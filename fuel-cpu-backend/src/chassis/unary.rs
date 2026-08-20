@@ -383,7 +383,7 @@ impl UnaryOpCore for Rsqrt {
 pub struct GeluTanh;
 impl UnaryOpCore for GeluTanh {
     fn f32(x: f32) -> f32 {
-        const COEFF: f32 = 0.797_884_56;
+        const COEFF: f32 = 0.797_884_6;
         let inner = COEFF * (x + 0.044_715 * x * x * x);
         0.5 * x * (1.0 + inner.tanh())
     }

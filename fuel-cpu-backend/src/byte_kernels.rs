@@ -906,7 +906,7 @@ macro_rules! cumsum_kernel {
                     let mut acc = $zero;
                     for j in 0..dim_size {
                         let pos = (o * dim_size + j) * inner + i;
-                        acc = acc + inv[pos];
+                        acc += inv[pos];
                         outv[pos] = acc;
                     }
                 }
@@ -2050,7 +2050,7 @@ pub fn rope_f32(
     seq: usize,
     head_dim: usize,
 ) -> Result<()> {
-    if head_dim % 2 != 0 {
+    if !head_dim.is_multiple_of(2) {
         return Err(Error::Msg(format!("rope_f32: head_dim ({head_dim}) must be even",)).bt());
     }
     let elem = std::mem::size_of::<f32>();
@@ -2220,7 +2220,7 @@ pub fn rope_f64(
     seq: usize,
     head_dim: usize,
 ) -> Result<()> {
-    if head_dim % 2 != 0 {
+    if !head_dim.is_multiple_of(2) {
         return Err(Error::Msg(format!("rope_f64: head_dim ({head_dim}) must be even",)).bt());
     }
     let elem = std::mem::size_of::<f64>();
@@ -4714,7 +4714,7 @@ pub fn matmul_f32_capacity(
         let ra = rhs_batch_dims[i];
         if la == ra {
             n_rep.push(1);
-        } else if ra > 0 && la > ra && la % ra == 0 {
+        } else if ra > 0 && la > ra && la.is_multiple_of(ra) {
             n_rep.push(la / ra);
         } else {
             return Err(Error::Msg(format!(
@@ -5121,7 +5121,7 @@ pub fn matmul_f64(
         let ra = rhs_batch_dims[i];
         if la == ra {
             n_rep.push(1);
-        } else if ra > 0 && la > ra && la % ra == 0 {
+        } else if ra > 0 && la > ra && la.is_multiple_of(ra) {
             n_rep.push(la / ra);
         } else {
             return Err(Error::Msg(format!(
@@ -5232,7 +5232,7 @@ fn block_slice_from_bytes<'a, T>(name: &str, bytes: &'a [u8]) -> Result<&'a [T]>
     if size == 0 {
         return Err(Error::Msg(format!("{name}: zero-sized block type")).bt());
     }
-    if bytes.len() % size != 0 {
+    if !bytes.len().is_multiple_of(size) {
         return Err(Error::Msg(format!(
             "{name}: byte length {} not a multiple of block size {size}",
             bytes.len(),
@@ -5241,7 +5241,7 @@ fn block_slice_from_bytes<'a, T>(name: &str, bytes: &'a [u8]) -> Result<&'a [T]>
     }
     let ptr = bytes.as_ptr();
     let align = std::mem::align_of::<T>();
-    if (ptr as usize) % align != 0 {
+    if !(ptr as usize).is_multiple_of(align) {
         return Err(Error::Msg(format!(
             "{name}: byte pointer not aligned to block type's alignment {align}",
         ))
@@ -5265,7 +5265,7 @@ fn qmatmul_generic_f32<T: fuel_quantized::GgmlType>(
     k: usize,
 ) -> Result<()> {
     let elements_per_block = T::BLCK_SIZE;
-    if k % elements_per_block != 0 {
+    if !k.is_multiple_of(elements_per_block) {
         return Err(Error::Msg(format!(
             "{name}: k={k} must be a multiple of block size {elements_per_block}",
         ))
@@ -6101,7 +6101,7 @@ fn fused_linear_check<T>(
         let ra = rhs_batch_dims[i];
         if la == ra {
             n_rep.push(1);
-        } else if ra > 0 && la > ra && la % ra == 0 {
+        } else if ra > 0 && la > ra && la.is_multiple_of(ra) {
             n_rep.push(la / ra);
         } else {
             return Err(Error::Msg(format!(
@@ -7224,20 +7224,20 @@ ssd_chunk_scan_kernel!(
 /// the expected quantization error for normally-distributed weights.
 pub const NF4_LUT: [f32; 16] = [
     -1.0,
-    -0.6961928009986877,
-    -0.5250730514526367,
-    -0.39491748809814453,
-    -0.28444138169288635,
-    -0.18477343022823334,
-    -0.09105003625154495,
+    -0.696_192_8,
+    -0.525_073_05,
+    -0.394_917_5,
+    -0.284_441_38,
+    -0.184_773_43,
+    -0.091_050_036,
     0.0,
-    0.07958029955625534,
-    0.16093020141124725,
-    0.24611230194568634,
-    0.33791524171829224,
-    0.44070982933044434,
-    0.5626170039176941,
-    0.7229568362236023,
+    0.079_580_3,
+    0.160_930_2,
+    0.246_112_3,
+    0.337_915_24,
+    0.440_709_83,
+    0.562_617,
+    0.722_956_84,
     1.0,
 ];
 
@@ -7257,10 +7257,10 @@ fn nf4_matmul_check_shapes(
     k: usize,
     block_size: usize,
 ) -> Result<()> {
-    if k == 0 || k % 2 != 0 {
+    if k == 0 || !k.is_multiple_of(2) {
         return Err(Error::Msg(format!("{name}: k={k} must be even and non-zero",)).bt());
     }
-    if block_size == 0 || k % block_size != 0 {
+    if block_size == 0 || !k.is_multiple_of(block_size) {
         return Err(Error::Msg(format!(
             "{name}: k={k} must be a multiple of block_size={block_size}",
         ))
@@ -7415,16 +7415,14 @@ fn flash_attn_admissible(
     if causal && kj > qi {
         return false;
     }
-    if let Some(w) = window_left {
-        if kj + w < qi {
+    if let Some(w) = window_left
+        && kj + w < qi {
             return false;
         }
-    }
-    if let Some(w) = window_right {
-        if kj > qi + w {
+    if let Some(w) = window_right
+        && kj > qi + w {
             return false;
         }
-    }
     true
 }
 
@@ -8863,15 +8861,14 @@ pub fn conv2d_f32(
         ))
         .bt());
     }
-    if let Some(b) = bias {
-        if b.len_bytes() != cout * elem {
+    if let Some(b) = bias
+        && b.len_bytes() != cout * elem {
             return Err(Error::Msg(format!(
                 "conv2d_f32: bias bytes={} doesn't match Cout={cout} (f32)",
                 b.len_bytes(),
             ))
             .bt());
         }
-    }
     let x_view: &[f32] = x.as_slice()?;
     let w_view: &[f32] = weight.as_slice()?;
     let bias_view: Option<&[f32]> = match bias {
@@ -9870,7 +9867,7 @@ where
     let mut idx = vec![0_usize; in_rank];
     for flat in 0..in_count {
         // Reconstruct multi-index `idx` from flat.
-        let mut rem = flat;
+        let rem = flat;
         let mut in_stride = 1;
         for i in (0..in_rank).rev() {
             idx[i] = (rem / in_stride) % in_shape[i];
@@ -10807,7 +10804,7 @@ mod tests {
         let act = CpuStorageBytes::from_slice(&[0.0_f32; 32]);
         let block_size = std::mem::size_of::<fuel_quantized::BlockQ4_0>();
         // Must be a multiple of 4 for U32-aligned storage.
-        assert!(block_size % 2 == 0);
+        assert!(block_size.is_multiple_of(2));
         let w = CpuStorageBytes::from_bytes(&vec![0u8; 2 * block_size]);
         let mut out = CpuStorageBytes::from_zero_bytes(2 * 4);
         qmatmul_q4_0_f32(&act, &w, &mut out, 1, 1, 2, 32).expect("qmatmul");
@@ -12925,7 +12922,7 @@ mod tests {
         fused_softmax_cross_entropy_f32(&logits, &targets, &mut out, 2, 4, REDUCTION_MEAN, -100)
             .expect("fsce");
         let loss = out.as_slice::<f32>().unwrap()[0];
-        let expected = ((2.44018972f32) + (1.38629436f32)) / 2.0;
+        let expected = (2.440_189_8_f32 + 1.386_294_4_f32) / 2.0;
         assert!(
             (loss - expected).abs() < 1e-5,
             "got {loss}, expected {expected}",
@@ -12941,7 +12938,7 @@ mod tests {
         fused_softmax_cross_entropy_f32(&logits, &targets, &mut out, 2, 4, REDUCTION_SUM, -100)
             .expect("fsce");
         let loss = out.as_slice::<f32>().unwrap()[0];
-        let expected = 2.44018972f32 + 1.38629436f32;
+        let expected = 2.440_189_8_f32 + 1.386_294_4_f32;
         assert!(
             (loss - expected).abs() < 1e-5,
             "got {loss}, expected {expected}",
@@ -12958,12 +12955,12 @@ mod tests {
             .expect("fsce");
         let per_row = out.as_slice::<f32>().unwrap();
         assert!(
-            (per_row[0] - 2.44018972).abs() < 1e-5,
+            (per_row[0] - 2.440_189_8).abs() < 1e-5,
             "row 0: got {}",
             per_row[0]
         );
         assert!(
-            (per_row[1] - 1.38629436).abs() < 1e-5,
+            (per_row[1] - 1.386_294_4).abs() < 1e-5,
             "row 1: got {}",
             per_row[1]
         );
@@ -12980,7 +12977,7 @@ mod tests {
         fused_softmax_cross_entropy_f32(&logits, &targets, &mut out, 2, 4, REDUCTION_MEAN, -100)
             .expect("fsce");
         let loss = out.as_slice::<f32>().unwrap()[0];
-        let expected = 2.44018972f32;
+        let expected = 2.440_189_8_f32;
         assert!(
             (loss - expected).abs() < 1e-5,
             "got {loss}, expected {expected}",
@@ -13027,7 +13024,7 @@ mod tests {
         fused_softmax_cross_entropy_f64(&logits, &targets, &mut out, 2, 4, REDUCTION_MEAN, -100)
             .expect("fsce f64");
         let loss = out.as_slice::<f32>().unwrap()[0];
-        let expected = (2.44018972_f32 + 1.38629436_f32) / 2.0;
+        let expected = (2.440_189_8_f32 + 1.386_294_4_f32) / 2.0;
         assert!(
             (loss - expected).abs() < 1e-5,
             "got {loss}, expected {expected}",
@@ -13055,7 +13052,7 @@ mod tests {
         fused_softmax_cross_entropy_bf16(&logits, &targets, &mut out, 2, 4, REDUCTION_MEAN, -100)
             .expect("fsce bf16");
         let loss = out.as_slice::<f32>().unwrap()[0];
-        let expected = (2.44018972_f32 + 1.38629436_f32) / 2.0;
+        let expected = (2.440_189_8_f32 + 1.386_294_4_f32) / 2.0;
         assert!(
             (loss - expected).abs() < 5e-2,
             "got {loss}, expected {expected}",
@@ -13080,7 +13077,7 @@ mod tests {
         fused_softmax_cross_entropy_f16(&logits, &targets, &mut out, 2, 4, REDUCTION_MEAN, -100)
             .expect("fsce f16");
         let loss = out.as_slice::<f32>().unwrap()[0];
-        let expected = (2.44018972_f32 + 1.38629436_f32) / 2.0;
+        let expected = (2.440_189_8_f32 + 1.386_294_4_f32) / 2.0;
         assert!(
             (loss - expected).abs() < 1e-2,
             "got {loss}, expected {expected}",
@@ -13192,9 +13189,9 @@ mod tests {
     /// CausalConv1d BF16 sanity. Loose tolerance for the 7-bit mantissa.
     #[test]
     fn causal_conv1d_bf16_no_silu_basic() {
-        let xf = vec![0.0_f32, 0.0, 1.0, 2.0];
-        let wf = vec![0.5_f32, 1.0, 2.0];
-        let bf = vec![0.1_f32];
+        let xf = [0.0_f32, 0.0, 1.0, 2.0];
+        let wf = [0.5_f32, 1.0, 2.0];
+        let bf = [0.1_f32];
         let xb: Vec<half::bf16> = xf.iter().map(|&v| half::bf16::from_f32(v)).collect();
         let wb: Vec<half::bf16> = wf.iter().map(|&v| half::bf16::from_f32(v)).collect();
         let bb: Vec<half::bf16> = bf.iter().map(|&v| half::bf16::from_f32(v)).collect();
@@ -13211,9 +13208,9 @@ mod tests {
     /// CausalConv1d F16 sanity with SiLU. Tighter tolerance than BF16.
     #[test]
     fn causal_conv1d_f16_with_silu() {
-        let xf = vec![0.0_f32, 0.0, 1.0, 2.0];
-        let wf = vec![0.5_f32, 1.0, 2.0];
-        let bf = vec![0.1_f32];
+        let xf = [0.0_f32, 0.0, 1.0, 2.0];
+        let wf = [0.5_f32, 1.0, 2.0];
+        let bf = [0.1_f32];
         let xb: Vec<half::f16> = xf.iter().map(|&v| half::f16::from_f32(v)).collect();
         let wb: Vec<half::f16> = wf.iter().map(|&v| half::f16::from_f32(v)).collect();
         let bb: Vec<half::f16> = bf.iter().map(|&v| half::f16::from_f32(v)).collect();

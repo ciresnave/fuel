@@ -105,7 +105,7 @@ impl MmappedHostStorage {
         if elem_size == 0 {
             return Err(Error::Msg("dtype has zero size".into()).bt());
         }
-        if byte_offset % elem_size != 0 {
+        if !byte_offset.is_multiple_of(elem_size) {
             return Err(Error::Msg(format!(
                 "mmap byte_offset {byte_offset} not aligned to {elem_size}-byte dtype {dtype:?}",
             ))

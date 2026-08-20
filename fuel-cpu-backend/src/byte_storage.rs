@@ -132,7 +132,7 @@ impl CpuStorageBytes {
         let len_bytes = self.len_bytes();
         let size = std::mem::size_of::<T>();
         let align = std::mem::align_of::<T>();
-        if size != 0 && len_bytes % size != 0 {
+        if size != 0 && !len_bytes.is_multiple_of(size) {
             return Err(Error::Msg(format!(
                 "CpuStorageBytes::as_slice_mut<{}>: byte length {} not a multiple of T size {}",
                 std::any::type_name::<T>(),
