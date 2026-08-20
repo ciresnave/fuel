@@ -13,6 +13,47 @@
 > Kept as the historical record of the pause decision and the prerequisite's design
 > sketch — the pause below is NOT a live gate.
 
+> ⚠️ **PAUSE RETIRED 2026-08-19 — CireSnave confirmed directly (via architect).
+> The resume condition was MET weeks ago.**
+>
+> **Why it is safe to retire is NOT that another document says this one is
+> superseded.** A supersession claim is somebody's assertion; the resume
+> condition is checkable. The pause was stated as: blocked until the FKC
+> contract-verification + automatic-kernel-integration program existed. **That
+> program exists at head, measured by content rather than by commit id:**
+> `fuel-dispatch/src/fkc/verify/` → **13** files; `VerificationLedger` → **8**
+> files; candidate-kernel ingestion → **7** files; recipe identity
+> (`base_map_hash`) → **10** files. *(Control:
+> `git ls-files 'fuel-dispatch/src/fkc/zz_no_such/*' | wc -l` → 0.)*
+>
+> 4b completed at **10.4× captured-replay, byte-exact** (TinyLlama-1.1B /
+> RTX 4070), and the work grew afterwards: a second acceptance test this
+> document never mentions, `phi_forward_with_kv_context_captured_matches_persistent`,
+> lives at `fuel-core/src/lazy.rs`.
+>
+> ⚠️ **DO NOT try to re-confirm those tests with a plain `cargo test`.** They are
+> `#[cfg(feature = "cuda")]` **and** `#[ignore = "requires a live CUDA device"]`,
+> so an ordinary run reports `0 passed; N filtered out` — **a vacuous zero that
+> reads exactly like a clean pass.** The only honest re-derivation is
+> `pwsh scripts/gpu-run.ps1 -Project fuel -- cargo test -p fuel-core --features cuda -- --ignored`,
+> and their last verified-green evidence remains commit `ef01a5dc` rather than
+> anything re-run since.
+>
+> **A note against the grain of the audit this notice came from: THIS DOCUMENT
+> WAS MAINTAINED.** Someone returned to it, annotated it with commit evidence,
+> and wrote plainly that the pause was not a live gate. It is stale only in that
+> its title still says PAUSED. Among four documents pointing at a deleted branch
+> and three calling built things designs, that difference deserves naming —
+> otherwise the audit reads as "every document was rotten", which is false and
+> would make the real findings easier to dismiss.
+>
+> **One citation correction, recorded rather than smoothed:** the evidence list
+> handed to me named `cbb2e289` as "Spec-B candidate-kernel ingestion". The sha
+> is a real ancestor of head, but its subject is
+> `docs(outreach): baracuda-seam SEAM_MAGIC lockstep ask` — a different change.
+> The other four cited commits check out. Spec-B ingestion is evidenced above by
+> content, which is why the content check is the one to trust.
+
 **Status (2026-07-11): PAUSED, by explicit user decision.** Do not resume any work toward
 finishing task 4b-δ (fuel-core wiring of `CapturedDecodeSession` into the real Llama decode
 loop), 4b-ε (the captured-decode bench leg), or the broader "audit the next unaudited kernel
