@@ -52,6 +52,18 @@ of the live source, not inference. Several findings were independently rediscove
 5 research passes working different angles of the doc — those are marked **[cross-validated]** and
 should be treated as the highest-confidence findings in this document.
 
+> ⚠️ **AMENDED 2026-08-20 — THIS IS A REFERENCE DOCUMENT AND ITS FINDINGS HAVE
+> MOVED ON.** The audit's gaps were migrated into the defect registry: **7**
+> `V-FKC` references now live in [`../gaps.md`](../gaps.md), which is the
+> source of truth for open defects and ownership (CLAUDE.md).
+>
+> **Read this for the audit's REASONING, not for its open-items list.** A finding
+> here that does not appear in `gaps.md` has either been closed or was never
+> promoted to an owned row — and this document cannot tell you which, because a
+> reference document has no owner and no clock.
+>
+> **Re-derive:** `grep -c 'V-FKC' docs/gaps.md` → **7**.
+
 **Purpose**: this document exists so that closing the gap between FKC's design and its
 implementation can proceed as real test-driven development — every gap below is written precisely
 enough to become a red test (a test that fails against today's code and passes once the gap is

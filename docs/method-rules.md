@@ -160,3 +160,24 @@ The sweep rewrote `LazyTensor` -> `Tensor` **inside the fenced code block**, lea
 2. **ANCHOR ON WHAT A RENAME CANNOT TOUCH** — file paths, `git ls-files`, directory counts, and identifiers that were **RETIRED** rather than renamed. `BackpropOp` and `fuel-core/src/op.rs` are good anchors *because they were deleted*. `pub struct Tensor` was a bad one *because it was renamed into*.
 3. **Where an identifier is unavoidable, say what it was renamed FROM**, so a later sweep's damage is legible rather than silent.
 4. **After any tree-wide rename, re-run every doc-embedded command.** The lane that found this did exactly that after rebasing, and caught three more of their own that had broken identically — control -> 0 (dead), claim -> 1 (reads as regression). **Had they pushed before rebasing they would have landed three amendments whose controls were already dead.**
+
+## checked-then-didnt-look
+
+> **Index line (in CLAUDE.md):** **Performing a verification and then reporting something other than its output is a distinct defect from failing to verify — and remembering to check does not fix it.** Report from the artifact, not from the fact that a step completed.
+
+**TWO INSTANCES IN ONE NIGHT, TWO PEOPLE, DIFFERENT TOOLS (2026-08-20).**
+
+- The architect ran `git log -1` on five shas *specifically to verify them*, and their terminal printed `docs(outreach): baracuda-seam SEAM_MAGIC lockstep ask`. They then wrote **"Spec-B candidate-kernel ingestion"** — the label from the document under review — into a report that reached CireSnave.
+- The doc-currency lane resolved a rebase conflict, confirmed the rebase **completed**, and reported *"resolved in favour of yours."* The push had in fact overwritten the other party's file. **They never read the file; they read that the step succeeded.**
+
+**Why this is not "forgot to check":** the check ran. Its output existed. What failed was the step between the output and the claim — a prior belief supplied the answer, and the measurement was treated as a formality that had been satisfied rather than as a source of information. **A rule that says "verify before claiming" is already satisfied by both of these.**
+
+**Practice:** state the claim in the form of the artifact — quote the subject line, `cat` the file, paste the count — so the report *is* the output rather than a summary of it. If you cannot quote it, you did not read it. And be most suspicious when the measurement is expected to confirm something: **a number that agrees with the prose gets shipped; a number that disagrees gets re-measured** (see `gap-029-persistent-decode-trait.md`, where the naive grep returns exactly the stale figure the document claims).
+
+## git-rebase-inverts-ours-and-theirs
+
+> **Index line (in CLAUDE.md):** **In a REBASE, `--theirs` is the commit being APPLIED (yours) and `--ours` is upstream — the exact inverse of a merge.** Taking "theirs" to mean "the other side's version" silently keeps your own and discards theirs.
+
+**A footgun with no warning and a plausible-sounding name in both directions (2026-08-20).** A lane resolving a conflict against a peer's committed repair ran `git checkout --theirs <file>` meaning *"take main's version"*. During a rebase, upstream is checked out first and each commit is replayed **onto** it, so **`--ours` is upstream and `--theirs` is the commit under replay.** The resolve silently kept the lane's own version, the rebase reported success, and the subsequent push overwrote the peer's work — while the lane reported the opposite in good faith.
+
+**Practice:** do not use `--ours`/`--theirs` during a rebase at all. Name the source explicitly — `git checkout origin/main -- <path>` — which is unambiguous under both operations. Then **read the file** before reporting what it contains (see `checked-then-didnt-look`; these two combined to produce the incident).

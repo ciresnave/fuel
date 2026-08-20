@@ -11,6 +11,20 @@
 as many external sources as practical, and *write* a Fuel model out to formats other engines
 can consume. Fuel-IR is the hub; every format is an importer and/or exporter spoke.
 
+> ⚠️ **AMENDED 2026-08-20 — "Not yet started" IS FALSE FOR THE IMPORT SIDE.**
+> Model-format ingestion exists on `main`: `fuel-onnx` is a crate (**10** files),
+> **66** files reference GGUF, **246** reference safetensors.
+>
+> **Scoped deliberately: this establishes that import paths exist, NOT that this
+> plan's design was implemented as written, and NOT that the EXPORT side moved.**
+> A section-by-section reconciliation is owed and this notice is not it — an
+> over-broad "COMPLETE" would replace one false status with another, and a
+> completion is the kind nobody re-checks.
+>
+> **Re-derive:** `git ls-files 'fuel-onnx/**' | wc -l` → **10**;
+> `git grep -l safetensors -- '*.rs' | wc -l` → **246**.
+> *(Control: `git grep -l ZzNotARealSymbolQq -- '*.rs' | wc -l` → 0.)*
+
 ---
 
 ## 0. The honest reframe (read this first)
