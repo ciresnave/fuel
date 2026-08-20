@@ -146,6 +146,10 @@ pub struct FusedOpEntry {
     /// Session 2 introduces) checks these at graph-build time. The
     /// raw `Graph::push` + `Graph::set_output_views` route preserves
     /// the same invariants via `set_output_views`'s validation pass.
+    #[expect(
+        clippy::type_complexity,
+        reason = "optional output-view rule fn-pointer; a type alias would add indirection for a single field"
+    )]
     pub output_views: Option<fn(&[Shape], &[DType], &FusedOpParams) -> Vec<OutputViewSpec>>,
 
     /// Which input index this fused op DESTROYS (mutates in place) on execution,
@@ -711,6 +715,10 @@ pub enum BackwardKind {
 /// Step 3 ports SoftmaxLastDim's existing matcher to `Callable`. The
 /// declarative form (see Q1 in `docs/fused-op-registry.md`) is wired up
 /// in step 4 once a second op exercises the abstraction.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "matcher pattern enum; boxing the large variant is deferred to the same follow-up as PatternNode (docs/gaps.md GAP-215) -- a cross-cutting change to construction/match sites, not a lint-commit change"
+)]
 pub enum SubgraphPattern {
     Declarative(PatternTree),
     Callable(fn(&Graph, NodeId) -> Option<PatternMatch>),

@@ -157,6 +157,10 @@ fn dtype_passthrough(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
 ///
 /// This mirrors the CPU kernel (im2col + batched GEMM) at the graph level and
 /// adds NO `Op` variant — the build-time-closed primitive basis is unchanged.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "graph-op recipe builder: the parameters are the conv operand dims / config; bundling into a struct obscures the recipe signature, not clarifies it"
+)]
 fn recipe(
     n: usize,
     cin: usize,

@@ -554,11 +554,10 @@ pub fn device_alternating_order(graph: &Graph, runs: &[Run]) -> Vec<usize> {
     for (ri, r) in runs.iter().enumerate() {
         for &m in &r.members {
             for &inp in &graph.node(m).inputs {
-                if let Some(&pi) = run_of.get(&inp) {
-                    if pi != ri && preds[ri].insert(pi) {
+                if let Some(&pi) = run_of.get(&inp)
+                    && pi != ri && preds[ri].insert(pi) {
                         succs[pi].push(ri);
                     }
-                }
             }
         }
     }
@@ -646,7 +645,7 @@ pub fn device_alternating_order(graph: &Graph, runs: &[Run]) -> Vec<usize> {
         // Priority key (smaller wins): heaviest downstream compute first,
         // then a different device than last (interleave), then smallest idx.
         let key_of = |ri: usize| -> (std::cmp::Reverse<u64>, bool, usize) {
-            let same_device = last_device.map_or(false, |ld| runs[ri].device == ld);
+            let same_device = last_device.is_some_and(|ld| runs[ri].device == ld);
             (std::cmp::Reverse(down_weight[ri]), same_device, ri)
         };
         let mut best_pos = 0usize;
@@ -680,6 +679,7 @@ pub fn device_alternating_order(graph: &Graph, runs: &[Run]) -> Vec<usize> {
     // the input order for the remainder so the lowering stays total rather
     // than dropping work.
     if order.len() != n {
+        #[expect(clippy::needless_range_loop, reason = "the bound `n` is the node count checked above (order.len() != n), not `emitted.len()`; enumerate could change the iteration count -- a wrong-number bug")]
         for i in 0..n {
             if !emitted[i] {
                 order.push(i);
@@ -1671,14 +1671,13 @@ mod tests {
         for &ri in order {
             for &m in &runs[ri].members {
                 for &inp in &graph.node(m).inputs {
-                    if let Some(&pi) = run_of.get(&inp) {
-                        if pi != ri {
+                    if let Some(&pi) = run_of.get(&inp)
+                        && pi != ri {
                             assert!(
                                 emitted.contains(&pi),
                                 "run {ri} emitted before its producer run {pi}",
                             );
                         }
-                    }
                 }
             }
             emitted.insert(ri);

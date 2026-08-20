@@ -152,6 +152,10 @@ pub enum QuantType {
     /// 256-element super-block = 2 bytes f16 d + 2 bytes f16 dmin +
     /// 12 bytes of 6-bit-packed sub-block scales/mins + 128 bytes
     /// of 4-bit-packed quants. GGML k-quant "medium" format.
+    #[expect(
+        non_camel_case_types,
+        reason = "GGML k-quant spec identifier (Q4_K_M = 4-bit K-quant Medium); matches the upstream / on-disk format name -- external convention over internal casing"
+    )]
     Q4_K_M,
     /// 256-element super-block = d + dmin + 12-byte scales + 32-byte hmask + 128-byte qs.
     Q5K,
@@ -1026,8 +1030,8 @@ pub enum Op {
     /// readers should use this op's NodeId.
     ///
     /// Bridge-retirement Phase 3a follow-up. Paired with
-    /// [`Op::Alloc`] to give the architecturally clean "alloc uninit
-    /// + explicit zero" pipeline. Backends with native device-side
+    /// [`Op::Alloc`] to give the architecturally clean "alloc uninit +
+    /// explicit zero" pipeline. Backends with native device-side
     /// fills (CUDA `cuMemsetD8Async`, Vulkan `vkCmdFillBuffer`)
     /// dispatch through their kernels; CPU does an
     /// `Arc::make_mut`-style in-place memset.
@@ -2217,14 +2221,13 @@ impl Graph {
         };
         let op_for_derive = if is_view { Some(node.op.clone()) } else { None };
         self.nodes.push(node);
-        if let (Some(input_id), Some(op)) = (view_input, op_for_derive) {
-            if input_id.0 < self.nodes.len() {
+        if let (Some(input_id), Some(op)) = (view_input, op_for_derive)
+            && input_id.0 < self.nodes.len() {
                 let input_layout = self.layout(input_id);
                 if let Ok(out_layout) = derive_view_output_layout(&op, &input_layout) {
                     self.set_layout(id, out_layout);
                 }
             }
-        }
         id
     }
 
@@ -2580,6 +2583,7 @@ impl Graph {
         // property over them) is preserved.
         let mut old_to_new: Vec<Option<NodeId>> = vec![None; n];
         let mut next = 0usize;
+        #[expect(clippy::needless_range_loop, reason = "`idx` is an id-space counter: it builds `NodeId(idx)` for the membership check and indexes `old_to_new` by that id; the bound `n` is the old-id count, not an array to enumerate")]
         for idx in 0..n {
             if live.contains(&NodeId(idx)) {
                 old_to_new[idx] = Some(NodeId(next));
@@ -2654,14 +2658,13 @@ impl Graph {
                     return bad(format!("Node#{idx} input Node#{}", inp.0));
                 }
             }
-            if let Op::Branch { reconverge_at } = node.op {
-                if reconverge_at.0 >= n {
+            if let Op::Branch { reconverge_at } = node.op
+                && reconverge_at.0 >= n {
                     return bad(format!(
                         "Node#{idx} Branch.reconverge_at Node#{}",
                         reconverge_at.0
                     ));
                 }
-            }
         }
         for id in self.placements.keys() {
             if id.0 >= n {
@@ -4891,6 +4894,10 @@ impl NodeHandle {
     /// `[B, Hq, Sq, D]`; `k` and `v` are `[B, Hkv, Sk, D]` with
     /// `Hq` a multiple of `Hkv` (GQA). `alibi_slopes` (optional) is
     /// `[Hq]`. Returns a tensor with `q`'s shape.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "public flash-attention builder: the parameters are the Q/K/V tensors + attention config; the surface is the op's ABI"
+    )]
     pub fn flash_attn(
         &self,
         k: &NodeHandle,
@@ -6870,15 +6877,15 @@ impl NodeHandle {
             2,
             "nf4_matmul: absmax must be rank 2 [n, k/block_size], got {abs_dims:?}",
         );
-        let m = a_dims[a_dims.len() - 2];
+        let _m = a_dims[a_dims.len() - 2];
         let k = a_dims[a_dims.len() - 1];
         let n = w_dims[0];
         assert!(
-            k % 2 == 0,
+            k.is_multiple_of(2),
             "nf4_matmul: k={k} must be even (w_packed holds 2 nibbles per byte along k)",
         );
         assert!(
-            block_size > 0 && k % block_size == 0,
+            block_size > 0 && k.is_multiple_of(block_size),
             "nf4_matmul: k={k} must be a positive multiple of block_size={block_size}",
         );
         assert_eq!(
@@ -8695,7 +8702,7 @@ impl NodeHandle {
                     // Decomposes to: Sqr(x) → Neg → Exp → MulScalar(2/√π)
                     //                → Mul(upstream, .).
                     // 2/√π = 1.1283791670955125738961589031...
-                    const TWO_OVER_SQRT_PI: f64 = 1.128_379_167_095_512_6_f64;
+                    const TWO_OVER_SQRT_PI: f64 = std::f64::consts::FRAC_2_SQRT_PI;
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
@@ -8724,7 +8731,6 @@ impl NodeHandle {
                     // y = flip(x, dim). Backward is another Flip on
                     // the same dim — Flip is its own inverse
                     // (involutive). One backward node, exact gradient.
-                    let dim = dim;
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
@@ -8742,9 +8748,7 @@ impl NodeHandle {
                     // its kernel. Constant: slice the unpadded region.
                     // Reflect/Replicate: accumulate gradient at the
                     // mirrored / replicated positions.
-                    let padding = padding.clone();
-                    let mode = mode;
-                    let x = inputs[0];
+                    let padding = padding.clone();                    let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
                     let grad_x = push_node(
@@ -8771,7 +8775,6 @@ impl NodeHandle {
                     // y[..., i, ...] = sum_{k=0..=i} x[..., k, ...]
                     // dL/dx[..., i, ...] = sum_{k=i..n} dL/dy[..., k, ...]
                     // i.e. reverse cumsum. Express via Flip → CumSum → Flip.
-                    let dim = dim;
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
@@ -8796,8 +8799,6 @@ impl NodeHandle {
                 Op::Roll { dim, shift } => {
                     // y = roll(x, dim, shift). Backward is the opposite
                     // shift along the same dim. One backward node.
-                    let dim = dim;
-                    let shift = shift;
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
@@ -8814,7 +8815,6 @@ impl NodeHandle {
                     // y = triu(x, diagonal). Mask is a binary indicator
                     // — gradient passes through kept positions and is
                     // zero on the masked half. Same op on the upstream.
-                    let diagonal = diagonal;
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
@@ -8829,7 +8829,6 @@ impl NodeHandle {
                 }
                 Op::Tril { diagonal } => {
                     // Mirror of Op::Triu — same mask gradient.
-                    let diagonal = diagonal;
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
@@ -9251,7 +9250,6 @@ impl NodeHandle {
                     // metadata-only. Backward: re-insert the axis at the
                     // same position via Unsqueeze. Both directions are
                     // metadata-only views (no bytes touched).
-                    let dim = dim;
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
@@ -10748,7 +10746,7 @@ impl NodeHandle {
                 Op::ErfInplace => {
                     // Same backward as Op::Erf — grad_x = upstream * (2/√π) * exp(-x²).
                     // `Op::Sqr(x)` reads pre-mutation x via Phase 4a ordering.
-                    const TWO_OVER_SQRT_PI: f64 = 1.128_379_167_095_512_6_f64;
+                    const TWO_OVER_SQRT_PI: f64 = std::f64::consts::FRAC_2_SQRT_PI;
                     let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
@@ -11058,11 +11056,10 @@ fn lower_scans_for_backward(graph: &SharedGraph, root: NodeId) -> NodeId {
                     let g = graph.read().unwrap();
                     for nid in 0..g.len() {
                         let node = g.node(NodeId(nid));
-                        if let Op::View { slot: 0 } | Op::ViewOwned { slot: 0 } = node.op {
-                            if node.inputs.first() == Some(&id) {
+                        if let Op::View { slot: 0 } | Op::ViewOwned { slot: 0 } = node.op
+                            && node.inputs.first() == Some(&id) {
                                 remap.insert(NodeId(nid), y);
                             }
-                        }
                     }
                 }
             }
@@ -11103,11 +11100,10 @@ fn lower_scans_for_backward(graph: &SharedGraph, root: NodeId) -> NodeId {
             let g = graph.read().unwrap();
             for nid in 0..g.len() {
                 let node = g.node(NodeId(nid));
-                if let Op::View { slot } | Op::ViewOwned { slot } = node.op {
-                    if node.inputs.first() == Some(&scan_id) {
+                if let Op::View { slot } | Op::ViewOwned { slot } = node.op
+                    && node.inputs.first() == Some(&scan_id) {
                         remap.insert(NodeId(nid), if slot == 0 { slot0 } else { slot1 });
                     }
-                }
             }
         }
         // Defensive never-hang guard: if a full pass lowered no scan to a
@@ -11548,7 +11544,7 @@ mod tests {
     /// view). Subsequent reads return the explicit entry.
     #[test]
     fn layout_explicit_strided_is_remembered() {
-        use fuel_ir::DimVec;
+        
         let mut g = Graph::new();
         let id = g.push(Node {
             op: Op::Transpose,
@@ -11608,7 +11604,7 @@ mod tests {
     fn conv2d_builder_emits_conv2d_node_with_right_shape() {
         // k=3 s=1 p=1 keeps H and W.
         let x = NodeHandle::from_f32(
-            vec![0.0_f32; 1 * 2 * 4 * 4],
+            vec![0.0_f32; 2 * 4 * 4],
             Shape::from_dims(&[1, 2, 4, 4]),
             cpu_dev(),
         );
@@ -11625,7 +11621,7 @@ mod tests {
     fn conv2d_builder_stride_and_no_padding() {
         // k=3 s=2 p=0 on H=W=8 gives (8-3)/2+1 = 3.
         let x = NodeHandle::from_f32(
-            vec![0.0_f32; 1 * 2 * 8 * 8],
+            vec![0.0_f32; 2 * 8 * 8],
             Shape::from_dims(&[1, 2, 8, 8]),
             cpu_dev(),
         );
@@ -11641,12 +11637,12 @@ mod tests {
     fn conv2d_builder_depthwise_groups() {
         // groups=Cin=Cout=4 is the depthwise case. Weight per channel is [Cin/groups=1, kH, kW].
         let x = NodeHandle::from_f32(
-            vec![0.0_f32; 1 * 4 * 4 * 4],
+            vec![0.0_f32; 4 * 4 * 4],
             Shape::from_dims(&[1, 4, 4, 4]),
             cpu_dev(),
         );
         let w = x.const_f32_like(
-            vec![0.0_f32; 4 * 1 * 3 * 3],
+            vec![0.0_f32; 4 * 3 * 3],
             Shape::from_dims(&[4, 1, 3, 3]),
         );
         let y = x.conv2d(&w, None, (1, 1), (1, 1), 4);
@@ -11657,7 +11653,7 @@ mod tests {
     fn conv_transpose2d_builder_emits_node_with_right_shape() {
         // Hin=4, Kh=3, s=2, pad=1, out_pad=1 → Hout = (4-1)*2 + (3-1) + 1 + 1 - 2 = 8.
         let x = NodeHandle::from_f32(
-            vec![0.0_f32; 1 * 2 * 4 * 4],
+            vec![0.0_f32; 2 * 4 * 4],
             Shape::from_dims(&[1, 2, 4, 4]),
             cpu_dev(),
         );
@@ -11674,7 +11670,7 @@ mod tests {
         // Lin=4, K=3, s=2, pad=1, out_pad=1, dil=1
         // Lout = (4-1)*2 + (3-1) + 1 + 1 - 2 = 8.
         let x = NodeHandle::from_f32(
-            vec![0.0_f32; 1 * 2 * 4],
+            vec![0.0_f32; 2 * 4],
             Shape::from_dims(&[1, 2, 4]),
             cpu_dev(),
         );
@@ -11688,11 +11684,11 @@ mod tests {
         // Lin=2, K=4, s=4, pad=0, out_pad=0, dil=1
         // Lout = (2-1)*4 + (4-1) + 0 + 1 - 0 = 8.
         let x = NodeHandle::from_f32(
-            vec![0.0_f32; 1 * 1 * 2],
+            vec![0.0_f32; 2],
             Shape::from_dims(&[1, 1, 2]),
             cpu_dev(),
         );
-        let w = x.const_f32_like(vec![0.0_f32; 1 * 1 * 4], Shape::from_dims(&[1, 1, 4]));
+        let w = x.const_f32_like(vec![0.0_f32; 4], Shape::from_dims(&[1, 1, 4]));
         let y = x.conv_transpose1d(&w, 4, 0, 0, 1, 1);
         assert_eq!(y.shape().dims(), &[1, 1, 8]);
     }
@@ -11703,7 +11699,7 @@ mod tests {
         // Cin=4 first dim matches input; Cout/group=3 → total Cout=6.
         // Lin=3, K=3, s=1, pad=0, out_pad=0, dil=1 → Lout = (3-1)*1 + 2 + 0 + 1 = 5.
         let x = NodeHandle::from_f32(
-            vec![0.0_f32; 1 * 4 * 3],
+            vec![0.0_f32; 4 * 3],
             Shape::from_dims(&[1, 4, 3]),
             cpu_dev(),
         );
@@ -11717,7 +11713,7 @@ mod tests {
         // Forward Y = conv2d(X, W) with stride=1, pad=1, groups=1 keeps H,W.
         // Backward should produce dX with X's shape and dW with W's shape.
         let x = NodeHandle::from_f32(
-            (0..(1 * 2 * 4 * 4))
+            (0..(2 * 4 * 4))
                 .map(|i| (i as f32) * 0.05 - 0.5)
                 .collect::<Vec<f32>>(),
             Shape::from_dims(&[1, 2, 4, 4]),
@@ -13122,16 +13118,16 @@ mod tests {
         use fuel_ir::{DynScalar, SymId};
         // q [1, 2, 3, 4]; K/V capacity [1, 1, 8, 4] (GQA Hq=2, Hkv=1).
         let q = NodeHandle::from_f32(
-            vec![0.0_f32; 1 * 2 * 3 * 4],
+            vec![0.0_f32; 2 * 3 * 4],
             Shape::from_dims(&[1, 2, 3, 4]),
             cpu_dev(),
         );
         let k = q.const_f32_like(
-            vec![0.0_f32; 1 * 1 * 8 * 4],
+            vec![0.0_f32; 8 * 4],
             Shape::from_dims(&[1, 1, 8, 4]),
         );
         let v = q.const_f32_like(
-            vec![0.0_f32; 1 * 1 * 8 * 4],
+            vec![0.0_f32; 8 * 4],
             Shape::from_dims(&[1, 1, 8, 4]),
         );
         let sym = SymId(0);
@@ -13166,16 +13162,16 @@ mod tests {
     fn flash_attn_dyn_concrete_k_len_exceeding_capacity_panics() {
         use fuel_ir::DynScalar;
         let q = NodeHandle::from_f32(
-            vec![0.0_f32; 1 * 1 * 2 * 4],
+            vec![0.0_f32; 2 * 4],
             Shape::from_dims(&[1, 1, 2, 4]),
             cpu_dev(),
         );
         let k = q.const_f32_like(
-            vec![0.0_f32; 1 * 1 * 4 * 4],
+            vec![0.0_f32; 4 * 4],
             Shape::from_dims(&[1, 1, 4, 4]),
         );
         let v = q.const_f32_like(
-            vec![0.0_f32; 1 * 1 * 4 * 4],
+            vec![0.0_f32; 4 * 4],
             Shape::from_dims(&[1, 1, 4, 4]),
         );
         // Concrete k_len=5 > capacity 4 → build-time panic.
@@ -13901,8 +13897,7 @@ mod tests {
         let empty: Arc<[OutputView]> = Arc::from(Vec::<OutputView>::new().into_boxed_slice());
         let err = s
             .with_bundle(empty)
-            .err()
-            .expect("empty bundle slice must error");
+            .expect_err("empty bundle slice must error");
         let msg = format!("{err}");
         assert!(msg.contains("non-empty"), "error message: {msg}");
     }
@@ -13923,8 +13918,7 @@ mod tests {
         };
         let err = s
             .with_bundle(Arc::from(vec![bad].into_boxed_slice()))
-            .err()
-            .expect("slot 0 dtype mismatch must error");
+            .expect_err("slot 0 dtype mismatch must error");
         let msg = format!("{err}");
         assert!(msg.contains("dtype"), "error message: {msg}");
     }
@@ -13988,8 +13982,7 @@ mod tests {
         };
         let err = g
             .set_output_views(id, vec![bad_dtype].into())
-            .err()
-            .expect("primary dtype mismatch must error");
+            .expect_err("primary dtype mismatch must error");
         let msg = format!("{err}");
         assert!(msg.contains("dtype"), "error message: {msg}");
         // shape mismatch on slot 0
@@ -14003,8 +13996,7 @@ mod tests {
         };
         let err = g
             .set_output_views(id, vec![bad_shape].into())
-            .err()
-            .expect("primary shape mismatch must error");
+            .expect_err("primary shape mismatch must error");
         let msg = format!("{err}");
         assert!(msg.contains("shape"), "error message: {msg}");
     }
@@ -14023,8 +14015,7 @@ mod tests {
         let producer = NodeHandle::from_existing(Arc::clone(&graph), id);
         let err = producer
             .view(0)
-            .err()
-            .expect("view on non-multi-output producer must error");
+            .expect_err("view on non-multi-output producer must error");
         let msg = format!("{err}");
         assert!(msg.contains("multi-output"), "error message: {msg}");
     }
@@ -14049,8 +14040,7 @@ mod tests {
         let producer = NodeHandle::from_existing(Arc::clone(&graph), producer_id);
         let err = producer
             .view(2)
-            .err()
-            .expect("slot 2 of a 2-slot producer must error");
+            .expect_err("slot 2 of a 2-slot producer must error");
         let msg = format!("{err}");
         assert!(msg.contains("out of range"), "error message: {msg}");
     }
@@ -14275,8 +14265,7 @@ mod tests {
     fn allocate_bundled_storage_rejects_empty() {
         let dev = cpu_dev();
         let err = allocate_bundled_storage(dev.as_ref(), &[])
-            .err()
-            .expect("empty specs error");
+            .expect_err("empty specs error");
         assert!(format!("{err}").contains("non-empty"));
     }
 

@@ -97,20 +97,20 @@ use fuel_kernel_seam_types::{OpAttrs, OpTag, PatternNode};
 /// catches.
 const NF4_LUT: [f32; 16] = [
     -1.0,
-    -0.6961928009986877,
-    -0.5250730514526367,
-    -0.39491748809814453,
-    -0.28444138169288635,
-    -0.18477343022823334,
-    -0.09105003625154495,
+    -0.696_192_8,
+    -0.525_073_05,
+    -0.394_917_5,
+    -0.284_441_38,
+    -0.184_773_43,
+    -0.091_050_036,
     0.0,
-    0.07958029955625534,
-    0.16093020141124725,
-    0.24611230194568634,
-    0.33791524171829224,
-    0.44070982933044434,
-    0.5626170039176941,
-    0.7229568362236023,
+    0.079_580_3,
+    0.160_930_2,
+    0.246_112_3,
+    0.337_915_24,
+    0.440_709_83,
+    0.562_617,
+    0.722_956_84,
     1.0,
 ];
 
@@ -731,5 +731,19 @@ mod tests {
         let out = decompose(&mut g, fused, &FusedOpParams::Rope);
         assert_eq!(out, fused, "wrong params => typed decline => fixpoint");
         assert_eq!(g.len(), before, "declined before any emission");
+    }
+
+    /// The `NF4_LUT` here is documented "byte-identical to
+    /// `fuel_cpu_backend::byte_kernels::NF4_LUT`", but nothing enforced it:
+    /// fuel-cpu-backend's own tests check only 3 endpoints + monotonicity at
+    /// 1e-6, leaving the 12 interior values free to drift. This asserts full
+    /// equality of both 16-element arrays (fuel-cpu-backend is a dev-dependency).
+    #[test]
+    fn nf4_lut_byte_identical_to_cpu_backend() {
+        assert_eq!(
+            NF4_LUT,
+            fuel_cpu_backend::byte_kernels::NF4_LUT,
+            "fuel-graph NF4_LUT diverged from fuel_cpu_backend::byte_kernels::NF4_LUT"
+        );
     }
 }
