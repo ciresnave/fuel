@@ -56,7 +56,7 @@ impl CpuInvoker {
     /// having exercised exactly one input value and no branch. The record is
     /// true and uninformative, and `gate_precision` cannot tell it from a
     /// real verification (GAP-222) — which is why the fix belongs here, in
-    /// the invoker, and not in a per-op workaround.
+    /// the invoker, and not in each op's own recipe.
     ///
     /// `bytes` must be `out_dtype`-encoded and length-consistent with
     /// `out_shape`; a mismatch is rejected at invoke time rather than

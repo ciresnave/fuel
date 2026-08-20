@@ -40,10 +40,6 @@ fuel-core/src/lazy_mmdit.rs	// ---- MMDiT-X joint block (TODO) -----------------
 fuel-core/src/lazy_mmdit.rs	// MMDiT-X (SD3.5 medium) variant: not implemented in v1; flagged as TODO.
 fuel-core/src/lazy_mmdit.rs	// upstream and would need an `enum JointBlockWeights { MMDiT(...),
 fuel-core/src/lazy_mmdit.rs	/// MMDiT-X joint-block variant is not yet implemented; this config
-fuel-core/src/lazy_nn/conv.rs	//! Dilation: the Tensor conv primitives do not yet accept a
-fuel-core/src/lazy_nn/two_proj_attention.rs	/// Per-token, per-layer footprint a *standard* K/V cache would need at
-fuel-core/src/lazy_nn_conv_transpose.rs	//!   carry it yet (the eager `// TODO: support groups.` comment will
-fuel-core/src/lazy_nn_conv_transpose.rs	/// (the eager side has a `TODO: support groups.` and the underlying
 fuel-core/src/lazy_phi.rs	///   supports false — set to true bails at load time).
 fuel-core/src/lazy_quantized_whisper.rs	//!   returns an error pointing callers at `from_f32_bake` for now.
 fuel-core/src/lazy_sam.rs	//!   path bails explicitly in that branch — currently only the
@@ -57,6 +53,7 @@ fuel-core/src/lazy_stella_v5.rs	//! distinct — it would need its own port.
 fuel-core/src/lazy_wuerstchen.rs	// conv_transpose2d does not yet plumb the bias; add manually.
 fuel-core/src/lazy_yolov3.rs	// NOT convs (shortcuts, routes, upsamples, yolo) are skipped.
 fuel-core/src/lazy_yolov3.rs	// shortcut / route / upsample / yolo blocks sit).
+fuel-core/src/persistent_decode.rs	// would need per-variant inv_freq, and no such model exists yet. Single-base	documented scope boundary with a stated trigger; not an unfinished-work admission (architect-authorised)
 fuel-core/src/train.rs	//! ## Not yet covered
 fuel-correctness-fixtures/src/lib.rs	//! ## Not yet in v1 (deferred to follow-up sessions)
 fuel-cpu-backend/src/byte_kernels.rs	// FlashAttn — naive multi-head SDPA (math definition)
@@ -137,6 +134,7 @@ fuel-dispatch/src/vulkan_dispatch.rs	/// audited `none(reason)`, `determinism: n
 fuel-dispatch/src/vulkan_dispatch.rs	/// float add (not yet wired) and fall through to CPU.
 fuel-dispatch/src/vulkan_dispatch.rs	/// output dQ (same shape as Q). Bails on window/softcap (route
 fuel-examples/src/bs1770.rs	// TODO: Should this branch be marked cold?
+fuel-examples/src/mnist_train.rs	//! behaviour across platforms/backends is NOT yet established and must not be	required boundary statement: records what the convergence oracle does NOT prove
 fuel-formats/src/pickle.rs	// TODO: have a separate ordered dict and a separate default dict.
 fuel-graph/src/jit.rs	// The see_through-set skip is a follow-up; for now match `then`
 fuel-graph/src/lib.rs	// gradient is non-trivial and not yet implemented
@@ -165,7 +163,7 @@ fuel-graph/src/registry.rs	/// recover their payload via the `extract:` layer (a
 fuel-graph/src/registry/conv_transpose_2d.rs	// not yet in the recipe → surfaced honest-miss fixpoint (never a crash).
 fuel-graph/src/registry/conv_transpose_2d.rs	// or wire a dedicated backward helper. For now NotDifferentiable
 fuel-graph/src/registry/conv_transpose_2d.rs	/// non-2-input arity (the with-bias form is not yet in the recipe — a surfaced
-fuel-graph/src/registry/flash_attn.rs	//! Backward is not yet implemented (panic stub in `Tensor::backward`);
+fuel-graph/src/registry/flash_attn.rs	//! Backward is not yet implemented (panic stub in `NodeHandle::backward`);
 fuel-graph/src/registry/flash_attn.rs	//! `GraphExecutor::cpu_fallback` to the reference naive-attention
 fuel-graph/src/registry/flash_attn.rs	//! naive form).
 fuel-graph/src/registry/flash_attn.rs	/// (the tiled-softmax numerics aren't bit-identical to the naive
@@ -188,6 +186,10 @@ fuel-memory/src/dlpack_view.rs	//! A naive "store a pointer into my own field" i
 fuel-metal-backend/src/ug.rs	// TODO: support more dtypes.
 fuel-metal-kernels/src/kernels/sdpa.rs	/// - final type != bf16 (TODO maybe just template this kernel too?)
 fuel-metal-kernels/src/metal/commands.rs	// TODO: Avoid redundant allocation before drop
+fuel-nn/src/conv_transpose.rs	//!   carry it yet (the eager `// TODO: support groups.` comment will
+fuel-nn/src/conv_transpose.rs	/// (the eager side has a `TODO: support groups.` and the underlying
+fuel-nn/src/modules/conv.rs	//! Dilation: the Tensor conv primitives do not yet accept a
+fuel-nn/src/modules/two_proj_attention.rs	/// Per-token, per-layer footprint a *standard* K/V cache would need at
 fuel-quantized/src/k_quants.rs	// TODO: Pre-allocate this.
 fuel-quantized/src/neon.rs	// TODO: dotprod
 fuel-tensor-tools/src/main.rs	// Read + requantize into memory first. A streaming writer would need every
@@ -207,5 +209,3 @@ fuel-vulkan-backend/src/mapped_meter.rs	//! Precise BAR-only accounting would ne
 fuel-vulkan-backend/src/recorder.rs	/// `SubmittedBatch` that has NOT yet had its fence waited (`consumed == false`)
 fuel-vulkan-kernels/src/lib.rs	/// FlashAttention-shape multi-head attention, f32. Naive
 fuel-vulkan-kernels/src/lib.rs	/// GQA + causal + scale + alibi; bails on window/softcap/Sk>4096/D>256.
-fuel-core/src/persistent_decode.rs	// would need per-variant inv_freq, and no such model exists yet. Single-base	documented scope boundary with a stated trigger; not an unfinished-work admission (architect-authorised)
-fuel-examples/src/mnist_train.rs	//! behaviour across platforms/backends is NOT yet established and must not be	required boundary statement: records what the convergence oracle does NOT prove
