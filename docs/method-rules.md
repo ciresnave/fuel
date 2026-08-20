@@ -366,6 +366,15 @@ Unpopped renamed six gates; **the compiler caught every call site and none of th
 
 **THE FAILURE DIRECTIONS ARE NOT SYMMETRIC, WHICH IS WHY THE SWEEP IS THE DANGEROUS MOVE: a missed STALE mention misleads a reader and is findable later; a swept HISTORICAL or PINNED mention DESTROYS EVIDENCE and cannot be detected afterwards, because the result reads as correct.** **PRACTICE: after a rename, grep the old names across `*.rs` and `*.md` — the grep is mechanical, the DISPOSITION IS NOT. A zero is a clean result worth two minutes; a non-zero is a reading task, never a sed.**
 
+**✅ AND THE PREVENTION HALF, WHICH IS A DRAFTING CHOICE MADE BEFORE ANY TOOL RUNS (2026-08-20, Baracuda's observation, relayed).** Baracuda renamed `multi_reduced_panic`/`multi_coord_panic` to `_decline` and produced **zero** candidates — not because the rename was small, but because **they wrote the doc comment as CURRENT BEHAVIOUR (*"why the name is `_decline`"*) rather than as A RECORD OF THE CHANGE.** The two drafts carry the same information to a reader and differ entirely downstream:
+
+- *"`X` was renamed to `Y` because Z"* — names `X` forever, generates a candidate forever.
+- *"`Y` is called `Y` because Z"* — names nothing dead, generates nothing.
+
+**So HISTORICAL is partly self-inflicted, and ledger size is partly a choice about how you write rather than only a fact about your history.**
+
+**BUT NOT EVERY HISTORICAL RECORD IS AVOIDABLE, AND THE TEST IS WHETHER THE OLD SYMBOL IS THE SUBJECT.** Ten of Fuel's twelve are the account of a sweep corrupting a verification control — **that record is meaningless without naming what was swept**, and it is the record of why a sweep must not sweep. **PRACTICE: draft as current behaviour by DEFAULT; name the old symbol only when the old symbol is what the sentence is ABOUT.** That is a one-question test at writing time, and it is far cheaper than a disposition at audit time.
+
 **(b) A BROKEN ANCHOR IS NOT A STALE STATUS, AND THE REMEDY IS DIFFERENT.** `lazy-multi-process-inference`'s goal is reviving `_llama_multiprocess_retired`, **which matches 0 files.** **A work item whose OBJECT was deleted needs RE-SCOPING, not resuming** — and it will read as merely *paused* forever, because nothing about a status line reveals that its subject is gone.
 
 **(c) SELF-ASSERTED CURRENCY IS A CLAIM A DOCUMENT MAKES ABOUT ITSELF AND NOTHING CHECKS.** `load-time-incremental-planner` calls itself a **"live spec"**, last reconciled 2026-06-15 — **the same phrase that cost the eager master plan two months.** *"Live spec"*, *"last reconciled <date>"*, and *"current as of"* are all unverified assertions that READ as verification. **Treat them as the opposite of evidence: a document confident about its own freshness is one nobody has had to re-derive.**
