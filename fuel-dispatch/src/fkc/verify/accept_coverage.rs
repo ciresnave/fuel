@@ -30,6 +30,28 @@ use crate::kernel::BindingEntry;
 /// infrastructure failure, not a panic), matching the posture of
 /// [`super::bit_stability::verify_bit_stability`] and
 /// [`super::ulp::verify_precision_bound`].
+/// ⚠️ **GAP-217b trace, 2026-08-20: this function has NO consumer anywhere,
+/// under any feature — and it is the ROOT of four other dead-code reports,
+/// which is why they are one finding rather than five.**
+///
+/// It is the ONLY constructor of [`VerifyOutcome::NoReference`] (`:39`
+/// below). With it unwired, that variant is unconstructible, and the four
+/// `Ok(Ok(VerifyOutcome::NoReference)) => ...` arms in `harness`,
+/// `seed_cpu_ledger` (x2), `seed_cuda_ledger` and `seed_vulkan_ledger` are
+/// **unreachable**: they name an outcome nothing can produce.
+///
+/// **Kept, not deleted.** `verify/mod.rs` already records the decision — no
+/// in-crate consumer today, re-export alongside the first one — and deleting
+/// it would take the variant and the arms with it, destroying the only
+/// evidence that "nothing to smoke-test" was ever meant to be a distinct
+/// outcome. The arms are harmless: they map to an "unverified" log line.
+///
+/// **What is NOT harmless is leaving this undated.** It is an expiring
+/// decline with no detector — if the consumer never lands, nothing fires and
+/// this outlives its reason silently. Tie it to a checkpoint that WILL occur
+/// rather than to an event that may not: if `verify_accept_coverage` still
+/// has no consumer when the accept-coverage claim is next touched, it and its
+/// variant come out together.
 pub fn verify_accept_coverage(
     inv: &dyn KernelInvoker,
     entry: &BindingEntry,

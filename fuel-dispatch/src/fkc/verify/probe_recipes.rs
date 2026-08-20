@@ -819,7 +819,10 @@ fn last_dim_params(op: OpKind, outer: usize, last: usize) -> Option<OpParams> {
             last_dim: last,
         },
         OpKind::LogSoftmaxLastDim | OpKind::LogSoftmaxLastDimBackward => {
-            OpParams::LogSoftmaxLastDim { outer_count: outer, last_dim: last }
+            OpParams::LogSoftmaxLastDim {
+                outer_count: outer,
+                last_dim: last,
+            }
         }
         OpKind::RmsNormLastDim
         | OpKind::LayerNormLastDim

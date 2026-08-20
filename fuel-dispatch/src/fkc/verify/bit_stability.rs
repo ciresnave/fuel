@@ -37,6 +37,14 @@ pub type ProbeInputs = Vec<HostTensor>;
 /// [`VerifyOutcome::Fail`]: this is an *infrastructure* failure (the kernel
 /// couldn't be run at all), not a verification-criterion miss.
 #[derive(Debug)]
+///
+/// ⚠️ **GAP-217b: `dead_code` reports `Invoke`'s and `Backend`'s payloads as
+/// "never read", and DELETING THEM WOULD SILENTLY EMPTY EVERY ERROR LOG.**
+/// The strings are surfaced through the derived `Debug` — the seeders write
+/// `format!("unverified: invoke error {e:?}")` — and rustc does not count a
+/// derived-`Debug` use as a field READ. The lint is correct about field
+/// access and wrong about usefulness, which is the direction that gets a
+/// payload deleted for tidiness.
 pub enum VerifyError {
     /// The invoker's underlying kernel call itself returned an error.
     Invoke(String),
@@ -57,6 +65,12 @@ pub enum VerifyOutcome {
     /// infrastructure [`VerifyError::NoReference`] — this is a clean,
     /// non-error "nothing to check" outcome some verifiers may choose to
     /// return instead of erroring).
+    ///
+    /// ⚠️ **Currently unconstructible.** Its only producer,
+    /// `accept_coverage::verify_accept_coverage`, has no consumer — see the
+    /// trace note there (GAP-217b). Every `NoReference` match arm in the
+    /// seeders is therefore dead today. Kept deliberately, with the
+    /// expiry tied to that function rather than restated here.
     NoReference,
 }
 

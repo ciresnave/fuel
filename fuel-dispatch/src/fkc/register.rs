@@ -915,7 +915,9 @@ mod tests {
             provider.warnings
         );
         assert!(
-            !unbacked.iter().any(|m| m.contains("bit_stable_on_same_hardware")),
+            !unbacked
+                .iter()
+                .any(|m| m.contains("bit_stable_on_same_hardware")),
             "`bit_stable_on_same_hardware` IS earned for this key (GAP-207) and              must not be reported unbacked — if it is, either the ledger lost              the record or the query key drifted: {unbacked:?}"
         );
     }

@@ -101,11 +101,6 @@ impl VerificationLedger {
         &self.records
     }
 
-    /// Append a record.
-    pub fn push(&mut self, r: LedgerRecord) {
-        self.records.push(r);
-    }
-
     /// Insert `r`, first removing any existing record with the same
     /// verification key `(backend, dtypes, kernel_revision_hash, claim)` — the
     /// same tuple `has_pass` matches on. This makes re-verification idempotent:

@@ -555,7 +555,12 @@ fn gap_077_bit_stable_coverage_under_simulated_gap_058_flip() {
          entries it should not. First 10 of {} key(s): {}",
         lost_by_flip.len(),
         lost_by_flip.len(),
-        lost_by_flip.iter().take(10).cloned().collect::<Vec<_>>().join(", "),
+        lost_by_flip
+            .iter()
+            .take(10)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", "),
     );
     // The sabotage arm strips bit-stability wholesale, so it is an upper
     // bound on what any selector can remove — and it must land on the same
