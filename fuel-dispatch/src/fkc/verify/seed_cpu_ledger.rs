@@ -90,6 +90,18 @@ struct Probe {
     params: OpParams,
     out_dtype: DType,
     out_shape: Vec<usize>,
+    /// Bytes to PRE-FILL the output buffer with — mirrors
+    /// `probe_recipes::Probe::out_seed` and exists for the same reason
+    /// (GAP-222): an in-place op reads no inputs, so against the invoker's
+    /// default zeroed buffer it is verified on zeros and the resulting pass
+    /// measures nothing.
+    ///
+    /// This is a SECOND `Probe` type, deliberately not merged with the one in
+    /// `probe_recipes` while GAP-220 is open — but the defect had to be fixed
+    /// in both, and that is worth noticing: two types that must change
+    /// together are already one type wearing two names. Evidence for GAP-220,
+    /// recorded rather than acted on.
+    out_seed: Option<Vec<u8>>,
 }
 
 /// The Task 4.5b target set: every FKC-contract-sourced fused CPU op
@@ -260,6 +272,7 @@ fn build_probe(family: Family, dtypes: &[DType], seed: u64) -> Option<Probe> {
                 params,
                 out_dtype: dt,
                 out_shape: vec![outer * last],
+                out_seed: None,
             })
         }
         Family::SoftmaxBwd | Family::NormBwd => {
@@ -294,6 +307,7 @@ fn build_probe(family: Family, dtypes: &[DType], seed: u64) -> Option<Probe> {
                 params,
                 out_dtype: dt,
                 out_shape: vec![outer * last],
+                out_seed: None,
             })
         }
         Family::ReduceMaxToBwd => {
@@ -316,6 +330,7 @@ fn build_probe(family: Family, dtypes: &[DType], seed: u64) -> Option<Probe> {
                 },
                 out_dtype: dt,
                 out_shape: vec![1],
+                out_seed: None,
             })
         }
         Family::PowiBwd => {
@@ -330,6 +345,7 @@ fn build_probe(family: Family, dtypes: &[DType], seed: u64) -> Option<Probe> {
                 params: OpParams::PowI { exp: 2 },
                 out_dtype: dt,
                 out_shape: vec![4],
+                out_seed: None,
             })
         }
         Family::FusedLinear => {
@@ -353,6 +369,7 @@ fn build_probe(family: Family, dtypes: &[DType], seed: u64) -> Option<Probe> {
                 },
                 out_dtype: dt,
                 out_shape: vec![m * n],
+                out_seed: None,
             })
         }
         Family::QMatMul => {
@@ -402,6 +419,7 @@ fn build_probe(family: Family, dtypes: &[DType], seed: u64) -> Option<Probe> {
                 },
                 out_dtype: DType::F32,
                 out_shape: vec![2],
+                out_seed: None,
             })
         }
         Family::InplaceAffine => {
@@ -409,12 +427,18 @@ fn build_probe(family: Family, dtypes: &[DType], seed: u64) -> Option<Probe> {
                 return None;
             }
             // 0 real inputs — in-place target is adopted by the executor
-            // (`cpu_affine_inplace_wrapper!` requires `inputs.is_empty()`).
+            // (`cpu_affine_inplace_wrapper!` requires `inputs.is_empty()`), so
+            // the probe data goes into the OUTPUT buffer. Without the seed the
+            // kernel runs on zeros and `affine(0) = 1` everywhere: bit-stable,
+            // and evidence of one input value (GAP-222). The four
+            // `inplace_affine` rows in the checked-in ledger were earned that
+            // way; this is what re-earns them rather than grandfathering them.
             Some(Probe {
                 inputs: vec![],
                 params: OpParams::Affine { mul: 2.0, add: 1.0 },
                 out_dtype: dtypes[0],
                 out_shape: vec![4],
+                out_seed: Some(to_bytes(dtypes[0], &fill_deterministic(4, seed))?),
             })
         }
         Family::Fsce => {
@@ -443,6 +467,7 @@ fn build_probe(family: Family, dtypes: &[DType], seed: u64) -> Option<Probe> {
                 },
                 out_dtype: DType::F32,
                 out_shape: vec![1],
+                out_seed: None,
             })
         }
         Family::Rope => {
@@ -475,6 +500,7 @@ fn build_probe(family: Family, dtypes: &[DType], seed: u64) -> Option<Probe> {
                 },
                 out_dtype: dt,
                 out_shape: vec![outer * seq * head_dim],
+                out_seed: None,
             })
         }
         Family::Conv2D | Family::ConvTranspose2D => {
@@ -537,6 +563,7 @@ fn build_probe(family: Family, dtypes: &[DType], seed: u64) -> Option<Probe> {
                 params,
                 out_dtype: dt,
                 out_shape: vec![out_len],
+                out_seed: None,
             })
         }
         Family::CausalConv1d => {
@@ -564,6 +591,7 @@ fn build_probe(family: Family, dtypes: &[DType], seed: u64) -> Option<Probe> {
                 },
                 out_dtype: dt,
                 out_shape: vec![batch * channels * seq_out],
+                out_seed: None,
             })
         }
         Family::SelectiveScan => {
@@ -590,6 +618,7 @@ fn build_probe(family: Family, dtypes: &[DType], seed: u64) -> Option<Probe> {
                 },
                 out_dtype: dt,
                 out_shape: vec![2],
+                out_seed: None,
             })
         }
         Family::SsdChunkScan => {
@@ -617,6 +646,7 @@ fn build_probe(family: Family, dtypes: &[DType], seed: u64) -> Option<Probe> {
                 },
                 out_dtype: dt,
                 out_shape: vec![2],
+                out_seed: None,
             })
         }
     }
@@ -694,8 +724,11 @@ pub fn run_cpu_verification() -> (Vec<LedgerRecord>, Vec<SeedAttempt>) {
                 }
             };
             let entry = to_binding_entry(imp);
-            let inv = CpuInvoker::new(probe.out_dtype, probe.out_shape.clone())
+            let mut inv = CpuInvoker::new(probe.out_dtype, probe.out_shape.clone())
                 .with_params(probe.params.clone());
+            if let Some(seed_bytes) = probe.out_seed.clone() {
+                inv = inv.with_seeded_output(seed_bytes);
+            }
             let inputs = probe.inputs.clone();
             let attempt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 verify_bit_stability(&inv, &entry, std::slice::from_ref(&inputs), ITERS)
@@ -711,9 +744,19 @@ pub fn run_cpu_verification() -> (Vec<LedgerRecord>, Vec<SeedAttempt>) {
                         result: "pass".to_string(),
                         verified_at: verified_at_string(),
                         protocol_version: 1,
+                        // `output_seeded` records WHAT THE CLAIM WAS EARNED
+                        // AGAINST, which is the whole lesson of GAP-222: a
+                        // pass earned on a zeroed in-place target is
+                        // byte-identical in every field to one earned on real
+                        // data, so the distinction was invisible in the
+                        // ledger, in every count, and to `gate_precision`.
+                        // Recording it makes that class visible for the first
+                        // time. `false` here is not a defect — it is the
+                        // correct value for an op that reads its inputs.
                         evidence: serde_json::json!({
                             "repeat_calls": ITERS,
                             "harness": "task-4.5b/seed_cpu_ledger",
+                            "output_seeded": probe.out_seed.is_some(),
                         }),
                     });
                     "pass".to_string()
@@ -815,6 +858,9 @@ pub fn run_cpu_primitive_verification() -> (Vec<LedgerRecord>, Vec<SeedAttempt>)
                     evidence: serde_json::json!({
                         "repeat_calls": ITERS,
                         "harness": "gap-207/seed_cpu_ledger::primitive",
+                        // See the note on the fused pass: this records what
+                        // the claim was earned AGAINST (GAP-222).
+                        "output_seeded": probe.out_seed.is_some(),
                     }),
                 });
                 "pass".to_string()

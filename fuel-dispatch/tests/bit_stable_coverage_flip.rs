@@ -439,13 +439,23 @@ fn gap_077_bit_stable_coverage_under_simulated_gap_058_flip() {
     // The original C2 ("neither all nor none") FAILED here, and failing was
     // correct: it stopped a vacuous verdict being reported as a clean one.
     // The vacuity is not assumed — its cause is asserted directly below.
-    assert_eq!(
-        bit_stable_entries, 0,
-        "the corpus is no longer degenerate: {bit_stable_entries} of {entries} \
-         contract-derived CPU entries are now bit-stable, where this harness \
-         measured 0. That means ledger backing now exists, the flip is no \
-         longer provably inert, and the differ must be re-read as a real \
-         measurement instead of a vacuity report.",
+    // --- THE CORPUS IS NO LONGER DEGENERATE, AND THAT REVERSAL IS THE POINT
+    //
+    // HISTORY, kept because the reversal IS the finding: until 2026-08-20 this
+    // asserted `bit_stable_entries == 0`. That was correct, and it made the
+    // whole differ a vacuity report — every contract-derived entry arrived
+    // UNAUDITED, so no key had a bit-stable candidate to lose and GAP-058's
+    // flip was inert BY ABSENCE OF ANYTHING TO STRIP. The assertion carried a
+    // message written for the day it would fail. GAP-207's ledger seeding is
+    // that day: 199 of 623 entries are now bit-stable from a CONTRACT, earned
+    // rather than filled.
+    //
+    // So the direction flips. The harness now asserts the corpus is NOT
+    // degenerate, because a silent return to zero would turn every verdict
+    // below back into a vacuity report that reads exactly like a clean one.
+    assert!(
+        bit_stable_entries > 0,
+        "the corpus is degenerate again: 0 of {entries} contract-derived CPU          entries are bit-stable. Every verdict below would then hold for the          WRONG reason — no key can lose a candidate it never had — and would be          indistinguishable from a clean result. Either the ledger lost its CPU          records or the query key drifted; do not relax this.",
     );
 
     // Cause, not correlation: the entries are UNAUDITED because the V-FKC-9
@@ -465,9 +475,13 @@ fn gap_077_bit_stable_coverage_under_simulated_gap_058_flip() {
         .filter(|(_, _, _, p)| p.notes == unaudited_notes)
         .count();
     assert_eq!(
-        unaudited_entries, entries,
-        "expected every contract-derived CPU entry to carry the UNAUDITED \
-         sentinel after the ledger gate",
+        unaudited_entries + bit_stable_entries,
+        entries,
+        "expected the ledger gate to partition every contract-derived CPU entry \
+         into exactly two classes — backed (bit-stable survives) or downgraded \
+         (UNAUDITED sentinel). {unaudited_entries} + {bit_stable_entries} != \
+         {entries} means a third class exists and every count here is over an \
+         incomplete population",
     );
 
     // --- Report ------------------------------------------------------------
@@ -498,25 +512,70 @@ fn gap_077_bit_stable_coverage_under_simulated_gap_058_flip() {
         "coverage map identical (baseline vs flipped)         : {}",
         cov_base == cov_flip
     );
-    eprintln!("READ THIS AS: no key loses its last bit-stable candidate because");
-    eprintln!("NO KEY HAS ONE TO LOSE. The flip is inert on the binding table;");
-    eprintln!("CPU bit-stability is supplied later, wholesale, by the fill pass.");
+    // Derived from the measurement, never hard-coded. The previous version of
+    // these lines printed "NO KEY HAS ONE TO LOSE. The flip is inert"
+    // unconditionally — and would have gone on printing it on the very run
+    // that measured 199, directly beneath the number contradicting it.
+    if bit_stable_entries == 0 {
+        eprintln!("READ THIS AS: no key loses its last bit-stable candidate because");
+        eprintln!("NO KEY HAS ONE TO LOSE — the flip would be inert by absence.");
+    } else {
+        eprintln!("READ THIS AS: {bit_stable_entries} of {entries} entries are ledger-backed,");
+        eprintln!("so the flip is NOT inert. Applying it would strip the last bit-stable");
+        eprintln!("candidate from {} key(s).", lost_by_flip.len());
+    }
     eprintln!("===========================================\n");
 
-    // The verdict, asserted only after the differ was shown to discriminate.
-    assert!(
-        lost_by_flip.is_empty(),
-        "GAP-058's flip removes the LAST bit-stable candidate from {} binding \
-         key(s), which breaks FKC-4.8-0001's always-built coverage commitment:\n{}",
-        lost_by_flip.len(),
-        lost_by_flip.join("\n"),
-    );
-    // Stronger than "no loss": the flip changes the coverage map not at all.
+    // --- THE VERDICT, and it reversed on 2026-08-20 -----------------------
+    //
+    // This used to assert `lost_by_flip.is_empty()` and `cov_base == cov_flip`
+    // — that the flip was inert. Both held only because NOTHING WAS BACKED.
+    // With 199 of 623 entries now ledger-backed (GAP-207), applying GAP-058's
+    // flip WOULD strip the last bit-stable candidate from every one of those
+    // keys, and asserting emptiness would now be asserting something false.
+    //
+    // The replacement is not a relaxation. It pins the flip's blast radius to
+    // EXACTLY the backed set: the flip must strip the backed keys and NOTHING
+    // ELSE. Stripping FEWER would mean the GAP-058 selector and the ledger
+    // disagree about which entries are backed; stripping MORE would mean it
+    // reaches entries it has no business touching. Both fire here.
+    //
+    // FOR ANYONE ACTING ON GAP-058: this measures a HYPOTHETICAL, not a live
+    // breakage — the flip is not applied. The hazard is three-way and no
+    // single row states it: seeding + this flip + retiring
+    // `fill_unset_cpu_precision` is when those keys actually lose coverage.
+    // Any two of the three are survivable.
     assert_eq!(
+        lost_by_flip.len(),
+        bit_stable_entries,
+        "the flip's blast radius is not the backed set: it strips the last \
+         bit-stable candidate from {} key(s) while {bit_stable_entries} entries \
+         are ledger-backed. FEWER means the GAP-058 selector and the ledger \
+         disagree about which entries are backed; MORE means the flip reaches \
+         entries it should not. First 10 of {} key(s): {}",
+        lost_by_flip.len(),
+        lost_by_flip.len(),
+        lost_by_flip.iter().take(10).cloned().collect::<Vec<_>>().join(", "),
+    );
+    // The sabotage arm strips bit-stability wholesale, so it is an upper
+    // bound on what any selector can remove — and it must land on the same
+    // set. A divergence means the flip removes something the wholesale arm
+    // does not, which is incoherent: one of the two arms is mis-built.
+    assert_eq!(
+        lost_by_flip.len(),
+        lost_by_sabotage.len(),
+        "the flip and the wholesale-sabotage arm disagree about how many keys \
+         lose their last bit-stable candidate ({} vs {}) — sabotage is an upper \
+         bound by construction, so a difference means one arm is mis-built",
+        lost_by_flip.len(),
+        lost_by_sabotage.len(),
+    );
+    assert_ne!(
         cov_base, cov_flip,
-        "the flip altered per-key coverage. The 'no last candidate lost' \
-         verdict above would still hold, but the flip would no longer be inert \
-         and the ranking-order consequences would need their own analysis.",
+        "the flip no longer changes per-key coverage at all. With \
+         {bit_stable_entries} backed entries that cannot be right — it would \
+         mean the flip stopped selecting anything, and the verdicts above \
+         would go green for exactly the reason this harness exists to catch.",
     );
 }
 
