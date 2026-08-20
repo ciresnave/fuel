@@ -693,6 +693,16 @@ impl OpAttrs {
 /// the consumer/`extract` routing the matcher compiler reads. `SeeThrough`/`Any`
 /// are matcher-only and never appear in a concrete region.
 #[derive(Clone, Debug, PartialEq)]
+// `Op` is ~489 bytes (`OpAttrs` is a wide flat attribute struct); the other
+// variants are <=8. Boxing the `Op` payload is the right fix, but it ripples
+// across ~150 `PatternNode::Op` construction sites in fuel-graph and
+// fuel-dispatch, which are mid-rename — deferred to a post-sweep follow-up.
+// `expect` (not `allow`) so this suppression self-reports the day the variant
+// is boxed and the lint stops firing.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Op-payload boxing deferred: ~150 cross-crate construction sites, sequenced after the in-flight rename sweep"
+)]
 pub enum PatternNode {
     /// An op over the [`OpTag`] vocabulary with one child per tensor input
     /// (ordered, exact arity). `attrs` carries the scalar slot / load-bearing
