@@ -270,9 +270,10 @@ pub fn canonical_pattern(graph: &Graph, add_id: NodeId) -> Option<PatternMatch> 
         return None;
     }
     if let Some(pad) = pad_reshape_id
-        && consumer_counts.get(&pad).copied().unwrap_or(0) != 1 {
-            return None;
-        }
+        && consumer_counts.get(&pad).copied().unwrap_or(0) != 1
+    {
+        return None;
+    }
 
     Some(PatternMatch {
         bindings: vec![(0, a_id), (1, b_id), (2, bias_src_id)],

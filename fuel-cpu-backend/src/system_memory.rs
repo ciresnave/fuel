@@ -79,9 +79,10 @@ pub fn total_bytes() -> Option<u64> {
 fn snapshot() -> Snapshot {
     let mut guard = SNAPSHOT.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(s) = guard.as_ref()
-        && s.captured_at.elapsed().as_millis() < CACHE_TTL_MILLIS {
-            return *s;
-        }
+        && s.captured_at.elapsed().as_millis() < CACHE_TTL_MILLIS
+    {
+        return *s;
+    }
     let fresh = capture();
     *guard = Some(fresh);
     fresh

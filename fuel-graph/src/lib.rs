@@ -2222,12 +2222,13 @@ impl Graph {
         let op_for_derive = if is_view { Some(node.op.clone()) } else { None };
         self.nodes.push(node);
         if let (Some(input_id), Some(op)) = (view_input, op_for_derive)
-            && input_id.0 < self.nodes.len() {
-                let input_layout = self.layout(input_id);
-                if let Ok(out_layout) = derive_view_output_layout(&op, &input_layout) {
-                    self.set_layout(id, out_layout);
-                }
+            && input_id.0 < self.nodes.len()
+        {
+            let input_layout = self.layout(input_id);
+            if let Ok(out_layout) = derive_view_output_layout(&op, &input_layout) {
+                self.set_layout(id, out_layout);
             }
+        }
         id
     }
 
@@ -2583,7 +2584,10 @@ impl Graph {
         // property over them) is preserved.
         let mut old_to_new: Vec<Option<NodeId>> = vec![None; n];
         let mut next = 0usize;
-        #[expect(clippy::needless_range_loop, reason = "`idx` is an id-space counter: it builds `NodeId(idx)` for the membership check and indexes `old_to_new` by that id; the bound `n` is the old-id count, not an array to enumerate")]
+        #[expect(
+            clippy::needless_range_loop,
+            reason = "`idx` is an id-space counter: it builds `NodeId(idx)` for the membership check and indexes `old_to_new` by that id; the bound `n` is the old-id count, not an array to enumerate"
+        )]
         for idx in 0..n {
             if live.contains(&NodeId(idx)) {
                 old_to_new[idx] = Some(NodeId(next));
@@ -2659,12 +2663,13 @@ impl Graph {
                 }
             }
             if let Op::Branch { reconverge_at } = node.op
-                && reconverge_at.0 >= n {
-                    return bad(format!(
-                        "Node#{idx} Branch.reconverge_at Node#{}",
-                        reconverge_at.0
-                    ));
-                }
+                && reconverge_at.0 >= n
+            {
+                return bad(format!(
+                    "Node#{idx} Branch.reconverge_at Node#{}",
+                    reconverge_at.0
+                ));
+            }
         }
         for id in self.placements.keys() {
             if id.0 >= n {
@@ -8947,7 +8952,8 @@ impl NodeHandle {
                     // its kernel. Constant: slice the unpadded region.
                     // Reflect/Replicate: accumulate gradient at the
                     // mirrored / replicated positions.
-                    let padding = padding.clone();                    let x = inputs[0];
+                    let padding = padding.clone();
+                    let x = inputs[0];
                     let x_shape = node_shape(&graph_handle, x);
                     let dtype = node_dtype(&graph_handle, x);
                     let grad_x = push_node(
@@ -11265,9 +11271,10 @@ fn lower_scans_for_backward(graph: &SharedGraph, root: NodeId) -> NodeId {
                     for nid in 0..g.len() {
                         let node = g.node(NodeId(nid));
                         if let Op::View { slot: 0 } | Op::ViewOwned { slot: 0 } = node.op
-                            && node.inputs.first() == Some(&id) {
-                                remap.insert(NodeId(nid), y);
-                            }
+                            && node.inputs.first() == Some(&id)
+                        {
+                            remap.insert(NodeId(nid), y);
+                        }
                     }
                 }
             }
@@ -11309,9 +11316,10 @@ fn lower_scans_for_backward(graph: &SharedGraph, root: NodeId) -> NodeId {
             for nid in 0..g.len() {
                 let node = g.node(NodeId(nid));
                 if let Op::View { slot } | Op::ViewOwned { slot } = node.op
-                    && node.inputs.first() == Some(&scan_id) {
-                        remap.insert(NodeId(nid), if slot == 0 { slot0 } else { slot1 });
-                    }
+                    && node.inputs.first() == Some(&scan_id)
+                {
+                    remap.insert(NodeId(nid), if slot == 0 { slot0 } else { slot1 });
+                }
             }
         }
         // Defensive never-hang guard: if a full pass lowered no scan to a
@@ -11752,7 +11760,6 @@ mod tests {
     /// view). Subsequent reads return the explicit entry.
     #[test]
     fn layout_explicit_strided_is_remembered() {
-        
         let mut g = Graph::new();
         let id = g.push(Node {
             op: Op::Transpose,
@@ -11849,10 +11856,7 @@ mod tests {
             Shape::from_dims(&[1, 4, 4, 4]),
             cpu_dev(),
         );
-        let w = x.const_f32_like(
-            vec![0.0_f32; 4 * 3 * 3],
-            Shape::from_dims(&[4, 1, 3, 3]),
-        );
+        let w = x.const_f32_like(vec![0.0_f32; 4 * 3 * 3], Shape::from_dims(&[4, 1, 3, 3]));
         let y = x.conv2d(&w, None, (1, 1), (1, 1), 4);
         assert_eq!(y.shape().dims(), &[1, 4, 4, 4]);
     }
@@ -11891,11 +11895,7 @@ mod tests {
     fn conv_transpose1d_builder_shape_stride_4_no_pad() {
         // Lin=2, K=4, s=4, pad=0, out_pad=0, dil=1
         // Lout = (2-1)*4 + (4-1) + 0 + 1 - 0 = 8.
-        let x = NodeHandle::from_f32(
-            vec![0.0_f32; 2],
-            Shape::from_dims(&[1, 1, 2]),
-            cpu_dev(),
-        );
+        let x = NodeHandle::from_f32(vec![0.0_f32; 2], Shape::from_dims(&[1, 1, 2]), cpu_dev());
         let w = x.const_f32_like(vec![0.0_f32; 4], Shape::from_dims(&[1, 1, 4]));
         let y = x.conv_transpose1d(&w, 4, 0, 0, 1, 1);
         assert_eq!(y.shape().dims(), &[1, 1, 8]);
@@ -13330,14 +13330,8 @@ mod tests {
             Shape::from_dims(&[1, 2, 3, 4]),
             cpu_dev(),
         );
-        let k = q.const_f32_like(
-            vec![0.0_f32; 8 * 4],
-            Shape::from_dims(&[1, 1, 8, 4]),
-        );
-        let v = q.const_f32_like(
-            vec![0.0_f32; 8 * 4],
-            Shape::from_dims(&[1, 1, 8, 4]),
-        );
+        let k = q.const_f32_like(vec![0.0_f32; 8 * 4], Shape::from_dims(&[1, 1, 8, 4]));
+        let v = q.const_f32_like(vec![0.0_f32; 8 * 4], Shape::from_dims(&[1, 1, 8, 4]));
         let sym = SymId(0);
         let out = q.flash_attn_dyn(
             &k,
@@ -13374,14 +13368,8 @@ mod tests {
             Shape::from_dims(&[1, 1, 2, 4]),
             cpu_dev(),
         );
-        let k = q.const_f32_like(
-            vec![0.0_f32; 4 * 4],
-            Shape::from_dims(&[1, 1, 4, 4]),
-        );
-        let v = q.const_f32_like(
-            vec![0.0_f32; 4 * 4],
-            Shape::from_dims(&[1, 1, 4, 4]),
-        );
+        let k = q.const_f32_like(vec![0.0_f32; 4 * 4], Shape::from_dims(&[1, 1, 4, 4]));
+        let v = q.const_f32_like(vec![0.0_f32; 4 * 4], Shape::from_dims(&[1, 1, 4, 4]));
         // Concrete k_len=5 > capacity 4 → build-time panic.
         let _ = q.flash_attn_dyn(
             &k,
@@ -14472,8 +14460,7 @@ mod tests {
     #[test]
     fn allocate_bundled_storage_rejects_empty() {
         let dev = cpu_dev();
-        let err = allocate_bundled_storage(dev.as_ref(), &[])
-            .expect_err("empty specs error");
+        let err = allocate_bundled_storage(dev.as_ref(), &[]).expect_err("empty specs error");
         assert!(format!("{err}").contains("non-empty"));
     }
 

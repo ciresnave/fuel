@@ -505,25 +505,36 @@ mod tests {
         let mut table = KernelBindingTable::new();
         let id = FusedOpId(FusedOpId::RUNTIME_FUSED_BASE);
         register_runtime_kernel_into(
-            &mut table, id, &[DType::F32, DType::F32], BackendId::Cpu, noop_kernel as KernelRef,
+            &mut table,
+            id,
+            &[DType::F32, DType::F32],
+            BackendId::Cpu,
+            noop_kernel as KernelRef,
         );
         register_runtime_kernel_into(
-            &mut table, id, &[DType::F32, DType::F32, DType::F32], BackendId::Cpu,
+            &mut table,
+            id,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cpu,
             other_noop_kernel as KernelRef,
         );
 
         match table.unique_runtime_fused(id, BackendId::Cpu) {
             crate::kernel::RuntimeFusedLookup::Ambiguous { signatures } => {
-                assert_eq!(signatures.len(), 2, "both signatures reported: {signatures:?}");
+                assert_eq!(
+                    signatures.len(),
+                    2,
+                    "both signatures reported: {signatures:?}"
+                );
                 assert!(
                     signatures.iter().any(|s| s.len() == 2)
                         && signatures.iter().any(|s| s.len() == 3),
                     "the report must name the competing ARITIES, got {signatures:?}",
                 );
             }
-            other => panic!(
-                "an id carrying two signatures must refuse, not guess — got {other:?}",
-            ),
+            other => {
+                panic!("an id carrying two signatures must refuse, not guess — got {other:?}",)
+            }
         }
     }
 
@@ -535,7 +546,11 @@ mod tests {
         let mut table = KernelBindingTable::new();
         let id = FusedOpId(FusedOpId::RUNTIME_FUSED_BASE);
         register_runtime_kernel_into(
-            &mut table, id, &[DType::F32, DType::F32], BackendId::Cpu, noop_kernel as KernelRef,
+            &mut table,
+            id,
+            &[DType::F32, DType::F32],
+            BackendId::Cpu,
+            noop_kernel as KernelRef,
         );
         match table.unique_runtime_fused(id, BackendId::Cpu) {
             crate::kernel::RuntimeFusedLookup::Unique(dtypes, _) => {

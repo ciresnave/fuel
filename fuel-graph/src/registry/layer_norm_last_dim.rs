@@ -364,7 +364,10 @@ pub fn canonical_pattern(graph: &Graph, div_id: NodeId) -> Option<PatternMatch> 
         if kd_shape.rank() != x_shape.rank() {
             return None;
         }
-        #[expect(clippy::needless_range_loop, reason = "loop over AXES, not an array scan; `axis` is compared (`axis == last`) and indexes `full` by that same axis; enumerate would obscure the axis semantics")]
+        #[expect(
+            clippy::needless_range_loop,
+            reason = "loop over AXES, not an array scan; `axis` is compared (`axis == last`) and indexes `full` by that same axis; enumerate would obscure the axis semantics"
+        )]
         for axis in 0..x_shape.rank() {
             let expected = if axis == last { 1 } else { full[axis] };
             if kd_shape.dims()[axis] != expected {

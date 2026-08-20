@@ -555,9 +555,11 @@ pub fn device_alternating_order(graph: &Graph, runs: &[Run]) -> Vec<usize> {
         for &m in &r.members {
             for &inp in &graph.node(m).inputs {
                 if let Some(&pi) = run_of.get(&inp)
-                    && pi != ri && preds[ri].insert(pi) {
-                        succs[pi].push(ri);
-                    }
+                    && pi != ri
+                    && preds[ri].insert(pi)
+                {
+                    succs[pi].push(ri);
+                }
             }
         }
     }
@@ -679,7 +681,10 @@ pub fn device_alternating_order(graph: &Graph, runs: &[Run]) -> Vec<usize> {
     // the input order for the remainder so the lowering stays total rather
     // than dropping work.
     if order.len() != n {
-        #[expect(clippy::needless_range_loop, reason = "the bound `n` is the node count checked above (order.len() != n), not `emitted.len()`; enumerate could change the iteration count -- a wrong-number bug")]
+        #[expect(
+            clippy::needless_range_loop,
+            reason = "the bound `n` is the node count checked above (order.len() != n), not `emitted.len()`; enumerate could change the iteration count -- a wrong-number bug"
+        )]
         for i in 0..n {
             if !emitted[i] {
                 order.push(i);
@@ -1672,12 +1677,13 @@ mod tests {
             for &m in &runs[ri].members {
                 for &inp in &graph.node(m).inputs {
                     if let Some(&pi) = run_of.get(&inp)
-                        && pi != ri {
-                            assert!(
-                                emitted.contains(&pi),
-                                "run {ri} emitted before its producer run {pi}",
-                            );
-                        }
+                        && pi != ri
+                    {
+                        assert!(
+                            emitted.contains(&pi),
+                            "run {ri} emitted before its producer run {pi}",
+                        );
+                    }
                 }
             }
             emitted.insert(ri);

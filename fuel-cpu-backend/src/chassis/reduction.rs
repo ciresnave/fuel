@@ -395,7 +395,10 @@ where
     let total_output = out_view.len();
     let mut acc: Vec<R::Acc> = (0..total_output).map(|_| R::init()).collect();
     let mut mi = vec![0usize; input_shape.len()];
-    #[expect(clippy::needless_range_loop, reason = "flat index is decoded to a multi-index (decode_multi_index) and scattered into acc[oi], not a sequential scan of in_view; enumerate would obscure the mapping and risk an iteration-count mismatch")]
+    #[expect(
+        clippy::needless_range_loop,
+        reason = "flat index is decoded to a multi-index (decode_multi_index) and scattered into acc[oi], not a sequential scan of in_view; enumerate would obscure the mapping and risk an iteration-count mismatch"
+    )]
     for flat in 0..total_input {
         decode_multi_index(flat, input_shape, &mut mi);
         let oi = output_index(input_shape, &kept, &mi);
@@ -465,7 +468,10 @@ where
     for i in (0..rank.saturating_sub(1)).rev() {
         out_strides_padded[i] = out_strides_padded[i + 1] * padded[i + 1];
     }
-    #[expect(clippy::needless_range_loop, reason = "in_flat drives explicit multi-index reconstruction (rem = in_flat) and strided scatter, not a sequential scan; enumerate would obscure the mapping and risk an iteration-count mismatch")]
+    #[expect(
+        clippy::needless_range_loop,
+        reason = "in_flat drives explicit multi-index reconstruction (rem = in_flat) and strided scatter, not a sequential scan; enumerate would obscure the mapping and risk an iteration-count mismatch"
+    )]
     for in_flat in 0..in_elems {
         let mut out_flat = 0_usize;
         let mut rem = in_flat;
