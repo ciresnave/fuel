@@ -27,7 +27,7 @@ impl std::fmt::Debug for CpuQStorage {
     }
 }
 
-fn cpu_src_as_slice<'a>(src: &'a dyn DynBackendStorage) -> Result<&'a [f32]> {
+fn cpu_src_as_slice(src: &dyn DynBackendStorage) -> Result<&[f32]> {
     let cpu = src
         .as_any()
         .downcast_ref::<CpuStorage>()

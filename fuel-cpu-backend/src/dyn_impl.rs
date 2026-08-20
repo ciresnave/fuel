@@ -438,7 +438,7 @@ where
             Ok(HostBuffer::F32(out))
         }
         (HostBuffer::F64(a), HostBuffer::F64(b)) => {
-            let out = binary_map(lhs_l, rhs_l, a, b, |a, b| f(a, b));
+            let out = binary_map(lhs_l, rhs_l, a, b, &f);
             Ok(HostBuffer::F64(out))
         }
         (HostBuffer::U8(a), HostBuffer::U8(b)) => {
