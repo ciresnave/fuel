@@ -1,35 +1,35 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Lazy `Conv1d` / `Conv2d` Module wrappers over `LazyTensor`.
+//! Lazy `Conv1d` / `Conv2d` Module wrappers over `Tensor`.
 //!
 //! Mirrors the eager `fuel-nn::{Conv1d, Conv2d}` surface: each layer
 //! holds a [`WeightStorage`] weight plus an optional bias and a config
 //! struct controlling padding / stride / dilation / groups. `forward`
 //! materializes the weight (and bias) as graph constants on the
-//! activation's graph and delegates to [`LazyTensor::conv1d`] /
-//! [`LazyTensor::conv2d`].
+//! activation's graph and delegates to [`Tensor::conv1d`] /
+//! [`Tensor::conv2d`].
 //!
-//! Dilation: the LazyTensor conv primitives do not yet accept a
+//! Dilation: the Tensor conv primitives do not yet accept a
 //! `dilation` argument, so configs that request dilation other than
 //! `1` (or `(1, 1)`) are rejected at `forward` time rather than
 //! silently dropped. This matches the "no deferrals — surface the
 //! gap" convention used elsewhere in the lazy port.
 
-use crate::modules::{LazyBatchNorm2d, LazyModule};
+use crate::modules::{BatchNorm2d, Module};
 use fuel::Result;
-use fuel::lazy::{LazyTensor, WeightStorage};
+use fuel::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
-/// Configuration for [`LazyConv1d`].
+/// Configuration for [`Conv1d`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LazyConv1dConfig {
+pub struct Conv1dConfig {
     pub padding: usize,
     pub stride: usize,
     pub dilation: usize,
     pub groups: usize,
 }
 
-impl Default for LazyConv1dConfig {
+impl Default for Conv1dConfig {
     fn default() -> Self {
         Self {
             padding: 0,
@@ -40,7 +40,7 @@ impl Default for LazyConv1dConfig {
     }
 }
 
-impl LazyConv1dConfig {
+impl Conv1dConfig {
     pub fn with_padding(mut self, padding: usize) -> Self {
         self.padding = padding;
         self
@@ -59,16 +59,16 @@ impl LazyConv1dConfig {
     }
 }
 
-/// Configuration for [`LazyConv2d`].
+/// Configuration for [`Conv2d`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LazyConv2dConfig {
+pub struct Conv2dConfig {
     pub padding: (usize, usize),
     pub stride: (usize, usize),
     pub dilation: (usize, usize),
     pub groups: usize,
 }
 
-impl Default for LazyConv2dConfig {
+impl Default for Conv2dConfig {
     fn default() -> Self {
         Self {
             padding: (0, 0),
@@ -79,7 +79,7 @@ impl Default for LazyConv2dConfig {
     }
 }
 
-impl LazyConv2dConfig {
+impl Conv2dConfig {
     pub fn with_padding(mut self, padding: (usize, usize)) -> Self {
         self.padding = padding;
         self
@@ -98,18 +98,18 @@ impl LazyConv2dConfig {
     }
 }
 
-/// 1-D convolution layer over `LazyTensor`.
+/// 1-D convolution layer over `Tensor`.
 #[derive(Debug, Clone)]
-pub struct LazyConv1d {
+pub struct Conv1d {
     weight: WeightStorage,
     bias: Option<Arc<[f32]>>,
-    cfg: LazyConv1dConfig,
+    cfg: Conv1dConfig,
     in_channels: usize,
     out_channels: usize,
     kernel_size: usize,
 }
 
-impl LazyConv1d {
+impl Conv1d {
     /// Build a 1-D convolution from a weight storage and optional bias.
     ///
     /// `weight` must have `out_channels * (in_channels / groups) * kernel_size`
@@ -118,21 +118,21 @@ impl LazyConv1d {
     pub fn new(
         weight: WeightStorage,
         bias: Option<Arc<[f32]>>,
-        cfg: LazyConv1dConfig,
+        cfg: Conv1dConfig,
         in_channels: usize,
         out_channels: usize,
         kernel_size: usize,
     ) -> Result<Self> {
         if cfg.groups < 1 {
             return Err(fuel::Error::Msg(format!(
-                "LazyConv1d::new: groups must be >= 1, got {}",
+                "Conv1d::new: groups must be >= 1, got {}",
                 cfg.groups,
             ))
             .bt());
         }
         if in_channels % cfg.groups != 0 {
             return Err(fuel::Error::Msg(format!(
-                "LazyConv1d::new: in_channels ({}) must be divisible \
+                "Conv1d::new: in_channels ({}) must be divisible \
                  by groups ({})",
                 in_channels, cfg.groups,
             ))
@@ -140,7 +140,7 @@ impl LazyConv1d {
         }
         if out_channels % cfg.groups != 0 {
             return Err(fuel::Error::Msg(format!(
-                "LazyConv1d::new: out_channels ({}) must be divisible \
+                "Conv1d::new: out_channels ({}) must be divisible \
                  by groups ({})",
                 out_channels, cfg.groups,
             ))
@@ -149,7 +149,7 @@ impl LazyConv1d {
         let expected = out_channels * (in_channels / cfg.groups) * kernel_size;
         if weight.elem_count() != expected {
             return Err(fuel::Error::Msg(format!(
-                "LazyConv1d::new: weight has {} elements but \
+                "Conv1d::new: weight has {} elements but \
                  out_channels * (in_channels / groups) * kernel_size = \
                  {} * {} * {} = {}",
                 weight.elem_count(),
@@ -163,7 +163,7 @@ impl LazyConv1d {
         if let Some(b) = bias.as_ref() {
             if b.len() != out_channels {
                 return Err(fuel::Error::Msg(format!(
-                    "LazyConv1d::new: bias has length {} but \
+                    "Conv1d::new: bias has length {} but \
                      out_channels = {}",
                     b.len(),
                     out_channels,
@@ -181,7 +181,7 @@ impl LazyConv1d {
         })
     }
 
-    pub fn cfg(&self) -> &LazyConv1dConfig {
+    pub fn cfg(&self) -> &Conv1dConfig {
         &self.cfg
     }
     pub fn weight(&self) -> &WeightStorage {
@@ -201,12 +201,12 @@ impl LazyConv1d {
     }
 }
 
-impl LazyModule for LazyConv1d {
-    fn forward(&self, xs: &LazyTensor) -> Result<LazyTensor> {
+impl Module for Conv1d {
+    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         if self.cfg.dilation != 1 {
             return Err(fuel::Error::Msg(format!(
-                "LazyConv1d::forward: dilation = {} is not supported; \
-                 LazyTensor::conv1d only takes stride/padding/groups. \
+                "Conv1d::forward: dilation = {} is not supported; \
+                 Tensor::conv1d only takes stride/padding/groups. \
                  Use dilation == 1.",
                 self.cfg.dilation,
             ))
@@ -232,19 +232,19 @@ impl LazyModule for LazyConv1d {
     }
 }
 
-/// 2-D convolution layer over `LazyTensor`.
+/// 2-D convolution layer over `Tensor`.
 #[derive(Debug, Clone)]
-pub struct LazyConv2d {
+pub struct Conv2d {
     weight: WeightStorage,
     bias: Option<Arc<[f32]>>,
-    cfg: LazyConv2dConfig,
+    cfg: Conv2dConfig,
     in_channels: usize,
     out_channels: usize,
     kernel_h: usize,
     kernel_w: usize,
 }
 
-impl LazyConv2d {
+impl Conv2d {
     /// Build a 2-D convolution from a weight storage and optional bias.
     ///
     /// `weight` must have `out_channels * (in_channels / groups) * kernel_h
@@ -254,7 +254,7 @@ impl LazyConv2d {
     pub fn new(
         weight: WeightStorage,
         bias: Option<Arc<[f32]>>,
-        cfg: LazyConv2dConfig,
+        cfg: Conv2dConfig,
         in_channels: usize,
         out_channels: usize,
         kernel_h: usize,
@@ -262,14 +262,14 @@ impl LazyConv2d {
     ) -> Result<Self> {
         if cfg.groups < 1 {
             return Err(fuel::Error::Msg(format!(
-                "LazyConv2d::new: groups must be >= 1, got {}",
+                "Conv2d::new: groups must be >= 1, got {}",
                 cfg.groups,
             ))
             .bt());
         }
         if in_channels % cfg.groups != 0 {
             return Err(fuel::Error::Msg(format!(
-                "LazyConv2d::new: in_channels ({}) must be divisible \
+                "Conv2d::new: in_channels ({}) must be divisible \
                  by groups ({})",
                 in_channels, cfg.groups,
             ))
@@ -277,7 +277,7 @@ impl LazyConv2d {
         }
         if out_channels % cfg.groups != 0 {
             return Err(fuel::Error::Msg(format!(
-                "LazyConv2d::new: out_channels ({}) must be divisible \
+                "Conv2d::new: out_channels ({}) must be divisible \
                  by groups ({})",
                 out_channels, cfg.groups,
             ))
@@ -286,7 +286,7 @@ impl LazyConv2d {
         let expected = out_channels * (in_channels / cfg.groups) * kernel_h * kernel_w;
         if weight.elem_count() != expected {
             return Err(fuel::Error::Msg(format!(
-                "LazyConv2d::new: weight has {} elements but \
+                "Conv2d::new: weight has {} elements but \
                  out_channels * (in_channels / groups) * kernel_h * kernel_w \
                  = {} * {} * {} * {} = {}",
                 weight.elem_count(),
@@ -301,7 +301,7 @@ impl LazyConv2d {
         if let Some(b) = bias.as_ref() {
             if b.len() != out_channels {
                 return Err(fuel::Error::Msg(format!(
-                    "LazyConv2d::new: bias has length {} but \
+                    "Conv2d::new: bias has length {} but \
                      out_channels = {}",
                     b.len(),
                     out_channels,
@@ -320,7 +320,7 @@ impl LazyConv2d {
         })
     }
 
-    pub fn cfg(&self) -> &LazyConv2dConfig {
+    pub fn cfg(&self) -> &Conv2dConfig {
         &self.cfg
     }
     pub fn weight(&self) -> &WeightStorage {
@@ -342,8 +342,8 @@ impl LazyConv2d {
         self.kernel_w
     }
 
-    /// Fold a following [`LazyBatchNorm2d`] into this conv's weight and
-    /// bias, returning a new [`LazyConv2d`] that produces the same
+    /// Fold a following [`BatchNorm2d`] into this conv's weight and
+    /// bias, returning a new [`Conv2d`] that produces the same
     /// activations as `bn(self(x))` in BN eval mode.
     ///
     /// Math (mirrors `CbsWeights::fuse_bn` in `lazy_yolov8`):
@@ -363,10 +363,10 @@ impl LazyConv2d {
     /// - if the weight storage is [`WeightStorage::Q4_0`] or
     ///   [`WeightStorage::WithLoRA`] — BN absorption requires a host
     ///   f32 view, which neither variant exposes losslessly.
-    pub fn absorb_bn(&self, bn: &LazyBatchNorm2d) -> Result<LazyConv2d> {
+    pub fn absorb_bn(&self, bn: &BatchNorm2d) -> Result<Conv2d> {
         if bn.num_features() != self.out_channels {
             return Err(fuel::Error::Msg(format!(
-                "LazyConv2d::absorb_bn: bn.num_features ({}) must equal \
+                "Conv2d::absorb_bn: bn.num_features ({}) must equal \
                  conv.out_channels ({})",
                 bn.num_features(),
                 self.out_channels,
@@ -386,7 +386,7 @@ impl LazyConv2d {
             WeightStorage::BF16(a) => a.iter().map(|v| v.to_f32()).collect(),
             WeightStorage::Q4_0 { .. } => {
                 return Err(fuel::Error::Msg(
-                    "LazyConv2d::absorb_bn: Q4_0 weights cannot be folded \
+                    "Conv2d::absorb_bn: Q4_0 weights cannot be folded \
                      with a following BatchNorm (no lossless host f32 \
                      view). Dequantize first, fold, then requantize if \
                      desired."
@@ -396,7 +396,7 @@ impl LazyConv2d {
             }
             WeightStorage::WithLoRA { .. } => {
                 return Err(fuel::Error::Msg(
-                    "LazyConv2d::absorb_bn: LoRA-wrapped weights cannot be \
+                    "Conv2d::absorb_bn: LoRA-wrapped weights cannot be \
                      folded with a following BatchNorm (the adapter must \
                      be applied to activations, not weights). Merge LoRA \
                      into the base first, then fold."
@@ -438,7 +438,7 @@ impl LazyConv2d {
             WeightStorage::Q4_0 { .. } | WeightStorage::WithLoRA { .. } => unreachable!(),
         };
 
-        LazyConv2d::new(
+        Conv2d::new(
             folded_weight,
             Some(Arc::from(new_bias)),
             self.cfg,
@@ -450,12 +450,12 @@ impl LazyConv2d {
     }
 }
 
-impl LazyModule for LazyConv2d {
-    fn forward(&self, xs: &LazyTensor) -> Result<LazyTensor> {
+impl Module for Conv2d {
+    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         if self.cfg.dilation != (1, 1) {
             return Err(fuel::Error::Msg(format!(
-                "LazyConv2d::forward: dilation = {:?} is not supported; \
-                 LazyTensor::conv2d only takes stride/padding/groups. \
+                "Conv2d::forward: dilation = {:?} is not supported; \
+                 Tensor::conv2d only takes stride/padding/groups. \
                  Use dilation == (1, 1).",
                 self.cfg.dilation,
             ))
@@ -498,7 +498,7 @@ mod tests {
         let cout = 4;
         let l = 9;
         let k = 3;
-        let cfg = LazyConv1dConfig {
+        let cfg = Conv1dConfig {
             padding: 1,
             stride: 2,
             dilation: 1,
@@ -507,7 +507,7 @@ mod tests {
 
         let w: Vec<f32> = ramp_f32(cout * cin * k, 0.05, -0.2);
         let bias: Vec<f32> = ramp_f32(cout, 0.1, 0.0);
-        let layer = LazyConv1d::new(
+        let layer = Conv1d::new(
             WeightStorage::F32(Arc::from(w)),
             Some(Arc::from(bias)),
             cfg,
@@ -518,7 +518,7 @@ mod tests {
         .unwrap();
 
         let x_data: Vec<f32> = ramp_f32(n * cin * l, 0.03, -0.4);
-        let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[n, cin, l]), &Device::cpu());
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, l]), &Device::cpu());
         let y = layer.forward(&x).unwrap();
         let l_out = (l + 2 * cfg.padding - k) / cfg.stride + 1;
         assert_eq!(y.shape().dims(), &[n, cout, l_out]);
@@ -536,7 +536,7 @@ mod tests {
         let cout = 3;
         let l = 7;
         let k = 3;
-        let cfg = LazyConv1dConfig {
+        let cfg = Conv1dConfig {
             padding: 1,
             stride: 1,
             dilation: 1,
@@ -547,7 +547,7 @@ mod tests {
         let x_data: Vec<f32> = ramp_f32(n * cin * l, 0.02, -0.3);
 
         let weight_arc: Arc<[f32]> = Arc::from(w.clone());
-        let layer = LazyConv1d::new(
+        let layer = Conv1d::new(
             WeightStorage::F32(Arc::clone(&weight_arc)),
             None,
             cfg,
@@ -556,14 +556,14 @@ mod tests {
             k,
         )
         .unwrap();
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             x_data.clone(),
             Shape::from_dims(&[n, cin, l]),
             &Device::cpu(),
         );
         let via_module = layer.forward(&x).unwrap().realize_f32();
 
-        let x2 = LazyTensor::from_f32(x_data, Shape::from_dims(&[n, cin, l]), &Device::cpu());
+        let x2 = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, l]), &Device::cpu());
         let w_t = x2.const_f32_like(Arc::clone(&weight_arc), Shape::from_dims(&[cout, cin, k]));
         let direct = x2
             .conv1d(&w_t, None, cfg.stride, cfg.padding, cfg.groups)
@@ -588,7 +588,7 @@ mod tests {
         let w_in = 8;
         let kh = 3;
         let kw = 3;
-        let cfg = LazyConv2dConfig {
+        let cfg = Conv2dConfig {
             padding: (1, 1),
             stride: (2, 2),
             dilation: (1, 1),
@@ -597,7 +597,7 @@ mod tests {
 
         let weight: Vec<f32> = ramp_f32(cout * cin * kh * kw, 0.02, -0.1);
         let bias: Vec<f32> = ramp_f32(cout, 0.05, 0.2);
-        let layer = LazyConv2d::new(
+        let layer = Conv2d::new(
             WeightStorage::F32(Arc::from(weight)),
             Some(Arc::from(bias)),
             cfg,
@@ -609,7 +609,7 @@ mod tests {
         .unwrap();
 
         let x_data: Vec<f32> = ramp_f32(n * cin * h * w_in, 0.01, -0.5);
-        let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu());
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu());
         let y = layer.forward(&x).unwrap();
         let h_out = (h + 2 * cfg.padding.0 - kh) / cfg.stride.0 + 1;
         let w_out = (w_in + 2 * cfg.padding.1 - kw) / cfg.stride.1 + 1;
@@ -630,7 +630,7 @@ mod tests {
         let w_in = 5;
         let kh = 3;
         let kw = 3;
-        let cfg = LazyConv2dConfig {
+        let cfg = Conv2dConfig {
             padding: (1, 1),
             stride: (1, 1),
             dilation: (1, 1),
@@ -644,7 +644,7 @@ mod tests {
         let weight_arc: Arc<[f32]> = Arc::from(weight.clone());
         let bias_arc: Arc<[f32]> = Arc::from(bias.clone());
 
-        let layer = LazyConv2d::new(
+        let layer = Conv2d::new(
             WeightStorage::F32(Arc::clone(&weight_arc)),
             Some(Arc::clone(&bias_arc)),
             cfg,
@@ -654,14 +654,14 @@ mod tests {
             kw,
         )
         .unwrap();
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             x_data.clone(),
             Shape::from_dims(&[n, cin, h, w_in]),
             &Device::cpu(),
         );
         let via_module = layer.forward(&x).unwrap().realize_f32();
 
-        let x2 = LazyTensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu());
+        let x2 = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu());
         let w_t = x2.const_f32_like(
             Arc::clone(&weight_arc),
             Shape::from_dims(&[cout, cin, kh, kw]),
@@ -692,7 +692,7 @@ mod tests {
         let w_in = 5;
         let kh = 3;
         let kw = 3;
-        let cfg = LazyConv2dConfig {
+        let cfg = Conv2dConfig {
             padding: (1, 1),
             stride: (1, 1),
             dilation: (1, 1),
@@ -710,7 +710,7 @@ mod tests {
         let eps = 1e-5_f64;
 
         // No-bias conv to keep the no-bias absorb path on test (a).
-        let conv = LazyConv2d::new(
+        let conv = Conv2d::new(
             WeightStorage::F32(Arc::from(weight)),
             None,
             cfg,
@@ -720,7 +720,7 @@ mod tests {
             kw,
         )
         .unwrap();
-        let bn = LazyBatchNorm2d::new(
+        let bn = BatchNorm2d::new(
             Arc::from(gamma),
             Arc::from(beta),
             Arc::from(r_mean),
@@ -733,7 +733,7 @@ mod tests {
         let x_data: Vec<f32> = ramp_f32(n * cin * h * w_in, 0.013, -0.4);
 
         // Path 1: conv → bn.
-        let x1 = LazyTensor::from_f32(
+        let x1 = Tensor::from_f32(
             x_data.clone(),
             Shape::from_dims(&[n, cin, h, w_in]),
             &Device::cpu(),
@@ -745,7 +745,7 @@ mod tests {
 
         // Path 2: absorb_bn → single conv.
         let fused = conv.absorb_bn(&bn).unwrap();
-        let x2 = LazyTensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu());
+        let x2 = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu());
         let y2 = fused.forward(&x2).unwrap().realize_f32();
 
         assert_eq!(y1.len(), y2.len());
@@ -775,12 +775,12 @@ mod tests {
         let cout = 1;
         let kh = 2;
         let kw = 2;
-        let cfg = LazyConv2dConfig::default();
+        let cfg = Conv2dConfig::default();
 
         let weight: Vec<f32> = vec![0.5, -0.25, 0.75, 0.1, -0.3, 0.4, 0.2, -0.6];
         debug_assert_eq!(weight.len(), cout * cin * kh * kw);
         let old_bias_val = 0.7_f32;
-        let conv = LazyConv2d::new(
+        let conv = Conv2d::new(
             WeightStorage::F32(Arc::from(weight.clone())),
             Some(Arc::from(vec![old_bias_val])),
             cfg,
@@ -797,7 +797,7 @@ mod tests {
         let var = 0.75_f32;
         let eps = 1e-4_f64;
 
-        let bn = LazyBatchNorm2d::new(
+        let bn = BatchNorm2d::new(
             Arc::from(vec![gamma]),
             Arc::from(vec![beta]),
             Arc::from(vec![mean]),
@@ -841,7 +841,7 @@ mod tests {
         let h = 3;
         let w_in = 3;
         let x_data: Vec<f32> = ramp_f32(n * cin * h * w_in, 0.1, -0.2);
-        let x1 = LazyTensor::from_f32(
+        let x1 = Tensor::from_f32(
             x_data.clone(),
             Shape::from_dims(&[n, cin, h, w_in]),
             &Device::cpu(),
@@ -850,7 +850,7 @@ mod tests {
             .forward(&conv.forward(&x1).unwrap())
             .unwrap()
             .realize_f32();
-        let x2 = LazyTensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu());
+        let x2 = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu());
         let y2 = fused.forward(&x2).unwrap().realize_f32();
         assert_eq!(y1.len(), y2.len());
         for (i, (a, b)) in y1.iter().zip(y2.iter()).enumerate() {
@@ -868,10 +868,10 @@ mod tests {
         let kh = 3;
         let kw = 3;
         let weight = ramp_f32(cout * cin * kh * kw, 0.01, 0.0);
-        let conv = LazyConv2d::new(
+        let conv = Conv2d::new(
             WeightStorage::F32(Arc::from(weight)),
             None,
-            LazyConv2dConfig::default(),
+            Conv2dConfig::default(),
             cin,
             cout,
             kh,
@@ -879,7 +879,7 @@ mod tests {
         )
         .unwrap();
         let wrong_features = cout + 1;
-        let bn = LazyBatchNorm2d::new(
+        let bn = BatchNorm2d::new(
             Arc::from(vec![1.0_f32; wrong_features]),
             Arc::from(vec![0.0_f32; wrong_features]),
             Arc::from(vec![0.0_f32; wrong_features]),
@@ -904,7 +904,7 @@ mod tests {
         let w_in = 5;
         let kh = 3;
         let kw = 3;
-        let cfg = LazyConv2dConfig {
+        let cfg = Conv2dConfig {
             padding: (1, 1),
             stride: (1, 1),
             dilation: (1, 1),
@@ -912,7 +912,7 @@ mod tests {
         };
 
         let weight: Vec<f32> = ramp_f32(c * 1 * kh * kw, 0.07, -0.1);
-        let layer = LazyConv2d::new(
+        let layer = Conv2d::new(
             WeightStorage::F32(Arc::from(weight)),
             None,
             cfg,
@@ -923,7 +923,7 @@ mod tests {
         )
         .unwrap();
         let x_data: Vec<f32> = ramp_f32(n * c * h * w_in, 0.02, 0.3);
-        let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[n, c, h, w_in]), &Device::cpu());
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[n, c, h, w_in]), &Device::cpu());
         let y = layer.forward(&x).unwrap();
         assert_eq!(y.shape().dims(), &[n, c, h, w_in]);
         let got = y.realize_f32();

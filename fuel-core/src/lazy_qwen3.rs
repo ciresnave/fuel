@@ -12,7 +12,7 @@
 //! stores the per-head QK-norm gains in `Qwen3LayerExtras`.
 
 use crate::inference_context::{DecodeSession, DecodeTokenData, InferenceContext, KvCache};
-use crate::lazy::{LayerWeights, LazyTensor, WeightStorage};
+use crate::lazy::{LayerWeights, Tensor, WeightStorage};
 use crate::persistent_decode::{
     DecodeBackbone, DecodeDims, DecodeLayerInputs, MaskPlan, PersistentDecodeModel,
 };
@@ -67,7 +67,7 @@ pub struct Qwen3Model {
 }
 
 impl Qwen3Model {
-    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let h_norm = self.run_backbone(tokens, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
@@ -77,7 +77,7 @@ impl Qwen3Model {
     /// Qwen3-specific: per-layer sliding-window gate
     /// (`use_sliding_window && layer_idx < max_window_layers`)
     /// and Q/K-norm gains are honored.
-    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         self.run_backbone(tokens, start_pos)
     }
 
@@ -90,7 +90,7 @@ impl Qwen3Model {
     /// caller passes raw embeddings.
     ///
     /// Returns logits `(1, seq, vocab_size)`.
-    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let h_norm = self.run_backbone_embeds(embeds, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
@@ -99,11 +99,7 @@ impl Qwen3Model {
     /// post-final-RmsNorm states `(1, seq, hidden_size)` — used by
     /// LLaVA-style multimodal hosts that consume hidden states
     /// without the lm_head projection.
-    pub fn forward_hidden_embeds(
-        &self,
-        embeds: &LazyTensor,
-        start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_hidden_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         self.run_backbone_embeds(embeds, start_pos)
     }
 
@@ -111,7 +107,7 @@ impl Qwen3Model {
     /// multimodal compositions to obtain text-side embeddings that
     /// will be concatenated with vision features before
     /// [`Self::forward_embeds`].
-    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &Tensor, tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
@@ -121,7 +117,7 @@ impl Qwen3Model {
         )
     }
 
-    fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
+    fn apply_lm_head(&self, h_norm: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         Ok(self
             .weights
@@ -129,13 +125,13 @@ impl Qwen3Model {
             .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
-    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
         assert!(seq > 0);
 
-        let h = LazyTensor::embed_tokens(
+        let h = Tensor::embed_tokens(
             weights.token_embedding.clone(),
             cfg.vocab_size,
             cfg.hidden_size,
@@ -145,7 +141,7 @@ impl Qwen3Model {
         self.run_backbone_embeds(&h, start_pos)
     }
 
-    fn run_backbone_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
+    fn run_backbone_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -199,7 +195,7 @@ impl Qwen3Model {
         )
     }
 
-    fn build_layer_mask(&self, anchor: &LazyTensor, seq: usize, uses_window: bool) -> LazyTensor {
+    fn build_layer_mask(&self, anchor: &Tensor, seq: usize, uses_window: bool) -> Tensor {
         let cfg = &self.config;
         let window = if uses_window {
             cfg.sliding_window.unwrap_or(seq + 1)
@@ -219,13 +215,13 @@ impl Qwen3Model {
 
     fn apply_layer(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &LayerWeights,
         extras: &Qwen3LayerExtras,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
         uses_window: bool,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let x_shape = x.shape();
         let dims = x_shape.dims();
@@ -352,7 +348,7 @@ pub(crate) struct Qwen3AttnBlock<'a> {
 pub(crate) fn qwen3_attn_with_kv_writes(
     blk: &Qwen3AttnBlock<'_>,
     inputs: &DecodeLayerInputs<'_>,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     let x = inputs.x;
     let x_shape = x.shape();
     let dims = x_shape.dims();
@@ -646,7 +642,7 @@ impl DecodeBackbone for Qwen3Model {
         &self,
         layer_idx: usize,
         inputs: &DecodeLayerInputs<'_>,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let layer = &self.weights.layers[layer_idx];
         let extras = &self.weights.layer_extras[layer_idx];
@@ -686,7 +682,7 @@ impl DecodeBackbone for Qwen3Model {
         h1.add(&ffn_out)
     }
 
-    fn decode_final_norm_and_head(&self, h: &LazyTensor) -> Result<LazyTensor> {
+    fn decode_final_norm_and_head(&self, h: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let h_norm =
             h.rms_norm_affine(Arc::clone(&self.weights.final_norm_gain), cfg.rms_norm_eps)?;
@@ -994,7 +990,7 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
         assert_eq!(logits_ref.len(), logits_via_embeds.len());
@@ -1016,7 +1012,7 @@ mod tests {
             config: cfg.clone(),
             weights: tiny_weights(&cfg),
         };
-        let bad_embeds = LazyTensor::from_f32(
+        let bad_embeds = Tensor::from_f32(
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
             Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
             &Device::cpu(),
@@ -1033,7 +1029,7 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![2, 5];
         let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let h_via_embeds = model
             .forward_hidden_embeds(&embeds, 0)

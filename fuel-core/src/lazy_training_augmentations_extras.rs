@@ -18,7 +18,7 @@
 //!   precision).
 //!
 //! - **In-place parameter update** — [`apply_inplace_sgd_step`]. Lazy
-//!   `LazyTensor` does not currently expose an in-place add primitive
+//!   `Tensor` does not currently expose an in-place add primitive
 //!   (only the unary activations `relu_inplace` / `silu_inplace` / etc.
 //!   from the Phase 4-5 in-place infrastructure). The implementation
 //!   therefore uses the functional `param.sub(grad.mul_scalar(lr))` form
@@ -27,7 +27,7 @@
 //!   allocates a new node. The gap is documented inline.
 
 use crate::Result;
-use crate::lazy::LazyTensor;
+use crate::lazy::Tensor;
 use fuel_ir::DType;
 use std::collections::HashMap;
 
@@ -43,7 +43,7 @@ use std::collections::HashMap;
 /// effective batch" semantics.
 #[derive(Debug)]
 pub struct GradAccumulator {
-    accum: HashMap<String, LazyTensor>,
+    accum: HashMap<String, Tensor>,
     microbatches: usize,
     count: usize,
 }
@@ -79,7 +79,7 @@ impl GradAccumulator {
     /// internal accumulator; subsequent calls element-wise add. Names
     /// must match across calls — a new name on a later call is an
     /// error.
-    pub fn accumulate(&mut self, grads: HashMap<String, LazyTensor>) -> Result<()> {
+    pub fn accumulate(&mut self, grads: HashMap<String, Tensor>) -> Result<()> {
         if self.accum.is_empty() {
             self.accum = grads;
             self.count = 1;
@@ -116,7 +116,7 @@ impl GradAccumulator {
     /// and clear the internal state. After this call, [`Self::count`]
     /// returns `0` and a subsequent `take_and_scale` returns an empty
     /// `HashMap`.
-    pub fn take_and_scale(&mut self) -> Result<HashMap<String, LazyTensor>> {
+    pub fn take_and_scale(&mut self) -> Result<HashMap<String, Tensor>> {
         let scale = 1.0 / self.microbatches as f64;
         let taken = std::mem::take(&mut self.accum);
         self.count = 0;
@@ -142,7 +142,7 @@ pub struct MixedPrecisionConfig {
 
 /// Cast a master-precision parameter to forward precision for the forward
 /// pass. A no-op when `param` already has `cfg.forward_dtype`.
-pub fn cast_for_forward(param: &LazyTensor, cfg: &MixedPrecisionConfig) -> Result<LazyTensor> {
+pub fn cast_for_forward(param: &Tensor, cfg: &MixedPrecisionConfig) -> Result<Tensor> {
     if param.dtype() == cfg.forward_dtype {
         return Ok(param.clone());
     }
@@ -159,9 +159,9 @@ pub fn cast_for_forward(param: &LazyTensor, cfg: &MixedPrecisionConfig) -> Resul
 /// for the optimizer step. Values already in `cfg.master_dtype` are
 /// passed through unchanged.
 pub fn cast_grads_back(
-    grads: HashMap<String, LazyTensor>,
+    grads: HashMap<String, Tensor>,
     cfg: &MixedPrecisionConfig,
-) -> Result<HashMap<String, LazyTensor>> {
+) -> Result<HashMap<String, Tensor>> {
     let mut out = HashMap::with_capacity(grads.len());
     for (name, g) in grads {
         if g.dtype() == cfg.master_dtype {
@@ -184,7 +184,7 @@ pub fn cast_grads_back(
 
 /// Apply an in-place SGD step: `param <- param - lr * grad`.
 ///
-/// `LazyTensor` does not currently expose a `Op::Add` / `Op::Sub`
+/// `Tensor` does not currently expose a `Op::Add` / `Op::Sub`
 /// in-place primitive (only the unary activations `relu_inplace` etc.
 /// from the Phase 4-5 in-place infrastructure). This implementation
 /// therefore uses the functional form `param = param.sub(grad.mul_scalar(lr))`
@@ -194,7 +194,7 @@ pub fn cast_grads_back(
 ///
 /// When an in-place add primitive lands, swap the body for a single
 /// in-place add of `grad.mul_scalar(-lr)` and remove this doc-noted gap.
-pub fn apply_inplace_sgd_step(param: &mut LazyTensor, grad: &LazyTensor, lr: f64) -> Result<()> {
+pub fn apply_inplace_sgd_step(param: &mut Tensor, grad: &Tensor, lr: f64) -> Result<()> {
     let scaled = grad.mul_scalar(lr);
     let updated = param
         .sub(&scaled)
@@ -209,8 +209,8 @@ mod tests {
     use crate::Device;
     use fuel_ir::Shape;
 
-    fn cpu_f32(values: Vec<f32>, shape: &[usize]) -> LazyTensor {
-        LazyTensor::from_f32(values, Shape::from_dims(shape), &Device::cpu())
+    fn cpu_f32(values: Vec<f32>, shape: &[usize]) -> Tensor {
+        Tensor::from_f32(values, Shape::from_dims(shape), &Device::cpu())
     }
 
     // ---------- Gradient accumulation ----------
@@ -315,7 +315,7 @@ mod tests {
             forward_dtype: DType::BF16,
             master_dtype: DType::F32,
         };
-        let grad_bf16 = LazyTensor::from_bf16(
+        let grad_bf16 = Tensor::from_bf16(
             vec![half::bf16::from_f32(1.0), half::bf16::from_f32(-2.0)],
             Shape::from_dims(&[2]),
             &Device::cpu(),

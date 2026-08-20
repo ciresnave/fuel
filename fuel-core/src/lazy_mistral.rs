@@ -53,8 +53,7 @@
 //! All Q/K/V/O biases are `None` (Mistral uses `linear_no_bias`).
 
 use crate::lazy::{
-    LayerWeights, LazyTensor, WeightStorage, load_tensor_as_f32,
-    load_transposed_matrix_preserve_dtype,
+    LayerWeights, Tensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
 };
 use crate::{Device, Result};
 use fuel_ir::Shape;
@@ -128,13 +127,13 @@ pub struct MistralModel {
 
 impl MistralModel {
     /// Run a forward pass on `tokens` and return the final logits
-    /// `[1, seq, vocab_size]` as a [`LazyTensor`]. Call `.realize_f32()`
+    /// `[1, seq, vocab_size]` as a [`Tensor`]. Call `.realize_f32()`
     /// on the result to materialize.
     ///
     /// `start_pos` offsets the RoPE frequencies. Pass `0` for the
     /// first forward call of a sequence; for v1 (no KV cache) callers
     /// always re-feed the full prefix so `start_pos` is typically `0`.
-    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
@@ -142,7 +141,7 @@ impl MistralModel {
         assert!(seq > 0, "MistralModel::forward: tokens must be non-empty");
 
         // Embedding lookup.
-        let h = LazyTensor::embed_tokens(
+        let h = Tensor::embed_tokens(
             weights.token_embedding.clone(),
             cfg.vocab_size,
             cfg.hidden_size,
@@ -157,7 +156,7 @@ impl MistralModel {
     /// `(batch, seq, hidden_size)`. Used by multimodal models
     /// (Pixtral, etc.) that interleave image embeddings with
     /// text embeddings before running the Mistral decoder.
-    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -203,7 +202,7 @@ impl MistralModel {
     /// adapters (NV-Embed v2's perceiver-style latent-attention
     /// head, custom poolers, etc.) that swap the causal LM head
     /// for a downstream projector.
-    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
@@ -213,7 +212,7 @@ impl MistralModel {
             "MistralModel::forward_hidden: tokens must be non-empty"
         );
 
-        let h = LazyTensor::embed_tokens(
+        let h = Tensor::embed_tokens(
             weights.token_embedding.clone(),
             cfg.vocab_size,
             cfg.hidden_size,
@@ -227,11 +226,7 @@ impl MistralModel {
     /// projection and returns the post-RmsNorm hidden states.
     /// Used by multimodal+embedding compositions that mix
     /// pre-computed embeddings with a custom pooling head.
-    pub fn forward_hidden_embeds(
-        &self,
-        embeds: &LazyTensor,
-        start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_hidden_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -255,19 +250,19 @@ impl MistralModel {
     /// just the padding mask, no causal triangle).
     pub fn forward_hidden_embeds_with_mask(
         &self,
-        embeds: &LazyTensor,
-        attention_mask: &LazyTensor,
+        embeds: &Tensor,
+        attention_mask: &Tensor,
         start_pos: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         self.forward_hidden_embeds_with_mask_impl(embeds, attention_mask, start_pos)
     }
 
     fn forward_hidden_embeds_with_mask_impl(
         &self,
-        embeds: &LazyTensor,
-        mask: &LazyTensor,
+        embeds: &Tensor,
+        mask: &Tensor,
         start_pos: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -297,7 +292,7 @@ impl MistralModel {
     /// `j + sliding_window <= i` (sliding-window). With
     /// `sliding_window == None` this reduces to a strict lower-tri
     /// causal mask.
-    fn build_sliding_window_mask(&self, anchor: &LazyTensor, seq: usize) -> LazyTensor {
+    fn build_sliding_window_mask(&self, anchor: &Tensor, seq: usize) -> Tensor {
         let cfg = &self.config;
         let window = cfg.sliding_window.unwrap_or(seq + 1);
         let mut mask_data = vec![0.0_f32; seq * seq];
@@ -319,12 +314,12 @@ impl MistralModel {
     /// padding mask for NV-Embed v2).
     fn apply_layer(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &LayerWeights,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-        mask: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+        mask: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let x_shape = x.shape();
         let dims = x_shape.dims();

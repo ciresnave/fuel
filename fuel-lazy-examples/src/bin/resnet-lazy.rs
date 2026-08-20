@@ -23,7 +23,7 @@
 // (e.g. `image`) the synthetic vector can be swapped for a decoded
 // tensor with the same ImageNet mean/std normalization.
 
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel::lazy_resnet::{ResNetConfig, ResNetModel};
 use fuel_ir::Shape;
 use std::io::Write;
@@ -95,7 +95,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     eprintln!("Running forward pass...");
     let t0 = Instant::now();
-    let img_lt = LazyTensor::from_f32(
+    let img_lt = Tensor::from_f32(
         image,
         Shape::from_dims(&[1, 3, IMG_SIZE, IMG_SIZE]),
         &fuel::Device::cpu(),

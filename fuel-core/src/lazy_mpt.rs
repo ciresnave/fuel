@@ -24,7 +24,7 @@
 //! ALiBi's negative biases on the valid (lower-triangular)
 //! positions instead of zeros.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -146,7 +146,7 @@ pub struct MptModel {
 }
 
 impl MptModel {
-    pub fn forward(&self, tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32]) -> Result<Tensor> {
         let h_norm = self.run_backbone(tokens)?;
         self.apply_lm_head(&h_norm)
     }
@@ -155,25 +155,25 @@ impl MptModel {
     /// return per-token hidden states `(1, seq, d_model)`.
     /// MPT uses ALiBi positional bias + causal mask combined
     /// in a single per-head additive bias.
-    pub fn forward_hidden(&self, tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn forward_hidden(&self, tokens: &[u32]) -> Result<Tensor> {
         self.run_backbone(tokens)
     }
 
     /// Multimodal entry point. Skips token embedding; runs the decoder
     /// over pre-embedded inputs. MPT does NOT scale embeddings and
     /// has no `start_pos` (ALiBi positional bias is purely relative).
-    pub fn forward_embeds(&self, embeds: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &Tensor) -> Result<Tensor> {
         let h_norm = self.run_backbone_embeds(embeds)?;
         self.apply_lm_head(&h_norm)
     }
 
     /// Hidden-state variant of [`Self::forward_embeds`].
-    pub fn forward_hidden_embeds(&self, embeds: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward_hidden_embeds(&self, embeds: &Tensor) -> Result<Tensor> {
         self.run_backbone_embeds(embeds)
     }
 
     /// Build per-token embeddings without running the decoder.
-    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &Tensor, tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
@@ -183,7 +183,7 @@ impl MptModel {
         )
     }
 
-    fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
+    fn apply_lm_head(&self, h_norm: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         Ok(self
             .weights
@@ -191,13 +191,13 @@ impl MptModel {
             .apply_linear(h_norm, cfg.d_model, cfg.vocab_size)?)
     }
 
-    fn run_backbone(&self, tokens: &[u32]) -> Result<LazyTensor> {
+    fn run_backbone(&self, tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
         assert!(seq > 0);
 
-        let h = LazyTensor::embed_tokens(
+        let h = Tensor::embed_tokens(
             weights.token_embedding.clone(),
             cfg.vocab_size,
             cfg.d_model,
@@ -207,7 +207,7 @@ impl MptModel {
         self.run_backbone_embeds(&h)
     }
 
-    fn run_backbone_embeds(&self, embeds: &LazyTensor) -> Result<LazyTensor> {
+    fn run_backbone_embeds(&self, embeds: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -251,12 +251,7 @@ impl MptModel {
         )
     }
 
-    fn apply_layer(
-        &self,
-        x: &LazyTensor,
-        layer: &MptLayerWeights,
-        mask: &LazyTensor,
-    ) -> Result<LazyTensor> {
+    fn apply_layer(&self, x: &Tensor, layer: &MptLayerWeights, mask: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let head_dim = cfg.head_dim();
         let x_shape = x.shape();
@@ -614,7 +609,7 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds).unwrap().realize_f32();
         let max_diff = logits_ref
@@ -635,7 +630,7 @@ mod tests {
             config: cfg.clone(),
             weights: tiny_weights(&cfg),
         };
-        let bad = LazyTensor::from_f32(
+        let bad = Tensor::from_f32(
             vec![0.0_f32; 3 * (cfg.d_model + 1)],
             Shape::from_dims(&[1, 3, cfg.d_model + 1]),
             &Device::cpu(),
@@ -652,7 +647,7 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let h_via_embeds = model.forward_hidden_embeds(&embeds).unwrap().realize_f32();
         let max_diff = h_ref

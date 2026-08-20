@@ -58,7 +58,7 @@
 //! v1 dtype — `Self::layers_are_rescaled` is always false for
 //! F32 weights.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -146,7 +146,7 @@ pub struct Rwkv5Model {
 }
 
 impl Rwkv5Model {
-    pub fn forward(&self, tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32]) -> Result<Tensor> {
         let h_norm = self.run_backbone(tokens)?;
         self.apply_lm_head(&h_norm)
     }
@@ -155,7 +155,7 @@ impl Rwkv5Model {
     /// and return per-token hidden states `(1, seq, hidden_size)`.
     /// No `start_pos` parameter — RWKV's recurrent state is
     /// implicit in the time-mix; v1 is prefill only.
-    pub fn forward_hidden(&self, tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn forward_hidden(&self, tokens: &[u32]) -> Result<Tensor> {
         self.run_backbone(tokens)
     }
 
@@ -163,18 +163,18 @@ impl Rwkv5Model {
     /// stack over pre-embedded inputs. RWKV does NOT scale embeddings
     /// and has no `start_pos` parameter — recurrent state is implicit
     /// in the time-mix (v1 is prefill only).
-    pub fn forward_embeds(&self, embeds: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &Tensor) -> Result<Tensor> {
         let h_norm = self.run_backbone_embeds(embeds)?;
         self.apply_lm_head(&h_norm)
     }
 
     /// Hidden-state variant of [`Self::forward_embeds`].
-    pub fn forward_hidden_embeds(&self, embeds: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward_hidden_embeds(&self, embeds: &Tensor) -> Result<Tensor> {
         self.run_backbone_embeds(embeds)
     }
 
     /// Build per-token embeddings without running the decoder.
-    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &Tensor, tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
@@ -184,7 +184,7 @@ impl Rwkv5Model {
         )
     }
 
-    fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
+    fn apply_lm_head(&self, h_norm: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         Ok(self
             .weights
@@ -192,13 +192,13 @@ impl Rwkv5Model {
             .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
-    fn run_backbone(&self, tokens: &[u32]) -> Result<LazyTensor> {
+    fn run_backbone(&self, tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
         assert!(seq > 0, "Rwkv5Model::forward: tokens must be non-empty");
 
-        let h = LazyTensor::embed_tokens(
+        let h = Tensor::embed_tokens(
             weights.token_embedding.clone(),
             cfg.vocab_size,
             cfg.hidden_size,
@@ -208,7 +208,7 @@ impl Rwkv5Model {
         self.run_backbone_embeds(&h)
     }
 
-    fn run_backbone_embeds(&self, embeds: &LazyTensor) -> Result<LazyTensor> {
+    fn run_backbone_embeds(&self, embeds: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -248,13 +248,13 @@ impl Rwkv5Model {
 
     fn apply_block(
         &self,
-        xs: &LazyTensor,
+        xs: &Tensor,
         layer: &Rwkv5LayerWeights,
         batch: usize,
         seq: usize,
         n_heads: usize,
         head_size: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let h = cfg.hidden_size;
 
@@ -287,13 +287,13 @@ impl Rwkv5Model {
 
     fn time_mix(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &Rwkv5LayerWeights,
         batch: usize,
         seq: usize,
         n_heads: usize,
         head_size: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let h = cfg.hidden_size;
         let ah = cfg.attention_hidden_size;
@@ -322,7 +322,7 @@ impl Rwkv5Model {
             Arc::clone(&layer.attn_time_mix_gate),
             Shape::from_dims(&[1, 1, h]),
         );
-        let one_minus = |m: &LazyTensor| -> Result<LazyTensor> {
+        let one_minus = |m: &Tensor| -> Result<Tensor> {
             // 1.0 - m, returning a tensor shaped (1, 1, h).
             let ones: Vec<f32> = vec![1.0_f32; h];
             let ones_t = x.const_f32_like(Arc::from(ones), Shape::from_dims(&[1, 1, h]));
@@ -385,7 +385,7 @@ impl Rwkv5Model {
             Shape::from_dims(&[batch, n_heads, head_size, head_size]),
         );
         let mut state = state_init;
-        let mut outs: Vec<LazyTensor> = Vec::with_capacity(seq);
+        let mut outs: Vec<Tensor> = Vec::with_capacity(seq);
         for t in 0..seq {
             let kt = k_h.slice(3_usize, t, 1)?; // (b, n_heads, head_size, 1)
             let vt = v_h.slice(2_usize, t, 1)?; // (b, n_heads, 1, head_size)
@@ -399,7 +399,7 @@ impl Rwkv5Model {
 
         // Concat along a new seq dim. Each out_t is (b, n_heads, head_size).
         // Stack into (b, seq, n_heads, head_size).
-        let mut stacked: Option<LazyTensor> = None;
+        let mut stacked: Option<Tensor> = None;
         for out_t in outs.into_iter() {
             let with_seq = out_t.reshape(Shape::from_dims(&[batch, 1, n_heads, head_size]))?;
             stacked = Some(match stacked {
@@ -431,11 +431,11 @@ impl Rwkv5Model {
 
     fn channel_mix(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &Rwkv5LayerWeights,
         batch: usize,
         seq: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let h = cfg.hidden_size;
         let inter = cfg.ffn_intermediate();
@@ -470,7 +470,7 @@ impl Rwkv5Model {
     /// Shift `x` (shape `[batch, seq, h]`) one position along the
     /// seq axis: position t in the output equals position t-1 in
     /// the input, with position 0 = zeros.
-    fn shift_seq(&self, x: &LazyTensor, batch: usize, seq: usize, h: usize) -> LazyTensor {
+    fn shift_seq(&self, x: &Tensor, batch: usize, seq: usize, h: usize) -> Tensor {
         let zero = x.const_f32_like(
             Arc::from(vec![0.0_f32; batch * h]),
             Shape::from_dims(&[batch, 1, h]),
@@ -487,7 +487,7 @@ impl Rwkv5Model {
 /// `(batch, seq, n_heads, head_size)`, normalize each group on
 /// the last dim, then apply per-channel gain + bias.
 fn group_norm(
-    x: &LazyTensor,
+    x: &Tensor,
     gain: &Arc<[f32]>,
     bias: &Arc<[f32]>,
     batch: usize,
@@ -495,7 +495,7 @@ fn group_norm(
     n_heads: usize,
     head_size: usize,
     eps: f64,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     let hidden = n_heads * head_size;
     assert_eq!(gain.len(), hidden);
     assert_eq!(bias.len(), hidden);
@@ -856,7 +856,7 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds).unwrap().realize_f32();
         let max_diff = logits_ref
@@ -877,7 +877,7 @@ mod tests {
             config: cfg.clone(),
             weights: tiny_weights(&cfg),
         };
-        let bad = LazyTensor::from_f32(
+        let bad = Tensor::from_f32(
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
             Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
             &Device::cpu(),
@@ -894,7 +894,7 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let h_via_embeds = model.forward_hidden_embeds(&embeds).unwrap().realize_f32();
         let max_diff = h_ref

@@ -19,7 +19,7 @@
 //!
 //! # Why this module is lazy-only
 //!
-//! Everything tensor-touching in this crate targets [`LazyTensor`], and every
+//! Everything tensor-touching in this crate targets [`Tensor`], and every
 //! model in Fuel is built on the lazy graph. A collective written against the
 //! old eager `Tensor` could not have reduced lazy shards, which is the likeliest
 //! reason this crate has no consumers. B6 deleted that eager `Tensor` outright
@@ -28,7 +28,7 @@
 //!
 //! # Transport, and why cross-vendor hops are authored here
 //!
-//! Movement is [`LazyTensor::copy_to_device`] → `Op::Copy`, resolved by the
+//! Movement is [`Tensor::copy_to_device`] → `Op::Copy`, resolved by the
 //! executor's Copy arm. **Every hop with CPU on one end is a single `Op::Copy`**
 //! — CPU↔CUDA, CPU↔Vulkan, and same-device. A **direct cross-vendor GPU↔GPU copy
 //! is not implemented**: both GPU wrappers reject a foreign-GPU output, and
@@ -50,7 +50,7 @@
 //! rather than read from the pass, and it was wrong.)*
 
 use crate::comm::ReduceOp;
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel::{Device, DeviceLocation, Error, Result};
 
 /// A set of devices participating in single-process collectives.
@@ -99,7 +99,7 @@ impl DeviceGroup {
     /// Each shard is brought to the leader (staging through CPU when it must
     /// cross vendors, see [`bring_to_leader`](Self::bring_to_leader)) and folded
     /// with `op`.
-    pub fn all_reduce(&self, shards: &[LazyTensor], op: ReduceOp) -> Result<LazyTensor> {
+    pub fn all_reduce(&self, shards: &[Tensor], op: ReduceOp) -> Result<Tensor> {
         let shards = self.check_shards(shards, "all_reduce")?;
 
         let mut acc = self.bring_to_leader(&shards[0], 0);
@@ -120,7 +120,7 @@ impl DeviceGroup {
     ///
     /// The gather counterpart of [`all_reduce`](Self::all_reduce): where reduce
     /// combines values element-wise, this preserves every shard's contribution.
-    pub fn all_gather(&self, shards: &[LazyTensor], dim: usize) -> Result<LazyTensor> {
+    pub fn all_gather(&self, shards: &[Tensor], dim: usize) -> Result<Tensor> {
         let shards = self.check_shards(shards, "all_gather")?;
 
         let mut acc = self.bring_to_leader(&shards[0], 0);
@@ -138,7 +138,7 @@ impl DeviceGroup {
     /// Realize `t` as `f32`, seeding a device handle for **every** device in the
     /// group.
     ///
-    /// A plain `LazyTensor::realize_f32` seeds only the *primary* device, so a
+    /// A plain `Tensor::realize_f32` seeds only the *primary* device, so a
     /// graph whose nodes span several backends cannot be executed through it —
     /// the non-primary backends have no handle to allocate against. This routes
     /// through `pipelined_bridge::realize_one_as_multi_device` with the leader as
@@ -147,7 +147,7 @@ impl DeviceGroup {
     ///
     /// Callers should not have to know that: the group already owns the device
     /// list, so it is the natural place for the seeding to live.
-    pub fn realize_f32(&self, t: &LazyTensor) -> Result<Vec<f32>> {
+    pub fn realize_f32(&self, t: &Tensor) -> Result<Vec<f32>> {
         let extras: Vec<&Device> = self.devices[1..].iter().collect();
         let graph = t.graph().clone();
         fuel::pipelined_bridge::realize_one_as_multi_device::<f32>(
@@ -174,7 +174,7 @@ impl DeviceGroup {
     /// A `rank` past the device list falls back to the leader unchanged: the
     /// count mismatch is already reported by [`check_shards`](Self::check_shards),
     /// and this must not panic on the way there.
-    fn bring_to_leader(&self, shard: &LazyTensor, rank: usize) -> LazyTensor {
+    fn bring_to_leader(&self, shard: &Tensor, rank: usize) -> Tensor {
         let leader = self.leader();
         let Some(src) = self.devices.get(rank) else {
             return shard.copy_to_device(leader);
@@ -202,8 +202,8 @@ impl DeviceGroup {
     /// `Op`-level `Arc::ptr_eq` assertion. Catching them here keeps the
     /// never-panic contract at the collective boundary, and the graph case can
     /// name the fix because every tensor reports its
-    /// [`graph_id`](LazyTensor::graph_id).
-    fn check_shards<'a>(&self, shards: &'a [LazyTensor], who: &str) -> Result<&'a [LazyTensor]> {
+    /// [`graph_id`](Tensor::graph_id).
+    fn check_shards<'a>(&self, shards: &'a [Tensor], who: &str) -> Result<&'a [Tensor]> {
         if shards.is_empty() {
             return Err(Error::Msg(format!(
                 "DeviceGroup::{who}: no shards to combine (expected at least one)"
@@ -235,11 +235,11 @@ mod tests {
     use super::*;
     use fuel::Shape;
 
-    fn shard(anchor: Option<&LazyTensor>, data: Vec<f32>, dev: &Device) -> LazyTensor {
+    fn shard(anchor: Option<&Tensor>, data: Vec<f32>, dev: &Device) -> Tensor {
         let shape = Shape::from_dims(&[data.len()]);
         match anchor {
-            Some(a) => LazyTensor::from_f32_on(a.graph(), data, shape, dev),
-            None => LazyTensor::from_f32(data, shape, dev),
+            Some(a) => Tensor::from_f32_on(a.graph(), data, shape, dev),
+            None => Tensor::from_f32(data, shape, dev),
         }
     }
 

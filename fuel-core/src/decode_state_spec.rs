@@ -9,7 +9,7 @@
 //! state, and that the state is per-head K/V at all.
 //!
 //! Both are false on `main` today. `DeepSeek2Model` decodes through a
-//! [`crate::lazy_latent_cache::LazyLatentCache`] whose per-layer state is a
+//! [`crate::lazy_latent_cache::LatentCache`] whose per-layer state is a
 //! compressed latent trailing `[kv_lora_rank]` plus a post-RoPE `k_pe` trailing
 //! `[qk_rope_head_dim]` — no per-head K/V anywhere. The hazard is not that such
 //! a model *cannot* implement the scalar vocabulary; it is that it **can, and
@@ -21,7 +21,7 @@
 //! # The vocabulary is not invented here
 //!
 //! Fuel already generalized this, twice, and the decode seam simply did not
-//! adopt it: [`crate::lazy_latent_cache::LazyLatentCache::new`] and
+//! adopt it: [`crate::lazy_latent_cache::LatentCache::new`] and
 //! [`crate::inference_context::LatentKvCache::with_capacity`] both take
 //! `slot_trailing: Vec<Vec<usize>>` — a per-slot trailing shape. In that
 //! vocabulary a standard KV layer is simply the 2-slot case:
@@ -36,7 +36,7 @@
 //!
 //! # What this module adds that `slot_trailing` does not have
 //!
-//! `LazyLatentCache` applies **one** `slot_trailing` list to **every** layer.
+//! `LatentCache` applies **one** `slot_trailing` list to **every** layer.
 //! That describes state *kind* generically while still asserting uniformity
 //! across *layers* — it buys one of the two dimensions and reads as if it bought
 //! both. Gemma3 already varies per-layer behaviour (sliding-window vs full
@@ -67,7 +67,7 @@ use crate::{Error, Result};
 /// The trailing shape is the per-token extent: a standard K buffer is
 /// `[n_kv_heads, head_dim]`, an MLA compressed latent is `[kv_lora_rank]`, and
 /// an empty trailing is a legal per-token scalar slot (matching
-/// [`crate::lazy_latent_cache::LazyLatentCache::new`]'s documented contract).
+/// [`crate::lazy_latent_cache::LatentCache::new`]'s documented contract).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StateSlot {
     /// Per-token trailing shape, excluding the sequence axis.

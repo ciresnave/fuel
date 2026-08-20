@@ -717,7 +717,7 @@ stack flow downward only. No lower layer may depend on a higher one.
 > **As-built note (2026-07-29) — this diagram and the "Current State" analysis below are a
 > target/historical snapshot, not the present workspace.** Verified against the crate list:
 > **`fuel-nn` does not exist** — no directory, no manifest entry; the NN surface lives in
-> `fuel-core` as `lazy_nn_varbuilder::LazyVarBuilder`, `lazy_nn_varmap::LazyVarMap`, and
+> `fuel-core` as `lazy_nn_varbuilder::VarBuilder`, `lazy_nn_varmap::VarMap`, and
 > `lazy_nn/` (linear, embedding, norm, activation, lora, quantizable_linear, moe, conv,
 > sequential). **`fuel-core-types` no longer exists** — it is now `fuel-ir`; `fuel-hardware`,
 > `fuel-memory` (ex-`fuel-storage`), and `fuel-backend-contract` all exist; `fuel-core` itself
@@ -1441,7 +1441,7 @@ Migration tactic — parallel-introduction-then-drop:
    — `None` means "ask the graph." Existing eagerly-constructed
    Tensors stay as-is at first.
 2. Migrate factories first (B2's actual work). The graph-side
-   primitive (`fuel_graph::Tensor::from_storage`) is in place;
+   primitive (`fuel_graph::NodeHandle::from_storage`) is in place;
    B2 routes fuel-core's `Tensor::ones` / `::zeros` / `::from_slice`
    / etc. through it instead of the legacy `from_storage` (eager-
    mode) path. ~13 factory functions in `fuel-core/src/tensor.rs`
@@ -1471,17 +1471,17 @@ that brought G into alignment with what was originally agreed):
       the fuel-core module entirely.*
 - [x] Migrate `fuel_graph::SharedGraph` from `Rc<RefCell<>>` to
       `Arc<RwLock<>>` so `fuel_core::Tensor` retains Send+Sync
-      after gaining `Option<fuel_graph::Tensor>`. *Shipped 2026-05-02
+      after gaining `Option<fuel_graph::NodeHandle>`. *Shipped 2026-05-02
       commit e6c31614. ~100 mechanical borrow→read/write
       replacements across fuel-graph + fuel-graph-cpu/executor/router
       + cuda-backend + reference-backend + fuel-core
       lazy/scheduling. cudnn.rs's thread-local cache unrelated and
       unchanged.*
-- [x] `Tensor_::link: Option<fuel_graph::Tensor>` — reuses the
+- [x] `Tensor_::link: Option<fuel_graph::NodeHandle>` — reuses the
       existing graph handle as the link payload (no separate
       `GraphLink` wrapper). *Initial commit 3c042bf8 introduced
       a separate `GraphLink`; fix-up 2/5 commit 8c32b535 dropped
-      it in favor of `fuel_graph::Tensor` directly.*
+      it in favor of `fuel_graph::NodeHandle` directly.*
 - [x] `Tensor::realized_storage()` mode-agnostic read seam plus
       `has_graph_link()` / `graph_link()` accessors. *Initial commit
       3c042bf8; fix-up 4/5 commit f0f0df1d revised the seam to
@@ -1525,8 +1525,8 @@ Follow-on (post-G, ahead of CE):
          fuel-graph-executor / fuel-graph-cpu / fuel-reference-backend's
          realize loops.
       2. Sweep (commit f0062c4f): public factories take an explicit
-         `&Device` (`fuel_graph::Tensor` takes `&Arc<dyn DynBackendDevice>`,
-         `fuel_core::LazyTensor` takes `&Device`); `const_*_like`
+         `&Device` (`fuel_graph::NodeHandle` takes `&Arc<dyn DynBackendDevice>`,
+         `fuel_core::Tensor` takes `&Device`); `const_*_like`
          methods stay 2-arg and derive device from `self`'s graph.
          ~700 callsites swept across ~50 files.
       3. Cleanup (commit a00e6738): `ConstData` enum dropped;
@@ -2175,7 +2175,7 @@ agent library's concern, not Fuel's.
 #### Three deliverables
 
 **9a. Per-tensor user metadata slot.** A small additive change.
-`LazyTensor::with_metadata(Arc<dyn Any + Send + Sync>)` builder +
+`Tensor::with_metadata(Arc<dyn Any + Send + Sync>)` builder +
 `metadata() -> Option<&Arc<...>>` accessor. Metadata travels with
 the lazy graph node, survives optimization passes (canonicalization
 must preserve it), and is observable via `SchedulerRule` callbacks
@@ -2421,7 +2421,7 @@ interrupt the eager-retirement program or the picker arc.
 ## Eager-retirement follow-ups (post-Phase γ)
 
 Phase γ (the Eager Tensor retirement program) shipped the bulk of the migration
-off `fuel_core::Tensor` to `LazyTensor`, but a handful of items got quarantined
+off `fuel_core::Tensor` to `Tensor`, but a handful of items got quarantined
 or deferred along the way rather than block the main sweep. Each bullet below
 captures one such item with the minimum context needed to pick it up cold in a
 future session. Group ordering mirrors the rough cost ladder — the binaries
@@ -2459,7 +2459,7 @@ wondering where the entry went.
 Each binary was set aside because its target model family doesn't yet have a
 lazy port. Restoring each one means landing the lazy port called out, then
 doing the standard binary swap (lazy_X imports + lazy weight loader +
-LazyTensor signatures).
+Tensor signatures).
 
 - **debertav2** — needs `ForMaskedLM` + `ForSequenceClassification` heads in `lazy_debertav2` (encoder body already ports cleanly; the two task heads are the missing piece).
 - **xlm-roberta** — needs `ForMaskedLM` + `ForSequenceClassification` heads in `lazy_xlm_roberta` (same shape as debertav2 — encoder ready, heads missing).
@@ -2572,11 +2572,11 @@ WASM binaries use for compact safetensors loading).
 
 These three integration tests were already broken before Phase γ started, but
 were left untouched during the sweep so the retirement diffs stayed focused.
-They are small mechanical fixes against the current `LazyTensor` + storage-seam
+They are small mechanical fixes against the current `Tensor` + storage-seam
 API, not architectural follow-ups.
 
 - `tests/phase6b_cuda_anchor.rs` — the `realize_f32_*` methods are now `Result`-returning; needs `?` insertion at the call sites. Separately, `ClipTextConfig` gained a required `activation` field that this test's fixture doesn't populate.
-- `tests/cuda_composed_bisect.rs` — same `Result`-vs-`LazyTensor` mismatch across `realize_f32`, `matmul`, and `rms_norm_last_dim` call sites.
+- `tests/cuda_composed_bisect.rs` — same `Result`-vs-`Tensor` mismatch across `realize_f32`, `matmul`, and `rms_norm_last_dim` call sites.
 - `tests/tensor_tests.rs` — the storage seam now returns `Arc<RwLock<Storage>>` instead of a `RwLockReadGuard`; the test reaches through the old guard shape and needs to be retargeted at the `Arc<RwLock<...>>` API.
 
 ### 4-5. fuel-book (doctest cleanup + markdown docs) — CLOSED by deletion (2026-08-14)
@@ -2596,9 +2596,9 @@ have during the binary migrations" but were not load-bearing for any binary
 that actually shipped — each one was worked around at the call site. They
 warrant first-class lazy implementations when a downstream consumer needs them.
 
-- **General-axis softmax on LazyTensor** — currently only `softmax_last_dim` is exposed; a general `softmax(axis)` would close a recurring port-time papercut for models that softmax over a non-trailing axis (typical in attention rewrites and some vision heads).
+- **General-axis softmax on Tensor** — currently only `softmax_last_dim` is exposed; a general `softmax(axis)` would close a recurring port-time papercut for models that softmax over a non-trailing axis (typical in attention rewrites and some vision heads).
 - **`max_pool2d` with `-inf` padding** — only the zero-padded variant is exposed today; some segmentation and detection heads expect `-inf` padding (so padded positions can never win the max). The shape is the same as the existing zero-padded kernel with a different fill constant; the lazy fanout is the work item.
-- **`LazyConv2d::absorb_bn` helper** — for inference-time folding of a following BatchNorm into the conv's weight + bias (the standard "fuse BN" optimization). Small algebraic helper; deferred because no current lazy binary needs it at the API surface (the folding ports that do exist do it ad-hoc at load time).
+- **`Conv2d::absorb_bn` helper** — for inference-time folding of a following BatchNorm into the conv's weight + bias (the standard "fuse BN" optimization). Small algebraic helper; deferred because no current lazy binary needs it at the API surface (the folding ports that do exist do it ad-hoc at load time).
 
 ---
 
@@ -2670,7 +2670,7 @@ fuel-lazy-examples ────────────────────�
                                       runnable
                                         │
                                         ▼
-fuel-core::lazy (LazyTensor, LlamaModel, LlamaTokenizer, generate)
+fuel-core::lazy (Tensor, LlamaModel, LlamaTokenizer, generate)
     │
     │  builds on
     ▼

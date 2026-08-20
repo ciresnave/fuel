@@ -2,13 +2,13 @@
 //! Lazy-graph ONNX evaluator — sub-port 5: elementwise, comparison,
 //! logical, and shape-manipulation ops.
 //!
-//! Hooks into [`crate::lazy_eval::LazyOnnxEval`]'s dispatch chain the same way
+//! Hooks into [`crate::lazy_eval::OnnxEval`]'s dispatch chain the same way
 //! [`crate::lazy_eval_conv`] and [`crate::lazy_eval_norm`] do: [`try_dispatch`]
 //! returns `Ok(true)` when it handled the node, `Ok(false)` to fall through.
 //!
 //! These ops were previously reachable only through the EAGER evaluator
 //! (`eval.rs`), which B6 retired along with the eager `Tensor`. Everything here
-//! is a thin adapter onto an existing [`LazyTensor`] primitive — the ONNX
+//! is a thin adapter onto an existing [`Tensor`] primitive — the ONNX
 //! semantics (broadcasting rules, attribute defaults, opset-version input-vs-
 //! attribute migrations) are the actual content.
 
@@ -17,18 +17,18 @@ use crate::lazy_eval::{
     realize_i64_vec, set_output,
 };
 use crate::onnx;
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel::{DType, Device, Error, Result, Shape};
 use std::collections::HashMap;
 
 /// Broadcast two operands to their common shape, ONNX/NumPy style.
 ///
-/// The comparison and logical primitives on [`LazyTensor`] are *same-shape*
+/// The comparison and logical primitives on [`Tensor`] are *same-shape*
 /// (`eq`, `lt`, `maximum`, …) while ONNX specifies numpy broadcasting for all
 /// of them, so every binary op here goes through this first. Right-aligns the
 /// two shapes, takes the max extent per axis, and rejects a genuine mismatch
 /// rather than silently picking one side.
-fn broadcast_pair(a: &LazyTensor, b: &LazyTensor, op: &str) -> Result<(LazyTensor, LazyTensor)> {
+fn broadcast_pair(a: &Tensor, b: &Tensor, op: &str) -> Result<(Tensor, Tensor)> {
     let (da, db) = (a.shape().dims().to_vec(), b.shape().dims().to_vec());
     if da == db {
         return Ok((a.clone(), b.clone()));
@@ -74,7 +74,7 @@ fn broadcast_pair(a: &LazyTensor, b: &LazyTensor, op: &str) -> Result<(LazyTenso
 /// output therefore dies at realize with "no backend supports minimum on
 /// [U8, U8, U8]". Doing the algebra in F32 and casting the final result back to
 /// U8 keeps every intermediate on a kernel that exists.
-fn nonzero_f32(x: &LazyTensor) -> Result<LazyTensor> {
+fn nonzero_f32(x: &Tensor) -> Result<Tensor> {
     let xf = x.to_dtype(DType::F32)?;
     let zero = xf.zeros_like()?;
     // `ne` yields U8; widen straight back to F32 so callers can compose.
@@ -82,11 +82,7 @@ fn nonzero_f32(x: &LazyTensor) -> Result<LazyTensor> {
 }
 
 /// Fetch a required positional input, erroring with the node name.
-fn input(
-    node: &onnx::NodeProto,
-    values: &HashMap<String, LazyTensor>,
-    idx: usize,
-) -> Result<LazyTensor> {
+fn input(node: &onnx::NodeProto, values: &HashMap<String, Tensor>, idx: usize) -> Result<Tensor> {
     let name = node.input.get(idx).ok_or_else(|| {
         Error::Msg(format!(
             "ONNX op '{}' (node '{}'): missing required input #{idx}",
@@ -105,9 +101,9 @@ fn input(
 /// Resize all do this), so both must be treated as absent.
 fn opt_input(
     node: &onnx::NodeProto,
-    values: &HashMap<String, LazyTensor>,
+    values: &HashMap<String, Tensor>,
     idx: usize,
-) -> Option<LazyTensor> {
+) -> Option<Tensor> {
     let name = node.input.get(idx)?;
     if name.is_empty() {
         return None;
@@ -118,7 +114,7 @@ fn opt_input(
 /// Realize an optional scalar input to f64 — Clip's min/max and Range's
 /// start/limit/delta are all rank-0 tensors rather than attributes in modern
 /// opsets.
-fn scalar_f64(t: &LazyTensor, what: &str) -> Result<f64> {
+fn scalar_f64(t: &Tensor, what: &str) -> Result<f64> {
     let v = t.realize_f32();
     match v.len() {
         1 => Ok(v[0] as f64),
@@ -128,12 +124,12 @@ fn scalar_f64(t: &LazyTensor, what: &str) -> Result<f64> {
 
 pub(crate) fn try_dispatch(
     node: &onnx::NodeProto,
-    values: &mut HashMap<String, LazyTensor>,
+    values: &mut HashMap<String, Tensor>,
     device: &Device,
-    anchor: &mut Option<LazyTensor>,
+    anchor: &mut Option<Tensor>,
 ) -> Result<bool> {
     match node.op_type.as_str() {
-        // ---- unary elementwise: direct LazyTensor primitives ----
+        // ---- unary elementwise: direct Tensor primitives ----
         "Abs" => set_output(node, 0, input(node, values, 0)?.abs(), values)?,
         "Neg" => set_output(node, 0, input(node, values, 0)?.neg(), values)?,
         "Sign" => set_output(node, 0, input(node, values, 0)?.sign(), values)?,
@@ -385,7 +381,7 @@ pub(crate) fn try_dispatch(
             if exclusive != 0 || reverse != 0 {
                 return Err(Error::Msg(format!(
                     "CumSum: exclusive={exclusive} reverse={reverse} not supported \
-                     (only the inclusive forward scan is wired to LazyTensor::cumsum)"
+                     (only the inclusive forward scan is wired to Tensor::cumsum)"
                 ))
                 .bt());
             }
@@ -574,7 +570,7 @@ pub(crate) fn try_dispatch(
             // ONNX: n = max(ceil((limit - start) / delta), 0)
             let n = (((limit - start) / delta).ceil()).max(0.0) as usize;
             let dtype = input(node, values, 0)?.dtype();
-            // NOT `LazyTensor::arange` — that mints a NEW graph and the result
+            // NOT `Tensor::arange` — that mints a NEW graph and the result
             // would not combine with anything else in this evaluation. Hang the
             // sequence off the anchor instead.
             let a = ensure_anchor(anchor, device);
@@ -642,7 +638,7 @@ pub(crate) fn try_dispatch(
             }
             // one_hot[..., d, ...] = (indices == d) ? on : off
             let idx_f = indices.to_dtype(DType::F32)?.unsqueeze(axis)?;
-            // NOT `LazyTensor::arange` — it mints a NEW graph, and the `eq`
+            // NOT `Tensor::arange` — it mints a NEW graph, and the `eq`
             // below would then fail with a cross-graph error. Build the ramp as
             // a constant on the indices' own graph.
             let mut ramp_dims = vec![1usize; rank1];
@@ -688,7 +684,7 @@ pub(crate) fn try_dispatch(
             if steps.iter().any(|&s| s != 1) {
                 return Err(Error::Msg(format!(
                     "Slice: step != 1 is not supported (got {steps:?}); \
-                     LazyTensor::narrow is contiguous-only"
+                     Tensor::narrow is contiguous-only"
                 ))
                 .bt());
             }

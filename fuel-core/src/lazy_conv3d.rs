@@ -17,7 +17,7 @@
 //! significantly more involved than the single (Qwen3-VL) consumer
 //! warrants. This module ports
 //! `fuel_transformers::models::multimodal::qwen3_vl::conv3d_temporal_2`
-//! using only the existing [`LazyTensor::conv2d`] primitive plus
+//! using only the existing [`Tensor::conv2d`] primitive plus
 //! `narrow` / `squeeze` / `add` / `unsqueeze`.
 //!
 //! ## Scope
@@ -30,7 +30,7 @@
 //!   of N consecutive frames, stride N).
 
 use crate::Result;
-use crate::lazy::LazyTensor;
+use crate::lazy::Tensor;
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -136,7 +136,7 @@ impl Conv3dTemporal2Weights {
     /// `(B, out_channels, 1, H_out, W_out)` where
     /// `H_out = (H + 2*padding - kernel_h) / stride + 1` (and
     /// likewise for W).
-    pub fn apply(&self, input: &LazyTensor) -> Result<LazyTensor> {
+    pub fn apply(&self, input: &Tensor) -> Result<Tensor> {
         let dims = input.shape();
         let dims = dims.dims();
         if dims.len() != 5 {
@@ -270,7 +270,7 @@ mod tests {
         //   x[0, 1, 0, 0, 0] = 30
         //   x[0, 1, 1, 0, 0] = 40
         let x_data: Vec<f32> = vec![10.0, 20.0, 30.0, 40.0];
-        let input = LazyTensor::from_f32(
+        let input = Tensor::from_f32(
             Arc::from(x_data),
             Shape::from_dims(&[1, 2, 2, 1, 1]),
             &Device::cpu(),
@@ -308,7 +308,7 @@ mod tests {
         )
         .unwrap();
         // Input shape (1, 2, 1, 1, 1) → 2 elements; T=1 should error.
-        let input = LazyTensor::from_f32(
+        let input = Tensor::from_f32(
             Arc::from(vec![1.0_f32; 2]),
             Shape::from_dims(&[1, 2, 1, 1, 1]),
             &Device::cpu(),
@@ -330,7 +330,7 @@ mod tests {
 
         let x_len = 1 * 3 * 2 * 4 * 4;
         let x_data: Vec<f32> = (0..x_len).map(|i| (i as f32) * 0.01).collect();
-        let input = LazyTensor::from_f32(
+        let input = Tensor::from_f32(
             Arc::from(x_data),
             Shape::from_dims(&[1, 3, 2, 4, 4]),
             &Device::cpu(),

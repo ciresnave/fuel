@@ -19,7 +19,7 @@
 //! means:
 //!
 //!   * The mask is **baked into the graph** for the lifetime of the
-//!     resulting `LazyTensor`. Re-executing the same lazy graph
+//!     resulting `Tensor`. Re-executing the same lazy graph
 //!     re-applies the same mask — there is no fresh sampling per
 //!     `realize_*` call. Callers that want a fresh mask per step
 //!     (the normal training loop case) must rebuild the dropout
@@ -53,7 +53,7 @@
 //! dropout layers in the training path until that primitive ships.
 
 use fuel::Result;
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel_ir::{DType, Shape};
 use std::sync::Arc;
 
@@ -66,11 +66,11 @@ use std::sync::Arc;
 /// behavior across step boundaries).
 ///
 /// ```rust,no_run
-/// # use fuel::{Device, lazy::LazyTensor};
+/// # use fuel::{Device, lazy::Tensor};
 /// # use fuel::lazy_nn_dropout::Dropout;
 /// # use fuel_ir::Shape;
 /// let device = Device::cpu();
-/// let x = LazyTensor::from_f32(
+/// let x = Tensor::from_f32(
 ///     vec![1.0_f32, 2.0, 3.0, 4.0],
 ///     Shape::from_dims(&[4]),
 ///     &device,
@@ -104,12 +104,12 @@ impl Dropout {
     /// the seed — adequate for a *single* forward pass but **not**
     /// suitable for a training loop that wants a fresh mask per
     /// step. Use [`Self::forward_with_seed`] for that.
-    pub fn forward(&self, x: &LazyTensor, train: bool) -> Result<LazyTensor> {
+    pub fn forward(&self, x: &Tensor, train: bool) -> Result<Tensor> {
         if !train {
             return Ok(x.clone());
         }
         // Address-of-graph-node fallback: stable within a single graph
-        // build, varies between LazyTensor instances. Suitable for
+        // build, varies between Tensor instances. Suitable for
         // ad-hoc one-shot use; the training-loop path should pass a
         // real seed through `forward_with_seed`.
         let seed = (x.graph_tensor() as *const _ as usize) as u64;
@@ -121,7 +121,7 @@ impl Dropout {
     /// node, so two calls with the same `seed` and the same input
     /// shape produce the same mask. Useful for tests and for
     /// deterministic training loops that thread their own rng state.
-    pub fn forward_with_seed(&self, x: &LazyTensor, seed: u64) -> Result<LazyTensor> {
+    pub fn forward_with_seed(&self, x: &Tensor, seed: u64) -> Result<Tensor> {
         if !(0.0..1.0).contains(&self.drop_p) {
             return Err(fuel::Error::Msg(format!(
                 "dropout: drop_p must be in [0, 1), got {}",
@@ -193,7 +193,7 @@ mod tests {
     fn forward_eval_is_identity() {
         let device = Device::cpu();
         let data: Vec<f32> = vec![1.0, -2.0, 3.0, -4.0, 5.0, -6.0];
-        let x = LazyTensor::from_f32(data.clone(), Shape::from_dims(&[6]), &device);
+        let x = Tensor::from_f32(data.clone(), Shape::from_dims(&[6]), &device);
         let drop = Dropout::new(0.5);
         let y = drop.forward(&x, /* train = */ false).unwrap();
         let out = y.realize_f32();
@@ -206,7 +206,7 @@ mod tests {
         // so every output element is either 0.0 or 2.0 * input.
         let device = Device::cpu();
         let data: Vec<f32> = (1..=128).map(|i| i as f32).collect();
-        let x = LazyTensor::from_f32(data.clone(), Shape::from_dims(&[128]), &device);
+        let x = Tensor::from_f32(data.clone(), Shape::from_dims(&[128]), &device);
         let drop = Dropout::new(0.5);
         let y = drop.forward_with_seed(&x, 0xDEADBEEF).unwrap();
         let out = y.realize_f32();
@@ -239,7 +239,7 @@ mod tests {
         let device = Device::cpu();
         let n = 4096;
         let data: Vec<f32> = vec![1.0; n];
-        let x = LazyTensor::from_f32(data.clone(), Shape::from_dims(&[n]), &device);
+        let x = Tensor::from_f32(data.clone(), Shape::from_dims(&[n]), &device);
         let drop = Dropout::new(0.3);
         let y = drop.forward_with_seed(&x, 0x5EED_5EED).unwrap();
         let out = y.realize_f32();
@@ -258,7 +258,7 @@ mod tests {
     fn same_seed_gives_same_mask() {
         let device = Device::cpu();
         let data: Vec<f32> = (0..64).map(|i| (i as f32) * 0.5).collect();
-        let x = LazyTensor::from_f32(data.clone(), Shape::from_dims(&[64]), &device);
+        let x = Tensor::from_f32(data.clone(), Shape::from_dims(&[64]), &device);
         let drop = Dropout::new(0.4);
         let a = drop.forward_with_seed(&x, 12345).unwrap().realize_f32();
         let b = drop.forward_with_seed(&x, 12345).unwrap().realize_f32();
@@ -269,7 +269,7 @@ mod tests {
     fn drop_p_zero_short_circuits() {
         let device = Device::cpu();
         let data: Vec<f32> = vec![7.0, -3.5, 0.25, 100.0];
-        let x = LazyTensor::from_f32(data.clone(), Shape::from_dims(&[4]), &device);
+        let x = Tensor::from_f32(data.clone(), Shape::from_dims(&[4]), &device);
         let drop = Dropout::new(0.0);
         let y = drop.forward_with_seed(&x, 1).unwrap();
         assert_eq!(y.realize_f32(), data);
@@ -278,7 +278,7 @@ mod tests {
     #[test]
     fn drop_p_out_of_range_errors() {
         let device = Device::cpu();
-        let x = LazyTensor::from_f32(vec![1.0_f32, 2.0], Shape::from_dims(&[2]), &device);
+        let x = Tensor::from_f32(vec![1.0_f32, 2.0], Shape::from_dims(&[2]), &device);
         assert!(Dropout::new(1.0).forward_with_seed(&x, 0).is_err());
         assert!(Dropout::new(-0.1).forward_with_seed(&x, 0).is_err());
     }

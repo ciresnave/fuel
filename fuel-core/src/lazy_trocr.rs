@@ -21,7 +21,7 @@
 
 use crate::Result;
 use crate::lazy::{
-    LazyTensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
+    Tensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
 };
 use crate::lazy_vit::{VitConfig, VitLayerWeights, VitModel, VitWeights};
 use fuel_ir::Shape;
@@ -119,7 +119,7 @@ pub struct TrocrModel {
 impl TrocrModel {
     /// Image → encoder hidden states `(1, num_patches + 1, vit_hidden_size)`.
     /// Delegates to a `VitModel` with `classifier = None`.
-    pub fn forward_encoder(&self, image: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward_encoder(&self, image: &Tensor) -> Result<Tensor> {
         let mut weights = self.encoder_weights.clone();
         weights.classifier = None;
         let vit = VitModel {
@@ -130,7 +130,7 @@ impl TrocrModel {
     }
 
     /// Encoder + decoder. Returns `(1, tgt_len, vocab_size)` logits.
-    pub fn forward(&self, image: &LazyTensor, tgt_tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn forward(&self, image: &Tensor, tgt_tokens: &[u32]) -> Result<Tensor> {
         let enc_out = self.forward_encoder(image)?;
         self.forward_decoder(tgt_tokens, &enc_out)
     }
@@ -138,7 +138,7 @@ impl TrocrModel {
     /// Decoder-only forward. `enc_out` is the graph anchor; built
     /// from `forward_encoder` or precomputed and reused across
     /// autoregressive steps.
-    pub fn forward_decoder(&self, tgt_tokens: &[u32], enc_out: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward_decoder(&self, tgt_tokens: &[u32], enc_out: &Tensor) -> Result<Tensor> {
         let dcfg = &self.decoder_config;
         let dw = &self.decoder_weights;
         let tgt_len = tgt_tokens.len();
@@ -212,12 +212,12 @@ impl TrocrModel {
 // ---- Decoder layer ---------------------------------------------------------
 
 fn apply_decoder_layer(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &TrocrDecoderLayerWeights,
-    enc_out: &LazyTensor,
-    causal_mask: &LazyTensor,
+    enc_out: &Tensor,
+    causal_mask: &Tensor,
     cfg: &TrocrDecoderConfig,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     let d = cfg.d_model;
     let n_heads = cfg.decoder_attention_heads;
     let head_dim = cfg.head_dim();
@@ -276,15 +276,15 @@ fn apply_decoder_layer(
 
 #[allow(clippy::too_many_arguments)]
 fn apply_attention(
-    q_input: &LazyTensor,
-    kv_input: &LazyTensor,
+    q_input: &Tensor,
+    kv_input: &Tensor,
     w: &TrocrAttentionWeights,
     n_heads: usize,
     head_dim: usize,
     q_in_dim: usize,
     kv_in_dim: usize,
-    mask: Option<&LazyTensor>,
-) -> Result<LazyTensor> {
+    mask: Option<&Tensor>,
+) -> Result<Tensor> {
     let q_dims = q_input.shape();
     let q_dims = q_dims.dims();
     let batch = q_dims[0];
@@ -749,7 +749,7 @@ mod tests {
             decoder_weights: dw,
         };
         let image: Vec<f32> = (0..(3 * 8 * 8)).map(|i| (i as f32) * 0.01).collect();
-        let img = LazyTensor::from_f32(image, Shape::from_dims(&[1, 3, 8, 8]), &Device::cpu());
+        let img = Tensor::from_f32(image, Shape::from_dims(&[1, 3, 8, 8]), &Device::cpu());
         let tgt = [1_u32, 2, 3];
         let logits = model.forward(&img, &tgt).unwrap();
         assert_eq!(logits.shape().dims(), &[1, tgt.len(), dcfg.vocab_size]);
@@ -774,7 +774,7 @@ mod tests {
             decoder_weights: dw,
         };
         let image: Vec<f32> = (0..(3 * 8 * 8)).map(|i| (i as f32) * 0.01).collect();
-        let img = LazyTensor::from_f32(image, Shape::from_dims(&[1, 3, 8, 8]), &Device::cpu());
+        let img = Tensor::from_f32(image, Shape::from_dims(&[1, 3, 8, 8]), &Device::cpu());
         let tgt = [1_u32, 2, 3];
         let full = model.forward(&img, &tgt).unwrap().realize_f32();
         let enc = model.forward_encoder(&img).unwrap();
@@ -803,14 +803,14 @@ mod tests {
             decoder_config: dcfg.clone(),
             decoder_weights: dw,
         };
-        let img_a = LazyTensor::from_f32(
+        let img_a = Tensor::from_f32(
             (0..(3 * 8 * 8))
                 .map(|i| i as f32 * 0.01)
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 8, 8]),
             &Device::cpu(),
         );
-        let img_b = LazyTensor::from_f32(
+        let img_b = Tensor::from_f32(
             (0..(3 * 8 * 8))
                 .map(|i| i as f32 * 0.01 + 0.5)
                 .collect::<Vec<_>>(),
@@ -844,7 +844,7 @@ mod tests {
             decoder_config: dcfg.clone(),
             decoder_weights: dw,
         };
-        let img = LazyTensor::from_f32(
+        let img = Tensor::from_f32(
             vec![0.1_f32; 3 * 8 * 8],
             Shape::from_dims(&[1, 3, 8, 8]),
             &Device::cpu(),
@@ -1140,7 +1140,7 @@ mod tests {
                 "tie_word_embeddings=true => output_projection should be None"
             );
             let image: Vec<f32> = (0..(3 * 8 * 8)).map(|i| (i as f32) * 0.01).collect();
-            let img = LazyTensor::from_f32(
+            let img = Tensor::from_f32(
                 image,
                 Shape::from_dims(&[1, 3, 8, 8]),
                 &crate::Device::cpu(),

@@ -33,7 +33,7 @@
 //! stay independent (one can be edited or retired without touching
 //! the other).
 
-use crate::lazy::LazyTensor;
+use crate::lazy::Tensor;
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -162,7 +162,7 @@ impl SdVae3Decoder {
     /// The TAESD3 scale + shift constants (`/ 1.5305 + 0.0609`) are
     /// applied inline at entry, so callers pass the raw sampler output
     /// without pre-arithmetic.
-    pub fn decode(&self, latent: &LazyTensor) -> crate::Result<LazyTensor> {
+    pub fn decode(&self, latent: &Tensor) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let lc = cfg.latent_channels;
 
@@ -265,14 +265,14 @@ impl SdVae3Decoder {
 // ---- ResNet block ---------------------------------------------------------
 
 fn resnet(
-    x: &LazyTensor,
+    x: &Tensor,
     rw: &Resnet3Weights,
     cfg: &SdVae3Config,
     c_in: usize,
     c_out: usize,
     h: usize,
     w: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let h1 = group_norm(
         x,
         &rw.n1_g,
@@ -312,13 +312,13 @@ fn resnet(
 /// reshape back. Mirrors SD 1.5 — SD3's VAE mid-block attention is
 /// the same op.
 fn vae_spatial_attention(
-    x: &LazyTensor,
+    x: &Tensor,
     aw: &Attn3Weights,
     cfg: &SdVae3Config,
     c: usize,
     h: usize,
     w: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let n = h * w;
     let x_norm = group_norm(
         x,
@@ -355,7 +355,7 @@ fn vae_spatial_attention(
 /// `lazy_sd_vae::group_norm`; kept private here so the two ports stay
 /// independent.
 fn group_norm(
-    x: &LazyTensor,
+    x: &Tensor,
     gamma: &Arc<[f32]>,
     beta: &Arc<[f32]>,
     groups: usize,
@@ -363,7 +363,7 @@ fn group_norm(
     c: usize,
     h: usize,
     w: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     assert_eq!(
         c % groups,
         0,
@@ -401,14 +401,14 @@ fn group_norm(
 /// kernel `[Cout, Cin, 3, 3]` in HF order, bias `[Cout]`. Output
 /// `[1, Cout, H, W]`. Dispatches to the native `Op::Conv2D`.
 fn conv2d_k3_s1_p1(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &Arc<[f32]>,
     b: &Arc<[f32]>,
     cin: usize,
     cout: usize,
     _h: usize,
     _w_sz: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin, 3, 3]));
     let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[cout]));
     x.conv2d(&w_t, Some(&b_t), (1, 1), (1, 1), 1)
@@ -417,21 +417,21 @@ fn conv2d_k3_s1_p1(
 /// 1×1 conv, stride 1, padding 0. Input `[1, Cin, H, W]`, kernel
 /// `[Cout, Cin, 1, 1]`, bias `[Cout]`. Output `[1, Cout, H, W]`.
 fn conv2d_k1_s1_p0(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &Arc<[f32]>,
     b: &Arc<[f32]>,
     cin: usize,
     cout: usize,
     _h: usize,
     _w_sz: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin, 1, 1]));
     let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[cout]));
     x.conv2d(&w_t, Some(&b_t), (1, 1), (0, 0), 1)
 }
 
 /// 2× nearest-neighbor upsample along both spatial axes.
-fn upsample_nearest_2x(x: &LazyTensor, c: usize, h: usize, w: usize) -> crate::Result<LazyTensor> {
+fn upsample_nearest_2x(x: &Tensor, c: usize, h: usize, w: usize) -> crate::Result<Tensor> {
     let x6 = x.reshape(Shape::from_dims(&[1, c, h, 1, w, 1]))?;
     let x6 = x6.concat(&x6, 3)?;
     let x6 = x6.concat(&x6, 5)?;
@@ -440,13 +440,13 @@ fn upsample_nearest_2x(x: &LazyTensor, c: usize, h: usize, w: usize) -> crate::R
 
 /// `y = x @ W + b`. `x`: `[1, seq, in_f]`, `W`: `[in_f, out_f]`.
 fn linear(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &Arc<[f32]>,
     b: Option<&Arc<[f32]>>,
     in_f: usize,
     out_f: usize,
     seq: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]));
     let proj = x.matmul(&w_t)?;
     match b {
@@ -793,7 +793,7 @@ mod tests {
         let lc = cfg.latent_channels;
         let oc = cfg.out_channels;
         let latent_data = vec![0.0_f32; lc * 4 * 4];
-        let latent = LazyTensor::from_f32(
+        let latent = Tensor::from_f32(
             latent_data,
             Shape::from_dims(&[1, lc, 4, 4]),
             &crate::Device::cpu(),
@@ -821,7 +821,7 @@ mod tests {
         let latent_data: Vec<f32> = (0..n)
             .map(|i| ((i as f32) * 0.137 - (n as f32) * 0.5).sin())
             .collect();
-        let latent = LazyTensor::from_f32(
+        let latent = Tensor::from_f32(
             latent_data,
             Shape::from_dims(&[1, lc, 4, 4]),
             &crate::Device::cpu(),

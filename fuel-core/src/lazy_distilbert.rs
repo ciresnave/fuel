@@ -32,7 +32,7 @@
 //! keep and `-inf` for mask. The caller is responsible for
 //! constructing it (e.g., from a pad-token mask).
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -114,11 +114,7 @@ impl DistilBertModel {
     /// Run a forward pass with an optional additive attention
     /// mask of shape `(1, 1, seq, seq)`. Returns the per-token
     /// hidden states of shape `(1, seq, dim)`.
-    pub fn forward(
-        &self,
-        tokens: &[u32],
-        attention_mask: Option<&LazyTensor>,
-    ) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32], attention_mask: Option<&Tensor>) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
@@ -127,7 +123,7 @@ impl DistilBertModel {
         assert!(seq <= cfg.max_position_embeddings);
 
         // Embeddings: word + position, sum, LayerNorm.
-        let word_emb_t = LazyTensor::from_f32(
+        let word_emb_t = Tensor::from_f32(
             weights.word_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &Device::cpu(),
@@ -173,8 +169,8 @@ impl DistilBertModel {
         &self,
         tokens: &[u32],
         layer_ids: &[usize],
-        attention_mask: Option<&LazyTensor>,
-    ) -> Result<Vec<LazyTensor>> {
+        attention_mask: Option<&Tensor>,
+    ) -> Result<Vec<Tensor>> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
@@ -192,7 +188,7 @@ impl DistilBertModel {
         );
 
         // Same embedding setup as `forward`.
-        let word_emb_t = LazyTensor::from_f32(
+        let word_emb_t = Tensor::from_f32(
             weights.word_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &Device::cpu(),
@@ -230,10 +226,10 @@ impl DistilBertModel {
 
     fn apply_layer(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &DistilBertLayerWeights,
-        attention_mask: Option<&LazyTensor>,
-    ) -> Result<LazyTensor> {
+        attention_mask: Option<&Tensor>,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let dims = x.shape();
         let dims = dims.dims();

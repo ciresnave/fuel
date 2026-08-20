@@ -52,7 +52,7 @@
 //! # Ok::<(), fuel_core::Error>(())
 //! ```
 
-use crate::lazy::LazyTensor;
+use crate::lazy::Tensor;
 use fuel_ir::Shape;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -271,7 +271,7 @@ impl ConvNextModel {
     /// Forward pass on a single ImageNet-normalized `[1, 3, 224, 224]`
     /// image (flattened row-major). Returns logits shape `[1,
     /// num_classes]`.
-    pub fn forward(&self, image: &[f32]) -> crate::Result<LazyTensor> {
+    pub fn forward(&self, image: &[f32]) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let (x, c, h) = self.run_backbone(image)?;
 
@@ -303,12 +303,12 @@ impl ConvNextModel {
     /// 2^(n_stages - 1))`. Useful for segmentation/detection
     /// heads, embedding adapters, and Depth-Anything-style
     /// dense prediction.
-    pub fn forward_features(&self, image: &[f32]) -> crate::Result<LazyTensor> {
+    pub fn forward_features(&self, image: &[f32]) -> crate::Result<Tensor> {
         let (x, _, _) = self.run_backbone(image)?;
         Ok(x)
     }
 
-    fn run_backbone(&self, image: &[f32]) -> crate::Result<(LazyTensor, usize, usize)> {
+    fn run_backbone(&self, image: &[f32]) -> crate::Result<(Tensor, usize, usize)> {
         let cfg = &self.config;
         let cin = cfg.in_channels;
         let s = cfg.image_size;
@@ -318,7 +318,7 @@ impl ConvNextModel {
             "forward: image has {} elements, expected {cin}×{s}×{s}",
             image.len()
         );
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             image.to_vec(),
             Shape::from_dims(&[1, cin, s, s]),
             &crate::Device::cpu(),
@@ -376,13 +376,13 @@ impl ConvNextModel {
 /// One ConvNeXt block: `x + γ * MLP(LN(permute(DWConv(x))))` with a
 /// permute-back. Residual is against the original (channels-first) `x`.
 fn convnext_block(
-    x: &LazyTensor,
+    x: &Tensor,
     bw: &ConvNextBlockWeights,
     eps: f64,
     c: usize,
     h: usize,
     w: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     // DWConv: [1, C, H, W] → [1, C, H, W], still channels-first.
     let dw = conv2d_depthwise_k7_s1_p3(x, &bw.dw_w, &bw.dw_b, c, h, w)?;
     // Move channels to the last dim so LayerNorm + MLP work on [1, H, W, C].
@@ -422,12 +422,12 @@ fn convnext_block(
 ///   `nx = gx / (gxmean + 1e-6)`             — `[1, 1, c4]`
 ///   `y = x · nx · γ + β + x`                — residual added back
 fn apply_grn(
-    x: &LazyTensor,
+    x: &Tensor,
     gamma_arr: &Arc<[f32]>,
     beta_arr: &Arc<[f32]>,
     c4: usize,
     seq: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let residual = x.clone();
     let sqr = x.mul(x)?;
     // sum over seq → [1, 1, c4]
@@ -458,13 +458,13 @@ fn apply_grn(
 
 /// `y = LayerNorm(x) * gamma + beta`. `x` is `[1, seq, hidden]`.
 fn layer_norm_affine(
-    x: &LazyTensor,
+    x: &Tensor,
     gamma: &Arc<[f32]>,
     beta: &Arc<[f32]>,
     eps: f64,
     hidden: usize,
     seq: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let normed = x.layer_norm_last_dim(eps)?;
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))
@@ -481,14 +481,14 @@ fn layer_norm_affine(
 /// the channel axis. Permutes channels-last, calls
 /// `layer_norm_affine`, permutes back.
 fn layer_norm_channel_dim(
-    x: &LazyTensor,
+    x: &Tensor,
     gamma: &Arc<[f32]>,
     beta: &Arc<[f32]>,
     eps: f64,
     c: usize,
     h: usize,
     w: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let x_nhwc = x.permute([0, 2, 3, 1_usize])?;
     let flat = x_nhwc.reshape(Shape::from_dims(&[1, h * w, c]))?;
     let normed = layer_norm_affine(&flat, gamma, beta, eps, c, h * w)?;
@@ -499,13 +499,13 @@ fn layer_norm_channel_dim(
 
 /// `y = x @ W + b`. `x` shape `[1, seq, in_f]`, W stored `[in_f, out_f]`.
 fn linear(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &Arc<[f32]>,
     b: Option<&Arc<[f32]>>,
     in_f: usize,
     out_f: usize,
     seq: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]));
     let proj = x.matmul(&w_t)?;
     match b {
@@ -521,12 +521,7 @@ fn linear(
 }
 
 /// Global average pool 2D. Input `[1, C, H, W]` → output `[1, C]`.
-fn global_avg_pool_2d(
-    x: &LazyTensor,
-    _c: usize,
-    _h: usize,
-    _w: usize,
-) -> crate::Result<LazyTensor> {
+fn global_avg_pool_2d(x: &Tensor, _c: usize, _h: usize, _w: usize) -> crate::Result<Tensor> {
     x.global_avg_pool_2d()
 }
 
@@ -541,7 +536,7 @@ fn global_avg_pool_2d(
 /// kernel to `[Cout, Cin*k*k]` in row-major (which gives exactly that
 /// ordering), then transpose to `[Cin*k*k, Cout]` for the matmul.
 fn conv2d_stride_eq_kernel(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &Arc<[f32]>,
     b: &Arc<[f32]>,
     cin: usize,
@@ -549,7 +544,7 @@ fn conv2d_stride_eq_kernel(
     k: usize,
     h: usize,
     w_sz: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     assert!(
         h.is_multiple_of(k),
         "conv2d_stride_eq_kernel: H={h} % k={k} != 0"
@@ -588,19 +583,19 @@ fn conv2d_stride_eq_kernel(
 
 /// Depthwise Conv2d, kernel=7, stride=1, padding=3. Weight shape
 /// `[C, 1, 7, 7]`, bias `[C]`. Dispatches to the native
-/// [`LazyTensor::conv2d`] op with `groups=C` (the depthwise
+/// [`Tensor::conv2d`] op with `groups=C` (the depthwise
 /// signature). Was composed from 49 slice+mul+add subgraphs before
 /// the native op landed; keeping the helper as a thin wrapper so
 /// ConvNeXt's block code doesn't need to know about the groups
 /// argument.
 fn conv2d_depthwise_k7_s1_p3(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &Arc<[f32]>,
     b: &Arc<[f32]>,
     c: usize,
     _h: usize,
     _w_sz: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[c, 1, 7, 7]));
     let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[c]));
     x.conv2d(&w_t, Some(&b_t), (1, 1), (3, 3), c)
@@ -992,7 +987,7 @@ mod tests {
         let x_data = vec![1.0_f32, 1.0, 2.0, 2.0, 3.0];
         let c4 = 5;
         let seq = 1;
-        let x = LazyTensor::from_f32(x_data.clone(), Shape::from_dims(&[1, seq, c4]), &dev);
+        let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[1, seq, c4]), &dev);
         let gamma = arc(vec![1.0_f32; c4]);
         let beta = arc(vec![0.0_f32; c4]);
         let out = apply_grn(&x, &gamma, &beta, c4, seq).unwrap().realize_f32();
@@ -1020,7 +1015,7 @@ mod tests {
         let x_data = vec![0.5_f32, -0.25, 0.75, 1.0];
         let c4 = 4;
         let seq = 1;
-        let x = LazyTensor::from_f32(x_data.clone(), Shape::from_dims(&[1, seq, c4]), &dev);
+        let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[1, seq, c4]), &dev);
         let gamma = arc(vec![0.0_f32; c4]);
         let beta = arc(vec![0.0_f32; c4]);
         let out = apply_grn(&x, &gamma, &beta, c4, seq).unwrap().realize_f32();

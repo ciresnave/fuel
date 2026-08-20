@@ -24,7 +24,7 @@
 //!
 //! # Lazy-only
 //!
-//! These signatures take [`LazyTensor`]. The eager `fuel::Tensor` surface is
+//! These signatures take [`Tensor`]. The eager `fuel::Tensor` surface is
 //! being retired, and a collective written against it could not reduce lazy
 //! shards — which is the likeliest reason this crate never acquired a consumer.
 //!
@@ -40,7 +40,7 @@
 //! ```
 
 use fuel::Result;
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 
 /// Reduce operation type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -79,7 +79,7 @@ impl CommInfo {
 /// The trait is object-safe so it can be stored as `Box<dyn Communicator>`.
 ///
 /// **Every shard handed to an implementation must belong to the same graph as
-/// the value it is combined with.** `LazyTensor` ops are graph-affine: two
+/// the value it is combined with.** `Tensor` ops are graph-affine: two
 /// tensors can be combined iff their `graph_id`s match. An out-of-process
 /// implementation that receives bytes over the wire must therefore materialize
 /// them onto the *caller's* graph (`const_f32_like`, `from_f32_on`), not mint a
@@ -90,16 +90,16 @@ pub trait Communicator: Send {
 
     /// All-reduce: compute element-wise reduction across all ranks,
     /// distributing the result to every rank.
-    fn all_reduce(&self, tensor: &LazyTensor, op: ReduceOp) -> Result<LazyTensor>;
+    fn all_reduce(&self, tensor: &Tensor, op: ReduceOp) -> Result<Tensor>;
 
     /// All-gather: concatenate tensors from all ranks along `dim`.
-    fn all_gather(&self, tensor: &LazyTensor, dim: usize) -> Result<LazyTensor>;
+    fn all_gather(&self, tensor: &Tensor, dim: usize) -> Result<Tensor>;
 
     /// Reduce-scatter: reduce across ranks then scatter equal chunks to each rank.
-    fn reduce_scatter(&self, tensor: &LazyTensor, op: ReduceOp, dim: usize) -> Result<LazyTensor>;
+    fn reduce_scatter(&self, tensor: &Tensor, op: ReduceOp, dim: usize) -> Result<Tensor>;
 
     /// Broadcast tensor from `root` to all ranks.
-    fn broadcast(&self, tensor: &LazyTensor, root: usize) -> Result<LazyTensor>;
+    fn broadcast(&self, tensor: &Tensor, root: usize) -> Result<Tensor>;
 
     /// Barrier: block until all ranks reach this point.
     fn barrier(&self) -> Result<()>;
@@ -124,24 +124,19 @@ impl Communicator for IdentityComm {
         }
     }
 
-    fn all_reduce(&self, tensor: &LazyTensor, _op: ReduceOp) -> Result<LazyTensor> {
+    fn all_reduce(&self, tensor: &Tensor, _op: ReduceOp) -> Result<Tensor> {
         Ok(tensor.clone())
     }
 
-    fn all_gather(&self, tensor: &LazyTensor, _dim: usize) -> Result<LazyTensor> {
+    fn all_gather(&self, tensor: &Tensor, _dim: usize) -> Result<Tensor> {
         Ok(tensor.clone())
     }
 
-    fn reduce_scatter(
-        &self,
-        tensor: &LazyTensor,
-        _op: ReduceOp,
-        _dim: usize,
-    ) -> Result<LazyTensor> {
+    fn reduce_scatter(&self, tensor: &Tensor, _op: ReduceOp, _dim: usize) -> Result<Tensor> {
         Ok(tensor.clone())
     }
 
-    fn broadcast(&self, tensor: &LazyTensor, _root: usize) -> Result<LazyTensor> {
+    fn broadcast(&self, tensor: &Tensor, _root: usize) -> Result<Tensor> {
         Ok(tensor.clone())
     }
 
@@ -156,8 +151,8 @@ mod tests {
     use fuel::{Device, Shape};
 
     /// A 1-D f32 lazy tensor on CPU, on a fresh graph.
-    fn t(data: &[f32]) -> LazyTensor {
-        LazyTensor::from_f32(
+    fn t(data: &[f32]) -> Tensor {
+        Tensor::from_f32(
             data.to_vec(),
             Shape::from_dims(&[data.len()]),
             &Device::cpu(),

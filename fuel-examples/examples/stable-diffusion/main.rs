@@ -245,7 +245,7 @@ fn text_embeddings(
     tokenizer_path: std::path::PathBuf,
     clip_weights_path: std::path::PathBuf,
     use_guide_scale: bool,
-) -> Result<fuel::lazy::LazyTensor> {
+) -> Result<fuel::lazy::Tensor> {
     let clip_cfg = ClipTextConfig::sd_v1();
     let st = unsafe { fuel::safetensors::MmapedSafetensors::new(&clip_weights_path) }
         .map_err(|e| E::msg(format!("clip mmap: {e}")))?;
@@ -439,10 +439,10 @@ fn run(args: Args) -> Result<()> {
                 pred_lazy.realize_f32()
             };
 
-            // Build LazyTensors for the scheduler step. The scheduler
-            // returns a LazyTensor — realize it back to f32 to feed the
+            // Build Tensors for the scheduler step. The scheduler
+            // returns a Tensor — realize it back to f32 to feed the
             // next UNet step.
-            let sample_lazy = fuel::lazy::LazyTensor::from_f32(
+            let sample_lazy = fuel::lazy::Tensor::from_f32(
                 latents.clone(),
                 fuel::Shape::from_dims(&[bsize, 4, h_lat, w_lat]),
                 &fuel::Device::cpu(),

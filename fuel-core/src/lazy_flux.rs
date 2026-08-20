@@ -32,7 +32,7 @@
 //!   `axes_dim = [16, 56, 56]` partitions the head dim across three
 //!   independent rotary frequency bands).
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -122,7 +122,7 @@ pub struct FluxLinear {
 }
 
 impl FluxLinear {
-    fn apply(&self, x: &LazyTensor) -> Result<LazyTensor> {
+    fn apply(&self, x: &Tensor) -> Result<Tensor> {
         let y = self
             .weight
             .apply_linear(x, self.in_features, self.out_features)?;
@@ -150,7 +150,7 @@ pub struct FluxMlpEmbedder {
 }
 
 impl FluxMlpEmbedder {
-    fn forward(&self, x: &LazyTensor) -> Result<LazyTensor> {
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let h = self.in_layer.apply(x)?;
         let h = h.silu();
         self.out_layer.apply(&h)
@@ -175,7 +175,7 @@ pub struct FluxMlp {
 }
 
 impl FluxMlp {
-    fn forward(&self, x: &LazyTensor) -> Result<LazyTensor> {
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let h = self.fc1.apply(x)?;
         let h = h.gelu();
         self.fc2.apply(&h)
@@ -193,7 +193,7 @@ pub struct FluxModulation {
 }
 
 impl FluxModulation {
-    fn forward(&self, vec_c: &LazyTensor) -> Result<Vec<ModulationOut>> {
+    fn forward(&self, vec_c: &Tensor) -> Result<Vec<ModulationOut>> {
         let y = self.lin.apply(&vec_c.silu())?;
         // y has shape (B, num_chunks * dim). Unsqueeze a sequence dim
         // and split into num_chunks (shift, scale, gate) triples.
@@ -231,19 +231,19 @@ impl FluxModulation {
 /// `(B, 1, dim)`.
 #[derive(Debug, Clone)]
 pub struct ModulationOut {
-    pub shift: LazyTensor,
-    pub scale: LazyTensor,
-    pub gate: LazyTensor,
+    pub shift: Tensor,
+    pub scale: Tensor,
+    pub gate: Tensor,
 }
 
 impl ModulationOut {
-    fn scale_shift(&self, x: &LazyTensor) -> Result<LazyTensor> {
+    fn scale_shift(&self, x: &Tensor) -> Result<Tensor> {
         let scale_plus_one = self.scale.add_scalar(1.0);
         let scaled = x.broadcast_mul(&scale_plus_one)?;
         scaled.broadcast_add(&self.shift)
     }
 
-    fn gate_apply(&self, x: &LazyTensor) -> Result<LazyTensor> {
+    fn gate_apply(&self, x: &Tensor) -> Result<Tensor> {
         self.gate.broadcast_mul(x)
     }
 }
@@ -298,7 +298,7 @@ pub struct FluxWeights {
 /// `flip_sin_to_cos=false` convention used by Flux): `cos` half first,
 /// then `sin` half. Input `(B,)` host-side scalars are interpreted as
 /// `t * 1000`. Output `(B, dim)`.
-fn timestep_embedding(t: &LazyTensor, dim: usize) -> Result<LazyTensor> {
+fn timestep_embedding(t: &Tensor, dim: usize) -> Result<Tensor> {
     if dim % 2 != 0 {
         return Err(crate::Error::Msg(format!("timestep_embedding: dim {dim} must be even",)).bt());
     }
@@ -334,7 +334,7 @@ fn timestep_embedding(t: &LazyTensor, dim: usize) -> Result<LazyTensor> {
 /// Build the 2-2 RoPE table for one axis: returns
 /// `(b, n, dim/2, 2, 2)` where the trailing 2x2 is the rotation matrix
 /// `[[cos, -sin], [sin, cos]]`.
-fn rope_axis(pos: &LazyTensor, dim: usize, theta: usize) -> Result<LazyTensor> {
+fn rope_axis(pos: &Tensor, dim: usize, theta: usize) -> Result<Tensor> {
     if dim % 2 != 0 {
         return Err(crate::Error::Msg(format!("rope_axis: dim {dim} must be even",)).bt());
     }
@@ -364,7 +364,7 @@ fn rope_axis(pos: &LazyTensor, dim: usize, theta: usize) -> Result<LazyTensor> {
     let neg_sin = sin.mul_scalar(-1.0);
     // Stack [cos, -sin, sin, cos] along a new dim, then reshape into
     // the (b, n, half, 2, 2) rotation-block layout.
-    let stacked = LazyTensor::stack(&[&cos, &neg_sin, &sin, &cos], 3_usize)?;
+    let stacked = Tensor::stack(&[&cos, &neg_sin, &sin, &cos], 3_usize)?;
     // stacked shape: (b, n, half, 4)
     stacked.reshape(Shape::from_dims(&[b, n, half, 2, 2]))
 }
@@ -374,7 +374,7 @@ fn rope_axis(pos: &LazyTensor, dim: usize, theta: usize) -> Result<LazyTensor> {
 /// half-dim. Returns the joint RoPE freq tensor with a head-dim of size
 /// 1 unsqueezed at position 1 — shape
 /// `(B, 1, N, sum(axes_dim)/2, 2, 2)`.
-fn embed_nd(ids: &LazyTensor, axes_dim: &[usize], theta: usize) -> Result<LazyTensor> {
+fn embed_nd(ids: &Tensor, axes_dim: &[usize], theta: usize) -> Result<Tensor> {
     let dims = ids.shape().dims().to_vec();
     if dims.len() != 3 {
         return Err(crate::Error::Msg(format!(
@@ -390,7 +390,7 @@ fn embed_nd(ids: &LazyTensor, axes_dim: &[usize], theta: usize) -> Result<LazyTe
         ))
         .bt());
     }
-    let mut per_axis: Vec<LazyTensor> = Vec::with_capacity(n_axes);
+    let mut per_axis: Vec<Tensor> = Vec::with_capacity(n_axes);
     for i in 0..n_axes {
         let pos = ids.narrow(2_usize, i, 1)?.squeeze(2_usize)?;
         per_axis.push(rope_axis(&pos, axes_dim[i], theta)?);
@@ -407,7 +407,7 @@ fn embed_nd(ids: &LazyTensor, axes_dim: &[usize], theta: usize) -> Result<LazyTe
 
 /// Apply RoPE to a query/key tensor of shape `(B, H, S, D)`.
 /// `pe` has shape `(B, 1, S, D/2, 2, 2)`.
-fn apply_rope(x: &LazyTensor, pe: &LazyTensor) -> Result<LazyTensor> {
+fn apply_rope(x: &Tensor, pe: &Tensor) -> Result<Tensor> {
     let x_dims = x.shape().dims().to_vec();
     if x_dims.len() != 4 {
         return Err(crate::Error::Msg(format!(
@@ -447,13 +447,7 @@ fn apply_rope(x: &LazyTensor, pe: &LazyTensor) -> Result<LazyTensor> {
 
 /// Apply rope to q,k then run scaled-dot-product attention. Returns
 /// `(B, S, H*D)`.
-fn attention(
-    q: &LazyTensor,
-    k: &LazyTensor,
-    v: &LazyTensor,
-    pe: &LazyTensor,
-    head_dim: usize,
-) -> Result<LazyTensor> {
+fn attention(q: &Tensor, k: &Tensor, v: &Tensor, pe: &Tensor, head_dim: usize) -> Result<Tensor> {
     let q = apply_rope(q, pe)?;
     let k = apply_rope(k, pe)?;
     let k_t = k.transpose()?;
@@ -468,12 +462,12 @@ fn attention(
 /// Split a fused QKV projection `(B, S, 3*dim)` into three head-major
 /// tensors `(B, H, S, head_dim)` with QK-Norm applied to Q and K.
 fn split_qkv_with_qknorm(
-    qkv: &LazyTensor,
+    qkv: &Tensor,
     num_heads: usize,
     head_dim: usize,
     qk_norm: &FluxQkNorm,
     qk_norm_enabled: bool,
-) -> Result<(LazyTensor, LazyTensor, LazyTensor)> {
+) -> Result<(Tensor, Tensor, Tensor)> {
     let dims = qkv.shape().dims().to_vec();
     if dims.len() != 3 {
         return Err(crate::Error::Msg(format!(
@@ -504,13 +498,13 @@ fn split_qkv_with_qknorm(
 // ---- DoubleStreamBlock forward ---------------------------------------------
 
 fn apply_double_stream(
-    img: &LazyTensor,
-    txt: &LazyTensor,
-    vec_c: &LazyTensor,
-    pe: &LazyTensor,
+    img: &Tensor,
+    txt: &Tensor,
+    vec_c: &Tensor,
+    pe: &Tensor,
     blk: &FluxDoubleStreamBlockWeights,
     cfg: &FluxConfig,
-) -> Result<(LazyTensor, LazyTensor)> {
+) -> Result<(Tensor, Tensor)> {
     let img_mods = blk.img_mod.forward(vec_c)?;
     let txt_mods = blk.txt_mod.forward(vec_c)?;
     if img_mods.len() != 2 || txt_mods.len() != 2 {
@@ -583,12 +577,12 @@ fn apply_double_stream(
 /// mlp_hidden part feeds a GELU. Their outputs are concatenated and
 /// projected back by `linear2`, then added to the input with a gate.
 fn apply_single_stream(
-    xs: &LazyTensor,
-    vec_c: &LazyTensor,
-    pe: &LazyTensor,
+    xs: &Tensor,
+    vec_c: &Tensor,
+    pe: &Tensor,
     blk: &FluxSingleStreamBlockWeights,
     cfg: &FluxConfig,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     let mods = blk.modulation.forward(vec_c)?;
     if mods.len() != 1 {
         return Err(crate::Error::Msg(
@@ -614,11 +608,7 @@ fn apply_single_stream(
 
 // ---- LastLayer -------------------------------------------------------------
 
-fn apply_last_layer(
-    xs: &LazyTensor,
-    vec_c: &LazyTensor,
-    last: &FluxLastLayer,
-) -> Result<LazyTensor> {
+fn apply_last_layer(xs: &Tensor, vec_c: &Tensor, last: &FluxLastLayer) -> Result<Tensor> {
     let h = vec_c.silu();
     let proj = last.ada_ln_modulation.apply(&h)?;
     let chunks = proj.chunk(2, 1_usize)?;
@@ -654,14 +644,14 @@ impl FluxModel {
     /// Returns `(B, S_image, in_channels)`.
     pub fn forward(
         &self,
-        img: &LazyTensor,
-        img_ids: &LazyTensor,
-        txt: &LazyTensor,
-        txt_ids: &LazyTensor,
-        timesteps: &LazyTensor,
-        y: &LazyTensor,
-        guidance: Option<&LazyTensor>,
-    ) -> Result<LazyTensor> {
+        img: &Tensor,
+        img_ids: &Tensor,
+        txt: &Tensor,
+        txt_ids: &Tensor,
+        timesteps: &Tensor,
+        y: &Tensor,
+        guidance: Option<&Tensor>,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         if txt.rank() != 3 {
             return Err(crate::Error::Msg(format!(
@@ -726,14 +716,14 @@ impl QuantizedFluxModel {
     /// [`FluxModel::forward`] exactly.
     pub fn forward(
         &self,
-        img: &LazyTensor,
-        img_ids: &LazyTensor,
-        txt: &LazyTensor,
-        txt_ids: &LazyTensor,
-        timesteps: &LazyTensor,
-        y: &LazyTensor,
-        guidance: Option<&LazyTensor>,
-    ) -> Result<LazyTensor> {
+        img: &Tensor,
+        img_ids: &Tensor,
+        txt: &Tensor,
+        txt_ids: &Tensor,
+        timesteps: &Tensor,
+        y: &Tensor,
+        guidance: Option<&Tensor>,
+    ) -> Result<Tensor> {
         self.inner
             .forward(img, img_ids, txt, txt_ids, timesteps, y, guidance)
     }
@@ -969,7 +959,7 @@ impl FluxVae {
     /// space `(B, z_channels, H/8, W/8)`. Takes the diagonal-Gaussian
     /// mean (deterministic — sampling is left as a follow-up if a
     /// caller needs stochastic encodes).
-    pub fn encode(&self, x: &LazyTensor) -> Result<LazyTensor> {
+    pub fn encode(&self, x: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let w = &self.encoder;
         let mut h = conv2d_k3_s1_p1(x, &w.conv_in_w, &w.conv_in_b, cfg.in_channels, cfg.ch)?;
@@ -1012,7 +1002,7 @@ impl FluxVae {
 
     /// Decode latents `(B, z_channels, H_lat, W_lat)` back to image
     /// space `(B, out_ch, 8 * H_lat, 8 * W_lat)`.
-    pub fn decode(&self, z: &LazyTensor) -> Result<LazyTensor> {
+    pub fn decode(&self, z: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let w = &self.decoder;
         let z = z.mul_scalar(1.0 / cfg.scale_factor);
@@ -1056,7 +1046,7 @@ impl FluxVae {
 
 // ---- VAE primitives --------------------------------------------------------
 
-fn vae_resnet(x: &LazyTensor, rw: &VaeResnetWeights, cfg: &FluxVaeConfig) -> Result<LazyTensor> {
+fn vae_resnet(x: &Tensor, rw: &VaeResnetWeights, cfg: &FluxVaeConfig) -> Result<Tensor> {
     let dims = x.shape().dims().to_vec();
     let (b, c_in, h, w) = (dims[0], dims[1], dims[2], dims[3]);
     let _ = b;
@@ -1093,11 +1083,7 @@ fn vae_resnet(x: &LazyTensor, rw: &VaeResnetWeights, cfg: &FluxVaeConfig) -> Res
 }
 
 /// Self-attention over `H*W` positions with 1x1 conv projections.
-fn vae_spatial_attention(
-    x: &LazyTensor,
-    aw: &VaeAttnWeights,
-    cfg: &FluxVaeConfig,
-) -> Result<LazyTensor> {
+fn vae_spatial_attention(x: &Tensor, aw: &VaeAttnWeights, cfg: &FluxVaeConfig) -> Result<Tensor> {
     let dims = x.shape().dims().to_vec();
     let (b, c, h, w) = (dims[0], dims[1], dims[2], dims[3]);
     let xn = group_norm(
@@ -1115,7 +1101,7 @@ fn vae_spatial_attention(
     let v = conv2d_k1_s1_p0(&xn, &aw.v_w, &aw.v_b, c, c)?;
     // (B, C, H, W) → (B, H*W, C)
     let n = h * w;
-    let to_seq = |t: &LazyTensor| -> Result<LazyTensor> {
+    let to_seq = |t: &Tensor| -> Result<Tensor> {
         Ok(t.reshape(Shape::from_dims(&[b, c, n]))?
             .permute([0, 2, 1_usize])?)
     };
@@ -1137,7 +1123,7 @@ fn vae_spatial_attention(
 
 /// Downsample: pad right + bottom by 1, then stride-2 3x3 conv. Eager
 /// uses asymmetric padding to keep parity with the upstream Flux Python.
-fn downsample_conv(x: &LazyTensor, w: &Arc<[f32]>, b: &Arc<[f32]>, c: usize) -> Result<LazyTensor> {
+fn downsample_conv(x: &Tensor, w: &Arc<[f32]>, b: &Arc<[f32]>, c: usize) -> Result<Tensor> {
     let x = x.pad_with_zeros(3_usize, 0, 1)?;
     let x = x.pad_with_zeros(2_usize, 0, 1)?;
     let w_t = x.const_f32_like(Arc::clone(w), Shape::from_dims(&[c, c, 3, 3]));
@@ -1146,7 +1132,7 @@ fn downsample_conv(x: &LazyTensor, w: &Arc<[f32]>, b: &Arc<[f32]>, c: usize) -> 
 }
 
 /// Upsample: 2x nearest then 3x3 stride-1 padding-1 conv.
-fn upsample_conv(x: &LazyTensor, w: &Arc<[f32]>, b: &Arc<[f32]>, c: usize) -> Result<LazyTensor> {
+fn upsample_conv(x: &Tensor, w: &Arc<[f32]>, b: &Arc<[f32]>, c: usize) -> Result<Tensor> {
     let x = x.upsample_nearest2d(2)?;
     let w_t = x.const_f32_like(Arc::clone(w), Shape::from_dims(&[c, c, 3, 3]));
     let b_t = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[c]));
@@ -1154,31 +1140,31 @@ fn upsample_conv(x: &LazyTensor, w: &Arc<[f32]>, b: &Arc<[f32]>, c: usize) -> Re
 }
 
 fn conv2d_k3_s1_p1(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &Arc<[f32]>,
     b: &Arc<[f32]>,
     cin: usize,
     cout: usize,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     let w_t = x.const_f32_like(Arc::clone(w), Shape::from_dims(&[cout, cin, 3, 3]));
     let b_t = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[cout]));
     x.conv2d(&w_t, Some(&b_t), (1, 1), (1, 1), 1)
 }
 
 fn conv2d_k1_s1_p0(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &Arc<[f32]>,
     b: &Arc<[f32]>,
     cin: usize,
     cout: usize,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     let w_t = x.const_f32_like(Arc::clone(w), Shape::from_dims(&[cout, cin, 1, 1]));
     let b_t = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[cout]));
     x.conv2d(&w_t, Some(&b_t), (1, 1), (0, 0), 1)
 }
 
 fn group_norm(
-    x: &LazyTensor,
+    x: &Tensor,
     gamma: &Arc<[f32]>,
     beta: &Arc<[f32]>,
     groups: usize,
@@ -1186,7 +1172,7 @@ fn group_norm(
     c: usize,
     h: usize,
     w: usize,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     if c % groups != 0 {
         return Err(crate::Error::Msg(format!(
             "group_norm: C={c} not divisible by groups={groups}",
@@ -1279,13 +1265,7 @@ impl FlowMatchScheduler {
     }
 
     /// One denoising step: `img + pred * (t_prev - t_curr)`.
-    pub fn step(
-        &self,
-        img: &LazyTensor,
-        pred: &LazyTensor,
-        t_curr: f64,
-        t_prev: f64,
-    ) -> Result<LazyTensor> {
+    pub fn step(&self, img: &Tensor, pred: &Tensor, t_curr: f64, t_prev: f64) -> Result<Tensor> {
         let delta = pred.mul_scalar(t_prev - t_curr);
         img.add(&delta)
     }
@@ -1311,14 +1291,14 @@ fn time_shift(mu: f64, sigma: f64, t: f64) -> f64 {
 #[allow(clippy::too_many_arguments)]
 pub fn generate(
     model: &FluxModel,
-    text_clip: &LazyTensor,
-    text_t5: &LazyTensor,
-    img: &LazyTensor,
-    img_ids: &LazyTensor,
-    txt_ids: &LazyTensor,
+    text_clip: &Tensor,
+    text_t5: &Tensor,
+    img: &Tensor,
+    img_ids: &Tensor,
+    txt_ids: &Tensor,
     scheduler: &FlowMatchScheduler,
-    guidance: Option<&LazyTensor>,
-) -> Result<LazyTensor> {
+    guidance: Option<&Tensor>,
+) -> Result<Tensor> {
     let ts = scheduler.timesteps();
     let mut x = img.clone();
     let batch = x.shape().dims()[0];
@@ -1745,20 +1725,13 @@ mod tests {
         cfg: &FluxConfig,
         seq_text: usize,
         seq_image: usize,
-    ) -> (
-        LazyTensor,
-        LazyTensor,
-        LazyTensor,
-        LazyTensor,
-        LazyTensor,
-        LazyTensor,
-    ) {
+    ) -> (Tensor, Tensor, Tensor, Tensor, Tensor, Tensor) {
         let dev = Device::cpu();
         let mut rng = make_rng(0xBADF00D);
         let img_data: Vec<f32> = (0..(1 * seq_image * cfg.in_channels))
             .map(|_| rng())
             .collect();
-        let img = LazyTensor::from_f32(
+        let img = Tensor::from_f32(
             Arc::from(img_data),
             Shape::from_dims(&[1, seq_image, cfg.in_channels]),
             &dev,
@@ -1999,7 +1972,7 @@ mod tests {
         let w_in = 64;
         let n = cfg.in_channels * h_in * w_in;
         let data: Vec<f32> = (0..n).map(|i| ((i as f32 * 0.013).sin()) * 0.5).collect();
-        let img = LazyTensor::from_f32(
+        let img = Tensor::from_f32(
             Arc::from(data),
             Shape::from_dims(&[1, cfg.in_channels, h_in, w_in]),
             &dev,
@@ -2032,7 +2005,7 @@ mod tests {
             assert!(w[0] > w[1]);
         }
         // One step: img + pred * (t_prev - t_curr).
-        let img = LazyTensor::from_f32(
+        let img = Tensor::from_f32(
             Arc::from(vec![1.0_f32, 2.0, 3.0, 4.0]),
             Shape::from_dims(&[1, 2, 2]),
             &dev,

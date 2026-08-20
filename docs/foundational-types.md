@@ -69,7 +69,7 @@ a *dtype*, or an *identity*, it almost certainly lives here.
 | `Op` | enum | `lib.rs:210` | **the op basis**: a closed set of primitive variants + one delegate arm, `Op::Fused(FusedOpId, FusedOpParams)`, to the open fused-op registry |
 | `Node` | struct | `lib.rs:1285` | `{ op, inputs, shape, dtype }` — the atom |
 | `Graph` | struct | `lib.rs:1348` | the arena of `Node`s + sparse side-tables (`target_backend`, `layouts`, `storage_class`, `storage_map`, …) |
-| `Tensor` | struct | `lib.rs:2530` | a **build handle** — `{ graph: Arc<RwLock<Graph>>, id: NodeId }`. The cursor you call `a.matmul(&b)` on; it *is not data*. (`fuel-core`'s `LazyTensor` wraps it for the user API) |
+| `Tensor` | struct | `lib.rs:2530` | a **build handle** — `{ graph: Arc<RwLock<Graph>>, id: NodeId }`. The cursor you call `a.matmul(&b)` on; it *is not data*. (`fuel-core`'s `Tensor` wraps it for the user API) |
 | `FusedOpId` | newtype `u16` | `registry.rs:64` | stable id of a registered fused op (static ids dense from 1; runtime/JIT ids from `RUNTIME_FUSED_BASE = 0x8000`) |
 | `FusedOpParams` | enum | `registry.rs:159` | per-instance params for a fused-op node (e.g. `FlashAttn { softmax_scale, causal, … }`) |
 

@@ -115,7 +115,7 @@ reconvergent routes live as real arena nodes (`fuel-graph/src/lib.rs:1006`, land
 > `fuel-graph/src/opt.rs:434` is its prerequisite). "Frozen at startup" applied to untrusted ops
 > and to new primitives — not to this trusted Fuel-driven fused-op path.
 
-**LazyTensor / Tensor** — the handle a user (or model code) holds. Calling `.matmul()`,
+**Tensor / Tensor** — the handle a user (or model code) holds. Calling `.matmul()`,
 `.softmax()`, etc. on it appends nodes to the graph and returns a new handle. It carries
 no data — only a reference to a node. (`fuel-core/src/lazy.rs`, `fuel-graph` `Tensor`.)
 
@@ -248,7 +248,7 @@ model. The eager-copy path is the current simplification.
 computing anything yet.
 
 **Today:** there is **no graph until the model's `forward` runs.** The first
-`LazyTensor::from_f32(...)` call mints a fresh `Graph` (`Arc::new(RwLock::new(Graph::new()))`,
+`Tensor::from_f32(...)` call mints a fresh `Graph` (`Arc::new(RwLock::new(Graph::new()))`,
 `fuel-graph/src/lib.rs:2260`). As the forward proceeds, each op (`embed.index_select`,
 `matmul`, `rope`, `softmax`, …) appends a node; weights are re-emitted as `Op::Const` nodes
 that reference their storage buffer (`apply_linear`, `lazy.rs:4502`). The result is the
@@ -360,7 +360,7 @@ path are **deleted**; `optimize_graph` runs once per realize.
 **What it is:** the boundary where the graph stops being IR and actually runs. This is the
 box that contains the work-item producer and the executor.
 
-**Entry** (`fuel-core`): `LazyTensor::realize_f32()` (`lazy.rs:1308`) → the **bridge**
+**Entry** (`fuel-core`): `Tensor::realize_f32()` (`lazy.rs:1308`) → the **bridge**
 (`pipelined_bridge.rs`). The bridge does the prep that execution needs:
 
 1. **Prep:** splice an `Op::Copy { target: Cpu }` node at each realize root (so the

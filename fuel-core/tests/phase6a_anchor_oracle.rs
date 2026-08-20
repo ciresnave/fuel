@@ -4,7 +4,7 @@
 //!
 //! Where `phase6b_cuda_anchor.rs` validates **CUDA executor vs reference**,
 //! this file validates **CPU executor vs reference** — the same lazy
-//! graphs realized via `LazyTensor::realize_f32()` (which goes through
+//! graphs realized via `Tensor::realize_f32()` (which goes through
 //! the `fuel-graph-cpu` executor with gemm-backed matmul + reference
 //! ops for everything else) must match the textbook reference.
 //!
@@ -18,7 +18,7 @@
 //! No feature gating, no skip-if-missing: this is a load-bearing CI
 //! gate that must run on every PR.
 
-use fuel_core::lazy::{LayerWeights, LazyTensor, LlamaWeights};
+use fuel_core::lazy::{LayerWeights, LlamaWeights, Tensor};
 use fuel_core::lazy_convnext::ConvNextModel;
 use fuel_core::lazy_llama2c::{Llama2cConfig, Llama2cModel};
 use fuel_ir::Shape;
@@ -28,7 +28,7 @@ use std::sync::Arc;
 /// reference oracle (`realize_f32_reference`). Tight tolerance — both are
 /// deterministic CPU code; differences are gemm sum-order drift only.
 ///
-/// The reference side uses [`LazyTensor::realize_f32_reference`] (cost-based
+/// The reference side uses [`Tensor::realize_f32_reference`] (cost-based
 /// cross-device placement suppressed — a genuine all-CPU realize on the CPU
 /// backend's bit-stable kernels). The `cpu` side is the ordinary production
 /// `realize_f32`. On a CPU-only host the two paths coincide; on a host with a
@@ -36,7 +36,7 @@ use std::sync::Arc;
 /// offload nodes) still matches the CPU oracle. Replaces the prior
 /// `realize_f32()`-vs-`realize_f32()` tautology and the retiring
 /// `fuel-reference-backend` textbook oracle.
-fn assert_cpu_oracle(t: &LazyTensor, atol: f32, rtol: f32) {
+fn assert_cpu_oracle(t: &Tensor, atol: f32, rtol: f32) {
     let reference = t.realize_f32_reference();
     let cpu = t.realize_f32();
     assert_eq!(reference.len(), cpu.len(), "length mismatch");
@@ -48,7 +48,7 @@ fn single_matmul_cpu_matches_reference() {
     let (m, k, n) = (32usize, 48, 24);
     let a_data: Vec<f32> = (0..(m * k)).map(|i| ((i as f32) * 1.3e-3).sin()).collect();
     let b_data: Vec<f32> = (0..(k * n)).map(|i| ((i as f32) * 1.7e-3).cos()).collect();
-    let a = LazyTensor::from_f32(a_data, Shape::from_dims(&[m, k]), &fuel_core::Device::cpu());
+    let a = Tensor::from_f32(a_data, Shape::from_dims(&[m, k]), &fuel_core::Device::cpu());
     let b = a.const_f32_like(b_data, Shape::from_dims(&[k, n]));
     let c = a.matmul(&b).unwrap();
     assert_cpu_oracle(&c, 1e-4, 1e-4);
@@ -65,7 +65,7 @@ fn dense_conv2d_cpu_matches_reference() {
     let w_data: Vec<f32> = (0..(cout * cin * k * k))
         .map(|i| ((i as f32) * 1.7e-3).cos())
         .collect();
-    let x = LazyTensor::from_f32(
+    let x = Tensor::from_f32(
         x_data,
         Shape::from_dims(&[n, cin, h, w_sz]),
         &fuel_core::Device::cpu(),
@@ -86,7 +86,7 @@ fn depthwise_conv2d_cpu_matches_reference() {
     let w_data: Vec<f32> = (0..(c * 1 * k * k))
         .map(|i| ((i as f32) * 1.7e-3).cos())
         .collect();
-    let x = LazyTensor::from_f32(
+    let x = Tensor::from_f32(
         x_data,
         Shape::from_dims(&[n, c, h, w_sz]),
         &fuel_core::Device::cpu(),
@@ -108,7 +108,7 @@ fn conv_transpose2d_cpu_matches_reference() {
     let w_data: Vec<f32> = (0..(cin * cout * k * k))
         .map(|i| ((i as f32) * 1.7e-3).cos())
         .collect();
-    let x = LazyTensor::from_f32(
+    let x = Tensor::from_f32(
         x_data,
         Shape::from_dims(&[n, cin, h, w_sz]),
         &fuel_core::Device::cpu(),
@@ -174,7 +174,7 @@ fn llama_2layer_cpu_matches_reference() {
         weights,
     };
     let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6, 7, 8];
-    let logits: LazyTensor = model.forward(&tokens, 0).unwrap();
+    let logits: Tensor = model.forward(&tokens, 0).unwrap();
     // Tighter tolerance than the CUDA equivalent (5e-3) since both
     // sides are CPU; only gemm-vs-textbook drift to absorb.
     assert_cpu_oracle(&logits, 5e-4, 5e-4);

@@ -26,7 +26,7 @@
 //!
 //! Forward-only, single image + single token sequence, F32.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::lazy_mixformer::{MixFormerConfig, MixFormerModel, MixFormerWeights};
 use crate::{Device, Result};
 use fuel_ir::Shape;
@@ -166,7 +166,7 @@ pub struct MoondreamModel {
 
 impl MoondreamModel {
     /// Run the full multimodal forward pass.
-    pub fn forward(&self, pixel_values: &LazyTensor, text_tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn forward(&self, pixel_values: &Tensor, text_tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         assert_eq!(
             cfg.projection.out_dim, cfg.text.hidden_size,
@@ -203,7 +203,7 @@ impl MoondreamModel {
         mf.forward_embeds(&combined, 0)
     }
 
-    fn vision_encode(&self, pixel_values: &LazyTensor) -> Result<LazyTensor> {
+    fn vision_encode(&self, pixel_values: &Tensor) -> Result<Tensor> {
         let cfg = &self.config.vision;
         let weights = &self.weights.vision;
         let dims = pixel_values.shape();
@@ -274,11 +274,7 @@ impl MoondreamModel {
         )?)
     }
 
-    fn apply_block(
-        &self,
-        x: &LazyTensor,
-        block: &MoondreamVisionBlockWeights,
-    ) -> Result<LazyTensor> {
+    fn apply_block(&self, x: &Tensor, block: &MoondreamVisionBlockWeights) -> Result<Tensor> {
         let cfg = &self.config.vision;
         let dims = x.shape();
         let dims = dims.dims();
@@ -336,7 +332,7 @@ impl MoondreamModel {
         h1.add(&mlp_out)
     }
 
-    fn apply_projection(&self, vision_out: &LazyTensor) -> Result<LazyTensor> {
+    fn apply_projection(&self, vision_out: &Tensor) -> Result<Tensor> {
         let cfg = &self.config.projection;
         let weights = &self.weights.projection;
         let fc1 = weights
@@ -359,7 +355,7 @@ impl MoondreamModel {
     }
 }
 
-fn activate(x: &LazyTensor, kind: MoondreamActivation) -> LazyTensor {
+fn activate(x: &Tensor, kind: MoondreamActivation) -> Tensor {
     match kind {
         MoondreamActivation::GeluPytorchTanh => x.gelu(),
         MoondreamActivation::Gelu => x.gelu_erf(),
@@ -527,10 +523,10 @@ mod tests {
         }
     }
 
-    fn tiny_image(cfg: &MoondreamVisionConfig) -> LazyTensor {
+    fn tiny_image(cfg: &MoondreamVisionConfig) -> Tensor {
         let n_pix = 1 * cfg.num_channels * cfg.image_size * cfg.image_size;
         let img_data: Vec<f32> = (0..n_pix).map(|i| (i as f32 / n_pix as f32)).collect();
-        LazyTensor::from_f32(
+        Tensor::from_f32(
             Arc::from(img_data),
             Shape::from_dims(&[1, cfg.num_channels, cfg.image_size, cfg.image_size]),
             &Device::cpu(),

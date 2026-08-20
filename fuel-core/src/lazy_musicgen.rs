@@ -38,7 +38,7 @@
 //! [`MusicGenModel::forward_with_encoder_states`].
 
 use crate::lazy::{
-    LazyTensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix,
+    Tensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix,
     load_transposed_matrix_preserve_dtype,
 };
 use crate::{Device, Result};
@@ -171,7 +171,7 @@ impl MusicGenModel {
         text_tokens: &[u32],
         audio_tokens: &[u32],
         start_pos: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         assert!(!text_tokens.is_empty(), "text_tokens must be non-empty");
         assert!(!audio_tokens.is_empty(), "audio_tokens must be non-empty");
@@ -187,7 +187,7 @@ impl MusicGenModel {
         // Build a graph anchor: the first codebook embedding table.
         // All other constants are anchored on the same graph through
         // `const_*_like` to keep cross-attention happy.
-        let anchor = LazyTensor::from_f32(
+        let anchor = Tensor::from_f32(
             self.weights.embed_tokens[0].clone(),
             Shape::from_dims(&[cfg.vocab_size + 1, cfg.hidden_size]),
             &Device::cpu(),
@@ -205,9 +205,9 @@ impl MusicGenModel {
     pub fn forward_with_encoder_states(
         &self,
         audio_tokens: &[u32],
-        encoder_states: &LazyTensor,
+        encoder_states: &Tensor,
         start_pos: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         assert!(!audio_tokens.is_empty(), "audio_tokens must be non-empty");
         let dims = encoder_states.shape();
@@ -240,7 +240,7 @@ impl MusicGenModel {
         )
     }
 
-    fn encode_text_adapter(&self, anchor: &LazyTensor, text_tokens: &[u32]) -> Result<LazyTensor> {
+    fn encode_text_adapter(&self, anchor: &Tensor, text_tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         let text_len = text_tokens.len();
         let embed = anchor.const_f32_like(
@@ -255,12 +255,12 @@ impl MusicGenModel {
 
     fn decode(
         &self,
-        anchor: &LazyTensor,
+        anchor: &Tensor,
         audio_tokens: &[u32],
         seq_len: usize,
-        encoder_states: &LazyTensor,
+        encoder_states: &Tensor,
         start_pos: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let n_cb = cfg.num_codebooks;
@@ -275,7 +275,7 @@ impl MusicGenModel {
         // Sum multi-codebook embeddings: for each codebook `i`,
         // look up `audio_tokens[i*seq..i*seq+seq]` in
         // `embed_tokens[i]`, then sum.
-        let mut summed: Option<LazyTensor> = None;
+        let mut summed: Option<Tensor> = None;
         for cb in 0..n_cb {
             let slice = &audio_tokens[cb * seq_len..(cb + 1) * seq_len];
             let table = anchor.const_f32_like(
@@ -333,24 +333,24 @@ impl MusicGenModel {
 
         // Multi-codebook lm_heads, stacked along a new dim → reshape
         // to `(num_codebooks, seq_len, vocab_size)` (batch == 1).
-        let mut per_codebook: Vec<LazyTensor> = Vec::with_capacity(n_cb);
+        let mut per_codebook: Vec<Tensor> = Vec::with_capacity(n_cb);
         for head in &weights.lm_heads {
             let logits = head.apply_linear(&h, cfg.hidden_size, cfg.vocab_size)?;
             // `logits` has shape `(1, seq_len, vocab_size)`.
             per_codebook.push(logits.squeeze(0_usize)?);
         }
-        let refs: Vec<&LazyTensor> = per_codebook.iter().collect();
-        LazyTensor::stack(&refs, 0_usize)
+        let refs: Vec<&Tensor> = per_codebook.iter().collect();
+        Tensor::stack(&refs, 0_usize)
             .map_err(|e| crate::Error::Msg(format!("stack lm_heads: {e}")).bt())
     }
 
     fn apply_decoder_layer(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &MusicGenDecoderLayerWeights,
-        encoder_states: &LazyTensor,
-        causal_mask: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        encoder_states: &Tensor,
+        causal_mask: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
 
         // ---- Self-attention sub-block (pre-LN, residual outside) ---
@@ -417,13 +417,13 @@ impl MusicGenModel {
     /// hidden dim).
     fn attention(
         &self,
-        q_src: &LazyTensor,
-        kv_src: &LazyTensor,
+        q_src: &Tensor,
+        kv_src: &Tensor,
         w: &MusicGenAttentionWeights,
         q_in_dim: usize,
         kv_in_dim: usize,
-        attn_mask: Option<&LazyTensor>,
-    ) -> Result<LazyTensor> {
+        attn_mask: Option<&Tensor>,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let inner = cfg.hidden_size;
         let head_dim = cfg.head_dim();
@@ -837,7 +837,7 @@ mod tests {
             .realize_f32();
 
         // Hand-build encoder states the same way the adapter does.
-        let anchor = LazyTensor::from_f32(
+        let anchor = Tensor::from_f32(
             model.weights.embed_tokens[0].clone(),
             Shape::from_dims(&[cfg.vocab_size + 1, cfg.hidden_size]),
             &Device::cpu(),

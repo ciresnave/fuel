@@ -7,7 +7,7 @@
 > preserved verbatim except for this banner and the
 > reconciliation note. Sessions 1-6 (and original gaps 1-6, 8, 10-13)
 > have landed: `8eefe4d1` (Session 1 — `realize_f64/_bf16/_f16` onto
-> the pipelined bridge, gap 8/13), `8146d75a` (Session 2 — LazyRealizer
+> the pipelined bridge, gap 8/13), `8146d75a` (Session 2 — Realizer
 > onto the bridge, gap 11), `aa156cd6` (Session 3 — delete the
 > `judge::cached()` Router branch, gap 12a), `0587aab5` (Session 4 —
 > retire the `*_gpu_on` generate family + `KVCache<B>`), `7d4e5e8c`
@@ -66,14 +66,14 @@ smaller set, clustered below.
   disposition + Router rewiring) plus one narrow technical gap
   (`Op::Move` has no executor arm).
 - **The legacy `GraphExecutor<B>` survives in 4 production seams**
-  (Judge profiling via `factories::LazyRealizer`; the
-  `judge::cached()` Router branch inside `LazyTensor::realize_f32`;
+  (Judge profiling via `factories::Realizer`; the
+  `judge::cached()` Router branch inside `Tensor::realize_f32`;
   the `*_gpu_on` generate/spec-decode family on LlamaModel/PhiModel/
   Llama2c; `train.rs`) **plus test/example callers**.
 - **A third evaluator exists** that the original audit didn't track:
   `fuel-graph-cpu::realize_any` (typed CPU recursive evaluator,
   `fuel-graph-cpu/src/lib.rs`, 2798 LOC). It still backs
-  `LazyTensor::realize_f64/_bf16/_f16` (`fuel-core/src/lazy.rs:1316-1328`)
+  `Tensor::realize_f64/_bf16/_f16` (`fuel-core/src/lazy.rs:1316-1328`)
   and the `GraphBackend` CpuBackend impl. Its `AnyTensor` enum covers
   only F32/F64/BF16/F16/U32 — **no U8** — which is consistent with
   the standing `lazy_encodec` "legacy-executor U8 gap" failure label.
@@ -106,8 +106,8 @@ smaller set, clustered below.
 | 8 | Typed `realize_f32` etc. | **partially-closed** | f32 entries migrated (Phase E.2, `32d712f7`): `realize_f32`/`realize_f32_cuda`/`realize_many_f32{,_cuda}` + `realize_u32` (`lazy.rs:880`) go through `pipelined_bridge::realize_one_as::<T>`. **But `realize_f64/_bf16/_f16` still call `fuel_graph_cpu::realize_*`** (`lazy.rs:1316-1328`) — the third evaluator, which panics on dtype mismatch and lacks U8. | ~0.5 session: switch the three entries to `realize_one_as::<T>` (already generic), delete the AnyTensor dependence from the public API. Likely also structurally fixes the `lazy_encodec` U8 class of failure. |
 | 9 | Eval-node panic context | **partially-closed (acceptable shape)** | Compile/dispatch errors carry NodeId + op context as typed `Result`s (`pipelined.rs:1008, 1057, 1102, 1223, 1334, 3046`) — consistent with the no-panics policy, *better* than the legacy panic-prefix wrapper. Kernel-internal panics still surface raw (no catch_unwind by design). | Optional polish only; fold node-context into kernel-Err wrapping opportunistically. Not a port blocker. |
 | 10 | Placement validation | **closed-by-supersession** | Explicit `validate_placements` exists only on the legacy executor (`fuel-graph-executor/src/lib.rs:773`). The pipelined path validates stronger and earlier: `compile_plan` resolves per-node alternatives at plan time and errors typed when no binding exists; per-node `target_backend` checks at `pipelined.rs:1334` etc. Matches "validate at graph-build time". | — |
-| 11 | `GraphBackend` trait disposition | **still-open — the load-bearing decision** | Trait: 33 methods (`fuel-graph-executor/src/lib.rs:130-562`). 6 impls survive: CpuBackend (`fuel-graph-cpu/src/backend.rs:13`, 611 LOC file), CudaBackend (`fuel-cuda-backend/src/backend.rs:20`, 242 LOC), VulkanBackend (`fuel-vulkan-backend/src/lib.rs:10093`), MklBackend (`fuel-mkl-cpu-backend/src/lib.rs:154`), AoclBackend (`fuel-aocl-cpu-backend/src/lib.rs:101`), Router (`fuel-graph-router/src/lib.rs:979`). The 2026-05-19 default was "retain as Judge profiling surface" — and that is exactly what holds it in place today: the Judge measures through `factories::factory_for → LazyRealizer → GraphExecutor<B>` (`fuel-core/src/judge/mod.rs:736-758`, `factories.rs:45-50`). **The retain rationale has expired**: the pipelined path can now realize on CPU/CUDA/Vulkan uniformly, the Judge data model already carries `kernel_source` per alternative (commit `1ba99650`), and MKL/AOCL are kernel_source extensions of Cpu (commit `92c0251b`) that the trait-shaped Judge can no longer even distinguish properly. **Recommend: retire.** | ~1 session to re-point Judge/probe onto `pipelined_bridge` (see Session 2 below); trait deletion itself rides Phase F/H. |
-| 12 | Router rewiring | **still-open — includes a live production branch** | `impl GraphBackend for Router` (`fuel-graph-router/src/lib.rs:979`) + `ResidencyEvictionRule`. Most surprising survivor: `LazyTensor::realize_f32` has a **production branch** — when `crate::judge::cached()` returns a dispatch table, it constructs `GraphExecutor::new(router)` and realizes through the legacy executor (`fuel-core/src/lazy.rs:1292-1303`). Every user who has run `populate_dispatch_table` gets the legacy executor on the hottest API in the crate. The picker (compile_plan + JudgeOracle Layer-2, commit `899d725e`/`130d2db2`) already consumes Judge data on the pipelined path, so this branch is now a *worse* duplicate of what the picker does. | ~1 session to delete the branch (Session 3); Router crate disposition + cross_device tests ride Phase G (Session 6). |
+| 11 | `GraphBackend` trait disposition | **still-open — the load-bearing decision** | Trait: 33 methods (`fuel-graph-executor/src/lib.rs:130-562`). 6 impls survive: CpuBackend (`fuel-graph-cpu/src/backend.rs:13`, 611 LOC file), CudaBackend (`fuel-cuda-backend/src/backend.rs:20`, 242 LOC), VulkanBackend (`fuel-vulkan-backend/src/lib.rs:10093`), MklBackend (`fuel-mkl-cpu-backend/src/lib.rs:154`), AoclBackend (`fuel-aocl-cpu-backend/src/lib.rs:101`), Router (`fuel-graph-router/src/lib.rs:979`). The 2026-05-19 default was "retain as Judge profiling surface" — and that is exactly what holds it in place today: the Judge measures through `factories::factory_for → Realizer → GraphExecutor<B>` (`fuel-core/src/judge/mod.rs:736-758`, `factories.rs:45-50`). **The retain rationale has expired**: the pipelined path can now realize on CPU/CUDA/Vulkan uniformly, the Judge data model already carries `kernel_source` per alternative (commit `1ba99650`), and MKL/AOCL are kernel_source extensions of Cpu (commit `92c0251b`) that the trait-shaped Judge can no longer even distinguish properly. **Recommend: retire.** | ~1 session to re-point Judge/probe onto `pipelined_bridge` (see Session 2 below); trait deletion itself rides Phase F/H. |
+| 12 | Router rewiring | **still-open — includes a live production branch** | `impl GraphBackend for Router` (`fuel-graph-router/src/lib.rs:979`) + `ResidencyEvictionRule`. Most surprising survivor: `Tensor::realize_f32` has a **production branch** — when `crate::judge::cached()` returns a dispatch table, it constructs `GraphExecutor::new(router)` and realizes through the legacy executor (`fuel-core/src/lazy.rs:1292-1303`). Every user who has run `populate_dispatch_table` gets the legacy executor on the hottest API in the crate. The picker (compile_plan + JudgeOracle Layer-2, commit `899d725e`/`130d2db2`) already consumes Judge data on the pipelined path, so this branch is now a *worse* duplicate of what the picker does. | ~1 session to delete the branch (Session 3); Router crate disposition + cross_device tests ride Phase G (Session 6). |
 | 13 | `Op::Move` executor dispatch (deferred at Phase B) | **still-open** | `WorkItemKind` has no Move arm; `Op::Move` appears in `pipelined.rs` only as an exclusion from the InplaceKernel path (`pipelined.rs:995`) and `op_to_op_kind` has no mapping → a graph containing `Op::Move` fails to compile on the pipelined executor. Only emitter: `ResidencyEvictionRule` (fuel-graph-router). | ~0.5 session: reuse `WorkItemKind::Copy` machinery (Move = Copy to target + destructive release of source — both halves already exist). Prerequisite for migrating residency eviction in Session 6. |
 
 ### Closures since the audit that exceeded its scope
@@ -196,7 +196,7 @@ mutation, BatchNorm EMA) — the last consumer of the eager
 `BackpropOp` tape.
 
 **Tier 4 — Judge/factories + Router (the two open decisions):**
-- `fuel-core/src/factories.rs` (8): `LazyRealizer` =
+- `fuel-core/src/factories.rs` (8): `Realizer` =
   `GraphExecutor<B>` adapter consumed by `judge/mod.rs:736-778` and
   `probe.rs:63`.
 - `fuel-core/src/transfer_cost.rs` (1):
@@ -266,7 +266,7 @@ Vulkan oracle tests, FA2 tests).
    removes the third evaluator from the public API and likely
    structurally fixes the U8-class failures.
 2. **Session 2 — Judge/probe re-point (decides gap 11).** Rebuild
-   `factories::LazyRealizer` on `pipelined_bridge` + `Device`
+   `factories::Realizer` on `pipelined_bridge` + `Device`
    (CPU/CUDA/Vulkan); migrate `transfer_cost.rs`; delete
    `realize_f32_vulkan`'s legacy signature. This expires the only
    architectural reason to retain `GraphBackend`, and gives the
@@ -274,7 +274,7 @@ Vulkan oracle tests, FA2 tests).
    path production uses (fixes the structural half of the
    probe/judge Reference-staleness test failures).
 3. **Session 3 — delete the `judge::cached()` Router branch** in
-   `LazyTensor::realize_f32` (gap 12a). The picker + JudgeOracle
+   `Tensor::realize_f32` (gap 12a). The picker + JudgeOracle
    Layer-2 already consume the same data on the pipelined path;
    updating-the-expectation is the fix. After this,
    PipelinedExecutor is THE executor on every realize entry point.

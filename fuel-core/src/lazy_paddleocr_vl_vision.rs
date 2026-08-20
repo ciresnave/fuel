@@ -51,7 +51,7 @@
 //! not a rewrite.
 
 use crate::lazy::{
-    LazyTensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
+    Tensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
 };
 use crate::{Device, Result};
 use fuel_ir::Shape;
@@ -170,7 +170,7 @@ impl PaddleOcrVlVisionModel {
     /// Output shape is
     /// `((num_tiles * num_patches_per_tile) / spatial_merge_size^2,
     ///   text_hidden_size)`.
-    pub fn forward(&self, pixels: &LazyTensor, tile_grid: (usize, usize)) -> Result<LazyTensor> {
+    pub fn forward(&self, pixels: &Tensor, tile_grid: (usize, usize)) -> Result<Tensor> {
         let cfg = &self.config;
         let (rows, cols) = tile_grid;
         let num_tiles = rows * cols;
@@ -235,7 +235,7 @@ impl PaddleOcrVlVisionModel {
 
         // Encode each tile independently and collect the post-merged
         // projections, then concatenate them in row-major tile order.
-        let mut tile_outputs: Vec<LazyTensor> = Vec::with_capacity(num_tiles);
+        let mut tile_outputs: Vec<Tensor> = Vec::with_capacity(num_tiles);
         for ti in 0..num_tiles {
             // Slice out the tile (1, c, h, w).
             let tile = pixels.slice(0_usize, ti, 1)?;
@@ -285,11 +285,11 @@ impl PaddleOcrVlVisionModel {
 
     fn apply_block(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         block: &PaddleOcrVlVisionBlockWeights,
-        cos: &LazyTensor,
-        sin: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        cos: &Tensor,
+        sin: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let h = cfg.hidden_size;
         let n_heads = cfg.num_attention_heads;
@@ -357,7 +357,7 @@ impl PaddleOcrVlVisionModel {
         h1.add(&fc2)
     }
 
-    fn apply_projector(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
+    fn apply_projector(&self, h_norm: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights.projector;
         let hidden = cfg.hidden_size;
@@ -840,7 +840,7 @@ pub struct PaddleOcrVlNaVitWeights {
 /// LFU cache for the bilinearly interpolated position embedding.
 /// Keyed on `(h_patches, w_patches)`. Values are the host-side
 /// interpolated tensor data (`Arc<[f32]>`) so that re-hits avoid
-/// recomputing the bilinear stencil; the LazyTensor side rebuilds
+/// recomputing the bilinear stencil; the Tensor side rebuilds
 /// the const node fresh against the active graph each call.
 #[derive(Debug, Default)]
 struct PosEmbedLfuCache {
@@ -962,7 +962,7 @@ impl PaddleOcrVlNaVitModel {
     /// Returns a `(merged_patches, text_hidden_size)` tensor where
     /// `merged_patches = (H/patch_size * W/patch_size) /
     /// spatial_merge_size^2`.
-    pub fn forward(&self, pixel_values: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, pixel_values: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let dims = pixel_values.shape();
         let dims = dims.dims().to_vec();
@@ -1080,11 +1080,11 @@ impl PaddleOcrVlNaVitModel {
 
     fn apply_block(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         block: &PaddleOcrVlVisionBlockWeights,
-        cos: &LazyTensor,
-        sin: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        cos: &Tensor,
+        sin: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let h = cfg.hidden_size;
         let n_heads = cfg.num_attention_heads;
@@ -1153,10 +1153,10 @@ impl PaddleOcrVlNaVitModel {
 
     fn apply_projector(
         &self,
-        h_norm: &LazyTensor,
+        h_norm: &Tensor,
         h_patches: usize,
         w_patches: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights.projector;
         let hidden = cfg.hidden_size;
@@ -1562,10 +1562,10 @@ mod tests {
         }
     }
 
-    fn tiny_pixels(cfg: &PaddleOcrVlVisionConfig, num_tiles: usize) -> LazyTensor {
+    fn tiny_pixels(cfg: &PaddleOcrVlVisionConfig, num_tiles: usize) -> Tensor {
         let n_pix = num_tiles * cfg.num_channels * cfg.image_size * cfg.image_size;
         let data: Vec<f32> = (0..n_pix).map(|i| (i as f32 / n_pix as f32)).collect();
-        LazyTensor::from_f32(
+        Tensor::from_f32(
             Arc::from(data),
             Shape::from_dims(&[num_tiles, cfg.num_channels, cfg.image_size, cfg.image_size]),
             &Device::cpu(),
@@ -2000,10 +2000,10 @@ mod tests {
             }
         }
 
-        fn navit_pixels(cfg: &PaddleOcrVlNaVitConfig, h: usize, w: usize) -> LazyTensor {
+        fn navit_pixels(cfg: &PaddleOcrVlNaVitConfig, h: usize, w: usize) -> Tensor {
             let n_pix = cfg.num_channels * h * w;
             let data: Vec<f32> = (0..n_pix).map(|i| i as f32 / n_pix as f32).collect();
-            LazyTensor::from_f32(
+            Tensor::from_f32(
                 Arc::from(data),
                 Shape::from_dims(&[1, cfg.num_channels, h, w]),
                 &Device::cpu(),
@@ -2165,7 +2165,7 @@ mod tests {
             // tensor of that shape via from_f32 and watch forward panic.
             let n_pix = cfg.num_channels * 13 * 12;
             let data: Vec<f32> = (0..n_pix).map(|i| i as f32).collect();
-            let pixels = LazyTensor::from_f32(
+            let pixels = Tensor::from_f32(
                 Arc::from(data),
                 Shape::from_dims(&[1, cfg.num_channels, 13, 12]),
                 &Device::cpu(),
@@ -2183,7 +2183,7 @@ mod tests {
             let cfg = model.config.clone();
             let n_pix = cfg.num_channels * 12 * 13;
             let data: Vec<f32> = (0..n_pix).map(|i| i as f32).collect();
-            let pixels = LazyTensor::from_f32(
+            let pixels = Tensor::from_f32(
                 Arc::from(data),
                 Shape::from_dims(&[1, cfg.num_channels, 12, 13]),
                 &Device::cpu(),

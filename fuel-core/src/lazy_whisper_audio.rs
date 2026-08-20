@@ -4,7 +4,7 @@
 //! Ports `fuel_transformers::models::audio::whisper::audio` to a
 //! single-threaded, f32-only, lazy-graph-free utility. The output of
 //! [`pcm_to_mel`] is a flat `Vec<f32>` of shape `(n_mels, n_frames)`
-//! that the caller wraps with `LazyTensor::from_f32` before feeding
+//! that the caller wraps with `Tensor::from_f32` before feeding
 //! the Whisper encoder.
 //!
 //! The mel filterbank is **not** embedded here: callers pass it as a

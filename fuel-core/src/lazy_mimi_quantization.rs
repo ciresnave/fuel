@@ -36,7 +36,7 @@
 //! v1 scope: F32, batch == 1, forward-only inference.
 
 use crate::Result;
-use crate::lazy::LazyTensor;
+use crate::lazy::Tensor;
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -92,7 +92,7 @@ pub struct SplitResidualVectorQuantizerWeights {
 
 /// `EuclideanCodebook::encode`: takes `(M, codebook_dim)` and returns
 /// `(M,)` U32 nearest-codebook indices using the matmul-distance trick.
-fn codebook_encode(x: &LazyTensor, cb: &EuclideanCodebookWeights) -> Result<LazyTensor> {
+fn codebook_encode(x: &Tensor, cb: &EuclideanCodebookWeights) -> Result<Tensor> {
     let dims = x.shape();
     let dims = dims.dims();
     let m = dims[0];
@@ -113,7 +113,7 @@ fn codebook_encode(x: &LazyTensor, cb: &EuclideanCodebookWeights) -> Result<Lazy
 
 /// `EuclideanCodebook::decode`: takes flat `(M,)` U32 indices and
 /// returns `(M, codebook_dim)` selected embeddings.
-fn codebook_decode(codes: &LazyTensor, cb: &EuclideanCodebookWeights) -> Result<LazyTensor> {
+fn codebook_decode(codes: &Tensor, cb: &EuclideanCodebookWeights) -> Result<Tensor> {
     let embedding = codes.const_f32_like(
         Arc::clone(&cb.embedding),
         Shape::from_dims(&[cb.codebook_size, cb.codebook_dim]),
@@ -122,12 +122,12 @@ fn codebook_decode(codes: &LazyTensor, cb: &EuclideanCodebookWeights) -> Result<
 }
 
 fn apply_linear_opt(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &Option<Arc<[f32]>>,
     b: &Option<Arc<[f32]>>,
     in_features: usize,
     out_features: usize,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     match w {
         None => Ok(x.clone()),
         Some(w_arc) => {
@@ -153,11 +153,11 @@ fn apply_linear_opt(
 }
 
 fn apply_conv1d_1x1_opt(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &Option<Arc<[f32]>>,
     in_channels: usize,
     out_channels: usize,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     match w {
         None => Ok(x.clone()),
         Some(w_arc) => {
@@ -171,7 +171,7 @@ fn apply_conv1d_1x1_opt(
 }
 
 /// `VectorQuantization::encode` — input `(B, D, T)` → codes `(B, T)`.
-fn vq_encode(xs: &LazyTensor, w: &VectorQuantizationWeights) -> Result<LazyTensor> {
+fn vq_encode(xs: &Tensor, w: &VectorQuantizationWeights) -> Result<Tensor> {
     let dims = xs.shape();
     let dims = dims.dims();
     let b = dims[0];
@@ -194,7 +194,7 @@ fn vq_encode(xs: &LazyTensor, w: &VectorQuantizationWeights) -> Result<LazyTenso
 }
 
 /// `VectorQuantization::decode` — codes `(B, T)` → `(B, D, T)`.
-fn vq_decode(codes: &LazyTensor, w: &VectorQuantizationWeights) -> Result<LazyTensor> {
+fn vq_decode(codes: &Tensor, w: &VectorQuantizationWeights) -> Result<Tensor> {
     let dims = codes.shape();
     let dims = dims.dims();
     let b = dims[0];
@@ -216,7 +216,7 @@ fn vq_decode(codes: &LazyTensor, w: &VectorQuantizationWeights) -> Result<LazyTe
 /// `ResidualVectorQuantization::encode` — input `(B, D, T)` →
 /// codes `(n_q, B, T)`. The encoder runs each VQ on the residual
 /// of the previous step.
-fn rvq_encode(xs: &LazyTensor, w: &ResidualVectorQuantizationWeights) -> Result<LazyTensor> {
+fn rvq_encode(xs: &Tensor, w: &ResidualVectorQuantizationWeights) -> Result<Tensor> {
     let mut residual = xs.clone();
     let mut codes_per_layer = Vec::with_capacity(w.layers.len());
     for layer in &w.layers {
@@ -226,7 +226,7 @@ fn rvq_encode(xs: &LazyTensor, w: &ResidualVectorQuantizationWeights) -> Result<
         codes_per_layer.push(indices);
     }
     // Stack along a fresh leading axis.
-    let mut stacked: Option<LazyTensor> = None;
+    let mut stacked: Option<Tensor> = None;
     for c in codes_per_layer {
         let dims = c.shape().dims().to_vec();
         let mut new_dims = vec![1_usize];
@@ -242,7 +242,7 @@ fn rvq_encode(xs: &LazyTensor, w: &ResidualVectorQuantizationWeights) -> Result<
 
 /// `ResidualVectorQuantization::decode` — input codes `(n_q, B, T)`
 /// → quantized features `(B, D, T)`. Sums per-layer reconstructions.
-fn rvq_decode(codes: &LazyTensor, w: &ResidualVectorQuantizationWeights) -> Result<LazyTensor> {
+fn rvq_decode(codes: &Tensor, w: &ResidualVectorQuantizationWeights) -> Result<Tensor> {
     assert!(!w.layers.is_empty(), "rvq_decode: empty layers");
     let dims = codes.shape();
     let dims = dims.dims();
@@ -253,7 +253,7 @@ fn rvq_decode(codes: &LazyTensor, w: &ResidualVectorQuantizationWeights) -> Resu
         dims[0],
         w.layers.len()
     );
-    let mut accum: Option<LazyTensor> = None;
+    let mut accum: Option<Tensor> = None;
     for (i, layer) in w.layers.iter().enumerate() {
         // Slice (1, B, T) and drop the leading dim.
         let slice = codes
@@ -270,10 +270,7 @@ fn rvq_decode(codes: &LazyTensor, w: &ResidualVectorQuantizationWeights) -> Resu
 
 /// `ResidualVectorQuantizer::encode` — input `(B, input_dim, T)` →
 /// codes `(B, n_q, T)`.
-pub fn rvq_quantizer_encode(
-    xs: &LazyTensor,
-    w: &ResidualVectorQuantizerWeights,
-) -> Result<LazyTensor> {
+pub fn rvq_quantizer_encode(xs: &Tensor, w: &ResidualVectorQuantizerWeights) -> Result<Tensor> {
     let projected = apply_conv1d_1x1_opt(xs, &w.input_proj_w, w.input_dim, w.dim)?;
     let stacked = rvq_encode(&projected, &w.vq)?;
     // (n_q, B, T) → (B, n_q, T)
@@ -282,10 +279,7 @@ pub fn rvq_quantizer_encode(
 
 /// `ResidualVectorQuantizer::decode` — input codes `(B, n_q, T)` →
 /// reconstructed features `(B, output_dim, T)`.
-pub fn rvq_quantizer_decode(
-    codes: &LazyTensor,
-    w: &ResidualVectorQuantizerWeights,
-) -> Result<LazyTensor> {
+pub fn rvq_quantizer_decode(codes: &Tensor, w: &ResidualVectorQuantizerWeights) -> Result<Tensor> {
     // (B, n_q, T) → (n_q, B, T)
     let codes = codes.permute([1, 0, 2_usize])?;
     let quantized = rvq_decode(&codes, &w.vq)?;
@@ -296,10 +290,7 @@ pub fn rvq_quantizer_decode(
 /// through both the semantic (1-deep) and acoustic (n_q-1 deep) RVQs
 /// **independently**, concatenating along the n_q axis. Returns
 /// codes shape `(B, n_q, T)`.
-pub fn split_rvq_encode(
-    xs: &LazyTensor,
-    w: &SplitResidualVectorQuantizerWeights,
-) -> Result<LazyTensor> {
+pub fn split_rvq_encode(xs: &Tensor, w: &SplitResidualVectorQuantizerWeights) -> Result<Tensor> {
     let semantic = rvq_quantizer_encode(xs, &w.rvq_first)?;
     if w.n_q > 1 {
         let acoustic = rvq_quantizer_encode(xs, &w.rvq_rest)?;
@@ -311,10 +302,7 @@ pub fn split_rvq_encode(
 
 /// `SplitResidualVectorQuantizer::decode` — sums semantic and
 /// acoustic reconstructions. Returns `(B, output_dim, T)`.
-pub fn split_rvq_decode(
-    codes: &LazyTensor,
-    w: &SplitResidualVectorQuantizerWeights,
-) -> Result<LazyTensor> {
+pub fn split_rvq_decode(codes: &Tensor, w: &SplitResidualVectorQuantizerWeights) -> Result<Tensor> {
     let dims = codes.shape();
     let dims = dims.dims();
     let b = dims[0];
@@ -613,7 +601,7 @@ mod tests {
         let x_data = vec![
             0.1_f32, 0.9, 0.1, 0.0, 0.0, 0.0, 1.1, 0.0, 1.2, 0.1, 0.0, 0.0,
         ];
-        let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[3, dim]), &Device::cpu());
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[3, dim]), &Device::cpu());
         let codes = codebook_encode(&x, &cb).unwrap().realize_u32();
         assert_eq!(codes.as_slice(), &[1, 2, 0]);
     }
@@ -629,7 +617,7 @@ mod tests {
             codebook_size: cs,
             codebook_dim: dim,
         };
-        let idx = LazyTensor::from_u32(vec![2_u32, 0, 3], Shape::from_dims(&[3]), &Device::cpu());
+        let idx = Tensor::from_u32(vec![2_u32, 0, 3], Shape::from_dims(&[3]), &Device::cpu());
         let out = codebook_decode(&idx, &cb).unwrap().realize_f32();
         let want = vec![6.0_f32, 7.0, 8.0, 0.0, 1.0, 2.0, 9.0, 10.0, 11.0];
         for (a, b) in out.iter().zip(want.iter()) {
@@ -645,7 +633,7 @@ mod tests {
         let b = 1;
         let t = 5;
         let w = tiny_vq(dim, cs, &mut nb);
-        let xs = LazyTensor::from_f32(
+        let xs = Tensor::from_f32(
             (0..(b * dim * t))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),
@@ -671,7 +659,7 @@ mod tests {
         let b = 1;
         let t = 5;
         let w = tiny_rvq(n_q, dim, cs, &mut nb);
-        let xs = LazyTensor::from_f32(
+        let xs = Tensor::from_f32(
             (0..(b * dim * t))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),
@@ -697,7 +685,7 @@ mod tests {
             rvq_rest: tiny_quantizer(n_q - 1, dim, cs, &mut nb),
             n_q,
         };
-        let xs = LazyTensor::from_f32(
+        let xs = Tensor::from_f32(
             (0..(b * dim * t))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),

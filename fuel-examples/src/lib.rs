@@ -16,7 +16,7 @@ use fuel::{Device, Result};
 /// B6 retired the eager `Tensor`, and image decode/encode never needed one:
 /// these helpers only ever used it as a shaped byte buffer plus a `permute`.
 /// Callers that want a tensor build one themselves — for the lazy stack that
-/// is `LazyTensor::from_vec(img.data, (3, img.height, img.width), dev)`.
+/// is `Tensor::from_vec(img.data, (3, img.height, img.width), dev)`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HostImage {
     /// `3 * height * width` bytes, laid out channel-major.

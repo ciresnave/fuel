@@ -86,5 +86,5 @@ pub use utils::{Map1, Map1Any, Map2, Map2Any, Map2InPlace, Map3, S};
 // live constructor — production CUDA realize has run entirely through
 // `fuel-dispatch`'s PipelinedExecutor since executor-unification. The
 // per-op correctness oracle is now CPU-backend-vs-CUDA pairwise consensus
-// (`LazyTensor::realize_f32_reference` + `test_utils::assert_cuda_matches_reference`).
+// (`Tensor::realize_f32_reference` + `test_utils::assert_cuda_matches_reference`).
 // The FA2 launcher survives in `crate::flash_attn::launch`.

@@ -60,7 +60,7 @@
 //! separately if a caller wants feature maps for downstream
 //! heads.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -176,7 +176,7 @@ pub struct ConvMixerModel {
 impl ConvMixerModel {
     /// Run a forward pass on `image` of shape `(1, 3, H, W)`.
     /// Returns class logits `(1, nclasses)`.
-    pub fn forward(&self, image: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, image: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let x = self.run_backbone(image)?;
         let pooled = x.global_avg_pool_2d()?;
@@ -195,11 +195,11 @@ impl ConvMixerModel {
     /// and return the channels-first feature map
     /// `(1, dim, H/patch, W/patch)` BEFORE global mean pool
     /// and the linear classifier.
-    pub fn forward_features(&self, image: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward_features(&self, image: &Tensor) -> Result<Tensor> {
         self.run_backbone(image)
     }
 
-    fn run_backbone(&self, image: &LazyTensor) -> Result<LazyTensor> {
+    fn run_backbone(&self, image: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let dims = image.shape();
         let dims = dims.dims();
@@ -230,7 +230,7 @@ impl ConvMixerModel {
         Ok(x)
     }
 
-    fn apply_block(&self, x: &LazyTensor, block: &ConvMixerBlockWeights) -> Result<LazyTensor> {
+    fn apply_block(&self, x: &Tensor, block: &ConvMixerBlockWeights) -> Result<Tensor> {
         let cfg = &self.config;
         let pad = (cfg.kernel_size - 1) / 2;
         // Depthwise: dim → dim, kernel=k, groups=dim, padding=pad.
@@ -255,7 +255,7 @@ impl ConvMixerModel {
 
     /// Apply fused-affine BatchNorm `y = x * w[c] + b[c]` across
     /// the channel dim of a `(N, C, H, W)` tensor.
-    fn apply_bn(&self, x: &LazyTensor, bn: &BatchNormParams) -> Result<LazyTensor> {
+    fn apply_bn(&self, x: &Tensor, bn: &BatchNormParams) -> Result<Tensor> {
         x.channel_affine_4d(Arc::clone(&bn.w), Arc::clone(&bn.b))
     }
 }
@@ -330,7 +330,7 @@ impl ConvMixerWeights {
 
 /// Build a tiny ConvMixer image for tests: 3 channels, (1, 3, H, W).
 #[cfg(test)]
-fn tiny_image(h: usize, w: usize, device: &Device) -> LazyTensor {
+fn tiny_image(h: usize, w: usize, device: &Device) -> Tensor {
     let mut s: u32 = 42;
     let data: Arc<[f32]> = Arc::from(
         (0..3 * h * w)
@@ -340,7 +340,7 @@ fn tiny_image(h: usize, w: usize, device: &Device) -> LazyTensor {
             })
             .collect::<Vec<_>>(),
     );
-    LazyTensor::from_f32(data, Shape::from_dims(&[1, 3, h, w]), device)
+    Tensor::from_f32(data, Shape::from_dims(&[1, 3, h, w]), device)
 }
 
 #[cfg(test)]

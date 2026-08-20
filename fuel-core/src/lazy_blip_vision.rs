@@ -21,7 +21,7 @@
 //! v1 scope: F32, batch == 1, prefill only.
 
 use crate::Result;
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -144,7 +144,7 @@ impl BlipVisionModel {
     /// per-token hidden states `(1, num_patches + 1, hidden_size)`.
     /// The first token is CLS; the rest are patch tokens in
     /// row-major order.
-    pub fn forward(&self, pixel_values: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, pixel_values: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let dims = pixel_values.shape();
         let dims = dims.dims();
@@ -205,11 +205,11 @@ impl BlipVisionModel {
 }
 
 fn apply_layer(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &BlipVisionLayerWeights,
     cfg: &BlipVisionConfig,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+    anchor: &Tensor,
+) -> Result<Tensor> {
     let residual = x.clone();
     let normed = x.layer_norm_affine(
         Arc::clone(&w.ln1.gain),
@@ -230,11 +230,11 @@ fn apply_layer(
 }
 
 fn apply_attention(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &BlipVisionAttentionWeights,
     cfg: &BlipVisionConfig,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+    anchor: &Tensor,
+) -> Result<Tensor> {
     let dims = x.shape();
     let dims = dims.dims();
     let b = dims[0];
@@ -271,11 +271,11 @@ fn apply_attention(
 }
 
 fn apply_mlp(
-    x: &LazyTensor,
+    x: &Tensor,
     m: &BlipMlpWeights,
     cfg: &BlipVisionConfig,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+    anchor: &Tensor,
+) -> Result<Tensor> {
     let h1 = m.fc1.apply_linear_with_bias(
         x,
         cfg.hidden_size,
@@ -486,7 +486,7 @@ mod tests {
             config: cfg.clone(),
             weights,
         };
-        let img = LazyTensor::from_f32(
+        let img = Tensor::from_f32(
             (0..(3 * cfg.image_size * cfg.image_size))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),
@@ -509,14 +509,14 @@ mod tests {
             config: cfg.clone(),
             weights,
         };
-        let img_a = LazyTensor::from_f32(
+        let img_a = Tensor::from_f32(
             (0..(3 * cfg.image_size * cfg.image_size))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, cfg.image_size, cfg.image_size]),
             &Device::cpu(),
         );
-        let img_b = LazyTensor::from_f32(
+        let img_b = Tensor::from_f32(
             (0..(3 * cfg.image_size * cfg.image_size))
                 .map(|i| (i as f32) * 0.01 + 0.5)
                 .collect::<Vec<_>>(),

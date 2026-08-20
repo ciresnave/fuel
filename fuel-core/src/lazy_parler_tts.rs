@@ -8,7 +8,7 @@
 //!   self_attn(causal) → +res → cross_attn → +res → FFN → +res
 //!
 //! Inputs:
-//!   - `input_ids`: U32 LazyTensor of shape `(1, num_codebooks, T)`.
+//!   - `input_ids`: U32 Tensor of shape `(1, num_codebooks, T)`.
 //!     Per-codebook embeddings are looked up and summed.
 //!   - `prompt_embeds` (optional): `(1, P, hidden_size)` — when
 //!     present, prepended to the embedded codebook tokens before
@@ -20,7 +20,7 @@
 //!   - `start_pos`: position-embedding offset for resume-style
 //!     decoding (prefill = 0).
 //!
-//! Output: `Vec<LazyTensor>` of length `num_codebooks`, each
+//! Output: `Vec<Tensor>` of length `num_codebooks`, each
 //! `(1, P+T or 1, vocab_size)` per-codebook lm-head logits.
 //!
 //! v1 scope:
@@ -32,7 +32,7 @@
 //!     Silu — matches the eager `Activation` enum subset).
 
 use crate::Result;
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -142,23 +142,23 @@ pub struct ParlerDecoderModel {
 impl ParlerDecoderModel {
     /// Prefill forward pass returning per-codebook logits.
     ///
-    /// * `input_ids` — U32 LazyTensor `(1, num_codebooks, T)`.
+    /// * `input_ids` — U32 Tensor `(1, num_codebooks, T)`.
     /// * `prompt_embeds` — optional `(1, P, hidden_size)` prepended
     ///   to the codebook embeddings before the decoder layers.
     /// * `encoder_states` — text-encoder output. When the model has
     ///   `enc_to_dec_proj`, it is applied here.
     /// * `start_pos` — position-embedding offset (0 for fresh prefill).
     ///
-    /// Returns a `Vec<LazyTensor>` of length `num_codebooks`, each
+    /// Returns a `Vec<Tensor>` of length `num_codebooks`, each
     /// shaped `(1, P+T, vocab_size)` (or `(1, T, vocab_size)` if no
     /// prompt).
     pub fn forward(
         &self,
-        input_ids: &LazyTensor,
-        prompt_embeds: Option<&LazyTensor>,
-        encoder_states: &LazyTensor,
+        input_ids: &Tensor,
+        prompt_embeds: Option<&Tensor>,
+        encoder_states: &Tensor,
         start_pos: usize,
-    ) -> Result<Vec<LazyTensor>> {
+    ) -> Result<Vec<Tensor>> {
         let cfg = &self.config;
         let w = &self.weights;
 
@@ -182,7 +182,7 @@ impl ParlerDecoderModel {
         let h_dim = cfg.hidden_size;
 
         // Sum per-codebook embeddings.
-        let mut embed_sum: Option<LazyTensor> = None;
+        let mut embed_sum: Option<Tensor> = None;
         for (cb, tbl) in w.embed_tokens.iter().enumerate() {
             let ids = input_ids
                 .narrow(1_usize, cb, 1)?
@@ -258,13 +258,13 @@ impl ParlerDecoderModel {
 }
 
 fn apply_decoder_layer(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &ParlerDecoderLayerWeights,
-    enc_states: &LazyTensor,
-    causal_mask: &LazyTensor,
+    enc_states: &Tensor,
+    causal_mask: &Tensor,
     cfg: &ParlerDecoderConfig,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+    anchor: &Tensor,
+) -> Result<Tensor> {
     let h_dim = cfg.hidden_size;
 
     // Self-attention with causal mask.
@@ -331,17 +331,17 @@ fn apply_decoder_layer(
 /// `kv_input` is `None`, K/V come from `q_input` (self-attn).
 #[allow(clippy::too_many_arguments)]
 fn apply_attention(
-    q_input: &LazyTensor,
-    kv_input: Option<&LazyTensor>,
+    q_input: &Tensor,
+    kv_input: Option<&Tensor>,
     w: &AttnProjections,
     num_heads: usize,
     num_kv_heads: usize,
     head_dim: usize,
     q_in_dim: usize,
     kv_in_dim: usize,
-    mask: Option<&LazyTensor>,
-    _anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+    mask: Option<&Tensor>,
+    _anchor: &Tensor,
+) -> Result<Tensor> {
     let q_dims = q_input.shape();
     let q_dims = q_dims.dims();
     let b = q_dims[0];
@@ -392,13 +392,13 @@ fn apply_attention(
 /// Repeat K/V along the head dim: `(B, n_kv, L, D) → (B, n_kv * n_rep, L, D)`
 /// via unsqueeze + broadcast_to + reshape.
 fn repeat_along_head_dim(
-    x: &LazyTensor,
+    x: &Tensor,
     b: usize,
     n_kv: usize,
     n_rep: usize,
     l: usize,
     d: usize,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     if n_rep == 1 {
         return Ok(x.clone());
     }
@@ -407,11 +407,7 @@ fn repeat_along_head_dim(
     bc.reshape(Shape::from_dims(&[b, n_kv * n_rep, l, d]))
 }
 
-fn apply_linear_with_bias(
-    x: &LazyTensor,
-    w: &LinearWeights,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+fn apply_linear_with_bias(x: &Tensor, w: &LinearWeights, anchor: &Tensor) -> Result<Tensor> {
     let _ = anchor;
     match &w.b {
         Some(b) => {
@@ -782,7 +778,7 @@ mod tests {
         };
         let dev = Device::cpu();
         // (1, num_codebooks, T) U32.
-        let anchor = LazyTensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
+        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
         let input_ids = anchor.const_u32_like(
             vec![1_u32, 2, 3, 4, 5, 6],
             Shape::from_dims(&[1, cfg.num_codebooks, 3]),
@@ -816,7 +812,7 @@ mod tests {
             weights,
         };
         let dev = Device::cpu();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
+        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
         let encoder_states = anchor.const_f32_like(
             Arc::<[f32]>::from(vec![0.05_f32; 1 * 4 * cfg.hidden_size]),
             Shape::from_dims(&[1, 4, cfg.hidden_size]),
@@ -863,7 +859,7 @@ mod tests {
             weights,
         };
         let dev = Device::cpu();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
+        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
         let ids = anchor.const_u32_like(
             vec![1_u32, 2, 3, 4],
             Shape::from_dims(&[1, cfg.num_codebooks, 2]),
@@ -908,7 +904,7 @@ mod tests {
             weights,
         };
         let dev = Device::cpu();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
+        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
         let ids = anchor.const_u32_like(
             vec![1_u32, 2, 3, 4],
             Shape::from_dims(&[1, cfg.num_codebooks, 2]),

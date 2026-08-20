@@ -41,7 +41,7 @@
 //! Forward-only, single sequence (`batch == 1`), no KV cache,
 //! F32, attention-only layers (eager's Mamba branch bails too).
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -281,7 +281,7 @@ impl GraniteMoeHybridWeights {
 }
 
 impl GraniteMoeHybridModel {
-    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let h_norm = self.run_backbone(tokens, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
@@ -292,7 +292,7 @@ impl GraniteMoeHybridModel {
     /// `logits_divisor` is NOT (it sits past the tied lm_head).
     /// Granite-rescaled RoPE tables and per-layer Attention vs.
     /// Mamba selection are honored.
-    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         self.run_backbone(tokens, start_pos)
     }
 
@@ -303,11 +303,7 @@ impl GraniteMoeHybridModel {
     /// so the multimodal composition layer owns the scaling decision.
     ///
     /// Layers of kind `Mamba` return Err (matches eager scope).
-    pub fn forward_embeds(
-        &self,
-        scaled_embeds: &LazyTensor,
-        start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, scaled_embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let h_norm = self.run_backbone_embeds(scaled_embeds, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
@@ -315,16 +311,16 @@ impl GraniteMoeHybridModel {
     /// Hidden-state variant of [`Self::forward_embeds`].
     pub fn forward_hidden_embeds(
         &self,
-        scaled_embeds: &LazyTensor,
+        scaled_embeds: &Tensor,
         start_pos: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         self.run_backbone_embeds(scaled_embeds, start_pos)
     }
 
     /// Build per-token embeddings without running the decoder. NOTE:
     /// the `embedding_multiplier` scaling is NOT applied — caller is
     /// responsible (matches the scaled-embeds contract above).
-    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &Tensor, tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
@@ -334,7 +330,7 @@ impl GraniteMoeHybridModel {
         )
     }
 
-    fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
+    fn apply_lm_head(&self, h_norm: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let lm_head = WeightStorage::F32(self.weights.token_embedding.clone());
         let logits = lm_head.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?;
@@ -346,13 +342,13 @@ impl GraniteMoeHybridModel {
         }
     }
 
-    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
         assert!(seq > 0);
 
-        let mut h = LazyTensor::embed_tokens(
+        let mut h = Tensor::embed_tokens(
             weights.token_embedding.clone(),
             cfg.vocab_size,
             cfg.hidden_size,
@@ -365,11 +361,7 @@ impl GraniteMoeHybridModel {
         self.run_backbone_embeds(&h, start_pos)
     }
 
-    fn run_backbone_embeds(
-        &self,
-        scaled_embeds: &LazyTensor,
-        start_pos: usize,
-    ) -> Result<LazyTensor> {
+    fn run_backbone_embeds(&self, scaled_embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = scaled_embeds.shape();
@@ -480,14 +472,14 @@ impl GraniteMoeHybridModel {
 
     fn apply_attn_block(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         input_norm_gain: &Arc<[f32]>,
         attn: &GraniteMoeHybridAttnWeights,
         post_attn_norm_gain: &Arc<[f32]>,
         mlp: &GraniteMoeHybridMlpWeights,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
 
         // Pre-attention norm.
@@ -514,11 +506,11 @@ impl GraniteMoeHybridModel {
 
     fn attention(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         w: &GraniteMoeHybridAttnWeights,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let x_shape = x.shape();
         let dims = x_shape.dims();
@@ -549,7 +541,7 @@ impl GraniteMoeHybridModel {
         // INSTEAD OF `1/sqrt(head_dim)`.
         let scores = q_r.matmul(&k_t)?;
         let scores_scaled = scores.mul_scalar(cfg.attention_multiplier as f64);
-        let mask = LazyTensor::additive_causal_mask_like(x, seq)
+        let mask = Tensor::additive_causal_mask_like(x, seq)
             .reshape(Shape::from_dims(&[1, 1, seq, seq]))?;
         let scores_masked = scores_scaled.broadcast_add(&mask)?;
         let probs = scores_masked.softmax_last_dim()?;
@@ -558,7 +550,7 @@ impl GraniteMoeHybridModel {
         Ok(w.o_proj.apply_linear(&merged, q_dim, cfg.hidden_size)?)
     }
 
-    fn apply_mlp(&self, x: &LazyTensor, w: &GraniteMoeHybridMlpWeights) -> Result<LazyTensor> {
+    fn apply_mlp(&self, x: &Tensor, w: &GraniteMoeHybridMlpWeights) -> Result<Tensor> {
         let cfg = &self.config;
         let h = cfg.hidden_size;
         let inter = cfg.shared_intermediate_size;
@@ -856,7 +848,7 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let scaled = if (cfg.embedding_multiplier - 1.0).abs() > f32::EPSILON {
             embeds.mul_scalar(cfg.embedding_multiplier as f64)
@@ -882,7 +874,7 @@ mod tests {
             config: cfg.clone(),
             weights: tiny_weights(&cfg),
         };
-        let bad = LazyTensor::from_f32(
+        let bad = Tensor::from_f32(
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
             Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
             &Device::cpu(),
@@ -899,7 +891,7 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let scaled = if (cfg.embedding_multiplier - 1.0).abs() > f32::EPSILON {
             embeds.mul_scalar(cfg.embedding_multiplier as f64)

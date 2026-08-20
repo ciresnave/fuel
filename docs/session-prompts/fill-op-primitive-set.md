@@ -62,7 +62,7 @@ This is the highest-leverage block. Without comparison ops + `Where`, dozens of 
   - `fuel-cpu-backend/src/byte_kernels.rs`: per-dtype kernels emitting `U8`. The existing `binary_f32_kernel!` macro produces same-dtype output; you'll need a new macro variant for `f32 × f32 → u8`. Call it `binary_compare_f32_kernel!` or similar.
   - `fuel-reference-backend/src/exec.rs`: 6 `Op::Eq => binary!(...)` arms; the `ops::eq` etc. functions need to exist (add them in `fuel-reference-backend/src/ops.rs` — single-line maps over input slices).
   - `fuel-graph-cpu/src/lib.rs`: 6 arms.
-  - `fuel-core/src/lazy.rs`: 6 `LazyTensor` wrappers.
+  - `fuel-core/src/lazy.rs`: 6 `Tensor` wrappers.
 - **Tests**: structural in fuel-graph (one per op asserting output dtype is U8); numerical equivalence in fuel-graph-cpu (one mass test that spot-checks all 6).
 - **Watch for**: `OpParams` for binary may already assume same-dtype; the U8-output case may force a new params arm (or reuse none of them). Audit `op_to_op_params` carefully.
 
@@ -81,7 +81,7 @@ This is the highest-leverage block. Without comparison ops + `Where`, dozens of 
 
 ### Batch B: Tier-1 unary fanout (mechanical, post-Recip/Abs precedent)
 
-After A lands, B is a string of nearly-identical PRs. Each follows `add-recip-abs-primitives.md` exactly. Aim for one commit per op per layer (graph IR; reference + CPU; LazyTensor + Judge), 3 commits per op.
+After A lands, B is a string of nearly-identical PRs. Each follows `add-recip-abs-primitives.md` exactly. Aim for one commit per op per layer (graph IR; reference + CPU; Tensor + Judge), 3 commits per op.
 
 #### PR B1 — `Op::Floor` / `Op::Ceil` / `Op::Round`
 
@@ -242,7 +242,7 @@ cargo test -p fuel-graph -p fuel-graph-cpu -p fuel-reference-backend -p fuel-cor
 - **Engage critically.** Several Tier-2/Tier-3 design decisions are sketches above, not final calls. Surface concerns before silently picking. Examples: should `Op::Squeeze` panic or no-op when the dim isn't 1? Should `Op::Pow`'s dtype handling promote? Should `Op::Where`'s cond accept f32 (truthy != 0) or strictly U8? Default to the **architecturally-cleanest** form even if it's slightly more user-facing work.
 - **Bit-stable cpu+reference is non-negotiable.** Every new `Op` ships a CPU kernel that matches reference exactly, modulo well-known transcendental wobble (`erf`/`tanh` etc.). Document tolerance in the kernel's `PrecisionGuarantee`.
 - **No production panics.** New backward arms that hit non-differentiable inputs (comparisons, cast-to-int, etc.) return `None` from their `GradientRule` rather than panicking. Comparisons on a loss path are user error; signal it via missing-gradient downstream, not panic.
-- **One commit per logical layer per PR.** Mirrors the Recip/Abs precedent: graph IR + minimal exec arms in one commit; integration test in another; LazyTensor + Judge in a third; CUDA stretch in a fourth (when it lands).
+- **One commit per logical layer per PR.** Mirrors the Recip/Abs precedent: graph IR + minimal exec arms in one commit; integration test in another; Tensor + Judge in a third; CUDA stretch in a fourth (when it lands).
 - **Sequencing matters.** Batch A absolutely first; everything else depends on `Where` + comparisons existing for backward rules / decompositions to be expressible. Batch B and C can interleave freely after A. Batch D can start once at least one Tier-1/Tier-2 op the decomposition needs is in place.
 - **Don't refactor existing ops opportunistically.** If you notice that `Op::Abs`'s backward could simplify after `Op::Sign` lands (PR B2), do it — but in a separate trailing commit, not folded into B2 itself. Keeps history bisectable.
 - **Update memory after each batch lands.** A short memory file per batch (e.g., `project_op_primitive_set_batch_a_shipped.md`) makes the future-session pickup story trivial.
@@ -254,13 +254,13 @@ cargo test -p fuel-graph -p fuel-graph-cpu -p fuel-reference-backend -p fuel-cor
 
 - **`Op` enum** grew by ~16 variants (6 comparison + Where + 6 unary fanout + Squeeze + Pow + Rsqrt + Rem + Flip + Roll + CumSum + Pad).
 - **`OpKind`** grew by the same set + a few more for the new kernel shapes.
-- Each shipped with bit-stable cpu+reference kernels, `LazyTensor` builders, and at least one numerical correctness test.
+- Each shipped with bit-stable cpu+reference kernels, `Tensor` builders, and at least one numerical correctness test.
 
 **This session's deliverable (Batch D):**
 
 - **`FusedOpRegistry`** seeded with ~30+ entries across activations, stable-math, trig, boolean reductions, shape compositions, pooling, normalizations, sampling, masking (PRs D1–D9). This session ships ZERO native Tier-3 kernels — the **recipe (both `decompose` and `pattern`), validated through cpu+reference**, is the deliverable. Per G1/G2 ([`../architecture/10-decisions-log.md`](../architecture/10-decisions-log.md)), no entry ships with only the `decompose` half (that strands an opaque island) and no entry ships with a panicking/absent `decompose`.
 - **Every new fused op** carries a total, never-panic `decompose` that lowers correctly onto the base map (numerical-correctness test exercising the decomposition) **and** a `pattern` that re-recognizes that subgraph.
-- **`LazyTensor`** gains builder methods for every Tier-3 fused op.
+- **`Tensor`** gains builder methods for every Tier-3 fused op.
 - **Judge `PROFILED_OPS`** extends only as new elementwise primitives appear inside decompositions (the unary/binary fanout coverage already shipped with Batches A/B).
 - **Memory** has a fresh entry summarizing the Batch D commits.
 

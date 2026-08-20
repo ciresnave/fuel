@@ -16,7 +16,7 @@
 //! v1 scope: F32, batch == 1, prefill only.
 
 use crate::Result;
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::lazy_bert::{BertConfig, BertModel, BertWeights};
 use crate::lazy_clip::{ClipVisionConfig, ClipVisionModel, ClipVisionWeights};
 use fuel_ir::Shape;
@@ -95,7 +95,7 @@ impl ChineseClipModel {
     }
 
     /// Encode an image into a `(1, projection_dim)` feature vector.
-    pub fn get_image_features(&self, image: &LazyTensor) -> Result<LazyTensor> {
+    pub fn get_image_features(&self, image: &Tensor) -> Result<Tensor> {
         let pooled = self.vision_model().forward(image)?;
         // (1, vision_embed_dim) → (1, projection_dim)
         Ok(self.weights.visual_projection.apply_linear(
@@ -108,7 +108,7 @@ impl ChineseClipModel {
     /// Encode `input_ids` (Chinese-BERT-tokenized) into a
     /// `(1, projection_dim)` feature vector. CLS-pooled then
     /// projected through `text_projection` (no bias, matches eager).
-    pub fn get_text_features(&self, input_ids: &[u32]) -> Result<LazyTensor> {
+    pub fn get_text_features(&self, input_ids: &[u32]) -> Result<Tensor> {
         let hidden = self.text_model().forward(input_ids)?;
         let h = self.config.text.hidden_size;
         // (1, T, hidden) → CLS at position 0 → (1, hidden)
@@ -127,9 +127,9 @@ impl ChineseClipModel {
     /// U32 ids tensor, distinct from the vision graph).
     pub fn contrastive_logits(
         &self,
-        image_features: &LazyTensor,
-        text_features: &LazyTensor,
-    ) -> Result<(LazyTensor, LazyTensor)> {
+        image_features: &Tensor,
+        text_features: &Tensor,
+    ) -> Result<(Tensor, Tensor)> {
         let image_normed = l2_normalize_last(image_features)?;
         let text_normed = l2_normalize_last(text_features)?;
         let logits = text_normed.matmul(&image_normed.permute([1, 0_usize])?)?;
@@ -140,7 +140,7 @@ impl ChineseClipModel {
     }
 }
 
-fn l2_normalize_last(x: &LazyTensor) -> Result<LazyTensor> {
+fn l2_normalize_last(x: &Tensor) -> Result<Tensor> {
     x.l2_normalize(1_usize, 0.0)
 }
 
@@ -344,7 +344,7 @@ mod tests {
     #[test]
     fn image_features_shape_and_finite() {
         let model = tiny_model();
-        let image = LazyTensor::from_f32(
+        let image = Tensor::from_f32(
             (0..(3 * 16 * 16))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),
@@ -372,8 +372,8 @@ mod tests {
     fn contrastive_logits_shape_and_finite() {
         let model = tiny_model();
         // Build features on the SAME graph (test-only) by constructing
-        // synthetic (1, 4) feature tensors anchored on a shared LazyTensor.
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        // synthetic (1, 4) feature tensors anchored on a shared Tensor.
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let img_feats = anchor.const_f32_like(
             Arc::from(vec![0.1_f32, 0.2, 0.3, 0.4]),
             Shape::from_dims(&[1, 4]),

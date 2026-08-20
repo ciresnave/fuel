@@ -44,7 +44,7 @@
 //! Generation loops (Lightbulb) consult
 //! [`LlamaEosToks::is_eos`](LlamaEosToks::is_eos) per token.
 
-use crate::lazy::{LazyTensor, LlamaConfig, LlamaModel, LlamaWeights};
+use crate::lazy::{LlamaConfig, LlamaModel, LlamaWeights, Tensor};
 use crate::{Error, Result};
 use fuel_ir::Shape;
 use std::f64::consts::PI;
@@ -408,13 +408,13 @@ impl Llama3Model {
     }
 
     /// Forward from token ids. Returns logits `[1, seq, vocab_size]`.
-    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let cfg = &self.inner.config;
         let weights = &self.inner.weights;
         let seq = tokens.len();
         assert!(seq > 0, "Llama3Model::forward: tokens must be non-empty");
 
-        let embed = LazyTensor::from_f32(
+        let embed = Tensor::from_f32(
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &crate::Device::cpu(),
@@ -427,7 +427,7 @@ impl Llama3Model {
     }
 
     /// Forward from pre-computed embeddings `[batch, seq, dim]`.
-    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let cfg = &self.inner.config;
         let weights = &self.inner.weights;
         let h_norm = self.run_backbone_embeds(embeds, start_pos)?;
@@ -438,15 +438,11 @@ impl Llama3Model {
 
     /// Forward from pre-computed embeddings; skip the LM head and
     /// return post-final-RMSNorm hidden states `[batch, seq, dim]`.
-    pub fn forward_hidden_embeds(
-        &self,
-        embeds: &LazyTensor,
-        start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_hidden_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         self.run_backbone_embeds(embeds, start_pos)
     }
 
-    fn run_backbone_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
+    fn run_backbone_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let cfg = &self.inner.config;
         let dims = embeds.shape();
         let dims = dims.dims();
@@ -465,7 +461,7 @@ impl Llama3Model {
         let rope_cos = embeds.const_f32_like(Arc::from(cos_data), rope_shape.clone());
         let rope_sin = embeds.const_f32_like(Arc::from(sin_data), rope_shape);
 
-        let mask = LazyTensor::additive_causal_mask_like(embeds, seq)
+        let mask = Tensor::additive_causal_mask_like(embeds, seq)
             .reshape(Shape::from_dims(&[1, 1, seq, seq]))?;
 
         self.inner

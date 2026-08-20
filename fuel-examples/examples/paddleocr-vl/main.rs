@@ -29,7 +29,7 @@ use clap::Parser;
 use std::io::Write;
 use std::sync::Arc;
 
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel::lazy_paddleocr_vl::bilinear_resize_to_grid;
 use fuel::lazy_paddleocr_vl_text::{
     PaddleOcrVlTextConfig, PaddleOcrVlTextModel, load_paddleocr_vl_text_weights_with_prefix,

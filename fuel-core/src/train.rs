@@ -53,7 +53,7 @@
 //!   here already supports it (eager master-plan Phase G).
 
 use crate::Device;
-use crate::lazy::LazyTensor;
+use crate::lazy::Tensor;
 use fuel_dispatch::pipelined::StorageCache;
 use fuel_graph::{Graph, Node, NodeId, Op, SharedGraph};
 use fuel_ir::{DType, Error, Result, Shape};
@@ -347,7 +347,7 @@ impl TrainState {
     pub fn step_with_schedule<S, F>(&mut self, schedule: &S, build_loss: F) -> Result<f32>
     where
         S: LrSchedule,
-        F: FnOnce(&SharedGraph, &HashMap<String, LazyTensor>) -> Result<LazyTensor>,
+        F: FnOnce(&SharedGraph, &HashMap<String, Tensor>) -> Result<Tensor>,
     {
         self.set_lr(schedule.lr_at(self.step_count));
         self.step(build_loss)
@@ -390,33 +390,33 @@ impl TrainState {
     /// Run one training step.
     ///
     /// `build_loss` receives a graph handle and a map of parameter
-    /// LazyTensor leaves (one per parameter, placeholder Const nodes
+    /// Tensor leaves (one per parameter, placeholder Const nodes
     /// whose storage the step driver binds through the realize
     /// call's `StorageCache`). It must return a scalar loss tensor.
     ///
     /// Returns the loss value (a single f32).
     pub fn step<F>(&mut self, build_loss: F) -> Result<f32>
     where
-        F: FnOnce(&SharedGraph, &HashMap<String, LazyTensor>) -> Result<LazyTensor>,
+        F: FnOnce(&SharedGraph, &HashMap<String, Tensor>) -> Result<Tensor>,
     {
         // 1. Build parameter placeholder tensors in a fresh graph.
-        //    Use a "seed" LazyTensor to get a fresh SharedGraph. The
+        //    Use a "seed" Tensor to get a fresh SharedGraph. The
         //    seed itself is NEVER realized — it exists only to mint
         //    the graph handle — so it deliberately lives on
-        //    Device::cpu(): LazyTensor::from_f32 eagerly uploads its
+        //    Device::cpu(): Tensor::from_f32 eagerly uploads its
         //    host buffer to the tensor's device, and the Vulkan
         //    byte-shape substrate rejects that upload by design
         //    (storage_from_host_buffer_owned_dyn returns Err →
         //    panic in Tensor::from_*). Training's REAL device
         //    placement comes from `self.device` at the realize-split
         //    call below, not from the seed.
-        let seed = LazyTensor::from_f32(vec![0.0f32], Shape::from_dims(&[1]), &Device::cpu());
+        let seed = Tensor::from_f32(vec![0.0f32], Shape::from_dims(&[1]), &Device::cpu());
         let graph = seed.graph_tensor().graph().clone();
 
         // The realize call's input cache: parameter (and optimizer-
         // moment) storage Arcs bound at their placeholder NodeIds.
         let mut cache = StorageCache::new();
-        let mut param_tensors: HashMap<String, LazyTensor> = HashMap::new();
+        let mut param_tensors: HashMap<String, Tensor> = HashMap::new();
         for name in &self.param_order {
             let (storage, shape) = &self.params[name];
             // Placeholder Const — no storage_map seeding; the cache
@@ -433,13 +433,13 @@ impl TrainState {
         let grad_map = loss.graph_tensor().backward();
 
         // 3a. Collect raw gradients.
-        let mut raw_grads: HashMap<String, LazyTensor> = HashMap::new();
+        let mut raw_grads: HashMap<String, Tensor> = HashMap::new();
         for name in &self.param_order {
             let param = &param_tensors[name];
             let grad = grad_map.get(param.graph_tensor()).ok_or_else(|| {
                 fuel_ir::Error::Msg(format!("parameter '{name}' did not appear in loss graph"))
             })?;
-            raw_grads.insert(name.clone(), LazyTensor::from_graph_tensor(grad));
+            raw_grads.insert(name.clone(), Tensor::from_graph_tensor(grad));
         }
 
         // 3b. If clipping is enabled, compute the global-norm scale
@@ -451,10 +451,10 @@ impl TrainState {
         // Scaling is a no-op when norm ≤ max_norm (scale=1) and
         // active otherwise; no branch in the graph, just one scalar
         // `clamp` — which works identically on every backend.
-        let clip_scale: Option<LazyTensor> = match self.grad_clip {
+        let clip_scale: Option<Tensor> = match self.grad_clip {
             None => None,
             Some(GradClip::GlobalNorm(max_norm)) => {
-                let mut total_sq: Option<LazyTensor> = None;
+                let mut total_sq: Option<Tensor> = None;
                 for name in &self.param_order {
                     let g = &raw_grads[name];
                     let g_sq_sum = g.sqr().sum_all();
@@ -482,10 +482,10 @@ impl TrainState {
         };
 
         // 4. Build update ops per parameter.
-        //    Returns the new_param LazyTensor plus any new opt-state
-        //    LazyTensors (Adam's new m and v).
-        let mut new_param_tensors: Vec<LazyTensor> = Vec::with_capacity(self.param_order.len());
-        let mut new_opt_tensors: Vec<(String, LazyTensor, LazyTensor)> = Vec::new();
+        //    Returns the new_param Tensor plus any new opt-state
+        //    Tensors (Adam's new m and v).
+        let mut new_param_tensors: Vec<Tensor> = Vec::with_capacity(self.param_order.len());
+        let mut new_opt_tensors: Vec<(String, Tensor, Tensor)> = Vec::new();
 
         for name in &self.param_order {
             let param = &param_tensors[name];
@@ -634,16 +634,16 @@ impl TrainState {
     }
 }
 
-/// Reusable loss functions. All pure LazyTensor graph constructors —
+/// Reusable loss functions. All pure Tensor graph constructors —
 /// every backend runs them via the primitives it already supports.
 pub mod loss {
-    use crate::lazy::LazyTensor;
+    use crate::lazy::Tensor;
     use fuel_ir::{Error, Result, Shape};
 
     /// Mean-squared-error loss: `mean((pred - target)²)`. Returns a
     /// scalar tensor. Works on any numeric shape — the mean is
     /// over all elements.
-    pub fn mse(pred: &LazyTensor, target: &LazyTensor) -> Result<LazyTensor> {
+    pub fn mse(pred: &Tensor, target: &Tensor) -> Result<Tensor> {
         let n = pred.graph_tensor().shape().elem_count();
         // `sub` fails on a shape mismatch or a cross-graph operand — both are
         // caller errors that must surface as a typed `Err`, not a panic inside
@@ -669,10 +669,7 @@ pub mod loss {
     ///
     /// Stable computation: `logsumexp(x) = max + log(sum(exp(x-max)))`.
     /// This avoids `exp(x)` overflow for large logits.
-    pub fn cross_entropy_with_logits(
-        logits: &LazyTensor,
-        target_one_hot: &LazyTensor,
-    ) -> Result<LazyTensor> {
+    pub fn cross_entropy_with_logits(logits: &Tensor, target_one_hot: &Tensor) -> Result<Tensor> {
         let dims = logits.graph_tensor().shape().dims().to_vec();
         let rank = dims.len();
         // Was `assert!`. Rank-0 logits are a caller mistake, and a caller
@@ -738,11 +735,11 @@ pub mod loss {
     /// lowered backward computes the gradient as if no rows are
     /// masked.
     pub fn fused_softmax_cross_entropy(
-        logits: &LazyTensor,
-        targets: &LazyTensor,
+        logits: &Tensor,
+        targets: &Tensor,
         reduction: fuel_graph::registry::Reduction,
         ignore_index: i64,
-    ) -> LazyTensor {
+    ) -> Tensor {
         logits.fused_softmax_cross_entropy(targets, reduction, ignore_index)
     }
 }
@@ -750,17 +747,17 @@ pub mod loss {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lazy::LazyTensor;
+    use crate::lazy::Tensor;
     use fuel_graph::registry::Reduction;
     use fuel_ir::DType;
 
-    /// Helper: build an I64 LazyTensor on the same graph as `host`,
-    /// using the fuel-graph `const_i64_like` builder. LazyTensor has
+    /// Helper: build an I64 Tensor on the same graph as `host`,
+    /// using the fuel-graph `const_i64_like` builder. Tensor has
     /// no native `from_i64` constructor today; the index-only ops
     /// (Gather, etc.) typically wire indices in via `const_u32_like`,
     /// so we go through `from_graph_tensor` here.
-    fn lt_const_i64_like(host: &LazyTensor, data: Vec<i64>, shape: Shape) -> LazyTensor {
-        LazyTensor::from_graph_tensor(host.graph_tensor().const_i64_like(data, shape))
+    fn lt_const_i64_like(host: &Tensor, data: Vec<i64>, shape: Shape) -> Tensor {
+        Tensor::from_graph_tensor(host.graph_tensor().const_i64_like(data, shape))
     }
 
     /// FusedSoftmaxCrossEntropy matches the primitive
@@ -784,7 +781,7 @@ mod tests {
 
         // Path 1: fused op.
         let logits_fused =
-            LazyTensor::from_f32(logits_data.clone(), Shape::from_dims(&[3, 4]), &device);
+            Tensor::from_f32(logits_data.clone(), Shape::from_dims(&[3, 4]), &device);
         let targets_fused =
             lt_const_i64_like(&logits_fused, targets_i64.clone(), Shape::from_dims(&[3]));
         let fused_loss =
@@ -794,7 +791,7 @@ mod tests {
         // Path 2: primitive composition. The one-hot targets must
         // live on the same graph as logits — use `const_f32_like`
         // off `logits_prim` so the second leaf joins that graph.
-        let logits_prim = LazyTensor::from_f32(logits_data, Shape::from_dims(&[3, 4]), &device);
+        let logits_prim = Tensor::from_f32(logits_data, Shape::from_dims(&[3, 4]), &device);
         let targets_prim = logits_prim.const_f32_like(targets_onehot, Shape::from_dims(&[3, 4]));
         let prim_loss = loss::cross_entropy_with_logits(&logits_prim, &targets_prim)
             .unwrap()
@@ -811,7 +808,7 @@ mod tests {
     fn fused_softmax_cross_entropy_none_returns_per_row() {
         let device = crate::Device::cpu();
         let logits_data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, 0.0, 0.0, 0.0, 0.0];
-        let logits = LazyTensor::from_f32(logits_data, Shape::from_dims(&[2, 4]), &device);
+        let logits = Tensor::from_f32(logits_data, Shape::from_dims(&[2, 4]), &device);
         let targets = lt_const_i64_like(&logits, vec![1_i64, 3], Shape::from_dims(&[2]));
         let per_row = loss::fused_softmax_cross_entropy(&logits, &targets, Reduction::None, -100)
             .realize_f32();
@@ -836,7 +833,7 @@ mod tests {
     fn fused_softmax_cross_entropy_ignore_index_masks_row() {
         let device = crate::Device::cpu();
         let logits_data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, 0.0, 0.0, 0.0, 0.0];
-        let logits = LazyTensor::from_f32(logits_data, Shape::from_dims(&[2, 4]), &device);
+        let logits = Tensor::from_f32(logits_data, Shape::from_dims(&[2, 4]), &device);
         let targets = lt_const_i64_like(&logits, vec![1_i64, -100], Shape::from_dims(&[2]));
         let loss_val = loss::fused_softmax_cross_entropy(&logits, &targets, Reduction::Mean, -100)
             .realize_f32()[0];
@@ -856,7 +853,7 @@ mod tests {
     fn causal_conv1d_basic_end_to_end() {
         let device = crate::Device::cpu();
         // x = [0, 0, 1, 2] (single batch, single channel, pre-padded)
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             vec![0.0_f32, 0.0, 1.0, 2.0],
             Shape::from_dims(&[1, 1, 4]),
             &device,
@@ -874,7 +871,7 @@ mod tests {
     #[test]
     fn causal_conv1d_with_silu_end_to_end() {
         let device = crate::Device::cpu();
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             vec![0.0_f32, 0.0, 1.0, 2.0],
             Shape::from_dims(&[1, 1, 4]),
             &device,
@@ -921,7 +918,7 @@ mod tests {
         let device = crate::Device::cpu();
         // batch=1, seqlen=1, dim=1, dstate=1. Same numbers as the
         // byte-kernel single-step test: expected y = 3.0.
-        let u = LazyTensor::from_f32(vec![3.0_f32], Shape::from_dims(&[1, 1, 1]), &device);
+        let u = Tensor::from_f32(vec![3.0_f32], Shape::from_dims(&[1, 1, 1]), &device);
         let delta = u.const_f32_like(vec![1.0_f32], Shape::from_dims(&[1, 1, 1]));
         let a = u.const_f32_like(vec![-1.0_f32], Shape::from_dims(&[1, 1]));
         let b = u.const_f32_like(vec![2.0_f32], Shape::from_dims(&[1, 1, 1]));
@@ -935,7 +932,7 @@ mod tests {
     #[test]
     fn selective_scan_with_softplus_end_to_end() {
         let device = crate::Device::cpu();
-        let u = LazyTensor::from_f32(vec![1.0_f32], Shape::from_dims(&[1, 1, 1]), &device);
+        let u = Tensor::from_f32(vec![1.0_f32], Shape::from_dims(&[1, 1, 1]), &device);
         let delta = u.const_f32_like(vec![0.0_f32], Shape::from_dims(&[1, 1, 1]));
         let a = u.const_f32_like(vec![0.0_f32], Shape::from_dims(&[1, 1]));
         let b = u.const_f32_like(vec![1.0_f32], Shape::from_dims(&[1, 1, 1]));
@@ -985,7 +982,7 @@ mod tests {
     fn ssd_chunk_scan_basic_end_to_end() {
         let device = crate::Device::cpu();
         // [batch=1, seqlen=1, heads=1, head_dim=1]
-        let x = LazyTensor::from_f32(vec![3.0_f32], Shape::from_dims(&[1, 1, 1, 1]), &device);
+        let x = Tensor::from_f32(vec![3.0_f32], Shape::from_dims(&[1, 1, 1, 1]), &device);
         let dt = x.const_f32_like(vec![1.0_f32], Shape::from_dims(&[1, 1, 1]));
         let a = x.const_f32_like(vec![-1.0_f32], Shape::from_dims(&[1]));
         let b = x.const_f32_like(vec![2.0_f32], Shape::from_dims(&[1, 1, 1, 1]));
@@ -1029,7 +1026,7 @@ mod tests {
         let device = crate::Device::cpu();
         // m=1, n=2, k=4, block_size=2 — same hand-computed test as
         // the byte-kernel two-outputs-two-blocks check.
-        let activations = LazyTensor::from_f32(
+        let activations = Tensor::from_f32(
             vec![1.0_f32, 2.0, 2.0, 4.0],
             Shape::from_dims(&[1, 4]),
             &device,
@@ -1037,7 +1034,7 @@ mod tests {
         let w_packed_t = activations
             .graph_tensor()
             .const_u8_like(vec![247_u8, 247, 127, 127], Shape::from_dims(&[2, 2]));
-        let w_packed = LazyTensor::from_graph_tensor(w_packed_t);
+        let w_packed = Tensor::from_graph_tensor(w_packed_t);
         let absmax =
             activations.const_f32_like(vec![1.0_f32, 2.0, 10.0, 20.0], Shape::from_dims(&[2, 2]));
         let y = activations.nf4_matmul(&w_packed, &absmax, 2).realize_f32();

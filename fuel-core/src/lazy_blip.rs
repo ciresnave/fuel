@@ -24,7 +24,7 @@
 //! sequence in one pass.
 
 use crate::Result;
-use crate::lazy::LazyTensor;
+use crate::lazy::Tensor;
 use crate::lazy_blip_text::{BlipTextConfig, BlipTextModel, BlipTextWeights};
 use crate::lazy_blip_vision::{BlipVisionConfig, BlipVisionModel, BlipVisionWeights};
 
@@ -80,10 +80,10 @@ impl BlipForConditionalGeneration {
     /// Returns next-token logits `(1, T, vocab_size)`.
     pub fn forward(
         &self,
-        pixel_values: &LazyTensor,
+        pixel_values: &Tensor,
         input_ids: &[u32],
         start_pos: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         // Vision tower: (1, 3, H, W) → (1, num_patches + 1, vision_hidden).
         let vision = BlipVisionModel {
             config: self.config.vision_config.clone(),
@@ -319,7 +319,7 @@ mod tests {
         let pixel_data: Vec<f32> = (0..1 * 3 * img_size * img_size)
             .map(|i| ((i as f32) * 0.001) - 0.05)
             .collect();
-        let pixels = LazyTensor::from_f32(
+        let pixels = Tensor::from_f32(
             pixel_data,
             Shape::from_dims(&[1, 3, img_size, img_size]),
             &Device::cpu(),
@@ -352,12 +352,12 @@ mod tests {
         let pixel_b: Vec<f32> = (0..3 * img_size * img_size)
             .map(|i| (i as f32) * -0.001 + 0.3)
             .collect();
-        let pa = LazyTensor::from_f32(
+        let pa = Tensor::from_f32(
             pixel_a,
             Shape::from_dims(&[1, 3, img_size, img_size]),
             &Device::cpu(),
         );
-        let pb = LazyTensor::from_f32(
+        let pb = Tensor::from_f32(
             pixel_b,
             Shape::from_dims(&[1, 3, img_size, img_size]),
             &Device::cpu(),

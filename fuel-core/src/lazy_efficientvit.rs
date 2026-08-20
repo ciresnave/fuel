@@ -26,7 +26,7 @@
 //!   - Forward-only (no autograd in scope).
 
 use crate::Result;
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::lazy_convmixer::BatchNormParams;
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -205,7 +205,7 @@ impl EfficientVitModel {
     /// Run inference on `image` of shape `(1, 3, H, W)`. Returns
     /// classifier logits when `weights.head` is `Some`, else
     /// pooled features `(1, channels[2])`.
-    pub fn forward(&self, image: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, image: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let dims = image.shape();
         let dims = dims.dims();
@@ -241,7 +241,7 @@ impl EfficientVitModel {
 
     /// Run the backbone (stem + 3 stages) and return the channels-
     /// first feature map BEFORE global mean pool and the classifier.
-    pub fn forward_features(&self, image: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward_features(&self, image: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let dims = image.shape();
         let dims = dims.dims();
@@ -259,7 +259,7 @@ impl EfficientVitModel {
         Ok(x)
     }
 
-    fn run_stem(&self, image: &LazyTensor) -> Result<LazyTensor> {
+    fn run_stem(&self, image: &Tensor) -> Result<Tensor> {
         let stem = &self.weights.stem;
         let x = apply_conv_bn(image, &stem.conv1, image)?.relu();
         let x = apply_conv_bn(&x, &stem.conv2, image)?.relu();
@@ -272,12 +272,12 @@ impl EfficientVitModel {
 
 // ---- Component helpers -----------------------------------------------------
 
-fn apply_bn(x: &LazyTensor, bn: &BatchNormParams, channels: usize) -> Result<LazyTensor> {
+fn apply_bn(x: &Tensor, bn: &BatchNormParams, channels: usize) -> Result<Tensor> {
     let _ = channels;
     x.channel_affine_4d(Arc::clone(&bn.w), Arc::clone(&bn.b))
 }
 
-fn apply_conv_bn(x: &LazyTensor, c: &ConvBnWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
+fn apply_conv_bn(x: &Tensor, c: &ConvBnWeights, anchor: &Tensor) -> Result<Tensor> {
     let w = anchor.const_f32_like(
         Arc::clone(&c.conv_w),
         Shape::from_dims(&[c.c_out, c.c_in / c.groups, c.k, c.k]),
@@ -286,11 +286,7 @@ fn apply_conv_bn(x: &LazyTensor, c: &ConvBnWeights, anchor: &LazyTensor) -> Resu
     apply_bn(&conv, &c.bn, c.c_out)
 }
 
-fn apply_conv1x1_bias(
-    x: &LazyTensor,
-    c: &Conv1x1BiasWeights,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+fn apply_conv1x1_bias(x: &Tensor, c: &Conv1x1BiasWeights, anchor: &Tensor) -> Result<Tensor> {
     let w = anchor.const_f32_like(Arc::clone(&c.w), Shape::from_dims(&[c.c_out, c.c_in, 1, 1]));
     let conv = x.conv2d(&w, None, (1, 1), (0, 0), 1)?;
     let bias = anchor
@@ -299,12 +295,12 @@ fn apply_conv1x1_bias(
     conv.broadcast_add(&bias)
 }
 
-fn apply_conv_mlp(x: &LazyTensor, m: &ConvMlpWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
+fn apply_conv_mlp(x: &Tensor, m: &ConvMlpWeights, anchor: &Tensor) -> Result<Tensor> {
     let h = apply_conv_bn(x, &m.pw1, anchor)?.relu();
     apply_conv_bn(&h, &m.pw2, anchor)
 }
 
-fn apply_se(x: &LazyTensor, se: &SeWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
+fn apply_se(x: &Tensor, se: &SeWeights, anchor: &Tensor) -> Result<Tensor> {
     // Mean over (H, W) keeping dims: reshape from (B, C, H, W) →
     // (B, C, 1, 1).
     let dims = x.shape();
@@ -319,41 +315,33 @@ fn apply_se(x: &LazyTensor, se: &SeWeights, anchor: &LazyTensor) -> Result<LazyT
     x.mul(&g_b)
 }
 
-fn apply_patchmerge(
-    x: &LazyTensor,
-    p: &PatchMergeWeights,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+fn apply_patchmerge(x: &Tensor, p: &PatchMergeWeights, anchor: &Tensor) -> Result<Tensor> {
     let x = apply_conv_bn(x, &p.conv1, anchor)?.relu();
     let x = apply_conv_bn(&x, &p.conv2, anchor)?.relu();
     let x = apply_se(&x, &p.se, anchor)?;
     apply_conv_bn(&x, &p.conv3, anchor)
 }
 
-fn apply_res_block(x: &LazyTensor, r: &ResBlockWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
+fn apply_res_block(x: &Tensor, r: &ResBlockWeights, anchor: &Tensor) -> Result<Tensor> {
     let y = apply_conv_bn(x, &r.dw, anchor)?;
     let x = x.add(&y)?;
     let y = apply_conv_mlp(&x, &r.mlp, anchor)?;
     x.add(&y)
 }
 
-fn apply_downsample(
-    x: &LazyTensor,
-    d: &DownsampleWeights,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+fn apply_downsample(x: &Tensor, d: &DownsampleWeights, anchor: &Tensor) -> Result<Tensor> {
     let x = apply_res_block(x, &d.res1, anchor)?;
     let x = apply_patchmerge(&x, &d.patchmerge, anchor)?;
     apply_res_block(&x, &d.res2, anchor)
 }
 
 fn apply_block(
-    x: &LazyTensor,
+    x: &Tensor,
     b: &EfficientVitBlockWeights,
     cfg: &EfficientVitConfig,
     stage: usize,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+    anchor: &Tensor,
+) -> Result<Tensor> {
     let y = apply_conv_bn(x, &b.dw0, anchor)?;
     let x = x.add(&y)?;
     let y = apply_conv_mlp(&x, &b.ffn0, anchor)?;
@@ -368,12 +356,12 @@ fn apply_block(
 
 /// CGA + optional 7×7 windowing.
 fn apply_cga_attn(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &CgaWeights,
     cfg: &EfficientVitConfig,
     stage: usize,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+    anchor: &Tensor,
+) -> Result<Tensor> {
     let win_res = 7;
     let need_windowing = cfg.stage_resolutions[stage] > win_res;
     if !need_windowing {
@@ -420,11 +408,11 @@ fn apply_cga_attn(
 
 /// CGA forward without windowing — assumes input fits as-is.
 fn cga_core(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &CgaWeights,
     cfg: &EfficientVitConfig,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+    anchor: &Tensor,
+) -> Result<Tensor> {
     let dims = x.shape();
     let dims = dims.dims();
     let b = dims[0];
@@ -437,12 +425,12 @@ fn cga_core(
     let scale = 1.0_f64 / (key_dim as f64).sqrt();
     let chunk_size = val_dim;
     // Split x along channel into `heads` chunks of `val_dim` channels.
-    let mut feats_in: Vec<LazyTensor> = Vec::with_capacity(heads);
+    let mut feats_in: Vec<Tensor> = Vec::with_capacity(heads);
     for i in 0..heads {
         feats_in.push(x.narrow(1_usize, i * chunk_size, chunk_size)?);
     }
     let mut feat = feats_in[0].clone();
-    let mut feats_out: Vec<LazyTensor> = Vec::with_capacity(heads);
+    let mut feats_out: Vec<Tensor> = Vec::with_capacity(heads);
     for i in 0..heads {
         if i > 0 {
             feat = feat.add(&feats_in[i])?;
@@ -481,7 +469,7 @@ fn cga_core(
 
 /// Pad a single dim with `right` zeros at the end. Composite using
 /// `concat` against a freshly-built zero tensor of matching shape.
-fn pad_dim_with_zeros(x: &LazyTensor, dim: usize, right: usize) -> Result<LazyTensor> {
+fn pad_dim_with_zeros(x: &Tensor, dim: usize, right: usize) -> Result<Tensor> {
     if right == 0 {
         return Ok(x.clone());
     }
@@ -710,7 +698,7 @@ mod tests {
             config: cfg.clone(),
             weights,
         };
-        let img = LazyTensor::from_f32(
+        let img = Tensor::from_f32(
             (0..(3 * 64 * 64))
                 .map(|i| i as f32 * 0.01)
                 .collect::<Vec<_>>(),
@@ -747,7 +735,7 @@ mod tests {
         };
         // image_size=128 → stem /16 = 8 at stage 0. Windowing
         // will tile into (8/7) → pad to 14 → 2x2 windows of 7x7.
-        let img = LazyTensor::from_f32(
+        let img = Tensor::from_f32(
             (0..(3 * 128 * 128))
                 .map(|i| (i as f32) * 0.001)
                 .collect::<Vec<_>>(),
@@ -779,14 +767,14 @@ mod tests {
             stage_resolutions: [4, 2, 1],
             key_dim: 4,
         };
-        let a = LazyTensor::from_f32(
+        let a = Tensor::from_f32(
             (0..(dim * 4 * 4))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, dim, 4, 4]),
             &Device::cpu(),
         );
-        let b = LazyTensor::from_f32(
+        let b = Tensor::from_f32(
             (0..(dim * 4 * 4))
                 .map(|i| (i as f32) * 0.01 + 0.5)
                 .collect::<Vec<_>>(),

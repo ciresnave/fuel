@@ -12,7 +12,7 @@
 
 **Architecture:** Three layers, bottom-up. (C1) a RoPE **delta-rotation primitive** in `lazy.rs` — constant-position tables + a per-block f32 rotation that reuses the model's exact `rope_with_tables_decomposed`. (C3+core) pure-core **bookkeeping** in `kv_block_pool.rs` that validates the block-aligned offset and allocates fresh dst blocks, returning `(M, src→dst physical pairs)`. (C2) the **product** `DeviceKvPool::splice_prefix_shifted` that drives the two: rotate each src K block → fresh dst K block, copy each src V block → fresh dst V block. (C4) a model-level **logit-parity anchor**. Spec: `docs/superpowers/specs/2026-08-05-rope-rung2-shifted-prefix-design.md`.
 
-**Tech stack:** Rust, fuel-core lazy DAG. Reuses `LazyTensor::{from_f32, const_f32_like, rope_with_tables_decomposed, realize_f32}`, `fuel_graph::build_rope_tables`, `KvBlockPool::{append, resident_block, session_block_table, filled_tokens, prefixes registry, take_free}`, `DeviceKvPool::{read_block, write_block, read_block_bytes, write_block_bytes, geometry, device, core/core_mut}`, `LlamaModel::forward_paged_step`.
+**Tech stack:** Rust, fuel-core lazy DAG. Reuses `Tensor::{from_f32, const_f32_like, rope_with_tables_decomposed, realize_f32}`, `fuel_graph::build_rope_tables`, `KvBlockPool::{append, resident_block, session_block_table, filled_tokens, prefixes registry, take_free}`, `DeviceKvPool::{read_block, write_block, read_block_bytes, write_block_bytes, geometry, device, core/core_mut}`, `LlamaModel::forward_paged_step`.
 
 ## Global Constraints
 
@@ -28,12 +28,12 @@
 ### Task 1 — RoPE delta-rotation primitive (C1)
 
 **Files:**
-- Modify: `fuel-core/src/lazy.rs` — add `LazyTensor::rope_delta_tables_const` beside `rope_tables_const` (~5356); add free fn `rope_delta_rotate_block_f32` beside it.
+- Modify: `fuel-core/src/lazy.rs` — add `Tensor::rope_delta_tables_const` beside `rope_tables_const` (~5356); add free fn `rope_delta_rotate_block_f32` beside it.
 - Test: `fuel-core/src/lazy.rs` `#[cfg(test)]` (beside the existing rope tests, ~1825).
 
 **Interfaces:**
 - Produces:
-  - `LazyTensor::rope_delta_tables_const(&self, theta: f64, delta: usize, rows: usize, head_dim: usize) -> (Self, Self)` — cos/sin `[rows, head_dim]`, **every row identical** = the position-`delta` row.
+  - `Tensor::rope_delta_tables_const(&self, theta: f64, delta: usize, rows: usize, head_dim: usize) -> (Self, Self)` — cos/sin `[rows, head_dim]`, **every row identical** = the position-`delta` row.
   - `rope_delta_rotate_block_f32(dev: &Device, k_block: &[f32], theta: f64, delta: usize, block_size: usize, n_kv_heads: usize, head_dim: usize) -> Vec<f32>` — rotate a K block (post-RoPE at its original positions) by a uniform θ·`delta`, returning the shifted K block, same length/layout.
 
 - [ ] **Step 1: Write the failing test.** Exactness: a K block rotated at `start_pos = p0` then delta-rotated by `M` equals the same raw K rotated directly at `start_pos = p0 + M`.
@@ -48,7 +48,7 @@ fn rope_delta_rotate_equals_direct_shift() {
     // raw K for one block: [1, n_kv_heads, bs, head_dim]
     let raw: Vec<f32> = (0..n_kv_heads * bs * head_dim).map(|i| (i as f32 * 0.017).sin()).collect();
     let shape = Shape::from_dims(&[1, n_kv_heads, bs, head_dim]);
-    let k = LazyTensor::from_f32(std::sync::Arc::from(raw.clone()), shape.clone(), &dev);
+    let k = Tensor::from_f32(std::sync::Arc::from(raw.clone()), shape.clone(), &dev);
     // direct: rope at positions p0+m .. p0+m+bs
     let (c_dir, s_dir) = k.rope_tables_const(theta, p0 + m, bs, head_dim);
     let direct = k.rope_with_tables_decomposed(&c_dir, &s_dir).unwrap().realize_f32();
@@ -88,7 +88,7 @@ pub fn rope_delta_rotate_block_f32(
     block_size: usize, n_kv_heads: usize, head_dim: usize,
 ) -> Vec<f32> {
     let shape = Shape::from_dims(&[1, n_kv_heads, block_size, head_dim]);
-    let k = LazyTensor::from_f32(std::sync::Arc::from(k_block.to_vec()), shape, dev);
+    let k = Tensor::from_f32(std::sync::Arc::from(k_block.to_vec()), shape, dev);
     let (cos, sin) = k.rope_delta_tables_const(theta, delta, block_size, head_dim);
     k.rope_with_tables_decomposed(&cos, &sin)
         .expect("rope_delta_rotate_block_f32: rope")

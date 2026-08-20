@@ -45,7 +45,7 @@
 //!   graph-build time; the realizer times the native-dtype kernel and
 //!   reads the output back at its native width, converting to f32
 //!   only for the cross-backend correctness verdict
-//!   ([`crate::factories::LazyRealizer::realize_capture_f32`]). A cell
+//!   ([`crate::factories::Realizer::realize_capture_f32`]). A cell
 //!   whose backend has no kernel for the requested dtype is skipped
 //!   cleanly (logged), never fatal — CPU currently carries
 //!   f16/bf16 kernels for the elementwise/matmul/reduction families
@@ -1152,7 +1152,7 @@ impl Judge {
         dtype: DType,
         size: &OpSize,
         device: &DeviceDescriptor,
-        realizer: &mut dyn crate::factories::LazyRealizer,
+        realizer: &mut dyn crate::factories::Realizer,
     ) -> Option<CellRun> {
         let tensor =
             match std::panic::catch_unwind(AssertUnwindSafe(|| build_input_graph(op, dtype, size)))
@@ -1283,7 +1283,7 @@ struct PreparedDirectCall {
 /// Look up the `kernel_source` of the FIRST alternative at the
 /// binding-table cell. Post-Session-3-rider this is the FALLBACK
 /// attribution only — used when the realizer reports no dispatched
-/// sibling ([`crate::factories::LazyRealizer::last_kernel_source`]
+/// sibling ([`crate::factories::Realizer::last_kernel_source`]
 /// returned `None`, i.e. the plan had no entry for the measured root
 /// and the executor's `compile_node` fallback dispatched the
 /// first-registered binding). Returns `""` when no alternative is
@@ -1674,26 +1674,26 @@ impl OpSize {
     }
 }
 
-/// Build a leaf [`LazyTensor`] at `dtype` from f32 source `data`. F16/
+/// Build a leaf [`Tensor`] at `dtype` from f32 source `data`. F16/
 /// BF16 down-convert the deterministic f32 domain element-wise
 /// (`half::f16/bf16::from_f32`) so the same input distribution is
 /// exercised at every precision — the cross-dtype comparison stays
 /// apples-to-apples modulo the dtype's own rounding. Panics only on a
 /// dtype outside the profiled `{F32, F16, BF16}` set (never reached:
 /// [`PROFILED_DTYPES`] is the sole caller of `build_input_graph`).
-fn make_leaf(dtype: DType, data: Vec<f32>, shape: Shape) -> crate::lazy::LazyTensor {
-    use crate::lazy::LazyTensor;
+fn make_leaf(dtype: DType, data: Vec<f32>, shape: Shape) -> crate::lazy::Tensor {
+    use crate::lazy::Tensor;
     let dev = crate::Device::cpu();
     match dtype {
-        DType::F32 => LazyTensor::from_f32(data, shape, &dev),
-        DType::F16 => LazyTensor::from_f16(
+        DType::F32 => Tensor::from_f32(data, shape, &dev),
+        DType::F16 => Tensor::from_f16(
             data.iter()
                 .map(|&x| half::f16::from_f32(x))
                 .collect::<Vec<_>>(),
             shape,
             &dev,
         ),
-        DType::BF16 => LazyTensor::from_bf16(
+        DType::BF16 => Tensor::from_bf16(
             data.iter()
                 .map(|&x| half::bf16::from_f32(x))
                 .collect::<Vec<_>>(),
@@ -1708,11 +1708,11 @@ fn make_leaf(dtype: DType, data: Vec<f32>, shape: Shape) -> crate::lazy::LazyTen
 /// `data`. Mirrors [`make_leaf`] but through the `const_*_like`
 /// constructors so the second operand shares `a`'s graph.
 fn make_const_like(
-    a: &crate::lazy::LazyTensor,
+    a: &crate::lazy::Tensor,
     dtype: DType,
     data: Vec<f32>,
     shape: Shape,
-) -> crate::lazy::LazyTensor {
+) -> crate::lazy::Tensor {
     match dtype {
         DType::F32 => a.const_f32_like(data, shape),
         DType::F16 => a.const_f16_like(
@@ -1735,7 +1735,7 @@ fn make_const_like(
 /// constant inputs. The inputs are deterministic (generated in f32 and
 /// down-converted to `dtype`) so precision comparisons across backends
 /// are meaningful.
-fn build_input_graph(op: OpKind, dtype: DType, size: &OpSize) -> crate::lazy::LazyTensor {
+fn build_input_graph(op: OpKind, dtype: DType, size: &OpSize) -> crate::lazy::Tensor {
     match (op, *size) {
         (OpKind::MatMul, OpSize::MatMul { m, n, k }) => {
             let a_data: Vec<f32> = (0..(m * k)).map(|i| ((i as f32) * 1.3e-3).sin()).collect();
@@ -1830,7 +1830,7 @@ fn build_input_graph(op: OpKind, dtype: DType, size: &OpSize) -> crate::lazy::La
         //
         // Builds the GQA decode operands q=[b,hq,1,d], k=v=[b,hkv,k_len,d]
         // and emits `Op::Fused(FLASH_ATTN, FlashAttn{..})` via the
-        // LazyTensor `flash_attn` builder (k_len == the K length axis, so
+        // Tensor `flash_attn` builder (k_len == the K length axis, so
         // the whole prefix is attended — the concrete-k_len decode).
         // seq_q=1 with `causal=true` is a no-op mask (the single query at
         // the last position attends every key), matching decode. On CPU
@@ -1916,7 +1916,7 @@ fn is_reduction(op: OpKind) -> bool {
 
 /// Dispatch one per-axis reduction along the last dim. The reduced
 /// dim is removed from the output shape.
-fn apply_reduction(op: OpKind, a: &crate::lazy::LazyTensor) -> crate::lazy::LazyTensor {
+fn apply_reduction(op: OpKind, a: &crate::lazy::Tensor) -> crate::lazy::Tensor {
     // Reduce the last dim. Input is rank-2 `[rows, cols]`; output is
     // rank-1 `[rows]`.
     let last_dim = a.rank() - 1;
@@ -1980,9 +1980,9 @@ fn binary_inputs(op: OpKind, n: usize) -> (Vec<f32>, Vec<f32>) {
 /// Dispatch one elementwise binary op against `(a, b)`.
 fn apply_binary(
     op: OpKind,
-    a: &crate::lazy::LazyTensor,
-    b: &crate::lazy::LazyTensor,
-) -> crate::lazy::LazyTensor {
+    a: &crate::lazy::Tensor,
+    b: &crate::lazy::Tensor,
+) -> crate::lazy::Tensor {
     match op {
         OpKind::AddElementwise => a.add(b).unwrap(),
         OpKind::SubElementwise => a.sub(b).unwrap(),
@@ -2038,7 +2038,7 @@ fn unary_input(n: usize) -> Vec<f32> {
 }
 
 /// Dispatch one elementwise unary op against `a`.
-fn apply_unary(op: OpKind, a: &crate::lazy::LazyTensor) -> crate::lazy::LazyTensor {
+fn apply_unary(op: OpKind, a: &crate::lazy::Tensor) -> crate::lazy::Tensor {
     match op {
         OpKind::NegElementwise => a.neg(),
         OpKind::SqrElementwise => a.sqr(),
@@ -2424,8 +2424,8 @@ mod tests {
         struct StubRealizer {
             src: Option<&'static str>,
         }
-        impl crate::factories::LazyRealizer for StubRealizer {
-            fn realize_f32(&mut self, _tensor: &crate::lazy::LazyTensor) -> Result<Vec<f32>> {
+        impl crate::factories::Realizer for StubRealizer {
+            fn realize_f32(&mut self, _tensor: &crate::lazy::Tensor) -> Result<Vec<f32>> {
                 Ok(vec![0.0; 8])
             }
             fn last_kernel_source(&self) -> Option<&'static str> {

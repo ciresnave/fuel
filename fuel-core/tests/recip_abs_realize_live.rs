@@ -6,7 +6,7 @@
 //! `fuel-cuda-backend/tests/recip_abs_realize_live.rs`, where they
 //! pinned the legacy `CudaGraphExecutor::eval_node` realize arms. That
 //! struct is retiring; the executor under test is now the production
-//! path — `LazyTensor::realize_f32_cuda` →
+//! path — `Tensor::realize_f32_cuda` →
 //! `pipelined_bridge::realize_one_as` → `PipelinedExecutor` →
 //! binding-table dispatch onto baracuda's `unary_recip_f32` /
 //! `unary_abs_f32`. The file moved here because the pipelined entries
@@ -19,7 +19,7 @@
 
 #![cfg(feature = "cuda")]
 
-use fuel_core::lazy::LazyTensor;
+use fuel_core::lazy::Tensor;
 use fuel_cuda_backend::CudaDevice;
 use fuel_ir::{DType, Shape};
 
@@ -42,7 +42,7 @@ fn dev_or_skip() -> Option<CudaDevice> {
 fn recip_realize_on_cuda_matches_reference() {
     let Some(dev) = dev_or_skip() else { return };
 
-    let a = LazyTensor::from_f32(
+    let a = Tensor::from_f32(
         vec![2.0_f32, 4.0, 8.0, 16.0],
         Shape::from_dims(&[4]),
         &fuel_core::Device::cpu(),
@@ -69,7 +69,7 @@ fn recip_realize_on_cuda_matches_reference() {
 fn abs_realize_on_cuda_matches_reference() {
     let Some(dev) = dev_or_skip() else { return };
 
-    let a = LazyTensor::from_f32(
+    let a = Tensor::from_f32(
         vec![-3.0_f32, 0.0, 3.0, -1.5, 2.5],
         Shape::from_dims(&[5]),
         &fuel_core::Device::cpu(),

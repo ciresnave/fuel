@@ -10,7 +10,7 @@
 
 #![cfg(any(feature = "aocl", feature = "onemkl"))]
 
-use fuel_core::lazy::LazyTensor;
+use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
 
 fn build_conv_graph(
@@ -22,14 +22,14 @@ fn build_conv_graph(
     k: usize,
     stride: (usize, usize),
     padding: (usize, usize),
-) -> LazyTensor {
+) -> Tensor {
     let x_data: Vec<f32> = (0..(n * c_in * h * w))
         .map(|i| ((i as f32) * 1.3e-3).sin())
         .collect();
     let w_data: Vec<f32> = (0..(c_out * c_in * k * k))
         .map(|i| ((i as f32) * 1.7e-3).cos())
         .collect();
-    let x = LazyTensor::from_f32(
+    let x = Tensor::from_f32(
         x_data,
         Shape::from_dims(&[n, c_in, h, w]),
         &fuel_core::Device::cpu(),

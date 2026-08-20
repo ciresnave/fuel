@@ -3,10 +3,10 @@
 ///
 /// # Host buffers, not tensors
 ///
-/// The four data fields are plain host buffers, **not** `LazyTensor`. Dataset
+/// The four data fields are plain host buffers, **not** `Tensor`. Dataset
 /// loading is file I/O plus a normalization pass; the consumer turns a batch
 /// into a tensor at the point it enters a graph, and it must do so on *its own*
-/// graph — `LazyTensor::from_*` mints a NEW graph per call, so a tensor handed
+/// graph — `Tensor::from_*` mints a NEW graph per call, so a tensor handed
 /// out by a loader could never be combined with the caller's activations
 /// anyway. Keeping the decode side host-typed is therefore not a downgrade: it
 /// is the only shape that composes.

@@ -8,7 +8,7 @@ Op coverage delivered:
 - BatchNormalization (eval/inference mode; rejects training_mode=1; broadcast over channel axis 1)
 - LayerNormalization (axis + epsilon, optional bias, mean/var via mean_keepdim suffix reduction)
 - Softmax / LogSoftmax (axis-aware via permute swap-axis-to-last, then softmax_last_dim, then inverse permute)
-- Relu / Gelu / Sigmoid / Tanh (delegated to LazyTensor primitives)
+- Relu / Gelu / Sigmoid / Tanh (delegated to Tensor primitives)
 - LeakyRelu (relu(x) + alpha*(x - relu(x)) decomposition)
 - Elu (relu(x) + alpha*(exp(min(x,0)) - 1) decomposition; min via -relu(-x))
 - HardSigmoid (clamp(alpha*x + beta, 0, 1))

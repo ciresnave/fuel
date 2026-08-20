@@ -5,16 +5,16 @@
 //! `fuel-transformers/.../euler_ancestral_discrete.rs`. Like the other
 //! schedulers in [`crate::lazy_sd_samplers`], all per-step coefficients
 //! are precomputed host-side `f64` and folded into the graph via
-//! [`LazyTensor::mul_scalar`] / [`LazyTensor::add`] — no new graph ops.
+//! [`Tensor::mul_scalar`] / [`Tensor::add`] — no new graph ops.
 //!
 //! Euler-ancestral is a noise-injecting stepper: each `step` adds a
 //! noise term with deviation `sigma_up`. The caller supplies the noise
 //! tensor so RNG ownership stays out of the scheduler — pass an
 //! all-zero tensor for deterministic behaviour, or
-//! [`LazyTensor::const_f32_like`] with samples from any RNG for the
+//! [`Tensor::const_f32_like`] with samples from any RNG for the
 //! ancestral path.
 
-use crate::lazy::LazyTensor;
+use crate::lazy::Tensor;
 use crate::lazy_sd_samplers::{BetaSchedule, PredictionType, SdScheduler, TimestepSpacing};
 use crate::{Error, Result};
 use fuel_ir::Shape;
@@ -152,11 +152,7 @@ impl EulerAncestralDiscreteScheduler {
 
     /// Scales the denoiser input by `1 / sqrt(sigma_t^2 + 1)`, matching
     /// the K-LMS convention used by k-diffusion samplers.
-    pub fn scale_model_input(
-        &self,
-        sample: &LazyTensor,
-        timestep_idx: usize,
-    ) -> Result<LazyTensor> {
+    pub fn scale_model_input(&self, sample: &Tensor, timestep_idx: usize) -> Result<Tensor> {
         if timestep_idx >= self.sigmas.len() {
             return Err(Error::Msg(format!(
                 "scale_model_input: timestep_idx {timestep_idx} out of bounds (sigmas.len={})",
@@ -175,11 +171,11 @@ impl EulerAncestralDiscreteScheduler {
     /// shape (pass an all-zero tensor for a deterministic step).
     pub fn step(
         &self,
-        model_output: &LazyTensor,
+        model_output: &Tensor,
         timestep_idx: usize,
-        sample: &LazyTensor,
-        noise: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        sample: &Tensor,
+        noise: &Tensor,
+    ) -> Result<Tensor> {
         if timestep_idx + 1 >= self.sigmas.len() {
             return Err(Error::Msg(format!(
                 "step: timestep_idx {timestep_idx} out of bounds (sigmas.len={})",
@@ -234,10 +230,10 @@ impl EulerAncestralDiscreteScheduler {
     /// `original + noise * sigma[timestep_idx]`.
     pub fn add_noise(
         &self,
-        original: &LazyTensor,
-        noise: &LazyTensor,
+        original: &Tensor,
+        noise: &Tensor,
         timestep_idx: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         if timestep_idx >= self.sigmas.len() {
             return Err(Error::Msg(format!(
                 "add_noise: timestep_idx {timestep_idx} out of bounds (sigmas.len={})",
@@ -269,12 +265,7 @@ impl SdScheduler for EulerAncestralDiscreteScheduler {
         self.recompute_schedule(num_inference_steps)
     }
 
-    fn step(
-        &mut self,
-        model_output: &LazyTensor,
-        timestep: usize,
-        sample: &LazyTensor,
-    ) -> Result<LazyTensor> {
+    fn step(&mut self, model_output: &Tensor, timestep: usize, sample: &Tensor) -> Result<Tensor> {
         let idx = self
             .timesteps
             .iter()
@@ -289,12 +280,7 @@ impl SdScheduler for EulerAncestralDiscreteScheduler {
         EulerAncestralDiscreteScheduler::step(self, model_output, idx, sample, &noise)
     }
 
-    fn add_noise(
-        &self,
-        original: &LazyTensor,
-        noise: &LazyTensor,
-        timesteps: &[usize],
-    ) -> Result<LazyTensor> {
+    fn add_noise(&self, original: &Tensor, noise: &Tensor, timesteps: &[usize]) -> Result<Tensor> {
         if timesteps.is_empty() {
             return Err(Error::Msg(
                 "EulerAncestralDiscreteScheduler::add_noise: timesteps must be non-empty".into(),
@@ -393,7 +379,7 @@ fn interp(x: &[f64], xp: &[f64], fp: &[f64]) -> Vec<f64> {
         .collect()
 }
 
-fn randn_like_on_graph(anchor: &LazyTensor, mean: f64, stdev: f64) -> Result<LazyTensor> {
+fn randn_like_on_graph(anchor: &Tensor, mean: f64, stdev: f64) -> Result<Tensor> {
     use rand_distr::{Distribution, Normal};
     let shape = anchor.shape();
     let n = shape.elem_count();
@@ -409,8 +395,8 @@ mod tests {
     use super::*;
     use crate::Device;
 
-    fn paired(a: &[f32], b: &[f32], shape: &[usize]) -> (LazyTensor, LazyTensor) {
-        let anchor = LazyTensor::from_f32(a.to_vec(), Shape::from_dims(shape), &Device::cpu());
+    fn paired(a: &[f32], b: &[f32], shape: &[usize]) -> (Tensor, Tensor) {
+        let anchor = Tensor::from_f32(a.to_vec(), Shape::from_dims(shape), &Device::cpu());
         let other = anchor.const_f32_like(b.to_vec(), Shape::from_dims(shape));
         (anchor, other)
     }

@@ -2,7 +2,7 @@
 //! Neural-network building blocks for Fuel's lazy graph.
 //!
 //! Extracted from `fuel-core` (2026-08-19). This crate sits **above**
-//! `fuel-core`: the whole surface is built on `LazyTensor`, which lives in
+//! `fuel-core`: the whole surface is built on `Tensor`, which lives in
 //! `fuel::lazy`, so `fuel-nn` is a *consumer* of `fuel-core` and
 //! `fuel-core` deliberately does **not** re-export it — that would be a
 //! dependency cycle.
@@ -12,9 +12,9 @@
 //! The `fuel-core` dissolution was recorded as "downstream of the eager-
 //! dispatch retirement (B6)". **B6 is complete** — verify with
 //! `git grep "pub struct Tensor" -- fuel-core/src/` (expect 0; control:
-//! `pub struct LazyTensor` returns 1). And this surface never depended on
+//! `pub struct Tensor` returns 1). And this surface never depended on
 //! eager `Tensor` in the first place: measured across all 22 files, every
-//! `Tensor` mention is `LazyTensor` or a doc comment, with one exception
+//! `Tensor` mention is `Tensor` or a doc comment, with one exception
 //! (`optim.rs`, `fuel_graph::NodeHandle::from_existing`) which is the graph
 //! handle from a crate already *below* `fuel-core`.
 //!

@@ -42,7 +42,7 @@
 //! enumerated by [`StellaEmbedDim`].
 
 use crate::Result;
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::lazy_qwen2::{Qwen2Config, Qwen2Model, Qwen2Weights};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -126,7 +126,7 @@ impl StellaV5Model {
     /// Run a forward pass on un-padded input tokens. All tokens
     /// are weighted equally during mean pooling. Returns
     /// L2-normalized embeddings `(1, out_features)`.
-    pub fn forward(&self, tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         let seq = tokens.len();
         assert!(seq > 0, "StellaV5Model::forward: tokens must be non-empty");
@@ -155,7 +155,7 @@ impl StellaV5Model {
     /// Run a forward pass with a caller-supplied attention mask
     /// of shape `(seq,)` (1 for keep, 0 for pad). Mean pools the
     /// hidden states weighted by the mask before projection.
-    pub fn forward_with_mask(&self, tokens: &[u32], attention_mask: &[u32]) -> Result<LazyTensor> {
+    pub fn forward_with_mask(&self, tokens: &[u32], attention_mask: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         let seq = tokens.len();
         assert!(
@@ -197,7 +197,7 @@ impl StellaV5Model {
 }
 
 /// L2-normalize on the last dim of a rank-2 tensor `(B, D)`.
-fn l2_normalize(x: &LazyTensor) -> Result<LazyTensor> {
+fn l2_normalize(x: &Tensor) -> Result<Tensor> {
     x.l2_normalize(1_usize, 0.0)
 }
 

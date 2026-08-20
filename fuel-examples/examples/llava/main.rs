@@ -32,7 +32,7 @@ use clap::Parser;
 use std::io::Write;
 use std::sync::Arc;
 
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel::lazy_llava::{HFLlavaConfig, LlavaModel, LlavaWeights, select_best_resolution};
 use fuel::safetensors::MmapedSafetensors;
 use fuel::{Device, Shape};
@@ -202,7 +202,7 @@ fn main() -> Result<()> {
     // ---- Image -------------------------------------------------------------
     let pixel_chw = load_image_chw(&args.image, img_size)?;
     println!("loaded image (1, 3, {img_size}, {img_size})");
-    let pixel_values = LazyTensor::from_f32(
+    let pixel_values = Tensor::from_f32(
         Arc::<[f32]>::from(pixel_chw),
         Shape::from_dims(&[1, 3, img_size, img_size]),
         &Device::cpu(),

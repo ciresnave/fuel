@@ -9,7 +9,7 @@
 //!      `(x_0, x_1), (x_2, x_3), …` rather than the standard
 //!      split-half layout `(x_i, x_{i+d/2})` that
 //!      [`fuel_graph::build_rope_tables`] /
-//!      [`LazyTensor::rope_with_tables`] assume. We emulate
+//!      [`Tensor::rope_with_tables`] assume. We emulate
 //!      the interleaved variant by **reshape-permuting** the
 //!      input from `(..., d)` to `(..., d/2, 2)`, swapping the
 //!      last two dims to `(..., 2, d/2)`, applying standard
@@ -41,7 +41,7 @@
 //! ignored in v1, mirroring the eager GLM-4 default).
 
 use crate::inference_context::{DecodeSession, DecodeTokenData, InferenceContext, KvCache};
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::persistent_decode::{
     DecodeBackbone, DecodeDims, DecodeLayerInputs, MaskPlan, PersistentDecodeModel,
 };
@@ -126,29 +126,25 @@ pub struct Glm4Model {
 }
 
 impl Glm4Model {
-    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let h_norm = self.run_backbone(tokens, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
 
     /// Multimodal entry point. Skips token embedding; runs the decoder
     /// over pre-embedded inputs. GLM4 does NOT scale embeddings.
-    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let h_norm = self.run_backbone_embeds(embeds, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
 
     /// Hidden-state variant of [`Self::forward_embeds`].
-    pub fn forward_hidden_embeds(
-        &self,
-        embeds: &LazyTensor,
-        start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_hidden_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         self.run_backbone_embeds(embeds, start_pos)
     }
 
     /// Build per-token embeddings without running the decoder.
-    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &Tensor, tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
@@ -158,7 +154,7 @@ impl Glm4Model {
         )
     }
 
-    fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
+    fn apply_lm_head(&self, h_norm: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let lm_head_w = match &self.weights.lm_head {
             Some(w) => w.clone(),
@@ -169,17 +165,17 @@ impl Glm4Model {
 
     /// Run the decoder forward up to the final RmsNorm and
     /// return per-token hidden states `(1, seq, hidden_size)`.
-    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         self.run_backbone(tokens, start_pos)
     }
 
-    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
         assert!(seq > 0, "Glm4Model::forward: tokens must be non-empty");
 
-        let h = LazyTensor::embed_tokens(
+        let h = Tensor::embed_tokens(
             weights.token_embedding.clone(),
             cfg.vocab_size,
             cfg.hidden_size,
@@ -189,7 +185,7 @@ impl Glm4Model {
         self.run_backbone_embeds(&h, start_pos)
     }
 
-    fn run_backbone_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
+    fn run_backbone_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -235,11 +231,11 @@ impl Glm4Model {
 
     fn apply_layer(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &Glm4LayerWeights,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let x_shape = x.shape();
         let dims = x_shape.dims();
@@ -288,7 +284,7 @@ impl Glm4Model {
         let scores = q_r.matmul(&k_t)?;
         let scores_scaled = scores.mul_scalar(scale);
         // Strict causal mask.
-        let mask = LazyTensor::additive_causal_mask_like(x, seq)
+        let mask = Tensor::additive_causal_mask_like(x, seq)
             .reshape(Shape::from_dims(&[1, 1, seq, seq]))?;
         let scores_masked = scores_scaled.broadcast_add(&mask)?;
         let attn = scores_masked.softmax_last_dim()?;
@@ -431,16 +427,16 @@ impl Glm4Model {
     #[allow(clippy::too_many_arguments)]
     fn apply_layer_with_kv_writes(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &Glm4LayerWeights,
-        k_cache_const: &LazyTensor,
-        v_cache_const: &LazyTensor,
+        k_cache_const: &Tensor,
+        v_cache_const: &Tensor,
         cached_len_sym: fuel_ir::SymId,
-        offset: Option<&LazyTensor>,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-        mask: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        offset: Option<&Tensor>,
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+        mask: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let head_dim = cfg.head_dim;
         let rope_dim = cfg.rope_dim();
@@ -638,7 +634,7 @@ impl DecodeBackbone for Glm4Model {
         &self,
         layer_idx: usize,
         inputs: &DecodeLayerInputs<'_>,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         self.apply_layer_with_kv_writes(
             inputs.x,
             &self.weights.layers[layer_idx],
@@ -652,7 +648,7 @@ impl DecodeBackbone for Glm4Model {
         )
     }
 
-    fn decode_final_norm_and_head(&self, h: &LazyTensor) -> Result<LazyTensor> {
+    fn decode_final_norm_and_head(&self, h: &Tensor) -> Result<Tensor> {
         let h_norm = h.rms_norm_affine(
             Arc::clone(&self.weights.final_norm_gain),
             self.config.rms_norm_eps,
@@ -671,12 +667,12 @@ impl DecodeBackbone for Glm4Model {
 /// "first half + second half" which exactly matches the standard
 /// split-half RoPE convention. Reverse the permute afterward.
 pub fn apply_interleaved_partial_rope(
-    qk: &LazyTensor,
-    rope_cos: &LazyTensor,
-    rope_sin: &LazyTensor,
+    qk: &Tensor,
+    rope_cos: &Tensor,
+    rope_sin: &Tensor,
     head_dim: usize,
     rope_dim: usize,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     if rope_dim == 0 {
         return Ok(qk.clone());
     }
@@ -960,7 +956,7 @@ mod tests {
 
         let dev = Device::cpu();
         // Build a (1, 1, 1, head_dim) tensor.
-        let qk = LazyTensor::from_f32(
+        let qk = Tensor::from_f32(
             Arc::from(
                 (0..head_dim)
                     .map(|i| (i as f32 + 1.0) * 0.1)
@@ -1041,7 +1037,7 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
         let max_diff = logits_ref
@@ -1062,7 +1058,7 @@ mod tests {
             config: cfg.clone(),
             weights: tiny_weights(&cfg),
         };
-        let bad = LazyTensor::from_f32(
+        let bad = Tensor::from_f32(
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
             Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
             &Device::cpu(),
@@ -1079,7 +1075,7 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let h_via_embeds = model
             .forward_hidden_embeds(&embeds, 0)

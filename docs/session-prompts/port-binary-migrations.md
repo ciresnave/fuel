@@ -4,9 +4,9 @@
 > current git: the bulk eager-binary port already landed (Phase H,
 > `cfcb35cf`, retired the eager `fuel-transformers/models`); this
 > spec now narrows to the actual *remaining* work — `custom-ops`
-> (needs a `LazyCustomOp1` surface) and the two training bins
+> (needs a `CustomOp1` surface) and the two training bins
 > (`mnist-training`, `reinforcement-learning` → `lazy_nn_optim` /
-> `LazyVar`). `llama_multiprocess` was *deleted* in `cfcb35cf`, not
+> `Var`). `llama_multiprocess` was *deleted* in `cfcb35cf`, not
 > quarantined, so it carries no port obligation.
 
 ## Remaining eager source
@@ -15,11 +15,11 @@ The wholesale runner port has shipped; what is left is the
 genuinely unfinished tail:
 
 - **`custom-ops`** — eager `CustomOp1` demo with no lazy
-  equivalent yet (needs a `LazyCustomOp1` surface; see Special
+  equivalent yet (needs a `CustomOp1` surface; see Special
   categories below).
 - **Training bins** (`mnist-training`,
   `reinforcement-learning`) — still need the lazy training
-  surface (`lazy_nn_optim`, `LazyVar`).
+  surface (`lazy_nn_optim`, `Var`).
 
 The historical framing of this doc was "108 eager
 `fuel-examples/examples/*/main.rs` runner binaries on eager
@@ -42,7 +42,7 @@ in-place to:
    model the graph is **input-independent and built at load**
    (`map_from_file` / native `.fuel`), not inside `forward()`;
    the runner wires the graph once, then feeds inputs.
-4. Drive the (already-built) graph with `LazyTensor` token /
+4. Drive the (already-built) graph with `Tensor` token /
    pixel inputs — runtime dispatches op-sequence runs between
    decision points; the route picker chooses only at branch
    points.
@@ -56,14 +56,14 @@ the lazy modules have already shipped from Rounds 1-4.
 ## Special categories
 
 - **Training bins** (`mnist-training`, `reinforcement-learning`):
-  migrate to the Round 5 lazy training surface — `LazyOptimizer`
-  (`LazySgd` / `LazyAdamW`), `LazyVar`, `lazy_nn_loss::*`,
-  `lazy_nn::{LazyLinear, LazyConv2d, LazyEmbedding}` from the
+  migrate to the Round 5 lazy training surface — `Optimizer`
+  (`Sgd` / `AdamW`), `Var`, `lazy_nn_loss::*`,
+  `lazy_nn::{Linear, Conv2d, Embedding}` from the
   shipping Round 6.
 - **`custom-ops`** (eager `CustomOp1` demo): if the lazy graph
   doesn't yet expose a custom-op extension surface, the binary
   port has to ship that surface first (foundational sub-port).
-  Most likely landing: a `LazyCustomOp1` trait analogous to
+  Most likely landing: a `CustomOp1` trait analogous to
   eager `CustomOp1` that injects an `Op::Fused(USER_DEFINED, ...)`
   node.
 - **Quantized binaries** (`quantized`, `quantized-gemma`,
@@ -73,7 +73,7 @@ the lazy modules have already shipped from Rounds 1-4.
   `WeightStorage::Q4_0` surface (and `lazy_quantized_*`
   modules where shipped — smollm3, whisper, flux).
 - **ONNX binaries** (`onnx`, `onnx-llm`, `onnx_basics.rs`):
-  use `fuel-onnx::LazyOnnxEval` from Round 5. May hit
+  use `fuel-onnx::OnnxEval` from Round 5. May hit
   unsupported-op errors for ops not yet covered by sub-ports
   1+2+3 — list those in the per-binary commit and ship the
   needed sub-port.
@@ -105,9 +105,9 @@ as an accepted residual rather than a blocking port.
 | whisper                | `lazy_whisper::WhisperModel` + `lazy_whisper_audio::pcm_to_mel` |
 | metavoice              | `lazy_metavoice::MetaVoiceModel`     |
 | mimi                   | `lazy_mimi_encodec::MimiEncodecModel`|
-| mnist-training         | `lazy_nn::{LazyLinear, LazyConv2d}` + `lazy_nn_optim::LazyAdamW` + `lazy_nn_loss::cross_entropy` |
+| mnist-training         | `lazy_nn::{Linear, Conv2d}` + `lazy_nn_optim::AdamW` + `lazy_nn_loss::cross_entropy` |
 | reinforcement-learning | `lazy_nn::*` + `lazy_nn_optim::*`    |
-| onnx / onnx-llm        | `fuel_onnx::LazyOnnxEval`            |
+| onnx / onnx-llm        | `fuel_onnx::OnnxEval`            |
 
 ## Batching strategy
 

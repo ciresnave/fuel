@@ -19,7 +19,7 @@
 //! `fuel-transformers/src/models/diffusion/wuerstchen/*` (~1176 LOC
 //! across 7 files); see `port-wuerstchen.md` for the full mapping.
 
-use crate::lazy::LazyTensor;
+use crate::lazy::Tensor;
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -281,13 +281,7 @@ pub struct PaellaUpLevelWeights {
 
 /// `(1, C, H, W)` LayerNorm over the channel axis with no affine.
 /// Matches eager `WLayerNorm`: permute NHWC, LN(last dim), permute back.
-fn w_layer_norm(
-    x: &LazyTensor,
-    c: usize,
-    h: usize,
-    w: usize,
-    eps: f64,
-) -> crate::Result<LazyTensor> {
+fn w_layer_norm(x: &Tensor, c: usize, h: usize, w: usize, eps: f64) -> crate::Result<Tensor> {
     let x_nhwc = x.permute([0, 2, 3, 1_usize])?;
     let x_flat = x_nhwc.reshape(Shape::from_dims(&[1, h * w, c]))?;
     let normed = x_flat.layer_norm_last_dim(eps)?;
@@ -298,21 +292,21 @@ fn w_layer_norm(
 
 /// Same shape contract as `w_layer_norm` but operates on a `[1, seq, C]`
 /// tensor directly (i.e. already channels-last and flattened).
-fn ln_last_no_affine(x: &LazyTensor, eps: f64) -> crate::Result<LazyTensor> {
+fn ln_last_no_affine(x: &Tensor, eps: f64) -> crate::Result<Tensor> {
     x.layer_norm_last_dim(eps)
 }
 
 /// `y = x @ W + b`. `x` shape `[B, seq, in_f]`, W stored
 /// `[in_f, out_f]` row-major.
 fn linear(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &Arc<[f32]>,
     b: Option<&Arc<[f32]>>,
     in_f: usize,
     out_f: usize,
     batch: usize,
     seq: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]));
     let proj = x.matmul(&w_t)?;
     match b {
@@ -338,13 +332,13 @@ fn linear(
 ///
 /// Public for downstream tests (`grn_hand_computed`).
 pub fn global_response_norm(
-    x: &LazyTensor,
+    x: &Tensor,
     gamma: &Arc<[f32]>,
     beta: &Arc<[f32]>,
     c: usize,
     h: usize,
     w: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     // sum over (h, w) per channel.
     let sq = x.mul(x)?; // [1, C, H, W]
     let agg = sq.reduce_sum_to(Shape::from_dims(&[1, c, 1, 1])).sqrt(); // [1, C, 1, 1]
@@ -373,13 +367,13 @@ pub fn global_response_norm(
 /// channelwise MLP with GRN (channels-last), residual. Optional skip
 /// is concatenated along the channel axis **before** the depthwise.
 fn apply_res_block(
-    x: &LazyTensor,
+    x: &Tensor,
     rw: &ResBlockWeights,
-    skip: Option<&LazyTensor>,
+    skip: Option<&Tensor>,
     h: usize,
     w: usize,
     eps: f64,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let c = rw.c;
     let c_skip = rw.c_skip;
     let k = rw.ksize;
@@ -423,13 +417,13 @@ fn apply_res_block(
 /// the optional skip is concatenated **after** the depthwise+norm, and
 /// the MLP's fc1 has input width `c + c_skip`.
 fn apply_res_block_stage_b(
-    x: &LazyTensor,
+    x: &Tensor,
     rw: &ResBlockWeights,
-    skip: Option<&LazyTensor>,
+    skip: Option<&Tensor>,
     h: usize,
     w: usize,
     eps: f64,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let c = rw.c;
     let c_skip = rw.c_skip;
     let k = rw.ksize;
@@ -471,12 +465,12 @@ fn apply_res_block_stage_b(
 /// FiLM-style timestep block. `t` is `[1, c_timestep]`; output is `(1+a)·x + b`
 /// where `[a, b] = mapper(t).unsqueeze(-1).unsqueeze(-1).chunk(2, axis=1)`.
 fn apply_timestep_block(
-    x: &LazyTensor,
+    x: &Tensor,
     tw: &TimestepBlockWeights,
-    t: &LazyTensor, // [1, 1, c_timestep]
+    t: &Tensor, // [1, 1, c_timestep]
     h: usize,
     w: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let c = tw.c;
     let mapped = linear(t, &tw.w, Some(&tw.b), tw.c_timestep, 2 * c, 1, 1)?;
     // mapped: [1, 1, 2C]. chunk along axis -1.
@@ -494,15 +488,15 @@ fn apply_timestep_block(
 /// Cross-attention block: norm(x) + attention(norm(x), silu(kv).mapper)
 /// where the spatial tokens are optionally prepended to kv (`self_attn`).
 fn apply_attn_block(
-    x: &LazyTensor,
+    x: &Tensor,
     aw: &AttnBlockWeights,
-    kv_raw: &LazyTensor, // [1, S_kv, c_cond]
+    kv_raw: &Tensor, // [1, S_kv, c_cond]
     s_kv: usize,
     h: usize,
     w: usize,
     eps: f64,
     self_attn: bool,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let c = aw.c;
     let heads = aw.heads;
     let d_head = c / heads;
@@ -598,12 +592,12 @@ impl PriorModel {
     /// text conditioning.
     pub fn forward(
         &self,
-        xs: &LazyTensor,
+        xs: &Tensor,
         r: f32,
-        c_embed: &LazyTensor,
+        c_embed: &Tensor,
         h: usize,
         w: usize,
-    ) -> crate::Result<LazyTensor> {
+    ) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let c = cfg.prior_c;
         let c_in = cfg.prior_c_in;
@@ -692,12 +686,12 @@ impl DiffNextModel {
     /// in `[0, 1]`; `clip` is `[1, S, clip_embed]` text conditioning.
     pub fn forward(
         &self,
-        xs: &LazyTensor,
+        xs: &Tensor,
         r: f32,
-        clip: &LazyTensor,
+        clip: &Tensor,
         h_in: usize,
         w_in: usize,
-    ) -> crate::Result<LazyTensor> {
+    ) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let c_in = cfg.diffnext_c_in;
         let c_out = cfg.diffnext_c_out;
@@ -753,7 +747,7 @@ impl DiffNextModel {
         x = w_layer_norm(&x, levels[0], h, w, eps)?;
 
         // --- down path ---
-        let mut skips: Vec<LazyTensor> = Vec::new();
+        let mut skips: Vec<Tensor> = Vec::new();
         for (i, lvl) in self.weights.down_levels.iter().enumerate() {
             let c_lvl = levels[i];
             if let (Some(dw), Some(db)) = (&lvl.down_w, &lvl.down_b) {
@@ -846,13 +840,7 @@ impl DiffNextModel {
 /// Pixel-unshuffle (a.k.a. space-to-depth) by factor `p`. Input
 /// `[1, C, H, W]` → output `[1, C*p², H/p, W/p]`. Implemented as a
 /// reshape+permute composition.
-fn pixel_unshuffle(
-    x: &LazyTensor,
-    c: usize,
-    h: usize,
-    w: usize,
-    p: usize,
-) -> crate::Result<LazyTensor> {
+fn pixel_unshuffle(x: &Tensor, c: usize, h: usize, w: usize, p: usize) -> crate::Result<Tensor> {
     let h_out = h / p;
     let w_out = w / p;
     let r = x.reshape(Shape::from_dims(&[1, c, h_out, p, w_out, p]))?;
@@ -863,13 +851,7 @@ fn pixel_unshuffle(
 
 /// Pixel-shuffle (depth-to-space) by factor `p`. Input `[1, C, H, W]`
 /// → output `[1, C/p², H*p, W*p]`. Inverse of `pixel_unshuffle`.
-fn pixel_shuffle(
-    x: &LazyTensor,
-    c: usize,
-    h: usize,
-    w: usize,
-    p: usize,
-) -> crate::Result<LazyTensor> {
+fn pixel_shuffle(x: &Tensor, c: usize, h: usize, w: usize, p: usize) -> crate::Result<Tensor> {
     let c_out = c / (p * p);
     let r = x.reshape(Shape::from_dims(&[1, c_out, p, p, h, w]))?;
     // permute to [1, C_out, H, p, W, p].
@@ -892,7 +874,7 @@ impl PaellaVqModel {
     /// `[1, latent_channels, h_lat, w_lat]`. Output shape
     /// `[1, out_channels, h_lat * upscale, w_lat * upscale]` where
     /// `upscale = 2 * 2^(n_levels - 1)` (the *2 is the final pixel-shuffle).
-    pub fn decode(&self, latents: &LazyTensor) -> crate::Result<LazyTensor> {
+    pub fn decode(&self, latents: &Tensor) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let dims = latents.shape().dims().to_vec();
         if dims.len() != 4 {
@@ -958,11 +940,11 @@ impl PaellaVqModel {
 
 /// Apply one Paella MixingResidualBlock.
 fn apply_paella_mixing_res(
-    x: &LazyTensor,
+    x: &Tensor,
     bw: &PaellaMixingResWeights,
     h: usize,
     w: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let c = bw.c;
     let g = &bw.gammas;
     let eps = 1e-6_f64;
@@ -996,13 +978,7 @@ fn apply_paella_mixing_res(
 
 /// Replication-pad 2D by `pad` on every side. Input `[1, C, H, W]` →
 /// output `[1, C, H + 2*pad, W + 2*pad]`.
-fn replicate_pad_2d(
-    x: &LazyTensor,
-    c: usize,
-    h: usize,
-    w: usize,
-    pad: usize,
-) -> crate::Result<LazyTensor> {
+fn replicate_pad_2d(x: &Tensor, c: usize, h: usize, w: usize, pad: usize) -> crate::Result<Tensor> {
     if pad == 0 {
         return Ok(x.clone());
     }
@@ -1039,14 +1015,14 @@ pub fn generate(
     prior: &PriorModel,
     diffnext: &DiffNextModel,
     paella: &PaellaVqModel,
-    text_embed: &LazyTensor,
+    text_embed: &Tensor,
     prior_steps: usize,
     b_steps: usize,
     prior_h: usize,
     prior_w: usize,
     b_h: usize,
     b_w: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let cfg = &prior.config;
 
     // Stage C: start from noise and run `1 + prior_steps` denoising
@@ -1089,7 +1065,7 @@ pub fn generate(
 /// model's `(x - a) / b` output is the update), so a reproducible
 /// pseudo-random initial state suffices for both the tiny test and the
 /// general-purpose entry point.
-fn noise_on_graph(anchor: &LazyTensor, shape: Shape, seed: u64) -> crate::Result<LazyTensor> {
+fn noise_on_graph(anchor: &Tensor, shape: Shape, seed: u64) -> crate::Result<Tensor> {
     let n = shape.elem_count();
     let data = small_normal_vec(n, seed);
     Ok(anchor.const_f32_like(data, shape))
@@ -1806,7 +1782,7 @@ mod tests {
     #[test]
     fn global_response_norm_hand_computed() {
         let x_data = vec![1.0_f32, 0.0, 0.0, 0.0]; // [1, 1, 2, 2]
-        let x = LazyTensor::from_f32(x_data.clone(), Shape::from_dims(&[1, 1, 2, 2]), &dev());
+        let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[1, 1, 2, 2]), &dev());
         let gamma = arc_ones(1);
         let beta = arc_zeros(1);
         let out = global_response_norm(&x, &gamma, &beta, 1, 2, 2)
@@ -1831,7 +1807,7 @@ mod tests {
         };
         // Latent shape: spatial 8x8.
         let lat_data = vec![0.01_f32; 1 * 4 * 8 * 8];
-        let lat = LazyTensor::from_f32(lat_data, Shape::from_dims(&[1, 4, 8, 8]), &dev());
+        let lat = Tensor::from_f32(lat_data, Shape::from_dims(&[1, 4, 8, 8]), &dev());
         let img = model.decode(&lat).unwrap();
         // n_levels = 2 → one upsample (×2) followed by pixel_shuffle ×2 = total ×4.
         assert_eq!(img.shape().dims(), &[1, 3, 32, 32]);
@@ -1854,7 +1830,7 @@ mod tests {
             weights,
         };
         let xs_data = vec![0.01_f32; 1 * cfg.prior_c_in * 2 * 2];
-        let xs = LazyTensor::from_f32(
+        let xs = Tensor::from_f32(
             xs_data,
             Shape::from_dims(&[1, cfg.prior_c_in, 2, 2]),
             &dev(),
@@ -1880,7 +1856,7 @@ mod tests {
         let h = 4;
         let w = 4;
         let xs_data = vec![0.01_f32; 1 * cfg.diffnext_c_in * h * w];
-        let xs = LazyTensor::from_f32(
+        let xs = Tensor::from_f32(
             xs_data,
             Shape::from_dims(&[1, cfg.diffnext_c_in, h, w]),
             &dev(),
@@ -2061,7 +2037,7 @@ mod tests {
             weights: make_paella_weights(&cfg),
         };
         let txt_data = vec![0.01_f32; 1 * 4 * cfg.clip_embed];
-        let txt = LazyTensor::from_f32(txt_data, Shape::from_dims(&[1, 4, cfg.clip_embed]), &dev());
+        let txt = Tensor::from_f32(txt_data, Shape::from_dims(&[1, 4, cfg.clip_embed]), &dev());
         let img = generate(&prior, &diffnext, &paella, &txt, 0, 0, 2, 2, 8, 8).unwrap();
         assert_eq!(img.shape().dims(), &[1, 3, 32, 32]);
         let flat = img.realize_f32();

@@ -2,7 +2,7 @@
 //! ML framework for Rust
 //!
 //! ```rust
-//! use fuel_core::lazy::{LazyTensor, realize_many_f32};
+//! use fuel_core::lazy::{Tensor, realize_many_f32};
 //! use fuel_core::Device;
 //! # use fuel_core::Error;
 //! # fn main() -> Result<(), Error> {
@@ -11,8 +11,8 @@
 //! // Every tensor is a node in a lazy graph. The first `from_*` call mints the
 //! // graph; a second operand joins it with `from_*_on(a.graph(), ..)` — ops
 //! // require both operands to share one graph.
-//! let a = LazyTensor::from_f32((0..6).map(|x| x as f32).collect::<Vec<_>>(), (2, 3), &dev);
-//! let b = LazyTensor::from_f32_on(a.graph(), (0..12).map(|x| x as f32).collect::<Vec<_>>(), (3, 4), &dev);
+//! let a = Tensor::from_f32((0..6).map(|x| x as f32).collect::<Vec<_>>(), (2, 3), &dev);
+//! let b = Tensor::from_f32_on(a.graph(), (0..12).map(|x| x as f32).collect::<Vec<_>>(), (3, 4), &dev);
 //! let c = a.matmul(&b)?;
 //! assert_eq!(c.shape().dims(), &[2, 4]);
 //!
@@ -216,7 +216,7 @@ pub mod lazy_yolov3;
 pub mod lazy_yolov8;
 pub mod lazy_z_image;
 // `seq_bucketing` removed in Phase 6d: paged attention via
-// `Op::PagedAttn` (and `LazyTensor::paged_attn`) supersedes the
+// `Op::PagedAttn` (and `Tensor::paged_attn`) supersedes the
 // bucket-and-pad approach. Variable-length decode is now expressed
 // directly via per-sequence `context_lens`.
 pub mod metal_backend;
@@ -296,7 +296,7 @@ pub use storage::Storage;
 pub use strided_index::{StridedBlocks, StridedIndex};
 
 // Eager `Tensor` is the runtime data type the executor materializes into.
-// New user code should use [`lazy::LazyTensor`] — the graph builder — and
+// New user code should use [`lazy::Tensor`] — the graph builder — and
 // realize it via `realize_f32` etc. The eager `Tensor` re-export below is
 // kept for backend-adjacent crates (fuel-onnx, fuel-pyo3, fuel-parallel,
 // fuel-datasets, fuel-examples helpers) that still shuttle

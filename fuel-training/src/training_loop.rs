@@ -12,7 +12,7 @@
 //! per-step bookkeeping that every training script reimplements:
 //!
 //! 1. Backward (`loss.backward()`)
-//! 2. Gradient harvest (per [`LazyVar`] in `opt.params()`)
+//! 2. Gradient harvest (per [`Var`] in `opt.params()`)
 //! 3. Gradient clipping (norm and/or value, if configured)
 //! 4. Optimizer step
 //! 5. LR scheduling
@@ -20,19 +20,19 @@
 //!
 //! All gradient operations run on the lazy graph: clipping uses
 //! [`fuel::lazy_training_augmentations::clip_grad_norm`] /
-//! [`clip_grad_value`], which return new `HashMap<String, LazyTensor>`
+//! [`clip_grad_value`], which return new `HashMap<String, Tensor>`
 //! values.
 //!
 //! # Example
 //!
 //! ```rust,no_run
-//! use fuel_nn::optim::{LazyAdamW, LazyOptimizer, LazyVar, AdamWConfig};
+//! use fuel_nn::optim::{AdamW, Optimizer, Var, AdamWConfig};
 //! use fuel::lazy_training_augmentations::CosineSchedule;
 //! use fuel_training::training_loop::TrainingLoop;
 //!
 //! # fn main() -> fuel::Result<()> {
-//! let var = LazyVar::new("w", 3usize, vec![1.0_f32, 2.0, 3.0])?;
-//! let mut opt = LazyAdamW::new(vec![var.clone()], AdamWConfig::default())?;
+//! let var = Var::new("w", 3usize, vec![1.0_f32, 2.0, 3.0])?;
+//! let mut opt = AdamW::new(vec![var.clone()], AdamWConfig::default())?;
 //! let sched = CosineSchedule { base_lr: 1e-3, warmup_steps: 10, total_steps: 100 };
 //! let mut loop_ = TrainingLoop::new()
 //!     .with_max_grad_norm(1.0)
@@ -45,9 +45,9 @@
 //! ```
 
 use fuel::Result;
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel::lazy_training_augmentations::{LrSchedule, clip_grad_norm, clip_grad_value};
-use fuel_nn::optim::{LazyOptimizer, LazyVar};
+use fuel_nn::optim::{Optimizer, Var};
 use std::collections::HashMap;
 
 /// The result of a single training step.
@@ -98,7 +98,7 @@ impl TrainingLoop {
 
     /// Attach a learning rate scheduler. The scheduler is consulted at
     /// step time via [`LrSchedule::lr_at`] and applied to the optimizer
-    /// via [`LazyOptimizer::set_learning_rate`].
+    /// via [`Optimizer::set_learning_rate`].
     pub fn with_scheduler<S: LrSchedule + 'static>(mut self, scheduler: S) -> Self {
         self.scheduler = Some(Box::new(scheduler));
         self
@@ -121,13 +121,9 @@ impl TrainingLoop {
         self.global_step
     }
 
-    /// Execute one training step against a [`LazyOptimizer`]: backward,
+    /// Execute one training step against a [`Optimizer`]: backward,
     /// harvest, clip, optimize, schedule.
-    pub fn step<O: LazyOptimizer>(
-        &mut self,
-        loss: &LazyTensor,
-        opt: &mut O,
-    ) -> Result<StepOutcome> {
+    pub fn step<O: Optimizer>(&mut self, loss: &Tensor, opt: &mut O) -> Result<StepOutcome> {
         let loss_val = loss.realize_f32()[0] as f64;
 
         let grads = harvest_grads(loss, opt.params());
@@ -196,10 +192,10 @@ impl Default for TrainingLoop {
 }
 
 /// Walk `vars`, look up each one's gradient in the backward map produced
-/// by `loss.backward()`, and collect into a `name -> LazyTensor` map.
+/// by `loss.backward()`, and collect into a `name -> Tensor` map.
 /// Parameters that didn't contribute to `loss` are silently skipped
-/// (same semantics as [`LazyOptimizer::backward_step`]).
-fn harvest_grads(loss: &LazyTensor, vars: &[LazyVar]) -> HashMap<String, LazyTensor> {
+/// (same semantics as [`Optimizer::backward_step`]).
+fn harvest_grads(loss: &Tensor, vars: &[Var]) -> HashMap<String, Tensor> {
     let grad_map = loss.backward();
     let mut grads = HashMap::with_capacity(vars.len());
     for var in vars {
@@ -209,13 +205,13 @@ fn harvest_grads(loss: &LazyTensor, vars: &[LazyVar]) -> HashMap<String, LazyTen
         let handle =
             fuel_graph::NodeHandle::from_existing(loss.graph_tensor().graph().clone(), node_id);
         if let Some(grad) = grad_map.get(&handle) {
-            grads.insert(var.name().to_string(), LazyTensor::from_graph_tensor(grad));
+            grads.insert(var.name().to_string(), Tensor::from_graph_tensor(grad));
         }
     }
     grads
 }
 
-fn global_l2_norm(grads: &HashMap<String, LazyTensor>) -> f64 {
+fn global_l2_norm(grads: &HashMap<String, Tensor>) -> f64 {
     let mut acc: f64 = 0.0;
     for g in grads.values() {
         let host = g.sqr().sum_all().realize_f32();

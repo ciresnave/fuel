@@ -8,7 +8,7 @@ extern crate accelerate_src;
 use anyhow::Result;
 use clap::{Parser, ValueEnum};
 use fuel::Device;
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use hf_hub::api::sync::Api;
 use serde::Deserialize;
 use std::io::Write;
@@ -171,7 +171,7 @@ pub fn main() -> Result<()> {
     let tokens: Vec<i64> = tokens_u32.iter().map(|&t| t as i64).collect();
 
     println!("Loading ONNX model from {:?}", model_path);
-    let evaluator = fuel_onnx::LazyOnnxEval::from_path(&model_path)?;
+    let evaluator = fuel_onnx::OnnxEval::from_path(&model_path)?;
 
     let mut generated_tokens = tokens.clone();
     print!("{}", args.prompt);
@@ -180,7 +180,7 @@ pub fn main() -> Result<()> {
     let mut rng = Lcg::new(args.seed);
 
     // Past key/value state lives on the host between frames; rebuilt as
-    // fresh LazyTensors each iteration so the graph stays small.
+    // fresh Tensors each iteration so the graph stays small.
     let num_layers = config.num_hidden_layers;
     let num_kv_heads = config.num_key_value_heads;
     let head_dim = config.hidden_size / config.num_attention_heads;
@@ -200,9 +200,9 @@ pub fn main() -> Result<()> {
         // sample-rate-like dummy — but we need a real F32 anchor. Use
         // the first KV tensor (always present) or a fresh zero f32
         // anchor.
-        let anchor = LazyTensor::from_f32(vec![0.0_f32; 1], (1usize,), &device);
+        let anchor = Tensor::from_f32(vec![0.0_f32; 1], (1usize,), &device);
 
-        let mut inputs: std::collections::HashMap<String, LazyTensor> =
+        let mut inputs: std::collections::HashMap<String, Tensor> =
             std::collections::HashMap::new();
 
         if let Some(past) = &past_kv {

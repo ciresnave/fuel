@@ -2,7 +2,7 @@
 //! Live-Vulkan bridge realize — proves the `optimize_graph` realize
 //! path (the single path after Phase A PR-A3b-2) realizes correctly on
 //! the Vulkan backend through `pipelined_bridge`
-//! (`LazyTensor::realize_f32_vulkan` → `pipelined_bridge::realize_one_as`
+//! (`Tensor::realize_f32_vulkan` → `pipelined_bridge::realize_one_as`
 //! → `PipelinedExecutor`), matching the host oracle. The path is
 //! backend-agnostic (it lives in the generic `realize_one_as`), so this
 //! is the Vulkan counterpart of the CPU `--lib` suite and the live-CUDA
@@ -18,7 +18,7 @@
 
 use std::sync::Arc;
 
-use fuel_core::lazy::LazyTensor;
+use fuel_core::lazy::Tensor;
 use fuel_ir::{DType, Shape};
 use fuel_vulkan_backend::VulkanBackend;
 
@@ -43,7 +43,7 @@ fn mul_add_realize_on_vulkan_matches_reference() {
         return;
     };
 
-    let a = LazyTensor::from_f32(
+    let a = Tensor::from_f32(
         vec![1.0_f32, 2.0, 3.0, 4.0],
         Shape::from_dims(&[4]),
         &fuel_core::Device::cpu(),
@@ -52,7 +52,7 @@ fn mul_add_realize_on_vulkan_matches_reference() {
     // `from_f32` would mint a separate graph and `add` across graphs
     // would fail).
     let b = a.const_f32_like(vec![10.0_f32, 20.0, 30.0, 40.0], Shape::from_dims(&[4]));
-    // LazyTensor binary ops are fallible (shape/broadcast validation),
+    // Tensor binary ops are fallible (shape/broadcast validation),
     // unlike the graph-`Tensor` ops; surface any error rather than panic
     // implicitly.
     let c = a.add(&b).expect("add").mul(&a).expect("mul");
@@ -77,7 +77,7 @@ fn deep_chain_realize_on_vulkan_matches_reference() {
         return;
     };
 
-    let a = LazyTensor::from_f32(
+    let a = Tensor::from_f32(
         vec![1.0_f32, 2.0, 3.0, 4.0],
         Shape::from_dims(&[4]),
         &fuel_core::Device::cpu(),

@@ -8,7 +8,7 @@
 //! op-dispatch time to pick between competing backends) need the
 //! same shapes. The producer-side `Judge` and the
 //! `populate_dispatch_table` / `cached` cache APIs live in
-//! `fuel-core` because they call into `LazyTensor`'s realize path.
+//! `fuel-core` because they call into `Tensor`'s realize path.
 //! Only the data + the pure lookup helpers are here.
 //!
 //! [`Judge`]: https://docs.rs/fuel-core/latest/fuel_core/judge/struct.Judge.html

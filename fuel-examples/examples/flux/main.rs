@@ -34,7 +34,7 @@ use clap::Parser;
 use std::sync::Arc;
 use tokenizers::Tokenizer;
 
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel::lazy_clip::{ClipTextConfig, ClipTextModel, ClipTextWeights};
 use fuel::lazy_flux::{
     FlowMatchScheduler, FluxConfig, FluxModel, FluxWeights, QuantizedFluxModel, generate,
@@ -167,7 +167,7 @@ fn argmax_u32(tokens: &[u32]) -> usize {
 /// Pack `(B, 16, H, W)` latent into FLUX's `(B, H/2 * W/2, 64)` patch
 /// sequence layout. Mirrors `flux::sampling::State::new` from the eager
 /// implementation.
-fn pack_latent(x: &LazyTensor, b: usize, c: usize, h: usize, w: usize) -> Result<LazyTensor> {
+fn pack_latent(x: &Tensor, b: usize, c: usize, h: usize, w: usize) -> Result<Tensor> {
     let packed = x
         .reshape(Shape::from_dims(&[b, c, h / 2, 2, w / 2, 2]))?
         .permute([0_usize, 2, 4, 1, 3, 5])?
@@ -176,7 +176,7 @@ fn pack_latent(x: &LazyTensor, b: usize, c: usize, h: usize, w: usize) -> Result
 }
 
 /// Reverse [`pack_latent`].
-fn unpack_latent(xs: &LazyTensor, height: usize, width: usize) -> Result<LazyTensor> {
+fn unpack_latent(xs: &Tensor, height: usize, width: usize) -> Result<Tensor> {
     let dims = xs.shape().dims().to_vec();
     let b = dims[0];
     let c_ph_pw = dims[2];
@@ -192,7 +192,7 @@ fn unpack_latent(xs: &LazyTensor, height: usize, width: usize) -> Result<LazyTen
 
 /// Per-patch RoPE id tensor `(B, H/2 * W/2, 3)` matching eager
 /// `flux::sampling::State::new`.
-fn make_img_ids(anchor: &LazyTensor, b: usize, h: usize, w: usize) -> LazyTensor {
+fn make_img_ids(anchor: &Tensor, b: usize, h: usize, w: usize) -> Tensor {
     let h2 = h / 2;
     let w2 = w / 2;
     let n = h2 * w2;
@@ -212,7 +212,7 @@ fn make_img_ids(anchor: &LazyTensor, b: usize, h: usize, w: usize) -> LazyTensor
 
 /// Per-token text RoPE id tensor `(B, S_text, 3)` — all zeros, just
 /// like the eager implementation.
-fn make_txt_ids(anchor: &LazyTensor, b: usize, seq: usize) -> LazyTensor {
+fn make_txt_ids(anchor: &Tensor, b: usize, seq: usize) -> Tensor {
     let buf = vec![0.0_f32; b * seq * 3];
     anchor.const_f32_like(Arc::from(buf), Shape::from_dims(&[b, seq, 3]))
 }
@@ -379,7 +379,7 @@ fn run(args: Args) -> Result<()> {
             let w_lat = width.div_ceil(16) * 2;
             let noise_seed = seed.unwrap_or(0xBADF_00D_BADF_00Du64);
             let noise = deterministic_noise(noise_seed, batch * c_lat * h_lat * w_lat);
-            let noise_t = LazyTensor::from_f32(
+            let noise_t = Tensor::from_f32(
                 Arc::from(noise),
                 Shape::from_dims(&[batch, c_lat, h_lat, w_lat]),
                 &device,
@@ -466,7 +466,7 @@ fn run(args: Args) -> Result<()> {
             let batch = 1usize;
             let c_lat = 16usize;
             let img_seq = h_lat / 2 * w_lat / 2;
-            let packed = LazyTensor::from_f32(
+            let packed = Tensor::from_f32(
                 Arc::from(raw),
                 Shape::from_dims(&[batch, img_seq, 64]),
                 &device,

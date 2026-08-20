@@ -62,17 +62,13 @@ impl QuantizedT5Model {
     /// Full seq2seq forward: encode `src_tokens`, decode
     /// `tgt_tokens` against the encoder output, return logits
     /// `(1, tgt_len, vocab_size)`.
-    pub fn forward(
-        &self,
-        src_tokens: &[u32],
-        tgt_tokens: &[u32],
-    ) -> Result<crate::lazy::LazyTensor> {
+    pub fn forward(&self, src_tokens: &[u32], tgt_tokens: &[u32]) -> Result<crate::lazy::Tensor> {
         self.inner.forward(src_tokens, tgt_tokens)
     }
 
     /// Encoder-only forward over token IDs. Returns post-final-norm
     /// hidden states `(1, src_len, d_model)`.
-    pub fn forward_encoder(&self, src_tokens: &[u32]) -> Result<crate::lazy::LazyTensor> {
+    pub fn forward_encoder(&self, src_tokens: &[u32]) -> Result<crate::lazy::Tensor> {
         self.inner.forward_encoder(src_tokens)
     }
 
@@ -80,8 +76,8 @@ impl QuantizedT5Model {
     /// token-embedding lookup. Returns `(1, src_len, d_model)`.
     pub fn forward_encoder_embeds(
         &self,
-        src_embeds: &crate::lazy::LazyTensor,
-    ) -> Result<crate::lazy::LazyTensor> {
+        src_embeds: &crate::lazy::Tensor,
+    ) -> Result<crate::lazy::Tensor> {
         self.inner.forward_encoder_embeds(src_embeds)
     }
 
@@ -90,8 +86,8 @@ impl QuantizedT5Model {
     pub fn forward_decoder(
         &self,
         tgt_tokens: &[u32],
-        encoder_out: &crate::lazy::LazyTensor,
-    ) -> Result<crate::lazy::LazyTensor> {
+        encoder_out: &crate::lazy::Tensor,
+    ) -> Result<crate::lazy::Tensor> {
         self.inner.forward_decoder(tgt_tokens, encoder_out)
     }
 
@@ -100,9 +96,9 @@ impl QuantizedT5Model {
     /// `(1, tgt_len, vocab_size)`.
     pub fn forward_decoder_embeds(
         &self,
-        tgt_embeds: &crate::lazy::LazyTensor,
-        encoder_out: &crate::lazy::LazyTensor,
-    ) -> Result<crate::lazy::LazyTensor> {
+        tgt_embeds: &crate::lazy::Tensor,
+        encoder_out: &crate::lazy::Tensor,
+    ) -> Result<crate::lazy::Tensor> {
         self.inner.forward_decoder_embeds(tgt_embeds, encoder_out)
     }
 
@@ -111,9 +107,9 @@ impl QuantizedT5Model {
     /// the LM head or tied-embedding scaling.
     pub fn forward_decoder_hidden_embeds(
         &self,
-        tgt_embeds: &crate::lazy::LazyTensor,
-        encoder_out: &crate::lazy::LazyTensor,
-    ) -> Result<crate::lazy::LazyTensor> {
+        tgt_embeds: &crate::lazy::Tensor,
+        encoder_out: &crate::lazy::Tensor,
+    ) -> Result<crate::lazy::Tensor> {
         self.inner
             .forward_decoder_hidden_embeds(tgt_embeds, encoder_out)
     }
@@ -123,9 +119,9 @@ impl QuantizedT5Model {
     /// both sides. Returns `(1, seq, d_model)`.
     pub fn embed_tokens_anchored(
         &self,
-        anchor: &crate::lazy::LazyTensor,
+        anchor: &crate::lazy::Tensor,
         tokens: &[u32],
-    ) -> Result<crate::lazy::LazyTensor> {
+    ) -> Result<crate::lazy::Tensor> {
         self.inner.embed_tokens_anchored(anchor, tokens)
     }
 
@@ -685,7 +681,7 @@ fn cpu_dequant_q4_0_bytes(bytes: &[u8]) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lazy::LazyTensor;
+    use crate::lazy::Tensor;
     use crate::lazy_t5::T5Activation;
 
     fn test_cfg() -> T5Config {
@@ -879,7 +875,7 @@ mod tests {
         let model = QuantizedT5Model::from_f32_bake(cfg.clone(), src).unwrap();
         let src_tokens = [1_u32, 2, 3];
         let enc_ref = model.forward_encoder(&src_tokens).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let src_embeds = model.embed_tokens_anchored(&anchor, &src_tokens).unwrap();
         let enc_via_embeds = model
             .forward_encoder_embeds(&src_embeds)

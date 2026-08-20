@@ -8,7 +8,7 @@
 //! weight tensor `[N, K/2]` U8 + a per-block absmax scale tensor
 //! `[N, K/block_size]` F32. This module takes a caller-supplied
 //! pair of byte buffers (typically loaded via the user's preferred
-//! safetensors parser) and constructs the two `LazyTensor` inputs in
+//! safetensors parser) and constructs the two `Tensor` inputs in
 //! the layout the fused op expects.
 //!
 //! ## bitsandbytes on-disk layout primer
@@ -46,29 +46,29 @@
 //!   migration.
 //!
 //! What it DOES: take the three concrete pieces (packed bytes,
-//! absmax scales, geometry) and build the two `LazyTensor` inputs
+//! absmax scales, geometry) and build the two `Tensor` inputs
 //! the fused op expects, including the reshape from bnb's flat
 //! layouts to Fuel's 2D ones.
 
 use crate::Device;
-use crate::lazy::LazyTensor;
+use crate::lazy::Tensor;
 use fuel_ir::{Result, Shape};
 
 /// A bitsandbytes-style NF4-quantized weight, materialized as the two
-/// `LazyTensor` inputs that [`fuel_graph::NodeHandle::nf4_matmul`]
+/// `Tensor` inputs that [`fuel_graph::NodeHandle::nf4_matmul`]
 /// expects, plus the cached `(n, k, block_size)` geometry for the
 /// matmul builder.
 ///
-/// The two inputs are kept as separate `LazyTensor` fields rather
+/// The two inputs are kept as separate `Tensor` fields rather
 /// than bundled into a single tensor — that matches the fused op's
 /// 3-input signature exactly. [`Self::matmul`] is the convenience
 /// builder for the common case where the caller has an `activations:
-/// LazyTensor` and just wants the linear-layer output.
+/// Tensor` and just wants the linear-layer output.
 pub struct Nf4Weight {
     /// Packed weight bytes, shape `[N, K/2]` U8.
-    pub w_packed: LazyTensor,
+    pub w_packed: Tensor,
     /// Per-block absmax scales, shape `[N, K/block_size]` F32.
-    pub absmax: LazyTensor,
+    pub absmax: Tensor,
     /// Output features (rows of the weight matrix).
     pub n: usize,
     /// Input features (the K in `(M, K) @ (K, N) → (M, N)`).
@@ -84,7 +84,7 @@ pub struct Nf4Weight {
 /// and supplying the geometry. This function:
 ///
 /// 1. Validates the buffer sizes against the geometry.
-/// 2. Constructs the two `LazyTensor`s on `device` with the 2D
+/// 2. Constructs the two `Tensor`s on `device` with the 2D
 ///    shapes the fused op expects (`[n, k/2]` and `[n, k/block_size]`,
 ///    reshaping bnb's flat layouts).
 /// 3. Returns the `Nf4Weight` ready for use.
@@ -135,11 +135,11 @@ pub fn nf4_from_bytes(
         ))
         .bt());
     }
-    // Build the LazyTensors. const_u8_like / const_f32_like need a
+    // Build the Tensors. const_u8_like / const_f32_like need a
     // host tensor as the "graph anchor"; we anchor on a tiny f32
     // scalar built directly from `device`. Once both are pushed onto
     // the same graph, they're ready to feed nf4_matmul.
-    let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), device);
+    let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), device);
     let w_packed_tensor = anchor
         .graph_tensor()
         .const_u8_like(w_packed, Shape::from_dims(&[n, k / 2]));
@@ -147,8 +147,8 @@ pub fn nf4_from_bytes(
         .graph_tensor()
         .const_f32_like(absmax, Shape::from_dims(&[n, k / block_size]));
     Ok(Nf4Weight {
-        w_packed: LazyTensor::from_graph_tensor(w_packed_tensor),
-        absmax: LazyTensor::from_graph_tensor(absmax_tensor),
+        w_packed: Tensor::from_graph_tensor(w_packed_tensor),
+        absmax: Tensor::from_graph_tensor(absmax_tensor),
         n,
         k,
         block_size,
@@ -166,7 +166,7 @@ impl Nf4Weight {
     /// Output dtype matches `activations`' dtype (F32 / F16 / BF16
     /// — see [`fuel_graph::NodeHandle::nf4_matmul`] for the full
     /// contract).
-    pub fn matmul(&self, activations: &LazyTensor) -> LazyTensor {
+    pub fn matmul(&self, activations: &Tensor) -> Tensor {
         activations.nf4_matmul(&self.w_packed, &self.absmax, self.block_size)
     }
 }
@@ -405,7 +405,7 @@ pub fn load_nf4_layer(
         .collect();
 
     // Hand off to the bytes-in-hand helper for layout validation +
-    // LazyTensor construction. The byte/scale counts get checked
+    // Tensor construction. The byte/scale counts get checked
     // against (n, k, block_size) there.
     nf4_from_bytes(w_bytes, absmax_f32, qs.n, qs.k, qs.block_size, device)
 }
@@ -435,7 +435,7 @@ mod tests {
             &device,
         )
         .expect("nf4_from_bytes");
-        let activations = LazyTensor::from_f32(
+        let activations = Tensor::from_f32(
             vec![1.0_f32, 2.0, 2.0, 4.0],
             Shape::from_dims(&[1, 4]),
             &device,
@@ -447,7 +447,7 @@ mod tests {
             .graph_tensor()
             .const_f32_like(vec![1.0_f32, 2.0, 2.0, 4.0], Shape::from_dims(&[1, 4]));
         let _ = activations; // keep the original visible for symmetry in the docs
-        let act = LazyTensor::from_graph_tensor(activations_t);
+        let act = Tensor::from_graph_tensor(activations_t);
         let y = weight.matmul(&act).realize_f32();
         assert_eq!(y.len(), 2);
         assert!((y[0] - 10.0).abs() < 1e-5, "out 0: {}", y[0]);
@@ -642,7 +642,7 @@ mod tests {
         assert_eq!(weight.block_size, block_size);
 
         // Sanity matmul: same expected output as nf4_weight_matmul_round_trip.
-        let act = LazyTensor::from_graph_tensor(
+        let act = Tensor::from_graph_tensor(
             weight
                 .w_packed
                 .graph_tensor()

@@ -9,26 +9,26 @@
 //! trailing `hidden` dim — matching the eager `fuel-nn::Embedding`
 //! semantics.
 
-use crate::modules::LazyModule;
+use crate::modules::Module;
 use fuel::Result;
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel_ir::Shape;
 use std::sync::Arc;
 
-/// Lookup-table embedding over `LazyTensor`.
+/// Lookup-table embedding over `Tensor`.
 #[derive(Debug, Clone)]
-pub struct LazyEmbedding {
+pub struct Embedding {
     table: Arc<[f32]>,
     vocab_size: usize,
     hidden: usize,
 }
 
-impl LazyEmbedding {
+impl Embedding {
     /// Build an embedding from a `[vocab_size, hidden]` weight buffer.
     pub fn new(table: Arc<[f32]>, vocab_size: usize, hidden: usize) -> Result<Self> {
         if table.len() != vocab_size * hidden {
             return Err(fuel::Error::Msg(format!(
-                "LazyEmbedding::new: table has {} elements but \
+                "Embedding::new: table has {} elements but \
                  vocab_size * hidden = {} * {} = {}",
                 table.len(),
                 vocab_size,
@@ -63,10 +63,10 @@ impl LazyEmbedding {
     /// `token_ids`. The input must be a U32 tensor of any rank; the
     /// output has the input's shape with a trailing `hidden` dim
     /// appended.
-    pub fn forward(&self, token_ids: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, token_ids: &Tensor) -> Result<Tensor> {
         if token_ids.dtype() != fuel::DType::U32 {
             return Err(fuel::Error::Msg(format!(
-                "LazyEmbedding::forward: token_ids must be U32, got {:?}",
+                "Embedding::forward: token_ids must be U32, got {:?}",
                 token_ids.dtype(),
             ))
             .bt());
@@ -90,9 +90,9 @@ impl LazyEmbedding {
     }
 }
 
-impl LazyModule for LazyEmbedding {
-    fn forward(&self, xs: &LazyTensor) -> Result<LazyTensor> {
-        LazyEmbedding::forward(self, xs)
+impl Module for Embedding {
+    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
+        Embedding::forward(self, xs)
     }
 }
 
@@ -113,9 +113,9 @@ mod tests {
         let hidden = 4;
         let seq = 5;
         let table = make_table(vocab, hidden);
-        let emb = LazyEmbedding::new(Arc::from(table), vocab, hidden).unwrap();
+        let emb = Embedding::new(Arc::from(table), vocab, hidden).unwrap();
         let tokens: Vec<u32> = vec![0, 3, 1, 6, 2];
-        let token_ids = LazyTensor::from_u32(tokens, Shape::from_dims(&[seq]), &Device::cpu());
+        let token_ids = Tensor::from_u32(tokens, Shape::from_dims(&[seq]), &Device::cpu());
         let out = emb.forward(&token_ids).unwrap();
         assert_eq!(out.shape().dims(), &[seq, hidden]);
         let got = out.realize_f32();
@@ -139,8 +139,8 @@ mod tests {
             expected.extend_from_slice(&table[base..base + hidden]);
         }
 
-        let emb = LazyEmbedding::new(Arc::from(table), vocab, hidden).unwrap();
-        let token_ids = LazyTensor::from_u32(
+        let emb = Embedding::new(Arc::from(table), vocab, hidden).unwrap();
+        let token_ids = Tensor::from_u32(
             tokens.clone(),
             Shape::from_dims(&[tokens.len()]),
             &Device::cpu(),

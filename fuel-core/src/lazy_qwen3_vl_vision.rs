@@ -35,7 +35,7 @@
 //! last entry must equal `N`.
 
 use crate::Result;
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::lazy_conv3d::Conv3dTemporal2Weights;
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -110,10 +110,10 @@ pub struct Qwen3VlVisionModel {
 #[derive(Debug, Clone)]
 pub struct Qwen3VlVisionOutput {
     /// Final per-patch hidden states, shape `(N, hidden_size)`.
-    pub embeddings: LazyTensor,
+    pub embeddings: Tensor,
     /// Per-DeepStack projection, in `deepstack_visual_indexes` order.
     /// Each tensor has shape `(N, out_hidden_size)`.
-    pub deepstack: Vec<LazyTensor>,
+    pub deepstack: Vec<Tensor>,
 }
 
 /// Build a block-diagonal additive attention mask of shape
@@ -168,11 +168,7 @@ pub fn build_cu_seqlens_mask(cu_seqlens: &[usize], n: usize) -> Result<Vec<f32>>
 
 impl Qwen3VlVisionModel {
     /// Encode patches → `(embeddings, deepstack)`.
-    pub fn forward(
-        &self,
-        pixels: &LazyTensor,
-        cu_seqlens: &[usize],
-    ) -> Result<Qwen3VlVisionOutput> {
+    pub fn forward(&self, pixels: &Tensor, cu_seqlens: &[usize]) -> Result<Qwen3VlVisionOutput> {
         let cfg = &self.config;
         let weights = &self.weights;
         if cfg.hidden_size % cfg.num_heads != 0 {
@@ -248,7 +244,7 @@ impl Qwen3VlVisionModel {
         let mask = pixels.const_f32_like(mask_data, Shape::from_dims(&[1, 1, n, n]));
 
         // ---- Transformer blocks + DeepStack capture ----------------
-        let mut deepstack_outputs: Vec<LazyTensor> = Vec::new();
+        let mut deepstack_outputs: Vec<Tensor> = Vec::new();
         for (layer_idx, layer) in weights.layers.iter().enumerate() {
             hidden = self.apply_layer(&hidden, layer, &mask, n)?;
             for (ds_idx, &capture_at) in cfg.deepstack_visual_indexes.iter().enumerate() {
@@ -284,11 +280,11 @@ impl Qwen3VlVisionModel {
 
     fn apply_layer(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &Qwen3VlVisionLayerWeights,
-        mask: &LazyTensor,
+        mask: &Tensor,
         n: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let h = cfg.hidden_size;
         let num_heads = cfg.num_heads;
@@ -640,13 +636,13 @@ mod tests {
     /// Build a `(N, C, T, H, W)` flattened-patches tensor where the
     /// caller has already extracted patches across all images.
     /// `total_patches = num_images * (T_frames / temporal_patch_size) * (H/patch) * (W/patch)`.
-    fn tiny_pixels(cfg: &Qwen3VlVisionConfig, n_patches: usize) -> LazyTensor {
+    fn tiny_pixels(cfg: &Qwen3VlVisionConfig, n_patches: usize) -> Tensor {
         let numel =
             n_patches * cfg.in_channels * cfg.temporal_patch_size * cfg.patch_size * cfg.patch_size;
         let data: Vec<f32> = (0..numel)
             .map(|i| (i as f32 / numel as f32) - 0.5)
             .collect();
-        LazyTensor::from_f32(
+        Tensor::from_f32(
             Arc::from(data),
             Shape::from_dims(&[
                 n_patches,
@@ -776,7 +772,7 @@ mod tests {
         for k in (4 * per_patch)..(n * per_patch) {
             pixels_b_data[k] += 0.25;
         }
-        let pixels_a = LazyTensor::from_f32(
+        let pixels_a = Tensor::from_f32(
             Arc::from(pixels_a_data),
             Shape::from_dims(&[
                 n,
@@ -787,7 +783,7 @@ mod tests {
             ]),
             &Device::cpu(),
         );
-        let pixels_b = LazyTensor::from_f32(
+        let pixels_b = Tensor::from_f32(
             Arc::from(pixels_b_data),
             Shape::from_dims(&[
                 n,

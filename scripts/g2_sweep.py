@@ -45,7 +45,7 @@ METHOD_FNS: set[str] = set()
 
 # Build a regex that finds the opening of any matching call.
 TYPE_PATTERN = re.compile(
-    r'\b(?:Tensor|fuel_graph::Tensor|LazyTensor)::(?P<fn>' +
+    r'\b(?:Tensor|fuel_graph::NodeHandle|Tensor)::(?P<fn>' +
     '|'.join(TYPE_FNS) + r')\s*\('
 )
 METHOD_PATTERN = (

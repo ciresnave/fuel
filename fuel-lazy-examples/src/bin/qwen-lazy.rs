@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-// End-to-end Qwen2 runner built on the same LazyTensor path as
+// End-to-end Qwen2 runner built on the same Tensor path as
 // `llama-lazy`, proving the LLaMA-family forward code also handles
 // architectures with Q/K/V attention biases.
 //

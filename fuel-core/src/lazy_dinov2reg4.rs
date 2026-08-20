@@ -34,7 +34,7 @@
 //! deferred (eager uses `upsample_nearest2d` as a workaround
 //! anyway — both are out of scope for v1).
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -152,7 +152,7 @@ pub struct Dinov2Reg4Model {
 impl Dinov2Reg4Model {
     /// Run image classification. `pixel_values` is `(1, 3, H, W)`
     /// with `H == W == cfg.image_size`. Returns `(1, num_classes)`.
-    pub fn forward(&self, pixel_values: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, pixel_values: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = pixel_values.shape();
@@ -256,9 +256,9 @@ impl Dinov2Reg4Model {
     /// [`crate::lazy_dinov2::Dinov2Model::forward_intermediate_layers`].
     pub fn forward_intermediate_layers(
         &self,
-        pixel_values: &LazyTensor,
+        pixel_values: &Tensor,
         layer_ids: &[usize],
-    ) -> Result<Vec<LazyTensor>> {
+    ) -> Result<Vec<Tensor>> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = pixel_values.shape();
@@ -340,7 +340,7 @@ impl Dinov2Reg4Model {
         Ok(out)
     }
 
-    fn apply_block(&self, x: &LazyTensor, block: &Dinov2Reg4BlockWeights) -> Result<LazyTensor> {
+    fn apply_block(&self, x: &Tensor, block: &Dinov2Reg4BlockWeights) -> Result<Tensor> {
         let cfg = &self.config;
         let dims = x.shape();
         let dims = dims.dims();
@@ -584,11 +584,11 @@ mod tests {
         }
     }
 
-    fn tiny_image(cfg: &Dinov2Reg4Config) -> LazyTensor {
+    fn tiny_image(cfg: &Dinov2Reg4Config) -> Tensor {
         let mut nb = rng_seed(7);
         let n = cfg.num_channels * cfg.image_size * cfg.image_size;
         let data: Arc<[f32]> = Arc::from((0..n).map(|_| nb()).collect::<Vec<_>>());
-        LazyTensor::from_f32(
+        Tensor::from_f32(
             data,
             Shape::from_dims(&[1, cfg.num_channels, cfg.image_size, cfg.image_size]),
             &Device::cpu(),

@@ -399,7 +399,7 @@ git commit -m "feat(scalar): real F8E6M2 scale variant per sk4 reference (GAP-00
     }
 ```
   Because `const` cannot call the iterator, expose `ALL` as a function or a
-  `once_cell`/`LazyLock` slice, OR keep the sweep iterating `DType::iter()`
+  `once_cell`/`Lock` slice, OR keep the sweep iterating `DType::iter()`
   directly and drop the `&[DType]` form. Simplest: change the test to
   `for dt in DType::iter()`. Adjust the interface line accordingly.
 

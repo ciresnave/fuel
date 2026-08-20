@@ -31,7 +31,7 @@ directory exists only as a quarantine marker. The reference for what it
   `Shard { dim, rank, world_size }` hint.
 
 None of those crates or types exist in the lazy world. Everything below is
-greenfield against `fuel-core::lazy_llama_full::Llama3Model`, `LazyTensor`,
+greenfield against `fuel-core::lazy_llama_full::Llama3Model`, `Tensor`,
 `Op::Fused`, the binding-table dispatch path, and the existing
 `fuel-parallel::tensor_parallel` scaffolding
 ([fuel-parallel/src/tensor_parallel.rs:200-248](../../fuel-parallel/src/tensor_parallel.rs#L200-L248)).
@@ -88,26 +88,26 @@ ordering pass sees the comm dependency natively.
 
 ### Option II — Comm as host-side step (orchestrate above)
 
-`LazyColumnParallel::forward(x) -> LazyTensor` is just `linear.apply_linear(x)`
-(no graph change). `LazyRowParallel::forward(x) -> LazyTensor` is:
+`ColumnParallel::forward(x) -> Tensor` is just `linear.apply_linear(x)`
+(no graph change). `RowParallel::forward(x) -> Tensor` is:
 
 ```rust
 let local = self.linear.apply_linear(x);     // graph op
 let local = local.realize()?;                 // realize this slice's result
 let merged = self.comm.all_reduce(&local, ReduceOp::Sum)?; // host-side comm
-LazyTensor::from_realized(merged, &x.device())   // re-wrap as a leaf for next layer
+Tensor::from_realized(merged, &x.device())   // re-wrap as a leaf for next layer
 ```
 
 The graph splits into per-comm-boundary realization slices. The
 `Communicator` trait already exists in `fuel-parallel::comm`; what's missing
-is a `from_realized` / `from_storage` constructor on `LazyTensor` that takes
+is a `from_realized` / `from_storage` constructor on `Tensor` that takes
 the comm result and turns it back into a graph-leaf for the next layer's
 matmul.
 
 - **Pro:** zero new ops. Zero new dispatch arms. Existing executor unaware.
 - **Pro:** matches the eager scaffolding exactly — `RowParallel` already does
   this with `Linear::forward` + `comm.all_reduce`.
-- **Pro:** the comm handle lives in `LazyRowParallel`, not in the IR — no
+- **Pro:** the comm handle lives in `RowParallel`, not in the IR — no
   topology leak.
 - **Con:** forces a realization barrier per row-parallel layer. For LLaMA
   that's `num_layers * 2` per token (o_proj + down_proj). The lazy executor
@@ -124,7 +124,7 @@ matmul.
 Reasoning:
 
 - Eager already chose Option II. The migration is mechanical: rebuild
-  `LazyColumnParallel` and `LazyRowParallel` against `LazyTensor` instead of
+  `ColumnParallel` and `RowParallel` against `Tensor` instead of
   eager `Tensor`. No new IR. No backend churn.
 - Comm/compute overlap (the main argument for I) is a v2 optimization. v1
   goal is "binary runs at all on N GPUs with correct output." Once that
@@ -141,7 +141,7 @@ choice open.**
 
 ## Subtasks for this work (each may be its own session)
 
-### Subtask A — `LazyColumnParallel` + `LazyRowParallel` (Option II shape)
+### Subtask A — `ColumnParallel` + `RowParallel` (Option II shape)
 
 Mirror `fuel-parallel/src/tensor_parallel.rs:ColumnParallel` and `RowParallel`
 in a new file `fuel-parallel/src/lazy_tensor_parallel.rs`.
@@ -149,33 +149,33 @@ in a new file `fuel-parallel/src/lazy_tensor_parallel.rs`.
 **Surface:**
 
 ```rust
-pub struct LazyColumnParallel {
+pub struct ColumnParallel {
     /// Local weight shard, shape `[in_features, out_features / world_size]`.
     weight: WeightStorage,
     in_features: usize,
     out_local: usize,
-    bias: Option<LazyBias>,
+    bias: Option<Bias>,
 }
 
-impl LazyColumnParallel {
+impl ColumnParallel {
     pub fn new(weight: WeightStorage, in_features: usize, out_local: usize) -> Self;
-    pub fn forward(&self, x: &LazyTensor) -> LazyTensor {
+    pub fn forward(&self, x: &Tensor) -> Tensor {
         // Pure local: weight.apply_linear(x, in_features, out_local).
         // No comm, no realize.
     }
 }
 
-pub struct LazyRowParallel<C: Communicator> {
+pub struct RowParallel<C: Communicator> {
     weight: WeightStorage,
     in_local: usize,
     out_features: usize,
-    bias: Option<LazyBias>,
+    bias: Option<Bias>,
     comm: Arc<C>,
 }
 
-impl<C: Communicator> LazyRowParallel<C> {
+impl<C: Communicator> RowParallel<C> {
     pub fn new(weight: WeightStorage, in_local: usize, out_features: usize, comm: Arc<C>) -> Self;
-    pub fn forward(&self, x: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let local = self.weight.apply_linear(x, self.in_local, self.out_features);
         let local_realized = local.realize()?;  // Storage handle
         let merged = self.comm.all_reduce_lazy(&local_realized, ReduceOp::Sum)?;
@@ -185,7 +185,7 @@ impl<C: Communicator> LazyRowParallel<C> {
 ```
 
 The `Communicator` trait today takes the eager `fuel::Tensor`. **It needs an
-equivalent that takes a realized storage handle (or a LazyTensor with a
+equivalent that takes a realized storage handle (or a Tensor with a
 realization barrier built in)** — see Subtask B.
 
 The `WeightStorage::apply_linear` builder already handles F32 / BF16 / Q4_0
@@ -202,7 +202,7 @@ so the shard's dtype is whatever the caller stored.
 
 > **[2026-07-30] Subtask A is shipped, and not as designed here.** `fuel-parallel`
 > was ported to lazy on `main`: `comm::Communicator` and `tensor_parallel::Linear`
-> now take `LazyTensor`, and `Linear::forward` **delegates to
+> now take `Tensor`, and `Linear::forward` **delegates to
 > `WeightStorage::apply_linear`** rather than reimplementing it — which is what
 > this section anticipated. Two deltas worth knowing before reviving the driver:
 >
@@ -219,16 +219,16 @@ so the shard's dtype is whatever the caller stored.
 
 ### Subtask B — `Communicator` for lazy tensors
 
-Extend the `Communicator` trait — or add a sibling `LazyCommunicator` trait —
-that takes and returns `LazyTensor` instead of eager `fuel::Tensor`. Implementation
+Extend the `Communicator` trait — or add a sibling `Communicator` trait —
+that takes and returns `Tensor` instead of eager `fuel::Tensor`. Implementation
 options:
 
-1. **Realize-inside-comm:** `LazyCommunicator::all_reduce(&self, t: &LazyTensor, op: ReduceOp) -> Result<LazyTensor>`
+1. **Realize-inside-comm:** `Communicator::all_reduce(&self, t: &Tensor, op: ReduceOp) -> Result<Tensor>`
    calls `t.realize()?` internally, dispatches `baracuda_nccl::all_reduce` on
-   the result, and rewraps via `LazyTensor::from_storage(...)`. Cleanest API.
-2. **Realize-outside:** `LazyCommunicator::all_reduce(&self, s: &Storage, op: ReduceOp) -> Result<Storage>`
+   the result, and rewraps via `Tensor::from_storage(...)`. Cleanest API.
+2. **Realize-outside:** `Communicator::all_reduce(&self, s: &Storage, op: ReduceOp) -> Result<Storage>`
    — caller realizes, calls comm, rewraps. Matches eager more closely but
-   pushes the realize/rewrap boilerplate into every `LazyRowParallel`.
+   pushes the realize/rewrap boilerplate into every `RowParallel`.
 
 Recommend option 1 — the abstraction is the comm op itself, not "comm op
 plus boilerplate."
@@ -241,7 +241,7 @@ at line 89.
 
 The dispatch path is direct — no binding-table entry, no `Op::AllReduce`,
 just `Storage → cuda_slice → baracuda_nccl::all_reduce → Storage`. The
-`LazyCommunicator` impl is the only place that knows about NCCL.
+`Communicator` impl is the only place that knows about NCCL.
 
 **`all_gather(dim)` and `reduce_scatter(op, dim)`** follow the same shape.
 `all_gather` is needed for column-parallel output gather when the consumer
@@ -268,7 +268,7 @@ isn't itself a row-parallel layer; `reduce_scatter` is needed if Subtask C's
 
 3. **`Communicator::init_rank(world_size, id, rank)` → `Arc<Comm>`** wrapped
    in a `NcclLazyCommunicator { comm: Arc<baracuda_nccl::Communicator> }`
-   that impls `LazyCommunicator`.
+   that impls `Communicator`.
 
 Output: `pub fn bootstrap_nccl_comm(args: &MultiProcessArgs) -> Result<(usize, usize, Arc<NcclLazyCommunicator>)>`
 returning `(rank, world_size, comm)`.
@@ -311,8 +311,8 @@ Wrap `crate::lazy_llama_full::Llama3Model` with a TP variant. For LLaMA-3:
 The simplest shape is *not* to fork `Llama3Model` — instead, write a new
 `TpLlama3Model` in the binary itself
 (`fuel-examples/examples/llama_multiprocess/model.rs`) that mirrors
-`Llama3Model::forward` but routes each linear through `LazyColumnParallel` /
-`LazyRowParallel`. Pulls weights via Subtask D's sharded loader.
+`Llama3Model::forward` but routes each linear through `ColumnParallel` /
+`RowParallel`. Pulls weights via Subtask D's sharded loader.
 
 If the per-binary approach starts feeling like copypasta, promote to
 `fuel-core/src/lazy_llama_multiprocess.rs` in a follow-up session.
@@ -334,7 +334,7 @@ original at commit `4ed0c05c`:
   `TpLlama3Model` via Subtask E.
 - Inference loop — `model.forward(&tokens, index_pos)?.realize()?` per
   token; tokenize / sample via existing `fuel_transformers::generation::LogitsProcessor`
-  which already handles `LazyTensor` (Phase H confirmed `generation` stays).
+  which already handles `Tensor` (Phase H confirmed `generation` stays).
 
 Re-add to `fuel-examples/Cargo.toml`:
 
@@ -353,7 +353,7 @@ exercises the codepath but degenerates AllReduce to identity).
 
 | Phase | Subtasks | Sessions |
 |-------|----------|----------|
-| Substrate | A (LazyColumnParallel + LazyRowParallel) + B (LazyCommunicator trait + NCCL impl) | 2 |
+| Substrate | A (ColumnParallel + RowParallel) + B (Communicator trait + NCCL impl) | 2 |
 | Driver    | C (process-group bootstrap) + D (sharded safetensors loader) | 1–2 |
 | Model     | E (TpLlama3Model wrapper) | 1 |
 | Binary    | F (revive binary, add to Cargo.toml, validate build) | 0.5 |
@@ -404,7 +404,7 @@ Arguments for landing now:
 
 **Recommended posture:** defer this session unless a consumer surfaces (a
 serving-side use case, a Fuel-internal benchmark that needs multi-GPU, a
-downstream lazy-port that wants to use `LazyRowParallel` as a primitive).
+downstream lazy-port that wants to use `RowParallel` as a primitive).
 When it does, the substrate work is small enough to ship in a single
 multi-session push. Until then, leave `_llama_multiprocess_retired` in
 quarantine and treat this prompt as a reservation slot.

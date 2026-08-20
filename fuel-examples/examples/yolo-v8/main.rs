@@ -261,7 +261,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         }
 
         // The lazy `forward` takes the raw flat buffer and constructs
-        // its own LazyTensor inside.
+        // its own Tensor inside.
         let raw = model.forward(&chw)?;
         let detections = decode_and_nms(&raw, cfg.num_classes, &nms);
         println!("generated {} detection(s)", detections.len());

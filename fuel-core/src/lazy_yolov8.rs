@@ -58,7 +58,7 @@
 //! - Forward-only. YOLOv8 training has a custom loss (box/cls/dfl
 //!   weighted sum) that's outside Phase 6a's scope.
 
-use crate::lazy::{LazyTensor, load_tensor_as_f32};
+use crate::lazy::{Tensor, load_tensor_as_f32};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -235,13 +235,13 @@ pub struct YoloV8Weights {
 /// scale[c] + shift[c]`. Used for BN fused into inference. Input
 /// layout `[1, C, H, W]`.
 fn per_channel_affine(
-    x: &LazyTensor,
+    x: &Tensor,
     scale: &Arc<[f32]>,
     shift: &Arc<[f32]>,
     c: usize,
     h: usize,
     w: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let s = x
         .const_f32_like(scale.clone(), Shape::from_dims(&[c]))
         .reshape(Shape::from_dims(&[1, c, 1, 1]))?
@@ -256,7 +256,7 @@ fn per_channel_affine(
 /// Conv+BN+SiLU. Computes `y = silu(conv2d(x, w) * scale + shift)`
 /// where `(scale, shift)` are the BN-fused per-channel parameters.
 fn cbs(
-    x: &LazyTensor,
+    x: &Tensor,
     cw: &CbsWeights,
     c_in: usize,
     c_out: usize,
@@ -266,7 +266,7 @@ fn cbs(
     groups: usize,
     h_out: usize,
     w_out: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let w_t = x.const_f32_like(
         cw.conv_w.clone(),
         Shape::from_dims(&[c_out, c_in / groups, k, k]),
@@ -286,20 +286,20 @@ fn cbs(
 /// and strictly > -0.5. Good enough for smoke; a real MaxPool op
 /// would use -inf padding.)
 fn max_pool_s1_composed(
-    x: &LazyTensor,
+    x: &Tensor,
     c: usize,
     h: usize,
     w: usize,
     k: usize,
     p: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     assert_eq!(
         k,
         2 * p + 1,
         "max_pool_s1_composed assumes padding = (k-1)/2"
     );
     let padded = pad_hw_zeros(x, c, h, w, p)?;
-    let mut acc: Option<LazyTensor> = None;
+    let mut acc: Option<Tensor> = None;
     for ky in 0..k {
         let row = padded.slice(2, ky, h)?;
         for kx in 0..k {
@@ -313,13 +313,7 @@ fn max_pool_s1_composed(
     Ok(acc.expect("max_pool_s1_composed: at least one tap"))
 }
 
-fn pad_hw_zeros(
-    x: &LazyTensor,
-    c: usize,
-    h: usize,
-    w: usize,
-    p: usize,
-) -> crate::Result<LazyTensor> {
+fn pad_hw_zeros(x: &Tensor, c: usize, h: usize, w: usize, p: usize) -> crate::Result<Tensor> {
     if p == 0 {
         return Ok(x.clone());
     }
@@ -336,12 +330,12 @@ fn pad_hw_zeros(
 /// YOLOv8 Bottleneck: `cv1(x) = cv(k=3) then cv(k=3)`; if
 /// `add_residual`, adds the input to the output.
 fn bottleneck(
-    x: &LazyTensor,
+    x: &Tensor,
     bw: &BottleneckWeights,
     c: usize,
     h: usize,
     w: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let y = cbs(x, &bw.cv1, c, c, 3, 1, 1, 1, h, w)?;
     let y = cbs(&y, &bw.cv2, c, c, 3, 1, 1, 1, h, w)?;
     if bw.add_residual { x.add(&y) } else { Ok(y) }
@@ -352,20 +346,20 @@ fn bottleneck(
 /// appending its output to an accumulator list), concats the full
 /// `(2+n)c`-channel stack, and merges with `cv2`.
 fn c2f(
-    x: &LazyTensor,
+    x: &Tensor,
     cw: &C2fWeights,
     c_in: usize,
     c_out: usize,
     h: usize,
     w: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let c = cw.c_inner; // = c_out / 2 in the standard YOLOv8 config
     let expanded = cbs(x, &cw.cv1, c_in, 2 * c, 1, 1, 0, 1, h, w)?;
     // Split into halves along channel axis.
     let a = expanded.slice(1, 0, c)?;
     let b = expanded.slice(1, c, c)?;
     // Run bottlenecks on `b`, accumulating each output.
-    let mut parts: Vec<LazyTensor> = vec![a, b.clone()];
+    let mut parts: Vec<Tensor> = vec![a, b.clone()];
     let mut cur = b;
     for bn in &cw.bottlenecks {
         cur = bottleneck(&cur, bn, c, h, w)?;
@@ -384,13 +378,13 @@ fn c2f(
 /// applications concatenated (input + 3 pools = 4*c channels), then
 /// `cv2` merges back to `c_out`.
 fn sppf(
-    x: &LazyTensor,
+    x: &Tensor,
     sw: &SppfWeights,
     c_in: usize,
     c_out: usize,
     h: usize,
     w: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let c_mid = c_in / 2;
     let y0 = cbs(x, &sw.cv1, c_in, c_mid, 1, 1, 0, 1, h, w)?;
     let y1 = max_pool_s1_composed(&y0, c_mid, h, w, 5, 2)?;
@@ -402,7 +396,7 @@ fn sppf(
 
 /// 2× nearest-neighbor upsample along both spatial axes. `[1, C, H, W]`
 /// → `[1, C, 2H, 2W]`.
-fn upsample_nearest_2x(x: &LazyTensor, c: usize, h: usize, w: usize) -> crate::Result<LazyTensor> {
+fn upsample_nearest_2x(x: &Tensor, c: usize, h: usize, w: usize) -> crate::Result<Tensor> {
     let x6 = x.reshape(Shape::from_dims(&[1, c, h, 1, w, 1]))?;
     let x6 = x6.concat(&x6, 3)?;
     let x6 = x6.concat(&x6, 5)?;
@@ -412,14 +406,14 @@ fn upsample_nearest_2x(x: &LazyTensor, c: usize, h: usize, w: usize) -> crate::R
 /// Raw 1×1 or 3×3 conv with bias but **no BN and no activation**.
 /// Used for the final layer of each detect-head branch.
 fn raw_conv(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &Arc<[f32]>,
     b: &Arc<[f32]>,
     c_in: usize,
     c_out: usize,
     k: usize,
     p: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[c_out, c_in, k, k]));
     let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[c_out]));
     x.conv2d(&w_t, Some(&b_t), (1, 1), (p, p), 1)
@@ -432,13 +426,13 @@ fn raw_conv(
 /// respectively. No activation applied; downstream decode uses
 /// `sigmoid` on `cls` and `softmax+expectation` on `reg`.
 fn detect_branch(
-    x: &LazyTensor,
+    x: &Tensor,
     dw: &DetectScaleWeights,
     cfg: &YoloV8Config,
     c_in: usize,
     h: usize,
     w: usize,
-) -> crate::Result<(LazyTensor, LazyTensor)> {
+) -> crate::Result<(Tensor, Tensor)> {
     // Classification head.
     let cls = cbs(x, &dw.cls_cv1, c_in, c_in, 3, 1, 1, 1, h, w)?;
     let cls = cbs(&cls, &dw.cls_cv2, c_in, c_in, 3, 1, 1, 1, h, w)?;
@@ -469,11 +463,7 @@ fn detect_branch(
 /// DFL decode: `reg_logits [1, 4*R, N]` → `[1, 4, N]` distances. Each
 /// coordinate's `R` bins are softmaxed then summed against `[0, 1, ...,
 /// R-1]` to produce the expectation.
-fn dfl_decode(
-    reg_logits: &LazyTensor,
-    reg_max: usize,
-    n_anchors: usize,
-) -> crate::Result<LazyTensor> {
+fn dfl_decode(reg_logits: &Tensor, reg_max: usize, n_anchors: usize) -> crate::Result<Tensor> {
     // Reshape [1, 4*R, N] → [1, 4, R, N] → [1, 4, N, R] (R last).
     let r = reg_max;
     let y = reg_logits.reshape(Shape::from_dims(&[1, 4, r, n_anchors]))?;
@@ -495,11 +485,11 @@ pub struct YoloV8RawOutput {
     /// Per-anchor classification logits, shape `[1, nc, N]` where `N =
     /// sum of H×W at each of 3 scales`. Apply sigmoid to convert to
     /// per-class probabilities.
-    pub cls_logits: LazyTensor,
+    pub cls_logits: Tensor,
     /// Per-anchor DFL-decoded distances, shape `[1, 4, N]`: left, top,
     /// right, bottom, in **grid cells** (not pixels). Multiply by the
     /// per-anchor stride to get pixels.
-    pub reg_dists: LazyTensor,
+    pub reg_dists: Tensor,
     /// Per-anchor stride (pixels per grid cell). Length N.
     pub strides: Vec<f32>,
     /// Per-anchor grid center (cx, cy) in grid cells. Length 2*N.
@@ -527,7 +517,7 @@ impl YoloV8Model {
             "forward: image wrong length"
         );
 
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             image.to_vec(),
             Shape::from_dims(&[1, 3, isize, isize]),
             &crate::Device::cpu(),
@@ -677,7 +667,7 @@ impl YoloV8Model {
         // Flatten each (H, W) into N positions then concat along the
         // position axis.
         let flatten_positions =
-            |t: &LazyTensor, c: usize, h: usize, w: usize| -> crate::Result<LazyTensor> {
+            |t: &Tensor, c: usize, h: usize, w: usize| -> crate::Result<Tensor> {
                 t.reshape(Shape::from_dims(&[1, c, h * w]))
             };
         let cls_s_f = flatten_positions(&cls_s, cfg.num_classes, h3, w3)?;
@@ -1002,16 +992,12 @@ mod tests {
         // pairwise IoU = 1.
         let reg: Vec<f32> = vec![1.0_f32; 16]; // 4 channels × 4 anchors
         let raw = YoloV8RawOutput {
-            cls_logits: LazyTensor::from_f32(
+            cls_logits: Tensor::from_f32(
                 vec![5.0_f32, 5.0, 5.0, 5.0],
                 Shape::from_dims(&[1, 1, 4]),
                 &crate::Device::cpu(),
             ),
-            reg_dists: LazyTensor::from_f32(
-                reg,
-                Shape::from_dims(&[1, 4, 4]),
-                &crate::Device::cpu(),
-            ),
+            reg_dists: Tensor::from_f32(reg, Shape::from_dims(&[1, 4, 4]), &crate::Device::cpu()),
             strides: vec![8.0; 4],
             grid_xy: vec![10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0],
         };

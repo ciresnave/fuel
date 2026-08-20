@@ -369,12 +369,12 @@ incrementally as Fuel offers them; **none block the port**.
    > requested by CireSnave. Close this gap on a token coming out of Fuel, not on a file listing.
 3. ~~**`nn` surface** — needs a coverage check.~~ **CLOSED 2026-07-29 (parity check, all
    [verified]).** Every symbol the consumer uses has a Fuel counterpart. `VarBuilder`/`VarMap` →
-   `fuel_core::lazy_nn_varbuilder::LazyVarBuilder` / `lazy_nn_varmap::LazyVarMap`. `Linear` /
+   `fuel_core::lazy_nn_varbuilder::VarBuilder` / `lazy_nn_varmap::VarMap`. `Linear` /
    `linear_no_bias` → `fuel-core/src/lazy_nn/linear.rs` (`linear()` :145, `linear_no_bias()` :169).
    `embedding` → `lazy_nn/embedding.rs`. `ops::silu` → `fuel-graph/src/lib.rs:4761` +
    `fuel-core/src/lazy.rs:498` (plus `silu_inplace` :4808). `ops::softmax_last_dim` →
    `fuel-graph/src/lib.rs:5970` + `fuel-core/src/lazy.rs:1037`. **Bonus overlap:** `lazy_nn/` also
-   ships `lora.rs` (`LazyLoraLinear`) and `quantizable_linear.rs` (`LazyQuantizableLinear`), which
+   ships `lora.rs` (`LoraLinear`) and `quantizable_linear.rs` (`QuantizableLinear`), which
    duplicate the consumer's `lora/` and `model/quantizable_linear.rs` — add both to the A.4 diff.
    Full `lazy_nn/` inventory: activation, conv, embedding, init, linear, lora, moe, norm,
    quantizable_linear, sampling, sequential, two_proj_attention.
@@ -390,7 +390,7 @@ incrementally as Fuel offers them; **none block the port**.
    on the consumer's real shapes before deleting a hand-tuned FFI; and these are baracuda-backed, so
    **CUDA-only**. A consumer needing 4-bit on Vulkan or CPU is still in gap territory.
 5. **Error type.** 49 `Error::Msg` + 28 `bail`. Mechanical, but touches nearly every coupled file.
-5d. **No `from_mmaped_safetensors` equivalent on `LazyVarBuilder` [reported 2026-07-29, port
+5d. **No `from_mmaped_safetensors` equivalent on `VarBuilder` [reported 2026-07-29, port
    session].** The Candle-shaped weight-loading route a consumer reaches for does not exist, so the
    real safetensors path has to be resolved before any loader code is written. Recorded as found
    rather than invented — it surfaced while the port session was cataloguing Fuel's actual API
@@ -480,7 +480,7 @@ incrementally as Fuel offers them; **none block the port**.
    gap. [verified 2026-07-29]** Found by the first consumer to write a two-tensor program, by hitting
    a panic rather than by reading.
 
-   Every `LazyTensor::from_*` constructor **mints its own graph** — `from_f32`, `from_bf16`, and
+   Every `Tensor::from_*` constructor **mints its own graph** — `from_f32`, `from_bf16`, and
    `zeros`/`full` which delegate to them; none takes a graph parameter. Meanwhile `matmul` asserts
    `Arc::ptr_eq(&self.graph, &other.graph)` (`fuel-graph/src/lib.rs:3913`). **So the obvious way to
    write a two-tensor program — construct both, multiply them — cannot work**, and fails with
@@ -506,7 +506,7 @@ incrementally as Fuel offers them; **none block the port**.
       constructor mints a **new** graph.
    2. Extend each assert message to name the cure — *"…must live on the same graph; use
       `const_*_like` to build on an existing graph"*.
-   3. State the common-root constraint once in the `LazyTensor` type doc.
+   3. State the common-root constraint once in the `Tensor` type doc.
 
    **SHIPPED 2026-07-29** (`7a284021`, gate green — `fuel-graph --lib` 473 passed including both
    `should_panic` tests): type doc, five constructor docs (`from_f32`, `from_f64`, `from_bf16`,

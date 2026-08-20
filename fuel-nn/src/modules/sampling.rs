@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Host-side sampling helpers over `LazyTensor` logits.
+//! Host-side sampling helpers over `Tensor` logits.
 //!
-//! Realizes the input logits with [`LazyTensor::realize_f32`] and runs
+//! Realizes the input logits with [`Tensor::realize_f32`] and runs
 //! the actual token selection on the host. The lazy-graph side is just
 //! a one-shot D2H — the sampling math itself is too branchy to express
 //! cleanly as a graph and the cost is dominated by the realize already.
@@ -16,20 +16,20 @@
 //! first.
 
 use fuel::Result;
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use rand::distr::Distribution;
 use rand::rngs::StdRng;
 
 /// Realize the logits into a host `Vec<f32>` and return it.
 ///
 /// GAP-186: this returns `Result`, so it must PROPAGATE a realize failure, not
-/// abort the process. `LazyTensor::realize_f32()` `.expect()`s (a test
+/// abort the process. `Tensor::realize_f32()` `.expect()`s (a test
 /// convenience) — calling it here made the four `sample_*` functions' `?` a
 /// dead branch and the `Result` signature a lie: a failed realize panicked
 /// instead of returning `Err`. On a serving path that turns one bad request
 /// into a killed session. Use the fallible `pipelined_bridge::realize_one_as`
 /// directly (the same path `train.rs::param_to_host` already relies on).
-fn realize_logits(logits: &LazyTensor) -> Result<Vec<f32>> {
+fn realize_logits(logits: &Tensor) -> Result<Vec<f32>> {
     let device = fuel::Device::cpu();
     let v =
         fuel::pipelined_bridge::realize_one_as::<f32>(logits.graph(), logits.node_id(), &device)?;
@@ -97,7 +97,7 @@ fn sample_multinomial(prs: &[f32], rng: &mut StdRng) -> Result<usize> {
 
 /// Greedy / argmax selection. Returns the index of the largest logit
 /// — equivalent to deterministic decoding.
-pub fn greedy(logits: &LazyTensor) -> Result<u32> {
+pub fn greedy(logits: &Tensor) -> Result<u32> {
     let values = realize_logits(logits)?;
     let idx = argmax(&values);
     Ok(idx as u32)
@@ -106,7 +106,7 @@ pub fn greedy(logits: &LazyTensor) -> Result<u32> {
 /// Temperature-only multinomial sample. Divides the logits by `temp`,
 /// applies a numerically stable softmax, and draws one index from the
 /// resulting categorical distribution.
-pub fn temperature_sample(logits: &LazyTensor, temp: f32, rng: &mut StdRng) -> Result<u32> {
+pub fn temperature_sample(logits: &Tensor, temp: f32, rng: &mut StdRng) -> Result<u32> {
     let values = realize_logits(logits)?;
     let prs = softmax_with_temp(values, temp)?;
     let idx = sample_multinomial(&prs, rng)?;
@@ -116,7 +116,7 @@ pub fn temperature_sample(logits: &LazyTensor, temp: f32, rng: &mut StdRng) -> R
 /// Top-K restricted multinomial sample. Selects the `k` highest-logit
 /// indices, renormalizes their softmax mass to sum to 1, and samples
 /// from the restricted set. `k` is clamped to `[1, vocab]`.
-pub fn top_k_sample(logits: &LazyTensor, k: usize, temp: f32, rng: &mut StdRng) -> Result<u32> {
+pub fn top_k_sample(logits: &Tensor, k: usize, temp: f32, rng: &mut StdRng) -> Result<u32> {
     let values = realize_logits(logits)?;
     let prs = softmax_with_temp(values, temp)?;
     if k == 0 {
@@ -143,7 +143,7 @@ pub fn top_k_sample(logits: &LazyTensor, k: usize, temp: f32, rng: &mut StdRng) 
 /// reaches `p`, zeros the rest, and samples. With `p >= 1.0` this is
 /// equivalent to a plain temperature sample; with `p <= 0.0` it falls
 /// back to greedy.
-pub fn top_p_sample(logits: &LazyTensor, p: f32, temp: f32, rng: &mut StdRng) -> Result<u32> {
+pub fn top_p_sample(logits: &Tensor, p: f32, temp: f32, rng: &mut StdRng) -> Result<u32> {
     let values = realize_logits(logits)?;
     let mut prs = softmax_with_temp(values, temp)?;
     if !p.is_finite() {
@@ -178,9 +178,9 @@ mod tests {
     use fuel_ir::Shape;
     use rand::SeedableRng;
 
-    fn lazy_logits(values: Vec<f32>) -> LazyTensor {
+    fn lazy_logits(values: Vec<f32>) -> Tensor {
         let n = values.len();
-        LazyTensor::from_f32(values, Shape::from_dims(&[n]), &Device::cpu())
+        Tensor::from_f32(values, Shape::from_dims(&[n]), &Device::cpu())
     }
 
     #[test]

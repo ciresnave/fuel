@@ -9,7 +9,7 @@ use anyhow::{Error as E, Result};
 use clap::Parser;
 use std::sync::Arc;
 
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel::lazy_clip::{ClipModel, ClipModelWeights, ClipTextConfig, ClipVisionConfig};
 use fuel::safetensors::MmapedSafetensors;
 use fuel::{Device, Shape};
@@ -110,7 +110,7 @@ pub fn main() -> Result<()> {
     let mut image_feats: Vec<Vec<f32>> = Vec::with_capacity(vec_imgs.len());
     for img_path in &vec_imgs {
         let pixels = load_image_as_vec(img_path, vision_config.image_size)?;
-        let pixels = LazyTensor::from_f32(
+        let pixels = Tensor::from_f32(
             Arc::<[f32]>::from(pixels),
             Shape::from_dims(&[1, 3, vision_config.image_size, vision_config.image_size]),
             &device,

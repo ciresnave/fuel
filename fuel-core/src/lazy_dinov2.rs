@@ -33,7 +33,7 @@
 //! interpolation deferred (eager uses bicubic which is a
 //! larger op we don't have on the lazy surface yet).
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -139,7 +139,7 @@ pub struct Dinov2Model {
 
 impl Dinov2Model {
     /// Run image classification. Returns `(1, num_classes)`.
-    pub fn forward(&self, pixel_values: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, pixel_values: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = pixel_values.shape();
@@ -234,7 +234,7 @@ impl Dinov2Model {
     /// canonical layer pick for DINOv2 ViT-Small/Base/Large is
     /// `[2, 5, 8, 11]` (every 3 layers).
     ///
-    /// Returns `Vec<LazyTensor>` with one tensor per requested
+    /// Returns `Vec<Tensor>` with one tensor per requested
     /// layer index, shape `(1, num_patches + 1, embed_dim)`. The
     /// CLS token is at slot 0 of each output; the patch features
     /// follow. **No final LayerNorm** is applied — the DPT head
@@ -245,9 +245,9 @@ impl Dinov2Model {
     /// and within `[0, depth)`.
     pub fn forward_intermediate_layers(
         &self,
-        pixel_values: &LazyTensor,
+        pixel_values: &Tensor,
         layer_ids: &[usize],
-    ) -> Result<Vec<LazyTensor>> {
+    ) -> Result<Vec<Tensor>> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = pixel_values.shape();
@@ -321,7 +321,7 @@ impl Dinov2Model {
         Ok(out)
     }
 
-    fn apply_block(&self, x: &LazyTensor, block: &Dinov2BlockWeights) -> Result<LazyTensor> {
+    fn apply_block(&self, x: &Tensor, block: &Dinov2BlockWeights) -> Result<Tensor> {
         let cfg = &self.config;
         let dims = x.shape();
         let dims = dims.dims();
@@ -561,10 +561,10 @@ mod tests {
         }
     }
 
-    fn tiny_image(cfg: &Dinov2Config) -> LazyTensor {
+    fn tiny_image(cfg: &Dinov2Config) -> Tensor {
         let n_pix = 1 * cfg.num_channels * cfg.image_size * cfg.image_size;
         let img_data: Vec<f32> = (0..n_pix).map(|i| (i as f32 / n_pix as f32)).collect();
-        LazyTensor::from_f32(
+        Tensor::from_f32(
             Arc::from(img_data),
             Shape::from_dims(&[1, cfg.num_channels, cfg.image_size, cfg.image_size]),
             &Device::cpu(),

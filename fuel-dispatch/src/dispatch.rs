@@ -943,7 +943,7 @@ macro_rules! cpu_where_wrapper {
             }
             let cond_guard = read_storage(&inputs[0])?;
             // GAP-168(c): the cond mask is Bool. This is the RUNTIME arm of the
-            // same rule the graph builder and the LazyTensor wrapper enforce —
+            // same rule the graph builder and the Tensor wrapper enforce —
             // three layers, and each had to be flipped separately. Bool and U8
             // are byte-identical, so this check is the only thing keeping a U8
             // buffer from being consumed here as if it were a mask.

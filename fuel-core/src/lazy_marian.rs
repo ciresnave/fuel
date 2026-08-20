@@ -36,7 +36,7 @@
 //! sees the full target sequence (teacher-forced layout); a
 //! production decode loop is out of scope.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -157,7 +157,7 @@ pub struct MarianModel {
 impl MarianModel {
     /// Encode + decode in one call. Returns logits of shape
     /// `[1, tgt_len, target_vocab_size]`.
-    pub fn forward(&self, src_tokens: &[u32], tgt_tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn forward(&self, src_tokens: &[u32], tgt_tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         assert!(!src_tokens.is_empty(), "src_tokens must be non-empty");
         assert!(!tgt_tokens.is_empty(), "tgt_tokens must be non-empty");
@@ -179,7 +179,7 @@ impl MarianModel {
         // Build a single embed tensor (== single graph) and reuse it
         // for both encoder + decoder so cross-attention can matmul
         // across the two stacks.
-        let embed = LazyTensor::from_f32(
+        let embed = Tensor::from_f32(
             self.weights.shared_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.d_model]),
             &Device::cpu(),
@@ -207,7 +207,7 @@ impl MarianModel {
     /// language detection, etc.) without paying the decoder
     /// cost or requiring target tokens. Mirrors the
     /// `T5Model::forward_encoder` shape.
-    pub fn forward_encoder(&self, src_tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn forward_encoder(&self, src_tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         assert!(!src_tokens.is_empty(), "src_tokens must be non-empty");
         assert!(
@@ -219,7 +219,7 @@ impl MarianModel {
             0,
             "d_model must be divisible by encoder_attention_heads",
         );
-        let embed = LazyTensor::from_f32(
+        let embed = Tensor::from_f32(
             self.weights.shared_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.d_model]),
             &Device::cpu(),
@@ -236,7 +236,7 @@ impl MarianModel {
     /// (matches Qwen2 raw-embeds convention — caller passes token-
     /// level embeds; model handles seq-position-dependent positional
     /// encoding).
-    pub fn forward_encoder_embeds(&self, src_embeds: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward_encoder_embeds(&self, src_embeds: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let pos_table = build_sinusoidal_table(cfg.max_position_embeddings, cfg.d_model);
         let pos_full = src_embeds.const_f32_like(
@@ -251,11 +251,7 @@ impl MarianModel {
     /// and returns logits `(1, tgt_len, target_vocab)`. `enc_out`
     /// serves as the graph anchor for sinusoidal positional encoding
     /// + lm_head bias.
-    pub fn forward_decoder_embeds(
-        &self,
-        tgt_embeds: &LazyTensor,
-        enc_out: &LazyTensor,
-    ) -> Result<LazyTensor> {
+    pub fn forward_decoder_embeds(&self, tgt_embeds: &Tensor, enc_out: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let pos_table = build_sinusoidal_table(cfg.max_position_embeddings, cfg.d_model);
         let pos_full = enc_out.const_f32_like(
@@ -279,9 +275,9 @@ impl MarianModel {
     /// without the LM head + final-logits bias.
     pub fn forward_decoder_hidden_embeds(
         &self,
-        tgt_embeds: &LazyTensor,
-        enc_out: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        tgt_embeds: &Tensor,
+        enc_out: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let pos_table = build_sinusoidal_table(cfg.max_position_embeddings, cfg.d_model);
         let pos_full = enc_out.const_f32_like(
@@ -294,7 +290,7 @@ impl MarianModel {
     /// Build per-token embeddings without running encoder or decoder.
     /// Returns `(1, seq, d_model)`. Marian shares the embedding
     /// matrix between encoder and decoder (v1 only supports this).
-    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &Tensor, tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.shared_embedding.clone(),
@@ -313,7 +309,7 @@ impl MarianModel {
     /// Use this for autoregressive NMT generation where the
     /// encoder output is cached once and the decoder is invoked
     /// per generated token.
-    pub fn forward_decoder(&self, tgt_tokens: &[u32], enc_out: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward_decoder(&self, tgt_tokens: &[u32], enc_out: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         assert!(!tgt_tokens.is_empty(), "tgt_tokens must be non-empty");
         assert!(
@@ -348,12 +344,7 @@ impl MarianModel {
         logits.broadcast_add(&bias_t)
     }
 
-    fn encode(
-        &self,
-        embed: &LazyTensor,
-        pos_full: &LazyTensor,
-        src_tokens: &[u32],
-    ) -> Result<LazyTensor> {
+    fn encode(&self, embed: &Tensor, pos_full: &Tensor, src_tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         let src_len = src_tokens.len();
         let batch = 1;
@@ -365,11 +356,7 @@ impl MarianModel {
         self.encode_from_embeds(&src_embeds, pos_full)
     }
 
-    fn encode_from_embeds(
-        &self,
-        src_embeds: &LazyTensor,
-        pos_full: &LazyTensor,
-    ) -> Result<LazyTensor> {
+    fn encode_from_embeds(&self, src_embeds: &Tensor, pos_full: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let dims = src_embeds.shape();
         let dims = dims.dims();
@@ -404,11 +391,11 @@ impl MarianModel {
 
     fn decode(
         &self,
-        embed: &LazyTensor,
-        pos_full: &LazyTensor,
+        embed: &Tensor,
+        pos_full: &Tensor,
         tgt_tokens: &[u32],
-        enc_out: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        enc_out: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let tgt_len = tgt_tokens.len();
         let batch = 1;
@@ -422,10 +409,10 @@ impl MarianModel {
 
     fn decode_from_embeds(
         &self,
-        tgt_embeds: &LazyTensor,
-        pos_full: &LazyTensor,
-        enc_out: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        tgt_embeds: &Tensor,
+        pos_full: &Tensor,
+        enc_out: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let dims = tgt_embeds.shape();
         let dims = dims.dims();
@@ -466,11 +453,7 @@ impl MarianModel {
         Ok(x)
     }
 
-    fn apply_encoder_layer(
-        &self,
-        x: &LazyTensor,
-        layer: &MarianEncoderLayerWeights,
-    ) -> Result<LazyTensor> {
+    fn apply_encoder_layer(&self, x: &Tensor, layer: &MarianEncoderLayerWeights) -> Result<Tensor> {
         let cfg = &self.config;
         let attn = self.attention(
             x,
@@ -502,11 +485,11 @@ impl MarianModel {
 
     fn apply_decoder_layer(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &MarianDecoderLayerWeights,
-        enc_out: &LazyTensor,
-        causal_mask: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        enc_out: &Tensor,
+        causal_mask: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         // Self-attention with causal mask.
         let self_attn = self.attention(
@@ -556,13 +539,13 @@ impl MarianModel {
     /// for cross-attention they differ.
     fn attention(
         &self,
-        q_src: &LazyTensor,
-        kv_src: &LazyTensor,
+        q_src: &Tensor,
+        kv_src: &Tensor,
         w: &MarianAttentionWeights,
         n_heads: usize,
         head_dim: usize,
-        attn_mask: Option<&LazyTensor>,
-    ) -> Result<LazyTensor> {
+        attn_mask: Option<&Tensor>,
+    ) -> Result<Tensor> {
         let d_model = self.config.d_model;
         let q_shape = q_src.shape();
         let q_dims = q_shape.dims();
@@ -610,13 +593,13 @@ impl MarianModel {
 
     fn feed_forward(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         fc1_w: &WeightStorage,
         fc1_b: &Arc<[f32]>,
         fc2_w: &WeightStorage,
         fc2_b: &Arc<[f32]>,
         ffn_dim: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let fc1 = add_bias_3d(fc1_w.apply_linear(x, cfg.d_model, ffn_dim)?, fc1_b, ffn_dim)?;
         let activated = match cfg.activation_function {
@@ -656,7 +639,7 @@ fn build_sinusoidal_table(max_positions: usize, d_model: usize) -> Vec<f32> {
     out
 }
 
-fn add_bias_3d(x: LazyTensor, bias: &Arc<[f32]>, n: usize) -> Result<LazyTensor> {
+fn add_bias_3d(x: Tensor, bias: &Arc<[f32]>, n: usize) -> Result<Tensor> {
     let _ = n;
     x.add_trailing_bias(Arc::clone(bias))
 }
@@ -1091,7 +1074,7 @@ mod tests {
         };
         let src = [1_u32, 2, 3];
         let enc_ref = model.forward_encoder(&src).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let src_embeds = model.embed_tokens_anchored(&anchor, &src).unwrap();
         let enc_via_embeds = model
             .forward_encoder_embeds(&src_embeds)
@@ -1142,7 +1125,7 @@ mod tests {
             config: cfg.clone(),
             weights: tiny_weights(&cfg),
         };
-        let bad = LazyTensor::from_f32(
+        let bad = Tensor::from_f32(
             vec![0.0_f32; 3 * (cfg.d_model + 1)],
             Shape::from_dims(&[1, 3, cfg.d_model + 1]),
             &Device::cpu(),

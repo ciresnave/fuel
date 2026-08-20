@@ -22,7 +22,7 @@
 //! biases, sliding-window gate — is inherited from the Qwen3 shape and
 //! re-implemented here without disturbing [`crate::lazy_qwen3`].
 
-use crate::lazy::{LayerWeights, LazyTensor, WeightStorage};
+use crate::lazy::{LayerWeights, Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -86,7 +86,7 @@ impl Qwen3VlTextModel {
     /// one `(t, h, w)` triple per token; for pure-text inputs all three
     /// axes share the same scalar position (so MROPE collapses to
     /// 1D RoPE).
-    pub fn forward(&self, tokens: &[u32], mrope_positions: &[MropePos]) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32], mrope_positions: &[MropePos]) -> Result<Tensor> {
         let h_norm = self.run_backbone(tokens, mrope_positions)?;
         self.apply_lm_head(&h_norm)
     }
@@ -95,11 +95,7 @@ impl Qwen3VlTextModel {
     /// `mrope_positions.len() == seq`. Used by the Qwen3-VL composition
     /// after image tokens have been substituted into the text embedding
     /// stream.
-    pub fn forward_embeds(
-        &self,
-        embeds: &LazyTensor,
-        mrope_positions: &[MropePos],
-    ) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &Tensor, mrope_positions: &[MropePos]) -> Result<Tensor> {
         let h_norm = self.run_backbone_embeds(embeds, mrope_positions)?;
         self.apply_lm_head(&h_norm)
     }
@@ -109,9 +105,9 @@ impl Qwen3VlTextModel {
     /// hosts that do not want the `lm_head` projection.
     pub fn forward_hidden_embeds(
         &self,
-        embeds: &LazyTensor,
+        embeds: &Tensor,
         mrope_positions: &[MropePos],
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         self.run_backbone_embeds_with_deepstack(embeds, mrope_positions, &[])
     }
 
@@ -126,10 +122,10 @@ impl Qwen3VlTextModel {
     /// injection (mirrors `if i < deepstack.len()` in eager).
     pub fn forward_embeds_with_deepstack(
         &self,
-        embeds: &LazyTensor,
+        embeds: &Tensor,
         mrope_positions: &[MropePos],
-        deepstack_per_layer: &[Option<LazyTensor>],
-    ) -> Result<LazyTensor> {
+        deepstack_per_layer: &[Option<Tensor>],
+    ) -> Result<Tensor> {
         let h_norm =
             self.run_backbone_embeds_with_deepstack(embeds, mrope_positions, deepstack_per_layer)?;
         self.apply_lm_head(&h_norm)
@@ -138,7 +134,7 @@ impl Qwen3VlTextModel {
     /// Token-embedding lookup anchored on `anchor`'s graph. Lets the
     /// composition host concatenate vision features with the resulting
     /// text embeddings before calling [`Self::forward_embeds`].
-    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &Tensor, tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
@@ -148,7 +144,7 @@ impl Qwen3VlTextModel {
         )
     }
 
-    fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
+    fn apply_lm_head(&self, h_norm: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         Ok(self
             .weights
@@ -156,7 +152,7 @@ impl Qwen3VlTextModel {
             .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
-    fn run_backbone(&self, tokens: &[u32], mrope_positions: &[MropePos]) -> Result<LazyTensor> {
+    fn run_backbone(&self, tokens: &[u32], mrope_positions: &[MropePos]) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
@@ -167,7 +163,7 @@ impl Qwen3VlTextModel {
             .bt());
         }
 
-        let h = LazyTensor::embed_tokens(
+        let h = Tensor::embed_tokens(
             weights.token_embedding.clone(),
             cfg.vocab_size,
             cfg.hidden_size,
@@ -177,20 +173,16 @@ impl Qwen3VlTextModel {
         self.run_backbone_embeds(&h, mrope_positions)
     }
 
-    fn run_backbone_embeds(
-        &self,
-        embeds: &LazyTensor,
-        mrope_positions: &[MropePos],
-    ) -> Result<LazyTensor> {
+    fn run_backbone_embeds(&self, embeds: &Tensor, mrope_positions: &[MropePos]) -> Result<Tensor> {
         self.run_backbone_embeds_with_deepstack(embeds, mrope_positions, &[])
     }
 
     fn run_backbone_embeds_with_deepstack(
         &self,
-        embeds: &LazyTensor,
+        embeds: &Tensor,
         mrope_positions: &[MropePos],
-        deepstack_per_layer: &[Option<LazyTensor>],
-    ) -> Result<LazyTensor> {
+        deepstack_per_layer: &[Option<Tensor>],
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -263,7 +255,7 @@ impl Qwen3VlTextModel {
         )
     }
 
-    fn build_layer_mask(&self, anchor: &LazyTensor, seq: usize, uses_window: bool) -> LazyTensor {
+    fn build_layer_mask(&self, anchor: &Tensor, seq: usize, uses_window: bool) -> Tensor {
         let cfg = &self.config;
         let window = if uses_window {
             cfg.sliding_window.unwrap_or(seq + 1)
@@ -283,13 +275,13 @@ impl Qwen3VlTextModel {
 
     fn apply_layer(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &LayerWeights,
         extras: &Qwen3VlTextLayerExtras,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
         uses_window: bool,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let x_shape = x.shape();
         let dims = x_shape.dims();
@@ -382,7 +374,7 @@ fn validate_mrope_section(section: &[usize; 3], head_dim: usize) -> Result<()> {
 
 /// Build the MROPE cos/sin tables for `seq` tokens at the supplied
 /// `(t, h, w)` positions. Output is laid out as `[seq, head_dim]` so it
-/// drops straight into [`LazyTensor::rope_with_tables`].
+/// drops straight into [`Tensor::rope_with_tables`].
 ///
 /// Section layout follows the HF convention: `mrope_section * 2`
 /// produces six repeated chunks `[t, h, w, t, h, w]` summing to
@@ -750,7 +742,7 @@ mod tests {
         let positions = scalar_positions(tokens.len());
         let logits_ref = model.forward(&tokens, &positions).unwrap().realize_f32();
 
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model
             .forward_embeds(&embeds, &positions)
@@ -775,7 +767,7 @@ mod tests {
             config: cfg.clone(),
             weights: tiny_weights(&cfg),
         };
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model
             .embed_tokens_anchored(&anchor, &[1_u32, 2, 3])
             .unwrap();

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Lazy `Linear` layer — `y = x @ W + b` over `LazyTensor`.
+//! Lazy `Linear` layer — `y = x @ W + b` over `Tensor`.
 //!
 //! Weight is held as a [`WeightStorage`] in `[in_features, out_features]`
 //! layout (the layout [`WeightStorage::apply_linear`] expects). This
@@ -11,25 +11,25 @@
 //! fresh on the activation's graph at forward time and broadcast-added
 //! across the leading dims of the projection.
 
-use crate::modules::LazyModule;
-use crate::varbuilder::LazyVarBuilder;
+use crate::modules::Module;
+use crate::varbuilder::VarBuilder;
 use fuel::Result;
-use fuel::lazy::{LazyTensor, WeightStorage};
+use fuel::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use std::sync::Arc;
 
-/// Linear (fully connected) layer over `LazyTensor`.
+/// Linear (fully connected) layer over `Tensor`.
 #[derive(Debug, Clone)]
-pub struct LazyLinear {
+pub struct Linear {
     weight: WeightStorage,
     bias: Option<Arc<[f32]>>,
     in_features: usize,
     out_features: usize,
 }
 
-impl LazyLinear {
+impl Linear {
     /// Build a linear layer from a weight storage and optional bias.
     ///
     /// `weight` must already be laid out as `[in_features, out_features]`
@@ -43,7 +43,7 @@ impl LazyLinear {
     ) -> Result<Self> {
         if weight.elem_count() != in_features * out_features {
             return Err(fuel::Error::Msg(format!(
-                "LazyLinear::new: weight has {} elements but \
+                "Linear::new: weight has {} elements but \
                  in_features * out_features = {} * {} = {}",
                 weight.elem_count(),
                 in_features,
@@ -55,7 +55,7 @@ impl LazyLinear {
         if let Some(b) = bias.as_ref() {
             if b.len() != out_features {
                 return Err(fuel::Error::Msg(format!(
-                    "LazyLinear::new: bias has length {} but \
+                    "Linear::new: bias has length {} but \
                      out_features = {}",
                     b.len(),
                     out_features,
@@ -101,8 +101,8 @@ impl LazyLinear {
     }
 }
 
-impl LazyModule for LazyLinear {
-    fn forward(&self, xs: &LazyTensor) -> Result<LazyTensor> {
+impl Module for Linear {
+    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         let y = self
             .weight
             .apply_linear(xs, self.in_features, self.out_features)?;
@@ -142,15 +142,15 @@ fn fan_in_kaiming_uniform(in_features: usize, n: usize, seed_salt: u64) -> Vec<f
     (0..n).map(|_| rng.random_range(-bound..bound)).collect()
 }
 
-/// Free factory: build a [`LazyLinear`] with weight + bias registered
-/// into `vs`'s underlying [`crate::varmap::LazyVarMap`] under
+/// Free factory: build a [`Linear`] with weight + bias registered
+/// into `vs`'s underlying [`crate::varmap::VarMap`] under
 /// the names `"<prefix>.weight"` and `"<prefix>.bias"`.
 ///
 /// The weight is laid out `[in_features, out_features]` (the layout
 /// [`fuel::lazy::WeightStorage::apply_linear`] expects). Init follows
 /// a Kaiming-fan-in uniform: `U(-1/sqrt(in_features), +1/sqrt(in_features))`,
 /// approximating the retired `fuel_nn::linear` semantics.
-pub fn linear(in_features: usize, out_features: usize, vs: &LazyVarBuilder) -> Result<LazyLinear> {
+pub fn linear(in_features: usize, out_features: usize, vs: &VarBuilder) -> Result<Linear> {
     let weight_var = vs.get_with(
         Shape::from_dims(&[in_features, out_features]),
         "weight",
@@ -163,23 +163,19 @@ pub fn linear(in_features: usize, out_features: usize, vs: &LazyVarBuilder) -> R
     })?;
     let weight = WeightStorage::F32(Arc::from(weight_var.to_vec()));
     let bias: Arc<[f32]> = Arc::from(bias_var.to_vec());
-    LazyLinear::new(weight, Some(bias), in_features, out_features)
+    Linear::new(weight, Some(bias), in_features, out_features)
 }
 
 /// Free factory: bias-less variant of [`linear`]. Only `"<prefix>.weight"`
-/// is registered into the underlying [`crate::varmap::LazyVarMap`].
-pub fn linear_no_bias(
-    in_features: usize,
-    out_features: usize,
-    vs: &LazyVarBuilder,
-) -> Result<LazyLinear> {
+/// is registered into the underlying [`crate::varmap::VarMap`].
+pub fn linear_no_bias(in_features: usize, out_features: usize, vs: &VarBuilder) -> Result<Linear> {
     let weight_var = vs.get_with(
         Shape::from_dims(&[in_features, out_features]),
         "weight",
         |s| fan_in_kaiming_uniform(in_features, s.elem_count(), 0),
     )?;
     let weight = WeightStorage::F32(Arc::from(weight_var.to_vec()));
-    LazyLinear::new_no_bias(weight, in_features, out_features)
+    Linear::new_no_bias(weight, in_features, out_features)
 }
 
 #[cfg(test)]
@@ -226,14 +222,14 @@ mod tests {
         let b: Vec<f32> = ramp_f32(out_features, 0.1, 0.0);
         let x_data: Vec<f32> = ramp_f32(seq * in_features, 0.03, -0.4);
 
-        let layer = LazyLinear::new(
+        let layer = Linear::new(
             WeightStorage::F32(Arc::from(w)),
             Some(Arc::from(b)),
             in_features,
             out_features,
         )
         .unwrap();
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             x_data,
             Shape::from_dims(&[seq, in_features]),
             &Device::cpu(),
@@ -259,14 +255,14 @@ mod tests {
 
         let expected = ref_linear(&x_data, &w, Some(&bias), seq, in_features, out_features);
 
-        let layer = LazyLinear::new(
+        let layer = Linear::new(
             WeightStorage::F32(Arc::from(w)),
             Some(Arc::from(bias)),
             in_features,
             out_features,
         )
         .unwrap();
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             x_data,
             Shape::from_dims(&[seq, in_features]),
             &Device::cpu(),
@@ -292,8 +288,8 @@ mod tests {
         let expected = ref_linear(&x_data, &w, None, seq, in_features, out_features);
 
         let weight = WeightStorage::F32(Arc::from(w.clone()));
-        let layer = LazyLinear::new_no_bias(weight.clone(), in_features, out_features).unwrap();
-        let x = LazyTensor::from_f32(
+        let layer = Linear::new_no_bias(weight.clone(), in_features, out_features).unwrap();
+        let x = Tensor::from_f32(
             x_data.clone(),
             Shape::from_dims(&[seq, in_features]),
             &Device::cpu(),
@@ -302,7 +298,7 @@ mod tests {
         assert_eq!(y.shape().dims(), &[seq, out_features]);
         let got = y.realize_f32();
 
-        let x2 = LazyTensor::from_f32(
+        let x2 = Tensor::from_f32(
             x_data,
             Shape::from_dims(&[seq, in_features]),
             &Device::cpu(),
@@ -329,16 +325,16 @@ mod tests {
 
     #[test]
     fn factory_registers_weight_and_bias_and_forward_shape_matches() {
-        use crate::varbuilder::LazyVarBuilder;
-        use crate::varmap::LazyVarMap;
+        use crate::varbuilder::VarBuilder;
+        use crate::varmap::VarMap;
         use fuel::DType;
 
         let in_features = 4;
         let out_features = 3;
         let seq = 5;
 
-        let map = LazyVarMap::new();
-        let vs = LazyVarBuilder::from_varmap(map.clone(), DType::F32, Device::cpu());
+        let map = VarMap::new();
+        let vs = VarBuilder::from_varmap(map.clone(), DType::F32, Device::cpu());
 
         let layer = super::linear(in_features, out_features, &vs.pp("proj")).unwrap();
         assert_eq!(layer.in_features(), in_features);
@@ -358,7 +354,7 @@ mod tests {
 
         // Forward gives the expected output shape on a small fixture.
         let x_data: Vec<f32> = ramp_f32(seq * in_features, 0.05, -0.1);
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             x_data,
             Shape::from_dims(&[seq, in_features]),
             &Device::cpu(),
@@ -372,8 +368,8 @@ mod tests {
         }
 
         // `linear_no_bias` registers only weight.
-        let map2 = LazyVarMap::new();
-        let vs2 = LazyVarBuilder::from_varmap(map2.clone(), DType::F32, Device::cpu());
+        let map2 = VarMap::new();
+        let vs2 = VarBuilder::from_varmap(map2.clone(), DType::F32, Device::cpu());
         let layer_nb = super::linear_no_bias(in_features, out_features, &vs2.pp("nb")).unwrap();
         assert!(layer_nb.bias().is_none());
         assert!(map2.get("nb.weight").is_some());

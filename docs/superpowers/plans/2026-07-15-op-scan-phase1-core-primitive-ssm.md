@@ -849,7 +849,7 @@ fn selective_scan_decompose_lowers_to_scan_and_matches() {
     use fuel_graph::registry::FusedOps;
     use fuel_graph::Op;
     let dev = Device::cpu();
-    let u = LazyTensor::from_f32(vec![2.0f32], Shape::from_dims(&[1, 1, 1]), &dev);
+    let u = Tensor::from_f32(vec![2.0f32], Shape::from_dims(&[1, 1, 1]), &dev);
     let delta = u.const_f32_like(vec![0.5f32], Shape::from_dims(&[1, 1, 1]));
     let a = u.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1, 1]));
     let b = u.const_f32_like(vec![3.0f32], Shape::from_dims(&[1, 1, 1]));
@@ -941,7 +941,7 @@ fn ssd_chunk_scan_decompose_lowers_to_scan_and_matches() {
     let dev = Device::cpu();
     // x [batch, seqlen, heads, head_dim] = [1,1,1,1]; dt [b,s,h]=[1,1,1];
     // a [heads]=[1]; b/c [b,s,h,state]=[1,1,1,1].
-    let x  = LazyTensor::from_f32(vec![2.0f32], Shape::from_dims(&[1, 1, 1, 1]), &dev);
+    let x  = Tensor::from_f32(vec![2.0f32], Shape::from_dims(&[1, 1, 1, 1]), &dev);
     let dt = x.const_f32_like(vec![0.5f32], Shape::from_dims(&[1, 1, 1]));
     let a  = x.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1]));
     let b  = x.const_f32_like(vec![3.0f32], Shape::from_dims(&[1, 1, 1, 1]));
@@ -979,7 +979,7 @@ fn ssd_chunk_scan_decompose_lowers_to_scan_and_matches() {
 }
 ```
 
-Confirm `LazyTensor::ssd_chunk_scan`'s exact signature at write-time (grep `fn ssd_chunk_scan` in `fuel-core`/`fuel-graph`); adjust arg order/types to match.
+Confirm `Tensor::ssd_chunk_scan`'s exact signature at write-time (grep `fn ssd_chunk_scan` in `fuel-core`/`fuel-graph`); adjust arg order/types to match.
 
 - [ ] **Step 3: Run, watch fail.** Run: `cargo test -p fuel-core --lib ssd_chunk_scan_decompose_lowers_to_scan_and_matches -- --exact`. Expected: FAIL (still self-returns → `Op::Fused(SSD_CHUNK_SCAN)` survives).
 
@@ -1014,7 +1014,7 @@ fn selective_scan_fused_kernel_is_the_executed_path_and_unroll_matches() {
     let dev = Device::cpu();
     let seqlen = 4usize;
     // Deterministic [1, seqlen, 1] u/delta, [1,1] a, [1, seqlen, 1] b/c.
-    let u     = LazyTensor::from_f32(vec![0.5, 1.0, -0.5, 0.25], Shape::from_dims(&[1, seqlen, 1]), &dev);
+    let u     = Tensor::from_f32(vec![0.5, 1.0, -0.5, 0.25], Shape::from_dims(&[1, seqlen, 1]), &dev);
     let delta = u.const_f32_like(vec![0.1, 0.2, 0.3, 0.4], Shape::from_dims(&[1, seqlen, 1]));
     let a     = u.const_f32_like(vec![-0.7], Shape::from_dims(&[1, 1]));
     let b     = u.const_f32_like(vec![1.0, 0.5, 0.25, 0.125], Shape::from_dims(&[1, seqlen, 1]));
@@ -1099,7 +1099,7 @@ git commit -m "docs(arch): Op::Scan closes G3 — 03-ir MAJOR + 04/08/12/14 MINO
 - **Type-name consistency (verified across all tasks):** `ScanEmit { All, Final }`, `ScanRole { Carry, Elem }`, `ScanPredicate`, `Op::Scan { n_xs, bound, emit, early_exit }`, `Op::ScanPlaceholder { role, index }`, `unroll_scan(graph, scan_id, steps) -> Result<(NodeId, NodeId), fuel_ir::Error>`, `Tensor::scan(&self, xs, consts, body_new_carry, body_y, bound, emit) -> Result<Tensor, fuel_ir::Error>` — spelled identically in every task and code block.
 - **The C2 linchpin:** the correctness relies on body-exits being the **last two `inputs`** (Task 1 doc + Task 3 builder + Tasks 6/7 decompose all obey this), which is what lets `base_map_hash`'s existing input-recursion hash the body with only a params-only `op_key` arm (Task 2). The born-red evidence is `op_key` returning `None` for `Op::Scan` before the arm.
 - **Never-workspace-wide cargo; one invocation at a time; CPU-only gates** — every command is `-p fuel-graph` / `-p fuel-core` / `-p fuel-dispatch`; the only GPU step (Task 8 Step 3) is explicitly optional/local.
-- **Confirm-against-real-code notes (implementer must verify at write-time):** `Graph::layout`/`reachable`-set accessors (Task 1); `compose_bundle` `Ok`-tuple shape + `OutputViewSpec::contiguous` (Task 3); `Op::Slice`/`Squeeze`/`Unsqueeze`/`Concat` field spellings (Task 4); `Tensor { graph, id }` same-crate field access in tests (Tasks 3–4); `const_f32_like`/`realize_f32`/`realize_one_as`/`LazyTensor::ssd_chunk_scan` signatures (Tasks 6–8); the exact SSM broadcast/reshape shape algebra (Tasks 6–7); constitution version headers (Task 9).
+- **Confirm-against-real-code notes (implementer must verify at write-time):** `Graph::layout`/`reachable`-set accessors (Task 1); `compose_bundle` `Ok`-tuple shape + `OutputViewSpec::contiguous` (Task 3); `Op::Slice`/`Squeeze`/`Unsqueeze`/`Concat` field spellings (Task 4); `Tensor { graph, id }` same-crate field access in tests (Tasks 3–4); `const_f32_like`/`realize_f32`/`realize_one_as`/`Tensor::ssd_chunk_scan` signatures (Tasks 6–8); the exact SSM broadcast/reshape shape algebra (Tasks 6–7); constitution version headers (Task 9).
 
 ## Genuine ambiguities flagged (could not fully resolve from spec + material + locked design)
 

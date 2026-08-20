@@ -24,7 +24,7 @@
 //! (no streaming).
 
 use crate::Result;
-use crate::lazy::LazyTensor;
+use crate::lazy::Tensor;
 use crate::lazy_mimi_quantization::{
     SplitResidualVectorQuantizerWeights, split_rvq_decode, split_rvq_encode,
 };
@@ -140,7 +140,7 @@ impl MimiModel {
 
     /// Full encode: audio waveform → discrete RVQ codes.
     /// Input `(1, channels, T_audio)`; output `(1, n_q, T_codes)`.
-    pub fn encode(&self, audio: &LazyTensor) -> Result<LazyTensor> {
+    pub fn encode(&self, audio: &Tensor) -> Result<Tensor> {
         let h = self.encoder().forward(audio)?;
         let h = self.encoder_transformer().forward(&h)?;
         let h = h
@@ -153,7 +153,7 @@ impl MimiModel {
 
     /// Full decode: RVQ codes → reconstructed audio.
     /// Input `(1, n_q, T_codes)`; output `(1, channels, T_audio)`.
-    pub fn decode(&self, codes: &LazyTensor) -> Result<LazyTensor> {
+    pub fn decode(&self, codes: &Tensor) -> Result<Tensor> {
         let h = split_rvq_decode(codes, &self.weights.quantizer)?;
         let h = self.upsample().forward(&h)?;
         let h = self.decoder_transformer().forward(&h)?;

@@ -17,7 +17,7 @@
 //! `fuel-reference-backend::attention::attention_naive` before that crate
 //! was retired 2026-07-04).
 
-use fuel_core::lazy::LazyTensor;
+use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
 
 fn rand_f32(shape: &[usize], seed: u32) -> Vec<f32> {
@@ -98,7 +98,7 @@ fn naive_attention(
 
 /// Build the equivalent attention graph: softmax(Q·K^T·scale)·V.
 /// No mask, no GQA — caller-side variants are tested in their own tests.
-fn composed_attention(q: &LazyTensor, k: &LazyTensor, v: &LazyTensor, scale: f32) -> LazyTensor {
+fn composed_attention(q: &Tensor, k: &Tensor, v: &Tensor, scale: f32) -> Tensor {
     // Q: [B, H, Sq, D], K: [B, H, Sk, D], V: [B, H, Sk, D]
     // K^T (along last two dims): [B, H, D, Sk]
     let kt = k.transpose().unwrap();
@@ -120,7 +120,7 @@ fn lazy_flash_attn_matches_composed_attention_basic() {
     let v_data = rand_f32(&[b, h, sk, d], 3);
     let scale = 1.0_f32 / (d as f32).sqrt();
 
-    let q = LazyTensor::from_f32(
+    let q = Tensor::from_f32(
         q_data.clone(),
         Shape::from_dims(&[b, h, sq, d]),
         &fuel_core::Device::cpu(),
@@ -135,7 +135,7 @@ fn lazy_flash_attn_matches_composed_attention_basic() {
     let fa = fa_out.realize_f32_reference();
 
     // Path B: explicit matmul+softmax composition.
-    let q2 = LazyTensor::from_f32(
+    let q2 = Tensor::from_f32(
         q_data,
         Shape::from_dims(&[b, h, sq, d]),
         &fuel_core::Device::cpu(),
@@ -170,7 +170,7 @@ fn lazy_flash_attn_matches_naive_with_causal_mask() {
     let v_data = rand_f32(&[b, h, sk, d], 6);
     let scale = 1.0_f32 / (d as f32).sqrt();
 
-    let q = LazyTensor::from_f32(
+    let q = Tensor::from_f32(
         q_data.clone(),
         Shape::from_dims(&[b, h, sq, d]),
         &fuel_core::Device::cpu(),

@@ -35,7 +35,7 @@
 //!   policy.
 
 use crate::Result;
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::lazy_gemma3::{Gemma3Config, Gemma3LayerWeights, Gemma3Model, Gemma3Weights};
 use std::sync::Arc;
 
@@ -51,7 +51,7 @@ pub struct QuantizedGemma3Model {
 impl QuantizedGemma3Model {
     /// Forward over a token-ID sequence. Returns logits with shape
     /// `(1, seq, vocab_size)`.
-    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         self.inner.forward(tokens, start_pos)
     }
 
@@ -59,26 +59,22 @@ impl QuantizedGemma3Model {
     /// token-embedding lookup). The caller is responsible for the
     /// `sqrt(hidden_size)` scaling — Gemma 3 expects pre-scaled
     /// embeddings here.
-    pub fn forward_embeds(
-        &self,
-        scaled_embeds: &LazyTensor,
-        start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, scaled_embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         self.inner.forward_embeds(scaled_embeds, start_pos)
     }
 
     /// Per-token hidden states up to the final offset RmsNorm, shape
     /// `(1, seq, hidden_size)`.
-    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         self.inner.forward_hidden(tokens, start_pos)
     }
 
     /// Pre-embedded variant of [`Self::forward_hidden`].
     pub fn forward_hidden_embeds(
         &self,
-        scaled_embeds: &LazyTensor,
+        scaled_embeds: &Tensor,
         start_pos: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         self.inner.forward_hidden_embeds(scaled_embeds, start_pos)
     }
 
@@ -86,7 +82,7 @@ impl QuantizedGemma3Model {
     /// multimodal compositions to obtain text-side embeddings that will
     /// be spliced with vision features before [`Self::forward_embeds`].
     /// The caller is responsible for the `sqrt(hidden_size)` scaling.
-    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &Tensor, tokens: &[u32]) -> Result<Tensor> {
         self.inner.embed_tokens_anchored(anchor, tokens)
     }
 
@@ -779,7 +775,7 @@ mod tests {
         let model = QuantizedGemma3Model::from_f32_bake(cfg.clone(), src).unwrap();
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let scaled = embeds.mul_scalar((cfg.hidden_size as f64).sqrt());
         let logits_via_embeds = model.forward_embeds(&scaled, 0).unwrap().realize_f32();

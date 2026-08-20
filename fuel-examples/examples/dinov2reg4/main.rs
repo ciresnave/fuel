@@ -11,7 +11,7 @@ extern crate intel_mkl_src;
 extern crate accelerate_src;
 
 use clap::Parser;
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel::lazy_dinov2reg4::{Dinov2Reg4Config, Dinov2Reg4Model, Dinov2Reg4Weights};
 use fuel::safetensors::MmapedSafetensors;
 use fuel::{Device, Shape};
@@ -44,7 +44,7 @@ pub fn main() -> anyhow::Result<()> {
     let image_chw = fuel_examples::imagenet::load_image518(&args.image)?;
     println!("loaded image: {} f32 values (CHW)", image_chw.len());
     let image_vec: Vec<f32> = image_chw;
-    let image = LazyTensor::from_f32(
+    let image = Tensor::from_f32(
         Arc::<[f32]>::from(image_vec),
         Shape::from_dims(&[1, 3, 518, 518]),
         &device,

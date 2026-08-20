@@ -39,7 +39,7 @@
 //! Pooling / projection heads stay out of v1 — caller can
 //! mean-pool and L2-normalize.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -168,11 +168,7 @@ impl JinaBertModel {
     ///   `(1, 1, seq, seq)` (broadcast-added on top of ALiBi).
     ///
     /// Returns per-token hidden states `(1, seq, hidden_size)`.
-    pub fn forward(
-        &self,
-        tokens: &[u32],
-        attention_mask: Option<&LazyTensor>,
-    ) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32], attention_mask: Option<&Tensor>) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
@@ -187,7 +183,7 @@ impl JinaBertModel {
         );
 
         // ---- Embeddings ----------------------------------------------------
-        let word_emb_t = LazyTensor::from_f32(
+        let word_emb_t = Tensor::from_f32(
             weights.word_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, h]),
             &Device::cpu(),
@@ -255,8 +251,8 @@ impl JinaBertModel {
         &self,
         tokens: &[u32],
         layer_ids: &[usize],
-        attention_mask: Option<&LazyTensor>,
-    ) -> Result<Vec<LazyTensor>> {
+        attention_mask: Option<&Tensor>,
+    ) -> Result<Vec<Tensor>> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
@@ -279,7 +275,7 @@ impl JinaBertModel {
             "layer_ids must all be in [0, num_hidden_layers = {depth})",
         );
 
-        let word_emb_t = LazyTensor::from_f32(
+        let word_emb_t = Tensor::from_f32(
             weights.word_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, h]),
             &Device::cpu(),
@@ -324,12 +320,7 @@ impl JinaBertModel {
         Ok(out)
     }
 
-    fn apply_layer(
-        &self,
-        x: &LazyTensor,
-        layer: &JinaLayerWeights,
-        bias: &LazyTensor,
-    ) -> Result<LazyTensor> {
+    fn apply_layer(&self, x: &Tensor, layer: &JinaLayerWeights, bias: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let dims = x.shape();
         let dims = dims.dims();

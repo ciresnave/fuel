@@ -42,7 +42,7 @@
 //! the pooling/normalization out of the model itself — they're
 //! a one-liner on the caller side and trivially composable.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::lazy_glm4::apply_interleaved_partial_rope;
 use crate::{Device, Result};
 use fuel_ir::Shape;
@@ -172,8 +172,8 @@ impl NomicBertModel {
         &self,
         tokens: &[u32],
         token_type_ids: Option<&[u32]>,
-        attention_mask: Option<&LazyTensor>,
-    ) -> Result<LazyTensor> {
+        attention_mask: Option<&Tensor>,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
@@ -186,7 +186,7 @@ impl NomicBertModel {
         );
 
         // ---- Embeddings -----------------------------------------------------
-        let word_emb_t = LazyTensor::from_f32(
+        let word_emb_t = Tensor::from_f32(
             weights.word_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.n_embd]),
             &Device::cpu(),
@@ -265,8 +265,8 @@ impl NomicBertModel {
         tokens: &[u32],
         layer_ids: &[usize],
         token_type_ids: Option<&[u32]>,
-        attention_mask: Option<&LazyTensor>,
-    ) -> Result<Vec<LazyTensor>> {
+        attention_mask: Option<&Tensor>,
+    ) -> Result<Vec<Tensor>> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
@@ -287,7 +287,7 @@ impl NomicBertModel {
             "layer_ids must all be in [0, n_layer = {depth})",
         );
 
-        let word_emb_t = LazyTensor::from_f32(
+        let word_emb_t = Tensor::from_f32(
             weights.word_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.n_embd]),
             &Device::cpu(),
@@ -341,12 +341,12 @@ impl NomicBertModel {
 
     fn apply_layer(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &NomicBertLayerWeights,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-        attention_mask: Option<&LazyTensor>,
-    ) -> Result<LazyTensor> {
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+        attention_mask: Option<&Tensor>,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         if cfg.prenorm {
             // Pre-LN: y = x + attn(LN(x)); z = y + ffn(LN(y)).
@@ -383,12 +383,12 @@ impl NomicBertModel {
 
     fn attention(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &NomicBertLayerWeights,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-        attention_mask: Option<&LazyTensor>,
-    ) -> Result<LazyTensor> {
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+        attention_mask: Option<&Tensor>,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let dims = x.shape();
         let dims = dims.dims();
@@ -442,7 +442,7 @@ impl NomicBertModel {
         out.add_optional_trailing_bias(layer.out_proj_bias.as_ref())
     }
 
-    fn mlp(&self, x: &LazyTensor, layer: &NomicBertLayerWeights) -> Result<LazyTensor> {
+    fn mlp(&self, x: &Tensor, layer: &NomicBertLayerWeights) -> Result<Tensor> {
         let cfg = &self.config;
         let d = cfg.n_embd;
         let h = cfg.n_inner;
@@ -475,13 +475,13 @@ impl NomicBertModel {
 }
 
 fn apply_rope(
-    qk: &LazyTensor,
-    rope_cos: &LazyTensor,
-    rope_sin: &LazyTensor,
+    qk: &Tensor,
+    rope_cos: &Tensor,
+    rope_sin: &Tensor,
     head_dim: usize,
     rope_dim: usize,
     interleaved: bool,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     if rope_dim == 0 {
         return Ok(qk.clone());
     }

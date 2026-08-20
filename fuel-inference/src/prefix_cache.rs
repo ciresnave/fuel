@@ -22,7 +22,7 @@
 //!
 //! ```rust
 //! use fuel_inference::prefix_cache::PrefixCache;
-//! use fuel::{DType, Device, lazy::LazyTensor};
+//! use fuel::{DType, Device, lazy::Tensor};
 //!
 //! # fn main() -> fuel::Result<()> {
 //! let mut cache = PrefixCache::new(16); // up to 16 cached prefixes
@@ -34,8 +34,8 @@
 //! assert!(cache.lookup(&system_tokens).is_none());
 //!
 //! // After prefill, store the KV states (one pair per layer)
-//! let k = LazyTensor::zeros((1, 4, 5, 64), DType::F32, &Device::cpu())?;
-//! let v = LazyTensor::zeros((1, 4, 5, 64), DType::F32, &Device::cpu())?;
+//! let k = Tensor::zeros((1, 4, 5, 64), DType::F32, &Device::cpu())?;
+//! let v = Tensor::zeros((1, 4, 5, 64), DType::F32, &Device::cpu())?;
 //! let kv_states = vec![(k, v)]; // 1-layer example
 //! cache.insert(&system_tokens, kv_states);
 //!
@@ -47,12 +47,12 @@
 //! # }
 //! ```
 
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 /// A cached KV state for one transformer layer.
-pub type LayerKvState = (LazyTensor, LazyTensor);
+pub type LayerKvState = (Tensor, Tensor);
 
 /// Hash key for a token sequence prefix.
 type PrefixHash = u64;
@@ -223,12 +223,12 @@ mod tests {
         (0..layers)
             .map(|_| {
                 let dims = fuel::Shape::from_dims(&[1, 4, seq_len, 64]);
-                let k = LazyTensor::from_f32(
+                let k = Tensor::from_f32(
                     vec![0.0_f32; 4 * seq_len * 64],
                     dims.clone(),
                     &Device::cpu(),
                 );
-                let v = LazyTensor::from_f32(vec![0.0_f32; 4 * seq_len * 64], dims, &Device::cpu());
+                let v = Tensor::from_f32(vec![0.0_f32; 4 * seq_len * 64], dims, &Device::cpu());
 
                 (k, v)
             })

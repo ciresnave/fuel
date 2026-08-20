@@ -161,7 +161,7 @@ fn format_size(size_in_bytes: usize) -> String {
 
 /// Lazy variant of the original eager `Model` enum. Each variant
 /// holds a `QuantizedXModel` whose `forward(tokens, start_pos)` returns
-/// a `LazyTensor` of shape `(1, seq, vocab_size)`.
+/// a `Tensor` of shape `(1, seq, vocab_size)`.
 enum Model {
     Phi3(QuantizedPhi3Model, usize), // (model, vocab_size)
     Phi3b(QuantizedLlama3Model, usize),

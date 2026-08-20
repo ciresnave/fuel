@@ -161,8 +161,8 @@ ports before the eager `fuel_core::Tensor` type-alias flip
       + mse + huber; 7 tests).
 - [x] [Eager fuel-nn optimizers](shipped/port-nn-optim.md)
       — `fuel-nn/src/optim.rs` (~600 LOC). **Shipped** as
-      `fuel-core/src/lazy_nn_optim.rs` (LazyOptimizer trait + LazySgd +
-      LazyAdamW + LazyVar wrapper; 9 tests including textbook-formula
+      `fuel-core/src/lazy_nn_optim.rs` (Optimizer trait + Sgd +
+      AdamW + Var wrapper; 9 tests including textbook-formula
       goldens for AdamW first-step + decoupled weight decay).
 - [x] [Eager fuel-nn Module wrappers](shipped/port-nn-layers.md)
       — `fuel-nn/src/{linear,conv,layer_norm,batch_norm,group_norm,embedding,sequential,rnn,lora,quantizable_linear,activation,encoding,init,kv_cache,rotary_emb,fused_ops,cpu_flash_attention,moe,sampling,func,training_context,var_builder,var_map}.rs`
@@ -171,7 +171,7 @@ ports before the eager `fuel_core::Tensor` type-alias flip
       (mod + linear + embedding + conv + norm + activation +
       sequential + lora + quantizable_linear + moe + sampling + init;
       33 tests covering each wrapper's golden against its underlying
-      LazyTensor primitive).
+      Tensor primitive).
 - [x] [Training augmentations](shipped/port-training-augmentations.md)
       — **All 5 sub-ports shipped** as
       `fuel-core/src/lazy_training_augmentations{,_extras}.rs`
@@ -200,7 +200,7 @@ tracker is considered complete.
       model → forward → output) — the lazy model modules all exist
       from rounds 1-4. Three special categories:
       - **Training bins** (mnist-training, reinforcement-learning):
-        migrate to the shipped LazyOptimizer / LazyVar /
+        migrate to the shipped Optimizer / Var /
         lazy_nn_loss surface from round 5.
       - **custom-ops** (eager CustomOp1 demo): needs a lazy custom-op
         surface — split out as foundational sub-port if one doesn't

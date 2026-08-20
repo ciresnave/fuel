@@ -62,7 +62,7 @@
 //! # Ok::<(), fuel_core::Error>(())
 //! ```
 
-use crate::lazy::LazyTensor;
+use crate::lazy::Tensor;
 use fuel_ir::Shape;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -218,7 +218,7 @@ impl WhisperModel {
     /// `mel` is a flat row-major `[1, num_mel_bins, T]` spectrogram —
     /// typically `[1, 80, 3000]` for 30 s of 16 kHz audio. The function
     /// validates shape-vs-config at entry.
-    pub fn forward_encoder(&self, mel: &[f32], mel_time: usize) -> crate::Result<LazyTensor> {
+    pub fn forward_encoder(&self, mel: &[f32], mel_time: usize) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let d = cfg.d_model;
         let n_mel = cfg.num_mel_bins;
@@ -230,7 +230,7 @@ impl WhisperModel {
             n_mel,
             mel_time
         );
-        let mel_t = LazyTensor::from_f32(
+        let mel_t = Tensor::from_f32(
             mel.to_vec(),
             Shape::from_dims(&[1, n_mel, mel_time]),
             &crate::Device::cpu(),
@@ -295,11 +295,7 @@ impl WhisperModel {
     /// precomputed encoder context. Returns logits of shape
     /// `[1, seq, vocab_size]` — the caller slices the last row to pick
     /// the next token.
-    pub fn forward_decoder(
-        &self,
-        tokens: &[u32],
-        encoder_out: &LazyTensor,
-    ) -> crate::Result<LazyTensor> {
+    pub fn forward_decoder(&self, tokens: &[u32], encoder_out: &Tensor) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let d = cfg.d_model;
         let seq = tokens.len();
@@ -364,7 +360,7 @@ impl WhisperModel {
     ) -> crate::Result<Vec<u32>> {
         let mel_time = mel.len() / self.config.num_mel_bins;
         let encoder_out = self.forward_encoder(mel, mel_time)?.realize_f32();
-        // Re-materialize the encoder output into a fresh LazyTensor for
+        // Re-materialize the encoder output into a fresh Tensor for
         // each decode step. Cheap vs rerunning the encoder.
         let t_half = mel_time / 2;
         let enc_shape = Shape::from_dims(&[1, t_half, self.config.d_model]);
@@ -372,7 +368,7 @@ impl WhisperModel {
 
         let mut tokens: Vec<u32> = prompt_tokens.to_vec();
         for _ in 0..max_new_tokens {
-            let encoder_t = LazyTensor::from_f32(
+            let encoder_t = Tensor::from_f32(
                 encoder_out.clone(),
                 enc_shape.clone(),
                 &crate::Device::cpu(),
@@ -404,13 +400,13 @@ impl WhisperModel {
 /// `y = LayerNorm(x) * gamma + beta`. Same shape as BERT's, parked
 /// here to keep the Whisper module self-contained.
 fn layer_norm_affine(
-    x: &LazyTensor,
+    x: &Tensor,
     gamma: &Arc<[f32]>,
     beta: &Arc<[f32]>,
     eps: f64,
     hidden: usize,
     seq: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let normed = x.layer_norm_last_dim(eps)?;
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))
@@ -426,13 +422,13 @@ fn layer_norm_affine(
 /// `y = x @ W + b`. `x` is `[1, seq, in_f]`, `W` is `[in_f, out_f]` (the
 /// transposed-at-load form we store in).
 fn linear(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &Arc<[f32]>,
     b: Option<&Arc<[f32]>>,
     in_f: usize,
     out_f: usize,
     seq: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]));
     let proj = x.matmul(&w_t)?;
     match b {
@@ -450,7 +446,7 @@ fn linear(
 /// Zero-pad `x: [1, C, T]` by 1 along the time axis, returning
 /// `[1, C, T+2]`. Built via concat with a const zero tensor — no
 /// native `Pad` op is needed since we only use this one padding.
-fn pad_t_axis_one_each_side(x: &LazyTensor, c: usize, t: usize) -> crate::Result<LazyTensor> {
+fn pad_t_axis_one_each_side(x: &Tensor, c: usize, t: usize) -> crate::Result<Tensor> {
     let zeros = x.const_f32_like(vec![0.0_f32; c], Shape::from_dims(&[1, c, 1]));
     zeros.concat(x, 2)?.concat(&zeros, 2) // [1, c, t+2]
 }
@@ -465,13 +461,13 @@ fn pad_t_axis_one_each_side(x: &LazyTensor, c: usize, t: usize) -> crate::Result
 /// has `3*in_c` channels), and matmul with the kernel reshaped to
 /// `[3*in_c, out_c]`.
 pub(crate) fn conv1d_k3_s1_p1(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &Arc<[f32]>,
     b: &Arc<[f32]>,
     in_c: usize,
     out_c: usize,
     t: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     // Pad T axis to T+2.
     let padded = pad_t_axis_one_each_side(x, in_c, t)?;
     // Three stride-1 windows along the time axis, each of length T.
@@ -515,13 +511,13 @@ pub(crate) fn conv1d_k3_s1_p1(
 /// other element). The even/odd indexing is expressed via reshape to
 /// a `[_, T/2, 2]` tile then a dim-3 slice.
 pub(crate) fn conv1d_k3_s2_p1(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &Arc<[f32]>,
     b: &Arc<[f32]>,
     in_c: usize,
     out_c: usize,
     t_in: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     assert!(
         t_in.is_multiple_of(2),
         "conv1d_k3_s2_p1 needs even T, got {t_in}"
@@ -581,9 +577,9 @@ pub(crate) fn conv1d_k3_s2_p1(
 /// should be applied.
 #[allow(clippy::too_many_arguments)]
 fn multi_head_attn(
-    q_src: &LazyTensor,
-    k_src: &LazyTensor,
-    v_src: &LazyTensor,
+    q_src: &Tensor,
+    k_src: &Tensor,
+    v_src: &Tensor,
     q_w: &Arc<[f32]>,
     q_b: &Arc<[f32]>,
     k_w: &Arc<[f32]>,
@@ -597,7 +593,7 @@ fn multi_head_attn(
     q_seq: usize,
     kv_seq: usize,
     causal: bool,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let q = linear(q_src, q_w, Some(q_b), d, d, q_seq)?;
     let k = linear(k_src, k_w, None, d, d, kv_seq)?; // no K bias
     let v = linear(v_src, v_w, Some(v_b), d, d, kv_seq)?;
@@ -637,11 +633,11 @@ fn multi_head_attn(
 /// One pre-LN encoder block: self-attention + FFN, each as
 /// `x + sublayer(LN(x))`.
 fn encoder_layer(
-    x: &LazyTensor,
+    x: &Tensor,
     lw: &WhisperEncoderLayerWeights,
     cfg: &WhisperConfig,
     seq: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let d = cfg.d_model;
     let n_heads = cfg.encoder_attention_heads;
     let d_head = cfg.encoder_head_dim();
@@ -662,12 +658,12 @@ fn encoder_layer(
 
 /// One pre-LN decoder block: causal self-attn + cross-attn + FFN.
 fn decoder_layer(
-    x: &LazyTensor,
-    encoder_out: &LazyTensor,
+    x: &Tensor,
+    encoder_out: &Tensor,
     lw: &WhisperDecoderLayerWeights,
     cfg: &WhisperConfig,
     q_seq: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let d = cfg.d_model;
     let n_heads = cfg.decoder_attention_heads;
     let d_head = cfg.decoder_head_dim();

@@ -51,7 +51,7 @@
 //!   (F32 / BF16 / Q4_0).
 //! - **Single batch.** Asserts `batch == 1`.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -192,35 +192,31 @@ pub struct LFM2Model {
 
 impl LFM2Model {
     /// Run a full-sequence forward and return logits `[1, seq, vocab_size]`.
-    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let h_norm = self.run_backbone(tokens, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
 
     /// Run the decoder forward up to the final RmsNorm and return
     /// per-token hidden states `(1, seq, hidden_size)`.
-    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         self.run_backbone(tokens, start_pos)
     }
 
     /// Multimodal entry point. Skips token embedding; runs the decoder
     /// over pre-embedded inputs of shape `(1, seq, hidden_size)`.
-    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let h_norm = self.run_backbone_embeds(embeds, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
 
     /// Hidden-state variant of [`Self::forward_embeds`].
-    pub fn forward_hidden_embeds(
-        &self,
-        embeds: &LazyTensor,
-        start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_hidden_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         self.run_backbone_embeds(embeds, start_pos)
     }
 
     /// Build per-token embeddings without running the decoder.
-    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &Tensor, tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
@@ -230,7 +226,7 @@ impl LFM2Model {
         )
     }
 
-    fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
+    fn apply_lm_head(&self, h_norm: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         Ok(self
             .weights
@@ -238,12 +234,12 @@ impl LFM2Model {
             .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
-    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let seq = tokens.len();
         assert!(seq > 0, "LFM2Model::forward: tokens must be non-empty");
 
-        let h = LazyTensor::embed_tokens(
+        let h = Tensor::embed_tokens(
             self.weights.token_embedding.clone(),
             cfg.vocab_size,
             cfg.hidden_size,
@@ -253,7 +249,7 @@ impl LFM2Model {
         self.run_backbone_embeds(&h, start_pos)
     }
 
-    fn run_backbone_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
+    fn run_backbone_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         cfg.validate()?;
         let weights = &self.weights;
@@ -282,7 +278,7 @@ impl LFM2Model {
         h.rms_norm_affine(Arc::clone(&weights.final_norm_gain), cfg.rms_norm_eps)
     }
 
-    fn build_causal_mask(&self, anchor: &LazyTensor, seq: usize) -> LazyTensor {
+    fn build_causal_mask(&self, anchor: &Tensor, seq: usize) -> Tensor {
         let mut mask_data = vec![0.0_f32; seq * seq];
         for i in 0..seq {
             for j in 0..seq {
@@ -296,12 +292,12 @@ impl LFM2Model {
 
     fn apply_layer(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &LFM2LayerWeights,
         layer_idx: usize,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let residual = x.clone();
         let x_norm = x.rms_norm_affine(Arc::clone(&layer.operator_norm_gain), cfg.rms_norm_eps)?;
@@ -329,7 +325,7 @@ impl LFM2Model {
         residual2.add(&mlp_out)
     }
 
-    fn apply_mlp(&self, x: &LazyTensor, layer: &LFM2LayerWeights) -> Result<LazyTensor> {
+    fn apply_mlp(&self, x: &Tensor, layer: &LFM2LayerWeights) -> Result<Tensor> {
         let cfg = &self.config;
         let gate = layer
             .ffn_gate
@@ -345,11 +341,11 @@ impl LFM2Model {
 
     fn apply_attention(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         a: &LFM2AttentionWeights,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let dims = x.shape();
         let dims = dims.dims();
@@ -411,7 +407,7 @@ impl LFM2Model {
     ///     compute `out = sum_keepdim(state * conv_weight, dim=2)`.
     ///   - Persist the rolled state for the next step.
     /// Until then `start_pos > 0` calls just re-run prefill from zero.
-    fn apply_short_conv(&self, x: &LazyTensor, c: &LFM2ConvWeights) -> Result<LazyTensor> {
+    fn apply_short_conv(&self, x: &Tensor, c: &LFM2ConvWeights) -> Result<Tensor> {
         let cfg = &self.config;
         let dims = x.shape();
         let dims = dims.dims();
@@ -811,7 +807,7 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
         let max_diff = logits_ref

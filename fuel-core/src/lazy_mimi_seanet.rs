@@ -40,7 +40,7 @@
 //! `lstm > 0`).
 
 use crate::Result;
-use crate::lazy::LazyTensor;
+use crate::lazy::Tensor;
 use crate::lazy_dac::expand_conv1d_weight_for_dilation_if_needed;
 use crate::lazy_encodec::{PadMode, pad1d};
 use fuel_ir::Shape;
@@ -104,6 +104,13 @@ impl SeaNetConfig {
 
 /// Forward-only `Conv1d` weights (no WeightNorm runtime renormalize).
 #[derive(Debug, Clone)]
+/// ⚠️ KEEPS THE `Lazy` PREFIX ON PURPOSE — do not "finish" the 2026-08-19
+/// prefix drop by renaming this. `Conv1dWeights` is ALREADY a live type in
+/// this crate, so here the prefix is NOT redundant: it is the only thing
+/// distinguishing two types in one crate. CireSnave's ruling was to drop
+/// `Lazy` *where it is redundant*, and this is one of exactly four names
+/// (with LazyKvCache, LazyPadMode, LazyConv1dWeights,
+/// LazyConvTranspose1dWeights) where that condition is not met.
 pub struct LazyConv1dWeights {
     /// Stored `(out_channels, in_channels / groups, kernel_size)`.
     pub weight: Arc<[f32]>,
@@ -118,6 +125,13 @@ pub struct LazyConv1dWeights {
 }
 
 #[derive(Debug, Clone)]
+/// ⚠️ KEEPS THE `Lazy` PREFIX ON PURPOSE — do not "finish" the 2026-08-19
+/// prefix drop by renaming this. `ConvTranspose1dWeights` is ALREADY a live type in
+/// this crate, so here the prefix is NOT redundant: it is the only thing
+/// distinguishing two types in one crate. CireSnave's ruling was to drop
+/// `Lazy` *where it is redundant*, and this is one of exactly four names
+/// (with LazyKvCache, LazyPadMode, LazyConv1dWeights,
+/// LazyConvTranspose1dWeights) where that condition is not met.
 pub struct LazyConvTranspose1dWeights {
     /// Stored `(in_channels, out_channels / groups, kernel_size)` to
     /// match PyTorch's `ConvTranspose1d.weight` layout.
@@ -166,7 +180,7 @@ pub struct SeaNetDecoderWeights {
 
 // ---- Forward helpers -------------------------------------------------------
 
-fn apply_activation(x: &LazyTensor, act: SeaNetActivation) -> LazyTensor {
+fn apply_activation(x: &Tensor, act: SeaNetActivation) -> Tensor {
     match act {
         SeaNetActivation::Elu1 => x.elu(1.0),
         SeaNetActivation::Gelu => x.gelu(),
@@ -178,11 +192,7 @@ fn apply_activation(x: &LazyTensor, act: SeaNetActivation) -> LazyTensor {
 /// Causal conv1d forward: left-pad with `(kernel-1) · dilation`
 /// then apply non-dilated conv1d (dilation is folded into the
 /// weight via zero-interleave).
-fn apply_causal_conv1d(
-    x: &LazyTensor,
-    w: &LazyConv1dWeights,
-    pad_mode: PadMode,
-) -> Result<LazyTensor> {
+fn apply_causal_conv1d(x: &Tensor, w: &LazyConv1dWeights, pad_mode: PadMode) -> Result<Tensor> {
     let effective_k = (w.kernel_size - 1) * w.dilation + 1;
     let pad_total = effective_k.saturating_sub(w.stride);
     let padded = pad1d(x, pad_total, 0, pad_mode, x)?;
@@ -209,15 +219,12 @@ fn apply_causal_conv1d(
 /// Causal conv_transpose1d for upsample. Mimi's upsample kernel is
 /// `2 · stride`, with the natural transposed-conv output trimmed
 /// to remove the trailing acausal tap region.
-fn apply_causal_conv_transpose1d(
-    x: &LazyTensor,
-    w: &LazyConvTranspose1dWeights,
-) -> Result<LazyTensor> {
+fn apply_causal_conv_transpose1d(x: &Tensor, w: &LazyConvTranspose1dWeights) -> Result<Tensor> {
     let weight = x.const_f32_like(
         Arc::clone(&w.weight),
         Shape::from_dims(&[w.in_channels, w.out_channels / w.groups, w.kernel_size]),
     );
-    // Use LazyTensor::conv_transpose1d (composite shipped earlier this
+    // Use Tensor::conv_transpose1d (composite shipped earlier this
     // session, layered over conv_transpose2d via rank-3 ↔ rank-4 lift).
     let y = x.conv_transpose1d(
         &weight, w.stride, /* padding */ 0, /* output_padding */ 0,
@@ -246,11 +253,11 @@ fn apply_causal_conv_transpose1d(
 }
 
 fn apply_resnet_block(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &SeaNetResnetBlockWeights,
     activation: SeaNetActivation,
     pad_mode: PadMode,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     let mut y = x.clone();
     for conv in &w.convs {
         y = apply_activation(&y, activation);
@@ -279,7 +286,7 @@ pub struct SeaNetDecoderModel {
 
 impl SeaNetEncoderModel {
     /// Encode raw audio `(1, channels, T)` to latent `(1, dimension, T_latent)`.
-    pub fn forward(&self, audio: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, audio: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let mut x = apply_causal_conv1d(audio, &self.weights.init_conv, cfg.pad_mode)?;
         for layer in &self.weights.layers {
@@ -297,7 +304,7 @@ impl SeaNetEncoderModel {
 impl SeaNetDecoderModel {
     /// Decode latent `(1, dimension, T_latent)` to audio
     /// `(1, channels, T)`.
-    pub fn forward(&self, latent: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, latent: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let mut x = apply_causal_conv1d(latent, &self.weights.init_conv, cfg.pad_mode)?;
         for layer in &self.weights.layers {
@@ -937,7 +944,7 @@ mod tests {
         // Input audio length must be divisible by total stride.
         let total_stride: usize = cfg.ratios.iter().product();
         let t_in = total_stride * 4;
-        let audio = LazyTensor::from_f32(
+        let audio = Tensor::from_f32(
             (0..(1 * cfg.channels * t_in))
                 .map(|i| (i as f32) * 0.001)
                 .collect::<Vec<_>>(),
@@ -960,7 +967,7 @@ mod tests {
         let cfg = tiny_cfg();
         let decoder = build_decoder(&cfg);
         let t_latent = 5;
-        let latent = LazyTensor::from_f32(
+        let latent = Tensor::from_f32(
             (0..(1 * cfg.dimension * t_latent))
                 .map(|i| (i as f32) * 0.001)
                 .collect::<Vec<_>>(),
@@ -987,7 +994,7 @@ mod tests {
         let decoder = build_decoder(&cfg);
         let total_stride: usize = cfg.ratios.iter().product();
         let t_in = total_stride * 3;
-        let audio = LazyTensor::from_f32(
+        let audio = Tensor::from_f32(
             (0..(1 * cfg.channels * t_in))
                 .map(|i| (i as f32) * 0.001)
                 .collect::<Vec<_>>(),

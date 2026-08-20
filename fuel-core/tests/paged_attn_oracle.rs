@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Phase 6d Track 1 lazy-IR oracle: `LazyTensor::paged_attn` realized
+//! Phase 6d Track 1 lazy-IR oracle: `Tensor::paged_attn` realized
 //! through the CPU executor matches the reference attention_paged_naive.
 //!
 //! Catches dispatch wiring (executor's PagedAttn arm + fuel-graph-cpu's
 //! PagedAttn dispatch + reference's PagedAttn dispatch) for the lazy
 //! path.
 
-use fuel_core::lazy::LazyTensor;
+use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
 
 fn rand_f32(shape: &[usize], seed: u32) -> Vec<f32> {
@@ -34,7 +34,7 @@ fn lazy_paged_attn_decode_round_trip() {
     let cl_data: Vec<u32> = vec![sk as u32; b];
 
     let scale = 1.0_f32 / (d as f32).sqrt();
-    let q = LazyTensor::from_f32(
+    let q = Tensor::from_f32(
         q_data.clone(),
         Shape::from_dims(&[b, h, sq, d]),
         &fuel_core::Device::cpu(),

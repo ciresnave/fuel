@@ -26,7 +26,7 @@
 //! v1 scope: F32, batch == 1, prefill only.
 
 use crate::Result;
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -169,9 +169,9 @@ impl BlipTextModel {
     pub fn forward(
         &self,
         input_ids: &[u32],
-        encoder_hidden_states: &LazyTensor,
+        encoder_hidden_states: &Tensor,
         start_pos: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let w = &self.weights;
         let t = input_ids.len();
@@ -208,7 +208,7 @@ impl BlipTextModel {
         // Strict causal mask `(1, 1, t, t)` — reshape the (t, t)
         // mask from the public helper to add the leading batch +
         // heads broadcast axes.
-        let causal_mask = LazyTensor::additive_causal_mask_like(anchor, t)
+        let causal_mask = Tensor::additive_causal_mask_like(anchor, t)
             .reshape(Shape::from_dims(&[1, 1, t, t]))?;
 
         for layer in &w.layers {
@@ -242,13 +242,13 @@ impl BlipTextModel {
 }
 
 fn apply_decoder_layer(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &BlipTextLayerWeights,
-    enc_states: &LazyTensor,
-    causal_mask: &LazyTensor,
+    enc_states: &Tensor,
+    causal_mask: &Tensor,
     cfg: &BlipTextConfig,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+    anchor: &Tensor,
+) -> Result<Tensor> {
     let h = cfg.hidden_size;
 
     // Self-attention with causal mask, Post-LN style:
@@ -330,16 +330,16 @@ fn apply_decoder_layer(
 
 #[allow(clippy::too_many_arguments)]
 fn apply_attention(
-    q_input: &LazyTensor,
-    kv_input: Option<&LazyTensor>,
+    q_input: &Tensor,
+    kv_input: Option<&Tensor>,
     w: &BlipTextAttentionWeights,
     num_heads: usize,
     head_dim: usize,
     q_in_dim: usize,
     kv_in_dim: usize,
-    mask: Option<&LazyTensor>,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+    mask: Option<&Tensor>,
+    anchor: &Tensor,
+) -> Result<Tensor> {
     let q_dims = q_input.shape();
     let q_dims = q_dims.dims();
     let b = q_dims[0];
@@ -644,7 +644,7 @@ mod tests {
             config: cfg.clone(),
             weights,
         };
-        let enc = LazyTensor::from_f32(
+        let enc = Tensor::from_f32(
             (0..(1 * 5 * cfg.encoder_hidden_size))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),
@@ -667,7 +667,7 @@ mod tests {
             config: cfg.clone(),
             weights,
         };
-        let enc = LazyTensor::from_f32(
+        let enc = Tensor::from_f32(
             vec![0.05_f32; 1 * 4 * cfg.encoder_hidden_size],
             Shape::from_dims(&[1, 4, cfg.encoder_hidden_size]),
             &Device::cpu(),
@@ -699,14 +699,14 @@ mod tests {
             weights,
         };
         let ids = vec![1_u32, 2, 3];
-        let enc_a = LazyTensor::from_f32(
+        let enc_a = Tensor::from_f32(
             (0..(1 * 4 * cfg.encoder_hidden_size))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 4, cfg.encoder_hidden_size]),
             &Device::cpu(),
         );
-        let enc_b = LazyTensor::from_f32(
+        let enc_b = Tensor::from_f32(
             (0..(1 * 4 * cfg.encoder_hidden_size))
                 .map(|i| (i as f32) * 0.01 + 0.5)
                 .collect::<Vec<_>>(),

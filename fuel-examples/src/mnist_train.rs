@@ -31,7 +31,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel::train::{OptimizerConfig, Parameter, TrainState, loss};
 use fuel::{Device, Result, Shape};
 
@@ -93,13 +93,7 @@ fn init_params(cfg: &MlpConfig) -> Vec<Parameter> {
 /// The MLP forward: `[n, in] → (ReLU) hidden → logits [n, out]`. Shared by the
 /// training step (params from the graph) and the inference eval (params rebuilt
 /// from trained host values) so the two can never diverge.
-fn mlp_logits(
-    x: &LazyTensor,
-    w1: &LazyTensor,
-    b1: &LazyTensor,
-    w2: &LazyTensor,
-    b2: &LazyTensor,
-) -> Result<LazyTensor> {
+fn mlp_logits(x: &Tensor, w1: &Tensor, b1: &Tensor, w2: &Tensor, b2: &Tensor) -> Result<Tensor> {
     let h = x.matmul(w1)?.broadcast_add(b1)?.relu();
     h.matmul(w2)?.broadcast_add(b2)
 }
@@ -134,7 +128,7 @@ impl MnistTrainer {
         let t_data = one_hot(labels, self.cfg.out_dim);
         let (in_dim, out_dim) = (self.cfg.in_dim, self.cfg.out_dim);
         self.state
-            .step(move |_graph, params: &HashMap<String, LazyTensor>| {
+            .step(move |_graph, params: &HashMap<String, Tensor>| {
                 let (w1, b1, w2, b2) = (&params["w1"], &params["b1"], &params["w2"], &params["b2"]);
                 // Input as a Const on the parameters' graph (the finetune anchor trick).
                 let x = w1.const_f32_like(x_data, Shape::from_dims(&[n_samples, in_dim]));
@@ -150,15 +144,15 @@ impl MnistTrainer {
     pub fn eval_accuracy(&self, images: &[f32], labels: &[u32], n_samples: usize) -> Result<f32> {
         let dev = Device::cpu();
         let cfg = &self.cfg;
-        let mk = |name: &str, dims: &[usize]| -> Result<LazyTensor> {
+        let mk = |name: &str, dims: &[usize]| -> Result<Tensor> {
             let data: Arc<[f32]> = self.state.param_to_host(name)?.into();
-            Ok(LazyTensor::from_f32(data, Shape::from_dims(dims), &dev))
+            Ok(Tensor::from_f32(data, Shape::from_dims(dims), &dev))
         };
         let w1 = mk("w1", &[cfg.in_dim, cfg.hidden])?;
         let b1 = mk("b1", &[cfg.hidden])?;
         let w2 = mk("w2", &[cfg.hidden, cfg.out_dim])?;
         let b2 = mk("b2", &[cfg.out_dim])?;
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             images.to_vec(),
             Shape::from_dims(&[n_samples, cfg.in_dim]),
             &dev,

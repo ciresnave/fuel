@@ -10,7 +10,7 @@
 //! v1 scope: F32, batch == 1, prefill only.
 
 use crate::Result;
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::lazy_fastvit::{FastVitConfig, FastVitModel, FastVitWeights};
 use crate::lazy_openclip_text::{OpenClipTextConfig, OpenClipTextModel, OpenClipTextWeights};
 use fuel_ir::Shape;
@@ -83,7 +83,7 @@ impl MobileClipModel {
     }
 
     /// Encode an image into a `(1, projection_dim)` feature vector.
-    pub fn get_image_features(&self, image: &LazyTensor) -> Result<LazyTensor> {
+    pub fn get_image_features(&self, image: &Tensor) -> Result<Tensor> {
         self.vision_model().forward(image)
     }
 
@@ -93,8 +93,8 @@ impl MobileClipModel {
         &self,
         input_ids: &[u32],
         eot_pos: usize,
-        anchor: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        anchor: &Tensor,
+    ) -> Result<Tensor> {
         let pooled = self.text_model().forward_pooled(input_ids, eot_pos)?;
         let cfg = &self.config;
         let proj = self.weights.text_projection.apply_linear(
@@ -118,9 +118,9 @@ impl MobileClipModel {
     /// what this entry point is for.
     pub fn contrastive_logits(
         &self,
-        image_features: &LazyTensor,
-        text_features: &LazyTensor,
-    ) -> Result<(LazyTensor, LazyTensor)> {
+        image_features: &Tensor,
+        text_features: &Tensor,
+    ) -> Result<(Tensor, Tensor)> {
         let image_normed = l2_normalize_last(image_features)?;
         let text_normed = l2_normalize_last(text_features)?;
         let logits = text_normed.matmul(&image_normed.permute([1, 0_usize])?)?;
@@ -131,7 +131,7 @@ impl MobileClipModel {
     }
 }
 
-fn l2_normalize_last(x: &LazyTensor) -> Result<LazyTensor> {
+fn l2_normalize_last(x: &Tensor) -> Result<Tensor> {
     x.l2_normalize(1_usize, 0.0)
 }
 
@@ -468,7 +468,7 @@ mod tests {
     fn image_features_shape_and_finite() {
         use crate::Device;
         let model = tiny_mobileclip();
-        let image = LazyTensor::from_f32(
+        let image = Tensor::from_f32(
             (0..(3 * 32 * 32))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),
@@ -488,7 +488,7 @@ mod tests {
         let ids = vec![1_u32, 2, 3, 4];
         // Anchor unused in text path; pass a stub.
         use crate::Device;
-        let stub = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let stub = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let txt_feats = model.get_text_features(&ids, 3, &stub).unwrap();
         assert_eq!(txt_feats.shape().dims(), &[1, 16]);
         for &v in &txt_feats.realize_f32() {
@@ -499,7 +499,7 @@ mod tests {
     #[test]
     fn l2_normalize_unit_norm() {
         use crate::Device;
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             vec![3.0_f32, 4.0, 0.0, 0.0, 1.0, 2.0],
             Shape::from_dims(&[2, 3]),
             &Device::cpu(),

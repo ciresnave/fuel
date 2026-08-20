@@ -40,7 +40,7 @@
 //! joint `ClipModel::similarity` returns a `[1, 1]` similarity
 //! when called with a single image + single text.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -190,7 +190,7 @@ pub struct ClipModel {
 impl ClipTextModel {
     /// Encode a single token sequence. Returns
     /// `(1, seq_len, embed_dim)` of post-final-LN hidden states.
-    pub fn forward(&self, tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
@@ -199,7 +199,7 @@ impl ClipTextModel {
         assert!(seq <= cfg.max_position_embeddings);
 
         // Anchor on a single embedding tensor.
-        let token_embeds = LazyTensor::embed_tokens(
+        let token_embeds = Tensor::embed_tokens(
             weights.token_embedding.clone(),
             cfg.vocab_size,
             cfg.embed_dim,
@@ -248,7 +248,7 @@ impl ClipTextModel {
     /// Pool the last hidden state by selecting position `eos_pos`,
     /// returning shape `(1, embed_dim)`. Caller chooses
     /// `eos_pos` (eager CLIP uses `argmax(input_ids)`).
-    pub fn pool_eos(&self, tokens: &[u32], eos_pos: usize) -> Result<LazyTensor> {
+    pub fn pool_eos(&self, tokens: &[u32], eos_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let h = self.forward(tokens)?;
         let pooled = h
@@ -283,7 +283,7 @@ impl ClipTextModel {
         &self,
         tokens: &[u32],
         layer_ids: &[usize],
-    ) -> Result<Vec<LazyTensor>> {
+    ) -> Result<Vec<Tensor>> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
@@ -300,7 +300,7 @@ impl ClipTextModel {
             "layer_ids must all be in [0, num_hidden_layers = {depth})",
         );
 
-        let token_embeds = LazyTensor::embed_tokens(
+        let token_embeds = Tensor::embed_tokens(
             weights.token_embedding.clone(),
             cfg.vocab_size,
             cfg.embed_dim,
@@ -351,7 +351,7 @@ impl ClipVisionModel {
     /// Encode a single image at the configured `image_size`.
     /// Returns the pooled CLS hidden state of shape
     /// `(1, embed_dim)`.
-    pub fn forward(&self, pixel_values: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, pixel_values: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = pixel_values.shape();
@@ -446,9 +446,9 @@ impl ClipVisionModel {
     /// ViT-shape backbone hooks.
     pub fn forward_intermediate_layers(
         &self,
-        pixel_values: &LazyTensor,
+        pixel_values: &Tensor,
         layer_ids: &[usize],
-    ) -> Result<Vec<LazyTensor>> {
+    ) -> Result<Vec<Tensor>> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = pixel_values.shape();
@@ -524,7 +524,7 @@ impl ClipVisionModel {
 impl ClipModel {
     /// Encode a single image and project into the shared
     /// embedding space. Returns `(1, projection_dim)`.
-    pub fn image_features(&self, pixel_values: &LazyTensor) -> Result<LazyTensor> {
+    pub fn image_features(&self, pixel_values: &Tensor) -> Result<Tensor> {
         let v_model = ClipVisionModel {
             config: self.vision_config.clone(),
             weights: self.weights.vision.clone(),
@@ -539,7 +539,7 @@ impl ClipModel {
 
     /// Encode a single token sequence at `eos_pos` (pooled) and
     /// project. Returns `(1, projection_dim)`.
-    pub fn text_features(&self, tokens: &[u32], eos_pos: usize) -> Result<LazyTensor> {
+    pub fn text_features(&self, tokens: &[u32], eos_pos: usize) -> Result<Tensor> {
         let t_model = ClipTextModel {
             config: self.text_config.clone(),
             weights: self.weights.text.clone(),
@@ -557,12 +557,12 @@ impl ClipModel {
 
 /// Apply one CLIP encoder layer (pre-LN, MHA, residual, pre-LN, MLP, residual).
 fn apply_clip_layer(
-    x: &LazyTensor,
+    x: &Tensor,
     layer: &ClipEncoderLayerWeights,
     n_heads: usize,
     head_dim: usize,
-    causal_mask: Option<&LazyTensor>,
-) -> Result<LazyTensor> {
+    causal_mask: Option<&Tensor>,
+) -> Result<Tensor> {
     let dims = x.shape();
     let dims = dims.dims();
     let batch = dims[0];
@@ -622,7 +622,7 @@ fn apply_clip_layer(
 }
 
 /// QuickGelu: `x * sigmoid(1.702 * x)`.
-fn quick_gelu(x: &LazyTensor) -> LazyTensor {
+fn quick_gelu(x: &Tensor) -> Tensor {
     let scaled = x.mul_scalar(1.702);
     let sig = scaled.sigmoid();
     x.mul(&sig).unwrap()
@@ -982,10 +982,10 @@ mod tests {
         }
     }
 
-    fn tiny_image(cfg: &ClipVisionConfig) -> LazyTensor {
+    fn tiny_image(cfg: &ClipVisionConfig) -> Tensor {
         let n_pix = 1 * cfg.num_channels * cfg.image_size * cfg.image_size;
         let img_data: Vec<f32> = (0..n_pix).map(|i| (i as f32 / n_pix as f32)).collect();
-        LazyTensor::from_f32(
+        Tensor::from_f32(
             Arc::from(img_data),
             Shape::from_dims(&[1, cfg.num_channels, cfg.image_size, cfg.image_size]),
             &Device::cpu(),

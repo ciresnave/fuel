@@ -59,7 +59,7 @@ use anyhow::{Error as E, Result, bail};
 use clap::Parser;
 
 use fuel::Shape;
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel::lazy_csm::{CsmConfig, CsmModel, CsmWeights};
 use hf_hub::{Repo, RepoType, api::sync::Api};
 
@@ -233,8 +233,8 @@ fn main() -> Result<()> {
     let tokens_mask: Vec<u8> = frame0_mask.to_vec();
 
     // ---- Run the v1 forward pass ---------------------------------------
-    // Anchor LazyTensor: every constant table is materialized on its graph.
-    let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &fuel::Device::cpu());
+    // Anchor Tensor: every constant table is materialized on its graph.
+    let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &fuel::Device::cpu());
 
     let t_fwd = std::time::Instant::now();
     let (embed, c0_logits) = model

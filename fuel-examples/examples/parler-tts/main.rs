@@ -28,7 +28,7 @@ use anyhow::Error as E;
 use clap::Parser;
 
 use fuel::Shape;
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel::lazy_dac::{DacConfig, DacModel, DacWeights};
 use fuel::lazy_parler_tts::{
     ParlerActivation, ParlerDecoderConfig, ParlerDecoderModel, ParlerDecoderWeights,
@@ -537,9 +537,9 @@ fn main() -> anyhow::Result<()> {
         .forward_encoder(&description_token_ids)
         .map_err(|e| E::msg(format!("text encoder forward: {e}")))?;
 
-    // Anchor LazyTensor — gives `const_*_like` helpers a graph to hang
+    // Anchor Tensor — gives `const_*_like` helpers a graph to hang
     // their nodes off of.
-    let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &fuel::Device::cpu());
+    let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &fuel::Device::cpu());
 
     // Prompt embeddings: look up each prompt token in the
     // `embed_prompts` table to get a `(1, P, hidden_size)` tensor.
@@ -621,7 +621,7 @@ fn main() -> anyhow::Result<()> {
     }
     println!("generated {min_len} steps × {num_codebooks} codebooks");
 
-    // Pack into a `(1, num_codebooks, T)` U32 LazyTensor for the DAC
+    // Pack into a `(1, num_codebooks, T)` U32 Tensor for the DAC
     // decoder.
     let codes_flat: Vec<u32> = (0..num_codebooks)
         .flat_map(|cb| all_audio_tokens[cb].iter().copied())

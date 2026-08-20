@@ -46,7 +46,7 @@
 //!     `tie_word_embeddings == true`; safetensors loader resolves it)
 
 use crate::inference_context::{DecodeSession, DecodeTokenData, InferenceContext, KvCache};
-use crate::lazy::{LayerWeights, LazyTensor, WeightStorage};
+use crate::lazy::{LayerWeights, Tensor, WeightStorage};
 use crate::persistent_decode::{
     DecodeBackbone, DecodeDims, DecodeLayerInputs, MaskPlan, PersistentDecodeModel,
 };
@@ -124,7 +124,7 @@ pub struct Qwen2Model {
 }
 
 impl Qwen2Model {
-    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let h_norm = self.run_backbone(tokens, start_pos)?;
@@ -138,7 +138,7 @@ impl Qwen2Model {
     /// Skips the `lm_head` projection — useful for embedding
     /// adapters (Stella-en-v5, etc.) that swap the causal LM
     /// head for a custom projector or pooler.
-    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         self.run_backbone(tokens, start_pos)
     }
 
@@ -155,10 +155,10 @@ impl Qwen2Model {
     /// `0` for keep and `-inf` (or a large negative) for mask.
     pub fn forward_hidden_embeds_with_mask(
         &self,
-        embeds: &LazyTensor,
-        attention_mask: &LazyTensor,
+        embeds: &Tensor,
+        attention_mask: &Tensor,
         start_pos: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -203,22 +203,18 @@ impl Qwen2Model {
     /// multimodal hosts that interleave image embeddings into
     /// the text stream (LLaVA-style consumers) and want hidden
     /// states without the lm_head projection.
-    pub fn forward_hidden_embeds(
-        &self,
-        embeds: &LazyTensor,
-        start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_hidden_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         self.run_backbone_embeds(embeds, start_pos)
     }
 
-    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
         let batch = 1;
         assert!(seq > 0, "Qwen2Model: tokens must be non-empty");
 
-        let h = LazyTensor::embed_tokens(
+        let h = Tensor::embed_tokens(
             weights.token_embedding.clone(),
             cfg.vocab_size,
             cfg.hidden_size,
@@ -228,7 +224,7 @@ impl Qwen2Model {
         self.run_backbone_embeds(&h, start_pos)
     }
 
-    fn run_backbone_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
+    fn run_backbone_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -280,7 +276,7 @@ impl Qwen2Model {
     /// Build the attention mask for one layer. `uses_window == true`
     /// produces the sliding-window causal mask; `false` produces a
     /// strict lower-triangular causal mask.
-    fn build_layer_mask(&self, anchor: &LazyTensor, seq: usize, uses_window: bool) -> LazyTensor {
+    fn build_layer_mask(&self, anchor: &Tensor, seq: usize, uses_window: bool) -> Tensor {
         let cfg = &self.config;
         let window = if uses_window {
             cfg.sliding_window
@@ -300,12 +296,12 @@ impl Qwen2Model {
 
     fn apply_layer(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &LayerWeights,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-        mask: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+        mask: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let head_dim = cfg.head_dim();
         let x_shape = x.shape();
@@ -385,7 +381,7 @@ impl Qwen2Model {
 
 /// Add an optional `[last_dim]` bias to `x`'s last dim via
 /// `broadcast_add`. Returns `x` unchanged when `bias` is `None`.
-/// Delegates to `LazyTensor::add_optional_trailing_bias` — the
+/// Delegates to `Tensor::add_optional_trailing_bias` — the
 /// per-port wrapper is preserved so call sites inside this module
 /// keep their existing signature.
 
@@ -512,22 +508,22 @@ impl Qwen2Model {
     #[allow(clippy::too_many_arguments)]
     fn apply_layer_with_kv_writes(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &LayerWeights,
-        k_cache_const: &LazyTensor,
-        v_cache_const: &LazyTensor,
+        k_cache_const: &Tensor,
+        v_cache_const: &Tensor,
         cached_len_sym: fuel_ir::SymId,
         // The live attended prefix (`cached_len + seq`) — the flash arm's
         // `k_len`. Inert on the f32 decode graph, where the arm declines.
         attended_len_sym: fuel_ir::SymId,
-        offset: Option<&LazyTensor>,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-        mask: &LazyTensor,
+        offset: Option<&Tensor>,
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+        mask: &Tensor,
         // GAP-194: this layer's own window, from the same plan entry `mask`
         // came from — so the arm and the mask cannot disagree.
         attn_window: Option<usize>,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let head_dim = cfg.head_dim();
         let x_shape = x.shape();
@@ -724,7 +720,7 @@ impl DecodeBackbone for Qwen2Model {
         &self,
         layer_idx: usize,
         inputs: &DecodeLayerInputs<'_>,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         self.apply_layer_with_kv_writes(
             inputs.x,
             &self.weights.layers[layer_idx],
@@ -740,7 +736,7 @@ impl DecodeBackbone for Qwen2Model {
         )
     }
 
-    fn decode_final_norm_and_head(&self, h: &LazyTensor) -> Result<LazyTensor> {
+    fn decode_final_norm_and_head(&self, h: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let h_norm =
             h.rms_norm_affine(Arc::clone(&self.weights.final_norm_gain), cfg.rms_norm_eps)?;
@@ -1114,7 +1110,7 @@ mod tests {
 
         // Build embeds externally and the bidirectional mask
         // anchored on the same graph as embeds.
-        let embed_table = LazyTensor::from_f32(
+        let embed_table = Tensor::from_f32(
             model.weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
             &Device::cpu(),
@@ -1178,7 +1174,7 @@ mod tests {
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
         let from_tokens = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
 
-        let embed_table = LazyTensor::from_f32(
+        let embed_table = Tensor::from_f32(
             model.weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
             &Device::cpu(),
@@ -1239,7 +1235,7 @@ mod tests {
         let per_layer = model.forward(tokens, 0).unwrap().realize_f32();
 
         let seq = tokens.len();
-        let embeds = LazyTensor::embed_tokens(
+        let embeds = Tensor::embed_tokens(
             model.weights.token_embedding.clone(),
             cfg.vocab_size,
             cfg.hidden_size,

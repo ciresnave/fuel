@@ -302,14 +302,14 @@ A *node-handle Tensor* is a Tensor whose bytes live in a graph-owned
 slot rather than being owned by the Tensor itself. The graph
 (`fuel_graph::Graph`) owns a `HashMap<NodeId, Arc<RwLock<Storage>>>`
 storage map; a node-handle `fuel_core::Tensor` carries a
-`fuel_graph::Tensor` reference into that graph and consults the
+`fuel_graph::NodeHandle` reference into that graph and consults the
 slot via `link.storage_for()`. This is the model post-B2 factories
 will produce; it co-exists with legacy eager Tensors until B6
 retires eager dispatch.
 
 ```rust
 use fuel_core::{Tensor, Device};
-use fuel_graph::Tensor as GraphTensor;
+use fuel_graph::NodeHandle as GraphTensor;
 use fuel_ir::Shape;
 
 fn main() -> fuel_core::Result<()> {

@@ -45,7 +45,7 @@
 //! and the attention mask path deferred.
 
 use crate::lazy::{
-    LazyTensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
+    Tensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
 };
 use crate::lazy_mistral::{
     MistralConfig, MistralModel, MistralWeights, load_mistral_weights_with_prefix,
@@ -163,7 +163,7 @@ pub struct PixtralModel {
 }
 
 impl PixtralModel {
-    pub fn forward(&self, pixel_values: &LazyTensor, text_tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn forward(&self, pixel_values: &Tensor, text_tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         assert_eq!(
             cfg.projector.out_dim, cfg.text.hidden_size,
@@ -193,7 +193,7 @@ impl PixtralModel {
         model.forward_embeds(&combined, 0)
     }
 
-    fn encode_vision(&self, pixel_values: &LazyTensor) -> Result<LazyTensor> {
+    fn encode_vision(&self, pixel_values: &Tensor) -> Result<Tensor> {
         let cfg = &self.config.vision;
         let weights = &self.weights.vision;
         let dims = pixel_values.shape();
@@ -249,11 +249,11 @@ impl PixtralModel {
 
     fn apply_block(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         block: &PixtralVisionBlockWeights,
-        cos: &LazyTensor,
-        sin: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        cos: &Tensor,
+        sin: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config.vision;
         let dims = x.shape();
         let dims = dims.dims();
@@ -315,7 +315,7 @@ impl PixtralModel {
         h1.add(&down)
     }
 
-    fn apply_projector(&self, vision_out: &LazyTensor) -> Result<LazyTensor> {
+    fn apply_projector(&self, vision_out: &Tensor) -> Result<Tensor> {
         let cfg = &self.config.projector;
         let weights = &self.weights.projector;
         let l1 = weights
@@ -709,10 +709,10 @@ mod tests {
         }
     }
 
-    fn tiny_image(cfg: &PixtralVisionConfig) -> LazyTensor {
+    fn tiny_image(cfg: &PixtralVisionConfig) -> Tensor {
         let n_pix = 1 * cfg.num_channels * cfg.image_size * cfg.image_size;
         let img_data: Vec<f32> = (0..n_pix).map(|i| (i as f32 / n_pix as f32)).collect();
-        LazyTensor::from_f32(
+        Tensor::from_f32(
             Arc::from(img_data),
             Shape::from_dims(&[1, cfg.num_channels, cfg.image_size, cfg.image_size]),
             &Device::cpu(),

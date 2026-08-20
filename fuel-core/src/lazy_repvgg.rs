@@ -57,7 +57,7 @@
 //! checkpoint distributed by the RepVGG authors) can plug in
 //! the same way without going through `fuse_repvgg_block`.
 
-use crate::lazy::{LazyTensor, WeightStorage, load_tensor_as_f32};
+use crate::lazy::{Tensor, WeightStorage, load_tensor_as_f32};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -205,7 +205,7 @@ pub struct RepVggModel {
 
 impl RepVggModel {
     /// Run a forward pass on `image` of shape `(1, 3, H, W)`.
-    pub fn forward(&self, image: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, image: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let x = self.run_backbone(image)?;
         let pooled = x.global_avg_pool_2d()?;
@@ -225,11 +225,11 @@ impl RepVggModel {
     /// single Conv+bias+ReLU layers) and return the channels-
     /// first feature map BEFORE global avg pool and the
     /// classifier.
-    pub fn forward_features(&self, image: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward_features(&self, image: &Tensor) -> Result<Tensor> {
         self.run_backbone(image)
     }
 
-    fn run_backbone(&self, image: &LazyTensor) -> Result<LazyTensor> {
+    fn run_backbone(&self, image: &Tensor) -> Result<Tensor> {
         let dims = image.shape();
         let dims = dims.dims();
         assert_eq!(dims.len(), 4, "image must be rank 4 [N, 3, H, W]");
@@ -244,7 +244,7 @@ impl RepVggModel {
         Ok(x)
     }
 
-    fn apply_layer(&self, x: &LazyTensor, layer: &RepVggLayerWeights) -> Result<LazyTensor> {
+    fn apply_layer(&self, x: &Tensor, layer: &RepVggLayerWeights) -> Result<Tensor> {
         let w_shape = Shape::from_dims(&[layer.c_out, layer.c_in / layer.groups, 3, 3]);
         let w = layer.conv_w.const_like(x, w_shape)?;
         let conv_out = x.conv2d(&w, None, (layer.stride, layer.stride), (1, 1), layer.groups)?;
@@ -699,10 +699,10 @@ mod tests {
         RepVggWeights { stem, stages, head }
     }
 
-    fn tiny_image(h: usize) -> LazyTensor {
+    fn tiny_image(h: usize) -> Tensor {
         let mut nb = rng_seed(99);
         let data: Arc<[f32]> = Arc::from((0..3 * h * h).map(|_| nb()).collect::<Vec<_>>());
-        LazyTensor::from_f32(data, Shape::from_dims(&[1, 3, h, h]), &Device::cpu())
+        Tensor::from_f32(data, Shape::from_dims(&[1, 3, h, h]), &Device::cpu())
     }
 
     #[test]

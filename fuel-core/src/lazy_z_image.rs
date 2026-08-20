@@ -67,7 +67,7 @@
 //!   encoder for tractability) runs `transformer -> scheduler ->
 //!   VAE.decode` to produce a finite image of the expected shape.
 
-use crate::lazy::LazyTensor;
+use crate::lazy::Tensor;
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -207,7 +207,7 @@ pub struct ZImageTransformerWeights {
 ///
 /// For `F=1, f_patch=1` (the image-generation case Z-Image always
 /// hits) this collapses to the standard 4D patchify.
-fn patchify(x: &LazyTensor, patch_size: usize, f_patch_size: usize) -> crate::Result<LazyTensor> {
+fn patchify(x: &Tensor, patch_size: usize, f_patch_size: usize) -> crate::Result<Tensor> {
     let dims = x.shape().dims().to_vec();
     let (b, c, f, h, w) = (dims[0], dims[1], dims[2], dims[3], dims[4]);
     let ph = patch_size;
@@ -241,12 +241,12 @@ fn patchify(x: &LazyTensor, patch_size: usize, f_patch_size: usize) -> crate::Re
 }
 
 fn unpatchify(
-    x: &LazyTensor,
+    x: &Tensor,
     size: (usize, usize, usize),
     patch_size: usize,
     f_patch_size: usize,
     out_channels: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let (f, h, w) = size;
     let ph = patch_size;
     let pw = patch_size;
@@ -295,12 +295,12 @@ fn unpatchify(
 /// `y = x @ W (+ b)`. `x` rank arbitrary, last dim = `in_f`. `W` shape
 /// `[in_f, out_f]`. Optional bias `[out_f]` broadcast on trailing dim.
 fn linear(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &Arc<[f32]>,
     b: Option<&Arc<[f32]>>,
     in_f: usize,
     out_f: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]));
     let proj = x.matmul(&w_t)?;
     Ok(match b {
@@ -310,7 +310,7 @@ fn linear(
 }
 
 /// Sinusoidal timestep embedding `(B,) -> (B, frequency_embedding_size)`.
-fn timestep_embedding(t: &LazyTensor, anchor: &LazyTensor) -> crate::Result<LazyTensor> {
+fn timestep_embedding(t: &Tensor, anchor: &Tensor) -> crate::Result<Tensor> {
     let half = FREQUENCY_EMBEDDING_SIZE / 2;
     // freqs[i] = exp( -ln(MAX_PERIOD) * i / half )  for i in 0..half
     let freqs_data: Vec<f32> = (0..half)
@@ -329,11 +329,7 @@ fn timestep_embedding(t: &LazyTensor, anchor: &LazyTensor) -> crate::Result<Lazy
 
 /// Apply RoPE in the **interleaved real/imag** form. `x` shape
 /// `(B, L, H, head_dim)`, `cos`/`sin` shape `(L, head_dim/2)`.
-fn apply_rotary_emb_interleaved(
-    x: &LazyTensor,
-    cos: &LazyTensor,
-    sin: &LazyTensor,
-) -> crate::Result<LazyTensor> {
+fn apply_rotary_emb_interleaved(x: &Tensor, cos: &Tensor, sin: &Tensor) -> crate::Result<Tensor> {
     let dims = x.shape().dims().to_vec();
     let (b, l, n, hd) = (dims[0], dims[1], dims[2], dims[3]);
     let half = hd / 2;
@@ -411,7 +407,7 @@ fn build_3d_rope_tables(
 
 /// `LayerNorm` without learnable params (eager `LayerNormNoParams`).
 /// Subtracts mean, divides by std (with eps), all along the last dim.
-fn layer_norm_no_params(x: &LazyTensor, eps: f64) -> crate::Result<LazyTensor> {
+fn layer_norm_no_params(x: &Tensor, eps: f64) -> crate::Result<Tensor> {
     // Build a no-affine layer norm via primitives. `layer_norm_last_dim`
     // already does the math we need with the same eps semantics.
     x.layer_norm_last_dim(eps)
@@ -422,13 +418,13 @@ fn layer_norm_no_params(x: &LazyTensor, eps: f64) -> crate::Result<LazyTensor> {
 // ============================================================================
 
 fn z_image_attention(
-    x: &LazyTensor,
-    attn_mask: Option<&LazyTensor>,
-    cos: &LazyTensor,
-    sin: &LazyTensor,
+    x: &Tensor,
+    attn_mask: Option<&Tensor>,
+    cos: &Tensor,
+    sin: &Tensor,
     aw: &ZImageAttnWeights,
     cfg: &ZImageConfig,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let dims = x.shape().dims().to_vec();
     let (b, l, dim) = (dims[0], dims[1], dims[2]);
     let n_heads = cfg.n_heads;
@@ -490,14 +486,14 @@ fn z_image_attention(
 // ============================================================================
 
 fn z_image_block(
-    x: &LazyTensor,
-    attn_mask: Option<&LazyTensor>,
-    cos: &LazyTensor,
-    sin: &LazyTensor,
-    adaln_input: Option<&LazyTensor>,
+    x: &Tensor,
+    attn_mask: Option<&Tensor>,
+    cos: &Tensor,
+    sin: &Tensor,
+    adaln_input: Option<&Tensor>,
     bw: &ZImageBlockWeights,
     cfg: &ZImageConfig,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let dim = cfg.dim;
     let hidden_dim = cfg.hidden_dim();
     let adaln_dim = dim.min(ADALN_EMBED_DIM);
@@ -541,11 +537,11 @@ fn z_image_block(
 }
 
 fn ffn_swiglu(
-    x: &LazyTensor,
+    x: &Tensor,
     fw: &ZImageFFNWeights,
     dim: usize,
     hidden_dim: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let x1 = linear(x, &fw.w1, None, dim, hidden_dim)?.silu();
     let x3 = linear(x, &fw.w3, None, dim, hidden_dim)?;
     let mid = x1.mul(&x3)?;
@@ -572,11 +568,11 @@ impl ZImageTransformer2DModel {
     /// Returns predicted velocity `(1, C, F, H, W)` matching `x`.
     pub fn forward(
         &self,
-        x: &LazyTensor,
-        t: &LazyTensor,
-        cap_feats: &LazyTensor,
-        cap_mask: &LazyTensor,
-    ) -> crate::Result<LazyTensor> {
+        x: &Tensor,
+        t: &Tensor,
+        cap_feats: &Tensor,
+        cap_mask: &Tensor,
+    ) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let w = &self.weights;
         let dims = x.shape().dims().to_vec();
@@ -823,13 +819,13 @@ impl ZImageTextEncoder {
     /// Encode token IDs into `(1, seq, hidden_size)`. Returns the output
     /// of `layers[num_hidden_layers - 2]` BEFORE the final RMSNorm, as
     /// in the upstream Z-Image text encoder.
-    pub fn forward(&self, tokens: &[u32]) -> crate::Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32]) -> crate::Result<Tensor> {
         let cfg = &self.config;
         if tokens.is_empty() {
             return Err(crate::Error::Msg("text encoder: tokens must be non-empty".into()).bt());
         }
         let seq = tokens.len();
-        let mut h = LazyTensor::embed_tokens(
+        let mut h = Tensor::embed_tokens(
             cfg.vocab_size_arc_clone(&self.weights.token_embedding),
             cfg.vocab_size,
             cfg.hidden_size,
@@ -840,7 +836,7 @@ impl ZImageTextEncoder {
         let (rope_cos, rope_sin) = h.rope_tables_const(cfg.rope_theta, 0, seq, cfg.head_dim);
 
         let target = cfg.num_hidden_layers - 2;
-        let causal = LazyTensor::additive_causal_mask_like(&h, seq);
+        let causal = Tensor::additive_causal_mask_like(&h, seq);
         for (i, layer) in self.weights.layers.iter().enumerate() {
             h = apply_text_encoder_layer(&h, layer, &rope_cos, &rope_sin, &causal, cfg)?;
             if i == target {
@@ -864,13 +860,13 @@ impl TextEncoderConfig {
 }
 
 fn apply_text_encoder_layer(
-    x: &LazyTensor,
+    x: &Tensor,
     layer: &TextEncoderLayer,
-    rope_cos: &LazyTensor,
-    rope_sin: &LazyTensor,
-    causal: &LazyTensor,
+    rope_cos: &Tensor,
+    rope_sin: &Tensor,
+    causal: &Tensor,
     cfg: &TextEncoderConfig,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let hidden = cfg.hidden_size;
     let n_heads = cfg.num_attention_heads;
     let n_kv = cfg.num_key_value_heads;
@@ -1037,7 +1033,7 @@ pub struct AutoEncoderKL {
 //      norm_num_groups so the Z-Image tiny test config works) -------
 
 fn vae_group_norm(
-    x: &LazyTensor,
+    x: &Tensor,
     gamma: &Arc<[f32]>,
     beta: &Arc<[f32]>,
     groups: usize,
@@ -1045,7 +1041,7 @@ fn vae_group_norm(
     c: usize,
     h: usize,
     w: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let cpg = c / groups;
     let m = cpg * h * w;
     let x_flat = x.reshape(Shape::from_dims(&[1, groups, m]))?;
@@ -1074,26 +1070,26 @@ fn vae_group_norm(
 }
 
 fn conv2d_k3_s1_p1(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &Arc<[f32]>,
     b: &Arc<[f32]>,
     cin: usize,
     cout: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin, 3, 3]));
     let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[cout]));
     x.conv2d(&w_t, Some(&b_t), (1, 1), (1, 1), 1)
 }
 
 fn conv2d_k3_s2_p0_with_pad(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &Arc<[f32]>,
     b: &Arc<[f32]>,
     cin: usize,
     cout: usize,
     h: usize,
     w_sz: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     // Match Python: pad_with_zeros (right=1, bottom=1) then stride-2 conv.
     // Implemented by manual reshape+concat zero padding on axes 2 and 3.
     let zeros_right_v: Vec<f32> = vec![0.0; cin * h * 1];
@@ -1112,7 +1108,7 @@ fn conv2d_k3_s2_p0_with_pad(
     x_padded.conv2d(&w_t, Some(&b_t), (2, 2), (0, 0), 1)
 }
 
-fn upsample_nearest_2x(x: &LazyTensor, c: usize, h: usize, w: usize) -> crate::Result<LazyTensor> {
+fn upsample_nearest_2x(x: &Tensor, c: usize, h: usize, w: usize) -> crate::Result<Tensor> {
     let x6 = x.reshape(Shape::from_dims(&[1, c, h, 1, w, 1]))?;
     let x6 = x6.concat(&x6, 3_usize)?;
     let x6 = x6.concat(&x6, 5_usize)?;
@@ -1120,14 +1116,14 @@ fn upsample_nearest_2x(x: &LazyTensor, c: usize, h: usize, w: usize) -> crate::R
 }
 
 fn vae_resnet(
-    x: &LazyTensor,
+    x: &Tensor,
     rw: &VaeResnetWeights,
     cfg: &VaeConfig,
     c_in: usize,
     c_out: usize,
     h: usize,
     w: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let h1 = vae_group_norm(x, &rw.n1_g, &rw.n1_b, cfg.norm_num_groups, 1e-6, c_in, h, w)?;
     let h1 = h1.silu();
     let h1 = conv2d_k3_s1_p1(&h1, &rw.c1_w, &rw.c1_b, c_in, c_out)?;
@@ -1155,13 +1151,13 @@ fn vae_resnet(
 }
 
 fn vae_spatial_attention(
-    x: &LazyTensor,
+    x: &Tensor,
     aw: &VaeAttnWeights,
     cfg: &VaeConfig,
     c: usize,
     h: usize,
     w: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let n = h * w;
     let x_norm = vae_group_norm(x, &aw.gn_g, &aw.gn_b, cfg.norm_num_groups, 1e-6, c, h, w)?;
     let xf = x_norm
@@ -1185,7 +1181,7 @@ impl AutoEncoderKL {
     /// Encode RGB image `(1, 3, H, W)` -> latent `(1, latent_ch, H/8, W/8)`.
     /// Returns the mean of the diagonal-Gaussian (sample = false), then
     /// applies the scale/shift convention `(z - shift) * scale`.
-    pub fn encode(&self, x: &LazyTensor) -> crate::Result<LazyTensor> {
+    pub fn encode(&self, x: &Tensor) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let w = &self.weights;
         let dims = x.shape().dims().to_vec();
@@ -1243,7 +1239,7 @@ impl AutoEncoderKL {
     }
 
     /// Decode latent `(1, latent_ch, H/8, W/8)` -> RGB image `(1, 3, H, W)`.
-    pub fn decode(&self, z: &LazyTensor) -> crate::Result<LazyTensor> {
+    pub fn decode(&self, z: &Tensor) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let w = &self.weights;
         let dims = z.shape().dims().to_vec();
@@ -1331,7 +1327,7 @@ impl SchedulerConfig {
 
 /// FlowMatch Euler discrete scheduler. All math is host-side `f64`; the
 /// scheduler outputs the step delta which is then applied to the latent
-/// via [`LazyTensor::mul_scalar`] / `add_scalar`.
+/// via [`Tensor::mul_scalar`] / `add_scalar`.
 #[derive(Debug, Clone)]
 pub struct FlowMatchEulerDiscreteScheduler {
     pub config: SchedulerConfig,
@@ -1412,11 +1408,7 @@ impl FlowMatchEulerDiscreteScheduler {
     }
 
     /// Euler step: `x_{t-1} = x_t + (σ_{i+1} - σ_i) * v_t`.
-    pub fn step(
-        &mut self,
-        model_output: &LazyTensor,
-        sample: &LazyTensor,
-    ) -> crate::Result<LazyTensor> {
+    pub fn step(&mut self, model_output: &Tensor, sample: &Tensor) -> crate::Result<Tensor> {
         let sigma = self.sigmas[self.step_index];
         let sigma_next = self.sigmas[self.step_index + 1];
         let dt = sigma_next - sigma;
@@ -1476,7 +1468,7 @@ impl ZImageModel {
         latent_w: usize,
         num_steps: usize,
         seed: u64,
-    ) -> crate::Result<LazyTensor> {
+    ) -> crate::Result<Tensor> {
         if num_steps == 0 {
             return Err(crate::Error::Msg("generate: num_steps must be > 0".into()).bt());
         }
@@ -2145,7 +2137,7 @@ mod tests {
         let c = cfg.in_channels;
         let h = 4;
         let w = 4;
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             vec![0.1_f32; c * h * w],
             Shape::from_dims(&[1, c, 1, h, w]),
             &crate::Device::cpu(),
@@ -2371,7 +2363,7 @@ mod tests {
         // 4×4 RGB image — 1 downsample stage → 2×2 latent.
         let h = 4;
         let w = 4;
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             vec![0.1_f32; cfg.in_channels * h * w],
             Shape::from_dims(&[1, cfg.in_channels, h, w]),
             &crate::Device::cpu(),
@@ -2393,7 +2385,7 @@ mod tests {
         sched.set_timesteps(8, None);
         assert_eq!(sched.num_inference_steps(), 8);
 
-        let sample = LazyTensor::from_f32(
+        let sample = Tensor::from_f32(
             vec![0.5_f32; 4],
             Shape::from_dims(&[1, 4]),
             &crate::Device::cpu(),
@@ -2437,7 +2429,7 @@ mod tests {
         let h_lat = 4;
         let w_lat = 4;
         let c = tcfg.in_channels;
-        let noise = LazyTensor::from_f32(
+        let noise = Tensor::from_f32(
             vec![0.1_f32; c * h_lat * w_lat],
             Shape::from_dims(&[1, c, 1, h_lat, w_lat]),
             &crate::Device::cpu(),

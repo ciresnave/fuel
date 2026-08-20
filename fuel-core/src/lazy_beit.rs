@@ -40,7 +40,7 @@
 //! Forward-only, single fixed-size image (`image_size` ×
 //! `image_size`), F32.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -153,7 +153,7 @@ impl BeitModel {
     }
 
     /// Run image classification. Returns `(1, num_classes)`.
-    pub fn forward(&self, pixel_values: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, pixel_values: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = pixel_values.shape();
@@ -246,9 +246,9 @@ impl BeitModel {
     /// SigLIP, and CLIP hooks.
     pub fn forward_intermediate_layers(
         &self,
-        pixel_values: &LazyTensor,
+        pixel_values: &Tensor,
         layer_ids: &[usize],
-    ) -> Result<Vec<LazyTensor>> {
+    ) -> Result<Vec<Tensor>> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = pixel_values.shape();
@@ -312,12 +312,7 @@ impl BeitModel {
         Ok(out)
     }
 
-    fn apply_block(
-        &self,
-        x: &LazyTensor,
-        block: &BeitBlockWeights,
-        anchor: &LazyTensor,
-    ) -> Result<LazyTensor> {
+    fn apply_block(&self, x: &Tensor, block: &BeitBlockWeights, anchor: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let dims = x.shape();
         let dims = dims.dims();
@@ -402,11 +397,11 @@ impl BeitModel {
 
     fn build_relative_position_bias(
         &self,
-        anchor: &LazyTensor,
+        anchor: &Tensor,
         bias_table: &Arc<[f32]>,
         seq: usize,
         n_heads: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         assert_eq!(seq, self.config.num_tokens());
         // Look up each (i, j)'s bucket and pull the n_heads vector.
         // Build the bias tensor directly as a const of shape
@@ -711,10 +706,10 @@ mod tests {
         }
     }
 
-    fn tiny_image(cfg: &BeitConfig) -> LazyTensor {
+    fn tiny_image(cfg: &BeitConfig) -> Tensor {
         let n_pix = 1 * cfg.num_channels * cfg.image_size * cfg.image_size;
         let img_data: Vec<f32> = (0..n_pix).map(|i| (i as f32 / n_pix as f32)).collect();
-        LazyTensor::from_f32(
+        Tensor::from_f32(
             Arc::from(img_data),
             Shape::from_dims(&[1, cfg.num_channels, cfg.image_size, cfg.image_size]),
             &Device::cpu(),

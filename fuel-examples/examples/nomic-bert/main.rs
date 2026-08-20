@@ -343,9 +343,9 @@ fn main() -> Result<()> {
                 }
             }
         }
-        // Need an anchor LazyTensor to attach the mask const to. We rebuild
+        // Need an anchor Tensor to attach the mask const to. We rebuild
         // the mask inside the forward call by passing None — but the lazy
-        // model accepts an Option<&LazyTensor> for the attention mask. To
+        // model accepts an Option<&Tensor> for the attention mask. To
         // avoid additional graph plumbing, use None and rely on the mask
         // being implicitly all-attend; for unpadded sequences this is fine,
         // and for padded ones we mean-pool with the explicit mask anyway.

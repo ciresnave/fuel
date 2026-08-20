@@ -40,10 +40,10 @@
 //! Following the existing scheduler convention, the caller supplies
 //! the initial `latent` tensor (the seeded `x_T` noise). The sampler
 //! holds no RNG state. Pass a noise tensor constructed with
-//! [`LazyTensor::const_f32_like`] (or any of the typed equivalents)
+//! [`Tensor::const_f32_like`] (or any of the typed equivalents)
 //! seeded from whatever RNG the binary owns.
 
-use crate::lazy::LazyTensor;
+use crate::lazy::Tensor;
 use crate::{Error, Result};
 use fuel_ir::Shape;
 
@@ -137,12 +137,12 @@ impl Sd3SamplerConfig {
 pub trait Sd3Denoiser {
     fn forward(
         &self,
-        latent: &LazyTensor,
-        timestep: &LazyTensor,
-        y: &LazyTensor,
-        context: &LazyTensor,
+        latent: &Tensor,
+        timestep: &Tensor,
+        y: &Tensor,
+        context: &Tensor,
         skip_layers: Option<&[usize]>,
-    ) -> Result<LazyTensor>;
+    ) -> Result<Tensor>;
 }
 
 /// SD3 flow-match Euler sampler with classifier-free guidance and
@@ -174,13 +174,13 @@ pub trait Sd3Denoiser {
 #[allow(clippy::too_many_arguments)]
 pub fn flow_match_euler_sample<M: Sd3Denoiser>(
     model: &M,
-    latent: LazyTensor,
-    context: LazyTensor,
-    y: LazyTensor,
+    latent: Tensor,
+    context: Tensor,
+    y: Tensor,
     config: &Sd3SamplerConfig,
-    neg_context: LazyTensor,
-    neg_y: LazyTensor,
-) -> Result<LazyTensor> {
+    neg_context: Tensor,
+    neg_y: Tensor,
+) -> Result<Tensor> {
     if config.num_steps == 0 {
         return Err(Error::Msg("flow_match_euler_sample: num_steps must be > 0".into()).bt());
     }
@@ -319,12 +319,12 @@ mod tests {
     impl Sd3Denoiser for IdentityDenoiser {
         fn forward(
             &self,
-            latent: &LazyTensor,
-            _timestep: &LazyTensor,
-            _y: &LazyTensor,
-            _context: &LazyTensor,
+            latent: &Tensor,
+            _timestep: &Tensor,
+            _y: &Tensor,
+            _context: &Tensor,
             _skip_layers: Option<&[usize]>,
-        ) -> Result<LazyTensor> {
+        ) -> Result<Tensor> {
             // Return a tiny multiple of the input so the sampler has
             // a non-zero `guidance` to integrate but the result stays
             // bounded.
@@ -341,12 +341,12 @@ mod tests {
     impl Sd3Denoiser for CountingDenoiser {
         fn forward(
             &self,
-            latent: &LazyTensor,
-            _timestep: &LazyTensor,
-            _y: &LazyTensor,
-            _context: &LazyTensor,
+            latent: &Tensor,
+            _timestep: &Tensor,
+            _y: &Tensor,
+            _context: &Tensor,
             skip_layers: Option<&[usize]>,
-        ) -> Result<LazyTensor> {
+        ) -> Result<Tensor> {
             if skip_layers.is_some() {
                 self.slg_calls.set(self.slg_calls.get() + 1);
             }
@@ -430,8 +430,7 @@ mod tests {
         let device = Device::cpu();
         // Tiny SD3-shaped latent: B=1, C=4, H=2, W=2 (the channel
         // count doesn't matter for the IdentityDenoiser).
-        let latent =
-            LazyTensor::from_f32(vec![0.1_f32; 16], Shape::from_dims(&[1, 4, 2, 2]), &device);
+        let latent = Tensor::from_f32(vec![0.1_f32; 16], Shape::from_dims(&[1, 4, 2, 2]), &device);
         let context = latent.const_f32_like(vec![0.2_f32; 48], Shape::from_dims(&[1, 6, 8]));
         let y = latent.const_f32_like(vec![0.3_f32; 8], Shape::from_dims(&[1, 8]));
         let neg_context = latent.const_f32_like(vec![-0.2_f32; 48], Shape::from_dims(&[1, 6, 8]));
@@ -525,8 +524,7 @@ mod tests {
     #[test]
     fn zero_num_steps_errors() {
         let device = Device::cpu();
-        let latent =
-            LazyTensor::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[1, 1, 2, 2]), &device);
+        let latent = Tensor::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[1, 1, 2, 2]), &device);
         let context = latent.const_f32_like(vec![0.0_f32; 4], Shape::from_dims(&[1, 1, 4]));
         let y = latent.const_f32_like(vec![0.0_f32; 4], Shape::from_dims(&[1, 4]));
         let neg_context = context.clone();
@@ -546,8 +544,7 @@ mod tests {
     #[test]
     fn neg_shape_mismatch_errors() {
         let device = Device::cpu();
-        let latent =
-            LazyTensor::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[1, 1, 2, 2]), &device);
+        let latent = Tensor::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[1, 1, 2, 2]), &device);
         let context = latent.const_f32_like(vec![0.0_f32; 6], Shape::from_dims(&[1, 2, 3]));
         let y = latent.const_f32_like(vec![0.0_f32; 4], Shape::from_dims(&[1, 4]));
         // Wrong context shape.

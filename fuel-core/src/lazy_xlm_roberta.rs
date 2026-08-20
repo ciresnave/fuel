@@ -34,7 +34,7 @@
 //! both deferred. Optional additive attention mask of shape
 //! `(1, 1, seq, seq)` for padding masking.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -122,11 +122,7 @@ pub struct XlmrModel {
 impl XlmrModel {
     /// Run a forward pass and return per-token hidden states
     /// of shape `(1, seq, hidden_size)`.
-    pub fn forward(
-        &self,
-        tokens: &[u32],
-        attention_mask: Option<&LazyTensor>,
-    ) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32], attention_mask: Option<&Tensor>) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
@@ -141,7 +137,7 @@ impl XlmrModel {
         );
 
         // ---- Embeddings: word + position + token_type, sum, LayerNorm ---
-        let word_emb_t = LazyTensor::from_f32(
+        let word_emb_t = Tensor::from_f32(
             weights.word_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
             &Device::cpu(),
@@ -203,8 +199,8 @@ impl XlmrModel {
         &self,
         tokens: &[u32],
         layer_ids: &[usize],
-        attention_mask: Option<&LazyTensor>,
-    ) -> Result<Vec<LazyTensor>> {
+        attention_mask: Option<&Tensor>,
+    ) -> Result<Vec<Tensor>> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
@@ -227,7 +223,7 @@ impl XlmrModel {
         );
 
         // Same embedding setup as `forward`.
-        let word_emb_t = LazyTensor::from_f32(
+        let word_emb_t = Tensor::from_f32(
             weights.word_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
             &Device::cpu(),
@@ -275,10 +271,10 @@ impl XlmrModel {
 
     fn apply_layer(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &XlmrLayerWeights,
-        attention_mask: Option<&LazyTensor>,
-    ) -> Result<LazyTensor> {
+        attention_mask: Option<&Tensor>,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let dims = x.shape();
         let dims = dims.dims();
@@ -506,11 +502,7 @@ pub struct XlmrForMaskedLM {
 impl XlmrForMaskedLM {
     /// Run a forward pass and return masked-LM logits over the vocab,
     /// shape `(1, seq, vocab_size)`.
-    pub fn forward(
-        &self,
-        tokens: &[u32],
-        attention_mask: Option<&LazyTensor>,
-    ) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32], attention_mask: Option<&Tensor>) -> Result<Tensor> {
         let cfg = &self.base.config;
         let h = self.base.forward(tokens, attention_mask)?;
 
@@ -623,11 +615,7 @@ pub struct XlmrForSequenceClassification {
 impl XlmrForSequenceClassification {
     /// Run a forward pass and return per-label logits of shape
     /// `(1, num_labels)`.
-    pub fn forward(
-        &self,
-        tokens: &[u32],
-        attention_mask: Option<&LazyTensor>,
-    ) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32], attention_mask: Option<&Tensor>) -> Result<Tensor> {
         let cfg = &self.base.config;
         let h = self.base.forward(tokens, attention_mask)?;
         // First-token hidden state: (1, seq, hidden) -> slice along dim

@@ -10,7 +10,7 @@
 //! OpKind/OpParams plumbing, the WorkItemKind::WriteSliceDoff execute
 //! arm, and the CPU byte kernel (offset override + bounds check).
 
-use fuel_core::lazy::LazyTensor;
+use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
 
 /// Basic append: offset 1, slab 1 row → writes to row 1 only.
@@ -18,7 +18,7 @@ use fuel_ir::Shape;
 fn doff_writes_at_device_offset() {
     let device = fuel_core::Device::cpu();
     // dest [4, 2] starts at zero; write [7, 8] at device offset 1.
-    let dest = LazyTensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
+    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
     let src = dest.const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]));
     let offset = dest.const_i64_like(vec![1_i64], Shape::from_dims(&[]));
     let post_write = dest
@@ -32,7 +32,7 @@ fn doff_writes_at_device_offset() {
 #[test]
 fn doff_offset_zero_writes_leading_row() {
     let device = fuel_core::Device::cpu();
-    let dest = LazyTensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
+    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
     let src = dest.const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]));
     let offset = dest.const_i64_like(vec![0_i64], Shape::from_dims(&[]));
     let post_write = dest
@@ -50,7 +50,7 @@ fn doff_decode_loop_appends_at_cached_len() {
     let device = fuel_core::Device::cpu();
     let max_seq = 4_usize;
     let head_dim = 2_usize;
-    let mut cache = LazyTensor::from_f32(
+    let mut cache = Tensor::from_f32(
         vec![0.0_f32; max_seq * head_dim],
         Shape::from_dims(&[max_seq, head_dim]),
         &device,
@@ -87,7 +87,7 @@ fn doff_decode_loop_appends_at_cached_len() {
 #[test]
 fn doff_writes_on_non_leading_axis() {
     let device = fuel_core::Device::cpu();
-    let dest = LazyTensor::from_f32(vec![0.0_f32; 10], Shape::from_dims(&[2, 5]), &device);
+    let dest = Tensor::from_f32(vec![0.0_f32; 10], Shape::from_dims(&[2, 5]), &device);
     // slab [2, 2] written at columns [2, 4) on axis 1.
     let src = dest.const_f32_like(vec![1.0_f32, 2.0, 3.0, 4.0], Shape::from_dims(&[2, 2]));
     let offset = dest.const_i64_like(vec![2_i64], Shape::from_dims(&[]));
@@ -110,7 +110,7 @@ fn doff_writes_on_non_leading_axis() {
 #[test]
 fn doff_rejects_non_i64_offset() {
     let device = fuel_core::Device::cpu();
-    let dest = LazyTensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
+    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
     let src = dest.const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]));
     let offset = dest.const_u32_like(vec![1_u32], Shape::from_dims(&[]));
     let r = dest.write_slice_doff(&src, &offset, 0, vec![(0, 1), (0, 2)]);
@@ -121,7 +121,7 @@ fn doff_rejects_non_i64_offset() {
 #[test]
 fn doff_rejects_nonscalar_offset() {
     let device = fuel_core::Device::cpu();
-    let dest = LazyTensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
+    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
     let src = dest.const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]));
     let offset = dest.const_i64_like(vec![1_i64, 2_i64], Shape::from_dims(&[2]));
     let r = dest.write_slice_doff(&src, &offset, 0, vec![(0, 1), (0, 2)]);
@@ -132,7 +132,7 @@ fn doff_rejects_nonscalar_offset() {
 #[test]
 fn doff_rejects_source_axis_mismatch() {
     let device = fuel_core::Device::cpu();
-    let dest = LazyTensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
+    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
     let src = dest.const_f32_like(vec![1.0_f32; 4], Shape::from_dims(&[2, 2]));
     let offset = dest.const_i64_like(vec![0_i64], Shape::from_dims(&[]));
     let r = dest.write_slice_doff(&src, &offset, 0, vec![(0, 1), (0, 2)]);
@@ -143,7 +143,7 @@ fn doff_rejects_source_axis_mismatch() {
 #[test]
 fn doff_rejects_axis_out_of_bounds() {
     let device = fuel_core::Device::cpu();
-    let dest = LazyTensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
+    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
     let src = dest.const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]));
     let offset = dest.const_i64_like(vec![0_i64], Shape::from_dims(&[]));
     let r = dest.write_slice_doff(&src, &offset, /* axis */ 3, vec![(0, 1), (0, 2)]);
@@ -157,7 +157,7 @@ fn doff_rejects_axis_out_of_bounds() {
 #[should_panic(expected = "dest_shape")]
 fn doff_offset_overflow_errors_at_realize_cpu() {
     let device = fuel_core::Device::cpu();
-    let dest = LazyTensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
+    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
     let src = dest.const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]));
     // offset 4 + width 1 > capacity 4 → overflow.
     let offset = dest.const_i64_like(vec![4_i64], Shape::from_dims(&[]));

@@ -44,7 +44,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use fuel_core::lazy::LazyTensor;
+use fuel_core::lazy::Tensor;
 use fuel_cuda_backend::CudaDevice;
 use fuel_ir::{DeviceLocation, Shape};
 use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
@@ -95,7 +95,7 @@ fn vulkan_amd_or_skip() -> Option<Arc<VulkanBackend>> {
 }
 
 /// Stamp an explicit per-node placement (the scheduler-assignment seam).
-fn place(t: &LazyTensor, loc: DeviceLocation) {
+fn place(t: &Tensor, loc: DeviceLocation) {
     let gt = t.graph_tensor();
     let id = gt.id();
     gt.graph()
@@ -109,7 +109,7 @@ fn place(t: &LazyTensor, loc: DeviceLocation) {
 /// chain is single-device (no spurious intra-chain residency copies). The
 /// 0.9999/0.0001 affine keeps values bounded (no overflow / NaN); the ReLU makes
 /// each stage a real, non-fusible kernel launch. Returns the chain root.
-fn extend_chain(mut x: LazyTensor, loc: DeviceLocation, len: usize) -> LazyTensor {
+fn extend_chain(mut x: Tensor, loc: DeviceLocation, len: usize) -> Tensor {
     for _ in 0..len {
         let m = x.mul_scalar(0.9999);
         let a = m.add_scalar(0.0001);
@@ -123,8 +123,8 @@ fn extend_chain(mut x: LazyTensor, loc: DeviceLocation, len: usize) -> LazyTenso
 }
 
 /// A fresh single-device chain of `len` stages on `loc`, seeded from `seed`.
-fn solo_chain(seed: f32, loc: DeviceLocation, len: usize) -> LazyTensor {
-    let x0 = LazyTensor::from_f32(
+fn solo_chain(seed: f32, loc: DeviceLocation, len: usize) -> Tensor {
+    let x0 = Tensor::from_f32(
         vec![seed; N],
         Shape::from_dims(&[N]),
         &fuel_core::Device::cpu(),
@@ -549,7 +549,7 @@ fn independent_cuda_and_vulkan_subdags_overlap() {
     //       the Vulkan fence at the Vulkan→CPU copy — that wait is where the two
     //       devices overlap.
     let build_combined = || {
-        let xc0 = LazyTensor::from_f32(vec![1.0_f32; N], Shape::from_dims(&[N]), &cpu);
+        let xc0 = Tensor::from_f32(vec![1.0_f32; N], Shape::from_dims(&[N]), &cpu);
         let xv0 = xc0.const_f32_like(vec![2.0_f32; N], Shape::from_dims(&[N]));
         let xc = extend_chain(xc0, cuda0, cuda_len);
         let xv = extend_chain(xv0, vk_loc, VULKAN_CHAIN_LEN);
@@ -841,7 +841,7 @@ fn run_auto_overlap_case(order: OperandOrder) {
     // per-device ordering tricks; C3 must auto-find the overlap order. The
     // operand order is the ONE knob — both must overlap after the follow-on.
     let build_combined = || {
-        let xc0 = LazyTensor::from_f32(vec![1.0_f32; N], Shape::from_dims(&[N]), &cpu);
+        let xc0 = Tensor::from_f32(vec![1.0_f32; N], Shape::from_dims(&[N]), &cpu);
         let xv0 = xc0.const_f32_like(vec![2.0_f32; N], Shape::from_dims(&[N]));
         let xc = extend_chain(xc0, cuda0, cuda_len);
         let xv = extend_chain(xv0, vk_loc, VULKAN_CHAIN_LEN);

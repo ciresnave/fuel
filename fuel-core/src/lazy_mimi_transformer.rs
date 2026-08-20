@@ -26,7 +26,7 @@
 //! v1 scope: F32, batch == 1, prefill only.
 
 use crate::Result;
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -129,7 +129,7 @@ impl ProjectedTransformerModel {
     /// configured at build time. With `conv_layout = true`, both
     /// input and output are `(B, C, T)`; the transformer internally
     /// works on `(B, T, C)`.
-    pub fn forward(&self, xs: &LazyTensor) -> Result<Vec<LazyTensor>> {
+    pub fn forward(&self, xs: &Tensor) -> Result<Vec<Tensor>> {
         let cfg = &self.config;
         let dims = xs.shape();
         let dims = dims.dims();
@@ -154,7 +154,7 @@ impl ProjectedTransformerModel {
         let head_dim = cfg.head_dim();
         let (cos, sin) = build_rope_tables(&h, t, head_dim, cfg.max_period);
         // Build the strict causal mask `(t, t)`.
-        let causal_mask = LazyTensor::additive_causal_mask_like(&h, t);
+        let causal_mask = Tensor::additive_causal_mask_like(&h, t);
 
         let mut hidden = h;
         for layer in &self.weights.transformer.layers {
@@ -180,15 +180,15 @@ impl ProjectedTransformerModel {
 }
 
 fn apply_layer(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &MimiTransformerLayerWeights,
-    cos: &LazyTensor,
-    sin: &LazyTensor,
-    causal_mask: &LazyTensor,
+    cos: &Tensor,
+    sin: &Tensor,
+    causal_mask: &Tensor,
     cfg: &MimiTransformerConfig,
     b: usize,
     t: usize,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     // Pre-LN self-attention.
     let n1 = x.layer_norm_affine(
         Arc::clone(&w.norm1.gain),
@@ -211,15 +211,15 @@ fn apply_layer(
 }
 
 fn apply_attention(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &MimiAttentionWeights,
-    cos: &LazyTensor,
-    sin: &LazyTensor,
-    causal_mask: &LazyTensor,
+    cos: &Tensor,
+    sin: &Tensor,
+    causal_mask: &Tensor,
     cfg: &MimiTransformerConfig,
     b: usize,
     t: usize,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     let d = cfg.d_model;
     let heads = cfg.num_heads;
     let head_dim = cfg.head_dim();
@@ -264,22 +264,14 @@ fn apply_attention(
     Ok(w.o_proj.apply_linear(&ctx, d, d)?)
 }
 
-fn apply_mlp(
-    x: &LazyTensor,
-    w: &MimiMlpWeights,
-    cfg: &MimiTransformerConfig,
-) -> Result<LazyTensor> {
+fn apply_mlp(x: &Tensor, w: &MimiMlpWeights, cfg: &MimiTransformerConfig) -> Result<Tensor> {
     let hidden = cfg.dim_feedforward;
     let d = cfg.d_model;
     let h = w.fc1.apply_linear(x, d, hidden)?.gelu_erf();
     Ok(w.fc2.apply_linear(&h, hidden, d)?)
 }
 
-fn apply_per_channel_scale(
-    x: &LazyTensor,
-    scale: &Arc<[f32]>,
-    hidden: usize,
-) -> Result<LazyTensor> {
+fn apply_per_channel_scale(x: &Tensor, scale: &Arc<[f32]>, hidden: usize) -> Result<Tensor> {
     let dims_v = x.shape().dims().to_vec();
     let mut shape = vec![1_usize; dims_v.len()];
     shape[dims_v.len() - 1] = hidden;
@@ -295,11 +287,11 @@ fn apply_per_channel_scale(
 /// Build cos/sin tables shaped `(T, head_dim / 2)` for the
 /// interleaved-RoPE convention used by Mimi (`rope_i`).
 fn build_rope_tables(
-    anchor: &LazyTensor,
+    anchor: &Tensor,
     t: usize,
     head_dim: usize,
     max_period: f32,
-) -> (LazyTensor, LazyTensor) {
+) -> (Tensor, Tensor) {
     let half = head_dim / 2;
     let mut cos_v = Vec::with_capacity(t * half);
     let mut sin_v = Vec::with_capacity(t * half);
@@ -321,14 +313,14 @@ fn build_rope_tables(
 ///   `x'[2i+1] = x[2i]*sin + x[2i+1]*cos`
 /// Input `(B, heads, T, head_dim)`, cos/sin `(T, head_dim/2)`.
 fn apply_rope_interleaved(
-    x: &LazyTensor,
-    cos: &LazyTensor,
-    sin: &LazyTensor,
+    x: &Tensor,
+    cos: &Tensor,
+    sin: &Tensor,
     b: usize,
     heads: usize,
     t: usize,
     head_dim: usize,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     let half = head_dim / 2;
     // Reshape (B, H, T, D) → (B, H, T, half, 2) and split into the
     // (even, odd) pair via `narrow` on the last dim.
@@ -349,7 +341,7 @@ fn apply_rope_interleaved(
     let new_even = x_even.mul(&cos_b)?.sub(&x_odd.mul(&sin_b)?)?;
     let new_odd = x_even.mul(&sin_b)?.add(&x_odd.mul(&cos_b)?)?;
     // Re-interleave via stack along a fresh axis + reshape.
-    let stacked = LazyTensor::stack(&[&new_even, &new_odd], 4_usize)?;
+    let stacked = Tensor::stack(&[&new_even, &new_odd], 4_usize)?;
     stacked.reshape(Shape::from_dims(&[b, heads, t, head_dim]))
 }
 
@@ -621,7 +613,7 @@ mod tests {
     fn forward_returns_one_per_output_dim() {
         let d = 8;
         let model = tiny_model(d, vec![d]);
-        let xs = LazyTensor::from_f32(
+        let xs = Tensor::from_f32(
             (0..(1 * d * 5))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),
@@ -642,7 +634,7 @@ mod tests {
         let input_dim = 4;
         let d = 8;
         let model = tiny_model(input_dim, vec![d]);
-        let xs = LazyTensor::from_f32(
+        let xs = Tensor::from_f32(
             (0..(1 * input_dim * 5))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),
@@ -657,7 +649,7 @@ mod tests {
     fn forward_multiple_output_projections() {
         let d = 8;
         let model = tiny_model(d, vec![d, 4]);
-        let xs = LazyTensor::from_f32(
+        let xs = Tensor::from_f32(
             (0..(1 * d * 5))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),
@@ -680,7 +672,7 @@ mod tests {
         let x_data: Vec<f32> = (0..(b * h * t * d))
             .map(|i| (i as f32 + 1.0) * 0.1)
             .collect();
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             x_data.clone(),
             Shape::from_dims(&[b, h, t, d]),
             &Device::cpu(),
@@ -703,7 +695,7 @@ mod tests {
         let d = 8;
         let model = tiny_model(d, vec![d]);
         let t = 4;
-        let xs_a = LazyTensor::from_f32(
+        let xs_a = Tensor::from_f32(
             (0..(1 * d * t))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),
@@ -715,7 +707,7 @@ mod tests {
         for c in 0..d {
             data_b[c * t + (t - 1)] = 9.0; // bump last token in every channel
         }
-        let xs_b = LazyTensor::from_f32(data_b, Shape::from_dims(&[1, d, t]), &Device::cpu());
+        let xs_b = Tensor::from_f32(data_b, Shape::from_dims(&[1, d, t]), &Device::cpu());
         let oa = model.forward(&xs_a).unwrap();
         let ob = model.forward(&xs_b).unwrap();
         let da = oa[0].realize_f32();

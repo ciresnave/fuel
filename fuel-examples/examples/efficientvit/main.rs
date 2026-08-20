@@ -7,7 +7,7 @@ extern crate accelerate_src;
 
 use clap::{Parser, ValueEnum};
 
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel::lazy_efficientvit::{EfficientVitConfig, EfficientVitModel, EfficientVitWeights};
 use fuel::safetensors::MmapedSafetensors;
 use fuel::{Device, Shape};
@@ -65,7 +65,7 @@ pub fn main() -> anyhow::Result<()> {
     let image_chw = fuel_examples::imagenet::load_image224(&args.image)?;
     println!("loaded image: {} f32 values (CHW)", image_chw.len());
     let image_vec: Vec<f32> = image_chw;
-    let image = LazyTensor::from_f32(
+    let image = Tensor::from_f32(
         Arc::<[f32]>::from(image_vec),
         Shape::from_dims(&[1, 3, 224, 224]),
         &device,

@@ -38,7 +38,7 @@ use crate::decode_shape::KvAllocId;
 use crate::kv_block_pool::{
     Externalized, KvAllocError, KvBlockPool, KvGeometry, PhysBlockId, SessionHandle,
 };
-use crate::lazy::LazyTensor;
+use crate::lazy::Tensor;
 
 /// Which of a layer's two pool buffers a block operation targets.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -381,7 +381,7 @@ impl DeviceKvPool {
             for l in 0..g.n_layers {
                 // K: delta-rotate the cached (post-RoPE) block by θ·M into the fresh block.
                 let k = self.read_block(l, BlockKind::K, *src)?;
-                let rot = crate::lazy::LazyTensor::rope_delta_rotate_block_f32(
+                let rot = crate::lazy::Tensor::rope_delta_rotate_block_f32(
                     self.device(),
                     &k,
                     rope_base,
@@ -475,7 +475,7 @@ impl DeviceKvPool {
         // Bind the pool buffer to a placeholder, slice the one block out, realize
         // as u8 — a byte reinterpret, so the read is correct for ANY dtype. The
         // f32 anchor only mints the graph (mirrors the historical read_block).
-        let anchor = LazyTensor::from_f32(vec![0.0], Shape::from_dims(&[1]), &self.device);
+        let anchor = Tensor::from_f32(vec![0.0], Shape::from_dims(&[1]), &self.device);
         let dest = anchor.const_placeholder_like(self.pool_shape.clone(), self.dtype);
         let block = dest
             .slice(0, phys as usize, 1)?
@@ -493,7 +493,7 @@ impl DeviceKvPool {
 
     /// Byte width of one pool element for byte-level movement. F32/BF16 only (the
     /// activation dtypes the CUDA bf16 leg needs); F16 movement is a trivial
-    /// follow-up (needs a `LazyTensor::from_f16_on` const source).
+    /// follow-up (needs a `Tensor::from_f16_on` const source).
     fn dtype_elem_bytes(&self) -> crate::Result<usize> {
         match self.dtype {
             DType::F32 => Ok(4),
@@ -510,24 +510,19 @@ impl DeviceKvPool {
     /// constructor via alignment-safe `try_cast_slice` (never panics). For BF16 a
     /// tiny f32 anchor mints the graph (mirrors `read_block_bytes`'s anchor); the
     /// bf16 const is a sibling on it.
-    fn const_from_bytes(&self, bytes: &[u8], shape: Shape) -> crate::Result<LazyTensor> {
+    fn const_from_bytes(&self, bytes: &[u8], shape: Shape) -> crate::Result<Tensor> {
         let dev = &self.device;
         match self.dtype {
             DType::F32 => {
                 let v: &[f32] = bytemuck::try_cast_slice(bytes)
                     .map_err(|e| msg_err(format!("const_from_bytes: f32 cast: {e:?}")))?;
-                Ok(LazyTensor::from_f32(v.to_vec(), shape, dev))
+                Ok(Tensor::from_f32(v.to_vec(), shape, dev))
             }
             DType::BF16 => {
                 let v: &[half::bf16] = bytemuck::try_cast_slice(bytes)
                     .map_err(|e| msg_err(format!("const_from_bytes: bf16 cast: {e:?}")))?;
-                let anchor = LazyTensor::from_f32(vec![0.0f32], Shape::from_dims(&[1]), dev);
-                Ok(LazyTensor::from_bf16_on(
-                    anchor.graph(),
-                    v.to_vec(),
-                    shape,
-                    dev,
-                ))
+                let anchor = Tensor::from_f32(vec![0.0f32], Shape::from_dims(&[1]), dev);
+                Ok(Tensor::from_bf16_on(anchor.graph(), v.to_vec(), shape, dev))
             }
             other => Err(msg_err(format!(
                 "DeviceKvPool::const_from_bytes: unsupported dtype {other:?} (F32/BF16)",
@@ -631,7 +626,7 @@ impl DeviceKvPool {
     /// and threads the result into the o-projection.
     ///
     /// All tensors are on `q`'s graph: `k_pool_ph`/`v_pool_ph` are
-    /// [`const_placeholder_like`](LazyTensor::const_placeholder_like) placeholders
+    /// [`const_placeholder_like`](Tensor::const_placeholder_like) placeholders
     /// the caller binds to this layer's pool buffers; `block_table`/`context_lens`
     /// are the [`materialize_block_table`](Self::materialize_block_table) tensors;
     /// `q` is `[1, Hq, 1, D]`; `k_new`/`v_new` are `[1, Hkv, 1, D]` (the new
@@ -646,17 +641,17 @@ impl DeviceKvPool {
     #[allow(clippy::too_many_arguments)]
     pub fn build_decode_attn(
         &self,
-        k_pool_ph: &LazyTensor,
-        v_pool_ph: &LazyTensor,
-        q: &LazyTensor,
-        k_new: &LazyTensor,
-        v_new: &LazyTensor,
-        block_table: &LazyTensor,
-        context_lens: &LazyTensor,
+        k_pool_ph: &Tensor,
+        v_pool_ph: &Tensor,
+        q: &Tensor,
+        k_new: &Tensor,
+        v_new: &Tensor,
+        block_table: &Tensor,
+        context_lens: &Tensor,
         phys_block: PhysBlockId,
         slot: usize,
         scale: f32,
-    ) -> crate::Result<LazyTensor> {
+    ) -> crate::Result<Tensor> {
         let g = self.geometry();
         let p = phys_block as usize;
         // The new token occupies one slot of one physical block: [1, 1, Hkv, D].
@@ -700,20 +695,20 @@ impl DeviceKvPool {
     #[allow(clippy::too_many_arguments)]
     pub fn build_decode_attn_batched(
         &self,
-        k_pool_ph: &LazyTensor,
-        v_pool_ph: &LazyTensor,
-        q: &LazyTensor,
-        k_new: &LazyTensor,
-        v_new: &LazyTensor,
-        block_table: &LazyTensor,
-        context_lens: &LazyTensor,
+        k_pool_ph: &Tensor,
+        v_pool_ph: &Tensor,
+        q: &Tensor,
+        k_new: &Tensor,
+        v_new: &Tensor,
+        block_table: &Tensor,
+        context_lens: &Tensor,
         writes: &[(PhysBlockId, usize)],
         scale: f32,
-    ) -> crate::Result<LazyTensor> {
+    ) -> crate::Result<Tensor> {
         let g = self.geometry();
         let slot_shape = Shape::from_dims(&[1, 1, g.n_kv_heads, g.head_dim]);
-        let mut post_k: Option<LazyTensor> = None;
-        let mut post_v: Option<LazyTensor> = None;
+        let mut post_k: Option<Tensor> = None;
+        let mut post_v: Option<Tensor> = None;
         for (i, &(phys, slot)) in writes.iter().enumerate() {
             let p = phys as usize;
             let ranges = vec![
@@ -776,17 +771,17 @@ impl DeviceKvPool {
     #[allow(clippy::too_many_arguments)]
     pub fn build_decode_attn_off(
         &self,
-        k_pool_ph: &LazyTensor,
-        v_pool_ph: &LazyTensor,
-        q: &LazyTensor,
-        k_new: &LazyTensor,
-        v_new: &LazyTensor,
-        block_table: &LazyTensor,
-        context_lens: &LazyTensor,
-        write_off: Option<&LazyTensor>,
+        k_pool_ph: &Tensor,
+        v_pool_ph: &Tensor,
+        q: &Tensor,
+        k_new: &Tensor,
+        v_new: &Tensor,
+        block_table: &Tensor,
+        context_lens: &Tensor,
+        write_off: Option<&Tensor>,
         write_sym: fuel_ir::SymId,
         scale: f32,
-    ) -> crate::Result<LazyTensor> {
+    ) -> crate::Result<Tensor> {
         let g = self.geometry();
         // New token as a single flat row: [1, Hkv, 1, D] → [1, Hkv, D] (h-major
         // order preserved), matching one row of the flattened pool's slot axis.
@@ -1233,7 +1228,7 @@ mod tests {
             let fresh = pool.core().resident_block(dst, dst_slot).unwrap();
             for l in 0..2usize {
                 let src_k = pool.read_block(l, BlockKind::K, src_phys).unwrap();
-                let want = crate::lazy::LazyTensor::rope_delta_rotate_block_f32(
+                let want = crate::lazy::Tensor::rope_delta_rotate_block_f32(
                     &Device::cpu(),
                     &src_k,
                     rope_base,
@@ -1491,7 +1486,7 @@ mod tests {
         );
 
         let run = |pt: &PageTableHost| -> Vec<f32> {
-            let q = LazyTensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, 1, d]), &dev);
+            let q = Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, 1, d]), &dev);
             let kc = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
             let vc = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
             let bt = q.const_u32_like(pt.block_table.clone(), pt.block_table_shape());
@@ -1579,9 +1574,9 @@ mod tests {
         assert_eq!(slot, 2, "new token lands at slot 2");
         let linear = phys as usize * block_size + slot; // 10
         let attn_ref = {
-            let q = LazyTensor::from_f32(q_data.clone(), q_shape.clone(), &dev);
+            let q = Tensor::from_f32(q_data.clone(), q_shape.clone(), &dev);
             // k_new/v_new must be siblings of q (build_decode_attn's same-graph
-            // contract) — LazyTensor::from_f32 would mint separate graphs.
+            // contract) — Tensor::from_f32 would mint separate graphs.
             let k_new = q.const_f32_like(k_new_data.clone(), kv_new_shape.clone());
             let v_new = q.const_f32_like(v_new_data.clone(), kv_new_shape.clone());
             let k_ph = q.const_placeholder_like(pool_ref.pool_shape().clone(), DType::F32);
@@ -1611,9 +1606,9 @@ mod tests {
         let sym = fuel_ir::SymId(0);
         let (pool_dyn, _p, _s, pt_dyn) = setup();
         let attn_dyn = {
-            let q = LazyTensor::from_f32(q_data.clone(), q_shape.clone(), &dev);
+            let q = Tensor::from_f32(q_data.clone(), q_shape.clone(), &dev);
             // k_new/v_new must be siblings of q (build_decode_attn's same-graph
-            // contract) — LazyTensor::from_f32 would mint separate graphs.
+            // contract) — Tensor::from_f32 would mint separate graphs.
             let k_new = q.const_f32_like(k_new_data.clone(), kv_new_shape.clone());
             let v_new = q.const_f32_like(v_new_data.clone(), kv_new_shape.clone());
             let k_ph = q.const_placeholder_like(pool_dyn.pool_shape_flat(), DType::F32);
@@ -1655,9 +1650,9 @@ mod tests {
         // ---- doff arm: device rank-0 I64 offset (write_slice_doff) ----
         let (pool_doff, _p, _s, pt_doff) = setup();
         let attn_doff = {
-            let q = LazyTensor::from_f32(q_data.clone(), q_shape.clone(), &dev);
+            let q = Tensor::from_f32(q_data.clone(), q_shape.clone(), &dev);
             // k_new/v_new must be siblings of q (build_decode_attn's same-graph
-            // contract) — LazyTensor::from_f32 would mint separate graphs.
+            // contract) — Tensor::from_f32 would mint separate graphs.
             let k_new = q.const_f32_like(k_new_data.clone(), kv_new_shape.clone());
             let v_new = q.const_f32_like(v_new_data.clone(), kv_new_shape.clone());
             let k_ph = q.const_placeholder_like(pool_doff.pool_shape_flat(), DType::F32);
@@ -1760,7 +1755,7 @@ mod tests {
         assert_eq!(pt.context_lens, vec![sk as u32]);
 
         // Build the paged_attn graph, binding the REAL pool buffers as k/v cache.
-        let q = LazyTensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, 1, d]), &dev);
+        let q = Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, 1, d]), &dev);
         let kc = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
         let vc = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
         let bt = q.const_u32_like(pt.block_table.clone(), pt.block_table_shape());
@@ -1972,7 +1967,7 @@ mod tests {
             );
 
             // Build the paged decode-step graph on q's graph, bind the pool.
-            let q = LazyTensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, 1, d]), &dev);
+            let q = Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, 1, d]), &dev);
             let kph = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
             let vph = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
             let knew = q.const_f32_like(k_data, Shape::from_dims(&[1, hkv, 1, d]));
@@ -2104,7 +2099,7 @@ mod tests {
             "spliced prefix length carried to B"
         );
         let q_data = rand_f32(hq * d, 1);
-        let q = LazyTensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, 1, d]), &dev);
+        let q = Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, 1, d]), &dev);
         let kph = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
         let vph = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
         let bt = q.const_u32_like(pt.block_table.clone(), pt.block_table_shape());

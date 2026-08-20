@@ -14,7 +14,7 @@
 //! dtype, inputs=…)" — enough to grep-locate the failing op in a
 //! large graph.
 
-use fuel_core::lazy::LazyTensor;
+use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
@@ -35,7 +35,7 @@ fn realize_panic_message_has_graph_location() {
     // Build a deliberately-bad graph: an IndexSelect with an
     // out-of-bounds index. The builder doesn't peek at the index
     // tensor's data, so this only fails at eval time.
-    let src = LazyTensor::from_f32(
+    let src = Tensor::from_f32(
         vec![1.0f32, 2.0, 3.0, 4.0],
         Shape::from_dims(&[4]),
         &fuel_core::Device::cpu(),

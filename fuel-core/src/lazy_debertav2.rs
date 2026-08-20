@@ -19,7 +19,7 @@
 //! These are the settings for `microsoft/deberta-v3-base`,
 //! `deberta-v3-large`, `deberta-v3-small`, and `mdeberta-v3-base`.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::{DType, Result};
 use fuel_ir::Shape;
 use std::collections::HashMap;
@@ -328,14 +328,14 @@ fn log_bucket(rel: isize, bucket_size: isize, max_position: isize) -> i64 {
 
 impl DebertaV2Model {
     /// Run prefill and return final hidden states `(1, T, hidden)`.
-    pub fn forward(&self, input_ids: &[u32]) -> Result<LazyTensor> {
+    pub fn forward(&self, input_ids: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         let w = &self.weights;
         let t = input_ids.len();
         assert!(t > 0);
         let h = cfg.hidden_size;
         let anchor_ids: Vec<u32> = input_ids.to_vec();
-        let ids = LazyTensor::from_u32(anchor_ids, Shape::from_dims(&[t]), &crate::Device::cpu());
+        let ids = Tensor::from_u32(anchor_ids, Shape::from_dims(&[t]), &crate::Device::cpu());
 
         // Word embedding lookup + LN.
         let table = ids.const_f32_like(
@@ -382,14 +382,14 @@ impl DebertaV2Model {
 }
 
 fn apply_layer(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &DebertaV2LayerWeights,
-    rel_table: &LazyTensor,
-    c2p_idx: &LazyTensor,
-    p2c_idx: &LazyTensor,
+    rel_table: &Tensor,
+    c2p_idx: &Tensor,
+    p2c_idx: &Tensor,
     cfg: &DebertaV2Config,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+    anchor: &Tensor,
+) -> Result<Tensor> {
     let attn_out = apply_attention(x, &w.attn, rel_table, c2p_idx, p2c_idx, cfg, anchor)?;
     // Post-LN inside the attention sublayer.
     let projected = apply_linear(&attn_out, &w.attn.out_dense, anchor)?;
@@ -411,14 +411,14 @@ fn apply_layer(
 }
 
 fn apply_attention(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &DebertaV2AttentionWeights,
-    rel_table: &LazyTensor,
-    c2p_idx: &LazyTensor,
-    p2c_idx: &LazyTensor,
+    rel_table: &Tensor,
+    c2p_idx: &Tensor,
+    p2c_idx: &Tensor,
     cfg: &DebertaV2Config,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+    anchor: &Tensor,
+) -> Result<Tensor> {
     let dims = x.shape();
     let dims = dims.dims();
     let b = dims[0];
@@ -526,7 +526,7 @@ fn apply_attention(
     Ok(ctx)
 }
 
-fn apply_linear(x: &LazyTensor, lw: &LinearWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
+fn apply_linear(x: &Tensor, lw: &LinearWeights, anchor: &Tensor) -> Result<Tensor> {
     let _ = anchor;
     let dims = x.shape();
     let dims = dims.dims();
@@ -692,7 +692,7 @@ impl DebertaV2NERModel {
         input_ids: &[u32],
         token_type_ids: Option<&[u32]>,
         attention_mask: Option<&[u32]>,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let _ = token_type_ids;
         let _ = attention_mask;
         let encoder = DebertaV2Model {
@@ -701,7 +701,7 @@ impl DebertaV2NERModel {
         };
         let hidden = encoder.forward(input_ids)?;
         // hidden: (1, seq, hidden). Anchor for the classifier consts.
-        let anchor = LazyTensor::from_u32(
+        let anchor = Tensor::from_u32(
             input_ids.to_vec(),
             Shape::from_dims(&[input_ids.len()]),
             &crate::Device::cpu(),
@@ -784,7 +784,7 @@ impl DebertaV2SeqClassificationModel {
         input_ids: &[u32],
         token_type_ids: Option<&[u32]>,
         attention_mask: Option<&[u32]>,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let _ = token_type_ids;
         let _ = attention_mask;
         let encoder = DebertaV2Model {
@@ -794,7 +794,7 @@ impl DebertaV2SeqClassificationModel {
         let hidden = encoder.forward(input_ids)?; // (1, seq, hidden)
         // First-token ([CLS]) hidden state: (1, 1, hidden) → (1, hidden).
         let cls = hidden.slice(1_usize, 0, 1)?.squeeze(1_usize)?;
-        let anchor = LazyTensor::from_u32(
+        let anchor = Tensor::from_u32(
             input_ids.to_vec(),
             Shape::from_dims(&[input_ids.len()]),
             &crate::Device::cpu(),

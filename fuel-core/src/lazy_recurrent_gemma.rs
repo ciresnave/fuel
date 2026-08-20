@@ -69,7 +69,7 @@
 //! graph-build time (same shape as the RWKV-5 port — long
 //! prompts produce large but well-formed graphs).
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -194,7 +194,7 @@ pub struct RecurrentGemmaModel {
 }
 
 impl RecurrentGemmaModel {
-    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let h_norm = self.run_backbone(tokens, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
@@ -203,7 +203,7 @@ impl RecurrentGemmaModel {
     /// return per-token hidden states `(1, seq, hidden_size)`.
     /// RecurrentGemma-specific: per-layer Attention vs. Recurrent
     /// (LRU) temporal block selection from `block_types`.
-    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         self.run_backbone(tokens, start_pos)
     }
 
@@ -211,22 +211,18 @@ impl RecurrentGemmaModel {
     /// over pre-embedded inputs. RecurrentGemma does NOT scale
     /// embeddings (unlike Gemma which applies sqrt(hidden_size) —
     /// RecurrentGemma's eager port omits it).
-    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let h_norm = self.run_backbone_embeds(embeds, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
 
     /// Hidden-state variant of [`Self::forward_embeds`].
-    pub fn forward_hidden_embeds(
-        &self,
-        embeds: &LazyTensor,
-        start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_hidden_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         self.run_backbone_embeds(embeds, start_pos)
     }
 
     /// Build per-token embeddings without running the decoder.
-    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &Tensor, tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
@@ -236,7 +232,7 @@ impl RecurrentGemmaModel {
         )
     }
 
-    fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
+    fn apply_lm_head(&self, h_norm: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let lm_head = WeightStorage::F32(self.weights.token_embedding.clone());
         let logits = lm_head.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?;
@@ -248,13 +244,13 @@ impl RecurrentGemmaModel {
         }
     }
 
-    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
         assert!(seq > 0, "RecurrentGemmaModel: tokens must be non-empty");
 
-        let h = LazyTensor::embed_tokens(
+        let h = Tensor::embed_tokens(
             weights.token_embedding.clone(),
             cfg.vocab_size,
             cfg.hidden_size,
@@ -264,7 +260,7 @@ impl RecurrentGemmaModel {
         self.run_backbone_embeds(&h, start_pos)
     }
 
-    fn run_backbone_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
+    fn run_backbone_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -316,12 +312,12 @@ impl RecurrentGemmaModel {
 
     fn apply_layer(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &RecurrentGemmaLayerWeights,
         layer_idx: usize,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let h = cfg.hidden_size;
 
@@ -357,11 +353,11 @@ impl RecurrentGemmaModel {
 
     fn apply_attention(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         a: &AttentionBlockWeights,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let x_shape = x.shape();
         let dims = x_shape.dims();
@@ -422,7 +418,7 @@ impl RecurrentGemmaModel {
         attn_out.add_trailing_bias(std::sync::Arc::clone(&a.o_b))
     }
 
-    fn apply_recurrent(&self, x: &LazyTensor, r: &RecurrentBlockWeights) -> Result<LazyTensor> {
+    fn apply_recurrent(&self, x: &Tensor, r: &RecurrentBlockWeights) -> Result<Tensor> {
         let cfg = &self.config;
         let x_shape = x.shape();
         let dims = x_shape.dims();
@@ -481,13 +477,13 @@ impl RecurrentGemmaModel {
 
     fn apply_rg_lru(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         rg: &RgluWeights,
         batch: usize,
         seq: usize,
         n_heads: usize,
         block_width: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let lru_width = n_heads * block_width;
 
         // Reshape x to (b, seq, n_heads, block_width).
@@ -498,7 +494,7 @@ impl RecurrentGemmaModel {
         // The per-head W has shape (block_width, block_width). We do
         // batched matmul: reshape x to (..., n_heads, 1, block_width) and
         // W to (1, 1, n_heads, block_width, block_width), then matmul.
-        let project = |w: &Arc<[f32]>, b: &Arc<[f32]>| -> Result<LazyTensor> {
+        let project = |w: &Arc<[f32]>, b: &Arc<[f32]>| -> Result<Tensor> {
             let w_t = x.const_f32_like(
                 Arc::clone(w),
                 Shape::from_dims(&[1, 1, n_heads, block_width, block_width]),
@@ -569,8 +565,8 @@ impl RecurrentGemmaModel {
         // Sequential recurrence:
         //   state[t] = decay_eff[t] * state[t-1] + normalized_x[t]
         // Stack states into (b, seq, lru_width). State starts at zeros.
-        let mut state: Option<LazyTensor> = None;
-        let mut out_steps: Vec<LazyTensor> = Vec::with_capacity(seq);
+        let mut state: Option<Tensor> = None;
+        let mut out_steps: Vec<Tensor> = Vec::with_capacity(seq);
         for t in 0..seq {
             let x_t = normalized_x.slice(1_usize, t, 1)?; // (b, 1, lru_width)
             let d_t = decay_eff.slice(1_usize, t, 1)?; // (b, 1, lru_width)
@@ -582,7 +578,7 @@ impl RecurrentGemmaModel {
             out_steps.push(new_state);
         }
         // Concat along seq axis.
-        let mut all: Option<LazyTensor> = None;
+        let mut all: Option<Tensor> = None;
         for step in out_steps.into_iter() {
             all = Some(match all {
                 None => step,
@@ -592,7 +588,7 @@ impl RecurrentGemmaModel {
         Ok(all.expect("at least one step"))
     }
 
-    fn apply_mlp(&self, x: &LazyTensor, layer: &RecurrentGemmaLayerWeights) -> Result<LazyTensor> {
+    fn apply_mlp(&self, x: &Tensor, layer: &RecurrentGemmaLayerWeights) -> Result<Tensor> {
         let cfg = &self.config;
         let h = cfg.hidden_size;
         let inter = cfg.mlp_intermediate();
@@ -1017,7 +1013,7 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
         let max_diff = logits_ref
@@ -1038,7 +1034,7 @@ mod tests {
             config: cfg.clone(),
             weights: tiny_weights(&cfg),
         };
-        let bad = LazyTensor::from_f32(
+        let bad = Tensor::from_f32(
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
             Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
             &Device::cpu(),
@@ -1055,7 +1051,7 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let h_via_embeds = model
             .forward_hidden_embeds(&embeds, 0)

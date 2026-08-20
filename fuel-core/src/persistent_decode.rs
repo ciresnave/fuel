@@ -46,7 +46,7 @@
 //! path it got.
 
 use crate::inference_context::{DecodeSession, DecodeTokenData, InferenceContext, KvCache, KvSlot};
-use crate::lazy::LazyTensor;
+use crate::lazy::Tensor;
 use crate::{Device, Result};
 use fuel_ir::{DType, Shape};
 use std::sync::Arc;
@@ -668,28 +668,28 @@ pub trait DecodeBackbone: PersistentDecodeModel {
         &self,
         layer_idx: usize,
         inputs: &DecodeLayerInputs<'_>,
-    ) -> Result<LazyTensor>;
+    ) -> Result<Tensor>;
 
     /// Final norm + LM head → `[batch, seq, vocab]`.
-    fn decode_final_norm_and_head(&self, h: &LazyTensor) -> Result<LazyTensor>;
+    fn decode_final_norm_and_head(&self, h: &Tensor) -> Result<Tensor>;
 }
 
 /// The per-layer arguments of [`DecodeBackbone::decode_apply_layer`], bundled
 /// so the signature stays readable as families are added.
 pub struct DecodeLayerInputs<'a> {
-    pub x: &'a LazyTensor,
-    pub k_cache: &'a LazyTensor,
-    pub v_cache: &'a LazyTensor,
+    pub x: &'a Tensor,
+    pub k_cache: &'a Tensor,
+    pub v_cache: &'a Tensor,
     pub cached_len_sym: fuel_ir::SymId,
     pub attended_len_sym: fuel_ir::SymId,
     /// `Some` on the device-offset (`Op::WriteSliceDoff`) path, `None` on the
     /// backend-generic `SymEnv` path. The layer must honour both — see the
     /// divergence note at the top of this module.
-    pub offset: Option<&'a LazyTensor>,
-    pub rope_cos: &'a LazyTensor,
-    pub rope_sin: &'a LazyTensor,
+    pub offset: Option<&'a Tensor>,
+    pub rope_cos: &'a Tensor,
+    pub rope_sin: &'a Tensor,
     /// **This layer's** mask variant, already sliced out of the stacked Const.
-    pub mask: &'a LazyTensor,
+    pub mask: &'a Tensor,
     /// **This layer's** window width, or `None` if it attends densely — the
     /// same plan entry `mask` was built from ([`MaskPlan::window_for_layer`]).
     ///
@@ -741,7 +741,7 @@ pub(crate) fn compute_decode_token_host<M: DecodeBackbone + ?Sized>(
 
 /// The graph [`build_decode_graph`] produced, plus the handles each tail needs.
 pub(crate) struct BuiltDecodeGraph {
-    logits_root: LazyTensor,
+    logits_root: Tensor,
     kv_nodes: Vec<(fuel_graph::NodeId, fuel_graph::NodeId)>,
     /// `Some` under [`DataConsts::Rebindable`] only — D1 has no re-bindable
     /// node to hold.
@@ -838,7 +838,7 @@ fn build_decode_graph<M: DecodeBackbone + ?Sized>(
     let host = compute_decode_token_host(model, cached_len, tokens, max_seq_len, rope_inv_freq);
 
     // ---- Embed lookup + reshape to [batch, seq, hidden] ----
-    let embed = LazyTensor::from_f32(
+    let embed = Tensor::from_f32(
         model.decode_token_embedding(),
         Shape::from_dims(&[dims.vocab, dims.hidden]),
         &Device::cpu(),
@@ -910,7 +910,7 @@ fn build_decode_graph<M: DecodeBackbone + ?Sized>(
     // needs a reshape after the slice; the uniform case takes the Const itself
     // and emits neither.
     let rope_2d = Shape::from_dims(&[seq, dims.rope_width]);
-    let (rope_cos_v, rope_sin_v): (Vec<LazyTensor>, Vec<LazyTensor>) = if n_rope == 1 {
+    let (rope_cos_v, rope_sin_v): (Vec<Tensor>, Vec<Tensor>) = if n_rope == 1 {
         (vec![rope_cos], vec![rope_sin])
     } else {
         let mut cs = Vec::with_capacity(n_rope);
@@ -934,7 +934,7 @@ fn build_decode_graph<M: DecodeBackbone + ?Sized>(
     // Hoist the per-variant width-1 slices ONCE, before the layer loop. The
     // uniform case takes the Const itself: no slice node is emitted at all, so
     // a non-varying family's graph is exactly what it was pre-GAP-029.
-    let masks: Vec<LazyTensor> = if n_variants == 1 {
+    let masks: Vec<Tensor> = if n_variants == 1 {
         vec![mask]
     } else {
         (0..n_variants)

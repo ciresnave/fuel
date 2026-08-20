@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use anyhow::Result;
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel::{Device, Shape};
 use std::sync::Arc;
 
@@ -42,10 +42,10 @@ pub fn main() -> Result<()> {
             let constants: std::collections::HashSet<_> =
                 graph.initializer.iter().map(|i| i.name.as_str()).collect();
             let mut inputs = std::collections::HashMap::new();
-            // Every `LazyTensor::from_*` mints a NEW graph and tensors only
+            // Every `Tensor::from_*` mints a NEW graph and tensors only
             // combine within one graph, so the first input becomes the anchor
             // and the rest are built on its graph.
-            let mut anchor: Option<LazyTensor> = None;
+            let mut anchor: Option<Tensor> = None;
             let dev = Device::cpu();
             for input in graph.input.iter() {
                 if constants.contains(input.name.as_str()) {
@@ -75,13 +75,10 @@ pub fn main() -> Result<()> {
                         let n: usize = dims.iter().product();
                         let zeros: Arc<[f32]> = Arc::from(vec![0f32; n]);
                         let t = match &anchor {
-                            None => LazyTensor::from_f32(zeros, Shape::from_dims(&dims), &dev),
-                            Some(a) => LazyTensor::from_f32_on(
-                                a.graph(),
-                                zeros,
-                                Shape::from_dims(&dims),
-                                &dev,
-                            ),
+                            None => Tensor::from_f32(zeros, Shape::from_dims(&dims), &dev),
+                            Some(a) => {
+                                Tensor::from_f32_on(a.graph(), zeros, Shape::from_dims(&dims), &dev)
+                            }
                         };
                         t.to_dtype(dt)?
                     }
@@ -98,7 +95,7 @@ pub fn main() -> Result<()> {
                 );
                 inputs.insert(input.name.clone(), value);
             }
-            let outputs = fuel_onnx::LazyOnnxEval::from_model(model).run(&inputs)?;
+            let outputs = fuel_onnx::OnnxEval::from_model(model).run(&inputs)?;
             for (name, value) in outputs.iter() {
                 // Lazy: realize to inspect.
                 println!(

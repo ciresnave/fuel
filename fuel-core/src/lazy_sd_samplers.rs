@@ -5,14 +5,14 @@
 //! and a model-predicted noise / velocity / clean sample, they produce
 //! the next sample for the reverse-diffusion loop. The per-step
 //! coefficients are precomputed `f64` and folded into the graph as
-//! [`LazyTensor::mul_scalar`] / [`LazyTensor::add_scalar`] — no new
+//! [`Tensor::mul_scalar`] / [`Tensor::add_scalar`] — no new
 //! graph ops are introduced.
 //!
 //! This sub-port covers the [`SdScheduler`] trait + [`DdimScheduler`]
 //! + [`DdpmScheduler`]. UniPC, Euler-ancestral and the SD attention
 //! blocks ship in separate sub-ports.
 
-use crate::lazy::LazyTensor;
+use crate::lazy::Tensor;
 use crate::{Error, Result};
 use fuel_ir::Shape;
 
@@ -65,22 +65,12 @@ pub trait SdScheduler {
     fn set_timesteps(&mut self, num_inference_steps: usize) -> Result<()>;
 
     /// One reverse-diffusion update. Returns the next-step sample.
-    fn step(
-        &mut self,
-        model_output: &LazyTensor,
-        timestep: usize,
-        sample: &LazyTensor,
-    ) -> Result<LazyTensor>;
+    fn step(&mut self, model_output: &Tensor, timestep: usize, sample: &Tensor) -> Result<Tensor>;
 
     /// Forward-process noising: `sqrt(alpha_bar_t) * original
     /// + sqrt(1 - alpha_bar_t) * noise`. `timesteps[0]` is the
     /// (single, batched) timestep used to look up the schedule.
-    fn add_noise(
-        &self,
-        original: &LazyTensor,
-        noise: &LazyTensor,
-        timesteps: &[usize],
-    ) -> Result<LazyTensor>;
+    fn add_noise(&self, original: &Tensor, noise: &Tensor, timesteps: &[usize]) -> Result<Tensor>;
 }
 
 // ---- host-side beta / alpha schedule helpers --------------------------------
@@ -133,7 +123,7 @@ fn clamp_timestep(t: usize, len: usize) -> usize {
     if t >= len { len - 1 } else { t }
 }
 
-fn randn_like_on_graph(anchor: &LazyTensor, mean: f64, stdev: f64) -> Result<LazyTensor> {
+fn randn_like_on_graph(anchor: &Tensor, mean: f64, stdev: f64) -> Result<Tensor> {
     use rand_distr::{Distribution, Normal};
     let shape = anchor.shape();
     let n = shape.elem_count();
@@ -259,12 +249,7 @@ impl SdScheduler for DdimScheduler {
         Ok(())
     }
 
-    fn step(
-        &mut self,
-        model_output: &LazyTensor,
-        timestep: usize,
-        sample: &LazyTensor,
-    ) -> Result<LazyTensor> {
+    fn step(&mut self, model_output: &Tensor, timestep: usize, sample: &Tensor) -> Result<Tensor> {
         let t = clamp_timestep(timestep, self.alphas_cumprod.len());
         let prev_t = t.saturating_sub(self.step_ratio);
         let alpha_prod_t = self.alphas_cumprod[t];
@@ -314,12 +299,7 @@ impl SdScheduler for DdimScheduler {
         }
     }
 
-    fn add_noise(
-        &self,
-        original: &LazyTensor,
-        noise: &LazyTensor,
-        timesteps: &[usize],
-    ) -> Result<LazyTensor> {
+    fn add_noise(&self, original: &Tensor, noise: &Tensor, timesteps: &[usize]) -> Result<Tensor> {
         if timesteps.is_empty() {
             return Err(
                 Error::Msg("DdimScheduler::add_noise: timesteps must be non-empty".into()).bt(),
@@ -445,12 +425,7 @@ impl SdScheduler for DdpmScheduler {
         Ok(())
     }
 
-    fn step(
-        &mut self,
-        model_output: &LazyTensor,
-        timestep: usize,
-        sample: &LazyTensor,
-    ) -> Result<LazyTensor> {
+    fn step(&mut self, model_output: &Tensor, timestep: usize, sample: &Tensor) -> Result<Tensor> {
         let prev_t = timestep as isize - self.step_ratio as isize;
         let alpha_prod_t = self.alphas_cumprod[timestep];
         let alpha_prod_t_prev = if prev_t >= 0 {
@@ -497,12 +472,7 @@ impl SdScheduler for DdpmScheduler {
         }
     }
 
-    fn add_noise(
-        &self,
-        original: &LazyTensor,
-        noise: &LazyTensor,
-        timesteps: &[usize],
-    ) -> Result<LazyTensor> {
+    fn add_noise(&self, original: &Tensor, noise: &Tensor, timesteps: &[usize]) -> Result<Tensor> {
         if timesteps.is_empty() {
             return Err(
                 Error::Msg("DdpmScheduler::add_noise: timesteps must be non-empty".into()).bt(),
@@ -522,8 +492,8 @@ mod tests {
     use super::*;
     use crate::Device;
 
-    fn paired(a: &[f32], b: &[f32], shape: &[usize]) -> (LazyTensor, LazyTensor) {
-        let anchor = LazyTensor::from_f32(a.to_vec(), Shape::from_dims(shape), &Device::cpu());
+    fn paired(a: &[f32], b: &[f32], shape: &[usize]) -> (Tensor, Tensor) {
+        let anchor = Tensor::from_f32(a.to_vec(), Shape::from_dims(shape), &Device::cpu());
         let other = anchor.const_f32_like(b.to_vec(), Shape::from_dims(shape));
         (anchor, other)
     }

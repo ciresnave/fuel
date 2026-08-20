@@ -45,7 +45,7 @@
 //! F32. Multimodal injection (image and audio embeddings
 //! interleaved with text token embeddings via mask) is deferred.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -140,7 +140,7 @@ pub struct Gemma4TextModel {
 }
 
 impl Gemma4TextModel {
-    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let h_norm = self.run_backbone(tokens, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
@@ -151,7 +151,7 @@ impl Gemma4TextModel {
     /// `SlidingAttention` / `FullAttention` layer types each
     /// with their own head_dim, num_kv_heads, RoPE table, and
     /// mask — all honored by the shared backbone.
-    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         self.run_backbone(tokens, start_pos)
     }
 
@@ -168,11 +168,7 @@ impl Gemma4TextModel {
     ///
     /// Returns logits `(1, seq, vocab_size)` (with optional logit
     /// softcap applied if the config enables it).
-    pub fn forward_embeds(
-        &self,
-        scaled_embeds: &LazyTensor,
-        start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, scaled_embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let h_norm = self.decode_from_scaled_embeds(scaled_embeds, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
@@ -183,9 +179,9 @@ impl Gemma4TextModel {
     /// rather than predict tokens.
     pub fn forward_hidden_embeds(
         &self,
-        scaled_embeds: &LazyTensor,
+        scaled_embeds: &Tensor,
         start_pos: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         self.decode_from_scaled_embeds(scaled_embeds, start_pos)
     }
 
@@ -201,7 +197,7 @@ impl Gemma4TextModel {
     /// `anchor` selects the graph the const-emitted embedding table
     /// lives on, so the result can be concatenated with image/audio
     /// embeddings on the same graph.
-    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &Tensor, tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
@@ -211,7 +207,7 @@ impl Gemma4TextModel {
         )
     }
 
-    fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
+    fn apply_lm_head(&self, h_norm: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let lm_head = WeightStorage::F32(self.weights.token_embedding.clone());
         let logits = lm_head.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?;
@@ -221,13 +217,13 @@ impl Gemma4TextModel {
         }
     }
 
-    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
         assert!(seq > 0);
 
-        let h = LazyTensor::embed_tokens(
+        let h = Tensor::embed_tokens(
             weights.token_embedding.clone(),
             cfg.vocab_size,
             cfg.hidden_size,
@@ -240,9 +236,9 @@ impl Gemma4TextModel {
 
     fn decode_from_scaled_embeds(
         &self,
-        scaled_embeds: &LazyTensor,
+        scaled_embeds: &Tensor,
         start_pos: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = scaled_embeds.shape();
@@ -318,7 +314,7 @@ impl Gemma4TextModel {
         h.rms_norm_affine_with_offset(&weights.final_norm_gain, 1.0, cfg.rms_norm_eps)
     }
 
-    fn build_mask(&self, anchor: &LazyTensor, seq: usize, sliding: Option<usize>) -> LazyTensor {
+    fn build_mask(&self, anchor: &Tensor, seq: usize, sliding: Option<usize>) -> Tensor {
         let window = sliding.unwrap_or(seq + 1);
         let mut mask_data = vec![0.0_f32; seq * seq];
         for i in 0..seq {
@@ -334,16 +330,16 @@ impl Gemma4TextModel {
     #[allow(clippy::too_many_arguments)]
     fn apply_layer(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &Gemma4LayerWeights,
         head_dim: usize,
         num_kv: usize,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
         rope_dim: usize,
-        mask: &LazyTensor,
+        mask: &Tensor,
         _is_global: bool,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let x_shape = x.shape();
         let dims = x_shape.dims();
@@ -441,7 +437,7 @@ impl Gemma4TextModel {
 }
 
 /// V RmsNorm: pure rsqrt(mean of squares + eps), no learned weight.
-fn v_rms_norm(v: &LazyTensor, eps: f64) -> Result<LazyTensor> {
+fn v_rms_norm(v: &Tensor, eps: f64) -> Result<Tensor> {
     v.rms_norm_last_dim(eps)
 }
 
@@ -834,7 +830,7 @@ mod tests {
     #[test]
     fn v_rms_norm_smoke() {
         let dev = Device::cpu();
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             Arc::from((0..16).map(|i| (i as f32 + 1.0) * 0.1).collect::<Vec<_>>()),
             Shape::from_dims(&[1, 2, 2, 4]),
             &dev,
@@ -882,7 +878,7 @@ mod tests {
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
 
         // Path 2: embed_tokens_anchored → scale → forward_embeds.
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let scaled = embeds.mul_scalar((cfg.hidden_size as f64).sqrt());
         let logits_via_embeds = model.forward_embeds(&scaled, 0).unwrap().realize_f32();
@@ -907,14 +903,14 @@ mod tests {
             weights: tiny_weights(&cfg),
         };
         // Wrong hidden size.
-        let bad_embeds = LazyTensor::from_f32(
+        let bad_embeds = Tensor::from_f32(
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
             Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
             &Device::cpu(),
         );
         assert!(model.forward_embeds(&bad_embeds, 0).is_err());
         // Wrong rank.
-        let rank2 = LazyTensor::from_f32(
+        let rank2 = Tensor::from_f32(
             vec![0.0_f32; cfg.hidden_size],
             Shape::from_dims(&[1, cfg.hidden_size]),
             &Device::cpu(),
@@ -934,7 +930,7 @@ mod tests {
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
 
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let scaled = embeds.mul_scalar((cfg.hidden_size as f64).sqrt());
         let h_via_embeds = model

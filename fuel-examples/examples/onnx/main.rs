@@ -8,7 +8,7 @@ extern crate accelerate_src;
 use anyhow::{Result, anyhow};
 use clap::{Parser, ValueEnum};
 use fuel::Device;
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel_examples::save_image;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -33,7 +33,7 @@ struct Args {
 
 // Mirrors `fuel_examples::imagenet::load_image_with_std_mean` but
 // returns a host-resident (data, shape) tuple ready for
-// LazyTensor::from_f32 instead of an eager Tensor.
+// Tensor::from_f32 instead of an eager Tensor.
 fn load_image_chw_f32(
     p: &str,
     res: usize,
@@ -79,7 +79,7 @@ pub fn main() -> Result<()> {
         }
     };
 
-    let image_lazy = LazyTensor::from_f32(image_chw, image_shape, &device);
+    let image_lazy = Tensor::from_f32(image_chw, image_shape, &device);
     // EfficientNet wants HWC, others want CHW.
     let image_lazy = match args.which {
         Which::SqueezeNet => image_lazy,
@@ -104,7 +104,7 @@ pub fn main() -> Result<()> {
         },
     };
 
-    let evaluator = fuel_onnx::LazyOnnxEval::from_path(&model)?;
+    let evaluator = fuel_onnx::OnnxEval::from_path(&model)?;
     let graph = evaluator
         .model()
         .graph

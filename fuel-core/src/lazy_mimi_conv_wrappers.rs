@@ -19,7 +19,7 @@
 //! exposing the flag — the weights *are* the learnt parameters.
 
 use crate::Result;
-use crate::lazy::LazyTensor;
+use crate::lazy::Tensor;
 use crate::lazy_mimi_conv::{LazyPadMode, StreamConv1dState, StreamableConv1dWeights};
 use crate::lazy_mimi_conv_transpose::{
     StreamConvTranspose1dState, StreamableConvTranspose1dWeights,
@@ -54,15 +54,15 @@ impl ConvDownsample1dWeights {
         Ok(Self { conv })
     }
 
-    pub fn forward(&self, xs: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         self.conv.forward(xs)
     }
 
     pub fn step(
         &self,
         state: StreamConv1dState,
-        xs: &LazyTensor,
-    ) -> Result<(StreamConv1dState, Option<LazyTensor>)> {
+        xs: &Tensor,
+    ) -> Result<(StreamConv1dState, Option<Tensor>)> {
         self.conv.step(state, xs)
     }
 }
@@ -95,15 +95,15 @@ impl ConvTrUpsample1dWeights {
         Ok(Self { convtr })
     }
 
-    pub fn forward(&self, xs: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         self.convtr.forward(xs)
     }
 
     pub fn step(
         &self,
         state: StreamConvTranspose1dState,
-        xs: &LazyTensor,
-    ) -> Result<(StreamConvTranspose1dState, Option<LazyTensor>)> {
+        xs: &Tensor,
+    ) -> Result<(StreamConvTranspose1dState, Option<Tensor>)> {
         self.convtr.step(state, xs)
     }
 }
@@ -114,9 +114,9 @@ mod tests {
     use crate::Device;
     use fuel_ir::Shape;
 
-    fn const_xs(b: usize, c: usize, t: usize, src: &[f32]) -> LazyTensor {
+    fn const_xs(b: usize, c: usize, t: usize, src: &[f32]) -> Tensor {
         assert_eq!(src.len(), b * c * t);
-        LazyTensor::from_f32(
+        Tensor::from_f32(
             Arc::from(src.to_vec()),
             Shape::from_dims(&[b, c, t]),
             &Device::cpu(),
@@ -132,7 +132,7 @@ mod tests {
         )
     }
 
-    fn ramp_xs(b: usize, c: usize, t: usize) -> LazyTensor {
+    fn ramp_xs(b: usize, c: usize, t: usize) -> Tensor {
         let n = b * c * t;
         let data: Vec<f32> = (0..n).map(|i| 0.05 + (i as f32) * 0.017).collect();
         const_xs(b, c, t, &data)
@@ -205,7 +205,7 @@ mod tests {
 
         let chunk = 3;
         let mut state = StreamConv1dState::empty();
-        let mut pieces: Vec<LazyTensor> = Vec::new();
+        let mut pieces: Vec<Tensor> = Vec::new();
         let mut t = 0;
         while t < t_in {
             let len = chunk.min(t_in - t);
@@ -253,7 +253,7 @@ mod tests {
 
         let chunk = 2;
         let mut state = StreamConvTranspose1dState::empty();
-        let mut pieces: Vec<LazyTensor> = Vec::new();
+        let mut pieces: Vec<Tensor> = Vec::new();
         let mut t = 0;
         while t < t_in {
             let len = chunk.min(t_in - t);

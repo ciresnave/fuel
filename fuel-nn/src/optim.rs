@@ -1,35 +1,35 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Lazy-graph port of `fuel-nn::optim`: the [`LazyOptimizer`] trait
-//! with [`LazySgd`] and [`LazyAdamW`] implementations.
+//! Lazy-graph port of `fuel-nn::optim`: the [`Optimizer`] trait
+//! with [`Sgd`] and [`AdamW`] implementations.
 //!
 //! ## Design
 //!
-//! [`LazyVar`] is the lazy equivalent of eager [`crate::Var`]: a
+//! [`Var`] is the lazy equivalent of eager [`crate::Var`]: a
 //! named, mutable F32 host-resident parameter. Each training step:
 //!
 //! 1. The user builds a forward graph that uses
-//!    [`LazyVar::tensor`] to splice each parameter in as a graph
+//!    [`Var::tensor`] to splice each parameter in as a graph
 //!    `const`. `tensor` records the issued [`fuel_graph::NodeId`]
-//!    on the `LazyVar` so [`LazyOptimizer::backward_step`] can fetch
+//!    on the `Var` so [`Optimizer::backward_step`] can fetch
 //!    the gradient back out of the `GradMap`.
 //! 2. The user computes a scalar `loss` and calls `backward_step`.
 //!    The optimizer runs `loss.backward()`, harvests each
-//!    parameter's gradient `LazyTensor`, and calls [`step`].
+//!    parameter's gradient `Tensor`, and calls [`step`].
 //! 3. [`step`] builds update ops on the same graph as the
 //!    gradients (`param = param - lr*grad`, etc.), realizes the
 //!    new parameter values to host f32, and writes them back to
-//!    each [`LazyVar`]'s shared host buffer. Per-parameter
+//!    each [`Var`]'s shared host buffer. Per-parameter
 //!    optimizer state (SGD velocity / AdamW first+second moments)
 //!    rides the same path.
 //!
-//! v1 is F32 + CPU realize via [`LazyTensor::realize_f32`]. Other
+//! v1 is F32 + CPU realize via [`Tensor::realize_f32`]. Other
 //! dtypes / devices land in follow-ups together with
 //! `port-training-augmentations.md`'s in-place update primitive.
 //!
-//! [`step`]: LazyOptimizer::step
+//! [`step`]: Optimizer::step
 
 use fuel::Result;
-use fuel::lazy::{LazyTensor, realize_many_f32};
+use fuel::lazy::{Tensor, realize_many_f32};
 use fuel_graph::NodeId;
 use fuel_ir::{Error, Shape};
 use std::collections::HashMap;
@@ -39,26 +39,26 @@ use std::sync::{Arc, RwLock};
 /// host-resident f32 values via shared interior mutability so the
 /// optimizer can write a new value without consuming the handle.
 ///
-/// Use [`LazyVar::tensor`] inside the forward-graph build step to
+/// Use [`Var::tensor`] inside the forward-graph build step to
 /// splice the current parameter value in as a graph const. Each
-/// call records the issued [`NodeId`] so [`LazyOptimizer::backward_step`]
+/// call records the issued [`NodeId`] so [`Optimizer::backward_step`]
 /// can find the gradient.
 #[derive(Clone, Debug)]
-pub struct LazyVar {
+pub struct Var {
     name: String,
     shape: Shape,
     data: Arc<RwLock<Vec<f32>>>,
     last_node: Arc<RwLock<Option<NodeId>>>,
 }
 
-impl LazyVar {
+impl Var {
     /// Build a new parameter with the given name, shape, and initial
     /// host data. Length must equal `shape.elem_count()`.
     pub fn new(name: impl Into<String>, shape: impl Into<Shape>, data: Vec<f32>) -> Result<Self> {
         let shape = shape.into();
         if data.len() != shape.elem_count() {
             return Err(Error::Msg(format!(
-                "LazyVar::new: data len {} != shape elem_count {}",
+                "Var::new: data len {} != shape elem_count {}",
                 data.len(),
                 shape.elem_count(),
             ))
@@ -87,7 +87,7 @@ impl LazyVar {
     }
 
     /// The parameter's name. Used as the key in the gradient map
-    /// passed to [`LazyOptimizer::step`].
+    /// passed to [`Optimizer::step`].
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -104,8 +104,8 @@ impl LazyVar {
 
     /// Splice the parameter into the graph anchored at `anchor` as
     /// a fresh `const`. Records the [`NodeId`] so
-    /// [`LazyOptimizer::backward_step`] can recover the gradient.
-    pub fn tensor(&self, anchor: &LazyTensor) -> LazyTensor {
+    /// [`Optimizer::backward_step`] can recover the gradient.
+    pub fn tensor(&self, anchor: &Tensor) -> Tensor {
         let snapshot = self.data.read().unwrap().clone();
         let lt = anchor.const_f32_like(snapshot, self.shape.clone());
         *self.last_node.write().unwrap() = Some(lt.graph_tensor().id());
@@ -117,7 +117,7 @@ impl LazyVar {
     pub fn set(&self, values: Vec<f32>) -> Result<()> {
         if values.len() != self.shape.elem_count() {
             return Err(Error::Msg(format!(
-                "LazyVar::set: values len {} != shape elem_count {}",
+                "Var::set: values len {} != shape elem_count {}",
                 values.len(),
                 self.shape.elem_count(),
             ))
@@ -133,18 +133,18 @@ impl LazyVar {
 }
 
 /// Common lazy-optimizer interface. Mirrors the eager
-/// `fuel-nn::Optimizer` trait, but parameters are [`LazyVar`]s and
-/// gradients are [`LazyTensor`]s keyed by parameter name.
-pub trait LazyOptimizer: Sized {
+/// `fuel-nn::Optimizer` trait, but parameters are [`Var`]s and
+/// gradients are [`Tensor`]s keyed by parameter name.
+pub trait Optimizer: Sized {
     type Config;
 
-    fn new(params: Vec<LazyVar>, cfg: Self::Config) -> Result<Self>;
+    fn new(params: Vec<Var>, cfg: Self::Config) -> Result<Self>;
 
     /// Apply one update step from a precomputed gradient map. Keys
     /// are parameter names; parameters absent from `grads` are left
     /// unchanged (matches the eager trait's "missing-grad ≡ no-op"
     /// semantics).
-    fn step(&mut self, grads: &HashMap<String, LazyTensor>) -> Result<()>;
+    fn step(&mut self, grads: &HashMap<String, Tensor>) -> Result<()>;
 
     fn learning_rate(&self) -> f64;
 
@@ -152,13 +152,13 @@ pub trait LazyOptimizer: Sized {
 
     /// Compute gradients from `loss` and apply one step. Each
     /// parameter's gradient is looked up via the [`NodeId`]
-    /// recorded by [`LazyVar::tensor`] during the forward build.
+    /// recorded by [`Var::tensor`] during the forward build.
     /// Parameters that did not contribute to `loss` (no NodeId
     /// recorded, or absent from the [`fuel_graph::GradMap`]) are
     /// skipped.
-    fn backward_step(&mut self, loss: &LazyTensor) -> Result<()> {
+    fn backward_step(&mut self, loss: &Tensor) -> Result<()> {
         let grad_map = loss.backward();
-        let mut grads: HashMap<String, LazyTensor> = HashMap::new();
+        let mut grads: HashMap<String, Tensor> = HashMap::new();
         for var in self.params() {
             let Some(node_id) = var.last_node_id() else {
                 continue;
@@ -166,7 +166,7 @@ pub trait LazyOptimizer: Sized {
             let handle =
                 fuel_graph::NodeHandle::from_existing(loss.graph_tensor().graph().clone(), node_id);
             if let Some(grad) = grad_map.get(&handle) {
-                grads.insert(var.name().to_string(), LazyTensor::from_graph_tensor(grad));
+                grads.insert(var.name().to_string(), Tensor::from_graph_tensor(grad));
             }
         }
         self.step(&grads)
@@ -175,7 +175,7 @@ pub trait LazyOptimizer: Sized {
     /// Borrow the parameter set; the trait uses this to drive
     /// `backward_step`. Implementations expose their own
     /// parameter-vector accessor by name.
-    fn params(&self) -> &[LazyVar];
+    fn params(&self) -> &[Var];
 }
 
 // ============================================================================
@@ -227,7 +227,7 @@ impl SgdConfig {
     }
 }
 
-/// Stochastic gradient descent over [`LazyVar`] parameters with
+/// Stochastic gradient descent over [`Var`] parameters with
 /// optional momentum and L2 weight decay. Update rule per param:
 ///
 /// ```text
@@ -236,15 +236,15 @@ impl SgdConfig {
 ///   w   -= lr * v                          (or g' if momentum == 0)
 /// ```
 #[derive(Debug)]
-pub struct LazySgd {
-    params: Vec<LazyVar>,
+pub struct Sgd {
+    params: Vec<Var>,
     velocity: HashMap<String, Vec<f32>>,
     cfg: SgdConfig,
 }
 
-impl LazySgd {
+impl Sgd {
     /// Borrow the underlying parameter list.
-    pub fn parameters(&self) -> &[LazyVar] {
+    pub fn parameters(&self) -> &[Var] {
         &self.params
     }
 
@@ -255,10 +255,10 @@ impl LazySgd {
     }
 }
 
-impl LazyOptimizer for LazySgd {
+impl Optimizer for Sgd {
     type Config = SgdConfig;
 
-    fn new(params: Vec<LazyVar>, cfg: SgdConfig) -> Result<Self> {
+    fn new(params: Vec<Var>, cfg: SgdConfig) -> Result<Self> {
         let velocity = if cfg.momentum != 0.0 {
             params
                 .iter()
@@ -282,11 +282,11 @@ impl LazyOptimizer for LazySgd {
         self.cfg.lr = lr;
     }
 
-    fn params(&self) -> &[LazyVar] {
+    fn params(&self) -> &[Var] {
         &self.params
     }
 
-    fn step(&mut self, grads: &HashMap<String, LazyTensor>) -> Result<()> {
+    fn step(&mut self, grads: &HashMap<String, Tensor>) -> Result<()> {
         if self.params.is_empty() {
             return Ok(());
         }
@@ -294,7 +294,7 @@ impl LazyOptimizer for LazySgd {
         let lr = self.cfg.lr;
         let wd = self.cfg.weight_decay;
 
-        let mut roots: Vec<LazyTensor> = Vec::with_capacity(self.params.len());
+        let mut roots: Vec<Tensor> = Vec::with_capacity(self.params.len());
         let mut active: Vec<usize> = Vec::with_capacity(self.params.len());
 
         for (idx, var) in self.params.iter().enumerate() {
@@ -332,7 +332,7 @@ impl LazyOptimizer for LazySgd {
             // Realize new_param and the per-step `update` (which IS the
             // new velocity when momentum > 0) jointly so we get both
             // host snapshots in one graph traversal.
-            let mut combined: Vec<&LazyTensor> = Vec::with_capacity(roots.len() * 2);
+            let mut combined: Vec<&Tensor> = Vec::with_capacity(roots.len() * 2);
             for r in &roots {
                 combined.push(r);
             }
@@ -342,10 +342,10 @@ impl LazyOptimizer for LazySgd {
             // intermediate alongside each new param.
             //
             // We do that by replaying the same expression here as a
-            // sibling root. Re-using `roots`' LazyTensor handles is
+            // sibling root. Re-using `roots`' Tensor handles is
             // fine because realize_many_f32 walks the shared graph.
             // Concretely: store the `update` tensors directly.
-            let mut updates: Vec<LazyTensor> = Vec::with_capacity(active.len());
+            let mut updates: Vec<Tensor> = Vec::with_capacity(active.len());
             for &idx in &active {
                 let var = &self.params[idx];
                 let grad = &grads[var.name()];
@@ -366,7 +366,7 @@ impl LazyOptimizer for LazySgd {
             }
             realize_many_f32(&combined)
         } else {
-            let refs: Vec<&LazyTensor> = roots.iter().collect();
+            let refs: Vec<&Tensor> = roots.iter().collect();
             realize_many_f32(&refs)
         };
 
@@ -445,22 +445,22 @@ impl AdamWConfig {
     }
 }
 
-/// AdamW optimizer over [`LazyVar`] parameters. Decoupled weight
+/// AdamW optimizer over [`Var`] parameters. Decoupled weight
 /// decay: `w` is scaled by `(1 - lr·λ)` BEFORE the moment-based
 /// update is subtracted, exactly matching the
 /// [Loshchilov & Hutter, 2019](https://arxiv.org/abs/1711.05101)
 /// algorithm and the eager `fuel-nn::AdamW` impl.
 #[derive(Debug)]
-pub struct LazyAdamW {
-    params: Vec<LazyVar>,
+pub struct AdamW {
+    params: Vec<Var>,
     first_moment: HashMap<String, Vec<f32>>,
     second_moment: HashMap<String, Vec<f32>>,
     cfg: AdamWConfig,
     step_t: usize,
 }
 
-impl LazyAdamW {
-    pub fn parameters(&self) -> &[LazyVar] {
+impl AdamW {
+    pub fn parameters(&self) -> &[Var] {
         &self.params
     }
 
@@ -479,10 +479,10 @@ impl LazyAdamW {
     }
 }
 
-impl LazyOptimizer for LazyAdamW {
+impl Optimizer for AdamW {
     type Config = AdamWConfig;
 
-    fn new(params: Vec<LazyVar>, cfg: AdamWConfig) -> Result<Self> {
+    fn new(params: Vec<Var>, cfg: AdamWConfig) -> Result<Self> {
         let mut first_moment = HashMap::new();
         let mut second_moment = HashMap::new();
         for v in &params {
@@ -507,11 +507,11 @@ impl LazyOptimizer for LazyAdamW {
         self.cfg.lr = lr;
     }
 
-    fn params(&self) -> &[LazyVar] {
+    fn params(&self) -> &[Var] {
         &self.params
     }
 
-    fn step(&mut self, grads: &HashMap<String, LazyTensor>) -> Result<()> {
+    fn step(&mut self, grads: &HashMap<String, Tensor>) -> Result<()> {
         if self.params.is_empty() {
             return Ok(());
         }
@@ -530,9 +530,9 @@ impl LazyOptimizer for LazyAdamW {
         let lr_scale_m = lr / bc1;
         let sqrt_scale_v = (1.0 / bc2).sqrt();
 
-        let mut new_params: Vec<LazyTensor> = Vec::with_capacity(self.params.len());
-        let mut new_ms: Vec<LazyTensor> = Vec::with_capacity(self.params.len());
-        let mut new_vs: Vec<LazyTensor> = Vec::with_capacity(self.params.len());
+        let mut new_params: Vec<Tensor> = Vec::with_capacity(self.params.len());
+        let mut new_ms: Vec<Tensor> = Vec::with_capacity(self.params.len());
+        let mut new_vs: Vec<Tensor> = Vec::with_capacity(self.params.len());
         let mut active: Vec<usize> = Vec::with_capacity(self.params.len());
 
         for (idx, var) in self.params.iter().enumerate() {
@@ -575,7 +575,7 @@ impl LazyOptimizer for LazyAdamW {
             return Ok(());
         }
 
-        let mut combined: Vec<&LazyTensor> = Vec::with_capacity(active.len() * 3);
+        let mut combined: Vec<&Tensor> = Vec::with_capacity(active.len() * 3);
         for r in &new_params {
             combined.push(r);
         }
@@ -605,14 +605,14 @@ mod tests {
     use super::*;
     use fuel::Device;
 
-    fn build_grads_for(vars: &[(&LazyVar, Vec<f32>)]) -> (LazyTensor, HashMap<String, LazyTensor>) {
+    fn build_grads_for(vars: &[(&Var, Vec<f32>)]) -> (Tensor, HashMap<String, Tensor>) {
         let (first_var, first_data) = &vars[0];
-        let anchor = LazyTensor::from_f32(
+        let anchor = Tensor::from_f32(
             first_data.clone(),
             first_var.shape().clone(),
             &Device::cpu(),
         );
-        let mut map: HashMap<String, LazyTensor> = HashMap::new();
+        let mut map: HashMap<String, Tensor> = HashMap::new();
         for (i, (var, data)) in vars.iter().enumerate() {
             let t = if i == 0 {
                 anchor.clone()
@@ -626,8 +626,8 @@ mod tests {
 
     #[test]
     fn lazy_var_round_trip() {
-        let v = LazyVar::new("w", Shape::from_dims(&[3]), vec![1.0, 2.0, 3.0]).unwrap();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32; 3], Shape::from_dims(&[3]), &Device::cpu());
+        let v = Var::new("w", Shape::from_dims(&[3]), vec![1.0, 2.0, 3.0]).unwrap();
+        let anchor = Tensor::from_f32(vec![0.0_f32; 3], Shape::from_dims(&[3]), &Device::cpu());
         let t = v.tensor(&anchor);
         let host = t.realize_f32();
         assert_eq!(host, vec![1.0, 2.0, 3.0]);
@@ -637,9 +637,9 @@ mod tests {
 
     #[test]
     fn sgd_unit_lr_unit_grad_subtracts_unit() {
-        let w = LazyVar::new("w", Shape::from_dims(&[3]), vec![5.0, 5.0, 5.0]).unwrap();
+        let w = Var::new("w", Shape::from_dims(&[3]), vec![5.0, 5.0, 5.0]).unwrap();
         let cfg = SgdConfig::new(1.0);
-        let mut opt = LazySgd::new(vec![w.clone()], cfg).unwrap();
+        let mut opt = Sgd::new(vec![w.clone()], cfg).unwrap();
         let (_anchor, grads) = build_grads_for(&[(&w, vec![1.0, 1.0, 1.0])]);
         opt.step(&grads).unwrap();
         // w' = 5 - 1*1 = 4 elementwise
@@ -648,9 +648,9 @@ mod tests {
 
     #[test]
     fn sgd_zero_lr_does_not_change_params() {
-        let w = LazyVar::new("w", Shape::from_dims(&[2]), vec![7.0, -3.0]).unwrap();
+        let w = Var::new("w", Shape::from_dims(&[2]), vec![7.0, -3.0]).unwrap();
         let cfg = SgdConfig::new(0.0);
-        let mut opt = LazySgd::new(vec![w.clone()], cfg).unwrap();
+        let mut opt = Sgd::new(vec![w.clone()], cfg).unwrap();
         let (_anchor, grads) = build_grads_for(&[(&w, vec![10.0, 10.0])]);
         opt.step(&grads).unwrap();
         let out = w.to_vec();
@@ -663,9 +663,9 @@ mod tests {
         // momentum = 0.9, lr = 0.1, g = [1, 1]. Plain (no weight decay).
         // step 1: v1 = 0.9*0 + 1 = 1; w1 = 1 - 0.1*1 = 0.9
         // step 2: v2 = 0.9*1 + 1 = 1.9; w2 = 0.9 - 0.1*1.9 = 0.71
-        let w = LazyVar::new("w", Shape::from_dims(&[2]), vec![1.0, 1.0]).unwrap();
+        let w = Var::new("w", Shape::from_dims(&[2]), vec![1.0, 1.0]).unwrap();
         let cfg = SgdConfig::new(0.1).with_momentum(0.9);
-        let mut opt = LazySgd::new(vec![w.clone()], cfg).unwrap();
+        let mut opt = Sgd::new(vec![w.clone()], cfg).unwrap();
 
         let (_anchor1, grads1) = build_grads_for(&[(&w, vec![1.0, 1.0])]);
         opt.step(&grads1).unwrap();
@@ -695,7 +695,7 @@ mod tests {
         //   v_hat = 0.00025 / (1 - 0.999) = 0.25
         //   update = 0.5 / (sqrt(0.25) + 1e-8) = 0.5 / 0.50000001 ≈ 0.999999...
         //   w1 = 2.0 - 0.1 * 0.99999998 ≈ 1.90000000200...
-        let w = LazyVar::new("w", Shape::from_dims(&[1]), vec![2.0]).unwrap();
+        let w = Var::new("w", Shape::from_dims(&[1]), vec![2.0]).unwrap();
         let cfg = AdamWConfig {
             lr: 0.1,
             beta1: 0.9,
@@ -703,7 +703,7 @@ mod tests {
             eps: 1e-8,
             weight_decay: 0.0,
         };
-        let mut opt = LazyAdamW::new(vec![w.clone()], cfg).unwrap();
+        let mut opt = AdamW::new(vec![w.clone()], cfg).unwrap();
         let (_anchor, grads) = build_grads_for(&[(&w, vec![0.5])]);
         opt.step(&grads).unwrap();
         let after = w.to_vec();
@@ -735,7 +735,7 @@ mod tests {
         // β1=0.9, β2=0.999, ε=1e-8, lr=0.1, λ=0.01, w0=3.0, g=0.0
         // Zero grad ⇒ m1=v1=0 ⇒ update=0.
         // Therefore w1 = 3.0 * (1 - 0.1 * 0.01) = 3.0 * 0.999 = 2.997.
-        let w = LazyVar::new("w", Shape::from_dims(&[1]), vec![3.0]).unwrap();
+        let w = Var::new("w", Shape::from_dims(&[1]), vec![3.0]).unwrap();
         let cfg = AdamWConfig {
             lr: 0.1,
             beta1: 0.9,
@@ -743,7 +743,7 @@ mod tests {
             eps: 1e-8,
             weight_decay: 0.01,
         };
-        let mut opt = LazyAdamW::new(vec![w.clone()], cfg).unwrap();
+        let mut opt = AdamW::new(vec![w.clone()], cfg).unwrap();
         let (_anchor, grads) = build_grads_for(&[(&w, vec![0.0])]);
         opt.step(&grads).unwrap();
         let after = w.to_vec();
@@ -758,11 +758,11 @@ mod tests {
     fn backward_step_runs_loss_backward_then_step() {
         // Build a tiny loss = (w - target)^2 sum_all on a real graph,
         // run backward_step, verify w moved toward target.
-        let w = LazyVar::new("w", Shape::from_dims(&[2]), vec![3.0, -1.0]).unwrap();
+        let w = Var::new("w", Shape::from_dims(&[2]), vec![3.0, -1.0]).unwrap();
         let cfg = SgdConfig::new(0.1);
-        let mut opt = LazySgd::new(vec![w.clone()], cfg).unwrap();
+        let mut opt = Sgd::new(vec![w.clone()], cfg).unwrap();
 
-        let anchor = LazyTensor::from_f32(vec![0.0_f32; 2], Shape::from_dims(&[2]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32; 2], Shape::from_dims(&[2]), &Device::cpu());
         let target = anchor.const_f32_like(vec![1.0_f32, 1.0], Shape::from_dims(&[2]));
         let w_t = w.tensor(&anchor);
         let diff = w_t.sub(&target).unwrap();
@@ -787,16 +787,16 @@ mod tests {
     #[test]
     fn empty_param_set_is_noop() {
         let cfg = SgdConfig::new(0.1);
-        let mut opt = LazySgd::new(vec![], cfg).unwrap();
-        let map: HashMap<String, LazyTensor> = HashMap::new();
+        let mut opt = Sgd::new(vec![], cfg).unwrap();
+        let map: HashMap<String, Tensor> = HashMap::new();
         opt.step(&map).unwrap();
         assert_eq!(opt.learning_rate(), 0.1);
     }
 
     #[test]
     fn set_learning_rate_updates_for_next_step() {
-        let w = LazyVar::new("w", Shape::from_dims(&[1]), vec![10.0]).unwrap();
-        let mut opt = LazySgd::new(vec![w.clone()], SgdConfig::new(1.0)).unwrap();
+        let w = Var::new("w", Shape::from_dims(&[1]), vec![10.0]).unwrap();
+        let mut opt = Sgd::new(vec![w.clone()], SgdConfig::new(1.0)).unwrap();
         opt.set_learning_rate(2.0);
         assert!((opt.learning_rate() - 2.0).abs() < 1e-12);
         let (_a, g) = build_grads_for(&[(&w, vec![1.0])]);

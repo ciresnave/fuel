@@ -36,7 +36,7 @@ fn read_labels(filename: &std::path::Path) -> Result<Vec<u32>> {
 /// Returns `(pixels, samples, rows, cols)`. Pixels are flattened row-major and
 /// scaled to `[0.0, 1.0]` on the host — the eager version built a `[samples,
 /// rows*cols]` u8 tensor only to `to_dtype(F32)` and divide it, which is one
-/// host pass expressed as three graph nodes. `LazyTensor` could not express it
+/// host pass expressed as three graph nodes. `Tensor` could not express it
 /// at all: it has no `from_u8`/`const_u8_like` constructor.
 fn read_images(filename: &std::path::Path) -> Result<(Vec<f32>, usize, usize, usize)> {
     let mut buf_reader = BufReader::new(File::open(filename)?);

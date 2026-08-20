@@ -25,7 +25,7 @@
 //! v1 scope: F32, batch == 1, fused-affine BN at the decode head.
 
 use crate::Result;
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::lazy_convmixer::BatchNormParams;
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -228,7 +228,7 @@ impl SemanticSegmentationModel {
     /// Run the segmentation head. Returns logits
     /// `(1, num_labels, h_stage0, w_stage0)` — caller is expected
     /// to upsample to the input image resolution.
-    pub fn forward(&self, image: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, image: &Tensor) -> Result<Tensor> {
         let hidden_states = encoder_forward(image, &self.config, &self.encoder)?;
         decode_head_forward(image, &hidden_states, &self.config, &self.decode_head)
     }
@@ -237,7 +237,7 @@ impl SemanticSegmentationModel {
 impl ImageClassificationModel {
     /// Run the encoder and return classification logits
     /// `(1, num_labels)` from the mean-pooled last-stage features.
-    pub fn forward(&self, image: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, image: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let hidden_states = encoder_forward(image, cfg, &self.encoder)?;
         let last = hidden_states.last().expect("encoder produced no states");
@@ -258,10 +258,10 @@ impl ImageClassificationModel {
 }
 
 fn encoder_forward(
-    image: &LazyTensor,
+    image: &Tensor,
     cfg: &SegformerConfig,
     enc: &SegformerEncoderWeights,
-) -> Result<Vec<LazyTensor>> {
+) -> Result<Vec<Tensor>> {
     assert_eq!(enc.stages.len(), cfg.num_encoder_blocks);
     let mut all = Vec::with_capacity(enc.stages.len());
     let mut x = image.clone();
@@ -285,7 +285,7 @@ fn encoder_forward(
 /// LayerNorm applied along the channel axis of a (B, C, H, W)
 /// tensor: permute to (B, H*W, C), normalize last dim, scale +
 /// shift, then permute back.
-fn layer_norm_chw(x: &LazyTensor, ln: &LayerNormWeights, eps: f64) -> Result<LazyTensor> {
+fn layer_norm_chw(x: &Tensor, ln: &LayerNormWeights, eps: f64) -> Result<Tensor> {
     let dims = x.shape();
     let dims = dims.dims();
     let b = dims[0];
@@ -302,11 +302,11 @@ fn layer_norm_chw(x: &LazyTensor, ln: &LayerNormWeights, eps: f64) -> Result<Laz
 }
 
 fn apply_segformer_layer(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &SegformerLayerWeights,
     cfg: &SegformerConfig,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+    anchor: &Tensor,
+) -> Result<Tensor> {
     let dims = x.shape();
     let dims = dims.dims();
     let b = dims[0];
@@ -364,14 +364,14 @@ fn apply_segformer_layer(
 /// view (Conv2d stride=sr_ratio + LN) when `attn.sr` is Some.
 #[allow(clippy::too_many_arguments)]
 fn apply_efficient_attention(
-    x: &LazyTensor,
+    x: &Tensor,
     attn: &EfficientSelfAttentionWeights,
     out: &AttentionOutputWeights,
     hidden_size: usize,
     num_heads: usize,
     eps: f64,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+    anchor: &Tensor,
+) -> Result<Tensor> {
     let dims = x.shape();
     let dims = dims.dims();
     let b = dims[0];
@@ -440,12 +440,12 @@ fn apply_efficient_attention(
 }
 
 fn apply_mix_ffn(
-    x: &LazyTensor,
+    x: &Tensor,
     m: &MixFfnWeights,
     cfg: &SegformerConfig,
     hidden_size: usize,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+    anchor: &Tensor,
+) -> Result<Tensor> {
     let dims = x.shape();
     let dims = dims.dims();
     let b = dims[0];
@@ -485,18 +485,18 @@ fn apply_mix_ffn(
 }
 
 fn decode_head_forward(
-    anchor: &LazyTensor,
-    states: &[LazyTensor],
+    anchor: &Tensor,
+    states: &[Tensor],
     cfg: &SegformerConfig,
     head: &SegformerDecodeHeadWeights,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     assert_eq!(states.len(), head.linear_c.len());
     let dims0 = states[0].shape();
     let dims0 = dims0.dims();
     let target_h = dims0[2];
     let target_w = dims0[3];
 
-    let mut feats: Vec<LazyTensor> = Vec::with_capacity(states.len());
+    let mut feats: Vec<Tensor> = Vec::with_capacity(states.len());
     for (i, hs) in states.iter().enumerate() {
         let (w, bias) = &head.linear_c[i];
         let dims = hs.shape();
@@ -533,7 +533,7 @@ fn decode_head_forward(
 
 // ---- Primitives ------------------------------------------------------------
 
-fn apply_conv2d(x: &LazyTensor, c: &Conv2dWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
+fn apply_conv2d(x: &Tensor, c: &Conv2dWeights, anchor: &Tensor) -> Result<Tensor> {
     let w = anchor.const_f32_like(
         Arc::clone(&c.w),
         Shape::from_dims(&[c.c_out, c.c_in / c.groups, c.k, c.k]),
@@ -550,7 +550,7 @@ fn apply_conv2d(x: &LazyTensor, c: &Conv2dWeights, anchor: &LazyTensor) -> Resul
     )
 }
 
-fn apply_bn(x: &LazyTensor, bn: &BatchNormParams, channels: usize) -> Result<LazyTensor> {
+fn apply_bn(x: &Tensor, bn: &BatchNormParams, channels: usize) -> Result<Tensor> {
     let _ = channels;
     x.channel_affine_4d(Arc::clone(&bn.w), Arc::clone(&bn.b))
 }
@@ -1238,7 +1238,7 @@ mod tests {
         // Image 32x32. Stride pipeline 2*2*2*2 = 16 → stage 0: 16,
         // stage 1: 8, stage 2: 4, stage 3: 2. Patch padding lifts
         // slightly but the shape is fine for the test.
-        let img = LazyTensor::from_f32(
+        let img = Tensor::from_f32(
             (0..(3 * 32 * 32))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),
@@ -1264,7 +1264,7 @@ mod tests {
             decode_head: dec,
             num_labels: n_labels,
         };
-        let img = LazyTensor::from_f32(
+        let img = Tensor::from_f32(
             (0..(3 * 32 * 32))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),
@@ -1294,14 +1294,14 @@ mod tests {
             encoder: enc,
             classifier: cls,
         };
-        let a = LazyTensor::from_f32(
+        let a = Tensor::from_f32(
             (0..(3 * 32 * 32))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
         );
-        let b = LazyTensor::from_f32(
+        let b = Tensor::from_f32(
             (0..(3 * 32 * 32))
                 .map(|i| (i as f32) * 0.01 + 0.7)
                 .collect::<Vec<_>>(),
@@ -1630,7 +1630,7 @@ mod tests {
             .expect("load classification model");
 
         // Sanity: shape + finiteness on a tiny image.
-        let img = LazyTensor::from_f32(
+        let img = Tensor::from_f32(
             (0..(3 * 32 * 32))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),
@@ -1700,7 +1700,7 @@ mod tests {
             .expect("load segmentation model");
         assert_eq!(model.num_labels, n_labels);
 
-        let img = LazyTensor::from_f32(
+        let img = Tensor::from_f32(
             (0..(3 * 32 * 32))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),

@@ -261,7 +261,7 @@ This is already how the lazy stack expresses transfers (per memory: PR #1 + #4 f
 
 ### Dispatch at DAG construction, not per-op-eval
 
-When a graph node is built (in the op-method or via `fuel_graph::Tensor::relu()` etc.), the dispatch decision happens **once**:
+When a graph node is built (in the op-method or via `fuel_graph::NodeHandle::relu()` etc.), the dispatch decision happens **once**:
 
 1. The op-method knows its `OpKind` (e.g., `OpKind::Unary(Relu)`).
 2. The op-method knows its inputs' dtype (from input nodes).
@@ -305,14 +305,14 @@ Key requirement: dispatch resolution for node N must be independent of node N+1.
 
 ```rust
 // fuel-graph-cpu (similar entries in vulkan, cuda):
-pub fn realize_into_storage(link: &fuel_graph::Tensor) -> Result<Storage> {
+pub fn realize_into_storage(link: &fuel_graph::NodeHandle) -> Result<Storage> {
     // Executor walk; cache is HashMap<NodeId, Storage>
     // Each node's pre-resolved kernel runs against its inputs from cache
     // Returns the link.id() node's Storage
 }
 
 // fuel-core/src/lazy_realize.rs:
-pub fn realize_into_storage(link: &fuel_graph::Tensor) -> Result<Arc<RwLock<Storage>>> {
+pub fn realize_into_storage(link: &fuel_graph::NodeHandle) -> Result<Arc<RwLock<Storage>>> {
     if let Some(arc) = link.storage_for() { return Ok(arc); }
     let storage = router().realize_into_storage(link)?;
     let arc = Arc::new(RwLock::new(storage));
@@ -630,7 +630,7 @@ Used as `dispatch_storage!(self, s => s.len_bytes())`. Macro hides the cfg arms;
 ### Preserved (no change to consumers)
 
 - `Tensor` and `Tensor_` (fuel-core) — public API stays identical; internal storage swap is invisible
-- `fuel_graph::Tensor` — same shape; backing changes
+- `fuel_graph::NodeHandle` — same shape; backing changes
 - `fuel_graph::Graph` — same; just stores different `Storage` shape per slot
 - All factory functions (`zeros`, `ones`, `from_slice`, etc.) — same signatures
 - All op methods (matmul, add, ...) — same signatures (B3 changes their bodies later)

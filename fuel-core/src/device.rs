@@ -24,9 +24,9 @@ pub use fuel_ir::DeviceLocation;
 ///
 /// ```rust
 /// use fuel_core::{Device, DType};
-/// use fuel_core::lazy::LazyTensor;
+/// use fuel_core::lazy::Tensor;
 /// let dev = Device::cpu();
-/// let t = LazyTensor::zeros((2, 3), DType::F32, &dev)?;
+/// let t = Tensor::zeros((2, 3), DType::F32, &dev)?;
 /// assert_eq!(t.shape().dims(), &[2, 3]);
 /// # Ok::<(), fuel_core::Error>(())
 /// ```

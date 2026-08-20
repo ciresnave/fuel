@@ -6,7 +6,7 @@ use pdf2image::{PDF, RenderOptionsBuilder};
 use std::sync::Arc;
 use tokenizers::Tokenizer;
 
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel::lazy_colpali::{ColPaliModel, ColPaliWeights};
 use fuel::lazy_gemma::{GemmaActivation, GemmaConfig};
 use fuel::lazy_paligemma::PaligemmaConfig;
@@ -199,7 +199,7 @@ fn main() -> Result<()> {
     let mut all_scores: Vec<f32> = Vec::with_capacity(pages.len());
     for page in &pages {
         let chw = image_to_chw(page, img_size);
-        let pixel_values = LazyTensor::from_f32(
+        let pixel_values = Tensor::from_f32(
             Arc::<[f32]>::from(chw),
             Shape::from_dims(&[1, 3, img_size, img_size]),
             &Device::cpu(),

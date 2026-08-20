@@ -33,7 +33,7 @@
 //! plugs into [`crate::lazy_sam::SamMaskDecoder`] interchangeably with
 //! the standard SAM ViT encoder output.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::lazy_convmixer::BatchNormParams;
 use crate::lazy_sam::SamLayerNormWeights;
 use crate::{Device, Result};
@@ -229,7 +229,7 @@ pub struct TinyVitModel {
 
 /// `x.conv2d(w, None, stride, pad, groups)` followed by per-channel
 /// fused-affine BN broadcast over (N, C, H, W).
-fn apply_conv2d_bn(x: &LazyTensor, w: &Conv2dBnWeights) -> Result<LazyTensor> {
+fn apply_conv2d_bn(x: &Tensor, w: &Conv2dBnWeights) -> Result<Tensor> {
     let cw = x.const_f32_like(
         Arc::clone(&w.conv_w),
         Shape::from_dims(&[w.c_out, w.c_in / w.groups, w.kernel, w.kernel]),
@@ -246,7 +246,7 @@ fn apply_conv2d_bn(x: &LazyTensor, w: &Conv2dBnWeights) -> Result<LazyTensor> {
 
 /// SAM-style per-channel LayerNorm over (B, C, H, W). Delegates to the
 /// crate-private helper shared with `lazy_sam`.
-fn layer_norm_2d(x: &LazyTensor, w: &LayerNorm2dWeights, c: usize, eps: f64) -> Result<LazyTensor> {
+fn layer_norm_2d(x: &Tensor, w: &LayerNorm2dWeights, c: usize, eps: f64) -> Result<Tensor> {
     crate::lazy_sam::layer_norm_2d(
         x,
         &SamLayerNormWeights {
@@ -258,13 +258,13 @@ fn layer_norm_2d(x: &LazyTensor, w: &LayerNorm2dWeights, c: usize, eps: f64) -> 
     )
 }
 
-fn apply_patch_embed(x: &LazyTensor, w: &PatchEmbedWeights) -> Result<LazyTensor> {
+fn apply_patch_embed(x: &Tensor, w: &PatchEmbedWeights) -> Result<Tensor> {
     let x = apply_conv2d_bn(x, &w.conv1)?;
     let x = x.gelu();
     apply_conv2d_bn(&x, &w.conv2)
 }
 
-fn apply_mbconv(x: &LazyTensor, w: &MbConvWeights) -> Result<LazyTensor> {
+fn apply_mbconv(x: &Tensor, w: &MbConvWeights) -> Result<Tensor> {
     let h = apply_conv2d_bn(x, &w.conv1)?;
     let h = h.gelu();
     let h = apply_conv2d_bn(&h, &w.conv2)?;
@@ -275,7 +275,7 @@ fn apply_mbconv(x: &LazyTensor, w: &MbConvWeights) -> Result<LazyTensor> {
 
 /// Patch merging — operates on `(B, L=H*W, C)` token sequence (or 4-D
 /// NCHW), and returns `(B, L_out, C_out)`.
-fn apply_patch_merging(x: &LazyTensor, w: &PatchMergingWeights) -> Result<LazyTensor> {
+fn apply_patch_merging(x: &Tensor, w: &PatchMergingWeights) -> Result<Tensor> {
     let dims = x.shape();
     let dims = dims.dims();
     // Accept rank-3 (B, L, C) by reshaping to NCHW; pass-through rank-4.
@@ -307,7 +307,7 @@ fn apply_patch_merging(x: &LazyTensor, w: &PatchMergingWeights) -> Result<LazyTe
         .permute([0, 2, 1_usize])
 }
 
-fn apply_mlp(x: &LazyTensor, w: &MlpWeights, in_dim: usize) -> Result<LazyTensor> {
+fn apply_mlp(x: &Tensor, w: &MlpWeights, in_dim: usize) -> Result<Tensor> {
     let x_norm = x.layer_norm_affine(Arc::clone(&w.norm.gain), Arc::clone(&w.norm.bias), 1e-5)?;
     let h =
         w.fc1
@@ -320,12 +320,12 @@ fn apply_mlp(x: &LazyTensor, w: &MlpWeights, in_dim: usize) -> Result<LazyTensor
 /// Apply windowed attention over the input `(B, L=window_size^2, dim)`.
 /// Adds the precomputed relative-position attention bias.
 fn apply_window_attn(
-    xs: &LazyTensor,
+    xs: &Tensor,
     w: &TinyVitAttnWeights,
     b: usize,
     n: usize,
     dim_in: usize,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     let xs = xs.layer_norm_affine(Arc::clone(&w.norm.gain), Arc::clone(&w.norm.bias), 1e-5)?;
     let d_total = w.dh + 2 * w.num_heads * w.key_dim;
     let qkv_flat = w
@@ -373,7 +373,7 @@ fn apply_window_attn(
         .apply_linear_with_bias(&out, w.dh, dim_in, Arc::clone(&w.proj_bias))
 }
 
-fn apply_tiny_vit_block(x: &LazyTensor, w: &TinyVitBlockWeights) -> Result<LazyTensor> {
+fn apply_tiny_vit_block(x: &Tensor, w: &TinyVitBlockWeights) -> Result<Tensor> {
     let dims = x.shape();
     let dims = dims.dims();
     let (b, l, c) = (dims[0], dims[1], dims[2]);
@@ -485,7 +485,7 @@ fn apply_tiny_vit_block(x: &LazyTensor, w: &TinyVitBlockWeights) -> Result<LazyT
     x.add(&mlp_out)
 }
 
-fn apply_conv_layer(x: &LazyTensor, w: &ConvLayerWeights) -> Result<LazyTensor> {
+fn apply_conv_layer(x: &Tensor, w: &ConvLayerWeights) -> Result<Tensor> {
     let mut h = x.clone();
     for block in &w.blocks {
         h = apply_mbconv(&h, block)?;
@@ -496,7 +496,7 @@ fn apply_conv_layer(x: &LazyTensor, w: &ConvLayerWeights) -> Result<LazyTensor> 
     }
 }
 
-fn apply_basic_layer(x: &LazyTensor, w: &BasicLayerWeights) -> Result<LazyTensor> {
+fn apply_basic_layer(x: &Tensor, w: &BasicLayerWeights) -> Result<Tensor> {
     let mut h = x.clone();
     for block in &w.blocks {
         h = apply_tiny_vit_block(&h, block)?;
@@ -512,7 +512,7 @@ impl TinyVitModel {
     /// `[3, img_size, img_size]` F32. Returns the image feature
     /// map `(1, 256, 64, 64)` — same shape as the standard SAM ViT
     /// encoder so the mask decoder consumes it interchangeably.
-    pub fn forward(&self, image_chw: &[f32]) -> Result<LazyTensor> {
+    pub fn forward(&self, image_chw: &[f32]) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let img = cfg.img_size;
@@ -527,7 +527,7 @@ impl TinyVitModel {
             ))
             .bt());
         }
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             image_chw.to_vec(),
             Shape::from_dims(&[1, cfg.in_chans, img, img]),
             &Device::cpu(),
