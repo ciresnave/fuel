@@ -6,6 +6,20 @@ host-data container / node-handle wrapper. Companion to the
 eager-tensor-retirement master plan (Phase F/H) and the
 executor-unification re-audit (Session 8 line).
 
+> ⚠️ **AMENDED 2026-08-19 — SUPERSEDED, AND BY MORE THAN IT PLANNED.** This plan
+> removes `BackpropOp`, the eager autograd tape and `Var` **"keeping `Tensor` as
+> a host-data container / node-handle wrapper"**. That premise no longer holds:
+> B6 removed `Tensor` from `fuel-core` as well. **The document's own goal state —
+> a fuel-core that still has `Tensor` — does not exist and will not return.**
+>
+> Read as history, not as a plan. Its audit of what the tape touched is still the
+> record of how the removal was scoped, which is why it is kept rather than
+> deleted.
+>
+> **Re-derive:** `git grep -c 'pub struct Tensor' -- 'fuel-core/src/*.rs' | wc -l`
+> → **0**; `git grep -l BackpropOp -- '*.rs' | wc -l` → **0**; control
+> `git grep -l 'pub struct LazyTensor' -- '*.rs' | wc -l` → **1**.
+
 **Totals:** ~5,790 LOC removed (~5,100 source + ~650 tests + ~40
 imports) out of 9,603 in the affected file set; ~3,800 LOC survive
 (data containers, shape ops, lazy bridges). 14 commits, 2–3
