@@ -390,6 +390,34 @@ without doing the forbidden thing. Such a rule survives on its own authority for
 as long as the file does — **which is indistinguishable, from the reader's side,
 from being correct.**
 
+**⚠️ AND SORT THE UNFALSIFIABLE ONES BY COST-OF-COMPLIANCE, WHICH IS THE DIMENSION THE
+CLASSIFICATION ITSELF LACKS (2026-08-20, architect).** Whether a rule can be
+falsified is only half the question; the other half is **what obeying it costs
+while nobody knows.**
+
+- **Cheap to obey, expensive to violate** → a missing precondition barely
+  matters. `-j 4` is here: if it is over-conservative we lose minutes; if it is
+  wrong the other way we lose hours to misattributed ICEs. **Retain it, and say
+  plainly that it rests on one known-good value rather than a bisected
+  boundary** — which is a real thing to stand on and is not the same claim.
+- **Expensive to obey AND unfalsifiable** → **the dangerous cell.** A rule that
+  taxes every session forever with no way to discover it has stopped being true.
+  *"`--features cuda` builds must be launched detached"* and *"one CUDA build at
+  a time"* live here. These deserve a measured precondition even when the
+  precondition is hard to get.
+
+**So the audit's output is the ORDERING, not the classification.** A `C` that is
+cheap to obey is a footnote; a `C` that costs an hour per session is the one to
+spend effort on.
+
+**AND SOME MEASUREMENTS MUST NOT BE TAKEN AT ALL.** Measuring `-j 4`'s true
+boundary means deliberately racing rustc on a shared box, whose symptom is
+**nondeterministic ICEs naming different dependency crates each run** — which
+every other lane blames on the branch they are building. **That is not a
+measurement, it is an injection into someone else's evidence.** A precondition
+you can only obtain by inflicting the failure on people who did not ask for it
+is one you decline to obtain, and record as declined.
+
 **PRACTICE when writing a prohibition: record the measurement that would have to
 change for it to stop applying.** One clause, written while you still know it —
 and it is the only thing that lets a later reader retire your rule without
