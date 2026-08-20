@@ -789,8 +789,14 @@ pub fn run_cpu_primitive_verification() -> (Vec<LedgerRecord>, Vec<SeedAttempt>)
             }
         };
 
-        let inv = CpuInvoker::new(probe.out_dtype, probe.out_shape.clone())
+        let mut inv = CpuInvoker::new(probe.out_dtype, probe.out_shape.clone())
             .with_params(probe.params.clone());
+        // An in-place op reads no inputs — its target arrives as `outputs[0]`,
+        // so the probe data has to go into the output buffer or the kernel is
+        // verified against zeros (GAP-222).
+        if let Some(seed_bytes) = probe.out_seed.clone() {
+            inv = inv.with_seeded_output(seed_bytes);
+        }
         let inputs = probe.inputs.clone();
         let attempt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             verify_bit_stability(&inv, entry, std::slice::from_ref(&inputs), ITERS)
@@ -991,6 +997,27 @@ mod tests {
         for (name, c) in &by_op {
             println!("[gap-207]     {name} x{c}");
         }
+
+        // The in-place arms in `build_primitive_probe` are a HAND-ENUMERATED
+        // list of 24 `OpKind` variants. Nothing in the compiler checks that
+        // list is complete — a new `<Op>Inplace` would simply fall through to
+        // `_ => None` and go missing without a word. This closes that: the
+        // residue is checked BY NAME, so an unlisted in-place op shows up here
+        // instead of quietly shrinking coverage.
+        //
+        // Naming is the population, which is a real weakness worth stating:
+        // an in-place op that does NOT end in `Inplace` is invisible to this.
+        // It is a better guard than none and not a proof.
+        let unlisted_inplace: Vec<&str> = log
+            .iter()
+            .filter(|a| a.outcome.starts_with("unverified: no probe recipe"))
+            .map(|a| a.op_name.as_str())
+            .filter(|n| n.ends_with("Inplace"))
+            .collect();
+        assert!(
+            unlisted_inplace.is_empty(),
+            "these in-place ops have no probe recipe: {unlisted_inplace:?}. The              `*Inplace` arm is a hand-written variant list, so a new one falls              through `_ => None` silently — add it there rather than widening              this assertion."
+        );
 
         // The two residues are NOT the same thing and must never be summed
         // into one "uncovered" number: `no_recipe` is a gap in this harness,
