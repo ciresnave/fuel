@@ -815,6 +815,106 @@ fn gap_225_what_actually_blocks_the_downgraded_cpu_entries() {
     );
 }
 
+/// **GAP-225 family split of the remaining `max_ulp` downgrades, by OP.**
+///
+/// Reports; asserts only invariants. The warning text names the
+/// `kernel_source` tag (`portable-cpu`) rather than the op, so the op is
+/// recovered by correlating the warning's revision hash against the imported
+/// primitives' `revision` — the same key `gate_precision` used to reject it.
+///
+/// **RESULT (2026-08-20): the hypothesis is DISCONFIRMED, and the reason is
+/// that it was applied to the wrong population.** The architect reasoned from
+/// the five families of the BIT-STABLE class (`Where`, `IndexAdd`,
+/// `ScatterAdd`, integer `MatMul`, `WriteSliceDoff`) to a conclusion about the
+/// `max_ulp` class. **The two sets are disjoint — not one of those five
+/// appears among the 84.** The `max_ulp` population is `Cast` 54, `Gather` 9,
+/// `IndexSelect` 9, and 12 elementwise binaries.
+///
+/// **What holds instead is the architect's own third disconfirming shape:**
+/// every `max_ulp` line in the three contracts owning these 84 declares
+/// `max_ulp: 0`, several with an inline reason. So the claims are legitimate
+/// and correctly stated, and the work is EARNING them, not correcting
+/// contracts.
+///
+/// **And that is cheaper than either reading suggested.** `max_ulp: 0` means
+/// bit-exact against the correctly-rounded result, and for these ops that
+/// reference is computable in-process and exactly: a `Cast` has a defined
+/// correctly-rounded value, `Gather`/`IndexSelect` must reproduce input bytes,
+/// and a single IEEE `+ - * /` in f64 rounds to the f32 result without double
+/// rounding. **No f64 oracle framework and no kiss-ref adapter is required for
+/// this population** — which also means `fuel-kiss-ref-backend`'s feature
+/// gating is not on its critical path.
+///
+/// **This exists to DISCONFIRM a hypothesis, not to confirm one.** The
+/// architect's read is that many of the 84 declare `max_ulp` on ops where a
+/// rounding bound is trivially zero (`Where`, `WriteSliceDoff` — copies) or
+/// meaningless (integer `MatMul`), so the fix would be correcting contracts
+/// rather than building an oracle. The disconfirming shapes are real and are
+/// what this must be able to show: a float op whose bound is about
+/// accumulation ORDER, or a contract that declares `max_ulp: 0` deliberately
+/// to mean "must be bit-exact" — which is a legitimate claim correctly
+/// stated, and would make "does not apply" wrong.
+#[test]
+fn gap_225_family_split_of_the_remaining_max_ulp_downgrades() {
+    let contracts = live_cpu_contracts();
+    let mut by_op: Vec<(String, usize)> = Vec::new();
+    let mut total = 0usize;
+    let mut unattributed = 0usize;
+
+    for (path, text) in &contracts {
+        let provider = import_bundle_str(text, &CpuLinkRegistry)
+            .unwrap_or_else(|e| panic!("contract {path} must import: {e:?}"));
+        let mut rev_to_op: HashMap<u64, String> = HashMap::new();
+        for prim in &provider.primitives {
+            rev_to_op.insert(
+                prim.revision.0,
+                format!("{:?} {:?}", prim.op, prim.dtypes.as_slice()),
+            );
+        }
+        for w in provider.warnings.iter().filter(|w| {
+            w.message.contains("downgraded to UNAUDITED") && w.message.contains("max_ulp")
+        }) {
+            total += 1;
+            let rev = w.message.find("rev ").and_then(|i| {
+                let rest = &w.message[i + 4..];
+                let end = rest.find(')').unwrap_or(rest.len());
+                rest[..end].parse::<u64>().ok()
+            });
+            let key = match rev.and_then(|r| rev_to_op.get(&r)) {
+                Some(k) => k.clone(),
+                None => {
+                    unattributed += 1;
+                    continue;
+                }
+            };
+            let op = key.split_whitespace().next().unwrap_or("?").to_string();
+            match by_op.iter_mut().find(|(k, _)| *k == op) {
+                Some((_, n)) => *n += 1,
+                None => by_op.push((op, 1)),
+            }
+        }
+    }
+    by_op.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+
+    eprintln!("[gap-225-split] {total} max_ulp downgrades, by op:");
+    for (op, n) in &by_op {
+        eprintln!("[gap-225-split]     {n:>3}  {op}");
+    }
+    eprintln!("[gap-225-split] unattributed (rev not found among primitives): {unattributed}");
+    eprintln!(
+        "[gap-225-split] NOTE: every `max_ulp` line in the three contracts that own these 84 (cast, indexing, elementwise-binary) declares `max_ulp: 0`, several with an inline reason (\"exact: f32 is a strict subset of f64\"). That is a measurement of CONTRACT TEXT LINES, not of declarations per downgraded entry — the lowered value is unavailable after `import_bundle_str`, which gates before returning. Stated as the weaker construct it is."
+    );
+
+    assert!(
+        total > 0,
+        "no max_ulp downgrades found — either they are all earned now (which is the finding, not a quiet pass) or this is parsing nothing"
+    );
+    assert_eq!(
+        unattributed, 0,
+        "{unattributed} of {total} warnings could not be attributed to an op by revision hash. The split above is then over a subset, and the missing ones are invisible in it"
+    );
+}
+
 fn count_downgrade_warnings(contracts: &[(String, String)]) -> usize {
     contracts
         .iter()
