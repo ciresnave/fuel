@@ -1,0 +1,22 @@
+# Line-ending policy.
+#
+# WHY THIS FILE EXISTS: a byte-compared artifact with no `eol=lf` has an
+# UNARMED freshness gate on Windows. Git stores LF, autocrlf checks out CRLF,
+# and the committed file is then not byte-identical to a fresh emission — so an
+# `emit && git diff --exit-code` check reports the whole file as changed, and a
+# comparison that NORMALIZES line endings first cannot see the difference it
+# normalizes. Found by Vulkane on a generated manifest, 2026-08-20.
+#
+# ADDING A BYTE-COMPARED OR HASH-VERIFIED ARTIFACT? Pin it here, or its gate is
+# decorative on half the machines that run it.
+
+# Licence files are hash-verified against canonical upstream text. Without this
+# pin, autocrlf re-diverges them on the next Windows checkout and the hash check
+# fails for a reason nobody guesses.
+LICENSE-*       text eol=lf
+LICENSE         text eol=lf
+
+# Vendored conformance corpus — byte-matched against KISS's published artifact.
+# Not currently exposed (our byte-match parses JSON first, so line endings never
+# reach the token comparison) but pinned so a future byte-level compare is armed.
+*.json          text eol=lf
