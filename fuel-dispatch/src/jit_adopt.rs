@@ -186,16 +186,24 @@ fn operand_dtypes(operands: &[OperandDesc]) -> Vec<DType> {
 /// `docs/architecture/04-optimization.md` ratifies multiple kernels under one
 /// decision point.
 ///
-/// So looking the id back up returns *an* alternative, and today that is the
-/// **first-registered** one on both paths — `first_runtime_fused` takes
-/// `alts.first()`, and `lookup_with_caps`'s own comment records that with no
-/// binding setting `requires_broadcast` it is "byte-identical to returning the
-/// first-registered alternative". **For the second adopter of a recipe that is
-/// somebody else's kernel** (GAP-213); and if that kernel's device has since
-/// been dropped it is not merely wrong but undefined (GAP-214).
+/// So an id does not determine a kernel, and resolving one back to a kernel is
+/// a question with no single right answer whenever a recipe carries more than
+/// one signature. `unique_runtime_fused` therefore **refuses** rather than
+/// picking (GAP-213); `lookup_runtime_kernel` surfaces that as
+/// `FusedLookupMiss::Ambiguous`. Use the `KernelRef` returned here instead.
+///
+/// **Production dispatch was never affected**, and the earlier version of this
+/// comment said otherwise. `lookup_with_caps` — the path `compiled.rs` and
+/// `pipelined.rs` dispatch through — builds `(op, dtypes, backend)` and does an
+/// exact keyed `get`, so it is dtype-precise and cannot return a kernel of the
+/// wrong arity. Its "first-registered" behaviour applies only among siblings
+/// under **one** exact key, appended in program order, which is the ratified
+/// alternatives model rather than a defect. (Choosing among those siblings by
+/// telemetry rather than registration order is a separate, open design item.)
 ///
 /// Measured: two tests adopting the same `relu(add)` f32 region both received
-/// `FusedOpId(32768)`, and the second launched the first's entry point.
+/// `FusedOpId(32768)`, and the second launched the first's entry point — a
+/// kernel bound to an already-dropped `CudaDevice` (GAP-214).
 #[derive(Clone, Copy, Debug)]
 pub struct Adopted {
     /// The recipe's runtime id. Shared with any other adoption of the same recipe.

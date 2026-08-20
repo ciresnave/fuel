@@ -74,17 +74,46 @@ pub fn register_runtime_kernel_into(
     table.register(BindingKey::RuntimeFused(id), dtypes, backend, kernel);
 }
 
-/// The first runtime-fused binding for `(id, backend)`, any dtype tuple.
-pub fn lookup_runtime_kernel(id: FusedOpId, backend: BackendId) -> Option<RuntimeKernelBinding> {
+/// Why a runtime-fused lookup returned no kernel. **Two distinct facts, kept
+/// distinct:** an `Option` would make them indistinguishable, and they have
+/// different fixes — *not bound* means register one, *ambiguous* means say
+/// which signature you want.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FusedLookupMiss {
+    /// Nothing is registered for this `(id, backend)`.
+    NotBound,
+    /// Several dtype tuples share this id, so no single kernel answers the
+    /// question. A [`FusedOpId`] names a RECIPE, not a signature.
+    Ambiguous { signatures: Vec<Vec<DType>> },
+}
+
+/// The runtime-fused binding for `(id, backend)` when exactly one dtype tuple
+/// is registered.
+///
+/// **Refuses to guess.** One `FusedOpId` can legitimately carry several dtype
+/// tuples (`register_runtime_fused` dedups on the recipe's base-map hash), and
+/// resolving by id alone would pick between them by `HashMap` order — a coin
+/// flip per process, capable of returning a kernel of the wrong operand arity.
+/// This is the diagnostic/test path; production dispatch takes the dtype tuple
+/// and does an exact keyed lookup (`lookup_with_caps`). See GAP-213.
+pub fn lookup_runtime_kernel(
+    id: FusedOpId,
+    backend: BackendId,
+) -> Result<RuntimeKernelBinding, FusedLookupMiss> {
+    use crate::kernel::RuntimeFusedLookup;
     let table = global_bindings();
-    table
-        .first_runtime_fused(id, backend)
-        .map(|(dtypes, e)| RuntimeKernelBinding {
+    match table.unique_runtime_fused(id, backend) {
+        RuntimeFusedLookup::Unique(dtypes, e) => Ok(RuntimeKernelBinding {
             kernel: e.kernel,
             caps: e.caps,
             precision: e.precision,
             dtypes: dtypes.to_vec(),
-        })
+        }),
+        RuntimeFusedLookup::NotBound => Err(FusedLookupMiss::NotBound),
+        RuntimeFusedLookup::Ambiguous { signatures } => {
+            Err(FusedLookupMiss::Ambiguous { signatures })
+        }
+    }
 }
 
 /// The capability predicate the optimizer's gate consults: is there an
@@ -316,6 +345,18 @@ mod tests {
     use fuel_ir::Layout;
     use std::sync::{Arc, RwLock as StdRwLock};
 
+    /// A second, distinct `KernelRef` — `adopt_runtime_fused` skips
+    /// registration when the same fn pointer is already bound, so the two
+    /// signatures in the GAP-213 test must not share one.
+    fn other_noop_kernel(
+        _inputs: &[Arc<StdRwLock<fuel_memory::Storage>>],
+        _outputs: &mut [Arc<StdRwLock<fuel_memory::Storage>>],
+        _layouts: &[Layout],
+        _params: &crate::kernel::OpParams,
+    ) -> fuel_ir::Result<()> {
+        Ok(())
+    }
+
     fn noop_kernel(
         _inputs: &[Arc<StdRwLock<fuel_memory::Storage>>],
         _outputs: &mut [Arc<StdRwLock<fuel_memory::Storage>>],
@@ -445,6 +486,77 @@ mod tests {
     /// `.expect()` in `extend_global_bindings` panicked while holding the
     /// global bindings write lock, poisoning it for every later test in the
     /// binary). The kernel must remain available after the re-adopt.
+    /// **GAP-213.** One `FusedOpId` can carry several dtype tuples — the id
+    /// names a RECIPE, not a signature — so resolving by id alone has no single
+    /// right answer. It must not invent one.
+    ///
+    /// Born red: the old `first_runtime_fused` scan bound `dtypes` and never
+    /// tested it, so it answered by `HashMap::iter()` order and could hand back
+    /// the 2-operand kernel for a 3-operand call. That is how GAP-001 spent
+    /// eleven days misattributed to a `baracuda-kernelgen` version.
+    ///
+    /// Built on a LOCAL table on purpose: the global-registry tests in this
+    /// module share process state and call `clear_runtime_fused_for_tests`
+    /// concurrently, so an id minted in one can be invalidated by another. This
+    /// test asserts a property of the lookup, and should not be able to fail
+    /// for a reason that has nothing to do with the lookup.
+    #[test]
+    fn one_recipe_two_signatures_refuses_to_guess() {
+        let mut table = KernelBindingTable::new();
+        let id = FusedOpId(FusedOpId::RUNTIME_FUSED_BASE);
+        register_runtime_kernel_into(
+            &mut table, id, &[DType::F32, DType::F32], BackendId::Cpu, noop_kernel as KernelRef,
+        );
+        register_runtime_kernel_into(
+            &mut table, id, &[DType::F32, DType::F32, DType::F32], BackendId::Cpu,
+            other_noop_kernel as KernelRef,
+        );
+
+        match table.unique_runtime_fused(id, BackendId::Cpu) {
+            crate::kernel::RuntimeFusedLookup::Ambiguous { signatures } => {
+                assert_eq!(signatures.len(), 2, "both signatures reported: {signatures:?}");
+                assert!(
+                    signatures.iter().any(|s| s.len() == 2)
+                        && signatures.iter().any(|s| s.len() == 3),
+                    "the report must name the competing ARITIES, got {signatures:?}",
+                );
+            }
+            other => panic!(
+                "an id carrying two signatures must refuse, not guess — got {other:?}",
+            ),
+        }
+    }
+
+    /// Control. With ONE signature there is nothing to be ambiguous about and
+    /// the lookup must still answer. Without this, the assertion above is
+    /// satisfied by a `unique_runtime_fused` that refuses unconditionally.
+    #[test]
+    fn one_signature_still_resolves() {
+        let mut table = KernelBindingTable::new();
+        let id = FusedOpId(FusedOpId::RUNTIME_FUSED_BASE);
+        register_runtime_kernel_into(
+            &mut table, id, &[DType::F32, DType::F32], BackendId::Cpu, noop_kernel as KernelRef,
+        );
+        match table.unique_runtime_fused(id, BackendId::Cpu) {
+            crate::kernel::RuntimeFusedLookup::Unique(dtypes, _) => {
+                assert_eq!(dtypes, &[DType::F32, DType::F32]);
+            }
+            other => panic!("one signature must resolve — got {other:?}"),
+        }
+    }
+
+    /// Second control: an unbound id must report NotBound, not Ambiguous. Keeps
+    /// the two miss reasons from collapsing back into one.
+    #[test]
+    fn unbound_id_reports_not_bound_not_ambiguous() {
+        let table = KernelBindingTable::new();
+        let id = FusedOpId(FusedOpId::RUNTIME_FUSED_BASE);
+        assert!(matches!(
+            table.unique_runtime_fused(id, BackendId::Cpu),
+            crate::kernel::RuntimeFusedLookup::NotBound
+        ));
+    }
+
     #[test]
     fn adopt_runtime_fused_is_idempotent_for_an_identical_region_and_kernel() {
         let id1 = adopt_runtime_fused(
