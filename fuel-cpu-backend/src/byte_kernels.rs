@@ -1001,6 +1001,10 @@ pub fn cumsum_f16(
 /// or `!keep_upper && j as i64 <= i as i64 + diagonal`; zeros
 /// everywhere else. Dtype-agnostic at the byte level: the caller
 /// supplies `dtype_size_in_bytes` and the kernel walks bytes.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "kernel entry point: the parameters are the operand buffers / strides / dims of the op ABI; bundling into a struct would obscure the signature, not clarify it"
+)]
 pub fn triangular_cpu(
     input: &CpuStorageBytes,
     out: &mut CpuStorageBytes,
@@ -1192,6 +1196,10 @@ log_softmax_last_dim_kernel!(
 
 // Avoid unused-fn lint warnings:
 #[allow(dead_code)]
+#[expect(
+    clippy::type_complexity,
+    reason = "a 2-tuple of fn pointers used only as a dead-code anchor to keep f64_to_f32/f32_to_f64 referenced; a type alias would be more indirection than the type it names"
+)]
 const _UNUSED_F32_F64_HELPERS: (fn(f64) -> f32, fn(f32) -> f64) = (f64_to_f32, f32_to_f64);
 
 // =============================================================================
@@ -1334,6 +1342,7 @@ pub fn masked_fill_cpu(
         ))
         .bt());
     }
+    #[expect(clippy::needless_range_loop, reason = "loop bound is a declared element count, not an array len, and `i` also computes the byte offset `i * dtype_size`; enumerate could change the iteration count -- a wrong-number bug in kernel code")]
     for i in 0..count {
         let off = i * dtype_size;
         if mv[i] != 0 {
@@ -1351,8 +1360,8 @@ pub fn masked_fill_cpu(
 
 /// Materialize a contiguous-row-major buffer from a (potentially
 /// strided / offset / broadcast) input. The output is a freshly
-/// allocated [`CpuStorageBytes`] holding `layout.shape().elem_count()
-/// * dtype_size` bytes; element `i` of the output corresponds to
+/// allocated [`CpuStorageBytes`] holding `layout.shape().elem_count() *
+/// dtype_size` bytes; element `i` of the output corresponds to
 /// the i-th element produced by `layout`'s strided iteration over
 /// the input.
 ///
@@ -1412,6 +1421,10 @@ pub fn contiguize_cpu(
 /// Updates: `out[outer, indices[i], inner] += src[outer, i, inner]`
 /// for each `i ∈ 0..n_indices`. Out-of-bounds indices return a
 /// typed Error.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "kernel entry point: the parameters are the operand buffers / strides / dims of the op ABI; bundling into a struct would obscure the signature, not clarify it"
+)]
 pub fn index_add_f32(
     base: &CpuStorageBytes,
     indices: &CpuStorageBytes,
@@ -1461,6 +1474,7 @@ pub fn index_add_f32(
     let idx_view: &[u32] = indices.as_slice()?;
     let src_view: &[f32] = src.as_slice()?;
     let out_view: &mut [f32] = out.as_slice_mut()?;
+    #[expect(clippy::needless_range_loop, reason = "loop bound is the declared index count, not an array len, and `i` is reported as the out-of-bounds position in the error path; enumerate could change the iteration count")]
     for i in 0..n_indices {
         let target = idx_view[i] as usize;
         if target >= base_dim_size {
@@ -1484,6 +1498,10 @@ pub fn index_add_f32(
 /// type `$T` (f32 / f64). Accumulates in-place using `$T`'s `+=`.
 macro_rules! index_add_native_kernel {
     ($name:ident, $T:ty, $T_size:expr) => {
+        #[expect(
+            clippy::too_many_arguments,
+            reason = "kernel entry point: the parameters are the operand buffers / strides / dims of the op ABI; bundling into a struct would obscure the signature, not clarify it"
+        )]
         pub fn $name(
             base: &CpuStorageBytes,
             indices: &CpuStorageBytes,
@@ -1560,6 +1578,10 @@ index_add_native_kernel!(index_add_f64, f64, std::mem::size_of::<f64>());
 /// Accumulates in f32 (widen → +=  → narrow back).
 macro_rules! index_add_half_kernel {
     ($name:ident, $T:ty, $T_size:expr) => {
+        #[expect(
+            clippy::too_many_arguments,
+            reason = "kernel entry point: the parameters are the operand buffers / strides / dims of the op ABI; bundling into a struct would obscure the signature, not clarify it"
+        )]
         pub fn $name(
             base: &CpuStorageBytes,
             indices: &CpuStorageBytes,
@@ -1937,6 +1959,10 @@ pub fn scatter_add_f32(
 /// Each output element at `(outer, j, inner)` reads from source
 /// at `(outer, indices[j], inner)`. Out-of-bounds indices return
 /// a typed error rather than reading garbage.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "kernel entry point: the parameters are the operand buffers / strides / dims of the op ABI; bundling into a struct would obscure the signature, not clarify it"
+)]
 pub fn index_select_cpu(
     source: &CpuStorageBytes,
     indices: &CpuStorageBytes,
@@ -1982,6 +2008,7 @@ pub fn index_select_cpu(
     let src_bytes = source.bytes();
     let idx_view: &[u32] = indices.as_slice()?;
     let out_bytes = out.bytes_mut();
+    #[expect(clippy::needless_range_loop, reason = "loop bound is the declared index count, not an array len, and `j` is reported as the out-of-bounds position in the error path; enumerate could change the iteration count")]
     for j in 0..n_indices {
         let i = idx_view[j] as usize;
         if i >= source_dim_size {
@@ -2355,6 +2382,7 @@ pub fn gather_cpu(
         s *= source_shape[d];
     }
     let mut multi = vec![0usize; rank];
+    #[expect(clippy::needless_range_loop, reason = "flat index drives explicit multi-index reconstruction (rem = f), not a sequential scan; enumerate would obscure the flat<->multi-index mapping and risk an iteration-count mismatch")]
     for f in 0..output_total {
         let mut rem = f;
         for d in (0..rank).rev() {
@@ -4652,6 +4680,10 @@ cast_kernel!(
 ///
 /// This is correctness-first; vendor BLAS backends will eclipse
 /// it on performance once they're wired into the unified path.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "kernel entry point: the parameters are the operand buffers / strides / dims of the op ABI; bundling into a struct would obscure the signature, not clarify it"
+)]
 pub fn matmul_f32(
     lhs: &CpuStorageBytes,
     rhs: &CpuStorageBytes,
@@ -4819,6 +4851,10 @@ pub fn matmul_f32_capacity(
 /// cuDNN use to keep matmul numerically stable on half floats.
 macro_rules! matmul_half_kernel {
     ($name:ident, $T:ty, $type_name:literal) => {
+        #[expect(
+            clippy::too_many_arguments,
+            reason = "kernel entry point: the parameters are the operand buffers / strides / dims of the op ABI; bundling into a struct would obscure the signature, not clarify it"
+        )]
         pub fn $name(
             lhs: &CpuStorageBytes,
             rhs: &CpuStorageBytes,
@@ -4957,6 +4993,10 @@ matmul_half_kernel!(matmul_f16, half::f16, "matmul_f16");
 /// (textbook (i, k, j) triple loop) and not a performance target.
 macro_rules! matmul_int_kernel {
     ($name:ident, $T:ty, $type_name:literal) => {
+        #[expect(
+            clippy::too_many_arguments,
+            reason = "kernel entry point: the parameters are the operand buffers / strides / dims of the op ABI; bundling into a struct would obscure the signature, not clarify it"
+        )]
         pub fn $name(
             lhs: &CpuStorageBytes,
             rhs: &CpuStorageBytes,
@@ -5096,6 +5136,10 @@ matmul_int_kernel!(matmul_u8, u8, "matmul_u8");
 /// Batched row-major `f64` matrix multiply — a direct mirror of
 /// [`matmul_f32`] with f64 element type and accumulator. Same
 /// per-axis matched/GQA contract; same (i, k, j) inner loop.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "kernel entry point: the parameters are the operand buffers / strides / dims of the op ABI; bundling into a struct would obscure the signature, not clarify it"
+)]
 pub fn matmul_f64(
     lhs: &CpuStorageBytes,
     rhs: &CpuStorageBytes,
@@ -5254,6 +5298,10 @@ fn block_slice_from_bytes<'a, T>(name: &str, bytes: &'a [u8]) -> Result<&'a [T]>
     Ok(unsafe { std::slice::from_raw_parts(ptr as *const T, bytes.len() / size) })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "kernel entry point: the parameters are the operand buffers / strides / dims of the op ABI; bundling into a struct would obscure the signature, not clarify it"
+)]
 fn qmatmul_generic_f32<T: fuel_quantized::GgmlType>(
     name: &str,
     activations: &CpuStorageBytes,
@@ -6074,6 +6122,10 @@ pub fn reduce_max_to_f16(
 // batch prefixes). The fused form simply seeds the accumulator with
 // bias[j] before the inner product.
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "shape-validation helper: the parameters are the per-operand byte sizes it cross-checks; inherent to the op's operand count, not a design smell"
+)]
 fn fused_linear_check<T>(
     name: &str,
     lhs: &CpuStorageBytes,
@@ -6328,6 +6380,10 @@ pub const REDUCTION_NONE: u8 = 2;
 /// reduction tag:
 ///   - `REDUCTION_MEAN` / `REDUCTION_SUM`: 4 bytes (one f32 scalar).
 ///   - `REDUCTION_NONE`: `n_rows * 4` bytes.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "shape-validation helper: the parameters are the per-operand byte sizes it cross-checks; inherent to the op's operand count, not a design smell"
+)]
 fn fused_softmax_cross_entropy_check_shapes(
     name: &str,
     logits_elem_bytes: usize,
@@ -6521,6 +6577,10 @@ fused_softmax_cross_entropy_kernel!(
 // typical kernel sizes (4 for Mamba).
 
 /// Shared shape-validation for the four CausalConv1d dtype variants.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "shape-validation helper: the parameters are the per-operand byte sizes it cross-checks; inherent to the op's operand count, not a design smell"
+)]
 fn causal_conv1d_check_shapes(
     name: &str,
     elem_bytes: usize,
@@ -6744,6 +6804,10 @@ causal_conv1d_half_kernel!(causal_conv1d_f16, half::f16);
 /// Shared shape-validation for the SelectiveScan dtype variants.
 /// Multi-output (Option C, 2026-06-01): the output buffer is always
 /// the bundled `[y_bytes ; last_state_bytes]` concatenation.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "shape-validation helper: the parameters are the per-operand byte sizes it cross-checks; inherent to the op's operand count, not a design smell"
+)]
 fn selective_scan_check_shapes(
     name: &str,
     elem_bytes: usize,
@@ -6997,6 +7061,10 @@ nonzero_indices_kernel!(nonzero_indices_u32, u32, |v: &u32| *v != 0);
 /// Shared shape-validation for the SsdChunkScan dtype variants.
 /// Multi-output (Option C, 2026-06-01): the output buffer is the
 /// bundled `[y_bytes ; last_state_bytes]` concatenation.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "shape-validation helper: the parameters are the per-operand byte sizes it cross-checks; inherent to the op's operand count, not a design smell"
+)]
 fn ssd_chunk_scan_check_shapes(
     name: &str,
     elem_bytes: usize,
@@ -7244,6 +7312,10 @@ pub const NF4_LUT: [f32; 16] = [
 /// Shared shape-validation for the three Nf4Matmul dtype variants.
 /// Returns the per-element byte size of `T` so callers can verify
 /// activation/output sizes without re-templating the check.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "shape-validation helper: the parameters are the per-operand byte sizes it cross-checks; inherent to the op's operand count, not a design smell"
+)]
 fn nf4_matmul_check_shapes(
     name: &str,
     elem_bytes: usize,
@@ -9865,6 +9937,7 @@ where
     // update max via comparisons.
     let mut first_set = vec![false; output.len()];
     let mut idx = vec![0_usize; in_rank];
+    #[expect(clippy::needless_range_loop, reason = "flat index drives explicit multi-index reconstruction (rem = flat), not a sequential scan; enumerate would obscure the flat<->multi-index mapping and risk an iteration-count mismatch")]
     for flat in 0..in_count {
         // Reconstruct multi-index `idx` from flat.
         let rem = flat;
@@ -9913,6 +9986,7 @@ where
     }
     let dst_count: usize = dst_shape.iter().product();
     let mut idx = vec![0_usize; dst_rank];
+    #[expect(clippy::needless_range_loop, reason = "flat index drives explicit multi-index reconstruction (rem = flat), not a sequential scan; enumerate would obscure the flat<->multi-index mapping and risk an iteration-count mismatch")]
     for flat in 0..dst_count {
         let mut rem = flat;
         for i in (0..dst_rank).rev() {
@@ -9953,6 +10027,7 @@ where
         *o = T::default();
     }
     let mut idx = vec![0_usize; in_rank];
+    #[expect(clippy::needless_range_loop, reason = "flat index drives explicit multi-index reconstruction (rem = flat), not a sequential scan; enumerate would obscure the flat<->multi-index mapping and risk an iteration-count mismatch")]
     for flat in 0..in_count {
         let mut rem = flat;
         for i in (0..in_rank).rev() {

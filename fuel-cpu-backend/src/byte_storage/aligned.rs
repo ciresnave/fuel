@@ -71,6 +71,11 @@ impl AlignedBytes {
         self.len
     }
 
+    /// Whether the allocation holds zero bytes.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
     /// Alignment of the underlying allocation, in bytes.
     pub fn align(&self) -> usize {
         self.align
