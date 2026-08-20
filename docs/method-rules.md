@@ -336,3 +336,38 @@ Doc-currency auditing tests one predicate: **is the claim still true?** That cat
 - **Is the path it prescribes still the cheapest one?** — staleness by workaround. **Detectable ONLY by re-testing the obstacle**, which nobody does, because the rule exists to stop them hitting it.
 
 **So the detector is not a re-read but a deliberate re-attempt of the forbidden thing, on a schedule. When a rule says "you cannot do X, do Y instead", the maintenance question is not whether Y still works — it is whether X still fails.**
+
+**⚠️ THAT DETECTOR ONLY EXISTS FOR RULES WHOSE `X` IS CHEAP AND SAFE TO
+RE-ATTEMPT — AND THE MOST ENTRENCHED RULES ARE PRECISELY THE ONES WHERE IT
+ISN'T.** Re-attempting the vcvarsall recipe from Bash costs one command. But
+this repo's expensive prohibitions cannot be re-attempted at all without
+inflicting the failure they forbid: *"only one `--features cuda` build at a
+time"* is re-tested by starting a second one and possibly killing a peer's
+30-56 minute forge with a `ptxas` allocation failure; *"ALL GPU-touching runs
+go through `gpu-run`"* is re-tested by not doing that, and the recorded cost of
+being wrong is a host-aperture kernel bugcheck. **A schedule of re-attempts is
+not available for either.**
+
+**So the requirement splits, and the second half is the one that keeps a rule
+retirable:**
+
+- **`X` cheap and safe to re-attempt** → schedule the re-attempt. The rule stays
+  falsifiable by doing the forbidden thing on purpose.
+- **`X` expensive or destructive** → the rule MUST record the measured
+  **precondition** that makes `X` fail, not merely the prohibition — because a
+  precondition can be tested without triggering the failure. The CUDA-concurrency
+  rule does this correctly: it records *"~16 concurrent nvcc survive; an
+  allocation failed near 22"*, and a reader can count processes and cores
+  instead of causing an OOM.
+
+**COROLLARY, and it is why a rules file grows monotonically: a prohibition with
+no safe re-attempt AND no recorded precondition is permanently unfalsifiable.**
+It cannot be retired by evidence, because no evidence against it can be gathered
+without doing the forbidden thing. Such a rule survives on its own authority for
+as long as the file does — **which is indistinguishable, from the reader's side,
+from being correct.**
+
+**PRACTICE when writing a prohibition: record the measurement that would have to
+change for it to stop applying.** One clause, written while you still know it —
+and it is the only thing that lets a later reader retire your rule without
+first getting hurt by it.
