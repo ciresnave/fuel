@@ -29,7 +29,7 @@ pub use mapped_meter::{
 /// deferred sync point, then drops it (freeing the GPU resources post-fence).
 pub use recorder::SubmittedBatch;
 
-use fuel_ir::{DType, Layout, Shape};
+use fuel_ir::{DType, Layout};
 use pipelines::Pipelines;
 use recorder::{OpStatEntry, OpStats, Recorder};
 use std::sync::Mutex;
@@ -1259,7 +1259,7 @@ impl VulkanBackend {
         data: &[T],
         dtype: DType,
     ) -> fuel_ir::Result<VulkanStorage> {
-        let byte_size = (data.len() * std::mem::size_of::<T>()) as u64;
+        let byte_size = std::mem::size_of_val(data) as u64;
         let _span = debug_span!("vk_upload_slice", bytes = byte_size).entered();
         // Staging: host-visible + mapped. Sub-allocated from the
         // host-visible pool.
@@ -1436,7 +1436,7 @@ impl VulkanBackend {
             //    MAX_PER_BUCKET buffers. Extras are dropped (VMA frees).
             //    Kept is the END of the Vec (most recent pushes, in case
             //    sizes drift over time).
-            for (_, vec) in pool.iter_mut() {
+            for vec in pool.values_mut() {
                 if vec.len() > MAX_PER_BUCKET {
                     let drop_count = vec.len() - MAX_PER_BUCKET;
                     vec.drain(0..drop_count);
@@ -1520,7 +1520,7 @@ impl VulkanBackend {
         &self,
         data: &[T],
     ) -> fuel_ir::Result<(Buffer, Allocation)> {
-        let byte_size = (data.len() * std::mem::size_of::<T>()) as u64;
+        let byte_size = std::mem::size_of_val(data) as u64;
         let _span = debug_span!("vk_upload_slice_raw", bytes = byte_size).entered();
         let size = byte_size.max(16);
         let (buf, alloc) = self
@@ -1795,8 +1795,8 @@ impl VulkanBackend {
             0,
             params_size,
         );
-        let rb = [input.buffer().raw() as u64];
-        let wb = [output.buffer().raw() as u64];
+        let rb = [input.buffer().raw()];
+        let wb = [output.buffer().raw()];
         self.record_dispatch_batched(
             op_name,
             pipeline,
@@ -1857,8 +1857,8 @@ impl VulkanBackend {
             0,
             params_size,
         );
-        let rb = [a.buffer().raw() as u64, b.buffer().raw() as u64];
-        let wb = [output.buffer().raw() as u64];
+        let rb = [a.buffer().raw(), b.buffer().raw()];
+        let wb = [output.buffer().raw()];
         self.record_dispatch_batched(
             op_name,
             pipeline,
@@ -1872,7 +1872,7 @@ impl VulkanBackend {
     }
 
     fn workgroups(n: usize) -> u32 {
-        ((n + 255) / 256) as u32
+        n.div_ceil(256) as u32
     }
 
     // ----- Pipelined-executor binding-table dispatch (V.1.C+) ----------------
@@ -2082,8 +2082,8 @@ impl VulkanBackend {
             out.len_bytes() as u64,
         );
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
-        let rb = [a_buf.raw() as u64, b_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [a_buf.raw(), b_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             op_name,
             pipeline,
@@ -2234,8 +2234,8 @@ impl VulkanBackend {
             out.len_bytes() as u64,
         );
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
-        let rb = [a_buf.raw() as u64, b_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [a_buf.raw(), b_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             op_name,
             &self.pipelines.binary_pipeline,
@@ -2332,8 +2332,8 @@ impl VulkanBackend {
             out.len_bytes() as u64,
         );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
-        let rb = [in_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [in_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             "softmax_last_dim_f32_bytes",
             &self.pipelines.softmax_pipeline,
@@ -2413,8 +2413,8 @@ impl VulkanBackend {
             out.len_bytes() as u64,
         );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
-        let rb = [in_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [in_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             "softmax_last_dim_f16_bytes",
             &self.pipelines.softmax_f16_pipeline,
@@ -2439,7 +2439,7 @@ impl VulkanBackend {
         outer_count: usize,
         last_dim: usize,
     ) -> fuel_ir::Result<()> {
-        if last_dim % 2 != 0 {
+        if !last_dim.is_multiple_of(2) {
             fuel_ir::bail!(
                 "VulkanBackend::softmax_last_dim_bf16_bytes: last_dim must be even \
                  (lane-pair packing); got {last_dim}",
@@ -2497,8 +2497,8 @@ impl VulkanBackend {
             out.len_bytes() as u64,
         );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
-        let rb = [in_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [in_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             "softmax_last_dim_bf16_bytes",
             &self.pipelines.softmax_bf16_pipeline,
@@ -2574,8 +2574,8 @@ impl VulkanBackend {
             out.len_bytes() as u64,
         );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
-        let rb = [in_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [in_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             "softmax_last_dim_f64_bytes",
             &self.pipelines.softmax_f64_pipeline,
@@ -2658,8 +2658,8 @@ impl VulkanBackend {
             out.len_bytes() as u64,
         );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
-        let rb = [in_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [in_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             "rms_norm_last_dim_f32_bytes",
             &self.pipelines.rms_norm_last_dim_pipeline,
@@ -2742,8 +2742,8 @@ impl VulkanBackend {
             out.len_bytes() as u64,
         );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
-        let rb = [in_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [in_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             "rms_norm_last_dim_f16_bytes",
             &self.pipelines.rms_norm_last_dim_f16_pipeline,
@@ -2771,7 +2771,7 @@ impl VulkanBackend {
         last_dim: usize,
         eps: f64,
     ) -> fuel_ir::Result<()> {
-        if last_dim % 2 != 0 {
+        if !last_dim.is_multiple_of(2) {
             fuel_ir::bail!(
                 "VulkanBackend::rms_norm_last_dim_bf16_bytes: last_dim must be even \
                  (lane-pair packing); got {last_dim}",
@@ -2833,8 +2833,8 @@ impl VulkanBackend {
             out.len_bytes() as u64,
         );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
-        let rb = [in_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [in_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             "rms_norm_last_dim_bf16_bytes",
             &self.pipelines.rms_norm_last_dim_bf16_pipeline,
@@ -2915,8 +2915,8 @@ impl VulkanBackend {
             out.len_bytes() as u64,
         );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
-        let rb = [in_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [in_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             "rms_norm_last_dim_f64_bytes",
             &self.pipelines.rms_norm_last_dim_f64_pipeline,
@@ -3006,7 +3006,7 @@ impl VulkanBackend {
         // picker for unaligned cases.
         if byte_width == 2 {
             let last = rank - 1;
-            if range_start[last] % 2 != 0 || src_shape[last] % 2 != 0 {
+            if !range_start[last].is_multiple_of(2) || !src_shape[last].is_multiple_of(2) {
                 fuel_ir::bail!(
                     "write_slice_bytes b2: last-dim range_start ({}) and src_shape ({}) \
                      must both be even (half-precision writes pack 2/u32)",
@@ -3017,7 +3017,7 @@ impl VulkanBackend {
         }
         if byte_width == 1 {
             let last = rank - 1;
-            if range_start[last] % 4 != 0 || src_shape[last] % 4 != 0 {
+            if !range_start[last].is_multiple_of(4) || !src_shape[last].is_multiple_of(4) {
                 fuel_ir::bail!(
                     "write_slice_bytes b1: last-dim range_start ({}) and src_shape ({}) \
                      must both be multiples of 4 (byte writes pack 4/u32)",
@@ -3114,8 +3114,8 @@ impl VulkanBackend {
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
 
         let groups = Self::workgroups(n_dispatch);
-        let rb = [src_buf.raw() as u64];
-        let wb = [dst_buf.raw() as u64];
+        let rb = [src_buf.raw()];
+        let wb = [dst_buf.raw()];
         self.record_dispatch_batched(
             op_name,
             pipeline,
@@ -3147,7 +3147,7 @@ impl VulkanBackend {
         if n == 0 {
             return Ok(());
         }
-        if n % 2 != 0 {
+        if !n.is_multiple_of(2) {
             fuel_ir::bail!(
                 "cast_f32_bytes: n={n} must be even (half-precision packed 2-per-u32); \
                  odd-count tensors should fall back to CPU",
@@ -3237,11 +3237,11 @@ impl VulkanBackend {
             out.len_bytes() as u64,
         );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
-        let rb = [in_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [in_buf.raw()];
+        let wb = [out_buf.raw()];
         // Each thread handles 2 elements → ceil(n / 2 / 256) workgroups.
         let pairs = n / 2;
-        let groups = ((pairs + 255) / 256) as u32;
+        let groups = pairs.div_ceil(256) as u32;
         self.record_dispatch_batched(
             op_name,
             pipeline,
@@ -3342,9 +3342,9 @@ impl VulkanBackend {
             out.len_bytes() as u64,
         );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
-        let rb = [in_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
-        let groups = ((n + 255) / 256) as u32;
+        let rb = [in_buf.raw()];
+        let wb = [out_buf.raw()];
+        let groups = n.div_ceil(256) as u32;
         self.record_dispatch_batched(
             op_name,
             pipeline,
@@ -3392,7 +3392,7 @@ impl VulkanBackend {
         let rhs_batch: usize = rhs_batch_dims.iter().product::<usize>().max(1);
         let (batch, n_rep) = if lhs_batch == rhs_batch {
             (lhs_batch, 1usize)
-        } else if lhs_batch > rhs_batch && rhs_batch > 0 && lhs_batch % rhs_batch == 0 {
+        } else if lhs_batch > rhs_batch && rhs_batch > 0 && lhs_batch.is_multiple_of(rhs_batch) {
             (lhs_batch, lhs_batch / rhs_batch)
         } else {
             fuel_ir::bail!(
@@ -3504,8 +3504,8 @@ impl VulkanBackend {
                 out.len_bytes() as u64,
             );
             desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
-            let rb = [lhs_buf.raw() as u64, rhs_buf.raw() as u64];
-            let wb = [out_buf.raw() as u64];
+            let rb = [lhs_buf.raw(), rhs_buf.raw()];
+            let wb = [out_buf.raw()];
             self.record_dispatch_batched(
                 "matvec_bf16_b",
                 &self.pipelines.matvec_bf16_b_pipeline,
@@ -3529,8 +3529,8 @@ impl VulkanBackend {
         let coop_ok = m >= 16
             && n >= 16
             && k >= 16
-            && m % 16 == 0
-            && n % 16 == 0
+            && m.is_multiple_of(16)
+            && n.is_multiple_of(16)
             && self.pipelines.matmul_coop_pipeline.is_some();
 
         let (pipeline, pipe_layout, op_name) = if coop_ok {
@@ -3548,9 +3548,9 @@ impl VulkanBackend {
         };
 
         let (gx, gy) = if coop_ok {
-            (((n + 63) / 64) as u32, ((m + 15) / 16) as u32)
+            (n.div_ceil(64) as u32, m.div_ceil(16) as u32)
         } else {
-            (((n + 63) / 64) as u32, ((m + 63) / 64) as u32)
+            (n.div_ceil(64) as u32, m.div_ceil(64) as u32)
         };
 
         let desc = self
@@ -3579,8 +3579,8 @@ impl VulkanBackend {
             out.len_bytes() as u64,
         );
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
-        let rb = [lhs_buf.raw() as u64, rhs_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [lhs_buf.raw(), rhs_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             op_name,
             pipeline,
@@ -3651,7 +3651,7 @@ impl VulkanBackend {
     /// variants; small shapes fall through to the scalar fallback.
     fn matmul_coop_ok(m: usize, n: usize, k: usize) -> bool {
         let _ = k; // K is unconstrained at the kernel level
-        m >= 16 && n >= 16 && m % 16 == 0 && n % 16 == 0
+        m >= 16 && n >= 16 && m.is_multiple_of(16) && n.is_multiple_of(16)
     }
 
     /// Shared body for small-shape half-precision matmul fallback.
@@ -3686,7 +3686,7 @@ impl VulkanBackend {
         let rhs_batch: usize = rhs_batch_dims.iter().product::<usize>().max(1);
         let (batch, n_rep) = if lhs_batch == rhs_batch {
             (lhs_batch, 1usize)
-        } else if lhs_batch > rhs_batch && rhs_batch > 0 && lhs_batch % rhs_batch == 0 {
+        } else if lhs_batch > rhs_batch && rhs_batch > 0 && lhs_batch.is_multiple_of(rhs_batch) {
             (lhs_batch, lhs_batch / rhs_batch)
         } else {
             fuel_ir::bail!(
@@ -3771,12 +3771,12 @@ impl VulkanBackend {
         desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, rhs_buf, 0, rhs_bind_len);
         desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out_bind_len);
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
-        let rb = [lhs_buf.raw() as u64, rhs_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [lhs_buf.raw(), rhs_buf.raw()];
+        let wb = [out_buf.raw()];
 
         // 16×16 workgroup; ceil over (N, M, batch).
-        let gx = ((n + 15) / 16) as u32;
-        let gy = ((m + 15) / 16) as u32;
+        let gx = n.div_ceil(16) as u32;
+        let gy = m.div_ceil(16) as u32;
         self.record_dispatch_batched(
             op_name,
             pipeline,
@@ -3872,7 +3872,7 @@ impl VulkanBackend {
         let rhs_batch: usize = rhs_batch_dims.iter().product::<usize>().max(1);
         let (batch, n_rep) = if lhs_batch == rhs_batch {
             (lhs_batch, 1usize)
-        } else if lhs_batch > rhs_batch && rhs_batch > 0 && lhs_batch % rhs_batch == 0 {
+        } else if lhs_batch > rhs_batch && rhs_batch > 0 && lhs_batch.is_multiple_of(rhs_batch) {
             (lhs_batch, lhs_batch / rhs_batch)
         } else {
             fuel_ir::bail!(
@@ -3880,7 +3880,7 @@ impl VulkanBackend {
             );
         };
 
-        if m < 16 || n < 16 || k < 16 || m % 16 != 0 || n % 16 != 0 {
+        if m < 16 || n < 16 || k < 16 || !m.is_multiple_of(16) || !n.is_multiple_of(16) {
             fuel_ir::bail!(
                 "{debug_name}: coop tile requires m>=16 && n>=16 && k>=16 && \
                  m%16==0 && n%16==0; got m={m}, n={n}, k={k}",
@@ -3970,11 +3970,11 @@ impl VulkanBackend {
         desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, rhs_buf, 0, rhs_bind_len);
         desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, out_buf, 0, out_bind_len);
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
-        let rb = [lhs_buf.raw() as u64, rhs_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [lhs_buf.raw(), rhs_buf.raw()];
+        let wb = [out_buf.raw()];
 
-        let gx = ((n + 63) / 64) as u32;
-        let gy = ((m + 15) / 16) as u32;
+        let gx = n.div_ceil(64) as u32;
+        let gy = m.div_ceil(16) as u32;
         self.record_dispatch_batched(
             op_name,
             pipeline,
@@ -4117,7 +4117,7 @@ impl VulkanBackend {
         let rhs_batch: usize = rhs_batch_dims.iter().product::<usize>().max(1);
         let (batch, n_rep) = if lhs_batch == rhs_batch {
             (lhs_batch, 1usize)
-        } else if lhs_batch > rhs_batch && rhs_batch > 0 && lhs_batch % rhs_batch == 0 {
+        } else if lhs_batch > rhs_batch && rhs_batch > 0 && lhs_batch.is_multiple_of(rhs_batch) {
             (lhs_batch, lhs_batch / rhs_batch)
         } else {
             fuel_ir::bail!(
@@ -4125,7 +4125,7 @@ impl VulkanBackend {
             );
         };
 
-        if m < 16 || n < 16 || k < 16 || m % 16 != 0 || n % 16 != 0 {
+        if m < 16 || n < 16 || k < 16 || !m.is_multiple_of(16) || !n.is_multiple_of(16) {
             fuel_ir::bail!(
                 "{debug_name}: coop tile requires m>=16 && n>=16 && k>=16 && \
                  m%16==0 && n%16==0; got m={m}, n={n}, k={k}",
@@ -4220,11 +4220,11 @@ impl VulkanBackend {
             out.len_bytes() as u64,
         );
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
-        let rb = [lhs_buf.raw() as u64, rhs_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [lhs_buf.raw(), rhs_buf.raw()];
+        let wb = [out_buf.raw()];
 
-        let gx = ((n + 63) / 64) as u32;
-        let gy = ((m + 15) / 16) as u32;
+        let gx = n.div_ceil(64) as u32;
+        let gy = m.div_ceil(16) as u32;
         self.record_dispatch_batched(
             op_name,
             pipeline,
@@ -4335,8 +4335,8 @@ impl VulkanBackend {
             out.len_bytes() as u64,
         );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
-        let rb = [in_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [in_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             "powi_f32_bytes",
             &self.pipelines.powi_pipeline,
@@ -4448,8 +4448,8 @@ impl VulkanBackend {
             out.len_bytes() as u64,
         );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
-        let rb = [in_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [in_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             "clamp_f32_bytes",
             &self.pipelines.clamp_pipeline,
@@ -4564,8 +4564,8 @@ impl VulkanBackend {
             out.len_bytes() as u64,
         );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
-        let rb = [in_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [in_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             "affine_f64_bytes",
             &self.pipelines.affine_f64_pipeline,
@@ -4669,8 +4669,8 @@ impl VulkanBackend {
         desc.write_buffer(0, DescriptorType::STORAGE_BUFFER, in_buf, 0, in_bind_len);
         desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out_bind_len);
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
-        let rb = [in_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [in_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             "affine_f16_bytes",
             &self.pipelines.affine_f16_pipeline,
@@ -4696,7 +4696,7 @@ impl VulkanBackend {
         layout: &Layout,
     ) -> fuel_ir::Result<()> {
         let out_elem = layout.shape().elem_count();
-        if out_elem % 2 != 0 {
+        if !out_elem.is_multiple_of(2) {
             fuel_ir::bail!("affine_bf16_bytes: out_elem {out_elem} must be even (pair-thread)");
         }
         let need_bytes = out_elem * 2;
@@ -4752,8 +4752,8 @@ impl VulkanBackend {
             out.len_bytes() as u64,
         );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
-        let rb = [in_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [in_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             "affine_bf16_bytes",
             &self.pipelines.affine_bf16_pipeline,
@@ -4895,8 +4895,8 @@ impl VulkanBackend {
         let out_buf = out.buffer_opt().ok_or_else(|| {
             fuel_ir::Error::Msg("affine_f32_bytes: out is host-evicted; fault back first".into())
         })?;
-        let rb = [in_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [in_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             "affine_f32_bytes",
             &self.pipelines.affine_pipeline,
@@ -4948,7 +4948,7 @@ impl VulkanBackend {
         let rhs_batch: usize = rhs_batch_dims.iter().product::<usize>().max(1);
         let (batch, n_rep) = if lhs_batch == rhs_batch {
             (lhs_batch, 1usize)
-        } else if lhs_batch > rhs_batch && rhs_batch > 0 && lhs_batch % rhs_batch == 0 {
+        } else if lhs_batch > rhs_batch && rhs_batch > 0 && lhs_batch.is_multiple_of(rhs_batch) {
             (lhs_batch, lhs_batch / rhs_batch)
         } else {
             fuel_ir::bail!(
@@ -5037,8 +5037,8 @@ impl VulkanBackend {
                 &self.pipelines.matmul_pipeline,
                 &self.pipelines.matmul_layout,
                 "matmul",
-                ((n + 63) / 64) as u32,
-                ((m + 63) / 64) as u32,
+                n.div_ceil(64) as u32,
+                m.div_ceil(64) as u32,
                 batch as u32,
             )
         } else {
@@ -5046,8 +5046,8 @@ impl VulkanBackend {
                 &self.pipelines.matmul_tiled_pipeline,
                 &self.pipelines.matmul_tiled_layout,
                 "matmul_tiled",
-                ((n + 63) / 64) as u32,
-                ((m + 63) / 64) as u32,
+                n.div_ceil(64) as u32,
+                m.div_ceil(64) as u32,
                 batch as u32,
             )
         };
@@ -5079,8 +5079,8 @@ impl VulkanBackend {
         );
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
 
-        let rb = [lhs_buf.raw() as u64, rhs_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [lhs_buf.raw(), rhs_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             op_name,
             pipeline,
@@ -5123,7 +5123,7 @@ impl VulkanBackend {
         let rhs_batch: usize = rhs_batch_dims.iter().product::<usize>().max(1);
         let (batch, n_rep) = if lhs_batch == rhs_batch {
             (lhs_batch, 1usize)
-        } else if lhs_batch > rhs_batch && rhs_batch > 0 && lhs_batch % rhs_batch == 0 {
+        } else if lhs_batch > rhs_batch && rhs_batch > 0 && lhs_batch.is_multiple_of(rhs_batch) {
             (lhs_batch, lhs_batch / rhs_batch)
         } else {
             fuel_ir::bail!(
@@ -5214,8 +5214,8 @@ impl VulkanBackend {
                 &self.pipelines.matmul_pipeline,
                 &self.pipelines.matmul_layout,
                 "matmul",
-                ((n + 63) / 64) as u32,
-                ((m + 63) / 64) as u32,
+                n.div_ceil(64) as u32,
+                m.div_ceil(64) as u32,
                 batch as u32,
             )
         } else {
@@ -5223,8 +5223,8 @@ impl VulkanBackend {
                 &self.pipelines.matmul_tiled_pipeline,
                 &self.pipelines.matmul_tiled_layout,
                 "matmul_tiled",
-                ((n + 63) / 64) as u32,
-                ((m + 63) / 64) as u32,
+                n.div_ceil(64) as u32,
+                m.div_ceil(64) as u32,
                 batch as u32,
             )
         };
@@ -5256,8 +5256,8 @@ impl VulkanBackend {
         );
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
 
-        let rb = [lhs_buf.raw() as u64, rhs_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [lhs_buf.raw(), rhs_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             op_name,
             pipeline,
@@ -5289,7 +5289,7 @@ impl VulkanBackend {
         k: usize,
         n: usize,
     ) -> fuel_ir::Result<()> {
-        if k % 32 != 0 {
+        if !k.is_multiple_of(32) {
             fuel_ir::bail!("matmul_q4_0_bytes: k ({k}) must be a multiple of 32 (Q4_0 block size)",);
         }
         let batch = batch.max(1);
@@ -5362,8 +5362,8 @@ impl VulkanBackend {
                     0,
                     std::mem::size_of::<QmvParams>() as u64,
                 );
-                let rb = [a_buf.raw() as u64, w_buf.raw() as u64];
-                let wb = [out_buf.raw() as u64];
+                let rb = [a_buf.raw(), w_buf.raw()];
+                let wb = [out_buf.raw()];
                 self.record_dispatch_batched(
                     "qmatvec_q4_0",
                     &self.pipelines.qmatvec_q4_0_pipeline,
@@ -5392,7 +5392,7 @@ impl VulkanBackend {
                 k: k as u32,
                 blocks_per_row: (k / 32) as u32,
             };
-            let n_tiles_m = ((m + TM - 1) / TM) as u32;
+            let n_tiles_m = m.div_ceil(TM) as u32;
             for b in 0..batch {
                 let (pbuf, pmem) = self.upload_params(&p)?;
                 let a_byte_off = (b * m * k * 4) as u64;
@@ -5423,8 +5423,8 @@ impl VulkanBackend {
                     0,
                     std::mem::size_of::<TiledParams>() as u64,
                 );
-                let rb = [a_buf.raw() as u64, w_buf.raw() as u64];
-                let wb = [out_buf.raw() as u64];
+                let rb = [a_buf.raw(), w_buf.raw()];
+                let wb = [out_buf.raw()];
                 self.record_dispatch_batched(
                     "matmul_q4_0_tiled",
                     &self.pipelines.matmul_q4_0_tiled_pipeline,
@@ -5456,14 +5456,14 @@ impl VulkanBackend {
         n: usize,
     ) -> fuel_ir::Result<()> {
         const QK_K: usize = 256;
-        if k % QK_K != 0 {
+        if !k.is_multiple_of(QK_K) {
             fuel_ir::bail!(
                 "matmul_q4_km_bytes: k ({k}) must be a multiple of {QK_K} (Q4_K_M super-block size)",
             );
         }
         let n_blocks = n * (k / QK_K);
         let w_f32_bytes = n * k * 4;
-        let mut w_f32 = self.alloc_bytes(w_f32_bytes)?;
+        let w_f32 = self.alloc_bytes(w_f32_bytes)?;
 
         // Dequantize: 2-buffer dispatch (input W bytes, output f32 bytes).
         #[repr(C)]
@@ -5512,8 +5512,8 @@ impl VulkanBackend {
             0,
             std::mem::size_of::<Q4KMParams>() as u64,
         );
-        let rb = [w_q_buf.raw() as u64];
-        let wb = [w_f32_buf.raw() as u64];
+        let rb = [w_q_buf.raw()];
+        let wb = [w_f32_buf.raw()];
         self.record_dispatch_batched(
             "dequant_q4_km",
             &self.pipelines.dequant_q4_km_pipeline,
@@ -5557,7 +5557,7 @@ impl VulkanBackend {
         n: usize,
     ) -> fuel_ir::Result<()> {
         const BLCK_SIZE: usize = 32;
-        if k % BLCK_SIZE != 0 {
+        if !k.is_multiple_of(BLCK_SIZE) {
             fuel_ir::bail!(
                 "matmul_q8_0_bytes: k ({k}) must be a multiple of {BLCK_SIZE} (Q8_0 block size)",
             );
@@ -5565,7 +5565,7 @@ impl VulkanBackend {
         let n_blocks = n * (k / BLCK_SIZE);
         let n_elements = n * k;
         let w_f32_bytes = n_elements * 4;
-        let mut w_f32 = self.alloc_bytes(w_f32_bytes)?;
+        let w_f32 = self.alloc_bytes(w_f32_bytes)?;
 
         #[repr(C)]
         #[derive(Clone, Copy)]
@@ -5613,8 +5613,8 @@ impl VulkanBackend {
             0,
             std::mem::size_of::<Q8Params>() as u64,
         );
-        let rb = [w_q_buf.raw() as u64];
-        let wb = [w_f32_buf.raw() as u64];
+        let rb = [w_q_buf.raw()];
+        let wb = [w_f32_buf.raw()];
         self.record_dispatch_batched(
             "dequant_q8_0",
             &self.pipelines.dequant_q8_0_pipeline,
@@ -5700,7 +5700,7 @@ impl VulkanBackend {
 
         let patches_n = s.im2col_len();
         let patches_bytes = patches_n * 4;
-        let mut patches = self.alloc_bytes(patches_bytes)?;
+        let patches = self.alloc_bytes(patches_bytes)?;
 
         let in_buf = input.buffer_opt().ok_or_else(|| {
             fuel_ir::Error::Msg("conv2d_f32_bytes: input is host-evicted; fault back first".into())
@@ -5781,9 +5781,9 @@ impl VulkanBackend {
             0,
             std::mem::size_of::<Im2ColParams>() as u64,
         );
-        let i_rb = [in_buf.raw() as u64];
-        let i_wb = [patches_buf.raw() as u64];
-        let im2col_wg = (total + 255) / 256;
+        let i_rb = [in_buf.raw()];
+        let i_wb = [patches_buf.raw()];
+        let im2col_wg = total.div_ceil(256);
         self.record_dispatch_batched(
             "conv2d_im2col",
             &self.pipelines.conv2d_im2col_pipeline,
@@ -5844,8 +5844,8 @@ impl VulkanBackend {
                 &self.pipelines.matmul_pipeline,
                 &self.pipelines.matmul_layout,
                 "conv2d.matmul",
-                ((n + 63) / 64) as u32,
-                ((m + 63) / 64) as u32,
+                n.div_ceil(64) as u32,
+                m.div_ceil(64) as u32,
             )
         };
 
@@ -5881,8 +5881,8 @@ impl VulkanBackend {
             0,
             mm_params_size,
         );
-        let mm_rb = [w_buf.raw() as u64, patches_buf.raw() as u64];
-        let mm_wb = [out_buf.raw() as u64];
+        let mm_rb = [w_buf.raw(), patches_buf.raw()];
+        let mm_wb = [out_buf.raw()];
         self.record_dispatch_batched(
             op_name,
             pipeline,
@@ -6055,7 +6055,7 @@ impl VulkanBackend {
         softmax_scale: f32,
         causal: bool,
     ) -> fuel_ir::Result<()> {
-        if hkv == 0 || hq % hkv != 0 {
+        if hkv == 0 || !hq.is_multiple_of(hkv) {
             fuel_ir::bail!("{debug_name}: hq={hq} must be a positive multiple of hkv={hkv}",);
         }
         if sk > 4096 {
@@ -6219,13 +6219,13 @@ impl VulkanBackend {
         );
 
         let rb = [
-            q_buf.raw() as u64,
-            k_buf.raw() as u64,
-            v_buf.raw() as u64,
-            do_buf.raw() as u64,
-            alibi_buf.raw() as u64,
+            q_buf.raw(),
+            k_buf.raw(),
+            v_buf.raw(),
+            do_buf.raw(),
+            alibi_buf.raw(),
         ];
-        let wb = [dout_buf.raw() as u64];
+        let wb = [dout_buf.raw()];
         let total_z = match which {
             FaBackwardDispatch::Q => (b * hq * sq) as u32,
             FaBackwardDispatch::K | FaBackwardDispatch::V => (b * hkv * sk) as u32,
@@ -6391,7 +6391,7 @@ impl VulkanBackend {
         causal: bool,
         elem_bytes: usize,
     ) -> fuel_ir::Result<()> {
-        if hkv == 0 || hq % hkv != 0 {
+        if hkv == 0 || !hq.is_multiple_of(hkv) {
             fuel_ir::bail!("{debug_name}: hq={hq} must be a positive multiple of hkv={hkv}",);
         }
         if sk > 4096 {
@@ -6520,12 +6520,12 @@ impl VulkanBackend {
         );
 
         let rb = [
-            q_buf.raw() as u64,
-            k_buf.raw() as u64,
-            v_buf.raw() as u64,
-            alibi_buf.raw() as u64,
+            q_buf.raw(),
+            k_buf.raw(),
+            v_buf.raw(),
+            alibi_buf.raw(),
         ];
-        let wb = [o_buf.raw() as u64];
+        let wb = [o_buf.raw()];
         let total_z = (b * hq * sq) as u32;
         self.record_dispatch_batched(
             op_name,
@@ -6596,7 +6596,7 @@ impl VulkanBackend {
 
         // Coop-matrix shape constraint inherited from
         // matmul_coop_bf16_bf16_bf16.
-        if m < 16 || n < 16 || m % 16 != 0 || n % 16 != 0 {
+        if m < 16 || n < 16 || !m.is_multiple_of(16) || !n.is_multiple_of(16) {
             fuel_ir::bail!(
                 "conv2d_bf16_bytes: coop tile requires c_out >= 16, h_out*w_out >= 16, \
                  c_out % 16 == 0, h_out*w_out % 16 == 0; got c_out={m}, h_out*w_out={n}",
@@ -6626,7 +6626,7 @@ impl VulkanBackend {
 
         let patches_n = s.im2col_len();
         let patches_bytes = patches_n * 2; // bf16
-        let mut patches = self.alloc_bytes(patches_bytes)?;
+        let patches = self.alloc_bytes(patches_bytes)?;
 
         let in_buf = input.buffer_opt().ok_or_else(|| {
             fuel_ir::Error::Msg("conv2d_bf16_bytes: input is host-evicted; fault back first".into())
@@ -6708,9 +6708,9 @@ impl VulkanBackend {
             0,
             std::mem::size_of::<Im2ColParams>() as u64,
         );
-        let i_rb = [in_buf.raw() as u64];
-        let i_wb = [patches_buf.raw() as u64];
-        let im2col_wg = (total + 255) / 256;
+        let i_rb = [in_buf.raw()];
+        let i_wb = [patches_buf.raw()];
+        let im2col_wg = total.div_ceil(256);
         self.record_dispatch_batched(
             "conv2d_im2col_bf16",
             &self.pipelines.conv2d_im2col_bf16_pipeline,
@@ -6793,11 +6793,11 @@ impl VulkanBackend {
             0,
             mm_params_size,
         );
-        let mm_rb = [w_buf.raw() as u64, patches_buf.raw() as u64];
-        let mm_wb = [out_buf.raw() as u64];
+        let mm_rb = [w_buf.raw(), patches_buf.raw()];
+        let mm_wb = [out_buf.raw()];
 
-        let gx = ((n + 63) / 64) as u32;
-        let gy = ((m + 15) / 16) as u32;
+        let gx = n.div_ceil(64) as u32;
+        let gy = m.div_ceil(16) as u32;
         let gz = s.batch as u32;
         self.record_dispatch_batched(
             "conv2d.matmul_coop_bf16",
@@ -6852,7 +6852,7 @@ impl VulkanBackend {
         let k_dim = s.c_in_per_group() * s.k_h * s.k_w;
         let n = h_out * w_out;
 
-        if m < 16 || n < 16 || m % 16 != 0 || n % 16 != 0 {
+        if m < 16 || n < 16 || !m.is_multiple_of(16) || !n.is_multiple_of(16) {
             fuel_ir::bail!(
                 "conv2d_f16_bytes: coop tile requires c_out >= 16, h_out*w_out >= 16, \
                  c_out % 16 == 0, h_out*w_out % 16 == 0; got c_out={m}, h_out*w_out={n}",
@@ -6879,7 +6879,7 @@ impl VulkanBackend {
 
         let patches_n = s.im2col_len();
         let patches_bytes = patches_n * 2;
-        let mut patches = self.alloc_bytes(patches_bytes)?;
+        let patches = self.alloc_bytes(patches_bytes)?;
 
         let in_buf = input.buffer_opt().ok_or_else(|| {
             fuel_ir::Error::Msg("conv2d_f16_bytes: input is host-evicted; fault back first".into())
@@ -6958,9 +6958,9 @@ impl VulkanBackend {
             0,
             std::mem::size_of::<Im2ColParams>() as u64,
         );
-        let i_rb = [in_buf.raw() as u64];
-        let i_wb = [patches_buf.raw() as u64];
-        let im2col_wg = (total + 255) / 256;
+        let i_rb = [in_buf.raw()];
+        let i_wb = [patches_buf.raw()];
+        let im2col_wg = total.div_ceil(256);
         self.record_dispatch_batched(
             "conv2d_im2col_bf16",
             &self.pipelines.conv2d_im2col_bf16_pipeline,
@@ -7041,11 +7041,11 @@ impl VulkanBackend {
             0,
             mm_params_size,
         );
-        let mm_rb = [w_buf.raw() as u64, patches_buf.raw() as u64];
-        let mm_wb = [out_buf.raw() as u64];
+        let mm_rb = [w_buf.raw(), patches_buf.raw()];
+        let mm_wb = [out_buf.raw()];
 
-        let gx = ((n + 63) / 64) as u32;
-        let gy = ((m + 15) / 16) as u32;
+        let gx = n.div_ceil(64) as u32;
+        let gy = m.div_ceil(16) as u32;
         let gz = s.batch as u32;
         self.record_dispatch_batched(
             "conv2d.matmul_coop_f16",
@@ -7206,9 +7206,9 @@ impl VulkanBackend {
             std::mem::size_of::<CParams>() as u64,
         );
 
-        let groups = ((out_elems as u32 + 63) / 64).max(1);
-        let rb = [a_buf.raw() as u64, b_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let groups = (out_elems as u32).div_ceil(64).max(1);
+        let rb = [a_buf.raw(), b_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             "concat_along_dim_f32_bytes",
             &self.pipelines.concat_along_dim_pipeline,
@@ -7284,7 +7284,7 @@ impl VulkanBackend {
         last_dim: usize,
         eps: f64,
     ) -> fuel_ir::Result<()> {
-        if last_dim % 2 != 0 {
+        if !last_dim.is_multiple_of(2) {
             fuel_ir::bail!(
                 "layer_norm_last_dim_backward_bf16_bytes: last_dim must be even (lane-pair); got {last_dim}",
             );
@@ -7420,8 +7420,8 @@ impl VulkanBackend {
             dx.len_bytes() as u64,
         );
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
-        let rb = [x_buf.raw() as u64, g_buf.raw() as u64];
-        let wb = [dx_buf.raw() as u64];
+        let rb = [x_buf.raw(), g_buf.raw()];
+        let wb = [dx_buf.raw()];
         self.record_dispatch_batched(
             op_name,
             pipeline,
@@ -7490,7 +7490,7 @@ impl VulkanBackend {
         last_dim: usize,
         eps: f64,
     ) -> fuel_ir::Result<()> {
-        if last_dim % 2 != 0 {
+        if !last_dim.is_multiple_of(2) {
             fuel_ir::bail!(
                 "layer_norm_last_dim_bf16_bytes: last_dim must be even (lane-pair); got {last_dim}",
             );
@@ -7616,8 +7616,8 @@ impl VulkanBackend {
             out.len_bytes() as u64,
         );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
-        let rb = [in_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [in_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             op_name,
             pipeline,
@@ -7683,10 +7683,10 @@ impl VulkanBackend {
                 indices.len_bytes(),
             );
         }
-        if elem_bytes == 2 && n_out % 2 != 0 {
+        if elem_bytes == 2 && !n_out.is_multiple_of(2) {
             fuel_ir::bail!("gather_bytes b2: n_out ({n_out}) must be even (pair-thread)",);
         }
-        if elem_bytes == 1 && n_out % 4 != 0 {
+        if elem_bytes == 1 && !n_out.is_multiple_of(4) {
             fuel_ir::bail!("gather_bytes b1: n_out ({n_out}) must be a multiple of 4",);
         }
 
@@ -7784,8 +7784,8 @@ impl VulkanBackend {
         desc.write_buffer(4, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
 
         let groups = Self::workgroups(n_dispatch);
-        let rb = [src_buf.raw() as u64, idx_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [src_buf.raw(), idx_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             op_name,
             pipeline,
@@ -7955,11 +7955,11 @@ impl VulkanBackend {
 
         let groups = Self::workgroups(n_src);
         let rb = [
-            idx_buf.raw() as u64,
-            src_buf.raw() as u64,
-            out_buf.raw() as u64,
+            idx_buf.raw(),
+            src_buf.raw(),
+            out_buf.raw(),
         ];
-        let wb = [out_buf.raw() as u64];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             "scatter_add_f64_bytes",
             &self.pipelines.scatter_add_f64_pipeline,
@@ -8099,11 +8099,11 @@ impl VulkanBackend {
         }
 
         let base_buf = base.buffer_opt().ok_or_else(|| {
-            fuel_ir::Error::Msg(format!("{debug_name}: base host-evicted").into())
+            fuel_ir::Error::Msg(format!("{debug_name}: base host-evicted"))
         })?;
         let out_buf_for_copy = out
             .buffer_opt()
-            .ok_or_else(|| fuel_ir::Error::Msg(format!("{debug_name}: out host-evicted").into()))?;
+            .ok_or_else(|| fuel_ir::Error::Msg(format!("{debug_name}: out host-evicted")))?;
         self.flush_pending()?;
         let copy_size = need_base as u64;
         self.queue
@@ -8148,13 +8148,13 @@ impl VulkanBackend {
         let (pbuf, pmem) = self.upload_params(&p)?;
 
         let idx_buf = indices.buffer_opt().ok_or_else(|| {
-            fuel_ir::Error::Msg(format!("{debug_name}: indices host-evicted").into())
+            fuel_ir::Error::Msg(format!("{debug_name}: indices host-evicted"))
         })?;
         let src_buf = src
             .buffer_opt()
-            .ok_or_else(|| fuel_ir::Error::Msg(format!("{debug_name}: src host-evicted").into()))?;
+            .ok_or_else(|| fuel_ir::Error::Msg(format!("{debug_name}: src host-evicted")))?;
         let out_buf = out.buffer_opt().ok_or_else(|| {
-            fuel_ir::Error::Msg(format!("{debug_name}: out host-evicted after copy?").into())
+            fuel_ir::Error::Msg(format!("{debug_name}: out host-evicted after copy?"))
         })?;
 
         // Round descriptor ranges to u32 multiples so robust-access
@@ -8180,11 +8180,11 @@ impl VulkanBackend {
 
         let groups = Self::workgroups(n_src);
         let rb = [
-            idx_buf.raw() as u64,
-            src_buf.raw() as u64,
-            out_buf.raw() as u64,
+            idx_buf.raw(),
+            src_buf.raw(),
+            out_buf.raw(),
         ];
-        let wb = [out_buf.raw() as u64];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             debug_name,
             pipeline,
@@ -8366,11 +8366,11 @@ impl VulkanBackend {
         // `out` is both read and written (atomic-add), so list it in BOTH
         // rb (read barrier source) and wb (write barrier target).
         let rb = [
-            idx_buf.raw() as u64,
-            src_buf.raw() as u64,
-            out_buf.raw() as u64,
+            idx_buf.raw(),
+            src_buf.raw(),
+            out_buf.raw(),
         ];
-        let wb = [out_buf.raw() as u64];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             "scatter_add_f32_bytes",
             &self.pipelines.scatter_add_f32_pipeline,
@@ -8399,7 +8399,7 @@ impl VulkanBackend {
         outer_count: usize,
         last_dim: usize,
     ) -> fuel_ir::Result<()> {
-        if input_dtype == DType::BF16 && last_dim % 2 != 0 {
+        if input_dtype == DType::BF16 && !last_dim.is_multiple_of(2) {
             fuel_ir::bail!("{op_name}: last_dim must be even on bf16 (lane-pair); got {last_dim}",);
         }
         let elem_bytes = match input_dtype {
@@ -8485,8 +8485,8 @@ impl VulkanBackend {
             out.len_bytes() as u64,
         );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
-        let rb = [in_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [in_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             op_name,
             pipeline,
@@ -8674,11 +8674,11 @@ impl VulkanBackend {
 
         // Copy base → out.
         let base_buf = base.buffer_opt().ok_or_else(|| {
-            fuel_ir::Error::Msg(format!("{debug_name}: base host-evicted").into())
+            fuel_ir::Error::Msg(format!("{debug_name}: base host-evicted"))
         })?;
         let out_buf_for_copy = out
             .buffer_opt()
-            .ok_or_else(|| fuel_ir::Error::Msg(format!("{debug_name}: out host-evicted").into()))?;
+            .ok_or_else(|| fuel_ir::Error::Msg(format!("{debug_name}: out host-evicted")))?;
         self.flush_pending()?;
         let copy_size = need_base as u64;
         self.queue
@@ -8713,13 +8713,13 @@ impl VulkanBackend {
         let (pbuf, pmem) = self.upload_params(&p)?;
 
         let idx_buf = indices.buffer_opt().ok_or_else(|| {
-            fuel_ir::Error::Msg(format!("{debug_name}: indices host-evicted").into())
+            fuel_ir::Error::Msg(format!("{debug_name}: indices host-evicted"))
         })?;
         let src_buf = src
             .buffer_opt()
-            .ok_or_else(|| fuel_ir::Error::Msg(format!("{debug_name}: src host-evicted").into()))?;
+            .ok_or_else(|| fuel_ir::Error::Msg(format!("{debug_name}: src host-evicted")))?;
         let out_buf = out.buffer_opt().ok_or_else(|| {
-            fuel_ir::Error::Msg(format!("{debug_name}: out host-evicted after copy?").into())
+            fuel_ir::Error::Msg(format!("{debug_name}: out host-evicted after copy?"))
         })?;
 
         let (src_bind_len, out_bind_len) = if round_buffers {
@@ -8749,11 +8749,11 @@ impl VulkanBackend {
         let total = n_src;
         let groups = Self::workgroups(total);
         let rb = [
-            idx_buf.raw() as u64,
-            src_buf.raw() as u64,
-            out_buf.raw() as u64,
+            idx_buf.raw(),
+            src_buf.raw(),
+            out_buf.raw(),
         ];
-        let wb = [out_buf.raw() as u64];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             debug_name,
             pipeline,
@@ -8867,8 +8867,8 @@ impl VulkanBackend {
             out.len_bytes() as u64,
         );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
-        let rb = [in_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [in_buf.raw()];
+        let wb = [out_buf.raw()];
         let groups = Self::workgroups(total_out);
         self.record_dispatch_batched(
             op_name,
@@ -9042,8 +9042,8 @@ impl VulkanBackend {
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
 
         let groups = Self::workgroups(n_out);
-        let rb = [go_buf.raw() as u64, gi_buf.raw() as u64];
-        let wb = [gi_buf.raw() as u64];
+        let rb = [go_buf.raw(), gi_buf.raw()];
+        let wb = [gi_buf.raw()];
         self.record_dispatch_batched(
             op_name,
             pipeline,
@@ -9099,10 +9099,10 @@ impl VulkanBackend {
                 grad_in.len_bytes(),
             );
         }
-        if elem_bytes == 2 && n_in % 2 != 0 {
+        if elem_bytes == 2 && !n_in.is_multiple_of(2) {
             fuel_ir::bail!("pad_backward_const_bytes b2: n_in ({n_in}) must be even (pair-thread)",);
         }
-        if elem_bytes == 1 && n_in % 4 != 0 {
+        if elem_bytes == 1 && !n_in.is_multiple_of(4) {
             fuel_ir::bail!("pad_backward_const_bytes b1: n_in ({n_in}) must be a multiple of 4",);
         }
 
@@ -9196,8 +9196,8 @@ impl VulkanBackend {
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
 
         let groups = Self::workgroups(n_dispatch);
-        let rb = [go_buf.raw() as u64];
-        let wb = [gi_buf.raw() as u64];
+        let rb = [go_buf.raw()];
+        let wb = [gi_buf.raw()];
         self.record_dispatch_batched(
             op_name,
             pipeline,
@@ -9257,10 +9257,10 @@ impl VulkanBackend {
                 dst.len_bytes(),
             );
         }
-        if elem_bytes == 2 && n_out % 2 != 0 {
+        if elem_bytes == 2 && !n_out.is_multiple_of(2) {
             fuel_ir::bail!("pad_replicate_bytes b2: n_out ({n_out}) must be even",);
         }
-        if elem_bytes == 1 && n_out % 4 != 0 {
+        if elem_bytes == 1 && !n_out.is_multiple_of(4) {
             fuel_ir::bail!("pad_replicate_bytes b1: n_out ({n_out}) must be a multiple of 4",);
         }
 
@@ -9352,8 +9352,8 @@ impl VulkanBackend {
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
 
         let groups = Self::workgroups(n_dispatch);
-        let rb = [src_buf.raw() as u64];
-        let wb = [dst_buf.raw() as u64];
+        let rb = [src_buf.raw()];
+        let wb = [dst_buf.raw()];
         self.record_dispatch_batched(
             op_name,
             pipeline,
@@ -9434,10 +9434,10 @@ impl VulkanBackend {
                 dst.len_bytes(),
             );
         }
-        if elem_bytes == 2 && n_out % 2 != 0 {
+        if elem_bytes == 2 && !n_out.is_multiple_of(2) {
             fuel_ir::bail!("pad_reflect_bytes b2: n_out ({n_out}) must be even",);
         }
-        if elem_bytes == 1 && n_out % 4 != 0 {
+        if elem_bytes == 1 && !n_out.is_multiple_of(4) {
             fuel_ir::bail!("pad_reflect_bytes b1: n_out ({n_out}) must be a multiple of 4",);
         }
 
@@ -9529,8 +9529,8 @@ impl VulkanBackend {
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
 
         let groups = Self::workgroups(n_dispatch);
-        let rb = [src_buf.raw() as u64];
-        let wb = [dst_buf.raw() as u64];
+        let rb = [src_buf.raw()];
+        let wb = [dst_buf.raw()];
         self.record_dispatch_batched(
             op_name,
             pipeline,
@@ -9582,10 +9582,10 @@ impl VulkanBackend {
                 mask.len_bytes(),
             );
         }
-        if elem_bytes == 2 && n_elem % 2 != 0 {
+        if elem_bytes == 2 && !n_elem.is_multiple_of(2) {
             fuel_ir::bail!("masked_fill_bytes b2: n_elem ({n_elem}) must be even",);
         }
-        if elem_bytes == 1 && n_elem % 4 != 0 {
+        if elem_bytes == 1 && !n_elem.is_multiple_of(4) {
             fuel_ir::bail!("masked_fill_bytes b1: n_elem ({n_elem}) must be a multiple of 4",);
         }
 
@@ -9731,8 +9731,8 @@ impl VulkanBackend {
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
 
         let groups = Self::workgroups(n_dispatch);
-        let rb = [in_buf.raw() as u64, mask_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [in_buf.raw(), mask_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             op_name,
             pipeline,
@@ -9802,10 +9802,10 @@ impl VulkanBackend {
             );
         }
 
-        if elem_bytes == 2 && n_out % 2 != 0 {
+        if elem_bytes == 2 && !n_out.is_multiple_of(2) {
             fuel_ir::bail!("pad_const_bytes b2: n_out ({n_out}) must be even (pair-thread)",);
         }
-        if elem_bytes == 1 && n_out % 4 != 0 {
+        if elem_bytes == 1 && !n_out.is_multiple_of(4) {
             fuel_ir::bail!(
                 "pad_const_bytes b1: n_out ({n_out}) must be a multiple of 4 (quad-thread)",
             );
@@ -9969,8 +9969,8 @@ impl VulkanBackend {
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
 
         let groups = Self::workgroups(n_dispatch);
-        let rb = [src_buf.raw() as u64];
-        let wb = [dst_buf.raw() as u64];
+        let rb = [src_buf.raw()];
+        let wb = [dst_buf.raw()];
         self.record_dispatch_batched(
             op_name,
             pipeline,
@@ -10043,7 +10043,7 @@ impl VulkanBackend {
         outer_count: usize,
         last_dim: usize,
     ) -> fuel_ir::Result<()> {
-        if last_dim % 2 != 0 {
+        if !last_dim.is_multiple_of(2) {
             fuel_ir::bail!(
                 "softmax_last_dim_backward_bf16_bytes: last_dim must be even \
                  (lane-pair packing); got {last_dim}",
@@ -10156,8 +10156,8 @@ impl VulkanBackend {
             dx.len_bytes() as u64,
         );
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
-        let rb = [y_buf.raw() as u64, g_buf.raw() as u64];
-        let wb = [dx_buf.raw() as u64];
+        let rb = [y_buf.raw(), g_buf.raw()];
+        let wb = [dx_buf.raw()];
         self.record_dispatch_batched(
             op_name,
             pipeline,
@@ -10418,9 +10418,9 @@ impl VulkanBackend {
             std::mem::size_of::<CParams>() as u64,
         );
 
-        let groups = ((out_elems as u32 + 63) / 64).max(1);
-        let rb = [a_buf.raw() as u64, b_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let groups = (out_elems as u32).div_ceil(64).max(1);
+        let rb = [a_buf.raw(), b_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             op_name,
             pipeline,
@@ -10510,8 +10510,8 @@ impl VulkanBackend {
                 out.len_bytes() as u64,
             );
             desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
-            let rb = [in_buf.raw() as u64];
-            let wb = [out_buf.raw() as u64];
+            let rb = [in_buf.raw()];
+            let wb = [out_buf.raw()];
             self.record_dispatch_batched(
                 op_name,
                 &self.pipelines.reduce_pipeline,
@@ -10577,8 +10577,8 @@ impl VulkanBackend {
                 out.len_bytes() as u64,
             );
             desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
-            let rb = [in_buf.raw() as u64];
-            let wb = [out_buf.raw() as u64];
+            let rb = [in_buf.raw()];
+            let wb = [out_buf.raw()];
             self.record_dispatch_batched(
                 op_name,
                 &self.pipelines.reduce_last_dim_pipeline,
@@ -10671,8 +10671,8 @@ impl VulkanBackend {
                 out.len_bytes() as u64,
             );
             desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
-            let rb = [in_buf.raw() as u64];
-            let wb = [out_buf.raw() as u64];
+            let rb = [in_buf.raw()];
+            let wb = [out_buf.raw()];
             self.record_dispatch_batched(
                 op_name,
                 &self.pipelines.reduce_f16_pipeline,
@@ -10737,8 +10737,8 @@ impl VulkanBackend {
                 out.len_bytes() as u64,
             );
             desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
-            let rb = [in_buf.raw() as u64];
-            let wb = [out_buf.raw() as u64];
+            let rb = [in_buf.raw()];
+            let wb = [out_buf.raw()];
             self.record_dispatch_batched(
                 op_name,
                 &self.pipelines.reduce_last_dim_f16_pipeline,
@@ -10824,8 +10824,8 @@ impl VulkanBackend {
             );
             desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out_bind_len);
             desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
-            let rb = [in_buf.raw() as u64];
-            let wb = [out_buf.raw() as u64];
+            let rb = [in_buf.raw()];
+            let wb = [out_buf.raw()];
             self.record_dispatch_batched(
                 op_name,
                 &self.pipelines.reduce_bf16_pipeline,
@@ -10848,7 +10848,7 @@ impl VulkanBackend {
             if n_rows == 0 || n_cols == 0 {
                 fuel_ir::bail!("{op_name}: degenerate shape (n_rows={n_rows}, n_cols={n_cols})",);
             }
-            if n_cols % 2 != 0 {
+            if !n_cols.is_multiple_of(2) {
                 fuel_ir::bail!(
                     "{op_name}: bf16 last-dim must be even (lane-pair packing); got {n_cols}",
                 );
@@ -10893,8 +10893,8 @@ impl VulkanBackend {
             );
             desc.write_buffer(1, DescriptorType::STORAGE_BUFFER, out_buf, 0, out_bind_len);
             desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
-            let rb = [in_buf.raw() as u64];
-            let wb = [out_buf.raw() as u64];
+            let rb = [in_buf.raw()];
+            let wb = [out_buf.raw()];
             self.record_dispatch_batched(
                 op_name,
                 &self.pipelines.reduce_last_dim_bf16_pipeline,
@@ -10973,8 +10973,8 @@ impl VulkanBackend {
                 out.len_bytes() as u64,
             );
             desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
-            let rb = [in_buf.raw() as u64];
-            let wb = [out_buf.raw() as u64];
+            let rb = [in_buf.raw()];
+            let wb = [out_buf.raw()];
             self.record_dispatch_batched(
                 op_name,
                 &self.pipelines.reduce_f64_pipeline,
@@ -11039,8 +11039,8 @@ impl VulkanBackend {
                 out.len_bytes() as u64,
             );
             desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
-            let rb = [in_buf.raw() as u64];
-            let wb = [out_buf.raw() as u64];
+            let rb = [in_buf.raw()];
+            let wb = [out_buf.raw()];
             self.record_dispatch_batched(
                 op_name,
                 &self.pipelines.reduce_last_dim_f64_pipeline,
@@ -11169,8 +11169,8 @@ impl VulkanBackend {
         );
 
         let groups = Self::workgroups(out_size);
-        let rb = [src_buf.raw() as u64, ids_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [src_buf.raw(), ids_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             "index_select_f32_bytes",
             &self.pipelines.index_select_pipeline,
@@ -11226,7 +11226,7 @@ impl VulkanBackend {
         n_indices: usize,
         inner_count: usize,
     ) -> fuel_ir::Result<()> {
-        if inner_count % 2 != 0 {
+        if !inner_count.is_multiple_of(2) {
             fuel_ir::bail!(
                 "index_select_bf16_bytes: inner_count must be even (pair-thread \
                  packing); got {inner_count}",
@@ -11373,8 +11373,8 @@ impl VulkanBackend {
         // processes 2 bf16 lanes per iteration.
         let thread_count = if pair_thread { out_size / 2 } else { out_size };
         let groups = Self::workgroups(thread_count);
-        let rb = [src_buf.raw() as u64, ids_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [src_buf.raw(), ids_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             op_name,
             pipeline,
@@ -11416,7 +11416,7 @@ impl VulkanBackend {
         }
         let seq = dims[rank - 2] as u32;
         let head_dim = dims[rank - 1] as u32;
-        if head_dim % 2 != 0 {
+        if !head_dim.is_multiple_of(2) {
             fuel_ir::bail!("VulkanBackend::rope_f32_bytes: head_dim must be even, got {head_dim}",);
         }
         let outer: u32 = dims[..rank - 2].iter().product::<usize>().max(1) as u32;
@@ -11547,13 +11547,13 @@ impl VulkanBackend {
         );
         desc.write_buffer(4, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
 
-        let groups = ((total + 63) / 64).max(1);
+        let groups = total.div_ceil(64).max(1);
         let rb = [
-            x_buf.raw() as u64,
-            cos_buf.raw() as u64,
-            sin_buf.raw() as u64,
+            x_buf.raw(),
+            cos_buf.raw(),
+            sin_buf.raw(),
         ];
-        let wb = [out_buf.raw() as u64];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             "rope_f32_bytes",
             &self.pipelines.rope_pipeline,
@@ -11612,7 +11612,7 @@ impl VulkanBackend {
         }
         let seq = dims[rank - 2] as u32;
         let head_dim = dims[rank - 1] as u32;
-        if head_dim % 4 != 0 {
+        if !head_dim.is_multiple_of(4) {
             fuel_ir::bail!(
                 "VulkanBackend::rope_bf16_bytes: head_dim must be a multiple of 4 \
                  (pair-thread packing); got {head_dim}",
@@ -11744,13 +11744,13 @@ impl VulkanBackend {
         );
         desc.write_buffer(4, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
 
-        let groups = ((pairs_total + 63) / 64).max(1);
+        let groups = pairs_total.div_ceil(64).max(1);
         let rb = [
-            x_buf.raw() as u64,
-            cos_buf.raw() as u64,
-            sin_buf.raw() as u64,
+            x_buf.raw(),
+            cos_buf.raw(),
+            sin_buf.raw(),
         ];
-        let wb = [out_buf.raw() as u64];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             "rope_bf16_bytes",
             &self.pipelines.rope_bf16_pipeline,
@@ -11811,7 +11811,7 @@ impl VulkanBackend {
         }
         let seq = dims[rank - 2] as u32;
         let head_dim = dims[rank - 1] as u32;
-        if head_dim % 2 != 0 {
+        if !head_dim.is_multiple_of(2) {
             fuel_ir::bail!("{op_name}: head_dim must be even, got {head_dim}");
         }
         let outer: u32 = dims[..rank - 2].iter().product::<usize>().max(1) as u32;
@@ -11938,13 +11938,13 @@ impl VulkanBackend {
         );
         desc.write_buffer(4, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
 
-        let groups = ((total + 63) / 64).max(1);
+        let groups = total.div_ceil(64).max(1);
         let rb = [
-            x_buf.raw() as u64,
-            cos_buf.raw() as u64,
-            sin_buf.raw() as u64,
+            x_buf.raw(),
+            cos_buf.raw(),
+            sin_buf.raw(),
         ];
-        let wb = [out_buf.raw() as u64];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             op_name,
             pipeline,
@@ -12109,8 +12109,8 @@ impl VulkanBackend {
             out.len_bytes() as u64,
         );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
-        let rb = [in_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [in_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             op_name,
             pipeline,
@@ -12136,7 +12136,7 @@ impl VulkanBackend {
     ) -> fuel_ir::Result<()> {
         let elem_size = 2usize;
         let n = input.len_bytes() / elem_size;
-        if n % 2 != 0 {
+        if !n.is_multiple_of(2) {
             fuel_ir::bail!(
                 "VulkanBackend::{op_name}: bf16 element count {n} must be even (pair-packed kernel)"
             );
@@ -12196,8 +12196,8 @@ impl VulkanBackend {
             out.len_bytes() as u64,
         );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
-        let rb = [in_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [in_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             op_name,
             &self.pipelines.unary_bf16_pipeline,
@@ -12233,7 +12233,7 @@ impl VulkanBackend {
                 lb.shape()
             );
         }
-        if out_elem % 2 != 0 {
+        if !out_elem.is_multiple_of(2) {
             fuel_ir::bail!("VulkanBackend::{op_name}: bf16 element count {out_elem} must be even");
         }
         let rank = out_dims.len();
@@ -12350,8 +12350,8 @@ impl VulkanBackend {
             out.len_bytes() as u64,
         );
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
-        let rb = [a_buf.raw() as u64, b_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [a_buf.raw(), b_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             op_name,
             &self.pipelines.binary_bf16_pipeline,
@@ -12384,7 +12384,7 @@ impl VulkanBackend {
         let op_name = if keep_upper { "triu" } else { "tril" };
         // b2 alignment: even cols (kernel processes pairs on the last
         // axis, so each pair must fit in one u32).
-        if byte_width == 2 && cols % 2 != 0 {
+        if byte_width == 2 && !cols.is_multiple_of(2) {
             fuel_ir::bail!("triangular_bytes b2: cols ({cols}) must be even (pair-packed kernel)",);
         }
         let total = batch_count
@@ -12485,8 +12485,8 @@ impl VulkanBackend {
             out.len_bytes() as u64,
         );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
-        let rb = [in_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [in_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             op_name,
             pipeline,
@@ -12618,8 +12618,8 @@ impl VulkanBackend {
             out.len_bytes() as u64,
         );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
-        let rb = [in_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [in_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             "flip",
             pipeline,
@@ -12764,8 +12764,8 @@ impl VulkanBackend {
             out.len_bytes() as u64,
         );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
-        let rb = [in_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [in_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             "roll",
             pipeline,
@@ -12975,8 +12975,8 @@ impl VulkanBackend {
             out.len_bytes() as u64,
         );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
-        let rb = [in_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [in_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             op_label,
             pipeline,
@@ -13103,8 +13103,8 @@ impl VulkanBackend {
         let sd_byte_size = (sd.len() * 4) as u64;
         desc.write_buffer(2, DescriptorType::STORAGE_BUFFER, &sd_buf, 0, sd_byte_size);
         desc.write_buffer(3, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 16);
-        let rb = [in_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [in_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             "strided_copy_signed",
             pipeline,
@@ -13131,7 +13131,7 @@ impl VulkanBackend {
         out: &mut VulkanStorageBytes,
         n: usize,
     ) -> fuel_ir::Result<()> {
-        if n % 4 != 0 {
+        if !n.is_multiple_of(4) {
             fuel_ir::bail!(
                 "cast_f8e4m3_bytes: element count {n} must be a multiple of 4 \
                  (kernel packs 4 F8E4M3 per u32)"
@@ -13226,8 +13226,8 @@ impl VulkanBackend {
             out.len_bytes() as u64,
         );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, 8);
-        let rb = [in_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [in_buf.raw()];
+        let wb = [out_buf.raw()];
         // Each thread does 4 elements.
         let groups = Self::workgroups(n / 4);
         self.record_dispatch_batched(
@@ -13357,8 +13357,8 @@ impl VulkanBackend {
             out.len_bytes() as u64,
         );
         desc.write_buffer(2, DescriptorType::UNIFORM_BUFFER, &pbuf, 0, params_size);
-        let rb = [in_buf.raw() as u64];
-        let wb = [out_buf.raw() as u64];
+        let rb = [in_buf.raw()];
+        let wb = [out_buf.raw()];
         self.record_dispatch_batched(
             op_name,
             &self.pipelines.unary_pipeline,
@@ -13938,7 +13938,7 @@ impl VulkanBackend {
         }
         const BLCK_SIZE: usize = 32;
         const BYTES_PER_BLOCK: usize = 34;
-        if n_elements % BLCK_SIZE != 0 {
+        if !n_elements.is_multiple_of(BLCK_SIZE) {
             fuel_ir::bail!(
                 "quantize_q8_0: n_elements {n_elements} must be multiple of {BLCK_SIZE}"
             );
@@ -13946,7 +13946,7 @@ impl VulkanBackend {
         let n_blocks = n_elements / BLCK_SIZE;
         let out_bytes = n_blocks * BYTES_PER_BLOCK;
         // Round up to u32 multiple (4 bytes per u32).
-        let out_u32_len = (out_bytes + 3) / 4;
+        let out_u32_len = out_bytes.div_ceil(4);
         let out = self.alloc_device((out_u32_len * 4) as u64, out_u32_len, DType::U32)?;
 
         #[repr(C)]
@@ -13966,7 +13966,7 @@ impl VulkanBackend {
         let (pbuf, pmem) = self.upload_params(&p)?;
 
         // 64 threads per workgroup, one thread per block.
-        let groups = ((n_blocks + 63) / 64) as u32;
+        let groups = n_blocks.div_ceil(64) as u32;
         self.dispatch_2buf(
             "quantize_q8_0",
             &self.pipelines.quantize_q8_0_pipeline,
