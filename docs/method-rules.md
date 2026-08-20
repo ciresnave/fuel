@@ -478,6 +478,20 @@ first getting hurt by it.
 
 **So one question — *if this mechanism silently became a no-op, which number would move?* — and the answer names the remedy: a fixture that discriminates (a), or an assertion about the foundation (b). "None" means you have not instrumented the mechanism at all, only its surroundings.**
 
+
+
+**⚠️ (c) A THIRD SHAPE, AND THE ARCHITECT PRAISED AN INSTANCE OF IT BEFORE IT WAS CAUGHT (2026-08-20): AN ASSERTION KEYED TO A MESSAGE **STRING** CANNOT DETECT A BEHAVIOUR CHANGE THAT REWRITES THE MESSAGE.**
+
+A characterisation test pinned the *current wrong* behaviour of a verifier and carried a "stale detector" — `assert!(!detail.contains("candidate 1 vs reference 2"))` — whose job was to fail once the verifier was fixed, forcing the fix to arrive with its own assertion. **The fixed verifier emitted a DIFFERENT sentence, so the negative assertion held VACUOUSLY. The test passed before AND after.** It was called *"the best-designed test I have seen today"* by the architect roughly an hour before its author withdrew it.
+
+**Same family as a report line that stopped depending on its measurement — aimed at a test instead of at a log.** A negative assertion over prose is satisfied by any rewording, **including the rewording the fix itself performs**, so it is at its weakest exactly when it is supposed to fire.
+
+**REMEDY: assert on NUMBERS the wording cannot carry.** The replacement pins that `1.0f16` (`0x3C00`) and `2.0f16` (`0x4000`) are **exactly 1024 f16 ULP** apart — **from both sides** (passes 1024, fails 1023), plus an identical-buffers control so a verifier that always reported a large distance cannot satisfy it. **1024 is unreachable by reading those 8 bytes as two f32s: it discriminates by construction rather than by wording.**
+
+**AND THE SABOTAGE OF THE REPLACEMENT WAS ITSELF INVALID ON THE FIRST TRY** — widening a width field did not reproduce the defect, because the decoder reads by dtype and merely compared fewer elements; the test passed, and reading that as *"the replacement doesn't discriminate either"* would have been a second wrong conclusion in the opposite direction. **The valid sabotage decodes every output as `F32`.** **A positive control can itself be inert — twice in one fix.**
+
+**Companion rule from the same change, on the opposite failure: REFUSING A CASE THE OLD CODE ANSWERED CORRECTLY IS A REGRESSION, NOT A SAFETY MEASURE.** A first draft refused two bound kinds as "not expressible from a total-order key"; they were expressible from the *value*, which the author had not carried yet. It broke a pre-existing test, which is how it was found. **"Refuse rather than approximate" is a rule about UNIMPLEMENTED things, not a licence for not implementing them.**
+
 **Why this is not merely "write better tests": in both instances the suite was green, the count was correct, and the work was real. Nothing in the output was wrong. The defect is that THE OUTPUT WOULD HAVE BEEN IDENTICAL HAD THE MECHANISM DONE NOTHING** — the same property as an unheld mutex, a zeroed probe target, and an unrun CI job. **Much of this file is one defect wearing different clothes: a result that cannot distinguish success from absence.**
 
 ---
