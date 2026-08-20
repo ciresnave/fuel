@@ -12,8 +12,8 @@
 //!
 //! 2. [`im2col`] — the input-rearrangement step that lets a vendor
 //!    BLAS gemm (AOCL, oneMKL, GPU matmul shader) carry conv2d's
-//!    arithmetic. After `im2col` writes `[batch * groups, c_in/groups
-//!    * k_h * k_w, h_out * w_out]`, the conv reduces to a per-group
+//!    arithmetic. After `im2col` writes `[batch * groups, c_in/groups *
+//!    k_h * k_w, h_out * w_out]`, the conv reduces to a per-group
 //!    matmul: `weight[g] @ patches[g] -> out[g]`. The matmul step is
 //!    NOT in this crate — callers plug their own.
 //!
@@ -93,10 +93,10 @@ impl ConvShape {
         if self.groups == 0 {
             return Err("groups must be ≥ 1");
         }
-        if self.c_in % self.groups != 0 {
+        if !self.c_in.is_multiple_of(self.groups) {
             return Err("c_in must be divisible by groups");
         }
-        if self.c_out % self.groups != 0 {
+        if !self.c_out.is_multiple_of(self.groups) {
             return Err("c_out must be divisible by groups");
         }
         if self.stride.0 == 0 || self.stride.1 == 0 {
@@ -423,7 +423,7 @@ mod tests {
         // Channel 1: zero
         let mut w = vec![0.0_f32; s.c_out * s.c_in_per_group() * s.k_h * s.k_w];
         // Channel 0's kernel center
-        w[(0 * 1 + 0) * 9 + 4] = 1.0;
+        w[4] = 1.0;
         // Channel 1's kernel: stays zero
 
         let x: Vec<f32> = (1..=18).map(|i| i as f32).collect();
