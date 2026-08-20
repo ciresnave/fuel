@@ -502,3 +502,31 @@ A lane paid a **66m26s** cold forge, then rebased 26 commits and checked that `t
 **PRACTICE: never infer warmth from a version pin or from a file's presence. If warmth matters (on this box a cold baracuda forge is 30-56 minutes), warm it with the SAME invocation you intend to run** — same `-p` set, same `--features`, same target kinds — **or budget cold.** And when allocating work on "whoever has a warm forge" grounds, **name the FEATURE SET, not just the crate**: an allocation that says "warm forge" is underspecified in precisely the way that produces this.
 
 **Corollary worth keeping about the cost: one cold forge under the RIGHT feature set is cheaper than a warm cache under the wrong one, which never helps and hides that it never helped.** The lane's own conclusion — *"my forge-verify cache was for the wrong feature set and never would have helped increments anyway"* — is the useful form: **the warm cache they thought they had was not merely stale, it was for a different question.**
+
+---
+
+## evidence-that-is-not-independent
+
+> **Index line (in CLAUDE.md):** Two artifacts agreeing is not two pieces of evidence **if one was written from the other** — and data that arrives ADJACENT to a question is not thereby the question's population. Both feel like corroboration and neither is.
+
+**Two mechanisms found 2026-08-20, by two different people, both producing a confident wrong answer from something that looked like support.**
+
+### (a) DERIVED CORROBORATION — the second copy was written from the first
+
+`CLAUDE.md` and `.github/workflows/rust-ci.yml:14-18` carried the **identical** false premise: that both metal crates are *"deliberately kept OFF `default-members` so a plain build works without Apple toolchains"*. Measured: **`fuel-metal-backend` IS in `default-members` and builds clean on Windows**; only `fuel-metal-kernels` is killed by `objc2`.
+
+**The doc-currency lane's framing is the rule: a reader who checks one against the other finds agreement and stops.** The agreement is worth nothing, because the second copy was derived from the first. **THAT IS STRICTLY WORSE THAN A SINGLE UNCORROBORATED CLAIM** — a lone claim invites verification; a matching pair closes the question.
+
+**Third instance in one day of a fact living in two places with one maintainer's attention.** The others: the `baracuda-kernelgen` pin (retraction in `Cargo.toml`, accusation left standing in `CLAUDE.md`), and a rename that updated a panic's own MESSAGE while leaving an allowlist entry quoting that message.
+
+**PRACTICE: when two artifacts agree, ask whether one was written FROM the other before counting it as confirmation. Independent corroboration means independently DERIVED, not merely separately STORED.**
+
+### (b) ADJACENT DATA ADOPTED AS THE POPULATION
+
+A lane reported five op families for the **bit-stable-blocked** class in the same message as a question about the **`max_ulp`-blocked** class. **The architect reasoned from the five to a conclusion about the 84 — and the two sets are DISJOINT.** One is the ops nothing could *probe*; the other is the ops whose declared *bound* is unbacked. **There was never a reason they should overlap; they arrived adjacent.**
+
+**This is specifically a COORDINATOR hazard, and worth naming as one: someone who does not run the measurements receives a SELECTION, and a selection presented together reads as one population.** The numbers in a lane's report were chosen for that report, not for the question you are about to ask of them.
+
+**PRACTICE: name the population before answering a question about it — out loud, in the reply. "The 84 are ops whose declared bound is unbacked" would have caught this before the reasoning started.** And when handing someone data plus a question, say which data the question ranges over.
+
+**Note the shape both share with the rest of this file: nothing in the OUTPUT looked wrong.** Two agreeing documents look like verification; two adjacent numbers look like one dataset. **The defect is in the provenance, which is not visible in the artifact.**
