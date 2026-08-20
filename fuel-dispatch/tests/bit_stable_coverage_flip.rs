@@ -455,7 +455,7 @@ fn gap_077_bit_stable_coverage_under_simulated_gap_058_flip() {
     // below back into a vacuity report that reads exactly like a clean one.
     assert!(
         bit_stable_entries > 0,
-        "the corpus is degenerate again: 0 of {entries} contract-derived CPU          entries are bit-stable. Every verdict below would then hold for the          WRONG reason — no key can lose a candidate it never had — and would be          indistinguishable from a clean result. Either the ledger lost its CPU          records or the query key drifted; do not relax this.",
+        "the corpus is degenerate again: 0 of {entries} contract-derived CPU entries are bit-stable. Every verdict below would then hold for the WRONG reason — no key can lose a candidate it never had — and would be indistinguishable from a clean result. Either the ledger lost its CPU records or the query key drifted; do not relax this.",
     );
 
     // Cause, not correlation: the entries are UNAUDITED because the V-FKC-9
@@ -486,10 +486,7 @@ fn gap_077_bit_stable_coverage_under_simulated_gap_058_flip() {
 
     // --- Report ------------------------------------------------------------
     eprintln!("\n=== GAP-077 bit-stable coverage differ ===");
-    eprintln!(
-        "scope            : CPU contracts only ({} files)",
-        contracts.len()
-    );
+    eprintln!("scope : CPU contracts only ({} files)", contracts.len());
     eprintln!("                   (CUDA/Vulkan link registries are feature-gated;");
     eprintln!("                    FKC-4.8-0001 is a fuel-cpu-backend commitment)");
     eprintln!("binding keys     : {}", cov_base.len());
@@ -509,7 +506,7 @@ fn gap_077_bit_stable_coverage_under_simulated_gap_058_flip() {
         lost_by_sabotage.len()
     );
     eprintln!(
-        "coverage map identical (baseline vs flipped)         : {}",
+        "coverage map identical (baseline vs flipped) : {}",
         cov_base == cov_flip
     );
     // Derived from the measurement, never hard-coded. The previous version of
@@ -673,6 +670,115 @@ fn assert_differ_discriminates() {
 /// Total number of V-FKC-9 ledger downgrade warnings emitted while importing
 /// the live CPU contracts — the direct evidence that the gate is what
 /// erases the declared bit-stable claims.
+/// **GAP-225 population census: WHAT actually blocks each downgraded CPU
+/// entry.** Reports, never asserts a threshold.
+///
+/// The number "424 `max_ulp`-blocked entries" was derived by subtraction —
+/// 623 contract-derived CPU entries minus the 199 that survive the ledger
+/// gate — and subtraction cannot say WHY the other 424 were downgraded.
+/// `gate_precision` collapses the whole guarantee if ANY of four claims is
+/// unbacked (`bit_stable_on_same_hardware`, `max_ulp`, `max_relative`,
+/// `max_absolute`), so a residue computed that way is a mixture, and at
+/// least one component is not `max_ulp` at all: 111 of 659 CPU registrations
+/// still have no probe recipe, so their BIT-STABLE claim is unearned too.
+///
+/// Designing a family taxonomy over an unverified population would produce a
+/// well-organised description of the wrong set — and a structured wrong
+/// answer invites less re-checking than the raw list it replaced.
+///
+/// **What this counts, named:** WARNINGS emitted at import, one per contract
+/// SECTION whose declared guarantee was downgraded — not table entries. A
+/// section fans over dtypes, so section-count and entry-count differ and
+/// must not be quoted for each other.
+#[test]
+fn gap_225_what_actually_blocks_the_downgraded_cpu_entries() {
+    let contracts = live_cpu_contracts();
+    let mut by_claim_set: Vec<(String, usize)> = Vec::new();
+    let mut total = 0usize;
+    let mut unparsed = 0usize;
+
+    for (path, text) in &contracts {
+        let provider = import_bundle_str(text, &CpuLinkRegistry)
+            .unwrap_or_else(|e| panic!("contract {path} must import: {e:?}"));
+        for w in provider
+            .warnings
+            .iter()
+            .filter(|w| w.message.contains("downgraded to UNAUDITED"))
+        {
+            total += 1;
+            // `precision claim(s) ["max_ulp", ...] for kernel ...`
+            let set = match (w.message.find('['), w.message.find(']')) {
+                (Some(a), Some(b)) if b > a => w.message[a..=b].to_string(),
+                _ => {
+                    unparsed += 1;
+                    continue;
+                }
+            };
+            match by_claim_set.iter_mut().find(|(k, _)| *k == set) {
+                Some((_, n)) => *n += 1,
+                None => by_claim_set.push((set, 1)),
+            }
+        }
+    }
+    by_claim_set.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+
+    // Is a warning per SECTION or per ENTRY? The tallies above are unusable
+    // until that is settled, because a section fans over dtypes and the two
+    // constructs differ by ~4x. Distinct `rev` values answer it: one per
+    // fanned dtype means per-entry.
+    let mut revs: Vec<String> = Vec::new();
+    for (path, text) in &contracts {
+        let provider = import_bundle_str(text, &CpuLinkRegistry)
+            .unwrap_or_else(|e| panic!("contract {path} must import: {e:?}"));
+        for w in provider
+            .warnings
+            .iter()
+            .filter(|w| w.message.contains("downgraded to UNAUDITED"))
+        {
+            if let Some(i) = w.message.find("rev ") {
+                let rest = &w.message[i + 4..];
+                let end = rest.find(')').unwrap_or(rest.len());
+                revs.push(rest[..end].to_string());
+            }
+        }
+    }
+    let distinct: std::collections::HashSet<&String> = revs.iter().collect();
+    eprintln!(
+        "[gap-225] warnings carry {} rev values, {} distinct -> {} per registration",
+        revs.len(),
+        distinct.len(),
+        if revs.len() == distinct.len() {
+            "ONE"
+        } else {
+            "MORE THAN ONE"
+        }
+    );
+
+    eprintln!(
+        "[gap-225] downgrade warnings over {} CPU contracts: {total}",
+        contracts.len()
+    );
+    for (set, n) in &by_claim_set {
+        eprintln!("[gap-225]     {n:>4}  unbacked {set}");
+    }
+
+    eprintln!(
+        "[gap-225] UNMEASURED: the ENTRY-level size of each class. A warning is neither per-section nor per-registration (104 warnings / 80 distinct revs), so these counts cannot be converted to entries, and the subtraction-derived \"424 max_ulp-blocked entries\" is NOT this population — it also contains the bit-stable class below, and any entries whose contracts declare no machine-checkable claim at all. Left visible rather than estimated."
+    );
+
+    // Non-triviality: a parse that silently produced nothing would print an
+    // empty table and read as "no downgrades", which is the answer this
+    // census exists to disprove or confirm.
+    assert!(
+        total > 0,
+        "no downgrade warnings at all — either the ledger now backs every declared CPU claim (which would be the finding of the program, not a quiet pass) or the warning text changed and this census is parsing nothing"
+    );
+    assert_eq!(
+        unparsed, 0,
+        "{unparsed} of {total} downgrade warnings did not contain a bracketed claim list — the message format changed and every tally above is over a subset of the population"
+    );
+}
+
 fn count_downgrade_warnings(contracts: &[(String, String)]) -> usize {
     contracts
         .iter()
