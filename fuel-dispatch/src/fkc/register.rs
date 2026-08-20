@@ -642,25 +642,51 @@ mod tests {
     const ELEMENTWISE_BINARY: &str =
         include_str!("../../../docs/kernel-contracts/cpu/elementwise-binary.fkc.md");
 
-    /// A contract whose entries are still BLOCKED at the time of writing —
-    /// `Gather` / `IndexSelect` have earned bit-stability but not `max_ulp`.
-    /// Used only as a starting point: the tests below LOCATE a blocked entry
-    /// rather than trusting this one to stay blocked.
-    const INDEXING: &str = include_str!("../../../docs/kernel-contracts/cpu/indexing.fkc.md");
+    /// Every live CPU contract, read from disk.
+    ///
+    /// ⚠️ **This started as two hand-picked contracts, and that was the same
+    /// mistake one level up.** The tests below were rewritten to LOCATE a
+    /// downgraded entry rather than name one, because naming `add_f32` made
+    /// them fail once the precision program earned its claims — and then they
+    /// failed AGAIN when the program earned everything in the two contracts I
+    /// had picked to search. **A hand-picked search SET expires exactly like a
+    /// hand-picked fixture.** The population is now "all of them", which is
+    /// the only version that does not need re-picking as coverage grows.
+    fn all_cpu_contracts() -> Vec<(String, String)> {
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/kernel-contracts/cpu");
+        let mut out = Vec::new();
+        for e in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read {dir:?}: {e}")) {
+            let path = e.expect("dir entry").path();
+            if path.extension().and_then(|x| x.to_str()) != Some("md") {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                out.push((name, text));
+            }
+        }
+        out.sort();
+        assert!(
+            out.len() >= 10,
+            "only {} CPU contracts found under {dir:?} — the search below would be over \
+             a subset, and a 'nothing is downgraded' result would then be about the \
+             wrong population",
+            out.len()
+        );
+        out
+    }
 
     /// Find an imported primitive whose guarantee was downgraded, together
     /// with the claims the gate reported unbacked.
-    ///
-    /// **The tests below used to name `add_f32` as their fixture, and the
-    /// precision program earned both of its claims — so they failed on the
-    /// program succeeding.** A fixture that the work under test is actively
-    /// removing is not a fixture; the property still holds, so the tests now
-    /// SEARCH for an entry exhibiting it. If none exists anywhere, that is
-    /// reported as the finding rather than as a pass.
-    fn find_downgraded(contracts: &[&str]) -> Option<(String, Vec<String>)> {
-        for text in contracts {
+    fn find_downgraded() -> Option<(String, Vec<String>)> {
+        for (_name, text) in all_cpu_contracts() {
             let link = EntryPointLink::new();
-            let Ok(provider) = import_bundle_str(text, &link) else {
+            let Ok(provider) = import_bundle_str(&text, &link) else {
                 continue;
             };
             for w in provider.warnings.iter() {
@@ -910,7 +936,7 @@ mod tests {
     /// wrong. It now locates one.
     #[test]
     fn the_import_gate_downgrades_an_entry_whose_claims_are_not_all_backed() {
-        let found = find_downgraded(&[INDEXING, ELEMENTWISE_BINARY]);
+        let found = find_downgraded();
         let Some((message, claims)) = found else {
             panic!(
                 "no contract-derived CPU entry is downgraded any more. That is either \
@@ -948,7 +974,7 @@ mod tests {
     /// makes it.
     #[test]
     fn a_backed_claim_does_not_rescue_an_entry_whose_sibling_claim_is_unbacked() {
-        let Some((message, claims)) = find_downgraded(&[INDEXING, ELEMENTWISE_BINARY]) else {
+        let Some((message, claims)) = find_downgraded() else {
             panic!(
                 "nothing is downgraded any more, so this property is no longer \
                  observable on live data. See the sibling test's message."

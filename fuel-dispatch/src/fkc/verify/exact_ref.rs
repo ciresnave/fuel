@@ -83,23 +83,53 @@ fn decode(dt: DType, b: &[u8]) -> Option<Scalar> {
 }
 
 /// Encode `s` into `dt`, rounding to nearest-even where the target is
-/// narrower. Integer targets follow Rust's saturating `as` conversion, which
-/// is the semantics Fuel's CPU casts are written against.
+/// narrower.
+///
+/// ⚠️ **Integer targets follow TWO different rules depending on where the
+/// value came from, and conflating them is wrong in a way that only shows up
+/// on out-of-range inputs.** Rust's `as`:
+///
+/// * **float -> int SATURATES** (and maps NaN to 0);
+/// * **int -> int TRUNCATES** (keeps the low bits, wrapping).
+///
+/// The first version of this function clamped both, and the sweep caught it
+/// the moment the probe values stopped being all zeros: `Cast [I64, I16]`
+/// reported candidate `0xa2` vs reference `0x80` — the reference saturating
+/// to `i16::MIN` where the kernel correctly truncated. **Second time the
+/// reference was wrong and the kernel was right**, which is what a truth
+/// reference is supposed to be able to show.
+///
+/// Degenerate probes hid this completely: zero is in range for every target,
+/// so saturation and truncation agree on it.
 fn encode(dt: DType, s: Scalar) -> Option<Vec<u8>> {
     let as_f = |s: Scalar| match s {
         Scalar::F(v) => v,
         Scalar::I(v) => v as f64,
     };
-    let as_i = |s: Scalar| -> i128 {
+    // Saturating conversion, for a FLOAT source: Rust's `f64 as iN` clamps to
+    // the target's range and maps NaN to 0.
+    let sat = |s: Scalar, lo: i128, hi: i128| -> i128 {
         match s {
             Scalar::I(v) => v,
-            // Rust's float -> int `as` saturates and truncates toward zero.
             Scalar::F(v) => {
                 if v.is_nan() {
                     0
                 } else {
-                    v.trunc() as i128
+                    (v.trunc() as i128).clamp(lo, hi)
                 }
+            }
+        }
+    };
+    // Whether the value came from an integer source, which selects TRUNCATION
+    // over saturation for an integer target.
+    let from_int = matches!(s, Scalar::I(_));
+    let raw = match s {
+        Scalar::I(v) => v,
+        Scalar::F(v) => {
+            if v.is_nan() {
+                0
+            } else {
+                v.trunc() as i128
             }
         }
     };
@@ -117,22 +147,54 @@ fn encode(dt: DType, s: Scalar) -> Option<Vec<u8>> {
             Scalar::I(v) => v != 0,
             Scalar::F(v) => v != 0.0,
         })],
-        DType::U8 => vec![as_i(s).clamp(0, i128::from(u8::MAX)) as u8],
-        DType::I8 => {
-            vec![(as_i(s).clamp(i128::from(i8::MIN), i128::from(i8::MAX)) as i8) as u8]
+        DType::U8 => {
+            let v = if from_int {
+                raw as u8
+            } else {
+                sat(s, 0, i128::from(u8::MAX)) as u8
+            };
+            vec![v]
         }
-        DType::I16 => (as_i(s).clamp(i128::from(i16::MIN), i128::from(i16::MAX)) as i16)
-            .to_le_bytes()
-            .to_vec(),
-        DType::U32 => (as_i(s).clamp(0, i128::from(u32::MAX)) as u32)
-            .to_le_bytes()
-            .to_vec(),
-        DType::I32 => (as_i(s).clamp(i128::from(i32::MIN), i128::from(i32::MAX)) as i32)
-            .to_le_bytes()
-            .to_vec(),
-        DType::I64 => (as_i(s).clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64)
-            .to_le_bytes()
-            .to_vec(),
+        DType::I8 => {
+            let v = if from_int {
+                raw as i8
+            } else {
+                sat(s, i128::from(i8::MIN), i128::from(i8::MAX)) as i8
+            };
+            vec![v as u8]
+        }
+        DType::I16 => {
+            let v = if from_int {
+                raw as i16
+            } else {
+                sat(s, i128::from(i16::MIN), i128::from(i16::MAX)) as i16
+            };
+            v.to_le_bytes().to_vec()
+        }
+        DType::U32 => {
+            let v = if from_int {
+                raw as u32
+            } else {
+                sat(s, 0, i128::from(u32::MAX)) as u32
+            };
+            v.to_le_bytes().to_vec()
+        }
+        DType::I32 => {
+            let v = if from_int {
+                raw as i32
+            } else {
+                sat(s, i128::from(i32::MIN), i128::from(i32::MAX)) as i32
+            };
+            v.to_le_bytes().to_vec()
+        }
+        DType::I64 => {
+            let v = if from_int {
+                raw as i64
+            } else {
+                sat(s, i128::from(i64::MIN), i128::from(i64::MAX)) as i64
+            };
+            v.to_le_bytes().to_vec()
+        }
         DType::F16 => half::f16::from_f64(as_f(s)).to_le_bytes().to_vec(),
         DType::BF16 => half::bf16::from_f64(as_f(s)).to_le_bytes().to_vec(),
         DType::F32 => (as_f(s) as f32).to_le_bytes().to_vec(),
@@ -169,7 +231,9 @@ pub(crate) fn has_exact_reference(op: OpKind, dtypes: &[DType]) -> bool {
     }
     matches!(
         op,
-        OpKind::Cast
+        OpKind::Gather
+            | OpKind::IndexSelect
+            | OpKind::Cast
             | OpKind::AddElementwise
             | OpKind::SubElementwise
             | OpKind::MulElementwise
@@ -200,6 +264,109 @@ impl KernelInvoker for ExactRefInvoker {
             decode(t.dtype, b)
                 .ok_or_else(|| VerifyError::Backend(format!("cannot decode {:?}", t.dtype)))
         };
+
+        // --- Pure byte movement: no arithmetic, so the reference is the
+        // --- MOVE ITSELF and the comparison is exact by construction.
+        //
+        // Deliberately copies BYTES rather than decode/encode per element.
+        // A gather that round-tripped through `f64` would be a claim about
+        // the CARRIER's fidelity, not about the move — and would quietly
+        // pass for a kernel that had corrupted a NaN payload or an I64
+        // beyond 2^53. Copying bytes cannot express that failure mode.
+        if matches!(self.op, OpKind::Gather | OpKind::IndexSelect) {
+            let src = inputs
+                .first()
+                .ok_or_else(|| VerifyError::Backend("needs a source input".into()))?;
+            let idx_t = inputs
+                .get(1)
+                .ok_or_else(|| VerifyError::Backend("needs a U32 index input".into()))?;
+            if idx_t.dtype != DType::U32 {
+                return Err(VerifyError::Backend(format!(
+                    "index operand is {:?}, expected U32",
+                    idx_t.dtype
+                )));
+            }
+            let w = width_of(src.dtype)
+                .ok_or_else(|| VerifyError::Backend(format!("no width for {:?}", src.dtype)))?;
+            let idx = |k: usize| -> Result<usize, VerifyError> {
+                let b = idx_t
+                    .bytes
+                    .get(k * 4..(k + 1) * 4)
+                    .ok_or_else(|| VerifyError::Backend(format!("index short at {k}")))?;
+                Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize)
+            };
+            let mut copy_from = |src_elem: usize, out: &mut Vec<u8>| -> Result<(), VerifyError> {
+                let b = src
+                    .bytes
+                    .get(src_elem * w..(src_elem + 1) * w)
+                    .ok_or_else(|| {
+                        VerifyError::Backend(format!("source short at elem {src_elem}"))
+                    })?;
+                out.extend_from_slice(b);
+                Ok(())
+            };
+
+            match (&self.params, self.op) {
+                (
+                    OpParams::IndexSelect {
+                        outer_count,
+                        source_dim_size,
+                        n_indices,
+                        inner_count,
+                    },
+                    OpKind::IndexSelect,
+                ) => {
+                    for o in 0..*outer_count {
+                        for k in 0..*n_indices {
+                            let sel = idx(k)?;
+                            for j in 0..*inner_count {
+                                let src_elem =
+                                    o * source_dim_size * inner_count + sel * inner_count + j;
+                                copy_from(src_elem, &mut out)?;
+                            }
+                        }
+                    }
+                }
+                (
+                    OpParams::Gather {
+                        source_shape,
+                        output_shape,
+                        dim,
+                    },
+                    OpKind::Gather,
+                ) => {
+                    let total: usize = output_shape.iter().product();
+                    for flat in 0..total {
+                        // Decompose the output flat index into coords, replace
+                        // the gathered dim with the index tensor's value, and
+                        // re-flatten over the SOURCE shape. Row-major both
+                        // sides; the two shapes agree on every dim but `dim`.
+                        let mut coords = vec![0usize; output_shape.len()];
+                        let mut rem = flat;
+                        for d in (0..output_shape.len()).rev() {
+                            coords[d] = rem % output_shape[d];
+                            rem /= output_shape[d];
+                        }
+                        coords[*dim] = idx(flat)?;
+                        let mut src_elem = 0usize;
+                        for d in 0..source_shape.len() {
+                            src_elem = src_elem * source_shape[d] + coords[d];
+                        }
+                        copy_from(src_elem, &mut out)?;
+                    }
+                }
+                (params, op) => {
+                    return Err(VerifyError::Backend(format!(
+                        "{op:?} with {params:?} is not the params shape this reference implements"
+                    )));
+                }
+            }
+            return Ok(HostTensor {
+                dtype: self.out_dtype,
+                shape: self.out_shape.clone(),
+                bytes: out,
+            });
+        }
 
         for i in 0..n {
             let s = match self.op {

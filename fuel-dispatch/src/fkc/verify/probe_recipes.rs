@@ -67,26 +67,63 @@ fn to_bytes(dt: DType, vals: &[f32]) -> Option<Vec<u8>> {
                 .collect::<Vec<_>>(),
         )
         .to_vec(),
-        DType::U8 => vals.iter().map(|&x| (x.abs() as u32 % 251) as u8).collect(),
+        // ⚠️ SCALED before the conversion, and that is the whole point.
+        //
+        // `fill_deterministic` returns floats in roughly `[-0.5, 0.5)` and
+        // `as` TRUNCATES toward zero, so the previous arms
+        // (`x.abs() as u32 % 251`, `x as i16`, ...) mapped EVERY probe value
+        // to 0. Every integer probe tensor was all zeros, and every ledger
+        // record earned for an integer dtype was earned against a degenerate
+        // input: a permutation of zeros equals a copy of zeros, so
+        // `Gather`/`IndexSelect` could not be told apart from a plain copy,
+        // and a kernel that ignored its input entirely would have passed.
+        //
+        // Found by SABOTAGE rather than by reading: making the `Gather`
+        // reference ignore its indices failed 4 of 9 registrations — the four
+        // FLOAT ones. `integer_probe_values_are_not_all_identical` below is
+        // the guard that makes it loud.
+        //
+        // The scale factors spread the sub-unit range across each dtype
+        // without reaching its limits, so no arm relies on saturation.
+        DType::U8 => vals
+            .iter()
+            .map(|&x| (((x + 0.5) * 251.0) as u32 % 251) as u8)
+            .collect(),
         DType::I8 => bytemuck::cast_slice(
             &vals
                 .iter()
-                .map(|&x| (x as i32).clamp(-120, 120) as i8)
+                .map(|&x| ((x * 240.0) as i32).clamp(-120, 120) as i8)
                 .collect::<Vec<_>>(),
         )
         .to_vec(),
-        DType::I16 => {
-            bytemuck::cast_slice(&vals.iter().map(|&x| x as i16).collect::<Vec<_>>()).to_vec()
-        }
-        DType::U32 => {
-            bytemuck::cast_slice(&vals.iter().map(|&x| x.abs() as u32).collect::<Vec<_>>()).to_vec()
-        }
-        DType::I32 => {
-            bytemuck::cast_slice(&vals.iter().map(|&x| x as i32).collect::<Vec<_>>()).to_vec()
-        }
-        DType::I64 => {
-            bytemuck::cast_slice(&vals.iter().map(|&x| x as i64).collect::<Vec<_>>()).to_vec()
-        }
+        DType::I16 => bytemuck::cast_slice(
+            &vals
+                .iter()
+                .map(|&x| (x * 60_000.0) as i16)
+                .collect::<Vec<_>>(),
+        )
+        .to_vec(),
+        DType::U32 => bytemuck::cast_slice(
+            &vals
+                .iter()
+                .map(|&x| ((x + 0.5) * 4_000_000_000.0) as u32)
+                .collect::<Vec<_>>(),
+        )
+        .to_vec(),
+        DType::I32 => bytemuck::cast_slice(
+            &vals
+                .iter()
+                .map(|&x| (x * 2_000_000_000.0) as i32)
+                .collect::<Vec<_>>(),
+        )
+        .to_vec(),
+        DType::I64 => bytemuck::cast_slice(
+            &vals
+                .iter()
+                .map(|&x| (f64::from(x) * 9.0e18) as i64)
+                .collect::<Vec<_>>(),
+        )
+        .to_vec(),
         // NOTE — there is deliberately NO `DType::Bool` arm, and it must stay
         // that way. This function's contract is "project float probe values
         // into `dt`'s bytes"; for Bool there is no correct projection to
@@ -979,6 +1016,59 @@ mod tests {
     use super::super::ledger::VerificationLedger;
     use super::*;
     use crate::kernel::KernelBindingTable;
+
+    /// ⚠️ **Every integer probe tensor is ALL ZEROS, so every ledger record
+    /// earned for an integer dtype was earned against a degenerate input.**
+    ///
+    /// `fill_deterministic` returns floats in roughly `[-0.5, 0.5)`, and the
+    /// integer arms of `to_bytes` convert with `as`, which TRUNCATES toward
+    /// zero. `x.abs() as u32` is 0 for every `|x| < 1`; so is `x as i16`, `x
+    /// as i32`, `x as i64`, and `(x as i32).clamp(-120, 120) as i8`.
+    ///
+    /// This is GAP-222's class: a pass technically earned and evidentially
+    /// empty. A permutation of zeros equals a copy of zeros, so
+    /// `Gather`/`IndexSelect` cannot be distinguished from a plain copy on an
+    /// integer dtype; a bit-stability check on a kernel that returns zeros is
+    /// satisfied by a kernel that returns zeros.
+    ///
+    /// Found by sabotage, not by reading: making the `Gather` reference IGNORE
+    /// its indices produced 4 failures, not 9 — the four FLOAT registrations.
+    /// The five integer ones passed a reference that had stopped gathering.
+    #[test]
+    fn integer_probe_values_are_not_all_identical() {
+        let vals = fill_deterministic(4, 0x1234_5678);
+        assert!(
+            vals.iter().all(|v| v.abs() < 1.0),
+            "precondition: fill_deterministic returns sub-unit values, which is why a              truncating conversion collapses them: {vals:?}"
+        );
+
+        let mut degenerate = Vec::new();
+        for dt in [
+            DType::U8,
+            DType::I8,
+            DType::I16,
+            DType::U32,
+            DType::I32,
+            DType::I64,
+        ] {
+            let Some(bytes) = to_bytes(dt, &vals) else {
+                continue;
+            };
+            let w = bytes.len() / vals.len();
+            let distinct: std::collections::HashSet<&[u8]> = bytes.chunks(w).collect();
+            if distinct.len() < 2 {
+                degenerate.push(format!(
+                    "{dt:?} -> {} distinct of {}",
+                    distinct.len(),
+                    vals.len()
+                ));
+            }
+        }
+        assert!(
+            degenerate.is_empty(),
+            "these integer dtypes encode every probe value to the SAME bytes, so any              record earned with them is evidentially empty — a permutation of              identical elements is indistinguishable from a copy, and a kernel that              ignored its input entirely would pass: {degenerate:?}"
+        );
+    }
 
     /// Parse a ledger dtype token back into a `DType`. The ledger stores
     /// `DType`'s `Debug` name (see `ledger::dtypes_match`, which compares the
