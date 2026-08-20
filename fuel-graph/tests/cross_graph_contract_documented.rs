@@ -66,7 +66,9 @@ const INLINE_MARKER: &str = "Arc::ptr_eq(";
 const FOUNDATION_FN: &str = "fn assert_same_graph";
 
 fn lib_rs() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src").join("lib.rs")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("lib.rs")
 }
 
 /// One `pub fn` and the lines of its body, plus the doc block immediately above it.
@@ -123,7 +125,12 @@ fn public_fns(src: &str) -> Vec<PubFn> {
         let mut doc_start = i;
         while doc_start > 0 {
             let t = lines[doc_start - 1].trim_start();
-            if t.starts_with("///") || t.starts_with("#[") || t.is_empty() && doc_start > 1 && lines[doc_start - 2].trim_start().starts_with("///") {
+            if t.starts_with("///")
+                || t.starts_with("#[")
+                || t.is_empty()
+                    && doc_start > 1
+                    && lines[doc_start - 2].trim_start().starts_with("///")
+            {
                 doc_start -= 1;
             } else {
                 break;
@@ -208,7 +215,10 @@ fn cross_graph_panics_are_documented() {
     let src = std::fs::read_to_string(lib_rs()).expect("read fuel-graph/src/lib.rs");
     let fns = public_fns(&src);
 
-    let carriers: Vec<&PubFn> = fns.iter().filter(|f| carries_cross_graph_panic(&f.body)).collect();
+    let carriers: Vec<&PubFn> = fns
+        .iter()
+        .filter(|f| carries_cross_graph_panic(&f.body))
+        .collect();
 
     // NON-TRIVIALITY. A scan that finds nothing passes for free; this asserts
     // the population is real before asserting anything about it. The measured
