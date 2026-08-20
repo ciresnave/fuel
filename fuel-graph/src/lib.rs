@@ -4259,6 +4259,15 @@ impl NodeHandle {
     /// - `[batch, m, k] @ [batch, k, n]` → `[batch, m, n]`
     /// - `[batch, seq, k] @ [k, n]` → `[batch, seq, n]` (rhs auto-broadcast)
     /// - `[k, n]` @ `[batch, n, m]` → `[batch, k, m]` (lhs auto-broadcast)
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn matmul(&self, other: &NodeHandle) -> NodeHandle {
         assert!(
             Arc::ptr_eq(&self.graph, &other.graph),
@@ -4373,6 +4382,15 @@ impl NodeHandle {
     /// resolves at compile if input-determined, else at execute from the
     /// producer-bound `SymEnv` (e.g. `Op::NonZeroIndices`'s count). The
     /// output shape is the capacity shape `[..., lhs.shape[-2], n]`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn matmul_dyn_m(&self, other: &NodeHandle, row_count: DynScalar) -> NodeHandle {
         self.assert_same_graph(other, "matmul_dyn_m", "other");
         // Only the F32 CPU capacity kernel honors a data-determined row
@@ -4401,6 +4419,15 @@ impl NodeHandle {
     /// Output shape: `[..., M, N]` F32. The backend dequantizes the
     /// weight blocks on the fly inside the matmul kernel, so the
     /// quantized blocks stay resident at their compressed size.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn qmatmul(
         &self,
         weight_bytes: &NodeHandle,
@@ -4480,6 +4507,15 @@ impl NodeHandle {
     /// Panics if the input ranks don't match, the channel counts are
     /// inconsistent with `groups`, or the output spatial dims would
     /// be non-positive.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn conv2d(
         &self,
         weight: &NodeHandle,
@@ -4587,6 +4623,15 @@ impl NodeHandle {
     /// `alibi_slopes` is the optional `[Hq]` per-head bias.
     ///
     /// Returns a tensor with `q`'s shape `[B, Hq, Sq, D]`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     #[allow(clippy::too_many_arguments)]
     pub fn paged_attn(
         &self,
@@ -4750,6 +4795,15 @@ impl NodeHandle {
     ///
     /// Panics if ranks don't match, channel counts are inconsistent
     /// with `groups`, or output spatial dims would be non-positive.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn conv_transpose2d(
         &self,
         weight: &NodeHandle,
@@ -4848,6 +4902,15 @@ impl NodeHandle {
     /// Parler-TTS / MetaVoice / CSM) where the decoder upsamples
     /// quantized latents back to waveform with strided transposed
     /// convs.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn conv_transpose1d(
         &self,
         weight: &NodeHandle,
@@ -4898,6 +4961,16 @@ impl NodeHandle {
         clippy::too_many_arguments,
         reason = "public flash-attention builder: the parameters are the Q/K/V tensors + attention config; the surface is the op's ABI"
     )]
+    /// Build the `flash_attn` node.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn flash_attn(
         &self,
         k: &NodeHandle,
@@ -5012,6 +5085,15 @@ impl NodeHandle {
     /// decode KV-cache write appends at the runtime offset and flash
     /// attends the runtime prefix, so the graph structure stays
     /// identical across tokens (Phase D symbolic extents).
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     #[allow(clippy::too_many_arguments)]
     pub fn flash_attn_dyn(
         &self,
@@ -6254,6 +6336,15 @@ impl NodeHandle {
     /// Differentiable through `a` and `b` only; gradient through the
     /// cond mask is `None` (registered in
     /// [`crate::grad::WhereRule`]).
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn where_cond(&self, a: &NodeHandle, b: &NodeHandle) -> NodeHandle {
         assert!(
             Arc::ptr_eq(&self.graph, &a.graph) && Arc::ptr_eq(&self.graph, &b.graph),
@@ -6722,6 +6813,15 @@ impl NodeHandle {
     /// entry. No primitive decomposition exists (fuel-graph has no
     /// `Op::Conv1D`); backends without a native kernel fall through
     /// to the executor's cpu_fallback path.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn causal_conv1d(
         &self,
         weight: &NodeHandle,
@@ -6829,6 +6929,15 @@ impl NodeHandle {
     /// matmul roundtrip is exactly what NF4's fused dequant-in-kernel
     /// design avoids); backends without a native kernel fall through
     /// to the executor's cpu_fallback path.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn nf4_matmul(
         &self,
         w_packed: &NodeHandle,
@@ -7049,6 +7158,15 @@ impl NodeHandle {
     /// Single-output SsdChunkScan: returns the `y` slot of the
     /// bundled producer (View(0)). See
     /// [`Self::ssd_chunk_scan_bundled`] for the multi-output variant.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn ssd_chunk_scan(
         &self,
         dt: &NodeHandle,
@@ -7200,6 +7318,15 @@ impl NodeHandle {
     /// See [`Self::selective_scan_bundled`] for the multi-output
     /// variant that also exposes `last_state` for autoregressive
     /// resumption.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn selective_scan(
         &self,
         delta: &NodeHandle,
@@ -7346,6 +7473,15 @@ impl NodeHandle {
     /// FusedOpParams::FusedSoftmaxCrossEntropy { reduction, ignore_index })`.
     /// See `fuel-graph/src/registry/fused_softmax_cross_entropy.rs` for
     /// the registry entry and decompose chain.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn fused_softmax_cross_entropy(
         &self,
         targets: &NodeHandle,
@@ -7477,6 +7613,15 @@ impl NodeHandle {
     /// the const nodes across all layers rather than re-duplicating
     /// them inside each `.rope()` call. The classic [`rope`] entry
     /// point funnels through this after building the tables itself.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn rope_with_tables(&self, cos: &NodeHandle, sin: &NodeHandle) -> NodeHandle {
         self.assert_same_graph(cos, "rope_with_tables", "cos");
         self.assert_same_graph(sin, "rope_with_tables", "sin");
@@ -7541,6 +7686,15 @@ impl NodeHandle {
     /// backends without a native `Op::Rope` kernel can synthesize from
     /// primitives, and so correctness tests can cross-check the fused
     /// path against the primitive path.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     #[doc(hidden)]
     pub fn rope_with_tables_decomposed(&self, cos: &NodeHandle, sin: &NodeHandle) -> NodeHandle {
         self.assert_same_graph(cos, "rope_with_tables_decomposed", "cos");
@@ -7631,6 +7785,15 @@ impl NodeHandle {
     /// `dim` using a 1-D `u32` index tensor. The output has the same
     /// shape as `self` except dimension `dim` is replaced by
     /// `indices.shape()[0]`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn index_select(&self, dim: usize, indices: &NodeHandle) -> NodeHandle {
         assert!(
             Arc::ptr_eq(&self.graph, &indices.graph),
@@ -7677,6 +7840,15 @@ impl NodeHandle {
     /// Append a `Gather` node that performs an N-dimensional gather along
     /// `dim`. The `indices` tensor must be `U32` with the same rank as
     /// `self`. Output shape equals `indices.shape()`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn gather(&self, dim: usize, indices: &NodeHandle) -> NodeHandle {
         assert!(
             Arc::ptr_eq(&self.graph, &indices.graph),
@@ -7718,6 +7890,15 @@ impl NodeHandle {
     }
 
     /// Append a `Concat` node joining `self` and `other` along `dim`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn concat(&self, other: &NodeHandle, dim: usize) -> NodeHandle {
         assert!(
             Arc::ptr_eq(&self.graph, &other.graph),
@@ -7894,6 +8075,15 @@ impl NodeHandle {
     /// Append an `IndexAdd` node — the functional inverse of
     /// `IndexSelect`. Returns `base` with `src` added at positions given
     /// by `indices` along `dim`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn index_add(&self, dim: usize, indices: &NodeHandle, src: &NodeHandle) -> NodeHandle {
         assert!(
             Arc::ptr_eq(&self.graph, &indices.graph) && Arc::ptr_eq(&self.graph, &src.graph),
@@ -7941,6 +8131,15 @@ impl NodeHandle {
     /// Append a `ScatterAdd` node — the functional inverse of `Gather`.
     /// Returns `base` with values from `src` accumulated at positions
     /// given by `indices` (with `indices[p]` substituted at `dim`).
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn scatter_add(&self, dim: usize, indices: &NodeHandle, src: &NodeHandle) -> NodeHandle {
         assert!(
             Arc::ptr_eq(&self.graph, &indices.graph) && Arc::ptr_eq(&self.graph, &src.graph),
@@ -10955,6 +11154,15 @@ impl GradMap {
     /// Returns `None` if the forward tensor was not reachable from the
     /// root passed to `backward` (i.e. not part of the computation being
     /// differentiated).
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn get(&self, forward: &NodeHandle) -> Option<NodeHandle> {
         assert!(
             Arc::ptr_eq(&self.graph, &forward.graph),
