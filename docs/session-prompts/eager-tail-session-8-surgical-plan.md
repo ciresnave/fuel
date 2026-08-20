@@ -16,9 +16,18 @@ executor-unification re-audit (Session 8 line).
 > record of how the removal was scoped, which is why it is kept rather than
 > deleted.
 >
-> **Re-derive:** `git grep -c 'pub struct Tensor' -- 'fuel-core/src/*.rs' | wc -l`
-> → **0**; `git grep -l BackpropOp -- '*.rs' | wc -l` → **0**; control
-> `git grep -l 'pub struct LazyTensor' -- '*.rs' | wc -l` → **1**.
+> **Re-derive:** `git grep -l BackpropOp -- '*.rs' | wc -l` → **0**;
+> `git ls-files fuel-core/src/op.rs` → empty. *(Control:
+> `git grep -c 'pub struct Tensor' -- 'fuel-core/src/*.rs' | wc -l` → **1**.)*
+>
+⚠️ **The commands above were REPAIRED 2026-08-19 after a rename invalidated
+> them within hours.** `refactor: drop the redundant Lazy prefix` renamed
+> `LazyTensor` → `Tensor`, so the original formulation broke in BOTH directions:
+> the claim `pub struct Tensor` in `fuel-core/src/*.rs` now returns **1** (the
+> *lazy* type, at `lazy.rs:98`) and would read as *"B6 regressed, the eager
+> Tensor is back"*; and the control `pub struct LazyTensor` now returns **0**,
+> so it could no longer prove the query works. **Do not restore either.** The
+> markers above are eager-autograd-specific and a rename cannot resurrect them.
 
 **Totals:** ~5,790 LOC removed (~5,100 source + ~650 tests + ~40
 imports) out of 9,603 in the affected file set; ~3,800 LOC survive

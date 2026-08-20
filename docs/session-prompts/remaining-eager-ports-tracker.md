@@ -8,15 +8,25 @@ ships, move its spec to `shipped/` and strike its tracker line.
 > DOCUMENT, WHICH MAKES A STALE STATUS WORSE THAN USUAL.** It calls itself a
 > "master index of eager-only model code still pending lazy translation" and
 > tells the reader to move specs to `shipped/` and strike lines as ports land.
-> **B6 finished the eager retirement**: `pub struct Tensor` in `fuel-core/src/*.rs`
-> → **0**, `BackpropOp` → **0**, `fuel-core/src/op.rs` → gone (control:
-> `pub struct LazyTensor` → **1**).
+> **B6 finished the eager retirement**: `BackpropOp` → **0**, `fuel-core/src/op.rs`
+> → **gone** (control: `pub struct Tensor` in `fuel-core/src/*.rs` → **1**, the
+> *lazy* type at `lazy.rs:98`).
 >
 > Nothing here is pending. A reader arriving to "pick up the next port" finds a
 > queue that cannot be worked.
 >
-> **Re-derive:** `git grep -c 'pub struct Tensor' -- 'fuel-core/src/*.rs' | wc -l`
-> → expect **0**; `git grep -l 'pub struct LazyTensor' -- '*.rs' | wc -l` → **1**.
+> **Re-derive:** `git grep -l BackpropOp -- '*.rs' | wc -l` → **0**;
+> `git ls-files fuel-core/src/op.rs` → empty. *(Control:
+> `git grep -c 'pub struct Tensor' -- 'fuel-core/src/*.rs' | wc -l` → **1**.)*
+>
+⚠️ **The commands above were REPAIRED 2026-08-19 after a rename invalidated
+> them within hours.** `refactor: drop the redundant Lazy prefix` renamed
+> `LazyTensor` → `Tensor`, so the original formulation broke in BOTH directions:
+> the claim `pub struct Tensor` in `fuel-core/src/*.rs` now returns **1** (the
+> *lazy* type, at `lazy.rs:98`) and would read as *"B6 regressed, the eager
+> Tensor is back"*; and the control `pub struct LazyTensor` now returns **0**,
+> so it could no longer prove the query works. **Do not restore either.** The
+> markers above are eager-autograd-specific and a rename cannot resurrect them.
 
 Conventions:
 - "Foundational" = something that other ports build on; do these first.
