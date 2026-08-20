@@ -4,6 +4,28 @@
 three parties: **Fuel**, **Baracuda** (its A1/A2/E1 fusion-patterns conditions resolved in rev 3/4 + the
 `SeamHello` C-ABI pinned, §3.1), and **Vulkane** (confirmed the named BDA surface, §7.2). This is the
 single, ratifiable description of how software on the two sides of Fuel's **kernel seam** communicate:
+
+> ⚠️ **AMENDED 2026-08-20 — THE STATUS LINE ASSERTS TWO THINGS AT ONCE AND ONLY
+> ONE SURVIVES. RATIFIED IS TRUE; THE BRANCH IS DEAD.**
+>
+> *"RATIFIED — Profile v1 … branch `feat/kernel-contracts-dlpack`"* is not a
+> status a reader can act on: ratified-on-an-unmerged-branch says both *rely on
+> this* and *this isn't merged yet*. **Resolved by measurement:** the seam is on
+> `main` — `fuel-kernel-seam` is a crate, `SeamHello` (the C-ABI pinned in §3.1)
+> appears in **2** files, `SEAM_MAGIC` in **1**, and the `Synthesizer` trait is
+> defined and consumed by Fuel's live JIT adopt path. The branch is **not on
+> origin**.
+>
+> **So: Profile v1 is ratified AND shipped. Drop the branch clause, keep the
+> ratification.** The three-party ratification (Fuel / Baracuda / Vulkane)
+> recorded below stands unchanged — it is the reason the seam has the shape it
+> has, and nothing else records it.
+>
+> **Re-derive:** `git ls-files 'fuel-kernel-seam/**' | wc -l` → non-zero;
+> `git grep -l SeamHello -- '*.rs' | wc -l` → **2**;
+> `git ls-remote --heads origin | grep -c kernel-contracts-dlpack` → **0**.
+> *(Control: `git grep -l 'ZzNotARealSeamQq' -- '*.rs' | wc -l` → 0, so the
+> non-zero counts above are evidence and a zero would be too.)*
 which party implements which subset, how a connection agrees on a spec version at runtime, and what each
 side may rely on. It is the **cross-project contract**; the [FDX spec](dlpack-extension.md) and the
 [FKC spec](kernel-contract-format.md) (+ [FKC fusion patterns](fkc-fusion-patterns.md)) are its

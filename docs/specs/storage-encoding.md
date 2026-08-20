@@ -9,6 +9,22 @@ at the kernel boundary (§7). When this spec and FDX disagree on the boundary ma
 be reconciled — but the internal type shape is owned **here**, and the boundary code shape is owned
 by FDX.
 
+> ⚠️ **AMENDED 2026-08-20 — THE BRANCH IN THE STATUS LINE DOES NOT EXIST, AND
+> THIS SPEC'S SUBJECT IS LIVE ON `main`.** `feat/kernel-contracts-dlpack` is not
+> on origin. **A specification that calls itself an unmerged draft is telling the
+> reader not to rely on it** — and Fuel relies on this one today.
+> > The DType/SType split this document specifies is settled architecture:
+> `SType` appears in **10** `.rs` files.
+>
+> **Status of the DESIGN is unchanged by this notice.** "Draft for review" may
+> still be true of the *document's* review state; what is false is the branch
+> pointer and the implication that nothing is built. Amended rather than
+> restatused, because only the author of the review process can close it.
+>
+> **Re-derive:** `git grep -l SType -- '*.rs' | wc -l` → **10**.
+> *(Control: `git ls-files 'fuel-core/src/*.rs' | wc -l` → **190** — a structural
+> anchor, so no identifier rename can silently break this check.)*
+
 **Scope.** How a `Storage` describes *the scheme by which its bytes encode logical elements*, on
 the tensor itself, without an op consulting op-params. Two orthogonal axes:
 

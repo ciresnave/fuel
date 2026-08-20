@@ -18,6 +18,22 @@ sequencing. The recipe principle (§1, every fused op carries `decompose` + `pat
 `decompose` total + never-panic + primitive→self; build-time-closed primitive basis) is unchanged —
 it is the canonical G1/G2/G3 statement.
 
+> ⚠️ **AMENDED 2026-08-20 — THE BRANCH IN THE STATUS LINE DOES NOT EXIST, AND
+> THIS SPEC'S SUBJECT IS LIVE ON `main`.** `feat/kernel-contracts-dlpack` is not
+> on origin. **A specification that calls itself an unmerged draft is telling the
+> reader not to rely on it** — and Fuel relies on this one today.
+> > Fusion-pattern machinery is on `main`: `FusionRule` / `SubgraphPattern`
+> appear in **26** `.rs` files.
+>
+> **Status of the DESIGN is unchanged by this notice.** "Draft for review" may
+> still be true of the *document's* review state; what is false is the branch
+> pointer and the implication that nothing is built. Amended rather than
+> restatused, because only the author of the review process can close it.
+>
+> **Re-derive:** `git grep -l 'FusionRule\|SubgraphPattern' -- '*.rs' | wc -l` → **26**.
+> *(Control: `git ls-files 'fuel-core/src/*.rs' | wc -l` → **190** — a structural
+> anchor, so no identifier rename can silently break this check.)*
+
 **Audience:** kernel providers who ship **fused** kernels and want Fuel to use them automatically on
 contract import. This document specifies the new `pattern:` block; it references the base FKC spec
 for the surrounding contract (`accept`/`return`/`op_params`/`cost`/`precision`/`entry_point`).

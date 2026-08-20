@@ -6,6 +6,29 @@
 fusion engine (`PatternKind::Declarative` → `crate::jit::match_region`,
 [fuel-graph/src/opt.rs](../../fuel-graph/src/opt.rs), commit `1ed5713c`).
 
+> ⚠️ **AMENDED 2026-08-20 — THE BRANCH IN THE STATUS LINE DOES NOT EXIST, AND
+> THIS SPEC'S SUBJECT IS LIVE ON `main`.** `feat/kernel-contracts-dlpack` is not
+> on origin. **A specification that calls itself an unmerged draft is telling the
+> reader not to rely on it** — and Fuel relies on this one today.
+> > `adopt_runtime_fused` is live in **9** files and `BindingKey::RuntimeFused` in
+> **3**. ⚠️ **AND THIS SPEC'S SUBJECT HAS TWO OPEN DEFECTS FOUND 2026-08-19**
+> (GAP-001's root cause): selection among registered alternatives is
+> **nondeterministic** — `first_runtime_fused` matches on `(fid, backend)` and
+> **ignores the dtype component of its own key**, so two entries under one
+> `FusedOpId` are resolved by `HashMap::iter()` order (**GAP-213**); and a
+> registered kernel outlives its device, since nothing ever releases a JIT slot
+> (**GAP-214**). A reader treating this document as a description of current
+> behaviour should read those rows first.
+>
+> **Status of the DESIGN is unchanged by this notice.** "Draft for review" may
+> still be true of the *document's* review state; what is false is the branch
+> pointer and the implication that nothing is built. Amended rather than
+> restatused, because only the author of the review process can close it.
+>
+> **Re-derive:** `git grep -l adopt_runtime_fused -- '*.rs' | wc -l` → **9**.
+> *(Control: `git ls-files 'fuel-core/src/*.rs' | wc -l` → **190** — a structural
+> anchor, so no identifier rename can silently break this check.)*
+
 This is the **Fuel-side half** of JIT-on-request §5: once Baracuda (the synthesizer)
 returns a kernel + contract for a Fuel-chosen region, how does Fuel *adopt* it — give it a
 runtime identity, fuse matching subgraphs to it, dispatch to its kernel, and (the honesty
