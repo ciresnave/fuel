@@ -24,6 +24,18 @@ use fuel_cuda_backend::CudaDevice;
 use fuel_ir::{DType, Shape};
 
 fn dev_or_skip() -> Option<CudaDevice> {
+    // The machine-wide GPU mutex must be held before we touch the card
+    // (GAP-224). This is the FIRST caller of the guard: it exists so the helper
+    // is exercised by a real site rather than only by its own unit tests, and
+    // so the ratchet in `fuel-test-support/tests/gpu_lock_ratchet.rs` has a
+    // worked example of the motion it asks for (budget 60 -> 59).
+    //
+    // NOTE, deliberately left alone: `dev_or_skip` is ALSO a GAP-157 silent
+    // skip — a missing device returns `None` and the caller reports `ok` having
+    // asserted nothing. That is a separate defect with a separate remedy
+    // (`fuel_test_support::required_ok`), and fixing it here would bundle two
+    // behaviour changes into one line.
+    fuel_test_support::require_gpu_run_lock();
     match CudaDevice::new(0) {
         Ok(d) => Some(d),
         Err(e) => {
