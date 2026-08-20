@@ -1756,7 +1756,12 @@ mod tests {
         // Before A2 this region was `UnRepresentable(MaskedFill)`; now it
         // registers, and `emit` resolves the fill Scalar to operand[0]'s dtype
         // (dtype-polymorphic — the imperative `Scalar::one(dtype)` behaviour).
-        clear_runtime_fused_for_tests();
+        // No `clear_runtime_fused_for_tests()` here: this test asserts on the
+        // EMITTED op (dtype/value), never on the registry state or the minted
+        // id, so the clear served nothing — and calling it unserialized in this
+        // parallel #[test] binary raced every other registry-touching test by
+        // wiping ids mid-run (GAP-219; the fn's own doc requires callers to
+        // serialize). Registering a unique region without a clean slate is fine.
         let region = PatternNode::Op {
             op: OpTag::MaskedFill,
             attrs: OpAttrs {
@@ -1807,7 +1812,9 @@ mod tests {
     fn powi_region_registers_and_emits() {
         // Before A3 a bare PowI region was `UnRepresentable(PowI)`; now it
         // registers, and `emit` reconstructs the i32 exponent from `scalars[0]`.
-        clear_runtime_fused_for_tests();
+        // No `clear_runtime_fused_for_tests()` here — see the masked_fill test
+        // above: this test asserts on the emitted op, not registry state, and
+        // an unserialized clear in a parallel binary raced other tests (GAP-219).
         let region = PatternNode::Op {
             op: OpTag::PowI,
             attrs: OpAttrs {
