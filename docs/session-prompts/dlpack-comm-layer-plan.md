@@ -3,6 +3,22 @@
 **Status:** Plan (2026-06-17). Not started. WIP lands on `feat/kernel-contracts-dlpack`
 (the same branch the two specs live on), never `main`.
 
+> ⚠️ **AMENDED 2026-08-19 — THE BRANCH ABOVE NO LONGER EXISTS AND THE WORK IS ON `main`.**
+> `feat/kernel-contracts-dlpack` is **not on origin** — following the status line
+> costs a failed checkout and the natural conclusion that the work was abandoned.
+> "Not started" is false at least in part: `dlpack` is a declared feature in both
+> `fuel-ir` and `fuel-memory`. **How much of the plan landed is NOT established here**
+> — what is established is that the branch pointer is dead and the claim of zero
+> movement is wrong.
+>
+> **Re-derive:** `git ls-remote --heads origin | grep -c kernel-contracts-dlpack`
+> → expect **0**. `git grep -c dlpack -- fuel-ir/Cargo.toml fuel-memory/Cargo.toml` → expect non-zero in both.
+> *(Control for the absence claim: `git ls-files 'fuel-dispatch/src/no_such_module/*' | wc -l`
+> → 0, so a zero from these queries means "not there" rather than "query broken".)*
+>
+> The plan below is KEPT, not deleted: its section-by-section reasoning records
+> *why* the surface is shaped as it is, and nothing else holds that.
+
 **Goal.** Implement the tensor-handoff boundary the two design specs describe: a versioned
 DLPack base (`DLTensor` / `DLManagedTensorVersioned`) plus the optional Fuel sidecar (`FDXSidecar`),
 used to pass tensors to kernels. This is the *as-built realization* of the design — it constructs

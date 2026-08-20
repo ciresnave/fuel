@@ -4,6 +4,21 @@
 steps 5–6 are descriptive/deferred-behind-consumer; step 7 gate is green. WIP lands on
 `feat/kernel-contracts-dlpack`, **never `main`**.
 
+> ⚠️ **AMENDED 2026-08-19 — THE BRANCH ABOVE NO LONGER EXISTS AND THE WORK IS ON `main`.**
+> `feat/kernel-contracts-dlpack` is **not on origin** — following the status line
+> costs a failed checkout and the natural conclusion that the work was abandoned.
+> The "WIP lands on `feat/kernel-contracts-dlpack`, **never `main`**" instruction is
+> unfollowable — that branch is gone, and the DType/SType split it describes is
+> settled architecture. Steps 5–6 remain descriptive; that part still stands.
+>
+> **Re-derive:** `git ls-remote --heads origin | grep -c kernel-contracts-dlpack`
+> → expect **0**. `git grep -l 'SType\|Encoding' -- '*.rs' | wc -l` → expect non-zero.
+> *(Control for the absence claim: `git ls-files 'fuel-dispatch/src/no_such_module/*' | wc -l`
+> → 0, so a zero from these queries means "not there" rather than "query broken".)*
+>
+> The plan below is KEPT, not deleted: its section-by-section reasoning records
+> *why* the surface is shaped as it is, and nothing else holds that.
+
 **Progress (2026-06-19):**
 
 - ✅ **Step 1** — `fuel-ir/src/stype.rs`: `SType`/`Encoding`/`ScaleSpec`

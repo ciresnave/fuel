@@ -3,6 +3,22 @@
 **Status**: design / not started (2026-06-13). Proposes a future change to
 [`03-ir`](../architecture/03-ir.md); promote the chosen mechanism into `03-ir` when built.
 
+> ⚠️ **AMENDED 2026-08-19 — "NOT STARTED" IS FALSE. The consumers this design was
+> written for are on `main`:** PagedAttn appears in **36** files, MoE in **32**,
+> MLA (`DeepSeek2Model`) in **6**.
+> *(Counts are files containing the symbol, not call sites — the number and the
+> construct it ranges over must be read together, or the re-derivation below will
+> look like drift when it is a different question.)*
+>
+> **Scope of that claim, deliberately narrow:** this establishes the *use cases*
+> shipped, **not** that every section here was implemented as written. The doc
+> needs a section-by-section reconciliation, and this notice is not it. What is
+> settled is that a reader must not treat "not started" as the current state.
+>
+> **Re-derive:** `git grep -li PagedAttn -- '*.rs' | wc -l` (expect ~36);
+> `git grep -l 'DeepSeek2Model' -- '*.rs' | wc -l` (expect non-zero).
+> *(Control: `git grep -l 'ZzNotARealSymbolQq' -- '*.rs' | wc -l` → 0.)*
+
 ## Problem
 
 Today a `Node` fixes `op / inputs / shape / dtype` at construction
