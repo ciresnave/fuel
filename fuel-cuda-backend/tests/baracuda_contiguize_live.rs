@@ -10,8 +10,13 @@
 //! executor — the executor's auto_contiguize loop is tested
 //! indirectly by every kernel-op live test (which exercises non-
 //! contig inputs through realize_*).
-
-#![cfg(feature = "cuda")]
+//!
+//! Gated `#[ignore]` — run with `cargo test -p fuel-cuda-backend -- --ignored`
+//! on a machine with an NVIDIA GPU + CUDA Runtime SDK installed. (Lives here,
+//! not in `fuel-dispatch/tests`, because it exercises only `fuel-cuda-backend`
+//! symbols — `fuel-cuda-backend` is unconditionally CUDA, so no `cuda` feature
+//! gate is needed; the `#[ignore]` is the run gate, matching the sibling
+//! `*_live.rs` tests in this directory.)
 
 use fuel_cuda_backend::{CudaDevice, CudaStorageBytes, baracuda::contiguize::contiguize_to_fresh};
 use fuel_ir::{DimVec, Layout, Shape, StrideVec};
