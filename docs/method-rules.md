@@ -181,3 +181,28 @@ The sweep rewrote `LazyTensor` -> `Tensor` **inside the fenced code block**, lea
 **A footgun with no warning and a plausible-sounding name in both directions (2026-08-20).** A lane resolving a conflict against a peer's committed repair ran `git checkout --theirs <file>` meaning *"take main's version"*. During a rebase, upstream is checked out first and each commit is replayed **onto** it, so **`--ours` is upstream and `--theirs` is the commit under replay.** The resolve silently kept the lane's own version, the rebase reported success, and the subsequent push overwrote the peer's work — while the lane reported the opposite in good faith.
 
 **Practice:** do not use `--ours`/`--theirs` during a rebase at all. Name the source explicitly — `git checkout origin/main -- <path>` — which is unambiguous under both operations. Then **read the file** before reporting what it contains (see `checked-then-didnt-look`; these two combined to produce the incident).
+
+
+---
+
+## a-local-branch-goes-stale-too
+
+> **Index line (in CLAUDE.md):** **`git checkout main` in a worktree lands you in the PAST.** The stale-tree rule is usually stated about the shared checkout; the local `main` BRANCH rots the same way and is measured the same way. Verified 2026-08-20: local `main` was **150 commits** behind `origin/main`.
+
+**THE STALE-TREE HAZARD HAS A SECOND FORM AND THE USUAL PHRASING MISSES IT (2026-08-20, reported by the precision lane after it bit them).**
+
+CLAUDE.md leads with *establish facts with `git show origin/main:<path>`, never by reading a working tree* — and everyone reads that as being about **the shared checkout** `C:\Projectsuel`. **The local `main` BRANCH is a separate object and rots independently.**
+
+Measured the day it was reported:
+
+```
+git rev-list --count main..origin/main   ->  150
+local main   2699fbad  2026-08-13
+origin/main  1be77f05  2026-08-20
+```
+
+**A lane that branches from `origin/main` explicitly is fine. A lane that runs `git checkout main` first is silently seven days and 150 commits in the past**, in a repo taking 40+ commits a day — and every fact it then establishes is about last week's code.
+
+**Why this is worse than the shared-checkout case: `main` is the name people reach for.** The shared checkout at least has a suspicious path; `main` reads as authoritative by its name alone.
+
+**PRACTICE: branch from `origin/main`, never from local `main`; and when a measurement disagrees with something you believe, check `git rev-list --count main..origin/main` before re-deriving the claim.** Same instrument as the shared-tree case, pointed at a ref instead of a directory.
