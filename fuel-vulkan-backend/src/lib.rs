@@ -221,6 +221,25 @@ impl CoopMatrixShape {
             saturating_accumulation: p.saturating_accumulation(),
         }
     }
+
+    /// True iff this is the exact cooperative-matrix tile every `matmul_coop*`
+    /// shader requires: **16×16×16 with f16 A/B inputs and f32 C/result
+    /// accumulation**. All five coop variants use this same tile — the
+    /// bf16/f16 output flavours downcast in the epilogue, but the coop-matrix
+    /// op itself is always f16×f16→f32 (see the `MATMUL_COOP*` docs in
+    /// fuel-vulkan-kernels). `VK_KHR_cooperative_matrix` guarantees *at least
+    /// one* shape, never a specific one, so this is the check the coop pipeline
+    /// build must gate on rather than mere extension presence.
+    pub fn is_matmul_coop_tile(&self) -> bool {
+        use vulkane::raw::bindings::VkComponentTypeKHR as Ct;
+        self.m_size == 16
+            && self.n_size == 16
+            && self.k_size == 16
+            && self.a_type as i32 == Ct::COMPONENT_TYPE_FLOAT16_KHR as i32
+            && self.b_type as i32 == Ct::COMPONENT_TYPE_FLOAT16_KHR as i32
+            && self.c_type as i32 == Ct::COMPONENT_TYPE_FLOAT32_KHR as i32
+            && self.result_type as i32 == Ct::COMPONENT_TYPE_FLOAT32_KHR as i32
+    }
 }
 
 /// Downloads at or below this many bytes stage through the persistent
@@ -593,9 +612,25 @@ impl VulkanBackend {
             eprintln!("  [coop-matrix] not available (has_coop_matrix={has_coop_matrix})");
         }
 
+        // GATE the coop pipelines on the device advertising the EXACT tile the
+        // `matmul_coop*` shaders use (16x16x16 f16xf16->f32), not merely on the
+        // extension being present. VK_KHR_cooperative_matrix guarantees at least
+        // one shape, never a specific one, and the coop pipelines are built
+        // eagerly with `?` below — so a device that has the extension but not
+        // this tile would fail backend init (or, on a lenient driver, run the
+        // coop path wrong). No match => build no coop pipelines => the matmul
+        // picker falls back to the non-coop tiled/small kernels.
+        let has_required_coop_shape = coop_matrix_shapes.iter().any(|s| s.is_matmul_coop_tile());
+        if has_coop_matrix && !has_required_coop_shape {
+            tracing::warn!(
+                "VK_KHR_cooperative_matrix present but the 16x16x16 f16xf16->f32 tile the \
+                 matmul_coop shaders need is NOT advertised — using non-coop matmul kernels",
+            );
+        }
+
         let queue = device.get_queue(queue_family, 0);
 
-        let pipelines = Pipelines::new(&device, has_coop_matrix).map_err(vk_err)?;
+        let pipelines = Pipelines::new(&device, has_required_coop_shape).map_err(vk_err)?;
         let recorder = Mutex::new(Recorder::new(&device, queue_family).map_err(vk_err)?);
         // BDA-capable allocator: every block carries
         // VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT, so a STORAGE_BUFFER created with
@@ -14233,5 +14268,56 @@ mod gap075_dtype_size_tests {
         for (dt, want) in cases {
             assert_eq!(dtype_size(dt), want, "dtype_size({dt:?}) wrong");
         }
+    }
+}
+
+#[cfg(test)]
+mod coop_shape_gate_tests {
+    //! Tests the cooperative-matrix SHAPE-GATE selection logic (GAP-216) — NOT
+    //! the tensor-core hardware path. The dev RTX 4070 supports 16x16x16 f16, so
+    //! this box cannot reproduce the backend-init failure the gate prevents, nor
+    //! prove the coop kernel actually executes; these assert only that the gate
+    //! picks the exact `matmul_coop*` shader tile and falls back on any other.
+    use super::CoopMatrixShape;
+    use vulkane::raw::bindings::VkComponentTypeKHR as Ct;
+
+    fn shape(m: u32, n: u32, k: u32, a: Ct, b: Ct, c: Ct, r: Ct) -> CoopMatrixShape {
+        CoopMatrixShape {
+            m_size: m,
+            n_size: n,
+            k_size: k,
+            a_type: a,
+            b_type: b,
+            c_type: c,
+            result_type: r,
+            saturating_accumulation: false,
+        }
+    }
+
+    #[test]
+    fn coop_gate_selects_only_the_matmul_coop_tile() {
+        let f16 = Ct::COMPONENT_TYPE_FLOAT16_KHR;
+        let f32 = Ct::COMPONENT_TYPE_FLOAT32_KHR;
+
+        // The exact tile every matmul_coop* shader needs -> selected.
+        assert!(shape(16, 16, 16, f16, f16, f32, f32).is_matmul_coop_tile());
+
+        // A device advertising ONLY 8x8x32 (has the extension, wrong tile) must
+        // fall back — the case that would otherwise fail backend init eagerly.
+        let only_8x8x32 = [shape(8, 8, 32, f16, f16, f32, f32)];
+        assert!(
+            !only_8x8x32.iter().any(|s| s.is_matmul_coop_tile()),
+            "8x8x32 must fall back (build no coop pipeline), not match the shader tile"
+        );
+
+        // Right dims, wrong accumulator (C=f16) -> NOT selected.
+        assert!(!shape(16, 16, 16, f16, f16, f16, f16).is_matmul_coop_tile());
+
+        // A list containing the required tile among others -> selected.
+        let mixed = [
+            shape(8, 8, 32, f16, f16, f32, f32),
+            shape(16, 16, 16, f16, f16, f32, f32),
+        ];
+        assert!(mixed.iter().any(|s| s.is_matmul_coop_tile()));
     }
 }
