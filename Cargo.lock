@@ -1901,6 +1901,7 @@ dependencies = [
  "baracuda-nccl",
  "baracuda-nvrtc",
  "baracuda-types",
+ "bytemuck",
  "float8",
  "fuel-backend-contract",
  "fuel-cpu-backend",

@@ -206,3 +206,27 @@ origin/main  1be77f05  2026-08-20
 **Why this is worse than the shared-checkout case: `main` is the name people reach for.** The shared checkout at least has a suspicious path; `main` reads as authoritative by its name alone.
 
 **PRACTICE: branch from `origin/main`, never from local `main`; and when a measurement disagrees with something you believe, check `git rev-list --count main..origin/main` before re-deriving the claim.** Same instrument as the shared-tree case, pointed at a ref instead of a directory.
+
+---
+
+## a-297-byte-log-has-three-causes
+
+> **Index line (in CLAUDE.md):** **A detached CUDA build that dies at ~297 bytes with vcvarsall's banner and NO marker has THREE known causes, all in the script, none in the launcher:** a missing `call` before vcvarsall, **LF-only line endings in the `.bat`**, and (for `.ps1`) **UTF-8 without a BOM plus any non-ASCII character**, which Windows PowerShell 5.1 reads as ANSI.
+
+**THE 297-BYTE SIGNATURE IS A SCRIPT DEFECT, AND KNOWING THAT IS ONLY HALF — IT HAS AT LEAST THREE DIFFERENT CAUSES (2026-08-20, third cause found by Fuel 1).**
+
+CLAUDE.md already records that the launcher is exonerated by an isolating control (`Start-Process` + broken bat → died; WMI + **the same** broken bat → died identically, 297 bytes; WMI + fixed bat → survived). **That correctly sends you to the script. It does not tell you which defect.**
+
+**Cause 1 — missing `call`.** `<...>vcvarsall.bat amd64` without `call` *terminates* the parent bat. The banner appears; nothing after it runs.
+
+**Cause 2 — LF-only line endings in a `.bat`.** `cmd.exe` wants CRLF and mis-parses an LF-only batch file: it executes the early lines, then chokes mid-file. **The Write tool emits LF.** Write bats with PowerShell, or convert, and **measure** (`grep -c $'\r'`) rather than assume.
+
+**Cause 3 — a `.ps1` that is UTF-8 WITHOUT a BOM and contains any non-ASCII byte.** Windows PowerShell 5.1 reads BOM-less files as **ANSI**, so a single em-dash (`—`, `e2 80 94`) becomes three garbage characters *inside a string literal* and the parse fails several lines later with a message naming an innocent token.
+
+**THE DIAGNOSTIC TELL THAT SEPARATES THEM FROM A PATH FAILURE:** `Environment initialized for: 'x64'` **present** in the log means the bat started and vcvarsall ran, so execution stopped *after* the banner. **A missing-interpreter/PATH failure dies BEFORE the banner.** Read the banner's presence before forming a hypothesis.
+
+**⚠️ AND CAUSE 3 PRODUCED A FALSE DIRECTIVE THAT SURVIVED IN GPU-SAFETY INFRASTRUCTURE.** `scripts/cuda-build.ps1` and `scripts/gpu-run.ps1` both declared `#Requires -Version 5.1` while failing to parse under 5.1 (**10 and 4 errors**). **The directive was TRUE ABOUT THE LANGUAGE AND FALSE ABOUT THE FILE** — every construct is 5.1-compatible; the encoding is not. That is a nastier variant of a false guard, because reading the code confirms the claim and only running it refutes it.
+
+**Fixed by making the claim true rather than by narrowing it** — a UTF-8 BOM was added to both, so 5.1 now parses them clean (0 errors) and pwsh 7 is unaffected (0 errors). **Weakening `#Requires` to `7.0` would also have been honest, and was rejected: the author evidently intended 5.1 support and the content delivers it.** Prefer repairing the artifact to lowering the claim, where the claim was achievable.
+
+**PRACTICE: for any `.ps1` that must run under Windows PowerShell, write it UTF-8 WITH BOM, or keep it strictly ASCII. Test with `[System.Management.Automation.Language.Parser]::ParseFile` under `powershell.exe`, not just `pwsh` — the version you run is not the version your `#Requires` promises.**
