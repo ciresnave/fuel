@@ -894,13 +894,75 @@ mod tests {
             add.precision.notes,
             crate::fused::PrecisionGuarantee::UNAUDITED.notes
         );
+        // The warning now cites ONLY `max_ulp` — and that is the interesting
+        // part, not an incidental detail.
+        //
+        // GAP-207 earned `bit_stable_on_same_hardware` for this exact
+        // `(Cpu, [F32,F32,F32], rev)` key, so the gate no longer lists that
+        // claim as unbacked. It DOES still list `max_ulp`, which nothing has
+        // earned. Asserting both halves is what proves the gate discriminates
+        // PER CLAIM rather than passing or failing an entry wholesale — a
+        // property the old single-sided assertion could not see.
+        let unbacked: Vec<&str> = provider
+            .warnings
+            .iter()
+            .map(|w| w.message.as_str())
+            .filter(|m| m.contains("[F32, F32, F32]"))
+            .collect();
         assert!(
-            provider
-                .warnings
-                .iter()
-                .any(|w| w.message.contains("bit_stable_on_same_hardware")),
-            "a downgrade warning was recorded: {:?}",
+            unbacked.iter().any(|m| m.contains("max_ulp")),
+            "expected an unbacked `max_ulp` warning: {:?}",
             provider.warnings
+        );
+        assert!(
+            !unbacked.iter().any(|m| m.contains("bit_stable_on_same_hardware")),
+            "`bit_stable_on_same_hardware` IS earned for this key (GAP-207) and              must not be reported unbacked — if it is, either the ledger lost              the record or the query key drifted: {unbacked:?}"
+        );
+    }
+
+    /// **Earning one claim buys nothing while a sibling claim is unearned.**
+    ///
+    /// `gate_precision` downgrades the WHOLE `PrecisionGuarantee` to UNAUDITED
+    /// if ANY declared claim lacks a ledger pass. So a contract declaring both
+    /// `bit_stable_on_same_hardware` and `max_ulp` stays fully downgraded
+    /// until BOTH are earned — and the assertions in the test above show
+    /// exactly that: the bit-stable claim is backed, the entry is still
+    /// UNAUDITED.
+    ///
+    /// This is recorded as its own test because it bounds GAP-207's headline:
+    /// 548 of 659 CPU registrations now carry an earned bit-stability record,
+    /// and for every entry that ALSO declares a ULP bound that record changes
+    /// nothing about the resulting guarantee. Retiring
+    /// `fill_unset_cpu_precision` therefore does not follow from bit-stability
+    /// coverage alone, which is not obvious from the coverage number and is
+    /// the kind of thing a program plan quietly assumes.
+    #[test]
+    fn a_backed_claim_does_not_rescue_an_entry_whose_sibling_claim_is_unbacked() {
+        let link = EntryPointLink::new();
+        let provider = import_bundle_str(ELEMENTWISE_BINARY, &link).expect("imports");
+        let add = provider
+            .primitives
+            .iter()
+            .find(|p| {
+                p.op == OpKind::AddElementwise
+                    && p.dtypes.as_slice() == [DType::F32, DType::F32, DType::F32]
+            })
+            .expect("add_f32 present");
+
+        // The ledger DOES back the bit-stable claim for this key...
+        assert!(
+            crate::fkc::verify::VerificationLedger::embedded().has_pass(
+                fuel_ir::probe::BackendId::Cpu,
+                &add.dtypes,
+                add.revision.0,
+                "bit_stable_on_same_hardware"
+            ),
+            "precondition: GAP-207 earned bit-stability for add_f32; without it              this test proves nothing about the all-or-nothing behaviour"
+        );
+        // ...and the entry is STILL fully downgraded, because `max_ulp` is not.
+        assert!(
+            !add.precision.bit_stable_on_same_hardware,
+            "the entry should still be UNAUDITED: one backed claim does not              rescue an entry whose sibling claim is unbacked"
         );
     }
 
