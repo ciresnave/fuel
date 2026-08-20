@@ -21,6 +21,22 @@
 > where **missing-fusion telemetry** lands — build the closed-world `FusionMissRecord` hook here (see
 > Phase C and Open questions).
 
+> ⚠️ **AMENDED 2026-08-20 — THIS PROGRAM SHIPPED AND WAS PROMOTED INTO THE
+> CONSTITUTION.** "The plan IS the graph" is no longer a program spec awaiting
+> execution; it is stated architecture in
+> [`../architecture/04-optimization.md`](../architecture/04-optimization.md),
+> which describes `optimize_graph` transforming the base map into the optimized
+> multi-path graph **in place** and records the per-decision-point alternatives,
+> the lock-step driver, the bounded per-device Pareto frontier and the runtime
+> route picker as **landed** at its v0.6.
+>
+> **`docs/architecture/` outranks this file** (CLAUDE.md's source-of-truth
+> hierarchy). Where they disagree, the architecture section wins and this
+> document is the historical rationale.
+>
+> **Re-derive:** `grep -n 'the plan IS the gra' docs/architecture/04-optimization.md`.
+> **Still open per §04 itself:** the sliding-window concurrent optimize-and-execute.
+
 ---
 
 ## What this program is

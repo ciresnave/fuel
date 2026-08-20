@@ -8,6 +8,31 @@ and 10 (G5/G7: Fuel is the telemetry strategist *and* consumer, not Baracuda-onl
 (unmerged; `main` untouched). This is the single entry point for a new Claude instance picking up
 the kernel-boundary program with no prior context beyond `CLAUDE.md` + memory.
 
+> ⚠️ **AMENDED 2026-08-20 — THE BRANCH THIS SEQUENCER NAMES DOES NOT EXIST, AND
+> "Living index" is the phrase that stops a reader checking.** `feat/kernel-contracts-dlpack`
+> is **not on origin**; the program it sequences is **unconditional production
+> infrastructure on `main`** — `fuel-dispatch/src/fkc/` holds **33** `.rs` files
+> and the crate's `[features]` comment records that there is deliberately no
+> `fkc` gate, so a build cannot omit it.
+>
+> **A document that calls itself living is asserting its own currency, and that
+> assertion is exactly what suppresses the check.** The same phrase
+> ("live master index") kept `eager-tensor-retirement-master-plan.md` reporting
+> a finished program as in-progress for two months.
+>
+> **This is the 5th of 14 documents naming that dead branch** — 5 in
+> `session-prompts/`, **7 in `docs/specs/`**, 1 in `architecture/`, 1 in
+> `outreach/`. The `docs/specs/` cluster is the more serious one and is not
+> covered by this program's scope: six of its seven present themselves as
+> DRAFT/design *"on branch `feat/kernel-contracts-dlpack`"*, and one says
+> **RATIFIED** while claiming to live there. Flagged for allocation, not fixed
+> here.
+>
+> **Re-derive:** `git ls-remote --heads origin | grep -c kernel-contracts-dlpack`
+> → **0**; `git ls-files 'fuel-dispatch/src/fkc/*.rs' | wc -l` → **33**;
+> `git grep -l 'feat/kernel-contracts-dlpack' -- 'docs/**/*.md' | wc -l` → **14**.
+> *(Control: `git ls-files 'fuel-dispatch/src/no_such_module/*' | wc -l` → 0.)*
+
 This document is an **INDEX and SEQUENCER**, not a restatement. It tells you *what exists*, *what is
 locked*, *what to build next*, and *which detailed doc owns each piece*. Read the detailed docs it
 points at before executing — they carry the step-by-step, the file:line anchors, and the born-red

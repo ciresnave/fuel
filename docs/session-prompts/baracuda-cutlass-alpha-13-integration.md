@@ -4,6 +4,15 @@
 >
 > **Reconciled 2026-06-20 against the adaptive-runtime-fusion decision ([10-decisions-log](../architecture/10-decisions-log.md)):** B8's `FusedLinearActivation` recipe is framed as the **two mandatory inverse halves** (`decompose` + `pattern`) of one recipe, not a decomposition plus an optional fusion rule (G1); option (b) is corrected — the new IR arm is a **fused-op identity**, not a new primitive (G3, the primitive basis is build-time-closed); the Pareto-frontier prune language is corrected so a cuBLAS-losing CUTLASS sibling is **shadowed, not evicted** on a single-model loss (G8); and the manual per-branch-point sibling registration is named as the precursor to the **closed-loop adaptive optimizer** (G7, Fuel-strategist / backend-synthesizer).
 
+> ⚠️ **AMENDED 2026-08-20 — THIS DOCUMENT IS ABOUT `alpha.13`. FUEL PINS
+> `alpha.78`, AND `alpha.79` IS PUBLISHED.** Sixty-five releases separate the
+> subject of this plan from the tree it describes. Read as history.
+>
+> Its integration *reasoning* is kept — the record of why the CUTLASS surface is
+> wired as it is — but no version-specific instruction in it should be followed.
+>
+> **Re-derive:** `grep -n 'baracuda-cutlass *=' Cargo.toml` → `0.0.1-alpha.78`.
+
 ## What this session is for
 
 Baracuda 0.0.1-alpha.7 → 0.0.1-alpha.13 ships every Tier-1 and Tier-2 ask Fuel filed in the 2026-05-10 critique (`project_baracuda_cutlass_critique.md`), plus four preemptive Tier-3 extensions. Headline additions:
