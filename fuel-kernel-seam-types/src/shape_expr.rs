@@ -428,7 +428,7 @@ pub fn eval_shape(
                 operand: *operand,
                 operands: operands.len(),
             })?;
-            if shape.iter().any(|&e| e == SYMBOLIC) {
+            if shape.contains(&SYMBOLIC) {
                 Ok(ShapeValue::Gap)
             } else {
                 Ok(ShapeValue::Concrete(shape.clone()))
@@ -768,7 +768,7 @@ mod tests {
                     axis: 5,
                     dim: Box::new(Dim::Const(1))
                 },
-                &vec![vec![2i64, 3]],
+                &[vec![2i64, 3]],
                 &[]
             ),
             Err(ShapeExprError::AxisOutOfRange { axis: 5, rank: 2 })
