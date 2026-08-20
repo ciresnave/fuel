@@ -921,15 +921,6 @@ mod tests {
 
     // ---- Safetensors round-trip fixtures --------------------------------
 
-    /// Append `n` f32 values to `owned` under `name` as a 1-D shape.
-    fn push_f32_1d(owned: &mut Vec<(String, Vec<usize>, Vec<u8>)>, name: &str, values: &[f32]) {
-        let mut bytes = Vec::with_capacity(values.len() * 4);
-        for v in values {
-            bytes.extend_from_slice(&v.to_le_bytes());
-        }
-        owned.push((name.to_string(), vec![values.len()], bytes));
-    }
-
     /// Append a multi-dim f32 tensor of given shape, filled by `nb()`.
     fn push_f32(
         owned: &mut Vec<(String, Vec<usize>, Vec<u8>)>,
