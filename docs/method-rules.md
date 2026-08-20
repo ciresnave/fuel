@@ -544,3 +544,33 @@ A lane reported five op families for the **bit-stable-blocked** class in the sam
 **PRACTICE: name the population before answering a question about it — out loud, in the reply. "The 84 are ops whose declared bound is unbacked" would have caught this before the reasoning started.** And when handing someone data plus a question, say which data the question ranges over.
 
 **Note the shape both share with the rest of this file: nothing in the OUTPUT looked wrong.** Two agreeing documents look like verification; two adjacent numbers look like one dataset. **The defect is in the provenance, which is not visible in the artifact.**
+
+---
+
+## a-reference-must-be-able-to-indict-itself
+
+> **Index line (in CLAUDE.md):** **A truth-reference must be ABLE to come out wrong — a harness that can only ever blame the kernel is an agreement check wearing a bound's name.** And keying an assertion to a *measurement* is not enough: **it has to be the measurement the property is ABOUT.** Two measurements that coincide today are indistinguishable as anchors until they diverge, so **a coincidence gets recorded as an invariant.**
+
+**Both found 2026-08-20 by the precision lane, in the same change, and each is worth more than the coverage number it came with (84 → 24 downgrades, 134 claims, 60 entries).**
+
+### (a) The reference was wrong before the kernel was
+
+Four `Cast [T, Bool]` comparisons failed — candidate `0x01`, reference `0x00`. **The KERNEL was right.** The independently-written reference truncated the float before testing against zero, so `0.5` became `false`.
+
+**That is the outcome a truth-reference must be CAPABLE of.** A comparison harness whose only possible verdict is "the kernel is wrong" is not measuring against truth — **it is an agreement check that has been given a bound's name**, the same defect as recording a differential as `max_ulp`. **The reference indicting itself is the evidence that it is a reference at all.**
+
+**PRACTICE: when a reference and a candidate disagree, the FIRST hypothesis is that the reference is wrong — and if that has never once happened, ask whether the harness could express it.**
+
+### (b) An assertion anchored to the wrong measurement
+
+Earlier the same day this lane taught **key an assertion to the MEASUREMENT, not to the number the measurement produced** — their flip harness followed `199 → 219` untouched while a registry row did not. **Then they keyed one to the wrong measurement.**
+
+`lost_by_flip.len() == bit_stable_entries` tied the **flip's blast radius** to the **total backed set**. **It held only because the two coincided at 199 — A COINCIDENCE RECORDED AS AN INVARIANT.** Backing a second claim for 60 more entries separated them (flip 219, backed 279) and it fired, reporting that the selector and the ledger disagree. **They do, and they are supposed to**: the flip is a narrow selector (184 sections), sabotage strips wholesale (418). **The real identity is with the SABOTAGE arm (279 == 279); what matters about the flip is only that it is non-empty.**
+
+**PRACTICE: name the property, then ask which measurement is ABOUT it — not which one currently equals it.** Two quantities that agree today are indistinguishable as anchors, and **the wrong one gives a green that is right by accident and a red that diagnoses the wrong situation confidently.**
+
+### Two smaller ones from the same change, both about labels
+
+**A FIXTURE THE WORK UNDER TEST IS ACTIVELY REMOVING IS NOT A FIXTURE.** Two tests named one entry as their *downgraded-entry* fixture; the change earned both of that entry's claims, so it stopped being downgraded and neither test could observe its property. **Both now LOCATE a downgraded entry, and if none exists anywhere they report that as the finding rather than passing.**
+
+**A REFUSAL WEARING AN ERROR'S LABEL.** 22 casts failed deep inside `encode` as `invoke error: no width for F8E4M3`. **Same outcome for the ledger, different thing entirely for a reader** — an unsupported format is a DECLINE and belongs up front, not a failure surfacing from the middle of a call stack.
