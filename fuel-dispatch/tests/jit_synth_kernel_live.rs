@@ -45,7 +45,7 @@
 //! loader from the generator.
 //!
 //! **Open follow-up, no longer gated on approval:** drive the seam end-to-end
-//! against the real `BaracudaSynthesizer` (`baracuda-kernelgen`, exact-pinned,
+//! against the real `BaracudaSynthesizer` (`baracuda-cuda-emit`, exact-pinned,
 //! `--features seam,nvrtc`) — the first time Fuel's JIT path would meet a real
 //! generator. The marquee region is `PagedAttn`'s dense recipe, which no GPU
 //! backend implements as a fused op.
@@ -75,7 +75,7 @@ fn dev_or_skip() -> Option<CudaDevice> {
 
 /// The scalar-ABI source `load_synth_kernel` expects: `(const float* in0,
 /// const float* in1, float* out, long long n)`, one grid-stride thread per
-/// output element — byte-for-byte the shape `baracuda-kernelgen`'s
+/// output element — byte-for-byte the shape `baracuda-cuda-emit`'s
 /// `emit_scalar` builds for `relu(add(a, b))` at F32 (see
 /// `jit_cuda_load.rs`'s module docs).
 const ENTRY: &str = "fuel_test_jit_relu_add_f32_scalar";
@@ -475,13 +475,13 @@ fn jit_scalar_param_kernel_launches_with_live_value() {
 /// keys `vec_width = 1` and picks the **Scalar** schedule → a `baracuda_gen_
 /// ..._scalar` kernel that `load_synth_kernel` handles today (the vectorized /
 /// strided ABIs are the documented loader follow-up). Gated behind `jit-synth`
-/// (= jit + cuda + baracuda-kernelgen{seam,nvrtc}); run with
+/// (= jit + cuda + baracuda-cuda-emit{seam,nvrtc}); run with
 /// `cargo test -p fuel-dispatch --features jit-synth -- --ignored`.
 #[test]
 #[ignore]
 #[cfg(feature = "jit-synth")]
 fn live_baracuda_synthesizer_full_loop_scalar() {
-    use baracuda_kernelgen::jit::seam::BaracudaSynthesizer;
+    use baracuda_cuda_emit::seam::BaracudaSynthesizer;
     use fuel_kernel_seam::{JitBudget, JitRequest, JitResponse, Synthesizer};
 
     let Some(device) = dev_or_skip() else {
@@ -693,7 +693,7 @@ fn live_baracuda_synthesizer_full_loop_scalar() {
 #[ignore]
 #[cfg(feature = "jit-synth")]
 fn live_baracuda_synthesizer_paged_attn_dense_region() {
-    use baracuda_kernelgen::jit::seam::BaracudaSynthesizer;
+    use baracuda_cuda_emit::seam::BaracudaSynthesizer;
     use fuel_graph::registry::{FusedOpParams, FusedOps};
     use fuel_graph::{Graph, Node, NodeId, Op};
 

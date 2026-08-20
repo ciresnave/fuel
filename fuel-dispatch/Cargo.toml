@@ -65,9 +65,9 @@ kiss-ops-vocab = { version = "0.2", optional = true }
 # scalar-ABI PTX kernel at test time.
 baracuda-nvrtc = { workspace = true, optional = true }
 # The live JIT synthesizer, only under `jit-synth` (which also enables cuda+jit,
-# providing the nvrtc + seam features kernelgen's `seam`/`nvrtc` need). Crates.io
+# providing the nvrtc + seam features cuda-emit's `seam`/`nvrtc` need). Crates.io
 # (exact pin) — NOT a ../baracuda path dep, so it honors the reference-only rule.
-baracuda-kernelgen = { workspace = true, optional = true, features = ["seam", "nvrtc"] }
+baracuda-cuda-emit = { workspace = true, optional = true, features = ["seam", "nvrtc"] }
 bytemuck = { workspace = true }
 half = { workspace = true }
 smallvec = { workspace = true }
@@ -148,7 +148,7 @@ telemetry = ["fuel-ir/serde"]
 # envelope crate + baracuda's OperandDesc (ElementKind). Default OFF.
 jit = ["dep:fuel-kernel-seam", "baracuda-types", "dep:kiss-ops-vocab"]
 # The LIVE JIT loop on published crates: jit + cuda + the real BaracudaSynthesizer
-# (baracuda-kernelgen, seam+nvrtc). Enables the on-device test that drives
+# (baracuda-cuda-emit, seam+nvrtc). Enables the on-device test that drives
 # synthesize -> take_kernel -> load_synth_kernel -> launch with Baracuda's own
 # generated kernel (not a mock). Needs the CUDA toolchain (nvrtc). Default OFF.
-jit-synth = ["jit", "cuda", "dep:baracuda-kernelgen"]
+jit-synth = ["jit", "cuda", "dep:baracuda-cuda-emit"]

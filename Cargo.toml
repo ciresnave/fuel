@@ -276,14 +276,16 @@ baracuda-nvrtc         = { version = "0.0.1-alpha.78" }
 # with the contract's declared `count_unit: elements`, so it is not a contract
 # mismatch either.
 #
-# THE PIN STAYS FOR NOW ONLY BECAUSE `.78` DOES FAIL ~25% OF THE TIME — that is
-# a separate decision from the retracted reason. Pending measurement: the same
-# 20x at `=alpha.77`. If it also fails ~25%, the version is conclusively
-# irrelevant and this pin comes out. See docs/gaps.md GAP-001.
-#
-# NOTE: kernelgen is RETIRED at .78 (no .79); its replacement is
-# `baracuda-cuda-emit`. Removing this pin and migrating are the same move.
-baracuda-kernelgen     = { version = "=0.0.1-alpha.77" }
+# SUPERSEDED 2026-08-20 — MIGRATED to `baracuda-cuda-emit` .79 (this change).
+# kernelgen was RETIRED at .78 with no .79; cuda-emit is its renamed successor
+# (same `BaracudaSynthesizer`, now `cuda_emit::seam::` — no longer `jit::seam::`).
+# So "hold at .77 vs move to .78" is moot: the pin below is a forward move, not a
+# hold. Same EXACT pin, same reason (seam-surface-only stability; never auto-
+# upgrade the alpha-fluid generator internals). The GAP-001 ~25% flake documented
+# above was measured on kernelgen and is a property of the synthesizer, not proven
+# a version boundary; it is UNVERIFIED on cuda-emit .79 and the investigation
+# continues there. See docs/gaps.md GAP-001.
+baracuda-cuda-emit     = { version = "=0.0.1-alpha.79" }
 baracuda-nccl-sys      = { version = "0.0.1-alpha.78" }
 baracuda-nccl          = { version = "0.0.1-alpha.78", features = ["half-crate"] }
 baracuda-cutlass       = { version = "0.0.1-alpha.78" }
@@ -399,7 +401,7 @@ tokio = "1"
 inherits = "release"
 debug = true
 
-# Unify the kernel-seam crates across the seam boundary. `baracuda-kernelgen`
+# Unify the kernel-seam crates across the seam boundary. `baracuda-cuda-emit`
 # (crates.io, under fuel-dispatch's `jit-synth` feature) depends on the PUBLISHED
 # fuel-kernel-seam / -types 0.10.3, while the workspace uses its own path members
 # of the same crates — cargo treats path and registry as different sources, so
@@ -407,7 +409,7 @@ debug = true
 # would impl a `Synthesizer` trait distinct from the one fuel-dispatch calls. The
 # members ARE the source that produced the published 0.10.3 (the envelope is frozen),
 # so redirecting the registry deps to them is the correct unification. Inert unless
-# `jit-synth` pulls kernelgen (no other crate depends on the registry seam crates).
+# `jit-synth` pulls cuda-emit (no other crate depends on the registry seam crates).
 [patch.crates-io]
 fuel-kernel-seam = { path = "./fuel-kernel-seam" }
 fuel-kernel-seam-types = { path = "./fuel-kernel-seam-types" }
