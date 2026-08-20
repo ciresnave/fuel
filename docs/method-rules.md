@@ -131,3 +131,32 @@ because someone acted on a compressed version and got the scope wrong.
 **WHY THIS EARNED A RULE RATHER THAN A NOTE.** The same day produced **two independent ~25% intermittents** across the portfolio (Lightbulb's mutation surviving 4/15; Fuel's GAP-001 at 5/20, later 11/20 on the *pinned* version) — **both of which a single trial reports as clean.** Fuel's lane had a clean 1/1 validation run in hand; reporting it would have un-pinned a dependency and declared a sibling project's crate innocent, with a correct instrument, correct prefill and correct controls. **Everything was right except the sample size, and no amount of care with the instrument catches that.** The reciprocal failure is real too — being over-powered for a falsifying claim wastes an hour of forge — so the rule is *match N to the shape*, not *always run 20*.
 
 **PRACTICE: before choosing N, say out loud whether the claim is falsifying, comparative, or confirmatory. Then state the repeat count in the result** — a claim that says `1/1` stays admissible; it just stops being indistinguishable from one that says `20/20`.
+
+
+---
+
+## docs-are-not-code-and-a-sweep-cannot-tell
+
+> **Index line (in CLAUDE.md):** **A mechanical rename rewrites re-derivation commands embedded in prose, silently — no compiler, test or CI job reads markdown.** Exclude `docs/**` from tree-wide identifier sweeps, or re-run every embedded command afterwards. Anchor on identifiers that were RETIRED, not RENAMED.
+
+**A MECHANICAL RENAME CORRUPTS DOC-EMBEDDED VERIFICATION COMMANDS, AND NOTHING DETECTS IT (2026-08-20, architect, self-inflicted, caught by the lane whose program it was about to invalidate).**
+
+The `Lazy`-prefix sweep (`18c29ad0`) swept `docs/**` along with `*.rs`. Hours earlier the same architect had written a B6 evidence block:
+
+```
+pub struct Tensor  in fuel-core/src/*.rs  ->  0 matches      <- claim
+(control) pub struct LazyTensor           ->  1 match        <- control
+```
+
+The sweep rewrote `LazyTensor` -> `Tensor` **inside the fenced code block**, leaving **the claim and its control as the same string, asserted to return both 0 and 1** — and leaving the claim independently FALSE, because `pub struct Tensor` in `fuel-core/src/` now matches the renamed lazy type. **A reader running it gets 1 and concludes B6 regressed.**
+
+**THE FACT SURVIVED AND THE EVIDENCE DIED, WHICH IS THE WORSE FAILURE** — a fact is recoverable; a corrupted control is invisible, and it fails in the direction that MANUFACTURES a false alarm.
+
+**Why this class is specific rather than obvious: a re-derivation command is the artifact designed to keep documentation honest, and it is made of source identifiers.** So the better a doc is at being checkable, the more surface it exposes to ordinary maintenance. **No compiler, no test, and no CI job reads markdown**, so there is no instrument anywhere in the repo that would have flagged it.
+
+**PRACTICE, in order of strength:**
+
+1. **EXCLUDE `docs/**` from mechanical identifier sweeps.** A rename rewriting a `git grep` string inside a fenced code block is a rename doing something nobody asked for. Update prose deliberately, as its own reviewed change.
+2. **ANCHOR ON WHAT A RENAME CANNOT TOUCH** — file paths, `git ls-files`, directory counts, and identifiers that were **RETIRED** rather than renamed. `BackpropOp` and `fuel-core/src/op.rs` are good anchors *because they were deleted*. `pub struct Tensor` was a bad one *because it was renamed into*.
+3. **Where an identifier is unavoidable, say what it was renamed FROM**, so a later sweep's damage is legible rather than silent.
+4. **After any tree-wide rename, re-run every doc-embedded command.** The lane that found this did exactly that after rebasing, and caught three more of their own that had broken identically — control -> 0 (dead), claim -> 1 (reads as regression). **Had they pushed before rebasing they would have landed three amendments whose controls were already dead.**
