@@ -7,6 +7,46 @@ families, overriding a narrower architect ruling. This document covers the
 **7 causal-LM families** that ruling resolved to; LFM2 and T5/Whisper are
 tracked sub-scopes, not declines (see §6).
 
+> ⚠️ **AMENDED 2026-08-20 — "increments 2+ not started" IS FALSE.** Increments 2
+> and 3 landed; increment 3's six are complete (`66c09ec4` SmolLm3, `42c1e32b`
+> Gemma3, and siblings).
+>
+> **Both numbers below name their construct, because the numerator and the
+> denominator range over DIFFERENT populations and the ratio is meaningless
+> without that:**
+>
+> - **9 model TYPES** implement `PersistentDecodeModel`: Gemma3Model, Glm4Model,
+>   LlamaModel, Phi3Model, PhiModel, Qwen2Model, Qwen3Model, Qwen3MoeModel,
+>   SmolLm3Model.
+> - **8 of the 11 `lazy_quantized_*` FAMILIES** — this document's stated scope —
+>   are covered, because each delegates to a non-quantized model type that
+>   carries the impl (e.g. `lazy_quantized_qwen2.rs` references `Qwen2Model` 23
+>   times). **No `lazy_quantized_*.rs` file contains a `PersistentDecodeModel`
+>   impl itself; zero of them even mention `persistent_decode`.** Counting impls
+>   per quantized file therefore returns 0 and is the wrong construct.
+> - **Remaining: `lfm2`, `t5`, `whisper`** — this doc's own "tracked sub-scopes,
+>   not declines". The 9th type, `PhiModel`, has no quantized counterpart, so it
+>   is a 9th type and not a 9th family.
+>
+> ⚠️ **THE OBVIOUS GREP AGREES WITH THE STALE TEXT, WHICH IS WHY IT SURVIVED.**
+> `git grep -h 'impl PersistentDecodeModel for'` returns **7** — matching the
+> "7 of 11" below — because it misses `lazy.rs`, where `LlamaModel` and
+> `PhiModel` are written fully qualified as
+> `impl crate::persistent_decode::PersistentDecodeModel for …`. **A number that
+> confirms the prose gets shipped; a number that contradicts it gets
+> re-measured.** Use the qualified-aware pattern.
+>
+> **Re-derive:**
+> `git grep -hE 'impl (crate::persistent_decode::)?PersistentDecodeModel for' -- '*.rs' | wc -l`
+> → **9**. *(Positive control — it must find the qualified form:*
+> `git grep -hE 'impl crate::persistent_decode::PersistentDecodeModel for' -- '*.rs'`
+> *→ LlamaModel and PhiModel.)*
+> Denominator: `git ls-files 'fuel-core/src/lazy_quantized_*.rs' | wc -l` → **11**.
+>
+> Also stale: `impl DecodeModel for` (a **different** trait, 5 impls, two of them
+> test doubles) cannot see this program at all. It was my first measurement and
+> it was the wrong trait.
+
 ---
 
 ## 1. What the gap actually is
