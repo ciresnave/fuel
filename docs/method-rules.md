@@ -137,7 +137,7 @@ because someone acted on a compressed version and got the scope wrong.
 
 ## docs-are-not-code-and-a-sweep-cannot-tell
 
-> **Index line (in CLAUDE.md):** **A mechanical rename rewrites re-derivation commands embedded in prose, silently — no compiler, test or CI job reads markdown.** Exclude `docs/**` from tree-wide identifier sweeps, or re-run every embedded command afterwards. Anchor on identifiers that were RETIRED, not RENAMED.
+> **Index line (in CLAUDE.md):** **A mechanical rename rewrites re-derivation commands embedded in prose, silently — no compiler, test or CI job reads markdown.** Exclude `docs/**` from tree-wide identifier sweeps, or re-run every embedded command afterwards. Anchor on identifiers that were RETIRED, not RENAMED. **AND ANCHOR THE CONTROL ON STRUCTURE, NOT ON ANY IDENTIFIER — the claim anchors on something RETIRED and retired things can only stay absent, but the CONTROL must anchor on something PRESENT and anything present can be renamed. The control is the fragile half, and the retired-identifier rule protects the half that was never at risk.** Use a file count (`git ls-files '<crate>/src/*.rs' | wc -l`), which breaks only on a restructure that moves files loudly.
 
 **A MECHANICAL RENAME CORRUPTS DOC-EMBEDDED VERIFICATION COMMANDS, AND NOTHING DETECTS IT (2026-08-20, architect, self-inflicted, caught by the lane whose program it was about to invalidate).**
 

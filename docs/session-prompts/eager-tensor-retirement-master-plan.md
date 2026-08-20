@@ -8,8 +8,19 @@
 > ```
 > BackpropOp              anywhere in *.rs   ->  0 matches
 > fuel-core/src/op.rs                        ->  GONE
-> (control) pub struct Tensor in fuel-core/src/*.rs -> 1, at lazy.rs:98
+> (control) git ls-files 'fuel-core/src/*.rs' | wc -l  ->  190
 > ```
+>
+> **The control is anchored on STRUCTURE, not on any identifier, and that is the
+> point.** Two earlier repairs of this block each used an identifier — one
+> `pub struct Tensor`, one `NodeHandle` — and `NodeHandle` had itself been
+> created by a rename (`cf861588`) four commits earlier. **The asymmetry: the
+> CLAIM anchors on something RETIRED (`BackpropOp`, `op.rs`), and retired things
+> can only stay absent, so the claim is safe. The CONTROL must anchor on
+> something PRESENT, and anything present can be renamed — so the control is the
+> fragile half of the pattern, and "anchor on retired identifiers" protects the
+> half that was never at risk.** A file count breaks only on a crate
+> restructure, which moves files loudly rather than rewriting strings silently.
 >
 > ⚠️ **THIS EVIDENCE BLOCK WAS CORRUPTED BY A MECHANICAL SWEEP AND REPAIRED
 > 2026-08-19.** As originally written it read `pub struct Tensor … -> 0 matches`
