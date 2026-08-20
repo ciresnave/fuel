@@ -463,3 +463,26 @@ first getting hurt by it.
 **So one question — *if this mechanism silently became a no-op, which number would move?* — and the answer names the remedy: a fixture that discriminates (a), or an assertion about the foundation (b). "None" means you have not instrumented the mechanism at all, only its surroundings.**
 
 **Why this is not merely "write better tests": in both instances the suite was green, the count was correct, and the work was real. Nothing in the output was wrong. The defect is that THE OUTPUT WOULD HAVE BEEN IDENTICAL HAD THE MECHANISM DONE NOTHING** — the same property as an unheld mutex, a zeroed probe target, and an unrun CI job. **Much of this file is one defect wearing different clothes: a result that cannot distinguish success from absence.**
+
+---
+
+## the-fingerprint-filename-is-not-the-fingerprint
+
+> **Index line (in CLAUDE.md):** A cargo fingerprint is keyed on **features + flags**, not just version — so `.fingerprint/<crate>-*` **existing** does not mean the cache is warm for *your* invocation. **"Same pin ⇒ warm" is the wrong inference; warmth is PER FEATURE SET.** Checking for the file reads the **filename**; the hash is what decides.
+
+**FOUND 2026-08-20, self-reported by the lane it cost, and it is the mirror of a rule already in this repo.**
+
+A lane paid a **66m26s** cold forge, then rebased 26 commits and checked that `target/debug/.fingerprint/baracuda-kernels-sys-*` still existed. **It did, and they reported "warm forge, best case".** The next build re-forged from scratch — `Compiling baracuda-kernels-sys v0.0.1-alpha.79`, 12 live `nvcc`.
+
+**The pin matched. The FEATURE SET did not.** The 66-minute build compiled `baracuda-kernels-sys` as a dependency of plain `fuel-cuda-backend` under **default features**; the new one pulls it under **`fuel-dispatch/cuda` + `fuel-core/cuda`**. Different feature unification → different fingerprint hash → different directory → **a full re-forge, with a file present the whole time that looked like proof of the opposite.**
+
+**THIS IS THE EXACT MIRROR OF THE CLEARING RULE ALREADY RECORDED HERE:** *clearing a fingerprint by guessed path can match nothing, leaving you warm while believing you forced a rebuild.* **Same object, opposite direction:**
+
+- **Clearing:** you believe you went COLD and you are WARM → you read a stale green as a fresh verification.
+- **Checking:** you believe you are WARM and you go COLD → you budget minutes and spend an hour, and a build that looks hung is just building.
+
+**In both, the mistake is treating the fingerprint DIRECTORY NAME as the fingerprint.** It is a hash of features and flags, and neither `ls` nor a glob can see that.
+
+**PRACTICE: never infer warmth from a version pin or from a file's presence. If warmth matters (on this box a cold baracuda forge is 30-56 minutes), warm it with the SAME invocation you intend to run** — same `-p` set, same `--features`, same target kinds — **or budget cold.** And when allocating work on "whoever has a warm forge" grounds, **name the FEATURE SET, not just the crate**: an allocation that says "warm forge" is underspecified in precisely the way that produces this.
+
+**Corollary worth keeping about the cost: one cold forge under the RIGHT feature set is cheaper than a warm cache under the wrong one, which never helps and hides that it never helped.** The lane's own conclusion — *"my forge-verify cache was for the wrong feature set and never would have helped increments anyway"* — is the useful form: **the warm cache they thought they had was not merely stale, it was for a different question.**
