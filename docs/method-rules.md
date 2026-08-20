@@ -221,6 +221,19 @@ CLAUDE.md already records that the launcher is exonerated by an isolating contro
 
 **Cause 1b — `call` PRESENT, but combined with a per-line `>>` redirect.** **vcvarsall halts a `call`-with-redirect.** This is the inverse of cause 1 and it defeats a reader who has been told to check for a *missing* `call`: the `call` is there, correct, and is part of the problem **in combination with** the redirect. The recorded working recipe chains instead — `vcvarsall && cargo`, **one** redirect for the whole chain, **no** `call`. Verified foreground: `cl.exe` resolves (14.51.36231), exit 0.
 
+**⚠️ CAUSE 1b IS WIDER THAN THE REDIRECT, AND THE WIDENING WAS ESTABLISHED BY AN OPPOSITE-OUTCOME CONTROL (2026-08-20, Fuel 1, correcting their own first report).** The claim as first offered was that a **parenthesized-group redirect** — `( … ) > log` — holds the log handle so **the line after the group never executes**, even when that line writes to a *different* file. It was offered as a new mechanism. **It is not. The group redirect is innocent, and two repros separate the variables:**
+
+```
+( echo x ) > log             then  echo y > separate-file   ->  line-after RUNS
+( "vcvarsall" amd64 ) > log  then  echo y > separate-file   ->  line-after does NOT run
+```
+
+**Same group, same redirect, opposite outcomes — so the differentiator is vcvarsall, not the redirect.** `vcvarsall.bat` terminates any *subsequent statement* in the batch file, whether that statement follows a `call vcvarsall >>` line (cause 1b) or a `( vcvarsall … )` group. **The ONLY thing that survives is a SAME-STATEMENT `&&` continuation** — which is exactly why the recorded working recipe (`vcvarsall && cargo`) works: cargo sits inside vcvarsall's own statement.
+
+**PRACTICE: nothing runs after vcvarsall in the same batch file except a same-statement chain. If you need to do anything afterwards, ISOLATE VCVARSALL IN ITS OWN SUBPROCESS** — `cmd /c "vcvarsall amd64 && set"` to harvest the environment, then `Set-Item env:` per line in the calling shell. The termination is then contained in a throwaway subprocess and the caller survives it.
+
+**AND KEEP THE SHAPE OF THE CORRECTION, WHICH IS THE TRANSFERABLE PART: two candidate mechanisms were CO-PRESENT in every failing run (a group redirect, and vcvarsall), so no amount of staring at the failures could separate them. What settled it was the SAME construct with the OTHER variable removed** — a group redirect around `echo`. **The reporter built that control against their own published claim and refuted it.**
+
 **Cause 2 — LF-only line endings in a `.bat`.** `cmd.exe` wants CRLF and mis-parses an LF-only batch file: it executes the early lines, then chokes mid-file. **The Write tool emits LF.** Write bats with PowerShell, or convert, and **measure** (`grep -c $'\r'`) rather than assume.
 
 **Cause 3 — a `.ps1` that is UTF-8 WITHOUT a BOM and contains any non-ASCII byte.** Windows PowerShell 5.1 reads BOM-less files as **ANSI**, so a single em-dash (`—`, `e2 80 94`) becomes three garbage characters *inside a string literal* and the parse fails several lines later with a message naming an innocent token.
@@ -248,4 +261,78 @@ The standing rule for long CUDA builds is: launch detached, have the script writ
 
 **The rule and its own failure mode produce the same observation**, which is the worst property a diagnostic can have. **The `Environment initialized for: 'x64'` banner and the target crate's `Checking <crate>` line are still in the log — so a log with real content and no marker should raise this, not the death hypothesis.**
 
+**⚠️ MEASURED 2026-08-20 — THE MECHANISM IS A SHARING VIOLATION, AND IT LEAVES A TELL THAT IS NOT SILENCE.** Two runs of one CRLF `.bat` that appends a marker to the log AND to a separate file:
+
+```
+A  cmd /c "bat > mlog.txt 2>&1"     mlog.txt:   BODY_LINE_1
+                                                The process cannot access the file because it is
+                                                being used by another process.   <- IN THE MARKER'S PLACE
+                                                BODY_LINE_2
+                                    marker.txt: MARKER_SEP_FILE=0                <- separate file SURVIVED
+                                    cmd exit=0                                   <- FAILURE DID NOT PROPAGATE
+
+B  cmd /c "bat"      (control)      mlog.txt:   MARKER_SAME_FILE=0               <- same append SUCCEEDS
+```
+
+**Three things worth having exactly:** (1) the same-file append fails with a **sharing violation**, because the whole-script redirect owns the handle for the script's lifetime; (2) **the error text lands in the log AT THE MARKER'S POSITION**, so the log is not silent — it carries a file-lock complaint that reads as unrelated noise, while a reader grepping for `_DONE_EXITCODE=` still finds nothing; (3) **`cmd` exits 0** — the failed append does not propagate, so the script reports success while its completion marker never lands. **Run B is what proves the redirect is the cause rather than the append being wrong.**
+
 **PRACTICE: the marker goes in a SEPARATE FILE.** `echo TAG_DONE_EXITCODE=%ERRORLEVEL% > marker.txt`, distinct from the log's redirect target. Then "no marker" means what it is supposed to mean. **And keep the three checks that were already required — liveness (pid), completion (marker), verdict (the target crate's own compile line) — because any two of them leave a state indistinguishable.**
+
+
+---
+
+## a-stale-tool-is-a-wrong-action
+
+> **Index line (in CLAUDE.md):** The stale-shared-tree rule covers reading stale CODE and getting a clean wrong ANSWER. **Executing a stale TOOL is a different and worse case: a tool carries machine-wide state, so a stale copy is not a wrong answer but a wrong ACTION — and no artifact records which version ran.**
+
+**FOUND 2026-08-20 (docs/gaps.md GAP-223), AND THE WELL-KNOWN STALE PATH IS NOT THE ONE THAT BIT.**
+
+`5db8e9af` fixed `scripts/gpu-run.ps1` and `scripts/cuda-build.ps1`, which declared `#Requires -Version 5.1` while being UTF-8 **without BOM** with em-dashes — so they could not parse under the version they demanded. Measured with 5.1's own parser (host `5.1.26100.9168`), positive control a deliberately-unbalanced `.ps1` returning `PARSE_ERRORS=1`:
+
+```
+origin/main          gpu-run.ps1  0    cuda-build.ps1   0     (also 0 under pwsh 7.6.5)
+C:\Projects\fuel     gpu-run.ps1  4    cuda-build.ps1  10     (0 under pwsh 7.6.5)
+```
+
+**TWO INDEPENDENT STALE PATHS reach the same broken tool, and the one everybody is warned about is not the one that bit:**
+
+1. **The shared checkout** — `C:\Projects\fuel`, where every lane's Bash tool defaults its cwd, sitting 162 commits behind. **It is also the ONLY natural path for a cross-project caller** (Baracuda, Vulkane) that has no Fuel worktree of its own.
+2. **A lane's OWN worktree at a pre-fix commit.** This is what actually happened: the lane invoked an absolute path into their own tree and never touched the shared checkout — they ran the test before rebasing.
+
+**THREE PROPERTIES MAKE THIS SURVIVE RATHER THAN GET CAUGHT:**
+
+- **It is shell-dependent, so it is intermittent ACROSS callers.** Under `pwsh` the stale copy parses clean; under `powershell` it dies. **Two lanes disagree, both are right, and neither can see why.** A defect that manufactures disagreement between honest reporters.
+- **The failure direction removes the guard.** `gpu-run.ps1` is the machine-wide GPU mutex — the only thing preventing a repeat of the 2026-07-31 host-aperture kernel bugcheck. **The natural reaction to "the wrapper won't even parse" is to run the GPU command directly.** A guard whose failure mode is to delete itself.
+- **It manufactures a FALSE STANDING CONSTRAINT.** The lane concluded *"5.1 is out; pwsh 7 required"* and was about to write it down. **A false constraint born of a stale path is durable precisely because it makes the working shape look mandatory** — nobody re-tests a requirement that the thing they already built appears to satisfy.
+
+**PRACTICE: invoke a shared TOOL from a head worktree by absolute path, and confirm the worktree is at head first. When a tool misbehaves, check the version you EXECUTED before forming any hypothesis about the language, the shell, or the tool's design.** Note what this does NOT admit of: a version check *inside* the tool cannot help, because the stale copy is the thing that would run it.
+
+**Corollary on attribution.** The architect filed the row asserting the lane hit it via the shared checkout, inferred from their `from_cwd`. **That was a hypothesis published as a fact, and the lane refuted it.** The measured hazard stood — it had been measured directly rather than inferred from the report — **and the correction WIDENED the class rather than shrinking it.** Verify the path a symptom came through, not merely that the symptom is real.
+
+**⚠️ AND THE DEEPER FINDING, WHICH ARRIVED FROM A PEER WHO NEVER HIT THE PARSE ERROR AT ALL: THE BYPASS DOES NOT NEED A BROKEN WRAPPER AS ITS EXCUSE.** Vulkane reported, unprompted, that they had run `cargo test --workspace --features …,kiss-target` **with no wrapper at all** — a GPU run, since `kiss_target_live.rs` creates an instance and enumerates physical devices — while chained behind a `cargo fmt`, having *"`cargo test --workspace` IS a GPU run"* written in their own durable memory. Nothing went wrong; **the only reason anyone knows is that they said so.**
+
+**Their framing is the one to keep: THE GUARD'S ABSENCE IS INDISTINGUISHABLE FROM ITS SUCCESS.** The run completes, the tests pass, and the sole difference is a mutex nobody observes. Same family as every other invisible-null in this file, with a worse blast radius — a host-aperture bugcheck rather than a wrong token.
+
+**So "use `pwsh`" and "remember the wrapper" are BOTH instructions that decay, and decay was just demonstrated in someone who had the rule recorded.** The durable form is to make the guarded thing detect the guard's absence: **`gpu-run.ps1` already exports `GPU_RUN_HELD=1` into the child environment** (for nested-invocation passthrough), and **zero Rust code observes it** — so a live-GPU test helper that refuses to proceed without it costs almost nothing and converts a silent success into a named refusal at the point of use.
+
+
+---
+
+## staleness-by-workaround
+
+> **Index line (in CLAUDE.md):** A rule can be TRUE when written, remain TRUE as stated, and still send the reader to a far more expensive path than the one that now works. **"Is this claim still true?" passes on every one of these.** Ask the second question: **is the path it prescribes still the cheapest one?**
+
+**NAMED 2026-08-20 by the doc-currency lane, who observed that their entire program would sail past this class untouched.**
+
+Doc-currency auditing tests one predicate: **is the claim still true?** That catches staleness by contradiction — the doc says X, the code says not-X. **It cannot catch a rule whose every sentence remains true while the obstacle it was written to route around has been removed.** Nothing in the rule is false, so no amount of re-reading it produces a flag.
+
+**THE WORKED EXAMPLE IS IN THIS REPO'S OWN `CLAUDE.md`.** The vcvarsall recipe is documented as *"PowerShell-tool-ONLY"*, because Git Bash's MSYS layer mangles both the leading `/c` and the inner quotes. **Every word of that is still true.** And it is now avoidable: put the quotes in a `.bat` and invoke `cmd //c <bat>`; better still, harvest vcvarsall's environment in a throwaway subprocess and never put it on a command line at all. **The rule survives its own audit and costs the reader the cheap path.**
+
+**A sibling instance, same shape, higher cost:** the gate for a `cfg`'d module was documented as `--features telemetry,cuda` — a GPU-class build — after the module's gate had been split onto `baracuda-types`. **The stated rule was about feature gating and was not obviously false; what it did was make the CHEAP gate look impossible**, sending two people to a 30-56 minute forge for an answer available in seconds.
+
+**PRACTICE: a currency checklist needs BOTH questions.**
+
+- **Is the claim still true?** — staleness by contradiction. Detectable by re-measuring the claim.
+- **Is the path it prescribes still the cheapest one?** — staleness by workaround. **Detectable ONLY by re-testing the obstacle**, which nobody does, because the rule exists to stop them hitting it.
+
+**So the detector is not a re-read but a deliberate re-attempt of the forbidden thing, on a schedule. When a rule says "you cannot do X, do Y instead", the maintenance question is not whether Y still works — it is whether X still fails.**
