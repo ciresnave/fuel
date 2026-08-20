@@ -11,10 +11,10 @@
 //! fresh on the activation's graph at forward time and broadcast-added
 //! across the leading dims of the projection.
 
-use crate::Result;
-use crate::lazy::{LazyTensor, WeightStorage};
-use crate::lazy_nn::LazyModule;
-use crate::lazy_nn_varbuilder::LazyVarBuilder;
+use crate::modules::LazyModule;
+use crate::varbuilder::LazyVarBuilder;
+use fuel::Result;
+use fuel::lazy::{LazyTensor, WeightStorage};
 use fuel_ir::Shape;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -42,7 +42,7 @@ impl LazyLinear {
         out_features: usize,
     ) -> Result<Self> {
         if weight.elem_count() != in_features * out_features {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyLinear::new: weight has {} elements but \
                  in_features * out_features = {} * {} = {}",
                 weight.elem_count(),
@@ -54,7 +54,7 @@ impl LazyLinear {
         }
         if let Some(b) = bias.as_ref() {
             if b.len() != out_features {
-                return Err(crate::Error::Msg(format!(
+                return Err(fuel::Error::Msg(format!(
                     "LazyLinear::new: bias has length {} but \
                      out_features = {}",
                     b.len(),
@@ -143,11 +143,11 @@ fn fan_in_kaiming_uniform(in_features: usize, n: usize, seed_salt: u64) -> Vec<f
 }
 
 /// Free factory: build a [`LazyLinear`] with weight + bias registered
-/// into `vs`'s underlying [`crate::lazy_nn_varmap::LazyVarMap`] under
+/// into `vs`'s underlying [`crate::varmap::LazyVarMap`] under
 /// the names `"<prefix>.weight"` and `"<prefix>.bias"`.
 ///
 /// The weight is laid out `[in_features, out_features]` (the layout
-/// [`crate::lazy::WeightStorage::apply_linear`] expects). Init follows
+/// [`fuel::lazy::WeightStorage::apply_linear`] expects). Init follows
 /// a Kaiming-fan-in uniform: `U(-1/sqrt(in_features), +1/sqrt(in_features))`,
 /// approximating the retired `fuel_nn::linear` semantics.
 pub fn linear(in_features: usize, out_features: usize, vs: &LazyVarBuilder) -> Result<LazyLinear> {
@@ -167,7 +167,7 @@ pub fn linear(in_features: usize, out_features: usize, vs: &LazyVarBuilder) -> R
 }
 
 /// Free factory: bias-less variant of [`linear`]. Only `"<prefix>.weight"`
-/// is registered into the underlying [`crate::lazy_nn_varmap::LazyVarMap`].
+/// is registered into the underlying [`crate::varmap::LazyVarMap`].
 pub fn linear_no_bias(
     in_features: usize,
     out_features: usize,
@@ -185,7 +185,7 @@ pub fn linear_no_bias(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Device;
+    use fuel::Device;
 
     fn ramp_f32(n: usize, scale: f32, offset: f32) -> Vec<f32> {
         (0..n).map(|i| (i as f32) * scale + offset).collect()
@@ -329,9 +329,9 @@ mod tests {
 
     #[test]
     fn factory_registers_weight_and_bias_and_forward_shape_matches() {
-        use crate::DType;
-        use crate::lazy_nn_varbuilder::LazyVarBuilder;
-        use crate::lazy_nn_varmap::LazyVarMap;
+        use crate::varbuilder::LazyVarBuilder;
+        use crate::varmap::LazyVarMap;
+        use fuel::DType;
 
         let in_features = 4;
         let out_features = 3;

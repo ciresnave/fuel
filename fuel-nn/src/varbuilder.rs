@@ -27,10 +27,10 @@
 //! prefix = "a.b"     + name = "w"  ⇒  "a.b.w"
 //! ```
 
-use crate::Result;
-use crate::lazy_nn_optim::LazyVar;
-use crate::lazy_nn_varmap::LazyVarMap;
-use crate::{DType, Device};
+use crate::optim::LazyVar;
+use crate::varmap::LazyVarMap;
+use fuel::Result;
+use fuel::{DType, Device};
 use fuel_ir::Shape;
 
 /// A name-prefixing handle over a [`LazyVarMap`] for constructing
@@ -102,7 +102,7 @@ impl LazyVarBuilder {
         let key = self.path(name);
         if let Some(existing) = self.map.get(&key) {
             if existing.shape().dims() != shape.dims() {
-                return Err(crate::Error::Msg(format!(
+                return Err(fuel::Error::Msg(format!(
                     "LazyVarBuilder::get_with: parameter {key} already \
                      registered with shape {:?}, requested {:?}",
                     existing.shape().dims(),

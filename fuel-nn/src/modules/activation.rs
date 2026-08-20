@@ -2,8 +2,8 @@
 //! Activation modules wrapping the corresponding `LazyTensor` ops.
 
 use super::LazyModule;
-use crate::Result;
-use crate::lazy::LazyTensor;
+use fuel::Result;
+use fuel::lazy::LazyTensor;
 
 macro_rules! activation_unit {
     ($name:ident, $method:ident) => {
@@ -92,7 +92,7 @@ impl LazyModule for LazyElu {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Device;
+    use fuel::Device;
     use fuel_ir::Shape;
     use std::sync::Arc;
 

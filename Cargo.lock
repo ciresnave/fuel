@@ -2203,6 +2203,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "fuel-nn"
+version = "0.10.3"
+dependencies = [
+ "fuel-core",
+ "fuel-graph",
+ "fuel-ir",
+ "half",
+ "rand",
+ "rand_distr",
+ "safetensors 0.7.0",
+]
+
+[[package]]
 name = "fuel-onnx"
 version = "0.10.3"
 dependencies = [
@@ -2260,6 +2273,7 @@ version = "0.10.3"
 dependencies = [
  "fuel-core",
  "fuel-graph",
+ "fuel-nn",
  "serde",
  "serde_json",
  "tracing",

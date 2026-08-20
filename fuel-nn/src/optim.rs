@@ -28,8 +28,8 @@
 //!
 //! [`step`]: LazyOptimizer::step
 
-use crate::Result;
-use crate::lazy::{LazyTensor, realize_many_f32};
+use fuel::Result;
+use fuel::lazy::{LazyTensor, realize_many_f32};
 use fuel_graph::NodeId;
 use fuel_ir::{Error, Shape};
 use std::collections::HashMap;
@@ -603,7 +603,7 @@ impl LazyOptimizer for LazyAdamW {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Device;
+    use fuel::Device;
 
     fn build_grads_for(vars: &[(&LazyVar, Vec<f32>)]) -> (LazyTensor, HashMap<String, LazyTensor>) {
         let (first_var, first_data) = &vars[0];

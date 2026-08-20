@@ -36,8 +36,8 @@ pub use quantizable_linear::LazyQuantizableLinear;
 pub use sequential::LazySequential;
 pub use two_proj_attention::LazyTwoProjAttention;
 
-use crate::Result;
-use crate::lazy::LazyTensor;
+use fuel::Result;
+use fuel::lazy::LazyTensor;
 
 /// Single-input `forward` over the lazy-graph tensor. Analogous to
 /// the eager [`crate::Module`] trait, retargeted at `LazyTensor`.
