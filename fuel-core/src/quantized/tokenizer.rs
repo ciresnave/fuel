@@ -77,7 +77,11 @@ struct Pipeline {
 impl Pipeline {
     fn apply(self, tokenizer: &mut Tokenizer) {
         if let Some(norm) = self.normalizer {
-            tokenizer.with_normalizer(Some(norm));
+            // tokenizers 0.23 made `with_normalizer` fallible (returns a
+            // `#[must_use]` Result; 0.22 returned `&mut Self`). The sibling
+            // `with_*` setters below still return `&mut Self`, so only this one
+            // needs the discard. Preserve the prior "set it, ignore" behavior.
+            let _ = tokenizer.with_normalizer(Some(norm));
         }
         if let Some(pt) = self.pretokenizer {
             tokenizer.with_pre_tokenizer(Some(pt));
@@ -293,7 +297,10 @@ impl TokenizerFromGguf for Tokenizer {
                 }
             }
             if !specials.is_empty() {
-                tokenizer.add_special_tokens(&specials);
+                // tokenizers 0.23 takes an owned-item iterator (was `&[AddedToken]`)
+                // and now returns a `#[must_use]` Result; 0.22 returned a bare count.
+                // Preserve the prior "register, ignore the count" behavior.
+                let _ = tokenizer.add_special_tokens(specials);
             }
         }
 
@@ -316,7 +323,10 @@ impl TokenizerFromGguf for Tokenizer {
                 .map(|tok| AddedToken::from(tok.clone(), true))
                 .collect();
             if !specials.is_empty() {
-                tokenizer.add_special_tokens(&specials);
+                // tokenizers 0.23 takes an owned-item iterator (was `&[AddedToken]`)
+                // and now returns a `#[must_use]` Result; 0.22 returned a bare count.
+                // Preserve the prior "register, ignore the count" behavior.
+                let _ = tokenizer.add_special_tokens(specials);
             }
         }
 
