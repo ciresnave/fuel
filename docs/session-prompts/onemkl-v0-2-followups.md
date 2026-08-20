@@ -6,6 +6,22 @@
 The three v0.2 categories below are deliberately deferred — each needs
 new Fuel-side seams that don't exist yet.
 
+> ⚠️ **AMENDED 2026-08-20 — THREE OF THE FOUR CLAIMED SYMBOLS ARE ON `main`; ONE
+> IS NOT.** `ThreadCountGuard`, `IsaLevel` and `AlignedBuffer` each appear in a
+> file. **`version_string` appears in ZERO** — so "shipped into
+> `fuel-mkl-cpu-backend` in the same window" is true of three quarters of its own
+> list.
+>
+> ⚠️ **And the whole document is unverifiable on this machine**, which the status
+> line does not say: per `CLAUDE.md`, `mkl`/`onemkl` are BOTH invisible to the
+> default build AND unbuildable here (the DLLs are absent — GAP-016). Anything
+> below can be read but not checked locally, and a green local gate says nothing
+> about it either way.
+>
+> **Re-derive:** `git grep -l ThreadCountGuard -- '*.rs' | wc -l` → **1**;
+> `git grep -l version_string -- '*.rs' | wc -l` → **0**.
+> *(Control: `git ls-files 'fuel-core/src/*.rs' | wc -l` → **190**.)*
+
 > Reconciled 2026-06-15 against the 2026-06-14 redirection + current git:
 > the CUDA Tier-2 / baracuda-pin gates are now largely MET, so the real
 > remaining gate is "a concrete consumer lands," not the CUDA work being

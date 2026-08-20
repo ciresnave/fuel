@@ -2,6 +2,22 @@
 
 > Reconciled 2026-06-15 against the 2026-06-14 redirection + current git: still an active reservation (ROADMAP designates this prompt as the authoritative recreation source for `llama_multiprocess/{main.rs,model.rs}`); retired-ExecutionPlan language and a moved phase-H link updated.
 
+> ⚠️ **AMENDED 2026-08-20 — THE TARGET THIS RESERVATION POINTS AT NO LONGER
+> EXISTS.** The stated goal is to let
+> `fuel-examples/examples/_llama_multiprocess_retired` "come back to life", and
+> that path matches **0 files** on `main`. The thing to be revived is gone, so
+> the reservation as written cannot be executed even if someone picked it up.
+>
+> **The reservation itself may still be wanted** — nothing here establishes it
+> isn't, and multi-session serving is a live goal. What is stale is the *anchor*:
+> a work item whose object was deleted needs re-scoping against what exists now,
+> not resuming. Deliberately not restatused, because whether the reservation
+> survives is not a documentation question.
+>
+> **Re-derive:** `git ls-files '*llama_multiprocess*' | wc -l` → **0**.
+> *(Control: `git ls-files 'fuel-core/src/*.rs' | wc -l` → **190** — non-zero, so
+> the zero above is absence rather than a broken query.)*
+
 ## What this session is for
 
 Design and ship the lazy substrate that lets

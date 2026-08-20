@@ -12,6 +12,22 @@
 >
 > Status against git: Stage 1 `70018b9c`, Stage 2 `30e35c26`, Stage 3 `0a786821`, Stage 4a `240af759`/`99e26dea` landed; Stage 4b WIP at `303ae8ca` (UNVERIFIED); Stages 5–7 + memory planning unbuilt.
 
+> ⚠️ **AMENDED 2026-08-20 — "live spec" IS A SELF-ASSERTED CURRENCY CLAIM AND
+> THIS ONE WAS LAST RECONCILED 2026-06-15.** That phrase is the same one that
+> kept `eager-tensor-retirement-master-plan.md` reading as in-progress for two
+> months: a document calling itself live is telling the reader not to check it.
+>
+> **Not restatused, because its substance may well hold** — `optimize_graph`
+> appears in **20** files and the program is clearly alive. But
+> `docs/architecture/04-optimization.md` has since recorded the per-decision-point
+> alternatives, the lock-step driver, the bounded per-device Pareto frontier and
+> the runtime route picker as **landed at v0.6**, so the "Stages 1–4a landed, 4b
+> WIP" line below is at minimum two months behind the constitution, **which
+> outranks this file.**
+>
+> **Re-derive:** `git grep -l optimize_graph -- '*.rs' | wc -l` → **20**;
+> `grep -n 'have all landed' docs/architecture/04-optimization.md`.
+
 Decision (2026-06-11, Fuel author): **planning moves out of
 `realize()`, and soon** — Fuel should build in this direction before
 more executor work accretes around the realize-time-planning shape.

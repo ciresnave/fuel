@@ -6,6 +6,27 @@
 **Prereq map:** A (async execution) → B1 (in-flight counter) → C (streaming walk + `DeviceLoadSelector`);
 B2 (sibling queue-depth telemetry) is an optional cross-process refinement.
 
+> ⚠️ **AMENDED 2026-08-20 — THIS DOCUMENT IS CONTRADICTED BY ITS OWN SIBLINGS,
+> AND IT IS THE ONE A READER MEETS FIRST.** It says *"design / scoping — no
+> executor code until Phase A is reviewed."*
+>
+> - `step-e-a4b-async-completion.md` → **"Status: SHIPPED 2026-06-29"**
+> - `step-e-phase-c-design.md` → **"Status: SHIPPED 2026-06-30"**
+> - `fuel-dispatch/src/pipelined.rs` is **15,739 lines**; `record_completion_event`
+>   and `to_cpu_bytes_finer` (the A4b deliverable) both exist on `main`.
+>
+> So the umbrella doc reports no executor code while two child docs report their
+> phases shipped and the code is fifteen thousand lines. **A reader who starts at
+> the parent — which is what a parent is for — gets the one stale answer in the
+> set.**
+>
+> The design reasoning is KEPT; what is false is the status line.
+>
+> **Re-derive:** `git show HEAD:fuel-dispatch/src/pipelined.rs | wc -l` → ~15739;
+> `git grep -l to_cpu_bytes_finer -- '*.rs' | wc -l` → **2**.
+> *(Control: `git ls-files 'fuel-core/src/*.rs' | wc -l` → **190** — structural,
+> so no rename can silently break this check.)*
+
 ---
 
 ## Why
