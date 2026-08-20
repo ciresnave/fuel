@@ -365,9 +365,10 @@ pub fn conv2d_via_gemm<T, F>(
     if let Some(b) = bias {
         debug_assert_eq!(b.len(), s.c_out);
         for ni in 0..s.batch {
-            for co in 0..s.c_out {
+            // b.len() == s.c_out (debug_assert above), so `enumerate` preserves
+            // the iteration count; `co` is still needed for `row_off`.
+            for (co, &bv) in b.iter().enumerate() {
                 let row_off = (ni * s.c_out + co) * n;
-                let bv = b[co];
                 for j in 0..n {
                     out[row_off + j] = out[row_off + j] + bv;
                 }
