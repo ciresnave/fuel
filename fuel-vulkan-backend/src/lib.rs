@@ -369,18 +369,6 @@ pub struct VulkanBackend {
     /// (≤ [`DOWNLOAD_POOL_MAX_BYTES`]) download staging buffers
     /// sub-allocate from. `None` iff `download_mem_type` is `None`.
     download_pool: Option<PoolHandle>,
-    /// Supported cooperative-matrix tile shapes, queried at init from
-    /// `VK_KHR_cooperative_matrix`. Empty if the extension is not
-    /// available. Used by the matmul dispatch to decide whether to
-    /// route large-M × bf16-B matmuls through a tensor-core kernel.
-    ///
-    /// Stored as a fuel-internal POD summary (M/N/K + dtype tags)
-    /// rather than the raw `vulkane::safe::CooperativeMatrixProperties`
-    /// — the latter contains `VkCooperativeMatrixPropertiesKHR` which
-    /// has a `pNext: *mut c_void` field that's !Send/!Sync, blocking
-    /// `Arc<VulkanBackend>` (required by the pipelined-executor
-    /// binding-table dispatch path).
-    coop_matrix_shapes: Vec<CoopMatrixShape>,
     /// Per-op-kind host-side timing. Counts and cumulative wall time
     /// spent inside `record_dispatch` for each op category. Useful
     /// for diagnosing whether submission overhead is the bottleneck
@@ -705,7 +693,6 @@ impl VulkanBackend {
             allocator,
             recorder,
             op_stats: OpStats::default(),
-            coop_matrix_shapes,
             buffer_pool,
             download_mem_type,
             download_pool,
