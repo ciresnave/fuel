@@ -14,9 +14,9 @@
 //! silently dropped. This matches the "no deferrals — surface the
 //! gap" convention used elsewhere in the lazy port.
 
-use crate::Result;
-use crate::lazy::{LazyTensor, WeightStorage};
-use crate::lazy_nn::{LazyBatchNorm2d, LazyModule};
+use crate::modules::{LazyBatchNorm2d, LazyModule};
+use fuel::Result;
+use fuel::lazy::{LazyTensor, WeightStorage};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -124,14 +124,14 @@ impl LazyConv1d {
         kernel_size: usize,
     ) -> Result<Self> {
         if cfg.groups < 1 {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyConv1d::new: groups must be >= 1, got {}",
                 cfg.groups,
             ))
             .bt());
         }
         if in_channels % cfg.groups != 0 {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyConv1d::new: in_channels ({}) must be divisible \
                  by groups ({})",
                 in_channels, cfg.groups,
@@ -139,7 +139,7 @@ impl LazyConv1d {
             .bt());
         }
         if out_channels % cfg.groups != 0 {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyConv1d::new: out_channels ({}) must be divisible \
                  by groups ({})",
                 out_channels, cfg.groups,
@@ -148,7 +148,7 @@ impl LazyConv1d {
         }
         let expected = out_channels * (in_channels / cfg.groups) * kernel_size;
         if weight.elem_count() != expected {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyConv1d::new: weight has {} elements but \
                  out_channels * (in_channels / groups) * kernel_size = \
                  {} * {} * {} = {}",
@@ -162,7 +162,7 @@ impl LazyConv1d {
         }
         if let Some(b) = bias.as_ref() {
             if b.len() != out_channels {
-                return Err(crate::Error::Msg(format!(
+                return Err(fuel::Error::Msg(format!(
                     "LazyConv1d::new: bias has length {} but \
                      out_channels = {}",
                     b.len(),
@@ -204,7 +204,7 @@ impl LazyConv1d {
 impl LazyModule for LazyConv1d {
     fn forward(&self, xs: &LazyTensor) -> Result<LazyTensor> {
         if self.cfg.dilation != 1 {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyConv1d::forward: dilation = {} is not supported; \
                  LazyTensor::conv1d only takes stride/padding/groups. \
                  Use dilation == 1.",
@@ -261,14 +261,14 @@ impl LazyConv2d {
         kernel_w: usize,
     ) -> Result<Self> {
         if cfg.groups < 1 {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyConv2d::new: groups must be >= 1, got {}",
                 cfg.groups,
             ))
             .bt());
         }
         if in_channels % cfg.groups != 0 {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyConv2d::new: in_channels ({}) must be divisible \
                  by groups ({})",
                 in_channels, cfg.groups,
@@ -276,7 +276,7 @@ impl LazyConv2d {
             .bt());
         }
         if out_channels % cfg.groups != 0 {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyConv2d::new: out_channels ({}) must be divisible \
                  by groups ({})",
                 out_channels, cfg.groups,
@@ -285,7 +285,7 @@ impl LazyConv2d {
         }
         let expected = out_channels * (in_channels / cfg.groups) * kernel_h * kernel_w;
         if weight.elem_count() != expected {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyConv2d::new: weight has {} elements but \
                  out_channels * (in_channels / groups) * kernel_h * kernel_w \
                  = {} * {} * {} * {} = {}",
@@ -300,7 +300,7 @@ impl LazyConv2d {
         }
         if let Some(b) = bias.as_ref() {
             if b.len() != out_channels {
-                return Err(crate::Error::Msg(format!(
+                return Err(fuel::Error::Msg(format!(
                     "LazyConv2d::new: bias has length {} but \
                      out_channels = {}",
                     b.len(),
@@ -365,7 +365,7 @@ impl LazyConv2d {
     ///   f32 view, which neither variant exposes losslessly.
     pub fn absorb_bn(&self, bn: &LazyBatchNorm2d) -> Result<LazyConv2d> {
         if bn.num_features() != self.out_channels {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyConv2d::absorb_bn: bn.num_features ({}) must equal \
                  conv.out_channels ({})",
                 bn.num_features(),
@@ -385,7 +385,7 @@ impl LazyConv2d {
             WeightStorage::F32(a) => a.iter().copied().collect(),
             WeightStorage::BF16(a) => a.iter().map(|v| v.to_f32()).collect(),
             WeightStorage::Q4_0 { .. } => {
-                return Err(crate::Error::Msg(
+                return Err(fuel::Error::Msg(
                     "LazyConv2d::absorb_bn: Q4_0 weights cannot be folded \
                      with a following BatchNorm (no lossless host f32 \
                      view). Dequantize first, fold, then requantize if \
@@ -395,7 +395,7 @@ impl LazyConv2d {
                 .bt());
             }
             WeightStorage::WithLoRA { .. } => {
-                return Err(crate::Error::Msg(
+                return Err(fuel::Error::Msg(
                     "LazyConv2d::absorb_bn: LoRA-wrapped weights cannot be \
                      folded with a following BatchNorm (the adapter must \
                      be applied to activations, not weights). Merge LoRA \
@@ -453,7 +453,7 @@ impl LazyConv2d {
 impl LazyModule for LazyConv2d {
     fn forward(&self, xs: &LazyTensor) -> Result<LazyTensor> {
         if self.cfg.dilation != (1, 1) {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyConv2d::forward: dilation = {:?} is not supported; \
                  LazyTensor::conv2d only takes stride/padding/groups. \
                  Use dilation == (1, 1).",
@@ -485,7 +485,7 @@ impl LazyModule for LazyConv2d {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Device;
+    use fuel::Device;
 
     fn ramp_f32(n: usize, scale: f32, offset: f32) -> Vec<f32> {
         (0..n).map(|i| (i as f32) * scale + offset).collect()

@@ -74,8 +74,8 @@
 //! fuel-inference   ← you are here (inference orchestration)
 //! fuel-transformers (model definitions)
 //! fuel-core        (tensors, devices, autograd, AND the NN surface:
-//!                   `lazy_nn_varbuilder::LazyVarBuilder`,
-//!                   `lazy_nn_varmap::LazyVarMap`, and `lazy_nn/`
+//!                   `fuel_nn::varbuilder::LazyVarBuilder`,
+//!                   `fuel_nn::varmap::LazyVarMap`, and `fuel_nn::modules`
 //!                   — linear, embedding, norm, activation, lora,
 //!                   quantizable_linear, moe, conv, sequential)
 //! ```

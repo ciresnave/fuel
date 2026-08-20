@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Training checkpoint management (lazy).
 //!
-//! Extends [`fuel::lazy_nn_varmap::LazyVarMap`]'s basic save/load with
+//! Extends [`fuel_nn::varmap::LazyVarMap`]'s basic save/load with
 //! metadata tracking for resumable training. A [`Checkpoint`] bundles
 //! model weights with the epoch, step, and an optional best metric so
 //! training can resume from exactly where it was interrupted.
@@ -9,8 +9,8 @@
 //! # Example
 //!
 //! ```rust,no_run
-//! use fuel::lazy_nn_optim::LazyVar;
-//! use fuel::lazy_nn_varmap::LazyVarMap;
+//! use fuel_nn::optim::LazyVar;
+//! use fuel_nn::varmap::LazyVarMap;
 //! use fuel_training::checkpoint::Checkpoint;
 //!
 //! # fn main() -> fuel::Result<()> {
@@ -30,7 +30,7 @@
 //! ```
 
 use fuel::Result;
-use fuel::lazy_nn_varmap::LazyVarMap;
+use fuel_nn::varmap::LazyVarMap;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 

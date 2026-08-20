@@ -16,9 +16,9 @@
 //! high-level `LazyModule` wrapper that bundles the adapter
 //! parameters with optional bias.
 
-use crate::Result;
-use crate::lazy::{LazyTensor, WeightStorage};
-use crate::lazy_nn::LazyModule;
+use crate::modules::LazyModule;
+use fuel::Result;
+use fuel::lazy::{LazyTensor, WeightStorage};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -56,10 +56,10 @@ impl LazyLoraLinear {
         out_features: usize,
     ) -> Result<Self> {
         if rank == 0 {
-            return Err(crate::Error::Msg("LazyLoraLinear::new: rank must be > 0".into()).bt());
+            return Err(fuel::Error::Msg("LazyLoraLinear::new: rank must be > 0".into()).bt());
         }
         if base_weight.elem_count() != in_features * out_features {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyLoraLinear::new: base_weight has {} elements but \
                  in_features * out_features = {} * {} = {}",
                 base_weight.elem_count(),
@@ -70,7 +70,7 @@ impl LazyLoraLinear {
             .bt());
         }
         if matches!(base_weight, WeightStorage::WithLoRA { .. }) {
-            return Err(crate::Error::Msg(
+            return Err(fuel::Error::Msg(
                 "LazyLoraLinear::new: base_weight is already WithLoRA \
                  (nested adapters unsupported)"
                     .into(),
@@ -78,7 +78,7 @@ impl LazyLoraLinear {
             .bt());
         }
         if lora_a.len() != in_features * rank {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyLoraLinear::new: lora_a has {} elements but \
                  in_features * rank = {} * {} = {}",
                 lora_a.len(),
@@ -89,7 +89,7 @@ impl LazyLoraLinear {
             .bt());
         }
         if lora_b.len() != rank * out_features {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyLoraLinear::new: lora_b has {} elements but \
                  rank * out_features = {} * {} = {}",
                 lora_b.len(),
@@ -101,7 +101,7 @@ impl LazyLoraLinear {
         }
         if let Some(b) = bias.as_ref() {
             if b.len() != out_features {
-                return Err(crate::Error::Msg(format!(
+                return Err(fuel::Error::Msg(format!(
                     "LazyLoraLinear::new: bias has length {} but \
                      out_features = {}",
                     b.len(),
@@ -188,8 +188,8 @@ impl LazyModule for LazyLoraLinear {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Device;
-    use crate::lazy_nn::LazyLinear;
+    use crate::modules::LazyLinear;
+    use fuel::Device;
 
     fn ramp_f32(n: usize, scale: f32, offset: f32) -> Vec<f32> {
         (0..n).map(|i| (i as f32) * scale + offset).collect()

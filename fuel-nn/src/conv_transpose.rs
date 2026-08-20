@@ -18,7 +18,7 @@
 //! appended as a single [`fuel_graph::Op::ConvTranspose2D`] node (the
 //! 1-D variant lifts to rank-4 transparently), and the bias add is
 //! appended as a broadcast add. Validation (rank, channel divisibility,
-//! stride / dilation > 0) surfaces as a typed [`crate::Error`] at
+//! stride / dilation > 0) surfaces as a typed [`fuel::Error`] at
 //! build time, matching the project rule that every check that *can*
 //! run at graph-build time *must*.
 //!
@@ -44,8 +44,8 @@
 //! - Dilation is forwarded as-is to the underlying primitive — the
 //!   IR carries it; no extra layer-level guard needed.
 
-use crate::Result;
-use crate::lazy::{LazyTensor, WeightStorage};
+use fuel::Result;
+use fuel::lazy::{LazyTensor, WeightStorage};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -111,7 +111,7 @@ impl ConvTranspose1dConfig {
 ///
 /// Holds a [`WeightStorage`] weight in PyTorch's
 /// `[Cin, Cout / groups, K]` layout (transposed channel order vs
-/// forward [`crate::lazy_nn::LazyConv1d`]) plus an optional bias of
+/// forward [`crate::modules::LazyConv1d`]) plus an optional bias of
 /// length `out_channels`.
 #[derive(Debug, Clone)]
 pub struct ConvTranspose1d {
@@ -143,28 +143,28 @@ impl ConvTranspose1d {
         kernel_size: usize,
     ) -> Result<Self> {
         if config.groups < 1 {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "ConvTranspose1d::new: groups must be >= 1, got {}",
                 config.groups,
             ))
             .bt());
         }
         if config.stride < 1 {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "ConvTranspose1d::new: stride must be >= 1, got {}",
                 config.stride,
             ))
             .bt());
         }
         if config.dilation < 1 {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "ConvTranspose1d::new: dilation must be >= 1, got {}",
                 config.dilation,
             ))
             .bt());
         }
         if !out_channels.is_multiple_of(config.groups) {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "ConvTranspose1d::new: out_channels ({}) must be \
                  divisible by groups ({})",
                 out_channels, config.groups,
@@ -172,7 +172,7 @@ impl ConvTranspose1d {
             .bt());
         }
         if !in_channels.is_multiple_of(config.groups) {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "ConvTranspose1d::new: in_channels ({}) must be \
                  divisible by groups ({})",
                 in_channels, config.groups,
@@ -181,7 +181,7 @@ impl ConvTranspose1d {
         }
         let expected = in_channels * (out_channels / config.groups) * kernel_size;
         if weight.elem_count() != expected {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "ConvTranspose1d::new: weight has {} elements but \
                  in_channels * (out_channels / groups) * kernel_size \
                  = {} * {} * {} = {}",
@@ -195,7 +195,7 @@ impl ConvTranspose1d {
         }
         if let Some(b) = bias.as_ref() {
             if b.len() != out_channels {
-                return Err(crate::Error::Msg(format!(
+                return Err(fuel::Error::Msg(format!(
                     "ConvTranspose1d::new: bias has length {} but \
                      out_channels = {}",
                     b.len(),
@@ -270,16 +270,16 @@ impl ConvTranspose1d {
     /// `"decoder.upsample"`. Reads `{prefix}.weight` as a flat
     /// `[Cin, Cout / groups, K]` tensor and `{prefix}.bias` (optional)
     /// as `[Cout]`. Source dtype is upcast to f32 via
-    /// [`crate::lazy::load_tensor_as_f32`].
+    /// [`fuel::lazy::load_tensor_as_f32`].
     pub fn load_from_mmapped(
-        st: &crate::safetensors::MmapedSafetensors,
+        st: &fuel::safetensors::MmapedSafetensors,
         prefix: &str,
         config: ConvTranspose1dConfig,
         in_channels: usize,
         out_channels: usize,
         kernel_size: usize,
     ) -> Result<Self> {
-        use crate::lazy::load_tensor_as_f32;
+        use fuel::lazy::load_tensor_as_f32;
         let w = load_tensor_as_f32(st, &format!("{prefix}.weight"))?;
         let weight_arc: Arc<[f32]> = Arc::<[f32]>::from(w);
         let bias = match load_tensor_as_f32(st, &format!("{prefix}.bias")) {
@@ -357,7 +357,7 @@ impl ConvTranspose2dConfig {
 /// 2-D transposed convolution layer over [`LazyTensor`].
 ///
 /// Weight layout is PyTorch's `[Cin, Cout / groups, Kh, Kw]` (transposed
-/// channel order vs forward [`crate::lazy_nn::LazyConv2d`]).
+/// channel order vs forward [`crate::modules::LazyConv2d`]).
 #[derive(Debug, Clone)]
 pub struct ConvTranspose2d {
     weight: WeightStorage,
@@ -387,28 +387,28 @@ impl ConvTranspose2d {
         kernel_w: usize,
     ) -> Result<Self> {
         if config.groups < 1 {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "ConvTranspose2d::new: groups must be >= 1, got {}",
                 config.groups,
             ))
             .bt());
         }
         if config.stride.0 < 1 || config.stride.1 < 1 {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "ConvTranspose2d::new: stride must be >= 1, got {:?}",
                 config.stride,
             ))
             .bt());
         }
         if config.dilation.0 < 1 || config.dilation.1 < 1 {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "ConvTranspose2d::new: dilation must be >= 1, got {:?}",
                 config.dilation,
             ))
             .bt());
         }
         if !out_channels.is_multiple_of(config.groups) {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "ConvTranspose2d::new: out_channels ({}) must be \
                  divisible by groups ({})",
                 out_channels, config.groups,
@@ -416,7 +416,7 @@ impl ConvTranspose2d {
             .bt());
         }
         if !in_channels.is_multiple_of(config.groups) {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "ConvTranspose2d::new: in_channels ({}) must be \
                  divisible by groups ({})",
                 in_channels, config.groups,
@@ -425,7 +425,7 @@ impl ConvTranspose2d {
         }
         let expected = in_channels * (out_channels / config.groups) * kernel_h * kernel_w;
         if weight.elem_count() != expected {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "ConvTranspose2d::new: weight has {} elements but \
                  in_channels * (out_channels / groups) * kernel_h * \
                  kernel_w = {} * {} * {} * {} = {}",
@@ -440,7 +440,7 @@ impl ConvTranspose2d {
         }
         if let Some(b) = bias.as_ref() {
             if b.len() != out_channels {
-                return Err(crate::Error::Msg(format!(
+                return Err(fuel::Error::Msg(format!(
                     "ConvTranspose2d::new: bias has length {} but \
                      out_channels = {}",
                     b.len(),
@@ -519,7 +519,7 @@ impl ConvTranspose2d {
     /// `[Cin, Cout / groups, Kh, Kw]` tensor and `{prefix}.bias`
     /// (optional) as `[Cout]`.
     pub fn load_from_mmapped(
-        st: &crate::safetensors::MmapedSafetensors,
+        st: &fuel::safetensors::MmapedSafetensors,
         prefix: &str,
         config: ConvTranspose2dConfig,
         in_channels: usize,
@@ -527,7 +527,7 @@ impl ConvTranspose2d {
         kernel_h: usize,
         kernel_w: usize,
     ) -> Result<Self> {
-        use crate::lazy::load_tensor_as_f32;
+        use fuel::lazy::load_tensor_as_f32;
         let w = load_tensor_as_f32(st, &format!("{prefix}.weight"))?;
         let weight_arc: Arc<[f32]> = Arc::<[f32]>::from(w);
         let bias = match load_tensor_as_f32(st, &format!("{prefix}.bias")) {
@@ -553,7 +553,7 @@ impl ConvTranspose2d {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Device;
+    use fuel::Device;
 
     fn ramp_f32(n: usize, scale: f32, offset: f32) -> Vec<f32> {
         (0..n).map(|i| (i as f32) * scale + offset).collect()

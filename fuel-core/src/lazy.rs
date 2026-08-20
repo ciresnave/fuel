@@ -11043,11 +11043,12 @@ fn realize_kv_write_targets(
     Ok(())
 }
 
-pub(crate) fn build_decode_causal_mask(
-    cached_len: usize,
-    seq: usize,
-    max_seq_len: usize,
-) -> Vec<f32> {
+/// Promoted from `pub(crate)` to `pub` by the `fuel-nn` extraction
+/// (2026-08-19): `fuel_nn::modules::two_proj_attention` calls it, and that
+/// module now lives outside this crate. This is a REAL public-API addition,
+/// not a mechanical move — flagged rather than folded silently into the
+/// extraction diff.
+pub fn build_decode_causal_mask(cached_len: usize, seq: usize, max_seq_len: usize) -> Vec<f32> {
     let mut mask_data = vec![0.0_f32; seq * max_seq_len];
     for q_idx in 0..seq {
         let abs_q = cached_len + q_idx;

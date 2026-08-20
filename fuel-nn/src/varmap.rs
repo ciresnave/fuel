@@ -2,7 +2,7 @@
 //! `LazyVarMap` — a name → [`LazyVar`] registry with safetensors
 //! save/load.
 //!
-//! Companion to [`crate::lazy_nn_optim::LazyVar`]. Mirrors the eager
+//! Companion to [`crate::optim::LazyVar`]. Mirrors the eager
 //! `fuel_nn::VarMap` surface so checkpoint code that used to call
 //! `varmap.save(path)` / `varmap.load(path)` can swap to the lazy
 //! equivalent without architectural change.
@@ -19,8 +19,8 @@
 //! little-endian F32 bytes), so they are interoperable with HF Hub
 //! checkpoints and the `MmapedSafetensors` loader.
 
-use crate::Result;
-use crate::lazy_nn_optim::LazyVar;
+use crate::optim::LazyVar;
+use fuel::Result;
 use safetensors::tensor::{Dtype, SafeTensors, TensorView};
 use std::collections::HashMap;
 use std::path::Path;
@@ -90,14 +90,14 @@ impl LazyVarMap {
             .map(|(name, bytes, shape)| {
                 let view =
                     TensorView::new(Dtype::F32, shape.clone(), bytes.as_slice()).map_err(|e| {
-                        crate::Error::Msg(format!("LazyVarMap::save: TensorView for {name}: {e}"))
+                        fuel::Error::Msg(format!("LazyVarMap::save: TensorView for {name}: {e}"))
                             .bt()
                     });
                 view.map(|v| (name.clone(), v))
             })
             .collect::<Result<Vec<_>>>()?;
         safetensors::tensor::serialize_to_file(views.into_iter(), None, path.as_ref())
-            .map_err(|e| crate::Error::Msg(format!("LazyVarMap::save: {e}")).bt())?;
+            .map_err(|e| fuel::Error::Msg(format!("LazyVarMap::save: {e}")).bt())?;
         Ok(())
     }
 
@@ -108,21 +108,21 @@ impl LazyVarMap {
     /// the on-disk shape or if its dtype is not F32.
     pub fn load<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         let bytes = std::fs::read(path.as_ref()).map_err(|e| {
-            crate::Error::Msg(format!(
+            fuel::Error::Msg(format!(
                 "LazyVarMap::load: read {}: {e}",
                 path.as_ref().display()
             ))
             .bt()
         })?;
         let tensors = SafeTensors::deserialize(&bytes)
-            .map_err(|e| crate::Error::Msg(format!("LazyVarMap::load: deserialize: {e}")).bt())?;
+            .map_err(|e| fuel::Error::Msg(format!("LazyVarMap::load: deserialize: {e}")).bt())?;
         let guard = self.vars.read().unwrap();
         for (name, view) in tensors.tensors() {
             let Some(var) = guard.get(&name) else {
                 continue;
             };
             if view.dtype() != Dtype::F32 {
-                return Err(crate::Error::Msg(format!(
+                return Err(fuel::Error::Msg(format!(
                     "LazyVarMap::load: tensor {name} has dtype {:?}, expected F32",
                     view.dtype()
                 ))
@@ -131,14 +131,14 @@ impl LazyVarMap {
             let on_disk_shape = view.shape();
             let var_shape = var.shape().dims();
             if on_disk_shape != var_shape {
-                return Err(crate::Error::Msg(format!(
+                return Err(fuel::Error::Msg(format!(
                     "LazyVarMap::load: tensor {name} has shape {on_disk_shape:?}, registered LazyVar shape is {var_shape:?}",
                 ))
                 .bt());
             }
             let raw = view.data();
             if raw.len() % 4 != 0 {
-                return Err(crate::Error::Msg(format!(
+                return Err(fuel::Error::Msg(format!(
                     "LazyVarMap::load: tensor {name} has byte length {} not divisible by 4",
                     raw.len(),
                 ))

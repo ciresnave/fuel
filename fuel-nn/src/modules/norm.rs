@@ -14,9 +14,9 @@
 //! statistics tracking is out of scope for the lazy-graph inference
 //! path.
 
-use crate::Result;
-use crate::lazy::LazyTensor;
-use crate::lazy_nn::LazyModule;
+use crate::modules::LazyModule;
+use fuel::Result;
+use fuel::lazy::LazyTensor;
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -43,7 +43,7 @@ impl LazyLayerNorm {
         last_dim: usize,
     ) -> Result<Self> {
         if gain.len() != last_dim {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyLayerNorm::new: gain has length {} but last_dim = {}",
                 gain.len(),
                 last_dim,
@@ -52,7 +52,7 @@ impl LazyLayerNorm {
         }
         if let Some(b) = bias.as_ref() {
             if b.len() != last_dim {
-                return Err(crate::Error::Msg(format!(
+                return Err(fuel::Error::Msg(format!(
                     "LazyLayerNorm::new: bias has length {} but last_dim = {}",
                     b.len(),
                     last_dim,
@@ -118,7 +118,7 @@ impl LazyRmsNorm {
     /// Build an RmsNorm wrapper. `gain.len()` must equal `last_dim`.
     pub fn new(gain: Arc<[f32]>, eps: f64, last_dim: usize) -> Result<Self> {
         if gain.len() != last_dim {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyRmsNorm::new: gain has length {} but last_dim = {}",
                 gain.len(),
                 last_dim,
@@ -184,19 +184,17 @@ impl LazyGroupNorm {
         eps: f64,
     ) -> Result<Self> {
         if num_groups == 0 {
-            return Err(
-                crate::Error::Msg("LazyGroupNorm::new: num_groups must be ≥ 1".into()).bt(),
-            );
+            return Err(fuel::Error::Msg("LazyGroupNorm::new: num_groups must be ≥ 1".into()).bt());
         }
         if num_channels % num_groups != 0 {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyGroupNorm::new: num_groups ({num_groups}) must divide \
                  num_channels ({num_channels})",
             ))
             .bt());
         }
         if gain.len() != num_channels {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyGroupNorm::new: gain has length {} but num_channels = {}",
                 gain.len(),
                 num_channels,
@@ -204,7 +202,7 @@ impl LazyGroupNorm {
             .bt());
         }
         if bias.len() != num_channels {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyGroupNorm::new: bias has length {} but num_channels = {}",
                 bias.len(),
                 num_channels,
@@ -250,7 +248,7 @@ impl LazyModule for LazyGroupNorm {
     fn forward(&self, xs: &LazyTensor) -> Result<LazyTensor> {
         let in_dims: Vec<usize> = xs.shape().dims().to_vec();
         if in_dims.len() < 3 {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyGroupNorm::forward: input rank must be ≥ 3, got {in_dims:?}",
             ))
             .bt());
@@ -258,7 +256,7 @@ impl LazyModule for LazyGroupNorm {
         let b_sz = in_dims[0];
         let c = in_dims[1];
         if c != self.num_channels {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyGroupNorm::forward: input channel dim {c} != num_channels = {}",
                 self.num_channels,
             ))
@@ -326,7 +324,7 @@ impl LazyBatchNorm2d {
             ("running_var", &running_var),
         ] {
             if buf.len() != num_features {
-                return Err(crate::Error::Msg(format!(
+                return Err(fuel::Error::Msg(format!(
                     "LazyBatchNorm2d::new: {name} has length {} but num_features = {}",
                     buf.len(),
                     num_features,
@@ -335,7 +333,7 @@ impl LazyBatchNorm2d {
             }
         }
         if eps < 0.0 {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyBatchNorm2d::new: eps must be ≥ 0, got {eps}",
             ))
             .bt());
@@ -397,13 +395,13 @@ impl LazyModule for LazyBatchNorm2d {
     fn forward(&self, xs: &LazyTensor) -> Result<LazyTensor> {
         let dims: Vec<usize> = xs.shape().dims().to_vec();
         if dims.len() != 4 {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyBatchNorm2d::forward: input must be rank 4 (N, C, H, W), got {dims:?}",
             ))
             .bt());
         }
         if dims[1] != self.num_features {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyBatchNorm2d::forward: input channel dim {} != num_features = {}",
                 dims[1], self.num_features,
             ))
@@ -417,7 +415,7 @@ impl LazyModule for LazyBatchNorm2d {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Device;
+    use fuel::Device;
 
     fn ramp_f32(n: usize, scale: f32, offset: f32) -> Vec<f32> {
         (0..n).map(|i| (i as f32) * scale + offset).collect()

@@ -40,7 +40,7 @@
 //! ## Example
 //!
 //! ```rust,no_run
-//! use fuel::lazy_nn_optim::{LazyAdamW, LazyOptimizer, LazyVar, AdamWConfig};
+//! use fuel_nn::optim::{LazyAdamW, LazyOptimizer, LazyVar, AdamWConfig};
 //! use fuel::lazy_training_augmentations::CosineSchedule;
 //! use fuel_training::training_loop::TrainingLoop;
 //!

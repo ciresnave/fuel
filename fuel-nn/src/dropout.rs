@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Lazy port of `fuel-nn`'s [`Dropout`](crate::lazy_nn_dropout::Dropout)
+//! Lazy port of `fuel-nn`'s [`Dropout`](crate::dropout::Dropout)
 //! module.
 //!
 //! During training each element of the input is independently
@@ -52,8 +52,8 @@
 //! file is the host-side stop-gap that unblocks ports of models with
 //! dropout layers in the training path until that primitive ships.
 
-use crate::Result;
-use crate::lazy::LazyTensor;
+use fuel::Result;
+use fuel::lazy::LazyTensor;
 use fuel_ir::{DType, Shape};
 use std::sync::Arc;
 
@@ -66,8 +66,8 @@ use std::sync::Arc;
 /// behavior across step boundaries).
 ///
 /// ```rust,no_run
-/// # use fuel_core::{Device, lazy::LazyTensor};
-/// # use fuel_core::lazy_nn_dropout::Dropout;
+/// # use fuel::{Device, lazy::LazyTensor};
+/// # use fuel::lazy_nn_dropout::Dropout;
 /// # use fuel_ir::Shape;
 /// let device = Device::cpu();
 /// let x = LazyTensor::from_f32(
@@ -123,7 +123,7 @@ impl Dropout {
     /// deterministic training loops that thread their own rng state.
     pub fn forward_with_seed(&self, x: &LazyTensor, seed: u64) -> Result<LazyTensor> {
         if !(0.0..1.0).contains(&self.drop_p) {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "dropout: drop_p must be in [0, 1), got {}",
                 self.drop_p,
             ))
@@ -135,7 +135,7 @@ impl Dropout {
             return Ok(x.clone());
         }
         if x.dtype() != DType::F32 {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "dropout: v1 only supports F32 inputs, got {:?} (graph-level \
                  BernoulliMask primitive lands later)",
                 x.dtype(),
@@ -187,7 +187,7 @@ fn build_bernoulli_mask(n: usize, drop_p: f64, seed: u64) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Device;
+    use fuel::Device;
 
     #[test]
     fn forward_eval_is_identity() {

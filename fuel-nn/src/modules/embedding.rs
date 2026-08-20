@@ -9,9 +9,9 @@
 //! trailing `hidden` dim — matching the eager `fuel-nn::Embedding`
 //! semantics.
 
-use crate::Result;
-use crate::lazy::LazyTensor;
-use crate::lazy_nn::LazyModule;
+use crate::modules::LazyModule;
+use fuel::Result;
+use fuel::lazy::LazyTensor;
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -27,7 +27,7 @@ impl LazyEmbedding {
     /// Build an embedding from a `[vocab_size, hidden]` weight buffer.
     pub fn new(table: Arc<[f32]>, vocab_size: usize, hidden: usize) -> Result<Self> {
         if table.len() != vocab_size * hidden {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyEmbedding::new: table has {} elements but \
                  vocab_size * hidden = {} * {} = {}",
                 table.len(),
@@ -64,8 +64,8 @@ impl LazyEmbedding {
     /// output has the input's shape with a trailing `hidden` dim
     /// appended.
     pub fn forward(&self, token_ids: &LazyTensor) -> Result<LazyTensor> {
-        if token_ids.dtype() != crate::DType::U32 {
-            return Err(crate::Error::Msg(format!(
+        if token_ids.dtype() != fuel::DType::U32 {
+            return Err(fuel::Error::Msg(format!(
                 "LazyEmbedding::forward: token_ids must be U32, got {:?}",
                 token_ids.dtype(),
             ))
@@ -99,7 +99,7 @@ impl LazyModule for LazyEmbedding {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Device;
+    use fuel::Device;
 
     fn make_table(vocab: usize, hidden: usize) -> Vec<f32> {
         (0..(vocab * hidden))

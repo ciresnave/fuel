@@ -20,9 +20,9 @@
 //! the typical small `num_experts` (4–16) this is the cheapest
 //! dense-graph formulation.
 
-use crate::Result;
-use crate::lazy::{LazyTensor, WeightStorage};
-use crate::lazy_nn::{LazyLinear, LazyModule};
+use crate::modules::{LazyLinear, LazyModule};
+use fuel::Result;
+use fuel::lazy::{LazyTensor, WeightStorage};
 use fuel_ir::{DynScalar, Shape};
 use std::sync::Arc;
 
@@ -55,17 +55,17 @@ impl LazyMoeRouter {
     ) -> Result<Self> {
         if num_experts == 0 {
             return Err(
-                crate::Error::Msg("LazyMoeRouter::new: num_experts must be > 0".into()).bt(),
+                fuel::Error::Msg("LazyMoeRouter::new: num_experts must be > 0".into()).bt(),
             );
         }
         if top_k == 0 || top_k > num_experts {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyMoeRouter::new: top_k must be in 1..={num_experts}, got {top_k}",
             ))
             .bt());
         }
         if weight.elem_count() != hidden_size * num_experts {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyMoeRouter::new: weight has {} elements but \
                  hidden_size * num_experts = {} * {} = {}",
                 weight.elem_count(),
@@ -109,7 +109,7 @@ impl LazyMoeRouter {
     pub fn route(&self, xs: &LazyTensor) -> Result<(LazyTensor, LazyTensor)> {
         let dims = xs.shape().dims().to_vec();
         if dims.is_empty() || *dims.last().unwrap() != self.hidden_size {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyMoeRouter::route: input last dim must be {}, got shape {:?}",
                 self.hidden_size, dims,
             ))
@@ -167,7 +167,7 @@ impl LazyMoeExpert {
         intermediate_size: usize,
     ) -> Result<Self> {
         if gate.in_features() != hidden_size || gate.out_features() != intermediate_size {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyMoeExpert::new: gate must be ({hidden_size}, {intermediate_size}), \
                  got ({}, {})",
                 gate.in_features(),
@@ -176,7 +176,7 @@ impl LazyMoeExpert {
             .bt());
         }
         if up.in_features() != hidden_size || up.out_features() != intermediate_size {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyMoeExpert::new: up must be ({hidden_size}, {intermediate_size}), \
                  got ({}, {})",
                 up.in_features(),
@@ -185,7 +185,7 @@ impl LazyMoeExpert {
             .bt());
         }
         if down.in_features() != intermediate_size || down.out_features() != hidden_size {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyMoeExpert::new: down must be ({intermediate_size}, {hidden_size}), \
                  got ({}, {})",
                 down.in_features(),
@@ -241,7 +241,7 @@ impl LazyMoeExpert {
     pub fn forward_dyn_m(&self, xs: &LazyTensor, count: fuel_ir::DynScalar) -> Result<LazyTensor> {
         for (name, lin) in [("gate", &self.gate), ("up", &self.up), ("down", &self.down)] {
             if lin.bias().is_some() {
-                return Err(crate::Error::Msg(format!(
+                return Err(fuel::Error::Msg(format!(
                     "LazyMoeExpert::forward_dyn_m: sparse dispatch requires bias-free \
                      experts, but the {name} projection has a bias (it would \
                      contaminate the un-computed capacity tail)",
@@ -285,7 +285,7 @@ impl LazyMoeLayer {
     /// and every expert's `hidden_size` must match the router's.
     pub fn new(router: LazyMoeRouter, experts: Vec<LazyMoeExpert>) -> Result<Self> {
         if experts.len() != router.num_experts() {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyMoeLayer::new: experts.len() = {} but router.num_experts = {}",
                 experts.len(),
                 router.num_experts(),
@@ -294,7 +294,7 @@ impl LazyMoeLayer {
         }
         for (i, e) in experts.iter().enumerate() {
             if e.hidden_size() != router.hidden_size() {
-                return Err(crate::Error::Msg(format!(
+                return Err(fuel::Error::Msg(format!(
                     "LazyMoeLayer::new: expert {i} hidden_size = {} but router \
                      hidden_size = {}",
                     e.hidden_size(),
@@ -338,7 +338,7 @@ impl LazyMoeLayer {
         let dims = xs.shape().dims().to_vec();
         let hidden = self.router.hidden_size();
         if dims.is_empty() || *dims.last().unwrap() != hidden {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyMoeLayer::forward: input last dim must be {hidden}, got shape {dims:?}",
             ))
             .bt());
@@ -398,7 +398,7 @@ impl LazyMoeLayer {
         let dims = xs.shape().dims().to_vec();
         let hidden = self.router.hidden_size();
         if dims.is_empty() || *dims.last().unwrap() != hidden {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyMoeLayer::forward_dense: input last dim must be {hidden}, got shape {dims:?}",
             ))
             .bt());
@@ -437,7 +437,7 @@ impl LazyModule for LazyMoeLayer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Device;
+    use fuel::Device;
 
     fn ramp_f32(n: usize, scale: f32, offset: f32) -> Vec<f32> {
         (0..n).map(|i| (i as f32) * scale + offset).collect()
@@ -477,7 +477,7 @@ mod tests {
         let (idx, w_out) = router.route(&xs).unwrap();
         assert_eq!(idx.shape().dims(), &[n, top_k]);
         assert_eq!(w_out.shape().dims(), &[n, top_k]);
-        assert_eq!(idx.dtype(), crate::DType::U32);
+        assert_eq!(idx.dtype(), fuel::DType::U32);
 
         let idx_v = idx.realize_u32();
         let w_v = w_out.realize_f32();

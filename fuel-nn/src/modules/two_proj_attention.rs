@@ -34,12 +34,12 @@
 //! yet. It is composable: [`Self::forward`] / [`Self::forward_with_latent_cache`]
 //! return the raw attention context (`[B, S, n_heads * head_dim]`); callers
 //! apply their own output projection (no `W_o` is baked in here), matching
-//! [`crate::lazy_nn::moe`]'s house style of shipping the primitive block
+//! [`crate::modules::moe`]'s house style of shipping the primitive block
 //! rather than a full layer.
 
-use crate::Result;
-use crate::lazy::{LazyTensor, WeightStorage};
-use crate::lazy_latent_cache::LazyLatentCache;
+use fuel::Result;
+use fuel::lazy::{LazyTensor, WeightStorage};
+use fuel::lazy_latent_cache::LazyLatentCache;
 use fuel_ir::Shape;
 
 /// Two-projection (shared K = V) attention block. Holds the `Q` and shared
@@ -74,26 +74,26 @@ impl LazyTwoProjAttention {
         hidden_size: usize,
     ) -> Result<Self> {
         if n_heads == 0 {
-            crate::bail!("LazyTwoProjAttention::new: n_heads must be >= 1");
+            fuel::bail!("LazyTwoProjAttention::new: n_heads must be >= 1");
         }
         if n_kv_heads == 0 {
-            crate::bail!("LazyTwoProjAttention::new: n_kv_heads must be >= 1");
+            fuel::bail!("LazyTwoProjAttention::new: n_kv_heads must be >= 1");
         }
         if head_dim == 0 {
-            crate::bail!("LazyTwoProjAttention::new: head_dim must be >= 1");
+            fuel::bail!("LazyTwoProjAttention::new: head_dim must be >= 1");
         }
         if hidden_size == 0 {
-            crate::bail!("LazyTwoProjAttention::new: hidden_size must be >= 1");
+            fuel::bail!("LazyTwoProjAttention::new: hidden_size must be >= 1");
         }
         if n_heads % n_kv_heads != 0 {
-            crate::bail!(
+            fuel::bail!(
                 "LazyTwoProjAttention::new: n_kv_heads ({n_kv_heads}) must evenly \
                  divide n_heads ({n_heads})",
             );
         }
         let want_q = hidden_size * n_heads * head_dim;
         if w_q.elem_count() != want_q {
-            crate::bail!(
+            fuel::bail!(
                 "LazyTwoProjAttention::new: w_q has {} elements but \
                  hidden_size * n_heads * head_dim = {hidden_size} * {n_heads} * {head_dim} = {want_q}",
                 w_q.elem_count(),
@@ -101,7 +101,7 @@ impl LazyTwoProjAttention {
         }
         let want_kv = hidden_size * n_kv_heads * head_dim;
         if w_kv.elem_count() != want_kv {
-            crate::bail!(
+            fuel::bail!(
                 "LazyTwoProjAttention::new: w_kv has {} elements but \
                  hidden_size * n_kv_heads * head_dim = {hidden_size} * {n_kv_heads} * {head_dim} = {want_kv}",
                 w_kv.elem_count(),
@@ -149,7 +149,7 @@ impl LazyTwoProjAttention {
     pub fn forward(&self, xs: &LazyTensor) -> Result<LazyTensor> {
         let dims = xs.shape().dims().to_vec();
         if dims.len() != 3 || dims[2] != self.hidden_size {
-            crate::bail!(
+            fuel::bail!(
                 "LazyTwoProjAttention::forward: expected input rank 3 (B, S, hidden={}), \
                  got shape {dims:?}",
                 self.hidden_size,
@@ -207,21 +207,21 @@ impl LazyTwoProjAttention {
     ) -> Result<(LazyTensor, LazyLatentCache)> {
         let dims = xs_step.shape().dims().to_vec();
         if dims.len() != 3 || dims[2] != self.hidden_size {
-            crate::bail!(
+            fuel::bail!(
                 "LazyTwoProjAttention::forward_with_latent_cache: expected xs_step rank 3 \
                  (1, seq_new, hidden={}), got shape {dims:?}",
                 self.hidden_size,
             );
         }
         if dims[0] != 1 {
-            crate::bail!(
+            fuel::bail!(
                 "LazyTwoProjAttention::forward_with_latent_cache: xs_step batch dim must be 1, \
                  got {}",
                 dims[0],
             );
         }
         if cache.n_slots() != 1 {
-            crate::bail!(
+            fuel::bail!(
                 "LazyTwoProjAttention::forward_with_latent_cache: cache must have exactly 1 \
                  slot (the shared kv projection), got {}",
                 cache.n_slots(),
@@ -229,7 +229,7 @@ impl LazyTwoProjAttention {
         }
         let want_trailing = [self.n_kv_heads * self.head_dim];
         if cache.slot_trailing(0) != want_trailing {
-            crate::bail!(
+            fuel::bail!(
                 "LazyTwoProjAttention::forward_with_latent_cache: cache slot 0 trailing shape \
                  must be {want_trailing:?} (n_kv_heads * head_dim), got {:?}",
                 cache.slot_trailing(0),
@@ -239,7 +239,7 @@ impl LazyTwoProjAttention {
         let cached_len = cache.current_seq_len();
         let total = cached_len + s;
         if total > cache.max_seq_len() {
-            crate::bail!(
+            fuel::bail!(
                 "LazyTwoProjAttention::forward_with_latent_cache: appending {s} tokens at \
                  position {cached_len} would exceed cache max_seq_len {}",
                 cache.max_seq_len(),
@@ -274,7 +274,7 @@ impl LazyTwoProjAttention {
         let n_rep = self.n_heads / self.n_kv_heads;
         let kv_all = kv_all.repeat_interleave(1_usize, n_rep)?; // (1, H, total, d)
 
-        let mask_data = crate::lazy::build_decode_causal_mask(cached_len, s, total);
+        let mask_data = fuel::lazy::build_decode_causal_mask(cached_len, s, total);
         let mask = xs_step.const_f32_like(mask_data, Shape::from_dims(&[1, 1, s, total]));
 
         let scale = 1.0_f64 / (self.head_dim as f64).sqrt();
@@ -293,7 +293,7 @@ impl LazyTwoProjAttention {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{DType, Device};
+    use fuel::{DType, Device};
     use std::sync::Arc;
 
     fn ramp_f32(n: usize, scale: f32, offset: f32) -> Vec<f32> {

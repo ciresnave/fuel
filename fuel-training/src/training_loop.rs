@@ -26,7 +26,7 @@
 //! # Example
 //!
 //! ```rust,no_run
-//! use fuel::lazy_nn_optim::{LazyAdamW, LazyOptimizer, LazyVar, AdamWConfig};
+//! use fuel_nn::optim::{LazyAdamW, LazyOptimizer, LazyVar, AdamWConfig};
 //! use fuel::lazy_training_augmentations::CosineSchedule;
 //! use fuel_training::training_loop::TrainingLoop;
 //!
@@ -46,8 +46,8 @@
 
 use fuel::Result;
 use fuel::lazy::LazyTensor;
-use fuel::lazy_nn_optim::{LazyOptimizer, LazyVar};
 use fuel::lazy_training_augmentations::{LrSchedule, clip_grad_norm, clip_grad_value};
+use fuel_nn::optim::{LazyOptimizer, LazyVar};
 use std::collections::HashMap;
 
 /// The result of a single training step.

@@ -2,8 +2,8 @@
 //! `LazySequential` — a Vec of boxed [`LazyModule`]s applied left-to-right.
 
 use super::LazyModule;
-use crate::Result;
-use crate::lazy::LazyTensor;
+use fuel::Result;
+use fuel::lazy::LazyTensor;
 
 /// A container that chains owned [`LazyModule`]s.
 ///
@@ -58,9 +58,9 @@ impl LazyModule for LazySequential {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Device;
-    use crate::lazy::WeightStorage;
-    use crate::lazy_nn::{LazyLinear, LazyModule};
+    use crate::modules::{LazyLinear, LazyModule};
+    use fuel::Device;
+    use fuel::lazy::WeightStorage;
     use fuel_ir::Shape;
     use std::sync::Arc;
 

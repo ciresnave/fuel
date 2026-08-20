@@ -12,9 +12,9 @@
 //! intent visible at the model-struct level (i.e. "this layer is
 //! intentionally checkpoint-format-polymorphic").
 
-use crate::Result;
-use crate::lazy::{LazyTensor, WeightStorage};
-use crate::lazy_nn::LazyModule;
+use crate::modules::LazyModule;
+use fuel::Result;
+use fuel::lazy::{LazyTensor, WeightStorage};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -43,7 +43,7 @@ impl LazyQuantizableLinear {
         out_features: usize,
     ) -> Result<Self> {
         if matches!(weight, WeightStorage::WithLoRA { .. }) {
-            return Err(crate::Error::Msg(
+            return Err(fuel::Error::Msg(
                 "LazyQuantizableLinear::new: WithLoRA must be \
                  wrapped in LazyLoraLinear, not LazyQuantizableLinear"
                     .into(),
@@ -51,7 +51,7 @@ impl LazyQuantizableLinear {
             .bt());
         }
         if weight.elem_count() != in_features * out_features {
-            return Err(crate::Error::Msg(format!(
+            return Err(fuel::Error::Msg(format!(
                 "LazyQuantizableLinear::new: weight has {} elements but \
                  in_features * out_features = {} * {} = {}",
                 weight.elem_count(),
@@ -63,7 +63,7 @@ impl LazyQuantizableLinear {
         }
         if let Some(b) = bias.as_ref() {
             if b.len() != out_features {
-                return Err(crate::Error::Msg(format!(
+                return Err(fuel::Error::Msg(format!(
                     "LazyQuantizableLinear::new: bias has length {} but \
                      out_features = {}",
                     b.len(),
@@ -134,8 +134,8 @@ impl LazyModule for LazyQuantizableLinear {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Device;
-    use crate::lazy_nn::LazyLinear;
+    use crate::modules::LazyLinear;
+    use fuel::Device;
 
     fn ramp_f32(n: usize, scale: f32, offset: f32) -> Vec<f32> {
         (0..n).map(|i| (i as f32) * scale + offset).collect()

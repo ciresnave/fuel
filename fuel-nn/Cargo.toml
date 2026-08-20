@@ -1,0 +1,26 @@
+[package]
+name = "fuel-nn"
+version.workspace = true
+edition.workspace = true
+description.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+license.workspace = true
+
+# Sits ABOVE fuel-core, not beside it. The NN surface is built on `LazyTensor`,
+# which lives in `fuel-core::lazy`, so fuel-nn is a CONSUMER of fuel-core and
+# `fuel-core` deliberately does NOT re-export it — that would be a dependency
+# cycle and cargo forbids it. When the fuel-core dissolution eventually runs,
+# fuel-nn re-points its imports; one crate's `use` lines rather than a blocked
+# program.
+[dependencies]
+fuel = { workspace = true }
+fuel-ir = { workspace = true }
+fuel-graph = { workspace = true }
+safetensors = { workspace = true }
+half = { workspace = true }
+rand = { workspace = true }
+rand_distr = { workspace = true }
+
+[dev-dependencies]
