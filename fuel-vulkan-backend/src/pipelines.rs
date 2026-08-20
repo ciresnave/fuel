@@ -565,7 +565,13 @@ fn make_desc_pool(device: &Device) -> Result<DescriptorPool> {
 }
 
 impl Pipelines {
-    pub fn new(device: &Device, has_coop_matrix: bool) -> Result<Self> {
+    /// `coop_shape_ok` means the device advertises the exact 16x16x16
+    /// f16xf16->f32 cooperative-matrix tile the `matmul_coop*` shaders need
+    /// (see `CoopMatrixShape::is_matmul_coop_tile`), NOT merely that
+    /// `VK_KHR_cooperative_matrix` is present. The coop pipelines below are
+    /// built eagerly with `?`, so gating them on extension-presence alone would
+    /// fail backend init on a device that has the extension but not this tile.
+    pub fn new(device: &Device, coop_shape_ok: bool) -> Result<Self> {
         // Layout: 2 storage buffers (binding 0,1) + 1 uniform (binding 2).
         let layout_2s1u = DescriptorSetLayout::new(
             device,
@@ -730,22 +736,22 @@ impl Pipelines {
         let matvec_bf16_b_mod = registry.load_module(device, shaders::MATVEC_BF16_B_GLSL)?;
         let matmul_tiled_bf16_b_mod =
             registry.load_module(device, shaders::MATMUL_TILED_BF16_B_GLSL)?;
-        let matmul_coop_mod = if has_coop_matrix {
+        let matmul_coop_mod = if coop_shape_ok {
             Some(registry.load_module(device, shaders::MATMUL_COOP)?)
         } else {
             None
         };
-        let matmul_coop_bf16_bf16_mod = if has_coop_matrix {
+        let matmul_coop_bf16_bf16_mod = if coop_shape_ok {
             Some(registry.load_module(device, shaders::MATMUL_COOP_BF16_BF16)?)
         } else {
             None
         };
-        let matmul_coop_f16_f16_mod = if has_coop_matrix {
+        let matmul_coop_f16_f16_mod = if coop_shape_ok {
             Some(registry.load_module(device, shaders::MATMUL_COOP_F16_F16)?)
         } else {
             None
         };
-        let matmul_coop_bf16_bf16_bf16_mod = if has_coop_matrix {
+        let matmul_coop_bf16_bf16_bf16_mod = if coop_shape_ok {
             Some(registry.load_module(device, shaders::MATMUL_COOP_BF16_BF16_BF16)?)
         } else {
             None
@@ -767,7 +773,7 @@ impl Pipelines {
             registry.load_module(device, shaders::FLASH_ATTN_BACKWARD_K_F32)?;
         let flash_attn_backward_v_f32_mod =
             registry.load_module(device, shaders::FLASH_ATTN_BACKWARD_V_F32)?;
-        let matmul_coop_f16_f16_f16_mod = if has_coop_matrix {
+        let matmul_coop_f16_f16_f16_mod = if coop_shape_ok {
             Some(registry.load_module(device, shaders::MATMUL_COOP_F16_F16_F16)?)
         } else {
             None
@@ -959,22 +965,22 @@ impl Pipelines {
         let matvec_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let matvec_bf16_b_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
         let matmul_tiled_bf16_b_layout = PipelineLayout::new(device, &[&layout_3s1u])?;
-        let matmul_coop_layout = if has_coop_matrix {
+        let matmul_coop_layout = if coop_shape_ok {
             Some(PipelineLayout::new(device, &[&layout_3s1u])?)
         } else {
             None
         };
-        let matmul_coop_bf16_bf16_layout = if has_coop_matrix {
+        let matmul_coop_bf16_bf16_layout = if coop_shape_ok {
             Some(PipelineLayout::new(device, &[&layout_3s1u])?)
         } else {
             None
         };
-        let matmul_coop_f16_f16_layout = if has_coop_matrix {
+        let matmul_coop_f16_f16_layout = if coop_shape_ok {
             Some(PipelineLayout::new(device, &[&layout_3s1u])?)
         } else {
             None
         };
-        let matmul_coop_bf16_bf16_bf16_layout = if has_coop_matrix {
+        let matmul_coop_bf16_bf16_bf16_layout = if coop_shape_ok {
             Some(PipelineLayout::new(device, &[&layout_3s1u])?)
         } else {
             None
@@ -989,7 +995,7 @@ impl Pipelines {
         let flash_attn_backward_q_f32_layout = PipelineLayout::new(device, &[&layout_6s1u])?;
         let flash_attn_backward_k_f32_layout = PipelineLayout::new(device, &[&layout_6s1u])?;
         let flash_attn_backward_v_f32_layout = PipelineLayout::new(device, &[&layout_6s1u])?;
-        let matmul_coop_f16_f16_f16_layout = if has_coop_matrix {
+        let matmul_coop_f16_f16_f16_layout = if coop_shape_ok {
             Some(PipelineLayout::new(device, &[&layout_3s1u])?)
         } else {
             None
