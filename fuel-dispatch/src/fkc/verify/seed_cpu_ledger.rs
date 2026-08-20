@@ -647,7 +647,9 @@ fn to_binding_entry(imp: &BackendImpl) -> BindingEntry {
 /// report) can show exactly what did and didn't verify, never silently.
 #[derive(Debug)]
 pub struct SeedAttempt {
-    pub op_name: &'static str,
+    /// `String`, not `&'static str`: the primitive pass names its subject with
+    /// `format!("{op:?}")` off a live `OpKind`, which has no static name.
+    pub op_name: String,
     pub dtypes: Vec<DType>,
     pub kernel_revision_hash: u64,
     pub outcome: String,
@@ -683,7 +685,7 @@ pub fn run_cpu_verification() -> (Vec<LedgerRecord>, Vec<SeedAttempt>) {
                 Some(p) => p,
                 None => {
                     log.push(SeedAttempt {
-                        op_name: name,
+                        op_name: name.to_string(),
                         dtypes,
                         kernel_revision_hash: rev,
                         outcome: "unverified: no probe recipe for this dtype tuple".to_string(),
@@ -722,13 +724,108 @@ pub fn run_cpu_verification() -> (Vec<LedgerRecord>, Vec<SeedAttempt>) {
                 Err(_) => "unverified: kernel invocation panicked".to_string(),
             };
             log.push(SeedAttempt {
-                op_name: name,
+                op_name: name.to_string(),
                 dtypes,
                 kernel_revision_hash: rev,
                 outcome,
             });
         }
     }
+    (records, log)
+}
+
+/// Empirically verify every CPU **PRIMITIVE** registration and return the PASS
+/// records to seed into the ledger, plus a full attempt log.
+///
+/// This is the half [`run_cpu_verification`] does not cover. That one sweeps
+/// the FUSED registry (`default_kernel_registry().impls_for(FusedOpId)`); this
+/// one sweeps the primitive `KernelBindingTable` built by the PRODUCTION
+/// `register_cpu_kernels`, so what it verifies is what dispatch actually binds
+/// — not a parallel list that can drift out of agreement with it.
+///
+/// **Why this exists: `fill_unset_cpu_precision` asserts a claim nobody
+/// measured.** It upgrades every UNAUDITED CPU entry to
+/// `PRIMITIVE_DETERMINISTIC_CPU` — i.e. writes `bit_stable_on_same_hardware`
+/// onto ~335 registrations wholesale. GAP-077 measured the consequence: **636
+/// CPU entries bit-stable, 636 owed to the fill, ZERO earned from a contract.**
+/// Retiring that fill requires the records to exist first, which is what this
+/// produces. Until they do, retiring it would leave the entries UNAUDITED and
+/// fail the step-7b coverage lint — so the seeding lands before, or with, the
+/// retirement, never after it.
+///
+/// **Never fabricates a pass.** A record is pushed only when
+/// `verify_bit_stability` actually observed `ITERS` byte-identical results. An
+/// op with no probe recipe, an invoke error, or a panic contributes NO record
+/// and appears in the log as unverified with its reason. The log is
+/// exhaustive: one entry per CPU `BindingEntry` examined, so pass + fail +
+/// unverified always reconciles against the table's own count.
+pub fn run_cpu_primitive_verification() -> (Vec<LedgerRecord>, Vec<SeedAttempt>) {
+    use crate::fkc::verify::probe_recipes::{build_primitive_probe, probe_seed};
+
+    let mut table = crate::kernel::KernelBindingTable::new();
+    crate::dispatch::register_cpu_kernels(&mut table);
+
+    let mut records = Vec::new();
+    let mut log = Vec::new();
+
+    for (op, dtypes, backend, entry) in table.iter_entries() {
+        if backend != BackendId::Cpu {
+            continue;
+        }
+        let dtypes_vec = dtypes.to_vec();
+        let rev = entry.kernel_revision_hash;
+        let op_name = format!("{op:?}");
+
+        let probe = match build_primitive_probe(op, dtypes, probe_seed(op, dtypes)) {
+            Some(p) => p,
+            None => {
+                log.push(SeedAttempt {
+                    op_name,
+                    dtypes: dtypes_vec,
+                    kernel_revision_hash: rev,
+                    outcome: "unverified: no probe recipe for this op/dtype tuple".to_string(),
+                });
+                continue;
+            }
+        };
+
+        let inv = CpuInvoker::new(probe.out_dtype, probe.out_shape.clone())
+            .with_params(probe.params.clone());
+        let inputs = probe.inputs.clone();
+        let attempt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            verify_bit_stability(&inv, entry, std::slice::from_ref(&inputs), ITERS)
+        }));
+        let outcome = match attempt {
+            Ok(Ok(VerifyOutcome::Pass)) => {
+                records.push(LedgerRecord {
+                    kernel_ref: op_name.clone(),
+                    backend: "Cpu".to_string(),
+                    dtypes: dtypes.iter().map(|d| format!("{d:?}")).collect(),
+                    kernel_revision_hash: rev,
+                    claim: "bit_stable_on_same_hardware".to_string(),
+                    result: "pass".to_string(),
+                    verified_at: verified_at_string(),
+                    protocol_version: 1,
+                    evidence: serde_json::json!({
+                        "repeat_calls": ITERS,
+                        "harness": "gap-207/seed_cpu_ledger::primitive",
+                    }),
+                });
+                "pass".to_string()
+            }
+            Ok(Ok(VerifyOutcome::Fail { detail })) => format!("fail: {detail}"),
+            Ok(Ok(VerifyOutcome::NoReference)) => "unverified: no probes".to_string(),
+            Ok(Err(e)) => format!("unverified: invoke error {e:?}"),
+            Err(_) => "unverified: kernel invocation panicked".to_string(),
+        };
+        log.push(SeedAttempt {
+            op_name,
+            dtypes: dtypes_vec,
+            kernel_revision_hash: rev,
+            outcome,
+        });
+    }
+
     (records, log)
 }
 
@@ -748,6 +845,164 @@ fn verified_at_string() -> String {
 mod tests {
     use super::*;
 
+    /// The fused and primitive passes both write into ONE ledger keyed on
+    /// `(backend, dtypes, kernel_revision_hash, claim)`. `kernel_ref` is NOT
+    /// in that key, so if the two populations ever produce the same key for
+    /// two DIFFERENT kernels, `upsert` silently drops one and the ledger
+    /// records a verdict under a name that did not earn it.
+    ///
+    /// The seeding test concatenates the two record sets on the assumption
+    /// that this cannot happen. That assumption is checked here rather than
+    /// asserted in a comment — a same-key collision would be invisible in the
+    /// record count, which is the only thing the seeding test reports.
+    #[test]
+    fn the_fused_and_primitive_passes_do_not_collide_on_the_ledger_key() {
+        let (fused, _) = run_cpu_verification();
+        let (prim, _) = run_cpu_primitive_verification();
+        assert!(
+            !fused.is_empty() && !prim.is_empty(),
+            "both populations must be non-empty or this check is vacuous              (fused {}, primitive {})",
+            fused.len(),
+            prim.len()
+        );
+
+        let key = |r: &LedgerRecord| {
+            (
+                r.backend.clone(),
+                r.dtypes.clone(),
+                r.kernel_revision_hash,
+                r.claim.clone(),
+            )
+        };
+        // Positive control on the PREDICATE: zero collisions is the answer we
+        // expect, and a `key` that never compares equal would produce the same
+        // zero for the wrong reason. Prove it can fire before believing it
+        // didn't.
+        let a = &fused[0];
+        let mut b = a.clone();
+        b.kernel_ref = format!("{}-synthetic", a.kernel_ref);
+        assert!(
+            key(a) == key(&b) && a.kernel_ref != b.kernel_ref,
+            "the collision predicate cannot recognise two records that differ              ONLY in kernel_ref — it would report zero collisions no matter              what the two passes produced"
+        );
+
+        let mut collisions: Vec<String> = Vec::new();
+        for f in &fused {
+            for p in &prim {
+                if key(f) == key(p) && f.kernel_ref != p.kernel_ref {
+                    collisions.push(format!(
+                        "{:?} rev={} claimed by both {:?} (fused) and {:?} (primitive)",
+                        f.dtypes, f.kernel_revision_hash, f.kernel_ref, p.kernel_ref
+                    ));
+                }
+            }
+        }
+        assert!(
+            collisions.is_empty(),
+            "the two CPU passes produce {} colliding ledger key(s); concatenating              their records lets `upsert` drop one verdict and file the other              under the wrong kernel_ref:
+  {}",
+            collisions.len(),
+            collisions.join("
+  ")
+        );
+    }
+
+    /// The primitive sweep must ACCOUNT FOR every CPU registration and must
+    /// never bank a pass it did not observe. Runs in the default suite (no
+    /// device, no feature) because it writes nothing — it only measures.
+    ///
+    /// **This is the instrument that turns GAP-207's coverage number from an
+    /// estimate into a measurement.** The program's premise is that
+    /// `fill_unset_cpu_precision` asserts `bit_stable_on_same_hardware` for
+    /// entries nobody verified; how many of those can actually EARN it is the
+    /// fact that decides whether the fill can be retired or only narrowed. A
+    /// stale estimate in a plan is exactly the shape that goes unchallenged,
+    /// so the number is computed here, at head, on every run.
+    ///
+    /// The assertions are deliberately invariants, not thresholds: a coverage
+    /// threshold would either be re-tuned whenever it failed (making it
+    /// decoration) or block unrelated work. The split is PRINTED for the
+    /// program to read; what is ASSERTED is only what must always hold.
+    #[test]
+    fn the_cpu_primitive_sweep_accounts_for_every_registration_and_fabricates_nothing() {
+        let (records, log) = run_cpu_primitive_verification();
+
+        // How many CPU entries exist, counted independently of the sweep — if
+        // these disagree, the sweep skipped something silently, which is the
+        // one failure this test exists to make impossible.
+        let mut table = crate::kernel::KernelBindingTable::new();
+        crate::dispatch::register_cpu_kernels(&mut table);
+        let cpu_entries = table
+            .iter_entries()
+            .filter(|(_, _, backend, _)| *backend == BackendId::Cpu)
+            .count();
+
+        assert_eq!(
+            log.len(),
+            cpu_entries,
+            "the sweep logged {} attempts for {cpu_entries} CPU registrations —              every entry must be accounted for, including the ones with no              probe recipe. A silent skip is how a coverage number becomes              larger than the thing it measures.",
+            log.len()
+        );
+
+        let passes = log.iter().filter(|a| a.outcome == "pass").count();
+        assert_eq!(
+            records.len(),
+            passes,
+            "banked {} ledger records against {passes} observed passes. These              must be equal in BOTH directions: more records than passes is a              fabricated claim, fewer is a measurement thrown away.",
+            records.len()
+        );
+
+        // Non-triviality: an empty or near-empty table would satisfy both
+        // assertions above perfectly.
+        assert!(
+            cpu_entries > 100,
+            "only {cpu_entries} CPU registrations found — `register_cpu_kernels`              is the production path and carries several hundred. Both              assertions above pass vacuously against a table this small."
+        );
+        assert!(
+            !records.is_empty(),
+            "not one CPU primitive earned `bit_stable_on_same_hardware` out of              {cpu_entries} registrations. That is not a coverage result, it is              a broken harness — the assertions above would both hold."
+        );
+
+        let no_recipe = log.iter().filter(|a| a.outcome.starts_with("unverified: no probe recipe")).count();
+        let failed = log.iter().filter(|a| a.outcome.starts_with("fail:")).count();
+        let other = log.len() - passes - no_recipe - failed;
+        println!(
+            "[gap-207] CPU primitive bit-stability sweep over {cpu_entries} registrations:
+                 {passes} pass
+                 {no_recipe} unverified (no probe recipe)
+                 {failed} FAIL (ran, was not bit-stable)
+                 {other} unverified (invoke error / panic / no probes)",
+        );
+        // Name the ops in the no-recipe residue, not just its size. A bare
+        // count says how much is uncovered; the names say what to build next,
+        // and they are the whole actionable output of this measurement.
+        let mut by_op: Vec<(String, usize)> = Vec::new();
+        for a in log.iter().filter(|a| a.outcome.starts_with("unverified: no probe recipe")) {
+            match by_op.iter_mut().find(|(n, _)| *n == a.op_name) {
+                Some((_, c)) => *c += 1,
+                None => by_op.push((a.op_name.clone(), 1)),
+            }
+        }
+        by_op.sort_by(|x, y| y.1.cmp(&x.1).then(x.0.cmp(&y.0)));
+        println!(
+            "[gap-207] {} distinct ops lack a probe recipe, by registration count:",
+            by_op.len()
+        );
+        for (name, c) in &by_op {
+            println!("[gap-207]     {name} x{c}");
+        }
+
+        // The two residues are NOT the same thing and must never be summed
+        // into one "uncovered" number: `no_recipe` is a gap in this harness,
+        // `failed` is a claim about a kernel. Only the second is evidence that
+        // `fill_unset_cpu_precision` is asserting something untrue.
+        assert_eq!(
+            passes + no_recipe + failed + other,
+            log.len(),
+            "the four outcome buckets do not partition the log"
+        );
+    }
+
     /// Task 4.5b: empirically verify the CPU fused-op family and WRITE
     /// the resulting `"pass"` records to the git-checked-in verification
     /// ledger (`docs/kernel-contracts/.fkc-verified-ledger.json`).
@@ -758,23 +1013,50 @@ mod tests {
     #[test]
     #[ignore = "re-seeding tool: writes docs/kernel-contracts/.fkc-verified-ledger.json; run manually via `cargo test -p fuel-dispatch seed_cpu_verified_ledger -- --ignored --nocapture` to regenerate the ledger. The verified ledger is committed; the default suite must not rewrite it."]
     fn seed_cpu_verified_ledger() {
-        let (records, log) = run_cpu_verification();
-        for attempt in &log {
+        // BOTH halves of the CPU surface. The fused registry and the primitive
+        // binding table are disjoint populations registered by different
+        // production paths; seeding only one leaves the other's claims resting
+        // on `fill_unset_cpu_precision`, which is the thing GAP-207 exists to
+        // retire. Reported as a SPLIT, never as one total — the two passes
+        // have different coverage and different reasons for their misses.
+        let (fused_records, fused_log) = run_cpu_verification();
+        let (prim_records, prim_log) = run_cpu_primitive_verification();
+
+        for (tag, log) in [("fused", &fused_log), ("primitive", &prim_log)] {
+            for attempt in log.iter() {
+                println!(
+                    "[gap-207/{tag}] {} {:?} (rev={}): {}",
+                    attempt.op_name, attempt.dtypes, attempt.kernel_revision_hash, attempt.outcome,
+                );
+            }
+        }
+        for (tag, recs, log) in [
+            ("fused", &fused_records, &fused_log),
+            ("primitive", &prim_records, &prim_log),
+        ] {
             println!(
-                "[task-4.5b] {} {:?} (rev={}): {}",
-                attempt.op_name, attempt.dtypes, attempt.kernel_revision_hash, attempt.outcome,
+                "[gap-207/{tag}] {} passed, {} unverified/failed, {} total attempts",
+                recs.len(),
+                log.iter().filter(|a| a.outcome != "pass").count(),
+                log.len(),
             );
         }
-        let passed = records.len();
-        let failed_or_unverified = log.iter().filter(|a| a.outcome != "pass").count();
-        println!(
-            "[task-4.5b] {passed} passed, {failed_or_unverified} unverified/failed, {} total attempts",
-            log.len(),
+
+        assert!(
+            !fused_records.is_empty(),
+            "expected at least one CPU FUSED op to empirically verify bit-stable; got 0 — see log above",
         );
         assert!(
-            !records.is_empty(),
-            "expected at least one CPU fused op to empirically verify bit-stable; got 0 — see log above",
+            !prim_records.is_empty(),
+            "expected at least one CPU PRIMITIVE op to empirically verify bit-stable; got 0 — see log above",
         );
+
+        // One flat set for the writer; the split above is the report, this is
+        // the payload. `upsert` keys on (backend, dtypes, revision, claim), so
+        // an op present in BOTH populations updates one row rather than
+        // producing two — which is why concatenating is safe here.
+        let mut records = fused_records;
+        records.extend(prim_records);
 
         // MERGE, never replace: this file also holds Vulkan and CUDA records
         // that need live devices to re-earn and that CI cannot regenerate.
