@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! `primitive_shape` — the single source of truth for primitive-Op shape+dtype
-//! inference (Convergence Increment A). Called by BOTH the `Tensor` builders
+//! inference (Convergence Increment A). Called by BOTH the `NodeHandle` builders
 //! (lib.rs) and the runtime `emit` re-emitter (runtime_fused.rs) so there is
 //! exactly one place that answers "what does this primitive Op produce". Reads
 //! params off the `Op` variant; never panics — a malformed op/shape is an `Err`.
@@ -26,7 +26,7 @@ fn need<'a>(shapes: &'a [Shape], n: usize, op: &Op) -> Result<&'a [Shape], Error
 /// is an honest `Err`.
 ///
 /// M-2: on the **emit** path this fn is intentionally **more permissive than the
-/// `Tensor` builders** — it computes the output shape/dtype but does NOT re-run
+/// `NodeHandle` builders** — it computes the output shape/dtype but does NOT re-run
 /// every builder-side precondition (broadcast-compatibility for `BroadcastTo`/
 /// `ReduceSumTo`/`ReduceMaxTo`, the size-1 check for `Squeeze`, the elem-count
 /// check for `Reshape`, duplicate-axis for `Permute`). The builders validate

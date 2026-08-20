@@ -15,7 +15,7 @@
 //! `pub struct LazyTensor` returns 1). And this surface never depended on
 //! eager `Tensor` in the first place: measured across all 22 files, every
 //! `Tensor` mention is `LazyTensor` or a doc comment, with one exception
-//! (`optim.rs`, `fuel_graph::Tensor::from_existing`) which is the graph
+//! (`optim.rs`, `fuel_graph::NodeHandle::from_existing`) which is the graph
 //! handle from a crate already *below* `fuel-core`.
 //!
 //! So this crate inherited a blocker it never had, from a program that has

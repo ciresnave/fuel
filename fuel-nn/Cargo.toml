@@ -24,3 +24,4 @@ rand = { workspace = true }
 rand_distr = { workspace = true }
 
 [dev-dependencies]
+fuel-quantized = { workspace = true }

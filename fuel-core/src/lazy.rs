@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Phase 6a bridge: a lazy-computation-graph tensor that wraps
-//! [`fuel_graph::Tensor`] and presents it through an API compatible
+//! [`fuel_graph::NodeHandle`] and presents it through an API compatible
 //! with fuel-core's eager [`Tensor`](crate::tensor::Tensor).
 //!
 //! # Purpose
 //!
 //! The Phase 6 architectural pivot moves fuel from eager execution to a
 //! lazy computation graph. End state: `fuel_core::tensor::Tensor` *is* a
-//! `fuel_graph::Tensor` and every model in `fuel-transformers` runs
+//! `fuel_graph::NodeHandle` and every model in `fuel-transformers` runs
 //! through the lazy backend without per-model porting.
 //!
 //! The bridge is the intermediate stage. [`LazyTensor`] is a wrapper
-//! around [`fuel_graph::Tensor`] that exposes the fuel-core-style
+//! around [`fuel_graph::NodeHandle`] that exposes the fuel-core-style
 //! method API (`.add()`, `.mul()`, `.matmul()`, `.relu()`, `.shape()`,
 //! `.to_vec0()`, `.to_vec1()`, ...) so callers can gradually migrate
 //! from eager to lazy one function at a time. Each method appends a
@@ -30,7 +30,7 @@
 //! and friends, shape/dtype inspection, the element-wise arithmetic
 //! and unary ops most models use, matmul, softmax, layer_norm,
 //! rms_norm, and realization to a typed `Vec`. Everything routes
-//! through `fuel_graph::Tensor` underneath.
+//! through `fuel_graph::NodeHandle` underneath.
 //!
 //! Missing: autograd integration via `fuel_core::Var`, the
 //! `backward()` / `apply_op*` convenience methods, safetensors
@@ -45,7 +45,7 @@ use fuel_ir::shape::{Dim, Dims};
 use std::sync::Arc;
 
 /// A lazy tensor that builds a `fuel_graph::Graph` as its methods are
-/// called. Cheap to clone — the underlying `fuel_graph::Tensor` is a
+/// called. Cheap to clone — the underlying `fuel_graph::NodeHandle` is a
 /// cheap handle pair `(Rc<RefCell<Graph>>, NodeId)`, so cloning just
 /// bumps the `Rc` and copies the id.
 ///
@@ -100,7 +100,7 @@ pub struct LazyTensor {
     // `crate::persistent_decode` (GAP-029 increment 3) and needs the graph +
     // NodeId handles to mint Consts and name realize roots. Still private to
     // the crate — no consumer sees the graph representation.
-    pub(crate) inner: fuel_graph::Tensor,
+    pub(crate) inner: fuel_graph::NodeHandle,
 }
 
 impl LazyTensor {
@@ -131,7 +131,7 @@ impl LazyTensor {
         device: &crate::Device,
     ) -> Self {
         Self {
-            inner: fuel_graph::Tensor::from_f32(data, shape, device.as_dyn()),
+            inner: fuel_graph::NodeHandle::from_f32(data, shape, device.as_dyn()),
         }
     }
 
@@ -167,7 +167,7 @@ impl LazyTensor {
         device: &crate::Device,
     ) -> Self {
         Self {
-            inner: fuel_graph::Tensor::from_f32_on(graph, data, shape, device.as_dyn()),
+            inner: fuel_graph::NodeHandle::from_f32_on(graph, data, shape, device.as_dyn()),
         }
     }
 
@@ -179,7 +179,7 @@ impl LazyTensor {
         device: &crate::Device,
     ) -> Self {
         Self {
-            inner: fuel_graph::Tensor::from_f64_on(graph, data, shape, device.as_dyn()),
+            inner: fuel_graph::NodeHandle::from_f64_on(graph, data, shape, device.as_dyn()),
         }
     }
 
@@ -193,7 +193,7 @@ impl LazyTensor {
         device: &crate::Device,
     ) -> Self {
         Self {
-            inner: fuel_graph::Tensor::from_bf16_on(graph, data, shape, device.as_dyn()),
+            inner: fuel_graph::NodeHandle::from_bf16_on(graph, data, shape, device.as_dyn()),
         }
     }
 
@@ -205,7 +205,7 @@ impl LazyTensor {
         device: &crate::Device,
     ) -> Self {
         Self {
-            inner: fuel_graph::Tensor::from_f16_on(graph, data, shape, device.as_dyn()),
+            inner: fuel_graph::NodeHandle::from_f16_on(graph, data, shape, device.as_dyn()),
         }
     }
 
@@ -218,7 +218,7 @@ impl LazyTensor {
         device: &crate::Device,
     ) -> Self {
         Self {
-            inner: fuel_graph::Tensor::from_u32_on(graph, data, shape, device.as_dyn()),
+            inner: fuel_graph::NodeHandle::from_u32_on(graph, data, shape, device.as_dyn()),
         }
     }
 
@@ -234,7 +234,7 @@ impl LazyTensor {
         device: &crate::Device,
     ) -> Self {
         Self {
-            inner: fuel_graph::Tensor::from_f64(data, shape, device.as_dyn()),
+            inner: fuel_graph::NodeHandle::from_f64(data, shape, device.as_dyn()),
         }
     }
 
@@ -252,7 +252,7 @@ impl LazyTensor {
         device: &crate::Device,
     ) -> Self {
         Self {
-            inner: fuel_graph::Tensor::from_bf16(data, shape, device.as_dyn()),
+            inner: fuel_graph::NodeHandle::from_bf16(data, shape, device.as_dyn()),
         }
     }
 
@@ -264,7 +264,7 @@ impl LazyTensor {
         device: &crate::Device,
     ) -> Self {
         Self {
-            inner: fuel_graph::Tensor::from_f16(data, shape, device.as_dyn()),
+            inner: fuel_graph::NodeHandle::from_f16(data, shape, device.as_dyn()),
         }
     }
 
@@ -277,7 +277,7 @@ impl LazyTensor {
         device: &crate::Device,
     ) -> Self {
         Self {
-            inner: fuel_graph::Tensor::from_u32(data, shape, device.as_dyn()),
+            inner: fuel_graph::NodeHandle::from_u32(data, shape, device.as_dyn()),
         }
     }
 
@@ -353,22 +353,22 @@ impl LazyTensor {
         }
     }
 
-    /// Unwrap the underlying `fuel_graph::Tensor`. Used by callers that
+    /// Unwrap the underlying `fuel_graph::NodeHandle`. Used by callers that
     /// need to drop down to the graph layer for operations the bridge
     /// does not yet expose.
-    pub fn into_graph_tensor(self) -> fuel_graph::Tensor {
+    pub fn into_graph_tensor(self) -> fuel_graph::NodeHandle {
         self.inner
     }
 
-    /// Borrow the underlying `fuel_graph::Tensor`.
-    pub fn graph_tensor(&self) -> &fuel_graph::Tensor {
+    /// Borrow the underlying `fuel_graph::NodeHandle`.
+    pub fn graph_tensor(&self) -> &fuel_graph::NodeHandle {
         &self.inner
     }
 
-    /// Wrap an existing `fuel_graph::Tensor` in a `LazyTensor`. Useful
+    /// Wrap an existing `fuel_graph::NodeHandle` in a `LazyTensor`. Useful
     /// when you have code that already builds a graph and want to
     /// present its outputs through this API.
-    pub fn from_graph_tensor(t: fuel_graph::Tensor) -> Self {
+    pub fn from_graph_tensor(t: fuel_graph::NodeHandle) -> Self {
         Self { inner: t }
     }
 
@@ -990,7 +990,7 @@ impl LazyTensor {
     }
 
     /// Quantized matmul: `C = self @ dequant(W_Q)`. See
-    /// [`fuel_graph::Tensor::qmatmul`] for details. The weight bytes
+    /// [`fuel_graph::NodeHandle::qmatmul`] for details. The weight bytes
     /// tensor must be a flat U32 const holding the raw Q-block byte
     /// stream (length = n_bytes / 4).
     ///
@@ -1418,7 +1418,7 @@ impl LazyTensor {
     }
 
     /// bitsandbytes-style 4-bit NormalFloat quantized matrix
-    /// multiply. See [`fuel_graph::Tensor::nf4_matmul`] for the full
+    /// multiply. See [`fuel_graph::NodeHandle::nf4_matmul`] for the full
     /// shape contract. v1 covers F32/F16/BF16 activations.
     pub fn nf4_matmul(&self, w_packed: &Self, absmax: &Self, block_size: usize) -> Self {
         Self {
@@ -1429,7 +1429,7 @@ impl LazyTensor {
     }
 
     /// Mamba-2's State-Space Duality chunked scan (forward). See
-    /// [`fuel_graph::Tensor::ssd_chunk_scan`] for the full shape
+    /// [`fuel_graph::NodeHandle::ssd_chunk_scan`] for the full shape
     /// contract. `chunk_size` is a GPU-parallelism granularity knob;
     /// the CPU kernel runs sequential regardless.
     pub fn ssd_chunk_scan(
@@ -1448,7 +1448,7 @@ impl LazyTensor {
     }
 
     /// Mamba-1's selective state-space scan (forward). See
-    /// [`fuel_graph::Tensor::selective_scan`] for the full shape
+    /// [`fuel_graph::NodeHandle::selective_scan`] for the full shape
     /// contract. Returns just `y` — for the bundled `(y, last_state)`
     /// form needed by autoregressive resumption use
     /// [`Self::selective_scan_bundled`].
@@ -1547,7 +1547,7 @@ impl LazyTensor {
 
     /// Depthwise 1-D causal convolution + bias + optional fused SiLU
     /// — the Mamba-1 / Mamba-2 prefill convolution fusion. See
-    /// [`fuel_graph::Tensor::causal_conv1d`] for the full shape
+    /// [`fuel_graph::NodeHandle::causal_conv1d`] for the full shape
     /// contract (caller must left-pad x with `kernel - 1` zeros).
     pub fn causal_conv1d(&self, weight: &Self, bias: &Self, use_silu: bool) -> Self {
         Self {
@@ -1559,7 +1559,7 @@ impl LazyTensor {
 
     /// Fused softmax + cross-entropy with integer (class-index)
     /// targets — the standard PyTorch CE loss. See
-    /// [`fuel_graph::Tensor::fused_softmax_cross_entropy`] for the full
+    /// [`fuel_graph::NodeHandle::fused_softmax_cross_entropy`] for the full
     /// shape contract.
     pub fn fused_softmax_cross_entropy(
         &self,
@@ -1606,7 +1606,7 @@ impl LazyTensor {
         })
     }
 
-    /// Apply rotary position embeddings. See [`fuel_graph::Tensor::rope`].
+    /// Apply rotary position embeddings. See [`fuel_graph::NodeHandle::rope`].
     /// Rank < 2 surfaces as a typed error at build time.
     pub fn rope(&self, base: f64, start_pos: usize) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
@@ -1624,7 +1624,7 @@ impl LazyTensor {
 
     /// Apply RoPE using caller-supplied `cos` and `sin` tables so they
     /// can be shared across many layers. See
-    /// [`fuel_graph::Tensor::rope_with_tables`].
+    /// [`fuel_graph::NodeHandle::rope_with_tables`].
     ///
     /// Rank / dtype / table-shape mismatches surface as typed errors
     /// at build time rather than panicking inside `fuel_graph`.
@@ -1678,7 +1678,7 @@ impl LazyTensor {
     /// Apply RoPE using caller-supplied `cos`/`sin` tables, emitting the
     /// PRIMITIVE decomposition (slice + neg + concat + mul + add — the
     /// rotate-half recipe) instead of a single fused `FusedOps::ROPE` node.
-    /// See [`fuel_graph::Tensor::rope_with_tables_decomposed`].
+    /// See [`fuel_graph::NodeHandle::rope_with_tables_decomposed`].
     ///
     /// CapturedRun 4b-resume: Fuel's `FusedOps::ROPE` is rotate-half (Llama/HF)
     /// but has NO correct (rotate-half) CUDA kernel — baracuda's is interleaved
@@ -3146,7 +3146,7 @@ mod tests {
 
     #[test]
     fn affine_scan_bptt_matches_finite_difference() {
-        use fuel_graph::{Node, Op, ScanEmit, ScanRole, Tensor};
+        use fuel_graph::{Node, NodeHandle, Op, ScanEmit, ScanRole};
         use fuel_ir::{DType, Shape};
         let dev = Device::cpu();
         // f(init, a, b): carry_{t+1} = a*carry_t + b, carry_0 = init, bound = 3, loss = carry_3.
@@ -3157,15 +3157,15 @@ mod tests {
          -> (
             std::sync::Arc<std::sync::RwLock<fuel_graph::Graph>>,
             fuel_graph::NodeId,
-            fuel_graph::Tensor,
-            fuel_graph::Tensor,
-            fuel_graph::Tensor,
+            fuel_graph::NodeHandle,
+            fuel_graph::NodeHandle,
+            fuel_graph::NodeHandle,
         ) {
-            let init = Tensor::from_f32(vec![init_v], Shape::from_dims(&[1]), &*dev.as_dyn());
+            let init = NodeHandle::from_f32(vec![init_v], Shape::from_dims(&[1]), &*dev.as_dyn());
             let g = init.graph().clone();
-            let a = Tensor::from_existing(g.clone(), init.id())
+            let a = NodeHandle::from_existing(g.clone(), init.id())
                 .const_f32_like(vec![a_v], Shape::from_dims(&[1]));
-            let b = Tensor::from_existing(g.clone(), init.id())
+            let b = NodeHandle::from_existing(g.clone(), init.id())
                 .const_f32_like(vec![b_v], Shape::from_dims(&[1]));
             let nc = {
                 let mut gw = g.write().unwrap();
@@ -3192,7 +3192,7 @@ mod tests {
                     dtype: DType::F32,
                 })
             };
-            let nc_t = Tensor::from_existing(g.clone(), nc);
+            let nc_t = NodeHandle::from_existing(g.clone(), nc);
             let out = init
                 .scan(
                     &[],
@@ -3222,9 +3222,9 @@ mod tests {
         };
         // Autograd grad w.r.t. init at (1.0, 0.5, 0.1).
         let (g, out_id, init, a, b) = build(1.0, 0.5, 0.1);
-        let out = fuel_graph::Tensor::from_existing(g.clone(), out_id);
+        let out = fuel_graph::NodeHandle::from_existing(g.clone(), out_id);
         let grads = out.backward();
-        let realize_grad = |t: &fuel_graph::Tensor| {
+        let realize_grad = |t: &fuel_graph::NodeHandle| {
             crate::pipelined_bridge::realize_one_as::<f32>(
                 &g,
                 grads.get(t).expect("grad").id(),
@@ -5360,7 +5360,7 @@ impl LazyTensor {
 // ============================================================================
 // Phase A.1 — wrapper additions (eager-`Tensor` retirement program).
 //
-// Methods on `fuel_graph::Tensor` that weren't previously surfaced through
+// Methods on `fuel_graph::NodeHandle` that weren't previously surfaced through
 // `LazyTensor`. Pure delegation; no new graph ops. See
 // `docs/session-prompts/eager-tensor-retirement-master-plan.md`.
 // ============================================================================
@@ -6366,7 +6366,7 @@ impl LazyTensor {
     /// Broadcasting the `[B, 1, 1, D]` tables over the head axis is what lets one
     /// table row serve all of that sequence's heads.
     ///
-    /// This is `fuel_graph::Tensor::rope_with_tables_decomposed`'s body
+    /// This is `fuel_graph::NodeHandle::rope_with_tables_decomposed`'s body
     /// (`fuel-graph/src/lib.rs` ~6931-6954) with the table shape generalized from
     /// one shared position to one-per-row — **same ops, same order, same
     /// associativity** (`y = x·cos + concat(-x[…,D/2..], x[…,..D/2])·sin`), so at

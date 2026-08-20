@@ -51,7 +51,7 @@
 //! node through `GraphExecutor::cpu_fallback`.
 //!
 //! The matcher is also stubbed (returns `None`) — Conv2D nodes
-//! originate from the `Tensor::conv2d` builder; user-decomposed forms
+//! originate from the `NodeHandle::conv2d` builder; user-decomposed forms
 //! don't exist as a pattern to recognize.
 
 use crate::registry::{
@@ -73,7 +73,7 @@ pub fn entry() -> FusedOpEntry {
         decompose,
         // Conv2D's backward is real (dX via ConvTranspose2D, dW via a
         // transposed Conv2D, dB via reduce_sum_to) but is wired
-        // through `Tensor::backward`'s `Op::Fused(CONV2D, _)` arm
+        // through `NodeHandle::backward`'s `Op::Fused(CONV2D, _)` arm
         // directly — same pattern as the other 5 already-migrated ops.
         // The registry's `BackwardKind::Fused(id)` path is reserved
         // for backward HELPERS (SoftmaxLastDimBackward etc.) that get
@@ -589,7 +589,7 @@ pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeI
     decompose_via_recipe(graph, id, &recipe_node, Some(Vec::new()))
 }
 
-/// Matcher stub — Conv2D is always produced by the `Tensor::conv2d`
+/// Matcher stub — Conv2D is always produced by the `NodeHandle::conv2d`
 /// builder; there is no user-decomposed pattern to recognize as
 /// `Op::Fused(CONV2D, _)`.
 pub fn canonical_pattern(_graph: &Graph, _root: NodeId) -> Option<PatternMatch> {

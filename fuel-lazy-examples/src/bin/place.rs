@@ -16,7 +16,7 @@ use fuel::judge::Criterion;
 use fuel::scheduling::{
     ScheduleOptions, auto_place_and_route, prepare_dispatch_table, recommend_placement,
 };
-use fuel_graph::{Op, Tensor};
+use fuel_graph::{NodeHandle, Op};
 use fuel_ir::{DeviceLocation, Shape};
 use std::sync::Arc;
 
@@ -46,7 +46,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Step 2: build a heterogeneous graph — three matmul sizes plus
     // a couple of unprofiled ops (Sub, Silu).
-    let root = Tensor::from_f32(
+    let root = NodeHandle::from_f32(
         vec![0.0_f32; 64 * 64],
         Shape::from_dims(&[64, 64]),
         cpu_dev(),

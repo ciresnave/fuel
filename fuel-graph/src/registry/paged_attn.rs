@@ -22,7 +22,7 @@
 //! PagedAttn is decode-side only by construction: the paged KV cache
 //! has variable-length sequences and no training pass writes through
 //! it. No gradient rule (matches the legacy `Op::PagedAttn { .. }`
-//! arm in `Tensor::backward`, which panics). The registry entry's
+//! arm in `NodeHandle::backward`, which panics). The registry entry's
 //! `BackwardKind::NotDifferentiable` reflects this.
 //!
 //! ## Decomposition — STALE CLAIM CORRECTED (2026-08-05)

@@ -60,7 +60,7 @@ pub fn entry() -> FusedOpEntry {
         decompose,
         // Phase 7.6 step 4 (backward-helper batch): the
         // architecturally-correct BackwardKind::Fused edge is now
-        // live. `Tensor::backward`'s Op::Fused arm reads this and
+        // live. `NodeHandle::backward`'s Op::Fused arm reads this and
         // emits Op::Fused(LAYER_NORM_LAST_DIM_BACKWARD, _) instead
         // of the legacy variant.
         backward: BackwardKind::Fused(FusedOps::LAYER_NORM_LAST_DIM_BACKWARD),

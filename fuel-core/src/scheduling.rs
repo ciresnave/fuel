@@ -852,7 +852,7 @@ mod tests {
 
     use crate::judge::Criterion;
     use crate::judge::{PROFILE_REPORT_VERSION, ProfileEntry, ProfileReport};
-    use fuel_graph::Tensor;
+    use fuel_graph::NodeHandle;
     use fuel_ir::Shape;
     use std::sync::Arc;
 
@@ -890,7 +890,7 @@ mod tests {
 
         // -- 2) build a graph with two matmuls + one unprofiled op
         //       — all derived from a single root so they share a graph.
-        let small_a = Tensor::from_f32(
+        let small_a = NodeHandle::from_f32(
             vec![0.0_f32; 64 * 64],
             Shape::from_dims(&[64, 64]),
             crate::Device::cpu().as_dyn(),
@@ -967,7 +967,7 @@ mod tests {
         };
         let table = DispatchTable::build(&report);
 
-        let a = Tensor::from_f32(
+        let a = NodeHandle::from_f32(
             vec![0.0_f32; 1024 * 1024],
             Shape::from_dims(&[1024, 1024]),
             crate::Device::cpu().as_dyn(),
@@ -1011,7 +1011,7 @@ mod tests {
         let _ = std::fs::create_dir_all(&scratch);
 
         // Build a small graph the planner will actually route.
-        let a = Tensor::from_f32(
+        let a = NodeHandle::from_f32(
             vec![0.0_f32; 64 * 64],
             Shape::from_dims(&[64, 64]),
             crate::Device::cpu().as_dyn(),
@@ -1130,7 +1130,7 @@ mod tests {
             ],
         };
 
-        let small_a = Tensor::from_f32(
+        let small_a = NodeHandle::from_f32(
             vec![0.0_f32; 64 * 64],
             Shape::from_dims(&[64, 64]),
             crate::Device::cpu().as_dyn(),
@@ -1218,7 +1218,7 @@ mod tests {
             ],
         };
 
-        let big_a = Tensor::from_f32(
+        let big_a = NodeHandle::from_f32(
             vec![0.0_f32; 1024 * 1024],
             Shape::from_dims(&[1024, 1024]),
             crate::Device::cpu().as_dyn(),
@@ -1299,7 +1299,7 @@ mod tests {
         };
         let table = DispatchTable::build(&report);
 
-        let small_a = Tensor::from_f32(
+        let small_a = NodeHandle::from_f32(
             vec![0.0_f32; 64 * 64],
             Shape::from_dims(&[64, 64]),
             crate::Device::cpu().as_dyn(),
@@ -1407,7 +1407,7 @@ mod tests {
         let table = DispatchTable::build(&report);
 
         // Build the heterogeneous graph (small + big matmul).
-        let small_a = Tensor::from_f32(
+        let small_a = NodeHandle::from_f32(
             vec![0.0_f32; 64 * 64],
             Shape::from_dims(&[64, 64]),
             crate::Device::cpu().as_dyn(),

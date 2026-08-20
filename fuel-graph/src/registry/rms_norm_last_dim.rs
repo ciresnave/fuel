@@ -21,7 +21,7 @@
 //!   recipe arm mirrors `softmax_last_dim`'s dual-spelling matcher, so the
 //!   framework's OWN lowered subgraph re-fuses (not just user-spelled forms).
 //!
-//! The numeric relation is [`crate::Tensor::rms_norm_last_dim_decomposed`]'s
+//! The numeric relation is [`crate::NodeHandle::rms_norm_last_dim_decomposed`]'s
 //! `Sqr → MeanDim → keepdim → AddScalar → Sqrt → BroadcastTo → Div`; the
 //! keepdim node is now `Unsqueeze(append)` in place of `Reshape(keepdim)` (a
 //! metadata-only D3 swap, numerically bit-exact). The matcher refuses to fire
@@ -50,7 +50,7 @@ pub fn entry() -> FusedOpEntry {
         decompose,
         // Phase 7.6 step 4 (backward-helper batch): the
         // architecturally-correct BackwardKind::Fused edge is now
-        // live. `Tensor::backward`'s Op::Fused arm reads this and
+        // live. `NodeHandle::backward`'s Op::Fused arm reads this and
         // emits Op::Fused(RMS_NORM_LAST_DIM_BACKWARD, _) instead of
         // the legacy variant.
         backward: BackwardKind::Fused(FusedOps::RMS_NORM_LAST_DIM_BACKWARD),

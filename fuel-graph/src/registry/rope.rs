@@ -12,7 +12,7 @@
 //!   materialized by the emit resolver on a rank-raise, D4, not baked here).
 //! - [`decompose`] — re-emits [`recipe`] through the
 //!   [`crate::registry::decompose_via_recipe`] bridge (mirrors
-//!   [`crate::Tensor::rope_with_tables_decomposed`]).
+//!   [`crate::NodeHandle::rope_with_tables_decomposed`]).
 //! - [`canonical_pattern`] — placeholder returning `None`. The Rope
 //!   decomposition is structurally large (slice/concat + per-axis broadcast
 //!   prep); until a canonical matcher lands, fusion fires only through the
@@ -43,7 +43,7 @@ pub fn entry() -> FusedOpEntry {
         pattern: SubgraphPattern::Callable(canonical_pattern),
         decompose,
         // Rope's backward is another Rope (with negated sin). It is
-        // expressed in `Tensor::backward`'s Op::Fused arm directly
+        // expressed in `NodeHandle::backward`'s Op::Fused arm directly
         // rather than through `BackwardKind::Fused(id)` because the
         // backward IS the same fused op — the registry's `Fused(id)`
         // variant is intended for backward helpers that have a
@@ -206,7 +206,7 @@ fn scalars(params: &FusedOpParams) -> Option<Vec<f64>> {
 /// The fused node `id` may be either `Op::Rope` (legacy emission) or
 /// `Op::Fused(FusedOps::ROPE, FusedOpParams::Rope)` (the builder path); the
 /// decomposition is identical for both. Mirrors
-/// [`crate::Tensor::rope_with_tables_decomposed`].
+/// [`crate::NodeHandle::rope_with_tables_decomposed`].
 pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeId {
     decompose_via_recipe(graph, id, recipe(), scalars(params))
 }

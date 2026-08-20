@@ -13,7 +13,7 @@
 //!
 //! Like `ReduceMaxToBackward`, this is the backward of a primitive
 //! (`Op::PowI`), not of a fused forward — autograd reaches it directly
-//! from `Op::PowI`'s arm in `Tensor::backward` rather than through a
+//! from `Op::PowI`'s arm in `NodeHandle::backward` rather than through a
 //! `BackwardKind::Fused` edge.
 //!
 //! Provides:

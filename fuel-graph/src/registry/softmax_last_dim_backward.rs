@@ -41,7 +41,7 @@
 //!   `OpKind` route).
 //!
 //! Higher-order gradients (backward through this helper itself)
-//! panic per `Tensor::backward`'s MVP behavior. The registry entry's
+//! panic per `NodeHandle::backward`'s MVP behavior. The registry entry's
 //! `backward` field reflects this: [`BackwardKind::NotDifferentiable`].
 
 use crate::registry::{

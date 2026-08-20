@@ -466,8 +466,8 @@ pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeI
 }
 
 /// Matcher stub — SelectiveScan nodes originate from the explicit
-/// `Tensor::selective_scan` builder. The primitive subgraph that
-/// Mamba's eager-Tensor inference code unrolls is a per-timestep
+/// `NodeHandle::selective_scan` builder. The primitive subgraph that
+/// Mamba's eager-NodeHandle inference code unrolls is a per-timestep
 /// recurrence with mutable state — not a pattern that can be
 /// auto-fused from a static graph walk.
 pub fn canonical_pattern(_graph: &Graph, _root: NodeId) -> Option<PatternMatch> {

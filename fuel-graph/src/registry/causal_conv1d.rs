@@ -11,7 +11,7 @@
 //!   - `x`:      `[batch, channels, seq + (kernel - 1)]` — caller
 //!     pre-pads with `kernel - 1` zeros on the left for the causal mask.
 //!     This matches Mamba-2's prefill convention (mamba2.rs:552 builds
-//!     the pad explicitly via `Tensor::cat`).
+//!     the pad explicitly via `NodeHandle::cat`).
 //!   - `weight`: `[channels, 1, kernel]` — depthwise (one filter per
 //!     channel; `groups == channels` in standard conv terminology).
 //!   - `bias`:   `[channels]` — required (matches baracuda's
@@ -289,7 +289,7 @@ pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeI
 }
 
 /// Matcher stub — CausalConv1d nodes originate from the explicit
-/// `Tensor::causal_conv1d` builder. No primitive subgraph pattern to
+/// `NodeHandle::causal_conv1d` builder. No primitive subgraph pattern to
 /// auto-fuse (would require an `Op::Conv1D + Add + Silu` chain
 /// pattern, but Op::Conv1D isn't in fuel-graph's primitive set).
 pub fn canonical_pattern(_graph: &Graph, _root: NodeId) -> Option<PatternMatch> {

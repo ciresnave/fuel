@@ -36,7 +36,7 @@ pub fn entry() -> FusedOpEntry {
         decompose,
         // Phase 7.6 step 4 (backward-helper batch): SOFTMAX_LAST_DIM_BACKWARD
         // is now a registry entry, so the architecturally-correct
-        // BackwardKind::Fused(id) edge is live. `Tensor::backward`'s
+        // BackwardKind::Fused(id) edge is live. `NodeHandle::backward`'s
         // `Op::Fused(SOFTMAX_LAST_DIM, _)` arm reads this entry and
         // emits `Op::Fused(SOFTMAX_LAST_DIM_BACKWARD, _)` for the
         // gradient node. The architectural connection latent since
