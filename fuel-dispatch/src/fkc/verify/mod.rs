@@ -70,6 +70,7 @@
 
 mod accept_coverage;
 mod bit_stability;
+mod exact_ref;
 #[cfg(feature = "cuda")]
 mod harness;
 mod invoker_cpu;

@@ -881,6 +881,130 @@ pub fn run_cpu_primitive_verification() -> (Vec<LedgerRecord>, Vec<SeedAttempt>)
     (records, log)
 }
 
+/// Empirically verify `max_ulp: 0` for every CPU primitive registration that
+/// has BOTH a probe recipe and an exact in-process reference.
+///
+/// **This is the claim the 84 remaining import downgrades are blocked on.**
+/// `gate_precision` collapses a whole guarantee if any declared claim is
+/// unbacked, so an entry declaring `bit_stable_on_same_hardware` AND
+/// `max_ulp` stays fully UNAUDITED until both are earned — which is why
+/// earning bit-stability for 572 registrations changed no guarantee for the
+/// entries that also declare a bound.
+///
+/// **The bound is hard-coded to `MaxUlp(0)` and that is deliberate.** Every
+/// `max_ulp` line in the contracts owning this population declares `0`, with
+/// inline reasons ("exact: f32 is a strict subset of f64"). Reading the
+/// declared value back out of the contract is not possible here —
+/// `import_bundle_str` gates before returning, so the lowered value is gone —
+/// so this verifies the STRICTEST bound. A kernel that passes `MaxUlp(0)`
+/// satisfies any larger declared bound, so the record is sound for the
+/// population; it would NOT be sound to record `max_ulp` from a looser check.
+///
+/// **Never fabricates.** An op with no exact reference contributes no record
+/// and appears in the log; so does a probe that errors. A `fail` is recorded
+/// as a fail — and a disagreement here is a FINDING about the kernel or about
+/// the reference, not a harness defect to be tuned away.
+pub fn run_cpu_max_ulp_verification() -> (Vec<LedgerRecord>, Vec<SeedAttempt>) {
+    use crate::fkc::verify::exact_ref::{ExactRefInvoker, has_exact_reference};
+    use crate::fkc::verify::probe_recipes::{build_primitive_probe, probe_seed};
+    use crate::fkc::verify::ulp::{Bound, verify_precision_bound};
+
+    let mut table = crate::kernel::KernelBindingTable::new();
+    crate::dispatch::register_cpu_kernels(&mut table);
+
+    let mut records = Vec::new();
+    let mut log = Vec::new();
+
+    for (op, dtypes, backend, entry) in table.iter_entries() {
+        if backend != BackendId::Cpu {
+            continue;
+        }
+        let dtypes_vec = dtypes.to_vec();
+        let rev = entry.kernel_revision_hash;
+        let op_name = format!("{op:?}");
+
+        if !has_exact_reference(op, dtypes) {
+            log.push(SeedAttempt {
+                op_name,
+                dtypes: dtypes_vec,
+                kernel_revision_hash: rev,
+                outcome: "unverified: no exact in-process reference for this op/dtype tuple"
+                    .to_string(),
+            });
+            continue;
+        }
+        let probe = match build_primitive_probe(op, dtypes, probe_seed(op, dtypes)) {
+            Some(p) => p,
+            None => {
+                log.push(SeedAttempt {
+                    op_name,
+                    dtypes: dtypes_vec,
+                    kernel_revision_hash: rev,
+                    outcome: "unverified: no probe recipe for this op/dtype tuple".to_string(),
+                });
+                continue;
+            }
+        };
+
+        let cand = CpuInvoker::new(probe.out_dtype, probe.out_shape.clone())
+            .with_params(probe.params.clone());
+        let refr = ExactRefInvoker {
+            op,
+            out_dtype: probe.out_dtype,
+            out_shape: probe.out_shape.clone(),
+            params: probe.params.clone(),
+        };
+        let inputs = probe.inputs.clone();
+        let attempt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            verify_precision_bound(
+                &cand,
+                &refr,
+                entry,
+                std::slice::from_ref(&inputs),
+                Bound::MaxUlp(0),
+            )
+        }));
+        let outcome = match attempt {
+            Ok(Ok(VerifyOutcome::Pass)) => {
+                records.push(LedgerRecord {
+                    kernel_ref: op_name.clone(),
+                    backend: "Cpu".to_string(),
+                    dtypes: dtypes.iter().map(|d| format!("{d:?}")).collect(),
+                    kernel_revision_hash: rev,
+                    claim: "max_ulp".to_string(),
+                    result: "pass".to_string(),
+                    verified_at: verified_at_string(),
+                    protocol_version: 1,
+                    evidence: serde_json::json!({
+                        "bound": "MaxUlp(0)",
+                        "reference": "exact in-process (fkc::verify::exact_ref)",
+                        "harness": "gap-225/seed_cpu_ledger::max_ulp",
+                        // What the claim was earned AGAINST, for the same
+                        // reason `output_seeded` exists (GAP-222): a record
+                        // earned against a differential and one earned against
+                        // a truth reference are otherwise identical in every
+                        // field, and only the second is a `max_ulp` bound.
+                        "reference_kind": "truth",
+                    }),
+                });
+                "pass".to_string()
+            }
+            Ok(Ok(VerifyOutcome::Fail { detail })) => format!("fail: {detail}"),
+            Ok(Ok(VerifyOutcome::NoReference)) => "unverified: no probes".to_string(),
+            Ok(Err(e)) => format!("unverified: invoke error {e:?}"),
+            Err(_) => "unverified: kernel invocation panicked".to_string(),
+        };
+        log.push(SeedAttempt {
+            op_name,
+            dtypes: dtypes_vec,
+            kernel_revision_hash: rev,
+            outcome,
+        });
+    }
+
+    (records, log)
+}
+
 /// `epoch:<unix seconds>` — a fixed, dependency-free timestamp (no
 /// `chrono`, per house convention). Informational only (`LedgerRecord`
 /// doesn't match on it).
@@ -896,6 +1020,75 @@ fn verified_at_string() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **The `max_ulp: 0` sweep: how many CPU registrations can earn the
+    /// claim the remaining 84 import downgrades are blocked on.** Reports;
+    /// asserts only invariants.
+    ///
+    /// A `fail` here would be a FINDING — Fuel's kernel and the exact
+    /// in-process reference disagreeing about a correctly-rounded result —
+    /// and the count is printed separately from the skips for that reason.
+    /// The two residues are not summed: "no exact reference" is a gap in this
+    /// module, "fail" is a claim about a kernel.
+    #[test]
+    fn the_cpu_max_ulp_sweep_accounts_for_every_registration_and_fabricates_nothing() {
+        let (records, log) = run_cpu_max_ulp_verification();
+
+        let mut table = crate::kernel::KernelBindingTable::new();
+        crate::dispatch::register_cpu_kernels(&mut table);
+        let cpu_entries = table
+            .iter_entries()
+            .filter(|(_, _, backend, _)| *backend == BackendId::Cpu)
+            .count();
+
+        assert_eq!(
+            log.len(),
+            cpu_entries,
+            "the sweep logged {} attempts for {cpu_entries} CPU registrations — every              entry must be accounted for, including the ones with no exact reference",
+            log.len()
+        );
+        let passes = log.iter().filter(|a| a.outcome == "pass").count();
+        assert_eq!(
+            records.len(),
+            passes,
+            "banked {} max_ulp records against {passes} observed passes",
+            records.len()
+        );
+
+        let no_ref = log
+            .iter()
+            .filter(|a| a.outcome.starts_with("unverified: no exact"))
+            .count();
+        let no_probe = log
+            .iter()
+            .filter(|a| a.outcome.starts_with("unverified: no probe"))
+            .count();
+        let failed = log
+            .iter()
+            .filter(|a| a.outcome.starts_with("fail:"))
+            .count();
+        let other = log.len() - passes - no_ref - no_probe - failed;
+        println!(
+            "[gap-225] CPU max_ulp:0 sweep over {cpu_entries} registrations:
+                 {passes} pass
+                 {no_ref} unverified (no exact in-process reference)
+                 {no_probe} unverified (no probe recipe)
+                 {failed} FAIL (kernel disagrees with the exact reference)
+                 {other} unverified (invoke error / panic)",
+        );
+        for a in log.iter().filter(|a| a.outcome.starts_with("fail:")) {
+            println!("[gap-225] FAIL {} {:?}: {}", a.op_name, a.dtypes, a.outcome);
+        }
+        assert_eq!(
+            passes + no_ref + no_probe + failed + other,
+            log.len(),
+            "the outcome buckets do not partition the log"
+        );
+        assert!(
+            !records.is_empty(),
+            "not one CPU registration earned max_ulp:0 out of {cpu_entries} — that is              a broken harness, not a coverage result: the assertions above would all hold"
+        );
+    }
 
     /// The fused and primitive passes both write into ONE ledger keyed on
     /// `(backend, dtypes, kernel_revision_hash, claim)`. `kernel_ref` is NOT
@@ -1103,8 +1296,17 @@ mod tests {
         // have different coverage and different reasons for their misses.
         let (fused_records, fused_log) = run_cpu_verification();
         let (prim_records, prim_log) = run_cpu_primitive_verification();
+        // The THIRD claim: `max_ulp: 0` against an exact in-process
+        // reference. Separate from bit-stability because it is a different
+        // claim about the same kernels, and `gate_precision` needs BOTH
+        // before a dual-claim entry's guarantee changes at all.
+        let (ulp_records, ulp_log) = run_cpu_max_ulp_verification();
 
-        for (tag, log) in [("fused", &fused_log), ("primitive", &prim_log)] {
+        for (tag, log) in [
+            ("fused", &fused_log),
+            ("primitive", &prim_log),
+            ("max_ulp", &ulp_log),
+        ] {
             for attempt in log.iter() {
                 println!(
                     "[gap-207/{tag}] {} {:?} (rev={}): {}",
@@ -1115,6 +1317,7 @@ mod tests {
         for (tag, recs, log) in [
             ("fused", &fused_records, &fused_log),
             ("primitive", &prim_records, &prim_log),
+            ("max_ulp", &ulp_records, &ulp_log),
         ] {
             println!(
                 "[gap-207/{tag}] {} passed, {} unverified/failed, {} total attempts",
@@ -1139,6 +1342,7 @@ mod tests {
         // producing two — which is why concatenating is safe here.
         let mut records = fused_records;
         records.extend(prim_records);
+        records.extend(ulp_records);
 
         // MERGE, never replace: this file also holds Vulkan and CUDA records
         // that need live devices to re-earn and that CI cannot regenerate.
