@@ -165,7 +165,7 @@ fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
 /// ```
 fn recipe(
     logits_shape: &Shape,
-    targets_shape: &Shape,
+    _targets_shape: &Shape,
     work_dtype: DType,
     targets_dtype: DType,
     reduction: Reduction,

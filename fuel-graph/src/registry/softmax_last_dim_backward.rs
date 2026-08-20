@@ -21,8 +21,8 @@
 //! entries: there is no user-decomposed form to recognize (the
 //! matcher is always stubbed). The `decompose` IS a "synthesize from
 //! primitives" recipe, though: the closed-form backward expression
-//! is a real 6-node primitive subgraph (the same `SumDim` + keepdim
-//! + `BroadcastTo` idiom the forward `softmax_last_dim` recipe uses),
+//! is a real 6-node primitive subgraph (the same `SumDim` + keepdim +
+//! `BroadcastTo` idiom the forward `softmax_last_dim` recipe uses),
 //! so per G2 it decomposes totally — never a basis-gap self-return.
 //! T8 (Increment C slice 1) migrated that subgraph from an imperative
 //! builder to the portable [`recipe`] datum, and in doing so exercised

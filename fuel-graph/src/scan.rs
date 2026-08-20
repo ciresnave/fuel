@@ -371,7 +371,7 @@ pub fn build_scan_step(
             let n = graph.node(x);
             (n.shape.clone(), n.dtype)
         };
-        if x_shape.dims().first().map_or(true, |&d0| d0 <= t) {
+        if x_shape.dims().first().is_none_or(|&d0| d0 <= t) {
             return Err(fuel_ir::Error::Msg(format!(
                 "build_scan_step: xs slice at t={t} out of range for shape {:?}",
                 x_shape.dims()
@@ -834,7 +834,7 @@ mod tests {
         let out = init
             .scan_until(
                 &[],
-                &[thr_t.clone()],
+                std::slice::from_ref(&thr_t),
                 &nc_t,
                 &nc_t,
                 &pred_t,
@@ -911,7 +911,7 @@ mod tests {
         assert!(
             init.scan_until(
                 &[],
-                &[thr_t.clone()],
+                std::slice::from_ref(&thr_t),
                 &nc_t,
                 &nc_t,
                 &big,

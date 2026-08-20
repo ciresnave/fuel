@@ -538,6 +538,13 @@ pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeI
 /// backward ([`super::flash_attn_backward`]): the softmax probabilities and
 /// the repeated K/V, plus — when softcap is active — the saved `tanh` node the
 /// backward needs for the `1 - tanh²` derivative.
+// V-variant imperative path: `dV = Pᵀ·dO` is linear in P and needs only
+// `probs`. `k_rep`/`v_rep`/`softcap_tanh`/`scores_shape` are consumed by the
+// Q/K variants via `decompose_via_recipe` (flash_attn_backward.rs:256-297) and
+// by tests; softcap's `1 - tanh²` derivative enters dQ/dK and cannot enter dV.
+// `#[allow]`, not `#[expect]`: the fields ARE read in the test target, so an
+// `expect` would be unfulfilled there — only the lib target sees them dead.
+#[allow(dead_code)]
 pub(crate) struct AttnRecompute {
     pub probs: NodeId,
     pub k_rep: NodeId,
@@ -707,6 +714,10 @@ pub(crate) fn recompute_probs(
 /// Repeat a `[B, Hkv, S, D]` K/V tensor's heads up to `Hq` (GQA/MQA) via
 /// `Reshape → BroadcastTo → Reshape`. Identity when `Hq == Hkv`. Shared with
 /// `paged_attn` (hkv-major / g-minor ordering).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "graph-op builder: the parameters are the operand dims / config of the GQA head-repeat"
+)]
 pub(crate) fn repeat_kv_heads(
     graph: &mut Graph,
     x_id: NodeId,
@@ -744,6 +755,10 @@ pub(crate) fn repeat_kv_heads(
 /// Build the ALiBi bias `slope[h] · (j - i)` broadcast to `[B, Hq, Sq, Sk]`,
 /// cast to `dtype`. Uses `Op::Iota` for the row/column position indices.
 /// Shared with `paged_attn` (`Sk` = the paged `kv_len`).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "graph-op builder: the parameters are the operand dims / config of the ALiBi bias term"
+)]
 pub(crate) fn alibi_bias(
     graph: &mut Graph,
     alibi_id: NodeId,

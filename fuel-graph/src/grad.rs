@@ -168,7 +168,7 @@ impl GradientRule for WhereRule {
     ) -> GradientList {
         let cond = inputs[0];
         let a = inputs[1];
-        let b = inputs[2];
+        let _b = inputs[2];
         let shape = node_shape(graph, a);
         let dtype = node_dtype(graph, a);
         // m_a = cast(cond, dtype) — the "pick a" mask in float space.

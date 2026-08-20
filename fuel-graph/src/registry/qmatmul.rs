@@ -144,7 +144,7 @@ const Q4_0_BYTES_PER_BLOCK: usize = 18; // f16 scale (2) + 16 packed-nibble byte
 fn recipe_q4_0(a_shape: &Shape, w_len_u32: usize, k: usize, n: usize) -> Option<PatternNode> {
     use OpTag as T;
 
-    if k == 0 || n == 0 || k % QK4_0 != 0 {
+    if k == 0 || n == 0 || !k.is_multiple_of(QK4_0) {
         return None;
     }
     let a_dims = a_shape.dims();

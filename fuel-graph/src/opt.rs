@@ -22,6 +22,7 @@
 //!   - `MulScalar(1.0)(x)` → `x`
 //!   - `Neg(Neg(x))` → `x`
 //!   - `Reshape(Reshape(x, _), s)` → `Reshape(x, s)`
+//!
 //!   These rarely appear in hand-written user code but show up
 //!   routinely in autograd-generated backward graphs and in
 //!   generic transformer building blocks that sometimes collapse.
@@ -38,10 +39,10 @@
 //! their `NodeHandle` handles.
 
 use crate::registry::{
-    FusedOpEntry, FusedOpId, FusedOpParams, FusedOps, SubgraphPattern, default_registry,
+    FusedOpEntry, FusedOpId, FusedOpParams, SubgraphPattern, default_registry,
 };
 use crate::{Graph, Node, NodeId, Op, ScanEmit, ScanRole, SharedGraph, topo_order_multi};
-use fuel_ir::{DType, DeviceLocation, Shape};
+use fuel_ir::{DType, DeviceLocation};
 use std::collections::HashMap;
 
 // ---- Rule registry framework ----------------------------------------------
@@ -288,7 +289,7 @@ impl RuleRegistry {
     /// One pass over the graph for a single rule family. Returns
     /// `true` if any rule fired during the pass — caller loops until
     /// `false` for fixpoint.
-    fn run_pass(&self, family: RuleFamily, graph: &SharedGraph, roots: &mut Vec<NodeId>) -> bool {
+    fn run_pass(&self, family: RuleFamily, graph: &SharedGraph, roots: &mut [NodeId]) -> bool {
         let order = {
             let g = graph.read().unwrap();
             topo_order_multi(&g, roots)
@@ -651,6 +652,10 @@ pub struct FusionRule {
 /// Internal: the runtime-flavor of a registry entry's pattern. We
 /// keep a function-pointer copy here rather than holding a reference
 /// into the (process-wide) registry so the rule is `'static`.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "matcher pattern enum; boxing the large variant is deferred to the same follow-up as PatternNode (docs/gaps.md GAP-215) -- a cross-cutting change to construction/match sites, not a lint-commit change"
+)]
 enum PatternKind {
     Callable(fn(&Graph, NodeId) -> Option<crate::registry::PatternMatch>),
     /// The declarative form (fkc-fusion-patterns §3): carries the owned
@@ -1654,12 +1659,11 @@ pub fn lower_const_placement(graph: &SharedGraph, roots: &[NodeId]) -> usize {
                 }
             }
         }
-        if unanimous {
-            if let Some(d) = target {
+        if unanimous
+            && let Some(d) = target {
                 g.set_placement(nid, d);
                 lowered += 1;
             }
-        }
     }
     lowered
 }
@@ -2013,11 +2017,10 @@ fn collect_alias_set(
     // every other Op::View of P shares the same bundle Arc. Add P
     // here so the forward walk reaches sibling Views via their
     // `inputs[0] == P` membership in the alias set.
-    if let Op::View { .. } = graph.node(root).op {
-        if let Some(&producer) = graph.node(root).inputs.first() {
+    if let Op::View { .. } = graph.node(root).op
+        && let Some(&producer) = graph.node(root).inputs.first() {
             alias.insert(producer);
         }
-    }
 
     for &nid in order {
         if alias.contains(&nid) {
@@ -2036,11 +2039,10 @@ fn collect_alias_set(
         if !extends_alias {
             continue;
         }
-        if let Some(&inp) = node.inputs.first() {
-            if alias.contains(&inp) {
+        if let Some(&inp) = node.inputs.first()
+            && alias.contains(&inp) {
                 alias.insert(nid);
             }
-        }
     }
     alias
 }
@@ -2373,11 +2375,10 @@ pub fn promote_views_for_liveness(graph: &mut crate::Graph, roots: &[NodeId]) ->
     for &nid in &order {
         let mut d = 0usize;
         for &inp in &graph.node(nid).inputs {
-            if let Some(&di) = depth.get(&inp) {
-                if di + 1 > d {
+            if let Some(&di) = depth.get(&inp)
+                && di + 1 > d {
                     d = di + 1;
                 }
-            }
         }
         depth.insert(nid, d);
     }
@@ -2390,11 +2391,10 @@ pub fn promote_views_for_liveness(graph: &mut crate::Graph, roots: &[NodeId]) ->
         let mut lu = depth[&nid];
         if let Some(downstream) = consumers.get(&nid) {
             for &c in downstream {
-                if let Some(&cl) = last_use.get(&c) {
-                    if cl > lu {
+                if let Some(&cl) = last_use.get(&c)
+                    && cl > lu {
                         lu = cl;
                     }
-                }
             }
         }
         last_use.insert(nid, lu);
@@ -2446,7 +2446,7 @@ pub fn promote_views_for_liveness(graph: &mut crate::Graph, roots: &[NodeId]) ->
         view_consumers: Vec<NodeId>,
     }
     let mut promotions: Vec<Promotion> = Vec::new();
-    for (_producer, views) in &by_producer {
+    for views in by_producer.values() {
         // Per-slot last use rollup.
         let mut slot_last_use: HashMap<u32, usize> = HashMap::new();
         for v in views {
@@ -3097,6 +3097,9 @@ pub fn insert_cast_fixups(graph: &mut Graph, casts: &[(NodeId, NodeId, DType)]) 
 mod tests {
     use super::*;
     use crate::NodeHandle;
+    // `FusedOps` is referenced only in these tests; the lib-level `use` above
+    // correctly dropped it as unused, so import it here where it's used.
+    use crate::registry::FusedOps;
     use fuel_ir::{DeviceLocation, Shape};
     use std::sync::Arc;
 
@@ -3966,7 +3969,7 @@ mod tests {
         let x_dtype = x.dtype();
         let x_id = x.id();
 
-        let (y_id, z_id) = {
+        let (_y_id, z_id) = {
             let mut g = x.graph().write().unwrap();
             let y_id = g.push(crate::Node {
                 op: crate::Op::ReluInplace,
@@ -5853,7 +5856,7 @@ mod tests {
         // authoritative source.
         // (No public setter to clear; instead override by leaving
         // graph.placement untouched and using only the external map.)
-        let placements = snapshot_placements(&g);
+        let _placements = snapshot_placements(&g);
         let inserted = insert_cross_device_copies(
             &mut g,
             &[n2],
