@@ -480,6 +480,20 @@ first getting hurt by it.
 
 
 
+**⚠️ (d) READ THE SABOTAGE'S KILL **COUNT**, NOT JUST ITS COLOUR — A PARTIAL RED IS THE ONLY SIGNAL THAT SEPARATES A LIVE SUITE FROM A SUITE WITH DEAD INPUTS (2026-08-20, and it found the largest evidence-quality defect of the day).**
+
+The standing discipline is *sabotage the mechanism, confirm the gate goes RED*. **That is not enough.** A `Gather` reference was sabotaged to ignore its indices and **failed 4 of 9 registrations.** A correct sabotage of a live suite fails **9 of 9**. **The five that survived were the INTEGER dtypes — and they survived because every integer probe tensor was ALL ZEROS**, so a reference that had stopped gathering still agreed with a kernel that gathered: a permutation of zeros equals a copy of zeros.
+
+**Cause: `fill_deterministic` produces floats in `[-0.5, 0.5)` and the integer arms convert with `as`, which truncates toward zero. Measured: U8, I8, I16, U32, I32, I64 each collapse all four probe values to ONE byte pattern.** Every integer-dtype ledger record — bit-stability and bound alike — had been earned against a degenerate input. **Probes ran, comparisons passed, records were written, and the tensor they all agreed about was zeros.**
+
+**THE PORTFOLIO PM'S FORMULATION IS THE RULE: a sabotage that kills EVERYTHING tells you the suite is alive; one that kills only SOME of what it should is the only signal that distinguishes a live suite from a suite with DEAD INPUTS.** A full red and a partial red are both "the gate fired", and only the second carries the information.
+
+**AND THE TAXONOMY IS WORTH KEEPING: every other entry in this file is an INSTRUMENT problem — a wrong gate, a stale set, a truncated query, an assertion that cannot see. THIS ONE IS THE MATERIAL THE INSTRUMENT WAS FED.** The gate was correct, the comparison was correct, the record was true. **The input was degenerate, and nothing downstream of an input can detect that.**
+
+**Corroborating consequence, which is how you know the fix was real: non-degenerate probes immediately exposed 16 disagreements, ALL of them the REFERENCE rather than the kernel** (Rust int→int truncates where float→int saturates). **Zero is in range for every target, so saturation and truncation AGREE on it** — one defect had been perfectly concealing another, and the concealed one was in the instrument.
+
+**PRACTICE: state the expected kill count before running a sabotage, and treat a SHORTFALL as a finding about the inputs. `n of m` where `n < m` is not a weaker red; it is a different red.**
+
 **⚠️ (c) A THIRD SHAPE, AND THE ARCHITECT PRAISED AN INSTANCE OF IT BEFORE IT WAS CAUGHT (2026-08-20): AN ASSERTION KEYED TO A MESSAGE **STRING** CANNOT DETECT A BEHAVIOUR CHANGE THAT REWRITES THE MESSAGE.**
 
 A characterisation test pinned the *current wrong* behaviour of a verifier and carried a "stale detector" — `assert!(!detail.contains("candidate 1 vs reference 2"))` — whose job was to fail once the verifier was fixed, forcing the fix to arrive with its own assertion. **The fixed verifier emitted a DIFFERENT sentence, so the negative assertion held VACUOUSLY. The test passed before AND after.** It was called *"the best-designed test I have seen today"* by the architect roughly an hour before its author withdrew it.
