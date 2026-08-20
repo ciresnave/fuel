@@ -442,6 +442,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "baracuda-cuda-emit"
+version = "0.0.1-alpha.79"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f35f9d9a7107dbf5b7dbc27bd8e2bfdf7f655093065285bda12602aa36726f8c"
+dependencies = [
+ "baracuda-nvrtc",
+ "fuel-kernel-seam",
+ "fuel-kernel-seam-types",
+ "unpopped",
+ "unpopped-vocab",
+]
+
+[[package]]
 name = "baracuda-cuda-sys"
 version = "0.0.1-alpha.79"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -571,18 +584,6 @@ dependencies = [
  "sha2",
  "thiserror 1.0.69",
  "walkdir",
-]
-
-[[package]]
-name = "baracuda-kernelgen"
-version = "0.0.1-alpha.77"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e5d3c0401203b47cd4ef2fa4b359f8906e841c6de6c16a282450a3b5f9d2a15"
-dependencies = [
- "baracuda-kernels-types",
- "baracuda-nvrtc",
- "fuel-kernel-seam",
- "fuel-kernel-seam-types",
 ]
 
 [[package]]
@@ -1422,7 +1423,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1555,7 +1556,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1941,7 +1942,7 @@ dependencies = [
 name = "fuel-dispatch"
 version = "0.10.3"
 dependencies = [
- "baracuda-kernelgen",
+ "baracuda-cuda-emit",
  "baracuda-kernels-types",
  "baracuda-nvrtc",
  "bytemuck",
@@ -3736,7 +3737,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4718,7 +4719,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5396,7 +5397,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5881,6 +5882,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "81e544489bf3d8ef66c953931f56617f423cd4b5494be343d9b9d3dda037b9a3"
 
 [[package]]
+name = "unpopped"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73382449cd1f987095ca2d7067e3c5091f015c1ba3228821c5427c527d9066d5"
+dependencies = [
+ "fuel-kernel-seam-types",
+ "libm",
+ "serde",
+ "serde_json",
+ "unpopped-vocab",
+]
+
+[[package]]
 name = "unpopped-vocab"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6256,7 +6270,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

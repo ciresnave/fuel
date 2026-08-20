@@ -36,7 +36,7 @@
 //!
 //! ## Launch-marshaling scope (read before trusting this on a new region shape)
 //!
-//! `baracuda-kernelgen`'s emitter chooses one of several kernel ABIs per
+//! `baracuda-cuda-emit`'s emitter chooses one of several kernel ABIs per
 //! `Schedule` (`Scalar` / `Vectorized{width}` / `Strided`) — see its
 //! `cuda.rs::Cuda::lower`. Only the **scalar** ABI is implemented here:
 //! `(const T* in0, .., const T* inK, T* out, long long n)`, one thread per
@@ -197,7 +197,7 @@ fn cuda_storage_mut<'a>(
 
 /// The scalar-ABI launch shared by every slot dispatcher: a pointer arg for
 /// each input (in order), the output pointer, then the output element count
-/// as `long long` — exactly the parameter list `baracuda-kernelgen`'s
+/// as `long long` — exactly the parameter list `baracuda-cuda-emit`'s
 /// `emit_scalar` builds. Modeled on `CudaUgIOp1::fwd`
 /// (`fuel-cuda-backend/src/ug.rs`) — the crate's other "launch a `CudaFunc`
 /// against Fuel storage" site — adapted from one typed `CudaSlice<T>` arg to N
