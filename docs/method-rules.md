@@ -219,6 +219,8 @@ CLAUDE.md already records that the launcher is exonerated by an isolating contro
 
 **Cause 1 — missing `call`.** `<...>vcvarsall.bat amd64` without `call` *terminates* the parent bat. The banner appears; nothing after it runs.
 
+**Cause 1b — `call` PRESENT, but combined with a per-line `>>` redirect.** **vcvarsall halts a `call`-with-redirect.** This is the inverse of cause 1 and it defeats a reader who has been told to check for a *missing* `call`: the `call` is there, correct, and is part of the problem **in combination with** the redirect. The recorded working recipe chains instead — `vcvarsall && cargo`, **one** redirect for the whole chain, **no** `call`. Verified foreground: `cl.exe` resolves (14.51.36231), exit 0.
+
 **Cause 2 — LF-only line endings in a `.bat`.** `cmd.exe` wants CRLF and mis-parses an LF-only batch file: it executes the early lines, then chokes mid-file. **The Write tool emits LF.** Write bats with PowerShell, or convert, and **measure** (`grep -c $'\r'`) rather than assume.
 
 **Cause 3 — a `.ps1` that is UTF-8 WITHOUT a BOM and contains any non-ASCII byte.** Windows PowerShell 5.1 reads BOM-less files as **ANSI**, so a single em-dash (`—`, `e2 80 94`) becomes three garbage characters *inside a string literal* and the parse fails several lines later with a message naming an innocent token.
@@ -230,3 +232,20 @@ CLAUDE.md already records that the launcher is exonerated by an isolating contro
 **Fixed by making the claim true rather than by narrowing it** — a UTF-8 BOM was added to both, so 5.1 now parses them clean (0 errors) and pwsh 7 is unaffected (0 errors). **Weakening `#Requires` to `7.0` would also have been honest, and was rejected: the author evidently intended 5.1 support and the content delivers it.** Prefer repairing the artifact to lowering the claim, where the claim was achievable.
 
 **PRACTICE: for any `.ps1` that must run under Windows PowerShell, write it UTF-8 WITH BOM, or keep it strictly ASCII. Test with `[System.Management.Automation.Language.Parser]::ParseFile` under `powershell.exe`, not just `pwsh` — the version you run is not the version your `#Requires` promises.**
+
+
+---
+
+## the-marker-can-be-eaten-by-its-own-log
+
+> **Index line (in CLAUDE.md):** **Write the completion marker to a SEPARATE FILE from the build log.** If the log is captured by a group/whole-script redirect, that redirect owns the handle for the script's lifetime and a marker appended to the same file is lost — producing "no marker" on a build that finished, which the discipline reads as "no result".
+
+**THE EXIT-CODE MARKER DISCIPLINE HAS A FAILURE MODE OF ITS OWN, AND IT IS INDISTINGUISHABLE FROM THE THING THE MARKER EXISTS TO DETECT (2026-08-20, found by Fuel 1 while rebuilding a detached forge launcher).**
+
+The standing rule for long CUDA builds is: launch detached, have the script write its own `<TAG>_DONE_EXITCODE=<code>` as its last output, and **treat "no marker" as NO RESULT rather than as failure**. That rule is right and stays.
+
+**But if the log is captured with a parenthesized-group or whole-script redirect — `( … ) > log.txt` — that redirect holds the file handle for the group's lifetime.** A marker line appended to **the same file** after or inside the group is silently lost. **So a build that ran to completion reports exactly the signature of one that died: no marker.**
+
+**The rule and its own failure mode produce the same observation**, which is the worst property a diagnostic can have. **The `Environment initialized for: 'x64'` banner and the target crate's `Checking <crate>` line are still in the log — so a log with real content and no marker should raise this, not the death hypothesis.**
+
+**PRACTICE: the marker goes in a SEPARATE FILE.** `echo TAG_DONE_EXITCODE=%ERRORLEVEL% > marker.txt`, distinct from the log's redirect target. Then "no marker" means what it is supposed to mean. **And keep the three checks that were already required — liveness (pid), completion (marker), verdict (the target crate's own compile line) — because any two of them leave a state indistinguishable.**
