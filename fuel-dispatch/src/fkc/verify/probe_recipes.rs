@@ -162,7 +162,17 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
         | OpKind::MulElementwise
         | OpKind::DivElementwise
         | OpKind::MaximumElementwise
-        | OpKind::MinimumElementwise => {
+        | OpKind::MinimumElementwise
+        // Pow / Rem are the same calling convention as the rest of the binary
+        // family (`[T, T, T]`, two inputs, `OpParams::None`) and were absent
+        // only because nobody listed them. They can produce NaN / inf from the
+        // deterministic probe values (`pow` of a negative base, `rem` by zero);
+        // that is fine for THIS claim, which is byte-identity across repeated
+        // invocations, not a numeric bound — a NaN with a stable payload is
+        // stable. If either turns out NOT to be, the sweep records a `fail`
+        // and that is a finding about the kernel, not about the probe.
+        | OpKind::PowElementwise
+        | OpKind::RemElementwise => {
             let a = ht(dt, vec![4], &fill_deterministic(4, seed))?;
             let b = ht(dt, vec![4], &fill_deterministic(4, seed ^ 0x9E37_79B9))?;
             Some(Probe {
@@ -249,7 +259,22 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
         }
         OpKind::Cast => {
             let out_dt = *dtypes.get(1)?;
-            let x = ht(dt, vec![4], &fill_deterministic(4, seed))?;
+            // Cast-FROM-Bool is the one source dtype `ht` cannot build, and it
+            // is 11 of the registrations here. The right fix is the same one
+            // `MaskedFill`'s mask uses: construct the operand DIRECTLY rather
+            // than adding a `Bool` arm to `to_bytes`.
+            //
+            // That distinction is the whole point and is easy to lose: there
+            // is no correct f32 -> Bool PROJECTION, so a `to_bytes` arm would
+            // have to invent a thresholding convention and every caller would
+            // silently inherit it. A Bool tensor's bytes, on the other hand,
+            // are perfectly well defined — `[0, 1, 0, 1]` is chosen so a
+            // cast exercises both values rather than a constant.
+            let x = if dt == DType::Bool {
+                HostTensor { dtype: DType::Bool, shape: vec![4], bytes: vec![0u8, 1, 0, 1] }
+            } else {
+                ht(dt, vec![4], &fill_deterministic(4, seed))?
+            };
             Some(Probe {
                 inputs: vec![x],
                 params: OpParams::None,
@@ -541,8 +566,186 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
             })
         }
 
+        // --- Comparisons (2 inputs of T -> a Bool mask) --------------------
+        // Registered as `[T, T, Bool]`: the output dtype is in the tuple, not
+        // inferable from `dtypes.first()`, so it is read from the tuple rather
+        // than assumed. `Bool` never reaches `to_bytes` here — the mask is the
+        // OUTPUT, which the invoker allocates.
+        OpKind::EqualElementwise
+        | OpKind::NotEqualElementwise
+        | OpKind::LessElementwise
+        | OpKind::LessEqualElementwise
+        | OpKind::GreaterElementwise
+        | OpKind::GreaterEqualElementwise => {
+            let out_dtype = *dtypes.get(2)?;
+            let a = ht(dt, vec![4], &fill_deterministic(4, seed))?;
+            let b = ht(dt, vec![4], &fill_deterministic(4, seed ^ 0x9E37_79B9))?;
+            Some(Probe {
+                inputs: vec![a, b],
+                params: OpParams::None,
+                out_dtype,
+                out_shape: vec![4],
+            })
+        }
+
+        // --- Per-axis reduce (1 input -> reduced output) -------------------
+        // Same `OpParams::Reduce` shape the ArgMax/ArgMinDim arm already uses,
+        // but the output keeps the input dtype instead of becoming U32.
+        OpKind::SumReduce | OpKind::MaxReduce | OpKind::MinReduce | OpKind::MeanReduce => {
+            let (outer, last) = (2usize, 4usize);
+            let x = ht(dt, vec![outer, last], &fill_deterministic(outer * last, seed))?;
+            Some(Probe {
+                inputs: vec![x],
+                params: OpParams::Reduce { dims: vec![1], keepdim: false },
+                out_dtype: dt,
+                out_shape: vec![outer],
+            })
+        }
+
+        // --- Reduce-to-broadcast-target (1 input -> smaller target) --------
+        // Distinct from the per-axis reduce above: the target is named by
+        // SHAPE, not by axis list, so it carries its own `OpParams` variant.
+        // `[2, 4] -> [1, 4]` reduces exactly one axis, which is enough to
+        // exercise the accumulation loop without inventing a wide fixture.
+        OpKind::ReduceSumTo => {
+            let x = ht(dt, vec![2, 4], &fill_deterministic(8, seed))?;
+            Some(Probe {
+                inputs: vec![x],
+                params: OpParams::ReduceSumTo {
+                    input_shape: vec![2, 4],
+                    output_shape: vec![1, 4],
+                },
+                out_dtype: dt,
+                out_shape: vec![1, 4],
+            })
+        }
+        OpKind::ReduceMaxTo => {
+            let x = ht(dt, vec![2, 4], &fill_deterministic(8, seed))?;
+            Some(Probe {
+                inputs: vec![x],
+                params: OpParams::ReduceMaxTo {
+                    input_shape: vec![2, 4],
+                    output_shape: vec![1, 4],
+                },
+                out_dtype: dt,
+                out_shape: vec![1, 4],
+            })
+        }
+
+        // --- Norm / softmax over the last dim, forward (1 input) -----------
+        // Recipe shape read off `seed_cpu_ledger::build_probe`'s FUSED arms
+        // for the same families, which are known to work. NOT unified with
+        // them — GAP-220 tracks whether the two builders encode the same
+        // obligation, and that is a question about their CALLERS, not about
+        // the shapes matching. Answering it by merging first would destroy
+        // the evidence needed to answer it.
+        //
+        // The probe is flat (`[outer * last]`) because the kernels take the
+        // 2-D geometry through `OpParams`, not through the layout.
+        OpKind::SoftmaxLastDim
+        | OpKind::LogSoftmaxLastDim
+        | OpKind::RmsNormLastDim
+        | OpKind::LayerNormLastDim => {
+            let (outer, last) = (2usize, 4usize);
+            let x = ht(dt, vec![outer * last], &fill_deterministic(outer * last, seed))?;
+            Some(Probe {
+                inputs: vec![x],
+                params: last_dim_params(op, outer, last)?,
+                out_dtype: dt,
+                out_shape: vec![outer * last],
+            })
+        }
+
+        // --- Norm / softmax over the last dim, backward (2 inputs) ---------
+        // `(y, g)` for softmax, `(x, g)` for the norms — same arity and same
+        // params variant either way, which is why one arm serves both.
+        OpKind::SoftmaxLastDimBackward
+        | OpKind::LogSoftmaxLastDimBackward
+        | OpKind::RmsNormLastDimBackward
+        | OpKind::LayerNormLastDimBackward => {
+            let (outer, last) = (2usize, 4usize);
+            let n = outer * last;
+            let y = ht(dt, vec![n], &fill_deterministic(n, seed))?;
+            let g = ht(dt, vec![n], &fill_deterministic(n, seed ^ 0x9E37_79B9))?;
+            Some(Probe {
+                inputs: vec![y, g],
+                params: last_dim_params(op, outer, last)?,
+                out_dtype: dt,
+                out_shape: vec![n],
+            })
+        }
+
+        // --- ReduceMaxTo backward (x, upstream) ----------------------------
+        // Degenerate no-op reduction (`input_shape == output_shape`, both
+        // rank-1 length-1): every output position maps to itself, so this is
+        // valid regardless of the broadcast-alignment details, which is the
+        // same reasoning the fused arm records for this family.
+        OpKind::ReduceMaxToBackward => {
+            let x = ht(dt, vec![1], &fill_deterministic(1, seed))?;
+            let up = ht(dt, vec![1], &fill_deterministic(1, seed ^ 0xA5A5_A5A5))?;
+            Some(Probe {
+                inputs: vec![x, up],
+                params: OpParams::ReduceMaxToBackward {
+                    input_shape: vec![1],
+                    output_shape: vec![1],
+                },
+                out_dtype: dt,
+                out_shape: vec![1],
+            })
+        }
+
+        // --- NOT HERE, DELIBERATELY: the `*Inplace` family --------------
+        // ~26 in-place unaries x 4 dtypes = 104 registrations, by far the
+        // largest remaining residue, and the cheapest-looking arm to write:
+        // copy the fused `Family::InplaceAffine` recipe, which uses
+        // `inputs: vec![]` because the executor passes the in-place target as
+        // `outputs[0]`.
+        //
+        // **That would earn 104 records against an all-zeros target.**
+        // `CpuInvoker` allocates the output with `alloc_cpu_zeroed`, so with
+        // no inputs the kernel runs on zeros: `relu_inplace` sees 0 and writes
+        // 0, `sqrt_inplace` sees 0 and writes 0. The runs ARE byte-identical,
+        // so the claim would be technically earned and evidentially empty —
+        // one input value, no branch exercised. A ledger full of that is worse
+        // than an empty one, because `gate_precision` cannot tell the
+        // difference and the whole point of GAP-207 is to stop claims resting
+        // on something nobody measured.
+        //
+        // The fix is `CpuInvoker` seeding the output buffer from probe bytes
+        // rather than zeroing it, which is a change to the INVOKER contract
+        // and belongs in its own increment with its own born-red — not
+        // bundled into a bulk recipe addition. Note this also means the
+        // `inplace_affine` records ALREADY in the checked-in ledger were
+        // earned this way (see GAP-207 follow-up).
         _ => None,
     }
+}
+
+/// `OpParams` for the last-dim norm / softmax family, forward or backward.
+///
+/// Split out because the forward and backward arms need the identical mapping
+/// and an inline `match` in each would be a second place to forget a variant.
+/// Returns `None` for anything outside the family — a caller that reaches here
+/// with another op gets no probe rather than a wrong one.
+fn last_dim_params(op: OpKind, outer: usize, last: usize) -> Option<OpParams> {
+    Some(match op {
+        OpKind::SoftmaxLastDim | OpKind::SoftmaxLastDimBackward => OpParams::SoftmaxLastDim {
+            outer_count: outer,
+            last_dim: last,
+        },
+        OpKind::LogSoftmaxLastDim | OpKind::LogSoftmaxLastDimBackward => {
+            OpParams::LogSoftmaxLastDim { outer_count: outer, last_dim: last }
+        }
+        OpKind::RmsNormLastDim
+        | OpKind::LayerNormLastDim
+        | OpKind::RmsNormLastDimBackward
+        | OpKind::LayerNormLastDimBackward => OpParams::NormLastDim {
+            outer_count: outer,
+            last_dim: last,
+            eps: 1e-5,
+        },
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
