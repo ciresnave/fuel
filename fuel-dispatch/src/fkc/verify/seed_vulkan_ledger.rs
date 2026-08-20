@@ -97,7 +97,6 @@ fn verified_at_string() -> String {
     format!("epoch:{secs}")
 }
 
-
 /// Empirically verify every Vulkan primitive registration this harness has a
 /// probe recipe for, returning a ledger seeded from the EMBEDDED (checked-in)
 /// records plus freshly-earned Vulkan `bit_stable` + byte-exact `max_ulp`
@@ -182,8 +181,7 @@ pub fn run_vulkan_verification_on(
                 op: format!("{op:?}"),
                 dtypes: dtypes_vec,
                 kernel_revision_hash: rev,
-                outcome: "skip: probe needs a seeded output, VulkanInvoker cannot seed"
-                    .to_string(),
+                outcome: "skip: probe needs a seeded output, VulkanInvoker cannot seed".to_string(),
             });
             continue;
         }

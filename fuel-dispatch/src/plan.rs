@@ -2905,18 +2905,6 @@ mod tests {
             kernel_overhead_ns: 0,
         }
     }
-    fn cost_500(
-        _: &[Shape],
-        _: &[DType],
-        _: &OpParams,
-        _: &BackendCapabilities,
-    ) -> crate::fused::CostEstimate {
-        crate::fused::CostEstimate {
-            flops: 500,
-            bytes_moved: 0,
-            kernel_overhead_ns: 0,
-        }
-    }
     // 15 000 FLOPs → 500 ns at the GPU throughput prior (30 FLOPs/ns):
     // a kernel whose GPU compute is faster than a 600-ns CPU kernel, but
     // whose 200 ns inbound transfer tips the honest total past it.

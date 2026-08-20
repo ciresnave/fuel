@@ -1015,8 +1015,14 @@ mod tests {
             "not one CPU primitive earned `bit_stable_on_same_hardware` out of              {cpu_entries} registrations. That is not a coverage result, it is              a broken harness — the assertions above would both hold."
         );
 
-        let no_recipe = log.iter().filter(|a| a.outcome.starts_with("unverified: no probe recipe")).count();
-        let failed = log.iter().filter(|a| a.outcome.starts_with("fail:")).count();
+        let no_recipe = log
+            .iter()
+            .filter(|a| a.outcome.starts_with("unverified: no probe recipe"))
+            .count();
+        let failed = log
+            .iter()
+            .filter(|a| a.outcome.starts_with("fail:"))
+            .count();
         let other = log.len() - passes - no_recipe - failed;
         println!(
             "[gap-207] CPU primitive bit-stability sweep over {cpu_entries} registrations:
@@ -1029,7 +1035,10 @@ mod tests {
         // count says how much is uncovered; the names say what to build next,
         // and they are the whole actionable output of this measurement.
         let mut by_op: Vec<(String, usize)> = Vec::new();
-        for a in log.iter().filter(|a| a.outcome.starts_with("unverified: no probe recipe")) {
+        for a in log
+            .iter()
+            .filter(|a| a.outcome.starts_with("unverified: no probe recipe"))
+        {
             match by_op.iter_mut().find(|(n, _)| *n == a.op_name) {
                 Some((_, c)) => *c += 1,
                 None => by_op.push((a.op_name.clone(), 1)),

@@ -271,6 +271,14 @@ impl PersistentOutputs {
 /// input lifetime), don't conclude "kernel/library not capture-safe" from it.
 ///
 /// [`capture_decode`]: PipelinedExecutor::capture_decode
+/// GAP-217b: gated on `cuda` because its ONLY caller is
+/// `capture_decode` (`#[cfg(feature = "cuda")]`, ~:1266). Without this it
+/// reports as dead code on every default build — a false signal on a
+/// predicate whose doc comment is a record of hard-won capture-safety
+/// findings, i.e. exactly the kind of item someone eventually deletes for
+/// being "unused". Gating it makes the reachability claim honest instead of
+/// leaving a warning to argue the opposite.
+#[cfg(feature = "cuda")]
 fn op_kind_is_capture_writeinto(op: OpKind) -> bool {
     matches!(
         op,

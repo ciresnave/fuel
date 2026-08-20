@@ -219,7 +219,11 @@ mod tests {
         // the assertion above a statement about THIS seed rather than about
         // the buffer merely being dirty.
         let got: Vec<f32> = bytemuck::cast_slice(&seeded.bytes).to_vec();
-        assert_eq!(got, vec![0.0f32, 1.5, 0.0, 3.0], "expected relu of the seed");
+        assert_eq!(
+            got,
+            vec![0.0f32, 1.5, 0.0, 3.0],
+            "expected relu of the seed"
+        );
 
         // ...and the zeroed run is relu(0) = 0, i.e. the degenerate evidence
         // GAP-222 describes: a perfectly stable result that says nothing.
@@ -247,7 +251,10 @@ mod tests {
         let err = CpuInvoker::new(DType::F32, vec![4])
             .with_seeded_output(short)
             .invoke(&entry, &[]);
-        assert!(err.is_err(), "a 3-element seed for a 4-element output was accepted");
+        assert!(
+            err.is_err(),
+            "a 3-element seed for a 4-element output was accepted"
+        );
     }
 
     #[test]
