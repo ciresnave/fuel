@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Symbolic autograd (Phase 6d Track 2).
 //!
-//! The forward backward pass in `Tensor::backward` walks the topo
+//! The forward backward pass in `NodeHandle::backward` walks the topo
 //! order in reverse and emits gradient nodes inline via a single
 //! 600-line `match` over `Op`. This module factors that out into a
 //! per-op trait so:
@@ -14,7 +14,7 @@
 //! 3. Third-party ops can register their own gradient rules without
 //!    forking `fuel-graph`.
 //!
-//! This is the *scaffolding*. The existing `match` in `Tensor::backward`
+//! This is the *scaffolding*. The existing `match` in `NodeHandle::backward`
 //! still does most of the work today; ops migrate one at a time as
 //! their rule is implemented here. The dispatcher below is consulted
 //! first; if no rule is registered for an op, the existing match
@@ -54,7 +54,7 @@ pub trait GradientRule {
     ) -> GradientList;
 }
 
-/// Dispatch entry consulted by `Tensor::backward` before falling
+/// Dispatch entry consulted by `NodeHandle::backward` before falling
 /// through to the inline `match`. Returns `None` if no rule is
 /// registered for `op` — the caller then handles it inline.
 ///
@@ -209,7 +209,7 @@ impl GradientRule for ReluRule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Tensor;
+    use crate::NodeHandle;
     use fuel_ir::Shape;
     use std::sync::Arc;
 
@@ -227,7 +227,7 @@ mod tests {
     /// for Add still exists as a safety net but should never run.)
     #[test]
     fn dispatch_fires_for_migrated_ops() {
-        let a = Tensor::from_f32(vec![1.0_f32, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0_f32, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let b = a.const_f32_like(vec![4.0_f32, 5.0, 6.0], Shape::from_dims(&[3]));
         let c = a.add(&b);
         // Drive a backward to populate upstream

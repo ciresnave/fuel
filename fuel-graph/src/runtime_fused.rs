@@ -1309,7 +1309,7 @@ fn emit<'r>(
             // of truth (`primitive_shape`) — a pure function of operand shapes,
             // correct for shape-changing/reducing/dtype-changing ops. Two
             // structural multi-output terminals are NOT such a function and are
-            // resolved here with the graph in hand, mirroring `Tensor::scan` /
+            // resolved here with the graph in hand, mirroring `NodeHandle::scan` /
             // `Graph::view` (Increment C, B1):
             //   * `Op::Scan` — the node's PRIMARY (slot-0) shape is the stacked
             //     ys `[bound] ++ body_y`, and its 2-slot `output_views` bundle
@@ -1414,7 +1414,7 @@ fn emit<'r>(
                 shape: s,
                 dtype: d,
             });
-            // Attach the scan's 2-slot bundle (mirrors `Tensor::scan`). A
+            // Attach the scan's 2-slot bundle (mirrors `NodeHandle::scan`). A
             // malformed spec (compose/validate failure) leaves the producer
             // bundle-less — a later `View` then falls back — never a panic.
             if let Some(specs) = scan_bundle {
@@ -5467,7 +5467,7 @@ mod tests {
         fn softmax_backward_reaches_the_recipe_through_autograd() {
             let dev: std::sync::Arc<dyn fuel_backend_contract::DynBackendDevice> =
                 std::sync::Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice);
-            let x = crate::Tensor::from_f32(
+            let x = crate::NodeHandle::from_f32(
                 vec![0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6],
                 Shape::from_dims(&[2, 3]),
                 &dev,
@@ -6680,7 +6680,7 @@ mod tests {
         }
 
         /// The imperative reference: the scan + its composed 2-slot bundle + the
-        /// slot projection (mirrors `Tensor::scan` + `Graph::view`).
+        /// slot projection (mirrors `NodeHandle::scan` + `Graph::view`).
         fn reference_view(g: &mut Graph, slot: u32) -> NodeId {
             let two = Shape::from_dims(&[2]);
             let init = g.push(Node {

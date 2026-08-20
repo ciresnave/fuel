@@ -50,7 +50,7 @@ pub fn entry() -> FusedOpEntry {
         pattern: SubgraphPattern::Callable(canonical_pattern),
         decompose,
         // The backward fused-op isn't part of the registry yet (a later
-        // step migrates each fused-backward helper). Tensor::backward
+        // step migrates each fused-backward helper). NodeHandle::backward
         // dispatches `Op::Fused(FUSED_LINEAR, _)` through a per-id arm
         // that emits the same three-grad decomposition as the legacy
         // `Op::FusedLinear` arm.

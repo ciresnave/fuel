@@ -210,7 +210,7 @@ pub enum FusedOpParams {
     /// Spatial dilation is always 1 today; the field is omitted from
     /// the param payload until backward's dilation-as-stride trick
     /// forces the primitive variant to grow one (per the comments
-    /// in `Tensor::backward`'s `Op::Conv2D` arm).
+    /// in `NodeHandle::backward`'s `Op::Conv2D` arm).
     Conv2D {
         stride: (usize, usize),
         padding: (usize, usize),
@@ -218,7 +218,7 @@ pub enum FusedOpParams {
     },
     /// SoftmaxLastDimBackward — `s * (g - sum(g * s, last, keepdim))`.
     /// Two inputs (forward_y, upstream); parameterless. Higher-order
-    /// gradients panic per `Tensor::backward`'s MVP behavior.
+    /// gradients panic per `NodeHandle::backward`'s MVP behavior.
     SoftmaxLastDimBackward,
     /// LayerNormLastDimBackward — recomputes mean/variance from the
     /// original x. Two inputs (x, upstream) + eps.
@@ -257,7 +257,7 @@ pub enum FusedOpParams {
     /// convention, = `cached_len` in decode). This is the runtime
     /// `k_len` decoupled from K's allocated shape that backs flash
     /// decode over a persistent capacity KV-cache. Build via
-    /// [`Tensor::flash_attn_dyn`].
+    /// [`NodeHandle::flash_attn_dyn`].
     FlashAttn {
         softmax_scale: f32,
         causal: bool,

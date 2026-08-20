@@ -32,7 +32,7 @@
 //! tiled softmax in the kernel produces different numerics than the
 //! naive form).
 //!
-//! Backward is not yet implemented (panic stub in `Tensor::backward`);
+//! Backward is not yet implemented (panic stub in `NodeHandle::backward`);
 //! the FlashAttn-shaped backward is a separate algorithm (the
 //! "recompute" variant in the FlashAttention paper) and lands when a
 //! consumer needs differentiable attention. Today `BackwardKind::
@@ -855,7 +855,7 @@ pub(crate) fn alibi_bias(
 }
 
 /// Matcher stub — FlashAttn nodes originate from
-/// `Tensor::flash_attn`-style builders, not from user-decomposed
+/// `NodeHandle::flash_attn`-style builders, not from user-decomposed
 /// `matmul + softmax + matmul` patterns. Recognizing the latter as
 /// fusion-into-FlashAttn would require careful tolerance handling
 /// (the tiled-softmax numerics aren't bit-identical to the naive

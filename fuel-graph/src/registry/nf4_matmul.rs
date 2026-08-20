@@ -377,7 +377,7 @@ pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeI
 }
 
 /// Matcher stub — Nf4Matmul nodes originate from the explicit
-/// `Tensor::nf4_matmul` builder. There's no primitive subgraph to
+/// `NodeHandle::nf4_matmul` builder. There's no primitive subgraph to
 /// recognize (the NF4 unpacking + lookup-table dequant doesn't
 /// exist as fuel-graph primitives).
 pub fn canonical_pattern(_graph: &Graph, _root: NodeId) -> Option<PatternMatch> {

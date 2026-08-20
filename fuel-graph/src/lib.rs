@@ -13,8 +13,8 @@
 //!   graph node. New ops are added here and consumed by every backend.
 //! - [`Graph`] — an arena of [`Node`]s. Nodes are immutable once added and
 //!   referenced by index. The arena grows; it never shrinks.
-//! - [`Tensor`] — a cheaply-cloneable handle to a `(graph, node_id)` pair.
-//!   Users build computations by calling methods on `Tensor`; each method
+//! - [`NodeHandle`] — a cheaply-cloneable handle to a `(graph, node_id)` pair.
+//!   Users build computations by calling methods on `NodeHandle`; each method
 //!   appends a node to the underlying graph and returns a new handle.
 //!
 //! Execution is deliberately not implemented here. A separate executor —
@@ -34,13 +34,13 @@
 //! - A small starter `Op` catalog: `Const`, `Add`, `Mul`, `MatMul`,
 //!   `Transpose`, `Relu`, `Sqr`, `Exp`. More ops are added as validation
 //!   tests for them land.
-//! - Unfused backward autograd: [`Tensor::backward`] walks the forward
+//! - Unfused backward autograd: [`NodeHandle::backward`] walks the forward
 //!   graph in reverse, applies per-op gradient rules, and emits new graph
 //!   nodes for the gradient of every leaf. Fused backward and symbolic
 //!   graph rewriting are deferred to Phase 6d.
 //! - No fusion, no planner. Those belong to later sub-phases of Phase 6.
 //! - Thread-safe. The graph is wrapped in `Arc<RwLock<_>>` so that
-//!   `fuel_graph::Tensor` — the lazy build handle — and any handle that
+//!   `fuel_graph::NodeHandle` — the lazy build handle — and any handle that
 //!   embeds it are `Send + Sync`. Borrow access goes through
 //!   `read().unwrap()` / `write().unwrap()`.
 
@@ -79,7 +79,7 @@ use std::sync::{Arc, RwLock};
 /// deep graphs are safe.
 ///
 /// This is the utility an executor walks to realize a tensor, and the
-/// utility [`Tensor::backward`] walks in reverse to construct the backward
+/// utility [`NodeHandle::backward`] walks in reverse to construct the backward
 /// graph.
 pub fn topo_order(graph: &Graph, root: NodeId) -> Vec<NodeId> {
     topo_order_multi(graph, &[root])
@@ -831,7 +831,7 @@ pub enum Op {
     ///
     /// Phase 3 of the unified scheduler work. The scheduler (Phase 4)
     /// inserts these nodes automatically; users can also construct
-    /// them explicitly via `Tensor::copy_to_device`.
+    /// them explicitly via `NodeHandle::copy_to_device`.
     Copy { target: DeviceLocation },
 
     /// Release the input tensor's device-resident storage. Produces a
@@ -914,7 +914,7 @@ pub enum Op {
     /// KV-cache write, whose append offset (`cached_len`) is a per-token
     /// runtime value over a fixed-capacity buffer, so the graph
     /// structure stays identical across tokens and the plan is reused.
-    /// Build a node with this set via [`Tensor::write_slice_dyn`]; the
+    /// Build a node with this set via [`NodeHandle::write_slice_dyn`]; the
     /// resolved `offset + width` is bounds-checked against the
     /// destination capacity at realize (a typed error, never a panic).
     WriteSlice {
@@ -949,7 +949,7 @@ pub enum Op {
     /// Layout, post-write. Destructive on `inputs[0]`; scheduled like
     /// `Op::WriteSlice`.
     ///
-    /// Phase C of the eager-Tensor retirement program. Backs
+    /// Phase C of the eager-NodeHandle retirement program. Backs
     /// sliding-window KV caches (Mistral / Phi-3 sliding-window /
     /// sliding-window Qwen). Non-differentiable; backward panics.
     WriteSliceRotating {
@@ -1555,7 +1555,7 @@ fn op_short_name(op: &Op) -> &'static str {
     }
 }
 
-/// G2 helper: element count of a `HostBuffer`. Used by Tensor's
+/// G2 helper: element count of a `HostBuffer`. Used by NodeHandle's
 /// constructors to validate that the supplied data matches the
 /// declared shape's `elem_count` before allocating Storage.
 fn host_buffer_elem_count(buf: &fuel_ir::HostBuffer) -> usize {
@@ -1569,7 +1569,7 @@ fn host_buffer_elem_count(buf: &fuel_ir::HostBuffer) -> usize {
         HostBuffer::U32(v) => v.len(),
         HostBuffer::I64(v) => v.len(),
         other => panic!(
-            "Tensor::from_*: unsupported host-buffer dtype {:?}",
+            "NodeHandle::from_*: unsupported host-buffer dtype {:?}",
             other.dtype(),
         ),
     }
@@ -1663,7 +1663,7 @@ pub struct Graph {
     /// Phase 7.5 work item G: graph-owned realized-storage map.
     /// Slots are populated for `Op::Const` leaves at construction
     /// time and for non-leaf nodes at realize time. Values are
-    /// `Arc<RwLock<Storage>>` so consumers (Tensor handles, executor
+    /// `Arc<RwLock<Storage>>` so consumers (NodeHandle handles, executor
     /// caches, residency machinery) share Storage cheaply via Arc
     /// clones. Lifetime is tied to the Graph; when the graph drops,
     /// any slots not held by external Arc clones are freed.
@@ -1778,7 +1778,7 @@ impl Graph {
     }
 
     /// This graph's process-unique [`GraphId`]. Used by affinity diagnostics to
-    /// name *which* graphs disagree; see [`Tensor::graph_id`].
+    /// name *which* graphs disagree; see [`NodeHandle::graph_id`].
     pub fn id(&self) -> GraphId {
         self.id
     }
@@ -2059,7 +2059,7 @@ impl Graph {
     /// Attach a data-determined row count to an `Op::MatMul` node — the
     /// sparse-MoE capacity-buffer support. The node's `Node::shape` stays
     /// the row-capacity output shape; `row_count` (a [`DynScalar`]) is how
-    /// many rows to actually compute. See [`Tensor::matmul_dyn_m`].
+    /// many rows to actually compute. See [`NodeHandle::matmul_dyn_m`].
     pub fn set_matmul_row_count(&mut self, id: NodeId, row_count: DynScalar) {
         assert!(
             id.0 < self.nodes.len(),
@@ -2149,7 +2149,7 @@ impl Graph {
     }
 
     /// Borrow a node by ID. Panics if the ID is out of bounds — it should
-    /// not be possible for a valid `Tensor` handle to produce an invalid
+    /// not be possible for a valid `NodeHandle` handle to produce an invalid
     /// ID, so any such panic indicates a bug in graph construction.
     pub fn node(&self, id: NodeId) -> &Node {
         &self.nodes[id.0]
@@ -2188,7 +2188,7 @@ impl Graph {
         )
     }
 
-    /// Append a node and return its fresh ID. Used by the `Tensor`
+    /// Append a node and return its fresh ID. Used by the `NodeHandle`
     /// builders, by `opt` passes that canonicalize or rewrite the
     /// graph by appending fresh nodes, and by external consumers
     /// (fuel-storage's pipelined executor tests, custom-op authors)
@@ -2537,7 +2537,7 @@ impl Graph {
     /// (the exploration debris that pathfinders leave) and rebuilds the
     /// arena with contiguous, renumbered [`NodeId`]s, remapping **every**
     /// `NodeId` reference in the graph. Returns the [`NodeRemap`] from old
-    /// to new ids so callers can fix up their own `Tensor` handles / roots.
+    /// to new ids so callers can fix up their own `NodeHandle` handles / roots.
     ///
     /// The live set follows node `inputs` from: `roots`, the
     /// `side_effect_roots`, and the full multi-path structure — for every
@@ -2708,7 +2708,7 @@ impl Graph {
 /// exploration debris that pathfinders leave) and rebuilds the arena with
 /// contiguous, renumbered [`NodeId`]s, remapping **every** `NodeId`
 /// reference in the graph. Returns the [`NodeRemap`] from old → new ids so
-/// callers can fix up their own roots / `Tensor` handles.
+/// callers can fix up their own roots / `NodeHandle` handles.
 ///
 /// The live set follows node `inputs` from `roots`, the
 /// `side_effect_roots`, and the full multi-path structure — for every
@@ -2736,7 +2736,7 @@ pub fn compact(graph: &mut Graph, roots: &[NodeId]) -> NodeRemap {
 ///
 /// Indexed by the *old* `NodeId`: `old_to_new[old.0]` is `Some(new)` if the
 /// node survived compaction, or `None` if it was dropped as unreachable
-/// debris. Callers use [`NodeRemap::get`] to translate roots / `Tensor`
+/// debris. Callers use [`NodeRemap::get`] to translate roots / `NodeHandle`
 /// ids they still hold; passes that know a node must have survived use
 /// [`NodeRemap::expect`].
 #[derive(Debug, Clone)]
@@ -3046,13 +3046,13 @@ pub type SharedGraph = Arc<RwLock<Graph>>;
 /// graph reference so builder methods have everything they need to append
 /// a new node.
 #[derive(Debug, Clone)]
-pub struct Tensor {
+pub struct NodeHandle {
     graph: SharedGraph,
     id: NodeId,
 }
 
-impl Tensor {
-    /// Wrap an existing `(graph, node_id)` pair as a Tensor handle.
+impl NodeHandle {
+    /// Wrap an existing `(graph, node_id)` pair as a NodeHandle handle.
     /// Used by graph-rewriting passes (e.g., `opt::insert_copies`)
     /// that produce new root `NodeId`s and need to hand them back to
     /// call sites as Tensors.
@@ -3109,7 +3109,7 @@ impl Tensor {
 
     /// Tag this tensor's node with a target device. The executor will
     /// validate (post-Phase-1) that the node's op can be evaluated on
-    /// that device. Returns the same `Tensor` handle so this composes
+    /// that device. Returns the same `NodeHandle` handle so this composes
     /// with builder-style graph construction:
     ///
     /// ```ignore
@@ -3139,7 +3139,7 @@ impl Tensor {
             shape: Shape::from_dims(&[0]),
             dtype,
         });
-        Tensor {
+        NodeHandle {
             graph: Arc::clone(&self.graph),
             id,
         }
@@ -3175,7 +3175,7 @@ impl Tensor {
             shape,
             dtype,
         });
-        Tensor {
+        NodeHandle {
             graph: Arc::clone(&self.graph),
             id,
         }
@@ -3200,7 +3200,7 @@ impl Tensor {
             shape,
             dtype,
         });
-        Tensor {
+        NodeHandle {
             graph: Arc::clone(&self.graph),
             id,
         }
@@ -3220,12 +3220,12 @@ impl Tensor {
     /// specs; `slot` must be in range. Errors at graph-build time
     /// (per the `validate-at-graph-build-time` rule); the executor
     /// never sees a malformed View node.
-    pub fn view(&self, slot: u32) -> std::result::Result<Tensor, fuel_ir::Error> {
+    pub fn view(&self, slot: u32) -> std::result::Result<NodeHandle, fuel_ir::Error> {
         let mut graph_w = self.graph.write().unwrap();
         let (slot_shape, slot_dtype, slot_byte_offset, slot_layout) = {
             let views = graph_w.output_views(self.id).ok_or_else(|| {
                 fuel_ir::Error::Msg(format!(
-                    "Tensor::view: Node#{} is not a multi-output \
+                    "NodeHandle::view: Node#{} is not a multi-output \
                      producer (no output_views registered)",
                     self.id.0,
                 ))
@@ -3234,7 +3234,7 @@ impl Tensor {
             let idx = slot as usize;
             let v = views.get(idx).ok_or_else(|| {
                 fuel_ir::Error::Msg(format!(
-                    "Tensor::view: slot {idx} out of range \
+                    "NodeHandle::view: slot {idx} out of range \
                      (producer has {} slots)",
                     views.len(),
                 ))
@@ -3276,7 +3276,7 @@ impl Tensor {
             graph_w.set_layout(id, effective_layout);
         }
         drop(graph_w);
-        Ok(Tensor {
+        Ok(NodeHandle {
             graph: Arc::clone(&self.graph),
             id,
         })
@@ -3288,12 +3288,12 @@ impl Tensor {
     /// is always contiguous.
     ///
     /// Same validation as `view`; same error surface.
-    pub fn view_owned(&self, slot: u32) -> std::result::Result<Tensor, fuel_ir::Error> {
+    pub fn view_owned(&self, slot: u32) -> std::result::Result<NodeHandle, fuel_ir::Error> {
         let mut graph_w = self.graph.write().unwrap();
         let (slot_shape, slot_dtype) = {
             let views = graph_w.output_views(self.id).ok_or_else(|| {
                 fuel_ir::Error::Msg(format!(
-                    "Tensor::view_owned: Node#{} is not a multi-output \
+                    "NodeHandle::view_owned: Node#{} is not a multi-output \
                      producer (no output_views registered)",
                     self.id.0,
                 ))
@@ -3302,7 +3302,7 @@ impl Tensor {
             let idx = slot as usize;
             let v = views.get(idx).ok_or_else(|| {
                 fuel_ir::Error::Msg(format!(
-                    "Tensor::view_owned: slot {idx} out of range \
+                    "NodeHandle::view_owned: slot {idx} out of range \
                      (producer has {} slots)",
                     views.len(),
                 ))
@@ -3317,7 +3317,7 @@ impl Tensor {
             dtype: slot_dtype,
         });
         drop(graph_w);
-        Ok(Tensor {
+        Ok(NodeHandle {
             graph: Arc::clone(&self.graph),
             id,
         })
@@ -3342,9 +3342,9 @@ impl Tensor {
     /// typed error.
     pub fn write_slice(
         &self,
-        source: &Tensor,
+        source: &NodeHandle,
         ranges: Vec<(usize, usize)>,
-    ) -> std::result::Result<Tensor, fuel_ir::Error> {
+    ) -> std::result::Result<NodeHandle, fuel_ir::Error> {
         self.require_same_graph(source, "write_slice", "source")?;
         let dest_shape = self.shape();
         let dest_dims = dest_shape.dims();
@@ -3407,7 +3407,7 @@ impl Tensor {
             shape: dest_shape,
             dtype,
         });
-        Ok(Tensor {
+        Ok(NodeHandle {
             graph: Arc::clone(&self.graph),
             id,
         })
@@ -3438,11 +3438,11 @@ impl Tensor {
     /// surface as a typed error at build time.
     pub fn write_slice_dyn(
         &self,
-        source: &Tensor,
+        source: &NodeHandle,
         ranges: Vec<(usize, usize)>,
         dyn_axis: usize,
         offset: DynScalar,
-    ) -> std::result::Result<Tensor, fuel_ir::Error> {
+    ) -> std::result::Result<NodeHandle, fuel_ir::Error> {
         self.require_same_graph(source, "write_slice_dyn", "source")?;
         let dest_shape = self.shape();
         let dest_dims = dest_shape.dims();
@@ -3524,7 +3524,7 @@ impl Tensor {
             shape: dest_shape,
             dtype,
         });
-        Ok(Tensor {
+        Ok(NodeHandle {
             graph: Arc::clone(&self.graph),
             id,
         })
@@ -3550,12 +3550,12 @@ impl Tensor {
     /// mismatches surface as a typed error at build time.
     pub fn write_slice_rotating(
         &self,
-        source: &Tensor,
-        position: &Tensor,
+        source: &NodeHandle,
+        position: &NodeHandle,
         axis: usize,
         modulus: usize,
         ranges: Vec<(usize, usize)>,
-    ) -> std::result::Result<Tensor, fuel_ir::Error> {
+    ) -> std::result::Result<NodeHandle, fuel_ir::Error> {
         self.require_same_graph(source, "write_slice_rotating", "source")?;
         self.require_same_graph(position, "write_slice_rotating", "position")?;
         let dest_shape = self.shape();
@@ -3680,7 +3680,7 @@ impl Tensor {
             shape: dest_shape,
             dtype,
         });
-        Ok(Tensor {
+        Ok(NodeHandle {
             graph: Arc::clone(&self.graph),
             id,
         })
@@ -3712,11 +3712,11 @@ impl Tensor {
     /// offset-dtype mismatches surface as a typed error at build time.
     pub fn write_slice_doff(
         &self,
-        source: &Tensor,
-        offset: &Tensor,
+        source: &NodeHandle,
+        offset: &NodeHandle,
         axis: usize,
         ranges: Vec<(usize, usize)>,
-    ) -> std::result::Result<Tensor, fuel_ir::Error> {
+    ) -> std::result::Result<NodeHandle, fuel_ir::Error> {
         self.require_same_graph(source, "write_slice_doff", "source")?;
         self.require_same_graph(offset, "write_slice_doff", "offset")?;
         let dest_shape = self.shape();
@@ -3820,7 +3820,7 @@ impl Tensor {
             shape: dest_shape,
             dtype,
         });
-        Ok(Tensor {
+        Ok(NodeHandle {
             graph: Arc::clone(&self.graph),
             id,
         })
@@ -3928,12 +3928,12 @@ impl Tensor {
         assert_eq!(
             n,
             shape.elem_count(),
-            "Tensor::from_*: data length {n} does not match shape element count {}",
+            "NodeHandle::from_*: data length {n} does not match shape element count {}",
             shape.elem_count(),
         );
         let backend_storage = device
             .storage_from_host_buffer_owned_dyn(buf)
-            .expect("Tensor::from_*: device.storage_from_host_buffer_owned_dyn failed");
+            .expect("NodeHandle::from_*: device.storage_from_host_buffer_owned_dyn failed");
         let storage_arc = Arc::new(RwLock::new(Storage::from_dyn(backend_storage)));
         let id = {
             let mut g = graph.write().unwrap();
@@ -3956,15 +3956,15 @@ impl Tensor {
     /// fresh one.
     ///
     /// This is the non-anchor route for adding a tensor to an existing graph.
-    /// `Tensor::from_f32` mints a NEW graph, so two `from_*` tensors can never be
+    /// `NodeHandle::from_f32` mints a NEW graph, so two `from_*` tensors can never be
     /// combined; `from_f32_on` puts the new leaf on `graph`, and
     /// [`const_f32_like`](Self::const_f32_like) does the same thing when what you
     /// have to hand is a sibling *tensor* rather than the graph itself.
     ///
     /// ```ignore
     /// let g: SharedGraph = Arc::new(RwLock::new(Graph::new()));
-    /// let a = Tensor::from_f32_on(&g, a_data, [2, 3], &device);
-    /// let w = Tensor::from_f32_on(&g, w_data, [3, 2], &device);
+    /// let a = NodeHandle::from_f32_on(&g, a_data, [2, 3], &device);
+    /// let w = NodeHandle::from_f32_on(&g, w_data, [3, 2], &device);
     /// let y = a.matmul(&w);   // same graph ✓
     /// ```
     pub fn from_f32_on(
@@ -4047,7 +4047,7 @@ impl Tensor {
         debug_assert_eq!(
             storage.read().unwrap().dtype(),
             dtype,
-            "Tensor::from_storage: declared dtype {:?} does not match storage dtype {:?}",
+            "NodeHandle::from_storage: declared dtype {:?} does not match storage dtype {:?}",
             dtype,
             storage.read().unwrap().dtype(),
         );
@@ -4073,7 +4073,7 @@ impl Tensor {
     /// derived from `self`'s graph (any existing slot's device — the
     /// graph always has at least one slot-bearing leaf by the time
     /// const_*_like is called). For cross-device const construction,
-    /// build a fresh graph with [`Tensor::from_f32`] and link via
+    /// build a fresh graph with [`NodeHandle::from_f32`] and link via
     /// [`Op::Move`] / [`Op::Copy`].
     pub fn const_f32_like(&self, data: impl Into<Arc<[f32]>>, shape: impl Into<Shape>) -> Self {
         let v: Arc<[f32]> = data.into();
@@ -4142,7 +4142,7 @@ impl Tensor {
         let device = pick_device_from_graph(&self.graph);
         let backend_storage = device
             .storage_from_host_buffer_owned_dyn(buf)
-            .expect("Tensor::const_like: device.storage_from_host_buffer_owned_dyn failed");
+            .expect("NodeHandle::const_like: device.storage_from_host_buffer_owned_dyn failed");
         let storage_arc = Arc::new(RwLock::new(Storage::from_dyn(backend_storage)));
         let id = {
             let mut g = self.graph.write().unwrap();
@@ -4196,7 +4196,7 @@ impl Tensor {
 
     /// Phase 7.5 work item G2: build a second `Const` leaf on the same
     /// graph as `self` whose realized bytes already live in `storage`.
-    /// Companion to [`Tensor::from_storage`] for the multi-input case.
+    /// Companion to [`NodeHandle::from_storage`] for the multi-input case.
     pub fn const_like_from_storage(
         &self,
         storage: Arc<RwLock<Storage>>,
@@ -4207,7 +4207,7 @@ impl Tensor {
         debug_assert_eq!(
             storage.read().unwrap().dtype(),
             dtype,
-            "Tensor::const_like_from_storage: declared dtype {:?} does not match storage dtype {:?}",
+            "NodeHandle::const_like_from_storage: declared dtype {:?} does not match storage dtype {:?}",
             dtype,
             storage.read().unwrap().dtype(),
         );
@@ -4231,12 +4231,12 @@ impl Tensor {
     /// Append an `Add` node `self + other` to the shared graph and return
     /// a handle to the result. Requires matching shapes and matching
     /// graphs.
-    pub fn add(&self, other: &Tensor) -> Tensor {
+    pub fn add(&self, other: &NodeHandle) -> NodeHandle {
         self.binary_op("add", Op::Add, other, self.shape())
     }
 
     /// Append a `Mul` node `self * other`.
-    pub fn mul(&self, other: &Tensor) -> Tensor {
+    pub fn mul(&self, other: &NodeHandle) -> NodeHandle {
         self.binary_op("mul", Op::Mul, other, self.shape())
     }
 
@@ -4256,7 +4256,7 @@ impl Tensor {
     /// - `[batch, m, k] @ [batch, k, n]` → `[batch, m, n]`
     /// - `[batch, seq, k] @ [k, n]` → `[batch, seq, n]` (rhs auto-broadcast)
     /// - `[k, n]` @ `[batch, n, m]` → `[batch, k, m]` (lhs auto-broadcast)
-    pub fn matmul(&self, other: &Tensor) -> Tensor {
+    pub fn matmul(&self, other: &NodeHandle) -> NodeHandle {
         assert!(
             Arc::ptr_eq(&self.graph, &other.graph),
             "matmul: tensors must live on the same graph — lhs is on graph #{}, rhs on graph \
@@ -4370,7 +4370,7 @@ impl Tensor {
     /// resolves at compile if input-determined, else at execute from the
     /// producer-bound `SymEnv` (e.g. `Op::NonZeroIndices`'s count). The
     /// output shape is the capacity shape `[..., lhs.shape[-2], n]`.
-    pub fn matmul_dyn_m(&self, other: &Tensor, row_count: DynScalar) -> Tensor {
+    pub fn matmul_dyn_m(&self, other: &NodeHandle, row_count: DynScalar) -> NodeHandle {
         self.assert_same_graph(other, "matmul_dyn_m", "other");
         // Only the F32 CPU capacity kernel honors a data-determined row
         // count today; other dtypes/backends compute all capacity rows.
@@ -4400,11 +4400,11 @@ impl Tensor {
     /// quantized blocks stay resident at their compressed size.
     pub fn qmatmul(
         &self,
-        weight_bytes: &Tensor,
+        weight_bytes: &NodeHandle,
         quant_type: QuantType,
         k: usize,
         n: usize,
-    ) -> Tensor {
+    ) -> NodeHandle {
         assert!(
             Arc::ptr_eq(&self.graph, &weight_bytes.graph),
             "qmatmul: tensors must live on the same graph; use `const_*_like` to build on an existing graph",
@@ -4479,12 +4479,12 @@ impl Tensor {
     /// be non-positive.
     pub fn conv2d(
         &self,
-        weight: &Tensor,
-        bias: Option<&Tensor>,
+        weight: &NodeHandle,
+        bias: Option<&NodeHandle>,
         stride: (usize, usize),
         padding: (usize, usize),
         groups: usize,
-    ) -> Tensor {
+    ) -> NodeHandle {
         assert!(
             Arc::ptr_eq(&self.graph, &weight.graph),
             "conv2d: x and weight must live on the same graph; use `const_*_like` to build on an existing graph",
@@ -4587,15 +4587,15 @@ impl Tensor {
     #[allow(clippy::too_many_arguments)]
     pub fn paged_attn(
         &self,
-        k_cache: &Tensor,
-        v_cache: &Tensor,
-        block_table: &Tensor,
-        context_lens: &Tensor,
-        alibi_slopes: Option<&Tensor>,
+        k_cache: &NodeHandle,
+        v_cache: &NodeHandle,
+        block_table: &NodeHandle,
+        context_lens: &NodeHandle,
+        alibi_slopes: Option<&NodeHandle>,
         softmax_scale: f32,
         block_size: usize,
         softcap: Option<f32>,
-    ) -> Tensor {
+    ) -> NodeHandle {
         let g = &self.graph;
         assert!(
             Arc::ptr_eq(g, &k_cache.graph),
@@ -4749,13 +4749,13 @@ impl Tensor {
     /// with `groups`, or output spatial dims would be non-positive.
     pub fn conv_transpose2d(
         &self,
-        weight: &Tensor,
+        weight: &NodeHandle,
         stride: (usize, usize),
         padding: (usize, usize),
         output_padding: (usize, usize),
         dilation: (usize, usize),
         groups: usize,
-    ) -> Tensor {
+    ) -> NodeHandle {
         assert!(
             Arc::ptr_eq(&self.graph, &weight.graph),
             "conv_transpose2d: x and weight must live on the same graph; use `const_*_like` to build on an existing graph",
@@ -4847,13 +4847,13 @@ impl Tensor {
     /// convs.
     pub fn conv_transpose1d(
         &self,
-        weight: &Tensor,
+        weight: &NodeHandle,
         stride: usize,
         padding: usize,
         output_padding: usize,
         dilation: usize,
         groups: usize,
-    ) -> Tensor {
+    ) -> NodeHandle {
         self.assert_same_graph(weight, "conv_transpose1d", "weight");
         let x_dims = self.shape();
         let x_dims = x_dims.dims();
@@ -4893,15 +4893,15 @@ impl Tensor {
     /// `[Hq]`. Returns a tensor with `q`'s shape.
     pub fn flash_attn(
         &self,
-        k: &Tensor,
-        v: &Tensor,
-        alibi_slopes: Option<&Tensor>,
+        k: &NodeHandle,
+        v: &NodeHandle,
+        alibi_slopes: Option<&NodeHandle>,
         softmax_scale: f32,
         causal: bool,
         window_size_left: Option<usize>,
         window_size_right: Option<usize>,
         softcap: Option<f32>,
-    ) -> Tensor {
+    ) -> NodeHandle {
         assert!(
             Arc::ptr_eq(&self.graph, &k.graph),
             "flash_attn: q + k must live on the same graph; use `const_*_like` to build on an existing graph"
@@ -5008,16 +5008,16 @@ impl Tensor {
     #[allow(clippy::too_many_arguments)]
     pub fn flash_attn_dyn(
         &self,
-        k: &Tensor,
-        v: &Tensor,
-        alibi_slopes: Option<&Tensor>,
+        k: &NodeHandle,
+        v: &NodeHandle,
+        alibi_slopes: Option<&NodeHandle>,
         softmax_scale: f32,
         causal: bool,
         window_size_left: Option<usize>,
         window_size_right: Option<usize>,
         softcap: Option<f32>,
         k_len: fuel_ir::DynScalar,
-    ) -> Tensor {
+    ) -> NodeHandle {
         assert!(
             Arc::ptr_eq(&self.graph, &k.graph),
             "flash_attn_dyn: q + k must live on the same graph; use `const_*_like` to build on an existing graph"
@@ -5118,17 +5118,17 @@ impl Tensor {
     }
 
     /// Append a `Relu` node `max(0, self)`.
-    pub fn relu(&self) -> Tensor {
+    pub fn relu(&self) -> NodeHandle {
         self.unary_op(Op::Relu)
     }
 
     /// Append a `Sqr` node `self * self`.
-    pub fn sqr(&self) -> Tensor {
+    pub fn sqr(&self) -> NodeHandle {
         self.unary_op(Op::Sqr)
     }
 
     /// Append an `Exp` node `e^self`.
-    pub fn exp(&self) -> Tensor {
+    pub fn exp(&self) -> NodeHandle {
         self.unary_op(Op::Exp)
     }
 
@@ -5136,7 +5136,7 @@ impl Tensor {
     /// `out.shape[i] = self.shape[axes[i]]`. The axes vector must be a
     /// permutation of `0..rank`. For a rank-3 input with `axes = [2, 0, 1]`,
     /// the shape transform is `[a, b, c] → [c, a, b]`.
-    pub fn permute(&self, axes: &[usize]) -> Tensor {
+    pub fn permute(&self, axes: &[usize]) -> NodeHandle {
         let in_shape = self.shape();
         let in_dims = in_shape.dims();
         let rank = in_dims.len();
@@ -5174,7 +5174,7 @@ impl Tensor {
     /// Result-returning sibling of [`Self::permute`]. Surfaces bad
     /// axes (wrong length, out-of-bounds entry, or duplicate) as a
     /// typed error rather than panicking.
-    pub fn try_permute(&self, axes: &[usize]) -> std::result::Result<Tensor, fuel_ir::Error> {
+    pub fn try_permute(&self, axes: &[usize]) -> std::result::Result<NodeHandle, fuel_ir::Error> {
         let in_shape = self.shape();
         let rank = in_shape.dims().len();
         if axes.len() != rank {
@@ -5218,7 +5218,7 @@ impl Tensor {
     /// tensor of rank ≥ 2. Leading dims are unchanged. For a rank-2
     /// tensor this is the ordinary matrix transpose; for higher ranks,
     /// every batch slice is transposed independently.
-    pub fn transpose(&self) -> Tensor {
+    pub fn transpose(&self) -> NodeHandle {
         let in_shape = self.shape();
         assert!(
             in_shape.dims().len() >= 2,
@@ -5242,7 +5242,7 @@ impl Tensor {
 
     /// Result-returning sibling of [`Self::transpose`]. Surfaces
     /// rank < 2 as a typed error rather than panicking.
-    pub fn try_transpose(&self) -> std::result::Result<Tensor, fuel_ir::Error> {
+    pub fn try_transpose(&self) -> std::result::Result<NodeHandle, fuel_ir::Error> {
         let in_shape = self.shape();
         if in_shape.dims().len() < 2 {
             return Err(fuel_ir::Error::Msg(format!(
@@ -5268,74 +5268,74 @@ impl Tensor {
     // --- additional element-wise binary ops ---
 
     /// Append a `Sub` node `self - other`. Requires matching shapes and dtypes.
-    pub fn sub(&self, other: &Tensor) -> Tensor {
+    pub fn sub(&self, other: &NodeHandle) -> NodeHandle {
         self.binary_op("sub", Op::Sub, other, self.shape())
     }
 
     /// Append a `Div` node `self / other`. Requires matching shapes and dtypes.
-    pub fn div(&self, other: &Tensor) -> Tensor {
+    pub fn div(&self, other: &NodeHandle) -> NodeHandle {
         self.binary_op("div", Op::Div, other, self.shape())
     }
 
     // --- additional element-wise unary ops ---
 
     /// Append a `Neg` node `-self`.
-    pub fn neg(&self) -> Tensor {
+    pub fn neg(&self) -> NodeHandle {
         self.unary_op(Op::Neg)
     }
 
     /// Append a `Sqrt` node `sqrt(self)`.
-    pub fn sqrt(&self) -> Tensor {
+    pub fn sqrt(&self) -> NodeHandle {
         self.unary_op(Op::Sqrt)
     }
 
     /// Append a `Log` node `ln(self)`.
-    pub fn log(&self) -> Tensor {
+    pub fn log(&self) -> NodeHandle {
         self.unary_op(Op::Log)
     }
 
     /// Append a `Sin` node.
-    pub fn sin(&self) -> Tensor {
+    pub fn sin(&self) -> NodeHandle {
         self.unary_op(Op::Sin)
     }
 
     /// Append a `Cos` node.
-    pub fn cos(&self) -> Tensor {
+    pub fn cos(&self) -> NodeHandle {
         self.unary_op(Op::Cos)
     }
 
     /// Append a `Tanh` node.
-    pub fn tanh(&self) -> Tensor {
+    pub fn tanh(&self) -> NodeHandle {
         self.unary_op(Op::Tanh)
     }
 
     /// Append a `Sigmoid` node.
-    pub fn sigmoid(&self) -> Tensor {
+    pub fn sigmoid(&self) -> NodeHandle {
         self.unary_op(Op::Sigmoid)
     }
 
     /// Append a `Silu` node (SiLU/Swish activation: `x · sigmoid(x)`).
-    pub fn silu(&self) -> Tensor {
+    pub fn silu(&self) -> NodeHandle {
         self.unary_op(Op::Silu)
     }
 
     /// Append a `Gelu` node (tanh-approximation GELU).
-    pub fn gelu(&self) -> Tensor {
+    pub fn gelu(&self) -> NodeHandle {
         self.unary_op(Op::Gelu)
     }
 
     /// Append a `Step` node (Heaviside step: `1` where `x > 0`, else `0`).
-    pub fn step(&self) -> Tensor {
+    pub fn step(&self) -> NodeHandle {
         self.unary_op(Op::Step)
     }
 
     /// Append a `Recip` node (`1 / self`).
-    pub fn recip(&self) -> Tensor {
+    pub fn recip(&self) -> NodeHandle {
         self.unary_op(Op::Recip)
     }
 
     /// Append an `Abs` node (`|self|`).
-    pub fn abs(&self) -> Tensor {
+    pub fn abs(&self) -> NodeHandle {
         self.unary_op(Op::Abs)
     }
 
@@ -5343,157 +5343,157 @@ impl Tensor {
     // infrastructure) ----
     //
     // Each emits an `Op::*Inplace` node whose input is `self`. The
-    // returned `Tensor` shares the underlying graph and is the new
+    // returned `NodeHandle` shares the underlying graph and is the new
     // root; subsequent ops should use the returned handle to make the
     // mutation-after-read ordering observable to `derive_ordering`.
     //
     // Phase 4 (the mutation-safety pass) is what makes these safe to
     // call on tape-tracked tensors. Until Phase 4 lands, calling these
     // on a tensor that's been saved for backward will panic at
-    // `Tensor::backward` time (clear error, no silent gradient
+    // `NodeHandle::backward` time (clear error, no silent gradient
     // corruption).
 
     /// Append a `ReluInplace` node — mutates `self`'s storage with
-    /// `max(0, self)`. See `Tensor::relu` for the functional variant.
-    pub fn relu_inplace(&self) -> Tensor {
+    /// `max(0, self)`. See `NodeHandle::relu` for the functional variant.
+    pub fn relu_inplace(&self) -> NodeHandle {
         self.unary_op(Op::ReluInplace)
     }
 
     /// Append a `SiluInplace` node — mutates `self`'s storage with
-    /// `self * sigmoid(self)`. See `Tensor::silu` for the functional
+    /// `self * sigmoid(self)`. See `NodeHandle::silu` for the functional
     /// variant.
-    pub fn silu_inplace(&self) -> Tensor {
+    pub fn silu_inplace(&self) -> NodeHandle {
         self.unary_op(Op::SiluInplace)
     }
 
     /// Append a `GeluInplace` node — mutates `self`'s storage with
-    /// the tanh-approximation GELU. See `Tensor::gelu` for the
+    /// the tanh-approximation GELU. See `NodeHandle::gelu` for the
     /// functional variant.
-    pub fn gelu_inplace(&self) -> Tensor {
+    pub fn gelu_inplace(&self) -> NodeHandle {
         self.unary_op(Op::GeluInplace)
     }
 
     /// Append a `TanhInplace` node — mutates `self`'s storage with
-    /// `tanh(self)`. See `Tensor::tanh` for the functional variant.
-    pub fn tanh_inplace(&self) -> Tensor {
+    /// `tanh(self)`. See `NodeHandle::tanh` for the functional variant.
+    pub fn tanh_inplace(&self) -> NodeHandle {
         self.unary_op(Op::TanhInplace)
     }
 
     /// Append a `SigmoidInplace` node — mutates `self`'s storage
-    /// with `sigmoid(self)`. See `Tensor::sigmoid` for the functional
+    /// with `sigmoid(self)`. See `NodeHandle::sigmoid` for the functional
     /// variant.
-    pub fn sigmoid_inplace(&self) -> Tensor {
+    pub fn sigmoid_inplace(&self) -> NodeHandle {
         self.unary_op(Op::SigmoidInplace)
     }
 
     /// Append a `NegInplace` node — mutates `self`'s storage with
-    /// `-self`. See `Tensor::neg` for the functional variant.
-    pub fn neg_inplace(&self) -> Tensor {
+    /// `-self`. See `NodeHandle::neg` for the functional variant.
+    pub fn neg_inplace(&self) -> NodeHandle {
         self.unary_op(Op::NegInplace)
     }
 
     /// Append an `AbsInplace` node — mutates `self`'s storage with
-    /// `|self|`. See `Tensor::abs` for the functional variant.
-    pub fn abs_inplace(&self) -> Tensor {
+    /// `|self|`. See `NodeHandle::abs` for the functional variant.
+    pub fn abs_inplace(&self) -> NodeHandle {
         self.unary_op(Op::AbsInplace)
     }
 
     /// Append a `SqrInplace` node — mutates `self`'s storage with
-    /// `self²`. See `Tensor::sqr` for the functional variant.
-    pub fn sqr_inplace(&self) -> Tensor {
+    /// `self²`. See `NodeHandle::sqr` for the functional variant.
+    pub fn sqr_inplace(&self) -> NodeHandle {
         self.unary_op(Op::SqrInplace)
     }
 
     /// Append a `SqrtInplace` node — mutates `self`'s storage with
-    /// `√self`. See `Tensor::sqrt` for the functional variant.
-    pub fn sqrt_inplace(&self) -> Tensor {
+    /// `√self`. See `NodeHandle::sqrt` for the functional variant.
+    pub fn sqrt_inplace(&self) -> NodeHandle {
         self.unary_op(Op::SqrtInplace)
     }
 
     /// Append a `RsqrtInplace` node — mutates `self`'s storage with
-    /// `1/√self`. See `Tensor::rsqrt` for the functional variant.
-    pub fn rsqrt_inplace(&self) -> Tensor {
+    /// `1/√self`. See `NodeHandle::rsqrt` for the functional variant.
+    pub fn rsqrt_inplace(&self) -> NodeHandle {
         self.unary_op(Op::RsqrtInplace)
     }
 
     /// Append a `RecipInplace` node — mutates `self`'s storage with
-    /// `1/self`. See `Tensor::recip` for the functional variant.
-    pub fn recip_inplace(&self) -> Tensor {
+    /// `1/self`. See `NodeHandle::recip` for the functional variant.
+    pub fn recip_inplace(&self) -> NodeHandle {
         self.unary_op(Op::RecipInplace)
     }
 
     /// Append an `ExpInplace` node — mutates `self`'s storage with
-    /// `exp(self)`. See `Tensor::exp` for the functional variant.
-    pub fn exp_inplace(&self) -> Tensor {
+    /// `exp(self)`. See `NodeHandle::exp` for the functional variant.
+    pub fn exp_inplace(&self) -> NodeHandle {
         self.unary_op(Op::ExpInplace)
     }
 
     /// Append a `LogInplace` node — mutates `self`'s storage with
-    /// `ln(self)`. See `Tensor::log` for the functional variant.
-    pub fn log_inplace(&self) -> Tensor {
+    /// `ln(self)`. See `NodeHandle::log` for the functional variant.
+    pub fn log_inplace(&self) -> NodeHandle {
         self.unary_op(Op::LogInplace)
     }
 
     /// Append a `SinInplace` node — mutates `self`'s storage with
-    /// `sin(self)`. See `Tensor::sin` for the functional variant.
-    pub fn sin_inplace(&self) -> Tensor {
+    /// `sin(self)`. See `NodeHandle::sin` for the functional variant.
+    pub fn sin_inplace(&self) -> NodeHandle {
         self.unary_op(Op::SinInplace)
     }
 
     /// Append a `CosInplace` node — mutates `self`'s storage with
-    /// `cos(self)`. See `Tensor::cos` for the functional variant.
-    pub fn cos_inplace(&self) -> Tensor {
+    /// `cos(self)`. See `NodeHandle::cos` for the functional variant.
+    pub fn cos_inplace(&self) -> NodeHandle {
         self.unary_op(Op::CosInplace)
     }
 
     /// Append a `SignInplace` node — mutates `self`'s storage with
-    /// `sign(self)`. See `Tensor::sign` for the functional variant.
-    pub fn sign_inplace(&self) -> Tensor {
+    /// `sign(self)`. See `NodeHandle::sign` for the functional variant.
+    pub fn sign_inplace(&self) -> NodeHandle {
         self.unary_op(Op::SignInplace)
     }
 
     /// Append a `FloorInplace` node — mutates `self`'s storage with
-    /// `⌊self⌋`. See `Tensor::floor` for the functional variant.
-    pub fn floor_inplace(&self) -> Tensor {
+    /// `⌊self⌋`. See `NodeHandle::floor` for the functional variant.
+    pub fn floor_inplace(&self) -> NodeHandle {
         self.unary_op(Op::FloorInplace)
     }
 
     /// Append a `CeilInplace` node — mutates `self`'s storage with
-    /// `⌈self⌉`. See `Tensor::ceil` for the functional variant.
-    pub fn ceil_inplace(&self) -> Tensor {
+    /// `⌈self⌉`. See `NodeHandle::ceil` for the functional variant.
+    pub fn ceil_inplace(&self) -> NodeHandle {
         self.unary_op(Op::CeilInplace)
     }
 
     /// Append a `RoundInplace` node — mutates `self`'s storage with
-    /// `round(self)`. See `Tensor::round` for the functional variant.
-    pub fn round_inplace(&self) -> Tensor {
+    /// `round(self)`. See `NodeHandle::round` for the functional variant.
+    pub fn round_inplace(&self) -> NodeHandle {
         self.unary_op(Op::RoundInplace)
     }
 
     /// Append an `ErfInplace` node — mutates `self`'s storage with
-    /// `erf(self)`. See `Tensor::erf` for the functional variant.
-    pub fn erf_inplace(&self) -> Tensor {
+    /// `erf(self)`. See `NodeHandle::erf` for the functional variant.
+    pub fn erf_inplace(&self) -> NodeHandle {
         self.unary_op(Op::ErfInplace)
     }
 
     /// Append a `GeluErfInplace` node — mutates `self`'s storage
-    /// with the exact-GeLU formula. See `Tensor::gelu_erf` for the
+    /// with the exact-GeLU formula. See `NodeHandle::gelu_erf` for the
     /// functional variant.
-    pub fn gelu_erf_inplace(&self) -> Tensor {
+    pub fn gelu_erf_inplace(&self) -> NodeHandle {
         self.unary_op(Op::GeluErfInplace)
     }
 
     /// Append a `ClampInplace { min, max }` node — mutates `self`'s
-    /// storage with `clamp(self, min, max)`. See `Tensor::clamp` for
+    /// storage with `clamp(self, min, max)`. See `NodeHandle::clamp` for
     /// the functional variant.
-    pub fn clamp_inplace(&self, min: f64, max: f64) -> Tensor {
+    pub fn clamp_inplace(&self, min: f64, max: f64) -> NodeHandle {
         self.unary_op(Op::ClampInplace { min, max })
     }
 
     /// Append a `PowIInplace(exp)` node — mutates `self`'s storage
-    /// with `self.powi(exp)`. See `Tensor::powi` for the functional
+    /// with `self.powi(exp)`. See `NodeHandle::powi` for the functional
     /// variant.
-    pub fn powi_inplace(&self, exp: i32) -> Tensor {
+    pub fn powi_inplace(&self, exp: i32) -> NodeHandle {
         self.unary_op(Op::PowIInplace(exp))
     }
 
@@ -5503,7 +5503,7 @@ impl Tensor {
     /// `fuel-graph::Op`; the non-inplace equivalent is `self
     /// .mul_scalar(mul).add_scalar(add)`). Wired to baracuda's
     /// `affine_inplace_*` symbol on CUDA when Phase 3 lands.
-    pub fn affine_inplace(&self, mul: f64, add: f64) -> Tensor {
+    pub fn affine_inplace(&self, mul: f64, add: f64) -> NodeHandle {
         let shape = self.shape();
         let dtype = self.dtype();
         let id = self.graph.write().unwrap().push(Node {
@@ -5524,33 +5524,33 @@ impl Tensor {
     /// Append a `Floor` node (`⌊self⌋`). Output dtype = input dtype.
     /// Backward is the zero distribution almost everywhere; gradient
     /// is dropped silently.
-    pub fn floor(&self) -> Tensor {
+    pub fn floor(&self) -> NodeHandle {
         self.unary_op(Op::Floor)
     }
 
     /// Append a `Ceil` node (`⌈self⌉`). Output dtype = input dtype.
     /// Backward drops gradient (non-differentiable almost everywhere).
-    pub fn ceil(&self) -> Tensor {
+    pub fn ceil(&self) -> NodeHandle {
         self.unary_op(Op::Ceil)
     }
 
     /// Append a `Round` node — banker's rounding (round-half-to-even,
     /// IEEE 754 roundeven). 0.5 → 0, 1.5 → 2, 2.5 → 2, 3.5 → 4.
     /// Output dtype = input dtype. Backward drops gradient.
-    pub fn round(&self) -> Tensor {
+    pub fn round(&self) -> NodeHandle {
         self.unary_op(Op::Round)
     }
 
     /// Append a `Sign` node (`-1` / `0` / `1`). `sign(0) = 0` by
     /// subgradient convention. Output dtype = input dtype. Backward
     /// drops gradient.
-    pub fn sign(&self) -> Tensor {
+    pub fn sign(&self) -> NodeHandle {
         self.unary_op(Op::Sign)
     }
 
     /// Append an `Erf` node (Gauss error function). Output dtype =
     /// input dtype. Differentiable.
-    pub fn erf(&self) -> Tensor {
+    pub fn erf(&self) -> NodeHandle {
         self.unary_op(Op::Erf)
     }
 
@@ -5558,7 +5558,7 @@ impl Tensor {
     /// (`0.5 * x * (1 + erf(x/√2))`). Distinct from [`Self::gelu`]
     /// (tanh approximation). Output dtype = input dtype.
     /// Differentiable.
-    pub fn gelu_erf(&self) -> Tensor {
+    pub fn gelu_erf(&self) -> NodeHandle {
         self.unary_op(Op::GeluErf)
     }
 
@@ -5569,7 +5569,7 @@ impl Tensor {
     ///
     /// **Returns `Result`**: dtype/shape mismatch surfaces as a
     /// typed error, not a panic.
-    pub fn pow(&self, other: &Tensor) -> std::result::Result<Tensor, fuel_ir::Error> {
+    pub fn pow(&self, other: &NodeHandle) -> std::result::Result<NodeHandle, fuel_ir::Error> {
         let out_shape = self.shape();
         self.try_binary_op("pow", Op::Pow, other, out_shape)
     }
@@ -5578,7 +5578,7 @@ impl Tensor {
     /// input. Single op rather than `sqrt(x).recip()` — one kernel
     /// launch and matches RMSNorm's `x * rsqrt(...)` shape.
     /// Differentiable.
-    pub fn rsqrt(&self) -> Tensor {
+    pub fn rsqrt(&self) -> NodeHandle {
         self.unary_op(Op::Rsqrt)
     }
 
@@ -5589,7 +5589,7 @@ impl Tensor {
     ///
     /// **Returns `Result`**: dtype/shape mismatch surfaces as a
     /// typed error, not a panic.
-    pub fn rem(&self, other: &Tensor) -> std::result::Result<Tensor, fuel_ir::Error> {
+    pub fn rem(&self, other: &NodeHandle) -> std::result::Result<NodeHandle, fuel_ir::Error> {
         let out_shape = self.shape();
         self.try_binary_op("rem", Op::Rem, other, out_shape)
     }
@@ -5600,7 +5600,7 @@ impl Tensor {
     /// (involutive: backward is another Flip on the same dim).
     ///
     /// **Returns `Result`**: bad `dim` surfaces as a typed error.
-    pub fn flip(&self, dim: usize) -> std::result::Result<Tensor, fuel_ir::Error> {
+    pub fn flip(&self, dim: usize) -> std::result::Result<NodeHandle, fuel_ir::Error> {
         let in_shape = self.shape();
         let rank = in_shape.dims().len();
         if dim >= rank {
@@ -5629,7 +5629,7 @@ impl Tensor {
     /// shape. Differentiable (backward is `Roll { dim, -shift }`).
     ///
     /// **Returns `Result`**: bad `dim` surfaces as a typed error.
-    pub fn roll(&self, dim: usize, shift: i64) -> std::result::Result<Tensor, fuel_ir::Error> {
+    pub fn roll(&self, dim: usize, shift: i64) -> std::result::Result<NodeHandle, fuel_ir::Error> {
         let in_shape = self.shape();
         let rank = in_shape.dims().len();
         if dim >= rank {
@@ -5657,7 +5657,7 @@ impl Tensor {
     /// reverse-cumsum (`Flip → CumSum → Flip`).
     ///
     /// **Returns `Result`**: bad `dim` surfaces as a typed error.
-    pub fn cumsum(&self, dim: usize) -> std::result::Result<Tensor, fuel_ir::Error> {
+    pub fn cumsum(&self, dim: usize) -> std::result::Result<NodeHandle, fuel_ir::Error> {
         let in_shape = self.shape();
         let rank = in_shape.dims().len();
         if dim >= rank {
@@ -5685,7 +5685,7 @@ impl Tensor {
     /// (keeping more, including subdiagonals).
     ///
     /// **Returns `Result`**: rank < 2 surfaces as a typed error.
-    pub fn triu(&self, diagonal: i64) -> std::result::Result<Tensor, fuel_ir::Error> {
+    pub fn triu(&self, diagonal: i64) -> std::result::Result<NodeHandle, fuel_ir::Error> {
         let in_shape = self.shape();
         let rank = in_shape.dims().len();
         if rank < 2 {
@@ -5721,14 +5721,14 @@ impl Tensor {
     /// error — never a panic.
     pub fn scan(
         &self,
-        xs: &[Tensor],
-        consts: &[Tensor],
-        body_new_carry: &Tensor,
-        body_y: &Tensor,
+        xs: &[NodeHandle],
+        consts: &[NodeHandle],
+        body_new_carry: &NodeHandle,
+        body_y: &NodeHandle,
         bound: usize,
         emit: ScanEmit,
-    ) -> std::result::Result<Tensor, fuel_ir::Error> {
-        let same_graph = |t: &Tensor| Arc::ptr_eq(&self.graph, &t.graph);
+    ) -> std::result::Result<NodeHandle, fuel_ir::Error> {
+        let same_graph = |t: &NodeHandle| Arc::ptr_eq(&self.graph, &t.graph);
         if !same_graph(body_new_carry)
             || !same_graph(body_y)
             || !xs.iter().all(same_graph)
@@ -5816,7 +5816,7 @@ impl Tensor {
     }
 
     /// Append an early-exit [`Op::Scan`] node — the `Result`-returning sibling
-    /// of [`Tensor::scan`] that carries a convergence predicate as the extra
+    /// of [`NodeHandle::scan`] that carries a convergence predicate as the extra
     /// trailing input (`early_exit = Some(ScanPredicate)`). `self` is the
     /// `init_carry`; `pred_exit` is a scalar-`U8` sub-DAG over the carry
     /// (`Op::ScanPlaceholder{Carry,0}` for the pre-step carry, and the shared
@@ -5835,15 +5835,15 @@ impl Tensor {
     #[allow(clippy::too_many_arguments)]
     pub fn scan_until(
         &self,
-        xs: &[Tensor],
-        consts: &[Tensor],
-        body_new_carry: &Tensor,
-        body_y: &Tensor,
-        pred_exit: &Tensor,
+        xs: &[NodeHandle],
+        consts: &[NodeHandle],
+        body_new_carry: &NodeHandle,
+        body_y: &NodeHandle,
+        pred_exit: &NodeHandle,
         bound: usize,
         emit: ScanEmit,
-    ) -> std::result::Result<Tensor, fuel_ir::Error> {
-        let same_graph = |t: &Tensor| Arc::ptr_eq(&self.graph, &t.graph);
+    ) -> std::result::Result<NodeHandle, fuel_ir::Error> {
+        let same_graph = |t: &NodeHandle| Arc::ptr_eq(&self.graph, &t.graph);
         if !same_graph(body_new_carry)
             || !same_graph(body_y)
             || !same_graph(pred_exit)
@@ -5972,7 +5972,7 @@ impl Tensor {
     /// `tril(diagonal = 0)` is the canonical causal-attention mask.
     ///
     /// **Returns `Result`**: rank < 2 surfaces as a typed error.
-    pub fn tril(&self, diagonal: i64) -> std::result::Result<Tensor, fuel_ir::Error> {
+    pub fn tril(&self, diagonal: i64) -> std::result::Result<NodeHandle, fuel_ir::Error> {
         let in_shape = self.shape();
         let rank = in_shape.dims().len();
         if rank < 2 {
@@ -5999,7 +5999,7 @@ impl Tensor {
     /// `log(softmax(x))` for NLL / cross-entropy loss.
     ///
     /// **Returns `Result`**: rank < 1 surfaces as a typed error.
-    pub fn log_softmax_last_dim(&self) -> std::result::Result<Tensor, fuel_ir::Error> {
+    pub fn log_softmax_last_dim(&self) -> std::result::Result<NodeHandle, fuel_ir::Error> {
         let in_shape = self.shape();
         if in_shape.dims().is_empty() {
             return Err(fuel_ir::Error::Msg(
@@ -6029,9 +6029,9 @@ impl Tensor {
     /// errors.
     pub fn masked_fill(
         &self,
-        mask: &Tensor,
+        mask: &NodeHandle,
         value: Scalar,
-    ) -> std::result::Result<Tensor, fuel_ir::Error> {
+    ) -> std::result::Result<NodeHandle, fuel_ir::Error> {
         self.require_same_graph(mask, "masked_fill", "mask")?;
         if self.shape().dims() != mask.shape().dims() {
             return Err(fuel_ir::Error::Msg(format!(
@@ -6164,7 +6164,7 @@ impl Tensor {
         padding: Vec<(usize, usize)>,
         mode: PadMode,
         value: f64,
-    ) -> std::result::Result<Tensor, fuel_ir::Error> {
+    ) -> std::result::Result<NodeHandle, fuel_ir::Error> {
         let in_shape = self.shape();
         let rank = in_shape.dims().len();
         if padding.len() != rank {
@@ -6196,42 +6196,42 @@ impl Tensor {
     /// Both operands must share dtype and shape; output dtype is `Bool`
     /// (`1` where equal, `0` otherwise). NaN follows IEEE-754
     /// (`NaN == NaN` is false). Non-differentiable.
-    pub fn eq(&self, other: &Tensor) -> Tensor {
+    pub fn eq(&self, other: &NodeHandle) -> NodeHandle {
         self.binary_compare_op("eq", Op::Equal, other)
     }
 
     /// Append a `Ne` node (`self != other`) producing a `Bool` mask.
     /// Same shape/dtype contract as [`Self::eq`]. NaN follows
     /// IEEE-754 (`NaN != NaN` is true → `1`). Non-differentiable.
-    pub fn ne(&self, other: &Tensor) -> Tensor {
+    pub fn ne(&self, other: &NodeHandle) -> NodeHandle {
         self.binary_compare_op("ne", Op::Ne, other)
     }
 
     /// Append an `Lt` node (`self < other`) producing a `Bool` mask.
     /// Same shape/dtype contract as [`Self::eq`]. NaN-on-either-side
     /// is always `0` (IEEE-754 unordered). Non-differentiable.
-    pub fn lt(&self, other: &Tensor) -> Tensor {
+    pub fn lt(&self, other: &NodeHandle) -> NodeHandle {
         self.binary_compare_op("lt", Op::Lt, other)
     }
 
     /// Append an `Le` node (`self <= other`) producing a `Bool` mask.
     /// Same shape/dtype contract as [`Self::eq`]. NaN-on-either-side
     /// is always `0`. Non-differentiable.
-    pub fn le(&self, other: &Tensor) -> Tensor {
+    pub fn le(&self, other: &NodeHandle) -> NodeHandle {
         self.binary_compare_op("le", Op::Le, other)
     }
 
     /// Append a `Gt` node (`self > other`) producing a `Bool` mask.
     /// Same shape/dtype contract as [`Self::eq`]. NaN-on-either-side
     /// is always `0`. Non-differentiable.
-    pub fn gt(&self, other: &Tensor) -> Tensor {
+    pub fn gt(&self, other: &NodeHandle) -> NodeHandle {
         self.binary_compare_op("gt", Op::Gt, other)
     }
 
     /// Append a `Ge` node (`self >= other`) producing a `Bool` mask.
     /// Same shape/dtype contract as [`Self::eq`]. NaN-on-either-side
     /// is always `0`. Non-differentiable.
-    pub fn ge(&self, other: &Tensor) -> Tensor {
+    pub fn ge(&self, other: &NodeHandle) -> NodeHandle {
         self.binary_compare_op("ge", Op::Ge, other)
     }
 
@@ -6247,7 +6247,7 @@ impl Tensor {
     /// Differentiable through `a` and `b` only; gradient through the
     /// cond mask is `None` (registered in
     /// [`crate::grad::WhereRule`]).
-    pub fn where_cond(&self, a: &Tensor, b: &Tensor) -> Tensor {
+    pub fn where_cond(&self, a: &NodeHandle, b: &NodeHandle) -> NodeHandle {
         assert!(
             Arc::ptr_eq(&self.graph, &a.graph) && Arc::ptr_eq(&self.graph, &b.graph),
             "where_cond: tensors must live on the same graph; use `const_*_like` to build on an existing graph",
@@ -6306,7 +6306,7 @@ impl Tensor {
     /// `opt::optimize`'s identity-`Cast` rule) — kept here rather than
     /// special-cased at construction so every identity cast, however it
     /// arises (decompose, autograd, user), is removed in one place.
-    pub fn cast(&self, target: DType) -> Tensor {
+    pub fn cast(&self, target: DType) -> NodeHandle {
         let op = Op::Cast(target);
         let (shape, dtype) = crate::shape::primitive_shape(&op, &[self.shape()], &[self.dtype()])
             .expect("cast: single input, dtype change always infers");
@@ -6326,7 +6326,7 @@ impl Tensor {
     /// shape using NumPy broadcasting rules (right-align, pad with 1s,
     /// expand size-1 dims). The new tensor has the target shape and the
     /// same dtype as `self`.
-    pub fn broadcast_to(&self, target: impl Into<Shape>) -> Tensor {
+    pub fn broadcast_to(&self, target: impl Into<Shape>) -> NodeHandle {
         let target = target.into();
         let src_dims = self.shape();
         // Validate broadcast compatibility up front so users hear about
@@ -6352,7 +6352,7 @@ impl Tensor {
     pub fn try_broadcast_to(
         &self,
         target: impl Into<Shape>,
-    ) -> std::result::Result<Tensor, fuel_ir::Error> {
+    ) -> std::result::Result<NodeHandle, fuel_ir::Error> {
         let target = target.into();
         let src_dims = self.shape();
         try_check_broadcast_compatible(src_dims.dims(), target.dims())?;
@@ -6377,7 +6377,7 @@ impl Tensor {
     /// side-table. Strictly more efficient than `reshape` for the
     /// size-1-insertion case because non-contiguous (e.g. transposed
     /// or broadcast) inputs flow through without auto-Contiguize.
-    pub fn unsqueeze(&self, dim: usize) -> Tensor {
+    pub fn unsqueeze(&self, dim: usize) -> NodeHandle {
         let in_shape = self.shape();
         let rank = in_shape.dims().len();
         assert!(
@@ -6401,7 +6401,7 @@ impl Tensor {
 
     /// Result-returning sibling of [`Self::unsqueeze`]. Surfaces
     /// `dim > rank` as a typed error rather than panicking.
-    pub fn try_unsqueeze(&self, dim: usize) -> std::result::Result<Tensor, fuel_ir::Error> {
+    pub fn try_unsqueeze(&self, dim: usize) -> std::result::Result<NodeHandle, fuel_ir::Error> {
         let in_shape = self.shape();
         let rank = in_shape.dims().len();
         if dim > rank {
@@ -6432,7 +6432,7 @@ impl Tensor {
     /// **Returns `Result`** rather than panicking — production paths
     /// can recover from a bad `dim` instead of crashing. Bad `dim`
     /// (out of bounds OR `shape[dim] != 1`) surfaces as a typed error.
-    pub fn squeeze(&self, dim: usize) -> std::result::Result<Tensor, fuel_ir::Error> {
+    pub fn squeeze(&self, dim: usize) -> std::result::Result<NodeHandle, fuel_ir::Error> {
         let in_shape = self.shape();
         let rank = in_shape.dims().len();
         if dim >= rank {
@@ -6472,7 +6472,7 @@ impl Tensor {
     /// layout-fixups before kernels that don't advertise
     /// [`crate::KernelCaps::strided_input`] without overloading
     /// [`Self::reshape`]'s "change shape" semantics.
-    pub fn contiguize(&self) -> Tensor {
+    pub fn contiguize(&self) -> NodeHandle {
         let shape = self.shape().clone();
         let dtype = self.dtype();
         let id = self.graph.write().unwrap().push(Node {
@@ -6490,7 +6490,7 @@ impl Tensor {
     /// Append a `Reshape` node producing `self`'s data under a new shape.
     /// The new shape must have the same total element count as the
     /// current shape.
-    pub fn reshape(&self, target: impl Into<Shape>) -> Tensor {
+    pub fn reshape(&self, target: impl Into<Shape>) -> NodeHandle {
         let target = target.into();
         assert_eq!(
             self.shape().elem_count(),
@@ -6519,7 +6519,7 @@ impl Tensor {
     pub fn try_reshape(
         &self,
         target: impl Into<Shape>,
-    ) -> std::result::Result<Tensor, fuel_ir::Error> {
+    ) -> std::result::Result<NodeHandle, fuel_ir::Error> {
         let target = target.into();
         let from = self.shape().elem_count();
         let to = target.elem_count();
@@ -6547,7 +6547,7 @@ impl Tensor {
     /// shape. The target must be reachable from `self.shape()` via
     /// reduction of dims (i.e. `self.shape()` could be produced from
     /// `target` by broadcasting).
-    pub fn reduce_sum_to(&self, target: impl Into<Shape>) -> Tensor {
+    pub fn reduce_sum_to(&self, target: impl Into<Shape>) -> NodeHandle {
         let target = target.into();
         // Symmetric check: self must be broadcast-compatible FROM the
         // smaller target. That is, the target must be broadcast-ready to
@@ -6573,7 +6573,7 @@ impl Tensor {
     /// The target must be reachable from `self.shape()` via reduction
     /// of dims (i.e. `self.shape()` could be produced from `target` by
     /// broadcasting).
-    pub fn reduce_max_to(&self, target: impl Into<Shape>) -> Tensor {
+    pub fn reduce_max_to(&self, target: impl Into<Shape>) -> NodeHandle {
         let target = target.into();
         check_broadcast_compatible(target.dims(), self.shape().dims());
         let op = Op::ReduceMaxTo(target);
@@ -6594,22 +6594,22 @@ impl Tensor {
     // --- reductions to a scalar ---
 
     /// Append a `SumAll` node reducing every element to a scalar (rank-0).
-    pub fn sum_all(&self) -> Tensor {
+    pub fn sum_all(&self) -> NodeHandle {
         self.scalar_reduction(Op::SumAll)
     }
 
     /// Append a `MaxAll` node producing the max element as a scalar.
-    pub fn max_all(&self) -> Tensor {
+    pub fn max_all(&self) -> NodeHandle {
         self.scalar_reduction(Op::MaxAll)
     }
 
     /// Append a `MinAll` node producing the min element as a scalar.
-    pub fn min_all(&self) -> Tensor {
+    pub fn min_all(&self) -> NodeHandle {
         self.scalar_reduction(Op::MinAll)
     }
 
     /// Append a `MeanAll` node producing the arithmetic mean as a scalar.
-    pub fn mean_all(&self) -> Tensor {
+    pub fn mean_all(&self) -> NodeHandle {
         self.scalar_reduction(Op::MeanAll)
     }
 
@@ -6617,22 +6617,22 @@ impl Tensor {
 
     /// Append a `SumDim(dim)` node. Reduces along `dim`; output rank is
     /// `input rank - 1` (the reduced dim is removed).
-    pub fn sum_dim(&self, dim: usize) -> Tensor {
+    pub fn sum_dim(&self, dim: usize) -> NodeHandle {
         self.axis_reduction("sum_dim", Op::SumDim(dim), dim)
     }
 
     /// Append a `MaxDim(dim)` node.
-    pub fn max_dim(&self, dim: usize) -> Tensor {
+    pub fn max_dim(&self, dim: usize) -> NodeHandle {
         self.axis_reduction("max_dim", Op::MaxDim(dim), dim)
     }
 
     /// Append a `MinDim(dim)` node.
-    pub fn min_dim(&self, dim: usize) -> Tensor {
+    pub fn min_dim(&self, dim: usize) -> NodeHandle {
         self.axis_reduction("min_dim", Op::MinDim(dim), dim)
     }
 
     /// Append a `MeanDim(dim)` node.
-    pub fn mean_dim(&self, dim: usize) -> Tensor {
+    pub fn mean_dim(&self, dim: usize) -> NodeHandle {
         self.axis_reduction("mean_dim", Op::MeanDim(dim), dim)
     }
 
@@ -6640,20 +6640,20 @@ impl Tensor {
     /// reduced dim removed, whose values are the index of the maximum
     /// along that dim. Non-differentiable — trying to run `backward()`
     /// through an ArgMax node will panic.
-    pub fn argmax_dim(&self, dim: usize) -> Tensor {
+    pub fn argmax_dim(&self, dim: usize) -> NodeHandle {
         self.index_reduction("argmax_dim", Op::ArgMaxDim(dim), dim)
     }
 
     /// Append an `ArgMinDim(dim)` node. Same semantics as `argmax_dim`
     /// but for the minimum.
-    pub fn argmin_dim(&self, dim: usize) -> Tensor {
+    pub fn argmin_dim(&self, dim: usize) -> NodeHandle {
         self.index_reduction("argmin_dim", Op::ArgMinDim(dim), dim)
     }
 
     /// Internal helper for index-producing reductions. Validates the
     /// dim, builds the reduced shape, and stamps the output with
     /// `DType::U32` regardless of the input dtype.
-    fn index_reduction(&self, name: &'static str, op: Op, dim: usize) -> Tensor {
+    fn index_reduction(&self, name: &'static str, op: Op, dim: usize) -> NodeHandle {
         let in_shape = self.shape();
         assert!(
             dim < in_shape.dims().len(),
@@ -6684,7 +6684,7 @@ impl Tensor {
     /// FusedOpParams::SoftmaxLastDim)` — the registry-extended arm.
     /// The legacy `Op::SoftmaxLastDim` variant remains in the enum
     /// during the migration; step 5 drops it once nothing emits it.
-    pub fn softmax_last_dim(&self) -> Tensor {
+    pub fn softmax_last_dim(&self) -> NodeHandle {
         assert!(
             !self.shape().dims().is_empty(),
             "softmax_last_dim: input must be rank >= 1",
@@ -6715,7 +6715,12 @@ impl Tensor {
     /// entry. No primitive decomposition exists (fuel-graph has no
     /// `Op::Conv1D`); backends without a native kernel fall through
     /// to the executor's cpu_fallback path.
-    pub fn causal_conv1d(&self, weight: &Tensor, bias: &Tensor, use_silu: bool) -> Tensor {
+    pub fn causal_conv1d(
+        &self,
+        weight: &NodeHandle,
+        bias: &NodeHandle,
+        use_silu: bool,
+    ) -> NodeHandle {
         assert!(
             Arc::ptr_eq(&self.graph, &weight.graph) && Arc::ptr_eq(&self.graph, &bias.graph),
             "causal_conv1d: tensors must live on the same graph; use `const_*_like` to build on an existing graph",
@@ -6817,7 +6822,12 @@ impl Tensor {
     /// matmul roundtrip is exactly what NF4's fused dequant-in-kernel
     /// design avoids); backends without a native kernel fall through
     /// to the executor's cpu_fallback path.
-    pub fn nf4_matmul(&self, w_packed: &Tensor, absmax: &Tensor, block_size: usize) -> Tensor {
+    pub fn nf4_matmul(
+        &self,
+        w_packed: &NodeHandle,
+        absmax: &NodeHandle,
+        block_size: usize,
+    ) -> NodeHandle {
         assert!(
             Arc::ptr_eq(&self.graph, &w_packed.graph) && Arc::ptr_eq(&self.graph, &absmax.graph),
             "nf4_matmul: tensors must live on the same graph; use `const_*_like` to build on an existing graph",
@@ -6923,15 +6933,15 @@ impl Tensor {
     /// to the executor's cpu_fallback path.
     /// Internal: build the bundled SsdChunkScan producer node and
     /// return its NodeId. Callers project per-slot via
-    /// [`Tensor::view`] / [`Tensor::view_owned`].
+    /// [`NodeHandle::view`] / [`NodeHandle::view_owned`].
     fn ssd_chunk_scan_producer(
         &self,
-        dt: &Tensor,
-        a: &Tensor,
-        b: &Tensor,
-        c: &Tensor,
+        dt: &NodeHandle,
+        a: &NodeHandle,
+        b: &NodeHandle,
+        c: &NodeHandle,
         chunk_size: usize,
-    ) -> Tensor {
+    ) -> NodeHandle {
         assert!(
             Arc::ptr_eq(&self.graph, &dt.graph)
                 && Arc::ptr_eq(&self.graph, &a.graph)
@@ -7034,12 +7044,12 @@ impl Tensor {
     /// [`Self::ssd_chunk_scan_bundled`] for the multi-output variant.
     pub fn ssd_chunk_scan(
         &self,
-        dt: &Tensor,
-        a: &Tensor,
-        b: &Tensor,
-        c: &Tensor,
+        dt: &NodeHandle,
+        a: &NodeHandle,
+        b: &NodeHandle,
+        c: &NodeHandle,
         chunk_size: usize,
-    ) -> Tensor {
+    ) -> NodeHandle {
         self.assert_same_graph(dt, "ssd_chunk_scan", "dt");
         self.assert_same_graph(a, "ssd_chunk_scan", "a");
         self.assert_same_graph(b, "ssd_chunk_scan", "b");
@@ -7072,16 +7082,16 @@ impl Tensor {
     /// recurrence); backends without a native kernel fall through to
     /// the executor's cpu_fallback path.
     /// Internal: build the bundled SelectiveScan producer node and
-    /// return its NodeId (wrapped in a `Tensor`). Callers project
-    /// per-slot via [`Tensor::view`] / [`Tensor::view_owned`].
+    /// return its NodeId (wrapped in a `NodeHandle`). Callers project
+    /// per-slot via [`NodeHandle::view`] / [`NodeHandle::view_owned`].
     fn selective_scan_producer(
         &self,
-        delta: &Tensor,
-        a: &Tensor,
-        b: &Tensor,
-        c: &Tensor,
+        delta: &NodeHandle,
+        a: &NodeHandle,
+        b: &NodeHandle,
+        c: &NodeHandle,
         delta_softplus: bool,
-    ) -> Tensor {
+    ) -> NodeHandle {
         assert!(
             Arc::ptr_eq(&self.graph, &delta.graph)
                 && Arc::ptr_eq(&self.graph, &a.graph)
@@ -7185,12 +7195,12 @@ impl Tensor {
     /// resumption.
     pub fn selective_scan(
         &self,
-        delta: &Tensor,
-        a: &Tensor,
-        b: &Tensor,
-        c: &Tensor,
+        delta: &NodeHandle,
+        a: &NodeHandle,
+        b: &NodeHandle,
+        c: &NodeHandle,
         delta_softplus: bool,
-    ) -> Tensor {
+    ) -> NodeHandle {
         self.assert_same_graph(delta, "selective_scan", "delta");
         self.assert_same_graph(a, "selective_scan", "a");
         self.assert_same_graph(b, "selective_scan", "b");
@@ -7209,12 +7219,12 @@ impl Tensor {
     /// resumption.
     pub fn selective_scan_bundled(
         &self,
-        delta: &Tensor,
-        a: &Tensor,
-        b: &Tensor,
-        c: &Tensor,
+        delta: &NodeHandle,
+        a: &NodeHandle,
+        b: &NodeHandle,
+        c: &NodeHandle,
         delta_softplus: bool,
-    ) -> std::result::Result<(Tensor, Tensor), fuel_ir::Error> {
+    ) -> std::result::Result<(NodeHandle, NodeHandle), fuel_ir::Error> {
         self.require_same_graph(delta, "selective_scan_bundled", "delta")?;
         self.require_same_graph(a, "selective_scan_bundled", "a")?;
         self.require_same_graph(b, "selective_scan_bundled", "b")?;
@@ -7229,12 +7239,12 @@ impl Tensor {
     /// `(y, last_state)`.
     pub fn ssd_chunk_scan_bundled(
         &self,
-        dt: &Tensor,
-        a: &Tensor,
-        b: &Tensor,
-        c: &Tensor,
+        dt: &NodeHandle,
+        a: &NodeHandle,
+        b: &NodeHandle,
+        c: &NodeHandle,
         chunk_size: usize,
-    ) -> std::result::Result<(Tensor, Tensor), fuel_ir::Error> {
+    ) -> std::result::Result<(NodeHandle, NodeHandle), fuel_ir::Error> {
         self.require_same_graph(dt, "ssd_chunk_scan_bundled", "dt")?;
         self.require_same_graph(a, "ssd_chunk_scan_bundled", "a")?;
         self.require_same_graph(b, "ssd_chunk_scan_bundled", "b")?;
@@ -7247,7 +7257,7 @@ impl Tensor {
 
     /// Append an [`Op::NonZeroIndices`] producer node — the keystone
     /// primitive for **data-dependent dynamic shapes**. Returns the
-    /// bundled producer `Tensor` (a `[capacity]` U32 tensor); callers
+    /// bundled producer `NodeHandle` (a `[capacity]` U32 tensor); callers
     /// usually want [`Self::nonzero_indices_bundled`] to also get the
     /// runtime count slot.
     ///
@@ -7258,7 +7268,7 @@ impl Tensor {
     /// downstream op that consumes the count as a dynamic extent /
     /// `DynScalar::Sym` (the KV-cache `cached_len` pattern, generalized to
     /// a data-determined count).
-    pub fn nonzero_indices_producer(&self, count_sym: SymId) -> Tensor {
+    pub fn nonzero_indices_producer(&self, count_sym: SymId) -> NodeHandle {
         let capacity = self.shape().elem_count();
         let indices_shape = Shape::from_dims(&[capacity]);
         let count_shape = Shape::from_dims(&[1]);
@@ -7303,7 +7313,7 @@ impl Tensor {
     pub fn nonzero_indices_bundled(
         &self,
         count_sym: SymId,
-    ) -> std::result::Result<(Tensor, Tensor), fuel_ir::Error> {
+    ) -> std::result::Result<(NodeHandle, NodeHandle), fuel_ir::Error> {
         let producer = self.nonzero_indices_producer(count_sym);
         let indices = producer.view(0)?;
         let count = producer.view(1)?;
@@ -7331,10 +7341,10 @@ impl Tensor {
     /// the registry entry and decompose chain.
     pub fn fused_softmax_cross_entropy(
         &self,
-        targets: &Tensor,
+        targets: &NodeHandle,
         reduction: crate::registry::Reduction,
         ignore_index: i64,
-    ) -> Tensor {
+    ) -> NodeHandle {
         assert!(
             Arc::ptr_eq(&self.graph, &targets.graph),
             "fused_softmax_cross_entropy: tensors must live on the same graph; use `const_*_like` to build on an existing graph",
@@ -7399,7 +7409,7 @@ impl Tensor {
     /// through the registry-extended arm. The legacy
     /// `Op::LayerNormLastDim { eps }` variant remains in the enum
     /// during migration; step 5 drops it once nothing emits it.
-    pub fn layer_norm_last_dim(&self, eps: f64) -> Tensor {
+    pub fn layer_norm_last_dim(&self, eps: f64) -> NodeHandle {
         let dims = self.shape();
         let d = dims.dims();
         assert!(
@@ -7435,7 +7445,7 @@ impl Tensor {
     ///
     /// Only `f32` is supported today. Extending to other float dtypes
     /// is mechanical: build the frequency tables in the target dtype.
-    pub fn rope(&self, base: f64, start_pos: usize) -> Tensor {
+    pub fn rope(&self, base: f64, start_pos: usize) -> NodeHandle {
         let (seq, d) = {
             let dims = self.shape();
             let v = dims.dims();
@@ -7460,7 +7470,7 @@ impl Tensor {
     /// the const nodes across all layers rather than re-duplicating
     /// them inside each `.rope()` call. The classic [`rope`] entry
     /// point funnels through this after building the tables itself.
-    pub fn rope_with_tables(&self, cos: &Tensor, sin: &Tensor) -> Tensor {
+    pub fn rope_with_tables(&self, cos: &NodeHandle, sin: &NodeHandle) -> NodeHandle {
         self.assert_same_graph(cos, "rope_with_tables", "cos");
         self.assert_same_graph(sin, "rope_with_tables", "sin");
         assert_eq!(
@@ -7525,7 +7535,7 @@ impl Tensor {
     /// primitives, and so correctness tests can cross-check the fused
     /// path against the primitive path.
     #[doc(hidden)]
-    pub fn rope_with_tables_decomposed(&self, cos: &Tensor, sin: &Tensor) -> Tensor {
+    pub fn rope_with_tables_decomposed(&self, cos: &NodeHandle, sin: &NodeHandle) -> NodeHandle {
         self.assert_same_graph(cos, "rope_with_tables_decomposed", "cos");
         self.assert_same_graph(sin, "rope_with_tables_decomposed", "sin");
         let in_shape = self.shape();
@@ -7574,7 +7584,7 @@ impl Tensor {
     /// Use [`rms_norm_last_dim_decomposed`](Self::rms_norm_last_dim_decomposed)
     /// instead if you need to differentiate through this op —
     /// backward through the fused op is not yet implemented.
-    pub fn rms_norm_last_dim(&self, eps: f64) -> Tensor {
+    pub fn rms_norm_last_dim(&self, eps: f64) -> NodeHandle {
         let x_dims_vec: Vec<usize> = self.shape().dims().to_vec();
         assert!(
             !x_dims_vec.is_empty() && *x_dims_vec.last().unwrap() > 0,
@@ -7591,7 +7601,7 @@ impl Tensor {
     /// working backward rules through its primitive subgraph. Use
     /// this when you need to differentiate through RMSNorm; use
     /// [`rms_norm_last_dim`](Self::rms_norm_last_dim) for inference.
-    pub fn rms_norm_last_dim_decomposed(&self, eps: f64) -> Tensor {
+    pub fn rms_norm_last_dim_decomposed(&self, eps: f64) -> NodeHandle {
         let x_shape = self.shape();
         let x_dims_vec: Vec<usize> = x_shape.dims().to_vec();
         assert!(
@@ -7614,7 +7624,7 @@ impl Tensor {
     /// `dim` using a 1-D `u32` index tensor. The output has the same
     /// shape as `self` except dimension `dim` is replaced by
     /// `indices.shape()[0]`.
-    pub fn index_select(&self, dim: usize, indices: &Tensor) -> Tensor {
+    pub fn index_select(&self, dim: usize, indices: &NodeHandle) -> NodeHandle {
         assert!(
             Arc::ptr_eq(&self.graph, &indices.graph),
             "index_select: data and index tensors must live on the same graph; use `const_*_like` to build on an existing graph",
@@ -7660,7 +7670,7 @@ impl Tensor {
     /// Append a `Gather` node that performs an N-dimensional gather along
     /// `dim`. The `indices` tensor must be `U32` with the same rank as
     /// `self`. Output shape equals `indices.shape()`.
-    pub fn gather(&self, dim: usize, indices: &Tensor) -> Tensor {
+    pub fn gather(&self, dim: usize, indices: &NodeHandle) -> NodeHandle {
         assert!(
             Arc::ptr_eq(&self.graph, &indices.graph),
             "gather: data and index tensors must live on the same graph; use `const_*_like` to build on an existing graph",
@@ -7701,7 +7711,7 @@ impl Tensor {
     }
 
     /// Append a `Concat` node joining `self` and `other` along `dim`.
-    pub fn concat(&self, other: &Tensor, dim: usize) -> Tensor {
+    pub fn concat(&self, other: &NodeHandle, dim: usize) -> NodeHandle {
         assert!(
             Arc::ptr_eq(&self.graph, &other.graph),
             "concat: tensors must live on the same graph; use `const_*_like` to build on an existing graph",
@@ -7746,7 +7756,7 @@ impl Tensor {
 
     /// Append a `Slice` (narrow) node taking elements `[start, start+len)`
     /// along `dim`. The output has the same rank; only `dim` shrinks.
-    pub fn slice(&self, dim: usize, start: usize, len: usize) -> Tensor {
+    pub fn slice(&self, dim: usize, start: usize, len: usize) -> NodeHandle {
         let in_shape = self.shape();
         let in_dims = in_shape.dims();
         assert!(dim < in_dims.len(), "slice: dim out of bounds");
@@ -7773,34 +7783,34 @@ impl Tensor {
     /// Append an `AddScalar` node: `y[i] = x[i] + c`. Convenient for
     /// avoiding a full-shape const node when you just want to bias a
     /// tensor by a constant.
-    pub fn add_scalar(&self, c: f64) -> Tensor {
+    pub fn add_scalar(&self, c: f64) -> NodeHandle {
         self.unary_op(Op::AddScalar(c))
     }
 
     /// Append a `MulScalar` node: `y[i] = x[i] * c`.
-    pub fn mul_scalar(&self, c: f64) -> Tensor {
+    pub fn mul_scalar(&self, c: f64) -> NodeHandle {
         self.unary_op(Op::MulScalar(c))
     }
 
     /// Append a `PowI` node raising each element to an integer power.
-    pub fn powi(&self, n: i32) -> Tensor {
+    pub fn powi(&self, n: i32) -> NodeHandle {
         self.unary_op(Op::PowI(n))
     }
 
     /// Append a `Clamp` node restricting each element to `[min, max]`.
-    pub fn clamp(&self, min: f64, max: f64) -> Tensor {
+    pub fn clamp(&self, min: f64, max: f64) -> NodeHandle {
         assert!(min <= max, "clamp: min ({min}) must be <= max ({max})",);
         self.unary_op(Op::Clamp { min, max })
     }
 
     /// Append a `Maximum` node `max(self, other)` element-wise. Matching
     /// shapes required.
-    pub fn maximum(&self, other: &Tensor) -> Tensor {
+    pub fn maximum(&self, other: &NodeHandle) -> NodeHandle {
         self.binary_op("maximum", Op::Maximum, other, self.shape())
     }
 
     /// Append a `Minimum` node `min(self, other)` element-wise.
-    pub fn minimum(&self, other: &Tensor) -> Tensor {
+    pub fn minimum(&self, other: &NodeHandle) -> NodeHandle {
         self.binary_op("minimum", Op::Minimum, other, self.shape())
     }
 
@@ -7810,25 +7820,25 @@ impl Tensor {
     /// `BroadcastTo` nodes as needed, and then emits a regular `Add`.
     /// Useful for bias addition (`[batch, hidden] + [hidden]`) without
     /// the caller writing the broadcast out explicitly.
-    pub fn broadcast_add(&self, other: &Tensor) -> Tensor {
+    pub fn broadcast_add(&self, other: &NodeHandle) -> NodeHandle {
         let (a, b) = self.auto_broadcast_pair("broadcast_add", other);
         a.add(&b)
     }
 
     /// Element-wise subtraction with automatic broadcasting.
-    pub fn broadcast_sub(&self, other: &Tensor) -> Tensor {
+    pub fn broadcast_sub(&self, other: &NodeHandle) -> NodeHandle {
         let (a, b) = self.auto_broadcast_pair("broadcast_sub", other);
         a.sub(&b)
     }
 
     /// Element-wise multiplication with automatic broadcasting.
-    pub fn broadcast_mul(&self, other: &Tensor) -> Tensor {
+    pub fn broadcast_mul(&self, other: &NodeHandle) -> NodeHandle {
         let (a, b) = self.auto_broadcast_pair("broadcast_mul", other);
         a.mul(&b)
     }
 
     /// Element-wise division with automatic broadcasting.
-    pub fn broadcast_div(&self, other: &Tensor) -> Tensor {
+    pub fn broadcast_div(&self, other: &NodeHandle) -> NodeHandle {
         let (a, b) = self.auto_broadcast_pair("broadcast_div", other);
         a.div(&b)
     }
@@ -7837,7 +7847,11 @@ impl Tensor {
     /// `broadcast_*` wrappers above. Inserts explicit `BroadcastTo` nodes
     /// on whichever side needs them — either or both may pass through
     /// unchanged if already at the target shape.
-    fn auto_broadcast_pair(&self, op: &'static str, other: &Tensor) -> (Tensor, Tensor) {
+    fn auto_broadcast_pair(
+        &self,
+        op: &'static str,
+        other: &NodeHandle,
+    ) -> (NodeHandle, NodeHandle) {
         assert!(
             Arc::ptr_eq(&self.graph, &other.graph),
             "{op}: tensors must live on the same graph — lhs is on graph #{}, rhs on graph #{}; \
@@ -7873,7 +7887,7 @@ impl Tensor {
     /// Append an `IndexAdd` node — the functional inverse of
     /// `IndexSelect`. Returns `base` with `src` added at positions given
     /// by `indices` along `dim`.
-    pub fn index_add(&self, dim: usize, indices: &Tensor, src: &Tensor) -> Tensor {
+    pub fn index_add(&self, dim: usize, indices: &NodeHandle, src: &NodeHandle) -> NodeHandle {
         assert!(
             Arc::ptr_eq(&self.graph, &indices.graph) && Arc::ptr_eq(&self.graph, &src.graph),
             "index_add: all tensors must live on the same graph; use `const_*_like` to build on an existing graph",
@@ -7920,7 +7934,7 @@ impl Tensor {
     /// Append a `ScatterAdd` node — the functional inverse of `Gather`.
     /// Returns `base` with values from `src` accumulated at positions
     /// given by `indices` (with `indices[p]` substituted at `dim`).
-    pub fn scatter_add(&self, dim: usize, indices: &Tensor, src: &Tensor) -> Tensor {
+    pub fn scatter_add(&self, dim: usize, indices: &NodeHandle, src: &NodeHandle) -> NodeHandle {
         assert!(
             Arc::ptr_eq(&self.graph, &indices.graph) && Arc::ptr_eq(&self.graph, &src.graph),
             "scatter_add: all tensors must live on the same graph; use `const_*_like` to build on an existing graph",
@@ -7956,7 +7970,7 @@ impl Tensor {
 
     // --- internal helpers for the new builders ---
 
-    fn scalar_reduction(&self, op: Op) -> Tensor {
+    fn scalar_reduction(&self, op: Op) -> NodeHandle {
         let (shape, dtype) = crate::shape::primitive_shape(&op, &[self.shape()], &[self.dtype()])
             .expect("scalar_reduction: single input always infers a rank-0 shape");
         let id = self.graph.write().unwrap().push(Node {
@@ -7971,7 +7985,7 @@ impl Tensor {
         }
     }
 
-    fn axis_reduction(&self, name: &'static str, op: Op, dim: usize) -> Tensor {
+    fn axis_reduction(&self, name: &'static str, op: Op, dim: usize) -> NodeHandle {
         let in_shape = self.shape();
         assert!(
             dim < in_shape.dims().len(),
@@ -8003,7 +8017,7 @@ impl Tensor {
     /// error naming both graphs, per "validate at graph-build time".
     fn require_same_graph(
         &self,
-        other: &Tensor,
+        other: &NodeHandle,
         op: &str,
         role: &str,
     ) -> std::result::Result<(), fuel_ir::Error> {
@@ -8022,10 +8036,10 @@ impl Tensor {
     }
 
     /// Panicking sibling of [`Self::require_same_graph`] for the builders that
-    /// return `Tensor` rather than `Result` — same convention as `matmul`,
+    /// return `NodeHandle` rather than `Result` — same convention as `matmul`,
     /// `qmatmul`, `conv2d` and `paged_attn`. A panic at the build site is far
     /// better than the hang it replaces: it names the operand and both graphs.
-    fn assert_same_graph(&self, other: &Tensor, op: &str, role: &str) {
+    fn assert_same_graph(&self, other: &NodeHandle, op: &str, role: &str) {
         assert!(
             Arc::ptr_eq(&self.graph, &other.graph),
             "{op}: operands must live on the same graph — self is on graph #{}, \
@@ -8037,7 +8051,13 @@ impl Tensor {
         );
     }
 
-    fn binary_op(&self, name: &'static str, op: Op, other: &Tensor, out_shape: Shape) -> Tensor {
+    fn binary_op(
+        &self,
+        name: &'static str,
+        op: Op,
+        other: &NodeHandle,
+        out_shape: Shape,
+    ) -> NodeHandle {
         assert!(
             Arc::ptr_eq(&self.graph, &other.graph),
             "{name}: tensors must live on the same graph — lhs is on graph #{}, rhs on graph #{}; \
@@ -8082,9 +8102,9 @@ impl Tensor {
         &self,
         name: &'static str,
         op: Op,
-        other: &Tensor,
+        other: &NodeHandle,
         out_shape: Shape,
-    ) -> std::result::Result<Tensor, fuel_ir::Error> {
+    ) -> std::result::Result<NodeHandle, fuel_ir::Error> {
         if !Arc::ptr_eq(&self.graph, &other.graph) {
             return Err(fuel_ir::Error::Msg(format!(
                 "{name}: tensors must live on the same graph — lhs is on graph #{}, rhs on graph #{}; \
@@ -8123,7 +8143,7 @@ impl Tensor {
         })
     }
 
-    fn unary_op(&self, op: Op) -> Tensor {
+    fn unary_op(&self, op: Op) -> NodeHandle {
         let shape = self.shape();
         let dtype = self.dtype();
         let id = self.graph.write().unwrap().push(Node {
@@ -8143,7 +8163,7 @@ impl Tensor {
     /// comparison family). Differs from [`Self::binary_op`] only in the
     /// node's output dtype: always `DType::U8` regardless of input
     /// dtype.
-    fn binary_compare_op(&self, name: &'static str, op: Op, other: &Tensor) -> Tensor {
+    fn binary_compare_op(&self, name: &'static str, op: Op, other: &NodeHandle) -> NodeHandle {
         assert!(
             Arc::ptr_eq(&self.graph, &other.graph),
             "{name}: tensors must live on the same graph — lhs is on graph #{}, rhs on graph #{}; \
@@ -9892,7 +9912,7 @@ impl Tensor {
                     // accumulating `IndexAdd` on the destination —
                     // express that explicitly in forward.
                     panic!(
-                        "Tensor::backward: Op::WriteSlice is non-differentiable. \
+                        "NodeHandle::backward: Op::WriteSlice is non-differentiable. \
                          Use Gather + IndexAdd if you need a differentiable scatter."
                     );
                 }
@@ -9903,7 +9923,7 @@ impl Tensor {
                     // need a gradient path; a differentiable scatter
                     // is expressible as Gather + IndexAdd in forward.
                     panic!(
-                        "Tensor::backward: Op::WriteSliceRotating is non-differentiable. \
+                        "NodeHandle::backward: Op::WriteSliceRotating is non-differentiable. \
                          Use Gather + IndexAdd if you need a differentiable scatter."
                     );
                 }
@@ -9913,7 +9933,7 @@ impl Tensor {
                     // device-resident offset. Decode-time append; no
                     // gradient path.
                     panic!(
-                        "Tensor::backward: Op::WriteSliceDoff is non-differentiable. \
+                        "NodeHandle::backward: Op::WriteSliceDoff is non-differentiable. \
                          Use Gather + IndexAdd if you need a differentiable scatter."
                     );
                 }
@@ -9964,7 +9984,7 @@ impl Tensor {
                         let eps = match params {
                             crate::registry::FusedOpParams::LayerNormLastDim { eps } => eps,
                             _ => panic!(
-                                "Tensor::backward: Op::Fused(LAYER_NORM_LAST_DIM, _) \
+                                "NodeHandle::backward: Op::Fused(LAYER_NORM_LAST_DIM, _) \
                                  expected FusedOpParams::LayerNormLastDim, got {params:?}",
                             ),
                         };
@@ -9989,7 +10009,7 @@ impl Tensor {
                         let eps = match params {
                             crate::registry::FusedOpParams::RmsNormLastDim { eps } => eps,
                             _ => panic!(
-                                "Tensor::backward: Op::Fused(RMS_NORM_LAST_DIM, _) \
+                                "NodeHandle::backward: Op::Fused(RMS_NORM_LAST_DIM, _) \
                                  expected FusedOpParams::RmsNormLastDim, got {params:?}",
                             ),
                         };
@@ -10087,7 +10107,7 @@ impl Tensor {
                                 groups,
                             } => (stride, padding, groups),
                             _ => panic!(
-                                "Tensor::backward: Op::Fused(CONV2D, _) \
+                                "NodeHandle::backward: Op::Fused(CONV2D, _) \
                                  expected FusedOpParams::Conv2D, got {params:?}",
                             ),
                         };
@@ -10114,7 +10134,7 @@ impl Tensor {
                         let out_pad_w = want_w.saturating_sub(base_w);
                         if groups != 1 {
                             panic!(
-                                "Tensor::backward: Op::Fused(CONV2D) groups>1 \
+                                "NodeHandle::backward: Op::Fused(CONV2D) groups>1 \
                                  backward not yet implemented (got groups={groups}). \
                                  The stride/padding/groups=1 case is wired; grouped \
                                  backward needs a per-group weight reshape.",
@@ -10145,7 +10165,7 @@ impl Tensor {
                         // dW via correlation expressed as a conv2d.
                         if sh != 1 || sw != 1 {
                             panic!(
-                                "Tensor::backward: Op::Fused(CONV2D) stride>1 \
+                                "NodeHandle::backward: Op::Fused(CONV2D) stride>1 \
                                  backward not yet implemented (got stride={stride:?}). \
                                  Conv2D needs a `dilation` field to express this \
                                  without composing extra ops.",
@@ -10239,7 +10259,7 @@ impl Tensor {
                         // trick as Conv2D's dW. Punt until a real
                         // consumer asks for it.
                         panic!(
-                            "Tensor::backward: ConvTranspose2D does \
+                            "NodeHandle::backward: ConvTranspose2D does \
                              not yet have its own gradient rule \
                              (only used in the forward path of \
                              Conv2D's backward).",
@@ -10279,7 +10299,7 @@ impl Tensor {
                                 softcap,
                             ),
                             other => panic!(
-                                "Tensor::backward: FlashAttn node carries \
+                                "NodeHandle::backward: FlashAttn node carries \
                                  unexpected params {other:?}",
                             ),
                         };
@@ -10330,7 +10350,7 @@ impl Tensor {
                         // training pass writes through it). No
                         // gradient rule.
                         panic!(
-                            "Tensor::backward: PagedAttn is \
+                            "NodeHandle::backward: PagedAttn is \
                              decode-only; no gradient rule exists.",
                         );
                     } else if fid == crate::registry::FusedOps::QMATMUL {
@@ -10347,7 +10367,7 @@ impl Tensor {
                         );
                     } else {
                         panic!(
-                            "Tensor::backward: Op::Fused id {fid:?} has no \
+                            "NodeHandle::backward: Op::Fused id {fid:?} has no \
                              backward arm wired yet. This is a programming \
                              bug — extend the match when the op migrates \
                              to the registry.",
@@ -10404,7 +10424,7 @@ impl Tensor {
                     // never-hang guard lower away. Reaching here means the
                     // pre-pass did not run (an internal bug).
                     panic!(
-                        "Tensor::backward: Op::Scan reached the reverse walk un-lowered — \
+                        "NodeHandle::backward: Op::Scan reached the reverse walk un-lowered — \
                             the C3 lower_scans_for_backward pre-pass did not run (internal bug)."
                     );
                 }
@@ -10920,10 +10940,10 @@ impl Tensor {
 }
 
 /// Map from forward-graph node IDs to the IDs of their accumulated
-/// backward-graph gradient nodes, returned by [`Tensor::backward`].
+/// backward-graph gradient nodes, returned by [`NodeHandle::backward`].
 ///
 /// All gradient nodes live on the same graph as the forward nodes. Getting
-/// a gradient by calling [`GradMap::get`] returns a new [`Tensor`] handle
+/// a gradient by calling [`GradMap::get`] returns a new [`NodeHandle`] handle
 /// pointing at the gradient node so callers can realize it, plug it into
 /// further computation, or back-propagate through it again.
 pub struct GradMap {
@@ -10937,13 +10957,13 @@ impl GradMap {
     /// Returns `None` if the forward tensor was not reachable from the
     /// root passed to `backward` (i.e. not part of the computation being
     /// differentiated).
-    pub fn get(&self, forward: &Tensor) -> Option<Tensor> {
+    pub fn get(&self, forward: &NodeHandle) -> Option<NodeHandle> {
         assert!(
             Arc::ptr_eq(&self.graph, &forward.graph),
             "GradMap::get: tensor is from a different graph",
         );
         let &grad_id = self.forward_to_grad.get(&forward.id)?;
-        Some(Tensor {
+        Some(NodeHandle {
             graph: self.graph.clone(),
             id: grad_id,
         })
@@ -11253,7 +11273,7 @@ fn build_ones(graph: &SharedGraph, shape: Shape, dtype: DType) -> NodeId {
 ///
 /// Build RoPE cos/sin tables for a given `(base, start_pos, seq,
 /// head_dim)`. Each returned `Vec<f32>` has shape `[seq, head_dim]`
-/// (row-major) in the half-split layout [`Tensor::rope_with_tables`]
+/// (row-major) in the half-split layout [`NodeHandle::rope_with_tables`]
 /// expects: positions `[:, :half]` and `[:, half:]` hold the same
 /// value for the same `(p, i)`, so a single elementwise multiply with
 /// `self` does the right thing alongside `rotate_half(self) * sin`.
@@ -11424,12 +11444,12 @@ mod tests {
         // No-drift guard (Convergence A, Task 6): every routed builder's output
         // shape/dtype must equal primitive_shape's answer for the same Op. If a
         // builder's inline math ever diverged from primitive_shape, this fails.
-        let x = Tensor::from_f32(
+        let x = NodeHandle::from_f32(
             vec![0.0_f32; 2 * 3 * 4],
             Shape::from_dims(&[2, 3, 4]),
             cpu_dev(),
         );
-        let checks: Vec<(Tensor, Op)> = vec![
+        let checks: Vec<(NodeHandle, Op)> = vec![
             (
                 x.slice(1, 0, 2),
                 Op::Slice {
@@ -11587,7 +11607,7 @@ mod tests {
     #[test]
     fn conv2d_builder_emits_conv2d_node_with_right_shape() {
         // k=3 s=1 p=1 keeps H and W.
-        let x = Tensor::from_f32(
+        let x = NodeHandle::from_f32(
             vec![0.0_f32; 1 * 2 * 4 * 4],
             Shape::from_dims(&[1, 2, 4, 4]),
             cpu_dev(),
@@ -11604,7 +11624,7 @@ mod tests {
     #[test]
     fn conv2d_builder_stride_and_no_padding() {
         // k=3 s=2 p=0 on H=W=8 gives (8-3)/2+1 = 3.
-        let x = Tensor::from_f32(
+        let x = NodeHandle::from_f32(
             vec![0.0_f32; 1 * 2 * 8 * 8],
             Shape::from_dims(&[1, 2, 8, 8]),
             cpu_dev(),
@@ -11620,7 +11640,7 @@ mod tests {
     #[test]
     fn conv2d_builder_depthwise_groups() {
         // groups=Cin=Cout=4 is the depthwise case. Weight per channel is [Cin/groups=1, kH, kW].
-        let x = Tensor::from_f32(
+        let x = NodeHandle::from_f32(
             vec![0.0_f32; 1 * 4 * 4 * 4],
             Shape::from_dims(&[1, 4, 4, 4]),
             cpu_dev(),
@@ -11636,7 +11656,7 @@ mod tests {
     #[test]
     fn conv_transpose2d_builder_emits_node_with_right_shape() {
         // Hin=4, Kh=3, s=2, pad=1, out_pad=1 → Hout = (4-1)*2 + (3-1) + 1 + 1 - 2 = 8.
-        let x = Tensor::from_f32(
+        let x = NodeHandle::from_f32(
             vec![0.0_f32; 1 * 2 * 4 * 4],
             Shape::from_dims(&[1, 2, 4, 4]),
             cpu_dev(),
@@ -11653,7 +11673,7 @@ mod tests {
     fn conv_transpose1d_builder_shape_stride_2_pad_1() {
         // Lin=4, K=3, s=2, pad=1, out_pad=1, dil=1
         // Lout = (4-1)*2 + (3-1) + 1 + 1 - 2 = 8.
-        let x = Tensor::from_f32(
+        let x = NodeHandle::from_f32(
             vec![0.0_f32; 1 * 2 * 4],
             Shape::from_dims(&[1, 2, 4]),
             cpu_dev(),
@@ -11667,7 +11687,7 @@ mod tests {
     fn conv_transpose1d_builder_shape_stride_4_no_pad() {
         // Lin=2, K=4, s=4, pad=0, out_pad=0, dil=1
         // Lout = (2-1)*4 + (4-1) + 0 + 1 - 0 = 8.
-        let x = Tensor::from_f32(
+        let x = NodeHandle::from_f32(
             vec![0.0_f32; 1 * 1 * 2],
             Shape::from_dims(&[1, 1, 2]),
             cpu_dev(),
@@ -11682,7 +11702,7 @@ mod tests {
         // groups=2: input Cin=4 splits into 2 groups of 2; weight
         // Cin=4 first dim matches input; Cout/group=3 → total Cout=6.
         // Lin=3, K=3, s=1, pad=0, out_pad=0, dil=1 → Lout = (3-1)*1 + 2 + 0 + 1 = 5.
-        let x = Tensor::from_f32(
+        let x = NodeHandle::from_f32(
             vec![0.0_f32; 1 * 4 * 3],
             Shape::from_dims(&[1, 4, 3]),
             cpu_dev(),
@@ -11696,7 +11716,7 @@ mod tests {
     fn conv2d_backward_grads_have_input_shapes() {
         // Forward Y = conv2d(X, W) with stride=1, pad=1, groups=1 keeps H,W.
         // Backward should produce dX with X's shape and dW with W's shape.
-        let x = Tensor::from_f32(
+        let x = NodeHandle::from_f32(
             (0..(1 * 2 * 4 * 4))
                 .map(|i| (i as f32) * 0.05 - 0.5)
                 .collect::<Vec<f32>>(),
@@ -11746,7 +11766,7 @@ mod tests {
 
     #[test]
     fn move_to_device_emits_op_move_node() {
-        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let moved = a.move_to_device(DeviceLocation::Vulkan { gpu_id: 0 });
         let g = moved.graph().read().unwrap();
         match &g.node(moved.id()).op {
@@ -11762,7 +11782,7 @@ mod tests {
 
     #[test]
     fn copy_to_device_emits_op_copy_node() {
-        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let b = a.copy_to_device(DeviceLocation::Vulkan { gpu_id: 0 });
         let g = b.graph().read().unwrap();
         match &g.node(b.id()).op {
@@ -11778,7 +11798,7 @@ mod tests {
 
     #[test]
     fn release_builder_emits_op_release_node() {
-        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let released = a.release();
         let g = released.graph().read().unwrap();
         assert!(matches!(g.node(released.id()).op, Op::Release));
@@ -11789,13 +11809,13 @@ mod tests {
 
     #[test]
     fn placement_is_none_by_default() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         assert_eq!(a.placement(), None);
     }
 
     #[test]
     fn on_device_sets_placement_hint() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
         // Only tag the Add node; the const leaves remain unplaced.
         let c = a.add(&b).on_device(DeviceLocation::Vulkan { gpu_id: 0 });
@@ -11806,7 +11826,7 @@ mod tests {
 
     #[test]
     fn placement_survives_graph_re_reads() {
-        let a = Tensor::from_f32(vec![1.0], Shape::from_dims(&[1]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0], Shape::from_dims(&[1]), cpu_dev());
         let tagged = a.clone().on_device(DeviceLocation::Cpu);
         // Re-read from a fresh borrow — round-trips through the side-table.
         assert_eq!(
@@ -11817,7 +11837,7 @@ mod tests {
 
     #[test]
     fn from_f32_creates_single_const_node() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         assert_eq!(a.graph().read().unwrap().len(), 1);
         assert_eq!(a.shape().dims(), &[3]);
         assert_eq!(a.dtype(), DType::F32);
@@ -11832,7 +11852,7 @@ mod tests {
 
     #[test]
     fn add_appends_a_node_and_tracks_inputs() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
         let c = a.add(&b);
         assert_eq!(c.graph().read().unwrap().len(), 3); // const, const, add
@@ -11846,7 +11866,7 @@ mod tests {
 
     #[test]
     fn chained_ops_all_share_one_graph() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
         let c = a.add(&b).mul(&a).sqr().relu();
         assert_eq!(c.graph().read().unwrap().len(), 6); // 2 consts + add + mul + sqr + relu
@@ -11855,7 +11875,7 @@ mod tests {
 
     #[test]
     fn matmul_validates_shapes_and_produces_correct_output_shape() {
-        let a = Tensor::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let b = a.const_f32_like(vec![1.0; 12], Shape::from_dims(&[3, 4]));
         let c = a.matmul(&b);
         assert_eq!(c.shape().dims(), &[2, 4]);
@@ -11864,7 +11884,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "shape mismatch")]
     fn add_panics_on_shape_mismatch() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let b = a.const_f32_like(vec![1.0, 2.0], Shape::from_dims(&[2]));
         let _ = a.add(&b);
     }
@@ -11872,7 +11892,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "inner dim mismatch")]
     fn matmul_panics_on_inner_dim_mismatch() {
-        let a = Tensor::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let b = a.const_f32_like(vec![1.0; 8], Shape::from_dims(&[4, 2]));
         let _ = a.matmul(&b);
     }
@@ -11880,8 +11900,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "must live on the same graph")]
     fn cross_graph_op_is_rejected() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
-        let b = Tensor::from_f32(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let b = NodeHandle::from_f32(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]), cpu_dev());
         let _ = a.add(&b);
     }
 
@@ -11894,22 +11914,22 @@ mod tests {
 
     #[test]
     fn each_new_graph_gets_a_distinct_id() {
-        let a = Tensor::from_f32(vec![1.0], Shape::from_dims(&[1]), cpu_dev());
-        let b = Tensor::from_f32(vec![2.0], Shape::from_dims(&[1]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0], Shape::from_dims(&[1]), cpu_dev());
+        let b = NodeHandle::from_f32(vec![2.0], Shape::from_dims(&[1]), cpu_dev());
         assert_ne!(a.graph_id(), b.graph_id());
     }
 
     #[test]
     fn same_graph_tensors_share_one_id() {
-        let a = Tensor::from_f32(vec![1.0], Shape::from_dims(&[1]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0], Shape::from_dims(&[1]), cpu_dev());
         let b = a.const_f32_like(vec![2.0], Shape::from_dims(&[1]));
         assert_eq!(a.graph_id(), b.graph_id());
     }
 
     #[test]
     fn affinity_panic_names_both_graph_ids() {
-        let a = Tensor::from_f32(vec![1.0], Shape::from_dims(&[1]), cpu_dev());
-        let b = Tensor::from_f32(vec![2.0], Shape::from_dims(&[1]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0], Shape::from_dims(&[1]), cpu_dev());
+        let b = NodeHandle::from_f32(vec![2.0], Shape::from_dims(&[1]), cpu_dev());
         let (ia, ib) = (a.graph_id(), b.graph_id());
         let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| a.add(&b)))
             .expect_err("cross-graph add must panic");
@@ -11926,8 +11946,8 @@ mod tests {
 
     #[test]
     fn from_f32_on_builds_into_the_given_graph() {
-        let root = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
-        let w = Tensor::from_f32_on(
+        let root = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let w = NodeHandle::from_f32_on(
             root.graph(),
             vec![4.0, 5.0, 6.0],
             Shape::from_dims(&[3]),
@@ -11942,8 +11962,8 @@ mod tests {
         // The program that could not previously be written: build two tensors
         // and combine them, without discovering `const_*_like`.
         let g: SharedGraph = Arc::new(RwLock::new(Graph::new()));
-        let a = Tensor::from_f32_on(&g, vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
-        let b = Tensor::from_f32_on(&g, vec![1.0; 6], Shape::from_dims(&[3, 2]), cpu_dev());
+        let a = NodeHandle::from_f32_on(&g, vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let b = NodeHandle::from_f32_on(&g, vec![1.0; 6], Shape::from_dims(&[3, 2]), cpu_dev());
         let y = a.matmul(&b);
         assert_eq!(y.shape().dims(), &[2, 2]);
         assert_eq!(y.graph_id(), a.graph_id());
@@ -11953,11 +11973,13 @@ mod tests {
     fn graph_scoped_constructors_cover_every_dtype() {
         let g: SharedGraph = Arc::new(RwLock::new(Graph::new()));
         let s = Shape::from_dims(&[1]);
-        let f32t = Tensor::from_f32_on(&g, vec![1.0f32], s.clone(), cpu_dev());
-        let f64t = Tensor::from_f64_on(&g, vec![1.0f64], s.clone(), cpu_dev());
-        let bf16t = Tensor::from_bf16_on(&g, vec![half::bf16::from_f32(1.0)], s.clone(), cpu_dev());
-        let f16t = Tensor::from_f16_on(&g, vec![half::f16::from_f32(1.0)], s.clone(), cpu_dev());
-        let u32t = Tensor::from_u32_on(&g, vec![1u32], s, cpu_dev());
+        let f32t = NodeHandle::from_f32_on(&g, vec![1.0f32], s.clone(), cpu_dev());
+        let f64t = NodeHandle::from_f64_on(&g, vec![1.0f64], s.clone(), cpu_dev());
+        let bf16t =
+            NodeHandle::from_bf16_on(&g, vec![half::bf16::from_f32(1.0)], s.clone(), cpu_dev());
+        let f16t =
+            NodeHandle::from_f16_on(&g, vec![half::f16::from_f32(1.0)], s.clone(), cpu_dev());
+        let u32t = NodeHandle::from_u32_on(&g, vec![1u32], s, cpu_dev());
         for t in [&f64t, &bf16t, &f16t, &u32t] {
             assert_eq!(
                 t.graph_id(),
@@ -11975,7 +11997,7 @@ mod tests {
 
     #[test]
     fn from_f64_tags_node_with_f64_dtype() {
-        let a = Tensor::from_f64(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a = NodeHandle::from_f64(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         assert_eq!(a.dtype(), DType::F64);
         let node = a.graph().read().unwrap().node(a.id()).clone();
         // Phase 7.5 G2: slot-rooted Const, dtype validated via slot.
@@ -11986,7 +12008,7 @@ mod tests {
 
     #[test]
     fn from_bf16_tags_node_with_bf16_dtype() {
-        let a = Tensor::from_bf16(
+        let a = NodeHandle::from_bf16(
             vec![bf16::from_f32(1.0), bf16::from_f32(2.0)],
             Shape::from_dims(&[2]),
             cpu_dev(),
@@ -12000,7 +12022,7 @@ mod tests {
 
     #[test]
     fn from_f16_tags_node_with_f16_dtype() {
-        let a = Tensor::from_f16(
+        let a = NodeHandle::from_f16(
             vec![f16::from_f32(1.0), f16::from_f32(2.0)],
             Shape::from_dims(&[2]),
             cpu_dev(),
@@ -12015,7 +12037,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "dtype mismatch")]
     fn add_panics_on_mixed_dtype() {
-        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let b = a.const_f64_like(vec![1.0, 2.0], Shape::from_dims(&[2]));
         let _ = a.add(&b);
     }
@@ -12024,7 +12046,7 @@ mod tests {
 
     #[test]
     fn transpose_swaps_shape_dims() {
-        let a = Tensor::from_f32(
+        let a = NodeHandle::from_f32(
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
             cpu_dev(),
@@ -12039,14 +12061,14 @@ mod tests {
     #[test]
     #[should_panic(expected = "rank ≥ 2")]
     fn transpose_rejects_rank_1() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let _ = a.transpose();
     }
 
     #[test]
     fn transpose_on_rank_3_swaps_last_two_dims() {
         // [2, 3, 4] → [2, 4, 3]
-        let a = Tensor::from_f32(vec![0.0_f32; 24], Shape::from_dims(&[2, 3, 4]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![0.0_f32; 24], Shape::from_dims(&[2, 3, 4]), cpu_dev());
         let t = a.transpose();
         assert_eq!(t.shape().dims(), &[2, 4, 3]);
     }
@@ -12056,7 +12078,7 @@ mod tests {
     #[test]
     fn matmul_rank_3_batched_shape() {
         // [2, 3, 4] @ [2, 4, 5] → [2, 3, 5]
-        let a = Tensor::from_f32(vec![0.0; 24], Shape::from_dims(&[2, 3, 4]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![0.0; 24], Shape::from_dims(&[2, 3, 4]), cpu_dev());
         let b = a.const_f32_like(vec![0.0; 40], Shape::from_dims(&[2, 4, 5]));
         let c = a.matmul(&b);
         assert_eq!(c.shape().dims(), &[2, 3, 5]);
@@ -12065,7 +12087,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "batch dim mismatch")]
     fn matmul_rank_3_rejects_batch_dim_mismatch() {
-        let a = Tensor::from_f32(vec![0.0; 24], Shape::from_dims(&[2, 3, 4]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![0.0; 24], Shape::from_dims(&[2, 3, 4]), cpu_dev());
         let b = a.const_f32_like(vec![0.0; 60], Shape::from_dims(&[3, 4, 5]));
         let _ = a.matmul(&b);
     }
@@ -12075,7 +12097,7 @@ mod tests {
         // [batch=2, seq=3, k=4] @ [k=4, n=5] → [2, 3, 5]. This is the
         // canonical "linear layer across a batch" pattern and should
         // Just Work without an explicit broadcast_to on the RHS.
-        let a = Tensor::from_f32(vec![0.0; 24], Shape::from_dims(&[2, 3, 4]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![0.0; 24], Shape::from_dims(&[2, 3, 4]), cpu_dev());
         let b = a.const_f32_like(vec![0.0; 20], Shape::from_dims(&[4, 5]));
         let c = a.matmul(&b);
         assert_eq!(c.shape().dims(), &[2, 3, 5]);
@@ -12084,7 +12106,7 @@ mod tests {
     #[test]
     fn matmul_auto_broadcasts_rank_2_lhs_against_batched_rhs() {
         // [m=3, k=4] @ [batch=2, k=4, n=5] → [2, 3, 5].
-        let a = Tensor::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
         let b = a.const_f32_like(vec![0.0; 40], Shape::from_dims(&[2, 4, 5]));
         let c = a.matmul(&b);
         assert_eq!(c.shape().dims(), &[2, 3, 5]);
@@ -12093,7 +12115,7 @@ mod tests {
     #[test]
     fn concat_output_shape_sums_along_dim() {
         // [2, 3] concat [2, 4] along dim 1 → [2, 7]
-        let a = Tensor::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let b = a.const_f32_like(vec![0.0; 8], Shape::from_dims(&[2, 4]));
         let c = a.concat(&b, 1);
         assert_eq!(c.shape().dims(), &[2, 7]);
@@ -12102,7 +12124,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "non-dim shapes")]
     fn concat_rejects_nondim_shape_mismatch() {
-        let a = Tensor::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let b = a.const_f32_like(vec![0.0; 12], Shape::from_dims(&[3, 4]));
         let _ = a.concat(&b, 1);
     }
@@ -12110,7 +12132,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "rank mismatch")]
     fn concat_rejects_rank_mismatch() {
-        let a = Tensor::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let b = a.const_f32_like(vec![0.0; 6], Shape::from_dims(&[6]));
         let _ = a.concat(&b, 0);
     }
@@ -12118,7 +12140,7 @@ mod tests {
     #[test]
     fn slice_shrinks_only_the_slice_dim() {
         // [3, 4] slice dim 1, start 1, len 2 → [3, 2]
-        let x = Tensor::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
         let s = x.slice(1, 1, 2);
         assert_eq!(s.shape().dims(), &[3, 2]);
     }
@@ -12126,14 +12148,14 @@ mod tests {
     #[test]
     #[should_panic(expected = "exceeds dim size")]
     fn slice_rejects_out_of_bounds_range() {
-        let x = Tensor::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let _ = x.slice(1, 1, 3); // start=1, len=3 → would need dim>=4
     }
 
     #[test]
     fn broadcast_add_shape_promotes_to_common_shape() {
         // [4, 1] + [1, 3] → [4, 3]
-        let a = Tensor::from_f32(vec![0.0; 4], Shape::from_dims(&[4, 1]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![0.0; 4], Shape::from_dims(&[4, 1]), cpu_dev());
         let b = a.const_f32_like(vec![0.0; 3], Shape::from_dims(&[1, 3]));
         let c = a.broadcast_add(&b);
         assert_eq!(c.shape().dims(), &[4, 3]);
@@ -12142,7 +12164,7 @@ mod tests {
     #[test]
     fn broadcast_sub_pads_shorter_shape_with_leading_ones() {
         // [3] - [2, 3] → [2, 3]
-        let a = Tensor::from_f32(vec![0.0; 3], Shape::from_dims(&[3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![0.0; 3], Shape::from_dims(&[3]), cpu_dev());
         let b = a.const_f32_like(vec![0.0; 6], Shape::from_dims(&[2, 3]));
         let c = a.broadcast_sub(&b);
         assert_eq!(c.shape().dims(), &[2, 3]);
@@ -12151,14 +12173,14 @@ mod tests {
     #[test]
     #[should_panic(expected = "incompatible shapes")]
     fn broadcast_add_rejects_incompatible_shapes() {
-        let a = Tensor::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let b = a.const_f32_like(vec![0.0; 8], Shape::from_dims(&[2, 4]));
         let _ = a.broadcast_add(&b);
     }
 
     #[test]
     fn argmax_dim_is_u32_and_removes_reduced_dim() {
-        let x = Tensor::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let am = x.argmax_dim(1);
         assert_eq!(am.dtype(), DType::U32);
         assert_eq!(am.shape().dims(), &[2]);
@@ -12167,13 +12189,13 @@ mod tests {
     #[test]
     #[should_panic(expected = "out of bounds")]
     fn argmax_dim_rejects_bad_dim() {
-        let x = Tensor::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let _ = x.argmax_dim(5);
     }
 
     #[test]
     fn index_add_shape_validation() {
-        let base = Tensor::from_f32(vec![0.0; 10], Shape::from_dims(&[10]), cpu_dev());
+        let base = NodeHandle::from_f32(vec![0.0; 10], Shape::from_dims(&[10]), cpu_dev());
         let idx = base.const_u32_like(vec![1, 3, 5], Shape::from_dims(&[3]));
         let src = base.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
         let out = base.index_add(0, &idx, &src);
@@ -12183,7 +12205,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "dtypes must match")]
     fn index_add_rejects_dtype_mismatch() {
-        let base = Tensor::from_f32(vec![0.0; 5], Shape::from_dims(&[5]), cpu_dev());
+        let base = NodeHandle::from_f32(vec![0.0; 5], Shape::from_dims(&[5]), cpu_dev());
         let idx = base.const_u32_like(vec![0, 2], Shape::from_dims(&[2]));
         let src = base.const_f64_like(vec![1.0, 2.0], Shape::from_dims(&[2]));
         let _ = base.index_add(0, &idx, &src);
@@ -12191,7 +12213,7 @@ mod tests {
 
     #[test]
     fn scatter_add_validates_index_matches_src() {
-        let base = Tensor::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let base = NodeHandle::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let idx = base.const_u32_like(vec![0, 2, 1, 0], Shape::from_dims(&[2, 2]));
         let src = base.const_f32_like(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[2, 2]));
         let out = base.scatter_add(1, &idx, &src);
@@ -12201,7 +12223,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "same shape")]
     fn scatter_add_rejects_index_src_shape_mismatch() {
-        let base = Tensor::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let base = NodeHandle::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let idx = base.const_u32_like(vec![0, 1], Shape::from_dims(&[2]));
         let src = base.const_f32_like(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[2, 2]));
         let _ = base.scatter_add(1, &idx, &src);
@@ -12210,7 +12232,7 @@ mod tests {
     #[test]
     fn reduce_sum_to_validates_compatibility() {
         // [3, 4] can reduce to [4] (sum along dim 0) or [3, 1] (sum along dim 1).
-        let x = Tensor::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
         let r1 = x.reduce_sum_to(Shape::from_dims(&[4]));
         assert_eq!(r1.shape().dims(), &[4]);
         let r2 = x.reduce_sum_to(Shape::from_dims(&[3, 1]));
@@ -12221,13 +12243,13 @@ mod tests {
     #[should_panic(expected = "incompatible")]
     fn reduce_sum_to_rejects_non_broadcast_target() {
         // [3, 4] cannot reduce to [3, 2] — target must be broadcast-into-source.
-        let x = Tensor::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
         let _ = x.reduce_sum_to(Shape::from_dims(&[3, 2]));
     }
 
     #[test]
     fn unsqueeze_inserts_size_one_dim() {
-        let x = Tensor::from_f32(
+        let x = NodeHandle::from_f32(
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
             cpu_dev(),
@@ -12251,7 +12273,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "out of bounds")]
     fn unsqueeze_rejects_dim_above_rank() {
-        let x = Tensor::from_f32(vec![1.0; 4], Shape::from_dims(&[4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![1.0; 4], Shape::from_dims(&[4]), cpu_dev());
         // dim=2 > rank=1 → panic.
         let _ = x.unsqueeze(2);
     }
@@ -12261,7 +12283,7 @@ mod tests {
         // After Graph::push auto-derives the Layout side-table for view
         // ops, an unsqueeze node should have an explicit layout entry
         // with a stride-0 axis at the inserted position.
-        let x = Tensor::from_f32(
+        let x = NodeHandle::from_f32(
             vec![1.0, 2.0, 3.0, 4.0],
             Shape::from_dims(&[2, 2]),
             cpu_dev(),
@@ -12282,7 +12304,7 @@ mod tests {
     #[test]
     fn reduce_max_to_validates_compatibility() {
         // [3, 4] can reduce to [4] (max along dim 0) or [3, 1] (max along dim 1).
-        let x = Tensor::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
         let r1 = x.reduce_max_to(Shape::from_dims(&[4]));
         assert_eq!(r1.shape().dims(), &[4]);
         assert!(matches!(
@@ -12296,13 +12318,13 @@ mod tests {
     #[test]
     #[should_panic(expected = "incompatible")]
     fn reduce_max_to_rejects_non_broadcast_target() {
-        let x = Tensor::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
         let _ = x.reduce_max_to(Shape::from_dims(&[3, 2]));
     }
 
     #[test]
     fn reshape_preserves_element_count() {
-        let x = Tensor::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
         let r = x.reshape(Shape::from_dims(&[2, 6]));
         assert_eq!(r.shape().dims(), &[2, 6]);
     }
@@ -12310,21 +12332,21 @@ mod tests {
     #[test]
     #[should_panic(expected = "element count mismatch")]
     fn reshape_rejects_different_element_count() {
-        let x = Tensor::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
         let _ = x.reshape(Shape::from_dims(&[3, 3]));
     }
 
     #[test]
     #[should_panic(expected = "same graph")]
     fn concat_across_graphs_panics() {
-        let a = Tensor::from_f32(vec![0.0; 3], Shape::from_dims(&[3]), cpu_dev());
-        let b = Tensor::from_f32(vec![0.0; 3], Shape::from_dims(&[3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![0.0; 3], Shape::from_dims(&[3]), cpu_dev());
+        let b = NodeHandle::from_f32(vec![0.0; 3], Shape::from_dims(&[3]), cpu_dev());
         let _ = a.concat(&b, 0);
     }
 
     #[test]
     fn scalar_ops_preserve_shape_and_dtype() {
-        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let y = x.add_scalar(5.0).mul_scalar(2.0).powi(2).clamp(0.0, 100.0);
         assert_eq!(y.shape().dims(), &[3]);
         assert_eq!(y.dtype(), DType::F32);
@@ -12332,7 +12354,7 @@ mod tests {
 
     #[test]
     fn maximum_requires_matching_shapes() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let b = a.const_f32_like(vec![4.0, 1.0, 5.0], Shape::from_dims(&[3]));
         let m = a.maximum(&b);
         assert_eq!(m.shape().dims(), &[3]);
@@ -12341,7 +12363,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "shape mismatch")]
     fn maximum_rejects_shape_mismatch() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let b = a.const_f32_like(vec![1.0, 2.0], Shape::from_dims(&[2]));
         let _ = a.maximum(&b);
     }
@@ -12351,7 +12373,7 @@ mod tests {
     #[test]
     fn topo_order_places_inputs_before_dependents() {
         // Build: c = (a + b) * a
-        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
         let sum = a.add(&b);
         let c = sum.mul(&a);
@@ -12370,7 +12392,7 @@ mod tests {
     fn topo_order_visits_each_node_once_when_shared() {
         // (a + a) — `a` appears twice in the Add's inputs but the topo
         // pass should still visit it exactly once.
-        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let double = a.add(&a);
         let order = topo_order(&double.graph().read().unwrap(), double.id());
         assert_eq!(order.len(), 2);
@@ -12390,7 +12412,7 @@ mod tests {
         // topo_order_multi(&[add1, add2]) must contain all 5 nodes
         // (a, b, c, add1, add2) with a before add1/add2 and b before
         // add1 and c before add2.
-        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
         let c = a.const_f32_like(vec![5.0, 6.0], Shape::from_dims(&[2]));
         let add1 = a.add(&b);
@@ -12410,7 +12432,7 @@ mod tests {
     fn backward_of_lone_const_seeds_ones() {
         // backward(a) gives a = 1s (the root's upstream is a ones tensor,
         // which is the gradient stored for the root itself).
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let grads = a.backward();
         let g_a = grads.get(&a).expect("root gets a seed gradient");
         // The seed is a Const ones node of matching shape. Phase 7.5
@@ -12428,7 +12450,7 @@ mod tests {
         // c = a + b  ⇒  dc/da = 1, dc/db = 1.
         // Upstream seed is a ones tensor. So grad_a and grad_b are both
         // the same ones node (no new math emitted for Add's backward).
-        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
         let c = a.add(&b);
         let grads = c.backward();
@@ -12443,7 +12465,7 @@ mod tests {
         // c = a * b  ⇒  dc/da = b, dc/db = a (upstream is 1s).
         // The backward pass should emit two new Mul nodes (upstream * b,
         // upstream * a).
-        let a = Tensor::from_f32(vec![2.0, 3.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![2.0, 3.0], Shape::from_dims(&[2]), cpu_dev());
         let b = a.const_f32_like(vec![5.0, 7.0], Shape::from_dims(&[2]));
         let c = a.mul(&b);
         let nodes_before = c.graph().read().unwrap().len();
@@ -12466,7 +12488,7 @@ mod tests {
         // After backward, the gradient for a should be an Add node
         // combining the two Mul contributions (one from each input slot
         // of the forward Mul).
-        let a = Tensor::from_f32(vec![3.0, 5.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![3.0, 5.0], Shape::from_dims(&[2]), cpu_dev());
         let c = a.mul(&a);
         let grads = c.backward();
         let g_a = grads.get(&a).unwrap();
@@ -12484,7 +12506,7 @@ mod tests {
     fn backward_of_matmul_emits_transpose_and_matmul_nodes() {
         // Forward: Y = A @ B,  A:[2,3], B:[3,4], Y:[2,4].
         // Backward: dA = dY @ B^T (shape [2,3]),  dB = A^T @ dY (shape [3,4]).
-        let a = Tensor::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let b = a.const_f32_like(vec![1.0; 12], Shape::from_dims(&[3, 4]));
         let y = a.matmul(&b);
         let grads = y.backward();
@@ -12504,7 +12526,7 @@ mod tests {
 
     #[test]
     fn cast_tags_node_with_target_dtype() {
-        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let b = a.cast(DType::F64);
         assert_eq!(b.dtype(), DType::F64);
         assert_eq!(b.shape().dims(), &[2]);
@@ -12515,7 +12537,7 @@ mod tests {
     #[test]
     fn broadcast_to_accepts_right_aligned_expansion() {
         // [3] broadcasts to [2, 3]: pad with leading 1, expand.
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let b = a.broadcast_to(Shape::from_dims(&[2, 3]));
         assert_eq!(b.shape().dims(), &[2, 3]);
     }
@@ -12523,7 +12545,7 @@ mod tests {
     #[test]
     fn broadcast_to_accepts_size_one_expansion() {
         // [3, 1] broadcasts to [3, 4]: size-1 dim expands.
-        let a = Tensor::from_f32(vec![10.0, 20.0, 30.0], Shape::from_dims(&[3, 1]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![10.0, 20.0, 30.0], Shape::from_dims(&[3, 1]), cpu_dev());
         let b = a.broadcast_to(Shape::from_dims(&[3, 4]));
         assert_eq!(b.shape().dims(), &[3, 4]);
     }
@@ -12532,20 +12554,20 @@ mod tests {
     #[should_panic(expected = "incompatible")]
     fn broadcast_to_rejects_incompatible_dim() {
         // [3] cannot broadcast to [2, 4] — the source dim 3 must match 4.
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let _ = a.broadcast_to(Shape::from_dims(&[2, 4]));
     }
 
     #[test]
     fn sum_all_produces_rank_zero_output() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let s = a.sum_all();
         assert_eq!(s.shape().dims(), &[] as &[usize]);
     }
 
     #[test]
     fn sum_dim_removes_reduced_dim_from_shape() {
-        let a = Tensor::from_f32(vec![1.0; 24], Shape::from_dims(&[2, 3, 4]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0; 24], Shape::from_dims(&[2, 3, 4]), cpu_dev());
         // Reducing dim 1 should give shape [2, 4].
         let s = a.sum_dim(1);
         assert_eq!(s.shape().dims(), &[2, 4]);
@@ -12554,13 +12576,13 @@ mod tests {
     #[test]
     #[should_panic(expected = "out of bounds")]
     fn sum_dim_rejects_bad_dim() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let _ = a.sum_dim(5);
     }
 
     #[test]
     fn softmax_and_layer_norm_preserve_shape() {
-        let a = Tensor::from_f32(
+        let a = NodeHandle::from_f32(
             vec![1.0, 2.0, 3.0, 4.0],
             Shape::from_dims(&[2, 2]),
             cpu_dev(),
@@ -12573,7 +12595,7 @@ mod tests {
     fn neg_sub_div_sqrt_log_sin_cos_tanh_sigmoid_all_build() {
         // Smoke test: every new builder produces a node with the expected
         // shape and dtype. Numerical correctness is exercised in exec.rs.
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let b = a.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
         for tensor in [
             a.neg(),
@@ -12596,7 +12618,7 @@ mod tests {
 
     #[test]
     fn from_u32_tags_node_with_u32_dtype() {
-        let a = Tensor::from_u32(vec![1, 2, 3], Shape::from_dims(&[3]), cpu_dev());
+        let a = NodeHandle::from_u32(vec![1, 2, 3], Shape::from_dims(&[3]), cpu_dev());
         assert_eq!(a.dtype(), DType::U32);
         let node = a.graph().read().unwrap().node(a.id()).clone();
         // Phase 7.5 G2: slot-rooted Const, dtype validated via slot.
@@ -12607,7 +12629,7 @@ mod tests {
 
     #[test]
     fn index_select_produces_shape_with_dim_replaced() {
-        let data = Tensor::from_f32(vec![1.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
+        let data = NodeHandle::from_f32(vec![1.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
         let idx = data.const_u32_like(vec![0, 2, 1, 0, 2], Shape::from_dims(&[5]));
         let out = data.index_select(0, &idx);
         assert_eq!(out.shape().dims(), &[5, 4]);
@@ -12617,7 +12639,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "must be U32")]
     fn index_select_rejects_float_index() {
-        let data = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let data = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let bad = data.const_f32_like(vec![0.0, 1.0], Shape::from_dims(&[2]));
         let _ = data.index_select(0, &bad);
     }
@@ -12625,14 +12647,14 @@ mod tests {
     #[test]
     #[should_panic(expected = "must be rank 1")]
     fn index_select_rejects_multi_dim_index() {
-        let data = Tensor::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let data = NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let idx = data.const_u32_like(vec![0, 1, 0, 1], Shape::from_dims(&[2, 2]));
         let _ = data.index_select(0, &idx);
     }
 
     #[test]
     fn gather_output_shape_matches_index_shape() {
-        let data = Tensor::from_f32(vec![1.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
+        let data = NodeHandle::from_f32(vec![1.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
         // Index shape [2, 5] — same rank as data (rank 2).
         let idx = data.const_u32_like(vec![0; 10], Shape::from_dims(&[2, 5]));
         let out = data.gather(1, &idx);
@@ -12642,7 +12664,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "same rank")]
     fn gather_rejects_rank_mismatch() {
-        let data = Tensor::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let data = NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         // Rank-1 index for rank-2 data → error.
         let idx = data.const_u32_like(vec![0, 1, 0], Shape::from_dims(&[3]));
         let _ = data.gather(1, &idx);
@@ -12653,7 +12675,7 @@ mod tests {
         // Before: this used to panic. After adding Step + Relu backward,
         // it should successfully emit a backward graph rooted in a Mul
         // whose second input is a Step node.
-        let a = Tensor::from_f32(vec![-1.0, 2.0, -3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![-1.0, 2.0, -3.0], Shape::from_dims(&[3]), cpu_dev());
         let y = a.relu();
         let grads = y.backward();
         let g_a = grads.get(&a).unwrap();
@@ -12669,9 +12691,9 @@ mod tests {
 
     #[test]
     fn recip_and_abs_builders_produce_unary_nodes() {
-        // Smoke test: Tensor::recip()/abs() build single-input nodes
+        // Smoke test: NodeHandle::recip()/abs() build single-input nodes
         // with the expected op variant and shape passthrough.
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let r = a.recip();
         let b = a.abs();
         assert_eq!(r.shape().dims(), &[3]);
@@ -12689,7 +12711,7 @@ mod tests {
         // y = 1/x ⇒ dy/dx = -y². The backward graph should be a Neg
         // wrapping a Mul whose inputs include a Sqr node — and the Sqr
         // should reference the forward Recip output, not a fresh recompute.
-        let a = Tensor::from_f32(vec![2.0, 4.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![2.0, 4.0], Shape::from_dims(&[2]), cpu_dev());
         let y = a.recip();
         let y_id = y.id();
         let grads = y.backward();
@@ -12724,7 +12746,7 @@ mod tests {
         // backward chain shrinks from 5 nodes (step+neg+step+sub+mul)
         // to 2 (sign+mul): grad_x = upstream * sign(x), where Sign is
         // a single primitive that returns -1/0/1 directly.
-        let a = Tensor::from_f32(vec![-2.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![-2.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let y = a.abs();
         let grads = y.backward();
         let g_a = grads.get(&a).unwrap();
@@ -12758,10 +12780,10 @@ mod tests {
 
     #[test]
     fn eq_builder_produces_bool_output_with_input_shape() {
-        // GAP-168(c): Tensor::eq builds a binary node whose dtype is Bool
+        // GAP-168(c): NodeHandle::eq builds a binary node whose dtype is Bool
         // regardless of input dtype (CireSnave's ruling — "Fuel uses Bool
         // where possible"), with shape == lhs.shape() (and == rhs.shape()).
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let b = a.const_f32_like(vec![1.0, 5.0, 3.0], Shape::from_dims(&[3]));
         let m = a.eq(&b);
         assert_eq!(m.shape().dims(), &[3]);
@@ -12776,7 +12798,7 @@ mod tests {
         // GAP-168(c): eq/ne/lt/le/gt/ge every one returns DType::Bool, not the
         // legacy U8 mask. Shape is preserved (== lhs == rhs). One assertion per
         // operator so a regression names the operator that drifted.
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let b = a.const_f32_like(vec![1.0, 5.0, 3.0], Shape::from_dims(&[3]));
         for (name, m) in [
             ("eq", a.eq(&b)),
@@ -12795,7 +12817,7 @@ mod tests {
     fn try_unsqueeze_returns_err_on_dim_above_rank() {
         // try_unsqueeze surfaces bad dim as Err; unsqueeze panics
         // on the same input. Both share the validation message.
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let err = a.try_unsqueeze(5).expect_err("dim above rank must error");
         assert!(
             format!("{err:?}").contains("out of bounds"),
@@ -12808,7 +12830,7 @@ mod tests {
 
     #[test]
     fn try_reshape_returns_err_on_count_mismatch() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), cpu_dev());
         let err = a
             .try_reshape(Shape::from_dims(&[3]))
             .expect_err("count mismatch must error");
@@ -12824,7 +12846,7 @@ mod tests {
 
     #[test]
     fn try_broadcast_to_returns_err_on_incompatible_shape() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let err = a
             .try_broadcast_to(Shape::from_dims(&[2, 4]))
             .expect_err("source dim 3 cannot broadcast to dim 4");
@@ -12840,7 +12862,7 @@ mod tests {
 
     #[test]
     fn try_transpose_returns_err_on_rank_below_2() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let err = a
             .try_transpose()
             .expect_err("rank-1 input cannot transpose");
@@ -12848,14 +12870,14 @@ mod tests {
             format!("{err:?}").contains("rank ≥ 2"),
             "error must mention rank requirement, got: {err:?}"
         );
-        let m = Tensor::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let m = NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let mt = m.try_transpose().expect("rank-2 transposes ok");
         assert_eq!(mt.shape().dims(), &[3, 2]);
     }
 
     #[test]
     fn try_permute_returns_err_on_bad_axes() {
-        let a = Tensor::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         // Wrong axes length:
         let err = a.try_permute(&[0]).expect_err("axes length mismatch");
         assert!(
@@ -12877,7 +12899,7 @@ mod tests {
     fn squeeze_drops_size_one_dim_metadata_only() {
         // Build [2, 1, 3] → squeeze(1) → [2, 3]. Op::Squeeze, view-op,
         // shape pruned, dtype preserved, single input slot.
-        let a = Tensor::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 1, 3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 1, 3]), cpu_dev());
         let s = a.squeeze(1).expect("squeeze on size-1 dim");
         assert_eq!(s.shape().dims(), &[2, 3]);
         assert_eq!(s.dtype(), DType::F32);
@@ -12895,7 +12917,7 @@ mod tests {
     #[test]
     fn squeeze_rejects_non_size_one_dim() {
         // Result-returning: bad dim surfaces as Err, not panic.
-        let a = Tensor::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let err = a
             .squeeze(1)
             .expect_err("squeezing a non-size-1 dim must error");
@@ -12907,7 +12929,7 @@ mod tests {
 
     #[test]
     fn squeeze_rejects_dim_above_rank() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let err = a.squeeze(5).expect_err("dim above rank must error");
         assert!(
             format!("{err:?}").contains("out of bounds"),
@@ -12919,7 +12941,7 @@ mod tests {
     fn backward_through_squeeze_emits_unsqueeze() {
         // y = squeeze(x, 1). Backward: re-insert dim 1 via Unsqueeze.
         // Gradient shape must equal x.shape exactly.
-        let a = Tensor::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 1, 3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 1, 3]), cpu_dev());
         let y = a.squeeze(1).expect("squeeze on size-1 dim");
         let grads = y.backward();
         let g_a = grads.get(&a).expect("gradient for a");
@@ -12939,8 +12961,8 @@ mod tests {
 
     #[test]
     fn floor_builder_produces_unary_node_same_dtype() {
-        // Tensor::floor builds a unary node preserving shape + dtype.
-        let a = Tensor::from_f32(vec![1.5, 2.5, 3.5], Shape::from_dims(&[3]), cpu_dev());
+        // NodeHandle::floor builds a unary node preserving shape + dtype.
+        let a = NodeHandle::from_f32(vec![1.5, 2.5, 3.5], Shape::from_dims(&[3]), cpu_dev());
         let f = a.floor();
         assert_eq!(f.shape().dims(), &[3]);
         assert_eq!(f.dtype(), DType::F32);
@@ -12955,7 +12977,7 @@ mod tests {
         // backward arm is a no-op. backward() must succeed and the
         // input gets no gradient (the input's upstream is never
         // populated through the Floor node).
-        let a = Tensor::from_f32(vec![1.5, 2.5, 3.5], Shape::from_dims(&[3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.5, 2.5, 3.5], Shape::from_dims(&[3]), cpu_dev());
         let y = a.floor();
         let grads = y.backward();
         // a's gradient is dropped — no entry in the GradMap.
@@ -12970,7 +12992,7 @@ mod tests {
         // self is a Bool cond (GAP-168(c)); a/b are F32. Output dtype = F32
         // (= a's dtype), shape = self.shape() (= a.shape() = b.shape()).
         // Op::Where node carries 3 inputs in order (cond, a, b).
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let b = a.const_f32_like(vec![10.0, 20.0, 30.0], Shape::from_dims(&[3]));
         let eq_a_b = a.eq(&b); // Bool mask
         let picked = eq_a_b.where_cond(&a, &b);
@@ -12991,7 +13013,7 @@ mod tests {
         // Exp's backward rule uses the forward output directly. The
         // gradient for x should be a Mul whose inputs include the
         // forward Exp node (not a new Exp node).
-        let a = Tensor::from_f32(vec![0.0, 1.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![0.0, 1.0], Shape::from_dims(&[2]), cpu_dev());
         let e = a.exp();
         let exp_forward_id = e.id();
         let grads = e.backward();
@@ -13030,7 +13052,7 @@ mod tests {
     #[test]
     fn write_slice_emits_op_writeslice_node() {
         // dest shape [4, 3]; source shape [1, 3]; write at row 2.
-        let dest = Tensor::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev());
+        let dest = NodeHandle::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev());
         let src = dest.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]));
         let out = dest
             .write_slice(&src, vec![(2, 3), (0, 3)])
@@ -13052,7 +13074,7 @@ mod tests {
     fn write_slice_dyn_records_dynamic_offset() {
         use fuel_ir::{DynScalar, SymId};
         // dest capacity [8, 3]; source [1, 3]; dynamic start on axis 0.
-        let dest = Tensor::from_f32(vec![0.0_f32; 24], Shape::from_dims(&[8, 3]), cpu_dev());
+        let dest = NodeHandle::from_f32(vec![0.0_f32; 24], Shape::from_dims(&[8, 3]), cpu_dev());
         let src = dest.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]));
         let sym = SymId(0);
         // ranges[0].0 is ignored (start is dynamic); width = 1 - 0 = 1
@@ -13077,7 +13099,7 @@ mod tests {
         use fuel_ir::{DynScalar, SymId};
         // dest capacity on axis 0 is 2, but the dynamic-axis slab is
         // width 4 — can never fit regardless of the runtime offset.
-        let dest = Tensor::from_f32(vec![0.0_f32; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let dest = NodeHandle::from_f32(vec![0.0_f32; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let src = dest.const_f32_like(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]));
         let err = dest.write_slice_dyn(&src, vec![(0, 4), (0, 3)], 0, DynScalar::Sym(SymId(0)));
         assert!(
@@ -13089,7 +13111,7 @@ mod tests {
     #[test]
     fn write_slice_dyn_rejects_axis_out_of_bounds() {
         use fuel_ir::{DynScalar, SymId};
-        let dest = Tensor::from_f32(vec![0.0_f32; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let dest = NodeHandle::from_f32(vec![0.0_f32; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let src = dest.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]));
         let err = dest.write_slice_dyn(&src, vec![(0, 1), (0, 3)], 5, DynScalar::Sym(SymId(0)));
         assert!(err.is_err(), "dyn_axis past rank must error");
@@ -13099,7 +13121,7 @@ mod tests {
     fn flash_attn_dyn_records_runtime_k_len() {
         use fuel_ir::{DynScalar, SymId};
         // q [1, 2, 3, 4]; K/V capacity [1, 1, 8, 4] (GQA Hq=2, Hkv=1).
-        let q = Tensor::from_f32(
+        let q = NodeHandle::from_f32(
             vec![0.0_f32; 1 * 2 * 3 * 4],
             Shape::from_dims(&[1, 2, 3, 4]),
             cpu_dev(),
@@ -13143,7 +13165,7 @@ mod tests {
     #[should_panic(expected = "k_len")]
     fn flash_attn_dyn_concrete_k_len_exceeding_capacity_panics() {
         use fuel_ir::DynScalar;
-        let q = Tensor::from_f32(
+        let q = NodeHandle::from_f32(
             vec![0.0_f32; 1 * 1 * 2 * 4],
             Shape::from_dims(&[1, 1, 2, 4]),
             cpu_dev(),
@@ -13172,7 +13194,7 @@ mod tests {
 
     #[test]
     fn write_slice_rejects_rank_mismatch() {
-        let dest = Tensor::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev());
+        let dest = NodeHandle::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev());
         let src = dest.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
         // ranges has rank 2 (matches dest) but source has rank 1.
         let err = dest.write_slice(&src, vec![(0, 1), (0, 3)]);
@@ -13198,10 +13220,11 @@ mod tests {
 
     #[test]
     fn write_slice_rejects_cross_graph_source() {
-        let dest = Tensor::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev());
+        let dest = NodeHandle::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev());
         // A SECOND `from_*` mints a second graph — the easy mistake to make,
         // and currently the un-diagnosable one.
-        let foreign = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]), cpu_dev());
+        let foreign =
+            NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]), cpu_dev());
         assert_ne!(
             dest.graph_id(),
             foreign.graph_id(),
@@ -13222,8 +13245,9 @@ mod tests {
 
     #[test]
     fn masked_fill_rejects_cross_graph_mask() {
-        let x = Tensor::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
-        let foreign_mask = Tensor::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let foreign_mask =
+            NodeHandle::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
         assert_ne!(
             x.graph_id(),
             foreign_mask.graph_id(),
@@ -13252,7 +13276,7 @@ mod tests {
         // cannot produce a gradient. Reject at build time — and this must fail
         // on the dtype guard specifically: graph / shape / mask-Bool / value-dtype
         // are all satisfied, so a bare `is_err()` can only be the guard firing.
-        let x = Tensor::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
         let scale = x.cast(DType::F8E8M0);
         let mask = x.cast(DType::Bool);
         let value = Scalar::one(DType::F8E8M0).unwrap();
@@ -13288,7 +13312,7 @@ mod tests {
             DType::F8E8M0,
             DType::F8E6M2,
         ] {
-            let x = Tensor::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+            let x = NodeHandle::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
             let t = x.cast(dt);
             let mask = x.cast(DType::Bool);
             // The dtype guard fires before the value-dtype check, so a dummy
@@ -13312,7 +13336,7 @@ mod tests {
     /// declines loudly at allocation, downstream of this permission).
     #[test]
     fn masked_fill_permits_fillable_dtypes_as_permission_not_capability() {
-        let x = Tensor::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
         let mask = x.cast(DType::Bool);
         assert!(
             x.masked_fill(&mask, Scalar::F32(0.0)).is_ok(),
@@ -13329,18 +13353,18 @@ mod tests {
     #[test]
     #[should_panic(expected = "same graph")]
     fn rope_with_tables_panics_on_cross_graph_tables() {
-        // Returns `Tensor`, so it follows the convention of the already-checked
+        // Returns `NodeHandle`, so it follows the convention of the already-checked
         // builders (`matmul`, `paged_attn`) and asserts. A panic names the
         // problem at the build site; the status quo hangs later saying nothing.
-        let x = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[1, 1, 2, 4]), cpu_dev());
-        let cos = Tensor::from_f32(vec![1.0_f32; 8], Shape::from_dims(&[2, 4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[1, 1, 2, 4]), cpu_dev());
+        let cos = NodeHandle::from_f32(vec![1.0_f32; 8], Shape::from_dims(&[2, 4]), cpu_dev());
         let sin = x.const_f32_like(vec![0.0_f32; 8], Shape::from_dims(&[2, 4]));
         let _ = x.rope_with_tables(&cos, &sin);
     }
 
     #[test]
     fn write_slice_rejects_slab_width_mismatch() {
-        let dest = Tensor::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev());
+        let dest = NodeHandle::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev());
         // Source has 2 elements along axis 0, but slab is width 1.
         let src = dest.const_f32_like(vec![1.0_f32; 6], Shape::from_dims(&[2, 3]));
         let err = dest.write_slice(&src, vec![(2, 3), (0, 3)]);
@@ -13349,7 +13373,7 @@ mod tests {
 
     #[test]
     fn write_slice_rejects_range_past_dest_extent() {
-        let dest = Tensor::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev());
+        let dest = NodeHandle::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev());
         let src = dest.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]));
         // axis 0: dest extent is 4; range [4, 5) is out of bounds.
         let err = dest.write_slice(&src, vec![(4, 5), (0, 3)]);
@@ -13363,7 +13387,7 @@ mod tests {
         //   ro = dest.relu()                          (non-destructive reader of dest)
         //   w  = dest.write_slice(&src, [(0,1),(0,3)])  (destructive on dest)
         // Expected ordering: w must run after ro.
-        let dest = Tensor::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev());
+        let dest = NodeHandle::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev());
         let src = dest.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]));
         let ro = dest.relu();
         let w = dest.write_slice(&src, vec![(0, 1), (0, 3)]).unwrap();
@@ -13516,7 +13540,7 @@ mod tests {
     // The view-aware `derive_ordering` (Phase 4a) ensures backward
     // grad nodes that read forward inputs run BEFORE any in-place
     // mutation of those inputs. The backward arms in
-    // `Tensor::backward` (Phase 4b) emit the same gradient graph as
+    // `NodeHandle::backward` (Phase 4b) emit the same gradient graph as
     // the non-inplace cousins. These tests prove that calling
     // `.backward()` through an in-place node:
     //   (1) does NOT panic (was previously guarded by the Phase 1
@@ -13531,7 +13555,7 @@ mod tests {
         // y = x.relu_inplace(); loss = y.sum_all(); loss.backward()
         // Phase 1's defensive panic is removed; backward emits
         // Op::Step(x) + Op::Mul(upstream, step) — same as Op::Relu.
-        let x = Tensor::from_f32(vec![1.0, -2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![1.0, -2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
         let y = x.relu_inplace();
         let loss = y.sum_all();
         let grads = loss.backward();
@@ -13548,7 +13572,7 @@ mod tests {
 
     #[test]
     fn backward_through_sigmoid_inplace_does_not_panic() {
-        let x = Tensor::from_f32(vec![0.5, -0.5], Shape::from_dims(&[2]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.5, -0.5], Shape::from_dims(&[2]), cpu_dev());
         let y = x.sigmoid_inplace();
         let loss = y.sum_all();
         let grads = loss.backward();
@@ -13558,7 +13582,7 @@ mod tests {
 
     #[test]
     fn backward_through_tanh_inplace_does_not_panic() {
-        let x = Tensor::from_f32(vec![0.1, 0.2, 0.3], Shape::from_dims(&[3]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.1, 0.2, 0.3], Shape::from_dims(&[3]), cpu_dev());
         let y = x.tanh_inplace();
         let loss = y.sum_all();
         let grads = loss.backward();
@@ -13568,7 +13592,7 @@ mod tests {
 
     #[test]
     fn backward_through_silu_inplace_does_not_panic() {
-        let x = Tensor::from_f32(vec![0.1, 0.2], Shape::from_dims(&[2]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.1, 0.2], Shape::from_dims(&[2]), cpu_dev());
         let y = x.silu_inplace();
         let loss = y.sum_all();
         let grads = loss.backward();
@@ -13581,7 +13605,7 @@ mod tests {
         // GeluInplace mirrors Op::Gelu's "currently inference-only"
         // panic — both rely on the same not-yet-implemented gradient.
         // SiluInplace is the recommended differentiable alternative.
-        let x = Tensor::from_f32(vec![0.1], Shape::from_dims(&[1]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.1], Shape::from_dims(&[1]), cpu_dev());
         let y = x.gelu_inplace();
         let loss = y.sum_all();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| loss.backward()));
@@ -13596,14 +13620,14 @@ mod tests {
         // Structural parity: relu_inplace backward emits the same node
         // count + same op variants as relu backward, since the
         // gradient formula is identical.
-        let x_inp = Tensor::from_f32(vec![1.0, -1.0], Shape::from_dims(&[2]), cpu_dev());
+        let x_inp = NodeHandle::from_f32(vec![1.0, -1.0], Shape::from_dims(&[2]), cpu_dev());
         let y_inp = x_inp.relu_inplace();
         let loss_inp = y_inp.sum_all();
         let nodes_before_inp = loss_inp.graph().read().unwrap().len();
         let _ = loss_inp.backward();
         let added_inp = loss_inp.graph().read().unwrap().len() - nodes_before_inp;
 
-        let x_fn = Tensor::from_f32(vec![1.0, -1.0], Shape::from_dims(&[2]), cpu_dev());
+        let x_fn = NodeHandle::from_f32(vec![1.0, -1.0], Shape::from_dims(&[2]), cpu_dev());
         let y_fn = x_fn.relu();
         let loss_fn = y_fn.sum_all();
         let nodes_before_fn = loss_fn.graph().read().unwrap().len();
@@ -13618,7 +13642,7 @@ mod tests {
 
     #[test]
     fn relu_inplace_builder_emits_op_reluinplace() {
-        let x = Tensor::from_f32(
+        let x = NodeHandle::from_f32(
             vec![1.0_f32, -1.0, 2.0, -2.0],
             Shape::from_dims(&[4]),
             cpu_dev(),
@@ -13634,7 +13658,7 @@ mod tests {
 
     #[test]
     fn affine_inplace_builder_emits_fused_inplace_affine() {
-        let x = Tensor::from_f32(
+        let x = NodeHandle::from_f32(
             vec![1.0_f32, 2.0, 3.0, 4.0],
             Shape::from_dims(&[4]),
             cpu_dev(),
@@ -13659,8 +13683,8 @@ mod tests {
         // One smoke per variant — each builder emits exactly the
         // matching `Op::*Inplace` variant, single input, shape +
         // dtype unchanged.
-        let x = Tensor::from_f32(vec![0.5_f32; 8], Shape::from_dims(&[8]), cpu_dev());
-        fn check(y: Tensor, x_id: NodeId, expect: fn(&Op) -> bool) {
+        let x = NodeHandle::from_f32(vec![0.5_f32; 8], Shape::from_dims(&[8]), cpu_dev());
+        fn check(y: NodeHandle, x_id: NodeId, expect: fn(&Op) -> bool) {
             let g = y.graph().read().unwrap();
             let node = g.node(y.id());
             assert!(expect(&node.op), "wrong Op variant: {:?}", node.op);
@@ -13708,8 +13732,9 @@ mod tests {
     /// non-inplace cousins.
     #[test]
     fn backward_through_expanded_inplace_unary_emits_grad() {
-        fn check_emits_grad(make: impl FnOnce(&Tensor) -> Tensor) {
-            let x = Tensor::from_f32(vec![0.5_f32, 1.5, 2.5], Shape::from_dims(&[3]), cpu_dev());
+        fn check_emits_grad(make: impl FnOnce(&NodeHandle) -> NodeHandle) {
+            let x =
+                NodeHandle::from_f32(vec![0.5_f32, 1.5, 2.5], Shape::from_dims(&[3]), cpu_dev());
             let y = make(&x);
             let loss = y.sum_all();
             let grads = loss.backward();
@@ -13733,8 +13758,9 @@ mod tests {
 
     #[test]
     fn backward_through_zero_grad_inplace_drops_gradient() {
-        fn check_drops(make: impl FnOnce(&Tensor) -> Tensor) {
-            let x = Tensor::from_f32(vec![1.5_f32, 2.5, -3.5], Shape::from_dims(&[3]), cpu_dev());
+        fn check_drops(make: impl FnOnce(&NodeHandle) -> NodeHandle) {
+            let x =
+                NodeHandle::from_f32(vec![1.5_f32, 2.5, -3.5], Shape::from_dims(&[3]), cpu_dev());
             let y = make(&x);
             let loss = y.sum_all();
             let grads = loss.backward();
@@ -13756,7 +13782,7 @@ mod tests {
         //   y_a = x.relu()                  (non-destructive reader of x)
         //   y_b = manually-pushed Op::ReluInplace on x  (destructive)
         // Expected: y_b must run after y_a.
-        let x = Tensor::from_f32(
+        let x = NodeHandle::from_f32(
             vec![1.0_f32, -1.0, 2.0, -2.0],
             Shape::from_dims(&[4]),
             cpu_dev(),
@@ -13983,7 +14009,7 @@ mod tests {
         assert!(msg.contains("shape"), "error message: {msg}");
     }
 
-    /// `Tensor::view(slot)` against a producer that hasn't been
+    /// `NodeHandle::view(slot)` against a producer that hasn't been
     /// declared multi-output returns Err — fails fast at build time.
     #[test]
     fn tensor_view_on_non_multi_output_errors() {
@@ -13994,7 +14020,7 @@ mod tests {
             shape: Shape::from_dims(&[2, 3]),
             dtype: DType::F32,
         });
-        let producer = Tensor::from_existing(Arc::clone(&graph), id);
+        let producer = NodeHandle::from_existing(Arc::clone(&graph), id);
         let err = producer
             .view(0)
             .err()
@@ -14003,7 +14029,7 @@ mod tests {
         assert!(msg.contains("multi-output"), "error message: {msg}");
     }
 
-    /// `Tensor::view(slot)` with slot OOB returns Err.
+    /// `NodeHandle::view(slot)` with slot OOB returns Err.
     #[test]
     fn tensor_view_oob_slot_errors() {
         let graph: SharedGraph = Arc::new(RwLock::new(Graph::new()));
@@ -14020,7 +14046,7 @@ mod tests {
                 .expect("valid 2-slot specs");
             id
         };
-        let producer = Tensor::from_existing(Arc::clone(&graph), producer_id);
+        let producer = NodeHandle::from_existing(Arc::clone(&graph), producer_id);
         let err = producer
             .view(2)
             .err()
@@ -14029,7 +14055,7 @@ mod tests {
         assert!(msg.contains("out of range"), "error message: {msg}");
     }
 
-    /// `Tensor::view(slot)` produces a tensor whose shape/dtype match
+    /// `NodeHandle::view(slot)` produces a tensor whose shape/dtype match
     /// the slot spec; producer's primary shape stays as slot 0's. The
     /// View node holds the producer in `inputs[0]`.
     #[test]
@@ -14048,7 +14074,7 @@ mod tests {
                 .expect("valid 2-slot specs");
             id
         };
-        let producer = Tensor::from_existing(Arc::clone(&graph), producer_id);
+        let producer = NodeHandle::from_existing(Arc::clone(&graph), producer_id);
         let v0 = producer.view(0).expect("slot 0 view");
         assert_eq!(v0.shape(), Shape::from_dims(&[2, 3]));
         assert_eq!(v0.dtype(), DType::F32);
@@ -14080,7 +14106,7 @@ mod tests {
         assert_eq!(l1.shape(), &Shape::from_dims(&[2, 4]));
     }
 
-    /// `Tensor::view(slot)` over a slot whose layout is non-contiguous
+    /// `NodeHandle::view(slot)` over a slot whose layout is non-contiguous
     /// (strided) populates the Graph's layout side-table with the
     /// slot's layout — so downstream consumers see the strided view.
     #[test]
@@ -14122,7 +14148,7 @@ mod tests {
                 .expect("valid 2-slot strided spec");
             id
         };
-        let producer = Tensor::from_existing(Arc::clone(&graph), producer_id);
+        let producer = NodeHandle::from_existing(Arc::clone(&graph), producer_id);
         let v1 = producer.view(1).expect("strided slot view");
         let g = graph.read().unwrap();
         assert!(
@@ -14134,8 +14160,8 @@ mod tests {
         assert_eq!(read_layout.stride(), strided_layout.stride());
     }
 
-    /// `Tensor::view_owned(slot)` produces the same shape/dtype as
-    /// `Tensor::view(slot)` but its output layout is ALWAYS contiguous
+    /// `NodeHandle::view_owned(slot)` produces the same shape/dtype as
+    /// `NodeHandle::view(slot)` but its output layout is ALWAYS contiguous
     /// — the forward memcpy produces a fresh standalone buffer, so
     /// the slot's (possibly strided) layout is not propagated.
     #[test]
@@ -14173,7 +14199,7 @@ mod tests {
                 .expect("valid 2-slot specs");
             id
         };
-        let producer = Tensor::from_existing(Arc::clone(&graph), producer_id);
+        let producer = NodeHandle::from_existing(Arc::clone(&graph), producer_id);
         let v1 = producer.view_owned(1).expect("ViewOwned slot 1");
         assert_eq!(v1.shape(), Shape::from_dims(&[3, 2]));
         assert_eq!(v1.dtype(), DType::F32);
@@ -14469,7 +14495,7 @@ mod tests {
             },
         ];
         let (graph, producer_id) = multi_output_producer(slot_specs);
-        let producer = Tensor::from_existing(Arc::clone(&graph), producer_id);
+        let producer = NodeHandle::from_existing(Arc::clone(&graph), producer_id);
         // Each slot has exactly one View, consumed at the same depth
         // (a no-op Relu downstream of each).
         let v0 = producer.view(0).expect("slot 0 view");
@@ -14525,7 +14551,7 @@ mod tests {
             },
         ];
         let (graph, producer_id) = multi_output_producer(slot_specs);
-        let producer = Tensor::from_existing(Arc::clone(&graph), producer_id);
+        let producer = NodeHandle::from_existing(Arc::clone(&graph), producer_id);
         let v_y = producer.view(0).expect("slot 0 view");
         let v_state = producer.view(1).expect("slot 1 view");
         // Slot 0 ("y") consumed at depth 1 (single Relu).
@@ -14615,7 +14641,7 @@ mod tests {
             },
         ];
         let (graph, producer_id) = multi_output_producer(slot_specs);
-        let producer = Tensor::from_existing(Arc::clone(&graph), producer_id);
+        let producer = NodeHandle::from_existing(Arc::clone(&graph), producer_id);
         let v_y = producer.view(0).expect("slot 0 view");
         let v_state = producer.view(1).expect("slot 1 view");
         let (v_y_id, v_y_shape, v_y_dtype) = (v_y.id(), v_y.shape(), v_y.dtype());
@@ -14723,7 +14749,7 @@ mod tests {
     #[test]
     fn derive_ordering_release_of_bundled_producer_pins_after_view_consumers() {
         let (graph, producer_id) = multi_output_producer(two_slot_views_2x3_and_2x4());
-        let producer = Tensor::from_existing(Arc::clone(&graph), producer_id);
+        let producer = NodeHandle::from_existing(Arc::clone(&graph), producer_id);
         let v0 = producer.view(0).expect("slot 0 view");
         let v1 = producer.view(1).expect("slot 1 view");
         let (v0_id, v0_shape, v0_dtype) = (v0.id(), v0.shape(), v0.dtype());
@@ -14771,7 +14797,7 @@ mod tests {
     #[test]
     fn derive_ordering_destructive_on_view_pins_sibling_view_consumers() {
         let (graph, producer_id) = multi_output_producer(two_slot_views_2x3_and_2x4());
-        let producer = Tensor::from_existing(Arc::clone(&graph), producer_id);
+        let producer = NodeHandle::from_existing(Arc::clone(&graph), producer_id);
         let v0 = producer.view(0).expect("slot 0 view");
         let v1 = producer.view(1).expect("slot 1 view");
         let (v0_id, _v0_shape, _v0_dtype) = (v0.id(), v0.shape(), v0.dtype());
@@ -14815,7 +14841,7 @@ mod tests {
     #[test]
     fn derive_ordering_view_owned_is_not_alias_extending() {
         let (graph, producer_id) = multi_output_producer(two_slot_views_2x3_and_2x4());
-        let producer = Tensor::from_existing(Arc::clone(&graph), producer_id);
+        let producer = NodeHandle::from_existing(Arc::clone(&graph), producer_id);
         // Slot 0 → View (shared Arc); slot 1 → ViewOwned (independent).
         let v_view = producer.view(0).expect("slot 0 view");
         let v_owned = producer.view_owned(1).expect("slot 1 viewowned");
@@ -14902,7 +14928,7 @@ mod tests {
             },
         ];
         let (graph, producer_id) = multi_output_producer(slot_specs);
-        let producer = Tensor::from_existing(Arc::clone(&graph), producer_id);
+        let producer = NodeHandle::from_existing(Arc::clone(&graph), producer_id);
         let v0 = producer.view(0).unwrap();
         let v1 = producer.view(1).unwrap();
         let v2 = producer.view(2).unwrap();
@@ -15001,11 +15027,12 @@ mod tests {
     /// The View's backward arm pushes an `Op::ScatterIntoSlot { slot }`
     /// node into the gradient graph as the producer's input gradient.
     /// Synthetic test: build a 2-slot producer + Op::View(slot 1) +
-    /// a Relu downstream + invoke Tensor::backward + walk the produced
+    /// a Relu downstream + invoke NodeHandle::backward + walk the produced
     /// gradient graph and assert a ScatterIntoSlot was emitted.
     #[test]
     fn op_view_backward_emits_scatter_into_slot() {
-        let producer_t = Tensor::from_f32(vec![0.0_f32; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let producer_t =
+            NodeHandle::from_f32(vec![0.0_f32; 6], Shape::from_dims(&[2, 3]), cpu_dev());
         let graph: SharedGraph = Arc::clone(producer_t.graph());
         let producer_id = producer_t.id();
         let view_id = {
@@ -15018,7 +15045,7 @@ mod tests {
             v1.id()
         };
         // Build a tiny tape-tracked loss = sum(relu(v1)).
-        let v1_tensor = Tensor::from_existing(Arc::clone(&graph), view_id);
+        let v1_tensor = NodeHandle::from_existing(Arc::clone(&graph), view_id);
         let relu_t = v1_tensor.relu();
         let loss_t = relu_t.sum_all();
 
@@ -15027,7 +15054,7 @@ mod tests {
 
         // The producer's input gradient should be reachable via a
         // chain that includes an Op::ScatterIntoSlot { slot: 1 } node.
-        let producer_tensor = Tensor::from_existing(Arc::clone(&graph), producer_id);
+        let producer_tensor = NodeHandle::from_existing(Arc::clone(&graph), producer_id);
         let grad_for_producer = grads
             .get(&producer_tensor)
             .expect("producer has an accumulated gradient");
@@ -15063,7 +15090,7 @@ mod tests {
         // Build: c = (a + b) * a — the same DAG the topo-order tests
         // use, exercised here purely to prove the arena is untouched by
         // the new variant.
-        let a = Tensor::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
         let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
         let sum = a.add(&b);
         let c = sum.mul(&a);
@@ -15874,7 +15901,7 @@ mod tests {
 
     #[test]
     fn scan_builder_all_and_final_shapes() {
-        use crate::{Graph, Node, Op, ScanEmit, ScanRole, Tensor};
+        use crate::{Graph, Node, NodeHandle, Op, ScanEmit, ScanRole};
         use fuel_ir::{DType, Shape};
         use std::sync::{Arc, RwLock};
         let graph = Arc::new(RwLock::new(Graph::new()));
@@ -15911,7 +15938,7 @@ mod tests {
             });
             (carry, hole, new_carry, body_y)
         };
-        let t = |id| Tensor {
+        let t = |id| NodeHandle {
             graph: graph.clone(),
             id,
         }; // same-crate access to private fields
@@ -15959,7 +15986,7 @@ mod tests {
 
     #[test]
     fn scan_builder_rejects_zero_bound() {
-        use crate::{Graph, Node, Op, ScanEmit, ScanRole, Tensor};
+        use crate::{Graph, Node, NodeHandle, Op, ScanEmit, ScanRole};
         use fuel_ir::{DType, Shape};
         use std::sync::{Arc, RwLock};
         let graph = Arc::new(RwLock::new(Graph::new()));
@@ -15989,7 +16016,7 @@ mod tests {
             });
             (carry, nc, nc)
         };
-        let t = |id| Tensor {
+        let t = |id| NodeHandle {
             graph: graph.clone(),
             id,
         };

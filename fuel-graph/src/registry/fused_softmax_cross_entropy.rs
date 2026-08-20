@@ -337,7 +337,7 @@ pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeI
 
 /// Pattern matcher stub. FusedSoftmaxCrossEntropy doesn't autoregister
 /// itself by recognizing primitive subgraphs — users opt in via the
-/// explicit `Tensor::fused_softmax_cross_entropy` builder. The
+/// explicit `NodeHandle::fused_softmax_cross_entropy` builder. The
 /// primitive `cross_entropy_with_logits` chain stays in place for
 /// callers that don't want the fused kernel.
 pub fn canonical_pattern(_graph: &Graph, _root: NodeId) -> Option<PatternMatch> {

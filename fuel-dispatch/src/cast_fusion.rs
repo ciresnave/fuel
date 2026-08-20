@@ -167,7 +167,7 @@ fn op_kind(op: &Op) -> Option<OpKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_graph::Tensor;
+    use fuel_graph::NodeHandle;
     use fuel_graph::opt::{CastFusionRule, RuleRegistry};
     use fuel_graph::topo_order_multi;
     use fuel_ir::Shape;
@@ -215,7 +215,7 @@ mod tests {
         // also wires the standard CPU registrations).
         let _bindings = global_bindings();
 
-        let x = Tensor::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
         let xc = x.cast(DType::BF16);
         let y = xc.neg();
         let graph = y.graph().clone();

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! bitsandbytes NF4 weight materialization helpers.
 //!
-//! Companion to [`fuel_graph::Tensor::nf4_matmul`] (registered as
+//! Companion to [`fuel_graph::NodeHandle::nf4_matmul`] (registered as
 //! [`fuel_graph::registry::FusedOps::NF4_MATMUL`], CPU dispatch
 //! shipped in `fuel-cpu-backend::byte_kernels::nf4_matmul_{f32,f16,bf16}`).
 //! The fused op takes 3 inputs: activations `[..., M, K]` + a packed
@@ -55,7 +55,7 @@ use crate::lazy::LazyTensor;
 use fuel_ir::{Result, Shape};
 
 /// A bitsandbytes-style NF4-quantized weight, materialized as the two
-/// `LazyTensor` inputs that [`fuel_graph::Tensor::nf4_matmul`]
+/// `LazyTensor` inputs that [`fuel_graph::NodeHandle::nf4_matmul`]
 /// expects, plus the cached `(n, k, block_size)` geometry for the
 /// matmul builder.
 ///
@@ -157,14 +157,14 @@ pub fn nf4_from_bytes(
 
 impl Nf4Weight {
     /// Convenience: run `activations @ dequant(weight)` via the
-    /// fused [`fuel_graph::Tensor::nf4_matmul`] op. `activations`
+    /// fused [`fuel_graph::NodeHandle::nf4_matmul`] op. `activations`
     /// must live on the same graph as `self.w_packed` and `self.absmax`;
     /// the caller threads this by building `activations` from
     /// `self.w_packed.graph_tensor()` (or any other tensor on the
     /// same graph).
     ///
     /// Output dtype matches `activations`' dtype (F32 / F16 / BF16
-    /// — see [`fuel_graph::Tensor::nf4_matmul`] for the full
+    /// — see [`fuel_graph::NodeHandle::nf4_matmul`] for the full
     /// contract).
     pub fn matmul(&self, activations: &LazyTensor) -> LazyTensor {
         activations.nf4_matmul(&self.w_packed, &self.absmax, self.block_size)
@@ -330,7 +330,7 @@ pub fn parse_bnb_quant_state(json_bytes: &[u8]) -> fuel_ir::Result<BnbQuantState
 ///
 /// All three tensors are read into host memory, validated against
 /// the geometry from the JSON blob, and reshaped into the 2D
-/// layouts that [`Nf4Weight`] / [`fuel_graph::Tensor::nf4_matmul`]
+/// layouts that [`Nf4Weight`] / [`fuel_graph::NodeHandle::nf4_matmul`]
 /// expect.
 ///
 /// **Limitations** (see `parse_bnb_quant_state` for the full list):

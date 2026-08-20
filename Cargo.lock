@@ -2210,6 +2210,7 @@ dependencies = [
  "fuel-core",
  "fuel-graph",
  "fuel-ir",
+ "fuel-quantized",
  "half",
  "rand",
  "rand_distr",

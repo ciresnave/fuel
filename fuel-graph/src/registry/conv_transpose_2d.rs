@@ -44,7 +44,7 @@
 //! `fuel-core/tests/incc_conv_transpose_im2col_oracle.rs`.
 //!
 //! The matcher is stubbed for the same reason: ConvTranspose2D nodes
-//! originate from `Tensor::conv_transpose2d` (and from `Conv2D`'s
+//! originate from `NodeHandle::conv_transpose2d` (and from `Conv2D`'s
 //! backward `dX` formula); there is no user-decomposed form to
 //! recognize as `Op::Fused(CONV_TRANSPOSE2D, _)`.
 
@@ -66,7 +66,7 @@ pub fn entry() -> FusedOpEntry {
         pattern: SubgraphPattern::Callable(canonical_pattern),
         decompose,
         // ConvTranspose2D's backward isn't implemented today (per the
-        // legacy `Op::ConvTranspose2D { .. }` arm in `Tensor::backward`
+        // legacy `Op::ConvTranspose2D { .. }` arm in `NodeHandle::backward`
         // — it panics with a clear "needs the dilation-as-stride trick
         // + a real consumer" message). When higher-order gradients
         // are needed, that arm will switch to BackwardKind::Decompose

@@ -11,7 +11,7 @@
 //! Session 6 (2026-06-11): fuel-graph-router retired; the rule is now
 //! self-contained (plain `Placement` map, no Router / SchedulerRule).
 
-use fuel_graph::Tensor;
+use fuel_graph::NodeHandle;
 use fuel_inference::scheduler::{MemoryScheduler, Priority, RequestInfo};
 use fuel_inference::scheduler_bridge::{MemoryPressureRule, MemoryPressureSnapshot, Placement};
 use fuel_ir::{DeviceLocation, Shape};
@@ -26,7 +26,7 @@ fn cpu_dev() -> &'static std::sync::Arc<dyn fuel_backend_contract::DynBackendDev
 
 #[test]
 fn rule_no_op_when_not_under_pressure() {
-    let a = Tensor::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+    let a = NodeHandle::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
     let b = a.const_f32_like(vec![2.0_f32; 4], Shape::from_dims(&[4]));
     let c = a.add(&b);
 
@@ -45,7 +45,7 @@ fn rule_no_op_when_not_under_pressure() {
 
 #[test]
 fn rule_inherits_first_input_placement_under_pressure() {
-    let a = Tensor::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+    let a = NodeHandle::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
     let b = a.relu();
     let c = b.relu();
 

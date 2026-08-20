@@ -703,7 +703,7 @@ enum WorkItemKind {
     /// `Op::View { slot }` — multi-output projection (Option C,
     /// Session 4). The output's Storage Arc IS the producer's Arc;
     /// the WorkItem's `output_layout` was prepared by
-    /// [`fuel_graph::Tensor::view`] with the slot's `byte_offset`
+    /// [`fuel_graph::NodeHandle::view`] with the slot's `byte_offset`
     /// baked into `Layout::start_offset` so downstream kernels reading
     /// the producer's bytes as `slot_dtype` elements land on the
     /// slot's first byte. Structurally identical to [`Self::ViewOf`]
@@ -15387,11 +15387,11 @@ mod tests {
         let c_id = cpu_const_f32(&graph, &mut cache, &[0.5], &[1, 1, 1]);
 
         let (y_id, last_state_id) = {
-            let u_t = fuel_graph::Tensor::from_existing(Arc::clone(&graph), u_id);
-            let delta_t = fuel_graph::Tensor::from_existing(Arc::clone(&graph), delta_id);
-            let a_t = fuel_graph::Tensor::from_existing(Arc::clone(&graph), a_id);
-            let b_t = fuel_graph::Tensor::from_existing(Arc::clone(&graph), b_id);
-            let c_t = fuel_graph::Tensor::from_existing(Arc::clone(&graph), c_id);
+            let u_t = fuel_graph::NodeHandle::from_existing(Arc::clone(&graph), u_id);
+            let delta_t = fuel_graph::NodeHandle::from_existing(Arc::clone(&graph), delta_id);
+            let a_t = fuel_graph::NodeHandle::from_existing(Arc::clone(&graph), a_id);
+            let b_t = fuel_graph::NodeHandle::from_existing(Arc::clone(&graph), b_id);
+            let c_t = fuel_graph::NodeHandle::from_existing(Arc::clone(&graph), c_id);
             let (y, last_state) = u_t
                 .selective_scan_bundled(&delta_t, &a_t, &b_t, &c_t, /* delta_softplus */ false)
                 .expect("selective_scan_bundled");

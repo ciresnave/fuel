@@ -21,7 +21,7 @@
 //! weight tensor is frozen (the U32 byte stream isn't a smooth
 //! function of any continuous parameter), and the activation gradient
 //! isn't implemented today — matches the legacy `Op::QMatMul { .. }`
-//! arm in `Tensor::backward`, which panics with a clear "use a
+//! arm in `NodeHandle::backward`, which panics with a clear "use a
 //! dequantize + standard matmul if you need gradients" message. The
 //! registry entry's `BackwardKind::NotDifferentiable` reflects this.
 

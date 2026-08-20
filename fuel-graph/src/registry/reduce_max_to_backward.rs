@@ -12,7 +12,7 @@
 //! backward of a **primitive** (`Op::ReduceMaxTo`), not of a fused
 //! forward. There is no `BackwardKind::Fused(REDUCE_MAX_TO_BACKWARD)`
 //! edge from any forward entry — autograd reaches this helper
-//! directly from `Op::ReduceMaxTo`'s arm in `Tensor::backward`. The
+//! directly from `Op::ReduceMaxTo`'s arm in `NodeHandle::backward`. The
 //! registry entry still exists so the executor's dispatch stays
 //! consistent (every fused op routes through `Op::Fused(id, _)`) and
 //! so step 5 can drop the legacy `Op::ReduceMaxToBackward` variant.

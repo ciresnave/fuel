@@ -445,7 +445,7 @@ pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeI
 }
 
 /// Matcher stub — SsdChunkScan nodes originate from the explicit
-/// `Tensor::ssd_chunk_scan` builder. The 100+ primitive subgraph in
+/// `NodeHandle::ssd_chunk_scan` builder. The 100+ primitive subgraph in
 /// fuel-transformers' eager `ssd_chunked` is too complex to pattern-
 /// match conservatively.
 pub fn canonical_pattern(_graph: &Graph, _root: NodeId) -> Option<PatternMatch> {

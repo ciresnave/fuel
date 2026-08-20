@@ -164,7 +164,7 @@ pub trait LazyOptimizer: Sized {
                 continue;
             };
             let handle =
-                fuel_graph::Tensor::from_existing(loss.graph_tensor().graph().clone(), node_id);
+                fuel_graph::NodeHandle::from_existing(loss.graph_tensor().graph().clone(), node_id);
             if let Some(grad) = grad_map.get(&handle) {
                 grads.insert(var.name().to_string(), LazyTensor::from_graph_tensor(grad));
             }

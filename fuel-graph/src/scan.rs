@@ -15,7 +15,7 @@ use crate::{Graph, Node, NodeId, Op, ScanEmit, ScanRole};
 /// `Elem` index must address one of the `n_xs` per-step slices. This keeps the
 /// later `clone_body_node`/`build_scan_step` `elem[index]` access infallible by
 /// construction — so a malformed body is a typed **build-time** `Err` (from the
-/// `Tensor::scan` / `Tensor::scan_until` builders) rather than a mid-realize
+/// `NodeHandle::scan` / `NodeHandle::scan_until` builders) rather than a mid-realize
 /// `elem[index]` panic on the forward-driver path. Short immutable borrow only.
 pub(crate) fn validate_scan_body_placeholders(
     graph: &Graph,
@@ -116,7 +116,7 @@ pub fn unroll_scan(
 
     // 2. Validate every ScanPlaceholder reachable from the body's two exit
     // nodes has an in-range index, BEFORE any cloning/mutation (shared with the
-    // build-time check in Tensor::scan / Tensor::scan_until).
+    // build-time check in NodeHandle::scan / NodeHandle::scan_until).
     validate_scan_body_placeholders(graph, &[body_new_carry, body_y], n_xs)?;
 
     // 3. Validate every xs[i] has a leading (scan-axis) dim >= steps: the
@@ -790,11 +790,11 @@ mod tests {
 
     #[test]
     fn scan_until_builds_early_exit_node_hashes_distinctly_and_validates() {
-        use crate::Tensor;
+        use crate::NodeHandle;
         // init_carry [1]; body new_carry = carry*2; consts include threshold.
-        let init = Tensor::from_f32(vec![1.0f32], Shape::from_dims(&[1]), cpu_dev());
+        let init = NodeHandle::from_f32(vec![1.0f32], Shape::from_dims(&[1]), cpu_dev());
         let graph = init.graph().clone();
-        // Build the shared body + predicate at graph level, wrap as Tensor handles.
+        // Build the shared body + predicate at graph level, wrap as NodeHandle handles.
         let (nc, thr, pred_ok) = {
             let mut g = graph.write().unwrap();
             let s = Shape::from_dims(&[1]);
@@ -827,9 +827,9 @@ mod tests {
             });
             (nc, thr, pred)
         };
-        let nc_t = Tensor::from_existing(graph.clone(), nc);
-        let thr_t = Tensor::from_existing(graph.clone(), thr);
-        let pred_t = Tensor::from_existing(graph.clone(), pred_ok);
+        let nc_t = NodeHandle::from_existing(graph.clone(), nc);
+        let thr_t = NodeHandle::from_existing(graph.clone(), thr);
+        let pred_t = NodeHandle::from_existing(graph.clone(), pred_ok);
 
         let out = init
             .scan_until(
@@ -878,11 +878,11 @@ mod tests {
                 dtype: DType::Bool,
             })
         };
-        let pred2_t = Tensor::from_existing(graph.clone(), pred2);
+        let pred2_t = NodeHandle::from_existing(graph.clone(), pred2);
         let out2 = init
             .scan_until(
                 &[],
-                &[Tensor::from_existing(graph.clone(), thr2)],
+                &[NodeHandle::from_existing(graph.clone(), thr2)],
                 &nc_t,
                 &nc_t,
                 &pred2_t,
@@ -907,7 +907,7 @@ mod tests {
         );
 
         // Rejection: a NON-scalar predicate is a typed Err (never a panic).
-        let big = Tensor::from_f32(vec![0.0f32, 1.0], Shape::from_dims(&[2]), cpu_dev()); // wrong graph AND non-scalar
+        let big = NodeHandle::from_f32(vec![0.0f32, 1.0], Shape::from_dims(&[2]), cpu_dev()); // wrong graph AND non-scalar
         assert!(
             init.scan_until(
                 &[],
@@ -931,7 +931,7 @@ mod tests {
                 dtype: DType::F32,
             })
         };
-        let f32pred_t = Tensor::from_existing(graph.clone(), f32pred);
+        let f32pred_t = NodeHandle::from_existing(graph.clone(), f32pred);
         assert!(
             init.scan_until(&[], &[thr_t], &nc_t, &nc_t, &f32pred_t, 5, ScanEmit::Final)
                 .is_err(),
@@ -1026,12 +1026,12 @@ mod tests {
 
     #[test]
     fn scan_until_rejects_out_of_range_elem_placeholder_at_build_time() {
-        use crate::Tensor;
+        use crate::NodeHandle;
         // n_xs = 1, but the body references ScanPlaceholder{Elem, 5} — out of
         // range. Must be a typed BUILD-TIME Err (before this fix the node built
         // fine and the forward driver's build_scan_step -> clone_body_node
         // panicked with elem[5] index-OOB — a never-panic regression).
-        let init = Tensor::from_f32(vec![0.0f32], Shape::from_dims(&[1]), cpu_dev());
+        let init = NodeHandle::from_f32(vec![0.0f32], Shape::from_dims(&[1]), cpu_dev());
         let graph = init.graph().clone();
         let (x, nc, thr, pred) = {
             let mut g = graph.write().unwrap();
@@ -1080,10 +1080,10 @@ mod tests {
             });
             (x, nc, thr, pred)
         };
-        let x_t = Tensor::from_existing(graph.clone(), x);
-        let thr_t = Tensor::from_existing(graph.clone(), thr);
-        let nc_t = Tensor::from_existing(graph.clone(), nc);
-        let pred_t = Tensor::from_existing(graph.clone(), pred);
+        let x_t = NodeHandle::from_existing(graph.clone(), x);
+        let thr_t = NodeHandle::from_existing(graph.clone(), thr);
+        let nc_t = NodeHandle::from_existing(graph.clone(), nc);
+        let pred_t = NodeHandle::from_existing(graph.clone(), pred);
         let r = init.scan_until(&[x_t], &[thr_t], &nc_t, &nc_t, &pred_t, 3, ScanEmit::Final);
         assert!(
             r.is_err(),
@@ -1093,10 +1093,10 @@ mod tests {
 
     #[test]
     fn scan_rejects_out_of_range_elem_placeholder_at_build_time() {
-        use crate::Tensor;
+        use crate::NodeHandle;
         // Base builder shares the same missing build-time check (Phase 1 only
         // avoided the panic because unroll_scan was its sole forward path).
-        let init = Tensor::from_f32(vec![0.0f32], Shape::from_dims(&[1]), cpu_dev());
+        let init = NodeHandle::from_f32(vec![0.0f32], Shape::from_dims(&[1]), cpu_dev());
         let graph = init.graph().clone();
         let (x, nc) = {
             let mut g = graph.write().unwrap();
@@ -1133,8 +1133,8 @@ mod tests {
             });
             (x, nc)
         };
-        let x_t = Tensor::from_existing(graph.clone(), x);
-        let nc_t = Tensor::from_existing(graph.clone(), nc);
+        let x_t = NodeHandle::from_existing(graph.clone(), x);
+        let nc_t = NodeHandle::from_existing(graph.clone(), nc);
         let r = init.scan(&[x_t], &[], &nc_t, &nc_t, 3, ScanEmit::Final);
         assert!(
             r.is_err(),
@@ -1144,12 +1144,12 @@ mod tests {
 
     #[test]
     fn backward_lowers_op_scan_and_no_longer_panics() {
-        use crate::Tensor;
+        use crate::NodeHandle;
         // Affine scan: carry[1]; consts a,b; new_carry = a*carry + b; emit=Final. bound=3.
-        let init = Tensor::from_f32(vec![1.0f32], Shape::from_dims(&[1]), cpu_dev());
-        let a = Tensor::from_existing(init.graph().clone(), init.id())
+        let init = NodeHandle::from_f32(vec![1.0f32], Shape::from_dims(&[1]), cpu_dev());
+        let a = NodeHandle::from_existing(init.graph().clone(), init.id())
             .const_f32_like(vec![0.5f32], Shape::from_dims(&[1]));
-        let b = Tensor::from_existing(init.graph().clone(), init.id())
+        let b = NodeHandle::from_existing(init.graph().clone(), init.id())
             .const_f32_like(vec![0.1f32], Shape::from_dims(&[1]));
         let graph = init.graph().clone();
         let nc = {
@@ -1177,7 +1177,7 @@ mod tests {
                 dtype: DType::F32,
             })
         };
-        let nc_t = Tensor::from_existing(graph.clone(), nc);
+        let nc_t = NodeHandle::from_existing(graph.clone(), nc);
         let out = init
             .scan(
                 &[],
