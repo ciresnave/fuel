@@ -162,6 +162,102 @@ mod tests {
     };
     use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
 
+    /// ⚠️ **`verify_precision_bound` reinterprets BOTH outputs as `f32`
+    /// unconditionally, so its verdict is meaningless for any op whose output
+    /// is not f32 — and it does not say so.**
+    ///
+    /// The only shape guard is `bytes.len() % 4 != 0`, which an F16 buffer
+    /// satisfies (4 elements = 8 bytes), so the bytes are reinterpreted as 2
+    /// f32s and compared. This is not hypothetical for the population it is
+    /// about to be pointed at: of the 84 CPU entries blocked on `max_ulp`, 54
+    /// are `Cast` — whose outputs include I8, U8, F16, BF16, I32, I64, U32 —
+    /// plus `Gather` / `IndexSelect` / binaries over half-precision.
+    ///
+    /// Born-red for the dtype-aware comparison. This test asserts the CURRENT
+    /// wrong behaviour on purpose, so that fixing the verifier makes it fail
+    /// and forces the fix to come with its own assertion. It is a
+    /// characterisation, not an endorsement.
+    #[test]
+    fn precision_bound_misreads_non_f32_outputs_as_f32() {
+        use super::{Bound, verify_precision_bound};
+        use crate::fkc::verify::bit_stability::{
+            HostTensor, KernelInvoker, VerifyError, VerifyOutcome,
+        };
+        use crate::kernel::BindingEntry;
+
+        struct ConstInvoker(Vec<u8>);
+        impl KernelInvoker for ConstInvoker {
+            fn invoke(
+                &self,
+                _entry: &BindingEntry,
+                _inputs: &[HostTensor],
+            ) -> Result<HostTensor, VerifyError> {
+                Ok(HostTensor {
+                    dtype: fuel_ir::DType::F16,
+                    shape: vec![4],
+                    bytes: self.0.clone(),
+                })
+            }
+        }
+
+        // Two F16 buffers that are WILDLY different as f16 values: all 1.0 vs
+        // all 2.0. A dtype-aware comparison must see a large distance.
+        let ones: Vec<u8> = (0..4)
+            .flat_map(|_| half::f16::from_f32(1.0).to_le_bytes())
+            .collect();
+        let twos: Vec<u8> = (0..4)
+            .flat_map(|_| half::f16::from_f32(2.0).to_le_bytes())
+            .collect();
+        assert_eq!(ones.len(), 8, "4 x f16 is 8 bytes");
+        assert_ne!(
+            ones, twos,
+            "the two buffers must differ or this proves nothing"
+        );
+
+        let entry = BindingEntry {
+            kernel: crate::dispatch::add_elementwise_f32_cpu_wrapper,
+            caps: crate::kernel::KernelCaps::empty(),
+            precision: crate::fused::PrecisionGuarantee::UNAUDITED,
+            cost: crate::kernel::unknown_cost,
+            kernel_source: "test",
+            is_generic: false,
+            kernel_revision_hash: 0,
+            cost_expr: None,
+        };
+        let probes = vec![vec![]];
+
+        let out = verify_precision_bound(
+            &ConstInvoker(ones),
+            &ConstInvoker(twos),
+            &entry,
+            &probes,
+            Bound::MaxUlp(0),
+        )
+        .expect("no infrastructure error");
+
+        // CURRENT behaviour: the 8 bytes are read as 2 f32s. `1.0f16` is
+        // 0x3C00, so a pair of them reads as the f32 bit pattern 0x3C003C00
+        // — a small denormal-ish value — and `2.0f16` (0x4000) reads as
+        // 0x40004000. Whatever those happen to compare to, the comparison is
+        // NOT about f16 values.
+        match out {
+            VerifyOutcome::Fail { detail } => {
+                assert!(
+                    detail.contains("candidate") && detail.contains("reference"),
+                    "expected an elementwise report, got: {detail}"
+                );
+                // The reported values are the MISREAD f32s, not 1.0 and 2.0.
+                assert!(
+                    !detail.contains("candidate 1 vs reference 2"),
+                    "if this now reports the true f16 values, the verifier became                      dtype-aware and THIS test is the thing that is stale: delete                      it and assert the correct behaviour instead. detail: {detail}"
+                );
+            }
+            other => panic!(
+                "expected a Fail from the misread comparison, got {other:?}. If the                  verifier now returns Pass for two clearly-different f16 buffers,                  that is worse, not better."
+            ),
+        }
+    }
+
     #[test]
     fn widen_doubles_each_bound() {
         assert!(matches!(
