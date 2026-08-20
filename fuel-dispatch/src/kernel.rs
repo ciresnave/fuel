@@ -933,6 +933,20 @@ pub struct KernelBindingTable {
     bindings: HashMap<(BindingKey, KernelDTypes, BackendId), SmallVec<[BindingEntry; 2]>>,
 }
 
+/// The outcome of [`KernelBindingTable::unique_runtime_fused`] — three
+/// distinct facts, deliberately not collapsed into an `Option`.
+#[derive(Debug)]
+pub enum RuntimeFusedLookup<'a> {
+    /// No runtime-fused binding for this `(fid, backend)`.
+    NotBound,
+    /// Exactly one dtype tuple is registered; this is its first alternative.
+    Unique(&'a [DType], &'a BindingEntry),
+    /// Several dtype tuples share this id. **No kernel is returned**, because
+    /// any choice among them would be arbitrary — and one of them may have a
+    /// different operand arity than the caller expects.
+    Ambiguous { signatures: Vec<Vec<DType>> },
+}
+
 impl KernelBindingTable {
     pub fn new() -> Self {
         Self {
@@ -1430,19 +1444,53 @@ impl KernelBindingTable {
             .any(|(k, _, b)| *b == backend && matches!(k, BindingKey::RuntimeFused(f) if *f == fid))
     }
 
-    /// The first runtime-fused entry for `(fid, backend)` with its dtype
-    /// tuple — a diagnostic/test view (dispatch resolves dtype-precisely via
-    /// [`Self::lookup_with_caps`]).
-    pub fn first_runtime_fused(
-        &self,
-        fid: FusedOpId,
-        backend: BackendId,
-    ) -> Option<(&[DType], &BindingEntry)> {
-        self.bindings.iter().find_map(|((k, dtypes, b), alts)| {
-            (*b == backend && matches!(k, BindingKey::RuntimeFused(f) if *f == fid))
-                .then(|| alts.first().map(|e| (dtypes.as_slice(), e)))
-                .flatten()
-        })
+    /// Resolve `(fid, backend)` to a runtime-fused binding, **refusing to pick
+    /// when the answer is ambiguous**.
+    ///
+    /// A [`FusedOpId`] names a RECIPE, not a signature: `register_runtime_fused`
+    /// deduplicates on the region's base-map hash, so one id can legitimately
+    /// carry several dtype tuples — `[F32, F32]` and `[F32, F32, F32]` are
+    /// different arities under the same id. [`Self::first_runtime_fused`] scans
+    /// for `(fid, backend)` and **binds `dtypes` without testing it**, so it
+    /// answers such a question by `HashMap::iter()` order: a coin flip per
+    /// process, and capable of returning a kernel of the wrong operand arity.
+    ///
+    /// The three outcomes are kept as three values rather than folded into an
+    /// `Option`, because *not bound* and *ambiguous* are different facts with
+    /// different fixes, and an `Option` would make them indistinguishable to the
+    /// caller — the same collapse that let GAP-001 read as a version regression
+    /// for eleven days.
+    ///
+    /// **Scope: this is the diagnostic/test resolution path.** Production
+    /// dispatch never came through here — it uses [`Self::lookup_with_caps`],
+    /// which takes the dtype tuple and does an exact keyed `get`, so it can
+    /// neither be ambiguous nor return a wrong arity. See GAP-213.
+    pub fn unique_runtime_fused(&self, fid: FusedOpId, backend: BackendId) -> RuntimeFusedLookup<'_> {
+        let mut matches = self.bindings.iter().filter(|((k, _, b), _)| {
+            *b == backend && matches!(k, BindingKey::RuntimeFused(f) if *f == fid)
+        });
+        let Some((( _, dtypes, _), alts)) = matches.next() else {
+            return RuntimeFusedLookup::NotBound;
+        };
+        if matches.next().is_some() {
+            let mut signatures: Vec<Vec<DType>> = self
+                .bindings
+                .iter()
+                .filter(|((k, _, b), _)| {
+                    *b == backend && matches!(k, BindingKey::RuntimeFused(f) if *f == fid)
+                })
+                .map(|((_, d, _), _)| d.to_vec())
+                .collect();
+            // HashMap order is per-process, so the report would otherwise vary run to
+            // run. `DType` is not `Ord`, so key on arity then the debug spelling —
+            // a presentation order only; nothing depends on which comes first.
+            signatures.sort_by_key(|d| (d.len(), format!("{d:?}")));
+            return RuntimeFusedLookup::Ambiguous { signatures };
+        }
+        match alts.first() {
+            Some(e) => RuntimeFusedLookup::Unique(dtypes.as_slice(), e),
+            None => RuntimeFusedLookup::NotBound,
+        }
     }
 
     /// **TEST-ONLY.** Drop every runtime-fused entry (static entries retained).
