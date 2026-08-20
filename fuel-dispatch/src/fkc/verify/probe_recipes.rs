@@ -23,7 +23,7 @@ use fuel_ir::DType;
 use fuel_ir::dispatch::OpKind;
 
 use super::bit_stability::{HostTensor, ProbeInputs, fill_deterministic};
-use crate::kernel::OpParams;
+use crate::kernel::{MatmulM, OpParams};
 
 /// Encode `vals` into `dt`'s byte representation, covering every dtype any
 /// backend's probe recipes need — the float set PLUS the integer / fp8 / bool
@@ -777,6 +777,144 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
             inplace_probe(dt, OpParams::Affine { mul: 2.0, add: 1.0 }, seed)
         }
         OpKind::PowIInplace => inplace_probe(dt, OpParams::PowI { exp: 3 }, seed),
+
+        // --- GAP-225: the BIT-STABLE-blocked class ------------------------
+        // These five families are the entire `["bit_stable_on_same_hardware"]`
+        // half of the import downgrades (20 of 104 warnings). They are blocked
+        // because nothing can PROBE them, not because any oracle is missing —
+        // so they are the part of the precision program that needs no
+        // reference implementation at all, and closing them shrinks the
+        // `max_ulp` problem to its true size instead of carrying these as ULP
+        // work.
+
+        // Where / select: `[Bool, T, T, T]` — cond, then the two branches.
+        // The mask is a direct literal for the same reason `MaskedFill`'s is:
+        // there is no correct f32 -> Bool projection, and `[0,1,0,1]` exercises
+        // both branches rather than one.
+        OpKind::Where => {
+            let dt = *dtypes.get(1)?;
+            let cond = HostTensor {
+                dtype: DType::Bool,
+                shape: vec![4],
+                bytes: vec![0u8, 1, 0, 1],
+            };
+            let a = ht(dt, vec![4], &fill_deterministic(4, seed))?;
+            let b = ht(dt, vec![4], &fill_deterministic(4, seed ^ 0x9E37_79B9))?;
+            Some(Probe {
+                inputs: vec![cond, a, b],
+                params: OpParams::None,
+                out_dtype: dt,
+                out_shape: vec![4],
+                out_seed: None,
+            })
+        }
+
+        // IndexAdd: `[T, U32, T, T]` — base, indices, src. Indices are a
+        // direct U32 literal rather than a projection of the float probe
+        // values: an index has to be IN RANGE, which is a correctness
+        // precondition, not a numeric one.
+        OpKind::IndexAdd => {
+            let base = ht(dt, vec![4], &fill_deterministic(4, seed))?;
+            let idx = HostTensor {
+                dtype: DType::U32,
+                shape: vec![2],
+                bytes: bytemuck::cast_slice(&[0u32, 2]).to_vec(),
+            };
+            let src = ht(dt, vec![2], &fill_deterministic(2, seed ^ 0x1D1D))?;
+            Some(Probe {
+                inputs: vec![base, idx, src],
+                params: OpParams::IndexAdd {
+                    outer_count: 1,
+                    base_dim_size: 4,
+                    n_indices: 2,
+                    inner_count: 1,
+                },
+                out_dtype: dt,
+                out_shape: vec![4],
+                out_seed: None,
+            })
+        }
+
+        // ScatterAdd: same operand shape as IndexAdd, different params —
+        // the destination is named by SHAPE plus a dim rather than by flat
+        // outer/inner counts.
+        OpKind::ScatterAdd => {
+            let base = ht(dt, vec![4], &fill_deterministic(4, seed))?;
+            let idx = HostTensor {
+                dtype: DType::U32,
+                shape: vec![2],
+                bytes: bytemuck::cast_slice(&[0u32, 2]).to_vec(),
+            };
+            let src = ht(dt, vec![2], &fill_deterministic(2, seed ^ 0x2C2C))?;
+            Some(Probe {
+                inputs: vec![base, idx, src],
+                params: OpParams::ScatterAdd {
+                    base_shape: vec![4],
+                    src_shape: vec![2],
+                    dim: 0,
+                },
+                out_dtype: dt,
+                out_shape: vec![4],
+                out_seed: None,
+            })
+        }
+
+        // MatMul: the blocked registrations are the INTEGER ones
+        // (`[I8,I8,I8]`, `[U8,U8,U8]`), which is why this arm exists at all —
+        // `ht` covers those dtypes, so the only thing missing was the recipe.
+        // 2x2x2 is the smallest shape that exercises an accumulation.
+        OpKind::MatMul => {
+            let lhs = ht(dt, vec![2, 2], &fill_deterministic(4, seed))?;
+            let rhs = ht(dt, vec![2, 2], &fill_deterministic(4, seed ^ 0x3E3E))?;
+            Some(Probe {
+                inputs: vec![lhs, rhs],
+                params: OpParams::Matmul {
+                    lhs_batch_dims: vec![],
+                    rhs_batch_dims: vec![],
+                    m: 2,
+                    n: 2,
+                    k: 2,
+                    m_compute: MatmulM::All,
+                },
+                out_dtype: dt,
+                out_shape: vec![2, 2],
+                out_seed: None,
+            })
+        }
+
+        // WriteSliceDoff: device-offset slice write, `(source, offset)` in
+        // and dest out.
+        //
+        // The offset IS an operand, and the binding key does not say so: the
+        // key is `[T, T]` — two entries for what the wrapper reads as two
+        // inputs plus an output. **The key's arity is not the operand arity**,
+        // which is why the first version of this arm passed one input and the
+        // wrapper rejected it by name. Recorded because the key is the only
+        // thing the sweep sees, and reading operand count off it is wrong for
+        // this family.
+        OpKind::WriteSliceDoff => {
+            let src = ht(dt, vec![1, 4], &fill_deterministic(4, seed))?;
+            // I64, not U32: the wrapper reads 8 bytes and says so
+            // (`offset storage has 4 bytes, need >= 8 (I64)`). The binding
+            // key names neither the operand nor its dtype, so the kernel's
+            // own rejection is the only source for this.
+            let offset = HostTensor {
+                dtype: DType::I64,
+                shape: vec![],
+                bytes: bytemuck::cast_slice(&[1i64]).to_vec(),
+            };
+            Some(Probe {
+                inputs: vec![src, offset],
+                params: OpParams::WriteSliceDoff {
+                    dest_shape: vec![2, 4],
+                    axis: 0,
+                    ranges: vec![(0, 1), (0, 4)],
+                },
+                out_dtype: dt,
+                out_shape: vec![2, 4],
+                out_seed: None,
+            })
+        }
 
         // Residue still without a recipe, so the next reader is not guessing:
         // attention (FlashAttn x4 variants, PagedAttn), conv (Conv2D,

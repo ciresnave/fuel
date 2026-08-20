@@ -762,8 +762,44 @@ fn gap_225_what_actually_blocks_the_downgraded_cpu_entries() {
         eprintln!("[gap-225]     {n:>4}  unbacked {set}");
     }
 
+    // Name the bit-stable-blocked class, not just its size: it is the
+    // ACTIONABLE half (probe-recipe work, no oracle), so a bare count of 20
+    // tells the next reader nothing about what to build.
+    eprintln!("[gap-225] the bit-stable-blocked class, by kernel:");
+    let mut named: Vec<String> = Vec::new();
+    for (path, text) in &contracts {
+        let provider = import_bundle_str(text, &CpuLinkRegistry)
+            .unwrap_or_else(|e| panic!("contract {path} must import: {e:?}"));
+        for w in provider.warnings.iter().filter(|w| {
+            w.message.contains("downgraded to UNAUDITED")
+                && w.message.contains("[\"bit_stable_on_same_hardware\"]")
+        }) {
+            let dt = w
+                .message
+                .find("dtypes ")
+                .map(|i| {
+                    let rest = &w.message[i + 7..];
+                    let end = rest.find(']').map(|e| e + 1).unwrap_or(rest.len());
+                    rest[..end].to_string()
+                })
+                .unwrap_or_default();
+            named.push(format!("{path}  {dt}"));
+        }
+    }
+    named.sort();
+    for n in &named {
+        eprintln!("[gap-225]     {n}");
+    }
+
+    // Derived from the live values, NOT hard-coded. The first version of
+    // this line baked "104 warnings / 80 distinct revs" into the string, and
+    // when the bit-stable class closed it went on printing the old numbers
+    // beside the new tally — the same defect this file already carries a fix
+    // for, reintroduced in the text explaining the fix.
     eprintln!(
-        "[gap-225] UNMEASURED: the ENTRY-level size of each class. A warning is neither per-section nor per-registration (104 warnings / 80 distinct revs), so these counts cannot be converted to entries, and the subtraction-derived \"424 max_ulp-blocked entries\" is NOT this population — it also contains the bit-stable class below, and any entries whose contracts declare no machine-checkable claim at all. Left visible rather than estimated."
+        "[gap-225] UNMEASURED: the ENTRY-level size of each class. A warning is neither per-section nor per-registration ({} warnings / {} distinct revs), so these counts cannot be converted to entries. The subtraction-derived \"424 max_ulp-blocked entries\" is NOT this population. Left visible rather than estimated.",
+        revs.len(),
+        distinct.len(),
     );
 
     // Non-triviality: a parse that silently produced nothing would print an
