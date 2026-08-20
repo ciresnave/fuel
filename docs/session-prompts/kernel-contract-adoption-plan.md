@@ -7,6 +7,22 @@ kernels* onto Fuel's existing dispatch surface — the `KernelBindingTable` (pri
 `FusedKernelRegistry` (`Op::Fused` ops) — with **zero hand-written registration glue**, validated at
 import time, never panicking, leaving the optimizer/planner the sole decision-maker.
 
+> ⚠️ **AMENDED 2026-08-19 — THE BRANCH ABOVE NO LONGER EXISTS AND THE WORK IS ON `main`.**
+> `feat/kernel-contracts-dlpack` is **not on origin** — following the status line
+> costs a failed checkout and the natural conclusion that the work was abandoned.
+> FKC is **unconditional production infrastructure** today — `fuel-dispatch/src/fkc/`
+> holds **33 `.rs` files** (20 at the top level, the rest under `verify/`; the git
+> pathspec glob below matches across `/`, so it counts both), and the crate's own `[features]` comment records that there is
+> deliberately no `fkc` gate, so a build cannot omit it.
+>
+> **Re-derive:** `git ls-remote --heads origin | grep -c kernel-contracts-dlpack`
+> → expect **0**. `git ls-files 'fuel-dispatch/src/fkc/*.rs' | wc -l` → expect **≥ 20**.
+> *(Control for the absence claim: `git ls-files 'fuel-dispatch/src/no_such_module/*' | wc -l`
+> → 0, so a zero from these queries means "not there" rather than "query broken".)*
+>
+> The plan below is KEPT, not deleted: its section-by-section reasoning records
+> *why* the surface is shaped as it is, and nothing else holds that.
+
 **Authoritative inputs (read before touching this plan):**
 - FKC spec: `docs/specs/kernel-contract-format.md` (the advertisement axis — this is what we import).
 - FDX spec: `docs/specs/dlpack-extension.md` (the tensor axis — the vocabulary FKC tensor descriptors

@@ -6,6 +6,19 @@ PR-by-PR plan for D2, grounded against the as-built code at worktree
 ("persistent decode wiring") of
 [`symbolic-extents-and-persistent-decode.md`](symbolic-extents-and-persistent-decode.md).
 
+> ⚠️ **AMENDED 2026-08-19 — "DESIGN ONLY / NO BEHAVIOUR CODE" IS FALSE. It is built
+> and on `main`:** the `DecodeModel` trait exists with **5 `impl DecodeModel for`**
+> blocks, and `SymEnv` — the symbolic-extent carrier this plan is written around —
+> appears in **31** files.
+>
+> The specific commit this doc grounds itself against (`4585b194`) is many months
+> behind, so treat every "as-built" reference below as historical rather than
+> current.
+>
+> **Re-derive:** `git grep -h 'impl DecodeModel for' -- '*.rs' | wc -l` (expect ≥ 5);
+> `git grep -l SymEnv -- '*.rs' | wc -l` (expect ~31).
+> *(Control: `git grep -l 'ZzNotARealSymbolQq' -- '*.rs' | wc -l` → 0.)*
+
 > **Scope:** single-session D2 only. Concurrent `(NodeId, SessionId)` keying is D3; the API
 > below is shaped so D3 slots in without rework (see §8). PhiModel decode stays on the sliced
 > per-token-rebuild path (D4).

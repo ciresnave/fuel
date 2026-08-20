@@ -3,6 +3,21 @@
 **Status: PLAN — not started. Branch: `feat/kernel-contracts-dlpack` (unmerged; `main` untouched).**
 **Audience: a fresh instance executing this end-to-end, TDD, one crate at a time.**
 
+> ⚠️ **AMENDED 2026-08-19 — THE BRANCH ABOVE NO LONGER EXISTS AND THE WORK IS ON `main`.**
+> `feat/kernel-contracts-dlpack` is **not on origin** — following the status line
+> costs a failed checkout and the natural conclusion that the work was abandoned.
+> "`main` untouched" is false: `fuel-dispatch/src/telemetry/` holds **10 files** on
+> `main`, including `baracuda_provider.rs` and the sk4 structure-key derivation.
+> Note its gate is `telemetry,baracuda-types` — **not** `cuda` (GAP-173).
+>
+> **Re-derive:** `git ls-remote --heads origin | grep -c kernel-contracts-dlpack`
+> → expect **0**. `git ls-files 'fuel-dispatch/src/telemetry/*.rs' | wc -l` → expect **≥ 10**.
+> *(Control for the absence claim: `git ls-files 'fuel-dispatch/src/no_such_module/*' | wc -l`
+> → 0, so a zero from these queries means "not there" rather than "query broken".)*
+>
+> The plan below is KEPT, not deleted: its section-by-section reasoning records
+> *why* the surface is shaped as it is, and nothing else holds that.
+
 This plan builds the **emission layer** for the Baracuda dispatch-telemetry / miss-reporting
 feed. It is **not** a retention rebuild. The crucial grounding (verified this session) is that the
 Judge **already retains** the per-candidate timings the feed needs:

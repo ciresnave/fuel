@@ -12,6 +12,18 @@ to fix ([10-decisions-log](../architecture/10-decisions-log.md)). It **refines t
 case. **Promote the chosen mechanism into [`03-ir`](../architecture/03-ir.md) once built** (per
 03-ir's note that "input-dependent extents are supported … a bounded symbol").
 
+> ⚠️ **AMENDED 2026-08-19 — THE TOP-LINE "design, agreed" IS THE MISLEADING PART.**
+> `SymEnv` is on `main` in **31** files and persistent decode has shipped across
+> multiple model families. Note §0 further down already says "D1 + step 1 are
+> **done**" — **so this document contradicts itself, and the contradiction is
+> invisible to anyone who reads the header and stops**, which is what a header is
+> for. The later status is the accurate one; this notice exists so the first
+> screen no longer disagrees with it.
+>
+> **Re-derive:** `git grep -l SymEnv -- '*.rs' | wc -l` (expect ~31);
+> `git grep -h 'impl DecodeModel for' -- '*.rs' | wc -l` (expect ≥ 5).
+> *(Control: `git grep -l 'ZzNotARealSymbolQq' -- '*.rs' | wc -l` → 0.)*
+
 D1 (the `StorageClass` substrate) already landed; this supersedes the old D2/D3/D5 framing.
 
 ---
