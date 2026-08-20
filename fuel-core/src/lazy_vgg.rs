@@ -49,7 +49,7 @@
 //! `H == W` and divisible by 32 (typically 224). Returns
 //! `(1, nclasses)` after the final FC + ReLU.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -147,7 +147,7 @@ pub struct VggModel {
 impl VggModel {
     /// Run a forward pass on `image` of shape `(1, 3, H, W)`.
     /// Returns `(1, nclasses)`.
-    pub fn forward(&self, image: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, image: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let x = self.run_backbone(image)?;
 
@@ -186,11 +186,11 @@ impl VggModel {
     /// `(1, last_block_channels, H/32, W/32)` BEFORE flatten
     /// and the FC head. Useful for downstream dense prediction
     /// or as a frozen feature extractor.
-    pub fn forward_features(&self, image: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward_features(&self, image: &Tensor) -> Result<Tensor> {
         self.run_backbone(image)
     }
 
-    fn run_backbone(&self, image: &LazyTensor) -> Result<LazyTensor> {
+    fn run_backbone(&self, image: &Tensor) -> Result<Tensor> {
         let dims = image.shape();
         let dims = dims.dims();
         assert_eq!(dims.len(), 4, "image must be rank 4 [N, 3, H, W]");
@@ -212,7 +212,7 @@ impl VggModel {
         Ok(x)
     }
 
-    fn apply_conv(&self, x: &LazyTensor, conv: &VggConvWeights) -> Result<LazyTensor> {
+    fn apply_conv(&self, x: &Tensor, conv: &VggConvWeights) -> Result<Tensor> {
         let w = conv
             .w
             .const_like(x, Shape::from_dims(&[conv.c_out, conv.c_in, 3, 3]))?;
@@ -223,7 +223,7 @@ impl VggModel {
         out.broadcast_add(&bias_t)
     }
 
-    fn apply_fc(&self, x: &LazyTensor, fc: &VggHeadFc) -> Result<LazyTensor> {
+    fn apply_fc(&self, x: &Tensor, fc: &VggHeadFc) -> Result<Tensor> {
         let out = fc.w.apply_linear(x, fc.in_features, fc.out_features)?;
         let bias_t = x.const_f32_like(Arc::clone(&fc.b), Shape::from_dims(&[fc.out_features]));
         out.broadcast_add(&bias_t)
@@ -397,10 +397,10 @@ mod tests {
         }
     }
 
-    fn tiny_image(h: usize) -> LazyTensor {
+    fn tiny_image(h: usize) -> Tensor {
         let mut nb = rng_seed(123);
         let data: Arc<[f32]> = Arc::from((0..3 * h * h).map(|_| nb()).collect::<Vec<_>>());
-        LazyTensor::from_f32(data, Shape::from_dims(&[1, 3, h, h]), &Device::cpu())
+        Tensor::from_f32(data, Shape::from_dims(&[1, 3, h, h]), &Device::cpu())
     }
 
     #[test]

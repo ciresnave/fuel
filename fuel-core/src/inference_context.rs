@@ -593,7 +593,7 @@ pub struct LatentSlot {
 ///     projection per layer — one slot.
 ///
 /// `LatentKvCache` is this module's counterpart to
-/// [`crate::lazy_latent_cache::LazyLatentCache`] — that type makes the
+/// [`crate::lazy_latent_cache::LatentCache`] — that type makes the
 /// exact same **per-layer, ordered list of latent buffers with
 /// independent trailing shapes** generalization for the **per-forward-
 /// pass** (single [`fuel_graph::Graph`]-anchored, functional
@@ -611,7 +611,7 @@ pub struct LatentSlot {
 /// n_kv_heads, max_seq_len, head_dim]` convention (capacity axis 2):
 /// a latent is a per-token *vector*, not a per-head *plane*, so there is
 /// no head axis to lead with. Matches [`crate::lazy_latent_cache::
-/// LazyLatentCache`]'s dim-0 convention exactly — this type's per-slot
+/// LatentCache`]'s dim-0 convention exactly — this type's per-slot
 /// buffer is byte-for-byte what that type's `slot_buffer_full` realizes,
 /// modulo device residency.
 pub struct LatentKvCache {
@@ -1039,7 +1039,7 @@ pub struct DecodeTokenData {
 ///
 /// ## Why the graph is HELD here
 ///
-/// D1 rebuilds a fresh `LazyTensor` graph every token and drops it after
+/// D1 rebuilds a fresh `Tensor` graph every token and drops it after
 /// realize. D2 keeps the `Arc<RwLock<Graph>>` alive on the session so the
 /// already-optimized structure (the stamps + inserted copies) survives.
 /// The cached [`OptimizedGraph`] holds only `{roots, generation}` — it
@@ -1587,7 +1587,7 @@ pub struct PagedDecodeTokenData {
 /// the per-token data Consts + `SymEnv` re-bound) for every subsequent token.
 ///
 /// Paged decode's structural variabilities that a re-plan would otherwise pay
-/// EVERY token are removed here: (1) the fresh `LazyTensor` graph root becomes
+/// EVERY token are removed here: (1) the fresh `Tensor` graph root becomes
 /// a held graph with stable re-bindable Const placeholders; (2) the L-varying
 /// `block_table` shape is pinned to `[1, max_blocks_cap]` (Task 1 padded
 /// materialize); (3) the per-step KV-write range becomes ONE flattened

@@ -42,7 +42,7 @@
 //! - `blk.{i}.ffn_down.weight`          — SwiGLU down
 
 use crate::Result;
-use crate::lazy::{LayerWeights, LazyTensor, WeightStorage};
+use crate::lazy::{LayerWeights, Tensor, WeightStorage};
 use crate::lazy_qwen2::{Qwen2Config, Qwen2Model, Qwen2Weights};
 use std::sync::Arc;
 
@@ -58,13 +58,13 @@ pub struct QuantizedQwen2Model {
 impl QuantizedQwen2Model {
     /// Forward over a token-ID sequence. Returns logits with shape
     /// `(1, seq, vocab_size)`.
-    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         self.inner.forward(tokens, start_pos)
     }
 
     /// Per-token hidden states up to the final RmsNorm, shape
     /// `(1, seq, hidden_size)`. Skips the `lm_head` projection.
-    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         self.inner.forward_hidden(tokens, start_pos)
     }
 
@@ -72,11 +72,7 @@ impl QuantizedQwen2Model {
     /// embedding lookup. Embeds must have shape
     /// `(1, seq, hidden_size)`. Uses the standard per-layer
     /// (sliding-window / strict-causal) mask construction.
-    pub fn forward_hidden_embeds(
-        &self,
-        embeds: &LazyTensor,
-        start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_hidden_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         self.inner.forward_hidden_embeds(embeds, start_pos)
     }
 
@@ -86,10 +82,10 @@ impl QuantizedQwen2Model {
     /// bidirectional encoder mode.
     pub fn forward_hidden_embeds_with_mask(
         &self,
-        embeds: &LazyTensor,
-        attention_mask: &LazyTensor,
+        embeds: &Tensor,
+        attention_mask: &Tensor,
         start_pos: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         self.inner
             .forward_hidden_embeds_with_mask(embeds, attention_mask, start_pos)
     }

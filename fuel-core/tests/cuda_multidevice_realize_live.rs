@@ -33,7 +33,7 @@
 
 #![cfg(feature = "cuda")]
 
-use fuel_core::lazy::LazyTensor;
+use fuel_core::lazy::Tensor;
 use fuel_cuda_backend::CudaDevice;
 use fuel_graph::{NodeId, Op};
 use fuel_ir::{DeviceLocation, Shape, probe::BackendId};
@@ -48,10 +48,10 @@ fn dev_or_skip() -> Option<CudaDevice> {
     }
 }
 
-/// Stamp an explicit per-node placement on a `LazyTensor`'s node — the
+/// Stamp an explicit per-node placement on a `Tensor`'s node — the
 /// scheduler-assignment seam (`Graph::set_placement`) that the planner honors
 /// with priority over the realize-call pinned device.
-fn place(t: &LazyTensor, loc: DeviceLocation) {
+fn place(t: &Tensor, loc: DeviceLocation) {
     let gt = t.graph_tensor();
     let id = gt.id();
     gt.graph()
@@ -83,7 +83,7 @@ fn place(t: &LazyTensor, loc: DeviceLocation) {
 fn two_subdags_cpu_and_cuda_realize_in_one_pass() {
     let Some(dev) = dev_or_skip() else { return };
 
-    let a = LazyTensor::from_f32(
+    let a = Tensor::from_f32(
         vec![1.0_f32, 2.0, 3.0, 4.0],
         Shape::from_dims(&[4]),
         &fuel_core::Device::cpu(),

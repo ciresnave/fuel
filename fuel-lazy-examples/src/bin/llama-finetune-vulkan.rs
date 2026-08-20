@@ -127,7 +127,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let iseq = input_seq;
 
         // `TrainState::step`'s loss-builder closure is infallible
-        // (returns `LazyTensor`); shape errors in this fixed-shape
+        // (returns `Tensor`); shape errors in this fixed-shape
         // demo graph indicate a bug, so expect() is appropriate here.
         let loss = state.step(move |_graph, params| {
             let lm_head = &params["lm_head"];

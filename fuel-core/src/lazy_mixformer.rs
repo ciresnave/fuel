@@ -29,7 +29,7 @@
 //! Forward-only, single sequence (`batch == 1`), no KV cache
 //! (recomputes each call), F32 activations.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -117,14 +117,14 @@ pub struct MixFormerModel {
 }
 
 impl MixFormerModel {
-    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
         let batch = 1;
         assert!(seq > 0, "MixFormerModel: tokens must be non-empty");
 
-        let h = LazyTensor::embed_tokens(
+        let h = Tensor::embed_tokens(
             weights.token_embedding.clone(),
             cfg.vocab_size,
             cfg.hidden_size,
@@ -139,7 +139,7 @@ impl MixFormerModel {
     /// `(batch, seq, hidden_size)`. Used by multimodal models
     /// (Moondream, etc.) that interleave image embeddings with
     /// text embeddings.
-    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -192,7 +192,7 @@ impl MixFormerModel {
     /// vision-language composition already uses
     /// [`Self::forward_embeds`] for the full lm_head path;
     /// `forward_hidden` is the matching extraction point).
-    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
@@ -202,7 +202,7 @@ impl MixFormerModel {
             "MixFormerModel::forward_hidden: tokens must be non-empty"
         );
 
-        let h = LazyTensor::embed_tokens(
+        let h = Tensor::embed_tokens(
             weights.token_embedding.clone(),
             cfg.vocab_size,
             cfg.hidden_size,
@@ -215,11 +215,7 @@ impl MixFormerModel {
     /// Like [`Self::forward_embeds`] but skips the `lm_head`
     /// projection + bias and returns the post-LayerNorm hidden
     /// states.
-    pub fn forward_hidden_embeds(
-        &self,
-        embeds: &LazyTensor,
-        start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_hidden_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -244,13 +240,13 @@ impl MixFormerModel {
 
     fn apply_layer(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &MixFormerLayerWeights,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
         head_dim: usize,
         rotary_dim: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let x_shape = x.shape();
         let dims = x_shape.dims();
@@ -289,7 +285,7 @@ impl MixFormerModel {
         let scores = q_r.matmul(&k_t)?;
         let scores_scaled = scores.mul_scalar(scale);
         // Strict causal mask.
-        let mask = LazyTensor::additive_causal_mask_like(x, seq)
+        let mask = Tensor::additive_causal_mask_like(x, seq)
             .reshape(Shape::from_dims(&[1, 1, seq, seq]))?;
         let scores_masked = scores_scaled.broadcast_add(&mask)?;
         let attn = scores_masked.softmax_last_dim()?;

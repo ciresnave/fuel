@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! `LazyVarMap` — a name → [`LazyVar`] registry with safetensors
+//! `VarMap` — a name → [`Var`] registry with safetensors
 //! save/load.
 //!
-//! Companion to [`crate::optim::LazyVar`]. Mirrors the eager
+//! Companion to [`crate::optim::Var`]. Mirrors the eager
 //! `fuel_nn::VarMap` surface so checkpoint code that used to call
 //! `varmap.save(path)` / `varmap.load(path)` can swap to the lazy
 //! equivalent without architectural change.
@@ -19,39 +19,39 @@
 //! little-endian F32 bytes), so they are interoperable with HF Hub
 //! checkpoints and the `MmapedSafetensors` loader.
 
-use crate::optim::LazyVar;
+use crate::optim::Var;
 use fuel::Result;
 use safetensors::tensor::{Dtype, SafeTensors, TensorView};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
-/// Name-keyed registry of [`LazyVar`] parameters with serialize / load
+/// Name-keyed registry of [`Var`] parameters with serialize / load
 /// helpers backed by the `safetensors` format.
 #[derive(Clone, Debug, Default)]
-pub struct LazyVarMap {
-    vars: Arc<RwLock<HashMap<String, LazyVar>>>,
+pub struct VarMap {
+    vars: Arc<RwLock<HashMap<String, Var>>>,
 }
 
-impl LazyVarMap {
+impl VarMap {
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Insert `var` keyed by its name. Replaces any existing entry with
     /// the same name.
-    pub fn insert(&self, var: LazyVar) {
+    pub fn insert(&self, var: Var) {
         let name = var.name().to_string();
         self.vars.write().unwrap().insert(name, var);
     }
 
     /// Look up a parameter by name. Returns `None` if absent.
-    pub fn get(&self, name: &str) -> Option<LazyVar> {
+    pub fn get(&self, name: &str) -> Option<Var> {
         self.vars.read().unwrap().get(name).cloned()
     }
 
     /// Snapshot of all registered parameters in arbitrary order.
-    pub fn all_vars(&self) -> Vec<LazyVar> {
+    pub fn all_vars(&self) -> Vec<Var> {
         self.vars.read().unwrap().values().cloned().collect()
     }
 
@@ -64,7 +64,7 @@ impl LazyVarMap {
         self.vars.read().unwrap().is_empty()
     }
 
-    /// Serialize every registered [`LazyVar`] as an F32 safetensors
+    /// Serialize every registered [`Var`] as an F32 safetensors
     /// tensor at `path`. Shapes are preserved.
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         let snapshots = {
@@ -90,14 +90,13 @@ impl LazyVarMap {
             .map(|(name, bytes, shape)| {
                 let view =
                     TensorView::new(Dtype::F32, shape.clone(), bytes.as_slice()).map_err(|e| {
-                        fuel::Error::Msg(format!("LazyVarMap::save: TensorView for {name}: {e}"))
-                            .bt()
+                        fuel::Error::Msg(format!("VarMap::save: TensorView for {name}: {e}")).bt()
                     });
                 view.map(|v| (name.clone(), v))
             })
             .collect::<Result<Vec<_>>>()?;
         safetensors::tensor::serialize_to_file(views.into_iter(), None, path.as_ref())
-            .map_err(|e| fuel::Error::Msg(format!("LazyVarMap::save: {e}")).bt())?;
+            .map_err(|e| fuel::Error::Msg(format!("VarMap::save: {e}")).bt())?;
         Ok(())
     }
 
@@ -109,13 +108,13 @@ impl LazyVarMap {
     pub fn load<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         let bytes = std::fs::read(path.as_ref()).map_err(|e| {
             fuel::Error::Msg(format!(
-                "LazyVarMap::load: read {}: {e}",
+                "VarMap::load: read {}: {e}",
                 path.as_ref().display()
             ))
             .bt()
         })?;
         let tensors = SafeTensors::deserialize(&bytes)
-            .map_err(|e| fuel::Error::Msg(format!("LazyVarMap::load: deserialize: {e}")).bt())?;
+            .map_err(|e| fuel::Error::Msg(format!("VarMap::load: deserialize: {e}")).bt())?;
         let guard = self.vars.read().unwrap();
         for (name, view) in tensors.tensors() {
             let Some(var) = guard.get(&name) else {
@@ -123,7 +122,7 @@ impl LazyVarMap {
             };
             if view.dtype() != Dtype::F32 {
                 return Err(fuel::Error::Msg(format!(
-                    "LazyVarMap::load: tensor {name} has dtype {:?}, expected F32",
+                    "VarMap::load: tensor {name} has dtype {:?}, expected F32",
                     view.dtype()
                 ))
                 .bt());
@@ -132,14 +131,14 @@ impl LazyVarMap {
             let var_shape = var.shape().dims();
             if on_disk_shape != var_shape {
                 return Err(fuel::Error::Msg(format!(
-                    "LazyVarMap::load: tensor {name} has shape {on_disk_shape:?}, registered LazyVar shape is {var_shape:?}",
+                    "VarMap::load: tensor {name} has shape {on_disk_shape:?}, registered Var shape is {var_shape:?}",
                 ))
                 .bt());
             }
             let raw = view.data();
             if raw.len() % 4 != 0 {
                 return Err(fuel::Error::Msg(format!(
-                    "LazyVarMap::load: tensor {name} has byte length {} not divisible by 4",
+                    "VarMap::load: tensor {name} has byte length {} not divisible by 4",
                     raw.len(),
                 ))
                 .bt());
@@ -161,8 +160,8 @@ mod tests {
 
     #[test]
     fn insert_and_get_roundtrips() -> Result<()> {
-        let map = LazyVarMap::new();
-        let v = LazyVar::new("alpha", Shape::from_dims(&[2]), vec![1.0_f32, 2.0])?;
+        let map = VarMap::new();
+        let v = Var::new("alpha", Shape::from_dims(&[2]), vec![1.0_f32, 2.0])?;
         map.insert(v.clone());
         let got = map.get("alpha").expect("alpha should be present");
         assert_eq!(got.name(), "alpha");
@@ -176,22 +175,22 @@ mod tests {
         let tmp = std::env::temp_dir().join("fuel_lazy_varmap_save_load.safetensors");
         let _ = std::fs::remove_file(&tmp);
 
-        let src = LazyVarMap::new();
-        src.insert(LazyVar::new(
+        let src = VarMap::new();
+        src.insert(Var::new(
             "a",
             Shape::from_dims(&[3]),
             vec![1.0_f32, 2.0, 3.0],
         )?);
-        src.insert(LazyVar::new(
+        src.insert(Var::new(
             "b",
             Shape::from_dims(&[2, 2]),
             vec![10.0_f32, 20.0, 30.0, 40.0],
         )?);
         src.save(&tmp)?;
 
-        let dst = LazyVarMap::new();
-        dst.insert(LazyVar::zeros("a", Shape::from_dims(&[3]))?);
-        dst.insert(LazyVar::zeros("b", Shape::from_dims(&[2, 2]))?);
+        let dst = VarMap::new();
+        dst.insert(Var::zeros("a", Shape::from_dims(&[3]))?);
+        dst.insert(Var::zeros("b", Shape::from_dims(&[2, 2]))?);
         dst.load(&tmp)?;
 
         assert_eq!(dst.get("a").unwrap().to_vec(), vec![1.0_f32, 2.0, 3.0]);
@@ -207,22 +206,14 @@ mod tests {
     fn load_skips_unknown_names() -> Result<()> {
         let tmp = std::env::temp_dir().join("fuel_lazy_varmap_skip_unknown.safetensors");
         let _ = std::fs::remove_file(&tmp);
-        let src = LazyVarMap::new();
-        src.insert(LazyVar::new(
-            "known",
-            Shape::from_dims(&[1]),
-            vec![42.0_f32],
-        )?);
-        src.insert(LazyVar::new(
-            "extra",
-            Shape::from_dims(&[1]),
-            vec![99.0_f32],
-        )?);
+        let src = VarMap::new();
+        src.insert(Var::new("known", Shape::from_dims(&[1]), vec![42.0_f32])?);
+        src.insert(Var::new("extra", Shape::from_dims(&[1]), vec![99.0_f32])?);
         src.save(&tmp)?;
 
         // Destination only knows about "known"; "extra" must be silently ignored.
-        let dst = LazyVarMap::new();
-        dst.insert(LazyVar::zeros("known", Shape::from_dims(&[1]))?);
+        let dst = VarMap::new();
+        dst.insert(Var::zeros("known", Shape::from_dims(&[1]))?);
         dst.load(&tmp)?;
         assert_eq!(dst.get("known").unwrap().to_vec(), vec![42.0_f32]);
         assert!(dst.get("extra").is_none());
@@ -234,15 +225,15 @@ mod tests {
     fn load_rejects_shape_mismatch() -> Result<()> {
         let tmp = std::env::temp_dir().join("fuel_lazy_varmap_shape_mismatch.safetensors");
         let _ = std::fs::remove_file(&tmp);
-        let src = LazyVarMap::new();
-        src.insert(LazyVar::new(
+        let src = VarMap::new();
+        src.insert(Var::new(
             "x",
             Shape::from_dims(&[4]),
             vec![1.0, 2.0, 3.0, 4.0],
         )?);
         src.save(&tmp)?;
-        let dst = LazyVarMap::new();
-        dst.insert(LazyVar::zeros("x", Shape::from_dims(&[2, 2]))?);
+        let dst = VarMap::new();
+        dst.insert(Var::zeros("x", Shape::from_dims(&[2, 2]))?);
         assert!(dst.load(&tmp).is_err());
         std::fs::remove_file(&tmp).ok();
         Ok(())

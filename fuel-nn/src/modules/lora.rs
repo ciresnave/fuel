@@ -13,18 +13,18 @@
 //! convention every shipped lazy port uses. The whole graph is
 //! constructed by [`WeightStorage::apply_linear`] on a
 //! [`WeightStorage::WithLoRA`] variant; this module is the
-//! high-level `LazyModule` wrapper that bundles the adapter
+//! high-level `Module` wrapper that bundles the adapter
 //! parameters with optional bias.
 
-use crate::modules::LazyModule;
+use crate::modules::Module;
 use fuel::Result;
-use fuel::lazy::{LazyTensor, WeightStorage};
+use fuel::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
-/// LoRA-adapted linear layer over `LazyTensor`.
+/// LoRA-adapted linear layer over `Tensor`.
 #[derive(Debug, Clone)]
-pub struct LazyLoraLinear {
+pub struct LoraLinear {
     base_weight: WeightStorage,
     bias: Option<Arc<[f32]>>,
     lora_a: Arc<[f32]>,
@@ -35,7 +35,7 @@ pub struct LazyLoraLinear {
     out_features: usize,
 }
 
-impl LazyLoraLinear {
+impl LoraLinear {
     /// Build a LoRA-adapted linear layer.
     ///
     /// - `base_weight` — frozen base in `[in_features, out_features]` layout.
@@ -56,11 +56,11 @@ impl LazyLoraLinear {
         out_features: usize,
     ) -> Result<Self> {
         if rank == 0 {
-            return Err(fuel::Error::Msg("LazyLoraLinear::new: rank must be > 0".into()).bt());
+            return Err(fuel::Error::Msg("LoraLinear::new: rank must be > 0".into()).bt());
         }
         if base_weight.elem_count() != in_features * out_features {
             return Err(fuel::Error::Msg(format!(
-                "LazyLoraLinear::new: base_weight has {} elements but \
+                "LoraLinear::new: base_weight has {} elements but \
                  in_features * out_features = {} * {} = {}",
                 base_weight.elem_count(),
                 in_features,
@@ -71,7 +71,7 @@ impl LazyLoraLinear {
         }
         if matches!(base_weight, WeightStorage::WithLoRA { .. }) {
             return Err(fuel::Error::Msg(
-                "LazyLoraLinear::new: base_weight is already WithLoRA \
+                "LoraLinear::new: base_weight is already WithLoRA \
                  (nested adapters unsupported)"
                     .into(),
             )
@@ -79,7 +79,7 @@ impl LazyLoraLinear {
         }
         if lora_a.len() != in_features * rank {
             return Err(fuel::Error::Msg(format!(
-                "LazyLoraLinear::new: lora_a has {} elements but \
+                "LoraLinear::new: lora_a has {} elements but \
                  in_features * rank = {} * {} = {}",
                 lora_a.len(),
                 in_features,
@@ -90,7 +90,7 @@ impl LazyLoraLinear {
         }
         if lora_b.len() != rank * out_features {
             return Err(fuel::Error::Msg(format!(
-                "LazyLoraLinear::new: lora_b has {} elements but \
+                "LoraLinear::new: lora_b has {} elements but \
                  rank * out_features = {} * {} = {}",
                 lora_b.len(),
                 rank,
@@ -102,7 +102,7 @@ impl LazyLoraLinear {
         if let Some(b) = bias.as_ref() {
             if b.len() != out_features {
                 return Err(fuel::Error::Msg(format!(
-                    "LazyLoraLinear::new: bias has length {} but \
+                    "LoraLinear::new: bias has length {} but \
                      out_features = {}",
                     b.len(),
                     out_features,
@@ -163,8 +163,8 @@ impl LazyLoraLinear {
     }
 }
 
-impl LazyModule for LazyLoraLinear {
-    fn forward(&self, xs: &LazyTensor) -> Result<LazyTensor> {
+impl Module for LoraLinear {
+    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         let merged = self.base_weight.clone().with_lora(
             Arc::clone(&self.lora_a),
             Arc::clone(&self.lora_b),
@@ -188,7 +188,7 @@ impl LazyModule for LazyLoraLinear {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::LazyLinear;
+    use crate::modules::Linear;
     use fuel::Device;
 
     fn ramp_f32(n: usize, scale: f32, offset: f32) -> Vec<f32> {
@@ -198,7 +198,7 @@ mod tests {
     #[test]
     fn lora_zero_alpha_matches_base_linear() {
         // With alpha=0 the LoRA delta vanishes and the forward must
-        // equal a plain LazyLinear over the same base weight + bias.
+        // equal a plain Linear over the same base weight + bias.
         let in_features = 6;
         let out_features = 4;
         let rank = 3;
@@ -210,7 +210,7 @@ mod tests {
         let lora_b: Vec<f32> = ramp_f32(rank * out_features, 0.04, -0.2);
         let x_data: Vec<f32> = ramp_f32(seq * in_features, 0.03, -0.25);
 
-        let lora = LazyLoraLinear::new(
+        let lora = LoraLinear::new(
             WeightStorage::F32(Arc::from(w.clone())),
             Some(Arc::from(bias.clone())),
             Arc::from(lora_a),
@@ -221,7 +221,7 @@ mod tests {
             out_features,
         )
         .unwrap();
-        let plain = LazyLinear::new(
+        let plain = Linear::new(
             WeightStorage::F32(Arc::from(w)),
             Some(Arc::from(bias)),
             in_features,
@@ -229,13 +229,13 @@ mod tests {
         )
         .unwrap();
 
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             x_data.clone(),
             Shape::from_dims(&[seq, in_features]),
             &Device::cpu(),
         );
         let y_lora = lora.forward(&x).unwrap();
-        let x2 = LazyTensor::from_f32(
+        let x2 = Tensor::from_f32(
             x_data,
             Shape::from_dims(&[seq, in_features]),
             &Device::cpu(),
@@ -289,7 +289,7 @@ mod tests {
             }
         }
 
-        let lora = LazyLoraLinear::new(
+        let lora = LoraLinear::new(
             WeightStorage::F32(Arc::from(w)),
             Some(Arc::from(bias)),
             Arc::from(lora_a),
@@ -301,7 +301,7 @@ mod tests {
         )
         .unwrap();
 
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             x_data,
             Shape::from_dims(&[seq, in_features]),
             &Device::cpu(),

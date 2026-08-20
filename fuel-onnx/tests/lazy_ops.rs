@@ -13,17 +13,17 @@
 //!
 //! # The graph-affinity trap this harness exists to avoid
 //!
-//! Every `LazyTensor::from_*` constructor **mints a NEW graph**, and two
+//! Every `Tensor::from_*` constructor **mints a NEW graph**, and two
 //! tensors can only combine if their `graph_id()` matches. A test that built
 //! `x` and `y` with two separate `from_f32` calls would therefore fail inside
 //! the evaluator with a cross-graph error that looks like an evaluator bug and
 //! is not one. [`run`] builds the first input with `from_f32` and every
 //! subsequent input with `from_f32_on(first.graph(), …)`.
 
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel::{Device, Result, Shape};
 use fuel_onnx::onnx::{AttributeProto, GraphProto, ModelProto, NodeProto, ValueInfoProto};
-use fuel_onnx::LazyOnnxEval;
+use fuel_onnx::OnnxEval;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -144,20 +144,20 @@ fn run(model: &ModelProto, inputs: &[In]) -> Result<Vec<f32>> {
 
 fn run_named(model: &ModelProto, inputs: &[In], want: &str) -> Result<Vec<f32>> {
     let dev = Device::cpu();
-    let mut map: HashMap<String, LazyTensor> = HashMap::new();
-    let mut anchor: Option<LazyTensor> = None;
+    let mut map: HashMap<String, Tensor> = HashMap::new();
+    let mut anchor: Option<Tensor> = None;
     for (name, data, shape) in inputs {
         let d: Arc<[f32]> = Arc::from(data.clone());
         let t = match &anchor {
-            None => LazyTensor::from_f32(d, Shape::from_dims(shape), &dev),
-            Some(a) => LazyTensor::from_f32_on(a.graph(), d, Shape::from_dims(shape), &dev),
+            None => Tensor::from_f32(d, Shape::from_dims(shape), &dev),
+            Some(a) => Tensor::from_f32_on(a.graph(), d, Shape::from_dims(shape), &dev),
         };
         if anchor.is_none() {
             anchor = Some(t.clone());
         }
         map.insert(name.to_string(), t);
     }
-    let out = LazyOnnxEval::from_model(model.clone()).run(&map)?;
+    let out = OnnxEval::from_model(model.clone()).run(&map)?;
     let z = out
         .get(want)
         .unwrap_or_else(|| panic!("output '{want}' not produced; got {:?}", out.keys()));
@@ -259,7 +259,7 @@ fn comparison_ops_produce_zero_one_masks() -> Result<()> {
 }
 
 /// ONNX specifies numpy broadcasting for comparisons, but the underlying
-/// LazyTensor primitives are same-shape — this is the case that would fail
+/// Tensor primitives are same-shape — this is the case that would fail
 /// without `broadcast_pair`.
 #[test]
 fn comparisons_broadcast_a_scalar_against_a_matrix() -> Result<()> {

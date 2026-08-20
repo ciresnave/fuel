@@ -77,7 +77,7 @@
 //! `(1, nclasses)`. Input is `(1, 3, H, W)`; H and W are
 //! free but typically 224 (B0) up to 600 (B7).
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::lazy_convmixer::BatchNormParams;
 use crate::{Device, Result};
 use fuel_ir::Shape;
@@ -229,7 +229,7 @@ pub struct EfficientNetModel {
 
 impl EfficientNetModel {
     /// Run a forward pass on `image` of shape `(1, 3, H, W)`.
-    pub fn forward(&self, image: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, image: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let x = self.run_backbone(image)?;
         let pooled = x.global_avg_pool_2d()?;
@@ -249,11 +249,11 @@ impl EfficientNetModel {
     /// final Conv-BN-Swish) and return the channels-first
     /// feature map `(1, final_channels, H/32, W/32)` BEFORE
     /// global avg pool and the classifier.
-    pub fn forward_features(&self, image: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward_features(&self, image: &Tensor) -> Result<Tensor> {
         self.run_backbone(image)
     }
 
-    fn run_backbone(&self, image: &LazyTensor) -> Result<LazyTensor> {
+    fn run_backbone(&self, image: &Tensor) -> Result<Tensor> {
         let dims = image.shape();
         let dims = dims.dims();
         assert_eq!(dims.len(), 4, "image must be rank 4 [N, 3, H, W]");
@@ -268,7 +268,7 @@ impl EfficientNetModel {
         Ok(swish(&x)?)
     }
 
-    fn apply_conv_bn(&self, x: &LazyTensor, cb: &ConvBN) -> Result<LazyTensor> {
+    fn apply_conv_bn(&self, x: &Tensor, cb: &ConvBN) -> Result<Tensor> {
         let x_padded = pad_same(x, cb.kernel, cb.stride)?;
         let w = cb.w.const_like(
             x,
@@ -278,7 +278,7 @@ impl EfficientNetModel {
         apply_bn(&conv, &cb.bn, cb.c_out)
     }
 
-    fn apply_conv_bias(&self, x: &LazyTensor, cb: &ConvBias) -> Result<LazyTensor> {
+    fn apply_conv_bias(&self, x: &Tensor, cb: &ConvBias) -> Result<Tensor> {
         // 1×1 conv → broadcast-add bias on channel dim.
         let w =
             cb.w.const_like(x, Shape::from_dims(&[cb.c_out, cb.c_in, 1, 1]))?;
@@ -289,7 +289,7 @@ impl EfficientNetModel {
         conv.broadcast_add(&b_t)
     }
 
-    fn apply_mbconv(&self, x: &LazyTensor, block: &MBConvWeights) -> Result<LazyTensor> {
+    fn apply_mbconv(&self, x: &Tensor, block: &MBConvWeights) -> Result<Tensor> {
         let cfg = &block.config;
         let use_residual = cfg.stride == 1 && cfg.input_channels == cfg.out_channels;
         let mut y = x.clone();
@@ -304,7 +304,7 @@ impl EfficientNetModel {
         if use_residual { x.add(&y) } else { Ok(y) }
     }
 
-    fn apply_se(&self, x: &LazyTensor, se: &SqueezeExciteWeights) -> Result<LazyTensor> {
+    fn apply_se(&self, x: &Tensor, se: &SqueezeExciteWeights) -> Result<Tensor> {
         let pooled = x.mean_keepdim(2_usize)?.mean_keepdim(3_usize)?; // (N, C, 1, 1)
         let g = self.apply_conv_bias(&pooled, &se.fc1)?;
         let g = swish(&g)?;
@@ -318,7 +318,7 @@ impl EfficientNetModel {
 /// `pad_total = max(0, (oh - 1) * s + k - ih)`, split as
 /// `(pad_total / 2, pad_total - pad_total / 2)`. Computed
 /// independently on dims 2 and 3.
-fn pad_same(x: &LazyTensor, k: usize, s: usize) -> Result<LazyTensor> {
+fn pad_same(x: &Tensor, k: usize, s: usize) -> Result<Tensor> {
     let dims = x.shape();
     let dims = dims.dims().to_vec();
     let (h, w) = (dims[2], dims[3]);
@@ -337,13 +337,13 @@ fn pad_same(x: &LazyTensor, k: usize, s: usize) -> Result<LazyTensor> {
 }
 
 /// Apply fused-affine BN to a 4-D NCHW tensor.
-fn apply_bn(x: &LazyTensor, bn: &BatchNormParams, channels: usize) -> Result<LazyTensor> {
+fn apply_bn(x: &Tensor, bn: &BatchNormParams, channels: usize) -> Result<Tensor> {
     let _ = channels;
     x.channel_affine_4d(Arc::clone(&bn.w), Arc::clone(&bn.b))
 }
 
 /// Swish / SiLU: `x * sigmoid(x)`. EfficientNet's standard activation.
-fn swish(x: &LazyTensor) -> Result<LazyTensor> {
+fn swish(x: &Tensor) -> Result<Tensor> {
     Ok(x.silu())
 }
 
@@ -622,10 +622,10 @@ mod tests {
         }
     }
 
-    fn tiny_image(h: usize) -> LazyTensor {
+    fn tiny_image(h: usize) -> Tensor {
         let mut nb = rng_seed(1234);
         let data: Arc<[f32]> = Arc::from((0..3 * h * h).map(|_| nb()).collect::<Vec<_>>());
-        LazyTensor::from_f32(data, Shape::from_dims(&[1, 3, h, h]), &Device::cpu())
+        Tensor::from_f32(data, Shape::from_dims(&[1, 3, h, h]), &Device::cpu())
     }
 
     /// pad_same with stride=2, k=3, even input → asymmetric (0, 1).
@@ -693,7 +693,7 @@ mod tests {
             fc1: build_conv_bias(32, 8, &mut nb),
             fc2: build_conv_bias(8, 32, &mut nb),
         };
-        let img = LazyTensor::from_f32(
+        let img = Tensor::from_f32(
             Arc::from(
                 (0..1 * 32 * 4 * 4)
                     .map(|i| (i as f32) * 0.001)

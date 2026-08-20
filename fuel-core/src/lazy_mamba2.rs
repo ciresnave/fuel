@@ -5,7 +5,7 @@
 //! recurrence via the State Space Duality (SSD) algorithm, which
 //! reformulates the SSM step as a chunked matrix scan amenable to
 //! GPU parallelism. The lazy stack already encapsulates the SSD
-//! recurrence as a single [`LazyTensor::ssd_chunk_scan`] op (Phase
+//! recurrence as a single [`Tensor::ssd_chunk_scan`] op (Phase
 //! 7.6 fused op; CPU + CUDA + Vulkan all wired) — the eager code's
 //! `segsum` / `reshape_into_chunks` / explicit chunk recurrence
 //! disappears.
@@ -36,7 +36,7 @@
 //!   variants need B/C reshape + per-group broadcast that's a
 //!   mechanical extension when a checkpoint demands it.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -136,7 +136,7 @@ impl Mamba2Model {
     /// `seq` must be divisible by `cfg.chunk_size` for the SSD scan.
     /// Callers that need non-aligned lengths can right-pad to the
     /// next multiple and ignore the trailing logits.
-    pub fn forward(&self, tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let h_norm = self.run_backbone(tokens)?;
@@ -149,11 +149,11 @@ impl Mamba2Model {
     /// RmsNorm and return per-token hidden states
     /// `(1, seq, d_model)`. v1 is prefill only; `seq` must be
     /// a multiple of `cfg.chunk_size`.
-    pub fn forward_hidden(&self, tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn forward_hidden(&self, tokens: &[u32]) -> Result<Tensor> {
         self.run_backbone(tokens)
     }
 
-    fn run_backbone(&self, tokens: &[u32]) -> Result<LazyTensor> {
+    fn run_backbone(&self, tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
@@ -167,7 +167,7 @@ impl Mamba2Model {
         );
         let vocab_padded = cfg.vocab_size();
 
-        let mut h = LazyTensor::embed_tokens(
+        let mut h = Tensor::embed_tokens(
             weights.token_embedding.clone(),
             vocab_padded,
             cfg.d_model,
@@ -184,11 +184,7 @@ impl Mamba2Model {
         )?)
     }
 
-    fn apply_residual_block(
-        &self,
-        x: &LazyTensor,
-        layer: &Mamba2LayerWeights,
-    ) -> Result<LazyTensor> {
+    fn apply_residual_block(&self, x: &Tensor, layer: &Mamba2LayerWeights) -> Result<Tensor> {
         let cfg = &self.config;
         let x_norm =
             x.rms_norm_affine(std::sync::Arc::clone(&layer.norm_gain), cfg.rms_norm_eps)?;
@@ -196,7 +192,7 @@ impl Mamba2Model {
         x.add(&mixer_out)
     }
 
-    fn apply_mixer(&self, x: &LazyTensor, layer: &Mamba2LayerWeights) -> Result<LazyTensor> {
+    fn apply_mixer(&self, x: &Tensor, layer: &Mamba2LayerWeights) -> Result<Tensor> {
         let cfg = &self.config;
         let d_inner = cfg.d_inner();
         let d_xbc = cfg.d_xbc();
@@ -251,7 +247,7 @@ impl Mamba2Model {
                 cfg.ngroups,
             );
             let n_per_group = n_heads / cfg.ngroups;
-            let expand = |t: LazyTensor| -> Result<LazyTensor> {
+            let expand = |t: Tensor| -> Result<Tensor> {
                 // [batch, seq, ngroups, d_state] → [batch, seq, ngroups, 1, d_state]
                 // → broadcast to [batch, seq, ngroups, n_per_group, d_state]
                 // → reshape to [batch, seq, n_heads, d_state].

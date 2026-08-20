@@ -9,7 +9,7 @@ use anyhow::{Error as E, Result};
 use clap::{Parser, ValueEnum};
 use std::sync::Arc;
 
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel::lazy_fastvit::{FastVitConfig, FastVitModel, FastVitWeights};
 use fuel::safetensors::MmapedSafetensors;
 use fuel::{Device, Shape};
@@ -80,7 +80,7 @@ pub fn main() -> Result<()> {
     let image_chw = fuel_examples::imagenet::load_image(&args.image, 256)?;
     println!("loaded image: {} f32 values (CHW)", image_chw.len());
     let image_vec: Vec<f32> = image_chw;
-    let image = LazyTensor::from_f32(
+    let image = Tensor::from_f32(
         Arc::<[f32]>::from(image_vec),
         Shape::from_dims(&[1, 3, 256, 256]),
         &device,

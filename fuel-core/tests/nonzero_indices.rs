@@ -7,7 +7,7 @@
 //! and asserts both slots. (The mid-realize `SymEnv` bind of `count` is
 //! increment 2 — not asserted here.)
 
-use fuel_core::lazy::LazyTensor;
+use fuel_core::lazy::Tensor;
 use fuel_ir::{Shape, SymGen};
 
 /// A mask with three nonzeros at flat positions 1, 3, 4.
@@ -15,7 +15,7 @@ use fuel_ir::{Shape, SymGen};
 fn nonzero_indices_f32_basic() {
     let dev = fuel_core::Device::cpu();
     // shape [2, 3]; flat = [0, 1, 0, 1, 1, 0] → nonzeros at 1, 3, 4.
-    let x = LazyTensor::from_f32(
+    let x = Tensor::from_f32(
         vec![0.0, 1.0, 0.0, 1.0, 1.0, 0.0],
         Shape::from_dims(&[2, 3]),
         &dev,
@@ -38,7 +38,7 @@ fn nonzero_indices_f32_basic() {
 #[test]
 fn nonzero_indices_all_zero() {
     let dev = fuel_core::Device::cpu();
-    let x = LazyTensor::from_f32(vec![0.0; 4], Shape::from_dims(&[4]), &dev);
+    let x = Tensor::from_f32(vec![0.0; 4], Shape::from_dims(&[4]), &dev);
     let mut symgen = SymGen::new();
     let (indices, count) = x.nonzero_indices_bundled(symgen.fresh()).unwrap();
     assert_eq!(count.realize_u32(), vec![0], "no nonzeros");
@@ -49,7 +49,7 @@ fn nonzero_indices_all_zero() {
 #[test]
 fn nonzero_indices_all_nonzero() {
     let dev = fuel_core::Device::cpu();
-    let x = LazyTensor::from_f32(vec![1.0, 2.0, -3.0, 0.5], Shape::from_dims(&[4]), &dev);
+    let x = Tensor::from_f32(vec![1.0, 2.0, -3.0, 0.5], Shape::from_dims(&[4]), &dev);
     let mut symgen = SymGen::new();
     let (indices, count) = x.nonzero_indices_bundled(symgen.fresh()).unwrap();
     assert_eq!(count.realize_u32(), vec![4], "every element nonzero");
@@ -72,7 +72,7 @@ fn nonzero_indices_drives_data_determined_write_slice() {
     use fuel_ir::DynScalar;
     let dev = fuel_core::Device::cpu();
     // flat [0,1,0,1,1,0] → 3 nonzeros → count = 3.
-    let x = LazyTensor::from_f32(
+    let x = Tensor::from_f32(
         vec![0.0, 1.0, 0.0, 1.0, 1.0, 0.0],
         Shape::from_dims(&[6]),
         &dev,
@@ -114,7 +114,7 @@ fn nonzero_indices_drives_data_determined_write_slice() {
 fn nonzero_indices_gather_by_count_selects_routed_rows() {
     let dev = fuel_core::Device::cpu();
     // values: N=4 tokens, hidden=2. Row r = [10r+0, 10r+1].
-    let values = LazyTensor::from_f32(
+    let values = Tensor::from_f32(
         vec![
             0.0, 1.0, // token 0
             10.0, 11.0, // token 1
@@ -160,7 +160,7 @@ fn nonzero_count_drives_dynamic_m_matmul() {
     use fuel_ir::DynScalar;
     let dev = fuel_core::Device::cpu();
     // [0,1,0,1,1,0] → indices = [1,3,4,0,0,0], count = 3, capacity = 6.
-    let x = LazyTensor::from_f32(
+    let x = Tensor::from_f32(
         vec![0.0, 1.0, 0.0, 1.0, 1.0, 0.0],
         Shape::from_dims(&[6]),
         &dev,

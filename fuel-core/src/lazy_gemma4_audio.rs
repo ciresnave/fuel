@@ -46,7 +46,7 @@
 //! and that all frames are valid. Mask-aware audio batching is a
 //! follow-up.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -163,7 +163,7 @@ impl Gemma4AudioModel {
     /// hidden states `(B, T_out, d_model)`, where `d_model` is
     /// `output_proj_dims.unwrap_or(hidden_size)` and `T_out` is the
     /// SSCP-subsampled length divided by `conf_reduction_factor`.
-    pub fn forward(&self, mel: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, mel: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let dims = mel.shape();
         let dims = dims.dims();
@@ -242,12 +242,12 @@ impl Gemma4AudioModel {
 
     fn sscp_block_forward(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         t_in: usize,
         f_in: usize,
         idx: usize,
         block: &SscpBlockWeights,
-    ) -> Result<(LazyTensor, usize, usize)> {
+    ) -> Result<(Tensor, usize, usize)> {
         let cfg = &self.config;
         let kt = cfg.sscp_conv_kernel_size[idx][0];
         let kf = cfg.sscp_conv_kernel_size[idx][1];
@@ -289,12 +289,12 @@ impl Gemma4AudioModel {
 
     fn conformer_block_forward(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &ConformerLayerWeights,
-        attn_mask: &LazyTensor,
-        rel_pos_idx: &LazyTensor,
+        attn_mask: &Tensor,
+        rel_pos_idx: &Tensor,
         t_seq: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let scale = cfg.conf_residual_weight;
         let clip = cfg.gradient_clipping;
@@ -334,14 +334,14 @@ impl Gemma4AudioModel {
 
     fn feed_forward(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         pre_gain: &Arc<[f32]>,
         post_gain: &Arc<[f32]>,
         w1: &WeightStorage,
         w2: &WeightStorage,
         scale: f64,
         clip: f64,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let residual = x.clone();
         let x = x.clamp(-clip, clip);
@@ -356,13 +356,13 @@ impl Gemma4AudioModel {
 
     fn attention(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &ConformerLayerWeights,
-        attn_mask: &LazyTensor,
-        rel_pos_idx: &LazyTensor,
+        attn_mask: &Tensor,
+        rel_pos_idx: &Tensor,
         t_seq: usize,
         clip: f64,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let n_heads = cfg.conf_num_attention_heads;
         let head_dim = cfg.head_dim();
@@ -440,12 +440,7 @@ impl Gemma4AudioModel {
         residual.add(&out_n)
     }
 
-    fn light_conv1d(
-        &self,
-        x: &LazyTensor,
-        layer: &ConformerLayerWeights,
-        clip: f64,
-    ) -> Result<LazyTensor> {
+    fn light_conv1d(&self, x: &Tensor, layer: &ConformerLayerWeights, clip: f64) -> Result<Tensor> {
         let cfg = &self.config;
         let hidden = cfg.hidden_size;
         let k = cfg.conf_conv_kernel_size;
@@ -481,7 +476,7 @@ impl Gemma4AudioModel {
 
     /// Build the chunked attention mask: 0.0 where attendable, a large
     /// negative number where not. Block-band over T_seq.
-    fn build_block_band_mask(&self, anchor: &LazyTensor, t_seq: usize) -> Result<LazyTensor> {
+    fn build_block_band_mask(&self, anchor: &Tensor, t_seq: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let mask =
             chunked_band_mask_values(t_seq, cfg.conf_attention_chunk_size, cfg.conf_left_chunks);
@@ -491,7 +486,7 @@ impl Gemma4AudioModel {
     /// Build a flat `(T*T,)` U32 index tensor selecting rows from the
     /// `(2*max_rel + 1, num_heads)` Shaw table: index `[i*T + j]` is
     /// `clip(i - j, -max_rel, +max_rel) + max_rel`.
-    fn build_rel_pos_indices(&self, anchor: &LazyTensor, t_seq: usize) -> Result<LazyTensor> {
+    fn build_rel_pos_indices(&self, anchor: &Tensor, t_seq: usize) -> Result<Tensor> {
         let max_rel = self.config.max_rel() as isize;
         let mut data = Vec::with_capacity(t_seq * t_seq);
         for i in 0..t_seq {
@@ -952,7 +947,7 @@ mod tests {
         let mel_data: Vec<f32> = (0..b * t_in * n_mels)
             .map(|i| (i as f32 * 0.001).sin())
             .collect();
-        let mel = LazyTensor::from_f32(
+        let mel = Tensor::from_f32(
             Arc::from(mel_data),
             Shape::from_dims(&[b, t_in, n_mels]),
             &Device::cpu(),
@@ -1045,7 +1040,7 @@ mod tests {
             config: cfg,
             weights: tiny_weights(&tiny_config()),
         };
-        let anchor = LazyTensor::from_f32(
+        let anchor = Tensor::from_f32(
             Arc::from(vec![0.0_f32; t_seq]),
             Shape::from_dims(&[t_seq]),
             &Device::cpu(),

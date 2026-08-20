@@ -44,7 +44,7 @@
 //! (recomputes per call), F32. Returns vocab logits
 //! `(1, seq, vocab_size)` with final softcapping applied.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -124,7 +124,7 @@ pub struct Gemma2Model {
 
 impl Gemma2Model {
     /// Forward pass: returns `(1, seq, vocab_size)`.
-    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let h_norm = self.run_backbone(tokens, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
@@ -132,7 +132,7 @@ impl Gemma2Model {
     /// Hidden-state variant — returns the post-final-RmsNorm states
     /// `(1, seq, hidden_size)`. Skips the tied lm_head matmul and the
     /// final logit softcapping. Used by retrieval / embedding consumers.
-    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         self.run_backbone(tokens, start_pos)
     }
 
@@ -142,11 +142,7 @@ impl Gemma2Model {
     /// `scaled_embeds` shape: `(1, seq, hidden_size)`. The caller
     /// must apply Gemma's `sqrt(hidden_size)` scaling before
     /// invoking — matches lazy_paligemma / lazy_voxtral convention.
-    pub fn forward_embeds(
-        &self,
-        scaled_embeds: &LazyTensor,
-        start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, scaled_embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let h_norm = self.decode_from_scaled_embeds(scaled_embeds, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
@@ -155,16 +151,16 @@ impl Gemma2Model {
     /// post-final-RmsNorm states `(1, seq, hidden_size)`.
     pub fn forward_hidden_embeds(
         &self,
-        scaled_embeds: &LazyTensor,
+        scaled_embeds: &Tensor,
         start_pos: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         self.decode_from_scaled_embeds(scaled_embeds, start_pos)
     }
 
     /// Build per-token embeddings without running the decoder. Used by
     /// multimodal compositions. Returns shape `(1, seq, hidden_size)`;
     /// caller is responsible for the `sqrt(hidden_size)` scaling.
-    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &Tensor, tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
@@ -174,7 +170,7 @@ impl Gemma2Model {
         )
     }
 
-    fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
+    fn apply_lm_head(&self, h_norm: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         // Tied lm_head reuses the token embedding weight (vocab, hidden) —
         // logits = h_norm @ embed.T. We assemble it as a Linear: hidden -> vocab.
@@ -186,14 +182,14 @@ impl Gemma2Model {
         Ok(logits.softcap_optional(cfg.final_logit_softcapping))
     }
 
-    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
         assert!(seq > 0, "Gemma2Model::forward: tokens must be non-empty");
 
         // ---- Embedding + sqrt(hidden_size) scaling -------------------------
-        let h = LazyTensor::embed_tokens(
+        let h = Tensor::embed_tokens(
             weights.token_embedding.clone(),
             cfg.vocab_size,
             cfg.hidden_size,
@@ -206,9 +202,9 @@ impl Gemma2Model {
 
     fn decode_from_scaled_embeds(
         &self,
-        scaled_embeds: &LazyTensor,
+        scaled_embeds: &Tensor,
         start_pos: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = scaled_embeds.shape();
@@ -258,7 +254,7 @@ impl Gemma2Model {
         h.rms_norm_affine_with_offset(&weights.final_norm_gain, 1.0, cfg.rms_norm_eps)
     }
 
-    fn build_mask(&self, anchor: &LazyTensor, seq: usize) -> LazyTensor {
+    fn build_mask(&self, anchor: &Tensor, seq: usize) -> Tensor {
         let cfg = &self.config;
         let mut mask_data = vec![0.0_f32; seq * seq];
         for i in 0..seq {
@@ -280,12 +276,12 @@ impl Gemma2Model {
 
     fn apply_layer(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &Gemma2LayerWeights,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-        mask: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+        mask: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let head_dim = cfg.head_dim;
         let x_shape = x.shape();
@@ -772,7 +768,7 @@ mod tests {
     fn gemma2_rms_norm_offset() {
         let h = 8;
         let data: Arc<[f32]> = Arc::from(vec![1.0_f32, -2.0, 3.0, -4.0, 5.0, -6.0, 7.0, -8.0]);
-        let x = LazyTensor::from_f32(data, Shape::from_dims(&[1, 1, h]), &Device::cpu());
+        let x = Tensor::from_f32(data, Shape::from_dims(&[1, 1, h]), &Device::cpu());
         let zero_gain: Arc<[f32]> = Arc::from(vec![0.0_f32; h]);
         let one_gain: Arc<[f32]> = Arc::from(vec![1.0_f32; h]);
         let g2_out = x
@@ -815,7 +811,7 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let scaled = embeds.mul_scalar((cfg.hidden_size as f64).sqrt());
         let logits_via_embeds = model.forward_embeds(&scaled, 0).unwrap().realize_f32();
@@ -838,7 +834,7 @@ mod tests {
             config: cfg.clone(),
             weights: tiny_weights(&cfg, 42),
         };
-        let bad_embeds = LazyTensor::from_f32(
+        let bad_embeds = Tensor::from_f32(
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
             Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
             &Device::cpu(),
@@ -855,7 +851,7 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![2, 5];
         let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let scaled = embeds.mul_scalar((cfg.hidden_size as f64).sqrt());
         let h_via_embeds = model

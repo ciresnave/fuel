@@ -5,7 +5,7 @@
 //!
 //! Training orchestration for the Fuel ML framework. This crate is the
 //! canonical home for training-loop infrastructure on top of the lazy
-//! substrate in `fuel-core` (LazyOptimizer, LazyVar, LazyVarMap, the
+//! substrate in `fuel-core` (Optimizer, Var, VarMap, the
 //! `lazy_training_augmentations` schedulers and grad clippers).
 //!
 //! ## Modules
@@ -40,18 +40,18 @@
 //! ## Example
 //!
 //! ```rust,no_run
-//! use fuel_nn::optim::{LazyAdamW, LazyOptimizer, LazyVar, AdamWConfig};
+//! use fuel_nn::optim::{AdamW, Optimizer, Var, AdamWConfig};
 //! use fuel::lazy_training_augmentations::CosineSchedule;
 //! use fuel_training::training_loop::TrainingLoop;
 //!
 //! # fn main() -> fuel::Result<()> {
-//! let x = LazyVar::new("x", fuel::Shape::from_dims(&[3]), vec![1.0_f32, 2.0, 3.0])?;
-//! let mut opt = LazyAdamW::new(vec![x.clone()], AdamWConfig::default())?;
+//! let x = Var::new("x", fuel::Shape::from_dims(&[3]), vec![1.0_f32, 2.0, 3.0])?;
+//! let mut opt = AdamW::new(vec![x.clone()], AdamWConfig::default())?;
 //! let sched = CosineSchedule { base_lr: 1e-3, warmup_steps: 10, total_steps: 100 };
 //! let mut loop_ = TrainingLoop::new()
 //!     .with_max_grad_norm(1.0)
 //!     .with_scheduler(sched);
-//! // Per step: build a `LazyTensor` loss using `x.tensor(&anchor)`, then
+//! // Per step: build a `Tensor` loss using `x.tensor(&anchor)`, then
 //! //   `loop_.step(&loss, &mut opt)?;`
 //! # Ok(())
 //! # }

@@ -21,7 +21,7 @@
 //! single-op winner-only model would have routed sub-optimally.
 
 use fuel::judge::{Criterion, DispatchTable};
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel::scheduling::{ScheduleOptions, dp_plan, prepare_dp_inputs, recommend_placement};
 use fuel_graph::{NodeId, Op};
 use fuel_ir::{DeviceLocation, probe::BackendId};
@@ -108,7 +108,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 struct AnchorBuild {
     label: String,
-    outputs: Vec<LazyTensor>,
+    outputs: Vec<Tensor>,
 }
 
 #[derive(Debug)]
@@ -120,7 +120,7 @@ struct DiffReport {
 
 fn compare_planners(
     label: &str,
-    outputs: &[LazyTensor],
+    outputs: &[Tensor],
     table: &DispatchTable,
     profile: &fuel::judge::ProfileReport,
     bandwidth: &fuel::transfer_cost::BandwidthMatrix,

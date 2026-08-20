@@ -11,20 +11,20 @@
 //! `fuel-onnx` loads ONNX model files and evaluates them against Fuel tensors:
 //!
 //! - [`read_file`]: deserialize an `.onnx` file into an in-memory `ModelProto`.
-//! - [`LazyOnnxEval`]: evaluate an ONNX graph onto the **lazy** graph, producing
-//!   [`fuel::lazy::LazyTensor`] outputs that realize on demand.
+//! - [`OnnxEval`]: evaluate an ONNX graph onto the **lazy** graph, producing
+//!   [`fuel::lazy::Tensor`] outputs that realize on demand.
 //!
 //! The eager evaluator (`eval.rs` / `simple_eval`) was **deleted in B6** along
-//! with the eager `Tensor` it was built on. `LazyOnnxEval` replaces it.
+//! with the eager `Tensor` it was built on. `OnnxEval` replaces it.
 //!
 //! ## Quick start
 //!
 //! ```rust,no_run
 //! use std::collections::HashMap;
-//! use fuel_onnx::LazyOnnxEval;
+//! use fuel_onnx::OnnxEval;
 //! # fn main() -> fuel::Result<()> {
-//! let eval = LazyOnnxEval::from_path("path/to/model.onnx")?;
-//! let inputs = HashMap::new(); // populate with fuel::lazy::LazyTensor values
+//! let eval = OnnxEval::from_path("path/to/model.onnx")?;
+//! let inputs = HashMap::new(); // populate with fuel::lazy::Tensor values
 //! let outputs = eval.run(&inputs)?;
 //! # Ok(()) }
 //! ```
@@ -53,7 +53,7 @@ pub mod lazy_eval;
 pub mod lazy_eval_conv;
 pub mod lazy_eval_norm;
 pub mod lazy_eval_ops;
-pub use lazy_eval::{onnx_dtype_to_fuel as dtype, LazyOnnxEval};
+pub use lazy_eval::{onnx_dtype_to_fuel as dtype, OnnxEval};
 
 /// Reads and deserializes an ONNX model from a file on disk.
 ///

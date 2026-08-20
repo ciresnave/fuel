@@ -10,7 +10,7 @@
 
 #![cfg(feature = "cuda")]
 
-use fuel_core::lazy::LazyTensor;
+use fuel_core::lazy::Tensor;
 use fuel_ir::{Shape, probe::BackendId};
 use std::sync::Arc;
 
@@ -44,7 +44,7 @@ fn require_cuda() {
 /// (executor-unification Session 1: the legacy `GraphExecutor` import
 /// this file carried is gone; `realize_f32` / `realize_f32_cuda` are
 /// the PipelinedExecutor entries).
-fn realize_both(t: &LazyTensor) -> (Vec<f32>, Vec<f32>) {
+fn realize_both(t: &Tensor) -> (Vec<f32>, Vec<f32>) {
     // Hard-CPU reference: `realize_f32_reference` suppresses cost-based
     // cross-device placement so the reference isn't offloaded onto (and
     // crashed by / made non-independent of) the CUDA device under test.
@@ -87,9 +87,9 @@ fn report(label: &str, ref_out: &[f32], cuda_out: &[f32]) {
 /// Same shapes as the failing composed test, so the comparison
 /// is apples-to-apples across the bisect cases below.
 struct Inputs {
-    x: LazyTensor,
-    w1: LazyTensor,
-    w2: LazyTensor,
+    x: Tensor,
+    w1: Tensor,
+    w2: Tensor,
 }
 
 fn build_inputs() -> Inputs {
@@ -98,7 +98,7 @@ fn build_inputs() -> Inputs {
     let dim_mid = 32_usize;
     let dim_out = 8_usize;
     let x_data: Vec<f32> = gen_lcg(12345, seq * dim_in);
-    let x = LazyTensor::from_f32(
+    let x = Tensor::from_f32(
         x_data,
         Shape::from_dims(&[1, seq, dim_in]),
         &fuel_core::Device::cpu(),
@@ -146,7 +146,7 @@ fn bisect_c_just_rmsnorm() -> Result<(), Box<dyn std::error::Error>> {
     let seq = 8_usize;
     let dim_mid = 32_usize;
     let data: Vec<f32> = gen_lcg(12345, seq * dim_mid);
-    let x = LazyTensor::from_f32(
+    let x = Tensor::from_f32(
         data,
         Shape::from_dims(&[1, seq, dim_mid]),
         &fuel_core::Device::cpu(),
@@ -165,7 +165,7 @@ fn bisect_d_rmsnorm_then_matmul() -> Result<(), Box<dyn std::error::Error>> {
     let dim_mid = 32_usize;
     let dim_out = 8_usize;
     let data: Vec<f32> = gen_lcg(12345, seq * dim_mid);
-    let x = LazyTensor::from_f32(
+    let x = Tensor::from_f32(
         data,
         Shape::from_dims(&[1, seq, dim_mid]),
         &fuel_core::Device::cpu(),

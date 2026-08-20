@@ -5,31 +5,31 @@
 //! Mirrors the eager `fuel-nn::QuantizableLinear` API surface so
 //! lazy ports written against either weight format can dispatch
 //! through a single concrete type. The forward pass is the same
-//! shape as [`super::LazyLinear`] — the only difference is that
+//! shape as [`super::Linear`] — the only difference is that
 //! this type doesn't refuse `WeightStorage::Q4_0` at construction
 //! time. Per the eager-side convention, this is kept as a separate
-//! type rather than collapsing into `LazyLinear` to make port
+//! type rather than collapsing into `Linear` to make port
 //! intent visible at the model-struct level (i.e. "this layer is
 //! intentionally checkpoint-format-polymorphic").
 
-use crate::modules::LazyModule;
+use crate::modules::Module;
 use fuel::Result;
-use fuel::lazy::{LazyTensor, WeightStorage};
+use fuel::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
-/// Linear layer over `LazyTensor` whose weight may be F32, BF16,
-/// or Q4_0. `LazyLoraLinear` covers the LoRA case; this is the
+/// Linear layer over `Tensor` whose weight may be F32, BF16,
+/// or Q4_0. `LoraLinear` covers the LoRA case; this is the
 /// non-LoRA polymorphic surface.
 #[derive(Debug, Clone)]
-pub struct LazyQuantizableLinear {
+pub struct QuantizableLinear {
     weight: WeightStorage,
     bias: Option<Arc<[f32]>>,
     in_features: usize,
     out_features: usize,
 }
 
-impl LazyQuantizableLinear {
+impl QuantizableLinear {
     /// Build a quantization-polymorphic linear layer.
     ///
     /// `weight` must be a non-LoRA [`WeightStorage`] variant
@@ -44,15 +44,15 @@ impl LazyQuantizableLinear {
     ) -> Result<Self> {
         if matches!(weight, WeightStorage::WithLoRA { .. }) {
             return Err(fuel::Error::Msg(
-                "LazyQuantizableLinear::new: WithLoRA must be \
-                 wrapped in LazyLoraLinear, not LazyQuantizableLinear"
+                "QuantizableLinear::new: WithLoRA must be \
+                 wrapped in LoraLinear, not QuantizableLinear"
                     .into(),
             )
             .bt());
         }
         if weight.elem_count() != in_features * out_features {
             return Err(fuel::Error::Msg(format!(
-                "LazyQuantizableLinear::new: weight has {} elements but \
+                "QuantizableLinear::new: weight has {} elements but \
                  in_features * out_features = {} * {} = {}",
                 weight.elem_count(),
                 in_features,
@@ -64,7 +64,7 @@ impl LazyQuantizableLinear {
         if let Some(b) = bias.as_ref() {
             if b.len() != out_features {
                 return Err(fuel::Error::Msg(format!(
-                    "LazyQuantizableLinear::new: bias has length {} but \
+                    "QuantizableLinear::new: bias has length {} but \
                      out_features = {}",
                     b.len(),
                     out_features,
@@ -115,8 +115,8 @@ impl LazyQuantizableLinear {
     }
 }
 
-impl LazyModule for LazyQuantizableLinear {
-    fn forward(&self, xs: &LazyTensor) -> Result<LazyTensor> {
+impl Module for QuantizableLinear {
+    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         let y = self
             .weight
             .apply_linear(xs, self.in_features, self.out_features)?;
@@ -134,7 +134,7 @@ impl LazyModule for LazyQuantizableLinear {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::LazyLinear;
+    use crate::modules::Linear;
     use fuel::Device;
 
     fn ramp_f32(n: usize, scale: f32, offset: f32) -> Vec<f32> {
@@ -189,14 +189,14 @@ mod tests {
         let bias: Vec<f32> = ramp_f32(out_features, 0.15, -0.2);
         let x_data: Vec<f32> = ramp_f32(seq * in_features, 0.05, -0.3);
 
-        let qlin = LazyQuantizableLinear::new(
+        let qlin = QuantizableLinear::new(
             WeightStorage::F32(Arc::from(w.clone())),
             Some(Arc::from(bias.clone())),
             in_features,
             out_features,
         )
         .unwrap();
-        let plain = LazyLinear::new(
+        let plain = Linear::new(
             WeightStorage::F32(Arc::from(w)),
             Some(Arc::from(bias)),
             in_features,
@@ -204,13 +204,13 @@ mod tests {
         )
         .unwrap();
 
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             x_data.clone(),
             Shape::from_dims(&[seq, in_features]),
             &Device::cpu(),
         );
         let got = qlin.forward(&x).unwrap().realize_f32();
-        let x2 = LazyTensor::from_f32(
+        let x2 = Tensor::from_f32(
             x_data,
             Shape::from_dims(&[seq, in_features]),
             &Device::cpu(),
@@ -235,11 +235,11 @@ mod tests {
 
         let q_weight = quantize_in_out_to_q4_0(&w, in_features, out_features);
         let qlin =
-            LazyQuantizableLinear::new(q_weight, Some(Arc::from(bias)), in_features, out_features)
+            QuantizableLinear::new(q_weight, Some(Arc::from(bias)), in_features, out_features)
                 .unwrap();
         assert!(qlin.is_quantized());
 
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             x_data,
             Shape::from_dims(&[seq, in_features]),
             &Device::cpu(),

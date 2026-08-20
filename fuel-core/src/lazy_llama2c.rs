@@ -13,8 +13,7 @@
 
 use crate::inference_context::{InferenceContext, KvCache};
 use crate::lazy::{
-    LayerWeights, LazyTensor, LlamaConfig, LlamaModel, LlamaWeights, SamplingStrategy,
-    WeightStorage,
+    LayerWeights, LlamaConfig, LlamaModel, LlamaWeights, SamplingStrategy, Tensor, WeightStorage,
 };
 use crate::{DType, Device, Result};
 use std::sync::Arc;
@@ -84,7 +83,7 @@ pub struct Llama2cModel {
 }
 
 impl Llama2cModel {
-    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let llama = LlamaModel {
             config: self.config.to_llama_config(),
             weights: self.weights.clone(),
@@ -96,12 +95,12 @@ impl Llama2cModel {
     /// return per-token hidden states `(1, seq, dim)`. Delegates
     /// to `LlamaModel::forward_hidden` with an internally-built
     /// anchor from the token-embedding constant.
-    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let llama = LlamaModel {
             config: self.config.to_llama_config(),
             weights: self.weights.clone(),
         };
-        let anchor = LazyTensor::from_f32(
+        let anchor = Tensor::from_f32(
             llama.weights.token_embedding.clone(),
             fuel_ir::Shape::from_dims(&[llama.config.vocab_size, llama.config.dim]),
             &crate::Device::cpu(),
@@ -120,8 +119,8 @@ impl Llama2cModel {
         &self,
         tokens: &[u32],
         start_pos: usize,
-        anchor: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        anchor: &Tensor,
+    ) -> Result<Tensor> {
         let llama = LlamaModel {
             config: self.config.to_llama_config(),
             weights: self.weights.clone(),
@@ -136,7 +135,7 @@ impl Llama2cModel {
     /// embeddings with text embeddings before running the LLM.
     ///
     /// Delegates to [`LlamaModel::forward_embeds`].
-    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let llama = LlamaModel {
             config: self.config.to_llama_config(),
             weights: self.weights.clone(),
@@ -148,11 +147,7 @@ impl Llama2cModel {
     /// pre-lm_head) instead of logits. Used by adapters / embeddings
     /// pipelines that need the raw representation. Delegates to
     /// [`LlamaModel::forward_hidden_embeds`].
-    pub fn forward_hidden_embeds(
-        &self,
-        embeds: &LazyTensor,
-        start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_hidden_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let llama = LlamaModel {
             config: self.config.to_llama_config(),
             weights: self.weights.clone(),
@@ -168,10 +163,10 @@ impl Llama2cModel {
     /// Delegates to [`LlamaModel::forward_hidden_embeds_with_mask`].
     pub fn forward_hidden_embeds_with_mask(
         &self,
-        embeds: &LazyTensor,
-        attention_mask: &LazyTensor,
+        embeds: &Tensor,
+        attention_mask: &Tensor,
         start_pos: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let llama = LlamaModel {
             config: self.config.to_llama_config(),
             weights: self.weights.clone(),
@@ -767,7 +762,7 @@ mod tests {
         let logits_a = model.forward(&tokens, 0).unwrap().realize_f32();
 
         // Path B: pre-compute the embeddings and call forward_embeds.
-        let embeds = LazyTensor::embed_tokens(
+        let embeds = Tensor::embed_tokens(
             Arc::clone(&token_embedding),
             cfg.vocab_size,
             cfg.dim,

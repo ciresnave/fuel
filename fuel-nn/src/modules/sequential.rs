@@ -1,29 +1,29 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! `LazySequential` — a Vec of boxed [`LazyModule`]s applied left-to-right.
+//! `Sequential` — a Vec of boxed [`Module`]s applied left-to-right.
 
-use super::LazyModule;
+use super::Module;
 use fuel::Result;
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 
-/// A container that chains owned [`LazyModule`]s.
+/// A container that chains owned [`Module`]s.
 ///
 /// `forward(xs)` runs `xs` through each contained module in order,
 /// passing the previous module's output as the next module's input.
-pub struct LazySequential {
-    layers: Vec<Box<dyn LazyModule + Send + Sync>>,
+pub struct Sequential {
+    layers: Vec<Box<dyn Module + Send + Sync>>,
 }
 
-impl LazySequential {
+impl Sequential {
     pub fn new() -> Self {
         Self { layers: Vec::new() }
     }
 
-    pub fn push<M: LazyModule + Send + Sync + 'static>(mut self, module: M) -> Self {
+    pub fn push<M: Module + Send + Sync + 'static>(mut self, module: M) -> Self {
         self.layers.push(Box::new(module));
         self
     }
 
-    pub fn add<M: LazyModule + Send + Sync + 'static>(&mut self, module: M) {
+    pub fn add<M: Module + Send + Sync + 'static>(&mut self, module: M) {
         self.layers.push(Box::new(module));
     }
 
@@ -36,14 +36,14 @@ impl LazySequential {
     }
 }
 
-impl Default for LazySequential {
+impl Default for Sequential {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl LazyModule for LazySequential {
-    fn forward(&self, xs: &LazyTensor) -> Result<LazyTensor> {
+impl Module for Sequential {
+    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         if self.layers.is_empty() {
             return Ok(xs.clone());
         }
@@ -58,15 +58,15 @@ impl LazyModule for LazySequential {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::modules::{LazyLinear, LazyModule};
+    use crate::modules::{Linear, Module};
     use fuel::Device;
     use fuel::lazy::WeightStorage;
     use fuel_ir::Shape;
     use std::sync::Arc;
 
-    fn tiny_xs(b: usize, d: usize, val: f32) -> LazyTensor {
+    fn tiny_xs(b: usize, d: usize, val: f32) -> Tensor {
         let data: Vec<f32> = vec![val; b * d];
-        LazyTensor::from_f32(Arc::from(data), Shape::from_dims(&[b, d]), &Device::cpu())
+        Tensor::from_f32(Arc::from(data), Shape::from_dims(&[b, d]), &Device::cpu())
     }
 
     #[test]
@@ -79,15 +79,15 @@ mod tests {
                 .map(|i| 0.02 + (i as f32) * 0.005)
                 .collect::<Vec<_>>(),
         );
-        let l1 = LazyLinear::new(WeightStorage::F32(Arc::clone(&w1)), None, 4, 6).unwrap();
-        let l2 = LazyLinear::new(WeightStorage::F32(Arc::clone(&w2)), None, 6, 3).unwrap();
+        let l1 = Linear::new(WeightStorage::F32(Arc::clone(&w1)), None, 4, 6).unwrap();
+        let l2 = Linear::new(WeightStorage::F32(Arc::clone(&w2)), None, 6, 3).unwrap();
 
         let xs = tiny_xs(1, 4, 0.25);
         let manual = l2.forward(&l1.forward(&xs).unwrap()).unwrap().realize_f32();
 
-        let seq = LazySequential::new()
-            .push(LazyLinear::new(WeightStorage::F32(Arc::clone(&w1)), None, 4, 6).unwrap())
-            .push(LazyLinear::new(WeightStorage::F32(Arc::clone(&w2)), None, 6, 3).unwrap());
+        let seq = Sequential::new()
+            .push(Linear::new(WeightStorage::F32(Arc::clone(&w1)), None, 4, 6).unwrap())
+            .push(Linear::new(WeightStorage::F32(Arc::clone(&w2)), None, 6, 3).unwrap());
         let chained = seq.forward(&xs).unwrap().realize_f32();
         assert_eq!(manual.len(), chained.len());
         for (i, (a, b)) in manual.iter().zip(chained.iter()).enumerate() {
@@ -98,7 +98,7 @@ mod tests {
     #[test]
     fn empty_sequential_is_identity() {
         let xs = tiny_xs(1, 3, 0.5);
-        let seq = LazySequential::new();
+        let seq = Sequential::new();
         let out = seq.forward(&xs).unwrap().realize_f32();
         let baseline = xs.realize_f32();
         assert_eq!(out, baseline);

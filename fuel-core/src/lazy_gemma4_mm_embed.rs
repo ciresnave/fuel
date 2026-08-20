@@ -16,7 +16,7 @@
 //! them with text token embeddings.
 
 use crate::Result;
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -44,7 +44,7 @@ impl Gemma4MmEmbedder {
     ///
     /// `soft_features` shape: `(..., multimodal_hidden_size)`.
     /// Returns shape `(..., text_hidden_size)`.
-    pub fn forward(&self, soft_features: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, soft_features: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let dims = soft_features.shape();
         let dims = dims.dims();
@@ -125,7 +125,7 @@ mod tests {
         let input_data: Vec<f32> = (0..1 * seq * cfg.multimodal_hidden_size)
             .map(|i| ((i as f32) * 0.05) - 0.1)
             .collect();
-        let input = LazyTensor::from_f32(
+        let input = Tensor::from_f32(
             input_data,
             Shape::from_dims(&[1, seq, cfg.multimodal_hidden_size]),
             &Device::cpu(),
@@ -156,7 +156,7 @@ mod tests {
             },
         };
         // Input: each row is (1, 2, 3, 4) — RMS = sqrt((1+4+9+16)/4) = sqrt(7.5).
-        let input = LazyTensor::from_f32(
+        let input = Tensor::from_f32(
             vec![1.0_f32, 2.0, 3.0, 4.0],
             Shape::from_dims(&[1, 1, 4]),
             &Device::cpu(),

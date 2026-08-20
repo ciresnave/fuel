@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Lazy port of `fuel-nn`'s loss functions.
 //!
-//! Each loss is a small composition of [`LazyTensor`] primitives and
-//! returns a scalar (or per-sample) `LazyTensor` describing the loss.
+//! Each loss is a small composition of [`Tensor`] primitives and
+//! returns a scalar (or per-sample) `Tensor` describing the loss.
 //! Numerical conventions match the eager fuel-nn implementations
 //! verbatim; the [`Reduction`] enum mirrors PyTorch's
 //! `'mean' | 'sum' | 'none'` parameter shape.
 
 use fuel::Result;
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel_ir::{DType, Shape};
 
 /// Reduction mode for losses with per-sample outputs. Matches
@@ -24,7 +24,7 @@ pub enum Reduction {
 }
 
 impl Reduction {
-    fn apply(self, per_sample: LazyTensor, n: usize) -> Result<LazyTensor> {
+    fn apply(self, per_sample: Tensor, n: usize) -> Result<Tensor> {
         match self {
             Reduction::None => Ok(per_sample),
             Reduction::Sum => Ok(per_sample.sum_all()),
@@ -41,7 +41,7 @@ impl Reduction {
 /// `inp` is `[N, C]` log-probabilities; `target` is `[N]` `U32`
 /// class labels. Picks `inp[i, target[i]]` for every row via
 /// gather, then negates and reduces.
-pub fn nll(inp: &LazyTensor, target: &LazyTensor, reduction: Reduction) -> Result<LazyTensor> {
+pub fn nll(inp: &Tensor, target: &Tensor, reduction: Reduction) -> Result<Tensor> {
     let inp_dims = inp.shape();
     let inp_dims = inp_dims.dims();
     if inp_dims.len() != 2 {
@@ -86,12 +86,8 @@ pub fn nll(inp: &LazyTensor, target: &LazyTensor, reduction: Reduction) -> Resul
 /// op (FusedOpId 17) which collapses log-softmax + NLL into a
 /// single graph node.
 ///
-/// [`fused_softmax_cross_entropy`]: LazyTensor::fused_softmax_cross_entropy
-pub fn cross_entropy(
-    inp: &LazyTensor,
-    target: &LazyTensor,
-    reduction: Reduction,
-) -> Result<LazyTensor> {
+/// [`fused_softmax_cross_entropy`]: Tensor::fused_softmax_cross_entropy
+pub fn cross_entropy(inp: &Tensor, target: &Tensor, reduction: Reduction) -> Result<Tensor> {
     let inp_dims = inp.shape();
     let inp_dims = inp_dims.dims();
     if inp_dims.len() != 2 {
@@ -136,10 +132,10 @@ pub fn cross_entropy(
 /// element-wise on tensors of identical shape and produces a
 /// scalar (or shape-preserving tensor for [`Reduction::None`]).
 pub fn binary_cross_entropy_with_logit(
-    inp: &LazyTensor,
-    target: &LazyTensor,
+    inp: &Tensor,
+    target: &Tensor,
     reduction: Reduction,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     if inp.shape().dims() != target.shape().dims() {
         return Err(fuel::Error::Msg(format!(
             "bce_with_logit: inp shape {:?} != target shape {:?}",
@@ -170,7 +166,7 @@ pub fn binary_cross_entropy_with_logit(
 ///
 /// `mean((inp - target)^2)` for the default reduction; the loss
 /// is element-wise `(inp - target)^2` otherwise.
-pub fn mse(inp: &LazyTensor, target: &LazyTensor, reduction: Reduction) -> Result<LazyTensor> {
+pub fn mse(inp: &Tensor, target: &Tensor, reduction: Reduction) -> Result<Tensor> {
     if inp.shape().dims() != target.shape().dims() {
         return Err(fuel::Error::Msg(format!(
             "mse: inp shape {:?} != target shape {:?}",
@@ -198,12 +194,7 @@ pub fn mse(inp: &LazyTensor, target: &LazyTensor, reduction: Reduction) -> Resul
 /// Quadratic `0.5 * (x - y)^2` for `|x - y| < delta`, linear
 /// `delta * (|x - y| - 0.5 * delta)` otherwise. Implemented via
 /// element-wise `where_cond` over a `|diff| <= delta` mask.
-pub fn huber(
-    inp: &LazyTensor,
-    target: &LazyTensor,
-    delta: f64,
-    reduction: Reduction,
-) -> Result<LazyTensor> {
+pub fn huber(inp: &Tensor, target: &Tensor, delta: f64, reduction: Reduction) -> Result<Tensor> {
     if inp.shape().dims() != target.shape().dims() {
         return Err(fuel::Error::Msg(format!(
             "huber: inp shape {:?} != target shape {:?}",
@@ -238,7 +229,7 @@ pub fn huber(
 /// Build a constant tensor on `host`'s graph filled with `value`,
 /// matching `host`'s shape and dtype (limited to the float dtypes
 /// the loss functions actually exercise).
-fn abs_diff_like_scalar(host: &LazyTensor, value: f64) -> Result<LazyTensor> {
+fn abs_diff_like_scalar(host: &Tensor, value: f64) -> Result<Tensor> {
     let shape = host.shape();
     let dims: Vec<usize> = shape.dims().to_vec();
     let n = shape.elem_count();
@@ -282,7 +273,7 @@ mod tests {
         //     loss_1 = -(2.5 - 2.720152) = 0.220152
         //   mean = (0.417067 + 0.220152) / 2 ≈ 0.318609
         let device = Device::cpu();
-        let logits = LazyTensor::from_f32(
+        let logits = Tensor::from_f32(
             vec![2.0_f32, 1.0, 0.1, 0.5, 2.5, 0.3],
             Shape::from_dims(&[2, 3]),
             &device,
@@ -304,7 +295,7 @@ mod tests {
         // log_probs[i, target[i]] gives [-0.1054, -0.1054]; mean
         // of -(log probs) ≈ 0.1054.
         let device = Device::cpu();
-        let log_probs = LazyTensor::from_f32(
+        let log_probs = Tensor::from_f32(
             vec![-0.1054_f32, -2.3026, -6.9078, -2.3026, -0.1054, -6.9078],
             Shape::from_dims(&[2, 3]),
             &device,
@@ -324,7 +315,7 @@ mod tests {
     #[test]
     fn mse_zero_on_equal_inputs() {
         let device = Device::cpu();
-        let a = LazyTensor::from_f32(
+        let a = Tensor::from_f32(
             vec![0.5_f32, -1.0, 2.0, 3.5],
             Shape::from_dims(&[4]),
             &device,
@@ -339,7 +330,7 @@ mod tests {
     fn mse_unit_on_unit_diff() {
         // Every element differs by exactly 1.0 ⇒ mean((1.0)^2) = 1.0.
         let device = Device::cpu();
-        let a = LazyTensor::from_f32(
+        let a = Tensor::from_f32(
             vec![1.0_f32, 2.0, 3.0, 4.0],
             Shape::from_dims(&[4]),
             &device,
@@ -366,8 +357,7 @@ mod tests {
         //                   sum = 0.693147
         // mean = (0.313262 + 0.313262 + 0.693147) / 3 ≈ 0.439890
         let device = Device::cpu();
-        let logits =
-            LazyTensor::from_f32(vec![1.0_f32, -1.0, 0.0], Shape::from_dims(&[3]), &device);
+        let logits = Tensor::from_f32(vec![1.0_f32, -1.0, 0.0], Shape::from_dims(&[3]), &device);
         let targets = logits.const_f32_like(vec![1.0_f32, 0.0, 1.0], Shape::from_dims(&[3]));
         let loss = binary_cross_entropy_with_logit(&logits, &targets, Reduction::Mean)
             .unwrap()
@@ -385,7 +375,7 @@ mod tests {
         // All |diff|=0.5 < delta=1.0 ⇒ 0.5 * 0.25 = 0.125 each;
         // mean = 0.125.
         let device = Device::cpu();
-        let inp = LazyTensor::from_f32(
+        let inp = Tensor::from_f32(
             vec![0.5_f32, 1.5, 2.5, 3.5],
             Shape::from_dims(&[4]),
             &device,
@@ -408,7 +398,7 @@ mod tests {
         //      |diff|=2.0 ≥ 1.0 ⇒ 1.0 * (2.0 - 0.5) = 1.5 (linear branch)
         // mean = (0.125 + 1.5) / 2 = 0.8125
         let device = Device::cpu();
-        let inp = LazyTensor::from_f32(vec![0.5_f32, 3.0], Shape::from_dims(&[2]), &device);
+        let inp = Tensor::from_f32(vec![0.5_f32, 3.0], Shape::from_dims(&[2]), &device);
         let tgt = inp.const_f32_like(vec![1.0_f32, 1.0], Shape::from_dims(&[2]));
         let loss = huber(&inp, &tgt, 1.0, Reduction::Mean)
             .unwrap()

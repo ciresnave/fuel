@@ -108,7 +108,7 @@ The `Tensor::*` builder for a multi-output op (`Tensor::selective_scan`, etc.) c
 
 ### Bundled-tuple builders
 
-`Tensor::selective_scan_bundled(...) -> Result<(Tensor, Tensor)>` returns both slots via `Op::View(0)` and `Op::View(1)` projections. `LazyTensor::selective_scan_bundled` is the higher-level wrapper. Mirror for `ssd_chunk_scan_bundled`.
+`Tensor::selective_scan_bundled(...) -> Result<(Tensor, Tensor)>` returns both slots via `Op::View(0)` and `Op::View(1)` projections. `Tensor::selective_scan_bundled` is the higher-level wrapper. Mirror for `ssd_chunk_scan_bundled`.
 
 ---
 
@@ -164,7 +164,7 @@ Read the producer's bundled Storage's bytes via `to_host_buffer_dyn()` (CPU path
 - **`Op::ScatterIntoSlot` kernel.** Needs a differentiable multi-output producer to be load-bearing. Mamba training is the obvious trigger; FSCE loss+grad bundling is another.
 - **Per-backend `Op::ViewOwned` copy-with-offset hooks** for CUDA / Vulkan. The CPU path ships; GPU follow-up is the consumer-migration session's scope.
 - **`Op::Copy` of a bundled producer.** Today errors cleanly; whole-bundle cross-device copy needs a per-backend bundle-aware Copy hook.
-- **Mamba consumer migration.** Eager `fuel_core::Tensor` → `LazyTensor` path. Once the eager-to-lazy session lands, Mamba's inference loop uses `selective_scan_bundled` for resumption.
+- **Mamba consumer migration.** Eager `fuel_core::Tensor` → `Tensor` path. Once the eager-to-lazy session lands, Mamba's inference loop uses `selective_scan_bundled` for resumption.
 - **FSCE loss+grad bundling.** Same pattern as SelectiveScan migration; its own session.
 
 ---

@@ -36,7 +36,7 @@
 //! - F32 activations; weights via `WeightStorage`.
 //! - **No shared expert** (Mixtral has none; Qwen2-MoE does).
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -116,7 +116,7 @@ pub struct MixtralModel {
 }
 
 impl MixtralModel {
-    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let h_norm = self.run_backbone(tokens, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
@@ -127,29 +127,25 @@ impl MixtralModel {
     /// based embedding adapters (analogous to NV-Embed-v2
     /// running on Mistral). Mirrors the `forward_hidden`
     /// pattern across the LLM family.
-    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         self.run_backbone(tokens, start_pos)
     }
 
     /// Multimodal entry point. Skips the token-embedding step and runs
     /// the decoder over pre-embedded inputs. Mixtral does NOT scale
     /// embeddings — `embeds` is passed raw.
-    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let h_norm = self.run_backbone_embeds(embeds, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
 
     /// Hidden-state variant of [`Self::forward_embeds`].
-    pub fn forward_hidden_embeds(
-        &self,
-        embeds: &LazyTensor,
-        start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_hidden_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         self.run_backbone_embeds(embeds, start_pos)
     }
 
     /// Build per-token embeddings without running the decoder.
-    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &Tensor, tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
@@ -159,7 +155,7 @@ impl MixtralModel {
         )
     }
 
-    fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
+    fn apply_lm_head(&self, h_norm: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         Ok(self
             .weights
@@ -171,13 +167,13 @@ impl MixtralModel {
     /// final RmsNorm. Used by both `forward` (then matmuls
     /// with `lm_head`) and `forward_hidden` (returns hidden
     /// states directly).
-    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
         assert!(seq > 0, "MixtralModel: tokens must be non-empty");
 
-        let h = LazyTensor::embed_tokens(
+        let h = Tensor::embed_tokens(
             weights.token_embedding.clone(),
             cfg.vocab_size,
             cfg.hidden_size,
@@ -187,7 +183,7 @@ impl MixtralModel {
         self.run_backbone_embeds(&h, start_pos)
     }
 
-    fn run_backbone_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
+    fn run_backbone_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -233,7 +229,7 @@ impl MixtralModel {
         )
     }
 
-    fn build_sliding_window_mask(&self, anchor: &LazyTensor, seq: usize) -> LazyTensor {
+    fn build_sliding_window_mask(&self, anchor: &Tensor, seq: usize) -> Tensor {
         let cfg = &self.config;
         let window = cfg.sliding_window.unwrap_or(seq + 1);
         let mut mask_data = vec![0.0_f32; seq * seq];
@@ -249,11 +245,11 @@ impl MixtralModel {
 
     fn apply_layer(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &MixtralLayerWeights,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let x_shape = x.shape();
         let dims = x_shape.dims();
@@ -321,11 +317,11 @@ impl MixtralModel {
     /// module level.
     fn apply_moe(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &MixtralLayerWeights,
         batch: usize,
         seq: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let h = cfg.hidden_size;
         let inter = cfg.intermediate_size;
@@ -337,7 +333,7 @@ impl MixtralModel {
         let router_logits = x.matmul(&gate_w)?;
         let router_weights = router_logits.softmax_last_dim()?; // [batch, seq, e]
 
-        let mut routed_sum: Option<LazyTensor> = None;
+        let mut routed_sum: Option<Tensor> = None;
         for (ei, ew) in layer.experts.iter().enumerate() {
             // SwiGLU expert: `down(silu(gate(x)) * up(x))`.
             let gate = ew.gate_w.apply_linear(x, h, inter)?;
@@ -627,7 +623,7 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
         let max_diff = logits_ref
@@ -648,7 +644,7 @@ mod tests {
             config: cfg.clone(),
             weights: tiny_weights(&cfg),
         };
-        let bad = LazyTensor::from_f32(
+        let bad = Tensor::from_f32(
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
             Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
             &Device::cpu(),
@@ -665,7 +661,7 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let h_via_embeds = model
             .forward_hidden_embeds(&embeds, 0)

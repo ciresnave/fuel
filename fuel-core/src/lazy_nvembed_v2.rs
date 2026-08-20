@@ -57,7 +57,7 @@
 //! normalized embeddings `(1, hidden_size)`. The output dim is
 //! NOT Matryoshka — NV-Embed v2 ships a fixed 4096-d embedding.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::lazy_mistral::{MistralConfig, MistralModel, MistralWeights};
 use crate::{Device, Result};
 use fuel_ir::Shape;
@@ -155,7 +155,7 @@ impl NvEmbedV2Model {
     /// Run a forward pass with an attention mask `(seq,)` of
     /// `1` for keep and `0` for pad. Returns L2-normalized
     /// embeddings `(1, hidden_size)`.
-    pub fn forward(&self, tokens: &[u32], attention_mask: &[u32]) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32], attention_mask: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         let bcfg = &cfg.backbone;
         let seq = tokens.len();
@@ -168,7 +168,7 @@ impl NvEmbedV2Model {
         );
 
         // ---- Embedding lookup --------------------------------------------
-        let embeds = LazyTensor::embed_tokens(
+        let embeds = Tensor::embed_tokens(
             self.weights.backbone.token_embedding.clone(),
             bcfg.vocab_size,
             bcfg.hidden_size,
@@ -284,11 +284,7 @@ impl NvEmbedV2Model {
     /// (the pooling step is what drops i's contribution at
     /// the end). Without this, masking position i would
     /// produce a row of `-inf`s and the softmax would NaN.
-    fn build_bidirectional_pad_mask(
-        &self,
-        anchor: &LazyTensor,
-        attention_mask: &[u32],
-    ) -> LazyTensor {
+    fn build_bidirectional_pad_mask(&self, anchor: &Tensor, attention_mask: &[u32]) -> Tensor {
         let seq = attention_mask.len();
         let mut mask_data = vec![0.0_f32; seq * seq];
         for i in 0..seq {
@@ -302,7 +298,7 @@ impl NvEmbedV2Model {
     }
 }
 
-fn l2_normalize(x: &LazyTensor) -> Result<LazyTensor> {
+fn l2_normalize(x: &Tensor) -> Result<Tensor> {
     x.l2_normalize(1_usize, 0.0)
 }
 

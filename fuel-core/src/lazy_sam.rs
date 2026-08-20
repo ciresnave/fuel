@@ -82,7 +82,7 @@
 //!   deferred to follow-up commits. They depend on the image
 //!   encoder being available first.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -266,7 +266,7 @@ impl SamImageEncoderVit {
     /// caller — SAM divides by 255 and standardizes with ImageNet
     /// stats before calling forward). Returns the image feature
     /// map of shape `(1, out_chans, patches_per_side, patches_per_side)`.
-    pub fn forward(&self, image_chw: &[f32]) -> Result<LazyTensor> {
+    pub fn forward(&self, image_chw: &[f32]) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let img = cfg.img_size;
@@ -283,7 +283,7 @@ impl SamImageEncoderVit {
         );
 
         // ---- Patch embedding: Conv2d(k=patch_size, s=patch_size) -----------
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             image_chw.to_vec(),
             Shape::from_dims(&[1, ch, img, img]),
             &Device::cpu(),
@@ -337,7 +337,7 @@ impl SamImageEncoderVit {
         layer_norm_2d(&x, &weights.neck_ln2, cfg.out_chans, 1e-6)
     }
 
-    fn apply_block(&self, x: &LazyTensor, blk: &SamBlockWeights, pps: usize) -> Result<LazyTensor> {
+    fn apply_block(&self, x: &Tensor, blk: &SamBlockWeights, pps: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let embed_dim = cfg.embed_dim;
 
@@ -395,14 +395,14 @@ impl SamImageEncoderVit {
 /// The eager `LayerNorm2d` does mean/var manually because the
 /// affine has to broadcast against a 4-D tensor with the channel
 /// axis NOT at the end. The lazy port uses the same manual
-/// formulation rather than the `LazyTensor::layer_norm_affine`
+/// formulation rather than the `Tensor::layer_norm_affine`
 /// method (which reduces over the LAST dim).
 pub(crate) fn layer_norm_2d(
-    x: &LazyTensor,
+    x: &Tensor,
     ln: &SamLayerNormWeights,
     num_channels: usize,
     eps: f64,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     // mean over dim 1 (channel), keepdim.
     let dims = x.shape();
     let dims = dims.dims();
@@ -439,11 +439,11 @@ pub(crate) fn layer_norm_2d(
 /// `(1, h, w, embed_dim)`. For windowed layers `(h, w) = (window, window)`,
 /// for global layers `(h, w) = (pps, pps)`. Output has the same shape.
 fn apply_attention(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &SamAttentionWeights,
     num_heads: usize,
     head_dim: usize,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     let dims = x.shape();
     let dims = dims.dims();
     assert_eq!(dims.len(), 4, "SAM attn: expected rank-4 input");
@@ -515,8 +515,8 @@ fn apply_attention(
 /// pre-matmul tensor `(b*nh, q_h*q_w, head_dim)`.
 #[allow(clippy::too_many_arguments)]
 fn add_decomposed_rel_pos(
-    attn: &LazyTensor,
-    q: &LazyTensor,
+    attn: &Tensor,
+    q: &Tensor,
     rel_pos_h: &Arc<[f32]>,
     rel_pos_w: &Arc<[f32]>,
     b_nh: usize,
@@ -524,7 +524,7 @@ fn add_decomposed_rel_pos(
     q_w: usize,
     head_dim: usize,
     input_size: usize,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     // For SAM ViT-B all attention input grids are square AND match
     // the stored rel-pos table size; no interpolation needed.
     let max_rel_dist = 2 * input_size - 1;
@@ -568,13 +568,13 @@ fn add_decomposed_rel_pos(
 /// Gather `q_size × k_size` relative-position entries from the
 /// `rel_pos` table. Returns shape `(q_size, k_size, head_dim)`.
 fn get_rel_pos(
-    anchor: &LazyTensor,
+    anchor: &Tensor,
     q_size: usize,
     k_size: usize,
     rel_pos: &Arc<[f32]>,
     max_rel_dist: usize,
     head_dim: usize,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     if 2 * std::cmp::max(q_size, k_size) - 1 != max_rel_dist {
         return Err(crate::Error::Msg(format!(
             "get_rel_pos: interpolation not yet supported (q_size={q_size}, \
@@ -609,12 +609,12 @@ fn get_rel_pos(
 /// `window`. Returns `(windows, (padded_h, padded_w))` where
 /// `windows` has shape `(num_windows·b, window, window, c)`.
 fn window_partition(
-    x: &LazyTensor,
+    x: &Tensor,
     window: usize,
     h: usize,
     w: usize,
     c: usize,
-) -> Result<(LazyTensor, (usize, usize))> {
+) -> Result<(Tensor, (usize, usize))> {
     let pad_h = (window - h % window) % window;
     let pad_w = (window - w % window) % window;
     let h_p = h + pad_h;
@@ -657,12 +657,12 @@ fn window_partition(
 /// Inverse of `window_partition`. Reassembles per-window features
 /// back into a `(b, h, w, c)` tensor, trimming any zero padding.
 fn window_unpartition(
-    windows: &LazyTensor,
+    windows: &Tensor,
     window: usize,
     (h_p, w_p): (usize, usize),
     (h, w): (usize, usize),
     c: usize,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     let nw_h = h_p / window;
     let nw_w = w_p / window;
     let total = windows.shape().dims()[0];
@@ -769,7 +769,7 @@ impl SamPromptEncoder {
     ///
     /// This is the broadcast positional encoding the mask decoder
     /// adds to image-encoder features during cross-attention.
-    pub fn dense_pe(&self, anchor: &LazyTensor) -> Result<LazyTensor> {
+    pub fn dense_pe(&self, anchor: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let (h, w) = cfg.image_embedding_size;
         // Build a (h, w, 2) tensor of normalized (x, y) cell-centers.
@@ -802,11 +802,11 @@ impl SamPromptEncoder {
     /// this matches the official SAM forward path.
     pub fn embed_points(
         &self,
-        anchor: &LazyTensor,
+        anchor: &Tensor,
         points_xy: &[f32],
         labels: &[f32],
         pad: bool,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let n = labels.len();
         assert_eq!(
@@ -887,7 +887,7 @@ impl SamPromptEncoder {
     /// `(x1, y1, x2, y2)` per box in original image pixels.
     /// Returns shape `(1, 2*N, embed_dim)` — two embeddings per
     /// box, one for each corner.
-    pub fn embed_boxes(&self, anchor: &LazyTensor, boxes_xyxy: &[f32]) -> Result<LazyTensor> {
+    pub fn embed_boxes(&self, anchor: &Tensor, boxes_xyxy: &[f32]) -> Result<Tensor> {
         let cfg = &self.config;
         assert_eq!(
             boxes_xyxy.len() % 4,
@@ -938,7 +938,7 @@ impl SamPromptEncoder {
     /// and `W = 4 * image_embedding_size.1` (SAM's input is 4× the
     /// embedding grid because two stride-2 convs reduce it).
     /// Returns `(1, embed_dim, image_embedding_size.0, image_embedding_size.1)`.
-    pub fn embed_masks(&self, masks: &LazyTensor) -> Result<LazyTensor> {
+    pub fn embed_masks(&self, masks: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let w = &self.weights;
         let mi = cfg.mask_in_chans;
@@ -974,7 +974,7 @@ impl SamPromptEncoder {
     /// Convenience: if no mask is supplied, return the
     /// `no_mask_embed` broadcast across the image embedding grid.
     /// Shape: `(1, embed_dim, h, w)`.
-    pub fn no_mask_dense(&self, anchor: &LazyTensor) -> Result<LazyTensor> {
+    pub fn no_mask_dense(&self, anchor: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let (h, w) = cfg.image_embedding_size;
         let no_mask = anchor.const_f32_like(
@@ -989,7 +989,7 @@ impl SamPromptEncoder {
     /// Project coordinates through the Gaussian matrix and emit
     /// sin/cos features. Input shape `(..., 2)`, output shape
     /// `(..., embed_dim)`.
-    fn pe_encoding(&self, anchor: &LazyTensor, coords: &LazyTensor) -> Result<LazyTensor> {
+    fn pe_encoding(&self, anchor: &Tensor, coords: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         // Scale `coords` from [0, 1] to [-1, 1].
         let coords = coords.affine(2.0, -1.0);
@@ -1009,10 +1009,10 @@ impl SamPromptEncoder {
 
     fn broadcast_per_point_emb(
         &self,
-        anchor: &LazyTensor,
+        anchor: &Tensor,
         emb_data: &Arc<[f32]>,
         n_points: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let e = anchor.const_f32_like(
             Arc::clone(emb_data),
@@ -1055,10 +1055,10 @@ pub struct SamDecoderAttentionWeights {
 
 fn sam_decoder_attention(
     w: &SamDecoderAttentionWeights,
-    q_in: &LazyTensor,
-    k_in: &LazyTensor,
-    v_in: &LazyTensor,
-) -> Result<LazyTensor> {
+    q_in: &Tensor,
+    k_in: &Tensor,
+    v_in: &Tensor,
+) -> Result<Tensor> {
     let d = w.embedding_dim;
     let internal = d / w.downsample_rate;
     let hd = internal / w.num_heads;
@@ -1123,7 +1123,7 @@ pub enum SamMlpActivation {
     Gelu,
 }
 
-fn apply_sam_mlp(x: &LazyTensor, w: &SamMlpBlockWeights) -> Result<LazyTensor> {
+fn apply_sam_mlp(x: &Tensor, w: &SamMlpBlockWeights) -> Result<Tensor> {
     let h =
         w.lin1
             .apply_linear_with_bias(x, w.embedding_dim, w.mlp_dim, Arc::clone(&w.lin1_bias))?;
@@ -1154,11 +1154,11 @@ pub struct SamTwoWayAttentionBlockWeights {
 
 fn apply_two_way_block(
     blk: &SamTwoWayAttentionBlockWeights,
-    queries: &LazyTensor,
-    keys: &LazyTensor,
-    query_pe: &LazyTensor,
-    key_pe: &LazyTensor,
-) -> Result<(LazyTensor, LazyTensor)> {
+    queries: &Tensor,
+    keys: &Tensor,
+    query_pe: &Tensor,
+    key_pe: &Tensor,
+) -> Result<(Tensor, Tensor)> {
     // Self-attention.
     let queries = if blk.skip_first_layer_pe {
         sam_decoder_attention(&blk.self_attn, queries, queries, queries)?
@@ -1222,10 +1222,10 @@ pub struct SamTwoWayTransformerWeights {
 /// keys is `(b, h*w, c)`.
 pub fn apply_two_way_transformer(
     w: &SamTwoWayTransformerWeights,
-    image_embedding: &LazyTensor,
-    image_pe: &LazyTensor,
-    point_embedding: &LazyTensor,
-) -> Result<(LazyTensor, LazyTensor)> {
+    image_embedding: &Tensor,
+    image_pe: &Tensor,
+    point_embedding: &Tensor,
+) -> Result<(Tensor, Tensor)> {
     let ie_dims = image_embedding.shape();
     let ie_dims = ie_dims.dims();
     assert_eq!(
@@ -1283,7 +1283,7 @@ pub struct SamMlpMaskDecoderWeights {
     pub sigmoid_output: bool,
 }
 
-fn apply_mlp_mask_decoder(w: &SamMlpMaskDecoderWeights, x: &LazyTensor) -> Result<LazyTensor> {
+fn apply_mlp_mask_decoder(w: &SamMlpMaskDecoderWeights, x: &Tensor) -> Result<Tensor> {
     let n = w.layers.len();
     assert_eq!(
         n,
@@ -1385,7 +1385,7 @@ pub struct SamMaskDecoder {
 impl SamMaskDecoder {
     /// Predict masks and IoU scores from image embeddings and prompts.
     ///
-    /// Inputs (all `LazyTensor` on the same graph):
+    /// Inputs (all `Tensor` on the same graph):
     ///   - `image_embeddings`: `(b, transformer_dim, h, w)` — from
     ///     the image encoder. `b` is typically 1.
     ///   - `image_pe`: `(b, transformer_dim, h, w)` — dense
@@ -1405,12 +1405,12 @@ impl SamMaskDecoder {
     ///   - `iou_pred`: `(b, num_returned)` quality scores.
     pub fn forward(
         &self,
-        image_embeddings: &LazyTensor,
-        image_pe: &LazyTensor,
-        sparse_prompt_embeddings: &LazyTensor,
-        dense_prompt_embeddings: &LazyTensor,
+        image_embeddings: &Tensor,
+        image_pe: &Tensor,
+        sparse_prompt_embeddings: &Tensor,
+        dense_prompt_embeddings: &Tensor,
         multimask_output: bool,
-    ) -> Result<(LazyTensor, LazyTensor)> {
+    ) -> Result<(Tensor, Tensor)> {
         let cfg = &self.config;
         let w = &self.weights;
         let nmt = cfg.num_mask_tokens();
@@ -1491,7 +1491,7 @@ impl SamMaskDecoder {
         // (b, nmt, td/8). Multiplying by the upscaled feature map
         // (flattened to (b, td/8, H·W) and reshaped back) yields
         // the predicted masks (b, nmt, H, W).
-        let mut hyper_outs: Vec<LazyTensor> = Vec::with_capacity(nmt);
+        let mut hyper_outs: Vec<Tensor> = Vec::with_capacity(nmt);
         for (i, mlp) in w.hypernetwork_mlps.iter().enumerate() {
             let mt_i = mask_tokens_out
                 .slice(1_usize, i, 1)?
@@ -1663,7 +1663,7 @@ impl SamModel {
 
     /// Encode the raw image into the dense feature map. Returns shape
     /// `(1, out_chans, patches_per_side, patches_per_side)`.
-    pub fn embeddings(&self, image_chw: &[f32], h: usize, w: usize) -> Result<LazyTensor> {
+    pub fn embeddings(&self, image_chw: &[f32], h: usize, w: usize) -> Result<Tensor> {
         let padded = self.preprocess(image_chw, h, w)?;
         self.image_encoder.forward(&padded)
     }
@@ -1688,13 +1688,13 @@ impl SamModel {
     ///   - `iou_pred`: `(1, num_returned)` quality scores.
     pub fn forward_for_embeddings(
         &self,
-        img_embeddings: &LazyTensor,
+        img_embeddings: &Tensor,
         orig_h: usize,
         orig_w: usize,
         points_xy: &[f32],
         point_labels: &[f32],
         multimask_output: bool,
-    ) -> Result<(LazyTensor, LazyTensor)> {
+    ) -> Result<(Tensor, Tensor)> {
         if point_labels.is_empty() {
             return Err(crate::Error::Msg(
                 "SAM forward: no prompts supplied (point_labels is empty)".into(),
@@ -1746,7 +1746,7 @@ impl SamModel {
         points_xy: &[f32],
         point_labels: &[f32],
         multimask_output: bool,
-    ) -> Result<(LazyTensor, LazyTensor)> {
+    ) -> Result<(Tensor, Tensor)> {
         let img_embeddings = self.embeddings(image_chw, orig_h, orig_w)?;
         self.forward_for_embeddings(
             &img_embeddings,
@@ -1965,7 +1965,7 @@ mod tests {
                 ((i / (h * w)) % c) as f32
             })
             .collect();
-        let x = LazyTensor::from_f32(data, Shape::from_dims(&[n, c, h, w]), &Device::cpu());
+        let x = Tensor::from_f32(data, Shape::from_dims(&[n, c, h, w]), &Device::cpu());
         let ln = SamLayerNormWeights {
             gain: Arc::from(vec![2.0_f32; c]),
             bias: Arc::from(vec![1.0_f32; c]),
@@ -2035,8 +2035,8 @@ mod tests {
         }
     }
 
-    fn dummy_anchor() -> LazyTensor {
-        LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu())
+    fn dummy_anchor() -> Tensor {
+        Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu())
     }
 
     #[test]
@@ -2127,7 +2127,7 @@ mod tests {
         let masks_data: Vec<f32> = (0..1 * 1 * h_in * w_in)
             .map(|i| ((i as f32) * 0.001) - 0.05)
             .collect();
-        let masks = LazyTensor::from_f32(
+        let masks = Tensor::from_f32(
             masks_data,
             Shape::from_dims(&[1, 1, h_in, w_in]),
             &Device::cpu(),
@@ -2369,7 +2369,7 @@ mod tests {
         let img_data: Vec<f32> = (0..1 * td * h * w)
             .map(|i| ((i as f32) * 0.001) - 0.05)
             .collect();
-        let img = LazyTensor::from_f32(img_data, Shape::from_dims(&[1, td, h, w]), &Device::cpu());
+        let img = Tensor::from_f32(img_data, Shape::from_dims(&[1, td, h, w]), &Device::cpu());
         let pe_data: Vec<f32> = (0..1 * td * h * w).map(|i| ((i as f32) * 0.0007)).collect();
         let pe = img.const_f32_like(
             Arc::<[f32]>::from(pe_data),
@@ -2415,7 +2415,7 @@ mod tests {
         let img_data: Vec<f32> = (0..1 * td * h * w)
             .map(|i| ((i as f32) * 0.001) - 0.05)
             .collect();
-        let img = LazyTensor::from_f32(img_data, Shape::from_dims(&[1, td, h, w]), &Device::cpu());
+        let img = Tensor::from_f32(img_data, Shape::from_dims(&[1, td, h, w]), &Device::cpu());
         let pe = img.const_f32_like(
             Arc::<[f32]>::from(vec![0.001_f32; 1 * td * h * w]),
             Shape::from_dims(&[1, td, h, w]),
@@ -2658,7 +2658,7 @@ mod tests {
         let w = 4;
         let c = 8;
         let data: Vec<f32> = (0..b * h * w * c).map(|i| i as f32).collect();
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             data.clone(),
             Shape::from_dims(&[b, h, w, c]),
             &Device::cpu(),

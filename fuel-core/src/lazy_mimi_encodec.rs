@@ -34,7 +34,7 @@
 //! scope for the composition port.
 
 use crate::Result;
-use crate::lazy::LazyTensor;
+use crate::lazy::Tensor;
 use crate::lazy_mimi::{MimiConfig, MimiModel, MimiWeights};
 use fuel_ir::Shape;
 
@@ -146,7 +146,7 @@ impl MimiEncodecModel {
 
     /// One-shot encode: PCM `(1, channels, T_audio)` → codes
     /// `(1, n_q, T_codes)` where `T_codes = T_audio / total_audio_stride`.
-    pub fn encode(&self, pcm: &LazyTensor) -> Result<LazyTensor> {
+    pub fn encode(&self, pcm: &Tensor) -> Result<Tensor> {
         let dims = pcm.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[1] != self.config.channels {
@@ -160,7 +160,7 @@ impl MimiEncodecModel {
 
     /// One-shot decode: codes `(1, n_q, T_codes)` → PCM
     /// `(1, channels, T_audio)` where `T_audio = T_codes · total_audio_stride`.
-    pub fn decode(&self, codes: &LazyTensor) -> Result<LazyTensor> {
+    pub fn decode(&self, codes: &Tensor) -> Result<Tensor> {
         let dims = codes.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[1] != self.config.inner.n_q {
@@ -187,8 +187,8 @@ impl MimiEncodecModel {
     pub fn encode_step(
         &self,
         mut state: MimiEncodecEncodeState,
-        pcm_chunk: &LazyTensor,
-    ) -> Result<(MimiEncodecEncodeState, Option<LazyTensor>)> {
+        pcm_chunk: &Tensor,
+    ) -> Result<(MimiEncodecEncodeState, Option<Tensor>)> {
         let dims = pcm_chunk.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[1] != self.config.channels {
@@ -230,7 +230,7 @@ impl MimiEncodecModel {
             }
             v
         };
-        let pcm_full = LazyTensor::from_f32(
+        let pcm_full = Tensor::from_f32(
             pcm_for_run,
             Shape::from_dims(&[1, self.config.channels, usable_len]),
             &crate::Device::cpu(),
@@ -252,8 +252,8 @@ impl MimiEncodecModel {
     pub fn decode_step(
         &self,
         mut state: MimiEncodecDecodeState,
-        codes_chunk: &LazyTensor,
-    ) -> Result<(MimiEncodecDecodeState, Option<LazyTensor>)> {
+        codes_chunk: &Tensor,
+    ) -> Result<(MimiEncodecDecodeState, Option<Tensor>)> {
         let dims = codes_chunk.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[0] != 1 || dims[1] != self.config.inner.n_q {
@@ -298,7 +298,7 @@ impl MimiEncodecModel {
         for q in 0..n_q {
             flat.extend_from_slice(&state.buffer[q]);
         }
-        let codes_full = LazyTensor::from_u32(
+        let codes_full = Tensor::from_u32(
             flat,
             Shape::from_dims(&[1, n_q, total_frames]),
             &crate::Device::cpu(),
@@ -825,7 +825,7 @@ mod tests {
         let pcm: Vec<f32> = (0..t_audio)
             .map(|i| ((i as f32) * 0.01).sin() * 0.1)
             .collect();
-        let pcm = LazyTensor::from_f32(pcm, Shape::from_dims(&[1, 1, t_audio]), &Device::cpu());
+        let pcm = Tensor::from_f32(pcm, Shape::from_dims(&[1, 1, t_audio]), &Device::cpu());
         let codes = model.encode(&pcm).unwrap();
         let code_dims = codes.shape().dims().to_vec();
         assert_eq!(code_dims, vec![1, n_q, t_audio / total_stride]);
@@ -847,8 +847,7 @@ mod tests {
         // exercises the decode streaming path. 4 code frames.
         let t_codes = 4;
         let codes: Vec<u32> = (0..(1 * n_q * t_codes)).map(|i| (i as u32) % 4).collect();
-        let codes_t =
-            LazyTensor::from_u32(codes, Shape::from_dims(&[1, n_q, t_codes]), &Device::cpu());
+        let codes_t = Tensor::from_u32(codes, Shape::from_dims(&[1, n_q, t_codes]), &Device::cpu());
 
         let one_shot = model.decode(&codes_t).unwrap().realize_f32();
         assert_eq!(one_shot.len(), t_codes * total_stride);
@@ -893,7 +892,7 @@ mod tests {
         let pcm: Vec<f32> = (0..t_audio)
             .map(|i| ((i as f32) * 0.03).cos() * 0.1)
             .collect();
-        let pcm_t = LazyTensor::from_f32(
+        let pcm_t = Tensor::from_f32(
             pcm.clone(),
             Shape::from_dims(&[1, 1, t_audio]),
             &Device::cpu(),
@@ -914,7 +913,7 @@ mod tests {
             let take = chunk_size.min(t_audio - cursor);
             let chunk_data: Vec<f32> = pcm[cursor..cursor + take].to_vec();
             let chunk =
-                LazyTensor::from_f32(chunk_data, Shape::from_dims(&[1, 1, take]), &Device::cpu());
+                Tensor::from_f32(chunk_data, Shape::from_dims(&[1, 1, take]), &Device::cpu());
             let (new_state, out) = model.encode_step(state, &chunk).unwrap();
             state = new_state;
             if let Some(codes) = out {

@@ -9,7 +9,7 @@ pub const IMAGENET_STD: [f32; 3] = [0.229f32, 0.224, 0.225];
 ///
 /// Returns `3 * res * res` floats in **CHW** order with imagenet normalization
 /// applied: `(pixel / 255 - mean[c]) / std[c]`. Build a tensor from it with
-/// `LazyTensor::from_vec(v, (3, res, res), dev)`.
+/// `Tensor::from_vec(v, (3, res, res), dev)`.
 ///
 /// B6 note: this used to return an eager `Tensor` and do the normalization with
 /// `broadcast_sub`/`broadcast_div`. Nothing about it needed a device — it is

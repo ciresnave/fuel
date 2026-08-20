@@ -21,7 +21,7 @@
 
 use fuel_conv::{ConvShape, conv2d_direct};
 use fuel_core::Device;
-use fuel_core::lazy::LazyTensor;
+use fuel_core::lazy::Tensor;
 use fuel_core::pipelined_bridge::realize_one_as;
 use fuel_graph::Op;
 use fuel_graph::registry::FusedOps;
@@ -59,7 +59,7 @@ fn check_case(
         .collect();
     let b_data: Vec<f32> = (0..cout).map(|i| (i as f32) * 0.05 - 0.1).collect();
 
-    let x = LazyTensor::from_f32(x_data.clone(), Shape::from_dims(&[n, cin, h, w]), &dev);
+    let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[n, cin, h, w]), &dev);
     let weight = x.const_f32_like(w_data.clone(), Shape::from_dims(&[cout, cin_per_g, kh, kw]));
     let bias_t = if bias {
         Some(x.const_f32_like(b_data.clone(), Shape::from_dims(&[cout])))

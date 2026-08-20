@@ -22,7 +22,7 @@
 //! recipe existed, `lowering_only` left the node fused and it tripped.
 
 use fuel_core::Device;
-use fuel_core::lazy::LazyTensor;
+use fuel_core::lazy::Tensor;
 use fuel_core::pipelined_bridge::realize_one_as;
 use fuel_graph::Op;
 use fuel_graph::QuantType;
@@ -71,11 +71,11 @@ fn check_q4_0(leading: &[usize], k: usize, n: usize) {
     let mut deq = vec![0f32; n * k];
     BlockQ4_0::to_float(&w_blocks, &mut deq);
 
-    // --- build the fused qmatmul node via the LazyTensor builder. ----------
+    // --- build the fused qmatmul node via the Tensor builder. ----------
     let a_data: Vec<f32> = (0..m * k).map(|i| ((i as f32) * 0.013).cos()).collect();
     let mut a_dims = leading.to_vec();
     a_dims.push(k);
-    let x = LazyTensor::from_f32(a_data.clone(), Shape::from_dims(&a_dims), &dev);
+    let x = Tensor::from_f32(a_data.clone(), Shape::from_dims(&a_dims), &dev);
     let w = x.const_u32_like(w_u32, Shape::from_dims(&[w_bytes.len() / 4]));
     let y = x
         .qmatmul(&w, QuantType::Q4_0, k, n)

@@ -48,9 +48,9 @@
 //! F32. Both LoRA-Q (DeepSeek-V2) and plain-Q (DeepSeek-V2-Lite)
 //! configurations supported.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::lazy_glm4::apply_interleaved_partial_rope;
-use crate::lazy_latent_cache::LazyLatentCache;
+use crate::lazy_latent_cache::LatentCache;
 use crate::{DType, Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -547,7 +547,7 @@ impl DeepSeek2Model {
         h.finish()
     }
 
-    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let h_norm = self.run_backbone(tokens, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
@@ -556,28 +556,24 @@ impl DeepSeek2Model {
     /// return per-token hidden states `(1, seq, hidden_size)`.
     /// DeepSeek-V2-specific: MLA attention, per-layer dense /
     /// MoE FFN selection (first `n` dense layers, then MoE).
-    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         self.run_backbone(tokens, start_pos)
     }
 
     /// Multimodal entry point. Skips token embedding; runs the decoder
     /// over pre-embedded inputs. DeepSeek-V2 does NOT scale embeddings.
-    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let h_norm = self.run_backbone_embeds(embeds, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
 
     /// Hidden-state variant of [`Self::forward_embeds`].
-    pub fn forward_hidden_embeds(
-        &self,
-        embeds: &LazyTensor,
-        start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_hidden_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         self.run_backbone_embeds(embeds, start_pos)
     }
 
     /// MLA cached-decode entry point: run `tokens` against a
-    /// [`LazyLatentCache`] holding the growing decode state, returning
+    /// [`LatentCache`] holding the growing decode state, returning
     /// the new tokens' logits and the advanced cache.
     ///
     /// This is the MLA decode-time compressed-KV payoff. Per layer the
@@ -603,8 +599,8 @@ impl DeepSeek2Model {
     pub fn forward_with_latent_cache(
         &self,
         tokens: &[u32],
-        cache: LazyLatentCache,
-    ) -> Result<(LazyTensor, LazyLatentCache)> {
+        cache: LatentCache,
+    ) -> Result<(Tensor, LatentCache)> {
         self.forward_with_latent_cache_impl(tokens, cache, false)
     }
 
@@ -623,8 +619,8 @@ impl DeepSeek2Model {
     pub fn forward_with_latent_cache_absorbed(
         &self,
         tokens: &[u32],
-        cache: LazyLatentCache,
-    ) -> Result<(LazyTensor, LazyLatentCache)> {
+        cache: LatentCache,
+    ) -> Result<(Tensor, LatentCache)> {
         self.forward_with_latent_cache_impl(tokens, cache, true)
     }
 
@@ -635,9 +631,9 @@ impl DeepSeek2Model {
     fn forward_with_latent_cache_impl(
         &self,
         tokens: &[u32],
-        cache: LazyLatentCache,
+        cache: LatentCache,
         absorb: bool,
-    ) -> Result<(LazyTensor, LazyLatentCache)> {
+    ) -> Result<(Tensor, LatentCache)> {
         let cfg = &self.config;
 
         if tokens.is_empty() {
@@ -830,7 +826,7 @@ impl DeepSeek2Model {
 
         // Bootstrap the fresh graph exactly like run_backbone: token
         // embedding lookup → (1, seq, hidden).
-        let mut h = LazyTensor::embed_tokens(
+        let mut h = Tensor::embed_tokens(
             self.weights.token_embedding.clone(),
             cfg.vocab_size,
             cfg.hidden_size,
@@ -964,16 +960,16 @@ impl DeepSeek2Model {
     #[allow(clippy::too_many_arguments)]
     fn apply_layer_with_latent_kv_writes(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &DeepSeek2LayerWeights,
         layer_idx: usize,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-        mask: &LazyTensor,
-        latent_c: &LazyTensor,
-        kpe_c: &LazyTensor,
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+        mask: &Tensor,
+        latent_c: &Tensor,
+        kpe_c: &Tensor,
         cached_len_sym: fuel_ir::SymId,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
 
         let x_norm = x.rms_norm_affine(Arc::clone(&layer.input_norm_gain), cfg.rms_norm_eps)?;
@@ -1037,15 +1033,15 @@ impl DeepSeek2Model {
     #[allow(clippy::too_many_arguments)]
     fn mla_attention_latent_kv(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         w: &DeepSeek2MlaWeights,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-        mask: &LazyTensor,
-        latent_c: &LazyTensor,
-        kpe_c: &LazyTensor,
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+        mask: &Tensor,
+        latent_c: &Tensor,
+        kpe_c: &Tensor,
         cached_len_sym: fuel_ir::SymId,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let n_heads = cfg.num_attention_heads;
         let q_head_dim = cfg.q_head_dim();
@@ -1329,9 +1325,9 @@ impl DeepSeek2Model {
         // Embed lookup + reshape to [1, seq, hidden]. Token-ids is a STABLE
         // re-bindable placeholder Const (mirrors `LlamaModel::
         // build_and_realize_first_decode_token`'s embed-table-const +
-        // index_select idiom — D1's `LazyTensor::embed_tokens` bakes the
+        // index_select idiom — D1's `Tensor::embed_tokens` bakes the
         // real ids directly into a Const, which is NOT re-bindable).
-        let embed = LazyTensor::from_f32(
+        let embed = Tensor::from_f32(
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
             &Device::cpu(),
@@ -1690,7 +1686,7 @@ impl DeepSeek2Model {
     ///
     /// # Why this exists
     ///
-    /// Naively threading `LazyLatentCache` directly across
+    /// Naively threading `LatentCache` directly across
     /// `forward_with_latent_cache` calls (no rebind — every call's ops
     /// land on the SAME ever-growing `Rc<RefCell<Graph>>`) hits a real
     /// `PipelinedExecutor` gap once the model has ≥ 2 layers AND ≥ 2
@@ -1728,33 +1724,32 @@ impl DeepSeek2Model {
     /// prior step's subgraph). Callers wanting device-resident prefixes
     /// should use [`Self::forward_with_latent_kv_context`] instead.
     ///
-    /// The fix implemented here is the strategy [`LazyLatentCache`]'s own
+    /// The fix implemented here is the strategy [`LatentCache`]'s own
     /// module doc already names as the alternative to per-call graph
     /// reuse: "re-creates the cache on the new step's graph (rebinding
     /// realized latents via `const_*_like`)". Each call now starts from
     /// its OWN fresh graph seeded with the REALIZED (host `f32`) prefix,
     /// so no `WriteSlice` destination is ever shared across calls — every
     /// destructive destination has exactly one consumer again, matching
-    /// the executor's assumption. Uses only [`LazyLatentCache`]'s public
+    /// the executor's assumption. Uses only [`LatentCache`]'s public
     /// API (`new` + `append` + `advance_by`), no changes to that type.
     fn rebind_latent_cache_fresh_graph(
         &self,
-        cache: LazyLatentCache,
+        cache: LatentCache,
         cached_len: usize,
-    ) -> Result<LazyLatentCache> {
+    ) -> Result<LatentCache> {
         if cached_len == 0 {
             return Ok(cache);
         }
         // GAP-186: production decode — realize the cached slots FALLIBLY, not
-        // via `LazyTensor::realize_f32`'s `.expect()` (a test convenience).
+        // via `Tensor::realize_f32`'s `.expect()` (a test convenience).
         // Same fallible path as `train.rs::param_to_host`.
-        fn host_f32(t: &LazyTensor) -> Result<Vec<f32>> {
+        fn host_f32(t: &Tensor) -> Result<Vec<f32>> {
             crate::pipelined_bridge::realize_one_as::<f32>(t.graph(), t.node_id(), &Device::cpu())
         }
         let cfg = &self.config;
-        let fresh_anchor =
-            LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
-        let mut fresh = LazyLatentCache::new(
+        let fresh_anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let mut fresh = LatentCache::new(
             &fresh_anchor,
             cache.n_layers(),
             cache.max_seq_len(),
@@ -1781,7 +1776,7 @@ impl DeepSeek2Model {
     }
 
     /// Build per-token embeddings without running the decoder.
-    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &Tensor, tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
@@ -1791,7 +1786,7 @@ impl DeepSeek2Model {
         )
     }
 
-    fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
+    fn apply_lm_head(&self, h_norm: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let lm_head_w = match &self.weights.lm_head {
             Some(w) => w.clone(),
@@ -1800,13 +1795,13 @@ impl DeepSeek2Model {
         Ok(lm_head_w.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
-    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
         assert!(seq > 0);
 
-        let h = LazyTensor::embed_tokens(
+        let h = Tensor::embed_tokens(
             weights.token_embedding.clone(),
             cfg.vocab_size,
             cfg.hidden_size,
@@ -1816,7 +1811,7 @@ impl DeepSeek2Model {
         self.run_backbone_embeds(&h, start_pos)
     }
 
-    fn run_backbone_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
+    fn run_backbone_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -1858,12 +1853,12 @@ impl DeepSeek2Model {
 
     fn apply_layer(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &DeepSeek2LayerWeights,
         layer_idx: usize,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let h = cfg.hidden_size;
 
@@ -1901,16 +1896,16 @@ impl DeepSeek2Model {
     /// through functionally.
     fn apply_layer_cached(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &DeepSeek2LayerWeights,
         layer_idx: usize,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-        mask: &LazyTensor,
-        cache: LazyLatentCache,
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+        mask: &Tensor,
+        cache: LatentCache,
         cached_len: usize,
         absorb: bool,
-    ) -> Result<(LazyTensor, LazyLatentCache)> {
+    ) -> Result<(Tensor, LatentCache)> {
         let cfg = &self.config;
 
         let x_norm = x.rms_norm_affine(
@@ -1960,15 +1955,15 @@ impl DeepSeek2Model {
     /// `kv_b_proj`, and attends the new queries against it.
     fn mla_attention_cached(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         w: &DeepSeek2MlaWeights,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-        mask: &LazyTensor,
-        cache: LazyLatentCache,
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+        mask: &Tensor,
+        cache: LatentCache,
         layer_idx: usize,
         cached_len: usize,
-    ) -> Result<(LazyTensor, LazyLatentCache)> {
+    ) -> Result<(Tensor, LatentCache)> {
         let cfg = &self.config;
         let n_heads = cfg.num_attention_heads;
         let q_head_dim = cfg.q_head_dim();
@@ -2099,15 +2094,15 @@ impl DeepSeek2Model {
     /// switch on sequence length, deferred here as a follow-up.
     fn mla_attention_cached_absorbed(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         w: &DeepSeek2MlaWeights,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-        mask: &LazyTensor,
-        cache: LazyLatentCache,
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+        mask: &Tensor,
+        cache: LatentCache,
         layer_idx: usize,
         cached_len: usize,
-    ) -> Result<(LazyTensor, LazyLatentCache)> {
+    ) -> Result<(Tensor, LatentCache)> {
         let cfg = &self.config;
         let n_heads = cfg.num_attention_heads;
         let q_head_dim = cfg.q_head_dim();
@@ -2208,11 +2203,11 @@ impl DeepSeek2Model {
 
     fn mla_attention(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         w: &DeepSeek2MlaWeights,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let x_shape = x.shape();
         let dims = x_shape.dims();
@@ -2280,7 +2275,7 @@ impl DeepSeek2Model {
         let scale = 1.0_f64 / (q_head_dim as f64).sqrt();
         let scores = q_full.matmul(&k_t)?;
         let scores_scaled = scores.mul_scalar(scale);
-        let mask = LazyTensor::additive_causal_mask_like(x, seq)
+        let mask = Tensor::additive_causal_mask_like(x, seq)
             .reshape(Shape::from_dims(&[1, 1, seq, seq]))?;
         let scores_masked = scores_scaled.broadcast_add(&mask)?;
         let probs = scores_masked.softmax_last_dim()?;
@@ -2291,7 +2286,7 @@ impl DeepSeek2Model {
             .apply_linear(&merged, n_heads * v_dim, cfg.hidden_size)?)
     }
 
-    fn apply_dense_mlp(&self, x: &LazyTensor, w: &DeepSeek2DenseMlpWeights) -> Result<LazyTensor> {
+    fn apply_dense_mlp(&self, x: &Tensor, w: &DeepSeek2DenseMlpWeights) -> Result<Tensor> {
         let cfg = &self.config;
         let h = cfg.hidden_size;
         let inter = cfg.intermediate_size;
@@ -2305,7 +2300,7 @@ impl DeepSeek2Model {
         Ok(w.down.apply_linear(&inner, inter, h)?)
     }
 
-    fn apply_moe(&self, x: &LazyTensor, w: &DeepSeek2MoeWeights) -> Result<LazyTensor> {
+    fn apply_moe(&self, x: &Tensor, w: &DeepSeek2MoeWeights) -> Result<Tensor> {
         let cfg = &self.config;
         let x_shape = x.shape();
         let dims = x_shape.dims();
@@ -2328,7 +2323,7 @@ impl DeepSeek2Model {
         let router_logits = x.matmul(&router_t)?;
         let routing_weights = router_logits.softmax_last_dim()?;
 
-        let mut routed_sum: Option<LazyTensor> = None;
+        let mut routed_sum: Option<Tensor> = None;
         for (ei, ew) in w.experts.iter().enumerate() {
             let gate = ew.gate.apply_linear(x, h, inter)?;
             let up = ew.up.apply_linear(x, h, inter)?;
@@ -2673,7 +2668,7 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
         let max_diff = logits_ref
@@ -2694,7 +2689,7 @@ mod tests {
             config: cfg.clone(),
             weights: tiny_weights(&cfg),
         };
-        let bad = LazyTensor::from_f32(
+        let bad = Tensor::from_f32(
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
             Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
             &Device::cpu(),
@@ -2731,9 +2726,8 @@ mod tests {
             // `forward_with_latent_cache` now works around it internally
             // (rebinding each call onto its own fresh graph), so plain
             // per-step realize works here without any test-side fallback.
-            let anchor =
-                LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
-            let cache = LazyLatentCache::new(
+            let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+            let cache = LatentCache::new(
                 &anchor,
                 cfg.num_hidden_layers,
                 8,
@@ -2797,10 +2791,10 @@ mod tests {
             config: cfg.clone(),
             weights: tiny_weights(&cfg),
         };
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
 
         // Wrong slot count (1 slot instead of 2).
-        let bad_slots = LazyLatentCache::new(
+        let bad_slots = LatentCache::new(
             &anchor,
             cfg.num_hidden_layers,
             8,
@@ -2811,7 +2805,7 @@ mod tests {
         assert!(model.forward_with_latent_cache(&[1, 2], bad_slots).is_err());
 
         // Wrong trailing shape on slot 0.
-        let bad_trailing = LazyLatentCache::new(
+        let bad_trailing = LatentCache::new(
             &anchor,
             cfg.num_hidden_layers,
             8,
@@ -2826,7 +2820,7 @@ mod tests {
         );
 
         // Exceeding capacity: max_seq_len 2, feed 3 tokens.
-        let small_cap = LazyLatentCache::new(
+        let small_cap = LatentCache::new(
             &anchor,
             cfg.num_hidden_layers,
             2,
@@ -2850,7 +2844,7 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let h_via_embeds = model
             .forward_hidden_embeds(&embeds, 0)
@@ -2905,9 +2899,8 @@ mod tests {
             };
             let vocab = cfg.vocab_size;
 
-            let anchor =
-                LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
-            let cache_u = LazyLatentCache::new(
+            let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+            let cache_u = LatentCache::new(
                 &anchor,
                 cfg.num_hidden_layers,
                 8,
@@ -2915,7 +2908,7 @@ mod tests {
                 DType::F32,
             )
             .unwrap();
-            let cache_a = LazyLatentCache::new(
+            let cache_a = LatentCache::new(
                 &anchor,
                 cfg.num_hidden_layers,
                 8,
@@ -2989,9 +2982,8 @@ mod tests {
 
             let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
 
-            let anchor =
-                LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
-            let cache = LazyLatentCache::new(
+            let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+            let cache = LatentCache::new(
                 &anchor,
                 cfg.num_hidden_layers,
                 8,

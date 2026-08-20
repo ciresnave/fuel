@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! `LazyKvCache` — functional KV cache backed by [`LazyTensor`].
+//! `LazyKvCache` — functional KV cache backed by [`Tensor`].
 //!
 //! Phase B of the eager-`Tensor` retirement program
 //! ([`docs/session-prompts/eager-tensor-retirement-master-plan.md`](
@@ -17,10 +17,10 @@
 //! the caller broadcasts/concats across batches as needed). The
 //! sequence axis is always dim 0.
 //!
-//! Per-layer K/V buffers are held as separate [`LazyTensor`]s so an
+//! Per-layer K/V buffers are held as separate [`Tensor`]s so an
 //! `append` to layer `l` only emits one [`Op::WriteSlice`] node per
 //! K/V, not one per layer × KV. The cost is `Vec` capacity of
-//! `2 * n_layers` `LazyTensor`s — cheap since each is a `(graph, id)`
+//! `2 * n_layers` `Tensor`s — cheap since each is a `(graph, id)`
 //! pair behind an `Arc`.
 //!
 //! # Lifecycle and graph anchoring
@@ -31,7 +31,7 @@
 //!
 //! 1. Re-creating the cache on each step's graph (`new` on the new
 //!    forward's anchor; the previous step's realized K/V values get
-//!    rebound via [`LazyTensor::const_f32_like`] — same pattern the
+//!    rebound via [`Tensor::const_f32_like`] — same pattern the
 //!    existing eight migrated lazy ports use), or
 //! 2. Holding the cache's realized K/V in host buffers between steps
 //!    and re-uploading on the next forward.
@@ -52,23 +52,30 @@
 //! `self -> Self` makes every cache state a distinct value, which:
 //!
 //! - Lets autograd snapshots cache versions trivially (each version is
-//!   its own [`LazyTensor`] graph).
+//!   its own [`Tensor`] graph).
 //! - Eliminates the "is this cache's slice valid right now?"
 //!   ambiguity — every cache is the latest one to the holder.
 //! - Composes cleanly with future graph-optimization passes that
 //!   rewrite the post-write buffer NodeId in place: the rewrite sees
 //!   one logical owner, the most recent cache.
 
-use crate::{DType, Device, lazy::LazyTensor};
+use crate::{DType, Device, lazy::Tensor};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
 /// Per-forward-pass KV cache. See module docs for lifecycle and shape
 /// contract.
 #[derive(Clone, Debug)]
+/// ⚠️ KEEPS THE `Lazy` PREFIX ON PURPOSE — do not "finish" the 2026-08-19
+/// prefix drop by renaming this. `KvCache` is ALREADY a live type in
+/// `fuel-core/src/inference_context.rs`, so here the prefix is NOT redundant: it is the only thing
+/// distinguishing two types in one crate. CireSnave's ruling was to drop
+/// `Lazy` *where it is redundant*, and this is one of exactly four names
+/// (with LazyKvCache, LazyPadMode, LazyConv1dWeights,
+/// LazyConvTranspose1dWeights) where that condition is not met.
 pub struct LazyKvCache {
     /// Per-layer (K, V) buffers. `layers[l].0` is K, `layers[l].1` is V.
-    layers: Vec<(LazyTensor, LazyTensor)>,
+    layers: Vec<(Tensor, Tensor)>,
     /// Sequence positions filled so far. Slices returned by [`Self::k`]
     /// / [`Self::v`] narrow to `[..current_seq_len]` along dim 0.
     current_seq_len: usize,
@@ -89,7 +96,7 @@ impl LazyKvCache {
     /// K/V tensors produced by the forward pass (commonly F32 / BF16 /
     /// F16 for inference workloads).
     pub fn new(
-        anchor: &LazyTensor,
+        anchor: &Tensor,
         n_layers: usize,
         max_seq_len: usize,
         n_kv_heads: usize,
@@ -139,12 +146,7 @@ impl LazyKvCache {
     ///
     /// Returns an error if `layer >= n_layers`, shapes don't match, or
     /// the append would exceed `max_seq_len`.
-    pub fn append(
-        mut self,
-        layer: usize,
-        k_new: &LazyTensor,
-        v_new: &LazyTensor,
-    ) -> crate::Result<Self> {
+    pub fn append(mut self, layer: usize, k_new: &Tensor, v_new: &Tensor) -> crate::Result<Self> {
         if layer >= self.layers.len() {
             crate::bail!(
                 "LazyKvCache::append: layer {layer} out of bounds (n_layers={})",
@@ -201,7 +203,7 @@ impl LazyKvCache {
     /// [`Self::append`]'s functional shape.
     ///
     /// Differences from [`Self::append`]:
-    ///   - Takes `position` (a rank-0 `U32` [`LazyTensor`]) as the
+    ///   - Takes `position` (a rank-0 `U32` [`Tensor`]) as the
     ///     logical write start. The kernel applies `position %
     ///     max_seq_len` so positions past the window wrap to slot 0.
     ///   - Never errors on capacity overflow — that's the whole point.
@@ -221,9 +223,9 @@ impl LazyKvCache {
     pub fn append_rotating(
         mut self,
         layer: usize,
-        k_new: &LazyTensor,
-        v_new: &LazyTensor,
-        position: &LazyTensor,
+        k_new: &Tensor,
+        v_new: &Tensor,
+        position: &Tensor,
     ) -> crate::Result<Self> {
         if layer >= self.layers.len() {
             crate::bail!(
@@ -289,7 +291,7 @@ impl LazyKvCache {
 
     /// Slice K-buffer for `layer` to `[0..current_seq_len]` along dim 0.
     /// Returns the slice on the same graph as the cache.
-    pub fn k(&self, layer: usize) -> LazyTensor {
+    pub fn k(&self, layer: usize) -> Tensor {
         self.layers[layer]
             .0
             .slice(0_usize, 0, self.current_seq_len.max(1))
@@ -297,7 +299,7 @@ impl LazyKvCache {
     }
 
     /// Slice V-buffer for `layer` to `[0..current_seq_len]` along dim 0.
-    pub fn v(&self, layer: usize) -> LazyTensor {
+    pub fn v(&self, layer: usize) -> Tensor {
         self.layers[layer]
             .1
             .slice(0_usize, 0, self.current_seq_len.max(1))
@@ -309,12 +311,12 @@ impl LazyKvCache {
     /// `k_buffer_full` is escape-hatch territory for callers that need
     /// to reason about the underlying buffer (e.g., to copy into
     /// another cache's same-shape buffer).
-    pub fn k_buffer_full(&self, layer: usize) -> LazyTensor {
+    pub fn k_buffer_full(&self, layer: usize) -> Tensor {
         self.layers[layer].0.clone()
     }
 
     /// Underlying full-capacity V-buffer; sibling of [`Self::k_buffer_full`].
-    pub fn v_buffer_full(&self, layer: usize) -> LazyTensor {
+    pub fn v_buffer_full(&self, layer: usize) -> Tensor {
         self.layers[layer].1.clone()
     }
 
@@ -344,16 +346,16 @@ impl LazyKvCache {
     }
 }
 
-/// Build a zero-initialized [`LazyTensor`] of the given shape/dtype on
-/// the same graph as `anchor`. Mirrors [`LazyTensor::zeros_like`] but
+/// Build a zero-initialized [`Tensor`] of the given shape/dtype on
+/// the same graph as `anchor`. Mirrors [`Tensor::zeros_like`] but
 /// takes a separate shape rather than copying `anchor`'s, since the
 /// cache buffers have a different shape from the anchor.
 fn zero_const_on(
-    anchor: &LazyTensor,
+    anchor: &Tensor,
     dtype: DType,
     shape: Shape,
     elems: usize,
-) -> std::result::Result<LazyTensor, fuel_ir::Error> {
+) -> std::result::Result<Tensor, fuel_ir::Error> {
     match dtype {
         DType::F32 => Ok(anchor.const_f32_like(vec![0.0_f32; elems], shape)),
         DType::F64 => Ok(anchor.const_f64_like(vec![0.0_f64; elems], shape)),
@@ -374,8 +376,8 @@ fn _arc_marker(_a: Arc<()>) {}
 mod tests {
     use super::*;
 
-    fn cpu_f32(data: Vec<f32>, shape: &[usize]) -> LazyTensor {
-        LazyTensor::from_f32(data, shape.to_vec(), &Device::cpu())
+    fn cpu_f32(data: Vec<f32>, shape: &[usize]) -> Tensor {
+        Tensor::from_f32(data, shape.to_vec(), &Device::cpu())
     }
 
     #[test]

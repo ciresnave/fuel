@@ -29,7 +29,7 @@
 //! the full input (matches the LLaMA / Mistral lazy v1 contract).
 
 use crate::lazy::{
-    LayerWeights, LazyTensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix,
+    LayerWeights, Tensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix,
     load_transposed_matrix_preserve_dtype,
 };
 use crate::{Device, Result};
@@ -115,15 +115,15 @@ impl MetaVoiceModel {
     pub fn forward(
         &self,
         tokens: &[u32],
-        speaker_embed: &LazyTensor,
+        speaker_embed: &Tensor,
         start_pos: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
         assert!(seq > 0, "MetaVoiceModel::forward: tokens must be non-empty");
 
-        let h = LazyTensor::embed_tokens(
+        let h = Tensor::embed_tokens(
             weights.token_embedding.clone(),
             cfg.vocab_size,
             cfg.hidden_size,
@@ -138,10 +138,10 @@ impl MetaVoiceModel {
     /// build embeddings outside the LM.
     pub fn forward_embeds(
         &self,
-        embeds: &LazyTensor,
-        speaker_embed: &LazyTensor,
+        embeds: &Tensor,
+        speaker_embed: &Tensor,
         start_pos: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -183,21 +183,17 @@ impl MetaVoiceModel {
         let h_norm = h.rms_norm_affine(Arc::clone(&weights.final_norm_gain), cfg.rms_norm_eps)?;
 
         let last = h_norm.narrow(1_usize, seq - 1, 1)?;
-        let mut per_codebook: Vec<LazyTensor> = Vec::with_capacity(cfg.num_codebooks);
+        let mut per_codebook: Vec<Tensor> = Vec::with_capacity(cfg.num_codebooks);
         for head in &weights.lm_heads {
             let logits = head.apply_linear(&last, cfg.hidden_size, cfg.vocab_size)?;
             per_codebook.push(logits.squeeze(1_usize)?);
         }
-        let refs: Vec<&LazyTensor> = per_codebook.iter().collect();
-        LazyTensor::stack(&refs, 1_usize)
+        let refs: Vec<&Tensor> = per_codebook.iter().collect();
+        Tensor::stack(&refs, 1_usize)
             .map_err(|e| crate::Error::Msg(format!("stack lm_heads: {e}")).bt())
     }
 
-    fn anchor_speaker(
-        &self,
-        speaker_embed: &LazyTensor,
-        anchor: &LazyTensor,
-    ) -> Result<LazyTensor> {
+    fn anchor_speaker(&self, speaker_embed: &Tensor, anchor: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let dims: Vec<usize> = speaker_embed.shape().dims().to_vec();
         let n: usize = dims.iter().product();
@@ -218,7 +214,7 @@ impl MetaVoiceModel {
         Ok(anchor.const_f32_like(data, Shape::from_dims(&[1, 1, cfg.speaker_emb_dim])))
     }
 
-    fn build_causal_mask(&self, anchor: &LazyTensor, seq: usize) -> LazyTensor {
+    fn build_causal_mask(&self, anchor: &Tensor, seq: usize) -> Tensor {
         let mut data = vec![0.0_f32; seq * seq];
         for i in 0..seq {
             for j in 0..seq {
@@ -232,12 +228,12 @@ impl MetaVoiceModel {
 
     fn apply_layer(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &LayerWeights,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-        mask: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+        mask: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
 
@@ -627,9 +623,9 @@ mod tests {
         }
     }
 
-    fn speaker_vec(cfg: &MetaVoiceConfig, fill: f32) -> LazyTensor {
+    fn speaker_vec(cfg: &MetaVoiceConfig, fill: f32) -> Tensor {
         let data: Vec<f32> = (0..cfg.speaker_emb_dim).map(|_| fill).collect();
-        LazyTensor::from_f32(
+        Tensor::from_f32(
             data,
             Shape::from_dims(&[1, 1, cfg.speaker_emb_dim]),
             &Device::cpu(),
@@ -676,7 +672,7 @@ mod tests {
 
         let out_tokens = model.forward(&tokens, &spk, 0).unwrap().realize_f32();
 
-        let embeds = LazyTensor::embed_tokens(
+        let embeds = Tensor::embed_tokens(
             model.weights.token_embedding.clone(),
             cfg.vocab_size,
             cfg.hidden_size,

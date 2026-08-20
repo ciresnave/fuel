@@ -11,7 +11,7 @@
 //!   [`StepSchedule`]. Adding a new schedule is a single trait impl.
 //!
 //! - **Gradient clipping** — pure tensor algebra over a
-//!   `HashMap<String, LazyTensor>` gradient bundle. Two variants:
+//!   `HashMap<String, Tensor>` gradient bundle. Two variants:
 //!   [`clip_grad_norm`] (global-norm L_p clipping) and
 //!   [`clip_grad_value`] (elementwise clamp).
 //!
@@ -20,7 +20,7 @@
 //! the master plan.
 
 use crate::Result;
-use crate::lazy::LazyTensor;
+use crate::lazy::Tensor;
 use std::collections::HashMap;
 
 /// Host-side learning-rate schedule.
@@ -140,10 +140,10 @@ impl LrSchedule for StepSchedule {
 /// Errors when `max_norm <= 0.0`, `norm_type <= 0.0`, or `grads` is
 /// empty.
 pub fn clip_grad_norm(
-    grads: &HashMap<String, LazyTensor>,
+    grads: &HashMap<String, Tensor>,
     max_norm: f64,
     norm_type: f64,
-) -> Result<HashMap<String, LazyTensor>> {
+) -> Result<HashMap<String, Tensor>> {
     if grads.is_empty() {
         return Err(crate::Error::Msg("clip_grad_norm: gradient bundle is empty".into()).bt());
     }
@@ -162,9 +162,9 @@ pub fn clip_grad_norm(
 
     // GAP-186: realize per-tensor reductions FALLIBLY. This is production
     // training code — a failed realize must return Err, not `.expect()` like
-    // `LazyTensor::realize_f32` (whose panic is a test convenience). Uses the
+    // `Tensor::realize_f32` (whose panic is a test convenience). Uses the
     // same fallible path as `train.rs::param_to_host`.
-    fn host_f32(t: &LazyTensor) -> Result<Vec<f32>> {
+    fn host_f32(t: &Tensor) -> Result<Vec<f32>> {
         crate::pipelined_bridge::realize_one_as::<f32>(
             t.graph(),
             t.node_id(),
@@ -240,9 +240,9 @@ pub fn clip_grad_norm(
 ///
 /// Errors when `clip_value < 0.0`.
 pub fn clip_grad_value(
-    grads: &HashMap<String, LazyTensor>,
+    grads: &HashMap<String, Tensor>,
     clip_value: f64,
-) -> Result<HashMap<String, LazyTensor>> {
+) -> Result<HashMap<String, Tensor>> {
     if clip_value < 0.0 {
         return Err(crate::Error::Msg(format!(
             "clip_grad_value: clip_value must be >= 0, got {clip_value}",
@@ -336,8 +336,8 @@ mod tests {
 
     // ---------- Gradient clipping tests ----------
 
-    fn make_grad(values: Vec<f32>, shape: &[usize]) -> LazyTensor {
-        LazyTensor::from_f32(values, Shape::from_dims(shape), &Device::cpu())
+    fn make_grad(values: Vec<f32>, shape: &[usize]) -> Tensor {
+        Tensor::from_f32(values, Shape::from_dims(shape), &Device::cpu())
     }
 
     #[test]

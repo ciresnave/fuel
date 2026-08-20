@@ -9,7 +9,7 @@ use anyhow::{Error as E, Result};
 use clap::Parser;
 
 use fuel::Shape;
-use fuel::lazy::{LazyTensor, LlamaConfig, LlamaModel, LlamaWeights};
+use fuel::lazy::{LlamaConfig, LlamaModel, LlamaWeights, Tensor};
 use fuel::lazy_llama_full::{Llama3Model, LlamaFullConfig, build_llama3_model};
 use fuel::lazy_snac::{SnacConfig, SnacModel, SnacWeights};
 use serde::Deserialize;
@@ -376,9 +376,8 @@ impl Model {
                 codes2.push(audio_tokens[i]);
             }
         }
-        // Anchor LazyTensor so const_u32_like has something to hang off of.
-        let anchor =
-            LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &fuel::Device::cpu());
+        // Anchor Tensor so const_u32_like has something to hang off of.
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &fuel::Device::cpu());
         let t0 = codes0.len();
         let t1 = codes1.len();
         let t2 = codes2.len();

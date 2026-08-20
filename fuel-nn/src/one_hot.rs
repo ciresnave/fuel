@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Lazy port of `fuel-nn`'s one-hot encoding helper.
 //!
-//! Given a `U32` [`LazyTensor`] of label indices of arbitrary shape
-//! and a `num_classes` depth, produces a float [`LazyTensor`] of
+//! Given a `U32` [`Tensor`] of label indices of arbitrary shape
+//! and a `num_classes` depth, produces a float [`Tensor`] of
 //! shape `(...input_shape..., num_classes)` carrying `on_value` at
 //! each label position and `off_value` everywhere else.
 //!
@@ -29,12 +29,12 @@
 //!   - Output dtype is `F32`. Other dtypes (`U8` one-cold etc.) can
 //!     be obtained via [`to_dtype`] post-hoc.
 //!
-//! [`index_select`]: LazyTensor::index_select
-//! [`reshape`]: LazyTensor::reshape
-//! [`to_dtype`]: LazyTensor::to_dtype
+//! [`index_select`]: Tensor::index_select
+//! [`reshape`]: Tensor::reshape
+//! [`to_dtype`]: Tensor::to_dtype
 
 use fuel::Result;
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel_ir::{DType, Shape};
 use std::sync::Arc;
 
@@ -57,11 +57,11 @@ use std::sync::Arc;
 /// distillation) when a dense per-class target tensor is needed
 /// downstream.
 pub fn one_hot(
-    labels: &LazyTensor,
+    labels: &Tensor,
     num_classes: usize,
     on_value: f32,
     off_value: f32,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     if labels.dtype() != DType::U32 {
         return Err(fuel::Error::Msg(format!(
             "one_hot: labels must be U32, got {:?}",
@@ -116,7 +116,7 @@ mod tests {
         //    [0, 0, 1],
         //    [0, 1, 0]]
         let device = Device::cpu();
-        let labels = LazyTensor::from_u32(vec![0_u32, 2, 1], Shape::from_dims(&[3]), &device);
+        let labels = Tensor::from_u32(vec![0_u32, 2, 1], Shape::from_dims(&[3]), &device);
         let oh = one_hot(&labels, 3, 1.0, 0.0).unwrap();
         assert_eq!(oh.shape().dims(), &[3, 3]);
         let v = oh.realize_f32();
@@ -137,7 +137,7 @@ mod tests {
         //   [[[1, 0, 0], [0, 1, 0]],
         //    [[0, 0, 1], [1, 0, 0]]]
         let device = Device::cpu();
-        let labels = LazyTensor::from_u32(vec![0_u32, 1, 2, 0], Shape::from_dims(&[2, 2]), &device);
+        let labels = Tensor::from_u32(vec![0_u32, 1, 2, 0], Shape::from_dims(&[2, 2]), &device);
         let oh = one_hot(&labels, 3, 1.0, 0.0).unwrap();
         assert_eq!(oh.shape().dims(), &[2, 2, 3]);
         let v = oh.realize_f32();
@@ -161,7 +161,7 @@ mod tests {
         //     [[1, 0, 1],
         //      [0, 1, 1]]
         let device = Device::cpu();
-        let labels = LazyTensor::from_u32(vec![1_u32, 0], Shape::from_dims(&[2]), &device);
+        let labels = Tensor::from_u32(vec![1_u32, 0], Shape::from_dims(&[2]), &device);
         let oc = one_hot(&labels, 3, 0.0, 1.0).unwrap();
         assert_eq!(oc.shape().dims(), &[2, 3]);
         let v = oc.realize_f32();
@@ -181,7 +181,7 @@ mod tests {
         // Build a labels tensor with the wrong dtype (I64) via
         // const_i64_like off a U32 source — exercises the
         // build-time dtype gate.
-        let probe = LazyTensor::from_u32(vec![0_u32], Shape::from_dims(&[1]), &device);
+        let probe = Tensor::from_u32(vec![0_u32], Shape::from_dims(&[1]), &device);
         let bad = probe.const_i64_like(vec![0_i64], Shape::from_dims(&[1]));
         let err = one_hot(&bad, 3, 1.0, 0.0);
         assert!(err.is_err(), "one_hot should reject non-U32 labels");
@@ -190,7 +190,7 @@ mod tests {
     #[test]
     fn one_hot_rejects_zero_num_classes() {
         let device = Device::cpu();
-        let labels = LazyTensor::from_u32(vec![0_u32], Shape::from_dims(&[1]), &device);
+        let labels = Tensor::from_u32(vec![0_u32], Shape::from_dims(&[1]), &device);
         let err = one_hot(&labels, 0, 1.0, 0.0);
         assert!(err.is_err(), "one_hot should reject num_classes == 0");
     }

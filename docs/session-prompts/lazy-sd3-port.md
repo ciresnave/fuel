@@ -93,7 +93,7 @@ impl Sd3TripleClip {
         clip_l_tokens: &[u32],   // 77 ids, pre-padded with EOS or pad-id
         clip_g_tokens: &[u32],
         t5_tokens: &[u32],
-    ) -> Result<(LazyTensor, LazyTensor)>;
+    ) -> Result<(Tensor, Tensor)>;
 }
 ```
 
@@ -137,7 +137,7 @@ pub struct SdVae3Config {
 
 impl SdVae3Decoder {
     pub fn load_from_mmapped(st: &SafeTensors, cfg: &SdVae3Config) -> Result<Self>;
-    pub fn decode(&self, latents: &LazyTensor) -> Result<LazyTensor>;
+    pub fn decode(&self, latents: &Tensor) -> Result<Tensor>;
 }
 ```
 
@@ -255,8 +255,8 @@ pub struct SkipLayerGuidanceConfig { /* as above */ }
 #[allow(clippy::too_many_arguments)]
 pub fn flow_match_euler_sample(
     mmdit: &MmDitFullModel,
-    y: &LazyTensor,
-    context: &LazyTensor,
+    y: &Tensor,
+    context: &Tensor,
     num_inference_steps: usize,
     cfg_scale: f64,
     time_shift: f64,        // alpha for time_snr_shift; 3.0 default
@@ -264,7 +264,7 @@ pub fn flow_match_euler_sample(
     width: usize,
     slg_config: Option<SkipLayerGuidanceConfig>,
     seed: Option<u64>,
-) -> Result<LazyTensor>;
+) -> Result<Tensor>;
 ```
 
 Implementation skeleton (translating eager `sampling.rs:18-67` line-for-line):
@@ -304,7 +304,7 @@ Rewrite against the lazy API. Concrete steps:
 3. Replace `crate::vae::build_sd3_vae_autoencoder` + `sd3_vae_vb_rename` with `fuel_core::lazy_sd_vae::SdVae3Decoder::load_from_mmapped` (or `lazy_sd3_vae::...` if §1.2 chose path (b)).
 4. Replace `crate::sampling::euler_sample` with `fuel_core::lazy_sd_samplers_sd3::flow_match_euler_sample`. Replace `crate::sampling::SkipLayerGuidanceConfig` with `fuel_core::lazy_sd_samplers_sd3::SkipLayerGuidanceConfig`.
 5. Replace `fuel_nn::VarBuilder::from_mmaped_safetensors` with the safetensors-loader helpers already shipped per the round-7b lazy migrations (`fuel-core/src/lazy.rs` + module-specific `load_from_mmapped` fns). Verify the exact loader pattern by reading a recently-migrated example such as `fuel-examples/examples/flux/main.rs` (Phase D batch B).
-6. Replace `fuel::Tensor` with `fuel_graph::Tensor` / `LazyTensor` for the concat / I/O dance:
+6. Replace `fuel::Tensor` with `fuel_graph::NodeHandle` / `Tensor` for the concat / I/O dance:
    - `let context = Tensor::cat(&[context, context_uncond], 0)?` → `let context = context.concat(&context_uncond, 0_usize)?`.
    - `let y = Tensor::cat(&[y, y_uncond], 0)?` → analogous.
    - `autoencoder.decode(&((x / 1.5305)? + 0.0609)?)` → `autoencoder.decode(&x.div_scalar(1.5305)?.add_scalar(0.0609)?)` (or whichever scalar-arith helpers exist).

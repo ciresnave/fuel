@@ -20,7 +20,7 @@
 //! 224×224 input (the unroll math assumes a 56×56 grid).
 
 use crate::Result;
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -199,7 +199,7 @@ pub struct HieraBlockSchedule {
 impl HieraModel {
     /// Forward pass returning class logits (with head) or pooled features
     /// (without head).
-    pub fn forward(&self, image: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, image: &Tensor) -> Result<Tensor> {
         let dims = image.shape();
         let dims = dims.dims();
         assert_eq!(dims.len(), 4);
@@ -257,7 +257,7 @@ impl HieraModel {
     }
 }
 
-fn unroll(x: &LazyTensor, b: usize, c: usize) -> Result<LazyTensor> {
+fn unroll(x: &Tensor, b: usize, c: usize) -> Result<Tensor> {
     // (B, 3136, C) → (B, 56, 56, C)
     let mut xs = x.reshape(Shape::from_dims(&[b, TOKEN_GRID, TOKEN_GRID, c]))?;
     let mut b_cur = b;
@@ -274,7 +274,7 @@ fn unroll(x: &LazyTensor, b: usize, c: usize) -> Result<LazyTensor> {
     Ok(xs.reshape(Shape::from_dims(&[b, NUM_TOKENS, c]))?)
 }
 
-fn apply_block(x: &LazyTensor, blk: &HieraBlockWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
+fn apply_block(x: &Tensor, blk: &HieraBlockWeights, anchor: &Tensor) -> Result<Tensor> {
     let dims = x.shape();
     let dims = dims.dims();
     let b = dims[0];
@@ -330,11 +330,7 @@ fn apply_block(x: &LazyTensor, blk: &HieraBlockWeights, anchor: &LazyTensor) -> 
     after_attn.add(&mlp_out)
 }
 
-fn apply_attention(
-    x: &LazyTensor,
-    blk: &HieraBlockWeights,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+fn apply_attention(x: &Tensor, blk: &HieraBlockWeights, anchor: &Tensor) -> Result<Tensor> {
     let dims = x.shape();
     let dims = dims.dims();
     let b = dims[0];
@@ -439,11 +435,7 @@ fn apply_attention(
     )
 }
 
-fn apply_layer_norm_last(
-    x: &LazyTensor,
-    ln: &LayerNormWeights,
-    hidden: usize,
-) -> Result<LazyTensor> {
+fn apply_layer_norm_last(x: &Tensor, ln: &LayerNormWeights, hidden: usize) -> Result<Tensor> {
     let _ = hidden;
     x.layer_norm_affine(Arc::clone(&ln.gain), Arc::clone(&ln.bias), 1e-6)
 }
@@ -679,7 +671,7 @@ mod tests {
     fn unroll_preserves_total_elements_and_shape() {
         let b = 1;
         let c = 4;
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             (0..(b * NUM_TOKENS * c))
                 .map(|i| (i as f32) * 0.001)
                 .collect::<Vec<_>>(),
@@ -708,7 +700,7 @@ mod tests {
             config: cfg.clone(),
             weights,
         };
-        let img = LazyTensor::from_f32(
+        let img = Tensor::from_f32(
             (0..(3 * 224 * 224))
                 .map(|i| (i as f32) * 0.001)
                 .collect::<Vec<_>>(),
@@ -730,14 +722,14 @@ mod tests {
             config: cfg,
             weights,
         };
-        let img_a = LazyTensor::from_f32(
+        let img_a = Tensor::from_f32(
             (0..(3 * 224 * 224))
                 .map(|i| (i as f32) * 0.001)
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 224, 224]),
             &Device::cpu(),
         );
-        let img_b = LazyTensor::from_f32(
+        let img_b = Tensor::from_f32(
             (0..(3 * 224 * 224))
                 .map(|i| (i as f32) * 0.001 + 0.3)
                 .collect::<Vec<_>>(),

@@ -89,7 +89,7 @@ pub trait DecodeModel {
     ///
     /// This replaces the former scalar `n_kv_heads()` / `head_dim()`, which
     /// asserted every model's state is uniform per-head KV — a claim MLA
-    /// (`DeepSeek2Model`, whose decode state is a `LazyLatentCache` of
+    /// (`DeepSeek2Model`, whose decode state is a `LatentCache` of
     /// `[latent, k_pe]` slots) cannot honor, yet was syntactically able to
     /// return, mis-allocating silently. A uniform per-head-KV model returns the
     /// same [`LayerStateSpec::KeyValue`] for every index and is unaffected. See
@@ -3940,7 +3940,7 @@ mod tests {
 
     /// A model whose decode state is NOT per-head KV — two layers, each an MLA
     /// slot pair (`[kv_lora_rank]` latent + `[qk_rope_head_dim]` `k_pe`), exactly
-    /// the shape `DeepSeek2Model` decodes through a `LazyLatentCache`. It has no
+    /// the shape `DeepSeek2Model` decodes through a `LatentCache`. It has no
     /// honest `(n_kv_heads, head_dim)`; the scheduler must decline it at
     /// construction rather than allocate a KV cache it never reads (GAP-166).
     struct MlaShapedModel;

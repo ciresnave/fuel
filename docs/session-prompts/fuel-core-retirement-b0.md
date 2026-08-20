@@ -59,7 +59,7 @@ of other programs (eager-dispatch retirement B6), not B0.
 > **First separable piece, measured 2026-08-19: `fuel-nn`.** The NN surface is
 > 22 files / ~8,855 lines (`lazy_nn_*.rs` + `lazy_nn/`) with **zero** eager-
 > `Tensor` dependency — the one apparent exception, `lazy_nn_optim.rs:167`, is
-> `fuel_graph::Tensor`, the graph handle from a crate already BELOW `fuel-core`.
+> `fuel_graph::NodeHandle`, the graph handle from a crate already BELOW `fuel-core`.
 > `lazy.rs` references `lazy_nn` zero times, so there is no cycle. It goes
 > **above** `fuel-core` as a consumer crate and re-points its `use` lines when
 > the dissolution eventually runs. Unblocks the Lightbulb port's
@@ -137,8 +137,8 @@ This is why B0 is sequenced (below), not one big-bang.
      lives there) and have it call into fuel-hardware for the pure-discovery pieces. Dep direction:
      fuel-dispatch → fuel-hardware → fuel-ir (fuel-hardware must NOT depend on fuel-dispatch).
   5. Split `BackendFactory` (`fuel-core/src/factories.rs`): `HardwareEnumerator` (`id()` +
-     `enumerate_devices()`) → fuel-hardware; `RealizerFactory` (`try_make_realizer` + `LazyRealizer`
-     + `BridgeRealizer`, which use LazyTensor/pipelined_bridge/StorageCache) STAYS in fuel-core.
+     `enumerate_devices()`) → fuel-hardware; `RealizerFactory` (`try_make_realizer` + `Realizer`
+     + `BridgeRealizer`, which use Tensor/pipelined_bridge/StorageCache) STAYS in fuel-core.
      `judge.rs` is the sole `try_make_realizer` consumer (stays).
   6. Rewire the **2 production `SystemTopology` call sites** in `fuel-core/src/pipelined_bridge.rs`
      (build_optimized_graph ~L329; insert-copies/shares_storage ~L1406) to wherever it lands.

@@ -34,12 +34,12 @@
 //!
 //! # Op surface used (already in lazy stack)
 //!
-//! - [`LazyTensor::causal_conv1d`] — Mamba-1 prefill conv with
+//! - [`Tensor::causal_conv1d`] — Mamba-1 prefill conv with
 //!   optional fused SiLU.
-//! - [`LazyTensor::selective_scan`] — the SSM scan; returns the `y`
+//! - [`Tensor::selective_scan`] — the SSM scan; returns the `y`
 //!   slot of the bundled producer.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -142,7 +142,7 @@ pub struct MambaModel {
 impl MambaModel {
     /// Run a full-sequence prefill forward and return the logits
     /// `[1, seq, vocab_size_padded]`.
-    pub fn forward(&self, tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let h_norm = self.run_backbone(tokens)?;
@@ -155,11 +155,11 @@ impl MambaModel {
     /// and return per-token hidden states `(1, seq, d_model)`.
     /// No `start_pos` parameter — Mamba's recurrent state is
     /// implicit in the SSM scan; v1 is prefill only.
-    pub fn forward_hidden(&self, tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn forward_hidden(&self, tokens: &[u32]) -> Result<Tensor> {
         self.run_backbone(tokens)
     }
 
-    fn run_backbone(&self, tokens: &[u32]) -> Result<LazyTensor> {
+    fn run_backbone(&self, tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
@@ -167,7 +167,7 @@ impl MambaModel {
         assert!(seq > 0, "MambaModel::forward: tokens must be non-empty");
         let vocab_padded = cfg.vocab_size();
 
-        let mut h = LazyTensor::embed_tokens(
+        let mut h = Tensor::embed_tokens(
             weights.token_embedding.clone(),
             vocab_padded,
             cfg.d_model,
@@ -184,11 +184,7 @@ impl MambaModel {
         )?)
     }
 
-    fn apply_residual_block(
-        &self,
-        x: &LazyTensor,
-        layer: &MambaLayerWeights,
-    ) -> Result<LazyTensor> {
+    fn apply_residual_block(&self, x: &Tensor, layer: &MambaLayerWeights) -> Result<Tensor> {
         let cfg = &self.config;
         let x_norm =
             x.rms_norm_affine(std::sync::Arc::clone(&layer.norm_gain), cfg.rms_norm_eps)?;
@@ -196,7 +192,7 @@ impl MambaModel {
         x.add(&mixer_out)
     }
 
-    fn apply_mixer(&self, x: &LazyTensor, layer: &MambaLayerWeights) -> Result<LazyTensor> {
+    fn apply_mixer(&self, x: &Tensor, layer: &MambaLayerWeights) -> Result<Tensor> {
         let cfg = &self.config;
         let d_inner = cfg.d_inner();
         let dt_rank = cfg.dt_rank();

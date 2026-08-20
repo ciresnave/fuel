@@ -5,7 +5,7 @@
 //!
 //! B6 retired the eager `Tensor` and this CLI was archived with it, because
 //! every path went through `QTensor::quantize` / `dequantize`. Restoring it did
-//! **not** require porting it to `LazyTensor`: this is a *file-format
+//! **not** require porting it to `Tensor`: this is a *file-format
 //! converter*. It reads bytes, rearranges them, and writes bytes. The eager
 //! tensor was never doing anything a `Vec<f32>` could not, and routing a
 //! whole-file requantization through a lazy graph would build a DAG whose only

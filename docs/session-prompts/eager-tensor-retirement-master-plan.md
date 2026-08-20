@@ -9,7 +9,7 @@
 > pub struct Tensor  in fuel-core/src/*.rs  ->  0 matches
 > BackpropOp         anywhere in *.rs       ->  0 matches
 > fuel-core/src/op.rs                       ->  GONE
-> (control) pub struct LazyTensor           ->  1 match, fuel-core/src/lazy.rs
+> (control) pub struct Tensor           ->  1 match, fuel-core/src/lazy.rs
 > ```
 >
 > **The line below said "Phase H in progress" and was last touched 2026-06-15.**
@@ -28,9 +28,9 @@
 Fuel's Phase 7.5 direction is "drop eager." The eager `fuel_core::Tensor` type
 plus its sibling autograd-tape machinery (`BackpropOp` in
 [fuel-core/src/op.rs](../../fuel-core/src/op.rs)) is being removed in favor of
-the lazy `LazyTensor` / `fuel_graph::Tensor` graph-building model. The
+the lazy `Tensor` / `fuel_graph::NodeHandle` graph-building model. The
 bridge-file doc comment in [fuel-core/src/lazy.rs:6-24](../../fuel-core/src/lazy.rs#L6-L24)
-made this the design intent from day one: `LazyTensor` is the scaffolding to
+made this the design intent from day one: `Tensor` is the scaffolding to
 make the final merge incremental; once every consumer compiles against the
 wrapper, the type alias flips and `fuel_core::Tensor` becomes the lazy variant.
 
@@ -41,7 +41,7 @@ confirmed the picture; the user has locked the sequencing decisions.
 ## Audit findings (compressed)
 
 **Magnitude.** 244 files across 9 crates import eager `fuel_core::Tensor`; 35
-files use `LazyTensor` (~12% of consumer surface). Concentrations:
+files use `Tensor` (~12% of consumer surface). Concentrations:
 - fuel-transformers — 177 files (LLM 94% eager, diffusion 87%, multimodal 77%,
   vision 81%, audio 76%, encoders 83%)
 - fuel-nn — 27/27 files eager (entire NN primitives layer)
@@ -50,12 +50,12 @@ files use `LazyTensor` (~12% of consumer surface). Concentrations:
 
 **Three categories of work, not one.**
 
-1. **API surface gap.** `LazyTensor` exposes ~107 methods; eager `Tensor` has
+1. **API surface gap.** `Tensor` exposes ~107 methods; eager `Tensor` has
    ~152. The first cut of the gap is ~45 methods, but reading the underlying
-   `fuel_graph::Tensor` shows it ALREADY has many of these (`unsqueeze`,
+   `fuel_graph::NodeHandle` shows it ALREADY has many of these (`unsqueeze`,
    `argmin_dim`, `triu`/`tril`, `log_softmax_last_dim`, `masked_fill`,
    `index_add`/`scatter_add`, `try_*` variants, `relu_inplace`/`silu_inplace`
-   etc., `backward()`). Most "gaps" are missing LazyTensor wrappers, not
+   etc., `backward()`). Most "gaps" are missing Tensor wrappers, not
    missing graph ops. **Real graph-layer gaps:** pooling/interpolation family
    (8 ops, blocks all vision), general `conv1d` (only `causal_conv1d` exists),
    `*_like` shape-derived factories, keepdim reductions, `stack`/`repeat`/
@@ -92,7 +92,7 @@ hand-decomposition in Whisper.
 2. **Phase G (training) is required**, not optional. Fuel will be used for
    training.
 3. **LazyKvCache: option (b)** — functional `cache = cache.append(k, v) ->
-   new_cache` returning a new `LazyTensor`-backed cache, not the mutable
+   new_cache` returning a new `Tensor`-backed cache, not the mutable
    wrapper. More consumer churn, cleaner graph semantics, better long-term.
 4. **Rotating KV cache: new Op variant.** Eager is going away soon; don't
    leave Mistral-class on the eager fallback.
@@ -104,7 +104,7 @@ hand-decomposition in Whisper.
 
 | Phase | Work | Sessions | Sequencing | Status |
 |-------|------|----------|------------|--------|
-| **A** | Close API gap on LazyTensor / `fuel_graph::Tensor` | 8–12 | First; blocks all consumer ports | **A.1–A.5 shipped 2026-05-30** + most A.x deferred items |
+| **A** | Close API gap on Tensor / `fuel_graph::NodeHandle` | 8–12 | First; blocks all consumer ports | **A.1–A.5 shipped 2026-05-30** + most A.x deferred items |
 | **B** | LazyKvCache option (b) | 1–2 | Parallel with A | **Shipped 2026-05-30** (commit `37ea082a`) |
 | **C** | Rotating-window KV cache (new Op) | 1 | Parallel with A+B if attention allows | **SHIPPED** (`94fa2e47`/`95491c89` — `Op::WriteSliceRotating` + `append_rotating`) |
 | **D** | LLM lazy ports (~14 models) | 7–10 | After A+B complete | **SUBSTANTIALLY SHIPPED** (155 `lazy_*.rs` ports; models tree retired to `_models_retired`) |
@@ -168,8 +168,8 @@ load grows monotonically.
 
 ### A.1 — Trivial wrapper additions (no new graph ops)
 
-Methods that exist on `fuel_graph::Tensor` but aren't exposed on
-`LazyTensor`. Pure delegation; one PR.
+Methods that exist on `fuel_graph::NodeHandle` but aren't exposed on
+`Tensor`. Pure delegation; one PR.
 
 - `unsqueeze(dim)`, `try_unsqueeze(dim)`
 - `try_permute(axes)`, `try_transpose()`, `try_broadcast_to(shape)`,
@@ -182,7 +182,7 @@ Methods that exist on `fuel_graph::Tensor` but aren't exposed on
 - `relu_inplace`/`silu_inplace`/`gelu_inplace`/`tanh_inplace`/
   `sigmoid_inplace`/`affine_inplace` (already on graph; Phase 4-5 shipped)
 - `const_f64_like`, `const_u32_like`, `const_i64_like`,
-  `const_placeholder_like` (already on `fuel_graph::Tensor`)
+  `const_placeholder_like` (already on `fuel_graph::NodeHandle`)
 - `on_device(loc)`, `move_to_device(loc)`, `copy_to_device(loc)`,
   `release()` — device-residency control
 - `backward()` — autograd entry point (currently only reachable through the
@@ -234,7 +234,7 @@ latter loses gradient-flow context; the former requires more graph plumbing.
 
 ### A.6 — General conv1d
 
-`LazyTensor` only has `causal_conv1d` (Mamba-specific). Need general
+`Tensor` only has `causal_conv1d` (Mamba-specific). Need general
 `conv1d(weight, bias, params)` matching eager's signature.
 [fuel-graph/src/registry/causal_conv1d.rs](../../fuel-graph/src/registry/causal_conv1d.rs)
 is the registry pattern reference.
@@ -242,7 +242,7 @@ is the registry pattern reference.
 - New `Op` variant: `Op::Conv1D`
 - Registry entry mirroring `conv2d.rs` shape
 - CPU + CUDA + Vulkan dispatch (CPU first; baracuda has `conv1d` kernels)
-- Wrapper: `LazyTensor::conv1d(weight, bias, params)`
+- Wrapper: `Tensor::conv1d(weight, bias, params)`
 
 ### A.7 — Pooling and interpolation family
 
@@ -262,7 +262,7 @@ interpolation second (used by UNet/segmentation/upscaling).
 ### A.8 — Signature harmonization
 
 Breaking-change PR. Save for last in Phase A so additive work lands cleanly
-first. Goal: every eager `Tensor` method that LazyTensor exposes has
+first. Goal: every eager `Tensor` method that Tensor exposes has
 **identical signature**, so the eventual type alias flip touches zero
 consumer code.
 
@@ -296,16 +296,16 @@ Sketch:
 
 ```rust
 pub struct LazyKvCache {
-    k_buffer: LazyTensor,   // [n_layers, max_seq, n_kv_heads, head_dim]
-    v_buffer: LazyTensor,   // same shape
+    k_buffer: Tensor,   // [n_layers, max_seq, n_kv_heads, head_dim]
+    v_buffer: Tensor,   // same shape
     current_seq_len: usize,
 }
 
 impl LazyKvCache {
     pub fn new(max_seq_len: usize, ...) -> Self;
-    pub fn append(self, layer: usize, k: &LazyTensor, v: &LazyTensor) -> Self;
-    pub fn k(&self, layer: usize) -> LazyTensor; // slice [:current_seq_len]
-    pub fn v(&self, layer: usize) -> LazyTensor;
+    pub fn append(self, layer: usize, k: &Tensor, v: &Tensor) -> Self;
+    pub fn k(&self, layer: usize) -> Tensor; // slice [:current_seq_len]
+    pub fn v(&self, layer: usize) -> Tensor;
 }
 ```
 
@@ -404,12 +404,12 @@ affects how much of fuel-nn's training path can collapse.
 ## Phase H detail — eager deletion
 
 1. Verify zero remaining `use fuel_core::Tensor` imports in consumer code
-2. Mark eager `Tensor` deprecated with a redirect to `LazyTensor`
-3. Flip the `pub type Tensor = LazyTensor` alias
+2. Mark eager `Tensor` deprecated with a redirect to `Tensor`
+3. Flip the `pub type Tensor = Tensor` alias
 4. Delete eager Tensor methods one file at a time, watching CI
 5. Retire `BackpropOp` and the eager autograd tape
 6. Retire `fuel-nn` once its callers are gone (or migrate fuel-nn to
-   `LazyTensor` if any internal users remain)
+   `Tensor` if any internal users remain)
 7. Final cleanup PR: remove `lazy.rs` bridge module's wrapper-only methods
    (delegating to the underlying type now becomes redundant)
 
@@ -432,7 +432,7 @@ affects how much of fuel-nn's training path can collapse.
   per-layer state tensor, or a higher-level `Op::MambaState`-style fused
   variant? (Probably WriteSlice first, fuse later.)
 - **Phase G:** Var as graph node or host-side eager mutator?
-- **Phase H:** does `pub type Tensor = LazyTensor` ship before all bridge
+- **Phase H:** does `pub type Tensor = Tensor` ship before all bridge
   wrappers are stripped, or as the final step?
 
 ## References

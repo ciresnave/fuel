@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Training checkpoint management (lazy).
 //!
-//! Extends [`fuel_nn::varmap::LazyVarMap`]'s basic save/load with
+//! Extends [`fuel_nn::varmap::VarMap`]'s basic save/load with
 //! metadata tracking for resumable training. A [`Checkpoint`] bundles
 //! model weights with the epoch, step, and an optional best metric so
 //! training can resume from exactly where it was interrupted.
@@ -9,13 +9,13 @@
 //! # Example
 //!
 //! ```rust,no_run
-//! use fuel_nn::optim::LazyVar;
-//! use fuel_nn::varmap::LazyVarMap;
+//! use fuel_nn::optim::Var;
+//! use fuel_nn::varmap::VarMap;
 //! use fuel_training::checkpoint::Checkpoint;
 //!
 //! # fn main() -> fuel::Result<()> {
-//! let varmap = LazyVarMap::new();
-//! varmap.insert(LazyVar::zeros("w", fuel::Shape::from_dims(&[8]))?);
+//! let varmap = VarMap::new();
+//! varmap.insert(Var::zeros("w", fuel::Shape::from_dims(&[8]))?);
 //!
 //! let dir = std::env::temp_dir().join("fuel_ckpt_example");
 //! let ckpt = Checkpoint::new(5, 1000).with_metric("val_loss", 0.42);
@@ -30,7 +30,7 @@
 //! ```
 
 use fuel::Result;
-use fuel_nn::varmap::LazyVarMap;
+use fuel_nn::varmap::VarMap;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -81,7 +81,7 @@ impl Checkpoint {
     /// does not exist. Writes:
     /// - `weights.safetensors` — model parameters
     /// - `metadata.json` — epoch, step, metrics
-    pub fn save<P: AsRef<Path>>(&self, dir: P, varmap: &LazyVarMap) -> Result<()> {
+    pub fn save<P: AsRef<Path>>(&self, dir: P, varmap: &VarMap) -> Result<()> {
         let dir = dir.as_ref();
         std::fs::create_dir_all(dir).map_err(|e| {
             fuel::Error::Msg(format!(
@@ -104,7 +104,7 @@ impl Checkpoint {
 
     /// Save to a timestamped subdirectory inside `base_dir`.
     /// The subdirectory is named `epoch_{epoch}_step_{step}`.
-    pub fn save_named<P: AsRef<Path>>(&self, base_dir: P, varmap: &LazyVarMap) -> Result<PathBuf> {
+    pub fn save_named<P: AsRef<Path>>(&self, base_dir: P, varmap: &VarMap) -> Result<PathBuf> {
         let name = format!("epoch_{}_step_{}", self.epoch, self.step);
         let dir = base_dir.as_ref().join(name);
         self.save(&dir, varmap)?;
@@ -112,7 +112,7 @@ impl Checkpoint {
     }
 
     /// Load model weights and metadata from `dir`, applying weights to `varmap`.
-    pub fn load<P: AsRef<Path>>(dir: P, varmap: &LazyVarMap) -> Result<Self> {
+    pub fn load<P: AsRef<Path>>(dir: P, varmap: &VarMap) -> Result<Self> {
         let dir = dir.as_ref();
         let weights_path = dir.join("weights.safetensors");
         varmap.load(&weights_path)?;
@@ -189,7 +189,7 @@ mod tests {
         let dir = std::env::temp_dir().join("fuel_training_lazy_ckpt_test");
         let _ = std::fs::remove_dir_all(&dir);
 
-        let varmap = LazyVarMap::new();
+        let varmap = VarMap::new();
         let ckpt = Checkpoint::new(2, 400).with_metric("loss", 1.5);
         ckpt.save(&dir, &varmap)?;
 
@@ -207,7 +207,7 @@ mod tests {
         let base = std::env::temp_dir().join("fuel_training_lazy_ckpt_latest_test");
         let _ = std::fs::remove_dir_all(&base);
 
-        let varmap = LazyVarMap::new();
+        let varmap = VarMap::new();
         Checkpoint::new(1, 100).save_named(&base, &varmap)?;
         Checkpoint::new(2, 200).save_named(&base, &varmap)?;
         Checkpoint::new(1, 150).save_named(&base, &varmap)?;

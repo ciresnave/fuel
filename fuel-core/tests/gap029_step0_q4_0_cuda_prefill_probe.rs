@@ -48,7 +48,7 @@
 #![cfg(feature = "cuda")]
 
 use fuel_core::Device;
-use fuel_core::lazy::LazyTensor;
+use fuel_core::lazy::Tensor;
 use fuel_core::pipelined_bridge::realize_one_as;
 use fuel_graph::QuantType;
 use fuel_ir::Shape;
@@ -92,7 +92,7 @@ fn realize_q4_0(m: usize, k: usize, n: usize, dev: &Device) -> (Outcome, Vec<f32
     BlockQ4_0::to_float(&w_blocks, &mut deq);
 
     let a_data: Vec<f32> = (0..m * k).map(|i| ((i as f32) * 0.013).cos()).collect();
-    let x = LazyTensor::from_f32(a_data.clone(), Shape::from_dims(&[m, k]), dev);
+    let x = Tensor::from_f32(a_data.clone(), Shape::from_dims(&[m, k]), dev);
     let w = x.const_u32_like(w_u32, Shape::from_dims(&[w_bytes.len() / 4]));
     let y = x
         .qmatmul(&w, QuantType::Q4_0, k, n)

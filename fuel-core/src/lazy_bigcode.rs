@@ -16,7 +16,7 @@
 //! to the token embedding.
 
 use crate::lazy::{
-    LazyTensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
+    Tensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
 };
 use crate::{Device, Result};
 use fuel_ir::Shape;
@@ -106,7 +106,7 @@ pub struct BigCodeModel {
 }
 
 impl BigCodeModel {
-    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let h_norm = self.run_backbone(tokens, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
@@ -117,7 +117,7 @@ impl BigCodeModel {
     /// uses learned absolute position embeddings + LayerNorm
     /// final norm — same backbone is run for both `forward`
     /// and `forward_hidden`.
-    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         self.run_backbone(tokens, start_pos)
     }
 
@@ -126,17 +126,13 @@ impl BigCodeModel {
     /// wpe table) is still applied internally based on `start_pos` +
     /// seq from the embeds — multimodal hosts pass the token-level
     /// embeds (post token-table lookup, pre-positional-add).
-    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let h_norm = self.run_backbone_embeds(embeds, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
 
     /// Hidden-state variant of [`Self::forward_embeds`].
-    pub fn forward_hidden_embeds(
-        &self,
-        embeds: &LazyTensor,
-        start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_hidden_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         self.run_backbone_embeds(embeds, start_pos)
     }
 
@@ -144,7 +140,7 @@ impl BigCodeModel {
     /// the positional embedding is NOT added — callers must pass the
     /// raw embeds to [`Self::forward_embeds`] which adds positional
     /// encoding internally.
-    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &Tensor, tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
@@ -154,7 +150,7 @@ impl BigCodeModel {
         )
     }
 
-    fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
+    fn apply_lm_head(&self, h_norm: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         Ok(self
             .weights
@@ -162,13 +158,13 @@ impl BigCodeModel {
             .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
-    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
         assert!(seq > 0);
 
-        let h = LazyTensor::embed_tokens(
+        let h = Tensor::embed_tokens(
             weights.token_embedding.clone(),
             cfg.vocab_size,
             cfg.hidden_size,
@@ -178,7 +174,7 @@ impl BigCodeModel {
         self.run_backbone_embeds(&h, start_pos)
     }
 
-    fn run_backbone_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
+    fn run_backbone_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -232,7 +228,7 @@ impl BigCodeModel {
         )
     }
 
-    fn apply_layer(&self, x: &LazyTensor, layer: &BigCodeLayerWeights) -> Result<LazyTensor> {
+    fn apply_layer(&self, x: &Tensor, layer: &BigCodeLayerWeights) -> Result<Tensor> {
         let cfg = &self.config;
         let head_dim = cfg.head_dim();
         let kv_dim = cfg.kv_dim();
@@ -285,7 +281,7 @@ impl BigCodeModel {
         let scale = 1.0_f64 / (head_dim as f64).sqrt();
         let scores = q.matmul(&k_t)?;
         let scores_scaled = scores.mul_scalar(scale);
-        let mask = LazyTensor::additive_causal_mask_like(x, seq)
+        let mask = Tensor::additive_causal_mask_like(x, seq)
             .reshape(Shape::from_dims(&[1, 1, seq, seq]))?;
         let scores_masked = scores_scaled.broadcast_add(&mask)?;
         let attn = scores_masked.softmax_last_dim()?;
@@ -728,7 +724,7 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
         let max_diff = logits_ref
@@ -749,7 +745,7 @@ mod tests {
             config: cfg.clone(),
             weights: tiny_weights(&cfg),
         };
-        let bad = LazyTensor::from_f32(
+        let bad = Tensor::from_f32(
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
             Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
             &Device::cpu(),
@@ -766,7 +762,7 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let h_via_embeds = model
             .forward_hidden_embeds(&embeds, 0)

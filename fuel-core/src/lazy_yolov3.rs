@@ -47,7 +47,7 @@
 //!   arrays — identical pattern to `lazy_yolov8::decode_and_nms`.
 
 use crate::lazy::{
-    LazyTensor, load_tensor_as_f32, load_transposed_matrix, load_transposed_matrix_preserve_dtype,
+    Tensor, load_tensor_as_f32, load_transposed_matrix, load_transposed_matrix_preserve_dtype,
 };
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -238,13 +238,13 @@ pub struct YoloV3Weights {
 
 /// Per-channel affine: `y[n,c,h,w] = x[n,c,h,w] * scale[c] + shift[c]`.
 fn per_channel_affine(
-    x: &LazyTensor,
+    x: &Tensor,
     scale: &Arc<[f32]>,
     shift: &Arc<[f32]>,
     c: usize,
     h: usize,
     w: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let s = x
         .const_f32_like(scale.clone(), Shape::from_dims(&[c]))
         .reshape(Shape::from_dims(&[1, c, 1, 1]))?
@@ -258,7 +258,7 @@ fn per_channel_affine(
 
 /// Leaky-ReLU(slope). Implemented as `max(x, slope * x)` — matches
 /// PyTorch's `F.leaky_relu` exactly when `slope > 0`.
-fn leaky_relu(x: &LazyTensor, slope: f64) -> crate::Result<LazyTensor> {
+fn leaky_relu(x: &Tensor, slope: f64) -> crate::Result<Tensor> {
     let scaled = x.mul_scalar(slope);
     x.maximum(&scaled)
 }
@@ -267,7 +267,7 @@ fn leaky_relu(x: &LazyTensor, slope: f64) -> crate::Result<LazyTensor> {
 /// Same-shape output (no stride, padding = (k-1)/2).
 #[allow(clippy::too_many_arguments)]
 fn cbn(
-    x: &LazyTensor,
+    x: &Tensor,
     cw: &CbnWeights,
     c_in: usize,
     c_out: usize,
@@ -276,7 +276,7 @@ fn cbn(
     h_out: usize,
     w_out: usize,
     cfg: &YoloV3Config,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let p = (k - 1) / 2;
     let w_t = x.const_f32_like(cw.conv_w.clone(), Shape::from_dims(&[c_out, c_in, k, k]));
     let conv = x.conv2d(&w_t, None, (stride, stride), (p, p), 1)?;
@@ -288,13 +288,13 @@ fn cbn(
 /// identity`. Both convs preserve spatial dims (stride 1, padding =
 /// (k-1)/2).
 fn residual(
-    x: &LazyTensor,
+    x: &Tensor,
     rw: &ResidualWeights,
     c: usize,
     h: usize,
     w: usize,
     cfg: &YoloV3Config,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let c_mid = c / 2;
     let y = cbn(x, &rw.cv1, c, c_mid, 1, 1, h, w, cfg)?;
     let y = cbn(&y, &rw.cv2, c_mid, c, 3, 1, h, w, cfg)?;
@@ -304,14 +304,14 @@ fn residual(
 /// One backbone stage: stride-2 downsample then `n` residual blocks at
 /// the new resolution.
 fn backbone_stage(
-    x: &LazyTensor,
+    x: &Tensor,
     sw: &BackboneStageWeights,
     c_in: usize,
     c_out: usize,
     h_in: usize,
     w_in: usize,
     cfg: &YoloV3Config,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let h_out = h_in / 2;
     let w_out = w_in / 2;
     let mut x = cbn(x, &sw.downsample, c_in, c_out, 3, 2, h_out, w_out, cfg)?;
@@ -326,14 +326,14 @@ fn backbone_stage(
 /// Returns the c-channel feature map (the final cv5 output) so callers
 /// can fork it into the lateral path and the final 3×3 + detect conv.
 fn head_stack(
-    x: &LazyTensor,
+    x: &Tensor,
     hw: &HeadStackWeights,
     c_in: usize,
     c: usize,
     h: usize,
     w: usize,
     cfg: &YoloV3Config,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let x = cbn(x, &hw.cv1, c_in, c, 1, 1, h, w, cfg)?;
     let x = cbn(&x, &hw.cv2, c, 2 * c, 3, 1, h, w, cfg)?;
     let x = cbn(&x, &hw.cv3, 2 * c, c, 1, 1, h, w, cfg)?;
@@ -344,11 +344,11 @@ fn head_stack(
 /// Raw 1×1 conv with bias, no BN/activation. Used as the final detect
 /// layer at each scale.
 fn raw_conv_1x1_bias(
-    x: &LazyTensor,
+    x: &Tensor,
     dw: &DetectConvWeights,
     c_in: usize,
     c_out: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let w_t = x.const_f32_like(dw.conv_w.clone(), Shape::from_dims(&[c_out, c_in, 1, 1]));
     let b_t = x.const_f32_like(dw.conv_b.clone(), Shape::from_dims(&[c_out]));
     x.conv2d(&w_t, Some(&b_t), (1, 1), (0, 0), 1)
@@ -360,13 +360,13 @@ fn raw_conv_1x1_bias(
 /// `[1, 3*H*W, 5+nc]` rows of `(cx, cy, w, h, obj, class[..])`. All
 /// outputs are in **pixel space** (network input resolution).
 fn decode_scale(
-    raw: &LazyTensor,
+    raw: &Tensor,
     anchors: &[(usize, usize); 3],
     stride: usize,
     num_classes: usize,
     h: usize,
     w: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let n_anchors = 3;
     let attrs = 5 + num_classes;
     // [1, 3*attrs, H, W] → [1, 3, attrs, H*W] → [1, 3, H*W, attrs] →
@@ -440,7 +440,7 @@ fn decode_scale(
 /// Each row is `(cx, cy, w, h, obj, class[0..nc])` in **pixel space**.
 #[derive(Debug, Clone)]
 pub struct YoloV3RawOutput {
-    pub predictions: LazyTensor,
+    pub predictions: Tensor,
 }
 
 #[derive(Debug, Clone)]
@@ -463,7 +463,7 @@ impl YoloV3Model {
             );
         }
 
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             image.to_vec(),
             Shape::from_dims(&[1, 3, isize, isize]),
             &crate::Device::cpu(),
@@ -1139,8 +1139,7 @@ mod tests {
                 }
             }
         }
-        let raw =
-            LazyTensor::from_f32(data, Shape::from_dims(&[1, c, h, w]), &crate::Device::cpu());
+        let raw = Tensor::from_f32(data, Shape::from_dims(&[1, c, h, w]), &crate::Device::cpu());
         let anchors = [(20_usize, 30_usize), (40, 60), (80, 90)];
         let stride = 32_usize;
         let decoded = decode_scale(&raw, &anchors, stride, num_classes, h, w).unwrap();
@@ -1205,7 +1204,7 @@ mod tests {
             data[off + 4] = 0.95; // obj
             data[off + 5] = 0.9; // class score
         }
-        let preds = LazyTensor::from_f32(
+        let preds = Tensor::from_f32(
             data,
             Shape::from_dims(&[1, n, attrs]),
             &crate::Device::cpu(),

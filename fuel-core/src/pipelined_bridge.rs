@@ -30,7 +30,7 @@
 //!    each.
 //! 5. Reads the CPU bytes into a typed `Vec<T>` via `bytemuck`.
 //!
-//! This module owns steps 1–5 so [`crate::lazy::LazyTensor`]'s
+//! This module owns steps 1–5 so [`crate::lazy::Tensor`]'s
 //! `realize_*` methods stay one-liners.
 //!
 //! ## Status post-Phase 3
@@ -332,7 +332,7 @@ pub fn realize_one_as_with_initial_reporting<T: bytemuck::Pod>(
 /// stays on `device`, so a CPU-pinned call is a genuine all-CPU oracle —
 /// never cost-relocated onto the very backend it's meant to validate. See
 /// [`fuel_dispatch::plan::PlanOptions::allow_cost_placement`]. Backs
-/// [`crate::lazy::LazyTensor::realize_f32_reference`] + the per-op parity
+/// [`crate::lazy::Tensor::realize_f32_reference`] + the per-op parity
 /// harness; the replacement for the retiring `fuel-reference-backend` oracle.
 pub fn realize_one_reference_as<T: bytemuck::Pod>(
     graph: &Arc<RwLock<Graph>>,
@@ -1216,7 +1216,7 @@ fn prepare_split(
 /// `WorkItemKind::Copy` arm (output allocation) and the
 /// `copy_from_cpu_wrapper` (per-target H2D).
 ///
-/// `pub(crate)`: [`crate::factories::LazyRealizer`] (the Judge's
+/// `pub(crate)`: [`crate::factories::Realizer`] (the Judge's
 /// realize seam) calls this directly to maintain a persistent
 /// const cache across its warmup + timed iterations — the pipelined
 /// replacement for the legacy executor's `const_pool` amortization.

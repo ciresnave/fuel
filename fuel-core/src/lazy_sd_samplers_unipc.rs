@@ -31,7 +31,7 @@
 
 use std::collections::HashSet;
 
-use crate::lazy::LazyTensor;
+use crate::lazy::Tensor;
 use crate::lazy_sd_samplers::{PredictionType, SdScheduler};
 use crate::{Error, Result};
 
@@ -374,11 +374,11 @@ fn solve_linear(a: &[f64], b: &[f64], n: usize) -> Result<Vec<f64>> {
 
 #[derive(Debug, Clone)]
 struct UniPcState {
-    model_outputs: Vec<Option<LazyTensor>>,
+    model_outputs: Vec<Option<Tensor>>,
     timestep_history: Vec<Option<usize>>,
     lower_order_nums: usize,
     order: usize,
-    last_sample: Option<LazyTensor>,
+    last_sample: Option<Tensor>,
 }
 
 impl UniPcState {
@@ -450,10 +450,10 @@ impl UniPcScheduler {
 
     fn convert_model_output(
         &self,
-        model_output: &LazyTensor,
-        sample: &LazyTensor,
+        model_output: &Tensor,
+        sample: &Tensor,
         timestep: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let alpha_t = self.schedule.alpha_t(timestep);
         let sigma_t = self.schedule.sigma_t(timestep);
         match self.config.prediction_type {
@@ -477,7 +477,7 @@ impl UniPcScheduler {
     /// `(i + 1)` term, which is an off-by-one. This port uses
     /// `step_index - i` (Rust `i` starts at 1) to match the algorithmic
     /// intent: at order=k we look up the `k-1` most recent past steps.
-    fn unip_bh_update(&self, sample: &LazyTensor, timestep: usize) -> Result<LazyTensor> {
+    fn unip_bh_update(&self, sample: &Tensor, timestep: usize) -> Result<Tensor> {
         let step_index = self.step_index(timestep);
         let ns = &self.schedule;
         let model_outputs = self.state.model_outputs.as_slice();
@@ -502,7 +502,7 @@ impl UniPcScheduler {
         let effective_order = order.min(step_index + 1);
 
         let mut rks = Vec::with_capacity(effective_order);
-        let mut d1s: Vec<LazyTensor> = Vec::with_capacity(effective_order.saturating_sub(1));
+        let mut d1s: Vec<Tensor> = Vec::with_capacity(effective_order.saturating_sub(1));
         for i in 1..effective_order {
             let ti = self.timestep_at(step_index - i);
             let history_idx = model_outputs.len().saturating_sub(i + 1);
@@ -579,12 +579,12 @@ impl UniPcScheduler {
     /// output `model_t`.
     fn unic_bh_update(
         &self,
-        model_output: &LazyTensor,
-        model_outputs: &[Option<LazyTensor>],
-        last_sample: &LazyTensor,
-        _sample: &LazyTensor,
+        model_output: &Tensor,
+        model_outputs: &[Option<Tensor>],
+        last_sample: &Tensor,
+        _sample: &Tensor,
         timestep: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let step_index = self.step_index(timestep);
         let m0 = model_outputs
             .last()
@@ -606,7 +606,7 @@ impl UniPcScheduler {
         let h = lambda_t - lambda_s0;
 
         let mut rks = Vec::with_capacity(order);
-        let mut d1s: Vec<LazyTensor> = Vec::with_capacity(order.saturating_sub(1));
+        let mut d1s: Vec<Tensor> = Vec::with_capacity(order.saturating_sub(1));
         for i in 1..order {
             let ti = self.timestep_at(step_index.saturating_sub(i + 1));
             let history_idx = model_outputs.len().saturating_sub(i + 1);
@@ -686,7 +686,7 @@ impl UniPcScheduler {
 }
 
 /// Returns `sum_i weights[i] * tensors[i]`. Requires non-empty inputs of equal length.
-fn weighted_sum(weights: &[f64], tensors: &[LazyTensor]) -> Result<LazyTensor> {
+fn weighted_sum(weights: &[f64], tensors: &[Tensor]) -> Result<Tensor> {
     if weights.is_empty() || weights.len() != tensors.len() {
         return Err(Error::Msg(format!(
             "weighted_sum: weights.len={} tensors.len={}",
@@ -724,16 +724,11 @@ impl SdScheduler for UniPcScheduler {
         Ok(())
     }
 
-    fn step(
-        &mut self,
-        model_output: &LazyTensor,
-        timestep: usize,
-        sample: &LazyTensor,
-    ) -> Result<LazyTensor> {
+    fn step(&mut self, model_output: &Tensor, timestep: usize, sample: &Tensor) -> Result<Tensor> {
         let step_index = self.step_index(timestep);
         let model_output_converted = self.convert_model_output(model_output, sample, timestep)?;
 
-        let corrected_sample: LazyTensor =
+        let corrected_sample: Tensor =
             match (&self.config.corrector, self.state.last_sample.clone()) {
                 (CorrectorConfiguration::Enabled { skip_steps }, Some(last_sample))
                     if !skip_steps.contains(&step_index) && step_index > 0 =>
@@ -776,12 +771,7 @@ impl SdScheduler for UniPcScheduler {
         Ok(prev_sample)
     }
 
-    fn add_noise(
-        &self,
-        original: &LazyTensor,
-        noise: &LazyTensor,
-        timesteps: &[usize],
-    ) -> Result<LazyTensor> {
+    fn add_noise(&self, original: &Tensor, noise: &Tensor, timesteps: &[usize]) -> Result<Tensor> {
         if timesteps.is_empty() {
             return Err(Error::Msg(
                 "UniPcScheduler::add_noise: timesteps must be non-empty".into(),
@@ -801,11 +791,11 @@ mod tests {
     use crate::Device;
     use fuel_ir::Shape;
 
-    fn lazy_from(values: &[f32], shape: &[usize]) -> LazyTensor {
-        LazyTensor::from_f32(values.to_vec(), Shape::from_dims(shape), &Device::cpu())
+    fn lazy_from(values: &[f32], shape: &[usize]) -> Tensor {
+        Tensor::from_f32(values.to_vec(), Shape::from_dims(shape), &Device::cpu())
     }
 
-    fn lazy_like(anchor: &LazyTensor, values: &[f32], shape: &[usize]) -> LazyTensor {
+    fn lazy_like(anchor: &Tensor, values: &[f32], shape: &[usize]) -> Tensor {
         anchor.const_f32_like(values.to_vec(), Shape::from_dims(shape))
     }
 

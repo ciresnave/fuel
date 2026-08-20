@@ -35,7 +35,7 @@
 //!     the conv weight pre-realize.
 
 use crate::Result;
-use crate::lazy::{LazyTensor, WeightStorage, load_tensor_as_f32};
+use crate::lazy::{Tensor, WeightStorage, load_tensor_as_f32};
 use crate::lazy_dac::expand_conv1d_weight_for_dilation_if_needed;
 use crate::lazy_lstm::{LstmCellWeights, LstmStack};
 use fuel_ir::Shape;
@@ -229,7 +229,7 @@ pub struct EncodecEncoder {
 }
 
 impl EncodecEncoder {
-    pub fn forward(&self, xs: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         encoder_forward(xs, &self.weights, &self.config)
     }
 }
@@ -243,7 +243,7 @@ pub struct EncodecDecoder {
 }
 
 impl EncodecDecoder {
-    pub fn forward(&self, latent: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, latent: &Tensor) -> Result<Tensor> {
         decoder_forward_with_weights(latent, &self.weights, &self.config)
     }
 }
@@ -263,7 +263,7 @@ impl EncodecQuantizer {
     /// Walks the RVQ stack: for each codebook, find the nearest
     /// codebook entry to the current residual, then subtract that
     /// entry's reconstruction before moving on to the next codebook.
-    pub fn encode(&self, latent: &LazyTensor) -> Result<Vec<LazyTensor>> {
+    pub fn encode(&self, latent: &Tensor) -> Result<Vec<Tensor>> {
         rvq_encode(latent, &self.weights, &self.config)
     }
 
@@ -271,7 +271,7 @@ impl EncodecQuantizer {
     /// a `(B, hidden_size, T)` latent by summing per-codebook embedding
     /// lookups. This is exactly the path [`EncodecModel::decode_codes`]
     /// uses internally.
-    pub fn decode(&self, codes: &[LazyTensor]) -> Result<LazyTensor> {
+    pub fn decode(&self, codes: &[Tensor]) -> Result<Tensor> {
         rvq_decode_per_codebook(codes, &self.weights, &self.config)
     }
 }
@@ -290,7 +290,7 @@ impl EncodecModel {
     /// with U32 dtype. Requires `self.weights.encoder` to be present —
     /// returns an error if the loaded checkpoint omitted the encoder
     /// half (some published checkpoints are decoder-only).
-    pub fn encode(&self, waveform: &LazyTensor) -> Result<Vec<LazyTensor>> {
+    pub fn encode(&self, waveform: &Tensor) -> Result<Vec<Tensor>> {
         let enc = self.weights.encoder.as_ref().ok_or_else(|| {
             fuel_ir::Error::Msg(
                 "EncodecModel::encode: encoder weights not loaded \
@@ -309,7 +309,7 @@ impl EncodecModel {
     /// `(B, audio_channels, T_out)`. The number of input tensors must
     /// match the number of quantizers loaded. Each tensor must be U32
     /// and shape `(B, T)`.
-    pub fn decode(&self, codes: &[LazyTensor]) -> Result<LazyTensor> {
+    pub fn decode(&self, codes: &[Tensor]) -> Result<Tensor> {
         if codes.len() != self.weights.quantizers.len() {
             crate::bail!(
                 "EncodecModel::decode: expected {} codebooks, got {}",
@@ -330,7 +330,7 @@ impl EncodecModel {
     /// the common case where the caller has the codes pre-stacked along
     /// the codebook axis (and to preserve binary compatibility with the
     /// existing `fuel-examples/examples/encodec` binary).
-    pub fn decode_codes(&self, codes: &LazyTensor) -> Result<LazyTensor> {
+    pub fn decode_codes(&self, codes: &Tensor) -> Result<Tensor> {
         let dims = codes.shape();
         let dims = dims.dims();
         assert_eq!(dims.len(), 3, "codes must be rank 3 [1, num_codebooks, T]");
@@ -353,11 +353,11 @@ impl EncodecModel {
     /// `embed[codes]` directly summed across codebooks. (Reference:
     /// `transformers/models/encodec/modeling_encodec.py` —
     /// `EncodecResidualVectorQuantizer.decode`.)
-    fn rvq_from_codes(&self, codes: &LazyTensor) -> Result<LazyTensor> {
+    fn rvq_from_codes(&self, codes: &Tensor) -> Result<Tensor> {
         rvq_decode_stacked(codes, &self.weights.quantizers, &self.config)
     }
 
-    fn decoder_forward(&self, latent: &LazyTensor) -> Result<LazyTensor> {
+    fn decoder_forward(&self, latent: &Tensor) -> Result<Tensor> {
         decoder_forward_with_weights(latent, &self.weights.decoder, &self.config)
     }
 }
@@ -368,14 +368,14 @@ impl EncodecModel {
 /// Decode codes pre-stacked along the codebook axis (shape
 /// `(1, num_codebooks, T)`).
 fn rvq_decode_stacked(
-    codes: &LazyTensor,
+    codes: &Tensor,
     quantizers: &[VectorQuantizerWeights],
     cfg: &EncodecConfig,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     let dims = codes.shape();
     let dims = dims.dims();
     let time = dims[2];
-    let mut sum: Option<LazyTensor> = None;
+    let mut sum: Option<Tensor> = None;
     for (idx, q) in quantizers.iter().enumerate() {
         let ids = codes
             .narrow(1_usize, idx, 1)?
@@ -397,13 +397,13 @@ fn rvq_decode_stacked(
     sum.ok_or_else(|| fuel_ir::Error::Msg("EnCodec RVQ: no codebooks".into()).bt())
 }
 
-/// Decode codes given as a per-codebook `Vec<LazyTensor>`, each shaped
+/// Decode codes given as a per-codebook `Vec<Tensor>`, each shaped
 /// `(B, T)` with U32 dtype.
 fn rvq_decode_per_codebook(
-    codes: &[LazyTensor],
+    codes: &[Tensor],
     quantizers: &[VectorQuantizerWeights],
     cfg: &EncodecConfig,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     if codes.is_empty() {
         crate::bail!("rvq_decode_per_codebook: zero codebooks");
     }
@@ -424,7 +424,7 @@ fn rvq_decode_per_codebook(
     }
     let b = first_dims[0];
     let t = first_dims[1];
-    let mut sum: Option<LazyTensor> = None;
+    let mut sum: Option<Tensor> = None;
     for (q, c) in quantizers.iter().zip(codes.iter()) {
         let ids = c.reshape(Shape::from_dims(&[b * t]))?;
         let codebook = c.const_f32_like(
@@ -452,10 +452,10 @@ fn rvq_decode_per_codebook(
 /// entries), subtract the chosen entry's embedding from the residual,
 /// then move on to the next codebook.
 fn rvq_encode(
-    latent: &LazyTensor,
+    latent: &Tensor,
     quantizers: &[VectorQuantizerWeights],
     cfg: &EncodecConfig,
-) -> Result<Vec<LazyTensor>> {
+) -> Result<Vec<Tensor>> {
     let dims = latent.shape();
     let dims = dims.dims();
     if dims.len() != 3 {
@@ -475,7 +475,7 @@ fn rvq_encode(
             cfg.codebook_dim,
         );
     }
-    let mut codes: Vec<LazyTensor> = Vec::with_capacity(quantizers.len());
+    let mut codes: Vec<Tensor> = Vec::with_capacity(quantizers.len());
     let mut residual = latent.clone();
     for q in quantizers.iter() {
         // (B, D, T) → (B, T, D) → (B*T, D).
@@ -514,7 +514,7 @@ fn rvq_encode(
 
 /// Encoder forward pass: waveform → latent. Mirrors eager
 /// `Encoder::forward` step by step.
-fn encoder_forward(xs: &LazyTensor, w: &EncoderWeights, cfg: &EncodecConfig) -> Result<LazyTensor> {
+fn encoder_forward(xs: &Tensor, w: &EncoderWeights, cfg: &EncodecConfig) -> Result<Tensor> {
     let mut x = apply_encodec_conv1d(xs, &w.init_conv, cfg, xs)?;
     for stage in &w.stages {
         for r in &stage.resnets {
@@ -544,10 +544,10 @@ fn encoder_forward(xs: &LazyTensor, w: &EncoderWeights, cfg: &EncodecConfig) -> 
 /// Decoder forward pass: latent → waveform. Shared between
 /// [`EncodecModel::decoder_forward`] and [`EncodecDecoder::forward`].
 fn decoder_forward_with_weights(
-    latent: &LazyTensor,
+    latent: &Tensor,
     dec: &DecoderWeights,
     cfg: &EncodecConfig,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     let mut x = apply_encodec_conv1d(latent, &dec.init_conv, cfg, latent)?;
     let dims = x.shape();
     let dims = dims.dims();
@@ -578,11 +578,11 @@ fn decoder_forward_with_weights(
 // ---- Component helpers -----------------------------------------------------
 
 fn apply_resnet_block(
-    x: &LazyTensor,
+    x: &Tensor,
     r: &ResnetBlockWeights,
     cfg: &EncodecConfig,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+    anchor: &Tensor,
+) -> Result<Tensor> {
     let residual = if let Some(sc) = &r.shortcut {
         apply_encodec_conv1d(x, sc, cfg, anchor)?
     } else {
@@ -611,11 +611,11 @@ fn apply_resnet_block(
 }
 
 fn apply_encodec_conv1d(
-    x: &LazyTensor,
+    x: &Tensor,
     c: &Conv1dWeights,
     cfg: &EncodecConfig,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+    anchor: &Tensor,
+) -> Result<Tensor> {
     // Effective kernel size with dilation.
     let k_eff = (c.k - 1) * c.dilation + 1;
     let padding_total = k_eff.saturating_sub(c.stride);
@@ -641,11 +641,11 @@ fn apply_encodec_conv1d(
 }
 
 fn apply_encodec_conv_transpose1d(
-    x: &LazyTensor,
+    x: &Tensor,
     c: &ConvTranspose1dWeights,
     cfg: &EncodecConfig,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+    anchor: &Tensor,
+) -> Result<Tensor> {
     let w = anchor.const_f32_like(Arc::clone(&c.w), Shape::from_dims(&[c.c_in, c.c_out, c.k]));
     let mut out = x.conv_transpose1d(&w, c.stride, 0, 0, 1, 1)?;
     if let Some(b) = &c.b {
@@ -670,7 +670,7 @@ fn apply_encodec_conv_transpose1d(
 }
 
 fn extra_padding_for_conv1d(
-    x: &LazyTensor,
+    x: &Tensor,
     k_eff: usize,
     stride: usize,
     padding_total: usize,
@@ -687,12 +687,12 @@ fn extra_padding_for_conv1d(
 /// Constant (zero) and Replicate (edge-repeat) modes via concat
 /// composites. Causal callers pass `right = 0`.
 pub fn pad1d(
-    x: &LazyTensor,
+    x: &Tensor,
     left: usize,
     right: usize,
     mode: PadMode,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+    anchor: &Tensor,
+) -> Result<Tensor> {
     if left == 0 && right == 0 {
         return Ok(x.clone());
     }
@@ -701,7 +701,7 @@ pub fn pad1d(
     let b = dims[0];
     let c = dims[1];
     let t = dims[2];
-    let make_const = |n: usize, anchor_t: &LazyTensor| -> LazyTensor {
+    let make_const = |n: usize, anchor_t: &Tensor| -> Tensor {
         anchor_t.const_f32_like(
             Arc::<[f32]>::from(vec![0.0_f32; b * c * n]),
             Shape::from_dims(&[b, c, n]),
@@ -1455,7 +1455,7 @@ mod tests {
                 data.push(((c + t) % cfg.codebook_size) as u32);
             }
         }
-        let anchor = LazyTensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &Device::cpu());
         let codes = anchor.const_u32_like(data, Shape::from_dims(&[1, cfg.num_codebooks, time]));
         let audio = model.decode_codes(&codes).unwrap();
         let shape = audio.shape();
@@ -1479,7 +1479,7 @@ mod tests {
         };
         let time = 4_usize;
         let dev = Device::cpu();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
+        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
         let codes_a = anchor.const_u32_like(
             vec![0_u32; cfg.num_codebooks * time],
             Shape::from_dims(&[1, cfg.num_codebooks, time]),
@@ -1504,7 +1504,7 @@ mod tests {
     #[test]
     fn pad1d_replicate_edges() {
         let dev = Device::cpu();
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             vec![1.0_f32, 2.0, 3.0, 4.0],
             Shape::from_dims(&[1, 1, 4]),
             &dev,
@@ -1518,7 +1518,7 @@ mod tests {
     #[test]
     fn pad1d_constant_zero() {
         let dev = Device::cpu();
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             vec![1.0_f32, 2.0, 3.0, 4.0],
             Shape::from_dims(&[1, 1, 4]),
             &dev,
@@ -1561,7 +1561,7 @@ mod tests {
         };
         // T_in = 32 samples; hop_length = 2*2 = 4 → T_latent ≈ 32/4 = 8.
         let t_in = 32_usize;
-        let waveform = LazyTensor::from_f32(
+        let waveform = Tensor::from_f32(
             (0..t_in)
                 .map(|i| ((i as f32) * 0.07).sin() * 0.1)
                 .collect::<Vec<_>>(),
@@ -1591,7 +1591,7 @@ mod tests {
         }
     }
 
-    /// `EncodecModel::decode` consumes a `Vec<LazyTensor>` of per-codebook
+    /// `EncodecModel::decode` consumes a `Vec<Tensor>` of per-codebook
     /// index streams and returns a (B, audio_channels, T_out) waveform.
     #[test]
     fn decode_shape() {
@@ -1603,8 +1603,8 @@ mod tests {
         };
         let t_latent = 4_usize;
         let dev = Device::cpu();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
-        let codes: Vec<LazyTensor> = (0..cfg.num_codebooks)
+        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
+        let codes: Vec<Tensor> = (0..cfg.num_codebooks)
             .map(|i| {
                 anchor.const_u32_like(
                     (0..t_latent)
@@ -1639,7 +1639,7 @@ mod tests {
             weights,
         };
         let t_in = 32_usize;
-        let waveform = LazyTensor::from_f32(
+        let waveform = Tensor::from_f32(
             (0..t_in)
                 .map(|i| ((i as f32) * 0.13).cos() * 0.05)
                 .collect::<Vec<_>>(),
@@ -1683,7 +1683,7 @@ mod tests {
             weights: weights.decoder.clone(),
         };
         let t_in = 32_usize;
-        let waveform = LazyTensor::from_f32(
+        let waveform = Tensor::from_f32(
             (0..t_in)
                 .map(|i| ((i as f32) * 0.11).sin() * 0.05)
                 .collect::<Vec<_>>(),
@@ -1727,7 +1727,7 @@ mod tests {
             weights,
         };
         let t_in = 32_usize;
-        let waveform = LazyTensor::from_f32(
+        let waveform = Tensor::from_f32(
             vec![0.0_f32; cfg.audio_channels * t_in],
             Shape::from_dims(&[1, cfg.audio_channels, t_in]),
             &Device::cpu(),

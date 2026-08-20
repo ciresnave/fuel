@@ -35,7 +35,7 @@
 //! Forward-only, batch == 1, F32. Position embedding
 //! interpolation for variable image sizes deferred.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -219,7 +219,7 @@ impl SiglipTextModel {
     /// Encode a token sequence and return the **last-position
     /// pooled** feature of shape `(1, hidden_size)`. The eager
     /// reference applies a final linear `head` after pooling.
-    pub fn forward(&self, tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
@@ -227,7 +227,7 @@ impl SiglipTextModel {
         assert!(seq > 0);
         assert!(seq <= cfg.max_position_embeddings);
 
-        let token_embeds = LazyTensor::embed_tokens(
+        let token_embeds = Tensor::embed_tokens(
             weights.token_embedding.clone(),
             cfg.vocab_size,
             cfg.hidden_size,
@@ -284,7 +284,7 @@ impl SiglipVisionModel {
     ///   - With pooling head: `(1, hidden_size)`.
     ///   - Without: `(1, num_patches, hidden_size)` of post-LN
     ///     patch tokens.
-    pub fn forward(&self, pixel_values: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, pixel_values: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = pixel_values.shape();
@@ -371,9 +371,9 @@ impl SiglipVisionModel {
     /// so the per-layer output is one shorter on the seq dim.
     pub fn forward_intermediate_layers(
         &self,
-        pixel_values: &LazyTensor,
+        pixel_values: &Tensor,
         layer_ids: &[usize],
-    ) -> Result<Vec<LazyTensor>> {
+    ) -> Result<Vec<Tensor>> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = pixel_values.shape();
@@ -447,7 +447,7 @@ impl SiglipVisionModel {
         Ok(out)
     }
 
-    fn apply_pooling_head(&self, xs: &LazyTensor, head: &SiglipPoolingHead) -> Result<LazyTensor> {
+    fn apply_pooling_head(&self, xs: &Tensor, head: &SiglipPoolingHead) -> Result<Tensor> {
         let cfg = &self.config;
         let dims = xs.shape();
         let dims = dims.dims();
@@ -504,7 +504,7 @@ impl SiglipVisionModel {
 
 impl SiglipModel {
     /// Encode a single image and return `(1, hidden_size)`.
-    pub fn image_features(&self, pixel_values: &LazyTensor) -> Result<LazyTensor> {
+    pub fn image_features(&self, pixel_values: &Tensor) -> Result<Tensor> {
         let v = SiglipVisionModel {
             config: self.vision_config.clone(),
             weights: self.weights.vision.clone(),
@@ -513,7 +513,7 @@ impl SiglipModel {
     }
 
     /// Encode a single token sequence and return `(1, hidden_size)`.
-    pub fn text_features(&self, tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn text_features(&self, tokens: &[u32]) -> Result<Tensor> {
         let t = SiglipTextModel {
             config: self.text_config.clone(),
             weights: self.weights.text.clone(),
@@ -525,14 +525,14 @@ impl SiglipModel {
 // ---- Shared helpers ---------------------------------------------------------
 
 fn apply_encoder_layer(
-    x: &LazyTensor,
+    x: &Tensor,
     layer: &SiglipEncoderLayerWeights,
     n_heads: usize,
     head_dim: usize,
-    causal_mask: Option<&LazyTensor>,
+    causal_mask: Option<&Tensor>,
     layer_norm_eps: f64,
     activation: SiglipActivation,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     let dims = x.shape();
     let dims = dims.dims();
     let batch = dims[0];
@@ -585,7 +585,7 @@ fn apply_encoder_layer(
     h1.add(&fc2)
 }
 
-fn activate(x: &LazyTensor, kind: SiglipActivation) -> LazyTensor {
+fn activate(x: &Tensor, kind: SiglipActivation) -> Tensor {
     match kind {
         SiglipActivation::GeluPytorchTanh => x.gelu(),
         SiglipActivation::Gelu => x.gelu_erf(),
@@ -1029,10 +1029,10 @@ mod tests {
         }
     }
 
-    fn tiny_image(cfg: &SiglipVisionConfig) -> LazyTensor {
+    fn tiny_image(cfg: &SiglipVisionConfig) -> Tensor {
         let n_pix = 1 * cfg.num_channels * cfg.image_size * cfg.image_size;
         let img_data: Vec<f32> = (0..n_pix).map(|i| (i as f32 / n_pix as f32)).collect();
-        LazyTensor::from_f32(
+        Tensor::from_f32(
             Arc::from(img_data),
             Shape::from_dims(&[1, cfg.num_channels, cfg.image_size, cfg.image_size]),
             &Device::cpu(),

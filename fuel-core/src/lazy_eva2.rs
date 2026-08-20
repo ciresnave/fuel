@@ -10,7 +10,7 @@
 //! `img_size`), forward-only inference.
 
 use crate::Result;
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -128,7 +128,7 @@ pub struct EvaModel {
 // ---- Forward ---------------------------------------------------------------
 
 impl EvaModel {
-    pub fn forward(&self, image: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, image: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let dims = image.shape();
         let dims = dims.dims();
@@ -208,13 +208,13 @@ impl EvaModel {
 }
 
 fn apply_block(
-    x: &LazyTensor,
+    x: &Tensor,
     blk: &EvaBlockWeights,
     cfg: &EvaConfig,
-    cos_emb: &LazyTensor,
-    sin_emb: &LazyTensor,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+    cos_emb: &Tensor,
+    sin_emb: &Tensor,
+    anchor: &Tensor,
+) -> Result<Tensor> {
     let e = cfg.embed_dim;
     let n1 = apply_layer_norm_last(x, &blk.norm1, e)?;
     let attn_out = apply_attention(&n1, blk, cfg, cos_emb, sin_emb, anchor)?;
@@ -225,13 +225,13 @@ fn apply_block(
 }
 
 fn apply_attention(
-    x: &LazyTensor,
+    x: &Tensor,
     blk: &EvaBlockWeights,
     cfg: &EvaConfig,
-    cos_emb: &LazyTensor,
-    sin_emb: &LazyTensor,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+    cos_emb: &Tensor,
+    sin_emb: &Tensor,
+    anchor: &Tensor,
+) -> Result<Tensor> {
     let dims = x.shape();
     let dims = dims.dims();
     let b = dims[0];
@@ -284,14 +284,14 @@ fn apply_attention(
 /// CLS token (position 0) untouched. `x` is `(B, heads, N, head_dim)`.
 /// `cos_emb`/`sin_emb` are `(N - 1, head_dim)`.
 fn apply_rope_skip_cls(
-    x: &LazyTensor,
-    cos_emb: &LazyTensor,
-    sin_emb: &LazyTensor,
+    x: &Tensor,
+    cos_emb: &Tensor,
+    sin_emb: &Tensor,
     b: usize,
     heads: usize,
     n: usize,
     head_dim: usize,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     let cls = x.narrow(2_usize, 0, 1)?;
     let body = x.narrow(2_usize, 1, n - 1)?;
     let body_rot = apply_rope(&body, cos_emb, sin_emb, b, heads, n - 1, head_dim)?;
@@ -299,14 +299,14 @@ fn apply_rope_skip_cls(
 }
 
 fn apply_rope(
-    x: &LazyTensor,
-    cos_emb: &LazyTensor,
-    sin_emb: &LazyTensor,
+    x: &Tensor,
+    cos_emb: &Tensor,
+    sin_emb: &Tensor,
     b: usize,
     heads: usize,
     n_body: usize,
     head_dim: usize,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     // x: (B, heads, n_body, head_dim). emb: (n_body, head_dim).
     // Build rot(x): rot[2k] = -x[2k+1]; rot[2k+1] = x[2k].
     let half = head_dim / 2;
@@ -322,7 +322,7 @@ fn apply_rope(
 
     // Stack along a new last dim, then reshape to interleave:
     // (..., half, 2) → (..., half * 2 = head_dim).
-    let rot = LazyTensor::stack(&[&x_odd_neg, &x_even], 4_usize)?
+    let rot = Tensor::stack(&[&x_odd_neg, &x_even], 4_usize)?
         .reshape(Shape::from_dims(&[b, heads, n_body, head_dim]))?;
 
     // Broadcast emb (n_body, head_dim) to (B, heads, n_body, head_dim).
@@ -338,12 +338,7 @@ fn apply_rope(
     x_cos.add(&rot_sin)
 }
 
-fn apply_mlp(
-    x: &LazyTensor,
-    m: &EvaMlpWeights,
-    cfg: &EvaConfig,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+fn apply_mlp(x: &Tensor, m: &EvaMlpWeights, cfg: &EvaConfig, anchor: &Tensor) -> Result<Tensor> {
     let e = cfg.embed_dim;
     let hidden = cfg.hidden_mlp_dim();
 
@@ -363,11 +358,7 @@ fn apply_mlp(
     out.broadcast_add(&out_b)
 }
 
-fn apply_layer_norm_last(
-    x: &LazyTensor,
-    ln: &LayerNormWeights,
-    hidden: usize,
-) -> Result<LazyTensor> {
+fn apply_layer_norm_last(x: &Tensor, ln: &LayerNormWeights, hidden: usize) -> Result<Tensor> {
     let _ = hidden;
     x.layer_norm_affine(Arc::clone(&ln.gain), Arc::clone(&ln.bias), 1e-6)
 }
@@ -603,7 +594,7 @@ mod tests {
             config: cfg.clone(),
             weights,
         };
-        let img = LazyTensor::from_f32(
+        let img = Tensor::from_f32(
             (0..(3 * 28 * 28))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),
@@ -625,14 +616,14 @@ mod tests {
             config: cfg,
             weights,
         };
-        let img_a = LazyTensor::from_f32(
+        let img_a = Tensor::from_f32(
             (0..(3 * 28 * 28))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 28, 28]),
             &Device::cpu(),
         );
-        let img_b = LazyTensor::from_f32(
+        let img_b = Tensor::from_f32(
             (0..(3 * 28 * 28))
                 .map(|i| (i as f32) * 0.01 + 0.3)
                 .collect::<Vec<_>>(),
@@ -673,7 +664,7 @@ mod tests {
         let x_data: Vec<f32> = (0..(b * heads * n * head_dim))
             .map(|i| (i as f32) * 0.01)
             .collect();
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             x_data.clone(),
             Shape::from_dims(&[b, heads, n, head_dim]),
             &Device::cpu(),

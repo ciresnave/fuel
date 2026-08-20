@@ -34,7 +34,7 @@
 //! ```
 
 use crate::comm::{Communicator, ReduceOp};
-use fuel::lazy::{LazyTensor, WeightStorage};
+use fuel::lazy::{Tensor, WeightStorage};
 use fuel::{Error, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -60,10 +60,10 @@ use std::sync::Arc;
 ///
 /// `fuel-parallel` has no consumers today, so nothing in-tree breaks.
 ///
-/// # Why host storage rather than a `LazyTensor` weight
+/// # Why host storage rather than a `Tensor` weight
 ///
-/// `LazyTensor` is **graph-affine**: two tensors combine iff they share a
-/// graph. A `Linear` holding a `LazyTensor` weight could only ever be applied
+/// `Tensor` is **graph-affine**: two tensors combine iff they share a
+/// graph. A `Linear` holding a `Tensor` weight could only ever be applied
 /// to inputs on that one graph — useless for a model that builds a fresh graph
 /// per step, which is exactly what Fuel's lazy decode path does.
 /// `WeightStorage` materializes onto **the input's** graph at `forward` time,
@@ -151,7 +151,7 @@ impl Linear {
     /// making a strategy decision that belongs to the optimizer. Lazy `matmul`
     /// is N-D batched with rank-2 broadcasting, so the whole dance collapses to
     /// one delegated call and the optimizer keeps its job.
-    pub fn forward(&self, x: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let (in_features, out_features) = (self.in_features, self.out_features);
 
         // The trailing-dim and stored-shape checks that were duplicated here
@@ -312,7 +312,7 @@ impl ColumnParallel {
     }
 
     /// Forward: local matmul only, no communication.
-    pub fn forward(&self, x: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
         self.linear.forward(x)
     }
 }
@@ -355,7 +355,7 @@ impl<C: Communicator> RowParallel<C> {
     }
 
     /// Forward: local matmul then all-reduce sum.
-    pub fn forward(&self, x: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let local = self.linear.forward(x)?;
         self.comm.all_reduce(&local, ReduceOp::Sum)
     }
@@ -407,9 +407,9 @@ mod tests {
         .unwrap()
     }
 
-    fn ones_input(dims: &[usize]) -> LazyTensor {
+    fn ones_input(dims: &[usize]) -> Tensor {
         let n: usize = dims.iter().product();
-        LazyTensor::from_f32(vec![1.0f32; n], Shape::from_dims(dims), &Device::cpu())
+        Tensor::from_f32(vec![1.0f32; n], Shape::from_dims(dims), &Device::cpu())
     }
 
     #[test]
@@ -507,9 +507,9 @@ mod tests {
 
     #[test]
     fn linear_applies_to_inputs_on_different_graphs() {
-        // The point of holding host data instead of a `LazyTensor` weight: one
+        // The point of holding host data instead of a `Tensor` weight: one
         // `Linear` must work against inputs rooted on unrelated graphs. Holding
-        // a `LazyTensor` would make the second call fail an operand-graph check.
+        // a `Tensor` would make the second call fail an operand-graph check.
         let lin = ones_linear(3, 2);
         let a = ones_input(&[1, 3]);
         let b = ones_input(&[2, 3]);
@@ -588,7 +588,7 @@ mod tests {
         // panics on rank < 2. Guarding here is what keeps the never-panic rule
         // intact through the delegation.
         let lin = ones_linear(3, 2);
-        let x = LazyTensor::from_f32(vec![1.0f32; 3], Shape::from_dims(&[3]), &Device::cpu());
+        let x = Tensor::from_f32(vec![1.0f32; 3], Shape::from_dims(&[3]), &Device::cpu());
         let err = lin.forward(&x).unwrap_err();
         assert!(format!("{err}").contains("rank >= 2"), "got: {err}");
     }

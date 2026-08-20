@@ -16,7 +16,7 @@ Session was interrupted very early — I had only read the worktree directory li
 
 Key findings before interruption that should help the next session:
 1. All 10 lazy modules exist: lazy_bert, lazy_bigcode, lazy_chatglm, lazy_debertav2, lazy_deepseek2 (note: module is `deepseek2` not `deepseekv2`), lazy_distilbert, lazy_falcon, lazy_gemma + lazy_gemma2 + lazy_gemma3 + lazy_gemma4_text (4 variants — gemma binary likely needs `--which` dispatch), lazy_glm4 + lazy_glm4_new (codegeex4-9b is a glm4 variant).
-2. lazy_bert::BertModel exposes both `new(config, weights)` and `from_hub(repo_id)` constructors, plus `forward(token_ids: &[u32]) -> Result<LazyTensor>` and a companion `BertTokenizer::from_hub`. The docstring example shows the canonical migration shape: from_hub → tokenizer.encode → model.forward(&ids) → .realize_f32().
+2. lazy_bert::BertModel exposes both `new(config, weights)` and `from_hub(repo_id)` constructors, plus `forward(token_ids: &[u32]) -> Result<Tensor>` and a companion `BertTokenizer::from_hub`. The docstring example shows the canonical migration shape: from_hub → tokenizer.encode → model.forward(&ids) → .realize_f32().
 3. No prior migration template exists in fuel-examples/ — this is the first batch of its kind, so a pattern needs to be established (likely worth doing one binary end-to-end first, getting cargo build green, then applying to the rest).
 4. lazy_bert.rs is 700+ lines — each lazy_* module needs ~5 min just to map its public surface; doing 10 of them plus rewrite plus cargo build per binary is a multi-hour task that exceeds a single sub-agent turn.
 

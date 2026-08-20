@@ -57,7 +57,7 @@ pub fn assert_allclose_f32(a: &[f32], b: &[f32], atol: f32, rtol: f32) {
 }
 
 #[cfg(feature = "cuda")]
-pub fn assert_cuda_matches_reference(t: &crate::lazy::LazyTensor, atol: f32, rtol: f32) {
+pub fn assert_cuda_matches_reference(t: &crate::lazy::Tensor, atol: f32, rtol: f32) {
     let probe = crate::probe::ProbeReport::probe_all();
     let has_cuda = probe
         .devices

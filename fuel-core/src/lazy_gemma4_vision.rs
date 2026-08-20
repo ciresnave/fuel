@@ -39,7 +39,7 @@
 //! on patch positions in eager guards against negative
 //! positions; v1 assumes non-negative inputs.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -104,7 +104,7 @@ impl Gemma4VisionModel {
     /// `patch_size`, and `(h / patch_size) * (w / patch_size)`
     /// must be a perfect-square multiple of
     /// `pooling_kernel_size^2`.
-    pub fn forward(&self, pixel_values: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, pixel_values: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = pixel_values.shape();
@@ -169,11 +169,11 @@ impl Gemma4VisionModel {
     /// sin_xy [num_patches, head_dim])`.
     fn build_position_aux(
         &self,
-        anchor: &LazyTensor,
+        anchor: &Tensor,
         ph: usize,
         pw: usize,
         num_patches: usize,
-    ) -> Result<(LazyTensor, LazyTensor, LazyTensor)> {
+    ) -> Result<(Tensor, Tensor, Tensor)> {
         let cfg = &self.config;
         let pe_size = cfg.position_embedding_size;
         let head_dim = cfg.head_dim;
@@ -271,11 +271,11 @@ impl Gemma4VisionModel {
 
     fn apply_layer(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &Gemma4VisionLayerWeights,
-        cos: &LazyTensor,
-        sin: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        cos: &Tensor,
+        sin: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
 
         // Pre-attn norm.
@@ -316,11 +316,11 @@ impl Gemma4VisionModel {
 
     fn attention(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &Gemma4VisionLayerWeights,
-        cos: &LazyTensor,
-        sin: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        cos: &Tensor,
+        sin: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let dims = x.shape();
         let dims = dims.dims();
@@ -375,12 +375,12 @@ impl Gemma4VisionModel {
     /// `output_length`.
     fn spatial_pool(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         ph: usize,
         pw: usize,
         k: usize,
         output_length: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let dims = x.shape();
         let dims = dims.dims();
@@ -687,7 +687,7 @@ mod tests {
         let w_img = 24;
         let n_pix = 1 * 3 * h_img * w_img;
         let img_data: Vec<f32> = (0..n_pix).map(|i| (i as f32 / n_pix as f32)).collect();
-        let pixel_values = LazyTensor::from_f32(
+        let pixel_values = Tensor::from_f32(
             Arc::from(img_data),
             Shape::from_dims(&[1, 3, h_img, w_img]),
             &Device::cpu(),
@@ -728,13 +728,13 @@ mod tests {
             weights,
         };
 
-        let pix_a = LazyTensor::from_f32(
+        let pix_a = Tensor::from_f32(
             Arc::from(img_a),
             Shape::from_dims(&[1, 3, h_img, w_img]),
             &Device::cpu(),
         );
         let out_a = model_a.forward(&pix_a).unwrap().realize_f32();
-        let pix_b = LazyTensor::from_f32(
+        let pix_b = Tensor::from_f32(
             Arc::from(img_b),
             Shape::from_dims(&[1, 3, h_img, w_img]),
             &Device::cpu(),
@@ -764,7 +764,7 @@ mod tests {
         // 3×3=9 patches with k=3 → 1 output token.
         let n_pix = 1 * 3 * h_img * w_img;
         let img_data: Vec<f32> = (0..n_pix).map(|i| (i as f32 / n_pix as f32)).collect();
-        let pix = LazyTensor::from_f32(
+        let pix = Tensor::from_f32(
             Arc::from(img_data),
             Shape::from_dims(&[1, 3, h_img, w_img]),
             &Device::cpu(),

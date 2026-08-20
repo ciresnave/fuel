@@ -43,7 +43,7 @@
 //! — they each maintain a different shape of recurrent state
 //! and warrant their own session. batch=1, F32.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -165,7 +165,7 @@ pub struct BasedModel {
 }
 
 impl BasedModel {
-    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let h_norm = self.run_backbone(tokens, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
@@ -175,29 +175,25 @@ impl BasedModel {
     /// Based-specific: per-layer mixer-type selection
     /// (sliding-window attention / linear-attention / short-conv)
     /// is honored. v1 = prefill only (start_pos = 0).
-    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         self.run_backbone(tokens, start_pos)
     }
 
     /// Multimodal entry point. Skips token embedding; runs the decoder
     /// over pre-embedded inputs. Based does NOT scale embeddings.
     /// v1 prefill only — `start_pos` must be 0.
-    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let h_norm = self.run_backbone_embeds(embeds, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
 
     /// Hidden-state variant of [`Self::forward_embeds`].
-    pub fn forward_hidden_embeds(
-        &self,
-        embeds: &LazyTensor,
-        start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_hidden_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         self.run_backbone_embeds(embeds, start_pos)
     }
 
     /// Build per-token embeddings without running the decoder.
-    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &Tensor, tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
@@ -207,19 +203,19 @@ impl BasedModel {
         )
     }
 
-    fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
+    fn apply_lm_head(&self, h_norm: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let lm_head = WeightStorage::F32(self.weights.token_embedding.clone());
         Ok(lm_head.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
-    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
         assert!(seq > 0);
 
-        let h = LazyTensor::embed_tokens(
+        let h = Tensor::embed_tokens(
             weights.token_embedding.clone(),
             cfg.vocab_size,
             cfg.hidden_size,
@@ -229,7 +225,7 @@ impl BasedModel {
         self.run_backbone_embeds(&h, start_pos)
     }
 
-    fn run_backbone_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
+    fn run_backbone_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -277,12 +273,12 @@ impl BasedModel {
 
     fn apply_block(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &BasedLayerWeights,
         layer_idx: usize,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let h = cfg.hidden_size;
         let x_norm = x.rms_norm_affine(
@@ -301,12 +297,12 @@ impl BasedModel {
 
     fn apply_mixer(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         mixer: &BasedMixerWeights,
         layer_idx: usize,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let expected = cfg.mixer_kind(layer_idx);
         match (mixer, expected) {
@@ -323,7 +319,7 @@ impl BasedModel {
         }
     }
 
-    fn apply_conv(&self, x: &LazyTensor, w: &BasedConvWeights) -> Result<LazyTensor> {
+    fn apply_conv(&self, x: &Tensor, w: &BasedConvWeights) -> Result<Tensor> {
         let cfg = &self.config;
         let x_shape = x.shape();
         let dims = x_shape.dims();
@@ -364,7 +360,7 @@ impl BasedModel {
         out.broadcast_add(&out_bias_t)
     }
 
-    fn apply_linear(&self, x: &LazyTensor, w: &BasedLinearAttentionWeights) -> Result<LazyTensor> {
+    fn apply_linear(&self, x: &Tensor, w: &BasedLinearAttentionWeights) -> Result<Tensor> {
         let cfg = &self.config;
         let x_shape = x.shape();
         let dims = x_shape.dims();
@@ -425,7 +421,7 @@ impl BasedModel {
             .sum_dim(3_usize)? // (b, h, seq)
             .add_scalar(1e-12);
         // z = 1 / z_inv. Use mul(-1) negate, exp, etc. — easier: just
-        // divide.  We don't have direct scalar-divide on LazyTensor's
+        // divide.  We don't have direct scalar-divide on Tensor's
         // public API; do it via reciprocal: build ones, divide.
         let ones = x.const_f32_like(
             Arc::from(vec![1.0_f32; batch * n_heads * seq]),
@@ -443,11 +439,11 @@ impl BasedModel {
 
     fn apply_sliding(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         w: &BasedSlidingWeights,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let x_shape = x.shape();
         let dims = x_shape.dims();
@@ -493,12 +489,7 @@ impl BasedModel {
         Ok(w.out_proj.apply_linear(&merged, h, h)?)
     }
 
-    fn apply_mlp(
-        &self,
-        x: &LazyTensor,
-        fc1: &WeightStorage,
-        fc2: &WeightStorage,
-    ) -> Result<LazyTensor> {
+    fn apply_mlp(&self, x: &Tensor, fc1: &WeightStorage, fc2: &WeightStorage) -> Result<Tensor> {
         let cfg = &self.config;
         let h = cfg.hidden_size;
         let inter = cfg.intermediate_size;
@@ -516,12 +507,12 @@ impl BasedModel {
 /// (x ⊗ x).flatten() / (sqrt(2) * sqrt(d))]` for input shape
 /// `(b, h, seq, d)`. Output shape is `(b, h, seq, d^2 + d + 1)`.
 fn taylor_feature_map(
-    x: &LazyTensor,
+    x: &Tensor,
     d: usize,
     batch: usize,
     n_heads: usize,
     seq: usize,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     let r2 = std::f64::consts::SQRT_2;
     let rd = (d as f64).sqrt();
     let rrd = rd.sqrt();
@@ -589,7 +580,7 @@ impl BasedWeights {
         // `transformer.wte.weight` slot if the checkpoint stores it
         // separately. The result is a flat `[vocab * hidden]` f32
         // buffer in HF row-major (token-major) order — the same shape
-        // `LazyTensor::embed_tokens` consumes.
+        // `Tensor::embed_tokens` consumes.
         let token_embedding_vec = load_tensor_as_f32(st, "lm_head.weight")
             .or_else(|_| load_tensor_as_f32(st, "transformer.wte.weight"))?;
         let token_embedding: Arc<[f32]> = Arc::from(token_embedding_vec);
@@ -969,7 +960,7 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
         let max_diff = logits_ref
@@ -990,7 +981,7 @@ mod tests {
             config: cfg.clone(),
             weights: tiny_weights(&cfg),
         };
-        let bad = LazyTensor::from_f32(
+        let bad = Tensor::from_f32(
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
             Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
             &Device::cpu(),
@@ -1007,7 +998,7 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let h_via_embeds = model
             .forward_hidden_embeds(&embeds, 0)
@@ -1032,7 +1023,7 @@ mod tests {
             config: cfg.clone(),
             weights: tiny_weights(&cfg),
         };
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model
             .embed_tokens_anchored(&anchor, &[1_u32, 2, 3])
             .unwrap();

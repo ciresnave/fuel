@@ -61,7 +61,7 @@
 //! - **Dropout / layer-drop / safe_clamp** — inference-only port,
 //!   no stochastic depth.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::lazy_whisper::{conv1d_k3_s1_p1, conv1d_k3_s2_p1};
 use crate::{Device, Result};
 use fuel_ir::Shape;
@@ -204,7 +204,7 @@ impl VoxtralEncoder {
     ///
     /// Returns hidden states of shape
     /// `[1, mel_time/2, hidden_size]`.
-    pub fn forward(&self, mel: &[f32], mel_time: usize) -> Result<LazyTensor> {
+    pub fn forward(&self, mel: &[f32], mel_time: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let d = cfg.hidden_size;
         let n_mel = cfg.num_mel_bins;
@@ -222,7 +222,7 @@ impl VoxtralEncoder {
         );
         let t_half = mel_time / 2;
 
-        let mel_t = LazyTensor::from_f32(
+        let mel_t = Tensor::from_f32(
             mel.to_vec(),
             Shape::from_dims(&[1, n_mel, mel_time]),
             &Device::cpu(),
@@ -275,10 +275,10 @@ impl VoxtralEncoder {
 }
 
 fn encoder_layer(
-    x: &LazyTensor,
+    x: &Tensor,
     lw: &VoxtralEncoderLayerWeights,
     cfg: &VoxtralEncoderConfig,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     let d = cfg.hidden_size;
     let n_heads = cfg.num_attention_heads;
     let head_dim = cfg.head_dim();
@@ -356,7 +356,7 @@ impl VoxtralMultiModalProjector {
     /// `audio` may be of any shape `[..., audio_intermediate_size]`;
     /// the input dim is `linear_1`'s in_features. Output is
     /// `[..., text_hidden]`.
-    pub fn forward(&self, audio: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, audio: &Tensor) -> Result<Tensor> {
         let x =
             self.linear_1
                 .apply_linear(audio, self.audio_intermediate_size, self.text_hidden)?;
@@ -405,7 +405,7 @@ pub struct VoxtralTextModel {
 
 impl VoxtralTextModel {
     /// Plain text-only forward: tokens → logits `(1, seq, vocab)`.
-    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let embeds = self.embed(tokens)?;
         self.forward_embeds(&embeds, start_pos)
     }
@@ -413,9 +413,9 @@ impl VoxtralTextModel {
     /// Embed tokens via the token embedding table → `(1, seq, hidden)`.
     /// Bootstraps a fresh graph. Use [`Self::embed_with_anchor`] to
     /// share a graph with an existing tensor (e.g. audio features).
-    pub fn embed(&self, tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn embed(&self, tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embed = self.embed_with_anchor(tokens, &anchor)?;
         let _ = cfg;
         Ok(embed)
@@ -424,7 +424,7 @@ impl VoxtralTextModel {
     /// Embed tokens onto `anchor`'s graph so the result can be
     /// composed with other tensors already on that graph (e.g.
     /// audio embeddings from the projector).
-    pub fn embed_with_anchor(&self, tokens: &[u32], anchor: &LazyTensor) -> Result<LazyTensor> {
+    pub fn embed_with_anchor(&self, tokens: &[u32], anchor: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let seq = tokens.len();
         assert!(seq > 0, "VoxtralTextModel: tokens must be non-empty");
@@ -442,7 +442,7 @@ impl VoxtralTextModel {
     /// `(1, seq, hidden)`. Used by the multimodal forward, which
     /// substitutes projected audio embeddings into the text
     /// embedding tensor before running the decoder.
-    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -469,12 +469,12 @@ impl VoxtralTextModel {
 }
 
 fn apply_text_layer(
-    x: &LazyTensor,
+    x: &Tensor,
     layer: &VoxtralTextLayerWeights,
     cfg: &VoxtralTextConfig,
-    rope_cos: &LazyTensor,
-    rope_sin: &LazyTensor,
-) -> Result<LazyTensor> {
+    rope_cos: &Tensor,
+    rope_sin: &Tensor,
+) -> Result<Tensor> {
     let h = cfg.hidden_size;
     let q_dim = cfg.num_attention_heads * cfg.head_dim;
     let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
@@ -501,8 +501,8 @@ fn apply_text_layer(
     let k_t = k_full.transpose()?;
     let scale = 1.0_f64 / (cfg.head_dim as f64).sqrt();
     let scores = q_r.matmul(&k_t)?.mul_scalar(scale);
-    let mask = LazyTensor::additive_causal_mask_like(x, seq)
-        .reshape(Shape::from_dims(&[1, 1, seq, seq]))?;
+    let mask =
+        Tensor::additive_causal_mask_like(x, seq).reshape(Shape::from_dims(&[1, 1, seq, seq]))?;
     let scores_masked = scores.broadcast_add(&mask)?;
     let attn = scores_masked.softmax_last_dim()?;
     let attn_v = attn.matmul(&v_full)?;
@@ -556,7 +556,7 @@ impl VoxtralModel {
         mel_time: usize,
         tokens: &[u32],
         start_pos: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
 
         // 1) Audio encoder → [1, mel_time/2, audio_hidden].
@@ -628,14 +628,14 @@ impl VoxtralModel {
 /// scattering audio_embeds rows in audio-token positions and zeros
 /// elsewhere. Then `out = text * (1 - mask) + scatter_audio * mask`.
 ///
-/// We use plain `LazyTensor` ops only — no scatter primitive needed.
+/// We use plain `Tensor` ops only — no scatter primitive needed.
 fn substitute_audio_embeds(
-    text_embeds: &LazyTensor,
-    audio_embeds: &LazyTensor,
+    text_embeds: &Tensor,
+    audio_embeds: &Tensor,
     tokens: &[u32],
     audio_token_id: u32,
     hidden: usize,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     let seq = tokens.len();
     let a_dims = audio_embeds.shape();
     let a_dims = a_dims.dims();
@@ -1044,7 +1044,7 @@ mod tests {
             audio_intermediate_size: audio_in,
             text_hidden: text_h,
         };
-        let audio = LazyTensor::from_f32(
+        let audio = Tensor::from_f32(
             (0..4 * audio_in)
                 .map(|i| (i as f32 * 0.01) - 0.1)
                 .collect::<Vec<_>>(),
@@ -1123,7 +1123,7 @@ mod tests {
         // 4-token input, audio_token_id = 99 at positions 1 and 3.
         let hidden = 3;
         let tokens = vec![10_u32, 99, 20, 99];
-        let audio = LazyTensor::from_f32(
+        let audio = Tensor::from_f32(
             vec![7.0_f32, 7.0, 7.0, 8.0, 8.0, 8.0],
             Shape::from_dims(&[2, hidden]),
             &Device::cpu(),
@@ -1214,7 +1214,7 @@ mod tests {
     fn substitute_audio_embeds_no_audio_tokens_returns_text_unchanged() {
         let hidden = 2;
         let tokens = vec![1_u32, 2, 3];
-        let audio = LazyTensor::from_f32(
+        let audio = Tensor::from_f32(
             vec![0.0_f32, 0.0],
             Shape::from_dims(&[1, hidden]),
             &Device::cpu(),

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! PyTorch-oracle parity for `LazyTensor::conv_transpose1d`.
+//! PyTorch-oracle parity for `Tensor::conv_transpose1d`.
 //!
 //! The lazy primitive is built by lifting the rank-3 input + weight
 //! into rank-4 and dispatching through `conv_transpose2d`. This
@@ -11,7 +11,7 @@
 //! Parler-TTS, MetaVoice, CSM) which all need transposed-conv
 //! upsampling on quantized latents to reconstruct waveforms.
 
-use fuel_core::lazy::LazyTensor;
+use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
 
 const T_DATA: [f32; 20] = [
@@ -45,7 +45,7 @@ fn transposed_weight() -> Vec<f32> {
 #[test]
 fn conv_transpose1d_groups_1_matches_pytorch() {
     let dev = fuel_core::Device::cpu();
-    let t = LazyTensor::from_f32(T_DATA.to_vec(), Shape::from_dims(&[1, 4, 5]), &dev);
+    let t = Tensor::from_f32(T_DATA.to_vec(), Shape::from_dims(&[1, 4, 5]), &dev);
     let wt = transposed_weight();
     let w = t.const_f32_like(wt, Shape::from_dims(&[4, 2, 3]));
 
@@ -70,7 +70,7 @@ fn conv_transpose1d_groups_1_matches_pytorch() {
 #[test]
 fn conv_transpose1d_groups_2_matches_pytorch() {
     let dev = fuel_core::Device::cpu();
-    let t = LazyTensor::from_f32(T_DATA.to_vec(), Shape::from_dims(&[1, 4, 5]), &dev);
+    let t = Tensor::from_f32(T_DATA.to_vec(), Shape::from_dims(&[1, 4, 5]), &dev);
     let wt = transposed_weight();
     let w = t.const_f32_like(wt, Shape::from_dims(&[4, 2, 3]));
 
@@ -99,7 +99,7 @@ fn conv_transpose1d_groups_2_matches_pytorch() {
 #[test]
 fn conv_transpose1d_stride_2_out_pad_1_shape() {
     let dev = fuel_core::Device::cpu();
-    let t = LazyTensor::from_f32(vec![0.5_f32; 1 * 1 * 4], Shape::from_dims(&[1, 1, 4]), &dev);
+    let t = Tensor::from_f32(vec![0.5_f32; 1 * 1 * 4], Shape::from_dims(&[1, 1, 4]), &dev);
     let w = t.const_f32_like(vec![0.3_f32; 1 * 1 * 3], Shape::from_dims(&[1, 1, 3]));
     // Lout = (4-1)*2 + (3-1) + 1 + 1 - 2 = 8.
     let res = t.conv_transpose1d(&w, 2, 1, 1, 1, 1).unwrap();

@@ -25,7 +25,7 @@
 //!
 //! ## Lazy-only
 //!
-//! Every tensor-touching surface here takes [`LazyTensor`](fuel::lazy::LazyTensor).
+//! Every tensor-touching surface here takes [`Tensor`](fuel::lazy::Tensor).
 //! Fuel retired eager entirely in B6, and a collective written against the old
 //! eager `Tensor` could not have reduced lazy shards — the most likely reason
 //! this crate sat unwired. Only [`comm`] and [`tensor_parallel`] ever touched
@@ -56,7 +56,7 @@
 //! ```text
 //! fuel-parallel      ← you are here (multi-GPU orchestration)
 //! fuel-transformers    (model definitions)
-//! fuel-core            (LazyTensor, Device)
+//! fuel-core            (Tensor, Device)
 //! fuel-graph           (the DAG + optimizer)
 //! fuel-ir              (Shape, DType, Op, errors)
 //! ```

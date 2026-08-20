@@ -51,13 +51,13 @@ enum Which {
     InstructV3_1B,
 }
 
-enum LazyModel {
+enum Model {
     V1(GemmaModel, usize),
     V2(Gemma2Model, usize),
     V3(Gemma3Model, usize),
 }
 
-impl LazyModel {
+impl Model {
     fn forward(&self, tokens: &[u32]) -> Result<Vec<f32>> {
         match self {
             Self::V1(m, _) => m
@@ -228,21 +228,21 @@ fn main() -> Result<()> {
             let weights = GemmaWeights::load_from_mmapped(&st, &config)
                 .map_err(|e| E::msg(format!("load gemma weights: {e}")))?;
             let vocab = config.vocab_size;
-            LazyModel::V1(GemmaModel { config, weights }, vocab)
+            Model::V1(GemmaModel { config, weights }, vocab)
         }
         Which::BaseV2_2B | Which::InstructV2_2B | Which::BaseV2_9B | Which::InstructV2_9B => {
             let config = gemma2_config_from_hf_json_str(&config_json)?;
             let weights = Gemma2Weights::load_from_mmapped(&st, &config)
                 .map_err(|e| E::msg(format!("load gemma2 weights: {e}")))?;
             let vocab = config.vocab_size;
-            LazyModel::V2(Gemma2Model { config, weights }, vocab)
+            Model::V2(Gemma2Model { config, weights }, vocab)
         }
         Which::BaseV3_1B | Which::InstructV3_1B => {
             let config = gemma3_config_from_hf_json_str(&config_json)?;
             let weights = Gemma3Weights::load_from_mmapped(&st, &config)
                 .map_err(|e| E::msg(format!("load gemma3 weights: {e}")))?;
             let vocab = config.vocab_size;
-            LazyModel::V3(Gemma3Model { config, weights }, vocab)
+            Model::V3(Gemma3Model { config, weights }, vocab)
         }
     };
     println!("loaded the model in {:?}", start.elapsed());

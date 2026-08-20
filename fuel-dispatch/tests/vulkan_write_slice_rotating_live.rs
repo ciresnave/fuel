@@ -4,7 +4,7 @@
 //! Mirrors the WriteSlice live-Vulkan tests in
 //! `vulkan_dispatch_live.rs`: directly invokes the dispatch table's
 //! kernel wrapper rather than going through PipelinedExecutor (which
-//! Vulkan-resident `LazyTensor::from_f32` doesn't support yet — see
+//! Vulkan-resident `Tensor::from_f32` doesn't support yet — see
 //! `VulkanBackendDevice::storage_from_host_buffer_owned_dyn`).
 //!
 //! Requires a working Vulkan device. Tests are `#[ignore]` so the

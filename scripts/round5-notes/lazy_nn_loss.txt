@@ -10,7 +10,7 @@ Names: cross_entropy_matches_eager_hand_computed_2x3, nll_matches_textbook_formu
 All 7 required tests pass (cargo test -p fuel-core --lib lazy_nn_loss: 7 passed, 0 failed). API mirrors eager fuel-nn naming:
 - pub enum Reduction { Mean, Sum, None }
 - nll(inp: [N,C] log-probs, target: [N] U32, reduction) — gather + neg + reduce
-- cross_entropy(inp: [N,C] logits, target: [N] I64, reduction) — routes through LazyTensor::fused_softmax_cross_entropy (FusedOpId 17). Note: target dtype is I64, not U32, because (a) FusedSoftmaxCrossEntropy fused op requires I64 targets, (b) no [U32, I64] Cast kernel is registered, and (c) the user-memory entry "Match external convention for well-known ops" mandates PyTorch's i64 CE targets. nll retains U32 (matches its eager source and gather indices convention).
+- cross_entropy(inp: [N,C] logits, target: [N] I64, reduction) — routes through Tensor::fused_softmax_cross_entropy (FusedOpId 17). Note: target dtype is I64, not U32, because (a) FusedSoftmaxCrossEntropy fused op requires I64 targets, (b) no [U32, I64] Cast kernel is registered, and (c) the user-memory entry "Match external convention for well-known ops" mandates PyTorch's i64 CE targets. nll retains U32 (matches its eager source and gather indices convention).
 - binary_cross_entropy_with_logit — numerically stable max(x,0) - x*y + log(1 + exp(-|x|)).
 - mse — (inp-target)^2 with reduction.
 - huber(delta) — abs_diff <= delta branch via where_cond (mask construction uses const_*_like helper supporting F32/F64/BF16/F16).

@@ -28,7 +28,7 @@
 //!   - Bidirectional and packed sequences are out of scope.
 
 use fuel::Result;
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -58,7 +58,7 @@ impl GruStack {
     /// Forward pass with zero initial hidden state. Input
     /// `(B, T, D_in)`; output `(B, T, D_hidden)` where
     /// `D_hidden` is the last layer's hidden dim.
-    pub fn forward(&self, x: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let mut h = x.clone();
         for layer in &self.layers {
             h = gru_layer_forward(&h, layer, None)?;
@@ -73,11 +73,7 @@ impl GruStack {
     /// 0 is reshaped to `(B, H)` and fed as the layer's
     /// `h_{-1}`. The per-layer hidden dim must match the
     /// stacked layer's `hidden_dim`.
-    pub fn forward_with_initial_state(
-        &self,
-        x: &LazyTensor,
-        h0: &LazyTensor,
-    ) -> Result<LazyTensor> {
+    pub fn forward_with_initial_state(&self, x: &Tensor, h0: &Tensor) -> Result<Tensor> {
         let h0_shape = h0.shape();
         let h0_dims = h0_shape.dims();
         if h0_dims.len() != 3 {
@@ -132,11 +128,7 @@ impl GruStack {
 /// Single-layer GRU forward, unrolled over time. `h0` is the
 /// per-layer initial hidden state of shape `(B, H)`; `None`
 /// means zero.
-fn gru_layer_forward(
-    x: &LazyTensor,
-    w: &GruCellWeights,
-    h0: Option<LazyTensor>,
-) -> Result<LazyTensor> {
+fn gru_layer_forward(x: &Tensor, w: &GruCellWeights, h0: Option<Tensor>) -> Result<Tensor> {
     let dims = x.shape();
     let dims = dims.dims();
     assert_eq!(dims.len(), 3, "GRU input must be rank 3 [B, T, D_in]");
@@ -176,7 +168,7 @@ fn gru_layer_forward(
 
     let w_ih_t = w_ih.transpose()?;
     let w_hh_t = w_hh.transpose()?;
-    let mut outputs: Vec<LazyTensor> = Vec::with_capacity(t);
+    let mut outputs: Vec<Tensor> = Vec::with_capacity(t);
     for step in 0..t {
         // x_t: (B, D_in).
         let x_t = x
@@ -401,7 +393,7 @@ mod tests {
         let expected =
             gru_layer_reference(&x_data, &h0, b, t, d_in, d_h, &w_ih, &w_hh, &b_ih, &b_hh);
 
-        let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[b, t, d_in]), &Device::cpu());
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[b, t, d_in]), &Device::cpu());
         let stack = GruStack {
             layers: vec![GruCellWeights {
                 w_ih: Arc::<[f32]>::from(w_ih),
@@ -457,7 +449,7 @@ mod tests {
             &after_l1, &h0_l2, b, t, d_in2, d_h2, &w_ih2, &w_hh2, &b_ih2, &b_hh2,
         );
 
-        let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[b, t, d_in1]), &Device::cpu());
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[b, t, d_in1]), &Device::cpu());
         let stack = GruStack {
             layers: vec![
                 GruCellWeights {
@@ -509,7 +501,7 @@ mod tests {
         let b_hh: Vec<f32> = vec![0.0_f32; three_d];
 
         let h0_data: Vec<f32> = vec![0.7_f32, -0.2];
-        let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[b, t, d]), &Device::cpu());
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[b, t, d]), &Device::cpu());
         let h0 = x.const_f32_like(
             Arc::<[f32]>::from(h0_data.clone()),
             Shape::from_dims(&[1, b, d]),
@@ -566,14 +558,14 @@ mod tests {
                 hidden_dim: d_h,
             }],
         };
-        let xa = LazyTensor::from_f32(
+        let xa = Tensor::from_f32(
             (0..(b * t * d_in))
                 .map(|i| (i as f32) * 0.05)
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[b, t, d_in]),
             &Device::cpu(),
         );
-        let xb = LazyTensor::from_f32(
+        let xb = Tensor::from_f32(
             (0..(b * t * d_in))
                 .map(|i| (i as f32) * 0.05 + 0.3)
                 .collect::<Vec<_>>(),

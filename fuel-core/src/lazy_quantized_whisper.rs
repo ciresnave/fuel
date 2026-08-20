@@ -28,7 +28,7 @@
 //!   Adding the loader is a mechanical re-use of the same GGUF reader
 //!   the LLaMA port uses; see `lazy::LlamaWeights::load_from_gguf`.)*
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::lazy_whisper::{WhisperConfig, WhisperModel, conv1d_k3_s1_p1, conv1d_k3_s2_p1};
 use fuel_ir::Shape;
 use fuel_quantized::{BlockQ4_0, GgmlType, QK4_0};
@@ -330,7 +330,7 @@ impl QuantizedWhisperModel {
     /// final LN); the only difference is that the attention + FFN
     /// projections inside each block read from Q4_0 weights via
     /// `WeightStorage::apply_linear` → `qmatmul`.
-    pub fn forward_encoder(&self, mel: &[f32], mel_time: usize) -> crate::Result<LazyTensor> {
+    pub fn forward_encoder(&self, mel: &[f32], mel_time: usize) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let d = cfg.d_model;
         let n_mel = cfg.num_mel_bins;
@@ -343,7 +343,7 @@ impl QuantizedWhisperModel {
             ))
             .bt());
         }
-        let mel_t = LazyTensor::from_f32(
+        let mel_t = Tensor::from_f32(
             mel.to_vec(),
             Shape::from_dims(&[1, n_mel, mel_time]),
             &crate::Device::cpu(),
@@ -402,11 +402,7 @@ impl QuantizedWhisperModel {
 
     /// Run the decoder against a precomputed encoder context, returning
     /// `[1, seq, vocab_size]` logits via tied output projection.
-    pub fn forward_decoder(
-        &self,
-        tokens: &[u32],
-        encoder_out: &LazyTensor,
-    ) -> crate::Result<LazyTensor> {
+    pub fn forward_decoder(&self, tokens: &[u32], encoder_out: &Tensor) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let d = cfg.d_model;
         let seq = tokens.len();
@@ -470,7 +466,7 @@ impl QuantizedWhisperModel {
 
         let mut tokens: Vec<u32> = prompt_tokens.to_vec();
         for _ in 0..max_new_tokens {
-            let encoder_t = LazyTensor::from_f32(
+            let encoder_t = Tensor::from_f32(
                 encoder_out.clone(),
                 enc_shape.clone(),
                 &crate::Device::cpu(),
@@ -499,13 +495,13 @@ impl QuantizedWhisperModel {
 // ---- Layer primitives -----------------------------------------------------
 
 fn layer_norm_affine(
-    x: &LazyTensor,
+    x: &Tensor,
     gamma: &Arc<[f32]>,
     beta: &Arc<[f32]>,
     eps: f64,
     hidden: usize,
     seq: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let normed = x.layer_norm_last_dim(eps)?;
     let g = x
         .const_f32_like(Arc::clone(gamma), Shape::from_dims(&[hidden]))
@@ -523,13 +519,13 @@ fn layer_norm_affine(
 /// `qmatmul` for Q4_0 and to plain matmul for F32 (so this same helper
 /// can run a hybrid model where only some matrices are quantized).
 fn q_linear(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &WeightStorage,
     b: Option<&Arc<[f32]>>,
     in_f: usize,
     out_f: usize,
     seq: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let proj = w.apply_linear(x, in_f, out_f)?;
     match b {
         Some(bias) => {
@@ -545,9 +541,9 @@ fn q_linear(
 
 #[allow(clippy::too_many_arguments)]
 fn multi_head_attn(
-    q_src: &LazyTensor,
-    k_src: &LazyTensor,
-    v_src: &LazyTensor,
+    q_src: &Tensor,
+    k_src: &Tensor,
+    v_src: &Tensor,
     q_w: &WeightStorage,
     q_b: &Arc<[f32]>,
     k_w: &WeightStorage,
@@ -561,7 +557,7 @@ fn multi_head_attn(
     q_seq: usize,
     kv_seq: usize,
     causal: bool,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let q = q_linear(q_src, q_w, Some(q_b), d, d, q_seq)?;
     let k = q_linear(k_src, k_w, None, d, d, kv_seq)?;
     let v = q_linear(v_src, v_w, Some(v_b), d, d, kv_seq)?;
@@ -596,11 +592,11 @@ fn multi_head_attn(
 }
 
 fn encoder_layer(
-    x: &LazyTensor,
+    x: &Tensor,
     lw: &QuantizedWhisperEncoderLayerWeights,
     cfg: &WhisperConfig,
     seq: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let d = cfg.d_model;
     let n_heads = cfg.encoder_attention_heads;
     let d_head = cfg.encoder_head_dim();
@@ -620,12 +616,12 @@ fn encoder_layer(
 }
 
 fn decoder_layer(
-    x: &LazyTensor,
-    encoder_out: &LazyTensor,
+    x: &Tensor,
+    encoder_out: &Tensor,
     lw: &QuantizedWhisperDecoderLayerWeights,
     cfg: &WhisperConfig,
     q_seq: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let d = cfg.d_model;
     let n_heads = cfg.decoder_attention_heads;
     let d_head = cfg.decoder_head_dim();

@@ -1,57 +1,57 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! Activation modules wrapping the corresponding `LazyTensor` ops.
+//! Activation modules wrapping the corresponding `Tensor` ops.
 
-use super::LazyModule;
+use super::Module;
 use fuel::Result;
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 
 macro_rules! activation_unit {
     ($name:ident, $method:ident) => {
         #[derive(Debug, Clone, Copy, Default)]
         pub struct $name;
-        impl LazyModule for $name {
-            fn forward(&self, xs: &LazyTensor) -> Result<LazyTensor> {
+        impl Module for $name {
+            fn forward(&self, xs: &Tensor) -> Result<Tensor> {
                 Ok(xs.$method())
             }
         }
     };
 }
 
-activation_unit!(LazyRelu, relu);
-activation_unit!(LazyGelu, gelu);
-activation_unit!(LazySilu, silu);
-activation_unit!(LazySigmoid, sigmoid);
-activation_unit!(LazyTanh, tanh);
+activation_unit!(Relu, relu);
+activation_unit!(Gelu, gelu);
+activation_unit!(Silu, silu);
+activation_unit!(Sigmoid, sigmoid);
+activation_unit!(Tanh, tanh);
 
 /// GELU with the PyTorch `tanh`-approximation parameterization.
 ///
 /// `0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3)))`.
-/// `LazyTensor::gelu` is the tanh approximation; this is a named
+/// `Tensor::gelu` is the tanh approximation; this is a named
 /// alias that documents the intent at use sites that read HF
 /// `hidden_act = "gelu_pytorch_tanh"`.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct LazyGeluPytorchTanh;
+pub struct GeluPytorchTanh;
 
-impl LazyModule for LazyGeluPytorchTanh {
-    fn forward(&self, xs: &LazyTensor) -> Result<LazyTensor> {
+impl Module for GeluPytorchTanh {
+    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         Ok(xs.gelu())
     }
 }
 
 /// LeakyReLU(x) = x if x >= 0 else negative_slope * x.
 #[derive(Debug, Clone, Copy)]
-pub struct LazyLeakyRelu {
+pub struct LeakyRelu {
     pub negative_slope: f64,
 }
 
-impl LazyLeakyRelu {
+impl LeakyRelu {
     pub fn new(negative_slope: f64) -> Self {
         Self { negative_slope }
     }
 }
 
-impl LazyModule for LazyLeakyRelu {
-    fn forward(&self, xs: &LazyTensor) -> Result<LazyTensor> {
+impl Module for LeakyRelu {
+    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         let neg = xs.neg().relu().neg().mul_scalar(self.negative_slope);
         let pos = xs.relu();
         pos.add(&neg)
@@ -60,18 +60,18 @@ impl LazyModule for LazyLeakyRelu {
 
 /// ELU(x) = x if x >= 0 else alpha * (exp(x) - 1).
 #[derive(Debug, Clone, Copy)]
-pub struct LazyElu {
+pub struct Elu {
     pub alpha: f64,
 }
 
-impl LazyElu {
+impl Elu {
     pub fn new(alpha: f64) -> Self {
         Self { alpha }
     }
 }
 
-impl LazyModule for LazyElu {
-    fn forward(&self, xs: &LazyTensor) -> Result<LazyTensor> {
+impl Module for Elu {
+    fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         let pos = xs.relu();
         // neg branch active when x < 0: alpha * (exp(x) - 1). For x >= 0
         // it would evaluate to alpha * (e^x - 1) too, so we mask via the
@@ -96,61 +96,61 @@ mod tests {
     use fuel_ir::Shape;
     use std::sync::Arc;
 
-    fn scalar_tensor(val: f32) -> LazyTensor {
-        LazyTensor::from_f32(Arc::from(vec![val]), Shape::from_dims(&[1]), &Device::cpu())
+    fn scalar_tensor(val: f32) -> Tensor {
+        Tensor::from_f32(Arc::from(vec![val]), Shape::from_dims(&[1]), &Device::cpu())
     }
 
-    fn first(t: LazyTensor) -> f32 {
+    fn first(t: Tensor) -> f32 {
         t.realize_f32()[0]
     }
 
     #[test]
     fn relu_clamps_negatives_to_zero() {
-        assert_eq!(first(LazyRelu.forward(&scalar_tensor(-2.0)).unwrap()), 0.0);
-        assert_eq!(first(LazyRelu.forward(&scalar_tensor(3.5)).unwrap()), 3.5);
+        assert_eq!(first(Relu.forward(&scalar_tensor(-2.0)).unwrap()), 0.0);
+        assert_eq!(first(Relu.forward(&scalar_tensor(3.5)).unwrap()), 3.5);
     }
 
     #[test]
     fn gelu_at_zero_is_zero() {
-        let got = first(LazyGelu.forward(&scalar_tensor(0.0)).unwrap());
+        let got = first(Gelu.forward(&scalar_tensor(0.0)).unwrap());
         assert!(got.abs() < 1e-5, "got {got}");
     }
 
     #[test]
     fn silu_at_zero_is_zero() {
-        let got = first(LazySilu.forward(&scalar_tensor(0.0)).unwrap());
+        let got = first(Silu.forward(&scalar_tensor(0.0)).unwrap());
         assert!(got.abs() < 1e-6, "got {got}");
     }
 
     #[test]
     fn sigmoid_at_zero_is_half() {
-        let got = first(LazySigmoid.forward(&scalar_tensor(0.0)).unwrap());
+        let got = first(Sigmoid.forward(&scalar_tensor(0.0)).unwrap());
         assert!((got - 0.5).abs() < 1e-6, "got {got}");
     }
 
     #[test]
     fn tanh_at_zero_is_zero() {
-        let got = first(LazyTanh.forward(&scalar_tensor(0.0)).unwrap());
+        let got = first(Tanh.forward(&scalar_tensor(0.0)).unwrap());
         assert!(got.abs() < 1e-6, "got {got}");
     }
 
     #[test]
     fn leaky_relu_at_minus_one_with_slope_0_1_equals_minus_0_1() {
-        let lru = LazyLeakyRelu::new(0.1);
+        let lru = LeakyRelu::new(0.1);
         let got = first(lru.forward(&scalar_tensor(-1.0)).unwrap());
         assert!((got - (-0.1_f32)).abs() < 1e-6, "got {got}");
     }
 
     #[test]
     fn elu_at_positive_is_identity() {
-        let elu = LazyElu::new(1.0);
+        let elu = Elu::new(1.0);
         let got = first(elu.forward(&scalar_tensor(2.0)).unwrap());
         assert!((got - 2.0).abs() < 1e-5, "got {got}");
     }
 
     #[test]
     fn elu_at_large_negative_approaches_minus_alpha() {
-        let elu = LazyElu::new(1.0);
+        let elu = Elu::new(1.0);
         // x = -10 → 1.0 * (e^-10 - 1) ≈ -0.9999546.
         let got = first(elu.forward(&scalar_tensor(-10.0)).unwrap());
         assert!((got - (-0.9999546_f32)).abs() < 1e-3, "got {got}");

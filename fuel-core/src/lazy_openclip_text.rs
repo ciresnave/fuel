@@ -27,7 +27,7 @@
 //!   - Pre-LN structure.
 
 use crate::Result;
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -115,7 +115,7 @@ pub struct OpenClipTextModel {
 impl OpenClipTextModel {
     /// Run the text transformer and return per-token hidden states
     /// `(1, seq, embed_dim)`.
-    pub fn forward(&self, input_ids: &[u32]) -> Result<LazyTensor> {
+    pub fn forward(&self, input_ids: &[u32]) -> Result<Tensor> {
         self.run_backbone(input_ids)
     }
 
@@ -124,7 +124,7 @@ impl OpenClipTextModel {
     /// end-of-text token in `input_ids` (CLIP's standard pooling
     /// picks the argmax-token-id position; v1 takes it as an
     /// explicit parameter so the lazy graph stays shape-static).
-    pub fn forward_pooled(&self, input_ids: &[u32], eot_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_pooled(&self, input_ids: &[u32], eot_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         assert!(
             eot_pos < input_ids.len(),
@@ -139,7 +139,7 @@ impl OpenClipTextModel {
         Ok(pooled)
     }
 
-    fn run_backbone(&self, input_ids: &[u32]) -> Result<LazyTensor> {
+    fn run_backbone(&self, input_ids: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         let w = &self.weights;
         let seq = input_ids.len();
@@ -151,7 +151,7 @@ impl OpenClipTextModel {
         );
 
         // Token embedding lookup.
-        let token_table = LazyTensor::from_f32(
+        let token_table = Tensor::from_f32(
             Arc::clone(&w.token_embedding),
             Shape::from_dims(&[cfg.vocab_size, cfg.embed_dim]),
             &crate::Device::cpu(),
@@ -183,11 +183,11 @@ impl OpenClipTextModel {
 }
 
 fn apply_layer(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &OpenClipEncoderLayerWeights,
     cfg: &OpenClipTextConfig,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+    anchor: &Tensor,
+) -> Result<Tensor> {
     let residual = x.clone();
     let normed = x.layer_norm_affine(Arc::clone(&w.ln1.gain), Arc::clone(&w.ln1.bias), 1e-5)?;
     let attn_out = apply_attention(&normed, &w.attn, cfg, anchor)?;
@@ -206,11 +206,11 @@ fn apply_layer(
 }
 
 fn apply_attention(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &OpenClipAttentionWeights,
     cfg: &OpenClipTextConfig,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+    anchor: &Tensor,
+) -> Result<Tensor> {
     let dims = x.shape();
     let dims = dims.dims();
     let b = dims[0];
@@ -247,12 +247,12 @@ fn apply_attention(
 }
 
 fn apply_mlp(
-    x: &LazyTensor,
+    x: &Tensor,
     m: &MlpWeights,
     in_dim: usize,
     hidden_dim: usize,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+    anchor: &Tensor,
+) -> Result<Tensor> {
     let h1 =
         m.fc1
             .apply_linear_with_bias(x, in_dim, hidden_dim, std::sync::Arc::clone(&m.fc1_bias))?;

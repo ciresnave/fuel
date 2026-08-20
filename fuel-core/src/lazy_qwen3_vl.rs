@@ -10,7 +10,7 @@
 //!
 //! 1. Run the vision tower if image / video pixels are present. The
 //!    tower returns per-patch embeddings `(N, vision_out_hidden)` and
-//!    a `Vec<LazyTensor>` of per-DeepStack-index residuals, each shaped
+//!    a `Vec<Tensor>` of per-DeepStack-index residuals, each shaped
 //!    `(N, vision_out_hidden)`.
 //! 2. Project each visual feature stream (final + DeepStack) through
 //!    the shared `multimodal_projector` linear into the text hidden
@@ -29,7 +29,7 @@
 //!    h, w)` derived from a row-major `(t_patches, h_patches,
 //!    w_patches)` grid declared on the visual input.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::lazy_qwen3_vl_text::{
     MropePos, Qwen3VlTextConfig, Qwen3VlTextModel, Qwen3VlTextWeights,
 };
@@ -104,13 +104,13 @@ impl Qwen3VlModel {
     #[allow(clippy::too_many_arguments)]
     pub fn forward(
         &self,
-        image_pixels: Option<&LazyTensor>,
+        image_pixels: Option<&Tensor>,
         image_grid: Option<PatchGrid>,
-        video_pixels: Option<&LazyTensor>,
+        video_pixels: Option<&Tensor>,
         video_grid: Option<PatchGrid>,
         text_tokens: &[u32],
         start_pos: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let v_cfg = &cfg.vision_config;
         let t_cfg = &cfg.text_config;
@@ -147,12 +147,12 @@ impl Qwen3VlModel {
         // anchor — same lifetime as the rest of the computation. With
         // no image/video, build a one-element f32 anchor matching
         // eager `lazy_qwen3_vl_text::forward`.
-        let anchor: LazyTensor = if let Some(p) = image_pixels {
+        let anchor: Tensor = if let Some(p) = image_pixels {
             p.clone()
         } else if let Some(p) = video_pixels {
             p.clone()
         } else {
-            LazyTensor::from_f32(
+            Tensor::from_f32(
                 Arc::from(vec![0.0_f32]),
                 Shape::from_dims(&[1]),
                 &Device::cpu(),
@@ -272,7 +272,7 @@ impl Qwen3VlModel {
 
     fn run_vision_and_project(
         &self,
-        pixels: &LazyTensor,
+        pixels: &Tensor,
         grid: PatchGrid,
     ) -> Result<VisionAndProjection> {
         let v_cfg = &self.config.vision_config;
@@ -325,17 +325,17 @@ impl Qwen3VlModel {
 /// Bundle of post-projection visual streams for one modality.
 struct VisionAndProjection {
     /// `(N, text_hidden)` — final visual features projected to text dim.
-    projected: LazyTensor,
+    projected: Tensor,
     /// One per DeepStack layer, each `(N, text_hidden)`.
-    deepstack_projected: Vec<LazyTensor>,
+    deepstack_projected: Vec<Tensor>,
 }
 
 fn project_visual(
     proj: &Qwen3VlMultimodalProjector,
-    visual: &LazyTensor,
+    visual: &Tensor,
     vision_out_hidden: usize,
     text_hidden: usize,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     let projected = proj
         .weight
         .apply_linear(visual, vision_out_hidden, text_hidden)?;
@@ -347,11 +347,11 @@ fn project_visual(
 /// `visual_embeds` `(N, text_hidden)`. Uses a const additive mask plus
 /// a gather-by-row pattern — no scatter / index_put primitive required.
 fn substitute_visual_embeds(
-    text_embeds: &LazyTensor,
-    visual_embeds: &LazyTensor,
+    text_embeds: &Tensor,
+    visual_embeds: &Tensor,
     slot_positions: &[usize],
     text_hidden: usize,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     if slot_positions.is_empty() {
         return Ok(text_embeds.clone());
     }
@@ -470,7 +470,7 @@ fn fill_visual_positions(
 /// image and video (if both modalities supply a residual at that slot)
 /// into a single `(1, seq, hidden)` tensor that is zero-elsewhere.
 fn build_deepstack_per_layer(
-    anchor: &LazyTensor,
+    anchor: &Tensor,
     seq: usize,
     text_hidden: usize,
     num_layers: usize,
@@ -478,13 +478,13 @@ fn build_deepstack_per_layer(
     image_slots: &[usize],
     video: Option<&VisionAndProjection>,
     video_slots: &[usize],
-) -> Result<Vec<Option<LazyTensor>>> {
+) -> Result<Vec<Option<Tensor>>> {
     let image_layers = image.map_or(0, |i| i.deepstack_projected.len());
     let video_layers = video.map_or(0, |v| v.deepstack_projected.len());
     let len = image_layers.max(video_layers).min(num_layers);
-    let mut out: Vec<Option<LazyTensor>> = Vec::with_capacity(len);
+    let mut out: Vec<Option<Tensor>> = Vec::with_capacity(len);
     for layer_idx in 0..len {
-        let mut accum: Option<LazyTensor> = None;
+        let mut accum: Option<Tensor> = None;
         if let Some(img) = image {
             if layer_idx < img.deepstack_projected.len() {
                 let t = scatter_visual_residual(
@@ -520,12 +520,12 @@ fn build_deepstack_per_layer(
 /// Build a `(1, seq, hidden)` tensor whose rows at `slot_positions` are
 /// the rows of `residual` `(N, hidden)`, zero everywhere else.
 fn scatter_visual_residual(
-    anchor: &LazyTensor,
-    residual: &LazyTensor,
+    anchor: &Tensor,
+    residual: &Tensor,
     slot_positions: &[usize],
     seq: usize,
     text_hidden: usize,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     if slot_positions.is_empty() {
         return Ok(anchor.const_f32_like(
             Arc::from(vec![0.0_f32; seq * text_hidden]),
@@ -785,13 +785,13 @@ mod tests {
     }
 
     /// Build a `(N, C, T_p, H, W)` flattened-patch tensor.
-    fn tiny_pixels(cfg: &Qwen3VlVisionConfig, n_patches: usize, scale: f32) -> LazyTensor {
+    fn tiny_pixels(cfg: &Qwen3VlVisionConfig, n_patches: usize, scale: f32) -> Tensor {
         let numel =
             n_patches * cfg.in_channels * cfg.temporal_patch_size * cfg.patch_size * cfg.patch_size;
         let data: Vec<f32> = (0..numel)
             .map(|i| scale * ((i as f32 / numel as f32) - 0.5))
             .collect();
-        LazyTensor::from_f32(
+        Tensor::from_f32(
             Arc::from(data),
             Shape::from_dims(&[
                 n_patches,
@@ -915,7 +915,7 @@ mod tests {
     fn image_token_slot_scatter_correctness() {
         let seq = 5_usize;
         let hidden = 4_usize;
-        let anchor = LazyTensor::from_f32(
+        let anchor = Tensor::from_f32(
             Arc::from(vec![0.0_f32]),
             Shape::from_dims(&[1]),
             &Device::cpu(),

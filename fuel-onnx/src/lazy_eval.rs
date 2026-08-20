@@ -2,7 +2,7 @@
 //! Lazy-graph ONNX evaluator — sub-port 1 of `port-onnx-eval.md`.
 //!
 //! Walks an ONNX graph and dispatches each node to the matching
-//! [`fuel::lazy::LazyTensor`] primitive, building a fuel_graph
+//! [`fuel::lazy::Tensor`] primitive, building a fuel_graph
 //! computation tree rather than running ops eagerly. Realization
 //! happens lazily when the caller realizes any output tensor.
 //!
@@ -17,18 +17,18 @@
 //!   - Reductions: `ReduceMean`, `ReduceSum`, `ReduceMax`, `ReduceMin`
 //!     (with `axes` + `keepdims` support).
 //!   - Constants: `Constant`, `ConstantOfShape`.
-//!   - Dtype: `Cast` (via [`LazyTensor::to_dtype`]).
+//!   - Dtype: `Cast` (via [`Tensor::to_dtype`]).
 //!   - Multi-input shape glue: `Concat`, `Split`.
 //!
 //! Conv / ConvTranspose / Pooling / Pad land in sub-port 2 — see the
 //! sibling [`crate::lazy_eval_conv`] module which hooks into the same
-//! [`LazyOnnxEval`] dispatch path via [`crate::lazy_eval_conv::try_dispatch_node`].
+//! [`OnnxEval`] dispatch path via [`crate::lazy_eval_conv::try_dispatch_node`].
 //! BatchNorm / LayerNorm / activations / Softmax land in sub-port 3.
 //! Quantized ops (`QLinearMatMul`, `Quantize/DequantizeLinear`) land
 //! in sub-port 4.
 
 use crate::onnx::{self, attribute_proto::AttributeType, tensor_proto::DataType};
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel::{DType, Device, Error, Result, Shape};
 use prost::Message;
 use std::collections::HashMap;
@@ -36,13 +36,13 @@ use std::path::Path;
 use std::sync::Arc;
 
 /// Lazy ONNX evaluator: owns a deserialized model proto and dispatches
-/// nodes to [`LazyTensor`] primitives on [`run`](Self::run).
+/// nodes to [`Tensor`] primitives on [`run`](Self::run).
 #[derive(Clone)]
-pub struct LazyOnnxEval {
+pub struct OnnxEval {
     model: onnx::ModelProto,
 }
 
-impl LazyOnnxEval {
+impl OnnxEval {
     /// Build from a protobuf-encoded `ModelProto`.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let model = onnx::ModelProto::decode(bytes).map_err(Error::wrap)?;
@@ -70,18 +70,18 @@ impl LazyOnnxEval {
     }
 
     /// Evaluate the graph. Maps each declared output name to the
-    /// `LazyTensor` produced by the corresponding node. The returned
+    /// `Tensor` produced by the corresponding node. The returned
     /// tensors have not been realized yet — call e.g. `realize_f32` on
     /// any of them to materialize the result.
-    pub fn run(&self, inputs: &HashMap<String, LazyTensor>) -> Result<HashMap<String, LazyTensor>> {
+    pub fn run(&self, inputs: &HashMap<String, Tensor>) -> Result<HashMap<String, Tensor>> {
         let graph = self
             .model
             .graph
             .as_ref()
             .ok_or_else(|| Error::Msg("ONNX model has no graph".into()).bt())?;
 
-        let mut values: HashMap<String, LazyTensor> = HashMap::new();
-        let mut anchor: Option<LazyTensor> = None;
+        let mut values: HashMap<String, Tensor> = HashMap::new();
+        let mut anchor: Option<Tensor> = None;
         let mut i64_cache: HashMap<String, Vec<i64>> = HashMap::new();
 
         // Seed inputs first so they serve as the const_*_like anchor —
@@ -121,17 +121,17 @@ impl LazyOnnxEval {
 
 fn dispatch_node(
     node: &onnx::NodeProto,
-    values: &mut HashMap<String, LazyTensor>,
+    values: &mut HashMap<String, Tensor>,
     device: &Device,
-    anchor: &mut Option<LazyTensor>,
+    anchor: &mut Option<Tensor>,
     i64_cache: &mut HashMap<String, Vec<i64>>,
 ) -> Result<()> {
-    let get = |values: &HashMap<String, LazyTensor>, name: &str| -> Result<LazyTensor> {
+    let get = |values: &HashMap<String, Tensor>, name: &str| -> Result<Tensor> {
         values.get(name).cloned().ok_or_else(|| {
             Error::Msg(format!("missing input '{}' for node '{}'", name, node.name)).bt()
         })
     };
-    let get_i64_vec = |values: &HashMap<String, LazyTensor>,
+    let get_i64_vec = |values: &HashMap<String, Tensor>,
                        i64_cache: &HashMap<String, Vec<i64>>,
                        name: &str|
      -> Result<Vec<i64>> {
@@ -509,8 +509,8 @@ fn dispatch_node(
 pub(crate) fn set_output(
     node: &onnx::NodeProto,
     i: usize,
-    v: LazyTensor,
-    values: &mut HashMap<String, LazyTensor>,
+    v: Tensor,
+    values: &mut HashMap<String, Tensor>,
 ) -> Result<()> {
     let name = node.output.get(i).ok_or_else(|| {
         Error::Msg(format!(
@@ -533,7 +533,7 @@ enum ReduceKind {
 
 fn reduce_op(
     node: &onnx::NodeProto,
-    values: &mut HashMap<String, LazyTensor>,
+    values: &mut HashMap<String, Tensor>,
     i64_cache: &HashMap<String, Vec<i64>>,
     kind: ReduceKind,
 ) -> Result<()> {
@@ -612,8 +612,8 @@ fn reduce_op(
 fn load_initializer(
     t: &onnx::TensorProto,
     device: &Device,
-    anchor: &mut Option<LazyTensor>,
-) -> Result<LazyTensor> {
+    anchor: &mut Option<Tensor>,
+) -> Result<Tensor> {
     let dims: Vec<usize> = t.dims.iter().map(|&d| d as usize).collect();
     let shape = Shape::from_dims(&dims);
     let dt = DataType::try_from(t.data_type).map_err(|_| {
@@ -632,14 +632,14 @@ fn load_initializer(
         DataType::Float => {
             let data = float_data(t)?;
             match anchor.as_ref() {
-                None => LazyTensor::from_f32(data, shape, device),
+                None => Tensor::from_f32(data, shape, device),
                 Some(a) => a.const_f32_like(data, shape),
             }
         }
         DataType::Double => {
             let data = double_data(t)?;
             match anchor.as_ref() {
-                None => LazyTensor::from_f64(data, shape, device),
+                None => Tensor::from_f64(data, shape, device),
                 Some(a) => a.const_f64_like(data, shape),
             }
         }
@@ -672,9 +672,9 @@ fn load_initializer(
     Ok(built)
 }
 
-pub(crate) fn ensure_anchor(anchor: &mut Option<LazyTensor>, device: &Device) -> LazyTensor {
+pub(crate) fn ensure_anchor(anchor: &mut Option<Tensor>, device: &Device) -> Tensor {
     if anchor.is_none() {
-        *anchor = Some(LazyTensor::from_f32(
+        *anchor = Some(Tensor::from_f32(
             Arc::<[f32]>::from(vec![0.0f32]),
             Shape::from_dims(&[1]),
             device,
@@ -771,9 +771,9 @@ fn fill_from_value_proto(
     t: &onnx::TensorProto,
     dt: DType,
     shape_dims: &[usize],
-    anchor: &mut Option<LazyTensor>,
+    anchor: &mut Option<Tensor>,
     device: &Device,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     let n: usize = shape_dims.iter().product();
     match dt {
         DType::F32 => {
@@ -858,7 +858,7 @@ pub fn onnx_dtype_to_fuel(dt: i32) -> Result<DType> {
 }
 
 pub(crate) fn get_i64_vec(
-    values: &HashMap<String, LazyTensor>,
+    values: &HashMap<String, Tensor>,
     i64_cache: &HashMap<String, Vec<i64>>,
     name: &str,
 ) -> Result<Vec<i64>> {
@@ -871,7 +871,7 @@ pub(crate) fn get_i64_vec(
     realize_i64_vec(t)
 }
 
-pub(crate) fn realize_i64_vec(t: &LazyTensor) -> Result<Vec<i64>> {
+pub(crate) fn realize_i64_vec(t: &Tensor) -> Result<Vec<i64>> {
     // Float-only path keeps fuel-graph-cpu adopt off the I64 slot.
     // Known-integer initializers / Constant outputs are read host-side
     // via the i64_cache; this fallback runs only for runtime-computed
@@ -1087,10 +1087,10 @@ mod tests {
 
         let mut buf = Vec::new();
         model_from_graph(graph).encode(&mut buf).unwrap();
-        let evaluator = LazyOnnxEval::from_bytes(&buf).unwrap();
+        let evaluator = OnnxEval::from_bytes(&buf).unwrap();
 
         let device = Device::cpu();
-        let x = LazyTensor::from_f32(x_data.clone(), Shape::from_dims(&[2, 3]), &device);
+        let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[2, 3]), &device);
 
         let mut inputs = HashMap::new();
         inputs.insert("X".to_string(), x);
@@ -1132,10 +1132,10 @@ mod tests {
 
         let mut buf = Vec::new();
         model_from_graph(graph).encode(&mut buf).unwrap();
-        let evaluator = LazyOnnxEval::from_bytes(&buf).unwrap();
+        let evaluator = OnnxEval::from_bytes(&buf).unwrap();
 
         let device = Device::cpu();
-        let x = LazyTensor::from_f32(vec![1.0f32, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), &device);
+        let x = Tensor::from_f32(vec![1.0f32, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), &device);
         let mut inputs = HashMap::new();
         inputs.insert("X".to_string(), x);
         let outputs = evaluator.run(&inputs).unwrap();
@@ -1168,10 +1168,10 @@ mod tests {
         };
         let mut buf = Vec::new();
         model_from_graph(graph).encode(&mut buf).unwrap();
-        let evaluator = LazyOnnxEval::from_bytes(&buf).unwrap();
+        let evaluator = OnnxEval::from_bytes(&buf).unwrap();
 
         let device = Device::cpu();
-        let x = LazyTensor::from_f32(vec![1.0f32; 4], Shape::from_dims(&[1, 4]), &device);
+        let x = Tensor::from_f32(vec![1.0f32; 4], Shape::from_dims(&[1, 4]), &device);
         let mut inputs = HashMap::new();
         inputs.insert("X".to_string(), x);
 
@@ -1202,7 +1202,7 @@ mod tests {
         };
         let mut buf = Vec::new();
         model_from_graph(graph).encode(&mut buf).unwrap();
-        let evaluator = LazyOnnxEval::from_bytes(&buf).unwrap();
+        let evaluator = OnnxEval::from_bytes(&buf).unwrap();
         let outputs = evaluator.run(&HashMap::new()).unwrap();
         let y = outputs.get("Y").unwrap();
         assert_eq!(y.shape().dims(), &[3]);
@@ -1228,7 +1228,7 @@ mod tests {
         };
         let mut buf = Vec::new();
         model_from_graph(graph).encode(&mut buf).unwrap();
-        let evaluator = LazyOnnxEval::from_bytes(&buf).unwrap();
+        let evaluator = OnnxEval::from_bytes(&buf).unwrap();
         let outputs = evaluator.run(&HashMap::new()).unwrap();
         let got = outputs.get("Y").unwrap().realize_f32();
         assert_eq!(got.len(), 2);

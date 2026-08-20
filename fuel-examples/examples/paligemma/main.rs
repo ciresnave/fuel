@@ -10,7 +10,7 @@ use clap::Parser;
 use std::io::Write;
 use std::sync::Arc;
 
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel::lazy_gemma::{GemmaActivation, GemmaConfig};
 use fuel::lazy_paligemma::{PaligemmaConfig, PaligemmaModel, PaligemmaWeights};
 use fuel::lazy_siglip::SiglipVisionConfig;
@@ -171,7 +171,7 @@ fn main() -> Result<()> {
     };
     println!("loaded the model in {:?}", start.elapsed());
 
-    let pixel_values = LazyTensor::from_f32(
+    let pixel_values = Tensor::from_f32(
         Arc::<[f32]>::from(pixel_chw),
         Shape::from_dims(&[1, 3, img_size, img_size]),
         &Device::cpu(),

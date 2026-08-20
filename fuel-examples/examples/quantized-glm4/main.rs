@@ -343,7 +343,7 @@ fn main() -> anyhow::Result<()> {
         LogitsProcessor::from_sampling(args.seed, sampling)
     };
 
-    // Realize the LazyTensor logits and slice off the last token's row
+    // Realize the Tensor logits and slice off the last token's row
     // as a plain `Vec<f32>` for the LogitsProcessor sampler.
     let vocab = cfg.vocab_size;
     let last_logits = |logits_flat: &[f32], seq: usize| -> Result<Vec<f32>> {

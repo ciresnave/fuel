@@ -9,7 +9,7 @@ use anyhow::{Error as E, Result};
 use clap::{Parser, ValueEnum};
 use std::sync::Arc;
 
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel::lazy_trocr::{TrocrActivation, TrocrDecoderConfig, TrocrModel};
 use fuel::lazy_vit::{VitActivation, VitConfig};
 use fuel::safetensors::MmapedSafetensors;
@@ -341,7 +341,7 @@ pub fn main() -> Result<()> {
         "loaded image ({} f32 values, {image_size}x{image_size})",
         image_vec.len()
     );
-    let pixel_values = LazyTensor::from_f32(
+    let pixel_values = Tensor::from_f32(
         Arc::<[f32]>::from(image_vec),
         Shape::from_dims(&[1, 3, image_size, image_size]),
         &device,

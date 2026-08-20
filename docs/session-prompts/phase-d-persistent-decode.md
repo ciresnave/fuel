@@ -23,7 +23,7 @@ passes.
 
 But the graph is still **rebuilt fresh and re-optimized every token** — see
 `forward_with_kv_context_impl` (`fuel-core/src/lazy.rs:5212`): it constructs a brand-new
-`LazyTensor` graph (fresh `NodeId`s for token-ids, RoPE cos/sin, per-layer mask, per-layer KV
+`Tensor` graph (fresh `NodeId`s for token-ids, RoPE cos/sin, per-layer mask, per-layer KV
 placeholders), realizes via `ctx.realize_one_as_with_env`, then drops the graph. Each realize
 runs `optimize_graph` (the placement DP + cost composer + Judge + residency/layout passes) from
 scratch.
@@ -496,7 +496,7 @@ in the full suite (**1284 passed**, was 1283 at HEAD; 0 failed, 10 ignored).
 **Mask hoist (byte-exact refactor).** The `[1,1,seq,max_seq_len]` causal mask moved out of
 `apply_layer_with_kv_writes` (was one Const per layer) to ONE Const built in
 `forward_with_kv_context_impl` and passed into each layer (like RoPE) — `lazy.rs`
-`apply_layer_with_kv_writes` now takes a `mask: &LazyTensor` param; the mask data comes from a new
+`apply_layer_with_kv_writes` now takes a `mask: &Tensor` param; the mask data comes from a new
 free fn `build_decode_causal_mask(cached_len, seq, max_seq_len)`. Byte-identical across layers by
 construction (mask depends only on `cached_len`/`seq`/`max_seq_len`); cuts the per-token re-bind
 count on the persistent path from `n_layers` to 1. The existing D1 decode gate
@@ -738,7 +738,7 @@ the sliced rebuild path as a mechanical follow-up. Reuses ALL the model-agnostic
 (`DecodeSession`, `DecodeTokenData`, `DecodeSession::realize_token`,
 `InferenceContext::prebuild_optimized_capturing_as_with_env`,
 `pipelined_bridge::{realize_one_prebuilt_env, upload_host_buffer_to_device, optimize_calls_thread_local}`,
-`LazyTensor::write_slice_dyn`, and the module-level `build_decode_causal_mask`). CPU-verified
+`Tensor::write_slice_dyn`, and the module-level `build_decode_causal_mask`). CPU-verified
 byte-exact; the wall-clock win is the same later live-GPU verify D2c documents.
 
 **How Phi differs from Llama (and how the transform adapted).** Phi's decode block is NOT a copy of

@@ -23,7 +23,7 @@
 
 #![cfg(feature = "cuda")]
 
-use fuel_core::lazy::LazyTensor;
+use fuel_core::lazy::Tensor;
 use fuel_cuda_backend::CudaDevice;
 use fuel_ir::{DType, DeviceLocation, Shape};
 
@@ -46,7 +46,7 @@ fn dev_or_skip() -> Option<CudaDevice> {
 fn mul_add_realize_on_cuda_matches_reference() {
     let Some(dev) = dev_or_skip() else { return };
 
-    let a = LazyTensor::from_f32(
+    let a = Tensor::from_f32(
         vec![1.0_f32, 2.0, 3.0, 4.0],
         Shape::from_dims(&[4]),
         &fuel_core::Device::cpu(),
@@ -75,7 +75,7 @@ fn mul_add_realize_on_cuda_matches_reference() {
 fn deep_chain_realize_on_cuda_matches_reference() {
     let Some(dev) = dev_or_skip() else { return };
 
-    let a = LazyTensor::from_f32(
+    let a = Tensor::from_f32(
         vec![1.0_f32, 2.0, 3.0, 4.0],
         Shape::from_dims(&[4]),
         &fuel_core::Device::cpu(),
@@ -120,7 +120,7 @@ fn long_chain_pool_reuse_on_cuda_matches_reference() {
     const STEPS: usize = 32;
 
     let a_host: Vec<f32> = (0..N).map(|i| (i % 17) as f32).collect();
-    let a = LazyTensor::from_f32(
+    let a = Tensor::from_f32(
         a_host.clone(),
         Shape::from_dims(&[N]),
         &fuel_core::Device::cpu(),

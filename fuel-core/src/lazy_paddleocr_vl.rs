@@ -42,7 +42,7 @@
 //!   eager preprocessor pipeline; the lazy path keeps the in-graph
 //!   shape identical regardless.
 
-use crate::lazy::LazyTensor;
+use crate::lazy::Tensor;
 use crate::lazy_paddleocr_vl_text::{
     PaddleOcrVlTextConfig, PaddleOcrVlTextModel, PaddleOcrVlTextWeights,
     load_paddleocr_vl_text_weights_with_prefix,
@@ -108,11 +108,11 @@ impl PaddleOcrVlModel {
     /// Returns logits of shape `(1, text_tokens.len(), vocab_size)`.
     pub fn forward(
         &self,
-        image_pixels: Option<&LazyTensor>,
+        image_pixels: Option<&Tensor>,
         text_tokens: &[u32],
         image_token_id: u32,
         start_pos: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         if text_tokens.is_empty() {
             return Err(crate::Error::Msg(
                 "PaddleOcrVlModel: text_tokens must be non-empty".into(),
@@ -135,11 +135,11 @@ impl PaddleOcrVlModel {
 
     fn forward_with_image(
         &self,
-        image_pixels: &LazyTensor,
+        image_pixels: &Tensor,
         text_tokens: &[u32],
         image_token_id: u32,
         start_pos: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let v_cfg = &cfg.vision;
         let t_cfg = &cfg.text;
@@ -200,7 +200,7 @@ impl PaddleOcrVlModel {
             );
         }
 
-        let stacked = LazyTensor::from_f32(
+        let stacked = Tensor::from_f32(
             Arc::from(tile_pixels),
             Shape::from_dims(&[num_tiles, channels, target, target]),
             &Device::cpu(),
@@ -273,13 +273,13 @@ impl PaddleOcrVlModel {
 /// image-placeholder tokens). Both inputs are expected as
 /// `(1, *, hidden)` so concat along dim 1 reassembles them in order.
 fn splice_image_slots(
-    text_embeds: &LazyTensor,
-    vision_embeds: &LazyTensor,
+    text_embeds: &Tensor,
+    vision_embeds: &Tensor,
     text_tokens: &[u32],
     image_token_id: u32,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     let seq = text_tokens.len();
-    let mut segments: Vec<LazyTensor> = Vec::new();
+    let mut segments: Vec<Tensor> = Vec::new();
     let mut vision_offset = 0_usize;
 
     let mut i = 0;
@@ -349,7 +349,7 @@ pub const IMAGENET_STD: [f32; 3] = [0.229, 0.224, 0.225];
 /// Smart-resize `image` to the entry in `supported_grids` whose
 /// aspect ratio is closest to the input's, apply CatmullRom bilinear-
 /// style resize, ImageNet-style per-channel normalize, and wrap the
-/// result as a `(1, 3, h_grid, w_grid)` F32 [`LazyTensor`] on CPU.
+/// result as a `(1, 3, h_grid, w_grid)` F32 [`Tensor`] on CPU.
 ///
 /// This is the OCR-quality preprocessor for the NaViT-style entry
 /// point. The fixed-tile [`PaddleOcrVlModel::forward`] path still
@@ -366,7 +366,7 @@ pub const IMAGENET_STD: [f32; 3] = [0.229, 0.224, 0.225];
 pub fn bilinear_resize_to_grid(
     image: &::image::DynamicImage,
     supported_grids: &[(usize, usize)],
-) -> Result<(LazyTensor, usize, usize)> {
+) -> Result<(Tensor, usize, usize)> {
     if supported_grids.is_empty() {
         return Err(crate::Error::Msg(
             "bilinear_resize_to_grid: supported_grids must be non-empty".into(),
@@ -439,7 +439,7 @@ pub fn bilinear_resize_to_grid(
         }
     }
 
-    let tensor = LazyTensor::from_f32(
+    let tensor = Tensor::from_f32(
         Arc::<[f32]>::from(data),
         Shape::from_dims(&[1, channels, h_grid, w_grid]),
         &Device::cpu(),
@@ -641,11 +641,11 @@ mod tests {
         }
     }
 
-    fn tiny_image(model: &PaddleOcrVlModel, height: usize, width: usize) -> LazyTensor {
+    fn tiny_image(model: &PaddleOcrVlModel, height: usize, width: usize) -> Tensor {
         let cfg = &model.config.vision;
         let n_pix = cfg.num_channels * height * width;
         let data: Vec<f32> = (0..n_pix).map(|i| (i as f32 / n_pix as f32)).collect();
-        LazyTensor::from_f32(
+        Tensor::from_f32(
             Arc::from(data),
             Shape::from_dims(&[cfg.num_channels, height, width]),
             &Device::cpu(),
@@ -708,7 +708,7 @@ mod tests {
             .rev()
             .map(|i| (i as f32 / n_pix as f32))
             .collect();
-        let img_b = LazyTensor::from_f32(
+        let img_b = Tensor::from_f32(
             Arc::from(data_b),
             Shape::from_dims(&[cfg.num_channels, cfg.image_size, cfg.image_size]),
             &Device::cpu(),

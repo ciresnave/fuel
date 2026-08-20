@@ -30,8 +30,7 @@
 //! pass.
 
 use crate::lazy::{
-    LayerWeights, LazyTensor, WeightStorage, load_tensor_as_f32,
-    load_transposed_matrix_preserve_dtype,
+    LayerWeights, Tensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
 };
 use crate::lazy_gemma::{GemmaConfig, GemmaModel, GemmaWeights};
 use crate::lazy_siglip::{
@@ -69,7 +68,7 @@ impl PaligemmaModel {
     /// Run the full multimodal forward pass. Returns logits
     /// for the combined `[image_features; text_embeds]`
     /// sequence of shape `(1, num_patches + text_len, vocab)`.
-    pub fn forward(&self, pixel_values: &LazyTensor, text_tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn forward(&self, pixel_values: &Tensor, text_tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         let v_cfg = &cfg.vision_config;
         let t_cfg = &cfg.text_config;
@@ -143,11 +142,7 @@ impl PaligemmaModel {
     /// Used by retrieval models (ColPali, ColIdefics, etc.) that
     /// project the per-token hidden states into a dense embedding
     /// space rather than predicting tokens.
-    pub fn forward_hidden(
-        &self,
-        pixel_values: &LazyTensor,
-        text_tokens: &[u32],
-    ) -> Result<LazyTensor> {
+    pub fn forward_hidden(&self, pixel_values: &Tensor, text_tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         let v_cfg = &cfg.vision_config;
         let t_cfg = &cfg.text_config;
@@ -202,7 +197,7 @@ impl PaligemmaModel {
 
 /// L2-normalize along the last dim with an epsilon-clamped
 /// denominator.
-fn l2_normalize_last(x: &LazyTensor, eps: f64) -> Result<LazyTensor> {
+fn l2_normalize_last(x: &Tensor, eps: f64) -> Result<Tensor> {
     let last = x.shape().dims().len() - 1;
     x.l2_normalize(last, eps)
 }
@@ -614,10 +609,10 @@ mod tests {
         }
     }
 
-    fn tiny_image(cfg: &SiglipVisionConfig) -> LazyTensor {
+    fn tiny_image(cfg: &SiglipVisionConfig) -> Tensor {
         let n_pix = 1 * cfg.num_channels * cfg.image_size * cfg.image_size;
         let img_data: Vec<f32> = (0..n_pix).map(|i| (i as f32 / n_pix as f32)).collect();
-        LazyTensor::from_f32(
+        Tensor::from_f32(
             Arc::from(img_data),
             Shape::from_dims(&[1, cfg.num_channels, cfg.image_size, cfg.image_size]),
             &Device::cpu(),
@@ -701,12 +696,12 @@ mod tests {
         let n_pix = 1 * v_cfg.num_channels * v_cfg.image_size * v_cfg.image_size;
         let img_a_data: Vec<f32> = (0..n_pix).map(|i| (i as f32 / n_pix as f32)).collect();
         let img_b_data: Vec<f32> = img_a_data.iter().map(|x| 1.0 - x).collect();
-        let img_a = LazyTensor::from_f32(
+        let img_a = Tensor::from_f32(
             Arc::from(img_a_data),
             Shape::from_dims(&[1, v_cfg.num_channels, v_cfg.image_size, v_cfg.image_size]),
             &Device::cpu(),
         );
-        let img_b = LazyTensor::from_f32(
+        let img_b = Tensor::from_f32(
             Arc::from(img_b_data),
             Shape::from_dims(&[1, v_cfg.num_channels, v_cfg.image_size, v_cfg.image_size]),
             &Device::cpu(),

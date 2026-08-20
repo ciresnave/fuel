@@ -11,7 +11,7 @@
 //! # State-as-value
 //!
 //! Eager keeps the output-overlap buffer in `&mut self`. The lazy
-//! port returns `(StreamConvTranspose1dState, Option<LazyTensor>)`
+//! port returns `(StreamConvTranspose1dState, Option<Tensor>)`
 //! from [`StreamableConvTranspose1dWeights::step`] so streaming
 //! composes naturally with the rest of the lazy decoder.
 //!
@@ -61,7 +61,7 @@
 //!   causal-only path Mimi uses).
 
 use crate::Result;
-use crate::lazy::LazyTensor;
+use crate::lazy::Tensor;
 use crate::lazy_mimi_conv::{LazyPadMode, bake_weight_norm, pad_last_1d};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -183,7 +183,7 @@ impl StreamableConvTranspose1dWeights {
         self.kernel_size.saturating_sub(self.stride)
     }
 
-    fn build_weight_tensor(&self, anchor: &LazyTensor) -> LazyTensor {
+    fn build_weight_tensor(&self, anchor: &Tensor) -> Tensor {
         anchor.const_f32_like(
             Arc::clone(&self.weight),
             Shape::from_dims(&[
@@ -194,7 +194,7 @@ impl StreamableConvTranspose1dWeights {
         )
     }
 
-    fn build_bias_tensor(&self, anchor: &LazyTensor) -> Option<LazyTensor> {
+    fn build_bias_tensor(&self, anchor: &Tensor) -> Option<Tensor> {
         self.bias
             .as_ref()
             .map(|b| anchor.const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels])))
@@ -202,7 +202,7 @@ impl StreamableConvTranspose1dWeights {
 
     /// Apply bias as a per-output-channel broadcast add along the
     /// time axis. `xs` must be rank-3 `(B, out_channels, T)`.
-    fn apply_bias(&self, xs: LazyTensor) -> Result<LazyTensor> {
+    fn apply_bias(&self, xs: Tensor) -> Result<Tensor> {
         match self.build_bias_tensor(&xs) {
             None => Ok(xs),
             Some(b) => {
@@ -216,7 +216,7 @@ impl StreamableConvTranspose1dWeights {
     /// eager `NormConvTranspose1d::forward` — used as the inner kernel
     /// inside both [`Self::forward`] (which then unpads) and
     /// [`Self::step`] (which then overlap-adds).
-    fn raw_forward(&self, xs: &LazyTensor) -> Result<LazyTensor> {
+    fn raw_forward(&self, xs: &Tensor) -> Result<Tensor> {
         let w = self.build_weight_tensor(xs);
         let y = xs.conv_transpose1d(
             &w,
@@ -239,7 +239,7 @@ impl StreamableConvTranspose1dWeights {
     /// which simplifies to `(B, out_channels, (T - 1) · stride +
     /// stride) = (B, out_channels, T · stride)` whenever
     /// `kernel >= stride`.
-    pub fn forward(&self, xs: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         let dims = xs.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[1] != self.in_channels {
@@ -283,7 +283,7 @@ impl StreamableConvTranspose1dWeights {
 /// region. `None` until the first step has produced output.
 #[derive(Debug, Clone, Default)]
 pub struct StreamConvTranspose1dState {
-    pub prev_ys: Option<LazyTensor>,
+    pub prev_ys: Option<Tensor>,
 }
 
 impl StreamConvTranspose1dState {
@@ -310,8 +310,8 @@ impl StreamableConvTranspose1dWeights {
     pub fn step(
         &self,
         state: StreamConvTranspose1dState,
-        xs: &LazyTensor,
-    ) -> Result<(StreamConvTranspose1dState, Option<LazyTensor>)> {
+        xs: &Tensor,
+    ) -> Result<(StreamConvTranspose1dState, Option<Tensor>)> {
         let dims = xs.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[1] != self.in_channels {
@@ -381,7 +381,7 @@ impl StreamableConvTranspose1dWeights {
 // `pad_last_1d` import which isn't directly called here but is part of
 // the sub-port-1 surface this module composes with.
 #[allow(dead_code)]
-fn _force_pad_imports_referenced(xs: &LazyTensor) -> Result<LazyTensor> {
+fn _force_pad_imports_referenced(xs: &Tensor) -> Result<Tensor> {
     pad_last_1d(xs, 0, 0, LazyPadMode::Constant)
 }
 
@@ -390,9 +390,9 @@ mod tests {
     use super::*;
     use crate::Device;
 
-    fn const_xs(b: usize, c: usize, t: usize, src: &[f32]) -> LazyTensor {
+    fn const_xs(b: usize, c: usize, t: usize, src: &[f32]) -> Tensor {
         assert_eq!(src.len(), b * c * t);
-        LazyTensor::from_f32(
+        Tensor::from_f32(
             Arc::from(src.to_vec()),
             Shape::from_dims(&[b, c, t]),
             &Device::cpu(),
@@ -470,12 +470,12 @@ mod tests {
 
     fn stream_concat_emits(
         cv: &StreamableConvTranspose1dWeights,
-        xs: &LazyTensor,
+        xs: &Tensor,
         chunk_size: usize,
         t_total: usize,
     ) -> Vec<f32> {
         let mut state = StreamConvTranspose1dState::empty();
-        let mut pieces: Vec<LazyTensor> = Vec::new();
+        let mut pieces: Vec<Tensor> = Vec::new();
         let mut t = 0;
         while t < t_total {
             let len = chunk_size.min(t_total - t);

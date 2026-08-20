@@ -13,7 +13,7 @@
 //!
 //! 1. **State as value, not interior mutability.** Eager carries the
 //!    ring buffer in `&mut self`. The lazy port returns
-//!    `(StreamConv1dState, Option<LazyTensor>)` from `step` so the
+//!    `(StreamConv1dState, Option<Tensor>)` from `step` so the
 //!    streaming state composes naturally with the rest of the lazy
 //!    encoder (no `&mut self` rippling through composition).
 //! 2. **WeightNorm baked at load.** Eager's `conv1d_weight_norm`
@@ -49,7 +49,7 @@
 //!   accepted.
 
 use crate::Result;
-use crate::lazy::LazyTensor;
+use crate::lazy::Tensor;
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -58,6 +58,13 @@ use std::sync::Arc;
 /// Mirrors eager `mimi::conv::PadMode` minus `Reflect`, which neither
 /// eager Mimi nor the lazy executor currently support.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// ⚠️ KEEPS THE `Lazy` PREFIX ON PURPOSE — do not "finish" the 2026-08-19
+/// prefix drop by renaming this. `PadMode` is ALREADY a live type in
+/// `fuel-core/src/lazy_encodec.rs`, so here the prefix is NOT redundant: it is the only thing
+/// distinguishing two types in one crate. CireSnave's ruling was to drop
+/// `Lazy` *where it is redundant*, and this is one of exactly four names
+/// (with LazyKvCache, LazyPadMode, LazyConv1dWeights,
+/// LazyConvTranspose1dWeights) where that condition is not met.
 pub enum LazyPadMode {
     /// Pad with zeros (eager `PadMode::Constant`).
     Constant,
@@ -72,12 +79,7 @@ pub enum LazyPadMode {
 /// Replicate is implemented via `narrow(T, 0, 1).repeat(..., left)`
 /// + concat — works against the existing `Op::Pad` (Constant only)
 /// gap until the executor's Replicate path lands.
-pub fn pad_last_1d(
-    xs: &LazyTensor,
-    left: usize,
-    right: usize,
-    mode: LazyPadMode,
-) -> Result<LazyTensor> {
+pub fn pad_last_1d(xs: &Tensor, left: usize, right: usize, mode: LazyPadMode) -> Result<Tensor> {
     if left == 0 && right == 0 {
         return Ok(xs.clone());
     }
@@ -279,7 +281,7 @@ impl StreamableConv1dWeights {
         ideal.saturating_sub(t_in)
     }
 
-    fn build_weight_tensor(&self, anchor: &LazyTensor) -> LazyTensor {
+    fn build_weight_tensor(&self, anchor: &Tensor) -> Tensor {
         anchor.const_f32_like(
             Arc::clone(&self.weight),
             Shape::from_dims(&[
@@ -290,7 +292,7 @@ impl StreamableConv1dWeights {
         )
     }
 
-    fn build_bias_tensor(&self, anchor: &LazyTensor) -> Option<LazyTensor> {
+    fn build_bias_tensor(&self, anchor: &Tensor) -> Option<Tensor> {
         self.bias
             .as_ref()
             .map(|b| anchor.const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels])))
@@ -299,12 +301,12 @@ impl StreamableConv1dWeights {
     /// Run the streaming conv in one-shot mode. Matches eager
     /// `StreamableConv1d::forward` semantics: apply left/right
     /// padding according to causal/symmetric and pad-mode, then
-    /// convolve at the underlying [`LazyTensor::conv1d`].
+    /// convolve at the underlying [`Tensor::conv1d`].
     ///
     /// Input shape `(B, in_channels, T)`. Output shape
     /// `(B, out_channels, T_out)` where
     /// `T_out = (T + pad_total + extra - kernel) / stride + 1`.
-    pub fn forward(&self, xs: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         let dims = xs.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[1] != self.in_channels {
@@ -338,11 +340,11 @@ impl StreamableConv1dWeights {
 /// consumed by an integer number of strided frames in the previous
 /// step.
 ///
-/// `buf` is `Some(LazyTensor)` of shape `(B, in_channels, L)` once
+/// `buf` is `Some(Tensor)` of shape `(B, in_channels, L)` once
 /// any context has accumulated, otherwise `None`.
 #[derive(Debug, Clone, Default)]
 pub struct StreamConv1dState {
-    pub buf: Option<LazyTensor>,
+    pub buf: Option<Tensor>,
     pub left_pad_applied: bool,
 }
 
@@ -370,8 +372,8 @@ impl StreamableConv1dWeights {
     pub fn step(
         &self,
         mut state: StreamConv1dState,
-        xs: &LazyTensor,
-    ) -> Result<(StreamConv1dState, Option<LazyTensor>)> {
+        xs: &Tensor,
+    ) -> Result<(StreamConv1dState, Option<Tensor>)> {
         let dims = xs.shape();
         let dims = dims.dims();
         if dims.len() != 3 || dims[1] != self.in_channels {
@@ -418,9 +420,9 @@ mod tests {
     use super::*;
     use crate::Device;
 
-    fn const_xs(b: usize, c: usize, t: usize, src: &[f32]) -> LazyTensor {
+    fn const_xs(b: usize, c: usize, t: usize, src: &[f32]) -> Tensor {
         assert_eq!(src.len(), b * c * t);
-        LazyTensor::from_f32(
+        Tensor::from_f32(
             Arc::from(src.to_vec()),
             Shape::from_dims(&[b, c, t]),
             &Device::cpu(),
@@ -502,12 +504,12 @@ mod tests {
 
     fn stream_concat(
         cv: &StreamableConv1dWeights,
-        xs: &LazyTensor,
+        xs: &Tensor,
         chunk_size: usize,
         t_total: usize,
-    ) -> LazyTensor {
+    ) -> Tensor {
         let mut state = StreamConv1dState::empty();
-        let mut pieces: Vec<LazyTensor> = Vec::new();
+        let mut pieces: Vec<Tensor> = Vec::new();
         let mut t = 0;
         while t < t_total {
             let len = chunk_size.min(t_total - t);

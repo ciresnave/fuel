@@ -108,11 +108,8 @@ impl Model {
         let cfg = self.config();
         let t_half = mel_time / 2;
         let enc_shape = fuel::Shape::from_dims(&[1, t_half, cfg.d_model]);
-        let enc_t = fuel::lazy::LazyTensor::from_f32(
-            encoder_flat.to_vec(),
-            enc_shape,
-            &fuel::Device::cpu(),
-        );
+        let enc_t =
+            fuel::lazy::Tensor::from_f32(encoder_flat.to_vec(), enc_shape, &fuel::Device::cpu());
         match self {
             Self::Normal(m) => {
                 let logits = m

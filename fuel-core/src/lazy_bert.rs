@@ -41,7 +41,7 @@
 //! # Ok::<(), fuel_core::Error>(())
 //! ```
 
-use crate::lazy::LazyTensor;
+use crate::lazy::Tensor;
 use fuel_ir::Shape;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -160,7 +160,7 @@ impl BertModel {
     }
 
     /// Run a forward pass on a single sequence of token IDs. Batch size is
-    /// fixed to 1. Returns a `LazyTensor` of shape `[1, seq, hidden_size]`
+    /// fixed to 1. Returns a `Tensor` of shape `[1, seq, hidden_size]`
     /// — the encoder's final hidden state, i.e. the thing task heads
     /// consume.
     ///
@@ -168,7 +168,7 @@ impl BertModel {
     /// is conventionally `[CLS]` and the final positional encoding is
     /// applied left-to-right from position 0; callers wanting `[CLS] …
     /// [SEP]` structure produce those IDs via the tokenizer.
-    pub fn forward(&self, token_ids: &[u32]) -> crate::Result<LazyTensor> {
+    pub fn forward(&self, token_ids: &[u32]) -> crate::Result<Tensor> {
         assert!(!token_ids.is_empty(), "BertModel::forward: empty input");
         let seq = token_ids.len();
         let cfg = &self.config;
@@ -184,7 +184,7 @@ impl BertModel {
         // weights, reshapes/broadcasts) is built via `const_*_like` on
         // this anchor so the whole forward lives in one graph —
         // `index_select` and `matmul` reject cross-graph ops.
-        let word_emb = LazyTensor::from_f32(
+        let word_emb = Tensor::from_f32(
             self.weights.word_embeddings.clone(),
             Shape::from_dims(&[cfg.vocab_size, h]),
             &crate::Device::cpu(),
@@ -255,7 +255,7 @@ impl BertModel {
         &self,
         token_ids: &[u32],
         layer_ids: &[usize],
-    ) -> crate::Result<Vec<LazyTensor>> {
+    ) -> crate::Result<Vec<Tensor>> {
         assert!(
             !token_ids.is_empty(),
             "BertModel::forward_intermediate_layers: empty input"
@@ -279,7 +279,7 @@ impl BertModel {
         );
 
         // Same embedding setup as `forward`.
-        let word_emb = LazyTensor::from_f32(
+        let word_emb = Tensor::from_f32(
             self.weights.word_embeddings.clone(),
             Shape::from_dims(&[cfg.vocab_size, h]),
             &crate::Device::cpu(),
@@ -339,13 +339,13 @@ impl BertModel {
 /// built via `x.const_f32_like(...)` so everything lives in the same
 /// graph (cross-graph ops like `mul`/`add` panic otherwise).
 fn layer_norm_affine(
-    x: &LazyTensor,
+    x: &Tensor,
     gamma: &Arc<[f32]>,
     beta: &Arc<[f32]>,
     eps: f64,
     hidden: usize,
     seq: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let normed = x.layer_norm_last_dim(eps)?;
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))
@@ -362,13 +362,13 @@ fn layer_norm_affine(
 /// `[out_features]`. `x` has shape `[1, seq, in_features]` and anchors
 /// the graph for the weight/bias consts.
 fn linear(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &Arc<[f32]>,
     b: &Arc<[f32]>,
     in_f: usize,
     out_f: usize,
     seq: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]));
     let bias = x
         .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))
@@ -380,11 +380,11 @@ fn linear(
 /// One full BERT transformer block: multi-head self-attention → add+norm →
 /// FFN(GELU) → add+norm.
 fn encoder_layer(
-    x: &LazyTensor,
+    x: &Tensor,
     lw: &BertLayerWeights,
     cfg: &BertConfig,
     seq: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let h = cfg.hidden_size;
     let n_heads = cfg.num_attention_heads;
     let d_head = cfg.head_dim();

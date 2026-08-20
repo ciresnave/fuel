@@ -35,7 +35,7 @@
 //! # Ok::<(), fuel_core::Error>(())
 //! ```
 
-use crate::lazy::LazyTensor;
+use crate::lazy::Tensor;
 use fuel_ir::Shape;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -208,7 +208,7 @@ impl SdTextEncoder {
     /// common source of cryptic mismatches downstream.
     ///
     /// Returns `[1, seq, hidden_size]` hidden states.
-    pub fn forward(&self, tokens: &[u32]) -> crate::Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32]) -> crate::Result<Tensor> {
         let cfg = &self.config;
         assert_eq!(
             tokens.len(),
@@ -221,7 +221,7 @@ impl SdTextEncoder {
         let h = cfg.hidden_size;
 
         // Anchor the graph on the token embedding matrix.
-        let token_emb = LazyTensor::from_f32(
+        let token_emb = Tensor::from_f32(
             self.weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, h]),
             &crate::Device::cpu(),
@@ -269,8 +269,8 @@ impl SdTextEncoder {
         &self,
         tokens: &[u32],
         until_layer: isize,
-    ) -> crate::Result<(LazyTensor, LazyTensor)> {
-        let token_emb = LazyTensor::from_f32(
+    ) -> crate::Result<(Tensor, Tensor)> {
+        let token_emb = Tensor::from_f32(
             self.weights.token_embedding.clone(),
             Shape::from_dims(&[self.config.vocab_size, self.config.hidden_size]),
             &crate::Device::cpu(),
@@ -286,10 +286,10 @@ impl SdTextEncoder {
     /// of threading a graph anchor to avoid cross-graph build errors.
     pub fn forward_until_encoder_layer_anchored(
         &self,
-        anchor: &LazyTensor,
+        anchor: &Tensor,
         tokens: &[u32],
         until_layer: isize,
-    ) -> crate::Result<(LazyTensor, LazyTensor)> {
+    ) -> crate::Result<(Tensor, Tensor)> {
         let token_emb = anchor.const_f32_like(
             self.weights.token_embedding.clone(),
             Shape::from_dims(&[self.config.vocab_size, self.config.hidden_size]),
@@ -299,10 +299,10 @@ impl SdTextEncoder {
 
     fn forward_until_encoder_layer_seeded(
         &self,
-        token_emb: LazyTensor,
+        token_emb: Tensor,
         tokens: &[u32],
         until_layer: isize,
-    ) -> crate::Result<(LazyTensor, LazyTensor)> {
+    ) -> crate::Result<(Tensor, Tensor)> {
         let cfg = &self.config;
         assert_eq!(
             tokens.len(),
@@ -337,7 +337,7 @@ impl SdTextEncoder {
         let p = pos_emb.index_select(0, &position_ids)?;
         let mut x = w.add(&p)?.reshape(Shape::from_dims(&[1, seq, h]))?;
 
-        let mut intermediate: Option<LazyTensor> = None;
+        let mut intermediate: Option<Tensor> = None;
         for (layer_id, lw) in self.weights.layers.iter().enumerate() {
             x = encoder_layer(&x, lw, cfg, seq)?;
             if layer_id == until_idx {
@@ -370,11 +370,11 @@ impl SdTextEncoder {
 /// One CLIP transformer block: causal self-attention + quick-GELU FFN,
 /// each wrapped as `x + sublayer(LN(x))` (pre-norm).
 fn encoder_layer(
-    x: &LazyTensor,
+    x: &Tensor,
     lw: &ClipLayerWeights,
     cfg: &ClipTextConfig,
     seq: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let h = cfg.hidden_size;
     let n_heads = cfg.num_attention_heads;
     let d_head = cfg.head_dim();
@@ -392,7 +392,7 @@ fn encoder_layer(
     let scale = 1.0_f64 / (d_head as f64).sqrt();
     let mut scores = q.matmul(&k_t)?.mul_scalar(scale);
     // Causal mask: -inf above the diagonal.
-    let mask_t = LazyTensor::additive_causal_mask_like(&scores, seq)
+    let mask_t = Tensor::additive_causal_mask_like(&scores, seq)
         .reshape(Shape::from_dims(&[1, 1, seq, seq]))?
         .broadcast_to(Shape::from_dims(&[1, n_heads, seq, seq]))?;
     scores = scores.add(&mask_t)?;
@@ -417,14 +417,14 @@ fn encoder_layer(
 /// QuickGELU: `x * sigmoid(1.702 * x)`. CLIP's approximation to GELU;
 /// the 1.702 constant is part of CLIP's trained baseline and swapping
 /// in the exact GELU at inference produces visibly different outputs.
-fn quick_gelu(x: &LazyTensor) -> crate::Result<LazyTensor> {
+fn quick_gelu(x: &Tensor) -> crate::Result<Tensor> {
     // sigmoid(y) = 1 / (1 + exp(-y))
     // sigmoid(1.702 * x) = 1 / (1 + exp(-1.702 * x))
     let scaled = x.mul_scalar(1.702);
     let neg = scaled.neg();
     let ex = neg.exp();
     let one_plus = ex.add_scalar(1.0);
-    // Reciprocal via 1/one_plus. LazyTensor's div goes through the
+    // Reciprocal via 1/one_plus. Tensor's div goes through the
     // Div op; use `div` with the numerator 1-tensor.
     let ones = x
         .const_f32_like(vec![1.0_f32; 1], Shape::from_dims(&[1]))
@@ -435,13 +435,13 @@ fn quick_gelu(x: &LazyTensor) -> crate::Result<LazyTensor> {
 
 /// `y = LayerNorm(x) * gamma + beta`. Same pattern as BERT / Whisper.
 fn layer_norm_affine(
-    x: &LazyTensor,
+    x: &Tensor,
     gamma: &Arc<[f32]>,
     beta: &Arc<[f32]>,
     eps: f64,
     hidden: usize,
     seq: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let normed = x.layer_norm_last_dim(eps)?;
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))
@@ -455,13 +455,13 @@ fn layer_norm_affine(
 }
 
 fn linear(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &Arc<[f32]>,
     b: Option<&Arc<[f32]>>,
     in_f: usize,
     out_f: usize,
     seq: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]));
     let proj = x.matmul(&w_t)?;
     match b {
@@ -787,7 +787,7 @@ mod tests {
         // We build a 1-element graph and compare against the closed form.
         let x_vals = [-2.0_f32, -0.5, 0.0, 0.5, 1.0, 2.0];
         for &v in &x_vals {
-            let x = LazyTensor::from_f32(vec![v], Shape::from_dims(&[1]), &crate::Device::cpu());
+            let x = Tensor::from_f32(vec![v], Shape::from_dims(&[1]), &crate::Device::cpu());
             let y = quick_gelu(&x).unwrap();
             let out = y.realize_f32()[0];
             let expected = v * (1.0 / (1.0 + (-1.702_f32 * v).exp()));

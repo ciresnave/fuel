@@ -11,7 +11,7 @@ use std::sync::Arc;
 use anyhow::{Error as E, Result, anyhow};
 use clap::Parser;
 use fuel::Shape;
-use fuel::lazy::{LazyTensor, load_tensor_as_f32, load_transposed_matrix};
+use fuel::lazy::{Tensor, load_tensor_as_f32, load_transposed_matrix};
 use fuel::lazy_bert::{BertConfig, BertModel, BertWeights};
 use hf_hub::{Repo, RepoType, api::sync::Api};
 use tokenizers::Tokenizer;
@@ -92,7 +92,7 @@ fn load_mlm_head(st: &fuel::safetensors::MmapedSafetensors, cfg: &BertConfig) ->
 
 /// Build the MLM logits from per-token hidden states `[1, seq, hidden]`.
 /// Output shape: `[1, seq, vocab]`.
-fn apply_mlm_head(hidden: &LazyTensor, mlm: &MlmHead, cfg: &BertConfig) -> Result<LazyTensor> {
+fn apply_mlm_head(hidden: &Tensor, mlm: &MlmHead, cfg: &BertConfig) -> Result<Tensor> {
     let h = cfg.hidden_size;
     let v = cfg.vocab_size;
 

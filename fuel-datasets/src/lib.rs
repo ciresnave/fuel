@@ -19,7 +19,7 @@
 //!
 //! Loaders return `Vec<f32>` / `Vec<u32>`, never a tensor. Decoding a dataset is
 //! file I/O plus a normalization pass, and the consumer must build its tensors on
-//! *its own* graph anyway — `LazyTensor::from_*` mints a NEW graph per call, so a
+//! *its own* graph anyway — `Tensor::from_*` mints a NEW graph per call, so a
 //! tensor handed out by a loader could never be combined with the caller's
 //! activations. Host buffers are the shape that composes.
 //!

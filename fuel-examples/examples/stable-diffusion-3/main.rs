@@ -46,7 +46,7 @@ use clap::Parser;
 use std::sync::Arc;
 use tokenizers::Tokenizer;
 
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel::lazy_mmdit::{MmDitFullConfig, MmDitFullModel, MmDitFullWeights};
 use fuel::lazy_sd_samplers_sd3::{Sd3Denoiser, Sd3SamplerConfig, flow_match_euler_sample};
 use fuel::lazy_sd3_text_encoder::{
@@ -125,12 +125,12 @@ struct MmDitFullDenoiser<'a> {
 impl<'a> Sd3Denoiser for MmDitFullDenoiser<'a> {
     fn forward(
         &self,
-        latent: &LazyTensor,
-        timestep: &LazyTensor,
-        y: &LazyTensor,
-        context: &LazyTensor,
+        latent: &Tensor,
+        timestep: &Tensor,
+        y: &Tensor,
+        context: &Tensor,
         skip_layers: Option<&[usize]>,
-    ) -> fuel::Result<LazyTensor> {
+    ) -> fuel::Result<Tensor> {
         self.model
             .forward(latent, timestep, y, context, skip_layers)
     }
@@ -349,7 +349,7 @@ fn main() -> Result<()> {
     let w_lat = width / 8;
     let noise_seed = seed.unwrap_or(0xBADF_00D_BADF_00D_u64);
     let noise = deterministic_noise(noise_seed, c_lat * h_lat * w_lat);
-    let latent = LazyTensor::from_f32(
+    let latent = Tensor::from_f32(
         Arc::from(noise),
         Shape::from_dims(&[1, c_lat, h_lat, w_lat]),
         &device,

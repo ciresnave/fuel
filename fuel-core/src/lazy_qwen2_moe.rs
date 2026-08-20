@@ -36,7 +36,7 @@
 //!   `Qwen/Qwen1.5-MoE-A2.7B-Chat` at ~14 GB — real-weights validation
 //!   needs that download.
 
-use crate::lazy::LazyTensor;
+use crate::lazy::Tensor;
 use fuel_ir::Shape;
 use serde::Deserialize;
 use std::sync::Arc;
@@ -135,7 +135,7 @@ impl Qwen2MoeModel {
     /// Run a forward pass on a single sequence of token IDs. Returns
     /// `[1, seq, vocab_size]` logits. No KV cache — this is the
     /// "prefill from scratch" path.
-    pub fn forward(&self, tokens: &[u32]) -> crate::Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32]) -> crate::Result<Tensor> {
         let h_norm = self.run_backbone(tokens)?;
         self.apply_lm_head(&h_norm)
     }
@@ -147,29 +147,25 @@ impl Qwen2MoeModel {
     /// Gemma / MixFormer / Qwen2 — useful for any embedding
     /// adapter or custom pooler built on top of a Qwen2-MoE
     /// backbone.
-    pub fn forward_hidden(&self, tokens: &[u32]) -> crate::Result<LazyTensor> {
+    pub fn forward_hidden(&self, tokens: &[u32]) -> crate::Result<Tensor> {
         self.run_backbone(tokens)
     }
 
     /// Multimodal entry point. Skips token embedding; runs the decoder
     /// over pre-embedded inputs. Qwen2-MoE does NOT scale embeddings
     /// and has no start_pos (matches eager forward signature).
-    pub fn forward_embeds(&self, embeds: &LazyTensor) -> crate::Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &Tensor) -> crate::Result<Tensor> {
         let h_norm = self.run_backbone_embeds(embeds)?;
         self.apply_lm_head(&h_norm)
     }
 
     /// Hidden-state variant of [`Self::forward_embeds`].
-    pub fn forward_hidden_embeds(&self, embeds: &LazyTensor) -> crate::Result<LazyTensor> {
+    pub fn forward_hidden_embeds(&self, embeds: &Tensor) -> crate::Result<Tensor> {
         self.run_backbone_embeds(embeds)
     }
 
     /// Build per-token embeddings without running the decoder.
-    pub fn embed_tokens_anchored(
-        &self,
-        anchor: &LazyTensor,
-        tokens: &[u32],
-    ) -> crate::Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &Tensor, tokens: &[u32]) -> crate::Result<Tensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
@@ -179,7 +175,7 @@ impl Qwen2MoeModel {
         )
     }
 
-    fn apply_lm_head(&self, h_norm: &LazyTensor) -> crate::Result<LazyTensor> {
+    fn apply_lm_head(&self, h_norm: &Tensor) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let lm = h_norm.const_f32_like(
             self.weights.lm_head.clone(),
@@ -191,13 +187,13 @@ impl Qwen2MoeModel {
     /// Shared backbone: embed → per-layer attn+MoE → final
     /// RmsNorm. Used by `forward` (then matmuls with `lm_head`)
     /// and `forward_hidden` (returns hidden states directly).
-    fn run_backbone(&self, tokens: &[u32]) -> crate::Result<LazyTensor> {
+    fn run_backbone(&self, tokens: &[u32]) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let h = cfg.hidden_size;
         let seq = tokens.len();
         assert!(seq > 0);
 
-        let embed = LazyTensor::from_f32(
+        let embed = Tensor::from_f32(
             self.weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, h]),
             &crate::Device::cpu(),
@@ -209,7 +205,7 @@ impl Qwen2MoeModel {
         self.run_backbone_embeds(&x)
     }
 
-    fn run_backbone_embeds(&self, embeds: &LazyTensor) -> crate::Result<LazyTensor> {
+    fn run_backbone_embeds(&self, embeds: &Tensor) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let h = cfg.hidden_size;
         let dims = embeds.shape();
@@ -241,11 +237,11 @@ impl Qwen2MoeModel {
 }
 
 fn decoder_layer(
-    x: &LazyTensor,
+    x: &Tensor,
     lw: &Qwen2MoeLayerWeights,
     cfg: &Qwen2MoeConfig,
     seq: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let h = cfg.hidden_size;
     // Attention sublayer
     let x_ln = rms_norm_affine(x, &lw.input_ln, cfg.rms_norm_eps, h, seq)?;
@@ -259,11 +255,11 @@ fn decoder_layer(
 }
 
 fn qwen2_attn(
-    x: &LazyTensor,
+    x: &Tensor,
     lw: &Qwen2MoeLayerWeights,
     cfg: &Qwen2MoeConfig,
     seq: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let h = cfg.hidden_size;
     let n_heads = cfg.num_attention_heads;
     let d_head = cfg.head_dim();
@@ -310,11 +306,11 @@ fn qwen2_attn(
 /// outputs are weighted by the full gate softmax. See module docs for
 /// the scoping rationale vs the trained top-k path.
 fn moe_block(
-    x: &LazyTensor,
+    x: &Tensor,
     lw: &Qwen2MoeLayerWeights,
     cfg: &Qwen2MoeConfig,
     seq: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let h = cfg.hidden_size;
     let e = cfg.num_experts;
 
@@ -326,7 +322,7 @@ fn moe_block(
     // Each expert's SwiGLU output, weighted by its per-token gate weight.
     // Accumulate into `routed_sum` : [1, seq, h].
     let moe_int = cfg.moe_intermediate_size;
-    let mut routed_sum: Option<LazyTensor> = None;
+    let mut routed_sum: Option<Tensor> = None;
     for (ei, ew) in lw.experts.iter().enumerate() {
         let expert_out = swiglu_mlp(x, &ew.gate_w, &ew.up_w, &ew.down_w, h, moe_int, seq)?;
         // Slice router_weights to get the column for this expert: [1, seq, 1].
@@ -361,14 +357,14 @@ fn moe_block(
 }
 
 fn swiglu_mlp(
-    x: &LazyTensor,
+    x: &Tensor,
     gate_w: &Arc<[f32]>,
     up_w: &Arc<[f32]>,
     down_w: &Arc<[f32]>,
     h: usize,
     h_ff: usize,
     seq: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let g = linear(x, gate_w, None, h, h_ff, seq)?.silu();
     let u = linear(x, up_w, None, h, h_ff, seq)?;
     let gated = g.mul(&u)?;
@@ -376,12 +372,12 @@ fn swiglu_mlp(
 }
 
 fn rms_norm_affine(
-    x: &LazyTensor,
+    x: &Tensor,
     gamma: &Arc<[f32]>,
     eps: f64,
     hidden: usize,
     seq: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     // RMS norm: x * rsqrt(mean(x^2) + eps) * gamma
     let sq = x.mul(x)?;
     let ms = sq.mean_dim(2)?; // [1, seq]
@@ -415,12 +411,12 @@ fn rope_tables(theta: f64, seq: usize, d_head: usize) -> (Vec<f32>, Vec<f32>) {
 }
 
 fn apply_rope(
-    x: &LazyTensor, // [1, H, seq, d_head]
+    x: &Tensor, // [1, H, seq, d_head]
     cos: &[f32],
     sin: &[f32],
     seq: usize,
     d_head: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let x_shape = x.shape();
     let x_dims = x_shape.dims();
     let n_heads = x_dims[1];
@@ -442,13 +438,13 @@ fn apply_rope(
 }
 
 fn linear(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &Arc<[f32]>,
     b: Option<&Arc<[f32]>>,
     in_f: usize,
     out_f: usize,
     seq: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]));
     let proj = x.matmul(&w_t)?;
     match b {
@@ -813,8 +809,7 @@ mod tests {
         let (cfg, model) = build_test_model();
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens).unwrap().realize_f32();
-        let anchor =
-            LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &crate::Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &crate::Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds).unwrap().realize_f32();
         let max_diff = logits_ref
@@ -832,7 +827,7 @@ mod tests {
     #[test]
     fn forward_embeds_rejects_bad_shape() {
         let (cfg, model) = build_test_model();
-        let bad = LazyTensor::from_f32(
+        let bad = Tensor::from_f32(
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
             Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
             &crate::Device::cpu(),
@@ -845,8 +840,7 @@ mod tests {
         let (_cfg, model) = build_test_model();
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens).unwrap().realize_f32();
-        let anchor =
-            LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &crate::Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &crate::Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let h_via_embeds = model.forward_hidden_embeds(&embeds).unwrap().realize_f32();
         let max_diff = h_ref

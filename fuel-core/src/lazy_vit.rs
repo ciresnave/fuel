@@ -40,7 +40,7 @@
 //! `use_mask_token` (masked autoencoding pre-training) and
 //! position interpolation (variable image sizes) deferred.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -154,7 +154,7 @@ impl VitModel {
     /// classifier). Shape:
     ///   - Without classifier: `(1, num_patches + 1, hidden)`
     ///   - With classifier: `(1, num_labels)` from the CLS token.
-    pub fn forward(&self, pixel_values: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, pixel_values: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = pixel_values.shape();
@@ -254,9 +254,9 @@ impl VitModel {
     /// identical.
     pub fn forward_intermediate_layers(
         &self,
-        pixel_values: &LazyTensor,
+        pixel_values: &Tensor,
         layer_ids: &[usize],
-    ) -> Result<Vec<LazyTensor>> {
+    ) -> Result<Vec<Tensor>> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = pixel_values.shape();
@@ -329,7 +329,7 @@ impl VitModel {
         Ok(out)
     }
 
-    fn apply_layer(&self, x: &LazyTensor, layer: &VitLayerWeights) -> Result<LazyTensor> {
+    fn apply_layer(&self, x: &Tensor, layer: &VitLayerWeights) -> Result<Tensor> {
         let cfg = &self.config;
         let dims = x.shape();
         let dims = dims.dims();
@@ -671,10 +671,10 @@ mod tests {
         }
     }
 
-    fn tiny_image(cfg: &VitConfig) -> LazyTensor {
+    fn tiny_image(cfg: &VitConfig) -> Tensor {
         let n_pix = 1 * cfg.num_channels * cfg.image_size * cfg.image_size;
         let img_data: Vec<f32> = (0..n_pix).map(|i| (i as f32 / n_pix as f32)).collect();
-        LazyTensor::from_f32(
+        Tensor::from_f32(
             Arc::from(img_data),
             Shape::from_dims(&[1, cfg.num_channels, cfg.image_size, cfg.image_size]),
             &Device::cpu(),

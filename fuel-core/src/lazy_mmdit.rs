@@ -39,7 +39,7 @@
 //! AdaLN conditioning derived from `timestep` + `y`.
 
 use crate::Result;
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -174,11 +174,11 @@ impl MmDitModel {
     /// (DiT's prediction target is the image stream).
     pub fn forward(
         &self,
-        img: &LazyTensor,
-        txt: &LazyTensor,
-        timestep: &LazyTensor,
-        y: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        img: &Tensor,
+        txt: &Tensor,
+        timestep: &Tensor,
+        y: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
 
         // ---- Conditioning vector c = T_mlp(sin_embed(t)) + Y_mlp(y) -----
@@ -211,10 +211,10 @@ impl MmDitModel {
 /// MLPs are 2-layer SiLU-activated linears. Result shape: `(B, dim)`.
 fn build_conditioning(
     w: &ConditioningWeights,
-    timestep: &LazyTensor,
-    y: &LazyTensor,
+    timestep: &Tensor,
+    y: &Tensor,
     dim: usize,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     let dims_t = timestep.shape().dims().to_vec();
     if dims_t.len() != 1 {
         return Err(crate::Error::Msg(format!(
@@ -255,7 +255,7 @@ fn build_conditioning(
 /// Sinusoidal feature embedding of a scalar timestep tensor. Input
 /// `(B,)`, output `(B, dim)` with first `dim/2` cosines followed by
 /// `dim/2` sines, matching `SD`'s `flip_sin_to_cos = true` ordering.
-fn timestep_sinusoidal_embed(t: &LazyTensor, dim: usize) -> Result<LazyTensor> {
+fn timestep_sinusoidal_embed(t: &Tensor, dim: usize) -> Result<Tensor> {
     if !dim.is_multiple_of(2) {
         return Err(crate::Error::Msg(format!(
             "timestep_sinusoidal_embed: dim {dim} must be even"
@@ -291,12 +291,12 @@ fn timestep_sinusoidal_embed(t: &LazyTensor, dim: usize) -> Result<LazyTensor> {
 /// AdaLN projection. Each tensor has shape `(B, dim)`.
 #[derive(Debug, Clone)]
 pub struct ModulationChunks {
-    pub shift_msa: LazyTensor,
-    pub scale_msa: LazyTensor,
-    pub gate_msa: LazyTensor,
-    pub shift_mlp: LazyTensor,
-    pub scale_mlp: LazyTensor,
-    pub gate_mlp: LazyTensor,
+    pub shift_msa: Tensor,
+    pub scale_msa: Tensor,
+    pub gate_msa: Tensor,
+    pub shift_mlp: Tensor,
+    pub scale_mlp: Tensor,
+    pub gate_mlp: Tensor,
 }
 
 /// Compute `(1 + scale) * x + shift` along the trailing feature dim.
@@ -304,11 +304,7 @@ pub struct ModulationChunks {
 /// `x` is `(B, S, dim)` and `scale`/`shift` are `(B, dim)`. The latter
 /// two are unsqueezed and broadcast across the sequence dimension to
 /// match `x`.
-pub fn apply_modulation(
-    x: &LazyTensor,
-    scale: &LazyTensor,
-    shift: &LazyTensor,
-) -> Result<LazyTensor> {
+pub fn apply_modulation(x: &Tensor, scale: &Tensor, shift: &Tensor) -> Result<Tensor> {
     let x_dims = x.shape().dims().to_vec();
     if x_dims.len() != 3 {
         return Err(crate::Error::Msg(format!(
@@ -332,7 +328,7 @@ pub fn apply_modulation(
 }
 
 fn compute_modulation(
-    c: &LazyTensor,
+    c: &Tensor,
     adaln_proj: &WeightStorage,
     adaln_bias: &Arc<[f32]>,
     dim: usize,
@@ -360,11 +356,7 @@ fn compute_modulation(
 
 // ---- Projections ------------------------------------------------------------
 
-fn split_qkv(
-    qkv: &LazyTensor,
-    num_heads: usize,
-    head_dim: usize,
-) -> Result<(LazyTensor, LazyTensor, LazyTensor)> {
+fn split_qkv(qkv: &Tensor, num_heads: usize, head_dim: usize) -> Result<(Tensor, Tensor, Tensor)> {
     let dims = qkv.shape().dims().to_vec();
     if dims.len() != 3 {
         return Err(crate::Error::Msg(format!(
@@ -392,12 +384,12 @@ fn split_qkv(
 }
 
 fn project_qkv(
-    x_norm_mod: &LazyTensor,
+    x_norm_mod: &Tensor,
     qkv_proj: &WeightStorage,
     qkv_bias: &Arc<[f32]>,
     num_heads: usize,
     head_dim: usize,
-) -> Result<(LazyTensor, LazyTensor, LazyTensor)> {
+) -> Result<(Tensor, Tensor, Tensor)> {
     let dim = num_heads * head_dim;
     let qkv = qkv_proj.apply_linear(x_norm_mod, dim, 3 * dim)?;
     let qkv = qkv.add_trailing_bias(Arc::clone(qkv_bias))?;
@@ -406,12 +398,7 @@ fn project_qkv(
 
 // ---- Joint scaled dot-product attention -------------------------------------
 
-fn attention(
-    q: &LazyTensor,
-    k: &LazyTensor,
-    v: &LazyTensor,
-    head_dim: usize,
-) -> Result<LazyTensor> {
+fn attention(q: &Tensor, k: &Tensor, v: &Tensor, head_dim: usize) -> Result<Tensor> {
     let k_t = k.transpose()?;
     let scale = 1.0_f64 / (head_dim as f64).sqrt();
     let scores = q.matmul(&k_t)?.mul_scalar(scale);
@@ -426,12 +413,12 @@ fn attention(
 /// QKV-projection, then joint-attention with concat'd K/V/Q, split
 /// back per modality, gated residual + per-modality MLP residual.
 pub fn apply_double_stream(
-    txt: &LazyTensor,
-    img: &LazyTensor,
-    c: &LazyTensor,
+    txt: &Tensor,
+    img: &Tensor,
+    c: &Tensor,
     weights: &DoubleStreamBlockWeights,
     cfg: &MmDitConfig,
-) -> Result<(LazyTensor, LazyTensor)> {
+) -> Result<(Tensor, Tensor)> {
     let dim = cfg.dim;
     let num_heads = cfg.num_heads;
     let head_dim = cfg.head_dim();
@@ -485,7 +472,7 @@ pub fn apply_double_stream(
 }
 
 /// `x + gate.unsqueeze(1) * delta` along the sequence axis.
-fn gated_residual(x: &LazyTensor, delta: &LazyTensor, gate: &LazyTensor) -> Result<LazyTensor> {
+fn gated_residual(x: &Tensor, delta: &Tensor, gate: &Tensor) -> Result<Tensor> {
     let x_dims = x.shape().dims().to_vec();
     if x_dims.len() != 3 {
         return Err(crate::Error::Msg(format!(
@@ -503,11 +490,11 @@ fn gated_residual(x: &LazyTensor, delta: &LazyTensor, gate: &LazyTensor) -> Resu
 }
 
 fn mlp_residual(
-    x: &LazyTensor,
+    x: &Tensor,
     m: &ModulationChunks,
     weights: &StreamWeights,
     cfg: &MmDitConfig,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     let dim = cfg.dim;
     let mlp_hidden = dim * cfg.mlp_ratio;
     let x_norm = x.layer_norm_last_dim(cfg.eps)?;
@@ -526,11 +513,11 @@ fn mlp_residual(
 /// concat'd (text | image) sequence, then attention, gated residual,
 /// shared MLP with gated residual.
 pub fn apply_single_stream(
-    joined: &LazyTensor,
-    c: &LazyTensor,
+    joined: &Tensor,
+    c: &Tensor,
     weights: &SingleStreamBlockWeights,
     cfg: &MmDitConfig,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     let dim = cfg.dim;
     let num_heads = cfg.num_heads;
     let head_dim = cfg.head_dim();
@@ -572,12 +559,7 @@ pub struct DoubleStreamBlock {
 }
 
 impl DoubleStreamBlock {
-    pub fn forward(
-        &self,
-        txt: &LazyTensor,
-        img: &LazyTensor,
-        c: &LazyTensor,
-    ) -> Result<(LazyTensor, LazyTensor)> {
+    pub fn forward(&self, txt: &Tensor, img: &Tensor, c: &Tensor) -> Result<(Tensor, Tensor)> {
         apply_double_stream(txt, img, c, &self.weights, &self.config)
     }
 }
@@ -589,7 +571,7 @@ pub struct SingleStreamBlock {
 }
 
 impl SingleStreamBlock {
-    pub fn forward(&self, joined: &LazyTensor, c: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, joined: &Tensor, c: &Tensor) -> Result<Tensor> {
         apply_single_stream(joined, c, &self.weights, &self.config)
     }
 }
@@ -1010,12 +992,12 @@ impl MmDitFullModel {
     /// Returns: `(N, out_channels, H, W)` predicted noise.
     pub fn forward(
         &self,
-        x: &LazyTensor,
-        t: &LazyTensor,
-        y: &LazyTensor,
-        context: &LazyTensor,
+        x: &Tensor,
+        t: &Tensor,
+        y: &Tensor,
+        context: &Tensor,
         skip_layers: Option<&[usize]>,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let hidden = cfg.hidden_size();
         let inner_cfg = cfg.inner_config();
@@ -1132,12 +1114,12 @@ impl MmDitFullModel {
 // ---- Patch embedder ---------------------------------------------------------
 
 fn patch_embed(
-    x: &LazyTensor,
+    x: &Tensor,
     weights: &PatchEmbedderWeights,
     patch_size: usize,
     in_channels: usize,
     hidden: usize,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     let w_shape = Shape::from_dims(&[hidden, in_channels, patch_size, patch_size]);
     let w_t = weights.proj_weight.const_like(x, w_shape)?;
     let bias_t = x.const_f32_like(Arc::clone(&weights.proj_bias), Shape::from_dims(&[hidden]));
@@ -1168,14 +1150,14 @@ fn patch_embed(
 /// resolutions that aren't exact multiples of `patch_size * 2` still
 /// produce a deterministic patch count.
 fn cropped_pos_embed(
-    anchor: &LazyTensor,
+    anchor: &Tensor,
     pos_embed: &Arc<[f32]>,
     pos_embed_max_size: usize,
     hidden: usize,
     h_lat: usize,
     w_lat: usize,
     patch_size: usize,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     let h = (h_lat + 1) / patch_size;
     let w = (w_lat + 1) / patch_size;
     if h > pos_embed_max_size || w > pos_embed_max_size {
@@ -1217,12 +1199,12 @@ fn cropped_pos_embed(
 /// context side — it's discarded), while the image stream gets a
 /// full DoubleStream-style attention + MLP update.
 fn apply_context_qkv_only_joint(
-    txt: &LazyTensor,
-    img: &LazyTensor,
-    c: &LazyTensor,
+    txt: &Tensor,
+    img: &Tensor,
+    c: &Tensor,
     weights: &ContextQkvOnlyBlockWeights,
     cfg: &MmDitConfig,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     let dim = cfg.dim;
     let num_heads = cfg.num_heads;
     let head_dim = cfg.head_dim();
@@ -1286,13 +1268,13 @@ fn apply_context_qkv_only_joint(
 /// Final-layer projection: 2-chunk AdaLN (shift, scale), then a single
 /// linear from `hidden` to `patch² * out_channels` per token.
 fn apply_final_layer(
-    x: &LazyTensor,
-    c: &LazyTensor,
+    x: &Tensor,
+    c: &Tensor,
     weights: &FinalLayerWeights,
     hidden: usize,
     patch_size: usize,
     out_channels: usize,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     let c_act = c.silu();
     let m = weights
         .adaln_proj
@@ -1325,12 +1307,12 @@ fn apply_final_layer(
 /// same `(h + 1) / patch_size` convention as the eager wrapper so the
 /// final `narrow` in `forward` can strip back to the original (H, W).
 fn unpatchify(
-    x: &LazyTensor,
+    x: &Tensor,
     patch_size: usize,
     out_channels: usize,
     h_lat: usize,
     w_lat: usize,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     let h_patch = (h_lat + 1) / patch_size;
     let w_patch = (w_lat + 1) / patch_size;
     let dims = x.shape().dims().to_vec();
@@ -1684,7 +1666,7 @@ mod tests {
         seq_text: usize,
         seq_image: usize,
         adm_in: usize,
-    ) -> (LazyTensor, LazyTensor, LazyTensor, LazyTensor) {
+    ) -> (Tensor, Tensor, Tensor, Tensor) {
         let dev = Device::cpu();
         let mut s: u32 = 0xBADF00D;
         let mut rng = move || -> f32 {
@@ -1695,7 +1677,7 @@ mod tests {
         let img_data: Vec<f32> = (0..(1 * seq_image * cfg.dim)).map(|_| rng()).collect();
         let y_data: Vec<f32> = (0..(1 * adm_in)).map(|_| rng()).collect();
         let t_data: Vec<f32> = vec![0.5_f32];
-        let txt = LazyTensor::from_f32(
+        let txt = Tensor::from_f32(
             Arc::from(txt_data),
             Shape::from_dims(&[1, seq_text, cfg.dim]),
             &dev,
@@ -1736,7 +1718,7 @@ mod tests {
         let data: Vec<f32> = (0..(b * s * dim))
             .map(|i| (i as f32 * 0.137).sin())
             .collect();
-        let x = LazyTensor::from_f32(Arc::from(data), Shape::from_dims(&[b, s, dim]), &dev);
+        let x = Tensor::from_f32(Arc::from(data), Shape::from_dims(&[b, s, dim]), &dev);
         let normed = x.layer_norm_last_dim(1e-6).unwrap();
         let zero = x.const_f32_like(
             Arc::from(vec![0.0_f32; b * dim]),
@@ -1768,7 +1750,7 @@ mod tests {
         let delta_data: Vec<f32> = (0..(b * s * dim))
             .map(|i| (i as f32 * 0.07).sin())
             .collect();
-        let x = LazyTensor::from_f32(Arc::from(x_data), Shape::from_dims(&[b, s, dim]), &dev);
+        let x = Tensor::from_f32(Arc::from(x_data), Shape::from_dims(&[b, s, dim]), &dev);
         let delta = x.const_f32_like(Arc::from(delta_data), Shape::from_dims(&[b, s, dim]));
         let gate = x.const_f32_like(
             Arc::from(vec![0.0_f32; b * dim]),
@@ -1998,7 +1980,7 @@ mod tests {
         h: usize,
         w: usize,
         s_context: usize,
-    ) -> (LazyTensor, LazyTensor, LazyTensor, LazyTensor) {
+    ) -> (Tensor, Tensor, Tensor, Tensor) {
         let dev = Device::cpu();
         let mut s: u32 = 0xFADE;
         let mut rng = move || -> f32 {
@@ -2011,7 +1993,7 @@ mod tests {
         let ctx_data: Vec<f32> = (0..(1 * s_context * cfg.context_embed_size))
             .map(|_| rng())
             .collect();
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             Arc::from(x_data),
             Shape::from_dims(&[1, cfg.in_channels, h, w]),
             &dev,
@@ -2124,7 +2106,7 @@ mod tests {
         let data: Vec<f32> = (0..(1 * s * c_per_token))
             .map(|i| i as f32 * 0.01)
             .collect();
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             Arc::from(data),
             Shape::from_dims(&[1, s, c_per_token]),
             &dev,

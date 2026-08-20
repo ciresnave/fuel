@@ -46,7 +46,7 @@
 //! F32, teacher-forced layout (decoder sees full target sequence
 //! in one call).
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -166,12 +166,12 @@ pub struct T5Model {
 }
 
 impl T5Model {
-    pub fn forward(&self, src_tokens: &[u32], tgt_tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn forward(&self, src_tokens: &[u32], tgt_tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         assert!(!src_tokens.is_empty());
         assert!(!tgt_tokens.is_empty());
 
-        let embed = LazyTensor::from_f32(
+        let embed = Tensor::from_f32(
             self.weights.shared_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.d_model]),
             &Device::cpu(),
@@ -209,10 +209,10 @@ impl T5Model {
     /// Includes the final RmsNorm. No LM head. Mirrors the
     /// `forward_hidden` pattern on the LLM backbones (Llama,
     /// Mistral, Qwen2) and the SD-text-encoder shape.
-    pub fn forward_encoder(&self, src_tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn forward_encoder(&self, src_tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         assert!(!src_tokens.is_empty(), "src_tokens must be non-empty");
-        let embed = LazyTensor::from_f32(
+        let embed = Tensor::from_f32(
             self.weights.shared_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.d_model]),
             &Device::cpu(),
@@ -225,7 +225,7 @@ impl T5Model {
     /// states `(1, src_len, d_model)`. Useful for hosts that want to
     /// splice non-text features into the T5 encoder input (rare for T5
     /// but matches the cross-port convention).
-    pub fn forward_encoder_embeds(&self, src_embeds: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward_encoder_embeds(&self, src_embeds: &Tensor) -> Result<Tensor> {
         self.encode_from_embeds(src_embeds)
     }
 
@@ -236,9 +236,9 @@ impl T5Model {
     /// embeddings (e.g. mixed-modality generation experiments).
     pub fn forward_decoder_embeds(
         &self,
-        tgt_embeds: &LazyTensor,
-        encoder_out: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        tgt_embeds: &Tensor,
+        encoder_out: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let dec_out = self.decode_from_embeds(tgt_embeds, encoder_out)?;
         let lm_head = match &self.weights.lm_head {
@@ -265,16 +265,16 @@ impl T5Model {
     /// LM head or tied-embedding scaling.
     pub fn forward_decoder_hidden_embeds(
         &self,
-        tgt_embeds: &LazyTensor,
-        encoder_out: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        tgt_embeds: &Tensor,
+        encoder_out: &Tensor,
+    ) -> Result<Tensor> {
         self.decode_from_embeds(tgt_embeds, encoder_out)
     }
 
     /// Build per-token embeddings without running encoder or decoder.
     /// Returns `(1, seq, d_model)`. T5 has tied src/tgt embeddings
     /// (shared_embedding); the same table serves both sides.
-    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &Tensor, tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.shared_embedding.clone(),
@@ -294,11 +294,7 @@ impl T5Model {
     /// autoregressive seq2seq generation where the encoder
     /// output is cached once and the decoder is invoked per
     /// generated token.
-    pub fn forward_decoder(
-        &self,
-        tgt_tokens: &[u32],
-        encoder_out: &LazyTensor,
-    ) -> Result<LazyTensor> {
+    pub fn forward_decoder(&self, tgt_tokens: &[u32], encoder_out: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         assert!(!tgt_tokens.is_empty(), "tgt_tokens must be non-empty");
         let embed = encoder_out.const_f32_like(
@@ -324,7 +320,7 @@ impl T5Model {
         Ok(lm_head.apply_linear(&dec_scaled, cfg.d_model, cfg.vocab_size)?)
     }
 
-    fn encode(&self, embed: &LazyTensor, src: &[u32]) -> Result<LazyTensor> {
+    fn encode(&self, embed: &Tensor, src: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         let src_len = src.len();
         let batch = 1;
@@ -335,7 +331,7 @@ impl T5Model {
         self.encode_from_embeds(&src_embeds)
     }
 
-    fn encode_from_embeds(&self, src_embeds: &LazyTensor) -> Result<LazyTensor> {
+    fn encode_from_embeds(&self, src_embeds: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let dims = src_embeds.shape();
         let dims = dims.dims();
@@ -374,7 +370,7 @@ impl T5Model {
         )
     }
 
-    fn decode(&self, embed: &LazyTensor, tgt: &[u32], enc_out: &LazyTensor) -> Result<LazyTensor> {
+    fn decode(&self, embed: &Tensor, tgt: &[u32], enc_out: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let tgt_len = tgt.len();
         let batch = 1;
@@ -385,11 +381,7 @@ impl T5Model {
         self.decode_from_embeds(&tgt_embeds, enc_out)
     }
 
-    fn decode_from_embeds(
-        &self,
-        tgt_embeds: &LazyTensor,
-        enc_out: &LazyTensor,
-    ) -> Result<LazyTensor> {
+    fn decode_from_embeds(&self, tgt_embeds: &Tensor, enc_out: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let dims = tgt_embeds.shape();
         let dims = dims.dims();
@@ -439,10 +431,10 @@ impl T5Model {
 
     fn apply_encoder_layer(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &T5EncoderLayerWeights,
-        pos_bias: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        pos_bias: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let x_norm = x.rms_norm_affine(
             std::sync::Arc::clone(&layer.self_attn_norm_gain),
@@ -461,12 +453,12 @@ impl T5Model {
 
     fn apply_decoder_layer(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &T5DecoderLayerWeights,
-        enc_out: &LazyTensor,
-        pos_bias: &LazyTensor,
-        causal_mask: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        enc_out: &Tensor,
+        pos_bias: &Tensor,
+        causal_mask: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let x_norm = x.rms_norm_affine(
             std::sync::Arc::clone(&layer.self_attn_norm_gain),
@@ -498,12 +490,12 @@ impl T5Model {
 
     fn attention(
         &self,
-        q_src: &LazyTensor,
-        kv_src: &LazyTensor,
+        q_src: &Tensor,
+        kv_src: &Tensor,
         w: &T5AttentionWeights,
-        pos_bias: Option<&LazyTensor>,
-        extra_mask: Option<&LazyTensor>,
-    ) -> Result<LazyTensor> {
+        pos_bias: Option<&Tensor>,
+        extra_mask: Option<&Tensor>,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let inner = cfg.inner_dim();
         let q_shape = q_src.shape();
@@ -538,7 +530,7 @@ impl T5Model {
         Ok(w.o.apply_linear(&merged, inner, cfg.d_model)?)
     }
 
-    fn feed_forward(&self, x: &LazyTensor, ffn: &T5FfnWeights) -> Result<LazyTensor> {
+    fn feed_forward(&self, x: &Tensor, ffn: &T5FfnWeights) -> Result<Tensor> {
         let cfg = &self.config;
         match ffn {
             T5FfnWeights::Dense { wi, wo } => {
@@ -556,7 +548,7 @@ impl T5Model {
         }
     }
 
-    fn activate(&self, x: &LazyTensor) -> LazyTensor {
+    fn activate(&self, x: &Tensor) -> Tensor {
         match self.config.activation {
             T5Activation::Relu => x.relu(),
             T5Activation::Silu => x.silu(),
@@ -572,14 +564,14 @@ impl T5Model {
 /// Returns a `[1, n_heads, q_len, kv_len]` tensor ready to be
 /// broadcast-added to attention scores.
 fn compute_position_bias(
-    anchor: &LazyTensor,
+    anchor: &Tensor,
     rel_bias_table: &Arc<[f32]>,
     q_len: usize,
     kv_len: usize,
     n_heads: usize,
     num_buckets: usize,
     max_distance: usize,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     assert_eq!(rel_bias_table.len(), num_buckets * n_heads);
     // Build the bucket lookup. The eager T5 uses `kv_pos - q_pos`
     // as the signed relative distance. Past is encoded in the
@@ -1011,7 +1003,7 @@ mod tests {
     fn relative_position_bucketing_basics() {
         let cfg = tiny_config();
         let weights = tiny_weights(&cfg);
-        let embed = LazyTensor::from_f32(
+        let embed = Tensor::from_f32(
             weights.shared_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.d_model]),
             &Device::cpu(),
@@ -1133,7 +1125,7 @@ mod tests {
         };
         let src = [1_u32, 2, 3];
         let enc_ref = model.forward_encoder(&src).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let src_embeds = model.embed_tokens_anchored(&anchor, &src).unwrap();
         let enc_via_embeds = model
             .forward_encoder_embeds(&src_embeds)
@@ -1184,7 +1176,7 @@ mod tests {
             config: cfg.clone(),
             weights: tiny_weights(&cfg),
         };
-        let bad = LazyTensor::from_f32(
+        let bad = Tensor::from_f32(
             vec![0.0_f32; 3 * (cfg.d_model + 1)],
             Shape::from_dims(&[1, 3, cfg.d_model + 1]),
             &Device::cpu(),

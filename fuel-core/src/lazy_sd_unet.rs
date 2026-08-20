@@ -43,7 +43,7 @@
 //!   implementation, so generation remains slow but the composition
 //!   overhead is gone; tiled/GPU kernels are later work.
 
-use crate::lazy::LazyTensor;
+use crate::lazy::Tensor;
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -224,7 +224,7 @@ impl SdUnet {
         text_emb: &[f32],
         h_lat: usize,
         w_lat: usize,
-    ) -> crate::Result<LazyTensor> {
+    ) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let c_in = cfg.in_channels;
         assert_eq!(latent.len(), c_in * h_lat * w_lat);
@@ -233,7 +233,7 @@ impl SdUnet {
         // --- timestep embedding ----------------------------------
         let c_first = cfg.block_out_channels[0];
         let time_sin = sinusoidal_timestep_embedding(timestep, c_first);
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             latent.to_vec(),
             Shape::from_dims(&[1, c_in, h_lat, w_lat]),
             &crate::Device::cpu(),
@@ -278,7 +278,7 @@ impl SdUnet {
         )?;
 
         // --- down path, collecting skips ------------------------
-        let mut skips: Vec<LazyTensor> = vec![x.clone()];
+        let mut skips: Vec<Tensor> = vec![x.clone()];
         let mut x = x;
         let mut h = h_lat;
         let mut w = w_lat;
@@ -382,15 +382,15 @@ impl SdUnet {
 // ---- ResNet with time conditioning -----------------------------------------
 
 fn u_resnet(
-    x: &LazyTensor,
+    x: &Tensor,
     rw: &UResnetWeights,
-    t_emb: &LazyTensor, // [1, 1, time_embed_dim]
+    t_emb: &Tensor, // [1, 1, time_embed_dim]
     cfg: &SdUnetConfig,
     c_in: usize,
     c_out: usize,
     h: usize,
     w: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let h1 = group_norm(
         x,
         &rw.n1_g,
@@ -436,14 +436,14 @@ fn u_resnet(
 // ---- Spatial Transformer ---------------------------------------------------
 
 fn spatial_transformer(
-    x: &LazyTensor, // [1, C, H, W]
+    x: &Tensor, // [1, C, H, W]
     sw: &SpatialTransformerWeights,
-    text_emb: &LazyTensor, // [1, 77, cross_dim]
+    text_emb: &Tensor, // [1, 77, cross_dim]
     cfg: &SdUnetConfig,
     c: usize,
     h: usize,
     w: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let n = h * w;
     let residual = x.clone();
     let x = group_norm(
@@ -474,13 +474,13 @@ fn spatial_transformer(
 
 /// One transformer block: self-attn → cross-attn → GEGLU FFN.
 fn transformer_block(
-    x: &LazyTensor, // [1, N, C]
+    x: &Tensor, // [1, N, C]
     tb: &TransformerBlockWeights,
-    text_emb: &LazyTensor, // [1, 77, cross_dim]
+    text_emb: &Tensor, // [1, 77, cross_dim]
     cfg: &SdUnetConfig,
     c: usize,
     n: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let head_dim = cfg.attention_head_dim;
     assert_eq!(c % head_dim, 0);
     let n_heads = c / head_dim;
@@ -517,15 +517,15 @@ fn transformer_block(
 }
 
 fn multi_head_attn(
-    q: &LazyTensor, // [1, q_n, c]
-    k: &LazyTensor, // [1, kv_n, c]
-    v: &LazyTensor, // [1, kv_n, c]
+    q: &Tensor, // [1, q_n, c]
+    k: &Tensor, // [1, kv_n, c]
+    v: &Tensor, // [1, kv_n, c]
     c: usize,
     q_n: usize,
     kv_n: usize,
     n_heads: usize,
     d_head: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let _ = (q_n, kv_n, c);
     let q = q.split_heads(n_heads, d_head)?; // [1, H, Q, D]
     let k = k.split_heads(n_heads, d_head)?;
@@ -561,13 +561,13 @@ fn sinusoidal_timestep_embedding(t: f32, dim: usize) -> Vec<f32> {
 // self-contained while native Conv2d + GroupNorm ops land) ----------
 
 fn layer_norm_affine(
-    x: &LazyTensor,
+    x: &Tensor,
     gamma: &Arc<[f32]>,
     beta: &Arc<[f32]>,
     eps: f64,
     hidden: usize,
     seq: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let normed = x.layer_norm_last_dim(eps)?;
     let g = x
         .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))
@@ -581,7 +581,7 @@ fn layer_norm_affine(
 }
 
 fn group_norm(
-    x: &LazyTensor,
+    x: &Tensor,
     gamma: &Arc<[f32]>,
     beta: &Arc<[f32]>,
     groups: usize,
@@ -589,7 +589,7 @@ fn group_norm(
     c: usize,
     h: usize,
     w: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let cpg = c / groups;
     let m = cpg * h * w;
     let x_flat = x.reshape(Shape::from_dims(&[1, groups, m]))?;
@@ -619,14 +619,14 @@ fn group_norm(
 
 /// 3×3 conv, stride 1, padding 1. Dispatches to the native `Op::Conv2D`.
 fn conv2d_k3_s1_p1(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &Arc<[f32]>,
     b: &Arc<[f32]>,
     cin: usize,
     cout: usize,
     _h: usize,
     _w_sz: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin, 3, 3]));
     let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[cout]));
     x.conv2d(&w_t, Some(&b_t), (1, 1), (1, 1), 1)
@@ -634,14 +634,14 @@ fn conv2d_k3_s1_p1(
 
 /// Stride-2 3×3 conv with padding 1. Dispatches to the native `Op::Conv2D`.
 fn conv2d_k3_s2_p1(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &Arc<[f32]>,
     b: &Arc<[f32]>,
     cin: usize,
     cout: usize,
     _h: usize,
     _w_sz: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin, 3, 3]));
     let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[cout]));
     x.conv2d(&w_t, Some(&b_t), (2, 2), (1, 1), 1)
@@ -649,20 +649,20 @@ fn conv2d_k3_s2_p1(
 
 /// 1×1 conv, stride 1, padding 0. Dispatches to the native `Op::Conv2D`.
 fn conv2d_k1_s1_p0(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &Arc<[f32]>,
     b: &Arc<[f32]>,
     cin: usize,
     cout: usize,
     _h: usize,
     _w_sz: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin, 1, 1]));
     let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[cout]));
     x.conv2d(&w_t, Some(&b_t), (1, 1), (0, 0), 1)
 }
 
-fn upsample_nearest_2x(x: &LazyTensor, c: usize, h: usize, w: usize) -> crate::Result<LazyTensor> {
+fn upsample_nearest_2x(x: &Tensor, c: usize, h: usize, w: usize) -> crate::Result<Tensor> {
     let x6 = x.reshape(Shape::from_dims(&[1, c, h, 1, w, 1]))?;
     let x6 = x6.concat(&x6, 3)?;
     let x6 = x6.concat(&x6, 5)?;
@@ -670,13 +670,13 @@ fn upsample_nearest_2x(x: &LazyTensor, c: usize, h: usize, w: usize) -> crate::R
 }
 
 fn linear(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &Arc<[f32]>,
     b: Option<&Arc<[f32]>>,
     in_f: usize,
     out_f: usize,
     seq: usize,
-) -> crate::Result<LazyTensor> {
+) -> crate::Result<Tensor> {
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]));
     let proj = x.matmul(&w_t)?;
     match b {

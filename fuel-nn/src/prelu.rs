@@ -13,7 +13,7 @@
 //!     channel axis is dim 1 of the input (channels-first NCHW /
 //!     NCL / NC layouts).
 //!
-//! The forward pass is built entirely from existing [`LazyTensor`]
+//! The forward pass is built entirely from existing [`Tensor`]
 //! primitives at graph-build time. Shape and channel-count checks
 //! run when [`PReLU::forward`] is invoked — none of the work is
 //! deferred to realize-time.
@@ -28,7 +28,7 @@
 //!     num_parameters`, matching the eager `fuel_nn::PReLU` check.
 
 use fuel::Result;
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -97,7 +97,7 @@ impl PReLU {
         })
     }
 
-    /// Apply the activation. Returns a `LazyTensor` of the same
+    /// Apply the activation. Returns a `Tensor` of the same
     /// shape and dtype as `x`.
     ///
     /// Per-channel form: `weight` is reshaped to `[1, C, 1, ...]`
@@ -107,7 +107,7 @@ impl PReLU {
     ///
     /// Scalar form: `weight` becomes a rank-0 tensor; the same
     /// `broadcast_mul` then fans it out across the full input.
-    pub fn forward(&self, x: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
         // Materialize the slope tensor on x's graph in the broadcast
         // shape we need.
         let weight = if self.num_parameters == 1 {
@@ -179,7 +179,7 @@ impl PReLU {
 /// Broadcast a rank-0 zero against `like`'s shape so that
 /// `x.minimum(&zero)` lands in the strict-shape path. Promotes the
 /// scalar via `broadcast_to`.
-fn broadcast_zero_like(zero_scalar: &LazyTensor, like: &LazyTensor) -> Result<LazyTensor> {
+fn broadcast_zero_like(zero_scalar: &Tensor, like: &Tensor) -> Result<Tensor> {
     Ok(zero_scalar.broadcast_to(like.shape())?)
 }
 
@@ -200,7 +200,7 @@ mod tests {
         //   y = [-0.2, -0.1, 0, 1, 2].
         let device = Device::cpu();
         let act = PReLU::scalar(0.1);
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             vec![-2.0_f32, -1.0, 0.0, 1.0, 2.0],
             Shape::from_dims(&[5]),
             &device,
@@ -224,7 +224,7 @@ mod tests {
         let device = Device::cpu();
         let weights: Arc<[f32]> = Arc::<[f32]>::from(vec![0.25_f32, 0.5]);
         let act = PReLU::new(weights, 2).unwrap();
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             vec![-4.0_f32, -2.0, 0.0, -3.0, 1.0, -1.0],
             Shape::from_dims(&[1, 2, 3]),
             &device,
@@ -242,7 +242,7 @@ mod tests {
         // PReLU(x) = x for x >= 0 regardless of alpha.
         let device = Device::cpu();
         let act = PReLU::scalar(0.7);
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             vec![0.0_f32, 0.5, 1.0, 2.5, 100.0],
             Shape::from_dims(&[5]),
             &device,
@@ -269,7 +269,7 @@ mod tests {
     fn prelu_per_channel_rejects_rank1_input() {
         let act = PReLU::per_channel_default(4).unwrap();
         let device = Device::cpu();
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             vec![1.0_f32, 2.0, 3.0, 4.0],
             Shape::from_dims(&[4]),
             &device,

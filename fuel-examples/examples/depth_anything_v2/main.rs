@@ -11,7 +11,7 @@ use anyhow::Error as E;
 use clap::Parser;
 use std::{ffi::OsString, path::PathBuf, sync::Arc};
 
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel::lazy_depth_anything_v2::{
     DepthAnythingV2Config, DepthAnythingV2Model, DepthAnythingV2Weights,
 };
@@ -111,7 +111,7 @@ pub fn main() -> anyhow::Result<()> {
     // Resize on the graph, then finish post-processing on the host
     // (min/max-normalize → optional color map → uint8). B6 deleted the eager
     // `Tensor` this used to route through; none of the remaining steps needed
-    // one, and `interpolate2d` exists on `LazyTensor`.
+    // one, and `interpolate2d` exists on `Tensor`.
     let output_image = post_process_image(&depth, original_height, original_width, args.color_map)?;
 
     let output_path = full_output_path(&args.image, &args.output_dir);
@@ -136,11 +136,11 @@ fn full_output_path(image_path: &PathBuf, output_dir: &Option<PathBuf>) -> PathB
 
 /// Load + resize + normalize the input image. Normalization is computed
 /// on the host as plain f32 vector arithmetic and the result is wrapped
-/// as a [`LazyTensor`] of shape `(1, 3, DINO_IMG_SIZE, DINO_IMG_SIZE)`.
+/// as a [`Tensor`] of shape `(1, 3, DINO_IMG_SIZE, DINO_IMG_SIZE)`.
 fn load_and_prep_image(
     image_path: &PathBuf,
     device: &Device,
-) -> anyhow::Result<(usize, usize, LazyTensor)> {
+) -> anyhow::Result<(usize, usize, Tensor)> {
     let (_original_image, original_height, original_width) = load_image(image_path, None)?;
 
     // Resize to CHW u8, then widen to f32 for the host-side normalize.
@@ -158,7 +158,7 @@ fn load_and_prep_image(
         }
     }
 
-    let image = LazyTensor::from_f32(
+    let image = Tensor::from_f32(
         Arc::<[f32]>::from(chw),
         Shape::from_dims(&[1, 3, DINO_IMG_SIZE, DINO_IMG_SIZE]),
         device,
@@ -168,7 +168,7 @@ fn load_and_prep_image(
 }
 
 fn post_process_image(
-    depth: &LazyTensor,
+    depth: &Tensor,
     original_height: usize,
     original_width: usize,
     color_map: bool,

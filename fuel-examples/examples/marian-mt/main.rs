@@ -227,7 +227,7 @@ pub fn main() -> anyhow::Result<()> {
     };
 
     // Encode the source sentence once. The lazy port's
-    // `forward_encoder` returns the encoder output as a `LazyTensor`
+    // `forward_encoder` returns the encoder output as a `Tensor`
     // which can be reused as the cross-attention K/V source on every
     // decode step.
     let src_tokens: Vec<u32> = {

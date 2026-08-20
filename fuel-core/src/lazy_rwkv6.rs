@@ -48,7 +48,7 @@
 //! Forward-only prefill: zero initial state, batch == 1, F32.
 //! The recurrent time loop is unrolled at graph-build time.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -116,14 +116,14 @@ pub struct Rwkv6Model {
 }
 
 impl Rwkv6Model {
-    pub fn forward(&self, tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32]) -> Result<Tensor> {
         let h_norm = self.run_backbone(tokens)?;
         self.apply_lm_head(&h_norm)
     }
 
     /// Run the RWKV-v6 stack forward up to the final LayerNorm
     /// and return per-token hidden states `(1, seq, hidden_size)`.
-    pub fn forward_hidden(&self, tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn forward_hidden(&self, tokens: &[u32]) -> Result<Tensor> {
         self.run_backbone(tokens)
     }
 
@@ -131,18 +131,18 @@ impl Rwkv6Model {
     /// stack over pre-embedded inputs. RWKV does NOT scale embeddings
     /// and has no `start_pos` parameter — recurrent state is implicit
     /// in the time-mix (v1 is prefill only).
-    pub fn forward_embeds(&self, embeds: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &Tensor) -> Result<Tensor> {
         let h_norm = self.run_backbone_embeds(embeds)?;
         self.apply_lm_head(&h_norm)
     }
 
     /// Hidden-state variant of [`Self::forward_embeds`].
-    pub fn forward_hidden_embeds(&self, embeds: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward_hidden_embeds(&self, embeds: &Tensor) -> Result<Tensor> {
         self.run_backbone_embeds(embeds)
     }
 
     /// Build per-token embeddings without running the decoder.
-    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &Tensor, tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
@@ -152,7 +152,7 @@ impl Rwkv6Model {
         )
     }
 
-    fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
+    fn apply_lm_head(&self, h_norm: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         Ok(self
             .weights
@@ -160,13 +160,13 @@ impl Rwkv6Model {
             .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
-    fn run_backbone(&self, tokens: &[u32]) -> Result<LazyTensor> {
+    fn run_backbone(&self, tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
         assert!(seq > 0, "Rwkv6Model: tokens must be non-empty");
 
-        let h = LazyTensor::embed_tokens(
+        let h = Tensor::embed_tokens(
             weights.token_embedding.clone(),
             cfg.vocab_size,
             cfg.hidden_size,
@@ -176,7 +176,7 @@ impl Rwkv6Model {
         self.run_backbone_embeds(&h)
     }
 
-    fn run_backbone_embeds(&self, embeds: &LazyTensor) -> Result<LazyTensor> {
+    fn run_backbone_embeds(&self, embeds: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -216,13 +216,13 @@ impl Rwkv6Model {
 
     fn apply_block(
         &self,
-        xs: &LazyTensor,
+        xs: &Tensor,
         layer: &Rwkv6LayerWeights,
         batch: usize,
         seq: usize,
         n_heads: usize,
         head_size: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let h = cfg.hidden_size;
 
@@ -254,13 +254,13 @@ impl Rwkv6Model {
 
     fn time_mix(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &Rwkv6LayerWeights,
         batch: usize,
         seq: usize,
         n_heads: usize,
         head_size: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let h = cfg.hidden_size;
         let ah = cfg.attention_hidden_size;
@@ -298,7 +298,7 @@ impl Rwkv6Model {
         //   stream_in  = xxx_proj.slice(2, s*n_heads, n_heads) → (b, t, n_heads)
         //   stream_w2  = w2.slice(0, s, 1).reshape(n_heads, h)
         //   m_s        = stream_in @ stream_w2 → (b, t, h)
-        let stream_offset = |s: usize| -> Result<LazyTensor> {
+        let stream_offset = |s: usize| -> Result<Tensor> {
             let in_s = xxx_proj.slice(2_usize, s * n_heads, n_heads)?;
             let w2_s = w2
                 .slice(0_usize, s, 1)?
@@ -312,7 +312,7 @@ impl Rwkv6Model {
         let m_g = stream_offset(4)?;
 
         // x[stream] = xs + sx * (time_mix_<stream> + m[stream]).
-        let make_input = |static_mix: &Arc<[f32]>, m: &LazyTensor| -> Result<LazyTensor> {
+        let make_input = |static_mix: &Arc<[f32]>, m: &Tensor| -> Result<Tensor> {
             let mix_static = x.const_f32_like(Arc::clone(static_mix), Shape::from_dims(&[1, 1, h]));
             let mix_static_bc = mix_static.broadcast_to(Shape::from_dims(&[batch, seq, h]))?;
             let mix_total = mix_static_bc.add(m)?;
@@ -374,7 +374,7 @@ impl Rwkv6Model {
             Shape::from_dims(&[batch, n_heads, head_size, head_size]),
         );
         let mut state = state_init;
-        let mut outs: Vec<LazyTensor> = Vec::with_capacity(seq);
+        let mut outs: Vec<Tensor> = Vec::with_capacity(seq);
         for t in 0..seq {
             let kt = k_h.slice(3_usize, t, 1)?; // (b, n_heads, head_size, 1)
             let vt = v_h.slice(2_usize, t, 1)?; // (b, n_heads, 1, head_size)
@@ -392,7 +392,7 @@ impl Rwkv6Model {
         }
 
         // Stack outs along the seq dim.
-        let mut stacked: Option<LazyTensor> = None;
+        let mut stacked: Option<Tensor> = None;
         for out_t in outs.into_iter() {
             let with_seq = out_t.reshape(Shape::from_dims(&[batch, 1, n_heads, head_size]))?;
             stacked = Some(match stacked {
@@ -419,11 +419,11 @@ impl Rwkv6Model {
 
     fn channel_mix(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &Rwkv6LayerWeights,
         batch: usize,
         seq: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let h = cfg.hidden_size;
         let inter = cfg.ffn_intermediate();
@@ -451,7 +451,7 @@ impl Rwkv6Model {
     }
 }
 
-fn shift_seq(x: &LazyTensor, batch: usize, seq: usize, h: usize) -> LazyTensor {
+fn shift_seq(x: &Tensor, batch: usize, seq: usize, h: usize) -> Tensor {
     let zero = x.const_f32_like(
         Arc::from(vec![0.0_f32; batch * h]),
         Shape::from_dims(&[batch, 1, h]),
@@ -464,7 +464,7 @@ fn shift_seq(x: &LazyTensor, batch: usize, seq: usize, h: usize) -> LazyTensor {
 }
 
 fn group_norm(
-    x: &LazyTensor,
+    x: &Tensor,
     gain: &Arc<[f32]>,
     bias: &Arc<[f32]>,
     batch: usize,
@@ -472,7 +472,7 @@ fn group_norm(
     n_heads: usize,
     head_size: usize,
     eps: f64,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     let hidden = n_heads * head_size;
     let xh = x.reshape(Shape::from_dims(&[batch, seq, n_heads, head_size]))?;
     let mean = xh.mean_dim(3_usize)?;
@@ -837,7 +837,7 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds).unwrap().realize_f32();
         let max_diff = logits_ref
@@ -858,7 +858,7 @@ mod tests {
             config: cfg.clone(),
             weights: tiny_weights(&cfg),
         };
-        let bad = LazyTensor::from_f32(
+        let bad = Tensor::from_f32(
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
             Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
             &Device::cpu(),
@@ -875,7 +875,7 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let h_via_embeds = model.forward_hidden_embeds(&embeds).unwrap().realize_f32();
         let max_diff = h_ref

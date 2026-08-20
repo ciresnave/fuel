@@ -9,7 +9,7 @@ use anyhow::{Error as E, Result};
 use clap::{Parser, ValueEnum};
 use std::sync::Arc;
 
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel::lazy_mobileclip::{MobileClipConfig, MobileClipModel, MobileClipWeights};
 use fuel::safetensors::MmapedSafetensors;
 use fuel::{Device, Shape};
@@ -128,7 +128,7 @@ pub fn main() -> Result<()> {
     let mut image_feats: Vec<Vec<f32>> = Vec::with_capacity(vec_imgs.len());
     for img_path in &vec_imgs {
         let pixels = load_image_as_vec(img_path, config.image_size)?;
-        let pixels = LazyTensor::from_f32(
+        let pixels = Tensor::from_f32(
             Arc::<[f32]>::from(pixels),
             Shape::from_dims(&[1, 3, config.image_size, config.image_size]),
             &device,
@@ -141,7 +141,7 @@ pub fn main() -> Result<()> {
     // position for OpenCLIP-style text encoders is the highest-id
     // token in the padded sequence (mirrors argmax(input_ids) in the
     // eager forward).
-    let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &device);
+    let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &device);
     let mut text_feats: Vec<Vec<f32>> = Vec::with_capacity(token_lists.len());
     for tokens in &token_lists {
         let eot_pos = argmax_u32(tokens);

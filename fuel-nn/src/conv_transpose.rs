@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Lazy `ConvTranspose1d` / `ConvTranspose2d` Module wrappers over
-//! [`LazyTensor`].
+//! [`Tensor`].
 //!
 //! Mirrors the eager [`fuel_nn::ConvTranspose1d`] /
 //! [`fuel_nn::ConvTranspose2d`] surface: each layer holds a
@@ -8,8 +8,8 @@
 //! controlling `padding` / `output_padding` / `stride` / `dilation` /
 //! `groups`. `forward` materializes the weight (and bias) as graph
 //! constants on the activation's graph at lazy-graph-build time and
-//! delegates to [`LazyTensor::conv_transpose1d`] /
-//! [`LazyTensor::conv_transpose2d`].
+//! delegates to [`Tensor::conv_transpose1d`] /
+//! [`Tensor::conv_transpose2d`].
 //!
 //! # Lazy-graph semantics
 //!
@@ -36,7 +36,7 @@
 //!
 //! # Limitations
 //!
-//! - 1-D path supports `groups >= 1`; the 2-D LazyTensor primitive
+//! - 1-D path supports `groups >= 1`; the 2-D Tensor primitive
 //!   accepts `groups` too, kept in the config for symmetry with the
 //!   eager API even though the eager `ConvTranspose2dConfig` doesn't
 //!   carry it yet (the eager `// TODO: support groups.` comment will
@@ -45,7 +45,7 @@
 //!   IR carries it; no extra layer-level guard needed.
 
 use fuel::Result;
-use fuel::lazy::{LazyTensor, WeightStorage};
+use fuel::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -107,11 +107,11 @@ impl ConvTranspose1dConfig {
     }
 }
 
-/// 1-D transposed convolution layer over [`LazyTensor`].
+/// 1-D transposed convolution layer over [`Tensor`].
 ///
 /// Holds a [`WeightStorage`] weight in PyTorch's
 /// `[Cin, Cout / groups, K]` layout (transposed channel order vs
-/// forward [`crate::modules::LazyConv1d`]) plus an optional bias of
+/// forward [`crate::modules::Conv1d`]) plus an optional bias of
 /// length `out_channels`.
 #[derive(Debug, Clone)]
 pub struct ConvTranspose1d {
@@ -133,7 +133,7 @@ impl ConvTranspose1d {
     ///
     /// Validates groups divisibility and shape at build time — bad
     /// inputs surface as typed errors here rather than panicking
-    /// later inside [`LazyTensor::conv_transpose1d`].
+    /// later inside [`Tensor::conv_transpose1d`].
     pub fn new(
         weight: WeightStorage,
         bias: Option<Arc<[f32]>>,
@@ -239,7 +239,7 @@ impl ConvTranspose1d {
     /// `[N, Cout, Lout]` with
     /// `Lout = (L - 1) * stride - 2 * padding + dilation * (K - 1) +
     /// output_padding + 1`.
-    pub fn forward(&self, x: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let w_shape = Shape::from_dims(&[
             self.in_channels,
             self.out_channels / self.config.groups,
@@ -307,7 +307,7 @@ impl ConvTranspose1d {
 /// `dilation=1`, `groups=1`. Mirrors the eager
 /// [`fuel_nn::ConvTranspose2dConfig`] surface, plus a `groups` field
 /// (the eager side has a `TODO: support groups.` and the underlying
-/// [`LazyTensor::conv_transpose2d`] already takes it).
+/// [`Tensor::conv_transpose2d`] already takes it).
 ///
 /// All `(usize, usize)` fields are `(height, width)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -354,10 +354,10 @@ impl ConvTranspose2dConfig {
     }
 }
 
-/// 2-D transposed convolution layer over [`LazyTensor`].
+/// 2-D transposed convolution layer over [`Tensor`].
 ///
 /// Weight layout is PyTorch's `[Cin, Cout / groups, Kh, Kw]` (transposed
-/// channel order vs forward [`crate::modules::LazyConv2d`]).
+/// channel order vs forward [`crate::modules::Conv2d`]).
 #[derive(Debug, Clone)]
 pub struct ConvTranspose2d {
     weight: WeightStorage,
@@ -486,7 +486,7 @@ impl ConvTranspose2d {
     ///
     /// `x` must be rank-4 `[N, Cin, H, W]`. Returns rank-4
     /// `[N, Cout, Hout, Wout]`.
-    pub fn forward(&self, x: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let w_shape = Shape::from_dims(&[
             self.in_channels,
             self.out_channels / self.config.groups,
@@ -585,7 +585,7 @@ mod tests {
         .unwrap();
 
         let x_data: Vec<f32> = ramp_f32(n * cin * l, 0.03, -0.4);
-        let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[n, cin, l]), &Device::cpu());
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, l]), &Device::cpu());
         let y = layer.forward(&x).unwrap();
         let l_out = l + k - 1;
         assert_eq!(y.shape().dims(), &[n, cout, l_out]);
@@ -599,7 +599,7 @@ mod tests {
     #[test]
     fn conv_transpose1d_strided_matches_direct_call() {
         // Module forward must agree byte-for-byte with hand-built
-        // LazyTensor::conv_transpose1d + broadcast_add.
+        // Tensor::conv_transpose1d + broadcast_add.
         let n = 1;
         let cin = 2;
         let cout = 3;
@@ -629,14 +629,14 @@ mod tests {
         .unwrap();
 
         let x_data: Vec<f32> = ramp_f32(n * cin * l, 0.02, -0.3);
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             x_data.clone(),
             Shape::from_dims(&[n, cin, l]),
             &Device::cpu(),
         );
         let via_module = layer.forward(&x).unwrap().realize_f32();
 
-        let x2 = LazyTensor::from_f32(x_data, Shape::from_dims(&[n, cin, l]), &Device::cpu());
+        let x2 = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, l]), &Device::cpu());
         let w_t = x2.const_f32_like(Arc::clone(&weight_arc), Shape::from_dims(&[cin, cout, k]));
         let direct_raw = x2
             .conv_transpose1d(
@@ -716,7 +716,7 @@ mod tests {
         .unwrap();
 
         let x_data: Vec<f32> = ramp_f32(n * cin * h * w_in, 0.01, -0.5);
-        let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu());
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu());
         let y = layer.forward(&x).unwrap();
         let h_out = h + kh - 1;
         let w_out = w_in + kw - 1;
@@ -764,14 +764,14 @@ mod tests {
         .unwrap();
 
         let x_data: Vec<f32> = ramp_f32(n * cin * h * w_in, 0.02, -0.4);
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             x_data.clone(),
             Shape::from_dims(&[n, cin, h, w_in]),
             &Device::cpu(),
         );
         let via_module = layer.forward(&x).unwrap().realize_f32();
 
-        let x2 = LazyTensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu());
+        let x2 = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu());
         let w_t = x2.const_f32_like(
             Arc::clone(&weight_arc),
             Shape::from_dims(&[cin, cout, kh, kw]),
@@ -819,7 +819,7 @@ mod tests {
     #[test]
     fn conv_transpose1d_no_bias_skips_broadcast() {
         // The no-bias path should produce the same numbers as the raw
-        // LazyTensor::conv_transpose1d call.
+        // Tensor::conv_transpose1d call.
         let n = 1;
         let cin = 2;
         let cout = 3;
@@ -840,14 +840,14 @@ mod tests {
         )
         .unwrap();
         let x_data: Vec<f32> = ramp_f32(n * cin * l, 0.04, -0.2);
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             x_data.clone(),
             Shape::from_dims(&[n, cin, l]),
             &Device::cpu(),
         );
         let via_module = layer.forward(&x).unwrap().realize_f32();
 
-        let x2 = LazyTensor::from_f32(x_data, Shape::from_dims(&[n, cin, l]), &Device::cpu());
+        let x2 = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, l]), &Device::cpu());
         let w_t = x2.const_f32_like(Arc::clone(&weight_arc), Shape::from_dims(&[cin, cout, k]));
         let direct = x2
             .conv_transpose1d(

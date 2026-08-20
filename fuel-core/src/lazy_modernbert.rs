@@ -38,7 +38,7 @@
 //! internally from `seq_len`. Classification / MLM heads stay
 //! out of v1 — they're a small follow-up.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -124,11 +124,7 @@ impl ModernBertModel {
     ///   mask is constructed inside.
     ///
     /// Returns per-token hidden states `(1, seq, hidden_size)`.
-    pub fn forward(
-        &self,
-        tokens: &[u32],
-        attention_mask: Option<&LazyTensor>,
-    ) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32], attention_mask: Option<&Tensor>) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
@@ -142,7 +138,7 @@ impl ModernBertModel {
         );
 
         // ---- Embeddings + LayerNorm ----------------------------------------
-        let word_emb_t = LazyTensor::from_f32(
+        let word_emb_t = Tensor::from_f32(
             weights.word_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, h]),
             &Device::cpu(),
@@ -233,8 +229,8 @@ impl ModernBertModel {
         &self,
         tokens: &[u32],
         layer_ids: &[usize],
-        attention_mask: Option<&LazyTensor>,
-    ) -> Result<Vec<LazyTensor>> {
+        attention_mask: Option<&Tensor>,
+    ) -> Result<Vec<Tensor>> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
@@ -257,7 +253,7 @@ impl ModernBertModel {
         );
 
         // Same embedding + RoPE + local-mask setup as `forward`.
-        let word_emb_t = LazyTensor::from_f32(
+        let word_emb_t = Tensor::from_f32(
             weights.word_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, h]),
             &Device::cpu(),
@@ -320,12 +316,12 @@ impl ModernBertModel {
 
     fn apply_layer(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &ModernBertLayerWeights,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-        attention_mask: Option<&LazyTensor>,
-    ) -> Result<LazyTensor> {
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+        attention_mask: Option<&Tensor>,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let h = cfg.hidden_size;
         let zero_bias = Arc::from(vec![0.0_f32; h]);
@@ -354,12 +350,12 @@ impl ModernBertModel {
 
     fn attention(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &ModernBertLayerWeights,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-        attention_mask: Option<&LazyTensor>,
-    ) -> Result<LazyTensor> {
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+        attention_mask: Option<&Tensor>,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let dims = x.shape();
         let dims = dims.dims();
@@ -395,7 +391,7 @@ impl ModernBertModel {
         Ok(layer.wo.apply_linear(&merged, h, h)?)
     }
 
-    fn geglu(&self, x: &LazyTensor, layer: &ModernBertLayerWeights) -> Result<LazyTensor> {
+    fn geglu(&self, x: &Tensor, layer: &ModernBertLayerWeights) -> Result<Tensor> {
         let cfg = &self.config;
         let h = cfg.hidden_size;
         let i = cfg.intermediate_size;

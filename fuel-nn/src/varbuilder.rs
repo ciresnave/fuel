@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! `LazyVarBuilder` — a name-prefixing wrapper around [`LazyVarMap`]
+//! `VarBuilder` — a name-prefixing wrapper around [`VarMap`]
 //! for constructing named lazy parameters.
 //!
 //! Mirrors the surface of the retired eager `fuel_nn::VarBuilder`: a
@@ -9,10 +9,10 @@
 //!
 //! # Differences from the eager `VarBuilder`
 //!
-//! The lazy variant returns a [`LazyVar`] (not a `Tensor`) — i.e. a
+//! The lazy variant returns a [`Var`] (not a `Tensor`) — i.e. a
 //! handle to a host-resident parameter that can be spliced into a
-//! lazy graph via [`LazyVar::tensor`]. The underlying storage is the
-//! [`LazyVarMap`]; the builder is purely a path-prefix + default
+//! lazy graph via [`Var::tensor`]. The underlying storage is the
+//! [`VarMap`]; the builder is purely a path-prefix + default
 //! `DType`/`Device` carrier with no backend-trait machinery.
 //!
 //! # Path semantics
@@ -27,29 +27,29 @@
 //! prefix = "a.b"     + name = "w"  ⇒  "a.b.w"
 //! ```
 
-use crate::optim::LazyVar;
-use crate::varmap::LazyVarMap;
+use crate::optim::Var;
+use crate::varmap::VarMap;
 use fuel::Result;
 use fuel::{DType, Device};
 use fuel_ir::Shape;
 
-/// A name-prefixing handle over a [`LazyVarMap`] for constructing
+/// A name-prefixing handle over a [`VarMap`] for constructing
 /// named lazy parameters. Cheap to clone — internally an Arc-shared
 /// map plus a fresh path prefix.
 #[derive(Clone, Debug)]
-pub struct LazyVarBuilder {
-    map: LazyVarMap,
+pub struct VarBuilder {
+    map: VarMap,
     prefix: String,
     dtype: DType,
     device: Device,
 }
 
-impl LazyVarBuilder {
+impl VarBuilder {
     /// Build a new var-builder rooted at the empty prefix, backed by
     /// `map`. `default_dtype` and `default_device` are carried so
     /// downstream layer factories can pick them up without an extra
     /// argument.
-    pub fn from_varmap(map: LazyVarMap, default_dtype: DType, default_device: Device) -> Self {
+    pub fn from_varmap(map: VarMap, default_dtype: DType, default_device: Device) -> Self {
         Self {
             map,
             prefix: String::new(),
@@ -80,9 +80,9 @@ impl LazyVarBuilder {
     }
 
     /// Look up — or zero-initialize — the parameter at `prefix.name`
-    /// with the given `shape`. If a [`LazyVar`] with the resolved key
+    /// with the given `shape`. If a [`Var`] with the resolved key
     /// already exists, it is returned as-is.
-    pub fn get(&self, shape: impl Into<Shape>, name: &str) -> Result<LazyVar> {
+    pub fn get(&self, shape: impl Into<Shape>, name: &str) -> Result<Var> {
         self.get_with(shape, name, |s| vec![0.0_f32; s.elem_count()])
     }
 
@@ -97,13 +97,13 @@ impl LazyVarBuilder {
         shape: impl Into<Shape>,
         name: &str,
         init_fn: impl FnOnce(&Shape) -> Vec<f32>,
-    ) -> Result<LazyVar> {
+    ) -> Result<Var> {
         let shape = shape.into();
         let key = self.path(name);
         if let Some(existing) = self.map.get(&key) {
             if existing.shape().dims() != shape.dims() {
                 return Err(fuel::Error::Msg(format!(
-                    "LazyVarBuilder::get_with: parameter {key} already \
+                    "VarBuilder::get_with: parameter {key} already \
                      registered with shape {:?}, requested {:?}",
                     existing.shape().dims(),
                     shape.dims(),
@@ -113,13 +113,13 @@ impl LazyVarBuilder {
             return Ok(existing);
         }
         let data = init_fn(&shape);
-        let var = LazyVar::new(key, shape, data)?;
+        let var = Var::new(key, shape, data)?;
         self.map.insert(var.clone());
         Ok(var)
     }
 
-    /// Access the underlying [`LazyVarMap`].
-    pub fn map(&self) -> &LazyVarMap {
+    /// Access the underlying [`VarMap`].
+    pub fn map(&self) -> &VarMap {
         &self.map
     }
 
@@ -154,8 +154,8 @@ mod tests {
 
     #[test]
     fn pp_chains_produce_dot_joined_keys() -> Result<()> {
-        let map = LazyVarMap::new();
-        let vs = LazyVarBuilder::from_varmap(map.clone(), DType::F32, Device::cpu());
+        let map = VarMap::new();
+        let vs = VarBuilder::from_varmap(map.clone(), DType::F32, Device::cpu());
         let v = vs
             .pp("outer")
             .pp("inner")
@@ -172,8 +172,8 @@ mod tests {
 
     #[test]
     fn repeated_get_returns_same_var() -> Result<()> {
-        let map = LazyVarMap::new();
-        let vs = LazyVarBuilder::from_varmap(map, DType::F32, Device::cpu());
+        let map = VarMap::new();
+        let vs = VarBuilder::from_varmap(map, DType::F32, Device::cpu());
         let first = vs.get_with(Shape::from_dims(&[3]), "w", |s| {
             (0..s.elem_count()).map(|i| i as f32 + 1.0).collect()
         })?;
@@ -189,8 +189,8 @@ mod tests {
 
     #[test]
     fn shape_mismatch_on_existing_var_errors() {
-        let map = LazyVarMap::new();
-        let vs = LazyVarBuilder::from_varmap(map, DType::F32, Device::cpu());
+        let map = VarMap::new();
+        let vs = VarBuilder::from_varmap(map, DType::F32, Device::cpu());
         vs.get(Shape::from_dims(&[2, 2]), "w").unwrap();
         let err = vs.get(Shape::from_dims(&[3, 3]), "w");
         assert!(err.is_err());
@@ -198,8 +198,8 @@ mod tests {
 
     #[test]
     fn dtype_and_device_accessors_round_trip() {
-        let map = LazyVarMap::new();
-        let vs = LazyVarBuilder::from_varmap(map, DType::F32, Device::cpu());
+        let map = VarMap::new();
+        let vs = VarBuilder::from_varmap(map, DType::F32, Device::cpu());
         assert_eq!(vs.dtype(), DType::F32);
         assert!(vs.device().is_cpu());
         let nested = vs.pp("layer0");
@@ -214,9 +214,9 @@ mod tests {
         let _ = std::fs::remove_file(&tmp);
 
         // Source: register two prefixed parameters with known values
-        // through a LazyVarBuilder + LazyVarMap.
-        let src_map = LazyVarMap::new();
-        let src_vs = LazyVarBuilder::from_varmap(src_map.clone(), DType::F32, Device::cpu());
+        // through a VarBuilder + VarMap.
+        let src_map = VarMap::new();
+        let src_vs = VarBuilder::from_varmap(src_map.clone(), DType::F32, Device::cpu());
         let src_w = src_vs
             .pp("layer0")
             .get_with(Shape::from_dims(&[2, 2]), "weight", |_| {
@@ -230,10 +230,10 @@ mod tests {
         src_map.save(&tmp)?;
 
         // Destination: register placeholders with the same shapes
-        // through a fresh LazyVarBuilder, then load — values must
+        // through a fresh VarBuilder, then load — values must
         // overwrite the placeholder zeros.
-        let dst_map = LazyVarMap::new();
-        let dst_vs = LazyVarBuilder::from_varmap(dst_map.clone(), DType::F32, Device::cpu());
+        let dst_map = VarMap::new();
+        let dst_vs = VarBuilder::from_varmap(dst_map.clone(), DType::F32, Device::cpu());
         let dst_w = dst_vs
             .pp("layer0")
             .get(Shape::from_dims(&[2, 2]), "weight")?;

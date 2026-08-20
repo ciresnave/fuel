@@ -38,7 +38,7 @@ extern crate accelerate_src;
 use anyhow::{Error as E, Result, bail};
 use clap::Parser;
 
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel::lazy_mixformer::{MixFormerActivation, MixFormerConfig};
 use fuel::lazy_moondream::{
     MoondreamConfig, MoondreamModel, MoondreamProjectionConfig, MoondreamVisionConfig,
@@ -233,7 +233,7 @@ async fn main() -> anyhow::Result<()> {
 
     let start = std::time::Instant::now();
     let image_data = load_image_nchw(&args.image)?;
-    let pixel_values = LazyTensor::from_f32(
+    let pixel_values = Tensor::from_f32(
         Arc::<[f32]>::from(image_data),
         Shape::from_dims(&[
             1,

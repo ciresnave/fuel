@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel::lazy_segformer::{
     ImageClassificationModel, SegformerActivation, SegformerConfig, SemanticSegmentationModel,
 };
@@ -136,11 +136,11 @@ struct LabelItem {
 
 /// Load an image at 224x224 ImageNet preprocessing via the shared
 /// helper, then convert to a lazy `(1, 3, 224, 224)` tensor.
-fn load_image_lazy(path: PathBuf, device: &Device) -> anyhow::Result<LazyTensor> {
+fn load_image_lazy(path: PathBuf, device: &Device) -> anyhow::Result<Tensor> {
     let image_chw = fuel_examples::imagenet::load_image224(path)?;
     println!("loaded image: {} f32 values (CHW)", image_chw.len());
     let image_vec: Vec<f32> = image_chw;
-    Ok(LazyTensor::from_f32(
+    Ok(Tensor::from_f32(
         Arc::<[f32]>::from(image_vec),
         Shape::from_dims(&[1, 3, 224, 224]),
         device,
@@ -231,7 +231,7 @@ fn classification_task(args: ClassificationArgs, device: &Device) -> anyhow::Res
 pub fn main() -> anyhow::Result<()> {
     let args = CliArgs::parse();
     // Lazy path realizes via CPU/router; the `cpu` flag is preserved
-    // for CLI parity but the device passed into LazyTensor::from_f32
+    // for CLI parity but the device passed into Tensor::from_f32
     // is always CPU.
     let _ = args.cpu;
     let device = Device::cpu();

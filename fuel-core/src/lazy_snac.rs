@@ -27,7 +27,7 @@
 //!     summation.
 
 use crate::Result;
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::lazy_dac::expand_conv1d_weight_for_dilation_if_needed;
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -182,12 +182,12 @@ pub struct SnacModel {
 
 impl SnacModel {
     /// Decode multi-stride codes back to a waveform. `codes` is a
-    /// list, one per codebook, each a U32 LazyTensor of shape
+    /// list, one per codebook, each a U32 Tensor of shape
     /// `(1, T_i)` where `T_i = T_max / vq_strides[i]`.
     ///
     /// `T_max` is the highest-resolution time axis (= length of
     /// `codes[k]` for the codebook with the smallest stride).
-    pub fn decode_codes(&self, codes: &[LazyTensor]) -> Result<LazyTensor> {
+    pub fn decode_codes(&self, codes: &[Tensor]) -> Result<Tensor> {
         assert_eq!(
             codes.len(),
             self.weights.quantizers.len(),
@@ -203,7 +203,7 @@ impl SnacModel {
     /// Compute the latent as the sum of per-codebook decoded streams,
     /// each upsampled (via repeat-interleave) to the highest-rate
     /// resolution.
-    fn rvq_from_codes(&self, codes: &[LazyTensor], anchor: &LazyTensor) -> Result<LazyTensor> {
+    fn rvq_from_codes(&self, codes: &[Tensor], anchor: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         // Find the max time resolution (smallest stride → most frames).
         let max_t = codes
@@ -213,7 +213,7 @@ impl SnacModel {
             .max()
             .unwrap_or(0);
 
-        let mut sum: Option<LazyTensor> = None;
+        let mut sum: Option<Tensor> = None;
         for (c, q) in codes.iter().zip(self.weights.quantizers.iter()) {
             let dims = c.shape();
             let dims = dims.dims();
@@ -250,7 +250,7 @@ impl SnacModel {
         sum.ok_or_else(|| fuel_ir::Error::Msg("SNAC RVQ: no codebooks".into()).bt())
     }
 
-    fn decoder_forward(&self, latent: &LazyTensor) -> Result<LazyTensor> {
+    fn decoder_forward(&self, latent: &Tensor) -> Result<Tensor> {
         let dec = &self.weights.decoder;
         let mut x = match &dec.init_conv {
             InitConvWeights::Standard(c) => apply_conv1d(latent, c, latent)?,
@@ -272,7 +272,7 @@ impl SnacModel {
 
 // ---- Component helpers -----------------------------------------------------
 
-fn apply_conv1d(x: &LazyTensor, c: &Conv1dWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
+fn apply_conv1d(x: &Tensor, c: &Conv1dWeights, anchor: &Tensor) -> Result<Tensor> {
     let (w_data, k_eff) = expand_conv1d_weight_for_dilation_if_needed(
         &c.w,
         c.c_out,
@@ -291,10 +291,10 @@ fn apply_conv1d(x: &LazyTensor, c: &Conv1dWeights, anchor: &LazyTensor) -> Resul
 }
 
 fn apply_conv_transpose1d(
-    x: &LazyTensor,
+    x: &Tensor,
     c: &ConvTranspose1dWeights,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+    anchor: &Tensor,
+) -> Result<Tensor> {
     let w = anchor.const_f32_like(Arc::clone(&c.w), Shape::from_dims(&[c.c_in, c.c_out, c.k]));
     let mut out = x.conv_transpose1d(&w, c.stride, c.pad, c.out_pad, 1, 1)?;
     if let Some(b) = &c.b {
@@ -307,7 +307,7 @@ fn apply_conv_transpose1d(
 }
 
 /// `Snake(x) = x + sin²(α · x) / (α + 1e-9)` per-channel.
-fn apply_snake1d(x: &LazyTensor, s: &Snake1dWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
+fn apply_snake1d(x: &Tensor, s: &Snake1dWeights, anchor: &Tensor) -> Result<Tensor> {
     let dims = x.shape();
     let dims = dims.dims();
     assert_eq!(dims[1], s.channels);
@@ -324,11 +324,7 @@ fn apply_snake1d(x: &LazyTensor, s: &Snake1dWeights, anchor: &LazyTensor) -> Res
     x.add(&correction)
 }
 
-fn apply_residual_unit(
-    x: &LazyTensor,
-    r: &ResidualUnitWeights,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+fn apply_residual_unit(x: &Tensor, r: &ResidualUnitWeights, anchor: &Tensor) -> Result<Tensor> {
     let y = apply_snake1d(x, &r.snake1, anchor)?;
     let y = apply_conv1d(&y, &r.conv1, anchor)?;
     let y = apply_snake1d(&y, &r.snake2, anchor)?;
@@ -345,11 +341,11 @@ fn apply_residual_unit(
 }
 
 fn apply_decoder_block(
-    x: &LazyTensor,
+    x: &Tensor,
     b: &DecoderBlockWeights,
-    anchor: &LazyTensor,
+    anchor: &Tensor,
     noise: bool,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     let y = apply_snake1d(x, &b.snake1, anchor)?;
     let mut y = apply_conv_transpose1d(&y, &b.conv_tr1, anchor)?;
     if noise {
@@ -365,7 +361,7 @@ fn apply_decoder_block(
 
 /// Local multi-head attention without rotary. Pre-LN → qkv linear
 /// → softmax attention → out linear → +residual.
-fn apply_local_mha(x: &LazyTensor, w: &LocalMhaWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
+fn apply_local_mha(x: &Tensor, w: &LocalMhaWeights, anchor: &Tensor) -> Result<Tensor> {
     let dims = x.shape();
     let dims = dims.dims();
     let b = dims[0];
@@ -400,7 +396,7 @@ fn apply_local_mha(x: &LazyTensor, w: &LocalMhaWeights, anchor: &LazyTensor) -> 
 }
 
 // `repeat_interleave_last_dim` retired — call sites now use the
-// public `LazyTensor::repeat_interleave(dim, repeats)` method
+// public `Tensor::repeat_interleave(dim, repeats)` method
 // shipped earlier this session.
 
 // ---- HuggingFace safetensors loader ----------------------------------------
@@ -1057,7 +1053,7 @@ mod tests {
     fn repeat_interleave_last_dim_via_public_api() {
         let dev = Device::cpu();
         // (1, 2, 3) → repeat last dim by 2 → (1, 2, 6).
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             vec![1.0_f32, 2.0, 3.0, 10.0, 20.0, 30.0],
             Shape::from_dims(&[1, 2, 3]),
             &dev,
@@ -1084,7 +1080,7 @@ mod tests {
         // For vq_strides = [2, 1], the max-resolution T = T_q0 * 2 = T_q1 * 1.
         // Use T_q0 = 2 → T_q1 = 4 → max_t = 4.
         let dev = Device::cpu();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
+        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
         let c0 = anchor.const_u32_like(vec![0_u32, 1], Shape::from_dims(&[1, 2]));
         let c1 = anchor.const_u32_like(vec![2_u32, 3, 4, 5], Shape::from_dims(&[1, 4]));
         let audio = model.decode_codes(&[c0, c1]).unwrap();
@@ -1107,7 +1103,7 @@ mod tests {
             weights,
         };
         let dev = Device::cpu();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
+        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
         let codes_a = vec![
             anchor.const_u32_like(vec![0_u32; 2], Shape::from_dims(&[1, 2])),
             anchor.const_u32_like(vec![0_u32; 4], Shape::from_dims(&[1, 4])),
@@ -1141,7 +1137,7 @@ mod tests {
             num_heads: 2,
             head_dim: c / 2,
         };
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             (0..(1 * c * t))
                 .map(|i| (i as f32) * 0.05)
                 .collect::<Vec<_>>(),
@@ -1157,7 +1153,7 @@ mod tests {
 
     #[test]
     fn snake_alpha_zero_is_identity() {
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             vec![0.5_f32, -0.25, 0.75, 1.0],
             Shape::from_dims(&[1, 2, 2]),
             &Device::cpu(),

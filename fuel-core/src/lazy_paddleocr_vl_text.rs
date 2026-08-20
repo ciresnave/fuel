@@ -42,8 +42,7 @@
 //!       `tie_word_embeddings`).
 
 use crate::lazy::{
-    LayerWeights, LazyTensor, WeightStorage, load_tensor_as_f32,
-    load_transposed_matrix_preserve_dtype,
+    LayerWeights, Tensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
 };
 use crate::{Device, Result};
 use fuel_ir::Shape;
@@ -120,9 +119,9 @@ impl PaddleOcrVlTextModel {
     /// Standard token-in / logits-out entry point. Uses 1D positions
     /// `start_pos..start_pos+seq` for all three M-RoPE axes — i.e.
     /// pure text input. Returns logits `(1, seq, vocab_size)`.
-    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
-        let h = LazyTensor::embed_tokens(
+        let h = Tensor::embed_tokens(
             self.weights.token_embedding.clone(),
             cfg.vocab_size,
             cfg.hidden_size,
@@ -137,7 +136,7 @@ impl PaddleOcrVlTextModel {
     /// it interleaves vision-tile embeddings into the text stream.
     /// Uses standard 1D positions; multimodal callers needing true
     /// 3D M-RoPE should use [`Self::forward_embeds_with_mrope`].
-    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let h_norm = self.forward_hidden_embeds(embeds, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
@@ -146,11 +145,7 @@ impl PaddleOcrVlTextModel {
     /// and returns post-final-RmsNorm hidden states. Used by
     /// PaddleOCR-VL composition tests that need to inspect text-stack
     /// hidden states before the logit projection.
-    pub fn forward_hidden_embeds(
-        &self,
-        embeds: &LazyTensor,
-        start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_hidden_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let seq = self.validate_embeds(embeds)?;
         let position_ids = host_text_position_ids(seq, start_pos);
@@ -169,9 +164,9 @@ impl PaddleOcrVlTextModel {
     /// composition layer can build it once and feed it in.
     pub fn forward_embeds_with_mrope(
         &self,
-        embeds: &LazyTensor,
+        embeds: &Tensor,
         position_ids: &[[i64; 3]],
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let h_norm = self.forward_hidden_embeds_with_mrope(embeds, position_ids)?;
         self.apply_lm_head(&h_norm)
     }
@@ -180,9 +175,9 @@ impl PaddleOcrVlTextModel {
     /// lm_head and returns post-RmsNorm hidden states.
     pub fn forward_hidden_embeds_with_mrope(
         &self,
-        embeds: &LazyTensor,
+        embeds: &Tensor,
         position_ids: &[[i64; 3]],
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let seq = self.validate_embeds(embeds)?;
         if position_ids.len() != seq {
@@ -197,7 +192,7 @@ impl PaddleOcrVlTextModel {
             .rms_norm_affine(Arc::clone(&self.weights.final_norm_gain), cfg.rms_norm_eps)
     }
 
-    fn validate_embeds(&self, embeds: &LazyTensor) -> Result<usize> {
+    fn validate_embeds(&self, embeds: &Tensor) -> Result<usize> {
         let cfg = &self.config;
         let dims = embeds.shape();
         let dims = dims.dims();
@@ -237,7 +232,7 @@ impl PaddleOcrVlTextModel {
         Ok(dims[1])
     }
 
-    fn run_backbone(&self, embeds: &LazyTensor, position_ids: &[[i64; 3]]) -> Result<LazyTensor> {
+    fn run_backbone(&self, embeds: &Tensor, position_ids: &[[i64; 3]]) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = position_ids.len();
@@ -260,7 +255,7 @@ impl PaddleOcrVlTextModel {
         Ok(h)
     }
 
-    fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
+    fn apply_lm_head(&self, h_norm: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         match &self.weights.output {
             Some(w) => Ok(w.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?),
@@ -276,12 +271,12 @@ impl PaddleOcrVlTextModel {
 
     fn apply_layer(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &LayerWeights,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-        mask: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+        mask: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
 
@@ -458,7 +453,7 @@ pub fn build_mrope_tables(
     (cos_data, sin_data)
 }
 
-fn build_causal_mask(anchor: &LazyTensor, seq: usize) -> LazyTensor {
+fn build_causal_mask(anchor: &Tensor, seq: usize) -> Tensor {
     let mut mask_data = vec![0.0_f32; seq * seq];
     for i in 0..seq {
         for j in (i + 1)..seq {
@@ -709,7 +704,7 @@ mod tests {
 
         let direct = model.forward(&tokens, 0).unwrap().realize_f32();
 
-        let embeds = LazyTensor::embed_tokens(
+        let embeds = Tensor::embed_tokens(
             model.weights.token_embedding.clone(),
             cfg.vocab_size,
             cfg.hidden_size,
@@ -814,7 +809,7 @@ mod tests {
             weights: tiny_weights(&cfg),
         };
         let tokens: Vec<u32> = vec![2, 4, 6];
-        let embeds = LazyTensor::embed_tokens(
+        let embeds = Tensor::embed_tokens(
             model.weights.token_embedding.clone(),
             cfg.vocab_size,
             cfg.hidden_size,
@@ -867,7 +862,7 @@ mod tests {
             weights: tiny_weights(&cfg),
         };
         let tokens: Vec<u32> = vec![1, 2, 3];
-        let embeds = LazyTensor::embed_tokens(
+        let embeds = Tensor::embed_tokens(
             model.weights.token_embedding.clone(),
             cfg.vocab_size,
             cfg.hidden_size,

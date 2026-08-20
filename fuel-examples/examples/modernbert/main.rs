@@ -12,7 +12,7 @@ use std::sync::Arc;
 use anyhow::{Error as E, Result, anyhow};
 use clap::{Parser, ValueEnum};
 use fuel::Shape;
-use fuel::lazy::{LazyTensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix};
+use fuel::lazy::{Tensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix};
 use fuel::lazy_modernbert::{
     ModernBertConfig, ModernBertLayerWeights, ModernBertModel, ModernBertWeights,
 };
@@ -206,11 +206,11 @@ fn load_mlm_head(
 /// Apply MLM head to per-token hidden states `[1, seq, hidden]`.
 /// Returns logits `[1, seq, vocab]`.
 fn apply_mlm_head(
-    hidden: &LazyTensor,
+    hidden: &Tensor,
     mlm: &MlmHead,
     word_embedding: &Arc<[f32]>,
     cfg: &ModernBertConfig,
-) -> Result<LazyTensor> {
+) -> Result<Tensor> {
     let h = cfg.hidden_size;
     let v = cfg.vocab_size;
 
@@ -228,7 +228,7 @@ fn apply_mlm_head(
     )?;
     // Decoder: tied to input embedding. word_embedding has layout
     // `[vocab, hidden]`. The matmul `x @ W^T` is what eager Linear does,
-    // but our LazyTensor.matmul expects `[hidden, vocab]`. We transpose
+    // but our Tensor.matmul expects `[hidden, vocab]`. We transpose
     // word_embedding once into a `[hidden, vocab]` const.
     let mut decoder_w = vec![0.0_f32; h * v];
     for vi in 0..v {

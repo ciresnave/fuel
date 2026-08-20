@@ -17,7 +17,7 @@
 
 use crate::lazy_eval::{get_attr_float_opt, get_attr_int_opt, normalize_axis, set_output};
 use crate::onnx;
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel::{Device, Error, Result, Shape};
 use std::collections::HashMap;
 
@@ -26,9 +26,9 @@ use std::collections::HashMap;
 /// continue its fallthrough to the unsupported-op error.
 pub fn try_dispatch(
     node: &onnx::NodeProto,
-    values: &mut HashMap<String, LazyTensor>,
+    values: &mut HashMap<String, Tensor>,
     device: &Device,
-    anchor: &mut Option<LazyTensor>,
+    anchor: &mut Option<Tensor>,
 ) -> Result<bool> {
     match node.op_type.as_str() {
         "BatchNormalization" => batch_normalization(node, values)?,
@@ -49,19 +49,15 @@ pub fn try_dispatch(
 
 fn unary_handler(
     node: &onnx::NodeProto,
-    values: &mut HashMap<String, LazyTensor>,
-    f: impl FnOnce(&LazyTensor) -> Result<LazyTensor>,
+    values: &mut HashMap<String, Tensor>,
+    f: impl FnOnce(&Tensor) -> Result<Tensor>,
 ) -> Result<()> {
     let x = get(values, &node.input[0], node)?;
     let y = f(&x)?;
     set_output(node, 0, y, values)
 }
 
-fn get(
-    values: &HashMap<String, LazyTensor>,
-    name: &str,
-    node: &onnx::NodeProto,
-) -> Result<LazyTensor> {
+fn get(values: &HashMap<String, Tensor>, name: &str, node: &onnx::NodeProto) -> Result<Tensor> {
     values.get(name).cloned().ok_or_else(|| {
         Error::Msg(format!(
             "missing input '{}' for node '{}' ({})",
@@ -75,10 +71,7 @@ fn get(
 // BatchNormalization (eval / inference mode)
 // ---------------------------------------------------------------------------
 
-fn batch_normalization(
-    node: &onnx::NodeProto,
-    values: &mut HashMap<String, LazyTensor>,
-) -> Result<()> {
+fn batch_normalization(node: &onnx::NodeProto, values: &mut HashMap<String, Tensor>) -> Result<()> {
     let training_mode = get_attr_int_opt(node, "training_mode").unwrap_or(0);
     if training_mode != 0 {
         return Err(Error::Msg(format!(
@@ -137,9 +130,9 @@ fn batch_normalization(
 
 fn layer_normalization(
     node: &onnx::NodeProto,
-    values: &mut HashMap<String, LazyTensor>,
+    values: &mut HashMap<String, Tensor>,
     _device: &Device,
-    _anchor: &mut Option<LazyTensor>,
+    _anchor: &mut Option<Tensor>,
 ) -> Result<()> {
     if node.input.len() < 2 {
         return Err(Error::Msg(format!(
@@ -210,7 +203,7 @@ fn layer_normalization(
 
 fn softmax_op(
     node: &onnx::NodeProto,
-    values: &mut HashMap<String, LazyTensor>,
+    values: &mut HashMap<String, Tensor>,
     log: bool,
 ) -> Result<()> {
     let x = get(values, &node.input[0], node)?;
@@ -257,7 +250,7 @@ fn softmax_op(
 // Parametric activations: LeakyRelu, Elu, HardSigmoid
 // ---------------------------------------------------------------------------
 
-fn leaky_relu(node: &onnx::NodeProto, values: &mut HashMap<String, LazyTensor>) -> Result<()> {
+fn leaky_relu(node: &onnx::NodeProto, values: &mut HashMap<String, Tensor>) -> Result<()> {
     // y = relu(x) + alpha * (x - relu(x))
     //   x >= 0 → relu(x) = x, x - relu(x) = 0 → y = x
     //   x <  0 → relu(x) = 0, x - relu(x) = x → y = alpha*x
@@ -269,7 +262,7 @@ fn leaky_relu(node: &onnx::NodeProto, values: &mut HashMap<String, LazyTensor>) 
     set_output(node, 0, y, values)
 }
 
-fn elu(node: &onnx::NodeProto, values: &mut HashMap<String, LazyTensor>) -> Result<()> {
+fn elu(node: &onnx::NodeProto, values: &mut HashMap<String, Tensor>) -> Result<()> {
     // y = relu(x) + alpha * (exp(min(x, 0)) - 1)
     //   x >= 0 → relu(x) = x, min(x,0) = 0, exp(0)-1 = 0 → y = x
     //   x <  0 → relu(x) = 0, min(x,0) = x, exp(x)-1   → y = alpha*(exp(x)-1)
@@ -284,7 +277,7 @@ fn elu(node: &onnx::NodeProto, values: &mut HashMap<String, LazyTensor>) -> Resu
     set_output(node, 0, y, values)
 }
 
-fn hard_sigmoid(node: &onnx::NodeProto, values: &mut HashMap<String, LazyTensor>) -> Result<()> {
+fn hard_sigmoid(node: &onnx::NodeProto, values: &mut HashMap<String, Tensor>) -> Result<()> {
     // y = clamp(alpha*x + beta, 0, 1)
     let x = get(values, &node.input[0], node)?;
     let alpha = get_attr_float_opt(node, "alpha").unwrap_or(0.2) as f64;
@@ -300,7 +293,7 @@ fn hard_sigmoid(node: &onnx::NodeProto, values: &mut HashMap<String, LazyTensor>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lazy_eval::LazyOnnxEval;
+    use crate::lazy_eval::OnnxEval;
     use crate::onnx::{attribute_proto::AttributeType, tensor_proto::DataType};
     use prost::Message;
     use std::sync::Arc;
@@ -380,11 +373,11 @@ mod tests {
         };
         let mut buf = Vec::new();
         model_from_graph(graph).encode(&mut buf).unwrap();
-        let evaluator = LazyOnnxEval::from_bytes(&buf).unwrap();
+        let evaluator = OnnxEval::from_bytes(&buf).unwrap();
 
         let device = Device::cpu();
         let dims_i64: Vec<usize> = x_dims.to_vec();
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             Arc::<[f32]>::from(x_data),
             Shape::from_dims(&dims_i64),
             &device,
@@ -434,10 +427,10 @@ mod tests {
         };
         let mut buf = Vec::new();
         model_from_graph(graph).encode(&mut buf).unwrap();
-        let evaluator = LazyOnnxEval::from_bytes(&buf).unwrap();
+        let evaluator = OnnxEval::from_bytes(&buf).unwrap();
 
         let device = Device::cpu();
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             Arc::<[f32]>::from(vec![1.0_f32, 2.0, 3.0, 4.0]),
             Shape::from_dims(&[1, 2, 2, 1]),
             &device,
@@ -482,10 +475,10 @@ mod tests {
         };
         let mut buf = Vec::new();
         model_from_graph(graph).encode(&mut buf).unwrap();
-        let evaluator = LazyOnnxEval::from_bytes(&buf).unwrap();
+        let evaluator = OnnxEval::from_bytes(&buf).unwrap();
 
         let device = Device::cpu();
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             Arc::<[f32]>::from(vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]),
             Shape::from_dims(&[2, 3]),
             &device,
@@ -527,10 +520,10 @@ mod tests {
         };
         let mut buf = Vec::new();
         model_from_graph(graph).encode(&mut buf).unwrap();
-        let evaluator = LazyOnnxEval::from_bytes(&buf).unwrap();
+        let evaluator = OnnxEval::from_bytes(&buf).unwrap();
 
         let device = Device::cpu();
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             Arc::<[f32]>::from(vec![1.0_f32, 2.0, 3.0, 1.0, 1.0, 1.0]),
             Shape::from_dims(&[2, 3]),
             &device,
@@ -568,7 +561,7 @@ mod tests {
         let got = run_unary("Relu", vec![], xs.clone(), &[xs.len()]);
 
         let device = Device::cpu();
-        let xt = LazyTensor::from_f32(
+        let xt = Tensor::from_f32(
             Arc::<[f32]>::from(xs.clone()),
             Shape::from_dims(&[xs.len()]),
             &device,
@@ -589,7 +582,7 @@ mod tests {
         let got = run_unary("Gelu", vec![], xs.clone(), &[xs.len()]);
 
         let device = Device::cpu();
-        let xt = LazyTensor::from_f32(
+        let xt = Tensor::from_f32(
             Arc::<[f32]>::from(xs.clone()),
             Shape::from_dims(&[xs.len()]),
             &device,

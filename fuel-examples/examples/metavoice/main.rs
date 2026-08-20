@@ -61,7 +61,7 @@ use anyhow::{Error as E, Result};
 use clap::Parser;
 use std::io::Write;
 
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel::lazy_encodec::{EncodecConfig, EncodecModel, EncodecWeights};
 use fuel::lazy_metavoice::{MetaVoiceConfig, MetaVoiceModel, MetaVoiceWeights};
 use fuel::safetensors::MmapedSafetensors;
@@ -173,7 +173,7 @@ fn main() -> Result<()> {
         weights: enc_weights,
     };
 
-    // 4) Build a speaker embedding LazyTensor on CPU.
+    // 4) Build a speaker embedding Tensor on CPU.
     let speaker_embed = load_speaker_embed(&args, &mv_cfg)?;
 
     // 5) Encode the prompt. **Gap:** the eager BPE tokenizer is not
@@ -286,7 +286,7 @@ fn main() -> Result<()> {
             codes_flat.extend(std::iter::repeat(0_u32).take(gen_len));
         }
     }
-    let anchor = LazyTensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &Device::cpu());
+    let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &Device::cpu());
     let codes = anchor.const_u32_like(codes_flat, Shape::from_dims(&[1, enc_num_cb, gen_len]));
 
     // 8) Decode to waveform.
@@ -325,13 +325,13 @@ fn main() -> Result<()> {
 
 // ---- Helpers ---------------------------------------------------------------
 
-/// Build a speaker embedding LazyTensor of shape
+/// Build a speaker embedding Tensor of shape
 /// `(1, 1, speaker_emb_dim)`. Prefers a pre-baked `spk_emb` tensor (the
 /// eager convention) over running the lazy speaker encoder, since the
 /// upstream mel-spectrogram extraction needed to drive
 /// `SpeakerEncoderModel::forward` is not available here. Falls back to
 /// zeros when no file is provided or load fails.
-fn load_speaker_embed(args: &Args, cfg: &MetaVoiceConfig) -> Result<LazyTensor> {
+fn load_speaker_embed(args: &Args, cfg: &MetaVoiceConfig) -> Result<Tensor> {
     let device = Device::cpu();
     let shape = Shape::from_dims(&[1, 1, cfg.speaker_emb_dim]);
 
@@ -347,7 +347,7 @@ fn load_speaker_embed(args: &Args, cfg: &MetaVoiceConfig) -> Result<LazyTensor> 
                     }
                     if out.len() == cfg.speaker_emb_dim {
                         println!("loaded spk_emb tensor ({} floats)", out.len());
-                        return Ok(LazyTensor::from_f32(out, shape, &device));
+                        return Ok(Tensor::from_f32(out, shape, &device));
                     } else {
                         eprintln!(
                             "speaker-encoder file has spk_emb with {} elts, \
@@ -373,7 +373,7 @@ fn load_speaker_embed(args: &Args, cfg: &MetaVoiceConfig) -> Result<LazyTensor> 
         println!("no --speaker-encoder given; using a zero speaker vector");
     }
 
-    Ok(LazyTensor::from_f32(
+    Ok(Tensor::from_f32(
         vec![0.0_f32; cfg.speaker_emb_dim],
         shape,
         &device,

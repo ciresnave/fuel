@@ -14,9 +14,9 @@ fuel-core/src/kv_block_pool_device.rs	/// way. f32-only for now (see [`Self::wri
 fuel-core/src/lazy.rs	/// Allocate a data-determined [`fuel_ir::SymId`] not yet used by any
 fuel-core/src/lazy.rs	/// does not yet expose.
 fuel-core/src/lazy_csm.rs	/// generated audio frame) is still consumer-side TODO.
-fuel-core/src/lazy_dac.rs	//! Dilation handling: `LazyTensor::conv1d` doesn't yet take a
+fuel-core/src/lazy_dac.rs	//! Dilation handling: `Tensor::conv1d` doesn't yet take a
 fuel-core/src/lazy_debertav2.rs	/// unused (the lazy encoder doesn't yet ingest either — see the
-fuel-core/src/lazy_deepseek2.rs	/// Naively threading `LazyLatentCache` directly across
+fuel-core/src/lazy_deepseek2.rs	/// Naively threading `LatentCache` directly across
 fuel-core/src/lazy_dinov2reg4.rs	//! deferred (eager uses `upsample_nearest2d` as a workaround
 fuel-core/src/lazy_encodec.rs	//! → Conv1d (dim/compress → dim) → optional 1×1 shortcut conv on
 fuel-core/src/lazy_encodec.rs	/// 1×1 conv on the residual branch when `use_conv_shortcut`.
@@ -40,7 +40,7 @@ fuel-core/src/lazy_mmdit.rs	// ---- MMDiT-X joint block (TODO) -----------------
 fuel-core/src/lazy_mmdit.rs	// MMDiT-X (SD3.5 medium) variant: not implemented in v1; flagged as TODO.
 fuel-core/src/lazy_mmdit.rs	// upstream and would need an `enum JointBlockWeights { MMDiT(...),
 fuel-core/src/lazy_mmdit.rs	/// MMDiT-X joint-block variant is not yet implemented; this config
-fuel-core/src/lazy_nn/conv.rs	//! Dilation: the LazyTensor conv primitives do not yet accept a
+fuel-core/src/lazy_nn/conv.rs	//! Dilation: the Tensor conv primitives do not yet accept a
 fuel-core/src/lazy_nn/two_proj_attention.rs	/// Per-token, per-layer footprint a *standard* K/V cache would need at
 fuel-core/src/lazy_nn_conv_transpose.rs	//!   carry it yet (the eager `// TODO: support groups.` comment will
 fuel-core/src/lazy_nn_conv_transpose.rs	/// (the eager side has a `TODO: support groups.` and the underlying

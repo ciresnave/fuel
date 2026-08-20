@@ -10,17 +10,17 @@
 //! `fuel_graph::NodeHandle` and every model in `fuel-transformers` runs
 //! through the lazy backend without per-model porting.
 //!
-//! The bridge is the intermediate stage. [`LazyTensor`] is a wrapper
+//! The bridge is the intermediate stage. [`Tensor`] is a wrapper
 //! around [`fuel_graph::NodeHandle`] that exposes the fuel-core-style
 //! method API (`.add()`, `.mul()`, `.matmul()`, `.relu()`, `.shape()`,
 //! `.to_vec0()`, `.to_vec1()`, ...) so callers can gradually migrate
 //! from eager to lazy one function at a time. Each method appends a
 //! node to the underlying [`fuel_graph::Graph`]; nothing runs until
-//! you call [`LazyTensor::realize_f32`] or a sibling.
+//! you call [`Tensor::realize_f32`] or a sibling.
 //!
 //! This is NOT intended as a permanent user-facing type. It's the
 //! scaffolding that makes the final merge incremental: each
-//! `fuel-transformers` model can be converted to `LazyTensor` in a
+//! `fuel-transformers` model can be converted to `Tensor` in a
 //! separate PR, and once they all compile against the wrapper, the
 //! type alias flips and `fuel_core::tensor::Tensor` becomes the lazy variant.
 //!
@@ -34,7 +34,7 @@
 //!
 //! Missing: autograd integration via `fuel_core::Var`, the
 //! `backward()` / `apply_op*` convenience methods, safetensors
-//! loading directly into `LazyTensor`s, and many of the niche
+//! loading directly into `Tensor`s, and many of the niche
 //! methods on `fuel_core::tensor::Tensor`. All of these are additive
 //! extensions — they do not require changes to the bridge's
 //! structural design.
@@ -62,8 +62,8 @@ use std::sync::Arc;
 /// So the obvious shape does *not* work:
 ///
 /// ```ignore
-/// let a = LazyTensor::from_f32(a_data, [2, 3], &device);
-/// let w = LazyTensor::from_f32(w_data, [3, 2], &device);  // ← a SECOND graph
+/// let a = Tensor::from_f32(a_data, [2, 3], &device);
+/// let w = Tensor::from_f32(w_data, [3, 2], &device);  // ← a SECOND graph
 /// let y = a.matmul(&w);                                   // ← panics
 /// ```
 ///
@@ -73,8 +73,8 @@ use std::sync::Arc;
 /// simply want the construction site to say which graph it targets:
 ///
 /// ```ignore
-/// let a = LazyTensor::from_f32(a_data, [2, 3], &device);          // the root
-/// let w = LazyTensor::from_f32_on(a.graph(), w_data, [3, 2], &device);
+/// let a = Tensor::from_f32(a_data, [2, 3], &device);          // the root
+/// let w = Tensor::from_f32_on(a.graph(), w_data, [3, 2], &device);
 /// let y = a.matmul(&w);                                           // ✓
 /// ```
 ///
@@ -82,7 +82,7 @@ use std::sync::Arc;
 /// what you have to hand is a sibling tensor rather than the graph:
 ///
 /// ```ignore
-/// let a = LazyTensor::from_f32(a_data, [2, 3], &device);  // the root
+/// let a = Tensor::from_f32(a_data, [2, 3], &device);  // the root
 /// let w = a.const_f32_like(w_data, [3, 2].into());        // same graph ✓
 /// let y = a.matmul(&w);                                   // ✓
 /// ```
@@ -95,7 +95,7 @@ use std::sync::Arc;
 /// precisely the mixed-precision case — f32 activations with bf16 weight
 /// matrices sharing one graph.
 #[derive(Clone, Debug)]
-pub struct LazyTensor {
+pub struct Tensor {
     // `pub(crate)`: the shared decode build path lives in
     // `crate::persistent_decode` (GAP-029 increment 3) and needs the graph +
     // NodeId handles to mint Consts and name realize roots. Still private to
@@ -103,7 +103,7 @@ pub struct LazyTensor {
     pub(crate) inner: fuel_graph::NodeHandle,
 }
 
-impl LazyTensor {
+impl Tensor {
     // ---- constructors ----
 
     /// Build an `f32` lazy tensor from flat data, a shape, and a device.
@@ -156,8 +156,8 @@ impl LazyTensor {
     /// to hand is a sibling *tensor* rather than the graph itself.
     ///
     /// ```ignore
-    /// let a = LazyTensor::from_f32(a_data, [2, 3], &device);          // root
-    /// let w = LazyTensor::from_f32_on(a.graph(), w_data, [3, 2], &device);
+    /// let a = Tensor::from_f32(a_data, [2, 3], &device);          // root
+    /// let w = Tensor::from_f32_on(a.graph(), w_data, [3, 2], &device);
     /// let y = a.matmul(&w)?;                                          // ✓
     /// ```
     pub fn from_f32_on(
@@ -365,7 +365,7 @@ impl LazyTensor {
         &self.inner
     }
 
-    /// Wrap an existing `fuel_graph::NodeHandle` in a `LazyTensor`. Useful
+    /// Wrap an existing `fuel_graph::NodeHandle` in a `Tensor`. Useful
     /// when you have code that already builds a graph and want to
     /// present its outputs through this API.
     pub fn from_graph_tensor(t: fuel_graph::NodeHandle) -> Self {
@@ -1475,7 +1475,7 @@ impl LazyTensor {
     /// matches the single-output [`Self::selective_scan`] result;
     /// `last_state` is the final hidden state `[batch, dim, dstate]`
     /// used by autoregressive callers to resume from a prefill
-    /// snapshot. Both LazyTensors are `Op::View` projections of the
+    /// snapshot. Both Tensors are `Op::View` projections of the
     /// same bundled producer Storage — realizing them in the same
     /// pass shares the bundle.
     pub fn selective_scan_bundled(
@@ -2003,7 +2003,7 @@ impl LazyTensor {
 }
 
 /// Realize many tensors in a single CPU topo-walk. Phase 7.6 step 9c E.2.
-pub fn realize_many_f32(tensors: &[&LazyTensor]) -> Vec<Vec<f32>> {
+pub fn realize_many_f32(tensors: &[&Tensor]) -> Vec<Vec<f32>> {
     if tensors.is_empty() {
         return Vec::new();
     }
@@ -2018,7 +2018,7 @@ pub fn realize_many_f32(tensors: &[&LazyTensor]) -> Vec<Vec<f32>> {
 /// change from `&mut GraphExecutor<CudaBackend>` to `&CudaDevice`.
 #[cfg(feature = "cuda")]
 pub fn realize_many_f32_cuda(
-    tensors: &[&LazyTensor],
+    tensors: &[&Tensor],
     device: &fuel_cuda_backend::CudaDevice,
 ) -> Vec<Vec<f32>> {
     if tensors.is_empty() {
@@ -2118,7 +2118,7 @@ impl crate::persistent_decode::DecodeBackbone for LlamaModel {
         &self,
         layer_idx: usize,
         inputs: &crate::persistent_decode::DecodeLayerInputs<'_>,
-    ) -> crate::Result<LazyTensor> {
+    ) -> crate::Result<Tensor> {
         self.apply_layer_with_kv_writes(
             inputs.x,
             &self.weights.layers[layer_idx],
@@ -2134,7 +2134,7 @@ impl crate::persistent_decode::DecodeBackbone for LlamaModel {
         )
     }
 
-    fn decode_final_norm_and_head(&self, h: &LazyTensor) -> crate::Result<LazyTensor> {
+    fn decode_final_norm_and_head(&self, h: &Tensor) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let h_norm = apply_affine_rms_norm(h, &self.weights.final_norm_gain, cfg.dim, cfg.norm_eps);
         Ok(self
@@ -2174,7 +2174,7 @@ mod tests {
 
     #[test]
     fn constructors_wrap_graph_tensor_correctly() {
-        let t = LazyTensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu());
+        let t = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu());
         assert_eq!(t.dtype(), DType::F32);
         assert_eq!(t.shape().dims(), &[3]);
         assert_eq!(t.rank(), 1);
@@ -2183,7 +2183,7 @@ mod tests {
 
     #[test]
     fn add_builds_add_node_in_underlying_graph() {
-        let a = LazyTensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu());
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu());
         let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
         let c = a.add(&b).unwrap();
         assert_eq!(c.shape().dims(), &[3]);
@@ -2201,7 +2201,7 @@ mod tests {
         // port would write: RmsNorm → matmul → RMS-style residual.
         // We just verify the shapes thread through cleanly and the
         // final tensor is consistent.
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
             &Device::cpu(),
@@ -2222,8 +2222,8 @@ mod tests {
 
     #[test]
     fn rope_through_lazy_wrapper() {
-        // Verify the RoPE builder is reachable through LazyTensor.
-        let x = LazyTensor::from_f32(
+        // Verify the RoPE builder is reachable through Tensor.
+        let x = Tensor::from_f32(
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
             Shape::from_dims(&[2, 4]),
             &Device::cpu(),
@@ -2251,7 +2251,7 @@ mod tests {
         // (heads forward → rope → back), mirroring the helper's permute so the two
         // paths are compared in the same layout.
         let rope_pool_at = |data: &[f32], start_pos: usize| -> Vec<f32> {
-            let k = LazyTensor::from_f32(
+            let k = Tensor::from_f32(
                 data.to_vec(),
                 Shape::from_dims(&[bs, n_kv_heads, head_dim]),
                 &dev,
@@ -2272,9 +2272,8 @@ mod tests {
         };
         let direct = rope_pool_at(&raw, p0 + m); // rope directly at shifted positions
         let at_p0 = rope_pool_at(&raw, p0); // cached, rotated at original positions
-        let shifted = LazyTensor::rope_delta_rotate_block_f32(
-            &dev, &at_p0, theta, m, bs, n_kv_heads, head_dim,
-        );
+        let shifted =
+            Tensor::rope_delta_rotate_block_f32(&dev, &at_p0, theta, m, bs, n_kv_heads, head_dim);
         let maxdiff = direct
             .iter()
             .zip(&shifted)
@@ -2288,7 +2287,7 @@ mod tests {
 
     #[test]
     fn cast_switches_dtype_through_wrapper() {
-        let x = LazyTensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu());
+        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu());
         let y = x.to_dtype(DType::F64).unwrap();
         assert_eq!(y.dtype(), DType::F64);
         assert_eq!(y.shape().dims(), &[3]);
@@ -2296,7 +2295,7 @@ mod tests {
 
     #[test]
     fn indexing_builds_correct_output_shape() {
-        let data = LazyTensor::from_f32(vec![1.0; 12], Shape::from_dims(&[3, 4]), &Device::cpu());
+        let data = Tensor::from_f32(vec![1.0; 12], Shape::from_dims(&[3, 4]), &Device::cpu());
         let idx = data.const_u32_like(vec![0, 2, 1], Shape::from_dims(&[3]));
         let out = data.index_select(0, &idx).unwrap();
         assert_eq!(out.shape().dims(), &[3, 4]);
@@ -2306,10 +2305,10 @@ mod tests {
 
     #[test]
     fn realize_f32_executes_the_underlying_graph() {
-        // The moment of truth: build a graph through LazyTensor and
+        // The moment of truth: build a graph through Tensor and
         // then realize it end-to-end. (a + b) * a for a = [1, 2, 3],
         // b = [4, 5, 6] should yield [5, 14, 27].
-        let a = LazyTensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu());
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu());
         let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
         let c = a.add(&b).unwrap().mul(&a).unwrap();
         let result = c.realize_f32();
@@ -2323,7 +2322,7 @@ mod tests {
         // NaN-propagating (torch parity). This guards the full lazy path
         // (graph build -> optimize -> dispatch -> CPU kernel -> realize),
         // not just the scalar-kernel unit tests in fuel-cpu-backend.
-        let a = LazyTensor::from_f32(
+        let a = Tensor::from_f32(
             vec![f32::NAN, -2.0, 3.0],
             Shape::from_dims(&[3]),
             &Device::cpu(),
@@ -2355,7 +2354,7 @@ mod tests {
     #[test]
     fn realize_f32_matmul_hand_computed() {
         // Classic 2x3 @ 3x2 matmul through the bridge.
-        let a = LazyTensor::from_f32(
+        let a = Tensor::from_f32(
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
             &Device::cpu(),
@@ -2380,7 +2379,7 @@ mod tests {
         let n = 32;
         let a_data: Vec<f32> = (0..m * k).map(|i| (i as f32 * 0.01).sin()).collect();
         let b_data: Vec<f32> = (0..k * n).map(|i| (i as f32 * 0.013).cos()).collect();
-        let a = LazyTensor::from_f32(a_data, Shape::from_dims(&[m, k]), &Device::cpu());
+        let a = Tensor::from_f32(a_data, Shape::from_dims(&[m, k]), &Device::cpu());
         let b = a.const_f32_like(b_data, Shape::from_dims(&[k, n]));
         let c = a.matmul(&b).unwrap();
         let fast = c.realize_f32();
@@ -2489,7 +2488,7 @@ mod tests {
         let k_data: Vec<f32> = (0..hkv * sk * d).map(|i| (i as f32 * 0.13).cos()).collect();
         let v_data: Vec<f32> = (0..hkv * sk * d).map(|i| i as f32 * 0.07 + 1.0).collect();
         let scale = 0.7071f32;
-        let q = LazyTensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, sq, d]), &dev);
+        let q = Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, sq, d]), &dev);
         let k = q.const_f32_like(k_data.clone(), Shape::from_dims(&[1, hkv, sk, d]));
         let v = q.const_f32_like(v_data.clone(), Shape::from_dims(&[1, hkv, sk, d]));
         // Distinct positive slope per head (powers of 1/2 — the alibi default).
@@ -2648,7 +2647,7 @@ mod tests {
             .map(|i| (i as f32 * 0.13).cos())
             .collect();
         let v_data: Vec<f32> = (0..hkv * cap * d).map(|i| i as f32 * 0.07 + 1.0).collect();
-        let q = LazyTensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, sq, d]), &dev);
+        let q = Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, sq, d]), &dev);
         let k = q
             .inner
             .const_f32_like(k_data.clone(), Shape::from_dims(&[1, hkv, cap, d]));
@@ -2795,7 +2794,7 @@ mod tests {
             "test data must be accumulation-order-sensitive so the parity has teeth",
         );
 
-        let x = LazyTensor::from_f32(data.clone(), Shape::from_dims(&[rows, cols]), &dev);
+        let x = Tensor::from_f32(data.clone(), Shape::from_dims(&[rows, cols]), &dev);
         // Recipe spelling: rank-reducing SumDim(last) (chassis `reduce`).
         let sumdim = x.inner.sum_dim(1);
         let got_sumdim = crate::pipelined_bridge::realize_one_as::<f32>(
@@ -2879,7 +2878,7 @@ mod tests {
         let keepdim = || Shape::from_dims(&[rows, 1]);
 
         // RECIPE path: lower the fused node to the recipe (SumDim spelling).
-        let recipe = LazyTensor::from_f32(data.clone(), shape(), &dev)
+        let recipe = Tensor::from_f32(data.clone(), shape(), &dev)
             .softmax_last_dim()
             .expect("softmax recipe build");
         let graph = recipe.inner.graph().clone();
@@ -2892,7 +2891,7 @@ mod tests {
 
         // LEGACY path: the pre-migration ReduceMaxTo/ReduceSumTo(keepdim)
         // spelling, hand-built with identical Sub/Exp/Div.
-        let x = LazyTensor::from_f32(data.clone(), shape(), &dev).inner;
+        let x = Tensor::from_f32(data.clone(), shape(), &dev).inner;
         let m = x.reduce_max_to(keepdim());
         let mb = m.broadcast_to(shape());
         let s = x.sub(&mb);
@@ -2918,7 +2917,7 @@ mod tests {
         // SECONDARY (documentation): the fused/production kernel differs by
         // at most 1 ULP — NOT from the migration but from its reciprocal-
         // multiply normalize (`e*(1/sum)`) vs the primitive true-`Div`.
-        let fused_out = LazyTensor::from_f32(data.clone(), shape(), &dev)
+        let fused_out = Tensor::from_f32(data.clone(), shape(), &dev)
             .softmax_last_dim()
             .expect("softmax fused build")
             .realize_f32();
@@ -2944,7 +2943,7 @@ mod tests {
         let keepdim = || Shape::from_dims(&[rows, 1]);
 
         // RECIPE path: lower the fused node (MeanDim + Unsqueeze spelling).
-        let recipe = LazyTensor::from_f32(data.clone(), shape(), &dev)
+        let recipe = Tensor::from_f32(data.clone(), shape(), &dev)
             .rms_norm_last_dim(eps)
             .expect("rms_norm recipe build");
         let graph = recipe.inner.graph().clone();
@@ -2957,7 +2956,7 @@ mod tests {
 
         // LEGACY path: MeanDim(last) + Reshape-keepdim spelling, same eps and
         // same true-`Div` normalize.
-        let x = LazyTensor::from_f32(data.clone(), shape(), &dev).inner;
+        let x = Tensor::from_f32(data.clone(), shape(), &dev).inner;
         let sq = x.sqr();
         let mean = sq.mean_dim(1);
         let mean_kd = mean.reshape(keepdim());
@@ -2977,7 +2976,7 @@ mod tests {
 
         // SECONDARY (documentation): the fused kernel's reciprocal-multiply
         // (`x*rms_inv`) differs from the primitive true-`Div` by ≤1 ULP.
-        let fused_out = LazyTensor::from_f32(data.clone(), shape(), &dev)
+        let fused_out = Tensor::from_f32(data.clone(), shape(), &dev)
             .rms_norm_last_dim(eps)
             .expect("rms_norm fused build")
             .realize_f32();
@@ -3004,7 +3003,7 @@ mod tests {
         use fuel_graph::Op;
         use fuel_graph::registry::FusedOps;
         let dev = Device::cpu();
-        let u = LazyTensor::from_f32(vec![2.0f32], Shape::from_dims(&[1, 1, 1]), &dev);
+        let u = Tensor::from_f32(vec![2.0f32], Shape::from_dims(&[1, 1, 1]), &dev);
         let delta = u.const_f32_like(vec![0.5f32], Shape::from_dims(&[1, 1, 1]));
         let a = u.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1, 1]));
         let b = u.const_f32_like(vec![3.0f32], Shape::from_dims(&[1, 1, 1]));
@@ -3080,7 +3079,7 @@ mod tests {
         let dev = Device::cpu();
         // x [batch, seqlen, heads, head_dim] = [1,1,1,1]; dt [b,s,h]=[1,1,1];
         // a [heads]=[1]; b/c [b,s,h,state]=[1,1,1,1].
-        let x = LazyTensor::from_f32(vec![2.0f32], Shape::from_dims(&[1, 1, 1, 1]), &dev);
+        let x = Tensor::from_f32(vec![2.0f32], Shape::from_dims(&[1, 1, 1, 1]), &dev);
         let dt = x.const_f32_like(vec![0.5f32], Shape::from_dims(&[1, 1, 1]));
         let a = x.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1]));
         let b = x.const_f32_like(vec![3.0f32], Shape::from_dims(&[1, 1, 1, 1]));
@@ -3262,7 +3261,7 @@ mod tests {
     fn selective_scan_is_differentiable_backward_matches_fd() {
         let dev = Device::cpu();
         let fwd = |u_v: f32| -> f32 {
-            let u = LazyTensor::from_f32(vec![u_v], Shape::from_dims(&[1, 1, 1]), &dev);
+            let u = Tensor::from_f32(vec![u_v], Shape::from_dims(&[1, 1, 1]), &dev);
             let delta = u.const_f32_like(vec![0.5f32], Shape::from_dims(&[1, 1, 1]));
             let a = u.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1, 1]));
             let b = u.const_f32_like(vec![3.0f32], Shape::from_dims(&[1, 1, 1]));
@@ -3270,7 +3269,7 @@ mod tests {
             u.selective_scan(&delta, &a, &b, &c, false).realize_f32()[0]
         };
         // Autograd at u=2.0.
-        let u = LazyTensor::from_f32(vec![2.0f32], Shape::from_dims(&[1, 1, 1]), &dev);
+        let u = Tensor::from_f32(vec![2.0f32], Shape::from_dims(&[1, 1, 1]), &dev);
         let delta = u.const_f32_like(vec![0.5f32], Shape::from_dims(&[1, 1, 1]));
         let a = u.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1, 1]));
         let b = u.const_f32_like(vec![3.0f32], Shape::from_dims(&[1, 1, 1]));
@@ -3295,7 +3294,7 @@ mod tests {
         // x [batch,seqlen,heads,head_dim]=[1,1,1,1]; dt [b,s,h]=[1,1,1]; a [heads]=[1];
         // b/c [b,s,h,state]=[1,1,1,1]. Single step: h = dt*b*x = 1.5x, y = c*h = 6x (linear).
         let fwd = |x_v: f32| -> f32 {
-            let x = LazyTensor::from_f32(vec![x_v], Shape::from_dims(&[1, 1, 1, 1]), &dev);
+            let x = Tensor::from_f32(vec![x_v], Shape::from_dims(&[1, 1, 1, 1]), &dev);
             let dt = x.const_f32_like(vec![0.5f32], Shape::from_dims(&[1, 1, 1]));
             let a = x.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1]));
             let b = x.const_f32_like(vec![3.0f32], Shape::from_dims(&[1, 1, 1, 1]));
@@ -3303,7 +3302,7 @@ mod tests {
             x.ssd_chunk_scan(&dt, &a, &b, &c, 1).realize_f32()[0]
         };
         // Autograd at x=2.0.
-        let x = LazyTensor::from_f32(vec![2.0f32], Shape::from_dims(&[1, 1, 1, 1]), &dev);
+        let x = Tensor::from_f32(vec![2.0f32], Shape::from_dims(&[1, 1, 1, 1]), &dev);
         let dt = x.const_f32_like(vec![0.5f32], Shape::from_dims(&[1, 1, 1]));
         let a = x.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1]));
         let b = x.const_f32_like(vec![3.0f32], Shape::from_dims(&[1, 1, 1, 1]));
@@ -3334,7 +3333,7 @@ mod tests {
         // u/delta [batch,seqlen,dim]=[1,2,1]; a [dim,dstate]=[1,1] (< 0, stable gate);
         // b/c [batch,seqlen,dstate]=[1,2,1]. loss = sum(y) (ones-seed over [1,2,1]).
         let fwd = |u_vals: &[f32]| -> f32 {
-            let u = LazyTensor::from_f32(u_vals.to_vec(), Shape::from_dims(&[1, 2, 1]), &dev);
+            let u = Tensor::from_f32(u_vals.to_vec(), Shape::from_dims(&[1, 2, 1]), &dev);
             let delta = u.const_f32_like(vec![0.7f32, 0.7], Shape::from_dims(&[1, 2, 1]));
             let a = u.const_f32_like(vec![-0.5f32], Shape::from_dims(&[1, 1]));
             let b = u.const_f32_like(vec![1.0f32, 1.0], Shape::from_dims(&[1, 2, 1]));
@@ -3345,7 +3344,7 @@ mod tests {
                 .sum()
         };
         let u0 = vec![1.0f32, 2.0];
-        let u = LazyTensor::from_f32(u0.clone(), Shape::from_dims(&[1, 2, 1]), &dev);
+        let u = Tensor::from_f32(u0.clone(), Shape::from_dims(&[1, 2, 1]), &dev);
         let delta = u.const_f32_like(vec![0.7f32, 0.7], Shape::from_dims(&[1, 2, 1]));
         let a = u.const_f32_like(vec![-0.5f32], Shape::from_dims(&[1, 1]));
         let b = u.const_f32_like(vec![1.0f32, 1.0], Shape::from_dims(&[1, 2, 1]));
@@ -3384,7 +3383,7 @@ mod tests {
         // carry passes exp(dt*a) across chunks. x [b,s,h,hd]=[1,4,1,1]; dt [b,s,h]=[1,4,1];
         // a [heads]=[1] (< 0); b/c [b,s,h,state]=[1,4,1,1].
         let fwd = |x_vals: &[f32]| -> f32 {
-            let x = LazyTensor::from_f32(x_vals.to_vec(), Shape::from_dims(&[1, 4, 1, 1]), &dev);
+            let x = Tensor::from_f32(x_vals.to_vec(), Shape::from_dims(&[1, 4, 1, 1]), &dev);
             let dt = x.const_f32_like(vec![0.6f32, 0.6, 0.6, 0.6], Shape::from_dims(&[1, 4, 1]));
             let a = x.const_f32_like(vec![-0.5f32], Shape::from_dims(&[1]));
             let b = x.const_f32_like(vec![1.0f32, 1.0, 1.0, 1.0], Shape::from_dims(&[1, 4, 1, 1]));
@@ -3395,7 +3394,7 @@ mod tests {
                 .sum()
         };
         let x0 = vec![1.0f32, 2.0, 3.0, 4.0];
-        let x = LazyTensor::from_f32(x0.clone(), Shape::from_dims(&[1, 4, 1, 1]), &dev);
+        let x = Tensor::from_f32(x0.clone(), Shape::from_dims(&[1, 4, 1, 1]), &dev);
         let dt = x.const_f32_like(vec![0.6f32, 0.6, 0.6, 0.6], Shape::from_dims(&[1, 4, 1]));
         let a = x.const_f32_like(vec![-0.5f32], Shape::from_dims(&[1]));
         let b = x.const_f32_like(vec![1.0f32, 1.0, 1.0, 1.0], Shape::from_dims(&[1, 4, 1, 1]));
@@ -3513,7 +3512,7 @@ mod tests {
         let dev = Device::cpu();
         let (batch, seqlen, dim, dstate) = (2usize, 3usize, 2usize, 2usize);
         // [batch, seqlen, dim] — all distinct, mixed signs.
-        let u = LazyTensor::from_f32(
+        let u = Tensor::from_f32(
             vec![
                 0.5, -0.3, 1.0, 0.2, -0.5, 0.7, 0.25, 0.9, -0.8, 0.4, 0.6, -0.1,
             ],
@@ -3592,7 +3591,7 @@ mod tests {
         use fuel_graph::registry::FusedOps;
         let dev = Device::cpu();
         let (batch, seqlen, dim, dstate) = (1usize, 3usize, 2usize, 2usize);
-        let u = LazyTensor::from_f32(
+        let u = Tensor::from_f32(
             vec![0.5, -0.3, 1.0, 0.2, -0.5, 0.7],
             Shape::from_dims(&[batch, seqlen, dim]),
             &dev,
@@ -3677,7 +3676,7 @@ mod tests {
         let c_data: Vec<f32> = (0..batch * seqlen * heads * state_dim)
             .map(|i| 0.25 + 0.035 * i as f32)
             .collect();
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             x_data,
             Shape::from_dims(&[batch, seqlen, heads, head_dim]),
             &dev,
@@ -3745,7 +3744,7 @@ mod tests {
             &dev,
         )
         .expect("nf4_from_bytes");
-        let act = LazyTensor::from_graph_tensor(
+        let act = Tensor::from_graph_tensor(
             weight
                 .w_packed
                 .graph_tensor()
@@ -3794,7 +3793,7 @@ mod tests {
     /// builder (autograd creates them), so the test constructs the
     /// `Op::Fused` node by hand.
     fn lower_realize_fused(
-        anchor: &LazyTensor,
+        anchor: &Tensor,
         op: fuel_graph::Op,
         inputs: Vec<fuel_graph::NodeId>,
         shape: Shape,
@@ -3824,7 +3823,7 @@ mod tests {
         let x_data = vec![1.5f32, -2.0, 0.5, 3.0];
         let up_data = vec![1.0f32, 0.5, 2.0, -1.0];
         let shape = Shape::from_dims(&[4]);
-        let x = LazyTensor::from_f32(x_data.clone(), shape.clone(), &dev);
+        let x = Tensor::from_f32(x_data.clone(), shape.clone(), &dev);
         let up = x.const_f32_like(up_data.clone(), shape.clone());
         let got = lower_realize_fused(
             &x,
@@ -3861,7 +3860,7 @@ mod tests {
         let (mul, add) = (2.5f64, -1.0f64);
         let x_data = vec![1.5f32, -2.0, 0.5, 3.0];
         let shape = Shape::from_dims(&[4]);
-        let x = LazyTensor::from_f32(x_data.clone(), shape.clone(), &dev);
+        let x = Tensor::from_f32(x_data.clone(), shape.clone(), &dev);
         let got = lower_realize_fused(
             &x,
             fuel_graph::Op::Fused(
@@ -3898,7 +3897,7 @@ mod tests {
         }
         let g_data = vec![1.0f32, -0.5, 0.3, 0.2, 1.5, -1.0];
         let shape = Shape::from_dims(&[rows, cols]);
-        let s = LazyTensor::from_f32(s_data.clone(), shape.clone(), &dev);
+        let s = Tensor::from_f32(s_data.clone(), shape.clone(), &dev);
         let g = s.const_f32_like(g_data.clone(), shape.clone());
         let got = lower_realize_fused(
             &s,
@@ -3936,7 +3935,7 @@ mod tests {
         let x_data = vec![1.0f32, -2.0, 0.5, 3.0, 0.25, -1.5];
         let g_data = vec![0.5f32, 1.0, -0.3, 0.2, -1.0, 0.7];
         let shape = Shape::from_dims(&[rows, cols]);
-        let x = LazyTensor::from_f32(x_data.clone(), shape.clone(), &dev);
+        let x = Tensor::from_f32(x_data.clone(), shape.clone(), &dev);
         let g = x.const_f32_like(g_data.clone(), shape.clone());
         let got = lower_realize_fused(
             &x,
@@ -3979,7 +3978,7 @@ mod tests {
         let x_data = vec![1.0f32, -2.0, 0.5, 3.0, 0.25, -1.5];
         let g_data = vec![0.5f32, 1.0, -0.3, 0.2, -1.0, 0.7];
         let shape = Shape::from_dims(&[rows, cols]);
-        let x = LazyTensor::from_f32(x_data.clone(), shape.clone(), &dev);
+        let x = Tensor::from_f32(x_data.clone(), shape.clone(), &dev);
         let g = x.const_f32_like(g_data.clone(), shape.clone());
         let got = lower_realize_fused(
             &x,
@@ -4030,7 +4029,7 @@ mod tests {
         let up_data = vec![10.0f32, 5.0]; // [2,1] — one per reduced row.
         let x_shape = Shape::from_dims(&[2, 3]);
         let up_shape = Shape::from_dims(&[2, 1]);
-        let x = LazyTensor::from_f32(x_data.clone(), x_shape.clone(), &dev);
+        let x = Tensor::from_f32(x_data.clone(), x_shape.clone(), &dev);
         let up = x.const_f32_like(up_data.clone(), up_shape);
         let got = lower_realize_fused(
             &x,
@@ -4060,7 +4059,7 @@ mod tests {
         let x_data = vec![0.0f32, 1.0, 2.0, 3.0, 1.0, 0.0, -1.0, -2.0];
         let w_data = vec![0.5f32, 1.0, -0.5, 1.0, 0.0, 2.0];
         let bias_data = vec![0.1f32, -0.2];
-        let x = LazyTensor::from_f32(x_data.clone(), Shape::from_dims(&[b, c, x_seq]), &dev);
+        let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[b, c, x_seq]), &dev);
         let w = x.const_f32_like(w_data.clone(), Shape::from_dims(&[c, 1, k]));
         let bias = x.const_f32_like(bias_data.clone(), Shape::from_dims(&[c]));
         let got = lower_realize_fused(
@@ -4113,7 +4112,7 @@ mod tests {
         let do_data = vec![0.5f32, -1.0, 0.2, 0.3]; // [Sq,D]
         let qshape = Shape::from_dims(&[1, 1, sq, d]);
         let kshape = Shape::from_dims(&[1, 1, sk, d]);
-        let q = LazyTensor::from_f32(q_data.clone(), qshape.clone(), &dev);
+        let q = Tensor::from_f32(q_data.clone(), qshape.clone(), &dev);
         let k = q.const_f32_like(k_data.clone(), kshape.clone());
         let v = q.const_f32_like(v_data.clone(), kshape.clone());
         let dout = q.const_f32_like(do_data.clone(), qshape.clone());
@@ -4237,7 +4236,7 @@ mod tests {
         let bt = vec![0u32, 2u32]; // block_table [1,2]: sequence uses blocks 0 and 2
         let cl = vec![3u32]; // context_lens [1]: only the first 3 keys are valid
 
-        let q = LazyTensor::from_f32(q_data.clone(), Shape::from_dims(&[1, 1, 1, 2]), &dev);
+        let q = Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, 1, 1, 2]), &dev);
         let kcache = q.const_f32_like(kc.clone(), Shape::from_dims(&[3, 2, 1, 2]));
         let vcache = q.const_f32_like(vc.clone(), Shape::from_dims(&[3, 2, 1, 2]));
         let block_table = q.const_u32_like(bt, Shape::from_dims(&[1, 2]));
@@ -4309,7 +4308,7 @@ mod tests {
     #[test]
     #[cfg(feature = "cuda")]
     fn cuda_executor_matches_cpu_on_add_mul() {
-        let a = LazyTensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu());
+        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu());
         let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
         let c = a.add(&b).unwrap().mul(&a).unwrap();
         let cpu_result = c.realize_f32();
@@ -4346,7 +4345,7 @@ mod tests {
                 return;
             }
         };
-        let a = LazyTensor::from_f32(
+        let a = Tensor::from_f32(
             vec![f32::NAN, -2.0, 3.0, f32::NAN],
             Shape::from_dims(&[4]),
             &Device::cpu(),
@@ -4419,7 +4418,7 @@ mod tests {
                 return;
             }
         };
-        let a = LazyTensor::from_f32(
+        let a = Tensor::from_f32(
             vec![f32::NAN, -2.0, 3.0],
             Shape::from_dims(&[3]),
             &Device::cpu(),
@@ -4445,7 +4444,7 @@ mod tests {
     #[test]
     #[cfg(feature = "cuda")]
     fn cuda_executor_matches_cpu_on_matmul() {
-        let a = LazyTensor::from_f32(
+        let a = Tensor::from_f32(
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
             &Device::cpu(),
@@ -4469,7 +4468,7 @@ mod tests {
     fn cuda_executor_matches_cpu_on_broadcast_matmul() {
         // Rank-3 × rank-2 matmul (what the transformer forward does).
         // The graph auto-broadcasts the rank-2 to rank-3.
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             (0..12).map(|i| i as f32 * 0.1).collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 4]),
             &Device::cpu(),
@@ -4491,7 +4490,7 @@ mod tests {
     #[test]
     #[cfg(feature = "cuda")]
     fn cuda_executor_matches_cpu_on_permute() {
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             (0..24).map(|i| i as f32).collect::<Vec<_>>(),
             Shape::from_dims(&[1, 2, 3, 4]),
             &Device::cpu(),
@@ -4506,7 +4505,7 @@ mod tests {
     #[test]
     #[cfg(feature = "cuda")]
     fn cuda_executor_matches_cpu_on_softmax() {
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
             &Device::cpu(),
@@ -4545,7 +4544,7 @@ mod tests {
         let data: Vec<f32> = (0..n * last)
             .map(|i| ((i as f32) * 0.13).sin() * 2.0 - 0.7)
             .collect();
-        let x = LazyTensor::from_f32(data, Shape::from_dims(&[n, last]), &Device::cpu());
+        let x = Tensor::from_f32(data, Shape::from_dims(&[n, last]), &Device::cpu());
         let y = x.softmax_last_dim().unwrap();
 
         // CPU baseline: fused SoftmaxLastDim through the standard
@@ -4583,7 +4582,7 @@ mod tests {
     #[test]
     #[cfg(feature = "cuda")]
     fn cuda_executor_matches_cpu_on_concat_slice() {
-        let a = LazyTensor::from_f32(
+        let a = Tensor::from_f32(
             vec![1.0, 2.0, 3.0, 4.0],
             Shape::from_dims(&[2, 2]),
             &Device::cpu(),
@@ -4600,7 +4599,7 @@ mod tests {
     #[test]
     #[cfg(feature = "cuda")]
     fn cuda_executor_matches_cpu_on_rms_norm() {
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             (0..8).map(|i| i as f32 * 0.5 - 1.5).collect::<Vec<_>>(),
             Shape::from_dims(&[2, 4]),
             &Device::cpu(),
@@ -4617,7 +4616,7 @@ mod tests {
 
     #[test]
     fn realize_f64_through_bridge() {
-        let a = LazyTensor::from_f64(vec![1.5, 2.5, 3.5], Shape::from_dims(&[3]), &Device::cpu());
+        let a = Tensor::from_f64(vec![1.5, 2.5, 3.5], Shape::from_dims(&[3]), &Device::cpu());
         let b = a.mul(&a).unwrap();
         assert_eq!(b.realize_f64(), vec![2.25, 6.25, 12.25]);
     }
@@ -4625,7 +4624,7 @@ mod tests {
     #[test]
     fn lazy_tensor_mini_llama_block_forward() {
         // A minimal LLaMA-style attention-only "block" built entirely
-        // through LazyTensor. No training, just the forward pass:
+        // through Tensor. No training, just the forward pass:
         //
         //   h = x + (RmsNorm(x) @ W_qkv → split Q/K/V → RoPE → attention → out proj)
         //
@@ -4639,7 +4638,7 @@ mod tests {
 
         // Fake input: [1, seq, d_model]
         let x_data: Vec<f32> = (0..seq * d_model).map(|i| i as f32 * 0.01).collect();
-        let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[1, seq, d_model]), &Device::cpu());
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[1, seq, d_model]), &Device::cpu());
 
         // Fake weights (just identities for simplicity — makes the
         // test easy to verify output finiteness without needing to
@@ -4727,7 +4726,7 @@ mod tests {
 // Helper method on the wrapper that we didn't include above because the
 // main struct's `impl` block was getting long. Kept in its own small
 // `impl` for readability.
-impl LazyTensor {
+impl Tensor {
     /// Build a second const U32 (index) tensor on the same graph.
     pub fn const_u32_like(&self, data: impl Into<Arc<[u32]>>, shape: impl Into<Shape>) -> Self {
         Self {
@@ -5361,11 +5360,11 @@ impl LazyTensor {
 // Phase A.1 — wrapper additions (eager-`Tensor` retirement program).
 //
 // Methods on `fuel_graph::NodeHandle` that weren't previously surfaced through
-// `LazyTensor`. Pure delegation; no new graph ops. See
+// `Tensor`. Pure delegation; no new graph ops. See
 // `docs/session-prompts/eager-tensor-retirement-master-plan.md`.
 // ============================================================================
 
-impl LazyTensor {
+impl Tensor {
     // ---- shape ops: unsqueeze (Result + Dim) + Result-returning siblings ----
 
     /// Append a size-1 dimension at position `dim`. Inverse of
@@ -5695,11 +5694,11 @@ impl LazyTensor {
 // ============================================================================
 // Phase A.2 — composite primitives expressible from existing ops.
 //
-// Each method here is implemented in terms of `LazyTensor`'s existing
+// Each method here is implemented in terms of `Tensor`'s existing
 // surface (reshape, permute, concat, unsqueeze, etc.). No new graph ops.
 // ============================================================================
 
-impl LazyTensor {
+impl Tensor {
     /// Transpose the last two dims as a Result-returning convenience —
     /// rank < 2 surfaces as an error rather than the panic the
     /// no-arg [`Self::transpose`] would produce. Alias for the eager
@@ -6311,7 +6310,7 @@ impl LazyTensor {
         head_dim: usize,
     ) -> Vec<f32> {
         let pool_shape = Shape::from_dims(&[block_size, n_kv_heads, head_dim]);
-        let k = LazyTensor::from_f32(k_block.to_vec(), pool_shape, dev);
+        let k = Tensor::from_f32(k_block.to_vec(), pool_shape, dev);
         let k4 = k
             .permute([1, 0, 2])
             .expect("rope_delta_rotate_block_f32: permute [bs,Hkv,D]->[Hkv,bs,D]")
@@ -6371,7 +6370,7 @@ impl LazyTensor {
     /// one shared position to one-per-row — **same ops, same order, same
     /// associativity** (`y = x·cos + concat(-x[…,D/2..], x[…,..D/2])·sin`), so at
     /// `B == 1` it is bit-identical to `rope_with_tables_decomposed`. Built on the
-    /// public `LazyTensor` surface (not a new `fuel-graph` op) deliberately: the
+    /// public `Tensor` surface (not a new `fuel-graph` op) deliberately: the
     /// single-position [`Self::rope_with_tables_decomposed`] hard-requires
     /// `cos.dims() == [seq, d]`, so it cannot carry per-row tables, and rebuilding
     /// the lowering here avoids re-entering the `fuel-graph` rope op.
@@ -6592,7 +6591,7 @@ impl LazyTensor {
     ///
     /// Equivalent to the `(T, T)` mask several ports build inline
     /// — promoted here so call sites stop drifting.
-    pub fn additive_causal_mask_like(anchor: &LazyTensor, seq_len: usize) -> Self {
+    pub fn additive_causal_mask_like(anchor: &Tensor, seq_len: usize) -> Self {
         let mut data = vec![0.0_f32; seq_len * seq_len];
         for i in 0..seq_len {
             for j in (i + 1)..seq_len {
@@ -6811,10 +6810,9 @@ impl LazyTensor {
                     .collect();
                 Ok(Self::from_f16(data, shape, device))
             }
-            other => Err(fuel_ir::Error::Msg(format!(
-                "LazyTensor::rand: unsupported dtype {other:?}",
-            ))
-            .bt()),
+            other => {
+                Err(fuel_ir::Error::Msg(format!("Tensor::rand: unsupported dtype {other:?}",)).bt())
+            }
         }
     }
 
@@ -6832,7 +6830,7 @@ impl LazyTensor {
         let shape = shape.into();
         let n = shape.elem_count();
         let normal = Normal::new(mean, stdev).map_err(|e| {
-            fuel_ir::Error::Msg(format!("LazyTensor::randn: invalid stdev={stdev}: {e}",)).bt()
+            fuel_ir::Error::Msg(format!("Tensor::randn: invalid stdev={stdev}: {e}",)).bt()
         })?;
         let mut rng = rand::rng();
         match dtype {
@@ -6857,7 +6855,7 @@ impl LazyTensor {
                 Ok(Self::from_f16(data, shape, device))
             }
             other => Err(fuel_ir::Error::Msg(format!(
-                "LazyTensor::randn: unsupported dtype {other:?}",
+                "Tensor::randn: unsupported dtype {other:?}",
             ))
             .bt()),
         }
@@ -7098,7 +7096,7 @@ impl LazyTensor {
             .pad_with_value(2, ph, ph + extra_h, pad_value)?
             .pad_with_value(3, pw, pw + extra_w, pad_value)?;
         // For each (ky, kx) collect the strided tap.
-        let mut acc: Option<LazyTensor> = None;
+        let mut acc: Option<Tensor> = None;
         for ky in 0..kh {
             // Slice H starting at ky, length h_out · sh, then reshape
             // to [N, C, h_out, sh, w_total] and slice the sh-dim at 0
@@ -7160,7 +7158,7 @@ impl LazyTensor {
         let expanded = self.reshape(vec![n, c, h, 1, w, 1])?;
         // Replicate along the new unit dims by concatenating scale copies.
         let h_expanded = (0..scale)
-            .fold(None, |acc: Option<LazyTensor>, _| {
+            .fold(None, |acc: Option<Tensor>, _| {
                 Some(match acc {
                     None => expanded.clone(),
                     Some(a) => a.concat(&expanded, 3).unwrap(),
@@ -7168,7 +7166,7 @@ impl LazyTensor {
             })
             .unwrap();
         let h_then_w = (0..scale)
-            .fold(None, |acc: Option<LazyTensor>, _| {
+            .fold(None, |acc: Option<Tensor>, _| {
                 Some(match acc {
                     None => h_expanded.clone(),
                     Some(a) => a.concat(&h_expanded, 5).unwrap(),
@@ -7200,7 +7198,7 @@ impl LazyTensor {
         let (n, c, t) = (dims[0], dims[1], dims[2]);
         let expanded = self.reshape(vec![n, c, t, 1])?;
         let replicated = (0..scale)
-            .fold(None, |acc: Option<LazyTensor>, _| {
+            .fold(None, |acc: Option<Tensor>, _| {
                 Some(match acc {
                     None => expanded.clone(),
                     Some(a) => a.concat(&expanded, 3).unwrap(),
@@ -7422,8 +7420,8 @@ impl LazyTensor {
 
 // ---- safetensors integration -----------------------------------------------
 
-impl LazyTensor {
-    /// Build a `LazyTensor` from raw little-endian bytes as they appear
+impl Tensor {
+    /// Build a `Tensor` from raw little-endian bytes as they appear
     /// in a safetensors file, plus a dtype and shape. Row-major layout
     /// is assumed. The byte count must match `shape.elem_count() *
     /// dtype_bytes`.
@@ -7500,13 +7498,13 @@ impl LazyTensor {
                 Ok(Self::from_u32(data, shape_obj, device))
             }
             other => crate::bail!(
-                "from_safetensors_bytes: unsupported dtype {other:?} — extend LazyTensor's \
+                "from_safetensors_bytes: unsupported dtype {other:?} — extend Tensor's \
                  safetensors loader to handle it",
             ),
         }
     }
 
-    /// Build a `LazyTensor` from a `safetensors::TensorView`. This is
+    /// Build a `Tensor` from a `safetensors::TensorView`. This is
     /// the most natural entry point when iterating over a
     /// [`crate::safetensors::MmapedSafetensors`] or similar.
     pub fn from_safetensors_view(
@@ -7639,7 +7637,7 @@ impl LlamaConfig {
 /// small and precision-sensitive, so they stay `Arc<[f32]>`.
 ///
 /// Cloning is cheap (Arc bump) for both variants. Use
-/// [`WeightStorage::const_like`] to emit a [`LazyTensor`] `Const`
+/// [`WeightStorage::const_like`] to emit a [`Tensor`] `Const`
 /// node with the right dtype.
 #[derive(Debug, Clone)]
 pub enum WeightStorage {
@@ -7719,7 +7717,7 @@ impl WeightStorage {
 
     /// Emit a `Const` node on `anchor`'s graph matching this
     /// storage's dtype. Used everywhere the forward pass wraps a
-    /// weight into a `LazyTensor`.
+    /// weight into a `Tensor`.
     ///
     /// For `Q4_0`, the emitted tensor is a 1-D `U32` const of length
     /// `bytes.len() / 4` holding the raw block byte stream. Callers
@@ -7729,9 +7727,9 @@ impl WeightStorage {
     /// applied via `apply_linear` so the right graph structure is built.
     pub fn const_like(
         &self,
-        anchor: &LazyTensor,
+        anchor: &Tensor,
         shape: Shape,
-    ) -> std::result::Result<LazyTensor, fuel_ir::Error> {
+    ) -> std::result::Result<Tensor, fuel_ir::Error> {
         match self {
             Self::F32(a) => Ok(anchor.const_f32_like(a.clone(), shape)),
             Self::BF16(a) => Ok(anchor.const_bf16_like(a.clone(), shape)),
@@ -7760,11 +7758,11 @@ impl WeightStorage {
     /// stop drifting.
     pub fn apply_linear_with_bias(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         in_features: usize,
         out_features: usize,
         bias: std::sync::Arc<[f32]>,
-    ) -> std::result::Result<LazyTensor, fuel_ir::Error> {
+    ) -> std::result::Result<Tensor, fuel_ir::Error> {
         if bias.len() != out_features {
             // Was a `debug_assert_eq!` — i.e. compiled OUT of release builds,
             // so a release binary silently built a broadcast against a
@@ -7800,10 +7798,10 @@ impl WeightStorage {
     /// a programming invariant, so it must surface as `Err`.
     pub fn apply_linear(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         in_features: usize,
         out_features: usize,
-    ) -> std::result::Result<LazyTensor, fuel_ir::Error> {
+    ) -> std::result::Result<Tensor, fuel_ir::Error> {
         // Build-time contract check, shared by every arm: a "linear with
         // `in_features`" requires x's trailing dim to BE `in_features`.
         // Checked here rather than at the ~620 call sites, and phrased so the
@@ -7872,7 +7870,7 @@ impl WeightStorage {
                     x.const_f32_like(Arc::clone(lora_b), Shape::from_dims(&[*rank, out_features]));
                 let scale = *alpha as f64 / *rank as f64;
                 // x: [*, in] → @A [*, rank] → @B [*, out] → scale → add base.
-                let lora_path = LazyTensor {
+                let lora_path = Tensor {
                     inner: x.matmul(&a_t)?.matmul(&b_t)?.inner.mul_scalar(scale),
                 };
                 base_out.add(&lora_path)
@@ -7886,7 +7884,7 @@ impl WeightStorage {
     /// `[capacity, in_features]` buffer whose first `row_count` rows are the
     /// routed tokens; the returned `[capacity, out_features]` buffer's tail
     /// (rows `row_count..capacity`) stays exactly zero (see
-    /// [`LazyTensor::matmul_dyn_m`]).
+    /// [`Tensor::matmul_dyn_m`]).
     ///
     /// F32-only (mirrors `matmul_dyn_m`); other weight encodings surface a
     /// typed build-time error. No bias is applied — a bias would fill the
@@ -7894,11 +7892,11 @@ impl WeightStorage {
     /// for a correct `index_add` scatter-back.
     pub fn apply_linear_dyn_m(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         in_features: usize,
         out_features: usize,
         row_count: fuel_ir::DynScalar,
-    ) -> std::result::Result<LazyTensor, fuel_ir::Error> {
+    ) -> std::result::Result<Tensor, fuel_ir::Error> {
         match self {
             Self::F32(_) => {
                 // const_like only errors on WithLoRA; the F32 arm is infallible.
@@ -8041,14 +8039,14 @@ pub struct LlamaWeights {
     pub output: WeightStorage,
 }
 
-/// A LLaMA-style transformer model assembled via `LazyTensor`. Holds
+/// A LLaMA-style transformer model assembled via `Tensor`. Holds
 /// config + weights as plain vectors; each `forward` call rebuilds a
 /// graph using those vectors as `Const` leaves.
 ///
 /// This lives in `fuel_core::lazy` rather than `fuel_transformers`
 /// because it was built directly on top of the Phase 6a bridge
 /// primitives and predates the migration of `fuel_transformers`'
-/// existing model code onto `LazyTensor`. Once that migration lands,
+/// existing model code onto `Tensor`. Once that migration lands,
 /// this code will move back to `fuel-transformers::models::llama`.
 #[derive(Debug, Clone)]
 pub struct LlamaModel {
@@ -8058,7 +8056,7 @@ pub struct LlamaModel {
 
 impl LlamaModel {
     /// Run a forward pass from a sequence of token IDs and return the
-    /// final logits as a `LazyTensor` of shape `[1, seq_len, vocab_size]`.
+    /// final logits as a `Tensor` of shape `[1, seq_len, vocab_size]`.
     /// Call `.realize_f32()` on the result to materialize them.
     ///
     /// `start_pos` offsets the RoPE frequencies — use `0` for the
@@ -8068,7 +8066,7 @@ impl LlamaModel {
     /// internally; it recomputes the full attention each call. Adding
     /// a KV cache is orthogonal plumbing that doesn't change the graph
     /// structure.
-    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> crate::Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
@@ -8081,7 +8079,7 @@ impl LlamaModel {
 
         // Embedding lookup: build a token embedding const tensor +
         // a U32 index tensor + index_select along dim 0.
-        let embed = LazyTensor::from_f32(
+        let embed = Tensor::from_f32(
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &Device::cpu(),
@@ -8103,11 +8101,7 @@ impl LlamaModel {
     /// Pixtral, Qwen-VL, etc.) that interleave image embeddings
     /// with text embeddings before running the LLaMA decoder
     /// stack.
-    pub fn forward_embeds(
-        &self,
-        embeds: &LazyTensor,
-        start_pos: usize,
-    ) -> crate::Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &Tensor, start_pos: usize) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let h_norm = self.run_backbone_embeds(embeds, start_pos)?;
@@ -8125,17 +8119,13 @@ impl LlamaModel {
     /// Mirrors `MistralModel::forward_hidden_embeds`.
     pub fn forward_hidden_embeds(
         &self,
-        embeds: &LazyTensor,
+        embeds: &Tensor,
         start_pos: usize,
-    ) -> crate::Result<LazyTensor> {
+    ) -> crate::Result<Tensor> {
         self.run_backbone_embeds(embeds, start_pos)
     }
 
-    fn run_backbone_embeds(
-        &self,
-        embeds: &LazyTensor,
-        start_pos: usize,
-    ) -> crate::Result<LazyTensor> {
+    fn run_backbone_embeds(&self, embeds: &Tensor, start_pos: usize) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -8152,7 +8142,7 @@ impl LlamaModel {
         let mut h = embeds.clone();
         let (rope_cos, rope_sin) = h.rope_tables_const(cfg.rope_base, start_pos, seq, cfg.head_dim);
 
-        let mask = LazyTensor::additive_causal_mask_like(embeds, seq)
+        let mask = Tensor::additive_causal_mask_like(embeds, seq)
             .reshape(Shape::from_dims(&[1, 1, seq, seq]))
             .unwrap();
 
@@ -8177,10 +8167,10 @@ impl LlamaModel {
     /// graph as `embeds` — build it via `embeds.const_f32_like`.
     pub fn forward_hidden_embeds_with_mask(
         &self,
-        embeds: &LazyTensor,
-        attention_mask: &LazyTensor,
+        embeds: &Tensor,
+        attention_mask: &Tensor,
         start_pos: usize,
-    ) -> crate::Result<LazyTensor> {
+    ) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -8224,8 +8214,8 @@ impl LlamaModel {
         &self,
         tokens: &[u32],
         start_pos: usize,
-        anchor: &LazyTensor,
-    ) -> crate::Result<LazyTensor> {
+        anchor: &Tensor,
+    ) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
@@ -8248,7 +8238,7 @@ impl LlamaModel {
         let (rope_cos, rope_sin) = h.rope_tables_const(cfg.rope_base, start_pos, seq, cfg.head_dim);
 
         // Build the strict-causal mask once for all layers.
-        let mask = LazyTensor::additive_causal_mask_like(&h, seq)
+        let mask = Tensor::additive_causal_mask_like(&h, seq)
             .reshape(Shape::from_dims(&[1, 1, seq, seq]))
             .unwrap();
 
@@ -8267,7 +8257,7 @@ impl LlamaModel {
     /// Internal entry that runs the LLaMA backbone given pre-built RoPE
     /// cos/sin tables and an attention mask. The standard
     /// [`forward_embeds`] path computes cos/sin from `cfg.rope_base`
-    /// via [`LazyTensor::rope_tables_const`] and uses a strict-causal
+    /// via [`Tensor::rope_tables_const`] and uses a strict-causal
     /// mask; [`crate::lazy_llama_full::Llama3Model`] uses this hook to
     /// inject Llama-3 long-context scaled RoPE tables without
     /// duplicating the forward path.
@@ -8277,11 +8267,11 @@ impl LlamaModel {
     /// broadcast-compatible with `(B, n_heads, seq, kv_seq)`.
     pub(crate) fn run_backbone_with_rope_tables(
         &self,
-        embeds: &LazyTensor,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-        mask: &LazyTensor,
-    ) -> crate::Result<LazyTensor> {
+        embeds: &Tensor,
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+        mask: &Tensor,
+    ) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -8308,12 +8298,12 @@ impl LlamaModel {
 
     fn apply_layer(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &LayerWeights,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-        mask: &LazyTensor,
-    ) -> crate::Result<LazyTensor> {
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+        mask: &Tensor,
+    ) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let x_shape = x.shape();
         let dims = x_shape.dims();
@@ -8382,7 +8372,7 @@ impl LlamaModel {
         let k_t = k_r.transpose()?;
         let scale = 1.0_f64 / (cfg.head_dim as f64).sqrt();
         let scores = q_r.matmul(&k_t)?;
-        let scores_scaled = LazyTensor {
+        let scores_scaled = Tensor {
             inner: scores.inner.mul_scalar(scale),
         };
         let scores_masked = scores_scaled.broadcast_add(mask)?;
@@ -8472,21 +8462,21 @@ impl LlamaModel {
     /// persistent path from `n_layers` to 1.
     fn apply_layer_with_kv_writes(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &LayerWeights,
-        k_cache_const: &LazyTensor,
-        v_cache_const: &LazyTensor,
+        k_cache_const: &Tensor,
+        v_cache_const: &Tensor,
         cached_len_sym: fuel_ir::SymId,
         attended_len_sym: fuel_ir::SymId,
-        offset: Option<&LazyTensor>,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-        mask: &LazyTensor,
+        offset: Option<&Tensor>,
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+        mask: &Tensor,
         // GAP-194: this layer's own window, so the flash-arm offer states the
         // truth rather than asserting `None`. Always `None` for Llama — but
         // DERIVED from its mask plan, not assumed.
         attn_window: Option<usize>,
-    ) -> crate::Result<LazyTensor> {
+    ) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let x_shape = x.shape();
         let dims = x_shape.dims();
@@ -8547,7 +8537,7 @@ impl LlamaModel {
 
         // Mask is hoisted to the forward (built once, shared across
         // layers) — see the D2b note on this method.
-        let scores_scaled = LazyTensor {
+        let scores_scaled = Tensor {
             inner: scores.inner.mul_scalar(scale),
         };
         let scores_masked = scores_scaled.broadcast_add(mask).unwrap();
@@ -8681,7 +8671,7 @@ impl LlamaModel {
 
         // Embed the single token → [1, 1, dim]. The table stays f32 (CUDA
         // IndexSelect has no bf16 key); cast to the activation dtype after lookup.
-        let embed = LazyTensor::from_f32(
+        let embed = Tensor::from_f32(
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &dev,
@@ -8767,7 +8757,7 @@ impl LlamaModel {
     /// [`Self::forward_with_kv_context_persistent`].
     ///
     /// Removes paged decode's three per-token re-plan triggers: (1) the fresh
-    /// `LazyTensor` graph root → a held graph of stable re-bindable Const
+    /// `Tensor` graph root → a held graph of stable re-bindable Const
     /// placeholders; (2) the L-varying `block_table` shape → pinned to
     /// `[1, max_blocks_cap]` (Task 1 padded materialize); (3) the per-step
     /// KV-write range → one flattened dynamic offset (Task 2
@@ -8976,7 +8966,7 @@ impl LlamaModel {
         // ---- Build the held graph ONCE with STABLE re-bindable placeholders. ----
         // Embed table stays f32 (CUDA IndexSelect has no bf16 key); cast to the
         // activation dtype after lookup. The embed Const is the graph root.
-        let embed = LazyTensor::from_f32(
+        let embed = Tensor::from_f32(
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &dev,
@@ -9266,7 +9256,7 @@ impl LlamaModel {
         })?;
 
         // Embed K tokens → [K, 1, dim] (f32 table; cast to activation dtype).
-        let embed = LazyTensor::from_f32(
+        let embed = Tensor::from_f32(
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &dev,
@@ -9344,18 +9334,18 @@ impl LlamaModel {
     #[allow(clippy::too_many_arguments)]
     fn apply_layer_paged_batched(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &LayerWeights,
         pool: &crate::kv_block_pool_device::DeviceKvPool,
-        k_pool_ph: &LazyTensor,
-        v_pool_ph: &LazyTensor,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-        block_table: &LazyTensor,
-        context_lens: &LazyTensor,
+        k_pool_ph: &Tensor,
+        v_pool_ph: &Tensor,
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+        block_table: &Tensor,
+        context_lens: &Tensor,
         writes: &[(crate::kv_block_pool::PhysBlockId, usize)],
         scale: f32,
-    ) -> crate::Result<LazyTensor> {
+    ) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let xs = x.shape();
         let batch = xs.dims()[0];
@@ -9391,19 +9381,19 @@ impl LlamaModel {
     #[allow(clippy::too_many_arguments)]
     fn apply_layer_paged(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &LayerWeights,
         pool: &crate::kv_block_pool_device::DeviceKvPool,
-        k_pool_ph: &LazyTensor,
-        v_pool_ph: &LazyTensor,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-        block_table: &LazyTensor,
-        context_lens: &LazyTensor,
+        k_pool_ph: &Tensor,
+        v_pool_ph: &Tensor,
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+        block_table: &Tensor,
+        context_lens: &Tensor,
         phys: crate::kv_block_pool::PhysBlockId,
         slot: usize,
         scale: f32,
-    ) -> crate::Result<LazyTensor> {
+    ) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let (batch, seq) = (1usize, 1usize);
         let (q_r, k_r, v_h) = self.project_qkv_roped(x, layer, rope_cos, rope_sin)?;
@@ -9444,19 +9434,19 @@ impl LlamaModel {
     #[allow(clippy::too_many_arguments)]
     fn apply_layer_paged_off(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &LayerWeights,
         pool: &crate::kv_block_pool_device::DeviceKvPool,
-        k_pool_ph: &LazyTensor,
-        v_pool_ph: &LazyTensor,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-        block_table: &LazyTensor,
-        context_lens: &LazyTensor,
-        write_off: Option<&LazyTensor>,
+        k_pool_ph: &Tensor,
+        v_pool_ph: &Tensor,
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+        block_table: &Tensor,
+        context_lens: &Tensor,
+        write_off: Option<&Tensor>,
         write_sym: fuel_ir::SymId,
         scale: f32,
-    ) -> crate::Result<LazyTensor> {
+    ) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let (batch, seq) = (1usize, 1usize);
         let (q_r, k_r, v_h) = self.project_qkv_roped(x, layer, rope_cos, rope_sin)?;
@@ -9495,11 +9485,11 @@ impl LlamaModel {
     /// casts around it when the activation dtype is already f32.
     fn project_qkv_roped(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &LayerWeights,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-    ) -> crate::Result<(LazyTensor, LazyTensor, LazyTensor)> {
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+    ) -> crate::Result<(Tensor, Tensor, Tensor)> {
         let cfg = &self.config;
         let x_shape = x.shape();
         let dims = x_shape.dims();
@@ -9561,19 +9551,19 @@ impl LlamaModel {
     }
 
     /// Per-row RoPE sibling of [`Self::project_qkv_roped`]: identical projection
-    /// + head reshape, but applies RoPE via [`LazyTensor::rope_batched`] with
+    /// + head reshape, but applies RoPE via [`Tensor::rope_batched`] with
     /// `[batch, 1, 1, head_dim]` cos/sin tables (one position per row) instead of
     /// the shared single-position `rope_with_tables_decomposed`. Uniform
     /// positions are a bit-identical special case, so this subsumes the shared
     /// path for the batched paged decode. `rope_cos`/`rope_sin` come from
-    /// [`LazyTensor::rope_tables_const_batched`].
+    /// [`Tensor::rope_tables_const_batched`].
     fn project_qkv_roped_batched(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &LayerWeights,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-    ) -> crate::Result<(LazyTensor, LazyTensor, LazyTensor)> {
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+    ) -> crate::Result<(Tensor, Tensor, Tensor)> {
         let cfg = &self.config;
         let x_shape = x.shape();
         let dims = x_shape.dims();
@@ -9637,7 +9627,7 @@ impl LlamaModel {
     /// Shared attention **tail** — pre-FFN RmsNorm → SwiGLU (`gate.silu() * up`) →
     /// down-projection → residual. `h1` is the post-attention residual
     /// (`x + o_proj(merged_heads)`). Identical for contiguous + paged decode.
-    fn ffn_block(&self, h1: &LazyTensor, layer: &LayerWeights) -> crate::Result<LazyTensor> {
+    fn ffn_block(&self, h1: &Tensor, layer: &LayerWeights) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let h1_norm = apply_affine_rms_norm(h1, &layer.ffn_norm_gain, cfg.dim, cfg.norm_eps);
         let gate = layer
@@ -10052,7 +10042,7 @@ impl LlamaModel {
 
         // ---- (2) Copy-in: WriteSlice each session's KV history into slot i. ----
         {
-            let anchor = LazyTensor::from_f32(
+            let anchor = Tensor::from_f32(
                 Arc::from(vec![0.0f32]),
                 Shape::from_dims(&[1]),
                 &Device::cpu(),
@@ -10097,7 +10087,7 @@ impl LlamaModel {
         // ---- (3) Batch=K decode graph over the shared buffer → [K, vocab]. ----
         let batch = k;
         let seq = 1usize;
-        let embed = LazyTensor::from_f32(
+        let embed = Tensor::from_f32(
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &Device::cpu(),
@@ -10202,7 +10192,7 @@ impl LlamaModel {
         // corruption (a bumped `cached_len` over a half-written position, or a
         // retry that reads stale/partial slots). ----
         {
-            let anchor = LazyTensor::from_f32(
+            let anchor = Tensor::from_f32(
                 Arc::from(vec![0.0f32]),
                 Shape::from_dims(&[1]),
                 &Device::cpu(),
@@ -11013,7 +11003,7 @@ fn captured_output_to_f32(
 ///
 /// `pub(crate)`: also consumed by the DeepSeek-V2 MLA cached-decode path
 /// (`lazy_deepseek2.rs`), which shares this exact mask shape/semantics
-/// across its `LazyLatentCache`-threaded layers.
+/// across its `LatentCache`-threaded layers.
 /// Realize a set of `Op::WriteSlice` target nodes purely for their in-place
 /// side effect (KV copy-in/copy-out for the batched decode arm). The returned
 /// host data is discarded — the realize just forces the writes to execute. The
@@ -11348,7 +11338,7 @@ pub(crate) fn offer_flash_decode_arm_for_region(
     offer_decode_flash_arm(&mut g, &spec, cap)
 }
 
-fn apply_affine_rms_norm(x: &LazyTensor, gain: &Arc<[f32]>, dim: usize, eps: f64) -> LazyTensor {
+fn apply_affine_rms_norm(x: &Tensor, gain: &Arc<[f32]>, dim: usize, eps: f64) -> Tensor {
     assert_eq!(
         gain.len(),
         dim,
@@ -12627,15 +12617,15 @@ impl PhiModel {
     #[allow(clippy::too_many_arguments)]
     fn apply_layer_with_kv_writes(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &PhiLayerWeights,
-        k_cache_const: &LazyTensor,
-        v_cache_const: &LazyTensor,
+        k_cache_const: &Tensor,
+        v_cache_const: &Tensor,
         cached_len_sym: fuel_ir::SymId,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-        mask: &LazyTensor,
-    ) -> crate::Result<LazyTensor> {
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+        mask: &Tensor,
+    ) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let x_shape = x.shape();
         let dims = x_shape.dims();
@@ -12724,7 +12714,7 @@ impl PhiModel {
         let k_t = full_k.transpose()?;
         let scale = 1.0_f64 / (cfg.head_dim as f64).sqrt();
         let scores = q_r.matmul(&k_t)?;
-        let scores_scaled = LazyTensor {
+        let scores_scaled = Tensor {
             inner: scores.inner.mul_scalar(scale),
         };
         let scores_masked = scores_scaled.broadcast_add(mask)?;
@@ -12820,7 +12810,7 @@ impl PhiModel {
         }
 
         // Embed lookup + reshape to [batch, seq, dim].
-        let embed = LazyTensor::from_f32(
+        let embed = Tensor::from_f32(
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &Device::cpu(),
@@ -13060,7 +13050,7 @@ impl PhiModel {
 
         // Embed lookup + reshape to [batch, seq, dim]. Token-ids is a
         // STABLE re-bindable placeholder Const (bytes bound via ctx).
-        let embed = LazyTensor::from_f32(
+        let embed = Tensor::from_f32(
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &Device::cpu(),
@@ -14221,12 +14211,12 @@ fn cpu_dequant_q8_0_bytes(bytes: &[u8]) -> Vec<f32> {
 ///
 /// Input shape: `[..., head_dim]`. Output shape: same.
 fn partial_rope(
-    x: &LazyTensor,
-    cos: &LazyTensor,
-    sin: &LazyTensor,
+    x: &Tensor,
+    cos: &Tensor,
+    sin: &Tensor,
     rotary_dim: usize,
     head_dim: usize,
-) -> LazyTensor {
+) -> Tensor {
     if rotary_dim == head_dim {
         return x.rope_with_tables(cos, sin).unwrap();
     }
@@ -14367,7 +14357,7 @@ mod generate_tests {
     /// frozen seams: the embedding `index_select` has no BF16 CUDA key,
     /// and norm gains are precision-sensitive host-side, converted to the
     /// running activation dtype at graph-build time — see
-    /// `LazyTensor::const_like_dtype`).
+    /// `Tensor::const_like_dtype`).
     ///
     /// Homogeneous BF16 activations × BF16 weights is the ONLY dtype
     /// combination `Tensor::matmul`'s gate allows for BF16 activations:
@@ -16744,7 +16734,7 @@ mod generate_tests {
         let max_seq_len = cached_len + seq;
         let cache_dtype = DType::BF16;
 
-        let embed = LazyTensor::from_f32(
+        let embed = Tensor::from_f32(
             model.weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &Device::cpu(),
@@ -23107,7 +23097,7 @@ mod lora_tests {
         let rank = 2;
         let alpha = 8.0_f32;
 
-        let anchor = LazyTensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &Device::cpu());
         // Base weight [in, out].
         let base_vec: Vec<f32> = (0..in_f * out_f).map(|i| (i as f32) * 0.1).collect();
         let lora_a_vec: Vec<f32> = (0..in_f * rank).map(|i| (i as f32) * 0.05).collect();
@@ -23183,7 +23173,7 @@ mod lora_tests {
     #[test]
     fn apply_linear_errors_on_trailing_dim_mismatch() {
         let ws = WeightStorage::F32(Arc::from(vec![0.0_f32; 12])); // 4 x 3
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             vec![0.0_f32; 10],
             Shape::from_dims(&[2, 5]), // trailing dim 5 != in_features 4
             &Device::cpu(),
@@ -23208,7 +23198,7 @@ mod lora_tests {
             in_features: 4,
             out_features: 4,
         };
-        let x = LazyTensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[2, 4]), &Device::cpu());
+        let x = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[2, 4]), &Device::cpu());
         // Trailing dim matches in_features, so this reaches the stored-shape
         // check rather than the contract check above.
         let err = ws
@@ -23224,7 +23214,7 @@ mod lora_tests {
     #[test]
     fn apply_linear_with_bias_errors_on_wrong_bias_length() {
         let ws = WeightStorage::F32(Arc::from(vec![0.0_f32; 12])); // 4 x 3
-        let x = LazyTensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[2, 4]), &Device::cpu());
+        let x = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[2, 4]), &Device::cpu());
         let bias: Arc<[f32]> = Arc::from(vec![0.0_f32; 2]); // wrong: out_features is 3
         let err = ws
             .apply_linear_with_bias(&x, 4, 3, bias)
@@ -23405,7 +23395,7 @@ mod llama_tests {
         let tokens = vec![3_u32, 1, 4, 1, 5];
         let logits = model.forward(&tokens, 0).unwrap();
         // Take last-position slice and argmax over vocab dim, all
-        // through the LazyTensor bridge API.
+        // through the Tensor bridge API.
         let last = logits.slice(1, tokens.len() - 1, 1).unwrap(); // [1, 1, vocab]
         let last_flat = last.reshape(Shape::from_dims(&[cfg.vocab_size])).unwrap();
         let predicted_ids = last_flat.argmax_dim(0_usize).unwrap().realize_u32();
@@ -23448,7 +23438,7 @@ mod llama_tests {
         let _logits = model.forward(&tokens, 0).unwrap().realize_f32();
 
         // Build embeds + bidirectional (all-zero) mask on one graph.
-        let embed = LazyTensor::from_f32(
+        let embed = Tensor::from_f32(
             model.weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &crate::Device::cpu(),
@@ -23511,7 +23501,7 @@ mod llama_tests {
         };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
 
-        let embed = LazyTensor::from_f32(
+        let embed = Tensor::from_f32(
             model.weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &crate::Device::cpu(),
@@ -23555,13 +23545,9 @@ mod safetensors_bridge_tests {
         for &v in &original {
             bytes.extend_from_slice(&v.to_le_bytes());
         }
-        let t = LazyTensor::from_safetensors_bytes(
-            &bytes,
-            safetensors::Dtype::F32,
-            &[4],
-            &Device::cpu(),
-        )
-        .unwrap();
+        let t =
+            Tensor::from_safetensors_bytes(&bytes, safetensors::Dtype::F32, &[4], &Device::cpu())
+                .unwrap();
         assert_eq!(t.shape().dims(), &[4]);
         assert_eq!(t.dtype(), DType::F32);
         assert_eq!(t.realize_f32(), original);
@@ -23578,13 +23564,9 @@ mod safetensors_bridge_tests {
         for b in &bf16_vec {
             bytes.extend_from_slice(&b.to_bits().to_le_bytes());
         }
-        let t = LazyTensor::from_safetensors_bytes(
-            &bytes,
-            safetensors::Dtype::BF16,
-            &[4],
-            &Device::cpu(),
-        )
-        .unwrap();
+        let t =
+            Tensor::from_safetensors_bytes(&bytes, safetensors::Dtype::BF16, &[4], &Device::cpu())
+                .unwrap();
         assert_eq!(t.dtype(), DType::BF16);
         // Values that round-trip exactly through bf16 should come back
         // unchanged.
@@ -23597,7 +23579,7 @@ mod safetensors_bridge_tests {
         // Shape says 3 elements, but we pass 4 bytes (1 f32 = 4 bytes
         // so 3 elements would need 12 bytes).
         let bad_bytes = vec![0_u8; 4];
-        let result = LazyTensor::from_safetensors_bytes(
+        let result = Tensor::from_safetensors_bytes(
             &bad_bytes,
             safetensors::Dtype::F32,
             &[3],
@@ -23612,15 +23594,15 @@ mod safetensors_bridge_tests {
 //
 // Pure pass-through tests: realize and assert the returned tensor has the
 // expected shape / dtype / values. The graph-level ops are tested in
-// `fuel-graph`; here we only verify that the LazyTensor wrappers don't
+// `fuel-graph`; here we only verify that the Tensor wrappers don't
 // drop information or mis-thread arguments.
 // ============================================================================
 #[cfg(test)]
 mod phase_a1_wrapper_tests {
     use super::*;
 
-    fn cpu_f32(data: Vec<f32>, shape: &[usize]) -> LazyTensor {
-        LazyTensor::from_f32(data, shape.to_vec(), &Device::cpu())
+    fn cpu_f32(data: Vec<f32>, shape: &[usize]) -> Tensor {
+        Tensor::from_f32(data, shape.to_vec(), &Device::cpu())
     }
 
     #[test]
@@ -24046,8 +24028,8 @@ mod phase_a1_wrapper_tests {
 mod phase_a2_composite_tests {
     use super::*;
 
-    fn cpu_f32(data: Vec<f32>, shape: &[usize]) -> LazyTensor {
-        LazyTensor::from_f32(data, shape.to_vec(), &Device::cpu())
+    fn cpu_f32(data: Vec<f32>, shape: &[usize]) -> Tensor {
+        Tensor::from_f32(data, shape.to_vec(), &Device::cpu())
     }
 
     #[test]
@@ -24227,7 +24209,7 @@ mod phase_a2_composite_tests {
             .flat_map(|i| vec![i as f32, i as f32 + 0.5, i as f32 + 1.0])
             .collect();
         let tokens = vec![1_u32, 3, 0];
-        let out = LazyTensor::embed_tokens(
+        let out = Tensor::embed_tokens(
             std::sync::Arc::from(table),
             vocab_size,
             hidden,
@@ -24295,7 +24277,7 @@ mod phase_a2_composite_tests {
 
     #[test]
     fn embed_tokens_empty_returns_error() {
-        let r = LazyTensor::embed_tokens(
+        let r = Tensor::embed_tokens(
             std::sync::Arc::from(vec![0.0_f32]),
             1,
             1,
@@ -24451,7 +24433,7 @@ mod phase_a2_composite_tests {
     #[test]
     fn additive_causal_mask_has_strict_lower_triangle() {
         let anchor = cpu_f32(vec![0.0_f32], &[1]);
-        let mask = LazyTensor::additive_causal_mask_like(&anchor, 4);
+        let mask = Tensor::additive_causal_mask_like(&anchor, 4);
         assert_eq!(mask.shape().dims(), &[4, 4]);
         let v = mask.realize_f32();
         // Expected (-inf shown as 'x'):
@@ -24582,7 +24564,7 @@ mod phase_a2_composite_tests {
     fn stack_adds_leading_dim() {
         let a = cpu_f32(vec![1.0, 2.0, 3.0], &[3]);
         let b = a.const_f32_like(vec![4.0, 5.0, 6.0], vec![3]);
-        let out = LazyTensor::stack(&[&a, &b], 0).unwrap();
+        let out = Tensor::stack(&[&a, &b], 0).unwrap();
         assert_eq!(out.shape().dims(), &[2, 3]);
         assert_eq!(out.realize_f32(), vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
     }
@@ -24591,7 +24573,7 @@ mod phase_a2_composite_tests {
     fn stack_adds_trailing_dim() {
         let a = cpu_f32(vec![1.0, 2.0, 3.0], &[3]);
         let b = a.const_f32_like(vec![4.0, 5.0, 6.0], vec![3]);
-        let out = LazyTensor::stack(&[&a, &b], 1).unwrap();
+        let out = Tensor::stack(&[&a, &b], 1).unwrap();
         assert_eq!(out.shape().dims(), &[3, 2]);
         assert_eq!(out.realize_f32(), vec![1.0, 4.0, 2.0, 5.0, 3.0, 6.0]);
     }
@@ -24600,12 +24582,12 @@ mod phase_a2_composite_tests {
     fn stack_rejects_mismatched_shapes() {
         let a = cpu_f32(vec![1.0, 2.0], &[2]);
         let b = a.const_f32_like(vec![3.0, 4.0, 5.0], vec![3]);
-        assert!(LazyTensor::stack(&[&a, &b], 0).is_err());
+        assert!(Tensor::stack(&[&a, &b], 0).is_err());
     }
 
     #[test]
     fn stack_rejects_empty_input() {
-        let result = LazyTensor::stack(&[], 0);
+        let result = Tensor::stack(&[], 0);
         assert!(result.is_err());
     }
 
@@ -24640,8 +24622,8 @@ mod phase_a2_composite_tests {
 mod phase_a3_keepdim_tests {
     use super::*;
 
-    fn cpu_f32(data: Vec<f32>, shape: &[usize]) -> LazyTensor {
-        LazyTensor::from_f32(data, shape.to_vec(), &Device::cpu())
+    fn cpu_f32(data: Vec<f32>, shape: &[usize]) -> Tensor {
+        Tensor::from_f32(data, shape.to_vec(), &Device::cpu())
     }
 
     #[test]
@@ -24709,8 +24691,8 @@ mod phase_a3_keepdim_tests {
 mod phase_a4_composite_tests {
     use super::*;
 
-    fn cpu_f32(data: Vec<f32>, shape: &[usize]) -> LazyTensor {
-        LazyTensor::from_f32(data, shape.to_vec(), &Device::cpu())
+    fn cpu_f32(data: Vec<f32>, shape: &[usize]) -> Tensor {
+        Tensor::from_f32(data, shape.to_vec(), &Device::cpu())
     }
 
     #[test]
@@ -24807,8 +24789,8 @@ mod phase_a4_composite_tests {
 mod phase_a5_factory_tests {
     use super::*;
 
-    fn cpu_f32(data: Vec<f32>, shape: &[usize]) -> LazyTensor {
-        LazyTensor::from_f32(data, shape.to_vec(), &Device::cpu())
+    fn cpu_f32(data: Vec<f32>, shape: &[usize]) -> Tensor {
+        Tensor::from_f32(data, shape.to_vec(), &Device::cpu())
     }
 
     #[test]
@@ -24829,27 +24811,27 @@ mod phase_a5_factory_tests {
 
     #[test]
     fn static_ones_f32() {
-        let t = LazyTensor::ones(vec![2, 3], DType::F32, &Device::cpu()).unwrap();
+        let t = Tensor::ones(vec![2, 3], DType::F32, &Device::cpu()).unwrap();
         assert_eq!(t.shape().dims(), &[2, 3]);
         assert_eq!(t.realize_f32(), vec![1.0; 6]);
     }
 
     #[test]
     fn static_zeros_f64() {
-        let t = LazyTensor::zeros(vec![4], DType::F64, &Device::cpu()).unwrap();
+        let t = Tensor::zeros(vec![4], DType::F64, &Device::cpu()).unwrap();
         assert_eq!(t.dtype(), DType::F64);
         assert_eq!(t.realize_f64(), vec![0.0; 4]);
     }
 
     #[test]
     fn full_with_f32_scalar() {
-        let t = LazyTensor::full(vec![5], fuel_ir::Scalar::F32(2.5), &Device::cpu()).unwrap();
+        let t = Tensor::full(vec![5], fuel_ir::Scalar::F32(2.5), &Device::cpu()).unwrap();
         assert_eq!(t.realize_f32(), vec![2.5; 5]);
     }
 
     #[test]
     fn eye_identity_matrix() {
-        let t = LazyTensor::eye(3, DType::F32, &Device::cpu());
+        let t = Tensor::eye(3, DType::F32, &Device::cpu());
         assert_eq!(t.shape().dims(), &[3, 3]);
         assert_eq!(
             t.realize_f32(),
@@ -24859,7 +24841,7 @@ mod phase_a5_factory_tests {
 
     #[test]
     fn tril2_lower_triangular_ones() {
-        let t = LazyTensor::tril2(3, DType::F32, &Device::cpu());
+        let t = Tensor::tril2(3, DType::F32, &Device::cpu());
         assert_eq!(
             t.realize_f32(),
             vec![1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0],
@@ -24868,7 +24850,7 @@ mod phase_a5_factory_tests {
 
     #[test]
     fn triu2_upper_triangular_ones() {
-        let t = LazyTensor::triu2(3, DType::F32, &Device::cpu());
+        let t = Tensor::triu2(3, DType::F32, &Device::cpu());
         assert_eq!(
             t.realize_f32(),
             vec![1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0],
@@ -24877,9 +24859,9 @@ mod phase_a5_factory_tests {
 
     #[test]
     fn meshgrid_ij_indexing_two_inputs() {
-        let x = LazyTensor::from_f32(vec![1.0_f32, 2.0, 3.0], vec![3], &Device::cpu());
+        let x = Tensor::from_f32(vec![1.0_f32, 2.0, 3.0], vec![3], &Device::cpu());
         let y = x.const_f32_like(vec![4.0_f32, 5.0], vec![2]);
-        let grids = LazyTensor::meshgrid(&[&x, &y], false).unwrap();
+        let grids = Tensor::meshgrid(&[&x, &y], false).unwrap();
         assert_eq!(grids.len(), 2);
         // ij: shapes are [len(x), len(y)] = [3, 2].
         assert_eq!(grids[0].shape().dims(), &[3, 2]);
@@ -24892,9 +24874,9 @@ mod phase_a5_factory_tests {
 
     #[test]
     fn meshgrid_xy_indexing_swaps_first_two() {
-        let x = LazyTensor::from_f32(vec![1.0_f32, 2.0, 3.0], vec![3], &Device::cpu());
+        let x = Tensor::from_f32(vec![1.0_f32, 2.0, 3.0], vec![3], &Device::cpu());
         let y = x.const_f32_like(vec![4.0_f32, 5.0], vec![2]);
-        let grids = LazyTensor::meshgrid(&[&x, &y], true).unwrap();
+        let grids = Tensor::meshgrid(&[&x, &y], true).unwrap();
         // xy: shapes flip to [len(y), len(x)] = [2, 3].
         assert_eq!(grids[0].shape().dims(), &[2, 3]);
         assert_eq!(grids[1].shape().dims(), &[2, 3]);
@@ -24906,15 +24888,15 @@ mod phase_a5_factory_tests {
 
     #[test]
     fn meshgrid_rejects_single_input() {
-        let x = LazyTensor::from_f32(vec![1.0_f32, 2.0], vec![2], &Device::cpu());
-        assert!(LazyTensor::meshgrid(&[&x], false).is_err());
+        let x = Tensor::from_f32(vec![1.0_f32, 2.0], vec![2], &Device::cpu());
+        assert!(Tensor::meshgrid(&[&x], false).is_err());
     }
 
     #[test]
     fn meshgrid_rejects_non_rank_one() {
-        let x = LazyTensor::from_f32(vec![1.0; 4], vec![2, 2], &Device::cpu());
+        let x = Tensor::from_f32(vec![1.0; 4], vec![2, 2], &Device::cpu());
         let y = x.const_f32_like(vec![1.0, 2.0], vec![2]);
-        assert!(LazyTensor::meshgrid(&[&x, &y], false).is_err());
+        assert!(Tensor::meshgrid(&[&x, &y], false).is_err());
     }
 
     // ---- additional deferred-Phase-A item tests ----
@@ -25033,7 +25015,7 @@ mod phase_a5_factory_tests {
 
     #[test]
     fn static_rand_f32() {
-        let t = LazyTensor::rand(vec![100], 0.0, 1.0, DType::F32, &Device::cpu()).unwrap();
+        let t = Tensor::rand(vec![100], 0.0, 1.0, DType::F32, &Device::cpu()).unwrap();
         let v = t.realize_f32();
         // Mean of uniform [0,1) should be ~0.5; tolerate sample noise.
         let mean: f32 = v.iter().sum::<f32>() / v.len() as f32;
@@ -25042,7 +25024,7 @@ mod phase_a5_factory_tests {
 
     #[test]
     fn static_randn_f64() {
-        let t = LazyTensor::randn(vec![1000], 0.0, 1.0, DType::F64, &Device::cpu()).unwrap();
+        let t = Tensor::randn(vec![1000], 0.0, 1.0, DType::F64, &Device::cpu()).unwrap();
         let v = t.realize_f64();
         let mean: f64 = v.iter().sum::<f64>() / v.len() as f64;
         // Normal(0,1) mean should be near 0; n=1000 gives stderr ~0.03.
@@ -25051,26 +25033,26 @@ mod phase_a5_factory_tests {
 
     #[test]
     fn arange_int_step() {
-        let t = LazyTensor::arange(0.0, 5.0, &Device::cpu());
+        let t = Tensor::arange(0.0, 5.0, &Device::cpu());
         assert_eq!(t.shape().dims(), &[5]);
         assert_eq!(t.realize_f32(), vec![0.0, 1.0, 2.0, 3.0, 4.0]);
     }
 
     #[test]
     fn arange_step_fractional() {
-        let t = LazyTensor::arange_step(2.0, 4.0, 0.5, &Device::cpu());
+        let t = Tensor::arange_step(2.0, 4.0, 0.5, &Device::cpu());
         assert_eq!(t.realize_f32(), vec![2.0, 2.5, 3.0, 3.5]);
     }
 
     #[test]
     fn arange_step_negative_descends() {
-        let t = LazyTensor::arange_step(5.0, 0.0, -1.0, &Device::cpu());
+        let t = Tensor::arange_step(5.0, 0.0, -1.0, &Device::cpu());
         assert_eq!(t.realize_f32(), vec![5.0, 4.0, 3.0, 2.0, 1.0]);
     }
 
     #[test]
     fn linspace_includes_endpoints() {
-        let t = LazyTensor::linspace(0.0, 1.0, 5, &Device::cpu());
+        let t = Tensor::linspace(0.0, 1.0, 5, &Device::cpu());
         assert_eq!(t.shape().dims(), &[5]);
         let v = t.realize_f32();
         assert!((v[0] - 0.0).abs() < 1e-6);
@@ -25080,13 +25062,13 @@ mod phase_a5_factory_tests {
 
     #[test]
     fn linspace_n_one_returns_start() {
-        let t = LazyTensor::linspace(7.0, 99.0, 1, &Device::cpu());
+        let t = Tensor::linspace(7.0, 99.0, 1, &Device::cpu());
         assert_eq!(t.realize_f32(), vec![7.0]);
     }
 
     #[test]
     fn norm_is_sqrt_sum_sq() {
-        let t = LazyTensor::from_f32(vec![3.0_f32, 4.0], vec![2], &Device::cpu());
+        let t = Tensor::from_f32(vec![3.0_f32, 4.0], vec![2], &Device::cpu());
         let n = t.norm();
         assert!((n.realize_f32()[0] - 5.0).abs() < 1e-6);
     }

@@ -164,7 +164,7 @@ pub fn main() -> Result<()> {
         anyhow::bail!(
             "--generate-masks is not implemented in the lazy port — the eager \
              `Sam::generate_masks` uses a multi-crop, multi-prompt sweep + \
-             non-maximum suppression that hasn't been ported to LazyTensor yet."
+             non-maximum suppression that hasn't been ported to Tensor yet."
         );
     }
 

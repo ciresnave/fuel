@@ -21,7 +21,7 @@
 //! v1 scope: F32, batch == 1, forward-only inference.
 
 use crate::Result;
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::lazy_lstm::{LstmCellWeights, LstmStack};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -71,7 +71,7 @@ pub struct SpeakerEncoderModel {
 impl SpeakerEncoderModel {
     /// Forward pass: `(1, T, mel_n_channels)` → `(1, T, embedding_size)`,
     /// L2-normalized along the embedding axis.
-    pub fn forward(&self, mels: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, mels: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let dims = mels.shape();
         let dims = dims.dims();
@@ -105,7 +105,7 @@ impl SpeakerEncoderModel {
     }
 }
 
-fn l2_normalize_last(x: &LazyTensor, b: usize, t: usize, e: usize) -> Result<LazyTensor> {
+fn l2_normalize_last(x: &Tensor, b: usize, t: usize, e: usize) -> Result<Tensor> {
     let _ = (b, t, e);
     x.l2_normalize(2_usize, 0.0)
 }
@@ -285,7 +285,7 @@ mod tests {
         let model = tiny_model();
         let cfg = &model.config;
         let t = 5;
-        let mels = LazyTensor::from_f32(
+        let mels = Tensor::from_f32(
             (0..(1 * t * cfg.mel_n_channels))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),
@@ -304,7 +304,7 @@ mod tests {
         let model = tiny_model();
         let cfg = &model.config;
         let t = 4;
-        let mels = LazyTensor::from_f32(
+        let mels = Tensor::from_f32(
             (0..(1 * t * cfg.mel_n_channels))
                 .map(|i| (i as f32) * 0.01 + 0.1)
                 .collect::<Vec<_>>(),

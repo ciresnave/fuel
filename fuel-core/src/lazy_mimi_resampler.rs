@@ -22,7 +22,7 @@
 //! — see [`crate::lazy_mimi_seanet`] for the same design choice.
 
 use crate::Result;
-use crate::lazy::LazyTensor;
+use crate::lazy::Tensor;
 use crate::lazy_encodec::{PadMode, pad1d};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -57,7 +57,7 @@ impl ConvDownsample1dModel {
     /// `(1, dim, T)` → `(1, dim, T / stride)`. Left-pad with
     /// `(kernel - stride)` samples in `Replicate` mode (the only
     /// pad_mode the eager port uses for this layer).
-    pub fn forward(&self, x: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let w = &self.weights;
         let kernel = 2 * w.stride;
         let pad_total = kernel.saturating_sub(w.stride);
@@ -75,7 +75,7 @@ impl ConvTrUpsample1dModel {
     /// transpose-conv: natural output length is `(T - 1) · stride
     /// + kernel`; trim the trailing `kernel - stride` samples for
     /// causality.
-    pub fn forward(&self, x: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let w = &self.weights;
         let kernel = 2 * w.stride;
         let weight = x.const_f32_like(Arc::clone(&w.weight), Shape::from_dims(&[w.dim, 1, kernel]));
@@ -198,7 +198,7 @@ mod tests {
             },
         };
         let t_in = 8;
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             (0..(1 * dim * t_in))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),
@@ -225,7 +225,7 @@ mod tests {
             },
         };
         let t_in = 5;
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             (0..(1 * dim * t_in))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),
@@ -260,7 +260,7 @@ mod tests {
             },
         };
         let t_in = 6;
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             (0..(1 * dim * t_in))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),

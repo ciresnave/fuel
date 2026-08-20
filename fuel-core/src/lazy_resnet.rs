@@ -44,7 +44,7 @@
 //! is 512 (basic) or 2048 (bottleneck). The `_no_final_layer`
 //! variant is just `nclasses = None` at config time.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::lazy_convmixer::BatchNormParams;
 use crate::{Device, Result};
 use fuel_ir::Shape;
@@ -179,7 +179,7 @@ pub struct ResNetModel {
 
 impl ResNetModel {
     /// Run a forward pass on `image` of shape `(1, 3, H, W)`.
-    pub fn forward(&self, image: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, image: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let x = self.run_backbone(image)?;
         let pooled = x.global_avg_pool_2d()?;
@@ -202,11 +202,11 @@ impl ResNetModel {
     /// `(1, features, H/32, W/32)` BEFORE global average pool
     /// and the classifier. Useful for segmentation/detection
     /// heads, embedding adapters, and dense prediction.
-    pub fn forward_features(&self, image: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward_features(&self, image: &Tensor) -> Result<Tensor> {
         self.run_backbone(image)
     }
 
-    fn run_backbone(&self, image: &LazyTensor) -> Result<LazyTensor> {
+    fn run_backbone(&self, image: &Tensor) -> Result<Tensor> {
         let dims = image.shape();
         let dims = dims.dims();
         assert_eq!(dims.len(), 4, "image must be rank 4 [N, 3, H, W]");
@@ -228,14 +228,14 @@ impl ResNetModel {
         Ok(x)
     }
 
-    fn apply_block(&self, x: &LazyTensor, block: &ResNetBlockWeights) -> Result<LazyTensor> {
+    fn apply_block(&self, x: &Tensor, block: &ResNetBlockWeights) -> Result<Tensor> {
         match self.config.kind {
             ResNetKind::Basic => self.apply_basic_block(x, block),
             ResNetKind::Bottleneck => self.apply_bottleneck_block(x, block),
         }
     }
 
-    fn apply_basic_block(&self, x: &LazyTensor, block: &ResNetBlockWeights) -> Result<LazyTensor> {
+    fn apply_basic_block(&self, x: &Tensor, block: &ResNetBlockWeights) -> Result<Tensor> {
         let c_in = block.c_in;
         let c_out = block.c_out;
         let s = block.stride;
@@ -253,11 +253,7 @@ impl ResNetModel {
         residual.add(&y)?.relu().to_result()
     }
 
-    fn apply_bottleneck_block(
-        &self,
-        x: &LazyTensor,
-        block: &ResNetBlockWeights,
-    ) -> Result<LazyTensor> {
+    fn apply_bottleneck_block(&self, x: &Tensor, block: &ResNetBlockWeights) -> Result<Tensor> {
         let c_in = block.c_in;
         let c_out = block.c_out;
         let c_expanded = 4 * c_out;
@@ -290,10 +286,10 @@ impl ResNetModel {
     /// `Conv1x1(c_in → block_out, stride) → BN`.
     fn maybe_downsample(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         block: &ResNetBlockWeights,
         block_out: usize,
-    ) -> Result<LazyTensor> {
+    ) -> Result<Tensor> {
         match &block.downsample {
             None => Ok(x.clone()),
             Some(ds) => {
@@ -310,19 +306,19 @@ impl ResNetModel {
 }
 
 /// Apply fused-affine BatchNorm to a 4-D NCHW tensor.
-fn apply_bn(x: &LazyTensor, bn: &BatchNormParams, channels: usize) -> Result<LazyTensor> {
+fn apply_bn(x: &Tensor, bn: &BatchNormParams, channels: usize) -> Result<Tensor> {
     let _ = channels;
     x.channel_affine_4d(Arc::clone(&bn.w), Arc::clone(&bn.b))
 }
 
-/// Tiny adapter: LazyTensor::relu returns a LazyTensor by value;
+/// Tiny adapter: Tensor::relu returns a Tensor by value;
 /// we need it inside a Result chain. (The eager Result-returning
 /// path predates the lazy infallible-relu signature.)
-trait LazyTensorResultExt {
-    fn to_result(self) -> Result<LazyTensor>;
+trait TensorResultExt {
+    fn to_result(self) -> Result<Tensor>;
 }
-impl LazyTensorResultExt for LazyTensor {
-    fn to_result(self) -> Result<LazyTensor> {
+impl TensorResultExt for Tensor {
+    fn to_result(self) -> Result<Tensor> {
         Ok(self)
     }
 }
@@ -742,10 +738,10 @@ mod tests {
         }
     }
 
-    fn tiny_image(h: usize, w: usize) -> LazyTensor {
+    fn tiny_image(h: usize, w: usize) -> Tensor {
         let mut nb = rng_seed(42);
         let data: Arc<[f32]> = Arc::from((0..3 * h * w).map(|_| nb()).collect::<Vec<_>>());
-        LazyTensor::from_f32(data, Shape::from_dims(&[1, 3, h, w]), &Device::cpu())
+        Tensor::from_f32(data, Shape::from_dims(&[1, 3, h, w]), &Device::cpu())
     }
 
     #[test]

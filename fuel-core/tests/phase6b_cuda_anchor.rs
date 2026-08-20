@@ -26,7 +26,7 @@
 #![cfg(feature = "cuda")]
 
 use fuel_core::Result;
-use fuel_core::lazy::{LayerWeights, LazyTensor, LlamaWeights};
+use fuel_core::lazy::{LayerWeights, LlamaWeights, Tensor};
 use fuel_core::lazy_bert::{BertConfig, BertLayerWeights, BertModel, BertWeights};
 use fuel_core::lazy_convnext::ConvNextModel;
 use fuel_core::lazy_llama2c::{Llama2cConfig, Llama2cModel};
@@ -50,7 +50,7 @@ fn cuda_executor() -> fuel_cuda_backend::CudaDevice {
 
 /// Realize `t` on both reference and CUDA backends, assert allclose.
 ///
-/// The reference side uses [`LazyTensor::realize_f32_reference`] — a
+/// The reference side uses [`Tensor::realize_f32_reference`] — a
 /// **hard-CPU** realize (cost-based cross-device placement suppressed), NOT
 /// `realize_f32()`. Since the Step-E cost-based auto-placement, `realize_f32`
 /// pins CPU only as a soft host anchor and its optimizer may price model nodes
@@ -58,7 +58,7 @@ fn cuda_executor() -> fuel_cuda_backend::CudaDevice {
 /// single-device realize) panic for lack of a seeded CUDA handle — and even
 /// when it doesn't, an oracle that runs on CUDA can't independently validate
 /// CUDA. The reference must genuinely run on CPU.
-fn assert_cuda_oracle(t: &LazyTensor, atol: f32, rtol: f32) {
+fn assert_cuda_oracle(t: &Tensor, atol: f32, rtol: f32) {
     let reference = t.realize_f32_reference();
     let exe = cuda_executor();
     let cuda = t.realize_f32_cuda(&exe);
@@ -90,7 +90,7 @@ fn single_matmul_cuda_matches_reference_within_tolerance() -> Result<()> {
     let (m, k, n) = (32usize, 48, 24);
     let a_data: Vec<f32> = (0..(m * k)).map(|i| ((i as f32) * 1.3e-3).sin()).collect();
     let b_data: Vec<f32> = (0..(k * n)).map(|i| ((i as f32) * 1.7e-3).cos()).collect();
-    let a = LazyTensor::from_f32(a_data, Shape::from_dims(&[m, k]), &fuel_core::Device::cpu());
+    let a = Tensor::from_f32(a_data, Shape::from_dims(&[m, k]), &fuel_core::Device::cpu());
     let b = a.const_f32_like(b_data, Shape::from_dims(&[k, n]));
     let c = a.matmul(&b)?;
 
@@ -173,7 +173,7 @@ fn llama_2layer_cuda_matches_reference() {
         weights,
     };
     let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6, 7, 8];
-    let logits: LazyTensor = model.forward(&tokens, 0).unwrap();
+    let logits: Tensor = model.forward(&tokens, 0).unwrap();
 
     // Hard-CPU reference (see `assert_cuda_oracle`): the 2-layer model must be
     // realized entirely on CPU, not offloaded onto the CUDA device it validates.
@@ -444,7 +444,7 @@ fn cuda_depthwise_conv2d_matches_reference() -> Result<()> {
     let w_data: Vec<f32> = (0..(c * 1 * k * k))
         .map(|i| ((i as f32) * 1.7e-3).cos())
         .collect();
-    let x = LazyTensor::from_f32(
+    let x = Tensor::from_f32(
         x_data,
         Shape::from_dims(&[n, c, h, w_sz]),
         &fuel_core::Device::cpu(),

@@ -714,7 +714,7 @@ fn main() -> anyhow::Result<()> {
 
         // Realize the lazy logits for the LAST position as a plain `Vec<f32>`
         // suitable for the sampling / repeat-penalty utilities.
-        let realize_last = |logits_lazy: fuel::lazy::LazyTensor, seq: usize| -> Result<Vec<f32>> {
+        let realize_last = |logits_lazy: fuel::lazy::Tensor, seq: usize| -> Result<Vec<f32>> {
             let flat = logits_lazy.realize_f32();
             let last_off = (seq - 1) * vocab;
             Ok(flat[last_off..last_off + vocab].to_vec())

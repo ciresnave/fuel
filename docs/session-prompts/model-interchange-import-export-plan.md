@@ -290,7 +290,7 @@ separate crates (not feature gates); the long model tail stays in an umbrella an
 **T0 — Tier seam + registry (prerequisite; justified now).** Establish `fuel-interchange-weights` +
 `fuel-interchange-graph` cores, split `fuel-formats` → `fuel-format-*` for the existing parsers
 (safetensors/gguf/pickle), stand up `fuel-model-core` with `inventory` registration + `AutoModel::from_path`,
-move the existing weight-load logic (`VarBuilder`/`LazyTensor::from_safetensors`) behind
+move the existing weight-load logic (`VarBuilder`/`Tensor::from_safetensors`) behind
 `fuel-interchange-weights`. Correct callers (bounded — only format/model-loading sites move). Reconcile the
 native format against 11-persistence's base-map serialization. **No new format capability yet — this is the
 homes the new work needs.**

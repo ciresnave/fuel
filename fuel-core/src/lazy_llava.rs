@@ -39,8 +39,8 @@
 //! Multi-image / anyres / `image_newline` injection deferred.
 
 use crate::lazy::{
-    LayerWeights, LazyTensor, LlamaConfig, LlamaModel, LlamaWeights, WeightStorage,
-    load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
+    LayerWeights, LlamaConfig, LlamaModel, LlamaWeights, Tensor, WeightStorage, load_tensor_as_f32,
+    load_transposed_matrix_preserve_dtype,
 };
 use crate::lazy_clip::{ClipEncoderLayerWeights, ClipVisionConfig, ClipVisionWeights};
 use crate::{Device, Result};
@@ -249,7 +249,7 @@ impl LlavaModel {
     /// Run the full multimodal forward pass. Returns logits for
     /// the combined `[image_features; text_embeds]` sequence
     /// of shape `(1, num_patches + text_len, vocab_size)`.
-    pub fn forward(&self, pixel_values: &LazyTensor, text_tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn forward(&self, pixel_values: &Tensor, text_tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         let v_cfg = &cfg.vision_config;
         let t_cfg = &cfg.text_config;
@@ -311,7 +311,7 @@ impl LlavaModel {
     /// hidden states (NO class token in the output) after the
     /// final post-LN. Used by LLaVA as the visual feature
     /// stream feeding the MM projector.
-    fn clip_vision_per_patch(&self, pixel_values: &LazyTensor) -> Result<LazyTensor> {
+    fn clip_vision_per_patch(&self, pixel_values: &Tensor) -> Result<Tensor> {
         let v_cfg = &self.config.vision_config;
         let weights = &self.weights.vision;
         let dims = pixel_values.shape();
@@ -395,12 +395,12 @@ impl LlavaModel {
 /// residual). Inlined here so we can drop the CLS token before
 /// the post-LN.
 fn clip_encoder_layer(
-    x: &LazyTensor,
+    x: &Tensor,
     layer: &crate::lazy_clip::ClipEncoderLayerWeights,
     n_heads: usize,
     head_dim: usize,
-    causal_mask: Option<&LazyTensor>,
-) -> Result<LazyTensor> {
+    causal_mask: Option<&Tensor>,
+) -> Result<Tensor> {
     let dims = x.shape();
     let dims = dims.dims();
     let batch = dims[0];
@@ -882,10 +882,10 @@ mod tests {
         }
     }
 
-    fn tiny_image(cfg: &ClipVisionConfig) -> LazyTensor {
+    fn tiny_image(cfg: &ClipVisionConfig) -> Tensor {
         let n_pix = 1 * cfg.num_channels * cfg.image_size * cfg.image_size;
         let img_data: Vec<f32> = (0..n_pix).map(|i| (i as f32 / n_pix as f32)).collect();
-        LazyTensor::from_f32(
+        Tensor::from_f32(
             Arc::from(img_data),
             Shape::from_dims(&[1, cfg.num_channels, cfg.image_size, cfg.image_size]),
             &Device::cpu(),

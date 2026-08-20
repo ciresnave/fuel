@@ -19,7 +19,7 @@
 //!   lazy graph emits a Q4_0 matmul kernel only, so mixed-block-format
 //!   GGUFs run as F32 except for the Q4_0 tensors.
 
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::lazy_lfm2::{
     LFM2AttentionWeights, LFM2BlockType, LFM2Config, LFM2ConvWeights, LFM2LayerWeights,
     LFM2MixerWeights, LFM2Model, LFM2Weights,
@@ -40,34 +40,30 @@ pub struct QuantizedLFM2Model {
 impl QuantizedLFM2Model {
     /// Forward over a token-ID sequence. Returns logits with shape
     /// `(1, seq, vocab_size)`.
-    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         self.inner.forward(tokens, start_pos)
     }
 
     /// Forward over pre-computed embeddings, skipping the
     /// token-embedding lookup. Embeds must have shape
     /// `(1, seq, hidden_size)`.
-    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         self.inner.forward_embeds(embeds, start_pos)
     }
 
     /// Per-token hidden states up to the final RmsNorm, shape
     /// `(1, seq, hidden_size)`.
-    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         self.inner.forward_hidden(tokens, start_pos)
     }
 
     /// Pre-embedded variant of [`Self::forward_hidden`].
-    pub fn forward_hidden_embeds(
-        &self,
-        embeds: &LazyTensor,
-        start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_hidden_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         self.inner.forward_hidden_embeds(embeds, start_pos)
     }
 
     /// Build per-token embeddings without running the decoder.
-    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &Tensor, tokens: &[u32]) -> Result<Tensor> {
         self.inner.embed_tokens_anchored(anchor, tokens)
     }
 
@@ -786,7 +782,7 @@ mod tests {
         let model = QuantizedLFM2Model::from_f32_bake(cfg.clone(), src).unwrap();
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
         let max_diff = logits_ref

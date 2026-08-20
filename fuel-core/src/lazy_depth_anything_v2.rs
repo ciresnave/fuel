@@ -19,7 +19,7 @@
 //!      upsample to target_patch_size·2^i → 1×1 out_conv).
 //!   4. **Final** `output_conv1` (3×3) → `interpolate2d` to the
 //!      full input image size (now arbitrary-scale, supported via
-//!      `LazyTensor::interpolate2d`) → `output_conv2` 3×3 → ReLU
+//!      `Tensor::interpolate2d`) → `output_conv2` 3×3 → ReLU
 //!      → 1×1 → ReLU → ReLU on the depth map.
 //!
 //! V1 scope (matches the eager port's standard configs):
@@ -29,7 +29,7 @@
 //!   - F32 weights and activations.
 
 use crate::Result;
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::lazy_dinov2::{Dinov2Config, Dinov2Model, Dinov2Weights};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -190,7 +190,7 @@ impl DepthAnythingV2Model {
     /// `config.input_image_size`. Returns the depth map
     /// `[1, 1, H_out, W_out]` where H_out/W_out are determined
     /// by the final `output_conv2` chain (1×1 stride-1 + pads).
-    pub fn forward(&self, image: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, image: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         assert!(
             !cfg.use_batch_norm,
@@ -217,18 +217,14 @@ impl DepthAnythingV2Model {
     /// Run the DPT head on 4 intermediate ViT features. Each
     /// `features[i]` is `[1, num_patches + 1, embed_dim]` — CLS
     /// at slot 0, patches at slots 1..=N.
-    fn depth_head_forward(
-        &self,
-        anchor: &LazyTensor,
-        features: &[LazyTensor],
-    ) -> Result<LazyTensor> {
+    fn depth_head_forward(&self, anchor: &Tensor, features: &[Tensor]) -> Result<Tensor> {
         assert_eq!(features.len(), 4, "DPT head expects 4 feature levels");
         let cfg = &self.config;
         let n_patches_per_side = cfg.target_patch_size;
         let head = &self.weights.depth_head;
 
         // Drop CLS, reshape patches to spatial, project, resize.
-        let mut pyramid: Vec<LazyTensor> = Vec::with_capacity(4);
+        let mut pyramid: Vec<Tensor> = Vec::with_capacity(4);
         for i in 0..4 {
             let f = &features[i];
             let dims = f.shape();
@@ -295,7 +291,7 @@ impl DepthAnythingV2Model {
 
 // ---- Component helpers ------------------------------------------------------
 
-fn apply_conv2d(x: &LazyTensor, c: &Conv2dWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
+fn apply_conv2d(x: &Tensor, c: &Conv2dWeights, anchor: &Tensor) -> Result<Tensor> {
     let w = anchor.const_f32_like(
         Arc::clone(&c.w),
         Shape::from_dims(&[c.c_out, c.c_in, c.k, c.k]),
@@ -312,10 +308,10 @@ fn apply_conv2d(x: &LazyTensor, c: &Conv2dWeights, anchor: &LazyTensor) -> Resul
 }
 
 fn apply_conv_transpose2d(
-    x: &LazyTensor,
+    x: &Tensor,
     c: &ConvTranspose2dWeights,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+    anchor: &Tensor,
+) -> Result<Tensor> {
     let w = anchor.const_f32_like(
         Arc::clone(&c.w),
         Shape::from_dims(&[c.c_in, c.c_out, c.k, c.k]),
@@ -330,7 +326,7 @@ fn apply_conv_transpose2d(
     Ok(out)
 }
 
-fn apply_resize_layer(x: &LazyTensor, rl: &ResizeLayer, anchor: &LazyTensor) -> Result<LazyTensor> {
+fn apply_resize_layer(x: &Tensor, rl: &ResizeLayer, anchor: &Tensor) -> Result<Tensor> {
     match rl {
         ResizeLayer::ConvTranspose(ct) => apply_conv_transpose2d(x, ct, anchor),
         ResizeLayer::Identity => Ok(x.clone()),
@@ -339,10 +335,10 @@ fn apply_resize_layer(x: &LazyTensor, rl: &ResizeLayer, anchor: &LazyTensor) -> 
 }
 
 fn apply_residual_conv_unit(
-    x: &LazyTensor,
+    x: &Tensor,
     rcu: &ResidualConvUnitWeights,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+    anchor: &Tensor,
+) -> Result<Tensor> {
     let y = x.relu();
     let y = apply_conv2d(&y, &rcu.conv1, anchor)?;
     let y = y.relu();
@@ -351,11 +347,11 @@ fn apply_residual_conv_unit(
 }
 
 fn apply_feature_fusion_block(
-    bottom_input: &LazyTensor,
-    top_input: Option<&LazyTensor>,
+    bottom_input: &Tensor,
+    top_input: Option<&Tensor>,
     ffb: &FeatureFusionBlockWeights,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+    anchor: &Tensor,
+) -> Result<Tensor> {
     // First mix in the deeper-path output if present, after
     // routing the bottom input through res_conv_unit1.
     let acc = if let Some(top) = top_input {
@@ -593,8 +589,7 @@ mod tests {
             weights,
         };
         let image: Vec<f32> = (0..(3 * 14 * 14)).map(|i| (i as f32) * 0.01).collect();
-        let img_tensor =
-            LazyTensor::from_f32(image, Shape::from_dims(&[1, 3, 14, 14]), &Device::cpu());
+        let img_tensor = Tensor::from_f32(image, Shape::from_dims(&[1, 3, 14, 14]), &Device::cpu());
         let depth = model.forward(&img_tensor).unwrap();
         let dims = depth.shape();
         let dims = dims.dims();
@@ -630,12 +625,12 @@ mod tests {
             weights,
         };
         let n = 3 * 14 * 14;
-        let img_a = LazyTensor::from_f32(
+        let img_a = Tensor::from_f32(
             (0..n).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 14, 14]),
             &Device::cpu(),
         );
-        let img_b = LazyTensor::from_f32(
+        let img_b = Tensor::from_f32(
             (0..n).map(|i| (i as f32) * 0.01 + 0.7).collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 14, 14]),
             &Device::cpu(),

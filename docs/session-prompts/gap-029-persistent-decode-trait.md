@@ -77,7 +77,7 @@ fn apply_layer_with_kv_writes(
     &self, x, layer: &LayerWeights, k_cache_const, v_cache_const,
     cached_len_sym, attended_len_sym, offset,
     rope_cos, rope_sin, mask,      // <-- ONE set, per MODEL
-) -> Result<LazyTensor>
+) -> Result<Tensor>
 ```
 
 `rope_cos` / `rope_sin` / `mask` are per-**model**. **Gemma3 violates exactly
@@ -115,10 +115,10 @@ parameter rather than a loop counter) is paid once, here.
 `DecodeModel` (`fuel-inference/src/multi_session.rs:77`) requires
 `n_kv_heads()` and `head_dim()`, both documented "(cache geometry)".
 **`DeepSeek2Model` is decode-capable on `main` today and has neither**, because
-MLA's decode state is a `LazyLatentCache`, not a `KvCache`: per layer, slot 0 is
+MLA's decode state is a `LatentCache`, not a `KvCache`: per layer, slot 0 is
 the post-norm compressed latent trailing `[kv_lora_rank]`, slot 1 the post-RoPE
 `k_pe`. The signature diverges too —
-`forward_with_latent_cache(&self, tokens, cache: LazyLatentCache) -> Result<(LazyTensor, LazyLatentCache)>`
+`forward_with_latent_cache(&self, tokens, cache: LatentCache) -> Result<(Tensor, LatentCache)>`
 threads the cache **by value and returns it**, where the trait takes
 `&mut KvCache`. Different state kind *and* different ownership shape.
 
@@ -143,7 +143,7 @@ non-KV* decode path in the tree, so it is the one consumer that can falsify
 nothing is built there. It is **out of GAP-029's scope** (no
 `lazy_quantized_deepseek2.rs`; positive-controlled against the 11-file listing)
 and is **not** to be ported here. It is a *design check*: can the geometry
-vocabulary express `LazyLatentCache` without lying? Failing that check costs two
+vocabulary express `LatentCache` without lying? Failing that check costs two
 impls now and ten later.
 
 *(Fact vs consequence: the file:line anchors, cache type and signature are
@@ -165,7 +165,7 @@ axis 2 does NOT, and the failure is not where it looks.**
 I did not need to invent a describing vocabulary. One is shipped, in two
 implementations:
 
-- `LazyLatentCache::new(anchor, n_layers, max_seq_len, slot_trailing: Vec<Vec<usize>>, dtype)`
+- `LatentCache::new(anchor, n_layers, max_seq_len, slot_trailing: Vec<Vec<usize>>, dtype)`
   (`lazy_latent_cache.rs:74`), with readers `n_slots()` (`:226`) and
   `slot_trailing(slot)` (`:228`).
 - `LatentKvCache::with_capacity(n_layers, max_seq_len, slot_trailing: Vec<Vec<usize>>, dtype, device)`
@@ -193,7 +193,7 @@ adopt.
 
 **The caveat, which is the reason to actually attempt the expression rather than
 assert the conclusion.** `slot_trailing` is **one list applied to every layer** —
-`LazyLatentCache::new` loops `for _ in 0..n_layers { for trailing in &slot_trailing { … } }`.
+`LatentCache::new` loops `for _ in 0..n_layers { for trailing in &slot_trailing { … } }`.
 So it describes **state KIND** generically while still **asserting uniformity
 ACROSS LAYERS**. It solves the MLA axis and leaves the Gemma3/LFM2 axis exactly
 where it was. Adopting it unchanged would buy one of the two dimensions and feel
@@ -213,7 +213,7 @@ reading of it was backwards.
 
 | | MLA (`forward_with_latent_cache`) | `DecodeModel` |
 |---|---|---|
-| threading | `cache: LazyLatentCache` **by value**, returned in the `Ok` tuple | `cache: &mut KvCache` |
+| threading | `cache: LatentCache` **by value**, returned in the `Ok` tuple | `cache: &mut KvCache` |
 | on `Err` | cache is **consumed and dropped** — caller loses it | caller **retains** the cache |
 
 These are **not the same guarantee, and neither dominates**:

@@ -58,7 +58,7 @@
 //! `max_position_embeddings = 77` budget that SD3 ships with).
 
 use crate::Result;
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::lazy_sd_text_encoder::{
     ClipTextActivation, ClipTextConfig, ClipTextWeights, SdTextEncoder,
 };
@@ -243,7 +243,7 @@ impl Sd3TripleClip {
         prompt_tokens_clip_l: &[u32],
         prompt_tokens_clip_g: &[u32],
         prompt_tokens_t5: &[u32],
-    ) -> Result<(LazyTensor, LazyTensor)> {
+    ) -> Result<(Tensor, Tensor)> {
         let seq = SD3_MAX_POSITION_EMBEDDINGS;
         if prompt_tokens_clip_l.len() != seq {
             return Err(crate::Error::Msg(format!(

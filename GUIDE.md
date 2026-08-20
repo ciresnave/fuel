@@ -174,7 +174,7 @@ let dataset = mnist::load()?; // downloads to ~/.cache/huggingface/datasets
 **Start here**: [`fuel-core::dispatch`](fuel-core/src/dispatch.rs)
 
 Compiling with `--features aocl,onemkl` makes the AOCL and oneMKL backends
-*available*. By default they're not used — `LazyTensor::realize_f32()` keeps
+*available*. By default they're not used — `Tensor::realize_f32()` keeps
 running through the portable Rust `gemm` baseline so behaviour stays
 predictable for users who never opt in. To switch on per-op empirical
 routing across every CPU backend Fuel sees, the app calls
@@ -239,7 +239,7 @@ A `Tensor` is a **handle**, not the data. It holds:
 - A shape and dtype (what kind of array this is).
 - A `Layout` (shape + strides + offset — a *view* over bytes).
 - A reference to those bytes — either an `Arc<RwLock<Storage>>`
-  it owns directly (legacy eager mode) or a `fuel_graph::Tensor`
+  it owns directly (legacy eager mode) or a `fuel_graph::NodeHandle`
   link into a graph-owned slot (node-handle mode, post-Phase-7.5-G).
   Exactly one of the two is set at any time.
 
@@ -263,7 +263,7 @@ no host-side payload rides on the node itself.
 **Phase 7.5 work item G** moved Storage ownership from individual
 Tensors to the graph: `fuel_graph::Graph` owns a
 `HashMap<NodeId, Arc<RwLock<Storage>>>` storage map. A node-handle
-`fuel_core::Tensor` carries a `fuel_graph::Tensor` reference (the
+`fuel_core::Tensor` carries a `fuel_graph::NodeHandle` reference (the
 graph and NodeId) and reads its bytes via `link.storage_for()`,
 which looks up the slot in the graph's map. Lifetime is tied to
 the graph: when the graph drops, slots not held by external Arc

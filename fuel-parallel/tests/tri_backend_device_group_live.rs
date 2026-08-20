@@ -50,7 +50,7 @@
 //! `PROOF` line distinguishes a real tri-vendor reduce from a same-vendor one
 //! wearing its clothes.
 
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel::{Device, Shape};
 use fuel_parallel::comm::ReduceOp;
 use fuel_parallel::device_group::DeviceGroup;
@@ -137,13 +137,13 @@ fn vulkan_igpu_or_fail() -> (Device, String) {
 /// Build `n` shards on one graph. Shard `i` is `[value_i; len]`; the first is the
 /// graph root and the rest hang off it, because every operand of a reduction must
 /// share a graph.
-fn shards_on_one_graph(values: &[f32], len: usize, dev: &Device) -> Vec<LazyTensor> {
+fn shards_on_one_graph(values: &[f32], len: usize, dev: &Device) -> Vec<Tensor> {
     let shape = Shape::from_dims(&[len]);
     let mut out = Vec::with_capacity(values.len());
-    let root = LazyTensor::from_f32(vec![values[0]; len], shape.clone(), dev);
+    let root = Tensor::from_f32(vec![values[0]; len], shape.clone(), dev);
     out.push(root);
     for v in &values[1..] {
-        let t = LazyTensor::from_f32_on(out[0].graph(), vec![*v; len], shape.clone(), dev);
+        let t = Tensor::from_f32_on(out[0].graph(), vec![*v; len], shape.clone(), dev);
         out.push(t);
     }
     out

@@ -7,7 +7,7 @@
 //! WorkItemKind::WriteSliceRotating execute arm, and the byte
 //! kernel's two-chunk ring-boundary split.
 
-use fuel_core::lazy::LazyTensor;
+use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
 
 /// Within-window write: position 1, slab 1 row, modulus 4. No
@@ -16,7 +16,7 @@ use fuel_ir::Shape;
 fn rotating_within_window() {
     let device = fuel_core::Device::cpu();
     // dest [4, 2] starts at zero; write [7, 8] at position 1.
-    let dest = LazyTensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
+    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
     let src = dest.const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]));
     let position = dest.const_u32_like(vec![1_u32], Shape::from_dims(&[]));
     let post_write = dest
@@ -36,7 +36,7 @@ fn rotating_within_window() {
 #[test]
 fn rotating_wraps_position_at_modulus() {
     let device = fuel_core::Device::cpu();
-    let dest = LazyTensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
+    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
     let src = dest.const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]));
     let position = dest.const_u32_like(vec![4_u32], Shape::from_dims(&[]));
     let post_write = dest
@@ -51,7 +51,7 @@ fn rotating_wraps_position_at_modulus() {
 #[test]
 fn rotating_splits_across_boundary() {
     let device = fuel_core::Device::cpu();
-    let dest = LazyTensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
+    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
     let src = dest.const_f32_like(vec![10.0_f32, 11.0, 20.0, 21.0], Shape::from_dims(&[2, 2]));
     let position = dest.const_u32_like(vec![3_u32], Shape::from_dims(&[]));
     let post_write = dest
@@ -70,7 +70,7 @@ fn rotating_mistral_style_decode_loop() {
     let device = fuel_core::Device::cpu();
     let window = 3_usize;
     let head_dim = 2_usize;
-    let mut cache = LazyTensor::from_f32(
+    let mut cache = Tensor::from_f32(
         vec![0.0_f32; window * head_dim],
         Shape::from_dims(&[window, head_dim]),
         &device,
@@ -112,7 +112,7 @@ fn rotating_mistral_style_decode_loop() {
 #[test]
 fn rotating_rejects_nonscalar_position() {
     let device = fuel_core::Device::cpu();
-    let dest = LazyTensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
+    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
     let src = dest.const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]));
     // position is rank-1 — should error at build time.
     let position = dest.const_u32_like(vec![1_u32, 2_u32], Shape::from_dims(&[2]));
@@ -124,7 +124,7 @@ fn rotating_rejects_nonscalar_position() {
 #[test]
 fn rotating_rejects_source_axis_mismatch() {
     let device = fuel_core::Device::cpu();
-    let dest = LazyTensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
+    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
     // source has 2 rows but ranges declares slab of 1 on axis 0.
     let src = dest.const_f32_like(vec![1.0_f32; 4], Shape::from_dims(&[2, 2]));
     let position = dest.const_u32_like(vec![0_u32], Shape::from_dims(&[]));
@@ -136,7 +136,7 @@ fn rotating_rejects_source_axis_mismatch() {
 #[test]
 fn rotating_rejects_modulus_exceeds_dest_dim() {
     let device = fuel_core::Device::cpu();
-    let dest = LazyTensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
+    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
     let src = dest.const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]));
     let position = dest.const_u32_like(vec![0_u32], Shape::from_dims(&[]));
     let r = dest.write_slice_rotating(
@@ -153,7 +153,7 @@ fn rotating_rejects_modulus_exceeds_dest_dim() {
 #[test]
 fn rotating_rejects_axis_out_of_bounds() {
     let device = fuel_core::Device::cpu();
-    let dest = LazyTensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
+    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
     let src = dest.const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]));
     let position = dest.const_u32_like(vec![0_u32], Shape::from_dims(&[]));
     let r = dest.write_slice_rotating(&src, &position, /* axis */ 3, 4, vec![(0, 1), (0, 2)]);

@@ -11,7 +11,7 @@
 //!
 //! # Realization path (executor-unification Session 2, 2026-06-11)
 //!
-//! [`LazyRealizer`] realizes a [`crate::lazy::LazyTensor`] through the
+//! [`Realizer`] realizes a [`crate::lazy::Tensor`] through the
 //! pipelined bridge ([`crate::pipelined_bridge::realize_one_as_with_initial`])
 //! on a pinned [`crate::Device`] — the SAME dispatch path production
 //! `realize_f32` uses. Pre-Session-2 this module constructed a typed
@@ -38,7 +38,7 @@
 //!
 //! No edits to judge.rs or probe.rs.
 
-use crate::lazy::LazyTensor;
+use crate::lazy::Tensor;
 use fuel_dispatch::pipelined::StorageCache;
 use fuel_ir::probe::BackendId;
 use fuel_ir::{DType, Error, Result};
@@ -50,8 +50,8 @@ use fuel_ir::{DType, Error, Result};
 /// Result-returning (no-panics policy): a backend that can't realize
 /// the graph (missing kernel, device error) surfaces a typed `Err`;
 /// the Judge logs and skips the cell.
-pub trait LazyRealizer {
-    fn realize_f32(&mut self, tensor: &LazyTensor) -> Result<Vec<f32>>;
+pub trait Realizer {
+    fn realize_f32(&mut self, tensor: &Tensor) -> Result<Vec<f32>>;
 
     /// Realize `tensor` and return the output numerically converted to
     /// `Vec<f32>`, dispatching the byte-readback on the tensor's ROOT
@@ -69,7 +69,7 @@ pub trait LazyRealizer {
     /// Defaulted to [`Self::realize_f32`] so test stubs (which only
     /// exercise F32) stay one-method; the production
     /// [`BridgeRealizer`] overrides it with the per-dtype readback.
-    fn realize_capture_f32(&mut self, tensor: &LazyTensor) -> Result<Vec<f32>> {
+    fn realize_capture_f32(&mut self, tensor: &Tensor) -> Result<Vec<f32>> {
         self.realize_f32(tensor)
     }
 
@@ -101,7 +101,7 @@ struct BridgeRealizer {
     device: crate::Device,
     cache: StorageCache,
     /// Picker attribution from the most recent realize — see
-    /// [`LazyRealizer::last_kernel_source`].
+    /// [`Realizer::last_kernel_source`].
     last_kernel_source: Option<&'static str>,
 }
 
@@ -117,13 +117,13 @@ impl BridgeRealizer {
     /// Realize `tensor` on the pinned device, reading the output
     /// storage back as `Vec<T>` (a byte-reinterpret — `T` must match
     /// the root node's dtype width). Shared body for the per-dtype
-    /// realize seams: [`LazyRealizer::realize_f32`] is `T = f32`;
-    /// [`LazyRealizer::realize_capture_f32`] picks `T` from the root
+    /// realize seams: [`Realizer::realize_f32`] is `T = f32`;
+    /// [`Realizer::realize_capture_f32`] picks `T` from the root
     /// dtype (F16 → `half::f16`, BF16 → `half::bf16`) and converts.
     ///
     /// Sets `last_kernel_source` from the picker's dispatched sibling
     /// for the realize root.
-    fn realize_as<T: bytemuck::Pod>(&mut self, tensor: &LazyTensor) -> Result<Vec<T>> {
+    fn realize_as<T: bytemuck::Pod>(&mut self, tensor: &Tensor) -> Result<Vec<T>> {
         let graph = tensor.graph_tensor().graph().clone();
         let target = tensor.graph_tensor().id();
 
@@ -175,12 +175,12 @@ impl BridgeRealizer {
     }
 }
 
-impl LazyRealizer for BridgeRealizer {
-    fn realize_f32(&mut self, tensor: &LazyTensor) -> Result<Vec<f32>> {
+impl Realizer for BridgeRealizer {
+    fn realize_f32(&mut self, tensor: &Tensor) -> Result<Vec<f32>> {
         self.realize_as::<f32>(tensor)
     }
 
-    fn realize_capture_f32(&mut self, tensor: &LazyTensor) -> Result<Vec<f32>> {
+    fn realize_capture_f32(&mut self, tensor: &Tensor) -> Result<Vec<f32>> {
         // Read the output back at the root's native width, then
         // NUMERICALLY convert to f32 (half::f16/bf16 → f32) so the
         // Judge's cross-backend consensus compares like-for-like. A
@@ -213,7 +213,7 @@ impl LazyRealizer for BridgeRealizer {
 
 /// One concrete backend the runtime can drive. Implementors are
 /// zero-sized factory tags; the actual per-call state (device
-/// handle, persistent const cache) lives in the [`LazyRealizer`]
+/// handle, persistent const cache) lives in the [`Realizer`]
 /// returned by [`BackendFactory::try_make_realizer`].
 pub trait BackendFactory: Send + Sync {
     /// Stable identifier — the same one the probe uses.
@@ -221,7 +221,7 @@ pub trait BackendFactory: Send + Sync {
 
     /// Construct a fresh realizer pinned to one device. Errors are
     /// propagated as-is — judge.rs prints and skips that device.
-    fn try_make_realizer(&self, device_index: u32) -> Result<Box<dyn LazyRealizer>>;
+    fn try_make_realizer(&self, device_index: u32) -> Result<Box<dyn Realizer>>;
 }
 
 /// All backend factories compiled into this build, in the same order
@@ -253,7 +253,7 @@ impl BackendFactory for CpuFactory {
     fn id(&self) -> BackendId {
         BackendId::Cpu
     }
-    fn try_make_realizer(&self, _device_index: u32) -> Result<Box<dyn LazyRealizer>> {
+    fn try_make_realizer(&self, _device_index: u32) -> Result<Box<dyn Realizer>> {
         Ok(Box::new(BridgeRealizer::new(crate::Device::cpu())))
     }
 }
@@ -277,7 +277,7 @@ impl BackendFactory for CudaFactory {
     fn id(&self) -> BackendId {
         BackendId::Cuda
     }
-    fn try_make_realizer(&self, device_index: u32) -> Result<Box<dyn LazyRealizer>> {
+    fn try_make_realizer(&self, device_index: u32) -> Result<Box<dyn Realizer>> {
         let dev = fuel_cuda_backend::CudaDevice::new(device_index as usize).map_err(|e| {
             fuel_ir::Error::Msg(format!("CudaDevice::new({device_index}) failed: {e}"))
         })?;
@@ -297,7 +297,7 @@ impl BackendFactory for VulkanFactory {
     fn id(&self) -> BackendId {
         BackendId::Vulkan
     }
-    fn try_make_realizer(&self, device_index: u32) -> Result<Box<dyn LazyRealizer>> {
+    fn try_make_realizer(&self, device_index: u32) -> Result<Box<dyn Realizer>> {
         let backend = fuel_vulkan_backend::VulkanBackend::with_selection(
             fuel_vulkan_backend::DeviceSelection::Index(device_index as usize),
         )

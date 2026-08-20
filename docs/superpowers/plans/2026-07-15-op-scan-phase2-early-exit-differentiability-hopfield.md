@@ -47,7 +47,7 @@ Rust (edition 2024, toolchain 1.96). `fuel-graph` and `fuel-core` are the only c
 - `fuel-graph/src/registry/ssd_chunk_scan.rs`: `backward` @ **110**; doc @ **83‑89**; `decompose` @ **~209**.
 - `fuel-graph/src/opt.rs`: consumer‑edge rewrite loop (the mirror for the pre‑pass) @ **334‑352**; `base_map_hash` @ **399**; `lower_to_base_map` @ **364**.
 - `fuel-core/src/lib.rs`: module list (add `pub mod hopfield;`) @ ~**71**.
-- `fuel-core/src/lazy.rs`: `LazyTensor::from_f32` @ **69**, `const_f32_like` @ **138**, `realize_f32` @ **1474**, `selective_scan` @ **1088**, `ssd_chunk_scan` @ **1068**, `backward` @ **4194**; SSM parity tests @ **2070**, **2131**, **2260**, **2400**.
+- `fuel-core/src/lazy.rs`: `Tensor::from_f32` @ **69**, `const_f32_like` @ **138**, `realize_f32` @ **1474**, `selective_scan` @ **1088**, `ssd_chunk_scan` @ **1068**, `backward` @ **4194**; SSM parity tests @ **2070**, **2131**, **2260**, **2400**.
 - `fuel-core/src/pipelined_bridge.rs`: `realize_one_as::<T>` @ **163**, `realize_one_as_with_initial::<T>` @ **279**.
 
 ---
@@ -411,7 +411,7 @@ pub fn drive_scan_until_final_f32(
     device: &crate::Device,
 ) -> Result<(Vec<f32>, usize), fuel_ir::Error>; // (final_carry_bytes, runtime_step_count)
 ```
-- Consumes: `fuel_graph::scan::{parse_scan_layout, build_scan_step}` (Task 3), `crate::pipelined_bridge::realize_one_as::<f32>` and `::<u8>`, `fuel_graph::Tensor::{from_existing, const_f32_like}`.
+- Consumes: `fuel_graph::scan::{parse_scan_layout, build_scan_step}` (Task 3), `crate::pipelined_bridge::realize_one_as::<f32>` and `::<u8>`, `fuel_graph::NodeHandle::{from_existing, const_f32_like}`.
 
 **Steps:**
 
@@ -674,13 +674,13 @@ Prove the pre‑pass gradients are correct against finite differences over the *
 **Files:**
 - Add tests to `fuel-core/src/lazy.rs` `#[cfg(test)]` (beside the SSM parity tests @ 2070+). No production code changes — this task validates Task 5.
 
-**Interfaces:** consumes `LazyTensor::{selective_scan, ssd_chunk_scan, backward, realize_f32}`, `fuel_graph::{Tensor, scan::unroll_scan}`, `crate::pipelined_bridge::realize_one_as`.
+**Interfaces:** consumes `Tensor::{selective_scan, ssd_chunk_scan, backward, realize_f32}`, `fuel_graph::{Tensor, scan::unroll_scan}`, `crate::pipelined_bridge::realize_one_as`.
 
 **Steps:**
 
 - [ ] **Write the failing tests.**
 
-*(a) affine scan BPTT.* Build the affine scan via `fuel_graph::Tensor::scan` at graph level, unroll to `bound` for the forward oracle + FD, and compare to `backward()` grads.
+*(a) affine scan BPTT.* Build the affine scan via `fuel_graph::NodeHandle::scan` at graph level, unroll to `bound` for the forward oracle + FD, and compare to `backward()` grads.
 ```rust
 #[test]
 fn affine_scan_bptt_matches_finite_difference() {
@@ -689,7 +689,7 @@ fn affine_scan_bptt_matches_finite_difference() {
     let dev = Device::cpu();
     // f(init, a, b): carry_{t+1} = a*carry_t + b, carry_0 = init, bound = 3, loss = carry_3.
     // Closed form: carry_3 = a^3*init + b*(a^2 + a + 1). d/dinit = a^3.
-    let build = |init_v: f32, a_v: f32, b_v: f32| -> (std::sync::Arc<std::sync::RwLock<fuel_graph::Graph>>, fuel_graph::NodeId, fuel_graph::Tensor, fuel_graph::Tensor, fuel_graph::Tensor) {
+    let build = |init_v: f32, a_v: f32, b_v: f32| -> (std::sync::Arc<std::sync::RwLock<fuel_graph::Graph>>, fuel_graph::NodeId, fuel_graph::NodeHandle, fuel_graph::NodeHandle, fuel_graph::NodeHandle) {
         let init = Tensor::from_f32(vec![init_v], Shape::from_dims(&[1]), &*dev.as_dyn());
         let g = init.graph().clone();
         let a = Tensor::from_existing(g.clone(), init.id()).const_f32_like(vec![a_v], Shape::from_dims(&[1]));
@@ -715,9 +715,9 @@ fn affine_scan_bptt_matches_finite_difference() {
     };
     // Autograd grad w.r.t. init at (1.0, 0.5, 0.1).
     let (g, out_id, init, a, b) = build(1.0, 0.5, 0.1);
-    let out = fuel_graph::Tensor::from_existing(g.clone(), out_id);
+    let out = fuel_graph::NodeHandle::from_existing(g.clone(), out_id);
     let grads = out.backward();
-    let realize_grad = |t: &fuel_graph::Tensor| crate::pipelined_bridge::realize_one_as::<f32>(&g, grads.get(t).expect("grad").id(), &dev).expect("realize grad")[0];
+    let realize_grad = |t: &fuel_graph::NodeHandle| crate::pipelined_bridge::realize_one_as::<f32>(&g, grads.get(t).expect("grad").id(), &dev).expect("realize grad")[0];
     let g_init = realize_grad(&init);
     let g_a = realize_grad(&a);
     let g_b = realize_grad(&b);
@@ -736,7 +736,7 @@ fn affine_scan_bptt_matches_finite_difference() {
 fn selective_scan_is_differentiable_backward_matches_fd() {
     let dev = Device::cpu();
     let fwd = |u_v: f32| -> f32 {
-        let u = LazyTensor::from_f32(vec![u_v], Shape::from_dims(&[1,1,1]), &dev);
+        let u = Tensor::from_f32(vec![u_v], Shape::from_dims(&[1,1,1]), &dev);
         let delta = u.const_f32_like(vec![0.5f32], Shape::from_dims(&[1,1,1]));
         let a = u.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1,1]));
         let b = u.const_f32_like(vec![3.0f32], Shape::from_dims(&[1,1,1]));
@@ -744,13 +744,13 @@ fn selective_scan_is_differentiable_backward_matches_fd() {
         u.selective_scan(&delta, &a, &b, &c, false).realize_f32()[0]
     };
     // Autograd at u=2.0.
-    let u = LazyTensor::from_f32(vec![2.0f32], Shape::from_dims(&[1,1,1]), &dev);
+    let u = Tensor::from_f32(vec![2.0f32], Shape::from_dims(&[1,1,1]), &dev);
     let delta = u.const_f32_like(vec![0.5f32], Shape::from_dims(&[1,1,1]));
     let a = u.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1,1]));
     let b = u.const_f32_like(vec![3.0f32], Shape::from_dims(&[1,1,1]));
     let c = u.const_f32_like(vec![4.0f32], Shape::from_dims(&[1,1,1]));
     let y = u.selective_scan(&delta, &a, &b, &c, false);
-    let grads = y.inner.backward(); // LazyTensor::backward delegates; or y.backward()
+    let grads = y.inner.backward(); // Tensor::backward delegates; or y.backward()
     let g_u_id = grads.get(u.graph_tensor()).expect("grad u").id();
     let g_u = crate::pipelined_bridge::realize_one_as::<f32>(&u.inner.graph().clone(), g_u_id, &dev).expect("realize")[0];
     let h = 1e-3;
@@ -785,12 +785,12 @@ Ship the Modern Hopfield associative‑memory retrieval as an `Op::Scan { emit: 
 /// to a fixed point (carry = xi, early_exit = ||xi_new - xi|| < eps, emit = Final).
 /// query: [1, d]; patterns X: [n, d]. Returns the retrieval Tensor (emit=Final view).
 pub fn hopfield_retrieve(
-    query: &fuel_graph::Tensor,   // [1, d], init_carry
-    patterns: &fuel_graph::Tensor,// [n, d], a const
+    query: &fuel_graph::NodeHandle,   // [1, d], init_carry
+    patterns: &fuel_graph::NodeHandle,// [n, d], a const
     beta: f32,
     eps: f32,
     max_iters: usize,             // = bound (capacity)
-) -> std::result::Result<fuel_graph::Tensor, fuel_ir::Error>;
+) -> std::result::Result<fuel_graph::NodeHandle, fuel_ir::Error>;
 ```
 - Consumes: `Tensor::{matmul, transpose, mul_scalar, softmax_last_dim, sub, sqr, reduce_sum_to, sqrt, lt, scan_until}`; the driver `drive_scan_until_final_f32`.
 
@@ -800,7 +800,7 @@ pub fn hopfield_retrieve(
 ```rust
 #[test]
 fn hopfield_retrieves_stored_pattern_and_exits_early() {
-    use fuel_graph::Tensor;
+    use fuel_graph::NodeHandle;
     let dev = Device::cpu();
     // Three orthogonal-ish stored patterns [n=3, d=4].
     let x = Tensor::from_f32(
@@ -824,10 +824,10 @@ fn hopfield_retrieves_stored_pattern_and_exits_early() {
 - [ ] **Implement `hopfield_retrieve`:**
 ```rust
 pub fn hopfield_retrieve(
-    query: &fuel_graph::Tensor,
-    patterns: &fuel_graph::Tensor,
+    query: &fuel_graph::NodeHandle,
+    patterns: &fuel_graph::NodeHandle,
     beta: f32, eps: f32, max_iters: usize,
-) -> std::result::Result<fuel_graph::Tensor, fuel_ir::Error> {
+) -> std::result::Result<fuel_graph::NodeHandle, fuel_ir::Error> {
     use fuel_graph::{Tensor, ScanEmit};
     if !std::sync::Arc::ptr_eq(query.graph(), patterns.graph()) {
         return Err(fuel_ir::Error::Msg("hopfield_retrieve: query and patterns must share a graph".into()).bt());
@@ -874,7 +874,7 @@ Prove BPTT through the unrolled retrieval matches finite differences — the con
 **Files:**
 - Add a test to `fuel-core/src/hopfield.rs` `#[cfg(test)]`. No production code unless a gap surfaces.
 
-**Interfaces:** consumes `hopfield_retrieve`, `fuel_graph::Tensor::backward`, `fuel_graph::scan::unroll_scan`, `crate::pipelined_bridge::realize_one_as`.
+**Interfaces:** consumes `hopfield_retrieve`, `fuel_graph::NodeHandle::backward`, `fuel_graph::scan::unroll_scan`, `crate::pipelined_bridge::realize_one_as`.
 
 **Steps:**
 
@@ -882,10 +882,10 @@ Prove BPTT through the unrolled retrieval matches finite differences — the con
 ```rust
 #[test]
 fn hopfield_gradient_matches_finite_difference() {
-    use fuel_graph::Tensor;
+    use fuel_graph::NodeHandle;
     let dev = Device::cpu();
     // Forward loss L(X) = sum(unroll(retrieve(q, X, beta, eps, 3))), FD over X[0].
-    let build = |x_vals: &[f32]| -> (std::sync::Arc<std::sync::RwLock<fuel_graph::Graph>>, fuel_graph::Tensor, fuel_graph::Tensor) {
+    let build = |x_vals: &[f32]| -> (std::sync::Arc<std::sync::RwLock<fuel_graph::Graph>>, fuel_graph::NodeHandle, fuel_graph::NodeHandle) {
         let x = Tensor::from_f32(x_vals.to_vec(), Shape::from_dims(&[2, 3]), &*dev.as_dyn());
         let q = Tensor::from_existing(x.graph().clone(), x.id()).const_f32_like(vec![0.6, 0.3, 0.1], Shape::from_dims(&[1, 3]));
         let r = crate::hopfield::hopfield_retrieve(&q, &x, 4.0, 1e-6, 3).expect("retrieve");

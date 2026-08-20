@@ -23,7 +23,7 @@
 //!     type is a follow-up.
 
 use crate::Result;
-use crate::lazy::{LazyTensor, WeightStorage, load_tensor_as_f32};
+use crate::lazy::{Tensor, WeightStorage, load_tensor_as_f32};
 use crate::lazy_convmixer::BatchNormParams;
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -315,7 +315,7 @@ impl Mv4Model {
     /// Run inference on `image` of shape `(1, 3, H, W)`. Returns
     /// classifier logits when `weights.head` is `Some`, else
     /// pooled features `(1, head_in_channels)`.
-    pub fn forward(&self, image: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, image: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let dims = image.shape();
         let dims = dims.dims();
@@ -350,7 +350,7 @@ impl Mv4Model {
     /// Backbone-only forward: returns the channels-first feature
     /// map after the last stage's blocks, BEFORE global mean pool
     /// and the optional head.
-    pub fn forward_features(&self, image: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward_features(&self, image: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let dims = image.shape();
         let dims = dims.dims();
@@ -366,12 +366,12 @@ impl Mv4Model {
 
 // ---- Component helpers -----------------------------------------------------
 
-fn apply_bn(x: &LazyTensor, bn: &BatchNormParams, channels: usize) -> Result<LazyTensor> {
+fn apply_bn(x: &Tensor, bn: &BatchNormParams, channels: usize) -> Result<Tensor> {
     let _ = channels;
     x.channel_affine_4d(Arc::clone(&bn.w), Arc::clone(&bn.b))
 }
 
-fn apply_conv_bn(x: &LazyTensor, c: &Conv2dBnWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
+fn apply_conv_bn(x: &Tensor, c: &Conv2dBnWeights, anchor: &Tensor) -> Result<Tensor> {
     let w = anchor.const_f32_like(
         Arc::clone(&c.w),
         Shape::from_dims(&[c.c_out, c.c_in / c.groups, c.k, c.k]),
@@ -380,7 +380,7 @@ fn apply_conv_bn(x: &LazyTensor, c: &Conv2dBnWeights, anchor: &LazyTensor) -> Re
     apply_bn(&conv, &c.bn, c.c_out)
 }
 
-fn apply_act(x: LazyTensor, act: Mv4Activation) -> LazyTensor {
+fn apply_act(x: Tensor, act: Mv4Activation) -> Tensor {
     match act {
         Mv4Activation::Relu => x.relu(),
         Mv4Activation::Gelu => x.gelu(),
@@ -388,20 +388,20 @@ fn apply_act(x: LazyTensor, act: Mv4Activation) -> LazyTensor {
 }
 
 fn apply_conv_bn_act(
-    x: &LazyTensor,
+    x: &Tensor,
     c: &Conv2dBnWeights,
     act: Mv4Activation,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+    anchor: &Tensor,
+) -> Result<Tensor> {
     Ok(apply_act(apply_conv_bn(x, c, anchor)?, act))
 }
 
 fn apply_block(
-    x: &LazyTensor,
+    x: &Tensor,
     b: &BlockWeights,
     act: Mv4Activation,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+    anchor: &Tensor,
+) -> Result<Tensor> {
     match b {
         BlockWeights::Convolutional(c) => apply_conv_bn_act(x, c, act, anchor),
         BlockWeights::EdgeResidual(er) => {
@@ -448,7 +448,7 @@ fn apply_block(
 ///   o    = attn · v                                                  (1, heads, H·W, kv_dim)
 ///   reshape back to (1, kv_dim·heads, H, W), output_proj, then optional
 ///   layer-scale + optional residual.
-fn apply_mqa(x: &LazyTensor, mqa: &MqaWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
+fn apply_mqa(x: &Tensor, mqa: &MqaWeights, anchor: &Tensor) -> Result<Tensor> {
     let dims = x.shape();
     let dims = dims.dims();
     let b = dims[0];
@@ -1279,7 +1279,7 @@ mod tests {
             config: cfg.clone(),
             weights,
         };
-        let img = LazyTensor::from_f32(
+        let img = Tensor::from_f32(
             (0..(3 * 32 * 32))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),
@@ -1302,7 +1302,7 @@ mod tests {
             config: cfg.clone(),
             weights,
         };
-        let img = LazyTensor::from_f32(
+        let img = Tensor::from_f32(
             (0..(3 * 32 * 32))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),
@@ -1324,7 +1324,7 @@ mod tests {
             config: cfg.clone(),
             weights,
         };
-        let img = LazyTensor::from_f32(
+        let img = Tensor::from_f32(
             (0..(3 * 32 * 32))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),
@@ -1355,14 +1355,14 @@ mod tests {
             config: cfg.clone(),
             weights,
         };
-        let img_a = LazyTensor::from_f32(
+        let img_a = Tensor::from_f32(
             (0..(3 * 32 * 32))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
         );
-        let img_b = LazyTensor::from_f32(
+        let img_b = Tensor::from_f32(
             (0..(3 * 32 * 32))
                 .map(|i| (i as f32) * 0.01 + 0.5)
                 .collect::<Vec<_>>(),
@@ -1455,7 +1455,7 @@ mod tests {
             config: cfg.clone(),
             weights,
         };
-        let img = LazyTensor::from_f32(
+        let img = Tensor::from_f32(
             (0..(3 * 32 * 32))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),
@@ -1477,7 +1477,7 @@ mod tests {
             config: cfg.clone(),
             weights,
         };
-        let img = LazyTensor::from_f32(
+        let img = Tensor::from_f32(
             (0..(3 * 32 * 32))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),
@@ -1501,14 +1501,14 @@ mod tests {
             config: cfg.clone(),
             weights,
         };
-        let img_a = LazyTensor::from_f32(
+        let img_a = Tensor::from_f32(
             (0..(3 * 32 * 32))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
         );
-        let img_b = LazyTensor::from_f32(
+        let img_b = Tensor::from_f32(
             (0..(3 * 32 * 32))
                 .map(|i| (i as f32) * 0.01 + 0.5)
                 .collect::<Vec<_>>(),
@@ -1654,7 +1654,7 @@ mod tests {
             config: cfg.clone(),
             weights: loaded,
         };
-        let img = LazyTensor::from_f32(
+        let img = Tensor::from_f32(
             (0..(3 * 32 * 32))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),

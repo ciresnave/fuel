@@ -28,7 +28,7 @@
 //! Forward-only, single sequence (`batch == 1`), no KV cache
 //! (recomputes each call), F32 activations.
 
-use crate::lazy::{LayerWeights, LazyTensor, WeightStorage};
+use crate::lazy::{LayerWeights, Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -94,7 +94,7 @@ pub struct GemmaModel {
 }
 
 impl GemmaModel {
-    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
@@ -107,7 +107,7 @@ impl GemmaModel {
         );
 
         // Embedding lookup + sqrt(hidden_size) scaling (Gemma-specific).
-        let h = LazyTensor::embed_tokens(
+        let h = Tensor::embed_tokens(
             weights.token_embedding.clone(),
             cfg.vocab_size,
             cfg.hidden_size,
@@ -126,7 +126,7 @@ impl GemmaModel {
     /// text embeddings before running the Gemma layers. The
     /// caller is responsible for the `sqrt(hidden_size)` token-
     /// embedding scaling that `forward()` applies internally.
-    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -167,7 +167,7 @@ impl GemmaModel {
     /// [`Self::forward_hidden_embeds`] for vision-language
     /// composition or embedding adapters that need raw hidden
     /// states.
-    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
@@ -177,7 +177,7 @@ impl GemmaModel {
             "GemmaModel::forward_hidden: tokens must be non-empty"
         );
 
-        let h_raw = LazyTensor::embed_tokens(
+        let h_raw = Tensor::embed_tokens(
             weights.token_embedding.clone(),
             cfg.vocab_size,
             cfg.hidden_size,
@@ -193,11 +193,7 @@ impl GemmaModel {
     /// projection and returns the post-RmsNorm hidden states.
     /// Caller is responsible for the `sqrt(hidden_size)`
     /// embedding scaling that `forward_hidden()` applies.
-    pub fn forward_hidden_embeds(
-        &self,
-        embeds: &LazyTensor,
-        start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_hidden_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -218,11 +214,11 @@ impl GemmaModel {
 
     fn apply_layer(
         &self,
-        x: &LazyTensor,
+        x: &Tensor,
         layer: &LayerWeights,
-        rope_cos: &LazyTensor,
-        rope_sin: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        rope_cos: &Tensor,
+        rope_sin: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let x_shape = x.shape();
         let dims = x_shape.dims();
@@ -565,7 +561,7 @@ mod tests {
     fn offset_rms_norm_with_zero_gain_matches_unity() {
         let device = Device::cpu();
         let dim = 8;
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             (0..dim).map(|i| 0.1 * (i as f32 - 3.5)).collect::<Vec<_>>(),
             Shape::from_dims(&[1, 1, dim]),
             &device,

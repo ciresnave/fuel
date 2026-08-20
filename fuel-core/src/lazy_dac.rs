@@ -12,7 +12,7 @@
 //! The Snake activation is a learnable periodic nonlinearity
 //! `x + sin²(α·x) / (α + 1e-9)` with a per-channel `α`.
 //!
-//! Dilation handling: `LazyTensor::conv1d` doesn't yet take a
+//! Dilation handling: `Tensor::conv1d` doesn't yet take a
 //! `dilation` parameter. Since DAC's dilated convs (k=7, d∈{1,3,9})
 //! all use **constant** kernel weights, we lift dilation into the
 //! weight tensor: expand `[Cout, Cin, K]` → `[Cout, Cin, K + (K-1)·(D-1)]`
@@ -29,7 +29,7 @@
 //!   - `batch == 1`.
 
 use crate::Result;
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -146,11 +146,11 @@ pub struct DacModel {
 impl DacModel {
     /// Decode discrete codes back to a waveform.
     ///
-    /// * `codes` — U32 LazyTensor of shape `(1, num_codebooks, time)`.
+    /// * `codes` — U32 Tensor of shape `(1, num_codebooks, time)`.
     /// * Returns F32 audio `(1, decoder_out_channels, time_out)` where
     ///   `time_out = time · prod(decoder_rates)` modulo per-stage
     ///   conv padding edge effects.
-    pub fn decode_codes(&self, codes: &LazyTensor) -> Result<LazyTensor> {
+    pub fn decode_codes(&self, codes: &Tensor) -> Result<Tensor> {
         let dims = codes.shape();
         let dims = dims.dims();
         assert_eq!(dims.len(), 3, "codes must be rank 3 [B, num_codebooks, T]");
@@ -165,12 +165,12 @@ impl DacModel {
     }
 
     /// `latent_sum = sum_i quantizers[i].out_proj(codebook_i[codes[:, i]])`.
-    fn rvq_from_codes(&self, codes: &LazyTensor) -> Result<LazyTensor> {
+    fn rvq_from_codes(&self, codes: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let dims = codes.shape();
         let dims = dims.dims();
         let time = dims[2];
-        let mut sum: Option<LazyTensor> = None;
+        let mut sum: Option<Tensor> = None;
         for (idx, q) in self.weights.quantizers.iter().enumerate() {
             // codes[:, idx, :] → (1, T) U32.
             let ids = codes
@@ -195,7 +195,7 @@ impl DacModel {
         sum.ok_or_else(|| fuel_ir::Error::Msg("DAC RVQ: no codebooks".into()).bt())
     }
 
-    fn decoder_forward(&self, latent: &LazyTensor) -> Result<LazyTensor> {
+    fn decoder_forward(&self, latent: &Tensor) -> Result<Tensor> {
         let dec = &self.weights.decoder;
         let mut x = apply_conv1d(latent, &dec.conv1, latent)?;
         for block in &dec.blocks {
@@ -249,7 +249,7 @@ fn expand_conv1d_weight_for_dilation(
     (out, k_expanded)
 }
 
-fn apply_conv1d(x: &LazyTensor, c: &Conv1dWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
+fn apply_conv1d(x: &Tensor, c: &Conv1dWeights, anchor: &Tensor) -> Result<Tensor> {
     let (w_data, k_eff) = expand_conv1d_weight_for_dilation(&c.w, c.c_out, c.c_in, c.k, c.dilation);
     let w = anchor.const_f32_like(
         Arc::<[f32]>::from(w_data),
@@ -262,10 +262,10 @@ fn apply_conv1d(x: &LazyTensor, c: &Conv1dWeights, anchor: &LazyTensor) -> Resul
 }
 
 fn apply_conv_transpose1d(
-    x: &LazyTensor,
+    x: &Tensor,
     c: &ConvTranspose1dWeights,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+    anchor: &Tensor,
+) -> Result<Tensor> {
     let w = anchor.const_f32_like(Arc::clone(&c.w), Shape::from_dims(&[c.c_in, c.c_out, c.k]));
     let mut out = x.conv_transpose1d(&w, c.stride, c.pad, 0, 1, 1)?;
     if let Some(b) = &c.b {
@@ -278,7 +278,7 @@ fn apply_conv_transpose1d(
 }
 
 /// `Snake(x) = x + sin²(α · x) / (α + 1e-9)` with per-channel α.
-fn apply_snake1d(x: &LazyTensor, s: &Snake1dWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
+fn apply_snake1d(x: &Tensor, s: &Snake1dWeights, anchor: &Tensor) -> Result<Tensor> {
     let dims = x.shape();
     let dims = dims.dims();
     assert_eq!(
@@ -299,11 +299,7 @@ fn apply_snake1d(x: &LazyTensor, s: &Snake1dWeights, anchor: &LazyTensor) -> Res
     x.add(&correction)
 }
 
-fn apply_residual_unit(
-    x: &LazyTensor,
-    r: &ResidualUnitWeights,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+fn apply_residual_unit(x: &Tensor, r: &ResidualUnitWeights, anchor: &Tensor) -> Result<Tensor> {
     let y = apply_snake1d(x, &r.snake1, anchor)?;
     let y = apply_conv1d(&y, &r.conv1, anchor)?;
     let y = apply_snake1d(&y, &r.snake2, anchor)?;
@@ -322,11 +318,7 @@ fn apply_residual_unit(
     }
 }
 
-fn apply_decoder_block(
-    x: &LazyTensor,
-    b: &DecoderBlockWeights,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+fn apply_decoder_block(x: &Tensor, b: &DecoderBlockWeights, anchor: &Tensor) -> Result<Tensor> {
     let y = apply_snake1d(x, &b.snake1, anchor)?;
     let y = apply_conv_transpose1d(&y, &b.conv_tr1, anchor)?;
     let y = apply_residual_unit(&y, &b.res1, anchor)?;
@@ -835,7 +827,7 @@ mod tests {
     fn snake1d_alpha_zero_is_identity() {
         // α = 0 → sin(0) = 0 → correction = 0/(0+ε) = 0 → output = x.
         let dev = Device::cpu();
-        let x = LazyTensor::from_f32(
+        let x = Tensor::from_f32(
             vec![0.5_f32, -0.25, 0.75, 1.0],
             Shape::from_dims(&[1, 2, 2]),
             &dev,
@@ -867,7 +859,7 @@ mod tests {
                 data.push(((c + t) % cfg.codebook_size) as u32);
             }
         }
-        let anchor = LazyTensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &Device::cpu());
         let codes = anchor.const_u32_like(data, Shape::from_dims(&[1, cfg.num_codebooks, time]));
         let audio = model.decode_codes(&codes).unwrap();
         let dims = audio.shape();
@@ -1213,7 +1205,7 @@ mod tests {
 
         let time = 4_usize;
         let dev = Device::cpu();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
+        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
         let codes = anchor.const_u32_like(
             vec![1_u32; cfg.num_codebooks * time],
             Shape::from_dims(&[1, cfg.num_codebooks, time]),
@@ -1239,7 +1231,7 @@ mod tests {
         };
         let time = 4_usize;
         let dev = Device::cpu();
-        let anchor = LazyTensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
+        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
         let codes_a = anchor.const_u32_like(
             vec![0_u32; cfg.num_codebooks * time],
             Shape::from_dims(&[1, cfg.num_codebooks, time]),

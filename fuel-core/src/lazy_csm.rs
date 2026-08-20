@@ -51,7 +51,7 @@
 //! v1 scope: F32, batch == 1, forward-only inference.
 
 use crate::Result;
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -228,8 +228,8 @@ impl CsmModel {
         audio_codes: &[u32],
         text_tokens: &[u32],
         tokens_mask: &[u8],
-        anchor: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        anchor: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let cb = cfg.audio_num_codebooks;
         let seq = text_tokens.len();
@@ -287,7 +287,7 @@ impl CsmModel {
 
     /// Apply the `codebook0_head` linear to the backbone hidden state.
     /// `backbone_h` shape `(1, S, backbone_dim)` → `(1, S, audio_vocab_size)`.
-    pub fn codebook0_logits(&self, backbone_h: &LazyTensor) -> Result<LazyTensor> {
+    pub fn codebook0_logits(&self, backbone_h: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         self.weights
             .codebook0_head
@@ -297,7 +297,7 @@ impl CsmModel {
     /// Project a tensor from backbone hidden space to decoder hidden
     /// space (no bias). Used between `cat([h, c0_embed], 1)` and the
     /// decoder's `forward_embeds`.
-    pub fn project_to_decoder(&self, curr_h: &LazyTensor) -> Result<LazyTensor> {
+    pub fn project_to_decoder(&self, curr_h: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         self.weights
             .projection
@@ -311,11 +311,7 @@ impl CsmModel {
     /// is predicted by `codebook0_logits` from the backbone hidden).
     /// `decoder_h` shape `(1, S, decoder_dim)` →
     /// `(1, S, audio_vocab_size)`.
-    pub fn audio_head_logits(
-        &self,
-        decoder_h: &LazyTensor,
-        codebook_idx: usize,
-    ) -> Result<LazyTensor> {
+    pub fn audio_head_logits(&self, decoder_h: &Tensor, codebook_idx: usize) -> Result<Tensor> {
         let cfg = &self.config;
         assert!(
             codebook_idx >= 1 && codebook_idx < cfg.audio_num_codebooks,
@@ -359,8 +355,8 @@ impl CsmModel {
         audio_codes: &[u32],
         text_tokens: &[u32],
         tokens_mask: &[u8],
-        anchor: &LazyTensor,
-    ) -> Result<(LazyTensor, LazyTensor)> {
+        anchor: &Tensor,
+    ) -> Result<(Tensor, Tensor)> {
         let embed = self.embed_frame(audio_codes, text_tokens, tokens_mask, anchor)?;
         let logits = self.codebook0_logits(&embed)?;
         Ok((embed, logits))
@@ -373,8 +369,8 @@ impl CsmModel {
         &self,
         code: u32,
         codebook_idx: usize,
-        anchor: &LazyTensor,
-    ) -> Result<LazyTensor> {
+        anchor: &Tensor,
+    ) -> Result<Tensor> {
         let cfg = &self.config;
         let bd = cfg.backbone_dim;
         let offset = (codebook_idx * cfg.audio_vocab_size) as u32;
@@ -443,8 +439,8 @@ mod tests {
         }
     }
 
-    fn anchor() -> LazyTensor {
-        LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu())
+    fn anchor() -> Tensor {
+        Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu())
     }
 
     #[test]
@@ -496,7 +492,7 @@ mod tests {
     fn codebook0_logits_shape() {
         let model = tiny_model();
         let cfg = &model.config;
-        let h = LazyTensor::from_f32(
+        let h = Tensor::from_f32(
             (0..(1 * 2 * cfg.backbone_dim))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),
@@ -512,7 +508,7 @@ mod tests {
         let model = tiny_model();
         let cfg = &model.config;
         let a = anchor();
-        let curr_h = LazyTensor::from_f32(
+        let curr_h = Tensor::from_f32(
             (0..(1 * 3 * cfg.backbone_dim))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),

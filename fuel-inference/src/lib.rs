@@ -55,14 +55,14 @@
 //!
 //! ```no_run
 //! use fuel_inference::generation::{LogitsProcessor, Sampling};
-//! use fuel::{Device, lazy::LazyTensor};
+//! use fuel::{Device, lazy::Tensor};
 //!
 //! # fn main() -> fuel::Result<()> {
 //! let device = Device::cpu();
 //! let mut lp = LogitsProcessor::new(42, Some(0.7), None);
 //!
 //! // logits: shape [vocab_size]
-//! let logits = LazyTensor::zeros(32_000usize, fuel::DType::F32, &device)?;
+//! let logits = Tensor::zeros(32_000usize, fuel::DType::F32, &device)?;
 //! // let next_token = lp.sample(&logits)?;
 //! # Ok(())
 //! # }
@@ -74,8 +74,8 @@
 //! fuel-inference   ← you are here (inference orchestration)
 //! fuel-transformers (model definitions)
 //! fuel-core        (tensors, devices, autograd, AND the NN surface:
-//!                   `fuel_nn::varbuilder::LazyVarBuilder`,
-//!                   `fuel_nn::varmap::LazyVarMap`, and `fuel_nn::modules`
+//!                   `fuel_nn::varbuilder::VarBuilder`,
+//!                   `fuel_nn::varmap::VarMap`, and `fuel_nn::modules`
 //!                   — linear, embedding, norm, activation, lora,
 //!                   quantizable_linear, moe, conv, sequential)
 //! ```

@@ -14,7 +14,7 @@
 
 #![cfg(feature = "cuda")]
 
-use fuel_core::lazy::LazyTensor;
+use fuel_core::lazy::Tensor;
 use fuel_ir::{Shape, probe::BackendId};
 
 /// A live CUDA device is **required** here, not optional.
@@ -43,7 +43,7 @@ fn cuda_device() -> fuel_cuda_backend::CudaDevice {
 fn doff_writes_at_device_offset_cuda() {
     require_cuda();
     let device = fuel_core::Device::cpu();
-    let dest = LazyTensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
+    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
     let src = dest.const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]));
     let offset = dest.const_i64_like(vec![1_i64], Shape::from_dims(&[]));
     let post_write = dest
@@ -60,7 +60,7 @@ fn doff_writes_at_device_offset_cuda() {
 fn doff_offset_zero_writes_leading_row_cuda() {
     require_cuda();
     let device = fuel_core::Device::cpu();
-    let dest = LazyTensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
+    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
     let src = dest.const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]));
     let offset = dest.const_i64_like(vec![0_i64], Shape::from_dims(&[]));
     let post_write = dest
@@ -81,7 +81,7 @@ fn doff_decode_loop_appends_at_cached_len_cuda() {
     let device = fuel_core::Device::cpu();
     let max_seq = 4_usize;
     let head_dim = 2_usize;
-    let mut cache = LazyTensor::from_f32(
+    let mut cache = Tensor::from_f32(
         vec![0.0_f32; max_seq * head_dim],
         Shape::from_dims(&[max_seq, head_dim]),
         &device,
@@ -109,7 +109,7 @@ fn doff_decode_loop_appends_at_cached_len_cuda() {
 fn doff_writes_on_non_leading_axis_cuda() {
     require_cuda();
     let device = fuel_core::Device::cpu();
-    let dest = LazyTensor::from_f32(vec![0.0_f32; 10], Shape::from_dims(&[2, 5]), &device);
+    let dest = Tensor::from_f32(vec![0.0_f32; 10], Shape::from_dims(&[2, 5]), &device);
     let src = dest.const_f32_like(vec![1.0_f32, 2.0, 3.0, 4.0], Shape::from_dims(&[2, 2]));
     let offset = dest.const_i64_like(vec![2_i64], Shape::from_dims(&[]));
     let post_write = dest

@@ -8,7 +8,7 @@ extern crate accelerate_src;
 use anyhow::Error as E;
 use clap::Parser;
 
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel::lazy_vit::{VitConfig, VitModel, VitWeights};
 use fuel::safetensors::MmapedSafetensors;
 use fuel::{Device, Shape};
@@ -63,7 +63,7 @@ pub fn main() -> anyhow::Result<()> {
     let device = Device::cpu();
 
     let pixels = load_image224_imagenet_norm(&args.image)?;
-    let image = LazyTensor::from_f32(
+    let image = Tensor::from_f32(
         Arc::<[f32]>::from(pixels),
         Shape::from_dims(&[1, 3, 224, 224]),
         &device,

@@ -9,7 +9,7 @@ use anyhow::Result;
 use clap::Parser;
 
 use fuel::Device;
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use std::sync::Arc;
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -143,7 +143,7 @@ fn main() -> Result<()> {
     } else {
         Device::cpu()
     };
-    let evaluator = fuel_onnx::LazyOnnxEval::from_path(&model_id)?;
+    let evaluator = fuel_onnx::OnnxEval::from_path(&model_id)?;
 
     println!("loaded the model in {:?}", start.elapsed());
 
@@ -172,7 +172,7 @@ fn main() -> Result<()> {
         // Build a fresh graph this frame: anchor on the audio chunk (f32),
         // then build sample_rate (i64 scalar) and state (f32) as siblings.
         let device = Device::cpu();
-        let chunk_only = LazyTensor::from_f32(chunk.clone(), (1, frame_size), &device);
+        let chunk_only = Tensor::from_f32(chunk.clone(), (1, frame_size), &device);
         let context_t = chunk_only.const_f32_like(
             Arc::<[f32]>::from(context_host.clone().into_boxed_slice()),
             (1, context_size),

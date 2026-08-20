@@ -6,8 +6,8 @@
 //! [`registry`] to assemble a report.
 //!
 //! This is the discovery concern ONLY. The realize-seam half
-//! (`try_make_realizer` / `LazyRealizer`) stays in `fuel-core::factories`,
-//! because it constructs a `LazyTensor` realizer and must live above the IR.
+//! (`try_make_realizer` / `Realizer`) stays in `fuel-core::factories`,
+//! because it constructs a `Tensor` realizer and must live above the IR.
 
 use fuel_ir::Result;
 use fuel_ir::probe::{BackendId, DeviceDescriptor};

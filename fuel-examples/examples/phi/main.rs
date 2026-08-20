@@ -78,7 +78,7 @@ impl TextGeneration {
         for index in 0..sample_len {
             let context_size = if index > 0 { 1 } else { tokens.len() };
             let ctxt = &tokens[tokens.len().saturating_sub(context_size)..];
-            // Lazy forward: returns LazyTensor of shape (1, seq, vocab).
+            // Lazy forward: returns Tensor of shape (1, seq, vocab).
             let logits_lazy = self.model.forward(ctxt, pos)?;
             // Realize as f32 and select the LAST position's logits.
             let logits_flat = logits_lazy.realize_f32();
@@ -353,7 +353,7 @@ fn mmlu<P: AsRef<std::path::Path>>(
             );
             let tokens = tokenizer.encode(prompt.as_str(), true).map_err(E::msg)?;
             let token_ids = tokens.get_ids().to_vec();
-            // Lazy forward: returns LazyTensor of shape (1, seq, vocab).
+            // Lazy forward: returns Tensor of shape (1, seq, vocab).
             let logits_lazy = model.forward(&token_ids, 0)?;
             let logits_flat = logits_lazy.realize_f32();
             let vocab = model.config.vocab_size;

@@ -29,7 +29,7 @@
 //! v1 scope: F32, batch == 1, forward-only inference.
 
 use crate::Result;
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -268,7 +268,7 @@ pub struct FastVitModel {
 impl FastVitModel {
     /// Run the backbone (stem + 4 stages) and return the channels-
     /// first feature map BEFORE global mean pool and the head.
-    pub fn forward_features(&self, image: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward_features(&self, image: &Tensor) -> Result<Tensor> {
         let dims = image.shape();
         let dims = dims.dims();
         assert_eq!(dims.len(), 4);
@@ -283,7 +283,7 @@ impl FastVitModel {
 
     /// Full forward: backbone → global mean → optional head
     /// (1×1 conv-BN-GELU → flatten → linear classifier).
-    pub fn forward(&self, image: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, image: &Tensor) -> Result<Tensor> {
         let feats = self.forward_features(image)?;
         match &self.weights.head {
             None => Ok(feats),
@@ -302,14 +302,14 @@ impl FastVitModel {
         }
     }
 
-    fn run_stem(&self, image: &LazyTensor) -> Result<LazyTensor> {
+    fn run_stem(&self, image: &Tensor) -> Result<Tensor> {
         let mut x = apply_reparam_mobileone(image, &self.weights.stem[0], image)?;
         x = apply_reparam_mobileone(&x, &self.weights.stem[1], image)?;
         apply_reparam_mobileone(&x, &self.weights.stem[2], image)
     }
 }
 
-fn run_stage(x: &LazyTensor, stage: &StageWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
+fn run_stage(x: &Tensor, stage: &StageWeights, anchor: &Tensor) -> Result<Tensor> {
     let mut x = if let Some(ds) = &stage.downsample {
         apply_patch_embed(x, ds, anchor)?
     } else {
@@ -336,11 +336,7 @@ fn run_stage(x: &LazyTensor, stage: &StageWeights, anchor: &LazyTensor) -> Resul
 
 // ---- Block helpers ---------------------------------------------------------
 
-fn apply_conv2d_bias(
-    x: &LazyTensor,
-    c: &Conv2dBiasWeights,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+fn apply_conv2d_bias(x: &Tensor, c: &Conv2dBiasWeights, anchor: &Tensor) -> Result<Tensor> {
     let w = anchor.const_f32_like(
         Arc::clone(&c.w),
         Shape::from_dims(&[c.c_out, c.c_in / c.groups, c.k, c.k]),
@@ -355,12 +351,12 @@ fn apply_conv2d_bias(
     )
 }
 
-fn apply_bn_fused(x: &LazyTensor, bn: &BnWeights, channels: usize) -> Result<LazyTensor> {
+fn apply_bn_fused(x: &Tensor, bn: &BnWeights, channels: usize) -> Result<Tensor> {
     let _ = channels;
     x.channel_affine_4d(Arc::clone(&bn.w), Arc::clone(&bn.b))
 }
 
-fn apply_se(x: &LazyTensor, se: &SeWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
+fn apply_se(x: &Tensor, se: &SeWeights, anchor: &Tensor) -> Result<Tensor> {
     let dims = x.shape();
     let dims = dims.dims();
     let c = dims[1];
@@ -374,10 +370,10 @@ fn apply_se(x: &LazyTensor, se: &SeWeights, anchor: &LazyTensor) -> Result<LazyT
 }
 
 fn apply_reparam_mobileone(
-    x: &LazyTensor,
+    x: &Tensor,
     m: &ReparamMobileOneWeights,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+    anchor: &Tensor,
+) -> Result<Tensor> {
     let mut y = apply_conv2d_bias(x, &m.conv, anchor)?;
     if let Some(se) = &m.se {
         y = apply_se(&y, se, anchor)?;
@@ -388,14 +384,14 @@ fn apply_reparam_mobileone(
     Ok(y)
 }
 
-fn apply_conv_mlp(x: &LazyTensor, m: &ConvMlpWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
+fn apply_conv_mlp(x: &Tensor, m: &ConvMlpWeights, anchor: &Tensor) -> Result<Tensor> {
     let x = apply_conv2d_bias(x, &m.conv_norm, anchor)?;
     let x = apply_conv2d_bias(&x, &m.fc1, anchor)?;
     let x = x.gelu_erf();
     apply_conv2d_bias(&x, &m.fc2, anchor)
 }
 
-fn apply_repmixer(x: &LazyTensor, r: &RepMixerWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
+fn apply_repmixer(x: &Tensor, r: &RepMixerWeights, anchor: &Tensor) -> Result<Tensor> {
     let mixer = apply_reparam_mobileone(x, &r.mixer, anchor)?;
     let norm = apply_reparam_mobileone(x, &r.norm, anchor)?;
     let diff = mixer.sub(&norm)?;
@@ -406,11 +402,7 @@ fn apply_repmixer(x: &LazyTensor, r: &RepMixerWeights, anchor: &LazyTensor) -> R
     x.add(&scaled)
 }
 
-fn apply_repmixer_block(
-    x: &LazyTensor,
-    b: &RepMixerBlockWeights,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+fn apply_repmixer_block(x: &Tensor, b: &RepMixerBlockWeights, anchor: &Tensor) -> Result<Tensor> {
     let y = apply_repmixer(x, &b.token_mixer, anchor)?;
     let mlp_out = apply_conv_mlp(&y, &b.mlp, anchor)?;
     let gamma = anchor
@@ -424,11 +416,11 @@ fn apply_repmixer_block(
 }
 
 fn apply_fastvit_attention(
-    x: &LazyTensor,
+    x: &Tensor,
     w: &FastVitAttentionWeights,
     head_dim: usize,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+    anchor: &Tensor,
+) -> Result<Tensor> {
     let dims = x.shape();
     let dims = dims.dims();
     let b = dims[0];
@@ -465,11 +457,7 @@ fn apply_fastvit_attention(
         .reshape(Shape::from_dims(&[b, c, h, ww]))?)
 }
 
-fn apply_attention_block(
-    x: &LazyTensor,
-    b: &AttentionBlockWeights,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+fn apply_attention_block(x: &Tensor, b: &AttentionBlockWeights, anchor: &Tensor) -> Result<Tensor> {
     let dims = x.shape();
     let dims = dims.dims();
     let c = dims[1];
@@ -492,11 +480,7 @@ fn apply_attention_block(
     x.add(&mlp_scaled)
 }
 
-fn apply_patch_embed(
-    x: &LazyTensor,
-    p: &PatchEmbedWeights,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+fn apply_patch_embed(x: &Tensor, p: &PatchEmbedWeights, anchor: &Tensor) -> Result<Tensor> {
     let lk = apply_conv2d_bias(x, &p.large_conv, anchor)?;
     let sk = apply_conv2d_bias(x, &p.small_conv, anchor)?;
     let mut x = lk.add(&sk)?;
@@ -781,7 +765,7 @@ mod tests {
             config: cfg.clone(),
             weights,
         };
-        let img = LazyTensor::from_f32(
+        let img = Tensor::from_f32(
             (0..(3 * 32 * 32))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),
@@ -803,7 +787,7 @@ mod tests {
             config: cfg.clone(),
             weights,
         };
-        let img = LazyTensor::from_f32(
+        let img = Tensor::from_f32(
             (0..(3 * 32 * 32))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),
@@ -829,14 +813,14 @@ mod tests {
             config: cfg,
             weights,
         };
-        let img_a = LazyTensor::from_f32(
+        let img_a = Tensor::from_f32(
             (0..(3 * 32 * 32))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
         );
-        let img_b = LazyTensor::from_f32(
+        let img_b = Tensor::from_f32(
             (0..(3 * 32 * 32))
                 .map(|i| (i as f32) * 0.01 + 0.5)
                 .collect::<Vec<_>>(),

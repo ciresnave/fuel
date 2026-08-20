@@ -8,7 +8,7 @@ extern crate accelerate_src;
 use anyhow::Error as E;
 use clap::Parser;
 
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel::lazy_siglip::{
     SiglipActivation, SiglipModel, SiglipModelWeights, SiglipTextConfig, SiglipVisionConfig,
 };
@@ -282,10 +282,10 @@ pub fn main() -> anyhow::Result<()> {
     let (token_seqs, vec_seq) = tokenize_sequences(&text_config, args.sequences, &tokenizer)?;
 
     // Encode every image independently → (1, hidden); collect into (N_img, hidden).
-    let mut image_feats: Vec<LazyTensor> = Vec::with_capacity(vec_imgs.len());
+    let mut image_feats: Vec<Tensor> = Vec::with_capacity(vec_imgs.len());
     for path in &vec_imgs {
         let pixels = load_image_chw(path, image_size)?;
-        let pixel_tensor = LazyTensor::from_f32(
+        let pixel_tensor = Tensor::from_f32(
             Arc::<[f32]>::from(pixels),
             Shape::from_dims(&[1, 3, image_size, image_size]),
             &device,
@@ -301,7 +301,7 @@ pub fn main() -> anyhow::Result<()> {
     let image_features_normalized = img_acc.l2_normalize(1_usize, 1e-12)?;
 
     // Encode every text sequence independently → (1, hidden); collect into (N_txt, hidden).
-    let mut text_feats: Vec<LazyTensor> = Vec::with_capacity(token_seqs.len());
+    let mut text_feats: Vec<Tensor> = Vec::with_capacity(token_seqs.len());
     for tokens in &token_seqs {
         let feat = model.text_features(tokens)?;
         text_feats.push(feat);

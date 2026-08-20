@@ -9,7 +9,7 @@ use anyhow::{Error as E, Result};
 use clap::Parser;
 use std::sync::Arc;
 
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel::lazy_convmixer::{ConvMixerConfig, ConvMixerModel, ConvMixerWeights};
 use fuel::safetensors::MmapedSafetensors;
 use fuel::{Device, Shape};
@@ -40,7 +40,7 @@ pub fn main() -> Result<()> {
     let image = fuel_examples::imagenet::load_image224(&args.image)?;
     println!("loaded image {image:?}");
     let image_vec: Vec<f32> = image;
-    let image_lazy = LazyTensor::from_f32(
+    let image_lazy = Tensor::from_f32(
         Arc::<[f32]>::from(image_vec),
         Shape::from_dims(&[1, 3, 224, 224]),
         &device,

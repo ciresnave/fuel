@@ -25,7 +25,7 @@
 //! v1 scope: F32, batch == 1, prefill only.
 
 use crate::Result;
-use crate::lazy::{LazyTensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::lazy_gemma::GemmaModel;
 use crate::lazy_paligemma::{PaligemmaConfig, PaligemmaModel, PaligemmaWeights};
 use fuel_ir::Shape;
@@ -53,11 +53,7 @@ pub struct ColPaliModel {
 impl ColPaliModel {
     /// Encode an image+text pair into per-token 128-d L2-normalized
     /// embeddings `(1, num_patches + text_len, 128)`.
-    pub fn forward_images(
-        &self,
-        pixel_values: &LazyTensor,
-        text_tokens: &[u32],
-    ) -> Result<LazyTensor> {
+    pub fn forward_images(&self, pixel_values: &Tensor, text_tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         let pg = PaligemmaModel {
             config: cfg.clone(),
@@ -69,7 +65,7 @@ impl ColPaliModel {
 
     /// Encode a text-only token sequence into per-token 128-d
     /// L2-normalized embeddings `(1, text_len, 128)`.
-    pub fn forward_text(&self, text_tokens: &[u32]) -> Result<LazyTensor> {
+    pub fn forward_text(&self, text_tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
         let gemma = GemmaModel {
             config: cfg.text_config.clone(),
@@ -81,11 +77,7 @@ impl ColPaliModel {
         self.project_and_normalize(&hidden, &hidden)
     }
 
-    fn project_and_normalize(
-        &self,
-        hidden: &LazyTensor,
-        anchor: &LazyTensor,
-    ) -> Result<LazyTensor> {
+    fn project_and_normalize(&self, hidden: &Tensor, anchor: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let h_dim = cfg.text_config.hidden_size;
         let projected =
@@ -101,7 +93,7 @@ impl ColPaliModel {
     }
 }
 
-fn l2_normalize_last(x: &LazyTensor, eps: f64) -> Result<LazyTensor> {
+fn l2_normalize_last(x: &Tensor, eps: f64) -> Result<Tensor> {
     let last = x.shape().dims().len() - 1;
     x.l2_normalize(last, eps)
 }
@@ -319,7 +311,7 @@ mod tests {
             weights,
         };
         let img_size = cfg.vision_config.image_size;
-        let pixel_values = LazyTensor::from_f32(
+        let pixel_values = Tensor::from_f32(
             (0..(3 * img_size * img_size))
                 .map(|i| (i as f32) * 0.01)
                 .collect::<Vec<_>>(),

@@ -27,7 +27,7 @@
 //!   - Bidirectional and packed sequences are out of scope.
 
 use crate::Result;
-use crate::lazy::LazyTensor;
+use crate::lazy::Tensor;
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -57,7 +57,7 @@ impl LstmStack {
     /// Forward pass without residual. Input `(1, T, D_in)`; output
     /// `(1, T, D_hidden)` where `D_hidden` is the last layer's
     /// hidden dim.
-    pub fn forward(&self, x: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let mut h = x.clone();
         for layer in &self.layers {
             h = lstm_layer_forward(&h, layer)?;
@@ -69,14 +69,14 @@ impl LstmStack {
     /// connection around the whole stack). Used by EnCodec / SNAC.
     /// Requires `x.shape() == output.shape()` (which holds when
     /// the input dim equals the last layer's hidden dim).
-    pub fn forward_with_residual(&self, x: &LazyTensor) -> Result<LazyTensor> {
+    pub fn forward_with_residual(&self, x: &Tensor) -> Result<Tensor> {
         let out = self.forward(x)?;
         out.add(x)
     }
 }
 
 /// Single-layer LSTM forward, unrolled over time.
-fn lstm_layer_forward(x: &LazyTensor, w: &LstmCellWeights) -> Result<LazyTensor> {
+fn lstm_layer_forward(x: &Tensor, w: &LstmCellWeights) -> Result<Tensor> {
     let dims = x.shape();
     let dims = dims.dims();
     assert_eq!(dims.len(), 3, "LSTM input must be rank 3 [B, T, D_in]");
@@ -113,7 +113,7 @@ fn lstm_layer_forward(x: &LazyTensor, w: &LstmCellWeights) -> Result<LazyTensor>
 
     let w_ih_t = w_ih.transpose()?;
     let w_hh_t = w_hh.transpose()?;
-    let mut outputs: Vec<LazyTensor> = Vec::with_capacity(t);
+    let mut outputs: Vec<Tensor> = Vec::with_capacity(t);
     for step in 0..t {
         // x_t: (B, D_in)
         let x_t = x
@@ -253,7 +253,7 @@ mod tests {
 
         let expected = lstm_layer_reference(&x_data, b, t, d_in, d_h, &w_ih, &w_hh, &b_ih, &b_hh);
 
-        let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[b, t, d_in]), &Device::cpu());
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[b, t, d_in]), &Device::cpu());
         let stack = LstmStack {
             layers: vec![LstmCellWeights {
                 w_ih: Arc::from(w_ih),
@@ -305,7 +305,7 @@ mod tests {
         let expected =
             lstm_layer_reference(&after_l1, b, t, d_in2, d_h2, &w_ih2, &w_hh2, &b_ih2, &b_hh2);
 
-        let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[b, t, d_in1]), &Device::cpu());
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[b, t, d_in1]), &Device::cpu());
         let stack = LstmStack {
             layers: vec![
                 LstmCellWeights {
@@ -351,7 +351,7 @@ mod tests {
         // for all t. h_t = 0.5 * tanh(0) = 0 for all t. So plain
         // `forward` output is all zeros; `forward_with_residual` output
         // must equal the input.
-        let x = LazyTensor::from_f32(x_data.clone(), Shape::from_dims(&[b, t, d]), &Device::cpu());
+        let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[b, t, d]), &Device::cpu());
         let stack = LstmStack {
             layers: vec![LstmCellWeights {
                 w_ih: Arc::from(w_ih),
@@ -396,14 +396,14 @@ mod tests {
                 hidden_dim: d_h,
             }],
         };
-        let xa = LazyTensor::from_f32(
+        let xa = Tensor::from_f32(
             (0..(b * t * d_in))
                 .map(|i| (i as f32) * 0.05)
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[b, t, d_in]),
             &Device::cpu(),
         );
-        let xb = LazyTensor::from_f32(
+        let xb = Tensor::from_f32(
             (0..(b * t * d_in))
                 .map(|i| (i as f32) * 0.05 + 0.3)
                 .collect::<Vec<_>>(),

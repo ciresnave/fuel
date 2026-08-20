@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Lazy-graph ONNX evaluator — sub-port 2 of `port-onnx-eval.md`.
 //!
-//! Extends [`crate::lazy_eval::LazyOnnxEval`] with convolution-family
+//! Extends [`crate::lazy_eval::OnnxEval`] with convolution-family
 //! ops:
 //!   - `Conv` (1D / 2D — `auto_pad` SAME_UPPER / SAME_LOWER / VALID /
 //!     NOTSET, explicit `pads`, `strides`, `group`; dilations rejected
@@ -21,7 +21,7 @@ use crate::lazy_eval::{
     get_attr_int_opt, get_attr_ints_opt, get_attr_string_opt, get_i64_vec, set_output,
 };
 use crate::onnx;
-use fuel::lazy::LazyTensor;
+use fuel::lazy::Tensor;
 use fuel::{Device, Error, Result, Shape};
 use std::collections::HashMap;
 
@@ -31,9 +31,9 @@ use std::collections::HashMap;
 /// typed [`Error::Msg`].
 pub fn try_dispatch_node(
     node: &onnx::NodeProto,
-    values: &mut HashMap<String, LazyTensor>,
+    values: &mut HashMap<String, Tensor>,
     device: &Device,
-    anchor: &mut Option<LazyTensor>,
+    anchor: &mut Option<Tensor>,
     i64_cache: &mut HashMap<String, Vec<i64>>,
 ) -> Result<bool> {
     match node.op_type.as_str() {
@@ -92,11 +92,7 @@ fn parse_auto_pad(node: &onnx::NodeProto) -> Result<AutoPad> {
     }
 }
 
-fn get(
-    values: &HashMap<String, LazyTensor>,
-    node: &onnx::NodeProto,
-    name: &str,
-) -> Result<LazyTensor> {
+fn get(values: &HashMap<String, Tensor>, node: &onnx::NodeProto, name: &str) -> Result<Tensor> {
     values.get(name).cloned().ok_or_else(|| {
         Error::Msg(format!("missing input '{}' for node '{}'", name, node.name)).bt()
     })
@@ -192,10 +188,10 @@ fn resolve_pads(
 /// native `padding` argument. If `(pre, post)` is symmetric already
 /// (`pre == post`) we skip the explicit pad and let Conv handle it.
 fn apply_asymmetric_pads(
-    mut x: LazyTensor,
+    mut x: Tensor,
     per_axis: &[(usize, usize)],
     spatial_start_dim: usize,
-) -> Result<(LazyTensor, Vec<usize>)> {
+) -> Result<(Tensor, Vec<usize>)> {
     let mut symmetric = Vec::with_capacity(per_axis.len());
     for (i, &(pre, post)) in per_axis.iter().enumerate() {
         if pre == post {
@@ -208,7 +204,7 @@ fn apply_asymmetric_pads(
     Ok((x, symmetric))
 }
 
-fn conv_op(node: &onnx::NodeProto, values: &mut HashMap<String, LazyTensor>) -> Result<()> {
+fn conv_op(node: &onnx::NodeProto, values: &mut HashMap<String, Tensor>) -> Result<()> {
     check_dilations(node)?;
     let auto_pad = parse_auto_pad(node)?;
     let groups = get_attr_int_opt(node, "group").unwrap_or(1) as usize;
@@ -291,10 +287,7 @@ fn conv_op(node: &onnx::NodeProto, values: &mut HashMap<String, LazyTensor>) -> 
     }
 }
 
-fn conv_transpose_op(
-    node: &onnx::NodeProto,
-    values: &mut HashMap<String, LazyTensor>,
-) -> Result<()> {
+fn conv_transpose_op(node: &onnx::NodeProto, values: &mut HashMap<String, Tensor>) -> Result<()> {
     check_dilations(node)?;
     let auto_pad = parse_auto_pad(node)?;
     let groups = get_attr_int_opt(node, "group").unwrap_or(1) as usize;
@@ -477,11 +470,7 @@ fn symmetric_or_err(node: &onnx::NodeProto, per_axis: &[(usize, usize)]) -> Resu
     Ok(out)
 }
 
-fn add_channel_bias(
-    y: &LazyTensor,
-    bias: &LazyTensor,
-    node: &onnx::NodeProto,
-) -> Result<LazyTensor> {
+fn add_channel_bias(y: &Tensor, bias: &Tensor, node: &onnx::NodeProto) -> Result<Tensor> {
     let y_rank = y.rank();
     if y_rank < 2 {
         return Err(Error::Msg(format!(
@@ -507,9 +496,9 @@ fn add_channel_bias(
 
 fn pad_op(
     node: &onnx::NodeProto,
-    values: &mut HashMap<String, LazyTensor>,
+    values: &mut HashMap<String, Tensor>,
     device: &Device,
-    anchor: &mut Option<LazyTensor>,
+    anchor: &mut Option<Tensor>,
     i64_cache: &mut HashMap<String, Vec<i64>>,
 ) -> Result<()> {
     // ONNX Pad: mode is an attribute; reflect / edge / wrap are
@@ -605,7 +594,7 @@ fn pad_op(
     Ok(())
 }
 
-fn scalar_to_f64(t: &LazyTensor) -> Result<f64> {
+fn scalar_to_f64(t: &Tensor) -> Result<f64> {
     if t.elem_count() != 1 {
         return Err(Error::Msg(format!(
             "Pad: constant_value must be a scalar, got shape {:?}",
@@ -623,7 +612,7 @@ fn scalar_to_f64(t: &LazyTensor) -> Result<f64> {
     }
 }
 
-fn max_pool_op(node: &onnx::NodeProto, values: &mut HashMap<String, LazyTensor>) -> Result<()> {
+fn max_pool_op(node: &onnx::NodeProto, values: &mut HashMap<String, Tensor>) -> Result<()> {
     let (kernel, strides, padding) = parse_pool_attrs(node)?;
     let x = get(values, node, &node.input[0])?;
     if x.rank() != 4 {
@@ -646,7 +635,7 @@ fn max_pool_op(node: &onnx::NodeProto, values: &mut HashMap<String, LazyTensor>)
     Ok(())
 }
 
-fn avg_pool_op(node: &onnx::NodeProto, values: &mut HashMap<String, LazyTensor>) -> Result<()> {
+fn avg_pool_op(node: &onnx::NodeProto, values: &mut HashMap<String, Tensor>) -> Result<()> {
     let (kernel, strides, padding) = parse_pool_attrs(node)?;
     if get_attr_int_opt(node, "count_include_pad").unwrap_or(0) != 0 && padding != (0, 0) {
         return Err(Error::Msg(format!(
@@ -760,10 +749,7 @@ fn parse_pool_attrs(
     Ok((kernel, strides, padding))
 }
 
-fn global_avg_pool_op(
-    node: &onnx::NodeProto,
-    values: &mut HashMap<String, LazyTensor>,
-) -> Result<()> {
+fn global_avg_pool_op(node: &onnx::NodeProto, values: &mut HashMap<String, Tensor>) -> Result<()> {
     let x = get(values, node, &node.input[0])?;
     if x.rank() != 4 {
         return Err(Error::Msg(format!(
@@ -779,10 +765,7 @@ fn global_avg_pool_op(
     Ok(())
 }
 
-fn global_max_pool_op(
-    node: &onnx::NodeProto,
-    values: &mut HashMap<String, LazyTensor>,
-) -> Result<()> {
+fn global_max_pool_op(node: &onnx::NodeProto, values: &mut HashMap<String, Tensor>) -> Result<()> {
     let x = get(values, node, &node.input[0])?;
     if x.rank() != 4 {
         return Err(Error::Msg(format!(
@@ -804,7 +787,7 @@ fn global_max_pool_op(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lazy_eval::LazyOnnxEval;
+    use crate::lazy_eval::OnnxEval;
     use crate::onnx::attribute_proto::AttributeType;
     use crate::onnx::tensor_proto::DataType;
     use fuel::Device;
@@ -879,11 +862,11 @@ mod tests {
 
     fn run_graph(
         graph: onnx::GraphProto,
-        inputs: HashMap<String, LazyTensor>,
-    ) -> Result<HashMap<String, LazyTensor>> {
+        inputs: HashMap<String, Tensor>,
+    ) -> Result<HashMap<String, Tensor>> {
         let mut buf = Vec::new();
         model_from_graph(graph).encode(&mut buf).unwrap();
-        let evaluator = LazyOnnxEval::from_bytes(&buf)?;
+        let evaluator = OnnxEval::from_bytes(&buf)?;
         evaluator.run(&inputs)
     }
 
@@ -903,7 +886,7 @@ mod tests {
             ..Default::default()
         };
         let device = Device::cpu();
-        let x = LazyTensor::from_f32(x_data.clone(), Shape::from_dims(&[1, 1, 3, 3]), &device);
+        let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[1, 1, 3, 3]), &device);
         let mut inputs = HashMap::new();
         inputs.insert("X".to_string(), x);
         let outputs = run_graph(graph, inputs).unwrap();
@@ -929,7 +912,7 @@ mod tests {
             ..Default::default()
         };
         let device = Device::cpu();
-        let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[1, 1, 2, 2]), &device);
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[1, 1, 2, 2]), &device);
         let mut inputs = HashMap::new();
         inputs.insert("X".to_string(), x);
         let outputs = run_graph(graph, inputs).unwrap();
@@ -953,7 +936,7 @@ mod tests {
             ..Default::default()
         };
         let device = Device::cpu();
-        let x = LazyTensor::from_f32(vec![5.0_f32, 7.0], Shape::from_dims(&[1, 2]), &device);
+        let x = Tensor::from_f32(vec![5.0_f32, 7.0], Shape::from_dims(&[1, 2]), &device);
         let mut inputs = HashMap::new();
         inputs.insert("X".to_string(), x);
         let outputs = run_graph(graph, inputs).unwrap();
@@ -981,7 +964,7 @@ mod tests {
             ..Default::default()
         };
         let device = Device::cpu();
-        let x = LazyTensor::from_f32(vec![1.0_f32, 2.0], Shape::from_dims(&[1, 2]), &device);
+        let x = Tensor::from_f32(vec![1.0_f32, 2.0], Shape::from_dims(&[1, 2]), &device);
         let mut inputs = HashMap::new();
         inputs.insert("X".to_string(), x);
         let err = run_graph(graph, inputs).unwrap_err();
@@ -1007,7 +990,7 @@ mod tests {
             ..Default::default()
         };
         let device = Device::cpu();
-        let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[1, 1, 4, 4]), &device);
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[1, 1, 4, 4]), &device);
         let mut inputs = HashMap::new();
         inputs.insert("X".to_string(), x);
         let outputs = run_graph(graph, inputs).unwrap();
@@ -1041,7 +1024,7 @@ mod tests {
             ..Default::default()
         };
         let device = Device::cpu();
-        let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[1, 1, 2, 2]), &device);
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[1, 1, 2, 2]), &device);
         let mut inputs = HashMap::new();
         inputs.insert("X".to_string(), x);
         let outputs = run_graph(graph, inputs).unwrap();
@@ -1063,7 +1046,7 @@ mod tests {
             ..Default::default()
         };
         let device = Device::cpu();
-        let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[1, 2, 2, 2]), &device);
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[1, 2, 2, 2]), &device);
         let mut inputs = HashMap::new();
         inputs.insert("X".to_string(), x);
         let outputs = run_graph(graph, inputs).unwrap();
@@ -1085,7 +1068,7 @@ mod tests {
             ..Default::default()
         };
         let device = Device::cpu();
-        let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[1, 2, 2, 2]), &device);
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[1, 2, 2, 2]), &device);
         let mut inputs = HashMap::new();
         inputs.insert("X".to_string(), x);
         let outputs = run_graph(graph, inputs).unwrap();

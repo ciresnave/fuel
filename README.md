@@ -241,7 +241,7 @@ without any manual `setvars.bat` or path-extension shell prep.
 ### Activating empirical backend selection
 
 Compiling with `--features aocl,onemkl` *registers* both backends, but by
-default `LazyTensor::realize_f32()` keeps using the portable Rust `gemm` —
+default `Tensor::realize_f32()` keeps using the portable Rust `gemm` —
 exactly as it did before the per-vendor backends existed. To switch on
 per-op empirical routing, the app calls `populate_dispatch_table()` once:
 
@@ -267,12 +267,12 @@ fn main() -> fuel_core::Result<()> {
     // means a previous process's `populate_dispatch_table()` is still
     // honored — `dispatch::cached()` quietly loads it on first use.
 
-    // ... your model code uses LazyTensor::realize_f32() as normal ...
+    // ... your model code uses Tensor::realize_f32() as normal ...
     Ok(())
 }
 ```
 
-Once a dispatch table is cached, every `LazyTensor::realize_f32()` call
+Once a dispatch table is cached, every `Tensor::realize_f32()` call
 consults it per op. On a Zen-class AMD CPU with both AOCL and oneMKL
 enabled, this typically picks AOCL or MKL (whichever wins the empirical
 race that run) for matmul-heavy work and stays on the portable backend
