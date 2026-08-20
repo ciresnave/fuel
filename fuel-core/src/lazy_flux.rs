@@ -963,16 +963,14 @@ impl FluxVae {
         let cfg = &self.config;
         let w = &self.encoder;
         let mut h = conv2d_k3_s1_p1(x, &w.conv_in_w, &w.conv_in_b, cfg.in_channels, cfg.ch)?;
-        let mut cur_c = cfg.ch;
         let last_idx = cfg.ch_mult.len() - 1;
         for (i_level, blk) in w.down.iter().enumerate() {
             let block_out = cfg.ch * cfg.ch_mult[i_level];
             for r in &blk.resnets {
                 h = vae_resnet(&h, r, cfg)?;
             }
-            cur_c = block_out;
             if let Some((cw, cb)) = &blk.downsample_conv {
-                h = downsample_conv(&h, cw, cb, cur_c)?;
+                h = downsample_conv(&h, cw, cb, block_out)?;
             }
             let _ = i_level == last_idx;
         }
