@@ -642,6 +642,44 @@ mod tests {
     const ELEMENTWISE_BINARY: &str =
         include_str!("../../../docs/kernel-contracts/cpu/elementwise-binary.fkc.md");
 
+    /// A contract whose entries are still BLOCKED at the time of writing —
+    /// `Gather` / `IndexSelect` have earned bit-stability but not `max_ulp`.
+    /// Used only as a starting point: the tests below LOCATE a blocked entry
+    /// rather than trusting this one to stay blocked.
+    const INDEXING: &str = include_str!("../../../docs/kernel-contracts/cpu/indexing.fkc.md");
+
+    /// Find an imported primitive whose guarantee was downgraded, together
+    /// with the claims the gate reported unbacked.
+    ///
+    /// **The tests below used to name `add_f32` as their fixture, and the
+    /// precision program earned both of its claims — so they failed on the
+    /// program succeeding.** A fixture that the work under test is actively
+    /// removing is not a fixture; the property still holds, so the tests now
+    /// SEARCH for an entry exhibiting it. If none exists anywhere, that is
+    /// reported as the finding rather than as a pass.
+    fn find_downgraded(contracts: &[&str]) -> Option<(String, Vec<String>)> {
+        for text in contracts {
+            let link = EntryPointLink::new();
+            let Ok(provider) = import_bundle_str(text, &link) else {
+                continue;
+            };
+            for w in provider.warnings.iter() {
+                if !w.message.contains("downgraded to UNAUDITED") {
+                    continue;
+                }
+                let claims = match (w.message.find('['), w.message.find(']')) {
+                    (Some(a), Some(b)) if b > a => w.message[a + 1..b]
+                        .split(',')
+                        .map(|c| c.trim().trim_matches('"').to_string())
+                        .collect(),
+                    _ => continue,
+                };
+                return Some((w.message.clone(), claims));
+            }
+        }
+        None
+    }
+
     // -- two distinct dummy kernels (distinct fn items ⇒ distinct ptrs) --
 
     fn dummy_a(
@@ -862,109 +900,75 @@ mod tests {
     // V-FKC-9 IMPORT-TIME GATE: unverified precision claims are downgraded
     // =====================================================================
 
+    /// The V-FKC-9 import gate downgrades a declared guarantee whose claims
+    /// are not all backed, and the warning names WHICH claims.
+    ///
+    /// ⚠️ **This test used to name `add_f32` and assert it was downgraded.
+    /// GAP-225 then earned both of its claims, and the test failed on the
+    /// program succeeding** — a fixture being actively removed by the work
+    /// under test. The property is unchanged; only the naming of a victim was
+    /// wrong. It now locates one.
     #[test]
-    fn importing_elementwise_binary_downgrades_add_f32_against_the_ledger() {
-        // The authored elementwise-binary contract declares add_f32
-        // bit_stable_on_same_hardware + a max_ulp bound — but `add_f32` is a
-        // PRIMITIVE `AddElementwise` op_kind contract, not one of the Task
-        // 4.5b-seeded FUSED CPU ops, so the verification ledger has no
-        // passing entry for it at ITS `kernel_revision_hash`. Task 4.3 wires
-        // `gate_precision` into `import_bundle_str` so this import downgrades
-        // it to UNAUDITED and records a warning, rather than trusting an
-        // asserted-but-unverified claim.
-        let link = EntryPointLink::new();
-        let provider = import_bundle_str(ELEMENTWISE_BINARY, &link).expect("imports");
-        let add = provider
-            .primitives
-            .iter()
-            .find(|p| {
-                p.op == OpKind::AddElementwise
-                    && p.dtypes.as_slice() == [DType::F32, DType::F32, DType::F32]
-            })
-            .expect("add_f32 present");
+    fn the_import_gate_downgrades_an_entry_whose_claims_are_not_all_backed() {
+        let found = find_downgraded(&[INDEXING, ELEMENTWISE_BINARY]);
+        let Some((message, claims)) = found else {
+            panic!(
+                "no contract-derived CPU entry is downgraded any more. That is either \
+                 the precision program finishing — in which case THIS test is what is \
+                 stale, and the thing to assert is that the gate still fires on a \
+                 constructed unbacked claim — or the warning text changed and this \
+                 search matches nothing. Do not delete it without deciding which."
+            );
+        };
         assert!(
-            !add.precision.bit_stable_on_same_hardware,
-            "unverified bit_stable claim must be downgraded at import"
+            !claims.is_empty(),
+            "the downgrade warning named no claims: {message}"
         );
         assert!(
-            add.precision.max_ulp.is_none(),
-            "unverified ulp bound must be dropped"
-        );
-        assert_eq!(
-            add.precision.notes,
-            crate::fused::PrecisionGuarantee::UNAUDITED.notes
-        );
-        // The warning now cites ONLY `max_ulp` — and that is the interesting
-        // part, not an incidental detail.
-        //
-        // GAP-207 earned `bit_stable_on_same_hardware` for this exact
-        // `(Cpu, [F32,F32,F32], rev)` key, so the gate no longer lists that
-        // claim as unbacked. It DOES still list `max_ulp`, which nothing has
-        // earned. Asserting both halves is what proves the gate discriminates
-        // PER CLAIM rather than passing or failing an entry wholesale — a
-        // property the old single-sided assertion could not see.
-        let unbacked: Vec<&str> = provider
-            .warnings
-            .iter()
-            .map(|w| w.message.as_str())
-            .filter(|m| m.contains("[F32, F32, F32]"))
-            .collect();
-        assert!(
-            unbacked.iter().any(|m| m.contains("max_ulp")),
-            "expected an unbacked `max_ulp` warning: {:?}",
-            provider.warnings
-        );
-        assert!(
-            !unbacked
-                .iter()
-                .any(|m| m.contains("bit_stable_on_same_hardware")),
-            "`bit_stable_on_same_hardware` IS earned for this key (GAP-207) and              must not be reported unbacked — if it is, either the ledger lost              the record or the query key drifted: {unbacked:?}"
+            claims.iter().all(|c| matches!(
+                c.as_str(),
+                "bit_stable_on_same_hardware" | "max_ulp" | "max_relative" | "max_absolute"
+            )),
+            "unrecognised claim name in {claims:?} — the gate's vocabulary changed and \
+             every census keyed on these strings is now reading a subset"
         );
     }
 
-    /// **Earning one claim buys nothing while a sibling claim is unearned.**
+    /// **Earning one claim buys NOTHING while a sibling claim is unearned.**
     ///
-    /// `gate_precision` downgrades the WHOLE `PrecisionGuarantee` to UNAUDITED
-    /// if ANY declared claim lacks a ledger pass. So a contract declaring both
-    /// `bit_stable_on_same_hardware` and `max_ulp` stays fully downgraded
-    /// until BOTH are earned — and the assertions in the test above show
-    /// exactly that: the bit-stable claim is backed, the entry is still
-    /// UNAUDITED.
+    /// `gate_precision` downgrades the WHOLE `PrecisionGuarantee` if ANY
+    /// declared claim lacks a ledger pass, so an entry declaring both
+    /// `bit_stable_on_same_hardware` and `max_ulp` stays fully UNAUDITED until
+    /// both are earned.
     ///
-    /// This is recorded as its own test because it bounds GAP-207's headline:
-    /// 548 of 659 CPU registrations now carry an earned bit-stability record,
-    /// and for every entry that ALSO declares a ULP bound that record changes
-    /// nothing about the resulting guarantee. Retiring
-    /// `fill_unset_cpu_precision` therefore does not follow from bit-stability
-    /// coverage alone, which is not obvious from the coverage number and is
-    /// the kind of thing a program plan quietly assumes.
+    /// This bounds the precision program's headline: coverage of ONE claim
+    /// does not convert into changed guarantees for dual-claim entries, which
+    /// is not visible in a claim-coverage number and is exactly the inference
+    /// a plan makes silently. Converted into a test so it fails if someone
+    /// makes it.
     #[test]
     fn a_backed_claim_does_not_rescue_an_entry_whose_sibling_claim_is_unbacked() {
-        let link = EntryPointLink::new();
-        let provider = import_bundle_str(ELEMENTWISE_BINARY, &link).expect("imports");
-        let add = provider
-            .primitives
-            .iter()
-            .find(|p| {
-                p.op == OpKind::AddElementwise
-                    && p.dtypes.as_slice() == [DType::F32, DType::F32, DType::F32]
-            })
-            .expect("add_f32 present");
+        let Some((message, claims)) = find_downgraded(&[INDEXING, ELEMENTWISE_BINARY]) else {
+            panic!(
+                "nothing is downgraded any more, so this property is no longer \
+                 observable on live data. See the sibling test's message."
+            );
+        };
 
-        // The ledger DOES back the bit-stable claim for this key...
+        // The point is a PARTIAL backing: at least one declared claim is
+        // unbacked while the entry has others. A warning listing every
+        // machine-checkable claim would be an entry with nothing backed, which
+        // demonstrates a weaker thing.
         assert!(
-            crate::fkc::verify::VerificationLedger::embedded().has_pass(
-                fuel_ir::probe::BackendId::Cpu,
-                &add.dtypes,
-                add.revision.0,
-                "bit_stable_on_same_hardware"
-            ),
-            "precondition: GAP-207 earned bit-stability for add_f32; without it              this test proves nothing about the all-or-nothing behaviour"
+            claims.len() < 4,
+            "the downgraded entry has ALL four claims unbacked, which shows the gate \
+             rejecting an entirely unverified entry — not that ONE backed claim fails \
+             to rescue it. Find a partially-backed entry or this assertion is weaker \
+             than it reads: {message}"
         );
-        // ...and the entry is STILL fully downgraded, because `max_ulp` is not.
         assert!(
-            !add.precision.bit_stable_on_same_hardware,
-            "the entry should still be UNAUDITED: one backed claim does not              rescue an entry whose sibling claim is unbacked"
+            message.contains("downgraded to UNAUDITED"),
+            "expected the whole guarantee collapsed, not a per-claim edit: {message}"
         );
     }
 

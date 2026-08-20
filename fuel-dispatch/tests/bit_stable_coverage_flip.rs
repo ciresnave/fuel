@@ -542,42 +542,55 @@ fn gap_077_bit_stable_coverage_under_simulated_gap_058_flip() {
     // single row states it: seeding + this flip + retiring
     // `fill_unset_cpu_precision` is when those keys actually lose coverage.
     // Any two of the three are survivable.
+    // ⚠️ THIS ASSERTION WAS WRONG AND FIRED CORRECTLY TO SAY SO.
+    //
+    // It used to read `lost_by_flip.len() == bit_stable_entries`, tying the
+    // FLIP's blast radius to the total backed set. That held only because the
+    // two coincided at 199 — a COINCIDENCE asserted as an invariant. When
+    // GAP-225 backed `max_ulp` for 60 more entries the numbers separated
+    // (flip 219, backed 279) and it fired, with a message offering the right
+    // diagnosis for the wrong situation: "the selector and the ledger
+    // disagree". They do disagree, and they are SUPPOSED to — the GAP-058
+    // flip is a NARROW selector (184 sections), while the sabotage arm strips
+    // bit-stability wholesale (418 sections).
+    //
+    // The real identity is with the SABOTAGE arm, not with the backed total:
+    // stripping every bit-stable claim must cost exactly the backed keys. The
+    // flip is a subset of that, and what matters about it is that it is
+    // non-empty — i.e. no longer inert.
+    //
+    // Keying an assertion to a measurement is not enough; it has to be the
+    // measurement the property is actually about.
     assert_eq!(
-        lost_by_flip.len(),
+        lost_by_sabotage.len(),
         bit_stable_entries,
-        "the flip's blast radius is not the backed set: it strips the last \
-         bit-stable candidate from {} key(s) while {bit_stable_entries} entries \
-         are ledger-backed. FEWER means the GAP-058 selector and the ledger \
-         disagree about which entries are backed; MORE means the flip reaches \
-         entries it should not. First 10 of {} key(s): {}",
-        lost_by_flip.len(),
-        lost_by_flip.len(),
-        lost_by_flip
-            .iter()
-            .take(10)
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(", "),
+        "stripping bit-stability wholesale cost {} key(s) while {bit_stable_entries} \
+         entries are ledger-backed. These must be equal by construction: every backed \
+         key has exactly one candidate to lose. A difference means the coverage map \
+         and the differ disagree about what 'backed' means.",
+        lost_by_sabotage.len(),
     );
-    // The sabotage arm strips bit-stability wholesale, so it is an upper
-    // bound on what any selector can remove — and it must land on the same
-    // set. A divergence means the flip removes something the wholesale arm
-    // does not, which is incoherent: one of the two arms is mis-built.
-    assert_eq!(
+    assert!(
+        lost_by_flip.len() <= lost_by_sabotage.len(),
+        "the GAP-058 flip ({}) strips MORE keys than wholesale sabotage ({}) — \
+         sabotage is an upper bound by construction, so the flip is reaching entries \
+         it has no business touching",
         lost_by_flip.len(),
         lost_by_sabotage.len(),
-        "the flip and the wholesale-sabotage arm disagree about how many keys \
-         lose their last bit-stable candidate ({} vs {}) — sabotage is an upper \
-         bound by construction, so a difference means one arm is mis-built",
-        lost_by_flip.len(),
-        lost_by_sabotage.len(),
+    );
+    assert!(
+        !lost_by_flip.is_empty(),
+        "the flip is inert again: it strips the last bit-stable candidate from no key, \
+         while {bit_stable_entries} entries are backed. Either the selector stopped \
+         matching or the backing moved out from under it — both make every verdict \
+         here vacuous for the reason this harness exists to catch."
     );
     assert_ne!(
         cov_base, cov_flip,
-        "the flip no longer changes per-key coverage at all. With \
-         {bit_stable_entries} backed entries that cannot be right — it would \
-         mean the flip stopped selecting anything, and the verdicts above \
-         would go green for exactly the reason this harness exists to catch.",
+        "the flip no longer changes per-key coverage at all. With {bit_stable_entries} \
+         backed entries that cannot be right — it would mean the flip stopped selecting \
+         anything, and the verdicts above would go green for exactly the reason this \
+         harness exists to catch.",
     );
 }
 
@@ -902,7 +915,7 @@ fn gap_225_family_split_of_the_remaining_max_ulp_downgrades() {
     }
     eprintln!("[gap-225-split] unattributed (rev not found among primitives): {unattributed}");
     eprintln!(
-        "[gap-225-split] NOTE: every `max_ulp` line in the three contracts that own these 84 (cast, indexing, elementwise-binary) declares `max_ulp: 0`, several with an inline reason (\"exact: f32 is a strict subset of f64\"). That is a measurement of CONTRACT TEXT LINES, not of declarations per downgraded entry — the lowered value is unavailable after `import_bundle_str`, which gates before returning. Stated as the weaker construct it is."
+        "[gap-225-split] NOTE: every `max_ulp` line in the contracts owning these {total} declares `max_ulp: 0`, several with an inline reason (\"exact: f32 is a strict subset of f64\"). That is a measurement of CONTRACT TEXT LINES, not of declarations per downgraded entry — the lowered value is unavailable after `import_bundle_str`, which gates before returning. Stated as the weaker construct it is."
     );
 
     assert!(
