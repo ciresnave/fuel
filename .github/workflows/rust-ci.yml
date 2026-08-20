@@ -6,19 +6,36 @@ on:
 
 name: Continuous integration
 
-# ⚠️ `--workspace` HERE IS NOT "the whole repo builds" — it excludes three
+# ⚠️ `--workspace` HERE IS NOT "the whole repo builds" — it excludes FIVE
 # crates, and every job below that uses `$WORKSPACE_EXCLUDES` is making a
 # NARROWER claim than it looks like. Never report a green from this workflow as
 # "workspace-clean" without naming these.
 #
+# ⚠️ COMMENT CORRECTED 2026-08-20 (measured; the EXCLUSION LIST IS UNCHANGED).
+# This block said "three crates" and described four; the list below has FIVE,
+# and `fuel-cuda-backend` was excluded here without ever being mentioned in the
+# prose. An undercount in a comment whose whole job is naming what a green does
+# NOT cover.
+#
 #   fuel-metal-backend / fuel-metal-kernels
-#       Pull `objc2`, which hard-errors "only works on Apple platforms" on any
-#       non-Apple target. They are deliberately kept OFF `default-members` so a
-#       plain `cargo build` works without Apple toolchains — but `--workspace`
-#       RE-INCLUDES them, which is exactly how this reached CI. The macOS
-#       "Run macos with metal" step deliberately does NOT use this variable: it
-#       is the only job on the matrix that can compile Metal, and therefore the
-#       only Metal coverage that exists anywhere.
+#       `objc2` hard-errors "only works on Apple platforms" on any non-Apple
+#       target — but ONLY ONE of these two crates is actually killed by it.
+#       Measured at head on Windows, one crate at a time:
+#         fuel-metal-kernels  -> FAILS, `could not compile objc2`
+#         fuel-metal-backend  -> BUILDS CLEAN, exit 0
+#       ⚠️ And the old premise here — "deliberately kept OFF `default-members`
+#       so a plain `cargo build` works without Apple toolchains" — is FALSE at
+#       head: `fuel-metal-backend` IS in `default-members` (27 entries, parsed
+#       from the root manifest). It is stated as false rather than dropped,
+#       because the premise is what a reader would otherwise re-derive.
+#       ⚠️ THE `fuel-metal-backend` EXCLUSION IS THEREFORE CONSERVATIVE, NOT
+#       NECESSARY — and it STAYS. Removing it would WIDEN what CI compiles, and
+#       the measurement above is WINDOWS-ONLY: "it builds here" is not "it
+#       builds on the ubuntu/macOS runners". Widening a gate is a separate
+#       decision needing a runner measurement, and this is not it.
+#       The macOS "Run macos with metal" step deliberately does NOT use this
+#       variable: it is the only job on the matrix that can compile Metal, and
+#       therefore the only Metal coverage that exists anywhere.
 #
 #   fuel-mkl-cpu-backend / fuel-aocl-cpu-backend
 #       MISSING-SDK exclusions, a different reason from the Metal pair (which is
