@@ -51,7 +51,7 @@ impl OpStats {
     pub fn snapshot(&self) -> Vec<(&'static str, OpStatEntry)> {
         let map = self.inner.lock().expect("op_stats poisoned");
         let mut v: Vec<_> = map.iter().map(|(k, v)| (*k, *v)).collect();
-        v.sort_by(|a, b| b.1.total_ns.cmp(&a.1.total_ns));
+        v.sort_by_key(|x| std::cmp::Reverse(x.1.total_ns));
         v
     }
 
@@ -253,6 +253,10 @@ impl Recorder {
     /// Only inserts a pipeline barrier when a READ buffer overlaps
     /// with a previously-written (dirty) buffer — independent ops
     /// can overlap on the GPU without barriers.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "Vulkan batch-dispatch recorder: the parameters are the pipeline, descriptor set, push/uniform buffers and workgroup dims of one recorded dispatch"
+    )]
     pub fn record_batch_dispatch(
         &mut self,
         device: &Device,
@@ -405,8 +409,8 @@ impl Recorder {
     /// Returns `Ok(None)` for an empty batch (no CB recorded since the last
     /// submit) — identical no-op semantics to `flush_batch`'s early return.
     ///
-    /// This is the ONLY difference from `flush_batch`: same `vkEndCommandBuffer`
-    /// + same `queue.submit(&[&cmd], Some(&fence))`, but instead of
+    /// This is the ONLY difference from `flush_batch`: same `vkEndCommandBuffer` +
+    /// same `queue.submit(&[&cmd], Some(&fence))`, but instead of
     /// `fence.wait(u64::MAX)` + dropping the transients/CB/pool inline, it MOVES
     /// them into the returned struct so they outlive the (still-running) GPU work.
     /// Counters/dirty-set are reset exactly as `flush_batch` does, and the pool is
