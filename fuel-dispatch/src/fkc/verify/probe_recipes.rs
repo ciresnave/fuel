@@ -147,6 +147,22 @@ pub(crate) struct Probe {
     pub(crate) params: OpParams,
     pub(crate) out_dtype: DType,
     pub(crate) out_shape: Vec<usize>,
+    /// Bytes to PRE-FILL the output buffer with, for ops whose target is an
+    /// output rather than an input (the `*Inplace` family: the executor hands
+    /// the in-place target in as `outputs[0]`, so such a probe has NO inputs).
+    ///
+    /// `None` means the invoker's default — a zeroed buffer. That default is
+    /// correct for every op that reads its inputs, and WRONG for an in-place
+    /// op, which would then be verified against all zeros: byte-identical
+    /// across repeats, one input value, no branch exercised. A claim earned
+    /// that way is true and uninformative, and nothing downstream can tell it
+    /// from a real one (GAP-222).
+    ///
+    /// An explicit field rather than an implicit rule like "no inputs means
+    /// seed the output": a `Probe` should not have to be decoded to be
+    /// understood, and a future zero-input op that is NOT in-place would
+    /// silently inherit the wrong treatment.
+    pub(crate) out_seed: Option<Vec<u8>>,
 }
 
 /// Build a real, valid probe for a primitive `op` at the registered
@@ -180,6 +196,7 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
                 params: OpParams::None,
                 out_dtype: dt,
                 out_shape: vec![4],
+                out_seed: None,
             })
         }
 
@@ -212,6 +229,7 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
                 params: OpParams::None,
                 out_dtype: dt,
                 out_shape: vec![4],
+                out_seed: None,
             })
         }
 
@@ -223,6 +241,7 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
                 params: OpParams::Affine { mul: 2.0, add: 1.0 },
                 out_dtype: dt,
                 out_shape: vec![4],
+                out_seed: None,
             })
         }
         OpKind::ClampElementwise => {
@@ -235,6 +254,7 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
                 },
                 out_dtype: dt,
                 out_shape: vec![4],
+                out_seed: None,
             })
         }
         OpKind::PowIElementwise => {
@@ -244,6 +264,7 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
                 params: OpParams::PowI { exp: 2 },
                 out_dtype: dt,
                 out_shape: vec![4],
+                out_seed: None,
             })
         }
 
@@ -255,6 +276,7 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
                 params: OpParams::None,
                 out_dtype: dt,
                 out_shape: vec![4],
+                out_seed: None,
             })
         }
         OpKind::Cast => {
@@ -280,6 +302,7 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
                 params: OpParams::None,
                 out_dtype: out_dt,
                 out_shape: vec![4],
+                out_seed: None,
             })
         }
 
@@ -296,6 +319,7 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
                 },
                 out_dtype: dt,
                 out_shape: vec![4],
+                out_seed: None,
             })
         }
         OpKind::Roll => {
@@ -311,6 +335,7 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
                 },
                 out_dtype: dt,
                 out_shape: vec![4],
+                out_seed: None,
             })
         }
         OpKind::CumSum => {
@@ -325,6 +350,7 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
                 },
                 out_dtype: dt,
                 out_shape: vec![4],
+                out_seed: None,
             })
         }
 
@@ -341,6 +367,7 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
                 },
                 out_dtype: dt,
                 out_shape: vec![2, 2],
+                out_seed: None,
             })
         }
 
@@ -358,6 +385,7 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
                 },
                 out_dtype: dt,
                 out_shape: vec![4],
+                out_seed: None,
             })
         }
 
@@ -385,6 +413,7 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
                 },
                 out_dtype: dt,
                 out_shape: vec![outer * n_idx * inner],
+                out_seed: None,
             })
         }
 
@@ -406,6 +435,7 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
                 },
                 out_dtype: dt,
                 out_shape: vec![2, 2],
+                out_seed: None,
             })
         }
 
@@ -437,6 +467,7 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
                 params: OpParams::MaskedFill { fill_bytes: fill },
                 out_dtype: dt,
                 out_shape: vec![4],
+                out_seed: None,
             })
         }
 
@@ -455,6 +486,7 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
                 },
                 out_dtype: dt,
                 out_shape: vec![8],
+                out_seed: None,
             })
         }
 
@@ -476,6 +508,7 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
                 },
                 out_dtype: dt,
                 out_shape: vec![4],
+                out_seed: None,
             })
         }
 
@@ -493,6 +526,7 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
                 },
                 out_dtype: dt,
                 out_shape: vec![2, 4],
+                out_seed: None,
             })
         }
 
@@ -514,6 +548,7 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
                 },
                 out_dtype: dt,
                 out_shape: vec![2, 4],
+                out_seed: None,
             })
         }
 
@@ -533,6 +568,7 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
                 },
                 out_dtype: DType::U32,
                 out_shape: vec![outer],
+                out_seed: None,
             })
         }
 
@@ -563,6 +599,7 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
                 },
                 out_dtype: dt,
                 out_shape: vec![outer, seq_n, hd],
+                out_seed: None,
             })
         }
 
@@ -585,6 +622,7 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
                 params: OpParams::None,
                 out_dtype,
                 out_shape: vec![4],
+                out_seed: None,
             })
         }
 
@@ -599,6 +637,7 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
                 params: OpParams::Reduce { dims: vec![1], keepdim: false },
                 out_dtype: dt,
                 out_shape: vec![outer],
+                out_seed: None,
             })
         }
 
@@ -617,6 +656,7 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
                 },
                 out_dtype: dt,
                 out_shape: vec![1, 4],
+                out_seed: None,
             })
         }
         OpKind::ReduceMaxTo => {
@@ -629,6 +669,7 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
                 },
                 out_dtype: dt,
                 out_shape: vec![1, 4],
+                out_seed: None,
             })
         }
 
@@ -653,6 +694,7 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
                 params: last_dim_params(op, outer, last)?,
                 out_dtype: dt,
                 out_shape: vec![outer * last],
+                out_seed: None,
             })
         }
 
@@ -672,6 +714,7 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
                 params: last_dim_params(op, outer, last)?,
                 out_dtype: dt,
                 out_shape: vec![n],
+                out_seed: None,
             })
         }
 
@@ -691,34 +734,76 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
                 },
                 out_dtype: dt,
                 out_shape: vec![1],
+                out_seed: None,
             })
         }
 
-        // --- NOT HERE, DELIBERATELY: the `*Inplace` family --------------
-        // ~26 in-place unaries x 4 dtypes = 104 registrations, by far the
-        // largest remaining residue, and the cheapest-looking arm to write:
-        // copy the fused `Family::InplaceAffine` recipe, which uses
-        // `inputs: vec![]` because the executor passes the in-place target as
-        // `outputs[0]`.
+        // --- The `*Inplace` family (0 inputs; target arrives as outputs[0]) -
+        // The executor's `WorkItemKind::InplaceKernel` arm passes the in-place
+        // target as `outputs[0]`, and the CPU wrappers REQUIRE `inputs`
+        // to be empty — so the probe carries no inputs and seeds the OUTPUT
+        // instead. Without that seed the kernel runs on a zeroed buffer:
+        // `relu_inplace` reads 0 and writes 0, sixteen repeats agree, and the
+        // claim comes back PASS having exercised one input value and no
+        // branch. See `Probe::out_seed` and GAP-222.
         //
-        // **That would earn 104 records against an all-zeros target.**
-        // `CpuInvoker` allocates the output with `alloc_cpu_zeroed`, so with
-        // no inputs the kernel runs on zeros: `relu_inplace` sees 0 and writes
-        // 0, `sqrt_inplace` sees 0 and writes 0. The runs ARE byte-identical,
-        // so the claim would be technically earned and evidentially empty —
-        // one input value, no branch exercised. A ledger full of that is worse
-        // than an empty one, because `gate_precision` cannot tell the
-        // difference and the whole point of GAP-207 is to stop claims resting
-        // on something nobody measured.
-        //
-        // The fix is `CpuInvoker` seeding the output buffer from probe bytes
-        // rather than zeroing it, which is a change to the INVOKER contract
-        // and belongs in its own increment with its own born-red — not
-        // bundled into a bulk recipe addition. Note this also means the
-        // `inplace_affine` records ALREADY in the checked-in ledger were
-        // earned this way (see GAP-207 follow-up).
+        // Scalar params ride in `OpParams`, not the dtype list, which is why
+        // three of these need their own arm rather than joining the unaries.
+        OpKind::AbsInplace
+        | OpKind::CeilInplace
+        | OpKind::CosInplace
+        | OpKind::ErfInplace
+        | OpKind::ExpInplace
+        | OpKind::FloorInplace
+        | OpKind::GeluErfInplace
+        | OpKind::GeluInplace
+        | OpKind::LogInplace
+        | OpKind::NegInplace
+        | OpKind::RecipInplace
+        | OpKind::ReluInplace
+        | OpKind::RoundInplace
+        | OpKind::RsqrtInplace
+        | OpKind::SigmoidInplace
+        | OpKind::SignInplace
+        | OpKind::SiluInplace
+        | OpKind::SinInplace
+        | OpKind::SqrInplace
+        | OpKind::SqrtInplace
+        | OpKind::TanhInplace => inplace_probe(dt, OpParams::None, seed),
+        OpKind::ClampInplace => {
+            inplace_probe(dt, OpParams::Clamp { min: -0.5, max: 0.5 }, seed)
+        }
+        OpKind::InplaceAffine => {
+            inplace_probe(dt, OpParams::Affine { mul: 2.0, add: 1.0 }, seed)
+        }
+        OpKind::PowIInplace => inplace_probe(dt, OpParams::PowI { exp: 3 }, seed),
+
+        // Residue still without a recipe, so the next reader is not guessing:
+        // attention (FlashAttn x4 variants, PagedAttn), conv (Conv2D,
+        // ConvTranspose2D, CausalConv1d), MatMul / QMatMul / Nf4Matmul,
+        // the SSM pair, IndexAdd / ScatterAdd, Where, WriteSliceDoff, and
+        // NonZeroIndices — the last of which is data-dependent-shape and so
+        // has no fixed `out_shape` to declare at all.
         _ => None,
     }
+}
+
+/// A probe for an in-place op: NO inputs, and the target seeded into the
+/// output buffer.
+///
+/// The seed is the load-bearing part. `CpuInvoker` zeroes the output by
+/// default, and for an op that reads no inputs that means the kernel is
+/// verified against all zeros — byte-identical across repeats, and evidence
+/// of nothing (GAP-222). `to_bytes` returning `None` for a dtype propagates
+/// as "no probe", never as an unseeded one.
+fn inplace_probe(dt: DType, params: OpParams, seed: u64) -> Option<Probe> {
+    Some(Probe {
+        inputs: vec![],
+        params,
+        out_dtype: dt,
+        out_shape: vec![4],
+        out_seed: Some(to_bytes(dt, &fill_deterministic(4, seed))?),
+    })
 }
 
 /// `OpParams` for the last-dim norm / softmax family, forward or backward.

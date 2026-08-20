@@ -29,6 +29,8 @@ pub struct CpuInvoker {
     out_dtype: DType,
     out_shape: Vec<usize>,
     params: OpParams,
+    /// Pre-fill for the output buffer; `None` = zeroed (the default).
+    out_seed: Option<Vec<u8>>,
 }
 
 impl CpuInvoker {
@@ -40,7 +42,30 @@ impl CpuInvoker {
             out_dtype,
             out_shape,
             params: OpParams::None,
+            out_seed: None,
         }
+    }
+
+    /// Pre-fill the output buffer with `bytes` instead of zeroing it.
+    ///
+    /// **Required for in-place ops, and the reason is evidential rather than
+    /// functional.** The executor hands an in-place target in as
+    /// `outputs[0]`, so such a kernel has no inputs at all — against a zeroed
+    /// buffer, `relu_inplace` reads 0 and writes 0. Sixteen repeats of that
+    /// are byte-identical, so `bit_stable_on_same_hardware` comes back PASS
+    /// having exercised exactly one input value and no branch. The record is
+    /// true and uninformative, and `gate_precision` cannot tell it from a
+    /// real verification (GAP-222) — which is why the fix belongs here, in
+    /// the invoker, and not in a per-op workaround.
+    ///
+    /// `bytes` must be `out_dtype`-encoded and length-consistent with
+    /// `out_shape`; a mismatch is rejected at invoke time rather than
+    /// silently truncating, because a short seed would leave a zeroed tail
+    /// and quietly reintroduce the same weak evidence over part of the
+    /// buffer.
+    pub fn with_seeded_output(mut self, bytes: Vec<u8>) -> Self {
+        self.out_seed = Some(bytes);
+        self
     }
 
     /// Builder-style override for ops that need non-`None` `OpParams`
@@ -76,8 +101,27 @@ impl KernelInvoker for CpuInvoker {
             .collect();
 
         let elem_count = self.out_shape.iter().product::<usize>();
-        let out_storage = fuel_memory::alloc_cpu_zeroed(self.out_dtype, elem_count)
-            .map_err(|e| VerifyError::Backend(e.to_string()))?;
+        let out_storage = match &self.out_seed {
+            None => fuel_memory::alloc_cpu_zeroed(self.out_dtype, elem_count)
+                .map_err(|e| VerifyError::Backend(e.to_string()))?,
+            Some(bytes) => {
+                let want = elem_count * self.out_dtype.size_in_bytes();
+                if bytes.len() != want {
+                    return Err(VerifyError::Backend(format!(
+                        "CpuInvoker: seeded output is {} bytes, expected {want} for                          {:?} x {:?} — refusing to run rather than seed a partial                          buffer and leave a zeroed tail",
+                        bytes.len(),
+                        self.out_dtype,
+                        self.out_shape,
+                    )));
+                }
+                fuel_memory::Storage::new(
+                    fuel_memory::BackendStorage::Cpu(
+                        fuel_cpu_backend::CpuStorageBytes::from_slice(bytes),
+                    ),
+                    self.out_dtype,
+                )
+            }
+        };
         let out = Arc::new(RwLock::new(out_storage));
         let mut outs = [out.clone()];
 
@@ -125,6 +169,86 @@ mod tests {
     use super::*;
     use crate::fkc::verify::bit_stability::{HostTensor, KernelInvoker};
     use fuel_ir::DType;
+
+    /// The seed must actually REACH the kernel, and a passing bit-stability
+    /// run cannot show that: an in-place kernel on a zeroed buffer is
+    /// perfectly bit-stable, so `with_seeded_output` could be inert and every
+    /// downstream test would still be green. That is the exact shape of
+    /// GAP-222 — a result that is true and uninformative — so the seeding
+    /// mechanism gets a control that fails if it stops working.
+    ///
+    /// `relu_inplace` is chosen because it DISCRIMINATES: its output differs
+    /// from its input only where the input is negative. A seed of all
+    /// positives would produce the same bytes whether or not the kernel read
+    /// them, so the fixture deliberately contains negatives.
+    #[test]
+    fn a_seeded_output_buffer_actually_reaches_an_inplace_kernel() {
+        let entry = crate::kernel::BindingEntry {
+            kernel: crate::dispatch::relu_inplace_f32_cpu_wrapper,
+            caps: crate::kernel::KernelCaps::empty(),
+            precision: crate::fused::PrecisionGuarantee::UNAUDITED,
+            cost: crate::kernel::unknown_cost,
+            kernel_source: "portable-cpu",
+            is_generic: false,
+            kernel_revision_hash: 0,
+            cost_expr: None,
+        };
+
+        let seed: [f32; 4] = [-2.0, 1.5, -0.25, 3.0];
+        let seed_bytes = bytemuck::cast_slice(&seed).to_vec();
+
+        // In-place ops take NO inputs; the target is `outputs[0]`.
+        let zeroed = CpuInvoker::new(DType::F32, vec![4])
+            .invoke(&entry, &[])
+            .expect("zeroed invoke");
+        let seeded = CpuInvoker::new(DType::F32, vec![4])
+            .with_seeded_output(seed_bytes.clone())
+            .invoke(&entry, &[])
+            .expect("seeded invoke");
+
+        // Control 1: the two runs must DIFFER. If they match, the seed never
+        // reached the kernel and every in-place ledger record earned through
+        // this path is a measurement of zeros.
+        assert_ne!(
+            zeroed.bytes, seeded.bytes,
+            "seeded and zeroed runs produced identical bytes — `with_seeded_output`              is inert, and every in-place verification through it is vacuous"
+        );
+
+        // Control 2: the seeded result is exactly relu(seed), which no amount
+        // of accidental non-zero content would reproduce. This is what makes
+        // the assertion above a statement about THIS seed rather than about
+        // the buffer merely being dirty.
+        let got: Vec<f32> = bytemuck::cast_slice(&seeded.bytes).to_vec();
+        assert_eq!(got, vec![0.0f32, 1.5, 0.0, 3.0], "expected relu of the seed");
+
+        // ...and the zeroed run is relu(0) = 0, i.e. the degenerate evidence
+        // GAP-222 describes: a perfectly stable result that says nothing.
+        let z: Vec<f32> = bytemuck::cast_slice(&zeroed.bytes).to_vec();
+        assert_eq!(z, vec![0.0f32; 4]);
+    }
+
+    /// A short or long seed is refused rather than silently padded — a
+    /// truncated seed would leave a zeroed tail and reintroduce the weak
+    /// evidence over part of the buffer, which is harder to spot than a
+    /// wholly zeroed one.
+    #[test]
+    fn a_wrong_length_seed_is_refused_instead_of_partially_applied() {
+        let entry = crate::kernel::BindingEntry {
+            kernel: crate::dispatch::relu_inplace_f32_cpu_wrapper,
+            caps: crate::kernel::KernelCaps::empty(),
+            precision: crate::fused::PrecisionGuarantee::UNAUDITED,
+            cost: crate::kernel::unknown_cost,
+            kernel_source: "portable-cpu",
+            is_generic: false,
+            kernel_revision_hash: 0,
+            cost_expr: None,
+        };
+        let short: Vec<u8> = vec![0u8; 3 * 4]; // 3 f32s for a 4-element output
+        let err = CpuInvoker::new(DType::F32, vec![4])
+            .with_seeded_output(short)
+            .invoke(&entry, &[]);
+        assert!(err.is_err(), "a 3-element seed for a 4-element output was accepted");
+    }
 
     #[test]
     fn cpu_invoker_runs_add_elementwise_f32_end_to_end() {

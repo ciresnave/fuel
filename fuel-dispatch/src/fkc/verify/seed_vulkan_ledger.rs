@@ -171,6 +171,22 @@ pub fn run_vulkan_verification_on(
                 continue;
             }
         };
+        // `VulkanInvoker` has no output-seeding path, and a probe that carries
+        // `out_seed` REQUIRES one: those are the in-place ops, whose target
+        // arrives as `outputs[0]`, so without the seed the kernel would run on
+        // a zeroed buffer and earn a bit-stable pass that measures nothing
+        // (GAP-222). Skipping is the honest outcome — ignoring the field would
+        // compile silently and reintroduce the exact defect on this backend.
+        if probe.out_seed.is_some() {
+            log.push(VulkanSeedAttempt {
+                op: format!("{op:?}"),
+                dtypes: dtypes_vec,
+                kernel_revision_hash: rev,
+                outcome: "skip: probe needs a seeded output, VulkanInvoker cannot seed"
+                    .to_string(),
+            });
+            continue;
+        }
         let inv = VulkanInvoker::new(backend.clone(), probe.out_dtype, probe.out_shape.clone())
             .with_params(probe.params.clone());
         let inputs = probe.inputs.clone();
@@ -268,6 +284,21 @@ pub fn run_vulkan_verification_on(
             }
             continue;
         };
+        // Same GAP-222 guard as the bit-stable pass, and it bites harder here:
+        // this leg diffs a Vulkan candidate against a CPU reference, and only
+        // the CPU invoker can seed. Running it would compare a seeded CPU
+        // result with an unseeded Vulkan one and report a ULP distance that is
+        // entirely an artifact of the two starting from different bytes.
+        if probe.out_seed.is_some() {
+            log.push(VulkanSeedAttempt {
+                op: format!("{op:?}"),
+                dtypes: dtypes_vec,
+                kernel_revision_hash: rev,
+                outcome: "max_ulp skip: probe needs a seeded output, VulkanInvoker cannot seed"
+                    .to_string(),
+            });
+            continue;
+        }
         let cand = VulkanInvoker::new(backend.clone(), probe.out_dtype, probe.out_shape.clone())
             .with_params(probe.params.clone());
         let refr = CpuInvoker::new(probe.out_dtype, probe.out_shape.clone())
