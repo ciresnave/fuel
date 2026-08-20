@@ -38,9 +38,7 @@
 //! about and returns the rewritten roots. Callers use these to update
 //! their `NodeHandle` handles.
 
-use crate::registry::{
-    FusedOpEntry, FusedOpId, FusedOpParams, SubgraphPattern, default_registry,
-};
+use crate::registry::{FusedOpEntry, FusedOpId, FusedOpParams, SubgraphPattern, default_registry};
 use crate::{Graph, Node, NodeId, Op, ScanEmit, ScanRole, SharedGraph, topo_order_multi};
 use fuel_ir::{DType, DeviceLocation};
 use std::collections::HashMap;
@@ -1659,11 +1657,10 @@ pub fn lower_const_placement(graph: &SharedGraph, roots: &[NodeId]) -> usize {
                 }
             }
         }
-        if unanimous
-            && let Some(d) = target {
-                g.set_placement(nid, d);
-                lowered += 1;
-            }
+        if unanimous && let Some(d) = target {
+            g.set_placement(nid, d);
+            lowered += 1;
+        }
     }
     lowered
 }
@@ -2018,9 +2015,10 @@ fn collect_alias_set(
     // here so the forward walk reaches sibling Views via their
     // `inputs[0] == P` membership in the alias set.
     if let Op::View { .. } = graph.node(root).op
-        && let Some(&producer) = graph.node(root).inputs.first() {
-            alias.insert(producer);
-        }
+        && let Some(&producer) = graph.node(root).inputs.first()
+    {
+        alias.insert(producer);
+    }
 
     for &nid in order {
         if alias.contains(&nid) {
@@ -2040,9 +2038,10 @@ fn collect_alias_set(
             continue;
         }
         if let Some(&inp) = node.inputs.first()
-            && alias.contains(&inp) {
-                alias.insert(nid);
-            }
+            && alias.contains(&inp)
+        {
+            alias.insert(nid);
+        }
     }
     alias
 }
@@ -2376,9 +2375,10 @@ pub fn promote_views_for_liveness(graph: &mut crate::Graph, roots: &[NodeId]) ->
         let mut d = 0usize;
         for &inp in &graph.node(nid).inputs {
             if let Some(&di) = depth.get(&inp)
-                && di + 1 > d {
-                    d = di + 1;
-                }
+                && di + 1 > d
+            {
+                d = di + 1;
+            }
         }
         depth.insert(nid, d);
     }
@@ -2392,9 +2392,10 @@ pub fn promote_views_for_liveness(graph: &mut crate::Graph, roots: &[NodeId]) ->
         if let Some(downstream) = consumers.get(&nid) {
             for &c in downstream {
                 if let Some(&cl) = last_use.get(&c)
-                    && cl > lu {
-                        lu = cl;
-                    }
+                    && cl > lu
+                {
+                    lu = cl;
+                }
             }
         }
         last_use.insert(nid, lu);

@@ -1465,11 +1465,15 @@ impl KernelBindingTable {
     /// dispatch never came through here — it uses [`Self::lookup_with_caps`],
     /// which takes the dtype tuple and does an exact keyed `get`, so it can
     /// neither be ambiguous nor return a wrong arity. See GAP-213.
-    pub fn unique_runtime_fused(&self, fid: FusedOpId, backend: BackendId) -> RuntimeFusedLookup<'_> {
+    pub fn unique_runtime_fused(
+        &self,
+        fid: FusedOpId,
+        backend: BackendId,
+    ) -> RuntimeFusedLookup<'_> {
         let mut matches = self.bindings.iter().filter(|((k, _, b), _)| {
             *b == backend && matches!(k, BindingKey::RuntimeFused(f) if *f == fid)
         });
-        let Some((( _, dtypes, _), alts)) = matches.next() else {
+        let Some(((_, dtypes, _), alts)) = matches.next() else {
             return RuntimeFusedLookup::NotBound;
         };
         if matches.next().is_some() {

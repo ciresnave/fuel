@@ -1342,7 +1342,10 @@ pub fn masked_fill_cpu(
         ))
         .bt());
     }
-    #[expect(clippy::needless_range_loop, reason = "loop bound is a declared element count, not an array len, and `i` also computes the byte offset `i * dtype_size`; enumerate could change the iteration count -- a wrong-number bug in kernel code")]
+    #[expect(
+        clippy::needless_range_loop,
+        reason = "loop bound is a declared element count, not an array len, and `i` also computes the byte offset `i * dtype_size`; enumerate could change the iteration count -- a wrong-number bug in kernel code"
+    )]
     for i in 0..count {
         let off = i * dtype_size;
         if mv[i] != 0 {
@@ -1474,7 +1477,10 @@ pub fn index_add_f32(
     let idx_view: &[u32] = indices.as_slice()?;
     let src_view: &[f32] = src.as_slice()?;
     let out_view: &mut [f32] = out.as_slice_mut()?;
-    #[expect(clippy::needless_range_loop, reason = "loop bound is the declared index count, not an array len, and `i` is reported as the out-of-bounds position in the error path; enumerate could change the iteration count")]
+    #[expect(
+        clippy::needless_range_loop,
+        reason = "loop bound is the declared index count, not an array len, and `i` is reported as the out-of-bounds position in the error path; enumerate could change the iteration count"
+    )]
     for i in 0..n_indices {
         let target = idx_view[i] as usize;
         if target >= base_dim_size {
@@ -2008,7 +2014,10 @@ pub fn index_select_cpu(
     let src_bytes = source.bytes();
     let idx_view: &[u32] = indices.as_slice()?;
     let out_bytes = out.bytes_mut();
-    #[expect(clippy::needless_range_loop, reason = "loop bound is the declared index count, not an array len, and `j` is reported as the out-of-bounds position in the error path; enumerate could change the iteration count")]
+    #[expect(
+        clippy::needless_range_loop,
+        reason = "loop bound is the declared index count, not an array len, and `j` is reported as the out-of-bounds position in the error path; enumerate could change the iteration count"
+    )]
     for j in 0..n_indices {
         let i = idx_view[j] as usize;
         if i >= source_dim_size {
@@ -2382,7 +2391,10 @@ pub fn gather_cpu(
         s *= source_shape[d];
     }
     let mut multi = vec![0usize; rank];
-    #[expect(clippy::needless_range_loop, reason = "flat index drives explicit multi-index reconstruction (rem = f), not a sequential scan; enumerate would obscure the flat<->multi-index mapping and risk an iteration-count mismatch")]
+    #[expect(
+        clippy::needless_range_loop,
+        reason = "flat index drives explicit multi-index reconstruction (rem = f), not a sequential scan; enumerate would obscure the flat<->multi-index mapping and risk an iteration-count mismatch"
+    )]
     for f in 0..output_total {
         let mut rem = f;
         for d in (0..rank).rev() {
@@ -7488,13 +7500,15 @@ fn flash_attn_admissible(
         return false;
     }
     if let Some(w) = window_left
-        && kj + w < qi {
-            return false;
-        }
+        && kj + w < qi
+    {
+        return false;
+    }
     if let Some(w) = window_right
-        && kj > qi + w {
-            return false;
-        }
+        && kj > qi + w
+    {
+        return false;
+    }
     true
 }
 
@@ -8934,13 +8948,14 @@ pub fn conv2d_f32(
         .bt());
     }
     if let Some(b) = bias
-        && b.len_bytes() != cout * elem {
-            return Err(Error::Msg(format!(
-                "conv2d_f32: bias bytes={} doesn't match Cout={cout} (f32)",
-                b.len_bytes(),
-            ))
-            .bt());
-        }
+        && b.len_bytes() != cout * elem
+    {
+        return Err(Error::Msg(format!(
+            "conv2d_f32: bias bytes={} doesn't match Cout={cout} (f32)",
+            b.len_bytes(),
+        ))
+        .bt());
+    }
     let x_view: &[f32] = x.as_slice()?;
     let w_view: &[f32] = weight.as_slice()?;
     let bias_view: Option<&[f32]> = match bias {
@@ -9937,7 +9952,10 @@ where
     // update max via comparisons.
     let mut first_set = vec![false; output.len()];
     let mut idx = vec![0_usize; in_rank];
-    #[expect(clippy::needless_range_loop, reason = "flat index drives explicit multi-index reconstruction (rem = flat), not a sequential scan; enumerate would obscure the flat<->multi-index mapping and risk an iteration-count mismatch")]
+    #[expect(
+        clippy::needless_range_loop,
+        reason = "flat index drives explicit multi-index reconstruction (rem = flat), not a sequential scan; enumerate would obscure the flat<->multi-index mapping and risk an iteration-count mismatch"
+    )]
     for flat in 0..in_count {
         // Reconstruct multi-index `idx` from flat.
         let rem = flat;
@@ -9986,7 +10004,10 @@ where
     }
     let dst_count: usize = dst_shape.iter().product();
     let mut idx = vec![0_usize; dst_rank];
-    #[expect(clippy::needless_range_loop, reason = "flat index drives explicit multi-index reconstruction (rem = flat), not a sequential scan; enumerate would obscure the flat<->multi-index mapping and risk an iteration-count mismatch")]
+    #[expect(
+        clippy::needless_range_loop,
+        reason = "flat index drives explicit multi-index reconstruction (rem = flat), not a sequential scan; enumerate would obscure the flat<->multi-index mapping and risk an iteration-count mismatch"
+    )]
     for flat in 0..dst_count {
         let mut rem = flat;
         for i in (0..dst_rank).rev() {
@@ -10027,7 +10048,10 @@ where
         *o = T::default();
     }
     let mut idx = vec![0_usize; in_rank];
-    #[expect(clippy::needless_range_loop, reason = "flat index drives explicit multi-index reconstruction (rem = flat), not a sequential scan; enumerate would obscure the flat<->multi-index mapping and risk an iteration-count mismatch")]
+    #[expect(
+        clippy::needless_range_loop,
+        reason = "flat index drives explicit multi-index reconstruction (rem = flat), not a sequential scan; enumerate would obscure the flat<->multi-index mapping and risk an iteration-count mismatch"
+    )]
     for flat in 0..in_count {
         let mut rem = flat;
         for i in (0..in_rank).rev() {

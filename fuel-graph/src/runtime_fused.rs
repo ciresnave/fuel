@@ -182,9 +182,10 @@ pub fn register_runtime_fused(
     // once it acquires it, observes the first caller's insert.
     let mut idx = hash_index().write().unwrap();
     if let Some(h) = hash
-        && let Some(&existing) = idx.get(&h) {
-            return Ok(existing);
-        }
+        && let Some(&existing) = idx.get(&h)
+    {
+        return Ok(existing);
+    }
 
     // The Vec length under the write lock is the allocator: id = BASE + index,
     // so the index is always `id - BASE` with no allocate/push race.
@@ -1203,10 +1204,9 @@ fn emit<'r>(
             // fill — a slot-free subtree never moves the cursor, so a hit
             // cannot misalign later slots.
             let sharable = count_scalar_slots(node) == 0;
-            if sharable
-                && let Some(&(_, id)) = memo.iter().find(|(p, _)| *p == node) {
-                    return Ok(id);
-                }
+            if sharable && let Some(&(_, id)) = memo.iter().find(|(p, _)| *p == node) {
+                return Ok(id);
+            }
             // Fill an open scalar slot from the cursor in PRE-order (before
             // descending into operands) — the same canonical order
             // `match_region_extract` recorded the live values in. (T3 note:
@@ -1271,10 +1271,11 @@ fn emit<'r>(
             // inert dead node, never a panic — the executor rejects it later).
             if let Op::MaskedFill { value } = &prim
                 && let Some(&dt) = child_dtypes.first()
-                    && value.dtype() != dt
-                        && let Some(fixed) = masked_fill_scalar(value.to_f64(), dt) {
-                            prim = Op::MaskedFill { value: fixed };
-                        }
+                && value.dtype() != dt
+                && let Some(fixed) = masked_fill_scalar(value.to_f64(), dt)
+            {
+                prim = Op::MaskedFill { value: fixed };
+            }
             // D4: a `BroadcastTo` whose target rank EXCEEDS its operand's rank
             // first materializes the legacy `Reshape` pad (1-padded left,
             // right-aligned — byte-identical to `registry::rope`'s hand-built
@@ -1285,19 +1286,20 @@ fn emit<'r>(
             // equal-rank broadcast is unchanged (no pad).
             if let Op::BroadcastTo(target) = &prim
                 && let Some(cs) = child_shapes.first()
-                    && target.rank() > cs.rank() {
-                        let mut padded: Vec<usize> = vec![1; target.rank() - cs.rank()];
-                        padded.extend_from_slice(cs.dims());
-                        let pad_shape = fuel_ir::Shape::from_dims(&padded);
-                        let pad = graph.push(Node {
-                            op: Op::Reshape(pad_shape.clone()),
-                            inputs: vec![child_ids[0]],
-                            shape: pad_shape.clone(),
-                            dtype: child_dtypes[0],
-                        });
-                        child_ids[0] = pad;
-                        child_shapes[0] = pad_shape;
-                    }
+                && target.rank() > cs.rank()
+            {
+                let mut padded: Vec<usize> = vec![1; target.rank() - cs.rank()];
+                padded.extend_from_slice(cs.dims());
+                let pad_shape = fuel_ir::Shape::from_dims(&padded);
+                let pad = graph.push(Node {
+                    op: Op::Reshape(pad_shape.clone()),
+                    inputs: vec![child_ids[0]],
+                    shape: pad_shape.clone(),
+                    dtype: child_dtypes[0],
+                });
+                child_ids[0] = pad;
+                child_shapes[0] = pad_shape;
+            }
             // Shape/dtype for the emitted node. Most ops use the single source
             // of truth (`primitive_shape`) — a pure function of operand shapes,
             // correct for shape-changing/reducing/dtype-changing ops. Two
@@ -1411,10 +1413,10 @@ fn emit<'r>(
             // malformed spec (compose/validate failure) leaves the producer
             // bundle-less — a later `View` then falls back — never a panic.
             if let Some(specs) = scan_bundle
-                && let Ok((_bytes, views)) = fuel_ir::storage::compose_bundle(&specs) {
-                    let _ =
-                        graph.set_output_views(out, std::sync::Arc::from(views.into_boxed_slice()));
-                }
+                && let Ok((_bytes, views)) = fuel_ir::storage::compose_bundle(&specs)
+            {
+                let _ = graph.set_output_views(out, std::sync::Arc::from(views.into_boxed_slice()));
+            }
             if sharable {
                 memo.push((node, out));
             }
@@ -2517,7 +2519,7 @@ mod tests {
             shape: x_shape.clone(),
             dtype,
         });
-        
+
         graph.push(Node {
             op: Op::Div,
             inputs: vec![e_id, db_id],
@@ -2635,7 +2637,7 @@ mod tests {
             shape: x_shape.clone(),
             dtype,
         });
-        
+
         graph.push(Node {
             op: Op::Add,
             inputs: vec![left_id, right_id],
