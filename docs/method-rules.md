@@ -337,6 +337,17 @@ Doc-currency auditing tests one predicate: **is the claim still true?** That cat
 
 **So the detector is not a re-read but a deliberate re-attempt of the forbidden thing, on a schedule. When a rule says "you cannot do X, do Y instead", the maintenance question is not whether Y still works — it is whether X still fails.**
 
+**⚠️ AND THE BOUND ON THAT DETECTOR, WHICH IS ALSO A GROWTH MECHANISM FOR THIS VERY FILE (2026-08-20, the doc-currency lane, checking back on the rule it had just been handed).** **A schedule of re-attempts does not exist for this repo's expensive prohibitions.** Re-attempting the vcvarsall recipe costs one command. Re-attempting *"only one `--features cuda` build at a time"* means starting a second and possibly killing a peer's 30-56 minute forge with a `ptxas` allocation failure. Re-attempting *"ALL GPU-touching runs go through `gpu-run`"* means **not** doing that, and the recorded cost of being wrong is a **host-aperture kernel bugcheck**.
+
+**THE RULES MOST LIKELY TO BE OBSOLETE ARE THE ONES WE CAN LEAST AFFORD TO TEST.** So the requirement splits:
+
+- **`X` cheap and safe** → schedule the re-attempt.
+- **`X` expensive or destructive** → the rule **MUST RECORD THE MEASURED PRECONDITION** that makes `X` fail, **because a precondition is testable without triggering the failure.** The CUDA-concurrency rule already does this correctly — *"~16 concurrent nvcc survive; an allocation failed near 22"* lets a reader **count processes** instead of causing an OOM. **That clause was doing work nobody had credited it for.**
+
+**AND THE COROLLARY EXPLAINS WHY THIS FILE AND `CLAUDE.md` ONLY EVER GROW: a prohibition with no safe re-attempt AND no recorded precondition is PERMANENTLY UNFALSIFIABLE.** No evidence against it can be gathered without doing the forbidden thing, so it survives on its own authority for as long as the file does — **which is indistinguishable, from the reader's side, from being correct.** Such rules can only accumulate.
+
+**PRACTICE, one sentence: when you write a prohibition, record the measurement that would have to change for it to stop applying.** It is the only thing that lets a later reader retire your rule **without first getting hurt by it.**
+
 **⚠️ THAT DETECTOR ONLY EXISTS FOR RULES WHOSE `X` IS CHEAP AND SAFE TO
 RE-ATTEMPT — AND THE MOST ENTRENCHED RULES ARE PRECISELY THE ONES WHERE IT
 ISN'T.** Re-attempting the vcvarsall recipe from Bash costs one command. But
