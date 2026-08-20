@@ -57,3 +57,5 @@
 # GAP-157: `require`/`required_ok` — a missing device is a FAILURE, not a
 # silent early return that reports `ok` having asserted nothing.
 fuel-test-support = { workspace = true }
+# baracuda_contiguize_live.rs: f32/f64 <-> byte reinterpret for h2d/d2h.
+bytemuck = { workspace = true }
