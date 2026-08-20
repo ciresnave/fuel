@@ -7,6 +7,35 @@ kernels are **Fuel-internal Slang** (`fuel-vulkan-kernels`) — no external bloc
 Vulkan to true parity on the capture-replay decode-latency lever, and possibly to a *working*
 full-decode capture ahead of CUDA.
 
+> ⚠️ **AMENDED 2026-08-19 — HALF OF THIS STATUS IS WRONG, AND ONLY HALF.**
+> "Implementation not started" is false: **`fuel-vulkan-backend/src/capture.rs`
+> exists** — 231 lines, 5 public items, `pub struct CapturedRun` with `replay`
+> and `rebind`, labelled in its own module docs as *Phase C PR-C2b*.
+>
+> **The WIRING claim, which is what this document is actually about, appears to
+> survive — but I could not measure it cleanly, and say so rather than ship a
+> tidy number.** Both backends define `pub struct CapturedRun` and both
+> re-export it as `pub use capture::CapturedRun`, and **no file imports it by
+> `use` at all**, so a name-based query cannot separate Vulkan's consumers from
+> CUDA's. A first attempt returned "0 outside consumers"; the same query shape
+> returned **31** when widened, and its control (`fuel_cuda_backend::capture`)
+> **also** returned 0 — so the zero was uninformative, not evidence.
+>
+> What IS measurable is the asymmetry: files referencing `CapturedRun` are
+> **fuel-cuda-backend 15, fuel-core 7, fuel-dispatch 6, fuel-vulkan-backend 2**
+> (its own module plus `lib.rs`). Vulkan's capture is implemented and thin on
+> consumers; **"not wired" is consistent with that and not established by it.**
+>
+> Correcting only the demonstrably false half deliberately: replacing "not
+> started" with "complete" would be a second wrong status, and the more durable
+> kind, because nobody re-checks a completion.
+>
+> **Re-derive:** `git show HEAD:fuel-vulkan-backend/src/capture.rs | wc -l` → ~231;
+> `git grep -l CapturedRun -- '*.rs' | sed 's|/src/.*||;s|/tests/.*||' | sort | uniq -c | sort -rn`
+> → the per-crate distribution above.
+> **Do not** use `git grep -l CapturedRun | grep -v fuel-vulkan-backend` as a
+> consumer count — it counts CUDA's type too.
+
 ## Where parity stands (verified)
 
 - **Persistent decode** (plan-once, re-bind per token): AT PARITY. `bench_persistent_decode_real_model_{cpu,vulkan,cuda,cuda_bf16}` all exist + pass (`fuel-core/src/lazy.rs:12208+`).

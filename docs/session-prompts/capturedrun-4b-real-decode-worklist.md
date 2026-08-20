@@ -6,6 +6,23 @@ This doc is the ground-truth worklist for capturing a REAL TinyLlama F32 persist
 from a thorough map of `fuel-core/src/lazy.rs` + `inference_context.rs` + the executor. Six
 interdependent pieces — ALL required; none unblocks decode capture alone.
 
+> ⚠️ **AMENDED 2026-08-19 — 4b IS COMPLETE.** Captured replay landed at **10.4×,
+> byte-exact** (TinyLlama-1.1B / RTX 4070): `ef01a5dc` (acceptance test GREEN)
+> and `9b7a5d1c` (the 4b-ε bench leg), both ancestors of head. A **second**
+> acceptance test this worklist predates,
+> `phi_forward_with_kv_context_captured_matches_persistent`, now exists in
+> `fuel-core/src/lazy.rs`.
+>
+> `CapturedRun` appears in **33** files; `CapturedDecodeSession` in **3**.
+>
+> ⚠️ Do **not** re-confirm with a plain `cargo test`: the acceptance tests are
+> `#[cfg(feature = "cuda")]` **and** `#[ignore]`, so an ordinary run reports
+> `0 passed; N filtered out` — a vacuous zero that reads like a pass. Use
+> `pwsh scripts/gpu-run.ps1 -Project fuel -- cargo test -p fuel-core --features cuda -- --ignored`.
+>
+> **Re-derive:** `git grep -l CapturedRun -- '*.rs' | wc -l` → ~33.
+> *(Control: `git grep -l ZzNotARealSymbolQq -- '*.rs' | wc -l` → 0.)*
+
 ## The decode graph's capture gaps (verified from the map)
 
 The F32 persistent-decode step (`apply_layer_with_kv_writes`, `lazy.rs:6244`) is mostly
