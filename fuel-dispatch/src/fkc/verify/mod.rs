@@ -123,7 +123,9 @@ pub use ledger::{LedgerQuery, VerificationLedger, gate_precision};
 // the build everyone actually runs.
 #[cfg(any(feature = "jit", feature = "cuda"))]
 pub use ledger::LedgerRecord;
-#[cfg(not(any(feature = "jit", feature = "cuda")))]
+// ...and `test` as well, or this warns as unused in an ordinary build: the
+// only consumer without those features IS a test.
+#[cfg(all(test, not(any(feature = "jit", feature = "cuda"))))]
 pub(crate) use ledger::LedgerRecord;
 // The numeric-bound surface: consumed ONLY by `jit_ingest`'s cuda-gated
 // candidate-vs-reference arm, i.e. `jit` AND `cuda`.

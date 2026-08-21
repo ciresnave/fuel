@@ -1021,6 +1021,123 @@ fn verified_at_string() -> String {
 mod tests {
     use super::*;
 
+    /// **GAP-226 split of the entries that declare nothing: how much can
+    /// start now, and how much waits on a vocabulary decision.** Reports;
+    /// asserts only invariants.
+    ///
+    /// Contract-derived CPU entries that declare no machine-checkable claim
+    /// are invisible to every census of downgrades — nothing rejects them, so
+    /// nothing reports them. The next question is not "fix them" but **which
+    /// half is even startable**: an entry whose claim already has a NAME
+    /// (`bit_stable_on_same_hardware`, `max_ulp`) and an earned ledger record
+    /// is a contract edit; one whose correctness notion has no name yet
+    /// (`bit_exact` for an integer output, `agrees_with_<backend>_to_ulp` for
+    /// a differential) waits on the vocabulary decision tracked by GAP-227.
+    ///
+    /// ⚠️ **POPULATION, stated because two of them exist and mixing them is
+    /// the defect this program keeps finding.** This counts the
+    /// CONTRACT-DERIVED table built from the live CPU contracts, NOT
+    /// `register_cpu_kernels`' production table that the sweeps above use.
+    /// The two differ and their numbers must not be quoted for each other.
+    ///
+    /// **What "could declare X" means here, precisely:** the ledger ALREADY
+    /// holds a passing record for that entry's `(backend, dtypes,
+    /// kernel_revision_hash, claim)`. That is a statement about evidence
+    /// that EXISTS, not evidence that could be produced — an entry with no
+    /// record might need a probe recipe, an exact reference, or a claim name,
+    /// and this measurement cannot separate those three. The residue is
+    /// reported as ONE bucket rather than guessed into three.
+    #[test]
+    fn gap_226_split_of_the_entries_that_declare_nothing() {
+        use crate::fkc::verify::VerificationLedger;
+        use crate::fused::PrecisionGuarantee;
+
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/kernel-contracts/cpu");
+        let mut table = crate::kernel::KernelBindingTable::new();
+        let mut fused = crate::fused::FusedKernelRegistry::new();
+        let mut n_contracts = 0usize;
+        for e in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read {dir:?}: {e}")) {
+            let path = e.expect("dir entry").path();
+            if path.extension().and_then(|x| x.to_str()) != Some("md") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(provider) = crate::fkc::import_bundle_str(&text, &crate::fkc::CpuLinkRegistry)
+            else {
+                continue;
+            };
+            if provider.register_into(&mut table, &mut fused).is_ok() {
+                n_contracts += 1;
+            }
+        }
+        assert!(
+            n_contracts >= 10,
+            "only {n_contracts} CPU contracts registered — the split below would be over \
+             a subset and would read as a smaller problem than it is"
+        );
+
+        let ledger = VerificationLedger::embedded();
+        let unaudited_notes = PrecisionGuarantee::UNAUDITED.notes;
+        let (mut total, mut nothing, mut both, mut bit_only, mut ulp_only, mut neither) =
+            (0usize, 0usize, 0usize, 0usize, 0usize, 0usize);
+        let mut neither_by_op: Vec<(String, usize)> = Vec::new();
+
+        for (op, dtypes, backend, entry) in table.iter_entries() {
+            total += 1;
+            if entry.precision.notes != unaudited_notes {
+                continue;
+            }
+            nothing += 1;
+            let rev = entry.kernel_revision_hash;
+            let bs = ledger.has_pass(backend, dtypes, rev, "bit_stable_on_same_hardware");
+            let ulp = ledger.has_pass(backend, dtypes, rev, "max_ulp");
+            match (bs, ulp) {
+                (true, true) => both += 1,
+                (true, false) => bit_only += 1,
+                (false, true) => ulp_only += 1,
+                (false, false) => {
+                    neither += 1;
+                    let name = format!("{op:?}");
+                    match neither_by_op.iter_mut().find(|(n, _)| *n == name) {
+                        Some((_, c)) => *c += 1,
+                        None => neither_by_op.push((name, 1)),
+                    }
+                }
+            }
+        }
+        neither_by_op.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+
+        println!("[gap-226] population: contract-derived CPU table, {total} entries");
+        println!("[gap-226] declaring nothing machine-checkable: {nothing}");
+        println!("[gap-226]   ledger already holds BOTH claims : {both}");
+        println!("[gap-226]   ledger holds bit_stable only     : {bit_only}");
+        println!("[gap-226]   ledger holds max_ulp only        : {ulp_only}");
+        println!("[gap-226]   ledger holds NEITHER             : {neither}");
+        println!(
+            "[gap-226] STARTABLE NOW (name exists, evidence exists, it is a contract edit): {}",
+            both + bit_only + ulp_only
+        );
+        println!("[gap-226] NOT YET (no record — needs a probe, a reference, or a NAME), by op:");
+        for (name, c) in &neither_by_op {
+            println!("[gap-226]     {c:>3}  {name}");
+        }
+
+        assert_eq!(
+            both + bit_only + ulp_only + neither,
+            nothing,
+            "the four buckets do not partition the entries that declare nothing"
+        );
+        assert!(
+            nothing > 0,
+            "no contract-derived CPU entry declares nothing any more — that would be \
+             the program finishing, not a quiet pass, and THIS test is then the stale \
+             thing"
+        );
+    }
+
     /// **The `max_ulp: 0` sweep: how many CPU registrations can earn the
     /// claim the remaining 84 import downgrades are blocked on.** Reports;
     /// asserts only invariants.
