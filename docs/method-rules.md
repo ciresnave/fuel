@@ -588,3 +588,31 @@ Earlier the same day this lane taught **key an assertion to the MEASUREMENT, not
 **A FIXTURE THE WORK UNDER TEST IS ACTIVELY REMOVING IS NOT A FIXTURE.** Two tests named one entry as their *downgraded-entry* fixture; the change earned both of that entry's claims, so it stopped being downgraded and neither test could observe its property. **Both now LOCATE a downgraded entry, and if none exists anywhere they report that as the finding rather than passing.**
 
 **A REFUSAL WEARING AN ERROR'S LABEL.** 22 casts failed deep inside `encode` as `invoke error: no width for F8E4M3`. **Same outcome for the ledger, different thing entirely for a reader** — an unsupported format is a DECLINE and belongs up front, not a failure surfacing from the middle of a call stack.
+
+---
+
+## a-gate-cannot-source-its-negative-case-from-the-defect
+
+> **Index line (in CLAUDE.md):** **A gate's “it fires” test must not source its negative case from data the work is actively removing** — a fixture, a search SET, or a named unsupported case all expire the same way, and they expire *by the program succeeding*. **Construct the negative case instead: an empty ledger backs nothing, permanently.** ⚠️ And a **WRONG** assertion that fires can settle a question the right one could not ask.
+
+**FOUR instruments fired on the program SUCCEEDING in one increment (2026-08-20/21), all belonging to the lane that wrote them, after THREE prior rewrites of the same two tests.**
+
+- a refusal test named `F8E4M3` as its unsupported dtype — **and `F8E4M3` became supported**;
+- two register-gate tests searched for a downgraded entry — **and no downgraded entry existed anywhere**;
+- two censuses asserted a **non-empty residue** — and the residue reached zero.
+
+**The progression is the lesson, because each rewrite was a smaller version of one mistake.** First a hand-picked FIXTURE (`add_f32`) expired when the work earned its claims. Rewritten to *locate* one — then the hand-picked SEARCH SET (two contracts) expired the same way. Rewritten to read every contract from disk — then the assumption that a residue EXISTS expired. **A fixture, a search set, and an existence assumption are the same defect at three scopes: all three source the negative case from the thing being fixed.**
+
+**PRACTICE: CONSTRUCT the negative case.** An empty ledger backs nothing and always will; a synthetic entry declaring an unearnable claim is downgraded forever. **And where a census must assert on real data, assert ZERO rather than non-empty** — which is strictly stronger and fires the moment a contract declares a claim nobody earned, **or a kernel revision changes and silently un-earns every claim keyed to it.**
+
+### And a wrong assertion can be an instrument
+
+Replacing an older cause-assertion, the lane wrote a **biconditional** — *UNAUDITED **iff** downgraded* — and **it fired immediately.** The failure is the finding: **downgrade is not the only route to UNAUDITED.** An entry that declares no machine-checkable claim arrives UNAUDITED **without ever being rejected**, so only one direction is an invariant (a downgrade implies UNAUDITED; the converse is false by construction).
+
+**That measured something the registry row had explicitly declined to decide.** The row listed two readings that fit the arithmetic equally well and refused to pick between them; **the wrong assertion picked one, by failing.** Measured at entry level: **303 backed, 320 UNAUDITED, 0 downgrades** — the 320 declare nothing at all.
+
+**So: an assertion strong enough to be WRONG is worth more than one weak enough to be safe** — it can only fail informatively, and a biconditional fails by naming which half is false. **This is the constructive twin of *a coincidence recorded as an invariant*: there, two quantities that agreed were anchored together and the tie was silent; here, two that were ASSUMED to agree were asserted equal and the disagreement spoke.**
+
+### A footnote worth its own line
+
+**A failure message that carries only a DISTANCE cannot diagnose the disagreement.** The lane's own encoder lost precision *inside a precision harness* — a brute-force nearest search computed distance in f64 where the f64 ULP at ~4.5e18 is ~512, so two candidates **rounded to the same distance**, a strict ordering became a spurious tie, and the tie-break took the wrong pattern. **It was diagnosable only because the message had just been changed to carry RAW BYTES: *“2 ULP apart” names the SIZE of a disagreement, not its CONTENT.***
