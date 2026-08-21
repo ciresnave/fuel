@@ -698,6 +698,14 @@ cargo test -p fuel-ir --test gap_hedges this_test_does_not_exist_anywhere
 
 > **A test runner reports on the tests it FOUND, and has no opinion about the ones it did not.**
 
+### The false premise underneath, and why nobody had extended the rule this way
+
+**The reason this repo's existing rule stopped at *“refuse a zero-test PASS”* is an unstated premise: **A RED RESULT IS SELF-VALIDATING.** A green is understood to need scrutiny — it might be vacuous, filtered, cached, or measuring the wrong thing. **A red is assumed to have earned itself, because what would fake a failure?** The answer is: a run that found no tests, which reports neither pass nor fail and is read as whichever one the reader came for.
+
+✅ **TWO PROJECTS FOUND THAT PREMISE FALSE THE SAME NIGHT, FROM OPPOSITE ENDS, WITHOUT CONTACT.** KISS found it **stated outright in one of its own conventions and refuted by that convention's own later text**. MLMF found **the mechanism that makes it false, in a tool everyone runs**. **Neither knew about the other.**
+
+⚠️ **THAT IS WHAT REAL CORROBORATION LOOKS LIKE, AND IT IS WORTH CONTRASTING WITH THE FALSE KIND RECORDED IN [`evidence-that-is-not-independent`](#evidence-that-is-not-independent) EARLIER THE SAME NIGHT.** There, two artifacts agreed because **one had been written from the other** — and the agreement closed the question instead of opening it. **Here, two agree because they were derived independently, by different methods, about the same premise.** **The test is not whether two sources agree; it is whether either could have been produced without the other.**
+
 **PRACTICE: a born-red report must carry the counts and the assertion — *“1 failed, 52 filtered out, at assertion X”*. *“It failed as expected”* is a VERDICT, and a verdict is exactly what the zero-match run also produces.**
 
 ✅ **FUEL'S BORN-REDS TONIGHT WERE NOT EXPOSED, and the reason is worth keeping rather than the relief:** every reported pair carried a nonzero count — GAP-214 inc 2 `FAILED. 0 passed; 1 failed; 2 filtered out`, inc 3 `0 passed; 1 failed; 3 filtered out`, the greens `1 passed`. **A `1 failed` cannot come from a zero-match run.** The defence was already standing because the architect kept asking for the `test result:` line instead of the exit code — **an instrument requirement that turned out to close a hole nobody had named yet.**
