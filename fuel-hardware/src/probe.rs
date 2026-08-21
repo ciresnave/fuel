@@ -25,7 +25,7 @@
 //! itself changes in a way that `#[serde(default)]` can't cover.
 //! Today: version 1.
 
-use fuel_ir::probe::{BackendId, DeviceDescriptor, EquivalenceKey};
+use fuel_ir::probe::{DeviceDescriptor, EquivalenceKey};
 use fuel_ir::Result;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -61,19 +61,22 @@ impl ProbeReport {
         // contributes one entry. New backends register themselves in
         // `crate::enumerate` and show up here automatically.
         for enumerator in crate::enumerate::registry() {
-            Self::collect(
-                &mut devices,
-                enumerator.id().as_str(),
-                || enumerator.enumerate_devices(),
-            );
+            Self::collect(&mut devices, enumerator.id().as_str(), || {
+                enumerator.enumerate_devices()
+            });
         }
 
         devices.sort_by(|a, b| {
-            a.backend.as_str().cmp(b.backend.as_str())
+            a.backend
+                .as_str()
+                .cmp(b.backend.as_str())
                 .then(a.device_index.cmp(&b.device_index))
         });
 
-        Self { version: PROBE_REPORT_VERSION, devices }
+        Self {
+            version: PROBE_REPORT_VERSION,
+            devices,
+        }
     }
 
     fn collect(
@@ -96,7 +99,9 @@ impl ProbeReport {
     /// devices (e.g. four RTX 4090s in the same rig) end up in the
     /// same bucket; the Judge profiles one representative per bucket
     /// and the dispatch table shares the result across the others.
-    pub fn equivalence_classes(&self) -> std::collections::HashMap<EquivalenceKey, Vec<&DeviceDescriptor>> {
+    pub fn equivalence_classes(
+        &self,
+    ) -> std::collections::HashMap<EquivalenceKey, Vec<&DeviceDescriptor>> {
         let mut map: std::collections::HashMap<EquivalenceKey, Vec<&DeviceDescriptor>> =
             Default::default();
         for d in &self.devices {
@@ -109,18 +114,13 @@ impl ProbeReport {
     /// possible (writes to a sibling `.tmp` file then renames).
     pub fn save(&self, path: &Path) -> Result<()> {
         let json = serde_json::to_vec_pretty(self)
-            .map_err(|e| fuel_ir::Error::Msg(
-                format!("probe: JSON encode failed: {e}")
-            ))?;
+            .map_err(|e| fuel_ir::Error::Msg(format!("probe: JSON encode failed: {e}")))?;
         let tmp = path.with_extension("tmp");
         std::fs::write(&tmp, &json)
-            .map_err(|e| fuel_ir::Error::Msg(
-                format!("probe: write {tmp:?} failed: {e}")
-            ))?;
-        std::fs::rename(&tmp, path)
-            .map_err(|e| fuel_ir::Error::Msg(
-                format!("probe: rename {tmp:?} → {path:?} failed: {e}")
-            ))?;
+            .map_err(|e| fuel_ir::Error::Msg(format!("probe: write {tmp:?} failed: {e}")))?;
+        std::fs::rename(&tmp, path).map_err(|e| {
+            fuel_ir::Error::Msg(format!("probe: rename {tmp:?} → {path:?} failed: {e}"))
+        })?;
         Ok(())
     }
 
@@ -131,14 +131,14 @@ impl ProbeReport {
         let bytes = match std::fs::read(path) {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(fuel_ir::Error::Msg(
-                format!("probe: read {path:?} failed: {e}")
-            )),
+            Err(e) => {
+                return Err(fuel_ir::Error::Msg(format!(
+                    "probe: read {path:?} failed: {e}"
+                )));
+            }
         };
         let report: Self = serde_json::from_slice(&bytes)
-            .map_err(|e| fuel_ir::Error::Msg(
-                format!("probe: parse {path:?} failed: {e}")
-            ))?;
+            .map_err(|e| fuel_ir::Error::Msg(format!("probe: parse {path:?} failed: {e}")))?;
         if report.version != PROBE_REPORT_VERSION {
             // Version mismatch is not an error — it's a cache miss.
             // Caller treats this the same as "no previous report."
@@ -164,10 +164,8 @@ impl ProbeReport {
             self.devices.iter().map(|d| d.equivalence_key()).collect();
         let prior_keys: std::collections::HashSet<_> =
             prior.devices.iter().map(|d| d.equivalence_key()).collect();
-        let added: Vec<EquivalenceKey> =
-            now_keys.difference(&prior_keys).cloned().collect();
-        let removed: Vec<EquivalenceKey> =
-            prior_keys.difference(&now_keys).cloned().collect();
+        let added: Vec<EquivalenceKey> = now_keys.difference(&prior_keys).cloned().collect();
+        let removed: Vec<EquivalenceKey> = prior_keys.difference(&now_keys).cloned().collect();
         HardwareChange::Changed { added, removed }
     }
 }
@@ -184,7 +182,7 @@ pub enum HardwareChange {
     /// in either list; the Judge can optionally bump the worker count
     /// but doesn't need to re-measure.
     Changed {
-        added:   Vec<EquivalenceKey>,
+        added: Vec<EquivalenceKey>,
         removed: Vec<EquivalenceKey>,
     },
 }
@@ -213,11 +211,13 @@ pub fn default_report_path() -> Option<std::path::PathBuf> {
     let base = std::env::var_os("LOCALAPPDATA")
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::var_os("XDG_CACHE_HOME").map(std::path::PathBuf::from))
-        .or_else(|| std::env::var_os("HOME").map(|h| {
-            let mut p = std::path::PathBuf::from(h);
-            p.push(".cache");
-            p
-        }))?;
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| {
+                let mut p = std::path::PathBuf::from(h);
+                p.push(".cache");
+                p
+            })
+        })?;
     let mut p = base;
     p.push("fuel");
     p.push(PROBE_REPORT_FILENAME);
@@ -227,20 +227,23 @@ pub fn default_report_path() -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use fuel_ir::probe::BackendId;
     use fuel_ir::DeviceLocation;
 
     fn sample_cuda_descriptor(idx: u32) -> DeviceDescriptor {
         DeviceDescriptor {
-            backend:            BackendId::Cuda,
-            device_index:       idx,
-            hardware_sku:       "NVIDIA GeForce RTX 4090".to_string(),
-            vendor_id:          0x10DE,
-            device_id:          0x2684,
+            backend: BackendId::Cuda,
+            device_index: idx,
+            hardware_sku: "NVIDIA GeForce RTX 4090".to_string(),
+            vendor_id: 0x10DE,
+            device_id: 0x2684,
             compute_capability: Some((8, 9)),
-            subgroup_width:     Some(32),
-            driver_version:     "CUDA 12.6".to_string(),
+            subgroup_width: Some(32),
+            driver_version: "CUDA 12.6".to_string(),
             total_memory_bytes: 25_769_803_776,
-            location:           DeviceLocation::Cuda { gpu_id: idx as usize },
+            location: DeviceLocation::Cuda {
+                gpu_id: idx as usize,
+            },
         }
     }
 
@@ -254,34 +257,38 @@ mod tests {
         assert_eq!(report.version, PROBE_REPORT_VERSION);
         assert!(
             report.devices.iter().any(|d| d.backend == BackendId::Cpu),
-            "cpu should always be present, got {:?}", report.devices);
+            "cpu should always be present, got {:?}",
+            report.devices
+        );
         // Verify sort invariant.
         for pair in report.devices.windows(2) {
             let a = &pair[0];
             let b = &pair[1];
-            let order = a.backend.as_str().cmp(b.backend.as_str())
+            let order = a
+                .backend
+                .as_str()
+                .cmp(b.backend.as_str())
                 .then(a.device_index.cmp(&b.device_index));
             assert!(
                 order != std::cmp::Ordering::Greater,
                 "probe report not sorted: {} {} before {} {}",
-                a.backend, a.device_index, b.backend, b.device_index,
+                a.backend,
+                a.device_index,
+                b.backend,
+                b.device_index,
             );
         }
     }
 
     #[test]
     fn save_load_roundtrip() {
-        let tmp = std::env::temp_dir().join(format!(
-            "fuel-probe-test-{}.json", std::process::id()
-        ));
+        let tmp = std::env::temp_dir().join(format!("fuel-probe-test-{}.json", std::process::id()));
         let original = ProbeReport {
             version: PROBE_REPORT_VERSION,
             devices: vec![sample_cuda_descriptor(0), sample_cuda_descriptor(1)],
         };
         original.save(&tmp).expect("save");
-        let loaded = ProbeReport::load(&tmp)
-            .expect("load")
-            .expect("file exists");
+        let loaded = ProbeReport::load(&tmp).expect("load").expect("file exists");
         assert_eq!(loaded, original);
         let _ = std::fs::remove_file(&tmp);
     }
@@ -289,7 +296,8 @@ mod tests {
     #[test]
     fn load_missing_file_returns_none() {
         let tmp = std::env::temp_dir().join(format!(
-            "fuel-probe-test-nonexistent-{}.json", std::process::id()
+            "fuel-probe-test-nonexistent-{}.json",
+            std::process::id()
         ));
         let _ = std::fs::remove_file(&tmp);
         let loaded = ProbeReport::load(&tmp).expect("missing file is not an error");
@@ -299,7 +307,8 @@ mod tests {
     #[test]
     fn load_wrong_version_returns_none() {
         let tmp = std::env::temp_dir().join(format!(
-            "fuel-probe-test-oldver-{}.json", std::process::id()
+            "fuel-probe-test-oldver-{}.json",
+            std::process::id()
         ));
         let ancient = serde_json::json!({
             "version": 0,
@@ -307,7 +316,10 @@ mod tests {
         });
         std::fs::write(&tmp, serde_json::to_vec(&ancient).unwrap()).unwrap();
         let loaded = ProbeReport::load(&tmp).expect("old version parses, not errors");
-        assert!(loaded.is_none(), "old-version reports should be treated as cache miss");
+        assert!(
+            loaded.is_none(),
+            "old-version reports should be treated as cache miss"
+        );
         let _ = std::fs::remove_file(&tmp);
     }
 
@@ -320,7 +332,10 @@ mod tests {
 
     #[test]
     fn diff_detects_added_device_class() {
-        let empty = ProbeReport { version: PROBE_REPORT_VERSION, devices: vec![] };
+        let empty = ProbeReport {
+            version: PROBE_REPORT_VERSION,
+            devices: vec![],
+        };
         let with_cuda = ProbeReport {
             version: PROBE_REPORT_VERSION,
             devices: vec![sample_cuda_descriptor(0)],
@@ -342,7 +357,10 @@ mod tests {
             version: PROBE_REPORT_VERSION,
             devices: vec![sample_cuda_descriptor(0)],
         };
-        let empty = ProbeReport { version: PROBE_REPORT_VERSION, devices: vec![] };
+        let empty = ProbeReport {
+            version: PROBE_REPORT_VERSION,
+            devices: vec![],
+        };
         let change = empty.diff(&with_cuda);
         match change {
             HardwareChange::Changed { added, removed } => {

@@ -45,8 +45,8 @@ use std::time::{Duration, Instant};
 
 use fuel_core::lazy::LazyTensor;
 use fuel_cuda_backend::CudaDevice;
-use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
 use fuel_ir::{DeviceLocation, Shape};
+use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
 
 /// Elements per buffer. 1<<22 = 4,194,304 f32 = 16 MiB. Each elementwise op
 /// reads+writes 32 MiB. A BIG buffer (vs a longer chain) raises per-stage GPU
@@ -97,7 +97,10 @@ fn vulkan_amd_or_skip() -> Option<Arc<VulkanBackend>> {
 fn place(t: &LazyTensor, loc: DeviceLocation) {
     let gt = t.graph_tensor();
     let id = gt.id();
-    gt.graph().write().expect("graph lock").set_placement(id, loc);
+    gt.graph()
+        .write()
+        .expect("graph lock")
+        .set_placement(id, loc);
 }
 
 /// Append `len` `relu(mul_scalar·add_scalar)` stages onto `x`, placing EVERY
@@ -120,7 +123,11 @@ fn extend_chain(mut x: LazyTensor, loc: DeviceLocation, len: usize) -> LazyTenso
 
 /// A fresh single-device chain of `len` stages on `loc`, seeded from `seed`.
 fn solo_chain(seed: f32, loc: DeviceLocation, len: usize) -> LazyTensor {
-    let x0 = LazyTensor::from_f32(vec![seed; N], Shape::from_dims(&[N]), &fuel_core::Device::cpu());
+    let x0 = LazyTensor::from_f32(
+        vec![seed; N],
+        Shape::from_dims(&[N]),
+        &fuel_core::Device::cpu(),
+    );
     extend_chain(x0, loc, len)
 }
 
@@ -150,14 +157,30 @@ fn calibrate_and_baseline(cuda: &CudaDevice, vk: &Arc<VulkanBackend>) -> Baselin
     };
     let vk_time = {
         let _ = solo_chain(2.0, vk_loc, VULKAN_CHAIN_LEN).realize_f32_vulkan(vk); // warm
-        best_of(3, &mut || { let v = solo_chain(2.0, vk_loc, VULKAN_CHAIN_LEN); let t = Instant::now(); let _ = v.realize_f32_vulkan(vk); t.elapsed() })
+        best_of(3, &mut || {
+            let v = solo_chain(2.0, vk_loc, VULKAN_CHAIN_LEN);
+            let t = Instant::now();
+            let _ = v.realize_f32_vulkan(vk);
+            t.elapsed()
+        })
     };
     const CUDA_LEN_CAP: usize = 256;
     let guess = 4 * VULKAN_CHAIN_LEN;
-    let guess_t = { let _ = solo_chain(1.0, cuda0, guess).realize_f32_cuda(cuda); best_of(3, &mut || { let c = solo_chain(1.0, cuda0, guess); let t = Instant::now(); let _ = c.realize_f32_cuda(cuda); t.elapsed() }) };
-    let cuda_len = ((guess as f64 * vk_time.as_secs_f64() / guess_t.as_secs_f64()).round() as usize)
+    let guess_t = {
+        let _ = solo_chain(1.0, cuda0, guess).realize_f32_cuda(cuda);
+        best_of(3, &mut || {
+            let c = solo_chain(1.0, cuda0, guess);
+            let t = Instant::now();
+            let _ = c.realize_f32_cuda(cuda);
+            t.elapsed()
+        })
+    };
+    let cuda_len = ((guess as f64 * vk_time.as_secs_f64() / guess_t.as_secs_f64()).round()
+        as usize)
         .clamp(VULKAN_CHAIN_LEN, CUDA_LEN_CAP);
-    eprintln!("  [calib] vk_time={vk_time:?} (len {VULKAN_CHAIN_LEN}); guess len {guess} -> {guess_t:?} => CUDA_LEN={cuda_len} (cap {CUDA_LEN_CAP})");
+    eprintln!(
+        "  [calib] vk_time={vk_time:?} (len {VULKAN_CHAIN_LEN}); guess len {guess} -> {guess_t:?} => CUDA_LEN={cuda_len} (cap {CUDA_LEN_CAP})"
+    );
 
     let mut cuda_samples = Vec::new();
     let mut vk_samples = Vec::new();
@@ -176,11 +199,18 @@ fn calibrate_and_baseline(cuda: &CudaDevice, vk: &Arc<VulkanBackend>) -> Baselin
         let out = v.realize_f32_vulkan(vk);
         vk_samples.push(t.elapsed());
         assert_eq!(out.len(), N);
-        assert!(out[0].is_finite(), "Vulkan chain produced non-finite output");
+        assert!(
+            out[0].is_finite(),
+            "Vulkan chain produced non-finite output"
+        );
     }
     let (cuda_min, _) = stats(&cuda_samples);
     let (vk_min, _) = stats(&vk_samples);
-    Baseline { cuda_len, cuda_min, vk_min }
+    Baseline {
+        cuda_len,
+        cuda_min,
+        vk_min,
+    }
 }
 
 /// Time `ITERS` combined realizes of `build` (returns `(graph, root)`),
@@ -192,7 +222,10 @@ fn time_combined<F>(
     extras: &[&fuel_core::Device],
 ) -> Vec<Duration>
 where
-    F: Fn() -> (Arc<std::sync::RwLock<fuel_graph::Graph>>, fuel_graph::NodeId),
+    F: Fn() -> (
+        Arc<std::sync::RwLock<fuel_graph::Graph>>,
+        fuel_graph::NodeId,
+    ),
 {
     // Warm.
     {
@@ -212,7 +245,10 @@ where
         .expect("combined mixed CUDA+Vulkan realize");
         samples.push(t.elapsed());
         assert_eq!(out.len(), N);
-        assert!(out[0].is_finite(), "combined mixed realize produced non-finite output");
+        assert!(
+            out[0].is_finite(),
+            "combined mixed realize produced non-finite output"
+        );
     }
     samples
 }
@@ -243,22 +279,33 @@ fn report_overlap(
     eprintln!("  perfect-overlap bound (max)                : {big:?}");
     eprintln!("  COMBINED one-pass : min={comb_min:?}  mean={comb_mean:?}");
     eprintln!("  ratio combined/sum                         : {ratio:.3}");
-    eprintln!("  overlap HIDDEN (sum - combined)            : {hidden:?}  of smaller-device {small:?}");
-    eprintln!("  overlap EFFICIENCY (hidden / min)          : {efficiency:.3}  (1.0 = perfect, 0.0 = serial)");
+    eprintln!(
+        "  overlap HIDDEN (sum - combined)            : {hidden:?}  of smaller-device {small:?}"
+    );
+    eprintln!(
+        "  overlap EFFICIENCY (hidden / min)          : {efficiency:.3}  (1.0 = perfect, 0.0 = serial)"
+    );
     eprintln!(
         "  => OVERLAP {}",
-        if comb_min < seq_sum_min && efficiency >= 0.4 { "CONFIRMED" } else { "NOT OBSERVED" },
+        if comb_min < seq_sum_min && efficiency >= 0.4 {
+            "CONFIRMED"
+        } else {
+            "NOT OBSERVED"
+        },
     );
     (comb_min, seq_sum_min, efficiency)
 }
-
 
 /// Dump the run-level dispatch order for `(g, root)` — both the un-reordered
 /// `extract_runs_multi` topo order AND the C3 `device_alternating_order`
 /// reorder — as compact `device/op` sequences, so we can SEE what the reorder
 /// did on the real (residency-stitched) combined graph. Call AFTER a warm-up
 /// realize so the graph is fully stamped + copy-stitched.
-fn dump_run_order(label: &str, g: &Arc<std::sync::RwLock<fuel_graph::Graph>>, root: fuel_graph::NodeId) {
+fn dump_run_order(
+    label: &str,
+    g: &Arc<std::sync::RwLock<fuel_graph::Graph>>,
+    root: fuel_graph::NodeId,
+) {
     use fuel_graph::Op;
     let gg = g.read().expect("graph");
     let runs = fuel_graph::extract_runs_multi(&gg, &[root]);
@@ -310,7 +357,10 @@ fn assert_reorder_enables_overlap_order(
     // drain (it consumes the drained result) and is excluded by size — the
     // producers are heavy (the long chains), the reconverge is len 1.
     let is_gpu = |d: Option<fuel_ir::probe::BackendId>| {
-        matches!(d, Some(fuel_ir::probe::BackendId::Cuda) | Some(fuel_ir::probe::BackendId::Vulkan))
+        matches!(
+            d,
+            Some(fuel_ir::probe::BackendId::Cuda) | Some(fuel_ir::probe::BackendId::Vulkan)
+        )
     };
     let mut first_drain: Option<usize> = None;
     let mut chunks: Vec<(usize, u64, Option<fuel_ir::probe::BackendId>)> = Vec::new(); // (pos, size, dev)
@@ -318,7 +368,11 @@ fn assert_reorder_enables_overlap_order(
         let r = &runs[ri];
         let is_drain = matches!(
             gg.node(r.entry).op,
-            Op::Copy { target: DeviceLocation::Cpu } | Op::Move { target: DeviceLocation::Cpu }
+            Op::Copy {
+                target: DeviceLocation::Cpu
+            } | Op::Move {
+                target: DeviceLocation::Cpu
+            }
         );
         let is_transfer = matches!(gg.node(r.entry).op, Op::Copy { .. } | Op::Move { .. });
         if is_drain && first_drain.is_none() {
@@ -383,7 +437,9 @@ fn assert_reorder_enables_overlap_order(
 #[ignore = "requires a live CUDA device + a cross-vendor Vulkan device (AMD iGPU)"]
 fn independent_cuda_and_vulkan_subdags_overlap() {
     let Some(cuda) = cuda_or_skip() else { return };
-    let Some(vk) = vulkan_amd_or_skip() else { return };
+    let Some(vk) = vulkan_amd_or_skip() else {
+        return;
+    };
 
     let cuda_dev: fuel_core::Device = cuda.clone().into();
     let vk_dev: fuel_core::Device = vk.clone().into();
@@ -406,7 +462,12 @@ fn independent_cuda_and_vulkan_subdags_overlap() {
     };
     let vk_time = {
         let _ = solo_chain(2.0, vk_loc, VULKAN_CHAIN_LEN).realize_f32_vulkan(&vk); // warm
-        best_of(3, &mut || { let v = solo_chain(2.0, vk_loc, VULKAN_CHAIN_LEN); let t = Instant::now(); let _ = v.realize_f32_vulkan(&vk); t.elapsed() })
+        best_of(3, &mut || {
+            let v = solo_chain(2.0, vk_loc, VULKAN_CHAIN_LEN);
+            let t = Instant::now();
+            let _ = v.realize_f32_vulkan(&vk);
+            t.elapsed()
+        })
     };
     // One measured correction: time a guess, scale toward vk_time, clamp hard.
     // NB: on the RTX 4070 the CUDA realize time is SUPER-LINEAR past a few hundred
@@ -419,10 +480,21 @@ fn independent_cuda_and_vulkan_subdags_overlap() {
     // concurrent progress is.)
     const CUDA_LEN_CAP: usize = 256;
     let guess = 4 * VULKAN_CHAIN_LEN;
-    let guess_t = { let _ = solo_chain(1.0, cuda0, guess).realize_f32_cuda(&cuda); best_of(3, &mut || { let c = solo_chain(1.0, cuda0, guess); let t = Instant::now(); let _ = c.realize_f32_cuda(&cuda); t.elapsed() }) };
-    let cuda_len = ((guess as f64 * vk_time.as_secs_f64() / guess_t.as_secs_f64()).round() as usize)
+    let guess_t = {
+        let _ = solo_chain(1.0, cuda0, guess).realize_f32_cuda(&cuda);
+        best_of(3, &mut || {
+            let c = solo_chain(1.0, cuda0, guess);
+            let t = Instant::now();
+            let _ = c.realize_f32_cuda(&cuda);
+            t.elapsed()
+        })
+    };
+    let cuda_len = ((guess as f64 * vk_time.as_secs_f64() / guess_t.as_secs_f64()).round()
+        as usize)
         .clamp(VULKAN_CHAIN_LEN, CUDA_LEN_CAP);
-    eprintln!("  [calib] vk_time={vk_time:?} (len {VULKAN_CHAIN_LEN}); guess len {guess} -> {guess_t:?} => CUDA_LEN={cuda_len} (cap {CUDA_LEN_CAP})");
+    eprintln!(
+        "  [calib] vk_time={vk_time:?} (len {VULKAN_CHAIN_LEN}); guess len {guess} -> {guess_t:?} => CUDA_LEN={cuda_len} (cap {CUDA_LEN_CAP})"
+    );
 
     // ----- sequential baselines: each chain ALONE on its device (timed) -----
     let mut cuda_samples = Vec::new();
@@ -442,7 +514,10 @@ fn independent_cuda_and_vulkan_subdags_overlap() {
         let out = v.realize_f32_vulkan(&vk);
         vk_samples.push(t.elapsed());
         assert_eq!(out.len(), N);
-        assert!(out[0].is_finite(), "Vulkan chain produced non-finite output");
+        assert!(
+            out[0].is_finite(),
+            "Vulkan chain produced non-finite output"
+        );
     }
 
     // ----- combined: BOTH chains in ONE realize, reconverging on CUDA -----
@@ -494,7 +569,10 @@ fn independent_cuda_and_vulkan_subdags_overlap() {
             (inputs[0], inputs[1]) // [vulkan, cuda]
         };
         let _ = fuel_core::pipelined_bridge::realize_one_as_multi_device::<f32>(
-            &g, id, &cpu, &[&cuda_dev, &vk_dev],
+            &g,
+            id,
+            &cpu,
+            &[&cuda_dev, &vk_dev],
         )
         .expect("warm-up combined realize");
         let gg = g.read().expect("graph");
@@ -511,7 +589,12 @@ fn independent_cuda_and_vulkan_subdags_overlap() {
         }
         eprintln!(
             "  [diag] chain-root backends: C={:?} V={:?}; Op::Copy ->cpu={} ->cuda={} ->vulkan={}; graph_len={}",
-            gg.target_backend(xc_id), gg.target_backend(xv_id), to_cpu, to_cuda, to_vk, gg.len(),
+            gg.target_backend(xc_id),
+            gg.target_backend(xv_id),
+            to_cpu,
+            to_cuda,
+            to_vk,
+            gg.len(),
         );
         drop(gg);
         dump_run_order("hand-arranged", &g, id);
@@ -522,12 +605,18 @@ fn independent_cuda_and_vulkan_subdags_overlap() {
         let (g, id) = build_combined();
         let t = Instant::now();
         let out = fuel_core::pipelined_bridge::realize_one_as_multi_device::<f32>(
-            &g, id, &cpu, &[&cuda_dev, &vk_dev],
+            &g,
+            id,
+            &cpu,
+            &[&cuda_dev, &vk_dev],
         )
         .expect("combined mixed CUDA+Vulkan realize");
         combined_samples.push(t.elapsed());
         assert_eq!(out.len(), N);
-        assert!(out[0].is_finite(), "combined mixed realize produced non-finite output");
+        assert!(
+            out[0].is_finite(),
+            "combined mixed realize produced non-finite output"
+        );
     }
 
     let (cuda_min, cuda_mean) = stats(&cuda_samples);
@@ -550,18 +639,28 @@ fn independent_cuda_and_vulkan_subdags_overlap() {
     let hidden = seq_sum_min.saturating_sub(comb_min);
     let efficiency = hidden.as_secs_f64() / small.as_secs_f64();
 
-    eprintln!("=== A4b-5 cross-device overlap benchmark (N={N}, vk_len={VULKAN_CHAIN_LEN}, cuda_len={cuda_len}, ITERS={ITERS}) ===");
+    eprintln!(
+        "=== A4b-5 cross-device overlap benchmark (N={N}, vk_len={VULKAN_CHAIN_LEN}, cuda_len={cuda_len}, ITERS={ITERS}) ==="
+    );
     eprintln!("  CUDA   alone : min={cuda_min:?}  mean={cuda_mean:?}");
     eprintln!("  Vulkan alone : min={vk_min:?}  mean={vk_mean:?}");
     eprintln!("  sequential SUM  (cuda_min + vk_min)        : {seq_sum_min:?}");
     eprintln!("  perfect-overlap bound (max)                : {big:?}");
     eprintln!("  COMBINED one-pass : min={comb_min:?}  mean={comb_mean:?}");
     eprintln!("  ratio combined/sum                         : {ratio:.3}");
-    eprintln!("  overlap HIDDEN (sum - combined)            : {hidden:?}  of smaller-device {small:?}");
-    eprintln!("  overlap EFFICIENCY (hidden / min)          : {efficiency:.3}  (1.0 = perfect, 0.0 = serial)");
+    eprintln!(
+        "  overlap HIDDEN (sum - combined)            : {hidden:?}  of smaller-device {small:?}"
+    );
+    eprintln!(
+        "  overlap EFFICIENCY (hidden / min)          : {efficiency:.3}  (1.0 = perfect, 0.0 = serial)"
+    );
     eprintln!(
         "  => OVERLAP {}",
-        if comb_min < seq_sum_min && efficiency >= 0.4 { "CONFIRMED" } else { "NOT OBSERVED" },
+        if comb_min < seq_sum_min && efficiency >= 0.4 {
+            "CONFIRMED"
+        } else {
+            "NOT OBSERVED"
+        },
     );
 
     // Hard gate 1: the combined run is faster than the sequential sum at all —
@@ -720,7 +819,9 @@ enum OperandOrder {
 /// this structural contract, not a flaky wall-clock assert).
 fn run_auto_overlap_case(order: OperandOrder) {
     let Some(cuda) = cuda_or_skip() else { return };
-    let Some(vk) = vulkan_amd_or_skip() else { return };
+    let Some(vk) = vulkan_amd_or_skip() else {
+        return;
+    };
 
     let cuda_dev: fuel_core::Device = cuda.clone().into();
     let vk_dev: fuel_core::Device = vk.clone().into();
@@ -763,13 +864,18 @@ fn run_auto_overlap_case(order: OperandOrder) {
             gg.node(id).inputs.clone()
         };
         let _ = fuel_core::pipelined_bridge::realize_one_as_multi_device::<f32>(
-            &g, id, &cpu, &[&cuda_dev, &vk_dev],
+            &g,
+            id,
+            &cpu,
+            &[&cuda_dev, &vk_dev],
         )
         .expect("warm-up combined realize");
         let gg = g.read().expect("graph");
         eprintln!(
             "  [diag] reconverge inputs ({label}): [{:?}, {:?}] (graph_len={})",
-            gg.target_backend(inputs[0]), gg.target_backend(inputs[1]), gg.len(),
+            gg.target_backend(inputs[0]),
+            gg.target_backend(inputs[1]),
+            gg.len(),
         );
         drop(gg);
         dump_run_order(label, &g, id);

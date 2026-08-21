@@ -50,44 +50,16 @@ pub mod cast;
 pub mod clamp;
 pub mod concat;
 pub mod contiguize;
+pub mod cumsum;
 pub mod elementwise;
+pub mod flip;
 /// Phase 74 (alpha.67) dense FP GEMM — cuBLAS-backed `gemm_dense_*`
 /// facade. Replaces the retired `byte_kernels` matmul arm (cuBLAS
 /// f32 + CUTLASS bf16/f16) with one uniform 4-dtype family.
 pub mod gemm_dense;
 pub mod gemm_int;
-pub mod powi;
 pub mod gguf;
 pub mod indexing;
-pub mod norm;
-pub mod reduce;
-/// Broadcast-reverse reductions (`ReduceSumTo` / `ReduceMaxTo`) —
-/// sys-only baracuda symbols shipped since alpha.46, surfaced by the
-/// 2026-06-10 ask-reply. Replaces the retired `byte_kernels` reduce
-/// arm and lifts coverage from f32-only to all four FP dtypes.
-pub mod reduce_to;
-pub mod scratch;
-pub mod shape_strides;
-pub mod cumsum;
-pub mod flip;
-pub mod pad;
-pub mod roll;
-pub mod softmax;
-pub mod status;
-pub mod triangular;
-pub mod write_slice;
-/// 4-bit weight-only quant GEMMs: Marlin (symmetric, GPTQ-derived),
-/// AWQ (asymmetric, HF *-AWQ checkpoints), NF4 (bitsandbytes
-/// NormalFloat-4). The underlying baracuda symbols are gated behind
-/// their respective baracuda cargo features (`marlin`, `awq`,
-/// `bnb_nf4`); Fuel enables all three in workspace Cargo.toml so
-/// the symbols are always linkable here.
-pub mod quant_w4a16;
-/// Sort-free on-device sampling kernels (FlashInfer cherry-pick).
-/// Avoids the D2H per token that the CPU-side `LogitsProcessor`
-/// path requires; designed to be wired into
-/// `fuel-transformers::generation::Sampling` as the GPU fast path.
-pub mod sampling;
 /// Fused Linear Cross-Entropy primitives (Liger-Kernel algorithm
 /// port). Five families: per_row (in-place softmax → grad + per-row
 /// loss), per_row_cast (None reduction), scalar_finalize (Mean/Sum
@@ -99,3 +71,31 @@ pub mod loss_flce;
 /// the two scan families ship alongside the Op-surface integration
 /// session — they share signatures closely with the autograd nodes.
 pub mod mamba;
+pub mod norm;
+pub mod pad;
+pub mod powi;
+/// 4-bit weight-only quant GEMMs: Marlin (symmetric, GPTQ-derived),
+/// AWQ (asymmetric, HF *-AWQ checkpoints), NF4 (bitsandbytes
+/// NormalFloat-4). The underlying baracuda symbols are gated behind
+/// their respective baracuda cargo features (`marlin`, `awq`,
+/// `bnb_nf4`); Fuel enables all three in workspace Cargo.toml so
+/// the symbols are always linkable here.
+pub mod quant_w4a16;
+pub mod reduce;
+/// Broadcast-reverse reductions (`ReduceSumTo` / `ReduceMaxTo`) —
+/// sys-only baracuda symbols shipped since alpha.46, surfaced by the
+/// 2026-06-10 ask-reply. Replaces the retired `byte_kernels` reduce
+/// arm and lifts coverage from f32-only to all four FP dtypes.
+pub mod reduce_to;
+pub mod roll;
+/// Sort-free on-device sampling kernels (FlashInfer cherry-pick).
+/// Avoids the D2H per token that the CPU-side `LogitsProcessor`
+/// path requires; designed to be wired into
+/// `fuel-transformers::generation::Sampling` as the GPU fast path.
+pub mod sampling;
+pub mod scratch;
+pub mod shape_strides;
+pub mod softmax;
+pub mod status;
+pub mod triangular;
+pub mod write_slice;

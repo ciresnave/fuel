@@ -257,10 +257,7 @@ impl ConvTranspose1d {
             None => Ok(y),
             Some(b) => {
                 let bias_t = y
-                    .const_f32_like(
-                        Arc::clone(b),
-                        Shape::from_dims(&[self.out_channels]),
-                    )
+                    .const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels]))
                     .reshape(Shape::from_dims(&[1, self.out_channels, 1]))?;
                 Ok(y.broadcast_add(&bias_t)?)
             }
@@ -338,10 +335,7 @@ impl ConvTranspose2dConfig {
         self.padding = padding;
         self
     }
-    pub fn with_output_padding(
-        mut self,
-        output_padding: (usize, usize),
-    ) -> Self {
+    pub fn with_output_padding(mut self, output_padding: (usize, usize)) -> Self {
         self.output_padding = output_padding;
         self
     }
@@ -428,10 +422,7 @@ impl ConvTranspose2d {
             ))
             .bt());
         }
-        let expected = in_channels
-            * (out_channels / config.groups)
-            * kernel_h
-            * kernel_w;
+        let expected = in_channels * (out_channels / config.groups) * kernel_h * kernel_w;
         if weight.elem_count() != expected {
             return Err(crate::Error::Msg(format!(
                 "ConvTranspose2d::new: weight has {} elements but \
@@ -514,10 +505,7 @@ impl ConvTranspose2d {
             None => Ok(y),
             Some(b) => {
                 let bias_t = y
-                    .const_f32_like(
-                        Arc::clone(b),
-                        Shape::from_dims(&[self.out_channels]),
-                    )
+                    .const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels]))
                     .reshape(Shape::from_dims(&[1, self.out_channels, 1, 1]))?;
                 Ok(y.broadcast_add(&bias_t)?)
             }
@@ -596,11 +584,7 @@ mod tests {
         .unwrap();
 
         let x_data: Vec<f32> = ramp_f32(n * cin * l, 0.03, -0.4);
-        let x = LazyTensor::from_f32(
-            x_data,
-            Shape::from_dims(&[n, cin, l]),
-            &Device::cpu(),
-        );
+        let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[n, cin, l]), &Device::cpu());
         let y = layer.forward(&x).unwrap();
         let l_out = l + k - 1;
         assert_eq!(y.shape().dims(), &[n, cout, l_out]);
@@ -651,15 +635,8 @@ mod tests {
         );
         let via_module = layer.forward(&x).unwrap().realize_f32();
 
-        let x2 = LazyTensor::from_f32(
-            x_data,
-            Shape::from_dims(&[n, cin, l]),
-            &Device::cpu(),
-        );
-        let w_t = x2.const_f32_like(
-            Arc::clone(&weight_arc),
-            Shape::from_dims(&[cin, cout, k]),
-        );
+        let x2 = LazyTensor::from_f32(x_data, Shape::from_dims(&[n, cin, l]), &Device::cpu());
+        let w_t = x2.const_f32_like(Arc::clone(&weight_arc), Shape::from_dims(&[cin, cout, k]));
         let direct_raw = x2
             .conv_transpose1d(
                 &w_t,
@@ -671,10 +648,7 @@ mod tests {
             )
             .unwrap();
         let b_t = direct_raw
-            .const_f32_like(
-                Arc::clone(&bias_arc),
-                Shape::from_dims(&[cout]),
-            )
+            .const_f32_like(Arc::clone(&bias_arc), Shape::from_dims(&[cout]))
             .reshape(Shape::from_dims(&[1, cout, 1]))
             .unwrap();
         let direct = direct_raw.broadcast_add(&b_t).unwrap().realize_f32();
@@ -695,7 +669,9 @@ mod tests {
             WeightStorage::F32(bad_weight),
             None,
             ConvTranspose1dConfig::default(),
-            /* in */ 2, /* out */ 3, /* k */ 4,
+            /* in */ 2,
+            /* out */ 3,
+            /* k */ 4,
         );
         assert!(r.is_err());
     }
@@ -708,14 +684,7 @@ mod tests {
             groups: 2,
             ..ConvTranspose1dConfig::default()
         };
-        let r = ConvTranspose1d::new(
-            WeightStorage::F32(w),
-            None,
-            cfg,
-            2,
-            3,
-            2,
-        );
+        let r = ConvTranspose1d::new(WeightStorage::F32(w), None, cfg, 2, 3, 2);
         assert!(r.is_err());
     }
 
@@ -746,11 +715,7 @@ mod tests {
         .unwrap();
 
         let x_data: Vec<f32> = ramp_f32(n * cin * h * w_in, 0.01, -0.5);
-        let x = LazyTensor::from_f32(
-            x_data,
-            Shape::from_dims(&[n, cin, h, w_in]),
-            &Device::cpu(),
-        );
+        let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu());
         let y = layer.forward(&x).unwrap();
         let h_out = h + kh - 1;
         let w_out = w_in + kw - 1;
@@ -805,11 +770,7 @@ mod tests {
         );
         let via_module = layer.forward(&x).unwrap().realize_f32();
 
-        let x2 = LazyTensor::from_f32(
-            x_data,
-            Shape::from_dims(&[n, cin, h, w_in]),
-            &Device::cpu(),
-        );
+        let x2 = LazyTensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu());
         let w_t = x2.const_f32_like(
             Arc::clone(&weight_arc),
             Shape::from_dims(&[cin, cout, kh, kw]),
@@ -825,10 +786,7 @@ mod tests {
             )
             .unwrap();
         let b_t = direct_raw
-            .const_f32_like(
-                Arc::clone(&bias_arc),
-                Shape::from_dims(&[cout]),
-            )
+            .const_f32_like(Arc::clone(&bias_arc), Shape::from_dims(&[cout]))
             .reshape(Shape::from_dims(&[1, cout, 1, 1]))
             .unwrap();
         let direct = direct_raw.broadcast_add(&b_t).unwrap().realize_f32();
@@ -849,7 +807,10 @@ mod tests {
             WeightStorage::F32(bad_weight),
             None,
             ConvTranspose2dConfig::default(),
-            /* in */ 2, /* out */ 3, /* kh */ 2, /* kw */ 2,
+            /* in */ 2,
+            /* out */ 3,
+            /* kh */ 2,
+            /* kw */ 2,
         );
         assert!(r.is_err());
     }
@@ -885,15 +846,8 @@ mod tests {
         );
         let via_module = layer.forward(&x).unwrap().realize_f32();
 
-        let x2 = LazyTensor::from_f32(
-            x_data,
-            Shape::from_dims(&[n, cin, l]),
-            &Device::cpu(),
-        );
-        let w_t = x2.const_f32_like(
-            Arc::clone(&weight_arc),
-            Shape::from_dims(&[cin, cout, k]),
-        );
+        let x2 = LazyTensor::from_f32(x_data, Shape::from_dims(&[n, cin, l]), &Device::cpu());
+        let w_t = x2.const_f32_like(Arc::clone(&weight_arc), Shape::from_dims(&[cin, cout, k]));
         let direct = x2
             .conv_transpose1d(
                 &w_t,

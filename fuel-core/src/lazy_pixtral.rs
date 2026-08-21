@@ -44,11 +44,10 @@
 //! and the attention mask path deferred.
 
 use crate::lazy::{
-    load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
-    LazyTensor, WeightStorage,
+    LazyTensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
 };
 use crate::lazy_mistral::{
-    load_mistral_weights_with_prefix, MistralConfig, MistralModel, MistralWeights,
+    MistralConfig, MistralModel, MistralWeights, load_mistral_weights_with_prefix,
 };
 use crate::{Device, Result};
 use fuel_ir::Shape;
@@ -78,7 +77,8 @@ pub struct PixtralVisionConfig {
 
 impl PixtralVisionConfig {
     pub fn head_dim_resolved(&self) -> usize {
-        self.head_dim.unwrap_or(self.hidden_size / self.num_attention_heads)
+        self.head_dim
+            .unwrap_or(self.hidden_size / self.num_attention_heads)
     }
     pub fn num_patches_per_side(&self) -> usize {
         self.image_size / self.patch_size
@@ -162,11 +162,7 @@ pub struct PixtralModel {
 }
 
 impl PixtralModel {
-    pub fn forward(
-        &self,
-        pixel_values: &LazyTensor,
-        text_tokens: &[u32],
-    ) -> Result<LazyTensor> {
+    pub fn forward(&self, pixel_values: &LazyTensor, text_tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         assert_eq!(
             cfg.projector.out_dim, cfg.text.hidden_size,
@@ -182,10 +178,8 @@ impl PixtralModel {
             Arc::clone(&self.weights.text.token_embedding),
             Shape::from_dims(&[cfg.text.vocab_size, cfg.text.hidden_size]),
         );
-        let token_ids = pixel_values.const_u32_like(
-            text_tokens.to_vec(),
-            Shape::from_dims(&[text_len]),
-        );
+        let token_ids =
+            pixel_values.const_u32_like(text_tokens.to_vec(), Shape::from_dims(&[text_len]));
         let text_embeds = mistral_embed_lt
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[1, text_len, cfg.text.hidden_size]))?;
@@ -216,37 +210,34 @@ impl PixtralModel {
         // Patch Conv2d (no bias).
         let conv_w = pixel_values.const_f32_like(
             Arc::clone(&weights.patch_conv),
-            Shape::from_dims(&[cfg.hidden_size, cfg.num_channels, cfg.patch_size, cfg.patch_size]),
+            Shape::from_dims(&[
+                cfg.hidden_size,
+                cfg.num_channels,
+                cfg.patch_size,
+                cfg.patch_size,
+            ]),
         );
-        let conv_out = pixel_values.conv2d(
-            &conv_w,
-            None,
-            (cfg.patch_size, cfg.patch_size),
-            (0, 0),
-            1,
-        )?;
+        let conv_out =
+            pixel_values.conv2d(&conv_w, None, (cfg.patch_size, cfg.patch_size), (0, 0), 1)?;
         // (b, hidden, ph, pw) → (b, hidden, num_patches) → (b, num_patches, hidden)
         let patches = conv_out
             .reshape(Shape::from_dims(&[batch, cfg.hidden_size, np]))?
             .permute([0, 2, 1_usize])?;
 
         // Pre-encoder RmsNorm (Mistral-shape, no offset).
-        let pre = patches.rms_norm_affine(std::sync::Arc::clone(&weights.ln_pre_gain), cfg.rms_norm_eps)?;
+        let pre = patches.rms_norm_affine(
+            std::sync::Arc::clone(&weights.ln_pre_gain),
+            cfg.rms_norm_eps,
+        )?;
 
         // Precompute 2D RoPE cos/sin tables for all patches.
         let head_dim = cfg.head_dim_resolved();
         assert_eq!(head_dim % 2, 0, "head_dim must be even");
-        let (cos_data, sin_data) = build_pixtral_2d_rope_tables(
-            cfg.rope_theta, head_dim, np_side,
-        );
-        let cos = pixel_values.const_f32_like(
-            Arc::from(cos_data),
-            Shape::from_dims(&[np, head_dim]),
-        );
-        let sin = pixel_values.const_f32_like(
-            Arc::from(sin_data),
-            Shape::from_dims(&[np, head_dim]),
-        );
+        let (cos_data, sin_data) = build_pixtral_2d_rope_tables(cfg.rope_theta, head_dim, np_side);
+        let cos =
+            pixel_values.const_f32_like(Arc::from(cos_data), Shape::from_dims(&[np, head_dim]));
+        let sin =
+            pixel_values.const_f32_like(Arc::from(sin_data), Shape::from_dims(&[np, head_dim]));
 
         let mut h = pre;
         for block in &weights.blocks {
@@ -272,7 +263,10 @@ impl PixtralModel {
         let head_dim = cfg.head_dim_resolved();
 
         // Pre-attn RmsNorm.
-        let x_norm = x.rms_norm_affine(std::sync::Arc::clone(&block.attn_norm_gain), cfg.rms_norm_eps)?;
+        let x_norm = x.rms_norm_affine(
+            std::sync::Arc::clone(&block.attn_norm_gain),
+            cfg.rms_norm_eps,
+        )?;
 
         let q = block.q_proj.apply_linear(&x_norm, h, h)?;
         let k = block.k_proj.apply_linear(&x_norm, h, h)?;
@@ -298,23 +292,34 @@ impl PixtralModel {
         let h1 = x.add(&attn_out)?;
 
         // Pre-FFN RmsNorm.
-        let h1_norm = h1.rms_norm_affine(std::sync::Arc::clone(&block.ffn_norm_gain), cfg.rms_norm_eps)?;
-        let gate = block.gate_proj.apply_linear(&h1_norm, h, cfg.intermediate_size)?;
-        let up = block.up_proj.apply_linear(&h1_norm, h, cfg.intermediate_size)?;
+        let h1_norm = h1.rms_norm_affine(
+            std::sync::Arc::clone(&block.ffn_norm_gain),
+            cfg.rms_norm_eps,
+        )?;
+        let gate = block
+            .gate_proj
+            .apply_linear(&h1_norm, h, cfg.intermediate_size)?;
+        let up = block
+            .up_proj
+            .apply_linear(&h1_norm, h, cfg.intermediate_size)?;
         let activated = match cfg.activation {
             PixtralActivation::Silu => up.silu(),
             PixtralActivation::Gelu => up.gelu_erf(),
             PixtralActivation::GeluPytorchTanh => up.gelu(),
         };
         let ffn_inner = gate.mul(&activated)?;
-        let down = block.down_proj.apply_linear(&ffn_inner, cfg.intermediate_size, h)?;
+        let down = block
+            .down_proj
+            .apply_linear(&ffn_inner, cfg.intermediate_size, h)?;
         h1.add(&down)
     }
 
     fn apply_projector(&self, vision_out: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config.projector;
         let weights = &self.weights.projector;
-        let l1 = weights.linear_1.apply_linear(vision_out, cfg.in_dim, cfg.out_dim)?;
+        let l1 = weights
+            .linear_1
+            .apply_linear(vision_out, cfg.in_dim, cfg.out_dim)?;
         let l1_b_t = vision_out.const_f32_like(
             Arc::clone(&weights.linear_1_bias),
             Shape::from_dims(&[cfg.out_dim]),
@@ -325,7 +330,9 @@ impl PixtralModel {
             PixtralActivation::Gelu => l1.gelu_erf(),
             PixtralActivation::GeluPytorchTanh => l1.gelu(),
         };
-        let l2 = weights.linear_2.apply_linear(&activated, cfg.out_dim, cfg.out_dim)?;
+        let l2 = weights
+            .linear_2
+            .apply_linear(&activated, cfg.out_dim, cfg.out_dim)?;
         let l2_b_t = vision_out.const_f32_like(
             Arc::clone(&weights.linear_2_bias),
             Shape::from_dims(&[cfg.out_dim]),
@@ -419,47 +426,65 @@ pub fn load_pixtral_vision_weights(
     if patch_conv.len() != expected_patch {
         crate::bail!(
             "{prefix}patch_conv.weight: {} elts, expected {}",
-            patch_conv.len(), expected_patch,
+            patch_conv.len(),
+            expected_patch,
         );
     }
     let ln_pre_gain = load_tensor_as_f32(st, &format!("{prefix}ln_pre.weight"))?;
     if ln_pre_gain.len() != h {
         crate::bail!(
             "{prefix}ln_pre.weight: {} elts, expected {}",
-            ln_pre_gain.len(), h,
+            ln_pre_gain.len(),
+            h,
         );
     }
 
-    let mut blocks: Vec<PixtralVisionBlockWeights> =
-        Vec::with_capacity(cfg.num_hidden_layers);
+    let mut blocks: Vec<PixtralVisionBlockWeights> = Vec::with_capacity(cfg.num_hidden_layers);
     for i in 0..cfg.num_hidden_layers {
         let p = format!("{prefix}transformer.layers.{i}");
-        let attn_norm_gain = load_tensor_as_f32(
-            st, &format!("{p}.attention_norm.weight"),
-        )?;
+        let attn_norm_gain = load_tensor_as_f32(st, &format!("{p}.attention_norm.weight"))?;
         let q_proj = load_transposed_matrix_preserve_dtype(
-            st, &format!("{p}.attention.q_proj.weight"), h, h,
+            st,
+            &format!("{p}.attention.q_proj.weight"),
+            h,
+            h,
         )?;
         let k_proj = load_transposed_matrix_preserve_dtype(
-            st, &format!("{p}.attention.k_proj.weight"), h, h,
+            st,
+            &format!("{p}.attention.k_proj.weight"),
+            h,
+            h,
         )?;
         let v_proj = load_transposed_matrix_preserve_dtype(
-            st, &format!("{p}.attention.v_proj.weight"), h, h,
+            st,
+            &format!("{p}.attention.v_proj.weight"),
+            h,
+            h,
         )?;
         let o_proj = load_transposed_matrix_preserve_dtype(
-            st, &format!("{p}.attention.o_proj.weight"), h, h,
+            st,
+            &format!("{p}.attention.o_proj.weight"),
+            h,
+            h,
         )?;
-        let ffn_norm_gain = load_tensor_as_f32(
-            st, &format!("{p}.ffn_norm.weight"),
-        )?;
+        let ffn_norm_gain = load_tensor_as_f32(st, &format!("{p}.ffn_norm.weight"))?;
         let gate_proj = load_transposed_matrix_preserve_dtype(
-            st, &format!("{p}.feed_forward.gate_proj.weight"), inter, h,
+            st,
+            &format!("{p}.feed_forward.gate_proj.weight"),
+            inter,
+            h,
         )?;
         let up_proj = load_transposed_matrix_preserve_dtype(
-            st, &format!("{p}.feed_forward.up_proj.weight"), inter, h,
+            st,
+            &format!("{p}.feed_forward.up_proj.weight"),
+            inter,
+            h,
         )?;
         let down_proj = load_transposed_matrix_preserve_dtype(
-            st, &format!("{p}.feed_forward.down_proj.weight"), h, inter,
+            st,
+            &format!("{p}.feed_forward.down_proj.weight"),
+            h,
+            inter,
         )?;
         blocks.push(PixtralVisionBlockWeights {
             attn_norm_gain: Arc::from(attn_norm_gain),
@@ -490,27 +515,31 @@ pub fn load_pixtral_projector_weights(
     prefix: &str,
 ) -> Result<PixtralProjectorWeights> {
     let linear_1 = load_transposed_matrix_preserve_dtype(
-        st, &format!("{prefix}linear_1.weight"), cfg.out_dim, cfg.in_dim,
+        st,
+        &format!("{prefix}linear_1.weight"),
+        cfg.out_dim,
+        cfg.in_dim,
     )?;
-    let linear_1_bias = load_tensor_as_f32(
-        st, &format!("{prefix}linear_1.bias"),
-    )?;
+    let linear_1_bias = load_tensor_as_f32(st, &format!("{prefix}linear_1.bias"))?;
     if linear_1_bias.len() != cfg.out_dim {
         crate::bail!(
             "{prefix}linear_1.bias: {} elts, expected {}",
-            linear_1_bias.len(), cfg.out_dim,
+            linear_1_bias.len(),
+            cfg.out_dim,
         );
     }
     let linear_2 = load_transposed_matrix_preserve_dtype(
-        st, &format!("{prefix}linear_2.weight"), cfg.out_dim, cfg.out_dim,
+        st,
+        &format!("{prefix}linear_2.weight"),
+        cfg.out_dim,
+        cfg.out_dim,
     )?;
-    let linear_2_bias = load_tensor_as_f32(
-        st, &format!("{prefix}linear_2.bias"),
-    )?;
+    let linear_2_bias = load_tensor_as_f32(st, &format!("{prefix}linear_2.bias"))?;
     if linear_2_bias.len() != cfg.out_dim {
         crate::bail!(
             "{prefix}linear_2.bias: {} elts, expected {}",
-            linear_2_bias.len(), cfg.out_dim,
+            linear_2_bias.len(),
+            cfg.out_dim,
         );
     }
     Ok(PixtralProjectorWeights {
@@ -532,11 +561,14 @@ impl PixtralWeights {
         cfg: &PixtralConfig,
     ) -> Result<Self> {
         let vision = load_pixtral_vision_weights(st, &cfg.vision, "vision_tower.")?;
-        let projector = load_pixtral_projector_weights(
-            st, &cfg.projector, "multi_modal_projector.",
-        )?;
+        let projector =
+            load_pixtral_projector_weights(st, &cfg.projector, "multi_modal_projector.")?;
         let text = load_mistral_weights_with_prefix(st, &cfg.text, "language_model.")?;
-        Ok(PixtralWeights { vision, projector, text })
+        Ok(PixtralWeights {
+            vision,
+            projector,
+            text,
+        })
     }
 }
 
@@ -604,18 +636,24 @@ mod tests {
             &mut *nb,
         );
         let ln_pre_gain = Arc::from(vec![1.0_f32; h]);
-        let blocks: Vec<PixtralVisionBlockWeights> = (0..cfg.num_hidden_layers).map(|_| PixtralVisionBlockWeights {
-            attn_norm_gain: Arc::from(vec![1.0_f32; h]),
-            q_proj: WeightStorage::F32(vec_of(h * h, &mut *nb)),
-            k_proj: WeightStorage::F32(vec_of(h * h, &mut *nb)),
-            v_proj: WeightStorage::F32(vec_of(h * h, &mut *nb)),
-            o_proj: WeightStorage::F32(vec_of(h * h, &mut *nb)),
-            ffn_norm_gain: Arc::from(vec![1.0_f32; h]),
-            gate_proj: WeightStorage::F32(vec_of(h * inter, &mut *nb)),
-            up_proj: WeightStorage::F32(vec_of(h * inter, &mut *nb)),
-            down_proj: WeightStorage::F32(vec_of(inter * h, &mut *nb)),
-        }).collect();
-        PixtralVisionWeights { patch_conv, ln_pre_gain, blocks }
+        let blocks: Vec<PixtralVisionBlockWeights> = (0..cfg.num_hidden_layers)
+            .map(|_| PixtralVisionBlockWeights {
+                attn_norm_gain: Arc::from(vec![1.0_f32; h]),
+                q_proj: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+                k_proj: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+                v_proj: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+                o_proj: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+                ffn_norm_gain: Arc::from(vec![1.0_f32; h]),
+                gate_proj: WeightStorage::F32(vec_of(h * inter, &mut *nb)),
+                up_proj: WeightStorage::F32(vec_of(h * inter, &mut *nb)),
+                down_proj: WeightStorage::F32(vec_of(inter * h, &mut *nb)),
+            })
+            .collect();
+        PixtralVisionWeights {
+            patch_conv,
+            ln_pre_gain,
+            blocks,
+        }
     }
 
     fn tiny_projector_weights(cfg: &PixtralProjectorConfig) -> PixtralProjectorWeights {
@@ -644,23 +682,30 @@ mod tests {
         let kv = cfg.num_key_value_heads * cfg.head_dim;
         let inter = cfg.intermediate_size;
         let token_embedding = vec_of(cfg.vocab_size * h, &mut *nb);
-        let layers: Vec<LayerWeights> = (0..cfg.num_hidden_layers).map(|_| LayerWeights {
-            attn_q: WeightStorage::F32(vec_of(h * h, &mut *nb)),
-            attn_q_bias: None,
-            attn_k: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
-            attn_k_bias: None,
-            attn_v: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
-            attn_v_bias: None,
-            attn_o: WeightStorage::F32(vec_of(h * h, &mut *nb)),
-            ffn_gate: WeightStorage::F32(vec_of(h * inter, &mut *nb)),
-            ffn_up: WeightStorage::F32(vec_of(h * inter, &mut *nb)),
-            ffn_down: WeightStorage::F32(vec_of(inter * h, &mut *nb)),
-            attn_norm_gain: Arc::from(vec![1.0_f32; h]),
-            ffn_norm_gain: Arc::from(vec![1.0_f32; h]),
-        }).collect();
+        let layers: Vec<LayerWeights> = (0..cfg.num_hidden_layers)
+            .map(|_| LayerWeights {
+                attn_q: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+                attn_q_bias: None,
+                attn_k: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
+                attn_k_bias: None,
+                attn_v: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
+                attn_v_bias: None,
+                attn_o: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+                ffn_gate: WeightStorage::F32(vec_of(h * inter, &mut *nb)),
+                ffn_up: WeightStorage::F32(vec_of(h * inter, &mut *nb)),
+                ffn_down: WeightStorage::F32(vec_of(inter * h, &mut *nb)),
+                attn_norm_gain: Arc::from(vec![1.0_f32; h]),
+                ffn_norm_gain: Arc::from(vec![1.0_f32; h]),
+            })
+            .collect();
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb));
-        MistralWeights { token_embedding, layers, final_norm_gain, output }
+        MistralWeights {
+            token_embedding,
+            layers,
+            final_norm_gain,
+            output,
+        }
     }
 
     fn tiny_image(cfg: &PixtralVisionConfig) -> LazyTensor {
@@ -688,7 +733,10 @@ mod tests {
             projector: tiny_projector_weights(&p_cfg),
             text: tiny_text_weights(&t_cfg),
         };
-        let model = PixtralModel { config: cfg, weights };
+        let model = PixtralModel {
+            config: cfg,
+            weights,
+        };
         let img = tiny_image(&v_cfg);
         let toks = [1_u32, 2, 3];
         let logits = model.forward(&img, &toks).unwrap();
@@ -714,8 +762,8 @@ mod tests {
 
     mod load {
         use super::*;
-        use safetensors::tensor::TensorView;
         use safetensors::Dtype;
+        use safetensors::tensor::TensorView;
         use std::collections::HashMap;
 
         fn put(
@@ -741,7 +789,9 @@ mod tests {
                 "lazy_pixtral_load_{}_{}.safetensors",
                 std::process::id(),
                 std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos(),
             ));
             std::fs::write(&path, bytes).expect("write tempfile");
             path
@@ -764,67 +814,151 @@ mod tests {
             let vp = "vision_tower.";
             let h = v_cfg.hidden_size;
             let inter = v_cfg.intermediate_size;
-            put(&mut map, &format!("{vp}patch_conv.weight"),
+            put(
+                &mut map,
+                &format!("{vp}patch_conv.weight"),
                 &[h, v_cfg.num_channels, v_cfg.patch_size, v_cfg.patch_size],
-                &vec_n(h * v_cfg.num_channels * v_cfg.patch_size * v_cfg.patch_size));
+                &vec_n(h * v_cfg.num_channels * v_cfg.patch_size * v_cfg.patch_size),
+            );
             put(&mut map, &format!("{vp}ln_pre.weight"), &[h], &vec_n(h));
             for i in 0..v_cfg.num_hidden_layers {
                 let p = format!("{vp}transformer.layers.{i}");
-                put(&mut map, &format!("{p}.attention_norm.weight"), &[h], &vec_n(h));
+                put(
+                    &mut map,
+                    &format!("{p}.attention_norm.weight"),
+                    &[h],
+                    &vec_n(h),
+                );
                 for proj in &["q_proj", "k_proj", "v_proj", "o_proj"] {
-                    put(&mut map, &format!("{p}.attention.{proj}.weight"),
-                        &[h, h], &vec_n(h * h));
+                    put(
+                        &mut map,
+                        &format!("{p}.attention.{proj}.weight"),
+                        &[h, h],
+                        &vec_n(h * h),
+                    );
                 }
                 put(&mut map, &format!("{p}.ffn_norm.weight"), &[h], &vec_n(h));
-                put(&mut map, &format!("{p}.feed_forward.gate_proj.weight"),
-                    &[inter, h], &vec_n(inter * h));
-                put(&mut map, &format!("{p}.feed_forward.up_proj.weight"),
-                    &[inter, h], &vec_n(inter * h));
-                put(&mut map, &format!("{p}.feed_forward.down_proj.weight"),
-                    &[h, inter], &vec_n(h * inter));
+                put(
+                    &mut map,
+                    &format!("{p}.feed_forward.gate_proj.weight"),
+                    &[inter, h],
+                    &vec_n(inter * h),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.feed_forward.up_proj.weight"),
+                    &[inter, h],
+                    &vec_n(inter * h),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.feed_forward.down_proj.weight"),
+                    &[h, inter],
+                    &vec_n(h * inter),
+                );
             }
 
             // Projector under `multi_modal_projector.*`
             let pp = "multi_modal_projector.";
-            put(&mut map, &format!("{pp}linear_1.weight"),
-                &[p_cfg.out_dim, p_cfg.in_dim], &vec_n(p_cfg.out_dim * p_cfg.in_dim));
-            put(&mut map, &format!("{pp}linear_1.bias"),
-                &[p_cfg.out_dim], &vec_n(p_cfg.out_dim));
-            put(&mut map, &format!("{pp}linear_2.weight"),
-                &[p_cfg.out_dim, p_cfg.out_dim], &vec_n(p_cfg.out_dim * p_cfg.out_dim));
-            put(&mut map, &format!("{pp}linear_2.bias"),
-                &[p_cfg.out_dim], &vec_n(p_cfg.out_dim));
+            put(
+                &mut map,
+                &format!("{pp}linear_1.weight"),
+                &[p_cfg.out_dim, p_cfg.in_dim],
+                &vec_n(p_cfg.out_dim * p_cfg.in_dim),
+            );
+            put(
+                &mut map,
+                &format!("{pp}linear_1.bias"),
+                &[p_cfg.out_dim],
+                &vec_n(p_cfg.out_dim),
+            );
+            put(
+                &mut map,
+                &format!("{pp}linear_2.weight"),
+                &[p_cfg.out_dim, p_cfg.out_dim],
+                &vec_n(p_cfg.out_dim * p_cfg.out_dim),
+            );
+            put(
+                &mut map,
+                &format!("{pp}linear_2.bias"),
+                &[p_cfg.out_dim],
+                &vec_n(p_cfg.out_dim),
+            );
 
             // Mistral text decoder under `language_model.*`
             let lp = "language_model.";
             let d = t_cfg.hidden_size;
             let kv = t_cfg.num_key_value_heads * t_cfg.head_dim;
-            put(&mut map, &format!("{lp}model.embed_tokens.weight"),
-                &[t_cfg.vocab_size, d], &vec_n(t_cfg.vocab_size * d));
+            put(
+                &mut map,
+                &format!("{lp}model.embed_tokens.weight"),
+                &[t_cfg.vocab_size, d],
+                &vec_n(t_cfg.vocab_size * d),
+            );
             for i in 0..t_cfg.num_hidden_layers {
                 let p = format!("{lp}model.layers.{i}");
-                put(&mut map, &format!("{p}.self_attn.q_proj.weight"),
-                    &[d, d], &vec_n(d * d));
-                put(&mut map, &format!("{p}.self_attn.k_proj.weight"),
-                    &[kv, d], &vec_n(kv * d));
-                put(&mut map, &format!("{p}.self_attn.v_proj.weight"),
-                    &[kv, d], &vec_n(kv * d));
-                put(&mut map, &format!("{p}.self_attn.o_proj.weight"),
-                    &[d, d], &vec_n(d * d));
-                put(&mut map, &format!("{p}.mlp.gate_proj.weight"),
-                    &[t_cfg.intermediate_size, d], &vec_n(t_cfg.intermediate_size * d));
-                put(&mut map, &format!("{p}.mlp.up_proj.weight"),
-                    &[t_cfg.intermediate_size, d], &vec_n(t_cfg.intermediate_size * d));
-                put(&mut map, &format!("{p}.mlp.down_proj.weight"),
-                    &[d, t_cfg.intermediate_size], &vec_n(d * t_cfg.intermediate_size));
-                put(&mut map, &format!("{p}.input_layernorm.weight"),
-                    &[d], &vec_n(d));
-                put(&mut map, &format!("{p}.post_attention_layernorm.weight"),
-                    &[d], &vec_n(d));
+                put(
+                    &mut map,
+                    &format!("{p}.self_attn.q_proj.weight"),
+                    &[d, d],
+                    &vec_n(d * d),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.self_attn.k_proj.weight"),
+                    &[kv, d],
+                    &vec_n(kv * d),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.self_attn.v_proj.weight"),
+                    &[kv, d],
+                    &vec_n(kv * d),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.self_attn.o_proj.weight"),
+                    &[d, d],
+                    &vec_n(d * d),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.mlp.gate_proj.weight"),
+                    &[t_cfg.intermediate_size, d],
+                    &vec_n(t_cfg.intermediate_size * d),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.mlp.up_proj.weight"),
+                    &[t_cfg.intermediate_size, d],
+                    &vec_n(t_cfg.intermediate_size * d),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.mlp.down_proj.weight"),
+                    &[d, t_cfg.intermediate_size],
+                    &vec_n(d * t_cfg.intermediate_size),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.input_layernorm.weight"),
+                    &[d],
+                    &vec_n(d),
+                );
+                put(
+                    &mut map,
+                    &format!("{p}.post_attention_layernorm.weight"),
+                    &[d],
+                    &vec_n(d),
+                );
             }
             put(&mut map, &format!("{lp}model.norm.weight"), &[d], &vec_n(d));
-            put(&mut map, &format!("{lp}lm_head.weight"),
-                &[t_cfg.vocab_size, d], &vec_n(t_cfg.vocab_size * d));
+            put(
+                &mut map,
+                &format!("{lp}lm_head.weight"),
+                &[t_cfg.vocab_size, d],
+                &vec_n(t_cfg.vocab_size * d),
+            );
 
             serialize_to_tempfile(&map)
         }
@@ -850,11 +984,16 @@ mod tests {
             assert_eq!(w.text.layers.len(), t_cfg.num_hidden_layers);
             assert_eq!(w.projector.linear_1_bias.len(), p_cfg.out_dim);
             assert_eq!(w.projector.linear_2_bias.len(), p_cfg.out_dim);
-            assert_eq!(w.text.token_embedding.len(),
-                t_cfg.vocab_size * t_cfg.hidden_size);
+            assert_eq!(
+                w.text.token_embedding.len(),
+                t_cfg.vocab_size * t_cfg.hidden_size
+            );
 
             // Forward must produce finite logits with the loaded weights.
-            let model = PixtralModel { config: cfg, weights: w };
+            let model = PixtralModel {
+                config: cfg,
+                weights: w,
+            };
             let img = tiny_image(&v_cfg);
             let toks = [1_u32, 2, 3];
             let logits = model.forward(&img, &toks).unwrap().realize_f32();

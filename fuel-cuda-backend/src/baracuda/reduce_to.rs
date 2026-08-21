@@ -116,9 +116,9 @@ fn reduce_to(
 macro_rules! reduce_to_kernel {
     ($name:ident, $run:path, $elem:expr, $label:expr $(,)?) => {
         #[doc = concat!(
-            "Broadcast-reverse `", $label, "` via baracuda's ",
-            "`reduce_*_to` family. Strided input, contiguous output.",
-        )]
+                                    "Broadcast-reverse `", $label, "` via baracuda's ",
+                                    "`reduce_*_to` family. Strided input, contiguous output.",
+                                )]
         pub fn $name(
             src: &CudaStorageBytes,
             input_layout: &Layout,
@@ -126,19 +126,64 @@ macro_rules! reduce_to_kernel {
             output_shape: &[usize],
         ) -> Result<CudaStorageBytes> {
             reduce_to(
-                src, input_layout, input_shape, output_shape,
-                $run, $elem, $label,
+                src,
+                input_layout,
+                input_shape,
+                output_shape,
+                $run,
+                $elem,
+                $label,
             )
         }
     };
 }
 
-reduce_to_kernel!(reduce_sum_to_f32,  sys::baracuda_kernels_reduce_sum_to_f32_run,  4, "reduce_sum_to_f32");
-reduce_to_kernel!(reduce_sum_to_f64,  sys::baracuda_kernels_reduce_sum_to_f64_run,  8, "reduce_sum_to_f64");
-reduce_to_kernel!(reduce_sum_to_f16,  sys::baracuda_kernels_reduce_sum_to_f16_run,  2, "reduce_sum_to_f16");
-reduce_to_kernel!(reduce_sum_to_bf16, sys::baracuda_kernels_reduce_sum_to_bf16_run, 2, "reduce_sum_to_bf16");
+reduce_to_kernel!(
+    reduce_sum_to_f32,
+    sys::baracuda_kernels_reduce_sum_to_f32_run,
+    4,
+    "reduce_sum_to_f32"
+);
+reduce_to_kernel!(
+    reduce_sum_to_f64,
+    sys::baracuda_kernels_reduce_sum_to_f64_run,
+    8,
+    "reduce_sum_to_f64"
+);
+reduce_to_kernel!(
+    reduce_sum_to_f16,
+    sys::baracuda_kernels_reduce_sum_to_f16_run,
+    2,
+    "reduce_sum_to_f16"
+);
+reduce_to_kernel!(
+    reduce_sum_to_bf16,
+    sys::baracuda_kernels_reduce_sum_to_bf16_run,
+    2,
+    "reduce_sum_to_bf16"
+);
 
-reduce_to_kernel!(reduce_max_to_f32,  sys::baracuda_kernels_reduce_max_to_f32_run,  4, "reduce_max_to_f32");
-reduce_to_kernel!(reduce_max_to_f64,  sys::baracuda_kernels_reduce_max_to_f64_run,  8, "reduce_max_to_f64");
-reduce_to_kernel!(reduce_max_to_f16,  sys::baracuda_kernels_reduce_max_to_f16_run,  2, "reduce_max_to_f16");
-reduce_to_kernel!(reduce_max_to_bf16, sys::baracuda_kernels_reduce_max_to_bf16_run, 2, "reduce_max_to_bf16");
+reduce_to_kernel!(
+    reduce_max_to_f32,
+    sys::baracuda_kernels_reduce_max_to_f32_run,
+    4,
+    "reduce_max_to_f32"
+);
+reduce_to_kernel!(
+    reduce_max_to_f64,
+    sys::baracuda_kernels_reduce_max_to_f64_run,
+    8,
+    "reduce_max_to_f64"
+);
+reduce_to_kernel!(
+    reduce_max_to_f16,
+    sys::baracuda_kernels_reduce_max_to_f16_run,
+    2,
+    "reduce_max_to_f16"
+);
+reduce_to_kernel!(
+    reduce_max_to_bf16,
+    sys::baracuda_kernels_reduce_max_to_bf16_run,
+    2,
+    "reduce_max_to_bf16"
+);

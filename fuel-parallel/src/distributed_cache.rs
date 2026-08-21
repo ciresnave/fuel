@@ -1,4 +1,4 @@
-﻿//! Distributed KV cache coordination for multi-GPU inference.
+//! Distributed KV cache coordination for multi-GPU inference.
 //!
 //! When running pipeline- or tensor-parallel inference, the KV cache for each
 //! attention layer must be kept in sync across devices. This module provides
@@ -59,12 +59,27 @@ impl CacheShardInfo {
         let start = per_rank * rank + rank.min(remainder);
         let count = per_rank + if rank < remainder { 1 } else { 0 };
         let layers: Vec<usize> = (start..start + count).collect();
-        Self { rank, world_size, num_layers, layers }
+        Self {
+            rank,
+            world_size,
+            num_layers,
+            layers,
+        }
     }
 
     /// Create a shard with explicit layer assignments.
-    pub fn with_layers(rank: usize, world_size: usize, num_layers: usize, layers: Vec<usize>) -> Self {
-        Self { rank, world_size, num_layers, layers }
+    pub fn with_layers(
+        rank: usize,
+        world_size: usize,
+        num_layers: usize,
+        layers: Vec<usize>,
+    ) -> Self {
+        Self {
+            rank,
+            world_size,
+            num_layers,
+            layers,
+        }
     }
 
     /// Rank of this shard.
@@ -162,13 +177,24 @@ impl CacheSyncProtocol {
     /// Record a synchronisation event.
     pub fn record_event(&mut self, event: SyncEvent) {
         match &event {
-            SyncEvent::ShardUpdated { rank, layer, seq_pos } => {
+            SyncEvent::ShardUpdated {
+                rank,
+                layer,
+                seq_pos,
+            } => {
                 self.positions.insert((*rank, *layer), *seq_pos);
             }
-            SyncEvent::PrefixConfirmed { prefix_id, num_tokens } => {
+            SyncEvent::PrefixConfirmed {
+                prefix_id,
+                num_tokens,
+            } => {
                 self.confirmed_prefixes.insert(*prefix_id, *num_tokens);
             }
-            SyncEvent::ShardEvicted { rank, layer, seq_pos } => {
+            SyncEvent::ShardEvicted {
+                rank,
+                layer,
+                seq_pos,
+            } => {
                 self.positions.insert((*rank, *layer), *seq_pos);
             }
             SyncEvent::FlushAll => {
@@ -244,7 +270,11 @@ pub struct CacheRoutingHint {
 impl CacheRoutingHint {
     /// Create a routing hint.
     pub fn new(prefix_id: u64, relevant_ranks: Vec<usize>, reusable_tokens: usize) -> Self {
-        Self { prefix_id, relevant_ranks, reusable_tokens }
+        Self {
+            prefix_id,
+            relevant_ranks,
+            reusable_tokens,
+        }
     }
 
     /// Whether this hint has any ranks to notify.
@@ -289,14 +319,22 @@ mod tests {
     fn owns_layer() {
         let shard = CacheShardInfo::new(1, 2, 8);
         assert!(!shard.owns_layer(0)); // layer 0 belongs to rank 0
-        assert!(shard.owns_layer(4));  // layer 4 belongs to rank 1
+        assert!(shard.owns_layer(4)); // layer 4 belongs to rank 1
     }
 
     #[test]
     fn protocol_track_updates() {
         let mut proto = CacheSyncProtocol::new(2, 4);
-        proto.record_event(SyncEvent::ShardUpdated { rank: 0, layer: 0, seq_pos: 10 });
-        proto.record_event(SyncEvent::ShardUpdated { rank: 1, layer: 0, seq_pos: 8 });
+        proto.record_event(SyncEvent::ShardUpdated {
+            rank: 0,
+            layer: 0,
+            seq_pos: 10,
+        });
+        proto.record_event(SyncEvent::ShardUpdated {
+            rank: 1,
+            layer: 0,
+            seq_pos: 8,
+        });
         assert_eq!(proto.latest_position(0, 0), Some(10));
         assert_eq!(proto.latest_position(1, 0), Some(8));
         assert_eq!(proto.min_synced_position(0), Some(8));
@@ -305,7 +343,11 @@ mod tests {
     #[test]
     fn protocol_min_synced_none_if_missing() {
         let mut proto = CacheSyncProtocol::new(3, 2);
-        proto.record_event(SyncEvent::ShardUpdated { rank: 0, layer: 0, seq_pos: 5 });
+        proto.record_event(SyncEvent::ShardUpdated {
+            rank: 0,
+            layer: 0,
+            seq_pos: 5,
+        });
         // rank 1 and 2 haven't reported
         assert_eq!(proto.min_synced_position(0), None);
     }
@@ -314,7 +356,10 @@ mod tests {
     fn protocol_prefix_confirmation() {
         let mut proto = CacheSyncProtocol::new(2, 4);
         assert!(!proto.is_prefix_confirmed(0xABCD));
-        proto.record_event(SyncEvent::PrefixConfirmed { prefix_id: 0xABCD, num_tokens: 64 });
+        proto.record_event(SyncEvent::PrefixConfirmed {
+            prefix_id: 0xABCD,
+            num_tokens: 64,
+        });
         assert!(proto.is_prefix_confirmed(0xABCD));
         assert_eq!(proto.prefix_tokens(0xABCD), Some(64));
     }
@@ -322,8 +367,15 @@ mod tests {
     #[test]
     fn protocol_flush_all() {
         let mut proto = CacheSyncProtocol::new(2, 4);
-        proto.record_event(SyncEvent::ShardUpdated { rank: 0, layer: 0, seq_pos: 10 });
-        proto.record_event(SyncEvent::PrefixConfirmed { prefix_id: 1, num_tokens: 5 });
+        proto.record_event(SyncEvent::ShardUpdated {
+            rank: 0,
+            layer: 0,
+            seq_pos: 10,
+        });
+        proto.record_event(SyncEvent::PrefixConfirmed {
+            prefix_id: 1,
+            num_tokens: 5,
+        });
         proto.record_event(SyncEvent::FlushAll);
         assert_eq!(proto.latest_position(0, 0), None);
         assert!(!proto.is_prefix_confirmed(1));
@@ -333,7 +385,11 @@ mod tests {
     fn protocol_log_bounded() {
         let mut proto = CacheSyncProtocol::new(1, 1).with_max_log_size(3);
         for i in 0..10 {
-            proto.record_event(SyncEvent::ShardUpdated { rank: 0, layer: 0, seq_pos: i });
+            proto.record_event(SyncEvent::ShardUpdated {
+                rank: 0,
+                layer: 0,
+                seq_pos: i,
+            });
         }
         assert_eq!(proto.event_count(), 3);
     }
@@ -341,8 +397,16 @@ mod tests {
     #[test]
     fn protocol_recent_events() {
         let mut proto = CacheSyncProtocol::new(1, 1);
-        proto.record_event(SyncEvent::ShardUpdated { rank: 0, layer: 0, seq_pos: 1 });
-        proto.record_event(SyncEvent::ShardUpdated { rank: 0, layer: 0, seq_pos: 2 });
+        proto.record_event(SyncEvent::ShardUpdated {
+            rank: 0,
+            layer: 0,
+            seq_pos: 1,
+        });
+        proto.record_event(SyncEvent::ShardUpdated {
+            rank: 0,
+            layer: 0,
+            seq_pos: 2,
+        });
         proto.record_event(SyncEvent::FlushAll);
         let recent = proto.recent_events(2);
         assert_eq!(recent.len(), 2);

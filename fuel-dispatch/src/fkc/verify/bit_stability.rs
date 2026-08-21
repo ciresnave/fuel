@@ -14,6 +14,12 @@
 //! malformed inputs (empty probes, zero iters) and reports the divergence
 //! (or lack of one) as data.
 
+// Staged verification machinery (V-FKC-9 Tasks 4.4-4.6), kept awaiting its
+// first consumer — see the NOTE in `fkc/verify/mod.rs`. dead_code is allowed
+// here under `-D warnings` until that consumer lands; re-remove this allow
+// alongside it.
+#![allow(dead_code)]
+
 use crate::kernel::BindingEntry;
 use fuel_ir::DType;
 
@@ -66,7 +72,11 @@ pub enum VerifyOutcome {
 /// invokers (`ConstInvoker`, `FlakyInvoker`) to exercise the verification
 /// logic without any hardware.
 pub trait KernelInvoker {
-    fn invoke(&self, entry: &BindingEntry, inputs: &[HostTensor]) -> Result<HostTensor, VerifyError>;
+    fn invoke(
+        &self,
+        entry: &BindingEntry,
+        inputs: &[HostTensor],
+    ) -> Result<HostTensor, VerifyError>;
 }
 
 /// Empirical bit-stability check (`bit_stable_on_same_hardware` claim, FKC
@@ -125,7 +135,7 @@ pub fn fill_deterministic(len: usize, mut seed: u64) -> Vec<f32> {
 #[cfg(test)]
 mod fake_tests {
     use super::*;
-    use crate::fkc::verify::ulp::{verify_precision_bound, Bound};
+    use crate::fkc::verify::ulp::{Bound, verify_precision_bound};
     use fuel_ir::DType;
     use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -133,7 +143,11 @@ mod fake_tests {
     struct ConstInvoker(Vec<u8>);
     impl KernelInvoker for ConstInvoker {
         fn invoke(&self, _e: &BindingEntry, _i: &[HostTensor]) -> Result<HostTensor, VerifyError> {
-            Ok(HostTensor { dtype: DType::F32, shape: vec![1], bytes: self.0.clone() })
+            Ok(HostTensor {
+                dtype: DType::F32,
+                shape: vec![1],
+                bytes: self.0.clone(),
+            })
         }
     }
 
@@ -144,12 +158,20 @@ mod fake_tests {
     impl KernelInvoker for FlakyInvoker {
         fn invoke(&self, _e: &BindingEntry, _i: &[HostTensor]) -> Result<HostTensor, VerifyError> {
             let n = self.0.fetch_add(1, Ordering::Relaxed);
-            Ok(HostTensor { dtype: DType::F32, shape: vec![1], bytes: vec![n] })
+            Ok(HostTensor {
+                dtype: DType::F32,
+                shape: vec![1],
+                bytes: vec![n],
+            })
         }
     }
 
     fn probe() -> ProbeInputs {
-        vec![HostTensor { dtype: DType::F32, shape: vec![1], bytes: vec![0, 0, 0, 0] }]
+        vec![HostTensor {
+            dtype: DType::F32,
+            shape: vec![1],
+            bytes: vec![0, 0, 0, 0],
+        }]
     }
 
     /// Constructs a minimal `BindingEntry` literal for verifier tests. Must
@@ -186,7 +208,9 @@ mod fake_tests {
             VerifyOutcome::Pass
         ));
         match verify_bit_stability(&FlakyInvoker(AtomicU8::new(0)), &e, &[probe()], 16).unwrap() {
-            VerifyOutcome::Fail { detail } => assert!(detail.contains("diverged"), "detail: {detail}"),
+            VerifyOutcome::Fail { detail } => {
+                assert!(detail.contains("diverged"), "detail: {detail}")
+            }
             other => panic!("expected Fail, got {other:?}"),
         }
     }
@@ -197,11 +221,25 @@ mod fake_tests {
         let reference = ConstInvoker(1.0f32.to_le_bytes().to_vec());
         let candidate = ConstInvoker(1.5f32.to_le_bytes().to_vec());
         assert!(matches!(
-            verify_precision_bound(&candidate, &reference, &e, &[probe()], Bound::MaxAbsolute(0.25)).unwrap(),
+            verify_precision_bound(
+                &candidate,
+                &reference,
+                &e,
+                &[probe()],
+                Bound::MaxAbsolute(0.25)
+            )
+            .unwrap(),
             VerifyOutcome::Fail { .. }
         ));
         assert!(matches!(
-            verify_precision_bound(&candidate, &reference, &e, &[probe()], Bound::MaxAbsolute(1.0)).unwrap(),
+            verify_precision_bound(
+                &candidate,
+                &reference,
+                &e,
+                &[probe()],
+                Bound::MaxAbsolute(1.0)
+            )
+            .unwrap(),
             VerifyOutcome::Pass
         ));
     }

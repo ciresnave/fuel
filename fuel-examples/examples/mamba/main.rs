@@ -9,9 +9,9 @@ use clap::{Parser, ValueEnum};
 use std::io::Write;
 use std::sync::Arc;
 
-use fuel::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype, WeightStorage};
-use fuel::lazy_mamba::{MambaConfig, MambaLayerWeights, MambaModel, MambaWeights, D_CONV, D_STATE};
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use fuel::lazy::{WeightStorage, load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+use fuel::lazy_mamba::{D_CONV, D_STATE, MambaConfig, MambaLayerWeights, MambaModel, MambaWeights};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 use tokenizers::Tokenizer;
 
 #[derive(Parser, ValueEnum, Clone, Copy, PartialEq, Eq, Debug)]
@@ -225,23 +225,19 @@ fn load_mamba_weights(
     let final_norm_gain = load_tensor_as_f32(st, "backbone.norm_f.weight")?;
     // lm_head is tied to embedding in Mamba — transpose embedding for matmul.
     // Try loading lm_head.weight first; fall back to tied.
-    let output: WeightStorage = match load_transposed_matrix_preserve_dtype(
-        st,
-        "lm_head.weight",
-        vocab_padded,
-        d_model,
-    ) {
-        Ok(w) => w,
-        Err(_) => {
-            let mut transposed = vec![0.0_f32; d_model * vocab_padded];
-            for i in 0..vocab_padded {
-                for j in 0..d_model {
-                    transposed[j * vocab_padded + i] = token_embedding[i * d_model + j];
+    let output: WeightStorage =
+        match load_transposed_matrix_preserve_dtype(st, "lm_head.weight", vocab_padded, d_model) {
+            Ok(w) => w,
+            Err(_) => {
+                let mut transposed = vec![0.0_f32; d_model * vocab_padded];
+                for i in 0..vocab_padded {
+                    for j in 0..d_model {
+                        transposed[j * vocab_padded + i] = token_embedding[i * d_model + j];
+                    }
                 }
+                WeightStorage::F32(Arc::from(transposed))
             }
-            WeightStorage::F32(Arc::from(transposed))
-        }
-    };
+        };
 
     Ok(MambaWeights {
         token_embedding: Arc::from(token_embedding),
@@ -414,7 +410,10 @@ fn sample(logits: &[f32], temperature: f32, top_p: Option<f32>, seed: u64) -> u3
     }
     let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let inv_t = 1.0 / temperature.max(1e-6);
-    let mut probs: Vec<f32> = logits.iter().map(|&x| ((x - max_l) * inv_t).exp()).collect();
+    let mut probs: Vec<f32> = logits
+        .iter()
+        .map(|&x| ((x - max_l) * inv_t).exp())
+        .collect();
     let sum: f32 = probs.iter().sum();
     for p in &mut probs {
         *p /= sum.max(1e-30);

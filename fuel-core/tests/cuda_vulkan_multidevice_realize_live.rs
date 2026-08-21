@@ -35,9 +35,9 @@ use std::sync::Arc;
 
 use fuel_core::lazy::LazyTensor;
 use fuel_cuda_backend::CudaDevice;
-use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
 use fuel_graph::{NodeId, Op};
-use fuel_ir::{probe::BackendId, DeviceLocation, Shape};
+use fuel_ir::{DeviceLocation, Shape, probe::BackendId};
+use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
 
 fn cuda_or_skip() -> Option<CudaDevice> {
     match CudaDevice::new(0) {
@@ -69,7 +69,10 @@ fn vulkan_amd_or_skip() -> Option<Arc<VulkanBackend>> {
     // cheaply, so just take index 1 if it exists, else index 0.
     for idx in [1usize, 0usize] {
         if let Ok(b) = VulkanBackend::with_selection(DeviceSelection::Index(idx)) {
-            eprintln!("Vulkan: selected device by index {idx} (gpu_id={})", b.gpu_id);
+            eprintln!(
+                "Vulkan: selected device by index {idx} (gpu_id={})",
+                b.gpu_id
+            );
             return Some(Arc::new(b));
         }
     }
@@ -112,7 +115,9 @@ fn place(t: &LazyTensor, loc: DeviceLocation) {
 #[ignore = "requires a live CUDA device + a Vulkan device (AMD iGPU)"]
 fn two_subdags_cuda_and_vulkan_realize_in_one_pass() {
     let Some(cuda) = cuda_or_skip() else { return };
-    let Some(vk) = vulkan_amd_or_skip() else { return };
+    let Some(vk) = vulkan_amd_or_skip() else {
+        return;
+    };
 
     let vk_loc = DeviceLocation::Vulkan { gpu_id: vk.gpu_id };
     let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
@@ -240,7 +245,9 @@ fn two_subdags_cuda_and_vulkan_realize_in_one_pass() {
                 if let Some(&src) = g.node(NodeId(i)).inputs.first() {
                     if matches!(
                         g.node(src).op,
-                        Op::Copy { target: DeviceLocation::Cpu }
+                        Op::Copy {
+                            target: DeviceLocation::Cpu
+                        }
                     ) {
                         found_two_hop_vk_to_cuda = true;
                     }

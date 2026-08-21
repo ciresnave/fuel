@@ -36,7 +36,7 @@
 
 use vulkane::safe::*;
 
-use crate::{VulkanBackend, vk_err};
+use crate::{vk_err, VulkanBackend};
 
 /// A captured, reusable command buffer: a run's compute dispatches
 /// recorded once and replayable via a single `vkQueueSubmit`.
@@ -143,7 +143,9 @@ mod tests {
     }
 
     fn from_bytes(b: &[u8]) -> Vec<f32> {
-        b.chunks_exact(4)
+        b.as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect()
     }
@@ -160,7 +162,9 @@ mod tests {
     #[test]
     #[ignore = "requires a live Vulkan device"]
     fn capture_replay_rebind_affine() {
-        let Some(backend) = backend_or_skip() else { return };
+        let Some(backend) = backend_or_skip() else {
+            return;
+        };
         let n = 4usize;
         let bytes = n * std::mem::size_of::<f32>();
         let layout = Layout::contiguous(Shape::from_dims(&[n]));

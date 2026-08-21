@@ -88,8 +88,11 @@ impl T5Config {
     pub fn t5_small() -> Self {
         Self {
             vocab_size: 32128,
-            d_model: 512, d_kv: 64, d_ff: 2048,
-            num_layers: 6, num_decoder_layers: None,
+            d_model: 512,
+            d_kv: 64,
+            d_ff: 2048,
+            num_layers: 6,
+            num_decoder_layers: None,
             num_heads: 8,
             relative_attention_num_buckets: 32,
             relative_attention_max_distance: 128,
@@ -111,8 +114,15 @@ pub struct T5AttentionWeights {
 
 #[derive(Debug, Clone)]
 pub enum T5FfnWeights {
-    Dense { wi: WeightStorage, wo: WeightStorage },
-    Gated { wi_0: WeightStorage, wi_1: WeightStorage, wo: WeightStorage },
+    Dense {
+        wi: WeightStorage,
+        wo: WeightStorage,
+    },
+    Gated {
+        wi_0: WeightStorage,
+        wi_1: WeightStorage,
+        wo: WeightStorage,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -263,13 +273,13 @@ impl T5Model {
     /// Build per-token embeddings without running encoder or decoder.
     /// Returns `(1, seq, d_model)`. T5 has tied src/tgt embeddings
     /// (shared_embedding); the same table serves both sides.
-    pub fn embed_tokens_anchored(
-        &self, anchor: &LazyTensor, tokens: &[u32],
-    ) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.shared_embedding.clone(),
-            cfg.vocab_size, cfg.d_model, tokens,
+            cfg.vocab_size,
+            cfg.d_model,
+            tokens,
         )
     }
 
@@ -338,13 +348,16 @@ impl T5Model {
         if src_len == 0 {
             return Err(crate::Error::Msg(
                 "T5Model::forward_encoder_embeds: src_len must be > 0".into(),
-            ).bt());
+            )
+            .bt());
         }
         let mut x = src_embeds.clone();
 
         let pos_bias = compute_position_bias(
-            src_embeds, &self.weights.encoder_rel_bias,
-            src_len, src_len,
+            src_embeds,
+            &self.weights.encoder_rel_bias,
+            src_len,
+            src_len,
             cfg.num_heads,
             cfg.relative_attention_num_buckets,
             cfg.relative_attention_max_distance,
@@ -354,15 +367,13 @@ impl T5Model {
             x = self.apply_encoder_layer(&x, layer, &pos_bias)?;
         }
 
-        x.rms_norm_affine(std::sync::Arc::clone(&self.weights.encoder_final_norm_gain), cfg.layer_norm_epsilon)
+        x.rms_norm_affine(
+            std::sync::Arc::clone(&self.weights.encoder_final_norm_gain),
+            cfg.layer_norm_epsilon,
+        )
     }
 
-    fn decode(
-        &self,
-        embed: &LazyTensor,
-        tgt: &[u32],
-        enc_out: &LazyTensor,
-    ) -> Result<LazyTensor> {
+    fn decode(&self, embed: &LazyTensor, tgt: &[u32], enc_out: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
         let tgt_len = tgt.len();
         let batch = 1;
@@ -391,13 +402,16 @@ impl T5Model {
         if tgt_len == 0 {
             return Err(crate::Error::Msg(
                 "T5Model::forward_decoder_embeds: tgt_len must be > 0".into(),
-            ).bt());
+            )
+            .bt());
         }
         let mut x = tgt_embeds.clone();
 
         let pos_bias = compute_position_bias(
-            tgt_embeds, &self.weights.decoder_rel_bias,
-            tgt_len, tgt_len,
+            tgt_embeds,
+            &self.weights.decoder_rel_bias,
+            tgt_len,
+            tgt_len,
             cfg.num_heads,
             cfg.relative_attention_num_buckets,
             cfg.relative_attention_max_distance,
@@ -409,16 +423,17 @@ impl T5Model {
                 causal_mask[i * tgt_len + j] = f32::NEG_INFINITY;
             }
         }
-        let causal = tgt_embeds.const_f32_like(
-            causal_mask,
-            Shape::from_dims(&[1, 1, tgt_len, tgt_len]),
-        );
+        let causal =
+            tgt_embeds.const_f32_like(causal_mask, Shape::from_dims(&[1, 1, tgt_len, tgt_len]));
 
         for layer in &self.weights.decoder_layers {
             x = self.apply_decoder_layer(&x, layer, enc_out, &pos_bias, &causal)?;
         }
 
-        x.rms_norm_affine(std::sync::Arc::clone(&self.weights.decoder_final_norm_gain), cfg.layer_norm_epsilon)
+        x.rms_norm_affine(
+            std::sync::Arc::clone(&self.weights.decoder_final_norm_gain),
+            cfg.layer_norm_epsilon,
+        )
     }
 
     fn apply_encoder_layer(
@@ -428,11 +443,17 @@ impl T5Model {
         pos_bias: &LazyTensor,
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
-        let x_norm = x.rms_norm_affine(std::sync::Arc::clone(&layer.self_attn_norm_gain), cfg.layer_norm_epsilon)?;
+        let x_norm = x.rms_norm_affine(
+            std::sync::Arc::clone(&layer.self_attn_norm_gain),
+            cfg.layer_norm_epsilon,
+        )?;
         let attn = self.attention(&x_norm, &x_norm, &layer.self_attn, Some(pos_bias), None)?;
         let h1 = x.add(&attn)?;
 
-        let h1_norm = h1.rms_norm_affine(std::sync::Arc::clone(&layer.ffn_norm_gain), cfg.layer_norm_epsilon)?;
+        let h1_norm = h1.rms_norm_affine(
+            std::sync::Arc::clone(&layer.ffn_norm_gain),
+            cfg.layer_norm_epsilon,
+        )?;
         let ffn = self.feed_forward(&h1_norm, &layer.ffn)?;
         h1.add(&ffn)
     }
@@ -446,21 +467,30 @@ impl T5Model {
         causal_mask: &LazyTensor,
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
-        let x_norm = x.rms_norm_affine(std::sync::Arc::clone(&layer.self_attn_norm_gain), cfg.layer_norm_epsilon)?;
+        let x_norm = x.rms_norm_affine(
+            std::sync::Arc::clone(&layer.self_attn_norm_gain),
+            cfg.layer_norm_epsilon,
+        )?;
         let self_attn = self.attention(
-            &x_norm, &x_norm, &layer.self_attn,
-            Some(pos_bias), Some(causal_mask),
+            &x_norm,
+            &x_norm,
+            &layer.self_attn,
+            Some(pos_bias),
+            Some(causal_mask),
         )?;
         let h1 = x.add(&self_attn)?;
 
-        let h1_norm = h1.rms_norm_affine(std::sync::Arc::clone(&layer.cross_attn_norm_gain), cfg.layer_norm_epsilon)?;
-        let cross_attn = self.attention(
-            &h1_norm, enc_out, &layer.cross_attn,
-            None, None,
+        let h1_norm = h1.rms_norm_affine(
+            std::sync::Arc::clone(&layer.cross_attn_norm_gain),
+            cfg.layer_norm_epsilon,
         )?;
+        let cross_attn = self.attention(&h1_norm, enc_out, &layer.cross_attn, None, None)?;
         let h2 = h1.add(&cross_attn)?;
 
-        let h2_norm = h2.rms_norm_affine(std::sync::Arc::clone(&layer.ffn_norm_gain), cfg.layer_norm_epsilon)?;
+        let h2_norm = h2.rms_norm_affine(
+            std::sync::Arc::clone(&layer.ffn_norm_gain),
+            cfg.layer_norm_epsilon,
+        )?;
         let ffn = self.feed_forward(&h2_norm, &layer.ffn)?;
         h2.add(&ffn)
     }
@@ -665,7 +695,11 @@ impl T5Weights {
         let n_enc = cfg.num_layers;
         let n_dec = cfg.num_decoder_layers_resolved();
         let gated = cfg.gated_ffn;
-        let ffn_name = if gated { "DenseGatedActDense" } else { "DenseReluDense" };
+        let ffn_name = if gated {
+            "DenseGatedActDense"
+        } else {
+            "DenseReluDense"
+        };
 
         let shared_embedding = Arc::from(load_tensor_as_f32(st, "shared.weight")?);
         let encoder_rel_bias = Arc::from(load_tensor_as_f32(
@@ -681,19 +715,21 @@ impl T5Weights {
         for i in 0..n_enc {
             let p = format!("encoder.block.{i}");
             let self_attn_norm_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.layer.0.layer_norm.weight"),
+                st,
+                &format!("{p}.layer.0.layer_norm.weight"),
             )?);
-            let self_attn = T5AttentionWeights::load(
-                st, &format!("{p}.layer.0.SelfAttention"), d, inner,
-            )?;
+            let self_attn =
+                T5AttentionWeights::load(st, &format!("{p}.layer.0.SelfAttention"), d, inner)?;
             let ffn_norm_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.layer.1.layer_norm.weight"),
+                st,
+                &format!("{p}.layer.1.layer_norm.weight"),
             )?);
-            let ffn = T5FfnWeights::load(
-                st, &format!("{p}.layer.1.{ffn_name}"), d, d_ff, gated,
-            )?;
+            let ffn = T5FfnWeights::load(st, &format!("{p}.layer.1.{ffn_name}"), d, d_ff, gated)?;
             encoder_layers.push(T5EncoderLayerWeights {
-                self_attn_norm_gain, self_attn, ffn_norm_gain, ffn,
+                self_attn_norm_gain,
+                self_attn,
+                ffn_norm_gain,
+                ffn,
             });
         }
 
@@ -701,42 +737,45 @@ impl T5Weights {
         for i in 0..n_dec {
             let p = format!("decoder.block.{i}");
             let self_attn_norm_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.layer.0.layer_norm.weight"),
+                st,
+                &format!("{p}.layer.0.layer_norm.weight"),
             )?);
-            let self_attn = T5AttentionWeights::load(
-                st, &format!("{p}.layer.0.SelfAttention"), d, inner,
-            )?;
+            let self_attn =
+                T5AttentionWeights::load(st, &format!("{p}.layer.0.SelfAttention"), d, inner)?;
             let cross_attn_norm_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.layer.1.layer_norm.weight"),
+                st,
+                &format!("{p}.layer.1.layer_norm.weight"),
             )?);
-            let cross_attn = T5AttentionWeights::load(
-                st, &format!("{p}.layer.1.EncDecAttention"), d, inner,
-            )?;
+            let cross_attn =
+                T5AttentionWeights::load(st, &format!("{p}.layer.1.EncDecAttention"), d, inner)?;
             let ffn_norm_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.layer.2.layer_norm.weight"),
+                st,
+                &format!("{p}.layer.2.layer_norm.weight"),
             )?);
-            let ffn = T5FfnWeights::load(
-                st, &format!("{p}.layer.2.{ffn_name}"), d, d_ff, gated,
-            )?;
+            let ffn = T5FfnWeights::load(st, &format!("{p}.layer.2.{ffn_name}"), d, d_ff, gated)?;
             decoder_layers.push(T5DecoderLayerWeights {
-                self_attn_norm_gain, self_attn,
-                cross_attn_norm_gain, cross_attn,
-                ffn_norm_gain, ffn,
+                self_attn_norm_gain,
+                self_attn,
+                cross_attn_norm_gain,
+                cross_attn,
+                ffn_norm_gain,
+                ffn,
             });
         }
 
-        let encoder_final_norm_gain = Arc::from(load_tensor_as_f32(
-            st, "encoder.final_layer_norm.weight",
-        )?);
-        let decoder_final_norm_gain = Arc::from(load_tensor_as_f32(
-            st, "decoder.final_layer_norm.weight",
-        )?);
+        let encoder_final_norm_gain =
+            Arc::from(load_tensor_as_f32(st, "encoder.final_layer_norm.weight")?);
+        let decoder_final_norm_gain =
+            Arc::from(load_tensor_as_f32(st, "decoder.final_layer_norm.weight")?);
 
         let lm_head = if cfg.tie_word_embeddings {
             None
         } else {
             Some(load_transposed_matrix_preserve_dtype(
-                st, "lm_head.weight", cfg.vocab_size, d,
+                st,
+                "lm_head.weight",
+                cfg.vocab_size,
+                d,
             )?)
         };
 
@@ -757,7 +796,11 @@ impl T5Weights {
 mod tests {
     use super::*;
 
-    fn tiny_attention_weights(d_model: usize, inner: usize, next_box: &mut Box<dyn FnMut() -> f32>) -> T5AttentionWeights {
+    fn tiny_attention_weights(
+        d_model: usize,
+        inner: usize,
+        next_box: &mut Box<dyn FnMut() -> f32>,
+    ) -> T5AttentionWeights {
         let vec_of = |n: usize, next: &mut dyn FnMut() -> f32| -> Arc<[f32]> {
             Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
         };
@@ -800,12 +843,8 @@ mod tests {
         let inner = cfg.inner_dim();
         let mut nb: Box<dyn FnMut() -> f32> = Box::new(next);
         let shared_embedding = vec_of(cfg.vocab_size * d, &mut *nb);
-        let encoder_rel_bias = vec_of(
-            cfg.relative_attention_num_buckets * cfg.num_heads, &mut *nb,
-        );
-        let decoder_rel_bias = vec_of(
-            cfg.relative_attention_num_buckets * cfg.num_heads, &mut *nb,
-        );
+        let encoder_rel_bias = vec_of(cfg.relative_attention_num_buckets * cfg.num_heads, &mut *nb);
+        let decoder_rel_bias = vec_of(cfg.relative_attention_num_buckets * cfg.num_heads, &mut *nb);
 
         let encoder_layers: Vec<T5EncoderLayerWeights> = (0..cfg.num_layers)
             .map(|_| T5EncoderLayerWeights {
@@ -834,17 +873,24 @@ mod tests {
         };
         T5Weights {
             shared_embedding,
-            encoder_rel_bias, decoder_rel_bias,
-            encoder_layers, decoder_layers,
-            encoder_final_norm_gain, decoder_final_norm_gain,
+            encoder_rel_bias,
+            decoder_rel_bias,
+            encoder_layers,
+            decoder_layers,
+            encoder_final_norm_gain,
+            decoder_final_norm_gain,
             lm_head,
         }
     }
 
     fn tiny_config() -> T5Config {
         T5Config {
-            vocab_size: 16, d_model: 8, d_kv: 4, d_ff: 16,
-            num_layers: 2, num_decoder_layers: None,
+            vocab_size: 16,
+            d_model: 8,
+            d_kv: 4,
+            d_ff: 16,
+            num_layers: 2,
+            num_decoder_layers: None,
             num_heads: 2,
             relative_attention_num_buckets: 8,
             relative_attention_max_distance: 16,
@@ -858,7 +904,10 @@ mod tests {
     #[test]
     fn forward_shape_and_finite() {
         let cfg = tiny_config();
-        let model = T5Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = T5Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let src = [1_u32, 2, 3, 4];
         let tgt = [5_u32, 6, 7];
         let logits = model.forward(&src, &tgt).unwrap();
@@ -871,7 +920,10 @@ mod tests {
     /// Gated FFN variant runs and changes output from the dense FFN.
     #[test]
     fn gated_vs_dense_ffn_differ() {
-        let cfg_a = T5Config { gated_ffn: false, ..tiny_config() };
+        let cfg_a = T5Config {
+            gated_ffn: false,
+            ..tiny_config()
+        };
         let cfg_b = T5Config {
             gated_ffn: true,
             activation: T5Activation::GeluPytorchTanh,
@@ -879,8 +931,14 @@ mod tests {
         };
         let w_a = tiny_weights(&cfg_a);
         let w_b = tiny_weights(&cfg_b);
-        let m_a = T5Model { config: cfg_a, weights: w_a };
-        let m_b = T5Model { config: cfg_b, weights: w_b };
+        let m_a = T5Model {
+            config: cfg_a,
+            weights: w_a,
+        };
+        let m_b = T5Model {
+            config: cfg_b,
+            weights: w_b,
+        };
         let src = [1_u32, 2, 3];
         let tgt = [4_u32, 5];
         let a = m_a.forward(&src, &tgt).unwrap().realize_f32();
@@ -889,8 +947,10 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-6,
-            "dense vs gated FFN must differ, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-6,
+            "dense vs gated FFN must differ, max_diff = {max_diff}"
+        );
     }
 
     /// Cross-attention conditions decoder on encoder output:
@@ -898,7 +958,10 @@ mod tests {
     #[test]
     fn cross_attention_is_wired() {
         let cfg = tiny_config();
-        let model = T5Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = T5Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tgt = [4_u32, 5, 6];
         let a = model.forward(&[1, 2, 3], &tgt).unwrap().realize_f32();
         let b = model.forward(&[7, 8, 9], &tgt).unwrap().realize_f32();
@@ -906,8 +969,10 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-6,
-            "cross-attention must condition on source: src change must change tgt logits, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-6,
+            "cross-attention must condition on source: src change must change tgt logits, max_diff = {max_diff}"
+        );
     }
 
     /// Decoder causal mask: changing a future token must NOT
@@ -915,7 +980,10 @@ mod tests {
     #[test]
     fn decoder_causal_mask_holds() {
         let cfg = tiny_config();
-        let model = T5Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = T5Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let src = [1_u32, 2, 3];
         let tgt_a = [4_u32, 5, 6, 7];
         let tgt_b = [4_u32, 5, 6, 15];
@@ -927,7 +995,9 @@ mod tests {
                 let i = t * v + col;
                 assert!(
                     (a[i] - b[i]).abs() < 1e-5,
-                    "causal mask violated at t={t}: {} vs {}", a[i], b[i],
+                    "causal mask violated at t={t}: {} vs {}",
+                    a[i],
+                    b[i],
                 );
             }
         }
@@ -947,11 +1017,15 @@ mod tests {
         );
         // Just verify the function runs and produces the right shape.
         let bias = compute_position_bias(
-            &embed, &weights.encoder_rel_bias,
-            4, 4, cfg.num_heads,
+            &embed,
+            &weights.encoder_rel_bias,
+            4,
+            4,
+            cfg.num_heads,
             cfg.relative_attention_num_buckets,
             cfg.relative_attention_max_distance,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(bias.shape().dims(), &[1, cfg.num_heads, 4, 4]);
     }
 
@@ -971,7 +1045,10 @@ mod tests {
     #[test]
     fn forward_encoder_shape_and_finite() {
         let cfg = tiny_config();
-        let model = T5Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = T5Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let src = [1_u32, 2, 3, 4, 5];
         let enc = model.forward_encoder(&src).unwrap();
         assert_eq!(enc.shape().dims(), &[1, src.len(), cfg.d_model]);
@@ -986,15 +1063,20 @@ mod tests {
     #[test]
     fn forward_encoder_responds_to_src() {
         let cfg = tiny_config();
-        let model = T5Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = T5Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let a = model.forward_encoder(&[1_u32, 2, 3]).unwrap().realize_f32();
         let b = model.forward_encoder(&[7_u32, 8, 9]).unwrap().realize_f32();
         let mut max_diff = 0.0_f32;
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-6,
-            "forward_encoder must respond to src changes, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-6,
+            "forward_encoder must respond to src changes, max_diff = {max_diff}"
+        );
     }
 
     /// `forward_decoder(tgt, enc_out)` runs only the decoder
@@ -1004,7 +1086,10 @@ mod tests {
     #[test]
     fn forward_decoder_shape_and_finite() {
         let cfg = tiny_config();
-        let model = T5Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = T5Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let enc = model.forward_encoder(&[1_u32, 2, 3, 4]).unwrap();
         let tgt = [5_u32, 6, 7];
         let logits = model.forward_decoder(&tgt, &enc).unwrap();
@@ -1020,7 +1105,10 @@ mod tests {
     #[test]
     fn forward_decoder_matches_full_forward() {
         let cfg = tiny_config();
-        let model = T5Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = T5Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let src = [1_u32, 2, 3];
         let tgt = [5_u32, 6, 7];
         let full = model.forward(&src, &tgt).unwrap().realize_f32();
@@ -1028,51 +1116,77 @@ mod tests {
         let split = model.forward_decoder(&tgt, &enc).unwrap().realize_f32();
         assert_eq!(full.len(), split.len());
         for (a, b) in full.iter().zip(split.iter()) {
-            assert!((a - b).abs() < 1e-5,
-                "forward_decoder must match forward: {a} vs {b}");
+            assert!(
+                (a - b).abs() < 1e-5,
+                "forward_decoder must match forward: {a} vs {b}"
+            );
         }
     }
 
     #[test]
     fn forward_encoder_embeds_matches_forward_encoder() {
         let cfg = tiny_config();
-        let model = T5Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = T5Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let src = [1_u32, 2, 3];
         let enc_ref = model.forward_encoder(&src).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let src_embeds = model.embed_tokens_anchored(&anchor, &src).unwrap();
-        let enc_via_embeds = model.forward_encoder_embeds(&src_embeds).unwrap().realize_f32();
-        let max_diff = enc_ref.iter().zip(enc_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "T5 forward_encoder vs forward_encoder_embeds must agree (max diff {max_diff})");
+        let enc_via_embeds = model
+            .forward_encoder_embeds(&src_embeds)
+            .unwrap()
+            .realize_f32();
+        let max_diff = enc_ref
+            .iter()
+            .zip(enc_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "T5 forward_encoder vs forward_encoder_embeds must agree (max diff {max_diff})"
+        );
     }
 
     #[test]
     fn forward_decoder_embeds_matches_forward_decoder() {
         let cfg = tiny_config();
-        let model = T5Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = T5Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let src = [1_u32, 2, 3];
         let tgt = [5_u32, 6, 7];
         let enc = model.forward_encoder(&src).unwrap();
         let dec_ref = model.forward_decoder(&tgt, &enc).unwrap().realize_f32();
         let tgt_embeds = model.embed_tokens_anchored(&enc, &tgt).unwrap();
-        let dec_via_embeds = model.forward_decoder_embeds(&tgt_embeds, &enc).unwrap().realize_f32();
-        let max_diff = dec_ref.iter().zip(dec_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "T5 forward_decoder vs forward_decoder_embeds must agree (max diff {max_diff})");
+        let dec_via_embeds = model
+            .forward_decoder_embeds(&tgt_embeds, &enc)
+            .unwrap()
+            .realize_f32();
+        let max_diff = dec_ref
+            .iter()
+            .zip(dec_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "T5 forward_decoder vs forward_decoder_embeds must agree (max diff {max_diff})"
+        );
     }
 
     #[test]
     fn forward_encoder_embeds_rejects_bad_shape() {
         let cfg = tiny_config();
-        let model = T5Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = T5Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let bad = LazyTensor::from_f32(
             vec![0.0_f32; 3 * (cfg.d_model + 1)],
-            Shape::from_dims(&[1, 3, cfg.d_model + 1]), &Device::cpu(),
+            Shape::from_dims(&[1, 3, cfg.d_model + 1]),
+            &Device::cpu(),
         );
         assert!(model.forward_encoder_embeds(&bad).is_err());
     }
@@ -1087,12 +1201,17 @@ mod tests {
     #[test]
     fn forward_decoder_hidden_embeds_skips_lm_head() {
         let cfg = tiny_config();
-        let model = T5Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = T5Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let src = [1_u32, 2, 3];
         let tgt = [5_u32, 6, 7];
         let enc = model.forward_encoder(&src).unwrap();
         let tgt_embeds = model.embed_tokens_anchored(&enc, &tgt).unwrap();
-        let hidden = model.forward_decoder_hidden_embeds(&tgt_embeds, &enc).unwrap();
+        let hidden = model
+            .forward_decoder_hidden_embeds(&tgt_embeds, &enc)
+            .unwrap();
         assert_eq!(hidden.shape().dims(), &[1, tgt.len(), cfg.d_model]);
         for &v in &hidden.realize_f32() {
             assert!(v.is_finite(), "non-finite hidden: {v}");

@@ -7,10 +7,10 @@ extern crate accelerate_src;
 use anyhow::{Error as E, Result};
 use clap::Parser;
 
-use fuel::lazy::{LazyTensor, LlamaConfig, LlamaModel, LlamaWeights};
-use fuel::lazy_llama_full::{build_llama3_model, Llama3Model, LlamaFullConfig};
-use fuel::lazy_snac::{SnacConfig, SnacModel, SnacWeights};
 use fuel::Shape;
+use fuel::lazy::{LazyTensor, LlamaConfig, LlamaModel, LlamaWeights};
+use fuel::lazy_llama_full::{Llama3Model, LlamaFullConfig, build_llama3_model};
+use fuel::lazy_snac::{SnacConfig, SnacModel, SnacWeights};
 use serde::Deserialize;
 use tokenizers::Tokenizer;
 
@@ -203,8 +203,7 @@ fn load_snac() -> Result<(SnacModel, SnacConfig)> {
     let api = hf_hub::api::sync::Api::new()?;
     let m = api.model("hubertsiuzdak/snac_24khz".to_string());
     let config_path = m.get("config.json")?;
-    let cfg_json: HfSnacConfig =
-        serde_json::from_reader(std::fs::File::open(config_path)?)?;
+    let cfg_json: HfSnacConfig = serde_json::from_reader(std::fs::File::open(config_path)?)?;
     let cfg: SnacConfig = cfg_json.into();
     let m = api.model("lmz/fuel-snac".to_string());
     let model_path = m.get("snac_24khz.safetensors")?;
@@ -367,7 +366,7 @@ impl Model {
         let mut codes0 = vec![];
         let mut codes1 = vec![];
         let mut codes2 = vec![];
-        for audio_tokens in audio_tokens.chunks_exact(7) {
+        for audio_tokens in audio_tokens.as_chunks::<7>().0 {
             codes0.push(audio_tokens[0]);
             for i in [1, 4] {
                 codes1.push(audio_tokens[i]);
@@ -377,11 +376,8 @@ impl Model {
             }
         }
         // Anchor LazyTensor so const_u32_like has something to hang off of.
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32],
-            Shape::from_dims(&[1]),
-            &fuel::Device::cpu(),
-        );
+        let anchor =
+            LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &fuel::Device::cpu());
         let t0 = codes0.len();
         let t1 = codes1.len();
         let t2 = codes2.len();

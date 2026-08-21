@@ -91,10 +91,7 @@ pub enum CostNode {
     /// A function-style term: `f(arg, ...)` (e.g. `block_bytes(quant_type)`
     /// in the quant-matmul cost hints). Resolved at eval time from the
     /// bindings by its canonical string spelling.
-    Call {
-        name: String,
-        args: Vec<CostNode>,
-    },
+    Call { name: String, args: Vec<CostNode> },
 }
 
 /// The four supported binary operators (§2.3: `+ - * / %`).
@@ -223,9 +220,7 @@ fn tokenize(src: &str) -> Result<Vec<Tok>, CostParseError> {
                 // alphabetic/underscore (a member name), so it is never
                 // confused with a decimal point.
                 loop {
-                    while i < bytes.len()
-                        && (bytes[i].is_ascii_alphanumeric() || bytes[i] == '_')
-                    {
+                    while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == '_') {
                         i += 1;
                     }
                     if i + 1 < bytes.len()
@@ -333,9 +328,11 @@ impl Parser {
                     }
                     match self.bump() {
                         Some(Tok::RParen) => {}
-                        _ => return Err(CostParseError(
-                            "unbalanced `(` in function call — expected `)`".into(),
-                        )),
+                        _ => {
+                            return Err(CostParseError(
+                                "unbalanced `(` in function call — expected `)`".into(),
+                            ));
+                        }
                     }
                     CostNode::Call { name, args }
                 } else {
@@ -356,12 +353,12 @@ impl Parser {
             Some(other) => {
                 return Err(CostParseError(format!(
                     "unexpected token `{other:?}` where a value was expected"
-                )))
+                )));
             }
             None => {
                 return Err(CostParseError(
                     "unexpected end of cost expression (expected a value)".into(),
-                ))
+                ));
             }
         };
         // Postfix `[index]` runs (shape-axis index: `dim[i]`, `out_shape[2]`,
@@ -507,7 +504,11 @@ pub fn bind_cost_symbols(
     }
     match params {
         OpParams::Matmul {
-            lhs_batch_dims, m, n, k, ..
+            lhs_batch_dims,
+            m,
+            n,
+            k,
+            ..
         } => {
             let batch = lhs_batch_dims.iter().copied().product::<usize>().max(1);
             b.insert("batch".to_string(), batch as f64);
@@ -609,14 +610,26 @@ mod tests {
 
     #[test]
     fn rem_and_div_and_float_literal() {
-        assert_eq!(eval(&compile_field(Some("10 % 3")).unwrap(), &b(&[])).unwrap(), 1.0);
-        assert_eq!(eval(&compile_field(Some("12 / 4")).unwrap(), &b(&[])).unwrap(), 3.0);
-        assert_eq!(eval(&compile_field(Some("2.5 * 2")).unwrap(), &b(&[])).unwrap(), 5.0);
+        assert_eq!(
+            eval(&compile_field(Some("10 % 3")).unwrap(), &b(&[])).unwrap(),
+            1.0
+        );
+        assert_eq!(
+            eval(&compile_field(Some("12 / 4")).unwrap(), &b(&[])).unwrap(),
+            3.0
+        );
+        assert_eq!(
+            eval(&compile_field(Some("2.5 * 2")).unwrap(), &b(&[])).unwrap(),
+            5.0
+        );
     }
 
     #[test]
     fn unary_negation() {
-        assert_eq!(eval(&compile_field(Some("-3 + 5")).unwrap(), &b(&[])).unwrap(), 2.0);
+        assert_eq!(
+            eval(&compile_field(Some("-3 + 5")).unwrap(), &b(&[])).unwrap(),
+            2.0
+        );
     }
 
     #[test]
@@ -629,7 +642,10 @@ mod tests {
     #[test]
     fn none_and_empty_are_unknown() {
         assert_eq!(compile_field(None).unwrap(), CompiledCostExpr::Unknown);
-        assert_eq!(compile_field(Some("   ")).unwrap(), CompiledCostExpr::Unknown);
+        assert_eq!(
+            compile_field(Some("   ")).unwrap(),
+            CompiledCostExpr::Unknown
+        );
         // Unknown evaluates to 0.
         assert_eq!(eval(&CompiledCostExpr::Unknown, &b(&[])).unwrap(), 0.0);
     }
@@ -657,12 +673,18 @@ mod tests {
     #[test]
     fn shape_index_and_member_path_parse() {
         // The corpus conv cost expressions.
-        compile_field(Some("2 * out_shape[0] * (x_shape[1] / groups) * w_shape[2] * w_shape[3]"))
-            .expect("out_shape[i] parses");
-        compile_field(Some("2 * out_elems * (x.dim[1] / groups) * weight.dim[2] * weight.dim[3]"))
-            .expect("role.dim[i] parses");
-        compile_field(Some("2 * x.dim[0] * x.dim[1] * (x.dim[2] - weight.dim[2] + 1) * weight.dim[2]"))
-            .expect("causal-conv expr parses");
+        compile_field(Some(
+            "2 * out_shape[0] * (x_shape[1] / groups) * w_shape[2] * w_shape[3]",
+        ))
+        .expect("out_shape[i] parses");
+        compile_field(Some(
+            "2 * out_elems * (x.dim[1] / groups) * weight.dim[2] * weight.dim[3]",
+        ))
+        .expect("role.dim[i] parses");
+        compile_field(Some(
+            "2 * x.dim[0] * x.dim[1] * (x.dim[2] - weight.dim[2] + 1) * weight.dim[2]",
+        ))
+        .expect("causal-conv expr parses");
     }
 
     #[test]

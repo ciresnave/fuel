@@ -6,7 +6,7 @@ extern crate accelerate_src;
 #[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
-use anyhow::{bail, Error as E, Result};
+use anyhow::{Error as E, Result, bail};
 use clap::Parser;
 use std::io::Write;
 use std::path::Path;
@@ -16,7 +16,7 @@ use fuel::lazy_granitemoehybrid::{
     GraniteLayerType, GraniteMoeHybridConfig, GraniteMoeHybridModel, GraniteMoeHybridWeights,
     GraniteRopeScaling,
 };
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 use tracing_chrome::ChromeLayerBuilder;
 use tracing_subscriber::prelude::*;
 
@@ -120,10 +120,8 @@ fn main() -> Result<()> {
         let model_path = Path::new(&model_id);
         let tokenizer_filename = model_path.join("tokenizer.json");
         let config_filename = model_path.join("config.json");
-        let filenames = fuel_examples::hub_load_local_safetensors(
-            model_path,
-            "model.safetensors.index.json",
-        )?;
+        let filenames =
+            fuel_examples::hub_load_local_safetensors(model_path, "model.safetensors.index.json")?;
         (tokenizer_filename, config_filename, filenames)
     } else {
         let api = Api::new()?;
@@ -132,8 +130,7 @@ fn main() -> Result<()> {
 
         let tokenizer_filename = repo.get("tokenizer.json")?;
         let config_filename = repo.get("config.json")?;
-        let filenames =
-            fuel_examples::hub_load_safetensors(&repo, "model.safetensors.index.json")?;
+        let filenames = fuel_examples::hub_load_safetensors(&repo, "model.safetensors.index.json")?;
         (tokenizer_filename, config_filename, filenames)
     };
 
@@ -145,7 +142,10 @@ fn main() -> Result<()> {
         .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
     let weights = GraniteMoeHybridWeights::load_from_mmapped(&st, &config)
         .map_err(|e| E::msg(format!("load weights: {e}")))?;
-    let model = GraniteMoeHybridModel { config: config.clone(), weights };
+    let model = GraniteMoeHybridModel {
+        config: config.clone(),
+        weights,
+    };
 
     let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
     let user_prompt = args.prompt.as_ref().map_or(DEFAULT_PROMPT, |p| p.as_str());
@@ -207,26 +207,23 @@ fn main() -> Result<()> {
 }
 
 fn granitemoehybrid_config_from_hf_json_str(json: &str) -> Result<GraniteMoeHybridConfig> {
-    let v: serde_json::Value = serde_json::from_str(json)
-        .map_err(|e| E::msg(format!("parsing config.json: {e}")))?;
-    let get_usize = |key: &str| -> Option<usize> {
-        v.get(key).and_then(|x| x.as_u64()).map(|x| x as usize)
-    };
+    let v: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| E::msg(format!("parsing config.json: {e}")))?;
+    let get_usize =
+        |key: &str| -> Option<usize> { v.get(key).and_then(|x| x.as_u64()).map(|x| x as usize) };
     let get_f64 = |key: &str| -> Option<f64> { v.get(key).and_then(|x| x.as_f64()) };
     let get_f32 = |key: &str| -> Option<f32> { get_f64(key).map(|x| x as f32) };
 
-    let vocab_size = get_usize("vocab_size")
-        .ok_or_else(|| E::msg("missing vocab_size"))?;
-    let hidden_size = get_usize("hidden_size")
-        .ok_or_else(|| E::msg("missing hidden_size"))?;
-    let intermediate_size = get_usize("intermediate_size")
-        .ok_or_else(|| E::msg("missing intermediate_size"))?;
+    let vocab_size = get_usize("vocab_size").ok_or_else(|| E::msg("missing vocab_size"))?;
+    let hidden_size = get_usize("hidden_size").ok_or_else(|| E::msg("missing hidden_size"))?;
+    let intermediate_size =
+        get_usize("intermediate_size").ok_or_else(|| E::msg("missing intermediate_size"))?;
     let shared_intermediate_size =
         get_usize("shared_intermediate_size").unwrap_or(intermediate_size);
-    let num_hidden_layers = get_usize("num_hidden_layers")
-        .ok_or_else(|| E::msg("missing num_hidden_layers"))?;
-    let num_attention_heads = get_usize("num_attention_heads")
-        .ok_or_else(|| E::msg("missing num_attention_heads"))?;
+    let num_hidden_layers =
+        get_usize("num_hidden_layers").ok_or_else(|| E::msg("missing num_hidden_layers"))?;
+    let num_attention_heads =
+        get_usize("num_attention_heads").ok_or_else(|| E::msg("missing num_attention_heads"))?;
     let num_key_value_heads = get_usize("num_key_value_heads").unwrap_or(num_attention_heads);
     let max_position_embeddings = get_usize("max_position_embeddings").unwrap_or(4096);
     let rms_norm_eps = get_f64("rms_norm_eps").unwrap_or(1e-5);
@@ -298,7 +295,9 @@ fn granitemoehybrid_config_from_hf_json_str(json: &str) -> Result<GraniteMoeHybr
 
 fn parse_eos_token_id(json: &str) -> Option<u32> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
-    v.get("eos_token_id").and_then(|x| x.as_u64()).map(|x| x as u32)
+    v.get("eos_token_id")
+        .and_then(|x| x.as_u64())
+        .map(|x| x as u32)
 }
 
 fn apply_repeat_penalty(logits: &mut [f32], penalty: f32, context: &[u32]) {
@@ -335,7 +334,10 @@ fn sample(
     }
     let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let inv_t = 1.0 / temperature.max(1e-6);
-    let mut probs: Vec<f32> = logits.iter().map(|&x| ((x - max_l) * inv_t).exp()).collect();
+    let mut probs: Vec<f32> = logits
+        .iter()
+        .map(|&x| ((x - max_l) * inv_t).exp())
+        .collect();
     let sum: f32 = probs.iter().sum();
     for p in &mut probs {
         *p /= sum.max(1e-30);
@@ -378,7 +380,9 @@ fn sample(
     } else {
         return 0;
     }
-    let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    let mut state = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     state ^= state >> 33;
     state = state.wrapping_mul(0xff51_afd7_ed55_8ccd);
     state ^= state >> 33;

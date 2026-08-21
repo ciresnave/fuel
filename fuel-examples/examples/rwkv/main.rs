@@ -28,10 +28,10 @@ use anyhow::{Error as E, Result};
 use clap::{Parser, ValueEnum};
 use std::io::Write;
 
+use fuel::lazy_rwkv_tokenizer::Tokenizer;
 use fuel::lazy_rwkv5::{Rwkv5Config, Rwkv5Model, Rwkv5Weights};
 use fuel::lazy_rwkv7::{Rwkv7Config, Rwkv7Model, Rwkv7Weights};
-use fuel::lazy_rwkv_tokenizer::Tokenizer;
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 
 /// Which RWKV variant to run. Selected via `--variant 5` or `--variant 7`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -281,15 +281,15 @@ fn read_json(path: Option<&std::path::Path>) -> Result<Option<serde_json::Value>
 }
 
 fn rwkv5_config_from_hf(path: Option<&std::path::Path>) -> Result<Rwkv5Config> {
-    let v = read_json(path)?
-        .ok_or_else(|| E::msg("rwkv v5 requires a config.json (got none)"))?;
-    let get_usize = |k: &str| -> Option<usize> { v.get(k).and_then(|x| x.as_u64()).map(|x| x as usize) };
+    let v = read_json(path)?.ok_or_else(|| E::msg("rwkv v5 requires a config.json (got none)"))?;
+    let get_usize =
+        |k: &str| -> Option<usize> { v.get(k).and_then(|x| x.as_u64()).map(|x| x as usize) };
     let get_f64 = |k: &str| -> Option<f64> { v.get(k).and_then(|x| x.as_f64()) };
 
-    let vocab_size = get_usize("vocab_size")
-        .ok_or_else(|| E::msg("config.json: missing vocab_size"))?;
-    let hidden_size = get_usize("hidden_size")
-        .ok_or_else(|| E::msg("config.json: missing hidden_size"))?;
+    let vocab_size =
+        get_usize("vocab_size").ok_or_else(|| E::msg("config.json: missing vocab_size"))?;
+    let hidden_size =
+        get_usize("hidden_size").ok_or_else(|| E::msg("config.json: missing hidden_size"))?;
     let num_hidden_layers = get_usize("num_hidden_layers")
         .ok_or_else(|| E::msg("config.json: missing num_hidden_layers"))?;
     let attention_hidden_size = get_usize("attention_hidden_size").unwrap_or(hidden_size);
@@ -326,9 +326,8 @@ fn rwkv7_config_from_hf(
             .and_then(|x| x.as_u64())
             .map(|x| x as usize)
     };
-    let get_f64 = |k: &str| -> Option<f64> {
-        v.as_ref().and_then(|v| v.get(k)).and_then(|x| x.as_f64())
-    };
+    let get_f64 =
+        |k: &str| -> Option<f64> { v.as_ref().and_then(|v| v.get(k)).and_then(|x| x.as_f64()) };
 
     // First try config.json, then infer from weight shapes.
     let (hidden_size, num_hidden_layers, vocab_size) = match (
@@ -365,14 +364,8 @@ fn rwkv7_config_from_hf(
 /// Infer (hidden_size, num_hidden_layers, vocab_size) from the safetensors
 /// header. Walks `rwkv.blocks.{i}.ln1.weight` to count layers and reads
 /// `rwkv.embeddings.weight`'s shape for hidden / vocab.
-fn infer_v7_shape(
-    st: &fuel::safetensors::MmapedSafetensors,
-) -> Result<(usize, usize, usize)> {
-    let names: Vec<String> = st
-        .tensors()
-        .iter()
-        .map(|(n, _)| n.clone())
-        .collect();
+fn infer_v7_shape(st: &fuel::safetensors::MmapedSafetensors) -> Result<(usize, usize, usize)> {
+    let names: Vec<String> = st.tensors().iter().map(|(n, _)| n.clone()).collect();
 
     let emb = names
         .iter()
@@ -392,15 +385,12 @@ fn infer_v7_shape(
 
     let mut max_layer: i64 = -1;
     for n in &names {
-        if let Some(rest) = n.strip_prefix("rwkv.blocks.") {
-            if let Some(dot) = rest.find('.') {
-                if let Ok(i) = rest[..dot].parse::<i64>() {
-                    if i > max_layer {
+        if let Some(rest) = n.strip_prefix("rwkv.blocks.")
+            && let Some(dot) = rest.find('.')
+                && let Ok(i) = rest[..dot].parse::<i64>()
+                    && i > max_layer {
                         max_layer = i;
                     }
-                }
-            }
-        }
     }
     if max_layer < 0 {
         return Err(E::msg("safetensors: no rwkv.blocks.* tensors found"));
@@ -419,9 +409,7 @@ fn infer_v7_lora_dims(
             .map_err(|e| E::msg(format!("load {name}: {e}")))?;
         let dims = view.shape();
         if dims.len() != 2 {
-            return Err(E::msg(format!(
-                "{name}: expected 2-D, got {dims:?}",
-            )));
+            return Err(E::msg(format!("{name}: expected 2-D, got {dims:?}",)));
         }
         if dims[0] != hidden_size {
             return Err(E::msg(format!(
@@ -458,7 +446,10 @@ fn sample(logits: &[f32], temperature: f32, seed: u64) -> u32 {
     }
     let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let inv_t = 1.0 / temperature.max(1e-6);
-    let mut probs: Vec<f32> = logits.iter().map(|&x| ((x - max_l) * inv_t).exp()).collect();
+    let mut probs: Vec<f32> = logits
+        .iter()
+        .map(|&x| ((x - max_l) * inv_t).exp())
+        .collect();
     let sum: f32 = probs.iter().sum();
     if sum > 0.0 {
         for p in &mut probs {

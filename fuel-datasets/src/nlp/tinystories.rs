@@ -29,11 +29,10 @@ impl Dataset {
         let mut bin_files = vec![];
         for file in std::fs::read_dir(dir)?.flatten() {
             let file = file.path();
-            if let Some(extension) = file.extension() {
-                if extension == "bin" {
+            if let Some(extension) = file.extension()
+                && extension == "bin" {
                     bin_files.push(file)
                 }
-            }
         }
         if bin_files.len() < 2 {
             fuel::bail!("found less than two bin files in {:?}", dir)

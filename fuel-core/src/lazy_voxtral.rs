@@ -208,12 +208,17 @@ impl VoxtralEncoder {
         let d = cfg.hidden_size;
         let n_mel = cfg.num_mel_bins;
         assert_eq!(
-            mel.len(), n_mel * mel_time,
+            mel.len(),
+            n_mel * mel_time,
             "Voxtral encoder: mel has {} elements, expected {}×{}",
-            mel.len(), n_mel, mel_time,
+            mel.len(),
+            n_mel,
+            mel_time,
         );
-        assert!(mel_time.is_multiple_of(2),
-            "Voxtral encoder: mel_time must be even (got {mel_time})");
+        assert!(
+            mel_time.is_multiple_of(2),
+            "Voxtral encoder: mel_time must be even (got {mel_time})"
+        );
         let t_half = mel_time / 2;
 
         let mel_t = LazyTensor::from_f32(
@@ -224,11 +229,23 @@ impl VoxtralEncoder {
 
         // ---- conv stem (downsample) ---------------------------------------
         let x = conv1d_k3_s1_p1(
-            &mel_t, &self.weights.conv1_w, &self.weights.conv1_b, n_mel, d, mel_time,
-        )?.gelu();
+            &mel_t,
+            &self.weights.conv1_w,
+            &self.weights.conv1_b,
+            n_mel,
+            d,
+            mel_time,
+        )?
+        .gelu();
         let x = conv1d_k3_s2_p1(
-            &x, &self.weights.conv2_w, &self.weights.conv2_b, d, d, mel_time,
-        )?.gelu();
+            &x,
+            &self.weights.conv2_w,
+            &self.weights.conv2_b,
+            d,
+            d,
+            mel_time,
+        )?
+        .gelu();
 
         // ---- transpose to [1, T/2, d] + add learned positions -------------
         let x = x.permute([0, 2, 1_usize])?;
@@ -274,11 +291,13 @@ fn encoder_layer(
     )?;
 
     // Q (biased) / K (bias-free) / V (biased).
-    let q = lw.self_attn_q.apply_linear_with_bias(
-        &x_ln, d, d, Arc::clone(&lw.self_attn_q_bias))?;
+    let q = lw
+        .self_attn_q
+        .apply_linear_with_bias(&x_ln, d, d, Arc::clone(&lw.self_attn_q_bias))?;
     let k = lw.self_attn_k.apply_linear(&x_ln, d, d)?;
-    let v = lw.self_attn_v.apply_linear_with_bias(
-        &x_ln, d, d, Arc::clone(&lw.self_attn_v_bias))?;
+    let v = lw
+        .self_attn_v
+        .apply_linear_with_bias(&x_ln, d, d, Arc::clone(&lw.self_attn_v_bias))?;
 
     // Match the eager reference: scaling is folded into Q rather than
     // into the post-matmul scores. Equivalent at F32.
@@ -293,8 +312,9 @@ fn encoder_layer(
     let attn = scores.softmax_last_dim()?;
     let ctx = attn.matmul(&v)?;
     let merged = ctx.merge_heads()?;
-    let attn_out = lw.self_attn_o.apply_linear_with_bias(
-        &merged, d, d, Arc::clone(&lw.self_attn_o_bias))?;
+    let attn_out =
+        lw.self_attn_o
+            .apply_linear_with_bias(&merged, d, d, Arc::clone(&lw.self_attn_o_bias))?;
     let h1 = x.add(&attn_out)?;
 
     // Pre-LN FFN block (Linear → GELU → Linear).
@@ -303,10 +323,16 @@ fn encoder_layer(
         Arc::clone(&lw.final_ln_bias),
         1e-5,
     )?;
-    let hidden = lw.fc1.apply_linear_with_bias(
-        &h1_ln, d, cfg.intermediate_size, Arc::clone(&lw.fc1_bias))?.gelu();
+    let hidden = lw
+        .fc1
+        .apply_linear_with_bias(&h1_ln, d, cfg.intermediate_size, Arc::clone(&lw.fc1_bias))?
+        .gelu();
     let ffn_out = lw.fc2.apply_linear_with_bias(
-        &hidden, cfg.intermediate_size, d, Arc::clone(&lw.fc2_bias))?;
+        &hidden,
+        cfg.intermediate_size,
+        d,
+        Arc::clone(&lw.fc2_bias),
+    )?;
     h1.add(&ffn_out)
 }
 
@@ -330,11 +356,13 @@ impl VoxtralMultiModalProjector {
     /// the input dim is `linear_1`'s in_features. Output is
     /// `[..., text_hidden]`.
     pub fn forward(&self, audio: &LazyTensor) -> Result<LazyTensor> {
-        let x = self.linear_1.apply_linear(
-            audio, self.audio_intermediate_size, self.text_hidden,
-        )?;
+        let x =
+            self.linear_1
+                .apply_linear(audio, self.audio_intermediate_size, self.text_hidden)?;
         let x = x.gelu();
-        Ok(self.linear_2.apply_linear(&x, self.text_hidden, self.text_hidden)?)
+        Ok(self
+            .linear_2
+            .apply_linear(&x, self.text_hidden, self.text_hidden)?)
     }
 }
 
@@ -386,11 +414,7 @@ impl VoxtralTextModel {
     /// share a graph with an existing tensor (e.g. audio features).
     pub fn embed(&self, tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32],
-            Shape::from_dims(&[1]),
-            &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embed = self.embed_with_anchor(tokens, &anchor)?;
         let _ = cfg;
         Ok(embed)
@@ -399,9 +423,7 @@ impl VoxtralTextModel {
     /// Embed tokens onto `anchor`'s graph so the result can be
     /// composed with other tensors already on that graph (e.g.
     /// audio embeddings from the projector).
-    pub fn embed_with_anchor(
-        &self, tokens: &[u32], anchor: &LazyTensor,
-    ) -> Result<LazyTensor> {
+    pub fn embed_with_anchor(&self, tokens: &[u32], anchor: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
         let seq = tokens.len();
         assert!(seq > 0, "VoxtralTextModel: tokens must be non-empty");
@@ -409,9 +431,7 @@ impl VoxtralTextModel {
             self.weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
         );
-        let token_ids = anchor.const_u32_like(
-            tokens.to_vec(), Shape::from_dims(&[seq]),
-        );
+        let token_ids = anchor.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         embed_table
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[1, seq, cfg.hidden_size]))
@@ -427,22 +447,23 @@ impl VoxtralTextModel {
         let dims = embeds.shape();
         let dims = dims.dims();
         assert_eq!(dims.len(), 3, "VoxtralTextModel: embeds must be rank-3");
-        assert_eq!(dims[2], cfg.hidden_size,
-            "VoxtralTextModel: embeds last dim must equal hidden_size");
+        assert_eq!(
+            dims[2], cfg.hidden_size,
+            "VoxtralTextModel: embeds last dim must equal hidden_size"
+        );
         let seq = dims[1];
 
-        let (rope_cos, rope_sin) = embeds.rope_tables_const(
-            cfg.rope_theta, start_pos, seq, cfg.head_dim,
-        );
+        let (rope_cos, rope_sin) =
+            embeds.rope_tables_const(cfg.rope_theta, start_pos, seq, cfg.head_dim);
 
         let mut h = embeds.clone();
         for layer in &weights.layers {
             h = apply_text_layer(&h, layer, cfg, &rope_cos, &rope_sin)?;
         }
-        let h_norm = h.rms_norm_affine(
-            Arc::clone(&weights.final_norm_gain), cfg.rms_norm_eps,
-        )?;
-        Ok(weights.lm_head.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size)?)
+        let h_norm = h.rms_norm_affine(Arc::clone(&weights.final_norm_gain), cfg.rms_norm_eps)?;
+        Ok(weights
+            .lm_head
+            .apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 }
 
@@ -460,9 +481,7 @@ fn apply_text_layer(
     let dims = dims.dims();
     let seq = dims[1];
 
-    let x_norm = x.rms_norm_affine(
-        Arc::clone(&layer.attn_norm_gain), cfg.rms_norm_eps,
-    )?;
+    let x_norm = x.rms_norm_affine(Arc::clone(&layer.attn_norm_gain), cfg.rms_norm_eps)?;
     let q = layer.attn_q.apply_linear(&x_norm, h, q_dim)?;
     let k = layer.attn_k.apply_linear(&x_norm, h, kv_dim)?;
     let v = layer.attn_v.apply_linear(&x_norm, h, kv_dim)?;
@@ -490,13 +509,17 @@ fn apply_text_layer(
     let attn_out = layer.attn_o.apply_linear(&merged, q_dim, h)?;
     let h1 = x.add(&attn_out)?;
 
-    let h1_norm = h1.rms_norm_affine(
-        Arc::clone(&layer.ffn_norm_gain), cfg.rms_norm_eps,
-    )?;
-    let gate = layer.ffn_gate.apply_linear(&h1_norm, h, cfg.intermediate_size)?;
-    let up = layer.ffn_up.apply_linear(&h1_norm, h, cfg.intermediate_size)?;
+    let h1_norm = h1.rms_norm_affine(Arc::clone(&layer.ffn_norm_gain), cfg.rms_norm_eps)?;
+    let gate = layer
+        .ffn_gate
+        .apply_linear(&h1_norm, h, cfg.intermediate_size)?;
+    let up = layer
+        .ffn_up
+        .apply_linear(&h1_norm, h, cfg.intermediate_size)?;
     let swiglu = gate.silu().mul(&up)?;
-    let ffn_out = layer.ffn_down.apply_linear(&swiglu, cfg.intermediate_size, h)?;
+    let ffn_out = layer
+        .ffn_down
+        .apply_linear(&swiglu, cfg.intermediate_size, h)?;
     h1.add(&ffn_out)
 }
 
@@ -527,7 +550,11 @@ impl VoxtralModel {
     ///
     /// Returns logits of shape `(1, seq, vocab_size)`.
     pub fn forward_with_audio(
-        &self, mel: &[f32], mel_time: usize, tokens: &[u32], start_pos: usize,
+        &self,
+        mel: &[f32],
+        mel_time: usize,
+        tokens: &[u32],
+        start_pos: usize,
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
 
@@ -550,8 +577,11 @@ impl VoxtralModel {
         //    this becomes `[375, 5120]` per `[1, 1500, 1280]`.
         let total = batch * a_seq * a_hidden;
         let intermediate = cfg.audio.intermediate_size;
-        assert_eq!(total % intermediate, 0,
-            "Voxtral projector reshape: total {total} not divisible by intermediate_size {intermediate}");
+        assert_eq!(
+            total % intermediate,
+            0,
+            "Voxtral projector reshape: total {total} not divisible by intermediate_size {intermediate}"
+        );
         let new_batch = total / intermediate;
         let audio_flat = audio_hidden.reshape(Shape::from_dims(&[new_batch, intermediate]))?;
 
@@ -574,7 +604,11 @@ impl VoxtralModel {
 
         // 5) Substitute audio embeddings at audio_token positions.
         let composed = substitute_audio_embeds(
-            &text_embeds, &audio_embeds, tokens, cfg.audio_token_id, cfg.text.hidden_size,
+            &text_embeds,
+            &audio_embeds,
+            tokens,
+            cfg.audio_token_id,
+            cfg.text.hidden_size,
         )?;
 
         // 6) Run the decoder.
@@ -604,13 +638,20 @@ fn substitute_audio_embeds(
     let seq = tokens.len();
     let a_dims = audio_embeds.shape();
     let a_dims = a_dims.dims();
-    assert_eq!(a_dims.len(), 2,
-        "substitute_audio_embeds: audio_embeds must be rank-2 [n, hidden]");
-    assert_eq!(a_dims[1], hidden,
+    assert_eq!(
+        a_dims.len(),
+        2,
+        "substitute_audio_embeds: audio_embeds must be rank-2 [n, hidden]"
+    );
+    assert_eq!(
+        a_dims[1], hidden,
         "substitute_audio_embeds: audio_embeds last dim {} != text hidden {}",
-        a_dims[1], hidden);
+        a_dims[1], hidden
+    );
 
-    let audio_positions: Vec<usize> = tokens.iter().enumerate()
+    let audio_positions: Vec<usize> = tokens
+        .iter()
+        .enumerate()
         .filter_map(|(i, &t)| if t == audio_token_id { Some(i) } else { None })
         .collect();
 
@@ -619,9 +660,13 @@ fn substitute_audio_embeds(
         return Ok(text_embeds.clone());
     }
 
-    assert_eq!(audio_positions.len(), a_dims[0],
+    assert_eq!(
+        audio_positions.len(),
+        a_dims[0],
         "substitute_audio_embeds: {} audio tokens vs {} audio embeddings",
-        audio_positions.len(), a_dims[0]);
+        audio_positions.len(),
+        a_dims[0]
+    );
 
     // Build the scatter index `(seq,)`:
     //   for audio-token positions, the index into `audio_embeds`'s rows
@@ -630,23 +675,24 @@ fn substitute_audio_embeds(
     for (audio_row, &pos) in audio_positions.iter().enumerate() {
         scatter_indices[pos] = audio_row as u32;
     }
-    let idx_t = text_embeds.const_u32_like(
-        scatter_indices, Shape::from_dims(&[seq]),
-    );
+    let idx_t = text_embeds.const_u32_like(scatter_indices, Shape::from_dims(&[seq]));
     // [seq, hidden] — audio_embeds row per token position; text-token
     // rows are bogus but masked out.
-    let scattered = audio_embeds.index_select(0_usize, &idx_t)?
+    let scattered = audio_embeds
+        .index_select(0_usize, &idx_t)?
         .reshape(Shape::from_dims(&[1, seq, hidden]))?;
 
     // [1, seq, 1] additive mask: 1.0 at audio positions, 0.0 else.
     let mut mask_data = vec![0.0_f32; seq];
-    for &p in &audio_positions { mask_data[p] = 1.0; }
+    for &p in &audio_positions {
+        mask_data[p] = 1.0;
+    }
     let mask = text_embeds
         .const_f32_like(mask_data, Shape::from_dims(&[seq]))
         .reshape(Shape::from_dims(&[1, seq, 1]))?
         .broadcast_to(Shape::from_dims(&[1, seq, hidden]))?;
 
-    let one_minus = mask.affine(-1.0, 1.0);  // 1 - mask
+    let one_minus = mask.affine(-1.0, 1.0); // 1 - mask
     let text_part = text_embeds.mul(&one_minus)?;
     let audio_part = scattered.mul(&mask)?;
     text_part.add(&audio_part)
@@ -688,8 +734,7 @@ impl VoxtralWeights {
         cfg: &VoxtralConfig,
     ) -> crate::Result<Self> {
         use crate::lazy::{
-            load_tensor_as_f32, load_transposed_matrix,
-            load_transposed_matrix_preserve_dtype,
+            load_tensor_as_f32, load_transposed_matrix, load_transposed_matrix_preserve_dtype,
         };
 
         // ---- audio encoder (Whisper-shape) -------------------------
@@ -699,63 +744,51 @@ impl VoxtralWeights {
         let conv1_b = load_tensor_as_f32(st, "audio_tower.conv1.bias")?;
         let conv2_w = load_tensor_as_f32(st, "audio_tower.conv2.weight")?;
         let conv2_b = load_tensor_as_f32(st, "audio_tower.conv2.bias")?;
-        let embed_positions = load_tensor_as_f32(
-            st, "audio_tower.embed_positions.weight",
-        )?;
+        let embed_positions = load_tensor_as_f32(st, "audio_tower.embed_positions.weight")?;
 
         let mut enc_layers: Vec<VoxtralEncoderLayerWeights> =
             Vec::with_capacity(acfg.num_hidden_layers);
         for i in 0..acfg.num_hidden_layers {
             let p = format!("audio_tower.layers.{i}");
-            let self_attn_ln_gain = load_tensor_as_f32(
-                st, &format!("{p}.self_attn_layer_norm.weight"),
-            )?;
-            let self_attn_ln_bias = load_tensor_as_f32(
-                st, &format!("{p}.self_attn_layer_norm.bias"),
-            )?;
+            let self_attn_ln_gain =
+                load_tensor_as_f32(st, &format!("{p}.self_attn_layer_norm.weight"))?;
+            let self_attn_ln_bias =
+                load_tensor_as_f32(st, &format!("{p}.self_attn_layer_norm.bias"))?;
 
-            let q_w = load_transposed_matrix(
-                st, &format!("{p}.self_attn.q_proj.weight"), d_aud, d_aud,
-            )?;
-            let q_b = load_tensor_as_f32(
-                st, &format!("{p}.self_attn.q_proj.bias"),
-            )?;
+            let q_w =
+                load_transposed_matrix(st, &format!("{p}.self_attn.q_proj.weight"), d_aud, d_aud)?;
+            let q_b = load_tensor_as_f32(st, &format!("{p}.self_attn.q_proj.bias"))?;
             // Whisper convention: k_proj is bias-free.
-            let k_w = load_transposed_matrix(
-                st, &format!("{p}.self_attn.k_proj.weight"), d_aud, d_aud,
-            )?;
-            let v_w = load_transposed_matrix(
-                st, &format!("{p}.self_attn.v_proj.weight"), d_aud, d_aud,
-            )?;
-            let v_b = load_tensor_as_f32(
-                st, &format!("{p}.self_attn.v_proj.bias"),
-            )?;
+            let k_w =
+                load_transposed_matrix(st, &format!("{p}.self_attn.k_proj.weight"), d_aud, d_aud)?;
+            let v_w =
+                load_transposed_matrix(st, &format!("{p}.self_attn.v_proj.weight"), d_aud, d_aud)?;
+            let v_b = load_tensor_as_f32(st, &format!("{p}.self_attn.v_proj.bias"))?;
             let out_w = load_transposed_matrix(
-                st, &format!("{p}.self_attn.out_proj.weight"), d_aud, d_aud,
+                st,
+                &format!("{p}.self_attn.out_proj.weight"),
+                d_aud,
+                d_aud,
             )?;
-            let out_b = load_tensor_as_f32(
-                st, &format!("{p}.self_attn.out_proj.bias"),
-            )?;
+            let out_b = load_tensor_as_f32(st, &format!("{p}.self_attn.out_proj.bias"))?;
 
-            let final_ln_gain = load_tensor_as_f32(
-                st, &format!("{p}.final_layer_norm.weight"),
-            )?;
-            let final_ln_bias = load_tensor_as_f32(
-                st, &format!("{p}.final_layer_norm.bias"),
-            )?;
+            let final_ln_gain = load_tensor_as_f32(st, &format!("{p}.final_layer_norm.weight"))?;
+            let final_ln_bias = load_tensor_as_f32(st, &format!("{p}.final_layer_norm.bias"))?;
 
             let fc1_w = load_transposed_matrix(
-                st, &format!("{p}.fc1.weight"), acfg.intermediate_size, d_aud,
+                st,
+                &format!("{p}.fc1.weight"),
+                acfg.intermediate_size,
+                d_aud,
             )?;
-            let fc1_b = load_tensor_as_f32(
-                st, &format!("{p}.fc1.bias"),
-            )?;
+            let fc1_b = load_tensor_as_f32(st, &format!("{p}.fc1.bias"))?;
             let fc2_w = load_transposed_matrix(
-                st, &format!("{p}.fc2.weight"), d_aud, acfg.intermediate_size,
+                st,
+                &format!("{p}.fc2.weight"),
+                d_aud,
+                acfg.intermediate_size,
             )?;
-            let fc2_b = load_tensor_as_f32(
-                st, &format!("{p}.fc2.bias"),
-            )?;
+            let fc2_b = load_tensor_as_f32(st, &format!("{p}.fc2.bias"))?;
 
             enc_layers.push(VoxtralEncoderLayerWeights {
                 self_attn_q: WeightStorage::F32(Arc::<[f32]>::from(q_w)),
@@ -775,12 +808,8 @@ impl VoxtralWeights {
                 final_ln_bias: Arc::<[f32]>::from(final_ln_bias),
             });
         }
-        let enc_final_ln_gain = load_tensor_as_f32(
-            st, "audio_tower.layer_norm.weight",
-        )?;
-        let enc_final_ln_bias = load_tensor_as_f32(
-            st, "audio_tower.layer_norm.bias",
-        )?;
+        let enc_final_ln_gain = load_tensor_as_f32(st, "audio_tower.layer_norm.weight")?;
+        let enc_final_ln_bias = load_tensor_as_f32(st, "audio_tower.layer_norm.bias")?;
 
         let audio = VoxtralEncoderWeights {
             conv1_w: Arc::<[f32]>::from(conv1_w),
@@ -814,7 +843,8 @@ impl VoxtralWeights {
         let kv_dim = tcfg.num_key_value_heads * tcfg.head_dim;
 
         let token_embedding = Arc::<[f32]>::from(load_tensor_as_f32(
-            st, "language_model.model.embed_tokens.weight",
+            st,
+            "language_model.model.embed_tokens.weight",
         )?);
 
         let mut text_layers: Vec<VoxtralTextLayerWeights> =
@@ -822,54 +852,86 @@ impl VoxtralWeights {
         for i in 0..tcfg.num_hidden_layers {
             let p = format!("language_model.model.layers.{i}");
             let attn_norm_gain = Arc::<[f32]>::from(load_tensor_as_f32(
-                st, &format!("{p}.input_layernorm.weight"),
+                st,
+                &format!("{p}.input_layernorm.weight"),
             )?);
             let ffn_norm_gain = Arc::<[f32]>::from(load_tensor_as_f32(
-                st, &format!("{p}.post_attention_layernorm.weight"),
+                st,
+                &format!("{p}.post_attention_layernorm.weight"),
             )?);
 
             let attn_q = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.q_proj.weight"), q_dim, h,
+                st,
+                &format!("{p}.self_attn.q_proj.weight"),
+                q_dim,
+                h,
             )?;
             let attn_k = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.k_proj.weight"), kv_dim, h,
+                st,
+                &format!("{p}.self_attn.k_proj.weight"),
+                kv_dim,
+                h,
             )?;
             let attn_v = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.v_proj.weight"), kv_dim, h,
+                st,
+                &format!("{p}.self_attn.v_proj.weight"),
+                kv_dim,
+                h,
             )?;
             let attn_o = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.o_proj.weight"), h, q_dim,
+                st,
+                &format!("{p}.self_attn.o_proj.weight"),
+                h,
+                q_dim,
             )?;
             let ffn_gate = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.mlp.gate_proj.weight"), tcfg.intermediate_size, h,
+                st,
+                &format!("{p}.mlp.gate_proj.weight"),
+                tcfg.intermediate_size,
+                h,
             )?;
             let ffn_up = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.mlp.up_proj.weight"), tcfg.intermediate_size, h,
+                st,
+                &format!("{p}.mlp.up_proj.weight"),
+                tcfg.intermediate_size,
+                h,
             )?;
             let ffn_down = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.mlp.down_proj.weight"), h, tcfg.intermediate_size,
+                st,
+                &format!("{p}.mlp.down_proj.weight"),
+                h,
+                tcfg.intermediate_size,
             )?;
 
             text_layers.push(VoxtralTextLayerWeights {
                 attn_norm_gain,
                 ffn_norm_gain,
-                attn_q, attn_k, attn_v, attn_o,
-                ffn_gate, ffn_up, ffn_down,
+                attn_q,
+                attn_k,
+                attn_v,
+                attn_o,
+                ffn_gate,
+                ffn_up,
+                ffn_down,
             });
         }
 
-        let final_norm_gain = Arc::<[f32]>::from(load_tensor_as_f32(
-            st, "language_model.model.norm.weight",
-        )?);
+        let final_norm_gain =
+            Arc::<[f32]>::from(load_tensor_as_f32(st, "language_model.model.norm.weight")?);
 
         // lm_head: prefer the explicit `language_model.lm_head.weight`;
         // fall back to tied embeddings if absent (`tie_word_embeddings`).
         let lm_head = match load_transposed_matrix_preserve_dtype(
-            st, "language_model.lm_head.weight", tcfg.vocab_size, h,
+            st,
+            "language_model.lm_head.weight",
+            tcfg.vocab_size,
+            h,
         ) {
             Ok(w) => w,
             Err(_) => crate::lazy_llama_full::tied_lm_head_from_embeddings(
-                &token_embedding, tcfg.vocab_size, h,
+                &token_embedding,
+                tcfg.vocab_size,
+                h,
             ),
         };
 
@@ -880,7 +942,12 @@ impl VoxtralWeights {
             lm_head,
         };
 
-        Ok(Self { audio, projector_1, projector_2, text })
+        Ok(Self {
+            audio,
+            projector_1,
+            projector_2,
+            text,
+        })
     }
 }
 
@@ -909,9 +976,8 @@ mod tests {
 
     fn tiny_encoder_weights(cfg: &VoxtralEncoderConfig) -> VoxtralEncoderWeights {
         let mut next = rng(11111);
-        let mut vec_of = |n: usize| -> Arc<[f32]> {
-            Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
-        };
+        let mut vec_of =
+            |n: usize| -> Arc<[f32]> { Arc::from((0..n).map(|_| next()).collect::<Vec<_>>()) };
         let d = cfg.hidden_size;
         let layers: Vec<VoxtralEncoderLayerWeights> = (0..cfg.num_hidden_layers)
             .map(|_| VoxtralEncoderLayerWeights {
@@ -930,7 +996,8 @@ mod tests {
                 fc2_bias: vec_of(d),
                 final_ln_gain: Arc::from(vec![1.0_f32; d]),
                 final_ln_bias: Arc::from(vec![0.0_f32; d]),
-            }).collect();
+            })
+            .collect();
         VoxtralEncoderWeights {
             conv1_w: vec_of(d * cfg.num_mel_bins * 3),
             conv1_b: vec_of(d),
@@ -947,10 +1014,14 @@ mod tests {
     fn encoder_forward_shape_and_finite() {
         let cfg = tiny_encoder_cfg();
         let weights = tiny_encoder_weights(&cfg);
-        let enc = VoxtralEncoder { config: cfg.clone(), weights };
+        let enc = VoxtralEncoder {
+            config: cfg.clone(),
+            weights,
+        };
         let mel_time = 8;
         let mel: Vec<f32> = (0..cfg.num_mel_bins * mel_time)
-            .map(|i| (i as f32 * 0.001) - 0.05).collect();
+            .map(|i| (i as f32 * 0.001) - 0.05)
+            .collect();
         let out = enc.forward(&mel, mel_time).unwrap();
         assert_eq!(out.shape().dims(), &[1, mel_time / 2, cfg.hidden_size]);
         let v = out.realize_f32();
@@ -962,9 +1033,8 @@ mod tests {
     #[test]
     fn projector_forward_shape_and_finite() {
         let mut next = rng(22222);
-        let mut vec_of = |n: usize| -> Arc<[f32]> {
-            Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
-        };
+        let mut vec_of =
+            |n: usize| -> Arc<[f32]> { Arc::from((0..n).map(|_| next()).collect::<Vec<_>>()) };
         let audio_in = 8;
         let text_h = 6;
         let projector = VoxtralMultiModalProjector {
@@ -974,7 +1044,9 @@ mod tests {
             text_hidden: text_h,
         };
         let audio = LazyTensor::from_f32(
-            (0..4 * audio_in).map(|i| (i as f32 * 0.01) - 0.1).collect::<Vec<_>>(),
+            (0..4 * audio_in)
+                .map(|i| (i as f32 * 0.01) - 0.1)
+                .collect::<Vec<_>>(),
             Shape::from_dims(&[4, audio_in]),
             &Device::cpu(),
         );
@@ -987,34 +1059,40 @@ mod tests {
 
     fn tiny_text_cfg() -> VoxtralTextConfig {
         VoxtralTextConfig {
-            vocab_size: 32, hidden_size: 12, intermediate_size: 24,
+            vocab_size: 32,
+            hidden_size: 12,
+            intermediate_size: 24,
             num_hidden_layers: 2,
-            num_attention_heads: 4, num_key_value_heads: 2,
+            num_attention_heads: 4,
+            num_key_value_heads: 2,
             head_dim: 4,
-            rms_norm_eps: 1e-5, rope_theta: 10_000.0,
-            max_position_embeddings: 64, tie_word_embeddings: false,
+            rms_norm_eps: 1e-5,
+            rope_theta: 10_000.0,
+            max_position_embeddings: 64,
+            tie_word_embeddings: false,
         }
     }
 
     fn tiny_text_weights(cfg: &VoxtralTextConfig) -> VoxtralTextWeights {
         let mut next = rng(33333);
-        let mut vec_of = |n: usize| -> Arc<[f32]> {
-            Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
-        };
+        let mut vec_of =
+            |n: usize| -> Arc<[f32]> { Arc::from((0..n).map(|_| next()).collect::<Vec<_>>()) };
         let h = cfg.hidden_size;
         let q_dim = cfg.num_attention_heads * cfg.head_dim;
         let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
-        let layers = (0..cfg.num_hidden_layers).map(|_| VoxtralTextLayerWeights {
-            attn_norm_gain: Arc::from(vec![1.0_f32; h]),
-            ffn_norm_gain: Arc::from(vec![1.0_f32; h]),
-            attn_q: WeightStorage::F32(vec_of(h * q_dim)),
-            attn_k: WeightStorage::F32(vec_of(h * kv_dim)),
-            attn_v: WeightStorage::F32(vec_of(h * kv_dim)),
-            attn_o: WeightStorage::F32(vec_of(q_dim * h)),
-            ffn_gate: WeightStorage::F32(vec_of(h * cfg.intermediate_size)),
-            ffn_up: WeightStorage::F32(vec_of(h * cfg.intermediate_size)),
-            ffn_down: WeightStorage::F32(vec_of(cfg.intermediate_size * h)),
-        }).collect();
+        let layers = (0..cfg.num_hidden_layers)
+            .map(|_| VoxtralTextLayerWeights {
+                attn_norm_gain: Arc::from(vec![1.0_f32; h]),
+                ffn_norm_gain: Arc::from(vec![1.0_f32; h]),
+                attn_q: WeightStorage::F32(vec_of(h * q_dim)),
+                attn_k: WeightStorage::F32(vec_of(h * kv_dim)),
+                attn_v: WeightStorage::F32(vec_of(h * kv_dim)),
+                attn_o: WeightStorage::F32(vec_of(q_dim * h)),
+                ffn_gate: WeightStorage::F32(vec_of(h * cfg.intermediate_size)),
+                ffn_up: WeightStorage::F32(vec_of(h * cfg.intermediate_size)),
+                ffn_down: WeightStorage::F32(vec_of(cfg.intermediate_size * h)),
+            })
+            .collect();
         VoxtralTextWeights {
             token_embedding: vec_of(cfg.vocab_size * h),
             layers,
@@ -1027,7 +1105,10 @@ mod tests {
     fn text_model_forward_shape_and_finite() {
         let cfg = tiny_text_cfg();
         let weights = tiny_text_weights(&cfg);
-        let model = VoxtralTextModel { config: cfg.clone(), weights };
+        let model = VoxtralTextModel {
+            config: cfg.clone(),
+            weights,
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
         let logits = model.forward(&tokens, 0).unwrap();
         assert_eq!(logits.shape().dims(), &[1, tokens.len(), cfg.vocab_size]);
@@ -1042,20 +1123,14 @@ mod tests {
         let hidden = 3;
         let tokens = vec![10_u32, 99, 20, 99];
         let audio = LazyTensor::from_f32(
-            vec![
-                7.0_f32, 7.0, 7.0,
-                8.0, 8.0, 8.0,
-            ],
+            vec![7.0_f32, 7.0, 7.0, 8.0, 8.0, 8.0],
             Shape::from_dims(&[2, hidden]),
             &Device::cpu(),
         );
         // Anchor text on audio's graph so the substitute step can mix.
         let text = audio.const_f32_like(
             Arc::<[f32]>::from(vec![
-                1.0_f32, 1.0, 1.0,
-                2.0, 2.0, 2.0,
-                3.0, 3.0, 3.0,
-                4.0, 4.0, 4.0,
+                1.0_f32, 1.0, 1.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0, 4.0, 4.0, 4.0,
             ]),
             Shape::from_dims(&[1, 4, hidden]),
         );
@@ -1064,10 +1139,7 @@ mod tests {
         // Expected: row 0 = text 1, row 1 = audio 7, row 2 = text 3,
         //           row 3 = audio 8.
         let want = [
-            1.0_f32, 1.0, 1.0,
-            7.0, 7.0, 7.0,
-            3.0, 3.0, 3.0,
-            8.0, 8.0, 8.0,
+            1.0_f32, 1.0, 1.0, 7.0, 7.0, 7.0, 3.0, 3.0, 3.0, 8.0, 8.0, 8.0,
         ];
         for (i, (&a, &b)) in v.iter().zip(want.iter()).enumerate() {
             assert!((a - b).abs() < 1e-5, "row {} elt: {a} vs {b}", i / hidden);
@@ -1093,36 +1165,45 @@ mod tests {
         let audio_w = tiny_encoder_weights(&audio_cfg);
         let text_w = tiny_text_weights(&text_cfg);
         let mut next = rng(44444);
-        let mut vec_of = |n: usize| -> Arc<[f32]> {
-            Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
-        };
-        let projector_1 = WeightStorage::F32(
-            vec_of(audio_cfg.intermediate_size * text_cfg.hidden_size));
-        let projector_2 = WeightStorage::F32(
-            vec_of(text_cfg.hidden_size * text_cfg.hidden_size));
+        let mut vec_of =
+            |n: usize| -> Arc<[f32]> { Arc::from((0..n).map(|_| next()).collect::<Vec<_>>()) };
+        let projector_1 =
+            WeightStorage::F32(vec_of(audio_cfg.intermediate_size * text_cfg.hidden_size));
+        let projector_2 = WeightStorage::F32(vec_of(text_cfg.hidden_size * text_cfg.hidden_size));
 
         // audio_token_id must be < vocab_size since it flows through
         // the embedding lookup before being replaced. Pick a
         // distinguished in-vocab id.
         let cfg = VoxtralConfig {
-            audio: audio_cfg.clone(), text: text_cfg.clone(), audio_token_id: 7,
+            audio: audio_cfg.clone(),
+            text: text_cfg.clone(),
+            audio_token_id: 7,
         };
         let model = VoxtralModel {
             config: cfg.clone(),
             weights: VoxtralWeights {
-                audio: audio_w, projector_1, projector_2, text: text_w,
+                audio: audio_w,
+                projector_1,
+                projector_2,
+                text: text_w,
             },
         };
 
         let mel_time = 8;
         let mel: Vec<f32> = (0..audio_cfg.num_mel_bins * mel_time)
-            .map(|i| (i as f32 * 0.001) - 0.05).collect();
+            .map(|i| (i as f32 * 0.001) - 0.05)
+            .collect();
 
         // 2 audio tokens at positions 1, 3; 3 text tokens elsewhere.
         let tokens: Vec<u32> = vec![1, 7, 2, 7, 3];
 
-        let logits = model.forward_with_audio(&mel, mel_time, &tokens, 0).unwrap();
-        assert_eq!(logits.shape().dims(), &[1, tokens.len(), text_cfg.vocab_size]);
+        let logits = model
+            .forward_with_audio(&mel, mel_time, &tokens, 0)
+            .unwrap();
+        assert_eq!(
+            logits.shape().dims(),
+            &[1, tokens.len(), text_cfg.vocab_size]
+        );
         for &v in &logits.realize_f32() {
             assert!(v.is_finite(), "non-finite forward_with_audio logits: {v}");
         }

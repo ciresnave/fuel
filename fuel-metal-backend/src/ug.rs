@@ -51,10 +51,7 @@ impl InplaceOp1 for MetalUgIOp1 {
             .as_any_mut()
             .downcast_mut::<MetalStorage>()
             .ok_or_else(|| {
-                fuel_ir::Error::Msg(
-                    "MetalUgIOp1: storage is not a MetalStorage".to_string(),
-                )
-                .bt()
+                fuel_ir::Error::Msg("MetalUgIOp1: storage is not a MetalStorage".to_string()).bt()
             })?;
 
         let elem_count = layout.shape().elem_count();

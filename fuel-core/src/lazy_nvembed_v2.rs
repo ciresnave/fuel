@@ -160,12 +160,19 @@ impl NvEmbedV2Model {
         let seq = tokens.len();
         let batch = 1;
         assert!(seq > 0, "NvEmbedV2Model::forward: tokens must be non-empty");
-        assert_eq!(attention_mask.len(), seq,
-            "attention_mask length must equal tokens length");
+        assert_eq!(
+            attention_mask.len(),
+            seq,
+            "attention_mask length must equal tokens length"
+        );
 
         // ---- Embedding lookup --------------------------------------------
         let embeds = LazyTensor::embed_tokens(
-            self.weights.backbone.token_embedding.clone(), bcfg.vocab_size, bcfg.hidden_size, tokens, &Device::cpu(),
+            self.weights.backbone.token_embedding.clone(),
+            bcfg.vocab_size,
+            bcfg.hidden_size,
+            tokens,
+            &Device::cpu(),
         )?;
 
         // ---- Build bidirectional 4-D pad mask -----------------------------
@@ -177,26 +184,43 @@ impl NvEmbedV2Model {
 
         // ---- Run Mistral backbone in bidirectional mode -------------------
         let backbone = MistralModel {
-            config: bcfg.clone(), weights: self.weights.backbone.clone(),
+            config: bcfg.clone(),
+            weights: self.weights.backbone.clone(),
         };
-        let hidden = backbone.forward_hidden_embeds_with_mask(
-            &embeds, &bidirectional_mask, 0,
-        )?;
+        let hidden = backbone.forward_hidden_embeds_with_mask(&embeds, &bidirectional_mask, 0)?;
 
         // ---- Latent attention head (Perceiver-style) ----------------------
         // norm(hidden) → Q; norm(latents) → K, V.
-        let hidden_normed = hidden.layer_norm_affine(std::sync::Arc::clone(&self.weights.cross_attn_norm_gain), std::sync::Arc::clone(&self.weights.cross_attn_norm_bias), cfg.layer_norm_eps)?;
+        let hidden_normed = hidden.layer_norm_affine(
+            std::sync::Arc::clone(&self.weights.cross_attn_norm_gain),
+            std::sync::Arc::clone(&self.weights.cross_attn_norm_bias),
+            cfg.layer_norm_eps,
+        )?;
         let latents = embeds.const_f32_like(
             Arc::clone(&self.weights.latents),
             Shape::from_dims(&[cfg.num_latents, bcfg.hidden_size]),
         );
         let latents = latents
             .reshape(Shape::from_dims(&[1, cfg.num_latents, bcfg.hidden_size]))?
-            .broadcast_to(Shape::from_dims(&[batch, cfg.num_latents, bcfg.hidden_size]))?;
-        let latents_normed = latents.layer_norm_affine(std::sync::Arc::clone(&self.weights.cross_attn_context_norm_gain), std::sync::Arc::clone(&self.weights.cross_attn_context_norm_bias), cfg.layer_norm_eps)?;
+            .broadcast_to(Shape::from_dims(&[
+                batch,
+                cfg.num_latents,
+                bcfg.hidden_size,
+            ]))?;
+        let latents_normed = latents.layer_norm_affine(
+            std::sync::Arc::clone(&self.weights.cross_attn_context_norm_gain),
+            std::sync::Arc::clone(&self.weights.cross_attn_context_norm_bias),
+            cfg.layer_norm_eps,
+        )?;
         let inner = cfg.latent_heads * cfg.latent_head_dim;
-        let q = self.weights.to_q.apply_linear(&hidden_normed, bcfg.hidden_size, inner)?;
-        let kv = self.weights.to_kv.apply_linear(&latents_normed, bcfg.hidden_size, 2 * inner)?;
+        let q = self
+            .weights
+            .to_q
+            .apply_linear(&hidden_normed, bcfg.hidden_size, inner)?;
+        let kv = self
+            .weights
+            .to_kv
+            .apply_linear(&latents_normed, bcfg.hidden_size, 2 * inner)?;
         let k = kv.slice(2_usize, 0, inner)?;
         let v = kv.slice(2_usize, inner, inner)?;
         // Heads split: (batch, len, heads, head_dim) → permute(0, 2, 1, 3).
@@ -209,18 +233,31 @@ impl NvEmbedV2Model {
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v)?; // (batch, heads, seq, head_dim)
         let merged = ctx.merge_heads()?;
-        let cross_out = self.weights.to_out.apply_linear(&merged, inner, bcfg.hidden_size)?;
+        let cross_out = self
+            .weights
+            .to_out
+            .apply_linear(&merged, inner, bcfg.hidden_size)?;
         // Residual: hidden + cross_out.
         let cross_hidden = hidden.add(&cross_out)?;
 
         // ---- GeGLU FFN with residual --------------------------------------
-        let ff_in = cross_hidden.layer_norm_affine(std::sync::Arc::clone(&self.weights.ff_norm_gain), std::sync::Arc::clone(&self.weights.ff_norm_bias), cfg.layer_norm_eps)?;
+        let ff_in = cross_hidden.layer_norm_affine(
+            std::sync::Arc::clone(&self.weights.ff_norm_gain),
+            std::sync::Arc::clone(&self.weights.ff_norm_bias),
+            cfg.layer_norm_eps,
+        )?;
         let ff_hidden = bcfg.hidden_size * cfg.ff_mult;
-        let ff_up = self.weights.ff_proj.apply_linear(&ff_in, bcfg.hidden_size, 2 * ff_hidden)?;
+        let ff_up = self
+            .weights
+            .ff_proj
+            .apply_linear(&ff_in, bcfg.hidden_size, 2 * ff_hidden)?;
         let ff_value = ff_up.slice(2_usize, 0, ff_hidden)?;
         let ff_gate = ff_up.slice(2_usize, ff_hidden, ff_hidden)?;
         let ff_inner = ff_value.mul(&ff_gate.gelu_erf())?;
-        let ff_out = self.weights.ff_down.apply_linear(&ff_inner, ff_hidden, bcfg.hidden_size)?;
+        let ff_out = self
+            .weights
+            .ff_down
+            .apply_linear(&ff_inner, ff_hidden, bcfg.hidden_size)?;
         let pooled_input = cross_hidden.add(&ff_out)?;
 
         // ---- Mask-weighted mean pool --------------------------------------
@@ -294,7 +331,7 @@ impl NvEmbedV2Weights {
         cfg: &NvEmbedV2Config,
     ) -> Result<Self> {
         use crate::lazy::{
-            load_tensor_as_f32, load_transposed_matrix_preserve_dtype, LayerWeights,
+            LayerWeights, load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
         };
 
         let bcfg = &cfg.backbone;
@@ -304,8 +341,7 @@ impl NvEmbedV2Weights {
         let ff_hidden = h * cfg.ff_mult;
 
         // ---- Mistral backbone (NV-Embed naming: no `model.` middle segment) --
-        let token_embedding_vec =
-            load_tensor_as_f32(st, "embedding_model.embed_tokens.weight")?;
+        let token_embedding_vec = load_tensor_as_f32(st, "embedding_model.embed_tokens.weight")?;
         if token_embedding_vec.len() != bcfg.vocab_size * h {
             crate::bail!(
                 "embedding_model.embed_tokens.weight: {} elts, expected {}",
@@ -319,31 +355,54 @@ impl NvEmbedV2Weights {
         for i in 0..bcfg.num_hidden_layers {
             let p = format!("embedding_model.layers.{i}");
             let attn_q = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.q_proj.weight"), h, h,
+                st,
+                &format!("{p}.self_attn.q_proj.weight"),
+                h,
+                h,
             )?;
             let attn_k = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.k_proj.weight"), kv, h,
+                st,
+                &format!("{p}.self_attn.k_proj.weight"),
+                kv,
+                h,
             )?;
             let attn_v = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.v_proj.weight"), kv, h,
+                st,
+                &format!("{p}.self_attn.v_proj.weight"),
+                kv,
+                h,
             )?;
             let attn_o = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.o_proj.weight"), h, h,
+                st,
+                &format!("{p}.self_attn.o_proj.weight"),
+                h,
+                h,
             )?;
             let ffn_gate = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.mlp.gate_proj.weight"), bcfg.intermediate_size, h,
+                st,
+                &format!("{p}.mlp.gate_proj.weight"),
+                bcfg.intermediate_size,
+                h,
             )?;
             let ffn_up = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.mlp.up_proj.weight"), bcfg.intermediate_size, h,
+                st,
+                &format!("{p}.mlp.up_proj.weight"),
+                bcfg.intermediate_size,
+                h,
             )?;
             let ffn_down = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.mlp.down_proj.weight"), h, bcfg.intermediate_size,
+                st,
+                &format!("{p}.mlp.down_proj.weight"),
+                h,
+                bcfg.intermediate_size,
             )?;
             let attn_norm_gain: Arc<[f32]> = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.input_layernorm.weight"),
+                st,
+                &format!("{p}.input_layernorm.weight"),
             )?);
             let ffn_norm_gain: Arc<[f32]> = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.post_attention_layernorm.weight"),
+                st,
+                &format!("{p}.post_attention_layernorm.weight"),
             )?);
             layers.push(LayerWeights {
                 attn_q,
@@ -394,13 +453,14 @@ impl NvEmbedV2Weights {
         let cab0 = "latent_attention_model.cross_attend_blocks.0";
         let cross_attn_norm_gain: Arc<[f32]> =
             Arc::from(load_tensor_as_f32(st, &format!("{cab0}.norm.weight"))?);
-        let cross_attn_norm_bias: Arc<[f32]> =
-            load_tensor_as_f32(st, &format!("{cab0}.norm.bias"))
-                .ok()
-                .map(Arc::from)
-                .unwrap_or_else(|| Arc::from(vec![0.0_f32; h]));
-        let cross_attn_context_norm_gain: Arc<[f32]> =
-            Arc::from(load_tensor_as_f32(st, &format!("{cab0}.norm_context.weight"))?);
+        let cross_attn_norm_bias: Arc<[f32]> = load_tensor_as_f32(st, &format!("{cab0}.norm.bias"))
+            .ok()
+            .map(Arc::from)
+            .unwrap_or_else(|| Arc::from(vec![0.0_f32; h]));
+        let cross_attn_context_norm_gain: Arc<[f32]> = Arc::from(load_tensor_as_f32(
+            st,
+            &format!("{cab0}.norm_context.weight"),
+        )?);
         let cross_attn_context_norm_bias: Arc<[f32]> =
             load_tensor_as_f32(st, &format!("{cab0}.norm_context.bias"))
                 .ok()
@@ -408,16 +468,21 @@ impl NvEmbedV2Weights {
                 .unwrap_or_else(|| Arc::from(vec![0.0_f32; h]));
         // Cross-attention projections — all `no_bias` linears.
         // `to_q`: [hidden, inner]; HF stores as [inner, hidden].
-        let to_q = load_transposed_matrix_preserve_dtype(
-            st, &format!("{cab0}.fn.to_q.weight"), inner, h,
-        )?;
+        let to_q =
+            load_transposed_matrix_preserve_dtype(st, &format!("{cab0}.fn.to_q.weight"), inner, h)?;
         // `to_kv`: [hidden, 2 * inner]; HF stores as [2 * inner, hidden].
         let to_kv = load_transposed_matrix_preserve_dtype(
-            st, &format!("{cab0}.fn.to_kv.weight"), 2 * inner, h,
+            st,
+            &format!("{cab0}.fn.to_kv.weight"),
+            2 * inner,
+            h,
         )?;
         // `to_out`: [inner, hidden]; HF stores as [hidden, inner].
         let to_out = load_transposed_matrix_preserve_dtype(
-            st, &format!("{cab0}.fn.to_out.weight"), h, inner,
+            st,
+            &format!("{cab0}.fn.to_out.weight"),
+            h,
+            inner,
         )?;
 
         // Cross-attend block 1 = norm + GeGLU FFN.
@@ -425,23 +490,28 @@ impl NvEmbedV2Weights {
         let cab1 = "latent_attention_model.cross_attend_blocks.1";
         let ff_norm_gain: Arc<[f32]> =
             Arc::from(load_tensor_as_f32(st, &format!("{cab1}.norm.weight"))?);
-        let ff_norm_bias: Arc<[f32]> =
-            load_tensor_as_f32(st, &format!("{cab1}.norm.bias"))
-                .ok()
-                .map(Arc::from)
-                .unwrap_or_else(|| Arc::from(vec![0.0_f32; h]));
+        let ff_norm_bias: Arc<[f32]> = load_tensor_as_f32(st, &format!("{cab1}.norm.bias"))
+            .ok()
+            .map(Arc::from)
+            .unwrap_or_else(|| Arc::from(vec![0.0_f32; h]));
         // GeGLU up-projection: [hidden, 2 * ff_hidden]; HF stores as
         // [2 * ff_hidden, hidden]. The eager `GeGlu` builds a single
         // `Linear(dim, dim_out * 2)` whose output is split into
         // (value, gate) on the last dim — matches our `ff_proj` slice
         // convention.
         let ff_proj = load_transposed_matrix_preserve_dtype(
-            st, &format!("{cab1}.fn.net.0.proj.weight"), 2 * ff_hidden, h,
+            st,
+            &format!("{cab1}.fn.net.0.proj.weight"),
+            2 * ff_hidden,
+            h,
         )?;
         // GeGLU down-projection: [ff_hidden, hidden]; HF stores as
         // [hidden, ff_hidden]. This is `vs.pp("net").pp("2")` in eager.
         let ff_down = load_transposed_matrix_preserve_dtype(
-            st, &format!("{cab1}.fn.net.2.weight"), h, ff_hidden,
+            st,
+            &format!("{cab1}.fn.net.2.weight"),
+            h,
+            ff_hidden,
         )?;
 
         Ok(Self {
@@ -481,11 +551,17 @@ mod tests {
 
     fn tiny_backbone_cfg() -> MistralConfig {
         MistralConfig {
-            vocab_size: 32, hidden_size: 16, intermediate_size: 32,
-            num_hidden_layers: 2, num_attention_heads: 4,
-            num_key_value_heads: 2, head_dim: 4,
-            rms_norm_eps: 1e-6, rope_theta: 10_000.0,
-            max_position_embeddings: 32, sliding_window: None,
+            vocab_size: 32,
+            hidden_size: 16,
+            intermediate_size: 32,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            num_key_value_heads: 2,
+            head_dim: 4,
+            rms_norm_eps: 1e-6,
+            rope_theta: 10_000.0,
+            max_position_embeddings: 32,
+            sliding_window: None,
         }
     }
 
@@ -494,20 +570,22 @@ mod tests {
         let i = cfg.intermediate_size;
         let kv = cfg.num_key_value_heads * cfg.head_dim;
         let token_embedding = vec_of(cfg.vocab_size * h, nb);
-        let layers: Vec<LayerWeights> = (0..cfg.num_hidden_layers).map(|_| LayerWeights {
-            attn_q: WeightStorage::F32(vec_of(h * h, nb)),
-            attn_q_bias: None,
-            attn_k: WeightStorage::F32(vec_of(h * kv, nb)),
-            attn_k_bias: None,
-            attn_v: WeightStorage::F32(vec_of(h * kv, nb)),
-            attn_v_bias: None,
-            attn_o: WeightStorage::F32(vec_of(h * h, nb)),
-            ffn_gate: WeightStorage::F32(vec_of(h * i, nb)),
-            ffn_up: WeightStorage::F32(vec_of(h * i, nb)),
-            ffn_down: WeightStorage::F32(vec_of(i * h, nb)),
-            attn_norm_gain: Arc::from(vec![1.0_f32; h]),
-            ffn_norm_gain: Arc::from(vec![1.0_f32; h]),
-        }).collect();
+        let layers: Vec<LayerWeights> = (0..cfg.num_hidden_layers)
+            .map(|_| LayerWeights {
+                attn_q: WeightStorage::F32(vec_of(h * h, nb)),
+                attn_q_bias: None,
+                attn_k: WeightStorage::F32(vec_of(h * kv, nb)),
+                attn_k_bias: None,
+                attn_v: WeightStorage::F32(vec_of(h * kv, nb)),
+                attn_v_bias: None,
+                attn_o: WeightStorage::F32(vec_of(h * h, nb)),
+                ffn_gate: WeightStorage::F32(vec_of(h * i, nb)),
+                ffn_up: WeightStorage::F32(vec_of(h * i, nb)),
+                ffn_down: WeightStorage::F32(vec_of(i * h, nb)),
+                attn_norm_gain: Arc::from(vec![1.0_f32; h]),
+                ffn_norm_gain: Arc::from(vec![1.0_f32; h]),
+            })
+            .collect();
         MistralWeights {
             token_embedding,
             layers,
@@ -546,7 +624,10 @@ mod tests {
             ff_proj: WeightStorage::F32(vec_of(h * 2 * ff_hidden, &mut nb)),
             ff_down: WeightStorage::F32(vec_of(ff_hidden * h, &mut nb)),
         };
-        NvEmbedV2Model { config: cfg, weights }
+        NvEmbedV2Model {
+            config: cfg,
+            weights,
+        }
     }
 
     #[test]
@@ -559,8 +640,10 @@ mod tests {
         assert_eq!(emb.shape().dims(), &[1, h]);
         let realized = emb.realize_f32();
         let norm_sq: f32 = realized.iter().map(|v| v * v).sum();
-        assert!((norm_sq - 1.0).abs() < 1e-5,
-            "L2 norm² expected ~1.0, got {norm_sq}");
+        assert!(
+            (norm_sq - 1.0).abs() < 1e-5,
+            "L2 norm² expected ~1.0, got {norm_sq}"
+        );
     }
 
     /// Bidirectional attention: changing the last token must
@@ -578,8 +661,10 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-7,
-            "last-token change must affect bidirectional pooled embedding, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-7,
+            "last-token change must affect bidirectional pooled embedding, max_diff = {max_diff}"
+        );
     }
 
     /// Masking out the last token alters the pooled embedding
@@ -598,8 +683,10 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-7,
-            "padding the last token must change the embedding, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-7,
+            "padding the last token must change the embedding, max_diff = {max_diff}"
+        );
     }
 
     /// Latent KV bank is wired: zeroing the latents must alter
@@ -619,7 +706,9 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-7,
-            "zeroing latents must alter embedding, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-7,
+            "zeroing latents must alter embedding, max_diff = {max_diff}"
+        );
     }
 }

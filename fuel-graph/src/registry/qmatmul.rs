@@ -25,8 +25,8 @@
 //! registry entry's `BackwardKind::NotDifferentiable` reflects this.
 
 use crate::registry::{
-    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps,
-    PatternMatch, SubgraphPattern, decompose_via_recipe,
+    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps, PatternMatch,
+    SubgraphPattern, decompose_via_recipe,
 };
 use crate::{Graph, NodeId, QuantType};
 use fuel_ir::{DType, Shape};
@@ -36,12 +36,12 @@ use fuel_kernel_seam_types::{OpAttrs, OpTag, PatternNode};
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
         destructive_input: None,
-        id:         FusedOps::QMATMUL,
-        name:       "QMatMul",
-        family:     FusedOpFamily::Quantized,
-        pattern:    SubgraphPattern::Callable(canonical_pattern),
+        id: FusedOps::QMATMUL,
+        name: "QMatMul",
+        family: FusedOpFamily::Quantized,
+        pattern: SubgraphPattern::Callable(canonical_pattern),
         decompose,
-        backward:   BackwardKind::NotDifferentiable,
+        backward: BackwardKind::NotDifferentiable,
         shape_rule,
         dtype_rule,
         output_views: None,
@@ -52,7 +52,8 @@ pub fn entry() -> FusedOpEntry {
 /// `N` is the weight's output dim from `FusedOpParams::QMatMul`.
 fn shape_rule(input_shapes: &[Shape], params: &FusedOpParams) -> Shape {
     debug_assert_eq!(
-        input_shapes.len(), 2,
+        input_shapes.len(),
+        2,
         "QMatMul takes 2 inputs (a, w_q_bytes)",
     );
     let n = match params {
@@ -71,10 +72,7 @@ fn shape_rule(input_shapes: &[Shape], params: &FusedOpParams) -> Shape {
 /// is opaque bytes — the dtype field on its node doesn't influence
 /// QMatMul's output dtype.
 fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
-    debug_assert_eq!(
-        input_dtypes.len(), 2,
-        "QMatMul takes 2 inputs",
-    );
+    debug_assert_eq!(input_dtypes.len(), 2, "QMatMul takes 2 inputs",);
     input_dtypes[0]
 }
 
@@ -145,7 +143,7 @@ const Q4_0_BYTES_PER_BLOCK: usize = 18; // f16 scale (2) + 16 packed-nibble byte
 fn recipe_q4_0(a_shape: &Shape, w_len_u32: usize, k: usize, n: usize) -> Option<PatternNode> {
     use OpTag as T;
 
-    if k == 0 || n == 0 || k % QK4_0 != 0 {
+    if k == 0 || n == 0 || !k.is_multiple_of(QK4_0) {
         return None;
     }
     let a_dims = a_shape.dims();
@@ -163,15 +161,32 @@ fn recipe_q4_0(a_shape: &Shape, w_len_u32: usize, k: usize, n: usize) -> Option<
     let m_prime: usize = a_dims[..a_dims.len() - 1].iter().product();
 
     // --- node constructors -------------------------------------------------
-    let op = |op, attrs, operands| PatternNode::Op { op, attrs, operands };
+    let op = |op, attrs, operands| PatternNode::Op {
+        op,
+        attrs: Box::new(attrs),
+        operands,
+    };
     let bind = |i: u8| PatternNode::Bind { index: i };
-    let shape_attr =
-        |dims: &[usize]| OpAttrs { target_shape: dims.iter().map(|&d| d as i64).collect(), ..OpAttrs::default() };
-    let cast_attr =
-        |dt: DType| OpAttrs { cast_dtype: Some(dt.as_str().to_string()), ..OpAttrs::default() };
-    let sc = |v: f64| OpAttrs { scalars: vec![v], ..OpAttrs::default() };
-    let unsq = |d: u8| OpAttrs { dims: vec![d], ..OpAttrs::default() };
-    let cat = |ax: i64| OpAttrs { axis: Some(ax), ..OpAttrs::default() };
+    let shape_attr = |dims: &[usize]| OpAttrs {
+        target_shape: dims.iter().map(|&d| d as i64).collect(),
+        ..OpAttrs::default()
+    };
+    let cast_attr = |dt: DType| OpAttrs {
+        cast_dtype: Some(dt.as_str().to_string()),
+        ..OpAttrs::default()
+    };
+    let sc = |v: f64| OpAttrs {
+        scalars: vec![v],
+        ..OpAttrs::default()
+    };
+    let unsq = |d: u8| OpAttrs {
+        dims: vec![d],
+        ..OpAttrs::default()
+    };
+    let cat = |ax: i64| OpAttrs {
+        axis: Some(ax),
+        ..OpAttrs::default()
+    };
     let slice = |ax: i64, start: u64, len: u64| OpAttrs {
         axis: Some(ax),
         slice_start: Some(start),
@@ -206,7 +221,11 @@ fn recipe_q4_0(a_shape: &Shape, w_len_u32: usize, k: usize, n: usize) -> Option<
     ); // [L, 4]
     let bytes_f64 = op(T::Reshape, shape_attr(&[four_l]), vec![stacked]); // [4L] F64
     let bytes = op(T::Cast, cast_attr(DType::F32), vec![bytes_f64]); // [4L] F32, 0..255
-    let blocks = op(T::Reshape, shape_attr(&[total_blocks, Q4_0_BYTES_PER_BLOCK]), vec![bytes]); // [tb,18]
+    let blocks = op(
+        T::Reshape,
+        shape_attr(&[total_blocks, Q4_0_BYTES_PER_BLOCK]),
+        vec![bytes],
+    ); // [tb,18]
 
     // --- 2. f16 block-scale decode (arithmetic IEEE-754-half) --------------
     // scale bytes = blocks[:, 0:2]; bits = b0 + 256·b1.
@@ -236,14 +255,15 @@ fn recipe_q4_0(a_shape: &Shape, w_len_u32: usize, k: usize, n: usize) -> Option<
     let fac4 = add_s(1.0, mul_s(65535.0, bit4)); // 65536^bit4
     let pow2exp = mul(mul(mul(mul(fac0, fac1), fac2), fac3), fac4); // 2^exp
     // normal:  (1024 + mant)·2^exp·2⁻²⁵ = (1 + mant/1024)·2^(exp−15)
-    let normal_mag = mul_s(
-        2f64.powi(-25),
-        mul(add_s(1024.0, mant.clone()), pow2exp),
-    );
+    let normal_mag = mul_s(2f64.powi(-25), mul(add_s(1024.0, mant.clone()), pow2exp));
     // subnormal: mant·2⁻²⁴
     let sub_mag = mul_s(2f64.powi(-24), mant);
     // is_sub = 1 iff exp == 0 (exp is an exact integer ≥ 0)
-    let is_sub = op(T::Relu, OpAttrs::default(), vec![add_s(1.0, mul_s(-1.0, exp))]);
+    let is_sub = op(
+        T::Relu,
+        OpAttrs::default(),
+        vec![add_s(1.0, mul_s(-1.0, exp))],
+    );
     let one_minus_sub = add_s(1.0, mul_s(-1.0, is_sub.clone()));
     let mag = add(mul(is_sub, sub_mag), mul(one_minus_sub, normal_mag));
     let scale = mul(signed, mag); // [tb,1] = f16 scale value
@@ -257,7 +277,11 @@ fn recipe_q4_0(a_shape: &Shape, w_len_u32: usize, k: usize, n: usize) -> Option<
     let x1 = add_s(-8.0, high); // high nibble − 8  → [tb,16]
     // to_float layout: weights[0..16] = x0, weights[16..32] = x1.
     let codes = op(T::Concat, cat(1), vec![x0, x1]); // [tb,32]
-    let scale_bc = op(T::BroadcastTo, shape_attr(&[total_blocks, QK4_0]), vec![scale]); // [tb,32]
+    let scale_bc = op(
+        T::BroadcastTo,
+        shape_attr(&[total_blocks, QK4_0]),
+        vec![scale],
+    ); // [tb,32]
     let dequant_blocks = mul(codes, scale_bc); // [tb,32] F32
     // Row-major reshape: block (row, kb) tiles column kb·32..+32 of row.
     let weight_nk = op(T::Reshape, shape_attr(&[n, k]), vec![dequant_blocks]); // [N,K]
@@ -383,19 +407,29 @@ mod tests {
         let mut a_dims = leading.to_vec();
         a_dims.push(k);
         let act = g.push(Node {
-            op: Op::Const, inputs: vec![], shape: Shape::from_dims(&a_dims), dtype: DType::F32,
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&a_dims),
+            dtype: DType::F32,
         });
         let total_blocks = n * (k / QK4_0);
         let total_bytes = total_blocks * Q4_0_BYTES_PER_BLOCK;
         let w = g.push(Node {
-            op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[total_bytes / 4]), dtype: DType::U32,
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[total_bytes / 4]),
+            dtype: DType::U32,
         });
         let mut out_dims = leading.to_vec();
         out_dims.push(n);
         g.push(Node {
             op: Op::Fused(
                 FusedOps::QMATMUL,
-                FusedOpParams::QMatMul { quant_type: QuantType::Q4_0, k, n },
+                FusedOpParams::QMatMul {
+                    quant_type: QuantType::Q4_0,
+                    k,
+                    n,
+                },
             ),
             inputs: vec![act, w],
             shape: Shape::from_dims(&out_dims),
@@ -414,14 +448,25 @@ mod tests {
         for leading in [vec![1usize], vec![4usize], vec![2usize, 3]] {
             let k = 64; // 2 blocks per row
             let n = 5;
-            let params = FusedOpParams::QMatMul { quant_type: QuantType::Q4_0, k, n };
+            let params = FusedOpParams::QMatMul {
+                quant_type: QuantType::Q4_0,
+                k,
+                n,
+            };
             let mut g = Graph::new();
             let fused = fused_q4_0_node(&mut g, &leading, k, n);
             let out_sh = g.node(fused).shape.clone();
 
             let new_root = decompose(&mut g, fused, &params);
-            assert_ne!(new_root, fused, "Q4_0 recipe decompose fires (leading={leading:?})");
-            assert_eq!(g.node(new_root).shape, out_sh, "output shape matches shape_rule");
+            assert_ne!(
+                new_root, fused,
+                "Q4_0 recipe decompose fires (leading={leading:?})"
+            );
+            assert_eq!(
+                g.node(new_root).shape,
+                out_sh,
+                "output shape matches shape_rule"
+            );
             assert_eq!(g.node(new_root).dtype, DType::F32, "output dtype is F32");
         }
     }
@@ -434,20 +479,41 @@ mod tests {
         let k = 64;
         let n = 3;
         let act = g.push(Node {
-            op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2, k]), dtype: DType::F32,
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[2, k]),
+            dtype: DType::F32,
         });
         let total_bytes = n * (k / 32) * 34; // Q8_0 bytes/block
         let w = g.push(Node {
-            op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[total_bytes / 4]), dtype: DType::U32,
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[total_bytes / 4]),
+            dtype: DType::U32,
         });
         let fused = g.push(Node {
-            op: Op::Fused(FusedOps::QMATMUL, FusedOpParams::QMatMul { quant_type: QuantType::Q8_0, k, n }),
+            op: Op::Fused(
+                FusedOps::QMATMUL,
+                FusedOpParams::QMatMul {
+                    quant_type: QuantType::Q8_0,
+                    k,
+                    n,
+                },
+            ),
             inputs: vec![act, w],
             shape: Shape::from_dims(&[2, n]),
             dtype: DType::F32,
         });
         let before = g.len();
-        let out = decompose(&mut g, fused, &FusedOpParams::QMatMul { quant_type: QuantType::Q8_0, k, n });
+        let out = decompose(
+            &mut g,
+            fused,
+            &FusedOpParams::QMatMul {
+                quant_type: QuantType::Q8_0,
+                k,
+                n,
+            },
+        );
         assert_eq!(out, fused, "non-Q4_0 => surfaced gap => fixpoint");
         assert_eq!(g.len(), before, "declined before any emission");
     }

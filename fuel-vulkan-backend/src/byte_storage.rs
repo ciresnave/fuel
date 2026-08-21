@@ -6,8 +6,8 @@
 //!
 //! - **Legacy `VulkanStorage`**: holds `StorageBacking` + `elem_count`
 //!   + `dtype` + `tier`. Used by every existing Vulkan op kernel.
-//!   Eviction/fault-back machinery (per Phase 7.5 P5) operates on
-//!   this type.
+//!     Eviction/fault-back machinery (per Phase 7.5 P5) operates on
+//!     this type.
 //! - **`VulkanStorageBytes`** (this module): holds the same
 //!   `StorageBacking` + `tier` plus a single `len_bytes` field.
 //!   Dtype lives on the [`fuel_memory::Storage`] wrapper, not

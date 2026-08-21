@@ -8,10 +8,10 @@
 //!
 //! v1 scope: F32, batch == 1, prefill only.
 
+use crate::Result;
 use crate::lazy::{LazyTensor, WeightStorage};
 use crate::lazy_fastvit::{FastVitConfig, FastVitModel, FastVitWeights};
 use crate::lazy_openclip_text::{OpenClipTextConfig, OpenClipTextModel, OpenClipTextWeights};
-use crate::Result;
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -68,7 +68,10 @@ impl MobileClipModel {
     pub fn vision_model(&self) -> FastVitModel {
         let mut cfg = self.config.vision.clone();
         cfg.num_classes = Some(self.config.projection_dim);
-        FastVitModel { config: cfg, weights: self.weights.vision.clone() }
+        FastVitModel {
+            config: cfg,
+            weights: self.weights.vision.clone(),
+        }
     }
 
     pub fn text_model(&self) -> OpenClipTextModel {
@@ -86,12 +89,17 @@ impl MobileClipModel {
     /// Encode `input_ids` with `eot_pos` (position of the EOT token)
     /// into a `(1, projection_dim)` feature vector.
     pub fn get_text_features(
-        &self, input_ids: &[u32], eot_pos: usize, anchor: &LazyTensor,
+        &self,
+        input_ids: &[u32],
+        eot_pos: usize,
+        anchor: &LazyTensor,
     ) -> Result<LazyTensor> {
         let pooled = self.text_model().forward_pooled(input_ids, eot_pos)?;
         let cfg = &self.config;
         let proj = self.weights.text_projection.apply_linear(
-            &pooled, cfg.text.embed_dim, cfg.projection_dim,
+            &pooled,
+            cfg.text.embed_dim,
+            cfg.projection_dim,
         )?;
         let _ = anchor;
         Ok(proj)
@@ -108,7 +116,9 @@ impl MobileClipModel {
     /// texts) and only assembles the contrastive matmul once — that's
     /// what this entry point is for.
     pub fn contrastive_logits(
-        &self, image_features: &LazyTensor, text_features: &LazyTensor,
+        &self,
+        image_features: &LazyTensor,
+        text_features: &LazyTensor,
     ) -> Result<(LazyTensor, LazyTensor)> {
         let image_normed = l2_normalize_last(image_features)?;
         let text_normed = l2_normalize_last(text_features)?;
@@ -152,7 +162,10 @@ impl MobileClipWeights {
         let text = OpenClipTextWeights::load_from_mmapped(st, &cfg.text)?;
 
         let text_projection = load_transposed_matrix_preserve_dtype(
-            st, "text.text_projection", cfg.projection_dim, cfg.text.embed_dim,
+            st,
+            "text.text_projection",
+            cfg.projection_dim,
+            cfg.text.embed_dim,
         )?;
 
         let logit_scale = load_tensor_as_f32(st, "logit_scale")
@@ -160,7 +173,12 @@ impl MobileClipWeights {
             .and_then(|v| v.first().copied())
             .unwrap_or_else(|| (1.0_f32 / 0.07).ln());
 
-        Ok(Self { vision, text, text_projection, logit_scale })
+        Ok(Self {
+            vision,
+            text,
+            text_projection,
+            logit_scale,
+        })
     }
 }
 
@@ -171,9 +189,8 @@ mod tests {
     use super::*;
     use crate::lazy_fastvit::{
         AttentionBlockWeights, BnWeights, Conv2dBiasWeights, ConvMlpWeights,
-        FastVitAttentionWeights, FastVitHeadWeights, FastVitStageBlocks,
-        PatchEmbedWeights, RepMixerBlockWeights, RepMixerWeights,
-        ReparamMobileOneWeights, SeWeights, StageWeights,
+        FastVitAttentionWeights, FastVitHeadWeights, FastVitStageBlocks, PatchEmbedWeights,
+        RepMixerBlockWeights, RepMixerWeights, ReparamMobileOneWeights, SeWeights, StageWeights,
     };
 
     fn rng_seed(seed: u32) -> impl FnMut() -> f32 {
@@ -198,16 +215,28 @@ mod tests {
     }
 
     #[test]
-    fn presets_construct() { presets_construct_works(); }
+    fn presets_construct() {
+        presets_construct_works();
+    }
 
     fn conv_w(
-        c_in: usize, c_out: usize, k: usize, stride: usize, pad: usize, groups: usize,
+        c_in: usize,
+        c_out: usize,
+        k: usize,
+        stride: usize,
+        pad: usize,
+        groups: usize,
         nb: &mut dyn FnMut() -> f32,
     ) -> Conv2dBiasWeights {
         Conv2dBiasWeights {
             w: vec_of(c_out * (c_in / groups) * k * k, nb),
             b: vec_of(c_out, nb),
-            c_in, c_out, k, stride, pad, groups,
+            c_in,
+            c_out,
+            k,
+            stride,
+            pad,
+            groups,
         }
     }
     fn se_w(c: usize, nb: &mut dyn FnMut() -> f32) -> SeWeights {
@@ -218,8 +247,14 @@ mod tests {
         }
     }
     fn reparam_mobileone(
-        c_in: usize, c_out: usize, k: usize, stride: usize, groups: usize,
-        with_se: bool, use_act: bool, nb: &mut dyn FnMut() -> f32,
+        c_in: usize,
+        c_out: usize,
+        k: usize,
+        stride: usize,
+        groups: usize,
+        with_se: bool,
+        use_act: bool,
+        nb: &mut dyn FnMut() -> f32,
     ) -> ReparamMobileOneWeights {
         let pad = k / 2;
         ReparamMobileOneWeights {
@@ -235,7 +270,11 @@ mod tests {
             fc2: conv_w(dim * exp, dim, 1, 1, 0, 1, nb),
         }
     }
-    fn repmixer_block_w(dim: usize, exp: usize, nb: &mut dyn FnMut() -> f32) -> RepMixerBlockWeights {
+    fn repmixer_block_w(
+        dim: usize,
+        exp: usize,
+        nb: &mut dyn FnMut() -> f32,
+    ) -> RepMixerBlockWeights {
         RepMixerBlockWeights {
             gamma_mlp: vec_of(dim, nb),
             token_mixer: RepMixerWeights {
@@ -246,9 +285,14 @@ mod tests {
             mlp: conv_mlp_w(dim, exp, nb),
         }
     }
-    fn attention_block_w(dim: usize, exp: usize, nb: &mut dyn FnMut() -> f32) -> AttentionBlockWeights {
+    fn attention_block_w(
+        dim: usize,
+        exp: usize,
+        nb: &mut dyn FnMut() -> f32,
+    ) -> AttentionBlockWeights {
         AttentionBlockWeights {
-            gamma1: vec_of(dim, nb), gamma2: vec_of(dim, nb),
+            gamma1: vec_of(dim, nb),
+            gamma2: vec_of(dim, nb),
             norm_bn: BnWeights {
                 w: Arc::from(vec![1.0_f32; dim]),
                 b: Arc::from(vec![0.0_f32; dim]),
@@ -270,7 +314,10 @@ mod tests {
         }
     }
 
-    fn build_tiny_fastvit_weights(cfg: &FastVitConfig, nb: &mut dyn FnMut() -> f32) -> FastVitWeights {
+    fn build_tiny_fastvit_weights(
+        cfg: &FastVitConfig,
+        nb: &mut dyn FnMut() -> f32,
+    ) -> FastVitWeights {
         let c0 = cfg.in_channels;
         let stem = [
             reparam_mobileone(3, c0, 3, 2, 1, false, true, nb),
@@ -282,25 +329,37 @@ mod tests {
                 downsample: None,
                 pos_emb: Some(conv_w(c0, c0, 7, 1, 3, c0, nb)),
                 blocks: FastVitStageBlocks::RepMixer(
-                    (0..cfg.blocks[0]).map(|_| repmixer_block_w(c0, cfg.exp_ratio, nb)).collect()),
+                    (0..cfg.blocks[0])
+                        .map(|_| repmixer_block_w(c0, cfg.exp_ratio, nb))
+                        .collect(),
+                ),
             },
             StageWeights {
                 downsample: Some(patch_embed_w(c0, c0 * 2, nb)),
                 pos_emb: Some(conv_w(c0 * 2, c0 * 2, 7, 1, 3, c0 * 2, nb)),
                 blocks: FastVitStageBlocks::RepMixer(
-                    (0..cfg.blocks[1]).map(|_| repmixer_block_w(c0 * 2, cfg.exp_ratio, nb)).collect()),
+                    (0..cfg.blocks[1])
+                        .map(|_| repmixer_block_w(c0 * 2, cfg.exp_ratio, nb))
+                        .collect(),
+                ),
             },
             StageWeights {
                 downsample: Some(patch_embed_w(c0 * 2, c0 * 4, nb)),
                 pos_emb: Some(conv_w(c0 * 4, c0 * 4, 7, 1, 3, c0 * 4, nb)),
                 blocks: FastVitStageBlocks::RepMixer(
-                    (0..cfg.blocks[2]).map(|_| repmixer_block_w(c0 * 4, cfg.exp_ratio, nb)).collect()),
+                    (0..cfg.blocks[2])
+                        .map(|_| repmixer_block_w(c0 * 4, cfg.exp_ratio, nb))
+                        .collect(),
+                ),
             },
             StageWeights {
                 downsample: Some(patch_embed_w(c0 * 4, c0 * 8, nb)),
                 pos_emb: Some(conv_w(c0 * 8, c0 * 8, 7, 1, 3, c0 * 8, nb)),
                 blocks: FastVitStageBlocks::Attention(
-                    (0..cfg.blocks[3]).map(|_| attention_block_w(c0 * 8, cfg.exp_ratio, nb)).collect()),
+                    (0..cfg.blocks[3])
+                        .map(|_| attention_block_w(c0 * 8, cfg.exp_ratio, nb))
+                        .collect(),
+                ),
             },
         ];
         let final_c = c0 * 8;
@@ -315,15 +374,22 @@ mod tests {
     fn tiny_mobileclip() -> MobileClipModel {
         // Vision tiny config matching the test setup in lazy_fastvit.
         let vision_cfg = FastVitConfig {
-            in_channels: 8, blocks: [1, 1, 1, 1],
-            exp_ratio: 2, attn: true, lkc_use_act: true,
-            head_dim: 4, image_size: 32,
+            in_channels: 8,
+            blocks: [1, 1, 1, 1],
+            exp_ratio: 2,
+            attn: true,
+            lkc_use_act: true,
+            head_dim: 4,
+            image_size: 32,
             num_classes: Some(16),
         };
         // Text tiny config (vocab 32, embed 8, 1 layer, max_pos 4).
         let text_cfg = OpenClipTextConfig {
-            vocab_size: 32, embed_dim: 8, intermediate_size: 16,
-            num_hidden_layers: 1, num_attention_heads: 2,
+            vocab_size: 32,
+            embed_dim: 8,
+            intermediate_size: 16,
+            num_hidden_layers: 1,
+            num_attention_heads: 2,
             max_position_embeddings: 4,
         };
         let cfg = MobileClipConfig {
@@ -336,26 +402,30 @@ mod tests {
         let vision = build_tiny_fastvit_weights(&vision_cfg, &mut nb);
         let text = build_tiny_openclip_text_weights(&text_cfg, &mut nb);
         let weights = MobileClipWeights {
-            vision, text,
+            vision,
+            text,
             text_projection: ws(text_cfg.embed_dim * cfg.projection_dim, &mut nb),
             logit_scale: 0.07_f32.ln(),
         };
-        MobileClipModel { config: cfg, weights }
+        MobileClipModel {
+            config: cfg,
+            weights,
+        }
     }
 
     // Build a tiny OpenClipText weight set mirroring the layout in
     // lazy_openclip_text (kept inline to avoid exposing private weight
     // helpers from that crate).
     fn build_tiny_openclip_text_weights(
-        cfg: &OpenClipTextConfig, nb: &mut dyn FnMut() -> f32,
+        cfg: &OpenClipTextConfig,
+        nb: &mut dyn FnMut() -> f32,
     ) -> OpenClipTextWeights {
         use crate::lazy_openclip_text::{
-            LayerNormWeights, MlpWeights, OpenClipAttentionWeights,
-            OpenClipEncoderLayerWeights,
+            LayerNormWeights, MlpWeights, OpenClipAttentionWeights, OpenClipEncoderLayerWeights,
         };
         let e = cfg.embed_dim;
-        let layers: Vec<OpenClipEncoderLayerWeights> = (0..cfg.num_hidden_layers).map(|_| {
-            OpenClipEncoderLayerWeights {
+        let layers: Vec<OpenClipEncoderLayerWeights> = (0..cfg.num_hidden_layers)
+            .map(|_| OpenClipEncoderLayerWeights {
                 ln1: LayerNormWeights {
                     gain: Arc::from(vec![1.0_f32; e]),
                     bias: Arc::from(vec![0.0_f32; e]),
@@ -380,8 +450,8 @@ mod tests {
                     fc2: ws(cfg.intermediate_size * e, nb),
                     fc2_bias: vec_of(e, nb),
                 },
-            }
-        }).collect();
+            })
+            .collect();
         OpenClipTextWeights {
             token_embedding: vec_of(cfg.vocab_size * e, nb),
             position_embedding: vec_of(cfg.max_position_embeddings * e, nb),
@@ -398,12 +468,17 @@ mod tests {
         use crate::Device;
         let model = tiny_mobileclip();
         let image = LazyTensor::from_f32(
-            (0..(3 * 32 * 32)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, 3, 32, 32]), &Device::cpu(),
+            (0..(3 * 32 * 32))
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 32, 32]),
+            &Device::cpu(),
         );
         let img_feats = model.get_image_features(&image).unwrap();
         assert_eq!(img_feats.shape().dims(), &[1, 16]);
-        for &v in &img_feats.realize_f32() { assert!(v.is_finite()); }
+        for &v in &img_feats.realize_f32() {
+            assert!(v.is_finite());
+        }
     }
 
     #[test]
@@ -415,7 +490,9 @@ mod tests {
         let stub = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let txt_feats = model.get_text_features(&ids, 3, &stub).unwrap();
         assert_eq!(txt_feats.shape().dims(), &[1, 16]);
-        for &v in &txt_feats.realize_f32() { assert!(v.is_finite()); }
+        for &v in &txt_feats.realize_f32() {
+            assert!(v.is_finite());
+        }
     }
 
     #[test]
@@ -423,7 +500,8 @@ mod tests {
         use crate::Device;
         let x = LazyTensor::from_f32(
             vec![3.0_f32, 4.0, 0.0, 0.0, 1.0, 2.0],
-            Shape::from_dims(&[2, 3]), &Device::cpu(),
+            Shape::from_dims(&[2, 3]),
+            &Device::cpu(),
         );
         let n = l2_normalize_last(&x).unwrap();
         let n_data = n.realize_f32();

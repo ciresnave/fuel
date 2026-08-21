@@ -6,8 +6,8 @@
 //! columns → rows first, checking all columns share a length (never panicking on
 //! a ragged input). Every failure is a [`KissRefError`].
 
-use crate::mapping::op_to_kiss;
 use crate::KissRefError;
+use crate::mapping::op_to_kiss;
 use fuel_kernel_seam_types::OpTag;
 
 pub use kiss_ref_core::{DiffReport, Tolerance};
@@ -17,12 +17,19 @@ pub use kiss_ref_core::{DiffReport, Tolerance};
 /// composed-region evaluator ([`crate::region`]) shares this transpose.
 pub(crate) fn to_rows<T: Copy>(op: OpTag, operands: &[&[T]]) -> Result<Vec<Vec<T>>, KissRefError> {
     if operands.is_empty() {
-        return Err(KissRefError::Arity { op, expected: 1, got: 0 });
+        return Err(KissRefError::Arity {
+            op,
+            expected: 1,
+            got: 0,
+        });
     }
     let n = operands[0].len();
     for col in operands {
         if col.len() != n {
-            return Err(KissRefError::LengthMismatch { expected: n, got: col.len() });
+            return Err(KissRefError::LengthMismatch {
+                expected: n,
+                got: col.len(),
+            });
         }
     }
     // i < n == col.len() for every column, so col[i] never panics.
@@ -63,10 +70,34 @@ macro_rules! adapter_float {
     };
 }
 
-adapter_float!(reference_f32, diff_f32, kiss_ref_core::reference_f32, kiss_ref_core::diff_f32, f32);
-adapter_float!(reference_f64, diff_f64, kiss_ref_core::reference_f64, kiss_ref_core::diff_f64, f64);
-adapter_float!(reference_f16, diff_f16, kiss_ref_core::reference_f16, kiss_ref_core::diff_f16, half::f16);
-adapter_float!(reference_bf16, diff_bf16, kiss_ref_core::reference_bf16, kiss_ref_core::diff_bf16, half::bf16);
+adapter_float!(
+    reference_f32,
+    diff_f32,
+    kiss_ref_core::reference_f32,
+    kiss_ref_core::diff_f32,
+    f32
+);
+adapter_float!(
+    reference_f64,
+    diff_f64,
+    kiss_ref_core::reference_f64,
+    kiss_ref_core::diff_f64,
+    f64
+);
+adapter_float!(
+    reference_f16,
+    diff_f16,
+    kiss_ref_core::reference_f16,
+    kiss_ref_core::diff_f16,
+    half::f16
+);
+adapter_float!(
+    reference_bf16,
+    diff_bf16,
+    kiss_ref_core::reference_bf16,
+    kiss_ref_core::diff_bf16,
+    half::bf16
+);
 
 #[cfg(test)]
 mod tests {
@@ -96,7 +127,10 @@ mod tests {
         let cand = [4.0f32]; // one short
         assert!(matches!(
             diff_f32(OpTag::Add, &cand, &[&a, &b], Tolerance::Exact),
-            Err(KissRefError::LengthMismatch { expected: 2, got: 1 })
+            Err(KissRefError::LengthMismatch {
+                expected: 2,
+                got: 1
+            })
         ));
     }
 

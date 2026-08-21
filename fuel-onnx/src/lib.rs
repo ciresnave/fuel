@@ -52,7 +52,7 @@ pub mod lazy_eval;
 pub mod lazy_eval_conv;
 pub mod lazy_eval_norm;
 pub mod lazy_eval_ops;
-pub use lazy_eval::{LazyOnnxEval, onnx_dtype_to_fuel as dtype};
+pub use lazy_eval::{onnx_dtype_to_fuel as dtype, LazyOnnxEval};
 
 /// Reads and deserializes an ONNX model from a file on disk.
 ///

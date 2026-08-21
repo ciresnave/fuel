@@ -110,11 +110,14 @@ fn compile_relu_add_ptx() -> Vec<u8> {
 fn relu_add_region() -> PatternNode {
     PatternNode::Op {
         op: OpTag::Relu,
-        attrs: OpAttrs::default(),
+        attrs: Box::new(OpAttrs::default()),
         operands: vec![PatternNode::Op {
             op: OpTag::Add,
-            attrs: OpAttrs::default(),
-            operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+            attrs: Box::new(OpAttrs::default()),
+            operands: vec![
+                PatternNode::Bind { index: 0 },
+                PatternNode::Bind { index: 1 },
+            ],
         }],
     }
 }
@@ -129,7 +132,9 @@ struct MockSynth {
 
 impl Synthesizer for MockSynth {
     fn synthesize(&self, _req: &JitRequest) -> JitResponse {
-        JitResponse::Synthesized { entry_point: ENTRY.into() }
+        JitResponse::Synthesized {
+            entry_point: ENTRY.into(),
+        }
     }
     fn take_kernel(&self, entry_point: &str) -> Option<SynthArtifact> {
         if entry_point != ENTRY {
@@ -158,7 +163,9 @@ fn download_f32(s: &Storage) -> Vec<f32> {
 #[ignore]
 fn jit_adopt_loads_and_launches_a_synthesized_cuda_kernel() {
     let Some(device) = dev_or_skip() else {
-        eprintln!("skipping jit_adopt_loads_and_launches_a_synthesized_cuda_kernel: no CUDA device");
+        eprintln!(
+            "skipping jit_adopt_loads_and_launches_a_synthesized_cuda_kernel: no CUDA device"
+        );
         return;
     };
 
@@ -173,7 +180,9 @@ fn jit_adopt_loads_and_launches_a_synthesized_cuda_kernel() {
         },
         contract: "## fused_op: fuel_test_jit_relu_add\ncost: n\n".into(),
     };
-    let synth = MockSynth { art: std::sync::Mutex::new(Some(artifact)) };
+    let synth = MockSynth {
+        art: std::sync::Mutex::new(Some(artifact)),
+    };
 
     let req = JitRequest {
         region: relu_add_region(),
@@ -182,7 +191,9 @@ fn jit_adopt_loads_and_launches_a_synthesized_cuda_kernel() {
             OperandDesc::new(1, &[4], &[1], ElementKind::F32, 256),
         ],
         arch: ArchSku::Sm89,
-        budget: JitBudget { max_compile_ms: 5_000 },
+        budget: JitBudget {
+            max_compile_ms: 5_000,
+        },
     };
 
     let id = adopt_from_response(&synth, &req, BackendId::Cuda, |art| {
@@ -206,7 +217,10 @@ fn jit_adopt_loads_and_launches_a_synthesized_cuda_kernel() {
     let lhs = Arc::new(RwLock::new(upload_f32(&device, &a)));
     let rhs = Arc::new(RwLock::new(upload_f32(&device, &b)));
     let out_bytes = CudaStorageBytes::alloc(&device, a.len() * 4).expect("alloc out");
-    let out = Arc::new(RwLock::new(Storage::new(BackendStorage::Cuda(out_bytes), DType::F32)));
+    let out = Arc::new(RwLock::new(Storage::new(
+        BackendStorage::Cuda(out_bytes),
+        DType::F32,
+    )));
 
     let layout = Layout::contiguous(Shape::from_dims(&[a.len()]));
     kernel(
@@ -218,7 +232,11 @@ fn jit_adopt_loads_and_launches_a_synthesized_cuda_kernel() {
     .expect("launch");
 
     let got = download_f32(&out.read().unwrap());
-    let want: Vec<f32> = a.iter().zip(b.iter()).map(|(x, y)| (x + y).max(0.0)).collect();
+    let want: Vec<f32> = a
+        .iter()
+        .zip(b.iter())
+        .map(|(x, y)| (x + y).max(0.0))
+        .collect();
     assert_eq!(got, want, "relu(a + b) via the JIT-loaded CUDA kernel");
 }
 
@@ -251,7 +269,7 @@ fn mul_param_cuda_source() -> String {
 fn mul_scalar_slot_region() -> PatternNode {
     PatternNode::Op {
         op: OpTag::MulScalar,
-        attrs: OpAttrs::default(),
+        attrs: Box::new(OpAttrs::default()),
         operands: vec![PatternNode::Bind { index: 0 }],
     }
 }
@@ -288,7 +306,9 @@ fn jit_scalar_param_kernel_launches_with_live_value() {
     }
     impl Synthesizer for ParamSynth {
         fn synthesize(&self, _req: &JitRequest) -> JitResponse {
-            JitResponse::Synthesized { entry_point: PARAM_ENTRY.into() }
+            JitResponse::Synthesized {
+                entry_point: PARAM_ENTRY.into(),
+            }
         }
         fn take_kernel(&self, entry_point: &str) -> Option<SynthArtifact> {
             if entry_point != PARAM_ENTRY {
@@ -297,13 +317,17 @@ fn jit_scalar_param_kernel_launches_with_live_value() {
             self.art.lock().unwrap().take()
         }
     }
-    let synth = ParamSynth { art: std::sync::Mutex::new(Some(artifact)) };
+    let synth = ParamSynth {
+        art: std::sync::Mutex::new(Some(artifact)),
+    };
 
     let req = JitRequest {
         region: mul_scalar_slot_region(),
         operands: vec![OperandDesc::new(1, &[4], &[1], ElementKind::F32, 256)],
         arch: ArchSku::Sm89,
-        budget: JitBudget { max_compile_ms: 5_000 },
+        budget: JitBudget {
+            max_compile_ms: 5_000,
+        },
     };
     let id = adopt_from_response(&synth, &req, BackendId::Cuda, |art| {
         load_synth_kernel(art, &device)
@@ -318,7 +342,10 @@ fn jit_scalar_param_kernel_launches_with_live_value() {
     let x = [1.0_f32, -5.0, 2.0, -0.5];
     let inp = Arc::new(RwLock::new(upload_f32(&device, &x)));
     let out_bytes = CudaStorageBytes::alloc(&device, x.len() * 4).expect("alloc out");
-    let out = Arc::new(RwLock::new(Storage::new(BackendStorage::Cuda(out_bytes), DType::F32)));
+    let out = Arc::new(RwLock::new(Storage::new(
+        BackendStorage::Cuda(out_bytes),
+        DType::F32,
+    )));
 
     let layout = Layout::contiguous(Shape::from_dims(&[x.len()]));
     kernel(
@@ -333,7 +360,10 @@ fn jit_scalar_param_kernel_launches_with_live_value() {
 
     let got = download_f32(&out.read().unwrap());
     let want: Vec<f32> = x.iter().map(|v| v * 2.5).collect();
-    assert_eq!(got, want, "x * p0 via the JIT-loaded scalar-Param CUDA kernel");
+    assert_eq!(
+        got, want,
+        "x * p0 via the JIT-loaded scalar-Param CUDA kernel"
+    );
 }
 
 // ---- the REAL BaracudaSynthesizer (alpha.76, published) — the milestone -----
@@ -372,7 +402,9 @@ fn live_baracuda_synthesizer_full_loop_scalar() {
         region: relu_add_region(),
         operands: vec![operand(), operand(), operand()],
         arch: ArchSku::Sm89,
-        budget: JitBudget { max_compile_ms: 5_000 },
+        budget: JitBudget {
+            max_compile_ms: 5_000,
+        },
     };
 
     // (1) The synthesizer accepts + builds the region (independent of our loader).
@@ -387,7 +419,10 @@ fn live_baracuda_synthesizer_full_loop_scalar() {
 
     // (2) The full adopt path: (re-)synthesize -> take_kernel -> load_synth_kernel.
     let id = adopt_from_response(&synth, &req, BackendId::Cuda, |art| {
-        eprintln!("synth emitted symbol: {}  (kind {:?})", art.link.symbol, art.kind);
+        eprintln!(
+            "synth emitted symbol: {}  (kind {:?})",
+            art.link.symbol, art.kind
+        );
         load_synth_kernel(art, &device)
     })
     .expect("adopt_from_response: the full loop reached adopt")
@@ -408,7 +443,10 @@ fn live_baracuda_synthesizer_full_loop_scalar() {
     let lhs = Arc::new(RwLock::new(upload_f32(&device, &a)));
     let rhs = Arc::new(RwLock::new(upload_f32(&device, &b)));
     let out_bytes = CudaStorageBytes::alloc(&device, a.len() * 4).expect("alloc out");
-    let out = Arc::new(RwLock::new(Storage::new(BackendStorage::Cuda(out_bytes), DType::F32)));
+    let out = Arc::new(RwLock::new(Storage::new(
+        BackendStorage::Cuda(out_bytes),
+        DType::F32,
+    )));
     let layout = Layout::contiguous(Shape::from_dims(&[a.len()]));
     kernel(
         &[lhs, rhs],
@@ -419,7 +457,11 @@ fn live_baracuda_synthesizer_full_loop_scalar() {
     .expect("launch Baracuda's synthesized relu(add)");
 
     let got = download_f32(&out.read().unwrap());
-    let want: Vec<f32> = a.iter().zip(b.iter()).map(|(x, y)| (x + y).max(0.0)).collect();
+    let want: Vec<f32> = a
+        .iter()
+        .zip(b.iter())
+        .map(|(x, y)| (x + y).max(0.0))
+        .collect();
     assert_eq!(
         got, want,
         "relu(a + b) via Baracuda's OWN alpha.76-synthesized CUDA kernel — the LIVE LOOP",
@@ -471,7 +513,12 @@ fn live_baracuda_synthesizer_paged_attn_dense_region() {
 
     let mut g = Graph::new();
     let leaf = |g: &mut Graph, dims: &[usize], dtype: DType| {
-        g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(dims), dtype })
+        g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(dims),
+            dtype,
+        })
     };
     let q = leaf(&mut g, &[B, HQ, SQ, D], DType::F32);
     let kc = leaf(&mut g, &[NUM_BLOCKS, BLOCK_SIZE, HKV, D], DType::F32);
@@ -512,12 +559,12 @@ fn live_baracuda_synthesizer_paged_attn_dense_region() {
         OperandDesc::new(dims.len(), &d, &s, k, elem)
     };
     let operands = vec![
-        od(&[B, HQ, SQ, D], ElementKind::F32, 4),                 // 0 q
+        od(&[B, HQ, SQ, D], ElementKind::F32, 4), // 0 q
         od(&[NUM_BLOCKS, BLOCK_SIZE, HKV, D], ElementKind::F32, 4), // 1 k_cache
         od(&[NUM_BLOCKS, BLOCK_SIZE, HKV, D], ElementKind::F32, 4), // 2 v_cache
-        od(&[B, MAX_BLK], ElementKind::U32, 4),                   // 3 block_table
-        od(&[B], ElementKind::U32, 4),                            // 4 context_lens
-        od(&[B, HQ, SQ, D], ElementKind::F32, 4),                 // out
+        od(&[B, MAX_BLK], ElementKind::U32, 4),   // 3 block_table
+        od(&[B], ElementKind::U32, 4),            // 4 context_lens
+        od(&[B, HQ, SQ, D], ElementKind::F32, 4), // out
     ];
 
     let synth = BaracudaSynthesizer::new(10_000);
@@ -525,7 +572,9 @@ fn live_baracuda_synthesizer_paged_attn_dense_region() {
         region,
         operands,
         arch: ArchSku::Sm89,
-        budget: JitBudget { max_compile_ms: 10_000 },
+        budget: JitBudget {
+            max_compile_ms: 10_000,
+        },
     };
 
     println!("\n=== PagedAttn dense region -> real BaracudaSynthesizer ===");

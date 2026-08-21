@@ -15,10 +15,10 @@
 //! `fuel-graph`'s `default_registry()` so it cannot drift from the graph's
 //! single source of truth.
 
+use fuel_graph::registry::{FusedOpId, FusedOps};
+use fuel_ir::DType;
 use fuel_ir::dispatch::OpKind;
 use fuel_ir::probe::BackendId;
-use fuel_ir::DType;
-use fuel_graph::registry::{FusedOpId, FusedOps};
 use smallvec::SmallVec;
 
 use crate::fkc::caps_map::{self, ResolvedLayout};
@@ -400,11 +400,25 @@ pub(crate) fn lower_dtype(token: &str, section: &str, operand: &str) -> Result<D
     if let Some(dt) = mapped {
         // Exhaustiveness anchor (no wildcard): a new DType variant breaks
         // this match, forcing the token table above to grow.
-        let _assert_exhaustive = match dt {
-            DType::U8 | DType::I8 | DType::U32 | DType::I16 | DType::I32 | DType::I64
-            | DType::BF16 | DType::F16 | DType::F32 | DType::F64 | DType::F8E4M3
-            | DType::F8E5M2 | DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0
-            | DType::F8E6M2 | DType::Bool => (),
+        match dt {
+            DType::U8
+            | DType::I8
+            | DType::U32
+            | DType::I16
+            | DType::I32
+            | DType::I64
+            | DType::BF16
+            | DType::F16
+            | DType::F32
+            | DType::F64
+            | DType::F8E4M3
+            | DType::F8E5M2
+            | DType::F6E2M3
+            | DType::F6E3M2
+            | DType::F4
+            | DType::F8E8M0
+            | DType::F8E6M2
+            | DType::Bool => (),
         };
         Ok(dt)
     } else if fuel_ir::is_reserved_dtype_token(token) {
@@ -610,8 +624,8 @@ fn resolve_operand_dtypes(
 /// - A section with NO optional operand behaves EXACTLY as before (one key per
 ///   dtype variant) — the already-migrated per-(op,dtype) families stay
 ///   byte-identical.
-/// The PRESENT (full-operand) key is emitted FIRST so the fused path's
-/// representative (first) variant is unchanged (`lower_fused` takes `.next()`).
+///   The PRESENT (full-operand) key is emitted FIRST so the fused path's
+///   representative (first) variant is unchanged (`lower_fused` takes `.next()`).
 fn assemble_dtype_variants(
     kernel: &FkcKernel,
     section: &str,
@@ -628,7 +642,11 @@ fn assemble_dtype_variants(
                 dtypes: resolved,
                 optional: d.optional,
             });
-            layouts.push(caps_map::resolve_layout(d.layout.as_ref(), section, operand)?);
+            layouts.push(caps_map::resolve_layout(
+                d.layout.as_ref(),
+                section,
+                operand,
+            )?);
         }
     }
 
@@ -704,12 +722,17 @@ fn assemble_dtype_variants(
         if let Some(ret) = &kernel.return_ {
             for out in &ret.outputs {
                 let operand = out.name.as_deref().unwrap_or("<output>");
-                if let Some(rule) = out.dtype_rule.as_deref() {
-                    if let Some(dt) =
-                        resolve_output_slot_dtype(rule, operand, &inputs, fan, optional_last, section)?
-                    {
-                        output_dtypes.push(dt);
-                    }
+                if let Some(rule) = out.dtype_rule.as_deref()
+                    && let Some(dt) = resolve_output_slot_dtype(
+                        rule,
+                        operand,
+                        &inputs,
+                        fan,
+                        optional_last,
+                        section,
+                    )?
+                {
+                    output_dtypes.push(dt);
                 }
             }
             // §5.5 multi-output bundle (Option C): a `return.bundle` packs
@@ -722,14 +745,12 @@ fn assemble_dtype_variants(
             // with a `passthrough(u)` bundle keys `[T; 6]`, byte-for-byte the
             // deleted hand-written reg. A section with NO bundle is unaffected
             // (the migrated per-(op,dtype) families stay byte-identical).
-            if let Some(bundle) = &ret.bundle {
-                if let Some((slot, rule)) = bundle_primary_dtype_rule(bundle) {
-                    if let Some(dt) =
-                        resolve_output_slot_dtype(&rule, &slot, &inputs, fan, optional_last, section)?
-                    {
-                        output_dtypes.push(dt);
-                    }
-                }
+            if let Some(bundle) = &ret.bundle
+                && let Some((slot, rule)) = bundle_primary_dtype_rule(bundle)
+                && let Some(dt) =
+                    resolve_output_slot_dtype(&rule, &slot, &inputs, fan, optional_last, section)?
+            {
+                output_dtypes.push(dt);
             }
         }
 
@@ -857,9 +878,19 @@ enum DtypeRule {
 /// `fixed(...)` names a bad dtype; `passthrough(role)` captures the role name.
 fn parse_dtype_rule(rule: &str, section: &str, operand: &str) -> Result<DtypeRule, FkcError> {
     let rule = rule.trim();
-    if let Some(inner) = rule.strip_prefix("fixed(").and_then(|s| s.strip_suffix(")")) {
-        Ok(DtypeRule::Fixed(lower_dtype(inner.trim(), section, operand)?))
-    } else if let Some(inner) = rule.strip_prefix("passthrough(").and_then(|s| s.strip_suffix(")")) {
+    if let Some(inner) = rule
+        .strip_prefix("fixed(")
+        .and_then(|s| s.strip_suffix(")"))
+    {
+        Ok(DtypeRule::Fixed(lower_dtype(
+            inner.trim(),
+            section,
+            operand,
+        )?))
+    } else if let Some(inner) = rule
+        .strip_prefix("passthrough(")
+        .and_then(|s| s.strip_suffix(")"))
+    {
         Ok(DtypeRule::Passthrough(inner.trim().to_string()))
     } else {
         Ok(DtypeRule::Other)
@@ -903,10 +934,10 @@ fn compile_cost(block: Option<&CostBlock>, section: &str) -> Result<CompiledCost
     let _bytes_moved = parse("bytes_moved", cost.bytes_moved.as_deref())?;
     // overhead_ns / memory.device_bytes are raw scalars (number or `~`);
     // when they are an expression STRING they are parse-validated too.
-    if let Some(mem) = &cost.memory {
-        if let Some(serde_yaml_ng::Value::String(s)) = &mem.device_bytes {
-            let _ = parse("memory.device_bytes", Some(s))?;
-        }
+    if let Some(mem) = &cost.memory
+        && let Some(serde_yaml_ng::Value::String(s)) = &mem.device_bytes
+    {
+        let _ = parse("memory.device_bytes", Some(s))?;
     }
     if let Some(serde_yaml_ng::Value::String(s)) = &cost.overhead_ns {
         let _ = parse("overhead_ns", Some(s))?;
@@ -1010,21 +1041,24 @@ fn lower_primitive(
     // a silent `unknown_cost` fallback. `None` ⇒ the register slice keeps the
     // imported `unknown_cost` sentinel (fill_unset then upgrades it).
     let cost_fn = match kernel.cost.as_ref().and_then(|c| c.cost_fn.as_deref()) {
-        Some(name) => Some(link.resolve_cost_fn(name).ok_or_else(|| {
-            FkcError::UnknownCostFn {
-                section: section.to_string(),
-                cost_fn: name.to_string(),
-            }
-        })?),
+        Some(name) => Some(
+            link.resolve_cost_fn(name)
+                .ok_or_else(|| FkcError::UnknownCostFn {
+                    section: section.to_string(),
+                    cost_fn: name.to_string(),
+                })?,
+        ),
         None => None,
     };
 
-    let base_entry_point = kernel.entry_point.as_deref().ok_or_else(|| {
-        FkcError::MissingRequiredField {
-            section: section.to_string(),
-            field: "entry_point".to_string(),
-        }
-    })?;
+    let base_entry_point =
+        kernel
+            .entry_point
+            .as_deref()
+            .ok_or_else(|| FkcError::MissingRequiredField {
+                section: section.to_string(),
+                field: "entry_point".to_string(),
+            })?;
 
     let kernel_source = kernel
         .kernel_source
@@ -1044,12 +1078,12 @@ fn lower_primitive(
             Some(dt) => std::borrow::Cow::Owned(format!("{base_entry_point}_{}", dtype_suffix(dt))),
             None => std::borrow::Cow::Borrowed(base_entry_point),
         };
-        let kernel_ref = link.resolve_primitive(&symbol).ok_or_else(|| {
-            FkcError::UnknownEntryPoint {
-                section: section.to_string(),
-                entry_point: symbol.into_owned(),
-            }
-        })?;
+        let kernel_ref =
+            link.resolve_primitive(&symbol)
+                .ok_or_else(|| FkcError::UnknownEntryPoint {
+                    section: section.to_string(),
+                    entry_point: symbol.into_owned(),
+                })?;
 
         out.push(ResolvedPrimitive {
             op,
@@ -1112,12 +1146,14 @@ fn lower_fused(
     let precision = precision::lower_precision(kernel.precision.as_ref(), section)?;
     let cost = compile_cost(kernel.cost.as_ref(), section)?;
 
-    let base_entry_point = kernel.entry_point.as_deref().ok_or_else(|| {
-        FkcError::MissingRequiredField {
-            section: section.to_string(),
-            field: "entry_point".to_string(),
-        }
-    })?;
+    let base_entry_point =
+        kernel
+            .entry_point
+            .as_deref()
+            .ok_or_else(|| FkcError::MissingRequiredField {
+                section: section.to_string(),
+                field: "entry_point".to_string(),
+            })?;
 
     let kernel_source = kernel
         .kernel_source
@@ -1137,12 +1173,12 @@ fn lower_fused(
             Some(dt) => std::borrow::Cow::Owned(format!("{base_entry_point}_{}", dtype_suffix(dt))),
             None => std::borrow::Cow::Borrowed(base_entry_point),
         };
-        let kernel_ref = link.resolve_fused(&symbol).ok_or_else(|| {
-            FkcError::UnknownEntryPoint {
-                section: section.to_string(),
-                entry_point: symbol.into_owned(),
-            }
-        })?;
+        let kernel_ref =
+            link.resolve_fused(&symbol)
+                .ok_or_else(|| FkcError::UnknownEntryPoint {
+                    section: section.to_string(),
+                    entry_point: symbol.into_owned(),
+                })?;
 
         out.push(ResolvedFused {
             id,
@@ -1371,7 +1407,10 @@ mod tests {
         assert!(p.precision.bit_stable_on_same_hardware);
         assert_eq!(p.precision.max_ulp, Some(0));
         // a non-null KernelRef.
-        assert_eq!(p.kernel as *const () as usize, dummy_kernel as *const () as usize);
+        assert_eq!(
+            p.kernel as *const () as usize,
+            dummy_kernel as *const () as usize
+        );
         // cost: flops = "n" parsed (not Unknown).
         assert!(matches!(p.cost, CompiledCostExpr::Expr(_)));
         assert_eq!(p.kernel_source, "portable-cpu");
@@ -1388,7 +1427,9 @@ mod tests {
         let keys: Vec<Vec<DType>> = all
             .iter()
             .map(|r| {
-                let Resolved::Primitive(p) = r else { panic!("binary is a primitive") };
+                let Resolved::Primitive(p) = r else {
+                    panic!("binary is a primitive")
+                };
                 assert_eq!(p.op, OpKind::AddElementwise);
                 p.dtypes.to_vec()
             })
@@ -1408,7 +1449,9 @@ mod tests {
     #[test]
     fn lowers_real_qmatmul_q4_0() {
         let r = lower_one(QUANT_MATMUL, "qmatmul_q4_0_f32").expect("q4_0 lowers");
-        let Resolved::Primitive(p) = r else { panic!("QMatMul is a primitive") };
+        let Resolved::Primitive(p) = r else {
+            panic!("QMatMul is a primitive")
+        };
         assert_eq!(p.op, OpKind::QMatMul);
         // activations F32, weight U8, output fixed(F32).
         assert_eq!(p.dtypes.as_slice(), &[DType::F32, DType::U8, DType::F32]);
@@ -1452,7 +1495,8 @@ mod tests {
         // import previously dropped in favor of the `unknown_cost` sentinel.
         const MATMUL: &str = include_str!("../../../docs/kernel-contracts/cpu/matmul.fkc.md");
         let file = parse_file(MATMUL).expect("matmul contract parses");
-        let resolved = lower_file(&file, &StubLink, &mut Vec::new()).expect("matmul contract lowers");
+        let resolved =
+            lower_file(&file, &StubLink, &mut Vec::new()).expect("matmul contract lowers");
         let prim = resolved
             .iter()
             .find_map(|r| match r {
@@ -1499,7 +1543,8 @@ mod tests {
         // the lowered set is 8 sections × 4 dtypes = 32 (was 8 pre-fan, when
         // `lower_fused` took only the representative first variant).
         let file = parse_file(FUSED_NORM_SOFTMAX).expect("parses");
-        let resolved = lower_file(&file, &StubLink, &mut Vec::new()).expect("all fused kernels lower");
+        let resolved =
+            lower_file(&file, &StubLink, &mut Vec::new()).expect("all fused kernels lower");
         assert_eq!(
             resolved.len(),
             file.kernels.len() * 4,
@@ -1584,7 +1629,9 @@ return:
         let keys: Vec<Vec<DType>> = all
             .iter()
             .map(|r| {
-                let Resolved::Fused(f) = r else { panic!("fanned_softmax is a fused op") };
+                let Resolved::Fused(f) = r else {
+                    panic!("fanned_softmax is a fused op")
+                };
                 assert_eq!(f.id, FusedOps::SOFTMAX_LAST_DIM);
                 assert_eq!(f.backend, BackendId::Cpu);
                 f.dtypes.to_vec()
@@ -1608,7 +1655,11 @@ return:
         // EXACTLY ONE `ResolvedFused`, byte-identical to today (its declared
         // `entry_point` resolves AS-IS — no `_<suffix>` appended).
         let all = lower_all(FUSED_FANOUT_SYNTH, "single_norm").expect("single_norm lowers");
-        assert_eq!(all.len(), 1, "single-dtype fused section ⇒ exactly one ResolvedFused");
+        assert_eq!(
+            all.len(),
+            1,
+            "single-dtype fused section ⇒ exactly one ResolvedFused"
+        );
         let Resolved::Fused(f) = &all[0] else {
             panic!("single_norm is a fused op");
         };
@@ -1906,9 +1957,22 @@ return:
     #[test]
     fn dtype_suffix_is_the_inverse_of_lower_dtype() {
         for dt in [
-            DType::U8, DType::I8, DType::U32, DType::I16, DType::I32, DType::I64,
-            DType::BF16, DType::F16, DType::F32, DType::F64, DType::F8E4M3,
-            DType::F6E2M3, DType::F6E3M2, DType::F4, DType::F8E8M0, DType::F8E6M2,
+            DType::U8,
+            DType::I8,
+            DType::U32,
+            DType::I16,
+            DType::I32,
+            DType::I64,
+            DType::BF16,
+            DType::F16,
+            DType::F32,
+            DType::F64,
+            DType::F8E4M3,
+            DType::F6E2M3,
+            DType::F6E3M2,
+            DType::F4,
+            DType::F8E8M0,
+            DType::F8E6M2,
         ] {
             let suffix = super::dtype_suffix(dt);
             let token = suffix.to_uppercase();
@@ -1923,7 +1987,10 @@ return:
     #[test]
     fn bogus_fused_op_is_unknown_fused_op() {
         let err = lower_fused_op("NotAFusedOp", "k").expect_err("bogus fused");
-        assert!(matches!(err, FkcError::UnknownFusedOp { .. }), "got {err:?}");
+        assert!(
+            matches!(err, FkcError::UnknownFusedOp { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -1933,7 +2000,10 @@ return:
             lower_fused_op("SOFTMAX_LAST_DIM", "k").unwrap(),
             FusedOps::SOFTMAX_LAST_DIM
         );
-        assert_eq!(lower_fused_op("FLASH_ATTN", "k").unwrap(), FusedOps::FLASH_ATTN);
+        assert_eq!(
+            lower_fused_op("FLASH_ATTN", "k").unwrap(),
+            FusedOps::FLASH_ATTN
+        );
         assert_eq!(lower_fused_op("QMATMUL", "k").unwrap(), FusedOps::QMATMUL);
         // The PascalCase registry `name` (what the OLD id_for_name resolver
         // matched) must NOT resolve — that was the bug.
@@ -1994,7 +2064,10 @@ return:
     #[test]
     fn bogus_backend_is_unknown_backend() {
         let err = lower_backend("Tpu", "k").expect_err("bogus backend");
-        assert!(matches!(err, FkcError::UnknownBackend { .. }), "got {err:?}");
+        assert!(
+            matches!(err, FkcError::UnknownBackend { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -2007,8 +2080,12 @@ return:
             revision_base: provider.revision_base.as_deref().unwrap_or(""),
         };
         let kernel = file.kernels.iter().find(|k| k.kernel == "add_f32").unwrap();
-        let err = lower_kernel(kernel, &defaults, &EmptyLink, &mut Vec::new()).expect_err("no entry point");
-        assert!(matches!(err, FkcError::UnknownEntryPoint { .. }), "got {err:?}");
+        let err = lower_kernel(kernel, &defaults, &EmptyLink, &mut Vec::new())
+            .expect_err("no entry point");
+        assert!(
+            matches!(err, FkcError::UnknownEntryPoint { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -2042,7 +2119,11 @@ return:
             kernel_source: "x",
             revision_base: "",
         };
-        let err = lower_kernel(&kernel, &defaults, &StubLink, &mut Vec::new()).expect_err("ambiguous");
-        assert!(matches!(err, FkcError::OpTargetAmbiguous { .. }), "got {err:?}");
+        let err =
+            lower_kernel(&kernel, &defaults, &StubLink, &mut Vec::new()).expect_err("ambiguous");
+        assert!(
+            matches!(err, FkcError::OpTargetAmbiguous { .. }),
+            "got {err:?}"
+        );
     }
 }

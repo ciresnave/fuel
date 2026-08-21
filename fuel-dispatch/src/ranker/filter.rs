@@ -180,7 +180,10 @@ mod tests {
         let ctx = FilterContext::new(OpKind::AddElementwise, &[DType::F32], &layouts);
         assert_eq!(f.filter(&[], &ctx), vec![0, 2]);
         assert_eq!(f.name(), "mock");
-        assert!(matches!(f.classification(), FilterClass::Soft { min_remaining: 1 }));
+        assert!(matches!(
+            f.classification(),
+            FilterClass::Soft { min_remaining: 1 }
+        ));
     }
 
     #[test]
@@ -207,10 +210,7 @@ mod tests {
 
     #[test]
     fn filter_class_variants_distinguishable() {
-        assert_ne!(
-            FilterClass::Hard,
-            FilterClass::Soft { min_remaining: 1 },
-        );
+        assert_ne!(FilterClass::Hard, FilterClass::Soft { min_remaining: 1 },);
         assert_ne!(
             FilterClass::Soft { min_remaining: 1 },
             FilterClass::Soft { min_remaining: 2 },

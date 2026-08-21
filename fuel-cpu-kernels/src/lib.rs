@@ -1,9 +1,9 @@
 //! Traits and methods for CPU-backed Tensors
 
 pub mod erf;
+pub mod kernels;
 pub mod philox;
 pub mod philox_kat;
-pub mod kernels;
 
 pub use kernels::VecOps;
 
@@ -70,7 +70,6 @@ pub mod avx;
 #[cfg(target_feature = "avx2")]
 pub use avx::{CurrentCpu, CurrentCpuBF16, CurrentCpuF16};
 
-
 #[cfg(any(target_arch = "arm", target_arch = "aarch64"))]
 #[cfg(target_feature = "neon")]
 pub mod neon;
@@ -78,11 +77,13 @@ pub mod neon;
 #[cfg(target_feature = "neon")]
 pub use neon::CurrentCpu;
 
-#[cfg(any(
-    target_feature = "neon",
-    target_feature = "avx2"
-))]
+#[cfg(any(target_feature = "neon", target_feature = "avx2"))]
 #[inline(always)]
+/// # Safety
+///
+/// `a_row` and `b_row` must point to at least `k` readable `f32` values.
+/// `c` must point to one writable `f32`. The `neon` or `avx2` target
+/// feature must be available (ensured by the `cfg` gate).
 pub unsafe fn vec_dot_f32(a_row: *const f32, b_row: *const f32, c: *mut f32, k: usize) {
     let np = k & !(CurrentCpu::STEP - 1);
 
@@ -118,10 +119,7 @@ pub unsafe fn vec_dot_f32(a_row: *const f32, b_row: *const f32, c: *mut f32, k: 
     }
 }
 
-#[cfg(not(any(
-    target_feature = "neon",
-    target_feature = "avx2"
-)))]
+#[cfg(not(any(target_feature = "neon", target_feature = "avx2")))]
 #[inline(always)]
 pub unsafe fn vec_dot_f32(a_row: *const f32, b_row: *const f32, c: *mut f32, k: usize) {
     // leftovers
@@ -130,11 +128,13 @@ pub unsafe fn vec_dot_f32(a_row: *const f32, b_row: *const f32, c: *mut f32, k: 
     }
 }
 
-#[cfg(any(
-    target_feature = "neon",
-    target_feature = "avx2"
-))]
+#[cfg(any(target_feature = "neon", target_feature = "avx2"))]
 #[inline(always)]
+/// # Safety
+///
+/// `row` must point to at least `k` readable `f32` values.
+/// `b` must point to one writable `f32`. The `neon` or `avx2` target
+/// feature must be available (ensured by the `cfg` gate).
 pub unsafe fn vec_sum(row: *const f32, b: *mut f32, k: usize) {
     let np = k & !(CurrentCpu::STEP - 1);
 
@@ -164,10 +164,7 @@ pub unsafe fn vec_sum(row: *const f32, b: *mut f32, k: usize) {
     }
 }
 
-#[cfg(not(any(
-    target_feature = "neon",
-    target_feature = "avx2"
-)))]
+#[cfg(not(any(target_feature = "neon", target_feature = "avx2")))]
 #[inline(always)]
 pub unsafe fn vec_sum(row: *const f32, b: *mut f32, k: usize) {
     unsafe {
@@ -180,6 +177,11 @@ pub unsafe fn vec_sum(row: *const f32, b: *mut f32, k: usize) {
 
 #[cfg(target_feature = "avx2")]
 #[inline(always)]
+/// # Safety
+///
+/// `a_row` and `b_row` must point to at least `k` readable `f16` values.
+/// `c` must point to one writable `f32`. The `avx2` target feature must
+/// be available (ensured by the `cfg` gate).
 pub unsafe fn vec_dot_f16(a_row: *const f16, b_row: *const f16, c: *mut f32, k: usize) {
     let mut sumf = 0.0f32;
     let np = k & !(CurrentCpuF16::STEP - 1);
@@ -219,6 +221,11 @@ pub unsafe fn vec_dot_f16(a_row: *const f16, b_row: *const f16, c: *mut f32, k: 
 
 #[cfg(target_feature = "avx2")]
 #[inline(always)]
+/// # Safety
+///
+/// `a_row` and `b_row` must point to at least `k` readable `bf16` values.
+/// `c` must point to one writable `f32`. The `avx2` target feature must
+/// be available (ensured by the `cfg` gate).
 pub unsafe fn vec_dot_bf16(a_row: *const bf16, b_row: *const bf16, c: *mut f32, k: usize) {
     let mut sumf = 0.0f32;
     let np = k & !(CurrentCpuBF16::STEP - 1);

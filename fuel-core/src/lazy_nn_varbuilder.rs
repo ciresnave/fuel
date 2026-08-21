@@ -155,7 +155,10 @@ mod tests {
     fn pp_chains_produce_dot_joined_keys() -> Result<()> {
         let map = LazyVarMap::new();
         let vs = LazyVarBuilder::from_varmap(map.clone(), DType::F32, Device::cpu());
-        let v = vs.pp("outer").pp("inner").get(Shape::from_dims(&[2, 3]), "w")?;
+        let v = vs
+            .pp("outer")
+            .pp("inner")
+            .get(Shape::from_dims(&[2, 3]), "w")?;
         assert_eq!(v.name(), "outer.inner.w");
         assert_eq!(v.shape().dims(), &[2, 3]);
         assert!(map.get("outer.inner.w").is_some());
@@ -230,7 +233,9 @@ mod tests {
         // overwrite the placeholder zeros.
         let dst_map = LazyVarMap::new();
         let dst_vs = LazyVarBuilder::from_varmap(dst_map.clone(), DType::F32, Device::cpu());
-        let dst_w = dst_vs.pp("layer0").get(Shape::from_dims(&[2, 2]), "weight")?;
+        let dst_w = dst_vs
+            .pp("layer0")
+            .get(Shape::from_dims(&[2, 2]), "weight")?;
         let dst_b = dst_vs.pp("layer0").get(Shape::from_dims(&[2]), "bias")?;
         assert_eq!(dst_w.to_vec(), vec![0.0_f32; 4]);
         assert_eq!(dst_b.to_vec(), vec![0.0_f32; 2]);

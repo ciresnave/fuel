@@ -9,7 +9,7 @@ use clap::Parser;
 use std::io::Write;
 
 use fuel::lazy_bigcode::{BigCodeConfig, BigCodeModel, BigCodeWeights};
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 use tokenizers::Tokenizer;
 
 #[derive(Parser, Debug)]
@@ -76,7 +76,10 @@ fn main() -> Result<()> {
         .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
     let weights = BigCodeWeights::load_from_mmapped(&st, &config)
         .map_err(|e| E::msg(format!("load weights: {e}")))?;
-    let model = BigCodeModel { config: config.clone(), weights };
+    let model = BigCodeModel {
+        config: config.clone(),
+        weights,
+    };
     println!("loaded the model in {:?}", start.elapsed());
 
     print!("{}", args.prompt);
@@ -131,7 +134,10 @@ fn sample(logits: &[f32], temperature: f32, top_p: Option<f32>, seed: u64) -> u3
     }
     let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let inv_t = 1.0 / temperature.max(1e-6);
-    let mut probs: Vec<f32> = logits.iter().map(|&x| ((x - max_l) * inv_t).exp()).collect();
+    let mut probs: Vec<f32> = logits
+        .iter()
+        .map(|&x| ((x - max_l) * inv_t).exp())
+        .collect();
     let sum: f32 = probs.iter().sum();
     for p in &mut probs {
         *p /= sum.max(1e-30);
@@ -169,7 +175,9 @@ fn sample(logits: &[f32], temperature: f32, top_p: Option<f32>, seed: u64) -> u3
     } else {
         return 0;
     }
-    let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    let mut state = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     state ^= state >> 33;
     state = state.wrapping_mul(0xff51_afd7_ed55_8ccd);
     state ^= state >> 33;

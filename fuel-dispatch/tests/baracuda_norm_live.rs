@@ -5,9 +5,13 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_ir::{dispatch::OpKind, probe::BackendId, DType, Layout, Result, Shape};
 use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
-use fuel_dispatch::{baracuda_dispatch::register_baracuda_cuda_kernels, dispatch::register_cuda_kernels, kernel::{KernelBindingTable, OpParams}};
+use fuel_dispatch::{
+    baracuda_dispatch::register_baracuda_cuda_kernels,
+    dispatch::register_cuda_kernels,
+    kernel::{KernelBindingTable, OpParams},
+};
+use fuel_ir::{DType, Layout, Result, Shape, dispatch::OpKind, probe::BackendId};
 use fuel_memory::{BackendStorage, Storage};
 
 fn dev_or_skip() -> Option<CudaDevice> {
@@ -33,8 +37,7 @@ fn pick_alt(
     op: OpKind,
     expected: fuel_dispatch::KernelRef,
 ) -> fuel_dispatch::KernelRef {
-    let alternatives =
-        table.lookup_alternatives(op, &[DType::F32, DType::F32], BackendId::Cuda);
+    let alternatives = table.lookup_alternatives(op, &[DType::F32, DType::F32], BackendId::Cuda);
     let expected_ptr = expected as usize;
     for alt in alternatives {
         if (alt.kernel as usize) == expected_ptr {
@@ -97,8 +100,10 @@ fn cpu_layer_norm(input: &[f32], outer: usize, last: usize, eps: f64) -> Vec<f32
     for o in 0..outer {
         let off = o * last;
         let mean: f32 = (0..last).map(|i| input[off + i]).sum::<f32>() / last as f32;
-        let var: f32 =
-            (0..last).map(|i| (input[off + i] - mean).powi(2)).sum::<f32>() / last as f32;
+        let var: f32 = (0..last)
+            .map(|i| (input[off + i] - mean).powi(2))
+            .sum::<f32>()
+            / last as f32;
         let inv_std = 1.0 / (var + eps as f32).sqrt();
         for i in 0..last {
             out[off + i] = (input[off + i] - mean) * inv_std;
@@ -111,10 +116,7 @@ fn assert_close(actual: &[f32], expected: &[f32], eps: f32) {
     assert_eq!(actual.len(), expected.len());
     for (i, (a, e)) in actual.iter().zip(expected.iter()).enumerate() {
         let diff = (a - e).abs();
-        assert!(
-            diff <= eps,
-            "idx {i}: |{a} - {e}| = {diff} > {eps}",
-        );
+        assert!(diff <= eps, "idx {i}: |{a} - {e}| = {diff} > {eps}",);
     }
 }
 

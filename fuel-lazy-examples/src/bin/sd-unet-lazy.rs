@@ -29,7 +29,10 @@ const DEFAULT_REPO: &str = "stable-diffusion-v1-5/stable-diffusion-v1-5";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
-    let repo_id = args.get(1).cloned().unwrap_or_else(|| DEFAULT_REPO.to_string());
+    let repo_id = args
+        .get(1)
+        .cloned()
+        .unwrap_or_else(|| DEFAULT_REPO.to_string());
     let h_lat: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(8);
     let w_lat: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(8);
 
@@ -45,15 +48,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("done in {:.2?}", t0.elapsed());
     eprintln!(
         "  channels={:?}  time_dim={}  cross_dim={}",
-        unet.config.block_out_channels,
-        unet.config.time_embed_dim,
-        unet.config.cross_attention_dim,
+        unet.config.block_out_channels, unet.config.time_embed_dim, unet.config.cross_attention_dim,
     );
     eprintln!();
 
     let lc = unet.config.in_channels;
     let latent = vec![0.0_f32; lc * h_lat * w_lat];
-    let text = vec![0.0_f32; 1 * 77 * unet.config.cross_attention_dim];
+    let text = vec![0.0_f32; 77 * unet.config.cross_attention_dim];
 
     eprintln!("Running one denoising step...");
     let t0 = Instant::now();
@@ -67,8 +68,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let max = out.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let mean = out.iter().sum::<f32>() / out.len() as f32;
     eprintln!();
-    println!("Output noise prediction [1, {}, {h_lat}, {w_lat}]:",
-        unet.config.out_channels);
+    println!(
+        "Output noise prediction [1, {}, {h_lat}, {w_lat}]:",
+        unet.config.out_channels
+    );
     println!("  min={min:+.4}  mean={mean:+.4}  max={max:+.4}");
     println!("  all finite: {}", out.iter().all(|v| v.is_finite()));
     Ok(())

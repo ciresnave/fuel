@@ -8,8 +8,8 @@
 //! v1 scope: F32, batch == 1, 448×448 input only (canonical
 //! `img_size`), forward-only inference.
 
-use crate::lazy::{LazyTensor, WeightStorage};
 use crate::Result;
+use crate::lazy::{LazyTensor, WeightStorage};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -27,25 +27,35 @@ impl EvaConfig {
     /// EVA-02 ViT-Base/14 at 448×448.
     pub fn vit_base() -> Self {
         Self {
-            embed_dim: 768, depth: 12, num_heads: 12,
-            img_size: 448, patch_size: 14,
+            embed_dim: 768,
+            depth: 12,
+            num_heads: 12,
+            img_size: 448,
+            patch_size: 14,
             num_classes: Some(1000),
         }
     }
     /// EVA-02 ViT-Large/14 at 448×448.
     pub fn vit_large() -> Self {
         Self {
-            embed_dim: 1024, depth: 24, num_heads: 16,
-            img_size: 448, patch_size: 14,
+            embed_dim: 1024,
+            depth: 24,
+            num_heads: 16,
+            img_size: 448,
+            patch_size: 14,
             num_classes: Some(1000),
         }
     }
-    pub fn head_dim(&self) -> usize { self.embed_dim / self.num_heads }
+    pub fn head_dim(&self) -> usize {
+        self.embed_dim / self.num_heads
+    }
     pub fn num_patches(&self) -> usize {
         let g = self.img_size / self.patch_size;
         g * g
     }
-    pub fn hidden_mlp_dim(&self) -> usize { self.embed_dim * 4 * 2 / 3 }
+    pub fn hidden_mlp_dim(&self) -> usize {
+        self.embed_dim * 4 * 2 / 3
+    }
 }
 
 // ---- Weight structures ------------------------------------------------------
@@ -59,18 +69,24 @@ pub struct LayerNormWeights {
 #[derive(Debug, Clone)]
 pub struct EvaAttentionWeights {
     /// Q has bias, K has NO bias, V has bias. All `[embed, embed]`.
-    pub q_w: WeightStorage, pub q_b: Arc<[f32]>,
+    pub q_w: WeightStorage,
+    pub q_b: Arc<[f32]>,
     pub k_w: WeightStorage,
-    pub v_w: WeightStorage, pub v_b: Arc<[f32]>,
-    pub proj_w: WeightStorage, pub proj_b: Arc<[f32]>,
+    pub v_w: WeightStorage,
+    pub v_b: Arc<[f32]>,
+    pub proj_w: WeightStorage,
+    pub proj_b: Arc<[f32]>,
 }
 
 #[derive(Debug, Clone)]
 pub struct EvaMlpWeights {
-    pub fc1_g_w: WeightStorage, pub fc1_g_b: Arc<[f32]>,
-    pub fc1_x_w: WeightStorage, pub fc1_x_b: Arc<[f32]>,
+    pub fc1_g_w: WeightStorage,
+    pub fc1_g_b: Arc<[f32]>,
+    pub fc1_x_w: WeightStorage,
+    pub fc1_x_b: Arc<[f32]>,
     pub norm: LayerNormWeights,
-    pub fc2_w: WeightStorage, pub fc2_b: Arc<[f32]>,
+    pub fc2_w: WeightStorage,
+    pub fc2_b: Arc<[f32]>,
 }
 
 #[derive(Debug, Clone)]
@@ -130,12 +146,14 @@ impl EvaModel {
             Shape::from_dims(&[e, 3, cfg.patch_size, cfg.patch_size]),
         );
         let bias = image.const_f32_like(
-            Arc::clone(&self.weights.patch_conv_b), Shape::from_dims(&[e]),
+            Arc::clone(&self.weights.patch_conv_b),
+            Shape::from_dims(&[e]),
         );
         let patches = image.conv2d(&w, Some(&bias), (cfg.patch_size, cfg.patch_size), (0, 0), 1)?;
         let p_dims = patches.shape();
         let p_dims = p_dims.dims();
-        let gh = p_dims[2]; let gw = p_dims[3];
+        let gh = p_dims[2];
+        let gw = p_dims[3];
         debug_assert_eq!(gh * gw, n_patches);
         let patches = patches
             .reshape(Shape::from_dims(&[b, e, n_patches]))?
@@ -143,13 +161,19 @@ impl EvaModel {
 
         // Concat CLS token at position 0.
         let cls = image
-            .const_f32_like(Arc::clone(&self.weights.cls_token), Shape::from_dims(&[1, 1, e]))
+            .const_f32_like(
+                Arc::clone(&self.weights.cls_token),
+                Shape::from_dims(&[1, 1, e]),
+            )
             .broadcast_to(Shape::from_dims(&[b, 1, e]))?;
         let mut x = cls.concat(&patches, 1_usize)?;
 
         // Add pos_embed.
         let pos = image
-            .const_f32_like(Arc::clone(&self.weights.pos_embed), Shape::from_dims(&[1, n_tokens, e]))
+            .const_f32_like(
+                Arc::clone(&self.weights.pos_embed),
+                Shape::from_dims(&[1, n_tokens, e]),
+            )
             .broadcast_to(Shape::from_dims(&[b, n_tokens, e]))?;
         x = x.add(&pos)?;
 
@@ -170,9 +194,10 @@ impl EvaModel {
         let patch_tokens = x.narrow(1_usize, 1, n_patches)?;
         let pooled = patch_tokens.mean_dim(1_usize)?;
         let normed = apply_layer_norm_last(&pooled, &self.weights.norm, e)?;
-        let logits = self.weights.head_w.apply_linear(
-            &normed, e, self.weights.head_b.len(),
-        )?;
+        let logits = self
+            .weights
+            .head_w
+            .apply_linear(&normed, e, self.weights.head_b.len())?;
         let head_bias = image.const_f32_like(
             Arc::clone(&self.weights.head_b),
             Shape::from_dims(&[self.weights.head_b.len()]),
@@ -182,8 +207,12 @@ impl EvaModel {
 }
 
 fn apply_block(
-    x: &LazyTensor, blk: &EvaBlockWeights, cfg: &EvaConfig,
-    cos_emb: &LazyTensor, sin_emb: &LazyTensor, anchor: &LazyTensor,
+    x: &LazyTensor,
+    blk: &EvaBlockWeights,
+    cfg: &EvaConfig,
+    cos_emb: &LazyTensor,
+    sin_emb: &LazyTensor,
+    anchor: &LazyTensor,
 ) -> Result<LazyTensor> {
     let e = cfg.embed_dim;
     let n1 = apply_layer_norm_last(x, &blk.norm1, e)?;
@@ -195,12 +224,18 @@ fn apply_block(
 }
 
 fn apply_attention(
-    x: &LazyTensor, blk: &EvaBlockWeights, cfg: &EvaConfig,
-    cos_emb: &LazyTensor, sin_emb: &LazyTensor, anchor: &LazyTensor,
+    x: &LazyTensor,
+    blk: &EvaBlockWeights,
+    cfg: &EvaConfig,
+    cos_emb: &LazyTensor,
+    sin_emb: &LazyTensor,
+    anchor: &LazyTensor,
 ) -> Result<LazyTensor> {
     let dims = x.shape();
     let dims = dims.dims();
-    let b = dims[0]; let n = dims[1]; let e = dims[2];
+    let b = dims[0];
+    let n = dims[1];
+    let e = dims[2];
     debug_assert_eq!(e, cfg.embed_dim);
     let heads = cfg.num_heads;
     let head_dim = cfg.head_dim();
@@ -249,8 +284,12 @@ fn apply_attention(
 /// `cos_emb`/`sin_emb` are `(N - 1, head_dim)`.
 fn apply_rope_skip_cls(
     x: &LazyTensor,
-    cos_emb: &LazyTensor, sin_emb: &LazyTensor,
-    b: usize, heads: usize, n: usize, head_dim: usize,
+    cos_emb: &LazyTensor,
+    sin_emb: &LazyTensor,
+    b: usize,
+    heads: usize,
+    n: usize,
+    head_dim: usize,
 ) -> Result<LazyTensor> {
     let cls = x.narrow(2_usize, 0, 1)?;
     let body = x.narrow(2_usize, 1, n - 1)?;
@@ -260,8 +299,12 @@ fn apply_rope_skip_cls(
 
 fn apply_rope(
     x: &LazyTensor,
-    cos_emb: &LazyTensor, sin_emb: &LazyTensor,
-    b: usize, heads: usize, n_body: usize, head_dim: usize,
+    cos_emb: &LazyTensor,
+    sin_emb: &LazyTensor,
+    b: usize,
+    heads: usize,
+    n_body: usize,
+    head_dim: usize,
 ) -> Result<LazyTensor> {
     // x: (B, heads, n_body, head_dim). emb: (n_body, head_dim).
     // Build rot(x): rot[2k] = -x[2k+1]; rot[2k+1] = x[2k].
@@ -295,7 +338,10 @@ fn apply_rope(
 }
 
 fn apply_mlp(
-    x: &LazyTensor, m: &EvaMlpWeights, cfg: &EvaConfig, anchor: &LazyTensor,
+    x: &LazyTensor,
+    m: &EvaMlpWeights,
+    cfg: &EvaConfig,
+    anchor: &LazyTensor,
 ) -> Result<LazyTensor> {
     let e = cfg.embed_dim;
     let hidden = cfg.hidden_mlp_dim();
@@ -317,7 +363,9 @@ fn apply_mlp(
 }
 
 fn apply_layer_norm_last(
-    x: &LazyTensor, ln: &LayerNormWeights, hidden: usize,
+    x: &LazyTensor,
+    ln: &LayerNormWeights,
+    hidden: usize,
 ) -> Result<LazyTensor> {
     let _ = hidden;
     x.layer_norm_affine(Arc::clone(&ln.gain), Arc::clone(&ln.bias), 1e-6)
@@ -338,12 +386,8 @@ impl EvaWeights {
         let mlp = cfg.hidden_mlp_dim();
         let num_classes = cfg.num_classes.unwrap_or(0);
 
-        let patch_conv_w = Arc::from(load_tensor_as_f32(
-            st, "patch_embed.proj.weight",
-        )?);
-        let patch_conv_b = Arc::from(load_tensor_as_f32(
-            st, "patch_embed.proj.bias",
-        )?);
+        let patch_conv_w = Arc::from(load_tensor_as_f32(st, "patch_embed.proj.weight")?);
+        let patch_conv_b = Arc::from(load_tensor_as_f32(st, "patch_embed.proj.bias")?);
         let cls_token = Arc::from(load_tensor_as_f32(st, "cls_token")?);
         let pos_embed = Arc::from(load_tensor_as_f32(st, "pos_embed")?);
         // RoPE table is precomputed and stored as a buffer.
@@ -370,7 +414,15 @@ impl EvaWeights {
             let v_b = Arc::from(load_tensor_as_f32(st, &format!("{p}.attn.v_proj.bias"))?);
             let proj_w = ltm(st, &format!("{p}.attn.proj.weight"), h, h)?;
             let proj_b = Arc::from(load_tensor_as_f32(st, &format!("{p}.attn.proj.bias"))?);
-            let attn = EvaAttentionWeights { q_w, q_b, k_w, v_w, v_b, proj_w, proj_b };
+            let attn = EvaAttentionWeights {
+                q_w,
+                q_b,
+                k_w,
+                v_w,
+                v_b,
+                proj_w,
+                proj_b,
+            };
 
             let norm2 = load_ln(&format!("{p}.norm2"))?;
             // SwiGLU MLP: gate path (w1) + value path (w3) + sub-norm + down (w2).
@@ -382,26 +434,49 @@ impl EvaWeights {
             let fc2_w = ltm(st, &format!("{p}.mlp.w3.weight"), h, mlp)?;
             let fc2_b = Arc::from(load_tensor_as_f32(st, &format!("{p}.mlp.w3.bias"))?);
             let mlp_w = EvaMlpWeights {
-                fc1_g_w, fc1_g_b, fc1_x_w, fc1_x_b, norm, fc2_w, fc2_b,
+                fc1_g_w,
+                fc1_g_b,
+                fc1_x_w,
+                fc1_x_b,
+                norm,
+                fc2_w,
+                fc2_b,
             };
 
-            blocks.push(EvaBlockWeights { norm1, attn, norm2, mlp: mlp_w });
+            blocks.push(EvaBlockWeights {
+                norm1,
+                attn,
+                norm2,
+                mlp: mlp_w,
+            });
         }
 
         let norm = load_ln("norm")?;
         let (head_w, head_b) = if num_classes > 0 {
             (
                 ltm(st, "head.weight", num_classes, h)?,
-                Arc::from(load_tensor_as_f32(st, "head.bias")
-                    .unwrap_or_else(|_| vec![0.0_f32; num_classes])),
+                Arc::from(
+                    load_tensor_as_f32(st, "head.bias")
+                        .unwrap_or_else(|_| vec![0.0_f32; num_classes]),
+                ),
             )
         } else {
-            (WeightStorage::F32(Arc::from(vec![0.0_f32; 0])), Arc::from(vec![0.0_f32; 0]))
+            (
+                WeightStorage::F32(Arc::from(vec![0.0_f32; 0])),
+                Arc::from(vec![0.0_f32; 0]),
+            )
         };
 
         Ok(Self {
-            patch_conv_w, patch_conv_b, cls_token, pos_embed, rot_pos_embed,
-            blocks, norm, head_w, head_b,
+            patch_conv_w,
+            patch_conv_b,
+            cls_token,
+            pos_embed,
+            rot_pos_embed,
+            blocks,
+            norm,
+            head_w,
+            head_b,
         })
     }
 }
@@ -437,27 +512,36 @@ mod tests {
         // 28×28 image, 7×7 patches → 4×4 = 16 patch tokens + 1 CLS = 17 tokens.
         // embed_dim 8, 2 heads → head_dim = 4. rot_pos_embed = (16, 8).
         EvaConfig {
-            embed_dim: 8, depth: 2, num_heads: 2,
-            img_size: 28, patch_size: 7,
+            embed_dim: 8,
+            depth: 2,
+            num_heads: 2,
+            img_size: 28,
+            patch_size: 7,
             num_classes: Some(5),
         }
     }
 
     fn build_attn_w(e: usize, nb: &mut dyn FnMut() -> f32) -> EvaAttentionWeights {
         EvaAttentionWeights {
-            q_w: ws(e * e, nb), q_b: vec_of(e, nb),
+            q_w: ws(e * e, nb),
+            q_b: vec_of(e, nb),
             k_w: ws(e * e, nb),
-            v_w: ws(e * e, nb), v_b: vec_of(e, nb),
-            proj_w: ws(e * e, nb), proj_b: vec_of(e, nb),
+            v_w: ws(e * e, nb),
+            v_b: vec_of(e, nb),
+            proj_w: ws(e * e, nb),
+            proj_b: vec_of(e, nb),
         }
     }
 
     fn build_mlp_w(e: usize, hidden: usize, nb: &mut dyn FnMut() -> f32) -> EvaMlpWeights {
         EvaMlpWeights {
-            fc1_g_w: ws(e * hidden, nb), fc1_g_b: vec_of(hidden, nb),
-            fc1_x_w: ws(e * hidden, nb), fc1_x_b: vec_of(hidden, nb),
+            fc1_g_w: ws(e * hidden, nb),
+            fc1_g_b: vec_of(hidden, nb),
+            fc1_x_w: ws(e * hidden, nb),
+            fc1_x_b: vec_of(hidden, nb),
             norm: ln_w(hidden),
-            fc2_w: ws(hidden * e, nb), fc2_b: vec_of(e, nb),
+            fc2_w: ws(hidden * e, nb),
+            fc2_b: vec_of(e, nb),
         }
     }
 
@@ -468,14 +552,14 @@ mod tests {
         let n_patches = cfg.num_patches();
         let hidden = cfg.hidden_mlp_dim();
         let n_tokens = n_patches + 1;
-        let blocks: Vec<EvaBlockWeights> = (0..cfg.depth).map(|_| {
-            EvaBlockWeights {
+        let blocks: Vec<EvaBlockWeights> = (0..cfg.depth)
+            .map(|_| EvaBlockWeights {
                 norm1: ln_w(e),
                 attn: build_attn_w(e, &mut nb),
                 norm2: ln_w(e),
                 mlp: build_mlp_w(e, hidden, &mut nb),
-            }
-        }).collect();
+            })
+            .collect();
 
         // Build rot_pos_embed: (n_patches, 2*head_dim) with interleaved
         // (cos[2k]==cos[2k+1], sin[2k]==sin[2k+1]) pairs. First head_dim
@@ -484,7 +568,8 @@ mod tests {
         for p in 0..n_patches {
             for k in 0..(head_dim / 2) {
                 let theta = (p as f32) / 10000.0_f32.powf(2.0 * k as f32 / head_dim as f32);
-                let s = theta.sin(); let _c = theta.cos();
+                let s = theta.sin();
+                let _c = theta.cos();
                 // sin block at index 2k, 2k+1.
                 rot.push(s); // sin[2k]
                 rot.push(s); // sin[2k+1]
@@ -513,10 +598,16 @@ mod tests {
     fn forward_shape_and_finite() {
         let cfg = tiny_config();
         let weights = build_weights(&cfg);
-        let model = EvaModel { config: cfg.clone(), weights };
+        let model = EvaModel {
+            config: cfg.clone(),
+            weights,
+        };
         let img = LazyTensor::from_f32(
-            (0..(3 * 28 * 28)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, 3, 28, 28]), &Device::cpu(),
+            (0..(3 * 28 * 28))
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 28, 28]),
+            &Device::cpu(),
         );
         let logits = model.forward(&img).unwrap();
         assert_eq!(logits.shape().dims(), &[1, 5]);
@@ -529,14 +620,23 @@ mod tests {
     fn forward_responds_to_input() {
         let cfg = tiny_config();
         let weights = build_weights(&cfg);
-        let model = EvaModel { config: cfg, weights };
+        let model = EvaModel {
+            config: cfg,
+            weights,
+        };
         let img_a = LazyTensor::from_f32(
-            (0..(3 * 28 * 28)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, 3, 28, 28]), &Device::cpu(),
+            (0..(3 * 28 * 28))
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 28, 28]),
+            &Device::cpu(),
         );
         let img_b = LazyTensor::from_f32(
-            (0..(3 * 28 * 28)).map(|i| (i as f32) * 0.01 + 0.3).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, 3, 28, 28]), &Device::cpu(),
+            (0..(3 * 28 * 28))
+                .map(|i| (i as f32) * 0.01 + 0.3)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 28, 28]),
+            &Device::cpu(),
         );
         let a = model.forward(&img_a).unwrap().realize_f32();
         let b = model.forward(&img_b).unwrap().realize_f32();
@@ -544,8 +644,10 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-6,
-            "EVA-02 must respond to input changes, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-6,
+            "EVA-02 must respond to input changes, max_diff = {max_diff}"
+        );
     }
 
     #[test]
@@ -563,9 +665,13 @@ mod tests {
         let cfg = tiny_config();
         let weights = build_weights(&cfg);
         let head_dim = cfg.head_dim();
-        let b = 1; let heads = cfg.num_heads; let n = cfg.num_patches() + 1;
+        let b = 1;
+        let heads = cfg.num_heads;
+        let n = cfg.num_patches() + 1;
 
-        let x_data: Vec<f32> = (0..(b * heads * n * head_dim)).map(|i| (i as f32) * 0.01).collect();
+        let x_data: Vec<f32> = (0..(b * heads * n * head_dim))
+            .map(|i| (i as f32) * 0.01)
+            .collect();
         let x = LazyTensor::from_f32(
             x_data.clone(),
             Shape::from_dims(&[b, heads, n, head_dim]),
@@ -586,9 +692,12 @@ mod tests {
             for d in 0..head_dim {
                 let i = ((hh * n) + 0) * head_dim + d;
                 let i_x = ((hh * n) + 0) * head_dim + d;
-                assert!((out_data[i] - x_data[i_x]).abs() < 1e-7,
+                assert!(
+                    (out_data[i] - x_data[i_x]).abs() < 1e-7,
                     "CLS-token RoPE leak at head={hh} d={d}: {} vs {}",
-                    out_data[i], x_data[i_x]);
+                    out_data[i],
+                    x_data[i_x]
+                );
             }
         }
     }

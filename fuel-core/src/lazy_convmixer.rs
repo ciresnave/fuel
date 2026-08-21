@@ -85,15 +85,23 @@ impl ConvMixerConfig {
     /// ConvMixer-1536/20: 1536 channels, 20 blocks, kernel=9, patch=7.
     pub fn c1536_20(nclasses: usize) -> Self {
         Self {
-            dim: 1536, depth: 20, kernel_size: 9, patch_size: 7,
-            nclasses, bn_eps: 1e-5,
+            dim: 1536,
+            depth: 20,
+            kernel_size: 9,
+            patch_size: 7,
+            nclasses,
+            bn_eps: 1e-5,
         }
     }
     /// ConvMixer-1024/20: 1024 channels, 20 blocks, kernel=9, patch=14.
     pub fn c1024_20(nclasses: usize) -> Self {
         Self {
-            dim: 1024, depth: 20, kernel_size: 9, patch_size: 14,
-            nclasses, bn_eps: 1e-5,
+            dim: 1024,
+            depth: 20,
+            kernel_size: 9,
+            patch_size: 14,
+            nclasses,
+            bn_eps: 1e-5,
         }
     }
 }
@@ -129,7 +137,10 @@ impl BatchNormParams {
             w[i] = gain[i] * inv;
             b[i] = bias[i] - running_mean[i] * w[i];
         }
-        Self { w: Arc::from(w), b: Arc::from(b) }
+        Self {
+            w: Arc::from(w),
+            b: Arc::from(b),
+        }
     }
 }
 
@@ -168,7 +179,10 @@ impl ConvMixerModel {
         let cfg = &self.config;
         let x = self.run_backbone(image)?;
         let pooled = x.global_avg_pool_2d()?;
-        let logits = self.weights.head.apply_linear(&pooled, cfg.dim, cfg.nclasses)?;
+        let logits = self
+            .weights
+            .head
+            .apply_linear(&pooled, cfg.dim, cfg.nclasses)?;
         let bias_t = pooled.const_f32_like(
             Arc::clone(&self.weights.head_bias),
             Shape::from_dims(&[cfg.nclasses]),
@@ -189,8 +203,13 @@ impl ConvMixerModel {
         let dims = image.shape();
         let dims = dims.dims();
         assert_eq!(dims.len(), 4, "image must be rank 4 [N, 3, H, W]");
-        assert_eq!(dims[1], 3, "image must have 3 input channels, got {}", dims[1]);
-        assert!(cfg.kernel_size % 2 == 1,
+        assert_eq!(
+            dims[1], 3,
+            "image must have 3 input channels, got {}",
+            dims[1]
+        );
+        assert!(
+            cfg.kernel_size % 2 == 1,
             "ConvMixer depthwise kernel must be odd for symmetric same-padding (got {})",
             cfg.kernel_size,
         );
@@ -210,11 +229,7 @@ impl ConvMixerModel {
         Ok(x)
     }
 
-    fn apply_block(
-        &self,
-        x: &LazyTensor,
-        block: &ConvMixerBlockWeights,
-    ) -> Result<LazyTensor> {
+    fn apply_block(&self, x: &LazyTensor, block: &ConvMixerBlockWeights) -> Result<LazyTensor> {
         let cfg = &self.config;
         let pad = (cfg.kernel_size - 1) / 2;
         // Depthwise: dim → dim, kernel=k, groups=dim, padding=pad.
@@ -229,10 +244,9 @@ impl ConvMixerModel {
         let residual = x.add(&dw_out)?;
 
         // Pointwise: dim → dim, kernel=1, padding=0.
-        let pw_w = block.pointwise.const_like(
-            x,
-            Shape::from_dims(&[cfg.dim, cfg.dim, 1, 1]),
-        )?;
+        let pw_w = block
+            .pointwise
+            .const_like(x, Shape::from_dims(&[cfg.dim, cfg.dim, 1, 1]))?;
         let pw_out = residual.conv2d(&pw_w, None, (1, 1), (0, 0), 1)?;
         let pw_out = pw_out.gelu_erf();
         self.apply_bn(&pw_out, &block.pointwise_bn)
@@ -263,13 +277,13 @@ impl ConvMixerWeights {
             let bias = load_tensor_as_f32(st, &format!("{prefix}.bias"))?;
             let mean = load_tensor_as_f32(st, &format!("{prefix}.running_mean"))?;
             let var = load_tensor_as_f32(st, &format!("{prefix}.running_var"))?;
-            Ok(BatchNormParams::from_raw(&gain, &bias, &mean, &var, cfg.bn_eps))
+            Ok(BatchNormParams::from_raw(
+                &gain, &bias, &mean, &var, cfg.bn_eps,
+            ))
         };
 
         // Stem: Conv2d(3, dim, patch, patch) → GELU → BatchNorm.
-        let stem = WeightStorage::F32(Arc::from(
-            load_tensor_as_f32(st, "stem.0.weight")?,
-        ));
+        let stem = WeightStorage::F32(Arc::from(load_tensor_as_f32(st, "stem.0.weight")?));
         let stem_bn = load_bn("stem.2")?;
 
         let mut blocks = Vec::with_capacity(cfg.depth);
@@ -285,20 +299,31 @@ impl ConvMixerWeights {
             ));
             let depthwise_bn = load_bn(&format!("blocks.{i}.0.fn.2"))
                 .or_else(|_| load_bn(&format!("blocks.{i}.0.2")))?;
-            let pointwise = WeightStorage::F32(Arc::from(
-                load_tensor_as_f32(st, &format!("blocks.{i}.2.weight"))?,
-            ));
+            let pointwise = WeightStorage::F32(Arc::from(load_tensor_as_f32(
+                st,
+                &format!("blocks.{i}.2.weight"),
+            )?));
             let pointwise_bn = load_bn(&format!("blocks.{i}.4"))?;
             blocks.push(ConvMixerBlockWeights {
-                depthwise, depthwise_bn, pointwise, pointwise_bn,
+                depthwise,
+                depthwise_bn,
+                pointwise,
+                pointwise_bn,
             });
         }
 
         let head = ltm(st, "head.weight", cfg.nclasses, cfg.dim)?;
-        let head_bias = Arc::from(load_tensor_as_f32(st, "head.bias")
-            .unwrap_or_else(|_| vec![0.0_f32; cfg.nclasses]));
+        let head_bias = Arc::from(
+            load_tensor_as_f32(st, "head.bias").unwrap_or_else(|_| vec![0.0_f32; cfg.nclasses]),
+        );
 
-        Ok(Self { stem, stem_bn, blocks, head, head_bias })
+        Ok(Self {
+            stem,
+            stem_bn,
+            blocks,
+            head,
+            head_bias,
+        })
     }
 }
 
@@ -306,12 +331,14 @@ impl ConvMixerWeights {
 #[cfg(test)]
 fn tiny_image(h: usize, w: usize, device: &Device) -> LazyTensor {
     let mut s: u32 = 42;
-    let data: Arc<[f32]> = Arc::from((0..3 * h * w)
-        .map(|_| {
-            s = s.wrapping_mul(1103515245).wrapping_add(12345);
-            ((s >> 16) as u16 as f32 / 65535.0 - 0.5)
-        })
-        .collect::<Vec<_>>());
+    let data: Arc<[f32]> = Arc::from(
+        (0..3 * h * w)
+            .map(|_| {
+                s = s.wrapping_mul(1103515245).wrapping_add(12345);
+                ((s >> 16) as u16 as f32 / 65535.0 - 0.5)
+            })
+            .collect::<Vec<_>>(),
+    );
     LazyTensor::from_f32(data, Shape::from_dims(&[1, 3, h, w]), device)
 }
 
@@ -325,8 +352,12 @@ mod tests {
 
     fn tiny_cfg(h_after_patch: usize) -> ConvMixerConfig {
         ConvMixerConfig {
-            dim: 8, depth: 2, kernel_size: 3, patch_size: h_after_patch,
-            nclasses: 5, bn_eps: 1e-5,
+            dim: 8,
+            depth: 2,
+            kernel_size: 3,
+            patch_size: h_after_patch,
+            nclasses: 5,
+            bn_eps: 1e-5,
         }
     }
 
@@ -372,13 +403,22 @@ mod tests {
         let head = WeightStorage::F32(vec_of(dim * cfg.nclasses, &mut *nb));
         let head_bias = vec_of(cfg.nclasses, &mut *nb);
 
-        ConvMixerWeights { stem, stem_bn, blocks, head, head_bias }
+        ConvMixerWeights {
+            stem,
+            stem_bn,
+            blocks,
+            head,
+            head_bias,
+        }
     }
 
     #[test]
     fn forward_shape_and_finite() {
         let cfg = tiny_cfg(2);
-        let model = ConvMixerModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = ConvMixerModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let img = tiny_image(8, 8, &Device::cpu());
         let logits = model.forward(&img).unwrap();
         assert_eq!(logits.shape().dims(), &[1, cfg.nclasses]);
@@ -414,10 +454,26 @@ mod tests {
         let mean = vec![0.5_f32, 0.0];
         let var = vec![4.0_f32, 1.0];
         let bn = BatchNormParams::from_raw(&gain, &bias, &mean, &var, 0.0);
-        assert!((bn.w[0] - 1.0).abs() < 1e-7, "expected w[0] = 1.0, got {}", bn.w[0]);
-        assert!((bn.w[1] - 3.0).abs() < 1e-7, "expected w[1] = 3.0, got {}", bn.w[1]);
-        assert!((bn.b[0] - 0.5).abs() < 1e-7, "expected b[0] = 0.5, got {}", bn.b[0]);
-        assert!((bn.b[1] + 1.0).abs() < 1e-7, "expected b[1] = -1.0, got {}", bn.b[1]);
+        assert!(
+            (bn.w[0] - 1.0).abs() < 1e-7,
+            "expected w[0] = 1.0, got {}",
+            bn.w[0]
+        );
+        assert!(
+            (bn.w[1] - 3.0).abs() < 1e-7,
+            "expected w[1] = 3.0, got {}",
+            bn.w[1]
+        );
+        assert!(
+            (bn.b[0] - 0.5).abs() < 1e-7,
+            "expected b[0] = 0.5, got {}",
+            bn.b[0]
+        );
+        assert!(
+            (bn.b[1] + 1.0).abs() < 1e-7,
+            "expected b[1] = -1.0, got {}",
+            bn.b[1]
+        );
     }
 
     /// Stem patch embedding: a (1, 3, 6, 6) input with patch=3
@@ -425,10 +481,17 @@ mod tests {
     #[test]
     fn stem_patch_grid_shape() {
         let cfg = ConvMixerConfig {
-            dim: 4, depth: 1, kernel_size: 3, patch_size: 3,
-            nclasses: 2, bn_eps: 1e-5,
+            dim: 4,
+            depth: 1,
+            kernel_size: 3,
+            patch_size: 3,
+            nclasses: 2,
+            bn_eps: 1e-5,
         };
-        let model = ConvMixerModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = ConvMixerModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let img = tiny_image(6, 6, &Device::cpu());
         let logits = model.forward(&img).unwrap();
         assert_eq!(logits.shape().dims(), &[1, cfg.nclasses]);
@@ -437,7 +500,10 @@ mod tests {
     #[test]
     fn forward_features_shape_and_finite() {
         let cfg = tiny_cfg(2);
-        let model = ConvMixerModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = ConvMixerModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let img = tiny_image(8, 8, &Device::cpu());
         let feats = model.forward_features(&img).unwrap();
         let shape = feats.shape();

@@ -1,4 +1,4 @@
-﻿use fuel::Result;
+use fuel::Result;
 
 // https://github.com/facebookresearch/audiocraft/blob/69fea8b290ad1b4b40d28f92d1dfc0ab01dbab85/audiocraft/data/audio_utils.py#L57
 //
@@ -36,7 +36,7 @@ pub fn normalize_loudness(
 #[cfg(feature = "symphonia")]
 pub fn pcm_decode<P: AsRef<std::path::Path>>(path: P) -> Result<(Vec<f32>, u32)> {
     use symphonia::core::audio::{AudioBufferRef, Signal};
-    use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
+    use symphonia::core::codecs::{CODEC_TYPE_NULL, DecoderOptions};
     use symphonia::core::conv::FromSample;
 
     fn conv<T>(

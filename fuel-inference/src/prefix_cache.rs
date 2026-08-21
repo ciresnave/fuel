@@ -179,10 +179,7 @@ impl PrefixCache {
     ///
     /// This is more expensive than [`lookup`](PrefixCache::lookup) because it probes
     /// multiple hash keys. Use it when you don't know the exact prefix boundary.
-    pub fn longest_prefix_match(
-        &mut self,
-        tokens: &[u32],
-    ) -> Option<(usize, Vec<LayerKvState>)> {
+    pub fn longest_prefix_match(&mut self, tokens: &[u32]) -> Option<(usize, Vec<LayerKvState>)> {
         // Try from longest to shortest
         for len in (1..=tokens.len()).rev() {
             let prefix = &tokens[..len];
@@ -219,13 +216,17 @@ fn hash_tokens(tokens: &[u32]) -> PrefixHash {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel::{DType, Device};
+    use fuel::Device;
 
     fn make_kv(layers: usize, seq_len: usize) -> Vec<LayerKvState> {
         (0..layers)
             .map(|_| {
                 let dims = fuel::Shape::from_dims(&[1, 4, seq_len, 64]);
-                let k = LazyTensor::from_f32(vec![0.0_f32; 4 * seq_len * 64], dims.clone(), &Device::cpu());
+                let k = LazyTensor::from_f32(
+                    vec![0.0_f32; 4 * seq_len * 64],
+                    dims.clone(),
+                    &Device::cpu(),
+                );
                 let v = LazyTensor::from_f32(vec![0.0_f32; 4 * seq_len * 64], dims, &Device::cpu());
 
                 (k, v)

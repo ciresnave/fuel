@@ -95,8 +95,7 @@ fn load_image_as_f32(
     for y in 0..height {
         for x in 0..width {
             for c in 0..3 {
-                chw[c * height * width + y * width + x] =
-                    raw[(y * width + x) * 3 + c] as f32;
+                chw[c * height * width + y * width + x] = raw[(y * width + x) * 3 + c] as f32;
             }
         }
     }
@@ -130,8 +129,7 @@ pub fn main() -> Result<()> {
         );
     }
 
-    let (image_chw, h, w, initial_h, initial_w) =
-        load_image_as_f32(&args.image, Some(IMAGE_SIZE))?;
+    let (image_chw, h, w, initial_h, initial_w) = load_image_as_f32(&args.image, Some(IMAGE_SIZE))?;
     println!("loaded image (3, {h}, {w})");
 
     let model_path = match args.model {
@@ -147,15 +145,13 @@ pub fn main() -> Result<()> {
     let cfg = SamModelConfig::vit_b();
     let st = unsafe { fuel::safetensors::MmapedSafetensors::multi(&[model_path]) }
         .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
-    let image_encoder_weights =
-        SamImageEncoderWeights::load_from_mmapped(&st, &cfg.image_encoder)
-            .map_err(|e| E::msg(format!("image-encoder weights: {e}")))?;
+    let image_encoder_weights = SamImageEncoderWeights::load_from_mmapped(&st, &cfg.image_encoder)
+        .map_err(|e| E::msg(format!("image-encoder weights: {e}")))?;
     let prompt_encoder_weights =
         SamPromptEncoderWeights::load_from_mmapped(&st, &cfg.prompt_encoder)
             .map_err(|e| E::msg(format!("prompt-encoder weights: {e}")))?;
-    let mask_decoder_weights =
-        SamMaskDecoderWeights::load_from_mmapped(&st, &cfg.mask_decoder)
-            .map_err(|e| E::msg(format!("mask-decoder weights: {e}")))?;
+    let mask_decoder_weights = SamMaskDecoderWeights::load_from_mmapped(&st, &cfg.mask_decoder)
+        .map_err(|e| E::msg(format!("mask-decoder weights: {e}")))?;
     let sam = SamModel::new(
         cfg,
         image_encoder_weights,
@@ -213,7 +209,11 @@ pub fn main() -> Result<()> {
         start_time.elapsed().as_secs_f32()
     );
     println!("mask: shape={:?}", mask_dims.dims());
-    println!("iou_predictions: shape={:?} values={:?}", iou_dims.dims(), iou_data);
+    println!(
+        "iou_predictions: shape={:?} values={:?}",
+        iou_dims.dims(),
+        iou_data
+    );
 
     // `mask_data` has shape `(num_returned, h, w)` (batch dim was squeezed by
     // `SamModel::forward`). With `multimask_output=false`, `num_returned == 1`.

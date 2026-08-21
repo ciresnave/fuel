@@ -56,29 +56,27 @@ pub use candidate::{Candidate, CouplingAdjustment};
 pub use chain::apply_filter_chain;
 pub use chained_selector::ChainedSelector;
 pub use cost::{
-    apply_inbound_transfer_costs, composite_ns, compute_static_costs, default_backend_rates,
-    CapabilitiesLookup, TransferEstimator,
+    CapabilitiesLookup, TransferEstimator, apply_inbound_transfer_costs, composite_ns,
+    compute_static_costs, default_backend_rates,
 };
 pub use cost_vector::{AccuracyClass, CostVector, MemoryTiers, PrecisionDigits};
 pub use device_load::{
-    load_tier, load_tier_for, mock_combined_lookup, mock_load_lookup, DeviceLoadSelector,
-    LoadLookup, MockBackendStreams, MockCombinedRuntime, LOAD_TIER_IDLE,
-    LOAD_TIER_MODERATE, LOAD_TIER_SATURATED,
+    DeviceLoadSelector, LOAD_TIER_IDLE, LOAD_TIER_MODERATE, LOAD_TIER_SATURATED, LoadLookup,
+    MockBackendStreams, MockCombinedRuntime, load_tier, load_tier_for, mock_combined_lookup,
+    mock_load_lookup,
 };
 pub use enumerate::enumerate_candidates;
 pub use filter::{AlternativeFilter, FilterClass, FilterContext};
 pub use filters::{
-    default_chain, BitStablePreferenceFilter, PrecisionFloorFilter, PrecisionRequirement,
-    StridedInputPreferenceFilter,
+    BitStablePreferenceFilter, PrecisionFloorFilter, PrecisionRequirement,
+    StridedInputPreferenceFilter, default_chain,
 };
 pub use judge::{HashMapJudge, JudgeOracle};
 pub use judge_aware_selector::JudgeAwareSelector;
 pub use placement_dp::{ChainInput, PlacementDp};
-pub use route_picker::{
-    pick_route, resolve_branch, RouteCache, TelemetryFingerprint, LOOKAHEAD_K,
-};
+pub use route_picker::{LOOKAHEAD_K, RouteCache, TelemetryFingerprint, pick_route, resolve_branch};
 pub use runtime_selector::{RuntimeSelector, WinnerSelector};
 pub use vram_pressure_selector::{
-    default_estimate_output_bytes, BackendRuntimeHandle, BackendRuntimeLookup,
-    OutputBytesEstimator, VramPressureSelector,
+    BackendRuntimeHandle, BackendRuntimeLookup, OutputBytesEstimator, VramPressureSelector,
+    default_estimate_output_bytes,
 };

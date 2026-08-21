@@ -60,28 +60,36 @@ pub fn unroll_scan(
     if scan_id.0 >= graph.len() {
         return Err(fuel_ir::Error::Msg(format!(
             "unroll_scan: scan_id {} is out of range (graph has {} nodes)",
-            scan_id.0, graph.len(),
-        )).bt());
+            scan_id.0,
+            graph.len(),
+        ))
+        .bt());
     }
     // 1. Read the Scan node's params + input layout in a short borrow.
     let (n_xs, bound, emit, has_exit, inputs) = {
         let n = graph.node(scan_id);
         match &n.op {
-            Op::Scan { n_xs, bound, emit, early_exit } => {
-                (*n_xs, *bound, *emit, early_exit.is_some(), n.inputs.clone())
-            }
+            Op::Scan {
+                n_xs,
+                bound,
+                emit,
+                early_exit,
+            } => (*n_xs, *bound, *emit, early_exit.is_some(), n.inputs.clone()),
             other => {
                 return Err(fuel_ir::Error::Msg(format!(
                     "unroll_scan: node {} is not an Op::Scan ({})",
-                    scan_id.0, other.short_name(),
-                )).bt());
+                    scan_id.0,
+                    other.short_name(),
+                ))
+                .bt());
             }
         }
     };
     if steps == 0 || steps > bound {
         return Err(fuel_ir::Error::Msg(format!(
             "unroll_scan: steps {steps} must be in 1..={bound}",
-        )).bt());
+        ))
+        .bt());
     }
     // inputs = [init_carry, xs_0..xs_{n_xs-1}, consts.., body_new_carry, body_y, [pred_exit]]
     // Trailing slots: body_new_carry + body_y (+ pred_exit when early_exit = Some).
@@ -125,7 +133,8 @@ pub fn unroll_scan(
             return Err(fuel_ir::Error::Msg(format!(
                 "unroll_scan: xs[{i}] (node {}) leading dim {} < steps ({steps})",
                 x.0, dims[0],
-            )).bt());
+            ))
+            .bt());
         }
     }
 
@@ -137,11 +146,19 @@ pub fn unroll_scan(
         // squeezed to drop the step axis -> the ScanPlaceholder{Elem,i} shape.
         let mut elem: Vec<NodeId> = Vec::with_capacity(n_xs);
         for &x in &xs {
-            let (x_shape, x_dtype) = { let n = graph.node(x); (n.shape.clone(), n.dtype) };
+            let (x_shape, x_dtype) = {
+                let n = graph.node(x);
+                (n.shape.clone(), n.dtype)
+            };
             let sliced_dims: Vec<usize> = std::iter::once(1usize)
-                .chain(x_shape.dims().iter().skip(1).copied()).collect();
+                .chain(x_shape.dims().iter().skip(1).copied())
+                .collect();
             let sl = graph.push(Node {
-                op: Op::Slice { dim: 0, start: t, len: 1 },
+                op: Op::Slice {
+                    dim: 0,
+                    start: t,
+                    len: 1,
+                },
                 inputs: vec![x],
                 shape: fuel_ir::Shape::from_dims(&sliced_dims),
                 dtype: x_dtype,
@@ -159,7 +176,8 @@ pub fn unroll_scan(
         // Clone the body subgraph (rooted at {body_new_carry, body_y}),
         // substituting placeholders + keeping consts shared.
         let mut subst: HashMap<NodeId, NodeId> = HashMap::new();
-        let next_carry = clone_body_node(graph, body_new_carry, carry, &elem, &consts_set, &mut subst);
+        let next_carry =
+            clone_body_node(graph, body_new_carry, carry, &elem, &consts_set, &mut subst);
         let y_t = clone_body_node(graph, body_y, carry, &elem, &consts_set, &mut subst);
         carry = next_carry;
         ys_steps.push(y_t);
@@ -168,8 +186,13 @@ pub fn unroll_scan(
     // stacked_ys = Concat(dim 0) of each y_t unsqueezed at dim 0.
     let mut unsqueezed: Vec<NodeId> = Vec::with_capacity(ys_steps.len());
     for &y in &ys_steps {
-        let (y_shape, y_dtype) = { let n = graph.node(y); (n.shape.clone(), n.dtype) };
-        let un_dims: Vec<usize> = std::iter::once(1usize).chain(y_shape.dims().iter().copied()).collect();
+        let (y_shape, y_dtype) = {
+            let n = graph.node(y);
+            (n.shape.clone(), n.dtype)
+        };
+        let un_dims: Vec<usize> = std::iter::once(1usize)
+            .chain(y_shape.dims().iter().copied())
+            .collect();
         let un = graph.push(Node {
             op: Op::Unsqueeze { dim: 0 },
             inputs: vec![y],
@@ -178,9 +201,13 @@ pub fn unroll_scan(
         });
         unsqueezed.push(un);
     }
-    let (y0_shape, y0_dtype) = { let n = graph.node(ys_steps[0]); (n.shape.clone(), n.dtype) };
+    let (y0_shape, y0_dtype) = {
+        let n = graph.node(ys_steps[0]);
+        (n.shape.clone(), n.dtype)
+    };
     let stacked_dims: Vec<usize> = std::iter::once(ys_steps.len())
-        .chain(y0_shape.dims().iter().copied()).collect();
+        .chain(y0_shape.dims().iter().copied())
+        .collect();
     let stacked_ys = graph.push(Node {
         op: Op::Concat { dim: 0 },
         inputs: unsqueezed,
@@ -205,20 +232,36 @@ fn clone_body_node(
     consts_set: &std::collections::HashSet<NodeId>,
     subst: &mut HashMap<NodeId, NodeId>,
 ) -> NodeId {
-    if let Some(&m) = subst.get(&id) { return m; }
-    if consts_set.contains(&id) { return id; }
+    if let Some(&m) = subst.get(&id) {
+        return m;
+    }
+    if consts_set.contains(&id) {
+        return id;
+    }
     let (op, in_ids, shape, dtype) = {
         let n = graph.node(id);
         (n.op.clone(), n.inputs.clone(), n.shape.clone(), n.dtype)
     };
     let mapped = match op {
-        Op::ScanPlaceholder { role: ScanRole::Carry, .. } => carry,
-        Op::ScanPlaceholder { role: ScanRole::Elem, index } => elem[index],
+        Op::ScanPlaceholder {
+            role: ScanRole::Carry,
+            ..
+        } => carry,
+        Op::ScanPlaceholder {
+            role: ScanRole::Elem,
+            index,
+        } => elem[index],
         _ => {
-            let new_inputs: Vec<NodeId> = in_ids.iter()
+            let new_inputs: Vec<NodeId> = in_ids
+                .iter()
                 .map(|&c| clone_body_node(graph, c, carry, elem, consts_set, subst))
                 .collect();
-            graph.push(Node { op, inputs: new_inputs, shape, dtype })
+            graph.push(Node {
+                op,
+                inputs: new_inputs,
+                shape,
+                dtype,
+            })
         }
     };
     subst.insert(id, mapped);
@@ -252,23 +295,33 @@ pub struct ScanStep {
 /// [`unroll_scan`], including the `early_exit`-aware trailing count, but yields
 /// a struct the step driver can drive one step at a time. Returns a typed
 /// `Err` for a non-`Op::Scan` node or a malformed (too-short) input layout.
-pub fn parse_scan_layout(graph: &Graph, scan_id: NodeId)
-    -> std::result::Result<ScanLayout, fuel_ir::Error>
-{
+pub fn parse_scan_layout(
+    graph: &Graph,
+    scan_id: NodeId,
+) -> std::result::Result<ScanLayout, fuel_ir::Error> {
     if scan_id.0 >= graph.len() {
         return Err(fuel_ir::Error::Msg(format!(
             "parse_scan_layout: scan_id {} is out of range (graph has {} nodes)",
-            scan_id.0, graph.len(),
-        )).bt());
+            scan_id.0,
+            graph.len(),
+        ))
+        .bt());
     }
     let n = graph.node(scan_id);
     let (n_xs, bound, emit, has_exit) = match &n.op {
-        Op::Scan { n_xs, bound, emit, early_exit } => (*n_xs, *bound, *emit, early_exit.is_some()),
+        Op::Scan {
+            n_xs,
+            bound,
+            emit,
+            early_exit,
+        } => (*n_xs, *bound, *emit, early_exit.is_some()),
         other => {
             return Err(fuel_ir::Error::Msg(format!(
                 "parse_scan_layout: node {} is not an Op::Scan ({})",
-                scan_id.0, other.short_name(),
-            )).bt());
+                scan_id.0,
+                other.short_name(),
+            ))
+            .bt());
         }
     };
     let inputs = &n.inputs;
@@ -285,7 +338,17 @@ pub fn parse_scan_layout(graph: &Graph, scan_id: NodeId)
     let body_new_carry = inputs[inputs.len() - n_trailing];
     let body_y = inputs[inputs.len() - n_trailing + 1];
     let pred_exit = has_exit.then(|| inputs[inputs.len() - 1]);
-    Ok(ScanLayout { n_xs, bound, emit, init_carry, xs, consts, body_new_carry, body_y, pred_exit })
+    Ok(ScanLayout {
+        n_xs,
+        bound,
+        emit,
+        init_carry,
+        xs,
+        consts,
+        body_new_carry,
+        body_y,
+        pred_exit,
+    })
 }
 
 /// Materialize one step of a scan at step index `t` with the given `carry`
@@ -294,23 +357,46 @@ pub fn parse_scan_layout(graph: &Graph, scan_id: NodeId)
 /// `pred_exit` referencing `body_new_carry` resolves to *this step's* new carry
 /// (no double-clone). Returns the post-step carry, `y`, and the optional `stop`
 /// predicate node.
-pub fn build_scan_step(graph: &mut Graph, layout: &ScanLayout, t: usize, carry: NodeId)
-    -> std::result::Result<ScanStep, fuel_ir::Error>
-{
+pub fn build_scan_step(
+    graph: &mut Graph,
+    layout: &ScanLayout,
+    t: usize,
+    carry: NodeId,
+) -> std::result::Result<ScanStep, fuel_ir::Error> {
     // per-step elem slices: xs[i] sliced [t,t+1) on axis 0, squeezed.
     let mut elem: Vec<NodeId> = Vec::with_capacity(layout.n_xs);
     for &x in &layout.xs {
-        let (x_shape, x_dtype) = { let n = graph.node(x); (n.shape.clone(), n.dtype) };
-        if x_shape.dims().first().map_or(true, |&d0| d0 <= t) {
+        let (x_shape, x_dtype) = {
+            let n = graph.node(x);
+            (n.shape.clone(), n.dtype)
+        };
+        if x_shape.dims().first().is_none_or(|&d0| d0 <= t) {
             return Err(fuel_ir::Error::Msg(format!(
-                "build_scan_step: xs slice at t={t} out of range for shape {:?}", x_shape.dims())).bt());
+                "build_scan_step: xs slice at t={t} out of range for shape {:?}",
+                x_shape.dims()
+            ))
+            .bt());
         }
-        let sliced: Vec<usize> = std::iter::once(1usize).chain(x_shape.dims().iter().skip(1).copied()).collect();
-        let sl = graph.push(Node { op: Op::Slice { dim: 0, start: t, len: 1 },
-            inputs: vec![x], shape: fuel_ir::Shape::from_dims(&sliced), dtype: x_dtype });
+        let sliced: Vec<usize> = std::iter::once(1usize)
+            .chain(x_shape.dims().iter().skip(1).copied())
+            .collect();
+        let sl = graph.push(Node {
+            op: Op::Slice {
+                dim: 0,
+                start: t,
+                len: 1,
+            },
+            inputs: vec![x],
+            shape: fuel_ir::Shape::from_dims(&sliced),
+            dtype: x_dtype,
+        });
         let sq_dims: Vec<usize> = x_shape.dims().iter().skip(1).copied().collect();
-        let sq = graph.push(Node { op: Op::Squeeze { dim: 0 },
-            inputs: vec![sl], shape: fuel_ir::Shape::from_dims(&sq_dims), dtype: x_dtype });
+        let sq = graph.push(Node {
+            op: Op::Squeeze { dim: 0 },
+            inputs: vec![sl],
+            shape: fuel_ir::Shape::from_dims(&sq_dims),
+            dtype: x_dtype,
+        });
         elem.push(sq);
     }
     let consts_set: std::collections::HashSet<NodeId> = layout.consts.iter().copied().collect();
@@ -318,17 +404,26 @@ pub fn build_scan_step(graph: &mut Graph, layout: &ScanLayout, t: usize, carry: 
     // Clone body_new_carry FIRST so subst records body_new_carry -> new_carry,
     // then clone body_y and pred_exit sharing subst (spec "Predicate referencing
     // body_new_carry" — no double-clone).
-    let new_carry = clone_body_node(graph, layout.body_new_carry, carry, &elem, &consts_set, &mut subst);
+    let new_carry = clone_body_node(
+        graph,
+        layout.body_new_carry,
+        carry,
+        &elem,
+        &consts_set,
+        &mut subst,
+    );
     let y = clone_body_node(graph, layout.body_y, carry, &elem, &consts_set, &mut subst);
-    let stop = layout.pred_exit.map(|p| clone_body_node(graph, p, carry, &elem, &consts_set, &mut subst));
+    let stop = layout
+        .pred_exit
+        .map(|p| clone_body_node(graph, p, carry, &elem, &consts_set, &mut subst));
     Ok(ScanStep { new_carry, y, stop })
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{Graph, Node, Op, ScanEmit, ScanPredicate, ScanRole};
-    use crate::scan::unroll_scan;
     use crate::opt::lower_to_base_map;
+    use crate::scan::unroll_scan;
+    use crate::{Graph, Node, Op, ScanEmit, ScanPredicate, ScanRole};
     use fuel_ir::{DType, Shape};
     use std::sync::{Arc, RwLock};
 
@@ -336,23 +431,50 @@ mod tests {
     /// slot-populating constructors. Singleton CpuBackendDevice via OnceLock
     /// (mirrors grad.rs:216).
     fn cpu_dev() -> &'static std::sync::Arc<dyn fuel_backend_contract::DynBackendDevice> {
-        static D: std::sync::OnceLock<std::sync::Arc<dyn fuel_backend_contract::DynBackendDevice>>
-            = std::sync::OnceLock::new();
+        static D: std::sync::OnceLock<std::sync::Arc<dyn fuel_backend_contract::DynBackendDevice>> =
+            std::sync::OnceLock::new();
         D.get_or_init(|| std::sync::Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
     }
 
     // Build a trivial scan: carry [1], body new_carry = carry*2, body_y =
     // new_carry, n_xs = 0, bound = 3, emit = All. Returns (graph_arc, scan_id).
-    fn trivial_scan(bound: usize, emit: ScanEmit, early_exit: Option<ScanPredicate>) -> (Arc<RwLock<Graph>>, crate::NodeId) {
+    fn trivial_scan(
+        bound: usize,
+        emit: ScanEmit,
+        early_exit: Option<ScanPredicate>,
+    ) -> (Arc<RwLock<Graph>>, crate::NodeId) {
         let graph = Arc::new(RwLock::new(Graph::new()));
         let scan = {
             let mut g = graph.write().unwrap();
             let s = Shape::from_dims(&[1]);
-            let carry = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
-            let hole = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
-            let nc = g.push(Node { op: Op::MulScalar(2.0), inputs: vec![hole], shape: s.clone(), dtype: DType::F32 });
+            let carry = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
+            let hole = g.push(Node {
+                op: Op::ScanPlaceholder {
+                    role: ScanRole::Carry,
+                    index: 0,
+                },
+                inputs: vec![],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
+            let nc = g.push(Node {
+                op: Op::MulScalar(2.0),
+                inputs: vec![hole],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
             g.push(Node {
-                op: Op::Scan { n_xs: 0, bound, emit, early_exit },
+                op: Op::Scan {
+                    n_xs: 0,
+                    bound,
+                    emit,
+                    early_exit,
+                },
                 inputs: vec![carry, nc, nc],
                 shape: Shape::from_dims(&[bound, 1]),
                 dtype: DType::F32,
@@ -370,12 +492,20 @@ mod tests {
         };
         let g = graph.read().unwrap();
         // ys root is a Concat over the 3 steps.
-        assert!(matches!(g.node(ys).op, Op::Concat { .. }), "emit=All ys root should be Concat, got {:?}", g.node(ys).op.short_name());
+        assert!(
+            matches!(g.node(ys).op, Op::Concat { .. }),
+            "emit=All ys root should be Concat, got {:?}",
+            g.node(ys).op.short_name()
+        );
         assert_eq!(g.node(ys).inputs.len(), 3, "one input per step");
         // No Op::Scan / Op::ScanPlaceholder reachable from the unrolled root.
         let reachable = crate::topo_order_multi(&g, &[ys]);
-        assert!(!reachable.iter().any(|&n| matches!(g.node(n).op, Op::Scan { .. } | Op::ScanPlaceholder { .. })),
-            "unrolled graph must contain no Scan/ScanPlaceholder nodes");
+        assert!(
+            !reachable
+                .iter()
+                .any(|&n| matches!(g.node(n).op, Op::Scan { .. } | Op::ScanPlaceholder { .. })),
+            "unrolled graph must contain no Scan/ScanPlaceholder nodes"
+        );
     }
 
     #[test]
@@ -386,14 +516,47 @@ mod tests {
         let scan = {
             let mut g = graph.write().unwrap();
             let s = Shape::from_dims(&[1]);
-            let carry = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
-            let thr   = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
-            let hole  = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
-            let nc    = g.push(Node { op: Op::MulScalar(2.0), inputs: vec![hole], shape: s.clone(), dtype: DType::F32 });
+            let carry = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
+            let thr = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
+            let hole = g.push(Node {
+                op: Op::ScanPlaceholder {
+                    role: ScanRole::Carry,
+                    index: 0,
+                },
+                inputs: vec![],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
+            let nc = g.push(Node {
+                op: Op::MulScalar(2.0),
+                inputs: vec![hole],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
             // predicate sub-DAG over the post-step carry (ignored by unroll).
-            let pred  = g.push(Node { op: Op::Ge, inputs: vec![nc, thr], shape: s.clone(), dtype: DType::Bool });
+            let pred = g.push(Node {
+                op: Op::Ge,
+                inputs: vec![nc, thr],
+                shape: s.clone(),
+                dtype: DType::Bool,
+            });
             g.push(Node {
-                op: Op::Scan { n_xs: 0, bound: 3, emit: ScanEmit::All, early_exit: Some(ScanPredicate) },
+                op: Op::Scan {
+                    n_xs: 0,
+                    bound: 3,
+                    emit: ScanEmit::All,
+                    early_exit: Some(ScanPredicate),
+                },
                 inputs: vec![carry, thr, nc, nc, pred], // consts=[thr], new_carry=nc, y=nc, pred_exit=pred
                 shape: Shape::from_dims(&[3, 1]),
                 dtype: DType::F32,
@@ -404,11 +567,18 @@ mod tests {
             unroll_scan(&mut g, scan, 3).expect("unroll must peel + ignore the predicate")
         };
         let g = graph.read().unwrap();
-        assert!(matches!(g.node(ys).op, Op::Concat { .. }), "emit=All ys root should be Concat");
+        assert!(
+            matches!(g.node(ys).op, Op::Concat { .. }),
+            "emit=All ys root should be Concat"
+        );
         assert_eq!(g.node(ys).inputs.len(), 3, "one input per step");
         let reachable = crate::topo_order_multi(&g, &[ys]);
-        assert!(!reachable.iter().any(|&n| matches!(g.node(n).op, Op::Scan { .. } | Op::ScanPlaceholder { .. })),
-            "unrolled graph must contain no Scan/ScanPlaceholder nodes");
+        assert!(
+            !reachable
+                .iter()
+                .any(|&n| matches!(g.node(n).op, Op::Scan { .. } | Op::ScanPlaceholder { .. })),
+            "unrolled graph must contain no Scan/ScanPlaceholder nodes"
+        );
     }
 
     #[test]
@@ -419,8 +589,12 @@ mod tests {
         let roots = lower_to_base_map(&graph, &[scan]);
         let g = graph.read().unwrap();
         let reachable = crate::topo_order_multi(&g, &roots);
-        assert!(reachable.iter().any(|&n| matches!(g.node(n).op, Op::Scan { .. })),
-            "Op::Scan must remain a terminal after lower_to_base_map");
+        assert!(
+            reachable
+                .iter()
+                .any(|&n| matches!(g.node(n).op, Op::Scan { .. })),
+            "Op::Scan must remain a terminal after lower_to_base_map"
+        );
     }
 
     #[test]
@@ -431,16 +605,34 @@ mod tests {
         // (start=1 > end=0 when inputs.len() == 2).
         let mut g = Graph::new();
         let s = Shape::from_dims(&[1]);
-        let carry = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
-        let body_exit = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
+        let carry = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: s.clone(),
+            dtype: DType::F32,
+        });
+        let body_exit = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: s.clone(),
+            dtype: DType::F32,
+        });
         let scan = g.push(Node {
-            op: Op::Scan { n_xs: 0, bound: 1, emit: ScanEmit::All, early_exit: None },
+            op: Op::Scan {
+                n_xs: 0,
+                bound: 1,
+                emit: ScanEmit::All,
+                early_exit: None,
+            },
             inputs: vec![carry, body_exit],
             shape: Shape::from_dims(&[1, 1]),
             dtype: DType::F32,
         });
         let r = unroll_scan(&mut g, scan, 1);
-        assert!(r.is_err(), "inputs.len() == n_xs + 2 must be rejected as malformed, not panic");
+        assert!(
+            r.is_err(),
+            "inputs.len() == n_xs + 2 must be rejected as malformed, not panic"
+        );
     }
 
     #[test]
@@ -452,11 +644,34 @@ mod tests {
         let scan = {
             let mut g = graph.write().unwrap();
             let s = Shape::from_dims(&[1]);
-            let carry = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
-            let elem_hole = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Elem, index: 0 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
-            let nc = g.push(Node { op: Op::MulScalar(2.0), inputs: vec![elem_hole], shape: s.clone(), dtype: DType::F32 });
+            let carry = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
+            let elem_hole = g.push(Node {
+                op: Op::ScanPlaceholder {
+                    role: ScanRole::Elem,
+                    index: 0,
+                },
+                inputs: vec![],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
+            let nc = g.push(Node {
+                op: Op::MulScalar(2.0),
+                inputs: vec![elem_hole],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
             g.push(Node {
-                op: Op::Scan { n_xs: 0, bound: 1, emit: ScanEmit::All, early_exit: None },
+                op: Op::Scan {
+                    n_xs: 0,
+                    bound: 1,
+                    emit: ScanEmit::All,
+                    early_exit: None,
+                },
                 inputs: vec![carry, nc, nc],
                 shape: Shape::from_dims(&[1, 1]),
                 dtype: DType::F32,
@@ -464,7 +679,10 @@ mod tests {
         };
         let mut g = graph.write().unwrap();
         let r = unroll_scan(&mut g, scan, 1);
-        assert!(r.is_err(), "Elem index >= n_xs must be a typed Err, never an elem[index] panic");
+        assert!(
+            r.is_err(),
+            "Elem index >= n_xs must be a typed Err, never an elem[index] panic"
+        );
     }
 
     #[test]
@@ -479,16 +697,62 @@ mod tests {
             let mut g = graph.write().unwrap();
             let carry_shape = Shape::from_dims(&[1]);
             let xs_shape = Shape::from_dims(&[2, 1]);
-            let init_carry = g.push(Node { op: Op::Const, inputs: vec![], shape: carry_shape.clone(), dtype: DType::F32 });
-            let xs0 = g.push(Node { op: Op::Const, inputs: vec![], shape: xs_shape.clone(), dtype: DType::F32 });
-            let const_id = g.push(Node { op: Op::Const, inputs: vec![], shape: carry_shape.clone(), dtype: DType::F32 });
-            let carry_hole = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: carry_shape.clone(), dtype: DType::F32 });
-            let elem_hole = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Elem, index: 0 }, inputs: vec![], shape: carry_shape.clone(), dtype: DType::F32 });
-            let sum = g.push(Node { op: Op::Add, inputs: vec![carry_hole, elem_hole], shape: carry_shape.clone(), dtype: DType::F32 });
+            let init_carry = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: carry_shape.clone(),
+                dtype: DType::F32,
+            });
+            let xs0 = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: xs_shape.clone(),
+                dtype: DType::F32,
+            });
+            let const_id = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: carry_shape.clone(),
+                dtype: DType::F32,
+            });
+            let carry_hole = g.push(Node {
+                op: Op::ScanPlaceholder {
+                    role: ScanRole::Carry,
+                    index: 0,
+                },
+                inputs: vec![],
+                shape: carry_shape.clone(),
+                dtype: DType::F32,
+            });
+            let elem_hole = g.push(Node {
+                op: Op::ScanPlaceholder {
+                    role: ScanRole::Elem,
+                    index: 0,
+                },
+                inputs: vec![],
+                shape: carry_shape.clone(),
+                dtype: DType::F32,
+            });
+            let sum = g.push(Node {
+                op: Op::Add,
+                inputs: vec![carry_hole, elem_hole],
+                shape: carry_shape.clone(),
+                dtype: DType::F32,
+            });
             let new_carry = sum;
-            let y = g.push(Node { op: Op::Mul, inputs: vec![sum, const_id], shape: carry_shape.clone(), dtype: DType::F32 });
+            let y = g.push(Node {
+                op: Op::Mul,
+                inputs: vec![sum, const_id],
+                shape: carry_shape.clone(),
+                dtype: DType::F32,
+            });
             let scan = g.push(Node {
-                op: Op::Scan { n_xs: 1, bound: 2, emit: ScanEmit::All, early_exit: None },
+                op: Op::Scan {
+                    n_xs: 1,
+                    bound: 2,
+                    emit: ScanEmit::All,
+                    early_exit: None,
+                },
                 inputs: vec![init_carry, xs0, const_id, new_carry, y],
                 shape: Shape::from_dims(&[2, 1]),
                 dtype: DType::F32,
@@ -500,16 +764,27 @@ mod tests {
             unroll_scan(&mut g, scan, 2).expect("unroll")
         };
         let g = graph.read().unwrap();
-        assert!(matches!(g.node(ys).op, Op::Concat { .. }), "emit=All ys root should be Concat, got {:?}", g.node(ys).op.short_name());
+        assert!(
+            matches!(g.node(ys).op, Op::Concat { .. }),
+            "emit=All ys root should be Concat, got {:?}",
+            g.node(ys).op.short_name()
+        );
         assert_eq!(g.node(ys).inputs.len(), 2, "one input per step");
         let reachable = crate::topo_order_multi(&g, &[ys]);
-        assert!(!reachable.iter().any(|&n| matches!(g.node(n).op, Op::Scan { .. } | Op::ScanPlaceholder { .. })),
-            "unrolled graph must contain no Scan/ScanPlaceholder nodes");
+        assert!(
+            !reachable
+                .iter()
+                .any(|&n| matches!(g.node(n).op, Op::Scan { .. } | Op::ScanPlaceholder { .. })),
+            "unrolled graph must contain no Scan/ScanPlaceholder nodes"
+        );
         // The const NodeId must be SHARED across both step clones — it
         // appears exactly once in the reachable set (topo_order_multi
         // dedups by NodeId), never re-cloned per step.
         let const_occurrences = reachable.iter().filter(|&&n| n == const_id).count();
-        assert_eq!(const_occurrences, 1, "const node must be shared (not cloned) across steps");
+        assert_eq!(
+            const_occurrences, 1,
+            "const node must be shared (not cloned) across steps"
+        );
     }
 
     #[test]
@@ -522,24 +797,61 @@ mod tests {
         let (nc, thr, pred_ok) = {
             let mut g = graph.write().unwrap();
             let s = Shape::from_dims(&[1]);
-            let hole = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
-            let nc   = g.push(Node { op: Op::MulScalar(2.0), inputs: vec![hole], shape: s.clone(), dtype: DType::F32 });
-            let thr  = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
-            let pred = g.push(Node { op: Op::Ge, inputs: vec![nc, thr], shape: s.clone(), dtype: DType::Bool });
+            let hole = g.push(Node {
+                op: Op::ScanPlaceholder {
+                    role: ScanRole::Carry,
+                    index: 0,
+                },
+                inputs: vec![],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
+            let nc = g.push(Node {
+                op: Op::MulScalar(2.0),
+                inputs: vec![hole],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
+            let thr = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
+            let pred = g.push(Node {
+                op: Op::Ge,
+                inputs: vec![nc, thr],
+                shape: s.clone(),
+                dtype: DType::Bool,
+            });
             (nc, thr, pred)
         };
-        let nc_t   = Tensor::from_existing(graph.clone(), nc);
-        let thr_t  = Tensor::from_existing(graph.clone(), thr);
+        let nc_t = Tensor::from_existing(graph.clone(), nc);
+        let thr_t = Tensor::from_existing(graph.clone(), thr);
         let pred_t = Tensor::from_existing(graph.clone(), pred_ok);
 
-        let out = init.scan_until(&[], &[thr_t.clone()], &nc_t, &nc_t, &pred_t, 5, ScanEmit::Final)
+        let out = init
+            .scan_until(
+                &[],
+                std::slice::from_ref(&thr_t),
+                &nc_t,
+                &nc_t,
+                &pred_t,
+                5,
+                ScanEmit::Final,
+            )
             .expect("well-formed scan_until must build");
         // The producer node behind the emit=Final view is an Op::Scan{early_exit: Some}.
-        let scan_id = { let g = graph.read().unwrap(); g.node(out.id()).inputs[0] };
+        let scan_id = {
+            let g = graph.read().unwrap();
+            g.node(out.id()).inputs[0]
+        };
         {
             let g = graph.read().unwrap();
             match &g.node(scan_id).op {
-                Op::Scan { early_exit, .. } => assert!(early_exit.is_some(), "early_exit must be Some"),
+                Op::Scan { early_exit, .. } => {
+                    assert!(early_exit.is_some(), "early_exit must be Some")
+                }
                 other => panic!("expected Op::Scan, got {}", other.short_name()),
             }
             // pred_exit is the LAST input (trailing), so reachability sees it.
@@ -547,28 +859,83 @@ mod tests {
         }
 
         // base_map_hash distinctness: a scan with the SAME body but a DIFFERENT predicate hashes differently.
-        let thr2 = { let mut g = graph.write().unwrap();
-            g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[1]), dtype: DType::F32 }) };
-        let pred2 = { let mut g = graph.write().unwrap();
-            g.push(Node { op: Op::Le, inputs: vec![nc, thr2], shape: Shape::from_dims(&[1]), dtype: DType::Bool }) };
+        let thr2 = {
+            let mut g = graph.write().unwrap();
+            g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[1]),
+                dtype: DType::F32,
+            })
+        };
+        let pred2 = {
+            let mut g = graph.write().unwrap();
+            g.push(Node {
+                op: Op::Le,
+                inputs: vec![nc, thr2],
+                shape: Shape::from_dims(&[1]),
+                dtype: DType::Bool,
+            })
+        };
         let pred2_t = Tensor::from_existing(graph.clone(), pred2);
-        let out2 = init.scan_until(&[], &[Tensor::from_existing(graph.clone(), thr2)], &nc_t, &nc_t, &pred2_t, 5, ScanEmit::Final)
+        let out2 = init
+            .scan_until(
+                &[],
+                &[Tensor::from_existing(graph.clone(), thr2)],
+                &nc_t,
+                &nc_t,
+                &pred2_t,
+                5,
+                ScanEmit::Final,
+            )
             .expect("second scan_until builds");
-        let scan2 = { let g = graph.read().unwrap(); g.node(out2.id()).inputs[0] };
-        let (h1, h2) = { let g = graph.read().unwrap();
-            (crate::opt::base_map_hash(&g, scan_id), crate::opt::base_map_hash(&g, scan2)) };
-        assert_ne!(h1, h2, "different predicates must hash distinctly (predicate is a trailing input)");
+        let scan2 = {
+            let g = graph.read().unwrap();
+            g.node(out2.id()).inputs[0]
+        };
+        let (h1, h2) = {
+            let g = graph.read().unwrap();
+            (
+                crate::opt::base_map_hash(&g, scan_id),
+                crate::opt::base_map_hash(&g, scan2),
+            )
+        };
+        assert_ne!(
+            h1, h2,
+            "different predicates must hash distinctly (predicate is a trailing input)"
+        );
 
         // Rejection: a NON-scalar predicate is a typed Err (never a panic).
         let big = Tensor::from_f32(vec![0.0f32, 1.0], Shape::from_dims(&[2]), cpu_dev()); // wrong graph AND non-scalar
-        assert!(init.scan_until(&[], &[thr_t.clone()], &nc_t, &nc_t, &big, 5, ScanEmit::Final).is_err(),
-            "non-same-graph / non-scalar predicate must be a typed Err");
+        assert!(
+            init.scan_until(
+                &[],
+                std::slice::from_ref(&thr_t),
+                &nc_t,
+                &nc_t,
+                &big,
+                5,
+                ScanEmit::Final
+            )
+            .is_err(),
+            "non-same-graph / non-scalar predicate must be a typed Err"
+        );
         // Rejection: a non-Bool predicate.
-        let f32pred = { let mut g = graph.write().unwrap();
-            g.push(Node { op: Op::Sqr, inputs: vec![nc], shape: Shape::from_dims(&[1]), dtype: DType::F32 }) };
+        let f32pred = {
+            let mut g = graph.write().unwrap();
+            g.push(Node {
+                op: Op::Sqr,
+                inputs: vec![nc],
+                shape: Shape::from_dims(&[1]),
+                dtype: DType::F32,
+            })
+        };
         let f32pred_t = Tensor::from_existing(graph.clone(), f32pred);
-        assert!(init.scan_until(&[], &[thr_t], &nc_t, &nc_t, &f32pred_t, 5, ScanEmit::Final).is_err(),
-            "non-Bool predicate must be a typed Err");
+        assert!(
+            init.scan_until(&[], &[thr_t], &nc_t, &nc_t, &f32pred_t, 5, ScanEmit::Final)
+                .is_err(),
+            "non-Bool predicate must be a typed Err"
+        );
     }
 
     #[test]
@@ -578,33 +945,82 @@ mod tests {
         let scan = {
             let mut g = graph.write().unwrap();
             let s = Shape::from_dims(&[1]);
-            let carry = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
-            let thr   = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
-            let hole  = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
-            let nc    = g.push(Node { op: Op::MulScalar(2.0), inputs: vec![hole], shape: s.clone(), dtype: DType::F32 });
-            let pred  = g.push(Node { op: Op::Ge, inputs: vec![nc, thr], shape: s.clone(), dtype: DType::Bool });
+            let carry = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
+            let thr = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
+            let hole = g.push(Node {
+                op: Op::ScanPlaceholder {
+                    role: ScanRole::Carry,
+                    index: 0,
+                },
+                inputs: vec![],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
+            let nc = g.push(Node {
+                op: Op::MulScalar(2.0),
+                inputs: vec![hole],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
+            let pred = g.push(Node {
+                op: Op::Ge,
+                inputs: vec![nc, thr],
+                shape: s.clone(),
+                dtype: DType::Bool,
+            });
             g.push(Node {
-                op: Op::Scan { n_xs: 0, bound: 4, emit: ScanEmit::Final, early_exit: Some(ScanPredicate) },
+                op: Op::Scan {
+                    n_xs: 0,
+                    bound: 4,
+                    emit: ScanEmit::Final,
+                    early_exit: Some(ScanPredicate),
+                },
                 inputs: vec![carry, thr, nc, nc, pred],
                 shape: Shape::from_dims(&[4, 1]),
                 dtype: DType::F32,
             })
         };
-        let layout = { let g = graph.read().unwrap(); crate::scan::parse_scan_layout(&g, scan).expect("layout") };
+        let layout = {
+            let g = graph.read().unwrap();
+            crate::scan::parse_scan_layout(&g, scan).expect("layout")
+        };
         assert!(layout.pred_exit.is_some());
         let init = layout.init_carry;
-        let step = { let mut g = graph.write().unwrap(); crate::scan::build_scan_step(&mut g, &layout, 0, init).expect("step") };
+        let step = {
+            let mut g = graph.write().unwrap();
+            crate::scan::build_scan_step(&mut g, &layout, 0, init).expect("step")
+        };
         let stop = step.stop.expect("early-exit scan yields a stop node");
         // The predicate clone must reach step.new_carry (the shared post-step carry),
         // and must reach NO ScanPlaceholder (all substituted away).
         let g = graph.read().unwrap();
         let reach = crate::topo_order_multi(&g, &[stop]);
-        assert!(reach.contains(&step.new_carry), "pred must read THIS step's new_carry (shared subst)");
-        assert!(!reach.iter().any(|&n| matches!(g.node(n).op, Op::ScanPlaceholder { .. })),
-            "no placeholders survive a materialized step");
+        assert!(
+            reach.contains(&step.new_carry),
+            "pred must read THIS step's new_carry (shared subst)"
+        );
+        assert!(
+            !reach
+                .iter()
+                .any(|&n| matches!(g.node(n).op, Op::ScanPlaceholder { .. })),
+            "no placeholders survive a materialized step"
+        );
         // The Ge's first input IS the step's new_carry — proof there was no double-clone.
         let ge_inputs = &g.node(stop).inputs;
-        assert_eq!(ge_inputs[0], step.new_carry, "predicate's post-step operand is the shared new_carry");
+        assert_eq!(
+            ge_inputs[0], step.new_carry,
+            "predicate's post-step operand is the shared new_carry"
+        );
     }
 
     #[test]
@@ -619,12 +1035,48 @@ mod tests {
         let (x, nc, thr, pred) = {
             let mut g = graph.write().unwrap();
             let s = Shape::from_dims(&[1]);
-            let x = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[3, 1]), dtype: DType::F32 });
-            let bad_elem = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Elem, index: 5 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
-            let carry_hole = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
-            let nc = g.push(Node { op: Op::Add, inputs: vec![carry_hole, bad_elem], shape: s.clone(), dtype: DType::F32 });
-            let thr = g.push(Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
-            let pred = g.push(Node { op: Op::Ge, inputs: vec![carry_hole, thr], shape: s.clone(), dtype: DType::Bool });
+            let x = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3, 1]),
+                dtype: DType::F32,
+            });
+            let bad_elem = g.push(Node {
+                op: Op::ScanPlaceholder {
+                    role: ScanRole::Elem,
+                    index: 5,
+                },
+                inputs: vec![],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
+            let carry_hole = g.push(Node {
+                op: Op::ScanPlaceholder {
+                    role: ScanRole::Carry,
+                    index: 0,
+                },
+                inputs: vec![],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
+            let nc = g.push(Node {
+                op: Op::Add,
+                inputs: vec![carry_hole, bad_elem],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
+            let thr = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
+            let pred = g.push(Node {
+                op: Op::Ge,
+                inputs: vec![carry_hole, thr],
+                shape: s.clone(),
+                dtype: DType::Bool,
+            });
             (x, nc, thr, pred)
         };
         let x_t = Tensor::from_existing(graph.clone(), x);
@@ -632,7 +1084,10 @@ mod tests {
         let nc_t = Tensor::from_existing(graph.clone(), nc);
         let pred_t = Tensor::from_existing(graph.clone(), pred);
         let r = init.scan_until(&[x_t], &[thr_t], &nc_t, &nc_t, &pred_t, 3, ScanEmit::Final);
-        assert!(r.is_err(), "scan_until must reject body Elem{{index >= n_xs}} at build time, not panic in the driver");
+        assert!(
+            r.is_err(),
+            "scan_until must reject body Elem{{index >= n_xs}} at build time, not panic in the driver"
+        );
     }
 
     #[test]
@@ -645,16 +1100,45 @@ mod tests {
         let (x, nc) = {
             let mut g = graph.write().unwrap();
             let s = Shape::from_dims(&[1]);
-            let x = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[3, 1]), dtype: DType::F32 });
-            let bad_elem = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Elem, index: 5 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
-            let carry_hole = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
-            let nc = g.push(Node { op: Op::Add, inputs: vec![carry_hole, bad_elem], shape: s.clone(), dtype: DType::F32 });
+            let x = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[3, 1]),
+                dtype: DType::F32,
+            });
+            let bad_elem = g.push(Node {
+                op: Op::ScanPlaceholder {
+                    role: ScanRole::Elem,
+                    index: 5,
+                },
+                inputs: vec![],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
+            let carry_hole = g.push(Node {
+                op: Op::ScanPlaceholder {
+                    role: ScanRole::Carry,
+                    index: 0,
+                },
+                inputs: vec![],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
+            let nc = g.push(Node {
+                op: Op::Add,
+                inputs: vec![carry_hole, bad_elem],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
             (x, nc)
         };
         let x_t = Tensor::from_existing(graph.clone(), x);
         let nc_t = Tensor::from_existing(graph.clone(), nc);
         let r = init.scan(&[x_t], &[], &nc_t, &nc_t, 3, ScanEmit::Final);
-        assert!(r.is_err(), "base scan must also reject body Elem{{index >= n_xs}} at build time");
+        assert!(
+            r.is_err(),
+            "base scan must also reject body Elem{{index >= n_xs}} at build time"
+        );
     }
 
     #[test]
@@ -662,26 +1146,62 @@ mod tests {
         use crate::Tensor;
         // Affine scan: carry[1]; consts a,b; new_carry = a*carry + b; emit=Final. bound=3.
         let init = Tensor::from_f32(vec![1.0f32], Shape::from_dims(&[1]), cpu_dev());
-        let a = Tensor::from_existing(init.graph().clone(), init.id()).const_f32_like(vec![0.5f32], Shape::from_dims(&[1]));
-        let b = Tensor::from_existing(init.graph().clone(), init.id()).const_f32_like(vec![0.1f32], Shape::from_dims(&[1]));
+        let a = Tensor::from_existing(init.graph().clone(), init.id())
+            .const_f32_like(vec![0.5f32], Shape::from_dims(&[1]));
+        let b = Tensor::from_existing(init.graph().clone(), init.id())
+            .const_f32_like(vec![0.1f32], Shape::from_dims(&[1]));
         let graph = init.graph().clone();
         let nc = {
             let mut g = graph.write().unwrap();
             let s = Shape::from_dims(&[1]);
-            let hole = g.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
-            let ac   = g.push(Node { op: Op::Mul, inputs: vec![a.id(), hole], shape: s.clone(), dtype: DType::F32 });
-            g.push(Node { op: Op::Add, inputs: vec![ac, b.id()], shape: s.clone(), dtype: DType::F32 })
+            let hole = g.push(Node {
+                op: Op::ScanPlaceholder {
+                    role: ScanRole::Carry,
+                    index: 0,
+                },
+                inputs: vec![],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
+            let ac = g.push(Node {
+                op: Op::Mul,
+                inputs: vec![a.id(), hole],
+                shape: s.clone(),
+                dtype: DType::F32,
+            });
+            g.push(Node {
+                op: Op::Add,
+                inputs: vec![ac, b.id()],
+                shape: s.clone(),
+                dtype: DType::F32,
+            })
         };
         let nc_t = Tensor::from_existing(graph.clone(), nc);
-        let out = init.scan(&[], &[a.clone(), b.clone()], &nc_t, &nc_t, 3, ScanEmit::Final).expect("scan");
+        let out = init
+            .scan(
+                &[],
+                &[a.clone(), b.clone()],
+                &nc_t,
+                &nc_t,
+                3,
+                ScanEmit::Final,
+            )
+            .expect("scan");
         // backward() must NOT panic (Phase 1 arm panics here) and must yield a grad for init_carry.
         let grads = out.backward();
         let g_init = grads.get(&init).expect("gradient for init_carry");
         // The gradient's subgraph must contain no Op::Scan/ScanPlaceholder (proof of lowering).
         let g = graph.read().unwrap();
         let reach = crate::topo_order_multi(&g, &[g_init.id()]);
-        assert!(!reach.iter().any(|&n| matches!(g.node(n).op, Op::Scan { .. } | Op::ScanPlaceholder { .. })),
-            "backward must lower the scan before differentiating");
-        assert!(grads.get(&a).is_some() && grads.get(&b).is_some(), "consts a,b get gradients (BPTT)");
+        assert!(
+            !reach
+                .iter()
+                .any(|&n| matches!(g.node(n).op, Op::Scan { .. } | Op::ScanPlaceholder { .. })),
+            "backward must lower the scan before differentiating"
+        );
+        assert!(
+            grads.get(&a).is_some() && grads.get(&b).is_some(),
+            "consts a,b get gradients (BPTT)"
+        );
     }
 }

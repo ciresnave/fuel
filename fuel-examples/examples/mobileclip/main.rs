@@ -60,14 +60,13 @@ struct Args {
 /// Load image, resize to (image_size, image_size), CHW f32, no mean/std
 /// normalization (matches the eager `load_image_with_std_mean(_, _, [0;3], [1;3])`
 /// call used by the original binary).
-fn load_image_as_vec<P: AsRef<std::path::Path>>(
-    path: P, image_size: usize,
-) -> Result<Vec<f32>> {
+fn load_image_as_vec<P: AsRef<std::path::Path>>(path: P, image_size: usize) -> Result<Vec<f32>> {
     let img = image::ImageReader::open(path)?
         .decode()
         .map_err(|e| E::msg(format!("decode image: {e}")))?;
     let img = img.resize_to_fill(
-        image_size as u32, image_size as u32,
+        image_size as u32,
+        image_size as u32,
         image::imageops::FilterType::Triangle,
     );
     let img = img.to_rgb8().into_raw(); // HWC u8
@@ -116,7 +115,10 @@ pub fn main() -> Result<()> {
         .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
     let weights = MobileClipWeights::load_from_mmapped(&st, &config)
         .map_err(|e| E::msg(format!("load mobileclip weights: {e}")))?;
-    let model = MobileClipModel { config: config.clone(), weights };
+    let model = MobileClipModel {
+        config: config.clone(),
+        weights,
+    };
 
     // Tokenize sequences (returns padded `Vec<Vec<u32>>` + sequences).
     let (token_lists, vec_seq) = tokenize_sequences(args.sequences, &tokenizer)?;
@@ -138,9 +140,7 @@ pub fn main() -> Result<()> {
     // position for OpenCLIP-style text encoders is the highest-id
     // token in the padded sequence (mirrors argmax(input_ids) in the
     // eager forward).
-    let anchor = LazyTensor::from_f32(
-        vec![0.0_f32], Shape::from_dims(&[1]), &device,
-    );
+    let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &device);
     let mut text_feats: Vec<Vec<f32>> = Vec::with_capacity(token_lists.len());
     for tokens in &token_lists {
         let eot_pos = argmax_u32(tokens);
@@ -158,8 +158,7 @@ pub fn main() -> Result<()> {
         let i_norm = l2_norm(ifeat);
         for (j, tfeat) in text_feats.iter().enumerate() {
             let t_norm = l2_norm(tfeat);
-            let dot: f32 = ifeat.iter().zip(tfeat.iter())
-                .map(|(a, b)| a * b).sum();
+            let dot: f32 = ifeat.iter().zip(tfeat.iter()).map(|(a, b)| a * b).sum();
             let denom = (i_norm * t_norm).max(1e-12);
             logits_per_image[i * n_txt + j] = logit_scale * dot / denom;
         }

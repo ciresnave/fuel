@@ -38,8 +38,8 @@
 //! NotDifferentiable` reflects runtime behavior.
 
 use crate::registry::{
-    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps,
-    PatternMatch, SubgraphPattern, decompose_via_recipe,
+    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps, PatternMatch,
+    SubgraphPattern, decompose_via_recipe,
 };
 use crate::{Graph, Node, NodeId, Op};
 use fuel_ir::{DType, DynScalar, Shape};
@@ -49,12 +49,12 @@ use fuel_kernel_seam_types::{OpAttrs, OpTag, PatternNode};
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
         destructive_input: None,
-        id:         FusedOps::FLASH_ATTN,
-        name:       "FlashAttn",
-        family:     FusedOpFamily::Attention,
-        pattern:    SubgraphPattern::Callable(canonical_pattern),
+        id: FusedOps::FLASH_ATTN,
+        name: "FlashAttn",
+        family: FusedOpFamily::Attention,
+        pattern: SubgraphPattern::Callable(canonical_pattern),
         decompose,
-        backward:   BackwardKind::NotDifferentiable,
+        backward: BackwardKind::NotDifferentiable,
         shape_rule,
         dtype_rule,
         output_views: None,
@@ -89,39 +89,66 @@ fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
 // for the softmax (mechanism 2a).
 
 fn r_op(op: OpTag, attrs: OpAttrs, operands: Vec<PatternNode>) -> PatternNode {
-    PatternNode::Op { op, attrs, operands }
+    PatternNode::Op {
+        op,
+        attrs: Box::new(attrs),
+        operands,
+    }
 }
 fn r_bind(i: u8) -> PatternNode {
     PatternNode::Bind { index: i }
 }
 /// A baked absolute `target_shape` attr for a shape-changer (Reshape/BroadcastTo).
 fn r_shape(dims: &[usize]) -> OpAttrs {
-    OpAttrs { target_shape: dims.iter().map(|&d| d as i64).collect(), ..OpAttrs::default() }
+    OpAttrs {
+        target_shape: dims.iter().map(|&d| d as i64).collect(),
+        ..OpAttrs::default()
+    }
 }
 /// A baked scalar for a scalar-param op (Mul/AddScalar) — NOT an open slot.
 fn r_scalar(v: f64) -> OpAttrs {
-    OpAttrs { scalars: vec![v], ..OpAttrs::default() }
+    OpAttrs {
+        scalars: vec![v],
+        ..OpAttrs::default()
+    }
 }
 /// An absolute permutation attr.
 fn r_perm(p: Vec<u8>) -> OpAttrs {
-    OpAttrs { perm: p, ..OpAttrs::default() }
+    OpAttrs {
+        perm: p,
+        ..OpAttrs::default()
+    }
 }
 /// A baked concrete diagonal for a Triu/Tril band (`tag_to_op` reads `axis`).
 fn r_diag(diagonal: i64) -> OpAttrs {
-    OpAttrs { axis: Some(diagonal), ..OpAttrs::default() }
+    OpAttrs {
+        axis: Some(diagonal),
+        ..OpAttrs::default()
+    }
 }
 /// A baked `Slice { dim, start, len }` attr (all concrete at decompose time).
 fn r_slice(dim: i64, start: u64, len: u64) -> OpAttrs {
-    OpAttrs { axis: Some(dim), slice_start: Some(start), slice_len: Some(len), ..OpAttrs::default() }
+    OpAttrs {
+        axis: Some(dim),
+        slice_start: Some(start),
+        slice_len: Some(len),
+        ..OpAttrs::default()
+    }
 }
 /// A `Cast(dtype)` attr (target rides `cast_dtype` as the stable name string).
 fn cast_attr(dtype: DType) -> OpAttrs {
-    OpAttrs { cast_dtype: Some(dtype.as_str().to_string()), ..OpAttrs::default() }
+    OpAttrs {
+        cast_dtype: Some(dtype.as_str().to_string()),
+        ..OpAttrs::default()
+    }
 }
 /// The nested-softmax selector attr (mechanism 2a): names the `SoftmaxLastDim`
 /// registry entry the C-T2 carrier reconstructs to.
 fn fused_softmax_attr() -> OpAttrs {
-    OpAttrs { fused_op: Some("SoftmaxLastDim".to_string()), ..OpAttrs::default() }
+    OpAttrs {
+        fused_op: Some("SoftmaxLastDim".to_string()),
+        ..OpAttrs::default()
+    }
 }
 
 /// GQA head-repeat as recipe DATA (mirrors [`repeat_kv_heads`]): when
@@ -130,7 +157,12 @@ fn fused_softmax_attr() -> OpAttrs {
 /// BroadcastTo operand at equal rank so emit's D4 auto-pad never fires (the
 /// recipe matches the legacy exactly).
 fn repeat_kv_heads_recipe(
-    x: PatternNode, b: usize, hkv: usize, hq: usize, s: usize, d: usize,
+    x: PatternNode,
+    b: usize,
+    hkv: usize,
+    hq: usize,
+    s: usize,
+    d: usize,
 ) -> PatternNode {
     if hq == hkv {
         return x;
@@ -150,18 +182,35 @@ fn repeat_kv_heads_recipe(
 /// F32→F32 cast is an executor-less identity), exactly as the imperative does.
 /// Every BroadcastTo is preceded by an equal-rank Reshape (no D4 auto-pad).
 fn alibi_bias_recipe(
-    alibi: PatternNode, b: usize, hq: usize, sq: usize, sk: usize,
-    q_pos_offset: usize, dtype: DType,
+    alibi: PatternNode,
+    b: usize,
+    hq: usize,
+    sq: usize,
+    sk: usize,
+    q_pos_offset: usize,
+    dtype: DType,
 ) -> PatternNode {
     let grid = &[sq, sk];
     let full = &[b, hq, sq, sk];
-    let row = r_op(OpTag::Reshape, r_shape(&[sq, 1]), vec![r_op(OpTag::Iota, r_shape(&[sq]), vec![])]);
-    let col = r_op(OpTag::Reshape, r_shape(&[1, sk]), vec![r_op(OpTag::Iota, r_shape(&[sk]), vec![])]);
+    let row = r_op(
+        OpTag::Reshape,
+        r_shape(&[sq, 1]),
+        vec![r_op(OpTag::Iota, r_shape(&[sq]), vec![])],
+    );
+    let col = r_op(
+        OpTag::Reshape,
+        r_shape(&[1, sk]),
+        vec![r_op(OpTag::Iota, r_shape(&[sk]), vec![])],
+    );
     let row_bc = r_op(OpTag::BroadcastTo, r_shape(grid), vec![row]);
     let col_bc = r_op(OpTag::BroadcastTo, r_shape(grid), vec![col]);
     let mut rel = r_op(OpTag::Sub, OpAttrs::default(), vec![col_bc, row_bc]); // j - i
     if q_pos_offset != 0 {
-        rel = r_op(OpTag::AddScalar, r_scalar(-(q_pos_offset as f64)), vec![rel]);
+        rel = r_op(
+            OpTag::AddScalar,
+            r_scalar(-(q_pos_offset as f64)),
+            vec![rel],
+        );
     }
     let rel_re = r_op(OpTag::Reshape, r_shape(&[1, 1, sq, sk]), vec![rel]);
     let rel_4d = r_op(OpTag::BroadcastTo, r_shape(full), vec![rel_re]);
@@ -232,9 +281,17 @@ pub(crate) fn recompute_probs_recipe(
     // `k_rep` is cloned into `kt`; the standalone `k_rep` is returned for the
     // backward's dQ (emit's identity-share dedups the two structurally-equal
     // occurrences back to one node).
-    let kt = r_op(OpTag::Permute, r_perm(vec![0, 1, 3, 2]), vec![k_rep.clone()]);
+    let kt = r_op(
+        OpTag::Permute,
+        r_perm(vec![0, 1, 3, 2]),
+        vec![k_rep.clone()],
+    );
     let scores = r_op(OpTag::MatMul, OpAttrs::default(), vec![q, kt]);
-    let mut scaled = r_op(OpTag::MulScalar, r_scalar(softmax_scale as f64), vec![scores]);
+    let mut scaled = r_op(
+        OpTag::MulScalar,
+        r_scalar(softmax_scale as f64),
+        vec![scores],
+    );
 
     // --- softcap: cap · tanh(scaled / cap) -----------------------------
     // The saved `tanh` (`t`) is cloned into `scaled` AND returned for the
@@ -284,7 +341,12 @@ pub(crate) fn recompute_probs_recipe(
 
     // --- probs = softmax(scaled), carried as a nested Op::Fused node (2a) ---
     let probs = r_op(OpTag::Fused, fused_softmax_attr(), vec![scaled]);
-    AttnRecomputeRecipe { probs, k_rep, v_rep, softcap_tanh }
+    AttnRecomputeRecipe {
+        probs,
+        k_rep,
+        v_rep,
+        softcap_tanh,
+    }
 }
 
 /// FlashAttn's materialized-SDPA primitive recipe as portable [`PatternNode`]
@@ -326,8 +388,23 @@ fn recipe(
     };
     let alibi = if has_alibi { Some(r_bind(3)) } else { None };
     let rc = recompute_probs_recipe(
-        r_bind(0), k_use, v_use, alibi, b, hq, sq, sk, d, hkv, softmax_scale, causal,
-        window_l, window_r, softcap, q_pos_offset, dtype,
+        r_bind(0),
+        k_use,
+        v_use,
+        alibi,
+        b,
+        hq,
+        sq,
+        sk,
+        d,
+        hkv,
+        softmax_scale,
+        causal,
+        window_l,
+        window_r,
+        softcap,
+        q_pos_offset,
+        dtype,
     );
     // out = probs · v  →  [B, Hq, Sq, D]  (k_rep / softcap_tanh are backward-only)
     r_op(OpTag::MatMul, OpAttrs::default(), vec![rc.probs, rc.v_rep])
@@ -384,9 +461,19 @@ fn recipe(
 pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeId {
     let (softmax_scale, causal, window_l, window_r, softcap, k_len) = match params {
         FusedOpParams::FlashAttn {
-            softmax_scale, causal, window_size_left, window_size_right, softcap, k_len,
+            softmax_scale,
+            causal,
+            window_size_left,
+            window_size_right,
+            softcap,
+            k_len,
         } => (
-            *softmax_scale, *causal, *window_size_left, *window_size_right, *softcap, *k_len,
+            *softmax_scale,
+            *causal,
+            *window_size_left,
+            *window_size_right,
+            *softcap,
+            *k_len,
         ),
         // Wrong params for this id — can't decompose; return self (fixpoint).
         _ => return id,
@@ -427,8 +514,20 @@ pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeI
     let has_alibi = n_inputs == 4;
 
     let recipe_node = recipe(
-        b, hq, sq, d, hkv, sk_full, concrete_klen, softmax_scale, causal, window_l, window_r,
-        softcap, has_alibi, dtype,
+        b,
+        hq,
+        sq,
+        d,
+        hkv,
+        sk_full,
+        concrete_klen,
+        softmax_scale,
+        causal,
+        window_l,
+        window_r,
+        softcap,
+        has_alibi,
+        dtype,
     );
     // No open scalar slots (scale / softcap / -inf / diagonals are baked).
     decompose_via_recipe(graph, id, &recipe_node, Some(Vec::new()))
@@ -440,10 +539,10 @@ pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeI
 /// backward needs for the `1 - tanh²` derivative.
 pub(crate) struct AttnRecompute {
     pub probs: NodeId,
-    pub k_rep: NodeId,
-    pub v_rep: NodeId,
-    pub softcap_tanh: Option<NodeId>,
-    pub scores_shape: Shape,
+    pub _k_rep: NodeId,
+    pub _v_rep: NodeId,
+    pub _softcap_tanh: Option<NodeId>,
+    pub _scores_shape: Shape,
 }
 
 /// Build `probs = softmax( mask( alibi( softcap( scale·QKᵀ ) ) ) )` plus the
@@ -570,10 +669,22 @@ pub(crate) fn recompute_probs(
             scaled = add_band(graph, scaled, Op::Triu { diagonal: o + 1 });
         }
         if let Some(r) = window_r {
-            scaled = add_band(graph, scaled, Op::Triu { diagonal: o + r as i64 + 1 });
+            scaled = add_band(
+                graph,
+                scaled,
+                Op::Triu {
+                    diagonal: o + r as i64 + 1,
+                },
+            );
         }
         if let Some(l) = window_l {
-            scaled = add_band(graph, scaled, Op::Tril { diagonal: o - l as i64 - 1 });
+            scaled = add_band(
+                graph,
+                scaled,
+                Op::Tril {
+                    diagonal: o - l as i64 - 1,
+                },
+            );
         }
     }
 
@@ -585,19 +696,26 @@ pub(crate) fn recompute_probs(
     });
     AttnRecompute {
         probs,
-        k_rep,
-        v_rep,
-        softcap_tanh,
-        scores_shape,
+        _k_rep: k_rep,
+        _v_rep: v_rep,
+        _softcap_tanh: softcap_tanh,
+        _scores_shape: scores_shape,
     }
 }
 
 /// Repeat a `[B, Hkv, S, D]` K/V tensor's heads up to `Hq` (GQA/MQA) via
 /// `Reshape → BroadcastTo → Reshape`. Identity when `Hq == Hkv`. Shared with
 /// `paged_attn` (hkv-major / g-minor ordering).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn repeat_kv_heads(
-    graph: &mut Graph, x_id: NodeId,
-    b: usize, hkv: usize, hq: usize, s: usize, d: usize, dtype: DType,
+    graph: &mut Graph,
+    x_id: NodeId,
+    b: usize,
+    hkv: usize,
+    hq: usize,
+    s: usize,
+    d: usize,
+    dtype: DType,
 ) -> NodeId {
     if hq == hkv {
         return x_id;
@@ -605,76 +723,122 @@ pub(crate) fn repeat_kv_heads(
     let g = hq / hkv;
     let r5 = graph.push(Node {
         op: Op::Reshape(Shape::from_dims(&[b, hkv, 1, s, d])),
-        inputs: vec![x_id], shape: Shape::from_dims(&[b, hkv, 1, s, d]), dtype,
+        inputs: vec![x_id],
+        shape: Shape::from_dims(&[b, hkv, 1, s, d]),
+        dtype,
     });
     let bc = graph.push(Node {
         op: Op::BroadcastTo(Shape::from_dims(&[b, hkv, g, s, d])),
-        inputs: vec![r5], shape: Shape::from_dims(&[b, hkv, g, s, d]), dtype,
+        inputs: vec![r5],
+        shape: Shape::from_dims(&[b, hkv, g, s, d]),
+        dtype,
     });
     graph.push(Node {
         op: Op::Reshape(Shape::from_dims(&[b, hq, s, d])),
-        inputs: vec![bc], shape: Shape::from_dims(&[b, hq, s, d]), dtype,
+        inputs: vec![bc],
+        shape: Shape::from_dims(&[b, hq, s, d]),
+        dtype,
     })
 }
 
 /// Build the ALiBi bias `slope[h] · (j - i)` broadcast to `[B, Hq, Sq, Sk]`,
 /// cast to `dtype`. Uses `Op::Iota` for the row/column position indices.
 /// Shared with `paged_attn` (`Sk` = the paged `kv_len`).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn alibi_bias(
-    graph: &mut Graph, alibi_id: NodeId,
-    b: usize, hq: usize, sq: usize, sk: usize, q_pos_offset: usize, dtype: DType,
+    graph: &mut Graph,
+    alibi_id: NodeId,
+    b: usize,
+    hq: usize,
+    sq: usize,
+    sk: usize,
+    q_pos_offset: usize,
+    dtype: DType,
 ) -> NodeId {
     let f32 = DType::F32;
     let grid = Shape::from_dims(&[sq, sk]);
     let row_iota = graph.push(Node {
-        op: Op::Iota { len: sq }, inputs: vec![], shape: Shape::from_dims(&[sq]), dtype: f32,
+        op: Op::Iota { len: sq },
+        inputs: vec![],
+        shape: Shape::from_dims(&[sq]),
+        dtype: f32,
     });
     let row = graph.push(Node {
         op: Op::Reshape(Shape::from_dims(&[sq, 1])),
-        inputs: vec![row_iota], shape: Shape::from_dims(&[sq, 1]), dtype: f32,
+        inputs: vec![row_iota],
+        shape: Shape::from_dims(&[sq, 1]),
+        dtype: f32,
     });
     let col_iota = graph.push(Node {
-        op: Op::Iota { len: sk }, inputs: vec![], shape: Shape::from_dims(&[sk]), dtype: f32,
+        op: Op::Iota { len: sk },
+        inputs: vec![],
+        shape: Shape::from_dims(&[sk]),
+        dtype: f32,
     });
     let col = graph.push(Node {
         op: Op::Reshape(Shape::from_dims(&[1, sk])),
-        inputs: vec![col_iota], shape: Shape::from_dims(&[1, sk]), dtype: f32,
+        inputs: vec![col_iota],
+        shape: Shape::from_dims(&[1, sk]),
+        dtype: f32,
     });
     let row_bc = graph.push(Node {
-        op: Op::BroadcastTo(grid.clone()), inputs: vec![row], shape: grid.clone(), dtype: f32,
+        op: Op::BroadcastTo(grid.clone()),
+        inputs: vec![row],
+        shape: grid.clone(),
+        dtype: f32,
     });
     let col_bc = graph.push(Node {
-        op: Op::BroadcastTo(grid.clone()), inputs: vec![col], shape: grid.clone(), dtype: f32,
+        op: Op::BroadcastTo(grid.clone()),
+        inputs: vec![col],
+        shape: grid.clone(),
+        dtype: f32,
     });
     let mut rel = graph.push(Node {
-        op: Op::Sub, inputs: vec![col_bc, row_bc], shape: grid.clone(), dtype: f32,   // j - i
+        op: Op::Sub,
+        inputs: vec![col_bc, row_bc],
+        shape: grid.clone(),
+        dtype: f32, // j - i
     });
     // Bottom-right decode alignment: absolute query position is `i +
     // q_pos_offset`, so the relative distance is `j - (i + offset)`.
     if q_pos_offset != 0 {
         rel = graph.push(Node {
-            op: Op::AddScalar(-(q_pos_offset as f64)), inputs: vec![rel], shape: grid, dtype: f32,
+            op: Op::AddScalar(-(q_pos_offset as f64)),
+            inputs: vec![rel],
+            shape: grid,
+            dtype: f32,
         });
     }
     let full = Shape::from_dims(&[b, hq, sq, sk]);
     let rel_re = graph.push(Node {
         op: Op::Reshape(Shape::from_dims(&[1, 1, sq, sk])),
-        inputs: vec![rel], shape: Shape::from_dims(&[1, 1, sq, sk]), dtype: f32,
+        inputs: vec![rel],
+        shape: Shape::from_dims(&[1, 1, sq, sk]),
+        dtype: f32,
     });
     let rel_4d = graph.push(Node {
         op: Op::BroadcastTo(full.clone()),
-        inputs: vec![rel_re], shape: full.clone(), dtype: f32,
+        inputs: vec![rel_re],
+        shape: full.clone(),
+        dtype: f32,
     });
     let slope_re = graph.push(Node {
         op: Op::Reshape(Shape::from_dims(&[1, hq, 1, 1])),
-        inputs: vec![alibi_id], shape: Shape::from_dims(&[1, hq, 1, 1]), dtype: f32,
+        inputs: vec![alibi_id],
+        shape: Shape::from_dims(&[1, hq, 1, 1]),
+        dtype: f32,
     });
     let slope_4d = graph.push(Node {
         op: Op::BroadcastTo(full.clone()),
-        inputs: vec![slope_re], shape: full.clone(), dtype: f32,
+        inputs: vec![slope_re],
+        shape: full.clone(),
+        dtype: f32,
     });
     let bias_f32 = graph.push(Node {
-        op: Op::Mul, inputs: vec![slope_4d, rel_4d], shape: full.clone(), dtype: f32,
+        op: Op::Mul,
+        inputs: vec![slope_4d, rel_4d],
+        shape: full.clone(),
+        dtype: f32,
     });
     // Match the scores dtype. A F32→F32 cast is an identity the executor has
     // no kernel for, so emit the Cast only when the attention dtype differs;
@@ -682,7 +846,12 @@ pub(crate) fn alibi_bias(
     if dtype == f32 {
         bias_f32
     } else {
-        graph.push(Node { op: Op::Cast(dtype), inputs: vec![bias_f32], shape: full, dtype })
+        graph.push(Node {
+            op: Op::Cast(dtype),
+            inputs: vec![bias_f32],
+            shape: full,
+            dtype,
+        })
     }
 }
 
@@ -713,15 +882,37 @@ mod tests {
             let n = graph.node(id);
             let q_shape = graph.node(n.inputs[0]).shape.clone();
             let k_shape = graph.node(n.inputs[1]).shape.clone();
-            let alibi = if n.inputs.len() == 4 { Some(n.inputs[3]) } else { None };
-            (n.inputs[0], n.inputs[1], n.inputs[2], alibi, q_shape, k_shape, n.dtype)
+            let alibi = if n.inputs.len() == 4 {
+                Some(n.inputs[3])
+            } else {
+                None
+            };
+            (
+                n.inputs[0],
+                n.inputs[1],
+                n.inputs[2],
+                alibi,
+                q_shape,
+                k_shape,
+                n.dtype,
+            )
         };
 
         let (softmax_scale, causal, window_l, window_r, softcap, k_len) = match params {
             FusedOpParams::FlashAttn {
-                softmax_scale, causal, window_size_left, window_size_right, softcap, k_len,
+                softmax_scale,
+                causal,
+                window_size_left,
+                window_size_right,
+                softcap,
+                k_len,
             } => (
-                *softmax_scale, *causal, *window_size_left, *window_size_right, *softcap, *k_len,
+                *softmax_scale,
+                *causal,
+                *window_size_left,
+                *window_size_right,
+                *softcap,
+                *k_len,
             ),
             _ => return id,
         };
@@ -742,24 +933,52 @@ mod tests {
             Some(kl) => {
                 let sliced = Shape::from_dims(&[b, hkv, kl, d]);
                 let k_sl = graph.push(Node {
-                    op: Op::Slice { dim: 2, start: 0, len: kl },
-                    inputs: vec![k_id], shape: sliced.clone(), dtype,
+                    op: Op::Slice {
+                        dim: 2,
+                        start: 0,
+                        len: kl,
+                    },
+                    inputs: vec![k_id],
+                    shape: sliced.clone(),
+                    dtype,
                 });
                 let v_sl = graph.push(Node {
-                    op: Op::Slice { dim: 2, start: 0, len: kl },
-                    inputs: vec![v_id], shape: sliced, dtype,
+                    op: Op::Slice {
+                        dim: 2,
+                        start: 0,
+                        len: kl,
+                    },
+                    inputs: vec![v_id],
+                    shape: sliced,
+                    dtype,
                 });
                 (k_sl, v_sl, kl, kl.saturating_sub(sq))
             }
         };
 
         let rc = recompute_probs(
-            graph, q_id, k_use, v_use, alibi_id, b, hq, sq, sk, d, hkv, softmax_scale, causal,
-            window_l, window_r, softcap, q_pos_offset, dtype,
+            graph,
+            q_id,
+            k_use,
+            v_use,
+            alibi_id,
+            b,
+            hq,
+            sq,
+            sk,
+            d,
+            hkv,
+            softmax_scale,
+            causal,
+            window_l,
+            window_r,
+            softcap,
+            q_pos_offset,
+            dtype,
         );
         graph.push(Node {
             op: Op::MatMul,
-            inputs: vec![rc.probs, rc.v_rep],
+            inputs: vec![rc.probs, rc._v_rep],
             shape: q_shape,
             dtype,
         })
@@ -777,9 +996,18 @@ mod tests {
         let na = g.node(a);
         let nb = g.node(b);
         assert_eq!(na.op, nb.op, "op mismatch: {:?} vs {:?}", na.op, nb.op);
-        assert_eq!(na.shape, nb.shape, "shape mismatch at {:?}: {:?} vs {:?}", na.op, na.shape, nb.shape);
+        assert_eq!(
+            na.shape, nb.shape,
+            "shape mismatch at {:?}: {:?} vs {:?}",
+            na.op, na.shape, nb.shape
+        );
         assert_eq!(na.dtype, nb.dtype, "dtype mismatch at {:?}", na.op);
-        assert_eq!(na.inputs.len(), nb.inputs.len(), "arity mismatch at {:?}", na.op);
+        assert_eq!(
+            na.inputs.len(),
+            nb.inputs.len(),
+            "arity mismatch at {:?}",
+            na.op
+        );
         for (&ia, &ib) in na.inputs.iter().zip(nb.inputs.iter()) {
             assert_structural_eq(g, ia, ib);
         }
@@ -804,13 +1032,33 @@ mod tests {
     /// NodeId.
     fn flash_node(g: &mut Graph, b: usize, sq: usize, sk_cap: usize, d: usize, cfg: Cfg) -> NodeId {
         let q_shape = Shape::from_dims(&[b, cfg.hq, sq, d]);
-        let q = g.push(Node { op: Op::Const, inputs: vec![], shape: q_shape.clone(), dtype: DType::F32 });
+        let q = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: q_shape.clone(),
+            dtype: DType::F32,
+        });
         let kv_shape = Shape::from_dims(&[b, cfg.hkv, sk_cap, d]);
-        let k = g.push(Node { op: Op::Const, inputs: vec![], shape: kv_shape.clone(), dtype: DType::F32 });
-        let v = g.push(Node { op: Op::Const, inputs: vec![], shape: kv_shape, dtype: DType::F32 });
+        let k = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: kv_shape.clone(),
+            dtype: DType::F32,
+        });
+        let v = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: kv_shape,
+            dtype: DType::F32,
+        });
         let mut inputs = vec![q, k, v];
         if cfg.alibi {
-            let al = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[cfg.hq]), dtype: DType::F32 });
+            let al = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[cfg.hq]),
+                dtype: DType::F32,
+            });
             inputs.push(al);
         }
         g.push(Node {
@@ -845,12 +1093,12 @@ mod tests {
         let (b, sq, sk_cap, d) = (1usize, 2usize, 4usize, 2usize);
         // Mask combos cover causal + each window edge, independently and combined.
         let masks: [(bool, Option<usize>, Option<usize>); 6] = [
-            (false, None, None),        // plain
-            (true, None, None),         // causal
-            (false, Some(2), Some(1)),  // both windows
-            (false, Some(2), None),     // left-only window
-            (false, None, Some(1)),     // right-only window
-            (true, Some(2), Some(1)),   // causal + windows (kitchen sink)
+            (false, None, None),       // plain
+            (true, None, None),        // causal
+            (false, Some(2), Some(1)), // both windows
+            (false, Some(2), None),    // left-only window
+            (false, None, Some(1)),    // right-only window
+            (true, Some(2), Some(1)),  // causal + windows (kitchen sink)
         ];
         let mut fired = 0usize;
         for (causal, window_l, window_r) in masks {
@@ -858,7 +1106,16 @@ mod tests {
                 for alibi in [false, true] {
                     for (hq, hkv) in [(2usize, 2usize), (4usize, 2usize)] {
                         for klen in [None, Some(3usize)] {
-                            let cfg = Cfg { hq, hkv, causal, window_l, window_r, softcap, alibi, klen };
+                            let cfg = Cfg {
+                                hq,
+                                hkv,
+                                causal,
+                                window_l,
+                                window_r,
+                                softcap,
+                                alibi,
+                                klen,
+                            };
                             let mut g = Graph::new();
                             let fused = flash_node(&mut g, b, sq, sk_cap, d, cfg);
                             let out_shape = g.node(fused).shape.clone();
@@ -885,7 +1142,11 @@ mod tests {
                 }
             }
         }
-        assert_eq!(fired, 6 * 2 * 2 * 2 * 2, "every config in the matrix was checked");
+        assert_eq!(
+            fired,
+            6 * 2 * 2 * 2 * 2,
+            "every config in the matrix was checked"
+        );
     }
 
     /// Out-of-scope gap posture (permanent registry-layer basis gap): a
@@ -896,8 +1157,14 @@ mod tests {
     fn flash_attn_symbolic_klen_stays_a_fixpoint_gap() {
         let mut g = Graph::new();
         let cfg = Cfg {
-            hq: 2, hkv: 2, causal: true, window_l: None, window_r: None,
-            softcap: None, alibi: false, klen: None,
+            hq: 2,
+            hkv: 2,
+            causal: true,
+            window_l: None,
+            window_r: None,
+            softcap: None,
+            alibi: false,
+            klen: None,
         };
         let fused = flash_node(&mut g, 1, 2, 4, 2, cfg);
         // Swap in a SYMBOLIC k_len (flash_node only builds concrete/None).
@@ -911,8 +1178,15 @@ mod tests {
         };
         let before = g.len();
         let out = decompose(&mut g, fused, &sym_params);
-        assert_eq!(out, fused, "symbolic k_len => registry-layer basis gap => fixpoint self-return");
-        assert_eq!(g.len(), before, "declined before any emission (no recipe built)");
+        assert_eq!(
+            out, fused,
+            "symbolic k_len => registry-layer basis gap => fixpoint self-return"
+        );
+        assert_eq!(
+            g.len(),
+            before,
+            "declined before any emission (no recipe built)"
+        );
     }
 
     /// Totality (G2): a wrong params payload declines to a fixpoint, never a
@@ -921,8 +1195,14 @@ mod tests {
     fn flash_attn_recipe_wrong_params_is_a_fixpoint_not_a_crash() {
         let mut g = Graph::new();
         let cfg = Cfg {
-            hq: 2, hkv: 2, causal: false, window_l: None, window_r: None,
-            softcap: None, alibi: false, klen: None,
+            hq: 2,
+            hkv: 2,
+            causal: false,
+            window_l: None,
+            window_r: None,
+            softcap: None,
+            alibi: false,
+            klen: None,
         };
         let fused = flash_node(&mut g, 1, 2, 4, 2, cfg);
         let before = g.len();

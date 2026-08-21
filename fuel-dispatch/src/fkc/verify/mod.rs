@@ -69,21 +69,21 @@
 
 mod accept_coverage;
 mod bit_stability;
-mod ledger;
-mod ulp;
+#[cfg(feature = "cuda")]
+mod harness;
 mod invoker_cpu;
-mod probe_recipes;
-mod seed_cpu_ledger;
 #[cfg(feature = "cuda")]
 mod invoker_cuda;
 #[cfg(feature = "vulkan")]
 mod invoker_vulkan;
-#[cfg(feature = "cuda")]
-mod harness;
+mod ledger;
+mod probe_recipes;
+mod seed_cpu_ledger;
 #[cfg(feature = "cuda")]
 mod seed_cuda_ledger;
 #[cfg(feature = "vulkan")]
 mod seed_vulkan_ledger;
+mod ulp;
 
 // ---------------------------------------------------------------------------
 // Re-export gating.
@@ -106,14 +106,14 @@ mod seed_vulkan_ledger;
 // `fill_deterministic`/`HostTensor`: `jit_ingest_probe` (jit) and
 // `harness`+`seed_cuda_ledger` (cuda, via `super::`).
 #[cfg(any(feature = "jit", feature = "cuda"))]
-pub use bit_stability::{fill_deterministic, HostTensor};
+pub use bit_stability::{HostTensor, fill_deterministic};
 // The invoker/outcome surface: `jit_ingest`'s cuda block (jit+cuda) and
 // `harness`+`seed_cuda_ledger` (cuda, via `super::`) — i.e. `cuda` covers both.
 #[cfg(feature = "cuda")]
 pub use bit_stability::{
-    verify_bit_stability, KernelInvoker, ProbeInputs, VerifyError, VerifyOutcome,
+    KernelInvoker, ProbeInputs, VerifyError, VerifyOutcome, verify_bit_stability,
 };
-pub use ledger::{gate_precision, LedgerQuery, VerificationLedger};
+pub use ledger::{LedgerQuery, VerificationLedger, gate_precision};
 // `LedgerRecord`: `jit_ingest` (jit) and `harness`+`seed_cuda_ledger` (cuda).
 #[cfg(any(feature = "jit", feature = "cuda"))]
 pub use ledger::LedgerRecord;
@@ -121,7 +121,7 @@ pub use ledger::LedgerRecord;
 // candidate-vs-reference arm, i.e. `jit` AND `cuda`.
 #[cfg(all(feature = "jit", feature = "cuda"))]
 pub use ulp::{
-    region_contains_transcendental, verify_precision_bound, widen_bound_for_transcendental, Bound,
+    Bound, region_contains_transcendental, verify_precision_bound, widen_bound_for_transcendental,
 };
 // The per-op transcendental classification — the SINGLE source `jit_ingest`'s
 // advisory ULP band shares with the region-level check above so the two never
@@ -143,16 +143,14 @@ pub use invoker_cpu::CpuInvoker;
 // here at crate visibility so `jit_ingest_probe::probe_from_operands` can
 // reuse the exact dtype-aware float→bytes encode without duplicating it.
 // (`harness`/`seed_cuda_ledger` each carry their own private `to_bytes`.)
-#[cfg(feature = "jit")]
-pub(crate) use seed_cpu_ledger::to_bytes;
-#[cfg(feature = "cuda")]
-pub use invoker_cuda::CudaInvoker;
-#[cfg(feature = "vulkan")]
-pub use invoker_vulkan::VulkanInvoker;
 #[cfg(feature = "cuda")]
 pub use harness::run_fkc_verify_harness;
 #[cfg(feature = "cuda")]
-pub use seed_cuda_ledger::{run_cuda_verification, CudaSeedAttempt};
+pub use invoker_cuda::CudaInvoker;
+#[cfg(feature = "jit")]
+pub(crate) use seed_cpu_ledger::to_bytes;
+#[cfg(feature = "cuda")]
+pub use seed_cuda_ledger::{CudaSeedAttempt, run_cuda_verification};
 
 /// The embedded (compile-time) verification ledger. Thin wrapper so callers
 /// outside this module can reach it as `verify::embedded()` without

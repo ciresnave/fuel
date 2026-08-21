@@ -61,8 +61,12 @@ pub struct Qwen2MoeConfig {
     pub norm_topk_prob: bool,
 }
 
-fn default_rms_norm_eps() -> f64 { 1e-6 }
-fn default_norm_topk_prob() -> bool { false }
+fn default_rms_norm_eps() -> f64 {
+    1e-6
+}
+fn default_norm_topk_prob() -> bool {
+    false
+}
 
 impl Qwen2MoeConfig {
     pub fn from_hf_json_str(s: &str) -> crate::Result<Self> {
@@ -82,17 +86,20 @@ impl Qwen2MoeConfig {
 #[derive(Debug, Clone)]
 pub struct ExpertWeights {
     pub gate_w: Arc<[f32]>,
-    pub up_w:   Arc<[f32]>,
+    pub up_w: Arc<[f32]>,
     pub down_w: Arc<[f32]>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Qwen2MoeLayerWeights {
     // attention (Qwen2 shape: Q/K/V have biases, O has none)
-    pub input_ln:     Arc<[f32]>,
-    pub q_w: Arc<[f32]>, pub q_b: Arc<[f32]>,
-    pub k_w: Arc<[f32]>, pub k_b: Arc<[f32]>,
-    pub v_w: Arc<[f32]>, pub v_b: Arc<[f32]>,
+    pub input_ln: Arc<[f32]>,
+    pub q_w: Arc<[f32]>,
+    pub q_b: Arc<[f32]>,
+    pub k_w: Arc<[f32]>,
+    pub k_b: Arc<[f32]>,
+    pub v_w: Arc<[f32]>,
+    pub v_b: Arc<[f32]>,
     pub o_w: Arc<[f32]>,
     // MoE FFN
     pub post_attn_ln: Arc<[f32]>,
@@ -101,7 +108,7 @@ pub struct Qwen2MoeLayerWeights {
     pub experts: Vec<ExpertWeights>,
     /// Shared expert (always active, wider than routed experts).
     pub shared_gate_w: Arc<[f32]>,
-    pub shared_up_w:   Arc<[f32]>,
+    pub shared_up_w: Arc<[f32]>,
     pub shared_down_w: Arc<[f32]>,
     /// Shared expert gating: `[1, hidden]` scalar gate.
     pub shared_expert_gate_w: Arc<[f32]>,
@@ -110,16 +117,16 @@ pub struct Qwen2MoeLayerWeights {
 #[derive(Debug, Clone)]
 pub struct Qwen2MoeWeights {
     pub token_embedding: Arc<[f32]>,
-    pub layers:   Vec<Qwen2MoeLayerWeights>,
+    pub layers: Vec<Qwen2MoeLayerWeights>,
     pub final_ln: Arc<[f32]>,
-    pub lm_head:  Arc<[f32]>,
+    pub lm_head: Arc<[f32]>,
 }
 
 // ---- Model -----------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct Qwen2MoeModel {
-    pub config:  Qwen2MoeConfig,
+    pub config: Qwen2MoeConfig,
     pub weights: Qwen2MoeWeights,
 }
 
@@ -158,12 +165,16 @@ impl Qwen2MoeModel {
 
     /// Build per-token embeddings without running the decoder.
     pub fn embed_tokens_anchored(
-        &self, anchor: &LazyTensor, tokens: &[u32],
+        &self,
+        anchor: &LazyTensor,
+        tokens: &[u32],
     ) -> crate::Result<LazyTensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
-            cfg.vocab_size, cfg.hidden_size, tokens,
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
         )
     }
 
@@ -210,19 +221,30 @@ impl Qwen2MoeModel {
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(crate::Error::Msg(
-                "Qwen2MoeModel::forward_embeds: seq must be > 0".into(),
-            ).bt());
+            return Err(
+                crate::Error::Msg("Qwen2MoeModel::forward_embeds: seq must be > 0".into()).bt(),
+            );
         }
         let mut x = embeds.clone();
         for lw in &self.weights.layers {
             x = decoder_layer(&x, lw, cfg, seq)?;
         }
-        Ok(rms_norm_affine(&x, &self.weights.final_ln, cfg.rms_norm_eps, h, seq)?)
+        Ok(rms_norm_affine(
+            &x,
+            &self.weights.final_ln,
+            cfg.rms_norm_eps,
+            h,
+            seq,
+        )?)
     }
 }
 
-fn decoder_layer(x: &LazyTensor, lw: &Qwen2MoeLayerWeights, cfg: &Qwen2MoeConfig, seq: usize) -> crate::Result<LazyTensor> {
+fn decoder_layer(
+    x: &LazyTensor,
+    lw: &Qwen2MoeLayerWeights,
+    cfg: &Qwen2MoeConfig,
+    seq: usize,
+) -> crate::Result<LazyTensor> {
     let h = cfg.hidden_size;
     // Attention sublayer
     let x_ln = rms_norm_affine(x, &lw.input_ln, cfg.rms_norm_eps, h, seq)?;
@@ -235,7 +257,12 @@ fn decoder_layer(x: &LazyTensor, lw: &Qwen2MoeLayerWeights, cfg: &Qwen2MoeConfig
     x.add(&moe)
 }
 
-fn qwen2_attn(x: &LazyTensor, lw: &Qwen2MoeLayerWeights, cfg: &Qwen2MoeConfig, seq: usize) -> crate::Result<LazyTensor> {
+fn qwen2_attn(
+    x: &LazyTensor,
+    lw: &Qwen2MoeLayerWeights,
+    cfg: &Qwen2MoeConfig,
+    seq: usize,
+) -> crate::Result<LazyTensor> {
     let h = cfg.hidden_size;
     let n_heads = cfg.num_attention_heads;
     let d_head = cfg.head_dim();
@@ -263,7 +290,9 @@ fn qwen2_attn(x: &LazyTensor, lw: &Qwen2MoeLayerWeights, cfg: &Qwen2MoeConfig, s
     let mut mask = vec![0.0_f32; seq * seq];
     for i in 0..seq {
         for j in 0..seq {
-            if j > i { mask[i * seq + j] = f32::NEG_INFINITY; }
+            if j > i {
+                mask[i * seq + j] = f32::NEG_INFINITY;
+            }
         }
     }
     let mask_t = scores
@@ -272,9 +301,7 @@ fn qwen2_attn(x: &LazyTensor, lw: &Qwen2MoeLayerWeights, cfg: &Qwen2MoeConfig, s
         .broadcast_to(Shape::from_dims(&[1, n_heads, seq, seq]))?;
     scores = scores.add(&mask_t)?;
     let probs = scores.softmax_last_dim()?;
-    let ctx = probs
-        .matmul(&v)?
-        .merge_heads()?;
+    let ctx = probs.matmul(&v)?.merge_heads()?;
     linear(&ctx, &lw.o_w, None, h, h, seq)
 }
 
@@ -293,7 +320,7 @@ fn moe_block(
     // Router: [1, seq, h] → gate.matmul → [1, seq, E].
     let gate = x.const_f32_like(lw.gate_w.clone(), Shape::from_dims(&[h, e]));
     let router_logits = x.matmul(&gate)?;
-    let router_weights = router_logits.softmax_last_dim()?;  // [1, seq, E]
+    let router_weights = router_logits.softmax_last_dim()?; // [1, seq, E]
 
     // Each expert's SwiGLU output, weighted by its per-token gate weight.
     // Accumulate into `routed_sum` : [1, seq, h].
@@ -302,8 +329,7 @@ fn moe_block(
     for (ei, ew) in lw.experts.iter().enumerate() {
         let expert_out = swiglu_mlp(x, &ew.gate_w, &ew.up_w, &ew.down_w, h, moe_int, seq)?;
         // Slice router_weights to get the column for this expert: [1, seq, 1].
-        let w_col = router_weights
-            .slice(2, ei, 1)?;  // [1, seq, 1]
+        let w_col = router_weights.slice(2, ei, 1)?; // [1, seq, 1]
         let w_bc = w_col.broadcast_to(Shape::from_dims(&[1, seq, h]))?;
         let gated = expert_out.mul(&w_bc)?;
         routed_sum = Some(match routed_sum {
@@ -315,10 +341,18 @@ fn moe_block(
 
     // Shared expert (always active, sigmoid-gated by a scalar per token).
     let shared_int = cfg.shared_expert_intermediate_size;
-    let shared_out = swiglu_mlp(x, &lw.shared_gate_w, &lw.shared_up_w, &lw.shared_down_w, h, shared_int, seq)?;
+    let shared_out = swiglu_mlp(
+        x,
+        &lw.shared_gate_w,
+        &lw.shared_up_w,
+        &lw.shared_down_w,
+        h,
+        shared_int,
+        seq,
+    )?;
     // Shared expert gate: Linear(h → 1), then sigmoid.
     let sg_w = x.const_f32_like(lw.shared_expert_gate_w.clone(), Shape::from_dims(&[h, 1]));
-    let sg = x.matmul(&sg_w)?.sigmoid();  // [1, seq, 1]
+    let sg = x.matmul(&sg_w)?.sigmoid(); // [1, seq, 1]
     let sg_bc = sg.broadcast_to(Shape::from_dims(&[1, seq, h]))?;
     let shared_gated = shared_out.mul(&sg_bc)?;
 
@@ -340,10 +374,16 @@ fn swiglu_mlp(
     linear(&gated, down_w, None, h_ff, h, seq)
 }
 
-fn rms_norm_affine(x: &LazyTensor, gamma: &Arc<[f32]>, eps: f64, hidden: usize, seq: usize) -> crate::Result<LazyTensor> {
+fn rms_norm_affine(
+    x: &LazyTensor,
+    gamma: &Arc<[f32]>,
+    eps: f64,
+    hidden: usize,
+    seq: usize,
+) -> crate::Result<LazyTensor> {
     // RMS norm: x * rsqrt(mean(x^2) + eps) * gamma
     let sq = x.mul(x)?;
-    let ms = sq.mean_dim(2)?;  // [1, seq]
+    let ms = sq.mean_dim(2)?; // [1, seq]
     let rstd = ms.add_scalar(eps).sqrt();
     let rstd_bc = rstd
         .reshape(Shape::from_dims(&[1, seq, 1]))?
@@ -374,7 +414,7 @@ fn rope_tables(theta: f64, seq: usize, d_head: usize) -> (Vec<f32>, Vec<f32>) {
 }
 
 fn apply_rope(
-    x: &LazyTensor,  // [1, H, seq, d_head]
+    x: &LazyTensor, // [1, H, seq, d_head]
     cos: &[f32],
     sin: &[f32],
     seq: usize,
@@ -438,97 +478,150 @@ impl Qwen2MoeWeights {
         let moe_int = cfg.moe_intermediate_size;
         let shared_int = cfg.shared_expert_intermediate_size;
 
-        let token_embedding = Arc::from(load_tensor_as_f32(
-            st, "model.embed_tokens.weight",
-        )?);
+        let token_embedding = Arc::from(load_tensor_as_f32(st, "model.embed_tokens.weight")?);
 
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         for i in 0..cfg.num_hidden_layers {
             let p = format!("model.layers.{i}");
             let input_ln = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.input_layernorm.weight"),
+                st,
+                &format!("{p}.input_layernorm.weight"),
             )?);
             let post_attn_ln = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.post_attention_layernorm.weight"),
+                st,
+                &format!("{p}.post_attention_layernorm.weight"),
             )?);
             let q_w = Arc::from(load_transposed_matrix(
-                st, &format!("{p}.self_attn.q_proj.weight"), h, h,
+                st,
+                &format!("{p}.self_attn.q_proj.weight"),
+                h,
+                h,
             )?);
             let q_b = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.self_attn.q_proj.bias"),
+                st,
+                &format!("{p}.self_attn.q_proj.bias"),
             )?);
             let k_w = Arc::from(load_transposed_matrix(
-                st, &format!("{p}.self_attn.k_proj.weight"), kv_dim, h,
+                st,
+                &format!("{p}.self_attn.k_proj.weight"),
+                kv_dim,
+                h,
             )?);
             let k_b = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.self_attn.k_proj.bias"),
+                st,
+                &format!("{p}.self_attn.k_proj.bias"),
             )?);
             let v_w = Arc::from(load_transposed_matrix(
-                st, &format!("{p}.self_attn.v_proj.weight"), kv_dim, h,
+                st,
+                &format!("{p}.self_attn.v_proj.weight"),
+                kv_dim,
+                h,
             )?);
             let v_b = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.self_attn.v_proj.bias"),
+                st,
+                &format!("{p}.self_attn.v_proj.bias"),
             )?);
             let o_w = Arc::from(load_transposed_matrix(
-                st, &format!("{p}.self_attn.o_proj.weight"), h, h,
+                st,
+                &format!("{p}.self_attn.o_proj.weight"),
+                h,
+                h,
             )?);
 
             // Router gate: HF stores `[num_experts, hidden]`; transposed
             // to `[hidden, num_experts]` for the matmul layout used by forward.
             let gate_w = Arc::from(load_transposed_matrix(
-                st, &format!("{p}.mlp.gate.weight"), cfg.num_experts, h,
+                st,
+                &format!("{p}.mlp.gate.weight"),
+                cfg.num_experts,
+                h,
             )?);
 
             let mut experts = Vec::with_capacity(cfg.num_experts);
             for e in 0..cfg.num_experts {
                 let ep = format!("{p}.mlp.experts.{e}");
                 let gate_w_e = Arc::from(load_transposed_matrix(
-                    st, &format!("{ep}.gate_proj.weight"), moe_int, h,
+                    st,
+                    &format!("{ep}.gate_proj.weight"),
+                    moe_int,
+                    h,
                 )?);
                 let up_w = Arc::from(load_transposed_matrix(
-                    st, &format!("{ep}.up_proj.weight"), moe_int, h,
+                    st,
+                    &format!("{ep}.up_proj.weight"),
+                    moe_int,
+                    h,
                 )?);
                 let down_w = Arc::from(load_transposed_matrix(
-                    st, &format!("{ep}.down_proj.weight"), h, moe_int,
+                    st,
+                    &format!("{ep}.down_proj.weight"),
+                    h,
+                    moe_int,
                 )?);
-                experts.push(ExpertWeights { gate_w: gate_w_e, up_w, down_w });
+                experts.push(ExpertWeights {
+                    gate_w: gate_w_e,
+                    up_w,
+                    down_w,
+                });
             }
 
             let shared_gate_w = Arc::from(load_transposed_matrix(
-                st, &format!("{p}.mlp.shared_expert.gate_proj.weight"), shared_int, h,
+                st,
+                &format!("{p}.mlp.shared_expert.gate_proj.weight"),
+                shared_int,
+                h,
             )?);
             let shared_up_w = Arc::from(load_transposed_matrix(
-                st, &format!("{p}.mlp.shared_expert.up_proj.weight"), shared_int, h,
+                st,
+                &format!("{p}.mlp.shared_expert.up_proj.weight"),
+                shared_int,
+                h,
             )?);
             let shared_down_w = Arc::from(load_transposed_matrix(
-                st, &format!("{p}.mlp.shared_expert.down_proj.weight"), h, shared_int,
+                st,
+                &format!("{p}.mlp.shared_expert.down_proj.weight"),
+                h,
+                shared_int,
             )?);
             let shared_expert_gate_w = Arc::from(load_transposed_matrix(
-                st, &format!("{p}.mlp.shared_expert_gate.weight"), 1, h,
+                st,
+                &format!("{p}.mlp.shared_expert_gate.weight"),
+                1,
+                h,
             )?);
 
             layers.push(Qwen2MoeLayerWeights {
                 input_ln,
-                q_w, q_b, k_w, k_b, v_w, v_b, o_w,
+                q_w,
+                q_b,
+                k_w,
+                k_b,
+                v_w,
+                v_b,
+                o_w,
                 post_attn_ln,
-                gate_w, experts,
-                shared_gate_w, shared_up_w, shared_down_w,
+                gate_w,
+                experts,
+                shared_gate_w,
+                shared_up_w,
+                shared_down_w,
                 shared_expert_gate_w,
             });
         }
 
-        let final_ln = Arc::from(load_tensor_as_f32(
-            st, "model.norm.weight",
-        )?);
+        let final_ln = Arc::from(load_tensor_as_f32(st, "model.norm.weight")?);
         // Qwen2-MoE: tied lm_head when `tie_word_embeddings=true`; else load.
-        let lm_head = match load_transposed_matrix(
-            st, "lm_head.weight", cfg.vocab_size, h,
-        ) {
+        let lm_head = match load_transposed_matrix(st, "lm_head.weight", cfg.vocab_size, h) {
             Ok(v) => Arc::from(v),
             Err(_) => Arc::clone(&token_embedding),
         };
 
-        Ok(Self { token_embedding, layers, final_ln, lm_head })
+        Ok(Self {
+            token_embedding,
+            layers,
+            final_ln,
+            lm_head,
+        })
     }
 }
 
@@ -568,21 +661,24 @@ mod tests {
         let experts: Vec<ExpertWeights> = (0..cfg.num_experts)
             .map(|_| ExpertWeights {
                 gate_w: z(h * moe_int),
-                up_w:   z(h * moe_int),
+                up_w: z(h * moe_int),
                 down_w: z(moe_int * h),
             })
             .collect();
         let layer = Qwen2MoeLayerWeights {
             input_ln: o(h),
-            q_w: z(h * h), q_b: z(h),
-            k_w: z(h * h), k_b: z(h),
-            v_w: z(h * h), v_b: z(h),
+            q_w: z(h * h),
+            q_b: z(h),
+            k_w: z(h * h),
+            k_b: z(h),
+            v_w: z(h * h),
+            v_b: z(h),
             o_w: z(h * h),
             post_attn_ln: o(h),
             gate_w: z(h * cfg.num_experts),
             experts,
             shared_gate_w: z(h * shared_int),
-            shared_up_w:   z(h * shared_int),
+            shared_up_w: z(h * shared_int),
             shared_down_w: z(shared_int * h),
             shared_expert_gate_w: z(h),
         };
@@ -592,7 +688,10 @@ mod tests {
             final_ln: o(h),
             lm_head: z(h * cfg.vocab_size),
         };
-        let model = Qwen2MoeModel { config: cfg.clone(), weights };
+        let model = Qwen2MoeModel {
+            config: cfg.clone(),
+            weights,
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
         let logits = model.forward(&tokens).unwrap();
         let flat = logits.realize_f32();
@@ -625,21 +724,24 @@ mod tests {
         let experts: Vec<ExpertWeights> = (0..cfg.num_experts)
             .map(|_| ExpertWeights {
                 gate_w: z(h * moe_int),
-                up_w:   z(h * moe_int),
+                up_w: z(h * moe_int),
                 down_w: z(moe_int * h),
             })
             .collect();
         let layer = Qwen2MoeLayerWeights {
             input_ln: o(h),
-            q_w: z(h * h), q_b: z(h),
-            k_w: z(h * h), k_b: z(h),
-            v_w: z(h * h), v_b: z(h),
+            q_w: z(h * h),
+            q_b: z(h),
+            k_w: z(h * h),
+            k_b: z(h),
+            v_w: z(h * h),
+            v_b: z(h),
             o_w: z(h * h),
             post_attn_ln: o(h),
             gate_w: z(h * cfg.num_experts),
             experts,
             shared_gate_w: z(h * shared_int),
-            shared_up_w:   z(h * shared_int),
+            shared_up_w: z(h * shared_int),
             shared_down_w: z(shared_int * h),
             shared_expert_gate_w: z(h),
         };
@@ -649,7 +751,10 @@ mod tests {
             final_ln: o(h),
             lm_head: z(h * cfg.vocab_size),
         };
-        let model = Qwen2MoeModel { config: cfg.clone(), weights };
+        let model = Qwen2MoeModel {
+            config: cfg.clone(),
+            weights,
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
         let hidden = model.forward_hidden(&tokens).unwrap();
         assert_eq!(hidden.shape().dims(), &[1, tokens.len(), h]);
@@ -668,21 +773,24 @@ mod tests {
         let experts: Vec<ExpertWeights> = (0..cfg.num_experts)
             .map(|_| ExpertWeights {
                 gate_w: z(h * moe_int),
-                up_w:   z(h * moe_int),
+                up_w: z(h * moe_int),
                 down_w: z(moe_int * h),
             })
             .collect();
         let layer = Qwen2MoeLayerWeights {
             input_ln: o(h),
-            q_w: z(h * h), q_b: z(h),
-            k_w: z(h * h), k_b: z(h),
-            v_w: z(h * h), v_b: z(h),
+            q_w: z(h * h),
+            q_b: z(h),
+            k_w: z(h * h),
+            k_b: z(h),
+            v_w: z(h * h),
+            v_b: z(h),
             o_w: z(h * h),
             post_attn_ln: o(h),
             gate_w: z(h * cfg.num_experts),
             experts,
             shared_gate_w: z(h * shared_int),
-            shared_up_w:   z(h * shared_int),
+            shared_up_w: z(h * shared_int),
             shared_down_w: z(shared_int * h),
             shared_expert_gate_w: z(h),
         };
@@ -692,7 +800,10 @@ mod tests {
             final_ln: o(h),
             lm_head: z(h * cfg.vocab_size),
         };
-        let model = Qwen2MoeModel { config: cfg.clone(), weights };
+        let model = Qwen2MoeModel {
+            config: cfg.clone(),
+            weights,
+        };
         (cfg, model)
     }
 
@@ -701,15 +812,19 @@ mod tests {
         let (cfg, model) = build_test_model();
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &crate::Device::cpu(),
-        );
+        let anchor =
+            LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &crate::Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds).unwrap().realize_f32();
-        let max_diff = logits_ref.iter().zip(logits_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "Qwen2MoE forward vs forward_embeds must agree (max diff {max_diff})");
+        let max_diff = logits_ref
+            .iter()
+            .zip(logits_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "Qwen2MoE forward vs forward_embeds must agree (max diff {max_diff})"
+        );
         let _ = cfg;
     }
 
@@ -718,7 +833,8 @@ mod tests {
         let (cfg, model) = build_test_model();
         let bad = LazyTensor::from_f32(
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
-            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]), &crate::Device::cpu(),
+            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
+            &crate::Device::cpu(),
         );
         assert!(model.forward_embeds(&bad).is_err());
     }
@@ -728,14 +844,18 @@ mod tests {
         let (_cfg, model) = build_test_model();
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &crate::Device::cpu(),
-        );
+        let anchor =
+            LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &crate::Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let h_via_embeds = model.forward_hidden_embeds(&embeds).unwrap().realize_f32();
-        let max_diff = h_ref.iter().zip(h_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "Qwen2MoE forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})");
+        let max_diff = h_ref
+            .iter()
+            .zip(h_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "Qwen2MoE forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})"
+        );
     }
 }

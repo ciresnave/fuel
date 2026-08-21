@@ -28,8 +28,8 @@
 //! the full input (matches the LLaMA / Mistral lazy v1 contract).
 
 use crate::lazy::{
-    load_tensor_as_f32, load_transposed_matrix, load_transposed_matrix_preserve_dtype,
-    LayerWeights, LazyTensor, WeightStorage,
+    LayerWeights, LazyTensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix,
+    load_transposed_matrix_preserve_dtype,
 };
 use crate::{Device, Result};
 use fuel_ir::Shape;
@@ -179,8 +179,7 @@ impl MetaVoiceModel {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, &mask)?;
         }
 
-        let h_norm =
-            h.rms_norm_affine(Arc::clone(&weights.final_norm_gain), cfg.rms_norm_eps)?;
+        let h_norm = h.rms_norm_affine(Arc::clone(&weights.final_norm_gain), cfg.rms_norm_eps)?;
 
         let last = h_norm.narrow(1_usize, seq - 1, 1)?;
         let mut per_codebook: Vec<LazyTensor> = Vec::with_capacity(cfg.num_codebooks);
@@ -241,12 +240,17 @@ impl MetaVoiceModel {
         let cfg = &self.config;
         let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
 
-        let x_norm =
-            x.rms_norm_affine(Arc::clone(&layer.attn_norm_gain), cfg.rms_norm_eps)?;
+        let x_norm = x.rms_norm_affine(Arc::clone(&layer.attn_norm_gain), cfg.rms_norm_eps)?;
 
-        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size)?;
-        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?;
-        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?;
+        let q = layer
+            .attn_q
+            .apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size)?;
+        let k = layer
+            .attn_k
+            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?;
+        let v = layer
+            .attn_v
+            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?;
 
         let q = q.split_heads(cfg.num_attention_heads, cfg.head_dim)?;
         let k = k.split_heads(cfg.num_key_value_heads, cfg.head_dim)?;
@@ -268,19 +272,24 @@ impl MetaVoiceModel {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        let attn_out =
-            layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?;
+        let attn_out = layer
+            .attn_o
+            .apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?;
 
         let h1 = x.add(&attn_out)?;
 
-        let h1_norm =
-            h1.rms_norm_affine(Arc::clone(&layer.ffn_norm_gain), cfg.rms_norm_eps)?;
-        let gate =
-            layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
-        let up = layer.ffn_up.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let h1_norm = h1.rms_norm_affine(Arc::clone(&layer.ffn_norm_gain), cfg.rms_norm_eps)?;
+        let gate = layer
+            .ffn_gate
+            .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let up = layer
+            .ffn_up
+            .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
         let swiglu = gate.silu().mul(&up)?;
         let ffn_out =
-            layer.ffn_down.apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size)?;
+            layer
+                .ffn_down
+                .apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size)?;
 
         h1.add(&ffn_out)
     }
@@ -409,10 +418,7 @@ impl MetaVoiceWeights {
             // We read as f32, split along the output axis, and
             // physically transpose each piece into fuel's `[in, out]`
             // layout.
-            let fused = load_tensor_as_f32(
-                st,
-                &format!("{p}.attention.wqkv.weight"),
-            )?;
+            let fused = load_tensor_as_f32(st, &format!("{p}.attention.wqkv.weight"))?;
             if fused.len() != qkv_out * h {
                 crate::bail!(
                     "{p}.attention.wqkv.weight: {} elts, expected {} ({}×{})",
@@ -460,10 +466,7 @@ impl MetaVoiceWeights {
             )?;
 
             // Per-layer RmsNorm gains.
-            let attn_norm_gain = load_tensor_as_f32(
-                st,
-                &format!("{p}.attention_norm.weight"),
-            )?;
+            let attn_norm_gain = load_tensor_as_f32(st, &format!("{p}.attention_norm.weight"))?;
             if attn_norm_gain.len() != h {
                 crate::bail!(
                     "{p}.attention_norm.weight: {} elts, expected {}",
@@ -471,10 +474,7 @@ impl MetaVoiceWeights {
                     h,
                 );
             }
-            let ffn_norm_gain = load_tensor_as_f32(
-                st,
-                &format!("{p}.ffn_norm.weight"),
-            )?;
+            let ffn_norm_gain = load_tensor_as_f32(st, &format!("{p}.ffn_norm.weight"))?;
             if ffn_norm_gain.len() != h {
                 crate::bail!(
                     "{p}.ffn_norm.weight: {} elts, expected {}",
@@ -515,8 +515,7 @@ impl MetaVoiceWeights {
         // broadcast across all `num_codebooks` heads. The single-output
         // fallback materializes the same transposed `[hidden, vocab]`
         // buffer once and shares it via `Arc::clone` across heads.
-        let mut lm_heads: Vec<WeightStorage> =
-            Vec::with_capacity(cfg.num_codebooks);
+        let mut lm_heads: Vec<WeightStorage> = Vec::with_capacity(cfg.num_codebooks);
         let first_head_name = format!("lm_heads.0.weight");
         if st.get(&first_head_name).is_ok() {
             for ci in 0..cfg.num_codebooks {
@@ -530,12 +529,7 @@ impl MetaVoiceWeights {
             }
         } else {
             // Single-output eager form — broadcast across all heads.
-            let single = load_transposed_matrix(
-                st,
-                "output.weight",
-                cfg.vocab_size,
-                h,
-            )?;
+            let single = load_transposed_matrix(st, "output.weight", cfg.vocab_size, h)?;
             let shared: Arc<[f32]> = Arc::from(single);
             for _ in 0..cfg.num_codebooks {
                 lm_heads.push(WeightStorage::F32(Arc::clone(&shared)));
@@ -626,7 +620,10 @@ mod tests {
     fn tiny_model() -> MetaVoiceModel {
         let cfg = tiny_cfg();
         let weights = tiny_weights(&cfg, 2026);
-        MetaVoiceModel { config: cfg, weights }
+        MetaVoiceModel {
+            config: cfg,
+            weights,
+        }
     }
 
     fn speaker_vec(cfg: &MetaVoiceConfig, fill: f32) -> LazyTensor {
@@ -659,7 +656,10 @@ mod tests {
         let mut cfg = tiny_cfg();
         cfg.num_codebooks = 6;
         let weights = tiny_weights(&cfg, 7);
-        let model = MetaVoiceModel { config: cfg.clone(), weights };
+        let model = MetaVoiceModel {
+            config: cfg.clone(),
+            weights,
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
         let spk = speaker_vec(&cfg, 0.0);
         let logits = model.forward(&tokens, &spk, 0).unwrap();

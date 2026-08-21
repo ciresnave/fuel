@@ -136,10 +136,9 @@ impl SharedMemHostStorage {
             .map(|m| m.len())
             .map_err(|e| Error::Msg(format!("shared_mem metadata: {e}")).bt())?;
         if (file_len as usize) < bytes {
-            return Err(Error::Msg(format!(
-                "shared_mem file too small: {file_len} < {bytes}"
-            ))
-            .bt());
+            return Err(
+                Error::Msg(format!("shared_mem file too small: {file_len} < {bytes}")).bt(),
+            );
         }
         // SAFETY: file is large enough for the requested range.
         let mmap = unsafe { MmapOptions::new().len(bytes).map_mut(&file) }
@@ -222,12 +221,16 @@ impl HostStorage for SharedMemHostStorage {
                 // exists yet — a DELIBERATE UNDER-SHIPMENT, not an unauthored
                 // encoding.
                 DType::F8E5M2 => {
-                    return Err(Error::UnsupportedDTypeForOp(self.dtype, "as_host_buffer_ref").bt())
+                    return Err(
+                        Error::UnsupportedDTypeForOp(self.dtype, "as_host_buffer_ref").bt(),
+                    );
                 }
                 // F8E6M2 is a token-only (non-OCP-standard) dtype with no host
                 // storage variant — unsupported for typed host access.
                 DType::F8E6M2 => {
-                    return Err(Error::UnsupportedDTypeForOp(self.dtype, "as_host_buffer_ref").bt())
+                    return Err(
+                        Error::UnsupportedDTypeForOp(self.dtype, "as_host_buffer_ref").bt(),
+                    );
                 }
                 // GAP-168(c): Bool bytes reinterpret as u8 (byte-identical).
                 DType::Bool => HostBufferRef::Bool(self.typed_slice::<u8>()),
@@ -264,8 +267,7 @@ mod tests {
         let path = tmp_path("cross_handle");
         let values = [1.0_f32, 2.0, 3.0, 4.0];
         {
-            let mut prod =
-                SharedMemHostStorage::create(&path, DType::F32, values.len()).unwrap();
+            let mut prod = SharedMemHostStorage::create(&path, DType::F32, values.len()).unwrap();
             let slice = prod.as_mut_slice_f32().unwrap();
             slice.copy_from_slice(&values);
         }
@@ -298,8 +300,7 @@ mod tests {
         // Create with 2 f32 (8 bytes)
         let _prod = SharedMemHostStorage::create(&path, DType::F32, 2).unwrap();
         // Ask for 100 f32 (400 bytes) via open — should fail.
-        let err =
-            SharedMemHostStorage::open(&path, DType::F32, 100).unwrap_err();
+        let err = SharedMemHostStorage::open(&path, DType::F32, 100).unwrap_err();
         assert!(
             format!("{err}").contains("too small"),
             "expected too-small error, got: {err}"
@@ -310,8 +311,7 @@ mod tests {
     #[test]
     fn zero_length_is_rejected() {
         let path = tmp_path("zero_length");
-        let err =
-            SharedMemHostStorage::create(&path, DType::F32, 0).unwrap_err();
+        let err = SharedMemHostStorage::create(&path, DType::F32, 0).unwrap_err();
         assert!(
             format!("{err}").contains("zero-length"),
             "expected zero-length error, got: {err}"

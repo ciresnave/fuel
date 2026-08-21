@@ -31,8 +31,8 @@
 //! batches to specific backends), speculative-decode draft/target
 //! pairing (co-locate them), and tiered-storage residency hints.
 
-use fuel_ir::DeviceLocation;
 use fuel_graph::{NodeId, SharedGraph};
+use fuel_ir::DeviceLocation;
 use std::collections::HashMap;
 
 use crate::scheduler::MemoryScheduler;
@@ -130,9 +130,12 @@ pub fn pressure_rule_from(scheduler: &MemoryScheduler) -> MemoryPressureRule {
 /// depend on.
 pub fn _placement_devices(placement: &Placement) -> Vec<DeviceLocation> {
     let mut seen = Vec::new();
-    for (_, dev) in placement {
-        if !seen.iter().any(|d| std::mem::discriminant(d) == std::mem::discriminant(dev)) {
-            seen.push(dev.clone());
+    for dev in placement.values() {
+        if !seen
+            .iter()
+            .any(|d| std::mem::discriminant(d) == std::mem::discriminant(dev))
+        {
+            seen.push(*dev);
         }
     }
     seen

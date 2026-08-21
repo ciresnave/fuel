@@ -87,12 +87,10 @@ impl LazyVarMap {
         let views: Vec<(String, TensorView<'_>)> = byte_bufs
             .iter()
             .map(|(name, bytes, shape)| {
-                let view = TensorView::new(Dtype::F32, shape.clone(), bytes.as_slice())
-                    .map_err(|e| {
-                        crate::Error::Msg(format!(
-                            "LazyVarMap::save: TensorView for {name}: {e}"
-                        ))
-                        .bt()
+                let view =
+                    TensorView::new(Dtype::F32, shape.clone(), bytes.as_slice()).map_err(|e| {
+                        crate::Error::Msg(format!("LazyVarMap::save: TensorView for {name}: {e}"))
+                            .bt()
                     });
                 view.map(|v| (name.clone(), v))
             })
@@ -109,8 +107,11 @@ impl LazyVarMap {
     /// the on-disk shape or if its dtype is not F32.
     pub fn load<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         let bytes = std::fs::read(path.as_ref()).map_err(|e| {
-            crate::Error::Msg(format!("LazyVarMap::load: read {}: {e}", path.as_ref().display()))
-                .bt()
+            crate::Error::Msg(format!(
+                "LazyVarMap::load: read {}: {e}",
+                path.as_ref().display()
+            ))
+            .bt()
         })?;
         let tensors = SafeTensors::deserialize(&bytes)
             .map_err(|e| crate::Error::Msg(format!("LazyVarMap::load: deserialize: {e}")).bt())?;
@@ -206,7 +207,11 @@ mod tests {
         let tmp = std::env::temp_dir().join("fuel_lazy_varmap_skip_unknown.safetensors");
         let _ = std::fs::remove_file(&tmp);
         let src = LazyVarMap::new();
-        src.insert(LazyVar::new("known", Shape::from_dims(&[1]), vec![42.0_f32])?);
+        src.insert(LazyVar::new(
+            "known",
+            Shape::from_dims(&[1]),
+            vec![42.0_f32],
+        )?);
         src.insert(LazyVar::new(
             "extra",
             Shape::from_dims(&[1]),
@@ -229,7 +234,11 @@ mod tests {
         let tmp = std::env::temp_dir().join("fuel_lazy_varmap_shape_mismatch.safetensors");
         let _ = std::fs::remove_file(&tmp);
         let src = LazyVarMap::new();
-        src.insert(LazyVar::new("x", Shape::from_dims(&[4]), vec![1.0, 2.0, 3.0, 4.0])?);
+        src.insert(LazyVar::new(
+            "x",
+            Shape::from_dims(&[4]),
+            vec![1.0, 2.0, 3.0, 4.0],
+        )?);
         src.save(&tmp)?;
         let dst = LazyVarMap::new();
         dst.insert(LazyVar::zeros("x", Shape::from_dims(&[2, 2]))?);

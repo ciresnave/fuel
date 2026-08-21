@@ -5,8 +5,8 @@
 //! on a host with an NVIDIA GPU + CUDA Runtime SDK installed.
 
 use fuel_backend_contract::backend::BackendRuntime;
-use fuel_ir::backend::FitStatus;
 use fuel_cuda_backend::CudaDevice;
+use fuel_ir::backend::FitStatus;
 
 fn dev_or_skip() -> Option<CudaDevice> {
     match CudaDevice::new(0) {
@@ -35,7 +35,10 @@ fn cuda_backend_runtime_reports_sensible_memory() {
         other => panic!("live GPU should report Some/Some, got {other:?}"),
     };
     assert!(total > 0, "total VRAM must be positive");
-    assert!(avail <= total, "available ({avail}) must not exceed total ({total})");
+    assert!(
+        avail <= total,
+        "available ({avail}) must not exceed total ({total})"
+    );
 }
 
 /// `would_fit` (default trait derivation) classifies allocations

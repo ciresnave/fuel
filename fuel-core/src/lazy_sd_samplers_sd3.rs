@@ -181,10 +181,7 @@ pub fn flow_match_euler_sample<M: Sd3Denoiser>(
     neg_y: LazyTensor,
 ) -> Result<LazyTensor> {
     if config.num_steps == 0 {
-        return Err(Error::Msg(
-            "flow_match_euler_sample: num_steps must be > 0".into(),
-        )
-        .bt());
+        return Err(Error::Msg("flow_match_euler_sample: num_steps must be > 0".into()).bt());
     }
     let latent_dims = latent.shape().dims().to_vec();
     if latent_dims.is_empty() || latent_dims[0] != 1 {
@@ -252,10 +249,7 @@ pub fn flow_match_euler_sample<M: Sd3Denoiser>(
 
         // ----- CFG pass: stack `x` twice along batch, run, split. ----
         let x_pair = x.concat(&x, 0_usize)?;
-        let t_pair = x.const_f32_like(
-            vec![timestep_val as f32; 2],
-            Shape::from_dims(&[2]),
-        );
+        let t_pair = x.const_f32_like(vec![timestep_val as f32; 2], Shape::from_dims(&[2]));
         let noise_pred = model.forward(&x_pair, &t_pair, &y_cfg, &context_cfg, None)?;
         let pred_cond = noise_pred.narrow(0_usize, 0, 1)?;
         let pred_uncond = noise_pred.narrow(0_usize, 1, 1)?;
@@ -268,17 +262,8 @@ pub fn flow_match_euler_sample<M: Sd3Denoiser>(
         // ----- SLG pass: run a third time on the positive branch, ---
         // skipping the configured layers, only inside the window.
         if slg_active && (step as f64) > slg_lo && (step as f64) < slg_hi {
-            let t_single = x.const_f32_like(
-                vec![timestep_val as f32; 1],
-                Shape::from_dims(&[1]),
-            );
-            let slg_pred = model.forward(
-                &x,
-                &t_single,
-                &y,
-                &context,
-                Some(&config.slg_layers),
-            )?;
+            let t_single = x.const_f32_like(vec![timestep_val as f32; 1], Shape::from_dims(&[1]));
+            let slg_pred = model.forward(&x, &t_single, &y, &context, Some(&config.slg_layers))?;
             // +slg_scale · (cond − cond_skipped)
             let delta = pred_cond.sub(&slg_pred)?.mul_scalar(config.slg_scale);
             guidance = guidance.add(&delta)?;
@@ -391,7 +376,11 @@ mod tests {
         // value (the shift biases toward higher σ).
         let shifted = sigma_schedule(8, 3.0);
         assert_eq!(shifted.len(), 9);
-        assert!((shifted[0] - 1.0).abs() < 1e-12, "shifted[0] = {}", shifted[0]);
+        assert!(
+            (shifted[0] - 1.0).abs() < 1e-12,
+            "shifted[0] = {}",
+            shifted[0]
+        );
         assert!(shifted.last().unwrap().abs() < 1e-12);
         for w in shifted.windows(2) {
             assert!(
@@ -440,22 +429,12 @@ mod tests {
         let device = Device::cpu();
         // Tiny SD3-shaped latent: B=1, C=4, H=2, W=2 (the channel
         // count doesn't matter for the IdentityDenoiser).
-        let latent = LazyTensor::from_f32(
-            vec![0.1_f32; 16],
-            Shape::from_dims(&[1, 4, 2, 2]),
-            &device,
-        );
-        let context = latent.const_f32_like(
-            vec![0.2_f32; 48],
-            Shape::from_dims(&[1, 6, 8]),
-        );
+        let latent =
+            LazyTensor::from_f32(vec![0.1_f32; 16], Shape::from_dims(&[1, 4, 2, 2]), &device);
+        let context = latent.const_f32_like(vec![0.2_f32; 48], Shape::from_dims(&[1, 6, 8]));
         let y = latent.const_f32_like(vec![0.3_f32; 8], Shape::from_dims(&[1, 8]));
-        let neg_context = latent.const_f32_like(
-            vec![-0.2_f32; 48],
-            Shape::from_dims(&[1, 6, 8]),
-        );
-        let neg_y =
-            latent.const_f32_like(vec![-0.3_f32; 8], Shape::from_dims(&[1, 8]));
+        let neg_context = latent.const_f32_like(vec![-0.2_f32; 48], Shape::from_dims(&[1, 6, 8]));
+        let neg_y = latent.const_f32_like(vec![-0.3_f32; 8], Shape::from_dims(&[1, 8]));
 
         // SLG disabled: just run a few steps end-to-end.
         let cfg_no_slg = Sd3SamplerConfig::slg_disabled(4, 3.0, 4.5);
@@ -470,11 +449,7 @@ mod tests {
             neg_y.clone(),
         )
         .unwrap();
-        assert_eq!(
-            out.shape().dims(),
-            &[1, 4, 2, 2],
-            "output shape mismatch",
-        );
+        assert_eq!(out.shape().dims(), &[1, 4, 2, 2], "output shape mismatch",);
         let realized = out.realize_f32();
         assert_eq!(realized.len(), 16);
         assert!(
@@ -493,7 +468,9 @@ mod tests {
             slg_start: 0.0,
             slg_end: 1.0,
         };
-        let counting = CountingDenoiser { slg_calls: std::cell::Cell::new(0) };
+        let counting = CountingDenoiser {
+            slg_calls: std::cell::Cell::new(0),
+        };
         let out = flow_match_euler_sample(
             &counting,
             latent.clone(),
@@ -521,7 +498,9 @@ mod tests {
         );
 
         // SLG disabled (empty layer list): no SLG calls.
-        let counting = CountingDenoiser { slg_calls: std::cell::Cell::new(0) };
+        let counting = CountingDenoiser {
+            slg_calls: std::cell::Cell::new(0),
+        };
         let cfg_disabled = Sd3SamplerConfig::slg_disabled(4, 3.0, 4.5);
         let _ = flow_match_euler_sample(
             &counting,
@@ -545,28 +524,16 @@ mod tests {
     #[test]
     fn zero_num_steps_errors() {
         let device = Device::cpu();
-        let latent = LazyTensor::from_f32(
-            vec![0.0_f32; 4],
-            Shape::from_dims(&[1, 1, 2, 2]),
-            &device,
-        );
-        let context =
-            latent.const_f32_like(vec![0.0_f32; 4], Shape::from_dims(&[1, 1, 4]));
+        let latent =
+            LazyTensor::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[1, 1, 2, 2]), &device);
+        let context = latent.const_f32_like(vec![0.0_f32; 4], Shape::from_dims(&[1, 1, 4]));
         let y = latent.const_f32_like(vec![0.0_f32; 4], Shape::from_dims(&[1, 4]));
         let neg_context = context.clone();
         let neg_y = y.clone();
         let cfg = Sd3SamplerConfig::slg_disabled(0, 3.0, 4.5);
         let denoiser = IdentityDenoiser;
-        let err = flow_match_euler_sample(
-            &denoiser,
-            latent,
-            context,
-            y,
-            &cfg,
-            neg_context,
-            neg_y,
-        )
-        .unwrap_err();
+        let err = flow_match_euler_sample(&denoiser, latent, context, y, &cfg, neg_context, neg_y)
+            .unwrap_err();
         let msg = format!("{err}");
         assert!(
             msg.contains("num_steps must be > 0"),
@@ -578,30 +545,18 @@ mod tests {
     #[test]
     fn neg_shape_mismatch_errors() {
         let device = Device::cpu();
-        let latent = LazyTensor::from_f32(
-            vec![0.0_f32; 4],
-            Shape::from_dims(&[1, 1, 2, 2]),
-            &device,
-        );
-        let context =
-            latent.const_f32_like(vec![0.0_f32; 6], Shape::from_dims(&[1, 2, 3]));
+        let latent =
+            LazyTensor::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[1, 1, 2, 2]), &device);
+        let context = latent.const_f32_like(vec![0.0_f32; 6], Shape::from_dims(&[1, 2, 3]));
         let y = latent.const_f32_like(vec![0.0_f32; 4], Shape::from_dims(&[1, 4]));
         // Wrong context shape.
-        let bad_neg_context =
-            latent.const_f32_like(vec![0.0_f32; 4], Shape::from_dims(&[1, 1, 4]));
+        let bad_neg_context = latent.const_f32_like(vec![0.0_f32; 4], Shape::from_dims(&[1, 1, 4]));
         let neg_y = y.clone();
         let cfg = Sd3SamplerConfig::slg_disabled(2, 3.0, 4.5);
         let denoiser = IdentityDenoiser;
-        let err = flow_match_euler_sample(
-            &denoiser,
-            latent,
-            context,
-            y,
-            &cfg,
-            bad_neg_context,
-            neg_y,
-        )
-        .unwrap_err();
+        let err =
+            flow_match_euler_sample(&denoiser, latent, context, y, &cfg, bad_neg_context, neg_y)
+                .unwrap_err();
         let msg = format!("{err}");
         assert!(
             msg.contains("neg_context shape"),

@@ -43,12 +43,12 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use fuel_correctness_fixtures::capture::{
-    default_tolerance_for, fixture_from_consensus, group_fixtures_for_emission,
-    representative_capture_matrix, write_fixture_file, CaptureCell, ConsensusDecision,
-    MeasuredOutput, ReviewEntry, ReviewReport,
-};
 use fuel_correctness_fixtures::CorrectnessFixture;
+use fuel_correctness_fixtures::capture::{
+    CaptureCell, ConsensusDecision, MeasuredOutput, ReviewEntry, ReviewReport,
+    default_tolerance_for, fixture_from_consensus, group_fixtures_for_emission,
+    representative_capture_matrix, write_fixture_file,
+};
 
 const HELP_TEXT: &str = "\
 fuel-capture-fixtures — produce distributable correctness fixtures
@@ -81,8 +81,14 @@ fn main() -> ExitCode {
             print_capture_cells();
             ExitCode::SUCCESS
         }
-        Ok(Cli::Mock { out_dir, review_file }) => match run_mock(&out_dir, review_file.as_deref()) {
-            Ok(RunSummary { fixtures_written, cells_skipped }) => {
+        Ok(Cli::Mock {
+            out_dir,
+            review_file,
+        }) => match run_mock(&out_dir, review_file.as_deref()) {
+            Ok(RunSummary {
+                fixtures_written,
+                cells_skipped,
+            }) => {
                 eprintln!(
                     "fuel-capture-fixtures: mock run wrote {fixtures_written} fixture(s) to {}",
                     out_dir.display(),
@@ -135,11 +141,15 @@ fn parse_args(args: &[String]) -> Result<Cli, String> {
             "--list-cells" => list = true,
             "--mock" => mock = true,
             "--out-dir" => {
-                let v = iter.next().ok_or_else(|| "--out-dir requires a value".to_string())?;
+                let v = iter
+                    .next()
+                    .ok_or_else(|| "--out-dir requires a value".to_string())?;
                 out_dir = Some(PathBuf::from(v));
             }
             "--review-file" => {
-                let v = iter.next().ok_or_else(|| "--review-file requires a value".to_string())?;
+                let v = iter
+                    .next()
+                    .ok_or_else(|| "--review-file requires a value".to_string())?;
                 review_file = Some(PathBuf::from(v));
             }
             other => return Err(format!("unknown argument: {other}")),
@@ -210,7 +220,10 @@ struct RunSummary {
     cells_skipped: usize,
 }
 
-fn run_mock(out_dir: &std::path::Path, review_file: Option<&std::path::Path>) -> std::io::Result<RunSummary> {
+fn run_mock(
+    out_dir: &std::path::Path,
+    review_file: Option<&std::path::Path>,
+) -> std::io::Result<RunSummary> {
     let cells = representative_capture_matrix();
     let mut fixtures: Vec<CorrectnessFixture> = Vec::new();
     let mut review = ReviewReport::new();
@@ -228,12 +241,15 @@ fn run_mock(out_dir: &std::path::Path, review_file: Option<&std::path::Path>) ->
                 let previews = outputs
                     .iter()
                     .map(|o| {
-                        let head: Vec<f32> =
-                            o.output.iter().take(8).copied().collect();
+                        let head: Vec<f32> = o.output.iter().take(8).copied().collect();
                         (o.backend_label.clone(), o.kernel_source.clone(), head)
                     })
                     .collect();
-                review.push(ReviewEntry { cell, reason, previews });
+                review.push(ReviewEntry {
+                    cell,
+                    reason,
+                    previews,
+                });
             }
         }
     }
@@ -257,7 +273,10 @@ fn run_mock(out_dir: &std::path::Path, review_file: Option<&std::path::Path>) ->
             review_path.display(),
         );
     }
-    Ok(RunSummary { fixtures_written, cells_skipped })
+    Ok(RunSummary {
+        fixtures_written,
+        cells_skipped,
+    })
 }
 
 #[cfg(test)]
@@ -268,8 +287,14 @@ mod tests {
     #[test]
     fn parse_args_help_or_empty() {
         assert!(matches!(parse_args(&[]).unwrap(), Cli::Help));
-        assert!(matches!(parse_args(&["--help".to_string()]).unwrap(), Cli::Help));
-        assert!(matches!(parse_args(&["-h".to_string()]).unwrap(), Cli::Help));
+        assert!(matches!(
+            parse_args(&["--help".to_string()]).unwrap(),
+            Cli::Help
+        ));
+        assert!(matches!(
+            parse_args(&["-h".to_string()]).unwrap(),
+            Cli::Help
+        ));
     }
 
     /// `--list-cells` parses to ListCells.
@@ -286,7 +311,10 @@ mod tests {
     fn parse_args_mock_default_out_dir() {
         let cli = parse_args(&["--mock".to_string()]).unwrap();
         match cli {
-            Cli::Mock { out_dir, review_file } => {
+            Cli::Mock {
+                out_dir,
+                review_file,
+            } => {
                 assert_eq!(out_dir, PathBuf::from("fixtures"));
                 assert!(review_file.is_none());
             }
@@ -301,7 +329,8 @@ mod tests {
             "--mock".to_string(),
             "--out-dir".to_string(),
             "/tmp/foo".to_string(),
-        ]).unwrap();
+        ])
+        .unwrap();
         match cli {
             Cli::Mock { out_dir, .. } => {
                 assert_eq!(out_dir, PathBuf::from("/tmp/foo"));
@@ -328,10 +357,8 @@ mod tests {
     /// review entries (mock backends agree by construction).
     #[test]
     fn mock_run_writes_fixtures_no_review() {
-        let tmp = std::env::temp_dir().join(format!(
-            "fuel-capture-fixtures-mock-{}",
-            std::process::id(),
-        ));
+        let tmp = std::env::temp_dir()
+            .join(format!("fuel-capture-fixtures-mock-{}", std::process::id(),));
         let _ = std::fs::remove_dir_all(&tmp);
         let summary = run_mock(&tmp, None).expect("run_mock");
         // Mock cells all agree → every cell produces a fixture.

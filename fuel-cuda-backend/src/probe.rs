@@ -13,8 +13,8 @@
 
 use fuel_ir::probe::{BackendId, BackendProbe, DeviceDescriptor};
 use fuel_ir::{DeviceLocation, Error, Result};
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// Memoized enumeration result — the whole point of this module's caching.
 ///
@@ -34,8 +34,7 @@ use std::sync::OnceLock;
 /// **Hot-plug caveat:** the cache lives for the process lifetime, so a device
 /// attached after the first enumeration will not appear. Correct for a test or
 /// CLI run and the deliberate tradeoff for killing the fan-out.
-static DEVICE_CACHE: OnceLock<std::result::Result<Vec<DeviceDescriptor>, String>> =
-    OnceLock::new();
+static DEVICE_CACHE: OnceLock<std::result::Result<Vec<DeviceDescriptor>, String>> = OnceLock::new();
 
 /// How many times the driver was ACTUALLY probed, process-global TOTAL across
 /// the memoized path and any direct [`enumerate_devices_uncached`] caller.
@@ -117,9 +116,11 @@ pub fn enumerate_devices_uncached() -> Result<Vec<DeviceDescriptor>> {
 
     let mut out = Vec::with_capacity(count as usize);
     for ordinal in 0..count {
-        let dev = baracuda_driver::Device::get(ordinal)
-            .map_err(|e| Error::Msg(format!("cuda probe: Device::get({ordinal}) failed: {e}")).bt())?;
-        let name = dev.name()
+        let dev = baracuda_driver::Device::get(ordinal).map_err(|e| {
+            Error::Msg(format!("cuda probe: Device::get({ordinal}) failed: {e}")).bt()
+        })?;
+        let name = dev
+            .name()
             .unwrap_or_else(|_| format!("cuda:{ordinal} (name query failed)"));
         let cc = dev.compute_capability().ok();
         let total_mem = dev.total_memory().unwrap_or(0);
@@ -129,11 +130,11 @@ pub fn enumerate_devices_uncached() -> Result<Vec<DeviceDescriptor>> {
             .unwrap_or(0);
 
         out.push(DeviceDescriptor {
-            backend:            BackendId::Cuda,
-            device_index:       ordinal,
-            hardware_sku:       name,
-            vendor_id:          NVIDIA_VENDOR_ID,
-            device_id:          pci_device_id,
+            backend: BackendId::Cuda,
+            device_index: ordinal,
+            hardware_sku: name,
+            vendor_id: NVIDIA_VENDOR_ID,
+            device_id: pci_device_id,
             compute_capability: cc,
             // TODO(cuda): CUDA *can* report this — it is
             // `CU_DEVICE_ATTRIBUTE_WARP_SIZE`, readable via the same
@@ -144,10 +145,12 @@ pub fn enumerate_devices_uncached() -> Result<Vec<DeviceDescriptor>> {
             // exercise — shipping either an unverified enum-variant name or a
             // hardcoded constant into a probe would be worse than a documented
             // `None`. Populate it in a CUDA-buildable change.
-            subgroup_width:     None,
-            driver_version:     driver_ver.clone(),
+            subgroup_width: None,
+            driver_version: driver_ver.clone(),
             total_memory_bytes: total_mem,
-            location:           DeviceLocation::Cuda { gpu_id: ordinal as usize },
+            location: DeviceLocation::Cuda {
+                gpu_id: ordinal as usize,
+            },
         });
     }
     Ok(out)

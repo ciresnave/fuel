@@ -3,7 +3,7 @@
 //! The files can be obtained from the following link:
 //! <http://yann.lecun.com/exdb/mnist/>
 use fuel::{Error, Result};
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use std::fs::File;
 use std::io::{self, BufReader, Read};
@@ -98,7 +98,10 @@ fn load_parquet(
             }
         }
     }
-    let images: Vec<f32> = buffer_images.into_iter().map(|b| f32::from(b) / 255.0).collect();
+    let images: Vec<f32> = buffer_images
+        .into_iter()
+        .map(|b| f32::from(b) / 255.0)
+        .collect();
     let labels: Vec<u32> = buffer_labels.into_iter().map(u32::from).collect();
     Ok((images, labels, samples))
 }

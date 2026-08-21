@@ -28,8 +28,8 @@
 //! host; the matcher is always stubbed — autograd emits the fused node).
 
 use crate::registry::{
-    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps,
-    PatternMatch, SubgraphPattern, decompose_via_recipe,
+    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps, PatternMatch,
+    SubgraphPattern, decompose_via_recipe,
 };
 use crate::{Graph, NodeId};
 use fuel_ir::{DType, Shape};
@@ -41,12 +41,12 @@ use std::sync::OnceLock;
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
         destructive_input: None,
-        id:         FusedOps::REDUCE_MAX_TO_BACKWARD,
-        name:       "ReduceMaxToBackward",
-        family:     FusedOpFamily::Backward,
-        pattern:    SubgraphPattern::Callable(canonical_pattern),
+        id: FusedOps::REDUCE_MAX_TO_BACKWARD,
+        name: "ReduceMaxToBackward",
+        family: FusedOpFamily::Backward,
+        pattern: SubgraphPattern::Callable(canonical_pattern),
         decompose,
-        backward:   BackwardKind::NotDifferentiable,
+        backward: BackwardKind::NotDifferentiable,
         shape_rule,
         dtype_rule,
         output_views: None,
@@ -55,7 +55,8 @@ pub fn entry() -> FusedOpEntry {
 
 fn shape_rule(input_shapes: &[Shape], _params: &FusedOpParams) -> Shape {
     debug_assert_eq!(
-        input_shapes.len(), 2,
+        input_shapes.len(),
+        2,
         "ReduceMaxToBackward takes 2 inputs (x, upstream)",
     );
     // grad_x has the original x's shape (input 0); upstream's shape
@@ -64,10 +65,7 @@ fn shape_rule(input_shapes: &[Shape], _params: &FusedOpParams) -> Shape {
 }
 
 fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
-    debug_assert_eq!(
-        input_dtypes.len(), 2,
-        "ReduceMaxToBackward takes 2 inputs",
-    );
+    debug_assert_eq!(input_dtypes.len(), 2, "ReduceMaxToBackward takes 2 inputs",);
     input_dtypes[0]
 }
 
@@ -116,7 +114,11 @@ fn recipe() -> &'static PatternNode {
             target_shape_rel: Some(ShapeExpr::SameAs { operand: 1 }),
             ..OpAttrs::default()
         };
-        let op = |op, attrs, operands| PatternNode::Op { op, attrs, operands };
+        let op = |op, attrs, operands| PatternNode::Op {
+            op,
+            attrs: Box::new(attrs),
+            operands,
+        };
         let x = || PatternNode::Bind { index: 0 };
         let up = || PatternNode::Bind { index: 1 };
         let bcast_x = |v: PatternNode| op(OpTag::BroadcastTo, same_as_x(), vec![v]);
@@ -128,19 +130,29 @@ fn recipe() -> &'static PatternNode {
             let mask_u8 = op(OpTag::Equal, OpAttrs::default(), vec![x(), bcast_x(y)]);
             let zeros = op(
                 OpTag::MulScalar,
-                OpAttrs { scalars: vec![0.0], ..OpAttrs::default() },
+                OpAttrs {
+                    scalars: vec![0.0],
+                    ..OpAttrs::default()
+                },
                 vec![x()],
             );
             op(
                 OpTag::MaskedFill,
-                OpAttrs { scalars: vec![1.0], ..OpAttrs::default() },
+                OpAttrs {
+                    scalars: vec![1.0],
+                    ..OpAttrs::default()
+                },
                 vec![zeros, mask_u8],
             )
         };
         // ties = ReduceSumTo(mask_f); share = up / ties; grad_x = mask_f · bcast(share).
         let ties = op(OpTag::ReduceSumTo, same_as_up(), vec![mask_f()]);
         let share = op(OpTag::Div, OpAttrs::default(), vec![up(), ties]);
-        op(OpTag::Mul, OpAttrs::default(), vec![mask_f(), bcast_x(share)])
+        op(
+            OpTag::Mul,
+            OpAttrs::default(),
+            vec![mask_f(), bcast_x(share)],
+        )
     })
 }
 

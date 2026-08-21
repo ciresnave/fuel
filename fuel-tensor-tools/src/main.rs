@@ -246,7 +246,11 @@ fn summarize(name: &str, dims: &[usize], dtype: GgmlDType, xs: &[f32], head: usi
         }
     }
     let finite = n - nonfinite;
-    let mean = if finite > 0 { sum / finite as f64 } else { f64::NAN };
+    let mean = if finite > 0 {
+        sum / finite as f64
+    } else {
+        f64::NAN
+    };
     println!("==== {name} ====");
     println!("  dtype={dtype:?}  shape={dims:?}  elems={n}");
     if finite > 0 {
@@ -290,9 +294,7 @@ fn run_ls(file: &std::path::PathBuf, format: Option<Format>, verbose: bool) -> R
             let mut f = std::fs::File::open(file)?;
             let header = fuel_formats::ggml::Header::read(&mut f)?;
             println!("hparams: {:?}", header.hparams);
-            while let Ok(raw) =
-                fuel_formats::ggml::read_one_raw_tensor(&mut f, header.magic)
-            {
+            while let Ok(raw) = fuel_formats::ggml::read_one_raw_tensor(&mut f, header.magic) {
                 println!("{}: {:?} {:?}", raw.name, raw.dtype, raw.dims);
             }
         }
@@ -317,7 +319,12 @@ fn run_ls(file: &std::path::PathBuf, format: Option<Format>, verbose: bool) -> R
         Format::Pth => {
             let infos = fuel_formats::pickle::read_pth_tensor_info(file, false, None)?;
             for info in infos {
-                println!("{}: {:?} {:?}", info.name, info.dtype, info.layout.shape().dims());
+                println!(
+                    "{}: {:?} {:?}",
+                    info.name,
+                    info.dtype,
+                    info.layout.shape().dims()
+                );
             }
         }
     }
@@ -359,9 +366,7 @@ fn run_print(
             let mut f = std::fs::File::open(file)?;
             let header = fuel_formats::ggml::Header::read(&mut f)?;
             let want: std::collections::HashSet<_> = names.iter().cloned().collect();
-            while let Ok(raw) =
-                fuel_formats::ggml::read_one_raw_tensor(&mut f, header.magic)
-            {
+            while let Ok(raw) = fuel_formats::ggml::read_one_raw_tensor(&mut f, header.magic) {
                 if !want.is_empty() && !want.contains(&raw.name) {
                     continue;
                 }
@@ -384,7 +389,7 @@ fn run_print(
                 let xs: Vec<f32> = match view.dtype() {
                     safetensors::Dtype::F32 => view
                         .data()
-                        .chunks_exact(4)
+                        .as_chunks::<4>().0.iter()
                         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                         .collect(),
                     other => {
@@ -443,8 +448,11 @@ fn run_quantize(
         }
     }
 
-    let metadata: Vec<(&str, &gguf::Value)> =
-        content.metadata.iter().map(|(k, v)| (k.as_str(), v)).collect();
+    let metadata: Vec<(&str, &gguf::Value)> = content
+        .metadata
+        .iter()
+        .map(|(k, v)| (k.as_str(), v))
+        .collect();
     write_gguf(out_file, &metadata, &out)?;
     println!("wrote {out_file:?}");
     Ok(())
@@ -518,17 +526,29 @@ fn write_gguf(
 fn main() -> Result<()> {
     let args = Args::parse();
     match args.command {
-        Command::Ls { files, format, verbose } => {
+        Command::Ls {
+            files,
+            format,
+            verbose,
+        } => {
             for file in files.iter() {
                 if let Err(e) = run_ls(file, format, verbose) {
                     println!("{file:?}: {e}");
                 }
             }
         }
-        Command::Print { file, names, format, head } => run_print(&file, names, format, head)?,
-        Command::Quantize { in_file, out_file, quantization, mode } => {
-            run_quantize(&in_file, &out_file, quantization, mode)?
-        }
+        Command::Print {
+            file,
+            names,
+            format,
+            head,
+        } => run_print(&file, names, format, head)?,
+        Command::Quantize {
+            in_file,
+            out_file,
+            quantization,
+            mode,
+        } => run_quantize(&in_file, &out_file, quantization, mode)?,
     }
     Ok(())
 }
@@ -548,7 +568,11 @@ mod tests {
         assert!(!bytes.is_empty(), "quantizer produced no bytes");
 
         let back = to_f32(GgmlDType::Q4_0, &bytes, xs.len())?;
-        assert_eq!(back.len(), xs.len(), "element count must survive the round trip");
+        assert_eq!(
+            back.len(),
+            xs.len(),
+            "element count must survive the round trip"
+        );
         for (i, (a, b)) in xs.iter().zip(&back).enumerate() {
             assert!(
                 (a - b).abs() < 0.5,

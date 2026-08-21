@@ -92,14 +92,17 @@ impl LFM2Config {
         if self.block_types.len() != self.num_hidden_layers {
             return Err(crate::Error::Msg(format!(
                 "LFM2Config: block_types.len() ({}) must equal num_hidden_layers ({})",
-                self.block_types.len(), self.num_hidden_layers,
-            )).bt());
+                self.block_types.len(),
+                self.num_hidden_layers,
+            ))
+            .bt());
         }
         if self.num_attention_heads * self.head_dim != self.hidden_size {
             return Err(crate::Error::Msg(format!(
                 "LFM2Config: num_attention_heads ({}) * head_dim ({}) must equal hidden_size ({})",
                 self.num_attention_heads, self.head_dim, self.hidden_size,
-            )).bt());
+            ))
+            .bt());
         }
         if self.num_attention_heads % self.num_key_value_heads != 0 {
             return Err(crate::Error::Msg(format!(
@@ -108,9 +111,7 @@ impl LFM2Config {
             )).bt());
         }
         if self.conv_kernel_size == 0 {
-            return Err(crate::Error::Msg(
-                "LFM2Config: conv_kernel_size must be >= 1".into(),
-            ).bt());
+            return Err(crate::Error::Msg("LFM2Config: conv_kernel_size must be >= 1".into()).bt());
         }
         Ok(())
     }
@@ -203,34 +204,37 @@ impl LFM2Model {
 
     /// Multimodal entry point. Skips token embedding; runs the decoder
     /// over pre-embedded inputs of shape `(1, seq, hidden_size)`.
-    pub fn forward_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
         let h_norm = self.run_backbone_embeds(embeds, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
 
     /// Hidden-state variant of [`Self::forward_embeds`].
     pub fn forward_hidden_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
+        &self,
+        embeds: &LazyTensor,
+        start_pos: usize,
     ) -> Result<LazyTensor> {
         self.run_backbone_embeds(embeds, start_pos)
     }
 
     /// Build per-token embeddings without running the decoder.
-    pub fn embed_tokens_anchored(
-        &self, anchor: &LazyTensor, tokens: &[u32],
-    ) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
-            cfg.vocab_size, cfg.hidden_size, tokens,
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
         )
     }
 
     fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
-        Ok(self.weights.output.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
+        Ok(self
+            .weights
+            .output
+            .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
     fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
@@ -240,14 +244,15 @@ impl LFM2Model {
 
         let h = LazyTensor::embed_tokens(
             self.weights.token_embedding.clone(),
-            cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
+            &Device::cpu(),
         )?;
         self.run_backbone_embeds(&h, start_pos)
     }
 
-    fn run_backbone_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
-    ) -> Result<LazyTensor> {
+    fn run_backbone_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
         cfg.validate()?;
         let weights = &self.weights;
@@ -261,14 +266,13 @@ impl LFM2Model {
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(crate::Error::Msg(
-                "LFM2Model::forward_embeds: seq must be > 0".into(),
-            ).bt());
+            return Err(
+                crate::Error::Msg("LFM2Model::forward_embeds: seq must be > 0".into()).bt(),
+            );
         }
 
-        let (rope_cos, rope_sin) = embeds.rope_tables_const(
-            cfg.rope_theta, start_pos, seq, cfg.head_dim,
-        );
+        let (rope_cos, rope_sin) =
+            embeds.rope_tables_const(cfg.rope_theta, start_pos, seq, cfg.head_dim);
 
         let mut h = embeds.clone();
         for (layer_idx, layer) in weights.layers.iter().enumerate() {
@@ -307,11 +311,14 @@ impl LFM2Model {
             (LFM2MixerWeights::Conv(c), LFM2BlockType::Conv) => {
                 self.apply_short_conv(&x_norm, c)?
             }
-            _ => return Err(crate::Error::Msg(format!(
-                "LFM2 layer {layer_idx}: mixer weight kind does not match \
+            _ => {
+                return Err(crate::Error::Msg(format!(
+                    "LFM2 layer {layer_idx}: mixer weight kind does not match \
                  block_types[{layer_idx}] = {:?}",
-                cfg.block_types[layer_idx],
-            )).bt()),
+                    cfg.block_types[layer_idx],
+                ))
+                .bt());
+            }
         };
         let h1 = residual.add(&mixer_out)?;
 
@@ -321,16 +328,18 @@ impl LFM2Model {
         residual2.add(&mlp_out)
     }
 
-    fn apply_mlp(
-        &self,
-        x: &LazyTensor,
-        layer: &LFM2LayerWeights,
-    ) -> Result<LazyTensor> {
+    fn apply_mlp(&self, x: &LazyTensor, layer: &LFM2LayerWeights) -> Result<LazyTensor> {
         let cfg = &self.config;
-        let gate = layer.ffn_gate.apply_linear(x, cfg.hidden_size, cfg.intermediate_size)?;
-        let up = layer.ffn_up.apply_linear(x, cfg.hidden_size, cfg.intermediate_size)?;
+        let gate = layer
+            .ffn_gate
+            .apply_linear(x, cfg.hidden_size, cfg.intermediate_size)?;
+        let up = layer
+            .ffn_up
+            .apply_linear(x, cfg.hidden_size, cfg.intermediate_size)?;
         let swiglu = gate.silu().mul(&up)?;
-        Ok(layer.ffn_down.apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size)?)
+        Ok(layer
+            .ffn_down
+            .apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size)?)
     }
 
     fn apply_attention(
@@ -401,11 +410,7 @@ impl LFM2Model {
     ///     compute `out = sum_keepdim(state * conv_weight, dim=2)`.
     ///   - Persist the rolled state for the next step.
     /// Until then `start_pos > 0` calls just re-run prefill from zero.
-    fn apply_short_conv(
-        &self,
-        x: &LazyTensor,
-        c: &LFM2ConvWeights,
-    ) -> Result<LazyTensor> {
+    fn apply_short_conv(&self, x: &LazyTensor, c: &LFM2ConvWeights) -> Result<LazyTensor> {
         let cfg = &self.config;
         let dims = x.shape();
         let dims = dims.dims();
@@ -419,9 +424,9 @@ impl LFM2Model {
         let bcx = c.in_proj.apply_linear(x, hidden, 3 * hidden)?;
         let bcx_t = bcx.permute([0, 2, 1_usize])?; // (B, 3*hidden, seq)
 
-        let b_gate = bcx_t.slice(1_usize, 0, hidden)?;          // (B, hidden, seq)
-        let c_gate = bcx_t.slice(1_usize, hidden, hidden)?;     // (B, hidden, seq)
-        let x_sig  = bcx_t.slice(1_usize, 2 * hidden, hidden)?; // (B, hidden, seq)
+        let b_gate = bcx_t.slice(1_usize, 0, hidden)?; // (B, hidden, seq)
+        let c_gate = bcx_t.slice(1_usize, hidden, hidden)?; // (B, hidden, seq)
+        let x_sig = bcx_t.slice(1_usize, 2 * hidden, hidden)?; // (B, hidden, seq)
 
         // Input-gate: bx = b * x. The depthwise conv operates on bx.
         let bx = b_gate.mul(&x_sig)?;
@@ -485,17 +490,16 @@ impl LFM2Weights {
         let inter = cfg.intermediate_size;
         let k = cfg.conv_kernel_size;
 
-        let token_embedding = Arc::from(load_tensor_as_f32(
-            st, "model.embed_tokens.weight",
-        )?);
+        let token_embedding = Arc::from(load_tensor_as_f32(st, "model.embed_tokens.weight")?);
 
         // Helper that tries one tensor name and falls back to a second.
         let load_alt_f32 = |a: &str, b: &str| -> Result<Vec<f32>> {
             load_tensor_as_f32(st, a).or_else(|_| load_tensor_as_f32(st, b))
         };
-        let load_alt_matrix = |a: &str, b: &str, out_f: usize, in_f: usize| -> Result<WeightStorage> {
-            ltm(st, a, out_f, in_f).or_else(|_| ltm(st, b, out_f, in_f))
-        };
+        let load_alt_matrix =
+            |a: &str, b: &str, out_f: usize, in_f: usize| -> Result<WeightStorage> {
+                ltm(st, a, out_f, in_f).or_else(|_| ltm(st, b, out_f, in_f))
+            };
 
         let mut layers: Vec<LFM2LayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
         for (i, &block) in cfg.block_types.iter().enumerate() {
@@ -513,17 +517,20 @@ impl LFM2Weights {
             let ffn_gate = load_alt_matrix(
                 &format!("{p}.mlp.gate_proj.weight"),
                 &format!("{p}.feed_forward.w1.weight"),
-                inter, h,
+                inter,
+                h,
             )?;
             let ffn_up = load_alt_matrix(
                 &format!("{p}.mlp.up_proj.weight"),
                 &format!("{p}.feed_forward.w3.weight"),
-                inter, h,
+                inter,
+                h,
             )?;
             let ffn_down = load_alt_matrix(
                 &format!("{p}.mlp.down_proj.weight"),
                 &format!("{p}.feed_forward.w2.weight"),
-                h, inter,
+                h,
+                inter,
             )?;
 
             let mixer = match block {
@@ -531,22 +538,26 @@ impl LFM2Weights {
                     let attn_q = load_alt_matrix(
                         &format!("{p}.self_attn.q_proj.weight"),
                         &format!("{p}.attention.q_proj.weight"),
-                        q_dim, h,
+                        q_dim,
+                        h,
                     )?;
                     let attn_k = load_alt_matrix(
                         &format!("{p}.self_attn.k_proj.weight"),
                         &format!("{p}.attention.k_proj.weight"),
-                        kv_dim, h,
+                        kv_dim,
+                        h,
                     )?;
                     let attn_v = load_alt_matrix(
                         &format!("{p}.self_attn.v_proj.weight"),
                         &format!("{p}.attention.v_proj.weight"),
-                        kv_dim, h,
+                        kv_dim,
+                        h,
                     )?;
                     let attn_o = load_alt_matrix(
                         &format!("{p}.self_attn.o_proj.weight"),
                         &format!("{p}.attention.o_proj.weight"),
-                        h, q_dim,
+                        h,
+                        q_dim,
                     )?;
                     let q_norm_gain = Arc::from(load_alt_f32(
                         &format!("{p}.self_attn.q_layernorm.weight"),
@@ -557,20 +568,26 @@ impl LFM2Weights {
                         &format!("{p}.attention.k_norm.weight"),
                     )?);
                     LFM2MixerWeights::Attention(LFM2AttentionWeights {
-                        attn_q, attn_k, attn_v, attn_o,
-                        q_norm_gain, k_norm_gain,
+                        attn_q,
+                        attn_k,
+                        attn_v,
+                        attn_o,
+                        q_norm_gain,
+                        k_norm_gain,
                     })
                 }
                 LFM2BlockType::Conv => {
                     let in_proj = load_alt_matrix(
                         &format!("{p}.conv.in_proj.weight"),
                         &format!("{p}.shortconv.in_proj.weight"),
-                        3 * h, h,
+                        3 * h,
+                        h,
                     )?;
                     let out_proj = load_alt_matrix(
                         &format!("{p}.conv.out_proj.weight"),
                         &format!("{p}.shortconv.out_proj.weight"),
-                        h, h,
+                        h,
+                        h,
                     )?;
                     let raw = load_alt_f32(
                         &format!("{p}.conv.conv.weight"),
@@ -581,16 +598,20 @@ impl LFM2Weights {
                     // `[k, hidden]` (eager loader's transposed form).
                     let conv_weight = normalize_conv_kernel(raw, h, k, i)?;
                     LFM2MixerWeights::Conv(LFM2ConvWeights {
-                        in_proj, out_proj,
+                        in_proj,
+                        out_proj,
                         conv_weight: Arc::from(conv_weight),
                     })
                 }
             };
 
             layers.push(LFM2LayerWeights {
-                operator_norm_gain, ffn_norm_gain,
+                operator_norm_gain,
+                ffn_norm_gain,
                 mixer,
-                ffn_gate, ffn_up, ffn_down,
+                ffn_gate,
+                ffn_up,
+                ffn_down,
             });
         }
 
@@ -602,7 +623,9 @@ impl LFM2Weights {
         let output = match ltm(st, "lm_head.weight", cfg.vocab_size, h) {
             Ok(w) => w,
             Err(_) => crate::lazy_llama_full::tied_lm_head_from_embeddings(
-                &token_embedding, cfg.vocab_size, h,
+                &token_embedding,
+                cfg.vocab_size,
+                h,
             ),
         };
 
@@ -620,7 +643,10 @@ impl LFM2Weights {
 /// checkpoints have shipped with: `(hidden, 1, k)` (already correct),
 /// `(hidden, k)`, or `(k, hidden)`.
 fn normalize_conv_kernel(
-    raw: Vec<f32>, hidden: usize, k: usize, layer_idx: usize,
+    raw: Vec<f32>,
+    hidden: usize,
+    k: usize,
+    layer_idx: usize,
 ) -> Result<Vec<f32>> {
     let want = hidden * k;
     if raw.len() != want {
@@ -669,9 +695,8 @@ mod tests {
             s = s.wrapping_mul(1103515245).wrapping_add(12345);
             ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
         };
-        let mut vec_of = |n: usize| -> Arc<[f32]> {
-            Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
-        };
+        let mut vec_of =
+            |n: usize| -> Arc<[f32]> { Arc::from((0..n).map(|_| next()).collect::<Vec<_>>()) };
         let h = cfg.hidden_size;
         let i = cfg.intermediate_size;
         let q_dim = cfg.num_attention_heads * cfg.head_dim;
@@ -682,42 +707,46 @@ mod tests {
         let mut layers: Vec<LFM2LayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
         for &block in cfg.block_types.iter() {
             let mixer = match block {
-                LFM2BlockType::Attention => {
-                    LFM2MixerWeights::Attention(LFM2AttentionWeights {
-                        attn_q: WeightStorage::F32(vec_of(h * q_dim)),
-                        attn_k: WeightStorage::F32(vec_of(h * kv_dim)),
-                        attn_v: WeightStorage::F32(vec_of(h * kv_dim)),
-                        attn_o: WeightStorage::F32(vec_of(q_dim * h)),
-                        q_norm_gain: Arc::from(vec![1.0_f32; cfg.head_dim]),
-                        k_norm_gain: Arc::from(vec![1.0_f32; cfg.head_dim]),
-                    })
-                }
-                LFM2BlockType::Conv => {
-                    LFM2MixerWeights::Conv(LFM2ConvWeights {
-                        in_proj: WeightStorage::F32(vec_of(h * 3 * h)),
-                        out_proj: WeightStorage::F32(vec_of(h * h)),
-                        conv_weight: vec_of(h * k),
-                    })
-                }
+                LFM2BlockType::Attention => LFM2MixerWeights::Attention(LFM2AttentionWeights {
+                    attn_q: WeightStorage::F32(vec_of(h * q_dim)),
+                    attn_k: WeightStorage::F32(vec_of(h * kv_dim)),
+                    attn_v: WeightStorage::F32(vec_of(h * kv_dim)),
+                    attn_o: WeightStorage::F32(vec_of(q_dim * h)),
+                    q_norm_gain: Arc::from(vec![1.0_f32; cfg.head_dim]),
+                    k_norm_gain: Arc::from(vec![1.0_f32; cfg.head_dim]),
+                }),
+                LFM2BlockType::Conv => LFM2MixerWeights::Conv(LFM2ConvWeights {
+                    in_proj: WeightStorage::F32(vec_of(h * 3 * h)),
+                    out_proj: WeightStorage::F32(vec_of(h * h)),
+                    conv_weight: vec_of(h * k),
+                }),
             };
             layers.push(LFM2LayerWeights {
                 operator_norm_gain: Arc::from(vec![1.0_f32; h]),
                 ffn_norm_gain: Arc::from(vec![1.0_f32; h]),
                 mixer,
                 ffn_gate: WeightStorage::F32(vec_of(h * i)),
-                ffn_up:   WeightStorage::F32(vec_of(h * i)),
+                ffn_up: WeightStorage::F32(vec_of(h * i)),
                 ffn_down: WeightStorage::F32(vec_of(i * h)),
             });
         }
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size));
-        LFM2Weights { token_embedding, layers, final_norm_gain, output }
+        LFM2Weights {
+            token_embedding,
+            layers,
+            final_norm_gain,
+            output,
+        }
     }
 
     #[test]
     fn forward_shape_and_finite_attention_plus_conv() {
         let cfg = tiny_cfg();
-        let model = LFM2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = LFM2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4, 5];
         let logits = model.forward(&tokens, 0).unwrap();
         assert_eq!(logits.shape().dims(), &[1, tokens.len(), cfg.vocab_size]);
@@ -729,7 +758,10 @@ mod tests {
     #[test]
     fn forward_hidden_shape_and_finite() {
         let cfg = tiny_cfg();
-        let model = LFM2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = LFM2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
         let hidden = model.forward_hidden(&tokens, 0).unwrap();
         assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
@@ -757,7 +789,10 @@ mod tests {
         // Stress the ShortConv path on its own.
         let mut cfg = tiny_cfg();
         cfg.block_types = vec![LFM2BlockType::Conv, LFM2BlockType::Conv];
-        let model = LFM2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = LFM2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits = model.forward(&tokens, 0).unwrap();
         assert_eq!(logits.shape().dims(), &[1, tokens.len(), cfg.vocab_size]);
@@ -769,17 +804,23 @@ mod tests {
     #[test]
     fn forward_embeds_matches_forward_after_token_lookup() {
         let cfg = tiny_cfg();
-        let model = LFM2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = LFM2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
-        let max_diff = logits_ref.iter().zip(logits_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-4,
-            "LFM2 forward vs forward_embeds must agree (max diff {max_diff})");
+        let max_diff = logits_ref
+            .iter()
+            .zip(logits_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-4,
+            "LFM2 forward vs forward_embeds must agree (max diff {max_diff})"
+        );
     }
 }

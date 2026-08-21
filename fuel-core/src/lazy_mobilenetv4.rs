@@ -21,9 +21,9 @@
 //!     additionally use Mobile-MQA Attention blocks; that block
 //!     type is a follow-up.
 
-use crate::lazy::{load_tensor_as_f32, LazyTensor, WeightStorage};
-use crate::lazy_convmixer::BatchNormParams;
 use crate::Result;
+use crate::lazy::{LazyTensor, WeightStorage, load_tensor_as_f32};
+use crate::lazy_convmixer::BatchNormParams;
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -39,14 +39,22 @@ pub enum Mv4Activation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockSpec {
     Convolutional {
-        out_channels: usize, kernel: usize, stride: usize,
+        out_channels: usize,
+        kernel: usize,
+        stride: usize,
     },
     EdgeResidual {
-        out_channels: usize, kernel: usize, stride: usize, expand: usize,
+        out_channels: usize,
+        kernel: usize,
+        stride: usize,
+        expand: usize,
     },
     UniversalBottleneck {
-        out_channels: usize, start_kernel: usize, mid_kernel: usize,
-        stride: usize, expand: usize,
+        out_channels: usize,
+        start_kernel: usize,
+        mid_kernel: usize,
+        stride: usize,
+        expand: usize,
     },
     /// Mobile multi-query attention block. Q has `heads` separate
     /// streams (each `kv_dim` channels); K/V each have a single
@@ -56,8 +64,12 @@ pub enum BlockSpec {
     ///
     /// v1: `stride` must equal 1.
     Attention {
-        out_channels: usize, heads: usize, kernel: usize, stride: usize,
-        kv_dim: usize, kv_stride: usize,
+        out_channels: usize,
+        heads: usize,
+        kernel: usize,
+        stride: usize,
+        kv_dim: usize,
+        kv_stride: usize,
     },
 }
 
@@ -85,32 +97,122 @@ impl Mv4Config {
             head_out_channels: 1280,
             stages: [
                 vec![
-                    Convolutional { out_channels: 32, kernel: 3, stride: 2 },
-                    Convolutional { out_channels: 32, kernel: 1, stride: 1 },
+                    Convolutional {
+                        out_channels: 32,
+                        kernel: 3,
+                        stride: 2,
+                    },
+                    Convolutional {
+                        out_channels: 32,
+                        kernel: 1,
+                        stride: 1,
+                    },
                 ],
                 vec![
-                    Convolutional { out_channels: 96, kernel: 3, stride: 2 },
-                    Convolutional { out_channels: 64, kernel: 1, stride: 1 },
+                    Convolutional {
+                        out_channels: 96,
+                        kernel: 3,
+                        stride: 2,
+                    },
+                    Convolutional {
+                        out_channels: 64,
+                        kernel: 1,
+                        stride: 1,
+                    },
                 ],
                 vec![
-                    UniversalBottleneck { out_channels: 96,  start_kernel: 5, mid_kernel: 5, stride: 2, expand: 3 },
-                    UniversalBottleneck { out_channels: 96,  start_kernel: 0, mid_kernel: 3, stride: 1, expand: 2 },
-                    UniversalBottleneck { out_channels: 96,  start_kernel: 0, mid_kernel: 3, stride: 1, expand: 2 },
-                    UniversalBottleneck { out_channels: 96,  start_kernel: 0, mid_kernel: 3, stride: 1, expand: 2 },
-                    UniversalBottleneck { out_channels: 96,  start_kernel: 0, mid_kernel: 3, stride: 1, expand: 2 },
-                    UniversalBottleneck { out_channels: 96,  start_kernel: 3, mid_kernel: 0, stride: 1, expand: 4 },
+                    UniversalBottleneck {
+                        out_channels: 96,
+                        start_kernel: 5,
+                        mid_kernel: 5,
+                        stride: 2,
+                        expand: 3,
+                    },
+                    UniversalBottleneck {
+                        out_channels: 96,
+                        start_kernel: 0,
+                        mid_kernel: 3,
+                        stride: 1,
+                        expand: 2,
+                    },
+                    UniversalBottleneck {
+                        out_channels: 96,
+                        start_kernel: 0,
+                        mid_kernel: 3,
+                        stride: 1,
+                        expand: 2,
+                    },
+                    UniversalBottleneck {
+                        out_channels: 96,
+                        start_kernel: 0,
+                        mid_kernel: 3,
+                        stride: 1,
+                        expand: 2,
+                    },
+                    UniversalBottleneck {
+                        out_channels: 96,
+                        start_kernel: 0,
+                        mid_kernel: 3,
+                        stride: 1,
+                        expand: 2,
+                    },
+                    UniversalBottleneck {
+                        out_channels: 96,
+                        start_kernel: 3,
+                        mid_kernel: 0,
+                        stride: 1,
+                        expand: 4,
+                    },
                 ],
                 vec![
-                    UniversalBottleneck { out_channels: 128, start_kernel: 3, mid_kernel: 3, stride: 2, expand: 6 },
-                    UniversalBottleneck { out_channels: 128, start_kernel: 5, mid_kernel: 5, stride: 1, expand: 4 },
-                    UniversalBottleneck { out_channels: 128, start_kernel: 0, mid_kernel: 5, stride: 1, expand: 4 },
-                    UniversalBottleneck { out_channels: 128, start_kernel: 0, mid_kernel: 5, stride: 1, expand: 3 },
-                    UniversalBottleneck { out_channels: 128, start_kernel: 0, mid_kernel: 3, stride: 1, expand: 4 },
-                    UniversalBottleneck { out_channels: 128, start_kernel: 0, mid_kernel: 3, stride: 1, expand: 4 },
+                    UniversalBottleneck {
+                        out_channels: 128,
+                        start_kernel: 3,
+                        mid_kernel: 3,
+                        stride: 2,
+                        expand: 6,
+                    },
+                    UniversalBottleneck {
+                        out_channels: 128,
+                        start_kernel: 5,
+                        mid_kernel: 5,
+                        stride: 1,
+                        expand: 4,
+                    },
+                    UniversalBottleneck {
+                        out_channels: 128,
+                        start_kernel: 0,
+                        mid_kernel: 5,
+                        stride: 1,
+                        expand: 4,
+                    },
+                    UniversalBottleneck {
+                        out_channels: 128,
+                        start_kernel: 0,
+                        mid_kernel: 5,
+                        stride: 1,
+                        expand: 3,
+                    },
+                    UniversalBottleneck {
+                        out_channels: 128,
+                        start_kernel: 0,
+                        mid_kernel: 3,
+                        stride: 1,
+                        expand: 4,
+                    },
+                    UniversalBottleneck {
+                        out_channels: 128,
+                        start_kernel: 0,
+                        mid_kernel: 3,
+                        stride: 1,
+                        expand: 4,
+                    },
                 ],
-                vec![
-                    Convolutional { out_channels: 960, kernel: 1, stride: 1 },
-                ],
+                vec![Convolutional {
+                    out_channels: 960,
+                    kernel: 1,
+                    stride: 1,
+                }],
             ],
         }
     }
@@ -235,10 +337,10 @@ impl Mv4Model {
                 let h = apply_conv_bn_act(&chw, &head.conv, cfg.activation, image)?;
                 let flat = h.reshape(Shape::from_dims(&[1, cfg.head_out_channels]))?;
                 let n = head.linear_b.len();
-                let logits = head.linear_w.apply_linear(&flat, cfg.head_out_channels, n)?;
-                let bias = image.const_f32_like(
-                    Arc::clone(&head.linear_b), Shape::from_dims(&[n]),
-                );
+                let logits = head
+                    .linear_w
+                    .apply_linear(&flat, cfg.head_out_channels, n)?;
+                let bias = image.const_f32_like(Arc::clone(&head.linear_b), Shape::from_dims(&[n]));
                 logits.broadcast_add(&bias)
             }
         }
@@ -263,26 +365,17 @@ impl Mv4Model {
 
 // ---- Component helpers -----------------------------------------------------
 
-fn apply_bn(
-    x: &LazyTensor, bn: &BatchNormParams, channels: usize,
-) -> Result<LazyTensor> {
+fn apply_bn(x: &LazyTensor, bn: &BatchNormParams, channels: usize) -> Result<LazyTensor> {
     let _ = channels;
     x.channel_affine_4d(Arc::clone(&bn.w), Arc::clone(&bn.b))
 }
 
-fn apply_conv_bn(
-    x: &LazyTensor, c: &Conv2dBnWeights, anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+fn apply_conv_bn(x: &LazyTensor, c: &Conv2dBnWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
     let w = anchor.const_f32_like(
         Arc::clone(&c.w),
         Shape::from_dims(&[c.c_out, c.c_in / c.groups, c.k, c.k]),
     );
-    let conv = x.conv2d(
-        &w, None,
-        (c.stride, c.stride),
-        (c.pad, c.pad),
-        c.groups,
-    )?;
+    let conv = x.conv2d(&w, None, (c.stride, c.stride), (c.pad, c.pad), c.groups)?;
     apply_bn(&conv, &c.bn, c.c_out)
 }
 
@@ -294,13 +387,19 @@ fn apply_act(x: LazyTensor, act: Mv4Activation) -> LazyTensor {
 }
 
 fn apply_conv_bn_act(
-    x: &LazyTensor, c: &Conv2dBnWeights, act: Mv4Activation, anchor: &LazyTensor,
+    x: &LazyTensor,
+    c: &Conv2dBnWeights,
+    act: Mv4Activation,
+    anchor: &LazyTensor,
 ) -> Result<LazyTensor> {
     Ok(apply_act(apply_conv_bn(x, c, anchor)?, act))
 }
 
 fn apply_block(
-    x: &LazyTensor, b: &BlockWeights, act: Mv4Activation, anchor: &LazyTensor,
+    x: &LazyTensor,
+    b: &BlockWeights,
+    act: Mv4Activation,
+    anchor: &LazyTensor,
 ) -> Result<LazyTensor> {
     match b {
         BlockWeights::Convolutional(c) => apply_conv_bn_act(x, c, act, anchor),
@@ -348,12 +447,12 @@ fn apply_block(
 ///   o    = attn · v                                                  (1, heads, H·W, kv_dim)
 ///   reshape back to (1, kv_dim·heads, H, W), output_proj, then optional
 ///   layer-scale + optional residual.
-fn apply_mqa(
-    x: &LazyTensor, mqa: &MqaWeights, anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+fn apply_mqa(x: &LazyTensor, mqa: &MqaWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
     let dims = x.shape();
     let dims = dims.dims();
-    let b = dims[0]; let h = dims[2]; let w = dims[3];
+    let b = dims[0];
+    let h = dims[2];
+    let w = dims[3];
     let heads = mqa.heads;
     let kv_dim = mqa.kv_dim;
     let scale = 1.0_f64 / (kv_dim as f64).sqrt();
@@ -375,7 +474,8 @@ fn apply_mqa(
     let k = apply_conv_bn(&k_input, &mqa.key_proj, anchor)?;
     let k_dims = k.shape();
     let k_dims = k_dims.dims();
-    let h_kv = k_dims[2]; let w_kv = k_dims[3];
+    let h_kv = k_dims[2];
+    let w_kv = k_dims[3];
     let kv_len = h_kv * w_kv;
     // (B, kv_dim, H_kv·W_kv) → (B, H_kv·W_kv, kv_dim) → unsqueeze head dim
     let k_seq = k
@@ -458,14 +558,17 @@ impl Mv4Weights {
         with_head: Option<usize>,
     ) -> crate::Result<Self> {
         // Stem.
-        let stem_w = mv4_load_check(st, "conv_stem.weight",
-            cfg.stem_dim * 3 * 3 * 3)?;
+        let stem_w = mv4_load_check(st, "conv_stem.weight", cfg.stem_dim * 3 * 3 * 3)?;
         let stem_bn = mv4_load_bn(st, "bn1", cfg.stem_dim)?;
         let stem = Conv2dBnWeights {
             w: Arc::from(stem_w),
             bn: stem_bn,
-            c_in: 3, c_out: cfg.stem_dim,
-            k: 3, stride: 2, pad: 1, groups: 1,
+            c_in: 3,
+            c_out: cfg.stem_dim,
+            k: 3,
+            stride: 2,
+            pad: 1,
+            groups: 1,
         };
 
         // Blocks.
@@ -483,7 +586,8 @@ impl Mv4Weights {
         // Head.
         let head = if let Some(nclasses) = with_head {
             let conv_w = mv4_load_check(
-                st, "conv_head.weight",
+                st,
+                "conv_head.weight",
                 cfg.head_out_channels * cfg.head_in_channels,
             )?;
             let bn = mv4_load_bn(st, "norm_head", cfg.head_out_channels)?;
@@ -492,11 +596,13 @@ impl Mv4Weights {
                 bn,
                 c_in: cfg.head_in_channels,
                 c_out: cfg.head_out_channels,
-                k: 1, stride: 1, pad: 0, groups: 1,
+                k: 1,
+                stride: 1,
+                pad: 0,
+                groups: 1,
             };
-            let linear_w_t = mv4_load_transposed(
-                st, "classifier.weight", nclasses, cfg.head_out_channels,
-            )?;
+            let linear_w_t =
+                mv4_load_transposed(st, "classifier.weight", nclasses, cfg.head_out_channels)?;
             let linear_b = mv4_load_check(st, "classifier.bias", nclasses)?;
             Some(Mv4HeadWeights {
                 conv,
@@ -518,29 +624,66 @@ fn mv4_load_block(
     in_ch: usize,
 ) -> crate::Result<(BlockWeights, usize)> {
     match *spec {
-        BlockSpec::Convolutional { out_channels, kernel, stride } => {
+        BlockSpec::Convolutional {
+            out_channels,
+            kernel,
+            stride,
+        } => {
             let pad = kernel / 2;
             let conv = mv4_load_conv_bn(
-                st, &format!("{prefix}.conv"), &format!("{prefix}.bn1"),
-                in_ch, out_channels, kernel, stride, pad, 1,
+                st,
+                &format!("{prefix}.conv"),
+                &format!("{prefix}.bn1"),
+                in_ch,
+                out_channels,
+                kernel,
+                stride,
+                pad,
+                1,
             )?;
             Ok((BlockWeights::Convolutional(conv), out_channels))
         }
-        BlockSpec::EdgeResidual { out_channels, kernel, stride, expand } => {
+        BlockSpec::EdgeResidual {
+            out_channels,
+            kernel,
+            stride,
+            expand,
+        } => {
             let mid = in_ch * expand;
             let pad = kernel / 2;
             let conv_exp = mv4_load_conv_bn(
-                st, &format!("{prefix}.conv_exp"), &format!("{prefix}.bn1"),
-                in_ch, mid, kernel, stride, pad, 1,
+                st,
+                &format!("{prefix}.conv_exp"),
+                &format!("{prefix}.bn1"),
+                in_ch,
+                mid,
+                kernel,
+                stride,
+                pad,
+                1,
             )?;
             let conv_pwl = mv4_load_conv_bn(
-                st, &format!("{prefix}.conv_pwl"), &format!("{prefix}.bn2"),
-                mid, out_channels, 1, 1, 0, 1,
+                st,
+                &format!("{prefix}.conv_pwl"),
+                &format!("{prefix}.bn2"),
+                mid,
+                out_channels,
+                1,
+                1,
+                0,
+                1,
             )?;
-            Ok((BlockWeights::EdgeResidual(EdgeResidualWeights { conv_exp, conv_pwl }), out_channels))
+            Ok((
+                BlockWeights::EdgeResidual(EdgeResidualWeights { conv_exp, conv_pwl }),
+                out_channels,
+            ))
         }
         BlockSpec::UniversalBottleneck {
-            out_channels, start_kernel, mid_kernel, stride, expand,
+            out_channels,
+            start_kernel,
+            mid_kernel,
+            stride,
+            expand,
         } => {
             let mid = in_ch * expand;
             let dw_start_stride = if mid_kernel > 0 { 1 } else { stride };
@@ -549,24 +692,52 @@ fn mv4_load_block(
                     st,
                     &format!("{prefix}.dw_start.conv"),
                     &format!("{prefix}.dw_start.bn"),
-                    in_ch, in_ch, start_kernel, dw_start_stride, start_kernel / 2, in_ch,
+                    in_ch,
+                    in_ch,
+                    start_kernel,
+                    dw_start_stride,
+                    start_kernel / 2,
+                    in_ch,
                 )?)
-            } else { None };
+            } else {
+                None
+            };
             let pw_exp = mv4_load_conv_bn(
-                st, &format!("{prefix}.pw_exp.conv"), &format!("{prefix}.pw_exp.bn"),
-                in_ch, mid, 1, 1, 0, 1,
+                st,
+                &format!("{prefix}.pw_exp.conv"),
+                &format!("{prefix}.pw_exp.bn"),
+                in_ch,
+                mid,
+                1,
+                1,
+                0,
+                1,
             )?;
             let dw_mid = if mid_kernel > 0 {
                 Some(mv4_load_conv_bn(
                     st,
                     &format!("{prefix}.dw_mid.conv"),
                     &format!("{prefix}.dw_mid.bn"),
-                    mid, mid, mid_kernel, stride, mid_kernel / 2, mid,
+                    mid,
+                    mid,
+                    mid_kernel,
+                    stride,
+                    mid_kernel / 2,
+                    mid,
                 )?)
-            } else { None };
+            } else {
+                None
+            };
             let pw_proj = mv4_load_conv_bn(
-                st, &format!("{prefix}.pw_proj.conv"), &format!("{prefix}.pw_proj.bn"),
-                mid, out_channels, 1, 1, 0, 1,
+                st,
+                &format!("{prefix}.pw_proj.conv"),
+                &format!("{prefix}.pw_proj.bn"),
+                mid,
+                out_channels,
+                1,
+                1,
+                0,
+                1,
             )?;
             let layer_scale_gamma = if st.get(&format!("{prefix}.layer_scale.gamma")).is_ok() {
                 let g = mv4_load_check(st, &format!("{prefix}.layer_scale.gamma"), out_channels)?;
@@ -575,53 +746,67 @@ fn mv4_load_block(
                 None
             };
             let skip = in_ch == out_channels && stride == 1;
-            Ok((BlockWeights::UniversalBottleneck(UibWeights {
-                dw_start, pw_exp, dw_mid, pw_proj, layer_scale_gamma, skip,
-            }), out_channels))
+            Ok((
+                BlockWeights::UniversalBottleneck(UibWeights {
+                    dw_start,
+                    pw_exp,
+                    dw_mid,
+                    pw_proj,
+                    layer_scale_gamma,
+                    skip,
+                }),
+                out_channels,
+            ))
         }
         BlockSpec::Attention {
-            out_channels, heads, kernel, stride, kv_dim, kv_stride,
+            out_channels,
+            heads,
+            kernel,
+            stride,
+            kv_dim,
+            kv_stride,
         } => {
             if stride != 1 {
-                return Err(crate::Error::Msg(
-                    "Mobile-MQA v1: stride must be 1".into(),
-                ).bt());
+                return Err(crate::Error::Msg("Mobile-MQA v1: stride must be 1".into()).bt());
             }
             // Input residual BN: in eager Fuel the BN dim is `out_channels`
             // (relies on in_channels == out_channels for Attention blocks).
-            let input_norm = mv4_load_bn(
-                st, &format!("{prefix}.norm"), out_channels,
-            )?;
+            let input_norm = mv4_load_bn(st, &format!("{prefix}.norm"), out_channels)?;
             let query_proj = mv4_load_proj(
-                st, &format!("{prefix}.attn.query.proj"),
-                in_ch, kv_dim * heads,
+                st,
+                &format!("{prefix}.attn.query.proj"),
+                in_ch,
+                kv_dim * heads,
             )?;
             let (key_down, value_down) = if kv_stride > 1 {
                 let kd = mv4_load_dw(
                     st,
                     &format!("{prefix}.attn.key.down_conv"),
                     &format!("{prefix}.attn.key.norm"),
-                    in_ch, kernel, kv_stride,
+                    in_ch,
+                    kernel,
+                    kv_stride,
                 )?;
                 let vd = mv4_load_dw(
                     st,
                     &format!("{prefix}.attn.value.down_conv"),
                     &format!("{prefix}.attn.value.norm"),
-                    in_ch, kernel, kv_stride,
+                    in_ch,
+                    kernel,
+                    kv_stride,
                 )?;
                 (Some(kd), Some(vd))
             } else {
                 (None, None)
             };
-            let key_proj = mv4_load_proj(
-                st, &format!("{prefix}.attn.key.proj"), in_ch, kv_dim,
-            )?;
-            let value_proj = mv4_load_proj(
-                st, &format!("{prefix}.attn.value.proj"), in_ch, kv_dim,
-            )?;
+            let key_proj = mv4_load_proj(st, &format!("{prefix}.attn.key.proj"), in_ch, kv_dim)?;
+            let value_proj =
+                mv4_load_proj(st, &format!("{prefix}.attn.value.proj"), in_ch, kv_dim)?;
             let output_proj = mv4_load_proj(
-                st, &format!("{prefix}.attn.output.proj"),
-                kv_dim * heads, out_channels,
+                st,
+                &format!("{prefix}.attn.output.proj"),
+                kv_dim * heads,
+                out_channels,
             )?;
             let layer_scale_gamma = if st.get(&format!("{prefix}.layer_scale.gamma")).is_ok() {
                 let g = mv4_load_check(st, &format!("{prefix}.layer_scale.gamma"), out_channels)?;
@@ -630,11 +815,22 @@ fn mv4_load_block(
                 None
             };
             let skip = in_ch == out_channels;
-            Ok((BlockWeights::Attention(MqaWeights {
-                input_norm, query_proj, key_down, key_proj,
-                value_down, value_proj, output_proj,
-                heads, kv_dim, layer_scale_gamma, skip,
-            }), out_channels))
+            Ok((
+                BlockWeights::Attention(MqaWeights {
+                    input_norm,
+                    query_proj,
+                    key_down,
+                    key_proj,
+                    value_down,
+                    value_proj,
+                    output_proj,
+                    heads,
+                    kv_dim,
+                    layer_scale_gamma,
+                    skip,
+                }),
+                out_channels,
+            ))
         }
     }
 }
@@ -654,14 +850,20 @@ fn mv4_load_conv_bn(
     groups: usize,
 ) -> crate::Result<Conv2dBnWeights> {
     let w = mv4_load_check(
-        st, &format!("{conv_prefix}.weight"),
+        st,
+        &format!("{conv_prefix}.weight"),
         c_out * (c_in / groups) * k * k,
     )?;
     let bn = mv4_load_bn(st, bn_prefix, c_out)?;
     Ok(Conv2dBnWeights {
         w: Arc::from(w),
         bn,
-        c_in, c_out, k, stride, pad, groups,
+        c_in,
+        c_out,
+        k,
+        stride,
+        pad,
+        groups,
     })
 }
 
@@ -685,8 +887,12 @@ fn mv4_load_proj(
     Ok(Conv2dBnWeights {
         w: Arc::from(w),
         bn: identity_bn,
-        c_in, c_out,
-        k: 1, stride: 1, pad: 0, groups: 1,
+        c_in,
+        c_out,
+        k: 1,
+        stride: 1,
+        pad: 0,
+        groups: 1,
     })
 }
 
@@ -700,15 +906,20 @@ fn mv4_load_dw(
     stride: usize,
 ) -> crate::Result<Conv2dBnWeights> {
     let w = mv4_load_check(
-        st, &format!("{conv_prefix}.weight"),
+        st,
+        &format!("{conv_prefix}.weight"),
         channels * kernel * kernel,
     )?;
     let bn = mv4_load_bn(st, bn_prefix, channels)?;
     Ok(Conv2dBnWeights {
         w: Arc::from(w),
         bn,
-        c_in: channels, c_out: channels,
-        k: kernel, stride, pad: kernel / 2, groups: channels,
+        c_in: channels,
+        c_out: channels,
+        k: kernel,
+        stride,
+        pad: kernel / 2,
+        groups: channels,
     })
 }
 
@@ -718,10 +929,12 @@ fn mv4_load_bn(
     channels: usize,
 ) -> crate::Result<BatchNormParams> {
     let gain = mv4_load_check(st, &format!("{prefix}.weight"), channels)?;
-    let bias = mv4_load_check(st, &format!("{prefix}.bias"),   channels)?;
+    let bias = mv4_load_check(st, &format!("{prefix}.bias"), channels)?;
     let mean = mv4_load_check(st, &format!("{prefix}.running_mean"), channels)?;
-    let var  = mv4_load_check(st, &format!("{prefix}.running_var"),  channels)?;
-    Ok(BatchNormParams::from_raw(&gain, &bias, &mean, &var, MV4_BN_EPS))
+    let var = mv4_load_check(st, &format!("{prefix}.running_var"), channels)?;
+    Ok(BatchNormParams::from_raw(
+        &gain, &bias, &mean, &var, MV4_BN_EPS,
+    ))
 }
 
 fn mv4_load_check(
@@ -733,7 +946,8 @@ fn mv4_load_check(
     if v.len() != expected_len {
         return Err(crate::Error::Msg(format!(
             "MobileNetV4 load {name:?}: got {} elements, expected {}",
-            v.len(), expected_len,
+            v.len(),
+            expected_len,
         ))
         .bt());
     }
@@ -761,7 +975,9 @@ impl Mv4Model {
     /// it into a model. `nclasses` selects whether the classifier head is
     /// loaded.
     pub fn from_hub_with_config(
-        repo_id: &str, config: Mv4Config, nclasses: Option<usize>,
+        repo_id: &str,
+        config: Mv4Config,
+        nclasses: Option<usize>,
     ) -> Result<Self> {
         Self::from_hub_with_filename(repo_id, "model.safetensors", config, nclasses)
     }
@@ -812,27 +1028,48 @@ mod tests {
         }
     }
     fn conv_bn_w(
-        c_in: usize, c_out: usize, k: usize, stride: usize, pad: usize, groups: usize,
+        c_in: usize,
+        c_out: usize,
+        k: usize,
+        stride: usize,
+        pad: usize,
+        groups: usize,
         nb: &mut dyn FnMut() -> f32,
     ) -> Conv2dBnWeights {
         Conv2dBnWeights {
             w: vec_of(c_out * (c_in / groups) * k * k, nb),
             bn: tiny_bn(c_out),
-            c_in, c_out, k, stride, pad, groups,
+            c_in,
+            c_out,
+            k,
+            stride,
+            pad,
+            groups,
         }
     }
 
     /// Build weights for a single spec. Tracks the running `in_channels`.
-    fn block_weights(
-        spec: &BlockSpec, in_ch: usize, nb: &mut dyn FnMut() -> f32,
-    ) -> BlockWeights {
+    fn block_weights(spec: &BlockSpec, in_ch: usize, nb: &mut dyn FnMut() -> f32) -> BlockWeights {
         match *spec {
-            BlockSpec::Convolutional { out_channels, kernel, stride } => {
-                BlockWeights::Convolutional(conv_bn_w(
-                    in_ch, out_channels, kernel, stride, kernel / 2, 1, nb,
-                ))
-            }
-            BlockSpec::EdgeResidual { out_channels, kernel, stride, expand } => {
+            BlockSpec::Convolutional {
+                out_channels,
+                kernel,
+                stride,
+            } => BlockWeights::Convolutional(conv_bn_w(
+                in_ch,
+                out_channels,
+                kernel,
+                stride,
+                kernel / 2,
+                1,
+                nb,
+            )),
+            BlockSpec::EdgeResidual {
+                out_channels,
+                kernel,
+                stride,
+                expand,
+            } => {
                 let mid = in_ch * expand;
                 BlockWeights::EdgeResidual(EdgeResidualWeights {
                     conv_exp: conv_bn_w(in_ch, mid, kernel, stride, kernel / 2, 1, nb),
@@ -840,39 +1077,87 @@ mod tests {
                 })
             }
             BlockSpec::UniversalBottleneck {
-                out_channels, start_kernel, mid_kernel, stride, expand,
+                out_channels,
+                start_kernel,
+                mid_kernel,
+                stride,
+                expand,
             } => {
                 let mid = in_ch * expand;
                 let dw_start_stride = if mid_kernel > 0 { 1 } else { stride };
                 let dw_start = if start_kernel > 0 {
                     Some(conv_bn_w(
-                        in_ch, in_ch, start_kernel, dw_start_stride, start_kernel / 2, in_ch, nb,
+                        in_ch,
+                        in_ch,
+                        start_kernel,
+                        dw_start_stride,
+                        start_kernel / 2,
+                        in_ch,
+                        nb,
                     ))
-                } else { None };
+                } else {
+                    None
+                };
                 let pw_exp = conv_bn_w(in_ch, mid, 1, 1, 0, 1, nb);
                 let dw_mid = if mid_kernel > 0 {
                     Some(conv_bn_w(
-                        mid, mid, mid_kernel, stride, mid_kernel / 2, mid, nb,
+                        mid,
+                        mid,
+                        mid_kernel,
+                        stride,
+                        mid_kernel / 2,
+                        mid,
+                        nb,
                     ))
-                } else { None };
+                } else {
+                    None
+                };
                 let pw_proj = conv_bn_w(mid, out_channels, 1, 1, 0, 1, nb);
                 let skip = in_ch == out_channels && stride == 1;
                 BlockWeights::UniversalBottleneck(UibWeights {
-                    dw_start, pw_exp, dw_mid, pw_proj,
+                    dw_start,
+                    pw_exp,
+                    dw_mid,
+                    pw_proj,
                     layer_scale_gamma: None,
                     skip,
                 })
             }
             BlockSpec::Attention {
-                out_channels, heads, kernel, stride, kv_dim, kv_stride,
+                out_channels,
+                heads,
+                kernel,
+                stride,
+                kv_dim,
+                kv_stride,
             } => {
                 assert_eq!(stride, 1, "Mobile-MQA v1: stride must be 1");
                 let key_down = if kv_stride > 1 {
-                    Some(conv_bn_w(in_ch, in_ch, kernel, kv_stride, kernel / 2, in_ch, nb))
-                } else { None };
+                    Some(conv_bn_w(
+                        in_ch,
+                        in_ch,
+                        kernel,
+                        kv_stride,
+                        kernel / 2,
+                        in_ch,
+                        nb,
+                    ))
+                } else {
+                    None
+                };
                 let value_down = if kv_stride > 1 {
-                    Some(conv_bn_w(in_ch, in_ch, kernel, kv_stride, kernel / 2, in_ch, nb))
-                } else { None };
+                    Some(conv_bn_w(
+                        in_ch,
+                        in_ch,
+                        kernel,
+                        kv_stride,
+                        kernel / 2,
+                        in_ch,
+                        nb,
+                    ))
+                } else {
+                    None
+                };
                 BlockWeights::Attention(MqaWeights {
                     input_norm: BatchNormParams {
                         w: Arc::from(vec![1.0_f32; in_ch]),
@@ -911,14 +1196,24 @@ mod tests {
                 };
             }
         }
-        Mv4Weights { stem, blocks, head: None }
+        Mv4Weights {
+            stem,
+            blocks,
+            head: None,
+        }
     }
 
     fn with_head(mut w: Mv4Weights, cfg: &Mv4Config, n_classes: usize) -> Mv4Weights {
         let mut nb = rng_seed(7777);
         w.head = Some(Mv4HeadWeights {
             conv: conv_bn_w(
-                cfg.head_in_channels, cfg.head_out_channels, 1, 1, 0, 1, &mut nb,
+                cfg.head_in_channels,
+                cfg.head_out_channels,
+                1,
+                1,
+                0,
+                1,
+                &mut nb,
             ),
             linear_w: ws(cfg.head_out_channels * n_classes, &mut nb),
             linear_b: vec_of(n_classes, &mut nb),
@@ -934,16 +1229,43 @@ mod tests {
             head_in_channels: 32,
             head_out_channels: 16,
             stages: [
-                vec![Convolutional { out_channels: 8, kernel: 1, stride: 1 }],
-                vec![Convolutional { out_channels: 16, kernel: 3, stride: 2 }],
+                vec![Convolutional {
+                    out_channels: 8,
+                    kernel: 1,
+                    stride: 1,
+                }],
+                vec![Convolutional {
+                    out_channels: 16,
+                    kernel: 3,
+                    stride: 2,
+                }],
                 vec![
-                    UniversalBottleneck { out_channels: 16, start_kernel: 3, mid_kernel: 3, stride: 1, expand: 2 },
-                    UniversalBottleneck { out_channels: 16, start_kernel: 0, mid_kernel: 3, stride: 1, expand: 2 },
+                    UniversalBottleneck {
+                        out_channels: 16,
+                        start_kernel: 3,
+                        mid_kernel: 3,
+                        stride: 1,
+                        expand: 2,
+                    },
+                    UniversalBottleneck {
+                        out_channels: 16,
+                        start_kernel: 0,
+                        mid_kernel: 3,
+                        stride: 1,
+                        expand: 2,
+                    },
                 ],
-                vec![
-                    EdgeResidual { out_channels: 24, kernel: 3, stride: 2, expand: 2 },
-                ],
-                vec![Convolutional { out_channels: 32, kernel: 1, stride: 1 }],
+                vec![EdgeResidual {
+                    out_channels: 24,
+                    kernel: 3,
+                    stride: 2,
+                    expand: 2,
+                }],
+                vec![Convolutional {
+                    out_channels: 32,
+                    kernel: 1,
+                    stride: 1,
+                }],
             ],
         }
     }
@@ -952,10 +1274,16 @@ mod tests {
     fn forward_no_head_shape_and_finite() {
         let cfg = tiny_config();
         let weights = build_weights(&cfg);
-        let model = Mv4Model { config: cfg.clone(), weights };
+        let model = Mv4Model {
+            config: cfg.clone(),
+            weights,
+        };
         let img = LazyTensor::from_f32(
-            (0..(3 * 32 * 32)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, 3, 32, 32]), &Device::cpu(),
+            (0..(3 * 32 * 32))
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 32, 32]),
+            &Device::cpu(),
         );
         let pooled = model.forward(&img).unwrap();
         // No head → pooled features (1, head_in_channels = 32).
@@ -969,10 +1297,16 @@ mod tests {
     fn forward_with_head_shape_and_finite() {
         let cfg = tiny_config();
         let weights = with_head(build_weights(&cfg), &cfg, 7);
-        let model = Mv4Model { config: cfg.clone(), weights };
+        let model = Mv4Model {
+            config: cfg.clone(),
+            weights,
+        };
         let img = LazyTensor::from_f32(
-            (0..(3 * 32 * 32)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, 3, 32, 32]), &Device::cpu(),
+            (0..(3 * 32 * 32))
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 32, 32]),
+            &Device::cpu(),
         );
         let logits = model.forward(&img).unwrap();
         assert_eq!(logits.shape().dims(), &[1, 7]);
@@ -985,10 +1319,16 @@ mod tests {
     fn forward_features_returns_pre_pool_map() {
         let cfg = tiny_config();
         let weights = build_weights(&cfg);
-        let model = Mv4Model { config: cfg.clone(), weights };
+        let model = Mv4Model {
+            config: cfg.clone(),
+            weights,
+        };
         let img = LazyTensor::from_f32(
-            (0..(3 * 32 * 32)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, 3, 32, 32]), &Device::cpu(),
+            (0..(3 * 32 * 32))
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 32, 32]),
+            &Device::cpu(),
         );
         let feats = model.forward_features(&img).unwrap();
         let shape = feats.shape();
@@ -1010,14 +1350,23 @@ mod tests {
     fn uib_responds_to_input() {
         let cfg = tiny_config();
         let weights = build_weights(&cfg);
-        let model = Mv4Model { config: cfg.clone(), weights };
+        let model = Mv4Model {
+            config: cfg.clone(),
+            weights,
+        };
         let img_a = LazyTensor::from_f32(
-            (0..(3 * 32 * 32)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, 3, 32, 32]), &Device::cpu(),
+            (0..(3 * 32 * 32))
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 32, 32]),
+            &Device::cpu(),
         );
         let img_b = LazyTensor::from_f32(
-            (0..(3 * 32 * 32)).map(|i| (i as f32) * 0.01 + 0.5).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, 3, 32, 32]), &Device::cpu(),
+            (0..(3 * 32 * 32))
+                .map(|i| (i as f32) * 0.01 + 0.5)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 32, 32]),
+            &Device::cpu(),
         );
         let a = model.forward(&img_a).unwrap().realize_f32();
         let b = model.forward(&img_b).unwrap().realize_f32();
@@ -1028,8 +1377,10 @@ mod tests {
         // Tiny random weights (~0.05 magnitude) propagated through many
         // BN+conv layers attenuate the signal. The path IS wired; we just
         // need a tolerance that admits the very-small-magnitude response.
-        assert!(max_diff > 1e-9,
-            "backbone must respond to input changes, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-9,
+            "backbone must respond to input changes, max_diff = {max_diff}"
+        );
     }
 
     #[test]
@@ -1053,16 +1404,44 @@ mod tests {
             head_in_channels: 32,
             head_out_channels: 16,
             stages: [
-                vec![Convolutional { out_channels: 8, kernel: 1, stride: 1 }],
-                vec![Convolutional { out_channels: 16, kernel: 3, stride: 2 }],
+                vec![Convolutional {
+                    out_channels: 8,
+                    kernel: 1,
+                    stride: 1,
+                }],
+                vec![Convolutional {
+                    out_channels: 16,
+                    kernel: 3,
+                    stride: 2,
+                }],
                 vec![
-                    UniversalBottleneck { out_channels: 16, start_kernel: 3, mid_kernel: 3, stride: 1, expand: 2 },
-                    Attention { out_channels: 16, heads: 2, kernel: 3, stride: 1, kv_dim: 4, kv_stride },
+                    UniversalBottleneck {
+                        out_channels: 16,
+                        start_kernel: 3,
+                        mid_kernel: 3,
+                        stride: 1,
+                        expand: 2,
+                    },
+                    Attention {
+                        out_channels: 16,
+                        heads: 2,
+                        kernel: 3,
+                        stride: 1,
+                        kv_dim: 4,
+                        kv_stride,
+                    },
                 ],
-                vec![
-                    EdgeResidual { out_channels: 24, kernel: 3, stride: 2, expand: 2 },
-                ],
-                vec![Convolutional { out_channels: 32, kernel: 1, stride: 1 }],
+                vec![EdgeResidual {
+                    out_channels: 24,
+                    kernel: 3,
+                    stride: 2,
+                    expand: 2,
+                }],
+                vec![Convolutional {
+                    out_channels: 32,
+                    kernel: 1,
+                    stride: 1,
+                }],
             ],
         }
     }
@@ -1071,10 +1450,16 @@ mod tests {
     fn mqa_kv_stride_2_runs() {
         let cfg = tiny_hybrid_config(2);
         let weights = build_weights(&cfg);
-        let model = Mv4Model { config: cfg.clone(), weights };
+        let model = Mv4Model {
+            config: cfg.clone(),
+            weights,
+        };
         let img = LazyTensor::from_f32(
-            (0..(3 * 32 * 32)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, 3, 32, 32]), &Device::cpu(),
+            (0..(3 * 32 * 32))
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 32, 32]),
+            &Device::cpu(),
         );
         let pooled = model.forward(&img).unwrap();
         assert_eq!(pooled.shape().dims(), &[1, cfg.head_in_channels]);
@@ -1087,10 +1472,16 @@ mod tests {
     fn mqa_kv_stride_1_runs() {
         let cfg = tiny_hybrid_config(1);
         let weights = build_weights(&cfg);
-        let model = Mv4Model { config: cfg.clone(), weights };
+        let model = Mv4Model {
+            config: cfg.clone(),
+            weights,
+        };
         let img = LazyTensor::from_f32(
-            (0..(3 * 32 * 32)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, 3, 32, 32]), &Device::cpu(),
+            (0..(3 * 32 * 32))
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 32, 32]),
+            &Device::cpu(),
         );
         let pooled = model.forward(&img).unwrap();
         assert_eq!(pooled.shape().dims(), &[1, cfg.head_in_channels]);
@@ -1105,14 +1496,23 @@ mod tests {
     fn mqa_responds_to_input() {
         let cfg = tiny_hybrid_config(2);
         let weights = build_weights(&cfg);
-        let model = Mv4Model { config: cfg.clone(), weights };
+        let model = Mv4Model {
+            config: cfg.clone(),
+            weights,
+        };
         let img_a = LazyTensor::from_f32(
-            (0..(3 * 32 * 32)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, 3, 32, 32]), &Device::cpu(),
+            (0..(3 * 32 * 32))
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 32, 32]),
+            &Device::cpu(),
         );
         let img_b = LazyTensor::from_f32(
-            (0..(3 * 32 * 32)).map(|i| (i as f32) * 0.01 + 0.5).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, 3, 32, 32]), &Device::cpu(),
+            (0..(3 * 32 * 32))
+                .map(|i| (i as f32) * 0.01 + 0.5)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 32, 32]),
+            &Device::cpu(),
         );
         let a = model.forward(&img_a).unwrap().realize_f32();
         let b = model.forward(&img_b).unwrap().realize_f32();
@@ -1120,8 +1520,10 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-9,
-            "Mobile-MQA path must respond to input changes, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-9,
+            "Mobile-MQA path must respond to input changes, max_diff = {max_diff}"
+        );
     }
 
     // ---- load_from_mmapped round-trip ---------------------------------------
@@ -1151,10 +1553,10 @@ mod tests {
         channels: usize,
     ) {
         for (suffix, raw) in [
-            ("weight",       raw_f32_const(channels, 1.0)),
-            ("bias",         raw_f32_const(channels, 0.0)),
+            ("weight", raw_f32_const(channels, 1.0)),
+            ("bias", raw_f32_const(channels, 0.0)),
             ("running_mean", raw_f32_const(channels, 0.0)),
-            ("running_var",  raw_f32_const(channels, 1.0)),
+            ("running_var", raw_f32_const(channels, 1.0)),
         ] {
             owned.push((format!("{prefix}.{suffix}"), vec![channels], raw));
         }
@@ -1196,11 +1598,12 @@ mod tests {
             tensors.insert(name.clone(), view);
         }
         let metadata: Option<HashMap<String, String>> = None;
-        let serialized = safetensors::serialize(&tensors, metadata)
-            .expect("safetensors::serialize");
+        let serialized =
+            safetensors::serialize(&tensors, metadata).expect("safetensors::serialize");
 
         let tmp = std::env::temp_dir().join(format!(
-            "fuel_mv4_load_test_{}.safetensors", std::process::id(),
+            "fuel_mv4_load_test_{}.safetensors",
+            std::process::id(),
         ));
         std::fs::write(&tmp, &serialized).expect("write tmp");
         let st = unsafe { crate::safetensors::MmapedSafetensors::new(&tmp) }
@@ -1211,23 +1614,32 @@ mod tests {
 
         // Stem conv weight matches the raw bytes (BN is identity ⇒ no scaling)
         // exactly; verify each element matches.
-        let raw_stem = &owned.iter()
-            .find(|(n, _, _)| n == "conv_stem.weight").unwrap().2;
-        let raw_stem_f: Vec<f32> = raw_stem.chunks_exact(4)
+        let raw_stem = &owned
+            .iter()
+            .find(|(n, _, _)| n == "conv_stem.weight")
+            .unwrap()
+            .2;
+        let raw_stem_f: Vec<f32> = raw_stem
+            .chunks_exact(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         for (i, expected) in raw_stem_f.iter().enumerate() {
             let got = loaded.stem.w[i];
-            assert!((got - expected).abs() < 1e-6,
-                "stem conv weight[{i}]: expected {expected}, got {got}");
+            assert!(
+                (got - expected).abs() < 1e-6,
+                "stem conv weight[{i}]: expected {expected}, got {got}"
+            );
         }
         // BN gain/bias fused from (gain=1, bias=0, mean=0, var=1, eps=1e-5)
         // is `w = 1/√(1+eps)`, `b = 0`. The model APPLIES BN as a per-channel
         // affine, so verifying `bn.w` is the right scalar covers it.
         let bn_scale = 1.0_f32 / (1.0_f32 + MV4_BN_EPS as f32).sqrt();
         for c in 0..cfg.stem_dim {
-            assert!((loaded.stem.bn.w[c] - bn_scale).abs() < 1e-6,
-                "stem.bn.w[{c}] expected ~{bn_scale}, got {}", loaded.stem.bn.w[c]);
+            assert!(
+                (loaded.stem.bn.w[c] - bn_scale).abs() < 1e-6,
+                "stem.bn.w[{c}] expected ~{bn_scale}, got {}",
+                loaded.stem.bn.w[c]
+            );
             assert!(loaded.stem.bn.b[c].abs() < 1e-6);
         }
 
@@ -1237,10 +1649,16 @@ mod tests {
         assert!(loaded.head.is_none());
 
         // Forward chain runs end-to-end.
-        let model = Mv4Model { config: cfg.clone(), weights: loaded };
+        let model = Mv4Model {
+            config: cfg.clone(),
+            weights: loaded,
+        };
         let img = LazyTensor::from_f32(
-            (0..(3 * 32 * 32)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, 3, 32, 32]), &Device::cpu(),
+            (0..(3 * 32 * 32))
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 32, 32]),
+            &Device::cpu(),
         );
         let pooled = model.forward(&img).unwrap();
         assert_eq!(pooled.shape().dims(), &[1, cfg.head_in_channels]);
@@ -1258,7 +1676,11 @@ mod tests {
         in_ch: usize,
     ) -> usize {
         match spec {
-            BlockSpec::Convolutional { out_channels, kernel, stride: _ } => {
+            BlockSpec::Convolutional {
+                out_channels,
+                kernel,
+                stride: _,
+            } => {
                 let _pad = kernel / 2;
                 owned.push((
                     format!("{prefix}.conv.weight"),
@@ -1268,7 +1690,12 @@ mod tests {
                 push_identity_bn(owned, &format!("{prefix}.bn1"), out_channels);
                 out_channels
             }
-            BlockSpec::EdgeResidual { out_channels, kernel, stride: _, expand } => {
+            BlockSpec::EdgeResidual {
+                out_channels,
+                kernel,
+                stride: _,
+                expand,
+            } => {
                 let mid = in_ch * expand;
                 owned.push((
                     format!("{prefix}.conv_exp.weight"),
@@ -1285,7 +1712,11 @@ mod tests {
                 out_channels
             }
             BlockSpec::UniversalBottleneck {
-                out_channels, start_kernel, mid_kernel, stride: _, expand,
+                out_channels,
+                start_kernel,
+                mid_kernel,
+                stride: _,
+                expand,
             } => {
                 let mid = in_ch * expand;
                 if start_kernel > 0 {
@@ -1338,7 +1769,8 @@ mod tests {
             "timm/mobilenetv4_conv_small.e2400_r224_in1k",
             cfg,
             Some(1000),
-        ).expect("from_hub_with_config");
+        )
+        .expect("from_hub_with_config");
         assert!(model.weights.head.is_some());
     }
 }

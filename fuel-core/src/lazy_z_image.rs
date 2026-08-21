@@ -226,7 +226,14 @@ fn patchify(x: &LazyTensor, patch_size: usize, f_patch_size: usize) -> crate::Re
     } else {
         // General case used only for video; matches eager fallback.
         let x = x.permute([0, 2, 3, 4, 1_usize])?;
-        let x = x.reshape(Shape::from_dims(&[b, f_tokens, pf, h_tokens, ph, w_tokens * pw * c]))?;
+        let x = x.reshape(Shape::from_dims(&[
+            b,
+            f_tokens,
+            pf,
+            h_tokens,
+            ph,
+            w_tokens * pw * c,
+        ]))?;
         let x = x.permute([0, 1, 3, 5, 2, 4_usize])?;
         x.reshape(Shape::from_dims(&[b, num_patches, patch_dim]))
     }
@@ -252,13 +259,33 @@ fn unpatchify(
     let x = x.narrow(1_usize, 0, ori_len)?;
 
     if f == 1 && pf == 1 {
-        let x = x.reshape(Shape::from_dims(&[b, h_tokens, w_tokens, ph, pw, out_channels]))?;
+        let x = x.reshape(Shape::from_dims(&[
+            b,
+            h_tokens,
+            w_tokens,
+            ph,
+            pw,
+            out_channels,
+        ]))?;
         let x = x.permute([0, 5, 1, 3, 2, 4_usize])?;
         let x = x.reshape(Shape::from_dims(&[b, out_channels, h, w]))?;
         x.unsqueeze(2_usize)
     } else {
-        let x = x.reshape(Shape::from_dims(&[b, f_tokens, h_tokens, w_tokens, pf * ph * pw * out_channels]))?;
-        let x = x.reshape(Shape::from_dims(&[b, f_tokens, h_tokens, w_tokens * pf, ph, pw * out_channels]))?;
+        let x = x.reshape(Shape::from_dims(&[
+            b,
+            f_tokens,
+            h_tokens,
+            w_tokens,
+            pf * ph * pw * out_channels,
+        ]))?;
+        let x = x.reshape(Shape::from_dims(&[
+            b,
+            f_tokens,
+            h_tokens,
+            w_tokens * pf,
+            ph,
+            pw * out_channels,
+        ]))?;
         let x = x.permute([0, 5, 1, 3, 2, 4_usize])?;
         x.reshape(Shape::from_dims(&[b, out_channels, f, h, w]))
     }
@@ -312,8 +339,12 @@ fn apply_rotary_emb_interleaved(
     // Reshape to (B, L, N, half, 2).
     let x5 = x.reshape(Shape::from_dims(&[b, l, n, half, 2]))?;
     // Extract real / imag halves: each is (B, L, N, half).
-    let x_real = x5.narrow(4_usize, 0, 1)?.reshape(Shape::from_dims(&[b, l, n, half]))?;
-    let x_imag = x5.narrow(4_usize, 1, 1)?.reshape(Shape::from_dims(&[b, l, n, half]))?;
+    let x_real = x5
+        .narrow(4_usize, 0, 1)?
+        .reshape(Shape::from_dims(&[b, l, n, half]))?;
+    let x_imag = x5
+        .narrow(4_usize, 1, 1)?
+        .reshape(Shape::from_dims(&[b, l, n, half]))?;
     // cos / sin: (L, half) -> (1, L, 1, half).
     let cos_e = cos
         .reshape(Shape::from_dims(&[1, l, 1, half]))?
@@ -344,12 +375,15 @@ fn build_3d_rope_tables(
     debug_assert_eq!(axes_lens.len(), 3);
     // Pre-build per-axis inv_freq tables.
     let half_dims: Vec<usize> = axes_dims.iter().map(|d| d / 2).collect();
-    let inv_freqs: Vec<Vec<f32>> = axes_dims.iter().map(|d| {
-        let half_d = d / 2;
-        (0..half_d)
-            .map(|i| 1.0 / (theta as f32).powf((2 * i) as f32 / *d as f32))
-            .collect()
-    }).collect();
+    let inv_freqs: Vec<Vec<f32>> = axes_dims
+        .iter()
+        .map(|d| {
+            let half_d = d / 2;
+            (0..half_d)
+                .map(|i| 1.0 / (theta as f32).powf((2 * i) as f32 / *d as f32))
+                .collect()
+        })
+        .collect();
 
     let seq = positions.len();
     let head_dim_half: usize = half_dims.iter().sum();
@@ -444,7 +478,9 @@ fn z_image_attention(
 
     let probs = scores.softmax_last_dim()?;
     let ctx = probs.matmul(&v)?;
-    let ctx = ctx.permute([0, 2, 1, 3_usize])?.reshape(Shape::from_dims(&[b, l, n_heads * head_dim]))?;
+    let ctx = ctx
+        .permute([0, 2, 1, 3_usize])?
+        .reshape(Shape::from_dims(&[b, l, n_heads * head_dim]))?;
     linear(&ctx, &aw.to_out_w, None, n_heads * head_dim, cfg.dim)
 }
 
@@ -481,9 +517,7 @@ fn z_image_block(
         let normed = x.rms_norm_affine(Arc::clone(&bw.attn_norm1_gain), cfg.norm_eps)?;
         let scaled = normed.broadcast_mul(&scale_msa)?;
         let attn_out = z_image_attention(&scaled, attn_mask, cos, sin, &bw.attn, cfg)?;
-        let attn_out = attn_out
-            .rms_norm_affine(Arc::clone(&bw.attn_norm2_gain), cfg.norm_eps)
-            ?;
+        let attn_out = attn_out.rms_norm_affine(Arc::clone(&bw.attn_norm2_gain), cfg.norm_eps)?;
         let x = x.add(&gate_msa.broadcast_mul(&attn_out)?)?;
 
         // FFN.
@@ -496,20 +530,21 @@ fn z_image_block(
         // No modulation (context refiner).
         let normed = x.rms_norm_affine(Arc::clone(&bw.attn_norm1_gain), cfg.norm_eps)?;
         let attn_out = z_image_attention(&normed, attn_mask, cos, sin, &bw.attn, cfg)?;
-        let attn_out = attn_out
-            .rms_norm_affine(Arc::clone(&bw.attn_norm2_gain), cfg.norm_eps)
-            ?;
+        let attn_out = attn_out.rms_norm_affine(Arc::clone(&bw.attn_norm2_gain), cfg.norm_eps)?;
         let x = x.add(&attn_out)?;
         let normed = x.rms_norm_affine(Arc::clone(&bw.ffn_norm1_gain), cfg.norm_eps)?;
         let ffn_out = ffn_swiglu(&normed, &bw.ffn, dim, hidden_dim)?;
-        let ffn_out = ffn_out
-            .rms_norm_affine(Arc::clone(&bw.ffn_norm2_gain), cfg.norm_eps)
-            ?;
+        let ffn_out = ffn_out.rms_norm_affine(Arc::clone(&bw.ffn_norm2_gain), cfg.norm_eps)?;
         x.add(&ffn_out)
     }
 }
 
-fn ffn_swiglu(x: &LazyTensor, fw: &ZImageFFNWeights, dim: usize, hidden_dim: usize) -> crate::Result<LazyTensor> {
+fn ffn_swiglu(
+    x: &LazyTensor,
+    fw: &ZImageFFNWeights,
+    dim: usize,
+    hidden_dim: usize,
+) -> crate::Result<LazyTensor> {
     let x1 = linear(x, &fw.w1, None, dim, hidden_dim)?.silu();
     let x3 = linear(x, &fw.w3, None, dim, hidden_dim)?;
     let mid = x1.mul(&x3)?;
@@ -552,14 +587,27 @@ impl ZImageTransformer2DModel {
         // 1. Timestep embedding.
         let t_scaled = t.mul_scalar(cfg.t_scale);
         let t_freq = timestep_embedding(&t_scaled, x)?;
-        let t_mid = linear(&t_freq, &w.t_embed_w1, Some(&w.t_embed_b1), FREQUENCY_EMBEDDING_SIZE, 1024)?.silu();
+        let t_mid = linear(
+            &t_freq,
+            &w.t_embed_w1,
+            Some(&w.t_embed_b1),
+            FREQUENCY_EMBEDDING_SIZE,
+            1024,
+        )?
+        .silu();
         let adaln_input = linear(&t_mid, &w.t_embed_w2, Some(&w.t_embed_b2), 1024, adaln_dim)?;
         //  (B, adaln_dim)
 
         // 2. Patchify and embed image.
         let x_patches = patchify(x, patch_size, f_patch_size)?;
         let patch_dim = f_patch_size * patch_size * patch_size * cfg.in_channels;
-        let mut x_seq = linear(&x_patches, &w.x_embed_w, Some(&w.x_embed_b), patch_dim, cfg.dim)?;
+        let mut x_seq = linear(
+            &x_patches,
+            &w.x_embed_w,
+            Some(&w.x_embed_b),
+            patch_dim,
+            cfg.dim,
+        )?;
         let img_seq_len = x_seq.shape().dims()[1];
 
         let f_tokens = f / f_patch_size;
@@ -568,37 +616,72 @@ impl ZImageTransformer2DModel {
         let text_len = cap_feats.shape().dims()[1];
 
         // 3. RoPE tables for image / caption / unified.
-        let img_positions: Vec<(usize, usize, usize)> = (0..f_tokens).flat_map(|fi| {
-            (0..h_tokens).flat_map(move |hi| (0..w_tokens).map(move |wi| (text_len + 1 + fi, hi, wi)))
-        }).collect();
-        let cap_positions: Vec<(usize, usize, usize)> = (0..text_len).map(|i| (1 + i, 0, 0)).collect();
+        let img_positions: Vec<(usize, usize, usize)> = (0..f_tokens)
+            .flat_map(|fi| {
+                (0..h_tokens)
+                    .flat_map(move |hi| (0..w_tokens).map(move |wi| (text_len + 1 + fi, hi, wi)))
+            })
+            .collect();
+        let cap_positions: Vec<(usize, usize, usize)> =
+            (0..text_len).map(|i| (1 + i, 0, 0)).collect();
         let mut unified_positions = img_positions.clone();
         unified_positions.extend(cap_positions.iter().copied());
 
         let head_dim = cfg.head_dim();
         let half_head = head_dim / 2;
         let (img_cos_v, img_sin_v) = build_3d_rope_tables(
-            &img_positions, &cfg.axes_dims, &cfg.axes_lens, cfg.rope_theta,
+            &img_positions,
+            &cfg.axes_dims,
+            &cfg.axes_lens,
+            cfg.rope_theta,
         );
         let (cap_cos_v, cap_sin_v) = build_3d_rope_tables(
-            &cap_positions, &cfg.axes_dims, &cfg.axes_lens, cfg.rope_theta,
+            &cap_positions,
+            &cfg.axes_dims,
+            &cfg.axes_lens,
+            cfg.rope_theta,
         );
         let (uni_cos_v, uni_sin_v) = build_3d_rope_tables(
-            &unified_positions, &cfg.axes_dims, &cfg.axes_lens, cfg.rope_theta,
+            &unified_positions,
+            &cfg.axes_dims,
+            &cfg.axes_lens,
+            cfg.rope_theta,
         );
 
-        let img_cos = x_seq.const_f32_like(Arc::from(img_cos_v), Shape::from_dims(&[img_seq_len, half_head]));
-        let img_sin = x_seq.const_f32_like(Arc::from(img_sin_v), Shape::from_dims(&[img_seq_len, half_head]));
-        let cap_cos = x_seq.const_f32_like(Arc::from(cap_cos_v), Shape::from_dims(&[text_len, half_head]));
-        let cap_sin = x_seq.const_f32_like(Arc::from(cap_sin_v), Shape::from_dims(&[text_len, half_head]));
-        let uni_cos = x_seq.const_f32_like(Arc::from(uni_cos_v), Shape::from_dims(&[img_seq_len + text_len, half_head]));
-        let uni_sin = x_seq.const_f32_like(Arc::from(uni_sin_v), Shape::from_dims(&[img_seq_len + text_len, half_head]));
+        let img_cos = x_seq.const_f32_like(
+            Arc::from(img_cos_v),
+            Shape::from_dims(&[img_seq_len, half_head]),
+        );
+        let img_sin = x_seq.const_f32_like(
+            Arc::from(img_sin_v),
+            Shape::from_dims(&[img_seq_len, half_head]),
+        );
+        let cap_cos = x_seq.const_f32_like(
+            Arc::from(cap_cos_v),
+            Shape::from_dims(&[text_len, half_head]),
+        );
+        let cap_sin = x_seq.const_f32_like(
+            Arc::from(cap_sin_v),
+            Shape::from_dims(&[text_len, half_head]),
+        );
+        let uni_cos = x_seq.const_f32_like(
+            Arc::from(uni_cos_v),
+            Shape::from_dims(&[img_seq_len + text_len, half_head]),
+        );
+        let uni_sin = x_seq.const_f32_like(
+            Arc::from(uni_sin_v),
+            Shape::from_dims(&[img_seq_len + text_len, half_head]),
+        );
 
         // 4. Caption RMSNorm + linear.
-        let cap_normed = cap_feats
-            .rms_norm_affine(Arc::clone(&w.cap_norm_gain), cfg.norm_eps)
-            ?;
-        let mut cap = linear(&cap_normed, &w.cap_linear_w, Some(&w.cap_linear_b), cfg.cap_feat_dim, cfg.dim)?;
+        let cap_normed = cap_feats.rms_norm_affine(Arc::clone(&w.cap_norm_gain), cfg.norm_eps)?;
+        let mut cap = linear(
+            &cap_normed,
+            &w.cap_linear_w,
+            Some(&w.cap_linear_b),
+            cfg.cap_feat_dim,
+            cfg.dim,
+        )?;
 
         // 5. Attention masks (F32: 1.0 = valid, 0.0 = padding).
         let ones_v: Vec<f32> = vec![1.0; b * img_seq_len];
@@ -607,7 +690,13 @@ impl ZImageTransformer2DModel {
         // 6. Noise refiner (modulated image stack).
         for blk in &w.noise_refiner {
             x_seq = z_image_block(
-                &x_seq, Some(&img_mask), &img_cos, &img_sin, Some(&adaln_input), blk, cfg,
+                &x_seq,
+                Some(&img_mask),
+                &img_cos,
+                &img_sin,
+                Some(&adaln_input),
+                blk,
+                cfg,
             )?;
         }
 
@@ -623,8 +712,13 @@ impl ZImageTransformer2DModel {
         // 9. Main layers (modulated).
         for blk in &w.layers {
             unified = z_image_block(
-                &unified, Some(&unified_mask), &uni_cos, &uni_sin,
-                Some(&adaln_input), blk, cfg,
+                &unified,
+                Some(&unified_mask),
+                &uni_cos,
+                &uni_sin,
+                Some(&adaln_input),
+                blk,
+                cfg,
             )?;
         }
 
@@ -634,16 +728,32 @@ impl ZImageTransformer2DModel {
         // 11. Final layer = layer_norm(x) * (1 + scale) -> linear.
         let scale = linear(
             &adaln_input.silu(),
-            &w.final_adaln_w, Some(&w.final_adaln_b),
-            adaln_dim, cfg.dim,
-        )?.add_scalar(1.0).unsqueeze(1_usize)?;
+            &w.final_adaln_w,
+            Some(&w.final_adaln_b),
+            adaln_dim,
+            cfg.dim,
+        )?
+        .add_scalar(1.0)
+        .unsqueeze(1_usize)?;
         let normed = layer_norm_no_params(&x_out, 1e-6)?;
         let scaled = normed.broadcast_mul(&scale)?;
         let out_channels = patch_size * patch_size * f_patch_size * cfg.in_channels;
-        let x_out = linear(&scaled, &w.final_linear_w, Some(&w.final_linear_b), cfg.dim, out_channels)?;
+        let x_out = linear(
+            &scaled,
+            &w.final_linear_w,
+            Some(&w.final_linear_b),
+            cfg.dim,
+            out_channels,
+        )?;
 
         // 12. Unpatchify back to (B, C, F, H, W).
-        unpatchify(&x_out, (f, h, w_dim), patch_size, f_patch_size, cfg.in_channels)
+        unpatchify(
+            &x_out,
+            (f, h, w_dim),
+            patch_size,
+            f_patch_size,
+            cfg.in_channels,
+        )
     }
 }
 
@@ -720,7 +830,10 @@ impl ZImageTextEncoder {
         let seq = tokens.len();
         let mut h = LazyTensor::embed_tokens(
             cfg.vocab_size_arc_clone(&self.weights.token_embedding),
-            cfg.vocab_size, cfg.hidden_size, tokens, &crate::Device::cpu(),
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
+            &crate::Device::cpu(),
         )?;
         // Pre-build RoPE tables (LLaMA half-split style; Qwen3 uses that).
         let (rope_cos, rope_sin) = h.rope_tables_const(cfg.rope_theta, 0, seq, cfg.head_dim);
@@ -734,15 +847,19 @@ impl ZImageTextEncoder {
             }
         }
         Err(crate::Error::Msg(format!(
-            "text encoder: target layer index {target} out of {}", self.weights.layers.len(),
-        )).bt())
+            "text encoder: target layer index {target} out of {}",
+            self.weights.layers.len(),
+        ))
+        .bt())
     }
 }
 
 impl TextEncoderConfig {
     /// Convenience that just clones an existing `Arc` (mirrors the
     /// implicit `Arc::clone` of caller-provided weight slabs).
-    fn vocab_size_arc_clone(&self, a: &Arc<[f32]>) -> Arc<[f32]> { a.clone() }
+    fn vocab_size_arc_clone(&self, a: &Arc<[f32]>) -> Arc<[f32]> {
+        a.clone()
+    }
 }
 
 fn apply_text_encoder_layer(
@@ -766,9 +883,15 @@ fn apply_text_encoder_layer(
     let k = linear(&x_norm, &layer.k_w, None, hidden, kv_dim)?;
     let v = linear(&x_norm, &layer.v_w, None, hidden, kv_dim)?;
 
-    let q = q.reshape(Shape::from_dims(&[b, l, n_heads, head_dim]))?.permute([0, 2, 1, 3_usize])?;
-    let k = k.reshape(Shape::from_dims(&[b, l, n_kv, head_dim]))?.permute([0, 2, 1, 3_usize])?;
-    let v = v.reshape(Shape::from_dims(&[b, l, n_kv, head_dim]))?.permute([0, 2, 1, 3_usize])?;
+    let q = q
+        .reshape(Shape::from_dims(&[b, l, n_heads, head_dim]))?
+        .permute([0, 2, 1, 3_usize])?;
+    let k = k
+        .reshape(Shape::from_dims(&[b, l, n_kv, head_dim]))?
+        .permute([0, 2, 1, 3_usize])?;
+    let v = v
+        .reshape(Shape::from_dims(&[b, l, n_kv, head_dim]))?
+        .permute([0, 2, 1, 3_usize])?;
 
     // Per-head RMSNorm along head_dim.
     let q = q.rms_norm_affine(Arc::clone(&layer.q_norm_gain), cfg.rms_norm_eps)?;
@@ -789,7 +912,9 @@ fn apply_text_encoder_layer(
     let scores = scores.broadcast_add(causal)?;
     let probs = scores.softmax_last_dim()?;
     let ctx = probs.matmul(&v_full)?;
-    let ctx = ctx.permute([0, 2, 1, 3_usize])?.reshape(Shape::from_dims(&[b, l, n_heads * head_dim]))?;
+    let ctx = ctx
+        .permute([0, 2, 1, 3_usize])?
+        .reshape(Shape::from_dims(&[b, l, n_heads * head_dim]))?;
     let attn_out = linear(&ctx, &layer.o_w, None, n_heads * head_dim, hidden)?;
 
     let h = x.add(&attn_out)?;
@@ -971,13 +1096,14 @@ fn conv2d_k3_s2_p0_with_pad(
     // Match Python: pad_with_zeros (right=1, bottom=1) then stride-2 conv.
     // Implemented by manual reshape+concat zero padding on axes 2 and 3.
     let zeros_right_v: Vec<f32> = vec![0.0; cin * h * 1];
-    let zeros_right = x
-        .const_f32_like(Arc::from(zeros_right_v), Shape::from_dims(&[1, cin, h, 1]));
+    let zeros_right = x.const_f32_like(Arc::from(zeros_right_v), Shape::from_dims(&[1, cin, h, 1]));
     let x_w = x.concat(&zeros_right, 3_usize)?;
     let new_w = w_sz + 1;
     let zeros_bottom_v: Vec<f32> = vec![0.0; cin * 1 * new_w];
-    let zeros_bottom = x
-        .const_f32_like(Arc::from(zeros_bottom_v), Shape::from_dims(&[1, cin, 1, new_w]));
+    let zeros_bottom = x.const_f32_like(
+        Arc::from(zeros_bottom_v),
+        Shape::from_dims(&[1, cin, 1, new_w]),
+    );
     let x_padded = x_w.concat(&zeros_bottom, 2_usize)?;
 
     let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin, 3, 3]));
@@ -1004,7 +1130,16 @@ fn vae_resnet(
     let h1 = vae_group_norm(x, &rw.n1_g, &rw.n1_b, cfg.norm_num_groups, 1e-6, c_in, h, w)?;
     let h1 = h1.silu();
     let h1 = conv2d_k3_s1_p1(&h1, &rw.c1_w, &rw.c1_b, c_in, c_out)?;
-    let h2 = vae_group_norm(&h1, &rw.n2_g, &rw.n2_b, cfg.norm_num_groups, 1e-6, c_out, h, w)?;
+    let h2 = vae_group_norm(
+        &h1,
+        &rw.n2_g,
+        &rw.n2_b,
+        cfg.norm_num_groups,
+        1e-6,
+        c_out,
+        h,
+        w,
+    )?;
     let h2 = h2.silu();
     let h2 = conv2d_k3_s1_p1(&h2, &rw.c2_w, &rw.c2_b, c_out, c_out)?;
     let shortcut = match (&rw.shortcut_w, &rw.shortcut_b) {
@@ -1028,7 +1163,9 @@ fn vae_spatial_attention(
 ) -> crate::Result<LazyTensor> {
     let n = h * w;
     let x_norm = vae_group_norm(x, &aw.gn_g, &aw.gn_b, cfg.norm_num_groups, 1e-6, c, h, w)?;
-    let xf = x_norm.permute([0, 2, 3, 1_usize])?.reshape(Shape::from_dims(&[1, n, c]))?;
+    let xf = x_norm
+        .permute([0, 2, 3, 1_usize])?
+        .reshape(Shape::from_dims(&[1, n, c]))?;
     let q = linear(&xf, &aw.q_w, Some(&aw.q_b), c, c)?;
     let k = linear(&xf, &aw.k_w, Some(&aw.k_b), c, c)?;
     let v = linear(&xf, &aw.v_w, Some(&aw.v_b), c, c)?;
@@ -1037,7 +1174,9 @@ fn vae_spatial_attention(
     let probs = scores.softmax_last_dim()?;
     let ctx = probs.matmul(&v)?;
     let out = linear(&ctx, &aw.out_w, Some(&aw.out_b), c, c)?;
-    let out_chw = out.reshape(Shape::from_dims(&[1, h, w, c]))?.permute([0, 3, 1, 2_usize])?;
+    let out_chw = out
+        .reshape(Shape::from_dims(&[1, h, w, c]))?
+        .permute([0, 3, 1, 2_usize])?;
     x.add(&out_chw)
 }
 
@@ -1052,7 +1191,13 @@ impl AutoEncoderKL {
         let (mut h, mut wd) = (dims[2], dims[3]);
         let lc = cfg.latent_channels;
 
-        let mut feat = conv2d_k3_s1_p1(x, &w.enc_conv_in_w, &w.enc_conv_in_b, cfg.in_channels, cfg.block_out_channels[0])?;
+        let mut feat = conv2d_k3_s1_p1(
+            x,
+            &w.enc_conv_in_w,
+            &w.enc_conv_in_b,
+            cfg.in_channels,
+            cfg.block_out_channels[0],
+        )?;
         let mut c = cfg.block_out_channels[0];
 
         for (i, &out_c) in cfg.block_out_channels.iter().enumerate() {
@@ -1075,14 +1220,25 @@ impl AutoEncoderKL {
         feat = vae_resnet(&feat, &w.enc_mid_resnet_2, cfg, c, c, h, wd)?;
 
         // conv_norm_out -> SiLU -> conv_out (-> 2*latent_channels).
-        let feat = vae_group_norm(&feat, &w.enc_conv_norm_out_g, &w.enc_conv_norm_out_b, cfg.norm_num_groups, 1e-6, c, h, wd)?;
+        let feat = vae_group_norm(
+            &feat,
+            &w.enc_conv_norm_out_g,
+            &w.enc_conv_norm_out_b,
+            cfg.norm_num_groups,
+            1e-6,
+            c,
+            h,
+            wd,
+        )?;
         let feat = feat.silu();
         let feat = conv2d_k3_s1_p1(&feat, &w.enc_conv_out_w, &w.enc_conv_out_b, c, 2 * lc)?;
 
         // Diagonal Gaussian: keep mean only (deterministic encode for tests).
         let mean = feat.narrow(1_usize, 0, lc)?;
         // (z - shift) * scale.
-        Ok(mean.add_scalar(-cfg.shift_factor).mul_scalar(cfg.scaling_factor))
+        Ok(mean
+            .add_scalar(-cfg.shift_factor)
+            .mul_scalar(cfg.scaling_factor))
     }
 
     /// Decode latent `(1, latent_ch, H/8, W/8)` -> RGB image `(1, 3, H, W)`.
@@ -1093,11 +1249,20 @@ impl AutoEncoderKL {
         let (mut h, mut wd) = (dims[2], dims[3]);
 
         // (z / scale + shift).
-        let z = z.mul_scalar(1.0 / cfg.scaling_factor).add_scalar(cfg.shift_factor);
+        let z = z
+            .mul_scalar(1.0 / cfg.scaling_factor)
+            .add_scalar(cfg.shift_factor);
 
-        let d_mid = *cfg.block_out_channels.last().ok_or_else(|| fuel_ir::Error::Msg(
-            "z-image VAE: block_out_channels must not be empty".to_string()))?;
-        let mut feat = conv2d_k3_s1_p1(&z, &w.dec_conv_in_w, &w.dec_conv_in_b, cfg.latent_channels, d_mid)?;
+        let d_mid = *cfg.block_out_channels.last().ok_or_else(|| {
+            fuel_ir::Error::Msg("z-image VAE: block_out_channels must not be empty".to_string())
+        })?;
+        let mut feat = conv2d_k3_s1_p1(
+            &z,
+            &w.dec_conv_in_w,
+            &w.dec_conv_in_b,
+            cfg.latent_channels,
+            d_mid,
+        )?;
 
         feat = vae_resnet(&feat, &w.dec_mid_resnet_1, cfg, d_mid, d_mid, h, wd)?;
         feat = vae_spatial_attention(&feat, &w.dec_mid_attn, cfg, d_mid, h, wd)?;
@@ -1120,9 +1285,24 @@ impl AutoEncoderKL {
             }
         }
 
-        let feat = vae_group_norm(&feat, &w.dec_conv_norm_out_g, &w.dec_conv_norm_out_b, cfg.norm_num_groups, 1e-6, c, h, wd)?;
+        let feat = vae_group_norm(
+            &feat,
+            &w.dec_conv_norm_out_g,
+            &w.dec_conv_norm_out_b,
+            cfg.norm_num_groups,
+            1e-6,
+            c,
+            h,
+            wd,
+        )?;
         let feat = feat.silu();
-        conv2d_k3_s1_p1(&feat, &w.dec_conv_out_w, &w.dec_conv_out_b, c, cfg.out_channels)
+        conv2d_k3_s1_p1(
+            &feat,
+            &w.dec_conv_out_w,
+            &w.dec_conv_out_b,
+            c,
+            cfg.out_channels,
+        )
     }
 }
 
@@ -1167,7 +1347,10 @@ impl FlowMatchEulerDiscreteScheduler {
         let mut sigmas: Vec<f64> = timesteps.iter().map(|&t| t / n as f64).collect();
         if !config.use_dynamic_shifting {
             let s = config.shift;
-            sigmas = sigmas.iter().map(|&x| s * x / (1.0 + (s - 1.0) * x)).collect();
+            sigmas = sigmas
+                .iter()
+                .map(|&x| s * x / (1.0 + (s - 1.0) * x))
+                .collect();
             timesteps = sigmas.iter().map(|&x| x * n as f64).collect();
         }
         Self {
@@ -1183,23 +1366,33 @@ impl FlowMatchEulerDiscreteScheduler {
         let sigma_max = self.sigmas[0];
         let sigma_min = *self.sigmas.last().unwrap_or(&0.0);
         let n_train = self.config.num_train_timesteps as f64;
-        let timesteps: Vec<f64> = (0..num_inference_steps).map(|i| {
-            let t = i as f64 / num_inference_steps as f64;
-            (sigma_max * (1.0 - t) + sigma_min * t) * n_train
-        }).collect();
+        let timesteps: Vec<f64> = (0..num_inference_steps)
+            .map(|i| {
+                let t = i as f64 / num_inference_steps as f64;
+                (sigma_max * (1.0 - t) + sigma_min * t) * n_train
+            })
+            .collect();
         let mut sigmas: Vec<f64> = timesteps.iter().map(|&t| t / n_train).collect();
         if let Some(mu) = mu {
             if self.config.use_dynamic_shifting {
-                sigmas = sigmas.iter().map(|&t| {
-                    if t <= 0.0 { 0.0 } else {
-                        let e_mu = mu.exp();
-                        e_mu / (e_mu + (1.0 / t - 1.0))
-                    }
-                }).collect();
+                sigmas = sigmas
+                    .iter()
+                    .map(|&t| {
+                        if t <= 0.0 {
+                            0.0
+                        } else {
+                            let e_mu = mu.exp();
+                            e_mu / (e_mu + (1.0 / t - 1.0))
+                        }
+                    })
+                    .collect();
             }
         } else if !self.config.use_dynamic_shifting {
             let s = self.config.shift;
-            sigmas = sigmas.iter().map(|&x| s * x / (1.0 + (s - 1.0) * x)).collect();
+            sigmas = sigmas
+                .iter()
+                .map(|&x| s * x / (1.0 + (s - 1.0) * x))
+                .collect();
         }
         sigmas.push(0.0);
         self.timesteps = timesteps;
@@ -1218,7 +1411,11 @@ impl FlowMatchEulerDiscreteScheduler {
     }
 
     /// Euler step: `x_{t-1} = x_t + (σ_{i+1} - σ_i) * v_t`.
-    pub fn step(&mut self, model_output: &LazyTensor, sample: &LazyTensor) -> crate::Result<LazyTensor> {
+    pub fn step(
+        &mut self,
+        model_output: &LazyTensor,
+        sample: &LazyTensor,
+    ) -> crate::Result<LazyTensor> {
         let sigma = self.sigmas[self.step_index];
         let sigma_next = self.sigmas[self.step_index + 1];
         let dt = sigma_next - sigma;
@@ -1227,9 +1424,15 @@ impl FlowMatchEulerDiscreteScheduler {
         Ok(next)
     }
 
-    pub fn num_inference_steps(&self) -> usize { self.timesteps.len() }
-    pub fn step_index(&self) -> usize { self.step_index }
-    pub fn is_complete(&self) -> bool { self.step_index >= self.timesteps.len() }
+    pub fn num_inference_steps(&self) -> usize {
+        self.timesteps.len()
+    }
+    pub fn step_index(&self) -> usize {
+        self.step_index
+    }
+    pub fn is_complete(&self) -> bool {
+        self.step_index >= self.timesteps.len()
+    }
 }
 
 /// Static shift schedule helper. Mirrors the eager `calculate_shift`.
@@ -1281,7 +1484,8 @@ impl ZImageModel {
         let text_len = cap_feats.shape().dims()[1];
         // cap_mask: all-1 over text_len (no padding in single-prompt path).
         let mask_v: Vec<f32> = vec![1.0; text_len];
-        let cap_mask = cap_feats.const_f32_like(Arc::from(mask_v), Shape::from_dims(&[1, text_len]));
+        let cap_mask =
+            cap_feats.const_f32_like(Arc::from(mask_v), Shape::from_dims(&[1, text_len]));
 
         // 2. Initial noise via deterministic LCG (host-side, then ported into a const).
         let cfg = &self.transformer.config;
@@ -1301,11 +1505,11 @@ impl ZImageModel {
         let mut latent = noise;
         for _ in 0..num_steps {
             let t_norm = sched.current_timestep_normalized();
-            let t = cap_feats.const_f32_like(
-                Arc::from(vec![t_norm as f32]),
-                Shape::from_dims(&[1]),
-            );
-            let v = self.transformer.forward(&latent, &t, &cap_feats, &cap_mask)?;
+            let t =
+                cap_feats.const_f32_like(Arc::from(vec![t_norm as f32]), Shape::from_dims(&[1]));
+            let v = self
+                .transformer
+                .forward(&latent, &t, &cap_feats, &cap_mask)?;
             latent = sched.step(&v, &latent)?;
         }
 
@@ -1320,12 +1524,16 @@ impl ZImageModel {
 fn lcg_noise(seed: u64, n: usize) -> Vec<f32> {
     let mut state = seed.wrapping_add(0x9E3779B97F4A7C15);
     let mut next_u32 = || -> u32 {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (state >> 32) as u32
     };
     let mut next_f32 = || -> f32 {
         // uniform in (0, 1).
-        let u = (next_u32() as f64 / u32::MAX as f64).max(1e-9).min(1.0 - 1e-9);
+        let u = (next_u32() as f64 / u32::MAX as f64)
+            .max(1e-9)
+            .min(1.0 - 1e-9);
         u as f32
     };
     let mut out = Vec::with_capacity(n);
@@ -1392,7 +1600,8 @@ impl ZImageTransformerWeights {
                 return Err(crate::Error::Msg(format!(
                     "lazy_z_image load: {name:?} has {} elements, expected {n}",
                     v.len(),
-                )).bt());
+                ))
+                .bt());
             }
             Ok(Arc::from(v))
         };
@@ -1416,7 +1625,11 @@ impl ZImageTransformerWeights {
         let x_embed_b = arc_load("all_x_embedder.2-1.bias", dim)?;
 
         // FinalLayer.
-        let final_adaln_w = linear_load("all_final_layer.2-1.adaLN_modulation.1.weight", dim, adaln_dim)?;
+        let final_adaln_w = linear_load(
+            "all_final_layer.2-1.adaLN_modulation.1.weight",
+            dim,
+            adaln_dim,
+        )?;
         let final_adaln_b = arc_load("all_final_layer.2-1.adaLN_modulation.1.bias", dim)?;
         let out_channels = cfg.in_channels; // Z-Image predicts in_channels velocity.
         let final_linear_w = linear_load(
@@ -1431,16 +1644,42 @@ impl ZImageTransformerWeights {
 
         let load_block = |prefix: &str, has_adaln: bool| -> crate::Result<ZImageBlockWeights> {
             let attn = ZImageAttnWeights {
-                to_q_w:  linear_load(&format!("{prefix}.attention.to_q.weight"),     cfg.n_heads * head_dim, dim)?,
-                to_k_w:  linear_load(&format!("{prefix}.attention.to_k.weight"),     cfg.n_kv_heads * head_dim, dim)?,
-                to_v_w:  linear_load(&format!("{prefix}.attention.to_v.weight"),     cfg.n_kv_heads * head_dim, dim)?,
-                to_out_w: linear_load(&format!("{prefix}.attention.to_out.0.weight"), dim, cfg.n_heads * head_dim)?,
+                to_q_w: linear_load(
+                    &format!("{prefix}.attention.to_q.weight"),
+                    cfg.n_heads * head_dim,
+                    dim,
+                )?,
+                to_k_w: linear_load(
+                    &format!("{prefix}.attention.to_k.weight"),
+                    cfg.n_kv_heads * head_dim,
+                    dim,
+                )?,
+                to_v_w: linear_load(
+                    &format!("{prefix}.attention.to_v.weight"),
+                    cfg.n_kv_heads * head_dim,
+                    dim,
+                )?,
+                to_out_w: linear_load(
+                    &format!("{prefix}.attention.to_out.0.weight"),
+                    dim,
+                    cfg.n_heads * head_dim,
+                )?,
                 q_norm_gain: if cfg.qk_norm {
-                    Some(arc_load(&format!("{prefix}.attention.norm_q.weight"), head_dim)?)
-                } else { None },
+                    Some(arc_load(
+                        &format!("{prefix}.attention.norm_q.weight"),
+                        head_dim,
+                    )?)
+                } else {
+                    None
+                },
                 k_norm_gain: if cfg.qk_norm {
-                    Some(arc_load(&format!("{prefix}.attention.norm_k.weight"), head_dim)?)
-                } else { None },
+                    Some(arc_load(
+                        &format!("{prefix}.attention.norm_k.weight"),
+                        head_dim,
+                    )?)
+                } else {
+                    None
+                },
             };
             let ffn = ZImageFFNWeights {
                 w1: linear_load(&format!("{prefix}.feed_forward.w1.weight"), hidden_dim, dim)?,
@@ -1449,20 +1688,28 @@ impl ZImageTransformerWeights {
             };
             let attn_norm1_gain = arc_load(&format!("{prefix}.attention_norm1.weight"), dim)?;
             let attn_norm2_gain = arc_load(&format!("{prefix}.attention_norm2.weight"), dim)?;
-            let ffn_norm1_gain  = arc_load(&format!("{prefix}.ffn_norm1.weight"), dim)?;
-            let ffn_norm2_gain  = arc_load(&format!("{prefix}.ffn_norm2.weight"), dim)?;
+            let ffn_norm1_gain = arc_load(&format!("{prefix}.ffn_norm1.weight"), dim)?;
+            let ffn_norm2_gain = arc_load(&format!("{prefix}.ffn_norm2.weight"), dim)?;
             let (adaln_w, adaln_b) = if has_adaln {
-                let w = linear_load(&format!("{prefix}.adaLN_modulation.0.weight"), 4 * dim, adaln_dim)?;
+                let w = linear_load(
+                    &format!("{prefix}.adaLN_modulation.0.weight"),
+                    4 * dim,
+                    adaln_dim,
+                )?;
                 let b = arc_load(&format!("{prefix}.adaLN_modulation.0.bias"), 4 * dim)?;
                 (Some(w), Some(b))
             } else {
                 (None, None)
             };
             Ok(ZImageBlockWeights {
-                attn, ffn,
-                attn_norm1_gain, attn_norm2_gain,
-                ffn_norm1_gain, ffn_norm2_gain,
-                adaln_w, adaln_b,
+                attn,
+                ffn,
+                attn_norm1_gain,
+                attn_norm2_gain,
+                ffn_norm1_gain,
+                ffn_norm2_gain,
+                adaln_w,
+                adaln_b,
             })
         };
 
@@ -1480,12 +1727,22 @@ impl ZImageTransformerWeights {
         }
 
         Ok(ZImageTransformerWeights {
-            t_embed_w1, t_embed_b1, t_embed_w2, t_embed_b2,
-            cap_norm_gain, cap_linear_w, cap_linear_b,
-            x_embed_w, x_embed_b,
-            final_adaln_w, final_adaln_b,
-            final_linear_w, final_linear_b,
-            noise_refiner, context_refiner, layers,
+            t_embed_w1,
+            t_embed_b1,
+            t_embed_w2,
+            t_embed_b2,
+            cap_norm_gain,
+            cap_linear_w,
+            cap_linear_b,
+            x_embed_w,
+            x_embed_b,
+            final_adaln_w,
+            final_adaln_b,
+            final_linear_w,
+            final_linear_b,
+            noise_refiner,
+            context_refiner,
+            layers,
         })
     }
 }
@@ -1506,49 +1763,83 @@ impl TextEncoderWeights {
         if token_embedding.len() != cfg.vocab_size * h {
             return Err(crate::Error::Msg(format!(
                 "z_image text encoder: embed_tokens has {} elements, expected {}",
-                token_embedding.len(), cfg.vocab_size * h,
-            )).bt());
+                token_embedding.len(),
+                cfg.vocab_size * h,
+            ))
+            .bt());
         }
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         for i in 0..cfg.num_hidden_layers {
             let q_w = Arc::from(load_transposed_matrix(
-                st, &format!("model.layers.{i}.self_attn.q_proj.weight"), qh, h,
+                st,
+                &format!("model.layers.{i}.self_attn.q_proj.weight"),
+                qh,
+                h,
             )?);
             let k_w = Arc::from(load_transposed_matrix(
-                st, &format!("model.layers.{i}.self_attn.k_proj.weight"), kv, h,
+                st,
+                &format!("model.layers.{i}.self_attn.k_proj.weight"),
+                kv,
+                h,
             )?);
             let v_w = Arc::from(load_transposed_matrix(
-                st, &format!("model.layers.{i}.self_attn.v_proj.weight"), kv, h,
+                st,
+                &format!("model.layers.{i}.self_attn.v_proj.weight"),
+                kv,
+                h,
             )?);
             let o_w = Arc::from(load_transposed_matrix(
-                st, &format!("model.layers.{i}.self_attn.o_proj.weight"), h, qh,
+                st,
+                &format!("model.layers.{i}.self_attn.o_proj.weight"),
+                h,
+                qh,
             )?);
             let q_norm_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("model.layers.{i}.self_attn.q_norm.weight"),
+                st,
+                &format!("model.layers.{i}.self_attn.q_norm.weight"),
             )?);
             let k_norm_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("model.layers.{i}.self_attn.k_norm.weight"),
+                st,
+                &format!("model.layers.{i}.self_attn.k_norm.weight"),
             )?);
             let gate_w = Arc::from(load_transposed_matrix(
-                st, &format!("model.layers.{i}.mlp.gate_proj.weight"), cfg.intermediate_size, h,
+                st,
+                &format!("model.layers.{i}.mlp.gate_proj.weight"),
+                cfg.intermediate_size,
+                h,
             )?);
             let up_w = Arc::from(load_transposed_matrix(
-                st, &format!("model.layers.{i}.mlp.up_proj.weight"), cfg.intermediate_size, h,
+                st,
+                &format!("model.layers.{i}.mlp.up_proj.weight"),
+                cfg.intermediate_size,
+                h,
             )?);
             let down_w = Arc::from(load_transposed_matrix(
-                st, &format!("model.layers.{i}.mlp.down_proj.weight"), h, cfg.intermediate_size,
+                st,
+                &format!("model.layers.{i}.mlp.down_proj.weight"),
+                h,
+                cfg.intermediate_size,
             )?);
             let input_ln_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("model.layers.{i}.input_layernorm.weight"),
+                st,
+                &format!("model.layers.{i}.input_layernorm.weight"),
             )?);
             let post_attn_ln_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("model.layers.{i}.post_attention_layernorm.weight"),
+                st,
+                &format!("model.layers.{i}.post_attention_layernorm.weight"),
             )?);
             layers.push(TextEncoderLayer {
-                q_w, k_w, v_w, o_w,
-                q_norm_gain, k_norm_gain,
-                gate_w, up_w, down_w,
-                input_ln_gain, post_attn_ln_gain,
+                q_w,
+                k_w,
+                v_w,
+                o_w,
+                q_norm_gain,
+                k_norm_gain,
+                gate_w,
+                up_w,
+                down_w,
+                input_ln_gain,
+                post_attn_ln_gain,
             });
         }
         Ok(TextEncoderWeights {
@@ -1575,34 +1866,47 @@ impl VaeWeights {
         };
 
         // ---- Helpers for resnet, attention -----------------------------
-        let load_resnet = |prefix: &str, c_in: usize, c_out: usize| -> crate::Result<VaeResnetWeights> {
-            let n1_g = load_f32(&format!("{prefix}.norm1.weight"))?;
-            let n1_b = load_f32(&format!("{prefix}.norm1.bias"))?;
-            let c1_w = load_f32(&format!("{prefix}.conv1.weight"))?;
-            let c1_b = load_f32(&format!("{prefix}.conv1.bias"))?;
-            let n2_g = load_f32(&format!("{prefix}.norm2.weight"))?;
-            let n2_b = load_f32(&format!("{prefix}.norm2.bias"))?;
-            let c2_w = load_f32(&format!("{prefix}.conv2.weight"))?;
-            let c2_b = load_f32(&format!("{prefix}.conv2.bias"))?;
-            let (shortcut_w, shortcut_b) = if c_in != c_out {
-                (Some(load_f32(&format!("{prefix}.conv_shortcut.weight"))?),
-                 Some(load_f32(&format!("{prefix}.conv_shortcut.bias"))?))
-            } else { (None, None) };
-            Ok(VaeResnetWeights {
-                n1_g, n1_b, c1_w, c1_b, n2_g, n2_b, c2_w, c2_b,
-                shortcut_w, shortcut_b,
-            })
-        };
+        let load_resnet =
+            |prefix: &str, c_in: usize, c_out: usize| -> crate::Result<VaeResnetWeights> {
+                let n1_g = load_f32(&format!("{prefix}.norm1.weight"))?;
+                let n1_b = load_f32(&format!("{prefix}.norm1.bias"))?;
+                let c1_w = load_f32(&format!("{prefix}.conv1.weight"))?;
+                let c1_b = load_f32(&format!("{prefix}.conv1.bias"))?;
+                let n2_g = load_f32(&format!("{prefix}.norm2.weight"))?;
+                let n2_b = load_f32(&format!("{prefix}.norm2.bias"))?;
+                let c2_w = load_f32(&format!("{prefix}.conv2.weight"))?;
+                let c2_b = load_f32(&format!("{prefix}.conv2.bias"))?;
+                let (shortcut_w, shortcut_b) = if c_in != c_out {
+                    (
+                        Some(load_f32(&format!("{prefix}.conv_shortcut.weight"))?),
+                        Some(load_f32(&format!("{prefix}.conv_shortcut.bias"))?),
+                    )
+                } else {
+                    (None, None)
+                };
+                Ok(VaeResnetWeights {
+                    n1_g,
+                    n1_b,
+                    c1_w,
+                    c1_b,
+                    n2_g,
+                    n2_b,
+                    c2_w,
+                    c2_b,
+                    shortcut_w,
+                    shortcut_b,
+                })
+            };
         let load_attn = |prefix: &str, c: usize| -> crate::Result<VaeAttnWeights> {
             Ok(VaeAttnWeights {
                 gn_g: load_f32(&format!("{prefix}.group_norm.weight"))?,
                 gn_b: load_f32(&format!("{prefix}.group_norm.bias"))?,
-                q_w:  load_linear(&format!("{prefix}.to_q.weight"), c, c)?,
-                q_b:  load_f32(&format!("{prefix}.to_q.bias"))?,
-                k_w:  load_linear(&format!("{prefix}.to_k.weight"), c, c)?,
-                k_b:  load_f32(&format!("{prefix}.to_k.bias"))?,
-                v_w:  load_linear(&format!("{prefix}.to_v.weight"), c, c)?,
-                v_b:  load_f32(&format!("{prefix}.to_v.bias"))?,
+                q_w: load_linear(&format!("{prefix}.to_q.weight"), c, c)?,
+                q_b: load_f32(&format!("{prefix}.to_q.bias"))?,
+                k_w: load_linear(&format!("{prefix}.to_k.weight"), c, c)?,
+                k_b: load_f32(&format!("{prefix}.to_k.bias"))?,
+                v_w: load_linear(&format!("{prefix}.to_v.weight"), c, c)?,
+                v_b: load_f32(&format!("{prefix}.to_v.bias"))?,
                 out_w: load_linear(&format!("{prefix}.to_out.0.weight"), c, c)?,
                 out_b: load_f32(&format!("{prefix}.to_out.0.bias"))?,
             })
@@ -1619,18 +1923,30 @@ impl VaeWeights {
             let mut resnets = Vec::with_capacity(cfg.layers_per_block);
             for ri in 0..cfg.layers_per_block {
                 let in_c = if ri == 0 { c_in_lvl } else { c_out };
-                resnets.push(load_resnet(&format!("encoder.down_blocks.{i}.resnets.{ri}"), in_c, c_out)?);
+                resnets.push(load_resnet(
+                    &format!("encoder.down_blocks.{i}.resnets.{ri}"),
+                    in_c,
+                    c_out,
+                )?);
             }
             c_in_lvl = c_out;
             let downsample_conv = if i < n_levels - 1 {
-                let w = load_f32(&format!("encoder.down_blocks.{i}.downsamplers.0.conv.weight"))?;
+                let w = load_f32(&format!(
+                    "encoder.down_blocks.{i}.downsamplers.0.conv.weight"
+                ))?;
                 let b = load_f32(&format!("encoder.down_blocks.{i}.downsamplers.0.conv.bias"))?;
                 Some((w, b))
-            } else { None };
-            enc_down_blocks.push(VaeDownBlockWeights { resnets, downsample_conv });
+            } else {
+                None
+            };
+            enc_down_blocks.push(VaeDownBlockWeights {
+                resnets,
+                downsample_conv,
+            });
         }
-        let c_mid_enc = *cfg.block_out_channels.last().ok_or_else(|| fuel_ir::Error::Msg(
-            "z-image VAE: block_out_channels must not be empty".to_string()))?;
+        let c_mid_enc = *cfg.block_out_channels.last().ok_or_else(|| {
+            fuel_ir::Error::Msg("z-image VAE: block_out_channels must not be empty".to_string())
+        })?;
         let enc_mid_resnet_1 = load_resnet("encoder.mid_block.resnets.0", c_mid_enc, c_mid_enc)?;
         let enc_mid_attn = load_attn("encoder.mid_block.attentions.0", c_mid_enc)?;
         let enc_mid_resnet_2 = load_resnet("encoder.mid_block.resnets.1", c_mid_enc, c_mid_enc)?;
@@ -1655,15 +1971,24 @@ impl VaeWeights {
             let mut resnets = Vec::with_capacity(n_res);
             for ri in 0..n_res {
                 let in_c = if ri == 0 { c_in_lvl } else { c_out };
-                resnets.push(load_resnet(&format!("decoder.up_blocks.{i}.resnets.{ri}"), in_c, c_out)?);
+                resnets.push(load_resnet(
+                    &format!("decoder.up_blocks.{i}.resnets.{ri}"),
+                    in_c,
+                    c_out,
+                )?);
             }
             c_in_lvl = c_out;
             let upsample_conv = if i < n_levels - 1 {
                 let w = load_f32(&format!("decoder.up_blocks.{i}.upsamplers.0.conv.weight"))?;
                 let b = load_f32(&format!("decoder.up_blocks.{i}.upsamplers.0.conv.bias"))?;
                 Some((w, b))
-            } else { None };
-            dec_up_blocks.push(VaeUpBlockWeights { resnets, upsample_conv });
+            } else {
+                None
+            };
+            dec_up_blocks.push(VaeUpBlockWeights {
+                resnets,
+                upsample_conv,
+            });
         }
         let dec_conv_norm_out_g = load_f32("decoder.conv_norm_out.weight")?;
         let dec_conv_norm_out_b = load_f32("decoder.conv_norm_out.bias")?;
@@ -1671,15 +1996,26 @@ impl VaeWeights {
         let dec_conv_out_b = load_f32("decoder.conv_out.bias")?;
 
         Ok(VaeWeights {
-            enc_conv_in_w, enc_conv_in_b, enc_down_blocks,
-            enc_mid_resnet_1, enc_mid_attn, enc_mid_resnet_2,
-            enc_conv_norm_out_g, enc_conv_norm_out_b,
-            enc_conv_out_w, enc_conv_out_b,
-            dec_conv_in_w, dec_conv_in_b,
-            dec_mid_resnet_1, dec_mid_attn, dec_mid_resnet_2,
+            enc_conv_in_w,
+            enc_conv_in_b,
+            enc_down_blocks,
+            enc_mid_resnet_1,
+            enc_mid_attn,
+            enc_mid_resnet_2,
+            enc_conv_norm_out_g,
+            enc_conv_norm_out_b,
+            enc_conv_out_w,
+            enc_conv_out_b,
+            dec_conv_in_w,
+            dec_conv_in_b,
+            dec_mid_resnet_1,
+            dec_mid_attn,
+            dec_mid_resnet_2,
             dec_up_blocks,
-            dec_conv_norm_out_g, dec_conv_norm_out_b,
-            dec_conv_out_w, dec_conv_out_b,
+            dec_conv_norm_out_g,
+            dec_conv_norm_out_b,
+            dec_conv_out_w,
+            dec_conv_out_b,
         })
     }
 }
@@ -1688,12 +2024,16 @@ impl VaeWeights {
 mod tests {
     use super::*;
 
-    fn arc(v: Vec<f32>) -> Arc<[f32]> { Arc::from(v) }
+    fn arc(v: Vec<f32>) -> Arc<[f32]> {
+        Arc::from(v)
+    }
 
     fn det_seed(seed: u64) -> impl FnMut() -> f32 {
         let mut s = seed.wrapping_mul(2654435761).wrapping_add(0xDEADBEEF);
         move || {
-            s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             (((s >> 32) as u32) as f32 / u32::MAX as f32 - 0.5) * 0.05
         }
     }
@@ -1753,8 +2093,16 @@ mod tests {
             attn_norm2_gain: arc(vec![1.0; dim]),
             ffn_norm1_gain: arc(vec![1.0; dim]),
             ffn_norm2_gain: arc(vec![1.0; dim]),
-            adaln_w: if modulation { Some(vec_of(adaln_dim * (4 * dim), rng)) } else { None },
-            adaln_b: if modulation { Some(arc(vec![0.0; 4 * dim])) } else { None },
+            adaln_w: if modulation {
+                Some(vec_of(adaln_dim * (4 * dim), rng))
+            } else {
+                None
+            },
+            adaln_b: if modulation {
+                Some(arc(vec![0.0; 4 * dim]))
+            } else {
+                None
+            },
         };
 
         ZImageTransformerWeights {
@@ -1771,9 +2119,15 @@ mod tests {
             final_adaln_b: arc(vec![0.0; dim]),
             final_linear_w: vec_of(dim * out_ch, &mut rng),
             final_linear_b: arc(vec![0.0; out_ch]),
-            noise_refiner: (0..cfg.n_refiner_layers).map(|_| make_block(&mut rng, true)).collect(),
-            context_refiner: (0..cfg.n_refiner_layers).map(|_| make_block(&mut rng, false)).collect(),
-            layers: (0..cfg.n_layers).map(|_| make_block(&mut rng, true)).collect(),
+            noise_refiner: (0..cfg.n_refiner_layers)
+                .map(|_| make_block(&mut rng, true))
+                .collect(),
+            context_refiner: (0..cfg.n_refiner_layers)
+                .map(|_| make_block(&mut rng, false))
+                .collect(),
+            layers: (0..cfg.n_layers)
+                .map(|_| make_block(&mut rng, true))
+                .collect(),
         }
     }
 
@@ -1781,24 +2135,34 @@ mod tests {
     fn transformer_forward_shape_tiny() {
         let cfg = tiny_transformer_cfg();
         let weights = tiny_transformer_weights(&cfg);
-        let model = ZImageTransformer2DModel { config: cfg.clone(), weights };
+        let model = ZImageTransformer2DModel {
+            config: cfg.clone(),
+            weights,
+        };
 
         // Tiny latent: 1 x 2 x 1 x 4 x 4 (so num_patches = 4).
         let c = cfg.in_channels;
-        let h = 4; let w = 4;
+        let h = 4;
+        let w = 4;
         let x = LazyTensor::from_f32(
             vec![0.1_f32; c * h * w],
             Shape::from_dims(&[1, c, 1, h, w]),
             &crate::Device::cpu(),
         );
         let t = x.const_f32_like(Arc::from(vec![0.5_f32]), Shape::from_dims(&[1]));
-        let cap = x.const_f32_like(Arc::from(vec![0.1_f32; 1 * 3 * cfg.cap_feat_dim]), Shape::from_dims(&[1, 3, cfg.cap_feat_dim]));
+        let cap = x.const_f32_like(
+            Arc::from(vec![0.1_f32; 1 * 3 * cfg.cap_feat_dim]),
+            Shape::from_dims(&[1, 3, cfg.cap_feat_dim]),
+        );
         let cap_mask = x.const_f32_like(Arc::from(vec![1.0_f32; 3]), Shape::from_dims(&[1, 3]));
 
         let out = model.forward(&x, &t, &cap, &cap_mask).unwrap();
         assert_eq!(out.shape().dims(), &[1, c, 1, h, w]);
         let flat = out.realize_f32();
-        assert!(flat.iter().all(|v| v.is_finite()), "non-finite transformer output");
+        assert!(
+            flat.iter().all(|v| v.is_finite()),
+            "non-finite transformer output"
+        );
     }
 
     // ------ Text encoder ------------------------------------------------
@@ -1822,19 +2186,21 @@ mod tests {
         let h = cfg.hidden_size;
         let i = cfg.intermediate_size;
         let kv = cfg.num_key_value_heads * cfg.head_dim;
-        let layers: Vec<TextEncoderLayer> = (0..cfg.num_hidden_layers).map(|_| TextEncoderLayer {
-            q_w: vec_of(h * (cfg.num_attention_heads * cfg.head_dim), &mut rng),
-            k_w: vec_of(h * kv, &mut rng),
-            v_w: vec_of(h * kv, &mut rng),
-            o_w: vec_of((cfg.num_attention_heads * cfg.head_dim) * h, &mut rng),
-            q_norm_gain: arc(vec![1.0; cfg.head_dim]),
-            k_norm_gain: arc(vec![1.0; cfg.head_dim]),
-            gate_w: vec_of(h * i, &mut rng),
-            up_w: vec_of(h * i, &mut rng),
-            down_w: vec_of(i * h, &mut rng),
-            input_ln_gain: arc(vec![1.0; h]),
-            post_attn_ln_gain: arc(vec![1.0; h]),
-        }).collect();
+        let layers: Vec<TextEncoderLayer> = (0..cfg.num_hidden_layers)
+            .map(|_| TextEncoderLayer {
+                q_w: vec_of(h * (cfg.num_attention_heads * cfg.head_dim), &mut rng),
+                k_w: vec_of(h * kv, &mut rng),
+                v_w: vec_of(h * kv, &mut rng),
+                o_w: vec_of((cfg.num_attention_heads * cfg.head_dim) * h, &mut rng),
+                q_norm_gain: arc(vec![1.0; cfg.head_dim]),
+                k_norm_gain: arc(vec![1.0; cfg.head_dim]),
+                gate_w: vec_of(h * i, &mut rng),
+                up_w: vec_of(h * i, &mut rng),
+                down_w: vec_of(i * h, &mut rng),
+                input_ln_gain: arc(vec![1.0; h]),
+                post_attn_ln_gain: arc(vec![1.0; h]),
+            })
+            .collect();
         TextEncoderWeights {
             token_embedding: vec_of(cfg.vocab_size * h, &mut rng),
             layers,
@@ -1845,12 +2211,18 @@ mod tests {
     fn text_encoder_forward_shape_tiny() {
         let cfg = tiny_text_cfg();
         let weights = tiny_text_weights(&cfg);
-        let enc = ZImageTextEncoder { config: cfg.clone(), weights };
+        let enc = ZImageTextEncoder {
+            config: cfg.clone(),
+            weights,
+        };
         let tokens = [3_u32, 5, 7];
         let out = enc.forward(&tokens).unwrap();
         assert_eq!(out.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
         let flat = out.realize_f32();
-        assert!(flat.iter().all(|v| v.is_finite()), "non-finite text encoder output");
+        assert!(
+            flat.iter().all(|v| v.is_finite()),
+            "non-finite text encoder output"
+        );
     }
 
     // ------ VAE -----------------------------------------------------------
@@ -1874,18 +2246,27 @@ mod tests {
         let lc = cfg.latent_channels;
         let n_stages = cfg.block_out_channels.len();
 
-        let make_resnet = |rng: &mut dyn FnMut() -> f32, c_in: usize, c_out: usize| VaeResnetWeights {
-            n1_g: arc(vec![1.0; c_in]),
-            n1_b: arc(vec![0.0; c_in]),
-            c1_w: vec_of(c_out * c_in * 9, rng),
-            c1_b: arc(vec![0.0; c_out]),
-            n2_g: arc(vec![1.0; c_out]),
-            n2_b: arc(vec![0.0; c_out]),
-            c2_w: vec_of(c_out * c_out * 9, rng),
-            c2_b: arc(vec![0.0; c_out]),
-            shortcut_w: if c_in != c_out { Some(vec_of(c_out * c_in, rng)) } else { None },
-            shortcut_b: if c_in != c_out { Some(arc(vec![0.0; c_out])) } else { None },
-        };
+        let make_resnet =
+            |rng: &mut dyn FnMut() -> f32, c_in: usize, c_out: usize| VaeResnetWeights {
+                n1_g: arc(vec![1.0; c_in]),
+                n1_b: arc(vec![0.0; c_in]),
+                c1_w: vec_of(c_out * c_in * 9, rng),
+                c1_b: arc(vec![0.0; c_out]),
+                n2_g: arc(vec![1.0; c_out]),
+                n2_b: arc(vec![0.0; c_out]),
+                c2_w: vec_of(c_out * c_out * 9, rng),
+                c2_b: arc(vec![0.0; c_out]),
+                shortcut_w: if c_in != c_out {
+                    Some(vec_of(c_out * c_in, rng))
+                } else {
+                    None
+                },
+                shortcut_b: if c_in != c_out {
+                    Some(arc(vec![0.0; c_out]))
+                } else {
+                    None
+                },
+            };
 
         let make_attn = |rng: &mut dyn FnMut() -> f32, c: usize| VaeAttnWeights {
             gn_g: arc(vec![1.0; c]),
@@ -1906,15 +2287,26 @@ mod tests {
         // Encoder down blocks.
         let mut enc_down_blocks = Vec::new();
         for (i, &out_c) in cfg.block_out_channels.iter().enumerate() {
-            let in_c = if i == 0 { c_first } else { cfg.block_out_channels[i - 1] };
-            let resnets: Vec<_> = (0..cfg.layers_per_block).map(|ri| {
-                let c_in = if ri == 0 { in_c } else { out_c };
-                make_resnet(&mut rng, c_in, out_c)
-            }).collect();
+            let in_c = if i == 0 {
+                c_first
+            } else {
+                cfg.block_out_channels[i - 1]
+            };
+            let resnets: Vec<_> = (0..cfg.layers_per_block)
+                .map(|ri| {
+                    let c_in = if ri == 0 { in_c } else { out_c };
+                    make_resnet(&mut rng, c_in, out_c)
+                })
+                .collect();
             let downsample_conv = if i < n_stages - 1 {
                 Some((vec_of(out_c * out_c * 9, &mut rng), arc(vec![0.0; out_c])))
-            } else { None };
-            enc_down_blocks.push(VaeDownBlockWeights { resnets, downsample_conv });
+            } else {
+                None
+            };
+            enc_down_blocks.push(VaeDownBlockWeights {
+                resnets,
+                downsample_conv,
+            });
         }
 
         // Decoder up blocks (reversed channels).
@@ -1922,14 +2314,21 @@ mod tests {
         let mut dec_up_blocks = Vec::new();
         for (i, &out_c) in reversed.iter().enumerate() {
             let in_c = if i == 0 { c_last } else { reversed[i - 1] };
-            let resnets: Vec<_> = (0..=cfg.layers_per_block).map(|ri| {
-                let c_in = if ri == 0 { in_c } else { out_c };
-                make_resnet(&mut rng, c_in, out_c)
-            }).collect();
+            let resnets: Vec<_> = (0..=cfg.layers_per_block)
+                .map(|ri| {
+                    let c_in = if ri == 0 { in_c } else { out_c };
+                    make_resnet(&mut rng, c_in, out_c)
+                })
+                .collect();
             let upsample_conv = if i < reversed.len() - 1 {
                 Some((vec_of(out_c * out_c * 9, &mut rng), arc(vec![0.0; out_c])))
-            } else { None };
-            dec_up_blocks.push(VaeUpBlockWeights { resnets, upsample_conv });
+            } else {
+                None
+            };
+            dec_up_blocks.push(VaeUpBlockWeights {
+                resnets,
+                upsample_conv,
+            });
         }
 
         VaeWeights {
@@ -1951,7 +2350,10 @@ mod tests {
             dec_up_blocks,
             dec_conv_norm_out_g: arc(vec![1.0; reversed[reversed.len() - 1]]),
             dec_conv_norm_out_b: arc(vec![0.0; reversed[reversed.len() - 1]]),
-            dec_conv_out_w: vec_of(cfg.out_channels * reversed[reversed.len() - 1] * 9, &mut rng),
+            dec_conv_out_w: vec_of(
+                cfg.out_channels * reversed[reversed.len() - 1] * 9,
+                &mut rng,
+            ),
             dec_conv_out_b: arc(vec![0.0; cfg.out_channels]),
         }
     }
@@ -1960,10 +2362,14 @@ mod tests {
     fn vae_round_trip_tiny() {
         let cfg = tiny_vae_cfg();
         let weights = tiny_vae_weights(&cfg);
-        let vae = AutoEncoderKL { config: cfg.clone(), weights };
+        let vae = AutoEncoderKL {
+            config: cfg.clone(),
+            weights,
+        };
 
         // 4×4 RGB image — 1 downsample stage → 2×2 latent.
-        let h = 4; let w = 4;
+        let h = 4;
+        let w = 4;
         let x = LazyTensor::from_f32(
             vec![0.1_f32; cfg.in_channels * h * w],
             Shape::from_dims(&[1, cfg.in_channels, h, w]),
@@ -1997,7 +2403,10 @@ mod tests {
             latent = sched.step(&v, &latent).unwrap();
         }
         let flat = latent.realize_f32();
-        assert!(flat.iter().all(|x| x.is_finite()), "non-finite scheduler output");
+        assert!(
+            flat.iter().all(|x| x.is_finite()),
+            "non-finite scheduler output"
+        );
         assert_eq!(sched.step_index(), 8);
     }
 
@@ -2010,15 +2419,22 @@ mod tests {
         // pre-built tiny cap_feats vector to keep the test fast.
         let tcfg = tiny_transformer_cfg();
         let tw = tiny_transformer_weights(&tcfg);
-        let transformer = ZImageTransformer2DModel { config: tcfg.clone(), weights: tw };
+        let transformer = ZImageTransformer2DModel {
+            config: tcfg.clone(),
+            weights: tw,
+        };
 
         let vcfg = tiny_vae_cfg();
         let vw = tiny_vae_weights(&vcfg);
-        let vae = AutoEncoderKL { config: vcfg.clone(), weights: vw };
+        let vae = AutoEncoderKL {
+            config: vcfg.clone(),
+            weights: vw,
+        };
 
         // Tiny 4×4 latent (matches transformer config) — VAE up-samples
         // 1 stage to 8×8 RGB.
-        let h_lat = 4; let w_lat = 4;
+        let h_lat = 4;
+        let w_lat = 4;
         let c = tcfg.in_channels;
         let noise = LazyTensor::from_f32(
             vec![0.1_f32; c * h_lat * w_lat],
@@ -2034,10 +2450,7 @@ mod tests {
             Arc::from(vec![0.05_f32; 1 * 2 * tcfg.cap_feat_dim]),
             Shape::from_dims(&[1, 2, tcfg.cap_feat_dim]),
         );
-        let cap_mask = noise.const_f32_like(
-            Arc::from(vec![1.0_f32; 2]),
-            Shape::from_dims(&[1, 2]),
-        );
+        let cap_mask = noise.const_f32_like(Arc::from(vec![1.0_f32; 2]), Shape::from_dims(&[1, 2]));
 
         let mut sched = FlowMatchEulerDiscreteScheduler::new(SchedulerConfig::z_image_turbo());
         sched.set_timesteps(2, None);
@@ -2052,22 +2465,28 @@ mod tests {
         // Strip frame axis and decode.
         let latent4 = latent.squeeze(2_usize).unwrap();
         let img = vae.decode(&latent4).unwrap();
-        assert_eq!(img.shape().dims(), &[1, vcfg.out_channels, h_lat * 2, w_lat * 2]);
+        assert_eq!(
+            img.shape().dims(),
+            &[1, vcfg.out_channels, h_lat * 2, w_lat * 2]
+        );
         let flat = img.realize_f32();
-        assert!(flat.iter().all(|x| x.is_finite()), "non-finite end-to-end output");
+        assert!(
+            flat.iter().all(|x| x.is_finite()),
+            "non-finite end-to-end output"
+        );
     }
 
     // ---- Safetensors loader smoke tests -------------------------------
 
-    fn write_tmp_safetensors_z(
-        tensors: &[(String, Vec<usize>, Vec<f32>)],
-    ) -> std::path::PathBuf {
+    fn write_tmp_safetensors_z(tensors: &[(String, Vec<usize>, Vec<f32>)]) -> std::path::PathBuf {
         use safetensors::tensor::TensorView;
         use std::collections::HashMap;
-        let bytes_store: Vec<Vec<u8>> = tensors.iter()
+        let bytes_store: Vec<Vec<u8>> = tensors
+            .iter()
             .map(|(_, _, data)| data.iter().flat_map(|f| f.to_le_bytes()).collect())
             .collect();
-        let views: HashMap<String, TensorView<'_>> = tensors.iter()
+        let views: HashMap<String, TensorView<'_>> = tensors
+            .iter()
             .zip(bytes_store.iter())
             .map(|((name, shape, _), bytes)| {
                 let v = TensorView::new(safetensors::Dtype::F32, shape.clone(), bytes)
@@ -2079,7 +2498,10 @@ mod tests {
         let bytes_out = safetensors::serialize(&views, metadata).unwrap();
         let path = std::env::temp_dir().join(format!(
             "fuel_lazy_z_image_test_{}_{}.safetensors",
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
             std::process::id(),
         ));
         std::fs::write(&path, bytes_out).unwrap();
@@ -2097,21 +2519,64 @@ mod tests {
         let kv = cfg.num_key_value_heads * cfg.head_dim;
         let i = cfg.intermediate_size;
         let mut t: Vec<(String, Vec<usize>, Vec<f32>)> = Vec::new();
-        t.push(("model.embed_tokens.weight".into(),
-            vec![cfg.vocab_size, h], vec![0.01; cfg.vocab_size * h]));
+        t.push((
+            "model.embed_tokens.weight".into(),
+            vec![cfg.vocab_size, h],
+            vec![0.01; cfg.vocab_size * h],
+        ));
         for li in 0..cfg.num_hidden_layers {
             let p = format!("model.layers.{li}");
-            t.push((format!("{p}.self_attn.q_proj.weight"), vec![qh, h], vec![0.0; qh * h]));
-            t.push((format!("{p}.self_attn.k_proj.weight"), vec![kv, h], vec![0.0; kv * h]));
-            t.push((format!("{p}.self_attn.v_proj.weight"), vec![kv, h], vec![0.0; kv * h]));
-            t.push((format!("{p}.self_attn.o_proj.weight"), vec![h, qh], vec![0.0; h * qh]));
-            t.push((format!("{p}.self_attn.q_norm.weight"), vec![cfg.head_dim], vec![1.0; cfg.head_dim]));
-            t.push((format!("{p}.self_attn.k_norm.weight"), vec![cfg.head_dim], vec![1.0; cfg.head_dim]));
-            t.push((format!("{p}.mlp.gate_proj.weight"), vec![i, h], vec![0.0; i * h]));
-            t.push((format!("{p}.mlp.up_proj.weight"),   vec![i, h], vec![0.0; i * h]));
-            t.push((format!("{p}.mlp.down_proj.weight"), vec![h, i], vec![0.0; i * h]));
-            t.push((format!("{p}.input_layernorm.weight"),           vec![h], vec![1.0; h]));
-            t.push((format!("{p}.post_attention_layernorm.weight"),  vec![h], vec![1.0; h]));
+            t.push((
+                format!("{p}.self_attn.q_proj.weight"),
+                vec![qh, h],
+                vec![0.0; qh * h],
+            ));
+            t.push((
+                format!("{p}.self_attn.k_proj.weight"),
+                vec![kv, h],
+                vec![0.0; kv * h],
+            ));
+            t.push((
+                format!("{p}.self_attn.v_proj.weight"),
+                vec![kv, h],
+                vec![0.0; kv * h],
+            ));
+            t.push((
+                format!("{p}.self_attn.o_proj.weight"),
+                vec![h, qh],
+                vec![0.0; h * qh],
+            ));
+            t.push((
+                format!("{p}.self_attn.q_norm.weight"),
+                vec![cfg.head_dim],
+                vec![1.0; cfg.head_dim],
+            ));
+            t.push((
+                format!("{p}.self_attn.k_norm.weight"),
+                vec![cfg.head_dim],
+                vec![1.0; cfg.head_dim],
+            ));
+            t.push((
+                format!("{p}.mlp.gate_proj.weight"),
+                vec![i, h],
+                vec![0.0; i * h],
+            ));
+            t.push((
+                format!("{p}.mlp.up_proj.weight"),
+                vec![i, h],
+                vec![0.0; i * h],
+            ));
+            t.push((
+                format!("{p}.mlp.down_proj.weight"),
+                vec![h, i],
+                vec![0.0; i * h],
+            ));
+            t.push((format!("{p}.input_layernorm.weight"), vec![h], vec![1.0; h]));
+            t.push((
+                format!("{p}.post_attention_layernorm.weight"),
+                vec![h],
+                vec![1.0; h],
+            ));
         }
         let path = write_tmp_safetensors_z(&t);
         let st = unsafe { crate::safetensors::MmapedSafetensors::new(&path).unwrap() };

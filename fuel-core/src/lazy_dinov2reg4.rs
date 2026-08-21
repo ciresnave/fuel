@@ -75,9 +75,14 @@ impl Dinov2Reg4Config {
     /// patch 14, 7806 classes.
     pub fn vit_small_plantclef() -> Self {
         Self {
-            embed_dim: 384, depth: 12, num_heads: 6,
-            num_channels: 3, image_size: 518, patch_size: 14,
-            mlp_ratio: 4, layer_norm_eps: 1e-6,
+            embed_dim: 384,
+            depth: 12,
+            num_heads: 6,
+            num_channels: 3,
+            image_size: 518,
+            patch_size: 14,
+            mlp_ratio: 4,
+            layer_norm_eps: 1e-6,
             num_classes: 7806,
             num_register_tokens: 4,
         }
@@ -85,9 +90,14 @@ impl Dinov2Reg4Config {
     /// DINOv2-reg4 ViT-Base/14 backbone variant.
     pub fn vit_base() -> Self {
         Self {
-            embed_dim: 768, depth: 12, num_heads: 12,
-            num_channels: 3, image_size: 518, patch_size: 14,
-            mlp_ratio: 4, layer_norm_eps: 1e-6,
+            embed_dim: 768,
+            depth: 12,
+            num_heads: 12,
+            num_channels: 3,
+            image_size: 518,
+            patch_size: 14,
+            mlp_ratio: 4,
+            layer_norm_eps: 1e-6,
             num_classes: 1000,
             num_register_tokens: 4,
         }
@@ -150,10 +160,14 @@ impl Dinov2Reg4Model {
         let batch = dims[0];
         assert_eq!(batch, 1, "v1 supports batch == 1");
         assert_eq!(dims[1], cfg.num_channels);
-        assert_eq!(dims[2], cfg.image_size,
-            "input H must equal cfg.image_size (variable input deferred)");
-        assert_eq!(dims[3], cfg.image_size,
-            "input W must equal cfg.image_size (variable input deferred)");
+        assert_eq!(
+            dims[2], cfg.image_size,
+            "input H must equal cfg.image_size (variable input deferred)"
+        );
+        assert_eq!(
+            dims[3], cfg.image_size,
+            "input W must equal cfg.image_size (variable input deferred)"
+        );
 
         let h = cfg.embed_dim;
         let np = cfg.num_patches();
@@ -164,10 +178,8 @@ impl Dinov2Reg4Model {
             Arc::clone(&weights.patch_proj),
             Shape::from_dims(&[h, cfg.num_channels, cfg.patch_size, cfg.patch_size]),
         );
-        let conv_b = pixel_values.const_f32_like(
-            Arc::clone(&weights.patch_proj_bias),
-            Shape::from_dims(&[h]),
-        );
+        let conv_b = pixel_values
+            .const_f32_like(Arc::clone(&weights.patch_proj_bias), Shape::from_dims(&[h]));
         let conv_out = pixel_values.conv2d(
             &conv_w,
             Some(&conv_b),
@@ -180,20 +192,16 @@ impl Dinov2Reg4Model {
             .permute([0, 2, 1_usize])?;
 
         // ---- Add learned position embedding (patches only) -----------------
-        let pos = pixel_values.const_f32_like(
-            Arc::clone(&weights.pos_embed),
-            Shape::from_dims(&[np, h]),
-        );
+        let pos =
+            pixel_values.const_f32_like(Arc::clone(&weights.pos_embed), Shape::from_dims(&[np, h]));
         let pos_bc = pos
             .reshape(Shape::from_dims(&[1, np, h]))?
             .broadcast_to(Shape::from_dims(&[batch, np, h]))?;
         let patches = patches.add(&pos_bc)?;
 
         // ---- Prepend CLS + register tokens ---------------------------------
-        let cls = pixel_values.const_f32_like(
-            Arc::clone(&weights.cls_token),
-            Shape::from_dims(&[1, 1, h]),
-        );
+        let cls = pixel_values
+            .const_f32_like(Arc::clone(&weights.cls_token), Shape::from_dims(&[1, 1, h]));
         let cls_bc = cls.broadcast_to(Shape::from_dims(&[batch, 1, h]))?;
         let reg = pixel_values.const_f32_like(
             Arc::clone(&weights.reg_token),
@@ -214,7 +222,11 @@ impl Dinov2Reg4Model {
         }
 
         // ---- Final LayerNorm + CLS classifier -----------------------------
-        let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&weights.final_ln_gain), std::sync::Arc::clone(&weights.final_ln_bias), cfg.layer_norm_eps)?;
+        let x_norm = x.layer_norm_affine(
+            std::sync::Arc::clone(&weights.final_ln_gain),
+            std::sync::Arc::clone(&weights.final_ln_bias),
+            cfg.layer_norm_eps,
+        )?;
         let cls_feat = x_norm
             .slice(1_usize, 0, 1)?
             .reshape(Shape::from_dims(&[batch, h]))?;
@@ -254,17 +266,22 @@ impl Dinov2Reg4Model {
         let batch = dims[0];
         assert_eq!(batch, 1, "v1 supports batch == 1");
         assert_eq!(dims[1], cfg.num_channels);
-        assert_eq!(dims[2], cfg.image_size,
-            "input H must equal cfg.image_size (variable input deferred)");
-        assert_eq!(dims[3], cfg.image_size,
-            "input W must equal cfg.image_size (variable input deferred)");
+        assert_eq!(
+            dims[2], cfg.image_size,
+            "input H must equal cfg.image_size (variable input deferred)"
+        );
+        assert_eq!(
+            dims[3], cfg.image_size,
+            "input W must equal cfg.image_size (variable input deferred)"
+        );
         assert!(!layer_ids.is_empty(), "layer_ids must not be empty");
         for w in layer_ids.windows(2) {
             assert!(w[0] < w[1], "layer_ids must be strictly increasing");
         }
         assert!(
             *layer_ids.last().unwrap() < cfg.depth,
-            "layer_ids must all be in [0, depth = {})", cfg.depth,
+            "layer_ids must all be in [0, depth = {})",
+            cfg.depth,
         );
 
         let h = cfg.embed_dim;
@@ -276,33 +293,30 @@ impl Dinov2Reg4Model {
             Arc::clone(&weights.patch_proj),
             Shape::from_dims(&[h, cfg.num_channels, cfg.patch_size, cfg.patch_size]),
         );
-        let conv_b = pixel_values.const_f32_like(
-            Arc::clone(&weights.patch_proj_bias),
-            Shape::from_dims(&[h]),
-        );
+        let conv_b = pixel_values
+            .const_f32_like(Arc::clone(&weights.patch_proj_bias), Shape::from_dims(&[h]));
         let conv_out = pixel_values.conv2d(
-            &conv_w, Some(&conv_b),
-            (cfg.patch_size, cfg.patch_size), (0, 0), 1,
+            &conv_w,
+            Some(&conv_b),
+            (cfg.patch_size, cfg.patch_size),
+            (0, 0),
+            1,
         )?;
         let patches = conv_out
             .reshape(Shape::from_dims(&[batch, h, np]))?
             .permute([0, 2, 1_usize])?;
 
         // Pos embed on patches only.
-        let pos = pixel_values.const_f32_like(
-            Arc::clone(&weights.pos_embed),
-            Shape::from_dims(&[np, h]),
-        );
+        let pos =
+            pixel_values.const_f32_like(Arc::clone(&weights.pos_embed), Shape::from_dims(&[np, h]));
         let pos_bc = pos
             .reshape(Shape::from_dims(&[1, np, h]))?
             .broadcast_to(Shape::from_dims(&[batch, np, h]))?;
         let patches = patches.add(&pos_bc)?;
 
         // Prepend CLS + register tokens.
-        let cls = pixel_values.const_f32_like(
-            Arc::clone(&weights.cls_token),
-            Shape::from_dims(&[1, 1, h]),
-        );
+        let cls = pixel_values
+            .const_f32_like(Arc::clone(&weights.cls_token), Shape::from_dims(&[1, 1, h]));
         let cls_bc = cls.broadcast_to(Shape::from_dims(&[batch, 1, h]))?;
         let reg = pixel_values.const_f32_like(
             Arc::clone(&weights.reg_token),
@@ -325,11 +339,7 @@ impl Dinov2Reg4Model {
         Ok(out)
     }
 
-    fn apply_block(
-        &self,
-        x: &LazyTensor,
-        block: &Dinov2Reg4BlockWeights,
-    ) -> Result<LazyTensor> {
+    fn apply_block(&self, x: &LazyTensor, block: &Dinov2Reg4BlockWeights) -> Result<LazyTensor> {
         let cfg = &self.config;
         let dims = x.shape();
         let dims = dims.dims();
@@ -340,12 +350,13 @@ impl Dinov2Reg4Model {
         let head_dim = cfg.head_dim();
 
         // Attention sublayer with Pre-LN + LayerScale.
-        let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&block.norm1_gain), std::sync::Arc::clone(&block.norm1_bias), cfg.layer_norm_eps)?;
+        let x_norm = x.layer_norm_affine(
+            std::sync::Arc::clone(&block.norm1_gain),
+            std::sync::Arc::clone(&block.norm1_bias),
+            cfg.layer_norm_eps,
+        )?;
         let qkv_lin = block.qkv.apply_linear(&x_norm, h, 3 * h)?;
-        let qkv_bias_t = x.const_f32_like(
-            Arc::clone(&block.qkv_bias),
-            Shape::from_dims(&[3 * h]),
-        );
+        let qkv_bias_t = x.const_f32_like(Arc::clone(&block.qkv_bias), Shape::from_dims(&[3 * h]));
         let qkv = qkv_lin.broadcast_add(&qkv_bias_t)?;
         let q = qkv.slice(2_usize, 0, h)?;
         let k = qkv.slice(2_usize, h, h)?;
@@ -362,41 +373,31 @@ impl Dinov2Reg4Model {
         let ctx = probs.matmul(&v)?;
         let merged = ctx.merge_heads()?;
         let proj = block.proj.apply_linear(&merged, h, h)?;
-        let proj_b_t = x.const_f32_like(
-            Arc::clone(&block.proj_bias),
-            Shape::from_dims(&[h]),
-        );
+        let proj_b_t = x.const_f32_like(Arc::clone(&block.proj_bias), Shape::from_dims(&[h]));
         let attn_out = proj.broadcast_add(&proj_b_t)?;
 
         // LayerScale 1: per-channel gamma multiplier BEFORE residual.
-        let ls1_t = x.const_f32_like(
-            Arc::clone(&block.ls1_gamma),
-            Shape::from_dims(&[h]),
-        );
+        let ls1_t = x.const_f32_like(Arc::clone(&block.ls1_gamma), Shape::from_dims(&[h]));
         let attn_scaled = attn_out.broadcast_mul(&ls1_t)?;
         let h1 = x.add(&attn_scaled)?;
 
         // MLP sublayer with Pre-LN + LayerScale.
-        let h1_norm = h1.layer_norm_affine(std::sync::Arc::clone(&block.norm2_gain), std::sync::Arc::clone(&block.norm2_bias), cfg.layer_norm_eps)?;
+        let h1_norm = h1.layer_norm_affine(
+            std::sync::Arc::clone(&block.norm2_gain),
+            std::sync::Arc::clone(&block.norm2_bias),
+            cfg.layer_norm_eps,
+        )?;
         let mlp_hidden = cfg.mlp_hidden();
         let fc1 = block.fc1.apply_linear(&h1_norm, h, mlp_hidden)?;
-        let fc1_b_t = x.const_f32_like(
-            Arc::clone(&block.fc1_bias),
-            Shape::from_dims(&[mlp_hidden]),
-        );
+        let fc1_b_t =
+            x.const_f32_like(Arc::clone(&block.fc1_bias), Shape::from_dims(&[mlp_hidden]));
         let fc1 = fc1.broadcast_add(&fc1_b_t)?.gelu_erf();
         let fc2 = block.fc2.apply_linear(&fc1, mlp_hidden, h)?;
-        let fc2_b_t = x.const_f32_like(
-            Arc::clone(&block.fc2_bias),
-            Shape::from_dims(&[h]),
-        );
+        let fc2_b_t = x.const_f32_like(Arc::clone(&block.fc2_bias), Shape::from_dims(&[h]));
         let mlp_out = fc2.broadcast_add(&fc2_b_t)?;
 
         // LayerScale 2.
-        let ls2_t = x.const_f32_like(
-            Arc::clone(&block.ls2_gamma),
-            Shape::from_dims(&[h]),
-        );
+        let ls2_t = x.const_f32_like(Arc::clone(&block.ls2_gamma), Shape::from_dims(&[h]));
         let mlp_scaled = mlp_out.broadcast_mul(&ls2_t)?;
         h1.add(&mlp_scaled)
     }
@@ -416,19 +417,18 @@ impl Dinov2Reg4Weights {
         let mlp = cfg.mlp_hidden();
 
         let patch_proj = Arc::from(load_tensor_as_f32(
-            st, "dinov2.embeddings.patch_embeddings.projection.weight",
+            st,
+            "dinov2.embeddings.patch_embeddings.projection.weight",
         )?);
         let patch_proj_bias = Arc::from(load_tensor_as_f32(
-            st, "dinov2.embeddings.patch_embeddings.projection.bias",
+            st,
+            "dinov2.embeddings.patch_embeddings.projection.bias",
         )?);
-        let cls_token = Arc::from(load_tensor_as_f32(
-            st, "dinov2.embeddings.cls_token",
-        )?);
-        let reg_token = Arc::from(load_tensor_as_f32(
-            st, "dinov2.embeddings.register_tokens",
-        )?);
+        let cls_token = Arc::from(load_tensor_as_f32(st, "dinov2.embeddings.cls_token")?);
+        let reg_token = Arc::from(load_tensor_as_f32(st, "dinov2.embeddings.register_tokens")?);
         let pos_embed = Arc::from(load_tensor_as_f32(
-            st, "dinov2.embeddings.position_embeddings",
+            st,
+            "dinov2.embeddings.position_embeddings",
         )?);
 
         let mut blocks = Vec::with_capacity(cfg.depth);
@@ -438,43 +438,65 @@ impl Dinov2Reg4Weights {
             let norm1_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.norm1.bias"))?);
             let qkv = ltm(st, &format!("{p}.attention.attention.qkv.weight"), 3 * h, h)?;
             let qkv_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.attention.attention.qkv.bias"),
+                st,
+                &format!("{p}.attention.attention.qkv.bias"),
             )?);
             let proj = ltm(st, &format!("{p}.attention.output.dense.weight"), h, h)?;
             let proj_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.attention.output.dense.bias"),
+                st,
+                &format!("{p}.attention.output.dense.bias"),
             )?);
             let ls1_gamma = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.layer_scale1.lambda1"),
+                st,
+                &format!("{p}.layer_scale1.lambda1"),
             )?);
             let norm2_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.norm2.weight"))?);
             let norm2_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.norm2.bias"))?);
             let fc1 = ltm(st, &format!("{p}.mlp.fc1.weight"), mlp, h)?;
-            let fc1_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.mlp.fc1.bias"),
-            )?);
+            let fc1_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.mlp.fc1.bias"))?);
             let fc2 = ltm(st, &format!("{p}.mlp.fc2.weight"), h, mlp)?;
-            let fc2_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.mlp.fc2.bias"),
-            )?);
+            let fc2_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.mlp.fc2.bias"))?);
             let ls2_gamma = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.layer_scale2.lambda1"),
+                st,
+                &format!("{p}.layer_scale2.lambda1"),
             )?);
             blocks.push(Dinov2Reg4BlockWeights {
-                norm1_gain, norm1_bias, qkv, qkv_bias, proj, proj_bias, ls1_gamma,
-                norm2_gain, norm2_bias, fc1, fc1_bias, fc2, fc2_bias, ls2_gamma,
+                norm1_gain,
+                norm1_bias,
+                qkv,
+                qkv_bias,
+                proj,
+                proj_bias,
+                ls1_gamma,
+                norm2_gain,
+                norm2_bias,
+                fc1,
+                fc1_bias,
+                fc2,
+                fc2_bias,
+                ls2_gamma,
             });
         }
 
         let final_ln_gain = Arc::from(load_tensor_as_f32(st, "dinov2.layernorm.weight")?);
         let final_ln_bias = Arc::from(load_tensor_as_f32(st, "dinov2.layernorm.bias")?);
         let head = ltm(st, "classifier.weight", cfg.num_classes, h)?;
-        let head_bias = Arc::from(load_tensor_as_f32(st, "classifier.bias")
-            .unwrap_or_else(|_| vec![0.0_f32; cfg.num_classes]));
+        let head_bias = Arc::from(
+            load_tensor_as_f32(st, "classifier.bias")
+                .unwrap_or_else(|_| vec![0.0_f32; cfg.num_classes]),
+        );
 
         Ok(Self {
-            patch_proj, patch_proj_bias, cls_token, reg_token, pos_embed, blocks,
-            final_ln_gain, final_ln_bias, head, head_bias,
+            patch_proj,
+            patch_proj_bias,
+            cls_token,
+            reg_token,
+            pos_embed,
+            blocks,
+            final_ln_gain,
+            final_ln_bias,
+            head,
+            head_bias,
         })
     }
 }
@@ -497,9 +519,14 @@ mod tests {
 
     fn tiny_cfg() -> Dinov2Reg4Config {
         Dinov2Reg4Config {
-            embed_dim: 16, depth: 2, num_heads: 4,
-            num_channels: 3, image_size: 28, patch_size: 14,
-            mlp_ratio: 2, layer_norm_eps: 1e-6,
+            embed_dim: 16,
+            depth: 2,
+            num_heads: 4,
+            num_channels: 3,
+            image_size: 28,
+            patch_size: 14,
+            mlp_ratio: 2,
+            layer_norm_eps: 1e-6,
             num_classes: 5,
             num_register_tokens: 4,
         }
@@ -509,7 +536,10 @@ mod tests {
         let mut nb = rng_seed(seed);
         let h = cfg.embed_dim;
         let np = cfg.num_patches();
-        let patch_proj = vec_of(h * cfg.num_channels * cfg.patch_size * cfg.patch_size, &mut nb);
+        let patch_proj = vec_of(
+            h * cfg.num_channels * cfg.patch_size * cfg.patch_size,
+            &mut nb,
+        );
         let patch_proj_bias = vec_of(h, &mut nb);
         let cls_token = vec_of(h, &mut nb);
         let reg_token = vec_of(cfg.num_register_tokens * h, &mut nb);
@@ -540,10 +570,16 @@ mod tests {
         let head_bias = vec_of(cfg.num_classes, &mut nb);
 
         Dinov2Reg4Weights {
-            patch_proj, patch_proj_bias,
-            cls_token, reg_token, pos_embed,
-            blocks, final_ln_gain, final_ln_bias,
-            head, head_bias,
+            patch_proj,
+            patch_proj_bias,
+            cls_token,
+            reg_token,
+            pos_embed,
+            blocks,
+            final_ln_gain,
+            final_ln_bias,
+            head,
+            head_bias,
         }
     }
 
@@ -562,7 +598,8 @@ mod tests {
     fn forward_shape_and_finite() {
         let cfg = tiny_cfg();
         let model = Dinov2Reg4Model {
-            config: cfg.clone(), weights: tiny_weights(&cfg, 11),
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg, 11),
         };
         let img = tiny_image(&cfg);
         let logits = model.forward(&img).unwrap();
@@ -596,8 +633,14 @@ mod tests {
         // elsewhere this must alter the CLS classifier output.
         modified.reg_token = Arc::from(vec![0.0_f32; n_reg * h]);
 
-        let m_a = Dinov2Reg4Model { config: cfg.clone(), weights: base };
-        let m_b = Dinov2Reg4Model { config: cfg.clone(), weights: modified };
+        let m_a = Dinov2Reg4Model {
+            config: cfg.clone(),
+            weights: base,
+        };
+        let m_b = Dinov2Reg4Model {
+            config: cfg.clone(),
+            weights: modified,
+        };
         let img = tiny_image(&cfg);
         let a = m_a.forward(&img).unwrap().realize_f32();
         let b = m_b.forward(&img).unwrap().realize_f32();
@@ -605,8 +648,10 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-7,
-            "zeroing register tokens must alter CLS classifier output, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-7,
+            "zeroing register tokens must alter CLS classifier output, max_diff = {max_diff}"
+        );
     }
 
     /// Classifier head is on CLS (slot 0), not on
@@ -628,8 +673,14 @@ mod tests {
         // output must change.
         modified.pos_embed = Arc::from(vec![0.0_f32; np * h]);
 
-        let m_a = Dinov2Reg4Model { config: cfg.clone(), weights: base };
-        let m_b = Dinov2Reg4Model { config: cfg.clone(), weights: modified };
+        let m_a = Dinov2Reg4Model {
+            config: cfg.clone(),
+            weights: base,
+        };
+        let m_b = Dinov2Reg4Model {
+            config: cfg.clone(),
+            weights: modified,
+        };
         let img = tiny_image(&cfg);
         let a = m_a.forward(&img).unwrap().realize_f32();
         let b = m_b.forward(&img).unwrap().realize_f32();
@@ -637,9 +688,11 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-7,
+        assert!(
+            max_diff > 1e-7,
             "zeroing pos_embed must alter CLS output (pos signal influences CLS via attention), \
-             max_diff = {max_diff}");
+             max_diff = {max_diff}"
+        );
     }
 
     /// `forward_intermediate_layers` returns one tensor per
@@ -649,10 +702,13 @@ mod tests {
     fn forward_intermediate_layers_shape() {
         let cfg = tiny_cfg();
         let model = Dinov2Reg4Model {
-            config: cfg.clone(), weights: tiny_weights(&cfg, 99),
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg, 99),
         };
         let img = tiny_image(&cfg);
-        let outs = model.forward_intermediate_layers(&img, &[0_usize, 1]).unwrap();
+        let outs = model
+            .forward_intermediate_layers(&img, &[0_usize, 1])
+            .unwrap();
         assert_eq!(outs.len(), 2);
         let expected_seq = cfg.seq_len(); // 1 (cls) + 4 (reg) + num_patches.
         for out in &outs {

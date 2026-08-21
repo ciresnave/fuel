@@ -33,10 +33,17 @@ use fuel_ir::Shape;
 /// the native-kernel oracle. `weight` is `[Cin, Cout/groups, Kh, Kw]`.
 #[allow(clippy::too_many_arguments)]
 fn check_case(
-    n: usize, cin: usize, h: usize, w: usize,
-    cout_per_g: usize, kh: usize, kw: usize,
-    stride: (usize, usize), padding: (usize, usize),
-    output_padding: (usize, usize), dilation: (usize, usize),
+    n: usize,
+    cin: usize,
+    h: usize,
+    w: usize,
+    cout_per_g: usize,
+    kh: usize,
+    kw: usize,
+    stride: (usize, usize),
+    padding: (usize, usize),
+    output_padding: (usize, usize),
+    dilation: (usize, usize),
     groups: usize,
 ) {
     let dev = Device::cpu();
@@ -46,7 +53,9 @@ fn check_case(
     );
 
     // Deterministic, well-scaled data (smooth sinusoids like the conv2d oracle).
-    let x_data: Vec<f32> = (0..n * cin * h * w).map(|i| ((i as f32) * 1.3e-3).sin()).collect();
+    let x_data: Vec<f32> = (0..n * cin * h * w)
+        .map(|i| ((i as f32) * 1.3e-3).sin())
+        .collect();
     let w_len = cin * cout_per_g * kh * kw;
     let w_data: Vec<f32> = (0..w_len).map(|i| ((i as f32) * 1.7e-3).cos()).collect();
 
@@ -107,10 +116,7 @@ fn check_case(
 
     // Shape sanity: the lowered root keeps [N, Cout, Hout, Wout].
     let cout = cout_per_g * groups;
-    assert_eq!(
-        out_dims.len(), 4,
-        "{label}: oracle output rank 4",
-    );
+    assert_eq!(out_dims.len(), 4, "{label}: oracle output rank 4",);
     assert_eq!(out_dims[0], n, "{label}: N");
     assert_eq!(out_dims[1], cout, "{label}: Cout");
     assert_eq!(got.len(), expected.len(), "{label}: output length");
@@ -125,7 +131,10 @@ fn check_case(
             "{label}: col2im recipe vs native kernel mismatch at {i}: got {g}, want {e}, rel {rel}",
         );
     }
-    assert!(max_rel < 1e-5, "{label}: max relative error {max_rel} exceeds 1e-5");
+    assert!(
+        max_rel < 1e-5,
+        "{label}: max relative error {max_rel} exceeds 1e-5"
+    );
 }
 
 /// Dense groups=1 transposed conv — the plain col2im overlap-add.
@@ -150,7 +159,7 @@ fn conv_transpose2d_col2im_matches_native_stride_pad_outpad() {
 /// weight arrange + matmul rank; the scatter index and crop are shared).
 #[test]
 fn conv_transpose2d_col2im_matches_native_grouped() {
-    check_case(1, 4, 4, 4, 3, 2, 2, (1, 1), (0, 0), (0, 0), (1, 1), 2);  // groups=2
-    check_case(2, 4, 3, 3, 1, 2, 2, (2, 2), (0, 0), (1, 1), (1, 1), 4);  // depthwise groups=Cin
-    check_case(1, 6, 5, 5, 2, 3, 3, (1, 1), (1, 1), (0, 0), (1, 1), 3);  // grouped, multiplier + pad
+    check_case(1, 4, 4, 4, 3, 2, 2, (1, 1), (0, 0), (0, 0), (1, 1), 2); // groups=2
+    check_case(2, 4, 3, 3, 1, 2, 2, (2, 2), (0, 0), (1, 1), (1, 1), 4); // depthwise groups=Cin
+    check_case(1, 6, 5, 5, 2, 3, 3, (1, 1), (1, 1), (0, 0), (1, 1), 3); // grouped, multiplier + pad
 }

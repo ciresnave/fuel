@@ -5,9 +5,13 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_ir::{dispatch::OpKind, probe::BackendId, DType, Result};
 use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
-use fuel_dispatch::{baracuda_dispatch::register_baracuda_cuda_kernels, dispatch::register_cuda_kernels, kernel::{KernelBindingTable, OpParams}};
+use fuel_dispatch::{
+    baracuda_dispatch::register_baracuda_cuda_kernels,
+    dispatch::register_cuda_kernels,
+    kernel::{KernelBindingTable, OpParams},
+};
+use fuel_ir::{DType, Result, dispatch::OpKind, probe::BackendId};
 use fuel_memory::{BackendStorage, Storage};
 
 fn dev_or_skip() -> Option<CudaDevice> {
@@ -72,12 +76,7 @@ fn run_binary_f32(
     let lhs_arc = Arc::new(RwLock::new(lhs));
     let rhs_arc = Arc::new(RwLock::new(rhs));
     let out_arc = Arc::new(RwLock::new(out));
-    let kernel = pick_alt(
-        &table,
-        op,
-        &[DType::F32, DType::F32, DType::F32],
-        expected,
-    );
+    let kernel = pick_alt(&table, op, &[DType::F32, DType::F32, DType::F32], expected);
     kernel(
         &[lhs_arc.clone(), rhs_arc.clone()],
         &mut [out_arc.clone()],
@@ -183,11 +182,7 @@ fn download_u8(s: &Storage) -> Vec<u8> {
     }
 }
 
-fn run_compare_f32(
-    kernel: fuel_dispatch::KernelRef,
-    a: &[f32],
-    b: &[f32],
-) -> Result<Vec<u8>> {
+fn run_compare_f32(kernel: fuel_dispatch::KernelRef, a: &[f32], b: &[f32]) -> Result<Vec<u8>> {
     let dev = CudaDevice::new(0).expect("cuda");
     let lhs = upload_f32(&dev, a);
     let rhs = upload_f32(&dev, b);
@@ -216,24 +211,27 @@ fn baracuda_compare_ge_f32_matches_cpu_semantics() {
     }
     let a = [1.0_f32, 2.0, 3.0, 2.0, f32::NAN, 0.0];
     let b = [2.0_f32, 2.0, 1.0, 3.0, 1.0, -0.0];
-    let got = run_compare_f32(
-        fuel_dispatch::baracuda_dispatch::binary::ge_f32_u8,
-        &a,
-        &b,
-    )
-    .expect("ge kernel call");
+    let got = run_compare_f32(fuel_dispatch::baracuda_dispatch::binary::ge_f32_u8, &a, &b)
+        .expect("ge kernel call");
 
     // Computed from IEEE-754 semantics, NOT from the kernel: 1>=2 false;
     // 2>=2 TRUE (inclusive); 3>=1 true; 2>=3 false; NaN>=1 FALSE (ordered
     // comparison with NaN is false, per both baracuda's documented behaviour
     // and fuel-cpu-backend's `compare.rs`); 0.0 >= -0.0 TRUE (IEEE-754 says
     // +0 == -0).
-    assert_eq!(got, vec![0u8, 1, 1, 0, 0, 1], "ge disagrees with IEEE-754/CPU");
+    assert_eq!(
+        got,
+        vec![0u8, 1, 1, 0, 0, 1],
+        "ge disagrees with IEEE-754/CPU"
+    );
 
     // The kernel documents that it writes ONLY 0 and 1. A wrongly-sized output
     // buffer is the failure this whole change is about, and it would most
     // likely show up as garbage bytes rather than as a size error.
-    assert!(got.iter().all(|&v| v == 0 || v == 1), "non-boolean byte in mask: {got:?}");
+    assert!(
+        got.iter().all(|&v| v == 0 || v == 1),
+        "non-boolean byte in mask: {got:?}"
+    );
     assert_eq!(got.len(), a.len(), "output length must be n BYTES, not n*4");
 }
 

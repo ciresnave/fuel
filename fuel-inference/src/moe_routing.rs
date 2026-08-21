@@ -1,4 +1,4 @@
-﻿//! Mixture-of-Experts (MoE) token routing.
+//! Mixture-of-Experts (MoE) token routing.
 //!
 //! MoE architectures (Mixtral, Qwen-MoE, DeepSeek-MoE, etc.) activate only a
 //! subset of experts per token, trading parameter count for compute efficiency.
@@ -231,9 +231,7 @@ impl MoeRouter {
 
         // Step 2: Capacity control
         let num_dropped = match self.config.overflow_policy {
-            OverflowPolicy::TokenDrop => {
-                self.apply_capacity_control(&mut assignments, batch_size)
-            }
+            OverflowPolicy::TokenDrop => self.apply_capacity_control(&mut assignments, batch_size),
             OverflowPolicy::NoDrop => 0,
         };
 
@@ -259,10 +257,7 @@ impl MoeRouter {
         let top_logits: Vec<f32> = indexed.iter().map(|&(_, v)| v).collect();
 
         // Softmax over the selected top-K logits only
-        let max_logit = top_logits
-            .iter()
-            .cloned()
-            .fold(f32::NEG_INFINITY, f32::max);
+        let max_logit = top_logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
         let exps: Vec<f32> = top_logits.iter().map(|&v| (v - max_logit).exp()).collect();
         let sum: f32 = exps.iter().sum();
         let weights: Vec<f32> = if sum > 0.0 {
@@ -298,11 +293,7 @@ impl MoeRouter {
             let mut new_indices = Vec::with_capacity(top_k);
             let mut new_weights = Vec::with_capacity(top_k);
 
-            for (&eidx, &w) in assign
-                .expert_indices
-                .iter()
-                .zip(&assign.expert_weights)
-            {
+            for (&eidx, &w) in assign.expert_indices.iter().zip(&assign.expert_weights) {
                 if expert_counts[eidx] < expert_capacity {
                     expert_counts[eidx] += 1;
                     new_indices.push(eidx);
@@ -335,11 +326,7 @@ impl MoeRouter {
         let mut expert_map: HashMap<usize, (Vec<usize>, Vec<f32>)> = HashMap::new();
 
         for (token_idx, assign) in assignments.iter().enumerate() {
-            for (&expert_id, &weight) in assign
-                .expert_indices
-                .iter()
-                .zip(&assign.expert_weights)
-            {
+            for (&expert_id, &weight) in assign.expert_indices.iter().zip(&assign.expert_weights) {
                 let entry = expert_map.entry(expert_id).or_default();
                 entry.0.push(token_idx);
                 entry.1.push(weight);
@@ -394,9 +381,7 @@ mod tests {
     #[test]
     fn weights_sum_to_one() {
         let router = MoeRouter::new(MoeConfig::new(8, 2));
-        let logits = make_logits(&[
-            &[1.0, 2.0, 3.0, 0.5, 0.1, 0.0, 0.0, 0.0],
-        ]);
+        let logits = make_logits(&[&[1.0, 2.0, 3.0, 0.5, 0.1, 0.0, 0.0, 0.0]]);
 
         let result = router.route(&logits);
         let wsum: f32 = result.assignments()[0].expert_weights.iter().sum();
@@ -413,12 +398,7 @@ mod tests {
         let router = MoeRouter::new(config);
 
         // All 4 tokens prefer expert 0
-        let logits = make_logits(&[
-            &[10.0, 0.0],
-            &[10.0, 0.0],
-            &[10.0, 0.0],
-            &[10.0, 0.0],
-        ]);
+        let logits = make_logits(&[&[10.0, 0.0], &[10.0, 0.0], &[10.0, 0.0], &[10.0, 0.0]]);
 
         let result = router.route(&logits);
         // Expert 0 capacity = ceil(1.0 * ceil(4*1/2)) = 2
@@ -431,11 +411,7 @@ mod tests {
         let config = MoeConfig::new(2, 1).with_overflow_policy(OverflowPolicy::NoDrop);
         let router = MoeRouter::new(config);
 
-        let logits = make_logits(&[
-            &[10.0, 0.0],
-            &[10.0, 0.0],
-            &[10.0, 0.0],
-        ]);
+        let logits = make_logits(&[&[10.0, 0.0], &[10.0, 0.0], &[10.0, 0.0]]);
 
         let result = router.route(&logits);
         assert_eq!(result.num_dropped(), 0);
@@ -515,12 +491,7 @@ mod tests {
             .with_overflow_policy(OverflowPolicy::TokenDrop);
         let router = MoeRouter::new(config);
 
-        let logits = make_logits(&[
-            &[10.0, 0.0],
-            &[10.0, 0.0],
-            &[10.0, 0.0],
-            &[10.0, 0.0],
-        ]);
+        let logits = make_logits(&[&[10.0, 0.0], &[10.0, 0.0], &[10.0, 0.0], &[10.0, 0.0]]);
 
         let result = router.route(&logits);
         // Some tokens should have the dropped flag

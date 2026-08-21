@@ -238,7 +238,7 @@ mod tests {
         };
         let f = PrecisionFloorFilter::new(req);
         let alts = vec![candidate_with_precision(
-            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,  // max_ulp: None
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU, // max_ulp: None
         )];
         assert!(f.filter(&alts, &ctx()).is_empty());
     }

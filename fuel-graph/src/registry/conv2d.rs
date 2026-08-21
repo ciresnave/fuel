@@ -54,8 +54,8 @@
 //! don't exist as a pattern to recognize.
 
 use crate::registry::{
-    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps,
-    PatternMatch, SubgraphPattern, decompose_via_recipe,
+    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps, PatternMatch,
+    SubgraphPattern, decompose_via_recipe,
 };
 use crate::{Graph, NodeId};
 use fuel_ir::{DType, Shape};
@@ -65,10 +65,10 @@ use fuel_kernel_seam_types::{OpAttrs, OpTag, PatternNode};
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
         destructive_input: None,
-        id:         FusedOps::CONV2D,
-        name:       "Conv2D",
-        family:     FusedOpFamily::Forward,
-        pattern:    SubgraphPattern::Callable(canonical_pattern),
+        id: FusedOps::CONV2D,
+        name: "Conv2D",
+        family: FusedOpFamily::Forward,
+        pattern: SubgraphPattern::Callable(canonical_pattern),
         decompose,
         // Conv2D's backward is real (dX via ConvTranspose2D, dW via a
         // transposed Conv2D, dB via reduce_sum_to) but is wired
@@ -78,7 +78,7 @@ pub fn entry() -> FusedOpEntry {
         // for backward HELPERS (SoftmaxLastDimBackward etc.) that get
         // their own FusedOpId; Conv2D's backward is structural, not a
         // helper.
-        backward:   BackwardKind::NotDifferentiable,
+        backward: BackwardKind::NotDifferentiable,
         shape_rule,
         dtype_rule: dtype_passthrough,
         output_views: None,
@@ -94,7 +94,9 @@ fn shape_rule(input_shapes: &[Shape], params: &FusedOpParams) -> Shape {
         "Conv2D takes 2 or 3 inputs (x, weight, [bias])",
     );
     let (stride, padding) = match params {
-        FusedOpParams::Conv2D { stride, padding, .. } => (*stride, *padding),
+        FusedOpParams::Conv2D {
+            stride, padding, ..
+        } => (*stride, *padding),
         _ => panic!("conv2d::shape_rule got non-Conv2D params: {params:?}"),
     };
     let x_dims = input_shapes[0].dims();
@@ -154,20 +156,34 @@ fn dtype_passthrough(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
 ///
 /// This mirrors the CPU kernel (im2col + batched GEMM) at the graph level and
 /// adds NO `Op` variant — the build-time-closed primitive basis is unchanged.
+#[allow(clippy::too_many_arguments)]
 fn recipe(
-    n: usize, cin: usize,
-    hpad: usize, wpad: usize,
-    kh: usize, kw: usize,
-    hout: usize, wout: usize,
+    n: usize,
+    cin: usize,
+    hpad: usize,
+    wpad: usize,
+    kh: usize,
+    kw: usize,
+    hout: usize,
+    wout: usize,
     cout: usize,
-    sh: usize, sw: usize,
-    ph: usize, pw: usize,
+    sh: usize,
+    sw: usize,
+    ph: usize,
+    pw: usize,
     has_bias: bool,
 ) -> PatternNode {
     use OpTag as T;
-    let op = |op, attrs, operands| PatternNode::Op { op, attrs, operands };
+    let op = |op, attrs, operands| PatternNode::Op {
+        op,
+        attrs: Box::new(attrs),
+        operands,
+    };
     let bind = |i| PatternNode::Bind { index: i };
-    let shape_attr = |dims: Vec<i64>| OpAttrs { target_shape: dims, ..OpAttrs::default() };
+    let shape_attr = |dims: Vec<i64>| OpAttrs {
+        target_shape: dims,
+        ..OpAttrs::default()
+    };
 
     let k = cin * kh * kw; // contraction dim  (Cin·Kh·Kw)
     let spatial = hout * wout; // output spatial (Hout·Wout)
@@ -182,7 +198,7 @@ fn recipe(
                 (ph as u64, ph as u64),
                 (pw as u64, pw as u64),
             ],
-            pad_mode:  Some(0), // PadMode::Constant
+            pad_mode: Some(0), // PadMode::Constant
             pad_value: Some(0.0),
             ..OpAttrs::default()
         },
@@ -200,7 +216,10 @@ fn recipe(
     // ---- 3. im2col gather -> [N,Cin,L]; reshape to patch matrix [N,K,Hout*Wout].
     let cols = op(
         T::IndexSelect,
-        OpAttrs { axis: Some(2), ..OpAttrs::default() },
+        OpAttrs {
+            axis: Some(2),
+            ..OpAttrs::default()
+        },
         vec![xf, idx],
     );
     let patch = op(
@@ -210,7 +229,11 @@ fn recipe(
     );
 
     // ---- 4. weight -> [1,Cout,K] -> broadcast [N,Cout,K]; matmul -> [N,Cout,Hout*Wout].
-    let wm = op(T::Reshape, shape_attr(vec![1, cout as i64, k as i64]), vec![bind(1)]);
+    let wm = op(
+        T::Reshape,
+        shape_attr(vec![1, cout as i64, k as i64]),
+        vec![bind(1)],
+    );
     let wb = op(
         T::BroadcastTo,
         shape_attr(vec![n as i64, cout as i64, k as i64]),
@@ -255,14 +278,24 @@ fn recipe(
 /// values are exact in F32 for padded-spatial extent `< 2^24`. Dilation is
 /// always 1 for Conv2D (`FusedOpParams::Conv2D` has no dilation field).
 fn flat_gather_index(
-    kh: usize, kw: usize,
-    hout: usize, wout: usize,
-    sh: usize, sw: usize,
+    kh: usize,
+    kw: usize,
+    hout: usize,
+    wout: usize,
+    sh: usize,
+    sw: usize,
     wpad: usize,
 ) -> PatternNode {
     use OpTag as T;
-    let op = |op, attrs, operands| PatternNode::Op { op, attrs, operands };
-    let shape_attr = |dims: Vec<i64>| OpAttrs { target_shape: dims, ..OpAttrs::default() };
+    let op = |op, attrs, operands| PatternNode::Op {
+        op,
+        attrs: Box::new(attrs),
+        operands,
+    };
+    let shape_attr = |dims: Vec<i64>| OpAttrs {
+        target_shape: dims,
+        ..OpAttrs::default()
+    };
 
     let l = kh * kw * hout * wout;
     let idx4_shape = vec![kh as i64, kw as i64, hout as i64, wout as i64];
@@ -271,13 +304,19 @@ fn flat_gather_index(
     let term = |axis_len: usize, reshape_dims: Vec<i64>, factor: f64| -> PatternNode {
         let iota = op(
             T::Iota,
-            OpAttrs { target_shape: vec![axis_len as i64], ..OpAttrs::default() },
+            OpAttrs {
+                target_shape: vec![axis_len as i64],
+                ..OpAttrs::default()
+            },
             vec![],
         );
         let re = op(T::Reshape, shape_attr(reshape_dims), vec![iota]);
         let scaled = op(
             T::MulScalar,
-            OpAttrs { scalars: vec![factor], ..OpAttrs::default() },
+            OpAttrs {
+                scalars: vec![factor],
+                ..OpAttrs::default()
+            },
             vec![re],
         );
         op(T::BroadcastTo, shape_attr(idx4_shape.clone()), vec![scaled])
@@ -291,7 +330,10 @@ fn flat_gather_index(
     let idx1 = op(T::Reshape, shape_attr(vec![l as i64]), vec![idx4]);
     op(
         T::Cast,
-        OpAttrs { cast_dtype: Some("u32".to_string()), ..OpAttrs::default() },
+        OpAttrs {
+            cast_dtype: Some("u32".to_string()),
+            ..OpAttrs::default()
+        },
         vec![idx1],
     )
 }
@@ -329,19 +371,33 @@ fn flat_gather_index(
 /// NO `Op` variant — the build-time-closed primitive basis is unchanged.
 #[allow(clippy::too_many_arguments)]
 fn recipe_grouped(
-    n: usize, cin: usize,
-    hpad: usize, wpad: usize,
-    kh: usize, kw: usize,
-    hout: usize, wout: usize,
-    cout: usize, groups: usize,
-    sh: usize, sw: usize,
-    ph: usize, pw: usize,
+    n: usize,
+    cin: usize,
+    hpad: usize,
+    wpad: usize,
+    kh: usize,
+    kw: usize,
+    hout: usize,
+    wout: usize,
+    cout: usize,
+    groups: usize,
+    sh: usize,
+    sw: usize,
+    ph: usize,
+    pw: usize,
     has_bias: bool,
 ) -> PatternNode {
     use OpTag as T;
-    let op = |op, attrs, operands| PatternNode::Op { op, attrs, operands };
+    let op = |op, attrs, operands| PatternNode::Op {
+        op,
+        attrs: Box::new(attrs),
+        operands,
+    };
     let bind = |i| PatternNode::Bind { index: i };
-    let shape_attr = |dims: Vec<i64>| OpAttrs { target_shape: dims, ..OpAttrs::default() };
+    let shape_attr = |dims: Vec<i64>| OpAttrs {
+        target_shape: dims,
+        ..OpAttrs::default()
+    };
 
     let cin_per_g = cin / groups;
     let cout_per_g = cout / groups;
@@ -359,7 +415,7 @@ fn recipe_grouped(
                 (ph as u64, ph as u64),
                 (pw as u64, pw as u64),
             ],
-            pad_mode:  Some(0), // PadMode::Constant
+            pad_mode: Some(0), // PadMode::Constant
             pad_value: Some(0.0),
             ..OpAttrs::default()
         },
@@ -367,7 +423,12 @@ fn recipe_grouped(
     );
     let xf = op(
         T::Reshape,
-        shape_attr(vec![n as i64, groups as i64, cin_per_g as i64, (hpad * wpad) as i64]),
+        shape_attr(vec![
+            n as i64,
+            groups as i64,
+            cin_per_g as i64,
+            (hpad * wpad) as i64,
+        ]),
         vec![xp],
     );
 
@@ -378,12 +439,20 @@ fn recipe_grouped(
     //         reshape to the per-group patch matrix [N, g, K/g, Hout*Wout].
     let cols = op(
         T::IndexSelect,
-        OpAttrs { axis: Some(3), ..OpAttrs::default() },
+        OpAttrs {
+            axis: Some(3),
+            ..OpAttrs::default()
+        },
         vec![xf, idx],
     );
     let patch = op(
         T::Reshape,
-        shape_attr(vec![n as i64, groups as i64, k_per_g as i64, spatial as i64]),
+        shape_attr(vec![
+            n as i64,
+            groups as i64,
+            k_per_g as i64,
+            spatial as i64,
+        ]),
         vec![cols],
     );
 
@@ -396,7 +465,12 @@ fn recipe_grouped(
     );
     let wb = op(
         T::BroadcastTo,
-        shape_attr(vec![n as i64, groups as i64, cout_per_g as i64, k_per_g as i64]),
+        shape_attr(vec![
+            n as i64,
+            groups as i64,
+            cout_per_g as i64,
+            k_per_g as i64,
+        ]),
         vec![wm],
     );
     let ymat = op(T::MatMul, OpAttrs::default(), vec![wb, patch]);
@@ -449,7 +523,11 @@ fn recipe_grouped(
 /// verify oracle.
 pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeId {
     let (stride, padding, groups) = match params {
-        FusedOpParams::Conv2D { stride, padding, groups } => (*stride, *padding, *groups),
+        FusedOpParams::Conv2D {
+            stride,
+            padding,
+            groups,
+        } => (*stride, *padding, *groups),
         // Wrong params for this id — can't decompose; return self (fixpoint).
         _ => return id,
     };
@@ -499,9 +577,13 @@ pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeI
 
     let has_bias = n_inputs == 3;
     let recipe_node = if groups == 1 {
-        recipe(n, cin, hpad, wpad, kh, kw, hout, wout, cout, sh, sw, ph, pw, has_bias)
+        recipe(
+            n, cin, hpad, wpad, kh, kw, hout, wout, cout, sh, sw, ph, pw, has_bias,
+        )
     } else {
-        recipe_grouped(n, cin, hpad, wpad, kh, kw, hout, wout, cout, groups, sh, sw, ph, pw, has_bias)
+        recipe_grouped(
+            n, cin, hpad, wpad, kh, kw, hout, wout, cout, groups, sh, sw, ph, pw, has_bias,
+        )
     };
     // No open scalar slots — every MulScalar carries a baked stride factor.
     decompose_via_recipe(graph, id, &recipe_node, Some(Vec::new()))
@@ -521,10 +603,10 @@ mod tests {
 
     fn mk_const(g: &mut Graph, dims: &[usize]) -> NodeId {
         g.push(Node {
-            op:     Op::Const,
+            op: Op::Const,
             inputs: vec![],
-            shape:  Shape::from_dims(dims),
-            dtype:  DType::F32,
+            shape: Shape::from_dims(dims),
+            dtype: DType::F32,
         })
     }
 
@@ -533,9 +615,16 @@ mod tests {
     #[allow(clippy::too_many_arguments)]
     fn fused_conv(
         g: &mut Graph,
-        n: usize, cin: usize, hin: usize, win: usize,
-        cout: usize, kh: usize, kw: usize,
-        stride: (usize, usize), padding: (usize, usize), groups: usize,
+        n: usize,
+        cin: usize,
+        hin: usize,
+        win: usize,
+        cout: usize,
+        kh: usize,
+        kw: usize,
+        stride: (usize, usize),
+        padding: (usize, usize),
+        groups: usize,
         bias: bool,
     ) -> NodeId {
         let x = mk_const(g, &[n, cin, hin, win]);
@@ -551,7 +640,11 @@ mod tests {
         g.push(Node {
             op: Op::Fused(
                 FusedOps::CONV2D,
-                FusedOpParams::Conv2D { stride, padding, groups },
+                FusedOpParams::Conv2D {
+                    stride,
+                    padding,
+                    groups,
+                },
             ),
             inputs,
             shape: Shape::from_dims(&[n, cout, hout, wout]),
@@ -597,29 +690,44 @@ mod tests {
             let root = decompose(&mut g, fused, &params);
             assert_ne!(root, fused, "conv2d groups=1 must lower (bias={bias})");
             assert_eq!(
-                g.node(root).shape, out_shape,
+                g.node(root).shape,
+                out_shape,
                 "lowered root keeps [N,Cout,Hout,Wout] (bias={bias})",
             );
             assert_eq!(g.node(root).dtype, DType::F32);
 
             let ops = reachable_ops(&g, root);
             assert!(
-                !ops.iter().any(|o| matches!(o, Op::Fused(fid, _) if *fid == FusedOps::CONV2D)),
+                !ops.iter()
+                    .any(|o| matches!(o, Op::Fused(fid, _) if *fid == FusedOps::CONV2D)),
                 "no Op::Fused(CONV2D) remains after decompose (bias={bias})",
             );
-            assert!(ops.iter().any(|o| matches!(o, Op::MatMul)), "recipe contains MatMul");
+            assert!(
+                ops.iter().any(|o| matches!(o, Op::MatMul)),
+                "recipe contains MatMul"
+            );
             assert!(
                 ops.iter().any(|o| matches!(o, Op::IndexSelect { .. })),
                 "recipe gathers patches via IndexSelect",
             );
-            assert!(ops.iter().any(|o| matches!(o, Op::Iota { .. })), "index built from Iota");
-            assert!(ops.iter().any(|o| matches!(o, Op::Pad { .. })), "input padded via Op::Pad");
             assert!(
-                ops.iter().any(|o| matches!(o, Op::Cast(dt) if *dt == DType::U32)),
+                ops.iter().any(|o| matches!(o, Op::Iota { .. })),
+                "index built from Iota"
+            );
+            assert!(
+                ops.iter().any(|o| matches!(o, Op::Pad { .. })),
+                "input padded via Op::Pad"
+            );
+            assert!(
+                ops.iter()
+                    .any(|o| matches!(o, Op::Cast(dt) if *dt == DType::U32)),
                 "index cast to U32 for the gather",
             );
             if bias {
-                assert!(ops.iter().any(|o| matches!(o, Op::Add)), "bias added via broadcast Add tail");
+                assert!(
+                    ops.iter().any(|o| matches!(o, Op::Add)),
+                    "bias added via broadcast Add tail"
+                );
             }
         }
     }
@@ -646,14 +754,28 @@ mod tests {
     fn conv2d_groups_gt_1_decompose_lowers_to_im2col_matmul() {
         // (n, cin, hin, win, cout, kh, kw, stride, padding, groups, bias)
         #[allow(clippy::type_complexity)]
-        let cases: [(usize, usize, usize, usize, usize, usize, usize, (usize, usize), (usize, usize), usize, bool); 3] = [
+        let cases: [(
+            usize,
+            usize,
+            usize,
+            usize,
+            usize,
+            usize,
+            usize,
+            (usize, usize),
+            (usize, usize),
+            usize,
+            bool,
+        ); 3] = [
             (1, 4, 5, 5, 6, 3, 3, (1, 1), (1, 1), 2, false), // groups=2
             (2, 4, 5, 5, 4, 2, 2, (1, 1), (0, 0), 4, true),  // depthwise groups=Cin, bias
             (1, 8, 6, 6, 16, 3, 3, (1, 1), (1, 1), 8, false), // depthwise multiplier Cout/g=2
         ];
         for (n, cin, hin, win, cout, kh, kw, stride, padding, groups, bias) in cases {
             let mut g = Graph::new();
-            let fused = fused_conv(&mut g, n, cin, hin, win, cout, kh, kw, stride, padding, groups, bias);
+            let fused = fused_conv(
+                &mut g, n, cin, hin, win, cout, kh, kw, stride, padding, groups, bias,
+            );
             let out_shape = g.node(fused).shape.clone();
             let params = match &g.node(fused).op {
                 Op::Fused(_, p) => p.clone(),
@@ -663,29 +785,44 @@ mod tests {
             let root = decompose(&mut g, fused, &params);
             assert_ne!(root, fused, "groups={groups} must lower (bias={bias})");
             assert_eq!(
-                g.node(root).shape, out_shape,
+                g.node(root).shape,
+                out_shape,
                 "lowered root keeps [N,Cout,Hout,Wout] (groups={groups}, bias={bias})",
             );
             assert_eq!(g.node(root).dtype, DType::F32);
 
             let ops = reachable_ops(&g, root);
             assert!(
-                !ops.iter().any(|o| matches!(o, Op::Fused(fid, _) if *fid == FusedOps::CONV2D)),
+                !ops.iter()
+                    .any(|o| matches!(o, Op::Fused(fid, _) if *fid == FusedOps::CONV2D)),
                 "no Op::Fused(CONV2D) remains after decompose (groups={groups}, bias={bias})",
             );
-            assert!(ops.iter().any(|o| matches!(o, Op::MatMul)), "recipe contains MatMul");
+            assert!(
+                ops.iter().any(|o| matches!(o, Op::MatMul)),
+                "recipe contains MatMul"
+            );
             assert!(
                 ops.iter().any(|o| matches!(o, Op::IndexSelect { .. })),
                 "recipe gathers patches via IndexSelect",
             );
-            assert!(ops.iter().any(|o| matches!(o, Op::Iota { .. })), "index built from Iota");
-            assert!(ops.iter().any(|o| matches!(o, Op::Pad { .. })), "input padded via Op::Pad");
             assert!(
-                ops.iter().any(|o| matches!(o, Op::Cast(dt) if *dt == DType::U32)),
+                ops.iter().any(|o| matches!(o, Op::Iota { .. })),
+                "index built from Iota"
+            );
+            assert!(
+                ops.iter().any(|o| matches!(o, Op::Pad { .. })),
+                "input padded via Op::Pad"
+            );
+            assert!(
+                ops.iter()
+                    .any(|o| matches!(o, Op::Cast(dt) if *dt == DType::U32)),
                 "index cast to U32 for the gather",
             );
             if bias {
-                assert!(ops.iter().any(|o| matches!(o, Op::Add)), "bias added via broadcast Add tail");
+                assert!(
+                    ops.iter().any(|o| matches!(o, Op::Add)),
+                    "bias added via broadcast Add tail"
+                );
             }
         }
     }
@@ -700,7 +837,11 @@ mod tests {
         // divisible by groups=3 — a malformed hand-built node.
         let x = mk_const(&mut g, &[1, 6, 5, 5]);
         let w = mk_const(&mut g, &[4, 2, 2, 2]);
-        let params = FusedOpParams::Conv2D { stride: (1, 1), padding: (0, 0), groups: 3 };
+        let params = FusedOpParams::Conv2D {
+            stride: (1, 1),
+            padding: (0, 0),
+            groups: 3,
+        };
         let fused = g.push(Node {
             op: Op::Fused(FusedOps::CONV2D, params.clone()),
             inputs: vec![x, w],

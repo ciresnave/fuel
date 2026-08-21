@@ -13,9 +13,13 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_ir::{dispatch::OpKind, probe::BackendId, DType};
 use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
-use fuel_dispatch::{baracuda_dispatch::register_baracuda_cuda_kernels, dispatch::register_cuda_kernels, kernel::{MatmulM, KernelBindingTable, OpParams}};
+use fuel_dispatch::{
+    baracuda_dispatch::register_baracuda_cuda_kernels,
+    dispatch::register_cuda_kernels,
+    kernel::{KernelBindingTable, MatmulM, OpParams},
+};
+use fuel_ir::{DType, dispatch::OpKind, probe::BackendId};
 use fuel_memory::{BackendStorage, Storage};
 
 fn dev_or_skip() -> Option<CudaDevice> {
@@ -144,7 +148,7 @@ fn baracuda_gemm_s8_rrr_identity_matches_reference() {
             m,
             n,
             k,
-        m_compute: MatmulM::All,
+            m_compute: MatmulM::All,
         },
     )
     .expect("kernel call");
@@ -193,7 +197,7 @@ fn baracuda_gemm_u8_rrr_identity_matches_reference() {
             m,
             n,
             k,
-        m_compute: MatmulM::All,
+            m_compute: MatmulM::All,
         },
     )
     .expect("kernel call");
@@ -225,5 +229,8 @@ fn int_gemm_registers_baracuda_only_alternative() {
         )
         .len();
     assert_eq!(before, 0, "no I8 matmul registered by the PTX path");
-    assert_eq!(after, 1, "baracuda registers exactly one I8 matmul alternative");
+    assert_eq!(
+        after, 1,
+        "baracuda registers exactly one I8 matmul alternative"
+    );
 }

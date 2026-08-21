@@ -216,7 +216,9 @@ pub fn effective_roots(graph: &Graph, roots: &[NodeId]) -> Vec<NodeId> {
             if seen.contains(&id) {
                 continue;
             }
-            let Op::Branch { reconverge_at } = graph.node(id).op else { continue };
+            let Op::Branch { reconverge_at } = graph.node(id).op else {
+                continue;
+            };
             // The branch participates if its merge target or any arm exit
             // is already part of the reachable computation.
             let participates = reachable.contains(&reconverge_at)
@@ -295,7 +297,9 @@ fn compute_arm_entries(
 ) -> HashSet<NodeId> {
     let mut arm_entries: HashSet<NodeId> = HashSet::new();
     for &id in order {
-        let Op::Branch { .. } = graph.node(id).op else { continue };
+        let Op::Branch { .. } = graph.node(id).op else {
+            continue;
+        };
         let arm_exits: Vec<NodeId> = graph.node(id).inputs.clone();
         if arm_exits.len() < 2 {
             continue;
@@ -321,11 +325,7 @@ fn compute_arm_entries(
                 // Arm-interior node. It is an arm *entry* if any of its
                 // predecessors is in the shared prefix (it departs from
                 // the diverge region).
-                let departs = graph
-                    .node(n)
-                    .inputs
-                    .iter()
-                    .any(|p| shared.contains(p));
+                let departs = graph.node(n).inputs.iter().any(|p| shared.contains(p));
                 if departs {
                     arm_entries.insert(n);
                 }
@@ -406,11 +406,7 @@ pub fn lower_runs_arm0(graph: &Graph, roots: &[NodeId]) -> Vec<NodeId> {
 /// [`lower_runs_arm0`], and a graph with **zero `Op::Branch` nodes** has
 /// no arm to skip, so it equals concatenating [`lower_run`] over
 /// [`extract_runs_multi`] — today's single-route order.
-pub fn lower_picked_route(
-    graph: &Graph,
-    roots: &[NodeId],
-    picked: &PickedRoute,
-) -> Vec<NodeId> {
+pub fn lower_picked_route(graph: &Graph, roots: &[NodeId], picked: &PickedRoute) -> Vec<NodeId> {
     let runs = extract_runs_multi(graph, roots);
     let skip = non_chosen_arm_nodes(graph, roots, picked);
     // The KEPT runs (chosen arms + pre/post/independent regions), in topo
@@ -557,10 +553,11 @@ pub fn device_alternating_order(graph: &Graph, runs: &[Run]) -> Vec<usize> {
     for (ri, r) in runs.iter().enumerate() {
         for &m in &r.members {
             for &inp in &graph.node(m).inputs {
-                if let Some(&pi) = run_of.get(&inp) {
-                    if pi != ri && preds[ri].insert(pi) {
-                        succs[pi].push(ri);
-                    }
+                if let Some(&pi) = run_of.get(&inp)
+                    && pi != ri
+                    && preds[ri].insert(pi)
+                {
+                    succs[pi].push(ri);
                 }
             }
         }
@@ -575,7 +572,10 @@ pub fn device_alternating_order(graph: &Graph, runs: &[Run]) -> Vec<usize> {
     // cross-device copy); it does no compute, so it weighs 0 and a drain is
     // never the heaviest-downstream pick — it sorts after the compute chunks.
     let compute_size = |ri: usize| -> u64 {
-        if matches!(graph.node(runs[ri].entry).op, Op::Copy { .. } | Op::Move { .. }) {
+        if matches!(
+            graph.node(runs[ri].entry).op,
+            Op::Copy { .. } | Op::Move { .. }
+        ) {
             0
         } else {
             runs[ri].members.len() as u64
@@ -646,8 +646,7 @@ pub fn device_alternating_order(graph: &Graph, runs: &[Run]) -> Vec<usize> {
         // Priority key (smaller wins): heaviest downstream compute first,
         // then a different device than last (interleave), then smallest idx.
         let key_of = |ri: usize| -> (std::cmp::Reverse<u64>, bool, usize) {
-            let same_device =
-                last_device.map_or(false, |ld| runs[ri].device == ld);
+            let same_device = last_device.is_some_and(|ld| runs[ri].device == ld);
             (std::cmp::Reverse(down_weight[ri]), same_device, ri)
         };
         let mut best_pos = 0usize;
@@ -681,8 +680,8 @@ pub fn device_alternating_order(graph: &Graph, runs: &[Run]) -> Vec<usize> {
     // the input order for the remainder so the lowering stays total rather
     // than dropping work.
     if order.len() != n {
-        for i in 0..n {
-            if !emitted[i] {
+        for (i, &is_emitted) in emitted.iter().enumerate() {
+            if !is_emitted {
                 order.push(i);
             }
         }
@@ -775,7 +774,10 @@ pub fn walk_picked_route_streaming<R, E>(
     let mut entry_to_branches: HashMap<NodeId, Vec<NodeId>> = HashMap::new();
     for meta in &branch_meta {
         for &(entry, _arm) in &meta.arm_entries {
-            entry_to_branches.entry(entry).or_default().push(meta.branch);
+            entry_to_branches
+                .entry(entry)
+                .or_default()
+                .push(meta.branch);
         }
     }
     let meta_of: HashMap<NodeId, &BranchArmMeta> =
@@ -880,7 +882,9 @@ fn branch_arm_meta(graph: &Graph, roots: &[NodeId]) -> Vec<BranchArmMeta> {
 
     let mut metas = Vec::new();
     for &id in &order {
-        let Op::Branch { .. } = graph.node(id).op else { continue };
+        let Op::Branch { .. } = graph.node(id).op else {
+            continue;
+        };
         let arm_exits = graph.node(id).inputs.clone();
         if arm_exits.len() < 2 {
             continue;
@@ -902,14 +906,18 @@ fn branch_arm_meta(graph: &Graph, roots: &[NodeId]) -> Vec<BranchArmMeta> {
                 if shared.contains(&n) {
                     continue;
                 }
-                let departs =
-                    graph.node(n).inputs.iter().any(|p| shared.contains(p));
+                let departs = graph.node(n).inputs.iter().any(|p| shared.contains(p));
                 if departs {
                     arm_entries.push((n, arm_idx));
                 }
             }
         }
-        metas.push(BranchArmMeta { branch: id, arm_entries, cones, shared });
+        metas.push(BranchArmMeta {
+            branch: id,
+            arm_entries,
+            cones,
+            shared,
+        });
     }
     metas
 }
@@ -919,11 +927,7 @@ fn branch_arm_meta(graph: &Graph, roots: &[NodeId]) -> Vec<BranchArmMeta> {
 /// node is skipped when it lies in a non-chosen arm's cone but is neither
 /// shared nor part of the chosen arm's cone. A stale / out-of-range
 /// `chosen` clamps to arm 0 (never panic).
-fn add_non_chosen_skip(
-    meta: &BranchArmMeta,
-    chosen: usize,
-    skip: &mut HashSet<NodeId>,
-) {
+fn add_non_chosen_skip(meta: &BranchArmMeta, chosen: usize, skip: &mut HashSet<NodeId>) {
     let chosen = if chosen < meta.cones.len() { chosen } else { 0 };
     let chosen_cone = &meta.cones[chosen];
     for (i, cone) in meta.cones.iter().enumerate() {
@@ -954,18 +958,16 @@ fn add_non_chosen_skip(
 /// chosen arm's cone — i.e. it is interior to a route the picker did not
 /// take. Arms are internally disjoint by the PR-A1 build-time
 /// validation, so these sets don't overlap the chosen arm.
-fn non_chosen_arm_nodes(
-    graph: &Graph,
-    roots: &[NodeId],
-    picked: &PickedRoute,
-) -> HashSet<NodeId> {
+fn non_chosen_arm_nodes(graph: &Graph, roots: &[NodeId], picked: &PickedRoute) -> HashSet<NodeId> {
     let eff_roots = effective_roots(graph, roots);
     let order = topo_order_multi(graph, &eff_roots);
     let reachable: HashSet<NodeId> = order.iter().copied().collect();
 
     let mut skip: HashSet<NodeId> = HashSet::new();
     for &id in &order {
-        let Op::Branch { .. } = graph.node(id).op else { continue };
+        let Op::Branch { .. } = graph.node(id).op else {
+            continue;
+        };
         let arm_exits = &graph.node(id).inputs;
         if arm_exits.len() < 2 {
             continue;
@@ -1140,8 +1142,9 @@ mod tests {
         let post_run = run_of(reconverge);
 
         // Four distinct runs: pre, arm0, arm1, post.
-        let distinct: HashSet<usize> =
-            [pre_run, arm0_run, arm1_run, post_run].into_iter().collect();
+        let distinct: HashSet<usize> = [pre_run, arm0_run, arm1_run, post_run]
+            .into_iter()
+            .collect();
         assert_eq!(
             distinct.len(),
             4,
@@ -1216,8 +1219,7 @@ mod tests {
     ///   than hard-coding arm 0.
     #[test]
     fn lower_picked_route_follows_chosen_arm_and_skips_others() {
-        let (g, _diverge, arm0, arm1, _reconverge, branch, post) =
-            diamond_with_branch();
+        let (g, _diverge, arm0, arm1, _reconverge, branch, post) = diamond_with_branch();
 
         // (1) Empty route == arm-0 everywhere == lower_runs_arm0.
         let empty = PickedRoute::new();
@@ -1286,52 +1288,80 @@ mod tests {
     #[test]
     fn collapse_variant_branch_bakes_the_winner_into_the_route() {
         // --- (a) collapse to the variant arm (arm 1) ---
-        let (mut g, _diverge, arm0, arm1, reconverge, branch, post) =
-            diamond_with_branch();
+        let (mut g, _diverge, arm0, arm1, reconverge, branch, post) = diamond_with_branch();
         // Before: default lowering realizes arm 0 (the finding — a same-device
         // variant arm is never selected).
         let before = lower_runs_arm0(&g, &[post]);
-        assert!(before.contains(&arm0) && !before.contains(&arm1),
-            "before the bake the default route is arm 0");
+        assert!(
+            before.contains(&arm0) && !before.contains(&arm1),
+            "before the bake the default route is arm 0"
+        );
 
-        g.collapse_variant_branch(branch, 1).expect("collapse to arm 1");
+        g.collapse_variant_branch(branch, 1)
+            .expect("collapse to arm 1");
 
         // The merge now reads the winner (arm 1); the branch is a single arm.
-        assert!(g.node(reconverge).inputs.contains(&arm1),
-            "reconverge rewired to read the baked winner (arm 1)");
-        assert!(!g.node(reconverge).inputs.contains(&arm0),
-            "reconverge no longer reads the pruned arm 0");
-        assert_eq!(g.node(branch).inputs, vec![arm1],
-            "the branch collapsed to the single winning arm");
+        assert!(
+            g.node(reconverge).inputs.contains(&arm1),
+            "reconverge rewired to read the baked winner (arm 1)"
+        );
+        assert!(
+            !g.node(reconverge).inputs.contains(&arm0),
+            "reconverge no longer reads the pruned arm 0"
+        );
+        assert_eq!(
+            g.node(branch).inputs,
+            vec![arm1],
+            "the branch collapsed to the single winning arm"
+        );
 
         // The empty-route lowering now follows the baked winner (arm 1) and
         // drops arm 0's interior — with NO PickedRoute.
         let after = lower_runs_arm0(&g, &[post]);
-        assert!(after.contains(&arm1),
-            "after the bake the default route follows the winner (arm 1); order={after:?}");
-        assert!(!after.contains(&arm0),
-            "after the bake arm 0's interior is pruned; order={after:?}");
+        assert!(
+            after.contains(&arm1),
+            "after the bake the default route follows the winner (arm 1); order={after:?}"
+        );
+        assert!(
+            !after.contains(&arm0),
+            "after the bake arm 0's interior is pruned; order={after:?}"
+        );
 
         // --- (b) collapse to arm 0 is byte-identical to today (arm 1 pruned) ---
         let (mut g2, _d2, a0_2, a1_2, recon2, branch2, post2) = diamond_with_branch();
         let recon2_inputs_before = g2.node(recon2).inputs.clone();
-        g2.collapse_variant_branch(branch2, 0).expect("collapse to arm 0");
-        assert_eq!(g2.node(recon2).inputs, recon2_inputs_before,
-            "arm-0 collapse leaves the merge unchanged");
-        assert_eq!(g2.node(branch2).inputs, vec![a0_2],
-            "arm-0 collapse reduces the branch to [arm0] (variant arm pruned)");
+        g2.collapse_variant_branch(branch2, 0)
+            .expect("collapse to arm 0");
+        assert_eq!(
+            g2.node(recon2).inputs,
+            recon2_inputs_before,
+            "arm-0 collapse leaves the merge unchanged"
+        );
+        assert_eq!(
+            g2.node(branch2).inputs,
+            vec![a0_2],
+            "arm-0 collapse reduces the branch to [arm0] (variant arm pruned)"
+        );
         let order2 = lower_runs_arm0(&g2, &[post2]);
-        assert!(order2.contains(&a0_2) && !order2.contains(&a1_2),
-            "arm-0 collapse realizes arm 0 (byte-identical to today)");
+        assert!(
+            order2.contains(&a0_2) && !order2.contains(&a1_2),
+            "arm-0 collapse realizes arm 0 (byte-identical to today)"
+        );
 
         // --- (c) never-panic guards: bad node / out-of-range winner / non-branch ---
         let (mut g3, _d3, _a0_3, _a1_3, _r3, branch3, post3) = diamond_with_branch();
-        assert!(g3.collapse_variant_branch(NodeId(9999), 0).is_err(),
-            "out-of-bounds branch node ⇒ Err, not panic");
-        assert!(g3.collapse_variant_branch(branch3, 7).is_err(),
-            "out-of-range winner_arm ⇒ Err, not panic");
-        assert!(g3.collapse_variant_branch(post3, 0).is_err(),
-            "non-Op::Branch node ⇒ Err, not panic");
+        assert!(
+            g3.collapse_variant_branch(NodeId(9999), 0).is_err(),
+            "out-of-bounds branch node ⇒ Err, not panic"
+        );
+        assert!(
+            g3.collapse_variant_branch(branch3, 7).is_err(),
+            "out-of-range winner_arm ⇒ Err, not panic"
+        );
+        assert!(
+            g3.collapse_variant_branch(post3, 0).is_err(),
+            "non-Op::Branch node ⇒ Err, not panic"
+        );
     }
 
     /// Build two coupled diamonds back-to-back (diamond-2 diverges off
@@ -1379,8 +1409,7 @@ mod tests {
     #[test]
     fn streaming_lowering_equals_one_shot_on_every_pick() {
         // --- single diamond: all four pick combinations ---
-        let (g, _diverge, _arm0, _arm1, _reconverge, branch, post) =
-            diamond_with_branch();
+        let (g, _diverge, _arm0, _arm1, _reconverge, branch, post) = diamond_with_branch();
         for chosen in [0usize, 1, 99] {
             // One-shot: build the route then lower.
             let mut route = PickedRoute::new();
@@ -1608,7 +1637,9 @@ mod tests {
         // Cross-device copy: Vulkan root -> CUDA (a residency seam = its own
         // run). Reconverge on CUDA reads [cuda_root, copy].
         let copy = g.push(Node {
-            op: Op::Copy { target: fuel_ir::DeviceLocation::Cuda { gpu_id: 0 } },
+            op: Op::Copy {
+                target: fuel_ir::DeviceLocation::Cuda { gpu_id: 0 },
+            },
             inputs: vec![vprev],
             shape: Shape::from_dims(&[2]),
             dtype: DType::F32,
@@ -1640,13 +1671,13 @@ mod tests {
         for &ri in order {
             for &m in &runs[ri].members {
                 for &inp in &graph.node(m).inputs {
-                    if let Some(&pi) = run_of.get(&inp) {
-                        if pi != ri {
-                            assert!(
-                                emitted.contains(&pi),
-                                "run {ri} emitted before its producer run {pi}",
-                            );
-                        }
+                    if let Some(&pi) = run_of.get(&inp)
+                        && pi != ri
+                    {
+                        assert!(
+                            emitted.contains(&pi),
+                            "run {ri} emitted before its producer run {pi}",
+                        );
                     }
                 }
             }
@@ -1673,8 +1704,10 @@ mod tests {
 
         // Map each landmark node to its position in the FLATTENED reordered
         // order, so we can assert the overlap-relevant ordering.
-        let flat: Vec<NodeId> =
-            perm.iter().flat_map(|&ri| runs[ri].members.clone()).collect();
+        let flat: Vec<NodeId> = perm
+            .iter()
+            .flat_map(|&ri| runs[ri].members.clone())
+            .collect();
         let pos = |n: NodeId| flat.iter().position(|&x| x == n).expect("node present");
 
         let cuda_root = *cuda_nodes.last().unwrap();
@@ -1700,12 +1733,8 @@ mod tests {
         //     transition before the copy. (With one chunk per device this is
         //     just "both chunks precede the copy", already asserted; assert
         //     the device sequence explicitly too.)
-        let dev_seq: Vec<Option<BackendId>> =
-            perm.iter().map(|&ri| runs[ri].device).collect();
-        let switches = dev_seq
-            .windows(2)
-            .filter(|w| w[0] != w[1])
-            .count();
+        let dev_seq: Vec<Option<BackendId>> = perm.iter().map(|&ri| runs[ri].device).collect();
+        let switches = dev_seq.windows(2).filter(|w| w[0] != w[1]).count();
         assert!(
             switches >= 1,
             "a two-device run list must contain at least one device switch; \
@@ -1771,8 +1800,10 @@ mod tests {
         assert_valid_topo_run_order(&g, &runs, &perm);
         // A strict chain has exactly one valid topological order; the
         // alternation cannot change it.
-        let flat: Vec<NodeId> =
-            perm.iter().flat_map(|&ri| runs[ri].members.clone()).collect();
+        let flat: Vec<NodeId> = perm
+            .iter()
+            .flat_map(|&ri| runs[ri].members.clone())
+            .collect();
         assert_eq!(
             flat,
             vec![a, b, c, d],
@@ -1794,8 +1825,7 @@ mod tests {
         let runs = extract_runs(&g, out);
 
         // Un-reordered reference: concatenate runs in topo order.
-        let reference: Vec<NodeId> =
-            runs.iter().flat_map(|r| lower_run(r).to_vec()).collect();
+        let reference: Vec<NodeId> = runs.iter().flat_map(|r| lower_run(r).to_vec()).collect();
         // The production lowering (now reorders multi-device).
         let lowered = lower_picked_route(&g, &[out], &PickedRoute::new());
 
@@ -1863,8 +1893,10 @@ mod tests {
         let perm = device_alternating_order(&g, &runs);
         assert_valid_topo_run_order(&g, &runs, &perm);
 
-        let flat: Vec<NodeId> =
-            perm.iter().flat_map(|&ri| runs[ri].members.clone()).collect();
+        let flat: Vec<NodeId> = perm
+            .iter()
+            .flat_map(|&ri| runs[ri].members.clone())
+            .collect();
         let pos = |n: NodeId| flat.iter().position(|&x| x == n).expect("present");
         let cuda_root = *cuda_nodes.last().unwrap();
         let vk_root = *vk_nodes.last().unwrap();
@@ -1886,8 +1918,10 @@ mod tests {
         let runs2 = extract_runs(&g2, out2);
         let perm2 = device_alternating_order(&g2, &runs2);
         assert_valid_topo_run_order(&g2, &runs2, &perm2);
-        let flat2: Vec<NodeId> =
-            perm2.iter().flat_map(|&ri| runs2[ri].members.clone()).collect();
+        let flat2: Vec<NodeId> = perm2
+            .iter()
+            .flat_map(|&ri| runs2[ri].members.clone())
+            .collect();
         let pos2 = |n: NodeId| flat2.iter().position(|&x| x == n).expect("present");
         assert!(
             pos2(*vk2.last().unwrap()) < pos2(*cuda2.last().unwrap()),

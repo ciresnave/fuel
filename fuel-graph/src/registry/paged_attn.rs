@@ -57,8 +57,8 @@
 //! path, and both halves of that sentence matter.
 
 use crate::registry::{
-    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps,
-    PatternMatch, SubgraphPattern, decompose_via_recipe,
+    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps, PatternMatch,
+    SubgraphPattern, decompose_via_recipe,
 };
 use crate::{Graph, NodeId};
 use fuel_ir::{DType, Shape};
@@ -68,12 +68,12 @@ use fuel_kernel_seam_types::{OpAttrs, OpTag, PatternNode};
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
         destructive_input: None,
-        id:         FusedOps::PAGED_ATTN,
-        name:       "PagedAttn",
-        family:     FusedOpFamily::Attention,
-        pattern:    SubgraphPattern::Callable(canonical_pattern),
+        id: FusedOps::PAGED_ATTN,
+        name: "PagedAttn",
+        family: FusedOpFamily::Attention,
+        pattern: SubgraphPattern::Callable(canonical_pattern),
         decompose,
-        backward:   BackwardKind::NotDifferentiable,
+        backward: BackwardKind::NotDifferentiable,
         shape_rule,
         dtype_rule,
         output_views: None,
@@ -105,26 +105,42 @@ fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
 // §6.20 rel attr) — the recipe mirrors the pre-C-T2 imperative body node-for-node.
 
 fn r_op(op: OpTag, attrs: OpAttrs, operands: Vec<PatternNode>) -> PatternNode {
-    PatternNode::Op { op, attrs, operands }
+    PatternNode::Op {
+        op,
+        attrs: Box::new(attrs),
+        operands,
+    }
 }
 fn r_bind(i: u8) -> PatternNode {
     PatternNode::Bind { index: i }
 }
 /// A baked absolute `target_shape` attr for a shape-changer (Reshape/BroadcastTo).
 fn r_shape(dims: &[usize]) -> OpAttrs {
-    OpAttrs { target_shape: dims.iter().map(|&d| d as i64).collect(), ..OpAttrs::default() }
+    OpAttrs {
+        target_shape: dims.iter().map(|&d| d as i64).collect(),
+        ..OpAttrs::default()
+    }
 }
 /// A baked scalar for a scalar-param op (MulScalar) — NOT an open slot.
 fn r_scalar(v: f64) -> OpAttrs {
-    OpAttrs { scalars: vec![v], ..OpAttrs::default() }
+    OpAttrs {
+        scalars: vec![v],
+        ..OpAttrs::default()
+    }
 }
 /// A single-axis attr (IndexSelect dim).
 fn r_axis(a: i64) -> OpAttrs {
-    OpAttrs { axis: Some(a), ..OpAttrs::default() }
+    OpAttrs {
+        axis: Some(a),
+        ..OpAttrs::default()
+    }
 }
 /// An absolute permutation attr.
 fn r_perm(p: Vec<u8>) -> OpAttrs {
-    OpAttrs { perm: p, ..OpAttrs::default() }
+    OpAttrs {
+        perm: p,
+        ..OpAttrs::default()
+    }
 }
 
 /// Gather a paged KV cache into dense attention form as recipe DATA: `IndexSelect`
@@ -179,8 +195,16 @@ fn repeat_kv_heads_recipe(
 fn alibi_bias_recipe(alibi: PatternNode, b: usize, hq: usize, sq: usize, sk: usize) -> PatternNode {
     let grid = &[sq, sk];
     let full = &[b, hq, sq, sk];
-    let row = r_op(OpTag::Reshape, r_shape(&[sq, 1]), vec![r_op(OpTag::Iota, r_shape(&[sq]), vec![])]);
-    let col = r_op(OpTag::Reshape, r_shape(&[1, sk]), vec![r_op(OpTag::Iota, r_shape(&[sk]), vec![])]);
+    let row = r_op(
+        OpTag::Reshape,
+        r_shape(&[sq, 1]),
+        vec![r_op(OpTag::Iota, r_shape(&[sq]), vec![])],
+    );
+    let col = r_op(
+        OpTag::Reshape,
+        r_shape(&[1, sk]),
+        vec![r_op(OpTag::Iota, r_shape(&[sk]), vec![])],
+    );
     let row_bc = r_op(OpTag::BroadcastTo, r_shape(grid), vec![row]);
     let col_bc = r_op(OpTag::BroadcastTo, r_shape(grid), vec![col]);
     let rel = r_op(OpTag::Sub, OpAttrs::default(), vec![col_bc, row_bc]); // j - i (offset 0)
@@ -236,7 +260,12 @@ fn alibi_bias_recipe(alibi: PatternNode, b: usize, hq: usize, sq: usize, sk: usi
 /// Returns `None` on a malformed node (wrong arity / rank) or wrong params —
 /// the same total, never-panic posture as [`decompose`]'s fixpoint self-return.
 pub fn recipe_for(graph: &Graph, id: NodeId, params: &FusedOpParams) -> Option<PatternNode> {
-    let FusedOpParams::PagedAttn { softmax_scale, block_size, softcap } = params else {
+    let FusedOpParams::PagedAttn {
+        softmax_scale,
+        block_size,
+        softcap,
+    } = params
+    else {
         return None;
     };
     let n = graph.node(id);
@@ -251,8 +280,15 @@ pub fn recipe_for(graph: &Graph, id: NodeId, params: &FusedOpParams) -> Option<P
         return None;
     }
     Some(recipe(
-        q_dims[0], q_dims[1], q_dims[2], q_dims[3],
-        kc_dims[2], bt_dims[1], *block_size, *softmax_scale, *softcap,
+        q_dims[0],
+        q_dims[1],
+        q_dims[2],
+        q_dims[3],
+        kc_dims[2],
+        bt_dims[1],
+        *block_size,
+        *softmax_scale,
+        *softcap,
         n.inputs.len() == 6,
     ))
 }
@@ -301,7 +337,11 @@ fn recipe(
     let cl_bc = r_op(OpTag::BroadcastTo, r_shape(scores_shape), vec![cl_re]);
     let mask = r_op(OpTag::Ge, OpAttrs::default(), vec![pos_bc, cl_bc]);
     // Dtype-polymorphic -inf fill: emit resolves the Scalar to operand[0]'s dtype.
-    let masked = r_op(OpTag::MaskedFill, r_scalar(f32::NEG_INFINITY as f64), vec![scaled, mask]);
+    let masked = r_op(
+        OpTag::MaskedFill,
+        r_scalar(f32::NEG_INFINITY as f64),
+        vec![scaled, mask],
+    );
 
     // --- 4. probs = softmax(masked) carried as a nested Op::Fused node; out = probs · v ---
     let probs = r_op(OpTag::Fused, fused_softmax_attr(), vec![masked]);
@@ -310,13 +350,19 @@ fn recipe(
 
 /// The `Cast(F32)` attr for the `context_lens` U32→F32 conversion.
 fn cast_f32_attr() -> OpAttrs {
-    OpAttrs { cast_dtype: Some(DType::F32.as_str().to_string()), ..OpAttrs::default() }
+    OpAttrs {
+        cast_dtype: Some(DType::F32.as_str().to_string()),
+        ..OpAttrs::default()
+    }
 }
 
 /// The nested-softmax selector attr (mechanism 2a): names the `SoftmaxLastDim`
 /// registry entry the C-T2 carrier reconstructs to.
 fn fused_softmax_attr() -> OpAttrs {
-    OpAttrs { fused_op: Some("SoftmaxLastDim".to_string()), ..OpAttrs::default() }
+    OpAttrs {
+        fused_op: Some("SoftmaxLastDim".to_string()),
+        ..OpAttrs::default()
+    }
 }
 
 /// Lower a fused PagedAttn node to its primitive gather-+-SDPA subgraph and
@@ -374,15 +420,28 @@ mod tests {
         let (q_id, kc_id, vc_id, bt_id, cl_id, alibi_id, q_shape, dtype) = {
             let n = graph.node(id);
             let q_shape = graph.node(n.inputs[0]).shape.clone();
-            let alibi = if n.inputs.len() == 6 { Some(n.inputs[5]) } else { None };
+            let alibi = if n.inputs.len() == 6 {
+                Some(n.inputs[5])
+            } else {
+                None
+            };
             (
-                n.inputs[0], n.inputs[1], n.inputs[2], n.inputs[3], n.inputs[4], alibi, q_shape, n.dtype,
+                n.inputs[0],
+                n.inputs[1],
+                n.inputs[2],
+                n.inputs[3],
+                n.inputs[4],
+                alibi,
+                q_shape,
+                n.dtype,
             )
         };
         let (scale, block_size, softcap) = match params {
-            FusedOpParams::PagedAttn { softmax_scale, block_size, softcap } => {
-                (*softmax_scale, *block_size, *softcap)
-            }
+            FusedOpParams::PagedAttn {
+                softmax_scale,
+                block_size,
+                softcap,
+            } => (*softmax_scale, *block_size, *softcap),
             _ => return id,
         };
 
@@ -398,8 +457,12 @@ mod tests {
             shape: Shape::from_dims(&[b * max_blk]),
             dtype: DType::U32,
         });
-        let k_att = legacy_gather_kv(graph, kc_id, bt_flat, b, max_blk, block_size, hkv, hq, d, kv_len, dtype);
-        let v_att = legacy_gather_kv(graph, vc_id, bt_flat, b, max_blk, block_size, hkv, hq, d, kv_len, dtype);
+        let k_att = legacy_gather_kv(
+            graph, kc_id, bt_flat, b, max_blk, block_size, hkv, hq, d, kv_len, dtype,
+        );
+        let v_att = legacy_gather_kv(
+            graph, vc_id, bt_flat, b, max_blk, block_size, hkv, hq, d, kv_len, dtype,
+        );
 
         let scores_shape = Shape::from_dims(&[b, hq, sq, kv_len]);
 
@@ -442,7 +505,8 @@ mod tests {
             });
         }
         if let Some(alibi) = alibi_id {
-            let bias = crate::registry::flash_attn::alibi_bias(graph, alibi, b, hq, sq, kv_len, 0, dtype);
+            let bias =
+                crate::registry::flash_attn::alibi_bias(graph, alibi, b, hq, sq, kv_len, 0, dtype);
             scaled = graph.push(Node {
                 op: Op::Add,
                 inputs: vec![scaled, bias],
@@ -497,7 +561,9 @@ mod tests {
             dtype: DType::Bool,
         });
         let masked = graph.push(Node {
-            op: Op::MaskedFill { value: Scalar::F32(f32::NEG_INFINITY) },
+            op: Op::MaskedFill {
+                value: Scalar::F32(f32::NEG_INFINITY),
+            },
             inputs: vec![scaled, mask],
             shape: scores_shape.clone(),
             dtype,
@@ -564,9 +630,18 @@ mod tests {
         let na = g.node(a);
         let nb = g.node(b);
         assert_eq!(na.op, nb.op, "op mismatch: {:?} vs {:?}", na.op, nb.op);
-        assert_eq!(na.shape, nb.shape, "shape mismatch at {:?}: {:?} vs {:?}", na.op, na.shape, nb.shape);
+        assert_eq!(
+            na.shape, nb.shape,
+            "shape mismatch at {:?}: {:?} vs {:?}",
+            na.op, na.shape, nb.shape
+        );
         assert_eq!(na.dtype, nb.dtype, "dtype mismatch at {:?}", na.op);
-        assert_eq!(na.inputs.len(), nb.inputs.len(), "arity mismatch at {:?}", na.op);
+        assert_eq!(
+            na.inputs.len(),
+            nb.inputs.len(),
+            "arity mismatch at {:?}",
+            na.op
+        );
         for (&ia, &ib) in na.inputs.iter().zip(nb.inputs.iter()) {
             assert_structural_eq(g, ia, ib);
         }
@@ -591,21 +666,55 @@ mod tests {
         has_alibi: bool,
     ) -> NodeId {
         let q_shape = Shape::from_dims(&[b, hq, sq, d]);
-        let q = g.push(Node { op: Op::Const, inputs: vec![], shape: q_shape.clone(), dtype: DType::F32 });
+        let q = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: q_shape.clone(),
+            dtype: DType::F32,
+        });
         let cache_shape = Shape::from_dims(&[num_blocks, block_size, hkv, d]);
-        let kc = g.push(Node { op: Op::Const, inputs: vec![], shape: cache_shape.clone(), dtype: DType::F32 });
-        let vc = g.push(Node { op: Op::Const, inputs: vec![], shape: cache_shape, dtype: DType::F32 });
-        let bt = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[b, max_blk]), dtype: DType::U32 });
-        let cl = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[b]), dtype: DType::U32 });
+        let kc = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: cache_shape.clone(),
+            dtype: DType::F32,
+        });
+        let vc = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: cache_shape,
+            dtype: DType::F32,
+        });
+        let bt = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[b, max_blk]),
+            dtype: DType::U32,
+        });
+        let cl = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[b]),
+            dtype: DType::U32,
+        });
         let mut inputs = vec![q, kc, vc, bt, cl];
         if has_alibi {
-            let al = g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[hq]), dtype: DType::F32 });
+            let al = g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(&[hq]),
+                dtype: DType::F32,
+            });
             inputs.push(al);
         }
         g.push(Node {
             op: Op::Fused(
                 FusedOps::PAGED_ATTN,
-                FusedOpParams::PagedAttn { softmax_scale: scale, block_size, softcap },
+                FusedOpParams::PagedAttn {
+                    softmax_scale: scale,
+                    block_size,
+                    softcap,
+                },
             ),
             inputs,
             shape: q_shape,
@@ -641,10 +750,15 @@ mod tests {
                         "recipe decompose fires (softcap={softcap:?}, alibi={has_alibi}, hq={hq}, hkv={hkv})"
                     );
                     assert_eq!(
-                        g.node(new_root).shape, out_shape,
+                        g.node(new_root).shape,
+                        out_shape,
                         "output shape matches shape_rule (softcap={softcap:?}, alibi={has_alibi})"
                     );
-                    assert_eq!(g.node(new_root).dtype, DType::F32, "PagedAttn output dtype is F32");
+                    assert_eq!(
+                        g.node(new_root).dtype,
+                        DType::F32,
+                        "PagedAttn output dtype is F32"
+                    );
 
                     let legacy_root = frozen_legacy_decompose(&mut g, fused, &params);
                     assert_structural_eq(&g, new_root, legacy_root);
@@ -683,8 +797,11 @@ mod tests {
     fn recipe_for_yields_the_region_without_touching_the_graph() {
         let mut g = Graph::new();
         let fused = paged_node(&mut g, 1, 2, 2, 3, 2, 4, 2, 2, 0.5, None, false);
-        let params =
-            FusedOpParams::PagedAttn { softmax_scale: 0.5, block_size: 2, softcap: None };
+        let params = FusedOpParams::PagedAttn {
+            softmax_scale: 0.5,
+            block_size: 2,
+            softcap: None,
+        };
 
         let before = g.len();
         let region = recipe_for(&g, fused, &params).expect("well-formed node yields a recipe");
@@ -705,8 +822,14 @@ mod tests {
 
         // And `decompose` — now literally this recipe plus emit — does emit it.
         let root = decompose(&mut g, fused, &params);
-        assert_ne!(root, fused, "decompose lowered (not a fixpoint self-return)");
-        assert!(g.len() > before, "decompose emitted the region into the graph");
+        assert_ne!(
+            root, fused,
+            "decompose lowered (not a fixpoint self-return)"
+        );
+        assert!(
+            g.len() > before,
+            "decompose emitted the region into the graph"
+        );
 
         // Never-panic posture: every decline is a typed `None`.
         assert!(

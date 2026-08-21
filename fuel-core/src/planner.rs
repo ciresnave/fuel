@@ -47,11 +47,7 @@ impl Planner {
     /// Always `Ok(())`. Callers (e.g. the decode loop in
     /// `fuel-core::lazy`) already treat `warm` as advisory and discard
     /// its result; the realize path runs the authoritative optimization.
-    pub fn warm(
-        _graph: &Arc<RwLock<Graph>>,
-        _targets: &[NodeId],
-        _device: &Device,
-    ) -> Result<()> {
+    pub fn warm(_graph: &Arc<RwLock<Graph>>, _targets: &[NodeId], _device: &Device) -> Result<()> {
         Ok(())
     }
 }
@@ -59,9 +55,9 @@ impl Planner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_ir::{DType, Shape};
     use fuel_dispatch::pipelined::StorageCache;
     use fuel_graph::{Node, Op};
+    use fuel_ir::{DType, Shape};
     use fuel_memory::{BackendStorage, Storage};
 
     fn push_node(g: &mut Graph, op: Op, inputs: Vec<NodeId>) -> NodeId {
@@ -76,9 +72,9 @@ mod tests {
     fn cpu_storage_f32(vals: &[f32]) -> Arc<RwLock<Storage>> {
         let bytes: &[u8] = bytemuck::cast_slice(vals);
         Arc::new(RwLock::new(Storage::new(
-            BackendStorage::Cpu(
-                fuel_cpu_backend::byte_storage::CpuStorageBytes::from_bytes(bytes),
-            ),
+            BackendStorage::Cpu(fuel_cpu_backend::byte_storage::CpuStorageBytes::from_bytes(
+                bytes,
+            )),
             DType::F32,
         )))
     }

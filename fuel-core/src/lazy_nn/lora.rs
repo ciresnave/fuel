@@ -24,13 +24,13 @@ use std::sync::Arc;
 /// LoRA-adapted linear layer over `LazyTensor`.
 #[derive(Debug, Clone)]
 pub struct LazyLoraLinear {
-    base_weight:  WeightStorage,
-    bias:         Option<Arc<[f32]>>,
-    lora_a:       Arc<[f32]>,
-    lora_b:       Arc<[f32]>,
-    rank:         usize,
-    alpha:        f32,
-    in_features:  usize,
+    base_weight: WeightStorage,
+    bias: Option<Arc<[f32]>>,
+    lora_a: Arc<[f32]>,
+    lora_b: Arc<[f32]>,
+    rank: usize,
+    alpha: f32,
+    in_features: usize,
     out_features: usize,
 }
 
@@ -55,9 +55,7 @@ impl LazyLoraLinear {
         out_features: usize,
     ) -> Result<Self> {
         if rank == 0 {
-            return Err(crate::Error::Msg(
-                "LazyLoraLinear::new: rank must be > 0".into(),
-            ).bt());
+            return Err(crate::Error::Msg("LazyLoraLinear::new: rank must be > 0".into()).bt());
         }
         if base_weight.elem_count() != in_features * out_features {
             return Err(crate::Error::Msg(format!(
@@ -67,35 +65,48 @@ impl LazyLoraLinear {
                 in_features,
                 out_features,
                 in_features * out_features,
-            )).bt());
+            ))
+            .bt());
         }
         if matches!(base_weight, WeightStorage::WithLoRA { .. }) {
             return Err(crate::Error::Msg(
                 "LazyLoraLinear::new: base_weight is already WithLoRA \
-                 (nested adapters unsupported)".into(),
-            ).bt());
+                 (nested adapters unsupported)"
+                    .into(),
+            )
+            .bt());
         }
         if lora_a.len() != in_features * rank {
             return Err(crate::Error::Msg(format!(
                 "LazyLoraLinear::new: lora_a has {} elements but \
                  in_features * rank = {} * {} = {}",
-                lora_a.len(), in_features, rank, in_features * rank,
-            )).bt());
+                lora_a.len(),
+                in_features,
+                rank,
+                in_features * rank,
+            ))
+            .bt());
         }
         if lora_b.len() != rank * out_features {
             return Err(crate::Error::Msg(format!(
                 "LazyLoraLinear::new: lora_b has {} elements but \
                  rank * out_features = {} * {} = {}",
-                lora_b.len(), rank, out_features, rank * out_features,
-            )).bt());
+                lora_b.len(),
+                rank,
+                out_features,
+                rank * out_features,
+            ))
+            .bt());
         }
         if let Some(b) = bias.as_ref() {
             if b.len() != out_features {
                 return Err(crate::Error::Msg(format!(
                     "LazyLoraLinear::new: bias has length {} but \
                      out_features = {}",
-                    b.len(), out_features,
-                )).bt());
+                    b.len(),
+                    out_features,
+                ))
+                .bt());
             }
         }
         Ok(Self {
@@ -164,10 +175,8 @@ impl LazyModule for LazyLoraLinear {
         let y = merged.apply_linear(xs, self.in_features, self.out_features)?;
         match &self.bias {
             Some(b) => {
-                let bias_t = y.const_f32_like(
-                    Arc::clone(b),
-                    Shape::from_dims(&[self.out_features]),
-                );
+                let bias_t =
+                    y.const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_features]));
                 y.broadcast_add(&bias_t)
             }
             None => Ok(y),
@@ -209,13 +218,15 @@ mod tests {
             0.0,
             in_features,
             out_features,
-        ).unwrap();
+        )
+        .unwrap();
         let plain = LazyLinear::new(
             WeightStorage::F32(Arc::from(w)),
             Some(Arc::from(bias)),
             in_features,
             out_features,
-        ).unwrap();
+        )
+        .unwrap();
 
         let x = LazyTensor::from_f32(
             x_data.clone(),
@@ -224,7 +235,9 @@ mod tests {
         );
         let y_lora = lora.forward(&x).unwrap();
         let x2 = LazyTensor::from_f32(
-            x_data, Shape::from_dims(&[seq, in_features]), &Device::cpu(),
+            x_data,
+            Shape::from_dims(&[seq, in_features]),
+            &Device::cpu(),
         );
         let y_plain = plain.forward(&x2).unwrap();
 
@@ -284,10 +297,13 @@ mod tests {
             rank as f32, // alpha == rank => scale == 1
             in_features,
             out_features,
-        ).unwrap();
+        )
+        .unwrap();
 
         let x = LazyTensor::from_f32(
-            x_data, Shape::from_dims(&[seq, in_features]), &Device::cpu(),
+            x_data,
+            Shape::from_dims(&[seq, in_features]),
+            &Device::cpu(),
         );
         let y = lora.forward(&x).unwrap();
         assert_eq!(y.shape().dims(), &[seq, out_features]);

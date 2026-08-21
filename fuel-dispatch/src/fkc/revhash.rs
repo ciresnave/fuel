@@ -88,24 +88,27 @@ fn canonical_form(k: &FkcKernel) -> String {
                     ),
                 );
             }
-            if let Some(fdx) = &d.fdx {
-                if let Some(q) = &fdx.quant {
-                    push(
-                        &format!("in{i}.quant"),
-                        &format!(
-                            "{}|{}|{}|{}|{}",
-                            q.family.as_deref().unwrap_or(""),
-                            q.ggml_dtype.as_deref().unwrap_or(""),
-                            q.granularity.as_deref().unwrap_or(""),
-                            q.role.as_deref().unwrap_or(""),
-                            q.scale_operand.as_deref().unwrap_or(""),
-                        ),
-                    );
-                }
+            if let Some(fdx) = &d.fdx
+                && let Some(q) = &fdx.quant
+            {
+                push(
+                    &format!("in{i}.quant"),
+                    &format!(
+                        "{}|{}|{}|{}|{}",
+                        q.family.as_deref().unwrap_or(""),
+                        q.ggml_dtype.as_deref().unwrap_or(""),
+                        q.granularity.as_deref().unwrap_or(""),
+                        q.role.as_deref().unwrap_or(""),
+                        q.scale_operand.as_deref().unwrap_or(""),
+                    ),
+                );
             }
         }
         if let Some(op_params) = &accept.op_params {
-            push("op_params.variant", op_params.variant.as_deref().unwrap_or(""));
+            push(
+                "op_params.variant",
+                op_params.variant.as_deref().unwrap_or(""),
+            );
         }
     }
 
@@ -113,7 +116,10 @@ fn canonical_form(k: &FkcKernel) -> String {
     // changes the hash).
     if let Some(cost) = &k.cost {
         push("cost.flops", cost.flops.as_deref().unwrap_or(""));
-        push("cost.bytes_moved", cost.bytes_moved.as_deref().unwrap_or(""));
+        push(
+            "cost.bytes_moved",
+            cost.bytes_moved.as_deref().unwrap_or(""),
+        );
         push("cost.class", cost.class.as_deref().unwrap_or(""));
         push("cost.provenance", cost.provenance.as_deref().unwrap_or(""));
     }
@@ -251,8 +257,8 @@ mod tests {
     #[test]
     fn revision_hash_frozen_value_regression() {
         let k = add_f32();
-        let h = compute_revision(&k, "fuel_cpu_backend::byte_kernels::add_f32", "git:sk3-pin")
-            .unwrap();
+        let h =
+            compute_revision(&k, "fuel_cpu_backend::byte_kernels::add_f32", "git:sk3-pin").unwrap();
         // Frozen 2026-07-23 (observed born-red first with a placeholder):
         // FNV1a(entry_point ++ 0x1f ++ revision_base ++ 0x1f ++ canonical-block).
         assert_eq!(h, KernelRevisionHash(0x7b44_60e6_54c2_7a45));
@@ -261,10 +267,18 @@ mod tests {
     #[test]
     fn auto_is_deterministic_for_fixed_inputs() {
         let k = add_f32();
-        let a = compute_revision(&k, "fuel_cpu_backend::byte_kernels::add_f32", "git:f41137b4")
-            .unwrap();
-        let b = compute_revision(&k, "fuel_cpu_backend::byte_kernels::add_f32", "git:f41137b4")
-            .unwrap();
+        let a = compute_revision(
+            &k,
+            "fuel_cpu_backend::byte_kernels::add_f32",
+            "git:f41137b4",
+        )
+        .unwrap();
+        let b = compute_revision(
+            &k,
+            "fuel_cpu_backend::byte_kernels::add_f32",
+            "git:f41137b4",
+        )
+        .unwrap();
         assert_eq!(a, b, "same canonical input ⇒ same hash");
     }
 

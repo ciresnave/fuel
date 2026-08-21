@@ -17,7 +17,8 @@ fn main() {
     println!("  {} device(s) total", report.devices.len());
     println!();
     for d in &report.devices {
-        let cc = d.compute_capability
+        let cc = d
+            .compute_capability
             .map(|(a, b)| format!("sm_{a}{b}"))
             .unwrap_or_else(|| "n/a".to_string());
         let mem_gib = d.total_memory_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
@@ -39,7 +40,11 @@ fn main() {
     for (key, devs) in &classes {
         println!(
             "  backend={} vendor=0x{:04x} device=0x{:04x} driver={} → {} device(s)",
-            key.backend, key.vendor_id, key.device_id, key.driver_version, devs.len(),
+            key.backend,
+            key.vendor_id,
+            key.device_id,
+            key.driver_version,
+            devs.len(),
         );
     }
     if let Some(path) = std::env::args().nth(1) {

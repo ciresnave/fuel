@@ -11,8 +11,13 @@
 /// the first mismatching index plus max abs/rel deviations when the
 /// assertion fires so divergences are easy to localize.
 pub fn assert_allclose_f32(a: &[f32], b: &[f32], atol: f32, rtol: f32) {
-    assert_eq!(a.len(), b.len(),
-        "assert_allclose_f32: length mismatch {} vs {}", a.len(), b.len());
+    assert_eq!(
+        a.len(),
+        b.len(),
+        "assert_allclose_f32: length mismatch {} vs {}",
+        a.len(),
+        b.len()
+    );
     let mut max_abs = 0.0_f32;
     let mut max_rel = 0.0_f32;
     let mut first_bad: Option<usize> = None;
@@ -26,8 +31,12 @@ pub fn assert_allclose_f32(a: &[f32], b: &[f32], atol: f32, rtol: f32) {
         }
         let ad = (x - y).abs();
         let rd = ad / x.abs().max(y.abs()).max(f32::MIN_POSITIVE);
-        if ad > max_abs { max_abs = ad; }
-        if rd > max_rel { max_rel = rd; }
+        if ad > max_abs {
+            max_abs = ad;
+        }
+        if rd > max_rel {
+            max_rel = rd;
+        }
         if ad > atol && rd > rtol && first_bad.is_none() {
             first_bad = Some(i);
         }
@@ -37,7 +46,9 @@ pub fn assert_allclose_f32(a: &[f32], b: &[f32], atol: f32, rtol: f32) {
             "assert_allclose_f32: first mismatch at index {i}: a={} b={} \
              (diff abs={} rel={}); max abs={max_abs} max rel={max_rel} \
              over {} elements (atol={atol} rtol={rtol})",
-            a[i], b[i], (a[i] - b[i]).abs(),
+            a[i],
+            b[i],
+            (a[i] - b[i]).abs(),
             (a[i] - b[i]).abs() / a[i].abs().max(b[i].abs()).max(f32::MIN_POSITIVE),
             a.len(),
         );
@@ -45,13 +56,12 @@ pub fn assert_allclose_f32(a: &[f32], b: &[f32], atol: f32, rtol: f32) {
 }
 
 #[cfg(feature = "cuda")]
-pub fn assert_cuda_matches_reference(
-    t: &crate::lazy::LazyTensor,
-    atol: f32,
-    rtol: f32,
-) {
+pub fn assert_cuda_matches_reference(t: &crate::lazy::LazyTensor, atol: f32, rtol: f32) {
     let probe = crate::probe::ProbeReport::probe_all();
-    let has_cuda = probe.devices.iter().any(|d| d.backend == fuel_ir::probe::BackendId::Cuda);
+    let has_cuda = probe
+        .devices
+        .iter()
+        .any(|d| d.backend == fuel_ir::probe::BackendId::Cuda);
     if !has_cuda {
         eprintln!("assert_cuda_matches_reference: no CUDA device, skipping");
         return;
@@ -62,7 +72,6 @@ pub fn assert_cuda_matches_reference(
     let cuda = t.realize_f32_cuda(&dev);
     assert_allclose_f32(&cuda, &reference, atol, rtol);
 }
-
 
 /// Element-wise absolute-tolerance comparison for two flat f32 slices.
 /// Panics with a descriptive message on the first cell exceeding

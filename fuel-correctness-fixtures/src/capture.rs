@@ -116,10 +116,10 @@ pub fn representative_capture_matrix() -> Vec<CaptureCell> {
     // (1024,1024,1024) → 4096, 65536, 1048576.
     // Elementwise: n for 1<<10, 1<<16, 1<<20 → 1024, 65536, 1048576.
     let plans: &[(OpKind, &[usize])] = &[
-        (OpKind::MatMul,          &[64 * 64, 256 * 256, 1024 * 1024]),
-        (OpKind::AddElementwise,  &[1 << 10, 1 << 16, 1 << 20]),
-        (OpKind::MulElementwise,  &[1 << 10, 1 << 16, 1 << 20]),
-        (OpKind::SoftmaxLastDim,  &[1 << 10, 1 << 16, 1 << 20]),
+        (OpKind::MatMul, &[64 * 64, 256 * 256, 1024 * 1024]),
+        (OpKind::AddElementwise, &[1 << 10, 1 << 16, 1 << 20]),
+        (OpKind::MulElementwise, &[1 << 10, 1 << 16, 1 << 20]),
+        (OpKind::SoftmaxLastDim, &[1 << 10, 1 << 16, 1 << 20]),
     ];
     let mut out = Vec::new();
     for (op, sizes) in plans {
@@ -163,7 +163,9 @@ pub fn derive_seed(op: OpKind, dtype: DType, sc: SizeClass) -> u64 {
     for b in op.as_str().as_bytes() {
         acc = acc.wrapping_mul(0x100000001b3).wrapping_add(*b as u64);
     }
-    acc = acc.wrapping_mul(0x100000001b3).wrapping_add(dtype.size_in_bytes() as u64);
+    acc = acc
+        .wrapping_mul(0x100000001b3)
+        .wrapping_add(dtype.size_in_bytes() as u64);
     acc = acc.wrapping_mul(0x100000001b3).wrapping_add(sc.0 as u64);
     acc
 }
@@ -227,13 +229,13 @@ fn is_binary_op(op: OpKind) -> bool {
     matches!(
         op,
         OpKind::AddElementwise
-        | OpKind::SubElementwise
-        | OpKind::MulElementwise
-        | OpKind::DivElementwise
-        | OpKind::MaximumElementwise
-        | OpKind::MinimumElementwise
-        | OpKind::PowElementwise
-        | OpKind::RemElementwise,
+            | OpKind::SubElementwise
+            | OpKind::MulElementwise
+            | OpKind::DivElementwise
+            | OpKind::MaximumElementwise
+            | OpKind::MinimumElementwise
+            | OpKind::PowElementwise
+            | OpKind::RemElementwise,
     )
 }
 
@@ -251,16 +253,24 @@ fn binary_inputs_concatenated(op: OpKind, total_elem_count: usize) -> Vec<f32> {
         .map(|i| ((i as f32) * 1.9e-3).cos())
         .collect();
     if matches!(op, OpKind::DivElementwise) {
-        for x in &mut b { *x += 1.5; }
+        for x in &mut b {
+            *x += 1.5;
+        }
     }
     if matches!(op, OpKind::PowElementwise) {
         // Both inputs must be positive (Judge's domain).
-        for x in &mut a { *x += 1.5; }
-        for x in &mut b { *x += 1.5; }
+        for x in &mut a {
+            *x += 1.5;
+        }
+        for x in &mut b {
+            *x += 1.5;
+        }
     }
     if matches!(op, OpKind::RemElementwise) {
         // Divisor away from zero.
-        for x in &mut b { *x += 1.5; }
+        for x in &mut b {
+            *x += 1.5;
+        }
     }
     let mut out = a;
     out.extend(b);
@@ -274,9 +284,9 @@ fn unary_input_with_shift(op: OpKind, n: usize) -> Vec<f32> {
     let needs_nonzero = matches!(
         op,
         OpKind::SqrtElementwise
-        | OpKind::LogElementwise
-        | OpKind::RecipElementwise
-        | OpKind::RsqrtElementwise,
+            | OpKind::LogElementwise
+            | OpKind::RecipElementwise
+            | OpKind::RsqrtElementwise,
     );
     if needs_nonzero {
         raw.into_iter().map(|x| x + 1.5).collect()
@@ -346,9 +356,11 @@ pub fn compute_pairwise_consensus(outputs: &[MeasuredOutput], epsilon: f32) -> V
     let mut best: Vec<usize> = vec![0];
     for i in 0..n {
         let mut cluster = vec![i];
-        for j in 0..n {
-            if j == i { continue; }
-            if cluster.iter().all(|&k| agree[j][k]) {
+        for (j, agree_row) in agree.iter().enumerate().take(n) {
+            if j == i {
+                continue;
+            }
+            if cluster.iter().all(|&k| agree_row[k]) {
                 cluster.push(j);
             }
         }
@@ -374,7 +386,9 @@ fn max_rel_err(a: &[f32], b: &[f32]) -> f32 {
         }
         let denom = x.abs().max(y.abs()).max(f32::MIN_POSITIVE);
         let rel = (x - y).abs() / denom;
-        if rel > worst { worst = rel; }
+        if rel > worst {
+            worst = rel;
+        }
     }
     worst
 }
@@ -420,7 +434,10 @@ impl std::fmt::Display for NoConsensusReason {
                 f,
                 "only {backend_count} backend(s) measured — need >=2 for consensus",
             ),
-            Self::NoMajority { backend_count, largest_cluster_size } => write!(
+            Self::NoMajority {
+                backend_count,
+                largest_cluster_size,
+            } => write!(
                 f,
                 "{backend_count} backends measured but largest agreeing cluster \
                  is only {largest_cluster_size} (need majority for fixture)",
@@ -446,9 +463,9 @@ pub fn fixture_from_consensus(
 ) -> ConsensusDecision {
     let n = outputs.len();
     if n < 2 {
-        return ConsensusDecision::NoConsensus(
-            NoConsensusReason::InsufficientPeers { backend_count: n },
-        );
+        return ConsensusDecision::NoConsensus(NoConsensusReason::InsufficientPeers {
+            backend_count: n,
+        });
     }
     let consensus = compute_pairwise_consensus(outputs, CAPTURE_CONSENSUS_EPSILON);
     // Strict majority: `consensus.len() * 2 > n` (equivalently
@@ -540,10 +557,13 @@ pub fn group_fixtures_for_emission(
             // file-on-disk diff stays sane when a capture run adds
             // or modifies a single cell.
             fs.sort_by_key(|f| (f.size_class.0, f.input_seed));
-            (path, FixtureFile {
-                version: FIXTURE_FILE_VERSION,
-                fixtures: fs,
-            })
+            (
+                path,
+                FixtureFile {
+                    version: FIXTURE_FILE_VERSION,
+                    fixtures: fs,
+                },
+            )
         })
         .collect()
 }
@@ -586,8 +606,7 @@ pub fn write_fixture_file(
     if let Some(parent) = full.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let json = serde_json::to_string_pretty(file)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let json = serde_json::to_string_pretty(file).map_err(std::io::Error::other)?;
     std::fs::write(&full, json)?;
     Ok(full)
 }
@@ -613,16 +632,26 @@ pub struct ReviewReport {
 }
 
 impl ReviewReport {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
     pub fn push(&mut self, entry: ReviewEntry) {
         self.entries.push(entry);
     }
-    pub fn is_empty(&self) -> bool { self.entries.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
     /// Render the report as a human-readable string for stderr or
     /// a `.txt` log. Stable ordering: by op, dtype, size_class.
     pub fn to_text(&self) -> String {
         let mut entries = self.entries.clone();
-        entries.sort_by_key(|e| (e.cell.op.as_str(), e.cell.dtype.size_in_bytes(), e.cell.size_class.0));
+        entries.sort_by_key(|e| {
+            (
+                e.cell.op.as_str(),
+                e.cell.dtype.size_in_bytes(),
+                e.cell.size_class.0,
+            )
+        });
         let mut out = String::new();
         out.push_str("# Correctness Capture — Human Review Required\n\n");
         if entries.is_empty() {
@@ -640,10 +669,7 @@ impl ReviewReport {
             out.push_str(&format!("- reason: {}\n", entry.reason));
             for (backend, ks, preview) in &entry.previews {
                 let ks_tag = if ks.is_empty() { "" } else { ks.as_str() };
-                out.push_str(&format!(
-                    "  - {backend} ({ks_tag}): {:?}\n",
-                    preview,
-                ));
+                out.push_str(&format!("  - {backend} ({ks_tag}): {:?}\n", preview,));
             }
             out.push('\n');
         }
@@ -666,9 +692,9 @@ impl ReviewReport {
 pub fn default_tolerance_for(op: OpKind, dtype: DType) -> ToleranceBand {
     let _ = dtype; // future: per-dtype defaults
     match op {
-        OpKind::AddElementwise
-        | OpKind::SubElementwise
-        | OpKind::MulElementwise => ToleranceBand::F32_STRICT,
+        OpKind::AddElementwise | OpKind::SubElementwise | OpKind::MulElementwise => {
+            ToleranceBand::F32_STRICT
+        }
         _ => ToleranceBand::F32_DEFAULT,
     }
 }
@@ -757,7 +783,9 @@ mod tests {
         let input = vec![0.5_f32, 0.5];
         let decision = fixture_from_consensus(cell, &input, &outs, ToleranceBand::F32_DEFAULT);
         match decision {
-            ConsensusDecision::NoConsensus(NoConsensusReason::InsufficientPeers { backend_count }) => {
+            ConsensusDecision::NoConsensus(NoConsensusReason::InsufficientPeers {
+                backend_count,
+            }) => {
                 assert_eq!(backend_count, 1);
             }
             other => panic!("expected InsufficientPeers, got {other:?}"),
@@ -880,7 +908,10 @@ mod tests {
         let input = vec![0.5_f32, 0.5, 0.5];
         let decision = fixture_from_consensus(cell, &input, &outs, ToleranceBand::F32_DEFAULT);
         match decision {
-            ConsensusDecision::NoConsensus(NoConsensusReason::NoMajority { backend_count, largest_cluster_size }) => {
+            ConsensusDecision::NoConsensus(NoConsensusReason::NoMajority {
+                backend_count,
+                largest_cluster_size,
+            }) => {
                 assert_eq!(backend_count, 5);
                 assert_eq!(largest_cluster_size, 2);
             }
@@ -943,9 +974,7 @@ mod tests {
     #[test]
     fn deterministic_input_matches_judge_unary_formula() {
         let actual = deterministic_f32_input(OpKind::SinElementwise, 8);
-        let expected: Vec<f32> = (0..8)
-            .map(|i| ((i as f32) * 2.1e-3).sin())
-            .collect();
+        let expected: Vec<f32> = (0..8).map(|i| ((i as f32) * 2.1e-3).sin()).collect();
         assert_eq!(actual, expected);
     }
 
@@ -955,9 +984,7 @@ mod tests {
     #[test]
     fn deterministic_input_matches_judge_binary_formula() {
         let actual = deterministic_f32_input(OpKind::AddElementwise, 8);
-        let mut expected: Vec<f32> = (0..4)
-            .map(|i| ((i as f32) * 2.1e-3).sin())
-            .collect();
+        let mut expected: Vec<f32> = (0..4).map(|i| ((i as f32) * 2.1e-3).sin()).collect();
         expected.extend((0..4).map(|i| ((i as f32) * 1.9e-3).cos()));
         assert_eq!(actual, expected);
     }
@@ -968,9 +995,7 @@ mod tests {
     #[test]
     fn deterministic_input_matches_judge_matmul_formula() {
         let actual = deterministic_f32_input(OpKind::MatMul, 8);
-        let mut expected: Vec<f32> = (0..4)
-            .map(|i| ((i as f32) * 1.3e-3).sin())
-            .collect();
+        let mut expected: Vec<f32> = (0..4).map(|i| ((i as f32) * 1.3e-3).sin()).collect();
         expected.extend((0..4).map(|i| ((i as f32) * 1.7e-3).cos()));
         assert_eq!(actual, expected);
     }
@@ -982,7 +1007,11 @@ mod tests {
         let raw = deterministic_f32_input(OpKind::SinElementwise, 4);
         let shifted = deterministic_f32_input(OpKind::SqrtElementwise, 4);
         for (r, s) in raw.iter().zip(shifted.iter()) {
-            assert!((s - (r + 1.5)).abs() < 1e-7, "expected r+1.5={}, got {s}", r + 1.5);
+            assert!(
+                (s - (r + 1.5)).abs() < 1e-7,
+                "expected r+1.5={}, got {s}",
+                r + 1.5
+            );
         }
     }
 
@@ -1072,10 +1101,8 @@ mod tests {
         let grouped = group_fixtures_for_emission(vec![fixture.clone()]);
         let (path, file) = grouped.iter().next().unwrap();
 
-        let tmp = std::env::temp_dir().join(format!(
-            "fuel-capture-fixtures-test-{}",
-            std::process::id(),
-        ));
+        let tmp = std::env::temp_dir()
+            .join(format!("fuel-capture-fixtures-test-{}", std::process::id(),));
         let _ = std::fs::remove_dir_all(&tmp);
         let written = write_fixture_file(&tmp, path, file).expect("write");
         let raw = std::fs::read_to_string(&written).expect("read");
@@ -1091,7 +1118,7 @@ mod tests {
     fn representative_matrix_shape() {
         let cells = representative_capture_matrix();
         assert_eq!(cells.len(), 4 * 3); // 4 ops × 3 size classes
-        // Every cell is f32 (the only profiled dtype today).
+                                        // Every cell is f32 (the only profiled dtype today).
         assert!(cells.iter().all(|c| c.dtype == DType::F32));
         // Seeds are distinct across (op, size_class) cells.
         let mut seeds: Vec<u64> = cells.iter().map(|c| c.input_seed).collect();
@@ -1127,11 +1154,20 @@ mod tests {
         // MatMul: 4096 → 12, 65536 → 16, 1048576 → 20.
         assert_eq!(by_op.get(&OpKind::MatMul), Some(&vec![12u8, 16, 20]));
         // Add/Mul: 1024 → 10, 65536 → 16, 1048576 → 20.
-        assert_eq!(by_op.get(&OpKind::AddElementwise), Some(&vec![10u8, 16, 20]));
-        assert_eq!(by_op.get(&OpKind::MulElementwise), Some(&vec![10u8, 16, 20]));
+        assert_eq!(
+            by_op.get(&OpKind::AddElementwise),
+            Some(&vec![10u8, 16, 20])
+        );
+        assert_eq!(
+            by_op.get(&OpKind::MulElementwise),
+            Some(&vec![10u8, 16, 20])
+        );
         // Softmax inherits the elementwise ladder placeholder until
         // Judge profiles fused composites.
-        assert_eq!(by_op.get(&OpKind::SoftmaxLastDim), Some(&vec![10u8, 16, 20]));
+        assert_eq!(
+            by_op.get(&OpKind::SoftmaxLastDim),
+            Some(&vec![10u8, 16, 20])
+        );
     }
 
     /// Review report renders cleanly even with multiple entries.
@@ -1156,8 +1192,7 @@ mod tests {
         });
         let text = report.to_text();
         assert!(text.contains("matmul"));
-        assert!(text.contains("NoMajority")
-            || text.contains("largest agreeing cluster"));
+        assert!(text.contains("NoMajority") || text.contains("largest agreeing cluster"));
         assert!(text.contains("cpu"));
         assert!(text.contains("cuda:0"));
     }

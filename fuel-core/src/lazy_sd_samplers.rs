@@ -96,9 +96,8 @@ fn linspace(start: f64, stop: f64, steps: usize) -> Vec<f64> {
 }
 
 fn betas_for_alpha_bar(num_diffusion_timesteps: usize, max_beta: f64) -> Vec<f64> {
-    let alpha_bar = |t: usize| {
-        f64::cos((t as f64 + 0.008) / 1.008 * std::f64::consts::FRAC_PI_2).powi(2)
-    };
+    let alpha_bar =
+        |t: usize| f64::cos((t as f64 + 0.008) / 1.008 * std::f64::consts::FRAC_PI_2).powi(2);
     let mut betas = Vec::with_capacity(num_diffusion_timesteps);
     for i in 0..num_diffusion_timesteps {
         let t1 = i / num_diffusion_timesteps;
@@ -137,9 +136,8 @@ fn randn_like_on_graph(anchor: &LazyTensor, mean: f64, stdev: f64) -> Result<Laz
     use rand_distr::{Distribution, Normal};
     let shape = anchor.shape();
     let n = shape.elem_count();
-    let normal = Normal::new(mean, stdev).map_err(|e| {
-        Error::Msg(format!("randn_like_on_graph: invalid stdev={stdev}: {e}")).bt()
-    })?;
+    let normal = Normal::new(mean, stdev)
+        .map_err(|e| Error::Msg(format!("randn_like_on_graph: invalid stdev={stdev}: {e}")).bt())?;
     let mut rng = rand::rng();
     let data: Vec<f32> = (0..n).map(|_| normal.sample(&mut rng) as f32).collect();
     Ok(anchor.const_f32_like(data, Shape::from_dims(shape.dims())))
@@ -224,7 +222,11 @@ fn build_ddim_timesteps(
             .rev()
             .collect(),
         TimestepSpacing::Trailing => std::iter::successors(Some(config.train_timesteps), |n| {
-            if *n > step_ratio { Some(n - step_ratio) } else { None }
+            if *n > step_ratio {
+                Some(n - step_ratio)
+            } else {
+                None
+            }
         })
         .map(|n| n - 1)
         .collect(),
@@ -295,7 +297,9 @@ impl SdScheduler for DdimScheduler {
 
         let variance = (beta_prod_t_prev / beta_prod_t) * (1.0 - alpha_prod_t / alpha_prod_t_prev);
         let std_dev_t = self.config.eta * variance.sqrt();
-        let dir_coef = (1.0 - alpha_prod_t_prev - std_dev_t * std_dev_t).max(0.0).sqrt();
+        let dir_coef = (1.0 - alpha_prod_t_prev - std_dev_t * std_dev_t)
+            .max(0.0)
+            .sqrt();
         let pred_sample_direction = pred_epsilon.mul_scalar(dir_coef);
         let prev_sample = pred_original_sample
             .mul_scalar(alpha_prod_t_prev.sqrt())
@@ -316,10 +320,9 @@ impl SdScheduler for DdimScheduler {
         timesteps: &[usize],
     ) -> Result<LazyTensor> {
         if timesteps.is_empty() {
-            return Err(Error::Msg(
-                "DdimScheduler::add_noise: timesteps must be non-empty".into(),
-            )
-            .bt());
+            return Err(
+                Error::Msg("DdimScheduler::add_noise: timesteps must be non-empty".into()).bt(),
+            );
         }
         let t = clamp_timestep(timesteps[0], self.alphas_cumprod.len());
         let sqrt_alpha = self.alphas_cumprod[t].sqrt();
@@ -500,10 +503,9 @@ impl SdScheduler for DdpmScheduler {
         timesteps: &[usize],
     ) -> Result<LazyTensor> {
         if timesteps.is_empty() {
-            return Err(Error::Msg(
-                "DdpmScheduler::add_noise: timesteps must be non-empty".into(),
-            )
-            .bt());
+            return Err(
+                Error::Msg("DdpmScheduler::add_noise: timesteps must be non-empty".into()).bt(),
+            );
         }
         let t = clamp_timestep(timesteps[0], self.alphas_cumprod.len());
         let sqrt_alpha = self.alphas_cumprod[t].sqrt();
@@ -534,7 +536,10 @@ mod tests {
         let next = sched.step(&model_out, t, &sample).unwrap();
         let out = next.realize_f32();
         assert_eq!(out.len(), 4);
-        assert!(out.iter().all(|v| v.is_finite()), "non-finite output: {out:?}");
+        assert!(
+            out.iter().all(|v| v.is_finite()),
+            "non-finite output: {out:?}"
+        );
     }
 
     #[test]
@@ -546,7 +551,10 @@ mod tests {
         let next = sched.step(&model_out, t, &sample).unwrap();
         let out = next.realize_f32();
         assert_eq!(out.len(), 4);
-        assert!(out.iter().all(|v| v.is_finite()), "non-finite output: {out:?}");
+        assert!(
+            out.iter().all(|v| v.is_finite()),
+            "non-finite output: {out:?}"
+        );
     }
 
     #[test]
@@ -575,7 +583,10 @@ mod tests {
 
         let sched = DdimScheduler::new(10, DdimSchedulerConfig::default()).unwrap();
         let (original, noise) = paired(&original_vals, &noise_vals, &[1, 4]);
-        let blended = sched.add_noise(&original, &noise, &[0]).unwrap().realize_f32();
+        let blended = sched
+            .add_noise(&original, &noise, &[0])
+            .unwrap()
+            .realize_f32();
 
         let alpha = sched.alphas_cumprod[0];
         let sqrt_a = alpha.sqrt() as f32;
@@ -592,7 +603,10 @@ mod tests {
 
         let sched = DdpmScheduler::new(10, DdpmSchedulerConfig::default()).unwrap();
         let (original, noise) = paired(&original_vals, &noise_vals, &[1, 4]);
-        let blended = sched.add_noise(&original, &noise, &[0]).unwrap().realize_f32();
+        let blended = sched
+            .add_noise(&original, &noise, &[0])
+            .unwrap()
+            .realize_f32();
         for (i, (&o, &n)) in original_vals.iter().zip(noise_vals.iter()).enumerate() {
             let expected = sqrt_a * o + sqrt_one_minus * n;
             assert!(

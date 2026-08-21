@@ -48,7 +48,8 @@ impl LazyLinear {
                 in_features,
                 out_features,
                 in_features * out_features,
-            )).bt());
+            ))
+            .bt());
         }
         if let Some(b) = bias.as_ref() {
             if b.len() != out_features {
@@ -57,10 +58,16 @@ impl LazyLinear {
                      out_features = {}",
                     b.len(),
                     out_features,
-                )).bt());
+                ))
+                .bt());
             }
         }
-        Ok(Self { weight, bias, in_features, out_features })
+        Ok(Self {
+            weight,
+            bias,
+            in_features,
+            out_features,
+        })
     }
 
     /// Convenience constructor for a bias-less linear layer.
@@ -95,13 +102,13 @@ impl LazyLinear {
 
 impl LazyModule for LazyLinear {
     fn forward(&self, xs: &LazyTensor) -> Result<LazyTensor> {
-        let y = self.weight.apply_linear(xs, self.in_features, self.out_features)?;
+        let y = self
+            .weight
+            .apply_linear(xs, self.in_features, self.out_features)?;
         match &self.bias {
             Some(b) => {
-                let bias_t = y.const_f32_like(
-                    Arc::clone(b),
-                    Shape::from_dims(&[self.out_features]),
-                );
+                let bias_t =
+                    y.const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_features]));
                 y.broadcast_add(&bias_t)
             }
             None => Ok(y),
@@ -142,11 +149,7 @@ fn fan_in_kaiming_uniform(in_features: usize, n: usize, seed_salt: u64) -> Vec<f
 /// [`crate::lazy::WeightStorage::apply_linear`] expects). Init follows
 /// a Kaiming-fan-in uniform: `U(-1/sqrt(in_features), +1/sqrt(in_features))`,
 /// approximating the retired `fuel_nn::linear` semantics.
-pub fn linear(
-    in_features: usize,
-    out_features: usize,
-    vs: &LazyVarBuilder,
-) -> Result<LazyLinear> {
+pub fn linear(in_features: usize, out_features: usize, vs: &LazyVarBuilder) -> Result<LazyLinear> {
     let weight_var = vs.get_with(
         Shape::from_dims(&[in_features, out_features]),
         "weight",
@@ -154,11 +157,9 @@ pub fn linear(
     )?;
     // Bias gets the same Kaiming-fan-in uniform bound (this matches
     // PyTorch's `nn.Linear` default: bias ~ U(-1/sqrt(fan_in), +1/sqrt(fan_in))).
-    let bias_var = vs.get_with(
-        Shape::from_dims(&[out_features]),
-        "bias",
-        |s| fan_in_kaiming_uniform(in_features, s.elem_count(), 1),
-    )?;
+    let bias_var = vs.get_with(Shape::from_dims(&[out_features]), "bias", |s| {
+        fan_in_kaiming_uniform(in_features, s.elem_count(), 1)
+    })?;
     let weight = WeightStorage::F32(Arc::from(weight_var.to_vec()));
     let bias: Arc<[f32]> = Arc::from(bias_var.to_vec());
     LazyLinear::new(weight, Some(bias), in_features, out_features)
@@ -191,8 +192,12 @@ mod tests {
 
     /// Reference `y = x @ W + bias` with W laid out `[in, out]`.
     fn ref_linear(
-        x: &[f32], w: &[f32], bias: Option<&[f32]>,
-        b_outer: usize, in_features: usize, out_features: usize,
+        x: &[f32],
+        w: &[f32],
+        bias: Option<&[f32]>,
+        b_outer: usize,
+        in_features: usize,
+        out_features: usize,
     ) -> Vec<f32> {
         let mut out = vec![0.0_f32; b_outer * out_features];
         for bi in 0..b_outer {
@@ -225,9 +230,12 @@ mod tests {
             Some(Arc::from(b)),
             in_features,
             out_features,
-        ).unwrap();
+        )
+        .unwrap();
         let x = LazyTensor::from_f32(
-            x_data, Shape::from_dims(&[seq, in_features]), &Device::cpu(),
+            x_data,
+            Shape::from_dims(&[seq, in_features]),
+            &Device::cpu(),
         );
         let y = layer.forward(&x).unwrap();
         assert_eq!(y.shape().dims(), &[seq, out_features]);
@@ -248,28 +256,26 @@ mod tests {
         let bias: Vec<f32> = ramp_f32(out_features, 0.25, -0.5);
         let x_data: Vec<f32> = ramp_f32(seq * in_features, 0.07, -0.3);
 
-        let expected = ref_linear(
-            &x_data, &w, Some(&bias), seq, in_features, out_features,
-        );
+        let expected = ref_linear(&x_data, &w, Some(&bias), seq, in_features, out_features);
 
         let layer = LazyLinear::new(
             WeightStorage::F32(Arc::from(w)),
             Some(Arc::from(bias)),
             in_features,
             out_features,
-        ).unwrap();
+        )
+        .unwrap();
         let x = LazyTensor::from_f32(
-            x_data, Shape::from_dims(&[seq, in_features]), &Device::cpu(),
+            x_data,
+            Shape::from_dims(&[seq, in_features]),
+            &Device::cpu(),
         );
         let y = layer.forward(&x).unwrap();
         assert_eq!(y.shape().dims(), &[seq, out_features]);
         let got = y.realize_f32();
         assert_eq!(got.len(), expected.len());
         for (i, (a, e)) in got.iter().zip(expected.iter()).enumerate() {
-            assert!(
-                (a - e).abs() < 1e-5,
-                "linear[{i}] expected {e}, got {a}",
-            );
+            assert!((a - e).abs() < 1e-5, "linear[{i}] expected {e}, got {a}",);
         }
     }
 
@@ -282,14 +288,10 @@ mod tests {
         let w: Vec<f32> = ramp_f32(in_features * out_features, 0.03, -0.15);
         let x_data: Vec<f32> = ramp_f32(seq * in_features, 0.04, 0.2);
 
-        let expected = ref_linear(
-            &x_data, &w, None, seq, in_features, out_features,
-        );
+        let expected = ref_linear(&x_data, &w, None, seq, in_features, out_features);
 
         let weight = WeightStorage::F32(Arc::from(w.clone()));
-        let layer = LazyLinear::new_no_bias(
-            weight.clone(), in_features, out_features,
-        ).unwrap();
+        let layer = LazyLinear::new_no_bias(weight.clone(), in_features, out_features).unwrap();
         let x = LazyTensor::from_f32(
             x_data.clone(),
             Shape::from_dims(&[seq, in_features]),
@@ -300,10 +302,13 @@ mod tests {
         let got = y.realize_f32();
 
         let x2 = LazyTensor::from_f32(
-            x_data, Shape::from_dims(&[seq, in_features]), &Device::cpu(),
+            x_data,
+            Shape::from_dims(&[seq, in_features]),
+            &Device::cpu(),
         );
         let direct = weight
-            .apply_linear(&x2, in_features, out_features).unwrap()
+            .apply_linear(&x2, in_features, out_features)
+            .unwrap()
             .realize_f32();
 
         assert_eq!(got.len(), expected.len());
@@ -341,13 +346,21 @@ mod tests {
         // Both parameters should be registered under the prefixed paths.
         assert!(map.get("proj.weight").is_some(), "weight not registered");
         assert!(map.get("proj.bias").is_some(), "bias not registered");
-        assert_eq!(map.get("proj.weight").unwrap().shape().dims(), &[in_features, out_features]);
-        assert_eq!(map.get("proj.bias").unwrap().shape().dims(), &[out_features]);
+        assert_eq!(
+            map.get("proj.weight").unwrap().shape().dims(),
+            &[in_features, out_features]
+        );
+        assert_eq!(
+            map.get("proj.bias").unwrap().shape().dims(),
+            &[out_features]
+        );
 
         // Forward gives the expected output shape on a small fixture.
         let x_data: Vec<f32> = ramp_f32(seq * in_features, 0.05, -0.1);
         let x = LazyTensor::from_f32(
-            x_data, Shape::from_dims(&[seq, in_features]), &Device::cpu(),
+            x_data,
+            Shape::from_dims(&[seq, in_features]),
+            &Device::cpu(),
         );
         let y = layer.forward(&x).unwrap();
         assert_eq!(y.shape().dims(), &[seq, out_features]);

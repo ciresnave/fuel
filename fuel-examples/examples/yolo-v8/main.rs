@@ -16,9 +16,7 @@ extern crate intel_mkl_src;
 extern crate accelerate_src;
 
 use clap::{Parser, ValueEnum};
-use fuel::lazy_yolov8::{
-    decode_and_nms, NmsConfig, YoloV8Config, YoloV8Model, YoloV8Weights,
-};
+use fuel::lazy_yolov8::{NmsConfig, YoloV8Config, YoloV8Model, YoloV8Weights, decode_and_nms};
 use fuel::safetensors::MmapedSafetensors;
 use image::DynamicImage;
 
@@ -228,8 +226,8 @@ pub fn run(args: Args) -> anyhow::Result<()> {
 
     let nms = NmsConfig {
         score_threshold: args.confidence_threshold,
-        iou_threshold:   args.nms_threshold,
-        top_k:           300,
+        iou_threshold: args.nms_threshold,
+        top_k: 300,
     };
 
     for image_name in args.images.iter() {
@@ -256,7 +254,7 @@ pub fn run(args: Args) -> anyhow::Result<()> {
                 let p = rgb.get_pixel(x as u32, y as u32);
                 let idx = y * w_u + x;
                 chw[0 * h_u * w_u + idx] = p[0] as f32 / 255.0;
-                chw[1 * h_u * w_u + idx] = p[1] as f32 / 255.0;
+                chw[h_u * w_u + idx] = p[1] as f32 / 255.0;
                 chw[2 * h_u * w_u + idx] = p[2] as f32 / 255.0;
             }
         }
@@ -267,13 +265,8 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         let detections = decode_and_nms(&raw, cfg.num_classes, &nms);
         println!("generated {} detection(s)", detections.len());
 
-        let image_out = report_detect(
-            &detections,
-            original_image,
-            width,
-            height,
-            args.legend_size,
-        )?;
+        let image_out =
+            report_detect(&detections, original_image, width, height, args.legend_size)?;
         image_name.set_extension("pp.jpg");
         println!("writing {image_name:?}");
         image_out.save(image_name)?

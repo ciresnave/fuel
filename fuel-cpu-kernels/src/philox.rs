@@ -35,7 +35,10 @@ fn philox4x32_round(ctr: [u32; 4], key: [u32; 2]) -> [u32; 4] {
 /// Bump the key by the Weyl constants (applied between rounds).
 #[inline(always)]
 fn philox4x32_bumpkey(key: [u32; 2]) -> [u32; 2] {
-    [key[0].wrapping_add(PHILOX_W0), key[1].wrapping_add(PHILOX_W1)]
+    [
+        key[0].wrapping_add(PHILOX_W0),
+        key[1].wrapping_add(PHILOX_W1),
+    ]
 }
 
 /// Philox-4x32-10: ten rounds over a 4x32 counter with a 2x32 key.
@@ -111,7 +114,10 @@ pub fn derive_counter(linear_index: u64, base: u32, stream: u32) -> [u32; 4] {
 /// times and discard three lanes.
 #[inline]
 pub fn random_bits_word(linear_index: u64, seed: u64, base: u32, stream: u32) -> u32 {
-    let out = philox4x32_10(derive_counter(linear_index, base, stream), key_from_seed(seed));
+    let out = philox4x32_10(
+        derive_counter(linear_index, base, stream),
+        key_from_seed(seed),
+    );
     out[(linear_index % 4) as usize]
 }
 
@@ -162,7 +168,15 @@ mod tests {
     #[test]
     fn block_advance_equals_one_counter_incr() {
         for &(base, stream) in &[(0u32, 0u32), (7, 3), (0xDEAD_BEEF, 0x0BAD_F00D)] {
-            for &block in &[0u64, 1, 2, 0xFFFF_FFFE, 0xFFFF_FFFF, 0x1_0000_0000, 0x1_0000_0001] {
+            for &block in &[
+                0u64,
+                1,
+                2,
+                0xFFFF_FFFE,
+                0xFFFF_FFFF,
+                0x1_0000_0000,
+                0x1_0000_0001,
+            ] {
                 let c_n = derive_counter(block * 4, base, stream);
                 let c_n1 = derive_counter((block + 1) * 4, base, stream);
                 assert_eq!(
@@ -199,7 +213,11 @@ mod tests {
     #[test]
     fn element_0_3_are_the_all_zero_kat_words() {
         let (ctr, key, expected) = PHILOX4X32_10_KAT[0];
-        assert_eq!(ctr, [0, 0, 0, 0], "KAT[0] is expected to be the all-zero vector");
+        assert_eq!(
+            ctr,
+            [0, 0, 0, 0],
+            "KAT[0] is expected to be the all-zero vector"
+        );
         assert_eq!(key, [0, 0]);
         for i in 0..4u64 {
             assert_eq!(
@@ -236,7 +254,11 @@ mod tests {
     /// failure class a narrow corpus cannot catch.
     #[test]
     fn philox4x32_10_matches_upstream_kat() {
-        assert_eq!(PHILOX4X32_10_KAT.len(), 55, "corpus size changed unexpectedly");
+        assert_eq!(
+            PHILOX4X32_10_KAT.len(),
+            55,
+            "corpus size changed unexpectedly"
+        );
         let mut failures = Vec::new();
         for (i, (ctr, key, expected)) in PHILOX4X32_10_KAT.iter().enumerate() {
             let got = philox4x32_10(*ctr, *key);

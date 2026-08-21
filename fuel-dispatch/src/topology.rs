@@ -49,11 +49,11 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock, RwLock};
 
+use crate::dispatch::{global_bindings, global_registry, topology_generation};
 use fuel_ir::backend::{BackendCapabilities, SubstrateClass, TransferPath};
 use fuel_ir::dispatch::OpKind;
 use fuel_ir::probe::BackendId;
 use fuel_ir::{DType, DeviceLocation};
-use crate::dispatch::{global_bindings, global_registry, topology_generation};
 
 use fuel_hardware::probe::ProbeReport;
 use fuel_hardware::transfer_cost::{TransferCalibration, TransferEstimate};
@@ -137,10 +137,10 @@ impl SystemTopology {
     pub fn current() -> Arc<SystemTopology> {
         let cur_gen = topology_generation();
         // Fast path: cached snapshot is current.
-        if let Some(t) = CURRENT_TOPOLOGY.read().unwrap().as_ref() {
-            if t.generation == cur_gen {
-                return Arc::clone(t);
-            }
+        if let Some(t) = CURRENT_TOPOLOGY.read().unwrap().as_ref()
+            && t.generation == cur_gen
+        {
+            return Arc::clone(t);
         }
         // Slow path: rebuild. We may race with another rebuild; the
         // last writer wins and both produce an internally-consistent
@@ -323,13 +323,14 @@ impl SystemTopology {
         if let Some(e) = cal.probed(src, dst) {
             return e;
         }
-        if src != DeviceLocation::Cpu && dst != DeviceLocation::Cpu {
-            if let (Some(d2h), Some(h2d)) = (
+        if src != DeviceLocation::Cpu
+            && dst != DeviceLocation::Cpu
+            && let (Some(d2h), Some(h2d)) = (
                 cal.probed(src, DeviceLocation::Cpu),
                 cal.probed(DeviceLocation::Cpu, dst),
-            ) {
-                return TransferEstimate::compose_staged(d2h, h2d);
-            }
+            )
+        {
+            return TransferEstimate::compose_staged(d2h, h2d);
         }
         TransferEstimate::fallback_for(self.transfer_path(src, dst))
     }
@@ -379,9 +380,7 @@ impl SystemTopology {
     /// binding table. Returns the list of `(backend, op, dtype)`
     /// pairs that were advertised but not registered. Empty list =
     /// no divergence. Used by the topology divergence test.
-    pub fn capabilities_op_coverage_divergence(
-        &self,
-    ) -> Vec<(BackendId, OpKind, DType)> {
+    pub fn capabilities_op_coverage_divergence(&self) -> Vec<(BackendId, OpKind, DType)> {
         let mut missing = Vec::new();
         for (backend, caps) in &self.capabilities {
             let registered = self.binding_op_coverage(*backend);
@@ -392,7 +391,8 @@ impl SystemTopology {
             }
         }
         missing.sort_by(|a, b| {
-            a.0.as_str().cmp(b.0.as_str())
+            a.0.as_str()
+                .cmp(b.0.as_str())
                 .then_with(|| format!("{:?}", a.1).cmp(&format!("{:?}", b.1)))
         });
         missing
@@ -422,7 +422,9 @@ impl SystemTopology {
                 // First-wins: matches CapabilityRegistry's lookup
                 // convention where the first-registered backend for
                 // a `(op, dtype)` wins ties.
-                capabilities.entry(caps.backend_id).or_insert_with(|| caps.clone());
+                capabilities
+                    .entry(caps.backend_id)
+                    .or_insert_with(|| caps.clone());
             }
         }
 
@@ -581,12 +583,7 @@ impl SystemTopology {
 /// Same-device queries short-circuit to zero WITHOUT touching the
 /// calibration, so CPU-only plans never trigger a probe.
 impl crate::ranker::TransferEstimator for SystemTopology {
-    fn estimate_transfer_ns(
-        &self,
-        src: DeviceLocation,
-        dst: DeviceLocation,
-        bytes: u64,
-    ) -> u64 {
+    fn estimate_transfer_ns(&self, src: DeviceLocation, dst: DeviceLocation, bytes: u64) -> u64 {
         // Inherent method (same name) takes resolution priority —
         // no recursion.
         SystemTopology::estimate_transfer_ns(self, src, dst, bytes)
@@ -719,7 +716,10 @@ mod tests {
         );
         let small = topology.estimate_transfer_ns(DeviceLocation::Cpu, phantom, 64 * 1024);
         let large = topology.estimate_transfer_ns(DeviceLocation::Cpu, phantom, 64 << 20);
-        assert!(small > 0, "unprobed cross-device transfer must never cost zero");
+        assert!(
+            small > 0,
+            "unprobed cross-device transfer must never cost zero"
+        );
         assert!(large > small, "estimate must be monotonic in bytes");
     }
 
@@ -914,7 +914,8 @@ mod tests {
                         assert!(
                             !devs.is_empty(),
                             "backend {:?} has no devices in snapshot gen={}",
-                            b, t.generation(),
+                            b,
+                            t.generation(),
                         );
                     }
                     let n = t.backends().len();
@@ -975,7 +976,8 @@ mod tests {
         assert!(
             here.contains(&BackendId::Cuda),
             "Cuda should be among the backends targeting {:?}, got {:?}",
-            cuda_dev, here,
+            cuda_dev,
+            here,
         );
     }
 
@@ -994,7 +996,8 @@ mod tests {
         assert!(
             here.contains(&BackendId::Vulkan),
             "Vulkan should be among the backends targeting {:?}, got {:?}",
-            vk_dev, here,
+            vk_dev,
+            here,
         );
     }
 

@@ -27,9 +27,9 @@
 //!   - `batch == 1`.
 //!   - F32 weights and activations.
 
+use crate::Result;
 use crate::lazy::{LazyTensor, WeightStorage};
 use crate::lazy_dinov2::{Dinov2Config, Dinov2Model, Dinov2Weights};
-use crate::Result;
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -199,8 +199,11 @@ impl DepthAnythingV2Model {
             !cfg.use_class_token,
             "DepthAnythingV2 v1: use_class_token=true is future work",
         );
-        assert_eq!(cfg.layer_ids_vits.len(), 4,
-            "layer_ids_vits must have length 4");
+        assert_eq!(
+            cfg.layer_ids_vits.len(),
+            4,
+            "layer_ids_vits must have length 4"
+        );
 
         let dinov2 = Dinov2Model {
             config: self.dinov2_config.clone(),
@@ -238,7 +241,10 @@ impl DepthAnythingV2Model {
             let x = patches
                 .permute([0, 2, 1_usize])?
                 .reshape(Shape::from_dims(&[
-                    batch, embed_dim, n_patches_per_side, n_patches_per_side,
+                    batch,
+                    embed_dim,
+                    n_patches_per_side,
+                    n_patches_per_side,
                 ]))?;
             let projected = apply_conv2d(&x, &head.projections[i], anchor)?;
             let resized = apply_resize_layer(&projected, &head.resize_layers[i], anchor)?;
@@ -252,17 +258,25 @@ impl DepthAnythingV2Model {
         let layer_4_rn = apply_conv2d(&pyramid[3], &head.scratch.layer4_rn, anchor)?;
 
         // Pyramid refinement: path4 → path3 → path2 → path1.
-        let path4 = apply_feature_fusion_block(
-            &layer_4_rn, None, &head.scratch.refine_net4, anchor,
-        )?;
+        let path4 =
+            apply_feature_fusion_block(&layer_4_rn, None, &head.scratch.refine_net4, anchor)?;
         let path3 = apply_feature_fusion_block(
-            &layer_3_rn, Some(&path4), &head.scratch.refine_net3, anchor,
+            &layer_3_rn,
+            Some(&path4),
+            &head.scratch.refine_net3,
+            anchor,
         )?;
         let path2 = apply_feature_fusion_block(
-            &layer_2_rn, Some(&path3), &head.scratch.refine_net2, anchor,
+            &layer_2_rn,
+            Some(&path3),
+            &head.scratch.refine_net2,
+            anchor,
         )?;
         let path1 = apply_feature_fusion_block(
-            &layer_1_rn, Some(&path2), &head.scratch.refine_net1, anchor,
+            &layer_1_rn,
+            Some(&path2),
+            &head.scratch.refine_net1,
+            anchor,
         )?;
 
         // Final 3×3 → arbitrary-scale interpolate to input image
@@ -280,11 +294,7 @@ impl DepthAnythingV2Model {
 
 // ---- Component helpers ------------------------------------------------------
 
-fn apply_conv2d(
-    x: &LazyTensor,
-    c: &Conv2dWeights,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+fn apply_conv2d(x: &LazyTensor, c: &Conv2dWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
     let w = anchor.const_f32_like(
         Arc::clone(&c.w),
         Shape::from_dims(&[c.c_out, c.c_in, c.k, c.k]),
@@ -292,19 +302,11 @@ fn apply_conv2d(
     let b = c.b.as_ref().map(|b| {
         let storage = WeightStorage::F32(Arc::clone(b));
         match storage {
-            WeightStorage::F32(arr) => anchor.const_f32_like(
-                arr, Shape::from_dims(&[c.c_out]),
-            ),
+            WeightStorage::F32(arr) => anchor.const_f32_like(arr, Shape::from_dims(&[c.c_out])),
             _ => unreachable!(),
         }
     });
-    let out = x.conv2d(
-        &w,
-        b.as_ref(),
-        (c.stride, c.stride),
-        (c.pad, c.pad),
-        1,
-    )?;
+    let out = x.conv2d(&w, b.as_ref(), (c.stride, c.stride), (c.pad, c.pad), 1)?;
     Ok(out)
 }
 
@@ -317,14 +319,7 @@ fn apply_conv_transpose2d(
         Arc::clone(&c.w),
         Shape::from_dims(&[c.c_in, c.c_out, c.k, c.k]),
     );
-    let mut out = x.conv_transpose2d(
-        &w,
-        (c.stride, c.stride),
-        (0, 0),
-        (0, 0),
-        (1, 1),
-        1,
-    )?;
+    let mut out = x.conv_transpose2d(&w, (c.stride, c.stride), (0, 0), (0, 0), (1, 1), 1)?;
     if let Some(b) = &c.b {
         let bias = anchor
             .const_f32_like(Arc::clone(b), Shape::from_dims(&[c.c_out]))
@@ -334,11 +329,7 @@ fn apply_conv_transpose2d(
     Ok(out)
 }
 
-fn apply_resize_layer(
-    x: &LazyTensor,
-    rl: &ResizeLayer,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+fn apply_resize_layer(x: &LazyTensor, rl: &ResizeLayer, anchor: &LazyTensor) -> Result<LazyTensor> {
     match rl {
         ResizeLayer::ConvTranspose(ct) => apply_conv_transpose2d(x, ct, anchor),
         ResizeLayer::Identity => Ok(x.clone()),
@@ -367,9 +358,7 @@ fn apply_feature_fusion_block(
     // First mix in the deeper-path output if present, after
     // routing the bottom input through res_conv_unit1.
     let acc = if let Some(top) = top_input {
-        let bottom_refined = apply_residual_conv_unit(
-            bottom_input, &ffb.res_conv_unit1, anchor,
-        )?;
+        let bottom_refined = apply_residual_conv_unit(bottom_input, &ffb.res_conv_unit1, anchor)?;
         top.add(&bottom_refined)?
     } else {
         bottom_input.clone()
@@ -396,8 +385,9 @@ impl DepthAnythingV2Weights {
             "DepthAnythingV2Weights::load_from_mmapped: DPT scratch/fusion \
              block naming pending; construct DepthAnythingV2Weights via \
              the explicit struct literal or contribute the loader."
-            .to_string()
-        ).bt())
+                .to_string(),
+        )
+        .bt())
     }
 }
 
@@ -406,8 +396,8 @@ impl DepthAnythingV2Weights {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lazy_dinov2::{Dinov2BlockWeights, Dinov2Weights};
     use crate::Device;
+    use crate::lazy_dinov2::{Dinov2BlockWeights, Dinov2Weights};
 
     fn rng_seed(seed: u32) -> impl FnMut() -> f32 {
         let mut s = seed;
@@ -423,9 +413,14 @@ mod tests {
 
     fn tiny_dinov2_config() -> Dinov2Config {
         Dinov2Config {
-            embed_dim: 8, depth: 4, num_heads: 2,
-            num_channels: 3, image_size: 14, patch_size: 7,
-            mlp_ratio: 4, layer_norm_eps: 1e-5,
+            embed_dim: 8,
+            depth: 4,
+            num_heads: 2,
+            num_channels: 3,
+            image_size: 14,
+            patch_size: 7,
+            mlp_ratio: 4,
+            layer_norm_eps: 1e-5,
             num_classes: 10,
         }
     }
@@ -434,8 +429,8 @@ mod tests {
         let mut nb = rng_seed(1234);
         let e = cfg.embed_dim;
         let n_patches = cfg.num_patches();
-        let blocks: Vec<Dinov2BlockWeights> = (0..cfg.depth).map(|_| {
-            Dinov2BlockWeights {
+        let blocks: Vec<Dinov2BlockWeights> = (0..cfg.depth)
+            .map(|_| Dinov2BlockWeights {
                 norm1_gain: Arc::from(vec![1.0_f32; e]),
                 norm1_bias: Arc::from(vec![0.0_f32; e]),
                 qkv: WeightStorage::F32(vec_of(e * 3 * e, &mut nb)),
@@ -450,10 +445,13 @@ mod tests {
                 fc2: WeightStorage::F32(vec_of(cfg.mlp_hidden() * e, &mut nb)),
                 fc2_bias: vec_of(e, &mut nb),
                 ls2_gamma: Arc::from(vec![1.0_f32; e]),
-            }
-        }).collect();
+            })
+            .collect();
         Dinov2Weights {
-            patch_proj: vec_of(e * cfg.num_channels * cfg.patch_size * cfg.patch_size, &mut nb),
+            patch_proj: vec_of(
+                e * cfg.num_channels * cfg.patch_size * cfg.patch_size,
+                &mut nb,
+            ),
             patch_proj_bias: vec_of(e, &mut nb),
             cls_token: vec_of(e, &mut nb),
             pos_embed: vec_of((n_patches + 1) * e, &mut nb),
@@ -478,30 +476,59 @@ mod tests {
         }
     }
 
-    fn conv2d_w(c_in: usize, c_out: usize, k: usize, stride: usize, pad: usize, bias: bool, nb: &mut dyn FnMut() -> f32) -> Conv2dWeights {
+    fn conv2d_w(
+        c_in: usize,
+        c_out: usize,
+        k: usize,
+        stride: usize,
+        pad: usize,
+        bias: bool,
+        nb: &mut dyn FnMut() -> f32,
+    ) -> Conv2dWeights {
         Conv2dWeights {
             w: vec_of(c_out * c_in * k * k, nb),
             b: if bias { Some(vec_of(c_out, nb)) } else { None },
-            c_in, c_out, k, stride, pad,
+            c_in,
+            c_out,
+            k,
+            stride,
+            pad,
         }
     }
 
-    fn conv_transpose2d_w(c_in: usize, c_out: usize, k: usize, stride: usize, bias: bool, nb: &mut dyn FnMut() -> f32) -> ConvTranspose2dWeights {
+    fn conv_transpose2d_w(
+        c_in: usize,
+        c_out: usize,
+        k: usize,
+        stride: usize,
+        bias: bool,
+        nb: &mut dyn FnMut() -> f32,
+    ) -> ConvTranspose2dWeights {
         ConvTranspose2dWeights {
             w: vec_of(c_in * c_out * k * k, nb),
             b: if bias { Some(vec_of(c_out, nb)) } else { None },
-            c_in, c_out, k, stride,
+            c_in,
+            c_out,
+            k,
+            stride,
         }
     }
 
-    fn residual_conv_unit_w(num_features: usize, nb: &mut dyn FnMut() -> f32) -> ResidualConvUnitWeights {
+    fn residual_conv_unit_w(
+        num_features: usize,
+        nb: &mut dyn FnMut() -> f32,
+    ) -> ResidualConvUnitWeights {
         ResidualConvUnitWeights {
             conv1: conv2d_w(num_features, num_features, 3, 1, 1, true, nb),
             conv2: conv2d_w(num_features, num_features, 3, 1, 1, true, nb),
         }
     }
 
-    fn feature_fusion_block_w(num_features: usize, target_patch_size: usize, nb: &mut dyn FnMut() -> f32) -> FeatureFusionBlockWeights {
+    fn feature_fusion_block_w(
+        num_features: usize,
+        target_patch_size: usize,
+        nb: &mut dyn FnMut() -> f32,
+    ) -> FeatureFusionBlockWeights {
         FeatureFusionBlockWeights {
             res_conv_unit1: residual_conv_unit_w(num_features, nb),
             res_conv_unit2: residual_conv_unit_w(num_features, nb),
@@ -510,7 +537,10 @@ mod tests {
         }
     }
 
-    fn tiny_da_weights(cfg: &DepthAnythingV2Config, dino_w: Dinov2Weights) -> DepthAnythingV2Weights {
+    fn tiny_da_weights(
+        cfg: &DepthAnythingV2Config,
+        dino_w: Dinov2Weights,
+    ) -> DepthAnythingV2Weights {
         let mut nb = rng_seed(7777);
         let in_ch = cfg.in_channel_size;
         let nf = cfg.num_features;
@@ -543,7 +573,9 @@ mod tests {
         DepthAnythingV2Weights {
             dinov2: dino_w,
             depth_head: DPTHeadWeights {
-                projections, resize_layers, scratch,
+                projections,
+                resize_layers,
+                scratch,
             },
         }
     }
@@ -560,15 +592,17 @@ mod tests {
             weights,
         };
         let image: Vec<f32> = (0..(3 * 14 * 14)).map(|i| (i as f32) * 0.01).collect();
-        let img_tensor = LazyTensor::from_f32(
-            image, Shape::from_dims(&[1, 3, 14, 14]), &Device::cpu(),
-        );
+        let img_tensor =
+            LazyTensor::from_f32(image, Shape::from_dims(&[1, 3, 14, 14]), &Device::cpu());
         let depth = model.forward(&img_tensor).unwrap();
         let dims = depth.shape();
         let dims = dims.dims();
         // Output is [1, 1, input_image_size, input_image_size] passed through
         // a 3×3 same-pad conv (no shape change), then 1×1 (no shape change).
-        assert_eq!(dims, &[1, 1, da_cfg.input_image_size, da_cfg.input_image_size]);
+        assert_eq!(
+            dims,
+            &[1, 1, da_cfg.input_image_size, da_cfg.input_image_size]
+        );
         // Outer ReLU on the depth map: all values must be ≥ 0.
         for &v in &depth.realize_f32() {
             assert!(v.is_finite(), "non-finite depth: {v}");
@@ -597,11 +631,13 @@ mod tests {
         let n = 3 * 14 * 14;
         let img_a = LazyTensor::from_f32(
             (0..n).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, 3, 14, 14]), &Device::cpu(),
+            Shape::from_dims(&[1, 3, 14, 14]),
+            &Device::cpu(),
         );
         let img_b = LazyTensor::from_f32(
             (0..n).map(|i| (i as f32) * 0.01 + 0.7).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, 3, 14, 14]), &Device::cpu(),
+            Shape::from_dims(&[1, 3, 14, 14]),
+            &Device::cpu(),
         );
         // Get the intermediate features for each input, then
         // compare the post-projection sums of the first feature
@@ -611,16 +647,22 @@ mod tests {
             config: dino_cfg.clone(),
             weights: dino_w,
         };
-        let fa = dino.forward_intermediate_layers(&img_a, &da_cfg.layer_ids_vits).unwrap();
-        let fb = dino.forward_intermediate_layers(&img_b, &da_cfg.layer_ids_vits).unwrap();
+        let fa = dino
+            .forward_intermediate_layers(&img_a, &da_cfg.layer_ids_vits)
+            .unwrap();
+        let fb = dino
+            .forward_intermediate_layers(&img_b, &da_cfg.layer_ids_vits)
+            .unwrap();
         let a = fa[0].realize_f32();
         let b = fb[0].realize_f32();
         let mut max_diff = 0.0_f32;
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-7,
-            "DINOv2 features must respond to input changes, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-7,
+            "DINOv2 features must respond to input changes, max_diff = {max_diff}"
+        );
         // Also confirm the model.forward shape stays consistent
         // across different inputs (the path executes).
         let _ = model.forward(&img_a).unwrap().realize_f32();

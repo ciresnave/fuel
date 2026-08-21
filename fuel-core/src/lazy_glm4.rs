@@ -132,28 +132,28 @@ impl Glm4Model {
 
     /// Multimodal entry point. Skips token embedding; runs the decoder
     /// over pre-embedded inputs. GLM4 does NOT scale embeddings.
-    pub fn forward_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
         let h_norm = self.run_backbone_embeds(embeds, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
 
     /// Hidden-state variant of [`Self::forward_embeds`].
     pub fn forward_hidden_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
+        &self,
+        embeds: &LazyTensor,
+        start_pos: usize,
     ) -> Result<LazyTensor> {
         self.run_backbone_embeds(embeds, start_pos)
     }
 
     /// Build per-token embeddings without running the decoder.
-    pub fn embed_tokens_anchored(
-        &self, anchor: &LazyTensor, tokens: &[u32],
-    ) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
-            cfg.vocab_size, cfg.hidden_size, tokens,
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
         )
     }
 
@@ -179,14 +179,16 @@ impl Glm4Model {
         assert!(seq > 0, "Glm4Model::forward: tokens must be non-empty");
 
         let h = LazyTensor::embed_tokens(
-            weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
+            weights.token_embedding.clone(),
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
+            &Device::cpu(),
         )?;
         self.run_backbone_embeds(&h, start_pos)
     }
 
-    fn run_backbone_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
-    ) -> Result<LazyTensor> {
+    fn run_backbone_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -199,32 +201,35 @@ impl Glm4Model {
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(crate::Error::Msg(
-                "Glm4Model::forward_embeds: seq must be > 0".into(),
-            ).bt());
+            return Err(
+                crate::Error::Msg("Glm4Model::forward_embeds: seq must be > 0".into()).bt(),
+            );
         }
         if cfg.num_attention_heads % cfg.num_key_value_heads != 0 {
             return Err(crate::Error::Msg(
                 "Glm4Config: num_attention_heads must be a multiple of num_key_value_heads".into(),
-            ).bt());
+            )
+            .bt());
         }
         let rope_dim = cfg.rope_dim();
         if rope_dim == 0 || rope_dim > cfg.head_dim || rope_dim % 2 != 0 {
             return Err(crate::Error::Msg(format!(
                 "Glm4Config: rope_dim ({rope_dim}) must be even and in (0, head_dim ({})]",
                 cfg.head_dim,
-            )).bt());
+            ))
+            .bt());
         }
         let mut h = embeds.clone();
 
-        let (rope_cos, rope_sin) = h.rope_tables_const(
-            cfg.rope_theta, start_pos, seq, rope_dim,
-        );
+        let (rope_cos, rope_sin) = h.rope_tables_const(cfg.rope_theta, start_pos, seq, rope_dim);
 
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin)?;
         }
-        h.rms_norm_affine(std::sync::Arc::clone(&weights.final_norm_gain), cfg.rms_norm_eps)
+        h.rms_norm_affine(
+            std::sync::Arc::clone(&weights.final_norm_gain),
+            cfg.rms_norm_eps,
+        )
     }
 
     fn apply_layer(
@@ -245,11 +250,23 @@ impl Glm4Model {
 
         // ---- Attention sublayer ---------------------------------------------
         let residual = x.clone();
-        let x_norm = x.rms_norm_affine(std::sync::Arc::clone(&layer.input_norm_gain), cfg.rms_norm_eps)?;
+        let x_norm = x.rms_norm_affine(
+            std::sync::Arc::clone(&layer.input_norm_gain),
+            cfg.rms_norm_eps,
+        )?;
 
-        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, q_dim)?.add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
-        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
-        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
+        let q = layer
+            .attn_q
+            .apply_linear(&x_norm, cfg.hidden_size, q_dim)?
+            .add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
+        let k = layer
+            .attn_k
+            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
+            .add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
+        let v = layer
+            .attn_v
+            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
+            .add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
 
         let _ = (batch, seq);
         let q = q.split_heads(cfg.num_attention_heads, cfg.head_dim)?;
@@ -278,17 +295,24 @@ impl Glm4Model {
 
         let merged = attn_v.merge_heads()?;
         let attn_out = layer.attn_o.apply_linear(&merged, q_dim, cfg.hidden_size)?;
-        let attn_normed = attn_out.rms_norm_affine(std::sync::Arc::clone(&layer.post_self_attn_norm_gain), cfg.rms_norm_eps)?;
+        let attn_normed = attn_out.rms_norm_affine(
+            std::sync::Arc::clone(&layer.post_self_attn_norm_gain),
+            cfg.rms_norm_eps,
+        )?;
         let h1 = residual.add(&attn_normed)?;
 
         // ---- FFN sublayer ---------------------------------------------------
         let residual2 = h1.clone();
-        let h1_norm = h1.rms_norm_affine(std::sync::Arc::clone(&layer.post_attn_norm_gain), cfg.rms_norm_eps)?;
+        let h1_norm = h1.rms_norm_affine(
+            std::sync::Arc::clone(&layer.post_attn_norm_gain),
+            cfg.rms_norm_eps,
+        )?;
 
         // Fused gate_up: [hidden, 2 * intermediate]. Split last dim.
-        let gate_up = layer.ffn_gate_up.apply_linear(
-            &h1_norm, cfg.hidden_size, 2 * cfg.intermediate_size,
-        )?;
+        let gate_up =
+            layer
+                .ffn_gate_up
+                .apply_linear(&h1_norm, cfg.hidden_size, 2 * cfg.intermediate_size)?;
         let gate = gate_up.slice(2_usize, 0, cfg.intermediate_size)?;
         let up = gate_up.slice(2_usize, cfg.intermediate_size, cfg.intermediate_size)?;
         let activated = match cfg.hidden_activation {
@@ -297,8 +321,14 @@ impl Glm4Model {
             Glm4Activation::GeluPytorchTanh => gate.gelu(),
         };
         let ffn_in = activated.mul(&up)?;
-        let ffn_out = layer.ffn_down.apply_linear(&ffn_in, cfg.intermediate_size, cfg.hidden_size)?;
-        let ffn_normed = ffn_out.rms_norm_affine(std::sync::Arc::clone(&layer.post_mlp_norm_gain), cfg.rms_norm_eps)?;
+        let ffn_out =
+            layer
+                .ffn_down
+                .apply_linear(&ffn_in, cfg.intermediate_size, cfg.hidden_size)?;
+        let ffn_normed = ffn_out.rms_norm_affine(
+            std::sync::Arc::clone(&layer.post_mlp_norm_gain),
+            cfg.rms_norm_eps,
+        )?;
         residual2.add(&ffn_normed)
     }
 
@@ -425,13 +455,16 @@ impl Glm4Model {
         let residual = x.clone();
         let x_norm = x.rms_norm_affine(Arc::clone(&layer.input_norm_gain), cfg.rms_norm_eps)?;
 
-        let q = layer.attn_q
+        let q = layer
+            .attn_q
             .apply_linear(&x_norm, cfg.hidden_size, q_dim)?
             .add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
-        let k = layer.attn_k
+        let k = layer
+            .attn_k
             .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
             .add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
-        let v = layer.attn_v
+        let v = layer
+            .attn_v
             .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
             .add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
 
@@ -442,11 +475,19 @@ impl Glm4Model {
         // Interleaved partial RoPE on the first `rope_dim` features, run in f32
         // (its build-time requirement); the casts are no-ops at f32 activation.
         let q_r = apply_interleaved_partial_rope(
-            &q_h.to_dtype(DType::F32)?, rope_cos, rope_sin, head_dim, rope_dim,
+            &q_h.to_dtype(DType::F32)?,
+            rope_cos,
+            rope_sin,
+            head_dim,
+            rope_dim,
         )?
         .to_dtype(act_dtype)?;
         let k_r = apply_interleaved_partial_rope(
-            &k_h.to_dtype(DType::F32)?, rope_cos, rope_sin, head_dim, rope_dim,
+            &k_h.to_dtype(DType::F32)?,
+            rope_cos,
+            rope_sin,
+            head_dim,
+            rope_dim,
         )?
         .to_dtype(act_dtype)?;
 
@@ -486,16 +527,20 @@ impl Glm4Model {
 
         let merged = attn_v.merge_heads()?;
         let attn_out = layer.attn_o.apply_linear(&merged, q_dim, cfg.hidden_size)?;
-        let attn_normed = attn_out
-            .rms_norm_affine(Arc::clone(&layer.post_self_attn_norm_gain), cfg.rms_norm_eps)?;
+        let attn_normed = attn_out.rms_norm_affine(
+            Arc::clone(&layer.post_self_attn_norm_gain),
+            cfg.rms_norm_eps,
+        )?;
         let h1 = residual.add(&attn_normed)?;
 
         // ---- FFN sublayer ---------------------------------------------------
         let residual2 = h1.clone();
-        let h1_norm = h1.rms_norm_affine(Arc::clone(&layer.post_attn_norm_gain), cfg.rms_norm_eps)?;
-        let gate_up = layer.ffn_gate_up.apply_linear(
-            &h1_norm, cfg.hidden_size, 2 * cfg.intermediate_size,
-        )?;
+        let h1_norm =
+            h1.rms_norm_affine(Arc::clone(&layer.post_attn_norm_gain), cfg.rms_norm_eps)?;
+        let gate_up =
+            layer
+                .ffn_gate_up
+                .apply_linear(&h1_norm, cfg.hidden_size, 2 * cfg.intermediate_size)?;
         let gate = gate_up.slice(2_usize, 0, cfg.intermediate_size)?;
         let up = gate_up.slice(2_usize, cfg.intermediate_size, cfg.intermediate_size)?;
         let activated = match cfg.hidden_activation {
@@ -504,8 +549,12 @@ impl Glm4Model {
             Glm4Activation::GeluPytorchTanh => gate.gelu(),
         };
         let ffn_in = activated.mul(&up)?;
-        let ffn_out = layer.ffn_down.apply_linear(&ffn_in, cfg.intermediate_size, cfg.hidden_size)?;
-        let ffn_normed = ffn_out.rms_norm_affine(Arc::clone(&layer.post_mlp_norm_gain), cfg.rms_norm_eps)?;
+        let ffn_out =
+            layer
+                .ffn_down
+                .apply_linear(&ffn_in, cfg.intermediate_size, cfg.hidden_size)?;
+        let ffn_normed =
+            ffn_out.rms_norm_affine(Arc::clone(&layer.post_mlp_norm_gain), cfg.rms_norm_eps)?;
         residual2.add(&ffn_normed)
     }
 }
@@ -525,7 +574,11 @@ impl PersistentDecodeModel for Glm4Model {
         rope_inv_freq: Option<&[f64]>,
     ) -> Result<DecodeTokenData> {
         let host = crate::persistent_decode::compute_decode_token_host(
-            self, cached_len, tokens, session.max_seq_len(), rope_inv_freq,
+            self,
+            cached_len,
+            tokens,
+            session.max_seq_len(),
+            rope_inv_freq,
         );
         crate::persistent_decode::upload_decode_token_data(
             device,
@@ -570,7 +623,10 @@ impl DecodeBackbone for Glm4Model {
     }
 
     fn decode_rope_plan(&self) -> crate::persistent_decode::RopePlan {
-        crate::persistent_decode::RopePlan::single(self.config.rope_theta, self.decode_dims().n_layers)
+        crate::persistent_decode::RopePlan::single(
+            self.config.rope_theta,
+            self.decode_dims().n_layers,
+        )
     }
 
     fn decode_token_embedding(&self) -> Arc<[f32]> {
@@ -597,7 +653,8 @@ impl DecodeBackbone for Glm4Model {
 
     fn decode_final_norm_and_head(&self, h: &LazyTensor) -> Result<LazyTensor> {
         let h_norm = h.rms_norm_affine(
-            Arc::clone(&self.weights.final_norm_gain), self.config.rms_norm_eps,
+            Arc::clone(&self.weights.final_norm_gain),
+            self.config.rms_norm_eps,
         )?;
         self.apply_lm_head(&h_norm)
     }
@@ -680,56 +737,66 @@ impl Glm4Weights {
             load_tensor_as_f32(st, &name).ok().map(Arc::from)
         };
 
-        let token_embedding = Arc::from(load_tensor_as_f32(
-            st, "model.embed_tokens.weight",
-        )?);
+        let token_embedding = Arc::from(load_tensor_as_f32(st, "model.embed_tokens.weight")?);
 
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         for i in 0..cfg.num_hidden_layers {
             let p = format!("model.layers.{i}");
             let input_norm_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.input_layernorm.weight"),
+                st,
+                &format!("{p}.input_layernorm.weight"),
             )?);
             let post_self_attn_norm_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.post_self_attn_layernorm.weight"),
+                st,
+                &format!("{p}.post_self_attn_layernorm.weight"),
             )?);
             let post_attn_norm_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.post_attention_layernorm.weight"),
+                st,
+                &format!("{p}.post_attention_layernorm.weight"),
             )?);
             let post_mlp_norm_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.post_mlp_layernorm.weight"),
+                st,
+                &format!("{p}.post_mlp_layernorm.weight"),
             )?);
             let attn_q = ltm(st, &format!("{p}.self_attn.q_proj.weight"), q_dim, h)?;
             let attn_q_bias = if cfg.attention_bias {
                 opt_bias(format!("{p}.self_attn.q_proj.bias"))
-            } else { None };
+            } else {
+                None
+            };
             let attn_k = ltm(st, &format!("{p}.self_attn.k_proj.weight"), kv_dim, h)?;
             let attn_k_bias = if cfg.attention_bias {
                 opt_bias(format!("{p}.self_attn.k_proj.bias"))
-            } else { None };
+            } else {
+                None
+            };
             let attn_v = ltm(st, &format!("{p}.self_attn.v_proj.weight"), kv_dim, h)?;
             let attn_v_bias = if cfg.attention_bias {
                 opt_bias(format!("{p}.self_attn.v_proj.bias"))
-            } else { None };
+            } else {
+                None
+            };
             let attn_o = ltm(st, &format!("{p}.self_attn.o_proj.weight"), h, q_dim)?;
-            let ffn_gate_up = ltm(
-                st, &format!("{p}.mlp.gate_up_proj.weight"), 2 * inter, h,
-            )?;
-            let ffn_down = ltm(
-                st, &format!("{p}.mlp.down_proj.weight"), h, inter,
-            )?;
+            let ffn_gate_up = ltm(st, &format!("{p}.mlp.gate_up_proj.weight"), 2 * inter, h)?;
+            let ffn_down = ltm(st, &format!("{p}.mlp.down_proj.weight"), h, inter)?;
             layers.push(Glm4LayerWeights {
-                input_norm_gain, post_self_attn_norm_gain,
-                post_attn_norm_gain, post_mlp_norm_gain,
-                attn_q, attn_q_bias, attn_k, attn_k_bias,
-                attn_v, attn_v_bias, attn_o,
-                ffn_gate_up, ffn_down,
+                input_norm_gain,
+                post_self_attn_norm_gain,
+                post_attn_norm_gain,
+                post_mlp_norm_gain,
+                attn_q,
+                attn_q_bias,
+                attn_k,
+                attn_k_bias,
+                attn_v,
+                attn_v_bias,
+                attn_o,
+                ffn_gate_up,
+                ffn_down,
             });
         }
 
-        let final_norm_gain = Arc::from(load_tensor_as_f32(
-            st, "model.norm.weight",
-        )?);
+        let final_norm_gain = Arc::from(load_tensor_as_f32(st, "model.norm.weight")?);
         let lm_head = if cfg.tie_word_embeddings {
             None
         } else {
@@ -745,7 +812,6 @@ impl Glm4Weights {
         })
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -774,11 +840,23 @@ mod tests {
                 post_attn_norm_gain: Arc::from(vec![1.0_f32; h]),
                 post_mlp_norm_gain: Arc::from(vec![1.0_f32; h]),
                 attn_q: WeightStorage::F32(vec_of(h * q_dim, &mut *nb)),
-                attn_q_bias: if cfg.attention_bias { Some(vec_of(q_dim, &mut *nb)) } else { None },
+                attn_q_bias: if cfg.attention_bias {
+                    Some(vec_of(q_dim, &mut *nb))
+                } else {
+                    None
+                },
                 attn_k: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
-                attn_k_bias: if cfg.attention_bias { Some(vec_of(kv, &mut *nb)) } else { None },
+                attn_k_bias: if cfg.attention_bias {
+                    Some(vec_of(kv, &mut *nb))
+                } else {
+                    None
+                },
                 attn_v: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
-                attn_v_bias: if cfg.attention_bias { Some(vec_of(kv, &mut *nb)) } else { None },
+                attn_v_bias: if cfg.attention_bias {
+                    Some(vec_of(kv, &mut *nb))
+                } else {
+                    None
+                },
                 attn_o: WeightStorage::F32(vec_of(q_dim * h, &mut *nb)),
                 ffn_gate_up: WeightStorage::F32(vec_of(h * (2 * i), &mut *nb)),
                 ffn_down: WeightStorage::F32(vec_of(i * h, &mut *nb)),
@@ -801,13 +879,18 @@ mod tests {
 
     fn tiny_config() -> Glm4Config {
         Glm4Config {
-            vocab_size: 32, hidden_size: 16, intermediate_size: 32,
-            num_hidden_layers: 2, num_attention_heads: 4,
-            num_key_value_heads: 2, head_dim: 4,
+            vocab_size: 32,
+            hidden_size: 16,
+            intermediate_size: 32,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            num_key_value_heads: 2,
+            head_dim: 4,
             partial_rotary_factor: 0.5, // rope_dim = 2
             attention_bias: false,
             max_position_embeddings: 64,
-            rope_theta: 10_000.0, rms_norm_eps: 1e-5,
+            rope_theta: 10_000.0,
+            rms_norm_eps: 1e-5,
             hidden_activation: Glm4Activation::Silu,
             tie_word_embeddings: false,
         }
@@ -816,7 +899,10 @@ mod tests {
     #[test]
     fn forward_shape_and_finite() {
         let cfg = tiny_config();
-        let model = Glm4Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Glm4Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4, 5];
         let logits = model.forward(&tokens, 0).unwrap();
         assert_eq!(logits.shape().dims(), &[1, tokens.len(), cfg.vocab_size]);
@@ -827,10 +913,16 @@ mod tests {
 
     #[test]
     fn tied_embedding_lm_head() {
-        let cfg = Glm4Config { tie_word_embeddings: true, ..tiny_config() };
+        let cfg = Glm4Config {
+            tie_word_embeddings: true,
+            ..tiny_config()
+        };
         let weights = tiny_weights(&cfg);
         assert!(weights.lm_head.is_none());
-        let model = Glm4Model { config: cfg.clone(), weights };
+        let model = Glm4Model {
+            config: cfg.clone(),
+            weights,
+        };
         let logits = model.forward(&[2, 3], 0).unwrap().realize_f32();
         assert_eq!(logits.len(), 2 * cfg.vocab_size);
         for &v in &logits {
@@ -843,7 +935,10 @@ mod tests {
         let mut cfg = tiny_config();
         cfg.partial_rotary_factor = 1.0;
         assert_eq!(cfg.rope_dim(), cfg.head_dim);
-        let model = Glm4Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Glm4Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let logits = model.forward(&[1, 2, 3], 0).unwrap().realize_f32();
         assert_eq!(logits.len(), 3 * cfg.vocab_size);
     }
@@ -854,14 +949,22 @@ mod tests {
     /// should be the identity; with non-trivial tables, output changes.
     #[test]
     fn interleaved_rope_is_applied() {
-        let cfg = Glm4Config { num_hidden_layers: 1, partial_rotary_factor: 1.0, ..tiny_config() };
+        let cfg = Glm4Config {
+            num_hidden_layers: 1,
+            partial_rotary_factor: 1.0,
+            ..tiny_config()
+        };
         let head_dim = cfg.head_dim;
         let rope_dim = cfg.rope_dim();
 
         let dev = Device::cpu();
         // Build a (1, 1, 1, head_dim) tensor.
         let qk = LazyTensor::from_f32(
-            Arc::from((0..head_dim).map(|i| (i as f32 + 1.0) * 0.1).collect::<Vec<_>>()),
+            Arc::from(
+                (0..head_dim)
+                    .map(|i| (i as f32 + 1.0) * 0.1)
+                    .collect::<Vec<_>>(),
+            ),
             Shape::from_dims(&[1, 1, 1, head_dim]),
             &dev,
         );
@@ -879,8 +982,10 @@ mod tests {
             .realize_f32();
         let in_data = qk.realize_f32();
         for (a, b) in in_data.iter().zip(id_out.iter()) {
-            assert!((a - b).abs() < 1e-6,
-                "identity RoPE must round-trip: {a} vs {b}");
+            assert!(
+                (a - b).abs() < 1e-6,
+                "identity RoPE must round-trip: {a} vs {b}"
+            );
         }
 
         // Non-trivial RoPE: cos=0, sin=1 ⇒ pair (x_0, x_1) becomes (-x_1, x_0).
@@ -904,15 +1009,20 @@ mod tests {
             .flat_map(|pair| vec![-pair[1], pair[0]])
             .collect();
         for (a, e) in rot_out.iter().zip(expected.iter()) {
-            assert!((a - e).abs() < 1e-5,
-                "interleaved rotation: got {a}, expected {e}");
+            assert!(
+                (a - e).abs() < 1e-5,
+                "interleaved rotation: got {a}, expected {e}"
+            );
         }
     }
 
     #[test]
     fn forward_hidden_shape_and_finite() {
         let cfg = tiny_config();
-        let model = Glm4Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Glm4Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
         let hidden = model.forward_hidden(&tokens, 0).unwrap();
         assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
@@ -924,27 +1034,37 @@ mod tests {
     #[test]
     fn forward_embeds_matches_forward_after_token_lookup() {
         let cfg = tiny_config();
-        let model = Glm4Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Glm4Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
-        let max_diff = logits_ref.iter().zip(logits_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "GLM4 forward vs forward_embeds must agree (max diff {max_diff})");
+        let max_diff = logits_ref
+            .iter()
+            .zip(logits_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "GLM4 forward vs forward_embeds must agree (max diff {max_diff})"
+        );
     }
 
     #[test]
     fn forward_embeds_rejects_bad_shape() {
         let cfg = tiny_config();
-        let model = Glm4Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Glm4Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let bad = LazyTensor::from_f32(
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
-            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]), &Device::cpu(),
+            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
+            &Device::cpu(),
         );
         assert!(model.forward_embeds(&bad, 0).is_err());
     }
@@ -952,18 +1072,27 @@ mod tests {
     #[test]
     fn forward_hidden_embeds_matches_forward_hidden() {
         let cfg = tiny_config();
-        let model = Glm4Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Glm4Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
-        let h_via_embeds = model.forward_hidden_embeds(&embeds, 0).unwrap().realize_f32();
-        let max_diff = h_ref.iter().zip(h_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "GLM4 forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})");
+        let h_via_embeds = model
+            .forward_hidden_embeds(&embeds, 0)
+            .unwrap()
+            .realize_f32();
+        let max_diff = h_ref
+            .iter()
+            .zip(h_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "GLM4 forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})"
+        );
     }
 
     // ==== GAP-029 family 5: persistent KV-context decode =====================
@@ -985,28 +1114,49 @@ mod tests {
         );
         let dev = Device::cpu();
         let mut cache = KvCache::with_capacity(
-            cfg.num_hidden_layers, cfg.num_key_value_heads, cfg.head_dim,
-            tokens.len(), DType::F32, &dev,
+            cfg.num_hidden_layers,
+            cfg.num_key_value_heads,
+            cfg.head_dim,
+            tokens.len(),
+            DType::F32,
+            &dev,
         )
         .expect("with_capacity");
         let mut ctx = InferenceContext::new(dev);
         let mut session: Option<DecodeSession> = None;
 
         model
-            .forward_with_kv_context_persistent(&tokens[..prefill], &mut cache, &mut ctx, &mut session)
+            .forward_with_kv_context_persistent(
+                &tokens[..prefill],
+                &mut cache,
+                &mut ctx,
+                &mut session,
+            )
             .expect("prefill");
-        assert!(session.is_none(), "prefill (seq > 1) must NOT build the held session");
+        assert!(
+            session.is_none(),
+            "prefill (seq > 1) must NOT build the held session"
+        );
 
         let mut out = Vec::with_capacity(n_decode);
         for i in prefill..tokens.len() {
             out.push(
                 model
-                    .forward_with_kv_context_persistent(&tokens[i..=i], &mut cache, &mut ctx, &mut session)
+                    .forward_with_kv_context_persistent(
+                        &tokens[i..=i],
+                        &mut cache,
+                        &mut ctx,
+                        &mut session,
+                    )
                     .expect("decode"),
             );
             assert!(session.is_some(), "decode must hold a session from token 1");
         }
-        assert_eq!(cache.cached_len, tokens.len(), "cache must advance every step");
+        assert_eq!(
+            cache.cached_len,
+            tokens.len(),
+            "cache must advance every step"
+        );
         out
     }
 
@@ -1028,7 +1178,10 @@ mod tests {
                 let full = model.forward(&tokens[..=pos], 0).unwrap().realize_f32();
                 let expected = &full[pos * cfg.vocab_size..(pos + 1) * cfg.vocab_size];
                 assert_eq!(got.len(), expected.len());
-                got.iter().zip(expected.iter()).map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max)
+                got.iter()
+                    .zip(expected.iter())
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0_f32, f32::max)
             })
             .collect()
     }
@@ -1064,9 +1217,19 @@ mod tests {
     /// exactly this test (the born-red).
     #[test]
     fn glm4_decode_matches_forward_full_rotary() {
-        let cfg = Glm4Config { partial_rotary_factor: 1.0, ..tiny_config() };
-        assert_eq!(cfg.rope_dim(), cfg.head_dim, "this config must be full-rotary");
-        let model = Glm4Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let cfg = Glm4Config {
+            partial_rotary_factor: 1.0,
+            ..tiny_config()
+        };
+        assert_eq!(
+            cfg.rope_dim(),
+            cfg.head_dim,
+            "this config must be full-rotary"
+        );
+        let model = Glm4Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6];
         let drift = decode_vs_forward_max_abs(&model, &tokens, 3);
         for (k, d) in drift.iter().enumerate() {
@@ -1089,12 +1252,22 @@ mod tests {
     #[test]
     fn control_decode_matches_forward_at_rope_dim_2() {
         let cfg = tiny_config(); // factor 0.5, head_dim 4 => rope_dim 2
-        assert_eq!(cfg.rope_dim(), 2, "control requires rope_dim == 2 (permute is identity)");
-        let model = Glm4Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        assert_eq!(
+            cfg.rope_dim(),
+            2,
+            "control requires rope_dim == 2 (permute is identity)"
+        );
+        let model = Glm4Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6];
         let drift = decode_vs_forward_max_abs(&model, &tokens, 3);
         for (k, d) in drift.iter().enumerate() {
-            assert!(*d < DECODE_ORACLE_ABS, "control decode step {k} diverges from forward by {d}");
+            assert!(
+                *d < DECODE_ORACLE_ABS,
+                "control decode step {k} diverges from forward by {d}"
+            );
         }
     }
 
@@ -1102,10 +1275,19 @@ mod tests {
     /// read (a) and (b). Not an assertion; the discriminator/control carry those.
     #[test]
     fn measure_glm4_decode_drift() {
-        let full = Glm4Config { partial_rotary_factor: 1.0, ..tiny_config() };
-        let m_full = Glm4Model { config: full.clone(), weights: tiny_weights(&full) };
+        let full = Glm4Config {
+            partial_rotary_factor: 1.0,
+            ..tiny_config()
+        };
+        let m_full = Glm4Model {
+            config: full.clone(),
+            weights: tiny_weights(&full),
+        };
         let ctrl = tiny_config();
-        let m_ctrl = Glm4Model { config: ctrl.clone(), weights: tiny_weights(&ctrl) };
+        let m_ctrl = Glm4Model {
+            config: ctrl.clone(),
+            weights: tiny_weights(&ctrl),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6];
         println!(
             "GLM4-DRIFT full_rotary(rope_dim={})={:?} control(rope_dim={})={:?}",

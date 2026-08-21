@@ -38,8 +38,8 @@
 //! ```
 
 use crate::registry::{
-    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps,
-    PatternMatch, SubgraphPattern, decompose_via_recipe,
+    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps, PatternMatch,
+    SubgraphPattern, decompose_via_recipe,
 };
 use crate::{Graph, NodeId, Op};
 use fuel_ir::{DType, Shape};
@@ -52,17 +52,17 @@ use std::sync::OnceLock;
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
         destructive_input: None,
-        id:         FusedOps::LAYER_NORM_LAST_DIM,
-        name:       "LayerNormLastDim",
-        family:     FusedOpFamily::Norm,
-        pattern:    SubgraphPattern::Callable(canonical_pattern),
+        id: FusedOps::LAYER_NORM_LAST_DIM,
+        name: "LayerNormLastDim",
+        family: FusedOpFamily::Norm,
+        pattern: SubgraphPattern::Callable(canonical_pattern),
         decompose,
         // Phase 7.6 step 4 (backward-helper batch): the
         // architecturally-correct BackwardKind::Fused edge is now
         // live. `Tensor::backward`'s Op::Fused arm reads this and
         // emits Op::Fused(LAYER_NORM_LAST_DIM_BACKWARD, _) instead
         // of the legacy variant.
-        backward:   BackwardKind::Fused(FusedOps::LAYER_NORM_LAST_DIM_BACKWARD),
+        backward: BackwardKind::Fused(FusedOps::LAYER_NORM_LAST_DIM_BACKWARD),
         shape_rule: shape_passthrough,
         dtype_rule: dtype_passthrough,
         output_views: None,
@@ -107,37 +107,64 @@ fn dtype_passthrough(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
 fn recipe() -> &'static PatternNode {
     static RECIPE: OnceLock<PatternNode> = OnceLock::new();
     RECIPE.get_or_init(|| {
-        let axis_last = || OpAttrs { axis_last: true, ..OpAttrs::default() };
+        let axis_last = || OpAttrs {
+            axis_last: true,
+            ..OpAttrs::default()
+        };
         let same_as_x = || OpAttrs {
             target_shape_rel: Some(ShapeExpr::SameAs { operand: 0 }),
             ..OpAttrs::default()
         };
-        let op = |op, attrs, operands| PatternNode::Op { op, attrs, operands };
+        let op = |op, attrs, operands| PatternNode::Op {
+            op,
+            attrs: Box::new(attrs),
+            operands,
+        };
         let x = || PatternNode::Bind { index: 0 };
         // centered = Sub(x, BroadcastTo(SameAs 0)(Unsqueeze(MeanDim(x)))) —
         // the SHARED subterm (emitter identity-shares it into one node).
-        let centered = op(OpTag::Sub, OpAttrs::default(), vec![
-            x(),
-            op(OpTag::BroadcastTo, same_as_x(), vec![
-                op(OpTag::Unsqueeze, axis_last(), vec![
-                    op(OpTag::MeanDim, axis_last(), vec![x()]),
-                ]),
-            ]),
-        ]);
+        let centered = op(
+            OpTag::Sub,
+            OpAttrs::default(),
+            vec![
+                x(),
+                op(
+                    OpTag::BroadcastTo,
+                    same_as_x(),
+                    vec![op(
+                        OpTag::Unsqueeze,
+                        axis_last(),
+                        vec![op(OpTag::MeanDim, axis_last(), vec![x()])],
+                    )],
+                ),
+            ],
+        );
         // denom_bcast = BroadcastTo(SameAs 0)(Sqrt(AddScalar[eps](
         //   Unsqueeze(MeanDim(Sqr(centered)))))).
-        let denom_bcast = op(OpTag::BroadcastTo, same_as_x(), vec![
-            op(OpTag::Sqrt, OpAttrs::default(), vec![
-                // AddScalar with EMPTY scalars = the eps OPEN slot.
-                op(OpTag::AddScalar, OpAttrs::default(), vec![
-                    op(OpTag::Unsqueeze, axis_last(), vec![
-                        op(OpTag::MeanDim, axis_last(), vec![
-                            op(OpTag::Sqr, OpAttrs::default(), vec![centered.clone()]),
-                        ]),
-                    ]),
-                ]),
-            ]),
-        ]);
+        let denom_bcast = op(
+            OpTag::BroadcastTo,
+            same_as_x(),
+            vec![op(
+                OpTag::Sqrt,
+                OpAttrs::default(),
+                vec![
+                    // AddScalar with EMPTY scalars = the eps OPEN slot.
+                    op(
+                        OpTag::AddScalar,
+                        OpAttrs::default(),
+                        vec![op(
+                            OpTag::Unsqueeze,
+                            axis_last(),
+                            vec![op(
+                                OpTag::MeanDim,
+                                axis_last(),
+                                vec![op(OpTag::Sqr, OpAttrs::default(), vec![centered.clone()])],
+                            )],
+                        )],
+                    ),
+                ],
+            )],
+        );
         op(OpTag::Div, OpAttrs::default(), vec![centered, denom_bcast])
     })
 }
@@ -207,26 +234,42 @@ pub fn decompose(graph: &mut Graph, id: NodeId, params: &FusedOpParams) -> NodeI
 /// softmax/rms matchers).
 pub fn canonical_pattern(graph: &Graph, div_id: NodeId) -> Option<PatternMatch> {
     let div = graph.node(div_id);
-    if !matches!(div.op, Op::Div) { return None; }
-    if div.inputs.len() != 2 { return None; }
+    if !matches!(div.op, Op::Div) {
+        return None;
+    }
+    if div.inputs.len() != 2 {
+        return None;
+    }
     let centered_id = div.inputs[0];
     let denom_bcast_id = div.inputs[1];
 
     // --- centered = Sub(x, mean_bcast) branch (the SHARED subterm) ---
     let centered = graph.node(centered_id);
-    if !matches!(centered.op, Op::Sub) { return None; }
-    if centered.inputs.len() != 2 { return None; }
+    if !matches!(centered.op, Op::Sub) {
+        return None;
+    }
+    if centered.inputs.len() != 2 {
+        return None;
+    }
     let x_id = centered.inputs[0];
     let mean_bcast_id = centered.inputs[1];
 
     let mean_bcast = graph.node(mean_bcast_id);
-    if !matches!(mean_bcast.op, Op::BroadcastTo(_)) { return None; }
-    if mean_bcast.inputs.len() != 1 { return None; }
+    if !matches!(mean_bcast.op, Op::BroadcastTo(_)) {
+        return None;
+    }
+    if mean_bcast.inputs.len() != 1 {
+        return None;
+    }
     let mean_kd_id = mean_bcast.inputs[0];
 
     let mean_kd = graph.node(mean_kd_id);
-    if !matches!(mean_kd.op, Op::Unsqueeze { .. }) { return None; }
-    if mean_kd.inputs.len() != 1 { return None; }
+    if !matches!(mean_kd.op, Op::Unsqueeze { .. }) {
+        return None;
+    }
+    if mean_kd.inputs.len() != 1 {
+        return None;
+    }
     let mean_id = mean_kd.inputs[0];
 
     let mean = graph.node(mean_id);
@@ -234,19 +277,31 @@ pub fn canonical_pattern(graph: &Graph, div_id: NodeId) -> Option<PatternMatch> 
         Op::MeanDim(d) => d,
         _ => return None,
     };
-    if mean.inputs.len() != 1 { return None; }
+    if mean.inputs.len() != 1 {
+        return None;
+    }
     // The mean is over the SAME x that `centered` subtracts from.
-    if mean.inputs[0] != x_id { return None; }
+    if mean.inputs[0] != x_id {
+        return None;
+    }
 
     // --- denom_bcast = BroadcastTo(Sqrt(AddScalar[eps](Unsqueeze(MeanDim(Sqr(centered)))))) ---
     let denom_bcast = graph.node(denom_bcast_id);
-    if !matches!(denom_bcast.op, Op::BroadcastTo(_)) { return None; }
-    if denom_bcast.inputs.len() != 1 { return None; }
+    if !matches!(denom_bcast.op, Op::BroadcastTo(_)) {
+        return None;
+    }
+    if denom_bcast.inputs.len() != 1 {
+        return None;
+    }
     let denom_id = denom_bcast.inputs[0];
 
     let denom = graph.node(denom_id);
-    if !matches!(denom.op, Op::Sqrt) { return None; }
-    if denom.inputs.len() != 1 { return None; }
+    if !matches!(denom.op, Op::Sqrt) {
+        return None;
+    }
+    if denom.inputs.len() != 1 {
+        return None;
+    }
     let var_eps_id = denom.inputs[0];
 
     let var_eps = graph.node(var_eps_id);
@@ -254,12 +309,18 @@ pub fn canonical_pattern(graph: &Graph, div_id: NodeId) -> Option<PatternMatch> 
         Op::AddScalar(e) => e,
         _ => return None,
     };
-    if var_eps.inputs.len() != 1 { return None; }
+    if var_eps.inputs.len() != 1 {
+        return None;
+    }
     let var_kd_id = var_eps.inputs[0];
 
     let var_kd = graph.node(var_kd_id);
-    if !matches!(var_kd.op, Op::Unsqueeze { .. }) { return None; }
-    if var_kd.inputs.len() != 1 { return None; }
+    if !matches!(var_kd.op, Op::Unsqueeze { .. }) {
+        return None;
+    }
+    if var_kd.inputs.len() != 1 {
+        return None;
+    }
     let var_id = var_kd.inputs[0];
 
     let var = graph.node(var_id);
@@ -267,34 +328,54 @@ pub fn canonical_pattern(graph: &Graph, div_id: NodeId) -> Option<PatternMatch> 
         Op::MeanDim(d) => d,
         _ => return None,
     };
-    if var.inputs.len() != 1 { return None; }
+    if var.inputs.len() != 1 {
+        return None;
+    }
     let csq_id = var.inputs[0];
 
     let csq = graph.node(csq_id);
-    if !matches!(csq.op, Op::Sqr) { return None; }
-    if csq.inputs.len() != 1 { return None; }
+    if !matches!(csq.op, Op::Sqr) {
+        return None;
+    }
+    if csq.inputs.len() != 1 {
+        return None;
+    }
     // The SHARED-subterm identity: `Sqr` must square the SAME `centered` node
     // the `Div` numerator reads — otherwise it isn't layer-norm.
-    if csq.inputs[0] != centered_id { return None; }
+    if csq.inputs[0] != centered_id {
+        return None;
+    }
 
     // Shape / axis discipline: both reduces target x's LAST axis, and both
     // keepdim restores yield x's shape with last-dim = 1. Both broadcasts
     // restore x's full shape.
     let x_shape = &graph.node(x_id).shape;
-    if x_shape.rank() == 0 { return None; }
+    if x_shape.rank() == 0 {
+        return None;
+    }
     let last = x_shape.rank() - 1;
-    if mean_axis != last || var_axis != last { return None; }
+    if mean_axis != last || var_axis != last {
+        return None;
+    }
     let full = x_shape.dims().to_vec();
     for kd_id in [mean_kd_id, var_kd_id] {
         let kd_shape = &graph.node(kd_id).shape;
-        if kd_shape.rank() != x_shape.rank() { return None; }
-        for axis in 0..x_shape.rank() {
-            let expected = if axis == last { 1 } else { full[axis] };
-            if kd_shape.dims()[axis] != expected { return None; }
+        if kd_shape.rank() != x_shape.rank() {
+            return None;
+        }
+        for (axis, &expected) in full.iter().enumerate() {
+            let expected = if axis == last { 1 } else { expected };
+            if kd_shape.dims()[axis] != expected {
+                return None;
+            }
         }
     }
-    if graph.node(mean_bcast_id).shape.dims() != full.as_slice() { return None; }
-    if graph.node(denom_bcast_id).shape.dims() != full.as_slice() { return None; }
+    if graph.node(mean_bcast_id).shape.dims() != full.as_slice() {
+        return None;
+    }
+    if graph.node(denom_bcast_id).shape.dims() != full.as_slice() {
+        return None;
+    }
 
     // Conservativeness: every intermediate consumed only within this pattern —
     // `centered` exactly twice (→ Sqr and → Div), all others exactly once.
@@ -319,7 +400,7 @@ pub fn canonical_pattern(graph: &Graph, div_id: NodeId) -> Option<PatternMatch> 
 
     Some(PatternMatch {
         bindings: vec![(0, x_id)],
-        params:   FusedOpParams::LayerNormLastDim { eps },
+        params: FusedOpParams::LayerNormLastDim { eps },
     })
 }
 
@@ -351,7 +432,12 @@ mod tests {
     fn canonical_pattern_matches_the_recipe_spelling() {
         let mut g = Graph::new();
         let sh = Shape::from_dims(&[2, 4]);
-        let x = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+        let x = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: sh.clone(),
+            dtype: DType::F32,
+        });
         let params = FusedOpParams::LayerNormLastDim { eps: 1e-5 };
         let fused = g.push(Node {
             op: Op::Fused(FusedOps::LAYER_NORM_LAST_DIM, params.clone()),

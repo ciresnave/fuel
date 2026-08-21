@@ -427,9 +427,7 @@ impl Args {
 /// Read a LLaMA-architecture GGUF file's metadata and produce a
 /// [`LlamaFullConfig`]. Mirrors the metadata extraction in
 /// `fuel_transformers::models::quantized_llama::ModelWeights::from_gguf`.
-fn llama_config_from_gguf<P: AsRef<std::path::Path>>(
-    path: P,
-) -> Result<LlamaFullConfig> {
+fn llama_config_from_gguf<P: AsRef<std::path::Path>>(path: P) -> Result<LlamaFullConfig> {
     let mc = fuel::quantized::gguf_mmap::MmapedContent::from_path(&path)
         .map_err(|e| E::msg(format!("gguf header: {e}")))?;
     let metadata = mc.metadata();
@@ -448,9 +446,7 @@ fn llama_config_from_gguf<P: AsRef<std::path::Path>>(
         .to_u32()
         .map_err(E::msg)? as usize;
     let block_count = md_get("llama.block_count")?.to_u32().map_err(E::msg)? as usize;
-    let embedding_length = md_get("llama.embedding_length")?
-        .to_u32()
-        .map_err(E::msg)? as usize;
+    let embedding_length = md_get("llama.embedding_length")?.to_u32().map_err(E::msg)? as usize;
     let rope_dim = md_get("llama.rope.dimension_count")?
         .to_u32()
         .map_err(E::msg)? as usize;
@@ -618,7 +614,7 @@ fn main() -> anyhow::Result<()> {
     let header_done = start.elapsed();
     let mc_content = mmaped.content();
     let mut total_size_in_bytes = 0;
-    for (_, tensor) in mc_content.tensor_infos.iter() {
+    for tensor in mc_content.tensor_infos.values() {
         let elem_count = tensor.shape.elem_count();
         total_size_in_bytes +=
             elem_count * tensor.ggml_dtype.type_size() / tensor.ggml_dtype.block_size();
@@ -626,7 +622,7 @@ fn main() -> anyhow::Result<()> {
     println!(
         "mmapped {:?} tensors ({}); header in {:.2}s",
         mc_content.tensor_infos.len(),
-        &format_size(total_size_in_bytes),
+        format_size(total_size_in_bytes),
         header_done.as_secs_f32(),
     );
     drop(mmaped);
@@ -679,7 +675,7 @@ fn main() -> anyhow::Result<()> {
                 }
             }
         };
-        print!("{}", &prompt_str);
+        print!("{}", prompt_str);
         let tokens = tos
             .tokenizer()
             .encode(prompt_str, true)

@@ -22,9 +22,9 @@
 //! coverage gaps, never panics — per KISS-CONFORM §6.6-0007 this whole path is
 //! advisory (kiss-ref flags, never verdicts).
 
+use crate::KissRefError;
 use crate::mapping::{op_to_kiss, supports};
 use crate::reference::to_rows;
-use crate::KissRefError;
 use fuel_ir::DType;
 use fuel_kernel_seam_types::{OpAttrs, OpTag, PatternNode};
 use kiss_ops_vocab::decomp::Expr;
@@ -41,8 +41,12 @@ pub fn region_supported(region: &PatternNode, dtype: DType) -> bool {
 
 fn node_supported(node: &PatternNode, dtype: DType) -> bool {
     match node {
-        PatternNode::Op { op, operands, attrs } => {
-            *attrs == OpAttrs::default()
+        PatternNode::Op {
+            op,
+            operands,
+            attrs,
+        } => {
+            attrs.as_ref() == &OpAttrs::default()
                 && supports(*op, dtype)
                 && operands.iter().all(|o| node_supported(o, dtype))
         }
@@ -56,9 +60,7 @@ fn node_supported(node: &PatternNode, dtype: DType) -> bool {
 /// [`region_supported`] declines it for evaluation).
 pub fn region_op_count(region: &PatternNode) -> usize {
     match region {
-        PatternNode::Op { operands, .. } => {
-            1 + operands.iter().map(region_op_count).sum::<usize>()
-        }
+        PatternNode::Op { operands, .. } => 1 + operands.iter().map(region_op_count).sum::<usize>(),
         PatternNode::SeeThrough { then } => region_op_count(then),
         PatternNode::Bind { .. } | PatternNode::Any => 0,
     }
@@ -197,8 +199,12 @@ pub fn region_advisory_tolerance(region: &PatternNode) -> Option<Tolerance> {
 fn region_to_expr(region: &PatternNode) -> Result<Expr, KissRefError> {
     match region {
         PatternNode::Bind { index } => Ok(Expr::Input(*index)),
-        PatternNode::Op { op, operands, attrs } => {
-            if *attrs != OpAttrs::default() {
+        PatternNode::Op {
+            op,
+            operands,
+            attrs,
+        } => {
+            if attrs.as_ref() != &OpAttrs::default() {
                 return Err(KissRefError::UnsupportedAttrs(*op));
             }
             let kiss_op = op_to_kiss(*op).ok_or(KissRefError::UnsupportedOp(*op))?;
@@ -230,7 +236,11 @@ fn region_rows<T: Copy>(
     // bind_indices() is sorted+deduped, so last() is the max index.
     let expected = region.bind_indices().last().map_or(0, |&m| m as usize + 1);
     if expected != 0 && operands.len() != expected {
-        return Err(KissRefError::Arity { op: root, expected, got: operands.len() });
+        return Err(KissRefError::Arity {
+            op: root,
+            expected,
+            got: operands.len(),
+        });
     }
     let rows = to_rows(root, operands)?;
     Ok((expr, rows))
@@ -271,10 +281,7 @@ macro_rules! region_float {
     ($refr:ident, $diff:ident, $t:ty, $kref:path, $kdiff:path) => {
         /// kiss-ref's reference output for a composed `region` over column-major
         /// `operands` (one slice per region input, matched by `Bind` index).
-        pub fn $refr(
-            region: &PatternNode,
-            operands: &[&[$t]],
-        ) -> Result<Vec<$t>, KissRefError> {
+        pub fn $refr(region: &PatternNode, operands: &[&[$t]]) -> Result<Vec<$t>, KissRefError> {
             let (expr, rows) = region_rows(region, operands)?;
             $kref(&expr, &row_refs(&rows)).map_err(map_kiss_error)
         }
@@ -336,7 +343,11 @@ mod tests {
     }
 
     fn node(tag: OpTag, operands: Vec<PatternNode>) -> PatternNode {
-        PatternNode::Op { op: tag, operands, attrs: OpAttrs::default() }
+        PatternNode::Op {
+            op: tag,
+            operands,
+            attrs: Box::new(OpAttrs::default()),
+        }
     }
 
     /// relu(a + b) — the canonical 2-op, 2-input region.
@@ -402,14 +413,19 @@ mod tests {
         let region = PatternNode::Op {
             op: OpTag::AddScalar,
             operands: vec![bind(0)],
-            attrs: OpAttrs { scalars: vec![1.0], ..OpAttrs::default() },
+            attrs: Box::new(OpAttrs {
+                scalars: vec![1.0],
+                ..OpAttrs::default()
+            }),
         };
         assert!(!region_supported(&region, DType::F32));
     }
 
     #[test]
     fn region_supported_declines_matcher_only_nodes() {
-        let st = PatternNode::SeeThrough { then: Box::new(relu_add()) };
+        let st = PatternNode::SeeThrough {
+            then: Box::new(relu_add()),
+        };
         assert!(!region_supported(&st, DType::F32));
         let any_operand = node(OpTag::Relu, vec![PatternNode::Any]);
         assert!(!region_supported(&any_operand, DType::F32));
@@ -426,7 +442,9 @@ mod tests {
         assert_eq!(region_op_count(&bind(0)), 0);
         // SeeThrough is counted *through* (structural metadata), though
         // region_supported declines it.
-        let st = PatternNode::SeeThrough { then: Box::new(relu_add()) };
+        let st = PatternNode::SeeThrough {
+            then: Box::new(relu_add()),
+        };
         assert_eq!(region_op_count(&st), 2);
     }
 
@@ -435,7 +453,9 @@ mod tests {
     #[test]
     fn matcher_only_nodes_err_unsupported_node() {
         let a = [1.0f32];
-        let st = PatternNode::SeeThrough { then: Box::new(relu_add()) };
+        let st = PatternNode::SeeThrough {
+            then: Box::new(relu_add()),
+        };
         assert!(matches!(
             reference_region_f32(&st, &[&a, &a]),
             Err(KissRefError::UnsupportedNode)
@@ -452,7 +472,10 @@ mod tests {
         let region = PatternNode::Op {
             op: OpTag::AddScalar,
             operands: vec![bind(0)],
-            attrs: OpAttrs { scalars: vec![1.0], ..OpAttrs::default() },
+            attrs: Box::new(OpAttrs {
+                scalars: vec![1.0],
+                ..OpAttrs::default()
+            }),
         };
         let x = [1.0f32];
         assert!(matches!(
@@ -476,7 +499,11 @@ mod tests {
         let a = [1.0f32, 2.0];
         assert!(matches!(
             reference_region_f32(&relu_add(), &[&a]),
-            Err(KissRefError::Arity { op: OpTag::Relu, expected: 2, got: 1 })
+            Err(KissRefError::Arity {
+                op: OpTag::Relu,
+                expected: 2,
+                got: 1
+            })
         ));
     }
 
@@ -525,7 +552,10 @@ mod tests {
         let cand = [4.0f32];
         assert!(matches!(
             diff_region_f32(&relu_add(), &cand, &[&a, &b], Tolerance::Exact),
-            Err(KissRefError::LengthMismatch { expected: 2, got: 1 })
+            Err(KissRefError::LengthMismatch {
+                expected: 2,
+                got: 1
+            })
         ));
     }
 
@@ -537,8 +567,7 @@ mod tests {
         let region = node(OpTag::Add, vec![bind(0), bind(1)]);
         let a = [f32::NAN];
         let b = [1.0f32];
-        let both =
-            diff_region_f32(&region, &[f32::NAN], &[&a, &b], Tolerance::Exact).unwrap();
+        let both = diff_region_f32(&region, &[f32::NAN], &[&a, &b], Tolerance::Exact).unwrap();
         assert!(both.conforms());
         let one = diff_region_f32(&region, &[0.0], &[&a, &b], Tolerance::Exact).unwrap();
         assert!(!one.conforms());
@@ -560,14 +589,20 @@ mod tests {
         let b16: Vec<f16> = [2.0f32, 3.0].iter().map(|&v| f16::from_f32(v)).collect();
         let reference = reference_region_f16(&relu_add(), &[&a16, &b16]).unwrap();
         assert_eq!(reference[0].to_f32(), 3.0);
-        let cand: Vec<f16> =
-            reference.iter().map(|&x| f16::from_bits(x.to_bits() + 1)).collect();
-        assert!(!diff_region_f16(&relu_add(), &cand, &[&a16, &b16], Tolerance::Exact)
-            .unwrap()
-            .conforms());
-        assert!(diff_region_f16(&relu_add(), &cand, &[&a16, &b16], Tolerance::Ulp(1))
-            .unwrap()
-            .conforms());
+        let cand: Vec<f16> = reference
+            .iter()
+            .map(|&x| f16::from_bits(x.to_bits() + 1))
+            .collect();
+        assert!(
+            !diff_region_f16(&relu_add(), &cand, &[&a16, &b16], Tolerance::Exact)
+                .unwrap()
+                .conforms()
+        );
+        assert!(
+            diff_region_f16(&relu_add(), &cand, &[&a16, &b16], Tolerance::Ulp(1))
+                .unwrap()
+                .conforms()
+        );
         // bf16.
         let ab: Vec<bf16> = [4.0f32, -1.0].iter().map(|&v| bf16::from_f32(v)).collect();
         let bb: Vec<bf16> = [0.5f32, 0.25].iter().map(|&v| bf16::from_f32(v)).collect();
@@ -611,7 +646,10 @@ mod tests {
 
     #[test]
     fn advisory_tolerance_multi_node_exact_region_is_n_minus_one() {
-        assert_eq!(region_advisory_tolerance(&relu_add()), Some(Tolerance::Ulp(1)));
+        assert_eq!(
+            region_advisory_tolerance(&relu_add()),
+            Some(Tolerance::Ulp(1))
+        );
     }
 
     #[test]
@@ -623,7 +661,10 @@ mod tests {
         // 1 exact -> 8 + (1-1) = 8.
         let region = node(
             OpTag::Silu,
-            vec![node(OpTag::Add, vec![bind(0), node(OpTag::Exp, vec![bind(1)])])],
+            vec![node(
+                OpTag::Add,
+                vec![bind(0), node(OpTag::Exp, vec![bind(1)])],
+            )],
         );
         assert_eq!(region_advisory_tolerance(&region), Some(Tolerance::Ulp(8)));
         // All-transcendental exp(tanh(x)): 4 + 4; the exact term saturates at 0
@@ -655,14 +696,12 @@ mod tests {
     fn advisory_band_matches_shared_cases() {
         fn normalize(t: Option<Tolerance>) -> Option<u64> {
             match t {
-                None => None,                    // op-free region
-                Some(Tolerance::Exact) => None,  // single exact op
+                None => None,                   // op-free region
+                Some(Tolerance::Exact) => None, // single exact op
                 Some(Tolerance::Ulp(n)) => Some(n),
             }
         }
-        for (region, expected) in
-            fuel_kernel_seam_types::advisory_band_reference_cases()
-        {
+        for (region, expected) in fuel_kernel_seam_types::advisory_band_reference_cases() {
             assert_eq!(
                 normalize(region_advisory_tolerance(&region)),
                 expected,
@@ -835,7 +874,10 @@ mod tests {
         let b16: Vec<f16> = bv.iter().map(|&v| f16::from_f32(v)).collect();
         let new16 = reference_region_f16(&sq_diff(), &[&a16, &b16]).unwrap();
         let old16 = legacy_reference_region_f16(&sq_diff(), &[&a16, &b16]).unwrap();
-        assert_eq!(new16, old16, "f16 region reference moved under the migration");
+        assert_eq!(
+            new16, old16,
+            "f16 region reference moved under the migration"
+        );
         // Byte-exact, not merely equal: compare the bit patterns.
         let new_bits: Vec<u16> = new16.iter().map(|x| x.to_bits()).collect();
         let old_bits: Vec<u16> = old16.iter().map(|x| x.to_bits()).collect();
@@ -846,8 +888,10 @@ mod tests {
             .zip(&bv)
             .map(|(&a, &b)| {
                 let (a, b) = (f16::from_f32(a), f16::from_f32(b));
-                f16::from_f32(f16::from_f32(a.to_f32() * a.to_f32()).to_f32()
-                    - f16::from_f32(b.to_f32() * b.to_f32()).to_f32())
+                f16::from_f32(
+                    f16::from_f32(a.to_f32() * a.to_f32()).to_f32()
+                        - f16::from_f32(b.to_f32() * b.to_f32()).to_f32(),
+                )
             })
             .collect();
         assert_eq!(new16, want16);
@@ -857,7 +901,10 @@ mod tests {
         let bbf: Vec<bf16> = bv.iter().map(|&v| bf16::from_f32(v)).collect();
         let newb = reference_region_bf16(&sq_diff(), &[&abf, &bbf]).unwrap();
         let oldb = legacy_reference_region_bf16(&sq_diff(), &[&abf, &bbf]).unwrap();
-        assert_eq!(newb, oldb, "bf16 region reference moved under the migration");
+        assert_eq!(
+            newb, oldb,
+            "bf16 region reference moved under the migration"
+        );
         let newb_bits: Vec<u16> = newb.iter().map(|x| x.to_bits()).collect();
         let oldb_bits: Vec<u16> = oldb.iter().map(|x| x.to_bits()).collect();
         assert_eq!(newb_bits, oldb_bits);
@@ -865,11 +912,17 @@ mod tests {
         // Wide lanes too — the whole `region_float!` family migrated, not just
         // the narrow mirrors.
         let new32 = reference_region_f32(&sq_diff(), &[&av, &bv]).unwrap();
-        assert_eq!(new32, legacy_reference_region_f32(&sq_diff(), &[&av, &bv]).unwrap());
+        assert_eq!(
+            new32,
+            legacy_reference_region_f32(&sq_diff(), &[&av, &bv]).unwrap()
+        );
         let a64: Vec<f64> = av.iter().map(|&v| v as f64).collect();
         let b64: Vec<f64> = bv.iter().map(|&v| v as f64).collect();
         let new64 = reference_region_f64(&sq_diff(), &[&a64, &b64]).unwrap();
-        assert_eq!(new64, legacy_reference_region_f64(&sq_diff(), &[&a64, &b64]).unwrap());
+        assert_eq!(
+            new64,
+            legacy_reference_region_f64(&sq_diff(), &[&a64, &b64]).unwrap()
+        );
     }
 
     #[test]
@@ -885,12 +938,18 @@ mod tests {
         let last = cand.len() - 1;
         cand[last] = f32::from_bits(reference[last].to_bits() + 1);
         let strict = diff_region_f32(&sq_diff(), &cand, &[&av, &bv], Tolerance::Exact).unwrap();
-        assert!(!strict.conforms(), "a 1-ULP error must fail Tolerance::Exact");
+        assert!(
+            !strict.conforms(),
+            "a 1-ULP error must fail Tolerance::Exact"
+        );
         assert_eq!(strict.mismatches, 1);
         assert_eq!(strict.max_ulp, 1);
         assert_eq!(strict.first_mismatch.map(|(i, _, _)| i), Some(last));
         let loose = diff_region_f32(&sq_diff(), &cand, &[&av, &bv], Tolerance::Ulp(1)).unwrap();
-        assert!(loose.conforms(), "a 1-ULP error must be tolerated at Ulp(1)");
+        assert!(
+            loose.conforms(),
+            "a 1-ULP error must be tolerated at Ulp(1)"
+        );
         assert_eq!(loose.max_ulp, 1); // raw distance still recorded
         // Field-for-field against the pre-migration loop.
         assert_eq!(
@@ -911,9 +970,11 @@ mod tests {
         let s64 = diff_region_f64(&sq_diff(), &c64, &[&a64, &b64], Tolerance::Exact).unwrap();
         assert!(!s64.conforms());
         assert_eq!(s64.max_ulp, 1);
-        assert!(diff_region_f64(&sq_diff(), &c64, &[&a64, &b64], Tolerance::Ulp(1))
-            .unwrap()
-            .conforms());
+        assert!(
+            diff_region_f64(&sq_diff(), &c64, &[&a64, &b64], Tolerance::Ulp(1))
+                .unwrap()
+                .conforms()
+        );
         assert_eq!(
             s64,
             legacy_diff_region_f64(&sq_diff(), &c64, &[&a64, &b64], Tolerance::Exact).unwrap()
@@ -923,13 +984,18 @@ mod tests {
         let a16: Vec<f16> = av.iter().map(|&v| f16::from_f32(v)).collect();
         let b16: Vec<f16> = bv.iter().map(|&v| f16::from_f32(v)).collect();
         let r16 = reference_region_f16(&sq_diff(), &[&a16, &b16]).unwrap();
-        let c16: Vec<f16> = r16.iter().map(|&x| f16::from_bits(x.to_bits() + 1)).collect();
+        let c16: Vec<f16> = r16
+            .iter()
+            .map(|&x| f16::from_bits(x.to_bits() + 1))
+            .collect();
         let s16 = diff_region_f16(&sq_diff(), &c16, &[&a16, &b16], Tolerance::Exact).unwrap();
         assert!(!s16.conforms());
         assert_eq!(s16.max_ulp, 1);
-        assert!(diff_region_f16(&sq_diff(), &c16, &[&a16, &b16], Tolerance::Ulp(1))
-            .unwrap()
-            .conforms());
+        assert!(
+            diff_region_f16(&sq_diff(), &c16, &[&a16, &b16], Tolerance::Ulp(1))
+                .unwrap()
+                .conforms()
+        );
         assert_eq!(
             s16,
             legacy_diff_region_f16(&sq_diff(), &c16, &[&a16, &b16], Tolerance::Exact).unwrap()
@@ -939,13 +1005,18 @@ mod tests {
         let abf: Vec<bf16> = av.iter().map(|&v| bf16::from_f32(v)).collect();
         let bbf: Vec<bf16> = bv.iter().map(|&v| bf16::from_f32(v)).collect();
         let rb = reference_region_bf16(&sq_diff(), &[&abf, &bbf]).unwrap();
-        let cb: Vec<bf16> = rb.iter().map(|&x| bf16::from_bits(x.to_bits() + 1)).collect();
+        let cb: Vec<bf16> = rb
+            .iter()
+            .map(|&x| bf16::from_bits(x.to_bits() + 1))
+            .collect();
         let sb = diff_region_bf16(&sq_diff(), &cb, &[&abf, &bbf], Tolerance::Exact).unwrap();
         assert!(!sb.conforms());
         assert_eq!(sb.max_ulp, 1);
-        assert!(diff_region_bf16(&sq_diff(), &cb, &[&abf, &bbf], Tolerance::Ulp(1))
-            .unwrap()
-            .conforms());
+        assert!(
+            diff_region_bf16(&sq_diff(), &cb, &[&abf, &bbf], Tolerance::Ulp(1))
+                .unwrap()
+                .conforms()
+        );
         assert_eq!(
             sb,
             legacy_diff_region_bf16(&sq_diff(), &cb, &[&abf, &bbf], Tolerance::Exact).unwrap()
@@ -960,7 +1031,11 @@ mod tests {
         let a = [1.5f32, -3.0];
         assert!(matches!(
             reference_region_f32(&sq_diff(), &[&a]),
-            Err(KissRefError::Arity { op: OpTag::Sub, expected: 2, got: 1 })
+            Err(KissRefError::Arity {
+                op: OpTag::Sub,
+                expected: 2,
+                got: 1
+            })
         ));
         // …and if kiss's seam does raise it, the adapter surfaces it as a typed
         // `Eval` decline — never a panic.
@@ -976,14 +1051,23 @@ mod tests {
         // Fuel's own typed decline (`diff_region_*` promised it before the
         // migration and must keep promising it after).
         assert_eq!(
-            map_kiss_error(kiss_ref_core::Error::LengthMismatch { expected: 2, got: 1 }),
-            KissRefError::LengthMismatch { expected: 2, got: 1 }
+            map_kiss_error(kiss_ref_core::Error::LengthMismatch {
+                expected: 2,
+                got: 1
+            }),
+            KissRefError::LengthMismatch {
+                expected: 2,
+                got: 1
+            }
         );
         let cand = [0.0f32];
         let b = [0.5f32, 2.0];
         assert!(matches!(
             diff_region_f32(&sq_diff(), &cand, &[&a, &b], Tolerance::Exact),
-            Err(KissRefError::LengthMismatch { expected: 2, got: 1 })
+            Err(KissRefError::LengthMismatch {
+                expected: 2,
+                got: 1
+            })
         ));
     }
 }

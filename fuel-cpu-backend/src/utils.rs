@@ -1,6 +1,6 @@
-﻿/// Helper functions to write CPU kernels.
-use fuel_ir::{HostBuffer, Error, Layout, Result, WithDType};
 use fuel_cpu_kernels::VecOps;
+/// Helper functions to write CPU kernels.
+use fuel_ir::{Error, HostBuffer, Layout, Result, WithDType};
 
 type C = HostBuffer;
 pub trait Map1 {
@@ -59,7 +59,13 @@ pub trait Map1Any {
 
 pub trait Map2 {
     const OP: &'static str;
-    fn f<T: WithDType + VecOps>(&self, v1: &[T], l1: &Layout, v2: &[T], l2: &Layout) -> Result<Vec<T>>;
+    fn f<T: WithDType + VecOps>(
+        &self,
+        v1: &[T],
+        l1: &Layout,
+        v2: &[T],
+        l2: &Layout,
+    ) -> Result<Vec<T>>;
 
     fn map(&self, v1: &C, l1: &Layout, v2: &C, l2: &Layout) -> Result<C> {
         match (v1, v2) {

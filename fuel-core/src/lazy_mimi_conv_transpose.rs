@@ -59,9 +59,9 @@
 //!   None accepted. TimeGroupNorm is rejected (eager-parity for the
 //!   causal-only path Mimi uses).
 
-use crate::lazy::LazyTensor;
-use crate::lazy_mimi_conv::{bake_weight_norm, pad_last_1d, LazyPadMode};
 use crate::Result;
+use crate::lazy::LazyTensor;
+use crate::lazy_mimi_conv::{LazyPadMode, bake_weight_norm, pad_last_1d};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -194,10 +194,9 @@ impl StreamableConvTranspose1dWeights {
     }
 
     fn build_bias_tensor(&self, anchor: &LazyTensor) -> Option<LazyTensor> {
-        self.bias.as_ref().map(|b| {
-            anchor
-                .const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels]))
-        })
+        self.bias
+            .as_ref()
+            .map(|b| anchor.const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels])))
     }
 
     /// Apply bias as a per-output-channel broadcast add along the
@@ -206,8 +205,7 @@ impl StreamableConvTranspose1dWeights {
         match self.build_bias_tensor(&xs) {
             None => Ok(xs),
             Some(b) => {
-                let bias_1c1 =
-                    b.reshape(Shape::from_dims(&[1, self.out_channels, 1]))?;
+                let bias_1c1 = b.reshape(Shape::from_dims(&[1, self.out_channels, 1]))?;
                 Ok(xs.broadcast_add(&bias_1c1)?)
             }
         }
@@ -341,10 +339,7 @@ impl StreamableConvTranspose1dWeights {
                     None => prev_ys,
                     Some(b) => {
                         let bias_1c1 = prev_ys
-                            .const_f32_like(
-                                Arc::clone(b),
-                                Shape::from_dims(&[self.out_channels]),
-                            )
+                            .const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels]))
                             .reshape(Shape::from_dims(&[1, self.out_channels, 1]))?;
                         prev_ys.broadcast_sub(&bias_1c1)?
                     }
@@ -361,10 +356,7 @@ impl StreamableConvTranspose1dWeights {
         };
         if invalid_steps == 0 {
             // Stride == kernel: no overlap to carry. Emit everything.
-            return Ok((
-                StreamConvTranspose1dState { prev_ys: None },
-                Some(merged),
-            ));
+            return Ok((StreamConvTranspose1dState { prev_ys: None }, Some(merged)));
         }
         if ot < invalid_steps {
             return Err(crate::Error::Msg(format!(
@@ -376,7 +368,9 @@ impl StreamableConvTranspose1dWeights {
         let emit = merged.narrow(2_usize, 0, emit_len)?;
         let new_prev = merged.narrow(2_usize, emit_len, invalid_steps)?;
         Ok((
-            StreamConvTranspose1dState { prev_ys: Some(new_prev) },
+            StreamConvTranspose1dState {
+                prev_ys: Some(new_prev),
+            },
             Some(emit),
         ))
     }
@@ -431,10 +425,7 @@ mod tests {
         // K=2, stride=1, in=1, out=1, causal. T_out (raw) = T + 1.
         // pad_total = 1, so trimmed length = T.
         let weight: Arc<[f32]> = Arc::from(vec![0.5_f32, -0.25]); // (in=1, out=1, k=2)
-        let cv = StreamableConvTranspose1dWeights::new(
-            weight, None, 1, 1, 2, 1, 1, true,
-        )
-        .unwrap();
+        let cv = StreamableConvTranspose1dWeights::new(weight, None, 1, 1, 2, 1, 1, true).unwrap();
         let xs = const_xs(1, 1, 4, &[1.0, 2.0, 3.0, 4.0]);
         let y = cv.forward(&xs).unwrap();
         assert_eq!(y.shape().dims(), &[1, 1, 4]);
@@ -463,10 +454,8 @@ mod tests {
         // Raw out len = (T-1) * 2 + 3; pad_total = 1; trimmed = raw-1.
         let weight: Arc<[f32]> = Arc::from(vec![1.0_f32, 0.5, -0.5]); // (1, 1, 3)
         let bias: Arc<[f32]> = Arc::from(vec![0.5_f32]);
-        let cv = StreamableConvTranspose1dWeights::new(
-            weight, Some(bias), 1, 1, 3, 2, 1, true,
-        )
-        .unwrap();
+        let cv =
+            StreamableConvTranspose1dWeights::new(weight, Some(bias), 1, 1, 3, 2, 1, true).unwrap();
         let xs = const_xs(1, 1, 3, &[1.0, 2.0, 3.0]);
         let y = cv.forward(&xs).unwrap();
         let dims = y.shape().dims().to_vec();
@@ -524,10 +513,7 @@ mod tests {
     #[test]
     fn streaming_chunk_by_1_equals_one_shot_kernel_2_stride_1_causal() {
         let weight: Arc<[f32]> = Arc::from(vec![0.5_f32, -0.25]);
-        let cv = StreamableConvTranspose1dWeights::new(
-            weight, None, 1, 1, 2, 1, 1, true,
-        )
-        .unwrap();
+        let cv = StreamableConvTranspose1dWeights::new(weight, None, 1, 1, 2, 1, 1, true).unwrap();
         let xs_data: Vec<f32> = (0..6).map(|i| (i as f32) * 0.3 - 0.7).collect();
         let xs = const_xs(1, 1, 6, &xs_data);
         let one_shot_full = cv.forward(&xs).unwrap().realize_f32();
@@ -544,10 +530,8 @@ mod tests {
     fn streaming_chunk_by_2_equals_one_shot_kernel_3_stride_1_causal_with_bias() {
         let weight: Arc<[f32]> = Arc::from(vec![0.2_f32, -0.4, 0.1]);
         let bias: Arc<[f32]> = Arc::from(vec![0.1_f32]);
-        let cv = StreamableConvTranspose1dWeights::new(
-            weight, Some(bias), 1, 1, 3, 1, 1, true,
-        )
-        .unwrap();
+        let cv =
+            StreamableConvTranspose1dWeights::new(weight, Some(bias), 1, 1, 3, 1, 1, true).unwrap();
         let xs_data: Vec<f32> = (0..8).map(|i| 0.05 + (i as f32) * 0.13).collect();
         let xs = const_xs(1, 1, 8, &xs_data);
         let one_shot_full = cv.forward(&xs).unwrap().realize_f32();
@@ -564,13 +548,8 @@ mod tests {
 
     #[test]
     fn streaming_chunk_by_larger_equals_one_shot_kernel_4_stride_2_causal() {
-        let weight: Arc<[f32]> = Arc::from(vec![
-            0.1_f32, -0.2, 0.3, -0.4, 0.15, 0.05, -0.1, 0.25,
-        ]); // (in=1, out=2, k=4)
-        let cv = StreamableConvTranspose1dWeights::new(
-            weight, None, 1, 2, 4, 2, 1, true,
-        )
-        .unwrap();
+        let weight: Arc<[f32]> = Arc::from(vec![0.1_f32, -0.2, 0.3, -0.4, 0.15, 0.05, -0.1, 0.25]); // (in=1, out=2, k=4)
+        let cv = StreamableConvTranspose1dWeights::new(weight, None, 1, 2, 4, 2, 1, true).unwrap();
         let xs_data: Vec<f32> = (0..8).map(|i| 0.1 * (i as f32) - 0.3).collect();
         let xs = const_xs(1, 1, 8, &xs_data);
         let one_shot_full = cv.forward(&xs).unwrap().realize_f32();

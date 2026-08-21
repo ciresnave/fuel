@@ -11,7 +11,7 @@ use std::io::Write;
 use fuel::lazy_gemma::{GemmaActivation, GemmaConfig, GemmaModel, GemmaWeights};
 use fuel::lazy_gemma2::{Gemma2Config, Gemma2Model, Gemma2Weights};
 use fuel::lazy_gemma3::{Gemma3Config, Gemma3Model, Gemma3Weights};
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 use tokenizers::Tokenizer;
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -310,9 +310,8 @@ fn gemma_config_from_hf_json_str(json: &str) -> Result<GemmaConfig> {
             .map(|x| x as usize)
             .unwrap_or(default)
     };
-    let get_f64 = |key: &str, default: f64| -> f64 {
-        v.get(key).and_then(|x| x.as_f64()).unwrap_or(default)
-    };
+    let get_f64 =
+        |key: &str, default: f64| -> f64 { v.get(key).and_then(|x| x.as_f64()).unwrap_or(default) };
     let get_bool = |key: &str, default: bool| -> bool {
         v.get(key).and_then(|x| x.as_bool()).unwrap_or(default)
     };
@@ -340,15 +339,11 @@ fn gemma2_config_from_hf_json_str(json: &str) -> Result<Gemma2Config> {
             .map(|x| x as usize)
             .unwrap_or(default)
     };
-    let get_usize_opt = |key: &str| -> Option<usize> {
-        v.get(key).and_then(|x| x.as_u64()).map(|x| x as usize)
-    };
-    let get_f64 = |key: &str, default: f64| -> f64 {
-        v.get(key).and_then(|x| x.as_f64()).unwrap_or(default)
-    };
-    let get_f64_opt = |key: &str| -> Option<f64> {
-        v.get(key).and_then(|x| x.as_f64())
-    };
+    let get_usize_opt =
+        |key: &str| -> Option<usize> { v.get(key).and_then(|x| x.as_u64()).map(|x| x as usize) };
+    let get_f64 =
+        |key: &str, default: f64| -> f64 { v.get(key).and_then(|x| x.as_f64()).unwrap_or(default) };
+    let get_f64_opt = |key: &str| -> Option<f64> { v.get(key).and_then(|x| x.as_f64()) };
     let get_bool = |key: &str, default: bool| -> bool {
         v.get(key).and_then(|x| x.as_bool()).unwrap_or(default)
     };
@@ -380,12 +375,9 @@ fn gemma3_config_from_hf_json_str(json: &str) -> Result<Gemma3Config> {
             .map(|x| x as usize)
             .unwrap_or(default)
     };
-    let get_f64 = |key: &str, default: f64| -> f64 {
-        v.get(key).and_then(|x| x.as_f64()).unwrap_or(default)
-    };
-    let get_f64_opt = |key: &str| -> Option<f64> {
-        v.get(key).and_then(|x| x.as_f64())
-    };
+    let get_f64 =
+        |key: &str, default: f64| -> f64 { v.get(key).and_then(|x| x.as_f64()).unwrap_or(default) };
+    let get_f64_opt = |key: &str| -> Option<f64> { v.get(key).and_then(|x| x.as_f64()) };
     let get_bool = |key: &str, default: bool| -> bool {
         v.get(key).and_then(|x| x.as_bool()).unwrap_or(default)
     };
@@ -412,7 +404,9 @@ fn gemma3_config_from_hf_json_str(json: &str) -> Result<Gemma3Config> {
 
 fn parse_eos_token_id(json: &str) -> Option<u32> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
-    v.get("eos_token_id").and_then(|x| x.as_u64()).map(|x| x as u32)
+    v.get("eos_token_id")
+        .and_then(|x| x.as_u64())
+        .map(|x| x as u32)
 }
 
 fn apply_repeat_penalty(logits: &mut [f32], penalty: f32, context: &[u32]) {
@@ -443,7 +437,10 @@ fn sample(logits: &[f32], temperature: f32, top_p: Option<f32>, seed: u64) -> u3
     }
     let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let inv_t = 1.0 / temperature.max(1e-6);
-    let mut probs: Vec<f32> = logits.iter().map(|&x| ((x - max_l) * inv_t).exp()).collect();
+    let mut probs: Vec<f32> = logits
+        .iter()
+        .map(|&x| ((x - max_l) * inv_t).exp())
+        .collect();
     let sum: f32 = probs.iter().sum();
     for p in &mut probs {
         *p /= sum.max(1e-30);
@@ -481,7 +478,9 @@ fn sample(logits: &[f32], temperature: f32, top_p: Option<f32>, seed: u64) -> u3
     } else {
         return 0;
     }
-    let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    let mut state = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     state ^= state >> 33;
     state = state.wrapping_mul(0xff51_afd7_ed55_8ccd);
     state ^= state >> 33;

@@ -50,10 +50,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("done in {:.2?}", t0.elapsed());
     eprintln!(
         "  dims={:?}  depths={:?}  image_size={}  classes={}",
-        model.config.dims,
-        model.config.depths,
-        model.config.image_size,
-        model.config.num_classes,
+        model.config.dims, model.config.depths, model.config.image_size, model.config.num_classes,
     );
 
     // Synthetic input: a centered bright spot on a dark field, then
@@ -86,12 +83,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let elapsed = t0.elapsed();
     eprintln!("Forward done in {:.2?}", elapsed);
 
-    let (top_idx, top_val) = logits
-        .iter()
-        .enumerate()
-        .fold((0usize, f32::NEG_INFINITY), |(bi, bv), (i, &v)| {
-            if v > bv { (i, v) } else { (bi, bv) }
-        });
+    let (top_idx, top_val) =
+        logits
+            .iter()
+            .enumerate()
+            .fold((0usize, f32::NEG_INFINITY), |(bi, bv), (i, &v)| {
+                if v > bv { (i, v) } else { (bi, bv) }
+            });
     println!();
     println!("Logits length: {}", logits.len());
     println!("Top-1 class index: {top_idx}  (logit = {top_val:+.4})");

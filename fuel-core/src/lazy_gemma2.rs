@@ -142,7 +142,9 @@ impl Gemma2Model {
     /// must apply Gemma's `sqrt(hidden_size)` scaling before
     /// invoking — matches lazy_paligemma / lazy_voxtral convention.
     pub fn forward_embeds(
-        &self, scaled_embeds: &LazyTensor, start_pos: usize,
+        &self,
+        scaled_embeds: &LazyTensor,
+        start_pos: usize,
     ) -> Result<LazyTensor> {
         let h_norm = self.decode_from_scaled_embeds(scaled_embeds, start_pos)?;
         self.apply_lm_head(&h_norm)
@@ -151,7 +153,9 @@ impl Gemma2Model {
     /// Hidden-state variant of [`Self::forward_embeds`]. Returns the
     /// post-final-RmsNorm states `(1, seq, hidden_size)`.
     pub fn forward_hidden_embeds(
-        &self, scaled_embeds: &LazyTensor, start_pos: usize,
+        &self,
+        scaled_embeds: &LazyTensor,
+        start_pos: usize,
     ) -> Result<LazyTensor> {
         self.decode_from_scaled_embeds(scaled_embeds, start_pos)
     }
@@ -159,13 +163,13 @@ impl Gemma2Model {
     /// Build per-token embeddings without running the decoder. Used by
     /// multimodal compositions. Returns shape `(1, seq, hidden_size)`;
     /// caller is responsible for the `sqrt(hidden_size)` scaling.
-    pub fn embed_tokens_anchored(
-        &self, anchor: &LazyTensor, tokens: &[u32],
-    ) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
-            cfg.vocab_size, cfg.hidden_size, tokens,
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
         )
     }
 
@@ -189,14 +193,20 @@ impl Gemma2Model {
 
         // ---- Embedding + sqrt(hidden_size) scaling -------------------------
         let h = LazyTensor::embed_tokens(
-            weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
+            weights.token_embedding.clone(),
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
+            &Device::cpu(),
         )?;
         let h = h.mul_scalar((cfg.hidden_size as f64).sqrt());
         self.decode_from_scaled_embeds(&h, start_pos)
     }
 
     fn decode_from_scaled_embeds(
-        &self, scaled_embeds: &LazyTensor, start_pos: usize,
+        &self,
+        scaled_embeds: &LazyTensor,
+        start_pos: usize,
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
@@ -207,31 +217,33 @@ impl Gemma2Model {
                 "Gemma2Model::forward_embeds: expected scaled_embeds shape \
                  (1, seq, hidden_size={}), got {:?}",
                 cfg.hidden_size, dims,
-            )).bt());
+            ))
+            .bt());
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(crate::Error::Msg(
-                "Gemma2Model::forward_embeds: seq must be > 0".into(),
-            ).bt());
+            return Err(
+                crate::Error::Msg("Gemma2Model::forward_embeds: seq must be > 0".into()).bt(),
+            );
         }
         let head_dim = cfg.head_dim;
         if cfg.num_attention_heads * head_dim != cfg.hidden_size {
             return Err(crate::Error::Msg(
                 "Gemma2Config: num_attention_heads * head_dim must equal hidden_size".into(),
-            ).bt());
+            )
+            .bt());
         }
         if cfg.num_attention_heads % cfg.num_key_value_heads != 0 {
             return Err(crate::Error::Msg(
-                "Gemma2Config: num_attention_heads must be a multiple of num_key_value_heads".into(),
-            ).bt());
+                "Gemma2Config: num_attention_heads must be a multiple of num_key_value_heads"
+                    .into(),
+            )
+            .bt());
         }
         let mut h = scaled_embeds.clone();
 
         // ---- Shared RoPE tables --------------------------------------------
-        let (rope_cos, rope_sin) = h.rope_tables_const(
-            cfg.rope_theta, start_pos, seq, head_dim,
-        );
+        let (rope_cos, rope_sin) = h.rope_tables_const(cfg.rope_theta, start_pos, seq, head_dim);
 
         // ---- Causal (optionally sliding) mask, shared across layers --------
         let mask = self.build_mask(&h, seq);
@@ -282,10 +294,21 @@ impl Gemma2Model {
         let kv_dim = cfg.num_key_value_heads * head_dim;
 
         // Attention sublayer: post_attn_norm(attn(input_norm(x))) + x.
-        let x_in = x.rms_norm_affine_with_offset(&layer.input_norm_gain, 1.0, cfg.rms_norm_eps).unwrap();
-        let q = layer.q.apply_linear(&x_in, cfg.hidden_size, cfg.hidden_size)?.add_optional_trailing_bias(layer.q_bias.as_ref())?;
-        let k = layer.k.apply_linear(&x_in, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.k_bias.as_ref())?;
-        let v = layer.v.apply_linear(&x_in, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.v_bias.as_ref())?;
+        let x_in = x
+            .rms_norm_affine_with_offset(&layer.input_norm_gain, 1.0, cfg.rms_norm_eps)
+            .unwrap();
+        let q = layer
+            .q
+            .apply_linear(&x_in, cfg.hidden_size, cfg.hidden_size)?
+            .add_optional_trailing_bias(layer.q_bias.as_ref())?;
+        let k = layer
+            .k
+            .apply_linear(&x_in, cfg.hidden_size, kv_dim)?
+            .add_optional_trailing_bias(layer.k_bias.as_ref())?;
+        let v = layer
+            .v
+            .apply_linear(&x_in, cfg.hidden_size, kv_dim)?
+            .add_optional_trailing_bias(layer.v_bias.as_ref())?;
 
         let _ = (batch, seq);
         let q = q.split_heads(cfg.num_attention_heads, head_dim)?;
@@ -307,22 +330,37 @@ impl Gemma2Model {
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v_full)?;
         let merged = ctx.merge_heads()?;
-        let attn_out = layer.o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?.add_optional_trailing_bias(layer.o_bias.as_ref())?;
+        let attn_out = layer
+            .o
+            .apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?
+            .add_optional_trailing_bias(layer.o_bias.as_ref())?;
         // Post-attn norm BEFORE the residual add.
-        let attn_post = attn_out.rms_norm_affine_with_offset(&layer.post_attn_norm_gain, 1.0, cfg.rms_norm_eps).unwrap();
+        let attn_post = attn_out
+            .rms_norm_affine_with_offset(&layer.post_attn_norm_gain, 1.0, cfg.rms_norm_eps)
+            .unwrap();
         let h1 = x.add(&attn_post)?;
 
         // MLP sublayer: post_ffn_norm(mlp(pre_ffn_norm(h1))) + h1.
-        let h1_in = h1.rms_norm_affine_with_offset(&layer.pre_ffn_norm_gain, 1.0, cfg.rms_norm_eps).unwrap();
-        let gate = layer.gate.apply_linear(&h1_in, cfg.hidden_size, cfg.intermediate_size)?;
-        let up = layer.up.apply_linear(&h1_in, cfg.hidden_size, cfg.intermediate_size)?;
+        let h1_in = h1
+            .rms_norm_affine_with_offset(&layer.pre_ffn_norm_gain, 1.0, cfg.rms_norm_eps)
+            .unwrap();
+        let gate = layer
+            .gate
+            .apply_linear(&h1_in, cfg.hidden_size, cfg.intermediate_size)?;
+        let up = layer
+            .up
+            .apply_linear(&h1_in, cfg.hidden_size, cfg.intermediate_size)?;
         // Gemma 2 default activation is GeGLU-tanh (HiddenAct::GeluPytorchTanh
         // in the config), but the original Gemma uses Silu. The eager config
         // carries the activation as a field; we follow gemma-2 default which
         // is GELU-tanh (used by the public release).
         let swi = gate.gelu().mul(&up)?;
-        let ffn_out = layer.down.apply_linear(&swi, cfg.intermediate_size, cfg.hidden_size)?;
-        let ffn_post = ffn_out.rms_norm_affine_with_offset(&layer.post_ffn_norm_gain, 1.0, cfg.rms_norm_eps).unwrap();
+        let ffn_out = layer
+            .down
+            .apply_linear(&swi, cfg.intermediate_size, cfg.hidden_size)?;
+        let ffn_post = ffn_out
+            .rms_norm_affine_with_offset(&layer.post_ffn_norm_gain, 1.0, cfg.rms_norm_eps)
+            .unwrap();
         h1.add(&ffn_post)
     }
 }
@@ -429,17 +467,19 @@ impl Gemma2Weights {
         let q_dim = cfg.num_attention_heads * cfg.head_dim;
         let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
 
-        let token_embedding = Arc::from(
-            crate::lazy::load_tensor_as_f32(st, "model.embed_tokens.weight")?,
-        );
+        let token_embedding = Arc::from(crate::lazy::load_tensor_as_f32(
+            st,
+            "model.embed_tokens.weight",
+        )?);
 
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         for li in 0..cfg.num_hidden_layers {
-            let load_lin = |suffix: &str, out_f: usize, in_f: usize| -> crate::Result<WeightStorage> {
-                let name = format!("model.layers.{li}.{suffix}");
-                let v = crate::lazy::load_transposed_matrix(st, &name, out_f, in_f)?;
-                Ok(WeightStorage::F32(Arc::from(v)))
-            };
+            let load_lin =
+                |suffix: &str, out_f: usize, in_f: usize| -> crate::Result<WeightStorage> {
+                    let name = format!("model.layers.{li}.{suffix}");
+                    let v = crate::lazy::load_transposed_matrix(st, &name, out_f, in_f)?;
+                    Ok(WeightStorage::F32(Arc::from(v)))
+                };
             let load_norm = |suffix: &str| -> crate::Result<Arc<[f32]>> {
                 let name = format!("model.layers.{li}.{suffix}");
                 Ok(Arc::from(crate::lazy::load_tensor_as_f32(st, &name)?))
@@ -464,11 +504,13 @@ impl Gemma2Weights {
             });
         }
 
-        let final_norm_gain = Arc::from(
-            crate::lazy::load_tensor_as_f32(st, "model.norm.weight")?,
-        );
+        let final_norm_gain = Arc::from(crate::lazy::load_tensor_as_f32(st, "model.norm.weight")?);
 
-        Ok(Gemma2Weights { token_embedding, layers, final_norm_gain })
+        Ok(Gemma2Weights {
+            token_embedding,
+            layers,
+            final_norm_gain,
+        })
     }
 }
 
@@ -511,11 +553,10 @@ impl Gemma2Model {
                 }
                 paths
             }
-            Err(_) => vec![repo
-                .get("model.safetensors")
-                .map_err(|e| {
-                    crate::Error::Msg(format!("hf-hub model.safetensors: {e}"))
-                })?],
+            Err(_) => vec![
+                repo.get("model.safetensors")
+                    .map_err(|e| crate::Error::Msg(format!("hf-hub model.safetensors: {e}")))?,
+            ],
         };
 
         let st = unsafe { crate::safetensors::MmapedSafetensors::multi(&weight_paths) }?;
@@ -591,8 +632,8 @@ mod tests {
             "max_position_embeddings": 512
         }"#;
         let cfg = Gemma2Config::from_hf_json_str(json).unwrap();
-        assert_eq!(cfg.num_key_value_heads, 4);  // defaults to num_attention_heads
-        assert_eq!(cfg.head_dim, 16);            // defaults to hidden / heads
+        assert_eq!(cfg.num_key_value_heads, 4); // defaults to num_attention_heads
+        assert_eq!(cfg.head_dim, 16); // defaults to hidden / heads
         assert!((cfg.rms_norm_eps - 1e-6).abs() < 1e-12);
         assert!((cfg.rope_theta - 10000.0).abs() < 1e-9);
         assert!(!cfg.attention_bias);
@@ -603,11 +644,17 @@ mod tests {
 
     fn tiny_cfg() -> Gemma2Config {
         Gemma2Config {
-            vocab_size: 32, hidden_size: 16, intermediate_size: 32,
-            num_hidden_layers: 2, num_attention_heads: 4,
-            num_key_value_heads: 2, head_dim: 4,
-            rms_norm_eps: 1e-6, rope_theta: 10_000.0,
-            attention_bias: false, max_position_embeddings: 32,
+            vocab_size: 32,
+            hidden_size: 16,
+            intermediate_size: 32,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            num_key_value_heads: 2,
+            head_dim: 4,
+            rms_norm_eps: 1e-6,
+            rope_theta: 10_000.0,
+            attention_bias: false,
+            max_position_embeddings: 32,
             attn_logit_softcapping: Some(50.0),
             final_logit_softcapping: Some(30.0),
             sliding_window: None,
@@ -650,7 +697,10 @@ mod tests {
     #[test]
     fn forward_shape_and_finite() {
         let cfg = tiny_cfg();
-        let model = Gemma2Model { config: cfg.clone(), weights: tiny_weights(&cfg, 11) };
+        let model = Gemma2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg, 11),
+        };
         let tokens = [1_u32, 2, 3, 4];
         let out = model.forward(&tokens, 0).unwrap();
         assert_eq!(out.shape().dims(), &[1, tokens.len(), cfg.vocab_size]);
@@ -664,12 +714,14 @@ mod tests {
     fn final_softcap_bounds_logits() {
         let mut cfg = tiny_cfg();
         cfg.final_logit_softcapping = Some(2.0);
-        let model = Gemma2Model { config: cfg.clone(), weights: tiny_weights(&cfg, 22) };
+        let model = Gemma2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg, 22),
+        };
         let tokens = [1_u32, 2, 3, 4];
         let out = model.forward(&tokens, 0).unwrap().realize_f32();
         for &v in &out {
-            assert!(v.abs() <= 2.0_f32 + 1e-4,
-                "logit {v} exceeds softcap 2.0");
+            assert!(v.abs() <= 2.0_f32 + 1e-4, "logit {v} exceeds softcap 2.0");
         }
     }
 
@@ -690,8 +742,14 @@ mod tests {
             c
         };
         let weights = tiny_weights(&cfg_no_window, 33);
-        let m_a = Gemma2Model { config: cfg_no_window, weights: weights.clone() };
-        let m_b = Gemma2Model { config: cfg_window, weights };
+        let m_a = Gemma2Model {
+            config: cfg_no_window,
+            weights: weights.clone(),
+        };
+        let m_b = Gemma2Model {
+            config: cfg_window,
+            weights,
+        };
         let tokens = [1_u32, 2, 3, 4];
         let a = m_a.forward(&tokens, 0).unwrap().realize_f32();
         let b = m_b.forward(&tokens, 0).unwrap().realize_f32();
@@ -699,8 +757,10 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-7,
-            "sliding window must alter output, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-7,
+            "sliding window must alter output, max_diff = {max_diff}"
+        );
     }
 
     /// Gemma-2 RmsNorm scales by `gamma + 1`. With gain=0 (default
@@ -714,18 +774,29 @@ mod tests {
         let x = LazyTensor::from_f32(data, Shape::from_dims(&[1, 1, h]), &Device::cpu());
         let zero_gain: Arc<[f32]> = Arc::from(vec![0.0_f32; h]);
         let one_gain: Arc<[f32]> = Arc::from(vec![1.0_f32; h]);
-        let g2_out = x.rms_norm_affine_with_offset(&zero_gain, 1.0, 1e-6).unwrap().realize_f32();
-        let baseline = x.rms_norm_affine(Arc::clone(&one_gain), 1e-6).unwrap().realize_f32();
+        let g2_out = x
+            .rms_norm_affine_with_offset(&zero_gain, 1.0, 1e-6)
+            .unwrap()
+            .realize_f32();
+        let baseline = x
+            .rms_norm_affine(Arc::clone(&one_gain), 1e-6)
+            .unwrap()
+            .realize_f32();
         for (a, b) in g2_out.iter().zip(baseline.iter()) {
-            assert!((a - b).abs() < 1e-6,
-                "gemma2 RmsNorm with gain=0 must equal standard RmsNorm with gain=1, {a} vs {b}");
+            assert!(
+                (a - b).abs() < 1e-6,
+                "gemma2 RmsNorm with gain=0 must equal standard RmsNorm with gain=1, {a} vs {b}"
+            );
         }
     }
 
     #[test]
     fn forward_hidden_shape_and_finite() {
         let cfg = tiny_cfg();
-        let model = Gemma2Model { config: cfg.clone(), weights: tiny_weights(&cfg, 42) };
+        let model = Gemma2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg, 42),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
         let hidden = model.forward_hidden(&tokens, 0).unwrap();
         assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
@@ -737,26 +808,35 @@ mod tests {
     #[test]
     fn forward_embeds_matches_forward_after_token_lookup() {
         let cfg = tiny_cfg();
-        let model = Gemma2Model { config: cfg.clone(), weights: tiny_weights(&cfg, 42) };
+        let model = Gemma2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg, 42),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let scaled = embeds.mul_scalar((cfg.hidden_size as f64).sqrt());
         let logits_via_embeds = model.forward_embeds(&scaled, 0).unwrap().realize_f32();
         assert_eq!(logits_ref.len(), logits_via_embeds.len());
-        let max_diff = logits_ref.iter().zip(logits_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "Gemma2 forward vs forward_embeds (post-scale) must agree (max diff {max_diff})");
+        let max_diff = logits_ref
+            .iter()
+            .zip(logits_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "Gemma2 forward vs forward_embeds (post-scale) must agree (max diff {max_diff})"
+        );
     }
 
     #[test]
     fn forward_embeds_rejects_bad_shape() {
         let cfg = tiny_cfg();
-        let model = Gemma2Model { config: cfg.clone(), weights: tiny_weights(&cfg, 42) };
+        let model = Gemma2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg, 42),
+        };
         let bad_embeds = LazyTensor::from_f32(
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
             Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
@@ -768,18 +848,27 @@ mod tests {
     #[test]
     fn forward_hidden_embeds_matches_forward_hidden() {
         let cfg = tiny_cfg();
-        let model = Gemma2Model { config: cfg.clone(), weights: tiny_weights(&cfg, 42) };
+        let model = Gemma2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg, 42),
+        };
         let tokens: Vec<u32> = vec![2, 5];
         let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let scaled = embeds.mul_scalar((cfg.hidden_size as f64).sqrt());
-        let h_via_embeds = model.forward_hidden_embeds(&scaled, 0).unwrap().realize_f32();
-        let max_diff = h_ref.iter().zip(h_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "Gemma2 forward_hidden vs forward_hidden_embeds (post-scale) must agree (max diff {max_diff})");
+        let h_via_embeds = model
+            .forward_hidden_embeds(&scaled, 0)
+            .unwrap()
+            .realize_f32();
+        let max_diff = h_ref
+            .iter()
+            .zip(h_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "Gemma2 forward_hidden vs forward_hidden_embeds (post-scale) must agree (max diff {max_diff})"
+        );
     }
 }

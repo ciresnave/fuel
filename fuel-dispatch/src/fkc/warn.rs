@@ -22,7 +22,10 @@ mod tests {
 
     #[test]
     fn import_warning_constructs_and_carries_section_and_message() {
-        let w = ImportWarning { section: "add_f32".into(), message: "downgraded bit_stable".into() };
+        let w = ImportWarning {
+            section: "add_f32".into(),
+            message: "downgraded bit_stable".into(),
+        };
         assert_eq!(w.section, "add_f32");
         assert!(w.message.contains("downgraded"));
         assert_eq!(w.clone(), w); // Clone + PartialEq derive present

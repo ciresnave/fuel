@@ -30,7 +30,12 @@ use super::status::check;
 
 fn shape_i32(op: &'static str, dim_index: usize, dim_value: usize) -> Result<i32> {
     i32::try_from(dim_value).map_err(|_| {
-        CudaError::BaracudaShapeOverflow { op, dim_index, dim_value }.into()
+        CudaError::BaracudaShapeOverflow {
+            op,
+            dim_index,
+            dim_value,
+        }
+        .into()
     })
 }
 
@@ -47,11 +52,21 @@ pub fn causal_conv1d_f32(
     x: &CudaStorageBytes,
     weight: &CudaStorageBytes,
     bias: Option<&CudaStorageBytes>,
-    batch: usize, channels: usize, seqlen: usize, width: usize,
+    batch: usize,
+    channels: usize,
+    seqlen: usize,
+    width: usize,
     use_silu: bool,
 ) -> Result<CudaStorageBytes> {
     causal_conv1d_inner(
-        x, weight, bias, batch, channels, seqlen, width, use_silu,
+        x,
+        weight,
+        bias,
+        batch,
+        channels,
+        seqlen,
+        width,
+        use_silu,
         std::mem::size_of::<f32>(),
         sys::baracuda_kernels_causal_conv1d_f32_run,
         "causal_conv1d_f32",
@@ -59,11 +74,24 @@ pub fn causal_conv1d_f32(
 }
 #[allow(clippy::too_many_arguments)]
 pub fn causal_conv1d_f16(
-    x: &CudaStorageBytes, weight: &CudaStorageBytes, bias: Option<&CudaStorageBytes>,
-    batch: usize, channels: usize, seqlen: usize, width: usize, use_silu: bool,
+    x: &CudaStorageBytes,
+    weight: &CudaStorageBytes,
+    bias: Option<&CudaStorageBytes>,
+    batch: usize,
+    channels: usize,
+    seqlen: usize,
+    width: usize,
+    use_silu: bool,
 ) -> Result<CudaStorageBytes> {
     causal_conv1d_inner(
-        x, weight, bias, batch, channels, seqlen, width, use_silu,
+        x,
+        weight,
+        bias,
+        batch,
+        channels,
+        seqlen,
+        width,
+        use_silu,
         std::mem::size_of::<half::f16>(),
         sys::baracuda_kernels_causal_conv1d_f16_run,
         "causal_conv1d_f16",
@@ -71,11 +99,24 @@ pub fn causal_conv1d_f16(
 }
 #[allow(clippy::too_many_arguments)]
 pub fn causal_conv1d_bf16(
-    x: &CudaStorageBytes, weight: &CudaStorageBytes, bias: Option<&CudaStorageBytes>,
-    batch: usize, channels: usize, seqlen: usize, width: usize, use_silu: bool,
+    x: &CudaStorageBytes,
+    weight: &CudaStorageBytes,
+    bias: Option<&CudaStorageBytes>,
+    batch: usize,
+    channels: usize,
+    seqlen: usize,
+    width: usize,
+    use_silu: bool,
 ) -> Result<CudaStorageBytes> {
     causal_conv1d_inner(
-        x, weight, bias, batch, channels, seqlen, width, use_silu,
+        x,
+        weight,
+        bias,
+        batch,
+        channels,
+        seqlen,
+        width,
+        use_silu,
         std::mem::size_of::<half::bf16>(),
         sys::baracuda_kernels_causal_conv1d_bf16_run,
         "causal_conv1d_bf16",
@@ -83,11 +124,24 @@ pub fn causal_conv1d_bf16(
 }
 #[allow(clippy::too_many_arguments)]
 pub fn causal_conv1d_f64(
-    x: &CudaStorageBytes, weight: &CudaStorageBytes, bias: Option<&CudaStorageBytes>,
-    batch: usize, channels: usize, seqlen: usize, width: usize, use_silu: bool,
+    x: &CudaStorageBytes,
+    weight: &CudaStorageBytes,
+    bias: Option<&CudaStorageBytes>,
+    batch: usize,
+    channels: usize,
+    seqlen: usize,
+    width: usize,
+    use_silu: bool,
 ) -> Result<CudaStorageBytes> {
     causal_conv1d_inner(
-        x, weight, bias, batch, channels, seqlen, width, use_silu,
+        x,
+        weight,
+        bias,
+        batch,
+        channels,
+        seqlen,
+        width,
+        use_silu,
         std::mem::size_of::<f64>(),
         sys::baracuda_kernels_causal_conv1d_f64_run,
         "causal_conv1d_f64",
@@ -95,10 +149,17 @@ pub fn causal_conv1d_f64(
 }
 
 type CausalConv1dRun = unsafe extern "C" fn(
-    i32, i32, i32, i32, i32,
-    *const std::ffi::c_void, *const std::ffi::c_void, *const std::ffi::c_void,
+    i32,
+    i32,
+    i32,
+    i32,
+    i32,
+    *const std::ffi::c_void,
+    *const std::ffi::c_void,
+    *const std::ffi::c_void,
     *mut std::ffi::c_void,
-    *mut std::ffi::c_void, usize,
+    *mut std::ffi::c_void,
+    usize,
     *mut std::ffi::c_void,
 ) -> i32;
 
@@ -107,7 +168,10 @@ fn causal_conv1d_inner(
     x: &CudaStorageBytes,
     weight: &CudaStorageBytes,
     bias: Option<&CudaStorageBytes>,
-    batch: usize, channels: usize, seqlen: usize, width: usize,
+    batch: usize,
+    channels: usize,
+    seqlen: usize,
+    width: usize,
     use_silu: bool,
     dtype_size_bytes: usize,
     kernel: CausalConv1dRun,
@@ -135,12 +199,17 @@ fn causal_conv1d_inner(
             weight.buffer().as_raw().0 as *const std::ffi::c_void,
             bias_ptr,
             out_buf.as_raw().0 as *mut std::ffi::c_void,
-            std::ptr::null_mut(), 0,
+            std::ptr::null_mut(),
+            0,
             stream,
         )
     };
     check(status, op_label)?;
-    Ok(CudaStorageBytes::from_parts(Arc::new(out_buf), device, out_bytes))
+    Ok(CudaStorageBytes::from_parts(
+        Arc::new(out_buf),
+        device,
+        out_bytes,
+    ))
 }
 
 // ──────── causal_conv1d FW with Fuel-IR pre-pad convention ────────
@@ -174,15 +243,13 @@ fn strip_prepad_d2d(
     prepad_elems: usize,
     elem_bytes: usize,
 ) -> Result<CudaStorageBytes> {
-    use baracuda_cuda_sys::driver;
-    use baracuda_cuda_sys::types::{CUmemorytype, CUDA_MEMCPY2D};
     use baracuda_cuda_sys::CUdeviceptr;
+    use baracuda_cuda_sys::driver;
+    use baracuda_cuda_sys::types::{CUDA_MEMCPY2D, CUmemorytype};
 
     let device = src.device().clone();
     let dst_cols = src_cols - prepad_elems;
-    let dst_bytes = rows
-        .saturating_mul(dst_cols)
-        .saturating_mul(elem_bytes);
+    let dst_bytes = rows.saturating_mul(dst_cols).saturating_mul(elem_bytes);
     if dst_bytes == 0 {
         return CudaStorageBytes::alloc(&device, 0);
     }
@@ -194,18 +261,17 @@ fn strip_prepad_d2d(
     let src_dev = CUdeviceptr(src.buffer().as_raw().0 + (prepad_elems * elem_bytes) as u64);
     let p = CUDA_MEMCPY2D {
         src_memory_type: CUmemorytype::DEVICE,
-        src_device:      src_dev,
+        src_device: src_dev,
         src_pitch,
         dst_memory_type: CUmemorytype::DEVICE,
-        dst_device:      dst_buf.as_raw(),
+        dst_device: dst_buf.as_raw(),
         dst_pitch,
-        width_in_bytes:  dst_pitch,
-        height:          rows,
+        width_in_bytes: dst_pitch,
+        height: rows,
         ..Default::default()
     };
-    let d = driver().map_err(|e| {
-        fuel_ir::Error::Msg(format!("strip_prepad_d2d: driver(): {e:?}")).bt()
-    })?;
+    let d = driver()
+        .map_err(|e| fuel_ir::Error::Msg(format!("strip_prepad_d2d: driver(): {e:?}")).bt())?;
     let cu = d.cu_memcpy_2d_async().map_err(|e| {
         fuel_ir::Error::Msg(format!("strip_prepad_d2d: cu_memcpy_2d_async: {e:?}")).bt()
     })?;
@@ -217,7 +283,11 @@ fn strip_prepad_d2d(
         ))
         .bt());
     }
-    Ok(CudaStorageBytes::from_parts(Arc::new(dst_buf), device, dst_bytes))
+    Ok(CudaStorageBytes::from_parts(
+        Arc::new(dst_buf),
+        device,
+        dst_bytes,
+    ))
 }
 
 /// Causal conv1d forward in Fuel-IR convention: pre-padded `x` shape
@@ -226,67 +296,134 @@ fn strip_prepad_d2d(
 /// (matches the Fuel-IR builder gate).
 #[allow(clippy::too_many_arguments)]
 pub fn causal_conv1d_fuel_prepad_f32(
-    x: &CudaStorageBytes, weight: &CudaStorageBytes, bias: &CudaStorageBytes,
-    batch: usize, channels: usize,
-    seq_in: usize, seq_out: usize, kernel: usize,
+    x: &CudaStorageBytes,
+    weight: &CudaStorageBytes,
+    bias: &CudaStorageBytes,
+    batch: usize,
+    channels: usize,
+    seq_in: usize,
+    seq_out: usize,
+    kernel: usize,
     use_silu: bool,
 ) -> Result<CudaStorageBytes> {
     causal_conv1d_fuel_prepad_inner(
-        x, weight, bias, batch, channels, seq_in, seq_out, kernel, use_silu,
+        x,
+        weight,
+        bias,
+        batch,
+        channels,
+        seq_in,
+        seq_out,
+        kernel,
+        use_silu,
         std::mem::size_of::<f32>(),
-        causal_conv1d_f32, "causal_conv1d_fuel_prepad_f32",
+        causal_conv1d_f32,
+        "causal_conv1d_fuel_prepad_f32",
     )
 }
 #[allow(clippy::too_many_arguments)]
 pub fn causal_conv1d_fuel_prepad_f64(
-    x: &CudaStorageBytes, weight: &CudaStorageBytes, bias: &CudaStorageBytes,
-    batch: usize, channels: usize,
-    seq_in: usize, seq_out: usize, kernel: usize,
+    x: &CudaStorageBytes,
+    weight: &CudaStorageBytes,
+    bias: &CudaStorageBytes,
+    batch: usize,
+    channels: usize,
+    seq_in: usize,
+    seq_out: usize,
+    kernel: usize,
     use_silu: bool,
 ) -> Result<CudaStorageBytes> {
     causal_conv1d_fuel_prepad_inner(
-        x, weight, bias, batch, channels, seq_in, seq_out, kernel, use_silu,
+        x,
+        weight,
+        bias,
+        batch,
+        channels,
+        seq_in,
+        seq_out,
+        kernel,
+        use_silu,
         std::mem::size_of::<f64>(),
-        causal_conv1d_f64, "causal_conv1d_fuel_prepad_f64",
+        causal_conv1d_f64,
+        "causal_conv1d_fuel_prepad_f64",
     )
 }
 #[allow(clippy::too_many_arguments)]
 pub fn causal_conv1d_fuel_prepad_bf16(
-    x: &CudaStorageBytes, weight: &CudaStorageBytes, bias: &CudaStorageBytes,
-    batch: usize, channels: usize,
-    seq_in: usize, seq_out: usize, kernel: usize,
+    x: &CudaStorageBytes,
+    weight: &CudaStorageBytes,
+    bias: &CudaStorageBytes,
+    batch: usize,
+    channels: usize,
+    seq_in: usize,
+    seq_out: usize,
+    kernel: usize,
     use_silu: bool,
 ) -> Result<CudaStorageBytes> {
     causal_conv1d_fuel_prepad_inner(
-        x, weight, bias, batch, channels, seq_in, seq_out, kernel, use_silu,
+        x,
+        weight,
+        bias,
+        batch,
+        channels,
+        seq_in,
+        seq_out,
+        kernel,
+        use_silu,
         std::mem::size_of::<half::bf16>(),
-        causal_conv1d_bf16, "causal_conv1d_fuel_prepad_bf16",
+        causal_conv1d_bf16,
+        "causal_conv1d_fuel_prepad_bf16",
     )
 }
 #[allow(clippy::too_many_arguments)]
 pub fn causal_conv1d_fuel_prepad_f16(
-    x: &CudaStorageBytes, weight: &CudaStorageBytes, bias: &CudaStorageBytes,
-    batch: usize, channels: usize,
-    seq_in: usize, seq_out: usize, kernel: usize,
+    x: &CudaStorageBytes,
+    weight: &CudaStorageBytes,
+    bias: &CudaStorageBytes,
+    batch: usize,
+    channels: usize,
+    seq_in: usize,
+    seq_out: usize,
+    kernel: usize,
     use_silu: bool,
 ) -> Result<CudaStorageBytes> {
     causal_conv1d_fuel_prepad_inner(
-        x, weight, bias, batch, channels, seq_in, seq_out, kernel, use_silu,
+        x,
+        weight,
+        bias,
+        batch,
+        channels,
+        seq_in,
+        seq_out,
+        kernel,
+        use_silu,
         std::mem::size_of::<half::f16>(),
-        causal_conv1d_f16, "causal_conv1d_fuel_prepad_f16",
+        causal_conv1d_f16,
+        "causal_conv1d_fuel_prepad_f16",
     )
 }
 
 type CausalConv1dRawFw = fn(
-    &CudaStorageBytes, &CudaStorageBytes, Option<&CudaStorageBytes>,
-    usize, usize, usize, usize, bool,
+    &CudaStorageBytes,
+    &CudaStorageBytes,
+    Option<&CudaStorageBytes>,
+    usize,
+    usize,
+    usize,
+    usize,
+    bool,
 ) -> Result<CudaStorageBytes>;
 
 #[allow(clippy::too_many_arguments)]
 fn causal_conv1d_fuel_prepad_inner(
-    x: &CudaStorageBytes, weight: &CudaStorageBytes, bias: &CudaStorageBytes,
-    batch: usize, channels: usize,
-    seq_in: usize, seq_out: usize, kernel: usize,
+    x: &CudaStorageBytes,
+    weight: &CudaStorageBytes,
+    bias: &CudaStorageBytes,
+    batch: usize,
+    channels: usize,
+    seq_in: usize,
+    seq_out: usize,
+    kernel: usize,
     use_silu: bool,
     elem_bytes: usize,
     raw_fw: CausalConv1dRawFw,
@@ -304,20 +441,20 @@ fn causal_conv1d_fuel_prepad_inner(
     // convolutions of the leading zero-pad; the remaining `seq_out`
     // timesteps match Fuel's CPU kernel exactly.
     let raw_out = raw_fw(
-        x, weight, Some(bias),
-        batch, channels, seq_in, kernel, use_silu,
+        x,
+        weight,
+        Some(bias),
+        batch,
+        channels,
+        seq_in,
+        kernel,
+        use_silu,
     )?;
     if kernel == 1 {
         // No prepad — raw_out is already Fuel-shaped.
         return Ok(raw_out);
     }
-    strip_prepad_d2d(
-        &raw_out,
-        batch * channels,
-        seq_in,
-        kernel - 1,
-        elem_bytes,
-    )
+    strip_prepad_d2d(&raw_out, batch * channels, seq_in, kernel - 1, elem_bytes)
 }
 
 /// Outputs from causal_conv1d backward: gradients matching the FW
@@ -334,13 +471,26 @@ pub struct CausalConv1dBackward {
 /// null on the FW pass).
 #[allow(clippy::too_many_arguments)]
 pub fn causal_conv1d_backward_f32(
-    x: &CudaStorageBytes, weight: &CudaStorageBytes,
-    bias: Option<&CudaStorageBytes>, dy: &CudaStorageBytes,
-    batch: usize, channels: usize, seqlen: usize, width: usize,
+    x: &CudaStorageBytes,
+    weight: &CudaStorageBytes,
+    bias: Option<&CudaStorageBytes>,
+    dy: &CudaStorageBytes,
+    batch: usize,
+    channels: usize,
+    seqlen: usize,
+    width: usize,
     use_silu: bool,
 ) -> Result<CausalConv1dBackward> {
     causal_conv1d_backward_inner(
-        x, weight, bias, dy, batch, channels, seqlen, width, use_silu,
+        x,
+        weight,
+        bias,
+        dy,
+        batch,
+        channels,
+        seqlen,
+        width,
+        use_silu,
         std::mem::size_of::<f32>(),
         sys::baracuda_kernels_causal_conv1d_f32_backward_run,
         "causal_conv1d_f32_backward",
@@ -348,12 +498,26 @@ pub fn causal_conv1d_backward_f32(
 }
 #[allow(clippy::too_many_arguments)]
 pub fn causal_conv1d_backward_f16(
-    x: &CudaStorageBytes, weight: &CudaStorageBytes,
-    bias: Option<&CudaStorageBytes>, dy: &CudaStorageBytes,
-    batch: usize, channels: usize, seqlen: usize, width: usize, use_silu: bool,
+    x: &CudaStorageBytes,
+    weight: &CudaStorageBytes,
+    bias: Option<&CudaStorageBytes>,
+    dy: &CudaStorageBytes,
+    batch: usize,
+    channels: usize,
+    seqlen: usize,
+    width: usize,
+    use_silu: bool,
 ) -> Result<CausalConv1dBackward> {
     causal_conv1d_backward_inner(
-        x, weight, bias, dy, batch, channels, seqlen, width, use_silu,
+        x,
+        weight,
+        bias,
+        dy,
+        batch,
+        channels,
+        seqlen,
+        width,
+        use_silu,
         std::mem::size_of::<half::f16>(),
         sys::baracuda_kernels_causal_conv1d_f16_backward_run,
         "causal_conv1d_f16_backward",
@@ -361,12 +525,26 @@ pub fn causal_conv1d_backward_f16(
 }
 #[allow(clippy::too_many_arguments)]
 pub fn causal_conv1d_backward_bf16(
-    x: &CudaStorageBytes, weight: &CudaStorageBytes,
-    bias: Option<&CudaStorageBytes>, dy: &CudaStorageBytes,
-    batch: usize, channels: usize, seqlen: usize, width: usize, use_silu: bool,
+    x: &CudaStorageBytes,
+    weight: &CudaStorageBytes,
+    bias: Option<&CudaStorageBytes>,
+    dy: &CudaStorageBytes,
+    batch: usize,
+    channels: usize,
+    seqlen: usize,
+    width: usize,
+    use_silu: bool,
 ) -> Result<CausalConv1dBackward> {
     causal_conv1d_backward_inner(
-        x, weight, bias, dy, batch, channels, seqlen, width, use_silu,
+        x,
+        weight,
+        bias,
+        dy,
+        batch,
+        channels,
+        seqlen,
+        width,
+        use_silu,
         std::mem::size_of::<half::bf16>(),
         sys::baracuda_kernels_causal_conv1d_bf16_backward_run,
         "causal_conv1d_bf16_backward",
@@ -374,12 +552,26 @@ pub fn causal_conv1d_backward_bf16(
 }
 #[allow(clippy::too_many_arguments)]
 pub fn causal_conv1d_backward_f64(
-    x: &CudaStorageBytes, weight: &CudaStorageBytes,
-    bias: Option<&CudaStorageBytes>, dy: &CudaStorageBytes,
-    batch: usize, channels: usize, seqlen: usize, width: usize, use_silu: bool,
+    x: &CudaStorageBytes,
+    weight: &CudaStorageBytes,
+    bias: Option<&CudaStorageBytes>,
+    dy: &CudaStorageBytes,
+    batch: usize,
+    channels: usize,
+    seqlen: usize,
+    width: usize,
+    use_silu: bool,
 ) -> Result<CausalConv1dBackward> {
     causal_conv1d_backward_inner(
-        x, weight, bias, dy, batch, channels, seqlen, width, use_silu,
+        x,
+        weight,
+        bias,
+        dy,
+        batch,
+        channels,
+        seqlen,
+        width,
+        use_silu,
         std::mem::size_of::<f64>(),
         sys::baracuda_kernels_causal_conv1d_f64_backward_run,
         "causal_conv1d_f64_backward",
@@ -387,18 +579,33 @@ pub fn causal_conv1d_backward_f64(
 }
 
 type CausalConv1dBackwardRun = unsafe extern "C" fn(
-    i32, i32, i32, i32, i32,
-    *const std::ffi::c_void, *const std::ffi::c_void, *const std::ffi::c_void, *const std::ffi::c_void,
-    *mut std::ffi::c_void, *mut std::ffi::c_void, *mut std::ffi::c_void,
-    *mut std::ffi::c_void, usize,
+    i32,
+    i32,
+    i32,
+    i32,
+    i32,
+    *const std::ffi::c_void,
+    *const std::ffi::c_void,
+    *const std::ffi::c_void,
+    *const std::ffi::c_void,
+    *mut std::ffi::c_void,
+    *mut std::ffi::c_void,
+    *mut std::ffi::c_void,
+    *mut std::ffi::c_void,
+    usize,
     *mut std::ffi::c_void,
 ) -> i32;
 
 #[allow(clippy::too_many_arguments)]
 fn causal_conv1d_backward_inner(
-    x: &CudaStorageBytes, weight: &CudaStorageBytes,
-    bias: Option<&CudaStorageBytes>, dy: &CudaStorageBytes,
-    batch: usize, channels: usize, seqlen: usize, width: usize,
+    x: &CudaStorageBytes,
+    weight: &CudaStorageBytes,
+    bias: Option<&CudaStorageBytes>,
+    dy: &CudaStorageBytes,
+    batch: usize,
+    channels: usize,
+    seqlen: usize,
+    width: usize,
     use_silu: bool,
     dtype_size_bytes: usize,
     kernel: CausalConv1dBackwardRun,
@@ -422,14 +629,15 @@ fn causal_conv1d_backward_inner(
             shape_i32(op_label, 2, seqlen)?,
             shape_i32(op_label, 3, width)?,
             if use_silu { 1 } else { 0 },
-            x.buffer().as_raw().0      as *const std::ffi::c_void,
+            x.buffer().as_raw().0 as *const std::ffi::c_void,
             weight.buffer().as_raw().0 as *const std::ffi::c_void,
             bias_ptr,
-            dy.buffer().as_raw().0     as *const std::ffi::c_void,
+            dy.buffer().as_raw().0 as *const std::ffi::c_void,
             dx_buf.as_raw().0 as *mut std::ffi::c_void,
             dw_buf.as_raw().0 as *mut std::ffi::c_void,
             db_buf.as_raw().0 as *mut std::ffi::c_void,
-            std::ptr::null_mut(), 0,
+            std::ptr::null_mut(),
+            0,
             stream,
         )
     };
@@ -455,63 +663,134 @@ fn causal_conv1d_backward_inner(
 /// `chunk_size` is the SSD chunk-scan block size; typically 256.
 #[allow(clippy::too_many_arguments)]
 pub fn ssd_chunk_scan_f32(
-    x: &CudaStorageBytes, dt: &CudaStorageBytes, a: &CudaStorageBytes,
-    b: &CudaStorageBytes, c: &CudaStorageBytes,
-    batch: usize, seqlen: usize, heads: usize,
-    head_dim: usize, state_dim: usize, chunk_size: usize,
+    x: &CudaStorageBytes,
+    dt: &CudaStorageBytes,
+    a: &CudaStorageBytes,
+    b: &CudaStorageBytes,
+    c: &CudaStorageBytes,
+    batch: usize,
+    seqlen: usize,
+    heads: usize,
+    head_dim: usize,
+    state_dim: usize,
+    chunk_size: usize,
 ) -> Result<CudaStorageBytes> {
     ssd_chunk_scan_inner(
-        x, dt, a, b, c, batch, seqlen, heads, head_dim, state_dim, chunk_size,
-        std::mem::size_of::<f32>(), 0,
+        x,
+        dt,
+        a,
+        b,
+        c,
+        batch,
+        seqlen,
+        heads,
+        head_dim,
+        state_dim,
+        chunk_size,
+        std::mem::size_of::<f32>(),
+        0,
         sys::baracuda_kernels_ssd_chunk_scan_f32_run,
         "ssd_chunk_scan_f32",
     )
 }
 #[allow(clippy::too_many_arguments)]
 pub fn ssd_chunk_scan_f16(
-    x: &CudaStorageBytes, dt: &CudaStorageBytes, a: &CudaStorageBytes,
-    b: &CudaStorageBytes, c: &CudaStorageBytes,
-    batch: usize, seqlen: usize, heads: usize,
-    head_dim: usize, state_dim: usize, chunk_size: usize,
+    x: &CudaStorageBytes,
+    dt: &CudaStorageBytes,
+    a: &CudaStorageBytes,
+    b: &CudaStorageBytes,
+    c: &CudaStorageBytes,
+    batch: usize,
+    seqlen: usize,
+    heads: usize,
+    head_dim: usize,
+    state_dim: usize,
+    chunk_size: usize,
 ) -> Result<CudaStorageBytes> {
     ssd_chunk_scan_inner(
-        x, dt, a, b, c, batch, seqlen, heads, head_dim, state_dim, chunk_size,
-        std::mem::size_of::<half::f16>(), 1,
+        x,
+        dt,
+        a,
+        b,
+        c,
+        batch,
+        seqlen,
+        heads,
+        head_dim,
+        state_dim,
+        chunk_size,
+        std::mem::size_of::<half::f16>(),
+        1,
         sys::baracuda_kernels_ssd_chunk_scan_f16_run,
         "ssd_chunk_scan_f16",
     )
 }
 #[allow(clippy::too_many_arguments)]
 pub fn ssd_chunk_scan_bf16(
-    x: &CudaStorageBytes, dt: &CudaStorageBytes, a: &CudaStorageBytes,
-    b: &CudaStorageBytes, c: &CudaStorageBytes,
-    batch: usize, seqlen: usize, heads: usize,
-    head_dim: usize, state_dim: usize, chunk_size: usize,
+    x: &CudaStorageBytes,
+    dt: &CudaStorageBytes,
+    a: &CudaStorageBytes,
+    b: &CudaStorageBytes,
+    c: &CudaStorageBytes,
+    batch: usize,
+    seqlen: usize,
+    heads: usize,
+    head_dim: usize,
+    state_dim: usize,
+    chunk_size: usize,
 ) -> Result<CudaStorageBytes> {
     ssd_chunk_scan_inner(
-        x, dt, a, b, c, batch, seqlen, heads, head_dim, state_dim, chunk_size,
-        std::mem::size_of::<half::bf16>(), 2,
+        x,
+        dt,
+        a,
+        b,
+        c,
+        batch,
+        seqlen,
+        heads,
+        head_dim,
+        state_dim,
+        chunk_size,
+        std::mem::size_of::<half::bf16>(),
+        2,
         sys::baracuda_kernels_ssd_chunk_scan_bf16_run,
         "ssd_chunk_scan_bf16",
     )
 }
 
 type SsdChunkScanRun = unsafe extern "C" fn(
-    i32, i32, i32, i32, i32, i32,
-    *const std::ffi::c_void, *const std::ffi::c_void, *const std::ffi::c_void,
-    *const std::ffi::c_void, *const std::ffi::c_void,
+    i32,
+    i32,
+    i32,
+    i32,
+    i32,
+    i32,
+    *const std::ffi::c_void,
+    *const std::ffi::c_void,
+    *const std::ffi::c_void,
+    *const std::ffi::c_void,
+    *const std::ffi::c_void,
     *mut std::ffi::c_void,
-    *mut std::ffi::c_void, usize,
+    *mut std::ffi::c_void,
+    usize,
     *mut std::ffi::c_void,
 ) -> i32;
 
 #[allow(clippy::too_many_arguments)]
 fn ssd_chunk_scan_inner(
-    x: &CudaStorageBytes, dt: &CudaStorageBytes, a: &CudaStorageBytes,
-    b: &CudaStorageBytes, c: &CudaStorageBytes,
-    batch: usize, seqlen: usize, heads: usize,
-    head_dim: usize, state_dim: usize, chunk_size: usize,
-    dtype_size_bytes: usize, dtype_id: i32,
+    x: &CudaStorageBytes,
+    dt: &CudaStorageBytes,
+    a: &CudaStorageBytes,
+    b: &CudaStorageBytes,
+    c: &CudaStorageBytes,
+    batch: usize,
+    seqlen: usize,
+    heads: usize,
+    head_dim: usize,
+    state_dim: usize,
+    chunk_size: usize,
+    dtype_size_bytes: usize,
+    dtype_id: i32,
     kernel: SsdChunkScanRun,
     op_label: &'static str,
 ) -> Result<CudaStorageBytes> {
@@ -533,7 +812,11 @@ fn ssd_chunk_scan_inner(
             dtype_id,
         )
     };
-    let ws_buf = if ws_bytes > 0 { Some(device.alloc_zeros::<u8>(ws_bytes)?) } else { None };
+    let ws_buf = if ws_bytes > 0 {
+        Some(device.alloc_zeros::<u8>(ws_bytes)?)
+    } else {
+        None
+    };
     let ws_ptr = ws_buf
         .as_ref()
         .map(|b| b.as_raw().0 as *mut std::ffi::c_void)
@@ -547,19 +830,24 @@ fn ssd_chunk_scan_inner(
             shape_i32(op_label, 3, head_dim)?,
             shape_i32(op_label, 4, state_dim)?,
             shape_i32(op_label, 5, chunk_size)?,
-            x.buffer().as_raw().0  as *const std::ffi::c_void,
+            x.buffer().as_raw().0 as *const std::ffi::c_void,
             dt.buffer().as_raw().0 as *const std::ffi::c_void,
-            a.buffer().as_raw().0  as *const std::ffi::c_void,
-            b.buffer().as_raw().0  as *const std::ffi::c_void,
-            c.buffer().as_raw().0  as *const std::ffi::c_void,
+            a.buffer().as_raw().0 as *const std::ffi::c_void,
+            b.buffer().as_raw().0 as *const std::ffi::c_void,
+            c.buffer().as_raw().0 as *const std::ffi::c_void,
             out_buf.as_raw().0 as *mut std::ffi::c_void,
-            ws_ptr, ws_bytes,
+            ws_ptr,
+            ws_bytes,
             stream,
         )
     };
     check(status, op_label)?;
     drop(ws_buf);
-    Ok(CudaStorageBytes::from_parts(Arc::new(out_buf), device, out_bytes))
+    Ok(CudaStorageBytes::from_parts(
+        Arc::new(out_buf),
+        device,
+        out_bytes,
+    ))
 }
 
 // ───────────────────────── selective_scan ─────────────────────────
@@ -585,75 +873,151 @@ pub struct SelectiveScanForward {
 /// Outputs `y: [batch, seqlen, dim]`, `last_state: [batch, dim, dstate]`.
 #[allow(clippy::too_many_arguments)]
 pub fn selective_scan_f32(
-    u: &CudaStorageBytes, delta: &CudaStorageBytes,
-    a: &CudaStorageBytes, b: &CudaStorageBytes, c: &CudaStorageBytes,
-    d_skip: Option<&CudaStorageBytes>, z: Option<&CudaStorageBytes>,
+    u: &CudaStorageBytes,
+    delta: &CudaStorageBytes,
+    a: &CudaStorageBytes,
+    b: &CudaStorageBytes,
+    c: &CudaStorageBytes,
+    d_skip: Option<&CudaStorageBytes>,
+    z: Option<&CudaStorageBytes>,
     delta_bias: Option<&CudaStorageBytes>,
-    batch: usize, seqlen: usize, dim: usize, dstate: usize,
+    batch: usize,
+    seqlen: usize,
+    dim: usize,
+    dstate: usize,
     delta_softplus: bool,
 ) -> Result<SelectiveScanForward> {
     selective_scan_inner(
-        u, delta, a, b, c, d_skip, z, delta_bias,
-        batch, seqlen, dim, dstate, delta_softplus,
-        std::mem::size_of::<f32>(), 0,
+        u,
+        delta,
+        a,
+        b,
+        c,
+        d_skip,
+        z,
+        delta_bias,
+        batch,
+        seqlen,
+        dim,
+        dstate,
+        delta_softplus,
+        std::mem::size_of::<f32>(),
+        0,
         sys::baracuda_kernels_selective_scan_f32_run,
         "selective_scan_f32",
     )
 }
 #[allow(clippy::too_many_arguments)]
 pub fn selective_scan_f16(
-    u: &CudaStorageBytes, delta: &CudaStorageBytes,
-    a: &CudaStorageBytes, b: &CudaStorageBytes, c: &CudaStorageBytes,
-    d_skip: Option<&CudaStorageBytes>, z: Option<&CudaStorageBytes>,
+    u: &CudaStorageBytes,
+    delta: &CudaStorageBytes,
+    a: &CudaStorageBytes,
+    b: &CudaStorageBytes,
+    c: &CudaStorageBytes,
+    d_skip: Option<&CudaStorageBytes>,
+    z: Option<&CudaStorageBytes>,
     delta_bias: Option<&CudaStorageBytes>,
-    batch: usize, seqlen: usize, dim: usize, dstate: usize,
+    batch: usize,
+    seqlen: usize,
+    dim: usize,
+    dstate: usize,
     delta_softplus: bool,
 ) -> Result<SelectiveScanForward> {
     selective_scan_inner(
-        u, delta, a, b, c, d_skip, z, delta_bias,
-        batch, seqlen, dim, dstate, delta_softplus,
-        std::mem::size_of::<half::f16>(), 1,
+        u,
+        delta,
+        a,
+        b,
+        c,
+        d_skip,
+        z,
+        delta_bias,
+        batch,
+        seqlen,
+        dim,
+        dstate,
+        delta_softplus,
+        std::mem::size_of::<half::f16>(),
+        1,
         sys::baracuda_kernels_selective_scan_f16_run,
         "selective_scan_f16",
     )
 }
 #[allow(clippy::too_many_arguments)]
 pub fn selective_scan_bf16(
-    u: &CudaStorageBytes, delta: &CudaStorageBytes,
-    a: &CudaStorageBytes, b: &CudaStorageBytes, c: &CudaStorageBytes,
-    d_skip: Option<&CudaStorageBytes>, z: Option<&CudaStorageBytes>,
+    u: &CudaStorageBytes,
+    delta: &CudaStorageBytes,
+    a: &CudaStorageBytes,
+    b: &CudaStorageBytes,
+    c: &CudaStorageBytes,
+    d_skip: Option<&CudaStorageBytes>,
+    z: Option<&CudaStorageBytes>,
     delta_bias: Option<&CudaStorageBytes>,
-    batch: usize, seqlen: usize, dim: usize, dstate: usize,
+    batch: usize,
+    seqlen: usize,
+    dim: usize,
+    dstate: usize,
     delta_softplus: bool,
 ) -> Result<SelectiveScanForward> {
     selective_scan_inner(
-        u, delta, a, b, c, d_skip, z, delta_bias,
-        batch, seqlen, dim, dstate, delta_softplus,
-        std::mem::size_of::<half::bf16>(), 2,
+        u,
+        delta,
+        a,
+        b,
+        c,
+        d_skip,
+        z,
+        delta_bias,
+        batch,
+        seqlen,
+        dim,
+        dstate,
+        delta_softplus,
+        std::mem::size_of::<half::bf16>(),
+        2,
         sys::baracuda_kernels_selective_scan_bf16_run,
         "selective_scan_bf16",
     )
 }
 
 type SelectiveScanRun = unsafe extern "C" fn(
-    i32, i32, i32, i32, i32,
-    *const std::ffi::c_void, *const std::ffi::c_void, *const std::ffi::c_void,
-    *const std::ffi::c_void, *const std::ffi::c_void,
-    *const std::ffi::c_void, *const std::ffi::c_void, *const std::ffi::c_void,
-    *mut std::ffi::c_void, *mut std::ffi::c_void,
-    *mut std::ffi::c_void, usize,
+    i32,
+    i32,
+    i32,
+    i32,
+    i32,
+    *const std::ffi::c_void,
+    *const std::ffi::c_void,
+    *const std::ffi::c_void,
+    *const std::ffi::c_void,
+    *const std::ffi::c_void,
+    *const std::ffi::c_void,
+    *const std::ffi::c_void,
+    *const std::ffi::c_void,
+    *mut std::ffi::c_void,
+    *mut std::ffi::c_void,
+    *mut std::ffi::c_void,
+    usize,
     *mut std::ffi::c_void,
 ) -> i32;
 
 #[allow(clippy::too_many_arguments)]
 fn selective_scan_inner(
-    u: &CudaStorageBytes, delta: &CudaStorageBytes,
-    a: &CudaStorageBytes, b: &CudaStorageBytes, c: &CudaStorageBytes,
-    d_skip: Option<&CudaStorageBytes>, z: Option<&CudaStorageBytes>,
+    u: &CudaStorageBytes,
+    delta: &CudaStorageBytes,
+    a: &CudaStorageBytes,
+    b: &CudaStorageBytes,
+    c: &CudaStorageBytes,
+    d_skip: Option<&CudaStorageBytes>,
+    z: Option<&CudaStorageBytes>,
     delta_bias: Option<&CudaStorageBytes>,
-    batch: usize, seqlen: usize, dim: usize, dstate: usize,
+    batch: usize,
+    seqlen: usize,
+    dim: usize,
+    dstate: usize,
     delta_softplus: bool,
-    dtype_size_bytes: usize, dtype_id: i32,
+    dtype_size_bytes: usize,
+    dtype_id: i32,
     kernel: SelectiveScanRun,
     op_label: &'static str,
 ) -> Result<SelectiveScanForward> {
@@ -671,7 +1035,11 @@ fn selective_scan_inner(
             dtype_id,
         )
     };
-    let ws_buf = if ws_bytes > 0 { Some(device.alloc_zeros::<u8>(ws_bytes)?) } else { None };
+    let ws_buf = if ws_bytes > 0 {
+        Some(device.alloc_zeros::<u8>(ws_bytes)?)
+    } else {
+        None
+    };
     let ws_ptr = ws_buf
         .as_ref()
         .map(|b| b.as_raw().0 as *mut std::ffi::c_void)
@@ -693,15 +1061,18 @@ fn selective_scan_inner(
             shape_i32(op_label, 2, dim)?,
             shape_i32(op_label, 3, dstate)?,
             if delta_softplus { 1 } else { 0 },
-            u.buffer().as_raw().0     as *const std::ffi::c_void,
+            u.buffer().as_raw().0 as *const std::ffi::c_void,
             delta.buffer().as_raw().0 as *const std::ffi::c_void,
-            a.buffer().as_raw().0     as *const std::ffi::c_void,
-            b.buffer().as_raw().0     as *const std::ffi::c_void,
-            c.buffer().as_raw().0     as *const std::ffi::c_void,
-            d_skip_ptr, z_ptr, delta_bias_ptr,
-            y_buf.as_raw().0          as *mut std::ffi::c_void,
+            a.buffer().as_raw().0 as *const std::ffi::c_void,
+            b.buffer().as_raw().0 as *const std::ffi::c_void,
+            c.buffer().as_raw().0 as *const std::ffi::c_void,
+            d_skip_ptr,
+            z_ptr,
+            delta_bias_ptr,
+            y_buf.as_raw().0 as *mut std::ffi::c_void,
             last_state_buf.as_raw().0 as *mut std::ffi::c_void,
-            ws_ptr, ws_bytes,
+            ws_ptr,
+            ws_bytes,
             stream,
         )
     };
@@ -710,7 +1081,11 @@ fn selective_scan_inner(
     let device2 = device.clone();
     Ok(SelectiveScanForward {
         y: CudaStorageBytes::from_parts(Arc::new(y_buf), device, y_bytes),
-        last_state: CudaStorageBytes::from_parts(Arc::new(last_state_buf), device2, last_state_bytes),
+        last_state: CudaStorageBytes::from_parts(
+            Arc::new(last_state_buf),
+            device2,
+            last_state_bytes,
+        ),
     })
 }
 

@@ -44,8 +44,8 @@ pub use fuel_ir::{DType, Error, Layout, Result, Shape};
 // reach the now-deleted eager `fuel-flash-attn-cuda{,-sys}` crates; the
 // launcher itself depends only on `baracuda-kernels-sys` (always present)
 // so it compiles unconditionally now.
-pub mod flash_attn;
 pub mod baracuda;
+pub mod flash_attn;
 /// Re-export of `baracuda_kernels_sys` so downstream crates (like
 /// `fuel-core`) can call baracuda FFI symbols without pulling
 /// `baracuda-kernels-sys` in as a direct dep.
@@ -65,12 +65,12 @@ pub mod storage_status;
 pub mod ug;
 pub mod utils;
 
-pub use byte_storage::CudaStorageBytes;
-pub use capture::CapturedRun;
 /// Step E A4b-1: the async-completion primitive the executor defers waits on.
 /// Re-exported from `baracuda_driver` so `fuel-dispatch`'s `CudaCompletion`
 /// can name the type without depending on baracuda directly.
 pub use baracuda_driver::Event;
+pub use byte_storage::CudaStorageBytes;
+pub use capture::CapturedRun;
 pub use device::{CublasHandle, CudaDevice, CudaFunc, DeviceId, LaunchArgs, LaunchConfig};
 pub use dyn_impl::{CudaBackendDevice, CudaBackendStorage};
 pub use error::{CudaError, WrapErr};

@@ -113,7 +113,10 @@ pub fn op_to_tag(op: &Op) -> Option<OpTag> {
 
 /// The §4.1 commutative ops, whose operands match order-independently (§3a.2a).
 fn is_commutative(op: OpTag) -> bool {
-    matches!(op, OpTag::Add | OpTag::Mul | OpTag::Maximum | OpTag::Minimum)
+    matches!(
+        op,
+        OpTag::Add | OpTag::Mul | OpTag::Maximum | OpTag::Minimum
+    )
 }
 
 /// Project a graph [`Op`]'s load-bearing non-tensor parameters into an
@@ -182,7 +185,11 @@ fn op_to_attrs(op: &Op) -> OpAttrs {
         // (mirrors how `target_shape` already serves BroadcastTo + Reshape).
         Op::Iota { len } => a.target_shape = vec![*len as i64],
         // Pad → per-axis amounts + mode code + constant value.
-        Op::Pad { padding, mode, value } => {
+        Op::Pad {
+            padding,
+            mode,
+            value,
+        } => {
             a.pad_amounts = padding.iter().map(|&(b, e)| (b as u64, e as u64)).collect();
             a.pad_mode = Some(match mode {
                 crate::PadMode::Constant => 0,
@@ -261,7 +268,15 @@ pub fn match_region_extract(
 ) -> Option<(Vec<NodeId>, Vec<f64>)> {
     let mut binds: BTreeMap<u8, NodeId> = BTreeMap::new();
     let mut scalars: Vec<f64> = Vec::new();
-    match_node(graph, root, pattern, true, consumers, &mut binds, &mut scalars)?;
+    match_node(
+        graph,
+        root,
+        pattern,
+        true,
+        consumers,
+        &mut binds,
+        &mut scalars,
+    )?;
     // Bind indices must form a contiguous [0, n) — exactly the region's inputs.
     let n = binds.len() as u8;
     if (0..n).all(|i| binds.contains_key(&i)) {
@@ -297,7 +312,11 @@ fn match_node(
             // against this node directly.
             match_node(graph, node_id, then, is_root, consumers, binds, scalars)
         }
-        PatternNode::Op { op, operands, attrs } => {
+        PatternNode::Op {
+            op,
+            operands,
+            attrs,
+        } => {
             let node = graph.node(node_id);
             if op_to_tag(&node.op) != Some(*op) {
                 return None;
@@ -395,8 +414,15 @@ mod tests {
         let a = op_to_attrs(&Op::Cast(DType::F16));
         assert_eq!(a.cast_dtype.as_deref(), Some("f16"));
         // Slice → axis(dim) + start + len.
-        let a = op_to_attrs(&Op::Slice { dim: 2, start: 3, len: 5 });
-        assert_eq!((a.axis, a.slice_start, a.slice_len), (Some(2), Some(3), Some(5)));
+        let a = op_to_attrs(&Op::Slice {
+            dim: 2,
+            start: 3,
+            len: 5,
+        });
+        assert_eq!(
+            (a.axis, a.slice_start, a.slice_len),
+            (Some(2), Some(3), Some(5))
+        );
         // Concat → axis(dim).
         assert_eq!(op_to_attrs(&Op::Concat { dim: 1 }).axis, Some(1));
         // Roll → axis(dim) + roll_shift.
@@ -405,7 +431,11 @@ mod tests {
         // Flip → axis(dim).
         assert_eq!(op_to_attrs(&Op::Flip { dim: 1 }).axis, Some(1));
         // Pad → amounts + mode + value.
-        let a = op_to_attrs(&Op::Pad { padding: vec![(1, 1), (0, 2)], mode: crate::PadMode::Constant, value: 0.5 });
+        let a = op_to_attrs(&Op::Pad {
+            padding: vec![(1, 1), (0, 2)],
+            mode: crate::PadMode::Constant,
+            value: 0.5,
+        });
         assert_eq!(a.pad_amounts, vec![(1, 1), (0, 2)]);
         assert_eq!((a.pad_mode, a.pad_value), (Some(0), Some(0.5)));
         // Iota len rides target_shape.
@@ -440,23 +470,41 @@ mod tests {
     }
 
     fn leaf(g: &mut Graph, s: &fuel_ir::Shape) -> NodeId {
-        g.push(crate::Node { op: Op::Const, inputs: vec![], shape: s.clone(), dtype: DType::F32 })
+        g.push(crate::Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: s.clone(),
+            dtype: DType::F32,
+        })
     }
     fn op1(g: &mut Graph, op: Op, x: NodeId, s: &fuel_ir::Shape) -> NodeId {
-        g.push(crate::Node { op, inputs: vec![x], shape: s.clone(), dtype: DType::F32 })
+        g.push(crate::Node {
+            op,
+            inputs: vec![x],
+            shape: s.clone(),
+            dtype: DType::F32,
+        })
     }
     fn op2(g: &mut Graph, op: Op, x: NodeId, y: NodeId, s: &fuel_ir::Shape) -> NodeId {
-        g.push(crate::Node { op, inputs: vec![x, y], shape: s.clone(), dtype: DType::F32 })
+        g.push(crate::Node {
+            op,
+            inputs: vec![x, y],
+            shape: s.clone(),
+            dtype: DType::F32,
+        })
     }
 
     fn relu_add_pattern() -> PatternNode {
         PatternNode::Op {
             op: OpTag::Relu,
-            attrs: OpAttrs::default(),
+            attrs: Box::new(OpAttrs::default()),
             operands: vec![PatternNode::Op {
                 op: OpTag::Add,
-                attrs: OpAttrs::default(),
-                operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+                attrs: Box::new(OpAttrs::default()),
+                operands: vec![
+                    PatternNode::Bind { index: 0 },
+                    PatternNode::Bind { index: 1 },
+                ],
             }],
         }
     }
@@ -470,7 +518,9 @@ mod tests {
         let sum = op2(&mut g, Op::Add, a, b, &s);
         let r = op1(&mut g, Op::Relu, sum, &s);
         let counts = consumer_counts(&g);
-        let got = match_region(&g, r, &relu_add_pattern(), &|n| *counts.get(&n).unwrap_or(&0));
+        let got = match_region(&g, r, &relu_add_pattern(), &|n| {
+            *counts.get(&n).unwrap_or(&0)
+        });
         assert_eq!(got, Some(vec![a, b]));
     }
 
@@ -486,11 +536,11 @@ mod tests {
         let prod = op2(&mut g, Op::Mul, c, rd, &s);
         let pat = PatternNode::Op {
             op: OpTag::Mul,
-            attrs: OpAttrs::default(),
+            attrs: Box::new(OpAttrs::default()),
             operands: vec![
                 PatternNode::Op {
                     op: OpTag::Relu,
-                    attrs: OpAttrs::default(),
+                    attrs: Box::new(OpAttrs::default()),
                     operands: vec![PatternNode::Bind { index: 0 }],
                 },
                 PatternNode::Bind { index: 1 },
@@ -512,7 +562,9 @@ mod tests {
         let r = op1(&mut g, Op::Relu, prod, &s);
         let counts = consumer_counts(&g);
         assert_eq!(
-            match_region(&g, r, &relu_add_pattern(), &|n| *counts.get(&n).unwrap_or(&0)),
+            match_region(&g, r, &relu_add_pattern(), &|n| *counts
+                .get(&n)
+                .unwrap_or(&0)),
             None
         );
     }
@@ -529,7 +581,9 @@ mod tests {
         let _r2 = op1(&mut g, Op::Neg, sum, &s); // second consumer of `sum`
         let counts = consumer_counts(&g);
         assert_eq!(
-            match_region(&g, r1, &relu_add_pattern(), &|n| *counts.get(&n).unwrap_or(&0)),
+            match_region(&g, r1, &relu_add_pattern(), &|n| *counts
+                .get(&n)
+                .unwrap_or(&0)),
             None
         );
     }
@@ -542,7 +596,10 @@ mod tests {
     fn permute_pattern(perm: &[u8]) -> PatternNode {
         PatternNode::Op {
             op: OpTag::Permute,
-            attrs: OpAttrs { perm: perm.to_vec(), ..OpAttrs::default() },
+            attrs: Box::new(OpAttrs {
+                perm: perm.to_vec(),
+                ..OpAttrs::default()
+            }),
             operands: vec![PatternNode::Bind { index: 0 }],
         }
     }
@@ -553,7 +610,12 @@ mod tests {
         let mut g = Graph::new();
         let s = fuel_ir::Shape::from_dims(&[2, 3]);
         let x = leaf(&mut g, &s);
-        let p = op1(&mut g, Op::Permute(vec![1, 0]), x, &fuel_ir::Shape::from_dims(&[3, 2]));
+        let p = op1(
+            &mut g,
+            Op::Permute(vec![1, 0]),
+            x,
+            &fuel_ir::Shape::from_dims(&[3, 2]),
+        );
         let counts = consumer_counts(&g);
         let cf = |n: NodeId| *counts.get(&n).unwrap_or(&0);
 
@@ -596,10 +658,10 @@ mod tests {
         // Slot template: both scalar attrs left empty (open slots).
         let pat = PatternNode::Op {
             op: OpTag::AddScalar,
-            attrs: OpAttrs::default(),
+            attrs: Box::new(OpAttrs::default()),
             operands: vec![PatternNode::Op {
                 op: OpTag::MulScalar,
-                attrs: OpAttrs::default(),
+                attrs: Box::new(OpAttrs::default()),
                 operands: vec![PatternNode::Bind { index: 0 }],
             }],
         };
@@ -620,13 +682,19 @@ mod tests {
 
         let baked = |v: f64| PatternNode::Op {
             op: OpTag::MulScalar,
-            attrs: OpAttrs { scalars: vec![v], ..OpAttrs::default() },
+            attrs: Box::new(OpAttrs {
+                scalars: vec![v],
+                ..OpAttrs::default()
+            }),
             operands: vec![PatternNode::Bind { index: 0 }],
         };
         // The equal baked value matches and extracts NOTHING…
         let (binds, scalars) = match_region_extract(&g, ms, &baked(2.5), &cf).expect("matches");
         assert_eq!(binds, vec![x]);
-        assert!(scalars.is_empty(), "baked value is a constant of the pattern, not a slot");
+        assert!(
+            scalars.is_empty(),
+            "baked value is a constant of the pattern, not a slot"
+        );
         // …and a different baked value refuses to match at all (attr guard).
         assert!(match_region_extract(&g, ms, &baked(3.0), &cf).is_none());
     }

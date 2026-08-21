@@ -90,7 +90,9 @@ fn clamp_run(
     for (i, &d) in dims.iter().enumerate() {
         shape_i32.push(i32::try_from(d).map_err(|_| {
             Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
-                op: op_label, dim_index: i, dim_value: d,
+                op: op_label,
+                dim_index: i,
+                dim_value: d,
             })
         })?);
     }
@@ -221,8 +223,11 @@ fn clamp_inplace_run(
     if lo_bytes.len() != dtype_size_bytes || hi_bytes.len() != dtype_size_bytes {
         return Err(Error::Msg(format!(
             "{op_label}: bound buffer size mismatch (got lo={}, hi={}, want {})",
-            lo_bytes.len(), hi_bytes.len(), dtype_size_bytes,
-        )).bt());
+            lo_bytes.len(),
+            hi_bytes.len(),
+            dtype_size_bytes,
+        ))
+        .bt());
     }
     let numel = (target.len_bytes() / dtype_size_bytes.max(1)) as i64;
     if numel == 0 {
@@ -240,9 +245,8 @@ fn clamp_inplace_run(
     let c_ptr = hi_buf.buffer().as_raw().0 as *const std::ffi::c_void;
 
     // Rank-1 contig walk; bounds broadcast via stride 0.
-    let shape_i32: [i32; 1] = [i32::try_from(numel).map_err(|_| {
-        Error::Msg(format!("{op_label}: numel {numel} overflows i32")).bt()
-    })?];
+    let shape_i32: [i32; 1] = [i32::try_from(numel)
+        .map_err(|_| Error::Msg(format!("{op_label}: numel {numel} overflows i32")).bt())?];
     let stride_a: [i64; 1] = [1];
     let stride_b: [i64; 1] = [0];
     let stride_c: [i64; 1] = [0];
@@ -253,10 +257,20 @@ fn clamp_inplace_run(
     // validated above.
     let status = unsafe {
         kernel(
-            numel, 1, shape_i32.as_ptr(),
-            stride_a.as_ptr(), stride_b.as_ptr(), stride_c.as_ptr(), stride_y.as_ptr(),
-            ptr_const, b_ptr, c_ptr, ptr_mut,
-            scratch.as_raw(), scratch.bytes(), stream,
+            numel,
+            1,
+            shape_i32.as_ptr(),
+            stride_a.as_ptr(),
+            stride_b.as_ptr(),
+            stride_c.as_ptr(),
+            stride_y.as_ptr(),
+            ptr_const,
+            b_ptr,
+            c_ptr,
+            ptr_mut,
+            scratch.as_raw(),
+            scratch.bytes(),
+            stream,
         )
     };
     check(status, op_label)?;
@@ -265,7 +279,10 @@ fn clamp_inplace_run(
 
 pub fn clamp_inplace_f32(target: &mut CudaStorageBytes, min: f32, max: f32) -> Result<()> {
     clamp_inplace_run(
-        target, &min.to_le_bytes(), &max.to_le_bytes(), 4,
+        target,
+        &min.to_le_bytes(),
+        &max.to_le_bytes(),
+        4,
         sys::baracuda_kernels_ternary_clamp_f32_strided_run,
         "clamp_inplace_f32",
     )
@@ -273,7 +290,10 @@ pub fn clamp_inplace_f32(target: &mut CudaStorageBytes, min: f32, max: f32) -> R
 
 pub fn clamp_inplace_f64(target: &mut CudaStorageBytes, min: f64, max: f64) -> Result<()> {
     clamp_inplace_run(
-        target, &min.to_le_bytes(), &max.to_le_bytes(), 8,
+        target,
+        &min.to_le_bytes(),
+        &max.to_le_bytes(),
+        8,
         sys::baracuda_kernels_ternary_clamp_f64_strided_run,
         "clamp_inplace_f64",
     )
@@ -283,7 +303,10 @@ pub fn clamp_inplace_f16(target: &mut CudaStorageBytes, min: f32, max: f32) -> R
     let min_h = half::f16::from_f32(min);
     let max_h = half::f16::from_f32(max);
     clamp_inplace_run(
-        target, &min_h.to_le_bytes(), &max_h.to_le_bytes(), 2,
+        target,
+        &min_h.to_le_bytes(),
+        &max_h.to_le_bytes(),
+        2,
         sys::baracuda_kernels_ternary_clamp_f16_strided_run,
         "clamp_inplace_f16",
     )
@@ -293,7 +316,10 @@ pub fn clamp_inplace_bf16(target: &mut CudaStorageBytes, min: f32, max: f32) -> 
     let min_b = half::bf16::from_f32(min);
     let max_b = half::bf16::from_f32(max);
     clamp_inplace_run(
-        target, &min_b.to_le_bytes(), &max_b.to_le_bytes(), 2,
+        target,
+        &min_b.to_le_bytes(),
+        &max_b.to_le_bytes(),
+        2,
         sys::baracuda_kernels_ternary_clamp_bf16_strided_run,
         "clamp_inplace_bf16",
     )

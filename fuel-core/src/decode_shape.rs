@@ -301,15 +301,16 @@ mod tests {
         use crate::inference_context::KvCache;
 
         let dev = crate::Device::cpu();
-        let mut cache = KvCache::with_capacity(2, 2, 4, 8, fuel_ir::DType::F32, &dev)
-            .expect("with_capacity");
+        let mut cache =
+            KvCache::with_capacity(2, 2, 4, 8, fuel_ir::DType::F32, &dev).expect("with_capacity");
         let first = cache.alloc_id();
 
         // A second cache of IDENTICAL geometry is a DIFFERENT allocation.
-        let other = KvCache::with_capacity(2, 2, 4, 8, fuel_ir::DType::F32, &dev)
-            .expect("with_capacity");
+        let other =
+            KvCache::with_capacity(2, 2, 4, 8, fuel_ir::DType::F32, &dev).expect("with_capacity");
         assert_ne!(
-            other.alloc_id(), first,
+            other.alloc_id(),
+            first,
             "same-geometry caches must not share an id — that collision IS the bug",
         );
 
@@ -317,7 +318,8 @@ mod tests {
         cache.cached_len = 5;
         cache.truncate_to(2);
         assert_eq!(
-            cache.alloc_id(), first,
+            cache.alloc_id(),
+            first,
             "truncate_to rewinds cached_len and touches no storage — re-minting \
              here would forfeit plan reuse on every rejected draft batch",
         );
@@ -331,21 +333,25 @@ mod tests {
         );
 
         // Replace one layer's storage: id must move again.
-        let replacement = KvCache::with_capacity(2, 2, 4, 8, fuel_ir::DType::F32, &dev)
-            .expect("with_capacity");
+        let replacement =
+            KvCache::with_capacity(2, 2, 4, 8, fuel_ir::DType::F32, &dev).expect("with_capacity");
         let src = replacement.layer(0).expect("layer 0");
-        cache.set_layer(0, crate::inference_context::KvLayer {
-            k: std::sync::Arc::clone(&src.k),
-            v: std::sync::Arc::clone(&src.v),
-            k_layout: src.k_layout.clone(),
-            v_layout: src.v_layout.clone(),
-            k_version: 0,
-            v_version: 0,
-            k_authority: src.k_authority.clone(),
-            v_authority: src.v_authority.clone(),
-        });
+        cache.set_layer(
+            0,
+            crate::inference_context::KvLayer {
+                k: std::sync::Arc::clone(&src.k),
+                v: std::sync::Arc::clone(&src.v),
+                k_layout: src.k_layout.clone(),
+                v_layout: src.v_layout.clone(),
+                k_version: 0,
+                v_version: 0,
+                k_authority: src.k_authority.clone(),
+                v_authority: src.v_authority.clone(),
+            },
+        );
         assert_ne!(
-            cache.alloc_id(), after_clear,
+            cache.alloc_id(),
+            after_clear,
             "set_layer swaps the Arc a held plan baked in — that is a new allocation",
         );
     }
@@ -414,8 +420,15 @@ mod tests {
         use crate::lazy::{LlamaConfig, LlamaModel};
 
         let cfg = LlamaConfig {
-            vocab_size: 16, dim: 8, n_layers: 2, n_heads: 2, n_kv_heads: 2,
-            head_dim: 4, ffn_dim: 16, norm_eps: 1e-5, rope_base: 10000.0,
+            vocab_size: 16,
+            dim: 8,
+            n_layers: 2,
+            n_heads: 2,
+            n_kv_heads: 2,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
         // Two weight sets. Layer contents are irrelevant to the key — what
         // matters is that each construction mints its own instance id, which is
@@ -427,8 +440,14 @@ mod tests {
             final_norm_gain: std::sync::Arc::from(vec![1.0_f32; 8]),
             output: crate::lazy::WeightStorage::F32(std::sync::Arc::from(vec![0.0_f32; 8 * 16])),
         };
-        let a = LlamaModel { config: cfg.clone(), weights: weights() };
-        let b = LlamaModel { config: cfg.clone(), weights: weights() };
+        let a = LlamaModel {
+            config: cfg.clone(),
+            weights: weights(),
+        };
+        let b = LlamaModel {
+            config: cfg.clone(),
+            weights: weights(),
+        };
 
         assert_ne!(
             a.decode_shape_key(),
@@ -440,7 +459,10 @@ mod tests {
         // clone sharing the same weights must too. An "always stale" key passes
         // every correctness test while silently disabling plan reuse.
         assert_eq!(a.decode_shape_key(), a.decode_shape_key());
-        let a_clone = LlamaModel { config: cfg, weights: a.weights.clone() };
+        let a_clone = LlamaModel {
+            config: cfg,
+            weights: a.weights.clone(),
+        };
         assert_eq!(
             a.decode_shape_key(),
             a_clone.decode_shape_key(),

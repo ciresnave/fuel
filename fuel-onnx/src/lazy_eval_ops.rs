@@ -12,7 +12,7 @@
 //! attribute migrations) are the actual content.
 
 use crate::lazy_eval::{
-    ensure_anchor, get_attr_float_opt, get_attr_int, get_attr_ints_opt, normalize_axis,
+    ensure_anchor, get_attr_float_opt, get_attr_ints_opt, normalize_axis,
     realize_i64_vec, set_output,
 };
 use crate::onnx;
@@ -36,8 +36,16 @@ fn broadcast_pair(a: &LazyTensor, b: &LazyTensor, op: &str) -> Result<(LazyTenso
     let mut out = Vec::with_capacity(rank);
     for i in 0..rank {
         // right-align: axis i of the result maps to the tail of each input
-        let ea = if i + da.len() >= rank { da[i + da.len() - rank] } else { 1 };
-        let eb = if i + db.len() >= rank { db[i + db.len() - rank] } else { 1 };
+        let ea = if i + da.len() >= rank {
+            da[i + da.len() - rank]
+        } else {
+            1
+        };
+        let eb = if i + db.len() >= rank {
+            db[i + db.len() - rank]
+        } else {
+            1
+        };
         let e = match (ea, eb) {
             (x, y) if x == y => x,
             (1, y) => y,
@@ -69,7 +77,7 @@ fn nonzero_f32(x: &LazyTensor) -> Result<LazyTensor> {
     let xf = x.to_dtype(DType::F32)?;
     let zero = xf.zeros_like()?;
     // `ne` yields U8; widen straight back to F32 so callers can compose.
-    Ok(xf.ne(&zero)?.to_dtype(DType::F32)?)
+    xf.ne(&zero)?.to_dtype(DType::F32)
 }
 
 /// Fetch a required positional input, erroring with the node name.
@@ -187,17 +195,17 @@ pub(crate) fn try_dispatch(
             let mut acc = input(node, values, 0)?;
             for i in 1..node.input.len() {
                 let (a, b) = broadcast_pair(&acc, &input(node, values, i)?, &node.op_type)?;
-                acc = if node.op_type == "Min" { a.minimum(&b)? } else { a.maximum(&b)? };
+                acc = if node.op_type == "Min" {
+                    a.minimum(&b)?
+                } else {
+                    a.maximum(&b)?
+                };
             }
             set_output(node, 0, acc, values)?
         }
 
         "Pow" => {
-            let (a, b) = broadcast_pair(
-                &input(node, values, 0)?,
-                &input(node, values, 1)?,
-                "Pow",
-            )?;
+            let (a, b) = broadcast_pair(&input(node, values, 0)?, &input(node, values, 1)?, "Pow")?;
             set_output(node, 0, a.pow(&b)?, values)?
         }
 
@@ -249,16 +257,30 @@ pub(crate) fn try_dispatch(
                 Some(a) => norm(a.i),
                 None => rank as usize,
             };
-            let slice: Vec<i64> = if start <= end { dims[start..end].to_vec() } else { vec![] };
+            let slice: Vec<i64> = if start <= end {
+                dims[start..end].to_vec()
+            } else {
+                vec![]
+            };
             let a = ensure_anchor(anchor, device);
             let n = slice.len();
-            set_output(node, 0, a.const_i64_like(slice, Shape::from_dims(&[n])), values)?
+            set_output(
+                node,
+                0,
+                a.const_i64_like(slice, Shape::from_dims(&[n])),
+                values,
+            )?
         }
         "Size" => {
             let x = input(node, values, 0)?;
             let n = x.shape().elem_count() as i64;
             let a = ensure_anchor(anchor, device);
-            set_output(node, 0, a.const_i64_like(vec![n], Shape::from_dims(&[] as &[usize])), values)?
+            set_output(
+                node,
+                0,
+                a.const_i64_like(vec![n], Shape::from_dims(&[] as &[usize])),
+                values,
+            )?
         }
 
         // ---- Expand: broadcast to a runtime shape ----
@@ -272,7 +294,11 @@ pub(crate) fn try_dispatch(
             let rank = xd.len().max(want.len());
             let mut out = Vec::with_capacity(rank);
             for i in 0..rank {
-                let ex = if i + xd.len() >= rank { xd[i + xd.len() - rank] } else { 1 };
+                let ex = if i + xd.len() >= rank {
+                    xd[i + xd.len() - rank]
+                } else {
+                    1
+                };
                 let ew = if i + want.len() >= rank {
                     let w = want[i + want.len() - rank];
                     if w < 0 {
@@ -343,8 +369,18 @@ pub(crate) fn try_dispatch(
             let axis_v = realize_i64_vec(&input(node, values, 1)?)?;
             let axis_raw = axis_v.first().copied().unwrap_or(0);
             let axis = normalize_axis(axis_raw, x.rank())?;
-            let exclusive = node.attribute.iter().find(|a| a.name == "exclusive").map(|a| a.i).unwrap_or(0);
-            let reverse = node.attribute.iter().find(|a| a.name == "reverse").map(|a| a.i).unwrap_or(0);
+            let exclusive = node
+                .attribute
+                .iter()
+                .find(|a| a.name == "exclusive")
+                .map(|a| a.i)
+                .unwrap_or(0);
+            let reverse = node
+                .attribute
+                .iter()
+                .find(|a| a.name == "reverse")
+                .map(|a| a.i)
+                .unwrap_or(0);
             if exclusive != 0 || reverse != 0 {
                 return Err(Error::Msg(format!(
                     "CumSum: exclusive={exclusive} reverse={reverse} not supported \
@@ -358,7 +394,12 @@ pub(crate) fn try_dispatch(
         // ---- ArgMax / ArgMin ----
         "ArgMax" | "ArgMin" => {
             let x = input(node, values, 0)?;
-            let axis_raw = node.attribute.iter().find(|a| a.name == "axis").map(|a| a.i).unwrap_or(0);
+            let axis_raw = node
+                .attribute
+                .iter()
+                .find(|a| a.name == "axis")
+                .map(|a| a.i)
+                .unwrap_or(0);
             let axis = normalize_axis(axis_raw, x.rank())?;
             let keepdims = node
                 .attribute
@@ -387,7 +428,11 @@ pub(crate) fn try_dispatch(
                 x.argmin_dim(axis)?
             };
             let idx = idx.to_dtype(DType::I64)?;
-            let y = if keepdims != 0 { idx.unsqueeze(axis)? } else { idx };
+            let y = if keepdims != 0 {
+                idx.unsqueeze(axis)?
+            } else {
+                idx
+            };
             set_output(node, 0, y, values)?
         }
 
@@ -490,8 +535,18 @@ pub(crate) fn try_dispatch(
             let b = input(node, values, 1)?;
             let alpha = get_attr_float_opt(node, "alpha").unwrap_or(1.0) as f64;
             let beta = get_attr_float_opt(node, "beta").unwrap_or(1.0) as f64;
-            let ta = node.attribute.iter().find(|x| x.name == "transA").map(|x| x.i).unwrap_or(0);
-            let tb = node.attribute.iter().find(|x| x.name == "transB").map(|x| x.i).unwrap_or(0);
+            let ta = node
+                .attribute
+                .iter()
+                .find(|x| x.name == "transA")
+                .map(|x| x.i)
+                .unwrap_or(0);
+            let tb = node
+                .attribute
+                .iter()
+                .find(|x| x.name == "transB")
+                .map(|x| x.i)
+                .unwrap_or(0);
             let a = if ta != 0 { a.t()? } else { a };
             let b = if tb != 0 { b.t()? } else { b };
             let mut y = a.matmul(&b)?;
@@ -523,7 +578,9 @@ pub(crate) fn try_dispatch(
             // sequence off the anchor instead.
             let a = ensure_anchor(anchor, device);
             let seq: Vec<f32> = (0..n).map(|i| (start + delta * i as f64) as f32).collect();
-            let y = a.const_f32_like(seq, Shape::from_dims(&[n])).to_dtype(dtype)?;
+            let y = a
+                .const_f32_like(seq, Shape::from_dims(&[n]))
+                .to_dtype(dtype)?;
             set_output(node, 0, y, values)?
         }
 
@@ -531,7 +588,12 @@ pub(crate) fn try_dispatch(
         "GatherElements" => {
             let x = input(node, values, 0)?;
             let idx = input(node, values, 1)?;
-            let axis_raw = node.attribute.iter().find(|a| a.name == "axis").map(|a| a.i).unwrap_or(0);
+            let axis_raw = node
+                .attribute
+                .iter()
+                .find(|a| a.name == "axis")
+                .map(|a| a.i)
+                .unwrap_or(0);
             let axis = normalize_axis(axis_raw, x.rank())?;
             // `gather` is exactly ONNX GatherElements (index tensor has the
             // output's shape); `index_select` is plain ONNX Gather. Do not
@@ -545,7 +607,9 @@ pub(crate) fn try_dispatch(
             let indices = input(node, values, 0)?;
             let depth = scalar_f64(&input(node, values, 1)?, "OneHot: depth")? as i64;
             if depth <= 0 {
-                return Err(Error::Msg(format!("OneHot: depth must be positive, got {depth}")).bt());
+                return Err(
+                    Error::Msg(format!("OneHot: depth must be positive, got {depth}")).bt(),
+                );
             }
             let vals = input(node, values, 2)?.realize_f32();
             if vals.len() != 2 {
@@ -556,7 +620,12 @@ pub(crate) fn try_dispatch(
                 .bt());
             }
             let (off, on) = (vals[0] as f64, vals[1] as f64);
-            let axis_raw = node.attribute.iter().find(|a| a.name == "axis").map(|a| a.i).unwrap_or(-1);
+            let axis_raw = node
+                .attribute
+                .iter()
+                .find(|a| a.name == "axis")
+                .map(|a| a.i)
+                .unwrap_or(-1);
             // The new axis may be appended, so normalize against rank+1.
             let rank1 = indices.rank() + 1;
             let axis = if axis_raw < 0 {

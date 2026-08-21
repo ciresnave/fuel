@@ -23,7 +23,7 @@ extern crate accelerate_src;
 
 use anyhow::{Error as E, Result};
 use clap::Parser;
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 
 use fuel::lazy_musicgen::{MusicGenConfig, MusicGenModel, MusicGenWeights};
 use fuel::safetensors::MmapedSafetensors;

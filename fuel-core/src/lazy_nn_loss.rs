@@ -40,17 +40,13 @@ impl Reduction {
 /// `inp` is `[N, C]` log-probabilities; `target` is `[N]` `U32`
 /// class labels. Picks `inp[i, target[i]]` for every row via
 /// gather, then negates and reduces.
-pub fn nll(
-    inp: &LazyTensor,
-    target: &LazyTensor,
-    reduction: Reduction,
-) -> Result<LazyTensor> {
+pub fn nll(inp: &LazyTensor, target: &LazyTensor, reduction: Reduction) -> Result<LazyTensor> {
     let inp_dims = inp.shape();
     let inp_dims = inp_dims.dims();
     if inp_dims.len() != 2 {
-        return Err(crate::Error::Msg(format!(
-            "nll: inp must be rank 2 [N, C], got {inp_dims:?}",
-        ))
+        return Err(crate::Error::Msg(
+            format!("nll: inp must be rank 2 [N, C], got {inp_dims:?}",),
+        )
         .bt());
     }
     let target_dims = target.shape();
@@ -175,11 +171,7 @@ pub fn binary_cross_entropy_with_logit(
 ///
 /// `mean((inp - target)^2)` for the default reduction; the loss
 /// is element-wise `(inp - target)^2` otherwise.
-pub fn mse(
-    inp: &LazyTensor,
-    target: &LazyTensor,
-    reduction: Reduction,
-) -> Result<LazyTensor> {
+pub fn mse(inp: &LazyTensor, target: &LazyTensor, reduction: Reduction) -> Result<LazyTensor> {
     if inp.shape().dims() != target.shape().dims() {
         return Err(crate::Error::Msg(format!(
             "mse: inp shape {:?} != target shape {:?}",
@@ -230,10 +222,7 @@ pub fn huber(
         .bt());
     }
     if !(delta > 0.0) {
-        return Err(crate::Error::Msg(format!(
-            "huber: delta must be > 0, got {delta}",
-        ))
-        .bt());
+        return Err(crate::Error::Msg(format!("huber: delta must be > 0, got {delta}",)).bt());
     }
     let diff = inp.sub(target)?;
     let abs_diff = diff.abs();
@@ -262,18 +251,9 @@ fn abs_diff_like_scalar(host: &LazyTensor, value: f64) -> Result<LazyTensor> {
             let t = host.const_f32_like(vec![value as f32; n], out_shape);
             t.to_dtype(DType::F64)
         }
-        DType::BF16 => Ok(host.const_bf16_like(
-            vec![half::bf16::from_f64(value); n],
-            out_shape,
-        )),
-        DType::F16 => Ok(host.const_f16_like(
-            vec![half::f16::from_f64(value); n],
-            out_shape,
-        )),
-        other => Err(crate::Error::Msg(format!(
-            "huber: unsupported dtype {other:?}",
-        ))
-        .bt()),
+        DType::BF16 => Ok(host.const_bf16_like(vec![half::bf16::from_f64(value); n], out_shape)),
+        DType::F16 => Ok(host.const_f16_like(vec![half::f16::from_f64(value); n], out_shape)),
+        other => Err(crate::Error::Msg(format!("huber: unsupported dtype {other:?}",)).bt()),
     }
 }
 
@@ -326,10 +306,7 @@ mod tests {
         // of -(log probs) ≈ 0.1054.
         let device = Device::cpu();
         let log_probs = LazyTensor::from_f32(
-            vec![
-                -0.1054_f32, -2.3026, -6.9078,
-                -2.3026,    -0.1054, -6.9078,
-            ],
+            vec![-0.1054_f32, -2.3026, -6.9078, -2.3026, -0.1054, -6.9078],
             Shape::from_dims(&[2, 3]),
             &device,
         );
@@ -353,10 +330,7 @@ mod tests {
             Shape::from_dims(&[4]),
             &device,
         );
-        let b = a.const_f32_like(
-            vec![0.5_f32, -1.0, 2.0, 3.5],
-            Shape::from_dims(&[4]),
-        );
+        let b = a.const_f32_like(vec![0.5_f32, -1.0, 2.0, 3.5], Shape::from_dims(&[4]));
         let loss = mse(&a, &b, Reduction::Mean).unwrap().realize_f32();
         assert_eq!(loss.len(), 1);
         assert!(loss[0].abs() < 1e-7, "got {} expected ~0", loss[0]);
@@ -371,10 +345,7 @@ mod tests {
             Shape::from_dims(&[4]),
             &device,
         );
-        let b = a.const_f32_like(
-            vec![0.0_f32, 1.0, 2.0, 3.0],
-            Shape::from_dims(&[4]),
-        );
+        let b = a.const_f32_like(vec![0.0_f32, 1.0, 2.0, 3.0], Shape::from_dims(&[4]));
         let loss = mse(&a, &b, Reduction::Mean).unwrap().realize_f32();
         assert_eq!(loss.len(), 1);
         assert!(
@@ -396,20 +367,12 @@ mod tests {
         //                   sum = 0.693147
         // mean = (0.313262 + 0.313262 + 0.693147) / 3 ≈ 0.439890
         let device = Device::cpu();
-        let logits = LazyTensor::from_f32(
-            vec![1.0_f32, -1.0, 0.0],
-            Shape::from_dims(&[3]),
-            &device,
-        );
-        let targets = logits.const_f32_like(
-            vec![1.0_f32, 0.0, 1.0],
-            Shape::from_dims(&[3]),
-        );
-        let loss = binary_cross_entropy_with_logit(
-            &logits, &targets, Reduction::Mean,
-        )
-        .unwrap()
-        .realize_f32();
+        let logits =
+            LazyTensor::from_f32(vec![1.0_f32, -1.0, 0.0], Shape::from_dims(&[3]), &device);
+        let targets = logits.const_f32_like(vec![1.0_f32, 0.0, 1.0], Shape::from_dims(&[3]));
+        let loss = binary_cross_entropy_with_logit(&logits, &targets, Reduction::Mean)
+            .unwrap()
+            .realize_f32();
         assert_eq!(loss.len(), 1);
         assert!(
             approx_eq(loss[0], 0.439890, 1e-5),
@@ -428,10 +391,7 @@ mod tests {
             Shape::from_dims(&[4]),
             &device,
         );
-        let tgt = inp.const_f32_like(
-            vec![0.0_f32, 1.0, 2.0, 3.0],
-            Shape::from_dims(&[4]),
-        );
+        let tgt = inp.const_f32_like(vec![0.0_f32, 1.0, 2.0, 3.0], Shape::from_dims(&[4]));
         let loss = huber(&inp, &tgt, 1.0, Reduction::Mean)
             .unwrap()
             .realize_f32();
@@ -449,15 +409,8 @@ mod tests {
         //      |diff|=2.0 ≥ 1.0 ⇒ 1.0 * (2.0 - 0.5) = 1.5 (linear branch)
         // mean = (0.125 + 1.5) / 2 = 0.8125
         let device = Device::cpu();
-        let inp = LazyTensor::from_f32(
-            vec![0.5_f32, 3.0],
-            Shape::from_dims(&[2]),
-            &device,
-        );
-        let tgt = inp.const_f32_like(
-            vec![1.0_f32, 1.0],
-            Shape::from_dims(&[2]),
-        );
+        let inp = LazyTensor::from_f32(vec![0.5_f32, 3.0], Shape::from_dims(&[2]), &device);
+        let tgt = inp.const_f32_like(vec![1.0_f32, 1.0], Shape::from_dims(&[2]));
         let loss = huber(&inp, &tgt, 1.0, Reduction::Mean)
             .unwrap()
             .realize_f32();

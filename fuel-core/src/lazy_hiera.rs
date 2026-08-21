@@ -18,8 +18,8 @@
 //! v1 scope: F32, batch == 1, forward-only inference, fixed
 //! 224×224 input (the unroll math assumes a 56×56 grid).
 
-use crate::lazy::{LazyTensor, WeightStorage};
 use crate::Result;
+use crate::lazy::{LazyTensor, WeightStorage};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -36,22 +36,52 @@ pub struct HieraConfig {
 
 impl HieraConfig {
     pub fn tiny() -> Self {
-        Self { channels: 96, heads: 1, stages: [1, 2, 7, 2], num_classes: Some(1000) }
+        Self {
+            channels: 96,
+            heads: 1,
+            stages: [1, 2, 7, 2],
+            num_classes: Some(1000),
+        }
     }
     pub fn small() -> Self {
-        Self { channels: 96, heads: 1, stages: [1, 2, 11, 2], num_classes: Some(1000) }
+        Self {
+            channels: 96,
+            heads: 1,
+            stages: [1, 2, 11, 2],
+            num_classes: Some(1000),
+        }
     }
     pub fn base() -> Self {
-        Self { channels: 96, heads: 1, stages: [2, 3, 16, 3], num_classes: Some(1000) }
+        Self {
+            channels: 96,
+            heads: 1,
+            stages: [2, 3, 16, 3],
+            num_classes: Some(1000),
+        }
     }
     pub fn base_plus() -> Self {
-        Self { channels: 112, heads: 2, stages: [2, 3, 16, 3], num_classes: Some(1000) }
+        Self {
+            channels: 112,
+            heads: 2,
+            stages: [2, 3, 16, 3],
+            num_classes: Some(1000),
+        }
     }
     pub fn large() -> Self {
-        Self { channels: 144, heads: 2, stages: [2, 6, 36, 4], num_classes: Some(1000) }
+        Self {
+            channels: 144,
+            heads: 2,
+            stages: [2, 6, 36, 4],
+            num_classes: Some(1000),
+        }
     }
     pub fn huge() -> Self {
-        Self { channels: 256, heads: 4, stages: [2, 6, 36, 4], num_classes: Some(1000) }
+        Self {
+            channels: 256,
+            heads: 4,
+            stages: [2, 6, 36, 4],
+            num_classes: Some(1000),
+        }
     }
 }
 
@@ -184,11 +214,13 @@ impl HieraModel {
             Shape::from_dims(&[c, 3, 7, 7]),
         );
         let bias = image.const_f32_like(
-            Arc::clone(&self.weights.embed.conv_b), Shape::from_dims(&[c]),
+            Arc::clone(&self.weights.embed.conv_b),
+            Shape::from_dims(&[c]),
         );
         let x = image.conv2d(&w, Some(&bias), (4, 4), (3, 3), 1)?;
         // (B, C, 56, 56) → (B, C, 3136) → (B, 3136, C)
-        let x = x.reshape(Shape::from_dims(&[b, c, NUM_TOKENS]))?
+        let x = x
+            .reshape(Shape::from_dims(&[b, c, NUM_TOKENS]))?
             .permute([0, 2, 1_usize])?;
         // Add pos_embed (broadcast 1 along the batch dim).
         let pos = image.const_f32_like(
@@ -213,7 +245,12 @@ impl HieraModel {
             None => Ok(pooled),
             Some(head) => {
                 let h = apply_layer_norm_last(&pooled, &head.norm, head.fc.in_features)?;
-                head.fc.w.apply_linear_with_bias(&h, head.fc.in_features, head.fc.out_features, Arc::clone(&head.fc.b))
+                head.fc.w.apply_linear_with_bias(
+                    &h,
+                    head.fc.in_features,
+                    head.fc.out_features,
+                    Arc::clone(&head.fc.b),
+                )
             }
         }
     }
@@ -236,12 +273,12 @@ fn unroll(x: &LazyTensor, b: usize, c: usize) -> Result<LazyTensor> {
     Ok(xs.reshape(Shape::from_dims(&[b, NUM_TOKENS, c]))?)
 }
 
-fn apply_block(
-    x: &LazyTensor, blk: &HieraBlockWeights, anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+fn apply_block(x: &LazyTensor, blk: &HieraBlockWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
     let dims = x.shape();
     let dims = dims.dims();
-    let b = dims[0]; let n_in = dims[1]; let c_in = dims[2];
+    let b = dims[0];
+    let n_in = dims[1];
+    let c_in = dims[2];
     debug_assert_eq!(c_in, blk.in_channels);
     let c_out = blk.out_channels;
 
@@ -250,7 +287,12 @@ fn apply_block(
     let residual = match &blk.proj {
         None => x.clone(),
         Some(proj) => {
-            let projected = proj.w.apply_linear_with_bias(&xs_norm, proj.in_features, proj.out_features, Arc::clone(&proj.b))?;
+            let projected = proj.w.apply_linear_with_bias(
+                &xs_norm,
+                proj.in_features,
+                proj.out_features,
+                Arc::clone(&proj.b),
+            )?;
             // (B, N, C_out) → (B, q_stride=4, N/4, C_out) → max → (B, N/4, C_out)
             // The pool stride here is fixed at 4 in the eager port.
             let stride = 4;
@@ -267,18 +309,35 @@ fn apply_block(
 
     let normed = apply_layer_norm_last(&after_attn, &blk.norm2, c_out)?;
     let mlp_out = {
-        let h = blk.mlp_fc1.w.apply_linear_with_bias(&normed, blk.mlp_fc1.in_features, blk.mlp_fc1.out_features, Arc::clone(&blk.mlp_fc1.b))?.gelu();
-        blk.mlp_fc2.w.apply_linear_with_bias(&h, blk.mlp_fc2.in_features, blk.mlp_fc2.out_features, Arc::clone(&blk.mlp_fc2.b))?
+        let h = blk
+            .mlp_fc1
+            .w
+            .apply_linear_with_bias(
+                &normed,
+                blk.mlp_fc1.in_features,
+                blk.mlp_fc1.out_features,
+                Arc::clone(&blk.mlp_fc1.b),
+            )?
+            .gelu();
+        blk.mlp_fc2.w.apply_linear_with_bias(
+            &h,
+            blk.mlp_fc2.in_features,
+            blk.mlp_fc2.out_features,
+            Arc::clone(&blk.mlp_fc2.b),
+        )?
     };
     after_attn.add(&mlp_out)
 }
 
 fn apply_attention(
-    x: &LazyTensor, blk: &HieraBlockWeights, anchor: &LazyTensor,
+    x: &LazyTensor,
+    blk: &HieraBlockWeights,
+    anchor: &LazyTensor,
 ) -> Result<LazyTensor> {
     let dims = x.shape();
     let dims = dims.dims();
-    let b = dims[0]; let n_in = dims[1];
+    let b = dims[0];
+    let n_in = dims[1];
     let c_out = blk.out_channels;
     let heads = blk.heads;
     let head_dim = c_out / heads;
@@ -293,24 +352,58 @@ fn apply_attention(
     let s_in = n_in / num_windows;
 
     // qkv: (B, N, 3*C_out)
-    let qkv = blk.qkv.w.apply_linear_with_bias(x, blk.qkv.in_features, blk.qkv.out_features, Arc::clone(&blk.qkv.b))?;
+    let qkv = blk.qkv.w.apply_linear_with_bias(
+        x,
+        blk.qkv.in_features,
+        blk.qkv.out_features,
+        Arc::clone(&blk.qkv.b),
+    )?;
     // Reshape: (B, s_in, num_windows, 3, heads, head_dim) → permute
     // (3, B, heads, num_windows, s_in, head_dim).
     let qkv = qkv
-        .reshape(Shape::from_dims(&[b, s_in, num_windows, 3, heads, head_dim]))?
+        .reshape(Shape::from_dims(&[
+            b,
+            s_in,
+            num_windows,
+            3,
+            heads,
+            head_dim,
+        ]))?
         .permute([3, 0, 4, 2, 1, 5_usize])?;
-    let q = qkv.narrow(0_usize, 0, 1)?
-        .reshape(Shape::from_dims(&[b, heads, num_windows, s_in, head_dim]))?;
-    let k = qkv.narrow(0_usize, 1, 1)?
-        .reshape(Shape::from_dims(&[b, heads, num_windows, s_in, head_dim]))?;
-    let v = qkv.narrow(0_usize, 2, 1)?
-        .reshape(Shape::from_dims(&[b, heads, num_windows, s_in, head_dim]))?;
+    let q = qkv.narrow(0_usize, 0, 1)?.reshape(Shape::from_dims(&[
+        b,
+        heads,
+        num_windows,
+        s_in,
+        head_dim,
+    ]))?;
+    let k = qkv.narrow(0_usize, 1, 1)?.reshape(Shape::from_dims(&[
+        b,
+        heads,
+        num_windows,
+        s_in,
+        head_dim,
+    ]))?;
+    let v = qkv.narrow(0_usize, 2, 1)?.reshape(Shape::from_dims(&[
+        b,
+        heads,
+        num_windows,
+        s_in,
+        head_dim,
+    ]))?;
 
     // Q-stride pooling on queries.
     let (q, s_q) = if blk.q_stride > 1 {
         let s_q = s_in / blk.q_stride;
         let q = q
-            .reshape(Shape::from_dims(&[b, heads, num_windows, blk.q_stride, s_q, head_dim]))?
+            .reshape(Shape::from_dims(&[
+                b,
+                heads,
+                num_windows,
+                blk.q_stride,
+                s_q,
+                head_dim,
+            ]))?
             .max_dim(3_usize)?;
         (q, s_q)
     } else {
@@ -337,16 +430,22 @@ fn apply_attention(
         // (B, num_windows, s_q, heads, head_dim).
         .permute([0, 2, 3, 1, 4_usize])?
         .reshape(Shape::from_dims(&[b, num_windows * s_q, c_out]))?;
-    blk.attn_proj.w.apply_linear_with_bias(&ctx, blk.attn_proj.in_features, blk.attn_proj.out_features, Arc::clone(&blk.attn_proj.b))
+    blk.attn_proj.w.apply_linear_with_bias(
+        &ctx,
+        blk.attn_proj.in_features,
+        blk.attn_proj.out_features,
+        Arc::clone(&blk.attn_proj.b),
+    )
 }
 
 fn apply_layer_norm_last(
-    x: &LazyTensor, ln: &LayerNormWeights, hidden: usize,
+    x: &LazyTensor,
+    ln: &LayerNormWeights,
+    hidden: usize,
 ) -> Result<LazyTensor> {
     let _ = hidden;
     x.layer_norm_affine(Arc::clone(&ln.gain), Arc::clone(&ln.bias), 1e-6)
 }
-
 
 // ---- HuggingFace safetensors loader ----------------------------------------
 
@@ -360,14 +459,14 @@ impl HieraWeights {
     ) -> Result<Self> {
         use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
 
-        let conv_w = Arc::from(load_tensor_as_f32(
-            st, "patch_embed.proj.weight",
-        )?);
-        let conv_b = Arc::from(load_tensor_as_f32(
-            st, "patch_embed.proj.bias",
-        )?);
+        let conv_w = Arc::from(load_tensor_as_f32(st, "patch_embed.proj.weight")?);
+        let conv_b = Arc::from(load_tensor_as_f32(st, "patch_embed.proj.bias")?);
         let pos_embed = Arc::from(load_tensor_as_f32(st, "pos_embed")?);
-        let embed = HieraEmbeddingWeights { conv_w, conv_b, pos_embed };
+        let embed = HieraEmbeddingWeights {
+            conv_w,
+            conv_b,
+            pos_embed,
+        };
 
         let load_ln = |prefix: &str| -> Result<LayerNormWeights> {
             Ok(LayerNormWeights {
@@ -379,7 +478,12 @@ impl HieraWeights {
         let load_linear = |prefix: &str, in_f: usize, out_f: usize| -> Result<LinearWeights> {
             let w = ltm(st, &format!("{prefix}.weight"), out_f, in_f)?;
             let b = Arc::from(load_tensor_as_f32(st, &format!("{prefix}.bias"))?);
-            Ok(LinearWeights { w, b, in_features: in_f, out_features: out_f })
+            Ok(LinearWeights {
+                w,
+                b,
+                in_features: in_f,
+                out_features: out_f,
+            })
         };
 
         let schedule = block_schedule(cfg);
@@ -390,23 +494,41 @@ impl HieraWeights {
             let norm2 = load_ln(&format!("{p}.norm2"))?;
             let proj = if sched.in_channels != sched.out_channels {
                 Some(load_linear(
-                    &format!("{p}.proj"), sched.in_channels, sched.out_channels,
+                    &format!("{p}.proj"),
+                    sched.in_channels,
+                    sched.out_channels,
                 )?)
-            } else { None };
+            } else {
+                None
+            };
             let qkv = load_linear(
-                &format!("{p}.attn.qkv"), sched.out_channels, 3 * sched.out_channels,
+                &format!("{p}.attn.qkv"),
+                sched.out_channels,
+                3 * sched.out_channels,
             )?;
             let attn_proj = load_linear(
-                &format!("{p}.attn.proj"), sched.out_channels, sched.out_channels,
+                &format!("{p}.attn.proj"),
+                sched.out_channels,
+                sched.out_channels,
             )?;
             let mlp_fc1 = load_linear(
-                &format!("{p}.mlp.fc1"), sched.out_channels, sched.out_channels * 4,
+                &format!("{p}.mlp.fc1"),
+                sched.out_channels,
+                sched.out_channels * 4,
             )?;
             let mlp_fc2 = load_linear(
-                &format!("{p}.mlp.fc2"), sched.out_channels * 4, sched.out_channels,
+                &format!("{p}.mlp.fc2"),
+                sched.out_channels * 4,
+                sched.out_channels,
             )?;
             blocks.push(HieraBlockWeights {
-                norm1, norm2, proj, qkv, attn_proj, mlp_fc1, mlp_fc2,
+                norm1,
+                norm2,
+                proj,
+                qkv,
+                attn_proj,
+                mlp_fc1,
+                mlp_fc2,
                 heads: sched.heads,
                 in_channels: sched.in_channels,
                 out_channels: sched.out_channels,
@@ -417,17 +539,25 @@ impl HieraWeights {
         }
 
         let head = if let Some(nc) = cfg.num_classes {
-            let last = blocks.last().map(|b| b.out_channels).unwrap_or(cfg.channels);
+            let last = blocks
+                .last()
+                .map(|b| b.out_channels)
+                .unwrap_or(cfg.channels);
             Some(HieraHeadWeights {
                 norm: load_ln("norm")?,
                 fc: load_linear("head.fc", last, nc)?,
             })
-        } else { None };
+        } else {
+            None
+        };
 
-        Ok(Self { embed, blocks, head })
+        Ok(Self {
+            embed,
+            blocks,
+            head,
+        })
     }
 }
-
 
 // ---- Tests -----------------------------------------------------------------
 
@@ -458,21 +588,24 @@ mod tests {
     }
 
     fn linear_w(
-        in_features: usize, out_features: usize, nb: &mut dyn FnMut() -> f32,
+        in_features: usize,
+        out_features: usize,
+        nb: &mut dyn FnMut() -> f32,
     ) -> LinearWeights {
         LinearWeights {
             w: ws(in_features * out_features, nb),
             b: vec_of(out_features, nb),
-            in_features, out_features,
+            in_features,
+            out_features,
         }
     }
 
-    fn build_block(
-        sched: HieraBlockSchedule, nb: &mut dyn FnMut() -> f32,
-    ) -> HieraBlockWeights {
+    fn build_block(sched: HieraBlockSchedule, nb: &mut dyn FnMut() -> f32) -> HieraBlockWeights {
         let proj = if sched.in_channels != sched.out_channels {
             Some(linear_w(sched.in_channels, sched.out_channels, nb))
-        } else { None };
+        } else {
+            None
+        };
         HieraBlockWeights {
             norm1: ln_w(sched.in_channels),
             norm2: ln_w(sched.out_channels),
@@ -506,7 +639,11 @@ mod tests {
             norm: ln_w(c * 8),
             fc: linear_w(c * 8, n, &mut nb),
         });
-        HieraWeights { embed, blocks, head }
+        HieraWeights {
+            embed,
+            blocks,
+            head,
+        }
     }
 
     #[test]
@@ -539,10 +676,14 @@ mod tests {
 
     #[test]
     fn unroll_preserves_total_elements_and_shape() {
-        let b = 1; let c = 4;
+        let b = 1;
+        let c = 4;
         let x = LazyTensor::from_f32(
-            (0..(b * NUM_TOKENS * c)).map(|i| (i as f32) * 0.001).collect::<Vec<_>>(),
-            Shape::from_dims(&[b, NUM_TOKENS, c]), &Device::cpu(),
+            (0..(b * NUM_TOKENS * c))
+                .map(|i| (i as f32) * 0.001)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[b, NUM_TOKENS, c]),
+            &Device::cpu(),
         );
         let y = unroll(&x, b, c).unwrap();
         assert_eq!(y.shape().dims(), &[b, NUM_TOKENS, c]);
@@ -562,10 +703,16 @@ mod tests {
     fn forward_shape_and_finite() {
         let cfg = HieraConfig::tiny();
         let weights = tiny_weights(&cfg);
-        let model = HieraModel { config: cfg.clone(), weights };
+        let model = HieraModel {
+            config: cfg.clone(),
+            weights,
+        };
         let img = LazyTensor::from_f32(
-            (0..(3 * 224 * 224)).map(|i| (i as f32) * 0.001).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, 3, 224, 224]), &Device::cpu(),
+            (0..(3 * 224 * 224))
+                .map(|i| (i as f32) * 0.001)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 224, 224]),
+            &Device::cpu(),
         );
         let logits = model.forward(&img).unwrap();
         assert_eq!(logits.shape().dims(), &[1, 1000]);
@@ -578,14 +725,23 @@ mod tests {
     fn forward_responds_to_input() {
         let cfg = HieraConfig::tiny();
         let weights = tiny_weights(&cfg);
-        let model = HieraModel { config: cfg, weights };
+        let model = HieraModel {
+            config: cfg,
+            weights,
+        };
         let img_a = LazyTensor::from_f32(
-            (0..(3 * 224 * 224)).map(|i| (i as f32) * 0.001).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, 3, 224, 224]), &Device::cpu(),
+            (0..(3 * 224 * 224))
+                .map(|i| (i as f32) * 0.001)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 224, 224]),
+            &Device::cpu(),
         );
         let img_b = LazyTensor::from_f32(
-            (0..(3 * 224 * 224)).map(|i| (i as f32) * 0.001 + 0.3).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, 3, 224, 224]), &Device::cpu(),
+            (0..(3 * 224 * 224))
+                .map(|i| (i as f32) * 0.001 + 0.3)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 224, 224]),
+            &Device::cpu(),
         );
         let a = model.forward(&img_a).unwrap().realize_f32();
         let b = model.forward(&img_b).unwrap().realize_f32();
@@ -595,8 +751,10 @@ mod tests {
         }
         // Tiny weights + 12 attention blocks + global mean over 3136 tokens
         // heavily damp the signal.
-        assert!(max_diff > 1e-10,
-            "Hiera must respond to input changes, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-10,
+            "Hiera must respond to input changes, max_diff = {max_diff}"
+        );
     }
 
     #[test]

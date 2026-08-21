@@ -14,9 +14,7 @@
 //! The entrypoint is [`try_dispatch`]: called by `lazy_eval`'s fallthrough
 //! arm, returns `Ok(true)` if it handled the op, `Ok(false)` otherwise.
 
-use crate::lazy_eval::{
-    get_attr_float_opt, get_attr_int_opt, normalize_axis, set_output,
-};
+use crate::lazy_eval::{get_attr_float_opt, get_attr_int_opt, normalize_axis, set_output};
 use crate::onnx;
 use fuel::lazy::LazyTensor;
 use fuel::{Device, Error, Result, Shape};
@@ -63,16 +61,13 @@ fn get(
     name: &str,
     node: &onnx::NodeProto,
 ) -> Result<LazyTensor> {
-    values
-        .get(name)
-        .cloned()
-        .ok_or_else(|| {
-            Error::Msg(format!(
-                "missing input '{}' for node '{}' ({})",
-                name, node.name, node.op_type
-            ))
-            .bt()
-        })
+    values.get(name).cloned().ok_or_else(|| {
+        Error::Msg(format!(
+            "missing input '{}' for node '{}' ({})",
+            name, node.name, node.op_type
+        ))
+        .bt()
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -261,10 +256,7 @@ fn softmax_op(
 // Parametric activations: LeakyRelu, Elu, HardSigmoid
 // ---------------------------------------------------------------------------
 
-fn leaky_relu(
-    node: &onnx::NodeProto,
-    values: &mut HashMap<String, LazyTensor>,
-) -> Result<()> {
+fn leaky_relu(node: &onnx::NodeProto, values: &mut HashMap<String, LazyTensor>) -> Result<()> {
     // y = relu(x) + alpha * (x - relu(x))
     //   x >= 0 → relu(x) = x, x - relu(x) = 0 → y = x
     //   x <  0 → relu(x) = 0, x - relu(x) = x → y = alpha*x
@@ -291,10 +283,7 @@ fn elu(node: &onnx::NodeProto, values: &mut HashMap<String, LazyTensor>) -> Resu
     set_output(node, 0, y, values)
 }
 
-fn hard_sigmoid(
-    node: &onnx::NodeProto,
-    values: &mut HashMap<String, LazyTensor>,
-) -> Result<()> {
+fn hard_sigmoid(node: &onnx::NodeProto, values: &mut HashMap<String, LazyTensor>) -> Result<()> {
     // y = clamp(alpha*x + beta, 0, 1)
     let x = get(values, &node.input[0], node)?;
     let alpha = get_attr_float_opt(node, "alpha").unwrap_or(0.2) as f64;
@@ -374,7 +363,12 @@ mod tests {
         (a - b).abs() <= eps
     }
 
-    fn run_unary(op_type: &str, attrs: Vec<onnx::AttributeProto>, x_data: Vec<f32>, x_dims: &[usize]) -> Vec<f32> {
+    fn run_unary(
+        op_type: &str,
+        attrs: Vec<onnx::AttributeProto>,
+        x_data: Vec<f32>,
+        x_dims: &[usize],
+    ) -> Vec<f32> {
         let mut n = node_(op_type, "n", &["X"], &["Y"]);
         n.attribute = attrs;
         let graph = onnx::GraphProto {
@@ -419,7 +413,12 @@ mod tests {
         // channel 1 denom ≈ 0.5
         //   (3 - 3.5)/0.5 * 0.5 + (-1) = -0.5 -1 = -1.5
         //   (4 - 3.5)/0.5 * 0.5 + (-1) =  0.5 -1 = -0.5
-        let bn = node_("BatchNormalization", "bn", &["X", "S", "B", "M", "V"], &["Y"]);
+        let bn = node_(
+            "BatchNormalization",
+            "bn",
+            &["X", "S", "B", "M", "V"],
+            &["Y"],
+        );
         let graph = onnx::GraphProto {
             node: vec![bn],
             initializer: vec![

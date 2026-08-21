@@ -27,8 +27,8 @@
 //!
 //! v1 scope: F32, batch == 1, forward-only inference.
 
-use crate::lazy::{LazyTensor, WeightStorage};
 use crate::Result;
+use crate::lazy::{LazyTensor, WeightStorage};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -58,45 +58,65 @@ impl FastVitConfig {
     /// `fastvit_t8` (timm).
     pub fn t8() -> Self {
         Self {
-            in_channels: 48, blocks: [2, 2, 4, 2],
-            exp_ratio: 3, attn: false, lkc_use_act: true,
-            head_dim: 32, image_size: 256,
+            in_channels: 48,
+            blocks: [2, 2, 4, 2],
+            exp_ratio: 3,
+            attn: false,
+            lkc_use_act: true,
+            head_dim: 32,
+            image_size: 256,
             num_classes: Some(1000),
         }
     }
     /// `fastvit_sa12` — hybrid variant with attention in the last stage.
     pub fn sa12() -> Self {
         Self {
-            in_channels: 64, blocks: [2, 2, 6, 2],
-            exp_ratio: 4, attn: true, lkc_use_act: true,
-            head_dim: 32, image_size: 256,
+            in_channels: 64,
+            blocks: [2, 2, 6, 2],
+            exp_ratio: 4,
+            attn: true,
+            lkc_use_act: true,
+            head_dim: 32,
+            image_size: 256,
             num_classes: Some(1000),
         }
     }
     /// FastViT-MCI0 — vision backbone for MobileCLIP-S1 / MetaCLIP.
     pub fn mci0() -> Self {
         Self {
-            in_channels: 64, blocks: [2, 6, 10, 2],
-            exp_ratio: 3, attn: true, lkc_use_act: true,
-            head_dim: 32, image_size: 256,
+            in_channels: 64,
+            blocks: [2, 6, 10, 2],
+            exp_ratio: 3,
+            attn: true,
+            lkc_use_act: true,
+            head_dim: 32,
+            image_size: 256,
             num_classes: None,
         }
     }
     /// FastViT-MCI1 — vision backbone for MobileCLIP-S2.
     pub fn mci1() -> Self {
         Self {
-            in_channels: 64, blocks: [4, 12, 20, 4],
-            exp_ratio: 3, attn: true, lkc_use_act: true,
-            head_dim: 32, image_size: 256,
+            in_channels: 64,
+            blocks: [4, 12, 20, 4],
+            exp_ratio: 3,
+            attn: true,
+            lkc_use_act: true,
+            head_dim: 32,
+            image_size: 256,
             num_classes: None,
         }
     }
     /// FastViT-MCI2 — vision backbone for MobileCLIP-S3.
     pub fn mci2() -> Self {
         Self {
-            in_channels: 80, blocks: [4, 12, 24, 4],
-            exp_ratio: 3, attn: true, lkc_use_act: true,
-            head_dim: 32, image_size: 256,
+            in_channels: 80,
+            blocks: [4, 12, 24, 4],
+            exp_ratio: 3,
+            attn: true,
+            lkc_use_act: true,
+            head_dim: 32,
+            image_size: 256,
             num_classes: None,
         }
     }
@@ -275,9 +295,7 @@ impl FastVitModel {
                 let c = dims[1];
                 let n = head.linear_b.len();
                 let logits = head.linear_w.apply_linear(&pooled, c, n)?;
-                let bias = image.const_f32_like(
-                    Arc::clone(&head.linear_b), Shape::from_dims(&[n]),
-                );
+                let bias = image.const_f32_like(Arc::clone(&head.linear_b), Shape::from_dims(&[n]));
                 logits.broadcast_add(&bias)
             }
         }
@@ -290,9 +308,7 @@ impl FastVitModel {
     }
 }
 
-fn run_stage(
-    x: &LazyTensor, stage: &StageWeights, anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+fn run_stage(x: &LazyTensor, stage: &StageWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
     let mut x = if let Some(ds) = &stage.downsample {
         apply_patch_embed(x, ds, anchor)?
     } else {
@@ -320,33 +336,30 @@ fn run_stage(
 // ---- Block helpers ---------------------------------------------------------
 
 fn apply_conv2d_bias(
-    x: &LazyTensor, c: &Conv2dBiasWeights, anchor: &LazyTensor,
+    x: &LazyTensor,
+    c: &Conv2dBiasWeights,
+    anchor: &LazyTensor,
 ) -> Result<LazyTensor> {
     let w = anchor.const_f32_like(
         Arc::clone(&c.w),
         Shape::from_dims(&[c.c_out, c.c_in / c.groups, c.k, c.k]),
     );
-    let bias = anchor.const_f32_like(
-        Arc::clone(&c.b), Shape::from_dims(&[c.c_out]),
-    );
+    let bias = anchor.const_f32_like(Arc::clone(&c.b), Shape::from_dims(&[c.c_out]));
     x.conv2d(
-        &w, Some(&bias),
+        &w,
+        Some(&bias),
         (c.stride, c.stride),
         (c.pad, c.pad),
         c.groups,
     )
 }
 
-fn apply_bn_fused(
-    x: &LazyTensor, bn: &BnWeights, channels: usize,
-) -> Result<LazyTensor> {
+fn apply_bn_fused(x: &LazyTensor, bn: &BnWeights, channels: usize) -> Result<LazyTensor> {
     let _ = channels;
     x.channel_affine_4d(Arc::clone(&bn.w), Arc::clone(&bn.b))
 }
 
-fn apply_se(
-    x: &LazyTensor, se: &SeWeights, anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+fn apply_se(x: &LazyTensor, se: &SeWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
     let dims = x.shape();
     let dims = dims.dims();
     let c = dims[1];
@@ -360,7 +373,9 @@ fn apply_se(
 }
 
 fn apply_reparam_mobileone(
-    x: &LazyTensor, m: &ReparamMobileOneWeights, anchor: &LazyTensor,
+    x: &LazyTensor,
+    m: &ReparamMobileOneWeights,
+    anchor: &LazyTensor,
 ) -> Result<LazyTensor> {
     let mut y = apply_conv2d_bias(x, &m.conv, anchor)?;
     if let Some(se) = &m.se {
@@ -372,18 +387,14 @@ fn apply_reparam_mobileone(
     Ok(y)
 }
 
-fn apply_conv_mlp(
-    x: &LazyTensor, m: &ConvMlpWeights, anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+fn apply_conv_mlp(x: &LazyTensor, m: &ConvMlpWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
     let x = apply_conv2d_bias(x, &m.conv_norm, anchor)?;
     let x = apply_conv2d_bias(&x, &m.fc1, anchor)?;
     let x = x.gelu_erf();
     apply_conv2d_bias(&x, &m.fc2, anchor)
 }
 
-fn apply_repmixer(
-    x: &LazyTensor, r: &RepMixerWeights, anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+fn apply_repmixer(x: &LazyTensor, r: &RepMixerWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
     let mixer = apply_reparam_mobileone(x, &r.mixer, anchor)?;
     let norm = apply_reparam_mobileone(x, &r.norm, anchor)?;
     let diff = mixer.sub(&norm)?;
@@ -395,24 +406,34 @@ fn apply_repmixer(
 }
 
 fn apply_repmixer_block(
-    x: &LazyTensor, b: &RepMixerBlockWeights, anchor: &LazyTensor,
+    x: &LazyTensor,
+    b: &RepMixerBlockWeights,
+    anchor: &LazyTensor,
 ) -> Result<LazyTensor> {
     let y = apply_repmixer(x, &b.token_mixer, anchor)?;
     let mlp_out = apply_conv_mlp(&y, &b.mlp, anchor)?;
     let gamma = anchor
-        .const_f32_like(Arc::clone(&b.gamma_mlp), Shape::from_dims(&[b.gamma_mlp.len()]))
+        .const_f32_like(
+            Arc::clone(&b.gamma_mlp),
+            Shape::from_dims(&[b.gamma_mlp.len()]),
+        )
         .reshape(Shape::from_dims(&[1, b.gamma_mlp.len(), 1, 1]))?;
     let scaled = mlp_out.broadcast_mul(&gamma)?;
     y.add(&scaled)
 }
 
 fn apply_fastvit_attention(
-    x: &LazyTensor, w: &FastVitAttentionWeights,
-    head_dim: usize, anchor: &LazyTensor,
+    x: &LazyTensor,
+    w: &FastVitAttentionWeights,
+    head_dim: usize,
+    anchor: &LazyTensor,
 ) -> Result<LazyTensor> {
     let dims = x.shape();
     let dims = dims.dims();
-    let b = dims[0]; let c = dims[1]; let h = dims[2]; let ww = dims[3];
+    let b = dims[0];
+    let c = dims[1];
+    let h = dims[2];
+    let ww = dims[3];
     let n = h * ww;
     let num_heads = c / head_dim;
     let scale = 1.0_f64 / (head_dim as f64).sqrt();
@@ -435,9 +456,7 @@ fn apply_fastvit_attention(
     let ctx = probs.matmul(&v)?.merge_heads()?;
     let _ = n;
     let projected = w.proj.apply_linear(&ctx, c, c)?;
-    let bias_t = anchor.const_f32_like(
-        Arc::clone(&w.proj_bias), Shape::from_dims(&[c]),
-    );
+    let bias_t = anchor.const_f32_like(Arc::clone(&w.proj_bias), Shape::from_dims(&[c]));
     let out = projected.broadcast_add(&bias_t)?;
     // Back to (B, C, H, W).
     Ok(out
@@ -446,7 +465,9 @@ fn apply_fastvit_attention(
 }
 
 fn apply_attention_block(
-    x: &LazyTensor, b: &AttentionBlockWeights, anchor: &LazyTensor,
+    x: &LazyTensor,
+    b: &AttentionBlockWeights,
+    anchor: &LazyTensor,
 ) -> Result<LazyTensor> {
     let dims = x.shape();
     let dims = dims.dims();
@@ -471,7 +492,9 @@ fn apply_attention_block(
 }
 
 fn apply_patch_embed(
-    x: &LazyTensor, p: &PatchEmbedWeights, anchor: &LazyTensor,
+    x: &LazyTensor,
+    p: &PatchEmbedWeights,
+    anchor: &LazyTensor,
 ) -> Result<LazyTensor> {
     let lk = apply_conv2d_bias(x, &p.large_conv, anchor)?;
     let sk = apply_conv2d_bias(x, &p.small_conv, anchor)?;
@@ -503,8 +526,9 @@ impl FastVitWeights {
              support is not yet wired (RepMixer/Attention stage mapping pending). \
              Construct FastVitWeights directly or contribute the loader via \
              `docs/session-prompts/fastvit-load-from-mmapped.md`."
-            .to_string()
-        ).bt())
+                .to_string(),
+        )
+        .bt())
     }
 }
 
@@ -530,13 +554,23 @@ mod tests {
     }
 
     fn conv_w(
-        c_in: usize, c_out: usize, k: usize, stride: usize, pad: usize, groups: usize,
+        c_in: usize,
+        c_out: usize,
+        k: usize,
+        stride: usize,
+        pad: usize,
+        groups: usize,
         nb: &mut dyn FnMut() -> f32,
     ) -> Conv2dBiasWeights {
         Conv2dBiasWeights {
             w: vec_of(c_out * (c_in / groups) * k * k, nb),
             b: vec_of(c_out, nb),
-            c_in, c_out, k, stride, pad, groups,
+            c_in,
+            c_out,
+            k,
+            stride,
+            pad,
+            groups,
         }
     }
 
@@ -549,8 +583,14 @@ mod tests {
     }
 
     fn reparam_mobileone(
-        c_in: usize, c_out: usize, k: usize, stride: usize, groups: usize,
-        with_se: bool, use_act: bool, nb: &mut dyn FnMut() -> f32,
+        c_in: usize,
+        c_out: usize,
+        k: usize,
+        stride: usize,
+        groups: usize,
+        with_se: bool,
+        use_act: bool,
+        nb: &mut dyn FnMut() -> f32,
     ) -> ReparamMobileOneWeights {
         let pad = k / 2;
         ReparamMobileOneWeights {
@@ -560,9 +600,7 @@ mod tests {
         }
     }
 
-    fn conv_mlp_w(
-        dim: usize, exp: usize, nb: &mut dyn FnMut() -> f32,
-    ) -> ConvMlpWeights {
+    fn conv_mlp_w(dim: usize, exp: usize, nb: &mut dyn FnMut() -> f32) -> ConvMlpWeights {
         ConvMlpWeights {
             conv_norm: conv_w(dim, dim, 7, 1, 3, dim, nb),
             fc1: conv_w(dim, dim * exp, 1, 1, 0, 1, nb),
@@ -570,7 +608,11 @@ mod tests {
         }
     }
 
-    fn repmixer_block_w(dim: usize, exp: usize, nb: &mut dyn FnMut() -> f32) -> RepMixerBlockWeights {
+    fn repmixer_block_w(
+        dim: usize,
+        exp: usize,
+        nb: &mut dyn FnMut() -> f32,
+    ) -> RepMixerBlockWeights {
         RepMixerBlockWeights {
             gamma_mlp: vec_of(dim, nb),
             token_mixer: RepMixerWeights {
@@ -583,7 +625,9 @@ mod tests {
     }
 
     fn attention_block_w(
-        dim: usize, exp: usize, nb: &mut dyn FnMut() -> f32,
+        dim: usize,
+        exp: usize,
+        nb: &mut dyn FnMut() -> f32,
     ) -> AttentionBlockWeights {
         AttentionBlockWeights {
             gamma1: vec_of(dim, nb),
@@ -601,9 +645,7 @@ mod tests {
         }
     }
 
-    fn patch_embed_w(
-        c_in: usize, c_out: usize, nb: &mut dyn FnMut() -> f32,
-    ) -> PatchEmbedWeights {
+    fn patch_embed_w(c_in: usize, c_out: usize, nb: &mut dyn FnMut() -> f32) -> PatchEmbedWeights {
         PatchEmbedWeights {
             large_conv: conv_w(c_in, c_out, 7, 2, 3, 1, nb),
             small_conv: conv_w(c_in, c_out, 3, 2, 1, 1, nb),
@@ -642,21 +684,27 @@ mod tests {
                 downsample: None,
                 pos_emb: Some(conv_w(c0, c0, 7, 1, 3, c0, &mut nb)),
                 blocks: FastVitStageBlocks::RepMixer(
-                    (0..cfg.blocks[0]).map(|_| repmixer_block_w(c0, cfg.exp_ratio, &mut nb)).collect(),
+                    (0..cfg.blocks[0])
+                        .map(|_| repmixer_block_w(c0, cfg.exp_ratio, &mut nb))
+                        .collect(),
                 ),
             },
             StageWeights {
                 downsample: Some(patch_embed_w(c0, c0 * 2, &mut nb)),
                 pos_emb: Some(conv_w(c0 * 2, c0 * 2, 7, 1, 3, c0 * 2, &mut nb)),
                 blocks: FastVitStageBlocks::RepMixer(
-                    (0..cfg.blocks[1]).map(|_| repmixer_block_w(c0 * 2, cfg.exp_ratio, &mut nb)).collect(),
+                    (0..cfg.blocks[1])
+                        .map(|_| repmixer_block_w(c0 * 2, cfg.exp_ratio, &mut nb))
+                        .collect(),
                 ),
             },
             StageWeights {
                 downsample: Some(patch_embed_w(c0 * 2, c0 * 4, &mut nb)),
                 pos_emb: Some(conv_w(c0 * 4, c0 * 4, 7, 1, 3, c0 * 4, &mut nb)),
                 blocks: FastVitStageBlocks::RepMixer(
-                    (0..cfg.blocks[2]).map(|_| repmixer_block_w(c0 * 4, cfg.exp_ratio, &mut nb)).collect(),
+                    (0..cfg.blocks[2])
+                        .map(|_| repmixer_block_w(c0 * 4, cfg.exp_ratio, &mut nb))
+                        .collect(),
                 ),
             },
             StageWeights {
@@ -664,11 +712,15 @@ mod tests {
                 pos_emb: Some(conv_w(c0 * 8, c0 * 8, 7, 1, 3, c0 * 8, &mut nb)),
                 blocks: if cfg.attn {
                     FastVitStageBlocks::Attention(
-                        (0..cfg.blocks[3]).map(|_| attention_block_w(c0 * 8, cfg.exp_ratio, &mut nb)).collect(),
+                        (0..cfg.blocks[3])
+                            .map(|_| attention_block_w(c0 * 8, cfg.exp_ratio, &mut nb))
+                            .collect(),
                     )
                 } else {
                     FastVitStageBlocks::RepMixer(
-                        (0..cfg.blocks[3]).map(|_| repmixer_block_w(c0 * 8, cfg.exp_ratio, &mut nb)).collect(),
+                        (0..cfg.blocks[3])
+                            .map(|_| repmixer_block_w(c0 * 8, cfg.exp_ratio, &mut nb))
+                            .collect(),
                     )
                 },
             },
@@ -680,34 +732,60 @@ mod tests {
             linear_b: vec_of(n, &mut nb),
         });
         // Avoid taking references during the assignment dance.
-        let s3 = std::mem::replace(&mut stages[3], StageWeights {
-            downsample: None, pos_emb: None,
-            blocks: FastVitStageBlocks::RepMixer(vec![]),
-        });
-        let s2 = std::mem::replace(&mut stages[2], StageWeights {
-            downsample: None, pos_emb: None,
-            blocks: FastVitStageBlocks::RepMixer(vec![]),
-        });
-        let s1 = std::mem::replace(&mut stages[1], StageWeights {
-            downsample: None, pos_emb: None,
-            blocks: FastVitStageBlocks::RepMixer(vec![]),
-        });
-        let s0 = std::mem::replace(&mut stages[0], StageWeights {
-            downsample: None, pos_emb: None,
-            blocks: FastVitStageBlocks::RepMixer(vec![]),
-        });
+        let s3 = std::mem::replace(
+            &mut stages[3],
+            StageWeights {
+                downsample: None,
+                pos_emb: None,
+                blocks: FastVitStageBlocks::RepMixer(vec![]),
+            },
+        );
+        let s2 = std::mem::replace(
+            &mut stages[2],
+            StageWeights {
+                downsample: None,
+                pos_emb: None,
+                blocks: FastVitStageBlocks::RepMixer(vec![]),
+            },
+        );
+        let s1 = std::mem::replace(
+            &mut stages[1],
+            StageWeights {
+                downsample: None,
+                pos_emb: None,
+                blocks: FastVitStageBlocks::RepMixer(vec![]),
+            },
+        );
+        let s0 = std::mem::replace(
+            &mut stages[0],
+            StageWeights {
+                downsample: None,
+                pos_emb: None,
+                blocks: FastVitStageBlocks::RepMixer(vec![]),
+            },
+        );
 
-        FastVitWeights { stem, stages: [s0, s1, s2, s3], head }
+        FastVitWeights {
+            stem,
+            stages: [s0, s1, s2, s3],
+            head,
+        }
     }
 
     #[test]
     fn forward_with_head_shape_and_finite() {
         let cfg = tiny_config();
         let weights = build_weights(&cfg);
-        let model = FastVitModel { config: cfg.clone(), weights };
+        let model = FastVitModel {
+            config: cfg.clone(),
+            weights,
+        };
         let img = LazyTensor::from_f32(
-            (0..(3 * 32 * 32)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, 3, 32, 32]), &Device::cpu(),
+            (0..(3 * 32 * 32))
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 32, 32]),
+            &Device::cpu(),
         );
         let logits = model.forward(&img).unwrap();
         assert_eq!(logits.shape().dims(), &[1, 10]);
@@ -720,10 +798,16 @@ mod tests {
     fn forward_features_returns_feature_map() {
         let cfg = tiny_config();
         let weights = build_weights(&cfg);
-        let model = FastVitModel { config: cfg.clone(), weights };
+        let model = FastVitModel {
+            config: cfg.clone(),
+            weights,
+        };
         let img = LazyTensor::from_f32(
-            (0..(3 * 32 * 32)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, 3, 32, 32]), &Device::cpu(),
+            (0..(3 * 32 * 32))
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 32, 32]),
+            &Device::cpu(),
         );
         let feats = model.forward_features(&img).unwrap();
         let shape = feats.shape();
@@ -740,14 +824,23 @@ mod tests {
     fn forward_responds_to_input() {
         let cfg = tiny_config();
         let weights = build_weights(&cfg);
-        let model = FastVitModel { config: cfg, weights };
+        let model = FastVitModel {
+            config: cfg,
+            weights,
+        };
         let img_a = LazyTensor::from_f32(
-            (0..(3 * 32 * 32)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, 3, 32, 32]), &Device::cpu(),
+            (0..(3 * 32 * 32))
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 32, 32]),
+            &Device::cpu(),
         );
         let img_b = LazyTensor::from_f32(
-            (0..(3 * 32 * 32)).map(|i| (i as f32) * 0.01 + 0.5).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, 3, 32, 32]), &Device::cpu(),
+            (0..(3 * 32 * 32))
+                .map(|i| (i as f32) * 0.01 + 0.5)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, 3, 32, 32]),
+            &Device::cpu(),
         );
         let a = model.forward(&img_a).unwrap().realize_f32();
         let b = model.forward(&img_b).unwrap().realize_f32();
@@ -758,8 +851,10 @@ mod tests {
         // Tiny random weights (~0.025) attenuate through stem + 4 stages of
         // (conv + SE-sigmoid + GELU + 7x7-dwconv + MLP) blocks; the signal
         // survives but is heavily damped.
-        assert!(max_diff > 1e-10,
-            "FastViT must respond to input changes, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-10,
+            "FastViT must respond to input changes, max_diff = {max_diff}"
+        );
     }
 
     #[test]

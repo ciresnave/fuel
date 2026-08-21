@@ -273,14 +273,21 @@ mod tests {
         total: Option<u64>,
     }
     impl BackendRuntime for MockRuntime {
-        fn available_bytes(&self) -> Option<u64> { self.available }
-        fn total_bytes(&self) -> Option<u64> { self.total }
+        fn available_bytes(&self) -> Option<u64> {
+            self.available
+        }
+        fn total_bytes(&self) -> Option<u64> {
+            self.total
+        }
     }
 
     /// Allocation strictly larger than available bytes → `WontFit`.
     #[test]
     fn would_fit_wont_fit_when_size_exceeds_available() {
-        let r = MockRuntime { available: Some(1_000), total: Some(10_000) };
+        let r = MockRuntime {
+            available: Some(1_000),
+            total: Some(10_000),
+        };
         assert_eq!(r.would_fit(1_001), FitStatus::WontFit);
     }
 
@@ -290,7 +297,10 @@ mod tests {
     fn would_fit_comfortable_when_post_alloc_under_threshold() {
         // total=100, available=80 → currently using 20.
         // size=10 → post-used=30, post-used/total=0.3 < 0.85.
-        let r = MockRuntime { available: Some(80), total: Some(100) };
+        let r = MockRuntime {
+            available: Some(80),
+            total: Some(100),
+        };
         assert_eq!(r.would_fit(10), FitStatus::Comfortable);
     }
 
@@ -300,7 +310,10 @@ mod tests {
     fn would_fit_tight_when_post_alloc_above_threshold() {
         // total=100, available=20 → currently using 80.
         // size=10 → post-used=90, post-used/total=0.9 > 0.85.
-        let r = MockRuntime { available: Some(20), total: Some(100) };
+        let r = MockRuntime {
+            available: Some(20),
+            total: Some(100),
+        };
         assert_eq!(r.would_fit(10), FitStatus::Tight);
     }
 
@@ -308,9 +321,18 @@ mod tests {
     /// not a false `Comfortable` or `WontFit`.
     #[test]
     fn would_fit_unknown_on_none_signals() {
-        let r1 = MockRuntime { available: None, total: Some(100) };
-        let r2 = MockRuntime { available: Some(50), total: None };
-        let r3 = MockRuntime { available: None, total: None };
+        let r1 = MockRuntime {
+            available: None,
+            total: Some(100),
+        };
+        let r2 = MockRuntime {
+            available: Some(50),
+            total: None,
+        };
+        let r3 = MockRuntime {
+            available: None,
+            total: None,
+        };
         assert_eq!(r1.would_fit(10), FitStatus::Unknown);
         assert_eq!(r2.would_fit(10), FitStatus::Unknown);
         assert_eq!(r3.would_fit(10), FitStatus::Unknown);
@@ -320,7 +342,10 @@ mod tests {
     /// or a spurious `Tight`. Defensive.
     #[test]
     fn would_fit_unknown_on_zero_total() {
-        let r = MockRuntime { available: Some(0), total: Some(0) };
+        let r = MockRuntime {
+            available: Some(0),
+            total: Some(0),
+        };
         assert_eq!(r.would_fit(0), FitStatus::Unknown);
     }
 
@@ -328,7 +353,10 @@ mod tests {
     /// backend.
     #[test]
     fn would_fit_zero_byte_alloc() {
-        let r = MockRuntime { available: Some(50), total: Some(100) };
+        let r = MockRuntime {
+            available: Some(50),
+            total: Some(100),
+        };
         assert_eq!(r.would_fit(0), FitStatus::Comfortable);
     }
 
@@ -341,7 +369,10 @@ mod tests {
     /// `BackendStreams`, so it keeps the default.
     #[test]
     fn base_runtime_is_not_streams_by_default() {
-        let r = MockRuntime { available: Some(50), total: Some(100) };
+        let r = MockRuntime {
+            available: Some(50),
+            total: Some(100),
+        };
         assert!(
             r.as_backend_streams().is_none(),
             "a backend with no queue concept must report None via as_backend_streams",

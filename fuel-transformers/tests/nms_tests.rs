@@ -1,6 +1,6 @@
-﻿use fuel::Result;
+use fuel::Result;
 use fuel_transformers::object_detection::{
-    non_maximum_suppression, soft_non_maximum_suppression, Bbox,
+    Bbox, non_maximum_suppression, soft_non_maximum_suppression,
 };
 
 #[test]

@@ -131,10 +131,7 @@ impl DistilBertModel {
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &Device::cpu(),
         );
-        let token_ids = word_emb_t.const_u32_like(
-            tokens.to_vec(),
-            Shape::from_dims(&[seq]),
-        );
+        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         let word_embeds = word_emb_t
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.dim]))?;
@@ -147,7 +144,11 @@ impl DistilBertModel {
             .reshape(Shape::from_dims(&[1, seq, cfg.dim]))?;
         let pos_bc = pos_slice.broadcast_to(Shape::from_dims(&[batch, seq, cfg.dim]))?;
         let sum = word_embeds.add(&pos_bc)?;
-        let mut h = sum.layer_norm_affine(std::sync::Arc::clone(&weights.embed_ln_gain), std::sync::Arc::clone(&weights.embed_ln_bias), cfg.layer_norm_eps)?;
+        let mut h = sum.layer_norm_affine(
+            std::sync::Arc::clone(&weights.embed_ln_gain),
+            std::sync::Arc::clone(&weights.embed_ln_bias),
+            cfg.layer_norm_eps,
+        )?;
 
         // Encoder blocks.
         for layer in &weights.layers {
@@ -195,10 +196,7 @@ impl DistilBertModel {
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &Device::cpu(),
         );
-        let token_ids = word_emb_t.const_u32_like(
-            tokens.to_vec(),
-            Shape::from_dims(&[seq]),
-        );
+        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         let word_embeds = word_emb_t
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.dim]))?;
@@ -211,7 +209,11 @@ impl DistilBertModel {
             .reshape(Shape::from_dims(&[1, seq, cfg.dim]))?;
         let pos_bc = pos_slice.broadcast_to(Shape::from_dims(&[batch, seq, cfg.dim]))?;
         let sum = word_embeds.add(&pos_bc)?;
-        let mut h = sum.layer_norm_affine(std::sync::Arc::clone(&weights.embed_ln_gain), std::sync::Arc::clone(&weights.embed_ln_bias), cfg.layer_norm_eps)?;
+        let mut h = sum.layer_norm_affine(
+            std::sync::Arc::clone(&weights.embed_ln_gain),
+            std::sync::Arc::clone(&weights.embed_ln_bias),
+            cfg.layer_norm_eps,
+        )?;
 
         let mut out = Vec::with_capacity(layer_ids.len());
         let mut next_capture = 0;
@@ -268,7 +270,11 @@ impl DistilBertModel {
         let attn_out = attn_out.add_trailing_bias(std::sync::Arc::clone(&layer.out_lin_bias))?;
 
         // Post-LN: LN(attn + x).
-        let h1 = x.add(&attn_out)?.layer_norm_affine(std::sync::Arc::clone(&layer.sa_ln_gain), std::sync::Arc::clone(&layer.sa_ln_bias), cfg.layer_norm_eps)?;
+        let h1 = x.add(&attn_out)?.layer_norm_affine(
+            std::sync::Arc::clone(&layer.sa_ln_gain),
+            std::sync::Arc::clone(&layer.sa_ln_bias),
+            cfg.layer_norm_eps,
+        )?;
 
         // ---- FFN ----------------------------------------------------------
         let fc1 = layer.lin1.apply_linear(&h1, d, cfg.hidden_dim)?;
@@ -281,7 +287,11 @@ impl DistilBertModel {
         let fc2 = fc2.add_trailing_bias(std::sync::Arc::clone(&layer.lin2_bias))?;
 
         // Post-LN: LN(ffn + h1).
-        let h2 = h1.add(&fc2)?.layer_norm_affine(std::sync::Arc::clone(&layer.output_ln_gain), std::sync::Arc::clone(&layer.output_ln_bias), cfg.layer_norm_eps)?;
+        let h2 = h1.add(&fc2)?.layer_norm_affine(
+            std::sync::Arc::clone(&layer.output_ln_gain),
+            std::sync::Arc::clone(&layer.output_ln_bias),
+            cfg.layer_norm_eps,
+        )?;
         Ok(h2)
     }
 }
@@ -326,14 +336,15 @@ impl DistilBertWeights {
         let d = cfg.dim;
         let hidden = cfg.hidden_dim;
 
-        let word_embedding = load_tensor_as_f32(
-            st,
-            &format!("{prefix}embeddings.word_embeddings.weight"),
-        )?;
+        let word_embedding =
+            load_tensor_as_f32(st, &format!("{prefix}embeddings.word_embeddings.weight"))?;
         if word_embedding.len() != cfg.vocab_size * d {
             crate::bail!(
                 "{prefix}embeddings.word_embeddings.weight: {} elts, expected {} ({}×{})",
-                word_embedding.len(), cfg.vocab_size * d, cfg.vocab_size, d,
+                word_embedding.len(),
+                cfg.vocab_size * d,
+                cfg.vocab_size,
+                d,
             );
         }
         let position_embedding = load_tensor_as_f32(
@@ -349,67 +360,59 @@ impl DistilBertWeights {
                 d,
             );
         }
-        let embed_ln_gain = load_tensor_as_f32(
-            st,
-            &format!("{prefix}embeddings.LayerNorm.weight"),
-        )?;
-        let embed_ln_bias = load_tensor_as_f32(
-            st,
-            &format!("{prefix}embeddings.LayerNorm.bias"),
-        )?;
+        let embed_ln_gain =
+            load_tensor_as_f32(st, &format!("{prefix}embeddings.LayerNorm.weight"))?;
+        let embed_ln_bias = load_tensor_as_f32(st, &format!("{prefix}embeddings.LayerNorm.bias"))?;
 
-        let mut layers: Vec<DistilBertLayerWeights> =
-            Vec::with_capacity(cfg.n_layers);
+        let mut layers: Vec<DistilBertLayerWeights> = Vec::with_capacity(cfg.n_layers);
         for i in 0..cfg.n_layers {
             let p = format!("{prefix}transformer.layer.{i}");
             let q_lin = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.attention.q_lin.weight"), d, d,
+                st,
+                &format!("{p}.attention.q_lin.weight"),
+                d,
+                d,
             )?;
-            let q_lin_bias = load_tensor_as_f32(
-                st, &format!("{p}.attention.q_lin.bias"),
-            )?;
+            let q_lin_bias = load_tensor_as_f32(st, &format!("{p}.attention.q_lin.bias"))?;
             let k_lin = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.attention.k_lin.weight"), d, d,
+                st,
+                &format!("{p}.attention.k_lin.weight"),
+                d,
+                d,
             )?;
-            let k_lin_bias = load_tensor_as_f32(
-                st, &format!("{p}.attention.k_lin.bias"),
-            )?;
+            let k_lin_bias = load_tensor_as_f32(st, &format!("{p}.attention.k_lin.bias"))?;
             let v_lin = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.attention.v_lin.weight"), d, d,
+                st,
+                &format!("{p}.attention.v_lin.weight"),
+                d,
+                d,
             )?;
-            let v_lin_bias = load_tensor_as_f32(
-                st, &format!("{p}.attention.v_lin.bias"),
-            )?;
+            let v_lin_bias = load_tensor_as_f32(st, &format!("{p}.attention.v_lin.bias"))?;
             let out_lin = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.attention.out_lin.weight"), d, d,
+                st,
+                &format!("{p}.attention.out_lin.weight"),
+                d,
+                d,
             )?;
-            let out_lin_bias = load_tensor_as_f32(
-                st, &format!("{p}.attention.out_lin.bias"),
-            )?;
-            let sa_ln_gain = load_tensor_as_f32(
-                st, &format!("{p}.sa_layer_norm.weight"),
-            )?;
-            let sa_ln_bias = load_tensor_as_f32(
-                st, &format!("{p}.sa_layer_norm.bias"),
-            )?;
+            let out_lin_bias = load_tensor_as_f32(st, &format!("{p}.attention.out_lin.bias"))?;
+            let sa_ln_gain = load_tensor_as_f32(st, &format!("{p}.sa_layer_norm.weight"))?;
+            let sa_ln_bias = load_tensor_as_f32(st, &format!("{p}.sa_layer_norm.bias"))?;
             let lin1 = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.ffn.lin1.weight"), hidden, d,
+                st,
+                &format!("{p}.ffn.lin1.weight"),
+                hidden,
+                d,
             )?;
-            let lin1_bias = load_tensor_as_f32(
-                st, &format!("{p}.ffn.lin1.bias"),
-            )?;
+            let lin1_bias = load_tensor_as_f32(st, &format!("{p}.ffn.lin1.bias"))?;
             let lin2 = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.ffn.lin2.weight"), d, hidden,
+                st,
+                &format!("{p}.ffn.lin2.weight"),
+                d,
+                hidden,
             )?;
-            let lin2_bias = load_tensor_as_f32(
-                st, &format!("{p}.ffn.lin2.bias"),
-            )?;
-            let output_ln_gain = load_tensor_as_f32(
-                st, &format!("{p}.output_layer_norm.weight"),
-            )?;
-            let output_ln_bias = load_tensor_as_f32(
-                st, &format!("{p}.output_layer_norm.bias"),
-            )?;
+            let lin2_bias = load_tensor_as_f32(st, &format!("{p}.ffn.lin2.bias"))?;
+            let output_ln_gain = load_tensor_as_f32(st, &format!("{p}.output_layer_norm.weight"))?;
+            let output_ln_bias = load_tensor_as_f32(st, &format!("{p}.output_layer_norm.bias"))?;
             layers.push(DistilBertLayerWeights {
                 q_lin,
                 q_lin_bias: Arc::from(q_lin_bias),
@@ -439,7 +442,6 @@ impl DistilBertWeights {
         })
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -475,28 +477,32 @@ mod tests {
         let embed_ln_gain = Arc::from(vec![1.0_f32; d]);
         let embed_ln_bias = Arc::from(vec![0.0_f32; d]);
 
-        let layers: Vec<DistilBertLayerWeights> = (0..cfg.n_layers).map(|_| DistilBertLayerWeights {
-            q_lin: WeightStorage::F32(vec_of(d * d, &mut *nb)),
-            q_lin_bias: vec_of(d, &mut *nb),
-            k_lin: WeightStorage::F32(vec_of(d * d, &mut *nb)),
-            k_lin_bias: vec_of(d, &mut *nb),
-            v_lin: WeightStorage::F32(vec_of(d * d, &mut *nb)),
-            v_lin_bias: vec_of(d, &mut *nb),
-            out_lin: WeightStorage::F32(vec_of(d * d, &mut *nb)),
-            out_lin_bias: vec_of(d, &mut *nb),
-            sa_ln_gain: Arc::from(vec![1.0_f32; d]),
-            sa_ln_bias: Arc::from(vec![0.0_f32; d]),
-            lin1: WeightStorage::F32(vec_of(d * cfg.hidden_dim, &mut *nb)),
-            lin1_bias: vec_of(cfg.hidden_dim, &mut *nb),
-            lin2: WeightStorage::F32(vec_of(cfg.hidden_dim * d, &mut *nb)),
-            lin2_bias: vec_of(d, &mut *nb),
-            output_ln_gain: Arc::from(vec![1.0_f32; d]),
-            output_ln_bias: Arc::from(vec![0.0_f32; d]),
-        }).collect();
+        let layers: Vec<DistilBertLayerWeights> = (0..cfg.n_layers)
+            .map(|_| DistilBertLayerWeights {
+                q_lin: WeightStorage::F32(vec_of(d * d, &mut *nb)),
+                q_lin_bias: vec_of(d, &mut *nb),
+                k_lin: WeightStorage::F32(vec_of(d * d, &mut *nb)),
+                k_lin_bias: vec_of(d, &mut *nb),
+                v_lin: WeightStorage::F32(vec_of(d * d, &mut *nb)),
+                v_lin_bias: vec_of(d, &mut *nb),
+                out_lin: WeightStorage::F32(vec_of(d * d, &mut *nb)),
+                out_lin_bias: vec_of(d, &mut *nb),
+                sa_ln_gain: Arc::from(vec![1.0_f32; d]),
+                sa_ln_bias: Arc::from(vec![0.0_f32; d]),
+                lin1: WeightStorage::F32(vec_of(d * cfg.hidden_dim, &mut *nb)),
+                lin1_bias: vec_of(cfg.hidden_dim, &mut *nb),
+                lin2: WeightStorage::F32(vec_of(cfg.hidden_dim * d, &mut *nb)),
+                lin2_bias: vec_of(d, &mut *nb),
+                output_ln_gain: Arc::from(vec![1.0_f32; d]),
+                output_ln_bias: Arc::from(vec![0.0_f32; d]),
+            })
+            .collect();
 
         DistilBertWeights {
-            word_embedding, position_embedding,
-            embed_ln_gain, embed_ln_bias,
+            word_embedding,
+            position_embedding,
+            embed_ln_gain,
+            embed_ln_bias,
             layers,
         }
     }
@@ -504,7 +510,10 @@ mod tests {
     #[test]
     fn forward_shape_and_finite() {
         let cfg = tiny_cfg();
-        let model = DistilBertModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = DistilBertModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens = [1_u32, 2, 3, 4];
         let out = model.forward(&tokens, None).unwrap();
         assert_eq!(out.shape().dims(), &[1, tokens.len(), cfg.dim]);
@@ -519,7 +528,10 @@ mod tests {
     #[test]
     fn bidirectional_attention() {
         let cfg = tiny_cfg();
-        let model = DistilBertModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = DistilBertModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let toks_a = [1_u32, 2, 3, 4];
         let toks_b = [1_u32, 2, 3, 15];
         let a = model.forward(&toks_a, None).unwrap().realize_f32();
@@ -530,8 +542,10 @@ mod tests {
         for i in 0..d {
             max_diff = max_diff.max((a[i] - b[i]).abs());
         }
-        assert!(max_diff > 1e-6,
-            "last-token change must affect position 0 (bidirectional), max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-6,
+            "last-token change must affect position 0 (bidirectional), max_diff = {max_diff}"
+        );
     }
 
     /// Position-embedding lookup is wired: changing only the
@@ -553,8 +567,14 @@ mod tests {
         // base keeps the original pos embed.
         base.position_embedding = Arc::from(original_pos_embed);
 
-        let m_a = DistilBertModel { config: cfg.clone(), weights: base };
-        let m_b = DistilBertModel { config: cfg, weights: model_zero };
+        let m_a = DistilBertModel {
+            config: cfg.clone(),
+            weights: base,
+        };
+        let m_b = DistilBertModel {
+            config: cfg,
+            weights: model_zero,
+        };
         let toks = [1_u32, 2, 3, 4];
         let a = m_a.forward(&toks, None).unwrap().realize_f32();
         let b = m_b.forward(&toks, None).unwrap().realize_f32();
@@ -562,8 +582,10 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-6,
-            "position-embed change must alter output, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-6,
+            "position-embed change must alter output, max_diff = {max_diff}"
+        );
     }
 
     /// `forward_intermediate_layers` returns one tensor per
@@ -571,9 +593,14 @@ mod tests {
     #[test]
     fn forward_intermediate_layers_shape() {
         let cfg = tiny_cfg();
-        let model = DistilBertModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = DistilBertModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens = [1_u32, 2, 3, 4];
-        let outs = model.forward_intermediate_layers(&tokens, &[0_usize, 1], None).unwrap();
+        let outs = model
+            .forward_intermediate_layers(&tokens, &[0_usize, 1], None)
+            .unwrap();
         assert_eq!(outs.len(), 2);
         for out in &outs {
             assert_eq!(out.shape().dims(), &[1, tokens.len(), cfg.dim]);
@@ -588,7 +615,9 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-7,
-            "layer 0 and layer 1 intermediates must differ, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-7,
+            "layer 0 and layer 1 intermediates must differ, max_diff = {max_diff}"
+        );
     }
 }

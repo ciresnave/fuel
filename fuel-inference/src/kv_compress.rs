@@ -1,4 +1,4 @@
-﻿//! KV cache compression strategies.
+//! KV cache compression strategies.
 //!
 //! Long-context inference is bottlenecked by KV cache memory.  This module
 //! provides three orthogonal compression strategies that can be applied
@@ -111,7 +111,10 @@ impl KiviConfig {
     ///
     /// Panics if `bits` is not 2 or 4.
     pub fn new(bits: u8) -> Self {
-        assert!(bits == 2 || bits == 4, "KIVI supports 2-bit or 4-bit quantization");
+        assert!(
+            bits == 2 || bits == 4,
+            "KIVI supports 2-bit or 4-bit quantization"
+        );
         Self { bits }
     }
 }
@@ -163,7 +166,7 @@ impl CompressedKv for KiviCompressed {
     fn compressed_size_bytes(&self) -> usize {
         // codes (packed) + scale + zero_point
         let packed_bits = self.codes.len() * self.bits as usize;
-        let packed_bytes = (packed_bits + 7) / 8;
+        let packed_bytes = packed_bits.div_ceil(8);
         packed_bytes + 4 + 4 // scale(f32) + zero_point(f32)
     }
 }
@@ -278,17 +281,15 @@ impl RkvCompressor {
     /// * `redundancy` — Optional per-token redundancy scores (higher = more redundant).
     ///
     /// Returns sorted indices of tokens to retain.
-    pub fn select_keep(
-        &self,
-        importance: &[f32],
-        redundancy: Option<&[f32]>,
-    ) -> Vec<usize> {
+    pub fn select_keep(&self, importance: &[f32], redundancy: Option<&[f32]>) -> Vec<usize> {
         let n = importance.len();
         if n == 0 {
             return Vec::new();
         }
 
-        let budget = ((n as f32 * self.config.budget_fraction).ceil() as usize).max(1).min(n);
+        let budget = ((n as f32 * self.config.budget_fraction).ceil() as usize)
+            .max(1)
+            .min(n);
 
         // Compute combined scores: importance - redundancy_weight * redundancy
         let mut scored: Vec<(usize, f32)> = importance
@@ -311,11 +312,7 @@ impl RkvCompressor {
     }
 
     /// Compute which token indices to evict (complement of `select_keep`).
-    pub fn select_evict(
-        &self,
-        importance: &[f32],
-        redundancy: Option<&[f32]>,
-    ) -> Vec<usize> {
+    pub fn select_evict(&self, importance: &[f32], redundancy: Option<&[f32]>) -> Vec<usize> {
         let keep = self.select_keep(importance, redundancy);
         let keep_set: std::collections::HashSet<usize> = keep.into_iter().collect();
         (0..importance.len())
@@ -683,10 +680,7 @@ mod tests {
         assert_eq!(restored.len(), 5);
         // For 1-D data with rank-1, reconstruction should be exact
         for (orig, rest) in values.iter().zip(&restored) {
-            assert!(
-                (orig - rest).abs() < 1e-4,
-                "orig={orig}, restored={rest}"
-            );
+            assert!((orig - rest).abs() < 1e-4, "orig={orig}, restored={rest}");
         }
     }
 
@@ -737,6 +731,9 @@ mod tests {
         assert_eq!(KiviCompressor::new(KiviConfig::new(4)).name(), "KIVI-4bit");
         assert_eq!(KiviCompressor::new(KiviConfig::new(2)).name(), "KIVI-2bit");
         assert_eq!(RkvCompressor::new(RkvConfig::new(0.5)).name(), "R-KV");
-        assert_eq!(LowRankCompressor::new(LowRankConfig::new(1)).name(), "LowRank");
+        assert_eq!(
+            LowRankCompressor::new(LowRankConfig::new(1)).name(),
+            "LowRank"
+        );
     }
 }

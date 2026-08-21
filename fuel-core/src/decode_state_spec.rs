@@ -75,7 +75,9 @@ pub struct StateSlot {
 
 impl StateSlot {
     pub fn new(trailing: impl Into<Vec<usize>>) -> Self {
-        Self { trailing: trailing.into() }
+        Self {
+            trailing: trailing.into(),
+        }
     }
 
     /// Elements contributed per token. An empty trailing is a scalar slot, so
@@ -108,7 +110,10 @@ impl LayerStateSpec {
     /// rather than a special case: it is a *spelling*, not a different kind.
     pub fn slots(&self) -> Vec<StateSlot> {
         match self {
-            Self::KeyValue { n_kv_heads, head_dim } => {
+            Self::KeyValue {
+                n_kv_heads,
+                head_dim,
+            } => {
                 let t = vec![*n_kv_heads, *head_dim];
                 vec![StateSlot::new(t.clone()), StateSlot::new(t)]
             }
@@ -125,7 +130,10 @@ impl LayerStateSpec {
     /// not keep.
     pub fn kv_dims(&self) -> Option<(usize, usize)> {
         match self {
-            Self::KeyValue { n_kv_heads, head_dim } => Some((*n_kv_heads, *head_dim)),
+            Self::KeyValue {
+                n_kv_heads,
+                head_dim,
+            } => Some((*n_kv_heads, *head_dim)),
             Self::Slots(_) => None,
         }
     }
@@ -141,32 +149,46 @@ impl LayerStateSpec {
     /// this module was written to surface. The uniform case is the *only* case it
     /// can serve honestly, and it says so by failing on every other one.
     pub fn collapse_uniform(specs: &[LayerStateSpec]) -> Result<(usize, usize)> {
-        let first = specs.first().ok_or_else(|| Error::Msg(
-            "LayerStateSpec::collapse_uniform: no layers — a model with zero \
-             layers has no cache geometry to collapse".into(),
-        ).bt())?;
+        let first = specs.first().ok_or_else(|| {
+            Error::Msg(
+                "LayerStateSpec::collapse_uniform: no layers — a model with zero \
+             layers has no cache geometry to collapse"
+                    .into(),
+            )
+            .bt()
+        })?;
 
-        let (n_kv_heads, head_dim) = first.kv_dims().ok_or_else(|| Error::Msg(
-            "LayerStateSpec::collapse_uniform: layer 0 is not per-head KV, so it \
+        let (n_kv_heads, head_dim) = first.kv_dims().ok_or_else(|| {
+            Error::Msg(
+                "LayerStateSpec::collapse_uniform: layer 0 is not per-head KV, so it \
              has no (n_kv_heads, head_dim) to collapse to. This model needs a \
-             slot-aware allocator, not a collapsed pair — see GAP-166.".into(),
-        ).bt())?;
+             slot-aware allocator, not a collapsed pair — see GAP-166."
+                    .into(),
+            )
+            .bt()
+        })?;
 
         for (i, s) in specs.iter().enumerate().skip(1) {
             match s.kv_dims() {
                 Some(d) if d == (n_kv_heads, head_dim) => {}
-                Some((h, d)) => return Err(Error::Msg(format!(
-                    "LayerStateSpec::collapse_uniform: layer {i} is per-head KV \
+                Some((h, d)) => {
+                    return Err(Error::Msg(format!(
+                        "LayerStateSpec::collapse_uniform: layer {i} is per-head KV \
                      ({h}, {d}) but layer 0 is ({n_kv_heads}, {head_dim}). A \
                      single pair cannot describe both; collapsing would silently \
                      allocate layer 0's geometry for every layer.",
-                )).bt()),
-                None => return Err(Error::Msg(format!(
-                    "LayerStateSpec::collapse_uniform: layer {i} is not per-head \
+                    ))
+                    .bt());
+                }
+                None => {
+                    return Err(Error::Msg(format!(
+                        "LayerStateSpec::collapse_uniform: layer {i} is not per-head \
                      KV while layer 0 is. Collapsing would allocate KV for a layer \
                      that keeps a different state kind entirely — the wrong state, \
                      not merely the wrong size.",
-                )).bt()),
+                    ))
+                    .bt());
+                }
             }
         }
         Ok((n_kv_heads, head_dim))
@@ -178,7 +200,10 @@ mod tests {
     use super::*;
 
     fn kv(h: usize, d: usize) -> LayerStateSpec {
-        LayerStateSpec::KeyValue { n_kv_heads: h, head_dim: d }
+        LayerStateSpec::KeyValue {
+            n_kv_heads: h,
+            head_dim: d,
+        }
     }
     /// An MLA-shaped layer, spelled exactly as `DeepSeek2Model` validates it in
     /// `forward_with_latent_cache_impl`: slot 0 trailing `[kv_lora_rank]`,
@@ -209,7 +234,8 @@ mod tests {
         assert_eq!(slots[1].trailing, vec![64], "post-RoPE k_pe");
         // The load-bearing half: it must NOT answer the KV question.
         assert_eq!(
-            m.kv_dims(), None,
+            m.kv_dims(),
+            None,
             "an MLA layer must decline (n_kv_heads, head_dim) rather than \
              fabricate a plausible pair — fabricating it is the exact defect \
              GAP-166 records",
@@ -241,8 +267,13 @@ mod tests {
     fn non_uniform_kv_dims_refuse_to_collapse() {
         let mut specs = vec![kv(8, 64); 4];
         specs[2] = kv(4, 64); // GQA-style divergence
-        let err = LayerStateSpec::collapse_uniform(&specs).unwrap_err().to_string();
-        assert!(err.contains("layer 2"), "must name the offending layer: {err}");
+        let err = LayerStateSpec::collapse_uniform(&specs)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("layer 2"),
+            "must name the offending layer: {err}"
+        );
     }
 
     #[test]
@@ -251,7 +282,9 @@ mod tests {
         // holding a different state kind. Collapsing here would allocate KV for
         // a layer that keeps something else — the wrong state, not the wrong size.
         let specs = vec![kv(8, 64), mla(512, 64), kv(8, 64)];
-        let err = LayerStateSpec::collapse_uniform(&specs).unwrap_err().to_string();
+        let err = LayerStateSpec::collapse_uniform(&specs)
+            .unwrap_err()
+            .to_string();
         assert!(
             err.contains("wrong state"),
             "the error must distinguish wrong-state from wrong-size: {err}",

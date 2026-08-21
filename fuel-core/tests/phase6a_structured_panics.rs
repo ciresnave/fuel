@@ -15,13 +15,17 @@
 
 use fuel_core::lazy::LazyTensor;
 use fuel_ir::Shape;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 /// Reach into the boxed payload and pull out a String. Mirrors
 /// `panic_payload_to_string` in fuel-graph-executor (private there).
 fn payload_text(p: &Box<dyn std::any::Any + Send>) -> String {
-    if let Some(s) = p.downcast_ref::<&'static str>() { return s.to_string(); }
-    if let Some(s) = p.downcast_ref::<String>()       { return s.clone();     }
+    if let Some(s) = p.downcast_ref::<&'static str>() {
+        return s.to_string();
+    }
+    if let Some(s) = p.downcast_ref::<String>() {
+        return s.clone();
+    }
     "<non-string panic payload>".to_string()
 }
 
@@ -30,7 +34,11 @@ fn realize_panic_message_has_graph_location() {
     // Build a deliberately-bad graph: an IndexSelect with an
     // out-of-bounds index. The builder doesn't peek at the index
     // tensor's data, so this only fails at eval time.
-    let src = LazyTensor::from_f32(vec![1.0f32, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), &fuel_core::Device::cpu());
+    let src = LazyTensor::from_f32(
+        vec![1.0f32, 2.0, 3.0, 4.0],
+        Shape::from_dims(&[4]),
+        &fuel_core::Device::cpu(),
+    );
     let bad_idx = src.const_u32_like(vec![100u32, 200u32], Shape::from_dims(&[2]));
     let result_tensor = src.index_select(0_usize, &bad_idx).unwrap();
 

@@ -1,4 +1,4 @@
-﻿use crate::metal::{
+use crate::metal::{
     BlitCommandEncoder, CommandBuffer, CommandSemaphore, CommandStatus, ComputeCommandEncoder,
 };
 use crate::MetalKernelError;
@@ -58,16 +58,12 @@ unsafe impl Sync for Commands {}
 impl Commands {
     pub fn new(command_queue: CommandQueue) -> Result<Self, MetalKernelError> {
         let compute_per_buffer = match std::env::var("FUEL_METAL_COMPUTE_PER_BUFFER") {
-            Ok(val) => val
-                .parse()
-                .unwrap_or(DEFAULT_FUEL_METAL_COMPUTE_PER_BUFFER),
+            Ok(val) => val.parse().unwrap_or(DEFAULT_FUEL_METAL_COMPUTE_PER_BUFFER),
             _ => DEFAULT_FUEL_METAL_COMPUTE_PER_BUFFER,
         };
 
         let pool_size = match std::env::var("FUEL_METAL_COMMAND_POOL_SIZE") {
-            Ok(val) => val
-                .parse()
-                .unwrap_or(DEFAULT_FUEL_METAL_COMMAND_POOL_SIZE),
+            Ok(val) => val.parse().unwrap_or(DEFAULT_FUEL_METAL_COMMAND_POOL_SIZE),
             _ => DEFAULT_FUEL_METAL_COMMAND_POOL_SIZE,
         };
 

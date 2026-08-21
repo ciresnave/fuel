@@ -70,7 +70,10 @@ impl ResidencyFile {
     /// should pick a unique path (e.g., include a PID / session id).
     pub fn create<P: AsRef<Path>>(path: P, capacity: u64) -> io::Result<Self> {
         let mut file = OpenOptions::new()
-            .read(true).write(true).create(true).truncate(true)
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
             .open(path)?;
         file.seek(SeekFrom::Start(capacity.saturating_sub(1)))?;
         file.write_all(&[0])?;
@@ -82,30 +85,45 @@ impl ResidencyFile {
             _file: file,
             mmap: Mutex::new(mmap),
             capacity,
-            free_regions: Mutex::new(vec![FreeRegion { offset: 0, len: capacity }]),
+            free_regions: Mutex::new(vec![FreeRegion {
+                offset: 0,
+                len: capacity,
+            }]),
         })
     }
 
     /// Total file size in bytes.
-    pub fn capacity(&self) -> u64 { self.capacity }
+    pub fn capacity(&self) -> u64 {
+        self.capacity
+    }
 
     /// Sum of free-region bytes. Not the largest contiguous free run
     /// — fragmentation means `bytes_free()` ≥ largest allocatable.
     pub fn bytes_free(&self) -> u64 {
-        self.free_regions.lock().unwrap().iter().map(|r| r.len).sum()
+        self.free_regions
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|r| r.len)
+            .sum()
     }
 
     /// Allocate a slot of `bytes` bytes. Returns `None` if no
     /// contiguous free region is large enough (i.e., fragmentation
     /// blocks the request even if total free bytes suffice).
     pub fn alloc(&self, bytes: u64) -> Option<Slot> {
-        if bytes == 0 { return Some(Slot { offset: 0, len: 0 }); }
+        if bytes == 0 {
+            return Some(Slot { offset: 0, len: 0 });
+        }
         let mut regions = self.free_regions.lock().unwrap();
         // First-fit. For our workload (few-thousand allocations over
         // a session) this is adequate; worst-case O(n) per alloc.
         for i in 0..regions.len() {
             if regions[i].len >= bytes {
-                let slot = Slot { offset: regions[i].offset, len: bytes };
+                let slot = Slot {
+                    offset: regions[i].offset,
+                    len: bytes,
+                };
                 if regions[i].len == bytes {
                     regions.remove(i);
                 } else {
@@ -122,11 +140,19 @@ impl ResidencyFile {
     /// regions so fragmentation doesn't accumulate after a
     /// recycle-heavy workload.
     pub fn free(&self, slot: Slot) {
-        if slot.len == 0 { return; }
+        if slot.len == 0 {
+            return;
+        }
         let mut regions = self.free_regions.lock().unwrap();
         // Find insertion point (sorted by offset).
         let pos = regions.partition_point(|r| r.offset < slot.offset);
-        regions.insert(pos, FreeRegion { offset: slot.offset, len: slot.len });
+        regions.insert(
+            pos,
+            FreeRegion {
+                offset: slot.offset,
+                len: slot.len,
+            },
+        );
         // Coalesce with right neighbor, then with left.
         if pos + 1 < regions.len()
             && regions[pos].offset + regions[pos].len == regions[pos + 1].offset
@@ -134,9 +160,7 @@ impl ResidencyFile {
             regions[pos].len += regions[pos + 1].len;
             regions.remove(pos + 1);
         }
-        if pos > 0
-            && regions[pos - 1].offset + regions[pos - 1].len == regions[pos].offset
-        {
+        if pos > 0 && regions[pos - 1].offset + regions[pos - 1].len == regions[pos].offset {
             regions[pos - 1].len += regions[pos].len;
             regions.remove(pos);
         }
@@ -144,8 +168,11 @@ impl ResidencyFile {
 
     /// Write `data` to the slot. Panics if `data.len() != slot.len`.
     pub fn write(&self, slot: Slot, data: &[u8]) {
-        assert_eq!(data.len() as u64, slot.len,
-            "ResidencyFile::write: data/slot length mismatch");
+        assert_eq!(
+            data.len() as u64,
+            slot.len,
+            "ResidencyFile::write: data/slot length mismatch"
+        );
         let mut mmap = self.mmap.lock().unwrap();
         let lo = slot.offset as usize;
         let hi = lo + slot.len as usize;
@@ -178,7 +205,9 @@ mod tests {
 
     struct PathGuard(PathBuf);
     impl Drop for PathGuard {
-        fn drop(&mut self) { let _ = std::fs::remove_file(&self.0); }
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
     }
 
     #[test]
@@ -239,8 +268,10 @@ mod tests {
         rf.free(c);
         // bytes_free == 200 but the largest contiguous region is 100.
         assert_eq!(rf.bytes_free(), 200);
-        assert!(rf.alloc(150).is_none(),
-            "expected 150-byte alloc to fail due to fragmentation");
+        assert!(
+            rf.alloc(150).is_none(),
+            "expected 150-byte alloc to fail due to fragmentation"
+        );
         // 100 fits.
         assert!(rf.alloc(100).is_some());
     }
@@ -262,7 +293,7 @@ mod tests {
         let _guard = PathGuard(path.clone());
         let rf = ResidencyFile::create(&path, 256).unwrap();
         let s1 = rf.alloc(200).unwrap();
-        rf.write(s1, &vec![1u8; 200]);
+        rf.write(s1, &[1u8; 200]);
         rf.free(s1);
         // Next alloc of same size reuses the same offset.
         let s2 = rf.alloc(200).unwrap();

@@ -229,7 +229,10 @@ mod tests {
             .expect("generic-only cell must emit a miss");
         assert_eq!(miss.schema, TELEMETRY_SCHEMA_VERSION);
         assert_eq!(miss.fallback, impl_id("baracuda-generic-strided"));
-        assert_eq!(miss.wanted, StructureKeyToken("matmul:mm:flipped=false".into()));
+        assert_eq!(
+            miss.wanted,
+            StructureKeyToken("matmul:mm:flipped=false".into())
+        );
         assert_eq!(miss.count, 1);
         assert_eq!(miss.hw, hw());
     }
@@ -258,8 +261,15 @@ mod tests {
             layouts: generic_layouts(),
         };
         assert!(
-            detect_miss(&best, "matmul", &[operand()], "sm_89", &NullStructureKeyProvider, hw())
-                .is_none(),
+            detect_miss(
+                &best,
+                "matmul",
+                &[operand()],
+                "sm_89",
+                &NullStructureKeyProvider,
+                hw()
+            )
+            .is_none(),
             "no structure key ⇒ no miss demand signal"
         );
     }

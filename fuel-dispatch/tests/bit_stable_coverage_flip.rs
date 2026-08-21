@@ -48,12 +48,12 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use fuel_dispatch::fkc::{import_bundle_str, CpuLinkRegistry};
+use fuel_dispatch::fkc::{CpuLinkRegistry, import_bundle_str};
 use fuel_dispatch::fused::{FusedKernelRegistry, PrecisionGuarantee};
 use fuel_dispatch::kernel::KernelBindingTable;
+use fuel_ir::DType;
 use fuel_ir::dispatch::OpKind;
 use fuel_ir::probe::BackendId;
-use fuel_ir::DType;
 
 /// A `(op, dtypes, backend)` binding key, owned so it can be a map key.
 type Key = (OpKind, Vec<DType>, BackendId);
@@ -240,9 +240,9 @@ fn transform(src: &str, mode: Mode) -> (String, usize) {
             }
             let block: Vec<&str> = lines[i + 1..block_end].to_vec();
 
-            let audited_true = field(&block, "audited").map(|v| {
-                v.split('#').next().unwrap_or("").trim() == "true"
-            }) == Some(true);
+            let audited_true = field(&block, "audited")
+                .map(|v| v.split('#').next().unwrap_or("").trim() == "true")
+                == Some(true);
             let bit_stable_true = field(&block, "bit_stable_on_same_hardware")
                 .map(|v| v.split('#').next().unwrap_or("").trim() == "true")
                 == Some(true);
@@ -333,7 +333,12 @@ fn keys_losing_last_bit_stable(
         .iter()
         .filter(|(_, c)| c.bit_stable > 0)
         .filter(|(k, _)| after.get(*k).map(|c| c.bit_stable).unwrap_or(0) == 0)
-        .map(|((op, dt, be), c)| format!("{op:?} dtypes={dt:?} {be:?} (was {}/{})", c.bit_stable, c.total))
+        .map(|((op, dt, be), c)| {
+            format!(
+                "{op:?} dtypes={dt:?} {be:?} (was {}/{})",
+                c.bit_stable, c.total
+            )
+        })
         .collect();
     lost.sort();
     lost
@@ -466,7 +471,10 @@ fn gap_077_bit_stable_coverage_under_simulated_gap_058_flip() {
 
     // --- Report ------------------------------------------------------------
     eprintln!("\n=== GAP-077 bit-stable coverage differ ===");
-    eprintln!("scope            : CPU contracts only ({} files)", contracts.len());
+    eprintln!(
+        "scope            : CPU contracts only ({} files)",
+        contracts.len()
+    );
     eprintln!("                   (CUDA/Vulkan link registries are feature-gated;");
     eprintln!("                    FKC-4.8-0001 is a fuel-cpu-backend commitment)");
     eprintln!("binding keys     : {}", cov_base.len());
@@ -477,9 +485,18 @@ fn gap_077_bit_stable_coverage_under_simulated_gap_058_flip() {
     eprintln!("GAP-058 flipped  : {gap058_changed} sections");
     eprintln!("sabotage stripped: {sabotage_changed} sections");
     eprintln!("--- verdict ---");
-    eprintln!("keys losing last bit-stable candidate under the flip : {}", lost_by_flip.len());
-    eprintln!("keys losing last bit-stable candidate under sabotage : {}", lost_by_sabotage.len());
-    eprintln!("coverage map identical (baseline vs flipped)         : {}", cov_base == cov_flip);
+    eprintln!(
+        "keys losing last bit-stable candidate under the flip : {}",
+        lost_by_flip.len()
+    );
+    eprintln!(
+        "keys losing last bit-stable candidate under sabotage : {}",
+        lost_by_sabotage.len()
+    );
+    eprintln!(
+        "coverage map identical (baseline vs flipped)         : {}",
+        cov_base == cov_flip
+    );
     eprintln!("READ THIS AS: no key loses its last bit-stable candidate because");
     eprintln!("NO KEY HAS ONE TO LOSE. The flip is inert on the binding table;");
     eprintln!("CPU bit-stability is supplied later, wholesale, by the fill pass.");
@@ -512,19 +529,44 @@ fn assert_differ_discriminates() {
     let other: Key = (OpKind::MatMul, vec![DType::F32], BackendId::Cpu);
 
     let before: HashMap<Key, Coverage> = HashMap::from([
-        (key.clone(), Coverage { total: 2, bit_stable: 1 }),
-        (other.clone(), Coverage { total: 1, bit_stable: 1 }),
+        (
+            key.clone(),
+            Coverage {
+                total: 2,
+                bit_stable: 1,
+            },
+        ),
+        (
+            other.clone(),
+            Coverage {
+                total: 1,
+                bit_stable: 1,
+            },
+        ),
     ]);
 
     // (1) A genuine loss on `key` (its only bit-stable candidate goes away)
     //     while `other` keeps one — must report exactly one key.
     let after_loss: HashMap<Key, Coverage> = HashMap::from([
-        (key.clone(), Coverage { total: 2, bit_stable: 0 }),
-        (other.clone(), Coverage { total: 1, bit_stable: 1 }),
+        (
+            key.clone(),
+            Coverage {
+                total: 2,
+                bit_stable: 0,
+            },
+        ),
+        (
+            other.clone(),
+            Coverage {
+                total: 1,
+                bit_stable: 1,
+            },
+        ),
     ]);
     let lost = keys_losing_last_bit_stable(&before, &after_loss);
     assert_eq!(
-        lost.len(), 1,
+        lost.len(),
+        1,
         "C4 FAILED (positive): a constructed loss of the last bit-stable \
          candidate was not reported. The differ cannot see the event it \
          exists to detect, so every 'no loss' verdict it produces is empty.",
@@ -541,10 +583,20 @@ fn assert_differ_discriminates() {
 
     // (3) A partial reduction (2 bit-stable → 1) is NOT a loss of the LAST
     //     candidate. Pins the boundary the question actually asks about.
-    let before_two: HashMap<Key, Coverage> =
-        HashMap::from([(key.clone(), Coverage { total: 3, bit_stable: 2 })]);
-    let after_one: HashMap<Key, Coverage> =
-        HashMap::from([(key, Coverage { total: 3, bit_stable: 1 })]);
+    let before_two: HashMap<Key, Coverage> = HashMap::from([(
+        key.clone(),
+        Coverage {
+            total: 3,
+            bit_stable: 2,
+        },
+    )]);
+    let after_one: HashMap<Key, Coverage> = HashMap::from([(
+        key,
+        Coverage {
+            total: 3,
+            bit_stable: 1,
+        },
+    )]);
     assert!(
         keys_losing_last_bit_stable(&before_two, &after_one).is_empty(),
         "C4 FAILED (boundary): a 2→1 reduction was reported as losing the \
@@ -640,7 +692,13 @@ fn gap_077_where_cpu_bit_stability_actually_comes_from() {
             notes: "control: an explicit contract-style claim, not the fill default",
         };
         let mut t = KernelBindingTable::new();
-        t.register_with_precision(OpKind::AddElementwise, &[DType::F32], BackendId::Cpu, noop, explicit);
+        t.register_with_precision(
+            OpKind::AddElementwise,
+            &[DType::F32],
+            BackendId::Cpu,
+            noop,
+            explicit,
+        );
         t.fill_unset_cpu_precision(PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU);
         let classified_from_fill = t
             .iter_precision()

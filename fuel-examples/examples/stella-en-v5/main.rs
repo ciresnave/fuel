@@ -13,17 +13,15 @@ extern crate accelerate_src;
 
 use std::path::Path;
 
-use anyhow::{anyhow, Error as E, Result};
+use anyhow::{Error as E, Result, anyhow};
 use clap::Parser;
 
 use fuel::lazy::{
-    load_tensor_as_f32, load_transposed_matrix_preserve_dtype, LayerWeights, WeightStorage,
+    LayerWeights, WeightStorage, load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
 };
 use fuel::lazy_qwen2::{Qwen2Config, Qwen2Weights};
-use fuel::lazy_stella_v5::{
-    StellaEmbedDim, StellaV5Config, StellaV5Model, StellaV5Weights,
-};
-use hf_hub::{api::sync::Api, Repo};
+use fuel::lazy_stella_v5::{StellaEmbedDim, StellaV5Config, StellaV5Model, StellaV5Weights};
+use hf_hub::{Repo, api::sync::Api};
 use std::sync::Arc;
 use tokenizers::{PaddingDirection, PaddingParams, PaddingStrategy, Tokenizer};
 
@@ -247,24 +245,18 @@ fn load_qwen2_weights(
         )
         .map_err(|e| anyhow!("{e}"))?;
         // Qwen2 has Q/K/V biases.
-        let attn_q_bias = load_tensor_as_f32(
-            st,
-            &format!("model.layers.{i}.self_attn.q_proj.bias"),
-        )
-        .ok()
-        .map(Arc::from);
-        let attn_k_bias = load_tensor_as_f32(
-            st,
-            &format!("model.layers.{i}.self_attn.k_proj.bias"),
-        )
-        .ok()
-        .map(Arc::from);
-        let attn_v_bias = load_tensor_as_f32(
-            st,
-            &format!("model.layers.{i}.self_attn.v_proj.bias"),
-        )
-        .ok()
-        .map(Arc::from);
+        let attn_q_bias =
+            load_tensor_as_f32(st, &format!("model.layers.{i}.self_attn.q_proj.bias"))
+                .ok()
+                .map(Arc::from);
+        let attn_k_bias =
+            load_tensor_as_f32(st, &format!("model.layers.{i}.self_attn.k_proj.bias"))
+                .ok()
+                .map(Arc::from);
+        let attn_v_bias =
+            load_tensor_as_f32(st, &format!("model.layers.{i}.self_attn.v_proj.bias"))
+                .ok()
+                .map(Arc::from);
         layers.push(LayerWeights {
             attn_q,
             attn_q_bias,
@@ -297,8 +289,7 @@ fn load_qwen2_weights(
             let mut transposed = vec![0.0_f32; cfg.hidden_size * cfg.vocab_size];
             for i in 0..cfg.vocab_size {
                 for j in 0..cfg.hidden_size {
-                    transposed[j * cfg.vocab_size + i] =
-                        token_embedding[i * cfg.hidden_size + j];
+                    transposed[j * cfg.vocab_size + i] = token_embedding[i * cfg.hidden_size + j];
                 }
             }
             WeightStorage::F32(Arc::from(transposed))
@@ -390,8 +381,14 @@ fn main() -> Result<()> {
     )
     .map_err(|e| anyhow!("load embed_head: {e}"))?;
 
-    let weights = StellaV5Weights { backbone, embed_head };
-    let model = StellaV5Model { config: cfg, weights };
+    let weights = StellaV5Weights {
+        backbone,
+        embed_head,
+    };
+    let model = StellaV5Model {
+        config: cfg,
+        weights,
+    };
 
     println!("loaded the model in {:?}", start.elapsed());
 

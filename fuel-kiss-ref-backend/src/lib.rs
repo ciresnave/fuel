@@ -24,7 +24,11 @@ pub enum KissRefError {
     /// The dtype has no mapping into kiss-ref's `Dtype` vocabulary.
     UnsupportedDtype(DType),
     /// Wrong number of operand columns for the op.
-    Arity { op: OpTag, expected: usize, got: usize },
+    Arity {
+        op: OpTag,
+        expected: usize,
+        got: usize,
+    },
     /// Operand columns / candidate slice lengths disagree.
     LengthMismatch { expected: usize, got: usize },
     /// A kiss-ref reference evaluation failed (wraps its typed error).
@@ -44,8 +48,8 @@ pub mod region;
 
 pub use mapping::{dtype_to_kiss, op_to_kiss, supports};
 pub use reference::{
-    diff_bf16, diff_f16, diff_f32, diff_f64, reference_bf16, reference_f16, reference_f32,
-    reference_f64, DiffReport, Tolerance,
+    DiffReport, Tolerance, diff_bf16, diff_f16, diff_f32, diff_f64, reference_bf16, reference_f16,
+    reference_f32, reference_f64,
 };
 pub use region::{
     diff_region_bf16, diff_region_f16, diff_region_f32, diff_region_f64, op_ulp_ceiling,
@@ -59,7 +63,16 @@ mod tests {
 
     #[test]
     fn error_type_constructs() {
-        let e = KissRefError::LengthMismatch { expected: 4, got: 3 };
-        assert!(matches!(e, KissRefError::LengthMismatch { expected: 4, got: 3 }));
+        let e = KissRefError::LengthMismatch {
+            expected: 4,
+            got: 3,
+        };
+        assert!(matches!(
+            e,
+            KissRefError::LengthMismatch {
+                expected: 4,
+                got: 3
+            }
+        ));
     }
 }

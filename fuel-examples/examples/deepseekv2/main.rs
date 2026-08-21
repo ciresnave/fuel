@@ -11,7 +11,7 @@ use std::io::Write;
 use fuel::lazy_deepseek2::{
     DeepSeek2Activation, DeepSeek2Config, DeepSeek2Model, DeepSeek2Weights,
 };
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 use tokenizers::Tokenizer;
 
 #[derive(Clone, Debug, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -133,7 +133,10 @@ fn main() -> Result<()> {
         .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
     let weights = DeepSeek2Weights::load_from_mmapped(&st, &config)
         .map_err(|e| E::msg(format!("load weights: {e}")))?;
-    let model = DeepSeek2Model { config: config.clone(), weights };
+    let model = DeepSeek2Model {
+        config: config.clone(),
+        weights,
+    };
     println!("loaded the model in {:?}", start.elapsed());
 
     print!("{}", args.prompt);
@@ -184,28 +187,25 @@ fn main() -> Result<()> {
 }
 
 fn deepseek2_config_from_hf_json_str(json: &str) -> Result<DeepSeek2Config> {
-    let v: serde_json::Value = serde_json::from_str(json)
-        .map_err(|e| E::msg(format!("parsing config.json: {e}")))?;
-    let get_usize = |key: &str| -> Option<usize> {
-        v.get(key).and_then(|x| x.as_u64()).map(|x| x as usize)
-    };
+    let v: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| E::msg(format!("parsing config.json: {e}")))?;
+    let get_usize =
+        |key: &str| -> Option<usize> { v.get(key).and_then(|x| x.as_u64()).map(|x| x as usize) };
     let get_f64 = |key: &str| -> Option<f64> { v.get(key).and_then(|x| x.as_f64()) };
     let get_bool = |key: &str| -> Option<bool> { v.get(key).and_then(|x| x.as_bool()) };
     let get_str = |key: &str| -> Option<String> {
         v.get(key).and_then(|x| x.as_str()).map(|x| x.to_string())
     };
 
-    let vocab_size = get_usize("vocab_size")
-        .ok_or_else(|| E::msg("missing vocab_size"))?;
-    let hidden_size = get_usize("hidden_size")
-        .ok_or_else(|| E::msg("missing hidden_size"))?;
-    let intermediate_size = get_usize("intermediate_size")
-        .ok_or_else(|| E::msg("missing intermediate_size"))?;
+    let vocab_size = get_usize("vocab_size").ok_or_else(|| E::msg("missing vocab_size"))?;
+    let hidden_size = get_usize("hidden_size").ok_or_else(|| E::msg("missing hidden_size"))?;
+    let intermediate_size =
+        get_usize("intermediate_size").ok_or_else(|| E::msg("missing intermediate_size"))?;
     let moe_intermediate_size = get_usize("moe_intermediate_size").unwrap_or(intermediate_size);
-    let num_hidden_layers = get_usize("num_hidden_layers")
-        .ok_or_else(|| E::msg("missing num_hidden_layers"))?;
-    let num_attention_heads = get_usize("num_attention_heads")
-        .ok_or_else(|| E::msg("missing num_attention_heads"))?;
+    let num_hidden_layers =
+        get_usize("num_hidden_layers").ok_or_else(|| E::msg("missing num_hidden_layers"))?;
+    let num_attention_heads =
+        get_usize("num_attention_heads").ok_or_else(|| E::msg("missing num_attention_heads"))?;
     let n_shared_experts = get_usize("n_shared_experts");
     let n_routed_experts = get_usize("n_routed_experts");
     let num_experts_per_tok = get_usize("num_experts_per_tok");
@@ -256,7 +256,9 @@ fn deepseek2_config_from_hf_json_str(json: &str) -> Result<DeepSeek2Config> {
 
 fn parse_eos_token_id(json: &str) -> Option<u32> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
-    v.get("eos_token_id").and_then(|x| x.as_u64()).map(|x| x as u32)
+    v.get("eos_token_id")
+        .and_then(|x| x.as_u64())
+        .map(|x| x as u32)
 }
 
 fn apply_repeat_penalty(logits: &mut [f32], penalty: f32, context: &[u32]) {
@@ -293,7 +295,10 @@ fn sample(
     }
     let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let inv_t = 1.0 / temperature.max(1e-6);
-    let mut probs: Vec<f32> = logits.iter().map(|&x| ((x - max_l) * inv_t).exp()).collect();
+    let mut probs: Vec<f32> = logits
+        .iter()
+        .map(|&x| ((x - max_l) * inv_t).exp())
+        .collect();
     let sum: f32 = probs.iter().sum();
     for p in &mut probs {
         *p /= sum.max(1e-30);
@@ -336,7 +341,9 @@ fn sample(
     } else {
         return 0;
     }
-    let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    let mut state = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     state ^= state >> 33;
     state = state.wrapping_mul(0xff51_afd7_ed55_8ccd);
     state ^= state >> 33;

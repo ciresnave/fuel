@@ -37,12 +37,10 @@
 //! of entry order. Within one equivalence class the replicated
 //! entries share a latency, so the min is a no-op there.
 
-use fuel_ir::dispatch::{
-    OpKind, ProfileReport, SizeClass, PROFILE_REPORT_VERSION,
-};
-use fuel_ir::probe::BackendId;
-use fuel_ir::DType;
 use fuel_dispatch::ranker::{HashMapJudge, JudgeOracle};
+use fuel_ir::DType;
+use fuel_ir::dispatch::{OpKind, PROFILE_REPORT_VERSION, ProfileReport, SizeClass};
+use fuel_ir::probe::BackendId;
 
 /// [`JudgeOracle`] adapter over a [`ProfileReport`]. Build once per
 /// report (cache lifecycle in [`super::cache`]), query per candidate
@@ -68,13 +66,8 @@ impl ProfileJudgeOracle {
             return Self { inner };
         }
         for e in &report.entries {
-            let prev = inner.measured_latency_ns(
-                e.op,
-                e.dtype,
-                e.size_class,
-                e.backend,
-                &e.kernel_source,
-            );
+            let prev =
+                inner.measured_latency_ns(e.op, e.dtype, e.size_class, e.backend, &e.kernel_source);
             // Keep the minimum across duplicate keys (multi-device
             // entries at one cell — see module docs).
             if prev.map_or(true, |p| e.latency_ns < p) {
@@ -151,15 +144,17 @@ mod tests {
         };
         let oracle = ProfileJudgeOracle::from_report(&report);
         assert!(oracle.is_empty());
-        assert!(oracle
-            .measured_latency_ns(
-                OpKind::MatMul,
-                DType::F32,
-                SizeClass(16),
-                BackendId::Cpu,
-                "",
-            )
-            .is_none());
+        assert!(
+            oracle
+                .measured_latency_ns(
+                    OpKind::MatMul,
+                    DType::F32,
+                    SizeClass(16),
+                    BackendId::Cpu,
+                    "",
+                )
+                .is_none()
+        );
     }
 
     /// Two entries at the same `(op, dtype, size_class, backend)`
@@ -171,7 +166,14 @@ mod tests {
         let report = ProfileReport {
             version: PROFILE_REPORT_VERSION,
             entries: vec![
-                entry(BackendId::Cpu, OpKind::MatMul, 16, 0, 1_000_000, "portable-cpu"),
+                entry(
+                    BackendId::Cpu,
+                    OpKind::MatMul,
+                    16,
+                    0,
+                    1_000_000,
+                    "portable-cpu",
+                ),
                 entry(BackendId::Cpu, OpKind::MatMul, 16, 0, 200_000, "aocl"),
             ],
         };
@@ -250,29 +252,57 @@ mod tests {
         };
         let oracle = ProfileJudgeOracle::from_report(&report);
         let hit = oracle.measured_latency_ns(
-            OpKind::MatMul, DType::F32, SizeClass(16), BackendId::Cpu, "",
+            OpKind::MatMul,
+            DType::F32,
+            SizeClass(16),
+            BackendId::Cpu,
+            "",
         );
         assert_eq!(hit, Some(1_000));
-        assert!(oracle
-            .measured_latency_ns(
-                OpKind::MatMul, DType::F32, SizeClass(16), BackendId::Cuda, "",
-            )
-            .is_none());
-        assert!(oracle
-            .measured_latency_ns(
-                OpKind::MatMul, DType::F64, SizeClass(16), BackendId::Cpu, "",
-            )
-            .is_none());
-        assert!(oracle
-            .measured_latency_ns(
-                OpKind::MatMul, DType::F32, SizeClass(17), BackendId::Cpu, "",
-            )
-            .is_none());
-        assert!(oracle
-            .measured_latency_ns(
-                OpKind::AddElementwise, DType::F32, SizeClass(16), BackendId::Cpu, "",
-            )
-            .is_none());
+        assert!(
+            oracle
+                .measured_latency_ns(
+                    OpKind::MatMul,
+                    DType::F32,
+                    SizeClass(16),
+                    BackendId::Cuda,
+                    "",
+                )
+                .is_none()
+        );
+        assert!(
+            oracle
+                .measured_latency_ns(
+                    OpKind::MatMul,
+                    DType::F64,
+                    SizeClass(16),
+                    BackendId::Cpu,
+                    "",
+                )
+                .is_none()
+        );
+        assert!(
+            oracle
+                .measured_latency_ns(
+                    OpKind::MatMul,
+                    DType::F32,
+                    SizeClass(17),
+                    BackendId::Cpu,
+                    "",
+                )
+                .is_none()
+        );
+        assert!(
+            oracle
+                .measured_latency_ns(
+                    OpKind::AddElementwise,
+                    DType::F32,
+                    SizeClass(16),
+                    BackendId::Cpu,
+                    "",
+                )
+                .is_none()
+        );
     }
 
     /// A report with a foreign schema version produces an empty

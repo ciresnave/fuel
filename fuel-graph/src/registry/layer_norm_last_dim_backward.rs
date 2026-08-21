@@ -32,8 +32,8 @@
 //! basis-gap self-return.
 
 use crate::registry::{
-    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps,
-    PatternMatch, SubgraphPattern, decompose_via_recipe,
+    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps, PatternMatch,
+    SubgraphPattern, decompose_via_recipe,
 };
 use crate::{Graph, NodeId};
 use fuel_ir::{DType, Shape};
@@ -45,12 +45,12 @@ use std::sync::OnceLock;
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
         destructive_input: None,
-        id:         FusedOps::LAYER_NORM_LAST_DIM_BACKWARD,
-        name:       "LayerNormLastDimBackward",
-        family:     FusedOpFamily::Backward,
-        pattern:    SubgraphPattern::Callable(canonical_pattern),
+        id: FusedOps::LAYER_NORM_LAST_DIM_BACKWARD,
+        name: "LayerNormLastDimBackward",
+        family: FusedOpFamily::Backward,
+        pattern: SubgraphPattern::Callable(canonical_pattern),
         decompose,
-        backward:   BackwardKind::NotDifferentiable,
+        backward: BackwardKind::NotDifferentiable,
         shape_rule,
         dtype_rule,
         output_views: None,
@@ -60,7 +60,8 @@ pub fn entry() -> FusedOpEntry {
 /// Shape rule: output equals input 0 (the forward layer-norm input `x`).
 fn shape_rule(input_shapes: &[Shape], _params: &FusedOpParams) -> Shape {
     debug_assert_eq!(
-        input_shapes.len(), 2,
+        input_shapes.len(),
+        2,
         "LayerNormLastDimBackward takes 2 inputs (x, upstream)",
     );
     input_shapes[0].clone()
@@ -69,7 +70,8 @@ fn shape_rule(input_shapes: &[Shape], _params: &FusedOpParams) -> Shape {
 /// Dtype rule: output dtype equals input 0.
 fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
     debug_assert_eq!(
-        input_dtypes.len(), 2,
+        input_dtypes.len(),
+        2,
         "LayerNormLastDimBackward takes 2 inputs",
     );
     input_dtypes[0]
@@ -117,32 +119,47 @@ fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
 fn recipe() -> &'static PatternNode {
     static RECIPE: OnceLock<PatternNode> = OnceLock::new();
     RECIPE.get_or_init(|| {
-        let axis_last = || OpAttrs { axis_last: true, ..OpAttrs::default() };
+        let axis_last = || OpAttrs {
+            axis_last: true,
+            ..OpAttrs::default()
+        };
         let same_as_x = || OpAttrs {
             target_shape_rel: Some(ShapeExpr::SameAs { operand: 0 }),
             ..OpAttrs::default()
         };
-        let op = |op, attrs, operands| PatternNode::Op { op, attrs, operands };
+        let op = |op, attrs, operands| PatternNode::Op {
+            op,
+            attrs: Box::new(attrs),
+            operands,
+        };
         let x = || PatternNode::Bind { index: 0 };
         let g = || PatternNode::Bind { index: 1 };
         // mean_b(src) = BroadcastTo(SameAs 0)(Unsqueeze(append)(MeanDim(last)(src)))
         let mean_b = |src: PatternNode| -> PatternNode {
-            op(OpTag::BroadcastTo, same_as_x(), vec![
-                op(OpTag::Unsqueeze, axis_last(), vec![
-                    op(OpTag::MeanDim, axis_last(), vec![src]),
-                ]),
-            ])
+            op(
+                OpTag::BroadcastTo,
+                same_as_x(),
+                vec![op(
+                    OpTag::Unsqueeze,
+                    axis_last(),
+                    vec![op(OpTag::MeanDim, axis_last(), vec![src])],
+                )],
+            )
         };
         // xc = Sub(x, mean_b(x))  — the centered term (slot-free, shared).
         let xc = op(OpTag::Sub, OpAttrs::default(), vec![x(), mean_b(x())]);
         // var_eps = AddScalar[open](mean_b(Sqr(xc)));  istd = Rsqrt(var_eps).
         // Both carry the eps slot, so each `.clone()` re-emits (RISK-A).
         let istd = || {
-            op(OpTag::Rsqrt, OpAttrs::default(), vec![
-                op(OpTag::AddScalar, OpAttrs::default(), vec![
-                    mean_b(op(OpTag::Sqr, OpAttrs::default(), vec![xc.clone()])),
-                ]),
-            ])
+            op(
+                OpTag::Rsqrt,
+                OpAttrs::default(),
+                vec![op(
+                    OpTag::AddScalar,
+                    OpAttrs::default(),
+                    vec![mean_b(op(OpTag::Sqr, OpAttrs::default(), vec![xc.clone()]))],
+                )],
+            )
         };
         // xhat = Mul(xc, istd)  — two consumers (g_xhat, t2).
         let xhat = || op(OpTag::Mul, OpAttrs::default(), vec![xc.clone(), istd()]);
@@ -166,9 +183,10 @@ fn recipe() -> &'static PatternNode {
 /// same eps value, so pre-order alignment is trivially satisfied).
 fn scalars(params: &FusedOpParams) -> Option<Vec<f64>> {
     match params {
-        FusedOpParams::LayerNormLastDimBackward { eps } => {
-            Some(vec![*eps; crate::runtime_fused::count_scalar_slots(recipe())])
-        }
+        FusedOpParams::LayerNormLastDimBackward { eps } => Some(vec![
+                *eps;
+                crate::runtime_fused::count_scalar_slots(recipe())
+            ]),
         _ => None,
     }
 }

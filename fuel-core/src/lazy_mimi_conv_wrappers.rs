@@ -17,12 +17,12 @@
 //! `learnt = false`); the lazy port mirrors that by simply not
 //! exposing the flag — the weights *are* the learnt parameters.
 
+use crate::Result;
 use crate::lazy::LazyTensor;
 use crate::lazy_mimi_conv::{LazyPadMode, StreamConv1dState, StreamableConv1dWeights};
 use crate::lazy_mimi_conv_transpose::{
     StreamConvTranspose1dState, StreamableConvTranspose1dWeights,
 };
-use crate::Result;
 use std::sync::Arc;
 
 /// Learnable downsampling block — a single strided
@@ -38,12 +38,7 @@ impl ConvDownsample1dWeights {
     /// (call [`crate::lazy_mimi_conv::bake_weight_norm`] first if the
     /// checkpoint stores the `(weight_g, weight_v)` pair).
     /// Layout `(dim, dim, 2 · stride)` row-major.
-    pub fn new(
-        stride: usize,
-        dim: usize,
-        causal: bool,
-        raw_weight: Arc<[f32]>,
-    ) -> Result<Self> {
+    pub fn new(stride: usize, dim: usize, causal: bool, raw_weight: Arc<[f32]>) -> Result<Self> {
         let conv = StreamableConv1dWeights::new(
             raw_weight,
             None,
@@ -85,12 +80,7 @@ impl ConvTrUpsample1dWeights {
     /// (call [`crate::lazy_mimi_conv_transpose::bake_weight_norm_transpose`]
     /// first if the checkpoint stores the `(weight_g, weight_v)` pair).
     /// Layout `(dim, 1, 2 · stride)` row-major — out-per-group is 1.
-    pub fn new(
-        stride: usize,
-        dim: usize,
-        causal: bool,
-        raw_weight: Arc<[f32]>,
-    ) -> Result<Self> {
+    pub fn new(stride: usize, dim: usize, causal: bool, raw_weight: Arc<[f32]>) -> Result<Self> {
         let convtr = StreamableConvTranspose1dWeights::new(
             raw_weight,
             None,
@@ -284,7 +274,10 @@ mod tests {
         let t_one = one_shot.len() / cout;
         let t_str = streamed.len() / cout;
         let common = t_one.min(t_str);
-        assert!(common >= stride, "expected at least {stride} shared per-ch samples, got {common}");
+        assert!(
+            common >= stride,
+            "expected at least {stride} shared per-ch samples, got {common}"
+        );
         for c in 0..cout {
             for k in 0..common {
                 let a = streamed[c * t_str + k];

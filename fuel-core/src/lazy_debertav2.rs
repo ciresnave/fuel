@@ -99,7 +99,9 @@ impl DebertaV2Config {
             id2label: None,
         }
     }
-    pub fn head_dim(&self) -> usize { self.hidden_size / self.num_attention_heads }
+    pub fn head_dim(&self) -> usize {
+        self.hidden_size / self.num_attention_heads
+    }
 
     /// Parse a HuggingFace `config.json` string. Strict on the fields
     /// the lazy port needs (`vocab_size`, `hidden_size`, …) but tolerant
@@ -119,9 +121,12 @@ impl DebertaV2Config {
             v.get(key)
                 .and_then(|x| x.as_u64())
                 .map(|x| x as usize)
-                .ok_or_else(|| crate::Error::Msg(format!(
-                    "deberta-v2 config.json: missing/invalid field {key:?}",
-                )).bt())
+                .ok_or_else(|| {
+                    crate::Error::Msg(format!(
+                        "deberta-v2 config.json: missing/invalid field {key:?}",
+                    ))
+                    .bt()
+                })
         };
 
         let vocab_size = get_usize("vocab_size")?;
@@ -131,12 +136,18 @@ impl DebertaV2Config {
         let intermediate_size = get_usize("intermediate_size")?;
         let max_position_embeddings = get_usize("max_position_embeddings")?;
 
-        let layer_norm_eps = v.get("layer_norm_eps")
-            .and_then(|x| x.as_f64()).unwrap_or(1e-7);
-        let position_buckets = v.get("position_buckets")
-            .and_then(|x| x.as_u64()).map(|x| x as usize).unwrap_or(256);
+        let layer_norm_eps = v
+            .get("layer_norm_eps")
+            .and_then(|x| x.as_f64())
+            .unwrap_or(1e-7);
+        let position_buckets = v
+            .get("position_buckets")
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize)
+            .unwrap_or(256);
         // HF ships -1 to mean "use max_position_embeddings"; accept that.
-        let max_relative_positions = match v.get("max_relative_positions").and_then(|x| x.as_i64()) {
+        let max_relative_positions = match v.get("max_relative_positions").and_then(|x| x.as_i64())
+        {
             Some(n) if n >= 1 => n as usize,
             _ => max_position_embeddings,
         };
@@ -233,7 +244,9 @@ pub struct DebertaV2Model {
 /// index for `k - q`, *plus* `position_buckets` (the `att_span`
 /// offset applied by the eager `c2p_pos` computation).
 pub fn build_c2p_indices(
-    seq_len: usize, position_buckets: usize, max_relative_positions: usize,
+    seq_len: usize,
+    position_buckets: usize,
+    max_relative_positions: usize,
 ) -> Vec<u32> {
     let bucket_size = position_buckets as isize;
     let max_position = max_relative_positions as isize;
@@ -261,7 +274,9 @@ pub fn build_c2p_indices(
 /// Square `(seq_len, seq_len)` indices indexed by `(k, q)` →
 /// transposed naturally by the matmul layout downstream.
 pub fn build_p2c_indices(
-    seq_len: usize, position_buckets: usize, max_relative_positions: usize,
+    seq_len: usize,
+    position_buckets: usize,
+    max_relative_positions: usize,
 ) -> Vec<u32> {
     let bucket_size = position_buckets as isize;
     let max_position = max_relative_positions as isize;
@@ -284,7 +299,13 @@ pub fn build_p2c_indices(
 }
 
 fn log_bucket(rel: isize, bucket_size: isize, max_position: isize) -> i64 {
-    let sign: isize = if rel > 0 { 1 } else if rel < 0 { -1 } else { 0 };
+    let sign: isize = if rel > 0 {
+        1
+    } else if rel < 0 {
+        -1
+    } else {
+        0
+    };
     let mid = bucket_size / 2;
     let abs = if rel.unsigned_abs() < mid as usize {
         (mid - 1) as f64
@@ -313,11 +334,7 @@ impl DebertaV2Model {
         assert!(t > 0);
         let h = cfg.hidden_size;
         let anchor_ids: Vec<u32> = input_ids.to_vec();
-        let ids = LazyTensor::from_u32(
-            anchor_ids,
-            Shape::from_dims(&[t]),
-            &crate::Device::cpu(),
-        );
+        let ids = LazyTensor::from_u32(anchor_ids, Shape::from_dims(&[t]), &crate::Device::cpu());
 
         // Word embedding lookup + LN.
         let table = ids.const_f32_like(
@@ -327,7 +344,11 @@ impl DebertaV2Model {
         let x = table
             .index_select(0_usize, &ids)?
             .reshape(Shape::from_dims(&[1, t, h]))?;
-        let mut x = x.layer_norm_affine(Arc::clone(&w.embed_ln.gain), Arc::clone(&w.embed_ln.bias), cfg.layer_norm_eps)?;
+        let mut x = x.layer_norm_affine(
+            Arc::clone(&w.embed_ln.gain),
+            Arc::clone(&w.embed_ln.bias),
+            cfg.layer_norm_eps,
+        )?;
 
         // Build / normalize rel_embeddings once per forward.
         let rel_table = ids.const_f32_like(
@@ -336,22 +357,21 @@ impl DebertaV2Model {
         );
         let rel_table = match &w.rel_emb_ln {
             None => rel_table,
-            Some(ln) => rel_table.reshape(Shape::from_dims(&[1, 2 * cfg.position_buckets, h]))?.layer_norm_affine(Arc::clone(&ln.gain), Arc::clone(&ln.bias), cfg.layer_norm_eps)?.reshape(Shape::from_dims(&[2 * cfg.position_buckets, h]))?,
+            Some(ln) => rel_table
+                .reshape(Shape::from_dims(&[1, 2 * cfg.position_buckets, h]))?
+                .layer_norm_affine(
+                    Arc::clone(&ln.gain),
+                    Arc::clone(&ln.bias),
+                    cfg.layer_norm_eps,
+                )?
+                .reshape(Shape::from_dims(&[2 * cfg.position_buckets, h]))?,
         };
 
         // Build c2p / p2c gather index tables (depend on T).
-        let c2p_idx = build_c2p_indices(
-            t, cfg.position_buckets, cfg.max_relative_positions,
-        );
-        let p2c_idx = build_p2c_indices(
-            t, cfg.position_buckets, cfg.max_relative_positions,
-        );
-        let c2p_idx = ids.const_u32_like(
-            c2p_idx, Shape::from_dims(&[1, t, t]),
-        );
-        let p2c_idx = ids.const_u32_like(
-            p2c_idx, Shape::from_dims(&[1, t, t]),
-        );
+        let c2p_idx = build_c2p_indices(t, cfg.position_buckets, cfg.max_relative_positions);
+        let p2c_idx = build_p2c_indices(t, cfg.position_buckets, cfg.max_relative_positions);
+        let c2p_idx = ids.const_u32_like(c2p_idx, Shape::from_dims(&[1, t, t]));
+        let p2c_idx = ids.const_u32_like(p2c_idx, Shape::from_dims(&[1, t, t]));
 
         for layer in &w.layers {
             x = apply_layer(&x, layer, &rel_table, &c2p_idx, &p2c_idx, cfg, &ids)?;
@@ -372,13 +392,21 @@ fn apply_layer(
     let attn_out = apply_attention(x, &w.attn, rel_table, c2p_idx, p2c_idx, cfg, anchor)?;
     // Post-LN inside the attention sublayer.
     let projected = apply_linear(&attn_out, &w.attn.out_dense, anchor)?;
-    let x = &projected.add(x)?.layer_norm_affine(Arc::clone(&w.attn.out_ln.gain), Arc::clone(&w.attn.out_ln.bias), cfg.layer_norm_eps)?;
+    let x = &projected.add(x)?.layer_norm_affine(
+        Arc::clone(&w.attn.out_ln.gain),
+        Arc::clone(&w.attn.out_ln.bias),
+        cfg.layer_norm_eps,
+    )?;
 
     // FFN.
     let inter = apply_linear(&x, &w.ffn.intermediate, anchor)?;
     let inter = inter.gelu();
     let out = apply_linear(&inter, &w.ffn.output, anchor)?;
-    out.add(&x)?.layer_norm_affine(Arc::clone(&w.ffn.output_ln.gain), Arc::clone(&w.ffn.output_ln.bias), cfg.layer_norm_eps)
+    out.add(&x)?.layer_norm_affine(
+        Arc::clone(&w.ffn.output_ln.gain),
+        Arc::clone(&w.ffn.output_ln.bias),
+        cfg.layer_norm_eps,
+    )
 }
 
 fn apply_attention(
@@ -392,7 +420,9 @@ fn apply_attention(
 ) -> Result<LazyTensor> {
     let dims = x.shape();
     let dims = dims.dims();
-    let b = dims[0]; let t = dims[1]; let h = dims[2];
+    let b = dims[0];
+    let t = dims[1];
+    let h = dims[2];
     let heads = cfg.num_attention_heads;
     let head_dim = cfg.head_dim();
 
@@ -401,13 +431,16 @@ fn apply_attention(
     let v = apply_linear(x, &w.value_proj, anchor)?;
 
     // (B, T, H) → (B, heads, T, head_dim) → flatten to (B*heads, T, head_dim).
-    let q = q.reshape(Shape::from_dims(&[b, t, heads, head_dim]))?
+    let q = q
+        .reshape(Shape::from_dims(&[b, t, heads, head_dim]))?
         .permute([0, 2, 1, 3_usize])?
         .reshape(Shape::from_dims(&[b * heads, t, head_dim]))?;
-    let k = k.reshape(Shape::from_dims(&[b, t, heads, head_dim]))?
+    let k = k
+        .reshape(Shape::from_dims(&[b, t, heads, head_dim]))?
         .permute([0, 2, 1, 3_usize])?
         .reshape(Shape::from_dims(&[b * heads, t, head_dim]))?;
-    let v = v.reshape(Shape::from_dims(&[b, t, heads, head_dim]))?
+    let v = v
+        .reshape(Shape::from_dims(&[b, t, heads, head_dim]))?
         .permute([0, 2, 1, 3_usize])?
         .reshape(Shape::from_dims(&[b * heads, t, head_dim]))?;
 
@@ -421,23 +454,36 @@ fn apply_attention(
 
     // share_att_key: project rel_table through Q and K linears.
     let rel_q = apply_linear(rel_table, &w.query_proj, anchor)?
-        .reshape(Shape::from_dims(&[2 * cfg.position_buckets, heads, head_dim]))?
+        .reshape(Shape::from_dims(&[
+            2 * cfg.position_buckets,
+            heads,
+            head_dim,
+        ]))?
         .permute([1, 0, 2_usize])?;
     let rel_k = apply_linear(rel_table, &w.key_proj, anchor)?
-        .reshape(Shape::from_dims(&[2 * cfg.position_buckets, heads, head_dim]))?
+        .reshape(Shape::from_dims(&[
+            2 * cfg.position_buckets,
+            heads,
+            head_dim,
+        ]))?
         .permute([1, 0, 2_usize])?;
     // Tile across the B dim (b == 1 in v1 so this is just heads).
     debug_assert_eq!(b, 1);
-    let rel_q = rel_q
-        .reshape(Shape::from_dims(&[b * heads, 2 * cfg.position_buckets, head_dim]))?;
-    let rel_k = rel_k
-        .reshape(Shape::from_dims(&[b * heads, 2 * cfg.position_buckets, head_dim]))?;
+    let rel_q = rel_q.reshape(Shape::from_dims(&[
+        b * heads,
+        2 * cfg.position_buckets,
+        head_dim,
+    ]))?;
+    let rel_k = rel_k.reshape(Shape::from_dims(&[
+        b * heads,
+        2 * cfg.position_buckets,
+        head_dim,
+    ]))?;
 
     // c2p: Q · rel_k^T → (b*heads, T, 2*att_span), then gather along last dim by c2p_idx.
     let rel_k_t = rel_k.permute([0, 2, 1_usize])?;
     let c2p_att = q.matmul(&rel_k_t)?.mul_scalar(scale);
-    let c2p_idx_b = c2p_idx
-        .broadcast_to(Shape::from_dims(&[b * heads, t, t]))?;
+    let c2p_idx_b = c2p_idx.broadcast_to(Shape::from_dims(&[b * heads, t, t]))?;
     let c2p_term = c2p_att.gather(2_usize, &c2p_idx_b)?;
 
     // p2c: rel_q · K^T → (b*heads, 2*att_span, T). Gather along the
@@ -452,8 +498,7 @@ fn apply_attention(
     // a row in dim 1 (the 2*att_span axis). The eager code's p2c table
     // is (q, k) → bucket id (k indexes the key/query position pair) — for
     // a square self-attention this is just the transposed c2p table.
-    let p2c_idx_b = p2c_idx
-        .broadcast_to(Shape::from_dims(&[b * heads, t, t]))?;
+    let p2c_idx_b = p2c_idx.broadcast_to(Shape::from_dims(&[b * heads, t, t]))?;
     // gather over dim 1 returns (bh, T, T) where output[bh, q, k] =
     // rel_q_kt[bh, p2c_idx[bh, q, k], k]. We want output[bh, q, k] =
     // rel_q_kt[bh, p2c_idx[bh, k, q], q] in eager terms (the .t() at the
@@ -480,10 +525,7 @@ fn apply_attention(
     Ok(ctx)
 }
 
-
-fn apply_linear(
-    x: &LazyTensor, lw: &LinearWeights, anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+fn apply_linear(x: &LazyTensor, lw: &LinearWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
     let _ = anchor;
     let dims = x.shape();
     let dims = dims.dims();
@@ -504,32 +546,40 @@ impl DebertaV2Weights {
         let h = cfg.hidden_size;
         let inter = cfg.intermediate_size;
 
-        let prefix = if load_tensor_as_f32(st, "deberta.embeddings.word_embeddings.weight").is_ok() {
+        let prefix = if load_tensor_as_f32(st, "deberta.embeddings.word_embeddings.weight").is_ok()
+        {
             "deberta."
-        } else { "" };
+        } else {
+            ""
+        };
 
         let word_embedding = Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}embeddings.word_embeddings.weight"),
+            st,
+            &format!("{prefix}embeddings.word_embeddings.weight"),
         )?);
         let embed_ln = LayerNormWeights {
             gain: Arc::from(load_tensor_as_f32(
-                st, &format!("{prefix}embeddings.LayerNorm.weight"),
+                st,
+                &format!("{prefix}embeddings.LayerNorm.weight"),
             )?),
             bias: Arc::from(load_tensor_as_f32(
-                st, &format!("{prefix}embeddings.LayerNorm.bias"),
+                st,
+                &format!("{prefix}embeddings.LayerNorm.bias"),
             )?),
         };
         let rel_embeddings = Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}encoder.rel_embeddings.weight"),
+            st,
+            &format!("{prefix}encoder.rel_embeddings.weight"),
         )?);
-        let rel_emb_ln = load_tensor_as_f32(
-            st, &format!("{prefix}encoder.LayerNorm.weight"),
-        ).ok().map(|gain| LayerNormWeights {
-            gain: Arc::from(gain),
-            bias: Arc::from(load_tensor_as_f32(
-                st, &format!("{prefix}encoder.LayerNorm.bias"),
-            ).unwrap_or_else(|_| vec![0.0_f32; h])),
-        });
+        let rel_emb_ln = load_tensor_as_f32(st, &format!("{prefix}encoder.LayerNorm.weight"))
+            .ok()
+            .map(|gain| LayerNormWeights {
+                gain: Arc::from(gain),
+                bias: Arc::from(
+                    load_tensor_as_f32(st, &format!("{prefix}encoder.LayerNorm.bias"))
+                        .unwrap_or_else(|_| vec![0.0_f32; h]),
+                ),
+            });
 
         let load_lin = |p: &str, in_f: usize, out_f: usize| -> Result<LinearWeights> {
             let w = ltm(st, &format!("{p}.weight"), out_f, in_f)?;
@@ -562,7 +612,11 @@ impl DebertaV2Weights {
         }
 
         Ok(Self {
-            word_embedding, embed_ln, rel_embeddings, rel_emb_ln, layers,
+            word_embedding,
+            embed_ln,
+            rel_embeddings,
+            rel_emb_ln,
+            layers,
         })
     }
 }
@@ -620,12 +674,12 @@ pub struct DebertaV2NERModel {
 impl DebertaV2NERModel {
     /// Build a NER model from already-loaded weights. `num_labels` is
     /// the number of entity classes (length of `id2label`).
-    pub fn new(
-        config: DebertaV2Config,
-        weights: DebertaV2NERWeights,
-        num_labels: usize,
-    ) -> Self {
-        Self { config, weights, num_labels }
+    pub fn new(config: DebertaV2Config, weights: DebertaV2NERWeights, num_labels: usize) -> Self {
+        Self {
+            config,
+            weights,
+            num_labels,
+        }
     }
 
     /// Run prefill + the NER head. `token_type_ids` / `attention_mask`
@@ -716,7 +770,11 @@ impl DebertaV2SeqClassificationModel {
         weights: DebertaV2SeqClassificationWeights,
         num_labels: usize,
     ) -> Self {
-        Self { config, weights, num_labels }
+        Self {
+            config,
+            weights,
+            num_labels,
+        }
     }
 
     /// Run prefill + sequence-classification head.
@@ -774,8 +832,14 @@ impl DebertaV2SeqClassificationWeights {
         };
         Ok(Self {
             encoder,
-            pooler_dense: LinearWeights { w: pooler_w, b: pooler_b },
-            classifier: LinearWeights { w: classifier_w, b: classifier_b },
+            pooler_dense: LinearWeights {
+                w: pooler_w,
+                b: pooler_b,
+            },
+            classifier: LinearWeights {
+                w: classifier_w,
+                b: classifier_b,
+            },
         })
     }
 }
@@ -806,9 +870,14 @@ mod tests {
         }
     }
     fn linear_w(
-        in_features: usize, out_features: usize, nb: &mut dyn FnMut() -> f32,
+        in_features: usize,
+        out_features: usize,
+        nb: &mut dyn FnMut() -> f32,
     ) -> LinearWeights {
-        LinearWeights { w: ws(in_features * out_features, nb), b: vec_of(out_features, nb) }
+        LinearWeights {
+            w: ws(in_features * out_features, nb),
+            b: vec_of(out_features, nb),
+        }
     }
 
     fn tiny_config() -> DebertaV2Config {
@@ -829,8 +898,8 @@ mod tests {
     fn build_weights(cfg: &DebertaV2Config) -> DebertaV2Weights {
         let mut nb = rng_seed(2026);
         let h = cfg.hidden_size;
-        let layers: Vec<DebertaV2LayerWeights> = (0..cfg.num_hidden_layers).map(|_| {
-            DebertaV2LayerWeights {
+        let layers: Vec<DebertaV2LayerWeights> = (0..cfg.num_hidden_layers)
+            .map(|_| DebertaV2LayerWeights {
                 attn: DebertaV2AttentionWeights {
                     query_proj: linear_w(h, h, &mut nb),
                     key_proj: linear_w(h, h, &mut nb),
@@ -843,8 +912,8 @@ mod tests {
                     output: linear_w(cfg.intermediate_size, h, &mut nb),
                     output_ln: ln_w(h),
                 },
-            }
-        }).collect();
+            })
+            .collect();
         DebertaV2Weights {
             word_embedding: vec_of(cfg.vocab_size * h, &mut nb),
             embed_ln: ln_w(h),
@@ -876,7 +945,10 @@ mod tests {
     fn forward_shape_and_finite() {
         let cfg = tiny_config();
         let weights = build_weights(&cfg);
-        let model = DebertaV2Model { config: cfg.clone(), weights };
+        let model = DebertaV2Model {
+            config: cfg.clone(),
+            weights,
+        };
         let ids = vec![1_u32, 2, 3, 4, 5, 6, 7, 8];
         let out = model.forward(&ids).unwrap();
         assert_eq!(out.shape().dims(), &[1, ids.len(), cfg.hidden_size]);
@@ -889,15 +961,26 @@ mod tests {
     fn forward_responds_to_input() {
         let cfg = tiny_config();
         let weights = build_weights(&cfg);
-        let model = DebertaV2Model { config: cfg, weights };
-        let a = model.forward(&[1_u32, 2, 3, 4, 5, 6, 7, 8]).unwrap().realize_f32();
-        let b = model.forward(&[1_u32, 2, 3, 4, 5, 6, 7, 9]).unwrap().realize_f32();
+        let model = DebertaV2Model {
+            config: cfg,
+            weights,
+        };
+        let a = model
+            .forward(&[1_u32, 2, 3, 4, 5, 6, 7, 8])
+            .unwrap()
+            .realize_f32();
+        let b = model
+            .forward(&[1_u32, 2, 3, 4, 5, 6, 7, 9])
+            .unwrap()
+            .realize_f32();
         let mut max_diff = 0.0_f32;
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-6,
-            "DeBERTa-v2 must respond to input changes, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-6,
+            "DeBERTa-v2 must respond to input changes, max_diff = {max_diff}"
+        );
     }
 
     #[test]
@@ -912,24 +995,28 @@ mod tests {
 
     // ---- Task head tests ---------------------------------------------------
 
-    fn build_ner_weights(
-        cfg: &DebertaV2Config, num_labels: usize,
-    ) -> DebertaV2NERWeights {
+    fn build_ner_weights(cfg: &DebertaV2Config, num_labels: usize) -> DebertaV2NERWeights {
         let mut nb = rng_seed(2027);
         let encoder = build_weights(cfg);
         let classifier = linear_w(cfg.hidden_size, num_labels, &mut nb);
-        DebertaV2NERWeights { encoder, classifier }
+        DebertaV2NERWeights {
+            encoder,
+            classifier,
+        }
     }
 
     fn build_seq_cls_weights(
-        cfg: &DebertaV2Config, num_labels: usize,
+        cfg: &DebertaV2Config,
+        num_labels: usize,
     ) -> DebertaV2SeqClassificationWeights {
         let mut nb = rng_seed(2028);
         let encoder = build_weights(cfg);
         let pooler_dense = linear_w(cfg.hidden_size, cfg.hidden_size, &mut nb);
         let classifier = linear_w(cfg.hidden_size, num_labels, &mut nb);
         DebertaV2SeqClassificationWeights {
-            encoder, pooler_dense, classifier,
+            encoder,
+            pooler_dense,
+            classifier,
         }
     }
 
@@ -971,7 +1058,9 @@ mod tests {
     ) {
         let n: usize = shape.iter().product();
         let mut bytes = Vec::with_capacity(n * 4);
-        for _ in 0..n { bytes.extend_from_slice(&nb().to_le_bytes()); }
+        for _ in 0..n {
+            bytes.extend_from_slice(&nb().to_le_bytes());
+        }
         owned.push((name.to_string(), shape, bytes));
     }
 
@@ -995,8 +1084,10 @@ mod tests {
     ) {
         // HF stores Linear weight as [out, in].
         push_f32(
-            owned, &format!("{prefix}.weight"),
-            vec![out_features, in_features], nb,
+            owned,
+            &format!("{prefix}.weight"),
+            vec![out_features, in_features],
+            nb,
         );
         push_f32(owned, &format!("{prefix}.bias"), vec![out_features], nb);
     }
@@ -1009,12 +1100,20 @@ mod tests {
         let h = cfg.hidden_size;
         let inter = cfg.intermediate_size;
         // Embeddings.
-        push_f32(owned, "embeddings.word_embeddings.weight",
-            vec![cfg.vocab_size, h], nb);
+        push_f32(
+            owned,
+            "embeddings.word_embeddings.weight",
+            vec![cfg.vocab_size, h],
+            nb,
+        );
         push_ln(owned, "embeddings.LayerNorm", h, nb);
         // Relative-position embeddings.
-        push_f32(owned, "encoder.rel_embeddings.weight",
-            vec![2 * cfg.position_buckets, h], nb);
+        push_f32(
+            owned,
+            "encoder.rel_embeddings.weight",
+            vec![2 * cfg.position_buckets, h],
+            nb,
+        );
         push_ln(owned, "encoder.LayerNorm", h, nb);
         // Transformer stack.
         for i in 0..cfg.num_hidden_layers {
@@ -1042,8 +1141,7 @@ mod tests {
                 .expect("TensorView::new");
             tensors.insert(name.clone(), view);
         }
-        let serialized = safetensors::serialize(&tensors, None)
-            .expect("safetensors::serialize");
+        let serialized = safetensors::serialize(&tensors, None).expect("safetensors::serialize");
         let tmp = std::env::temp_dir().join(format!(
             "fuel_debertav2_load_test_{}_{tag}.safetensors",
             std::process::id(),
@@ -1060,7 +1158,13 @@ mod tests {
 
         let mut owned: Vec<(String, Vec<usize>, Vec<u8>)> = Vec::new();
         push_encoder(&mut owned, &cfg, &mut nb);
-        push_lin(&mut owned, "classifier", cfg.hidden_size, num_labels, &mut nb);
+        push_lin(
+            &mut owned,
+            "classifier",
+            cfg.hidden_size,
+            num_labels,
+            &mut nb,
+        );
 
         let tmp = build_safetensors_file(owned, "ner");
         let st = unsafe { crate::safetensors::MmapedSafetensors::new(&tmp) }
@@ -1087,21 +1191,28 @@ mod tests {
 
         let mut owned: Vec<(String, Vec<usize>, Vec<u8>)> = Vec::new();
         push_encoder(&mut owned, &cfg, &mut nb);
-        push_lin(&mut owned, "pooler.dense",
-            cfg.hidden_size, cfg.hidden_size, &mut nb);
-        push_lin(&mut owned, "classifier",
-            cfg.hidden_size, num_labels, &mut nb);
+        push_lin(
+            &mut owned,
+            "pooler.dense",
+            cfg.hidden_size,
+            cfg.hidden_size,
+            &mut nb,
+        );
+        push_lin(
+            &mut owned,
+            "classifier",
+            cfg.hidden_size,
+            num_labels,
+            &mut nb,
+        );
 
         let tmp = build_safetensors_file(owned, "seqcls");
         let st = unsafe { crate::safetensors::MmapedSafetensors::new(&tmp) }
             .expect("MmapedSafetensors::new");
 
-        let weights = DebertaV2SeqClassificationWeights::load_from_mmapped(
-            &st, &cfg, num_labels,
-        ).expect("load seq-cls weights");
-        let model = DebertaV2SeqClassificationModel::new(
-            cfg, weights, num_labels,
-        );
+        let weights = DebertaV2SeqClassificationWeights::load_from_mmapped(&st, &cfg, num_labels)
+            .expect("load seq-cls weights");
+        let model = DebertaV2SeqClassificationModel::new(cfg, weights, num_labels);
 
         let ids = vec![1_u32, 2, 3, 4, 5, 6, 7, 8];
         let logits = model.forward(&ids, None, None).unwrap();

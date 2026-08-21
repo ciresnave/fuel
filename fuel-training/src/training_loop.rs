@@ -164,8 +164,8 @@ impl TrainingLoop {
             global_step: self.global_step,
         };
 
-        if let Some(interval) = self.log_interval {
-            if self.global_step % interval == 0 {
+        if let Some(interval) = self.log_interval
+            && self.global_step.is_multiple_of(interval) {
                 match grad_norm {
                     Some(gn) => tracing::info!(
                         step = self.global_step,
@@ -182,7 +182,6 @@ impl TrainingLoop {
                     ),
                 }
             }
-        }
 
         Ok(outcome)
     }
@@ -205,15 +204,10 @@ fn harvest_grads(loss: &LazyTensor, vars: &[LazyVar]) -> HashMap<String, LazyTen
         let Some(node_id) = var.last_node_id() else {
             continue;
         };
-        let handle = fuel_graph::Tensor::from_existing(
-            loss.graph_tensor().graph().clone(),
-            node_id,
-        );
+        let handle =
+            fuel_graph::Tensor::from_existing(loss.graph_tensor().graph().clone(), node_id);
         if let Some(grad) = grad_map.get(&handle) {
-            grads.insert(
-                var.name().to_string(),
-                LazyTensor::from_graph_tensor(grad),
-            );
+            grads.insert(var.name().to_string(), LazyTensor::from_graph_tensor(grad));
         }
     }
     grads

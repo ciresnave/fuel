@@ -1,4 +1,4 @@
-﻿//! Memory-aware inference scheduler.
+//! Memory-aware inference scheduler.
 //!
 //! In a serving context, multiple requests compete for a fixed KV cache memory
 //! budget.  A naive approach admits every request immediately, which can cause
@@ -40,8 +40,8 @@
 //! assert!(sched.active_count() == 0);
 //! ```
 
-use std::collections::{BinaryHeap, HashMap};
 use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap};
 
 /// Priority level for an inference request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

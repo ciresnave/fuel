@@ -104,34 +104,37 @@ impl StarCoder2Model {
 
     /// Multimodal entry point. Skips token embedding; runs the decoder
     /// over pre-embedded inputs. Starcoder2 does NOT scale embeddings.
-    pub fn forward_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
         let h_norm = self.run_backbone_embeds(embeds, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
 
     /// Hidden-state variant of [`Self::forward_embeds`].
     pub fn forward_hidden_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
+        &self,
+        embeds: &LazyTensor,
+        start_pos: usize,
     ) -> Result<LazyTensor> {
         self.run_backbone_embeds(embeds, start_pos)
     }
 
     /// Build per-token embeddings without running the decoder.
-    pub fn embed_tokens_anchored(
-        &self, anchor: &LazyTensor, tokens: &[u32],
-    ) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
-            cfg.vocab_size, cfg.hidden_size, tokens,
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
         )
     }
 
     fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
-        Ok(self.weights.output.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
+        Ok(self
+            .weights
+            .output
+            .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
     fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
@@ -141,14 +144,16 @@ impl StarCoder2Model {
         assert!(seq > 0);
 
         let h = LazyTensor::embed_tokens(
-            weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
+            weights.token_embedding.clone(),
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
+            &Device::cpu(),
         )?;
         self.run_backbone_embeds(&h, start_pos)
     }
 
-    fn run_backbone_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
-    ) -> Result<LazyTensor> {
+    fn run_backbone_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -163,23 +168,26 @@ impl StarCoder2Model {
         if seq == 0 {
             return Err(crate::Error::Msg(
                 "StarCoder2Model::forward_embeds: seq must be > 0".into(),
-            ).bt());
+            )
+            .bt());
         }
         if cfg.num_attention_heads * cfg.head_dim != cfg.hidden_size {
             return Err(crate::Error::Msg(
                 "StarCoder2Config: num_attention_heads * head_dim must equal hidden_size".into(),
-            ).bt());
+            )
+            .bt());
         }
         if cfg.num_attention_heads % cfg.num_key_value_heads != 0 {
             return Err(crate::Error::Msg(
-                "StarCoder2Config: num_attention_heads must be a multiple of num_key_value_heads".into(),
-            ).bt());
+                "StarCoder2Config: num_attention_heads must be a multiple of num_key_value_heads"
+                    .into(),
+            )
+            .bt());
         }
         let mut h = embeds.clone();
 
-        let (rope_cos, rope_sin) = h.rope_tables_const(
-            cfg.rope_theta, start_pos, seq, cfg.head_dim,
-        );
+        let (rope_cos, rope_sin) =
+            h.rope_tables_const(cfg.rope_theta, start_pos, seq, cfg.head_dim);
 
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin)?;
@@ -205,11 +213,24 @@ impl StarCoder2Model {
         let seq = dims[1];
         let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
 
-        let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&layer.input_ln_gain), std::sync::Arc::clone(&layer.input_ln_bias), cfg.norm_epsilon)?;
+        let x_norm = x.layer_norm_affine(
+            std::sync::Arc::clone(&layer.input_ln_gain),
+            std::sync::Arc::clone(&layer.input_ln_bias),
+            cfg.norm_epsilon,
+        )?;
 
-        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size)?.add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
-        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
-        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
+        let q = layer
+            .attn_q
+            .apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size)?
+            .add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
+        let k = layer
+            .attn_k
+            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
+            .add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
+        let v = layer
+            .attn_v
+            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
+            .add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
 
         let _ = (batch, seq);
         let q = q.split_heads(cfg.num_attention_heads, cfg.head_dim)?;
@@ -233,15 +254,28 @@ impl StarCoder2Model {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        let attn_out = layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?.add_optional_trailing_bias(layer.attn_o_bias.as_ref())?;
+        let attn_out = layer
+            .attn_o
+            .apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?
+            .add_optional_trailing_bias(layer.attn_o_bias.as_ref())?;
 
         let h1 = x.add(&attn_out)?;
-        let h1_norm = h1.layer_norm_affine(std::sync::Arc::clone(&layer.post_attn_ln_gain), std::sync::Arc::clone(&layer.post_attn_ln_bias), cfg.norm_epsilon)?;
+        let h1_norm = h1.layer_norm_affine(
+            std::sync::Arc::clone(&layer.post_attn_ln_gain),
+            std::sync::Arc::clone(&layer.post_attn_ln_bias),
+            cfg.norm_epsilon,
+        )?;
 
         // MLP: c_proj(gelu(c_fc(x))). Standard GELU, not GeluPyTorchTanh.
-        let mid = layer.mlp_fc.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?.add_optional_trailing_bias(layer.mlp_fc_bias.as_ref())?;
+        let mid = layer
+            .mlp_fc
+            .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?
+            .add_optional_trailing_bias(layer.mlp_fc_bias.as_ref())?;
         let mid_act = mid.gelu_erf();
-        let ffn_out = layer.mlp_proj.apply_linear(&mid_act, cfg.intermediate_size, cfg.hidden_size)?.add_optional_trailing_bias(layer.mlp_proj_bias.as_ref())?;
+        let ffn_out = layer
+            .mlp_proj
+            .apply_linear(&mid_act, cfg.intermediate_size, cfg.hidden_size)?
+            .add_optional_trailing_bias(layer.mlp_proj_bias.as_ref())?;
 
         h1.add(&ffn_out)
     }
@@ -275,42 +309,107 @@ impl StarCoder2Weights {
         let q_dim = cfg.num_attention_heads * cfg.head_dim;
         let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
         let inter = cfg.intermediate_size;
-        let opt_bias = |st: &crate::safetensors::MmapedSafetensors, n: &str| -> Option<Arc<[f32]>> {
-            if cfg.use_bias {
-                load_tensor_as_f32(st, n).ok().map(Arc::from)
-            } else { None }
-        };
+        let opt_bias =
+            |st: &crate::safetensors::MmapedSafetensors, n: &str| -> Option<Arc<[f32]>> {
+                if cfg.use_bias {
+                    load_tensor_as_f32(st, n).ok().map(Arc::from)
+                } else {
+                    None
+                }
+            };
 
         let token_embedding = Arc::from(load_tensor_as_f32(st, "model.embed_tokens.weight")?);
         let mut layers: Vec<StarCoder2LayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
         for i in 0..cfg.num_hidden_layers {
             let p = format!("model.layers.{i}");
-            let input_ln_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.input_layernorm.weight"))?);
-            let input_ln_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.input_layernorm.bias"))?);
-            let post_attn_ln_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.post_attention_layernorm.weight"))?);
-            let post_attn_ln_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.post_attention_layernorm.bias"))?);
-            let attn_q = load_transposed_matrix_preserve_dtype(st, &format!("{p}.self_attn.q_proj.weight"), q_dim, h)?;
+            let input_ln_gain = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.input_layernorm.weight"),
+            )?);
+            let input_ln_bias = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.input_layernorm.bias"),
+            )?);
+            let post_attn_ln_gain = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.post_attention_layernorm.weight"),
+            )?);
+            let post_attn_ln_bias = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.post_attention_layernorm.bias"),
+            )?);
+            let attn_q = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.self_attn.q_proj.weight"),
+                q_dim,
+                h,
+            )?;
             let attn_q_bias = opt_bias(st, &format!("{p}.self_attn.q_proj.bias"));
-            let attn_k = load_transposed_matrix_preserve_dtype(st, &format!("{p}.self_attn.k_proj.weight"), kv_dim, h)?;
+            let attn_k = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.self_attn.k_proj.weight"),
+                kv_dim,
+                h,
+            )?;
             let attn_k_bias = opt_bias(st, &format!("{p}.self_attn.k_proj.bias"));
-            let attn_v = load_transposed_matrix_preserve_dtype(st, &format!("{p}.self_attn.v_proj.weight"), kv_dim, h)?;
+            let attn_v = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.self_attn.v_proj.weight"),
+                kv_dim,
+                h,
+            )?;
             let attn_v_bias = opt_bias(st, &format!("{p}.self_attn.v_proj.bias"));
-            let attn_o = load_transposed_matrix_preserve_dtype(st, &format!("{p}.self_attn.o_proj.weight"), h, q_dim)?;
+            let attn_o = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.self_attn.o_proj.weight"),
+                h,
+                q_dim,
+            )?;
             let attn_o_bias = opt_bias(st, &format!("{p}.self_attn.o_proj.bias"));
-            let mlp_fc = load_transposed_matrix_preserve_dtype(st, &format!("{p}.mlp.c_fc.weight"), inter, h)?;
+            let mlp_fc = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.mlp.c_fc.weight"),
+                inter,
+                h,
+            )?;
             let mlp_fc_bias = opt_bias(st, &format!("{p}.mlp.c_fc.bias"));
-            let mlp_proj = load_transposed_matrix_preserve_dtype(st, &format!("{p}.mlp.c_proj.weight"), h, inter)?;
+            let mlp_proj = load_transposed_matrix_preserve_dtype(
+                st,
+                &format!("{p}.mlp.c_proj.weight"),
+                h,
+                inter,
+            )?;
             let mlp_proj_bias = opt_bias(st, &format!("{p}.mlp.c_proj.bias"));
             layers.push(StarCoder2LayerWeights {
-                input_ln_gain, input_ln_bias, post_attn_ln_gain, post_attn_ln_bias,
-                attn_q, attn_q_bias, attn_k, attn_k_bias, attn_v, attn_v_bias, attn_o, attn_o_bias,
-                mlp_fc, mlp_fc_bias, mlp_proj, mlp_proj_bias,
+                input_ln_gain,
+                input_ln_bias,
+                post_attn_ln_gain,
+                post_attn_ln_bias,
+                attn_q,
+                attn_q_bias,
+                attn_k,
+                attn_k_bias,
+                attn_v,
+                attn_v_bias,
+                attn_o,
+                attn_o_bias,
+                mlp_fc,
+                mlp_fc_bias,
+                mlp_proj,
+                mlp_proj_bias,
             });
         }
         let final_ln_gain = Arc::from(load_tensor_as_f32(st, "model.norm.weight")?);
         let final_ln_bias = Arc::from(load_tensor_as_f32(st, "model.norm.bias")?);
-        let output = load_transposed_matrix_preserve_dtype(st, "lm_head.weight", cfg.vocab_size, h)?;
-        Ok(Self { token_embedding, layers, final_ln_gain, final_ln_bias, output })
+        let output =
+            load_transposed_matrix_preserve_dtype(st, "lm_head.weight", cfg.vocab_size, h)?;
+        Ok(Self {
+            token_embedding,
+            layers,
+            final_ln_gain,
+            final_ln_bias,
+            output,
+        })
     }
 }
 
@@ -332,39 +431,82 @@ mod tests {
         let kv = cfg.num_key_value_heads * cfg.head_dim;
         let mut next_box: Box<dyn FnMut() -> f32> = Box::new(next);
         let token_embedding = vec_of(cfg.vocab_size * h, &mut *next_box);
-        let layers: Vec<StarCoder2LayerWeights> = (0..cfg.num_hidden_layers).map(|_| StarCoder2LayerWeights {
-            input_ln_gain:     Arc::from(vec![1.0_f32; h]),
-            input_ln_bias:     Arc::from(vec![0.0_f32; h]),
-            post_attn_ln_gain: Arc::from(vec![1.0_f32; h]),
-            post_attn_ln_bias: Arc::from(vec![0.0_f32; h]),
-            attn_q:        WeightStorage::F32(vec_of(h * h, &mut *next_box)),
-            attn_q_bias:   if cfg.use_bias { Some(vec_of(h, &mut *next_box)) } else { None },
-            attn_k:        WeightStorage::F32(vec_of(h * kv, &mut *next_box)),
-            attn_k_bias:   if cfg.use_bias { Some(vec_of(kv, &mut *next_box)) } else { None },
-            attn_v:        WeightStorage::F32(vec_of(h * kv, &mut *next_box)),
-            attn_v_bias:   if cfg.use_bias { Some(vec_of(kv, &mut *next_box)) } else { None },
-            attn_o:        WeightStorage::F32(vec_of(h * h, &mut *next_box)),
-            attn_o_bias:   if cfg.use_bias { Some(vec_of(h, &mut *next_box)) } else { None },
-            mlp_fc:        WeightStorage::F32(vec_of(h * i, &mut *next_box)),
-            mlp_fc_bias:   if cfg.use_bias { Some(vec_of(i, &mut *next_box)) } else { None },
-            mlp_proj:      WeightStorage::F32(vec_of(i * h, &mut *next_box)),
-            mlp_proj_bias: if cfg.use_bias { Some(vec_of(h, &mut *next_box)) } else { None },
-        }).collect();
+        let layers: Vec<StarCoder2LayerWeights> = (0..cfg.num_hidden_layers)
+            .map(|_| StarCoder2LayerWeights {
+                input_ln_gain: Arc::from(vec![1.0_f32; h]),
+                input_ln_bias: Arc::from(vec![0.0_f32; h]),
+                post_attn_ln_gain: Arc::from(vec![1.0_f32; h]),
+                post_attn_ln_bias: Arc::from(vec![0.0_f32; h]),
+                attn_q: WeightStorage::F32(vec_of(h * h, &mut *next_box)),
+                attn_q_bias: if cfg.use_bias {
+                    Some(vec_of(h, &mut *next_box))
+                } else {
+                    None
+                },
+                attn_k: WeightStorage::F32(vec_of(h * kv, &mut *next_box)),
+                attn_k_bias: if cfg.use_bias {
+                    Some(vec_of(kv, &mut *next_box))
+                } else {
+                    None
+                },
+                attn_v: WeightStorage::F32(vec_of(h * kv, &mut *next_box)),
+                attn_v_bias: if cfg.use_bias {
+                    Some(vec_of(kv, &mut *next_box))
+                } else {
+                    None
+                },
+                attn_o: WeightStorage::F32(vec_of(h * h, &mut *next_box)),
+                attn_o_bias: if cfg.use_bias {
+                    Some(vec_of(h, &mut *next_box))
+                } else {
+                    None
+                },
+                mlp_fc: WeightStorage::F32(vec_of(h * i, &mut *next_box)),
+                mlp_fc_bias: if cfg.use_bias {
+                    Some(vec_of(i, &mut *next_box))
+                } else {
+                    None
+                },
+                mlp_proj: WeightStorage::F32(vec_of(i * h, &mut *next_box)),
+                mlp_proj_bias: if cfg.use_bias {
+                    Some(vec_of(h, &mut *next_box))
+                } else {
+                    None
+                },
+            })
+            .collect();
         let final_ln_gain = Arc::from(vec![1.0_f32; h]);
         let final_ln_bias = Arc::from(vec![0.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *next_box));
-        StarCoder2Weights { token_embedding, layers, final_ln_gain, final_ln_bias, output }
+        StarCoder2Weights {
+            token_embedding,
+            layers,
+            final_ln_gain,
+            final_ln_bias,
+            output,
+        }
     }
 
     #[test]
     fn forward_shape_and_finite_2_layer() {
         let cfg = StarCoder2Config {
-            vocab_size: 32, hidden_size: 16, intermediate_size: 32,
-            num_hidden_layers: 2, num_attention_heads: 4, num_key_value_heads: 2,
-            head_dim: 4, max_position_embeddings: 64, norm_epsilon: 1e-5,
-            rope_theta: 10_000.0, use_bias: true, sliding_window: Some(4),
+            vocab_size: 32,
+            hidden_size: 16,
+            intermediate_size: 32,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            num_key_value_heads: 2,
+            head_dim: 4,
+            max_position_embeddings: 64,
+            norm_epsilon: 1e-5,
+            rope_theta: 10_000.0,
+            use_bias: true,
+            sliding_window: Some(4),
         };
-        let model = StarCoder2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = StarCoder2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4, 5];
         let logits = model.forward(&tokens, 0).unwrap();
         assert_eq!(logits.shape().dims(), &[1, tokens.len(), cfg.vocab_size]);
@@ -378,12 +520,23 @@ mod tests {
     #[test]
     fn forward_hidden_shape_and_finite() {
         let cfg = StarCoder2Config {
-            vocab_size: 32, hidden_size: 16, intermediate_size: 32,
-            num_hidden_layers: 2, num_attention_heads: 4, num_key_value_heads: 2,
-            head_dim: 4, max_position_embeddings: 64, norm_epsilon: 1e-5,
-            rope_theta: 10_000.0, use_bias: true, sliding_window: None,
+            vocab_size: 32,
+            hidden_size: 16,
+            intermediate_size: 32,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            num_key_value_heads: 2,
+            head_dim: 4,
+            max_position_embeddings: 64,
+            norm_epsilon: 1e-5,
+            rope_theta: 10_000.0,
+            use_bias: true,
+            sliding_window: None,
         };
-        let model = StarCoder2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = StarCoder2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
         let hidden = model.forward_hidden(&tokens, 0).unwrap();
         assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
@@ -394,37 +547,55 @@ mod tests {
 
     fn forward_embeds_test_cfg() -> StarCoder2Config {
         StarCoder2Config {
-            vocab_size: 32, hidden_size: 16, intermediate_size: 32,
-            num_hidden_layers: 2, num_attention_heads: 4, num_key_value_heads: 2,
-            head_dim: 4, max_position_embeddings: 64, norm_epsilon: 1e-5,
-            rope_theta: 10_000.0, use_bias: true, sliding_window: None,
+            vocab_size: 32,
+            hidden_size: 16,
+            intermediate_size: 32,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            num_key_value_heads: 2,
+            head_dim: 4,
+            max_position_embeddings: 64,
+            norm_epsilon: 1e-5,
+            rope_theta: 10_000.0,
+            use_bias: true,
+            sliding_window: None,
         }
     }
 
     #[test]
     fn forward_embeds_matches_forward_after_token_lookup() {
         let cfg = forward_embeds_test_cfg();
-        let model = StarCoder2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = StarCoder2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
-        let max_diff = logits_ref.iter().zip(logits_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "StarCoder2 forward vs forward_embeds must agree (max diff {max_diff})");
+        let max_diff = logits_ref
+            .iter()
+            .zip(logits_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "StarCoder2 forward vs forward_embeds must agree (max diff {max_diff})"
+        );
     }
 
     #[test]
     fn forward_embeds_rejects_bad_shape() {
         let cfg = forward_embeds_test_cfg();
-        let model = StarCoder2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = StarCoder2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let bad = LazyTensor::from_f32(
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
-            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]), &Device::cpu(),
+            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
+            &Device::cpu(),
         );
         assert!(model.forward_embeds(&bad, 0).is_err());
     }
@@ -432,17 +603,26 @@ mod tests {
     #[test]
     fn forward_hidden_embeds_matches_forward_hidden() {
         let cfg = forward_embeds_test_cfg();
-        let model = StarCoder2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = StarCoder2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
-        let h_via_embeds = model.forward_hidden_embeds(&embeds, 0).unwrap().realize_f32();
-        let max_diff = h_ref.iter().zip(h_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "StarCoder2 forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})");
+        let h_via_embeds = model
+            .forward_hidden_embeds(&embeds, 0)
+            .unwrap()
+            .realize_f32();
+        let max_diff = h_ref
+            .iter()
+            .zip(h_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "StarCoder2 forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})"
+        );
     }
 }

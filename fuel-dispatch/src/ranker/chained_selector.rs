@@ -29,8 +29,8 @@
 //!    - [`FitStatus::Comfortable`] / [`FitStatus::Unknown`] →
 //!      tier 0. Unknown is honest "no signal", NOT pressure — it
 //!      ties with Comfortable (post-remediation semantics).
-//!    No runtime lookup configured, or no handle for the pair, also
-//!    yields Unknown.
+//!      No runtime lookup configured, or no handle for the pair, also
+//!      yields Unknown.
 //! 2. **Load tier (the live-load re-pick — Step E Phase C / C2).** A
 //!    coarse bucket of the candidate device's live in-flight count over
 //!    its slot capacity ([`super::device_load::load_tier`]), read off the
@@ -85,9 +85,9 @@ use std::sync::Arc;
 use fuel_ir::backend::FitStatus;
 
 use super::{
-    composite_ns, default_backend_rates, default_estimate_output_bytes, AlternativeSet,
-    BackendRuntimeLookup, Candidate, DecisionContext, JudgeOracle, OutputBytesEstimator,
-    RuntimeSelector,
+    AlternativeSet, BackendRuntimeLookup, Candidate, DecisionContext, JudgeOracle,
+    OutputBytesEstimator, RuntimeSelector, composite_ns, default_backend_rates,
+    default_estimate_output_bytes,
 };
 
 /// Production runtime selector: VRAM-pressure guard + Judge-measured
@@ -181,16 +181,16 @@ impl ChainedSelector {
     /// the selector's scale consistent with the plan rank.
     fn latency_ns(&self, c: &Candidate, ctx: Option<&DecisionContext>) -> u64 {
         let kernel_ns = (|| {
-            if let (Some(judge), Some(ctx)) = (self.judge.as_ref(), ctx) {
-                if let Some(measured) = judge.measured_latency_ns(
+            if let (Some(judge), Some(ctx)) = (self.judge.as_ref(), ctx)
+                && let Some(measured) = judge.measured_latency_ns(
                     ctx.op,
                     ctx.principal_dtype,
                     ctx.size_class,
                     c.backend,
                     c.kernel_source,
-                ) {
-                    return measured;
-                }
+                )
+            {
+                return measured;
             }
             let (cr, bw) = default_backend_rates(c.backend);
             composite_ns(&c.static_cost, cr, bw)
@@ -202,10 +202,7 @@ impl ChainedSelector {
 impl std::fmt::Debug for ChainedSelector {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ChainedSelector")
-            .field(
-                "judge",
-                &self.judge.as_ref().map(|_| "<dyn JudgeOracle>"),
-            )
+            .field("judge", &self.judge.as_ref().map(|_| "<dyn JudgeOracle>"))
             .field(
                 "backend_runtime_lookup",
                 &self.backend_runtime_lookup.as_ref().map(|_| "<closure>"),
@@ -238,7 +235,7 @@ impl RuntimeSelector for ChainedSelector {
                 FitStatus::Tight => 1u8,
             };
             let key = (pressure_tier, load_tier, self.latency_ns(c, ctx), i);
-            if best.map_or(true, |b| key < b) {
+            if best.is_none_or(|b| key < b) {
                 best = Some(key);
             }
         }
@@ -278,11 +275,7 @@ mod tests {
 
     /// `composite_ns` of this candidate equals `cost_ns` (flops
     /// dominate; bytes_moved = cost so memory_ns = cost/4 < cost).
-    fn make_candidate(
-        backend: BackendId,
-        device: DeviceLocation,
-        cost_ns: u64,
-    ) -> Candidate {
+    fn make_candidate(backend: BackendId, device: DeviceLocation, cost_ns: u64) -> Candidate {
         Candidate {
             kernel: noop_kernel,
             caps: KernelCaps::empty(),
@@ -344,14 +337,17 @@ mod tests {
 
     /// Lookup with per-backend (available, total); backends not in
     /// the list resolve to `None` (= Unknown).
-    fn lookup_for(
-        entries: Vec<(BackendId, Option<u64>, Option<u64>)>,
-    ) -> BackendRuntimeLookup {
+    fn lookup_for(entries: Vec<(BackendId, Option<u64>, Option<u64>)>) -> BackendRuntimeLookup {
         Arc::new(move |b, _d| {
-            entries.iter().find(|(eb, _, _)| *eb == b).map(|&(_, a, t)| {
-                Box::new(MockRuntime { available: a, total: t })
-                    as Box<dyn BackendRuntime + Send + Sync>
-            })
+            entries
+                .iter()
+                .find(|(eb, _, _)| *eb == b)
+                .map(|&(_, a, t)| {
+                    Box::new(MockRuntime {
+                        available: a,
+                        total: t,
+                    }) as Box<dyn BackendRuntime + Send + Sync>
+                })
         })
     }
 
@@ -395,6 +391,7 @@ mod tests {
 
     /// Per-backend `(available, total, pending, capacity)` lookup handing
     /// out the combined VRAM+load handle; absent backends ⇒ `None`.
+    #[allow(clippy::type_complexity)]
     fn load_lookup_for(
         entries: Vec<(BackendId, Option<u64>, Option<u64>, Option<u32>, u32)>,
     ) -> BackendRuntimeLookup {
@@ -623,7 +620,14 @@ mod tests {
         // CPU measured at 50ns < CUDA's unmeasured composite 100ns
         // → CPU wins.
         let mut judge = HashMapJudge::new();
-        judge.insert(c.op, c.principal_dtype, c.size_class, BackendId::Cpu, "", 50);
+        judge.insert(
+            c.op,
+            c.principal_dtype,
+            c.size_class,
+            BackendId::Cpu,
+            "",
+            50,
+        );
         let chained = ChainedSelector::with_default_estimator(
             Some(Arc::new(judge) as Arc<dyn JudgeOracle>),
             None,
@@ -637,7 +641,14 @@ mod tests {
 
         // CPU measured at 5000ns > CUDA's 100ns → CUDA stays.
         let mut judge = HashMapJudge::new();
-        judge.insert(c.op, c.principal_dtype, c.size_class, BackendId::Cpu, "", 5_000);
+        judge.insert(
+            c.op,
+            c.principal_dtype,
+            c.size_class,
+            BackendId::Cpu,
+            "",
+            5_000,
+        );
         let chained = ChainedSelector::with_default_estimator(
             Some(Arc::new(judge) as Arc<dyn JudgeOracle>),
             None,
@@ -658,7 +669,14 @@ mod tests {
         let c = ctx();
         let mut judge = HashMapJudge::new();
         // CUDA measured blazing fast...
-        judge.insert(c.op, c.principal_dtype, c.size_class, BackendId::Cuda, "", 1);
+        judge.insert(
+            c.op,
+            c.principal_dtype,
+            c.size_class,
+            BackendId::Cuda,
+            "",
+            1,
+        );
         // ...but CUDA can't fit the output.
         let lookup = lookup_for(vec![
             (BackendId::Cuda, Some(50), Some(10_000)),
@@ -704,9 +722,30 @@ mod tests {
         // Judge: CUDA fastest overall (doesn't matter — Tight),
         // Vulkan beats CPU within tier 0.
         let mut judge = HashMapJudge::new();
-        judge.insert(c.op, c.principal_dtype, c.size_class, BackendId::Cuda, "", 1);
-        judge.insert(c.op, c.principal_dtype, c.size_class, BackendId::Cpu, "", 90);
-        judge.insert(c.op, c.principal_dtype, c.size_class, BackendId::Vulkan, "", 40);
+        judge.insert(
+            c.op,
+            c.principal_dtype,
+            c.size_class,
+            BackendId::Cuda,
+            "",
+            1,
+        );
+        judge.insert(
+            c.op,
+            c.principal_dtype,
+            c.size_class,
+            BackendId::Cpu,
+            "",
+            90,
+        );
+        judge.insert(
+            c.op,
+            c.principal_dtype,
+            c.size_class,
+            BackendId::Vulkan,
+            "",
+            40,
+        );
 
         let chained = ChainedSelector::with_default_estimator(
             Some(Arc::new(judge) as Arc<dyn JudgeOracle>),
@@ -735,8 +774,22 @@ mod tests {
         set.set_context(c);
 
         let mut judge = HashMapJudge::new();
-        judge.insert(c.op, c.principal_dtype, c.size_class, BackendId::Cpu, "aocl", 9_000);
-        judge.insert(c.op, c.principal_dtype, c.size_class, BackendId::Cpu, "mkl", 1_000);
+        judge.insert(
+            c.op,
+            c.principal_dtype,
+            c.size_class,
+            BackendId::Cpu,
+            "aocl",
+            9_000,
+        );
+        judge.insert(
+            c.op,
+            c.principal_dtype,
+            c.size_class,
+            BackendId::Cpu,
+            "mkl",
+            1_000,
+        );
         let chained = ChainedSelector::with_default_estimator(
             Some(Arc::new(judge) as Arc<dyn JudgeOracle>),
             None,

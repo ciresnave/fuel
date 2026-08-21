@@ -69,13 +69,16 @@ fn build_strided_args(
     if rank < 2 {
         return Err(Error::Msg(format!(
             "{op_label}: rank {rank} < 2 (triangular requires at least [rows, cols])",
-        )).bt());
+        ))
+        .bt());
     }
     let mut shape_i32: Vec<i32> = Vec::with_capacity(rank);
     for (i, &d) in dims.iter().enumerate() {
         shape_i32.push(i32::try_from(d).map_err(|_| {
             Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
-                op: op_label, dim_index: i, dim_value: d,
+                op: op_label,
+                dim_index: i,
+                dim_value: d,
             })
         })?);
     }
@@ -113,7 +116,10 @@ fn triangular_run(
         return CudaStorageBytes::alloc(&device, 0);
     }
     let diag_i32 = i32::try_from(diagonal).map_err(|_| {
-        Error::Msg(format!("{op_label}: diagonal {diagonal} does not fit in i32")).bt()
+        Error::Msg(format!(
+            "{op_label}: diagonal {diagonal} does not fit in i32"
+        ))
+        .bt()
     })?;
     let out = device.alloc_zeros::<u8>(out_bytes)?;
     let stream = device.stream().as_raw() as *mut std::ffi::c_void;
@@ -133,36 +139,37 @@ fn triangular_run(
         // SAFETY: shape/stride buffers owned through the call.
         unsafe {
             strided(
-                in_ptr, out_ptr,
-                shape_i32.as_ptr(), rank,
-                stride_x.as_ptr(), stride_y.as_ptr(),
-                diag_i32, stream,
+                in_ptr,
+                out_ptr,
+                shape_i32.as_ptr(),
+                rank,
+                stride_x.as_ptr(),
+                stride_y.as_ptr(),
+                diag_i32,
+                stream,
             )
         }
     } else {
         let i32_or = |dim_index: usize, dim_value: usize| -> Result<i32> {
             i32::try_from(dim_value).map_err(|_| {
                 Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
-                    op: op_label, dim_index, dim_value,
+                    op: op_label,
+                    dim_index,
+                    dim_value,
                 })
             })
         };
-        let shape_i32: [i32; 3] = [
-            i32_or(0, batch_count)?,
-            i32_or(1, rows)?,
-            i32_or(2, cols)?,
-        ];
+        let shape_i32: [i32; 3] = [i32_or(0, batch_count)?, i32_or(1, rows)?, i32_or(2, cols)?];
         // SAFETY: shape array lives for the FFI call.
-        unsafe {
-            contig(
-                in_ptr, out_ptr,
-                shape_i32.as_ptr(), 3, diag_i32, stream,
-            )
-        }
+        unsafe { contig(in_ptr, out_ptr, shape_i32.as_ptr(), 3, diag_i32, stream) }
     };
     let _ = Shape::from_dims(&[batch_count, rows, cols]); // suppress unused warnings if any
     check(status, op_label)?;
-    Ok(CudaStorageBytes::from_parts(Arc::new(out), device, out_bytes))
+    Ok(CudaStorageBytes::from_parts(
+        Arc::new(out),
+        device,
+        out_bytes,
+    ))
 }
 
 macro_rules! triangular_kernel {
@@ -177,7 +184,12 @@ macro_rules! triangular_kernel {
             diagonal: i64,
         ) -> Result<CudaStorageBytes> {
             triangular_run(
-                input, src_layout, batch_count, rows, cols, diagonal,
+                input,
+                src_layout,
+                batch_count,
+                rows,
+                cols,
+                diagonal,
                 sys::$contig_sym,
                 sys::$strided_sym,
                 $op_label,
@@ -193,43 +205,50 @@ triangular_kernel!(
     triu_f32,
     baracuda_kernels_triu_f32_run,
     baracuda_kernels_triu_f32_strided_run,
-    4, "triu_f32"
+    4,
+    "triu_f32"
 );
 triangular_kernel!(
     triu_f64,
     baracuda_kernels_triu_f64_run,
     baracuda_kernels_triu_f64_strided_run,
-    8, "triu_f64"
+    8,
+    "triu_f64"
 );
 triangular_kernel!(
     triu_f16,
     baracuda_kernels_triu_f16_run,
     baracuda_kernels_triu_f16_strided_run,
-    2, "triu_f16"
+    2,
+    "triu_f16"
 );
 triangular_kernel!(
     triu_bf16,
     baracuda_kernels_triu_bf16_run,
     baracuda_kernels_triu_bf16_strided_run,
-    2, "triu_bf16"
+    2,
+    "triu_bf16"
 );
 triangular_kernel!(
     triu_i32,
     baracuda_kernels_triu_i32_run,
     baracuda_kernels_triu_i32_strided_run,
-    4, "triu_i32"
+    4,
+    "triu_i32"
 );
 triangular_kernel!(
     triu_i64,
     baracuda_kernels_triu_i64_run,
     baracuda_kernels_triu_i64_strided_run,
-    8, "triu_i64"
+    8,
+    "triu_i64"
 );
 triangular_kernel!(
     triu_bool,
     baracuda_kernels_triu_bool_run,
     baracuda_kernels_triu_bool_strided_run,
-    1, "triu_bool"
+    1,
+    "triu_bool"
 );
 
 // ----- Tril --------------------------------------------------------------
@@ -238,41 +257,48 @@ triangular_kernel!(
     tril_f32,
     baracuda_kernels_tril_f32_run,
     baracuda_kernels_tril_f32_strided_run,
-    4, "tril_f32"
+    4,
+    "tril_f32"
 );
 triangular_kernel!(
     tril_f64,
     baracuda_kernels_tril_f64_run,
     baracuda_kernels_tril_f64_strided_run,
-    8, "tril_f64"
+    8,
+    "tril_f64"
 );
 triangular_kernel!(
     tril_f16,
     baracuda_kernels_tril_f16_run,
     baracuda_kernels_tril_f16_strided_run,
-    2, "tril_f16"
+    2,
+    "tril_f16"
 );
 triangular_kernel!(
     tril_bf16,
     baracuda_kernels_tril_bf16_run,
     baracuda_kernels_tril_bf16_strided_run,
-    2, "tril_bf16"
+    2,
+    "tril_bf16"
 );
 triangular_kernel!(
     tril_i32,
     baracuda_kernels_tril_i32_run,
     baracuda_kernels_tril_i32_strided_run,
-    4, "tril_i32"
+    4,
+    "tril_i32"
 );
 triangular_kernel!(
     tril_i64,
     baracuda_kernels_tril_i64_run,
     baracuda_kernels_tril_i64_strided_run,
-    8, "tril_i64"
+    8,
+    "tril_i64"
 );
 triangular_kernel!(
     tril_bool,
     baracuda_kernels_tril_bool_run,
     baracuda_kernels_tril_bool_strided_run,
-    1, "tril_bool"
+    1,
+    "tril_bool"
 );

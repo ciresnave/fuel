@@ -26,7 +26,10 @@ impl CurrentCpu {
         // block documents it once — wrapping each `vgetq_lane_f32` individually
         // would repeat the same note four times inside one expression.
         unsafe {
-            vgetq_lane_f32(x, 0) + vgetq_lane_f32(x, 1) + vgetq_lane_f32(x, 2) + vgetq_lane_f32(x, 3)
+            vgetq_lane_f32(x, 0)
+                + vgetq_lane_f32(x, 1)
+                + vgetq_lane_f32(x, 2)
+                + vgetq_lane_f32(x, 3)
         }
     }
 }

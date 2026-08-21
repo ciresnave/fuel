@@ -1,11 +1,11 @@
-﻿use std::borrow::Cow;
+use std::borrow::Cow;
 
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
 use crate::ops::{Im2Col, MatMul, copy_strided_src_};
 use crate::utils::{Map1, Map2};
-use fuel_ir::{Layout, Result, WithDType, conv::ParamsConv2D, shape::stride_dims4};
 use fuel_cpu_kernels::VecOps;
+use fuel_ir::{Layout, Result, WithDType, conv::ParamsConv2D, shape::stride_dims4};
 
 pub struct Conv2D<'a>(pub &'a ParamsConv2D);
 

@@ -91,11 +91,14 @@ fn parse_auto_pad(node: &onnx::NodeProto) -> Result<AutoPad> {
     }
 }
 
-fn get(values: &HashMap<String, LazyTensor>, node: &onnx::NodeProto, name: &str) -> Result<LazyTensor> {
-    values
-        .get(name)
-        .cloned()
-        .ok_or_else(|| Error::Msg(format!("missing input '{}' for node '{}'", name, node.name)).bt())
+fn get(
+    values: &HashMap<String, LazyTensor>,
+    node: &onnx::NodeProto,
+    name: &str,
+) -> Result<LazyTensor> {
+    values.get(name).cloned().ok_or_else(|| {
+        Error::Msg(format!("missing input '{}' for node '{}'", name, node.name)).bt()
+    })
 }
 
 fn check_dilations(node: &onnx::NodeProto) -> Result<()> {
@@ -239,13 +242,7 @@ fn conv_op(node: &onnx::NodeProto, values: &mut HashMap<String, LazyTensor>) -> 
                     .bt());
                 }
             };
-            let pads = resolve_pads(
-                node,
-                auto_pad,
-                &[x_dims[2]],
-                &[w_dims[2]],
-                &[stride],
-            )?;
+            let pads = resolve_pads(node, auto_pad, &[x_dims[2]], &[w_dims[2]], &[stride])?;
             let (x_padded, sym) = apply_asymmetric_pads(x, &pads, 2)?;
             let y = x_padded.conv1d(&w, bias.as_ref(), stride, sym[0], groups)?;
             set_output(node, 0, y, values)?;
@@ -281,13 +278,7 @@ fn conv_op(node: &onnx::NodeProto, values: &mut HashMap<String, LazyTensor>) -> 
                 &[strides.0, strides.1],
             )?;
             let (x_padded, sym) = apply_asymmetric_pads(x, &pads, 2)?;
-            let y = x_padded.conv2d(
-                &w,
-                bias.as_ref(),
-                strides,
-                (sym[0], sym[1]),
-                groups,
-            )?;
+            let y = x_padded.conv2d(&w, bias.as_ref(), strides, (sym[0], sym[1]), groups)?;
             set_output(node, 0, y, values)?;
             Ok(())
         }
@@ -342,13 +333,8 @@ fn conv_transpose_op(
             // ConvTranspose auto_pad: SAME_* sizes the *output* to
             // `input * stride`. For NOTSET / VALID, pads come from the
             // explicit attribute (default 0).
-            let pads = resolve_conv_transpose_pads(
-                node,
-                auto_pad,
-                &[x_dims[2]],
-                &[w_dims[2]],
-                &[stride],
-            )?;
+            let pads =
+                resolve_conv_transpose_pads(node, auto_pad, &[x_dims[2]], &[w_dims[2]], &[stride])?;
             let p = symmetric_or_err(node, &pads)?;
             let mut y = x.conv_transpose1d(&w, stride, p[0], output_padding, 1, groups)?;
             if let Some(b) = bias {
@@ -397,14 +383,8 @@ fn conv_transpose_op(
                 &[strides.0, strides.1],
             )?;
             let p = symmetric_or_err(node, &pads)?;
-            let mut y = x.conv_transpose2d(
-                &w,
-                strides,
-                (p[0], p[1]),
-                output_padding,
-                (1, 1),
-                groups,
-            )?;
+            let mut y =
+                x.conv_transpose2d(&w, strides, (p[0], p[1]), output_padding, (1, 1), groups)?;
             if let Some(b) = bias {
                 y = add_channel_bias(&y, &b, node)?;
             }
@@ -545,11 +525,7 @@ fn pad_op(
             .bt());
         }
         other => {
-            return Err(Error::Msg(format!(
-                "Pad '{}': unknown mode '{}'",
-                node.name, other
-            ))
-            .bt());
+            return Err(Error::Msg(format!("Pad '{}': unknown mode '{}'", node.name, other)).bt());
         }
     }
     let data = get(values, node, &node.input[0])?;
@@ -646,10 +622,7 @@ fn scalar_to_f64(t: &LazyTensor) -> Result<f64> {
     }
 }
 
-fn max_pool_op(
-    node: &onnx::NodeProto,
-    values: &mut HashMap<String, LazyTensor>,
-) -> Result<()> {
+fn max_pool_op(node: &onnx::NodeProto, values: &mut HashMap<String, LazyTensor>) -> Result<()> {
     let (kernel, strides, padding) = parse_pool_attrs(node)?;
     let x = get(values, node, &node.input[0])?;
     if x.rank() != 4 {
@@ -672,10 +645,7 @@ fn max_pool_op(
     Ok(())
 }
 
-fn avg_pool_op(
-    node: &onnx::NodeProto,
-    values: &mut HashMap<String, LazyTensor>,
-) -> Result<()> {
+fn avg_pool_op(node: &onnx::NodeProto, values: &mut HashMap<String, LazyTensor>) -> Result<()> {
     let (kernel, strides, padding) = parse_pool_attrs(node)?;
     if get_attr_int_opt(node, "count_include_pad").unwrap_or(0) != 0 && padding != (0, 0) {
         return Err(Error::Msg(format!(
@@ -1016,7 +986,10 @@ mod tests {
         let err = run_graph(graph, inputs).unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("reflect"), "msg should mention mode: {msg}");
-        assert!(msg.contains("sub-port"), "msg should point at sub-port: {msg}");
+        assert!(
+            msg.contains("sub-port"),
+            "msg should point at sub-port: {msg}"
+        );
     }
 
     #[test]
@@ -1046,7 +1019,10 @@ mod tests {
         // Bottom-right [10,11,14,15] → max 15
         let expected = [5.0_f32, 7.0, 13.0, 15.0];
         for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
-            assert!(approx_eq(*g, *e, 1e-5), "mismatch at {i}: got {g} expected {e} (got={got:?})");
+            assert!(
+                approx_eq(*g, *e, 1e-5),
+                "mismatch at {i}: got {g} expected {e} (got={got:?})"
+            );
         }
     }
 

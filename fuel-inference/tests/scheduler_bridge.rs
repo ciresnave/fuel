@@ -10,18 +10,16 @@
 //! Session 6 (2026-06-11): fuel-graph-router retired; the rule is now
 //! self-contained (plain `Placement` map, no Router / SchedulerRule).
 
-use fuel_ir::{DeviceLocation, Shape};
 use fuel_graph::Tensor;
 use fuel_inference::scheduler::{MemoryScheduler, Priority, RequestInfo};
-use fuel_inference::scheduler_bridge::{
-    MemoryPressureRule, MemoryPressureSnapshot, Placement,
-};
+use fuel_inference::scheduler_bridge::{MemoryPressureRule, MemoryPressureSnapshot, Placement};
+use fuel_ir::{DeviceLocation, Shape};
 
 /// Phase 7.5 G2: tests need a real device for slot-populating
 /// constructors. Singleton CpuBackendDevice via OnceLock.
 fn cpu_dev() -> &'static std::sync::Arc<dyn fuel_backend_contract::DynBackendDevice> {
-    static D: std::sync::OnceLock<std::sync::Arc<dyn fuel_backend_contract::DynBackendDevice>>
-        = std::sync::OnceLock::new();
+    static D: std::sync::OnceLock<std::sync::Arc<dyn fuel_backend_contract::DynBackendDevice>> =
+        std::sync::OnceLock::new();
     D.get_or_init(|| std::sync::Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
 }
 
@@ -31,12 +29,17 @@ fn rule_no_op_when_not_under_pressure() {
     let b = a.const_f32_like(vec![2.0_f32; 4], Shape::from_dims(&[4]));
     let c = a.add(&b);
 
-    let snapshot = MemoryPressureSnapshot { under_pressure: false, usage_fraction: 0.1 };
+    let snapshot = MemoryPressureSnapshot {
+        under_pressure: false,
+        usage_fraction: 0.1,
+    };
     let rule = MemoryPressureRule::new(snapshot);
     let mut placement = Placement::new();
     rule.apply(c.graph(), &[c.id()], &mut placement);
-    assert!(placement.is_empty(),
-        "rule must not touch placement when under_pressure=false");
+    assert!(
+        placement.is_empty(),
+        "rule must not touch placement when under_pressure=false"
+    );
 }
 
 #[test]
@@ -45,17 +48,26 @@ fn rule_inherits_first_input_placement_under_pressure() {
     let b = a.relu();
     let c = b.relu();
 
-    let snapshot = MemoryPressureSnapshot { under_pressure: true, usage_fraction: 0.95 };
+    let snapshot = MemoryPressureSnapshot {
+        under_pressure: true,
+        usage_fraction: 0.95,
+    };
     let rule = MemoryPressureRule::new(snapshot);
     let mut placement = Placement::new();
     placement.insert(a.id(), DeviceLocation::Cpu);
 
     rule.apply(c.graph(), &[c.id()], &mut placement);
     assert_eq!(placement.get(&a.id()), Some(&DeviceLocation::Cpu));
-    assert_eq!(placement.get(&b.id()), Some(&DeviceLocation::Cpu),
-        "b should inherit a's placement under pressure");
-    assert_eq!(placement.get(&c.id()), Some(&DeviceLocation::Cpu),
-        "c should inherit b's (= a's) placement under pressure");
+    assert_eq!(
+        placement.get(&b.id()),
+        Some(&DeviceLocation::Cpu),
+        "b should inherit a's placement under pressure"
+    );
+    assert_eq!(
+        placement.get(&c.id()),
+        Some(&DeviceLocation::Cpu),
+        "c should inherit b's (= a's) placement under pressure"
+    );
 }
 
 #[test]

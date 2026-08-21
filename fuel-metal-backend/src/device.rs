@@ -1,13 +1,13 @@
-﻿use fuel_ir::{DType, Result};
+use fuel_ir::{DType, Result};
 
 #[cfg(feature = "ug")]
 use fuel_metal_kernels::metal::ComputePipeline;
 use fuel_metal_kernels::{
+    Kernels,
     metal::{
         BlitCommandEncoder, Buffer, BufferMap, Commands, ComputeCommandEncoder, Device,
         MTLResourceOptions,
     },
-    Kernels,
 };
 use objc2_foundation::NSURL;
 use objc2_metal::{MTLCaptureDescriptor, MTLCaptureDestination, MTLCaptureManager};

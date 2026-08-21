@@ -135,7 +135,8 @@ impl XlmrModel {
         assert!(
             seq + cfg.pad_token_id as usize + 1 <= cfg.max_position_embeddings,
             "seq + padding_idx + 1 ({}) exceeds max_position_embeddings ({})",
-            seq + cfg.pad_token_id as usize + 1, cfg.max_position_embeddings,
+            seq + cfg.pad_token_id as usize + 1,
+            cfg.max_position_embeddings,
         );
 
         // ---- Embeddings: word + position + token_type, sum, LayerNorm ---
@@ -144,10 +145,7 @@ impl XlmrModel {
             Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
             &Device::cpu(),
         );
-        let token_ids = word_emb_t.const_u32_like(
-            tokens.to_vec(),
-            Shape::from_dims(&[seq]),
-        );
+        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         let word_embeds = word_emb_t
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
@@ -159,10 +157,7 @@ impl XlmrModel {
             Arc::clone(&weights.position_embedding),
             Shape::from_dims(&[cfg.max_position_embeddings, cfg.hidden_size]),
         );
-        let pos_ids = word_emb_t.const_u32_like(
-            position_ids_vec,
-            Shape::from_dims(&[seq]),
-        );
+        let pos_ids = word_emb_t.const_u32_like(position_ids_vec, Shape::from_dims(&[seq]));
         let pos_embeds = pos_full
             .index_select(0_usize, &pos_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
@@ -172,16 +167,17 @@ impl XlmrModel {
             Arc::clone(&weights.token_type_embedding),
             Shape::from_dims(&[cfg.type_vocab_size, cfg.hidden_size]),
         );
-        let tt_ids = word_emb_t.const_u32_like(
-            vec![0_u32; seq],
-            Shape::from_dims(&[seq]),
-        );
+        let tt_ids = word_emb_t.const_u32_like(vec![0_u32; seq], Shape::from_dims(&[seq]));
         let tt_embeds = tt_full
             .index_select(0_usize, &tt_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
 
         let sum = word_embeds.add(&pos_embeds)?.add(&tt_embeds)?;
-        let mut h = sum.layer_norm_affine(std::sync::Arc::clone(&weights.embed_ln_gain), std::sync::Arc::clone(&weights.embed_ln_bias), cfg.layer_norm_eps)?;
+        let mut h = sum.layer_norm_affine(
+            std::sync::Arc::clone(&weights.embed_ln_gain),
+            std::sync::Arc::clone(&weights.embed_ln_bias),
+            cfg.layer_norm_eps,
+        )?;
 
         // ---- Encoder layers --------------------------------------------
         for layer in &weights.layers {
@@ -216,7 +212,8 @@ impl XlmrModel {
         assert!(
             seq + cfg.pad_token_id as usize + 1 <= cfg.max_position_embeddings,
             "seq + padding_idx + 1 ({}) exceeds max_position_embeddings ({})",
-            seq + cfg.pad_token_id as usize + 1, cfg.max_position_embeddings,
+            seq + cfg.pad_token_id as usize + 1,
+            cfg.max_position_embeddings,
         );
         assert!(!layer_ids.is_empty(), "layer_ids must not be empty");
         for w in layer_ids.windows(2) {
@@ -234,10 +231,7 @@ impl XlmrModel {
             Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
             &Device::cpu(),
         );
-        let token_ids = word_emb_t.const_u32_like(
-            tokens.to_vec(),
-            Shape::from_dims(&[seq]),
-        );
+        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         let word_embeds = word_emb_t
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
@@ -247,9 +241,7 @@ impl XlmrModel {
             Arc::clone(&weights.position_embedding),
             Shape::from_dims(&[cfg.max_position_embeddings, cfg.hidden_size]),
         );
-        let pos_ids = word_emb_t.const_u32_like(
-            position_ids_vec, Shape::from_dims(&[seq]),
-        );
+        let pos_ids = word_emb_t.const_u32_like(position_ids_vec, Shape::from_dims(&[seq]));
         let pos_embeds = pos_full
             .index_select(0_usize, &pos_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
@@ -257,14 +249,16 @@ impl XlmrModel {
             Arc::clone(&weights.token_type_embedding),
             Shape::from_dims(&[cfg.type_vocab_size, cfg.hidden_size]),
         );
-        let tt_ids = word_emb_t.const_u32_like(
-            vec![0_u32; seq], Shape::from_dims(&[seq]),
-        );
+        let tt_ids = word_emb_t.const_u32_like(vec![0_u32; seq], Shape::from_dims(&[seq]));
         let tt_embeds = tt_full
             .index_select(0_usize, &tt_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
         let sum = word_embeds.add(&pos_embeds)?.add(&tt_embeds)?;
-        let mut h = sum.layer_norm_affine(std::sync::Arc::clone(&weights.embed_ln_gain), std::sync::Arc::clone(&weights.embed_ln_bias), cfg.layer_norm_eps)?;
+        let mut h = sum.layer_norm_affine(
+            std::sync::Arc::clone(&weights.embed_ln_gain),
+            std::sync::Arc::clone(&weights.embed_ln_bias),
+            cfg.layer_norm_eps,
+        )?;
 
         let mut out = Vec::with_capacity(layer_ids.len());
         let mut next_capture = 0;
@@ -319,7 +313,11 @@ impl XlmrModel {
         let attn_out = attn_out.add_trailing_bias(std::sync::Arc::clone(&layer.out_proj_bias))?;
 
         // Post-LN: LN(attn + x).
-        let h1 = x.add(&attn_out)?.layer_norm_affine(std::sync::Arc::clone(&layer.attn_ln_gain), std::sync::Arc::clone(&layer.attn_ln_bias), cfg.layer_norm_eps)?;
+        let h1 = x.add(&attn_out)?.layer_norm_affine(
+            std::sync::Arc::clone(&layer.attn_ln_gain),
+            std::sync::Arc::clone(&layer.attn_ln_bias),
+            cfg.layer_norm_eps,
+        )?;
 
         // FFN.
         let fc1 = layer.fc1.apply_linear(&h1, d, cfg.intermediate_size)?;
@@ -334,7 +332,11 @@ impl XlmrModel {
         let fc2 = fc2.add_trailing_bias(std::sync::Arc::clone(&layer.fc2_bias))?;
 
         // Post-LN: LN(ffn + h1).
-        Ok(h1.add(&fc2)?.layer_norm_affine(std::sync::Arc::clone(&layer.ffn_ln_gain), std::sync::Arc::clone(&layer.ffn_ln_bias), cfg.layer_norm_eps)?)
+        Ok(h1.add(&fc2)?.layer_norm_affine(
+            std::sync::Arc::clone(&layer.ffn_ln_gain),
+            std::sync::Arc::clone(&layer.ffn_ln_bias),
+            cfg.layer_norm_eps,
+        )?)
     }
 }
 
@@ -354,26 +356,32 @@ impl XlmrWeights {
 
         // Some XLM-R checkpoints prefix with "roberta." and some don't;
         // probe both, prefer the prefixed form (standard HF).
-        let prefix = if load_tensor_as_f32(st, "roberta.embeddings.word_embeddings.weight").is_ok() {
+        let prefix = if load_tensor_as_f32(st, "roberta.embeddings.word_embeddings.weight").is_ok()
+        {
             "roberta."
         } else {
             ""
         };
 
         let word_embedding = Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}embeddings.word_embeddings.weight"),
+            st,
+            &format!("{prefix}embeddings.word_embeddings.weight"),
         )?);
         let position_embedding = Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}embeddings.position_embeddings.weight"),
+            st,
+            &format!("{prefix}embeddings.position_embeddings.weight"),
         )?);
         let token_type_embedding = Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}embeddings.token_type_embeddings.weight"),
+            st,
+            &format!("{prefix}embeddings.token_type_embeddings.weight"),
         )?);
         let embed_ln_gain = Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}embeddings.LayerNorm.weight"),
+            st,
+            &format!("{prefix}embeddings.LayerNorm.weight"),
         )?);
         let embed_ln_bias = Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}embeddings.LayerNorm.bias"),
+            st,
+            &format!("{prefix}embeddings.LayerNorm.bias"),
         )?);
 
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
@@ -381,51 +389,74 @@ impl XlmrWeights {
             let p = format!("{prefix}encoder.layer.{i}");
             let q_proj = ltm(st, &format!("{p}.attention.self.query.weight"), h, h)?;
             let q_proj_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.attention.self.query.bias"),
+                st,
+                &format!("{p}.attention.self.query.bias"),
             )?);
             let k_proj = ltm(st, &format!("{p}.attention.self.key.weight"), h, h)?;
             let k_proj_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.attention.self.key.bias"),
+                st,
+                &format!("{p}.attention.self.key.bias"),
             )?);
             let v_proj = ltm(st, &format!("{p}.attention.self.value.weight"), h, h)?;
             let v_proj_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.attention.self.value.bias"),
+                st,
+                &format!("{p}.attention.self.value.bias"),
             )?);
             let out_proj = ltm(st, &format!("{p}.attention.output.dense.weight"), h, h)?;
             let out_proj_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.attention.output.dense.bias"),
+                st,
+                &format!("{p}.attention.output.dense.bias"),
             )?);
             let attn_ln_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.attention.output.LayerNorm.weight"),
+                st,
+                &format!("{p}.attention.output.LayerNorm.weight"),
             )?);
             let attn_ln_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.attention.output.LayerNorm.bias"),
+                st,
+                &format!("{p}.attention.output.LayerNorm.bias"),
             )?);
             let fc1 = ltm(st, &format!("{p}.intermediate.dense.weight"), inter, h)?;
             let fc1_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.intermediate.dense.bias"),
+                st,
+                &format!("{p}.intermediate.dense.bias"),
             )?);
             let fc2 = ltm(st, &format!("{p}.output.dense.weight"), h, inter)?;
-            let fc2_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.output.dense.bias"),
-            )?);
+            let fc2_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.output.dense.bias"))?);
             let ffn_ln_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.output.LayerNorm.weight"),
+                st,
+                &format!("{p}.output.LayerNorm.weight"),
             )?);
             let ffn_ln_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.output.LayerNorm.bias"),
+                st,
+                &format!("{p}.output.LayerNorm.bias"),
             )?);
             layers.push(XlmrLayerWeights {
-                q_proj, q_proj_bias, k_proj, k_proj_bias,
-                v_proj, v_proj_bias, out_proj, out_proj_bias,
-                attn_ln_gain, attn_ln_bias,
-                fc1, fc1_bias, fc2, fc2_bias, ffn_ln_gain, ffn_ln_bias,
+                q_proj,
+                q_proj_bias,
+                k_proj,
+                k_proj_bias,
+                v_proj,
+                v_proj_bias,
+                out_proj,
+                out_proj_bias,
+                attn_ln_gain,
+                attn_ln_bias,
+                fc1,
+                fc1_bias,
+                fc2,
+                fc2_bias,
+                ffn_ln_gain,
+                ffn_ln_bias,
             });
         }
 
         Ok(Self {
-            word_embedding, position_embedding, token_type_embedding,
-            embed_ln_gain, embed_ln_bias, layers,
+            word_embedding,
+            position_embedding,
+            token_type_embedding,
+            embed_ln_gain,
+            embed_ln_bias,
+            layers,
         })
     }
 }
@@ -450,25 +481,25 @@ impl XlmrWeights {
 /// memory duplication. A `tied`-mode follow-up is welcome.
 #[derive(Debug, Clone)]
 pub struct ForMaskedLMWeights {
-    pub lm_head_dense_weight:   WeightStorage,
-    pub lm_head_dense_bias:     Arc<[f32]>,
-    pub lm_head_ln_gain:        Arc<[f32]>,
-    pub lm_head_ln_bias:        Arc<[f32]>,
+    pub lm_head_dense_weight: WeightStorage,
+    pub lm_head_dense_bias: Arc<[f32]>,
+    pub lm_head_ln_gain: Arc<[f32]>,
+    pub lm_head_ln_bias: Arc<[f32]>,
     pub lm_head_decoder_weight: WeightStorage,
-    pub lm_head_decoder_bias:   Arc<[f32]>,
+    pub lm_head_decoder_bias: Arc<[f32]>,
 }
 
 /// XLM-RoBERTa with a masked-language-model head on top of the base
 /// encoder. Output shape: `(1, seq, vocab_size)`.
 #[derive(Debug, Clone)]
 pub struct XlmrForMaskedLM {
-    pub base:                   XlmrModel,
-    pub lm_head_dense_weight:   WeightStorage,
-    pub lm_head_dense_bias:     Arc<[f32]>,
-    pub lm_head_ln_gain:        Arc<[f32]>,
-    pub lm_head_ln_bias:        Arc<[f32]>,
+    pub base: XlmrModel,
+    pub lm_head_dense_weight: WeightStorage,
+    pub lm_head_dense_bias: Arc<[f32]>,
+    pub lm_head_ln_gain: Arc<[f32]>,
+    pub lm_head_ln_bias: Arc<[f32]>,
     pub lm_head_decoder_weight: WeightStorage,
-    pub lm_head_decoder_bias:   Arc<[f32]>,
+    pub lm_head_decoder_bias: Arc<[f32]>,
 }
 
 impl XlmrForMaskedLM {
@@ -485,7 +516,8 @@ impl XlmrForMaskedLM {
         // lm_head: dense -> gelu -> layer_norm -> decoder.
         // `apply_linear` matmuls a `(1, seq, hidden)` activation by a
         // `(hidden, hidden)` weight to give `(1, seq, hidden)`.
-        let dense = self.lm_head_dense_weight
+        let dense = self
+            .lm_head_dense_weight
             .apply_linear(&h, cfg.hidden_size, cfg.hidden_size)?;
         let dense = dense.add_trailing_bias(Arc::clone(&self.lm_head_dense_bias))?;
         let act = dense.gelu_erf();
@@ -494,8 +526,9 @@ impl XlmrForMaskedLM {
             Arc::clone(&self.lm_head_ln_bias),
             cfg.layer_norm_eps,
         )?;
-        let logits = self.lm_head_decoder_weight
-            .apply_linear(&normed, cfg.hidden_size, cfg.vocab_size)?;
+        let logits =
+            self.lm_head_decoder_weight
+                .apply_linear(&normed, cfg.hidden_size, cfg.vocab_size)?;
         let logits = logits.add_trailing_bias(Arc::clone(&self.lm_head_decoder_bias))?;
         Ok(logits)
     }
@@ -514,19 +547,11 @@ impl ForMaskedLMWeights {
         let h = cfg.hidden_size;
         let v = cfg.vocab_size;
         let lm_head_dense_weight = ltm(st, "lm_head.dense.weight", h, h)?;
-        let lm_head_dense_bias = Arc::from(load_tensor_as_f32(
-            st, "lm_head.dense.bias",
-        )?);
-        let lm_head_ln_gain = Arc::from(load_tensor_as_f32(
-            st, "lm_head.layer_norm.weight",
-        )?);
-        let lm_head_ln_bias = Arc::from(load_tensor_as_f32(
-            st, "lm_head.layer_norm.bias",
-        )?);
+        let lm_head_dense_bias = Arc::from(load_tensor_as_f32(st, "lm_head.dense.bias")?);
+        let lm_head_ln_gain = Arc::from(load_tensor_as_f32(st, "lm_head.layer_norm.weight")?);
+        let lm_head_ln_bias = Arc::from(load_tensor_as_f32(st, "lm_head.layer_norm.bias")?);
         let lm_head_decoder_weight = ltm(st, "lm_head.decoder.weight", v, h)?;
-        let lm_head_decoder_bias = Arc::from(load_tensor_as_f32(
-            st, "lm_head.decoder.bias",
-        )?);
+        let lm_head_decoder_bias = Arc::from(load_tensor_as_f32(st, "lm_head.decoder.bias")?);
         Ok(Self {
             lm_head_dense_weight,
             lm_head_dense_bias,
@@ -548,13 +573,16 @@ impl XlmrForMaskedLM {
         let base_weights = XlmrWeights::load_from_mmapped(st, &cfg)?;
         let head = ForMaskedLMWeights::load_from_mmapped(st, &cfg)?;
         Ok(Self {
-            base: XlmrModel { config: cfg, weights: base_weights },
-            lm_head_dense_weight:   head.lm_head_dense_weight,
-            lm_head_dense_bias:     head.lm_head_dense_bias,
-            lm_head_ln_gain:        head.lm_head_ln_gain,
-            lm_head_ln_bias:        head.lm_head_ln_bias,
+            base: XlmrModel {
+                config: cfg,
+                weights: base_weights,
+            },
+            lm_head_dense_weight: head.lm_head_dense_weight,
+            lm_head_dense_bias: head.lm_head_dense_bias,
+            lm_head_ln_gain: head.lm_head_ln_gain,
+            lm_head_ln_bias: head.lm_head_ln_bias,
             lm_head_decoder_weight: head.lm_head_decoder_weight,
-            lm_head_decoder_bias:   head.lm_head_decoder_bias,
+            lm_head_decoder_bias: head.lm_head_decoder_bias,
         })
     }
 }
@@ -571,10 +599,10 @@ impl XlmrForMaskedLM {
 ///   - `classifier.out_proj.bias`    `[num_labels]`
 #[derive(Debug, Clone)]
 pub struct ForSequenceClassificationWeights {
-    pub classifier_dense_weight:    WeightStorage,
-    pub classifier_dense_bias:      Arc<[f32]>,
+    pub classifier_dense_weight: WeightStorage,
+    pub classifier_dense_bias: Arc<[f32]>,
     pub classifier_out_proj_weight: WeightStorage,
-    pub classifier_out_proj_bias:   Arc<[f32]>,
+    pub classifier_out_proj_bias: Arc<[f32]>,
 }
 
 /// XLM-RoBERTa with a sequence-classification head on top of the base
@@ -583,12 +611,12 @@ pub struct ForSequenceClassificationWeights {
 /// then through an `out_proj` linear. Output shape: `(1, num_labels)`.
 #[derive(Debug, Clone)]
 pub struct XlmrForSequenceClassification {
-    pub base:                       XlmrModel,
-    pub num_labels:                 usize,
-    pub classifier_dense_weight:    WeightStorage,
-    pub classifier_dense_bias:      Arc<[f32]>,
+    pub base: XlmrModel,
+    pub num_labels: usize,
+    pub classifier_dense_weight: WeightStorage,
+    pub classifier_dense_bias: Arc<[f32]>,
     pub classifier_out_proj_weight: WeightStorage,
-    pub classifier_out_proj_bias:   Arc<[f32]>,
+    pub classifier_out_proj_bias: Arc<[f32]>,
 }
 
 impl XlmrForSequenceClassification {
@@ -608,13 +636,15 @@ impl XlmrForSequenceClassification {
             .slice(1_usize, 0, 1)?
             .reshape(Shape::from_dims(&[1, cfg.hidden_size]))?;
         // dense (hidden -> hidden) + bias + tanh.
-        let dense = self.classifier_dense_weight
-            .apply_linear(&cls, cfg.hidden_size, cfg.hidden_size)?;
+        let dense =
+            self.classifier_dense_weight
+                .apply_linear(&cls, cfg.hidden_size, cfg.hidden_size)?;
         let dense = dense.add_trailing_bias(Arc::clone(&self.classifier_dense_bias))?;
         let act = dense.tanh();
         // out_proj (hidden -> num_labels) + bias.
-        let logits = self.classifier_out_proj_weight
-            .apply_linear(&act, cfg.hidden_size, self.num_labels)?;
+        let logits =
+            self.classifier_out_proj_weight
+                .apply_linear(&act, cfg.hidden_size, self.num_labels)?;
         let logits = logits.add_trailing_bias(Arc::clone(&self.classifier_out_proj_bias))?;
         Ok(logits)
     }
@@ -631,15 +661,10 @@ impl ForSequenceClassificationWeights {
         use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype as ltm};
         let h = cfg.hidden_size;
         let classifier_dense_weight = ltm(st, "classifier.dense.weight", h, h)?;
-        let classifier_dense_bias = Arc::from(load_tensor_as_f32(
-            st, "classifier.dense.bias",
-        )?);
-        let classifier_out_proj_weight = ltm(
-            st, "classifier.out_proj.weight", num_labels, h,
-        )?;
-        let classifier_out_proj_bias = Arc::from(load_tensor_as_f32(
-            st, "classifier.out_proj.bias",
-        )?);
+        let classifier_dense_bias = Arc::from(load_tensor_as_f32(st, "classifier.dense.bias")?);
+        let classifier_out_proj_weight = ltm(st, "classifier.out_proj.weight", num_labels, h)?;
+        let classifier_out_proj_bias =
+            Arc::from(load_tensor_as_f32(st, "classifier.out_proj.bias")?);
         Ok(Self {
             classifier_dense_weight,
             classifier_dense_bias,
@@ -660,16 +685,18 @@ impl XlmrForSequenceClassification {
         let base_weights = XlmrWeights::load_from_mmapped(st, &cfg)?;
         let head = ForSequenceClassificationWeights::load_from_mmapped(st, &cfg, num_labels)?;
         Ok(Self {
-            base: XlmrModel { config: cfg, weights: base_weights },
+            base: XlmrModel {
+                config: cfg,
+                weights: base_weights,
+            },
             num_labels,
-            classifier_dense_weight:    head.classifier_dense_weight,
-            classifier_dense_bias:      head.classifier_dense_bias,
+            classifier_dense_weight: head.classifier_dense_weight,
+            classifier_dense_bias: head.classifier_dense_bias,
             classifier_out_proj_weight: head.classifier_out_proj_weight,
-            classifier_out_proj_bias:   head.classifier_out_proj_bias,
+            classifier_out_proj_bias: head.classifier_out_proj_bias,
         })
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -708,29 +735,33 @@ mod tests {
         let embed_ln_gain = Arc::from(vec![1.0_f32; d]);
         let embed_ln_bias = Arc::from(vec![0.0_f32; d]);
 
-        let layers: Vec<XlmrLayerWeights> = (0..cfg.num_hidden_layers).map(|_| XlmrLayerWeights {
-            q_proj: WeightStorage::F32(vec_of(d * d, &mut *nb)),
-            q_proj_bias: vec_of(d, &mut *nb),
-            k_proj: WeightStorage::F32(vec_of(d * d, &mut *nb)),
-            k_proj_bias: vec_of(d, &mut *nb),
-            v_proj: WeightStorage::F32(vec_of(d * d, &mut *nb)),
-            v_proj_bias: vec_of(d, &mut *nb),
-            out_proj: WeightStorage::F32(vec_of(d * d, &mut *nb)),
-            out_proj_bias: vec_of(d, &mut *nb),
-            attn_ln_gain: Arc::from(vec![1.0_f32; d]),
-            attn_ln_bias: Arc::from(vec![0.0_f32; d]),
-            fc1: WeightStorage::F32(vec_of(d * cfg.intermediate_size, &mut *nb)),
-            fc1_bias: vec_of(cfg.intermediate_size, &mut *nb),
-            fc2: WeightStorage::F32(vec_of(cfg.intermediate_size * d, &mut *nb)),
-            fc2_bias: vec_of(d, &mut *nb),
-            ffn_ln_gain: Arc::from(vec![1.0_f32; d]),
-            ffn_ln_bias: Arc::from(vec![0.0_f32; d]),
-        }).collect();
+        let layers: Vec<XlmrLayerWeights> = (0..cfg.num_hidden_layers)
+            .map(|_| XlmrLayerWeights {
+                q_proj: WeightStorage::F32(vec_of(d * d, &mut *nb)),
+                q_proj_bias: vec_of(d, &mut *nb),
+                k_proj: WeightStorage::F32(vec_of(d * d, &mut *nb)),
+                k_proj_bias: vec_of(d, &mut *nb),
+                v_proj: WeightStorage::F32(vec_of(d * d, &mut *nb)),
+                v_proj_bias: vec_of(d, &mut *nb),
+                out_proj: WeightStorage::F32(vec_of(d * d, &mut *nb)),
+                out_proj_bias: vec_of(d, &mut *nb),
+                attn_ln_gain: Arc::from(vec![1.0_f32; d]),
+                attn_ln_bias: Arc::from(vec![0.0_f32; d]),
+                fc1: WeightStorage::F32(vec_of(d * cfg.intermediate_size, &mut *nb)),
+                fc1_bias: vec_of(cfg.intermediate_size, &mut *nb),
+                fc2: WeightStorage::F32(vec_of(cfg.intermediate_size * d, &mut *nb)),
+                fc2_bias: vec_of(d, &mut *nb),
+                ffn_ln_gain: Arc::from(vec![1.0_f32; d]),
+                ffn_ln_bias: Arc::from(vec![0.0_f32; d]),
+            })
+            .collect();
 
         XlmrWeights {
-            word_embedding, position_embedding,
+            word_embedding,
+            position_embedding,
             token_type_embedding,
-            embed_ln_gain, embed_ln_bias,
+            embed_ln_gain,
+            embed_ln_bias,
             layers,
         }
     }
@@ -738,7 +769,10 @@ mod tests {
     #[test]
     fn forward_shape_and_finite() {
         let cfg = tiny_cfg();
-        let model = XlmrModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = XlmrModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens = [1_u32, 2, 3, 4];
         let out = model.forward(&tokens, None).unwrap();
         assert_eq!(out.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
@@ -754,10 +788,18 @@ mod tests {
         let cfg = tiny_cfg();
         let base = tiny_weights(&cfg);
         let mut modified = base.clone();
-        let new_tt: Vec<f32> = (0..cfg.type_vocab_size * cfg.hidden_size).map(|_| 0.5).collect();
+        let new_tt: Vec<f32> = (0..cfg.type_vocab_size * cfg.hidden_size)
+            .map(|_| 0.5)
+            .collect();
         modified.token_type_embedding = Arc::from(new_tt);
-        let m_base = XlmrModel { config: cfg.clone(), weights: base };
-        let m_mod = XlmrModel { config: cfg.clone(), weights: modified };
+        let m_base = XlmrModel {
+            config: cfg.clone(),
+            weights: base,
+        };
+        let m_mod = XlmrModel {
+            config: cfg.clone(),
+            weights: modified,
+        };
         let toks = [1_u32, 2, 3];
         let a = m_base.forward(&toks, None).unwrap().realize_f32();
         let b = m_mod.forward(&toks, None).unwrap().realize_f32();
@@ -765,8 +807,10 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-6,
-            "token type embedding must affect output, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-6,
+            "token type embedding must affect output, max_diff = {max_diff}"
+        );
     }
 
     /// RoBERTa position-id convention: position_ids start at
@@ -787,8 +831,14 @@ mod tests {
             pe_vec[target_row * cfg.hidden_size + i] = 1.0;
         }
         modified.position_embedding = Arc::from(pe_vec);
-        let m_base = XlmrModel { config: cfg.clone(), weights: base };
-        let m_mod = XlmrModel { config: cfg.clone(), weights: modified };
+        let m_base = XlmrModel {
+            config: cfg.clone(),
+            weights: base,
+        };
+        let m_mod = XlmrModel {
+            config: cfg.clone(),
+            weights: modified,
+        };
         let toks = [1_u32, 2, 3];
         let a = m_base.forward(&toks, None).unwrap().realize_f32();
         let b = m_mod.forward(&toks, None).unwrap().realize_f32();
@@ -796,8 +846,10 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-6,
-            "RoBERTa position offset (modifying row pad_idx+1) must affect output, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-6,
+            "RoBERTa position offset (modifying row pad_idx+1) must affect output, max_diff = {max_diff}"
+        );
     }
 
     // ---- Head fixtures ---------------------------------------------------
@@ -812,18 +864,22 @@ mod tests {
         let h = cfg.hidden_size;
         let v = cfg.vocab_size;
         XlmrForMaskedLM {
-            base: XlmrModel { config: cfg.clone(), weights: tiny_weights(cfg) },
-            lm_head_dense_weight:   WeightStorage::F32(vec_of(h * h, &mut *nb)),
-            lm_head_dense_bias:     vec_of(h, &mut *nb),
-            lm_head_ln_gain:        Arc::from(vec![1.0_f32; h]),
-            lm_head_ln_bias:        Arc::from(vec![0.0_f32; h]),
+            base: XlmrModel {
+                config: cfg.clone(),
+                weights: tiny_weights(cfg),
+            },
+            lm_head_dense_weight: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+            lm_head_dense_bias: vec_of(h, &mut *nb),
+            lm_head_ln_gain: Arc::from(vec![1.0_f32; h]),
+            lm_head_ln_bias: Arc::from(vec![0.0_f32; h]),
             lm_head_decoder_weight: WeightStorage::F32(vec_of(h * v, &mut *nb)),
-            lm_head_decoder_bias:   vec_of(v, &mut *nb),
+            lm_head_decoder_bias: vec_of(v, &mut *nb),
         }
     }
 
     fn tiny_for_sequence_classification(
-        cfg: &XlmrConfig, num_labels: usize,
+        cfg: &XlmrConfig,
+        num_labels: usize,
     ) -> XlmrForSequenceClassification {
         let mut s: u32 = 90909;
         let next = move || -> f32 {
@@ -833,12 +889,15 @@ mod tests {
         let mut nb: Box<dyn FnMut() -> f32> = Box::new(next);
         let h = cfg.hidden_size;
         XlmrForSequenceClassification {
-            base: XlmrModel { config: cfg.clone(), weights: tiny_weights(cfg) },
+            base: XlmrModel {
+                config: cfg.clone(),
+                weights: tiny_weights(cfg),
+            },
             num_labels,
-            classifier_dense_weight:    WeightStorage::F32(vec_of(h * h, &mut *nb)),
-            classifier_dense_bias:      vec_of(h, &mut *nb),
+            classifier_dense_weight: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+            classifier_dense_bias: vec_of(h, &mut *nb),
             classifier_out_proj_weight: WeightStorage::F32(vec_of(h * num_labels, &mut *nb)),
-            classifier_out_proj_bias:   vec_of(num_labels, &mut *nb),
+            classifier_out_proj_bias: vec_of(num_labels, &mut *nb),
         }
     }
 
@@ -874,13 +933,11 @@ mod tests {
     // ---- Safetensors round-trip fixtures --------------------------------
 
     /// Append `n` f32 values to `owned` under `name` as a 1-D shape.
-    fn push_f32_1d(
-        owned: &mut Vec<(String, Vec<usize>, Vec<u8>)>,
-        name: &str,
-        values: &[f32],
-    ) {
+    fn push_f32_1d(owned: &mut Vec<(String, Vec<usize>, Vec<u8>)>, name: &str, values: &[f32]) {
         let mut bytes = Vec::with_capacity(values.len() * 4);
-        for v in values { bytes.extend_from_slice(&v.to_le_bytes()); }
+        for v in values {
+            bytes.extend_from_slice(&v.to_le_bytes());
+        }
         owned.push((name.to_string(), vec![values.len()], bytes));
     }
 
@@ -893,7 +950,9 @@ mod tests {
     ) {
         let n: usize = shape.iter().product();
         let mut bytes = Vec::with_capacity(n * 4);
-        for _ in 0..n { bytes.extend_from_slice(&nb().to_le_bytes()); }
+        for _ in 0..n {
+            bytes.extend_from_slice(&nb().to_le_bytes());
+        }
         owned.push((name.to_string(), shape, bytes));
     }
 
@@ -905,7 +964,7 @@ mod tests {
         nb: &mut dyn FnMut() -> f32,
     ) {
         push_f32(owned, &format!("{prefix}.weight"), vec![c], nb);
-        push_f32(owned, &format!("{prefix}.bias"),   vec![c], nb);
+        push_f32(owned, &format!("{prefix}.bias"), vec![c], nb);
     }
 
     /// Push an HF Linear (`<prefix>.{weight,bias}`). HF stores weight
@@ -918,8 +977,10 @@ mod tests {
         nb: &mut dyn FnMut() -> f32,
     ) {
         push_f32(
-            owned, &format!("{prefix}.weight"),
-            vec![out_features, in_features], nb,
+            owned,
+            &format!("{prefix}.weight"),
+            vec![out_features, in_features],
+            nb,
         );
         push_f32(owned, &format!("{prefix}.bias"), vec![out_features], nb);
     }
@@ -932,35 +993,80 @@ mod tests {
         let prefix = "roberta.";
         // Embeddings.
         push_f32(
-            owned, &format!("{prefix}embeddings.word_embeddings.weight"),
-            vec![cfg.vocab_size, cfg.hidden_size], nb,
+            owned,
+            &format!("{prefix}embeddings.word_embeddings.weight"),
+            vec![cfg.vocab_size, cfg.hidden_size],
+            nb,
         );
         push_f32(
-            owned, &format!("{prefix}embeddings.position_embeddings.weight"),
-            vec![cfg.max_position_embeddings, cfg.hidden_size], nb,
+            owned,
+            &format!("{prefix}embeddings.position_embeddings.weight"),
+            vec![cfg.max_position_embeddings, cfg.hidden_size],
+            nb,
         );
         push_f32(
-            owned, &format!("{prefix}embeddings.token_type_embeddings.weight"),
-            vec![cfg.type_vocab_size, cfg.hidden_size], nb,
+            owned,
+            &format!("{prefix}embeddings.token_type_embeddings.weight"),
+            vec![cfg.type_vocab_size, cfg.hidden_size],
+            nb,
         );
-        push_ln(owned, &format!("{prefix}embeddings.LayerNorm"), cfg.hidden_size, nb);
+        push_ln(
+            owned,
+            &format!("{prefix}embeddings.LayerNorm"),
+            cfg.hidden_size,
+            nb,
+        );
         // Encoder layers.
         for i in 0..cfg.num_hidden_layers {
             let p = format!("{prefix}encoder.layer.{i}");
-            push_linear(owned, &format!("{p}.attention.self.query"),
-                cfg.hidden_size, cfg.hidden_size, nb);
-            push_linear(owned, &format!("{p}.attention.self.key"),
-                cfg.hidden_size, cfg.hidden_size, nb);
-            push_linear(owned, &format!("{p}.attention.self.value"),
-                cfg.hidden_size, cfg.hidden_size, nb);
-            push_linear(owned, &format!("{p}.attention.output.dense"),
-                cfg.hidden_size, cfg.hidden_size, nb);
-            push_ln(owned, &format!("{p}.attention.output.LayerNorm"),
-                cfg.hidden_size, nb);
-            push_linear(owned, &format!("{p}.intermediate.dense"),
-                cfg.hidden_size, cfg.intermediate_size, nb);
-            push_linear(owned, &format!("{p}.output.dense"),
-                cfg.intermediate_size, cfg.hidden_size, nb);
+            push_linear(
+                owned,
+                &format!("{p}.attention.self.query"),
+                cfg.hidden_size,
+                cfg.hidden_size,
+                nb,
+            );
+            push_linear(
+                owned,
+                &format!("{p}.attention.self.key"),
+                cfg.hidden_size,
+                cfg.hidden_size,
+                nb,
+            );
+            push_linear(
+                owned,
+                &format!("{p}.attention.self.value"),
+                cfg.hidden_size,
+                cfg.hidden_size,
+                nb,
+            );
+            push_linear(
+                owned,
+                &format!("{p}.attention.output.dense"),
+                cfg.hidden_size,
+                cfg.hidden_size,
+                nb,
+            );
+            push_ln(
+                owned,
+                &format!("{p}.attention.output.LayerNorm"),
+                cfg.hidden_size,
+                nb,
+            );
+            push_linear(
+                owned,
+                &format!("{p}.intermediate.dense"),
+                cfg.hidden_size,
+                cfg.intermediate_size,
+                nb,
+            );
+            push_linear(
+                owned,
+                &format!("{p}.output.dense"),
+                cfg.intermediate_size,
+                cfg.hidden_size,
+                nb,
+            );
             push_ln(owned, &format!("{p}.output.LayerNorm"), cfg.hidden_size, nb);
         }
     }
@@ -977,13 +1083,14 @@ mod tests {
                 .expect("TensorView::new");
             tensors.insert(name.clone(), view);
         }
-        let serialized = safetensors::serialize(&tensors, None)
-            .expect("safetensors::serialize");
+        let serialized = safetensors::serialize(&tensors, None).expect("safetensors::serialize");
         let tmp = std::env::temp_dir().join(format!(
             "fuel_xlmr_heads_{}_{tag}_{}.safetensors",
             std::process::id(),
             std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
         ));
         std::fs::write(&tmp, &serialized).expect("write tmp");
         tmp
@@ -1007,11 +1114,21 @@ mod tests {
         let mut owned: Vec<(String, Vec<usize>, Vec<u8>)> = Vec::new();
         push_base_encoder(&mut owned, &cfg, &mut nb);
         // lm_head.
-        push_linear(&mut owned, "lm_head.dense",
-            cfg.hidden_size, cfg.hidden_size, &mut nb);
+        push_linear(
+            &mut owned,
+            "lm_head.dense",
+            cfg.hidden_size,
+            cfg.hidden_size,
+            &mut nb,
+        );
         push_ln(&mut owned, "lm_head.layer_norm", cfg.hidden_size, &mut nb);
-        push_linear(&mut owned, "lm_head.decoder",
-            cfg.hidden_size, cfg.vocab_size, &mut nb);
+        push_linear(
+            &mut owned,
+            "lm_head.decoder",
+            cfg.hidden_size,
+            cfg.vocab_size,
+            &mut nb,
+        );
 
         let tmp = build_safetensors_file(owned, "mlm");
         let st = unsafe { crate::safetensors::MmapedSafetensors::new(&tmp) }
@@ -1040,24 +1157,36 @@ mod tests {
 
         let mut owned: Vec<(String, Vec<usize>, Vec<u8>)> = Vec::new();
         push_base_encoder(&mut owned, &cfg, &mut nb);
-        push_linear(&mut owned, "classifier.dense",
-            cfg.hidden_size, cfg.hidden_size, &mut nb);
-        push_linear(&mut owned, "classifier.out_proj",
-            cfg.hidden_size, num_labels, &mut nb);
+        push_linear(
+            &mut owned,
+            "classifier.dense",
+            cfg.hidden_size,
+            cfg.hidden_size,
+            &mut nb,
+        );
+        push_linear(
+            &mut owned,
+            "classifier.out_proj",
+            cfg.hidden_size,
+            num_labels,
+            &mut nb,
+        );
 
         let tmp = build_safetensors_file(owned, "seq");
         let st = unsafe { crate::safetensors::MmapedSafetensors::new(&tmp) }
             .expect("MmapedSafetensors::new");
 
-        let model = XlmrForSequenceClassification::load_from_mmapped(
-            &st, cfg.clone(), num_labels,
-        ).expect("XlmrForSequenceClassification::load_from_mmapped");
+        let model = XlmrForSequenceClassification::load_from_mmapped(&st, cfg.clone(), num_labels)
+            .expect("XlmrForSequenceClassification::load_from_mmapped");
 
         let toks = [1_u32, 2, 3, 4, 5];
         let out = model.forward(&toks, None).unwrap();
         assert_eq!(out.shape().dims(), &[1, num_labels]);
         for &v in &out.realize_f32() {
-            assert!(v.is_finite(), "non-finite classifier logit from loaded model: {v}");
+            assert!(
+                v.is_finite(),
+                "non-finite classifier logit from loaded model: {v}"
+            );
         }
 
         let _ = std::fs::remove_file(&tmp);
@@ -1068,9 +1197,14 @@ mod tests {
     #[test]
     fn forward_intermediate_layers_shape() {
         let cfg = tiny_cfg();
-        let model = XlmrModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = XlmrModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let toks = [1_u32, 2, 3];
-        let outs = model.forward_intermediate_layers(&toks, &[0_usize, 1], None).unwrap();
+        let outs = model
+            .forward_intermediate_layers(&toks, &[0_usize, 1], None)
+            .unwrap();
         assert_eq!(outs.len(), 2);
         for out in &outs {
             assert_eq!(out.shape().dims(), &[1, toks.len(), cfg.hidden_size]);
@@ -1084,7 +1218,9 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-7,
-            "layer 0 and layer 1 intermediates must differ, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-7,
+            "layer 0 and layer 1 intermediates must differ, max_diff = {max_diff}"
+        );
     }
 }

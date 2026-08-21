@@ -24,8 +24,8 @@
 //!
 //! v1 scope: F32, batch == 1, prefill only.
 
-use crate::lazy::{LazyTensor, WeightStorage};
 use crate::Result;
+use crate::lazy::{LazyTensor, WeightStorage};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -184,16 +184,12 @@ impl BlipTextModel {
             Arc::clone(&w.word_embedding),
             Shape::from_dims(&[cfg.vocab_size, h]),
         );
-        let ids = anchor.const_u32_like(
-            input_ids.to_vec(), Shape::from_dims(&[t]),
-        );
+        let ids = anchor.const_u32_like(input_ids.to_vec(), Shape::from_dims(&[t]));
         let tok = word_table
             .index_select(0_usize, &ids)?
             .reshape(Shape::from_dims(&[1, t, h]))?;
         let pos_ids: Vec<u32> = (0..t).map(|i| (i + start_pos) as u32).collect();
-        let pos_idx = anchor.const_u32_like(
-            pos_ids, Shape::from_dims(&[t]),
-        );
+        let pos_idx = anchor.const_u32_like(pos_ids, Shape::from_dims(&[t]));
         let pos_table = anchor.const_f32_like(
             Arc::clone(&w.position_embedding),
             Shape::from_dims(&[cfg.max_position_embeddings, h]),
@@ -202,7 +198,11 @@ impl BlipTextModel {
             .index_select(0_usize, &pos_idx)?
             .reshape(Shape::from_dims(&[1, t, h]))?;
         let mut x = tok.add(&pos)?;
-        x = x.layer_norm_affine(Arc::clone(&w.embed_ln.gain), Arc::clone(&w.embed_ln.bias), cfg.layer_norm_eps)?;
+        x = x.layer_norm_affine(
+            Arc::clone(&w.embed_ln.gain),
+            Arc::clone(&w.embed_ln.bias),
+            cfg.layer_norm_eps,
+        )?;
 
         // Strict causal mask `(1, 1, t, t)` — reshape the (t, t)
         // mask from the public helper to add the leading batch +
@@ -215,14 +215,28 @@ impl BlipTextModel {
         }
 
         // LM head: dense → act → LN → vocab linear + bias.
-        let h_pred = w.pred_dense.apply_linear_with_bias(&x, h, h, std::sync::Arc::clone(&w.pred_dense_bias))?;
+        let h_pred = w.pred_dense.apply_linear_with_bias(
+            &x,
+            h,
+            h,
+            std::sync::Arc::clone(&w.pred_dense_bias),
+        )?;
         let h_pred = match cfg.hidden_activation {
             BlipTextActivation::Gelu => h_pred.gelu(),
             BlipTextActivation::GeluPytorchTanh => h_pred.gelu_erf(),
             BlipTextActivation::Relu => h_pred.relu(),
         };
-        let h_pred = h_pred.layer_norm_affine(Arc::clone(&w.pred_ln.gain), Arc::clone(&w.pred_ln.bias), cfg.layer_norm_eps)?;
-        w.lm_head.apply_linear_with_bias(&h_pred, h, cfg.vocab_size, std::sync::Arc::clone(&w.lm_head_bias))
+        let h_pred = h_pred.layer_norm_affine(
+            Arc::clone(&w.pred_ln.gain),
+            Arc::clone(&w.pred_ln.bias),
+            cfg.layer_norm_eps,
+        )?;
+        w.lm_head.apply_linear_with_bias(
+            &h_pred,
+            h,
+            cfg.vocab_size,
+            std::sync::Arc::clone(&w.lm_head_bias),
+        )
     }
 }
 
@@ -240,33 +254,77 @@ fn apply_decoder_layer(
     //   y = attn(x, x); y = out_dense(y); x = LN(y + x).
     let residual = x.clone();
     let attn_out = apply_attention(
-        x, None, &w.self_attn,
-        cfg.num_attention_heads, cfg.head_dim(),
-        h, h, Some(causal_mask), anchor,
+        x,
+        None,
+        &w.self_attn,
+        cfg.num_attention_heads,
+        cfg.head_dim(),
+        h,
+        h,
+        Some(causal_mask),
+        anchor,
     )?;
-    let y = w.self_attn.out_dense.apply_linear_with_bias(&attn_out, h, h, std::sync::Arc::clone(&w.self_attn.out_dense_bias))?;
-    let x = &y.add(&residual)?.layer_norm_affine(Arc::clone(&w.self_attn.out_ln.gain), Arc::clone(&w.self_attn.out_ln.bias), cfg.layer_norm_eps)?;
+    let y = w.self_attn.out_dense.apply_linear_with_bias(
+        &attn_out,
+        h,
+        h,
+        std::sync::Arc::clone(&w.self_attn.out_dense_bias),
+    )?;
+    let x = &y.add(&residual)?.layer_norm_affine(
+        Arc::clone(&w.self_attn.out_ln.gain),
+        Arc::clone(&w.self_attn.out_ln.bias),
+        cfg.layer_norm_eps,
+    )?;
 
     // Cross-attention to encoder states.
     let residual = x.clone();
     let cross_out = apply_attention(
-        &x, Some(enc_states), &w.cross_attn,
-        cfg.num_attention_heads, cfg.head_dim(),
-        h, cfg.encoder_hidden_size, None, anchor,
+        &x,
+        Some(enc_states),
+        &w.cross_attn,
+        cfg.num_attention_heads,
+        cfg.head_dim(),
+        h,
+        cfg.encoder_hidden_size,
+        None,
+        anchor,
     )?;
-    let y = w.cross_attn.out_dense.apply_linear_with_bias(&cross_out, h, h, std::sync::Arc::clone(&w.cross_attn.out_dense_bias))?;
-    let x = &y.add(&residual)?.layer_norm_affine(Arc::clone(&w.cross_attn.out_ln.gain), Arc::clone(&w.cross_attn.out_ln.bias), cfg.layer_norm_eps)?;
+    let y = w.cross_attn.out_dense.apply_linear_with_bias(
+        &cross_out,
+        h,
+        h,
+        std::sync::Arc::clone(&w.cross_attn.out_dense_bias),
+    )?;
+    let x = &y.add(&residual)?.layer_norm_affine(
+        Arc::clone(&w.cross_attn.out_ln.gain),
+        Arc::clone(&w.cross_attn.out_ln.bias),
+        cfg.layer_norm_eps,
+    )?;
 
     // FFN.
     let residual = x.clone();
-    let inter = w.ffn.intermediate.apply_linear_with_bias(&x, h, cfg.intermediate_size, std::sync::Arc::clone(&w.ffn.intermediate_bias))?;
+    let inter = w.ffn.intermediate.apply_linear_with_bias(
+        &x,
+        h,
+        cfg.intermediate_size,
+        std::sync::Arc::clone(&w.ffn.intermediate_bias),
+    )?;
     let inter = match cfg.hidden_activation {
         BlipTextActivation::Gelu => inter.gelu(),
         BlipTextActivation::GeluPytorchTanh => inter.gelu_erf(),
         BlipTextActivation::Relu => inter.relu(),
     };
-    let out = w.ffn.output.apply_linear_with_bias(&inter, cfg.intermediate_size, h, std::sync::Arc::clone(&w.ffn.output_bias))?;
-    out.add(&residual)?.layer_norm_affine(Arc::clone(&w.ffn.output_ln.gain), Arc::clone(&w.ffn.output_ln.bias), cfg.layer_norm_eps)
+    let out = w.ffn.output.apply_linear_with_bias(
+        &inter,
+        cfg.intermediate_size,
+        h,
+        std::sync::Arc::clone(&w.ffn.output_bias),
+    )?;
+    out.add(&residual)?.layer_norm_affine(
+        Arc::clone(&w.ffn.output_ln.gain),
+        Arc::clone(&w.ffn.output_ln.bias),
+        cfg.layer_norm_eps,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -283,16 +341,32 @@ fn apply_attention(
 ) -> Result<LazyTensor> {
     let q_dims = q_input.shape();
     let q_dims = q_dims.dims();
-    let b = q_dims[0]; let q_len = q_dims[1];
+    let b = q_dims[0];
+    let q_len = q_dims[1];
     let kv_src = kv_input.unwrap_or(q_input);
     let kv_dims = kv_src.shape();
     let kv_dims = kv_dims.dims();
     let kv_len = kv_dims[1];
     let embed = num_heads * head_dim;
 
-    let q = w.query.apply_linear_with_bias(q_input, q_in_dim, embed, std::sync::Arc::clone(&w.query_bias))?;
-    let k = w.key.apply_linear_with_bias(kv_src, kv_in_dim, embed, std::sync::Arc::clone(&w.key_bias))?;
-    let v = w.value.apply_linear_with_bias(kv_src, kv_in_dim, embed, std::sync::Arc::clone(&w.value_bias))?;
+    let q = w.query.apply_linear_with_bias(
+        q_input,
+        q_in_dim,
+        embed,
+        std::sync::Arc::clone(&w.query_bias),
+    )?;
+    let k = w.key.apply_linear_with_bias(
+        kv_src,
+        kv_in_dim,
+        embed,
+        std::sync::Arc::clone(&w.key_bias),
+    )?;
+    let v = w.value.apply_linear_with_bias(
+        kv_src,
+        kv_in_dim,
+        embed,
+        std::sync::Arc::clone(&w.value_bias),
+    )?;
 
     let scaling = 1.0_f64 / (head_dim as f64).sqrt();
     let q = q.mul_scalar(scaling);
@@ -314,14 +388,9 @@ fn apply_attention(
     ctx.merge_heads()
 }
 
-
-
 // ---- HuggingFace safetensors loader ----------------------------------------
 
-fn load_ln(
-    st: &crate::safetensors::MmapedSafetensors,
-    prefix: &str,
-) -> Result<LayerNormWeights> {
+fn load_ln(st: &crate::safetensors::MmapedSafetensors, prefix: &str) -> Result<LayerNormWeights> {
     use crate::lazy::load_tensor_as_f32;
     Ok(LayerNormWeights {
         gain: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.weight"))?),
@@ -338,21 +407,42 @@ fn load_blip_text_attn(
     use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
     Ok(BlipTextAttentionWeights {
         query: load_transposed_matrix_preserve_dtype(
-            st, &format!("{prefix}.self.query.weight"), hidden_size, hidden_size,
+            st,
+            &format!("{prefix}.self.query.weight"),
+            hidden_size,
+            hidden_size,
         )?,
-        query_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.self.query.bias"))?),
+        query_bias: Arc::from(load_tensor_as_f32(
+            st,
+            &format!("{prefix}.self.query.bias"),
+        )?),
         key: load_transposed_matrix_preserve_dtype(
-            st, &format!("{prefix}.self.key.weight"), hidden_size, kv_in_dim,
+            st,
+            &format!("{prefix}.self.key.weight"),
+            hidden_size,
+            kv_in_dim,
         )?,
         key_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.self.key.bias"))?),
         value: load_transposed_matrix_preserve_dtype(
-            st, &format!("{prefix}.self.value.weight"), hidden_size, kv_in_dim,
+            st,
+            &format!("{prefix}.self.value.weight"),
+            hidden_size,
+            kv_in_dim,
         )?,
-        value_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.self.value.bias"))?),
+        value_bias: Arc::from(load_tensor_as_f32(
+            st,
+            &format!("{prefix}.self.value.bias"),
+        )?),
         out_dense: load_transposed_matrix_preserve_dtype(
-            st, &format!("{prefix}.output.dense.weight"), hidden_size, hidden_size,
+            st,
+            &format!("{prefix}.output.dense.weight"),
+            hidden_size,
+            hidden_size,
         )?,
-        out_dense_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.output.dense.bias"))?),
+        out_dense_bias: Arc::from(load_tensor_as_f32(
+            st,
+            &format!("{prefix}.output.dense.bias"),
+        )?),
         out_ln: load_ln(st, &format!("{prefix}.output.LayerNorm"))?,
     })
 }
@@ -378,10 +468,12 @@ impl BlipTextWeights {
         let inter = cfg.intermediate_size;
 
         let word_embedding = Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}bert.embeddings.word_embeddings.weight"),
+            st,
+            &format!("{prefix}bert.embeddings.word_embeddings.weight"),
         )?);
         let position_embedding = Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}bert.embeddings.position_embeddings.weight"),
+            st,
+            &format!("{prefix}bert.embeddings.position_embeddings.weight"),
         )?);
         let embed_ln = load_ln(st, &format!("{prefix}bert.embeddings.LayerNorm"))?;
 
@@ -389,51 +481,71 @@ impl BlipTextWeights {
         for i in 0..cfg.num_hidden_layers {
             let lp = format!("{prefix}bert.encoder.layer.{i}");
             let self_attn = load_blip_text_attn(st, &format!("{lp}.attention"), h, h)?;
-            let cross_attn = load_blip_text_attn(
-                st, &format!("{lp}.crossattention"), h, encoder_hidden_size,
-            )?;
+            let cross_attn =
+                load_blip_text_attn(st, &format!("{lp}.crossattention"), h, encoder_hidden_size)?;
             let ffn = BlipTextFfnWeights {
                 intermediate: load_transposed_matrix_preserve_dtype(
-                    st, &format!("{lp}.intermediate.dense.weight"), inter, h,
+                    st,
+                    &format!("{lp}.intermediate.dense.weight"),
+                    inter,
+                    h,
                 )?,
                 intermediate_bias: Arc::from(load_tensor_as_f32(
-                    st, &format!("{lp}.intermediate.dense.bias"),
+                    st,
+                    &format!("{lp}.intermediate.dense.bias"),
                 )?),
                 output: load_transposed_matrix_preserve_dtype(
-                    st, &format!("{lp}.output.dense.weight"), h, inter,
+                    st,
+                    &format!("{lp}.output.dense.weight"),
+                    h,
+                    inter,
                 )?,
-                output_bias: Arc::from(load_tensor_as_f32(
-                    st, &format!("{lp}.output.dense.bias"),
-                )?),
+                output_bias: Arc::from(load_tensor_as_f32(st, &format!("{lp}.output.dense.bias"))?),
                 output_ln: load_ln(st, &format!("{lp}.output.LayerNorm"))?,
             };
-            layers.push(BlipTextLayerWeights { self_attn, cross_attn, ffn });
+            layers.push(BlipTextLayerWeights {
+                self_attn,
+                cross_attn,
+                ffn,
+            });
         }
 
         let pred_dense = load_transposed_matrix_preserve_dtype(
-            st, &format!("{prefix}cls.predictions.transform.dense.weight"), h, h,
+            st,
+            &format!("{prefix}cls.predictions.transform.dense.weight"),
+            h,
+            h,
         )?;
         let pred_dense_bias = Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}cls.predictions.transform.dense.bias"),
+            st,
+            &format!("{prefix}cls.predictions.transform.dense.bias"),
         )?);
         let pred_ln = load_ln(st, &format!("{prefix}cls.predictions.transform.LayerNorm"))?;
 
         let lm_head = load_transposed_matrix_preserve_dtype(
-            st, &format!("{prefix}cls.predictions.decoder.weight"), cfg.vocab_size, h,
+            st,
+            &format!("{prefix}cls.predictions.decoder.weight"),
+            cfg.vocab_size,
+            h,
         )?;
         let lm_head_bias = Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}cls.predictions.bias"),
+            st,
+            &format!("{prefix}cls.predictions.bias"),
         )?);
 
         Ok(Self {
-            word_embedding, position_embedding, embed_ln,
+            word_embedding,
+            position_embedding,
+            embed_ln,
             layers,
-            pred_dense, pred_dense_bias, pred_ln,
-            lm_head, lm_head_bias,
+            pred_dense,
+            pred_dense_bias,
+            pred_ln,
+            lm_head,
+            lm_head_bias,
         })
     }
 }
-
 
 // ---- Tests -----------------------------------------------------------------
 
@@ -462,33 +574,39 @@ mod tests {
         }
     }
 
-    fn attn_w(
-        h: usize, kv_in: usize, nb: &mut dyn FnMut() -> f32,
-    ) -> BlipTextAttentionWeights {
+    fn attn_w(h: usize, kv_in: usize, nb: &mut dyn FnMut() -> f32) -> BlipTextAttentionWeights {
         BlipTextAttentionWeights {
-            query: ws(h * h, nb), query_bias: vec_of(h, nb),
-            key: ws(kv_in * h, nb), key_bias: vec_of(h, nb),
-            value: ws(kv_in * h, nb), value_bias: vec_of(h, nb),
-            out_dense: ws(h * h, nb), out_dense_bias: vec_of(h, nb),
+            query: ws(h * h, nb),
+            query_bias: vec_of(h, nb),
+            key: ws(kv_in * h, nb),
+            key_bias: vec_of(h, nb),
+            value: ws(kv_in * h, nb),
+            value_bias: vec_of(h, nb),
+            out_dense: ws(h * h, nb),
+            out_dense_bias: vec_of(h, nb),
             out_ln: ln_w(h),
         }
     }
 
-    fn ffn_w(
-        h: usize, inter: usize, nb: &mut dyn FnMut() -> f32,
-    ) -> BlipTextFfnWeights {
+    fn ffn_w(h: usize, inter: usize, nb: &mut dyn FnMut() -> f32) -> BlipTextFfnWeights {
         BlipTextFfnWeights {
-            intermediate: ws(h * inter, nb), intermediate_bias: vec_of(inter, nb),
-            output: ws(inter * h, nb), output_bias: vec_of(h, nb),
+            intermediate: ws(h * inter, nb),
+            intermediate_bias: vec_of(inter, nb),
+            output: ws(inter * h, nb),
+            output_bias: vec_of(h, nb),
             output_ln: ln_w(h),
         }
     }
 
     fn tiny_config() -> BlipTextConfig {
         BlipTextConfig {
-            vocab_size: 32, hidden_size: 8, encoder_hidden_size: 8,
-            intermediate_size: 16, num_hidden_layers: 2,
-            num_attention_heads: 2, max_position_embeddings: 32,
+            vocab_size: 32,
+            hidden_size: 8,
+            encoder_hidden_size: 8,
+            intermediate_size: 16,
+            num_hidden_layers: 2,
+            num_attention_heads: 2,
+            max_position_embeddings: 32,
             hidden_activation: BlipTextActivation::Gelu,
             layer_norm_eps: 1e-12,
         }
@@ -497,13 +615,13 @@ mod tests {
     fn tiny_weights(cfg: &BlipTextConfig) -> BlipTextWeights {
         let mut nb = rng_seed(2026);
         let h = cfg.hidden_size;
-        let layers: Vec<BlipTextLayerWeights> = (0..cfg.num_hidden_layers).map(|_| {
-            BlipTextLayerWeights {
+        let layers: Vec<BlipTextLayerWeights> = (0..cfg.num_hidden_layers)
+            .map(|_| BlipTextLayerWeights {
                 self_attn: attn_w(h, h, &mut nb),
                 cross_attn: attn_w(h, cfg.encoder_hidden_size, &mut nb),
                 ffn: ffn_w(h, cfg.intermediate_size, &mut nb),
-            }
-        }).collect();
+            })
+            .collect();
         BlipTextWeights {
             word_embedding: vec_of(cfg.vocab_size * h, &mut nb),
             position_embedding: vec_of(cfg.max_position_embeddings * h, &mut nb),
@@ -521,10 +639,14 @@ mod tests {
     fn forward_shape_and_finite() {
         let cfg = tiny_config();
         let weights = tiny_weights(&cfg);
-        let model = BlipTextModel { config: cfg.clone(), weights };
+        let model = BlipTextModel {
+            config: cfg.clone(),
+            weights,
+        };
         let enc = LazyTensor::from_f32(
             (0..(1 * 5 * cfg.encoder_hidden_size))
-                .map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 5, cfg.encoder_hidden_size]),
             &Device::cpu(),
         );
@@ -540,7 +662,10 @@ mod tests {
     fn causal_mask_enforced() {
         let cfg = tiny_config();
         let weights = tiny_weights(&cfg);
-        let model = BlipTextModel { config: cfg.clone(), weights };
+        let model = BlipTextModel {
+            config: cfg.clone(),
+            weights,
+        };
         let enc = LazyTensor::from_f32(
             vec![0.05_f32; 1 * 4 * cfg.encoder_hidden_size],
             Shape::from_dims(&[1, 4, cfg.encoder_hidden_size]),
@@ -554,8 +679,12 @@ mod tests {
         for t in 0..3 {
             for c in 0..cfg.vocab_size {
                 let i = t * cfg.vocab_size + c;
-                assert!((a[i] - b[i]).abs() < 1e-5,
-                    "causal mask violated at t={t} c={c}: {} vs {}", a[i], b[i]);
+                assert!(
+                    (a[i] - b[i]).abs() < 1e-5,
+                    "causal mask violated at t={t} c={c}: {} vs {}",
+                    a[i],
+                    b[i]
+                );
             }
         }
     }
@@ -564,17 +693,22 @@ mod tests {
     fn cross_attention_is_wired() {
         let cfg = tiny_config();
         let weights = tiny_weights(&cfg);
-        let model = BlipTextModel { config: cfg.clone(), weights };
+        let model = BlipTextModel {
+            config: cfg.clone(),
+            weights,
+        };
         let ids = vec![1_u32, 2, 3];
         let enc_a = LazyTensor::from_f32(
             (0..(1 * 4 * cfg.encoder_hidden_size))
-                .map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 4, cfg.encoder_hidden_size]),
             &Device::cpu(),
         );
         let enc_b = LazyTensor::from_f32(
             (0..(1 * 4 * cfg.encoder_hidden_size))
-                .map(|i| (i as f32) * 0.01 + 0.5).collect::<Vec<_>>(),
+                .map(|i| (i as f32) * 0.01 + 0.5)
+                .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 4, cfg.encoder_hidden_size]),
             &Device::cpu(),
         );
@@ -584,8 +718,10 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-6,
-            "cross-attention must condition decoder on encoder, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-6,
+            "cross-attention must condition decoder on encoder, max_diff = {max_diff}"
+        );
     }
 
     #[test]

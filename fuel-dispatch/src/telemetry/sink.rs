@@ -171,7 +171,11 @@ impl TelemetrySink {
                 .map(|t| &t.0)
                 .cmp(&b.structure_key.as_ref().map(|t| &t.0))
                 .then_with(|| a.chosen.kernel_source.cmp(&b.chosen.kernel_source))
-                .then_with(|| a.chosen.kernel_revision_hash.cmp(&b.chosen.kernel_revision_hash))
+                .then_with(|| {
+                    a.chosen
+                        .kernel_revision_hash
+                        .cmp(&b.chosen.kernel_revision_hash)
+                })
         });
         recs
     }
@@ -196,7 +200,11 @@ impl TelemetrySink {
                 .0
                 .cmp(&b.wanted.0)
                 .then_with(|| a.fallback.kernel_source.cmp(&b.fallback.kernel_source))
-                .then_with(|| a.fallback.kernel_revision_hash.cmp(&b.fallback.kernel_revision_hash))
+                .then_with(|| {
+                    a.fallback
+                        .kernel_revision_hash
+                        .cmp(&b.fallback.kernel_revision_hash)
+                })
         });
         recs
     }
@@ -257,9 +265,9 @@ fn write_jsonl<T: serde::Serialize>(path: &Path, records: &[T]) -> std::io::Resu
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::telemetry::miss::{detect_miss, AdmittedContract};
-    use crate::telemetry::structure_key::{Contiguity, FdxOperandDesc, StructureKeyProvider};
     use crate::fkc::{ResolvedLayout, Tri};
+    use crate::telemetry::miss::{AdmittedContract, detect_miss};
+    use crate::telemetry::structure_key::{Contiguity, FdxOperandDesc, StructureKeyProvider};
     use fuel_ir::dispatch::OpKind;
     use fuel_ir::{BackendId, DType};
 
@@ -336,12 +344,22 @@ mod tests {
                 .expect("generic-only cell must emit a miss");
             sink.record_miss(miss);
         }
-        assert_eq!(sink.miss_cell_count(), 1, "three identical misses aggregate to ONE cell");
+        assert_eq!(
+            sink.miss_cell_count(),
+            1,
+            "three identical misses aggregate to ONE cell"
+        );
         let recs = sink.miss_records();
         assert_eq!(recs.len(), 1);
-        assert_eq!(recs[0].wanted, StructureKeyToken("matmul:innerdiv16:vec8:f16".into()));
+        assert_eq!(
+            recs[0].wanted,
+            StructureKeyToken("matmul:innerdiv16:vec8:f16".into())
+        );
         assert_eq!(recs[0].fallback, impl_id("baracuda-generic-strided"));
-        assert_eq!(recs[0].count, 3, "the three observations sum in the cell count");
+        assert_eq!(
+            recs[0].count, 3,
+            "the three observations sum in the cell count"
+        );
         assert_eq!(recs[0].hw, cpu_hw());
     }
 
@@ -351,7 +369,10 @@ mod tests {
         let provider = CannedProvider("k".into());
         let mut sink = TelemetrySink::new();
         for src in ["baracuda-generic-strided", "portable-cpu-strided"] {
-            let best = AdmittedContract { impl_id: impl_id(src), ..generic_best() };
+            let best = AdmittedContract {
+                impl_id: impl_id(src),
+                ..generic_best()
+            };
             let miss = detect_miss(&best, "matmul", &[operand()], "sm_89", &provider, cpu_hw())
                 .expect("miss");
             sink.record_miss(miss);
@@ -367,8 +388,8 @@ mod tests {
         let provider = CannedProvider("innerdiv16:f16".into());
         let best = generic_best();
         let mut sink = TelemetrySink::new();
-        let miss = detect_miss(&best, "matmul", &[operand()], "sm_89", &provider, cpu_hw())
-            .expect("miss");
+        let miss =
+            detect_miss(&best, "matmul", &[operand()], "sm_89", &provider, cpu_hw()).expect("miss");
         sink.record_miss(miss);
 
         let dir = tempfile::tempdir().expect("tempdir");
@@ -381,13 +402,22 @@ mod tests {
         assert_eq!(lines.len(), 1, "one record ⇒ one JSONL line");
         // Each line parses standalone as a MissRecord and round-trips.
         let back: MissRecord = serde_json::from_str(lines[0]).expect("parse MissRecord line");
-        assert_eq!(back.wanted, StructureKeyToken("matmul:innerdiv16:f16".into()));
+        assert_eq!(
+            back.wanted,
+            StructureKeyToken("matmul:innerdiv16:f16".into())
+        );
         assert_eq!(back.fallback, impl_id("baracuda-generic-strided"));
-        assert_eq!(back.hw.compute_capability, None, "CPU stamp round-trips to None");
+        assert_eq!(
+            back.hw.compute_capability, None,
+            "CPU stamp round-trips to None"
+        );
         // v2 schema stamped; est_speedup deliberately absent from the wire.
         assert_eq!(back.schema, super::super::record::TELEMETRY_SCHEMA_VERSION);
         assert!(!lines[0].contains("est_speedup"), "est_speedup is omitted");
-        assert!(!lines[0].contains("compute_capability"), "None CC omitted from the wire");
+        assert!(
+            !lines[0].contains("compute_capability"),
+            "None CC omitted from the wire"
+        );
     }
 
     /// An empty sink flushes an empty file without error (never-panic).
@@ -430,20 +460,30 @@ mod tests {
         let detailed = dispatch_rec(
             Some("mm:innerdiv16"),
             "baracuda",
-            vec![Candidate { impl_id: impl_id("baracuda"), latency_ns: Some(41_230) }],
+            vec![Candidate {
+                impl_id: impl_id("baracuda"),
+                latency_ns: Some(41_230),
+            }],
         );
         sink.record_dispatch(detailed);
         // Second: a Coarse re-observation of the SAME cell — empty candidates.
         let coarse = dispatch_rec(Some("mm:innerdiv16"), "baracuda", vec![]);
         sink.record_dispatch(coarse);
 
-        assert_eq!(sink.dispatch_cell_count(), 1, "same cell ⇒ one aggregated cell");
+        assert_eq!(
+            sink.dispatch_cell_count(),
+            1,
+            "same cell ⇒ one aggregated cell"
+        );
         let recs = sink.dispatch_records();
         assert_eq!(recs.len(), 1);
         assert_eq!(recs[0].count, 2, "two observations sum in the cell count");
         assert_eq!(
             recs[0].candidates,
-            vec![Candidate { impl_id: impl_id("baracuda"), latency_ns: Some(41_230) }],
+            vec![Candidate {
+                impl_id: impl_id("baracuda"),
+                latency_ns: Some(41_230)
+            }],
             "the Detailed candidates survive a later empty Coarse observation",
         );
     }
@@ -455,7 +495,11 @@ mod tests {
         let mut sink = TelemetrySink::new();
         sink.record_dispatch(dispatch_rec(Some("mm"), "baracuda", vec![]));
         sink.record_dispatch(dispatch_rec(Some("mm"), "cublas", vec![]));
-        assert_eq!(sink.dispatch_cell_count(), 2, "two chosen impls ⇒ two cells");
+        assert_eq!(
+            sink.dispatch_cell_count(),
+            2,
+            "two chosen impls ⇒ two cells"
+        );
     }
 
     /// `flush_all` writes the two record kinds to SEPARATE homogeneous files —
@@ -466,13 +510,16 @@ mod tests {
         let provider = CannedProvider("innerdiv16:f16".into());
         let best = generic_best();
         let mut sink = TelemetrySink::new();
-        let miss = detect_miss(&best, "matmul", &[operand()], "sm_89", &provider, cpu_hw())
-            .expect("miss");
+        let miss =
+            detect_miss(&best, "matmul", &[operand()], "sm_89", &provider, cpu_hw()).expect("miss");
         sink.record_miss(miss);
         sink.record_dispatch(dispatch_rec(
             Some("mm:innerdiv16"),
             "baracuda",
-            vec![Candidate { impl_id: impl_id("baracuda"), latency_ns: Some(41_230) }],
+            vec![Candidate {
+                impl_id: impl_id("baracuda"),
+                latency_ns: Some(41_230),
+            }],
         ));
 
         let dir = tempfile::tempdir().expect("tempdir");
@@ -484,8 +531,9 @@ mod tests {
             std::fs::read_to_string(dir.path().join("dispatches.jsonl")).expect("dispatches");
         let _: MissRecord =
             serde_json::from_str(miss_body.lines().next().expect("miss line")).expect("MissRecord");
-        let back: DispatchRecord = serde_json::from_str(disp_body.lines().next().expect("disp line"))
-            .expect("DispatchRecord");
+        let back: DispatchRecord =
+            serde_json::from_str(disp_body.lines().next().expect("disp line"))
+                .expect("DispatchRecord");
         assert_eq!(back.chosen, impl_id("baracuda"));
         assert_eq!(back.candidates[0].latency_ns, Some(41_230));
     }

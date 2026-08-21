@@ -31,9 +31,9 @@
 //! optimizer ranker doesn't need to know HOW the Judge collected
 //! the data, just that it can be queried per cell.
 
+use fuel_ir::DType;
 use fuel_ir::dispatch::{OpKind, SizeClass};
 use fuel_ir::probe::BackendId;
-use fuel_ir::DType;
 
 /// Read-only oracle over empirical measurements. Phase 3 wires this
 /// into [`super::cost::compute_static_costs`] as the optional
@@ -97,8 +97,10 @@ impl HashMapJudge {
         kernel_source: &str,
         latency_ns: u64,
     ) {
-        self.entries
-            .insert((op, dtype, size_class, backend, kernel_source.to_string()), latency_ns);
+        self.entries.insert(
+            (op, dtype, size_class, backend, kernel_source.to_string()),
+            latency_ns,
+        );
     }
 
     /// Total number of populated cells.
@@ -164,15 +166,16 @@ mod tests {
     #[test]
     fn hashmap_judge_miss_returns_none() {
         let j = HashMapJudge::new();
-        assert!(j
-            .measured_latency_ns(
+        assert!(
+            j.measured_latency_ns(
                 OpKind::AddElementwise,
                 DType::F32,
                 SizeClass(8),
                 BackendId::Cpu,
                 "",
             )
-            .is_none());
+            .is_none()
+        );
     }
 
     #[test]
@@ -181,42 +184,74 @@ mod tests {
         // last write wins per cell.
         let mut j = HashMapJudge::new();
         j.insert(
-            OpKind::MatMul, DType::F32, SizeClass(16), BackendId::Cpu, "aocl", 1_000,
+            OpKind::MatMul,
+            DType::F32,
+            SizeClass(16),
+            BackendId::Cpu,
+            "aocl",
+            1_000,
         );
         j.insert(
-            OpKind::MatMul, DType::F32, SizeClass(16), BackendId::Cpu, "aocl", 2_000,
+            OpKind::MatMul,
+            DType::F32,
+            SizeClass(16),
+            BackendId::Cpu,
+            "aocl",
+            2_000,
         );
         assert_eq!(
             j.measured_latency_ns(
-                OpKind::MatMul, DType::F32, SizeClass(16), BackendId::Cpu, "aocl",
+                OpKind::MatMul,
+                DType::F32,
+                SizeClass(16),
+                BackendId::Cpu,
+                "aocl",
             ),
             Some(2_000),
         );
         // Distinct kernel_source at the same (op, dtype, size, backend)
         // produces a DISTINCT entry — no collision.
         j.insert(
-            OpKind::MatMul, DType::F32, SizeClass(16), BackendId::Cpu, "mkl", 1_500,
+            OpKind::MatMul,
+            DType::F32,
+            SizeClass(16),
+            BackendId::Cpu,
+            "mkl",
+            1_500,
         );
         assert_eq!(j.len(), 2);
         assert_eq!(
             j.measured_latency_ns(
-                OpKind::MatMul, DType::F32, SizeClass(16), BackendId::Cpu, "mkl",
+                OpKind::MatMul,
+                DType::F32,
+                SizeClass(16),
+                BackendId::Cpu,
+                "mkl",
             ),
             Some(1_500),
         );
         assert_eq!(
             j.measured_latency_ns(
-                OpKind::MatMul, DType::F32, SizeClass(16), BackendId::Cpu, "aocl",
+                OpKind::MatMul,
+                DType::F32,
+                SizeClass(16),
+                BackendId::Cpu,
+                "aocl",
             ),
             Some(2_000),
         );
         // Unknown kernel_source at the same (op, dtype, size, backend)
         // misses — no fallthrough to either sibling.
-        assert!(j
-            .measured_latency_ns(
-                OpKind::MatMul, DType::F32, SizeClass(16), BackendId::Cpu, "portable-cpu",
+        assert!(
+            j.measured_latency_ns(
+                OpKind::MatMul,
+                DType::F32,
+                SizeClass(16),
+                BackendId::Cpu,
+                "portable-cpu",
             )
-            .is_none());
+            .is_none()
+        );
     }
 
     #[test]
@@ -225,23 +260,33 @@ mod tests {
         let (op, dt, sc) = (OpKind::MatMul, DType::F32, SizeClass(16));
         j.insert(op, dt, sc, BackendId::Cpu, "", 1_000_000);
         j.insert(op, dt, sc, BackendId::Cuda, "", 100_000);
-        assert_eq!(j.measured_latency_ns(op, dt, sc, BackendId::Cpu, ""), Some(1_000_000));
-        assert_eq!(j.measured_latency_ns(op, dt, sc, BackendId::Cuda, ""), Some(100_000));
-        assert!(j.measured_latency_ns(op, dt, sc, BackendId::Vulkan, "").is_none());
+        assert_eq!(
+            j.measured_latency_ns(op, dt, sc, BackendId::Cpu, ""),
+            Some(1_000_000)
+        );
+        assert_eq!(
+            j.measured_latency_ns(op, dt, sc, BackendId::Cuda, ""),
+            Some(100_000)
+        );
+        assert!(
+            j.measured_latency_ns(op, dt, sc, BackendId::Vulkan, "")
+                .is_none()
+        );
     }
 
     #[test]
     fn trait_is_dyn_compatible() {
         // Compile-time check encoded as runtime construction.
         let j: Box<dyn JudgeOracle> = Box::new(HashMapJudge::new());
-        assert!(j
-            .measured_latency_ns(
+        assert!(
+            j.measured_latency_ns(
                 OpKind::AddElementwise,
                 DType::F32,
                 SizeClass(0),
                 BackendId::Cpu,
                 "",
             )
-            .is_none());
+            .is_none()
+        );
     }
 }

@@ -5,9 +5,13 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_ir::{dispatch::OpKind, probe::BackendId, DType};
 use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
-use fuel_dispatch::{baracuda_dispatch::register_baracuda_cuda_kernels, dispatch::register_cuda_kernels, kernel::{KernelBindingTable, OpParams}};
+use fuel_dispatch::{
+    baracuda_dispatch::register_baracuda_cuda_kernels,
+    dispatch::register_cuda_kernels,
+    kernel::{KernelBindingTable, OpParams},
+};
+use fuel_ir::{DType, dispatch::OpKind, probe::BackendId};
 use fuel_memory::{BackendStorage, Storage};
 
 fn dev_or_skip() -> Option<CudaDevice> {
@@ -33,8 +37,7 @@ fn pick_alt(
     op: OpKind,
     expected: fuel_dispatch::KernelRef,
 ) -> fuel_dispatch::KernelRef {
-    let alternatives =
-        table.lookup_alternatives(op, &[DType::F32, DType::F32], BackendId::Cuda);
+    let alternatives = table.lookup_alternatives(op, &[DType::F32, DType::F32], BackendId::Cuda);
     let expected_ptr = expected as usize;
     for alt in alternatives {
         if (alt.kernel as usize) == expected_ptr {
@@ -86,10 +89,7 @@ fn baracuda_rope_f32_at_seq_position_zero_is_identity() {
     let got = download_f32(&out_arc.read().unwrap());
     // Identity at pos 0: output == input within fp32 tolerance.
     for (g, e) in got.iter().zip(input.iter()) {
-        assert!(
-            (g - e).abs() < 1e-5,
-            "got {got:?} expected {input:?}",
-        );
+        assert!((g - e).abs() < 1e-5, "got {got:?} expected {input:?}",);
     }
 }
 
@@ -206,8 +206,15 @@ fn pick_flash(
 /// reference matches the kernel's f32-accumulation-of-half-inputs numerics.
 #[allow(clippy::too_many_arguments)]
 fn decode_reference(
-    q: &[f32], k: &[f32], v: &[f32],
-    b: usize, hq: usize, hkv: usize, d: usize, sk: usize, k_len: usize,
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    b: usize,
+    hq: usize,
+    hkv: usize,
+    d: usize,
+    sk: usize,
+    k_len: usize,
     scale: f32,
 ) -> Vec<f32> {
     let mut out = vec![0.0f32; b * hq * d];
@@ -273,7 +280,10 @@ fn register_baracuda_binds_flash_decoding_f16_bf16() {
     register_baracuda_cuda_kernels(&mut table);
 
     let f16_alts = table.lookup_alternatives(
-        OpKind::FlashAttn, &[DType::F16, DType::F16, DType::F16, DType::F16], BackendId::Cuda);
+        OpKind::FlashAttn,
+        &[DType::F16, DType::F16, DType::F16, DType::F16],
+        BackendId::Cuda,
+    );
     let want_f16 =
         fuel_dispatch::baracuda_dispatch::flash_decoding::flash_decoding_f16 as *const () as usize;
     assert!(
@@ -282,7 +292,10 @@ fn register_baracuda_binds_flash_decoding_f16_bf16() {
     );
 
     let bf16_alts = table.lookup_alternatives(
-        OpKind::FlashAttn, &[DType::BF16, DType::BF16, DType::BF16, DType::BF16], BackendId::Cuda);
+        OpKind::FlashAttn,
+        &[DType::BF16, DType::BF16, DType::BF16, DType::BF16],
+        BackendId::Cuda,
+    );
     let want_bf16 =
         fuel_dispatch::baracuda_dispatch::flash_decoding::flash_decoding_bf16 as *const () as usize;
     assert!(
@@ -301,7 +314,12 @@ fn run_flash_decode_case(
     to_half: impl Fn(f32) -> f32, // round-trip through the storage dtype
     upload_half: impl Fn(&CudaDevice, &[f32]) -> Storage,
     download_half: impl Fn(&Storage) -> Vec<f32>,
-    b: usize, hq: usize, hkv: usize, d: usize, sk: usize, k_len: usize,
+    b: usize,
+    hq: usize,
+    hkv: usize,
+    d: usize,
+    sk: usize,
+    k_len: usize,
     tol: f32,
     seed0: u64,
 ) -> f32 {
@@ -310,8 +328,12 @@ fn run_flash_decode_case(
     // the exact values the kernel reads.
     let mut seed = seed0;
     let q_f32: Vec<f32> = (0..b * hq * d).map(|_| to_half(prng(&mut seed))).collect();
-    let k_f32: Vec<f32> = (0..b * hkv * sk * d).map(|_| to_half(prng(&mut seed))).collect();
-    let v_f32: Vec<f32> = (0..b * hkv * sk * d).map(|_| to_half(prng(&mut seed))).collect();
+    let k_f32: Vec<f32> = (0..b * hkv * sk * d)
+        .map(|_| to_half(prng(&mut seed)))
+        .collect();
+    let v_f32: Vec<f32> = (0..b * hkv * sk * d)
+        .map(|_| to_half(prng(&mut seed)))
+        .collect();
 
     let q = Arc::new(RwLock::new(upload_half(dev, &q_f32)));
     let k = Arc::new(RwLock::new(upload_half(dev, &k_f32)));
@@ -331,7 +353,13 @@ fn run_flash_decode_case(
         &mut [out.clone()],
         &[q_layout, k_layout, v_layout],
         &OpParams::FlashAttn {
-            b, hq, hkv, sq: 1, sk, d, k_len,
+            b,
+            hq,
+            hkv,
+            sq: 1,
+            sk,
+            d,
+            k_len,
             softmax_scale: scale,
             causal: true,
             window_size_left: None,
@@ -364,22 +392,31 @@ fn flash_decoding_f16_gqa_matches_base_map() {
     register_cuda_kernels(&mut table);
     register_baracuda_cuda_kernels(&mut table);
     let kernel = pick_flash(
-        &table, DType::F16,
+        &table,
+        DType::F16,
         fuel_dispatch::baracuda_dispatch::flash_decoding::flash_decoding_f16,
     );
     // (cap, k_len): single-split cases {1,37,128} + a multi-split case
     // (cap=384, k_len=300 ⇒ 2 splits) that exercises the combine kernel.
     for &(cap, k_len) in &[(128usize, 1usize), (128, 37), (128, 128), (384, 300)] {
         let diff = run_flash_decode_case(
-            &dev, DType::F16, kernel,
+            &dev,
+            DType::F16,
+            kernel,
             |x| f16::from_f32(x).to_f32(),
             |d, h| {
                 let hv: Vec<f16> = h.iter().map(|&x| f16::from_f32(x)).collect();
                 upload(d, DType::F16, &hv)
             },
             |s| download::<f16>(s).iter().map(|x| x.to_f32()).collect(),
-            2, 8, 2, 64, cap, k_len,
-            3.0e-2, 0x1234_5678 + (cap as u64) * 1000 + k_len as u64,
+            2,
+            8,
+            2,
+            64,
+            cap,
+            k_len,
+            3.0e-2,
+            0x1234_5678 + (cap as u64) * 1000 + k_len as u64,
         );
         eprintln!("flash_decoding_f16 cap={cap} k_len={k_len}: max abs diff = {diff}");
     }
@@ -394,20 +431,29 @@ fn flash_decoding_bf16_gqa_matches_base_map() {
     register_cuda_kernels(&mut table);
     register_baracuda_cuda_kernels(&mut table);
     let kernel = pick_flash(
-        &table, DType::BF16,
+        &table,
+        DType::BF16,
         fuel_dispatch::baracuda_dispatch::flash_decoding::flash_decoding_bf16,
     );
     for &k_len in &[1usize, 37, 128] {
         let diff = run_flash_decode_case(
-            &dev, DType::BF16, kernel,
+            &dev,
+            DType::BF16,
+            kernel,
             |x| bf16::from_f32(x).to_f32(),
             |d, h| {
                 let hv: Vec<bf16> = h.iter().map(|&x| bf16::from_f32(x)).collect();
                 upload(d, DType::BF16, &hv)
             },
             |s| download::<bf16>(s).iter().map(|x| x.to_f32()).collect(),
-            2, 8, 2, 64, 128, k_len,
-            8.0e-2, 0xABCD_0001 + k_len as u64,
+            2,
+            8,
+            2,
+            64,
+            128,
+            k_len,
+            8.0e-2,
+            0xABCD_0001 + k_len as u64,
         );
         eprintln!("flash_decoding_bf16 k_len={k_len}: max abs diff = {diff}");
     }
@@ -423,12 +469,17 @@ fn flash_decoding_f16_klen_zero_is_zeros() {
     register_cuda_kernels(&mut table);
     register_baracuda_cuda_kernels(&mut table);
     let kernel = pick_flash(
-        &table, DType::F16,
+        &table,
+        DType::F16,
         fuel_dispatch::baracuda_dispatch::flash_decoding::flash_decoding_f16,
     );
     let (b, hq, hkv, d, sk) = (2usize, 4, 2, 32, 64);
-    let q_f32: Vec<f16> = (0..b * hq * d).map(|i| f16::from_f32((i % 7) as f32)).collect();
-    let kv: Vec<f16> = (0..b * hkv * sk * d).map(|i| f16::from_f32((i % 5) as f32)).collect();
+    let q_f32: Vec<f16> = (0..b * hq * d)
+        .map(|i| f16::from_f32((i % 7) as f32))
+        .collect();
+    let kv: Vec<f16> = (0..b * hkv * sk * d)
+        .map(|i| f16::from_f32((i % 5) as f32))
+        .collect();
     let q = Arc::new(RwLock::new(upload(&dev, DType::F16, &q_f32)));
     let k = Arc::new(RwLock::new(upload(&dev, DType::F16, &kv)));
     let v = Arc::new(RwLock::new(upload(&dev, DType::F16, &kv)));
@@ -445,9 +496,18 @@ fn flash_decoding_f16_klen_zero_is_zeros() {
             Layout::contiguous(Shape::from_dims(&[b, hkv, sk, d])),
         ],
         &OpParams::FlashAttn {
-            b, hq, hkv, sq: 1, sk, d, k_len: 0,
-            softmax_scale: 0.125, causal: true,
-            window_size_left: None, window_size_right: None, softcap: None,
+            b,
+            hq,
+            hkv,
+            sq: 1,
+            sk,
+            d,
+            k_len: 0,
+            softmax_scale: 0.125,
+            causal: true,
+            window_size_left: None,
+            window_size_right: None,
+            softcap: None,
         },
     )
     .expect("flash_decoding k_len=0");
@@ -476,7 +536,8 @@ fn flash_decoding_reuses_per_device_workspace() {
     register_cuda_kernels(&mut table);
     register_baracuda_cuda_kernels(&mut table);
     let kernel = pick_flash(
-        &table, DType::F16,
+        &table,
+        DType::F16,
         fuel_dispatch::baracuda_dispatch::flash_decoding::flash_decoding_f16,
     );
 
@@ -487,15 +548,44 @@ fn flash_decoding_reuses_per_device_workspace() {
         let hv: Vec<f16> = h.iter().map(|&x| f16::from_f32(x)).collect();
         upload(d, DType::F16, &hv)
     };
-    let f16_down = |s: &Storage| download::<f16>(s).iter().map(|x| x.to_f32()).collect::<Vec<_>>();
+    let f16_down = |s: &Storage| {
+        download::<f16>(s)
+            .iter()
+            .map(|x| x.to_f32())
+            .collect::<Vec<_>>()
+    };
     run_flash_decode_case(
-        &dev, DType::F16, kernel, |x| f16::from_f32(x).to_f32(),
-        f16_up, f16_down, 2, 8, 2, 64, 384, 300, 3.0e-2, 0xF00D_0001,
+        &dev,
+        DType::F16,
+        kernel,
+        |x| f16::from_f32(x).to_f32(),
+        f16_up,
+        f16_down,
+        2,
+        8,
+        2,
+        64,
+        384,
+        300,
+        3.0e-2,
+        0xF00D_0001,
     );
     let after_first = dev.flash_workspace().allocation_count();
     run_flash_decode_case(
-        &dev, DType::F16, kernel, |x| f16::from_f32(x).to_f32(),
-        f16_up, f16_down, 2, 8, 2, 64, 384, 250, 3.0e-2, 0xF00D_0002,
+        &dev,
+        DType::F16,
+        kernel,
+        |x| f16::from_f32(x).to_f32(),
+        f16_up,
+        f16_down,
+        2,
+        8,
+        2,
+        64,
+        384,
+        250,
+        3.0e-2,
+        0xF00D_0002,
     );
     let after_second = dev.flash_workspace().allocation_count();
     eprintln!(
@@ -511,21 +601,32 @@ fn flash_decoding_reuses_per_device_workspace() {
     let ws = dev2.flash_workspace();
     let a0 = ws.allocation_count();
     assert_eq!(a0, 0, "a fresh device's workspace cache starts empty");
-    ws.with(&dev2, 8192, |ptr, n| { assert!(!ptr.is_null()); assert_eq!(n, 8192); }).unwrap();
+    ws.with(&dev2, 8192, |ptr, n| {
+        assert!(!ptr.is_null());
+        assert_eq!(n, 8192);
+    })
+    .unwrap();
     let a1 = ws.allocation_count();
     ws.with(&dev2, 8192, |_, n| assert_eq!(n, 8192)).unwrap(); // same ⇒ reuse
     let a2 = ws.allocation_count();
-    ws.with(&dev2, 16384, |_, _| ()).unwrap();                 // larger ⇒ grow
+    ws.with(&dev2, 16384, |_, _| ()).unwrap(); // larger ⇒ grow
     let a3 = ws.allocation_count();
-    ws.with(&dev2, 4096, |_, _| ()).unwrap();                  // smaller ⇒ reuse
+    ws.with(&dev2, 4096, |_, _| ()).unwrap(); // smaller ⇒ reuse
     let a4 = ws.allocation_count();
     // A zero-byte request touches neither the buffer nor the counter.
-    ws.with(&dev2, 0, |ptr, n| { assert!(ptr.is_null()); assert_eq!(n, 0); }).unwrap();
+    ws.with(&dev2, 0, |ptr, n| {
+        assert!(ptr.is_null());
+        assert_eq!(n, 0);
+    })
+    .unwrap();
     let a5 = ws.allocation_count();
     assert_eq!(a1, 1, "the first (fresh) request allocates exactly once");
     assert_eq!(a2, 1, "a same-capacity request reuses — no new allocation");
     assert_eq!(a3, 2, "a larger request grows — one more allocation");
-    assert_eq!(a4, 2, "a smaller request reuses the larger buffer — no allocation");
+    assert_eq!(
+        a4, 2,
+        "a smaller request reuses the larger buffer — no allocation"
+    );
     assert_eq!(a5, 2, "a zero-byte request allocates nothing");
 }
 
@@ -540,20 +641,24 @@ fn flash_decoding_f16_rejects_unsupported_shapes() {
     register_cuda_kernels(&mut table);
     register_baracuda_cuda_kernels(&mut table);
     let kernel = pick_flash(
-        &table, DType::F16,
+        &table,
+        DType::F16,
         fuel_dispatch::baracuda_dispatch::flash_decoding::flash_decoding_f16,
     );
     let mk = |b: usize, hq: usize, hkv: usize, sq: usize, sk: usize, d: usize| {
         let q = Arc::new(RwLock::new(upload(
-            &dev, DType::F16,
+            &dev,
+            DType::F16,
             &vec![f16::from_f32(0.1); b * hq * sq * d],
         )));
         let kv = Arc::new(RwLock::new(upload(
-            &dev, DType::F16,
+            &dev,
+            DType::F16,
             &vec![f16::from_f32(0.1); b * hkv * sk * d],
         )));
         let v = Arc::new(RwLock::new(upload(
-            &dev, DType::F16,
+            &dev,
+            DType::F16,
             &vec![f16::from_f32(0.1); b * hkv * sk * d],
         )));
         let out = Arc::new(RwLock::new(Storage::new(
@@ -569,16 +674,26 @@ fn flash_decoding_f16_rejects_unsupported_shapes() {
     {
         let (q, k, v, out) = mk(1, 2, 2, 3, 8, 32);
         let r = kernel(
-            &[q, k, v], &mut [out],
+            &[q, k, v],
+            &mut [out],
             &[
                 Layout::contiguous(Shape::from_dims(&[1, 2, 3, 32])),
                 Layout::contiguous(Shape::from_dims(&[1, 2, 8, 32])),
                 Layout::contiguous(Shape::from_dims(&[1, 2, 8, 32])),
             ],
             &OpParams::FlashAttn {
-                b: 1, hq: 2, hkv: 2, sq: 3, sk: 8, d: 32, k_len: 8,
-                softmax_scale: 0.1, causal: true,
-                window_size_left: None, window_size_right: None, softcap: None,
+                b: 1,
+                hq: 2,
+                hkv: 2,
+                sq: 3,
+                sk: 8,
+                d: 32,
+                k_len: 8,
+                softmax_scale: 0.1,
+                causal: true,
+                window_size_left: None,
+                window_size_right: None,
+                softcap: None,
             },
         );
         assert!(r.is_err(), "seq_q != 1 must be rejected");
@@ -587,16 +702,26 @@ fn flash_decoding_f16_rejects_unsupported_shapes() {
     {
         let (q, k, v, out) = mk(1, 8, 3, 1, 8, 32);
         let r = kernel(
-            &[q, k, v], &mut [out],
+            &[q, k, v],
+            &mut [out],
             &[
                 Layout::contiguous(Shape::from_dims(&[1, 8, 1, 32])),
                 Layout::contiguous(Shape::from_dims(&[1, 3, 8, 32])),
                 Layout::contiguous(Shape::from_dims(&[1, 3, 8, 32])),
             ],
             &OpParams::FlashAttn {
-                b: 1, hq: 8, hkv: 3, sq: 1, sk: 8, d: 32, k_len: 8,
-                softmax_scale: 0.1, causal: true,
-                window_size_left: None, window_size_right: None, softcap: None,
+                b: 1,
+                hq: 8,
+                hkv: 3,
+                sq: 1,
+                sk: 8,
+                d: 32,
+                k_len: 8,
+                softmax_scale: 0.1,
+                causal: true,
+                window_size_left: None,
+                window_size_right: None,
+                softcap: None,
             },
         );
         assert!(r.is_err(), "Hq % Hkv != 0 must be rejected");
@@ -605,18 +730,31 @@ fn flash_decoding_f16_rejects_unsupported_shapes() {
     {
         let (q, k, v, out) = mk(1, 2, 2, 1, 4, 160);
         let r = kernel(
-            &[q, k, v], &mut [out],
+            &[q, k, v],
+            &mut [out],
             &[
                 Layout::contiguous(Shape::from_dims(&[1, 2, 1, 160])),
                 Layout::contiguous(Shape::from_dims(&[1, 2, 4, 160])),
                 Layout::contiguous(Shape::from_dims(&[1, 2, 4, 160])),
             ],
             &OpParams::FlashAttn {
-                b: 1, hq: 2, hkv: 2, sq: 1, sk: 4, d: 160, k_len: 4,
-                softmax_scale: 0.1, causal: true,
-                window_size_left: None, window_size_right: None, softcap: None,
+                b: 1,
+                hq: 2,
+                hkv: 2,
+                sq: 1,
+                sk: 4,
+                d: 160,
+                k_len: 4,
+                softmax_scale: 0.1,
+                causal: true,
+                window_size_left: None,
+                window_size_right: None,
+                softcap: None,
             },
         );
-        assert!(r.is_err(), "head_dim > 128 must be rejected by _can_implement");
+        assert!(
+            r.is_err(),
+            "head_dim > 128 must be rejected by _can_implement"
+        );
     }
 }

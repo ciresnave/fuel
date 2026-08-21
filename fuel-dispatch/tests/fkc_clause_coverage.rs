@@ -104,7 +104,11 @@ const MIN_EXPECTED_CLAUSES: usize = 40;
 
 /// Variants known to be cited by tests. If the scanner stops seeing these it is
 /// blind, and its green is meaningless.
-const MUST_DETECT_AS_COVERED: &[&str] = &["LayoutIncoherent", "QuantIncoherent", "MissingRequiredField"];
+const MUST_DETECT_AS_COVERED: &[&str] = &[
+    "LayoutIncoherent",
+    "QuantIncoherent",
+    "MissingRequiredField",
+];
 
 fn crate_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -118,17 +122,22 @@ fn derive_clauses() -> BTreeSet<String> {
     let path = crate_root().join("src/fkc/error.rs");
     let src = std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("cannot read the clause source {}: {e}", path.display()));
-    let start = src
-        .find("pub enum FkcError")
-        .unwrap_or_else(|| panic!("`pub enum FkcError` not found in {} — the clause set moved; \
-             this gate must be repointed, NOT deleted", path.display()));
+    let start = src.find("pub enum FkcError").unwrap_or_else(|| {
+        panic!(
+            "`pub enum FkcError` not found in {} — the clause set moved; \
+             this gate must be repointed, NOT deleted",
+            path.display()
+        )
+    });
     let body = &src[start..];
 
     let mut out = BTreeSet::new();
     for line in body.lines() {
         // Variants sit at exactly one indent level, and are followed by `{`
         // (struct-like), `(` (tuple-like) or `,` (unit).
-        let Some(rest) = line.strip_prefix("    ") else { continue };
+        let Some(rest) = line.strip_prefix("    ") else {
+            continue;
+        };
         if rest.starts_with(' ') || rest.starts_with("//") || rest.starts_with('#') {
             continue;
         }
@@ -184,7 +193,9 @@ fn rust_sources() -> Vec<PathBuf> {
 fn cited_by_tests(clauses: &BTreeSet<String>) -> BTreeMap<String, Vec<String>> {
     let mut cited: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for file in rust_sources() {
-        let Ok(src) = std::fs::read_to_string(&file) else { continue };
+        let Ok(src) = std::fs::read_to_string(&file) else {
+            continue;
+        };
         let label = file
             .strip_prefix(crate_root())
             .unwrap_or(&file)
@@ -201,7 +212,9 @@ fn cited_by_tests(clauses: &BTreeSet<String>) -> BTreeMap<String, Vec<String>> {
             }
             if in_test && !trimmed.starts_with("//") {
                 for c in clauses {
-                    if line.contains(&format!("FkcError::{c}")) || line.contains(&format!("Self::{c}")) {
+                    if line.contains(&format!("FkcError::{c}"))
+                        || line.contains(&format!("Self::{c}"))
+                    {
                         let entry = cited.entry(c.clone()).or_default();
                         if !entry.contains(&label) {
                             entry.push(label.clone());
@@ -263,7 +276,11 @@ fn every_clause_is_cited_by_a_test() {
          proves is reachable. Either add a test that provokes it, or add an \
          entry to EXEMPT with a reason a reader can check.",
         uncovered.len(),
-        uncovered.iter().map(|c| format!("  - FkcError::{c}")).collect::<Vec<_>>().join("\n")
+        uncovered
+            .iter()
+            .map(|c| format!("  - FkcError::{c}"))
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 }
 
@@ -277,7 +294,10 @@ fn every_clause_is_cited_by_a_test() {
 #[test]
 fn no_orphan_exemptions() {
     let clauses = derive_clauses();
-    assert!(clauses.len() >= MIN_EXPECTED_CLAUSES, "clause derivation collapsed");
+    assert!(
+        clauses.len() >= MIN_EXPECTED_CLAUSES,
+        "clause derivation collapsed"
+    );
 
     let orphans: Vec<&str> = EXEMPT
         .iter()
@@ -313,7 +333,10 @@ fn no_orphan_exemptions() {
 fn exemptions_are_still_necessary_and_the_scanner_discriminates() {
     let clauses = derive_clauses();
     let cited = cited_by_tests(&clauses);
-    assert!(clauses.len() >= MIN_EXPECTED_CLAUSES, "clause derivation collapsed");
+    assert!(
+        clauses.len() >= MIN_EXPECTED_CLAUSES,
+        "clause derivation collapsed"
+    );
 
     let now_covered: Vec<&str> = EXEMPT
         .iter()

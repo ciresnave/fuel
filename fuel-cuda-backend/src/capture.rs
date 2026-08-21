@@ -235,7 +235,11 @@ mod tests {
         captured.replay(&dev).unwrap();
         dev.synchronize().unwrap();
         let got = dev.clone_dtoh(&zbuf.slice(0..n)).unwrap();
-        assert_eq!(got, expect(&xb), "replay after overwriting same input buffer");
+        assert_eq!(
+            got,
+            expect(&xb),
+            "replay after overwriting same input buffer"
+        );
 
         // 3) rebind onto NEW buffers (operand rebasing) -> replay
         let xc = [5.0f32, 6.0, 7.0, 8.0];
@@ -259,7 +263,11 @@ mod tests {
         captured.replay(&dev).unwrap();
         dev.synchronize().unwrap();
         let got = dev.clone_dtoh(&z2.slice(0..n)).unwrap();
-        assert_eq!(got, expect(&xc), "replay after rebinding to new operand buffers");
+        assert_eq!(
+            got,
+            expect(&xc),
+            "replay after rebinding to new operand buffers"
+        );
 
         assert!(dev.supports_graph_capture());
     }

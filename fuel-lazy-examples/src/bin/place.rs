@@ -13,17 +13,17 @@
 
 use fuel::judge::Criterion;
 use fuel::scheduling::{
-    auto_place_and_route, prepare_dispatch_table, recommend_placement, ScheduleOptions,
+    ScheduleOptions, auto_place_and_route, prepare_dispatch_table, recommend_placement,
 };
-use fuel_ir::{DeviceLocation, Shape};
 use fuel_graph::{Op, Tensor};
+use fuel_ir::{DeviceLocation, Shape};
 use std::sync::Arc;
 
 /// Phase 7.5 G2: example needs a real device for slot-populating
 /// constructors. Singleton CpuBackendDevice via OnceLock.
 fn cpu_dev() -> &'static std::sync::Arc<dyn fuel_backend_contract::DynBackendDevice> {
-    static D: std::sync::OnceLock<std::sync::Arc<dyn fuel_backend_contract::DynBackendDevice>>
-        = std::sync::OnceLock::new();
+    static D: std::sync::OnceLock<std::sync::Arc<dyn fuel_backend_contract::DynBackendDevice>> =
+        std::sync::OnceLock::new();
     D.get_or_init(|| std::sync::Arc::new(fuel_cpu_backend::dyn_impl::CpuBackendDevice))
 }
 
@@ -37,13 +37,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (table, profile) = prepare_dispatch_table(ScheduleOptions::default())?;
     eprintln!(
         "Loaded dispatch table ({} entries from {} profile measurements) in {:.2?}",
-        table.len(), profile.entries.len(), t0.elapsed(),
+        table.len(),
+        profile.entries.len(),
+        t0.elapsed(),
     );
     eprintln!();
 
     // Step 2: build a heterogeneous graph — three matmul sizes plus
     // a couple of unprofiled ops (Sub, Silu).
-    let root = Tensor::from_f32(vec![0.0_f32; 64 * 64], Shape::from_dims(&[64, 64]), cpu_dev());
+    let root = Tensor::from_f32(
+        vec![0.0_f32; 64 * 64],
+        Shape::from_dims(&[64, 64]),
+        cpu_dev(),
+    );
     let mk = |elems: usize| Arc::<[f32]>::from(vec![0.0_f32; elems]);
 
     // Tiny matmul: 64×64 @ 64×64 (size_class 12)
@@ -71,15 +77,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Per-node placement (graph has {} nodes):", graph.len());
     println!();
-    for &criterion in &[Criterion::Fastest, Criterion::MostAccurate, Criterion::Balanced] {
+    for &criterion in &[
+        Criterion::Fastest,
+        Criterion::MostAccurate,
+        Criterion::Balanced,
+    ] {
         let plan = recommend_placement(&graph, &table, criterion, fallback);
         println!("=== Criterion: {criterion} ===");
         for (label, t) in [
-            ("tiny  matmul (64×64²)",      &tiny_mm),
-            ("mid   matmul (256×256²)",    &mid_mm),
-            ("large matmul (1024×1024²)",  &big_mm),
-            ("unprofiled sub",             &unprofiled_sub),
-            ("unprofiled silu",            &unprofiled_silu),
+            ("tiny  matmul (64×64²)", &tiny_mm),
+            ("mid   matmul (256×256²)", &mid_mm),
+            ("large matmul (1024×1024²)", &big_mm),
+            ("unprofiled sub", &unprofiled_sub),
+            ("unprofiled silu", &unprofiled_silu),
         ] {
             println!("  {label:<28}  →  {:?}", plan[&t.id()]);
         }
@@ -92,7 +102,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let n_before = root.graph().read().unwrap().len();
     let _new_roots = auto_place_and_route(
         root.graph(),
-        &[tiny_mm.id(), mid_mm.id(), big_mm.id(), unprofiled_sub.id(), unprofiled_silu.id()],
+        &[
+            tiny_mm.id(),
+            mid_mm.id(),
+            big_mm.id(),
+            unprofiled_sub.id(),
+            unprofiled_silu.id(),
+        ],
         &table,
         Criterion::Fastest,
         fallback,

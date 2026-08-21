@@ -46,9 +46,9 @@ pub fn erf_inv(x: f64) -> f64 {
     if x == 0.0 {
         0.0
     } else if x >= 1.0 {
-        f64::INFINITY
+        <f64>::INFINITY
     } else if x <= -1.0 {
-        f64::NEG_INFINITY
+        <f64>::NEG_INFINITY
     } else if x < 0.0 {
         erf_inv_impl(-x, 1.0 + x, -1.0)
     } else {
@@ -70,9 +70,9 @@ pub fn erfc_f32(x: f32) -> f32 {
 /// error function at `x`.
 pub fn erfc_inv(x: f64) -> f64 {
     if x <= 0.0 {
-        f64::INFINITY
+        <f64>::INFINITY
     } else if x >= 2.0 {
-        f64::NEG_INFINITY
+        <f64>::NEG_INFINITY
     } else if x > 1.0 {
         erf_inv_impl(-1.0 + x, 2.0 - x, -1.0)
     } else {
