@@ -64,6 +64,11 @@ mod validate;
 // pub(crate): jit_ingest.rs (outside this module tree) reaches LedgerRecord
 // via crate::fkc::verify::LedgerRecord for RejectionReport::ledger_record.
 pub(crate) mod verify;
+// Contract-maintenance tooling for the `audited:` attestation (GAP-228).
+// OUTSIDE `verify/` on purpose: it writes `.fkc.md` files, and `verify/`'s
+// single-writer gate scans that directory for any write call. See its docs.
+#[cfg(test)]
+mod contract_audit_flip;
 #[cfg(feature = "vulkan")]
 mod vulkan_link;
 mod warn;

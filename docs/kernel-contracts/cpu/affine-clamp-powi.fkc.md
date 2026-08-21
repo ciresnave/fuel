@@ -90,8 +90,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false                    # CPU primitive: importer applies PRIMITIVE_DETERMINISTIC_CPU family default (§12.4)
-  notes: "native f32 mul-then-add; deterministic positional loop; bit-stable on same hardware."
+  audited: true
+  notes: "native f32 mul-then-add; deterministic positional loop; bit-stable on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -154,8 +154,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "native f64 mul-then-add; deterministic positional loop; bit-stable on same hardware."
+  audited: true
+  notes: "native f64 mul-then-add; deterministic positional loop; bit-stable on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -219,8 +219,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "widen to f32, mul-then-add in f32, narrow to bf16 on store; deterministic; bit-stable same hardware."
+  audited: true
+  notes: "widen to f32, mul-then-add in f32, narrow to bf16 on store; deterministic; bit-stable same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -283,8 +283,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "widen to f32, mul-then-add in f32, narrow to f16 on store; deterministic; bit-stable same hardware."
+  audited: true
+  notes: "widen to f32, mul-then-add in f32, narrow to f16 on store; deterministic; bit-stable same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -350,8 +350,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "f32::clamp; exact (no rounding); IEEE NaN propagates; min>max is a typed Error, not a panic."
+  audited: true
+  notes: "f32::clamp; exact (no rounding); IEEE NaN propagates; min>max is a typed Error, not a panic. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -414,8 +414,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "f64::clamp; exact; IEEE NaN propagates; min>max is a typed Error, not a panic."
+  audited: true
+  notes: "f64::clamp; exact; IEEE NaN propagates; min>max is a typed Error, not a panic. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -479,8 +479,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "widen to f32, clamp in f32, narrow to bf16 on store; IEEE NaN; min>max is a typed Error; bit-stable same hardware."
+  audited: true
+  notes: "widen to f32, clamp in f32, narrow to bf16 on store; IEEE NaN; min>max is a typed Error; bit-stable same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -542,8 +542,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "widen to f32, clamp in f32, narrow to f16 on store; IEEE NaN; min>max is a typed Error; bit-stable same hardware."
+  audited: true
+  notes: "widen to f32, clamp in f32, narrow to f16 on store; IEEE NaN; min>max is a typed Error; bit-stable same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -608,8 +608,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "native f32::powi (integer-exponent mul chain, not powf); exp==0 -> 1.0; deterministic; bit-stable same hardware."
+  audited: true
+  notes: "native f32::powi (integer-exponent mul chain, not powf); exp==0 -> 1.0; deterministic; bit-stable same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -670,8 +670,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "native f64::powi (integer-exponent mul chain, not powf); exp==0 -> 1.0; deterministic; bit-stable same hardware."
+  audited: true
+  notes: "native f64::powi (integer-exponent mul chain, not powf); exp==0 -> 1.0; deterministic; bit-stable same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -732,8 +732,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "widen to f32, f32::powi, narrow to bf16 on store; exp==0 -> 1.0; deterministic; bit-stable same hardware."
+  audited: true
+  notes: "widen to f32, f32::powi, narrow to bf16 on store; exp==0 -> 1.0; deterministic; bit-stable same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -794,8 +794,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "widen to f32, f32::powi, narrow to f16 on store; exp==0 -> 1.0; deterministic; bit-stable same hardware."
+  audited: true
+  notes: "widen to f32, f32::powi, narrow to f16 on store; exp==0 -> 1.0; deterministic; bit-stable same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```

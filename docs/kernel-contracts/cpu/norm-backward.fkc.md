@@ -112,8 +112,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false                      # CPU primitive: importer applies PRIMITIVE_DETERMINISTIC_CPU family default (§12.4)
-  notes: "native f32 dot + write; deterministic fixed-order per-row reduction."
+  audited: true
+  notes: "native f32 dot + write; deterministic fixed-order per-row reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -183,8 +183,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "native f64 dot + write; deterministic fixed-order per-row reduction."
+  audited: true
+  notes: "native f64 dot + write; deterministic fixed-order per-row reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -255,8 +255,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "bf16 widened to f32, dot accumulated in f32, narrowed to bf16 on store; deterministic per-row reduction."
+  audited: true
+  notes: "bf16 widened to f32, dot accumulated in f32, narrowed to bf16 on store; deterministic per-row reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -326,8 +326,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "f16 widened to f32, dot accumulated in f32, narrowed to f16 on store; deterministic per-row reduction."
+  audited: true
+  notes: "f16 widened to f32, dot accumulated in f32, narrowed to f16 on store; deterministic per-row reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -399,8 +399,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out = g - exp(y)*sum(g); per-row g_sum in f32 accumulator; deterministic fixed-order reduction."
+  audited: true
+  notes: "out = g - exp(y)*sum(g); per-row g_sum in f32 accumulator; deterministic fixed-order reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -470,8 +470,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "out = g - exp(y)*sum(g); native f64, f64 g_sum accumulator; deterministic per-row reduction."
+  audited: true
+  notes: "out = g - exp(y)*sum(g); native f64, f64 g_sum accumulator; deterministic per-row reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -541,8 +541,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "bf16 widened to f32, g_sum + exp in f32, narrowed to bf16 on store; deterministic per-row reduction."
+  audited: true
+  notes: "bf16 widened to f32, g_sum + exp in f32, narrowed to bf16 on store; deterministic per-row reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -612,8 +612,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "f16 widened to f32, g_sum + exp in f32, narrowed to f16 on store; deterministic per-row reduction."
+  audited: true
+  notes: "f16 widened to f32, g_sum + exp in f32, narrowed to f16 on store; deterministic per-row reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -688,8 +688,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "native f32; recomputes mean/var/rstd; eps narrowed to f32; deterministic per-row passes."
+  audited: true
+  notes: "native f32; recomputes mean/var/rstd; eps narrowed to f32; deterministic per-row passes. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -761,8 +761,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "native f64 throughout; eps used in f64; deterministic per-row passes."
+  audited: true
+  notes: "native f64 throughout; eps used in f64; deterministic per-row passes. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -834,8 +834,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "bf16 widened to f32, stats + combine in f32, eps narrowed to f32, narrowed to bf16 on store; deterministic per-row passes."
+  audited: true
+  notes: "bf16 widened to f32, stats + combine in f32, eps narrowed to f32, narrowed to bf16 on store; deterministic per-row passes. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -907,8 +907,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "f16 widened to f32, stats + combine in f32, eps narrowed to f32, narrowed to f16 on store; deterministic per-row passes."
+  audited: true
+  notes: "f16 widened to f32, stats + combine in f32, eps narrowed to f32, narrowed to f16 on store; deterministic per-row passes. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -982,8 +982,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "native f32; one fused sum_sq/sum_gx pass; eps narrowed to f32; deterministic per-row reduction."
+  audited: true
+  notes: "native f32; one fused sum_sq/sum_gx pass; eps narrowed to f32; deterministic per-row reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1054,8 +1054,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "native f64 throughout; eps used in f64; deterministic per-row reduction."
+  audited: true
+  notes: "native f64 throughout; eps used in f64; deterministic per-row reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1127,8 +1127,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "bf16 widened to f32, sum_sq/sum_gx + derived in f32, eps narrowed to f32, narrowed to bf16 on store; deterministic per-row reduction."
+  audited: true
+  notes: "bf16 widened to f32, sum_sq/sum_gx + derived in f32, eps narrowed to f32, narrowed to bf16 on store; deterministic per-row reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1200,8 +1200,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "f16 widened to f32, sum_sq/sum_gx + derived in f32, eps narrowed to f32, narrowed to f16 on store; deterministic per-row reduction."
+  audited: true
+  notes: "f16 widened to f32, sum_sq/sum_gx + derived in f32, eps narrowed to f32, narrowed to f16 on store; deterministic per-row reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```

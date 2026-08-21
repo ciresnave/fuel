@@ -80,7 +80,7 @@ mod invoker_cuda;
 mod invoker_vulkan;
 mod ledger;
 mod probe_recipes;
-mod seed_cpu_ledger;
+pub(crate) mod seed_cpu_ledger;
 #[cfg(feature = "cuda")]
 mod seed_cuda_ledger;
 #[cfg(feature = "vulkan")]

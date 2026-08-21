@@ -197,8 +197,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "max(0, x); exact for f32/f64. bf16/f16 widen to f32 then narrow. NaN-propagating (torch parity, pinned 2026-07-08) — not f32::max's NaN-as-missing."
+  audited: true
+  notes: "max(0, x); exact for f32/f64. bf16/f16 widen to f32 then narrow. NaN-propagating (torch parity, pinned 2026-07-08) — not f32::max's NaN-as-missing. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -259,8 +259,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "-x; exact (sign flip) for every dtype, including bf16/f16."
+  audited: true
+  notes: "-x; exact (sign flip) for every dtype, including bf16/f16. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -322,8 +322,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "x*x; f32/f64 native. bf16/f16 widen to f32 then narrow (double rounding)."
+  audited: true
+  notes: "x*x; f32/f64 native. bf16/f16 widen to f32 then narrow (double rounding). [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -385,8 +385,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "sqrt(x), IEEE-754 correctly rounded for f32/f64; negatives -> NaN. bf16/f16 via f32."
+  audited: true
+  notes: "sqrt(x), IEEE-754 correctly rounded for f32/f64; negatives -> NaN. bf16/f16 via f32. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -447,8 +447,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "1/x; f32/f64 IEEE divide (1/0 -> inf). bf16/f16 via f32."
+  audited: true
+  notes: "1/x; f32/f64 IEEE divide (1/0 -> inf). bf16/f16 via f32. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -509,8 +509,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "|x|; exact (sign clear) for every dtype, including bf16/f16."
+  audited: true
+  notes: "|x|; exact (sign clear) for every dtype, including bf16/f16. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -573,8 +573,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "tanh via std/libm; not correctly-rounded; bf16/f16 via f32. Same-hardware bitwise but not cross-hardware (libm differs)."
+  audited: true
+  notes: "tanh via std/libm; not correctly-rounded; bf16/f16 via f32. Same-hardware bitwise but not cross-hardware (libm differs). [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -635,8 +635,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "e^x via std/libm; not correctly-rounded; bf16/f16 via f32. Same-hardware bitwise, not cross-hardware."
+  audited: true
+  notes: "e^x via std/libm; not correctly-rounded; bf16/f16 via f32. Same-hardware bitwise, not cross-hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -698,8 +698,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "ln(x) via std/libm; negatives -> NaN, ln(0) -> -inf; not correctly-rounded; bf16/f16 via f32."
+  audited: true
+  notes: "ln(x) via std/libm; negatives -> NaN, ln(0) -> -inf; not correctly-rounded; bf16/f16 via f32. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -761,8 +761,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "sin(x) via std/libm; not correctly-rounded; bf16/f16 via f32. Same-hardware bitwise, not cross-hardware."
+  audited: true
+  notes: "sin(x) via std/libm; not correctly-rounded; bf16/f16 via f32. Same-hardware bitwise, not cross-hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -823,8 +823,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "cos(x) via std/libm; not correctly-rounded; bf16/f16 via f32. Same-hardware bitwise, not cross-hardware."
+  audited: true
+  notes: "cos(x) via std/libm; not correctly-rounded; bf16/f16 via f32. Same-hardware bitwise, not cross-hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -886,8 +886,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "1/(1+exp(-x)) via std/libm exp; not correctly-rounded; bf16/f16 via f32."
+  audited: true
+  notes: "1/(1+exp(-x)) via std/libm exp; not correctly-rounded; bf16/f16 via f32. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -949,8 +949,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "x/(1+exp(-x)) via std/libm exp; not correctly-rounded; bf16/f16 via f32."
+  audited: true
+  notes: "x/(1+exp(-x)) via std/libm exp; not correctly-rounded; bf16/f16 via f32. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1011,8 +1011,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "x>0 ? 1 : 0; exact compare+select; step(NaN)=0 (NaN compares false). bf16/f16 compared in f32."
+  audited: true
+  notes: "x>0 ? 1 : 0; exact compare+select; step(NaN)=0 (NaN compares false). bf16/f16 compared in f32. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1073,8 +1073,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "floor(x); exact (roundTowardNegative). bf16/f16 via f32 (the f32 floor is exactly representable back in half)."
+  audited: true
+  notes: "floor(x); exact (roundTowardNegative). bf16/f16 via f32 (the f32 floor is exactly representable back in half). [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1135,8 +1135,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "ceil(x); exact (roundTowardPositive). bf16/f16 via f32 (exactly representable back in half)."
+  audited: true
+  notes: "ceil(x); exact (roundTowardPositive). bf16/f16 via f32 (exactly representable back in half). [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1198,8 +1198,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "round_ties_even (banker's, roundTiesToEven, NOT half-away-from-zero); exact. bf16/f16 via f32."
+  audited: true
+  notes: "round_ties_even (banker's, roundTiesToEven, NOT half-away-from-zero); exact. bf16/f16 via f32. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1262,8 +1262,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "x>0 ? 1 : x<0 ? -1 : 0; exact; sign(0)=0, sign(NaN)=0. bf16/f16 compared in f32."
+  audited: true
+  notes: "x>0 ? 1 : x<0 ? -1 : 0; exact; sign(0)=0, sign(NaN)=0. bf16/f16 compared in f32. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1325,8 +1325,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "erf via libm::erff (f32) / libm::erf (f64); not correctly-rounded; bf16/f16 via f32 (erff). Same-hardware bitwise (libm pinned), not cross-hardware."
+  audited: true
+  notes: "erf via libm::erff (f32) / libm::erf (f64); not correctly-rounded; bf16/f16 via f32 (erff). Same-hardware bitwise (libm pinned), not cross-hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1390,8 +1390,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "EXACT erf GELU 0.5*x*(1+erf(x/sqrt2)) via libm; DISTINCT from gelu_tanh. bf16/f16 via f32. Same-hardware bitwise, not cross-hardware."
+  audited: true
+  notes: "EXACT erf GELU 0.5*x*(1+erf(x/sqrt2)) via libm; DISTINCT from gelu_tanh. bf16/f16 via f32. Same-hardware bitwise, not cross-hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1458,8 +1458,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "TANH-approx GELU 0.5*x*(1+tanh(sqrt(2/pi)*(x+0.044715*x^3))); sqrt(2/pi) 7-digit f32 / 16-digit f64; DISTINCT from gelu_erf. bf16/f16 via f32. Same-hardware bitwise, not cross-hardware."
+  audited: true
+  notes: "TANH-approx GELU 0.5*x*(1+tanh(sqrt(2/pi)*(x+0.044715*x^3))); sqrt(2/pi) 7-digit f32 / 16-digit f64; DISTINCT from gelu_erf. bf16/f16 via f32. Same-hardware bitwise, not cross-hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1522,8 +1522,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "1/sqrt(x) as a single op (not Sqrt+Recip); negatives -> NaN, rsqrt(0) -> +inf. f32/f64 native; bf16/f16 via f32."
+  audited: true
+  notes: "1/sqrt(x) as a single op (not Sqrt+Recip); negatives -> NaN, rsqrt(0) -> +inf. f32/f64 native; bf16/f16 via f32. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
