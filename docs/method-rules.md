@@ -681,6 +681,34 @@ The obvious born-red for *"these entries no longer depend on the fill"* is **del
 
 ---
 
+## a-zero-match-filter-satisfies-the-born-red
+
+> **Index line (in CLAUDE.md):** **`cargo test <filter>` reports `ok` and exits 0 when the filter matches NOTHING** — so **every “run it and watch it fail” step is satisfied by a run in which the test does not exist.** A module never registered, a name misspelled, a forgotten `#[test]` — all produce the same green. **The born-red discipline has a hole exactly at its entry point.** Read the COUNTS, never the word `ok`.
+
+**Found 2026-08-21 by MLMF, live, on a task whose brief predicted a compile error for an unregistered module and got a green run with zero tests. VERIFIED IN FUEL with a positive control:**
+
+```
+cargo test -p fuel-ir --test gap_hedges this_test_does_not_exist_anywhere
+  test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out     exit 0
+(control) cargo test -p fuel-ir --test gap_hedges no_new_prose_hedge
+  test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 11 filtered out     exit 0
+```
+
+**This repo already refuses `running 0 tests` as a PASS. The sharper form is that it also satisfies a RED**: an implementer can ship tests that never ran **and truthfully report the red-before-green step as performed.** The step that is supposed to prove a test CAN fail is the step the hole lives in.
+
+> **A test runner reports on the tests it FOUND, and has no opinion about the ones it did not.**
+
+**PRACTICE: a born-red report must carry the counts and the assertion — *“1 failed, 52 filtered out, at assertion X”*. *“It failed as expected”* is a VERDICT, and a verdict is exactly what the zero-match run also produces.**
+
+✅ **FUEL'S BORN-REDS TONIGHT WERE NOT EXPOSED, and the reason is worth keeping rather than the relief:** every reported pair carried a nonzero count — GAP-214 inc 2 `FAILED. 0 passed; 1 failed; 2 filtered out`, inc 3 `0 passed; 1 failed; 3 filtered out`, the greens `1 passed`. **A `1 failed` cannot come from a zero-match run.** The defence was already standing because the architect kept asking for the `test result:` line instead of the exit code — **an instrument requirement that turned out to close a hole nobody had named yet.**
+
+**Two adjacent findings from the same MLMF task, both worth carrying:**
+
+**A FALSE COMMENT WITH A COMPLETELY DEAD CONTROL.** A brief claimed that deleting an allocation bound would abort on a `u32::MAX` count. Measured: `try_reserve(4294967295)` for a `Vec<u64>` **returns `Ok` and commits 34 GB** — the abort could never happen, because `try_reserve` exists to avoid it. **So the explicit bytes-remaining bound is the entire defence and the suite as briefed could not detect its removal.** And their own earlier code already documented the correct behaviour, from a sabotage that had corrected the same misconception — **a mistake re-made against a fix its author had already written down.**
+
+**A CONTROL THAT WAS STRUCTURALLY IMPOSSIBLE RATHER THAN WEAK.** A predicted `u32`/`u64` field swap would kill two tests — **except the swap consumes the same twelve bytes in either order, so no position assertion anywhere can see it.** That is *a correct total hides a wrong distribution* with **POSITION** as the projection the defect leaves invariant: **second domain the rule has covered without modification.**
+
+---
 ## a-restated-reason-is-never-re-derived
 
 > **Index line (in CLAUDE.md):** **A stale MEASUREMENT gets caught because someone eventually re-runs the query. A STALE JUSTIFICATION NEVER GETS RE-RUN — restating it costs nothing and reads as identical to having checked.** And distinguish the two failures, because they need different fixes: **an EXPIRED reason is a claim that WAS true (wants a re-check schedule); a reason that NEVER APPLIED is a claim that never was (wants the justification DERIVED at the moment it is stated).**
