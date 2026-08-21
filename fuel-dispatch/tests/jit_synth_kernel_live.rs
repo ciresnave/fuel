@@ -336,6 +336,98 @@ fn jit_adopt_loads_and_launches_a_synthesized_cuda_kernel() {
     assert_eq!(got, want, "relu(a + b) via the JIT-loaded CUDA kernel");
 }
 
+/// **GAP-214 born-red.** A JIT-loaded `CudaFunc` is valid only inside the CUDA
+/// context that loaded it. `dispatch_slot` records the loading device's
+/// [`DeviceId`] and refuses to launch against operands on ANY other device — a
+/// typed error, never a launch. We assert the REFUSAL, not the bad launch: the
+/// failure mode is UB, which does not reliably fail, so observing it is not a
+/// test.
+///
+/// Two `CudaDevice::new(0)` on the SAME ordinal yield DISTINCT `DeviceId`s (the
+/// id is minted from a monotonic counter), so this exercises
+/// same-ordinal-different-context — GAP-001's actual symptom — not the easy
+/// cross-ordinal case a much weaker check would also pass.
+///
+/// Three arms + the standing sabotage discipline:
+/// 1. NEGATIVE CONTROL — all operands on the loading device → normal launch.
+///    Without it the test passes for a dispatcher that refuses everything.
+/// 2. all operands on a foreign context → typed refusal.
+/// 3. PER-OPERAND DISCRIMINATOR — inputs on dev1, OUTPUT on dev2. A guard that
+///    checks only one operand launches this (cross-context UB on the output);
+///    the per-operand guard refuses. The arm a reviewer cannot see missing.
+#[test]
+#[ignore]
+fn jit_kernel_refuses_operands_on_a_foreign_cuda_context() {
+    let (Some(dev1), Some(dev2)) = (dev_or_skip(), dev_or_skip()) else {
+        eprintln!(
+            "skipping jit_kernel_refuses_operands_on_a_foreign_cuda_context: no CUDA device"
+        );
+        return;
+    };
+    assert_ne!(
+        dev1.id(),
+        dev2.id(),
+        "two CudaDevice::new(0) on one ordinal must have distinct DeviceIds — the premise",
+    );
+
+    let artifact = SynthArtifact {
+        artifact: compile_relu_add_ptx(),
+        kind: ArtifactKind::Ptx,
+        link: LinkEntry {
+            entry_point: ENTRY.into(),
+            symbol: ENTRY.into(),
+            structure_key: "elementwise:f32".into(),
+            revision_hash: 1,
+        },
+        contract: "## fused_op: fuel_test_jit_relu_add_gap214\ncost: n\n".into(),
+    };
+    // The slot records dev1's DeviceId at claim time.
+    let kernel = load_synth_kernel(&artifact, &dev1).expect("load on dev1");
+
+    let a = [1.0_f32, -5.0, 2.0, -0.5];
+    let b = [2.0_f32, 3.0, -10.0, 0.5];
+    let layout = Layout::contiguous(Shape::from_dims(&[a.len()]));
+    let layouts = [layout.clone(), layout.clone(), layout];
+
+    // Arm 1 — NEGATIVE CONTROL: matching device launches and computes relu(a+b).
+    {
+        let lhs = Arc::new(RwLock::new(upload_f32(&dev1, &a)));
+        let rhs = Arc::new(RwLock::new(upload_f32(&dev1, &b)));
+        let out = alloc_out_nan_filled(&dev1, a.len());
+        kernel(&[lhs, rhs], &mut [out.clone()], &layouts, &OpParams::None)
+            .expect("arm1: matching-device dispatch must LAUNCH, not refuse");
+        let got = download_f32(&out.read().unwrap());
+        assert_fully_written(&got, "gap214 arm1 (matching device)");
+        let want: Vec<f32> = a.iter().zip(&b).map(|(x, y)| (x + y).max(0.0)).collect();
+        assert_eq!(got, want, "arm1: relu(a + b) on the loading device");
+    }
+
+    // Arm 2 — all operands on dev2 (a foreign context) → typed refusal, no launch.
+    {
+        let lhs = Arc::new(RwLock::new(upload_f32(&dev2, &a)));
+        let rhs = Arc::new(RwLock::new(upload_f32(&dev2, &b)));
+        let out = alloc_out_nan_filled(&dev2, a.len());
+        let err = kernel(&[lhs, rhs], &mut [out], &layouts, &OpParams::None)
+            .expect_err("arm2: operands on a foreign context must be REFUSED, not launched");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("different") && msg.contains("context"),
+            "arm2: the refusal must name the device-context mismatch, got: {msg}",
+        );
+    }
+
+    // Arm 3 — PER-OPERAND DISCRIMINATOR: inputs on dev1, OUTPUT on dev2. A
+    // check-one-operand impl (first input, on dev1) would launch and corrupt the
+    // dev2 output buffer from dev1's context; the per-operand guard refuses.
+    {
+        let lhs = Arc::new(RwLock::new(upload_f32(&dev1, &a)));
+        let rhs = Arc::new(RwLock::new(upload_f32(&dev1, &b)));
+        let out = alloc_out_nan_filled(&dev2, a.len()); // OUTPUT on the wrong device
+        kernel(&[lhs, rhs], &mut [out], &layouts, &OpParams::None)
+            .expect_err("arm3: a mixed-device operand set (output on dev2) must be REFUSED");
+    }
+}
+
 // ---- scalar-Param kernel (the trailing `float p{i}` ABI) -------------------
 
 /// `mul_scalar` with ONE runtime param — the emitter's param'd scalar ABI:
