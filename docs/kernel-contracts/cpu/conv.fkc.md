@@ -128,8 +128,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false                         # CPU primitive: family default (PRIMITIVE_DETERMINISTIC_CPU) applies (§4.8/§12.4)
-  notes: "native f32 direct conv; fixed reduction order over (Cin/group, Kh, Kw); deterministic; not bit-stable cross-hardware (FMA contraction may differ)."
+  audited: true
+  notes: "native f32 direct conv; fixed reduction order over (Cin/group, Kh, Kw); deterministic; not bit-stable cross-hardware (FMA contraction may differ). [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -209,8 +209,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "native f64 direct conv; fixed reduction order; deterministic; widest precision of the family (no widen/narrow round-trip)."
+  audited: true
+  notes: "native f64 direct conv; fixed reduction order; deterministic; widest precision of the family (no widen/narrow round-trip). [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -293,8 +293,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "per-output-position reduction accumulated in f32 (widen on load, narrow on store); bf16 I/O. Deterministic; not bit-stable cross-hardware."
+  audited: true
+  notes: "per-output-position reduction accumulated in f32 (widen on load, narrow on store); bf16 I/O. Deterministic; not bit-stable cross-hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -375,8 +375,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "per-output-position reduction accumulated in f32 (widen on load, narrow on store); f16 I/O (IEEE half). Deterministic; not bit-stable cross-hardware."
+  audited: true
+  notes: "per-output-position reduction accumulated in f32 (widen on load, narrow on store); f16 I/O (IEEE half). Deterministic; not bit-stable cross-hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -470,8 +470,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false                         # CPU primitive: family default (PRIMITIVE_DETERMINISTIC_CPU) applies (§4.8/§12.4)
-  notes: "native f32 scatter-accumulate; fixed scatter order; val==0 skip is value-dependent but result-identical; deterministic; not bit-stable cross-hardware (FMA contraction may differ)."
+  audited: true
+  notes: "native f32 scatter-accumulate; fixed scatter order; val==0 skip is value-dependent but result-identical; deterministic; not bit-stable cross-hardware (FMA contraction may differ). [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -552,8 +552,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "native f64 scatter-accumulate; fixed scatter order; val==0 skip value-dependent but result-identical; deterministic; widest precision of the family (no widen/narrow round-trip)."
+  audited: true
+  notes: "native f64 scatter-accumulate; fixed scatter order; val==0 skip value-dependent but result-identical; deterministic; widest precision of the family (no widen/narrow round-trip). [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -639,8 +639,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "all scatter accumulation in an f32 buffer (widen on load, narrow on store); bf16 I/O. Deterministic; not bit-stable cross-hardware."
+  audited: true
+  notes: "all scatter accumulation in an f32 buffer (widen on load, narrow on store); bf16 I/O. Deterministic; not bit-stable cross-hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -723,8 +723,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "all scatter accumulation in an f32 buffer (widen on load, narrow on store); f16 I/O (IEEE half). Deterministic; not bit-stable cross-hardware."
+  audited: true
+  notes: "all scatter accumulation in an f32 buffer (widen on load, narrow on store); f16 I/O (IEEE half). Deterministic; not bit-stable cross-hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```

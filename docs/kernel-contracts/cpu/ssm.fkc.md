@@ -447,8 +447,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false                         # CPU primitive: family default (PRIMITIVE_DETERMINISTIC_CPU) applies (§4.8/§12.4)
-  notes: "native f32 depthwise conv + bias; optional fused SiLU. Deterministic; not bit-stable cross-hardware (FMA contraction may differ)."
+  audited: true
+  notes: "native f32 depthwise conv + bias; optional fused SiLU. Deterministic; not bit-stable cross-hardware (FMA contraction may differ). [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -527,8 +527,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "native f64 depthwise conv + bias; optional fused SiLU; widest precision of the family. Deterministic; not bit-stable cross-hardware."
+  audited: true
+  notes: "native f64 depthwise conv + bias; optional fused SiLU; widest precision of the family. Deterministic; not bit-stable cross-hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -608,8 +608,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "compute in f32 (widen on load, narrow on store); bf16 I/O; optional fused SiLU in f32. Deterministic; not bit-stable cross-hardware."
+  audited: true
+  notes: "compute in f32 (widen on load, narrow on store); bf16 I/O; optional fused SiLU in f32. Deterministic; not bit-stable cross-hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -688,8 +688,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "compute in f32 (widen on load, narrow on store); f16 I/O (IEEE half); optional fused SiLU in f32. Deterministic; not bit-stable cross-hardware."
+  audited: true
+  notes: "compute in f32 (widen on load, narrow on store); f16 I/O (IEEE half); optional fused SiLU in f32. Deterministic; not bit-stable cross-hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```

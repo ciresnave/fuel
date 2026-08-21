@@ -963,6 +963,112 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
             })
         }
 
+        // --- GAP-228(b): the conv family ----------------------------------
+        //
+        // These 20 registrations declare `max_ulp: ~` throughout, so ONLY
+        // `bit_stable_on_same_hardware` needs earning and **no exact
+        // reference is required at all**. That is a stronger reason for
+        // taking conv first than the one the scope was argued on ("its
+        // reference is definable") — worth recording, because a correct
+        // decision reached through a weaker reason is still a weaker reason.
+        //
+        // Shapes read off `seed_cpu_ledger::build_probe`'s FUSED arms for the
+        // same families, which are known to work. NOT unified with them:
+        // GAP-220 tracks whether the two builders encode the same obligation,
+        // and that is a question about their CALLERS.
+        //
+        // Arity comes from the dtype tuple, matching the registration: 3 = no
+        // bias, 4 = bias. Read, not assumed — the tuples were measured off the
+        // live binding table.
+        OpKind::Conv2D | OpKind::ConvTranspose2D => {
+            let with_bias = match dtypes.len() {
+                3 => false,
+                4 => true,
+                _ => return None,
+            };
+            let is_transpose = matches!(op, OpKind::ConvTranspose2D);
+            // Transpose: H_out = (H_in-1)*stride - 2*pad + dil*(Kh-1) + out_pad + 1
+            //          = (2-1)*1 - 0 + 1*(2-1) + 0 + 1 = 3
+            // Forward:   H_out = (H_in + 2*pad - dil*(Kh-1) - 1)/stride + 1 = 2
+            let (x_shape, w_shape, out_shape): ([usize; 4], [usize; 4], [usize; 4]) =
+                if is_transpose {
+                    ([1, 1, 2, 2], [1, 1, 2, 2], [1, 1, 3, 3])
+                } else {
+                    ([1, 1, 3, 3], [1, 1, 2, 2], [1, 1, 2, 2])
+                };
+            let x_len: usize = x_shape.iter().product();
+            let w_len: usize = w_shape.iter().product();
+            let out_len: usize = out_shape.iter().product();
+            let cout = out_shape[1];
+            let x = ht(dt, vec![x_len], &fill_deterministic(x_len, seed))?;
+            let w = ht(dt, vec![w_len], &fill_deterministic(w_len, seed ^ 0x3333))?;
+            let mut inputs = vec![x, w];
+            if with_bias {
+                inputs.push(ht(dt, vec![cout], &fill_deterministic(cout, seed ^ 0x4444))?);
+            }
+            let params = if is_transpose {
+                OpParams::ConvTranspose2D {
+                    x_shape,
+                    w_shape,
+                    out_shape,
+                    stride: (1, 1),
+                    padding: (0, 0),
+                    output_padding: (0, 0),
+                    dilation: (1, 1),
+                    groups: 1,
+                }
+            } else {
+                OpParams::Conv2D {
+                    x_shape,
+                    w_shape,
+                    out_shape,
+                    stride: (1, 1),
+                    padding: (0, 0),
+                    dilation: (1, 1),
+                    groups: 1,
+                }
+            };
+            Some(Probe {
+                inputs,
+                params,
+                out_dtype: dt,
+                out_shape: vec![out_len],
+                out_seed: None,
+            })
+        }
+
+        // Depthwise causal 1-D conv: `(x, weight, bias)`, caller left-pads.
+        //
+        // The values are the hand-verified ones from
+        // `fuel-cpu-backend`'s `causal_conv1d_f32_no_silu_basic` (out[0]=2.1,
+        // out[1]=5.1) rather than `fill_deterministic` output — a known-sane
+        // invocation instead of arbitrary bytes. For a bit-stability claim
+        // any deterministic input works, but a probe whose expected output is
+        // known is the one that fails loudly if the calling convention drifts.
+        OpKind::CausalConv1d => {
+            if dtypes.len() != 4 {
+                return None;
+            }
+            let (batch, channels, seq_in, seq_out, kernel) = (1usize, 1usize, 4usize, 2usize, 3usize);
+            let x = ht(dt, vec![batch * channels * seq_in], &[0.0, 0.0, 1.0, 2.0])?;
+            let w = ht(dt, vec![channels * kernel], &[0.5, 1.0, 2.0])?;
+            let b = ht(dt, vec![channels], &[0.1])?;
+            Some(Probe {
+                inputs: vec![x, w, b],
+                params: OpParams::CausalConv1d {
+                    batch,
+                    channels,
+                    seq_in,
+                    seq_out,
+                    kernel,
+                    use_silu: false,
+                },
+                out_dtype: dt,
+                out_shape: vec![batch * channels * seq_out],
+                out_seed: None,
+            })
+        }
+
         // Residue still without a recipe, so the next reader is not guessing:
         // attention (FlashAttn x4 variants, PagedAttn), conv (Conv2D,
         // ConvTranspose2D, CausalConv1d), MatMul / QMatMul / Nf4Matmul,
