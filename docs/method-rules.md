@@ -616,3 +616,37 @@ Replacing an older cause-assertion, the lane wrote a **biconditional** — *UNAU
 ### A footnote worth its own line
 
 **A failure message that carries only a DISTANCE cannot diagnose the disagreement.** The lane's own encoder lost precision *inside a precision harness* — a brute-force nearest search computed distance in f64 where the f64 ULP at ~4.5e18 is ~512, so two candidates **rounded to the same distance**, a strict ordering became a spurious tie, and the tie-break took the wrong pattern. **It was diagnosable only because the message had just been changed to carry RAW BYTES: *“2 ULP apart” names the SIZE of a disagreement, not its CONTENT.***
+
+---
+
+## a-correct-total-can-hide-a-wrong-distribution
+
+> **Index line (in CLAUDE.md):** **A pre-declared delta that holds EXACTLY is necessary and NOT sufficient — a correct total can contain a wrong distribution, and the count that justifies a change is structurally unable to see a defect that conserves it.** Check the delta AND its shape. ⚠️ And when a gate fires on your tooling, **MOVE THE TOOL, do not teach the gate an exception** — every exemption makes the gate weaker and its claim less true.
+
+**Both found 2026-08-21 by the precision lane, inside the change that closed GAP-228(a) — 240 CPU entries moved from a bulk fill to contract + earned record (UNAUDITED 320→80, backed 303→543).**
+
+### (a) The delta held exactly, and the defect was inside it
+
+The architect's gate was a **pre-declared count**: *the fill must have exactly 240 fewer entries afterwards; a shortfall is a finding rather than a smaller success.* **It held. Exactly 240.**
+
+**And on its first run the generator had attached the EMPIRICAL basis clause to 2 `matmul` sections that were already `audited: true` by SOURCE reasoning** — attaching one kind of evidence to an attestation earned another way. **Same-name-different-strength, produced by the tool built to avoid it.**
+
+**The entry-level delta was 240 regardless, because the defect CONSERVED the quantity being counted.** The two mis-clothed sections were already audited, so they never entered or left the UNAUDITED set. **The number that justified the whole change was structurally unable to see the flaw the change introduced.**
+
+**Caught by comparing flips to clauses PER FILE — 4 flips, 6 clauses.** That comparison is now part of the run.
+
+**PRACTICE: a pre-declared total is necessary and not sufficient. Pair it with a SHAPE check — per-file, per-op, per-class — chosen so that a defect which conserves the total cannot conserve the shape.** The delta answers *did the right AMOUNT move*; only the shape answers *did the right THINGS move*.
+
+### (b) A gate fired on the tooling, and the first two fixes were BENDS
+
+The single-writer gate (GAP-210) correctly refused a second writer into the ledger's directory. **The gate's CLAIM is narrower than its PREDICATE** — a contract rewriter is not the ledger — so the temptation is to encode the difference as an exception.
+
+**Two were tried and both were bends:** an exemption keyed on a **filename**, then a narrower *"the file must not mention the ledger"* — **which failed because the seeder's own `#[ignore]` string legitimately names it.** **Each bend made the gate weaker and its claim less true**, and the second failed on a *correct* usage, which is how you know the predicate was being tortured rather than refined.
+
+**Resolution: the WRITER MOVED** — out of the scanned directory entirely, to `fkc/contract_audit_flip.rs`. **The exception is REMOVED rather than ENCODED**, and it turned out to be the right home on the merits anyway: `verify/` is the verification seam, and this tool *consumes* the ledger rather than producing it.
+
+**PRACTICE: when a gate fires on your own tooling, the first question is whether the TOOL is in the wrong place, not whether the GATE needs an exception.** An exemption is permanent, invisible in the gate's stated claim, and compounds — **a moved file is none of those things.**
+
+### A footnote: the born-red was available in a stronger form than the obvious one
+
+The obvious born-red for *"these entries no longer depend on the fill"* is **delete the fill and see what survives** — destructive, and it perturbs everything else. **The contract-derived table is built by `register_into`, which never applies the fill at all** — so the backed count measured there **IS** the post-retirement number, obtained by reading a path that already excludes the fill rather than by removing it. **Look for a code path that already lacks the thing you were about to delete.**
