@@ -386,6 +386,60 @@ mod tests {
         let new_total = new_total_sq.sqrt();
         assert!((new_total - 6.5).abs() < 1e-5, "clipped norm = {new_total}");
     }
+    // ---------- Guard coverage (GAP-229) ----------
+    //
+    // These exist because `clip_grad_norm`'s guards are written `!(x > 0.0)`
+    // rather than `x <= 0.0`, and the doc above the function CLAIMS that
+    // difference is deliberate. Nothing enforced the claim. The two tests
+    // above pass 5.0 / 6.5 / 2.0, and the two guard forms are INDISTINGUISH-
+    // ABLE on every finite input -- they diverge on `NaN` alone:
+    //
+    //     !(NaN > 0.0)  ==  true   -> rejects
+    //       NaN <= 0.0  ==  false  -> admits, and then max_norm/total_norm
+    //                                 scales every gradient to NaN
+    //
+    // So rewriting a guard to `<= 0.0` was invisible to the entire fuel-core
+    // suite. Enumerated at 237e4264: `clip_grad_norm` had exactly two callers
+    // in test code and one in production (`training_loop.rs:132`, forwarding
+    // whatever `with_max_grad_norm` stored, which is itself unvalidated and
+    // called from doc comments only). No caller supplied NaN.
+    //
+    // WHICH ARM PROVES WHAT -- do not count greens here:
+    //   * the two `NAN` tests are DISCRIMINATING; they are the only asserts
+    //     in this file that fail if a guard is rewritten to `<= 0.0`.
+    //   * `rejects_non_positive_thresholds` is NOT discriminating for that
+    //     question -- both forms reject 0.0 and negatives. It covers the
+    //     documented contract, not the rewrite.
+
+    #[test]
+    fn clip_grad_norm_rejects_nan_max_norm() {
+        let mut grads = HashMap::new();
+        grads.insert("a".to_string(), make_grad(vec![3.0_f32, 4.0], &[2]));
+        assert!(
+            clip_grad_norm(&grads, f64::NAN, 2.0).is_err(),
+            "NaN max_norm must be rejected, not admitted"
+        );
+    }
+
+    #[test]
+    fn clip_grad_norm_rejects_nan_norm_type() {
+        let mut grads = HashMap::new();
+        grads.insert("a".to_string(), make_grad(vec![3.0_f32, 4.0], &[2]));
+        assert!(
+            clip_grad_norm(&grads, 1.0, f64::NAN).is_err(),
+            "NaN norm_type must be rejected, not admitted"
+        );
+    }
+
+    #[test]
+    fn clip_grad_norm_rejects_non_positive_thresholds() {
+        let mut grads = HashMap::new();
+        grads.insert("a".to_string(), make_grad(vec![3.0_f32, 4.0], &[2]));
+        assert!(clip_grad_norm(&grads, 0.0, 2.0).is_err(), "max_norm == 0");
+        assert!(clip_grad_norm(&grads, -1.0, 2.0).is_err(), "max_norm < 0");
+        assert!(clip_grad_norm(&grads, 1.0, 0.0).is_err(), "norm_type == 0");
+        assert!(clip_grad_norm(&grads, 1.0, -1.0).is_err(), "norm_type < 0");
+    }
 
     #[test]
     fn clip_grad_value_clamps_elementwise() {
