@@ -786,3 +786,48 @@ So the question *"does the suite catch this?"* has a **closed-form** answer requ
 **AND IT GENERALISES PAST LINTS.** Any behaviour-preserving-looking edit — a guard rewrite, a widened `Option` domain, a swapped comparison, a default changed — has a **divergence set**. Name it, then ask which callers can produce a member of it. **A suite of any size is blind to a divergence its inputs cannot reach**, and the size is what makes people stop asking.
 
 **PRACTICE: state the divergence set explicitly (*"these differ only on NaN"*), enumerate the callers for it, and report the caller set — not the suite total — as the coverage claim.** *"1,471 tests"* is a fact about the crate; *"zero callers supply the divergence input"* is a fact about the change.
+
+## line-numbers-rot-and-nothing-else-does
+
+> **Index line (in CLAUDE.md):** In a doc-citation sweep of CLAUDE.md, **file paths and GAP ids were 0% defective and line numbers were 67% defective.** A citation that already names its target does not need the number — and the number is the only half that rots. **Strip it; keep the name.**
+
+**MEASURED 2026-08-21 across CLAUDE.md's bullets (L70 excluded, in flight):**
+
+```
+file-path citations   19 checked   0 wrong    (0%)
+GAP-id citations      25 checked   0 wrong    (0%)   control: 217 ids known
+line-anchored         9 in-repo    6 wrong   (67%)   3 more cross-repo, unverifiable here
+```
+
+**The decay is entirely in line numbers.** Paths survive because a file move is a
+loud event someone notices; ids survive because a registry row is never
+renumbered. **A line number rots on any insertion above it, silently, and nothing
+in the artifact shows it.**
+
+**Drift observed:** off-by-1 x4, off-by-8 x1, **off-by-26 x1**. Severity tracks
+distance: off-by-one lands the reader adjacent and self-corrects; **off-by-8 landed
+in a function signature where a reader would conclude the cited panic had been
+FIXED**, which is the harmful direction; off-by-26 lands in unrelated code.
+
+**⚠️ THE CONTROLLED COMPARISON IS THE STRONGEST PART, AND IT IS ONE BULLET AGAINST
+ITSELF.** The `never panic` bullet carries BOTH a line number (`lib.rs:~3931`) and
+a prose anchor (`git grep 'does not match shape element count'`), added **on the
+same day by the same person**. One day later the **line number had moved to 3939**
+and **the prose anchor still resolved both sites**. Same claim, same file, same
+author, same hour — the identifier-free anchor survived and the number did not.
+
+**PRACTICE: do not update a drifted line number — DELETE it.** Every one of the six
+here already named its target (`pub mod telemetry;`, the `cfg_attr` derive, the
+quoted sentence), so the number was **redundant AND the only rot-prone half**.
+Updating it resets a clock that will run out again; removing it ends the class.
+Keep a line number only where nothing else identifies the target, and expect to
+re-verify it.
+
+**BOUND, because the obvious inference is wrong:** this does **not** show stamped
+claims (`(checked)`, `measured`) drift more. The drifted six span stamped and
+unstamped bullets alike, and at n=9 the split does not separate. **The
+stamped-is-higher-risk inversion is right on mechanism** (a verification stamp
+suppresses re-derivation — CLAUDE.md's `no rust-toolchain.toml (checked)` went
+false in a day) **but this sweep does not measure it as a rate, and should not be
+cited as if it did.**
+
