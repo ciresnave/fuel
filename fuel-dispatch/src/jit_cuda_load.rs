@@ -67,7 +67,7 @@
 
 use std::sync::{Arc, OnceLock, RwLock};
 
-use fuel_cuda_backend::{CudaDevice, CudaFunc, LaunchConfig, WrapErr};
+use fuel_cuda_backend::{CudaDevice, CudaFunc, DeviceId, LaunchConfig, WrapErr};
 use fuel_ir::{Error, Layout, Result};
 use fuel_kernel_seam::{ArtifactKind, SynthArtifact};
 use fuel_memory::{BackendStorage, Storage};
@@ -78,11 +78,15 @@ use crate::kernel::{KernelRef, OpParams};
 /// "why a slot table" section for why this exists at all.
 const MAX_JIT_SLOTS: usize = 64;
 
-/// One claimed slot: the loaded+resolved `CudaFunc` plus its entry point
-/// (carried only for diagnostics in launch-time error messages).
+/// One claimed slot: the loaded+resolved `CudaFunc`, its entry point (carried
+/// for diagnostics in launch-time error messages), and the identity of the CUDA
+/// device (context) that loaded it. **GAP-214**: a `CudaFunc` is meaningful only
+/// inside the context it was loaded in, so the slot records which device that
+/// was; [`dispatch_slot`] refuses to launch it against operands on any other.
 struct Slot {
     func: CudaFunc,
     entry_point: String,
+    device_id: DeviceId,
 }
 
 fn slots() -> &'static RwLock<Vec<Option<Slot>>> {
@@ -133,11 +137,11 @@ pub fn load_synth_kernel(art: &SynthArtifact, device: &CudaDevice) -> Result<Ker
         .bt()
     })?;
     let func = device.get_or_load_custom_func(&art.link.symbol, &art.link.entry_point, ptx_src)?;
-    claim_slot(func, art.link.entry_point.clone())
+    claim_slot(func, art.link.entry_point.clone(), device.id())
 }
 
 /// Claim the next free slot in the bank and return its dispatcher.
-fn claim_slot(func: CudaFunc, entry_point: String) -> Result<KernelRef> {
+fn claim_slot(func: CudaFunc, entry_point: String, device_id: DeviceId) -> Result<KernelRef> {
     let mut guard = slots().write().unwrap();
     let idx = guard.iter().position(Option::is_none).ok_or_else(|| {
         Error::Msg(format!(
@@ -146,7 +150,11 @@ fn claim_slot(func: CudaFunc, entry_point: String) -> Result<KernelRef> {
         ))
         .bt()
     })?;
-    guard[idx] = Some(Slot { func, entry_point });
+    guard[idx] = Some(Slot {
+        func,
+        entry_point,
+        device_id,
+    });
     drop(guard);
     Ok(DISPATCH_TABLE[idx])
 }
@@ -195,6 +203,26 @@ fn cuda_storage_mut<'a>(
     }
 }
 
+/// GAP-214 increment 2: a JIT slot's `CudaFunc` is launchable only inside the
+/// CUDA context that loaded it. Refuse — a typed `Err`, never a panic, never a
+/// launch — if an operand is on a different device than the slot recorded. A
+/// torn-down context reuses an ordinal with a FRESH [`DeviceId`] (ids are minted
+/// from a monotonic counter), so this catches same-ordinal-different-context,
+/// not only cross-ordinal. Called on EVERY operand (each input and the output):
+/// a mixed-device operand set is the exact multi-session hazard this guards, and
+/// checking one operand would make the guard's claim false for the rest.
+fn check_operand_device(operand: DeviceId, expected: DeviceId, entry_point: &str) -> Result<()> {
+    if operand != expected {
+        return Err(Error::Msg(format!(
+            "load_synth_kernel({entry_point}): JIT kernel was loaded on device {expected:?} but an \
+             operand is on device {operand:?} — refusing to launch a CudaFunc from a different (or \
+             torn-down) CUDA context",
+        ))
+        .bt());
+    }
+    Ok(())
+}
+
 /// The scalar-ABI launch shared by every slot dispatcher: a pointer arg for
 /// each input (in order), the output pointer, then the output element count
 /// as `long long` — exactly the parameter list `baracuda-cuda-emit`'s
@@ -212,6 +240,7 @@ fn launch_scalar(
     layouts: &[Layout],
     params: &OpParams,
     entry_point: &str,
+    expected_device: DeviceId,
 ) -> Result<()> {
     if outputs.len() != 1 {
         return Err(Error::Msg(format!(
@@ -243,9 +272,11 @@ fn launch_scalar(
     let mut builder = func.builder();
     for g in &in_guards {
         let cuda = cuda_storage(g, entry_point)?;
+        check_operand_device(cuda.device().id(), expected_device, entry_point)?;
         builder.arg(cuda.buffer());
     }
     let out_cuda = cuda_storage_mut(&mut out_guard, entry_point)?;
+    check_operand_device(out_cuda.device().id(), expected_device, entry_point)?;
     builder.arg(out_cuda.buffer());
     let n: i64 = numel as i64;
     builder.arg(&n);
@@ -300,6 +331,7 @@ fn dispatch_slot<const N: usize>(
         layouts,
         params,
         &slot.entry_point,
+        slot.device_id,
     )
 }
 
