@@ -1173,6 +1173,115 @@ mod tests {
         );
     }
 
+    /// Classify one sweep outcome into exactly one named bucket.
+    ///
+    /// **THIS REPLACES A REMAINDER, AND THE REMAINDER WAS THREE DEFECTS
+    /// STACKED IN ONE LINE.** Both sweeps used to compute
+    /// `let other = log.len() - passes - no_ref - no_probe - failed;` and then
+    /// assert `passes + no_ref + no_probe + failed + other == log.len()` under
+    /// the message *"the outcome buckets do not partition the log"*.
+    ///
+    /// 1. **The assertion cannot fail.** It is `x + (L - x) == L`, true for
+    ///    every possible classification, including one that classifies nothing
+    ///    at all. It reads as a partition check and is an identity.
+    /// 2. **The catch-all wore a specific cause's name.** `other` was printed
+    ///    as `unverified (invoke error / panic)`, so ANY outcome spelling the
+    ///    predicates missed was reported to the reader as an invoke error — a
+    ///    false diagnosis manufactured by a bucket defined as "everything
+    ///    else".
+    /// 3. **One predicate collided.** `starts_with("unverified: no probe")`
+    ///    matches BOTH `"unverified: no probe recipe ..."` (a gap in this
+    ///    harness — nobody wrote a recipe) AND `"unverified: no probes"`
+    ///    (`VerifyOutcome::NoReference` — the verifier had nothing to compare
+    ///    against). Two different findings, merged, then reported under the
+    ///    name of the first.
+    ///
+    /// Returning `Option` makes the miss loud: an unrecognised outcome is
+    /// `None` and the callers assert there are none. **A new outcome spelling
+    /// must become a RED GATE, not a silent increment of a bucket that means
+    /// something else.**
+    fn outcome_bucket(outcome: &str) -> Option<&'static str> {
+        if outcome == "pass" {
+            Some("pass")
+        } else if outcome.starts_with("fail:") {
+            Some("fail")
+        } else if outcome.starts_with("unverified: no probe recipe") {
+            Some("no_recipe")
+        } else if outcome == "unverified: no probes" {
+            Some("no_probes")
+        } else if outcome.starts_with("unverified: no exact in-process reference") {
+            Some("no_reference")
+        } else if outcome.starts_with("unverified: invoke error") {
+            Some("invoke_error")
+        } else if outcome == "unverified: kernel invocation panicked" {
+            Some("panicked")
+        } else {
+            None
+        }
+    }
+
+    /// **Every outcome this harness can emit lands in its own bucket — the two
+    /// that used to collide most of all.**
+    ///
+    /// The vocabulary is written out rather than derived, because the point is
+    /// to pin the SPELLINGS: these strings are produced at seven sites, and a
+    /// classifier is only as good as its agreement with them. Add an arm there
+    /// without adding it here and the sweeps go red on `unclassified`, naming
+    /// the spelling that is new.
+    #[test]
+    fn the_outcome_vocabulary_is_classified_into_distinct_buckets() {
+        let vocabulary: &[(&str, &str)] = &[
+            ("pass", "pass"),
+            ("fail: byte 3 differs", "fail"),
+            (
+                "unverified: no probe recipe for this dtype tuple",
+                "no_recipe",
+            ),
+            (
+                "unverified: no probe recipe for this op/dtype tuple",
+                "no_recipe",
+            ),
+            // THE COLLISION. This shares the prefix "unverified: no probe"
+            // with the two above and means something entirely different: the
+            // VERIFIER had no reference, rather than this harness having no
+            // recipe.
+            ("unverified: no probes", "no_probes"),
+            (
+                "unverified: no exact in-process reference for this op/dtype tuple",
+                "no_reference",
+            ),
+            ("unverified: invoke error Shape", "invoke_error"),
+            ("unverified: kernel invocation panicked", "panicked"),
+        ];
+
+        for (spelling, expected) in vocabulary {
+            assert_eq!(
+                outcome_bucket(spelling),
+                Some(*expected),
+                "`{spelling}` must classify as `{expected}`"
+            );
+        }
+
+        // The collision asserted directly, not left implicit in the table:
+        // these two must never share a bucket again.
+        assert_ne!(
+            outcome_bucket("unverified: no probe recipe for this op/dtype tuple"),
+            outcome_bucket("unverified: no probes"),
+            "a harness gap (no recipe written) and a verifier result (no reference \
+             available) are different findings and must not merge — merging them is \
+             exactly what a shared `starts_with` prefix did"
+        );
+
+        // An unrecognised spelling must be refused rather than absorbed. Built
+        // at runtime so the control cannot be mistaken for vocabulary.
+        assert_eq!(
+            outcome_bucket(&format!("unverified: {} something new", 1 + 1)),
+            None,
+            "an unknown outcome must return None so the sweeps can name it, instead of \
+             falling into a bucket that means something else"
+        );
+    }
+
     /// **The conv probes actually exercise their kernels — the output is not
     /// a constant.**
     ///
@@ -1357,9 +1466,16 @@ mod tests {
         // property the whole increment was for, measured directly rather than
         // by removing the fill and seeing what survives.
         //
-        // The numbers are pinned, not floating: GAP-228 flipped exactly 240
-        // entries' worth of sections, so `nothing` must be 80 and the backed
-        // count 543. **A shortfall is not a smaller success — it is one
+        // The numbers are pinned, not floating: after GAP-228(a) flipped 240
+        // entries' worth of sections and (b) flipped conv's 20, `nothing` must
+        // be 60 and the backed count 563.
+        //
+        // THIS COMMENT READ "80 ... 543" UNTIL THE BUCKET SWEEP FOUND IT. I
+        // updated the assertion's own message from 80 to 60 and left its twin
+        // four lines up: the same right-verdict-wrong-diagnosis defect, one
+        // line removed from where I had just fixed it. When a number is
+        // corrected, correct every statement of it, not the one being edited.
+        // **A shortfall is not a smaller success — it is one
         // declaration with no earned record behind it**, and it would be
         // invisible in a diff.
         // THESE TWO NUMBERS MOVE WITH EVERY INCREMENT, AND THAT IS THE
@@ -1432,32 +1548,30 @@ mod tests {
             records.len()
         );
 
-        let no_ref = log
-            .iter()
-            .filter(|a| a.outcome.starts_with("unverified: no exact"))
-            .count();
-        let no_probe = log
-            .iter()
-            .filter(|a| a.outcome.starts_with("unverified: no probe"))
-            .count();
-        let failed = log
-            .iter()
-            .filter(|a| a.outcome.starts_with("fail:"))
-            .count();
-        let other = log.len() - passes - no_ref - no_probe - failed;
-        println!(
-            "[gap-225] CPU max_ulp:0 sweep over {cpu_entries} registrations:
-                 {passes} pass
-                 {no_ref} unverified (no exact in-process reference)
-                 {no_probe} unverified (no probe recipe)
-                 {failed} FAIL (kernel disagrees with the exact reference)
-                 {other} unverified (invoke error / panic)",
-        );
+        let mut buckets: std::collections::BTreeMap<&'static str, usize> =
+            std::collections::BTreeMap::new();
+        let mut unclassified: Vec<String> = Vec::new();
+        for a in &log {
+            match outcome_bucket(&a.outcome) {
+                Some(b) => *buckets.entry(b).or_default() += 1,
+                None => unclassified.push(a.outcome.clone()),
+            }
+        }
+        println!("[gap-225] CPU max_ulp:0 sweep over {cpu_entries} registrations:");
+        for (name, n) in &buckets {
+            println!("[gap-225]     {n:>4}  {name}");
+        }
         for a in log.iter().filter(|a| a.outcome.starts_with("fail:")) {
             println!("[gap-225] FAIL {} {:?}: {}", a.op_name, a.dtypes, a.outcome);
         }
+        assert!(
+            unclassified.is_empty(),
+            "these outcomes match no bucket: {unclassified:?}. Under the old remainder \
+             they were counted and PRINTED as invoke errors, because the catch-all \
+             carried that name."
+        );
         assert_eq!(
-            passes + no_ref + no_probe + failed + other,
+            buckets.values().sum::<usize>(),
             log.len(),
             "the outcome buckets do not partition the log"
         );
@@ -1585,21 +1699,24 @@ mod tests {
             "not one CPU primitive earned `bit_stable_on_same_hardware` out of              {cpu_entries} registrations. That is not a coverage result, it is              a broken harness — the assertions above would both hold."
         );
 
-        let no_recipe = log
-            .iter()
-            .filter(|a| a.outcome.starts_with("unverified: no probe recipe"))
-            .count();
-        let failed = log
-            .iter()
-            .filter(|a| a.outcome.starts_with("fail:"))
-            .count();
-        let other = log.len() - passes - no_recipe - failed;
-        println!(
-            "[gap-207] CPU primitive bit-stability sweep over {cpu_entries} registrations:
-                 {passes} pass
-                 {no_recipe} unverified (no probe recipe)
-                 {failed} FAIL (ran, was not bit-stable)
-                 {other} unverified (invoke error / panic / no probes)",
+        let mut buckets: std::collections::BTreeMap<&'static str, usize> =
+            std::collections::BTreeMap::new();
+        let mut unclassified: Vec<String> = Vec::new();
+        for a in &log {
+            match outcome_bucket(&a.outcome) {
+                Some(b) => *buckets.entry(b).or_default() += 1,
+                None => unclassified.push(a.outcome.clone()),
+            }
+        }
+        let no_recipe = buckets.get("no_recipe").copied().unwrap_or(0);
+        let failed = buckets.get("fail").copied().unwrap_or(0);
+        println!("[gap-207] CPU primitive bit-stability sweep over {cpu_entries} registrations:");
+        for (name, n) in &buckets {
+            println!("[gap-207]     {n:>4}  {name}");
+        }
+        assert!(
+            unclassified.is_empty(),
+            "these outcomes match no bucket: {unclassified:?}"
         );
         // Name the ops in the no-recipe residue, not just its size. A bare
         // count says how much is uncovered; the names say what to build next,
@@ -1649,9 +1766,9 @@ mod tests {
         // `failed` is a claim about a kernel. Only the second is evidence that
         // `fill_unset_cpu_precision` is asserting something untrue.
         assert_eq!(
-            passes + no_recipe + failed + other,
+            buckets.values().sum::<usize>(),
             log.len(),
-            "the four outcome buckets do not partition the log"
+            "the outcome buckets do not partition the log"
         );
     }
 
