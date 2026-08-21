@@ -487,6 +487,16 @@ components = [\"rustfmt\"]
             ),
             (
                 "seed_cpu_ledger.rs",
+                "Under the old remainder",
+                "the assertion that every sweep outcome lands in a NAMED bucket. Its                  predecessor was `x + (L - x) == L`, which could not fail, while its                  catch-all was printed to the reader as an invoke error.",
+            ),
+            (
+                "seed_cpu_ledger.rs",
+                "must not merge",
+                "the guard that a harness gap (no recipe written) and a verifier result                  (no reference available) never share a bucket again. They did, through                  a shared `starts_with` prefix.",
+            ),
+            (
+                "seed_cpu_ledger.rs",
                 "families_tested, EXACT_REFERENCE_FAMILIES",
                 "the exact-reference families the attachment control actually \
                  poisoned. Without it, a family that stops passing is skipped with \
