@@ -678,3 +678,29 @@ The obvious born-red for *"these entries no longer depend on the fill"* is **del
 **Both tests were correct. Both results were correct. Both inferences were wrong, in the same direction, from opposite evidence** — one from *“it does not match”*, one from *“it is not whitespace”*. **The common step is treating the elimination of a hypothesis as evidence FOR whatever you were going to conclude next**, and it is seductive precisely because a refutation feels like progress. **Ruling out X narrows the space; it does not populate it.**
 
 **PRACTICE: after a test refutes a hypothesis, state the NEXT hypothesis as a hypothesis and ask what would distinguish it — do not let the refutation carry it.** And prefer a discriminator that **measures a direction or a distribution** over one that asks **match / no-match**: a binary test collapses every not-matching state into one answer, and the states you most need to tell apart are all on that side.
+
+---
+
+## a-restated-reason-is-never-re-derived
+
+> **Index line (in CLAUDE.md):** **A stale MEASUREMENT gets caught because someone eventually re-runs the query. A STALE JUSTIFICATION NEVER GETS RE-RUN — restating it costs nothing and reads as identical to having checked.** And distinguish the two failures, because they need different fixes: **an EXPIRED reason is a claim that WAS true (wants a re-check schedule); a reason that NEVER APPLIED is a claim that never was (wants the justification DERIVED at the moment it is stated).**
+
+**2026-08-21, and the architect's own instance is the worked example.** GAP-227 (the last red CI gate) was held on the stated ground that fixing it required `rustup update stable`, **which would invalidate a warm CUDA forge while a lane was mid-verify on a UB fix.**
+
+**The PM raised it as a hold whose reason had EXPIRED — the lane had finished. The truth was worse: the reason NEVER APPLIED.** `1.98.0` was already installed as a **named toolchain**, so the fix never required touching the `stable` alias at all — **and the architect had measured that personally, hours before giving the reason.**
+
+**The mechanism, which explains every other instance in this file:**
+
+> **I re-stated a reason instead of re-deriving it.**
+
+**A number invites re-measurement; a justification does not.** Repeating *“we can't, because X”* is free, produces no artifact, and is indistinguishable from having just checked X. **That is why stale prohibitions, stale holds and stale blockers all outlive stale numbers** — not because people are more careless with reasons, but because **nothing about a reason prompts a re-run.**
+
+**PRACTICE: when you state a reason for NOT doing something, derive it in that moment or say you are quoting it.** *“Held — because a forge is warm (measured now)”* and *“held — because a forge was warm (as of four hours ago)”* are different claims, and only the second is honest when you have not looked.
+
+### And ANNOUNCE CLOSURES, not only allocations
+
+**The standing fix for invisible allocations — announce at the point of allocation — has a half that was missing: announce at the point of CLOSURE too.** Twice in one night a lane proposed work from a candidate list containing an item the architect had already **closed and not mentioned**, costing them a slot on a three-item list they had measured before proposing. **A closed item is as invisible as an unannounced allocation, and it wastes the lane's planning rather than the coordinator's.**
+
+### Footnote: a prefix that is truncated BY CONSTRUCTION
+
+*“13 clippy sites”* was not a count — **it was where the compiler gave up.** CI dies at the first failing crate, which stops its dependents, so the rest **cannot** be reported. **Distinct from the other population failures recorded here** (a wrong complement, a two-mechanism grep, an op set minus a family): **those are bad queries and can be fixed by asking better. This one is truncated by the instrument's own semantics and no phrasing repairs it** — only running past the failure does.
