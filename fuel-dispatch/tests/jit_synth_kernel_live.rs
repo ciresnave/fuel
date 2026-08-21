@@ -69,8 +69,21 @@ use fuel_kernel_seam::{
 };
 use fuel_memory::{BackendStorage, Storage};
 
-fn dev_or_skip() -> Option<CudaDevice> {
-    CudaDevice::new(0).ok()
+/// Acquire CUDA device 0 for a live test.
+///
+/// GAP-224: asserts the machine-wide GPU mutex is held (`require_gpu_run_lock`) —
+/// an unguarded live-GPU run is indistinguishable from a guarded one in every
+/// output except the crash it can cause.
+///
+/// GAP-157: a MISSING device is a FAILURE (`required_ok`), not a silent `None`
+/// that lets the caller early-return `ok` having asserted nothing. These tests
+/// are `#[ignore]`d, so only an explicit `--ignored` run reaches here — the exact
+/// case where a silent skip is most incoherent: the device was asked for by name.
+/// On a box without a CUDA device, `--ignored` runs of this file now FAIL loudly
+/// (intended), rather than passing green.
+fn dev() -> CudaDevice {
+    fuel_test_support::require_gpu_run_lock();
+    fuel_test_support::required_ok("CUDA device 0", CudaDevice::new(0))
 }
 
 /// The scalar-ABI source `load_synth_kernel` expects: `(const float* in0,
@@ -253,12 +266,7 @@ got: {got:?}",
 #[test]
 #[ignore]
 fn jit_adopt_loads_and_launches_a_synthesized_cuda_kernel() {
-    let Some(device) = dev_or_skip() else {
-        eprintln!(
-            "skipping jit_adopt_loads_and_launches_a_synthesized_cuda_kernel: no CUDA device"
-        );
-        return;
-    };
+    let device = dev();
 
     let artifact = SynthArtifact {
         artifact: compile_relu_add_ptx(),
@@ -358,14 +366,11 @@ fn jit_adopt_loads_and_launches_a_synthesized_cuda_kernel() {
 #[test]
 #[ignore]
 fn jit_kernel_refuses_operands_on_a_foreign_cuda_context() {
-    let (Some(dev1), Some(dev2)) = (dev_or_skip(), dev_or_skip()) else {
-        eprintln!("skipping jit_kernel_refuses_operands_on_a_foreign_cuda_context: no CUDA device");
-        return;
-    };
+    let (dev1, dev2) = (dev(), dev());
     assert_ne!(
         dev1.id(),
         dev2.id(),
-        "two CudaDevice::new(0) on one ordinal must have distinct DeviceIds — the premise",
+        "two fresh devices on one ordinal must have distinct DeviceIds — the premise",
     );
 
     let artifact = SynthArtifact {
@@ -467,10 +472,7 @@ fn mul_scalar_slot_region() -> PatternNode {
 #[test]
 #[ignore]
 fn jit_scalar_param_kernel_launches_with_live_value() {
-    let Some(device) = dev_or_skip() else {
-        eprintln!("skipping jit_scalar_param_kernel_launches_with_live_value: no CUDA device");
-        return;
-    };
+    let device = dev();
 
     let source = mul_param_cuda_source();
     let opts = CompileOptions::default();
@@ -574,10 +576,7 @@ fn live_baracuda_synthesizer_full_loop_scalar() {
     use baracuda_cuda_emit::seam::BaracudaSynthesizer;
     use fuel_kernel_seam::{JitBudget, JitRequest, JitResponse, Synthesizer};
 
-    let Some(device) = dev_or_skip() else {
-        eprintln!("skipping live_baracuda_synthesizer_full_loop_scalar: no CUDA device");
-        return;
-    };
+    let device = dev();
 
     let synth = BaracudaSynthesizer::new(5_000);
     // Baracuda's OpDef contract: `operands` holds exactly n_inputs + 1 entries —

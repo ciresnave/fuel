@@ -96,6 +96,8 @@ fuel-quantized = { workspace = true }
 fuel-conv = { workspace = true }
 # Telemetry sink tests write JSONL to a scratch dir (atomic tmp+rename).
 tempfile = { workspace = true }
+# GAP-224: live-GPU tests assert the machine-wide GPU mutex via require_gpu_run_lock.
+fuel-test-support = { workspace = true }
 
 [features]
 # FKC is NOT a feature — it is unconditional core infrastructure. serde /

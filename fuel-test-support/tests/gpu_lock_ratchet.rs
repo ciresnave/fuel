@@ -29,6 +29,16 @@
 //! Deliberately not listed: spellings the code does not currently use. Claiming
 //! a reach the scan does not have would be the same defect as the missing
 //! guard, pointed at the documentation.
+//!
+//! And it over-counts in the OTHER direction: the scan skips lines beginning
+//! with `//`, but it CANNOT distinguish a code site from a STRING LITERAL or
+//! macro argument containing the same spelling. A `panic!`/`assert!` message
+//! mentioning `CudaDevice::new(` is counted as an acquisition. Found 2026-08-21
+//! by a lane whose assert message tripped it. The remedy is to reword the
+//! message, never to "guard" it — guarding a string satisfies the scanner
+//! instead of the property, which is the defect this scanner exists to catch,
+//! aimed at itself. So `BUDGET` is a count of MATCHES, not of acquisitions, and
+//! the two differ by an unknown small number.
 
 use std::path::{Path, PathBuf};
 
@@ -50,7 +60,13 @@ const GUARD_CALL: &str = "require_gpu_run_lock()";
 /// `new_device()` in prose. **grep counted a STRING; the scanner counts a
 /// SITE**, and those are different populations — the same distinction that
 /// makes this file's own population claim worth stating.
-const BUDGET: usize = 59;
+///
+/// Lowered 59 -> 58 on 2026-08-21: guarding `jit_synth_kernel_live.rs`'s device
+/// helper (`dev`) with `require_gpu_run_lock` removed one real site. The same
+/// change also removed a FALSE +1 that a lane's assert-message string had added
+/// (see the over-count note in the module docs above), so the net is a genuine
+/// one-site reduction, not a wash. FIRST time this constant has moved down.
+const BUDGET: usize = 58;
 
 fn repo_root() -> PathBuf {
     // fuel-test-support/ -> repo root
