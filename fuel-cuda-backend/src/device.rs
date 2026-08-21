@@ -122,6 +122,49 @@ impl DeviceId {
     }
 }
 
+/// Process-global set of `DeviceId`s that currently have at least one live
+/// `CudaDevice` clone. **GAP-214 increment 3**: the JIT slot bank
+/// (`fuel_dispatch::jit_cuda_load`) reclaims a slot whose recorded `DeviceId`
+/// is no longer in this set.
+///
+/// Keyed on the monotonic `DeviceId` (never reused), NOT on the device ordinal:
+/// an ordinal-keyed signal would report a same-ordinal successor's slot
+/// reclaimable while that successor is alive — the exact same-ordinal-reuse trap
+/// increment 2's per-operand check exists to catch.
+///
+/// **Lock order (invariant 5):** `claim_slot` holds the slot-bank write lock and
+/// THEN calls [`is_device_live`] (this mutex), establishing bank → LIVE_DEVICES.
+/// So nothing holding `LIVE_DEVICES` may take the slot-bank lock. `DeviceLiveness`
+/// below honours that — it touches only this set, never the bank.
+fn live_devices() -> &'static Mutex<std::collections::HashSet<DeviceId>> {
+    static LIVE: std::sync::OnceLock<Mutex<std::collections::HashSet<DeviceId>>> =
+        std::sync::OnceLock::new();
+    LIVE.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
+/// True iff at least one `CudaDevice` clone with this id is currently alive.
+/// A JIT slot whose recorded id is NOT live may be reclaimed — see GAP-214
+/// increment 3 (`fuel_dispatch::jit_cuda_load::claim_slot`).
+pub fn is_device_live(id: DeviceId) -> bool {
+    live_devices().lock().unwrap().contains(&id)
+}
+
+/// Removes its id from [`live_devices`] when the LAST `CudaDevice` clone drops.
+/// Held as `Arc<DeviceLiveness>` on every `CudaDevice`, so ALL drop paths update
+/// the registry by construction (the Arc refcount) rather than a hand-maintained
+/// list. Touches only the Rust set — no CUDA resource — so its drop order vs
+/// `context` is irrelevant, and it honours the lock-order invariant above
+/// (it never takes the slot-bank lock).
+struct DeviceLiveness {
+    id: DeviceId,
+}
+
+impl Drop for DeviceLiveness {
+    fn drop(&mut self) {
+        live_devices().lock().unwrap().remove(&self.id);
+    }
+}
+
 struct CudaRng(baracuda_curand::Generator);
 unsafe impl Send for CudaRng {}
 
@@ -148,6 +191,10 @@ pub struct CudaDevice {
     // be destroyed *before* the owning Context is torn down (otherwise
     // the driver access-violates on process exit). Keep `context` last.
     id: DeviceId,
+    // GAP-214 inc 3: last-clone-drop removes `id` from LIVE_DEVICES so a dead
+    // device's JIT slots become reclaimable. Pure-Rust registry update, no CUDA
+    // resource, so its position vs the Drop-order fields below is irrelevant.
+    liveness: Arc<DeviceLiveness>,
     seed_value: Arc<RwLock<u64>>,
     curand: Arc<Mutex<CudaRng>>,
     pub(crate) blas: Arc<CublasHandle>,
@@ -527,8 +574,13 @@ impl CudaDevice {
         blas.set_stream(&stream).w()?;
         let mut curand = baracuda_curand::Generator::new(RngKind::Default).w()?;
         curand.seed(299792458).w()?;
+        let id = DeviceId::new();
+        // GAP-214 inc 3: register liveness at construction; DeviceLiveness::drop
+        // removes it when the last clone of this device drops.
+        live_devices().lock().unwrap().insert(id);
         Ok(Self {
-            id: DeviceId::new(),
+            id,
+            liveness: Arc::new(DeviceLiveness { id }),
             context: Arc::new(context),
             stream: Arc::new(stream),
             blas: Arc::new(CublasHandle(blas)),

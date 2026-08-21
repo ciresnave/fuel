@@ -881,3 +881,136 @@ fn live_baracuda_synthesizer_paged_attn_dense_region() {
     }
     println!("=== END RESULT ===\n");
 }
+
+/// **GAP-214 increment 3 born-red.** JIT slots are reclaimed when their device is
+/// torn down (restoring capacity), but ONLY dead-device slots — and a
+/// reclaimed-then-reused slot is still safe because inc 2 refuses on DeviceId
+/// mismatch. Asserts WHICH slot is reclaimed, not just how many (a correct count
+/// could hide reclaiming the wrong slot). Three arms, all live via gpu-run:
+/// (a) dead device → its slot reclaimed, and ONLY it; (b) LIVE device → NOT
+/// reclaimed (the negative control — fails if liveness is keyed on ordinal, since
+/// dev_b reuses ordinal 0 with a distinct DeviceId); (c) old KernelRef through a
+/// reclaimed-then-reused index, dispatched with operands on a FOREIGN LIVE device
+/// → refused by inc 2. Operands on the OLD DEAD device are UNREACHABLE (holding a
+/// storage keeps a device clone alive → keeps it live → prevents reclamation,
+/// invariant 6), so "foreign" is documented as the reachable form of the hazard.
+#[test]
+#[ignore]
+fn jit_slot_reclamation_frees_dead_device_slots_but_not_live_ones() {
+    use fuel_cuda_backend::{DeviceId, is_device_live};
+    use fuel_dispatch::jit_cuda_load::{
+        clear_slots_for_tests, reclaim_dead_slots_for_tests, slot_device_ids_for_tests,
+    };
+
+    let ptx = compile_relu_add_ptx();
+    let art = || SynthArtifact {
+        artifact: ptx.clone(),
+        kind: ArtifactKind::Ptx,
+        link: LinkEntry {
+            entry_point: ENTRY.into(),
+            symbol: ENTRY.into(),
+            structure_key: "elementwise:f32".into(),
+            revision_hash: 1,
+        },
+        contract: "## fused_op: fuel_test_jit_relu_add_inc3\ncost: n\n".into(),
+    };
+    let slot_of = |id: DeviceId| {
+        slot_device_ids_for_tests()
+            .iter()
+            .position(|s| *s == Some(id))
+            .expect("the device's slot is claimed")
+    };
+
+    // ---- Arm (a): a slot whose device is DEAD is reclaimed, and ONLY it. ----
+    {
+        clear_slots_for_tests();
+        let dev1 = dev();
+        let id1 = dev1.id();
+        let _r1 = load_synth_kernel(&art(), &dev1).expect("arm(a): load on dev1");
+        let idx1 = slot_of(id1);
+        assert!(is_device_live(id1), "arm(a): dev1 live while held");
+        drop(dev1);
+        assert!(
+            !is_device_live(id1),
+            "arm(a): dev1 dead after its last clone drops"
+        );
+        let freed = reclaim_dead_slots_for_tests();
+        assert_eq!(
+            freed,
+            vec![idx1],
+            "arm(a): reclaimed EXACTLY dev1's slot (which slot, not just how many)"
+        );
+        assert_eq!(
+            slot_device_ids_for_tests()[idx1],
+            None,
+            "arm(a): the reclaimed slot is now free/reusable"
+        );
+    }
+
+    // ---- Arm (b): a slot whose device is ALIVE is NOT reclaimed (negative control). ----
+    {
+        clear_slots_for_tests();
+        let dev_b = dev(); // HELD alive across the whole arm
+        let id_b = dev_b.id();
+        let _rb = load_synth_kernel(&art(), &dev_b).expect("arm(b): load on dev_b");
+        let idx_b = slot_of(id_b);
+        assert!(is_device_live(id_b), "arm(b): dev_b held alive");
+        let freed = reclaim_dead_slots_for_tests();
+        assert!(
+            freed.is_empty(),
+            "arm(b): a LIVE device's slot must NOT be reclaimed, got freed={freed:?} \
+             (fails if reclamation ignores liveness, or if liveness is keyed on ordinal)"
+        );
+        assert_eq!(
+            slot_device_ids_for_tests()[idx_b],
+            Some(id_b),
+            "arm(b): dev_b's slot is untouched"
+        );
+        drop(dev_b);
+    }
+
+    // ---- Arm (c): old KernelRef through a reclaimed-then-reused index → refused. ----
+    {
+        clear_slots_for_tests();
+        let dev_old = dev();
+        let id_old = dev_old.id();
+        let r_old = load_synth_kernel(&art(), &dev_old).expect("arm(c): load on dev_old");
+        let idx = slot_of(id_old);
+        drop(dev_old);
+        assert_eq!(
+            reclaim_dead_slots_for_tests(),
+            vec![idx],
+            "arm(c): dead dev_old's slot reclaimed"
+        );
+        // A new device loads and REUSES the freed index (now the first free slot).
+        let dev_new = dev();
+        let id_new = dev_new.id();
+        let _r_new = load_synth_kernel(&art(), &dev_new).expect("arm(c): load on dev_new");
+        assert_eq!(
+            slot_device_ids_for_tests()[idx],
+            Some(id_new),
+            "arm(c): the reclaimed index was REUSED by dev_new"
+        );
+        // r_old is dispatch_slot::<idx> — it now resolves dev_new's kernel. Dispatch
+        // it with operands on a FOREIGN LIVE device (dev_fgn ≠ dev_new) → inc 2 refuses.
+        let dev_fgn = dev();
+        let a = [1.0_f32, 2.0, 3.0, 4.0];
+        let b = [5.0_f32, 6.0, 7.0, 8.0];
+        let lhs = Arc::new(RwLock::new(upload_f32(&dev_fgn, &a)));
+        let rhs = Arc::new(RwLock::new(upload_f32(&dev_fgn, &b)));
+        let out = alloc_out_nan_filled(&dev_fgn, a.len());
+        let layout = Layout::contiguous(Shape::from_dims(&[a.len()]));
+        r_old(
+            &[lhs, rhs],
+            &mut [out],
+            &[layout.clone(), layout.clone(), layout],
+            &OpParams::None,
+        )
+        .expect_err(
+            "arm(c): old KernelRef through a reused index, operands on a foreign device → \
+             inc 2 must refuse (cross-context launch)",
+        );
+    }
+
+    clear_slots_for_tests();
+}
