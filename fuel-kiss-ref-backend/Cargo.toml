@@ -25,4 +25,4 @@ half = { workspace = true }
 # a release, not to track a rev.
 kiss-ref-core       = "0.2"
 kiss-ops-vocab      = "0.2"
-kiss-classify-vocab = "0.2"
+kiss-classify-vocab = "0.3"

@@ -2115,7 +2115,7 @@ dependencies = [
  "fuel-ir",
  "fuel-kernel-seam-types",
  "half",
- "kiss-classify-vocab",
+ "kiss-classify-vocab 0.3.0",
  "kiss-ops-vocab",
  "kiss-ref-core",
 ]
@@ -3343,6 +3343,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29df93d5496e200d4a61b3866cb8384ad22e17482b128b8f14afdfa7f089ab4e"
 
 [[package]]
+name = "kiss-classify-vocab"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e4d6765249c473b554812ec829554ff06fcd553e7dc296918cc07445988d2e2"
+
+[[package]]
 name = "kiss-ops-vocab"
 version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3355,7 +3361,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "033fab75ff86c324470c43792f9306768a3f79e61a99394f5f6bc268ba9148a6"
 dependencies = [
  "half",
- "kiss-classify-vocab",
+ "kiss-classify-vocab 0.2.3",
  "kiss-ops-vocab",
  "libm",
 ]
