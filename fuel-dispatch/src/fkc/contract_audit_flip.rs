@@ -416,6 +416,144 @@ components = [\"rustfmt\"]
     ///
     /// So this reports the sections in three buckets: fully backed (flippable
     /// now), partly backed (must not be flipped wholesale), and unbacked.
+    /// **A DELETED ASSERTION AND A SATISFIED ASSERTION ARE INDISTINGUISHABLE
+    /// TO A SUITE THAT ONLY RUNS THE ASSERTIONS IT FINDS.**
+    ///
+    /// **Measured, not argued.** Deleting `assert_eq!(nothing, 60, ...)` from
+    /// `gap_226_split_of_the_entries_that_declare_nothing` and running that
+    /// gate returns `test result: ok. 1 passed` — with a real
+    /// `Compiling fuel-dispatch` line, so the binary matched the edited source
+    /// and this is not a warm-cache artifact. Clippy stays silent too, because
+    /// `nothing` is still read by the assertions below it: even the accidental
+    /// dead-code defence does not fire.
+    ///
+    /// **A WRONG VALUE IS COMPARED AND FAILS. A DELETED VALUE IS NEVER
+    /// COMPARED AT ALL.** Every comment beside those pins defends what the
+    /// number should BE. Not one of them defends the line's EXISTENCE — and
+    /// the pins are the load-bearing part of this harness, because they are
+    /// the only place a silent coverage loss shows up as a number.
+    ///
+    /// So: enumerate the pins that must be found, and go red when one is not.
+    ///
+    /// ⚠️ **THIS TEST DELIBERATELY DOES NOT LIVE IN THE FILE IT CHECKS, AND
+    /// THAT IS LOAD-BEARING RATHER THAN TIDINESS.** An existence check written
+    /// in the file it scans **counts itself**: every anchor below is a literal,
+    /// so `nothing, 60,` matched twice — once in the pin and once in this list
+    /// — *while the pin was deleted*. The gate reported AMBIGUOUS, and once the
+    /// pin came back it would have reported PRESENT for the same reason it
+    /// reported it while missing: because the list is the thing being found.
+    /// Written under `fkc/` and scanning only `fkc/verify/`, the anchors are
+    /// outside the scanned set and each occurrence is a real one.
+    ///
+    /// That was the third self-referential scan to trip on its own text in this
+    /// crate in one session — after a comment naming the forbidden write
+    /// spellings in `ledger.rs`, and after this test's own absence-control
+    /// literal. **The rule that generalises: a source-scanning check must not
+    /// be inside the set it scans.**
+    ///
+    /// ⚠️ **THE REGRESS IS REAL AND THIS DOES NOT CLOSE IT.** Deleting an
+    /// entry from `REQUIRED_PINS` switches off the check for that pin exactly
+    /// as deleting the pin switched off the check for its value. What changes
+    /// is *where the deletion has to happen*: in a short list whose only
+    /// purpose is to say THESE MUST EXIST, under a name that says so, instead
+    /// of invisibly inside a hundred-line test among forty other lines. That
+    /// is a **shorter** regress, not a terminated one, and claiming otherwise
+    /// would be the same overreach as letting the `max_ulp` attachment control
+    /// look like it covered bit-stability.
+    #[test]
+    fn the_pins_this_harness_rests_on_are_still_present() {
+        // (file, anchor, what its absence would silently cost)
+        const REQUIRED_PINS: &[(&str, &str, &str)] = &[
+            (
+                "seed_cpu_ledger.rs",
+                "nothing, 60,",
+                "the count of contract entries still declaring NO precision claim \
+                 (GAP-226/228). Without it, a regression that un-earns entries reads \
+                 as a pass.",
+            ),
+            (
+                "seed_cpu_ledger.rs",
+                "expected 563 contract-derived entries backed WITHOUT the fill",
+                "the count backed by contract + record rather than by \
+                 `fill_unset_cpu_precision`. This is the number the whole program \
+                 exists to move; unpinned, the fill could come back unnoticed.",
+            ),
+            (
+                "seed_cpu_ledger.rs",
+                "checked, 20,",
+                "the conv registrations that must actually invoke (GAP-228(b)). \
+                 Without it, a probe that stops building leaves the loop covering \
+                 fewer ops and still reporting no constant output.",
+            ),
+            (
+                "seed_cpu_ledger.rs",
+                "families_tested, EXACT_REFERENCE_FAMILIES",
+                "the exact-reference families the attachment control actually \
+                 poisoned. Without it, a family that stops passing is skipped with \
+                 a println and the control silently covers less.",
+            ),
+        ];
+
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/fkc/verify");
+        let mut missing: Vec<String> = Vec::new();
+        let mut duplicated: Vec<String> = Vec::new();
+        let mut total_bytes = 0usize;
+        for (file, anchor, why) in REQUIRED_PINS {
+            let path = dir.join(file);
+            let src = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("cannot read {path:?}: {e}"));
+            total_bytes += src.len();
+            match src.matches(anchor).count() {
+                0 => missing.push(format!("{file}: `{anchor}` — {why}")),
+                1 => {}
+                n => duplicated.push(format!("{file}: `{anchor}` appears {n} times")),
+            }
+        }
+
+        // Positive control on the PATH: a wrong directory reads nothing and
+        // every anchor would report missing, which is loud — but a wrong
+        // directory that happened to hold same-named files would not be.
+        assert!(
+            total_bytes > 10_000,
+            "read only {total_bytes} bytes across the pinned files — the scan is \
+             looking in the wrong place"
+        );
+        // Positive control on the PREDICATE: an anchor that is deliberately
+        // not in the file must be reported. Without this, a `contains` that
+        // always returned true would make every check above vacuous.
+        //
+        // THE ABSENT ANCHOR IS BUILT AT RUNTIME AND MUST NEVER BE A LITERAL.
+        // The first version of this control WAS a literal, and it fired --
+        // because a source-scanning test scans the file it is written in, so
+        // the control found ITSELF, and the gate went red on its own control
+        // while the real check underneath was never reached. Second time a
+        // self-referential scan in this crate has been tripped by its own
+        // text; the first was a comment naming the forbidden write spellings
+        // in `ledger.rs`. It is also why reading a gate's MESSAGE is not
+        // optional: this failure and a genuinely deleted pin are both a red X,
+        // and only the message tells them apart.
+        let probe = std::fs::read_to_string(dir.join("seed_cpu_ledger.rs")).expect("readable");
+        let absent = format!("nothing, {},", u32::MAX);
+        assert!(
+            !probe.contains(&absent),
+            "the absence predicate is broken: it finds `{absent}`, which is not in the              file, so every pin below would report present no matter what"
+        );
+
+        assert!(
+            duplicated.is_empty(),
+            "these pins are ambiguous, so a deletion of one copy would go unnoticed: \
+             {duplicated:?}"
+        );
+        assert!(
+            missing.is_empty(),
+            "THESE PINS HAVE BEEN DELETED, AND THEIR GATES NOW PASS WITHOUT THEM:\n  {}\n\
+             A wrong value is compared and fails; a deleted value is never compared \
+             at all. Restore the line, or remove its entry from REQUIRED_PINS in the \
+             same change and say why it is no longer load-bearing.",
+            missing.join("\n  ")
+        );
+    }
+
     #[test]
     #[ignore = "planning measurement for GAP-228; run manually with --ignored --nocapture"]
     fn gap_228_which_sections_are_wholesale_flippable() {
