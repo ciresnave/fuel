@@ -179,8 +179,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "max(0, x); exact f32/f64. bf16/f16 widen to f32 then narrow. NaN-propagating (torch parity, pinned 2026-07-08). Identical to the non-in-place relu."
+  audited: true
+  notes: "max(0, x); exact f32/f64. bf16/f16 widen to f32 then narrow. NaN-propagating (torch parity, pinned 2026-07-08). Identical to the non-in-place relu. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -237,8 +237,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "x*sigmoid(x); transcendental. f32/f64 native; bf16/f16 via f32. Identical to the non-in-place silu."
+  audited: true
+  notes: "x*sigmoid(x); transcendental. f32/f64 native; bf16/f16 via f32. Identical to the non-in-place silu. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -296,8 +296,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "GeluTanh: 0.5x(1+tanh(√(2/π)(x+0.044715x³))); 7-digit √(2/π) for f32, 16-digit for f64; bf16/f16 via f32. OpKind GeluInplace (canonical tanh GELU), distinct from GeluErfInplace. Identical to the non-in-place gelu."
+  audited: true
+  notes: "GeluTanh: 0.5x(1+tanh(√(2/π)(x+0.044715x³))); 7-digit √(2/π) for f32, 16-digit for f64; bf16/f16 via f32. OpKind GeluInplace (canonical tanh GELU), distinct from GeluErfInplace. Identical to the non-in-place gelu. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -354,8 +354,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "tanh(x); transcendental via libm/std. f32/f64 native; bf16/f16 via f32. Identical to the non-in-place tanh."
+  audited: true
+  notes: "tanh(x); transcendental via libm/std. f32/f64 native; bf16/f16 via f32. Identical to the non-in-place tanh. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -412,8 +412,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "1/(1+exp(-x)); transcendental. f32/f64 native; bf16/f16 via f32. Identical to the non-in-place sigmoid."
+  audited: true
+  notes: "1/(1+exp(-x)); transcendental. f32/f64 native; bf16/f16 via f32. Identical to the non-in-place sigmoid. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -469,8 +469,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "-x; exact. bf16/f16 via f32. Identical to the non-in-place neg."
+  audited: true
+  notes: "-x; exact. bf16/f16 via f32. Identical to the non-in-place neg. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -526,8 +526,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "|x|; exact. bf16/f16 via f32. Identical to the non-in-place abs."
+  audited: true
+  notes: "|x|; exact. bf16/f16 via f32. Identical to the non-in-place abs. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -583,8 +583,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "x*x; exact. bf16/f16 via f32. Identical to the non-in-place sqr."
+  audited: true
+  notes: "x*x; exact. bf16/f16 via f32. Identical to the non-in-place sqr. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -641,8 +641,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "√x; f32/f64 native; bf16/f16 via f32. NaN for x<0. Identical to the non-in-place sqrt."
+  audited: true
+  notes: "√x; f32/f64 native; bf16/f16 via f32. NaN for x<0. Identical to the non-in-place sqrt. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -699,8 +699,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "1/√x; f32/f64 native; bf16/f16 via f32. Identical to the non-in-place rsqrt."
+  audited: true
+  notes: "1/√x; f32/f64 native; bf16/f16 via f32. Identical to the non-in-place rsqrt. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -757,8 +757,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "1/x; exact IEEE division; ±inf at 0. bf16/f16 via f32. Identical to the non-in-place recip."
+  audited: true
+  notes: "1/x; exact IEEE division; ±inf at 0. bf16/f16 via f32. Identical to the non-in-place recip. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -815,8 +815,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "e^x; transcendental. f32/f64 native; bf16/f16 via f32. Identical to the non-in-place exp."
+  audited: true
+  notes: "e^x; transcendental. f32/f64 native; bf16/f16 via f32. Identical to the non-in-place exp. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -873,8 +873,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "ln(x); transcendental. NaN for x<0, -inf at 0. f32/f64 native; bf16/f16 via f32. Identical to the non-in-place log."
+  audited: true
+  notes: "ln(x); transcendental. NaN for x<0, -inf at 0. f32/f64 native; bf16/f16 via f32. Identical to the non-in-place log. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -931,8 +931,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "sin(x); transcendental. f32/f64 native; bf16/f16 via f32. Identical to the non-in-place sin."
+  audited: true
+  notes: "sin(x); transcendental. f32/f64 native; bf16/f16 via f32. Identical to the non-in-place sin. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -989,8 +989,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "cos(x); transcendental. f32/f64 native; bf16/f16 via f32. Identical to the non-in-place cos."
+  audited: true
+  notes: "cos(x); transcendental. f32/f64 native; bf16/f16 via f32. Identical to the non-in-place cos. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1047,8 +1047,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "sign(x) ∈ {-1,0,1}; Sign(0)=0. bf16/f16 via f32. Identical to the non-in-place sign."
+  audited: true
+  notes: "sign(x) ∈ {-1,0,1}; Sign(0)=0. bf16/f16 via f32. Identical to the non-in-place sign. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1104,8 +1104,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "⌊x⌋; exact. bf16/f16 via f32. Identical to the non-in-place floor."
+  audited: true
+  notes: "⌊x⌋; exact. bf16/f16 via f32. Identical to the non-in-place floor. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1161,8 +1161,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "⌈x⌉; exact. bf16/f16 via f32. Identical to the non-in-place ceil."
+  audited: true
+  notes: "⌈x⌉; exact. bf16/f16 via f32. Identical to the non-in-place ceil. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1219,8 +1219,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "round_ties_even (banker's rounding). bf16/f16 via f32. Identical to the non-in-place round."
+  audited: true
+  notes: "round_ties_even (banker's rounding). bf16/f16 via f32. Identical to the non-in-place round. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1277,8 +1277,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "erf(x) via libm::erf{,f}; f32/f64 native; bf16/f16 via f32. Identical to the non-in-place erf."
+  audited: true
+  notes: "erf(x) via libm::erf{,f}; f32/f64 native; bf16/f16 via f32. Identical to the non-in-place erf. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1336,8 +1336,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "exact-erf GELU: 0.5x(1+erf(x/√2)) via libm; OpKind GeluErfInplace, DISTINCT from the tanh GeluInplace. bf16/f16 via f32. Identical to the non-in-place gelu_erf."
+  audited: true
+  notes: "exact-erf GELU: 0.5x(1+erf(x/√2)) via libm; OpKind GeluErfInplace, DISTINCT from the tanh GeluInplace. bf16/f16 via f32. Identical to the non-in-place gelu_erf. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1401,8 +1401,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false                # CPU primitive: PRIMITIVE_DETERMINISTIC_CPU default (§12.4)
-  notes: "Native f32 mul-add; IEEE inf/NaN. mul==1 ⇒ AddScalar; add==0 ⇒ MulScalar."
+  audited: true
+  notes: "Native f32 mul-add; IEEE inf/NaN. mul==1 ⇒ AddScalar; add==0 ⇒ MulScalar. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1463,8 +1463,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "Native f64 mul-add; IEEE inf/NaN. mul==1 ⇒ AddScalar; add==0 ⇒ MulScalar."
+  audited: true
+  notes: "Native f64 mul-add; IEEE inf/NaN. mul==1 ⇒ AddScalar; add==0 ⇒ MulScalar. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1527,8 +1527,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "bf16 widens to f32, mul-add in f32 (params f64→f32), narrows to bf16 on store. Matches the non-in-place affine_* half convention."
+  audited: true
+  notes: "bf16 widens to f32, mul-add in f32 (params f64→f32), narrows to bf16 on store. Matches the non-in-place affine_* half convention. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1590,8 +1590,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "f16 widens to f32, mul-add in f32 (params f64→f32), narrows to f16 on store. Matches the non-in-place affine_* half convention."
+  audited: true
+  notes: "f16 widens to f32, mul-add in f32 (params f64→f32), narrows to f16 on store. Matches the non-in-place affine_* half convention. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1654,8 +1654,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "Native f32 clamp. min>max ⇒ typed Error (no panic). Exact: clamp returns one of the operands or a bound."
+  audited: true
+  notes: "Native f32 clamp. min>max ⇒ typed Error (no panic). Exact: clamp returns one of the operands or a bound. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1716,8 +1716,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "Native f64 clamp. min>max ⇒ typed Error (no panic)."
+  audited: true
+  notes: "Native f64 clamp. min>max ⇒ typed Error (no panic). [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1779,8 +1779,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "bf16 widens to f32, clamps against f32-narrowed bounds, narrows on store. min>max ⇒ typed Error (no panic)."
+  audited: true
+  notes: "bf16 widens to f32, clamps against f32-narrowed bounds, narrows on store. min>max ⇒ typed Error (no panic). [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1842,8 +1842,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "f16 widens to f32, clamps against f32-narrowed bounds, narrows on store. min>max ⇒ typed Error (no panic)."
+  audited: true
+  notes: "f16 widens to f32, clamps against f32-narrowed bounds, narrows on store. min>max ⇒ typed Error (no panic). [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1906,8 +1906,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "Native f32 powi (i32 exponent). exp==0 ⇒ 1.0; negative exp ⇒ reciprocal; IEEE inf/NaN."
+  audited: true
+  notes: "Native f32 powi (i32 exponent). exp==0 ⇒ 1.0; negative exp ⇒ reciprocal; IEEE inf/NaN. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1967,8 +1967,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "Native f64 powi (i32 exponent). exp==0 ⇒ 1.0; negative exp ⇒ reciprocal; IEEE inf/NaN."
+  audited: true
+  notes: "Native f64 powi (i32 exponent). exp==0 ⇒ 1.0; negative exp ⇒ reciprocal; IEEE inf/NaN. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -2029,8 +2029,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "bf16 widens to f32, powi in f32 (i32 exponent), narrows to bf16 on store. exp==0 ⇒ 1.0; negative exp ⇒ reciprocal."
+  audited: true
+  notes: "bf16 widens to f32, powi in f32 (i32 exponent), narrows to bf16 on store. exp==0 ⇒ 1.0; negative exp ⇒ reciprocal. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -2090,8 +2090,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "f16 widens to f32, powi in f32 (i32 exponent), narrows to f16 on store. exp==0 ⇒ 1.0; negative exp ⇒ reciprocal."
+  audited: true
+  notes: "f16 widens to f32, powi in f32 (i32 exponent), narrows to f16 on store. exp==0 ⇒ 1.0; negative exp ⇒ reciprocal. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```

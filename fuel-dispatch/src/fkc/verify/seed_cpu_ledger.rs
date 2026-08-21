@@ -49,7 +49,7 @@ use crate::kernel::{BindingEntry, MatmulM, OpParams};
 
 /// Repeat-call count per probe for the `bit_stable_on_same_hardware`
 /// check — `>= 16` per the task's floor.
-const ITERS: usize = 16;
+pub(crate) const ITERS: usize = 16;
 
 /// Which shape/`OpParams` recipe a given `FusedOpId` needs. One variant
 /// per distinct wrapper calling convention in `dispatch.rs` (verified by
@@ -1124,6 +1124,35 @@ mod tests {
         for (name, c) in &neither_by_op {
             println!("[gap-226]     {c:>3}  {name}");
         }
+
+        // ⚠️ THE BORN-RED THE ARCHITECT ASKED FOR, and it is stronger than it
+        // looks because of HOW this table is built.
+        //
+        // `build the table from contracts` NEVER RUNS `fill_unset_cpu_precision`
+        // — the fill is applied inside `register_cpu_kernels`, not by
+        // `register_into`. So every entry counted as backed here is backed
+        // WITHOUT the fill, from contract + earned ledger record. That is the
+        // property the whole increment was for, measured directly rather than
+        // by removing the fill and seeing what survives.
+        //
+        // The numbers are pinned, not floating: GAP-228 flipped exactly 240
+        // entries' worth of sections, so `nothing` must be 80 and the backed
+        // count 543. **A shortfall is not a smaller success — it is one
+        // declaration with no earned record behind it**, and it would be
+        // invisible in a diff.
+        assert_eq!(
+            nothing, 80,
+            "expected exactly 80 entries still declaring nothing after GAP-228's flip              (320 before, 240 flipped). {nothing} means a declaration was not evidenced              by the record it was supposed to rest on, or a kernel revision moved and              silently un-earned one."
+        );
+        assert_eq!(
+            total - nothing,
+            543,
+            "expected 543 contract-derived entries backed WITHOUT the fill. This table              is built by `register_into`, which does not apply              `fill_unset_cpu_precision` — so this count IS the post-fill-retirement              number for these entries, and a drop means the backing did not actually              move from the fill to contract + record."
+        );
+        assert_eq!(
+            neither, nothing,
+            "every entry still declaring nothing must be one with NO ledger record — if              any had a record, it was flippable and GAP-228's generator skipped it"
+        );
 
         assert_eq!(
             both + bit_only + ulp_only + neither,

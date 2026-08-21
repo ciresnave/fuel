@@ -1739,8 +1739,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "f32::powf — libm-class transcendental, not a hardware-exact op; ULP bound depends on the platform powf and is left for the Judge to calibrate. IEEE NaN (e.g. negative base, fractional exponent → NaN). Deterministic on same hardware (same powf implementation)."
+  audited: true
+  notes: "f32::powf — libm-class transcendental, not a hardware-exact op; ULP bound depends on the platform powf and is left for the Judge to calibrate. IEEE NaN (e.g. negative base, fractional exponent → NaN). Deterministic on same hardware (same powf implementation). [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1803,8 +1803,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "f64::powf — libm-class transcendental; ULP bound platform-dependent, left for the Judge. IEEE NaN (negative base, fractional exponent → NaN). Deterministic on same hardware."
+  audited: true
+  notes: "f64::powf — libm-class transcendental; ULP bound platform-dependent, left for the Judge. IEEE NaN (negative base, fractional exponent → NaN). Deterministic on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1868,8 +1868,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "Widen to f32, f32::powf, narrow to bf16 on store. Transcendental ULP platform-dependent (Judge calibrates) plus one bf16 rounding. IEEE NaN. Deterministic on same hardware."
+  audited: true
+  notes: "Widen to f32, f32::powf, narrow to bf16 on store. Transcendental ULP platform-dependent (Judge calibrates) plus one bf16 rounding. IEEE NaN. Deterministic on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1932,8 +1932,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "Widen to f32, f32::powf, narrow to f16 on store. Transcendental ULP platform-dependent (Judge calibrates) plus one f16 rounding. IEEE NaN. Deterministic on same hardware."
+  audited: true
+  notes: "Widen to f32, f32::powf, narrow to f16 on store. Transcendental ULP platform-dependent (Judge calibrates) plus one f16 rounding. IEEE NaN. Deterministic on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```

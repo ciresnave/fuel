@@ -98,8 +98,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false                        # CPU primitive: importer applies PRIMITIVE_DETERMINISTIC_CPU (§12.4)
-  notes: "Native f32 accumulate, fixed (i,k,j) loop order; deterministic on same hardware."
+  audited: true
+  notes: "Native f32 accumulate, fixed (i,k,j) loop order; deterministic on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -170,8 +170,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "Native f64 accumulate, fixed (i,k,j) loop order; deterministic on same hardware."
+  audited: true
+  notes: "Native f64 accumulate, fixed (i,k,j) loop order; deterministic on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -243,8 +243,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "bf16 I/O widened to f32 for multiply-accumulate; f32 accumulator; narrow on store; deterministic on same hardware."
+  audited: true
+  notes: "bf16 I/O widened to f32 for multiply-accumulate; f32 accumulator; narrow on store; deterministic on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -316,8 +316,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "f16 I/O widened to f32 for multiply-accumulate; f32 accumulator; narrow on store; deterministic on same hardware."
+  audited: true
+  notes: "f16 I/O widened to f32 for multiply-accumulate; f32 accumulator; narrow on store; deterministic on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```

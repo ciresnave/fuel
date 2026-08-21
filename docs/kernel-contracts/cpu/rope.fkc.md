@@ -106,8 +106,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false                         # CPU primitive: family default (PRIMITIVE_DETERMINISTIC_CPU) applies (§4.8/§12.4)
-  notes: "native f32 rotate_half; deterministic; not bit-stable cross-hardware (FMA contraction may differ)."
+  audited: true
+  notes: "native f32 rotate_half; deterministic; not bit-stable cross-hardware (FMA contraction may differ). [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -183,8 +183,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "native f64 rotate_half; deterministic; widest precision of the family (no widen/narrow round-trip)."
+  audited: true
+  notes: "native f64 rotate_half; deterministic; widest precision of the family (no widen/narrow round-trip). [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -262,8 +262,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "compute in f32 (widen on load, narrow on store); bf16 I/O. Deterministic; not bit-stable cross-hardware."
+  audited: true
+  notes: "compute in f32 (widen on load, narrow on store); bf16 I/O. Deterministic; not bit-stable cross-hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -340,8 +340,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "compute in f32 (widen on load, narrow on store); f16 I/O (IEEE half). Deterministic; not bit-stable cross-hardware."
+  audited: true
+  notes: "compute in f32 (widen on load, narrow on store); f16 I/O (IEEE half). Deterministic; not bit-stable cross-hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
 
 determinism: same_hardware_bitwise
 ```
