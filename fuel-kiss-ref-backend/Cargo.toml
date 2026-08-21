@@ -23,6 +23,6 @@ half = { workspace = true }
 # What this gives up vs a rev pin: tracking UNRELEASED main. That is the healthy
 # direction — being blocked on an unreleased kiss-ref change is a signal to cut
 # a release, not to track a rev.
-kiss-ref-core       = "0.2"
+kiss-ref-core       = "0.3"
 kiss-ops-vocab      = "0.2"
 kiss-classify-vocab = "0.2"

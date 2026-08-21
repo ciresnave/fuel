@@ -29,7 +29,7 @@ fuel-kiss-ref-backend = { path = "../fuel-kiss-ref-backend", optional = true }
 # `mod ulp;` is always compiled and its unit tests run under a plain `cargo test`.
 # `no_std`, small; already present transitively via fuel-kiss-ref-backend. "0.2"
 # tracks non-breaking 0.2.z per kiss-ref's release discipline (same as the adapter).
-kiss-ref-core = "0.2"
+kiss-ref-core = "0.3"
 fuel-memory = { workspace = true }
 fuel-vulkan-backend = { workspace = true, optional = true }
 # Baracuda's shipped `structure_key` keyer (pure-Rust types crate — no nvcc).
