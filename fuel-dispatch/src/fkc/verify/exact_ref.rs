@@ -314,6 +314,17 @@ pub(crate) struct ExactRefInvoker {
     pub(crate) out_dtype: DType,
     pub(crate) out_shape: Vec<usize>,
     pub(crate) params: OpParams,
+    /// Test-only: corrupt this reference's output so the comparison against
+    /// the kernel MUST fail.
+    ///
+    /// **This exists to test ATTACHMENT, which no count can.** A reference
+    /// bound to the wrong `(op, dtypes)` still produces a perfectly correct
+    /// number of earned records — GAP-228(a)'s run-1 defect in a different
+    /// costume. Poisoning ONE family and checking that exactly that family's
+    /// registrations fail is the control that separates "the evidence exists"
+    /// from "the evidence is attached to the kernel it claims to be about".
+    #[cfg(test)]
+    pub(crate) poison: bool,
 }
 
 /// Which `(op, dtypes)` this module can reference exactly. Anything else is
@@ -461,6 +472,12 @@ impl KernelInvoker for ExactRefInvoker {
                     )));
                 }
             }
+            #[cfg(test)]
+            if self.poison {
+                if let Some(b) = out.first_mut() {
+                    *b ^= 0x01;
+                }
+            }
             return Ok(HostTensor {
                 dtype: self.out_dtype,
                 shape: self.out_shape.clone(),
@@ -544,6 +561,15 @@ impl KernelInvoker for ExactRefInvoker {
             out.extend_from_slice(&encode(self.out_dtype, s).ok_or_else(|| {
                 VerifyError::Backend(format!("cannot encode {:?}", self.out_dtype))
             })?);
+        }
+
+        #[cfg(test)]
+        if self.poison {
+            // Flip a bit in the first byte. Enough to fail `MaxUlp(0)` for
+            // any dtype, in both the float and the byte-exact modes.
+            if let Some(b) = out.first_mut() {
+                *b ^= 0x01;
+            }
         }
 
         Ok(HostTensor {
