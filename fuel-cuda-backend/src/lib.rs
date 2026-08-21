@@ -72,7 +72,9 @@ pub mod utils;
 pub use baracuda_driver::Event;
 pub use byte_storage::CudaStorageBytes;
 pub use capture::CapturedRun;
-pub use device::{CublasHandle, CudaDevice, CudaFunc, DeviceId, LaunchArgs, LaunchConfig};
+pub use device::{
+    CublasHandle, CudaDevice, CudaFunc, DeviceId, LaunchArgs, LaunchConfig, is_device_live,
+};
 pub use dyn_impl::{CudaBackendDevice, CudaBackendStorage};
 pub use error::{CudaError, WrapErr};
 pub use pinned::PinnedHostStorage;

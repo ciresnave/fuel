@@ -64,6 +64,39 @@
 //! from `SynthArtifact` alone (the contract's `op_params` metadata is the
 //! eventual cross-check); the slot machinery keeps them aligned by
 //! construction (one canonical pattern pre-order on both sides).
+//!
+//! ## GAP-214 increment 3 — JIT-slot reclamation, and what must stay true
+//!
+//! A `CudaFunc` is valid only inside the CUDA context that loaded it, so the slot
+//! bank ([`slots`]) is a process-global set of context-bound kernels. Increment 3
+//! reclaims a slot ([`reclaim_dead_slots`], run by [`claim_slot`] lazily when the
+//! bank is full) once its device is torn down, restoring capacity. That is safe
+//! ONLY while ALL of these hold — if any one changes, reclamation becomes unsafe
+//! SILENTLY, so they are named as the invariant, not just as the rationale:
+//!
+//! 1. [`dispatch_slot`] REFUSES a launch on a `DeviceId` mismatch (increment 2).
+//! 2. Same-ordinal context reuse mints a FRESH `DeviceId` (fuel-cuda-backend's
+//!    monotonic counter). So an old `KernelRef` dispatched through a
+//!    reclaimed-then-reused slot index carries the OLD id while the new occupant
+//!    carries the NEW id, and (1) refuses it — the ordering constraint, enforced
+//!    by inc 2 rather than by reclamation timing.
+//! 3. The liveness signal (`fuel_cuda_backend::is_device_live`) is
+//!    `DeviceId`-keyed, NOT ordinal-keyed — an ordinal-keyed signal would report a
+//!    live successor's slot reclaimable.
+//! 4. baracuda's `StreamInner` holds its `Context` ("outlives the stream"), so
+//!    dropping a reclaimed `CudaFunc` drops stream-then-context — no
+//!    `cuStreamDestroy` in a dead context.
+//! 5. Lock order is bank → `LIVE_DEVICES`: `claim_slot` holds the bank write lock
+//!    THEN calls `is_device_live`. Nothing holding `LIVE_DEVICES` may take the
+//!    bank lock (`DeviceLiveness::drop` honours this — it touches only the set).
+//! 6. Reclamation of a slot is IMPOSSIBLE while any storage from its device is
+//!    live: storage holds a device clone, and liveness is clone-keyed, so the
+//!    device reads live until its last clone (storage included) drops. This is why
+//!    the "operands on the dead device" hazard is unreachable rather than untested,
+//!    and why the born-red's cross-context arm uses a foreign LIVE device. It is
+//!    also what makes clone-keying stronger than merely not-the-`Arc<CudaDevice>`
+//!    leak the ruling rejected: it makes the dangerous case structurally
+//!    impossible, not just bounded.
 
 use std::sync::{Arc, OnceLock, RwLock};
 
@@ -141,15 +174,57 @@ pub fn load_synth_kernel(art: &SynthArtifact, device: &CudaDevice) -> Result<Ker
 }
 
 /// Claim the next free slot in the bank and return its dispatcher.
+/// GAP-214 increment 3: free every slot whose recorded device is no longer live,
+/// returning the freed indices. See the module docs' invariants — reclamation is
+/// safe only because inc 2 refuses on `DeviceId` mismatch, same-ordinal reuse
+/// mints a fresh `DeviceId`, the liveness signal is `DeviceId`-keyed (not
+/// ordinal), and dropping a reclaimed `CudaFunc` drops its stream then its
+/// context in that order (baracuda's `StreamInner` holds its `Context`), so no
+/// `cuStreamDestroy` in a dead context. And it can only ever fire on a dead
+/// device: reclamation is impossible while any storage from that device is live,
+/// because storage holds a device clone and liveness is clone-keyed.
+///
+/// The caller holds the slot-bank write lock; this then takes `LIVE_DEVICES` via
+/// `is_device_live` (invariant 5: bank → LIVE_DEVICES, never the reverse — so
+/// nothing holding `LIVE_DEVICES` may take the bank lock).
+fn reclaim_dead_slots(bank: &mut [Option<Slot>]) -> Vec<usize> {
+    let mut freed = Vec::new();
+    for (i, slot) in bank.iter_mut().enumerate() {
+        let dead = slot
+            .as_ref()
+            .is_some_and(|s| !fuel_cuda_backend::is_device_live(s.device_id));
+        if dead {
+            // Drops the Slot -> CudaFunc -> Arc<Stream> -> Context, in that (safe)
+            // order. Done under the bank write lock, but the drop touches no lock
+            // this thread holds (it is CUDA teardown, not LIVE_DEVICES).
+            *slot = None;
+            freed.push(i);
+        }
+    }
+    freed
+}
+
+/// Claim the next free slot in the bank and return its dispatcher.
 fn claim_slot(func: CudaFunc, entry_point: String, device_id: DeviceId) -> Result<KernelRef> {
     let mut guard = slots().write().unwrap();
-    let idx = guard.iter().position(Option::is_none).ok_or_else(|| {
-        Error::Msg(format!(
-            "load_synth_kernel({entry_point}): the {MAX_JIT_SLOTS}-slot JIT-kernel bank is full \
-             — bump MAX_JIT_SLOTS + the dispatch_table! call in jit_cuda_load.rs",
-        ))
-        .bt()
-    })?;
+    let idx = match guard.iter().position(Option::is_none) {
+        Some(i) => i,
+        None => {
+            // GAP-214 inc 3: the bank is full of CLAIMED slots — reclaim any whose
+            // device has been torn down before declaring it full. Lazy: reclamation
+            // happens exactly when capacity is needed, so no eager teardown callback
+            // and no fuel-cuda-backend -> fuel-dispatch back-edge.
+            reclaim_dead_slots(guard.as_mut_slice());
+            guard.iter().position(Option::is_none).ok_or_else(|| {
+                Error::Msg(format!(
+                    "load_synth_kernel({entry_point}): the {MAX_JIT_SLOTS}-slot JIT-kernel bank is \
+                     full and every slot's device is still live — bump MAX_JIT_SLOTS + the \
+                     dispatch_table! call in jit_cuda_load.rs",
+                ))
+                .bt()
+            })?
+        }
+    };
     guard[idx] = Some(Slot {
         func,
         entry_point,
@@ -157,6 +232,38 @@ fn claim_slot(func: CudaFunc, entry_point: String, device_id: DeviceId) -> Resul
     });
     drop(guard);
     Ok(DISPATCH_TABLE[idx])
+}
+
+/// Test hook (GAP-214 inc 3): run the same reclamation `claim_slot` runs when the
+/// bank is full, returning the freed slot indices — so a born-red can assert not
+/// just HOW MANY slots were reclaimed but WHICH (a correct count could hide
+/// reclaiming the wrong slot).
+#[doc(hidden)]
+pub fn reclaim_dead_slots_for_tests() -> Vec<usize> {
+    let mut guard = slots().write().unwrap();
+    reclaim_dead_slots(guard.as_mut_slice())
+}
+
+/// Test hook: the recorded `DeviceId` of each slot (`None` = free), so a born-red
+/// can verify a specific slot's occupant before/after reclamation and reuse.
+#[doc(hidden)]
+pub fn slot_device_ids_for_tests() -> Vec<Option<DeviceId>> {
+    slots()
+        .read()
+        .unwrap()
+        .iter()
+        .map(|s| s.as_ref().map(|s| s.device_id))
+        .collect()
+}
+
+/// Test hook: drop every slot, resetting the bank to empty. Live-GPU born-reds
+/// run serially (gpu-run) and are invoked `--exact`, so no other bank user races
+/// this; it exists so a test can start from a known-empty bank.
+#[doc(hidden)]
+pub fn clear_slots_for_tests() {
+    for slot in slots().write().unwrap().iter_mut() {
+        *slot = None;
+    }
 }
 
 /// The output element count for the scalar-ABI launch: prefer the output
