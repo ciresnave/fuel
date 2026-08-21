@@ -1128,6 +1128,76 @@ mod tests {
         }
     }
 
+    /// **The conv probes actually exercise their kernels — the output is not
+    /// a constant.**
+    ///
+    /// ⚠️ **Bit-stability has no attachment control of the kind
+    /// `every_exact_reference_is_attached_to_the_op_it_claims` provides, and
+    /// saying so is more useful than pretending the control transfers.** That
+    /// one poisons a REFERENCE; a bit-stability check compares a kernel
+    /// against ITSELF across repeats, so there is no second implementation to
+    /// misattach and perturbing the probe just yields a different
+    /// bit-stable answer.
+    ///
+    /// Two things do stand in for it. First, a probe built for the wrong op
+    /// is REJECTED by the kernel rather than silently passing — that is how
+    /// `WriteSliceDoff` was caught twice (wrong operand count, then wrong
+    /// offset dtype), and the sweep reports 0 invoke errors. Second, and this
+    /// is what this test adds: **a kernel that ignored its inputs entirely
+    /// would be perfectly bit-stable.** The all-zeros integer probes were
+    /// exactly that, and nothing in a pass count could see it.
+    ///
+    /// So: invoke each conv probe once and require the output to vary. A
+    /// constant output means either the probe is degenerate or the kernel is
+    /// not reading it, and both make every conv record evidentially empty.
+    #[test]
+    fn the_conv_probes_produce_a_non_constant_output() {
+        use crate::fkc::verify::bit_stability::KernelInvoker;
+        use crate::fkc::verify::probe_recipes::{build_primitive_probe, probe_seed};
+        use fuel_ir::dispatch::OpKind;
+
+        let mut table = crate::kernel::KernelBindingTable::new();
+        crate::dispatch::register_cpu_kernels(&mut table);
+
+        let mut checked = 0usize;
+        let mut constant: Vec<String> = Vec::new();
+        for (op, dtypes, backend, entry) in table.iter_entries() {
+            if backend != BackendId::Cpu
+                || !matches!(
+                    op,
+                    OpKind::Conv2D | OpKind::ConvTranspose2D | OpKind::CausalConv1d
+                )
+            {
+                continue;
+            }
+            let Some(probe) = build_primitive_probe(op, dtypes, probe_seed(op, dtypes)) else {
+                continue;
+            };
+            let inv = CpuInvoker::new(probe.out_dtype, probe.out_shape.clone())
+                .with_params(probe.params.clone());
+            let Ok(out) = inv.invoke(entry, &probe.inputs) else {
+                continue;
+            };
+            checked += 1;
+            let w = probe.out_dtype.size_in_bytes();
+            let distinct: std::collections::HashSet<&[u8]> = out.bytes.chunks(w).collect();
+            if distinct.len() < 2 {
+                constant.push(format!("{op:?} {dtypes:?} -> {} distinct", distinct.len()));
+            }
+        }
+
+        assert_eq!(
+            checked, 20,
+            "expected 20 conv registrations to invoke; got {checked}. Fewer means some \
+             probe or kernel did not run, and its record rests on nothing this test saw."
+        );
+        assert!(
+            constant.is_empty(),
+            "these conv probes produce a CONSTANT output, so a kernel ignoring its \
+             inputs would pass bit-stability identically: {constant:?}"
+        );
+    }
+
     /// **GAP-226 split of the entries that declare nothing: how much can
     /// start now, and how much waits on a vocabulary decision.** Reports;
     /// asserts only invariants.
@@ -1247,14 +1317,23 @@ mod tests {
         // count 543. **A shortfall is not a smaller success — it is one
         // declaration with no earned record behind it**, and it would be
         // invisible in a diff.
+        // THESE TWO NUMBERS MOVE WITH EVERY INCREMENT, AND THAT IS THE
+        // POINT -- but updating them is only honest when the delta was
+        // PRE-DECLARED AND MATCHED.
+        //
+        // 320 -> 80 was GAP-228(a) (240 flipped). 80 -> 60 is (b) (conv's 20).
+        // Each time, the number written here is the one called BEFORE the run,
+        // never the one observed after. A pin edited to whatever the run
+        // produced is decoration; a pin edited to a figure predicted in
+        // advance is the record of a prediction that held.
         assert_eq!(
-            nothing, 80,
-            "expected exactly 80 entries still declaring nothing after GAP-228's flip              (320 before, 240 flipped). {nothing} means a declaration was not evidenced              by the record it was supposed to rest on, or a kernel revision moved and              silently un-earned one."
+            nothing, 60,
+            "expected exactly 80 entries still declaring nothing after GAP-228's flip              (80 before, conv's 20 flipped). {nothing} means a declaration was not evidenced              by the record it was supposed to rest on, or a kernel revision moved and              silently un-earned one."
         );
         assert_eq!(
             total - nothing,
-            543,
-            "expected 543 contract-derived entries backed WITHOUT the fill. This table              is built by `register_into`, which does not apply              `fill_unset_cpu_precision` — so this count IS the post-fill-retirement              number for these entries, and a drop means the backing did not actually              move from the fill to contract + record."
+            563,
+            "expected 563 contract-derived entries backed WITHOUT the fill. This table              is built by `register_into`, which does not apply              `fill_unset_cpu_precision` — so this count IS the post-fill-retirement              number for these entries, and a drop means the backing did not actually              move from the fill to contract + record."
         );
         assert_eq!(
             neither, nothing,
