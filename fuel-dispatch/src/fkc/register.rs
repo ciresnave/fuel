@@ -926,75 +926,134 @@ mod tests {
     // V-FKC-9 IMPORT-TIME GATE: unverified precision claims are downgraded
     // =====================================================================
 
-    /// The V-FKC-9 import gate downgrades a declared guarantee whose claims
-    /// are not all backed, and the warning names WHICH claims.
+    /// The V-FKC-9 gate downgrades a declared guarantee whose claims are not
+    /// all backed, and the warning NAMES which ones.
     ///
-    /// ⚠️ **This test used to name `add_f32` and assert it was downgraded.
-    /// GAP-225 then earned both of its claims, and the test failed on the
-    /// program succeeding** — a fixture being actively removed by the work
-    /// under test. The property is unchanged; only the naming of a victim was
-    /// wrong. It now locates one.
+    /// ⚠️ **This test has now expired twice on live data and is constructed
+    /// because of it.** It first named `add_f32` and failed when the precision
+    /// program earned that entry's claims. It was rewritten to LOCATE a
+    /// downgraded entry, and failed again when the two contracts it searched
+    /// became fully backed. It was widened to every CPU contract — and failed
+    /// a third time, because **there are now zero unbacked declared claims on
+    /// the whole CPU surface.**
+    ///
+    /// Each rewrite was a smaller version of the same mistake: sourcing a
+    /// NEGATIVE case from data that the work under test is actively removing.
+    /// A gate's "it fires" test cannot depend on something still being broken.
+    /// So the unbacked case is now BUILT: an empty ledger backs nothing, so
+    /// every declared claim is unbacked by construction, permanently.
     #[test]
     fn the_import_gate_downgrades_an_entry_whose_claims_are_not_all_backed() {
-        let found = find_downgraded();
-        let Some((message, claims)) = found else {
-            panic!(
-                "no contract-derived CPU entry is downgraded any more. That is either \
-                 the precision program finishing — in which case THIS test is what is \
-                 stale, and the thing to assert is that the gate still fires on a \
-                 constructed unbacked claim — or the warning text changed and this \
-                 search matches nothing. Do not delete it without deciding which."
-            );
+        use crate::fkc::verify::{LedgerQuery, VerificationLedger, gate_precision};
+        use crate::fused::PrecisionGuarantee;
+
+        let declared = PrecisionGuarantee {
+            bit_stable_on_same_hardware: true,
+            max_ulp: Some(0),
+            ..PrecisionGuarantee::UNAUDITED
         };
+        let dtypes = [DType::F32, DType::F32, DType::F32];
+        let q = LedgerQuery {
+            kernel_ref: "constructed",
+            backend: fuel_ir::probe::BackendId::Cpu,
+            dtypes: &dtypes,
+            kernel_revision_hash: 0xDEAD_BEEF,
+        };
+        let mut warnings = Vec::new();
+        let gated = gate_precision(declared, &q, &VerificationLedger::default(), &mut warnings);
+
         assert!(
-            !claims.is_empty(),
-            "the downgrade warning named no claims: {message}"
+            !gated.bit_stable_on_same_hardware && gated.max_ulp.is_none(),
+            "an entry whose claims are backed by NOTHING must be downgraded whole"
+        );
+        assert_eq!(
+            gated.notes,
+            PrecisionGuarantee::UNAUDITED.notes,
+            "the downgrade must land on the UNAUDITED sentinel, not a partial edit"
         );
         assert!(
-            claims.iter().all(|c| matches!(
-                c.as_str(),
-                "bit_stable_on_same_hardware" | "max_ulp" | "max_relative" | "max_absolute"
-            )),
-            "unrecognised claim name in {claims:?} — the gate's vocabulary changed and \
-             every census keyed on these strings is now reading a subset"
+            warnings
+                .iter()
+                .any(|w| w.message.contains("bit_stable_on_same_hardware")
+                    && w.message.contains("max_ulp")),
+            "the warning must NAME both unbacked claims, or a census keyed on those \
+             names reads a subset: {warnings:?}"
         );
     }
 
     /// **Earning one claim buys NOTHING while a sibling claim is unearned.**
     ///
-    /// `gate_precision` downgrades the WHOLE `PrecisionGuarantee` if ANY
-    /// declared claim lacks a ledger pass, so an entry declaring both
-    /// `bit_stable_on_same_hardware` and `max_ulp` stays fully UNAUDITED until
-    /// both are earned.
+    /// `gate_precision` collapses the WHOLE guarantee if ANY declared claim
+    /// lacks a pass, so coverage of one claim does not convert into changed
+    /// guarantees for dual-claim entries. That is invisible in a
+    /// claim-coverage number and is exactly the inference a plan makes
+    /// silently — converted into a test so it fails if someone makes it.
     ///
-    /// This bounds the precision program's headline: coverage of ONE claim
-    /// does not convert into changed guarantees for dual-claim entries, which
-    /// is not visible in a claim-coverage number and is exactly the inference
-    /// a plan makes silently. Converted into a test so it fails if someone
-    /// makes it.
+    /// Constructed for the same reason as the test above: a ledger holding
+    /// exactly ONE of the two declared claims cannot be produced from live
+    /// data any more, and depending on live data to still be broken is what
+    /// expired the previous three versions.
     #[test]
     fn a_backed_claim_does_not_rescue_an_entry_whose_sibling_claim_is_unbacked() {
-        let Some((message, claims)) = find_downgraded() else {
-            panic!(
-                "nothing is downgraded any more, so this property is no longer \
-                 observable on live data. See the sibling test's message."
-            );
+        // `LedgerRecord`'s re-export is feature-gated (`jit`/`cuda`), so reach
+        // it by module path — this test is unconditional and must not become
+        // one that only runs under a feature nobody's default build enables.
+        use crate::fkc::verify::{LedgerQuery, LedgerRecord, VerificationLedger, gate_precision};
+        use crate::fused::PrecisionGuarantee;
+
+        let dtypes = [DType::F32, DType::F32, DType::F32];
+        let rev = 0xDEAD_BEEF_u64;
+        // A ledger that backs bit-stability and NOTHING ELSE.
+        let ledger = VerificationLedger::from_records(vec![LedgerRecord {
+            kernel_ref: "constructed".to_string(),
+            backend: "Cpu".to_string(),
+            dtypes: dtypes.iter().map(|d| format!("{d:?}")).collect(),
+            kernel_revision_hash: rev,
+            claim: "bit_stable_on_same_hardware".to_string(),
+            result: "pass".to_string(),
+            verified_at: "epoch:0".to_string(),
+            protocol_version: 1,
+            evidence: serde_json::Value::Null,
+        }]);
+
+        let q = LedgerQuery {
+            kernel_ref: "constructed",
+            backend: fuel_ir::probe::BackendId::Cpu,
+            dtypes: &dtypes,
+            kernel_revision_hash: rev,
         };
 
-        // The point is a PARTIAL backing: at least one declared claim is
-        // unbacked while the entry has others. A warning listing every
-        // machine-checkable claim would be an entry with nothing backed, which
-        // demonstrates a weaker thing.
+        // Control: the ledger really does back the bit-stable claim, so a
+        // failure below is about the SIBLING and not about a lookup miss.
         assert!(
-            claims.len() < 4,
-            "the downgraded entry has ALL four claims unbacked, which shows the gate \
-             rejecting an entirely unverified entry — not that ONE backed claim fails \
-             to rescue it. Find a partially-backed entry or this assertion is weaker \
-             than it reads: {message}"
+            ledger.has_pass(q.backend, q.dtypes, rev, "bit_stable_on_same_hardware"),
+            "precondition: the constructed ledger must back bit-stability"
+        );
+
+        let declared = PrecisionGuarantee {
+            bit_stable_on_same_hardware: true,
+            max_ulp: Some(0),
+            ..PrecisionGuarantee::UNAUDITED
+        };
+        let mut warnings = Vec::new();
+        let gated = gate_precision(declared, &q, &ledger, &mut warnings);
+
+        assert!(
+            !gated.bit_stable_on_same_hardware,
+            "ONE backed claim must not rescue an entry whose sibling is unbacked — the \
+             whole guarantee collapses"
+        );
+        let named: Vec<&str> = warnings.iter().map(|w| w.message.as_str()).collect();
+        assert!(
+            named.iter().any(|m| m.contains("max_ulp")),
+            "the warning must cite the UNBACKED sibling: {named:?}"
         );
         assert!(
-            message.contains("downgraded to UNAUDITED"),
-            "expected the whole guarantee collapsed, not a per-claim edit: {message}"
+            !named
+                .iter()
+                .any(|m| m.contains("[\"bit_stable_on_same_hardware\"")),
+            "the BACKED claim must not be reported unbacked — that would mean the gate \
+             does not discriminate per claim: {named:?}"
         );
     }
 

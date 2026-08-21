@@ -135,9 +135,19 @@ fn to_bytes(dt: DType, vals: &[f32]) -> Option<Vec<u8>> {
         // and that is the right shape: a legitimate bypass, not a gap. Adding
         // an arm here to satisfy a coverage gate would be fabricating data to
         // please an instrument.
-        // F8E4M3: one byte per element. Produce a deterministic VALID normal
-        // value (exponent field kept out of the 0b1111 inf/nan range) — the
-        // exact value is irrelevant, only that it round-trips stably.
+        // F8E4M3 (OCP **E4M3FN**): one byte per element. Produce a
+        // deterministic VALID normal value — the exact value is irrelevant,
+        // only that it round-trips stably.
+        //
+        // ⚠️ The reason previously given here was WRONG, in the way this
+        // registry keeps filing: it said the exponent field is "kept out of
+        // the 0b1111 inf/nan range". **E4M3FN has no infinities, and exponent
+        // 1111 is NOT wholly reserved** — only mantissa 111 is NaN
+        // (`S.1111.111`, two encodings), while `1111.000`-`1111.110` are
+        // ordinary finite values up to 448. The probe values are fine and
+        // staying clear is conservative; the JUSTIFICATION over-reserved, and
+        // a true-sounding reason with the wrong scope is exactly what gets
+        // repeated as fact.
         DType::F8E4M3 => vals
             .iter()
             .enumerate()

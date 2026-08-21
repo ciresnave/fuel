@@ -116,9 +116,15 @@ pub use bit_stability::{
     KernelInvoker, ProbeInputs, VerifyError, VerifyOutcome, verify_bit_stability,
 };
 pub use ledger::{LedgerQuery, VerificationLedger, gate_precision};
-// `LedgerRecord`: `jit_ingest` (jit) and `harness`+`seed_cuda_ledger` (cuda).
+// `LedgerRecord`: `jit_ingest` (jit) and `harness`+`seed_cuda_ledger` (cuda)
+// — and, unconditionally, the register-gate tests, which CONSTRUCT a ledger
+// rather than depending on live data still being unbacked. A `#[cfg]` on this
+// re-export would have made those tests feature-conditional, i.e. absent from
+// the build everyone actually runs.
 #[cfg(any(feature = "jit", feature = "cuda"))]
 pub use ledger::LedgerRecord;
+#[cfg(not(any(feature = "jit", feature = "cuda")))]
+pub(crate) use ledger::LedgerRecord;
 // The numeric-bound surface: consumed ONLY by `jit_ingest`'s cuda-gated
 // candidate-vs-reference arm, i.e. `jit` AND `cuda`.
 #[cfg(all(feature = "jit", feature = "cuda"))]
