@@ -359,9 +359,7 @@ fn jit_adopt_loads_and_launches_a_synthesized_cuda_kernel() {
 #[ignore]
 fn jit_kernel_refuses_operands_on_a_foreign_cuda_context() {
     let (Some(dev1), Some(dev2)) = (dev_or_skip(), dev_or_skip()) else {
-        eprintln!(
-            "skipping jit_kernel_refuses_operands_on_a_foreign_cuda_context: no CUDA device"
-        );
+        eprintln!("skipping jit_kernel_refuses_operands_on_a_foreign_cuda_context: no CUDA device");
         return;
     };
     assert_ne!(
