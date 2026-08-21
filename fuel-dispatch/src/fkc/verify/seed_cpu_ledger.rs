@@ -1060,6 +1060,11 @@ mod tests {
     fn every_exact_reference_is_attached_to_the_op_it_claims() {
         use fuel_ir::dispatch::OpKind;
 
+        /// How many CPU families production offers an exact reference for.
+        /// Pinned so that a family appearing or disappearing is a red gate
+        /// rather than a quietly shorter loop.
+        const EXACT_REFERENCE_FAMILIES: usize = 9;
+
         // Baseline: which registrations pass with no poison.
         let (_, clean) = run_cpu_max_ulp_verification_inner(None);
         let passing: Vec<(String, Vec<DType>)> = clean
@@ -1073,24 +1078,51 @@ mod tests {
              every family below"
         );
 
-        for op in [
-            OpKind::Cast,
-            OpKind::Gather,
-            OpKind::IndexSelect,
-            OpKind::AddElementwise,
-            OpKind::SubElementwise,
-            OpKind::MulElementwise,
-            OpKind::DivElementwise,
-            OpKind::MaximumElementwise,
-            OpKind::MinimumElementwise,
-        ] {
+        // THE FAMILY LIST IS DERIVED FROM PRODUCTION, NOT HARDCODED.
+        //
+        // It used to be a literal list of nine `OpKind`s that happened to equal
+        // `has_exact_reference`'s nine arms — and NOTHING ENFORCED THAT
+        // EQUALITY IN EITHER DIRECTION. A tenth op added to production would
+        // never be poisoned here; deleting one from the list would shrink both
+        // sides of `failed.len() == expected.len()` together and still pass.
+        // Both losses are silent, and the second is the one a reviewer would
+        // wave through, because a shorter list reads as a smaller job.
+        //
+        // Deriving the list means an op added to `has_exact_reference` comes
+        // under this control the moment it exists, and an op removed from it
+        // moves the pinned count instead of vanishing.
+        let mut fam_table = crate::kernel::KernelBindingTable::new();
+        crate::dispatch::register_cpu_kernels(&mut fam_table);
+        let mut families: Vec<OpKind> = Vec::new();
+        for (op, dtypes, backend, _entry) in fam_table.iter_entries() {
+            if backend == BackendId::Cpu
+                && crate::fkc::verify::exact_ref::has_exact_reference(op, dtypes)
+                && !families.contains(&op)
+            {
+                families.push(op);
+            }
+        }
+        families.sort_by_key(|o| format!("{o:?}"));
+        assert_eq!(
+            families.len(),
+            EXACT_REFERENCE_FAMILIES,
+            "production offers an exact reference for {} CPU families, not the pinned              {EXACT_REFERENCE_FAMILIES}: {families:?}. If a family was ADDED, it is now              under this control and the pin moves with it; if one was REMOVED, say why              its records no longer need an attachment check.",
+            families.len()
+        );
+
+        let mut families_tested = 0usize;
+        let mut not_testable: Vec<String> = Vec::new();
+        for op in families {
             let name = format!("{op:?}");
             let expected: Vec<&(String, Vec<DType>)> =
                 passing.iter().filter(|(n, _)| *n == name).collect();
             if expected.is_empty() {
                 // A family with no passing registration cannot be tested for
-                // attachment, and saying so beats skipping silently.
+                // attachment. Saying so beats skipping silently — but a
+                // PRINTLN is not saying so, it is a skip with a receipt nobody
+                // reads. The count below is what makes it visible.
                 println!("[attach] {name}: no passing registration — not testable");
+                not_testable.push(name);
                 continue;
             }
 
@@ -1121,11 +1153,24 @@ mod tests {
                 failed.len(),
                 expected.len()
             );
+            families_tested += 1;
             println!(
                 "[attach] {name}: {} registration(s), all and only",
                 failed.len()
             );
         }
+
+        // ⚠️ THE SKIP BRANCH ABOVE IS A SECOND WAY THIS CONTROL SHRINKS, AND
+        // IT NEEDS NO SOURCE EDIT AT ALL. A family that stops passing for any
+        // reason — a probe that stops building, a kernel revision that moves —
+        // is skipped with a println, and every assertion in the loop still
+        // holds because the loop simply has less to check. Deleting a line
+        // from a list is at least visible in a diff; this one is invisible in
+        // the source AND in the result.
+        assert_eq!(
+            families_tested, EXACT_REFERENCE_FAMILIES,
+            "only {families_tested} of {EXACT_REFERENCE_FAMILIES} exact-reference              families were actually poisoned; {not_testable:?} had no passing              registration to poison. Production claims an exact reference for them, so              a skip here means their records rest on an attachment nothing checked."
+        );
     }
 
     /// **The conv probes actually exercise their kernels — the output is not
@@ -1328,7 +1373,7 @@ mod tests {
         // advance is the record of a prediction that held.
         assert_eq!(
             nothing, 60,
-            "expected exactly 80 entries still declaring nothing after GAP-228's flip              (80 before, conv's 20 flipped). {nothing} means a declaration was not evidenced              by the record it was supposed to rest on, or a kernel revision moved and              silently un-earned one."
+            "expected exactly 60 entries still declaring nothing after GAP-228's flip              (80 before, conv's 20 flipped). {nothing} means a declaration was not evidenced              by the record it was supposed to rest on, or a kernel revision moved and              silently un-earned one."
         );
         assert_eq!(
             total - nothing,
