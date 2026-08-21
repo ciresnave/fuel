@@ -740,3 +740,49 @@ cargo test -p fuel-ir --test gap_hedges this_test_does_not_exist_anywhere
 ### Footnote: a prefix that is truncated BY CONSTRUCTION
 
 *“13 clippy sites”* was not a count — **it was where the compiler gave up.** CI dies at the first failing crate, which stops its dependents, so the rest **cannot** be reported. **Distinct from the other population failures recorded here** (a wrong complement, a two-mechanism grep, an op set minus a family): **those are bad queries and can be fixed by asking better. This one is truncated by the instrument's own semantics and no phrasing repairs it** — only running past the failure does.
+
+---
+## where-a-process-starts-is-not-where-it-acts
+
+> **Index line (in CLAUDE.md):** **`from_cwd`, a peer summary, a branch name in a handoff — all describe where a process STARTED or what was true at a MOMENT, never where it acted.** Inferring a peer's staleness from launch metadata is an absence claim off the wrong instrument, and it is the **coordinator's** version of that error, with the cost landing on someone else. **Send the discriminating probe; do NOT attach your conclusion to it.**
+
+**2026-08-21, the architect's own instance, twice in one night against the same lane.** Both times the inference was *"this lane measured in the shared checkout, which is stale."* Both times it was **wrong**, and both times the lane refuted it with content.
+
+The first is GAP-223 (a parse failure attributed to the shared tree; their own worktree was pre-rebase — a **different** stale path, so the correction *widened* the class). The second: a seven-crate coverage triage reported *"at head 237e4264"* from `from_cwd=C:\Projects\fuel`, and the shared checkout was measured sitting **46 commits behind** that sha, with **three of the seven triaged crates** having files inside the window. The suspicion was cheap to form and entirely unfounded — **the lane never runs cargo in the shared checkout**, a discipline they had already stated once.
+
+**MECHANISM.** `from_cwd` is where a shell was *spawned*. It says nothing about where `cargo`, `git`, or an editor subsequently ran, and a disciplined peer's whole practice is to act somewhere else. Same family as *reachability is a `pub mod` chain, not a root re-export* and *a file's feature gate is not a guarantee's coverage* — **one mechanism checked, absence concluded** — but with a distinguishing feature that makes it worse:
+
+> **The other instances are wrong about CODE. This one is wrong about a PERSON, and they pay the round-trip to disprove it.**
+
+**THE ASYMMETRY THAT DECIDES THE PRACTICE.** A discriminating probe costs the recipient one command. The *conclusion attached to it* costs them a rebuttal, and — compounding — trains them to read incoming probes as accusations. **The probe was correct both times; the framing was the defect both times.** Separate them explicitly: *"run this, it distinguishes X from Y"* is a request. *"You're probably stale, run this"* is a verdict wearing a request's clothing, and the verdict is the part that was never checked.
+
+**AND THE DISCRIMINATOR IS NOT "IS IT STALE".** Staleness is only a defect if it touches the measured population. The right question is **does the changed set intersect what was measured** — here, `git diff --name-only HEAD <sha>` against the crate list, which is one command and answers the question that actually matters. A tree can be 46 commits behind and the measurement still be exactly right.
+
+**WHAT THE LANE DID BETTER, and it is a reusable upgrade.** Asked *"does file X exist in your tree?"* — a **presence** question — they answered with their run log showing `Running tests\<X> ... 4 passed`: the file was **compiled and executed inside the measurement**. Presence proves the tree; **execution proves the tree AND that the reported count includes it.** When asked to prove an anchor, prefer evidence that the thing PARTICIPATED over evidence that it was merely THERE.
+
+**PRACTICE: verify a peer's anchor by content or execution, never from launch metadata; ask what the staleness would have to touch before deciding it matters; and send the probe naked — if you cannot state the check without the accusation, you have not designed the check.**
+
+---
+## enumerate-the-divergence-input
+
+> **Index line (in CLAUDE.md):** **To decide whether a test suite catches a proposed rewrite, do not run the suite — ENUMERATE THE CALLERS FOR THE INPUT ON WHICH THE OLD AND NEW FORMS DIVERGE.** If no caller supplies it, the suite **provably cannot** catch the rewrite, and reading the callers told you more than running 1,471 tests would have. **Suite SIZE is not coverage of the FIX SURFACE.**
+
+**2026-08-21, GAP-229.** A per-crate coverage triage established that `fuel-core` runs **1,471 tests** under default features on every platform — a strong gate by any aggregate measure, and the basis for a proposed *"safe to auto-fix here"* verdict across ~1,460 clippy findings.
+
+**The aggregate was true and licensed nothing.** Worked example, in production training code:
+
+```
+clippy::neg_cmp_op_on_partial_ord  wants   !(max_norm > 0.0)  ->  max_norm <= 0.0
+```
+
+**The two forms are identical on `0.0`, on every negative, and on every finite value. They diverge on `NaN` alone** — `!(NaN > 0.0)` is `true` and **rejects**; `NaN <= 0.0` is `false` and **admits**, after which `max_norm / total_norm` silently scales **every gradient** to `NaN`.
+
+So the question *"does the suite catch this?"* has a **closed-form** answer requiring no build: enumerate the callers, and ask whether any supplies `NaN`. The complete caller set was **two tests** (`5.0`/`2.0` and `6.5`/`2.0`), **one production site** forwarding an unvalidated builder field, and a builder called **from doc comments only**. **None supplies `NaN`. Therefore the divergence is unreachable from the test set and the suite CANNOT catch the rewrite** — not *probably does not*.
+
+**Confirmed by sabotage afterwards, which is the weaker instrument and was run only as a check on the reasoning:** guards flipped to `<= 0.0` gave `3 passed; 2 failed; 1389 filtered out`, and **both pre-existing tests went GREEN with the guard sabotaged.**
+
+**WHY THE ENUMERATION BEATS THE SABOTAGE HERE.** A sabotage run answers *"did these tests catch THIS mutation"* and costs a build. The enumeration answers *"can any test in the population reach the divergence at all"*, costs a grep, and returns **provably** rather than **empirically** — a green sabotage leaves *"maybe I mutated the wrong line"* open, while an empty caller set does not. Sabotage remains correct when the divergence input is hard to characterise; **when the two forms differ on a nameable set of inputs, enumerate instead.**
+
+**AND IT GENERALISES PAST LINTS.** Any behaviour-preserving-looking edit — a guard rewrite, a widened `Option` domain, a swapped comparison, a default changed — has a **divergence set**. Name it, then ask which callers can produce a member of it. **A suite of any size is blind to a divergence its inputs cannot reach**, and the size is what makes people stop asking.
+
+**PRACTICE: state the divergence set explicitly (*"these differ only on NaN"*), enumerate the callers for it, and report the caller set — not the suite total — as the coverage claim.** *"1,471 tests"* is a fact about the crate; *"zero callers supply the divergence input"* is a fact about the change.
