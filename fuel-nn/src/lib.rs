@@ -11,10 +11,19 @@
 //!
 //! The `fuel-core` dissolution was recorded as "downstream of the eager-
 //! dispatch retirement (B6)". **B6 is complete** — verify with
-//! `git grep "pub struct Tensor" -- fuel-core/src/` (expect 0; control:
-//! `pub struct Tensor` returns 1). And this surface never depended on
-//! eager `Tensor` in the first place: measured across all 22 files, every
-//! `Tensor` mention is `Tensor` or a doc comment, with one exception
+//! `git grep "pub struct Tensor" -- fuel-core/src/` (expect 0).
+//!
+//! ⚠️ **The control here was CORRUPTED by my own `Lazy`-prefix rename and is
+//! repaired.** It used to read *"control: `pub struct LazyTensor` returns 1"* —
+//! the sweep rewrote the control string to match the claim string, leaving one
+//! sentence asserting the same query returns both 0 and 1. A control must anchor
+//! on something a rename cannot reach, so it is now STRUCTURAL:
+//! `git ls-files 'fuel-core/src/*.rs' | wc -l` → **190** (proves the path is
+//! live; if it returns 0 the claim above is vacuous rather than true).
+//!
+//! And this surface never depended on the EAGER tensor type in the first place:
+//! measured across all 22 files, every tensor mention is the lazy
+//! `fuel::lazy::Tensor` or a doc comment, with one exception
 //! (`optim.rs`, `fuel_graph::NodeHandle::from_existing`) which is the graph
 //! handle from a crate already *below* `fuel-core`.
 //!
