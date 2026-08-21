@@ -66,7 +66,13 @@ const GUARD_CALL: &str = "require_gpu_run_lock()";
 /// change also removed a FALSE +1 that a lane's assert-message string had added
 /// (see the over-count note in the module docs above), so the net is a genuine
 /// one-site reduction, not a wash. FIRST time this constant has moved down.
-const BUDGET: usize = 58;
+///
+/// Lowered 58 -> 54 on 2026-08-21: guarded the four `fuel-cuda-backend/tests`
+/// `*_live.rs` device helpers (`pinned`, `byte_storage`, `backend_runtime`,
+/// `baracuda_contiguize`) — each `dev_or_skip -> dev` with `require_gpu_run_lock`
+/// + `required_ok`. Four real acquisition sites now guarded (all GUARDS, no
+/// string-corrections this batch), verified per site (none remain unguarded).
+const BUDGET: usize = 54;
 
 fn repo_root() -> PathBuf {
     // fuel-test-support/ -> repo root

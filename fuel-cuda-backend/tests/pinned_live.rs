@@ -8,20 +8,20 @@ use fuel_backend_contract::backend::HostStorage;
 use fuel_cuda_backend::{CudaDevice, PinnedHostStorage};
 use fuel_ir::{DType, HostBufferRef};
 
-fn dev_or_skip() -> Option<CudaDevice> {
-    match CudaDevice::new(0) {
-        Ok(d) => Some(d),
-        Err(e) => {
-            eprintln!("no CUDA device; skipping: {e:?}");
-            None
-        }
-    }
+/// Acquire CUDA device 0 for a live test. GAP-224: asserts the machine-wide GPU
+/// mutex is held (`require_gpu_run_lock`); GAP-157: a missing device is a FAILURE
+/// (`required_ok`), not a silent skip. On a device-less box, an `--ignored` run of
+/// this file now FAILS loudly (intended) rather than passing green having asserted
+/// nothing.
+fn dev() -> CudaDevice {
+    fuel_test_support::require_gpu_run_lock();
+    fuel_test_support::required_ok("CUDA device 0", CudaDevice::new(0))
 }
 
 #[test]
 #[ignore]
 fn pinned_zeros_f32_is_zero() {
-    let Some(dev) = dev_or_skip() else { return };
+    let dev = dev();
     let buf = PinnedHostStorage::zeros_f32(&dev, 64).expect("alloc");
     let view = buf.as_host_buffer_ref().expect("view");
     assert_eq!(view.dtype(), DType::F32);
@@ -35,7 +35,7 @@ fn pinned_zeros_f32_is_zero() {
 #[test]
 #[ignore]
 fn pinned_write_then_read() {
-    let Some(dev) = dev_or_skip() else { return };
+    let dev = dev();
     let mut buf = PinnedHostStorage::zeros_f32(&dev, 8).expect("alloc");
     {
         let slice = buf.as_mut_slice_f32().expect("mut");
@@ -58,7 +58,7 @@ fn pinned_zero_length_round_trip() {
     // `NonNull::dangling` sentinel (same trick stdlib uses for
     // empty-`Vec`). Derefing to `&[T]` and re-materializing through
     // `as_host_buffer_ref` on a zero-length buffer both stay sound.
-    let Some(dev) = dev_or_skip() else { return };
+    let dev = dev();
     let buf = PinnedHostStorage::zeros_f32(&dev, 0).expect("alloc");
     assert!(buf.is_empty());
     let view = buf.as_host_buffer_ref().expect("view");
@@ -72,7 +72,7 @@ fn pinned_zero_length_round_trip() {
 #[test]
 #[ignore]
 fn pinned_zeros_by_dtype() {
-    let Some(dev) = dev_or_skip() else { return };
+    let dev = dev();
     for dt in [DType::U8, DType::I32, DType::F16, DType::BF16, DType::F64] {
         let buf = PinnedHostStorage::zeros(&dev, dt, 4).expect("alloc");
         assert_eq!(buf.dtype(), dt);
