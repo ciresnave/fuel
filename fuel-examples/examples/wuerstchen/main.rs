@@ -19,8 +19,8 @@ use anyhow::Result;
 use clap::Parser;
 
 use fuel::lazy_wuerstchen::{
-    DiffNextModel, DiffNextWeights, PaellaVqModel, PaellaVqWeights, PriorModel,
-    PriorWeights, WuerstchenConfig,
+    DiffNextModel, DiffNextWeights, PaellaVqModel, PaellaVqWeights, PriorModel, PriorWeights,
+    WuerstchenConfig,
 };
 
 #[derive(Parser)]
@@ -155,9 +155,7 @@ fn run(args: Args) -> Result<()> {
     // TODO(lazy-wuerstchen-pipeline): wire the prior-denoise → decoder-denoise
     // → vqgan-decode loop once a lazy CLIP-style text encoder is available
     // (the eager `stable_diffusion::clip` text encoder is not yet ported).
-    println!(
-        "Models loaded; lazy text-encoder + denoising loop is the next migration step."
-    );
+    println!("Models loaded; lazy text-encoder + denoising loop is the next migration step.");
     println!("Target output: {}", args.final_image);
 
     Ok(())

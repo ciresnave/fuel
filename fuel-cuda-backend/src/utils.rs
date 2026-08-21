@@ -1,8 +1,8 @@
-﻿/// Helper functions to plug cuda kernels in fuel.
-use fuel_ir::dtype::WithDType;
-use fuel_ir::{Layout, Result};
 use baracuda_driver::DeviceBuffer;
 use baracuda_types::{DeviceRepr, ValidAsZeroBits};
+/// Helper functions to plug cuda kernels in fuel.
+use fuel_ir::dtype::WithDType;
+use fuel_ir::{Layout, Result};
 
 use crate::{CudaDevice, CudaError, WrapErr};
 

@@ -8,12 +8,8 @@ use anyhow::{Error as E, Result};
 use clap::Parser;
 use std::sync::Arc;
 
-use fuel::lazy::{
-    load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
-};
-use fuel::lazy_jina_bert::{
-    JinaBertConfig, JinaBertModel, JinaBertWeights, JinaLayerWeights,
-};
+use fuel::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
+use fuel::lazy_jina_bert::{JinaBertConfig, JinaBertModel, JinaBertWeights, JinaLayerWeights};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -63,17 +59,26 @@ fn main() -> Result<()> {
     };
     let _device = fuel_examples::device(args.cpu)?;
 
-    let model_name = args.model.clone().unwrap_or_else(|| "jinaai/jina-embeddings-v2-base-en".to_string());
+    let model_name = args
+        .model
+        .clone()
+        .unwrap_or_else(|| "jinaai/jina-embeddings-v2-base-en".to_string());
     let model_path = match args.model_file.as_ref() {
         Some(model_file) => std::path::PathBuf::from(model_file),
         None => hf_hub::api::sync::Api::new()?
-            .repo(hf_hub::Repo::new(model_name.clone(), hf_hub::RepoType::Model))
+            .repo(hf_hub::Repo::new(
+                model_name.clone(),
+                hf_hub::RepoType::Model,
+            ))
             .get("model.safetensors")?,
     };
     let tokenizer_path = match args.tokenizer.as_ref() {
         Some(file) => std::path::PathBuf::from(file),
         None => hf_hub::api::sync::Api::new()?
-            .repo(hf_hub::Repo::new(model_name.clone(), hf_hub::RepoType::Model))
+            .repo(hf_hub::Repo::new(
+                model_name.clone(),
+                hf_hub::RepoType::Model,
+            ))
             .get("tokenizer.json")?,
     };
     let mut tokenizer = tokenizers::Tokenizer::from_file(tokenizer_path).map_err(E::msg)?;
@@ -82,7 +87,10 @@ fn main() -> Result<()> {
     let st = unsafe { fuel::safetensors::MmapedSafetensors::multi(&[model_path]) }
         .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
     let weights = load_jina_bert_weights(&st, &cfg)?;
-    let model = JinaBertModel { config: cfg.clone(), weights };
+    let model = JinaBertModel {
+        config: cfg.clone(),
+        weights,
+    };
 
     let start = std::time::Instant::now();
 
@@ -121,7 +129,11 @@ fn main() -> Result<()> {
         } else {
             pooled
         };
-        println!("pooled embedding (len {}): {:?}", pooled.len(), &pooled[..pooled.len().min(8)]);
+        println!(
+            "pooled embedding (len {}): {:?}",
+            pooled.len(),
+            &pooled[..pooled.len().min(8)]
+        );
         println!("Took {:?}", start.elapsed());
     } else {
         let sentences = [
@@ -202,37 +214,52 @@ fn load_jina_bert_weights(
             .map_err(|e| E::msg(format!("embed_ln_gain: {e}")))?,
     );
     let embed_ln_bias: Arc<[f32]> = Arc::from(
-        load_tensor_as_f32(st, "embeddings.LayerNorm.bias")
-            .unwrap_or_else(|_| vec![0.0; h]),
+        load_tensor_as_f32(st, "embeddings.LayerNorm.bias").unwrap_or_else(|_| vec![0.0; h]),
     );
 
     let mut layers: Vec<JinaLayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
     for i in 0..cfg.num_hidden_layers {
         let base = format!("encoder.layer.{i}");
         let q = load_transposed_matrix_preserve_dtype(
-            st, &format!("{base}.attention.self.query.weight"), h, h,
-        ).map_err(|e| E::msg(format!("q L{i}: {e}")))?;
+            st,
+            &format!("{base}.attention.self.query.weight"),
+            h,
+            h,
+        )
+        .map_err(|e| E::msg(format!("q L{i}: {e}")))?;
         let q_bias: Arc<[f32]> = Arc::from(
             load_tensor_as_f32(st, &format!("{base}.attention.self.query.bias"))
                 .unwrap_or_else(|_| vec![0.0; h]),
         );
         let k = load_transposed_matrix_preserve_dtype(
-            st, &format!("{base}.attention.self.key.weight"), h, h,
-        ).map_err(|e| E::msg(format!("k L{i}: {e}")))?;
+            st,
+            &format!("{base}.attention.self.key.weight"),
+            h,
+            h,
+        )
+        .map_err(|e| E::msg(format!("k L{i}: {e}")))?;
         let k_bias: Arc<[f32]> = Arc::from(
             load_tensor_as_f32(st, &format!("{base}.attention.self.key.bias"))
                 .unwrap_or_else(|_| vec![0.0; h]),
         );
         let v = load_transposed_matrix_preserve_dtype(
-            st, &format!("{base}.attention.self.value.weight"), h, h,
-        ).map_err(|e| E::msg(format!("v L{i}: {e}")))?;
+            st,
+            &format!("{base}.attention.self.value.weight"),
+            h,
+            h,
+        )
+        .map_err(|e| E::msg(format!("v L{i}: {e}")))?;
         let v_bias: Arc<[f32]> = Arc::from(
             load_tensor_as_f32(st, &format!("{base}.attention.self.value.bias"))
                 .unwrap_or_else(|_| vec![0.0; h]),
         );
         let attn_out = load_transposed_matrix_preserve_dtype(
-            st, &format!("{base}.attention.output.dense.weight"), h, h,
-        ).map_err(|e| E::msg(format!("attn_out L{i}: {e}")))?;
+            st,
+            &format!("{base}.attention.output.dense.weight"),
+            h,
+            h,
+        )
+        .map_err(|e| E::msg(format!("attn_out L{i}: {e}")))?;
         let attn_out_bias: Arc<[f32]> = Arc::from(
             load_tensor_as_f32(st, &format!("{base}.attention.output.dense.bias"))
                 .unwrap_or_else(|_| vec![0.0; h]),
@@ -246,15 +273,21 @@ fn load_jina_bert_weights(
                 .unwrap_or_else(|_| vec![0.0; h]),
         );
         let gated_layers = load_transposed_matrix_preserve_dtype(
-            st, &format!("{base}.mlp.gated_layers.weight"),
-            2 * cfg.intermediate_size, h,
-        ).map_err(|e| E::msg(format!("gated_layers L{i}: {e}")))?;
+            st,
+            &format!("{base}.mlp.gated_layers.weight"),
+            2 * cfg.intermediate_size,
+            h,
+        )
+        .map_err(|e| E::msg(format!("gated_layers L{i}: {e}")))?;
         let mlp_wo = load_transposed_matrix_preserve_dtype(
-            st, &format!("{base}.mlp.wo.weight"), h, cfg.intermediate_size,
-        ).map_err(|e| E::msg(format!("mlp_wo L{i}: {e}")))?;
+            st,
+            &format!("{base}.mlp.wo.weight"),
+            h,
+            cfg.intermediate_size,
+        )
+        .map_err(|e| E::msg(format!("mlp_wo L{i}: {e}")))?;
         let mlp_wo_bias: Arc<[f32]> = Arc::from(
-            load_tensor_as_f32(st, &format!("{base}.mlp.wo.bias"))
-                .unwrap_or_else(|_| vec![0.0; h]),
+            load_tensor_as_f32(st, &format!("{base}.mlp.wo.bias")).unwrap_or_else(|_| vec![0.0; h]),
         );
         let mlp_ln_gain: Arc<[f32]> = Arc::from(
             load_tensor_as_f32(st, &format!("{base}.mlp.layernorm.weight"))
@@ -265,14 +298,21 @@ fn load_jina_bert_weights(
                 .unwrap_or_else(|_| vec![0.0; h]),
         );
         layers.push(JinaLayerWeights {
-            q, q_bias,
-            k, k_bias,
-            v, v_bias,
-            attn_out, attn_out_bias,
-            attn_ln_gain, attn_ln_bias,
+            q,
+            q_bias,
+            k,
+            k_bias,
+            v,
+            v_bias,
+            attn_out,
+            attn_out_bias,
+            attn_ln_gain,
+            attn_ln_bias,
             gated_layers,
-            mlp_wo, mlp_wo_bias,
-            mlp_ln_gain, mlp_ln_bias,
+            mlp_wo,
+            mlp_wo_bias,
+            mlp_ln_gain,
+            mlp_ln_bias,
         });
     }
     Ok(JinaBertWeights {
@@ -289,4 +329,3 @@ fn l2_normalize(v: &[f32]) -> Vec<f32> {
     let inv = (sumsq.sqrt() + 1e-12).recip();
     v.iter().map(|x| x * inv).collect()
 }
-

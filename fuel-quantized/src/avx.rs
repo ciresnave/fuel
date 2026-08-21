@@ -1,6 +1,6 @@
 use super::k_quants::{
-    BlockQ2K, BlockQ3K, BlockQ4K, BlockQ4_0, BlockQ4_1, BlockQ5K, BlockQ5_0, BlockQ5_1, BlockQ6K,
-    BlockQ8K, BlockQ8_0, BlockQ8_1, QK4_1, QK5_0, QK5_1, QK8_0, QK8_1, QK_K,
+    BlockQ2K, BlockQ3K, BlockQ4_0, BlockQ4_1, BlockQ4K, BlockQ5_0, BlockQ5_1, BlockQ5K, BlockQ6K,
+    BlockQ8_0, BlockQ8_1, BlockQ8K, QK_K, QK4_1, QK5_0, QK5_1, QK8_0, QK8_1,
 };
 use byteorder::{ByteOrder, LittleEndian};
 use half::f16;

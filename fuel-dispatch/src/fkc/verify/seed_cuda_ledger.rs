@@ -29,16 +29,16 @@
 //! as skipped/failed. `#[cfg(feature = "cuda")]` throughout — needs a live
 //! `CudaDevice`; its seeding test is `#[ignore]`'d.
 
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use fuel_cuda_backend::CudaDevice;
+use fuel_ir::DType;
 use fuel_ir::dispatch::OpKind;
 use fuel_ir::probe::BackendId;
-use fuel_ir::DType;
 
 use super::{
-    fill_deterministic, verify_bit_stability, CpuInvoker, CudaInvoker, HostTensor, KernelInvoker,
-    LedgerRecord, ProbeInputs, VerificationLedger, VerifyError, VerifyOutcome,
+    CpuInvoker, CudaInvoker, HostTensor, KernelInvoker, LedgerRecord, ProbeInputs,
+    VerificationLedger, VerifyError, VerifyOutcome, fill_deterministic, verify_bit_stability,
 };
 use crate::kernel::{KernelBindingTable, MatmulM, OpParams};
 
@@ -58,7 +58,11 @@ const MAX_ULP_OPS: &[(OpKind, u32)] = &[
 /// mismatch rather than a panic.
 fn max_ulp_ok(cand: &[u8], refr: &[u8], bound: u32) -> std::result::Result<bool, String> {
     if cand.len() % 4 != 0 || refr.len() != cand.len() {
-        return Err(format!("output length/align mismatch (cand {} ref {})", cand.len(), refr.len()));
+        return Err(format!(
+            "output length/align mismatch (cand {} ref {})",
+            cand.len(),
+            refr.len()
+        ));
     }
     let a: &[f32] = bytemuck::cast_slice(cand);
     let b: &[f32] = bytemuck::cast_slice(refr);
@@ -99,19 +103,33 @@ struct Probe {
 fn to_bytes(dt: DType, vals: &[f32]) -> Option<Vec<u8>> {
     Some(match dt {
         DType::F32 => bytemuck::cast_slice(vals).to_vec(),
-        DType::F64 => bytemuck::cast_slice(&vals.iter().map(|&x| x as f64).collect::<Vec<_>>()).to_vec(),
-        DType::BF16 => {
-            bytemuck::cast_slice(&vals.iter().map(|&x| half::bf16::from_f32(x)).collect::<Vec<_>>()).to_vec()
+        DType::F64 => {
+            bytemuck::cast_slice(&vals.iter().map(|&x| x as f64).collect::<Vec<_>>()).to_vec()
         }
-        DType::F16 => {
-            bytemuck::cast_slice(&vals.iter().map(|&x| half::f16::from_f32(x)).collect::<Vec<_>>()).to_vec()
-        }
+        DType::BF16 => bytemuck::cast_slice(
+            &vals
+                .iter()
+                .map(|&x| half::bf16::from_f32(x))
+                .collect::<Vec<_>>(),
+        )
+        .to_vec(),
+        DType::F16 => bytemuck::cast_slice(
+            &vals
+                .iter()
+                .map(|&x| half::f16::from_f32(x))
+                .collect::<Vec<_>>(),
+        )
+        .to_vec(),
         _ => return None,
     })
 }
 
 fn ht(dt: DType, shape: Vec<usize>, vals: &[f32]) -> Option<HostTensor> {
-    Some(HostTensor { dtype: dt, shape, bytes: to_bytes(dt, vals)? })
+    Some(HostTensor {
+        dtype: dt,
+        shape,
+        bytes: to_bytes(dt, vals)?,
+    })
 }
 
 /// Build a real, valid probe for a CUDA primitive `op` at the registered
@@ -135,7 +153,12 @@ fn build_cuda_probe(op: OpKind, dtypes: &[DType], seed: u64) -> Option<Probe> {
         | OpKind::MinimumElementwise => {
             let a = ht(dt, vec![4], &fill_deterministic(4, seed))?;
             let b = ht(dt, vec![4], &fill_deterministic(4, seed ^ 0x9E37_79B9))?;
-            Some(Probe { inputs: vec![a, b], params: OpParams::None, out_dtype: dt, out_shape: vec![4] })
+            Some(Probe {
+                inputs: vec![a, b],
+                params: OpParams::None,
+                out_dtype: dt,
+                out_shape: vec![4],
+            })
         }
 
         // --- Unary elementwise (1 input, params ignored) -------------------
@@ -162,7 +185,12 @@ fn build_cuda_probe(op: OpKind, dtypes: &[DType], seed: u64) -> Option<Probe> {
         | OpKind::CeilElementwise
         | OpKind::RoundElementwise => {
             let x = ht(dt, vec![4], &fill_deterministic(4, seed))?;
-            Some(Probe { inputs: vec![x], params: OpParams::None, out_dtype: dt, out_shape: vec![4] })
+            Some(Probe {
+                inputs: vec![x],
+                params: OpParams::None,
+                out_dtype: dt,
+                out_shape: vec![4],
+            })
         }
 
         // --- MatMul (2 inputs) ---------------------------------------------
@@ -188,10 +216,18 @@ fn build_cuda_probe(op: OpKind, dtypes: &[DType], seed: u64) -> Option<Probe> {
         // --- RmsNorm / LayerNorm last-dim (1 input) ------------------------
         OpKind::RmsNormLastDim | OpKind::LayerNormLastDim => {
             let (outer, last) = (2usize, 4usize);
-            let x = ht(dt, vec![outer * last], &fill_deterministic(outer * last, seed))?;
+            let x = ht(
+                dt,
+                vec![outer * last],
+                &fill_deterministic(outer * last, seed),
+            )?;
             Some(Probe {
                 inputs: vec![x],
-                params: OpParams::NormLastDim { outer_count: outer, last_dim: last, eps: 1e-5 },
+                params: OpParams::NormLastDim {
+                    outer_count: outer,
+                    last_dim: last,
+                    eps: 1e-5,
+                },
                 out_dtype: dt,
                 out_shape: vec![outer * last],
             })
@@ -200,10 +236,17 @@ fn build_cuda_probe(op: OpKind, dtypes: &[DType], seed: u64) -> Option<Probe> {
         // --- Softmax / LogSoftmax last-dim (1 input) -----------------------
         OpKind::SoftmaxLastDim | OpKind::LogSoftmaxLastDim => {
             let (outer, last) = (2usize, 4usize);
-            let x = ht(dt, vec![outer * last], &fill_deterministic(outer * last, seed))?;
+            let x = ht(
+                dt,
+                vec![outer * last],
+                &fill_deterministic(outer * last, seed),
+            )?;
             Some(Probe {
                 inputs: vec![x],
-                params: OpParams::SoftmaxLastDim { outer_count: outer, last_dim: last },
+                params: OpParams::SoftmaxLastDim {
+                    outer_count: outer,
+                    last_dim: last,
+                },
                 out_dtype: dt,
                 out_shape: vec![outer * last],
             })
@@ -223,7 +266,11 @@ fn build_cuda_probe(op: OpKind, dtypes: &[DType], seed: u64) -> Option<Probe> {
         // --- IndexSelect (embed): src[outer, source_dim, inner] + U32 idx --
         OpKind::IndexSelect => {
             let (outer, source_dim, n_idx, inner) = (1usize, 4usize, 2usize, 3usize);
-            let src = ht(dt, vec![outer * source_dim * inner], &fill_deterministic(outer * source_dim * inner, seed))?;
+            let src = ht(
+                dt,
+                vec![outer * source_dim * inner],
+                &fill_deterministic(outer * source_dim * inner, seed),
+            )?;
             // Indices are ALWAYS U32 (the CUDA wrapper hard-requires it); 0,1
             // are in-bounds for source_dim=4.
             let indices = HostTensor {
@@ -278,7 +325,10 @@ pub struct CudaSeedAttempt {
 /// `epoch:<unix seconds>` — dependency-free timestamp (house convention).
 fn verified_at_string() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     format!("epoch:{secs}")
 }
 
@@ -299,8 +349,8 @@ pub fn run_cuda_verification(
 
     let mut ledger =
         VerificationLedger::from_records(VerificationLedger::embedded().records().to_vec());
-    let device = CudaDevice::new(0)
-        .map_err(|e| VerifyError::Backend(format!("no CUDA device: {e}")))?;
+    let device =
+        CudaDevice::new(0).map_err(|e| VerifyError::Backend(format!("no CUDA device: {e}")))?;
     let mut log = Vec::new();
 
     for (op, dtypes, backend, entry) in table.iter_entries() {
@@ -355,12 +405,16 @@ pub fn run_cuda_verification(
                 "pass".to_string(),
                 serde_json::json!({ "repeat_calls": ITERS, "harness": "capturedrun-4b/seed_cuda_ledger" }),
             ),
-            Ok(Ok(VerifyOutcome::Fail { detail })) => {
-                (Some("fail"), format!("fail: {detail}"), serde_json::json!({ "detail": detail }))
-            }
-            Ok(Ok(VerifyOutcome::NoReference)) => {
-                (None, "skip: no reference".to_string(), serde_json::Value::Null)
-            }
+            Ok(Ok(VerifyOutcome::Fail { detail })) => (
+                Some("fail"),
+                format!("fail: {detail}"),
+                serde_json::json!({ "detail": detail }),
+            ),
+            Ok(Ok(VerifyOutcome::NoReference)) => (
+                None,
+                "skip: no reference".to_string(),
+                serde_json::Value::Null,
+            ),
             Ok(Err(e)) => (
                 Some("fail"),
                 format!("fail: invoke error {e:?}"),
@@ -448,15 +502,17 @@ pub fn run_cuda_verification(
         let refr = CpuInvoker::new(probe.out_dtype, probe.out_shape.clone())
             .with_params(probe.params.clone());
         let inputs = probe.inputs.clone();
-        let attempt = catch_unwind(AssertUnwindSafe(|| -> std::result::Result<String, VerifyError> {
-            let a = cand.invoke(cuda_entry, &inputs)?;
-            let b = refr.invoke(cpu_entry, &inputs)?;
-            Ok(match max_ulp_ok(&a.bytes, &b.bytes, bound) {
-                Ok(true) => "pass".to_string(),
-                Ok(false) => format!("fail: exceeds max_ulp {bound}"),
-                Err(e) => format!("fail: {e}"),
-            })
-        }));
+        let attempt = catch_unwind(AssertUnwindSafe(
+            || -> std::result::Result<String, VerifyError> {
+                let a = cand.invoke(cuda_entry, &inputs)?;
+                let b = refr.invoke(cpu_entry, &inputs)?;
+                Ok(match max_ulp_ok(&a.bytes, &b.bytes, bound) {
+                    Ok(true) => "pass".to_string(),
+                    Ok(false) => format!("fail: exceeds max_ulp {bound}"),
+                    Err(e) => format!("fail: {e}"),
+                })
+            },
+        ));
 
         let (result, outcome) = match attempt {
             Ok(Ok(s)) if s == "pass" => (Some("pass"), "max_ulp pass".to_string()),
@@ -506,13 +562,22 @@ mod tests {
     fn seed_cuda_verified_ledger() {
         let (ledger, log) = run_cuda_verification(None, true).expect("cuda seeding runs");
         for a in &log {
-            println!("[step3] {} {:?} (rev={}): {}", a.op, a.dtypes, a.kernel_revision_hash, a.outcome);
+            println!(
+                "[step3] {} {:?} (rev={}): {}",
+                a.op, a.dtypes, a.kernel_revision_hash, a.outcome
+            );
         }
         let passed = log.iter().filter(|a| a.outcome == "pass").count();
         let failed = log.iter().filter(|a| a.outcome.starts_with("fail")).count();
         let skipped = log.iter().filter(|a| a.outcome.starts_with("skip")).count();
-        println!("[step3] {passed} passed, {failed} failed, {skipped} skipped, {} attempts", log.len());
-        assert!(passed > 0, "expected at least one CUDA kernel to verify bit-stable; got 0 — see log");
+        println!(
+            "[step3] {passed} passed, {failed} failed, {skipped} skipped, {} attempts",
+            log.len()
+        );
+        assert!(
+            passed > 0,
+            "expected at least one CUDA kernel to verify bit-stable; got 0 — see log"
+        );
 
         let cuda_passes = ledger
             .records()
@@ -527,6 +592,10 @@ mod tests {
         let mut f = std::fs::File::create(&path).unwrap_or_else(|e| panic!("open {path:?}: {e}"));
         f.write_all(json.as_bytes()).expect("write ledger");
         f.write_all(b"\n").expect("write newline");
-        println!("[step3] wrote {} records to {}", ledger.records().len(), path.display());
+        println!(
+            "[step3] wrote {} records to {}",
+            ledger.records().len(),
+            path.display()
+        );
     }
 }

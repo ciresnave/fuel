@@ -26,10 +26,10 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_ir::{probe::BackendId, DType, DeviceLocation, Shape};
 use fuel_dispatch::pipelined::{PipelinedExecutor, StorageCache};
 use fuel_dispatch::residency::insert_residency_evictions;
 use fuel_graph::{Graph, Node, NodeId, Op, SharedGraph};
+use fuel_ir::{DType, DeviceLocation, Shape, probe::BackendId};
 use fuel_memory::{BackendStorage, Storage};
 use fuel_vulkan_backend::VulkanBackend;
 
@@ -64,8 +64,12 @@ fn backend_or_skip() -> Option<Arc<VulkanBackend>> {
 #[test]
 #[ignore = "requires a live Vulkan device"]
 fn vulkan_evict_fault_back_roundtrip_preserves_output() {
-    let Some(backend) = backend_or_skip() else { return };
-    let vk_loc = DeviceLocation::Vulkan { gpu_id: backend.gpu_id };
+    let Some(backend) = backend_or_skip() else {
+        return;
+    };
+    let vk_loc = DeviceLocation::Vulkan {
+        gpu_id: backend.gpu_id,
+    };
 
     let build = || -> (SharedGraph, NodeId, NodeId) {
         let graph: SharedGraph = Arc::new(RwLock::new(Graph::new()));
@@ -103,7 +107,10 @@ fn vulkan_evict_fault_back_roundtrip_preserves_output() {
         let mut cache = StorageCache::new();
         cache.insert(
             a,
-            Arc::new(RwLock::new(Storage::new(BackendStorage::Vulkan(vk), DType::F32))),
+            Arc::new(RwLock::new(Storage::new(
+                BackendStorage::Vulkan(vk),
+                DType::F32,
+            ))),
         );
         cache
     };
@@ -140,7 +147,12 @@ fn vulkan_evict_fault_back_roundtrip_preserves_output() {
         let g = graph2.read().unwrap();
         let chain = chains.iter().find(|c| c.candidate == a2).unwrap();
         assert!(
-            matches!(g.node(chain.move_node).op, Op::Move { target: DeviceLocation::Cpu }),
+            matches!(
+                g.node(chain.move_node).op,
+                Op::Move {
+                    target: DeviceLocation::Cpu
+                }
+            ),
             "evict half must be a destructive D2H Op::Move (the buffer whose free A2.1 defers)",
         );
         // The Move's transfer kernel runs on the SOURCE's backend (Vulkan D2H);
@@ -194,8 +206,12 @@ fn vulkan_evict_fault_back_roundtrip_preserves_output() {
 #[test]
 #[ignore = "requires a live Vulkan device"]
 fn vulkan_release_open_batch_deferred_deletion_no_drain() {
-    let Some(backend) = backend_or_skip() else { return };
-    let vk_loc = DeviceLocation::Vulkan { gpu_id: backend.gpu_id };
+    let Some(backend) = backend_or_skip() else {
+        return;
+    };
+    let vk_loc = DeviceLocation::Vulkan {
+        gpu_id: backend.gpu_id,
+    };
 
     let graph: SharedGraph = Arc::new(RwLock::new(Graph::new()));
     let (a, bcpu, rel, out) = {
@@ -239,7 +255,10 @@ fn vulkan_release_open_batch_deferred_deletion_no_drain() {
             .expect("h2d seed a");
         cache.insert(
             a,
-            Arc::new(RwLock::new(Storage::new(BackendStorage::Vulkan(a_vk), DType::F32))),
+            Arc::new(RwLock::new(Storage::new(
+                BackendStorage::Vulkan(a_vk),
+                DType::F32,
+            ))),
         );
         // CPU-seeded const (the independent CPU branch — no cross-device read).
         let b_cpu = fuel_memory::from_slice_cpu::<f32>(&[-1.0_f32, -1.0, -1.0, -1.0]);

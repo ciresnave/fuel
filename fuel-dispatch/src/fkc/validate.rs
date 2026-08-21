@@ -201,12 +201,11 @@ pub fn validate_kernel(kernel: &FkcKernel) -> Result<(), FkcError> {
         }
         // Rule 7: op-param variant in the correct namespace — SKIPPED for a
         // describe-only section (no resolved dispatch target to bind against).
-        if !describe_only {
-            if let Some(op_params) = &accept.op_params {
-                if let Some(variant) = op_params.variant.as_deref() {
-                    validate_op_params_namespace(section, variant, is_fused)?;
-                }
-            }
+        if !describe_only
+            && let Some(op_params) = &accept.op_params
+            && let Some(variant) = op_params.variant.as_deref()
+        {
+            validate_op_params_namespace(section, variant, is_fused)?;
         }
     }
 
@@ -246,7 +245,11 @@ fn required_fields(kernel: &FkcKernel, section: &str, describe_only: bool) -> Re
     // blurb: a non-empty one-line string.
     match kernel.blurb.as_deref() {
         Some(b) if !b.trim().is_empty() => {}
-        _ => return Err(FkcError::MissingBlurb { section: section.to_string() }),
+        _ => {
+            return Err(FkcError::MissingBlurb {
+                section: section.to_string(),
+            });
+        }
     }
 
     // entry_point.
@@ -346,7 +349,10 @@ fn validate_operand(
     // place, ggml/family/granularity membership, MX/AFFINE_BLOCK gate).
     if let Some(fdx) = &d.fdx {
         // Rule 3: a sub-byte base dtype MUST carry an fdx.quant block.
-        let is_sub_byte = d.dtypes.iter().any(|t| matches!(t.as_str(), "F4" | "F6E2M3" | "F6E3M2"));
+        let is_sub_byte = d
+            .dtypes
+            .iter()
+            .any(|t| matches!(t.as_str(), "F4" | "F6E2M3" | "F6E3M2"));
         if is_sub_byte && fdx.quant.is_none() && fdx.sub_byte.is_none() {
             return Err(FkcError::QuantIncoherent {
                 section: section.to_string(),
@@ -380,7 +386,7 @@ fn layout_coherence(
     operand: &str,
     layout: &crate::fkc::schema::LayoutSpec,
 ) -> Result<(), FkcError> {
-    use crate::fkc::caps_map::{resolve_layout, Tri};
+    use crate::fkc::caps_map::{Tri, resolve_layout};
     // Parse the five flags (also validates each value token; bad value →
     // BadLayoutFlag from resolve_layout).
     let r = resolve_layout(Some(layout), section, operand)?;
@@ -426,7 +432,10 @@ fn layout_coherence(
     // — the shape-blind (op, dtypes, backend) binder can't tell a correctly-
     // broadcast operand from a wrongly-shaped one without the axis set. So:
     // present iff required, and non-empty when required.
-    match (&layout.broadcast_axes, matches!(r.broadcast_stride0, Tri::Required)) {
+    match (
+        &layout.broadcast_axes,
+        matches!(r.broadcast_stride0, Tri::Required),
+    ) {
         (Some(axes), true) if axes.is_empty() => {
             return Err(FkcError::LayoutIncoherent {
                 section: section.to_string(),
@@ -467,7 +476,7 @@ fn awkward_strategy_coherence(
     d: &TensorDesc,
     _accept: &crate::fkc::schema::AcceptBlock,
 ) -> Result<(), FkcError> {
-    use crate::fkc::caps_map::{resolve_layout, Tri};
+    use crate::fkc::caps_map::{Tri, resolve_layout};
 
     // Effective strategy: per-operand override, else (handled by caller for the
     // kernel-wide default — but the per-operand check only needs the per-operand
@@ -554,28 +563,28 @@ fn quant_coherence(
         });
     }
     // Rule 16: granularity token ∈ FDX table (when present, non-null).
-    if let Some(g) = quant.granularity.as_deref() {
-        if !is_fdx_granularity(g) {
-            return Err(FkcError::FdxTokenNotInTable {
-                section: section.to_string(),
-                field: format!("{operand}.fdx.quant.granularity"),
-                token: g.to_string(),
-            });
-        }
+    if let Some(g) = quant.granularity.as_deref()
+        && !is_fdx_granularity(g)
+    {
+        return Err(FkcError::FdxTokenNotInTable {
+            section: section.to_string(),
+            field: format!("{operand}.fdx.quant.granularity"),
+            token: g.to_string(),
+        });
     }
     // Rule 16 + 3: ggml_dtype is a real GgmlDType variant (by code).
-    if let Some(g) = quant.ggml_dtype.as_deref() {
-        if ggml_dtype_code(g).is_none() {
-            // `Q4_K_M` (GGUF name, NOT a variant) lands here.
-            return Err(FkcError::QuantIncoherent {
-                section: section.to_string(),
-                operand: operand.to_string(),
-                reason: format!(
-                    "ggml_dtype `{g}` is not a real GgmlDType variant (matched by code; \
+    if let Some(g) = quant.ggml_dtype.as_deref()
+        && ggml_dtype_code(g).is_none()
+    {
+        // `Q4_K_M` (GGUF name, NOT a variant) lands here.
+        return Err(FkcError::QuantIncoherent {
+            section: section.to_string(),
+            operand: operand.to_string(),
+            reason: format!(
+                "ggml_dtype `{g}` is not a real GgmlDType variant (matched by code; \
                      `Q4_K_M` is a GGUF file-format name → use `Q4K`)"
-                ),
-            });
-        }
+            ),
+        });
     }
 
     // Scale single-place rule: a separate scale_operand XOR a sidecar scale,
@@ -757,7 +766,10 @@ fn gather_coherence(
                 ("context_lens", gather.context_lens.as_deref()),
             ] {
                 if let Some(role) = role {
-                    let exists = accept.inputs.iter().any(|i| i.name.as_deref() == Some(role));
+                    let exists = accept
+                        .inputs
+                        .iter()
+                        .any(|i| i.name.as_deref() == Some(role));
                     if !exists {
                         return Err(FkcError::GatherIncoherent {
                             section: section.to_string(),
@@ -806,14 +818,14 @@ fn extent_coherence(
     fdx: &crate::fkc::schema::FdxSpec,
 ) -> Result<(), FkcError> {
     // symbolic_extent ∈ {rejected, tolerated, required} (when present).
-    if let Some(se) = fdx.symbolic_extent.as_deref() {
-        if !matches!(se, "rejected" | "tolerated" | "required") {
-            return Err(FkcError::UnknownAdmissibilityEnum {
-                section: section.to_string(),
-                field: format!("{operand}.fdx.symbolic_extent"),
-                value: se.to_string(),
-            });
-        }
+    if let Some(se) = fdx.symbolic_extent.as_deref()
+        && !matches!(se, "rejected" | "tolerated" | "required")
+    {
+        return Err(FkcError::UnknownAdmissibilityEnum {
+            section: section.to_string(),
+            field: format!("{operand}.fdx.symbolic_extent"),
+            value: se.to_string(),
+        });
     }
     // extent_kind ∈ {rejected, scalar, range, affine} (when present).
     if let Some(ek) = fdx.extent_kind.as_deref() {
@@ -862,7 +874,12 @@ fn validate_op_params_namespace(
         Err(FkcError::BadOpParamsVariant {
             section: section.to_string(),
             variant: variant.to_string(),
-            namespace: if is_fused { "FusedOpParams" } else { "OpParams" }.to_string(),
+            namespace: if is_fused {
+                "FusedOpParams"
+            } else {
+                "OpParams"
+            }
+            .to_string(),
         })
     }
 }
@@ -1024,7 +1041,10 @@ fn contract_authorable(table: &[(&str, Option<&str>)], v: &str) -> bool {
 /// DType (rule 16). `passthrough(role)` / other rules carry no dtype literal.
 fn check_output_dtype_rule(section: &str, operand: &str, rule: &str) -> Result<(), FkcError> {
     let rule = rule.trim();
-    if let Some(inner) = rule.strip_prefix("fixed(").and_then(|s| s.strip_suffix(")")) {
+    if let Some(inner) = rule
+        .strip_prefix("fixed(")
+        .and_then(|s| s.strip_suffix(")"))
+    {
         let tok = inner.trim();
         lower::lower_dtype(tok, section, operand).map_err(|_| FkcError::FdxTokenNotInTable {
             section: section.to_string(),
@@ -1042,10 +1062,7 @@ fn check_output_dtype_rule(section: &str, operand: &str, rule: &str) -> Result<(
 /// `cross_check_fused_section` for every bundle slot whose `shape_rule`
 /// evaluates against a real probe shape, covers that DERIVED case instead
 /// (Finding 5.3).
-fn check_bundle_ranks(
-    section: &str,
-    bundle: &serde_yaml_ng::Value,
-) -> Result<(), FkcError> {
+fn check_bundle_ranks(section: &str, bundle: &serde_yaml_ng::Value) -> Result<(), FkcError> {
     let serde_yaml_ng::Value::Sequence(slots) = bundle else {
         return Ok(());
     };
@@ -1061,14 +1078,13 @@ fn check_bundle_ranks(
         // A static `shape:` literal list is rank-checkable.
         if let Some(serde_yaml_ng::Value::Sequence(dims)) =
             map.get(serde_yaml_ng::Value::String("shape".into()))
+            && dims.len() > 6
         {
-            if dims.len() > 6 {
-                return Err(FkcError::BundleSlotRankExceeded {
-                    section: section.to_string(),
-                    slot: slot_name,
-                    rank: dims.len(),
-                });
-            }
+            return Err(FkcError::BundleSlotRankExceeded {
+                section: section.to_string(),
+                slot: slot_name,
+                rank: dims.len(),
+            });
         }
     }
     Ok(())
@@ -1138,10 +1154,17 @@ fn validate_cost(kernel: &FkcKernel, section: &str) -> Result<(), FkcError> {
     // flops/bytes/cost_fn is still a placeholder).
     let class = cost.class.as_deref().unwrap_or("");
     let has_any_expr = cost.flops.as_deref().is_some_and(|s| !s.trim().is_empty())
-        || cost.bytes_moved.as_deref().is_some_and(|s| !s.trim().is_empty());
-    let has_cost_fn = cost.cost_fn.as_deref().is_some_and(|s| !s.trim().is_empty());
+        || cost
+            .bytes_moved
+            .as_deref()
+            .is_some_and(|s| !s.trim().is_empty());
+    let has_cost_fn = cost
+        .cost_fn
+        .as_deref()
+        .is_some_and(|s| !s.trim().is_empty());
     if cost.provenance.as_deref() == Some("declared")
-        && crate::fkc::cost_compile::classify_cost("declared", class, has_any_expr, has_cost_fn).is_none()
+        && crate::fkc::cost_compile::classify_cost("declared", class, has_any_expr, has_cost_fn)
+            .is_none()
     {
         return Err(FkcError::PlaceholderCost {
             section: section.to_string(),
@@ -1260,7 +1283,10 @@ determinism: same_hardware_bitwise
     fn version_too_new_is_unsupported() {
         let src = valid_bundle().replace("fkc_version: 1", "fkc_version: 99");
         let err = validate_str(&src).expect_err("version 99 unsupported");
-        assert!(matches!(err, FkcError::UnsupportedVersion { found: 99, max: 1 }), "got {err:?}");
+        assert!(
+            matches!(err, FkcError::UnsupportedVersion { found: 99, max: 1 }),
+            "got {err:?}"
+        );
     }
 
     // ===== Rule 2 =====
@@ -1303,7 +1329,10 @@ determinism: same_hardware_bitwise
             "op_kind: AddElementwise\nfused_op: SOFTMAX_LAST_DIM",
         );
         let err = validate_str(&src).expect_err("both targets");
-        assert!(matches!(err, FkcError::OpTargetAmbiguous { .. }), "got {err:?}");
+        assert!(
+            matches!(err, FkcError::OpTargetAmbiguous { .. }),
+            "got {err:?}"
+        );
     }
 
     // ===== Rule 3 / 16 — dtype =====
@@ -1311,7 +1340,10 @@ determinism: same_hardware_bitwise
     fn bad_dtype_token_is_fdx_token_not_in_table() {
         let src = valid_bundle().replace("dtypes: [F32]", "dtypes: [F99]");
         let err = validate_str(&src).expect_err("F99 not a dtype");
-        assert!(matches!(err, FkcError::FdxTokenNotInTable { .. }), "got {err:?}");
+        assert!(
+            matches!(err, FkcError::FdxTokenNotInTable { .. }),
+            "got {err:?}"
+        );
     }
 
     // ===== Rule 4 — layout coherence =====
@@ -1323,7 +1355,10 @@ determinism: same_hardware_bitwise
             "layout: { contiguous: \"n/a\", strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }",
         );
         let err = validate_str(&src).expect_err("no acceptable layout");
-        assert!(matches!(err, FkcError::LayoutIncoherent { .. }), "got {err:?}");
+        assert!(
+            matches!(err, FkcError::LayoutIncoherent { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -1333,7 +1368,10 @@ determinism: same_hardware_bitwise
             "layout: { contiguous: required, strided: rejected, broadcast_stride0: accepted, start_offset: rejected, reverse_strides: rejected }",
         );
         let err = validate_str(&src).expect_err("broadcast w/o strided");
-        assert!(matches!(err, FkcError::LayoutIncoherent { .. }), "got {err:?}");
+        assert!(
+            matches!(err, FkcError::LayoutIncoherent { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -1343,7 +1381,10 @@ determinism: same_hardware_bitwise
             "layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: accepted }",
         );
         let err = validate_str(&src).expect_err("reverse w/o strided");
-        assert!(matches!(err, FkcError::LayoutIncoherent { .. }), "got {err:?}");
+        assert!(
+            matches!(err, FkcError::LayoutIncoherent { .. }),
+            "got {err:?}"
+        );
     }
 
     // ===== Rule 4 — broadcast_axes mask (§6-additive, path 1a) =====
@@ -1370,7 +1411,10 @@ determinism: same_hardware_bitwise
             "layout: { contiguous: accepted, strided: accepted, broadcast_stride0: required, start_offset: rejected, reverse_strides: rejected }",
         );
         let err = validate_str(&src).expect_err("required broadcast needs a broadcast_axes mask");
-        assert!(matches!(err, FkcError::LayoutIncoherent { .. }), "got {err:?}");
+        assert!(
+            matches!(err, FkcError::LayoutIncoherent { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -1380,7 +1424,10 @@ determinism: same_hardware_bitwise
             "layout: { contiguous: accepted, strided: accepted, broadcast_stride0: accepted, broadcast_axes: [0], start_offset: rejected, reverse_strides: rejected }",
         );
         let err = validate_str(&src).expect_err("broadcast_axes is meaningful only with required");
-        assert!(matches!(err, FkcError::LayoutIncoherent { .. }), "got {err:?}");
+        assert!(
+            matches!(err, FkcError::LayoutIncoherent { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -1390,7 +1437,10 @@ determinism: same_hardware_bitwise
             "layout: { contiguous: accepted, strided: accepted, broadcast_stride0: required, broadcast_axes: [], start_offset: rejected, reverse_strides: rejected }",
         );
         let err = validate_str(&src).expect_err("empty broadcast_axes on a required broadcast");
-        assert!(matches!(err, FkcError::LayoutIncoherent { .. }), "got {err:?}");
+        assert!(
+            matches!(err, FkcError::LayoutIncoherent { .. }),
+            "got {err:?}"
+        );
     }
 
     // ===== Rule 5 — awkward strategy =====
@@ -1401,7 +1451,10 @@ determinism: same_hardware_bitwise
             "layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected, awkward_layout_strategy: handles_strided }",
         );
         let err = validate_str(&src).expect_err("handles_strided but strided rejected");
-        assert!(matches!(err, FkcError::AwkwardStrategyIncoherent { .. }), "got {err:?}");
+        assert!(
+            matches!(err, FkcError::AwkwardStrategyIncoherent { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -1411,7 +1464,10 @@ determinism: same_hardware_bitwise
             "layout: { contiguous: required, strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected, awkward_layout_strategy: teleports }",
         );
         let err = validate_str(&src).expect_err("unknown strategy");
-        assert!(matches!(err, FkcError::AwkwardStrategyIncoherent { .. }), "got {err:?}");
+        assert!(
+            matches!(err, FkcError::AwkwardStrategyIncoherent { .. }),
+            "got {err:?}"
+        );
     }
 
     // ===== Rule 6 — quant =====
@@ -1469,16 +1525,25 @@ determinism: same_hardware_bitwise
 
     #[test]
     fn ggml_block_with_real_dtype_ok() {
-        let src = quant_bundle("GGML_BLOCK", "          ggml_dtype: Q4_0\n          role: weight");
+        let src = quant_bundle(
+            "GGML_BLOCK",
+            "          ggml_dtype: Q4_0\n          role: weight",
+        );
         validate_str(&src).expect("GGML_BLOCK Q4_0 weight validates");
     }
 
     #[test]
     fn ggml_dtype_q4_k_m_is_quant_incoherent() {
         // The GGUF file-format name `Q4_K_M` is NOT a GgmlDType variant.
-        let src = quant_bundle("GGML_BLOCK", "          ggml_dtype: Q4_K_M\n          role: weight");
+        let src = quant_bundle(
+            "GGML_BLOCK",
+            "          ggml_dtype: Q4_K_M\n          role: weight",
+        );
         let err = validate_str(&src).expect_err("Q4_K_M bad");
-        assert!(matches!(err, FkcError::QuantIncoherent { .. }), "got {err:?}");
+        assert!(
+            matches!(err, FkcError::QuantIncoherent { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -1488,40 +1553,64 @@ determinism: same_hardware_bitwise
             "          ggml_dtype: Q4_0\n          granularity: PerChannel\n          role: weight",
         );
         let err = validate_str(&src).expect_err("GGML carries no granularity");
-        assert!(matches!(err, FkcError::QuantIncoherent { .. }), "got {err:?}");
+        assert!(
+            matches!(err, FkcError::QuantIncoherent { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]
     fn mx_family_is_not_yet_registrable() {
-        let src = quant_bundle("MX", "          granularity: PerBlock\n          role: weight");
+        let src = quant_bundle(
+            "MX",
+            "          granularity: PerBlock\n          role: weight",
+        );
         let err = validate_str(&src).expect_err("MX not registrable");
-        assert!(matches!(err, FkcError::MxNotYetRegistrable { ref family, .. } if family == "MX"), "got {err:?}");
+        assert!(
+            matches!(err, FkcError::MxNotYetRegistrable { ref family, .. } if family == "MX"),
+            "got {err:?}"
+        );
     }
 
     #[test]
     fn affine_block_without_block_shape_is_incoherent() {
-        let src = quant_bundle("AFFINE_BLOCK", "          role: weight\n          scale_operand: scl");
+        let src = quant_bundle(
+            "AFFINE_BLOCK",
+            "          role: weight\n          scale_operand: scl",
+        );
         // scale_operand `scl` won't exist either, but block_shape missing OR the
         // scale-operand check fires; both are coherence errors.
         let err = validate_str(&src).expect_err("AFFINE_BLOCK needs block_shape / real scale");
         assert!(
-            matches!(err, FkcError::QuantIncoherent { .. } | FkcError::ScaleDoubleDeclared { .. }),
+            matches!(
+                err,
+                FkcError::QuantIncoherent { .. } | FkcError::ScaleDoubleDeclared { .. }
+            ),
             "got {err:?}"
         );
     }
 
     #[test]
     fn affine_int_bad_granularity_is_incoherent() {
-        let src = quant_bundle("AFFINE_INT", "          granularity: PerBlock\n          role: weight");
+        let src = quant_bundle(
+            "AFFINE_INT",
+            "          granularity: PerBlock\n          role: weight",
+        );
         let err = validate_str(&src).expect_err("AFFINE_INT PerBlock bad");
-        assert!(matches!(err, FkcError::QuantIncoherent { .. }), "got {err:?}");
+        assert!(
+            matches!(err, FkcError::QuantIncoherent { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]
     fn unknown_family_is_fdx_token_not_in_table() {
         let src = quant_bundle("MADE_UP", "          role: weight");
         let err = validate_str(&src).expect_err("MADE_UP not an FDX family");
-        assert!(matches!(err, FkcError::FdxTokenNotInTable { .. }), "got {err:?}");
+        assert!(
+            matches!(err, FkcError::FdxTokenNotInTable { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -1533,7 +1622,10 @@ determinism: same_hardware_bitwise
             "          ggml_dtype: Q4_0\n          role: weight\n          scale_operand: act",
         );
         let err = validate_str(&src).expect_err("GGML + separate scale");
-        assert!(matches!(err, FkcError::ScaleDoubleDeclared { .. }), "got {err:?}");
+        assert!(
+            matches!(err, FkcError::ScaleDoubleDeclared { .. }),
+            "got {err:?}"
+        );
     }
 
     // ===== Rule 7 — op-param namespace =====
@@ -1541,7 +1633,10 @@ determinism: same_hardware_bitwise
     fn op_kind_with_fused_only_variant_is_bad_namespace() {
         // `FusedLinear` is a FusedOpParams variant, NOT an OpParams variant; an
         // op_kind contract naming it must fail the namespace check.
-        let src = valid_bundle().replace("op_params: { variant: None }", "op_params: { variant: FusedLinear }");
+        let src = valid_bundle().replace(
+            "op_params: { variant: None }",
+            "op_params: { variant: FusedLinear }",
+        );
         let err = validate_str(&src).expect_err("FusedLinear not in OpParams");
         assert!(
             matches!(err, FkcError::BadOpParamsVariant { ref namespace, .. } if namespace == "OpParams"),
@@ -1559,11 +1654,12 @@ determinism: same_hardware_bitwise
     /// the enum.
     #[test]
     fn op_params_namespace_accepts_the_real_nonzeroindices_variant() {
-        let src = valid_bundle()
-            .replace("op_params: { variant: None }", "op_params: { variant: NonZeroIndices }");
-        validate_str(&src).expect(
-            "NonZeroIndices is a real OpParams variant — a contract may name it",
+        let src = valid_bundle().replace(
+            "op_params: { variant: None }",
+            "op_params: { variant: NonZeroIndices }",
         );
+        validate_str(&src)
+            .expect("NonZeroIndices is a real OpParams variant — a contract may name it");
     }
 
     /// The predicate must be exactly the generated table, in both directions.
@@ -1611,7 +1707,10 @@ determinism: same_hardware_bitwise
         // change exists to eliminate.
         for (name, excluded) in OP_PARAMS_VARIANTS.iter().chain(FUSED_OP_PARAMS_VARIANTS) {
             if let Some(reason) = excluded {
-                assert!(!reason.trim().is_empty(), "{name} is excluded with an empty reason");
+                assert!(
+                    !reason.trim().is_empty(),
+                    "{name} is excluded with an empty reason"
+                );
             }
         }
     }
@@ -1627,8 +1726,10 @@ determinism: same_hardware_bitwise
         assert!(!is_op_params_variant("JitScalars"));
         assert!(!is_fused_op_params_variant("Runtime"));
 
-        let src = valid_bundle()
-            .replace("op_params: { variant: None }", "op_params: { variant: JitScalars }");
+        let src = valid_bundle().replace(
+            "op_params: { variant: None }",
+            "op_params: { variant: JitScalars }",
+        );
         let err = validate_str(&src).expect_err("JitScalars is runtime-JIT-only");
         assert!(
             matches!(err, FkcError::BadOpParamsVariant { ref namespace, .. } if namespace == "OpParams"),
@@ -1702,8 +1803,10 @@ determinism: same_hardware_bitwise
             FDX_CODES_SRC.lines().count()
         );
 
-        let declared_families: std::collections::BTreeSet<String> =
-            FDX_FAMILY_TOKENS.iter().map(|(c, _)| c.to_string()).collect();
+        let declared_families: std::collections::BTreeSet<String> = FDX_FAMILY_TOKENS
+            .iter()
+            .map(|(c, _)| c.to_string())
+            .collect();
         assert_eq!(
             families, declared_families,
             "FDX's FDX_QUANT_* table and FKC's mirror of it have diverged — update \
@@ -1747,7 +1850,10 @@ determinism: same_hardware_bitwise
     fn missing_provenance_errors() {
         let src = valid_bundle().replace("  provenance: declared\n", "");
         let err = validate_str(&src).expect_err("no provenance");
-        assert!(matches!(err, FkcError::CostProvenanceMissing { .. }), "got {err:?}");
+        assert!(
+            matches!(err, FkcError::CostProvenanceMissing { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -1764,7 +1870,10 @@ determinism: same_hardware_bitwise
             .replace("  flops: \"n\"\n", "")
             .replace("  bytes_moved: \"3 * n * 4\"\n", "");
         let err = validate_str(&src).expect_err("bare declared cost");
-        assert!(matches!(err, FkcError::PlaceholderCost { .. }), "got {err:?}");
+        assert!(
+            matches!(err, FkcError::PlaceholderCost { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -1780,37 +1889,61 @@ determinism: same_hardware_bitwise
 
     #[test]
     fn placeholder_cost_class_field() {
-        use crate::fkc::cost_compile::{classify_cost, CostClassKind};
+        use crate::fkc::cost_compile::{CostClassKind, classify_cost};
         assert!(classify_cost("declared", "cheap_elementwise", false, false).is_none());
-        assert!(matches!(classify_cost("declared", "free", false, false), Some(CostClassKind::Free)));
-        assert!(matches!(classify_cost("declared", "gemm_like", true, false), Some(CostClassKind::DeclaredFormula)));
-        assert!(matches!(classify_cost("declared", "gemm_like", false, true), Some(CostClassKind::VendorSpec)));
-        assert!(matches!(classify_cost("judge_measured", "gemm_like", false, false), Some(CostClassKind::JudgeMeasured)));
+        assert!(matches!(
+            classify_cost("declared", "free", false, false),
+            Some(CostClassKind::Free)
+        ));
+        assert!(matches!(
+            classify_cost("declared", "gemm_like", true, false),
+            Some(CostClassKind::DeclaredFormula)
+        ));
+        assert!(matches!(
+            classify_cost("declared", "gemm_like", false, true),
+            Some(CostClassKind::VendorSpec)
+        ));
+        assert!(matches!(
+            classify_cost("judge_measured", "gemm_like", false, false),
+            Some(CostClassKind::JudgeMeasured)
+        ));
         // integration: a declared+non-free class with NO flops/bytes/cost_fn is rejected on import
         use crate::fkc::register::import_bundle_str;
         let src = "---\nfkc_version: 1\nprovider:\n  name: ph-provider\n  backend: Cpu\n  kernel_source: \"ph-cpu\"\n---\n\n# ph\n\n## add_f32\n\nA.\n\n```fkc\nkernel: add_f32\nop_kind: AddElementwise\nblurb: \"a\"\nentry_point: \"x::add_f32\"\naccept:\n  inputs:\n    - name: lhs\n      dtypes: [F32]\n      layout: { contiguous: required, strided: rejected }\n    - name: rhs\n      dtypes: [F32]\n      layout: { contiguous: required, strided: rejected }\n  op_params: { variant: None }\nreturn:\n  outputs:\n    - name: out\n      dtype_rule: passthrough(lhs)\ncost:\n  provenance: declared\n  class: cheap_elementwise\nprecision:\n  bit_stable_on_same_hardware: true\n  audited: true\ndeterminism: same_hardware_bitwise\n```\n";
-        let err = import_bundle_str(src, &StubLink::new()).expect_err("declared + non-free class + no usable cost path must reject");
-        assert!(matches!(err, FkcError::PlaceholderCost { .. }), "got {err:?}");
+        let err = import_bundle_str(src, &StubLink::new())
+            .expect_err("declared + non-free class + no usable cost path must reject");
+        assert!(
+            matches!(err, FkcError::PlaceholderCost { .. }),
+            "got {err:?}"
+        );
     }
 
     // ===== Rule 9 — determinism/precision =====
     #[test]
     fn nondeterministic_with_bitstable_true_is_incoherent() {
-        let src = valid_bundle().replace("determinism: same_hardware_bitwise", "determinism: nondeterministic");
+        let src = valid_bundle().replace(
+            "determinism: same_hardware_bitwise",
+            "determinism: nondeterministic",
+        );
         let err = validate_str(&src).expect_err("nondeterministic + bit_stable true");
-        assert!(matches!(err, FkcError::QuantIncoherent { .. }), "got {err:?}");
+        assert!(
+            matches!(err, FkcError::QuantIncoherent { .. }),
+            "got {err:?}"
+        );
     }
 
     // ===== Rule 15 — extent =====
     #[test]
     fn unknown_extent_kind_is_typed_error() {
-        let src = quant_bundle("none", "")
-            .replace(
-                "      fdx:\n        requires_ext: true\n        quant:\n          family: none\n",
-                "      fdx:\n        extent_kind: wobbly\n        symbolic_extent: required\n",
-            );
+        let src = quant_bundle("none", "").replace(
+            "      fdx:\n        requires_ext: true\n        quant:\n          family: none\n",
+            "      fdx:\n        extent_kind: wobbly\n        symbolic_extent: required\n",
+        );
         let err = validate_str(&src).expect_err("bad extent_kind");
-        assert!(matches!(err, FkcError::UnknownAdmissibilityEnum { .. }), "got {err:?}");
+        assert!(
+            matches!(err, FkcError::UnknownAdmissibilityEnum { .. }),
+            "got {err:?}"
+        );
     }
 
     // ===== Rule 17 / §3.10 — describe-only (non-registrable) sections =====
@@ -1895,7 +2028,10 @@ determinism: same_hardware_bitwise
         // resolution is skipped.
         let src = describe_only_bundle().replace("dtypes: [F32, F64, BF16, F16]", "dtypes: [F99]");
         let err = validate_str(&src).expect_err("bad dtype in describe-only docs");
-        assert!(matches!(err, FkcError::FdxTokenNotInTable { .. }), "got {err:?}");
+        assert!(
+            matches!(err, FkcError::FdxTokenNotInTable { .. }),
+            "got {err:?}"
+        );
     }
 
     #[test]
@@ -1906,7 +2042,10 @@ determinism: same_hardware_bitwise
             "layout: { contiguous: \"n/a\", strided: rejected, broadcast_stride0: rejected, start_offset: rejected, reverse_strides: rejected }",
         );
         let err = validate_str(&src).expect_err("incoherent layout in describe-only docs");
-        assert!(matches!(err, FkcError::LayoutIncoherent { .. }), "got {err:?}");
+        assert!(
+            matches!(err, FkcError::LayoutIncoherent { .. }),
+            "got {err:?}"
+        );
     }
 
     /// A describe-only zero-operand op (e.g. a `rand_uniform`/`rand_normal`
@@ -2112,7 +2251,9 @@ determinism: same_hardware_bitwise
     }
     impl StubLink {
         fn new() -> Self {
-            Self { seen: std::sync::Mutex::new(std::collections::HashMap::new()) }
+            Self {
+                seen: std::sync::Mutex::new(std::collections::HashMap::new()),
+            }
         }
         fn resolve(&self, symbol: &str) -> Option<crate::kernel::KernelRef> {
             use std::sync::Arc;
@@ -2120,10 +2261,38 @@ determinism: same_hardware_bitwise
             // A family of distinct fn items so distinct symbols get distinct
             // pointers (avoids spurious duplicate-pointer collapse on lower —
             // lowering does not finalize, but keep them distinct anyway).
-            fn k0(_i: &[Arc<RwLock<fuel_memory::Storage>>], _o: &mut [Arc<RwLock<fuel_memory::Storage>>], _l: &[fuel_ir::Layout], _p: &crate::kernel::OpParams) -> fuel_ir::Result<()> { Ok(()) }
-            fn k1(_i: &[Arc<RwLock<fuel_memory::Storage>>], _o: &mut [Arc<RwLock<fuel_memory::Storage>>], _l: &[fuel_ir::Layout], _p: &crate::kernel::OpParams) -> fuel_ir::Result<()> { Ok(()) }
-            fn k2(_i: &[Arc<RwLock<fuel_memory::Storage>>], _o: &mut [Arc<RwLock<fuel_memory::Storage>>], _l: &[fuel_ir::Layout], _p: &crate::kernel::OpParams) -> fuel_ir::Result<()> { Ok(()) }
-            fn k3(_i: &[Arc<RwLock<fuel_memory::Storage>>], _o: &mut [Arc<RwLock<fuel_memory::Storage>>], _l: &[fuel_ir::Layout], _p: &crate::kernel::OpParams) -> fuel_ir::Result<()> { Ok(()) }
+            fn k0(
+                _i: &[Arc<RwLock<fuel_memory::Storage>>],
+                _o: &mut [Arc<RwLock<fuel_memory::Storage>>],
+                _l: &[fuel_ir::Layout],
+                _p: &crate::kernel::OpParams,
+            ) -> fuel_ir::Result<()> {
+                Ok(())
+            }
+            fn k1(
+                _i: &[Arc<RwLock<fuel_memory::Storage>>],
+                _o: &mut [Arc<RwLock<fuel_memory::Storage>>],
+                _l: &[fuel_ir::Layout],
+                _p: &crate::kernel::OpParams,
+            ) -> fuel_ir::Result<()> {
+                Ok(())
+            }
+            fn k2(
+                _i: &[Arc<RwLock<fuel_memory::Storage>>],
+                _o: &mut [Arc<RwLock<fuel_memory::Storage>>],
+                _l: &[fuel_ir::Layout],
+                _p: &crate::kernel::OpParams,
+            ) -> fuel_ir::Result<()> {
+                Ok(())
+            }
+            fn k3(
+                _i: &[Arc<RwLock<fuel_memory::Storage>>],
+                _o: &mut [Arc<RwLock<fuel_memory::Storage>>],
+                _l: &[fuel_ir::Layout],
+                _p: &crate::kernel::OpParams,
+            ) -> fuel_ir::Result<()> {
+                Ok(())
+            }
             let table: [crate::kernel::KernelRef; 4] = [k0, k1, k2, k3];
             let mut g = self.seen.lock().unwrap();
             if let Some(k) = g.get(symbol) {
@@ -2135,8 +2304,12 @@ determinism: same_hardware_bitwise
         }
     }
     impl crate::fkc::lower::LinkRegistry for StubLink {
-        fn resolve_primitive(&self, s: &str) -> Option<crate::kernel::KernelRef> { self.resolve(s) }
-        fn resolve_fused(&self, s: &str) -> Option<crate::kernel::KernelRef> { self.resolve(s) }
+        fn resolve_primitive(&self, s: &str) -> Option<crate::kernel::KernelRef> {
+            self.resolve(s)
+        }
+        fn resolve_fused(&self, s: &str) -> Option<crate::kernel::KernelRef> {
+            self.resolve(s)
+        }
         fn resolve_cost_fn(&self, _name: &str) -> Option<crate::kernel::CostFn> {
             // Permissive (§4.4 cost-fn trampoline): the corpus lint checks that a
             // NAMED `cost.cost_fn` parses + lowers, not that it resolves to a
@@ -2214,7 +2387,11 @@ determinism: same_hardware_bitwise
         // .../fuel-dispatch). The corpus lives at ../docs/kernel-contracts.
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let corpus = manifest.join("..").join("docs").join("kernel-contracts");
-        assert!(corpus.is_dir(), "corpus dir not found at {}", corpus.display());
+        assert!(
+            corpus.is_dir(),
+            "corpus dir not found at {}",
+            corpus.display()
+        );
 
         let mut files = Vec::new();
         collect_fkc_files(&corpus, &mut files);
@@ -2229,7 +2406,11 @@ determinism: same_hardware_bitwise
 
         for path in &files {
             file_count += 1;
-            let rel = path.strip_prefix(manifest).unwrap_or(path).display().to_string();
+            let rel = path
+                .strip_prefix(manifest)
+                .unwrap_or(path)
+                .display()
+                .to_string();
             let src = std::fs::read_to_string(path).expect("read corpus file");
 
             // 1) parse.
@@ -2246,15 +2427,20 @@ determinism: same_hardware_bitwise
             // specific kernel + rule, validate each kernel individually too.
             // First the file-level (version) check.
             if file.front_matter.fkc_version > FKC_VERSION_MAX {
-                hard_failures.push(format!("{rel}: version {} > {}", file.front_matter.fkc_version, FKC_VERSION_MAX));
+                hard_failures.push(format!(
+                    "{rel}: version {} > {}",
+                    file.front_matter.fkc_version, FKC_VERSION_MAX
+                ));
                 continue;
             }
             for kernel in &file.kernels {
                 let kname = kernel.kernel.as_str();
                 match validate_kernel(kernel) {
                     Ok(()) => {}
-                    Err(e @ (FkcError::MxNotYetRegistrable { .. }
-                    | FkcError::GatherNotYetSupported { .. })) => {
+                    Err(
+                        e @ (FkcError::MxNotYetRegistrable { .. }
+                        | FkcError::GatherNotYetSupported { .. }),
+                    ) => {
                         deferred.push(format!("{rel} :: {kname}: {e}"));
                     }
                     Err(e) => {
@@ -2270,7 +2456,8 @@ determinism: same_hardware_bitwise
                     // lowering an MX/AFFINE_BLOCK contract succeeds; any lower
                     // error here is a real finding.
                     match e {
-                        FkcError::MxNotYetRegistrable { .. } | FkcError::GatherNotYetSupported { .. } => {}
+                        FkcError::MxNotYetRegistrable { .. }
+                        | FkcError::GatherNotYetSupported { .. } => {}
                         // Describable but NOT-YET-FANNABLE (§3.4 multi-dtype
                         // fan-out): a MULTI-AXIS dtype contract whose varying
                         // operands enumerate DIFFERENT dtype lists (e.g. a
@@ -2309,7 +2496,9 @@ determinism: same_hardware_bitwise
             hard_failures.len()
         );
         if !deferred.is_empty() {
-            eprintln!("--- deferred (describable, not-yet-registrable / not-yet-fannable; spec §6/§3.9.1/§3.4) ---");
+            eprintln!(
+                "--- deferred (describable, not-yet-registrable / not-yet-fannable; spec §6/§3.9.1/§3.4) ---"
+            );
             for d in &deferred {
                 eprintln!("  {d}");
             }
@@ -2354,7 +2543,11 @@ determinism: same_hardware_bitwise
     fn ci_lint_corpus_has_no_cross_file_entry_point_collisions() {
         let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let corpus = manifest.join("..").join("docs").join("kernel-contracts");
-        assert!(corpus.is_dir(), "corpus dir not found at {}", corpus.display());
+        assert!(
+            corpus.is_dir(),
+            "corpus dir not found at {}",
+            corpus.display()
+        );
 
         let mut files = Vec::new();
         collect_fkc_files(&corpus, &mut files);
@@ -2369,7 +2562,11 @@ determinism: same_hardware_bitwise
         let mut checked = 0usize;
 
         for path in &files {
-            let rel = path.strip_prefix(manifest).unwrap_or(path).display().to_string();
+            let rel = path
+                .strip_prefix(manifest)
+                .unwrap_or(path)
+                .display()
+                .to_string();
             let src = std::fs::read_to_string(path).expect("read corpus file");
             let Ok(file) = parse_file(&src) else {
                 // Parse failures are the other lint's business; skip rather
@@ -2432,33 +2629,66 @@ determinism: same_hardware_bitwise
         // The value here is the ratchet: a NEW collision fails immediately.
         const KNOWN: &[(&str, &str)] = &[
             // dispatch/reduce.fkc.md (orphan) vs cpu/reduce{,-to}.fkc.md
-            ("portable-cpu", "fuel_cpu_backend::byte_kernels::sum_reduce_f32"),
-            ("portable-cpu", "fuel_cpu_backend::byte_kernels::max_reduce_f32"),
-            ("portable-cpu", "fuel_cpu_backend::byte_kernels::min_reduce_f32"),
-            ("portable-cpu", "fuel_cpu_backend::byte_kernels::mean_reduce_f32"),
-            ("portable-cpu", "fuel_cpu_backend::byte_kernels::reduce_sum_to_f32"),
-            ("portable-cpu", "fuel_cpu_backend::byte_kernels::reduce_max_to_f32"),
-            ("portable-cpu", "fuel_cpu_backend::byte_kernels::reduce_max_to_backward_f32"),
+            (
+                "portable-cpu",
+                "fuel_cpu_backend::byte_kernels::sum_reduce_f32",
+            ),
+            (
+                "portable-cpu",
+                "fuel_cpu_backend::byte_kernels::max_reduce_f32",
+            ),
+            (
+                "portable-cpu",
+                "fuel_cpu_backend::byte_kernels::min_reduce_f32",
+            ),
+            (
+                "portable-cpu",
+                "fuel_cpu_backend::byte_kernels::mean_reduce_f32",
+            ),
+            (
+                "portable-cpu",
+                "fuel_cpu_backend::byte_kernels::reduce_sum_to_f32",
+            ),
+            (
+                "portable-cpu",
+                "fuel_cpu_backend::byte_kernels::reduce_max_to_f32",
+            ),
+            (
+                "portable-cpu",
+                "fuel_cpu_backend::byte_kernels::reduce_max_to_backward_f32",
+            ),
             // vulkan/conv-attn-rope.fkc.md (orphan) vs vulkan/attention.fkc.md
             ("vulkan-slang", "fuel_vulkan_backend::fkc::flash_attn_f32"),
             ("vulkan-slang", "fuel_vulkan_backend::fkc::flash_attn_bf16"),
             ("vulkan-slang", "fuel_vulkan_backend::fkc::flash_attn_f16"),
-            ("vulkan-slang", "fuel_vulkan_backend::fkc::flash_attn_backward_q_f32"),
-            ("vulkan-slang", "fuel_vulkan_backend::fkc::flash_attn_backward_k_f32"),
-            ("vulkan-slang", "fuel_vulkan_backend::fkc::flash_attn_backward_v_f32"),
+            (
+                "vulkan-slang",
+                "fuel_vulkan_backend::fkc::flash_attn_backward_q_f32",
+            ),
+            (
+                "vulkan-slang",
+                "fuel_vulkan_backend::fkc::flash_attn_backward_k_f32",
+            ),
+            (
+                "vulkan-slang",
+                "fuel_vulkan_backend::fkc::flash_attn_backward_v_f32",
+            ),
         ];
-        let is_known = |key: &(String, String)| {
-            KNOWN.iter().any(|(ks, ep)| *ks == key.0 && *ep == key.1)
-        };
+        let is_known =
+            |key: &(String, String)| KNOWN.iter().any(|(ks, ep)| *ks == key.0 && *ep == key.1);
 
-        let novel: Vec<&(String, String, String)> =
-            collisions.iter().filter(|c| !is_known(&(c.0.clone(), c.1.clone()))).collect();
+        let novel: Vec<&(String, String, String)> = collisions
+            .iter()
+            .filter(|c| !is_known(&(c.0.clone(), c.1.clone())))
+            .collect();
 
         // An allowlist that is never re-checked ROTS: a fixed collision would
         // sit here forever, and the next reader would believe the debt is
         // larger than it is. Fail on a stale entry too.
-        let seen: std::collections::HashSet<(String, String)> =
-            collisions.iter().map(|c| (c.0.clone(), c.1.clone())).collect();
+        let seen: std::collections::HashSet<(String, String)> = collisions
+            .iter()
+            .map(|c| (c.0.clone(), c.1.clone()))
+            .collect();
         let stale: Vec<&(&str, &str)> = KNOWN
             .iter()
             .filter(|(ks, ep)| !seen.contains(&((*ks).to_string(), (*ep).to_string())))

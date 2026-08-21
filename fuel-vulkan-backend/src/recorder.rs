@@ -19,8 +19,8 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
-use vulkane::safe::*;
 use vulkane::raw::bindings::*;
+use vulkane::safe::*;
 
 /// Host-side op timing.
 ///
@@ -50,7 +50,7 @@ impl OpStats {
     pub fn snapshot(&self) -> Vec<(&'static str, OpStatEntry)> {
         let map = self.inner.lock().expect("op_stats poisoned");
         let mut v: Vec<_> = map.iter().map(|(k, v)| (*k, *v)).collect();
-        v.sort_by(|a, b| b.1.total_ns.cmp(&a.1.total_ns));
+        v.sort_by_key(|(_, e)| std::cmp::Reverse(e.total_ns));
         v
     }
 
@@ -252,6 +252,7 @@ impl Recorder {
     /// Only inserts a pipeline barrier when a READ buffer overlaps
     /// with a previously-written (dirty) buffer — independent ops
     /// can overlap on the GPU without barriers.
+    #[allow(clippy::too_many_arguments)]
     pub fn record_batch_dispatch(
         &mut self,
         device: &Device,
@@ -267,14 +268,17 @@ impl Recorder {
             let cmd = self.pool.allocate_primary()?;
             let dt = device.dispatch();
             unsafe {
-                let begin = dt.vkBeginCommandBuffer
+                let begin = dt
+                    .vkBeginCommandBuffer
                     .ok_or(Error::MissingFunction("vkBeginCommandBuffer"))?;
                 let info = VkCommandBufferBeginInfo {
                     sType: VkStructureType::STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
                     ..Default::default()
                 };
                 let r = begin(cmd.raw(), &info);
-                if r != VkResult::SUCCESS { return Err(Error::Vk(r)); }
+                if r != VkResult::SUCCESS {
+                    return Err(Error::Vk(r));
+                }
             }
             self.batch_cb = Some(cmd);
         }
@@ -292,7 +296,7 @@ impl Recorder {
                     let mem_barrier = VkMemoryBarrier {
                         sType: VkStructureType::STRUCTURE_TYPE_MEMORY_BARRIER,
                         pNext: std::ptr::null(),
-                        srcAccessMask: 0x40, // VK_ACCESS_SHADER_WRITE_BIT
+                        srcAccessMask: 0x40,        // VK_ACCESS_SHADER_WRITE_BIT
                         dstAccessMask: 0x20 | 0x40, // SHADER_READ | SHADER_WRITE
                     };
                     barrier_fn(
@@ -300,9 +304,12 @@ impl Recorder {
                         0x800, // VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
                         0x800,
                         0,
-                        1, &mem_barrier,
-                        0, std::ptr::null(),
-                        0, std::ptr::null(),
+                        1,
+                        &mem_barrier,
+                        0,
+                        std::ptr::null(),
+                        0,
+                        std::ptr::null(),
                     );
                 }
                 self.dirty_buffers.clear();
@@ -324,8 +331,11 @@ impl Recorder {
                     cmd_handle,
                     VkPipelineBindPoint::PIPELINE_BIND_POINT_COMPUTE,
                     pipe_layout.raw(),
-                    0, 1, &desc_handle,
-                    0, std::ptr::null(),
+                    0,
+                    1,
+                    &desc_handle,
+                    0,
+                    std::ptr::null(),
                 );
             }
 
@@ -352,12 +362,7 @@ impl Recorder {
 
     /// End the current batch CB recording, submit it, and wait for
     /// the GPU to finish. Drops all transient resources afterward.
-    pub fn flush_batch(
-        &mut self,
-        device: &Device,
-        queue: &Queue,
-        queue_family: u32,
-    ) -> Result<()> {
+    pub fn flush_batch(&mut self, device: &Device, queue: &Queue, queue_family: u32) -> Result<()> {
         let Some(cmd) = self.batch_cb.take() else {
             return Ok(());
         };
@@ -365,10 +370,13 @@ impl Recorder {
 
         // End recording.
         unsafe {
-            let end = dt.vkEndCommandBuffer
+            let end = dt
+                .vkEndCommandBuffer
                 .ok_or(Error::MissingFunction("vkEndCommandBuffer"))?;
             let r = end(cmd.raw());
-            if r != VkResult::SUCCESS { return Err(Error::Vk(r)); }
+            if r != VkResult::SUCCESS {
+                return Err(Error::Vk(r));
+            }
         }
 
         // Submit with a fence and wait.
@@ -398,12 +406,12 @@ impl Recorder {
     /// submit) — identical no-op semantics to `flush_batch`'s early return.
     ///
     /// This is the ONLY difference from `flush_batch`: same `vkEndCommandBuffer`
-    /// + same `queue.submit(&[&cmd], Some(&fence))`, but instead of
-    /// `fence.wait(u64::MAX)` + dropping the transients/CB/pool inline, it MOVES
-    /// them into the returned struct so they outlive the (still-running) GPU work.
-    /// Counters/dirty-set are reset exactly as `flush_batch` does, and the pool is
-    /// swapped for a fresh one so the next batch records into a clean pool while
-    /// this one is in flight.
+    ///   + same `queue.submit(&[&cmd], Some(&fence))`, but instead of
+    ///     `fence.wait(u64::MAX)` + dropping the transients/CB/pool inline, it MOVES
+    ///     them into the returned struct so they outlive the (still-running) GPU work.
+    ///     Counters/dirty-set are reset exactly as `flush_batch` does, and the pool is
+    ///     swapped for a fresh one so the next batch records into a clean pool while
+    ///     this one is in flight.
     pub fn submit_batch(
         &mut self,
         device: &Device,
@@ -417,10 +425,13 @@ impl Recorder {
 
         // End recording (same as flush_batch).
         unsafe {
-            let end = dt.vkEndCommandBuffer
+            let end = dt
+                .vkEndCommandBuffer
                 .ok_or(Error::MissingFunction("vkEndCommandBuffer"))?;
             let r = end(cmd.raw());
-            if r != VkResult::SUCCESS { return Err(Error::Vk(r)); }
+            if r != VkResult::SUCCESS {
+                return Err(Error::Vk(r));
+            }
         }
 
         // Submit with a fence but DO NOT wait — the async split.
@@ -453,28 +464,5 @@ impl Recorder {
         self.dirty_buffers.clear();
 
         Ok(Some(batch))
-    }
-
-    /// Drain without submitting (for cleanup).
-    pub fn drain(&mut self, device: &Device, queue_family: u32) -> Result<()> {
-        if self.batch_cb.is_some() {
-            // There's an active batch — need to end + discard it.
-            // End the recording so the CB transitions out of recording
-            // state before we drop it.
-            let cmd = self.batch_cb.take().unwrap();
-            let dt = device.dispatch();
-            unsafe {
-                if let Some(end) = dt.vkEndCommandBuffer {
-                    end(cmd.raw());
-                }
-            }
-            drop(cmd);
-        }
-        self.batch_transients.clear();
-        self.batch_descs.clear();
-        self.batch_count = 0;
-        self.dirty_buffers.clear();
-        self.pool = CommandPool::new(device, queue_family)?;
-        Ok(())
     }
 }

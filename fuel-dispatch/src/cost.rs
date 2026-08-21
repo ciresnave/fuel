@@ -36,7 +36,7 @@
 //!   attention (more setup work).
 
 use crate::fused::CostEstimate;
-use crate::kernel::{unknown_cost, CostFn, OpParams};
+use crate::kernel::{CostFn, OpParams, unknown_cost};
 use fuel_ir::backend::BackendCapabilities;
 use fuel_ir::dispatch::OpKind;
 use fuel_ir::{DType, Shape};
@@ -224,14 +224,24 @@ pub fn cost_reduce_to_cpu(
 /// rhs_batch_dims }` from `OpParams` to compute the exact FLOP
 /// count (`2·batch·M·N·K`).
 pub fn cost_matmul_cpu(
-    shapes: &[Shape],
+    _shapes: &[Shape],
     dtypes: &[DType],
     params: &OpParams,
     _caps: &BackendCapabilities,
 ) -> CostEstimate {
     let (m, n, k, batch) = match params {
-        OpParams::Matmul { m, n, k, lhs_batch_dims, .. } => {
-            let batch: u64 = lhs_batch_dims.iter().map(|&d| d as u64).product::<u64>().max(1);
+        OpParams::Matmul {
+            m,
+            n,
+            k,
+            lhs_batch_dims,
+            ..
+        } => {
+            let batch: u64 = lhs_batch_dims
+                .iter()
+                .map(|&d| d as u64)
+                .product::<u64>()
+                .max(1);
             (*m as u64, *n as u64, *k as u64, batch)
         }
         _ => return CostEstimate::default(),
@@ -257,8 +267,17 @@ pub fn cost_fused_linear_primitive_cpu(
 ) -> CostEstimate {
     let mm = cost_matmul_cpu(shapes, dtypes, params, caps);
     let (m, n, batch) = match params {
-        OpParams::Matmul { m, n, lhs_batch_dims, .. } => {
-            let batch: u64 = lhs_batch_dims.iter().map(|&d| d as u64).product::<u64>().max(1);
+        OpParams::Matmul {
+            m,
+            n,
+            lhs_batch_dims,
+            ..
+        } => {
+            let batch: u64 = lhs_batch_dims
+                .iter()
+                .map(|&d| d as u64)
+                .product::<u64>()
+                .max(1);
             (*m as u64, *n as u64, batch)
         }
         _ => return mm,
@@ -284,7 +303,7 @@ pub fn cost_cast_cpu(
     _caps: &BackendCapabilities,
 ) -> CostEstimate {
     let n = out_elem_count(shapes);
-    let dsize_in  = dtypes.first().map(|d| dtype_bytes(*d)).unwrap_or(4);
+    let dsize_in = dtypes.first().map(|d| dtype_bytes(*d)).unwrap_or(4);
     let dsize_out = dtypes.last().map(|d| dtype_bytes(*d)).unwrap_or(dsize_in);
     CostEstimate {
         flops: 0,
@@ -375,7 +394,7 @@ pub fn cost_indexing_cpu(
 ) -> CostEstimate {
     let n_out = out_elem_count(shapes);
     let dsize_data = dtypes.first().map(|d| dtype_bytes(*d)).unwrap_or(4);
-    let dsize_idx  = dtypes.get(1).map(|d| dtype_bytes(*d)).unwrap_or(4);
+    let dsize_idx = dtypes.get(1).map(|d| dtype_bytes(*d)).unwrap_or(4);
     CostEstimate {
         flops: n_out, // conservative — gather is 0, scatter is N; midpoint.
         bytes_moved: 2 * n_out * dsize_data + n_out * dsize_idx,
@@ -411,9 +430,13 @@ pub fn cost_conv2d_primitive_cpu(
     _caps: &BackendCapabilities,
 ) -> CostEstimate {
     let (x_shape, w_shape, out_shape, groups) = match params {
-        OpParams::Conv2D { x_shape, w_shape, out_shape, groups, .. } => {
-            (x_shape, w_shape, out_shape, *groups as u64)
-        }
+        OpParams::Conv2D {
+            x_shape,
+            w_shape,
+            out_shape,
+            groups,
+            ..
+        } => (x_shape, w_shape, out_shape, *groups as u64),
         _ => return CostEstimate::default(),
     };
     let dsize = dtypes.first().map(|d| dtype_bytes(*d)).unwrap_or(4);
@@ -425,9 +448,9 @@ pub fn cost_conv2d_primitive_cpu(
     let kh = w_shape[2] as u64;
     let kw = w_shape[3] as u64;
     let conv_flops = 2 * n * cout * h_out * w_out * cin_per_g * kh * kw;
-    let elems_in   = (x_shape[0] * x_shape[1] * x_shape[2] * x_shape[3]) as u64;
-    let elems_w    = (w_shape[0] * w_shape[1] * w_shape[2] * w_shape[3]) as u64;
-    let elems_out  = n * cout * h_out * w_out;
+    let elems_in = (x_shape[0] * x_shape[1] * x_shape[2] * x_shape[3]) as u64;
+    let elems_w = (w_shape[0] * w_shape[1] * w_shape[2] * w_shape[3]) as u64;
+    let elems_out = n * cout * h_out * w_out;
     let _ = groups; // accounted for via cin_per_g already.
     CostEstimate {
         flops: conv_flops,
@@ -446,9 +469,13 @@ pub fn cost_conv_transpose2d_primitive_cpu(
     _caps: &BackendCapabilities,
 ) -> CostEstimate {
     let (x_shape, w_shape, out_shape, groups) = match params {
-        OpParams::ConvTranspose2D { x_shape, w_shape, out_shape, groups, .. } => {
-            (x_shape, w_shape, out_shape, *groups as u64)
-        }
+        OpParams::ConvTranspose2D {
+            x_shape,
+            w_shape,
+            out_shape,
+            groups,
+            ..
+        } => (x_shape, w_shape, out_shape, *groups as u64),
         _ => return CostEstimate::default(),
     };
     let dsize = dtypes.first().map(|d| dtype_bytes(*d)).unwrap_or(4);
@@ -460,9 +487,9 @@ pub fn cost_conv_transpose2d_primitive_cpu(
     let kh = w_shape[2] as u64;
     let kw = w_shape[3] as u64;
     let flops = 2 * n * cout * h_out * w_out * cin_per_g * kh * kw;
-    let elems_in   = (x_shape[0] * x_shape[1] * x_shape[2] * x_shape[3]) as u64;
-    let elems_w    = (w_shape[0] * w_shape[1] * w_shape[2] * w_shape[3]) as u64;
-    let elems_out  = n * cout * h_out * w_out;
+    let elems_in = (x_shape[0] * x_shape[1] * x_shape[2] * x_shape[3]) as u64;
+    let elems_w = (w_shape[0] * w_shape[1] * w_shape[2] * w_shape[3]) as u64;
+    let elems_out = n * cout * h_out * w_out;
     CostEstimate {
         flops,
         bytes_moved: (elems_in + elems_w + elems_out) * dsize,
@@ -479,9 +506,22 @@ pub fn cost_flash_attn_primitive_cpu(
     _caps: &BackendCapabilities,
 ) -> CostEstimate {
     let (b, hq, _hkv, sq, sk, d) = match params {
-        OpParams::FlashAttn { b, hq, hkv, sq, sk, d, .. } => {
-            (*b as u64, *hq as u64, *hkv as u64, *sq as u64, *sk as u64, *d as u64)
-        }
+        OpParams::FlashAttn {
+            b,
+            hq,
+            hkv,
+            sq,
+            sk,
+            d,
+            ..
+        } => (
+            *b as u64,
+            *hq as u64,
+            *hkv as u64,
+            *sq as u64,
+            *sk as u64,
+            *d as u64,
+        ),
         _ => return CostEstimate::default(),
     };
     let dsize = dtypes.first().map(|d| dtype_bytes(*d)).unwrap_or(4);
@@ -524,9 +564,14 @@ pub fn cost_flash_decoding_cuda(
     _caps: &BackendCapabilities,
 ) -> CostEstimate {
     let (b, hq, sq, d, k_len) = match params {
-        OpParams::FlashAttn { b, hq, sq, d, k_len, .. } => {
-            (*b as u64, *hq as u64, *sq as u64, *d as u64, *k_len as u64)
-        }
+        OpParams::FlashAttn {
+            b,
+            hq,
+            sq,
+            d,
+            k_len,
+            ..
+        } => (*b as u64, *hq as u64, *sq as u64, *d as u64, *k_len as u64),
         _ => return CostEstimate::default(),
     };
     // Out-of-support shapes → infeasible (ranker never places here).
@@ -561,16 +606,28 @@ pub fn cost_paged_attn_primitive_cpu(
     _caps: &BackendCapabilities,
 ) -> CostEstimate {
     let (b, hq, sq, d, block_size, num_blocks) = match params {
-        OpParams::PagedAttn { b, hq, sq, d, block_size, num_blocks, .. } => {
-            (*b as u64, *hq as u64, *sq as u64, *d as u64,
-             *block_size as u64, *num_blocks as u64)
-        }
+        OpParams::PagedAttn {
+            b,
+            hq,
+            sq,
+            d,
+            block_size,
+            num_blocks,
+            ..
+        } => (
+            *b as u64,
+            *hq as u64,
+            *sq as u64,
+            *d as u64,
+            *block_size as u64,
+            *num_blocks as u64,
+        ),
         _ => return CostEstimate::default(),
     };
     let dsize = dtypes.first().map(|d| dtype_bytes(*d)).unwrap_or(4);
     let sk_upper = block_size * num_blocks;
     let mm_flops = 4 * b * hq * sq * sk_upper * d;
-    let elems_q  = b * hq * sq * d;
+    let elems_q = b * hq * sq * d;
     let elems_kv = 2 * num_blocks * block_size * d;
     let elems_out = elems_q;
     CostEstimate {
@@ -589,9 +646,10 @@ pub fn cost_softmax_last_dim_primitive_cpu(
     _caps: &BackendCapabilities,
 ) -> CostEstimate {
     let (outer, last_dim) = match params {
-        OpParams::SoftmaxLastDim { outer_count, last_dim } => {
-            (*outer_count as u64, *last_dim as u64)
-        }
+        OpParams::SoftmaxLastDim {
+            outer_count,
+            last_dim,
+        } => (*outer_count as u64, *last_dim as u64),
         _ => return CostEstimate::default(),
     };
     let n = outer * last_dim;
@@ -613,9 +671,19 @@ pub fn cost_nf4_matmul_primitive_cpu(
     _caps: &BackendCapabilities,
 ) -> CostEstimate {
     let (batch, m, n, k, block_size) = match params {
-        OpParams::Nf4Matmul { batch, m, n, k, block_size } => {
-            (*batch as u64, *m as u64, *n as u64, *k as u64, *block_size as u64)
-        }
+        OpParams::Nf4Matmul {
+            batch,
+            m,
+            n,
+            k,
+            block_size,
+        } => (
+            *batch as u64,
+            *m as u64,
+            *n as u64,
+            *k as u64,
+            *block_size as u64,
+        ),
         _ => return CostEstimate::default(),
     };
     if block_size == 0 || k % block_size != 0 {
@@ -646,10 +714,18 @@ pub fn cost_ssd_chunk_scan_primitive_cpu(
 ) -> CostEstimate {
     let (batch, seqlen, heads, head_dim, state_dim) = match params {
         OpParams::SsdChunkScan {
-            batch, seqlen, heads, head_dim, state_dim, ..
+            batch,
+            seqlen,
+            heads,
+            head_dim,
+            state_dim,
+            ..
         } => (
-            *batch as u64, *seqlen as u64, *heads as u64,
-            *head_dim as u64, *state_dim as u64,
+            *batch as u64,
+            *seqlen as u64,
+            *heads as u64,
+            *head_dim as u64,
+            *state_dim as u64,
         ),
         _ => return CostEstimate::default(),
     };
@@ -675,9 +751,13 @@ pub fn cost_selective_scan_primitive_cpu(
     _caps: &BackendCapabilities,
 ) -> CostEstimate {
     let (batch, seqlen, dim, dstate) = match params {
-        OpParams::SelectiveScan { batch, seqlen, dim, dstate, .. } => {
-            (*batch as u64, *seqlen as u64, *dim as u64, *dstate as u64)
-        }
+        OpParams::SelectiveScan {
+            batch,
+            seqlen,
+            dim,
+            dstate,
+            ..
+        } => (*batch as u64, *seqlen as u64, *dim as u64, *dstate as u64),
         _ => return CostEstimate::default(),
     };
     let flops = batch * seqlen * dim * dstate * 16;
@@ -704,11 +784,19 @@ pub fn cost_causal_conv1d_primitive_cpu(
 ) -> CostEstimate {
     let (batch, channels, seq_in, seq_out, kernel, use_silu) = match params {
         OpParams::CausalConv1d {
-            batch, channels, seq_in, seq_out, kernel, use_silu,
+            batch,
+            channels,
+            seq_in,
+            seq_out,
+            kernel,
+            use_silu,
         } => (
-            *batch as u64, *channels as u64,
-            *seq_in as u64, *seq_out as u64,
-            *kernel as u64, *use_silu,
+            *batch as u64,
+            *channels as u64,
+            *seq_in as u64,
+            *seq_out as u64,
+            *kernel as u64,
+            *use_silu,
         ),
         _ => return CostEstimate::default(),
     };
@@ -738,9 +826,7 @@ pub fn cost_fused_softmax_cross_entropy_primitive_cpu(
     _caps: &BackendCapabilities,
 ) -> CostEstimate {
     let (n_rows, vocab) = match params {
-        OpParams::FusedSoftmaxCrossEntropy { n_rows, vocab, .. } => {
-            (*n_rows as u64, *vocab as u64)
-        }
+        OpParams::FusedSoftmaxCrossEntropy { n_rows, vocab, .. } => (*n_rows as u64, *vocab as u64),
         _ => return CostEstimate::default(),
     };
     // 1 max-compare + 2-FLOP exp+sum per row element + ~10 FLOP log
@@ -769,9 +855,11 @@ pub fn cost_norm_last_dim_primitive_cpu(
     _caps: &BackendCapabilities,
 ) -> CostEstimate {
     let (outer, last_dim) = match params {
-        OpParams::NormLastDim { outer_count, last_dim, .. } => {
-            (*outer_count as u64, *last_dim as u64)
-        }
+        OpParams::NormLastDim {
+            outer_count,
+            last_dim,
+            ..
+        } => (*outer_count as u64, *last_dim as u64),
         _ => return CostEstimate::default(),
     };
     let n = outer * last_dim;
@@ -791,9 +879,11 @@ pub fn cost_rope_primitive_cpu(
     _caps: &BackendCapabilities,
 ) -> CostEstimate {
     let (outer, seq, head_dim) = match params {
-        OpParams::Rope { outer_count, seq, head_dim } => {
-            (*outer_count as u64, *seq as u64, *head_dim as u64)
-        }
+        OpParams::Rope {
+            outer_count,
+            seq,
+            head_dim,
+        } => (*outer_count as u64, *seq as u64, *head_dim as u64),
         _ => return CostEstimate::default(),
     };
     let n = outer * seq * head_dim;
@@ -814,9 +904,13 @@ pub fn cost_qmatmul_primitive_cpu(
     _caps: &BackendCapabilities,
 ) -> CostEstimate {
     let (batch_count, m, n, k) = match params {
-        OpParams::QMatMul { batch_count, m, n, k, .. } => {
-            (*batch_count as u64, *m as u64, *n as u64, *k as u64)
-        }
+        OpParams::QMatMul {
+            batch_count,
+            m,
+            n,
+            k,
+            ..
+        } => (*batch_count as u64, *m as u64, *n as u64, *k as u64),
         _ => return CostEstimate::default(),
     };
     let dsize = dtypes.first().map(|d| dtype_bytes(*d)).unwrap_or(4);
@@ -837,10 +931,12 @@ pub fn cost_reduce_max_to_backward_primitive_cpu(
     _params: &OpParams,
     _caps: &BackendCapabilities,
 ) -> CostEstimate {
-    let n_in = shapes.first()
+    let n_in = shapes
+        .first()
         .map(|s| s.dims().iter().map(|&d| d as u64).product::<u64>())
         .unwrap_or(0);
-    let n_out = shapes.get(1)
+    let n_out = shapes
+        .get(1)
         .map(|s| s.dims().iter().map(|&d| d as u64).product::<u64>())
         .unwrap_or(0);
     let dsize = dtypes.first().map(|d| dtype_bytes(*d)).unwrap_or(4);
@@ -868,26 +964,26 @@ pub fn default_cost_for_op_kind(op: OpKind) -> CostFn {
     use OpKind::*;
     match op {
         // Elementwise unary — cheap math.
-        ReluElementwise | NegElementwise | SqrElementwise | SqrtElementwise
-        | RecipElementwise | AbsElementwise | StepElementwise
-        | FloorElementwise | CeilElementwise | RoundElementwise
-        | SignElementwise => cost_elementwise_unary_cpu,
+        ReluElementwise | NegElementwise | SqrElementwise | SqrtElementwise | RecipElementwise
+        | AbsElementwise | StepElementwise | FloorElementwise | CeilElementwise
+        | RoundElementwise | SignElementwise => cost_elementwise_unary_cpu,
 
         // Elementwise unary — transcendental.
-        TanhElementwise | ExpElementwise | LogElementwise
-        | SinElementwise | CosElementwise | SigmoidElementwise
-        | SiluElementwise | GeluElementwise | GeluErfElementwise
+        TanhElementwise | ExpElementwise | LogElementwise | SinElementwise | CosElementwise
+        | SigmoidElementwise | SiluElementwise | GeluElementwise | GeluErfElementwise
         | ErfElementwise | RsqrtElementwise => cost_elementwise_unary_transcendental_cpu,
 
         // Elementwise binary.
-        AddElementwise | SubElementwise | MulElementwise | DivElementwise
-        | MaximumElementwise | MinimumElementwise | PowElementwise
-        | RemElementwise => cost_elementwise_binary_cpu,
+        AddElementwise | SubElementwise | MulElementwise | DivElementwise | MaximumElementwise
+        | MinimumElementwise | PowElementwise | RemElementwise => cost_elementwise_binary_cpu,
 
         // Comparisons (output U8).
-        EqualElementwise | NotEqualElementwise | LessElementwise
-        | LessEqualElementwise | GreaterElementwise | GreaterEqualElementwise
-            => cost_comparison_cpu,
+        EqualElementwise
+        | NotEqualElementwise
+        | LessElementwise
+        | LessEqualElementwise
+        | GreaterElementwise
+        | GreaterEqualElementwise => cost_comparison_cpu,
 
         Where => cost_where_cpu,
 
@@ -907,9 +1003,9 @@ pub fn default_cost_for_op_kind(op: OpKind) -> CostFn {
         // Attention (forward + backward share the geometry-based cost — the
         // backward ops carry `OpParams::FlashAttn`, and forward FLOPs are a
         // sound proxy; mirrors the softmax/norm forward+backward arms below).
-        FlashAttn
-        | FlashAttnBackwardQ | FlashAttnBackwardK | FlashAttnBackwardV
-            => cost_flash_attn_primitive_cpu,
+        FlashAttn | FlashAttnBackwardQ | FlashAttnBackwardK | FlashAttnBackwardV => {
+            cost_flash_attn_primitive_cpu
+        }
         PagedAttn => cost_paged_attn_primitive_cpu,
 
         // Cast.
@@ -928,17 +1024,17 @@ pub fn default_cost_for_op_kind(op: OpKind) -> CostFn {
         Concat => cost_concat_cpu,
 
         // Softmax / norm family (forward + backward).
-        SoftmaxLastDim | SoftmaxLastDimBackward
-        | LogSoftmaxLastDim | LogSoftmaxLastDimBackward
-            => cost_softmax_last_dim_primitive_cpu,
+        SoftmaxLastDim | SoftmaxLastDimBackward | LogSoftmaxLastDim | LogSoftmaxLastDimBackward => {
+            cost_softmax_last_dim_primitive_cpu
+        }
         FusedSoftmaxCrossEntropy => cost_fused_softmax_cross_entropy_primitive_cpu,
         CausalConv1d => cost_causal_conv1d_primitive_cpu,
         SelectiveScan => cost_selective_scan_primitive_cpu,
         SsdChunkScan => cost_ssd_chunk_scan_primitive_cpu,
         Nf4Matmul => cost_nf4_matmul_primitive_cpu,
-        RmsNormLastDim | RmsNormLastDimBackward
-        | LayerNormLastDim | LayerNormLastDimBackward
-            => cost_norm_last_dim_primitive_cpu,
+        RmsNormLastDim | RmsNormLastDimBackward | LayerNormLastDim | LayerNormLastDimBackward => {
+            cost_norm_last_dim_primitive_cpu
+        }
         ReduceMaxToBackward => cost_reduce_max_to_backward_primitive_cpu,
 
         // Rope.
@@ -996,9 +1092,9 @@ mod tests {
     /// families themselves compute something.
     #[test]
     fn elementwise_unary_cost_scales_with_elem_count() {
+        use fuel_ir::DeviceLocation;
         use fuel_ir::backend::{BackendCapabilities, TransferPath};
         use fuel_ir::probe::BackendId;
-        use fuel_ir::DeviceLocation;
         use std::collections::HashSet;
 
         let in_shape = Shape::from_dims(&[8, 16]);
@@ -1028,9 +1124,9 @@ mod tests {
     /// Smoke: unknown_cost returns all-zero estimate.
     #[test]
     fn unknown_cost_returns_default() {
+        use fuel_ir::DeviceLocation;
         use fuel_ir::backend::BackendCapabilities;
         use fuel_ir::probe::BackendId;
-        use fuel_ir::DeviceLocation;
         use std::collections::HashSet;
 
         let caps = BackendCapabilities {

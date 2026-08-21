@@ -38,10 +38,10 @@
 //! (Mimi v0.1 has `lstm = 0`; the eager port also bails when
 //! `lstm > 0`).
 
+use crate::Result;
 use crate::lazy::LazyTensor;
 use crate::lazy_dac::expand_conv1d_weight_for_dilation_if_needed;
-use crate::lazy_encodec::{pad1d, PadMode};
-use crate::Result;
+use crate::lazy_encodec::{PadMode, pad1d};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -178,14 +178,18 @@ fn apply_activation(x: &LazyTensor, act: SeaNetActivation) -> LazyTensor {
 /// then apply non-dilated conv1d (dilation is folded into the
 /// weight via zero-interleave).
 fn apply_causal_conv1d(
-    x: &LazyTensor, w: &LazyConv1dWeights, pad_mode: PadMode,
+    x: &LazyTensor,
+    w: &LazyConv1dWeights,
+    pad_mode: PadMode,
 ) -> Result<LazyTensor> {
     let effective_k = (w.kernel_size - 1) * w.dilation + 1;
     let pad_total = effective_k.saturating_sub(w.stride);
     let padded = pad1d(x, pad_total, 0, pad_mode, x)?;
     let (weight_v, expanded_k) = expand_conv1d_weight_for_dilation_if_needed(
         &w.weight,
-        w.out_channels, w.in_channels / w.groups, w.kernel_size,
+        w.out_channels,
+        w.in_channels / w.groups,
+        w.kernel_size,
         w.dilation,
     );
     debug_assert_eq!(expanded_k, effective_k);
@@ -194,11 +198,10 @@ fn apply_causal_conv1d(
         weight_arc,
         Shape::from_dims(&[w.out_channels, w.in_channels / w.groups, effective_k]),
     );
-    let bias_t = w.bias.as_ref().map(|b| {
-        padded.const_f32_like(
-            Arc::clone(b), Shape::from_dims(&[w.out_channels]),
-        )
-    });
+    let bias_t = w
+        .bias
+        .as_ref()
+        .map(|b| padded.const_f32_like(Arc::clone(b), Shape::from_dims(&[w.out_channels])));
     padded.conv1d(&weight, bias_t.as_ref(), w.stride, 0, w.groups)
 }
 
@@ -206,7 +209,8 @@ fn apply_causal_conv1d(
 /// `2 · stride`, with the natural transposed-conv output trimmed
 /// to remove the trailing acausal tap region.
 fn apply_causal_conv_transpose1d(
-    x: &LazyTensor, w: &LazyConvTranspose1dWeights,
+    x: &LazyTensor,
+    w: &LazyConvTranspose1dWeights,
 ) -> Result<LazyTensor> {
     let weight = x.const_f32_like(
         Arc::clone(&w.weight),
@@ -241,8 +245,10 @@ fn apply_causal_conv_transpose1d(
 }
 
 fn apply_resnet_block(
-    x: &LazyTensor, w: &SeaNetResnetBlockWeights,
-    activation: SeaNetActivation, pad_mode: PadMode,
+    x: &LazyTensor,
+    w: &SeaNetResnetBlockWeights,
+    activation: SeaNetActivation,
+    pad_mode: PadMode,
 ) -> Result<LazyTensor> {
     let mut y = x.clone();
     for conv in &w.convs {
@@ -318,15 +324,27 @@ impl SeaNetDecoderModel {
 /// `in_channels`. Mirrors the eager port's
 /// `weight_v · weight_g / ||weight_v||` reparameterization.
 fn fuse_weight_norm(
-    weight_g: &[f32], weight_v: &[f32],
-    leading: usize, inner_per_leading: usize,
+    weight_g: &[f32],
+    weight_v: &[f32],
+    leading: usize,
+    inner_per_leading: usize,
 ) -> Vec<f32> {
-    assert_eq!(weight_g.len(), leading,
+    assert_eq!(
+        weight_g.len(),
+        leading,
         "fuse_weight_norm: weight_g len {} != leading {}",
-        weight_g.len(), leading);
-    assert_eq!(weight_v.len(), leading * inner_per_leading,
+        weight_g.len(),
+        leading
+    );
+    assert_eq!(
+        weight_v.len(),
+        leading * inner_per_leading,
         "fuse_weight_norm: weight_v len {} != {} ({} × {})",
-        weight_v.len(), leading * inner_per_leading, leading, inner_per_leading);
+        weight_v.len(),
+        leading * inner_per_leading,
+        leading,
+        inner_per_leading
+    );
     let mut out = vec![0.0_f32; weight_v.len()];
     for o in 0..leading {
         let base = o * inner_per_leading;
@@ -336,7 +354,11 @@ fn fuse_weight_norm(
             sum_sq += v * v;
         }
         let norm = sum_sq.sqrt() as f32;
-        let inv = if norm > 0.0 { weight_g[o] / norm } else { 0.0_f32 };
+        let inv = if norm > 0.0 {
+            weight_g[o] / norm
+        } else {
+            0.0_f32
+        };
         for j in 0..inner_per_leading {
             out[base + j] = weight_v[base + j] * inv;
         }
@@ -372,8 +394,13 @@ fn load_mimi_norm_conv_weight(
 fn load_mimi_conv1d(
     st: &crate::safetensors::MmapedSafetensors,
     conv_prefix: &str,
-    in_channels: usize, out_channels: usize, kernel_size: usize,
-    stride: usize, dilation: usize, groups: usize, bias: bool,
+    in_channels: usize,
+    out_channels: usize,
+    kernel_size: usize,
+    stride: usize,
+    dilation: usize,
+    groups: usize,
+    bias: bool,
 ) -> Result<LazyConv1dWeights> {
     use crate::lazy::load_tensor_as_f32;
     let inner = (in_channels / groups) * kernel_size;
@@ -381,8 +408,11 @@ fn load_mimi_conv1d(
     if w.len() != out_channels * inner {
         crate::bail!(
             "{conv_prefix}.weight: {} elements, expected {} ({} × {} × {})",
-            w.len(), out_channels * inner,
-            out_channels, in_channels / groups, kernel_size,
+            w.len(),
+            out_channels * inner,
+            out_channels,
+            in_channels / groups,
+            kernel_size,
         );
     }
     let b = if bias {
@@ -400,8 +430,12 @@ fn load_mimi_conv1d(
     Ok(LazyConv1dWeights {
         weight: Arc::from(w),
         bias: b,
-        in_channels, out_channels,
-        kernel_size, stride, dilation, groups,
+        in_channels,
+        out_channels,
+        kernel_size,
+        stride,
+        dilation,
+        groups,
     })
 }
 
@@ -411,8 +445,12 @@ fn load_mimi_conv1d(
 fn load_mimi_conv_transpose1d(
     st: &crate::safetensors::MmapedSafetensors,
     conv_prefix: &str,
-    in_channels: usize, out_channels: usize, kernel_size: usize,
-    stride: usize, groups: usize, bias: bool,
+    in_channels: usize,
+    out_channels: usize,
+    kernel_size: usize,
+    stride: usize,
+    groups: usize,
+    bias: bool,
 ) -> Result<LazyConvTranspose1dWeights> {
     use crate::lazy::load_tensor_as_f32;
     let inner = (out_channels / groups) * kernel_size;
@@ -420,8 +458,11 @@ fn load_mimi_conv_transpose1d(
     if w.len() != in_channels * inner {
         crate::bail!(
             "{conv_prefix}.weight: {} elements, expected {} ({} × {} × {})",
-            w.len(), in_channels * inner,
-            in_channels, out_channels / groups, kernel_size,
+            w.len(),
+            in_channels * inner,
+            in_channels,
+            out_channels / groups,
+            kernel_size,
         );
     }
     let b = if bias {
@@ -439,8 +480,11 @@ fn load_mimi_conv_transpose1d(
     Ok(LazyConvTranspose1dWeights {
         weight: Arc::from(w),
         bias: b,
-        in_channels, out_channels,
-        kernel_size, stride, groups,
+        in_channels,
+        out_channels,
+        kernel_size,
+        stride,
+        groups,
     })
 }
 
@@ -451,27 +495,51 @@ fn load_mimi_conv_transpose1d(
 fn load_seanet_resnet_block(
     st: &crate::safetensors::MmapedSafetensors,
     prefix: &str,
-    dim: usize, residual_kernel_size: usize, dilation: usize,
-    compress: usize, true_skip: bool,
+    dim: usize,
+    residual_kernel_size: usize,
+    dilation: usize,
+    compress: usize,
+    true_skip: bool,
 ) -> Result<SeaNetResnetBlockWeights> {
     let hidden = dim / compress;
     // block.1 = first dilated conv: dim → hidden, kernel = residual_k,
     // dilation = dilation_base^j.
     let conv0 = load_mimi_conv1d(
-        st, &format!("{prefix}.block.1.conv"),
-        dim, hidden, residual_kernel_size, 1, dilation, 1, true,
+        st,
+        &format!("{prefix}.block.1.conv"),
+        dim,
+        hidden,
+        residual_kernel_size,
+        1,
+        dilation,
+        1,
+        true,
     )?;
     // block.3 = second conv: hidden → dim, kernel = 1, dilation = 1.
     let conv1 = load_mimi_conv1d(
-        st, &format!("{prefix}.block.3.conv"),
-        hidden, dim, 1, 1, 1, 1, true,
+        st,
+        &format!("{prefix}.block.3.conv"),
+        hidden,
+        dim,
+        1,
+        1,
+        1,
+        1,
+        true,
     )?;
     let shortcut = if true_skip {
         None
     } else {
         Some(load_mimi_conv1d(
-            st, &format!("{prefix}.shortcut.conv"),
-            dim, dim, 1, 1, 1, 1, true,
+            st,
+            &format!("{prefix}.shortcut.conv"),
+            dim,
+            dim,
+            1,
+            1,
+            1,
+            1,
+            true,
         )?)
     };
     Ok(SeaNetResnetBlockWeights {
@@ -495,9 +563,15 @@ impl SeaNetEncoderWeights {
         let mut layer_idx = 0_usize;
         let layers_pp = format!("{prefix}.layers");
         let init_conv = load_mimi_conv1d(
-            st, &format!("{layers_pp}.{layer_idx}.conv"),
-            cfg.channels, cfg.n_filters,
-            cfg.kernel_size, 1, 1, 1, true,
+            st,
+            &format!("{layers_pp}.{layer_idx}.conv"),
+            cfg.channels,
+            cfg.n_filters,
+            cfg.kernel_size,
+            1,
+            1,
+            1,
+            true,
         )?;
         layer_idx += 1;
         let mut mult = 1_usize;
@@ -508,9 +582,13 @@ impl SeaNetEncoderWeights {
             for j in 0..cfg.n_residual_layers {
                 let dilation = cfg.dilation_base.pow(j as u32);
                 let block = load_seanet_resnet_block(
-                    st, &format!("{layers_pp}.{layer_idx}"),
-                    dim, cfg.residual_kernel_size, dilation,
-                    cfg.compress, cfg.true_skip,
+                    st,
+                    &format!("{layers_pp}.{layer_idx}"),
+                    dim,
+                    cfg.residual_kernel_size,
+                    dilation,
+                    cfg.compress,
+                    cfg.true_skip,
                 )?;
                 residuals.push(block);
                 layer_idx += 1;
@@ -518,21 +596,40 @@ impl SeaNetEncoderWeights {
             // Activation (no params) reserves `layer_idx`.
             // Downsample lives at `layer_idx + 1`.
             let downsample = load_mimi_conv1d(
-                st, &format!("{layers_pp}.{}.conv", layer_idx + 1),
-                dim, dim * 2,
-                ratio * 2, *ratio, 1, 1, true,
+                st,
+                &format!("{layers_pp}.{}.conv", layer_idx + 1),
+                dim,
+                dim * 2,
+                ratio * 2,
+                *ratio,
+                1,
+                1,
+                true,
             )?;
             layer_idx += 2;
-            layers.push(SeaNetEncoderLayerWeights { residuals, downsample });
+            layers.push(SeaNetEncoderLayerWeights {
+                residuals,
+                downsample,
+            });
             mult *= 2;
         }
         // Final activation reserves `layer_idx`; final conv at `layer_idx + 1`.
         let final_conv = load_mimi_conv1d(
-            st, &format!("{layers_pp}.{}.conv", layer_idx + 1),
-            mult * cfg.n_filters, cfg.dimension,
-            cfg.last_kernel_size, 1, 1, 1, true,
+            st,
+            &format!("{layers_pp}.{}.conv", layer_idx + 1),
+            mult * cfg.n_filters,
+            cfg.dimension,
+            cfg.last_kernel_size,
+            1,
+            1,
+            1,
+            true,
         )?;
-        Ok(SeaNetEncoderWeights { init_conv, layers, final_conv })
+        Ok(SeaNetEncoderWeights {
+            init_conv,
+            layers,
+            final_conv,
+        })
     }
 }
 
@@ -552,9 +649,15 @@ impl SeaNetDecoderWeights {
         let layers_pp = format!("{prefix}.layers");
         let mut mult = 1_usize << cfg.ratios.len();
         let init_conv = load_mimi_conv1d(
-            st, &format!("{layers_pp}.{layer_idx}.conv"),
-            cfg.dimension, mult * cfg.n_filters,
-            cfg.kernel_size, 1, 1, 1, true,
+            st,
+            &format!("{layers_pp}.{layer_idx}.conv"),
+            cfg.dimension,
+            mult * cfg.n_filters,
+            cfg.kernel_size,
+            1,
+            1,
+            1,
+            true,
         )?;
         layer_idx += 1;
         let mut layers = Vec::with_capacity(cfg.ratios.len());
@@ -565,31 +668,54 @@ impl SeaNetDecoderWeights {
             // lives at `layer_idx + 1`. The transpose-conv uses
             // `groups = 1` (mirrors eager `SeaNetDecoder::new`).
             let upsample = load_mimi_conv_transpose1d(
-                st, &format!("{layers_pp}.{}.conv", layer_idx + 1),
-                dim, out_dim, ratio * 2, *ratio, 1, true,
+                st,
+                &format!("{layers_pp}.{}.conv", layer_idx + 1),
+                dim,
+                out_dim,
+                ratio * 2,
+                *ratio,
+                1,
+                true,
             )?;
             layer_idx += 2;
             let mut residuals = Vec::with_capacity(cfg.n_residual_layers);
             for j in 0..cfg.n_residual_layers {
                 let dilation = cfg.dilation_base.pow(j as u32);
                 let block = load_seanet_resnet_block(
-                    st, &format!("{layers_pp}.{layer_idx}"),
-                    out_dim, cfg.residual_kernel_size, dilation,
-                    cfg.compress, cfg.true_skip,
+                    st,
+                    &format!("{layers_pp}.{layer_idx}"),
+                    out_dim,
+                    cfg.residual_kernel_size,
+                    dilation,
+                    cfg.compress,
+                    cfg.true_skip,
                 )?;
                 residuals.push(block);
                 layer_idx += 1;
             }
-            layers.push(SeaNetDecoderLayerWeights { upsample, residuals });
+            layers.push(SeaNetDecoderLayerWeights {
+                upsample,
+                residuals,
+            });
             mult /= 2;
         }
         // Final activation reserves `layer_idx`; final conv at `layer_idx + 1`.
         let final_conv = load_mimi_conv1d(
-            st, &format!("{layers_pp}.{}.conv", layer_idx + 1),
-            cfg.n_filters, cfg.channels,
-            cfg.last_kernel_size, 1, 1, 1, true,
+            st,
+            &format!("{layers_pp}.{}.conv", layer_idx + 1),
+            cfg.n_filters,
+            cfg.channels,
+            cfg.last_kernel_size,
+            1,
+            1,
+            1,
+            true,
         )?;
-        Ok(SeaNetDecoderWeights { init_conv, layers, final_conv })
+        Ok(SeaNetDecoderWeights {
+            init_conv,
+            layers,
+            final_conv,
+        })
     }
 }
 
@@ -612,31 +738,53 @@ mod tests {
     }
 
     fn conv_w(
-        in_c: usize, out_c: usize, k: usize, stride: usize, dilation: usize, groups: usize,
-        bias: bool, nb: &mut dyn FnMut() -> f32,
+        in_c: usize,
+        out_c: usize,
+        k: usize,
+        stride: usize,
+        dilation: usize,
+        groups: usize,
+        bias: bool,
+        nb: &mut dyn FnMut() -> f32,
     ) -> LazyConv1dWeights {
         LazyConv1dWeights {
             weight: vec_of(out_c * (in_c / groups) * k, nb),
             bias: if bias { Some(vec_of(out_c, nb)) } else { None },
-            in_channels: in_c, out_channels: out_c,
-            kernel_size: k, stride, dilation, groups,
+            in_channels: in_c,
+            out_channels: out_c,
+            kernel_size: k,
+            stride,
+            dilation,
+            groups,
         }
     }
 
     fn conv_tr_w(
-        in_c: usize, out_c: usize, k: usize, stride: usize, groups: usize,
-        bias: bool, nb: &mut dyn FnMut() -> f32,
+        in_c: usize,
+        out_c: usize,
+        k: usize,
+        stride: usize,
+        groups: usize,
+        bias: bool,
+        nb: &mut dyn FnMut() -> f32,
     ) -> LazyConvTranspose1dWeights {
         LazyConvTranspose1dWeights {
             weight: vec_of(in_c * (out_c / groups) * k, nb),
             bias: if bias { Some(vec_of(out_c, nb)) } else { None },
-            in_channels: in_c, out_channels: out_c,
-            kernel_size: k, stride, groups,
+            in_channels: in_c,
+            out_channels: out_c,
+            kernel_size: k,
+            stride,
+            groups,
         }
     }
 
     fn resnet_block_w(
-        dim: usize, k: usize, dilation: usize, compress: usize, true_skip: bool,
+        dim: usize,
+        k: usize,
+        dilation: usize,
+        compress: usize,
+        true_skip: bool,
         nb: &mut dyn FnMut() -> f32,
     ) -> SeaNetResnetBlockWeights {
         let hidden = dim / compress;
@@ -645,20 +793,29 @@ mod tests {
                 conv_w(dim, hidden, k, 1, dilation, 1, true, nb),
                 conv_w(hidden, dim, 1, 1, 1, 1, true, nb),
             ],
-            shortcut: if true_skip { None } else { Some(conv_w(dim, dim, 1, 1, 1, 1, true, nb)) },
+            shortcut: if true_skip {
+                None
+            } else {
+                Some(conv_w(dim, dim, 1, 1, 1, 1, true, nb))
+            },
         }
     }
 
     fn tiny_cfg() -> SeaNetConfig {
         SeaNetConfig {
-            dimension: 8, channels: 1,
+            dimension: 8,
+            channels: 1,
             n_filters: 2,
             n_residual_layers: 1,
             ratios: vec![2, 2],
             activation: SeaNetActivation::Elu1,
-            kernel_size: 3, residual_kernel_size: 3, last_kernel_size: 3,
-            dilation_base: 2, pad_mode: PadMode::Constant,
-            true_skip: true, compress: 2,
+            kernel_size: 3,
+            residual_kernel_size: 3,
+            last_kernel_size: 3,
+            dilation_base: 2,
+            pad_mode: PadMode::Constant,
+            true_skip: true,
+            compress: 2,
             final_activation: None,
         }
     }
@@ -666,35 +823,70 @@ mod tests {
     fn build_encoder(cfg: &SeaNetConfig) -> SeaNetEncoderModel {
         let mut nb = rng_seed(2026);
         let mut mult = 1_usize;
-        let init_conv = conv_w(cfg.channels, mult * cfg.n_filters, cfg.kernel_size, 1, 1, 1, true, &mut nb);
+        let init_conv = conv_w(
+            cfg.channels,
+            mult * cfg.n_filters,
+            cfg.kernel_size,
+            1,
+            1,
+            1,
+            true,
+            &mut nb,
+        );
         let mut layers = Vec::with_capacity(cfg.ratios.len());
         for ratio in cfg.ratios.iter().rev() {
             let dim = mult * cfg.n_filters;
             let mut residuals = Vec::with_capacity(cfg.n_residual_layers);
             for j in 0..cfg.n_residual_layers {
                 residuals.push(resnet_block_w(
-                    dim, cfg.residual_kernel_size,
+                    dim,
+                    cfg.residual_kernel_size,
                     cfg.dilation_base.pow(j as u32),
-                    cfg.compress, cfg.true_skip, &mut nb,
+                    cfg.compress,
+                    cfg.true_skip,
+                    &mut nb,
                 ));
             }
             let downsample = conv_w(dim, dim * 2, ratio * 2, *ratio, 1, 1, true, &mut nb);
-            layers.push(SeaNetEncoderLayerWeights { residuals, downsample });
+            layers.push(SeaNetEncoderLayerWeights {
+                residuals,
+                downsample,
+            });
             mult *= 2;
         }
         let final_conv = conv_w(
-            mult * cfg.n_filters, cfg.dimension, cfg.last_kernel_size, 1, 1, 1, true, &mut nb,
+            mult * cfg.n_filters,
+            cfg.dimension,
+            cfg.last_kernel_size,
+            1,
+            1,
+            1,
+            true,
+            &mut nb,
         );
         SeaNetEncoderModel {
             config: cfg.clone(),
-            weights: SeaNetEncoderWeights { init_conv, layers, final_conv },
+            weights: SeaNetEncoderWeights {
+                init_conv,
+                layers,
+                final_conv,
+            },
         }
     }
 
     fn build_decoder(cfg: &SeaNetConfig) -> SeaNetDecoderModel {
         let mut nb = rng_seed(2027);
         let mut mult = 1_usize << cfg.ratios.len();
-        let init_conv = conv_w(cfg.dimension, mult * cfg.n_filters, cfg.kernel_size, 1, 1, 1, true, &mut nb);
+        let init_conv = conv_w(
+            cfg.dimension,
+            mult * cfg.n_filters,
+            cfg.kernel_size,
+            1,
+            1,
+            1,
+            true,
+            &mut nb,
+        );
         let mut layers = Vec::with_capacity(cfg.ratios.len());
         for ratio in cfg.ratios.iter() {
             let dim = mult * cfg.n_filters;
@@ -703,20 +895,37 @@ mod tests {
             let mut residuals = Vec::with_capacity(cfg.n_residual_layers);
             for j in 0..cfg.n_residual_layers {
                 residuals.push(resnet_block_w(
-                    out_dim, cfg.residual_kernel_size,
+                    out_dim,
+                    cfg.residual_kernel_size,
                     cfg.dilation_base.pow(j as u32),
-                    cfg.compress, cfg.true_skip, &mut nb,
+                    cfg.compress,
+                    cfg.true_skip,
+                    &mut nb,
                 ));
             }
-            layers.push(SeaNetDecoderLayerWeights { upsample, residuals });
+            layers.push(SeaNetDecoderLayerWeights {
+                upsample,
+                residuals,
+            });
             mult /= 2;
         }
         let final_conv = conv_w(
-            cfg.n_filters, cfg.channels, cfg.last_kernel_size, 1, 1, 1, true, &mut nb,
+            cfg.n_filters,
+            cfg.channels,
+            cfg.last_kernel_size,
+            1,
+            1,
+            1,
+            true,
+            &mut nb,
         );
         SeaNetDecoderModel {
             config: cfg.clone(),
-            weights: SeaNetDecoderWeights { init_conv, layers, final_conv },
+            weights: SeaNetDecoderWeights {
+                init_conv,
+                layers,
+                final_conv,
+            },
         }
     }
 
@@ -728,7 +937,9 @@ mod tests {
         let total_stride: usize = cfg.ratios.iter().product();
         let t_in = total_stride * 4;
         let audio = LazyTensor::from_f32(
-            (0..(1 * cfg.channels * t_in)).map(|i| (i as f32) * 0.001).collect::<Vec<_>>(),
+            (0..(1 * cfg.channels * t_in))
+                .map(|i| (i as f32) * 0.001)
+                .collect::<Vec<_>>(),
             Shape::from_dims(&[1, cfg.channels, t_in]),
             &Device::cpu(),
         );
@@ -738,7 +949,9 @@ mod tests {
         assert_eq!(dims[0], 1);
         assert_eq!(dims[1], cfg.dimension);
         assert_eq!(dims[2], t_in / total_stride);
-        for &v in &latent.realize_f32() { assert!(v.is_finite()); }
+        for &v in &latent.realize_f32() {
+            assert!(v.is_finite());
+        }
     }
 
     #[test]
@@ -747,7 +960,9 @@ mod tests {
         let decoder = build_decoder(&cfg);
         let t_latent = 5;
         let latent = LazyTensor::from_f32(
-            (0..(1 * cfg.dimension * t_latent)).map(|i| (i as f32) * 0.001).collect::<Vec<_>>(),
+            (0..(1 * cfg.dimension * t_latent))
+                .map(|i| (i as f32) * 0.001)
+                .collect::<Vec<_>>(),
             Shape::from_dims(&[1, cfg.dimension, t_latent]),
             &Device::cpu(),
         );
@@ -759,7 +974,9 @@ mod tests {
         let total_stride: usize = cfg.ratios.iter().product();
         // Causal-trimmed upsample produces exactly t_latent · total_stride.
         assert_eq!(dims[2], t_latent * total_stride);
-        for &v in &audio.realize_f32() { assert!(v.is_finite()); }
+        for &v in &audio.realize_f32() {
+            assert!(v.is_finite());
+        }
     }
 
     #[test]
@@ -770,7 +987,9 @@ mod tests {
         let total_stride: usize = cfg.ratios.iter().product();
         let t_in = total_stride * 3;
         let audio = LazyTensor::from_f32(
-            (0..(1 * cfg.channels * t_in)).map(|i| (i as f32) * 0.001).collect::<Vec<_>>(),
+            (0..(1 * cfg.channels * t_in))
+                .map(|i| (i as f32) * 0.001)
+                .collect::<Vec<_>>(),
             Shape::from_dims(&[1, cfg.channels, t_in]),
             &Device::cpu(),
         );

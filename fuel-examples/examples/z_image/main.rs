@@ -27,9 +27,8 @@ use hf_hub::api::sync::Api;
 use tokenizers::Tokenizer;
 
 use fuel::lazy_z_image::{
-    AutoEncoderKL, TextEncoderConfig, TextEncoderWeights, VaeConfig, VaeWeights,
-    ZImageConfig, ZImageModel, ZImageTextEncoder, ZImageTransformer2DModel,
-    ZImageTransformerWeights,
+    AutoEncoderKL, TextEncoderConfig, TextEncoderWeights, VaeConfig, VaeWeights, ZImageConfig,
+    ZImageModel, ZImageTextEncoder, ZImageTransformer2DModel, ZImageTransformerWeights,
 };
 
 #[derive(Debug, Clone, Copy, clap::ValueEnum, PartialEq, Eq)]
@@ -271,7 +270,10 @@ fn run(args: Args) -> Result<()> {
     println!("Latent size: {}x{}", latent_w, latent_h);
 
     // ==================== Generate ====================
-    println!("\nGenerating image ({} steps, seed {})...", num_steps, args.seed);
+    println!(
+        "\nGenerating image ({} steps, seed {})...",
+        num_steps, args.seed
+    );
     let image = model.generate(&tokens, latent_h, latent_w, num_steps, args.seed)?;
     let image_data = image.realize_f32();
     let dims = image.shape().dims().to_vec();

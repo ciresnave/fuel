@@ -14,8 +14,8 @@
 //! and `SoftmaxLastDimFuseRule` are deleted.
 
 use crate::registry::{
-    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps,
-    PatternMatch, SubgraphPattern, decompose_via_recipe,
+    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps, PatternMatch,
+    SubgraphPattern, decompose_via_recipe,
 };
 use crate::{Graph, NodeId, Op};
 use fuel_ir::{DType, Shape};
@@ -28,10 +28,10 @@ use std::sync::OnceLock;
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
         destructive_input: None,
-        id:         FusedOps::SOFTMAX_LAST_DIM,
-        name:       "SoftmaxLastDim",
-        family:     FusedOpFamily::Forward,
-        pattern:    SubgraphPattern::Callable(canonical_pattern),
+        id: FusedOps::SOFTMAX_LAST_DIM,
+        name: "SoftmaxLastDim",
+        family: FusedOpFamily::Forward,
+        pattern: SubgraphPattern::Callable(canonical_pattern),
         decompose,
         // Phase 7.6 step 4 (backward-helper batch): SOFTMAX_LAST_DIM_BACKWARD
         // is now a registry entry, so the architecturally-correct
@@ -40,7 +40,7 @@ pub fn entry() -> FusedOpEntry {
         // emits `Op::Fused(SOFTMAX_LAST_DIM_BACKWARD, _)` for the
         // gradient node. The architectural connection latent since
         // step 3 is now exercised.
-        backward:   BackwardKind::Fused(FusedOps::SOFTMAX_LAST_DIM_BACKWARD),
+        backward: BackwardKind::Fused(FusedOps::SOFTMAX_LAST_DIM_BACKWARD),
         shape_rule: shape_passthrough,
         dtype_rule: dtype_passthrough,
         output_views: None,
@@ -83,31 +83,56 @@ fn dtype_passthrough(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
 fn recipe() -> &'static PatternNode {
     static RECIPE: OnceLock<PatternNode> = OnceLock::new();
     RECIPE.get_or_init(|| {
-        let axis_last = || OpAttrs { axis_last: true, ..OpAttrs::default() };
+        let axis_last = || OpAttrs {
+            axis_last: true,
+            ..OpAttrs::default()
+        };
         let same_as_x = || OpAttrs {
             target_shape_rel: Some(ShapeExpr::SameAs { operand: 0 }),
             ..OpAttrs::default()
         };
-        let op = |op, attrs, operands| PatternNode::Op { op, attrs, operands };
+        let op = |op, attrs, operands| PatternNode::Op {
+            op,
+            attrs: Box::new(attrs),
+            operands,
+        };
         let x = || PatternNode::Bind { index: 0 };
-        let e = op(OpTag::Exp, OpAttrs::default(), vec![
-            op(OpTag::Sub, OpAttrs::default(), vec![
-                x(),
-                op(OpTag::BroadcastTo, same_as_x(), vec![
-                    op(OpTag::Unsqueeze, axis_last(), vec![
-                        op(OpTag::MaxDim, axis_last(), vec![x()]),
-                    ]),
-                ]),
-            ]),
-        ]);
-        op(OpTag::Div, OpAttrs::default(), vec![
-            e.clone(),
-            op(OpTag::BroadcastTo, same_as_x(), vec![
-                op(OpTag::Unsqueeze, axis_last(), vec![
-                    op(OpTag::SumDim, axis_last(), vec![e]),
-                ]),
-            ]),
-        ])
+        let e = op(
+            OpTag::Exp,
+            OpAttrs::default(),
+            vec![op(
+                OpTag::Sub,
+                OpAttrs::default(),
+                vec![
+                    x(),
+                    op(
+                        OpTag::BroadcastTo,
+                        same_as_x(),
+                        vec![op(
+                            OpTag::Unsqueeze,
+                            axis_last(),
+                            vec![op(OpTag::MaxDim, axis_last(), vec![x()])],
+                        )],
+                    ),
+                ],
+            )],
+        );
+        op(
+            OpTag::Div,
+            OpAttrs::default(),
+            vec![
+                e.clone(),
+                op(
+                    OpTag::BroadcastTo,
+                    same_as_x(),
+                    vec![op(
+                        OpTag::Unsqueeze,
+                        axis_last(),
+                        vec![op(OpTag::SumDim, axis_last(), vec![e])],
+                    )],
+                ),
+            ],
+        )
     })
 }
 
@@ -156,48 +181,86 @@ pub fn canonical_pattern(graph: &Graph, div_id: NodeId) -> Option<PatternMatch> 
 /// `canonical_softmax_pattern`).
 fn legacy_spelled_pattern(graph: &Graph, div_id: NodeId) -> Option<PatternMatch> {
     let div = graph.node(div_id);
-    if !matches!(div.op, Op::Div) { return None; }
-    if div.inputs.len() != 2 { return None; }
+    if !matches!(div.op, Op::Div) {
+        return None;
+    }
+    if div.inputs.len() != 2 {
+        return None;
+    }
     let e_id = div.inputs[0];
     let db_id = div.inputs[1];
 
     let db = graph.node(db_id);
-    if !matches!(db.op, Op::BroadcastTo(_)) { return None; }
-    if db.inputs.len() != 1 { return None; }
+    if !matches!(db.op, Op::BroadcastTo(_)) {
+        return None;
+    }
+    if db.inputs.len() != 1 {
+        return None;
+    }
     let d_id = db.inputs[0];
 
     let d = graph.node(d_id);
-    if !matches!(d.op, Op::ReduceSumTo(_)) { return None; }
-    if d.inputs.len() != 1 || d.inputs[0] != e_id { return None; }
+    if !matches!(d.op, Op::ReduceSumTo(_)) {
+        return None;
+    }
+    if d.inputs.len() != 1 || d.inputs[0] != e_id {
+        return None;
+    }
 
     let e = graph.node(e_id);
-    if !matches!(e.op, Op::Exp) { return None; }
-    if e.inputs.len() != 1 { return None; }
+    if !matches!(e.op, Op::Exp) {
+        return None;
+    }
+    if e.inputs.len() != 1 {
+        return None;
+    }
     let s_id = e.inputs[0];
 
     let s = graph.node(s_id);
-    if !matches!(s.op, Op::Sub) { return None; }
-    if s.inputs.len() != 2 { return None; }
+    if !matches!(s.op, Op::Sub) {
+        return None;
+    }
+    if s.inputs.len() != 2 {
+        return None;
+    }
     let x_id = s.inputs[0];
     let mb_id = s.inputs[1];
 
     let mb = graph.node(mb_id);
-    if !matches!(mb.op, Op::BroadcastTo(_)) { return None; }
-    if mb.inputs.len() != 1 { return None; }
+    if !matches!(mb.op, Op::BroadcastTo(_)) {
+        return None;
+    }
+    if mb.inputs.len() != 1 {
+        return None;
+    }
     let m_id = mb.inputs[0];
 
     let m = graph.node(m_id);
-    if !matches!(m.op, Op::ReduceMaxTo(_)) { return None; }
-    if m.inputs.len() != 1 || m.inputs[0] != x_id { return None; }
+    if !matches!(m.op, Op::ReduceMaxTo(_)) {
+        return None;
+    }
+    if m.inputs.len() != 1 || m.inputs[0] != x_id {
+        return None;
+    }
 
     let x_shape = &graph.node(x_id).shape;
-    if x_shape.rank() == 0 { return None; }
+    if x_shape.rank() == 0 {
+        return None;
+    }
     let m_shape = &graph.node(m_id).shape;
-    if m_shape.rank() != x_shape.rank() { return None; }
+    if m_shape.rank() != x_shape.rank() {
+        return None;
+    }
     let last = x_shape.rank() - 1;
     for axis in 0..x_shape.rank() {
-        let expected = if axis == last { 1 } else { x_shape.dims()[axis] };
-        if m_shape.dims()[axis] != expected { return None; }
+        let expected = if axis == last {
+            1
+        } else {
+            x_shape.dims()[axis]
+        };
+        if m_shape.dims()[axis] != expected {
+            return None;
+        }
     }
 
     // Conservativeness: every intermediate (m, mb, d, db, s) must be
@@ -221,7 +284,7 @@ fn legacy_spelled_pattern(graph: &Graph, div_id: NodeId) -> Option<PatternMatch>
 
     Some(PatternMatch {
         bindings: vec![(0, x_id)],
-        params:   FusedOpParams::SoftmaxLastDim,
+        params: FusedOpParams::SoftmaxLastDim,
     })
 }
 
@@ -233,63 +296,105 @@ fn legacy_spelled_pattern(graph: &Graph, div_id: NodeId) -> Option<PatternMatch>
 /// Div numerator).
 fn recipe_spelled_pattern(graph: &Graph, div_id: NodeId) -> Option<PatternMatch> {
     let div = graph.node(div_id);
-    if !matches!(div.op, Op::Div) { return None; }
-    if div.inputs.len() != 2 { return None; }
+    if !matches!(div.op, Op::Div) {
+        return None;
+    }
+    if div.inputs.len() != 2 {
+        return None;
+    }
     let e_id = div.inputs[0];
     let db_id = div.inputs[1];
 
     let db = graph.node(db_id);
-    if !matches!(db.op, Op::BroadcastTo(_)) { return None; }
-    if db.inputs.len() != 1 { return None; }
+    if !matches!(db.op, Op::BroadcastTo(_)) {
+        return None;
+    }
+    if db.inputs.len() != 1 {
+        return None;
+    }
     let u2_id = db.inputs[0];
 
     let u2 = graph.node(u2_id);
-    let Op::Unsqueeze { dim: u2_dim } = u2.op else { return None; };
-    if u2.inputs.len() != 1 { return None; }
+    let Op::Unsqueeze { dim: u2_dim } = u2.op else {
+        return None;
+    };
+    if u2.inputs.len() != 1 {
+        return None;
+    }
     let d_id = u2.inputs[0];
 
     let d = graph.node(d_id);
-    let Op::SumDim(sum_axis) = d.op else { return None; };
-    if d.inputs.len() != 1 || d.inputs[0] != e_id { return None; }
+    let Op::SumDim(sum_axis) = d.op else {
+        return None;
+    };
+    if d.inputs.len() != 1 || d.inputs[0] != e_id {
+        return None;
+    }
 
     let e = graph.node(e_id);
-    if !matches!(e.op, Op::Exp) { return None; }
-    if e.inputs.len() != 1 { return None; }
+    if !matches!(e.op, Op::Exp) {
+        return None;
+    }
+    if e.inputs.len() != 1 {
+        return None;
+    }
     let s_id = e.inputs[0];
 
     let s = graph.node(s_id);
-    if !matches!(s.op, Op::Sub) { return None; }
-    if s.inputs.len() != 2 { return None; }
+    if !matches!(s.op, Op::Sub) {
+        return None;
+    }
+    if s.inputs.len() != 2 {
+        return None;
+    }
     let x_id = s.inputs[0];
     let mb_id = s.inputs[1];
 
     let mb = graph.node(mb_id);
-    if !matches!(mb.op, Op::BroadcastTo(_)) { return None; }
-    if mb.inputs.len() != 1 { return None; }
+    if !matches!(mb.op, Op::BroadcastTo(_)) {
+        return None;
+    }
+    if mb.inputs.len() != 1 {
+        return None;
+    }
     let u1_id = mb.inputs[0];
 
     let u1 = graph.node(u1_id);
-    let Op::Unsqueeze { dim: u1_dim } = u1.op else { return None; };
-    if u1.inputs.len() != 1 { return None; }
+    let Op::Unsqueeze { dim: u1_dim } = u1.op else {
+        return None;
+    };
+    if u1.inputs.len() != 1 {
+        return None;
+    }
     let m_id = u1.inputs[0];
 
     let m = graph.node(m_id);
-    let Op::MaxDim(max_axis) = m.op else { return None; };
-    if m.inputs.len() != 1 || m.inputs[0] != x_id { return None; }
+    let Op::MaxDim(max_axis) = m.op else {
+        return None;
+    };
+    if m.inputs.len() != 1 || m.inputs[0] != x_id {
+        return None;
+    }
 
     // Axis discipline: both reduces AND both keepdim-restores target x's
     // LAST axis (the reduce drops rank by one, so the restoring Unsqueeze
     // appends at `last` of the reduced tensor — which IS `last` of x).
     let x_shape = &graph.node(x_id).shape;
-    if x_shape.rank() == 0 { return None; }
+    if x_shape.rank() == 0 {
+        return None;
+    }
     let last = x_shape.rank() - 1;
     if max_axis != last || sum_axis != last || u1_dim != last || u2_dim != last {
         return None;
     }
     // Both broadcasts restore x's full shape.
     let full = x_shape.dims();
-    if graph.node(mb_id).shape.dims() != full { return None; }
-    if graph.node(db_id).shape.dims() != full { return None; }
+    if graph.node(mb_id).shape.dims() != full {
+        return None;
+    }
+    if graph.node(db_id).shape.dims() != full {
+        return None;
+    }
 
     // Conservativeness: every intermediate consumed only within this
     // pattern; e is consumed twice (→ d via SumDim, → div as numerator).
@@ -312,7 +417,7 @@ fn recipe_spelled_pattern(graph: &Graph, div_id: NodeId) -> Option<PatternMatch>
 
     Some(PatternMatch {
         bindings: vec![(0, x_id)],
-        params:   FusedOpParams::SoftmaxLastDim,
+        params: FusedOpParams::SoftmaxLastDim,
     })
 }
 
@@ -345,7 +450,12 @@ mod tests {
     fn canonical_pattern_matches_the_recipe_spelling() {
         let mut g = Graph::new();
         let sh = Shape::from_dims(&[2, 4]);
-        let x = g.push(Node { op: Op::Const, inputs: vec![], shape: sh.clone(), dtype: DType::F32 });
+        let x = g.push(Node {
+            op: Op::Const,
+            inputs: vec![],
+            shape: sh.clone(),
+            dtype: DType::F32,
+        });
         let fused = g.push(Node {
             op: Op::Fused(FusedOps::SOFTMAX_LAST_DIM, FusedOpParams::SoftmaxLastDim),
             inputs: vec![x],

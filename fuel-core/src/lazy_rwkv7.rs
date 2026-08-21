@@ -179,19 +179,22 @@ impl Rwkv7Model {
     }
 
     /// Build per-token embeddings without running the decoder.
-    pub fn embed_tokens_anchored(
-        &self, anchor: &LazyTensor, tokens: &[u32],
-    ) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
-            cfg.vocab_size, cfg.hidden_size, tokens,
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
         )
     }
 
     fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
-        Ok(self.weights.head.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
+        Ok(self
+            .weights
+            .head
+            .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
     fn run_backbone(&self, tokens: &[u32]) -> Result<LazyTensor> {
@@ -201,7 +204,11 @@ impl Rwkv7Model {
         assert!(seq > 0);
 
         let h = LazyTensor::embed_tokens(
-            weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
+            weights.token_embedding.clone(),
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
+            &Device::cpu(),
         )?;
         self.run_backbone_embeds(&h)
     }
@@ -220,16 +227,17 @@ impl Rwkv7Model {
         let seq = dims[1];
         let batch = dims[0];
         if seq == 0 {
-            return Err(crate::Error::Msg(
-                "Rwkv7Model::forward_embeds: seq must be > 0".into(),
-            ).bt());
+            return Err(
+                crate::Error::Msg("Rwkv7Model::forward_embeds: seq must be > 0".into()).bt(),
+            );
         }
         let n_heads = cfg.n_heads();
         let head_size = cfg.head_size;
         if n_heads * head_size != cfg.hidden_size {
             return Err(crate::Error::Msg(
                 "Rwkv7Config: n_heads * head_size must equal hidden_size".into(),
-            ).bt());
+            )
+            .bt());
         }
         let mut h = embeds.clone();
 
@@ -241,16 +249,31 @@ impl Rwkv7Model {
             } else {
                 h.clone()
             };
-            let xs_ln1 = xs.layer_norm_affine(std::sync::Arc::clone(&layer.ln1_gain), std::sync::Arc::clone(&layer.ln1_bias), cfg.layer_norm_epsilon)?;
+            let xs_ln1 = xs.layer_norm_affine(
+                std::sync::Arc::clone(&layer.ln1_gain),
+                std::sync::Arc::clone(&layer.ln1_bias),
+                cfg.layer_norm_epsilon,
+            )?;
             let (attn, v_first_layer) = self.time_mix(
-                &xs_ln1, layer, batch, seq, n_heads, head_size, li, v_first.as_ref(),
+                &xs_ln1,
+                layer,
+                batch,
+                seq,
+                n_heads,
+                head_size,
+                li,
+                v_first.as_ref(),
             )?;
             if li == 0 {
                 v_first = Some(v_first_layer);
             }
             let h_post_attn = xs.add(&attn)?;
 
-            let xs_ln2 = h_post_attn.layer_norm_affine(std::sync::Arc::clone(&layer.ln2_gain), std::sync::Arc::clone(&layer.ln2_bias), cfg.layer_norm_epsilon)?;
+            let xs_ln2 = h_post_attn.layer_norm_affine(
+                std::sync::Arc::clone(&layer.ln2_gain),
+                std::sync::Arc::clone(&layer.ln2_bias),
+                cfg.layer_norm_epsilon,
+            )?;
             let ff = self.channel_mix(&xs_ln2, layer, batch, seq)?;
             h = h_post_attn.add(&ff)?;
         }
@@ -313,7 +336,9 @@ impl Rwkv7Model {
         let w1 = x.const_f32_like(Arc::clone(&tm.w1), Shape::from_dims(&[h, cfg.d_decay]));
         let w2 = x.const_f32_like(Arc::clone(&tm.w2), Shape::from_dims(&[cfg.d_decay, h]));
         let w_hidden = xw.matmul(&w1)?.tanh().matmul(&w2)?;
-        let w_pre = w0.broadcast_to(Shape::from_dims(&[batch, seq, h]))?.add(&w_hidden)?;
+        let w_pre = w0
+            .broadcast_to(Shape::from_dims(&[batch, seq, h]))?
+            .add(&w_hidden)?;
         let w_sig = w_pre.sigmoid();
         let w = w_sig.mul_scalar(-0.606531_f64).exp();
 
@@ -321,7 +346,8 @@ impl Rwkv7Model {
         let a0 = x.const_f32_like(Arc::clone(&tm.a0), Shape::from_dims(&[1, 1, h]));
         let a1 = x.const_f32_like(Arc::clone(&tm.a1), Shape::from_dims(&[h, cfg.d_aaa]));
         let a2 = x.const_f32_like(Arc::clone(&tm.a2), Shape::from_dims(&[cfg.d_aaa, h]));
-        let a_pre = a0.broadcast_to(Shape::from_dims(&[batch, seq, h]))?
+        let a_pre = a0
+            .broadcast_to(Shape::from_dims(&[batch, seq, h]))?
             .add(&xa.matmul(&a1)?.matmul(&a2)?)?;
         let a = a_pre.sigmoid();
 
@@ -350,7 +376,8 @@ impl Rwkv7Model {
             let v0 = x.const_f32_like(Arc::clone(v0_arc), Shape::from_dims(&[1, 1, h]));
             let v1l = x.const_f32_like(Arc::clone(v1_arc), Shape::from_dims(&[h, cfg.d_mv]));
             let v2l = x.const_f32_like(Arc::clone(v2_arc), Shape::from_dims(&[cfg.d_mv, h]));
-            let gate_pre = v0.broadcast_to(Shape::from_dims(&[batch, seq, h]))?
+            let gate_pre = v0
+                .broadcast_to(Shape::from_dims(&[batch, seq, h]))?
                 .add(&xv.matmul(&v1l)?.matmul(&v2l)?)?;
             let gate = gate_pre.sigmoid();
             // Stack the per-step v_first vectors back into a (b, seq, h) tensor.
@@ -375,7 +402,8 @@ impl Rwkv7Model {
         let kk_norm_bc = kk_norm
             .reshape(Shape::from_dims(&[batch, seq, n_heads, 1]))?
             .broadcast_to(Shape::from_dims(&[batch, seq, n_heads, head_size]))?;
-        let kk = kk_h.div(&kk_norm_bc)?
+        let kk = kk_h
+            .div(&kk_norm_bc)?
             .reshape(Shape::from_dims(&[batch, seq, h]))?;
 
         // k = k * (1 + (a - 1) * k_a)
@@ -385,25 +413,27 @@ impl Rwkv7Model {
         let k_corrected = k.mul(&scale_term)?;
 
         // ---- Per-head reshapes for state update -----------------------------
-        let r_h = r.reshape(Shape::from_dims(&[batch, seq, n_heads, head_size]))?
-            .permute([0, 2, 1, 3_usize])?;        // (b, h, seq, N)
+        let r_h = r
+            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_size]))?
+            .permute([0, 2, 1, 3_usize])?; // (b, h, seq, N)
         let k_h_state = k_corrected
             .reshape(Shape::from_dims(&[batch, seq, n_heads, head_size]))?
-            .permute([0, 2, 1, 3_usize])?;       // (b, h, seq, N)
-        let v_h = v.reshape(Shape::from_dims(&[batch, seq, n_heads, head_size]))?
+            .permute([0, 2, 1, 3_usize])?; // (b, h, seq, N)
+        let v_h = v
+            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_size]))?
             .permute([0, 2, 1, 3_usize])?;
-        let kk_h2 = kk.reshape(Shape::from_dims(&[batch, seq, n_heads, head_size]))?
+        let kk_h2 = kk
+            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_size]))?
             .permute([0, 2, 1, 3_usize])?;
-        let a_h = a.reshape(Shape::from_dims(&[batch, seq, n_heads, head_size]))?
+        let a_h = a
+            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_size]))?
             .permute([0, 2, 1, 3_usize])?;
-        let w_h = w.reshape(Shape::from_dims(&[batch, seq, n_heads, head_size]))?
+        let w_h = w
+            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_size]))?
             .permute([0, 2, 1, 3_usize])?;
 
         // ---- Bonus term r_k --------------------------------------------------
-        let r_k_const = x.const_f32_like(
-            Arc::clone(&tm.r_k),
-            Shape::from_dims(&[1, 1, h]),
-        );
+        let r_k_const = x.const_f32_like(Arc::clone(&tm.r_k), Shape::from_dims(&[1, 1, h]));
 
         // ---- Delta-rule time loop -------------------------------------------
         // state shape: (b, n_heads, head_size, head_size)
@@ -414,35 +444,38 @@ impl Rwkv7Model {
         let mut state = state_init;
         let mut out_steps: Vec<LazyTensor> = Vec::with_capacity(seq);
         for t in 0..seq {
-            let r_t = r_h.slice(2_usize, t, 1)?;                // (b, h, 1, N)
+            let r_t = r_h.slice(2_usize, t, 1)?; // (b, h, 1, N)
             let k_t = k_h_state.slice(2_usize, t, 1)?;
             let v_t = v_h.slice(2_usize, t, 1)?;
             let kk_t = kk_h2.slice(2_usize, t, 1)?;
             let a_t = a_h.slice(2_usize, t, 1)?;
-            let w_t = w_h.slice(2_usize, t, 1)?;                // (b, h, 1, N)
+            let w_t = w_h.slice(2_usize, t, 1)?; // (b, h, 1, N)
 
             // vk = v^T @ k → (b, h, N, N)  (outer product: v[N,1] @ k[1,N])
             let v_col = v_t.reshape(Shape::from_dims(&[batch, n_heads, head_size, 1]))?;
             let k_row = k_t.reshape(Shape::from_dims(&[batch, n_heads, 1, head_size]))?;
-            let vk = v_col.matmul(&k_row)?;                       // (b, h, N, N)
+            let vk = v_col.matmul(&k_row)?; // (b, h, N, N)
 
             // ab = (-kk)^T @ (kk * a) → (b, h, N, N)
-            let kk_col_neg = kk_t.mul_scalar(-1.0)
+            let kk_col_neg = kk_t
+                .mul_scalar(-1.0)
                 .reshape(Shape::from_dims(&[batch, n_heads, head_size, 1]))?;
-            let kk_a_row = kk_t.mul(&a_t)?
+            let kk_a_row = kk_t
+                .mul(&a_t)?
                 .reshape(Shape::from_dims(&[batch, n_heads, 1, head_size]))?;
-            let ab = kk_col_neg.matmul(&kk_a_row)?;               // (b, h, N, N)
+            let ab = kk_col_neg.matmul(&kk_a_row)?; // (b, h, N, N)
 
             // state := state * w + state @ ab + vk
             // w broadcast: (b, h, 1, N) → (b, h, N, N) for elementwise multiply
-            let w_bc = w_t.broadcast_to(Shape::from_dims(&[batch, n_heads, head_size, head_size]))?;
+            let w_bc =
+                w_t.broadcast_to(Shape::from_dims(&[batch, n_heads, head_size, head_size]))?;
             let state_decayed = state.mul(&w_bc)?;
             let state_via_ab = state.matmul(&ab)?;
             state = state_decayed.add(&state_via_ab)?.add(&vk)?;
 
             // out_t = state @ r → (b, h, N, 1) → flatten to (b, h, N)
             let r_col = r_t.reshape(Shape::from_dims(&[batch, n_heads, head_size, 1]))?;
-            let out_col = state.matmul(&r_col)?;                  // (b, h, N, 1)
+            let out_col = state.matmul(&r_col)?; // (b, h, N, 1)
             let out_per_head = out_col.reshape(Shape::from_dims(&[batch, n_heads, head_size]))?;
             // Stack per-head into (b, 1, hidden).
             let out_t = out_per_head.reshape(Shape::from_dims(&[batch, 1, h]))?;
@@ -460,20 +493,25 @@ impl Rwkv7Model {
 
         // ---- Per-head GroupNorm with eps = 64e-5 ----------------------------
         let out_grouped = group_norm_per_head(
-            &stacked, &tm.ln_x_gain, &tm.ln_x_bias,
-            batch, seq, n_heads, head_size, 64e-5,
+            &stacked,
+            &tm.ln_x_gain,
+            &tm.ln_x_bias,
+            batch,
+            seq,
+            n_heads,
+            head_size,
+            64e-5,
         )?;
 
         // ---- Bonus term: (r * k * r_k).sum_per_head * v ----------------------
         let r_k_term = r.mul(&k_corrected)?.broadcast_mul(&r_k_const)?;
         let r_k_per_head = r_k_term
             .reshape(Shape::from_dims(&[batch, seq, n_heads, head_size]))?
-            .sum_dim(3_usize)?;                                   // (b, seq, n_heads)
+            .sum_dim(3_usize)?; // (b, seq, n_heads)
         let r_k_bc = r_k_per_head
             .reshape(Shape::from_dims(&[batch, seq, n_heads, 1]))?
             .broadcast_to(Shape::from_dims(&[batch, seq, n_heads, head_size]))?;
-        let v_per_head = v
-            .reshape(Shape::from_dims(&[batch, seq, n_heads, head_size]))?;
+        let v_per_head = v.reshape(Shape::from_dims(&[batch, seq, n_heads, head_size]))?;
         let bonus = r_k_bc
             .mul(&v_per_head)?
             .reshape(Shape::from_dims(&[batch, seq, h]))?;
@@ -543,8 +581,14 @@ fn group_norm_per_head(
         .reshape(Shape::from_dims(&[batch, seq, n_heads, 1]))?
         .broadcast_to(Shape::from_dims(&[batch, seq, n_heads, head_size]))?;
     let normed = centered.mul(&inv_std_bc)?;
-    let gain_t = x.const_f32_like(Arc::clone(gain), Shape::from_dims(&[1, 1, n_heads, head_size]));
-    let bias_t = x.const_f32_like(Arc::clone(bias), Shape::from_dims(&[1, 1, n_heads, head_size]));
+    let gain_t = x.const_f32_like(
+        Arc::clone(gain),
+        Shape::from_dims(&[1, 1, n_heads, head_size]),
+    );
+    let bias_t = x.const_f32_like(
+        Arc::clone(bias),
+        Shape::from_dims(&[1, 1, n_heads, head_size]),
+    );
     let gain_bc = gain_t.broadcast_to(Shape::from_dims(&[batch, seq, n_heads, head_size]))?;
     let bias_bc = bias_t.broadcast_to(Shape::from_dims(&[batch, seq, n_heads, head_size]))?;
     let scaled = normed.mul(&gain_bc)?.add(&bias_bc)?;
@@ -564,9 +608,7 @@ impl Rwkv7Weights {
         let h = cfg.hidden_size;
         let ffn_inter = cfg.dim_ffn();
 
-        let token_embedding = Arc::from(load_tensor_as_f32(
-            st, "rwkv.embeddings.weight",
-        )?);
+        let token_embedding = Arc::from(load_tensor_as_f32(st, "rwkv.embeddings.weight")?);
 
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         for i in 0..cfg.num_hidden_layers {
@@ -577,14 +619,24 @@ impl Rwkv7Weights {
             let ln2_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.ln2.bias"))?);
             let pre_ln = if i == 0 {
                 let g = load_tensor_as_f32(st, &format!("{p}.pre_ln.weight"))
-                    .ok().map(Arc::from);
+                    .ok()
+                    .map(Arc::from);
                 let b = load_tensor_as_f32(st, &format!("{p}.pre_ln.bias"))
-                    .ok().map(Arc::from);
-                match (g, b) { (Some(g), Some(b)) => Some((g, b)), _ => None }
-            } else { None };
+                    .ok()
+                    .map(Arc::from);
+                match (g, b) {
+                    (Some(g), Some(b)) => Some((g, b)),
+                    _ => None,
+                }
+            } else {
+                None
+            };
 
             let a = |n: &str| -> Result<Arc<[f32]>> {
-                Ok(Arc::from(load_tensor_as_f32(st, &format!("{p}.attention.{n}"))?))
+                Ok(Arc::from(load_tensor_as_f32(
+                    st,
+                    &format!("{p}.attention.{n}"),
+                )?))
             };
             let x_r = a("x_r")?;
             let x_w = a("x_w")?;
@@ -615,25 +667,57 @@ impl Rwkv7Weights {
             let ln_x_gain = a("ln_x.weight")?;
             let ln_x_bias = a("ln_x.bias")?;
             let time_mix = Rwkv7TimeMixWeights {
-                x_r, x_w, x_k, x_v, x_a, x_g,
-                w0, w1, w2, a0, a1, a2, v0, v1, v2, g1, g2,
-                k_k, k_a, r_k,
-                receptance, key, value, output, ln_x_gain, ln_x_bias,
+                x_r,
+                x_w,
+                x_k,
+                x_v,
+                x_a,
+                x_g,
+                w0,
+                w1,
+                w2,
+                a0,
+                a1,
+                a2,
+                v0,
+                v1,
+                v2,
+                g1,
+                g2,
+                k_k,
+                k_a,
+                r_k,
+                receptance,
+                key,
+                value,
+                output,
+                ln_x_gain,
+                ln_x_bias,
             };
 
             let c = |n: &str| -> Result<Arc<[f32]>> {
-                Ok(Arc::from(load_tensor_as_f32(st, &format!("{p}.feed_forward.{n}"))?))
+                Ok(Arc::from(load_tensor_as_f32(
+                    st,
+                    &format!("{p}.feed_forward.{n}"),
+                )?))
             };
             let cm_x_k = c("x_k")?;
             let cm_key = ltm(st, &format!("{p}.feed_forward.key.weight"), ffn_inter, h)?;
             let cm_value = ltm(st, &format!("{p}.feed_forward.value.weight"), h, ffn_inter)?;
             let channel_mix = Rwkv7ChannelMixWeights {
-                x_k: cm_x_k, key: cm_key, value: cm_value,
+                x_k: cm_x_k,
+                key: cm_key,
+                value: cm_value,
             };
 
             layers.push(Rwkv7LayerWeights {
-                ln1_gain, ln1_bias, ln2_gain, ln2_bias, pre_ln,
-                time_mix, channel_mix,
+                ln1_gain,
+                ln1_bias,
+                ln2_gain,
+                ln2_bias,
+                pre_ln,
+                time_mix,
+                channel_mix,
             });
         }
 
@@ -642,7 +726,11 @@ impl Rwkv7Weights {
         let head = ltm(st, "head.weight", cfg.vocab_size, h)?;
 
         Ok(Self {
-            token_embedding, layers, final_ln_gain, final_ln_bias, head,
+            token_embedding,
+            layers,
+            final_ln_gain,
+            final_ln_bias,
+            head,
         })
     }
 }
@@ -697,7 +785,9 @@ mod tests {
                     a0: vec_of(h, &mut *nb),
                     a1: vec_of(h * cfg.d_aaa, &mut *nb),
                     a2: vec_of(cfg.d_aaa * h, &mut *nb),
-                    v0, v1, v2,
+                    v0,
+                    v1,
+                    v2,
                     g1: vec_of(h * cfg.d_gate, &mut *nb),
                     g2: vec_of(cfg.d_gate * h, &mut *nb),
                     k_k: vec_of(h, &mut *nb),
@@ -730,17 +820,25 @@ mod tests {
         let final_ln_bias = Arc::from(vec![0.0_f32; h]);
         let head = WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb));
         Rwkv7Weights {
-            token_embedding, layers,
-            final_ln_gain, final_ln_bias, head,
+            token_embedding,
+            layers,
+            final_ln_gain,
+            final_ln_bias,
+            head,
         }
     }
 
     fn tiny_config() -> Rwkv7Config {
         Rwkv7Config {
-            vocab_size: 16, hidden_size: 8,
-            num_hidden_layers: 2, head_size: 4,
+            vocab_size: 16,
+            hidden_size: 8,
+            num_hidden_layers: 2,
+            head_size: 4,
             intermediate_size: Some(16),
-            d_decay: 3, d_aaa: 3, d_mv: 3, d_gate: 3,
+            d_decay: 3,
+            d_aaa: 3,
+            d_mv: 3,
+            d_gate: 3,
             layer_norm_epsilon: 1e-5,
         }
     }
@@ -748,7 +846,10 @@ mod tests {
     #[test]
     fn forward_shape_and_finite() {
         let cfg = tiny_config();
-        let model = Rwkv7Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Rwkv7Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4, 5];
         let logits = model.forward(&tokens).unwrap();
         assert_eq!(logits.shape().dims(), &[1, tokens.len(), cfg.vocab_size]);
@@ -760,7 +861,10 @@ mod tests {
     #[test]
     fn single_token() {
         let cfg = tiny_config();
-        let model = Rwkv7Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Rwkv7Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let logits = model.forward(&[3]).unwrap().realize_f32();
         assert_eq!(logits.len(), cfg.vocab_size);
     }
@@ -769,9 +873,15 @@ mod tests {
     /// affect last-token logits via the recurrent state.
     #[test]
     fn delta_rule_state_propagates() {
-        let cfg = Rwkv7Config { num_hidden_layers: 1, ..tiny_config() };
+        let cfg = Rwkv7Config {
+            num_hidden_layers: 1,
+            ..tiny_config()
+        };
         let weights = tiny_weights(&cfg);
-        let model = Rwkv7Model { config: cfg.clone(), weights };
+        let model = Rwkv7Model {
+            config: cfg.clone(),
+            weights,
+        };
         let a = model.forward(&[0, 3, 3, 3]).unwrap().realize_f32();
         let b = model.forward(&[7, 3, 3, 3]).unwrap().realize_f32();
         let v = cfg.vocab_size;
@@ -781,8 +891,10 @@ mod tests {
         for (x, y) in last_a.iter().zip(last_b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-10,
-            "delta-rule state must propagate, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-10,
+            "delta-rule state must propagate, max_diff = {max_diff}"
+        );
     }
 
     /// Value residual stream must be wired at layer > 0:
@@ -795,15 +907,24 @@ mod tests {
     /// gives a clearly measurable diff.
     #[test]
     fn value_residual_is_wired() {
-        let cfg = Rwkv7Config { num_hidden_layers: 2, ..tiny_config() };
+        let cfg = Rwkv7Config {
+            num_hidden_layers: 2,
+            ..tiny_config()
+        };
         let base = tiny_weights(&cfg);
         let mut overridden = base.clone();
         let h = cfg.hidden_size;
         // Layer 1's v0 — push it to a large positive value so
         // sigmoid(v0) ≈ 1 and the v_first → v blend is forced.
         overridden.layers[1].time_mix.v0 = Some(Arc::from(vec![5.0_f32; h]));
-        let m_base = Rwkv7Model { config: cfg.clone(), weights: base };
-        let m_over = Rwkv7Model { config: cfg, weights: overridden };
+        let m_base = Rwkv7Model {
+            config: cfg.clone(),
+            weights: base,
+        };
+        let m_over = Rwkv7Model {
+            config: cfg,
+            weights: overridden,
+        };
         let toks = [1_u32, 2, 3];
         let a = m_base.forward(&toks).unwrap().realize_f32();
         let b = m_over.forward(&toks).unwrap().realize_f32();
@@ -816,14 +937,19 @@ mod tests {
         // override produces only ~3e-7 absolute diff. The
         // value-residual path IS active; we just require it
         // to be measurably non-zero.
-        assert!(max_diff > 1e-8,
-            "value-residual gate (v0) must alter output, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-8,
+            "value-residual gate (v0) must alter output, max_diff = {max_diff}"
+        );
     }
 
     #[test]
     fn forward_hidden_shape_and_finite() {
         let cfg = tiny_config();
-        let model = Rwkv7Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Rwkv7Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
         let hidden = model.forward_hidden(&tokens).unwrap();
         assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
@@ -835,27 +961,37 @@ mod tests {
     #[test]
     fn forward_embeds_matches_forward_after_token_lookup() {
         let cfg = tiny_config();
-        let model = Rwkv7Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Rwkv7Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds).unwrap().realize_f32();
-        let max_diff = logits_ref.iter().zip(logits_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "Rwkv7 forward vs forward_embeds must agree (max diff {max_diff})");
+        let max_diff = logits_ref
+            .iter()
+            .zip(logits_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "Rwkv7 forward vs forward_embeds must agree (max diff {max_diff})"
+        );
     }
 
     #[test]
     fn forward_embeds_rejects_bad_shape() {
         let cfg = tiny_config();
-        let model = Rwkv7Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Rwkv7Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let bad = LazyTensor::from_f32(
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
-            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]), &Device::cpu(),
+            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
+            &Device::cpu(),
         );
         assert!(model.forward_embeds(&bad).is_err());
     }
@@ -863,17 +999,23 @@ mod tests {
     #[test]
     fn forward_hidden_embeds_matches_forward_hidden() {
         let cfg = tiny_config();
-        let model = Rwkv7Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Rwkv7Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let h_via_embeds = model.forward_hidden_embeds(&embeds).unwrap().realize_f32();
-        let max_diff = h_ref.iter().zip(h_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "Rwkv7 forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})");
+        let max_diff = h_ref
+            .iter()
+            .zip(h_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "Rwkv7 forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})"
+        );
     }
 }

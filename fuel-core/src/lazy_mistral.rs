@@ -52,8 +52,8 @@
 //! All Q/K/V/O biases are `None` (Mistral uses `linear_no_bias`).
 
 use crate::lazy::{
-    load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
-    LayerWeights, LazyTensor, WeightStorage,
+    LayerWeights, LazyTensor, WeightStorage, load_tensor_as_f32,
+    load_transposed_matrix_preserve_dtype,
 };
 use crate::{Device, Result};
 use fuel_ir::Shape;
@@ -142,7 +142,11 @@ impl MistralModel {
 
         // Embedding lookup.
         let h = LazyTensor::embed_tokens(
-            weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
+            weights.token_embedding.clone(),
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
+            &Device::cpu(),
         )?;
 
         self.forward_embeds(&h, start_pos)
@@ -166,24 +170,30 @@ impl MistralModel {
             "MistralConfig: num_attention_heads * head_dim must equal hidden_size",
         );
         assert_eq!(
-            cfg.num_attention_heads % cfg.num_key_value_heads, 0,
+            cfg.num_attention_heads % cfg.num_key_value_heads,
+            0,
             "MistralConfig: num_attention_heads ({}) must be a multiple of num_key_value_heads ({})",
-            cfg.num_attention_heads, cfg.num_key_value_heads,
+            cfg.num_attention_heads,
+            cfg.num_key_value_heads,
         );
 
         let mut h = embeds.clone();
 
-        let (rope_cos, rope_sin) = h.rope_tables_const(
-            cfg.rope_theta, start_pos, seq, cfg.head_dim,
-        );
+        let (rope_cos, rope_sin) =
+            h.rope_tables_const(cfg.rope_theta, start_pos, seq, cfg.head_dim);
         let mask = self.build_sliding_window_mask(embeds, seq);
 
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, &mask)?;
         }
 
-        let h_norm = h.rms_norm_affine(std::sync::Arc::clone(&weights.final_norm_gain), cfg.rms_norm_eps)?;
-        Ok(weights.output.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size)?)
+        let h_norm = h.rms_norm_affine(
+            std::sync::Arc::clone(&weights.final_norm_gain),
+            cfg.rms_norm_eps,
+        )?;
+        Ok(weights
+            .output
+            .apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
     /// Run the decoder forward up to the final RmsNorm and
@@ -197,10 +207,17 @@ impl MistralModel {
         let weights = &self.weights;
         let seq = tokens.len();
         let batch = 1;
-        assert!(seq > 0, "MistralModel::forward_hidden: tokens must be non-empty");
+        assert!(
+            seq > 0,
+            "MistralModel::forward_hidden: tokens must be non-empty"
+        );
 
         let h = LazyTensor::embed_tokens(
-            weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
+            weights.token_embedding.clone(),
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
+            &Device::cpu(),
         )?;
         self.forward_hidden_embeds(&h, start_pos)
     }
@@ -209,7 +226,11 @@ impl MistralModel {
     /// projection and returns the post-RmsNorm hidden states.
     /// Used by multimodal+embedding compositions that mix
     /// pre-computed embeddings with a custom pooling head.
-    pub fn forward_hidden_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_hidden_embeds(
+        &self,
+        embeds: &LazyTensor,
+        start_pos: usize,
+    ) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -255,14 +276,16 @@ impl MistralModel {
         assert_eq!(dims[2], cfg.hidden_size);
 
         let mut h = embeds.clone();
-        let (rope_cos, rope_sin) = h.rope_tables_const(
-            cfg.rope_theta, start_pos, seq, cfg.head_dim,
-        );
+        let (rope_cos, rope_sin) =
+            h.rope_tables_const(cfg.rope_theta, start_pos, seq, cfg.head_dim);
 
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, mask)?;
         }
-        Ok(h.rms_norm_affine(std::sync::Arc::clone(&weights.final_norm_gain), cfg.rms_norm_eps)?)
+        Ok(h.rms_norm_affine(
+            std::sync::Arc::clone(&weights.final_norm_gain),
+            cfg.rms_norm_eps,
+        )?)
     }
 
     /// Build the sliding-window causal mask for a single forward
@@ -309,12 +332,21 @@ impl MistralModel {
         let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
 
         // Pre-attention RmsNorm (affine).
-        let x_norm = x.rms_norm_affine(std::sync::Arc::clone(&layer.attn_norm_gain), cfg.rms_norm_eps)?;
+        let x_norm = x.rms_norm_affine(
+            std::sync::Arc::clone(&layer.attn_norm_gain),
+            cfg.rms_norm_eps,
+        )?;
 
         // Q / K / V projections (bias-free for Mistral).
-        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size)?;
-        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?;
-        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?;
+        let q = layer
+            .attn_q
+            .apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size)?;
+        let k = layer
+            .attn_k
+            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?;
+        let v = layer
+            .attn_v
+            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?;
 
         // Reshape to per-head and transpose to [batch, heads, seq, head_dim].
         let _ = (batch, seq);
@@ -342,19 +374,31 @@ impl MistralModel {
 
         // Merge heads + output projection.
         let merged = attn_v.merge_heads()?;
-        let attn_out = layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?;
+        let attn_out = layer
+            .attn_o
+            .apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?;
 
         // First residual.
         let h1 = x.add(&attn_out)?;
 
         // Pre-FFN RmsNorm (affine).
-        let h1_norm = h1.rms_norm_affine(std::sync::Arc::clone(&layer.ffn_norm_gain), cfg.rms_norm_eps)?;
+        let h1_norm = h1.rms_norm_affine(
+            std::sync::Arc::clone(&layer.ffn_norm_gain),
+            cfg.rms_norm_eps,
+        )?;
 
         // SwiGLU FFN: `down(silu(gate) * up)`.
-        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
-        let up = layer.ffn_up.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let gate = layer
+            .ffn_gate
+            .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let up = layer
+            .ffn_up
+            .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
         let swiglu = gate.silu().mul(&up)?;
-        let ffn_out = layer.ffn_down.apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size)?;
+        let ffn_out =
+            layer
+                .ffn_down
+                .apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size)?;
 
         // Second residual.
         h1.add(&ffn_out)
@@ -377,13 +421,12 @@ pub fn load_mistral_weights_with_prefix(
 ) -> Result<MistralWeights> {
     let h = cfg.hidden_size;
     let kv = cfg.num_key_value_heads * cfg.head_dim;
-    let token_embedding = load_tensor_as_f32(
-        st, &format!("{prefix}model.embed_tokens.weight"),
-    )?;
+    let token_embedding = load_tensor_as_f32(st, &format!("{prefix}model.embed_tokens.weight"))?;
     if token_embedding.len() != cfg.vocab_size * h {
         crate::bail!(
             "{prefix}model.embed_tokens.weight: {} elts, expected {}",
-            token_embedding.len(), cfg.vocab_size * h,
+            token_embedding.len(),
+            cfg.vocab_size * h,
         );
     }
 
@@ -391,38 +434,61 @@ pub fn load_mistral_weights_with_prefix(
     for i in 0..cfg.num_hidden_layers {
         let p = format!("{prefix}model.layers.{i}");
         let attn_q = load_transposed_matrix_preserve_dtype(
-            st, &format!("{p}.self_attn.q_proj.weight"), h, h,
+            st,
+            &format!("{p}.self_attn.q_proj.weight"),
+            h,
+            h,
         )?;
         let attn_k = load_transposed_matrix_preserve_dtype(
-            st, &format!("{p}.self_attn.k_proj.weight"), kv, h,
+            st,
+            &format!("{p}.self_attn.k_proj.weight"),
+            kv,
+            h,
         )?;
         let attn_v = load_transposed_matrix_preserve_dtype(
-            st, &format!("{p}.self_attn.v_proj.weight"), kv, h,
+            st,
+            &format!("{p}.self_attn.v_proj.weight"),
+            kv,
+            h,
         )?;
         let attn_o = load_transposed_matrix_preserve_dtype(
-            st, &format!("{p}.self_attn.o_proj.weight"), h, h,
+            st,
+            &format!("{p}.self_attn.o_proj.weight"),
+            h,
+            h,
         )?;
         let ffn_gate = load_transposed_matrix_preserve_dtype(
-            st, &format!("{p}.mlp.gate_proj.weight"), cfg.intermediate_size, h,
+            st,
+            &format!("{p}.mlp.gate_proj.weight"),
+            cfg.intermediate_size,
+            h,
         )?;
         let ffn_up = load_transposed_matrix_preserve_dtype(
-            st, &format!("{p}.mlp.up_proj.weight"), cfg.intermediate_size, h,
+            st,
+            &format!("{p}.mlp.up_proj.weight"),
+            cfg.intermediate_size,
+            h,
         )?;
         let ffn_down = load_transposed_matrix_preserve_dtype(
-            st, &format!("{p}.mlp.down_proj.weight"), h, cfg.intermediate_size,
+            st,
+            &format!("{p}.mlp.down_proj.weight"),
+            h,
+            cfg.intermediate_size,
         )?;
-        let attn_norm_gain = load_tensor_as_f32(
-            st, &format!("{p}.input_layernorm.weight"),
-        )?;
-        let ffn_norm_gain = load_tensor_as_f32(
-            st, &format!("{p}.post_attention_layernorm.weight"),
-        )?;
+        let attn_norm_gain = load_tensor_as_f32(st, &format!("{p}.input_layernorm.weight"))?;
+        let ffn_norm_gain =
+            load_tensor_as_f32(st, &format!("{p}.post_attention_layernorm.weight"))?;
         layers.push(LayerWeights {
-            attn_q, attn_q_bias: None,
-            attn_k, attn_k_bias: None,
-            attn_v, attn_v_bias: None,
+            attn_q,
+            attn_q_bias: None,
+            attn_k,
+            attn_k_bias: None,
+            attn_v,
+            attn_v_bias: None,
             attn_o,
-            ffn_gate, ffn_up, ffn_down,
+            ffn_gate,
+            ffn_up,
+            ffn_down,
             attn_norm_gain: Arc::from(attn_norm_gain),
             ffn_norm_gain: Arc::from(ffn_norm_gain),
         });
@@ -432,7 +498,10 @@ pub fn load_mistral_weights_with_prefix(
     // Mistral typically does NOT tie embeddings (Mistral-7B has a
     // distinct lm_head); fall back to tied for safety only.
     let output: WeightStorage = match load_transposed_matrix_preserve_dtype(
-        st, &format!("{prefix}lm_head.weight"), cfg.vocab_size, h,
+        st,
+        &format!("{prefix}lm_head.weight"),
+        cfg.vocab_size,
+        h,
     ) {
         Ok(w) => w,
         Err(_) => {
@@ -487,23 +556,30 @@ mod tests {
         let kv = cfg.num_key_value_heads * cfg.head_dim;
         let mut next_box: Box<dyn FnMut() -> f32> = Box::new(next);
         let token_embedding = vec_of(cfg.vocab_size * h, &mut *next_box);
-        let layers: Vec<LayerWeights> = (0..cfg.num_hidden_layers).map(|_| LayerWeights {
-            attn_q: WeightStorage::F32(vec_of(h * h, &mut *next_box)),
-            attn_q_bias: None,
-            attn_k: WeightStorage::F32(vec_of(h * kv, &mut *next_box)),
-            attn_k_bias: None,
-            attn_v: WeightStorage::F32(vec_of(h * kv, &mut *next_box)),
-            attn_v_bias: None,
-            attn_o: WeightStorage::F32(vec_of(h * h, &mut *next_box)),
-            ffn_gate: WeightStorage::F32(vec_of(h * i, &mut *next_box)),
-            ffn_up:   WeightStorage::F32(vec_of(h * i, &mut *next_box)),
-            ffn_down: WeightStorage::F32(vec_of(i * h, &mut *next_box)),
-            attn_norm_gain: Arc::from(vec![1.0_f32; h]),
-            ffn_norm_gain:  Arc::from(vec![1.0_f32; h]),
-        }).collect();
+        let layers: Vec<LayerWeights> = (0..cfg.num_hidden_layers)
+            .map(|_| LayerWeights {
+                attn_q: WeightStorage::F32(vec_of(h * h, &mut *next_box)),
+                attn_q_bias: None,
+                attn_k: WeightStorage::F32(vec_of(h * kv, &mut *next_box)),
+                attn_k_bias: None,
+                attn_v: WeightStorage::F32(vec_of(h * kv, &mut *next_box)),
+                attn_v_bias: None,
+                attn_o: WeightStorage::F32(vec_of(h * h, &mut *next_box)),
+                ffn_gate: WeightStorage::F32(vec_of(h * i, &mut *next_box)),
+                ffn_up: WeightStorage::F32(vec_of(h * i, &mut *next_box)),
+                ffn_down: WeightStorage::F32(vec_of(i * h, &mut *next_box)),
+                attn_norm_gain: Arc::from(vec![1.0_f32; h]),
+                ffn_norm_gain: Arc::from(vec![1.0_f32; h]),
+            })
+            .collect();
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *next_box));
-        MistralWeights { token_embedding, layers, final_norm_gain, output }
+        MistralWeights {
+            token_embedding,
+            layers,
+            final_norm_gain,
+            output,
+        }
     }
 
     /// Smoke: a tiny 2-layer Mistral-shape forward produces logits of
@@ -523,7 +599,10 @@ mod tests {
             max_position_embeddings: 64,
             sliding_window: Some(4),
         };
-        let model = MistralModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = MistralModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6, 7, 8];
         let logits = model.forward(&tokens, 0).unwrap();
         assert_eq!(logits.shape().dims(), &[1, tokens.len(), cfg.vocab_size]);
@@ -558,11 +637,21 @@ mod tests {
         };
         let weights = tiny_weights(&cfg);
         let tokens: Vec<u32> = vec![3, 1, 4, 1, 5, 9];
-        let out_no_window = MistralModel { config: cfg.clone(), weights: weights.clone() }
-            .forward(&tokens, 0).unwrap().realize_f32();
+        let out_no_window = MistralModel {
+            config: cfg.clone(),
+            weights: weights.clone(),
+        }
+        .forward(&tokens, 0)
+        .unwrap()
+        .realize_f32();
         cfg.sliding_window = Some(tokens.len() + 1);
-        let out_large_window = MistralModel { config: cfg, weights }
-            .forward(&tokens, 0).unwrap().realize_f32();
+        let out_large_window = MistralModel {
+            config: cfg,
+            weights,
+        }
+        .forward(&tokens, 0)
+        .unwrap()
+        .realize_f32();
         assert_eq!(out_no_window, out_large_window);
     }
 
@@ -587,13 +676,25 @@ mod tests {
         cfg_full.sliding_window = None;
         let weights = tiny_weights(&cfg_small);
         let tokens: Vec<u32> = vec![1, 2, 3, 4, 5];
-        let out_small = MistralModel { config: cfg_small, weights: weights.clone() }
-            .forward(&tokens, 0).unwrap().realize_f32();
-        let out_full = MistralModel { config: cfg_full, weights }
-            .forward(&tokens, 0).unwrap().realize_f32();
+        let out_small = MistralModel {
+            config: cfg_small,
+            weights: weights.clone(),
+        }
+        .forward(&tokens, 0)
+        .unwrap()
+        .realize_f32();
+        let out_full = MistralModel {
+            config: cfg_full,
+            weights,
+        }
+        .forward(&tokens, 0)
+        .unwrap()
+        .realize_f32();
         // The two must differ — sliding_window=2 masks history past 2 tokens
         // while full causal attends to everything below.
-        let any_diff = out_small.iter().zip(out_full.iter())
+        let any_diff = out_small
+            .iter()
+            .zip(out_full.iter())
             .any(|(&a, &b)| (a - b).abs() > 1e-5);
         assert!(any_diff, "sliding_window=2 should differ from full causal");
     }
@@ -605,14 +706,22 @@ mod tests {
     #[test]
     fn forward_hidden_skips_lm_head() {
         let cfg = MistralConfig {
-            vocab_size: 32, hidden_size: 16, intermediate_size: 32,
-            num_hidden_layers: 2, num_attention_heads: 4,
-            num_key_value_heads: 2, head_dim: 4,
-            rms_norm_eps: 1e-5, rope_theta: 10_000.0,
+            vocab_size: 32,
+            hidden_size: 16,
+            intermediate_size: 32,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            num_key_value_heads: 2,
+            head_dim: 4,
+            rms_norm_eps: 1e-5,
+            rope_theta: 10_000.0,
             max_position_embeddings: 32,
             sliding_window: None,
         };
-        let model = MistralModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = MistralModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
         let hidden = model.forward_hidden(&tokens, 0).unwrap();
         assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);

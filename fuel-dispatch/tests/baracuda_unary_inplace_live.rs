@@ -14,9 +14,13 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_ir::{dispatch::OpKind, probe::BackendId, DType};
 use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
-use fuel_dispatch::{baracuda_dispatch::register_baracuda_cuda_kernels, dispatch::register_cuda_kernels, kernel::{KernelBindingTable, OpParams}};
+use fuel_dispatch::{
+    baracuda_dispatch::register_baracuda_cuda_kernels,
+    dispatch::register_cuda_kernels,
+    kernel::{KernelBindingTable, OpParams},
+};
+use fuel_ir::{DType, dispatch::OpKind, probe::BackendId};
 use fuel_memory::{BackendStorage, Storage};
 
 fn dev_or_skip() -> Option<CudaDevice> {
@@ -202,7 +206,9 @@ fn baracuda_silu_inplace_bf16() {
     let Some(_dev) = dev_or_skip() else { return };
     let table = dual_table();
     let input = [
-        bf16::from_f32(0.0), bf16::from_f32(1.0), bf16::from_f32(-1.0),
+        bf16::from_f32(0.0),
+        bf16::from_f32(1.0),
+        bf16::from_f32(-1.0),
     ];
     let out = run_unary_inplace(
         &table,
@@ -225,9 +231,7 @@ fn baracuda_sigmoid_inplace_f16() {
     use half::f16;
     let Some(_dev) = dev_or_skip() else { return };
     let table = dual_table();
-    let input = [
-        f16::from_f32(0.0), f16::from_f32(1.0), f16::from_f32(-1.0),
-    ];
+    let input = [f16::from_f32(0.0), f16::from_f32(1.0), f16::from_f32(-1.0)];
     let out = run_unary_inplace(
         &table,
         OpKind::SigmoidInplace,

@@ -53,11 +53,11 @@
 
 use std::sync::Arc;
 
-use fuel_ir::dispatch::{OpKind, SizeClass};
 use fuel_ir::DType;
+use fuel_ir::dispatch::{OpKind, SizeClass};
 
 use super::{
-    composite_ns, default_backend_rates, AlternativeSet, Candidate, JudgeOracle, RuntimeSelector,
+    AlternativeSet, Candidate, JudgeOracle, RuntimeSelector, composite_ns, default_backend_rates,
 };
 
 /// Phase 5.2 runtime selector that re-queries the Judge at dispatch
@@ -242,12 +242,7 @@ mod tests {
 
     /// Helper: build a selector against a freshly-populated judge.
     fn make_selector(judge: HashMapJudge) -> JudgeAwareSelector {
-        JudgeAwareSelector::new(
-            Arc::new(judge),
-            OpKind::MatMul,
-            DType::F32,
-            SizeClass(16),
-        )
+        JudgeAwareSelector::new(Arc::new(judge), OpKind::MatMul, DType::F32, SizeClass(16))
     }
 
     /// No measurements → behaves like WinnerSelector.
@@ -442,8 +437,22 @@ mod tests {
         set.push(make_candidate(BackendId::Cpu, 200));
 
         let mut judge = HashMapJudge::new();
-        judge.insert(OpKind::MatMul, DType::F32, SizeClass(16), BackendId::Cuda, "", 5_000);
-        judge.insert(OpKind::MatMul, DType::F32, SizeClass(16), BackendId::Cpu, "", 5_000);
+        judge.insert(
+            OpKind::MatMul,
+            DType::F32,
+            SizeClass(16),
+            BackendId::Cuda,
+            "",
+            5_000,
+        );
+        judge.insert(
+            OpKind::MatMul,
+            DType::F32,
+            SizeClass(16),
+            BackendId::Cpu,
+            "",
+            5_000,
+        );
 
         let sel = make_selector(judge);
         let pick = sel.select(&set).expect("non-empty");

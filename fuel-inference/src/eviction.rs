@@ -1,4 +1,4 @@
-﻿//! Composable KV cache eviction policies.
+//! Composable KV cache eviction policies.
 //!
 //! This module provides an [`EvictionPolicy`] trait and several implementations for
 //! deciding which tokens to evict when a KV cache exceeds its budget. Policies can
@@ -323,7 +323,12 @@ impl EvictionPolicy for VotingAggregator {
 
         for (policy, weight) in &self.policies {
             let scores = policy.score(ctx);
-            debug_assert_eq!(scores.len(), n, "policy '{}' returned wrong number of scores", policy.name());
+            debug_assert_eq!(
+                scores.len(),
+                n,
+                "policy '{}' returned wrong number of scores",
+                policy.name()
+            );
 
             // Scores from individual policies are already normalized to [0, 1]
             // by each policy's implementation. Apply weight directly.
@@ -357,7 +362,11 @@ mod tests {
         let scores = policy.score(&ctx);
         assert_eq!(scores.len(), 5);
         for i in 1..scores.len() {
-            assert!(scores[i] > scores[i - 1], "score[{i}] should be > score[{}]", i - 1);
+            assert!(
+                scores[i] > scores[i - 1],
+                "score[{i}] should be > score[{}]",
+                i - 1
+            );
         }
         assert!((scores[0] - 0.0).abs() < 1e-6);
         assert!((scores[4] - 1.0).abs() < 1e-6);

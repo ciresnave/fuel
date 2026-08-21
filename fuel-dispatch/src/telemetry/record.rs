@@ -162,9 +162,15 @@ mod tests {
             structure_key: Some(StructureKeyToken("mm:innerdiv16:vec8:f16".into())),
             chosen: baracuda_impl(),
             candidates: vec![
-                Candidate { impl_id: baracuda_impl(), latency_ns: Some(41_230) },
                 Candidate {
-                    impl_id: ImplId { kernel_source: "cublas".into(), ..baracuda_impl() },
+                    impl_id: baracuda_impl(),
+                    latency_ns: Some(41_230),
+                },
+                Candidate {
+                    impl_id: ImplId {
+                        kernel_source: "cublas".into(),
+                        ..baracuda_impl()
+                    },
                     latency_ns: Some(48_800),
                 },
             ],
@@ -184,7 +190,10 @@ mod tests {
         let miss = MissRecord {
             schema: TELEMETRY_SCHEMA_VERSION,
             wanted: StructureKeyToken("mm:innerdiv16:vec8:flipped:f16".into()),
-            fallback: ImplId { kernel_source: "baracuda-generic-strided".into(), ..baracuda_impl() },
+            fallback: ImplId {
+                kernel_source: "baracuda-generic-strided".into(),
+                ..baracuda_impl()
+            },
             count: 37,
             hw: cuda_stamp(),
         };
@@ -208,8 +217,14 @@ mod tests {
             hw: cuda_stamp(),
         };
         let line = serde_json::to_string(&rec).expect("serialize");
-        assert!(!line.contains("candidates"), "empty candidates must be omitted");
-        assert!(!line.contains("structure_key"), "None structure_key must be omitted");
+        assert!(
+            !line.contains("candidates"),
+            "empty candidates must be omitted"
+        );
+        assert!(
+            !line.contains("structure_key"),
+            "None structure_key must be omitted"
+        );
     }
 
     /// The schema-v2 hardware fingerprint serializes on both records, and the
@@ -246,8 +261,14 @@ mod tests {
             hw: cpu_stamp(),
         };
         let line = serde_json::to_string(&miss).expect("serialize");
-        assert!(!line.contains("compute_capability"), "None CC must be omitted from the wire");
-        assert!(line.contains("hardware_sku") && line.contains("driver_version"), "sku/driver stay");
+        assert!(
+            !line.contains("compute_capability"),
+            "None CC must be omitted from the wire"
+        );
+        assert!(
+            line.contains("hardware_sku") && line.contains("driver_version"),
+            "sku/driver stay"
+        );
         let back: MissRecord = serde_json::from_str(&line).expect("deserialize");
         assert_eq!(miss, back);
         assert_eq!(back.hw.compute_capability, None);
@@ -301,7 +322,10 @@ mod tests {
             location: DeviceLocation::Cpu,
         };
         let stamp = HwStamp::from_descriptor(&cpu);
-        assert_eq!(stamp.compute_capability, None, "CPU path ⇒ no compute capability");
+        assert_eq!(
+            stamp.compute_capability, None,
+            "CPU path ⇒ no compute capability"
+        );
         assert_eq!(stamp.hardware_sku, "Intel(R) Core(TM) i9-14900K");
     }
 }

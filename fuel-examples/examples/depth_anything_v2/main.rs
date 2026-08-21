@@ -88,10 +88,8 @@ pub fn main() -> anyhow::Result<()> {
     let config = DepthAnythingV2Config::vit_small();
     let dinov2_config = Dinov2Config::vit_small();
 
-    let st = unsafe {
-        MmapedSafetensors::multi(&[&dinov2_model_file, &depth_anything_model_file])
-    }
-    .map_err(|e| E::msg(format!("mmap: {e}")))?;
+    let st = unsafe { MmapedSafetensors::multi(&[&dinov2_model_file, &depth_anything_model_file]) }
+        .map_err(|e| E::msg(format!("mmap: {e}")))?;
     let weights = DepthAnythingV2Weights::load_from_mmapped(&st, &config)
         .map_err(|e| E::msg(format!("weights: {e}")))?;
     let depth_anything = DepthAnythingV2Model {
@@ -101,8 +99,7 @@ pub fn main() -> anyhow::Result<()> {
     };
     println!("DepthAnythingV2 model built");
 
-    let (original_height, original_width, image) =
-        load_and_prep_image(&args.image, &device)?;
+    let (original_height, original_width, image) = load_and_prep_image(&args.image, &device)?;
     println!("Loaded image {:?}", image.shape());
 
     let depth = depth_anything
@@ -114,12 +111,7 @@ pub fn main() -> anyhow::Result<()> {
     // (min/max-normalize → optional color map → uint8). B6 deleted the eager
     // `Tensor` this used to route through; none of the remaining steps needed
     // one, and `interpolate2d` exists on `LazyTensor`.
-    let output_image = post_process_image(
-        &depth,
-        original_height,
-        original_width,
-        args.color_map,
-    )?;
+    let output_image = post_process_image(&depth, original_height, original_width, args.color_map)?;
 
     let output_path = full_output_path(&args.image, &args.output_dir);
     println!("Saving image to {}", output_path.to_string_lossy());
@@ -151,9 +143,7 @@ fn load_and_prep_image(
     let (_original_image, original_height, original_width) = load_image(image_path, None)?;
 
     // Resize to CHW u8, then widen to f32 for the host-side normalize.
-    let resized = fuel_examples::load_image_and_resize(
-        image_path, DINO_IMG_SIZE, DINO_IMG_SIZE,
-    )?;
+    let resized = fuel_examples::load_image_and_resize(image_path, DINO_IMG_SIZE, DINO_IMG_SIZE)?;
     let mut chw: Vec<f32> = resized.data.iter().map(|&b| b as f32).collect();
     assert_eq!(chw.len(), 3 * DINO_IMG_SIZE * DINO_IMG_SIZE);
 

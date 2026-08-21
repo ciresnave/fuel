@@ -173,19 +173,20 @@ fn qwen2_cfg_from_gguf(mc: &fuel::quantized::gguf_mmap::MmapedContent) -> Result
     let content = mc.content();
     let md = &content.metadata;
     let md_get = |s: &str| -> Result<&fuel::quantized::gguf_file::Value> {
-        md.get(s).ok_or_else(|| E::msg(format!("missing GGUF metadata key {s:?}")))
+        md.get(s)
+            .ok_or_else(|| E::msg(format!("missing GGUF metadata key {s:?}")))
     };
 
-    let num_attention_heads =
-        md_get("qwen2.attention.head_count")?.to_u32().map_err(E::msg)? as usize;
-    let num_key_value_heads =
-        md_get("qwen2.attention.head_count_kv")?.to_u32().map_err(E::msg)? as usize;
-    let hidden_size =
-        md_get("qwen2.embedding_length")?.to_u32().map_err(E::msg)? as usize;
+    let num_attention_heads = md_get("qwen2.attention.head_count")?
+        .to_u32()
+        .map_err(E::msg)? as usize;
+    let num_key_value_heads = md_get("qwen2.attention.head_count_kv")?
+        .to_u32()
+        .map_err(E::msg)? as usize;
+    let hidden_size = md_get("qwen2.embedding_length")?.to_u32().map_err(E::msg)? as usize;
     let max_position_embeddings =
         md_get("qwen2.context_length")?.to_u32().map_err(E::msg)? as usize;
-    let num_hidden_layers =
-        md_get("qwen2.block_count")?.to_u32().map_err(E::msg)? as usize;
+    let num_hidden_layers = md_get("qwen2.block_count")?.to_u32().map_err(E::msg)? as usize;
     let rms_norm_eps = md_get("qwen2.attention.layer_norm_rms_epsilon")?
         .to_f32()
         .map_err(E::msg)? as f64;
@@ -290,7 +291,7 @@ fn main() -> anyhow::Result<()> {
         .map_err(|e| e.with_path(&model_path))?;
     let header_done = start.elapsed();
     let mut total_size_in_bytes = 0;
-    for (_, tensor) in mmaped.content().tensor_infos.iter() {
+    for tensor in mmaped.content().tensor_infos.values() {
         let elem_count = tensor.shape.elem_count();
         total_size_in_bytes +=
             elem_count * tensor.ggml_dtype.type_size() / tensor.ggml_dtype.block_size();
@@ -298,7 +299,7 @@ fn main() -> anyhow::Result<()> {
     println!(
         "mmapped {:?} tensors ({}); header in {:.2}s",
         mmaped.content().tensor_infos.len(),
-        &format_size(total_size_in_bytes),
+        format_size(total_size_in_bytes),
         header_done.as_secs_f32(),
     );
 
@@ -320,7 +321,7 @@ fn main() -> anyhow::Result<()> {
         Which::DeepseekR1Qwen7B => format!("<｜User｜>{prompt_str}<｜Assistant｜>"),
         _ => format!("<|im_start|>user\n{prompt_str}<|im_end|>\n<|im_start|>assistant\n"),
     };
-    print!("formatted instruct prompt: {}", &prompt_str);
+    print!("formatted instruct prompt: {}", prompt_str);
     let tokens = tos
         .tokenizer()
         .encode(prompt_str, true)
@@ -380,7 +381,11 @@ fn main() -> anyhow::Result<()> {
         let mut last_logits: Vec<f32> = logits_flat[last_off..last_off + vocab].to_vec();
         if args.repeat_penalty != 1.0 {
             let start_at = all_tokens.len().saturating_sub(args.repeat_last_n);
-            apply_repeat_penalty(&mut last_logits, args.repeat_penalty, &all_tokens[start_at..]);
+            apply_repeat_penalty(
+                &mut last_logits,
+                args.repeat_penalty,
+                &all_tokens[start_at..],
+            );
         }
         next_token = sample(
             &last_logits,
@@ -451,7 +456,10 @@ fn sample(
     }
     let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let inv_t = 1.0 / temperature.max(1e-6);
-    let mut probs: Vec<f32> = logits.iter().map(|&x| ((x - max_l) * inv_t).exp()).collect();
+    let mut probs: Vec<f32> = logits
+        .iter()
+        .map(|&x| ((x - max_l) * inv_t).exp())
+        .collect();
     let sum: f32 = probs.iter().sum();
     for p in &mut probs {
         *p /= sum.max(1e-30);
@@ -494,7 +502,9 @@ fn sample(
     } else {
         return 0;
     }
-    let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    let mut state = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     state ^= state >> 33;
     state = state.wrapping_mul(0xff51_afd7_ed55_8ccd);
     state ^= state >> 33;

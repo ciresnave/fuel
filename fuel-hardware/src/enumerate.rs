@@ -8,8 +8,8 @@
 //! (`try_make_realizer` / `LazyRealizer`) stays in `fuel-core::factories`,
 //! because it constructs a `LazyTensor` realizer and must live above the IR.
 
-use fuel_ir::probe::{BackendId, DeviceDescriptor};
 use fuel_ir::Result;
+use fuel_ir::probe::{BackendId, DeviceDescriptor};
 
 /// One backend's device-enumeration capability. Implementors are zero-sized
 /// tags; enumeration delegates to the backend crate's `probe::enumerate_devices`.

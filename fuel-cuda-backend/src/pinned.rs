@@ -134,12 +134,10 @@ impl PinnedHostStorage {
             DType::F32 => Self::zeros_f32(dev, len),
             DType::F64 => Self::zeros_f64(dev, len),
             DType::F8E4M3 => Self::zeros_f8e4m3(dev, len),
-            dt => {
-                Err(Error::from(CudaError::UnsupportedDtype {
-                    dtype: dt,
-                    op: "PinnedHostStorage::zeros",
-                }))
-            }
+            dt => Err(Error::from(CudaError::UnsupportedDtype {
+                dtype: dt,
+                op: "PinnedHostStorage::zeros",
+            })),
         }
     }
 
@@ -226,22 +224,46 @@ impl PinnedHostStorage {
     /// match. Callers fill these before uploading; the read path goes
     /// through [`as_host_buffer_ref`](HostStorage::as_host_buffer_ref).
     pub fn as_mut_slice_u8(&mut self) -> Option<&mut [u8]> {
-        if let Self::U8(b) = self { Some(&mut **b) } else { None }
+        if let Self::U8(b) = self {
+            Some(&mut **b)
+        } else {
+            None
+        }
     }
     pub fn as_mut_slice_u32(&mut self) -> Option<&mut [u32]> {
-        if let Self::U32(b) = self { Some(&mut **b) } else { None }
+        if let Self::U32(b) = self {
+            Some(&mut **b)
+        } else {
+            None
+        }
     }
     pub fn as_mut_slice_f32(&mut self) -> Option<&mut [f32]> {
-        if let Self::F32(b) = self { Some(&mut **b) } else { None }
+        if let Self::F32(b) = self {
+            Some(&mut **b)
+        } else {
+            None
+        }
     }
     pub fn as_mut_slice_f16(&mut self) -> Option<&mut [f16]> {
-        if let Self::F16(b) = self { Some(&mut **b) } else { None }
+        if let Self::F16(b) = self {
+            Some(&mut **b)
+        } else {
+            None
+        }
     }
     pub fn as_mut_slice_bf16(&mut self) -> Option<&mut [bf16]> {
-        if let Self::BF16(b) = self { Some(&mut **b) } else { None }
+        if let Self::BF16(b) = self {
+            Some(&mut **b)
+        } else {
+            None
+        }
     }
     pub fn as_mut_slice_f64(&mut self) -> Option<&mut [f64]> {
-        if let Self::F64(b) = self { Some(&mut **b) } else { None }
+        if let Self::F64(b) = self {
+            Some(&mut **b)
+        } else {
+            None
+        }
     }
 }
 
@@ -274,4 +296,3 @@ impl HostStorage for PinnedHostStorage {
         Ok(self.as_host_buffer_ref()?.to_owned())
     }
 }
-

@@ -99,7 +99,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output_tokens = model.generate_streaming_with_kv_context(
         &prompt_tokens,
         max_new,
-        SamplingStrategy::Temperature { temp: 0.8, seed: 42 },
+        SamplingStrategy::Temperature {
+            temp: 0.8,
+            seed: 42,
+        },
         tokenizer.eos_id(),
         &device,
         DType::F32,
@@ -125,11 +128,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         elapsed,
         elapsed.as_secs_f64() / new_tokens.max(1) as f64,
     );
-    if let Some(eos) = tokenizer.eos_id() {
-        if output_tokens.last() == Some(&eos) {
+    if let Some(eos) = tokenizer.eos_id()
+        && output_tokens.last() == Some(&eos) {
             eprintln!("(stopped early on EOS token {eos})");
         }
-    }
 
     Ok(())
 }

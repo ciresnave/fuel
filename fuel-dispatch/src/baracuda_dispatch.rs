@@ -14,9 +14,9 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_ir::{Layout, Error, Result, probe::BackendId};
-use fuel_ir::dispatch::OpKind;
 use fuel_ir::DType;
+use fuel_ir::dispatch::OpKind;
+use fuel_ir::{Error, Layout, Result, probe::BackendId};
 
 use crate::kernel::{KernelBindingTable, OpParams};
 use fuel_memory::Storage;
@@ -83,9 +83,12 @@ macro_rules! cuda_unary_inplace_baracuda_wrapper {
         ) -> Result<()> {
             if !inputs.is_empty() || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
-                    concat!(stringify!($wrapper_name),
-                        ": expected 0 inputs + 1 output (target adopted by executor), got {} + {}"),
-                    inputs.len(), outputs.len(),
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": expected 0 inputs + 1 output (target adopted by executor), got {} + {}"
+                    ),
+                    inputs.len(),
+                    outputs.len(),
                 ))
                 .bt());
             }
@@ -159,14 +162,17 @@ macro_rules! cuda_rope_baracuda_wrapper {
                         stringify!($wrapper_name),
                         ": expected 1 input + 1 output, got {} + {}",
                     ),
-                    inputs.len(), outputs.len(),
+                    inputs.len(),
+                    outputs.len(),
                 ))
                 .bt());
             }
             let (outer_count, seq, head_dim) = match params {
-                OpParams::Rope { outer_count, seq, head_dim } => {
-                    (*outer_count, *seq, *head_dim)
-                }
+                OpParams::Rope {
+                    outer_count,
+                    seq,
+                    head_dim,
+                } => (*outer_count, *seq, *head_dim),
                 other => {
                     return Err(Error::Msg(format!(
                         concat!(
@@ -206,14 +212,18 @@ macro_rules! cuda_index_select_baracuda_wrapper {
                         stringify!($wrapper_name),
                         ": expected 2 inputs + 1 output, got {} + {}",
                     ),
-                    inputs.len(), outputs.len(),
+                    inputs.len(),
+                    outputs.len(),
                 ))
                 .bt());
             }
             let (outer_count, source_dim_size, n_indices, inner_count) = match params {
-                OpParams::IndexSelect { outer_count, source_dim_size, n_indices, inner_count } => {
-                    (*outer_count, *source_dim_size, *n_indices, *inner_count)
-                }
+                OpParams::IndexSelect {
+                    outer_count,
+                    source_dim_size,
+                    n_indices,
+                    inner_count,
+                } => (*outer_count, *source_dim_size, *n_indices, *inner_count),
                 other => {
                     return Err(Error::Msg(format!(
                         concat!(
@@ -229,10 +239,7 @@ macro_rules! cuda_index_select_baracuda_wrapper {
             let idx_guard = read_storage(&inputs[1])?;
             if idx_guard.dtype != DType::U32 {
                 return Err(Error::Msg(format!(
-                    concat!(
-                        stringify!($wrapper_name),
-                        ": indices must be U32, got {:?}",
-                    ),
+                    concat!(stringify!($wrapper_name), ": indices must be U32, got {:?}",),
                     idx_guard.dtype,
                 ))
                 .bt());
@@ -243,7 +250,13 @@ macro_rules! cuda_index_select_baracuda_wrapper {
             let out_cuda = cuda_output(&mut out_guard)?;
             // Write-into-output (CapturedRun): `_into` writes into outputs[0].
             $baracuda_fn(
-                src_cuda, idx_cuda, outer_count, source_dim_size, n_indices, inner_count, out_cuda,
+                src_cuda,
+                idx_cuda,
+                outer_count,
+                source_dim_size,
+                n_indices,
+                inner_count,
+                out_cuda,
             )
         }
     };
@@ -263,19 +276,30 @@ macro_rules! cuda_gather_baracuda_wrapper {
         ) -> Result<()> {
             if inputs.len() != 2 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
-                    concat!(stringify!($wrapper_name), ": expected 2 inputs + 1 output, got {} + {}"),
-                    inputs.len(), outputs.len(),
-                )).bt());
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": expected 2 inputs + 1 output, got {} + {}"
+                    ),
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             let (source_shape, output_shape, dim) = match params {
-                OpParams::Gather { source_shape, output_shape, dim } => {
-                    (source_shape.clone(), output_shape.clone(), *dim)
-                }
+                OpParams::Gather {
+                    source_shape,
+                    output_shape,
+                    dim,
+                } => (source_shape.clone(), output_shape.clone(), *dim),
                 other => {
                     return Err(Error::Msg(format!(
-                        concat!(stringify!($wrapper_name), ": expected OpParams::Gather, got {:?}"),
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": expected OpParams::Gather, got {:?}"
+                        ),
                         other,
-                    )).bt());
+                    ))
+                    .bt());
                 }
             };
             let src_guard = read_storage(&inputs[0])?;
@@ -284,7 +308,8 @@ macro_rules! cuda_gather_baracuda_wrapper {
                 return Err(Error::Msg(format!(
                     concat!(stringify!($wrapper_name), ": indices must be U32, got {:?}"),
                     idx_guard.dtype,
-                )).bt());
+                ))
+                .bt());
             }
             let mut out_guard = write_storage(&outputs[0])?;
             let src_cuda = cuda_input(&src_guard)?;
@@ -307,19 +332,30 @@ macro_rules! cuda_scatter_add_baracuda_wrapper {
         ) -> Result<()> {
             if inputs.len() != 3 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
-                    concat!(stringify!($wrapper_name), ": expected 3 inputs + 1 output, got {} + {}"),
-                    inputs.len(), outputs.len(),
-                )).bt());
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": expected 3 inputs + 1 output, got {} + {}"
+                    ),
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             let (base_shape, src_shape, dim) = match params {
-                OpParams::ScatterAdd { base_shape, src_shape, dim } => {
-                    (base_shape.clone(), src_shape.clone(), *dim)
-                }
+                OpParams::ScatterAdd {
+                    base_shape,
+                    src_shape,
+                    dim,
+                } => (base_shape.clone(), src_shape.clone(), *dim),
                 other => {
                     return Err(Error::Msg(format!(
-                        concat!(stringify!($wrapper_name), ": expected OpParams::ScatterAdd, got {:?}"),
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": expected OpParams::ScatterAdd, got {:?}"
+                        ),
                         other,
-                    )).bt());
+                    ))
+                    .bt());
                 }
             };
             let base_guard = read_storage(&inputs[0])?;
@@ -328,7 +364,8 @@ macro_rules! cuda_scatter_add_baracuda_wrapper {
                 return Err(Error::Msg(format!(
                     concat!(stringify!($wrapper_name), ": indices must be U32, got {:?}"),
                     idx_guard.dtype,
-                )).bt());
+                ))
+                .bt());
             }
             let src_guard = read_storage(&inputs[2])?;
             let mut out_guard = write_storage(&outputs[0])?;
@@ -353,17 +390,26 @@ macro_rules! cuda_masked_fill_baracuda_wrapper {
         ) -> Result<()> {
             if inputs.len() != 2 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
-                    concat!(stringify!($wrapper_name), ": expected 2 inputs + 1 output, got {} + {}"),
-                    inputs.len(), outputs.len(),
-                )).bt());
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": expected 2 inputs + 1 output, got {} + {}"
+                    ),
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             let fill_bytes = match params {
                 OpParams::MaskedFill { fill_bytes } => fill_bytes.clone(),
                 other => {
                     return Err(Error::Msg(format!(
-                        concat!(stringify!($wrapper_name), ": expected OpParams::MaskedFill, got {:?}"),
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": expected OpParams::MaskedFill, got {:?}"
+                        ),
                         other,
-                    )).bt());
+                    ))
+                    .bt());
                 }
             };
             let src_guard = read_storage(&inputs[0])?;
@@ -428,18 +474,29 @@ macro_rules! cuda_matmul_baracuda_wrapper {
                         stringify!($wrapper_name),
                         ": expected 2 inputs + 1 output, got {} + {}",
                     ),
-                    inputs.len(), outputs.len(),
-                )).bt());
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             let (lhs_batch_dims, rhs_batch_dims, m, n, k) = match params {
-                OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k, .. } => {
-                    (lhs_batch_dims.clone(), rhs_batch_dims.clone(), *m, *n, *k)
-                }
+                OpParams::Matmul {
+                    lhs_batch_dims,
+                    rhs_batch_dims,
+                    m,
+                    n,
+                    k,
+                    ..
+                } => (lhs_batch_dims.clone(), rhs_batch_dims.clone(), *m, *n, *k),
                 other => {
                     return Err(Error::Msg(format!(
-                        concat!(stringify!($wrapper_name), ": expected OpParams::Matmul, got {:?}"),
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": expected OpParams::Matmul, got {:?}"
+                        ),
                         other,
-                    )).bt());
+                    ))
+                    .bt());
                 }
             };
             let lhs_guard = read_storage(&inputs[0])?;
@@ -448,7 +505,13 @@ macro_rules! cuda_matmul_baracuda_wrapper {
             let lhs_cuda = cuda_input(&lhs_guard)?;
             let rhs_cuda = cuda_input(&rhs_guard)?;
             let result = $baracuda_fn(
-                lhs_cuda, rhs_cuda, &lhs_batch_dims, &rhs_batch_dims, m, n, k,
+                lhs_cuda,
+                rhs_cuda,
+                &lhs_batch_dims,
+                &rhs_batch_dims,
+                m,
+                n,
+                k,
             )?;
             let out_cuda = cuda_output(&mut out_guard)?;
             *out_cuda = result;
@@ -477,18 +540,29 @@ macro_rules! cuda_matmul_into_baracuda_wrapper {
                         stringify!($wrapper_name),
                         ": expected 2 inputs + 1 output, got {} + {}",
                     ),
-                    inputs.len(), outputs.len(),
-                )).bt());
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             let (lhs_batch_dims, rhs_batch_dims, m, n, k) = match params {
-                OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k, .. } => {
-                    (lhs_batch_dims.clone(), rhs_batch_dims.clone(), *m, *n, *k)
-                }
+                OpParams::Matmul {
+                    lhs_batch_dims,
+                    rhs_batch_dims,
+                    m,
+                    n,
+                    k,
+                    ..
+                } => (lhs_batch_dims.clone(), rhs_batch_dims.clone(), *m, *n, *k),
                 other => {
                     return Err(Error::Msg(format!(
-                        concat!(stringify!($wrapper_name), ": expected OpParams::Matmul, got {:?}"),
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": expected OpParams::Matmul, got {:?}"
+                        ),
                         other,
-                    )).bt());
+                    ))
+                    .bt());
                 }
             };
             let lhs_guard = read_storage(&inputs[0])?;
@@ -498,7 +572,14 @@ macro_rules! cuda_matmul_into_baracuda_wrapper {
             let rhs_cuda = cuda_input(&rhs_guard)?;
             let out_cuda = cuda_output(&mut out_guard)?;
             $baracuda_into_fn(
-                lhs_cuda, rhs_cuda, &lhs_batch_dims, &rhs_batch_dims, m, n, k, out_cuda,
+                lhs_cuda,
+                rhs_cuda,
+                &lhs_batch_dims,
+                &rhs_batch_dims,
+                m,
+                n,
+                k,
+                out_cuda,
             )
         }
     };
@@ -529,9 +610,9 @@ pub mod gemm_dense {
     use super::*;
     use fuel_cuda_backend::baracuda::gemm_dense as bk;
 
-    cuda_matmul_into_baracuda_wrapper!(matmul_f32,  bk::matmul_f32_into);
-    cuda_matmul_into_baracuda_wrapper!(matmul_f64,  bk::matmul_f64_into);
-    cuda_matmul_into_baracuda_wrapper!(matmul_f16,  bk::matmul_f16_into);
+    cuda_matmul_into_baracuda_wrapper!(matmul_f32, bk::matmul_f32_into);
+    cuda_matmul_into_baracuda_wrapper!(matmul_f64, bk::matmul_f64_into);
+    cuda_matmul_into_baracuda_wrapper!(matmul_f16, bk::matmul_f16_into);
     cuda_matmul_into_baracuda_wrapper!(matmul_bf16, bk::matmul_bf16_into);
 }
 
@@ -562,34 +643,36 @@ macro_rules! cuda_reduce_to_baracuda_wrapper {
                         stringify!($wrapper_name),
                         ": expected 1 input + 1 output, got {} + {}",
                     ),
-                    inputs.len(), outputs.len(),
-                )).bt());
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             let (input_shape, output_shape) = match params {
-                OpParams::$variant { input_shape, output_shape } => {
-                    (input_shape.clone(), output_shape.clone())
-                }
+                OpParams::$variant {
+                    input_shape,
+                    output_shape,
+                } => (input_shape.clone(), output_shape.clone()),
                 other => {
                     return Err(Error::Msg(format!(
                         concat!(
                             stringify!($wrapper_name),
-                            ": expected OpParams::", stringify!($variant), ", got {:?}",
+                            ": expected OpParams::",
+                            stringify!($variant),
+                            ", got {:?}",
                         ),
                         other,
-                    )).bt());
+                    ))
+                    .bt());
                 }
             };
             let input_layout = layouts.first().ok_or_else(|| {
-                Error::Msg(
-                    concat!(stringify!($wrapper_name), ": layouts empty").to_string(),
-                ).bt()
+                Error::Msg(concat!(stringify!($wrapper_name), ": layouts empty").to_string()).bt()
             })?;
             let in_guard = read_storage(&inputs[0])?;
             let mut out_guard = write_storage(&outputs[0])?;
             let src_cuda = cuda_input(&in_guard)?;
-            let result = $baracuda_fn(
-                src_cuda, input_layout, &input_shape, &output_shape,
-            )?;
+            let result = $baracuda_fn(src_cuda, input_layout, &input_shape, &output_shape)?;
             let out_cuda = cuda_output(&mut out_guard)?;
             *out_cuda = result;
             Ok(())
@@ -601,14 +684,14 @@ pub mod reduce_to {
     use super::*;
     use fuel_cuda_backend::baracuda::reduce_to as bk;
 
-    cuda_reduce_to_baracuda_wrapper!(sum_to_f32,  bk::reduce_sum_to_f32,  ReduceSumTo);
-    cuda_reduce_to_baracuda_wrapper!(sum_to_f64,  bk::reduce_sum_to_f64,  ReduceSumTo);
-    cuda_reduce_to_baracuda_wrapper!(sum_to_f16,  bk::reduce_sum_to_f16,  ReduceSumTo);
+    cuda_reduce_to_baracuda_wrapper!(sum_to_f32, bk::reduce_sum_to_f32, ReduceSumTo);
+    cuda_reduce_to_baracuda_wrapper!(sum_to_f64, bk::reduce_sum_to_f64, ReduceSumTo);
+    cuda_reduce_to_baracuda_wrapper!(sum_to_f16, bk::reduce_sum_to_f16, ReduceSumTo);
     cuda_reduce_to_baracuda_wrapper!(sum_to_bf16, bk::reduce_sum_to_bf16, ReduceSumTo);
 
-    cuda_reduce_to_baracuda_wrapper!(max_to_f32,  bk::reduce_max_to_f32,  ReduceMaxTo);
-    cuda_reduce_to_baracuda_wrapper!(max_to_f64,  bk::reduce_max_to_f64,  ReduceMaxTo);
-    cuda_reduce_to_baracuda_wrapper!(max_to_f16,  bk::reduce_max_to_f16,  ReduceMaxTo);
+    cuda_reduce_to_baracuda_wrapper!(max_to_f32, bk::reduce_max_to_f32, ReduceMaxTo);
+    cuda_reduce_to_baracuda_wrapper!(max_to_f64, bk::reduce_max_to_f64, ReduceMaxTo);
+    cuda_reduce_to_baracuda_wrapper!(max_to_f16, bk::reduce_max_to_f16, ReduceMaxTo);
     cuda_reduce_to_baracuda_wrapper!(max_to_bf16, bk::reduce_max_to_bf16, ReduceMaxTo);
 }
 
@@ -637,17 +720,24 @@ macro_rules! cuda_causal_conv1d_baracuda_wrapper {
                         ": expected 3 inputs (x, weight, bias), got {}",
                     ),
                     inputs.len(),
-                )).bt());
+                ))
+                .bt());
             }
             if outputs.len() != 1 {
                 return Err(Error::Msg(format!(
                     concat!(stringify!($wrapper_name), ": expected 1 output, got {}"),
                     outputs.len(),
-                )).bt());
+                ))
+                .bt());
             }
             let (batch, channels, seq_in, seq_out, kernel, use_silu) = match params {
                 OpParams::CausalConv1d {
-                    batch, channels, seq_in, seq_out, kernel, use_silu,
+                    batch,
+                    channels,
+                    seq_in,
+                    seq_out,
+                    kernel,
+                    use_silu,
                 } => (*batch, *channels, *seq_in, *seq_out, *kernel, *use_silu),
                 other => {
                     return Err(Error::Msg(format!(
@@ -656,19 +746,19 @@ macro_rules! cuda_causal_conv1d_baracuda_wrapper {
                             ": expected OpParams::CausalConv1d, got {:?}",
                         ),
                         other,
-                    )).bt());
+                    ))
+                    .bt());
                 }
             };
             let x_guard = read_storage(&inputs[0])?;
             let w_guard = read_storage(&inputs[1])?;
             let bias_guard = read_storage(&inputs[2])?;
             let mut out_guard = write_storage(&outputs[0])?;
-            let x_cuda    = cuda_input(&x_guard)?;
-            let w_cuda    = cuda_input(&w_guard)?;
+            let x_cuda = cuda_input(&x_guard)?;
+            let w_cuda = cuda_input(&w_guard)?;
             let bias_cuda = cuda_input(&bias_guard)?;
             let result = $baracuda_fn(
-                x_cuda, w_cuda, bias_cuda,
-                batch, channels, seq_in, seq_out, kernel, use_silu,
+                x_cuda, w_cuda, bias_cuda, batch, channels, seq_in, seq_out, kernel, use_silu,
             )?;
             let out_cuda = cuda_output(&mut out_guard)?;
             *out_cuda = result;
@@ -681,10 +771,10 @@ pub mod conv1d {
     use super::*;
     use fuel_cuda_backend::baracuda::mamba as bk;
 
-    cuda_causal_conv1d_baracuda_wrapper!(causal_conv1d_f32,  bk::causal_conv1d_fuel_prepad_f32);
-    cuda_causal_conv1d_baracuda_wrapper!(causal_conv1d_f64,  bk::causal_conv1d_fuel_prepad_f64);
+    cuda_causal_conv1d_baracuda_wrapper!(causal_conv1d_f32, bk::causal_conv1d_fuel_prepad_f32);
+    cuda_causal_conv1d_baracuda_wrapper!(causal_conv1d_f64, bk::causal_conv1d_fuel_prepad_f64);
     cuda_causal_conv1d_baracuda_wrapper!(causal_conv1d_bf16, bk::causal_conv1d_fuel_prepad_bf16);
-    cuda_causal_conv1d_baracuda_wrapper!(causal_conv1d_f16,  bk::causal_conv1d_fuel_prepad_f16);
+    cuda_causal_conv1d_baracuda_wrapper!(causal_conv1d_f16, bk::causal_conv1d_fuel_prepad_f16);
 }
 
 // ===========================================================================
@@ -705,31 +795,46 @@ macro_rules! cuda_arg_reduce_baracuda_wrapper {
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
-                    concat!(stringify!($wrapper_name), ": expected 1 input + 1 output, got {} + {}"),
-                    inputs.len(), outputs.len(),
-                )).bt());
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": expected 1 input + 1 output, got {} + {}"
+                    ),
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             let dim = match params {
                 OpParams::Reduce { dims, keepdim: _ } => {
                     if dims.len() != 1 {
                         return Err(Error::Msg(format!(
-                            concat!(stringify!($wrapper_name), ": expected a single reduce dim, got {:?}"),
+                            concat!(
+                                stringify!($wrapper_name),
+                                ": expected a single reduce dim, got {:?}"
+                            ),
                             dims,
-                        )).bt());
+                        ))
+                        .bt());
                     }
                     dims[0]
                 }
                 other => {
                     return Err(Error::Msg(format!(
-                        concat!(stringify!($wrapper_name), ": expected OpParams::Reduce, got {:?}"),
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": expected OpParams::Reduce, got {:?}"
+                        ),
                         other,
-                    )).bt());
+                    ))
+                    .bt());
                 }
             };
             let layout = layouts.first().ok_or_else(|| {
-                Error::Msg(format!(
-                    concat!(stringify!($wrapper_name), ": layouts empty"),
-                )).bt()
+                Error::Msg(format!(concat!(
+                    stringify!($wrapper_name),
+                    ": layouts empty"
+                ),))
+                .bt()
             })?;
             let in_guard = read_storage(&inputs[0])?;
             let mut out_guard = write_storage(&outputs[0])?;
@@ -775,17 +880,26 @@ macro_rules! cuda_powi_baracuda_wrapper {
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
-                    concat!(stringify!($wrapper_name), ": expected 1 input + 1 output, got {} + {}"),
-                    inputs.len(), outputs.len(),
-                )).bt());
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": expected 1 input + 1 output, got {} + {}"
+                    ),
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             let exp = match params {
                 OpParams::PowI { exp } => *exp,
                 other => {
                     return Err(Error::Msg(format!(
-                        concat!(stringify!($wrapper_name), ": expected OpParams::PowI, got {:?}"),
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": expected OpParams::PowI, got {:?}"
+                        ),
                         other,
-                    )).bt());
+                    ))
+                    .bt());
                 }
             };
             let layout = layouts.first();
@@ -823,17 +937,26 @@ macro_rules! cuda_powi_backward_baracuda_wrapper {
         ) -> Result<()> {
             if inputs.len() != 2 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
-                    concat!(stringify!($wrapper_name), ": expected 2 inputs + 1 output, got {} + {}"),
-                    inputs.len(), outputs.len(),
-                )).bt());
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": expected 2 inputs + 1 output, got {} + {}"
+                    ),
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             let exp = match params {
                 OpParams::PowI { exp } => *exp,
                 other => {
                     return Err(Error::Msg(format!(
-                        concat!(stringify!($wrapper_name), ": expected OpParams::PowI, got {:?}"),
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": expected OpParams::PowI, got {:?}"
+                        ),
                         other,
-                    )).bt());
+                    ))
+                    .bt());
                 }
             };
             let layout = layouts.first();
@@ -880,29 +1003,47 @@ macro_rules! cuda_clamp_baracuda_wrapper {
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
-                    concat!(stringify!($wrapper_name), ": expected 1 input + 1 output, got {} + {}"),
-                    inputs.len(), outputs.len(),
-                )).bt());
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": expected 1 input + 1 output, got {} + {}"
+                    ),
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             let (min_f64, max_f64) = match params {
                 OpParams::Clamp { min, max } => (*min, *max),
                 other => {
                     return Err(Error::Msg(format!(
-                        concat!(stringify!($wrapper_name), ": expected OpParams::Clamp, got {:?}"),
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": expected OpParams::Clamp, got {:?}"
+                        ),
                         other,
-                    )).bt());
+                    ))
+                    .bt());
                 }
             };
             let layout = layouts.first().ok_or_else(|| {
-                Error::Msg(concat!(
-                    stringify!($wrapper_name),
-                    ": Clamp requires an input layout (call with layouts[0])",
-                ).to_string()).bt()
+                Error::Msg(
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": Clamp requires an input layout (call with layouts[0])",
+                    )
+                    .to_string(),
+                )
+                .bt()
             })?;
             let in_guard = read_storage(&inputs[0])?;
             let mut out_guard = write_storage(&outputs[0])?;
             let src_cuda = cuda_input(&in_guard)?;
-            let result = $baracuda_fn(src_cuda, layout, min_f64 as $scalar_ty, max_f64 as $scalar_ty)?;
+            let result = $baracuda_fn(
+                src_cuda,
+                layout,
+                min_f64 as $scalar_ty,
+                max_f64 as $scalar_ty,
+            )?;
             let out_cuda = cuda_output(&mut out_guard)?;
             *out_cuda = result;
             Ok(())
@@ -940,18 +1081,26 @@ macro_rules! cuda_clamp_inplace_baracuda_wrapper {
         ) -> Result<()> {
             if !inputs.is_empty() || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
-                    concat!(stringify!($wrapper_name),
-                        ": expected 0 inputs + 1 output (target adopted by executor), got {} + {}"),
-                    inputs.len(), outputs.len(),
-                )).bt());
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": expected 0 inputs + 1 output (target adopted by executor), got {} + {}"
+                    ),
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             let (min_f64, max_f64) = match params {
                 OpParams::Clamp { min, max } => (*min, *max),
                 other => {
                     return Err(Error::Msg(format!(
-                        concat!(stringify!($wrapper_name), ": expected OpParams::Clamp, got {:?}"),
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": expected OpParams::Clamp, got {:?}"
+                        ),
                         other,
-                    )).bt());
+                    ))
+                    .bt());
                 }
             };
             let mut out_guard = write_storage(&outputs[0])?;
@@ -971,18 +1120,26 @@ macro_rules! cuda_powi_inplace_baracuda_wrapper {
         ) -> Result<()> {
             if !inputs.is_empty() || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
-                    concat!(stringify!($wrapper_name),
-                        ": expected 0 inputs + 1 output (target adopted by executor), got {} + {}"),
-                    inputs.len(), outputs.len(),
-                )).bt());
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": expected 0 inputs + 1 output (target adopted by executor), got {} + {}"
+                    ),
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             let exp = match params {
                 OpParams::PowI { exp } => *exp,
                 other => {
                     return Err(Error::Msg(format!(
-                        concat!(stringify!($wrapper_name), ": expected OpParams::PowI, got {:?}"),
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": expected OpParams::PowI, got {:?}"
+                        ),
                         other,
-                    )).bt());
+                    ))
+                    .bt());
                 }
             };
             let mut out_guard = write_storage(&outputs[0])?;
@@ -996,9 +1153,9 @@ pub mod clamp_inplace {
     use super::*;
     use fuel_cuda_backend::baracuda::clamp as bk;
 
-    cuda_clamp_inplace_baracuda_wrapper!(clamp_inplace_f32,  bk::clamp_inplace_f32,  f32);
-    cuda_clamp_inplace_baracuda_wrapper!(clamp_inplace_f64,  bk::clamp_inplace_f64,  f64);
-    cuda_clamp_inplace_baracuda_wrapper!(clamp_inplace_f16,  bk::clamp_inplace_f16,  f32);
+    cuda_clamp_inplace_baracuda_wrapper!(clamp_inplace_f32, bk::clamp_inplace_f32, f32);
+    cuda_clamp_inplace_baracuda_wrapper!(clamp_inplace_f64, bk::clamp_inplace_f64, f64);
+    cuda_clamp_inplace_baracuda_wrapper!(clamp_inplace_f16, bk::clamp_inplace_f16, f32);
     cuda_clamp_inplace_baracuda_wrapper!(clamp_inplace_bf16, bk::clamp_inplace_bf16, f32);
 }
 
@@ -1006,9 +1163,9 @@ pub mod powi_inplace {
     use super::*;
     use fuel_cuda_backend::baracuda::powi as bk;
 
-    cuda_powi_inplace_baracuda_wrapper!(powi_inplace_f32,  bk::powi_inplace_f32);
-    cuda_powi_inplace_baracuda_wrapper!(powi_inplace_f64,  bk::powi_inplace_f64);
-    cuda_powi_inplace_baracuda_wrapper!(powi_inplace_f16,  bk::powi_inplace_f16);
+    cuda_powi_inplace_baracuda_wrapper!(powi_inplace_f32, bk::powi_inplace_f32);
+    cuda_powi_inplace_baracuda_wrapper!(powi_inplace_f64, bk::powi_inplace_f64);
+    cuda_powi_inplace_baracuda_wrapper!(powi_inplace_f16, bk::powi_inplace_f16);
     cuda_powi_inplace_baracuda_wrapper!(powi_inplace_bf16, bk::powi_inplace_bf16);
 }
 
@@ -1043,25 +1200,35 @@ macro_rules! cuda_concat_baracuda_wrapper {
             params: &OpParams,
         ) -> Result<()> {
             if inputs.is_empty() {
-                return Err(Error::Msg(format!(
-                    concat!(stringify!($wrapper_name), ": at least 1 input required"),
-                )).bt());
+                return Err(Error::Msg(format!(concat!(
+                    stringify!($wrapper_name),
+                    ": at least 1 input required"
+                ),))
+                .bt());
             }
             if outputs.len() != 1 {
                 return Err(Error::Msg(format!(
                     concat!(stringify!($wrapper_name), ": expected 1 output, got {}"),
                     outputs.len(),
-                )).bt());
+                ))
+                .bt());
             }
             let (outer_count, input_dim_sizes, inner_count, axis) = match params {
-                OpParams::Concat { outer_count, input_dim_sizes, inner_count, axis } => {
-                    (*outer_count, input_dim_sizes.clone(), *inner_count, *axis)
-                }
+                OpParams::Concat {
+                    outer_count,
+                    input_dim_sizes,
+                    inner_count,
+                    axis,
+                } => (*outer_count, input_dim_sizes.clone(), *inner_count, *axis),
                 other => {
                     return Err(Error::Msg(format!(
-                        concat!(stringify!($wrapper_name), ": expected OpParams::Concat, got {:?}"),
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": expected OpParams::Concat, got {:?}"
+                        ),
                         other,
-                    )).bt());
+                    ))
+                    .bt());
                 }
             };
             if input_dim_sizes.len() != inputs.len() {
@@ -1072,7 +1239,8 @@ macro_rules! cuda_concat_baracuda_wrapper {
                     ),
                     input_dim_sizes.len(),
                     inputs.len(),
-                )).bt());
+                ))
+                .bt());
             }
             // When the executor supplies input layouts, take the
             // stride-aware path. The executor passes `layouts[0..N]`
@@ -1098,8 +1266,12 @@ macro_rules! cuda_concat_baracuda_wrapper {
                 let mut out_guard = write_storage(&outputs[0])?;
                 let out_cuda = cuda_output(&mut out_guard)?;
                 $baracuda_into_fn(
-                    &in_cudas, input_layouts, axis,
-                    outer_count, &input_dim_sizes, inner_count,
+                    &in_cudas,
+                    input_layouts,
+                    axis,
+                    outer_count,
+                    &input_dim_sizes,
+                    inner_count,
                     out_cuda,
                 )
             } else {
@@ -1108,8 +1280,12 @@ macro_rules! cuda_concat_baracuda_wrapper {
                 // any capture scope) — D2D-copy the chain's result into
                 // outputs[0] so its Arc identity is preserved.
                 let result = $baracuda_fn(
-                    &in_cudas, input_layouts, axis,
-                    outer_count, &input_dim_sizes, inner_count,
+                    &in_cudas,
+                    input_layouts,
+                    axis,
+                    outer_count,
+                    &input_dim_sizes,
+                    inner_count,
                 )?;
                 let mut out_guard = write_storage(&outputs[0])?;
                 let out_cuda = cuda_output(&mut out_guard)?;
@@ -1155,17 +1331,28 @@ macro_rules! cuda_write_slice_baracuda_wrapper {
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
-                    concat!(stringify!($wrapper_name), ": expected 1 input + 1 output, got {} + {}"),
-                    inputs.len(), outputs.len(),
-                )).bt());
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": expected 1 input + 1 output, got {} + {}"
+                    ),
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             let (dest_shape, ranges) = match params {
-                OpParams::WriteSlice { dest_shape, ranges, .. } => (dest_shape, ranges),
+                OpParams::WriteSlice {
+                    dest_shape, ranges, ..
+                } => (dest_shape, ranges),
                 other => {
                     return Err(Error::Msg(format!(
-                        concat!(stringify!($wrapper_name), ": expected OpParams::WriteSlice, got {:?}"),
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": expected OpParams::WriteSlice, got {:?}"
+                        ),
                         other,
-                    )).bt());
+                    ))
+                    .bt());
                 }
             };
             // Derive source_shape + range_start from the ranges. The
@@ -1192,10 +1379,10 @@ pub mod write_slice {
     use super::*;
     use fuel_cuda_backend::baracuda::write_slice as bk;
 
-    cuda_write_slice_baracuda_wrapper!(write_slice_b1,  bk::write_slice_b1);
-    cuda_write_slice_baracuda_wrapper!(write_slice_b2,  bk::write_slice_b2);
-    cuda_write_slice_baracuda_wrapper!(write_slice_b4,  bk::write_slice_b4);
-    cuda_write_slice_baracuda_wrapper!(write_slice_b8,  bk::write_slice_b8);
+    cuda_write_slice_baracuda_wrapper!(write_slice_b1, bk::write_slice_b1);
+    cuda_write_slice_baracuda_wrapper!(write_slice_b2, bk::write_slice_b2);
+    cuda_write_slice_baracuda_wrapper!(write_slice_b4, bk::write_slice_b4);
+    cuda_write_slice_baracuda_wrapper!(write_slice_b8, bk::write_slice_b8);
     cuda_write_slice_baracuda_wrapper!(write_slice_b16, bk::write_slice_b16);
 }
 
@@ -1228,27 +1415,44 @@ macro_rules! cuda_write_slice_rotating_baracuda_wrapper {
         ) -> Result<()> {
             if inputs.len() != 2 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
-                    concat!(stringify!($wrapper_name), ": expected 2 inputs (source, position) + 1 output (dest), got {} + {}"),
-                    inputs.len(), outputs.len(),
-                )).bt());
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": expected 2 inputs (source, position) + 1 output (dest), got {} + {}"
+                    ),
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             let (dest_shape, axis, modulus, ranges) = match params {
-                OpParams::WriteSliceRotating { dest_shape, axis, modulus, ranges } => {
-                    (dest_shape, *axis, *modulus, ranges)
-                }
+                OpParams::WriteSliceRotating {
+                    dest_shape,
+                    axis,
+                    modulus,
+                    ranges,
+                } => (dest_shape, *axis, *modulus, ranges),
                 other => {
                     return Err(Error::Msg(format!(
-                        concat!(stringify!($wrapper_name), ": expected OpParams::WriteSliceRotating, got {:?}"),
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": expected OpParams::WriteSliceRotating, got {:?}"
+                        ),
                         other,
-                    )).bt());
+                    ))
+                    .bt());
                 }
             };
             let rank = dest_shape.len();
             if ranges.len() != rank {
                 return Err(Error::Msg(format!(
-                    concat!(stringify!($wrapper_name), ": ranges.len() {} != dest rank {}"),
-                    ranges.len(), rank,
-                )).bt());
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": ranges.len() {} != dest rank {}"
+                    ),
+                    ranges.len(),
+                    rank,
+                ))
+                .bt());
             }
 
             // D2H the 4-byte position scalar.
@@ -1257,11 +1461,17 @@ macro_rules! cuda_write_slice_rotating_baracuda_wrapper {
             let pos_bytes = pos_cuda.to_cpu_bytes()?;
             if pos_bytes.len() < 4 {
                 return Err(Error::Msg(format!(
-                    concat!(stringify!($wrapper_name), ": position storage has {} bytes, need >= 4"),
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": position storage has {} bytes, need >= 4"
+                    ),
                     pos_bytes.len(),
-                )).bt());
+                ))
+                .bt());
             }
-            let position = u32::from_ne_bytes([pos_bytes[0], pos_bytes[1], pos_bytes[2], pos_bytes[3]]) as usize;
+            let position =
+                u32::from_ne_bytes([pos_bytes[0], pos_bytes[1], pos_bytes[2], pos_bytes[3]])
+                    as usize;
             let wrapped_start = position % modulus;
 
             // Derive slab_shape from ranges; v1 forces axis=0 so the
@@ -1270,16 +1480,27 @@ macro_rules! cuda_write_slice_rotating_baracuda_wrapper {
             for (i, &(start, end)) in ranges.iter().enumerate() {
                 if end < start {
                     return Err(Error::Msg(format!(
-                        concat!(stringify!($wrapper_name), ": ranges[{i}] = ({start}, {end}) has end < start"),
-                        i = i, start = start, end = end,
-                    )).bt());
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": ranges[{i}] = ({start}, {end}) has end < start"
+                        ),
+                        i = i,
+                        start = start,
+                        end = end,
+                    ))
+                    .bt());
                 }
                 let slab = end - start;
                 if i == axis && slab > modulus {
                     return Err(Error::Msg(format!(
-                        concat!(stringify!($wrapper_name), ": rotating-axis slab {slab} > modulus {modulus}"),
-                        slab = slab, modulus = modulus,
-                    )).bt());
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": rotating-axis slab {slab} > modulus {modulus}"
+                        ),
+                        slab = slab,
+                        modulus = modulus,
+                    ))
+                    .bt());
                 }
                 slab_shape.push(slab);
             }
@@ -1306,7 +1527,10 @@ macro_rules! cuda_write_slice_rotating_baracuda_wrapper {
             if first_len > 0 {
                 let chunk_row_bytes = first_len * row_bytes;
                 let src_first = src_cuda.extract_strided_to_new(
-                    outer_count, stride_bytes, /* offset_in_outer */ 0, chunk_row_bytes,
+                    outer_count,
+                    stride_bytes,
+                    /* offset_in_outer */ 0,
+                    chunk_row_bytes,
                 )?;
                 let mut sub_source_shape = slab_shape.clone();
                 sub_source_shape[axis] = first_len;
@@ -1315,13 +1539,22 @@ macro_rules! cuda_write_slice_rotating_baracuda_wrapper {
 
                 let mut out_guard = write_storage(&outputs[0])?;
                 let dest_cuda = cuda_output(&mut out_guard)?;
-                $baracuda_fn(dest_cuda, &src_first, dest_shape, &sub_source_shape, &sub_range_start)?;
+                $baracuda_fn(
+                    dest_cuda,
+                    &src_first,
+                    dest_shape,
+                    &sub_source_shape,
+                    &sub_range_start,
+                )?;
             }
             if second_len > 0 {
                 let chunk_row_bytes = second_len * row_bytes;
                 let offset_in_outer = first_len * row_bytes;
                 let src_second = src_cuda.extract_strided_to_new(
-                    outer_count, stride_bytes, offset_in_outer, chunk_row_bytes,
+                    outer_count,
+                    stride_bytes,
+                    offset_in_outer,
+                    chunk_row_bytes,
                 )?;
                 let mut sub_source_shape = slab_shape.clone();
                 sub_source_shape[axis] = second_len;
@@ -1330,7 +1563,13 @@ macro_rules! cuda_write_slice_rotating_baracuda_wrapper {
 
                 let mut out_guard = write_storage(&outputs[0])?;
                 let dest_cuda = cuda_output(&mut out_guard)?;
-                $baracuda_fn(dest_cuda, &src_second, dest_shape, &sub_source_shape, &sub_range_start)?;
+                $baracuda_fn(
+                    dest_cuda,
+                    &src_second,
+                    dest_shape,
+                    &sub_source_shape,
+                    &sub_range_start,
+                )?;
             }
             Ok(())
         }
@@ -1341,10 +1580,10 @@ pub mod write_slice_rotating {
     use super::*;
     use fuel_cuda_backend::baracuda::write_slice as bk;
 
-    cuda_write_slice_rotating_baracuda_wrapper!(write_slice_rotating_b1,  bk::write_slice_b1,   1);
-    cuda_write_slice_rotating_baracuda_wrapper!(write_slice_rotating_b2,  bk::write_slice_b2,   2);
-    cuda_write_slice_rotating_baracuda_wrapper!(write_slice_rotating_b4,  bk::write_slice_b4,   4);
-    cuda_write_slice_rotating_baracuda_wrapper!(write_slice_rotating_b8,  bk::write_slice_b8,   8);
+    cuda_write_slice_rotating_baracuda_wrapper!(write_slice_rotating_b1, bk::write_slice_b1, 1);
+    cuda_write_slice_rotating_baracuda_wrapper!(write_slice_rotating_b2, bk::write_slice_b2, 2);
+    cuda_write_slice_rotating_baracuda_wrapper!(write_slice_rotating_b4, bk::write_slice_b4, 4);
+    cuda_write_slice_rotating_baracuda_wrapper!(write_slice_rotating_b8, bk::write_slice_b8, 8);
     cuda_write_slice_rotating_baracuda_wrapper!(write_slice_rotating_b16, bk::write_slice_b16, 16);
 }
 
@@ -1370,33 +1609,53 @@ macro_rules! cuda_write_slice_doff_baracuda_wrapper {
         ) -> Result<()> {
             if inputs.len() != 2 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
-                    concat!(stringify!($wrapper_name), ": expected 2 inputs (source, offset) + 1 output (dest), got {} + {}"),
-                    inputs.len(), outputs.len(),
-                )).bt());
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": expected 2 inputs (source, offset) + 1 output (dest), got {} + {}"
+                    ),
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             let (dest_shape, axis, ranges) = match params {
-                OpParams::WriteSliceDoff { dest_shape, axis, ranges } => {
-                    (dest_shape, *axis, ranges)
-                }
+                OpParams::WriteSliceDoff {
+                    dest_shape,
+                    axis,
+                    ranges,
+                } => (dest_shape, *axis, ranges),
                 other => {
                     return Err(Error::Msg(format!(
-                        concat!(stringify!($wrapper_name), ": expected OpParams::WriteSliceDoff, got {:?}"),
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": expected OpParams::WriteSliceDoff, got {:?}"
+                        ),
                         other,
-                    )).bt());
+                    ))
+                    .bt());
                 }
             };
             let rank = dest_shape.len();
             if ranges.len() != rank {
                 return Err(Error::Msg(format!(
-                    concat!(stringify!($wrapper_name), ": ranges.len() {} != dest rank {}"),
-                    ranges.len(), rank,
-                )).bt());
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": ranges.len() {} != dest rank {}"
+                    ),
+                    ranges.len(),
+                    rank,
+                ))
+                .bt());
             }
             if axis >= rank {
                 return Err(Error::Msg(format!(
-                    concat!(stringify!($wrapper_name), ": axis {} out of bounds for rank {}"),
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": axis {} out of bounds for rank {}"
+                    ),
                     axis, rank,
-                )).bt());
+                ))
+                .bt());
             }
             // Derive source_shape (slab widths) + range_start (off-axis
             // starts; the axis slot is a placeholder — the true start is
@@ -1406,9 +1665,13 @@ macro_rules! cuda_write_slice_doff_baracuda_wrapper {
             for &(start, end) in ranges.iter() {
                 if end < start {
                     return Err(Error::Msg(format!(
-                        concat!(stringify!($wrapper_name), ": range ({}, {}) has end < start"),
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": range ({}, {}) has end < start"
+                        ),
                         start, end,
-                    )).bt());
+                    ))
+                    .bt());
                 }
                 source_shape.push(end - start);
                 range_start.push(start);
@@ -1424,15 +1687,24 @@ macro_rules! cuda_write_slice_doff_baracuda_wrapper {
             let off_cuda = cuda_input(&off_guard)?;
             if off_cuda.len_bytes() < 8 {
                 return Err(Error::Msg(format!(
-                    concat!(stringify!($wrapper_name), ": offset storage has {} bytes, need >= 8 (I64)"),
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": offset storage has {} bytes, need >= 8 (I64)"
+                    ),
                     off_cuda.len_bytes(),
-                )).bt());
+                ))
+                .bt());
             }
             let dyn_start_dev = off_cuda.buffer().as_raw().0 as *const i64;
             let dest_cuda = cuda_output(&mut out_guard)?;
             $baracuda_fn(
-                dest_cuda, src_cuda, dest_shape, &source_shape, &range_start,
-                axis, dyn_start_dev,
+                dest_cuda,
+                src_cuda,
+                dest_shape,
+                &source_shape,
+                &range_start,
+                axis,
+                dyn_start_dev,
             )
         }
     };
@@ -1467,19 +1739,31 @@ macro_rules! cuda_triangular_baracuda_wrapper {
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
-                    concat!(stringify!($wrapper_name), ": expected 1 input + 1 output, got {} + {}"),
-                    inputs.len(), outputs.len(),
-                )).bt());
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": expected 1 input + 1 output, got {} + {}"
+                    ),
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             let (batch, rows, cols, diag) = match params {
-                OpParams::Triangular { batch_count, rows, cols, diagonal } => {
-                    (*batch_count, *rows, *cols, *diagonal)
-                }
+                OpParams::Triangular {
+                    batch_count,
+                    rows,
+                    cols,
+                    diagonal,
+                } => (*batch_count, *rows, *cols, *diagonal),
                 other => {
                     return Err(Error::Msg(format!(
-                        concat!(stringify!($wrapper_name), ": expected OpParams::Triangular, got {:?}"),
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": expected OpParams::Triangular, got {:?}"
+                        ),
                         other,
-                    )).bt());
+                    ))
+                    .bt());
                 }
             };
             let layout = layouts.first();
@@ -1499,21 +1783,21 @@ pub mod triangular {
     use fuel_cuda_backend::baracuda::triangular as bk;
 
     // Triu
-    cuda_triangular_baracuda_wrapper!(triu_f32,  bk::triu_f32);
-    cuda_triangular_baracuda_wrapper!(triu_f64,  bk::triu_f64);
-    cuda_triangular_baracuda_wrapper!(triu_f16,  bk::triu_f16);
+    cuda_triangular_baracuda_wrapper!(triu_f32, bk::triu_f32);
+    cuda_triangular_baracuda_wrapper!(triu_f64, bk::triu_f64);
+    cuda_triangular_baracuda_wrapper!(triu_f16, bk::triu_f16);
     cuda_triangular_baracuda_wrapper!(triu_bf16, bk::triu_bf16);
-    cuda_triangular_baracuda_wrapper!(triu_i32,  bk::triu_i32);
-    cuda_triangular_baracuda_wrapper!(triu_i64,  bk::triu_i64);
+    cuda_triangular_baracuda_wrapper!(triu_i32, bk::triu_i32);
+    cuda_triangular_baracuda_wrapper!(triu_i64, bk::triu_i64);
     cuda_triangular_baracuda_wrapper!(triu_bool, bk::triu_bool);
 
     // Tril
-    cuda_triangular_baracuda_wrapper!(tril_f32,  bk::tril_f32);
-    cuda_triangular_baracuda_wrapper!(tril_f64,  bk::tril_f64);
-    cuda_triangular_baracuda_wrapper!(tril_f16,  bk::tril_f16);
+    cuda_triangular_baracuda_wrapper!(tril_f32, bk::tril_f32);
+    cuda_triangular_baracuda_wrapper!(tril_f64, bk::tril_f64);
+    cuda_triangular_baracuda_wrapper!(tril_f16, bk::tril_f16);
     cuda_triangular_baracuda_wrapper!(tril_bf16, bk::tril_bf16);
-    cuda_triangular_baracuda_wrapper!(tril_i32,  bk::tril_i32);
-    cuda_triangular_baracuda_wrapper!(tril_i64,  bk::tril_i64);
+    cuda_triangular_baracuda_wrapper!(tril_i32, bk::tril_i32);
+    cuda_triangular_baracuda_wrapper!(tril_i64, bk::tril_i64);
     cuda_triangular_baracuda_wrapper!(tril_bool, bk::tril_bool);
 }
 
@@ -1531,19 +1815,31 @@ macro_rules! cuda_flip_baracuda_wrapper {
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
-                    concat!(stringify!($wrapper_name), ": expected 1 input + 1 output, got {} + {}"),
-                    inputs.len(), outputs.len(),
-                )).bt());
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": expected 1 input + 1 output, got {} + {}"
+                    ),
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             let (outer, dim_size, inner, axis) = match params {
-                OpParams::Flip { outer_count, dim_size, inner_count, axis } => {
-                    (*outer_count, *dim_size, *inner_count, *axis)
-                }
+                OpParams::Flip {
+                    outer_count,
+                    dim_size,
+                    inner_count,
+                    axis,
+                } => (*outer_count, *dim_size, *inner_count, *axis),
                 other => {
                     return Err(Error::Msg(format!(
-                        concat!(stringify!($wrapper_name), ": expected OpParams::Flip, got {:?}"),
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": expected OpParams::Flip, got {:?}"
+                        ),
                         other,
-                    )).bt());
+                    ))
+                    .bt());
                 }
             };
             let layout = layouts.first();
@@ -1562,9 +1858,9 @@ pub mod flip {
     use super::*;
     use fuel_cuda_backend::baracuda::flip as bk;
 
-    cuda_flip_baracuda_wrapper!(flip_f32,  bk::flip_f32);
-    cuda_flip_baracuda_wrapper!(flip_f64,  bk::flip_f64);
-    cuda_flip_baracuda_wrapper!(flip_f16,  bk::flip_f16);
+    cuda_flip_baracuda_wrapper!(flip_f32, bk::flip_f32);
+    cuda_flip_baracuda_wrapper!(flip_f64, bk::flip_f64);
+    cuda_flip_baracuda_wrapper!(flip_f16, bk::flip_f16);
     cuda_flip_baracuda_wrapper!(flip_bf16, bk::flip_bf16);
 }
 
@@ -1582,19 +1878,32 @@ macro_rules! cuda_roll_baracuda_wrapper {
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
-                    concat!(stringify!($wrapper_name), ": expected 1 input + 1 output, got {} + {}"),
-                    inputs.len(), outputs.len(),
-                )).bt());
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": expected 1 input + 1 output, got {} + {}"
+                    ),
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             let (outer, dim_size, inner, shift, axis) = match params {
-                OpParams::Roll { outer_count, dim_size, inner_count, shift, axis } => {
-                    (*outer_count, *dim_size, *inner_count, *shift, *axis)
-                }
+                OpParams::Roll {
+                    outer_count,
+                    dim_size,
+                    inner_count,
+                    shift,
+                    axis,
+                } => (*outer_count, *dim_size, *inner_count, *shift, *axis),
                 other => {
                     return Err(Error::Msg(format!(
-                        concat!(stringify!($wrapper_name), ": expected OpParams::Roll, got {:?}"),
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": expected OpParams::Roll, got {:?}"
+                        ),
                         other,
-                    )).bt());
+                    ))
+                    .bt());
                 }
             };
             let layout = layouts.first();
@@ -1613,9 +1922,9 @@ pub mod roll {
     use super::*;
     use fuel_cuda_backend::baracuda::roll as bk;
 
-    cuda_roll_baracuda_wrapper!(roll_f32,  bk::roll_f32);
-    cuda_roll_baracuda_wrapper!(roll_f64,  bk::roll_f64);
-    cuda_roll_baracuda_wrapper!(roll_f16,  bk::roll_f16);
+    cuda_roll_baracuda_wrapper!(roll_f32, bk::roll_f32);
+    cuda_roll_baracuda_wrapper!(roll_f64, bk::roll_f64);
+    cuda_roll_baracuda_wrapper!(roll_f16, bk::roll_f16);
     cuda_roll_baracuda_wrapper!(roll_bf16, bk::roll_bf16);
 }
 
@@ -1634,19 +1943,31 @@ macro_rules! cuda_cumsum_baracuda_wrapper {
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
-                    concat!(stringify!($wrapper_name), ": expected 1 input + 1 output, got {} + {}"),
-                    inputs.len(), outputs.len(),
-                )).bt());
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": expected 1 input + 1 output, got {} + {}"
+                    ),
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             let (outer, dim_size, inner, axis) = match params {
-                OpParams::CumSum { outer_count, dim_size, inner_count, axis } => {
-                    (*outer_count, *dim_size, *inner_count, *axis)
-                }
+                OpParams::CumSum {
+                    outer_count,
+                    dim_size,
+                    inner_count,
+                    axis,
+                } => (*outer_count, *dim_size, *inner_count, *axis),
                 other => {
                     return Err(Error::Msg(format!(
-                        concat!(stringify!($wrapper_name), ": expected OpParams::CumSum, got {:?}"),
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": expected OpParams::CumSum, got {:?}"
+                        ),
                         other,
-                    )).bt());
+                    ))
+                    .bt());
                 }
             };
             let layout = layouts.first();
@@ -1665,9 +1986,9 @@ pub mod cumsum {
     use super::*;
     use fuel_cuda_backend::baracuda::cumsum as bk;
 
-    cuda_cumsum_baracuda_wrapper!(cumsum_f32,  bk::cumsum_f32);
-    cuda_cumsum_baracuda_wrapper!(cumsum_f64,  bk::cumsum_f64);
-    cuda_cumsum_baracuda_wrapper!(cumsum_f16,  bk::cumsum_f16);
+    cuda_cumsum_baracuda_wrapper!(cumsum_f32, bk::cumsum_f32);
+    cuda_cumsum_baracuda_wrapper!(cumsum_f64, bk::cumsum_f64);
+    cuda_cumsum_baracuda_wrapper!(cumsum_f16, bk::cumsum_f16);
     cuda_cumsum_baracuda_wrapper!(cumsum_bf16, bk::cumsum_bf16);
 }
 
@@ -1684,32 +2005,42 @@ pub mod cumsum {
 fn decode_fill_f32(b: &[u8]) -> Result<f32> {
     if b.len() != 4 {
         return Err(Error::Msg(format!(
-            "pad_constant_f32: fill_bytes.len()={} != 4", b.len(),
-        )).bt());
+            "pad_constant_f32: fill_bytes.len()={} != 4",
+            b.len(),
+        ))
+        .bt());
     }
     Ok(f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
 }
 fn decode_fill_f64(b: &[u8]) -> Result<f64> {
     if b.len() != 8 {
         return Err(Error::Msg(format!(
-            "pad_constant_f64: fill_bytes.len()={} != 8", b.len(),
-        )).bt());
+            "pad_constant_f64: fill_bytes.len()={} != 8",
+            b.len(),
+        ))
+        .bt());
     }
-    Ok(f64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]))
+    Ok(f64::from_le_bytes([
+        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+    ]))
 }
 fn decode_fill_f16(b: &[u8]) -> Result<half::f16> {
     if b.len() != 2 {
         return Err(Error::Msg(format!(
-            "pad_constant_f16: fill_bytes.len()={} != 2", b.len(),
-        )).bt());
+            "pad_constant_f16: fill_bytes.len()={} != 2",
+            b.len(),
+        ))
+        .bt());
     }
     Ok(half::f16::from_le_bytes([b[0], b[1]]))
 }
 fn decode_fill_bf16(b: &[u8]) -> Result<half::bf16> {
     if b.len() != 2 {
         return Err(Error::Msg(format!(
-            "pad_constant_bf16: fill_bytes.len()={} != 2", b.len(),
-        )).bt());
+            "pad_constant_bf16: fill_bytes.len()={} != 2",
+            b.len(),
+        ))
+        .bt());
     }
     Ok(half::bf16::from_le_bytes([b[0], b[1]]))
 }
@@ -1728,19 +2059,32 @@ macro_rules! cuda_pad_baracuda_wrapper {
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
-                    concat!(stringify!($wrapper_name), ": expected 1 input + 1 output, got {} + {}"),
-                    inputs.len(), outputs.len(),
-                )).bt());
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": expected 1 input + 1 output, got {} + {}"
+                    ),
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             let (in_shape, out_shape, padding, mode_tag, fill_bytes) = match params {
-                OpParams::Pad { in_shape, out_shape, padding, mode_tag, fill_bytes } => {
-                    (in_shape, out_shape, padding, *mode_tag, fill_bytes)
-                }
+                OpParams::Pad {
+                    in_shape,
+                    out_shape,
+                    padding,
+                    mode_tag,
+                    fill_bytes,
+                } => (in_shape, out_shape, padding, *mode_tag, fill_bytes),
                 other => {
                     return Err(Error::Msg(format!(
-                        concat!(stringify!($wrapper_name), ": expected OpParams::Pad, got {:?}"),
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": expected OpParams::Pad, got {:?}"
+                        ),
                         other,
-                    )).bt());
+                    ))
+                    .bt());
                 }
             };
             let in_guard = read_storage(&inputs[0])?;
@@ -1755,10 +2099,14 @@ macro_rules! cuda_pad_baracuda_wrapper {
                 2 => $replicate_fn(src_cuda, in_shape, out_shape, padding)?,
                 other => {
                     return Err(Error::Msg(format!(
-                        concat!(stringify!($wrapper_name), ": mode_tag {} not supported \
-                         (Constant=0, Reflect=1, Replicate=2; Circular=3 not yet)"),
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": mode_tag {} not supported \
+                         (Constant=0, Reflect=1, Replicate=2; Circular=3 not yet)"
+                        ),
                         other,
-                    )).bt());
+                    ))
+                    .bt());
                 }
             };
             let out_cuda = cuda_output(&mut out_guard)?;
@@ -1781,27 +2129,43 @@ macro_rules! cuda_pad_backward_baracuda_wrapper {
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
-                    concat!(stringify!($wrapper_name), ": expected 1 input + 1 output, got {} + {}"),
-                    inputs.len(), outputs.len(),
-                )).bt());
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": expected 1 input + 1 output, got {} + {}"
+                    ),
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             let (in_shape, out_shape, padding, mode_tag) = match params {
-                OpParams::PadBackward { in_shape, out_shape, padding, mode_tag } => {
-                    (in_shape, out_shape, padding, *mode_tag)
-                }
+                OpParams::PadBackward {
+                    in_shape,
+                    out_shape,
+                    padding,
+                    mode_tag,
+                } => (in_shape, out_shape, padding, *mode_tag),
                 other => {
                     return Err(Error::Msg(format!(
-                        concat!(stringify!($wrapper_name), ": expected OpParams::PadBackward, got {:?}"),
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": expected OpParams::PadBackward, got {:?}"
+                        ),
                         other,
-                    )).bt());
+                    ))
+                    .bt());
                 }
             };
             if mode_tag != 0 {
                 return Err(Error::Msg(format!(
-                    concat!(stringify!($wrapper_name), ": only Constant-mode backward (tag 0) supported \
-                     on CUDA today, got mode_tag {}"),
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": only Constant-mode backward (tag 0) supported \
+                     on CUDA today, got mode_tag {}"
+                    ),
                     mode_tag,
-                )).bt());
+                ))
+                .bt());
             }
             // OpParams::PadBackward layout: in_shape = forward x shape
             // (= dx shape), out_shape = forward y shape (= dy shape).
@@ -1826,28 +2190,36 @@ pub mod pad {
 
     cuda_pad_baracuda_wrapper!(
         pad_f32,
-        bk::pad_constant_f32, bk::pad_reflect_f32, bk::pad_replicate_f32,
+        bk::pad_constant_f32,
+        bk::pad_reflect_f32,
+        bk::pad_replicate_f32,
         super::decode_fill_f32
     );
     cuda_pad_baracuda_wrapper!(
         pad_f64,
-        bk::pad_constant_f64, bk::pad_reflect_f64, bk::pad_replicate_f64,
+        bk::pad_constant_f64,
+        bk::pad_reflect_f64,
+        bk::pad_replicate_f64,
         super::decode_fill_f64
     );
     cuda_pad_baracuda_wrapper!(
         pad_f16,
-        bk::pad_constant_f16, bk::pad_reflect_f16, bk::pad_replicate_f16,
+        bk::pad_constant_f16,
+        bk::pad_reflect_f16,
+        bk::pad_replicate_f16,
         super::decode_fill_f16
     );
     cuda_pad_baracuda_wrapper!(
         pad_bf16,
-        bk::pad_constant_bf16, bk::pad_reflect_bf16, bk::pad_replicate_bf16,
+        bk::pad_constant_bf16,
+        bk::pad_reflect_bf16,
+        bk::pad_replicate_bf16,
         super::decode_fill_bf16
     );
 
-    cuda_pad_backward_baracuda_wrapper!(pad_backward_f32,  bk::pad_backward_f32);
-    cuda_pad_backward_baracuda_wrapper!(pad_backward_f64,  bk::pad_backward_f64);
-    cuda_pad_backward_baracuda_wrapper!(pad_backward_f16,  bk::pad_backward_f16);
+    cuda_pad_backward_baracuda_wrapper!(pad_backward_f32, bk::pad_backward_f32);
+    cuda_pad_backward_baracuda_wrapper!(pad_backward_f64, bk::pad_backward_f64);
+    cuda_pad_backward_baracuda_wrapper!(pad_backward_f16, bk::pad_backward_f16);
     cuda_pad_backward_baracuda_wrapper!(pad_backward_bf16, bk::pad_backward_bf16);
 }
 
@@ -1871,17 +2243,26 @@ macro_rules! cuda_affine_baracuda_wrapper {
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
-                    concat!(stringify!($wrapper_name), ": expected 1 input + 1 output, got {} + {}"),
-                    inputs.len(), outputs.len(),
-                )).bt());
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": expected 1 input + 1 output, got {} + {}"
+                    ),
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             let (mul_f64, add_f64) = match params {
                 OpParams::Affine { mul, add } => (*mul, *add),
                 other => {
                     return Err(Error::Msg(format!(
-                        concat!(stringify!($wrapper_name), ": expected OpParams::Affine, got {:?}"),
+                        concat!(
+                            stringify!($wrapper_name),
+                            ": expected OpParams::Affine, got {:?}"
+                        ),
                         other,
-                    )).bt());
+                    ))
+                    .bt());
                 }
             };
             let cast = $scalar_cast;
@@ -1956,14 +2337,16 @@ pub mod affine {
         };
     }
 
+    cuda_affine_inplace_baracuda_wrapper!(affine_inplace_f32, bk::affine_inplace_f32, |v: f64| v
+        as f32);
+    cuda_affine_inplace_baracuda_wrapper!(affine_inplace_f64, bk::affine_inplace_f64, |v: f64| v);
     cuda_affine_inplace_baracuda_wrapper!(
-        affine_inplace_f32, bk::affine_inplace_f32, |v: f64| v as f32);
-    cuda_affine_inplace_baracuda_wrapper!(
-        affine_inplace_f64, bk::affine_inplace_f64, |v: f64| v);
-    cuda_affine_inplace_baracuda_wrapper!(
-        affine_inplace_bf16, bk::affine_inplace_bf16, |v: f64| v as f32);
-    cuda_affine_inplace_baracuda_wrapper!(
-        affine_inplace_f16, bk::affine_inplace_f16, |v: f64| v as f32);
+        affine_inplace_bf16,
+        bk::affine_inplace_bf16,
+        |v: f64| v as f32
+    );
+    cuda_affine_inplace_baracuda_wrapper!(affine_inplace_f16, bk::affine_inplace_f16, |v: f64| v
+        as f32);
 }
 
 // ===========================================================================
@@ -2026,7 +2409,8 @@ macro_rules! cuda_softmax_last_dim_baracuda_wrapper {
                         stringify!($wrapper_name),
                         ": expected 1 input + 1 output, got {} + {}",
                     ),
-                    inputs.len(), outputs.len(),
+                    inputs.len(),
+                    outputs.len(),
                 ))
                 .bt());
             }
@@ -2047,10 +2431,14 @@ macro_rules! cuda_softmax_last_dim_baracuda_wrapper {
                 }
             }
             let layout = layouts.first().ok_or_else(|| {
-                Error::Msg(concat!(
-                    stringify!($wrapper_name),
-                    ": SoftmaxLastDim requires an input layout (call with layouts[0])",
-                ).to_string()).bt()
+                Error::Msg(
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": SoftmaxLastDim requires an input layout (call with layouts[0])",
+                    )
+                    .to_string(),
+                )
+                .bt()
             })?;
             let in_guard = read_storage(&inputs[0])?;
             let mut out_guard = write_storage(&outputs[0])?;
@@ -2131,15 +2519,25 @@ macro_rules! cuda_flash_decoding_baracuda_wrapper {
                         stringify!($wrapper_name),
                         ": expected 3 inputs (q, k, v) + 1 output, got {} + {}",
                     ),
-                    inputs.len(), outputs.len(),
+                    inputs.len(),
+                    outputs.len(),
                 ))
                 .bt());
             }
             let (b, hq, hkv, sq, sk, d, k_len, scale) = match params {
                 OpParams::FlashAttn {
-                    b, hq, hkv, sq, sk, d, k_len,
-                    softmax_scale, causal: _,
-                    window_size_left, window_size_right, softcap,
+                    b,
+                    hq,
+                    hkv,
+                    sq,
+                    sk,
+                    d,
+                    k_len,
+                    softmax_scale,
+                    causal: _,
+                    window_size_left,
+                    window_size_right,
+                    softcap,
                 } => {
                     // Window / softcap are unimplemented by the decode
                     // kernel; the ranker must exclude these (cost gate).
@@ -2183,9 +2581,8 @@ macro_rules! cuda_flash_decoding_baracuda_wrapper {
             let k_cuda = cuda_input(&k_guard)?;
             let v_cuda = cuda_input(&v_guard)?;
             let result = $baracuda_fn(
-                q_cuda, k_cuda, v_cuda,
-                q_layout, k_layout, v_layout,
-                b, hq, hkv, sq, sk, d, k_len, scale,
+                q_cuda, k_cuda, v_cuda, q_layout, k_layout, v_layout, b, hq, hkv, sq, sk, d, k_len,
+                scale,
             )?;
             let out_cuda = cuda_output(&mut out_guard)?;
             *out_cuda = result;
@@ -2198,7 +2595,7 @@ pub mod flash_decoding {
     use super::*;
     use fuel_cuda_backend::baracuda::attention as bk;
 
-    cuda_flash_decoding_baracuda_wrapper!(flash_decoding_f16,  bk::flash_decoding_f16);
+    cuda_flash_decoding_baracuda_wrapper!(flash_decoding_f16, bk::flash_decoding_f16);
     cuda_flash_decoding_baracuda_wrapper!(flash_decoding_bf16, bk::flash_decoding_bf16);
 }
 
@@ -2219,7 +2616,8 @@ macro_rules! cuda_norm_last_dim_baracuda_wrapper {
                         stringify!($wrapper_name),
                         ": expected 1 input + 1 output, got {} + {}",
                     ),
-                    inputs.len(), outputs.len(),
+                    inputs.len(),
+                    outputs.len(),
                 ))
                 .bt());
             }
@@ -2237,10 +2635,14 @@ macro_rules! cuda_norm_last_dim_baracuda_wrapper {
                 }
             };
             let layout = layouts.first().ok_or_else(|| {
-                Error::Msg(concat!(
-                    stringify!($wrapper_name),
-                    ": NormLastDim requires an input layout (call with layouts[0])",
-                ).to_string()).bt()
+                Error::Msg(
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": NormLastDim requires an input layout (call with layouts[0])",
+                    )
+                    .to_string(),
+                )
+                .bt()
             })?;
             let in_guard = read_storage(&inputs[0])?;
             let mut out_guard = write_storage(&outputs[0])?;
@@ -2272,7 +2674,8 @@ macro_rules! cuda_rms_norm_into_baracuda_wrapper {
                         stringify!($wrapper_name),
                         ": expected 1 input + 1 output, got {} + {}",
                     ),
-                    inputs.len(), outputs.len(),
+                    inputs.len(),
+                    outputs.len(),
                 ))
                 .bt());
             }
@@ -2290,10 +2693,14 @@ macro_rules! cuda_rms_norm_into_baracuda_wrapper {
                 }
             };
             let layout = layouts.first().ok_or_else(|| {
-                Error::Msg(concat!(
-                    stringify!($wrapper_name),
-                    ": NormLastDim requires an input layout (call with layouts[0])",
-                ).to_string()).bt()
+                Error::Msg(
+                    concat!(
+                        stringify!($wrapper_name),
+                        ": NormLastDim requires an input layout (call with layouts[0])",
+                    )
+                    .to_string(),
+                )
+                .bt()
             })?;
             let in_guard = read_storage(&inputs[0])?;
             let mut out_guard = write_storage(&outputs[0])?;
@@ -2363,12 +2770,10 @@ macro_rules! cuda_reduce_baracuda_wrapper {
                 }
             };
             let layout = layouts.first().ok_or_else(|| {
-                Error::Msg(format!(
-                    concat!(
-                        stringify!($wrapper_name),
-                        ": reduce requires an input layout (call with layouts[0])",
-                    ),
-                ))
+                Error::Msg(format!(concat!(
+                    stringify!($wrapper_name),
+                    ": reduce requires an input layout (call with layouts[0])",
+                ),))
                 .bt()
             })?;
             let in_guard = read_storage(&inputs[0])?;
@@ -2535,112 +2940,112 @@ pub mod unary {
     // Reuses the same baracuda symbols but the wrapper passes the
     // target's pointer for both x + y. Full 4-dtype coverage matches
     // the non-inplace cousins above.
-    cuda_unary_inplace_baracuda_wrapper!(relu_inplace_f32,    bk::unary_inplace_relu_f32);
-    cuda_unary_inplace_baracuda_wrapper!(silu_inplace_f32,    bk::unary_inplace_silu_f32);
-    cuda_unary_inplace_baracuda_wrapper!(gelu_inplace_f32,    bk::unary_inplace_gelu_f32);
-    cuda_unary_inplace_baracuda_wrapper!(tanh_inplace_f32,    bk::unary_inplace_tanh_f32);
+    cuda_unary_inplace_baracuda_wrapper!(relu_inplace_f32, bk::unary_inplace_relu_f32);
+    cuda_unary_inplace_baracuda_wrapper!(silu_inplace_f32, bk::unary_inplace_silu_f32);
+    cuda_unary_inplace_baracuda_wrapper!(gelu_inplace_f32, bk::unary_inplace_gelu_f32);
+    cuda_unary_inplace_baracuda_wrapper!(tanh_inplace_f32, bk::unary_inplace_tanh_f32);
     cuda_unary_inplace_baracuda_wrapper!(sigmoid_inplace_f32, bk::unary_inplace_sigmoid_f32);
 
-    cuda_unary_inplace_baracuda_wrapper!(relu_inplace_f64,    bk::unary_inplace_relu_f64);
-    cuda_unary_inplace_baracuda_wrapper!(silu_inplace_f64,    bk::unary_inplace_silu_f64);
-    cuda_unary_inplace_baracuda_wrapper!(gelu_inplace_f64,    bk::unary_inplace_gelu_f64);
-    cuda_unary_inplace_baracuda_wrapper!(tanh_inplace_f64,    bk::unary_inplace_tanh_f64);
+    cuda_unary_inplace_baracuda_wrapper!(relu_inplace_f64, bk::unary_inplace_relu_f64);
+    cuda_unary_inplace_baracuda_wrapper!(silu_inplace_f64, bk::unary_inplace_silu_f64);
+    cuda_unary_inplace_baracuda_wrapper!(gelu_inplace_f64, bk::unary_inplace_gelu_f64);
+    cuda_unary_inplace_baracuda_wrapper!(tanh_inplace_f64, bk::unary_inplace_tanh_f64);
     cuda_unary_inplace_baracuda_wrapper!(sigmoid_inplace_f64, bk::unary_inplace_sigmoid_f64);
 
-    cuda_unary_inplace_baracuda_wrapper!(relu_inplace_bf16,    bk::unary_inplace_relu_bf16);
-    cuda_unary_inplace_baracuda_wrapper!(silu_inplace_bf16,    bk::unary_inplace_silu_bf16);
-    cuda_unary_inplace_baracuda_wrapper!(gelu_inplace_bf16,    bk::unary_inplace_gelu_bf16);
-    cuda_unary_inplace_baracuda_wrapper!(tanh_inplace_bf16,    bk::unary_inplace_tanh_bf16);
+    cuda_unary_inplace_baracuda_wrapper!(relu_inplace_bf16, bk::unary_inplace_relu_bf16);
+    cuda_unary_inplace_baracuda_wrapper!(silu_inplace_bf16, bk::unary_inplace_silu_bf16);
+    cuda_unary_inplace_baracuda_wrapper!(gelu_inplace_bf16, bk::unary_inplace_gelu_bf16);
+    cuda_unary_inplace_baracuda_wrapper!(tanh_inplace_bf16, bk::unary_inplace_tanh_bf16);
     cuda_unary_inplace_baracuda_wrapper!(sigmoid_inplace_bf16, bk::unary_inplace_sigmoid_bf16);
 
-    cuda_unary_inplace_baracuda_wrapper!(relu_inplace_f16,    bk::unary_inplace_relu_f16);
-    cuda_unary_inplace_baracuda_wrapper!(silu_inplace_f16,    bk::unary_inplace_silu_f16);
-    cuda_unary_inplace_baracuda_wrapper!(gelu_inplace_f16,    bk::unary_inplace_gelu_f16);
-    cuda_unary_inplace_baracuda_wrapper!(tanh_inplace_f16,    bk::unary_inplace_tanh_f16);
+    cuda_unary_inplace_baracuda_wrapper!(relu_inplace_f16, bk::unary_inplace_relu_f16);
+    cuda_unary_inplace_baracuda_wrapper!(silu_inplace_f16, bk::unary_inplace_silu_f16);
+    cuda_unary_inplace_baracuda_wrapper!(gelu_inplace_f16, bk::unary_inplace_gelu_f16);
+    cuda_unary_inplace_baracuda_wrapper!(tanh_inplace_f16, bk::unary_inplace_tanh_f16);
     cuda_unary_inplace_baracuda_wrapper!(sigmoid_inplace_f16, bk::unary_inplace_sigmoid_f16);
 
     // In-place unary op family expansion (2026-05-30) — 16 new ops
     // × 4 dtypes = 64 new wrappers. Each reuses the matching baracuda
     // forward symbol with same-pointer dispatch.
-    cuda_unary_inplace_baracuda_wrapper!(neg_inplace_f32,  bk::unary_inplace_neg_f32);
-    cuda_unary_inplace_baracuda_wrapper!(neg_inplace_f64,  bk::unary_inplace_neg_f64);
+    cuda_unary_inplace_baracuda_wrapper!(neg_inplace_f32, bk::unary_inplace_neg_f32);
+    cuda_unary_inplace_baracuda_wrapper!(neg_inplace_f64, bk::unary_inplace_neg_f64);
     cuda_unary_inplace_baracuda_wrapper!(neg_inplace_bf16, bk::unary_inplace_neg_bf16);
-    cuda_unary_inplace_baracuda_wrapper!(neg_inplace_f16,  bk::unary_inplace_neg_f16);
+    cuda_unary_inplace_baracuda_wrapper!(neg_inplace_f16, bk::unary_inplace_neg_f16);
 
-    cuda_unary_inplace_baracuda_wrapper!(abs_inplace_f32,  bk::unary_inplace_abs_f32);
-    cuda_unary_inplace_baracuda_wrapper!(abs_inplace_f64,  bk::unary_inplace_abs_f64);
+    cuda_unary_inplace_baracuda_wrapper!(abs_inplace_f32, bk::unary_inplace_abs_f32);
+    cuda_unary_inplace_baracuda_wrapper!(abs_inplace_f64, bk::unary_inplace_abs_f64);
     cuda_unary_inplace_baracuda_wrapper!(abs_inplace_bf16, bk::unary_inplace_abs_bf16);
-    cuda_unary_inplace_baracuda_wrapper!(abs_inplace_f16,  bk::unary_inplace_abs_f16);
+    cuda_unary_inplace_baracuda_wrapper!(abs_inplace_f16, bk::unary_inplace_abs_f16);
 
-    cuda_unary_inplace_baracuda_wrapper!(sqr_inplace_f32,  bk::unary_inplace_sqr_f32);
-    cuda_unary_inplace_baracuda_wrapper!(sqr_inplace_f64,  bk::unary_inplace_sqr_f64);
+    cuda_unary_inplace_baracuda_wrapper!(sqr_inplace_f32, bk::unary_inplace_sqr_f32);
+    cuda_unary_inplace_baracuda_wrapper!(sqr_inplace_f64, bk::unary_inplace_sqr_f64);
     cuda_unary_inplace_baracuda_wrapper!(sqr_inplace_bf16, bk::unary_inplace_sqr_bf16);
-    cuda_unary_inplace_baracuda_wrapper!(sqr_inplace_f16,  bk::unary_inplace_sqr_f16);
+    cuda_unary_inplace_baracuda_wrapper!(sqr_inplace_f16, bk::unary_inplace_sqr_f16);
 
-    cuda_unary_inplace_baracuda_wrapper!(sqrt_inplace_f32,  bk::unary_inplace_sqrt_f32);
-    cuda_unary_inplace_baracuda_wrapper!(sqrt_inplace_f64,  bk::unary_inplace_sqrt_f64);
+    cuda_unary_inplace_baracuda_wrapper!(sqrt_inplace_f32, bk::unary_inplace_sqrt_f32);
+    cuda_unary_inplace_baracuda_wrapper!(sqrt_inplace_f64, bk::unary_inplace_sqrt_f64);
     cuda_unary_inplace_baracuda_wrapper!(sqrt_inplace_bf16, bk::unary_inplace_sqrt_bf16);
-    cuda_unary_inplace_baracuda_wrapper!(sqrt_inplace_f16,  bk::unary_inplace_sqrt_f16);
+    cuda_unary_inplace_baracuda_wrapper!(sqrt_inplace_f16, bk::unary_inplace_sqrt_f16);
 
-    cuda_unary_inplace_baracuda_wrapper!(rsqrt_inplace_f32,  bk::unary_inplace_rsqrt_f32);
-    cuda_unary_inplace_baracuda_wrapper!(rsqrt_inplace_f64,  bk::unary_inplace_rsqrt_f64);
+    cuda_unary_inplace_baracuda_wrapper!(rsqrt_inplace_f32, bk::unary_inplace_rsqrt_f32);
+    cuda_unary_inplace_baracuda_wrapper!(rsqrt_inplace_f64, bk::unary_inplace_rsqrt_f64);
     cuda_unary_inplace_baracuda_wrapper!(rsqrt_inplace_bf16, bk::unary_inplace_rsqrt_bf16);
-    cuda_unary_inplace_baracuda_wrapper!(rsqrt_inplace_f16,  bk::unary_inplace_rsqrt_f16);
+    cuda_unary_inplace_baracuda_wrapper!(rsqrt_inplace_f16, bk::unary_inplace_rsqrt_f16);
 
-    cuda_unary_inplace_baracuda_wrapper!(recip_inplace_f32,  bk::unary_inplace_recip_f32);
-    cuda_unary_inplace_baracuda_wrapper!(recip_inplace_f64,  bk::unary_inplace_recip_f64);
+    cuda_unary_inplace_baracuda_wrapper!(recip_inplace_f32, bk::unary_inplace_recip_f32);
+    cuda_unary_inplace_baracuda_wrapper!(recip_inplace_f64, bk::unary_inplace_recip_f64);
     cuda_unary_inplace_baracuda_wrapper!(recip_inplace_bf16, bk::unary_inplace_recip_bf16);
-    cuda_unary_inplace_baracuda_wrapper!(recip_inplace_f16,  bk::unary_inplace_recip_f16);
+    cuda_unary_inplace_baracuda_wrapper!(recip_inplace_f16, bk::unary_inplace_recip_f16);
 
-    cuda_unary_inplace_baracuda_wrapper!(exp_inplace_f32,  bk::unary_inplace_exp_f32);
-    cuda_unary_inplace_baracuda_wrapper!(exp_inplace_f64,  bk::unary_inplace_exp_f64);
+    cuda_unary_inplace_baracuda_wrapper!(exp_inplace_f32, bk::unary_inplace_exp_f32);
+    cuda_unary_inplace_baracuda_wrapper!(exp_inplace_f64, bk::unary_inplace_exp_f64);
     cuda_unary_inplace_baracuda_wrapper!(exp_inplace_bf16, bk::unary_inplace_exp_bf16);
-    cuda_unary_inplace_baracuda_wrapper!(exp_inplace_f16,  bk::unary_inplace_exp_f16);
+    cuda_unary_inplace_baracuda_wrapper!(exp_inplace_f16, bk::unary_inplace_exp_f16);
 
-    cuda_unary_inplace_baracuda_wrapper!(log_inplace_f32,  bk::unary_inplace_log_f32);
-    cuda_unary_inplace_baracuda_wrapper!(log_inplace_f64,  bk::unary_inplace_log_f64);
+    cuda_unary_inplace_baracuda_wrapper!(log_inplace_f32, bk::unary_inplace_log_f32);
+    cuda_unary_inplace_baracuda_wrapper!(log_inplace_f64, bk::unary_inplace_log_f64);
     cuda_unary_inplace_baracuda_wrapper!(log_inplace_bf16, bk::unary_inplace_log_bf16);
-    cuda_unary_inplace_baracuda_wrapper!(log_inplace_f16,  bk::unary_inplace_log_f16);
+    cuda_unary_inplace_baracuda_wrapper!(log_inplace_f16, bk::unary_inplace_log_f16);
 
-    cuda_unary_inplace_baracuda_wrapper!(sin_inplace_f32,  bk::unary_inplace_sin_f32);
-    cuda_unary_inplace_baracuda_wrapper!(sin_inplace_f64,  bk::unary_inplace_sin_f64);
+    cuda_unary_inplace_baracuda_wrapper!(sin_inplace_f32, bk::unary_inplace_sin_f32);
+    cuda_unary_inplace_baracuda_wrapper!(sin_inplace_f64, bk::unary_inplace_sin_f64);
     cuda_unary_inplace_baracuda_wrapper!(sin_inplace_bf16, bk::unary_inplace_sin_bf16);
-    cuda_unary_inplace_baracuda_wrapper!(sin_inplace_f16,  bk::unary_inplace_sin_f16);
+    cuda_unary_inplace_baracuda_wrapper!(sin_inplace_f16, bk::unary_inplace_sin_f16);
 
-    cuda_unary_inplace_baracuda_wrapper!(cos_inplace_f32,  bk::unary_inplace_cos_f32);
-    cuda_unary_inplace_baracuda_wrapper!(cos_inplace_f64,  bk::unary_inplace_cos_f64);
+    cuda_unary_inplace_baracuda_wrapper!(cos_inplace_f32, bk::unary_inplace_cos_f32);
+    cuda_unary_inplace_baracuda_wrapper!(cos_inplace_f64, bk::unary_inplace_cos_f64);
     cuda_unary_inplace_baracuda_wrapper!(cos_inplace_bf16, bk::unary_inplace_cos_bf16);
-    cuda_unary_inplace_baracuda_wrapper!(cos_inplace_f16,  bk::unary_inplace_cos_f16);
+    cuda_unary_inplace_baracuda_wrapper!(cos_inplace_f16, bk::unary_inplace_cos_f16);
 
-    cuda_unary_inplace_baracuda_wrapper!(sign_inplace_f32,  bk::unary_inplace_sign_f32);
-    cuda_unary_inplace_baracuda_wrapper!(sign_inplace_f64,  bk::unary_inplace_sign_f64);
+    cuda_unary_inplace_baracuda_wrapper!(sign_inplace_f32, bk::unary_inplace_sign_f32);
+    cuda_unary_inplace_baracuda_wrapper!(sign_inplace_f64, bk::unary_inplace_sign_f64);
     cuda_unary_inplace_baracuda_wrapper!(sign_inplace_bf16, bk::unary_inplace_sign_bf16);
-    cuda_unary_inplace_baracuda_wrapper!(sign_inplace_f16,  bk::unary_inplace_sign_f16);
+    cuda_unary_inplace_baracuda_wrapper!(sign_inplace_f16, bk::unary_inplace_sign_f16);
 
-    cuda_unary_inplace_baracuda_wrapper!(floor_inplace_f32,  bk::unary_inplace_floor_f32);
-    cuda_unary_inplace_baracuda_wrapper!(floor_inplace_f64,  bk::unary_inplace_floor_f64);
+    cuda_unary_inplace_baracuda_wrapper!(floor_inplace_f32, bk::unary_inplace_floor_f32);
+    cuda_unary_inplace_baracuda_wrapper!(floor_inplace_f64, bk::unary_inplace_floor_f64);
     cuda_unary_inplace_baracuda_wrapper!(floor_inplace_bf16, bk::unary_inplace_floor_bf16);
-    cuda_unary_inplace_baracuda_wrapper!(floor_inplace_f16,  bk::unary_inplace_floor_f16);
+    cuda_unary_inplace_baracuda_wrapper!(floor_inplace_f16, bk::unary_inplace_floor_f16);
 
-    cuda_unary_inplace_baracuda_wrapper!(ceil_inplace_f32,  bk::unary_inplace_ceil_f32);
-    cuda_unary_inplace_baracuda_wrapper!(ceil_inplace_f64,  bk::unary_inplace_ceil_f64);
+    cuda_unary_inplace_baracuda_wrapper!(ceil_inplace_f32, bk::unary_inplace_ceil_f32);
+    cuda_unary_inplace_baracuda_wrapper!(ceil_inplace_f64, bk::unary_inplace_ceil_f64);
     cuda_unary_inplace_baracuda_wrapper!(ceil_inplace_bf16, bk::unary_inplace_ceil_bf16);
-    cuda_unary_inplace_baracuda_wrapper!(ceil_inplace_f16,  bk::unary_inplace_ceil_f16);
+    cuda_unary_inplace_baracuda_wrapper!(ceil_inplace_f16, bk::unary_inplace_ceil_f16);
 
-    cuda_unary_inplace_baracuda_wrapper!(round_inplace_f32,  bk::unary_inplace_round_f32);
-    cuda_unary_inplace_baracuda_wrapper!(round_inplace_f64,  bk::unary_inplace_round_f64);
+    cuda_unary_inplace_baracuda_wrapper!(round_inplace_f32, bk::unary_inplace_round_f32);
+    cuda_unary_inplace_baracuda_wrapper!(round_inplace_f64, bk::unary_inplace_round_f64);
     cuda_unary_inplace_baracuda_wrapper!(round_inplace_bf16, bk::unary_inplace_round_bf16);
-    cuda_unary_inplace_baracuda_wrapper!(round_inplace_f16,  bk::unary_inplace_round_f16);
+    cuda_unary_inplace_baracuda_wrapper!(round_inplace_f16, bk::unary_inplace_round_f16);
 
-    cuda_unary_inplace_baracuda_wrapper!(erf_inplace_f32,  bk::unary_inplace_erf_f32);
-    cuda_unary_inplace_baracuda_wrapper!(erf_inplace_f64,  bk::unary_inplace_erf_f64);
+    cuda_unary_inplace_baracuda_wrapper!(erf_inplace_f32, bk::unary_inplace_erf_f32);
+    cuda_unary_inplace_baracuda_wrapper!(erf_inplace_f64, bk::unary_inplace_erf_f64);
     cuda_unary_inplace_baracuda_wrapper!(erf_inplace_bf16, bk::unary_inplace_erf_bf16);
-    cuda_unary_inplace_baracuda_wrapper!(erf_inplace_f16,  bk::unary_inplace_erf_f16);
+    cuda_unary_inplace_baracuda_wrapper!(erf_inplace_f16, bk::unary_inplace_erf_f16);
 
-    cuda_unary_inplace_baracuda_wrapper!(gelu_erf_inplace_f32,  bk::unary_inplace_gelu_erf_f32);
-    cuda_unary_inplace_baracuda_wrapper!(gelu_erf_inplace_f64,  bk::unary_inplace_gelu_erf_f64);
+    cuda_unary_inplace_baracuda_wrapper!(gelu_erf_inplace_f32, bk::unary_inplace_gelu_erf_f32);
+    cuda_unary_inplace_baracuda_wrapper!(gelu_erf_inplace_f64, bk::unary_inplace_gelu_erf_f64);
     cuda_unary_inplace_baracuda_wrapper!(gelu_erf_inplace_bf16, bk::unary_inplace_gelu_erf_bf16);
-    cuda_unary_inplace_baracuda_wrapper!(gelu_erf_inplace_f16,  bk::unary_inplace_gelu_erf_f16);
+    cuda_unary_inplace_baracuda_wrapper!(gelu_erf_inplace_f16, bk::unary_inplace_gelu_erf_f16);
 
     // f16
     cuda_unary_baracuda_wrapper!(neg_f16, bk::unary_neg_f16_into);
@@ -2718,8 +3123,7 @@ pub mod unary {
 /// The authored CUDA (baracuda) cast kernel contract, embedded into the binary
 /// via `include_str!` (the PRODUCTION contract). Parsed + lowered by
 /// [`register_cuda_cast_from_contract`].
-const CUDA_CAST_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cuda/cast.fkc.md");
+const CUDA_CAST_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/cast.fkc.md");
 
 /// Register the CUDA cast family (70 `(SRC, DST)` pairs → the ONE dtype-agnostic
 /// `cast::cast_baracuda_wrapper`) by IMPORTING its FKC kernel contract — the
@@ -2757,12 +3161,11 @@ const CUDA_CAST_CONTRACT: &str =
 /// here via `expect` (mirroring the CPU / Vulkan convention); it cannot fail for a
 /// runtime-data reason.
 fn register_cuda_cast_from_contract(table: &mut KernelBindingTable) {
-    let provider =
-        crate::fkc::import_bundle_str(CUDA_CAST_CONTRACT, &crate::fkc::CudaLinkRegistry)
-            .expect(
-                "authored CUDA cast contract must import \
+    let provider = crate::fkc::import_bundle_str(CUDA_CAST_CONTRACT, &crate::fkc::CudaLinkRegistry)
+        .expect(
+            "authored CUDA cast contract must import \
                  (embedded via include_str!, resolved through CudaLinkRegistry)",
-            );
+        );
     debug_assert!(
         provider.fused.is_empty(),
         "cuda cast contract declares no fused ops",
@@ -2835,8 +3238,7 @@ const CUDA_BINARY_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cud
 /// contract that is never `include_str!`d and imported here declares nothing
 /// into the binding table. `Op::PagedAttn`'s recipe stays unplaceable until
 /// all three layers exist.
-const CUDA_COMPARE_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cuda/compare.fkc.md");
+const CUDA_COMPARE_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/compare.fkc.md");
 
 /// Register the CUDA comparison family (6 ops x 4 float dtypes -> U8) FROM its
 /// FKC contract. This is what makes `GreaterEqualElementwise[F32,F32,U8]`
@@ -2844,9 +3246,13 @@ const CUDA_COMPARE_CONTRACT: &str =
 /// recipe off the device.
 fn register_cuda_compare_from_contract(table: &mut KernelBindingTable) {
     let provider =
-        crate::fkc::import_bundle_str(CUDA_COMPARE_CONTRACT, &crate::fkc::CudaLinkRegistry)
-            .expect("authored CUDA compare contract must import (embedded include_str!, CudaLinkRegistry)");
-    debug_assert!(provider.fused.is_empty(), "cuda compare contract declares no fused ops");
+        crate::fkc::import_bundle_str(CUDA_COMPARE_CONTRACT, &crate::fkc::CudaLinkRegistry).expect(
+            "authored CUDA compare contract must import (embedded include_str!, CudaLinkRegistry)",
+        );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda compare contract declares no fused ops"
+    );
     let mut fused = crate::fused::FusedKernelRegistry::new();
     provider
         .register_into(table, &mut fused)
@@ -2857,9 +3263,14 @@ fn register_cuda_compare_from_contract(table: &mut KernelBindingTable) {
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
 /// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
 fn register_cuda_binary_from_contract(table: &mut KernelBindingTable) {
-    let provider = crate::fkc::import_bundle_str(CUDA_BINARY_CONTRACT, &crate::fkc::CudaLinkRegistry)
-        .expect("authored CUDA binary contract must import (embedded include_str!, CudaLinkRegistry)");
-    debug_assert!(provider.fused.is_empty(), "cuda binary contract declares no fused ops");
+    let provider =
+        crate::fkc::import_bundle_str(CUDA_BINARY_CONTRACT, &crate::fkc::CudaLinkRegistry).expect(
+            "authored CUDA binary contract must import (embedded include_str!, CudaLinkRegistry)",
+        );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda binary contract declares no fused ops"
+    );
     let mut fused = crate::fused::FusedKernelRegistry::new();
     provider
         .register_into(table, &mut fused)
@@ -2874,9 +3285,14 @@ const CUDA_REDUCE_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cud
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
 /// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
 fn register_cuda_reduce_from_contract(table: &mut KernelBindingTable) {
-    let provider = crate::fkc::import_bundle_str(CUDA_REDUCE_CONTRACT, &crate::fkc::CudaLinkRegistry)
-        .expect("authored CUDA reduce contract must import (embedded include_str!, CudaLinkRegistry)");
-    debug_assert!(provider.fused.is_empty(), "cuda reduce contract declares no fused ops");
+    let provider =
+        crate::fkc::import_bundle_str(CUDA_REDUCE_CONTRACT, &crate::fkc::CudaLinkRegistry).expect(
+            "authored CUDA reduce contract must import (embedded include_str!, CudaLinkRegistry)",
+        );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda reduce contract declares no fused ops"
+    );
     let mut fused = crate::fused::FusedKernelRegistry::new();
     provider
         .register_into(table, &mut fused)
@@ -2892,8 +3308,13 @@ const CUDA_NORM_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/
 /// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
 fn register_cuda_norm_from_contract(table: &mut KernelBindingTable) {
     let provider = crate::fkc::import_bundle_str(CUDA_NORM_CONTRACT, &crate::fkc::CudaLinkRegistry)
-        .expect("authored CUDA norm contract must import (embedded include_str!, CudaLinkRegistry)");
-    debug_assert!(provider.fused.is_empty(), "cuda norm contract declares no fused ops");
+        .expect(
+            "authored CUDA norm contract must import (embedded include_str!, CudaLinkRegistry)",
+        );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda norm contract declares no fused ops"
+    );
     let mut fused = crate::fused::FusedKernelRegistry::new();
     provider
         .register_into(table, &mut fused)
@@ -2908,9 +3329,14 @@ const CUDA_SOFTMAX_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cu
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
 /// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
 fn register_cuda_softmax_from_contract(table: &mut KernelBindingTable) {
-    let provider = crate::fkc::import_bundle_str(CUDA_SOFTMAX_CONTRACT, &crate::fkc::CudaLinkRegistry)
-        .expect("authored CUDA softmax contract must import (embedded include_str!, CudaLinkRegistry)");
-    debug_assert!(provider.fused.is_empty(), "cuda softmax contract declares no fused ops");
+    let provider =
+        crate::fkc::import_bundle_str(CUDA_SOFTMAX_CONTRACT, &crate::fkc::CudaLinkRegistry).expect(
+            "authored CUDA softmax contract must import (embedded include_str!, CudaLinkRegistry)",
+        );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda softmax contract declares no fused ops"
+    );
     let mut fused = crate::fused::FusedKernelRegistry::new();
     provider
         .register_into(table, &mut fused)
@@ -2926,8 +3352,13 @@ const CUDA_POWI_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/
 /// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
 fn register_cuda_powi_from_contract(table: &mut KernelBindingTable) {
     let provider = crate::fkc::import_bundle_str(CUDA_POWI_CONTRACT, &crate::fkc::CudaLinkRegistry)
-        .expect("authored CUDA powi contract must import (embedded include_str!, CudaLinkRegistry)");
-    debug_assert!(provider.fused.is_empty(), "cuda powi contract declares no fused ops");
+        .expect(
+            "authored CUDA powi contract must import (embedded include_str!, CudaLinkRegistry)",
+        );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda powi contract declares no fused ops"
+    );
     let mut fused = crate::fused::FusedKernelRegistry::new();
     provider
         .register_into(table, &mut fused)
@@ -2936,7 +3367,8 @@ fn register_cuda_powi_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) powi_backward kernel contract (`include_str!`), imported by
 /// [`register_cuda_powi_backward_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_POWI_BACKWARD_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/powi_backward.fkc.md");
+const CUDA_POWI_BACKWARD_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/cuda/powi_backward.fkc.md");
 
 /// Register the CUDA powi_backward family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -2944,7 +3376,10 @@ const CUDA_POWI_BACKWARD_CONTRACT: &str = include_str!("../../docs/kernel-contra
 fn register_cuda_powi_backward_from_contract(table: &mut KernelBindingTable) {
     let provider = crate::fkc::import_bundle_str(CUDA_POWI_BACKWARD_CONTRACT, &crate::fkc::CudaLinkRegistry)
         .expect("authored CUDA powi_backward contract must import (embedded include_str!, CudaLinkRegistry)");
-    debug_assert!(provider.fused.is_empty(), "cuda powi_backward contract declares no fused ops");
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda powi_backward contract declares no fused ops"
+    );
     let mut fused = crate::fused::FusedKernelRegistry::new();
     provider
         .register_into(table, &mut fused)
@@ -2959,9 +3394,14 @@ const CUDA_CLAMP_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
 /// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
 fn register_cuda_clamp_from_contract(table: &mut KernelBindingTable) {
-    let provider = crate::fkc::import_bundle_str(CUDA_CLAMP_CONTRACT, &crate::fkc::CudaLinkRegistry)
-        .expect("authored CUDA clamp contract must import (embedded include_str!, CudaLinkRegistry)");
-    debug_assert!(provider.fused.is_empty(), "cuda clamp contract declares no fused ops");
+    let provider =
+        crate::fkc::import_bundle_str(CUDA_CLAMP_CONTRACT, &crate::fkc::CudaLinkRegistry).expect(
+            "authored CUDA clamp contract must import (embedded include_str!, CudaLinkRegistry)",
+        );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda clamp contract declares no fused ops"
+    );
     let mut fused = crate::fused::FusedKernelRegistry::new();
     provider
         .register_into(table, &mut fused)
@@ -2977,8 +3417,13 @@ const CUDA_FLIP_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/
 /// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
 fn register_cuda_flip_from_contract(table: &mut KernelBindingTable) {
     let provider = crate::fkc::import_bundle_str(CUDA_FLIP_CONTRACT, &crate::fkc::CudaLinkRegistry)
-        .expect("authored CUDA flip contract must import (embedded include_str!, CudaLinkRegistry)");
-    debug_assert!(provider.fused.is_empty(), "cuda flip contract declares no fused ops");
+        .expect(
+            "authored CUDA flip contract must import (embedded include_str!, CudaLinkRegistry)",
+        );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda flip contract declares no fused ops"
+    );
     let mut fused = crate::fused::FusedKernelRegistry::new();
     provider
         .register_into(table, &mut fused)
@@ -2994,8 +3439,13 @@ const CUDA_ROLL_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/
 /// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
 fn register_cuda_roll_from_contract(table: &mut KernelBindingTable) {
     let provider = crate::fkc::import_bundle_str(CUDA_ROLL_CONTRACT, &crate::fkc::CudaLinkRegistry)
-        .expect("authored CUDA roll contract must import (embedded include_str!, CudaLinkRegistry)");
-    debug_assert!(provider.fused.is_empty(), "cuda roll contract declares no fused ops");
+        .expect(
+            "authored CUDA roll contract must import (embedded include_str!, CudaLinkRegistry)",
+        );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda roll contract declares no fused ops"
+    );
     let mut fused = crate::fused::FusedKernelRegistry::new();
     provider
         .register_into(table, &mut fused)
@@ -3010,9 +3460,14 @@ const CUDA_CUMSUM_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cud
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
 /// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
 fn register_cuda_cumsum_from_contract(table: &mut KernelBindingTable) {
-    let provider = crate::fkc::import_bundle_str(CUDA_CUMSUM_CONTRACT, &crate::fkc::CudaLinkRegistry)
-        .expect("authored CUDA cumsum contract must import (embedded include_str!, CudaLinkRegistry)");
-    debug_assert!(provider.fused.is_empty(), "cuda cumsum contract declares no fused ops");
+    let provider =
+        crate::fkc::import_bundle_str(CUDA_CUMSUM_CONTRACT, &crate::fkc::CudaLinkRegistry).expect(
+            "authored CUDA cumsum contract must import (embedded include_str!, CudaLinkRegistry)",
+        );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda cumsum contract declares no fused ops"
+    );
     let mut fused = crate::fused::FusedKernelRegistry::new();
     provider
         .register_into(table, &mut fused)
@@ -3021,15 +3476,24 @@ fn register_cuda_cumsum_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) triangular kernel contract (`include_str!`), imported by
 /// [`register_cuda_triangular_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_TRIANGULAR_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/triangular.fkc.md");
+const CUDA_TRIANGULAR_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/cuda/triangular.fkc.md");
 
 /// Register the CUDA triangular family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
 /// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
 fn register_cuda_triangular_from_contract(table: &mut KernelBindingTable) {
-    let provider = crate::fkc::import_bundle_str(CUDA_TRIANGULAR_CONTRACT, &crate::fkc::CudaLinkRegistry)
-        .expect("authored CUDA triangular contract must import (embedded include_str!, CudaLinkRegistry)");
-    debug_assert!(provider.fused.is_empty(), "cuda triangular contract declares no fused ops");
+    let provider = crate::fkc::import_bundle_str(
+        CUDA_TRIANGULAR_CONTRACT,
+        &crate::fkc::CudaLinkRegistry,
+    )
+    .expect(
+        "authored CUDA triangular contract must import (embedded include_str!, CudaLinkRegistry)",
+    );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda triangular contract declares no fused ops"
+    );
     let mut fused = crate::fused::FusedKernelRegistry::new();
     provider
         .register_into(table, &mut fused)
@@ -3038,15 +3502,24 @@ fn register_cuda_triangular_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) arg_reduce kernel contract (`include_str!`), imported by
 /// [`register_cuda_arg_reduce_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_ARG_REDUCE_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/arg_reduce.fkc.md");
+const CUDA_ARG_REDUCE_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/cuda/arg_reduce.fkc.md");
 
 /// Register the CUDA arg_reduce family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
 /// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
 fn register_cuda_arg_reduce_from_contract(table: &mut KernelBindingTable) {
-    let provider = crate::fkc::import_bundle_str(CUDA_ARG_REDUCE_CONTRACT, &crate::fkc::CudaLinkRegistry)
-        .expect("authored CUDA arg_reduce contract must import (embedded include_str!, CudaLinkRegistry)");
-    debug_assert!(provider.fused.is_empty(), "cuda arg_reduce contract declares no fused ops");
+    let provider = crate::fkc::import_bundle_str(
+        CUDA_ARG_REDUCE_CONTRACT,
+        &crate::fkc::CudaLinkRegistry,
+    )
+    .expect(
+        "authored CUDA arg_reduce contract must import (embedded include_str!, CudaLinkRegistry)",
+    );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda arg_reduce contract declares no fused ops"
+    );
     let mut fused = crate::fused::FusedKernelRegistry::new();
     provider
         .register_into(table, &mut fused)
@@ -3055,15 +3528,24 @@ fn register_cuda_arg_reduce_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) reduce_to kernel contract (`include_str!`), imported by
 /// [`register_cuda_reduce_to_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_REDUCE_TO_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/reduce_to.fkc.md");
+const CUDA_REDUCE_TO_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/cuda/reduce_to.fkc.md");
 
 /// Register the CUDA reduce_to family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
 /// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
 fn register_cuda_reduce_to_from_contract(table: &mut KernelBindingTable) {
-    let provider = crate::fkc::import_bundle_str(CUDA_REDUCE_TO_CONTRACT, &crate::fkc::CudaLinkRegistry)
-        .expect("authored CUDA reduce_to contract must import (embedded include_str!, CudaLinkRegistry)");
-    debug_assert!(provider.fused.is_empty(), "cuda reduce_to contract declares no fused ops");
+    let provider = crate::fkc::import_bundle_str(
+        CUDA_REDUCE_TO_CONTRACT,
+        &crate::fkc::CudaLinkRegistry,
+    )
+    .expect(
+        "authored CUDA reduce_to contract must import (embedded include_str!, CudaLinkRegistry)",
+    );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda reduce_to contract declares no fused ops"
+    );
     let mut fused = crate::fused::FusedKernelRegistry::new();
     provider
         .register_into(table, &mut fused)
@@ -3079,8 +3561,13 @@ const CUDA_ROPE_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/
 /// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
 fn register_cuda_rope_from_contract(table: &mut KernelBindingTable) {
     let provider = crate::fkc::import_bundle_str(CUDA_ROPE_CONTRACT, &crate::fkc::CudaLinkRegistry)
-        .expect("authored CUDA rope contract must import (embedded include_str!, CudaLinkRegistry)");
-    debug_assert!(provider.fused.is_empty(), "cuda rope contract declares no fused ops");
+        .expect(
+            "authored CUDA rope contract must import (embedded include_str!, CudaLinkRegistry)",
+        );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda rope contract declares no fused ops"
+    );
     let mut fused = crate::fused::FusedKernelRegistry::new();
     provider
         .register_into(table, &mut fused)
@@ -3115,9 +3602,14 @@ const CUDA_UNARY_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
 /// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
 fn register_cuda_unary_from_contract(table: &mut KernelBindingTable) {
-    let provider = crate::fkc::import_bundle_str(CUDA_UNARY_CONTRACT, &crate::fkc::CudaLinkRegistry)
-        .expect("authored CUDA unary contract must import (embedded include_str!, CudaLinkRegistry)");
-    debug_assert!(provider.fused.is_empty(), "cuda unary contract declares no fused ops");
+    let provider =
+        crate::fkc::import_bundle_str(CUDA_UNARY_CONTRACT, &crate::fkc::CudaLinkRegistry).expect(
+            "authored CUDA unary contract must import (embedded include_str!, CudaLinkRegistry)",
+        );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda unary contract declares no fused ops"
+    );
     let mut fused = crate::fused::FusedKernelRegistry::new();
     provider
         .register_into(table, &mut fused)
@@ -3130,7 +3622,8 @@ fn register_cuda_unary_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) clamp_inplace kernel contract (`include_str!`), imported by
 /// [`register_cuda_clamp_inplace_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_CLAMP_INPLACE_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/clamp_inplace.fkc.md");
+const CUDA_CLAMP_INPLACE_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/cuda/clamp_inplace.fkc.md");
 
 /// Register the CUDA clamp_inplace family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -3138,7 +3631,10 @@ const CUDA_CLAMP_INPLACE_CONTRACT: &str = include_str!("../../docs/kernel-contra
 fn register_cuda_clamp_inplace_from_contract(table: &mut KernelBindingTable) {
     let provider = crate::fkc::import_bundle_str(CUDA_CLAMP_INPLACE_CONTRACT, &crate::fkc::CudaLinkRegistry)
         .expect("authored CUDA clamp_inplace contract must import (embedded include_str!, CudaLinkRegistry)");
-    debug_assert!(provider.fused.is_empty(), "cuda clamp_inplace contract declares no fused ops");
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda clamp_inplace contract declares no fused ops"
+    );
     let mut fused = crate::fused::FusedKernelRegistry::new();
     provider
         .register_into(table, &mut fused)
@@ -3147,15 +3643,24 @@ fn register_cuda_clamp_inplace_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) powi_inplace kernel contract (`include_str!`), imported by
 /// [`register_cuda_powi_inplace_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_POWI_INPLACE_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/powi_inplace.fkc.md");
+const CUDA_POWI_INPLACE_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/cuda/powi_inplace.fkc.md");
 
 /// Register the CUDA powi_inplace family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
 /// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
 fn register_cuda_powi_inplace_from_contract(table: &mut KernelBindingTable) {
-    let provider = crate::fkc::import_bundle_str(CUDA_POWI_INPLACE_CONTRACT, &crate::fkc::CudaLinkRegistry)
-        .expect("authored CUDA powi_inplace contract must import (embedded include_str!, CudaLinkRegistry)");
-    debug_assert!(provider.fused.is_empty(), "cuda powi_inplace contract declares no fused ops");
+    let provider = crate::fkc::import_bundle_str(
+        CUDA_POWI_INPLACE_CONTRACT,
+        &crate::fkc::CudaLinkRegistry,
+    )
+    .expect(
+        "authored CUDA powi_inplace contract must import (embedded include_str!, CudaLinkRegistry)",
+    );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda powi_inplace contract declares no fused ops"
+    );
     let mut fused = crate::fused::FusedKernelRegistry::new();
     provider
         .register_into(table, &mut fused)
@@ -3164,7 +3669,8 @@ fn register_cuda_powi_inplace_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) inplace_unary kernel contract (`include_str!`), imported by
 /// [`register_cuda_inplace_unary_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_INPLACE_UNARY_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/inplace_unary.fkc.md");
+const CUDA_INPLACE_UNARY_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/cuda/inplace_unary.fkc.md");
 
 /// Register the CUDA inplace_unary family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -3172,7 +3678,10 @@ const CUDA_INPLACE_UNARY_CONTRACT: &str = include_str!("../../docs/kernel-contra
 fn register_cuda_inplace_unary_from_contract(table: &mut KernelBindingTable) {
     let provider = crate::fkc::import_bundle_str(CUDA_INPLACE_UNARY_CONTRACT, &crate::fkc::CudaLinkRegistry)
         .expect("authored CUDA inplace_unary contract must import (embedded include_str!, CudaLinkRegistry)");
-    debug_assert!(provider.fused.is_empty(), "cuda inplace_unary contract declares no fused ops");
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda inplace_unary contract declares no fused ops"
+    );
     let mut fused = crate::fused::FusedKernelRegistry::new();
     provider
         .register_into(table, &mut fused)
@@ -3185,15 +3694,24 @@ fn register_cuda_inplace_unary_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) write_slice kernel contract (`include_str!`), imported by
 /// [`register_cuda_write_slice_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_WRITE_SLICE_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/write_slice.fkc.md");
+const CUDA_WRITE_SLICE_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/cuda/write_slice.fkc.md");
 
 /// Register the CUDA write_slice family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
 /// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
 fn register_cuda_write_slice_from_contract(table: &mut KernelBindingTable) {
-    let provider = crate::fkc::import_bundle_str(CUDA_WRITE_SLICE_CONTRACT, &crate::fkc::CudaLinkRegistry)
-        .expect("authored CUDA write_slice contract must import (embedded include_str!, CudaLinkRegistry)");
-    debug_assert!(provider.fused.is_empty(), "cuda write_slice contract declares no fused ops");
+    let provider = crate::fkc::import_bundle_str(
+        CUDA_WRITE_SLICE_CONTRACT,
+        &crate::fkc::CudaLinkRegistry,
+    )
+    .expect(
+        "authored CUDA write_slice contract must import (embedded include_str!, CudaLinkRegistry)",
+    );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda write_slice contract declares no fused ops"
+    );
     let mut fused = crate::fused::FusedKernelRegistry::new();
     provider
         .register_into(table, &mut fused)
@@ -3202,7 +3720,8 @@ fn register_cuda_write_slice_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) write_slice_rotating kernel contract (`include_str!`), imported by
 /// [`register_cuda_write_slice_rotating_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_WRITE_SLICE_ROTATING_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/write_slice_rotating.fkc.md");
+const CUDA_WRITE_SLICE_ROTATING_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/cuda/write_slice_rotating.fkc.md");
 
 /// Register the CUDA write_slice_rotating family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -3210,7 +3729,10 @@ const CUDA_WRITE_SLICE_ROTATING_CONTRACT: &str = include_str!("../../docs/kernel
 fn register_cuda_write_slice_rotating_from_contract(table: &mut KernelBindingTable) {
     let provider = crate::fkc::import_bundle_str(CUDA_WRITE_SLICE_ROTATING_CONTRACT, &crate::fkc::CudaLinkRegistry)
         .expect("authored CUDA write_slice_rotating contract must import (embedded include_str!, CudaLinkRegistry)");
-    debug_assert!(provider.fused.is_empty(), "cuda write_slice_rotating contract declares no fused ops");
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda write_slice_rotating contract declares no fused ops"
+    );
     let mut fused = crate::fused::FusedKernelRegistry::new();
     provider
         .register_into(table, &mut fused)
@@ -3219,7 +3741,8 @@ fn register_cuda_write_slice_rotating_from_contract(table: &mut KernelBindingTab
 
 /// The authored CUDA (baracuda) write_slice_doff kernel contract (`include_str!`), imported by
 /// [`register_cuda_write_slice_doff_from_contract`] - the SOLE registration path.
-const CUDA_WRITE_SLICE_DOFF_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/write_slice_doff.fkc.md");
+const CUDA_WRITE_SLICE_DOFF_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/cuda/write_slice_doff.fkc.md");
 
 /// Register the CUDA write_slice_doff family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the b1/b2/b4/b8 production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -3227,7 +3750,10 @@ const CUDA_WRITE_SLICE_DOFF_CONTRACT: &str = include_str!("../../docs/kernel-con
 fn register_cuda_write_slice_doff_from_contract(table: &mut KernelBindingTable) {
     let provider = crate::fkc::import_bundle_str(CUDA_WRITE_SLICE_DOFF_CONTRACT, &crate::fkc::CudaLinkRegistry)
         .expect("authored CUDA write_slice_doff contract must import (embedded include_str!, CudaLinkRegistry)");
-    debug_assert!(provider.fused.is_empty(), "cuda write_slice_doff contract declares no fused ops");
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda write_slice_doff contract declares no fused ops"
+    );
     let mut fused = crate::fused::FusedKernelRegistry::new();
     provider
         .register_into(table, &mut fused)
@@ -3246,9 +3772,14 @@ const CUDA_CONCAT_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cud
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
 /// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
 fn register_cuda_concat_from_contract(table: &mut KernelBindingTable) {
-    let provider = crate::fkc::import_bundle_str(CUDA_CONCAT_CONTRACT, &crate::fkc::CudaLinkRegistry)
-        .expect("authored CUDA concat contract must import (embedded include_str!, CudaLinkRegistry)");
-    debug_assert!(provider.fused.is_empty(), "cuda concat contract declares no fused ops");
+    let provider =
+        crate::fkc::import_bundle_str(CUDA_CONCAT_CONTRACT, &crate::fkc::CudaLinkRegistry).expect(
+            "authored CUDA concat contract must import (embedded include_str!, CudaLinkRegistry)",
+        );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda concat contract declares no fused ops"
+    );
     let mut fused = crate::fused::FusedKernelRegistry::new();
     provider
         .register_into(table, &mut fused)
@@ -3263,9 +3794,14 @@ const CUDA_AFFINE_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cud
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
 /// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
 fn register_cuda_affine_from_contract(table: &mut KernelBindingTable) {
-    let provider = crate::fkc::import_bundle_str(CUDA_AFFINE_CONTRACT, &crate::fkc::CudaLinkRegistry)
-        .expect("authored CUDA affine contract must import (embedded include_str!, CudaLinkRegistry)");
-    debug_assert!(provider.fused.is_empty(), "cuda affine contract declares no fused ops");
+    let provider =
+        crate::fkc::import_bundle_str(CUDA_AFFINE_CONTRACT, &crate::fkc::CudaLinkRegistry).expect(
+            "authored CUDA affine contract must import (embedded include_str!, CudaLinkRegistry)",
+        );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda affine contract declares no fused ops"
+    );
     let mut fused = crate::fused::FusedKernelRegistry::new();
     provider
         .register_into(table, &mut fused)
@@ -3274,7 +3810,8 @@ fn register_cuda_affine_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) inplace_affine kernel contract (`include_str!`), imported by
 /// [`register_cuda_inplace_affine_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_INPLACE_AFFINE_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/inplace_affine.fkc.md");
+const CUDA_INPLACE_AFFINE_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/cuda/inplace_affine.fkc.md");
 
 /// Register the CUDA inplace_affine family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -3282,7 +3819,10 @@ const CUDA_INPLACE_AFFINE_CONTRACT: &str = include_str!("../../docs/kernel-contr
 fn register_cuda_inplace_affine_from_contract(table: &mut KernelBindingTable) {
     let provider = crate::fkc::import_bundle_str(CUDA_INPLACE_AFFINE_CONTRACT, &crate::fkc::CudaLinkRegistry)
         .expect("authored CUDA inplace_affine contract must import (embedded include_str!, CudaLinkRegistry)");
-    debug_assert!(provider.fused.is_empty(), "cuda inplace_affine contract declares no fused ops");
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda inplace_affine contract declares no fused ops"
+    );
     let mut fused = crate::fused::FusedKernelRegistry::new();
     provider
         .register_into(table, &mut fused)
@@ -3299,7 +3839,10 @@ const CUDA_PAD_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/p
 fn register_cuda_pad_from_contract(table: &mut KernelBindingTable) {
     let provider = crate::fkc::import_bundle_str(CUDA_PAD_CONTRACT, &crate::fkc::CudaLinkRegistry)
         .expect("authored CUDA pad contract must import (embedded include_str!, CudaLinkRegistry)");
-    debug_assert!(provider.fused.is_empty(), "cuda pad contract declares no fused ops");
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda pad contract declares no fused ops"
+    );
     let mut fused = crate::fused::FusedKernelRegistry::new();
     provider
         .register_into(table, &mut fused)
@@ -3308,15 +3851,24 @@ fn register_cuda_pad_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) pad_backward kernel contract (`include_str!`), imported by
 /// [`register_cuda_pad_backward_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_PAD_BACKWARD_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/pad_backward.fkc.md");
+const CUDA_PAD_BACKWARD_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/cuda/pad_backward.fkc.md");
 
 /// Register the CUDA pad_backward family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
 /// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
 fn register_cuda_pad_backward_from_contract(table: &mut KernelBindingTable) {
-    let provider = crate::fkc::import_bundle_str(CUDA_PAD_BACKWARD_CONTRACT, &crate::fkc::CudaLinkRegistry)
-        .expect("authored CUDA pad_backward contract must import (embedded include_str!, CudaLinkRegistry)");
-    debug_assert!(provider.fused.is_empty(), "cuda pad_backward contract declares no fused ops");
+    let provider = crate::fkc::import_bundle_str(
+        CUDA_PAD_BACKWARD_CONTRACT,
+        &crate::fkc::CudaLinkRegistry,
+    )
+    .expect(
+        "authored CUDA pad_backward contract must import (embedded include_str!, CudaLinkRegistry)",
+    );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda pad_backward contract declares no fused ops"
+    );
     let mut fused = crate::fused::FusedKernelRegistry::new();
     provider
         .register_into(table, &mut fused)
@@ -3325,7 +3877,8 @@ fn register_cuda_pad_backward_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) causal_conv1d kernel contract (`include_str!`), imported by
 /// [`register_cuda_causal_conv1d_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_CAUSAL_CONV1D_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/causal_conv1d.fkc.md");
+const CUDA_CAUSAL_CONV1D_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/cuda/causal_conv1d.fkc.md");
 
 /// Register the CUDA causal_conv1d family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
@@ -3333,7 +3886,10 @@ const CUDA_CAUSAL_CONV1D_CONTRACT: &str = include_str!("../../docs/kernel-contra
 fn register_cuda_causal_conv1d_from_contract(table: &mut KernelBindingTable) {
     let provider = crate::fkc::import_bundle_str(CUDA_CAUSAL_CONV1D_CONTRACT, &crate::fkc::CudaLinkRegistry)
         .expect("authored CUDA causal_conv1d contract must import (embedded include_str!, CudaLinkRegistry)");
-    debug_assert!(provider.fused.is_empty(), "cuda causal_conv1d contract declares no fused ops");
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda causal_conv1d contract declares no fused ops"
+    );
     let mut fused = crate::fused::FusedKernelRegistry::new();
     provider
         .register_into(table, &mut fused)
@@ -3346,15 +3902,24 @@ fn register_cuda_causal_conv1d_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) gemm_dense kernel contract (`include_str!`), imported by
 /// [`register_cuda_gemm_dense_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_GEMM_DENSE_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/gemm_dense.fkc.md");
+const CUDA_GEMM_DENSE_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/cuda/gemm_dense.fkc.md");
 
 /// Register the CUDA gemm_dense family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
 /// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
 fn register_cuda_gemm_dense_from_contract(table: &mut KernelBindingTable) {
-    let provider = crate::fkc::import_bundle_str(CUDA_GEMM_DENSE_CONTRACT, &crate::fkc::CudaLinkRegistry)
-        .expect("authored CUDA gemm_dense contract must import (embedded include_str!, CudaLinkRegistry)");
-    debug_assert!(provider.fused.is_empty(), "cuda gemm_dense contract declares no fused ops");
+    let provider = crate::fkc::import_bundle_str(
+        CUDA_GEMM_DENSE_CONTRACT,
+        &crate::fkc::CudaLinkRegistry,
+    )
+    .expect(
+        "authored CUDA gemm_dense contract must import (embedded include_str!, CudaLinkRegistry)",
+    );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda gemm_dense contract declares no fused ops"
+    );
     let mut fused = crate::fused::FusedKernelRegistry::new();
     provider
         .register_into(table, &mut fused)
@@ -3363,15 +3928,24 @@ fn register_cuda_gemm_dense_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) gemm_int kernel contract (`include_str!`), imported by
 /// [`register_cuda_gemm_int_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_GEMM_INT_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/gemm_int.fkc.md");
+const CUDA_GEMM_INT_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/cuda/gemm_int.fkc.md");
 
 /// Register the CUDA gemm_int family FROM its FKC contract (per-(op,dtype), fanned
 /// `<op>_<dtype>` -> the distinct production wrappers via [`crate::fkc::CudaLinkRegistry`]).
 /// Runs BEFORE `fill_unset_cost_for_backend(Cuda, ..)`; caps/precision ride through the import.
 fn register_cuda_gemm_int_from_contract(table: &mut KernelBindingTable) {
-    let provider = crate::fkc::import_bundle_str(CUDA_GEMM_INT_CONTRACT, &crate::fkc::CudaLinkRegistry)
-        .expect("authored CUDA gemm_int contract must import (embedded include_str!, CudaLinkRegistry)");
-    debug_assert!(provider.fused.is_empty(), "cuda gemm_int contract declares no fused ops");
+    let provider = crate::fkc::import_bundle_str(
+        CUDA_GEMM_INT_CONTRACT,
+        &crate::fkc::CudaLinkRegistry,
+    )
+    .expect(
+        "authored CUDA gemm_int contract must import (embedded include_str!, CudaLinkRegistry)",
+    );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda gemm_int contract declares no fused ops"
+    );
     let mut fused = crate::fused::FusedKernelRegistry::new();
     provider
         .register_into(table, &mut fused)
@@ -3380,7 +3954,8 @@ fn register_cuda_gemm_int_from_contract(table: &mut KernelBindingTable) {
 
 /// The authored CUDA (baracuda) indexing kernel contract (`include_str!`), imported by
 /// [`register_cuda_indexing_from_contract`] - the SOLE registration path (hand-written regs DELETED).
-const CUDA_INDEXING_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cuda/indexing.fkc.md");
+const CUDA_INDEXING_CONTRACT: &str =
+    include_str!("../../docs/kernel-contracts/cuda/indexing.fkc.md");
 
 /// Register the CUDA indexing family (IndexSelect / Gather / MaskedFill over
 /// `{F32, F64, I32}` = 9 keys + ScatterAdd over `{F32, F64}` = 2 keys = 11
@@ -3397,9 +3972,17 @@ const CUDA_INDEXING_CONTRACT: &str = include_str!("../../docs/kernel-contracts/c
 /// (`requires_contiguous` ⇒ `strided_input == false`) + UNAUDITED precision seed
 /// ride through the import.
 fn register_cuda_indexing_from_contract(table: &mut KernelBindingTable) {
-    let provider = crate::fkc::import_bundle_str(CUDA_INDEXING_CONTRACT, &crate::fkc::CudaLinkRegistry)
-        .expect("authored CUDA indexing contract must import (embedded include_str!, CudaLinkRegistry)");
-    debug_assert!(provider.fused.is_empty(), "cuda indexing contract declares no fused ops");
+    let provider = crate::fkc::import_bundle_str(
+        CUDA_INDEXING_CONTRACT,
+        &crate::fkc::CudaLinkRegistry,
+    )
+    .expect(
+        "authored CUDA indexing contract must import (embedded include_str!, CudaLinkRegistry)",
+    );
+    debug_assert!(
+        provider.fused.is_empty(),
+        "cuda indexing contract declares no fused ops"
+    );
     let mut fused = crate::fused::FusedKernelRegistry::new();
     provider
         .register_into(table, &mut fused)
@@ -3580,8 +4163,14 @@ mod cast_contract_tests {
         // Reconstruct production's 70 (src, dst) keys exactly (the deleted
         // hand-written double-loop + F8E4M3 legs).
         let base = [
-            DType::F32, DType::F64, DType::F16, DType::BF16,
-            DType::I32, DType::U32, DType::I64, DType::U8,
+            DType::F32,
+            DType::F64,
+            DType::F16,
+            DType::BF16,
+            DType::I32,
+            DType::U32,
+            DType::I64,
+            DType::U8,
         ];
         let mut pairs: Vec<(DType, DType)> = Vec::new();
         for &src in &base {
@@ -3639,126 +4228,726 @@ mod cast_contract_tests {
         register_baracuda_cuda_kernels(&mut table);
         let cuda = BackendId::Cuda;
         let cases: &[(OpKind, &[DType], KernelRef, bool)] = &[
-        (OpKind::AddElementwise, &[DType::F32, DType::F32, DType::F32][..], binary::add_f32 as KernelRef, true),
-        (OpKind::AddElementwise, &[DType::F16, DType::F16, DType::F16][..], binary::add_f16 as KernelRef, true),
-        (OpKind::AddElementwise, &[DType::BF16, DType::BF16, DType::BF16][..], binary::add_bf16 as KernelRef, true),
-        (OpKind::AddElementwise, &[DType::F64, DType::F64, DType::F64][..], binary::add_f64 as KernelRef, true),
-        (OpKind::SubElementwise, &[DType::F32, DType::F32, DType::F32][..], binary::sub_f32 as KernelRef, true),
-        (OpKind::SubElementwise, &[DType::F16, DType::F16, DType::F16][..], binary::sub_f16 as KernelRef, true),
-        (OpKind::SubElementwise, &[DType::BF16, DType::BF16, DType::BF16][..], binary::sub_bf16 as KernelRef, true),
-        (OpKind::SubElementwise, &[DType::F64, DType::F64, DType::F64][..], binary::sub_f64 as KernelRef, true),
-        (OpKind::MulElementwise, &[DType::F32, DType::F32, DType::F32][..], binary::mul_f32 as KernelRef, true),
-        (OpKind::MulElementwise, &[DType::F16, DType::F16, DType::F16][..], binary::mul_f16 as KernelRef, true),
-        (OpKind::MulElementwise, &[DType::BF16, DType::BF16, DType::BF16][..], binary::mul_bf16 as KernelRef, true),
-        (OpKind::MulElementwise, &[DType::F64, DType::F64, DType::F64][..], binary::mul_f64 as KernelRef, true),
-        (OpKind::DivElementwise, &[DType::F32, DType::F32, DType::F32][..], binary::div_f32 as KernelRef, true),
-        (OpKind::DivElementwise, &[DType::F16, DType::F16, DType::F16][..], binary::div_f16 as KernelRef, true),
-        (OpKind::DivElementwise, &[DType::BF16, DType::BF16, DType::BF16][..], binary::div_bf16 as KernelRef, true),
-        (OpKind::DivElementwise, &[DType::F64, DType::F64, DType::F64][..], binary::div_f64 as KernelRef, true),
-        (OpKind::MaximumElementwise, &[DType::F32, DType::F32, DType::F32][..], binary::maximum_f32 as KernelRef, true),
-        (OpKind::MaximumElementwise, &[DType::F16, DType::F16, DType::F16][..], binary::maximum_f16 as KernelRef, true),
-        (OpKind::MaximumElementwise, &[DType::BF16, DType::BF16, DType::BF16][..], binary::maximum_bf16 as KernelRef, true),
-        (OpKind::MaximumElementwise, &[DType::F64, DType::F64, DType::F64][..], binary::maximum_f64 as KernelRef, true),
-        (OpKind::MinimumElementwise, &[DType::F32, DType::F32, DType::F32][..], binary::minimum_f32 as KernelRef, true),
-        (OpKind::MinimumElementwise, &[DType::F16, DType::F16, DType::F16][..], binary::minimum_f16 as KernelRef, true),
-        (OpKind::MinimumElementwise, &[DType::BF16, DType::BF16, DType::BF16][..], binary::minimum_bf16 as KernelRef, true),
-        (OpKind::MinimumElementwise, &[DType::F64, DType::F64, DType::F64][..], binary::minimum_f64 as KernelRef, true),
-        (OpKind::PowElementwise, &[DType::F32, DType::F32, DType::F32][..], binary::pow_f32 as KernelRef, true),
-        (OpKind::PowElementwise, &[DType::F16, DType::F16, DType::F16][..], binary::pow_f16 as KernelRef, true),
-        (OpKind::PowElementwise, &[DType::BF16, DType::BF16, DType::BF16][..], binary::pow_bf16 as KernelRef, true),
-        (OpKind::PowElementwise, &[DType::F64, DType::F64, DType::F64][..], binary::pow_f64 as KernelRef, true),
-        (OpKind::RemElementwise, &[DType::F32, DType::F32, DType::F32][..], binary::rem_f32 as KernelRef, true),
-        (OpKind::RemElementwise, &[DType::F16, DType::F16, DType::F16][..], binary::rem_f16 as KernelRef, true),
-        (OpKind::RemElementwise, &[DType::BF16, DType::BF16, DType::BF16][..], binary::rem_bf16 as KernelRef, true),
-        (OpKind::RemElementwise, &[DType::F64, DType::F64, DType::F64][..], binary::rem_f64 as KernelRef, true),
-        (OpKind::SumReduce, &[DType::F32, DType::F32][..], reduce::sum_f32 as KernelRef, true),
-        (OpKind::SumReduce, &[DType::F16, DType::F16][..], reduce::sum_f16 as KernelRef, true),
-        (OpKind::SumReduce, &[DType::BF16, DType::BF16][..], reduce::sum_bf16 as KernelRef, true),
-        (OpKind::SumReduce, &[DType::F64, DType::F64][..], reduce::sum_f64 as KernelRef, true),
-        (OpKind::MaxReduce, &[DType::F32, DType::F32][..], reduce::max_f32 as KernelRef, true),
-        (OpKind::MaxReduce, &[DType::F16, DType::F16][..], reduce::max_f16 as KernelRef, true),
-        (OpKind::MaxReduce, &[DType::BF16, DType::BF16][..], reduce::max_bf16 as KernelRef, true),
-        (OpKind::MaxReduce, &[DType::F64, DType::F64][..], reduce::max_f64 as KernelRef, true),
-        (OpKind::MinReduce, &[DType::F32, DType::F32][..], reduce::min_f32 as KernelRef, true),
-        (OpKind::MinReduce, &[DType::F16, DType::F16][..], reduce::min_f16 as KernelRef, true),
-        (OpKind::MinReduce, &[DType::BF16, DType::BF16][..], reduce::min_bf16 as KernelRef, true),
-        (OpKind::MinReduce, &[DType::F64, DType::F64][..], reduce::min_f64 as KernelRef, true),
-        (OpKind::MeanReduce, &[DType::F32, DType::F32][..], reduce::mean_f32 as KernelRef, true),
-        (OpKind::MeanReduce, &[DType::F16, DType::F16][..], reduce::mean_f16 as KernelRef, true),
-        (OpKind::MeanReduce, &[DType::BF16, DType::BF16][..], reduce::mean_bf16 as KernelRef, true),
-        (OpKind::MeanReduce, &[DType::F64, DType::F64][..], reduce::mean_f64 as KernelRef, true),
-        (OpKind::RmsNormLastDim, &[DType::F32, DType::F32][..], norm::rms_f32 as KernelRef, true),
-        (OpKind::RmsNormLastDim, &[DType::F16, DType::F16][..], norm::rms_f16 as KernelRef, true),
-        (OpKind::RmsNormLastDim, &[DType::BF16, DType::BF16][..], norm::rms_bf16 as KernelRef, true),
-        (OpKind::RmsNormLastDim, &[DType::F64, DType::F64][..], norm::rms_f64 as KernelRef, true),
-        (OpKind::LayerNormLastDim, &[DType::F32, DType::F32][..], norm::layer_f32 as KernelRef, true),
-        (OpKind::LayerNormLastDim, &[DType::F16, DType::F16][..], norm::layer_f16 as KernelRef, true),
-        (OpKind::LayerNormLastDim, &[DType::BF16, DType::BF16][..], norm::layer_bf16 as KernelRef, true),
-        (OpKind::LayerNormLastDim, &[DType::F64, DType::F64][..], norm::layer_f64 as KernelRef, true),
-        (OpKind::SoftmaxLastDim, &[DType::F32, DType::F32][..], softmax::softmax_f32 as KernelRef, true),
-        (OpKind::SoftmaxLastDim, &[DType::F16, DType::F16][..], softmax::softmax_f16 as KernelRef, true),
-        (OpKind::SoftmaxLastDim, &[DType::BF16, DType::BF16][..], softmax::softmax_bf16 as KernelRef, true),
-        (OpKind::SoftmaxLastDim, &[DType::F64, DType::F64][..], softmax::softmax_f64 as KernelRef, true),
-        (OpKind::LogSoftmaxLastDim, &[DType::F32, DType::F32][..], softmax::log_softmax_f32 as KernelRef, true),
-        (OpKind::LogSoftmaxLastDim, &[DType::F16, DType::F16][..], softmax::log_softmax_f16 as KernelRef, true),
-        (OpKind::LogSoftmaxLastDim, &[DType::BF16, DType::BF16][..], softmax::log_softmax_bf16 as KernelRef, true),
-        (OpKind::LogSoftmaxLastDim, &[DType::F64, DType::F64][..], softmax::log_softmax_f64 as KernelRef, true),
-        (OpKind::PowIElementwise, &[DType::F32, DType::F32][..], powi::powi_f32 as KernelRef, true),
-        (OpKind::PowIElementwise, &[DType::F64, DType::F64][..], powi::powi_f64 as KernelRef, true),
-        (OpKind::PowIElementwise, &[DType::F16, DType::F16][..], powi::powi_f16 as KernelRef, true),
-        (OpKind::PowIElementwise, &[DType::BF16, DType::BF16][..], powi::powi_bf16 as KernelRef, true),
-        (OpKind::PowIElementwiseBackward, &[DType::F32, DType::F32, DType::F32][..], powi_backward::powi_backward_f32 as KernelRef, true),
-        (OpKind::PowIElementwiseBackward, &[DType::F64, DType::F64, DType::F64][..], powi_backward::powi_backward_f64 as KernelRef, true),
-        (OpKind::PowIElementwiseBackward, &[DType::F16, DType::F16, DType::F16][..], powi_backward::powi_backward_f16 as KernelRef, true),
-        (OpKind::PowIElementwiseBackward, &[DType::BF16, DType::BF16, DType::BF16][..], powi_backward::powi_backward_bf16 as KernelRef, true),
-        (OpKind::ClampElementwise, &[DType::F32, DType::F32][..], clamp::clamp_f32 as KernelRef, true),
-        (OpKind::ClampElementwise, &[DType::F64, DType::F64][..], clamp::clamp_f64 as KernelRef, true),
-        (OpKind::ClampElementwise, &[DType::F16, DType::F16][..], clamp::clamp_f16 as KernelRef, true),
-        (OpKind::ClampElementwise, &[DType::BF16, DType::BF16][..], clamp::clamp_bf16 as KernelRef, true),
-        (OpKind::Flip, &[DType::F32, DType::F32][..], flip::flip_f32 as KernelRef, true),
-        (OpKind::Flip, &[DType::F16, DType::F16][..], flip::flip_f16 as KernelRef, true),
-        (OpKind::Flip, &[DType::BF16, DType::BF16][..], flip::flip_bf16 as KernelRef, true),
-        (OpKind::Flip, &[DType::F64, DType::F64][..], flip::flip_f64 as KernelRef, true),
-        (OpKind::Roll, &[DType::F32, DType::F32][..], roll::roll_f32 as KernelRef, true),
-        (OpKind::Roll, &[DType::F16, DType::F16][..], roll::roll_f16 as KernelRef, true),
-        (OpKind::Roll, &[DType::BF16, DType::BF16][..], roll::roll_bf16 as KernelRef, true),
-        (OpKind::Roll, &[DType::F64, DType::F64][..], roll::roll_f64 as KernelRef, true),
-        (OpKind::CumSum, &[DType::F32, DType::F32][..], cumsum::cumsum_f32 as KernelRef, true),
-        (OpKind::CumSum, &[DType::F16, DType::F16][..], cumsum::cumsum_f16 as KernelRef, true),
-        (OpKind::CumSum, &[DType::BF16, DType::BF16][..], cumsum::cumsum_bf16 as KernelRef, true),
-        (OpKind::CumSum, &[DType::F64, DType::F64][..], cumsum::cumsum_f64 as KernelRef, true),
-        (OpKind::Triu, &[DType::F32, DType::F32][..], triangular::triu_f32 as KernelRef, true),
-        (OpKind::Triu, &[DType::F64, DType::F64][..], triangular::triu_f64 as KernelRef, true),
-        (OpKind::Triu, &[DType::F16, DType::F16][..], triangular::triu_f16 as KernelRef, true),
-        (OpKind::Triu, &[DType::BF16, DType::BF16][..], triangular::triu_bf16 as KernelRef, true),
-        (OpKind::Triu, &[DType::I32, DType::I32][..], triangular::triu_i32 as KernelRef, true),
-        (OpKind::Triu, &[DType::I64, DType::I64][..], triangular::triu_i64 as KernelRef, true),
-        (OpKind::Tril, &[DType::F32, DType::F32][..], triangular::tril_f32 as KernelRef, true),
-        (OpKind::Tril, &[DType::F64, DType::F64][..], triangular::tril_f64 as KernelRef, true),
-        (OpKind::Tril, &[DType::F16, DType::F16][..], triangular::tril_f16 as KernelRef, true),
-        (OpKind::Tril, &[DType::BF16, DType::BF16][..], triangular::tril_bf16 as KernelRef, true),
-        (OpKind::Tril, &[DType::I32, DType::I32][..], triangular::tril_i32 as KernelRef, true),
-        (OpKind::Tril, &[DType::I64, DType::I64][..], triangular::tril_i64 as KernelRef, true),
-        (OpKind::ArgMaxDim, &[DType::F32, DType::U32][..], arg_reduce::argmax_dim_u32_f32 as KernelRef, true),
-        (OpKind::ArgMaxDim, &[DType::F64, DType::U32][..], arg_reduce::argmax_dim_u32_f64 as KernelRef, true),
-        (OpKind::ArgMaxDim, &[DType::F16, DType::U32][..], arg_reduce::argmax_dim_u32_f16 as KernelRef, true),
-        (OpKind::ArgMaxDim, &[DType::BF16, DType::U32][..], arg_reduce::argmax_dim_u32_bf16 as KernelRef, true),
-        (OpKind::ArgMinDim, &[DType::F32, DType::U32][..], arg_reduce::argmin_dim_u32_f32 as KernelRef, true),
-        (OpKind::ArgMinDim, &[DType::F64, DType::U32][..], arg_reduce::argmin_dim_u32_f64 as KernelRef, true),
-        (OpKind::ArgMinDim, &[DType::F16, DType::U32][..], arg_reduce::argmin_dim_u32_f16 as KernelRef, true),
-        (OpKind::ArgMinDim, &[DType::BF16, DType::U32][..], arg_reduce::argmin_dim_u32_bf16 as KernelRef, true),
-        (OpKind::ReduceSumTo, &[DType::F32, DType::F32][..], reduce_to::sum_to_f32 as KernelRef, true),
-        (OpKind::ReduceSumTo, &[DType::F16, DType::F16][..], reduce_to::sum_to_f16 as KernelRef, true),
-        (OpKind::ReduceSumTo, &[DType::BF16, DType::BF16][..], reduce_to::sum_to_bf16 as KernelRef, true),
-        (OpKind::ReduceSumTo, &[DType::F64, DType::F64][..], reduce_to::sum_to_f64 as KernelRef, true),
-        (OpKind::ReduceMaxTo, &[DType::F32, DType::F32][..], reduce_to::max_to_f32 as KernelRef, true),
-        (OpKind::ReduceMaxTo, &[DType::F16, DType::F16][..], reduce_to::max_to_f16 as KernelRef, true),
-        (OpKind::ReduceMaxTo, &[DType::BF16, DType::BF16][..], reduce_to::max_to_bf16 as KernelRef, true),
-        (OpKind::ReduceMaxTo, &[DType::F64, DType::F64][..], reduce_to::max_to_f64 as KernelRef, true),
-        (OpKind::Rope, &[DType::F32, DType::F32][..], attention::rope_f32 as KernelRef, true),
-        (OpKind::Rope, &[DType::F16, DType::F16][..], attention::rope_f16 as KernelRef, true),
-        (OpKind::Rope, &[DType::BF16, DType::BF16][..], attention::rope_bf16 as KernelRef, true),
-        (OpKind::Rope, &[DType::F64, DType::F64][..], attention::rope_f64 as KernelRef, true),
+            (
+                OpKind::AddElementwise,
+                &[DType::F32, DType::F32, DType::F32][..],
+                binary::add_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::AddElementwise,
+                &[DType::F16, DType::F16, DType::F16][..],
+                binary::add_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::AddElementwise,
+                &[DType::BF16, DType::BF16, DType::BF16][..],
+                binary::add_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::AddElementwise,
+                &[DType::F64, DType::F64, DType::F64][..],
+                binary::add_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SubElementwise,
+                &[DType::F32, DType::F32, DType::F32][..],
+                binary::sub_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SubElementwise,
+                &[DType::F16, DType::F16, DType::F16][..],
+                binary::sub_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SubElementwise,
+                &[DType::BF16, DType::BF16, DType::BF16][..],
+                binary::sub_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SubElementwise,
+                &[DType::F64, DType::F64, DType::F64][..],
+                binary::sub_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MulElementwise,
+                &[DType::F32, DType::F32, DType::F32][..],
+                binary::mul_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MulElementwise,
+                &[DType::F16, DType::F16, DType::F16][..],
+                binary::mul_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MulElementwise,
+                &[DType::BF16, DType::BF16, DType::BF16][..],
+                binary::mul_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MulElementwise,
+                &[DType::F64, DType::F64, DType::F64][..],
+                binary::mul_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::DivElementwise,
+                &[DType::F32, DType::F32, DType::F32][..],
+                binary::div_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::DivElementwise,
+                &[DType::F16, DType::F16, DType::F16][..],
+                binary::div_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::DivElementwise,
+                &[DType::BF16, DType::BF16, DType::BF16][..],
+                binary::div_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::DivElementwise,
+                &[DType::F64, DType::F64, DType::F64][..],
+                binary::div_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MaximumElementwise,
+                &[DType::F32, DType::F32, DType::F32][..],
+                binary::maximum_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MaximumElementwise,
+                &[DType::F16, DType::F16, DType::F16][..],
+                binary::maximum_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MaximumElementwise,
+                &[DType::BF16, DType::BF16, DType::BF16][..],
+                binary::maximum_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MaximumElementwise,
+                &[DType::F64, DType::F64, DType::F64][..],
+                binary::maximum_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MinimumElementwise,
+                &[DType::F32, DType::F32, DType::F32][..],
+                binary::minimum_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MinimumElementwise,
+                &[DType::F16, DType::F16, DType::F16][..],
+                binary::minimum_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MinimumElementwise,
+                &[DType::BF16, DType::BF16, DType::BF16][..],
+                binary::minimum_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MinimumElementwise,
+                &[DType::F64, DType::F64, DType::F64][..],
+                binary::minimum_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::PowElementwise,
+                &[DType::F32, DType::F32, DType::F32][..],
+                binary::pow_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::PowElementwise,
+                &[DType::F16, DType::F16, DType::F16][..],
+                binary::pow_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::PowElementwise,
+                &[DType::BF16, DType::BF16, DType::BF16][..],
+                binary::pow_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::PowElementwise,
+                &[DType::F64, DType::F64, DType::F64][..],
+                binary::pow_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::RemElementwise,
+                &[DType::F32, DType::F32, DType::F32][..],
+                binary::rem_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::RemElementwise,
+                &[DType::F16, DType::F16, DType::F16][..],
+                binary::rem_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::RemElementwise,
+                &[DType::BF16, DType::BF16, DType::BF16][..],
+                binary::rem_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::RemElementwise,
+                &[DType::F64, DType::F64, DType::F64][..],
+                binary::rem_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SumReduce,
+                &[DType::F32, DType::F32][..],
+                reduce::sum_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SumReduce,
+                &[DType::F16, DType::F16][..],
+                reduce::sum_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SumReduce,
+                &[DType::BF16, DType::BF16][..],
+                reduce::sum_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SumReduce,
+                &[DType::F64, DType::F64][..],
+                reduce::sum_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MaxReduce,
+                &[DType::F32, DType::F32][..],
+                reduce::max_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MaxReduce,
+                &[DType::F16, DType::F16][..],
+                reduce::max_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MaxReduce,
+                &[DType::BF16, DType::BF16][..],
+                reduce::max_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MaxReduce,
+                &[DType::F64, DType::F64][..],
+                reduce::max_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MinReduce,
+                &[DType::F32, DType::F32][..],
+                reduce::min_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MinReduce,
+                &[DType::F16, DType::F16][..],
+                reduce::min_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MinReduce,
+                &[DType::BF16, DType::BF16][..],
+                reduce::min_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MinReduce,
+                &[DType::F64, DType::F64][..],
+                reduce::min_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MeanReduce,
+                &[DType::F32, DType::F32][..],
+                reduce::mean_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MeanReduce,
+                &[DType::F16, DType::F16][..],
+                reduce::mean_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MeanReduce,
+                &[DType::BF16, DType::BF16][..],
+                reduce::mean_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::MeanReduce,
+                &[DType::F64, DType::F64][..],
+                reduce::mean_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::RmsNormLastDim,
+                &[DType::F32, DType::F32][..],
+                norm::rms_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::RmsNormLastDim,
+                &[DType::F16, DType::F16][..],
+                norm::rms_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::RmsNormLastDim,
+                &[DType::BF16, DType::BF16][..],
+                norm::rms_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::RmsNormLastDim,
+                &[DType::F64, DType::F64][..],
+                norm::rms_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::LayerNormLastDim,
+                &[DType::F32, DType::F32][..],
+                norm::layer_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::LayerNormLastDim,
+                &[DType::F16, DType::F16][..],
+                norm::layer_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::LayerNormLastDim,
+                &[DType::BF16, DType::BF16][..],
+                norm::layer_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::LayerNormLastDim,
+                &[DType::F64, DType::F64][..],
+                norm::layer_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SoftmaxLastDim,
+                &[DType::F32, DType::F32][..],
+                softmax::softmax_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SoftmaxLastDim,
+                &[DType::F16, DType::F16][..],
+                softmax::softmax_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SoftmaxLastDim,
+                &[DType::BF16, DType::BF16][..],
+                softmax::softmax_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SoftmaxLastDim,
+                &[DType::F64, DType::F64][..],
+                softmax::softmax_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::LogSoftmaxLastDim,
+                &[DType::F32, DType::F32][..],
+                softmax::log_softmax_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::LogSoftmaxLastDim,
+                &[DType::F16, DType::F16][..],
+                softmax::log_softmax_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::LogSoftmaxLastDim,
+                &[DType::BF16, DType::BF16][..],
+                softmax::log_softmax_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::LogSoftmaxLastDim,
+                &[DType::F64, DType::F64][..],
+                softmax::log_softmax_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::PowIElementwise,
+                &[DType::F32, DType::F32][..],
+                powi::powi_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::PowIElementwise,
+                &[DType::F64, DType::F64][..],
+                powi::powi_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::PowIElementwise,
+                &[DType::F16, DType::F16][..],
+                powi::powi_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::PowIElementwise,
+                &[DType::BF16, DType::BF16][..],
+                powi::powi_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::PowIElementwiseBackward,
+                &[DType::F32, DType::F32, DType::F32][..],
+                powi_backward::powi_backward_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::PowIElementwiseBackward,
+                &[DType::F64, DType::F64, DType::F64][..],
+                powi_backward::powi_backward_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::PowIElementwiseBackward,
+                &[DType::F16, DType::F16, DType::F16][..],
+                powi_backward::powi_backward_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::PowIElementwiseBackward,
+                &[DType::BF16, DType::BF16, DType::BF16][..],
+                powi_backward::powi_backward_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ClampElementwise,
+                &[DType::F32, DType::F32][..],
+                clamp::clamp_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ClampElementwise,
+                &[DType::F64, DType::F64][..],
+                clamp::clamp_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ClampElementwise,
+                &[DType::F16, DType::F16][..],
+                clamp::clamp_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ClampElementwise,
+                &[DType::BF16, DType::BF16][..],
+                clamp::clamp_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Flip,
+                &[DType::F32, DType::F32][..],
+                flip::flip_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Flip,
+                &[DType::F16, DType::F16][..],
+                flip::flip_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Flip,
+                &[DType::BF16, DType::BF16][..],
+                flip::flip_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Flip,
+                &[DType::F64, DType::F64][..],
+                flip::flip_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Roll,
+                &[DType::F32, DType::F32][..],
+                roll::roll_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Roll,
+                &[DType::F16, DType::F16][..],
+                roll::roll_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Roll,
+                &[DType::BF16, DType::BF16][..],
+                roll::roll_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Roll,
+                &[DType::F64, DType::F64][..],
+                roll::roll_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::CumSum,
+                &[DType::F32, DType::F32][..],
+                cumsum::cumsum_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::CumSum,
+                &[DType::F16, DType::F16][..],
+                cumsum::cumsum_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::CumSum,
+                &[DType::BF16, DType::BF16][..],
+                cumsum::cumsum_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::CumSum,
+                &[DType::F64, DType::F64][..],
+                cumsum::cumsum_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Triu,
+                &[DType::F32, DType::F32][..],
+                triangular::triu_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Triu,
+                &[DType::F64, DType::F64][..],
+                triangular::triu_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Triu,
+                &[DType::F16, DType::F16][..],
+                triangular::triu_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Triu,
+                &[DType::BF16, DType::BF16][..],
+                triangular::triu_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Triu,
+                &[DType::I32, DType::I32][..],
+                triangular::triu_i32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Triu,
+                &[DType::I64, DType::I64][..],
+                triangular::triu_i64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Tril,
+                &[DType::F32, DType::F32][..],
+                triangular::tril_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Tril,
+                &[DType::F64, DType::F64][..],
+                triangular::tril_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Tril,
+                &[DType::F16, DType::F16][..],
+                triangular::tril_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Tril,
+                &[DType::BF16, DType::BF16][..],
+                triangular::tril_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Tril,
+                &[DType::I32, DType::I32][..],
+                triangular::tril_i32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Tril,
+                &[DType::I64, DType::I64][..],
+                triangular::tril_i64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ArgMaxDim,
+                &[DType::F32, DType::U32][..],
+                arg_reduce::argmax_dim_u32_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ArgMaxDim,
+                &[DType::F64, DType::U32][..],
+                arg_reduce::argmax_dim_u32_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ArgMaxDim,
+                &[DType::F16, DType::U32][..],
+                arg_reduce::argmax_dim_u32_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ArgMaxDim,
+                &[DType::BF16, DType::U32][..],
+                arg_reduce::argmax_dim_u32_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ArgMinDim,
+                &[DType::F32, DType::U32][..],
+                arg_reduce::argmin_dim_u32_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ArgMinDim,
+                &[DType::F64, DType::U32][..],
+                arg_reduce::argmin_dim_u32_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ArgMinDim,
+                &[DType::F16, DType::U32][..],
+                arg_reduce::argmin_dim_u32_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ArgMinDim,
+                &[DType::BF16, DType::U32][..],
+                arg_reduce::argmin_dim_u32_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ReduceSumTo,
+                &[DType::F32, DType::F32][..],
+                reduce_to::sum_to_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ReduceSumTo,
+                &[DType::F16, DType::F16][..],
+                reduce_to::sum_to_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ReduceSumTo,
+                &[DType::BF16, DType::BF16][..],
+                reduce_to::sum_to_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ReduceSumTo,
+                &[DType::F64, DType::F64][..],
+                reduce_to::sum_to_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ReduceMaxTo,
+                &[DType::F32, DType::F32][..],
+                reduce_to::max_to_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ReduceMaxTo,
+                &[DType::F16, DType::F16][..],
+                reduce_to::max_to_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ReduceMaxTo,
+                &[DType::BF16, DType::BF16][..],
+                reduce_to::max_to_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ReduceMaxTo,
+                &[DType::F64, DType::F64][..],
+                reduce_to::max_to_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Rope,
+                &[DType::F32, DType::F32][..],
+                attention::rope_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Rope,
+                &[DType::F16, DType::F16][..],
+                attention::rope_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Rope,
+                &[DType::BF16, DType::BF16][..],
+                attention::rope_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Rope,
+                &[DType::F64, DType::F64][..],
+                attention::rope_f64 as KernelRef,
+                true,
+            ),
         ];
         let mut checked = 0usize;
         for (op, key, expected, want_strided) in cases {
@@ -3802,91 +4991,516 @@ mod cast_contract_tests {
         register_baracuda_cuda_kernels(&mut table);
         let cuda = BackendId::Cuda;
         let cases: &[(OpKind, &[DType], KernelRef, bool)] = &[
-        (OpKind::NegElementwise, &[DType::F32, DType::F32][..], unary::neg_f32 as KernelRef, true),
-        (OpKind::NegElementwise, &[DType::F16, DType::F16][..], unary::neg_f16 as KernelRef, true),
-        (OpKind::NegElementwise, &[DType::BF16, DType::BF16][..], unary::neg_bf16 as KernelRef, true),
-        (OpKind::NegElementwise, &[DType::F64, DType::F64][..], unary::neg_f64 as KernelRef, true),
-        (OpKind::AbsElementwise, &[DType::F32, DType::F32][..], unary::abs_f32 as KernelRef, true),
-        (OpKind::AbsElementwise, &[DType::F16, DType::F16][..], unary::abs_f16 as KernelRef, true),
-        (OpKind::AbsElementwise, &[DType::BF16, DType::BF16][..], unary::abs_bf16 as KernelRef, true),
-        (OpKind::AbsElementwise, &[DType::F64, DType::F64][..], unary::abs_f64 as KernelRef, true),
-        (OpKind::SqrElementwise, &[DType::F32, DType::F32][..], unary::sqr_f32 as KernelRef, true),
-        (OpKind::SqrElementwise, &[DType::F16, DType::F16][..], unary::sqr_f16 as KernelRef, true),
-        (OpKind::SqrElementwise, &[DType::BF16, DType::BF16][..], unary::sqr_bf16 as KernelRef, true),
-        (OpKind::SqrElementwise, &[DType::F64, DType::F64][..], unary::sqr_f64 as KernelRef, true),
-        (OpKind::SqrtElementwise, &[DType::F32, DType::F32][..], unary::sqrt_f32 as KernelRef, true),
-        (OpKind::SqrtElementwise, &[DType::F16, DType::F16][..], unary::sqrt_f16 as KernelRef, true),
-        (OpKind::SqrtElementwise, &[DType::BF16, DType::BF16][..], unary::sqrt_bf16 as KernelRef, true),
-        (OpKind::SqrtElementwise, &[DType::F64, DType::F64][..], unary::sqrt_f64 as KernelRef, true),
-        (OpKind::RecipElementwise, &[DType::F32, DType::F32][..], unary::recip_f32 as KernelRef, true),
-        (OpKind::RecipElementwise, &[DType::F16, DType::F16][..], unary::recip_f16 as KernelRef, true),
-        (OpKind::RecipElementwise, &[DType::BF16, DType::BF16][..], unary::recip_bf16 as KernelRef, true),
-        (OpKind::RecipElementwise, &[DType::F64, DType::F64][..], unary::recip_f64 as KernelRef, true),
-        (OpKind::ExpElementwise, &[DType::F32, DType::F32][..], unary::exp_f32 as KernelRef, true),
-        (OpKind::ExpElementwise, &[DType::F16, DType::F16][..], unary::exp_f16 as KernelRef, true),
-        (OpKind::ExpElementwise, &[DType::BF16, DType::BF16][..], unary::exp_bf16 as KernelRef, true),
-        (OpKind::ExpElementwise, &[DType::F64, DType::F64][..], unary::exp_f64 as KernelRef, true),
-        (OpKind::LogElementwise, &[DType::F32, DType::F32][..], unary::log_f32 as KernelRef, true),
-        (OpKind::LogElementwise, &[DType::F16, DType::F16][..], unary::log_f16 as KernelRef, true),
-        (OpKind::LogElementwise, &[DType::BF16, DType::BF16][..], unary::log_bf16 as KernelRef, true),
-        (OpKind::LogElementwise, &[DType::F64, DType::F64][..], unary::log_f64 as KernelRef, true),
-        (OpKind::SinElementwise, &[DType::F32, DType::F32][..], unary::sin_f32 as KernelRef, true),
-        (OpKind::SinElementwise, &[DType::F16, DType::F16][..], unary::sin_f16 as KernelRef, true),
-        (OpKind::SinElementwise, &[DType::BF16, DType::BF16][..], unary::sin_bf16 as KernelRef, true),
-        (OpKind::SinElementwise, &[DType::F64, DType::F64][..], unary::sin_f64 as KernelRef, true),
-        (OpKind::CosElementwise, &[DType::F32, DType::F32][..], unary::cos_f32 as KernelRef, true),
-        (OpKind::CosElementwise, &[DType::F16, DType::F16][..], unary::cos_f16 as KernelRef, true),
-        (OpKind::CosElementwise, &[DType::BF16, DType::BF16][..], unary::cos_bf16 as KernelRef, true),
-        (OpKind::CosElementwise, &[DType::F64, DType::F64][..], unary::cos_f64 as KernelRef, true),
-        (OpKind::TanhElementwise, &[DType::F32, DType::F32][..], unary::tanh_f32 as KernelRef, true),
-        (OpKind::TanhElementwise, &[DType::F16, DType::F16][..], unary::tanh_f16 as KernelRef, true),
-        (OpKind::TanhElementwise, &[DType::BF16, DType::BF16][..], unary::tanh_bf16 as KernelRef, true),
-        (OpKind::TanhElementwise, &[DType::F64, DType::F64][..], unary::tanh_f64 as KernelRef, true),
-        (OpKind::ReluElementwise, &[DType::F32, DType::F32][..], unary::relu_f32 as KernelRef, true),
-        (OpKind::ReluElementwise, &[DType::F16, DType::F16][..], unary::relu_f16 as KernelRef, true),
-        (OpKind::ReluElementwise, &[DType::BF16, DType::BF16][..], unary::relu_bf16 as KernelRef, true),
-        (OpKind::ReluElementwise, &[DType::F64, DType::F64][..], unary::relu_f64 as KernelRef, true),
-        (OpKind::GeluElementwise, &[DType::F32, DType::F32][..], unary::gelu_tanh_f32 as KernelRef, true),
-        (OpKind::GeluElementwise, &[DType::F16, DType::F16][..], unary::gelu_tanh_f16 as KernelRef, true),
-        (OpKind::GeluElementwise, &[DType::BF16, DType::BF16][..], unary::gelu_tanh_bf16 as KernelRef, true),
-        (OpKind::GeluElementwise, &[DType::F64, DType::F64][..], unary::gelu_tanh_f64 as KernelRef, true),
-        (OpKind::GeluErfElementwise, &[DType::F32, DType::F32][..], unary::gelu_f32 as KernelRef, true),
-        (OpKind::GeluErfElementwise, &[DType::F16, DType::F16][..], unary::gelu_f16 as KernelRef, true),
-        (OpKind::GeluErfElementwise, &[DType::BF16, DType::BF16][..], unary::gelu_bf16 as KernelRef, true),
-        (OpKind::GeluErfElementwise, &[DType::F64, DType::F64][..], unary::gelu_f64 as KernelRef, true),
-        (OpKind::StepElementwise, &[DType::F32, DType::F32][..], unary::step_f32 as KernelRef, true),
-        (OpKind::StepElementwise, &[DType::F16, DType::F16][..], unary::step_f16 as KernelRef, true),
-        (OpKind::StepElementwise, &[DType::BF16, DType::BF16][..], unary::step_bf16 as KernelRef, true),
-        (OpKind::StepElementwise, &[DType::F64, DType::F64][..], unary::step_f64 as KernelRef, true),
-        (OpKind::SiluElementwise, &[DType::F32, DType::F32][..], unary::silu_f32 as KernelRef, true),
-        (OpKind::SiluElementwise, &[DType::F16, DType::F16][..], unary::silu_f16 as KernelRef, true),
-        (OpKind::SiluElementwise, &[DType::BF16, DType::BF16][..], unary::silu_bf16 as KernelRef, true),
-        (OpKind::SiluElementwise, &[DType::F64, DType::F64][..], unary::silu_f64 as KernelRef, true),
-        (OpKind::SigmoidElementwise, &[DType::F32, DType::F32][..], unary::sigmoid_f32 as KernelRef, true),
-        (OpKind::SigmoidElementwise, &[DType::F16, DType::F16][..], unary::sigmoid_f16 as KernelRef, true),
-        (OpKind::SigmoidElementwise, &[DType::BF16, DType::BF16][..], unary::sigmoid_bf16 as KernelRef, true),
-        (OpKind::SigmoidElementwise, &[DType::F64, DType::F64][..], unary::sigmoid_f64 as KernelRef, true),
-        (OpKind::RsqrtElementwise, &[DType::F32, DType::F32][..], unary::rsqrt_f32 as KernelRef, true),
-        (OpKind::RsqrtElementwise, &[DType::F16, DType::F16][..], unary::rsqrt_f16 as KernelRef, true),
-        (OpKind::RsqrtElementwise, &[DType::BF16, DType::BF16][..], unary::rsqrt_bf16 as KernelRef, true),
-        (OpKind::RsqrtElementwise, &[DType::F64, DType::F64][..], unary::rsqrt_f64 as KernelRef, true),
-        (OpKind::FloorElementwise, &[DType::F32, DType::F32][..], unary::floor_f32 as KernelRef, true),
-        (OpKind::FloorElementwise, &[DType::F16, DType::F16][..], unary::floor_f16 as KernelRef, true),
-        (OpKind::FloorElementwise, &[DType::BF16, DType::BF16][..], unary::floor_bf16 as KernelRef, true),
-        (OpKind::FloorElementwise, &[DType::F64, DType::F64][..], unary::floor_f64 as KernelRef, true),
-        (OpKind::CeilElementwise, &[DType::F32, DType::F32][..], unary::ceil_f32 as KernelRef, true),
-        (OpKind::CeilElementwise, &[DType::F16, DType::F16][..], unary::ceil_f16 as KernelRef, true),
-        (OpKind::CeilElementwise, &[DType::BF16, DType::BF16][..], unary::ceil_bf16 as KernelRef, true),
-        (OpKind::CeilElementwise, &[DType::F64, DType::F64][..], unary::ceil_f64 as KernelRef, true),
-        (OpKind::RoundElementwise, &[DType::F32, DType::F32][..], unary::round_f32 as KernelRef, true),
-        (OpKind::RoundElementwise, &[DType::F16, DType::F16][..], unary::round_f16 as KernelRef, true),
-        (OpKind::RoundElementwise, &[DType::BF16, DType::BF16][..], unary::round_bf16 as KernelRef, true),
-        (OpKind::RoundElementwise, &[DType::F64, DType::F64][..], unary::round_f64 as KernelRef, true),
-        (OpKind::ErfElementwise, &[DType::F32, DType::F32][..], unary::erf_f32 as KernelRef, true),
-        (OpKind::ErfElementwise, &[DType::F16, DType::F16][..], unary::erf_f16 as KernelRef, true),
-        (OpKind::ErfElementwise, &[DType::BF16, DType::BF16][..], unary::erf_bf16 as KernelRef, true),
-        (OpKind::ErfElementwise, &[DType::F64, DType::F64][..], unary::erf_f64 as KernelRef, true),
-        (OpKind::SignElementwise, &[DType::F32, DType::F32][..], unary::sign_f32 as KernelRef, true),
+            (
+                OpKind::NegElementwise,
+                &[DType::F32, DType::F32][..],
+                unary::neg_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::NegElementwise,
+                &[DType::F16, DType::F16][..],
+                unary::neg_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::NegElementwise,
+                &[DType::BF16, DType::BF16][..],
+                unary::neg_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::NegElementwise,
+                &[DType::F64, DType::F64][..],
+                unary::neg_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::AbsElementwise,
+                &[DType::F32, DType::F32][..],
+                unary::abs_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::AbsElementwise,
+                &[DType::F16, DType::F16][..],
+                unary::abs_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::AbsElementwise,
+                &[DType::BF16, DType::BF16][..],
+                unary::abs_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::AbsElementwise,
+                &[DType::F64, DType::F64][..],
+                unary::abs_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SqrElementwise,
+                &[DType::F32, DType::F32][..],
+                unary::sqr_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SqrElementwise,
+                &[DType::F16, DType::F16][..],
+                unary::sqr_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SqrElementwise,
+                &[DType::BF16, DType::BF16][..],
+                unary::sqr_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SqrElementwise,
+                &[DType::F64, DType::F64][..],
+                unary::sqr_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SqrtElementwise,
+                &[DType::F32, DType::F32][..],
+                unary::sqrt_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SqrtElementwise,
+                &[DType::F16, DType::F16][..],
+                unary::sqrt_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SqrtElementwise,
+                &[DType::BF16, DType::BF16][..],
+                unary::sqrt_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SqrtElementwise,
+                &[DType::F64, DType::F64][..],
+                unary::sqrt_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::RecipElementwise,
+                &[DType::F32, DType::F32][..],
+                unary::recip_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::RecipElementwise,
+                &[DType::F16, DType::F16][..],
+                unary::recip_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::RecipElementwise,
+                &[DType::BF16, DType::BF16][..],
+                unary::recip_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::RecipElementwise,
+                &[DType::F64, DType::F64][..],
+                unary::recip_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ExpElementwise,
+                &[DType::F32, DType::F32][..],
+                unary::exp_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ExpElementwise,
+                &[DType::F16, DType::F16][..],
+                unary::exp_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ExpElementwise,
+                &[DType::BF16, DType::BF16][..],
+                unary::exp_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ExpElementwise,
+                &[DType::F64, DType::F64][..],
+                unary::exp_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::LogElementwise,
+                &[DType::F32, DType::F32][..],
+                unary::log_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::LogElementwise,
+                &[DType::F16, DType::F16][..],
+                unary::log_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::LogElementwise,
+                &[DType::BF16, DType::BF16][..],
+                unary::log_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::LogElementwise,
+                &[DType::F64, DType::F64][..],
+                unary::log_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SinElementwise,
+                &[DType::F32, DType::F32][..],
+                unary::sin_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SinElementwise,
+                &[DType::F16, DType::F16][..],
+                unary::sin_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SinElementwise,
+                &[DType::BF16, DType::BF16][..],
+                unary::sin_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SinElementwise,
+                &[DType::F64, DType::F64][..],
+                unary::sin_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::CosElementwise,
+                &[DType::F32, DType::F32][..],
+                unary::cos_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::CosElementwise,
+                &[DType::F16, DType::F16][..],
+                unary::cos_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::CosElementwise,
+                &[DType::BF16, DType::BF16][..],
+                unary::cos_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::CosElementwise,
+                &[DType::F64, DType::F64][..],
+                unary::cos_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::TanhElementwise,
+                &[DType::F32, DType::F32][..],
+                unary::tanh_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::TanhElementwise,
+                &[DType::F16, DType::F16][..],
+                unary::tanh_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::TanhElementwise,
+                &[DType::BF16, DType::BF16][..],
+                unary::tanh_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::TanhElementwise,
+                &[DType::F64, DType::F64][..],
+                unary::tanh_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ReluElementwise,
+                &[DType::F32, DType::F32][..],
+                unary::relu_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ReluElementwise,
+                &[DType::F16, DType::F16][..],
+                unary::relu_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ReluElementwise,
+                &[DType::BF16, DType::BF16][..],
+                unary::relu_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ReluElementwise,
+                &[DType::F64, DType::F64][..],
+                unary::relu_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::GeluElementwise,
+                &[DType::F32, DType::F32][..],
+                unary::gelu_tanh_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::GeluElementwise,
+                &[DType::F16, DType::F16][..],
+                unary::gelu_tanh_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::GeluElementwise,
+                &[DType::BF16, DType::BF16][..],
+                unary::gelu_tanh_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::GeluElementwise,
+                &[DType::F64, DType::F64][..],
+                unary::gelu_tanh_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::GeluErfElementwise,
+                &[DType::F32, DType::F32][..],
+                unary::gelu_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::GeluErfElementwise,
+                &[DType::F16, DType::F16][..],
+                unary::gelu_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::GeluErfElementwise,
+                &[DType::BF16, DType::BF16][..],
+                unary::gelu_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::GeluErfElementwise,
+                &[DType::F64, DType::F64][..],
+                unary::gelu_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::StepElementwise,
+                &[DType::F32, DType::F32][..],
+                unary::step_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::StepElementwise,
+                &[DType::F16, DType::F16][..],
+                unary::step_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::StepElementwise,
+                &[DType::BF16, DType::BF16][..],
+                unary::step_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::StepElementwise,
+                &[DType::F64, DType::F64][..],
+                unary::step_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SiluElementwise,
+                &[DType::F32, DType::F32][..],
+                unary::silu_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SiluElementwise,
+                &[DType::F16, DType::F16][..],
+                unary::silu_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SiluElementwise,
+                &[DType::BF16, DType::BF16][..],
+                unary::silu_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SiluElementwise,
+                &[DType::F64, DType::F64][..],
+                unary::silu_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SigmoidElementwise,
+                &[DType::F32, DType::F32][..],
+                unary::sigmoid_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SigmoidElementwise,
+                &[DType::F16, DType::F16][..],
+                unary::sigmoid_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SigmoidElementwise,
+                &[DType::BF16, DType::BF16][..],
+                unary::sigmoid_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SigmoidElementwise,
+                &[DType::F64, DType::F64][..],
+                unary::sigmoid_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::RsqrtElementwise,
+                &[DType::F32, DType::F32][..],
+                unary::rsqrt_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::RsqrtElementwise,
+                &[DType::F16, DType::F16][..],
+                unary::rsqrt_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::RsqrtElementwise,
+                &[DType::BF16, DType::BF16][..],
+                unary::rsqrt_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::RsqrtElementwise,
+                &[DType::F64, DType::F64][..],
+                unary::rsqrt_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::FloorElementwise,
+                &[DType::F32, DType::F32][..],
+                unary::floor_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::FloorElementwise,
+                &[DType::F16, DType::F16][..],
+                unary::floor_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::FloorElementwise,
+                &[DType::BF16, DType::BF16][..],
+                unary::floor_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::FloorElementwise,
+                &[DType::F64, DType::F64][..],
+                unary::floor_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::CeilElementwise,
+                &[DType::F32, DType::F32][..],
+                unary::ceil_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::CeilElementwise,
+                &[DType::F16, DType::F16][..],
+                unary::ceil_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::CeilElementwise,
+                &[DType::BF16, DType::BF16][..],
+                unary::ceil_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::CeilElementwise,
+                &[DType::F64, DType::F64][..],
+                unary::ceil_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::RoundElementwise,
+                &[DType::F32, DType::F32][..],
+                unary::round_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::RoundElementwise,
+                &[DType::F16, DType::F16][..],
+                unary::round_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::RoundElementwise,
+                &[DType::BF16, DType::BF16][..],
+                unary::round_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::RoundElementwise,
+                &[DType::F64, DType::F64][..],
+                unary::round_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ErfElementwise,
+                &[DType::F32, DType::F32][..],
+                unary::erf_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ErfElementwise,
+                &[DType::F16, DType::F16][..],
+                unary::erf_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ErfElementwise,
+                &[DType::BF16, DType::BF16][..],
+                unary::erf_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::ErfElementwise,
+                &[DType::F64, DType::F64][..],
+                unary::erf_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::SignElementwise,
+                &[DType::F32, DType::F32][..],
+                unary::sign_f32 as KernelRef,
+                true,
+            ),
         ];
         let mut checked = 0usize;
         for (op, key, expected, want_strided) in cases {
@@ -3930,98 +5544,558 @@ mod cast_contract_tests {
         register_baracuda_cuda_kernels(&mut table);
         let cuda = BackendId::Cuda;
         let cases: &[(OpKind, &[DType], KernelRef, bool)] = &[
-        (OpKind::ClampInplace, &[DType::F32, DType::F32][..], clamp_inplace::clamp_inplace_f32 as KernelRef, false),
-        (OpKind::ClampInplace, &[DType::F64, DType::F64][..], clamp_inplace::clamp_inplace_f64 as KernelRef, false),
-        (OpKind::ClampInplace, &[DType::BF16, DType::BF16][..], clamp_inplace::clamp_inplace_bf16 as KernelRef, false),
-        (OpKind::ClampInplace, &[DType::F16, DType::F16][..], clamp_inplace::clamp_inplace_f16 as KernelRef, false),
-        (OpKind::PowIInplace, &[DType::F32, DType::F32][..], powi_inplace::powi_inplace_f32 as KernelRef, false),
-        (OpKind::PowIInplace, &[DType::F64, DType::F64][..], powi_inplace::powi_inplace_f64 as KernelRef, false),
-        (OpKind::PowIInplace, &[DType::BF16, DType::BF16][..], powi_inplace::powi_inplace_bf16 as KernelRef, false),
-        (OpKind::PowIInplace, &[DType::F16, DType::F16][..], powi_inplace::powi_inplace_f16 as KernelRef, false),
-        (OpKind::ReluInplace, &[DType::F32, DType::F32][..], unary::relu_inplace_f32 as KernelRef, false),
-        (OpKind::ReluInplace, &[DType::F64, DType::F64][..], unary::relu_inplace_f64 as KernelRef, false),
-        (OpKind::ReluInplace, &[DType::BF16, DType::BF16][..], unary::relu_inplace_bf16 as KernelRef, false),
-        (OpKind::ReluInplace, &[DType::F16, DType::F16][..], unary::relu_inplace_f16 as KernelRef, false),
-        (OpKind::SiluInplace, &[DType::F32, DType::F32][..], unary::silu_inplace_f32 as KernelRef, false),
-        (OpKind::SiluInplace, &[DType::F64, DType::F64][..], unary::silu_inplace_f64 as KernelRef, false),
-        (OpKind::SiluInplace, &[DType::BF16, DType::BF16][..], unary::silu_inplace_bf16 as KernelRef, false),
-        (OpKind::SiluInplace, &[DType::F16, DType::F16][..], unary::silu_inplace_f16 as KernelRef, false),
-        (OpKind::GeluInplace, &[DType::F32, DType::F32][..], unary::gelu_inplace_f32 as KernelRef, false),
-        (OpKind::GeluInplace, &[DType::F64, DType::F64][..], unary::gelu_inplace_f64 as KernelRef, false),
-        (OpKind::GeluInplace, &[DType::BF16, DType::BF16][..], unary::gelu_inplace_bf16 as KernelRef, false),
-        (OpKind::GeluInplace, &[DType::F16, DType::F16][..], unary::gelu_inplace_f16 as KernelRef, false),
-        (OpKind::TanhInplace, &[DType::F32, DType::F32][..], unary::tanh_inplace_f32 as KernelRef, false),
-        (OpKind::TanhInplace, &[DType::F64, DType::F64][..], unary::tanh_inplace_f64 as KernelRef, false),
-        (OpKind::TanhInplace, &[DType::BF16, DType::BF16][..], unary::tanh_inplace_bf16 as KernelRef, false),
-        (OpKind::TanhInplace, &[DType::F16, DType::F16][..], unary::tanh_inplace_f16 as KernelRef, false),
-        (OpKind::SigmoidInplace, &[DType::F32, DType::F32][..], unary::sigmoid_inplace_f32 as KernelRef, false),
-        (OpKind::SigmoidInplace, &[DType::F64, DType::F64][..], unary::sigmoid_inplace_f64 as KernelRef, false),
-        (OpKind::SigmoidInplace, &[DType::BF16, DType::BF16][..], unary::sigmoid_inplace_bf16 as KernelRef, false),
-        (OpKind::SigmoidInplace, &[DType::F16, DType::F16][..], unary::sigmoid_inplace_f16 as KernelRef, false),
-        (OpKind::NegInplace, &[DType::F32, DType::F32][..], unary::neg_inplace_f32 as KernelRef, false),
-        (OpKind::NegInplace, &[DType::F64, DType::F64][..], unary::neg_inplace_f64 as KernelRef, false),
-        (OpKind::NegInplace, &[DType::BF16, DType::BF16][..], unary::neg_inplace_bf16 as KernelRef, false),
-        (OpKind::NegInplace, &[DType::F16, DType::F16][..], unary::neg_inplace_f16 as KernelRef, false),
-        (OpKind::AbsInplace, &[DType::F32, DType::F32][..], unary::abs_inplace_f32 as KernelRef, false),
-        (OpKind::AbsInplace, &[DType::F64, DType::F64][..], unary::abs_inplace_f64 as KernelRef, false),
-        (OpKind::AbsInplace, &[DType::BF16, DType::BF16][..], unary::abs_inplace_bf16 as KernelRef, false),
-        (OpKind::AbsInplace, &[DType::F16, DType::F16][..], unary::abs_inplace_f16 as KernelRef, false),
-        (OpKind::SqrInplace, &[DType::F32, DType::F32][..], unary::sqr_inplace_f32 as KernelRef, false),
-        (OpKind::SqrInplace, &[DType::F64, DType::F64][..], unary::sqr_inplace_f64 as KernelRef, false),
-        (OpKind::SqrInplace, &[DType::BF16, DType::BF16][..], unary::sqr_inplace_bf16 as KernelRef, false),
-        (OpKind::SqrInplace, &[DType::F16, DType::F16][..], unary::sqr_inplace_f16 as KernelRef, false),
-        (OpKind::SqrtInplace, &[DType::F32, DType::F32][..], unary::sqrt_inplace_f32 as KernelRef, false),
-        (OpKind::SqrtInplace, &[DType::F64, DType::F64][..], unary::sqrt_inplace_f64 as KernelRef, false),
-        (OpKind::SqrtInplace, &[DType::BF16, DType::BF16][..], unary::sqrt_inplace_bf16 as KernelRef, false),
-        (OpKind::SqrtInplace, &[DType::F16, DType::F16][..], unary::sqrt_inplace_f16 as KernelRef, false),
-        (OpKind::RsqrtInplace, &[DType::F32, DType::F32][..], unary::rsqrt_inplace_f32 as KernelRef, false),
-        (OpKind::RsqrtInplace, &[DType::F64, DType::F64][..], unary::rsqrt_inplace_f64 as KernelRef, false),
-        (OpKind::RsqrtInplace, &[DType::BF16, DType::BF16][..], unary::rsqrt_inplace_bf16 as KernelRef, false),
-        (OpKind::RsqrtInplace, &[DType::F16, DType::F16][..], unary::rsqrt_inplace_f16 as KernelRef, false),
-        (OpKind::RecipInplace, &[DType::F32, DType::F32][..], unary::recip_inplace_f32 as KernelRef, false),
-        (OpKind::RecipInplace, &[DType::F64, DType::F64][..], unary::recip_inplace_f64 as KernelRef, false),
-        (OpKind::RecipInplace, &[DType::BF16, DType::BF16][..], unary::recip_inplace_bf16 as KernelRef, false),
-        (OpKind::RecipInplace, &[DType::F16, DType::F16][..], unary::recip_inplace_f16 as KernelRef, false),
-        (OpKind::ExpInplace, &[DType::F32, DType::F32][..], unary::exp_inplace_f32 as KernelRef, false),
-        (OpKind::ExpInplace, &[DType::F64, DType::F64][..], unary::exp_inplace_f64 as KernelRef, false),
-        (OpKind::ExpInplace, &[DType::BF16, DType::BF16][..], unary::exp_inplace_bf16 as KernelRef, false),
-        (OpKind::ExpInplace, &[DType::F16, DType::F16][..], unary::exp_inplace_f16 as KernelRef, false),
-        (OpKind::LogInplace, &[DType::F32, DType::F32][..], unary::log_inplace_f32 as KernelRef, false),
-        (OpKind::LogInplace, &[DType::F64, DType::F64][..], unary::log_inplace_f64 as KernelRef, false),
-        (OpKind::LogInplace, &[DType::BF16, DType::BF16][..], unary::log_inplace_bf16 as KernelRef, false),
-        (OpKind::LogInplace, &[DType::F16, DType::F16][..], unary::log_inplace_f16 as KernelRef, false),
-        (OpKind::SinInplace, &[DType::F32, DType::F32][..], unary::sin_inplace_f32 as KernelRef, false),
-        (OpKind::SinInplace, &[DType::F64, DType::F64][..], unary::sin_inplace_f64 as KernelRef, false),
-        (OpKind::SinInplace, &[DType::BF16, DType::BF16][..], unary::sin_inplace_bf16 as KernelRef, false),
-        (OpKind::SinInplace, &[DType::F16, DType::F16][..], unary::sin_inplace_f16 as KernelRef, false),
-        (OpKind::CosInplace, &[DType::F32, DType::F32][..], unary::cos_inplace_f32 as KernelRef, false),
-        (OpKind::CosInplace, &[DType::F64, DType::F64][..], unary::cos_inplace_f64 as KernelRef, false),
-        (OpKind::CosInplace, &[DType::BF16, DType::BF16][..], unary::cos_inplace_bf16 as KernelRef, false),
-        (OpKind::CosInplace, &[DType::F16, DType::F16][..], unary::cos_inplace_f16 as KernelRef, false),
-        (OpKind::SignInplace, &[DType::F32, DType::F32][..], unary::sign_inplace_f32 as KernelRef, false),
-        (OpKind::SignInplace, &[DType::F64, DType::F64][..], unary::sign_inplace_f64 as KernelRef, false),
-        (OpKind::SignInplace, &[DType::BF16, DType::BF16][..], unary::sign_inplace_bf16 as KernelRef, false),
-        (OpKind::SignInplace, &[DType::F16, DType::F16][..], unary::sign_inplace_f16 as KernelRef, false),
-        (OpKind::FloorInplace, &[DType::F32, DType::F32][..], unary::floor_inplace_f32 as KernelRef, false),
-        (OpKind::FloorInplace, &[DType::F64, DType::F64][..], unary::floor_inplace_f64 as KernelRef, false),
-        (OpKind::FloorInplace, &[DType::BF16, DType::BF16][..], unary::floor_inplace_bf16 as KernelRef, false),
-        (OpKind::FloorInplace, &[DType::F16, DType::F16][..], unary::floor_inplace_f16 as KernelRef, false),
-        (OpKind::CeilInplace, &[DType::F32, DType::F32][..], unary::ceil_inplace_f32 as KernelRef, false),
-        (OpKind::CeilInplace, &[DType::F64, DType::F64][..], unary::ceil_inplace_f64 as KernelRef, false),
-        (OpKind::CeilInplace, &[DType::BF16, DType::BF16][..], unary::ceil_inplace_bf16 as KernelRef, false),
-        (OpKind::CeilInplace, &[DType::F16, DType::F16][..], unary::ceil_inplace_f16 as KernelRef, false),
-        (OpKind::RoundInplace, &[DType::F32, DType::F32][..], unary::round_inplace_f32 as KernelRef, false),
-        (OpKind::RoundInplace, &[DType::F64, DType::F64][..], unary::round_inplace_f64 as KernelRef, false),
-        (OpKind::RoundInplace, &[DType::BF16, DType::BF16][..], unary::round_inplace_bf16 as KernelRef, false),
-        (OpKind::RoundInplace, &[DType::F16, DType::F16][..], unary::round_inplace_f16 as KernelRef, false),
-        (OpKind::ErfInplace, &[DType::F32, DType::F32][..], unary::erf_inplace_f32 as KernelRef, false),
-        (OpKind::ErfInplace, &[DType::F64, DType::F64][..], unary::erf_inplace_f64 as KernelRef, false),
-        (OpKind::ErfInplace, &[DType::BF16, DType::BF16][..], unary::erf_inplace_bf16 as KernelRef, false),
-        (OpKind::ErfInplace, &[DType::F16, DType::F16][..], unary::erf_inplace_f16 as KernelRef, false),
-        (OpKind::GeluErfInplace, &[DType::F32, DType::F32][..], unary::gelu_erf_inplace_f32 as KernelRef, false),
-        (OpKind::GeluErfInplace, &[DType::F64, DType::F64][..], unary::gelu_erf_inplace_f64 as KernelRef, false),
-        (OpKind::GeluErfInplace, &[DType::BF16, DType::BF16][..], unary::gelu_erf_inplace_bf16 as KernelRef, false),
-        (OpKind::GeluErfInplace, &[DType::F16, DType::F16][..], unary::gelu_erf_inplace_f16 as KernelRef, false),
+            (
+                OpKind::ClampInplace,
+                &[DType::F32, DType::F32][..],
+                clamp_inplace::clamp_inplace_f32 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::ClampInplace,
+                &[DType::F64, DType::F64][..],
+                clamp_inplace::clamp_inplace_f64 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::ClampInplace,
+                &[DType::BF16, DType::BF16][..],
+                clamp_inplace::clamp_inplace_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::ClampInplace,
+                &[DType::F16, DType::F16][..],
+                clamp_inplace::clamp_inplace_f16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::PowIInplace,
+                &[DType::F32, DType::F32][..],
+                powi_inplace::powi_inplace_f32 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::PowIInplace,
+                &[DType::F64, DType::F64][..],
+                powi_inplace::powi_inplace_f64 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::PowIInplace,
+                &[DType::BF16, DType::BF16][..],
+                powi_inplace::powi_inplace_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::PowIInplace,
+                &[DType::F16, DType::F16][..],
+                powi_inplace::powi_inplace_f16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::ReluInplace,
+                &[DType::F32, DType::F32][..],
+                unary::relu_inplace_f32 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::ReluInplace,
+                &[DType::F64, DType::F64][..],
+                unary::relu_inplace_f64 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::ReluInplace,
+                &[DType::BF16, DType::BF16][..],
+                unary::relu_inplace_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::ReluInplace,
+                &[DType::F16, DType::F16][..],
+                unary::relu_inplace_f16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::SiluInplace,
+                &[DType::F32, DType::F32][..],
+                unary::silu_inplace_f32 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::SiluInplace,
+                &[DType::F64, DType::F64][..],
+                unary::silu_inplace_f64 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::SiluInplace,
+                &[DType::BF16, DType::BF16][..],
+                unary::silu_inplace_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::SiluInplace,
+                &[DType::F16, DType::F16][..],
+                unary::silu_inplace_f16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::GeluInplace,
+                &[DType::F32, DType::F32][..],
+                unary::gelu_inplace_f32 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::GeluInplace,
+                &[DType::F64, DType::F64][..],
+                unary::gelu_inplace_f64 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::GeluInplace,
+                &[DType::BF16, DType::BF16][..],
+                unary::gelu_inplace_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::GeluInplace,
+                &[DType::F16, DType::F16][..],
+                unary::gelu_inplace_f16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::TanhInplace,
+                &[DType::F32, DType::F32][..],
+                unary::tanh_inplace_f32 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::TanhInplace,
+                &[DType::F64, DType::F64][..],
+                unary::tanh_inplace_f64 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::TanhInplace,
+                &[DType::BF16, DType::BF16][..],
+                unary::tanh_inplace_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::TanhInplace,
+                &[DType::F16, DType::F16][..],
+                unary::tanh_inplace_f16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::SigmoidInplace,
+                &[DType::F32, DType::F32][..],
+                unary::sigmoid_inplace_f32 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::SigmoidInplace,
+                &[DType::F64, DType::F64][..],
+                unary::sigmoid_inplace_f64 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::SigmoidInplace,
+                &[DType::BF16, DType::BF16][..],
+                unary::sigmoid_inplace_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::SigmoidInplace,
+                &[DType::F16, DType::F16][..],
+                unary::sigmoid_inplace_f16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::NegInplace,
+                &[DType::F32, DType::F32][..],
+                unary::neg_inplace_f32 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::NegInplace,
+                &[DType::F64, DType::F64][..],
+                unary::neg_inplace_f64 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::NegInplace,
+                &[DType::BF16, DType::BF16][..],
+                unary::neg_inplace_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::NegInplace,
+                &[DType::F16, DType::F16][..],
+                unary::neg_inplace_f16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::AbsInplace,
+                &[DType::F32, DType::F32][..],
+                unary::abs_inplace_f32 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::AbsInplace,
+                &[DType::F64, DType::F64][..],
+                unary::abs_inplace_f64 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::AbsInplace,
+                &[DType::BF16, DType::BF16][..],
+                unary::abs_inplace_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::AbsInplace,
+                &[DType::F16, DType::F16][..],
+                unary::abs_inplace_f16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::SqrInplace,
+                &[DType::F32, DType::F32][..],
+                unary::sqr_inplace_f32 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::SqrInplace,
+                &[DType::F64, DType::F64][..],
+                unary::sqr_inplace_f64 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::SqrInplace,
+                &[DType::BF16, DType::BF16][..],
+                unary::sqr_inplace_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::SqrInplace,
+                &[DType::F16, DType::F16][..],
+                unary::sqr_inplace_f16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::SqrtInplace,
+                &[DType::F32, DType::F32][..],
+                unary::sqrt_inplace_f32 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::SqrtInplace,
+                &[DType::F64, DType::F64][..],
+                unary::sqrt_inplace_f64 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::SqrtInplace,
+                &[DType::BF16, DType::BF16][..],
+                unary::sqrt_inplace_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::SqrtInplace,
+                &[DType::F16, DType::F16][..],
+                unary::sqrt_inplace_f16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::RsqrtInplace,
+                &[DType::F32, DType::F32][..],
+                unary::rsqrt_inplace_f32 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::RsqrtInplace,
+                &[DType::F64, DType::F64][..],
+                unary::rsqrt_inplace_f64 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::RsqrtInplace,
+                &[DType::BF16, DType::BF16][..],
+                unary::rsqrt_inplace_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::RsqrtInplace,
+                &[DType::F16, DType::F16][..],
+                unary::rsqrt_inplace_f16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::RecipInplace,
+                &[DType::F32, DType::F32][..],
+                unary::recip_inplace_f32 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::RecipInplace,
+                &[DType::F64, DType::F64][..],
+                unary::recip_inplace_f64 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::RecipInplace,
+                &[DType::BF16, DType::BF16][..],
+                unary::recip_inplace_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::RecipInplace,
+                &[DType::F16, DType::F16][..],
+                unary::recip_inplace_f16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::ExpInplace,
+                &[DType::F32, DType::F32][..],
+                unary::exp_inplace_f32 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::ExpInplace,
+                &[DType::F64, DType::F64][..],
+                unary::exp_inplace_f64 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::ExpInplace,
+                &[DType::BF16, DType::BF16][..],
+                unary::exp_inplace_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::ExpInplace,
+                &[DType::F16, DType::F16][..],
+                unary::exp_inplace_f16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::LogInplace,
+                &[DType::F32, DType::F32][..],
+                unary::log_inplace_f32 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::LogInplace,
+                &[DType::F64, DType::F64][..],
+                unary::log_inplace_f64 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::LogInplace,
+                &[DType::BF16, DType::BF16][..],
+                unary::log_inplace_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::LogInplace,
+                &[DType::F16, DType::F16][..],
+                unary::log_inplace_f16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::SinInplace,
+                &[DType::F32, DType::F32][..],
+                unary::sin_inplace_f32 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::SinInplace,
+                &[DType::F64, DType::F64][..],
+                unary::sin_inplace_f64 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::SinInplace,
+                &[DType::BF16, DType::BF16][..],
+                unary::sin_inplace_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::SinInplace,
+                &[DType::F16, DType::F16][..],
+                unary::sin_inplace_f16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::CosInplace,
+                &[DType::F32, DType::F32][..],
+                unary::cos_inplace_f32 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::CosInplace,
+                &[DType::F64, DType::F64][..],
+                unary::cos_inplace_f64 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::CosInplace,
+                &[DType::BF16, DType::BF16][..],
+                unary::cos_inplace_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::CosInplace,
+                &[DType::F16, DType::F16][..],
+                unary::cos_inplace_f16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::SignInplace,
+                &[DType::F32, DType::F32][..],
+                unary::sign_inplace_f32 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::SignInplace,
+                &[DType::F64, DType::F64][..],
+                unary::sign_inplace_f64 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::SignInplace,
+                &[DType::BF16, DType::BF16][..],
+                unary::sign_inplace_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::SignInplace,
+                &[DType::F16, DType::F16][..],
+                unary::sign_inplace_f16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::FloorInplace,
+                &[DType::F32, DType::F32][..],
+                unary::floor_inplace_f32 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::FloorInplace,
+                &[DType::F64, DType::F64][..],
+                unary::floor_inplace_f64 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::FloorInplace,
+                &[DType::BF16, DType::BF16][..],
+                unary::floor_inplace_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::FloorInplace,
+                &[DType::F16, DType::F16][..],
+                unary::floor_inplace_f16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::CeilInplace,
+                &[DType::F32, DType::F32][..],
+                unary::ceil_inplace_f32 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::CeilInplace,
+                &[DType::F64, DType::F64][..],
+                unary::ceil_inplace_f64 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::CeilInplace,
+                &[DType::BF16, DType::BF16][..],
+                unary::ceil_inplace_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::CeilInplace,
+                &[DType::F16, DType::F16][..],
+                unary::ceil_inplace_f16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::RoundInplace,
+                &[DType::F32, DType::F32][..],
+                unary::round_inplace_f32 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::RoundInplace,
+                &[DType::F64, DType::F64][..],
+                unary::round_inplace_f64 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::RoundInplace,
+                &[DType::BF16, DType::BF16][..],
+                unary::round_inplace_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::RoundInplace,
+                &[DType::F16, DType::F16][..],
+                unary::round_inplace_f16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::ErfInplace,
+                &[DType::F32, DType::F32][..],
+                unary::erf_inplace_f32 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::ErfInplace,
+                &[DType::F64, DType::F64][..],
+                unary::erf_inplace_f64 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::ErfInplace,
+                &[DType::BF16, DType::BF16][..],
+                unary::erf_inplace_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::ErfInplace,
+                &[DType::F16, DType::F16][..],
+                unary::erf_inplace_f16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::GeluErfInplace,
+                &[DType::F32, DType::F32][..],
+                unary::gelu_erf_inplace_f32 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::GeluErfInplace,
+                &[DType::F64, DType::F64][..],
+                unary::gelu_erf_inplace_f64 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::GeluErfInplace,
+                &[DType::BF16, DType::BF16][..],
+                unary::gelu_erf_inplace_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::GeluErfInplace,
+                &[DType::F16, DType::F16][..],
+                unary::gelu_erf_inplace_f16 as KernelRef,
+                false,
+            ),
         ];
         let mut checked = 0usize;
         for (op, key, expected, want_strided) in cases {
@@ -4065,33 +6139,168 @@ mod cast_contract_tests {
         register_baracuda_cuda_kernels(&mut table);
         let cuda = BackendId::Cuda;
         let cases: &[(OpKind, &[DType], KernelRef, bool)] = &[
-        (OpKind::WriteSlice, &[DType::F32, DType::F32][..], write_slice::write_slice_b4 as KernelRef, false),
-        (OpKind::WriteSlice, &[DType::F64, DType::F64][..], write_slice::write_slice_b8 as KernelRef, false),
-        (OpKind::WriteSlice, &[DType::F16, DType::F16][..], write_slice::write_slice_b2 as KernelRef, false),
-        (OpKind::WriteSlice, &[DType::BF16, DType::BF16][..], write_slice::write_slice_b2 as KernelRef, false),
-        (OpKind::WriteSlice, &[DType::I32, DType::I32][..], write_slice::write_slice_b4 as KernelRef, false),
-        (OpKind::WriteSlice, &[DType::I64, DType::I64][..], write_slice::write_slice_b8 as KernelRef, false),
-        (OpKind::WriteSlice, &[DType::U32, DType::U32][..], write_slice::write_slice_b4 as KernelRef, false),
-        (OpKind::WriteSlice, &[DType::U8, DType::U8][..], write_slice::write_slice_b1 as KernelRef, false),
-        (OpKind::WriteSlice, &[DType::I8, DType::I8][..], write_slice::write_slice_b1 as KernelRef, false),
-        (OpKind::WriteSliceRotating, &[DType::F32, DType::F32][..], write_slice_rotating::write_slice_rotating_b4 as KernelRef, false),
-        (OpKind::WriteSliceRotating, &[DType::F64, DType::F64][..], write_slice_rotating::write_slice_rotating_b8 as KernelRef, false),
-        (OpKind::WriteSliceRotating, &[DType::F16, DType::F16][..], write_slice_rotating::write_slice_rotating_b2 as KernelRef, false),
-        (OpKind::WriteSliceRotating, &[DType::BF16, DType::BF16][..], write_slice_rotating::write_slice_rotating_b2 as KernelRef, false),
-        (OpKind::WriteSliceRotating, &[DType::I32, DType::I32][..], write_slice_rotating::write_slice_rotating_b4 as KernelRef, false),
-        (OpKind::WriteSliceRotating, &[DType::I64, DType::I64][..], write_slice_rotating::write_slice_rotating_b8 as KernelRef, false),
-        (OpKind::WriteSliceRotating, &[DType::U32, DType::U32][..], write_slice_rotating::write_slice_rotating_b4 as KernelRef, false),
-        (OpKind::WriteSliceRotating, &[DType::U8, DType::U8][..], write_slice_rotating::write_slice_rotating_b1 as KernelRef, false),
-        (OpKind::WriteSliceRotating, &[DType::I8, DType::I8][..], write_slice_rotating::write_slice_rotating_b1 as KernelRef, false),
-        (OpKind::WriteSliceDoff, &[DType::F32, DType::F32][..], write_slice_doff::write_slice_doff_b4 as KernelRef, false),
-        (OpKind::WriteSliceDoff, &[DType::F64, DType::F64][..], write_slice_doff::write_slice_doff_b8 as KernelRef, false),
-        (OpKind::WriteSliceDoff, &[DType::F16, DType::F16][..], write_slice_doff::write_slice_doff_b2 as KernelRef, false),
-        (OpKind::WriteSliceDoff, &[DType::BF16, DType::BF16][..], write_slice_doff::write_slice_doff_b2 as KernelRef, false),
-        (OpKind::WriteSliceDoff, &[DType::I32, DType::I32][..], write_slice_doff::write_slice_doff_b4 as KernelRef, false),
-        (OpKind::WriteSliceDoff, &[DType::I64, DType::I64][..], write_slice_doff::write_slice_doff_b8 as KernelRef, false),
-        (OpKind::WriteSliceDoff, &[DType::U32, DType::U32][..], write_slice_doff::write_slice_doff_b4 as KernelRef, false),
-        (OpKind::WriteSliceDoff, &[DType::U8, DType::U8][..], write_slice_doff::write_slice_doff_b1 as KernelRef, false),
-        (OpKind::WriteSliceDoff, &[DType::I8, DType::I8][..], write_slice_doff::write_slice_doff_b1 as KernelRef, false),
+            (
+                OpKind::WriteSlice,
+                &[DType::F32, DType::F32][..],
+                write_slice::write_slice_b4 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::WriteSlice,
+                &[DType::F64, DType::F64][..],
+                write_slice::write_slice_b8 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::WriteSlice,
+                &[DType::F16, DType::F16][..],
+                write_slice::write_slice_b2 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::WriteSlice,
+                &[DType::BF16, DType::BF16][..],
+                write_slice::write_slice_b2 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::WriteSlice,
+                &[DType::I32, DType::I32][..],
+                write_slice::write_slice_b4 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::WriteSlice,
+                &[DType::I64, DType::I64][..],
+                write_slice::write_slice_b8 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::WriteSlice,
+                &[DType::U32, DType::U32][..],
+                write_slice::write_slice_b4 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::WriteSlice,
+                &[DType::U8, DType::U8][..],
+                write_slice::write_slice_b1 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::WriteSlice,
+                &[DType::I8, DType::I8][..],
+                write_slice::write_slice_b1 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::WriteSliceRotating,
+                &[DType::F32, DType::F32][..],
+                write_slice_rotating::write_slice_rotating_b4 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::WriteSliceRotating,
+                &[DType::F64, DType::F64][..],
+                write_slice_rotating::write_slice_rotating_b8 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::WriteSliceRotating,
+                &[DType::F16, DType::F16][..],
+                write_slice_rotating::write_slice_rotating_b2 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::WriteSliceRotating,
+                &[DType::BF16, DType::BF16][..],
+                write_slice_rotating::write_slice_rotating_b2 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::WriteSliceRotating,
+                &[DType::I32, DType::I32][..],
+                write_slice_rotating::write_slice_rotating_b4 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::WriteSliceRotating,
+                &[DType::I64, DType::I64][..],
+                write_slice_rotating::write_slice_rotating_b8 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::WriteSliceRotating,
+                &[DType::U32, DType::U32][..],
+                write_slice_rotating::write_slice_rotating_b4 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::WriteSliceRotating,
+                &[DType::U8, DType::U8][..],
+                write_slice_rotating::write_slice_rotating_b1 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::WriteSliceRotating,
+                &[DType::I8, DType::I8][..],
+                write_slice_rotating::write_slice_rotating_b1 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::WriteSliceDoff,
+                &[DType::F32, DType::F32][..],
+                write_slice_doff::write_slice_doff_b4 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::WriteSliceDoff,
+                &[DType::F64, DType::F64][..],
+                write_slice_doff::write_slice_doff_b8 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::WriteSliceDoff,
+                &[DType::F16, DType::F16][..],
+                write_slice_doff::write_slice_doff_b2 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::WriteSliceDoff,
+                &[DType::BF16, DType::BF16][..],
+                write_slice_doff::write_slice_doff_b2 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::WriteSliceDoff,
+                &[DType::I32, DType::I32][..],
+                write_slice_doff::write_slice_doff_b4 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::WriteSliceDoff,
+                &[DType::I64, DType::I64][..],
+                write_slice_doff::write_slice_doff_b8 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::WriteSliceDoff,
+                &[DType::U32, DType::U32][..],
+                write_slice_doff::write_slice_doff_b4 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::WriteSliceDoff,
+                &[DType::U8, DType::U8][..],
+                write_slice_doff::write_slice_doff_b1 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::WriteSliceDoff,
+                &[DType::I8, DType::I8][..],
+                write_slice_doff::write_slice_doff_b1 as KernelRef,
+                false,
+            ),
         ];
         let mut checked = 0usize;
         for (op, key, expected, want_strided) in cases {
@@ -4135,33 +6344,168 @@ mod cast_contract_tests {
         register_baracuda_cuda_kernels(&mut table);
         let cuda = BackendId::Cuda;
         let cases: &[(OpKind, &[DType], KernelRef, bool)] = &[
-        (OpKind::Concat, &[DType::F32, DType::F32][..], concat::concat_f32 as KernelRef, true),
-        (OpKind::Concat, &[DType::F16, DType::F16][..], concat::concat_f16 as KernelRef, true),
-        (OpKind::Concat, &[DType::BF16, DType::BF16][..], concat::concat_bf16 as KernelRef, true),
-        (OpKind::Concat, &[DType::F64, DType::F64][..], concat::concat_f64 as KernelRef, true),
-        (OpKind::Affine, &[DType::F32, DType::F32][..], affine::affine_f32 as KernelRef, true),
-        (OpKind::Affine, &[DType::F64, DType::F64][..], affine::affine_f64 as KernelRef, true),
-        (OpKind::Affine, &[DType::F16, DType::F16][..], affine::affine_f16 as KernelRef, true),
-        (OpKind::Affine, &[DType::BF16, DType::BF16][..], affine::affine_bf16 as KernelRef, true),
-        (OpKind::Affine, &[DType::I32, DType::I32][..], affine::affine_i32 as KernelRef, true),
-        (OpKind::Affine, &[DType::I64, DType::I64][..], affine::affine_i64 as KernelRef, true),
-        (OpKind::Affine, &[DType::U8, DType::U8][..], affine::affine_u8 as KernelRef, true),
-        (OpKind::InplaceAffine, &[DType::F32, DType::F32][..], affine::affine_inplace_f32 as KernelRef, false),
-        (OpKind::InplaceAffine, &[DType::F64, DType::F64][..], affine::affine_inplace_f64 as KernelRef, false),
-        (OpKind::InplaceAffine, &[DType::BF16, DType::BF16][..], affine::affine_inplace_bf16 as KernelRef, false),
-        (OpKind::InplaceAffine, &[DType::F16, DType::F16][..], affine::affine_inplace_f16 as KernelRef, false),
-        (OpKind::Pad, &[DType::F32, DType::F32][..], pad::pad_f32 as KernelRef, false),
-        (OpKind::Pad, &[DType::F16, DType::F16][..], pad::pad_f16 as KernelRef, false),
-        (OpKind::Pad, &[DType::BF16, DType::BF16][..], pad::pad_bf16 as KernelRef, false),
-        (OpKind::Pad, &[DType::F64, DType::F64][..], pad::pad_f64 as KernelRef, false),
-        (OpKind::PadBackward, &[DType::F32, DType::F32][..], pad::pad_backward_f32 as KernelRef, false),
-        (OpKind::PadBackward, &[DType::F16, DType::F16][..], pad::pad_backward_f16 as KernelRef, false),
-        (OpKind::PadBackward, &[DType::BF16, DType::BF16][..], pad::pad_backward_bf16 as KernelRef, false),
-        (OpKind::PadBackward, &[DType::F64, DType::F64][..], pad::pad_backward_f64 as KernelRef, false),
-        (OpKind::CausalConv1d, &[DType::F32, DType::F32, DType::F32, DType::F32][..], conv1d::causal_conv1d_f32 as KernelRef, false),
-        (OpKind::CausalConv1d, &[DType::F64, DType::F64, DType::F64, DType::F64][..], conv1d::causal_conv1d_f64 as KernelRef, false),
-        (OpKind::CausalConv1d, &[DType::BF16, DType::BF16, DType::BF16, DType::BF16][..], conv1d::causal_conv1d_bf16 as KernelRef, false),
-        (OpKind::CausalConv1d, &[DType::F16, DType::F16, DType::F16, DType::F16][..], conv1d::causal_conv1d_f16 as KernelRef, false),
+            (
+                OpKind::Concat,
+                &[DType::F32, DType::F32][..],
+                concat::concat_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Concat,
+                &[DType::F16, DType::F16][..],
+                concat::concat_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Concat,
+                &[DType::BF16, DType::BF16][..],
+                concat::concat_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Concat,
+                &[DType::F64, DType::F64][..],
+                concat::concat_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Affine,
+                &[DType::F32, DType::F32][..],
+                affine::affine_f32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Affine,
+                &[DType::F64, DType::F64][..],
+                affine::affine_f64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Affine,
+                &[DType::F16, DType::F16][..],
+                affine::affine_f16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Affine,
+                &[DType::BF16, DType::BF16][..],
+                affine::affine_bf16 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Affine,
+                &[DType::I32, DType::I32][..],
+                affine::affine_i32 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Affine,
+                &[DType::I64, DType::I64][..],
+                affine::affine_i64 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::Affine,
+                &[DType::U8, DType::U8][..],
+                affine::affine_u8 as KernelRef,
+                true,
+            ),
+            (
+                OpKind::InplaceAffine,
+                &[DType::F32, DType::F32][..],
+                affine::affine_inplace_f32 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::InplaceAffine,
+                &[DType::F64, DType::F64][..],
+                affine::affine_inplace_f64 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::InplaceAffine,
+                &[DType::BF16, DType::BF16][..],
+                affine::affine_inplace_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::InplaceAffine,
+                &[DType::F16, DType::F16][..],
+                affine::affine_inplace_f16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::Pad,
+                &[DType::F32, DType::F32][..],
+                pad::pad_f32 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::Pad,
+                &[DType::F16, DType::F16][..],
+                pad::pad_f16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::Pad,
+                &[DType::BF16, DType::BF16][..],
+                pad::pad_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::Pad,
+                &[DType::F64, DType::F64][..],
+                pad::pad_f64 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::PadBackward,
+                &[DType::F32, DType::F32][..],
+                pad::pad_backward_f32 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::PadBackward,
+                &[DType::F16, DType::F16][..],
+                pad::pad_backward_f16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::PadBackward,
+                &[DType::BF16, DType::BF16][..],
+                pad::pad_backward_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::PadBackward,
+                &[DType::F64, DType::F64][..],
+                pad::pad_backward_f64 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::CausalConv1d,
+                &[DType::F32, DType::F32, DType::F32, DType::F32][..],
+                conv1d::causal_conv1d_f32 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::CausalConv1d,
+                &[DType::F64, DType::F64, DType::F64, DType::F64][..],
+                conv1d::causal_conv1d_f64 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::CausalConv1d,
+                &[DType::BF16, DType::BF16, DType::BF16, DType::BF16][..],
+                conv1d::causal_conv1d_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::CausalConv1d,
+                &[DType::F16, DType::F16, DType::F16, DType::F16][..],
+                conv1d::causal_conv1d_f16 as KernelRef,
+                false,
+            ),
         ];
         let mut checked = 0usize;
         for (op, key, expected, want_strided) in cases {
@@ -4205,12 +6549,42 @@ mod cast_contract_tests {
         register_baracuda_cuda_kernels(&mut table);
         let cuda = BackendId::Cuda;
         let cases: &[(OpKind, &[DType], KernelRef, bool)] = &[
-        (OpKind::MatMul, &[DType::F32, DType::F32, DType::F32][..], gemm_dense::matmul_f32 as KernelRef, false),
-        (OpKind::MatMul, &[DType::F16, DType::F16, DType::F16][..], gemm_dense::matmul_f16 as KernelRef, false),
-        (OpKind::MatMul, &[DType::BF16, DType::BF16, DType::BF16][..], gemm_dense::matmul_bf16 as KernelRef, false),
-        (OpKind::MatMul, &[DType::F64, DType::F64, DType::F64][..], gemm_dense::matmul_f64 as KernelRef, false),
-        (OpKind::MatMul, &[DType::I8, DType::I8, DType::I8][..], gemm_int::gemm_s8_rrr as KernelRef, false),
-        (OpKind::MatMul, &[DType::U8, DType::U8, DType::U8][..], gemm_int::gemm_u8_rrr as KernelRef, false),
+            (
+                OpKind::MatMul,
+                &[DType::F32, DType::F32, DType::F32][..],
+                gemm_dense::matmul_f32 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::MatMul,
+                &[DType::F16, DType::F16, DType::F16][..],
+                gemm_dense::matmul_f16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::MatMul,
+                &[DType::BF16, DType::BF16, DType::BF16][..],
+                gemm_dense::matmul_bf16 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::MatMul,
+                &[DType::F64, DType::F64, DType::F64][..],
+                gemm_dense::matmul_f64 as KernelRef,
+                false,
+            ),
+            (
+                OpKind::MatMul,
+                &[DType::I8, DType::I8, DType::I8][..],
+                gemm_int::gemm_s8_rrr as KernelRef,
+                false,
+            ),
+            (
+                OpKind::MatMul,
+                &[DType::U8, DType::U8, DType::U8][..],
+                gemm_int::gemm_u8_rrr as KernelRef,
+                false,
+            ),
         ];
         let mut checked = 0usize;
         for (op, key, expected, want_strided) in cases {
@@ -4265,17 +6639,61 @@ mod cast_contract_tests {
         let u32 = DType::U32;
         let u8 = DType::U8;
         let cases: &[(OpKind, &[DType], KernelRef)] = &[
-        (OpKind::IndexSelect, &[DType::F32, u32, DType::F32][..], indexing::index_select_f32 as KernelRef),
-        (OpKind::IndexSelect, &[DType::F64, u32, DType::F64][..], indexing::index_select_f64 as KernelRef),
-        (OpKind::IndexSelect, &[DType::I32, u32, DType::I32][..], indexing::index_select_i32 as KernelRef),
-        (OpKind::Gather, &[DType::F32, u32, DType::F32][..], indexing::gather_f32 as KernelRef),
-        (OpKind::Gather, &[DType::F64, u32, DType::F64][..], indexing::gather_f64 as KernelRef),
-        (OpKind::Gather, &[DType::I32, u32, DType::I32][..], indexing::gather_i32 as KernelRef),
-        (OpKind::MaskedFill, &[DType::F32, u8, DType::F32][..], indexing::masked_fill_f32 as KernelRef),
-        (OpKind::MaskedFill, &[DType::F64, u8, DType::F64][..], indexing::masked_fill_f64 as KernelRef),
-        (OpKind::MaskedFill, &[DType::I32, u8, DType::I32][..], indexing::masked_fill_i32 as KernelRef),
-        (OpKind::ScatterAdd, &[DType::F32, u32, DType::F32, DType::F32][..], indexing::scatter_add_f32 as KernelRef),
-        (OpKind::ScatterAdd, &[DType::F64, u32, DType::F64, DType::F64][..], indexing::scatter_add_f64 as KernelRef),
+            (
+                OpKind::IndexSelect,
+                &[DType::F32, u32, DType::F32][..],
+                indexing::index_select_f32 as KernelRef,
+            ),
+            (
+                OpKind::IndexSelect,
+                &[DType::F64, u32, DType::F64][..],
+                indexing::index_select_f64 as KernelRef,
+            ),
+            (
+                OpKind::IndexSelect,
+                &[DType::I32, u32, DType::I32][..],
+                indexing::index_select_i32 as KernelRef,
+            ),
+            (
+                OpKind::Gather,
+                &[DType::F32, u32, DType::F32][..],
+                indexing::gather_f32 as KernelRef,
+            ),
+            (
+                OpKind::Gather,
+                &[DType::F64, u32, DType::F64][..],
+                indexing::gather_f64 as KernelRef,
+            ),
+            (
+                OpKind::Gather,
+                &[DType::I32, u32, DType::I32][..],
+                indexing::gather_i32 as KernelRef,
+            ),
+            (
+                OpKind::MaskedFill,
+                &[DType::F32, u8, DType::F32][..],
+                indexing::masked_fill_f32 as KernelRef,
+            ),
+            (
+                OpKind::MaskedFill,
+                &[DType::F64, u8, DType::F64][..],
+                indexing::masked_fill_f64 as KernelRef,
+            ),
+            (
+                OpKind::MaskedFill,
+                &[DType::I32, u8, DType::I32][..],
+                indexing::masked_fill_i32 as KernelRef,
+            ),
+            (
+                OpKind::ScatterAdd,
+                &[DType::F32, u32, DType::F32, DType::F32][..],
+                indexing::scatter_add_f32 as KernelRef,
+            ),
+            (
+                OpKind::ScatterAdd,
+                &[DType::F64, u32, DType::F64, DType::F64][..],
+                indexing::scatter_add_f64 as KernelRef,
+            ),
         ];
         let mut checked = 0usize;
         for (op, key, expected) in cases {
@@ -4397,9 +6815,18 @@ mod cast_contract_tests {
 
             // seq_q != 1 ⇒ INFEASIBLE (the static gate).
             let bad_sq = OpParams::FlashAttn {
-                b: 1, hq: 8, hkv: 8, sq: 2, sk: 16, d: 64, k_len: 16,
-                softmax_scale: 1.0, causal: true,
-                window_size_left: None, window_size_right: None, softcap: None,
+                b: 1,
+                hq: 8,
+                hkv: 8,
+                sq: 2,
+                sk: 16,
+                d: 64,
+                k_len: 16,
+                softmax_scale: 1.0,
+                causal: true,
+                window_size_left: None,
+                window_size_right: None,
+                softcap: None,
             };
             assert_eq!(
                 (entry.cost)(&[out.clone()], &[dt], &bad_sq, &caps).flops,
@@ -4409,9 +6836,18 @@ mod cast_contract_tests {
 
             // head_dim > 128 ⇒ INFEASIBLE.
             let bad_d = OpParams::FlashAttn {
-                b: 1, hq: 8, hkv: 8, sq: 1, sk: 16, d: 256, k_len: 16,
-                softmax_scale: 1.0, causal: true,
-                window_size_left: None, window_size_right: None, softcap: None,
+                b: 1,
+                hq: 8,
+                hkv: 8,
+                sq: 1,
+                sk: 16,
+                d: 256,
+                k_len: 16,
+                softmax_scale: 1.0,
+                causal: true,
+                window_size_left: None,
+                window_size_right: None,
+                softcap: None,
             };
             assert_eq!(
                 (entry.cost)(&[out.clone()], &[dt], &bad_d, &caps).flops,
@@ -4421,9 +6857,18 @@ mod cast_contract_tests {
 
             // Supported decode shape (seq_q==1, head_dim<=128) ⇒ FEASIBLE.
             let good = OpParams::FlashAttn {
-                b: 1, hq: 8, hkv: 8, sq: 1, sk: 16, d: 64, k_len: 16,
-                softmax_scale: 1.0, causal: true,
-                window_size_left: None, window_size_right: None, softcap: None,
+                b: 1,
+                hq: 8,
+                hkv: 8,
+                sq: 1,
+                sk: 16,
+                d: 64,
+                k_len: 16,
+                softmax_scale: 1.0,
+                causal: true,
+                window_size_left: None,
+                window_size_right: None,
+                softcap: None,
             };
             assert_ne!(
                 (entry.cost)(&[out], &[dt], &good, &caps).flops,

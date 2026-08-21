@@ -1,4 +1,4 @@
-﻿//! Chat template support for LLM examples
+//! Chat template support for LLM examples
 //!
 //! This module provides Jinja-based chat template rendering compatible with
 //! HuggingFace's `tokenizer.apply_chat_template()` functionality.
@@ -32,7 +32,7 @@
 //! # }
 //! ```
 
-use minijinja::{context, Environment};
+use minijinja::{Environment, context};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -414,14 +414,13 @@ impl Conversation {
 
     /// Clear conversation history (keeps system prompt if present)
     pub fn clear(&mut self) {
-        if let Some(first) = self.messages.first() {
-            if first.role == "system" {
+        if let Some(first) = self.messages.first()
+            && first.role == "system" {
                 let system = self.messages.remove(0);
                 self.messages.clear();
                 self.messages.push(system);
                 return;
             }
-        }
         self.messages.clear();
     }
 

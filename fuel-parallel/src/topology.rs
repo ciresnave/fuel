@@ -1,4 +1,4 @@
-﻿//! Device topology modelling.
+//! Device topology modelling.
 //!
 //! Describes the physical layout of compute devices and their interconnects so
 //! that placement and scheduling decisions can take transfer costs into account.
@@ -241,11 +241,17 @@ mod tests {
 
     fn two_gpu_topology() -> DeviceTopology {
         let mut topo = DeviceTopology::new();
-        topo.add_device(DeviceInfo::new(0, DeviceKind::Cuda, "GPU 0")
-            .with_memory_bytes(24_000_000_000));
-        topo.add_device(DeviceInfo::new(1, DeviceKind::Cuda, "GPU 1")
-            .with_memory_bytes(24_000_000_000));
-        topo.add_link(DeviceId(0), DeviceId(1), Link::new(Interconnect::NvLink, 600_000));
+        topo.add_device(
+            DeviceInfo::new(0, DeviceKind::Cuda, "GPU 0").with_memory_bytes(24_000_000_000),
+        );
+        topo.add_device(
+            DeviceInfo::new(1, DeviceKind::Cuda, "GPU 1").with_memory_bytes(24_000_000_000),
+        );
+        topo.add_link(
+            DeviceId(0),
+            DeviceId(1),
+            Link::new(Interconnect::NvLink, 600_000),
+        );
         topo
     }
 
@@ -273,7 +279,9 @@ mod tests {
     fn transfer_time() {
         let topo = two_gpu_topology();
         // 600 GB/s ≈ 600_000 MB/s; 1 MB transfer ≈ 1/600_000 s ≈ 1.67 µs
-        let time = topo.transfer_time_us(DeviceId(0), DeviceId(1), 1024 * 1024).unwrap();
+        let time = topo
+            .transfer_time_us(DeviceId(0), DeviceId(1), 1024 * 1024)
+            .unwrap();
         assert!(time > 0.0 && time < 100.0);
     }
 
@@ -297,8 +305,16 @@ mod tests {
         topo.add_device(DeviceInfo::new(0, DeviceKind::Cuda, "GPU 0"));
         topo.add_device(DeviceInfo::new(1, DeviceKind::Cuda, "GPU 1"));
         topo.add_device(DeviceInfo::new(2, DeviceKind::Cuda, "GPU 2"));
-        topo.add_link(DeviceId(0), DeviceId(1), Link::new(Interconnect::Pcie, 32_000));
-        topo.add_link(DeviceId(0), DeviceId(2), Link::new(Interconnect::NvLink, 600_000));
+        topo.add_link(
+            DeviceId(0),
+            DeviceId(1),
+            Link::new(Interconnect::Pcie, 32_000),
+        );
+        topo.add_link(
+            DeviceId(0),
+            DeviceId(2),
+            Link::new(Interconnect::NvLink, 600_000),
+        );
 
         let (peer, link) = topo.fastest_peer(DeviceId(0)).unwrap();
         assert_eq!(peer, DeviceId(2));
@@ -310,7 +326,11 @@ mod tests {
         let mut topo = DeviceTopology::new();
         topo.add_device(DeviceInfo::new(0, DeviceKind::Cuda, "GPU 0"));
         topo.add_device(DeviceInfo::new(1, DeviceKind::Cuda, "GPU 1"));
-        topo.add_directed_link(DeviceId(0), DeviceId(1), Link::new(Interconnect::Pcie, 16_000));
+        topo.add_directed_link(
+            DeviceId(0),
+            DeviceId(1),
+            Link::new(Interconnect::Pcie, 16_000),
+        );
 
         assert!(topo.link(DeviceId(0), DeviceId(1)).is_some());
         assert!(topo.link(DeviceId(1), DeviceId(0)).is_none());

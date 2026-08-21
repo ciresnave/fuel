@@ -10,9 +10,13 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_ir::{dispatch::OpKind, probe::BackendId, DType};
 use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
-use fuel_dispatch::{baracuda_dispatch::register_baracuda_cuda_kernels, dispatch::register_cuda_kernels, kernel::{KernelBindingTable, OpParams}};
+use fuel_dispatch::{
+    baracuda_dispatch::register_baracuda_cuda_kernels,
+    dispatch::register_cuda_kernels,
+    kernel::{KernelBindingTable, OpParams},
+};
+use fuel_ir::{DType, dispatch::OpKind, probe::BackendId};
 use fuel_memory::{BackendStorage, Storage};
 
 fn dev_or_skip() -> Option<CudaDevice> {
@@ -76,10 +80,10 @@ fn baracuda_write_slice_f32_kv_append() {
 
     let got = download::<f32>(&dest_arc.read().unwrap());
     let expected = vec![
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,    // row 0
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,    // row 1
-        1.0, 2.0, 3.0, 4.0, 5.0, 6.0,    // row 2 ← source
-        0.0, 0.0, 0.0, 0.0, 0.0, 0.0,    // row 3
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, // row 0
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, // row 1
+        1.0, 2.0, 3.0, 4.0, 5.0, 6.0, // row 2 ← source
+        0.0, 0.0, 0.0, 0.0, 0.0, 0.0, // row 3
     ];
     assert_eq!(got, expected);
 }
@@ -93,14 +97,9 @@ fn baracuda_write_slice_f32_interior_2d() {
     let Some(dev) = dev_or_skip() else { return };
     let table = dual_table();
     let dest_host = vec![
-        10.0_f32, 11.0, 12.0, 13.0,
-        14.0,     15.0, 16.0, 17.0,
-        18.0,     19.0, 20.0, 21.0,
+        10.0_f32, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0, 19.0, 20.0, 21.0,
     ];
-    let src_host = vec![
-        100.0_f32, 101.0,
-        102.0,     103.0,
-    ];
+    let src_host = vec![100.0_f32, 101.0, 102.0, 103.0];
 
     let dest_arc = Arc::new(RwLock::new(upload(&dev, DType::F32, &dest_host)));
     let src_arc = Arc::new(RwLock::new(upload(&dev, DType::F32, &src_host)));
@@ -123,9 +122,7 @@ fn baracuda_write_slice_f32_interior_2d() {
 
     let got = download::<f32>(&dest_arc.read().unwrap());
     let expected = vec![
-        10.0, 100.0, 101.0, 13.0,
-        14.0, 102.0, 103.0, 17.0,
-        18.0, 19.0,  20.0,  21.0,
+        10.0, 100.0, 101.0, 13.0, 14.0, 102.0, 103.0, 17.0, 18.0, 19.0, 20.0, 21.0,
     ];
     assert_eq!(got, expected);
 }
@@ -139,10 +136,7 @@ fn baracuda_write_slice_f16_1d() {
     let table = dual_table();
     // 5-element dest, write 2 elements at offset 2.
     let dest_host: Vec<half::f16> = (0..5).map(|i| half::f16::from_f32(i as f32)).collect();
-    let src_host: Vec<half::f16> = vec![
-        half::f16::from_f32(100.0),
-        half::f16::from_f32(200.0),
-    ];
+    let src_host: Vec<half::f16> = vec![half::f16::from_f32(100.0), half::f16::from_f32(200.0)];
 
     let dest_arc = Arc::new(RwLock::new(upload(&dev, DType::F16, &dest_host)));
     let src_arc = Arc::new(RwLock::new(upload(&dev, DType::F16, &src_host)));
@@ -178,15 +172,18 @@ fn baracuda_write_slice_f16_1d() {
 fn write_slice_registered_for_all_9_dtypes() {
     let table = dual_table();
     let dtypes = [
-        DType::F32, DType::F64, DType::F16, DType::BF16,
-        DType::I32, DType::I64, DType::U32, DType::U8, DType::I8,
+        DType::F32,
+        DType::F64,
+        DType::F16,
+        DType::BF16,
+        DType::I32,
+        DType::I64,
+        DType::U32,
+        DType::U8,
+        DType::I8,
     ];
     for dt in dtypes {
-        let alts = table.lookup_alternatives(
-            OpKind::WriteSlice,
-            &[dt, dt],
-            BackendId::Cuda,
-        );
+        let alts = table.lookup_alternatives(OpKind::WriteSlice, &[dt, dt], BackendId::Cuda);
         assert!(
             !alts.is_empty(),
             "no WriteSlice CUDA registration for dtype {dt:?}",

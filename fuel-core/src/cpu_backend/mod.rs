@@ -8,6 +8,5 @@
 pub use fuel_ir::{CpuDevice, CpuStorage, CpuStorageRef, HostBuffer, HostBufferRef};
 
 pub use fuel_cpu_backend::utils::{
-    binary_map, binary_map_vec, unary_map, unary_map_vec,
-    Map1, Map1Any, Map2, Map2InPlace, Map2U8,
+    Map1, Map1Any, Map2, Map2InPlace, Map2U8, binary_map, binary_map_vec, unary_map, unary_map_vec,
 };

@@ -74,8 +74,8 @@ fn main() -> Result<()> {
     let default_model = "sentence-transformers/all-MiniLM-L6-v2".to_string();
     let model_id = args.model_id.unwrap_or(default_model);
 
-    let model = BertModel::from_hub(&model_id)
-        .map_err(|e| E::msg(format!("loading bert model: {e}")))?;
+    let model =
+        BertModel::from_hub(&model_id).map_err(|e| E::msg(format!("loading bert model: {e}")))?;
     let tokenizer = BertTokenizer::from_hub(&model_id)
         .map_err(|e| E::msg(format!("loading bert tokenizer: {e}")))?;
 

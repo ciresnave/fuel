@@ -16,10 +16,10 @@
 //! [`MmapedContent::content`] and decode the bytes themselves — which is
 //! what the lazy loader already did.
 
-use super::arch::{detect_from_gguf, Architecture};
+use super::arch::{Architecture, detect_from_gguf};
 use super::gguf_file::{Content, Value};
-use crate::model_progress::{ProgressEvent, ProgressReporter};
 use crate::Result;
+use crate::model_progress::{ProgressEvent, ProgressReporter};
 use memmap2::Mmap;
 use std::collections::HashMap;
 use std::fs::File;
@@ -72,7 +72,11 @@ impl MmapedContent {
                 architecture: arch.as_str().to_string(),
             });
         }
-        Ok(Self { mmap, content, path: path_buf })
+        Ok(Self {
+            mmap,
+            content,
+            path: path_buf,
+        })
     }
 
     /// Raw metadata map, identical to `Content::metadata`.

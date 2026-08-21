@@ -1,9 +1,9 @@
-﻿use fuel_ir::HostBufferRef;
-use fuel_ir::dtype::WithDType;
-use fuel_ir::{HostBuffer, DType, Layout, Result, Shape};
 use baracuda_curand::RngKind;
 use baracuda_driver::{DeviceBuffer, Dim3, Function, LaunchBuilder};
 use float8::F8E4M3;
+use fuel_ir::HostBufferRef;
+use fuel_ir::dtype::WithDType;
+use fuel_ir::{DType, HostBuffer, Layout, Result, Shape};
 use half::{bf16, f16};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
@@ -68,8 +68,16 @@ impl<'f> LaunchArgs<'f> {
             .inner
             .take()
             .expect("LaunchArgs already launched")
-            .grid(Dim3 { x: cfg.grid_dim.0, y: cfg.grid_dim.1, z: cfg.grid_dim.2 })
-            .block(Dim3 { x: cfg.block_dim.0, y: cfg.block_dim.1, z: cfg.block_dim.2 })
+            .grid(Dim3 {
+                x: cfg.grid_dim.0,
+                y: cfg.grid_dim.1,
+                z: cfg.grid_dim.2,
+            })
+            .block(Dim3 {
+                x: cfg.block_dim.0,
+                y: cfg.block_dim.1,
+                z: cfg.block_dim.2,
+            })
             .shared_mem_bytes(cfg.shared_mem_bytes);
         unsafe { b.launch() }
     }
@@ -199,10 +207,12 @@ impl CudaDevice {
         src: &[T],
         dst: &mut baracuda_driver::DeviceSliceMut<T>,
     ) -> Result<()> {
-        use baracuda_cuda_sys::{driver, CUresult};
+        use baracuda_cuda_sys::{CUresult, driver};
         assert_eq!(src.len(), dst.len());
         let bytes = src.len() * std::mem::size_of::<T>();
-        let d = driver().map_err(|_| CudaError::InternalError("cuda driver load")).w()?;
+        let d = driver()
+            .map_err(|_| CudaError::InternalError("cuda driver load"))
+            .w()?;
         let cu = d
             .cu_memcpy_htod_async()
             .map_err(|_| CudaError::InternalError("cuMemcpyHtoDAsync not available"))
@@ -227,15 +237,23 @@ impl CudaDevice {
         &self,
         src: &baracuda_driver::DeviceSlice<T>,
     ) -> Result<Vec<T>> {
-        use baracuda_cuda_sys::{driver, CUresult};
+        use baracuda_cuda_sys::{CUresult, driver};
         let mut out = vec![T::default(); src.len()];
         let bytes = src.len() * std::mem::size_of::<T>();
-        let d = driver().map_err(|_| CudaError::InternalError("cuda driver load")).w()?;
+        let d = driver()
+            .map_err(|_| CudaError::InternalError("cuda driver load"))
+            .w()?;
         let cu = d
             .cu_memcpy_dtoh()
             .map_err(|_| CudaError::InternalError("cuMemcpyDtoH not available"))
             .w()?;
-        let r = unsafe { cu(out.as_mut_ptr() as *mut std::ffi::c_void, src.as_raw(), bytes) };
+        let r = unsafe {
+            cu(
+                out.as_mut_ptr() as *mut std::ffi::c_void,
+                src.as_raw(),
+                bytes,
+            )
+        };
         if r == CUresult::SUCCESS {
             Ok(out)
         } else {
@@ -250,10 +268,12 @@ impl CudaDevice {
         src: &baracuda_driver::DeviceSlice<T>,
         dst: &mut baracuda_driver::DeviceSliceMut<T>,
     ) -> Result<()> {
-        use baracuda_cuda_sys::{driver, CUresult};
+        use baracuda_cuda_sys::{CUresult, driver};
         assert_eq!(src.len(), dst.len());
         let bytes = src.len() * std::mem::size_of::<T>();
-        let d = driver().map_err(|_| CudaError::InternalError("cuda driver load")).w()?;
+        let d = driver()
+            .map_err(|_| CudaError::InternalError("cuda driver load"))
+            .w()?;
         let cu = d
             .cu_memcpy_dtod_async()
             .map_err(|_| CudaError::InternalError("cuMemcpyDtoDAsync not available"))
@@ -282,15 +302,23 @@ impl CudaDevice {
         src: &baracuda_driver::DeviceSlice<T>,
         dst: &mut [T],
     ) -> Result<()> {
-        use baracuda_cuda_sys::{driver, CUresult};
+        use baracuda_cuda_sys::{CUresult, driver};
         assert_eq!(src.len(), dst.len());
         let bytes = src.len() * std::mem::size_of::<T>();
-        let d = driver().map_err(|_| CudaError::InternalError("cuda driver load")).w()?;
+        let d = driver()
+            .map_err(|_| CudaError::InternalError("cuda driver load"))
+            .w()?;
         let cu = d
             .cu_memcpy_dtoh()
             .map_err(|_| CudaError::InternalError("cuMemcpyDtoH not available"))
             .w()?;
-        let r = unsafe { cu(dst.as_mut_ptr() as *mut std::ffi::c_void, src.as_raw(), bytes) };
+        let r = unsafe {
+            cu(
+                dst.as_mut_ptr() as *mut std::ffi::c_void,
+                src.as_raw(),
+                bytes,
+            )
+        };
         if r == CUresult::SUCCESS {
             Ok(())
         } else {
@@ -299,10 +327,7 @@ impl CudaDevice {
     }
 
     /// Host → device (new buffer): allocate + copy in one call.
-    pub fn clone_htod<T: baracuda_types::DeviceRepr>(
-        &self,
-        src: &[T],
-    ) -> Result<DeviceBuffer<T>> {
+    pub fn clone_htod<T: baracuda_types::DeviceRepr>(&self, src: &[T]) -> Result<DeviceBuffer<T>> {
         DeviceBuffer::from_slice(&self.context, src).w()
     }
 }
@@ -369,7 +394,9 @@ impl CudaDevice {
     /// Always returns `true` for the same reason `disable_event_tracking`
     /// is a no-op now — baracuda's `DeviceBuffer` model is implicitly
     /// stream-ordered and doesn't expose the flag.
-    pub fn is_event_tracking(&self) -> bool { true }
+    pub fn is_event_tracking(&self) -> bool {
+        true
+    }
 
     #[cfg(all(feature = "ug", not(target_arch = "wasm32")))]
     pub fn compile(
@@ -602,7 +629,7 @@ impl CudaDevice {
             DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => {
                 return Err(
                     CudaError::InternalError("Dummy types not supported in CUDA backend").into(),
-                )
+                );
             }
         };
         Ok(CudaStorage {
@@ -611,7 +638,13 @@ impl CudaDevice {
         })
     }
 
-    pub fn rand_uniform(&self, shape: &Shape, dtype: DType, lo: f64, up: f64) -> Result<CudaStorage> {
+    pub fn rand_uniform(
+        &self,
+        shape: &Shape,
+        dtype: DType,
+        lo: f64,
+        up: f64,
+    ) -> Result<CudaStorage> {
         let elem_count = shape.elem_count();
         let curand = self.curand.lock().unwrap();
         let slice = match dtype {
@@ -644,13 +677,18 @@ impl CudaDevice {
             // (`torch.rand(..., dtype=torch.bool)` errors). The decline is honest
             // rather than lossy: `UnsupportedDtype` carries `dtype`, so Bool's
             // decline is a DISTINCT value from every other member of this arm.
-            DType::F8E4M3 | DType::F8E5M2 | DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 | DType::F8E6M2 | DType::Bool => {
-                Err(CudaError::UnsupportedDtype {
-                    dtype,
-                    op: "rand_uniform",
-                })
-                .w()?
-            }
+            DType::F8E4M3
+            | DType::F8E5M2
+            | DType::F6E2M3
+            | DType::F6E3M2
+            | DType::F4
+            | DType::F8E8M0
+            | DType::F8E6M2
+            | DType::Bool => Err(CudaError::UnsupportedDtype {
+                dtype,
+                op: "rand_uniform",
+            })
+            .w()?,
         };
         let slice = if lo == 0. && up == 1.0 {
             slice
@@ -665,7 +703,13 @@ impl CudaDevice {
         })
     }
 
-    pub fn rand_normal(&self, shape: &Shape, dtype: DType, mean: f64, std: f64) -> Result<CudaStorage> {
+    pub fn rand_normal(
+        &self,
+        shape: &Shape,
+        dtype: DType,
+        mean: f64,
+        std: f64,
+    ) -> Result<CudaStorage> {
         // TODO: Add support for F16 and BF16 though this is likely to require some upstream
         // cudarc changes.
         let elem_count = shape.elem_count();
@@ -692,10 +736,7 @@ impl CudaDevice {
             .w()?,
             DType::F32 => {
                 let mut data = unsafe { self.alloc::<f32>(elem_count_round)? };
-                curand
-                    .0
-                    .normal(&mut data, mean as f32, std as f32)
-                    .w()?;
+                curand.0.normal(&mut data, mean as f32, std as f32).w()?;
                 CudaStorageSlice::F32(data)
             }
             DType::F64 => {
@@ -705,13 +746,18 @@ impl CudaDevice {
             }
             // GAP-168(c): Bool declines — see `rand_uniform` above; a normal
             // distribution has no meaning on a two-valued type.
-            DType::F8E4M3 | DType::F8E5M2 | DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 | DType::F8E6M2 | DType::Bool => {
-                Err(CudaError::UnsupportedDtype {
-                    dtype,
-                    op: "rand_normal",
-                })
-                .w()?
-            }
+            DType::F8E4M3
+            | DType::F8E5M2
+            | DType::F6E2M3
+            | DType::F6E3M2
+            | DType::F4
+            | DType::F8E8M0
+            | DType::F8E6M2
+            | DType::Bool => Err(CudaError::UnsupportedDtype {
+                dtype,
+                op: "rand_normal",
+            })
+            .w()?,
         };
         Ok(CudaStorage {
             slice,
@@ -782,12 +828,14 @@ impl CudaDevice {
             // dummy-byte types below decline for an OP reason — they HAVE storage
             // but no uninit-alloc kernel — a separate concern, left as-is.
             DType::F8E5M2 | DType::F8E6M2 => {
-                return Err(crate::storage_status::storage_unavailable(dtype, "alloc_uninit").into());
+                return Err(
+                    crate::storage_status::storage_unavailable(dtype, "alloc_uninit").into(),
+                );
             }
             DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => {
                 return Err(
                     CudaError::InternalError("Dummy types not supported in CUDA backend").into(),
-                )
+                );
             }
         };
         Ok(CudaStorage {
@@ -796,7 +844,10 @@ impl CudaDevice {
         })
     }
 
-    pub fn storage_from_slice<T: WithDType + fuel_ir::HostDType>(&self, s: &[T]) -> Result<CudaStorage> {
+    pub fn storage_from_slice<T: WithDType + fuel_ir::HostDType>(
+        &self,
+        s: &[T],
+    ) -> Result<CudaStorage> {
         let slice = match T::cpu_storage_ref(s) {
             HostBufferRef::U8(storage) => {
                 let data = self.clone_htod(storage)?;

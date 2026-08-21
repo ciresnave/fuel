@@ -210,28 +210,28 @@ impl RecurrentGemmaModel {
     /// over pre-embedded inputs. RecurrentGemma does NOT scale
     /// embeddings (unlike Gemma which applies sqrt(hidden_size) —
     /// RecurrentGemma's eager port omits it).
-    pub fn forward_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
         let h_norm = self.run_backbone_embeds(embeds, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
 
     /// Hidden-state variant of [`Self::forward_embeds`].
     pub fn forward_hidden_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
+        &self,
+        embeds: &LazyTensor,
+        start_pos: usize,
     ) -> Result<LazyTensor> {
         self.run_backbone_embeds(embeds, start_pos)
     }
 
     /// Build per-token embeddings without running the decoder.
-    pub fn embed_tokens_anchored(
-        &self, anchor: &LazyTensor, tokens: &[u32],
-    ) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
-            cfg.vocab_size, cfg.hidden_size, tokens,
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
         )
     }
 
@@ -254,14 +254,16 @@ impl RecurrentGemmaModel {
         assert!(seq > 0, "RecurrentGemmaModel: tokens must be non-empty");
 
         let h = LazyTensor::embed_tokens(
-            weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
+            weights.token_embedding.clone(),
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
+            &Device::cpu(),
         )?;
         self.run_backbone_embeds(&h, start_pos)
     }
 
-    fn run_backbone_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
-    ) -> Result<LazyTensor> {
+    fn run_backbone_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -276,32 +278,34 @@ impl RecurrentGemmaModel {
         if seq == 0 {
             return Err(crate::Error::Msg(
                 "RecurrentGemmaModel::forward_embeds: seq must be > 0".into(),
-            ).bt());
+            )
+            .bt());
         }
         if (cfg.partial_rotary_factor - 0.5).abs() >= 1e-9 {
             return Err(crate::Error::Msg(format!(
                 "RecurrentGemmaConfig: partial_rotary_factor must be exactly 0.5 (got {})",
                 cfg.partial_rotary_factor,
-            )).bt());
+            ))
+            .bt());
         }
         if cfg.num_attention_heads % cfg.num_key_value_heads != 0 {
             return Err(crate::Error::Msg(
                 "num_attention_heads must be a multiple of num_key_value_heads".into(),
-            ).bt());
+            )
+            .bt());
         }
         let lru_width = cfg.lru_width_or_default();
         if lru_width % cfg.num_attention_heads != 0 {
             return Err(crate::Error::Msg(format!(
                 "lru_width ({lru_width}) must be a multiple of num_attention_heads ({})",
                 cfg.num_attention_heads,
-            )).bt());
+            ))
+            .bt());
         }
         let mut h = embeds.clone();
 
         let rope_dim = cfg.head_dim / 2;
-        let (rope_cos, rope_sin) = h.rope_tables_const(
-            cfg.rope_theta, start_pos, seq, rope_dim,
-        );
+        let (rope_cos, rope_sin) = h.rope_tables_const(cfg.rope_theta, start_pos, seq, rope_dim);
 
         for (layer_idx, layer) in weights.layers.iter().enumerate() {
             h = self.apply_layer(&h, layer, layer_idx, &rope_cos, &rope_sin)?;
@@ -322,7 +326,8 @@ impl RecurrentGemmaModel {
 
         // Temporal sublayer: pre_norm → temporal_block → residual add.
         let residual = x.clone();
-        let x_norm = x.rms_norm_affine_with_offset(&layer.temporal_pre_norm_gain, 1.0, cfg.rms_norm_eps)?;
+        let x_norm =
+            x.rms_norm_affine_with_offset(&layer.temporal_pre_norm_gain, 1.0, cfg.rms_norm_eps)?;
         let temporal_out = match (&layer.temporal, cfg.block_type(layer_idx)) {
             (TemporalBlockWeights::Attention(a), TemporalBlockType::Attention) => {
                 self.apply_attention(&x_norm, a, rope_cos, rope_sin)?
@@ -330,17 +335,21 @@ impl RecurrentGemmaModel {
             (TemporalBlockWeights::Recurrent(r), TemporalBlockType::Recurrent) => {
                 self.apply_recurrent(&x_norm, r)?
             }
-            _ => return Err(crate::Error::Msg(format!(
-                "RecurrentGemma layer {layer_idx}: weight kind does not match \
+            _ => {
+                return Err(crate::Error::Msg(format!(
+                    "RecurrentGemma layer {layer_idx}: weight kind does not match \
                  block_types[{layer_idx} % {}] — config + weights are inconsistent",
-                cfg.block_types.len(),
-            )).bt()),
+                    cfg.block_types.len(),
+                ))
+                .bt());
+            }
         };
         let h1 = residual.add(&temporal_out)?;
 
         // Channel sublayer: pre_norm → MLP → residual add.
         let residual2 = h1.clone();
-        let h1_norm = h1.rms_norm_affine_with_offset(&layer.channel_pre_norm_gain, 1.0, cfg.rms_norm_eps)?;
+        let h1_norm =
+            h1.rms_norm_affine_with_offset(&layer.channel_pre_norm_gain, 1.0, cfg.rms_norm_eps)?;
         let mlp_out = self.apply_mlp(&h1_norm, layer)?;
         residual2.add(&mlp_out)
     }
@@ -362,9 +371,18 @@ impl RecurrentGemmaModel {
         let rope_dim = cfg.head_dim / 2;
         let window = cfg.attention_window_size;
 
-        let q = a.q_w.apply_linear(x, cfg.hidden_size, q_dim)?.add_optional_trailing_bias(a.q_b.as_ref())?;
-        let k = a.k_w.apply_linear(x, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(a.k_b.as_ref())?;
-        let v = a.v_w.apply_linear(x, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(a.v_b.as_ref())?;
+        let q = a
+            .q_w
+            .apply_linear(x, cfg.hidden_size, q_dim)?
+            .add_optional_trailing_bias(a.q_b.as_ref())?;
+        let k = a
+            .k_w
+            .apply_linear(x, cfg.hidden_size, kv_dim)?
+            .add_optional_trailing_bias(a.k_b.as_ref())?;
+        let v = a
+            .v_w
+            .apply_linear(x, cfg.hidden_size, kv_dim)?
+            .add_optional_trailing_bias(a.v_b.as_ref())?;
 
         let _ = (batch, seq);
         let q = q.split_heads(cfg.num_attention_heads, cfg.head_dim)?;
@@ -403,11 +421,7 @@ impl RecurrentGemmaModel {
         attn_out.add_trailing_bias(std::sync::Arc::clone(&a.o_b))
     }
 
-    fn apply_recurrent(
-        &self,
-        x: &LazyTensor,
-        r: &RecurrentBlockWeights,
-    ) -> Result<LazyTensor> {
+    fn apply_recurrent(&self, x: &LazyTensor, r: &RecurrentBlockWeights) -> Result<LazyTensor> {
         let cfg = &self.config;
         let x_shape = x.shape();
         let dims = x_shape.dims();
@@ -420,14 +434,24 @@ impl RecurrentGemmaModel {
         let kernel = cfg.conv1d_width;
 
         // Gating branch.
-        let y = r.linear_y_w.apply_linear_with_bias(x, h, lru_width, std::sync::Arc::clone(&r.linear_y_b))?;
+        let y = r.linear_y_w.apply_linear_with_bias(
+            x,
+            h,
+            lru_width,
+            std::sync::Arc::clone(&r.linear_y_b),
+        )?;
         let y_act = match cfg.hidden_activation {
             GemmaActivation::Gelu => y.gelu_erf(),
             GemmaActivation::GeluPytorchTanh => y.gelu(),
         };
 
         // Recurrence input.
-        let x_branch = r.linear_x_w.apply_linear_with_bias(x, h, lru_width, std::sync::Arc::clone(&r.linear_x_b))?;
+        let x_branch = r.linear_x_w.apply_linear_with_bias(
+            x,
+            h,
+            lru_width,
+            std::sync::Arc::clone(&r.linear_x_b),
+        )?;
 
         // Causal conv1d: (batch, seq, lru_width) → (batch, lru_width, seq),
         // pad left with (kernel - 1) zeros, run causal_conv1d, transpose back.
@@ -441,10 +465,7 @@ impl RecurrentGemmaModel {
             Arc::clone(&r.conv1d_w),
             Shape::from_dims(&[lru_width, 1, kernel]),
         );
-        let conv_b = x.const_f32_like(
-            Arc::clone(&r.conv1d_b),
-            Shape::from_dims(&[lru_width]),
-        );
+        let conv_b = x.const_f32_like(Arc::clone(&r.conv1d_b), Shape::from_dims(&[lru_width]));
         let x_conv = x_b_padded.causal_conv1d(&conv_w, &conv_b, false); // (b, lru, seq)
         let x_back = x_conv.permute([0, 2, 1_usize])?; // (b, seq, lru_width)
 
@@ -482,7 +503,11 @@ impl RecurrentGemmaModel {
                 Shape::from_dims(&[1, 1, n_heads, block_width, block_width]),
             );
             let w_bc = w_t.broadcast_to(Shape::from_dims(&[
-                batch, seq, n_heads, block_width, block_width,
+                batch,
+                seq,
+                n_heads,
+                block_width,
+                block_width,
             ]))?;
             let x_row = xh.reshape(Shape::from_dims(&[batch, seq, n_heads, 1, block_width]))?;
             let res = x_row.matmul(&w_bc)?; // (b, seq, n_heads, 1, block_width)
@@ -492,19 +517,15 @@ impl RecurrentGemmaModel {
                 Arc::clone(b),
                 Shape::from_dims(&[1, 1, n_heads, block_width]),
             );
-            let b_bc = b_t.broadcast_to(Shape::from_dims(&[
-                batch, seq, n_heads, block_width,
-            ]))?;
+            let b_bc = b_t.broadcast_to(Shape::from_dims(&[batch, seq, n_heads, block_width]))?;
             res.add(&b_bc)
         };
         let input_gate = project(&rg.input_gate_weight, &rg.input_gate_bias)?.sigmoid();
-        let recurrent_gate = project(&rg.recurrent_gate_weight, &rg.recurrent_gate_bias)?
-            .sigmoid();
+        let recurrent_gate = project(&rg.recurrent_gate_weight, &rg.recurrent_gate_bias)?.sigmoid();
 
         // Flatten back to (b, seq, lru_width).
         let input_gate = input_gate.reshape(Shape::from_dims(&[batch, seq, lru_width]))?;
-        let recurrent_gate = recurrent_gate
-            .reshape(Shape::from_dims(&[batch, seq, lru_width]))?;
+        let recurrent_gate = recurrent_gate.reshape(Shape::from_dims(&[batch, seq, lru_width]))?;
 
         // log_decay = -8 * recurrent_gate * softplus(recurrent_param)
         // softplus(y) = log(exp(y) + 1)
@@ -529,13 +550,10 @@ impl RecurrentGemmaModel {
         // Build reset mask shape (1, seq, 1): [1.0, 0.0, 0.0, ...].
         let mut reset_data = vec![0.0_f32; seq];
         reset_data[0] = 1.0;
-        let reset = x.const_f32_like(
-            Arc::from(reset_data),
-            Shape::from_dims(&[1, seq, 1]),
-        );
+        let reset = x.const_f32_like(Arc::from(reset_data), Shape::from_dims(&[1, seq, 1]));
         let one_minus_reset = reset.mul_scalar(-1.0).add_scalar(1.0); // 1 - reset
-        let one_minus_reset_bc = one_minus_reset
-            .broadcast_to(Shape::from_dims(&[batch, seq, lru_width]))?;
+        let one_minus_reset_bc =
+            one_minus_reset.broadcast_to(Shape::from_dims(&[batch, seq, lru_width]))?;
         // 1 - a_square (clamp away from negatives via straight subtraction; in
         // valid range a_square ∈ (0, 1] so 1 - a_square ≥ 0).
         let one_minus_a_square = a_square.mul_scalar(-1.0).add_scalar(1.0);
@@ -554,7 +572,7 @@ impl RecurrentGemmaModel {
         let mut out_steps: Vec<LazyTensor> = Vec::with_capacity(seq);
         for t in 0..seq {
             let x_t = normalized_x.slice(1_usize, t, 1)?; // (b, 1, lru_width)
-            let d_t = decay_eff.slice(1_usize, t, 1)?;     // (b, 1, lru_width)
+            let d_t = decay_eff.slice(1_usize, t, 1)?; // (b, 1, lru_width)
             let new_state = match state {
                 None => x_t,
                 Some(s) => d_t.mul(&s)?.add(&x_t)?,
@@ -573,16 +591,22 @@ impl RecurrentGemmaModel {
         Ok(all.expect("at least one step"))
     }
 
-    fn apply_mlp(
-        &self,
-        x: &LazyTensor,
-        layer: &RecurrentGemmaLayerWeights,
-    ) -> Result<LazyTensor> {
+    fn apply_mlp(&self, x: &LazyTensor, layer: &RecurrentGemmaLayerWeights) -> Result<LazyTensor> {
         let cfg = &self.config;
         let h = cfg.hidden_size;
         let inter = cfg.mlp_intermediate();
-        let gate = layer.mlp_gate_w.apply_linear_with_bias(x, h, inter, std::sync::Arc::clone(&layer.mlp_gate_b))?;
-        let up = layer.mlp_up_w.apply_linear_with_bias(x, h, inter, std::sync::Arc::clone(&layer.mlp_up_b))?;
+        let gate = layer.mlp_gate_w.apply_linear_with_bias(
+            x,
+            h,
+            inter,
+            std::sync::Arc::clone(&layer.mlp_gate_b),
+        )?;
+        let up = layer.mlp_up_w.apply_linear_with_bias(
+            x,
+            h,
+            inter,
+            std::sync::Arc::clone(&layer.mlp_up_b),
+        )?;
         let activated = match cfg.hidden_activation {
             GemmaActivation::Gelu => gate.gelu_erf(),
             GemmaActivation::GeluPytorchTanh => gate.gelu(),
@@ -610,9 +634,7 @@ impl RecurrentGemmaWeights {
         let q_dim = cfg.num_attention_heads * cfg.head_dim;
         let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
 
-        let token_embedding = Arc::from(load_tensor_as_f32(
-            st, "model.embed_tokens.weight",
-        )?);
+        let token_embedding = Arc::from(load_tensor_as_f32(st, "model.embed_tokens.weight")?);
 
         let opt_bias = |name: String| -> Option<Arc<[f32]>> {
             load_tensor_as_f32(st, &name).ok().map(Arc::from)
@@ -622,10 +644,12 @@ impl RecurrentGemmaWeights {
         for i in 0..cfg.num_hidden_layers {
             let p = format!("model.layers.{i}");
             let temporal_pre_norm_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.temporal_pre_norm.weight"),
+                st,
+                &format!("{p}.temporal_pre_norm.weight"),
             )?);
             let channel_pre_norm_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.channel_pre_norm.weight"),
+                st,
+                &format!("{p}.channel_pre_norm.weight"),
             )?);
 
             let temporal = match cfg.block_type(i) {
@@ -634,64 +658,84 @@ impl RecurrentGemmaWeights {
                     let q_w = ltm(st, &format!("{tp}.q_proj.weight"), q_dim, h)?;
                     let q_b = if cfg.attention_bias {
                         opt_bias(format!("{tp}.q_proj.bias"))
-                    } else { None };
+                    } else {
+                        None
+                    };
                     let k_w = ltm(st, &format!("{tp}.k_proj.weight"), kv_dim, h)?;
                     let k_b = if cfg.attention_bias {
                         opt_bias(format!("{tp}.k_proj.bias"))
-                    } else { None };
+                    } else {
+                        None
+                    };
                     let v_w = ltm(st, &format!("{tp}.v_proj.weight"), kv_dim, h)?;
                     let v_b = if cfg.attention_bias {
                         opt_bias(format!("{tp}.v_proj.bias"))
-                    } else { None };
+                    } else {
+                        None
+                    };
                     let o_w = ltm(st, &format!("{tp}.o_proj.weight"), h, q_dim)?;
-                    let o_b = Arc::from(load_tensor_as_f32(
-                        st, &format!("{tp}.o_proj.bias"),
-                    )?);
+                    let o_b = Arc::from(load_tensor_as_f32(st, &format!("{tp}.o_proj.bias"))?);
                     TemporalBlockWeights::Attention(AttentionBlockWeights {
-                        q_w, q_b, k_w, k_b, v_w, v_b, o_w, o_b,
+                        q_w,
+                        q_b,
+                        k_w,
+                        k_b,
+                        v_w,
+                        v_b,
+                        o_w,
+                        o_b,
                     })
                 }
                 TemporalBlockType::Recurrent => {
                     let tp = format!("{p}.temporal_block");
                     let linear_y_w = ltm(st, &format!("{tp}.linear_y.weight"), lru, h)?;
-                    let linear_y_b = Arc::from(load_tensor_as_f32(
-                        st, &format!("{tp}.linear_y.bias"),
-                    )?);
+                    let linear_y_b =
+                        Arc::from(load_tensor_as_f32(st, &format!("{tp}.linear_y.bias"))?);
                     let linear_x_w = ltm(st, &format!("{tp}.linear_x.weight"), lru, h)?;
-                    let linear_x_b = Arc::from(load_tensor_as_f32(
-                        st, &format!("{tp}.linear_x.bias"),
-                    )?);
+                    let linear_x_b =
+                        Arc::from(load_tensor_as_f32(st, &format!("{tp}.linear_x.bias"))?);
                     let linear_out_w = ltm(st, &format!("{tp}.linear_out.weight"), h, lru)?;
-                    let linear_out_b = Arc::from(load_tensor_as_f32(
-                        st, &format!("{tp}.linear_out.bias"),
-                    )?);
-                    let conv1d_w = Arc::from(load_tensor_as_f32(
-                        st, &format!("{tp}.conv_1d.weight"),
-                    )?);
-                    let conv1d_b = Arc::from(load_tensor_as_f32(
-                        st, &format!("{tp}.conv_1d.bias"),
-                    )?);
+                    let linear_out_b =
+                        Arc::from(load_tensor_as_f32(st, &format!("{tp}.linear_out.bias"))?);
+                    let conv1d_w =
+                        Arc::from(load_tensor_as_f32(st, &format!("{tp}.conv_1d.weight"))?);
+                    let conv1d_b =
+                        Arc::from(load_tensor_as_f32(st, &format!("{tp}.conv_1d.bias"))?);
                     let recurrent_param = Arc::from(load_tensor_as_f32(
-                        st, &format!("{tp}.rg_lru.recurrent_param"),
+                        st,
+                        &format!("{tp}.rg_lru.recurrent_param"),
                     )?);
                     let input_gate_weight = Arc::from(load_tensor_as_f32(
-                        st, &format!("{tp}.rg_lru.input_gate_weight"),
+                        st,
+                        &format!("{tp}.rg_lru.input_gate_weight"),
                     )?);
                     let input_gate_bias = Arc::from(load_tensor_as_f32(
-                        st, &format!("{tp}.rg_lru.input_gate_bias"),
+                        st,
+                        &format!("{tp}.rg_lru.input_gate_bias"),
                     )?);
                     let recurrent_gate_weight = Arc::from(load_tensor_as_f32(
-                        st, &format!("{tp}.rg_lru.recurrent_gate_weight"),
+                        st,
+                        &format!("{tp}.rg_lru.recurrent_gate_weight"),
                     )?);
                     let recurrent_gate_bias = Arc::from(load_tensor_as_f32(
-                        st, &format!("{tp}.rg_lru.recurrent_gate_bias"),
+                        st,
+                        &format!("{tp}.rg_lru.recurrent_gate_bias"),
                     )?);
                     TemporalBlockWeights::Recurrent(RecurrentBlockWeights {
-                        linear_y_w, linear_y_b, linear_x_w, linear_x_b,
-                        linear_out_w, linear_out_b, conv1d_w, conv1d_b,
+                        linear_y_w,
+                        linear_y_b,
+                        linear_x_w,
+                        linear_x_b,
+                        linear_out_w,
+                        linear_out_b,
+                        conv1d_w,
+                        conv1d_b,
                         rg_lru: RgluWeights {
-                            recurrent_param, input_gate_weight, input_gate_bias,
-                            recurrent_gate_weight, recurrent_gate_bias,
+                            recurrent_param,
+                            input_gate_weight,
+                            input_gate_bias,
+                            recurrent_gate_weight,
+                            recurrent_gate_bias,
                         },
                     })
                 }
@@ -699,33 +743,34 @@ impl RecurrentGemmaWeights {
 
             let mp = format!("{p}.mlp_block");
             let mlp_gate_w = ltm(st, &format!("{mp}.gate_proj.weight"), inter, h)?;
-            let mlp_gate_b = Arc::from(load_tensor_as_f32(
-                st, &format!("{mp}.gate_proj.bias"),
-            )?);
+            let mlp_gate_b = Arc::from(load_tensor_as_f32(st, &format!("{mp}.gate_proj.bias"))?);
             let mlp_up_w = ltm(st, &format!("{mp}.up_proj.weight"), inter, h)?;
-            let mlp_up_b = Arc::from(load_tensor_as_f32(
-                st, &format!("{mp}.up_proj.bias"),
-            )?);
+            let mlp_up_b = Arc::from(load_tensor_as_f32(st, &format!("{mp}.up_proj.bias"))?);
             let mlp_down_w = ltm(st, &format!("{mp}.down_proj.weight"), h, inter)?;
-            let mlp_down_b = Arc::from(load_tensor_as_f32(
-                st, &format!("{mp}.down_proj.bias"),
-            )?);
+            let mlp_down_b = Arc::from(load_tensor_as_f32(st, &format!("{mp}.down_proj.bias"))?);
 
             layers.push(RecurrentGemmaLayerWeights {
-                temporal_pre_norm_gain, channel_pre_norm_gain,
+                temporal_pre_norm_gain,
+                channel_pre_norm_gain,
                 temporal,
-                mlp_gate_w, mlp_gate_b, mlp_up_w, mlp_up_b, mlp_down_w, mlp_down_b,
+                mlp_gate_w,
+                mlp_gate_b,
+                mlp_up_w,
+                mlp_up_b,
+                mlp_down_w,
+                mlp_down_b,
             });
         }
 
-        let final_norm_gain = Arc::from(load_tensor_as_f32(
-            st, "model.final_norm.weight",
-        )?);
+        let final_norm_gain = Arc::from(load_tensor_as_f32(st, "model.final_norm.weight")?);
 
-        Ok(Self { token_embedding, layers, final_norm_gain })
+        Ok(Self {
+            token_embedding,
+            layers,
+            final_norm_gain,
+        })
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -756,11 +801,23 @@ mod tests {
                     TemporalBlockType::Attention => {
                         TemporalBlockWeights::Attention(AttentionBlockWeights {
                             q_w: WeightStorage::F32(vec_of(h * q_dim, &mut *nb)),
-                            q_b: if cfg.attention_bias { Some(vec_of(q_dim, &mut *nb)) } else { None },
+                            q_b: if cfg.attention_bias {
+                                Some(vec_of(q_dim, &mut *nb))
+                            } else {
+                                None
+                            },
                             k_w: WeightStorage::F32(vec_of(h * kv_dim, &mut *nb)),
-                            k_b: if cfg.attention_bias { Some(vec_of(kv_dim, &mut *nb)) } else { None },
+                            k_b: if cfg.attention_bias {
+                                Some(vec_of(kv_dim, &mut *nb))
+                            } else {
+                                None
+                            },
                             v_w: WeightStorage::F32(vec_of(h * kv_dim, &mut *nb)),
-                            v_b: if cfg.attention_bias { Some(vec_of(kv_dim, &mut *nb)) } else { None },
+                            v_b: if cfg.attention_bias {
+                                Some(vec_of(kv_dim, &mut *nb))
+                            } else {
+                                None
+                            },
                             o_w: WeightStorage::F32(vec_of(q_dim * h, &mut *nb)),
                             o_b: vec_of(h, &mut *nb),
                         })
@@ -779,7 +836,10 @@ mod tests {
                                 recurrent_param: vec_of(lru, &mut *nb),
                                 input_gate_weight: vec_of(n_heads * block_w * block_w, &mut *nb),
                                 input_gate_bias: vec_of(n_heads * block_w, &mut *nb),
-                                recurrent_gate_weight: vec_of(n_heads * block_w * block_w, &mut *nb),
+                                recurrent_gate_weight: vec_of(
+                                    n_heads * block_w * block_w,
+                                    &mut *nb,
+                                ),
                                 recurrent_gate_bias: vec_of(n_heads * block_w, &mut *nb),
                             },
                         })
@@ -799,19 +859,30 @@ mod tests {
             })
             .collect();
         let final_norm_gain = Arc::from(vec![0.05_f32; h]);
-        RecurrentGemmaWeights { token_embedding, layers, final_norm_gain }
+        RecurrentGemmaWeights {
+            token_embedding,
+            layers,
+            final_norm_gain,
+        }
     }
 
     fn tiny_config() -> RecurrentGemmaConfig {
         RecurrentGemmaConfig {
-            vocab_size: 16, hidden_size: 8, intermediate_size: 16,
-            num_hidden_layers: 3, num_attention_heads: 2, num_key_value_heads: 2,
-            head_dim: 4, lru_width: Some(8),
-            attention_window_size: 8, conv1d_width: 4,
+            vocab_size: 16,
+            hidden_size: 8,
+            intermediate_size: 16,
+            num_hidden_layers: 3,
+            num_attention_heads: 2,
+            num_key_value_heads: 2,
+            head_dim: 4,
+            lru_width: Some(8),
+            attention_window_size: 8,
+            conv1d_width: 4,
             logits_soft_cap: 30.0,
             hidden_activation: GemmaActivation::GeluPytorchTanh,
             partial_rotary_factor: 0.5,
-            rms_norm_eps: 1e-6, rope_theta: 10_000.0,
+            rms_norm_eps: 1e-6,
+            rope_theta: 10_000.0,
             block_types: vec![
                 TemporalBlockType::Recurrent,
                 TemporalBlockType::Recurrent,
@@ -825,7 +896,10 @@ mod tests {
     #[test]
     fn forward_shape_and_finite() {
         let cfg = tiny_config();
-        let model = RecurrentGemmaModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = RecurrentGemmaModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4, 5];
         let logits = model.forward(&tokens, 0).unwrap();
         assert_eq!(logits.shape().dims(), &[1, tokens.len(), cfg.vocab_size]);
@@ -837,7 +911,10 @@ mod tests {
     #[test]
     fn single_token() {
         let cfg = tiny_config();
-        let model = RecurrentGemmaModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = RecurrentGemmaModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let logits = model.forward(&[3], 0).unwrap().realize_f32();
         assert_eq!(logits.len(), cfg.vocab_size);
     }
@@ -853,7 +930,10 @@ mod tests {
             ..tiny_config()
         };
         let weights = tiny_weights(&cfg);
-        let model = RecurrentGemmaModel { config: cfg.clone(), weights };
+        let model = RecurrentGemmaModel {
+            config: cfg.clone(),
+            weights,
+        };
         let a = model.forward(&[0, 5, 5, 5], 0).unwrap().realize_f32();
         let b = model.forward(&[7, 5, 5, 5], 0).unwrap().realize_f32();
         let last_a = &a[a.len() - cfg.vocab_size..];
@@ -865,26 +945,42 @@ mod tests {
         // Tiny-weight test (weights ∈ [-0.025, 0.025]) — the
         // recurrent contribution is real but small; we just
         // require it to be measurably non-zero.
-        assert!(max_diff > 1e-8,
-            "recurrent state must propagate first→last, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-8,
+            "recurrent state must propagate first→last, max_diff = {max_diff}"
+        );
     }
 
     /// Soft-cap on logits is wired: removing it changes output.
     #[test]
     fn logits_soft_cap_changes_output() {
-        let cfg_a = RecurrentGemmaConfig { logits_soft_cap: 0.0, ..tiny_config() };
-        let cfg_b = RecurrentGemmaConfig { logits_soft_cap: 5.0, ..tiny_config() };
+        let cfg_a = RecurrentGemmaConfig {
+            logits_soft_cap: 0.0,
+            ..tiny_config()
+        };
+        let cfg_b = RecurrentGemmaConfig {
+            logits_soft_cap: 5.0,
+            ..tiny_config()
+        };
         let weights = tiny_weights(&cfg_a);
-        let m_a = RecurrentGemmaModel { config: cfg_a, weights: weights.clone() };
-        let m_b = RecurrentGemmaModel { config: cfg_b, weights };
+        let m_a = RecurrentGemmaModel {
+            config: cfg_a,
+            weights: weights.clone(),
+        };
+        let m_b = RecurrentGemmaModel {
+            config: cfg_b,
+            weights,
+        };
         let a = m_a.forward(&[1, 2, 3], 0).unwrap().realize_f32();
         let b = m_b.forward(&[1, 2, 3], 0).unwrap().realize_f32();
         let mut max_diff = 0.0_f32;
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-6,
-            "logits soft-cap must alter output, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-6,
+            "logits soft-cap must alter output, max_diff = {max_diff}"
+        );
     }
 
     #[test]
@@ -899,7 +995,10 @@ mod tests {
     #[test]
     fn forward_hidden_shape_and_finite() {
         let cfg = tiny_config();
-        let model = RecurrentGemmaModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = RecurrentGemmaModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
         let hidden = model.forward_hidden(&tokens, 0).unwrap();
         assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
@@ -911,27 +1010,37 @@ mod tests {
     #[test]
     fn forward_embeds_matches_forward_after_token_lookup() {
         let cfg = tiny_config();
-        let model = RecurrentGemmaModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = RecurrentGemmaModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
-        let max_diff = logits_ref.iter().zip(logits_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "RecurrentGemma forward vs forward_embeds must agree (max diff {max_diff})");
+        let max_diff = logits_ref
+            .iter()
+            .zip(logits_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "RecurrentGemma forward vs forward_embeds must agree (max diff {max_diff})"
+        );
     }
 
     #[test]
     fn forward_embeds_rejects_bad_shape() {
         let cfg = tiny_config();
-        let model = RecurrentGemmaModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = RecurrentGemmaModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let bad = LazyTensor::from_f32(
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
-            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]), &Device::cpu(),
+            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
+            &Device::cpu(),
         );
         assert!(model.forward_embeds(&bad, 0).is_err());
     }
@@ -939,17 +1048,26 @@ mod tests {
     #[test]
     fn forward_hidden_embeds_matches_forward_hidden() {
         let cfg = tiny_config();
-        let model = RecurrentGemmaModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = RecurrentGemmaModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
-        let h_via_embeds = model.forward_hidden_embeds(&embeds, 0).unwrap().realize_f32();
-        let max_diff = h_ref.iter().zip(h_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "RecurrentGemma forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})");
+        let h_via_embeds = model
+            .forward_hidden_embeds(&embeds, 0)
+            .unwrap()
+            .realize_f32();
+        let max_diff = h_ref
+            .iter()
+            .zip(h_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "RecurrentGemma forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})"
+        );
     }
 }

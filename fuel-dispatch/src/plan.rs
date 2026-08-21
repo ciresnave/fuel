@@ -28,20 +28,20 @@
 
 use std::collections::HashMap;
 
+use fuel_graph::{Graph, NodeId};
 use fuel_ir::dispatch::{OpKind, SizeClass};
 use fuel_ir::probe::BackendId;
 use fuel_ir::{DType, DeviceLocation, Error, Result, Shape};
-use fuel_graph::{Graph, NodeId};
 
 use smallvec::SmallVec;
 
 use crate::kernel::KernelBindingTable;
 use crate::pipelined::{build_lookup_dtypes, op_to_op_kind};
 use crate::ranker::{
-    apply_filter_chain, apply_inbound_transfer_costs, composite_ns,
-    compute_static_costs, default_backend_rates, default_chain, enumerate_candidates,
-    AlternativeSet, CapabilitiesLookup, ChainInput, DecisionContext, FilterContext,
-    JudgeOracle, PlacementDp, PrecisionRequirement, TransferEstimator, KEEP_PER_DEVICE,
+    AlternativeSet, CapabilitiesLookup, ChainInput, DecisionContext, FilterContext, JudgeOracle,
+    KEEP_PER_DEVICE, PlacementDp, PrecisionRequirement, TransferEstimator, apply_filter_chain,
+    apply_inbound_transfer_costs, composite_ns, compute_static_costs, default_backend_rates,
+    default_chain, enumerate_candidates,
 };
 
 /// Per-realize execution plan. Built by [`compile_plan`].
@@ -297,16 +297,14 @@ pub struct PlanOptions<'env> {
     pub populate_costs: bool,
     /// Cross-co-located-backend placement enumerator. See struct
     /// docs.
-    pub placements_for_device:
-        Option<&'env (dyn Fn(DeviceLocation) -> Vec<BackendId> + 'env)>,
+    pub placements_for_device: Option<&'env (dyn Fn(DeviceLocation) -> Vec<BackendId> + 'env)>,
     /// Realize-call device pin (picker-arc step 4a). See struct
     /// docs.
     pub pinned_device: Option<DeviceLocation>,
     /// Off-device fallback enumerator for missing-impl ops
     /// (picker-arc step 4b). See struct docs.
-    pub fallback_placements_for: Option<
-        &'env (dyn Fn(DeviceLocation) -> Vec<(BackendId, DeviceLocation)> + 'env),
-    >,
+    pub fallback_placements_for:
+        Option<&'env (dyn Fn(DeviceLocation) -> Vec<(BackendId, DeviceLocation)> + 'env)>,
     /// Capabilities lookup. Required when `populate_costs` is
     /// true.
     pub capabilities_for: Option<&'env CapabilitiesLookup<'env>>,
@@ -559,10 +557,7 @@ impl<'env> PlanOptions<'env> {
     /// whose winning kernel is the FKC generic fallback. See the
     /// [`Self::telemetry`] field docs.
     #[cfg(feature = "telemetry")]
-    pub fn with_telemetry(
-        mut self,
-        hooks: &'env crate::telemetry::TelemetryHooks<'env>,
-    ) -> Self {
+    pub fn with_telemetry(mut self, hooks: &'env crate::telemetry::TelemetryHooks<'env>) -> Self {
         self.telemetry = Some(hooks);
         self
     }
@@ -685,8 +680,7 @@ pub fn compile_plan(
     // Stage-2 residency view, threaded along the walk (see the
     // doc comment). Nodes matching no resolution rule stay absent —
     // residency unknown, no transfer term fires on their edges.
-    let mut residency: HashMap<NodeId, DeviceLocation> =
-        HashMap::with_capacity(order.len());
+    let mut residency: HashMap<NodeId, DeviceLocation> = HashMap::with_capacity(order.len());
 
     // Stage-3 DP state. Empty (and cost-free) unless multi-device
     // placement freedom actually materializes at some node.
@@ -701,16 +695,16 @@ pub fn compile_plan(
         // verbatim; its residency commits with the same priority
         // order the full walk uses (early rules, then the stored
         // winner's device — the priority-4 "plan winner" rule).
-        if let Some(base) = options.reuse_plan {
-            if let Some(set) = base.alternatives(id) {
-                let resident = early_residency(graph, options, id, node)
-                    .or_else(|| set.winner().map(|w| w.device));
-                if let Some(loc) = resident {
-                    residency.insert(id, loc);
-                }
-                alternatives_map.insert(id, set.clone());
-                continue;
+        if let Some(base) = options.reuse_plan
+            && let Some(set) = base.alternatives(id)
+        {
+            let resident = early_residency(graph, options, id, node)
+                .or_else(|| set.winner().map(|w| w.device));
+            if let Some(loc) = resident {
+                residency.insert(id, loc);
             }
+            alternatives_map.insert(id, set.clone());
+            continue;
         }
 
         // Residency priorities 1–3: definitional transfer/alloc
@@ -718,18 +712,12 @@ pub fn compile_plan(
         let early = early_residency(graph, options, id, node);
 
         let mut dp_row_opened = false;
-        let winner_device = match build_node_draft(
-            graph,
-            id,
-            node,
-            bindings_table,
-            options,
-        )? {
+        let winner_device = match build_node_draft(graph, id, node, bindings_table, options)? {
             Some(draft) => {
                 let devices = distinct_devices(&draft.set);
-                let dp_estimator = options.transfer_estimator.filter(|_| {
-                    draft.relaxed && early.is_none() && devices.len() >= 2
-                });
+                let dp_estimator = options
+                    .transfer_estimator
+                    .filter(|_| draft.relaxed && early.is_none() && devices.len() >= 2);
                 if let Some(est) = dp_estimator {
                     // Stage 3: open a DP row instead of committing a
                     // winner. Residency stays unresolved until the
@@ -755,12 +743,10 @@ pub fn compile_plan(
                     // fallbacks), close any open producer rows toward
                     // it FIRST so the close prices the crossing and
                     // the finalize prices the edge.
-                    if let Some(est) = options.transfer_estimator {
-                        if let [single] = devices.as_slice() {
-                            close_open_inputs(
-                                &mut dp, graph, node, *single, est, &mut residency,
-                            );
-                        }
+                    if let Some(est) = options.transfer_estimator
+                        && let [single] = devices.as_slice()
+                    {
+                        close_open_inputs(&mut dp, graph, node, *single, est, &mut residency);
                     }
                     let set = finalize_node_greedy(
                         graph,
@@ -774,14 +760,10 @@ pub fn compile_plan(
                     // Multi-device greedy sets (legacy missing-impl
                     // fallback shapes) learn their device only after
                     // ranking — close producers toward the winner.
-                    if devices.len() > 1 {
-                        if let (Some(est), Some(wd)) =
-                            (options.transfer_estimator, dev)
-                        {
-                            close_open_inputs(
-                                &mut dp, graph, node, wd, est, &mut residency,
-                            );
-                        }
+                    if devices.len() > 1
+                        && let (Some(est), Some(wd)) = (options.transfer_estimator, dev)
+                    {
+                        close_open_inputs(&mut dp, graph, node, wd, est, &mut residency);
                     }
                     alternatives_map.insert(id, set);
                     dev
@@ -793,14 +775,10 @@ pub fn compile_plan(
                 // the chain at its transfer target (the production
                 // realize-root splice is exactly this shape — closing
                 // here IS the exit pricing through an explicit node).
-                if let fuel_graph::Op::Copy { target } | fuel_graph::Op::Move { target } =
-                    node.op
+                if let fuel_graph::Op::Copy { target } | fuel_graph::Op::Move { target } = node.op
+                    && let Some(est) = options.transfer_estimator
                 {
-                    if let Some(est) = options.transfer_estimator {
-                        close_open_inputs(
-                            &mut dp, graph, node, target, est, &mut residency,
-                        );
-                    }
+                    close_open_inputs(&mut dp, graph, node, target, est, &mut residency);
                 }
                 None
             }
@@ -870,8 +848,7 @@ pub fn compile_plan(
             )
             .bt());
         };
-        let commits =
-            dp.finish(options.pinned_device, |nid| node_bytes(graph, nid), est);
+        let commits = dp.finish(options.pinned_device, |nid| node_bytes(graph, nid), est);
         for (n, d) in commits {
             residency.insert(n, d);
         }
@@ -883,12 +860,10 @@ pub fn compile_plan(
                 continue;
             }
             let node = graph.node(id);
-            if is_passthrough(node) {
-                if let Some(&loc) =
-                    node.inputs.first().and_then(|i| residency.get(i))
-                {
-                    residency.insert(id, loc);
-                }
+            if is_passthrough(node)
+                && let Some(&loc) = node.inputs.first().and_then(|i| residency.get(i))
+            {
+                residency.insert(id, loc);
             }
         }
         // Finalize deferred rows in topo order: price inbound
@@ -987,7 +962,7 @@ fn emit_plan_telemetry(
     options: &PlanOptions<'_>,
 ) {
     use crate::telemetry::{
-        detect_miss_precomputed, DispatchRecord, FdxOperandDesc, ImplId, TELEMETRY_SCHEMA_VERSION,
+        DispatchRecord, FdxOperandDesc, ImplId, TELEMETRY_SCHEMA_VERSION, detect_miss_precomputed,
     };
 
     // Off gate (branch-predictable, first): no hooks or disabled ⇒ nothing.
@@ -1141,7 +1116,10 @@ fn build_candidates(
                 ),
                 _ => None,
             };
-            TeleCandidate { impl_id, latency_ns }
+            TeleCandidate {
+                impl_id,
+                latency_ns,
+            }
         })
         .collect()
 }
@@ -1155,7 +1133,10 @@ fn build_candidates(
 /// bridge-maintained source-backend stamp).
 pub fn node_needs_plan_entry(op: &fuel_graph::Op) -> bool {
     op_to_op_kind(op).is_some()
-        && !matches!(op, fuel_graph::Op::Copy { .. } | fuel_graph::Op::Move { .. })
+        && !matches!(
+            op,
+            fuel_graph::Op::Copy { .. } | fuel_graph::Op::Move { .. }
+        )
 }
 
 /// Residency-inheriting pass-throughs: view ops, `Reshape`,
@@ -1163,7 +1144,10 @@ pub fn node_needs_plan_entry(op: &fuel_graph::Op) -> bool {
 /// data input.
 fn is_passthrough(node: &fuel_graph::Node) -> bool {
     node.op.is_view_op()
-        || matches!(node.op, fuel_graph::Op::Reshape(_) | fuel_graph::Op::Contiguize)
+        || matches!(
+            node.op,
+            fuel_graph::Op::Reshape(_) | fuel_graph::Op::Contiguize
+        )
 }
 
 /// Distinct candidate devices in first-seen order (the enumerator
@@ -1286,16 +1270,15 @@ fn close_open_inputs(
         }
         let root = dp.resolve(input);
         if dp.is_open(root) {
-            let commits =
-                dp.close_toward(root, toward, &[node_bytes(graph, input)], est);
+            let commits = dp.close_toward(root, toward, &[node_bytes(graph, input)], est);
             for (n, d) in commits {
                 residency.insert(n, d);
             }
         }
-        if !residency.contains_key(&input) {
-            if let Some(d) = dp.committed_device(root) {
-                residency.insert(input, d);
-            }
+        if !residency.contains_key(&input)
+            && let Some(d) = dp.committed_device(root)
+        {
+            residency.insert(input, d);
         }
     }
 }
@@ -1410,34 +1393,31 @@ fn build_node_draft(
     // placement (scheduler assignments) → the realize call's
     // pinned device → the legacy stamped-backend default.
     let explicit_backend = graph.target_backend(id);
-    let target_device = decision_device_for(graph, options, id)
-        .ok_or_else(|| {
-            Error::Msg(format!(
-                "compile_plan: node {:?} ({:?}) has no device context — \
+    let target_device = decision_device_for(graph, options, id).ok_or_else(|| {
+        Error::Msg(format!(
+            "compile_plan: node {:?} ({:?}) has no device context — \
                  set PlanOptions::pinned_device, a graph placement, or \
                  the node's target_backend",
-                id, node.op,
-            ))
-            .bt()
-        })?;
+            id, node.op,
+        ))
+        .bt()
+    })?;
     // Diagnostic backend for error reporting; also the legacy
     // single-backend placement when no topology enumerator is
     // configured.
-    let diag_backend =
-        explicit_backend.unwrap_or_else(|| backend_for_device(target_device));
+    let diag_backend = explicit_backend.unwrap_or_else(|| backend_for_device(target_device));
     let dtypes = build_lookup_dtypes(graph, node);
 
     // Build the placement list: cross-backend if a topology
     // enumerator is configured, otherwise single-backend
     // legacy mode.
-    let placements: Vec<(BackendId, DeviceLocation)> =
-        match options.placements_for_device {
-            Some(f) => f(target_device)
-                .into_iter()
-                .map(|backend| (backend, target_device))
-                .collect(),
-            None => vec![(diag_backend, target_device)],
-        };
+    let placements: Vec<(BackendId, DeviceLocation)> = match options.placements_for_device {
+        Some(f) => f(target_device)
+            .into_iter()
+            .map(|backend| (backend, target_device))
+            .collect(),
+        None => vec![(diag_backend, target_device)],
+    };
 
     let op_params = candidate_default_op_params(graph, node);
 
@@ -1461,8 +1441,8 @@ fn build_node_draft(
     let pricing_active = options.transfer_estimator.is_some()
         && options.populate_costs
         && options.capabilities_for.is_some();
-    let fallback_allowed = node.op.destructive_input().is_none()
-        && options.fallback_placements_for.is_some();
+    let fallback_allowed =
+        node.op.destructive_input().is_none() && options.fallback_placements_for.is_some();
     let relaxed = options.allow_cost_placement
         && pricing_active
         && fallback_allowed
@@ -1479,21 +1459,9 @@ fn build_node_draft(
         if let Some(fallback) = options.fallback_placements_for {
             merged.extend(fallback(target_device));
         }
-        set = enumerate_candidates(
-            op_kind,
-            &dtypes,
-            &merged,
-            &op_params,
-            bindings_table,
-        );
+        set = enumerate_candidates(op_kind, &dtypes, &merged, &op_params, bindings_table);
     } else {
-        set = enumerate_candidates(
-            op_kind,
-            &dtypes,
-            &placements,
-            &op_params,
-            bindings_table,
-        );
+        set = enumerate_candidates(op_kind, &dtypes, &placements, &op_params, bindings_table);
 
         // Picker-arc step 4b (legacy, unpriced path): when the
         // decision device has NO implementation for this
@@ -1502,19 +1470,20 @@ fn build_node_draft(
         // plan-time picker decision (the bridge stitches residency
         // via Op::Copy insertion around the off-device winner)
         // instead of a realize-time error.
-        if set.is_empty() && fallback_allowed {
-            if let Some(fallback) = options.fallback_placements_for {
-                let fb_placements = fallback(target_device);
-                if !fb_placements.is_empty() {
-                    set = enumerate_candidates(
-                        op_kind,
-                        &dtypes,
-                        &fb_placements,
-                        &op_params,
-                        bindings_table,
-                    );
-                    from_fallback = !set.is_empty();
-                }
+        if set.is_empty()
+            && fallback_allowed
+            && let Some(fallback) = options.fallback_placements_for
+        {
+            let fb_placements = fallback(target_device);
+            if !fb_placements.is_empty() {
+                set = enumerate_candidates(
+                    op_kind,
+                    &dtypes,
+                    &fb_placements,
+                    &op_params,
+                    bindings_table,
+                );
+                from_fallback = !set.is_empty();
             }
         }
     }
@@ -1559,13 +1528,8 @@ fn build_node_draft(
         if fb_placements.is_empty() {
             return Err(err);
         }
-        let mut fb_set = enumerate_candidates(
-            op_kind,
-            &dtypes,
-            &fb_placements,
-            &op_params,
-            bindings_table,
-        );
+        let mut fb_set =
+            enumerate_candidates(op_kind, &dtypes, &fb_placements, &op_params, bindings_table);
         if fb_set.is_empty() {
             return Err(err);
         }
@@ -1685,17 +1649,15 @@ fn finalize_node_greedy(
     // across one device so the selector's relative ranking is
     // unaffected. Pruned BEFORE truncation so same-device
     // alternatives fill the top-N.
-    if relaxed {
-        if let Some(winner_device) = set.winner().map(|c| c.device) {
-            let keep: Vec<usize> = set
-                .alternatives()
-                .iter()
-                .enumerate()
-                .filter_map(|(i, c)| (c.device == winner_device).then_some(i))
-                .collect();
-            if keep.len() < set.len() {
-                set.retain_indices(&keep);
-            }
+    if relaxed && let Some(winner_device) = set.winner().map(|c| c.device) {
+        let keep: Vec<usize> = set
+            .alternatives()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| (c.device == winner_device).then_some(i))
+            .collect();
+        if keep.len() < set.len() {
+            set.retain_indices(&keep);
         }
     }
 
@@ -1780,12 +1742,10 @@ fn candidate_default_op_params(
 mod tests {
     use super::*;
     use crate::fused::PrecisionGuarantee;
-    use crate::kernel::{unknown_cost, KernelCaps, OpParams};
-    use fuel_ir::backend::{
-        BackendCapabilities, SubstrateClass, TransferPath,
-    };
+    use crate::kernel::{KernelCaps, OpParams, unknown_cost};
+    use fuel_graph::{Node, Op, topo_order};
+    use fuel_ir::backend::{BackendCapabilities, SubstrateClass, TransferPath};
     use fuel_ir::{DType, Layout, Result as FuelResult, Shape, StrideVec};
-    use fuel_graph::{topo_order, Node, Op};
     use fuel_memory::Storage;
     use smallvec::smallvec;
     use std::collections::HashSet;
@@ -2000,14 +1960,23 @@ mod tests {
         let bindings = crate::dispatch::global_bindings(); // self-seeded, populated
         let mut g = Graph::new();
         let lhs = g.push(Node {
-            op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[2, 3]),
+            dtype: DType::F32,
         });
         // BF16 weight → the matmul dtype key becomes the mixed [F32, BF16, F32].
         let rhs = g.push(Node {
-            op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[3, 2]), dtype: DType::BF16,
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[3, 2]),
+            dtype: DType::BF16,
         });
         let mm = g.push(Node {
-            op: Op::MatMul, inputs: vec![lhs, rhs], shape: Shape::from_dims(&[2, 2]), dtype: DType::F32,
+            op: Op::MatMul,
+            inputs: vec![lhs, rhs],
+            shape: Shape::from_dims(&[2, 2]),
+            dtype: DType::F32,
         });
         g.set_target_backend(mm, BackendId::Cpu);
 
@@ -2015,7 +1984,12 @@ mod tests {
         let opts = PlanOptions::new().without_cost_population();
         let err = compile_plan(&g, &order, &bindings, &opts).unwrap_err();
         match err {
-            Error::NoBackendForOp { op, dtypes, available_backends, supported_combinations } => {
+            Error::NoBackendForOp {
+                op,
+                dtypes,
+                available_backends,
+                supported_combinations,
+            } => {
                 assert_eq!(op, OpKind::MatMul);
                 assert_eq!(
                     dtypes,
@@ -2028,9 +2002,11 @@ mod tests {
                     "a populated table must report Cpu, never []: {available_backends:?}",
                 );
                 assert!(
-                    supported_combinations.iter().any(|(b, o, d)| *b == BackendId::Cpu
-                        && *o == OpKind::MatMul
-                        && *d == vec![DType::F32, DType::F32, DType::F32]),
+                    supported_combinations
+                        .iter()
+                        .any(|(b, o, d)| *b == BackendId::Cpu
+                            && *o == OpKind::MatMul
+                            && *d == vec![DType::F32, DType::F32, DType::F32]),
                     "must show uniform F32 matmul IS registered (so the mixed gap is visible): \
                      {supported_combinations:?}",
                 );
@@ -2144,7 +2120,11 @@ mod tests {
             _: &OpParams,
             _: &BackendCapabilities,
         ) -> crate::fused::CostEstimate {
-            crate::fused::CostEstimate { flops: 10, bytes_moved: 0, kernel_overhead_ns: 0 }
+            crate::fused::CostEstimate {
+                flops: 10,
+                bytes_moved: 0,
+                kernel_overhead_ns: 0,
+            }
         }
         fn expensive_cost(
             _: &[Shape],
@@ -2211,27 +2191,47 @@ mod tests {
         use fuel_ir::dispatch::SizeClass;
 
         fn cpu_layer1(
-            _: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities,
+            _: &[Shape],
+            _: &[DType],
+            _: &OpParams,
+            _: &BackendCapabilities,
         ) -> crate::fused::CostEstimate {
-            crate::fused::CostEstimate { flops: 10, bytes_moved: 0, kernel_overhead_ns: 0 }
+            crate::fused::CostEstimate {
+                flops: 10,
+                bytes_moved: 0,
+                kernel_overhead_ns: 0,
+            }
         }
         fn aocl_layer1(
-            _: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities,
+            _: &[Shape],
+            _: &[DType],
+            _: &OpParams,
+            _: &BackendCapabilities,
         ) -> crate::fused::CostEstimate {
-            crate::fused::CostEstimate { flops: 100_000, bytes_moved: 0, kernel_overhead_ns: 0 }
+            crate::fused::CostEstimate {
+                flops: 100_000,
+                bytes_moved: 0,
+                kernel_overhead_ns: 0,
+            }
         }
         let mut table = KernelBindingTable::new();
         table.register_full(
             OpKind::AddElementwise,
             &[DType::F32, DType::F32, DType::F32],
-            BackendId::Cpu, noop_kernel, KernelCaps::empty(),
-            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU, cpu_layer1,
+            BackendId::Cpu,
+            noop_kernel,
+            KernelCaps::empty(),
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+            cpu_layer1,
         );
         table.register_full(
             OpKind::AddElementwise,
             &[DType::F32, DType::F32, DType::F32],
-            BackendId::Cuda, noop_kernel_b, KernelCaps::empty(),
-            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU, aocl_layer1,
+            BackendId::Cuda,
+            noop_kernel_b,
+            KernelCaps::empty(),
+            PrecisionGuarantee::PRIMITIVE_DETERMINISTIC_CPU,
+            aocl_layer1,
         );
 
         let (g, add_id) = build_add_graph();
@@ -2239,7 +2239,9 @@ mod tests {
         let placements_fn = |dev: DeviceLocation| -> Vec<BackendId> {
             if dev == DeviceLocation::Cpu {
                 vec![BackendId::Cpu, BackendId::Cuda]
-            } else { vec![] }
+            } else {
+                vec![]
+            }
         };
         let cpu_caps_val = cpu_caps();
         let caps_fn = |_: BackendId| Some(&cpu_caps_val);
@@ -2248,8 +2250,22 @@ mod tests {
         // first-input-shape rule gives elem_count 3.
         let sc = SizeClass::from_elem_count(3);
         let mut judge = HashMapJudge::new();
-        judge.insert(OpKind::AddElementwise, DType::F32, sc, BackendId::Cpu, "", 5_000);
-        judge.insert(OpKind::AddElementwise, DType::F32, sc, BackendId::Cuda, "", 20);
+        judge.insert(
+            OpKind::AddElementwise,
+            DType::F32,
+            sc,
+            BackendId::Cpu,
+            "",
+            5_000,
+        );
+        judge.insert(
+            OpKind::AddElementwise,
+            DType::F32,
+            sc,
+            BackendId::Cuda,
+            "",
+            20,
+        );
 
         let opts = PlanOptions::new()
             .with_placements_for_device(&placements_fn)
@@ -2329,11 +2345,7 @@ mod tests {
         let order = topo_order(&g, add_id);
         let placements_fn = |dev: DeviceLocation| -> Vec<BackendId> {
             if dev == DeviceLocation::Cpu {
-                vec![
-                    BackendId::Cpu,
-                    BackendId::Cuda,
-                    BackendId::Vulkan,
-                ]
+                vec![BackendId::Cpu, BackendId::Cuda, BackendId::Vulkan]
             } else {
                 vec![]
             }
@@ -2378,9 +2390,8 @@ mod tests {
         let opts_stamped = PlanOptions::new()
             .without_cost_population()
             .with_placements_for_device(&placements_fn);
-        let plan_stamped =
-            compile_plan(&g_stamped, &order_stamped, &table, &opts_stamped)
-                .expect("stamped compile");
+        let plan_stamped = compile_plan(&g_stamped, &order_stamped, &table, &opts_stamped)
+            .expect("stamped compile");
 
         // New: same graph shape, NO target_backend anywhere, pinned
         // device instead.
@@ -2484,7 +2495,9 @@ mod tests {
 
         let (mut g, add_id) = build_add_graph();
         let copy_id = g.push(Node {
-            op: Op::Copy { target: DeviceLocation::Cpu },
+            op: Op::Copy {
+                target: DeviceLocation::Cpu,
+            },
             inputs: vec![add_id],
             shape: Shape::from_dims(&[3]),
             dtype: DType::F32,
@@ -2528,7 +2541,9 @@ mod tests {
 
         let (mut g, add_id) = build_add_graph();
         let move_id = g.push(Node {
-            op: Op::Move { target: DeviceLocation::Cpu },
+            op: Op::Move {
+                target: DeviceLocation::Cpu,
+            },
             inputs: vec![add_id],
             shape: Shape::from_dims(&[3]),
             dtype: DType::F32,
@@ -2578,7 +2593,11 @@ mod tests {
         let order = topo_order(&g, add);
 
         let placements_fn = move |dev: DeviceLocation| -> Vec<BackendId> {
-            if dev == cuda0 { vec![BackendId::Cuda] } else { vec![BackendId::Cpu] }
+            if dev == cuda0 {
+                vec![BackendId::Cuda]
+            } else {
+                vec![BackendId::Cpu]
+            }
         };
         let fallback_fn = |_dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
             vec![(BackendId::Cpu, DeviceLocation::Cpu)]
@@ -2619,7 +2638,11 @@ mod tests {
         let (g, add_id) = build_add_graph();
         let order = topo_order(&g, add_id);
         let placements_fn = |dev: DeviceLocation| -> Vec<BackendId> {
-            if dev == DeviceLocation::Cpu { vec![BackendId::Cpu] } else { vec![] }
+            if dev == DeviceLocation::Cpu {
+                vec![BackendId::Cpu]
+            } else {
+                vec![]
+            }
         };
         let fallback_fn = |_dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
             panic!(
@@ -2669,7 +2692,11 @@ mod tests {
         });
         let order = topo_order(&g, relu);
         let placements_fn = move |dev: DeviceLocation| -> Vec<BackendId> {
-            if dev == cuda0 { vec![BackendId::Cuda] } else { vec![BackendId::Cpu] }
+            if dev == cuda0 {
+                vec![BackendId::Cuda]
+            } else {
+                vec![BackendId::Cpu]
+            }
         };
         let fallback_fn = |_dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
             vec![(BackendId::Cpu, DeviceLocation::Cpu)]
@@ -2681,7 +2708,13 @@ mod tests {
             .with_fallback_placements_for(&fallback_fn);
         let err = compile_plan(&g, &order, &table, &opts).unwrap_err();
         assert!(
-            matches!(err, Error::NoBackendForOp { op: OpKind::ReluInplace, .. }),
+            matches!(
+                err,
+                Error::NoBackendForOp {
+                    op: OpKind::ReluInplace,
+                    ..
+                }
+            ),
             "destructive op must NOT fall back off-device; got {err:?}",
         );
     }
@@ -2723,7 +2756,11 @@ mod tests {
         });
         let order = topo_order(&g, add);
         let placements_fn = move |dev: DeviceLocation| -> Vec<BackendId> {
-            if dev == cuda0 { vec![BackendId::Cuda] } else { vec![] }
+            if dev == cuda0 {
+                vec![BackendId::Cuda]
+            } else {
+                vec![]
+            }
         };
         let fallback_fn = move |_dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
             vec![
@@ -2802,7 +2839,11 @@ mod tests {
         let order = topo_order(&g, add);
 
         let placements_fn = move |dev: DeviceLocation| -> Vec<BackendId> {
-            if dev == cuda0 { vec![BackendId::Cuda] } else { vec![] }
+            if dev == cuda0 {
+                vec![BackendId::Cuda]
+            } else {
+                vec![]
+            }
         };
         let fallback_fn = move |_dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
             vec![
@@ -2813,9 +2854,8 @@ mod tests {
         // The const's bytes live on vk0 (e.g. a persistent cache
         // slot) — exactly what the bridge's input-residency callback
         // reports.
-        let residency_fn = move |id: NodeId| -> Option<DeviceLocation> {
-            (id == lhs).then_some(vk0)
-        };
+        let residency_fn =
+            move |id: NodeId| -> Option<DeviceLocation> { (id == lhs).then_some(vk0) };
         let est = FlatEstimator { latency_ns: 1_000 };
         let cpu_caps_val = cpu_caps();
         let caps_fn = |_: BackendId| Some(&cpu_caps_val);
@@ -2840,30 +2880,49 @@ mod tests {
     /// Plan-time cost fns for the Stage-2 relax tests. Composite is
     /// the flops figure directly (no bytes, no overhead).
     fn cost_600(
-        _: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities,
+        _: &[Shape],
+        _: &[DType],
+        _: &OpParams,
+        _: &BackendCapabilities,
     ) -> crate::fused::CostEstimate {
-        crate::fused::CostEstimate { flops: 600, bytes_moved: 0, kernel_overhead_ns: 0 }
+        crate::fused::CostEstimate {
+            flops: 600,
+            bytes_moved: 0,
+            kernel_overhead_ns: 0,
+        }
     }
     fn cost_10(
-        _: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities,
+        _: &[Shape],
+        _: &[DType],
+        _: &OpParams,
+        _: &BackendCapabilities,
     ) -> crate::fused::CostEstimate {
-        crate::fused::CostEstimate { flops: 10, bytes_moved: 0, kernel_overhead_ns: 0 }
-    }
-    fn cost_500(
-        _: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities,
-    ) -> crate::fused::CostEstimate {
-        crate::fused::CostEstimate { flops: 500, bytes_moved: 0, kernel_overhead_ns: 0 }
+        crate::fused::CostEstimate {
+            flops: 10,
+            bytes_moved: 0,
+            kernel_overhead_ns: 0,
+        }
     }
     // 15 000 FLOPs → 500 ns at the GPU throughput prior (30 FLOPs/ns):
     // a kernel whose GPU compute is faster than a 600-ns CPU kernel, but
     // whose 200 ns inbound transfer tips the honest total past it.
     fn cost_15_000(
-        _: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities,
+        _: &[Shape],
+        _: &[DType],
+        _: &OpParams,
+        _: &BackendCapabilities,
     ) -> crate::fused::CostEstimate {
-        crate::fused::CostEstimate { flops: 15_000, bytes_moved: 0, kernel_overhead_ns: 0 }
+        crate::fused::CostEstimate {
+            flops: 15_000,
+            bytes_moved: 0,
+            kernel_overhead_ns: 0,
+        }
     }
     fn cost_10_000_000(
-        _: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities,
+        _: &[Shape],
+        _: &[DType],
+        _: &OpParams,
+        _: &BackendCapabilities,
     ) -> crate::fused::CostEstimate {
         crate::fused::CostEstimate {
             flops: 10_000_000,
@@ -2906,16 +2965,18 @@ mod tests {
         let (g, add_id) = build_add_graph();
         let order = topo_order(&g, add_id);
         let placements_fn = |dev: DeviceLocation| -> Vec<BackendId> {
-            if dev == DeviceLocation::Cpu { vec![BackendId::Cpu] } else { vec![] }
+            if dev == DeviceLocation::Cpu {
+                vec![BackendId::Cpu]
+            } else {
+                vec![]
+            }
         };
         let fallback_fn = move |_dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
             vec![(BackendId::Cuda, cuda0)]
         };
         // build_add_graph's consts have no cache entry; report them
         // CPU-resident as build_const_cache would for a CPU realize.
-        let residency_fn = |_id: NodeId| -> Option<DeviceLocation> {
-            Some(DeviceLocation::Cpu)
-        };
+        let residency_fn = |_id: NodeId| -> Option<DeviceLocation> { Some(DeviceLocation::Cpu) };
         let cpu_caps_val = cpu_caps();
         let caps_fn = |_: BackendId| Some(&cpu_caps_val);
         let opts = PlanOptions::new()
@@ -2936,13 +2997,21 @@ mod tests {
     fn compile_plan_relaxed_tiny_op_stays_local_when_transfer_dominates() {
         // CPU 600 ns vs CUDA 10 ns kernel; 1 ms per input crossing.
         // CUDA total = 10 + 2 × 1_000_000 ≫ CPU 600.
-        let est = FlatEstimator { latency_ns: 1_000_000 };
+        let est = FlatEstimator {
+            latency_ns: 1_000_000,
+        };
         let set = relaxed_plan_with_costs(cost_600, cost_10, &est);
         let w = set.winner().unwrap();
-        assert_eq!(w.device, DeviceLocation::Cpu, "transfer dominates → stay local");
+        assert_eq!(
+            w.device,
+            DeviceLocation::Cpu,
+            "transfer dominates → stay local"
+        );
         assert_eq!(w.inbound_transfer_ns, 0, "local winner pays no transfer");
         assert!(
-            set.alternatives().iter().all(|c| c.device == DeviceLocation::Cpu),
+            set.alternatives()
+                .iter()
+                .all(|c| c.device == DeviceLocation::Cpu),
             "off-device siblings pruned after rank",
         );
     }
@@ -3028,7 +3097,11 @@ mod tests {
             let (g, add_id) = build_add_graph();
             let order = topo_order(&g, add_id);
             let placements_fn = |dev: DeviceLocation| -> Vec<BackendId> {
-                if dev == DeviceLocation::Cpu { vec![BackendId::Cpu] } else { vec![] }
+                if dev == DeviceLocation::Cpu {
+                    vec![BackendId::Cpu]
+                } else {
+                    vec![]
+                }
             };
             let fallback_fn = move |_dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
                 vec![(BackendId::Cuda, cuda0)]
@@ -3093,10 +3166,10 @@ mod tests {
         assert_eq!(cuda_caps_val.backend_id, BackendId::Cuda);
         assert_eq!(cuda_caps_val.device_location, cuda0);
 
-        let winner_fixed =
-            winner_device_under(&table, cpu_caps_val, Some(cuda_caps_val), cuda0);
+        let winner_fixed = winner_device_under(&table, cpu_caps_val, Some(cuda_caps_val), cuda0);
         assert_eq!(
-            winner_fixed, DeviceLocation::Cpu,
+            winner_fixed,
+            DeviceLocation::Cpu,
             "POST-FIX: with GPU caps registered the CUDA candidate is \
              costed honestly (15000 FLOPs ÷ 30/ns = 500 ns compute + 200 \
              transfer = 700 > CPU 600), so the CPU-pinned realize stays \
@@ -3115,6 +3188,7 @@ mod tests {
     ///     win (100 → ~3 ns) can't overcome the 200 ns transfer.
     ///   - LARGE op (10 M FLOPs) → moves to CUDA: the throughput win
     ///     (10 M → ~333 k ns) dwarfs the 200 ns transfer.
+    ///
     /// Under the pre-Part-C FIXED 1-FLOP/ns prior the GPU's compute-ns
     /// EQUALS the CPU's for equal FLOPs, so it can never overcome the
     /// transfer and the large-op case wrongly stays on CPU — that is
@@ -3234,17 +3308,19 @@ mod tests {
         let (g, add_id) = build_add_graph();
         let order = topo_order(&g, add_id);
         let placements_fn = |dev: DeviceLocation| -> Vec<BackendId> {
-            if dev == DeviceLocation::Cpu { vec![BackendId::Cpu] } else { vec![] }
+            if dev == DeviceLocation::Cpu {
+                vec![BackendId::Cpu]
+            } else {
+                vec![]
+            }
         };
         let fallback_fn = move |_dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
             vec![(BackendId::Cuda, cuda0)]
         };
-        let residency_fn =
-            |_id: NodeId| -> Option<DeviceLocation> { Some(DeviceLocation::Cpu) };
+        let residency_fn = |_id: NodeId| -> Option<DeviceLocation> { Some(DeviceLocation::Cpu) };
         let est = FlatEstimator { latency_ns: 100 };
         let cpu_caps_val = cpu_caps();
-        let cuda_caps_val =
-            crate::dispatch::derive_backend_caps(BackendId::Cuda, cuda0, &table);
+        let cuda_caps_val = crate::dispatch::derive_backend_caps(BackendId::Cuda, cuda0, &table);
         let caps_fn = |b: BackendId| -> Option<&BackendCapabilities> {
             match b {
                 BackendId::Cpu => Some(&cpu_caps_val),
@@ -3269,7 +3345,9 @@ mod tests {
              pinned CPU device (no relaxed cross-device enumeration)",
         );
         assert!(
-            set.alternatives().iter().all(|c| c.device == DeviceLocation::Cpu),
+            set.alternatives()
+                .iter()
+                .all(|c| c.device == DeviceLocation::Cpu),
             "no off-device candidate enumerated at all",
         );
     }
@@ -3287,8 +3365,7 @@ mod tests {
         let w = set.winner().unwrap();
         assert_eq!(w.device, cuda0, "kernel gap dominates → move");
         assert_eq!(
-            w.inbound_transfer_ns,
-            2_000,
+            w.inbound_transfer_ns, 2_000,
             "the move's two input crossings are priced on the winner",
         );
         assert!(
@@ -3327,13 +3404,15 @@ mod tests {
         let (g, add_id) = build_add_graph();
         let order = topo_order(&g, add_id);
         let placements_fn = |dev: DeviceLocation| -> Vec<BackendId> {
-            if dev == DeviceLocation::Cpu { vec![BackendId::Cpu] } else { vec![] }
+            if dev == DeviceLocation::Cpu {
+                vec![BackendId::Cpu]
+            } else {
+                vec![]
+            }
         };
         // Single-device system: no other device exists.
-        let fallback_fn =
-            |_dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> { Vec::new() };
-        let residency_fn =
-            |_id: NodeId| -> Option<DeviceLocation> { Some(DeviceLocation::Cpu) };
+        let fallback_fn = |_dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> { Vec::new() };
+        let residency_fn = |_id: NodeId| -> Option<DeviceLocation> { Some(DeviceLocation::Cpu) };
         let cpu_caps_val = cpu_caps();
         let caps_fn = |_: BackendId| Some(&cpu_caps_val);
 
@@ -3344,7 +3423,9 @@ mod tests {
             .with_capabilities_for(&caps_fn);
         let base = compile_plan(&g, &order, &table, &base_opts).expect("base");
 
-        let est = FlatEstimator { latency_ns: 1_000_000 };
+        let est = FlatEstimator {
+            latency_ns: 1_000_000,
+        };
         let wired_opts = PlanOptions::new()
             .with_pinned_device(DeviceLocation::Cpu)
             .with_placements_for_device(&placements_fn)
@@ -3391,7 +3472,11 @@ mod tests {
         g.set_placement(add_id, DeviceLocation::Cpu);
         let order = topo_order(&g, add_id);
         let placements_fn = |dev: DeviceLocation| -> Vec<BackendId> {
-            if dev == DeviceLocation::Cpu { vec![BackendId::Cpu] } else { vec![] }
+            if dev == DeviceLocation::Cpu {
+                vec![BackendId::Cpu]
+            } else {
+                vec![]
+            }
         };
         let fallback_fn = |_dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
             panic!(
@@ -3399,8 +3484,7 @@ mod tests {
                  placements must not enter the priced relax",
             );
         };
-        let residency_fn =
-            |_id: NodeId| -> Option<DeviceLocation> { Some(DeviceLocation::Cpu) };
+        let residency_fn = |_id: NodeId| -> Option<DeviceLocation> { Some(DeviceLocation::Cpu) };
         let est = FlatEstimator { latency_ns: 0 };
         let cpu_caps_val = cpu_caps();
         let caps_fn = |_: BackendId| Some(&cpu_caps_val);
@@ -3457,13 +3541,16 @@ mod tests {
         });
         let order = topo_order(&g, relu);
         let placements_fn = |dev: DeviceLocation| -> Vec<BackendId> {
-            if dev == DeviceLocation::Cpu { vec![BackendId::Cpu] } else { vec![] }
+            if dev == DeviceLocation::Cpu {
+                vec![BackendId::Cpu]
+            } else {
+                vec![]
+            }
         };
         let fallback_fn = move |_dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
             vec![(BackendId::Cuda, cuda0)]
         };
-        let residency_fn =
-            |_id: NodeId| -> Option<DeviceLocation> { Some(DeviceLocation::Cpu) };
+        let residency_fn = |_id: NodeId| -> Option<DeviceLocation> { Some(DeviceLocation::Cpu) };
         let est = FlatEstimator { latency_ns: 0 };
         let cpu_caps_val = cpu_caps();
         let caps_fn = |_: BackendId| Some(&cpu_caps_val);
@@ -3522,7 +3609,11 @@ mod tests {
         });
         let order = topo_order(&g, add);
         let placements_fn = move |dev: DeviceLocation| -> Vec<BackendId> {
-            if dev == cuda0 { vec![BackendId::Cuda] } else { vec![] }
+            if dev == cuda0 {
+                vec![BackendId::Cuda]
+            } else {
+                vec![]
+            }
         };
         let fallback_fn = |_dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
             vec![(BackendId::Cpu, DeviceLocation::Cpu)]
@@ -3563,8 +3654,7 @@ mod tests {
         let order = topo_order(&g, add_id);
         let cpu_caps_val = cpu_caps();
         let caps_fn = |_: BackendId| Some(&cpu_caps_val);
-        let residency_fn =
-            |_id: NodeId| -> Option<DeviceLocation> { Some(DeviceLocation::Cpu) };
+        let residency_fn = |_id: NodeId| -> Option<DeviceLocation> { Some(DeviceLocation::Cpu) };
 
         let base_opts = PlanOptions::new().with_capabilities_for(&caps_fn);
         let base = compile_plan(&g, &order, &table, &base_opts).expect("base");
@@ -3613,8 +3703,7 @@ mod tests {
         let err = compile_plan(&g, &order, &table, &opts).unwrap_err();
         let msg = format!("{err:?}");
         assert!(
-            msg.contains("transfer")
-                && (msg.contains("estimator") || msg.contains("pricing")),
+            msg.contains("transfer") && (msg.contains("estimator") || msg.contains("pricing")),
             "error should name the missing transfer estimator / pricing; got: {msg}",
         );
     }
@@ -3732,32 +3821,70 @@ mod tests {
     }
 
     fn cost_50(
-        _: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities,
+        _: &[Shape],
+        _: &[DType],
+        _: &OpParams,
+        _: &BackendCapabilities,
     ) -> crate::fused::CostEstimate {
-        crate::fused::CostEstimate { flops: 50, bytes_moved: 0, kernel_overhead_ns: 0 }
+        crate::fused::CostEstimate {
+            flops: 50,
+            bytes_moved: 0,
+            kernel_overhead_ns: 0,
+        }
     }
     fn cost_100(
-        _: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities,
+        _: &[Shape],
+        _: &[DType],
+        _: &OpParams,
+        _: &BackendCapabilities,
     ) -> crate::fused::CostEstimate {
-        crate::fused::CostEstimate { flops: 100, bytes_moved: 0, kernel_overhead_ns: 0 }
+        crate::fused::CostEstimate {
+            flops: 100,
+            bytes_moved: 0,
+            kernel_overhead_ns: 0,
+        }
     }
     fn cost_300(
-        _: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities,
+        _: &[Shape],
+        _: &[DType],
+        _: &OpParams,
+        _: &BackendCapabilities,
     ) -> crate::fused::CostEstimate {
-        crate::fused::CostEstimate { flops: 300, bytes_moved: 0, kernel_overhead_ns: 0 }
+        crate::fused::CostEstimate {
+            flops: 300,
+            bytes_moved: 0,
+            kernel_overhead_ns: 0,
+        }
     }
     fn cost_800(
-        _: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities,
+        _: &[Shape],
+        _: &[DType],
+        _: &OpParams,
+        _: &BackendCapabilities,
     ) -> crate::fused::CostEstimate {
-        crate::fused::CostEstimate { flops: 800, bytes_moved: 0, kernel_overhead_ns: 0 }
+        crate::fused::CostEstimate {
+            flops: 800,
+            bytes_moved: 0,
+            kernel_overhead_ns: 0,
+        }
     }
     fn cost_5000(
-        _: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities,
+        _: &[Shape],
+        _: &[DType],
+        _: &OpParams,
+        _: &BackendCapabilities,
     ) -> crate::fused::CostEstimate {
-        crate::fused::CostEstimate { flops: 5000, bytes_moved: 0, kernel_overhead_ns: 0 }
+        crate::fused::CostEstimate {
+            flops: 5000,
+            bytes_moved: 0,
+            kernel_overhead_ns: 0,
+        }
     }
     fn cost_100_000(
-        _: &[Shape], _: &[DType], _: &OpParams, _: &BackendCapabilities,
+        _: &[Shape],
+        _: &[DType],
+        _: &OpParams,
+        _: &BackendCapabilities,
     ) -> crate::fused::CostEstimate {
         crate::fused::CostEstimate {
             flops: 100_000,
@@ -3812,10 +3939,34 @@ mod tests {
     fn dp_mid_sequence_gpu_segment_beats_all_cpu_and_all_gpu() {
         let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
         let mut table = KernelBindingTable::new();
-        register_unary_f32(&mut table, OpKind::SqrElementwise, BackendId::Cpu, noop_kernel, cost_100);
-        register_unary_f32(&mut table, OpKind::SqrElementwise, BackendId::Cuda, noop_kernel_b, cost_5000);
-        register_unary_f32(&mut table, OpKind::NegElementwise, BackendId::Cpu, noop_kernel, cost_800);
-        register_unary_f32(&mut table, OpKind::NegElementwise, BackendId::Cuda, noop_kernel_b, cost_100);
+        register_unary_f32(
+            &mut table,
+            OpKind::SqrElementwise,
+            BackendId::Cpu,
+            noop_kernel,
+            cost_100,
+        );
+        register_unary_f32(
+            &mut table,
+            OpKind::SqrElementwise,
+            BackendId::Cuda,
+            noop_kernel_b,
+            cost_5000,
+        );
+        register_unary_f32(
+            &mut table,
+            OpKind::NegElementwise,
+            BackendId::Cpu,
+            noop_kernel,
+            cost_800,
+        );
+        register_unary_f32(
+            &mut table,
+            OpKind::NegElementwise,
+            BackendId::Cuda,
+            noop_kernel_b,
+            cost_100,
+        );
 
         let mut g = Graph::new();
         let c = push_f32(&mut g, Op::Const, vec![], &[4]);
@@ -3827,7 +3978,11 @@ mod tests {
         let order = topo_order(&g, n5);
 
         let placements_fn = |dev: DeviceLocation| -> Vec<BackendId> {
-            if dev == DeviceLocation::Cpu { vec![BackendId::Cpu] } else { vec![BackendId::Cuda] }
+            if dev == DeviceLocation::Cpu {
+                vec![BackendId::Cpu]
+            } else {
+                vec![BackendId::Cuda]
+            }
         };
         let fallback_fn = move |dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
             if dev == DeviceLocation::Cpu {
@@ -3836,8 +3991,9 @@ mod tests {
                 vec![(BackendId::Cpu, DeviceLocation::Cpu)]
             }
         };
-        let residency_fn =
-            move |id: NodeId| -> Option<DeviceLocation> { (id == c).then_some(DeviceLocation::Cpu) };
+        let residency_fn = move |id: NodeId| -> Option<DeviceLocation> {
+            (id == c).then_some(DeviceLocation::Cpu)
+        };
         let est = FlatEstimator { latency_ns: 1_000 };
         let cpu_caps_val = cpu_caps();
         let caps_fn = |_: BackendId| Some(&cpu_caps_val);
@@ -3851,7 +4007,11 @@ mod tests {
         let plan = compile_plan(&g, &order, &table, &opts).expect("compile");
 
         let dev_of = |id: NodeId| plan.alternatives(id).unwrap().winner().unwrap().device;
-        assert_eq!(dev_of(n1), DeviceLocation::Cpu, "GPU-hostile entry stays CPU");
+        assert_eq!(
+            dev_of(n1),
+            DeviceLocation::Cpu,
+            "GPU-hostile entry stays CPU"
+        );
         assert_eq!(dev_of(n2), cuda0, "segment start migrates");
         assert_eq!(dev_of(n3), cuda0, "segment interior stays GPU");
         assert_eq!(dev_of(n4), cuda0, "segment end stays GPU");
@@ -3860,8 +4020,18 @@ mod tests {
         // Transfer diagnostics on the final sets: the two crossings
         // are priced exactly once each, on the segment boundary
         // winners.
-        let inbound = |id: NodeId| plan.alternatives(id).unwrap().winner().unwrap().inbound_transfer_ns;
-        assert_eq!(inbound(n2), 1_000, "entry crossing priced on the first GPU op");
+        let inbound = |id: NodeId| {
+            plan.alternatives(id)
+                .unwrap()
+                .winner()
+                .unwrap()
+                .inbound_transfer_ns
+        };
+        assert_eq!(
+            inbound(n2),
+            1_000,
+            "entry crossing priced on the first GPU op"
+        );
         assert_eq!(inbound(n3), 0);
         assert_eq!(inbound(n4), 0);
         assert_eq!(inbound(n5), 1_000, "exit crossing priced on the return op");
@@ -3871,7 +4041,11 @@ mod tests {
         for id in [n1, n2, n3, n4, n5] {
             let d = dev_of(id);
             assert!(
-                plan.alternatives(id).unwrap().alternatives().iter().all(|c| c.device == d),
+                plan.alternatives(id)
+                    .unwrap()
+                    .alternatives()
+                    .iter()
+                    .all(|c| c.device == d),
                 "set pruned to the DP-committed device",
             );
         }
@@ -3898,12 +4072,42 @@ mod tests {
 
         let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
         let mut table = KernelBindingTable::new();
-        register_unary_f32(&mut table, OpKind::NegElementwise, BackendId::Cpu, noop_kernel, cost_100_000);
-        register_unary_f32(&mut table, OpKind::NegElementwise, BackendId::Cuda, noop_kernel_b, cost_100);
-        register_unary_f32(&mut table, OpKind::SoftmaxLastDim, BackendId::Cpu, noop_kernel, cost_300);
-        register_unary_f32(&mut table, OpKind::SoftmaxLastDim, BackendId::Cuda, noop_kernel_b, cost_100);
+        register_unary_f32(
+            &mut table,
+            OpKind::NegElementwise,
+            BackendId::Cpu,
+            noop_kernel,
+            cost_100_000,
+        );
+        register_unary_f32(
+            &mut table,
+            OpKind::NegElementwise,
+            BackendId::Cuda,
+            noop_kernel_b,
+            cost_100,
+        );
+        register_unary_f32(
+            &mut table,
+            OpKind::SoftmaxLastDim,
+            BackendId::Cpu,
+            noop_kernel,
+            cost_300,
+        );
+        register_unary_f32(
+            &mut table,
+            OpKind::SoftmaxLastDim,
+            BackendId::Cuda,
+            noop_kernel_b,
+            cost_100,
+        );
         // Sqr exists ONLY on CPU — the chain's anchor.
-        register_unary_f32(&mut table, OpKind::SqrElementwise, BackendId::Cpu, noop_kernel, cost_100);
+        register_unary_f32(
+            &mut table,
+            OpKind::SqrElementwise,
+            BackendId::Cpu,
+            noop_kernel,
+            cost_100,
+        );
 
         let mut g = Graph::new();
         let c = push_f32(&mut g, Op::Const, vec![], &[1]);
@@ -3918,7 +4122,11 @@ mod tests {
         let order = topo_order(&g, n2);
 
         let placements_fn = |dev: DeviceLocation| -> Vec<BackendId> {
-            if dev == DeviceLocation::Cpu { vec![BackendId::Cpu] } else { vec![BackendId::Cuda] }
+            if dev == DeviceLocation::Cpu {
+                vec![BackendId::Cpu]
+            } else {
+                vec![BackendId::Cuda]
+            }
         };
         let fallback_fn = move |dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
             if dev == DeviceLocation::Cpu {
@@ -3927,9 +4135,13 @@ mod tests {
                 vec![(BackendId::Cpu, DeviceLocation::Cpu)]
             }
         };
-        let residency_fn =
-            move |id: NodeId| -> Option<DeviceLocation> { (id == c).then_some(DeviceLocation::Cpu) };
-        let est = BytesEstimator { latency_ns: 10, ns_per_byte: 1 };
+        let residency_fn = move |id: NodeId| -> Option<DeviceLocation> {
+            (id == c).then_some(DeviceLocation::Cpu)
+        };
+        let est = BytesEstimator {
+            latency_ns: 10,
+            ns_per_byte: 1,
+        };
         let cpu_caps_val = cpu_caps();
         let caps_fn = |_: BackendId| Some(&cpu_caps_val);
         let opts = PlanOptions::new()
@@ -3950,7 +4162,11 @@ mod tests {
         );
         assert_eq!(dev_of(n2), DeviceLocation::Cpu);
         assert!(
-            plan.alternatives(f).unwrap().alternatives().iter().all(|c| c.device == DeviceLocation::Cpu),
+            plan.alternatives(f)
+                .unwrap()
+                .alternatives()
+                .iter()
+                .all(|c| c.device == DeviceLocation::Cpu),
             "fused set pruned to the committed device",
         );
     }
@@ -3966,8 +4182,20 @@ mod tests {
     fn dp_exit_pricing_keeps_final_op_on_realize_target() {
         let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
         let mut table = KernelBindingTable::new();
-        register_unary_f32(&mut table, OpKind::NegElementwise, BackendId::Cpu, noop_kernel, cost_50);
-        register_unary_f32(&mut table, OpKind::NegElementwise, BackendId::Cuda, noop_kernel_b, cost_100);
+        register_unary_f32(
+            &mut table,
+            OpKind::NegElementwise,
+            BackendId::Cpu,
+            noop_kernel,
+            cost_50,
+        );
+        register_unary_f32(
+            &mut table,
+            OpKind::NegElementwise,
+            BackendId::Cuda,
+            noop_kernel_b,
+            cost_100,
+        );
 
         let mut g = Graph::new();
         let c = push_f32(&mut g, Op::Const, vec![], &[4]);
@@ -3975,7 +4203,11 @@ mod tests {
         let order = topo_order(&g, n);
 
         let placements_fn = |dev: DeviceLocation| -> Vec<BackendId> {
-            if dev == DeviceLocation::Cpu { vec![BackendId::Cpu] } else { vec![BackendId::Cuda] }
+            if dev == DeviceLocation::Cpu {
+                vec![BackendId::Cpu]
+            } else {
+                vec![BackendId::Cuda]
+            }
         };
         let fallback_fn = move |dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
             if dev == DeviceLocation::Cpu {
@@ -4015,8 +4247,20 @@ mod tests {
     fn dp_exit_pricing_does_not_pin_when_kernel_gap_dominates() {
         let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
         let mut table = KernelBindingTable::new();
-        register_unary_f32(&mut table, OpKind::NegElementwise, BackendId::Cpu, noop_kernel, cost_10_000_000);
-        register_unary_f32(&mut table, OpKind::NegElementwise, BackendId::Cuda, noop_kernel_b, cost_100);
+        register_unary_f32(
+            &mut table,
+            OpKind::NegElementwise,
+            BackendId::Cpu,
+            noop_kernel,
+            cost_10_000_000,
+        );
+        register_unary_f32(
+            &mut table,
+            OpKind::NegElementwise,
+            BackendId::Cuda,
+            noop_kernel_b,
+            cost_100,
+        );
 
         let mut g = Graph::new();
         let c = push_f32(&mut g, Op::Const, vec![], &[4]);
@@ -4024,7 +4268,11 @@ mod tests {
         let order = topo_order(&g, n);
 
         let placements_fn = |dev: DeviceLocation| -> Vec<BackendId> {
-            if dev == DeviceLocation::Cpu { vec![BackendId::Cpu] } else { vec![BackendId::Cuda] }
+            if dev == DeviceLocation::Cpu {
+                vec![BackendId::Cpu]
+            } else {
+                vec![BackendId::Cuda]
+            }
         };
         let fallback_fn = move |dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
             if dev == DeviceLocation::Cpu {
@@ -4046,7 +4294,10 @@ mod tests {
             .with_transfer_estimator(&est)
             .with_input_residency(&residency_fn);
         let plan = compile_plan(&g, &order, &table, &opts).expect("compile");
-        assert_eq!(plan.alternatives(n).unwrap().winner().unwrap().device, cuda0);
+        assert_eq!(
+            plan.alternatives(n).unwrap().winner().unwrap().device,
+            cuda0
+        );
     }
 
     /// Stage 3 test (d): single-DEVICE plan equality. Two backends
@@ -4080,10 +4331,8 @@ mod tests {
                 vec![]
             }
         };
-        let fallback_fn =
-            |_dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> { Vec::new() };
-        let residency_fn =
-            |_id: NodeId| -> Option<DeviceLocation> { Some(DeviceLocation::Cpu) };
+        let fallback_fn = |_dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> { Vec::new() };
+        let residency_fn = |_id: NodeId| -> Option<DeviceLocation> { Some(DeviceLocation::Cpu) };
         let cpu_caps_val = cpu_caps();
         let caps_fn = |_: BackendId| Some(&cpu_caps_val);
 
@@ -4092,7 +4341,9 @@ mod tests {
             .with_capabilities_for(&caps_fn);
         let base = compile_plan(&g, &order, &table, &base_opts).expect("base");
 
-        let est = FlatEstimator { latency_ns: 1_000_000 };
+        let est = FlatEstimator {
+            latency_ns: 1_000_000,
+        };
         let wired_opts = PlanOptions::new()
             .with_placements_for_device(&placements_fn)
             .with_fallback_placements_for(&fallback_fn)
@@ -4157,7 +4408,11 @@ mod tests {
         let order = topo_order(&g, d);
 
         let placements_fn = |dev: DeviceLocation| -> Vec<BackendId> {
-            if dev == DeviceLocation::Cpu { vec![BackendId::Cpu] } else { vec![BackendId::Cuda] }
+            if dev == DeviceLocation::Cpu {
+                vec![BackendId::Cpu]
+            } else {
+                vec![BackendId::Cuda]
+            }
         };
         let fallback_fn = move |dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
             if dev == DeviceLocation::Cpu {
@@ -4212,8 +4467,20 @@ mod tests {
         let mut table = KernelBindingTable::new();
         // Equal costs — ties must break toward the decision device
         // along the whole chain.
-        register_unary_f32(&mut table, OpKind::NegElementwise, BackendId::Cpu, noop_kernel, cost_100);
-        register_unary_f32(&mut table, OpKind::NegElementwise, BackendId::Cuda, noop_kernel_b, cost_100);
+        register_unary_f32(
+            &mut table,
+            OpKind::NegElementwise,
+            BackendId::Cpu,
+            noop_kernel,
+            cost_100,
+        );
+        register_unary_f32(
+            &mut table,
+            OpKind::NegElementwise,
+            BackendId::Cuda,
+            noop_kernel_b,
+            cost_100,
+        );
 
         let mut g = Graph::new();
         let c = push_f32(&mut g, Op::Const, vec![], &[4]);
@@ -4227,7 +4494,11 @@ mod tests {
         let order = topo_order(&g, prev);
 
         let placements_fn = |dev: DeviceLocation| -> Vec<BackendId> {
-            if dev == DeviceLocation::Cpu { vec![BackendId::Cpu] } else { vec![BackendId::Cuda] }
+            if dev == DeviceLocation::Cpu {
+                vec![BackendId::Cpu]
+            } else {
+                vec![BackendId::Cuda]
+            }
         };
         let fallback_fn = move |dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
             if dev == DeviceLocation::Cpu {
@@ -4236,8 +4507,9 @@ mod tests {
                 vec![(BackendId::Cpu, DeviceLocation::Cpu)]
             }
         };
-        let residency_fn =
-            move |id: NodeId| -> Option<DeviceLocation> { (id == c).then_some(DeviceLocation::Cpu) };
+        let residency_fn = move |id: NodeId| -> Option<DeviceLocation> {
+            (id == c).then_some(DeviceLocation::Cpu)
+        };
         let est = FlatEstimator { latency_ns: 10 };
         let cpu_caps_val = cpu_caps();
         let caps_fn = |_: BackendId| Some(&cpu_caps_val);
@@ -4277,19 +4549,40 @@ mod tests {
         // Per-op win 700 < 1000 crossing; combined win 2100 > 2000 —
         // the segment only migrates if the chain survives the
         // Reshape between n1 and n2.
-        register_unary_f32(&mut table, OpKind::NegElementwise, BackendId::Cpu, noop_kernel, cost_800);
-        register_unary_f32(&mut table, OpKind::NegElementwise, BackendId::Cuda, noop_kernel_b, cost_100);
+        register_unary_f32(
+            &mut table,
+            OpKind::NegElementwise,
+            BackendId::Cpu,
+            noop_kernel,
+            cost_800,
+        );
+        register_unary_f32(
+            &mut table,
+            OpKind::NegElementwise,
+            BackendId::Cuda,
+            noop_kernel_b,
+            cost_100,
+        );
 
         let mut g = Graph::new();
         let c = push_f32(&mut g, Op::Const, vec![], &[4]);
         let n1 = push_f32(&mut g, Op::Neg, vec![c], &[4]);
-        let r = push_f32(&mut g, Op::Reshape(Shape::from_dims(&[2, 2])), vec![n1], &[2, 2]);
+        let r = push_f32(
+            &mut g,
+            Op::Reshape(Shape::from_dims(&[2, 2])),
+            vec![n1],
+            &[2, 2],
+        );
         let n2 = push_f32(&mut g, Op::Neg, vec![r], &[2, 2]);
         let n3 = push_f32(&mut g, Op::Neg, vec![n2], &[2, 2]);
         let order = topo_order(&g, n3);
 
         let placements_fn = |dev: DeviceLocation| -> Vec<BackendId> {
-            if dev == DeviceLocation::Cpu { vec![BackendId::Cpu] } else { vec![BackendId::Cuda] }
+            if dev == DeviceLocation::Cpu {
+                vec![BackendId::Cpu]
+            } else {
+                vec![BackendId::Cuda]
+            }
         };
         let fallback_fn = move |dev: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
             if dev == DeviceLocation::Cpu {
@@ -4298,8 +4591,9 @@ mod tests {
                 vec![(BackendId::Cpu, DeviceLocation::Cpu)]
             }
         };
-        let residency_fn =
-            move |id: NodeId| -> Option<DeviceLocation> { (id == c).then_some(DeviceLocation::Cpu) };
+        let residency_fn = move |id: NodeId| -> Option<DeviceLocation> {
+            (id == c).then_some(DeviceLocation::Cpu)
+        };
         let est = FlatEstimator { latency_ns: 1_000 };
         let cpu_caps_val = cpu_caps();
         let caps_fn = |_: BackendId| Some(&cpu_caps_val);
@@ -4322,7 +4616,10 @@ mod tests {
                 "the chain must not break at the Reshape pass-through",
             );
         }
-        assert!(plan.alternatives(r).is_none(), "Reshape carries no plan entry");
+        assert!(
+            plan.alternatives(r).is_none(),
+            "Reshape carries no plan entry"
+        );
     }
 
     // =====================================================================
@@ -4600,7 +4897,10 @@ mod tests {
 
             let sink = Mutex::new(TelemetrySink::new());
             let provider = StubProvider;
-            let config = TelemetryConfig { mode: TelemetryMode::Detailed, out_path: None };
+            let config = TelemetryConfig {
+                mode: TelemetryMode::Detailed,
+                out_path: None,
+            };
             let hooks = TelemetryHooks {
                 config: &config,
                 sink: &sink,
@@ -4619,7 +4919,11 @@ mod tests {
                 1,
                 "one planned cell ⇒ exactly one aggregated dispatch record",
             );
-            assert_eq!(sink.miss_cell_count(), 0, "specialized winners emit no miss");
+            assert_eq!(
+                sink.miss_cell_count(),
+                0,
+                "specialized winners emit no miss"
+            );
             let recs = sink.dispatch_records();
             assert_eq!(recs.len(), 1);
             let rec = &recs[0];
@@ -4628,7 +4932,10 @@ mod tests {
             assert_eq!(rec.chosen.op, OpKind::AddElementwise);
             assert_eq!(rec.chosen.backend, BackendId::Cpu);
             assert_eq!(rec.chosen.dtypes, vec![DType::F32, DType::F32, DType::F32]);
-            assert_eq!(rec.chosen.kernel_revision_hash, 0, "hand-written ⇒ untracked");
+            assert_eq!(
+                rec.chosen.kernel_revision_hash, 0,
+                "hand-written ⇒ untracked"
+            );
             assert_eq!(rec.count, 1);
             assert_eq!(rec.hw, cpu_hw());
             // structure_key from the stub provider (2 inputs + the output
@@ -4669,7 +4976,10 @@ mod tests {
 
             let sink = Mutex::new(TelemetrySink::new());
             let provider = StubProvider;
-            let config = TelemetryConfig { mode: TelemetryMode::Coarse, out_path: None };
+            let config = TelemetryConfig {
+                mode: TelemetryMode::Coarse,
+                out_path: None,
+            };
             let hooks = TelemetryHooks {
                 config: &config,
                 sink: &sink,
@@ -4682,9 +4992,16 @@ mod tests {
             let _plan = compile_plan(&g, &order, &table, &opts).expect("compile");
 
             let sink = sink.into_inner().expect("sink lock");
-            assert_eq!(sink.dispatch_cell_count(), 1, "Coarse still emits the chosen signal");
+            assert_eq!(
+                sink.dispatch_cell_count(),
+                1,
+                "Coarse still emits the chosen signal"
+            );
             let recs = sink.dispatch_records();
-            assert!(recs[0].candidates.is_empty(), "Coarse omits candidates (no Judge reads)");
+            assert!(
+                recs[0].candidates.is_empty(),
+                "Coarse omits candidates (no Judge reads)"
+            );
             assert_eq!(recs[0].chosen.kernel_source, "portable-cpu");
             assert_eq!(recs[0].count, 1);
         }
@@ -4737,7 +5054,10 @@ mod tests {
                 _arch: &str,
             ) -> Option<StructureKeyToken> {
                 *self.seen.lock().expect("record lock") = operands.to_vec();
-                Some(StructureKeyToken(format!("{op_class}:n={}", operands.len())))
+                Some(StructureKeyToken(format!(
+                    "{op_class}:n={}",
+                    operands.len()
+                )))
             }
         }
 
@@ -4757,7 +5077,9 @@ mod tests {
             let order = topo_order(&g, add_id);
 
             let sink = Mutex::new(TelemetrySink::new());
-            let provider = RecordingProvider { seen: Mutex::new(Vec::new()) };
+            let provider = RecordingProvider {
+                seen: Mutex::new(Vec::new()),
+            };
             let config = TelemetryConfig {
                 mode: TelemetryMode::Coarse,
                 out_path: None,
@@ -4782,8 +5104,16 @@ mod tests {
             );
             let out = seen.last().expect("output operand present");
             // The Add output is a contiguous [3] F32 tensor.
-            assert_eq!(out.dtype, DType::F32, "output operand carries the node dtype");
-            assert_eq!(out.shape, vec![3i64], "output operand carries the node shape");
+            assert_eq!(
+                out.dtype,
+                DType::F32,
+                "output operand carries the node dtype"
+            );
+            assert_eq!(
+                out.shape,
+                vec![3i64],
+                "output operand carries the node shape"
+            );
             assert_eq!(
                 out.contiguity,
                 Contiguity::Contiguous,

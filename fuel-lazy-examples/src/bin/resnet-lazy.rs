@@ -39,14 +39,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|| DEFAULT_MODEL.to_string());
 
     let (cfg, filename) = match variant {
-        "18"  => (ResNetConfig::resnet18(Some(1000)),  "resnet18.safetensors"),
-        "34"  => (ResNetConfig::resnet34(Some(1000)),  "resnet34.safetensors"),
-        "50"  => (ResNetConfig::resnet50(Some(1000)),  "resnet50.safetensors"),
+        "18" => (ResNetConfig::resnet18(Some(1000)), "resnet18.safetensors"),
+        "34" => (ResNetConfig::resnet34(Some(1000)), "resnet34.safetensors"),
+        "50" => (ResNetConfig::resnet50(Some(1000)), "resnet50.safetensors"),
         "101" => (ResNetConfig::resnet101(Some(1000)), "resnet101.safetensors"),
         "152" => (ResNetConfig::resnet152(Some(1000)), "resnet152.safetensors"),
-        other => return Err(format!(
-            "unknown ResNet variant {other:?} (expected 18/34/50/101/152)",
-        ).into()),
+        other => {
+            return Err(
+                format!("unknown ResNet variant {other:?} (expected 18/34/50/101/152)",).into(),
+            );
+        }
     };
 
     eprintln!("=== fuel resnet-lazy ===");

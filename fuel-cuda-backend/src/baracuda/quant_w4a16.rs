@@ -76,13 +76,19 @@ pub fn marlin_gemm_f16(
     let status = unsafe {
         sys::baracuda_kernels_int4_marlin_gemm_f16_run(
             i32::try_from(m).map_err(|_| crate::error::CudaError::BaracudaShapeOverflow {
-                op: "int4_marlin_gemm_f16", dim_index: 0, dim_value: m,
+                op: "int4_marlin_gemm_f16",
+                dim_index: 0,
+                dim_value: m,
             })?,
             i32::try_from(n).map_err(|_| crate::error::CudaError::BaracudaShapeOverflow {
-                op: "int4_marlin_gemm_f16", dim_index: 1, dim_value: n,
+                op: "int4_marlin_gemm_f16",
+                dim_index: 1,
+                dim_value: n,
             })?,
             i32::try_from(k).map_err(|_| crate::error::CudaError::BaracudaShapeOverflow {
-                op: "int4_marlin_gemm_f16", dim_index: 2, dim_value: k,
+                op: "int4_marlin_gemm_f16",
+                dim_index: 2,
+                dim_value: k,
             })?,
             a.buffer().as_raw().0 as *const std::ffi::c_void,
             b_packed.buffer().as_raw().0 as *const std::ffi::c_void,
@@ -96,15 +102,18 @@ pub fn marlin_gemm_f16(
     };
     check(status, "int4_marlin_gemm_f16")?;
     drop(ws_buf);
-    Ok(CudaStorageBytes::from_parts(Arc::new(out_buf), device, out_bytes))
+    Ok(CudaStorageBytes::from_parts(
+        Arc::new(out_buf),
+        device,
+        out_bytes,
+    ))
 }
 
 /// Marlin shape/alignment validator (no kernel launch). Returns
 /// `Ok(())` iff baracuda will accept this (M, N, K, groupsize).
 pub fn marlin_can_implement_f16(m: i32, n: i32, k: i32, groupsize: i32) -> Result<()> {
-    let status = unsafe {
-        sys::baracuda_kernels_int4_marlin_gemm_f16_can_implement(m, n, k, groupsize)
-    };
+    let status =
+        unsafe { sys::baracuda_kernels_int4_marlin_gemm_f16_can_implement(m, n, k, groupsize) };
     check(status, "int4_marlin_gemm_f16_can_implement")
 }
 
@@ -142,13 +151,19 @@ pub fn awq_gemm_f16(
         return CudaStorageBytes::alloc(&device, 0);
     }
     let m_i32 = i32::try_from(m).map_err(|_| crate::error::CudaError::BaracudaShapeOverflow {
-        op: "int4_awq_gemm_f16", dim_index: 0, dim_value: m,
+        op: "int4_awq_gemm_f16",
+        dim_index: 0,
+        dim_value: m,
     })?;
     let ic_i32 = i32::try_from(ic).map_err(|_| crate::error::CudaError::BaracudaShapeOverflow {
-        op: "int4_awq_gemm_f16", dim_index: 1, dim_value: ic,
+        op: "int4_awq_gemm_f16",
+        dim_index: 1,
+        dim_value: ic,
     })?;
     let oc_i32 = i32::try_from(oc).map_err(|_| crate::error::CudaError::BaracudaShapeOverflow {
-        op: "int4_awq_gemm_f16", dim_index: 2, dim_value: oc,
+        op: "int4_awq_gemm_f16",
+        dim_index: 2,
+        dim_value: oc,
     })?;
     let ws_bytes = unsafe {
         sys::baracuda_kernels_int4_awq_gemm_f16_workspace_bytes(m_i32, oc_i32, split_k_iters)
@@ -167,24 +182,37 @@ pub fn awq_gemm_f16(
 
     let status = unsafe {
         sys::baracuda_kernels_int4_awq_gemm_f16_run(
-            m_i32, ic_i32, oc_i32,
-            group_size, split_k_iters,
+            m_i32,
+            ic_i32,
+            oc_i32,
+            group_size,
+            split_k_iters,
             in_feats.buffer().as_raw().0 as *const std::ffi::c_void,
             kernel_weights.buffer().as_raw().0 as *const std::ffi::c_void,
             scaling_factors.buffer().as_raw().0 as *const std::ffi::c_void,
             zeros.buffer().as_raw().0 as *const std::ffi::c_void,
             out_buf.as_raw().0 as *mut std::ffi::c_void,
-            ws_ptr, ws_bytes, stream,
+            ws_ptr,
+            ws_bytes,
+            stream,
         )
     };
     check(status, "int4_awq_gemm_f16")?;
     drop(ws_buf);
-    Ok(CudaStorageBytes::from_parts(Arc::new(out_buf), device, out_bytes))
+    Ok(CudaStorageBytes::from_parts(
+        Arc::new(out_buf),
+        device,
+        out_bytes,
+    ))
 }
 
 /// AWQ shape/alignment validator (no kernel launch).
 pub fn awq_can_implement_f16(
-    m: i32, ic: i32, oc: i32, group_size: i32, split_k_iters: i32,
+    m: i32,
+    ic: i32,
+    oc: i32,
+    group_size: i32,
+    split_k_iters: i32,
 ) -> Result<()> {
     let status = unsafe {
         sys::baracuda_kernels_int4_awq_gemm_f16_can_implement(m, ic, oc, group_size, split_k_iters)
@@ -209,7 +237,11 @@ pub fn nf4_dequantize_f16(
     block_size: usize,
 ) -> Result<CudaStorageBytes> {
     nf4_dequantize_inner(
-        w_packed, absmax, n, k, block_size,
+        w_packed,
+        absmax,
+        n,
+        k,
+        block_size,
         std::mem::size_of::<half::f16>(),
         sys::baracuda_kernels_nf4_dequantize_f16_run,
         "nf4_dequantize_f16",
@@ -225,7 +257,11 @@ pub fn nf4_dequantize_bf16(
     block_size: usize,
 ) -> Result<CudaStorageBytes> {
     nf4_dequantize_inner(
-        w_packed, absmax, n, k, block_size,
+        w_packed,
+        absmax,
+        n,
+        k,
+        block_size,
         std::mem::size_of::<half::bf16>(),
         sys::baracuda_kernels_nf4_dequantize_bf16_run,
         "nf4_dequantize_bf16",
@@ -241,7 +277,11 @@ pub fn nf4_dequantize_f32(
     block_size: usize,
 ) -> Result<CudaStorageBytes> {
     nf4_dequantize_inner(
-        w_packed, absmax, n, k, block_size,
+        w_packed,
+        absmax,
+        n,
+        k,
+        block_size,
         std::mem::size_of::<f32>(),
         sys::baracuda_kernels_nf4_dequantize_f32_run,
         "nf4_dequantize_f32",
@@ -249,7 +289,9 @@ pub fn nf4_dequantize_f32(
 }
 
 type Nf4DequantizeRun = unsafe extern "C" fn(
-    n: i32, k: i32, block_size: i32,
+    n: i32,
+    k: i32,
+    block_size: i32,
     w_packed: *const std::ffi::c_void,
     absmax: *const std::ffi::c_void,
     out: *mut std::ffi::c_void,
@@ -274,19 +316,26 @@ fn nf4_dequantize_inner(
     let out_buf = device.alloc_zeros::<u8>(out_bytes)?;
     let stream = device.stream().as_raw() as *mut std::ffi::c_void;
     let n_i32 = i32::try_from(n).map_err(|_| crate::error::CudaError::BaracudaShapeOverflow {
-        op: op_label, dim_index: 0, dim_value: n,
+        op: op_label,
+        dim_index: 0,
+        dim_value: n,
     })?;
     let k_i32 = i32::try_from(k).map_err(|_| crate::error::CudaError::BaracudaShapeOverflow {
-        op: op_label, dim_index: 1, dim_value: k,
+        op: op_label,
+        dim_index: 1,
+        dim_value: k,
     })?;
-    let bs_i32 = i32::try_from(block_size).map_err(|_| {
-        crate::error::CudaError::BaracudaShapeOverflow {
-            op: op_label, dim_index: 2, dim_value: block_size,
-        }
-    })?;
+    let bs_i32 =
+        i32::try_from(block_size).map_err(|_| crate::error::CudaError::BaracudaShapeOverflow {
+            op: op_label,
+            dim_index: 2,
+            dim_value: block_size,
+        })?;
     let status = unsafe {
         kernel(
-            n_i32, k_i32, bs_i32,
+            n_i32,
+            k_i32,
+            bs_i32,
             w_packed.buffer().as_raw().0 as *const std::ffi::c_void,
             absmax.buffer().as_raw().0 as *const std::ffi::c_void,
             out_buf.as_raw().0 as *mut std::ffi::c_void,
@@ -294,11 +343,17 @@ fn nf4_dequantize_inner(
         )
     };
     check(status, op_label)?;
-    Ok(CudaStorageBytes::from_parts(Arc::new(out_buf), device, out_bytes))
+    Ok(CudaStorageBytes::from_parts(
+        Arc::new(out_buf),
+        device,
+        out_bytes,
+    ))
 }
 
 type Nf4GemvRun = unsafe extern "C" fn(
-    n: i32, k: i32, block_size: i32,
+    n: i32,
+    k: i32,
+    block_size: i32,
     w_packed: *const std::ffi::c_void,
     absmax: *const std::ffi::c_void,
     y: *const std::ffi::c_void,
@@ -326,19 +381,26 @@ fn nf4_gemv_inner(
     let out_buf = device.alloc_zeros::<u8>(out_bytes)?;
     let stream = device.stream().as_raw() as *mut std::ffi::c_void;
     let n_i32 = i32::try_from(n).map_err(|_| crate::error::CudaError::BaracudaShapeOverflow {
-        op: op_label, dim_index: 0, dim_value: n,
+        op: op_label,
+        dim_index: 0,
+        dim_value: n,
     })?;
     let k_i32 = i32::try_from(k).map_err(|_| crate::error::CudaError::BaracudaShapeOverflow {
-        op: op_label, dim_index: 1, dim_value: k,
+        op: op_label,
+        dim_index: 1,
+        dim_value: k,
     })?;
-    let bs_i32 = i32::try_from(block_size).map_err(|_| {
-        crate::error::CudaError::BaracudaShapeOverflow {
-            op: op_label, dim_index: 2, dim_value: block_size,
-        }
-    })?;
+    let bs_i32 =
+        i32::try_from(block_size).map_err(|_| crate::error::CudaError::BaracudaShapeOverflow {
+            op: op_label,
+            dim_index: 2,
+            dim_value: block_size,
+        })?;
     let status = unsafe {
         kernel(
-            n_i32, k_i32, bs_i32,
+            n_i32,
+            k_i32,
+            bs_i32,
             w_packed.buffer().as_raw().0 as *const std::ffi::c_void,
             absmax.buffer().as_raw().0 as *const std::ffi::c_void,
             activations.buffer().as_raw().0 as *const std::ffi::c_void,
@@ -348,7 +410,11 @@ fn nf4_gemv_inner(
     };
     check(status, op_label)?;
     drop(m); // silence unused (kept for documentation purposes)
-    Ok(CudaStorageBytes::from_parts(Arc::new(out_buf), device, out_bytes))
+    Ok(CudaStorageBytes::from_parts(
+        Arc::new(out_buf),
+        device,
+        out_bytes,
+    ))
 }
 
 macro_rules! nf4_gemv {
@@ -363,7 +429,14 @@ macro_rules! nf4_gemv {
             block_size: usize,
         ) -> Result<CudaStorageBytes> {
             nf4_gemv_inner(
-                w_packed, absmax, activations, n, k, block_size, $m, $dtype_size,
+                w_packed,
+                absmax,
+                activations,
+                n,
+                k,
+                block_size,
+                $m,
+                $dtype_size,
                 sys::$sys,
                 stringify!($name),
             )
@@ -371,14 +444,62 @@ macro_rules! nf4_gemv {
     };
 }
 
-nf4_gemv!(nf4_gemv_m1_f16,  baracuda_kernels_nf4_gemv_m1_f16_run,  2, 1, "f16 act");
-nf4_gemv!(nf4_gemv_m2_f16,  baracuda_kernels_nf4_gemv_m2_f16_run,  2, 2, "f16 act");
-nf4_gemv!(nf4_gemv_m4_f16,  baracuda_kernels_nf4_gemv_m4_f16_run,  2, 4, "f16 act");
-nf4_gemv!(nf4_gemv_m8_f16,  baracuda_kernels_nf4_gemv_m8_f16_run,  2, 8, "f16 act");
-nf4_gemv!(nf4_gemv_m1_bf16, baracuda_kernels_nf4_gemv_m1_bf16_run, 2, 1, "bf16 act");
-nf4_gemv!(nf4_gemv_m2_bf16, baracuda_kernels_nf4_gemv_m2_bf16_run, 2, 2, "bf16 act");
-nf4_gemv!(nf4_gemv_m4_bf16, baracuda_kernels_nf4_gemv_m4_bf16_run, 2, 4, "bf16 act");
-nf4_gemv!(nf4_gemv_m8_bf16, baracuda_kernels_nf4_gemv_m8_bf16_run, 2, 8, "bf16 act");
+nf4_gemv!(
+    nf4_gemv_m1_f16,
+    baracuda_kernels_nf4_gemv_m1_f16_run,
+    2,
+    1,
+    "f16 act"
+);
+nf4_gemv!(
+    nf4_gemv_m2_f16,
+    baracuda_kernels_nf4_gemv_m2_f16_run,
+    2,
+    2,
+    "f16 act"
+);
+nf4_gemv!(
+    nf4_gemv_m4_f16,
+    baracuda_kernels_nf4_gemv_m4_f16_run,
+    2,
+    4,
+    "f16 act"
+);
+nf4_gemv!(
+    nf4_gemv_m8_f16,
+    baracuda_kernels_nf4_gemv_m8_f16_run,
+    2,
+    8,
+    "f16 act"
+);
+nf4_gemv!(
+    nf4_gemv_m1_bf16,
+    baracuda_kernels_nf4_gemv_m1_bf16_run,
+    2,
+    1,
+    "bf16 act"
+);
+nf4_gemv!(
+    nf4_gemv_m2_bf16,
+    baracuda_kernels_nf4_gemv_m2_bf16_run,
+    2,
+    2,
+    "bf16 act"
+);
+nf4_gemv!(
+    nf4_gemv_m4_bf16,
+    baracuda_kernels_nf4_gemv_m4_bf16_run,
+    2,
+    4,
+    "bf16 act"
+);
+nf4_gemv!(
+    nf4_gemv_m8_bf16,
+    baracuda_kernels_nf4_gemv_m8_bf16_run,
+    2,
+    8,
+    "bf16 act"
+);
 
 // =============================================================================
 // Named wrapper types (xn-pattern #1, 2026-05-29 audit)
@@ -441,11 +562,7 @@ impl AwqWeight {
     /// Convenience: matmul `activations[M, IC] @ self.weights.T -> [M, OC]`.
     /// Delegates to [`awq_gemm_f16`] with `self.group_size` and
     /// `self.split_k_iters`.
-    pub fn matmul_f16(
-        &self,
-        activations: &CudaStorageBytes,
-        m: usize,
-    ) -> Result<CudaStorageBytes> {
+    pub fn matmul_f16(&self, activations: &CudaStorageBytes, m: usize) -> Result<CudaStorageBytes> {
         awq_gemm_f16(
             activations,
             &self.packed_weights,
@@ -487,11 +604,7 @@ pub struct MarlinWeight {
 
 impl MarlinWeight {
     /// Convenience: matmul `activations[M, K] @ self.weights.T -> [M, N]`.
-    pub fn matmul_f16(
-        &self,
-        activations: &CudaStorageBytes,
-        m: usize,
-    ) -> Result<CudaStorageBytes> {
+    pub fn matmul_f16(&self, activations: &CudaStorageBytes, m: usize) -> Result<CudaStorageBytes> {
         marlin_gemm_f16(
             activations,
             &self.b_packed,
@@ -527,47 +640,107 @@ pub struct NF4Weight {
 impl NF4Weight {
     /// Dequantize to a fresh f16 tensor (debug / general path).
     pub fn dequantize_f16(&self) -> Result<CudaStorageBytes> {
-        nf4_dequantize_f16(&self.w_packed, &self.absmax, self.n, self.k, self.block_size)
+        nf4_dequantize_f16(
+            &self.w_packed,
+            &self.absmax,
+            self.n,
+            self.k,
+            self.block_size,
+        )
     }
 
     /// Dequantize to bf16.
     pub fn dequantize_bf16(&self) -> Result<CudaStorageBytes> {
-        nf4_dequantize_bf16(&self.w_packed, &self.absmax, self.n, self.k, self.block_size)
+        nf4_dequantize_bf16(
+            &self.w_packed,
+            &self.absmax,
+            self.n,
+            self.k,
+            self.block_size,
+        )
     }
 
     /// GEMV decode-step kernel for `M ∈ {1, 2, 4, 8}`, f16
     /// activations. `m` outside the set returns Err.
-    pub fn gemv_f16(
-        &self,
-        activations: &CudaStorageBytes,
-        m: usize,
-    ) -> Result<CudaStorageBytes> {
+    pub fn gemv_f16(&self, activations: &CudaStorageBytes, m: usize) -> Result<CudaStorageBytes> {
         match m {
-            1 => nf4_gemv_m1_f16(&self.w_packed, &self.absmax, activations, self.n, self.k, self.block_size),
-            2 => nf4_gemv_m2_f16(&self.w_packed, &self.absmax, activations, self.n, self.k, self.block_size),
-            4 => nf4_gemv_m4_f16(&self.w_packed, &self.absmax, activations, self.n, self.k, self.block_size),
-            8 => nf4_gemv_m8_f16(&self.w_packed, &self.absmax, activations, self.n, self.k, self.block_size),
-            other => fuel_ir::bail!(
-                "NF4Weight::gemv_f16: M ∈ {{1, 2, 4, 8}} required, got {other}"
+            1 => nf4_gemv_m1_f16(
+                &self.w_packed,
+                &self.absmax,
+                activations,
+                self.n,
+                self.k,
+                self.block_size,
             ),
+            2 => nf4_gemv_m2_f16(
+                &self.w_packed,
+                &self.absmax,
+                activations,
+                self.n,
+                self.k,
+                self.block_size,
+            ),
+            4 => nf4_gemv_m4_f16(
+                &self.w_packed,
+                &self.absmax,
+                activations,
+                self.n,
+                self.k,
+                self.block_size,
+            ),
+            8 => nf4_gemv_m8_f16(
+                &self.w_packed,
+                &self.absmax,
+                activations,
+                self.n,
+                self.k,
+                self.block_size,
+            ),
+            other => {
+                fuel_ir::bail!("NF4Weight::gemv_f16: M ∈ {{1, 2, 4, 8}} required, got {other}")
+            }
         }
     }
 
     /// GEMV decode-step kernel for `M ∈ {1, 2, 4, 8}`, bf16
     /// activations.
-    pub fn gemv_bf16(
-        &self,
-        activations: &CudaStorageBytes,
-        m: usize,
-    ) -> Result<CudaStorageBytes> {
+    pub fn gemv_bf16(&self, activations: &CudaStorageBytes, m: usize) -> Result<CudaStorageBytes> {
         match m {
-            1 => nf4_gemv_m1_bf16(&self.w_packed, &self.absmax, activations, self.n, self.k, self.block_size),
-            2 => nf4_gemv_m2_bf16(&self.w_packed, &self.absmax, activations, self.n, self.k, self.block_size),
-            4 => nf4_gemv_m4_bf16(&self.w_packed, &self.absmax, activations, self.n, self.k, self.block_size),
-            8 => nf4_gemv_m8_bf16(&self.w_packed, &self.absmax, activations, self.n, self.k, self.block_size),
-            other => fuel_ir::bail!(
-                "NF4Weight::gemv_bf16: M ∈ {{1, 2, 4, 8}} required, got {other}"
+            1 => nf4_gemv_m1_bf16(
+                &self.w_packed,
+                &self.absmax,
+                activations,
+                self.n,
+                self.k,
+                self.block_size,
             ),
+            2 => nf4_gemv_m2_bf16(
+                &self.w_packed,
+                &self.absmax,
+                activations,
+                self.n,
+                self.k,
+                self.block_size,
+            ),
+            4 => nf4_gemv_m4_bf16(
+                &self.w_packed,
+                &self.absmax,
+                activations,
+                self.n,
+                self.k,
+                self.block_size,
+            ),
+            8 => nf4_gemv_m8_bf16(
+                &self.w_packed,
+                &self.absmax,
+                activations,
+                self.n,
+                self.k,
+                self.block_size,
+            ),
+            other => {
+                fuel_ir::bail!("NF4Weight::gemv_bf16: M ∈ {{1, 2, 4, 8}} required, got {other}")
+            }
         }
     }
 }

@@ -8,14 +8,14 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::{anyhow, Error as E, Result};
+use anyhow::{Error as E, Result, anyhow};
 use clap::{Parser, ValueEnum};
-use fuel::lazy::{load_tensor_as_f32, load_transposed_matrix, LazyTensor, WeightStorage};
+use fuel::Shape;
+use fuel::lazy::{LazyTensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix};
 use fuel::lazy_modernbert::{
     ModernBertConfig, ModernBertLayerWeights, ModernBertModel, ModernBertWeights,
 };
-use fuel::Shape;
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 use tokenizers::Tokenizer;
 
 #[derive(Debug, Clone, ValueEnum)]
@@ -82,11 +82,21 @@ struct HfConfig {
     local_rope_theta: f64,
 }
 
-fn default_layer_norm_eps() -> f64 { 1e-5 }
-fn default_global_attn_every_n_layers() -> usize { 3 }
-fn default_global_rope_theta() -> f64 { 160_000.0 }
-fn default_local_attention() -> usize { 128 }
-fn default_local_rope_theta() -> f64 { 10_000.0 }
+fn default_layer_norm_eps() -> f64 {
+    1e-5
+}
+fn default_global_attn_every_n_layers() -> usize {
+    3
+}
+fn default_global_rope_theta() -> f64 {
+    160_000.0
+}
+fn default_local_attention() -> usize {
+    128
+}
+fn default_local_rope_theta() -> f64 {
+    10_000.0
+}
 
 impl From<HfConfig> for ModernBertConfig {
     fn from(c: HfConfig) -> Self {
@@ -114,60 +124,38 @@ fn load_modernbert_weights(
     let h = cfg.hidden_size;
     let inter = cfg.intermediate_size;
 
-    let word_embedding =
-        load_tensor_as_f32(st, "model.embeddings.tok_embeddings.weight")
-            .map_err(|e| anyhow!("{e}"))?;
-    let embed_ln_gain = load_tensor_as_f32(st, "model.embeddings.norm.weight")
+    let word_embedding = load_tensor_as_f32(st, "model.embeddings.tok_embeddings.weight")
         .map_err(|e| anyhow!("{e}"))?;
+    let embed_ln_gain =
+        load_tensor_as_f32(st, "model.embeddings.norm.weight").map_err(|e| anyhow!("{e}"))?;
 
     let mut layers: Vec<ModernBertLayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
     for i in 0..cfg.num_hidden_layers {
         // Layer 0 has no attn_norm in ModernBERT — the embedding LayerNorm
         // does the pre-norm. Try to load; absent → None.
-        let attn_norm_gain = load_tensor_as_f32(
-            st,
-            &format!("model.layers.{i}.attn_norm.weight"),
-        )
-        .ok()
-        .map(Arc::from);
+        let attn_norm_gain = load_tensor_as_f32(st, &format!("model.layers.{i}.attn_norm.weight"))
+            .ok()
+            .map(Arc::from);
 
         // Wqkv: `[3 * hidden, hidden]` HF → `[hidden, 3 * hidden]` fuel.
-        let wqkv = load_transposed_matrix(
-            st,
-            &format!("model.layers.{i}.attn.Wqkv.weight"),
-            3 * h,
-            h,
-        )
-        .map_err(|e| anyhow!("{e}"))?;
-        // Wo: `[hidden, hidden]` HF → `[hidden, hidden]` (square, transposed).
-        let wo = load_transposed_matrix(
-            st,
-            &format!("model.layers.{i}.attn.Wo.weight"),
-            h,
-            h,
-        )
-        .map_err(|e| anyhow!("{e}"))?;
-
-        let mlp_norm_gain =
-            load_tensor_as_f32(st, &format!("model.layers.{i}.mlp_norm.weight"))
+        let wqkv =
+            load_transposed_matrix(st, &format!("model.layers.{i}.attn.Wqkv.weight"), 3 * h, h)
                 .map_err(|e| anyhow!("{e}"))?;
+        // Wo: `[hidden, hidden]` HF → `[hidden, hidden]` (square, transposed).
+        let wo = load_transposed_matrix(st, &format!("model.layers.{i}.attn.Wo.weight"), h, h)
+            .map_err(|e| anyhow!("{e}"))?;
+
+        let mlp_norm_gain = load_tensor_as_f32(st, &format!("model.layers.{i}.mlp_norm.weight"))
+            .map_err(|e| anyhow!("{e}"))?;
 
         // Wi: `[2 * intermediate, hidden]` HF → `[hidden, 2 * intermediate]` fuel.
-        let mlp_wi = load_transposed_matrix(
-            st,
-            &format!("model.layers.{i}.mlp.Wi.weight"),
-            2 * inter,
-            h,
-        )
-        .map_err(|e| anyhow!("{e}"))?;
+        let mlp_wi =
+            load_transposed_matrix(st, &format!("model.layers.{i}.mlp.Wi.weight"), 2 * inter, h)
+                .map_err(|e| anyhow!("{e}"))?;
         // Wo: `[hidden, intermediate]` HF → `[intermediate, hidden]` fuel.
-        let mlp_wo = load_transposed_matrix(
-            st,
-            &format!("model.layers.{i}.mlp.Wo.weight"),
-            h,
-            inter,
-        )
-        .map_err(|e| anyhow!("{e}"))?;
+        let mlp_wo =
+            load_transposed_matrix(st, &format!("model.layers.{i}.mlp.Wo.weight"), h, inter)
+                .map_err(|e| anyhow!("{e}"))?;
 
         layers.push(ModernBertLayerWeights {
             attn_norm_gain,
@@ -179,8 +167,8 @@ fn load_modernbert_weights(
         });
     }
 
-    let final_norm_gain = load_tensor_as_f32(st, "model.final_norm.weight")
-        .map_err(|e| anyhow!("{e}"))?;
+    let final_norm_gain =
+        load_tensor_as_f32(st, "model.final_norm.weight").map_err(|e| anyhow!("{e}"))?;
 
     Ok(ModernBertWeights {
         word_embedding: Arc::from(word_embedding),
@@ -193,9 +181,9 @@ fn load_modernbert_weights(
 /// MLM head weights: dense + norm + decoder.bias. Decoder weights are
 /// tied to the input token embedding.
 struct MlmHead {
-    head_dense: Arc<[f32]>,    // `[hidden, hidden]` in fuel `[in, out]` layout
+    head_dense: Arc<[f32]>,     // `[hidden, hidden]` in fuel `[in, out]` layout
     head_norm_gain: Arc<[f32]>, // `[hidden]`
-    decoder_bias: Arc<[f32]>,  // `[vocab]`
+    decoder_bias: Arc<[f32]>,   // `[vocab]`
 }
 
 fn load_mlm_head(
@@ -203,12 +191,10 @@ fn load_mlm_head(
     cfg: &ModernBertConfig,
 ) -> Result<MlmHead> {
     let h = cfg.hidden_size;
-    let head_dense = load_transposed_matrix(st, "head.dense.weight", h, h)
-        .map_err(|e| anyhow!("{e}"))?;
-    let head_norm_gain = load_tensor_as_f32(st, "head.norm.weight")
-        .map_err(|e| anyhow!("{e}"))?;
-    let decoder_bias = load_tensor_as_f32(st, "decoder.bias")
-        .map_err(|e| anyhow!("{e}"))?;
+    let head_dense =
+        load_transposed_matrix(st, "head.dense.weight", h, h).map_err(|e| anyhow!("{e}"))?;
+    let head_norm_gain = load_tensor_as_f32(st, "head.norm.weight").map_err(|e| anyhow!("{e}"))?;
+    let decoder_bias = load_tensor_as_f32(st, "decoder.bias").map_err(|e| anyhow!("{e}"))?;
     Ok(MlmHead {
         head_dense: Arc::from(head_dense),
         head_norm_gain: Arc::from(head_norm_gain),
@@ -228,10 +214,7 @@ fn apply_mlm_head(
     let v = cfg.vocab_size;
 
     // head.dense: linear (no bias)
-    let dense_t = hidden.const_f32_like(
-        Arc::clone(&mlm.head_dense),
-        Shape::from_dims(&[h, h]),
-    );
+    let dense_t = hidden.const_f32_like(Arc::clone(&mlm.head_dense), Shape::from_dims(&[h, h]));
     let x = hidden.matmul(&dense_t)?;
     // GELU
     let x = x.gelu_erf();
@@ -252,10 +235,8 @@ fn apply_mlm_head(
             decoder_w[j * v + vi] = word_embedding[vi * h + j];
         }
     }
-    let decoder_w_t = hidden.const_f32_like(
-        Arc::<[f32]>::from(decoder_w),
-        Shape::from_dims(&[h, v]),
-    );
+    let decoder_w_t =
+        hidden.const_f32_like(Arc::<[f32]>::from(decoder_w), Shape::from_dims(&[h, v]));
     let logits = x.matmul(&decoder_w_t)?;
     // Add decoder.bias broadcast over [1, seq].
     let bias_t = hidden
@@ -307,7 +288,10 @@ fn main() -> Result<()> {
         .map_err(|e| anyhow!("mmap safetensors: {e}"))?;
     let weights = load_modernbert_weights(&st, &cfg)?;
     let mlm = load_mlm_head(&st, &cfg)?;
-    let model = ModernBertModel { config: cfg.clone(), weights };
+    let model = ModernBertModel {
+        config: cfg.clone(),
+        weights,
+    };
 
     // Lazy port runs batch=1; we iterate prompts one at a time.
     let prompts: Vec<String> = match args.prompt {
@@ -325,12 +309,7 @@ fn main() -> Result<()> {
         let tokens: Vec<u32> = encoded.get_ids().to_vec();
 
         let hidden = model.forward(&tokens, None)?;
-        let logits = apply_mlm_head(
-            &hidden,
-            &mlm,
-            &model.weights.word_embedding,
-            &cfg,
-        )?;
+        let logits = apply_mlm_head(&hidden, &mlm, &model.weights.word_embedding, &cfg)?;
         let argmax = logits.argmax_dim(2_usize)?;
         let argmax_data = argmax.realize_u32();
 

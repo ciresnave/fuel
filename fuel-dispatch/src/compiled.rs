@@ -29,10 +29,10 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_ir::dispatch::OpKind;
-use fuel_ir::probe::BackendId;
 #[cfg_attr(not(feature = "cuda"), allow(unused_imports))]
 use fuel_ir::Error;
+use fuel_ir::dispatch::OpKind;
+use fuel_ir::probe::BackendId;
 use fuel_ir::{DType, Layout, Result};
 
 use crate::kernel::{KernelBindingTable, KernelCaps, KernelDTypes, KernelRef, OpParams};
@@ -241,9 +241,9 @@ fn produce_pending(
     {
         if will_be_waited {
             if let Some(out0) = outputs.first() {
-                let guard = out0
-                    .read()
-                    .map_err(|_| Error::Msg("output storage lock poisoned recording completion".into()).bt())?;
+                let guard = out0.read().map_err(|_| {
+                    Error::Msg("output storage lock poisoned recording completion".into()).bt()
+                })?;
                 if let fuel_memory::BackendStorage::Cuda(cuda_bytes) = &guard.inner {
                     // Step E B1: this is the single CUDA async-submit site — the kernel
                     // was just enqueued on the device stream. The completion handle's
@@ -254,7 +254,9 @@ fn produce_pending(
                     // counter.
                     let loc = cuda_bytes.device().location();
                     let ev = cuda_bytes.record_completion_event()?;
-                    return Ok(CompletionHandle::Pending(Box::new(CudaCompletion::new(ev, loc))));
+                    return Ok(CompletionHandle::Pending(Box::new(CudaCompletion::new(
+                        ev, loc,
+                    ))));
                 }
             }
         }
@@ -429,8 +431,7 @@ mod tests {
         let l = Layout::contiguous(fuel_ir::Shape::from(vec![2]));
         let layouts = vec![l.clone(), l.clone(), l];
 
-        let handle = execute_compiled(&compiled, &inputs, &mut outputs, &layouts)
-            .expect("execute");
+        let handle = execute_compiled(&compiled, &inputs, &mut outputs, &layouts).expect("execute");
         assert!(
             matches!(handle, CompletionHandle::Ready),
             "CPU execute_compiled must return Ready (A4b-1 behavior-preserving)",
@@ -464,10 +465,9 @@ mod tests {
             let l = Layout::contiguous(fuel_ir::Shape::from(vec![2]));
             let layouts = vec![l.clone(), l.clone(), l];
 
-            let handle = execute_compiled_with_wait_hint(
-                &compiled, &inputs, &mut outputs, &layouts, hint,
-            )
-            .expect("execute");
+            let handle =
+                execute_compiled_with_wait_hint(&compiled, &inputs, &mut outputs, &layouts, hint)
+                    .expect("execute");
             assert!(
                 matches!(handle, CompletionHandle::Ready),
                 "CPU path returns Ready regardless of the wait hint ({hint})",
@@ -486,8 +486,8 @@ mod tests {
     /// success; `Pending(c).wait()` delegates to the boxed `Completion`.
     #[test]
     fn completion_handle_ready_is_noop_pending_delegates() {
-        use std::sync::atomic::{AtomicBool, Ordering};
         use std::sync::Arc as StdArc;
+        use std::sync::atomic::{AtomicBool, Ordering};
 
         CompletionHandle::Ready.wait().expect("Ready.wait() is Ok");
 
@@ -511,7 +511,7 @@ mod tests {
     /// compile_node surfaces NoBackendForOp on missing binding.
     #[test]
     fn compile_node_errors_on_missing_binding() {
-        let bindings = KernelBindingTable::new();  // empty
+        let bindings = KernelBindingTable::new(); // empty
         let result = compile_node(
             OpKind::AddElementwise,
             &[DType::F32, DType::F32, DType::F32],

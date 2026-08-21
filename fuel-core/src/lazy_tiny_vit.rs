@@ -233,18 +233,28 @@ fn apply_conv2d_bn(x: &LazyTensor, w: &Conv2dBnWeights) -> Result<LazyTensor> {
         Arc::clone(&w.conv_w),
         Shape::from_dims(&[w.c_out, w.c_in / w.groups, w.kernel, w.kernel]),
     );
-    let conv = x.conv2d(&cw, None, (w.stride, w.stride), (w.padding, w.padding), w.groups)?;
+    let conv = x.conv2d(
+        &cw,
+        None,
+        (w.stride, w.stride),
+        (w.padding, w.padding),
+        w.groups,
+    )?;
     conv.channel_affine_4d(Arc::clone(&w.bn.w), Arc::clone(&w.bn.b))
 }
 
 /// SAM-style per-channel LayerNorm over (B, C, H, W). Delegates to the
 /// crate-private helper shared with `lazy_sam`.
-fn layer_norm_2d(
-    x: &LazyTensor, w: &LayerNorm2dWeights, c: usize, eps: f64,
-) -> Result<LazyTensor> {
-    crate::lazy_sam::layer_norm_2d(x, &SamLayerNormWeights {
-        gain: Arc::clone(&w.gain), bias: Arc::clone(&w.bias),
-    }, c, eps)
+fn layer_norm_2d(x: &LazyTensor, w: &LayerNorm2dWeights, c: usize, eps: f64) -> Result<LazyTensor> {
+    crate::lazy_sam::layer_norm_2d(
+        x,
+        &SamLayerNormWeights {
+            gain: Arc::clone(&w.gain),
+            bias: Arc::clone(&w.bias),
+        },
+        c,
+        eps,
+    )
 }
 
 fn apply_patch_embed(x: &LazyTensor, w: &PatchEmbedWeights) -> Result<LazyTensor> {
@@ -273,8 +283,10 @@ fn apply_patch_merging(x: &LazyTensor, w: &PatchMergingWeights) -> Result<LazyTe
         let (h, ww) = w.input_resolution;
         if c != w.dim {
             return Err(crate::Error::Msg(format!(
-                "PatchMerging: input C={c} != expected dim={}", w.dim,
-            )).bt());
+                "PatchMerging: input C={c} != expected dim={}",
+                w.dim,
+            ))
+            .bt());
         }
         x.reshape(Shape::from_dims(&[b, h, ww, c]))?
             .permute([0, 3, 1, 2_usize])?
@@ -295,42 +307,47 @@ fn apply_patch_merging(x: &LazyTensor, w: &PatchMergingWeights) -> Result<LazyTe
 }
 
 fn apply_mlp(x: &LazyTensor, w: &MlpWeights, in_dim: usize) -> Result<LazyTensor> {
-    let x_norm = x.layer_norm_affine(
-        Arc::clone(&w.norm.gain), Arc::clone(&w.norm.bias), 1e-5,
-    )?;
-    let h = w.fc1.apply_linear_with_bias(&x_norm, in_dim, w.fc1_bias.len(), Arc::clone(&w.fc1_bias))?;
+    let x_norm = x.layer_norm_affine(Arc::clone(&w.norm.gain), Arc::clone(&w.norm.bias), 1e-5)?;
+    let h =
+        w.fc1
+            .apply_linear_with_bias(&x_norm, in_dim, w.fc1_bias.len(), Arc::clone(&w.fc1_bias))?;
     let h = h.gelu();
-    w.fc2.apply_linear_with_bias(&h, w.fc1_bias.len(), in_dim, Arc::clone(&w.fc2_bias))
+    w.fc2
+        .apply_linear_with_bias(&h, w.fc1_bias.len(), in_dim, Arc::clone(&w.fc2_bias))
 }
 
 /// Apply windowed attention over the input `(B, L=window_size^2, dim)`.
 /// Adds the precomputed relative-position attention bias.
 fn apply_window_attn(
-    xs: &LazyTensor, w: &TinyVitAttnWeights, b: usize, n: usize, dim_in: usize,
+    xs: &LazyTensor,
+    w: &TinyVitAttnWeights,
+    b: usize,
+    n: usize,
+    dim_in: usize,
 ) -> Result<LazyTensor> {
-    let xs = xs.layer_norm_affine(
-        Arc::clone(&w.norm.gain), Arc::clone(&w.norm.bias), 1e-5,
-    )?;
+    let xs = xs.layer_norm_affine(Arc::clone(&w.norm.gain), Arc::clone(&w.norm.bias), 1e-5)?;
     let d_total = w.dh + 2 * w.num_heads * w.key_dim;
-    let qkv_flat = w.qkv.apply_linear_with_bias(
-        &xs, dim_in, d_total, Arc::clone(&w.qkv_bias),
-    )?;
+    let qkv_flat = w
+        .qkv
+        .apply_linear_with_bias(&xs, dim_in, d_total, Arc::clone(&w.qkv_bias))?;
     // (B, N, num_heads, d_total/num_heads).
     let per_head = d_total / w.num_heads;
     let qkv = qkv_flat.reshape(Shape::from_dims(&[b, n, w.num_heads, per_head]))?;
 
     // Slice along the last dim: Q is first key_dim, K is next key_dim,
     // V is remaining `d = attn_ratio * key_dim`.
-    let q = qkv.narrow(3_usize, 0, w.key_dim)?
+    let q = qkv
+        .narrow(3_usize, 0, w.key_dim)?
         .permute([0, 2, 1, 3_usize])?;
-    let k = qkv.narrow(3_usize, w.key_dim, w.key_dim)?
+    let k = qkv
+        .narrow(3_usize, w.key_dim, w.key_dim)?
         .permute([0, 2, 1, 3_usize])?;
-    let v = qkv.narrow(3_usize, 2 * w.key_dim, w.d)?
+    let v = qkv
+        .narrow(3_usize, 2 * w.key_dim, w.d)?
         .permute([0, 2, 1, 3_usize])?;
 
     let scale = 1.0_f64 / (w.key_dim as f64).sqrt();
-    let attn = q.matmul(&k.permute([0, 1, 3, 2_usize])?)?
-        .mul_scalar(scale);
+    let attn = q.matmul(&k.permute([0, 1, 3, 2_usize])?)?.mul_scalar(scale);
 
     // Build the per-batch relative-position bias by gathering
     // attention_biases[h, idxs[i*n+j]] for each (i, j) — produces
@@ -339,10 +356,7 @@ fn apply_window_attn(
         Arc::clone(&w.attention_biases),
         Shape::from_dims(&[w.num_heads, w.n_offsets]),
     );
-    let idxs = xs.const_u32_like(
-        w.attention_bias_idxs.to_vec(),
-        Shape::from_dims(&[n * n]),
-    );
+    let idxs = xs.const_u32_like(w.attention_bias_idxs.to_vec(), Shape::from_dims(&[n * n]));
     let ab = bias_table
         .index_select(1_usize, &idxs)?
         .reshape(Shape::from_dims(&[1, w.num_heads, n, n]))?
@@ -350,23 +364,24 @@ fn apply_window_attn(
     let attn = attn.add(&ab)?;
     let attn = attn.softmax_last_dim()?;
 
-    let out = attn.matmul(&v)?
+    let out = attn
+        .matmul(&v)?
         .permute([0, 2, 1, 3_usize])?
         .reshape(Shape::from_dims(&[b, n, w.dh]))?;
-    w.proj.apply_linear_with_bias(&out, w.dh, dim_in, Arc::clone(&w.proj_bias))
+    w.proj
+        .apply_linear_with_bias(&out, w.dh, dim_in, Arc::clone(&w.proj_bias))
 }
 
-fn apply_tiny_vit_block(
-    x: &LazyTensor, w: &TinyVitBlockWeights,
-) -> Result<LazyTensor> {
+fn apply_tiny_vit_block(x: &LazyTensor, w: &TinyVitBlockWeights) -> Result<LazyTensor> {
     let dims = x.shape();
     let dims = dims.dims();
     let (b, l, c) = (dims[0], dims[1], dims[2]);
     let (h, ww) = w.input_resolution;
     if c != w.dim {
-        return Err(crate::Error::Msg(format!(
-            "TinyViTBlock: input C={c} != block dim={}", w.dim,
-        )).bt());
+        return Err(crate::Error::Msg(
+            format!("TinyViTBlock: input C={c} != block dim={}", w.dim,),
+        )
+        .bt());
     }
 
     let res_x = x.clone();
@@ -409,33 +424,61 @@ fn apply_tiny_vit_block(
         let n_w = p_w / w.window_size;
         // (B, n_h, ws, n_w, ws, C) → (B*n_h*n_w, ws*ws, C).
         let windows = x_grid
-            .reshape(Shape::from_dims(&[b, n_h, w.window_size, n_w, w.window_size, c]))?
+            .reshape(Shape::from_dims(&[
+                b,
+                n_h,
+                w.window_size,
+                n_w,
+                w.window_size,
+                c,
+            ]))?
             .permute([0, 1, 3, 2, 4, 5_usize])?
-            .reshape(Shape::from_dims(&[b * n_h * n_w, w.window_size * w.window_size, c]))?;
+            .reshape(Shape::from_dims(&[
+                b * n_h * n_w,
+                w.window_size * w.window_size,
+                c,
+            ]))?;
         let win_attn = apply_window_attn(
-            &windows, &w.attn, b * n_h * n_w, w.window_size * w.window_size, c,
+            &windows,
+            &w.attn,
+            b * n_h * n_w,
+            w.window_size * w.window_size,
+            c,
         )?;
         // (B*n_h*n_w, ws*ws, C) → (B, n_h, n_w, ws, ws, C) → (B, p_h, p_w, C).
         let unwin = win_attn
-            .reshape(Shape::from_dims(&[b, n_h, n_w, w.window_size, w.window_size, c]))?
+            .reshape(Shape::from_dims(&[
+                b,
+                n_h,
+                n_w,
+                w.window_size,
+                w.window_size,
+                c,
+            ]))?
             .permute([0, 1, 3, 2, 4, 5_usize])?
             .reshape(Shape::from_dims(&[b, p_h, p_w, c]))?;
         // Strip padding on H and W.
         let unwin = if pad_b > 0 {
             unwin.narrow(1_usize, 0, h)?
-        } else { unwin };
+        } else {
+            unwin
+        };
         let unwin = if pad_r > 0 {
             unwin.narrow(2_usize, 0, ww)?
-        } else { unwin };
+        } else {
+            unwin
+        };
         unwin.reshape(Shape::from_dims(&[b, l, c]))?
     };
 
     let x = res_x.add(&attn_out)?;
     // DW local conv: (B, L, C) → (B, C, H, W) → DWConv → (B, C, L) → (B, L, C).
-    let x_nchw = x.permute([0, 2, 1_usize])?
+    let x_nchw = x
+        .permute([0, 2, 1_usize])?
         .reshape(Shape::from_dims(&[b, c, h, ww]))?;
     let x_conv = apply_conv2d_bn(&x_nchw, &w.local_conv)?;
-    let x = x_conv.reshape(Shape::from_dims(&[b, c, l]))?
+    let x = x_conv
+        .reshape(Shape::from_dims(&[b, c, l]))?
         .permute([0, 2, 1_usize])?;
     let mlp_out = apply_mlp(&x, &w.mlp, c)?;
     x.add(&mlp_out)
@@ -475,8 +518,13 @@ impl TinyVitModel {
         if image_chw.len() != cfg.in_chans * img * img {
             return Err(crate::Error::Msg(format!(
                 "TinyViTModel: expected {} f32s ({}x{}x{}), got {}",
-                cfg.in_chans * img * img, cfg.in_chans, img, img, image_chw.len(),
-            )).bt());
+                cfg.in_chans * img * img,
+                cfg.in_chans,
+                img,
+                img,
+                image_chw.len(),
+            ))
+            .bt());
         }
         let x = LazyTensor::from_f32(
             image_chw.to_vec(),
@@ -507,9 +555,11 @@ impl TinyVitModel {
         if last_side * last_side != l {
             return Err(crate::Error::Msg(format!(
                 "TinyViTModel::forward: post-stages token count L={l} is not a perfect square",
-            )).bt());
+            ))
+            .bt());
         }
-        let x_nchw = x.reshape(Shape::from_dims(&[b, last_side, last_side, c]))?
+        let x_nchw = x
+            .reshape(Shape::from_dims(&[b, last_side, last_side, c]))?
             .permute([0, 3, 1, 2_usize])?;
 
         // Neck: 2× (Conv + LN2d).
@@ -536,8 +586,13 @@ impl TinyVitModel {
 fn load_conv2d_bn(
     st: &crate::safetensors::MmapedSafetensors,
     prefix: &str,
-    c_in: usize, c_out: usize, kernel: usize, groups: usize,
-    stride: usize, padding: usize, bn_eps: f64,
+    c_in: usize,
+    c_out: usize,
+    kernel: usize,
+    groups: usize,
+    stride: usize,
+    padding: usize,
+    bn_eps: f64,
 ) -> Result<Conv2dBnWeights> {
     use crate::lazy::load_tensor_as_f32;
     let conv_w = Arc::from(load_tensor_as_f32(st, &format!("{prefix}.c.weight"))?);
@@ -547,7 +602,14 @@ fn load_conv2d_bn(
     let var = load_tensor_as_f32(st, &format!("{prefix}.bn.running_var"))?;
     let bn = BatchNormParams::from_raw(&gain, &bias, &mean, &var, bn_eps);
     Ok(Conv2dBnWeights {
-        conv_w, bn, c_out, c_in, kernel, groups, stride, padding,
+        conv_w,
+        bn,
+        c_out,
+        c_in,
+        kernel,
+        groups,
+        stride,
+        padding,
     })
 }
 
@@ -566,12 +628,31 @@ impl TinyVitWeights {
         // Patch embed: seq.0 = Conv2dBN(in_chans, first_dim/2, 3, stride=2, pad=1)
         //              seq.2 = Conv2dBN(first_dim/2, first_dim, 3, stride=2, pad=1)
         let pe_conv1 = load_conv2d_bn(
-            st, "patch_embed.seq.0", in_chans, first_dim / 2, 3, 1, 2, 1, bn_eps,
+            st,
+            "patch_embed.seq.0",
+            in_chans,
+            first_dim / 2,
+            3,
+            1,
+            2,
+            1,
+            bn_eps,
         )?;
         let pe_conv2 = load_conv2d_bn(
-            st, "patch_embed.seq.2", first_dim / 2, first_dim, 3, 1, 2, 1, bn_eps,
+            st,
+            "patch_embed.seq.2",
+            first_dim / 2,
+            first_dim,
+            3,
+            1,
+            2,
+            1,
+            bn_eps,
         )?;
-        let patch_embed = PatchEmbedWeights { conv1: pe_conv1, conv2: pe_conv2 };
+        let patch_embed = PatchEmbedWeights {
+            conv1: pe_conv1,
+            conv2: pe_conv2,
+        };
 
         // Stage 0: ConvLayer with MBConv blocks.
         let mut stage0_blocks = Vec::with_capacity(cfg.depths[0]);
@@ -579,28 +660,54 @@ impl TinyVitWeights {
         let hidden0 = dim0 * cfg.mbconv_expand_ratio;
         for i in 0..cfg.depths[0] {
             let p = format!("layers.0.blocks.{i}");
-            let conv1 = load_conv2d_bn(st, &format!("{p}.conv1"), dim0, hidden0, 1, 1, 1, 0, bn_eps)?;
-            let conv2 = load_conv2d_bn(st, &format!("{p}.conv2"), hidden0, hidden0, 3, hidden0, 1, 1, bn_eps)?;
-            let conv3 = load_conv2d_bn(st, &format!("{p}.conv3"), hidden0, dim0, 1, 1, 1, 0, bn_eps)?;
-            stage0_blocks.push(MbConvWeights { conv1, conv2, conv3 });
+            let conv1 =
+                load_conv2d_bn(st, &format!("{p}.conv1"), dim0, hidden0, 1, 1, 1, 0, bn_eps)?;
+            let conv2 = load_conv2d_bn(
+                st,
+                &format!("{p}.conv2"),
+                hidden0,
+                hidden0,
+                3,
+                hidden0,
+                1,
+                1,
+                bn_eps,
+            )?;
+            let conv3 =
+                load_conv2d_bn(st, &format!("{p}.conv3"), hidden0, dim0, 1, 1, 1, 0, bn_eps)?;
+            stage0_blocks.push(MbConvWeights {
+                conv1,
+                conv2,
+                conv3,
+            });
         }
         // Downsample to next dim (PatchMerging-style with 3 convs).
         let dim1 = cfg.embed_dims[1];
         let mut input_res = (cfg.img_size / 4, cfg.img_size / 4);
         let stage0_ds = {
             let p = "layers.0.downsample".to_string();
-            let conv1 = load_conv2d_bn(st, &format!("{p}.conv1"), dim0, dim1, 1, 1, 1, 0, bn_eps).ok();
-            let conv2 = load_conv2d_bn(st, &format!("{p}.conv2"), dim1, dim1, 3, dim1, 2, 1, bn_eps).ok();
-            let conv3 = load_conv2d_bn(st, &format!("{p}.conv3"), dim1, dim1, 1, 1, 1, 0, bn_eps).ok();
+            let conv1 =
+                load_conv2d_bn(st, &format!("{p}.conv1"), dim0, dim1, 1, 1, 1, 0, bn_eps).ok();
+            let conv2 =
+                load_conv2d_bn(st, &format!("{p}.conv2"), dim1, dim1, 3, dim1, 2, 1, bn_eps).ok();
+            let conv3 =
+                load_conv2d_bn(st, &format!("{p}.conv3"), dim1, dim1, 1, 1, 1, 0, bn_eps).ok();
             match (conv1, conv2, conv3) {
                 (Some(c1), Some(c2), Some(c3)) => Some(PatchMergingWeights {
-                    conv1: c1, conv2: c2, conv3: c3,
-                    input_resolution: input_res, dim: dim0, out: dim1,
+                    conv1: c1,
+                    conv2: c2,
+                    conv3: c3,
+                    input_resolution: input_res,
+                    dim: dim0,
+                    out: dim1,
                 }),
                 _ => None,
             }
         };
-        let stage0 = ConvLayerWeights { blocks: stage0_blocks, downsample: stage0_ds };
+        let stage0 = ConvLayerWeights {
+            blocks: stage0_blocks,
+            downsample: stage0_ds,
+        };
 
         // Stages 1..N: BasicLayer with TinyViTBlock.
         let load_ln = |prefix: &str| -> Result<SamLayerNormWeights> {
@@ -628,46 +735,62 @@ impl TinyVitWeights {
                 let p = format!("layers.{s}.blocks.{i}");
                 let norm = load_ln(&format!("{p}.attn.norm"))?;
                 let qkv = ltm(st, &format!("{p}.attn.qkv.weight"), d_total, dim)?;
-                let qkv_bias = Arc::from(load_tensor_as_f32(
-                    st, &format!("{p}.attn.qkv.bias"),
-                )?);
+                let qkv_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.attn.qkv.bias"))?);
                 let proj = ltm(st, &format!("{p}.attn.proj.weight"), dim, dh)?;
-                let proj_bias = Arc::from(load_tensor_as_f32(
-                    st, &format!("{p}.attn.proj.bias"),
-                )?);
+                let proj_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.attn.proj.bias"))?);
                 // attention_biases shape: [num_heads, n_distinct_offsets]
                 let attention_biases: Arc<[f32]> = Arc::from(load_tensor_as_f32(
-                    st, &format!("{p}.attn.attention_biases"),
+                    st,
+                    &format!("{p}.attn.attention_biases"),
                 )?);
                 let n_offsets = attention_biases.len() / num_heads;
                 // Build flat indexing table.
-                let attention_bias_idxs: Arc<[u32]> = Arc::from(
-                    build_attention_bias_idxs(window_size, n_offsets)
-                );
+                let attention_bias_idxs: Arc<[u32]> =
+                    Arc::from(build_attention_bias_idxs(window_size, n_offsets));
                 let attn = TinyVitAttnWeights {
-                    norm, qkv, qkv_bias, proj, proj_bias,
-                    attention_biases, attention_bias_idxs, n_offsets,
-                    key_dim, num_heads, d: dim, dh,
+                    norm,
+                    qkv,
+                    qkv_bias,
+                    proj,
+                    proj_bias,
+                    attention_biases,
+                    attention_bias_idxs,
+                    n_offsets,
+                    key_dim,
+                    num_heads,
+                    d: dim,
+                    dh,
                 };
                 let local_conv = load_conv2d_bn(
-                    st, &format!("{p}.local_conv"),
-                    dim, dim, cfg.local_conv_size, dim, 1, cfg.local_conv_size / 2, bn_eps,
+                    st,
+                    &format!("{p}.local_conv"),
+                    dim,
+                    dim,
+                    cfg.local_conv_size,
+                    dim,
+                    1,
+                    cfg.local_conv_size / 2,
+                    bn_eps,
                 )?;
                 let mlp_norm = load_ln(&format!("{p}.mlp.norm"))?;
                 let fc1 = ltm(st, &format!("{p}.mlp.fc1.weight"), dim * cfg.mlp_ratio, dim)?;
-                let fc1_bias = Arc::from(load_tensor_as_f32(
-                    st, &format!("{p}.mlp.fc1.bias"),
-                )?);
+                let fc1_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.mlp.fc1.bias"))?);
                 let fc2 = ltm(st, &format!("{p}.mlp.fc2.weight"), dim, dim * cfg.mlp_ratio)?;
-                let fc2_bias = Arc::from(load_tensor_as_f32(
-                    st, &format!("{p}.mlp.fc2.bias"),
-                )?);
+                let fc2_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.mlp.fc2.bias"))?);
                 let mlp = MlpWeights {
-                    norm: mlp_norm, fc1, fc1_bias, fc2, fc2_bias,
+                    norm: mlp_norm,
+                    fc1,
+                    fc1_bias,
+                    fc2,
+                    fc2_bias,
                 };
                 blocks.push(TinyVitBlockWeights {
-                    attn, local_conv, mlp,
-                    dim, input_resolution: input_res, window_size,
+                    attn,
+                    local_conv,
+                    mlp,
+                    dim,
+                    input_resolution: input_res,
+                    window_size,
                 });
                 let _ = n_tokens;
             }
@@ -675,17 +798,47 @@ impl TinyVitWeights {
             let downsample = if s + 1 < cfg.num_stages() {
                 let dim_next = cfg.embed_dims[s + 1];
                 let p = format!("layers.{s}.downsample");
-                let conv1 = load_conv2d_bn(st, &format!("{p}.conv1"), dim, dim_next, 1, 1, 1, 0, bn_eps).ok();
-                let conv2 = load_conv2d_bn(st, &format!("{p}.conv2"), dim_next, dim_next, 3, dim_next, 2, 1, bn_eps).ok();
-                let conv3 = load_conv2d_bn(st, &format!("{p}.conv3"), dim_next, dim_next, 1, 1, 1, 0, bn_eps).ok();
+                let conv1 =
+                    load_conv2d_bn(st, &format!("{p}.conv1"), dim, dim_next, 1, 1, 1, 0, bn_eps)
+                        .ok();
+                let conv2 = load_conv2d_bn(
+                    st,
+                    &format!("{p}.conv2"),
+                    dim_next,
+                    dim_next,
+                    3,
+                    dim_next,
+                    2,
+                    1,
+                    bn_eps,
+                )
+                .ok();
+                let conv3 = load_conv2d_bn(
+                    st,
+                    &format!("{p}.conv3"),
+                    dim_next,
+                    dim_next,
+                    1,
+                    1,
+                    1,
+                    0,
+                    bn_eps,
+                )
+                .ok();
                 match (conv1, conv2, conv3) {
                     (Some(c1), Some(c2), Some(c3)) => Some(PatchMergingWeights {
-                        conv1: c1, conv2: c2, conv3: c3,
-                        input_resolution: input_res, dim, out: dim_next,
+                        conv1: c1,
+                        conv2: c2,
+                        conv3: c3,
+                        input_resolution: input_res,
+                        dim,
+                        out: dim_next,
                     }),
                     _ => None,
                 }
-            } else { None };
+            } else {
+                None
+            };
 
             stages.push(BasicLayerWeights { blocks, downsample });
         }
@@ -706,7 +859,12 @@ impl TinyVitWeights {
         };
         let _ = last_dim;
 
-        Ok(Self { patch_embed, stage0, stages, neck })
+        Ok(Self {
+            patch_embed,
+            stage0,
+            stages,
+            neck,
+        })
     }
 }
 
@@ -735,14 +893,15 @@ fn build_attention_bias_idxs(window_size: usize, n_offsets: usize) -> Vec<u32> {
             let (ky, kx) = (ki / window_size, ki % window_size);
             let dy = qy.abs_diff(ky);
             let dx = qx.abs_diff(kx);
-            let off_idx = offsets.iter().position(|&o| o == (dy, dx))
-                .unwrap_or(0) as u32;
+            let off_idx = offsets.iter().position(|&o| o == (dy, dx)).unwrap_or(0) as u32;
             idxs[qi * n_tokens + ki] = off_idx;
         }
     }
     // Cap to n_offsets to ensure no OOB indexing.
     for i in idxs.iter_mut() {
-        if (*i as usize) >= n_offsets { *i = (n_offsets - 1) as u32; }
+        if (*i as usize) >= n_offsets {
+            *i = (n_offsets - 1) as u32;
+        }
     }
     idxs
 }
@@ -774,14 +933,24 @@ mod tests {
     }
 
     fn conv_bn(
-        c_in: usize, c_out: usize, kernel: usize, stride: usize, padding: usize, groups: usize,
+        c_in: usize,
+        c_out: usize,
+        kernel: usize,
+        stride: usize,
+        padding: usize,
+        groups: usize,
         nb: &mut dyn FnMut() -> f32,
     ) -> Conv2dBnWeights {
         let nw = c_out * (c_in / groups) * kernel * kernel;
         Conv2dBnWeights {
             conv_w: vec_of(nw, nb),
             bn: tiny_bn(c_out, nb),
-            c_out, c_in, kernel, groups, stride, padding,
+            c_out,
+            c_in,
+            kernel,
+            groups,
+            stride,
+            padding,
         }
     }
 
@@ -841,24 +1010,29 @@ mod tests {
         let e0 = cfg.embed_dims[0];
         let pe1 = conv_bn(in_c, e0 / 2, 3, 2, 1, 1, &mut nb);
         let pe2 = conv_bn(e0 / 2, e0, 3, 2, 1, 1, &mut nb);
-        let patch_embed = PatchEmbedWeights { conv1: pe1, conv2: pe2 };
+        let patch_embed = PatchEmbedWeights {
+            conv1: pe1,
+            conv2: pe2,
+        };
 
         // Stage 0: MBConv blocks + PatchMerging downsample to stage 1's dim.
         let pps0 = cfg.img_size / 4;
         let mb_hidden = e0 * cfg.mbconv_expand_ratio;
-        let stage0_blocks: Vec<MbConvWeights> = (0..cfg.depths[0]).map(|_| {
-            MbConvWeights {
+        let stage0_blocks: Vec<MbConvWeights> = (0..cfg.depths[0])
+            .map(|_| MbConvWeights {
                 conv1: conv_bn(e0, mb_hidden, 1, 1, 0, 1, &mut nb),
                 conv2: conv_bn(mb_hidden, mb_hidden, 3, 1, 1, mb_hidden, &mut nb),
                 conv3: conv_bn(mb_hidden, e0, 1, 1, 0, 1, &mut nb),
-            }
-        }).collect();
+            })
+            .collect();
         let e1 = cfg.embed_dims[1];
         let stage0_ds = PatchMergingWeights {
             conv1: conv_bn(e0, e1, 1, 1, 0, 1, &mut nb),
             conv2: conv_bn(e1, e1, 3, 2, 1, e1, &mut nb),
             conv3: conv_bn(e1, e1, 1, 1, 0, 1, &mut nb),
-            input_resolution: (pps0, pps0), dim: e0, out: e1,
+            input_resolution: (pps0, pps0),
+            dim: e0,
+            out: e1,
         };
         let stage0 = ConvLayerWeights {
             blocks: stage0_blocks,
@@ -882,45 +1056,72 @@ mod tests {
             let d_total = dh + 2 * nh * key_dim;
             let (attn_idxs, n_offsets) = make_attn_idxs(ws);
 
-            let blocks: Vec<TinyVitBlockWeights> = (0..cfg.depths[i]).map(|_| {
-                let attn = TinyVitAttnWeights {
-                    norm: ln_w(dim),
-                    qkv: WeightStorage::F32(vec_of(dim * d_total, &mut nb)),
-                    qkv_bias: vec_of(d_total, &mut nb),
-                    proj: WeightStorage::F32(vec_of(dh * dim, &mut nb)),
-                    proj_bias: vec_of(dim, &mut nb),
-                    attention_biases: vec_of(nh * n_offsets, &mut nb),
-                    attention_bias_idxs: Arc::from(attn_idxs.clone()),
-                    n_offsets, key_dim, num_heads: nh, d, dh,
-                };
-                TinyVitBlockWeights {
-                    attn,
-                    local_conv: conv_bn(dim, dim, cfg.local_conv_size, 1, cfg.local_conv_size/2, dim, &mut nb),
-                    mlp: MlpWeights {
+            let blocks: Vec<TinyVitBlockWeights> = (0..cfg.depths[i])
+                .map(|_| {
+                    let attn = TinyVitAttnWeights {
                         norm: ln_w(dim),
-                        fc1: WeightStorage::F32(vec_of(dim * dim * cfg.mlp_ratio, &mut nb)),
-                        fc1_bias: vec_of(dim * cfg.mlp_ratio, &mut nb),
-                        fc2: WeightStorage::F32(vec_of(dim * cfg.mlp_ratio * dim, &mut nb)),
-                        fc2_bias: vec_of(dim, &mut nb),
-                    },
-                    dim, input_resolution: (res, res), window_size: ws,
-                }
-            }).collect();
+                        qkv: WeightStorage::F32(vec_of(dim * d_total, &mut nb)),
+                        qkv_bias: vec_of(d_total, &mut nb),
+                        proj: WeightStorage::F32(vec_of(dh * dim, &mut nb)),
+                        proj_bias: vec_of(dim, &mut nb),
+                        attention_biases: vec_of(nh * n_offsets, &mut nb),
+                        attention_bias_idxs: Arc::from(attn_idxs.clone()),
+                        n_offsets,
+                        key_dim,
+                        num_heads: nh,
+                        d,
+                        dh,
+                    };
+                    TinyVitBlockWeights {
+                        attn,
+                        local_conv: conv_bn(
+                            dim,
+                            dim,
+                            cfg.local_conv_size,
+                            1,
+                            cfg.local_conv_size / 2,
+                            dim,
+                            &mut nb,
+                        ),
+                        mlp: MlpWeights {
+                            norm: ln_w(dim),
+                            fc1: WeightStorage::F32(vec_of(dim * dim * cfg.mlp_ratio, &mut nb)),
+                            fc1_bias: vec_of(dim * cfg.mlp_ratio, &mut nb),
+                            fc2: WeightStorage::F32(vec_of(dim * cfg.mlp_ratio * dim, &mut nb)),
+                            fc2_bias: vec_of(dim, &mut nb),
+                        },
+                        dim,
+                        input_resolution: (res, res),
+                        window_size: ws,
+                    }
+                })
+                .collect();
             let ds = if i < n_stages - 1 {
                 let next_dim = cfg.embed_dims[i + 1];
-                let stride = if [320, 448, 576].contains(&next_dim) { 1 } else { 2 };
+                let stride = if [320, 448, 576].contains(&next_dim) {
+                    1
+                } else {
+                    2
+                };
                 let ds_w = PatchMergingWeights {
                     conv1: conv_bn(dim, next_dim, 1, 1, 0, 1, &mut nb),
                     // Stride mirrors eager logic: 1 for {320,448,576} else 2.
                     conv2: conv_bn(next_dim, next_dim, 3, stride, 1, next_dim, &mut nb),
                     conv3: conv_bn(next_dim, next_dim, 1, 1, 0, 1, &mut nb),
-                    input_resolution: (res, res), dim, out: next_dim,
+                    input_resolution: (res, res),
+                    dim,
+                    out: next_dim,
                 };
                 // Advance current_res for the next stage's blocks.
                 current_res = if stride == 2 { res / 2 } else { res };
                 Some(ds_w)
-            } else { None };
-            stages.push(BasicLayerWeights { blocks, downsample: ds });
+            } else {
+                None
+            };
+            stages.push(BasicLayerWeights {
+                blocks,
+                downsample: ds,
+            });
         }
 
         let last_dim = *cfg.embed_dims.last().unwrap();
@@ -931,7 +1132,12 @@ mod tests {
             ln2: ln2d_w(256),
         };
 
-        TinyVitWeights { patch_embed, stage0, stages, neck }
+        TinyVitWeights {
+            patch_embed,
+            stage0,
+            stages,
+            neck,
+        }
     }
 
     #[test]
@@ -940,9 +1146,13 @@ mod tests {
         // the last → 32/4 (patch_embed) → 8 → 4 → 2 → 1 (no ds).
         // Final spatial side: 1. Neck output: (1, 256, 1, 1).
         let cfg = tiny_config();
-        let model = TinyVitModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = TinyVitModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let img: Vec<f32> = (0..cfg.in_chans * cfg.img_size * cfg.img_size)
-            .map(|i| ((i as f32) * 0.001) - 0.05).collect();
+            .map(|i| ((i as f32) * 0.001) - 0.05)
+            .collect();
         let out = model.forward(&img).unwrap();
         assert_eq!(out.shape().dims(), &[1, 256, 1, 1]);
         for &v in &out.realize_f32() {

@@ -6,8 +6,8 @@
 //! readers in `fuel-core/src/quantized/`.
 
 use crate::k_quants::{
-    self, BlockQ2K, BlockQ3K, BlockQ4K, BlockQ4_0, BlockQ4_1, BlockQ5K, BlockQ5_0, BlockQ5_1,
-    BlockQ6K, BlockQ8K, BlockQ8_0, BlockQ8_1, GgmlType,
+    self, BlockQ2K, BlockQ3K, BlockQ4_0, BlockQ4_1, BlockQ4K, BlockQ5_0, BlockQ5_1, BlockQ5K,
+    BlockQ6K, BlockQ8_0, BlockQ8_1, BlockQ8K, GgmlType,
 };
 use fuel_ir::quantized::GgmlDType;
 use fuel_ir::{HostBuffer, Result};

@@ -22,10 +22,10 @@
 //! is out of scope — v1 returns logits for the entire token
 //! sequence in one pass.
 
+use crate::Result;
 use crate::lazy::LazyTensor;
 use crate::lazy_blip_text::{BlipTextConfig, BlipTextModel, BlipTextWeights};
 use crate::lazy_blip_vision::{BlipVisionConfig, BlipVisionModel, BlipVisionWeights};
-use crate::Result;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct BlipConfig {
@@ -94,12 +94,10 @@ impl BlipForConditionalGeneration {
         // `text_config.encoder_hidden_size`, which must match the
         // vision tower's hidden dim.
         assert_eq!(
-            self.config.text_config.encoder_hidden_size,
-            self.config.vision_config.hidden_size,
+            self.config.text_config.encoder_hidden_size, self.config.vision_config.hidden_size,
             "BLIP: text_config.encoder_hidden_size ({}) must equal \
              vision_config.hidden_size ({})",
-            self.config.text_config.encoder_hidden_size,
-            self.config.vision_config.hidden_size,
+            self.config.text_config.encoder_hidden_size, self.config.vision_config.hidden_size,
         );
 
         // Text decoder cross-attends to encoder_hidden in every layer.
@@ -123,32 +121,30 @@ impl BlipWeights {
         st: &crate::safetensors::MmapedSafetensors,
         cfg: &BlipConfig,
     ) -> Result<Self> {
-        let vision = BlipVisionWeights::load_from_mmapped(
-            st, &cfg.vision_config, "vision_model.",
-        )?;
+        let vision = BlipVisionWeights::load_from_mmapped(st, &cfg.vision_config, "vision_model.")?;
         let text = BlipTextWeights::load_from_mmapped(
-            st, &cfg.text_config, cfg.vision_config.hidden_size, "text_decoder.",
+            st,
+            &cfg.text_config,
+            cfg.vision_config.hidden_size,
+            "text_decoder.",
         )?;
         Ok(Self { vision, text })
     }
 }
-
 
 // ---- Tests ---------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Device;
     use crate::lazy::WeightStorage;
     use crate::lazy_blip_text::{
-        BlipTextActivation, BlipTextAttentionWeights, BlipTextFfnWeights,
-        BlipTextLayerWeights,
+        BlipTextActivation, BlipTextAttentionWeights, BlipTextFfnWeights, BlipTextLayerWeights,
     };
     use crate::lazy_blip_vision::{
-        BlipMlpWeights, BlipVisionActivation, BlipVisionAttentionWeights,
-        BlipVisionLayerWeights,
+        BlipMlpWeights, BlipVisionActivation, BlipVisionAttentionWeights, BlipVisionLayerWeights,
     };
-    use crate::Device;
     use fuel_ir::Shape;
     use std::sync::Arc;
 
@@ -183,7 +179,10 @@ mod tests {
             hidden_activation: BlipTextActivation::Gelu,
             layer_norm_eps: 1e-12,
         };
-        BlipConfig { vision_config, text_config }
+        BlipConfig {
+            vision_config,
+            text_config,
+        }
     }
 
     fn ln_weights(dim: usize) -> crate::lazy_blip_vision::LayerNormWeights {
@@ -202,12 +201,11 @@ mod tests {
 
     fn tiny_vision_weights(cfg: &BlipVisionConfig) -> BlipVisionWeights {
         let mut next = rng(11111);
-        let mut vec_of = |n: usize| -> Arc<[f32]> {
-            Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
-        };
+        let mut vec_of =
+            |n: usize| -> Arc<[f32]> { Arc::from((0..n).map(|_| next()).collect::<Vec<_>>()) };
         let h = cfg.hidden_size;
-        let layers: Vec<_> = (0..cfg.num_hidden_layers).map(|_| {
-            BlipVisionLayerWeights {
+        let layers: Vec<_> = (0..cfg.num_hidden_layers)
+            .map(|_| BlipVisionLayerWeights {
                 ln1: ln_weights(h),
                 attn: BlipVisionAttentionWeights {
                     qkv: WeightStorage::F32(vec_of(h * 3 * h)),
@@ -222,8 +220,8 @@ mod tests {
                     fc2: WeightStorage::F32(vec_of(cfg.intermediate_size * h)),
                     fc2_bias: vec_of(h),
                 },
-            }
-        }).collect();
+            })
+            .collect();
         let np = cfg.num_patches();
         BlipVisionWeights {
             patch_proj: vec_of(h * 3 * cfg.patch_size * cfg.patch_size),
@@ -237,13 +235,12 @@ mod tests {
 
     fn tiny_text_weights(cfg: &BlipTextConfig) -> BlipTextWeights {
         let mut next = rng(22222);
-        let mut vec_of = |n: usize| -> Arc<[f32]> {
-            Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
-        };
+        let mut vec_of =
+            |n: usize| -> Arc<[f32]> { Arc::from((0..n).map(|_| next()).collect::<Vec<_>>()) };
         let h = cfg.hidden_size;
         let eh = cfg.encoder_hidden_size;
-        let layers: Vec<_> = (0..cfg.num_hidden_layers).map(|_| {
-            BlipTextLayerWeights {
+        let layers: Vec<_> = (0..cfg.num_hidden_layers)
+            .map(|_| BlipTextLayerWeights {
                 self_attn: BlipTextAttentionWeights {
                     query: WeightStorage::F32(vec_of(h * h)),
                     query_bias: vec_of(h),
@@ -273,8 +270,8 @@ mod tests {
                     output_bias: vec_of(h),
                     output_ln: ln_weights_text(h),
                 },
-            }
-        }).collect();
+            })
+            .collect();
         BlipTextWeights {
             word_embedding: vec_of(cfg.vocab_size * h),
             position_embedding: vec_of(cfg.max_position_embeddings * h),
@@ -312,11 +309,15 @@ mod tests {
         let text_weights = tiny_text_weights(&cfg.text_config);
         let model = BlipForConditionalGeneration {
             config: cfg.clone(),
-            weights: BlipWeights { vision: vision_weights, text: text_weights },
+            weights: BlipWeights {
+                vision: vision_weights,
+                text: text_weights,
+            },
         };
         let img_size = cfg.vision_config.image_size;
         let pixel_data: Vec<f32> = (0..1 * 3 * img_size * img_size)
-            .map(|i| ((i as f32) * 0.001) - 0.05).collect();
+            .map(|i| ((i as f32) * 0.001) - 0.05)
+            .collect();
         let pixels = LazyTensor::from_f32(
             pixel_data,
             Shape::from_dims(&[1, 3, img_size, img_size]),
@@ -338,25 +339,39 @@ mod tests {
         let text_weights = tiny_text_weights(&cfg.text_config);
         let model = BlipForConditionalGeneration {
             config: cfg.clone(),
-            weights: BlipWeights { vision: vision_weights, text: text_weights },
+            weights: BlipWeights {
+                vision: vision_weights,
+                text: text_weights,
+            },
         };
         let img_size = cfg.vision_config.image_size;
         let pixel_a: Vec<f32> = (0..3 * img_size * img_size)
-            .map(|i| (i as f32) * 0.001).collect();
+            .map(|i| (i as f32) * 0.001)
+            .collect();
         let pixel_b: Vec<f32> = (0..3 * img_size * img_size)
-            .map(|i| (i as f32) * -0.001 + 0.3).collect();
+            .map(|i| (i as f32) * -0.001 + 0.3)
+            .collect();
         let pa = LazyTensor::from_f32(
-            pixel_a, Shape::from_dims(&[1, 3, img_size, img_size]), &Device::cpu(),
+            pixel_a,
+            Shape::from_dims(&[1, 3, img_size, img_size]),
+            &Device::cpu(),
         );
         let pb = LazyTensor::from_f32(
-            pixel_b, Shape::from_dims(&[1, 3, img_size, img_size]), &Device::cpu(),
+            pixel_b,
+            Shape::from_dims(&[1, 3, img_size, img_size]),
+            &Device::cpu(),
         );
         let ids = vec![1_u32, 2, 3];
         let la = model.forward(&pa, &ids, 0).unwrap().realize_f32();
         let lb = model.forward(&pb, &ids, 0).unwrap().realize_f32();
-        let max_diff = la.iter().zip(lb.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff > 1e-6,
-            "different pixel inputs should yield different logits (max diff = {max_diff})");
+        let max_diff = la
+            .iter()
+            .zip(lb.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff > 1e-6,
+            "different pixel inputs should yield different logits (max diff = {max_diff})"
+        );
     }
 }

@@ -192,12 +192,16 @@ mod tests {
 
         let pick = LastEntrySelector.select(&set).expect("non-empty");
         assert_eq!(
-            pick.backend, BackendId::Cpu,
+            pick.backend,
+            BackendId::Cpu,
             "custom selector overrides default winner-pick",
         );
         // And the default would have picked AOCL — proves they
         // disagree.
-        assert_eq!(WinnerSelector.select(&set).unwrap().backend, BackendId::Cuda);
+        assert_eq!(
+            WinnerSelector.select(&set).unwrap().backend,
+            BackendId::Cuda
+        );
     }
 
     /// Trait is dyn-compatible so the executor can pass

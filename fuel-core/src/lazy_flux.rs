@@ -122,7 +122,9 @@ pub struct FluxLinear {
 
 impl FluxLinear {
     fn apply(&self, x: &LazyTensor) -> Result<LazyTensor> {
-        let y = self.weight.apply_linear(x, self.in_features, self.out_features)?;
+        let y = self
+            .weight
+            .apply_linear(x, self.in_features, self.out_features)?;
         match &self.bias {
             Some(b) => Ok(y.add_trailing_bias(Arc::clone(b))?),
             None => Ok(y),
@@ -198,14 +200,16 @@ impl FluxModulation {
         if dims.len() != 2 {
             return Err(crate::Error::Msg(format!(
                 "FluxModulation::forward: expected rank-2 output, got {dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         let (b, total) = (dims[0], dims[1]);
         if total % (3 * self.num_chunks) != 0 {
             return Err(crate::Error::Msg(format!(
                 "FluxModulation: trailing dim {total} not divisible by 3 * num_chunks ({})",
                 3 * self.num_chunks,
-            )).bt());
+            ))
+            .bt());
         }
         let dim = total / (3 * self.num_chunks);
         let y = y.reshape(Shape::from_dims(&[b, 1, 3 * self.num_chunks * dim]))?;
@@ -295,9 +299,7 @@ pub struct FluxWeights {
 /// `t * 1000`. Output `(B, dim)`.
 fn timestep_embedding(t: &LazyTensor, dim: usize) -> Result<LazyTensor> {
     if dim % 2 != 0 {
-        return Err(crate::Error::Msg(format!(
-            "timestep_embedding: dim {dim} must be even",
-        )).bt());
+        return Err(crate::Error::Msg(format!("timestep_embedding: dim {dim} must be even",)).bt());
     }
     let time_factor = 1000.0_f64;
     let max_period = 10_000.0_f64;
@@ -306,7 +308,8 @@ fn timestep_embedding(t: &LazyTensor, dim: usize) -> Result<LazyTensor> {
     if dims.len() != 1 {
         return Err(crate::Error::Msg(format!(
             "timestep_embedding: t must be rank-1, got {dims:?}",
-        )).bt());
+        ))
+        .bt());
     }
     let batch = dims[0];
     let t_scaled = t.mul_scalar(time_factor);
@@ -332,9 +335,7 @@ fn timestep_embedding(t: &LazyTensor, dim: usize) -> Result<LazyTensor> {
 /// `[[cos, -sin], [sin, cos]]`.
 fn rope_axis(pos: &LazyTensor, dim: usize, theta: usize) -> Result<LazyTensor> {
     if dim % 2 != 0 {
-        return Err(crate::Error::Msg(format!(
-            "rope_axis: dim {dim} must be even",
-        )).bt());
+        return Err(crate::Error::Msg(format!("rope_axis: dim {dim} must be even",)).bt());
     }
     let theta_f = theta as f64;
     let half = dim / 2;
@@ -345,7 +346,8 @@ fn rope_axis(pos: &LazyTensor, dim: usize, theta: usize) -> Result<LazyTensor> {
     if pos_dims.len() != 2 {
         return Err(crate::Error::Msg(format!(
             "rope_axis: pos must be rank-2 (B, N), got {pos_dims:?}",
-        )).bt());
+        ))
+        .bt());
     }
     let (b, n) = (pos_dims[0], pos_dims[1]);
     let inv_freq_t = pos
@@ -376,14 +378,16 @@ fn embed_nd(ids: &LazyTensor, axes_dim: &[usize], theta: usize) -> Result<LazyTe
     if dims.len() != 3 {
         return Err(crate::Error::Msg(format!(
             "embed_nd: ids must be rank-3 (B, N, n_axes), got {dims:?}",
-        )).bt());
+        ))
+        .bt());
     }
     let n_axes = dims[2];
     if n_axes != axes_dim.len() {
         return Err(crate::Error::Msg(format!(
             "embed_nd: ids trailing dim {n_axes} != axes_dim.len() {}",
             axes_dim.len(),
-        )).bt());
+        ))
+        .bt());
     }
     let mut per_axis: Vec<LazyTensor> = Vec::with_capacity(n_axes);
     for i in 0..n_axes {
@@ -407,13 +411,12 @@ fn apply_rope(x: &LazyTensor, pe: &LazyTensor) -> Result<LazyTensor> {
     if x_dims.len() != 4 {
         return Err(crate::Error::Msg(format!(
             "apply_rope: x must be rank-4 (B, H, S, D), got {x_dims:?}",
-        )).bt());
+        ))
+        .bt());
     }
     let (b, h, s, d) = (x_dims[0], x_dims[1], x_dims[2], x_dims[3]);
     if d % 2 != 0 {
-        return Err(crate::Error::Msg(format!(
-            "apply_rope: head dim {d} must be even",
-        )).bt());
+        return Err(crate::Error::Msg(format!("apply_rope: head dim {d} must be even",)).bt());
     }
     // x: (B, H, S, D/2, 2)
     let x5 = x.reshape(Shape::from_dims(&[b, h, s, d / 2, 2]))?;
@@ -425,7 +428,8 @@ fn apply_rope(x: &LazyTensor, pe: &LazyTensor) -> Result<LazyTensor> {
     if pe_dims.len() != 6 {
         return Err(crate::Error::Msg(format!(
             "apply_rope: pe must be rank-6 (B, 1, S, D/2, 2, 2), got {pe_dims:?}",
-        )).bt());
+        ))
+        .bt());
     }
     let fr0 = pe.narrow(5_usize, 0, 1)?.squeeze(5_usize)?; // (B, 1, S, D/2, 2)
     let fr1 = pe.narrow(5_usize, 1, 1)?.squeeze(5_usize)?; // (B, 1, S, D/2, 2)
@@ -443,7 +447,11 @@ fn apply_rope(x: &LazyTensor, pe: &LazyTensor) -> Result<LazyTensor> {
 /// Apply rope to q,k then run scaled-dot-product attention. Returns
 /// `(B, S, H*D)`.
 fn attention(
-    q: &LazyTensor, k: &LazyTensor, v: &LazyTensor, pe: &LazyTensor, head_dim: usize,
+    q: &LazyTensor,
+    k: &LazyTensor,
+    v: &LazyTensor,
+    pe: &LazyTensor,
+    head_dim: usize,
 ) -> Result<LazyTensor> {
     let q = apply_rope(q, pe)?;
     let k = apply_rope(k, pe)?;
@@ -469,12 +477,19 @@ fn split_qkv_with_qknorm(
     if dims.len() != 3 {
         return Err(crate::Error::Msg(format!(
             "split_qkv_with_qknorm: input must be rank-3, got {dims:?}",
-        )).bt());
+        ))
+        .bt());
     }
     let dim = num_heads * head_dim;
-    let q = qkv.narrow(2_usize, 0, dim)?.split_heads(num_heads, head_dim)?;
-    let k = qkv.narrow(2_usize, dim, dim)?.split_heads(num_heads, head_dim)?;
-    let v = qkv.narrow(2_usize, 2 * dim, dim)?.split_heads(num_heads, head_dim)?;
+    let q = qkv
+        .narrow(2_usize, 0, dim)?
+        .split_heads(num_heads, head_dim)?;
+    let k = qkv
+        .narrow(2_usize, dim, dim)?
+        .split_heads(num_heads, head_dim)?;
+    let v = qkv
+        .narrow(2_usize, 2 * dim, dim)?
+        .split_heads(num_heads, head_dim)?;
     let (q, k) = if qk_norm_enabled {
         let q = q.rms_norm_affine(Arc::clone(&qk_norm.query_gain), 1e-6)?;
         let k = k.rms_norm_affine(Arc::clone(&qk_norm.key_gain), 1e-6)?;
@@ -500,7 +515,8 @@ fn apply_double_stream(
     if img_mods.len() != 2 || txt_mods.len() != 2 {
         return Err(crate::Error::Msg(
             "apply_double_stream: each modulation must produce 2 chunks".into(),
-        ).bt());
+        )
+        .bt());
     }
     let (img_mod1, img_mod2) = (&img_mods[0], &img_mods[1]);
     let (txt_mod1, txt_mod2) = (&txt_mods[0], &txt_mods[1]);
@@ -510,16 +526,22 @@ fn apply_double_stream(
     let img_n = img_mod1.scale_shift(&img_n)?;
     let img_qkv = blk.img_attn.qkv.apply(&img_n)?;
     let (img_q, img_k, img_v) = split_qkv_with_qknorm(
-        &img_qkv, blk.img_attn.num_heads, blk.img_attn.head_dim,
-        &blk.img_attn.qk_norm, cfg.qk_norm,
+        &img_qkv,
+        blk.img_attn.num_heads,
+        blk.img_attn.head_dim,
+        &blk.img_attn.qk_norm,
+        cfg.qk_norm,
     )?;
 
     let txt_n = txt.layer_norm_last_dim(1e-6)?;
     let txt_n = txt_mod1.scale_shift(&txt_n)?;
     let txt_qkv = blk.txt_attn.qkv.apply(&txt_n)?;
     let (txt_q, txt_k, txt_v) = split_qkv_with_qknorm(
-        &txt_qkv, blk.txt_attn.num_heads, blk.txt_attn.head_dim,
-        &blk.txt_attn.qk_norm, cfg.qk_norm,
+        &txt_qkv,
+        blk.txt_attn.num_heads,
+        blk.txt_attn.head_dim,
+        &blk.txt_attn.qk_norm,
+        cfg.qk_norm,
     )?;
 
     // Joint attention: cat over the sequence axis (dim 2 in the
@@ -570,7 +592,8 @@ fn apply_single_stream(
     if mods.len() != 1 {
         return Err(crate::Error::Msg(
             "apply_single_stream: modulation must produce 1 chunk".into(),
-        ).bt());
+        )
+        .bt());
     }
     let m = &mods[0];
     let h = blk.num_heads * blk.head_dim;
@@ -579,9 +602,8 @@ fn apply_single_stream(
     let proj = blk.linear1.apply(&x_mod)?;
     let qkv = proj.narrow(2_usize, 0, 3 * h)?;
     let mlp_part = proj.narrow(2_usize, 3 * h, blk.mlp_hidden)?;
-    let (q, k, v) = split_qkv_with_qknorm(
-        &qkv, blk.num_heads, blk.head_dim, &blk.qk_norm, cfg.qk_norm,
-    )?;
+    let (q, k, v) =
+        split_qkv_with_qknorm(&qkv, blk.num_heads, blk.head_dim, &blk.qk_norm, cfg.qk_norm)?;
     let attn = attention(&q, &k, &v, pe, blk.head_dim)?;
     let mlp = mlp_part.gelu();
     let merged = attn.concat(&mlp, 2_usize)?;
@@ -592,7 +614,9 @@ fn apply_single_stream(
 // ---- LastLayer -------------------------------------------------------------
 
 fn apply_last_layer(
-    xs: &LazyTensor, vec_c: &LazyTensor, last: &FluxLastLayer,
+    xs: &LazyTensor,
+    vec_c: &LazyTensor,
+    last: &FluxLastLayer,
 ) -> Result<LazyTensor> {
     let h = vec_c.silu();
     let proj = last.ada_ln_modulation.apply(&h)?;
@@ -601,7 +625,8 @@ fn apply_last_layer(
         return Err(crate::Error::Msg(format!(
             "apply_last_layer: expected 2 chunks from adaLN, got {}",
             chunks.len(),
-        )).bt());
+        ))
+        .bt());
     }
     let shift = chunks[0].unsqueeze(1_usize)?;
     let scale = chunks[1].unsqueeze(1_usize)?;
@@ -639,13 +664,17 @@ impl FluxModel {
         let cfg = &self.config;
         if txt.rank() != 3 {
             return Err(crate::Error::Msg(format!(
-                "FluxModel::forward: txt must be rank-3, got {}", txt.rank(),
-            )).bt());
+                "FluxModel::forward: txt must be rank-3, got {}",
+                txt.rank(),
+            ))
+            .bt());
         }
         if img.rank() != 3 {
             return Err(crate::Error::Msg(format!(
-                "FluxModel::forward: img must be rank-3, got {}", img.rank(),
-            )).bt());
+                "FluxModel::forward: img must be rank-3, got {}",
+                img.rank(),
+            ))
+            .bt());
         }
 
         // Concatenate ids over the sequence axis (dim 1) → run rope.
@@ -664,8 +693,7 @@ impl FluxModel {
         vec_c = vec_c.add(&self.weights.vector_in.forward(y)?)?;
 
         for blk in &self.weights.double_blocks {
-            let (new_img, new_txt) =
-                apply_double_stream(&img_h, &txt_h, &vec_c, &pe, blk, cfg)?;
+            let (new_img, new_txt) = apply_double_stream(&img_h, &txt_h, &vec_c, &pe, blk, cfg)?;
             img_h = new_img;
             txt_h = new_txt;
         }
@@ -705,10 +733,13 @@ impl QuantizedFluxModel {
         y: &LazyTensor,
         guidance: Option<&LazyTensor>,
     ) -> Result<LazyTensor> {
-        self.inner.forward(img, img_ids, txt, txt_ids, timesteps, y, guidance)
+        self.inner
+            .forward(img, img_ids, txt, txt_ids, timesteps, y, guidance)
     }
 
-    pub fn inner(&self) -> &FluxModel { &self.inner }
+    pub fn inner(&self) -> &FluxModel {
+        &self.inner
+    }
 
     /// Quantize every Linear weight in a source [`FluxModel`] to Q4_0
     /// and return the wrapped model. Linears whose `in_features` are
@@ -769,7 +800,8 @@ fn bake_linear(l: &mut FluxLinear) -> Result<()> {
             let _ = other;
             return Err(crate::Error::Msg(
                 "bake_linear: source weight must be F32 or already Q4_0".into(),
-            ).bt());
+            )
+            .bt());
         }
     };
     l.weight = quantize_in_out_to_q4_0(&f32_in_out, l.in_features, l.out_features)?;
@@ -777,14 +809,17 @@ fn bake_linear(l: &mut FluxLinear) -> Result<()> {
 }
 
 fn quantize_in_out_to_q4_0(
-    f32_in_out: &[f32], in_features: usize, out_features: usize,
+    f32_in_out: &[f32],
+    in_features: usize,
+    out_features: usize,
 ) -> Result<WeightStorage> {
     use fuel_quantized::{BlockQ4_0, GgmlType};
     const QK4_0: usize = 32;
     if in_features % QK4_0 != 0 {
         return Err(crate::Error::Msg(format!(
             "quantize_in_out_to_q4_0: in_features ({in_features}) must be divisible by {QK4_0}",
-        )).bt());
+        ))
+        .bt());
     }
     let mut f32_out_in = vec![0.0_f32; out_features * in_features];
     for o in 0..out_features {
@@ -796,13 +831,13 @@ fn quantize_in_out_to_q4_0(
     let mut blocks: Vec<BlockQ4_0> = vec![BlockQ4_0::zeros(); n_blocks];
     BlockQ4_0::from_float(&f32_out_in, &mut blocks);
     let bytes_len = n_blocks * std::mem::size_of::<BlockQ4_0>();
-    let byte_slice: &[u8] = unsafe {
-        std::slice::from_raw_parts(blocks.as_ptr() as *const u8, bytes_len)
-    };
+    let byte_slice: &[u8] =
+        unsafe { std::slice::from_raw_parts(blocks.as_ptr() as *const u8, bytes_len) };
     let padded_len = bytes_len.div_ceil(4) * 4;
     let mut padded = vec![0_u8; padded_len];
     padded[..bytes_len].copy_from_slice(byte_slice);
-    let words: Vec<u32> = padded.chunks_exact(4)
+    let words: Vec<u32> = padded
+        .chunks_exact(4)
         .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     Ok(WeightStorage::Q4_0 {
@@ -852,10 +887,14 @@ impl FluxVaeConfig {
 
 #[derive(Debug, Clone)]
 pub struct VaeResnetWeights {
-    pub n1_g: Arc<[f32]>, pub n1_b: Arc<[f32]>,
-    pub c1_w: Arc<[f32]>, pub c1_b: Arc<[f32]>,
-    pub n2_g: Arc<[f32]>, pub n2_b: Arc<[f32]>,
-    pub c2_w: Arc<[f32]>, pub c2_b: Arc<[f32]>,
+    pub n1_g: Arc<[f32]>,
+    pub n1_b: Arc<[f32]>,
+    pub c1_w: Arc<[f32]>,
+    pub c1_b: Arc<[f32]>,
+    pub n2_g: Arc<[f32]>,
+    pub n2_b: Arc<[f32]>,
+    pub c2_w: Arc<[f32]>,
+    pub c2_b: Arc<[f32]>,
     pub shortcut_w: Option<Arc<[f32]>>,
     pub shortcut_b: Option<Arc<[f32]>>,
     pub in_channels: usize,
@@ -864,11 +903,16 @@ pub struct VaeResnetWeights {
 
 #[derive(Debug, Clone)]
 pub struct VaeAttnWeights {
-    pub gn_g: Arc<[f32]>, pub gn_b: Arc<[f32]>,
-    pub q_w: Arc<[f32]>, pub q_b: Arc<[f32]>,
-    pub k_w: Arc<[f32]>, pub k_b: Arc<[f32]>,
-    pub v_w: Arc<[f32]>, pub v_b: Arc<[f32]>,
-    pub out_w: Arc<[f32]>, pub out_b: Arc<[f32]>,
+    pub gn_g: Arc<[f32]>,
+    pub gn_b: Arc<[f32]>,
+    pub q_w: Arc<[f32]>,
+    pub q_b: Arc<[f32]>,
+    pub k_w: Arc<[f32]>,
+    pub k_b: Arc<[f32]>,
+    pub v_w: Arc<[f32]>,
+    pub v_b: Arc<[f32]>,
+    pub out_w: Arc<[f32]>,
+    pub out_b: Arc<[f32]>,
     pub channels: usize,
 }
 
@@ -886,24 +930,30 @@ pub struct VaeUpBlock {
 
 #[derive(Debug, Clone)]
 pub struct FluxVaeEncoderWeights {
-    pub conv_in_w: Arc<[f32]>, pub conv_in_b: Arc<[f32]>,
+    pub conv_in_w: Arc<[f32]>,
+    pub conv_in_b: Arc<[f32]>,
     pub down: Vec<VaeDownBlock>,
     pub mid1: VaeResnetWeights,
     pub mid_attn: VaeAttnWeights,
     pub mid2: VaeResnetWeights,
-    pub norm_out_g: Arc<[f32]>, pub norm_out_b: Arc<[f32]>,
-    pub conv_out_w: Arc<[f32]>, pub conv_out_b: Arc<[f32]>,
+    pub norm_out_g: Arc<[f32]>,
+    pub norm_out_b: Arc<[f32]>,
+    pub conv_out_w: Arc<[f32]>,
+    pub conv_out_b: Arc<[f32]>,
 }
 
 #[derive(Debug, Clone)]
 pub struct FluxVaeDecoderWeights {
-    pub conv_in_w: Arc<[f32]>, pub conv_in_b: Arc<[f32]>,
+    pub conv_in_w: Arc<[f32]>,
+    pub conv_in_b: Arc<[f32]>,
     pub mid1: VaeResnetWeights,
     pub mid_attn: VaeAttnWeights,
     pub mid2: VaeResnetWeights,
     pub up: Vec<VaeUpBlock>,
-    pub norm_out_g: Arc<[f32]>, pub norm_out_b: Arc<[f32]>,
-    pub conv_out_w: Arc<[f32]>, pub conv_out_b: Arc<[f32]>,
+    pub norm_out_g: Arc<[f32]>,
+    pub norm_out_b: Arc<[f32]>,
+    pub conv_out_w: Arc<[f32]>,
+    pub conv_out_b: Arc<[f32]>,
 }
 
 #[derive(Debug, Clone)]
@@ -941,7 +991,16 @@ impl FluxVae {
         let h_dims = h.shape().dims().to_vec();
         let (b, c, hh, ww) = (h_dims[0], h_dims[1], h_dims[2], h_dims[3]);
         let _ = b;
-        let h = group_norm(&h, &w.norm_out_g, &w.norm_out_b, cfg.norm_num_groups, cfg.norm_eps, c, hh, ww)?;
+        let h = group_norm(
+            &h,
+            &w.norm_out_g,
+            &w.norm_out_b,
+            cfg.norm_num_groups,
+            cfg.norm_eps,
+            c,
+            hh,
+            ww,
+        )?;
         let h = h.silu();
         let h = conv2d_k3_s1_p1(&h, &w.conv_out_w, &w.conv_out_b, c, 2 * cfg.z_channels)?;
         // Take the mean (first z_channels) — deterministic encode.
@@ -979,7 +1038,16 @@ impl FluxVae {
         let h_dims = h.shape().dims().to_vec();
         let (b, c, hh, ww) = (h_dims[0], h_dims[1], h_dims[2], h_dims[3]);
         let _ = b;
-        let h = group_norm(&h, &w.norm_out_g, &w.norm_out_b, cfg.norm_num_groups, cfg.norm_eps, c, hh, ww)?;
+        let h = group_norm(
+            &h,
+            &w.norm_out_g,
+            &w.norm_out_b,
+            cfg.norm_num_groups,
+            cfg.norm_eps,
+            c,
+            hh,
+            ww,
+        )?;
         let h = h.silu();
         conv2d_k3_s1_p1(&h, &w.conv_out_w, &w.conv_out_b, c, cfg.out_ch)
     }
@@ -987,17 +1055,33 @@ impl FluxVae {
 
 // ---- VAE primitives --------------------------------------------------------
 
-fn vae_resnet(
-    x: &LazyTensor, rw: &VaeResnetWeights, cfg: &FluxVaeConfig,
-) -> Result<LazyTensor> {
+fn vae_resnet(x: &LazyTensor, rw: &VaeResnetWeights, cfg: &FluxVaeConfig) -> Result<LazyTensor> {
     let dims = x.shape().dims().to_vec();
     let (b, c_in, h, w) = (dims[0], dims[1], dims[2], dims[3]);
     let _ = b;
     let c_out = rw.out_channels;
-    let h1 = group_norm(x, &rw.n1_g, &rw.n1_b, cfg.norm_num_groups, cfg.norm_eps, c_in, h, w)?;
+    let h1 = group_norm(
+        x,
+        &rw.n1_g,
+        &rw.n1_b,
+        cfg.norm_num_groups,
+        cfg.norm_eps,
+        c_in,
+        h,
+        w,
+    )?;
     let h1 = h1.silu();
     let h1 = conv2d_k3_s1_p1(&h1, &rw.c1_w, &rw.c1_b, c_in, c_out)?;
-    let h2 = group_norm(&h1, &rw.n2_g, &rw.n2_b, cfg.norm_num_groups, cfg.norm_eps, c_out, h, w)?;
+    let h2 = group_norm(
+        &h1,
+        &rw.n2_g,
+        &rw.n2_b,
+        cfg.norm_num_groups,
+        cfg.norm_eps,
+        c_out,
+        h,
+        w,
+    )?;
     let h2 = h2.silu();
     let h2 = conv2d_k3_s1_p1(&h2, &rw.c2_w, &rw.c2_b, c_out, c_out)?;
     let shortcut = match (&rw.shortcut_w, &rw.shortcut_b) {
@@ -1009,18 +1093,30 @@ fn vae_resnet(
 
 /// Self-attention over `H*W` positions with 1x1 conv projections.
 fn vae_spatial_attention(
-    x: &LazyTensor, aw: &VaeAttnWeights, cfg: &FluxVaeConfig,
+    x: &LazyTensor,
+    aw: &VaeAttnWeights,
+    cfg: &FluxVaeConfig,
 ) -> Result<LazyTensor> {
     let dims = x.shape().dims().to_vec();
     let (b, c, h, w) = (dims[0], dims[1], dims[2], dims[3]);
-    let xn = group_norm(x, &aw.gn_g, &aw.gn_b, cfg.norm_num_groups, cfg.norm_eps, c, h, w)?;
+    let xn = group_norm(
+        x,
+        &aw.gn_g,
+        &aw.gn_b,
+        cfg.norm_num_groups,
+        cfg.norm_eps,
+        c,
+        h,
+        w,
+    )?;
     let q = conv2d_k1_s1_p0(&xn, &aw.q_w, &aw.q_b, c, c)?;
     let k = conv2d_k1_s1_p0(&xn, &aw.k_w, &aw.k_b, c, c)?;
     let v = conv2d_k1_s1_p0(&xn, &aw.v_w, &aw.v_b, c, c)?;
     // (B, C, H, W) → (B, H*W, C)
     let n = h * w;
     let to_seq = |t: &LazyTensor| -> Result<LazyTensor> {
-        Ok(t.reshape(Shape::from_dims(&[b, c, n]))?.permute([0, 2, 1_usize])?)
+        Ok(t.reshape(Shape::from_dims(&[b, c, n]))?
+            .permute([0, 2, 1_usize])?)
     };
     let q = to_seq(&q)?;
     let k = to_seq(&k)?;
@@ -1031,16 +1127,16 @@ fn vae_spatial_attention(
     let probs = scores.softmax_last_dim()?;
     let ctx = probs.matmul(&v)?; // (B, N, C)
     // Back to (B, C, H, W)
-    let ctx_chw = ctx.permute([0, 2, 1_usize])?.reshape(Shape::from_dims(&[b, c, h, w]))?;
+    let ctx_chw = ctx
+        .permute([0, 2, 1_usize])?
+        .reshape(Shape::from_dims(&[b, c, h, w]))?;
     let proj = conv2d_k1_s1_p0(&ctx_chw, &aw.out_w, &aw.out_b, c, c)?;
     x.add(&proj)
 }
 
 /// Downsample: pad right + bottom by 1, then stride-2 3x3 conv. Eager
 /// uses asymmetric padding to keep parity with the upstream Flux Python.
-fn downsample_conv(
-    x: &LazyTensor, w: &Arc<[f32]>, b: &Arc<[f32]>, c: usize,
-) -> Result<LazyTensor> {
+fn downsample_conv(x: &LazyTensor, w: &Arc<[f32]>, b: &Arc<[f32]>, c: usize) -> Result<LazyTensor> {
     let x = x.pad_with_zeros(3_usize, 0, 1)?;
     let x = x.pad_with_zeros(2_usize, 0, 1)?;
     let w_t = x.const_f32_like(Arc::clone(w), Shape::from_dims(&[c, c, 3, 3]));
@@ -1049,9 +1145,7 @@ fn downsample_conv(
 }
 
 /// Upsample: 2x nearest then 3x3 stride-1 padding-1 conv.
-fn upsample_conv(
-    x: &LazyTensor, w: &Arc<[f32]>, b: &Arc<[f32]>, c: usize,
-) -> Result<LazyTensor> {
+fn upsample_conv(x: &LazyTensor, w: &Arc<[f32]>, b: &Arc<[f32]>, c: usize) -> Result<LazyTensor> {
     let x = x.upsample_nearest2d(2)?;
     let w_t = x.const_f32_like(Arc::clone(w), Shape::from_dims(&[c, c, 3, 3]));
     let b_t = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[c]));
@@ -1059,7 +1153,11 @@ fn upsample_conv(
 }
 
 fn conv2d_k3_s1_p1(
-    x: &LazyTensor, w: &Arc<[f32]>, b: &Arc<[f32]>, cin: usize, cout: usize,
+    x: &LazyTensor,
+    w: &Arc<[f32]>,
+    b: &Arc<[f32]>,
+    cin: usize,
+    cout: usize,
 ) -> Result<LazyTensor> {
     let w_t = x.const_f32_like(Arc::clone(w), Shape::from_dims(&[cout, cin, 3, 3]));
     let b_t = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[cout]));
@@ -1067,7 +1165,11 @@ fn conv2d_k3_s1_p1(
 }
 
 fn conv2d_k1_s1_p0(
-    x: &LazyTensor, w: &Arc<[f32]>, b: &Arc<[f32]>, cin: usize, cout: usize,
+    x: &LazyTensor,
+    w: &Arc<[f32]>,
+    b: &Arc<[f32]>,
+    cin: usize,
+    cout: usize,
 ) -> Result<LazyTensor> {
     let w_t = x.const_f32_like(Arc::clone(w), Shape::from_dims(&[cout, cin, 1, 1]));
     let b_t = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[cout]));
@@ -1075,14 +1177,20 @@ fn conv2d_k1_s1_p0(
 }
 
 fn group_norm(
-    x: &LazyTensor, gamma: &Arc<[f32]>, beta: &Arc<[f32]>,
-    groups: usize, eps: f64,
-    c: usize, h: usize, w: usize,
+    x: &LazyTensor,
+    gamma: &Arc<[f32]>,
+    beta: &Arc<[f32]>,
+    groups: usize,
+    eps: f64,
+    c: usize,
+    h: usize,
+    w: usize,
 ) -> Result<LazyTensor> {
     if c % groups != 0 {
         return Err(crate::Error::Msg(format!(
             "group_norm: C={c} not divisible by groups={groups}",
-        )).bt());
+        ))
+        .bt());
     }
     let dims = x.shape().dims().to_vec();
     let b = dims[0];
@@ -1132,12 +1240,23 @@ pub struct FlowMatchScheduler {
 impl FlowMatchScheduler {
     /// Construct a linear scheduler with no shift.
     pub fn linear(num_steps: usize) -> Self {
-        Self { num_steps, shift: None }
+        Self {
+            num_steps,
+            shift: None,
+        }
     }
 
     /// Construct a shifted scheduler matching the upstream Flux config.
-    pub fn shifted(num_steps: usize, image_seq_len: usize, base_shift: f64, max_shift: f64) -> Self {
-        Self { num_steps, shift: Some((image_seq_len, base_shift, max_shift)) }
+    pub fn shifted(
+        num_steps: usize,
+        image_seq_len: usize,
+        base_shift: f64,
+        max_shift: f64,
+    ) -> Self {
+        Self {
+            num_steps,
+            shift: Some((image_seq_len, base_shift, max_shift)),
+        }
     }
 
     /// The schedule as a descending list of `num_steps + 1` timesteps
@@ -1160,7 +1279,11 @@ impl FlowMatchScheduler {
 
     /// One denoising step: `img + pred * (t_prev - t_curr)`.
     pub fn step(
-        &self, img: &LazyTensor, pred: &LazyTensor, t_curr: f64, t_prev: f64,
+        &self,
+        img: &LazyTensor,
+        pred: &LazyTensor,
+        t_curr: f64,
+        t_prev: f64,
     ) -> Result<LazyTensor> {
         let delta = pred.mul_scalar(t_prev - t_curr);
         img.add(&delta)
@@ -1223,7 +1346,10 @@ fn load_flux_linear(
 ) -> Result<FluxLinear> {
     use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
     let weight = load_transposed_matrix_preserve_dtype(
-        st, &format!("{prefix}.weight"), out_features, in_features,
+        st,
+        &format!("{prefix}.weight"),
+        out_features,
+        in_features,
     )?;
     let bias = if bias {
         let b = load_tensor_as_f32(st, &format!("{prefix}.bias"))?;
@@ -1231,13 +1357,19 @@ fn load_flux_linear(
             return Err(crate::Error::Msg(format!(
                 "load_flux_linear: bias {prefix}.bias has {} elements, expected {out_features}",
                 b.len(),
-            )).bt());
+            ))
+            .bt());
         }
         Some(Arc::from(b))
     } else {
         None
     };
-    Ok(FluxLinear { weight, bias, in_features, out_features })
+    Ok(FluxLinear {
+        weight,
+        bias,
+        in_features,
+        out_features,
+    })
 }
 
 fn load_flux_qknorm(
@@ -1254,7 +1386,10 @@ fn load_flux_qknorm(
             q.len(), k.len(),
         )).bt());
     }
-    Ok(FluxQkNorm { query_gain: Arc::from(q), key_gain: Arc::from(k) })
+    Ok(FluxQkNorm {
+        query_gain: Arc::from(q),
+        key_gain: Arc::from(k),
+    })
 }
 
 fn load_flux_mlp_embedder(
@@ -1264,7 +1399,7 @@ fn load_flux_mlp_embedder(
     h_sz: usize,
 ) -> Result<FluxMlpEmbedder> {
     Ok(FluxMlpEmbedder {
-        in_layer:  load_flux_linear(st, &format!("{prefix}.in_layer"),  in_sz, h_sz, true)?,
+        in_layer: load_flux_linear(st, &format!("{prefix}.in_layer"), in_sz, h_sz, true)?,
         out_layer: load_flux_linear(st, &format!("{prefix}.out_layer"), h_sz, h_sz, true)?,
     })
 }
@@ -1278,9 +1413,9 @@ fn load_flux_self_attention(
 ) -> Result<FluxSelfAttention> {
     let head_dim = dim / num_heads;
     Ok(FluxSelfAttention {
-        qkv:     load_flux_linear(st, &format!("{prefix}.qkv"), dim, 3 * dim, qkv_bias)?,
+        qkv: load_flux_linear(st, &format!("{prefix}.qkv"), dim, 3 * dim, qkv_bias)?,
         qk_norm: load_flux_qknorm(st, &format!("{prefix}.norm"), head_dim)?,
-        proj:    load_flux_linear(st, &format!("{prefix}.proj"), dim, dim, true)?,
+        proj: load_flux_linear(st, &format!("{prefix}.proj"), dim, dim, true)?,
         num_heads,
         head_dim,
     })
@@ -1294,8 +1429,8 @@ fn load_flux_mlp(
 ) -> Result<FluxMlp> {
     // Eager Flux stores mlp as `mlp.0` / `mlp.2` (a Sequential).
     Ok(FluxMlp {
-        fc1: load_flux_linear(st, &format!("{prefix}.0"), in_sz,  mlp_sz, true)?,
-        fc2: load_flux_linear(st, &format!("{prefix}.2"), mlp_sz, in_sz,  true)?,
+        fc1: load_flux_linear(st, &format!("{prefix}.0"), in_sz, mlp_sz, true)?,
+        fc2: load_flux_linear(st, &format!("{prefix}.2"), mlp_sz, in_sz, true)?,
     })
 }
 
@@ -1306,7 +1441,13 @@ fn load_flux_modulation(
     num_chunks: usize,
 ) -> Result<FluxModulation> {
     Ok(FluxModulation {
-        lin: load_flux_linear(st, &format!("{prefix}.lin"), dim, 3 * num_chunks * dim, true)?,
+        lin: load_flux_linear(
+            st,
+            &format!("{prefix}.lin"),
+            dim,
+            3 * num_chunks * dim,
+            true,
+        )?,
         num_chunks,
     })
 }
@@ -1319,12 +1460,24 @@ fn load_flux_double_block(
     let h = cfg.hidden_size;
     let mlp_h = cfg.mlp_hidden();
     Ok(FluxDoubleStreamBlockWeights {
-        img_mod:  load_flux_modulation(st, &format!("{prefix}.img_mod"), h, 2)?,
-        img_attn: load_flux_self_attention(st, &format!("{prefix}.img_attn"), h, cfg.num_heads, cfg.qkv_bias)?,
-        img_mlp:  load_flux_mlp(st, &format!("{prefix}.img_mlp"), h, mlp_h)?,
-        txt_mod:  load_flux_modulation(st, &format!("{prefix}.txt_mod"), h, 2)?,
-        txt_attn: load_flux_self_attention(st, &format!("{prefix}.txt_attn"), h, cfg.num_heads, cfg.qkv_bias)?,
-        txt_mlp:  load_flux_mlp(st, &format!("{prefix}.txt_mlp"), h, mlp_h)?,
+        img_mod: load_flux_modulation(st, &format!("{prefix}.img_mod"), h, 2)?,
+        img_attn: load_flux_self_attention(
+            st,
+            &format!("{prefix}.img_attn"),
+            h,
+            cfg.num_heads,
+            cfg.qkv_bias,
+        )?,
+        img_mlp: load_flux_mlp(st, &format!("{prefix}.img_mlp"), h, mlp_h)?,
+        txt_mod: load_flux_modulation(st, &format!("{prefix}.txt_mod"), h, 2)?,
+        txt_attn: load_flux_self_attention(
+            st,
+            &format!("{prefix}.txt_attn"),
+            h,
+            cfg.num_heads,
+            cfg.qkv_bias,
+        )?,
+        txt_mlp: load_flux_mlp(st, &format!("{prefix}.txt_mlp"), h, mlp_h)?,
     })
 }
 
@@ -1337,8 +1490,8 @@ fn load_flux_single_block(
     let head_dim = cfg.head_dim();
     let mlp_h = cfg.mlp_hidden();
     Ok(FluxSingleStreamBlockWeights {
-        linear1: load_flux_linear(st, &format!("{prefix}.linear1"), h,             3 * h + mlp_h, true)?,
-        linear2: load_flux_linear(st, &format!("{prefix}.linear2"), h + mlp_h,     h,             true)?,
+        linear1: load_flux_linear(st, &format!("{prefix}.linear1"), h, 3 * h + mlp_h, true)?,
+        linear2: load_flux_linear(st, &format!("{prefix}.linear2"), h + mlp_h, h, true)?,
         qk_norm: load_flux_qknorm(st, &format!("{prefix}.norm"), head_dim)?,
         modulation: load_flux_modulation(st, &format!("{prefix}.modulation"), h, 1)?,
         num_heads: cfg.num_heads,
@@ -1382,19 +1535,39 @@ impl FluxWeights {
         };
         let mut double_blocks = Vec::with_capacity(cfg.depth);
         for i in 0..cfg.depth {
-            double_blocks.push(load_flux_double_block(st, &format!("double_blocks.{i}"), cfg)?);
+            double_blocks.push(load_flux_double_block(
+                st,
+                &format!("double_blocks.{i}"),
+                cfg,
+            )?);
         }
         let mut single_blocks = Vec::with_capacity(cfg.depth_single_blocks);
         for i in 0..cfg.depth_single_blocks {
-            single_blocks.push(load_flux_single_block(st, &format!("single_blocks.{i}"), cfg)?);
+            single_blocks.push(load_flux_single_block(
+                st,
+                &format!("single_blocks.{i}"),
+                cfg,
+            )?);
         }
         let final_layer = FluxLastLayer {
             linear: load_flux_linear(st, "final_layer.linear", h, cfg.in_channels, true)?,
-            ada_ln_modulation: load_flux_linear(st, "final_layer.adaLN_modulation.1", h, 2 * h, true)?,
+            ada_ln_modulation: load_flux_linear(
+                st,
+                "final_layer.adaLN_modulation.1",
+                h,
+                2 * h,
+                true,
+            )?,
         };
         Ok(FluxWeights {
-            img_in, txt_in, time_in, vector_in, guidance_in,
-            double_blocks, single_blocks, final_layer,
+            img_in,
+            txt_in,
+            time_in,
+            vector_in,
+            guidance_in,
+            double_blocks,
+            single_blocks,
+            final_layer,
         })
     }
 }
@@ -1406,12 +1579,19 @@ mod tests {
     use super::*;
 
     fn linear_rand(
-        in_f: usize, out_f: usize, bias: bool, rng: &mut impl FnMut() -> f32,
+        in_f: usize,
+        out_f: usize,
+        bias: bool,
+        rng: &mut impl FnMut() -> f32,
     ) -> FluxLinear {
         let w: Vec<f32> = (0..in_f * out_f).map(|_| rng()).collect();
         let b = if bias {
-            Some(Arc::<[f32]>::from((0..out_f).map(|_| rng()).collect::<Vec<_>>()))
-        } else { None };
+            Some(Arc::<[f32]>::from(
+                (0..out_f).map(|_| rng()).collect::<Vec<_>>(),
+            ))
+        } else {
+            None
+        };
         FluxLinear {
             weight: WeightStorage::F32(Arc::from(w)),
             bias: b,
@@ -1456,9 +1636,7 @@ mod tests {
         }
     }
 
-    fn tiny_self_attention(
-        cfg: &FluxConfig, rng: &mut impl FnMut() -> f32,
-    ) -> FluxSelfAttention {
+    fn tiny_self_attention(cfg: &FluxConfig, rng: &mut impl FnMut() -> f32) -> FluxSelfAttention {
         let h = cfg.hidden_size;
         FluxSelfAttention {
             qkv: linear_rand(h, 3 * h, cfg.qkv_bias, rng),
@@ -1479,7 +1657,9 @@ mod tests {
     }
 
     fn tiny_modulation(
-        h: usize, num_chunks: usize, rng: &mut impl FnMut() -> f32,
+        h: usize,
+        num_chunks: usize,
+        rng: &mut impl FnMut() -> f32,
     ) -> FluxModulation {
         FluxModulation {
             lin: linear_rand(h, 3 * num_chunks * h, true, rng),
@@ -1488,7 +1668,8 @@ mod tests {
     }
 
     fn tiny_double_block(
-        cfg: &FluxConfig, rng: &mut impl FnMut() -> f32,
+        cfg: &FluxConfig,
+        rng: &mut impl FnMut() -> f32,
     ) -> FluxDoubleStreamBlockWeights {
         let h = cfg.hidden_size;
         FluxDoubleStreamBlockWeights {
@@ -1502,7 +1683,8 @@ mod tests {
     }
 
     fn tiny_single_block(
-        cfg: &FluxConfig, rng: &mut impl FnMut() -> f32,
+        cfg: &FluxConfig,
+        rng: &mut impl FnMut() -> f32,
     ) -> FluxSingleStreamBlockWeights {
         let h = cfg.hidden_size;
         let m = cfg.mlp_hidden();
@@ -1517,18 +1699,14 @@ mod tests {
         }
     }
 
-    fn tiny_mlp_embedder(
-        in_sz: usize, h: usize, rng: &mut impl FnMut() -> f32,
-    ) -> FluxMlpEmbedder {
+    fn tiny_mlp_embedder(in_sz: usize, h: usize, rng: &mut impl FnMut() -> f32) -> FluxMlpEmbedder {
         FluxMlpEmbedder {
             in_layer: linear_rand(in_sz, h, true, rng),
             out_layer: linear_rand(h, h, true, rng),
         }
     }
 
-    fn tiny_last_layer(
-        h: usize, in_ch: usize, rng: &mut impl FnMut() -> f32,
-    ) -> FluxLastLayer {
+    fn tiny_last_layer(h: usize, in_ch: usize, rng: &mut impl FnMut() -> f32) -> FluxLastLayer {
         FluxLastLayer {
             linear: linear_rand(h, in_ch, true, rng),
             ada_ln_modulation: linear_rand(h, 2 * h, true, rng),
@@ -1545,36 +1723,62 @@ mod tests {
             vector_in: tiny_mlp_embedder(cfg.vec_in_dim, h, &mut rng),
             guidance_in: if cfg.guidance_embed {
                 Some(tiny_mlp_embedder(256, h, &mut rng))
-            } else { None },
-            double_blocks: (0..cfg.depth).map(|_| tiny_double_block(cfg, &mut rng)).collect(),
+            } else {
+                None
+            },
+            double_blocks: (0..cfg.depth)
+                .map(|_| tiny_double_block(cfg, &mut rng))
+                .collect(),
             single_blocks: (0..cfg.depth_single_blocks)
-                .map(|_| tiny_single_block(cfg, &mut rng)).collect(),
+                .map(|_| tiny_single_block(cfg, &mut rng))
+                .collect(),
             final_layer: tiny_last_layer(h, cfg.in_channels, &mut rng),
         };
-        FluxModel { config: cfg.clone(), weights }
+        FluxModel {
+            config: cfg.clone(),
+            weights,
+        }
     }
 
     fn tiny_inputs(
-        cfg: &FluxConfig, seq_text: usize, seq_image: usize,
-    ) -> (LazyTensor, LazyTensor, LazyTensor, LazyTensor, LazyTensor, LazyTensor) {
+        cfg: &FluxConfig,
+        seq_text: usize,
+        seq_image: usize,
+    ) -> (
+        LazyTensor,
+        LazyTensor,
+        LazyTensor,
+        LazyTensor,
+        LazyTensor,
+        LazyTensor,
+    ) {
         let dev = Device::cpu();
         let mut rng = make_rng(0xBADF00D);
-        let img_data: Vec<f32> = (0..(1 * seq_image * cfg.in_channels)).map(|_| rng()).collect();
+        let img_data: Vec<f32> = (0..(1 * seq_image * cfg.in_channels))
+            .map(|_| rng())
+            .collect();
         let img = LazyTensor::from_f32(
-            Arc::from(img_data), Shape::from_dims(&[1, seq_image, cfg.in_channels]), &dev,
+            Arc::from(img_data),
+            Shape::from_dims(&[1, seq_image, cfg.in_channels]),
+            &dev,
         );
-        let txt_data: Vec<f32> = (0..(1 * seq_text * cfg.context_in_dim)).map(|_| rng()).collect();
+        let txt_data: Vec<f32> = (0..(1 * seq_text * cfg.context_in_dim))
+            .map(|_| rng())
+            .collect();
         let txt = img.const_f32_like(
-            Arc::from(txt_data), Shape::from_dims(&[1, seq_text, cfg.context_in_dim]),
+            Arc::from(txt_data),
+            Shape::from_dims(&[1, seq_text, cfg.context_in_dim]),
         );
         let n_axes = cfg.axes_dim.len();
         let img_ids_data: Vec<f32> = (0..(seq_image * n_axes)).map(|i| (i % 4) as f32).collect();
         let img_ids = img.const_f32_like(
-            Arc::from(img_ids_data), Shape::from_dims(&[1, seq_image, n_axes]),
+            Arc::from(img_ids_data),
+            Shape::from_dims(&[1, seq_image, n_axes]),
         );
         let txt_ids_data: Vec<f32> = vec![0.0_f32; seq_text * n_axes];
         let txt_ids = img.const_f32_like(
-            Arc::from(txt_ids_data), Shape::from_dims(&[1, seq_text, n_axes]),
+            Arc::from(txt_ids_data),
+            Shape::from_dims(&[1, seq_text, n_axes]),
         );
         let y_data: Vec<f32> = (0..cfg.vec_in_dim).map(|_| rng()).collect();
         let y = img.const_f32_like(Arc::from(y_data), Shape::from_dims(&[1, cfg.vec_in_dim]));
@@ -1587,7 +1791,9 @@ mod tests {
         let cfg = tiny_cfg();
         let model = tiny_model(&cfg);
         let (img, img_ids, txt, txt_ids, t, y) = tiny_inputs(&cfg, 4, 8);
-        let out = model.forward(&img, &img_ids, &txt, &txt_ids, &t, &y, None).unwrap();
+        let out = model
+            .forward(&img, &img_ids, &txt, &txt_ids, &t, &y, None)
+            .unwrap();
         assert_eq!(out.shape().dims(), &[1, 8, cfg.in_channels]);
         for &v in &out.realize_f32() {
             assert!(v.is_finite(), "non-finite output: {v}");
@@ -1609,10 +1815,19 @@ mod tests {
         let mut model_without = model_with.clone();
         model_without.config = cfg_without;
         let (img, img_ids, txt, txt_ids, t, y) = tiny_inputs(&cfg_with, 4, 8);
-        let out_with = model_with.forward(&img, &img_ids, &txt, &txt_ids, &t, &y, None).unwrap().realize_f32();
-        let out_without = model_without.forward(&img, &img_ids, &txt, &txt_ids, &t, &y, None).unwrap().realize_f32();
-        let max_diff: f32 = out_with.iter().zip(out_without.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0, f32::max);
+        let out_with = model_with
+            .forward(&img, &img_ids, &txt, &txt_ids, &t, &y, None)
+            .unwrap()
+            .realize_f32();
+        let out_without = model_without
+            .forward(&img, &img_ids, &txt, &txt_ids, &t, &y, None)
+            .unwrap()
+            .realize_f32();
+        let max_diff: f32 = out_with
+            .iter()
+            .zip(out_without.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f32::max);
         assert!(
             max_diff > 1e-6,
             "qk_norm path must change output (max_diff = {max_diff})",
@@ -1637,17 +1852,33 @@ mod tests {
         }
     }
 
-    fn zeros(n: usize) -> Arc<[f32]> { Arc::from(vec![0.0_f32; n]) }
-    fn ones(n: usize) -> Arc<[f32]> { Arc::from(vec![1.0_f32; n]) }
+    fn zeros(n: usize) -> Arc<[f32]> {
+        Arc::from(vec![0.0_f32; n])
+    }
+    fn ones(n: usize) -> Arc<[f32]> {
+        Arc::from(vec![1.0_f32; n])
+    }
 
     fn zero_resnet(c_in: usize, c_out: usize) -> VaeResnetWeights {
         VaeResnetWeights {
-            n1_g: ones(c_in), n1_b: zeros(c_in),
-            c1_w: zeros(c_out * c_in * 9), c1_b: zeros(c_out),
-            n2_g: ones(c_out), n2_b: zeros(c_out),
-            c2_w: zeros(c_out * c_out * 9), c2_b: zeros(c_out),
-            shortcut_w: if c_in != c_out { Some(zeros(c_out * c_in)) } else { None },
-            shortcut_b: if c_in != c_out { Some(zeros(c_out)) } else { None },
+            n1_g: ones(c_in),
+            n1_b: zeros(c_in),
+            c1_w: zeros(c_out * c_in * 9),
+            c1_b: zeros(c_out),
+            n2_g: ones(c_out),
+            n2_b: zeros(c_out),
+            c2_w: zeros(c_out * c_out * 9),
+            c2_b: zeros(c_out),
+            shortcut_w: if c_in != c_out {
+                Some(zeros(c_out * c_in))
+            } else {
+                None
+            },
+            shortcut_b: if c_in != c_out {
+                Some(zeros(c_out))
+            } else {
+                None
+            },
             in_channels: c_in,
             out_channels: c_out,
         }
@@ -1655,11 +1886,16 @@ mod tests {
 
     fn zero_attn(c: usize) -> VaeAttnWeights {
         VaeAttnWeights {
-            gn_g: ones(c), gn_b: zeros(c),
-            q_w: zeros(c * c), q_b: zeros(c),
-            k_w: zeros(c * c), k_b: zeros(c),
-            v_w: zeros(c * c), v_b: zeros(c),
-            out_w: zeros(c * c), out_b: zeros(c),
+            gn_g: ones(c),
+            gn_b: zeros(c),
+            q_w: zeros(c * c),
+            q_b: zeros(c),
+            k_w: zeros(c * c),
+            k_b: zeros(c),
+            v_w: zeros(c * c),
+            v_b: zeros(c),
+            out_w: zeros(c * c),
+            out_b: zeros(c),
             channels: c,
         }
     }
@@ -1681,8 +1917,13 @@ mod tests {
             }
             let downsample_conv = if i_level != mults.len() - 1 {
                 Some((zeros(block_in * block_in * 9), zeros(block_in)))
-            } else { None };
-            down.push(VaeDownBlock { resnets, downsample_conv });
+            } else {
+                None
+            };
+            down.push(VaeDownBlock {
+                resnets,
+                downsample_conv,
+            });
         }
         let block_in = ch * mults.last().copied().unwrap_or(1);
         let encoder = FluxVaeEncoderWeights {
@@ -1692,7 +1933,8 @@ mod tests {
             mid1: zero_resnet(block_in, block_in),
             mid_attn: zero_attn(block_in),
             mid2: zero_resnet(block_in, block_in),
-            norm_out_g: ones(block_in), norm_out_b: zeros(block_in),
+            norm_out_g: ones(block_in),
+            norm_out_b: zeros(block_in),
             conv_out_w: zeros(2 * cfg.z_channels * block_in * 9),
             conv_out_b: zeros(2 * cfg.z_channels),
         };
@@ -1711,23 +1953,39 @@ mod tests {
             }
             let upsample_conv = if i_level_rev != 0 {
                 Some((zeros(block_in_dec * block_in_dec * 9), zeros(block_in_dec)))
-            } else { None };
-            up.push(VaeUpBlock { resnets, upsample_conv });
+            } else {
+                None
+            };
+            up.push(VaeUpBlock {
+                resnets,
+                upsample_conv,
+            });
         }
         up.reverse();
         let last_dec_c = ch * mults[0];
         let decoder = FluxVaeDecoderWeights {
             conv_in_w: zeros((ch * mults.last().copied().unwrap_or(1)) * cfg.z_channels * 9),
             conv_in_b: zeros(ch * mults.last().copied().unwrap_or(1)),
-            mid1: zero_resnet(ch * mults.last().copied().unwrap_or(1), ch * mults.last().copied().unwrap_or(1)),
+            mid1: zero_resnet(
+                ch * mults.last().copied().unwrap_or(1),
+                ch * mults.last().copied().unwrap_or(1),
+            ),
             mid_attn: zero_attn(ch * mults.last().copied().unwrap_or(1)),
-            mid2: zero_resnet(ch * mults.last().copied().unwrap_or(1), ch * mults.last().copied().unwrap_or(1)),
+            mid2: zero_resnet(
+                ch * mults.last().copied().unwrap_or(1),
+                ch * mults.last().copied().unwrap_or(1),
+            ),
             up,
-            norm_out_g: ones(last_dec_c), norm_out_b: zeros(last_dec_c),
+            norm_out_g: ones(last_dec_c),
+            norm_out_b: zeros(last_dec_c),
             conv_out_w: zeros(cfg.out_ch * last_dec_c * 9),
             conv_out_b: zeros(cfg.out_ch),
         };
-        FluxVae { config: cfg, encoder, decoder }
+        FluxVae {
+            config: cfg,
+            encoder,
+            decoder,
+        }
     }
 
     #[test]
@@ -1741,7 +1999,9 @@ mod tests {
         let n = cfg.in_channels * h_in * w_in;
         let data: Vec<f32> = (0..n).map(|i| ((i as f32 * 0.013).sin()) * 0.5).collect();
         let img = LazyTensor::from_f32(
-            Arc::from(data), Shape::from_dims(&[1, cfg.in_channels, h_in, w_in]), &dev,
+            Arc::from(data),
+            Shape::from_dims(&[1, cfg.in_channels, h_in, w_in]),
+            &dev,
         );
         let z = vae.encode(&img).unwrap();
         let z_dims = z.shape().dims().to_vec();
@@ -1773,10 +2033,12 @@ mod tests {
         // One step: img + pred * (t_prev - t_curr).
         let img = LazyTensor::from_f32(
             Arc::from(vec![1.0_f32, 2.0, 3.0, 4.0]),
-            Shape::from_dims(&[1, 2, 2]), &dev,
+            Shape::from_dims(&[1, 2, 2]),
+            &dev,
         );
         let pred = img.const_f32_like(
-            Arc::from(vec![0.5_f32, 0.5, 0.5, 0.5]), Shape::from_dims(&[1, 2, 2]),
+            Arc::from(vec![0.5_f32, 0.5, 0.5, 0.5]),
+            Shape::from_dims(&[1, 2, 2]),
         );
         let out = sched.step(&img, &pred, ts[0], ts[1]).unwrap();
         let out_v = out.realize_f32();
@@ -1784,7 +2046,10 @@ mod tests {
         // img + 0.5 * (-0.25) = img - 0.125
         for (i, v) in out_v.iter().enumerate() {
             let expected = (i + 1) as f32 - 0.125;
-            assert!((v - expected).abs() < 1e-5, "step output[{i}] = {v}, expected {expected}");
+            assert!(
+                (v - expected).abs() < 1e-5,
+                "step output[{i}] = {v}, expected {expected}"
+            );
             assert!(v.is_finite());
         }
 
@@ -1813,17 +2078,17 @@ mod tests {
     // ---- Safetensors loader round-trip --------------------------------
 
     /// Write tensors to a temp .safetensors file and return the path.
-    fn write_tmp_safetensors(
-        tensors: &[(&str, Vec<usize>, Vec<f32>)],
-    ) -> std::path::PathBuf {
+    fn write_tmp_safetensors(tensors: &[(&str, Vec<usize>, Vec<f32>)]) -> std::path::PathBuf {
         use safetensors::tensor::TensorView;
         use std::collections::HashMap;
         // safetensors::serialize takes (dtype, shape, &[u8]) views.
         // Hold the bytes alive while we serialize.
-        let bytes_store: Vec<Vec<u8>> = tensors.iter()
+        let bytes_store: Vec<Vec<u8>> = tensors
+            .iter()
             .map(|(_, _, data)| data.iter().flat_map(|f| f.to_le_bytes()).collect())
             .collect();
-        let views: HashMap<String, TensorView<'_>> = tensors.iter()
+        let views: HashMap<String, TensorView<'_>> = tensors
+            .iter()
             .zip(bytes_store.iter())
             .map(|((name, shape, _), bytes)| {
                 let v = TensorView::new(safetensors::Dtype::F32, shape.clone(), bytes)
@@ -1835,26 +2100,29 @@ mod tests {
         let bytes_out = safetensors::serialize(&views, metadata).expect("safetensors::serialize");
         let path = std::env::temp_dir().join(format!(
             "fuel_lazy_flux_test_{}.safetensors",
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
         ));
         std::fs::write(&path, bytes_out).expect("write safetensors");
         path
     }
 
-    fn linear_tensors(prefix: &str, in_f: usize, out_f: usize, seed: u32, with_bias: bool)
-        -> Vec<(String, Vec<usize>, Vec<f32>)>
-    {
+    fn linear_tensors(
+        prefix: &str,
+        in_f: usize,
+        out_f: usize,
+        seed: u32,
+        with_bias: bool,
+    ) -> Vec<(String, Vec<usize>, Vec<f32>)> {
         let mut s = seed;
         let mut next = || -> f32 {
             s = s.wrapping_mul(1103515245).wrapping_add(12345);
             ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
         };
         let w_data: Vec<f32> = (0..in_f * out_f).map(|_| next()).collect();
-        let mut out = vec![(
-            format!("{prefix}.weight"),
-            vec![out_f, in_f],
-            w_data,
-        )];
+        let mut out = vec![(format!("{prefix}.weight"), vec![out_f, in_f], w_data)];
         if with_bias {
             let b_data: Vec<f32> = (0..out_f).map(|_| next()).collect();
             out.push((format!("{prefix}.bias"), vec![out_f], b_data));
@@ -1868,11 +2136,19 @@ mod tests {
     #[test]
     fn load_from_mmapped_round_trip_tiny() {
         let cfg = FluxConfig {
-            in_channels: 4, vec_in_dim: 8, context_in_dim: 8,
-            hidden_size: 8, mlp_ratio: 2.0,
-            num_heads: 2, depth: 1, depth_single_blocks: 0,
-            axes_dim: vec![2, 2], theta: 10_000,
-            qkv_bias: true, guidance_embed: false, qk_norm: true,
+            in_channels: 4,
+            vec_in_dim: 8,
+            context_in_dim: 8,
+            hidden_size: 8,
+            mlp_ratio: 2.0,
+            num_heads: 2,
+            depth: 1,
+            depth_single_blocks: 0,
+            axes_dim: vec![2, 2],
+            theta: 10_000,
+            qkv_bias: true,
+            guidance_embed: false,
+            qk_norm: true,
         };
         let h = cfg.hidden_size;
         let m = cfg.mlp_hidden();
@@ -1883,33 +2159,100 @@ mod tests {
         tensors.extend(linear_tensors("txt_in", cfg.context_in_dim, h, 2, true));
         tensors.extend(linear_tensors("time_in.in_layer", 256, h, 3, true));
         tensors.extend(linear_tensors("time_in.out_layer", h, h, 4, true));
-        tensors.extend(linear_tensors("vector_in.in_layer", cfg.vec_in_dim, h, 5, true));
+        tensors.extend(linear_tensors(
+            "vector_in.in_layer",
+            cfg.vec_in_dim,
+            h,
+            5,
+            true,
+        ));
         tensors.extend(linear_tensors("vector_in.out_layer", h, h, 6, true));
         // double block 0.
-        tensors.extend(linear_tensors("double_blocks.0.img_mod.lin", h, 6 * h, 7, true));
-        tensors.extend(linear_tensors("double_blocks.0.img_attn.qkv", h, 3 * h, 8, true));
-        tensors.extend(linear_tensors("double_blocks.0.img_attn.proj", h, h, 9, true));
-        tensors.push(("double_blocks.0.img_attn.norm.query_norm.scale".into(),
-            vec![head_dim], vec![1.0_f32; head_dim]));
-        tensors.push(("double_blocks.0.img_attn.norm.key_norm.scale".into(),
-            vec![head_dim], vec![1.0_f32; head_dim]));
+        tensors.extend(linear_tensors(
+            "double_blocks.0.img_mod.lin",
+            h,
+            6 * h,
+            7,
+            true,
+        ));
+        tensors.extend(linear_tensors(
+            "double_blocks.0.img_attn.qkv",
+            h,
+            3 * h,
+            8,
+            true,
+        ));
+        tensors.extend(linear_tensors(
+            "double_blocks.0.img_attn.proj",
+            h,
+            h,
+            9,
+            true,
+        ));
+        tensors.push((
+            "double_blocks.0.img_attn.norm.query_norm.scale".into(),
+            vec![head_dim],
+            vec![1.0_f32; head_dim],
+        ));
+        tensors.push((
+            "double_blocks.0.img_attn.norm.key_norm.scale".into(),
+            vec![head_dim],
+            vec![1.0_f32; head_dim],
+        ));
         tensors.extend(linear_tensors("double_blocks.0.img_mlp.0", h, m, 10, true));
         tensors.extend(linear_tensors("double_blocks.0.img_mlp.2", m, h, 11, true));
-        tensors.extend(linear_tensors("double_blocks.0.txt_mod.lin", h, 6 * h, 12, true));
-        tensors.extend(linear_tensors("double_blocks.0.txt_attn.qkv", h, 3 * h, 13, true));
-        tensors.extend(linear_tensors("double_blocks.0.txt_attn.proj", h, h, 14, true));
-        tensors.push(("double_blocks.0.txt_attn.norm.query_norm.scale".into(),
-            vec![head_dim], vec![1.0_f32; head_dim]));
-        tensors.push(("double_blocks.0.txt_attn.norm.key_norm.scale".into(),
-            vec![head_dim], vec![1.0_f32; head_dim]));
+        tensors.extend(linear_tensors(
+            "double_blocks.0.txt_mod.lin",
+            h,
+            6 * h,
+            12,
+            true,
+        ));
+        tensors.extend(linear_tensors(
+            "double_blocks.0.txt_attn.qkv",
+            h,
+            3 * h,
+            13,
+            true,
+        ));
+        tensors.extend(linear_tensors(
+            "double_blocks.0.txt_attn.proj",
+            h,
+            h,
+            14,
+            true,
+        ));
+        tensors.push((
+            "double_blocks.0.txt_attn.norm.query_norm.scale".into(),
+            vec![head_dim],
+            vec![1.0_f32; head_dim],
+        ));
+        tensors.push((
+            "double_blocks.0.txt_attn.norm.key_norm.scale".into(),
+            vec![head_dim],
+            vec![1.0_f32; head_dim],
+        ));
         tensors.extend(linear_tensors("double_blocks.0.txt_mlp.0", h, m, 15, true));
         tensors.extend(linear_tensors("double_blocks.0.txt_mlp.2", m, h, 16, true));
         // final layer.
-        tensors.extend(linear_tensors("final_layer.linear", h, cfg.in_channels, 17, true));
-        tensors.extend(linear_tensors("final_layer.adaLN_modulation.1", h, 2 * h, 18, true));
+        tensors.extend(linear_tensors(
+            "final_layer.linear",
+            h,
+            cfg.in_channels,
+            17,
+            true,
+        ));
+        tensors.extend(linear_tensors(
+            "final_layer.adaLN_modulation.1",
+            h,
+            2 * h,
+            18,
+            true,
+        ));
 
         // Write file.
-        let refs: Vec<(&str, Vec<usize>, Vec<f32>)> = tensors.iter()
+        let refs: Vec<(&str, Vec<usize>, Vec<f32>)> = tensors
+            .iter()
             .map(|(n, s, d)| (n.as_str(), s.clone(), d.clone()))
             .collect();
         let path = write_tmp_safetensors(&refs);
@@ -1944,13 +2287,25 @@ mod tests {
         let model = tiny_model(&cfg);
         let q = QuantizedFluxModel::from_f32_bake(model.clone()).unwrap();
         let (img, img_ids, txt, txt_ids, t, y) = tiny_inputs(&cfg, 4, 8);
-        let a = model.forward(&img, &img_ids, &txt, &txt_ids, &t, &y, None).unwrap().realize_f32();
-        let b = q.forward(&img, &img_ids, &txt, &txt_ids, &t, &y, None).unwrap().realize_f32();
-        let max_diff: f32 = a.iter().zip(b.iter())
-            .map(|(x, y)| (x - y).abs()).fold(0.0, f32::max);
+        let a = model
+            .forward(&img, &img_ids, &txt, &txt_ids, &t, &y, None)
+            .unwrap()
+            .realize_f32();
+        let b = q
+            .forward(&img, &img_ids, &txt, &txt_ids, &t, &y, None)
+            .unwrap()
+            .realize_f32();
+        let max_diff: f32 = a
+            .iter()
+            .zip(b.iter())
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0, f32::max);
         // Q4_0 round-trip noise is bounded by block-max / 8; with
         // small random weights the per-output drift stays well below 0.01.
-        assert!(max_diff < 1e-2, "quantized Flux forward should stay close to F32 (max_diff = {max_diff})");
+        assert!(
+            max_diff < 1e-2,
+            "quantized Flux forward should stay close to F32 (max_diff = {max_diff})"
+        );
         for &v in &b {
             assert!(v.is_finite(), "non-finite quantized output: {v}");
         }

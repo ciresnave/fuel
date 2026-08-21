@@ -165,9 +165,7 @@ fn format_size(size_in_bytes: usize) -> String {
 /// architecture. Mirrors the keys used by the eager `quantized_glm4`
 /// loader and infers `vocab_size` / `intermediate_size` from tensor
 /// shapes when no explicit metadata key is present.
-fn glm4_config_from_gguf(
-    mc: &fuel::quantized::gguf_mmap::MmapedContent,
-) -> Result<Glm4Config> {
+fn glm4_config_from_gguf(mc: &fuel::quantized::gguf_mmap::MmapedContent) -> Result<Glm4Config> {
     let meta = mc.metadata();
     let content = mc.content();
 
@@ -177,18 +175,14 @@ fn glm4_config_from_gguf(
             .to_u32()
             .map_err(|e| E::msg(format!("gguf metadata {k:?}: {e:?}")))
     };
-    let get_u32_opt = |k: &str| -> Option<u32> {
-        meta.get(k).and_then(|v| v.to_u32().ok())
-    };
+    let get_u32_opt = |k: &str| -> Option<u32> { meta.get(k).and_then(|v| v.to_u32().ok()) };
     let get_f32 = |k: &str| -> Result<f32> {
         meta.get(k)
             .ok_or_else(|| E::msg(format!("gguf metadata: missing {k:?}")))?
             .to_f32()
             .map_err(|e| E::msg(format!("gguf metadata {k:?}: {e:?}")))
     };
-    let get_bool_opt = |k: &str| -> Option<bool> {
-        meta.get(k).and_then(|v| v.to_bool().ok())
-    };
+    let get_bool_opt = |k: &str| -> Option<bool> { meta.get(k).and_then(|v| v.to_bool().ok()) };
 
     let hidden_size = get_u32("glm4.embedding_length")? as usize;
     let num_hidden_layers = get_u32("glm4.block_count")? as usize;
@@ -292,7 +286,7 @@ fn main() -> anyhow::Result<()> {
         .map_err(|e| e.with_path(&model_path))?;
     let header_done = start.elapsed();
     let mut total_size_in_bytes = 0;
-    for (_, tensor) in mc.content().tensor_infos.iter() {
+    for tensor in mc.content().tensor_infos.values() {
         let elem_count = tensor.shape.elem_count();
         total_size_in_bytes +=
             elem_count * tensor.ggml_dtype.type_size() / tensor.ggml_dtype.block_size();
@@ -300,7 +294,7 @@ fn main() -> anyhow::Result<()> {
     println!(
         "mmapped {:?} tensors ({}); header in {:.2}s",
         mc.content().tensor_infos.len(),
-        &format_size(total_size_in_bytes),
+        format_size(total_size_in_bytes),
         header_done.as_secs_f32(),
     );
 

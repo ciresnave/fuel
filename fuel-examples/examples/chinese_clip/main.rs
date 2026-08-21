@@ -9,9 +9,7 @@ use clap::Parser;
 use std::sync::Arc;
 
 use fuel::lazy::LazyTensor;
-use fuel::lazy_chinese_clip::{
-    ChineseClipConfig, ChineseClipModel, ChineseClipWeights,
-};
+use fuel::lazy_chinese_clip::{ChineseClipConfig, ChineseClipModel, ChineseClipWeights};
 use fuel::safetensors::MmapedSafetensors;
 use fuel::{Device, Shape};
 use tokenizers::Tokenizer;
@@ -92,8 +90,7 @@ fn main() -> Result<()> {
     tracing::info!("Images loaded. ");
 
     let tokenizer = load_tokenizer()?;
-    let (token_lists, text_sequences) =
-        tokenize_sequences(args.sequences, &tokenizer)?;
+    let (token_lists, text_sequences) = tokenize_sequences(args.sequences, &tokenizer)?;
 
     // Per-text features (1, projection_dim).
     let mut text_feats: Vec<Vec<f32>> = Vec::with_capacity(token_lists.len());
@@ -115,8 +112,7 @@ fn main() -> Result<()> {
         let i_norm = l2_norm(ifeat);
         for (j, tfeat) in text_feats.iter().enumerate() {
             let t_norm = l2_norm(tfeat);
-            let dot: f32 = ifeat.iter().zip(tfeat.iter())
-                .map(|(a, b)| a * b).sum();
+            let dot: f32 = ifeat.iter().zip(tfeat.iter()).map(|(a, b)| a * b).sum();
             let denom = (i_norm * t_norm).max(1e-12);
             logits_per_image[i * n_txt + j] = logit_scale * dot / denom;
         }
@@ -213,12 +209,11 @@ pub fn tokenize_sequences(
 
 /// Load image, resize to (image_size, image_size), apply OpenAI
 /// normalization, return CHW row-major f32 vector.
-fn load_image_as_vec<T: AsRef<std::path::Path>>(
-    path: T, image_size: usize,
-) -> Result<Vec<f32>> {
+fn load_image_as_vec<T: AsRef<std::path::Path>>(path: T, image_size: usize) -> Result<Vec<f32>> {
     let img = image::ImageReader::open(path)?.decode()?;
     let img = img.resize_to_fill(
-        image_size as u32, image_size as u32,
+        image_size as u32,
+        image_size as u32,
         image::imageops::FilterType::Triangle,
     );
     let img = img.to_rgb8().into_raw(); // HWC u8

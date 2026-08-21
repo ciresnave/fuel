@@ -93,9 +93,15 @@ fn validate_dims(
     let out_per_batch = m.saturating_mul(n);
     let lhs_batch_count: usize = lhs_batch_dims.iter().product::<usize>().max(1);
     let rhs_batch_count: usize = rhs_batch_dims.iter().product::<usize>().max(1);
-    let need_lhs = lhs_batch_count.saturating_mul(lhs_per_batch).saturating_mul(elem);
-    let need_rhs = rhs_batch_count.saturating_mul(rhs_per_batch).saturating_mul(elem);
-    let need_out = lhs_batch_count.saturating_mul(out_per_batch).saturating_mul(elem);
+    let need_lhs = lhs_batch_count
+        .saturating_mul(lhs_per_batch)
+        .saturating_mul(elem);
+    let need_rhs = rhs_batch_count
+        .saturating_mul(rhs_per_batch)
+        .saturating_mul(elem);
+    let need_out = lhs_batch_count
+        .saturating_mul(out_per_batch)
+        .saturating_mul(elem);
     if lhs.len_bytes() != need_lhs {
         return Err(err(format!(
             "{label}: lhs bytes={} doesn't match shape {:?} + [{m}, {k}]",
@@ -375,10 +381,34 @@ macro_rules! gemm_dense_matmul {
     };
 }
 
-gemm_dense_matmul!(matmul_f32,  sys::baracuda_kernels_gemm_dense_f32_run,  f32, 4, "gemm_dense_f32");
-gemm_dense_matmul!(matmul_f64,  sys::baracuda_kernels_gemm_dense_f64_run,  f64, 8, "gemm_dense_f64");
-gemm_dense_matmul!(matmul_f16,  sys::baracuda_kernels_gemm_dense_f16_run,  f32, 2, "gemm_dense_f16");
-gemm_dense_matmul!(matmul_bf16, sys::baracuda_kernels_gemm_dense_bf16_run, f32, 2, "gemm_dense_bf16");
+gemm_dense_matmul!(
+    matmul_f32,
+    sys::baracuda_kernels_gemm_dense_f32_run,
+    f32,
+    4,
+    "gemm_dense_f32"
+);
+gemm_dense_matmul!(
+    matmul_f64,
+    sys::baracuda_kernels_gemm_dense_f64_run,
+    f64,
+    8,
+    "gemm_dense_f64"
+);
+gemm_dense_matmul!(
+    matmul_f16,
+    sys::baracuda_kernels_gemm_dense_f16_run,
+    f32,
+    2,
+    "gemm_dense_f16"
+);
+gemm_dense_matmul!(
+    matmul_bf16,
+    sys::baracuda_kernels_gemm_dense_bf16_run,
+    f32,
+    2,
+    "gemm_dense_bf16"
+);
 
 // =============================================================================
 // cuBLAS same-hardware determinism audit (task-cublas-audit, 2026-07-10/11)
@@ -406,8 +436,8 @@ gemm_dense_matmul!(matmul_bf16, sys::baracuda_kernels_gemm_dense_bf16_run, f32, 
 mod determinism_audit {
     use super::*;
     use crate::CudaDevice;
-    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     fn dev_or_skip() -> Option<CudaDevice> {
         match CudaDevice::new(0) {
@@ -454,11 +484,41 @@ mod determinism_audit {
     /// Real decode-graph matmul shapes (see module comment) plus one
     /// batched shape to exercise `cublasGemmStridedBatchedEx`.
     const SHAPES: &[Shape] = &[
-        Shape { label: "qkv_o_proj_dim128_gemv", batch: 1, m: 1, k: 128, n: 128 },
-        Shape { label: "kv_proj_narrow_gqa",     batch: 1, m: 1, k: 128, n: 64 },
-        Shape { label: "ffn_up_512",             batch: 1, m: 1, k: 128, n: 512 },
-        Shape { label: "ffn_down_512",           batch: 1, m: 1, k: 512, n: 128 },
-        Shape { label: "attn_scores_batched4",   batch: 4, m: 1, k: 32, n: 16 },
+        Shape {
+            label: "qkv_o_proj_dim128_gemv",
+            batch: 1,
+            m: 1,
+            k: 128,
+            n: 128,
+        },
+        Shape {
+            label: "kv_proj_narrow_gqa",
+            batch: 1,
+            m: 1,
+            k: 128,
+            n: 64,
+        },
+        Shape {
+            label: "ffn_up_512",
+            batch: 1,
+            m: 1,
+            k: 128,
+            n: 512,
+        },
+        Shape {
+            label: "ffn_down_512",
+            batch: 1,
+            m: 1,
+            k: 512,
+            n: 128,
+        },
+        Shape {
+            label: "attn_scores_batched4",
+            batch: 4,
+            m: 1,
+            k: 32,
+            n: 16,
+        },
     ];
 
     /// Run one `matmul_f32` call for `shape` against fixed `lhs`/`rhs`
@@ -466,9 +526,18 @@ mod determinism_audit {
     fn run_once(shape: &Shape, lhs: &CudaStorageBytes, rhs: &CudaStorageBytes) -> Vec<u8> {
         let lhs_batch_dims = vec![shape.batch];
         let rhs_batch_dims = vec![shape.batch];
-        let out = matmul_f32(lhs, rhs, &lhs_batch_dims, &rhs_batch_dims, shape.m, shape.n, shape.k)
-            .expect("matmul_f32 launch");
-        out.to_cpu_bytes().expect("to_cpu_bytes (device-synchronizing D2H)")
+        let out = matmul_f32(
+            lhs,
+            rhs,
+            &lhs_batch_dims,
+            &rhs_batch_dims,
+            shape.m,
+            shape.n,
+            shape.k,
+        )
+        .expect("matmul_f32 launch");
+        out.to_cpu_bytes()
+            .expect("to_cpu_bytes (device-synchronizing D2H)")
     }
 
     /// Part 3.1 + 3.3: repeat-call bit-exactness (≥100 calls per shape)
@@ -484,10 +553,14 @@ mod determinism_audit {
         let Some(dev) = dev_or_skip() else { return };
 
         for shape in SHAPES {
-            let lhs_data = fill_deterministic(shape.batch * shape.m * shape.k, 0xC0FFEE ^ shape.n as u64);
-            let rhs_data = fill_deterministic(shape.batch * shape.k * shape.n, 0xFACADE ^ shape.k as u64);
-            let lhs = CudaStorageBytes::from_cpu_bytes(&dev, &to_bytes(&lhs_data)).expect("lhs upload");
-            let rhs = CudaStorageBytes::from_cpu_bytes(&dev, &to_bytes(&rhs_data)).expect("rhs upload");
+            let lhs_data =
+                fill_deterministic(shape.batch * shape.m * shape.k, 0xC0FFEE ^ shape.n as u64);
+            let rhs_data =
+                fill_deterministic(shape.batch * shape.k * shape.n, 0xFACADE ^ shape.k as u64);
+            let lhs =
+                CudaStorageBytes::from_cpu_bytes(&dev, &to_bytes(&lhs_data)).expect("lhs upload");
+            let rhs =
+                CudaStorageBytes::from_cpu_bytes(&dev, &to_bytes(&rhs_data)).expect("rhs upload");
 
             let first = run_once(shape, &lhs, &rhs);
             for i in 1..ITERS {
@@ -505,12 +578,13 @@ mod determinism_audit {
             );
 
             // Cross-process leg: compare against (or seed) a golden file.
-            let golden_path = std::env::temp_dir()
-                .join(format!("fuel_cublas_audit_golden_{}.bin", shape.label));
+            let golden_path =
+                std::env::temp_dir().join(format!("fuel_cublas_audit_golden_{}.bin", shape.label));
             if golden_path.exists() {
                 let golden = std::fs::read(&golden_path).expect("read golden file");
                 assert_eq!(
-                    golden, first,
+                    golden,
+                    first,
                     "cuBLAS determinism audit FAILED: shape={} result differs from a PRIOR \
                      process's golden output (fresh cuBLAS handle / context) at {}",
                     shape.label,
@@ -553,12 +627,22 @@ mod determinism_audit {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_bg = stop.clone();
         let bg_handle = std::thread::spawn(move || {
-            let Some(bg_dev) = dev_or_skip() else { return 0usize };
-            let bg_shape = Shape { label: "bg_noise", batch: 1, m: 64, k: 512, n: 512 };
+            let Some(bg_dev) = dev_or_skip() else {
+                return 0usize;
+            };
+            let bg_shape = Shape {
+                label: "bg_noise",
+                batch: 1,
+                m: 64,
+                k: 512,
+                n: 512,
+            };
             let lhs_data = fill_deterministic(bg_shape.m * bg_shape.k, 0x1234_5678);
             let rhs_data = fill_deterministic(bg_shape.k * bg_shape.n, 0x8765_4321);
-            let lhs = CudaStorageBytes::from_cpu_bytes(&bg_dev, &to_bytes(&lhs_data)).expect("bg lhs upload");
-            let rhs = CudaStorageBytes::from_cpu_bytes(&bg_dev, &to_bytes(&rhs_data)).expect("bg rhs upload");
+            let lhs = CudaStorageBytes::from_cpu_bytes(&bg_dev, &to_bytes(&lhs_data))
+                .expect("bg lhs upload");
+            let rhs = CudaStorageBytes::from_cpu_bytes(&bg_dev, &to_bytes(&rhs_data))
+                .expect("bg rhs upload");
             let mut count = 0usize;
             while !stop_bg.load(Ordering::Relaxed) {
                 let _ = run_once(&bg_shape, &lhs, &rhs);
@@ -574,10 +658,18 @@ mod determinism_audit {
         std::thread::sleep(std::time::Duration::from_millis(50));
 
         for shape in SHAPES {
-            let lhs_data = fill_deterministic(shape.batch * shape.m * shape.k, 0x5EED_0001 ^ shape.n as u64);
-            let rhs_data = fill_deterministic(shape.batch * shape.k * shape.n, 0x5EED_0002 ^ shape.k as u64);
-            let lhs = CudaStorageBytes::from_cpu_bytes(&dev, &to_bytes(&lhs_data)).expect("lhs upload");
-            let rhs = CudaStorageBytes::from_cpu_bytes(&dev, &to_bytes(&rhs_data)).expect("rhs upload");
+            let lhs_data = fill_deterministic(
+                shape.batch * shape.m * shape.k,
+                0x5EED_0001 ^ shape.n as u64,
+            );
+            let rhs_data = fill_deterministic(
+                shape.batch * shape.k * shape.n,
+                0x5EED_0002 ^ shape.k as u64,
+            );
+            let lhs =
+                CudaStorageBytes::from_cpu_bytes(&dev, &to_bytes(&lhs_data)).expect("lhs upload");
+            let rhs =
+                CudaStorageBytes::from_cpu_bytes(&dev, &to_bytes(&rhs_data)).expect("rhs upload");
 
             let first = run_once(shape, &lhs, &rhs);
             for i in 1..ITERS {

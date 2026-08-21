@@ -9,9 +9,7 @@ use clap::Parser;
 use std::sync::Arc;
 
 use fuel::lazy::LazyTensor;
-use fuel::lazy_clip::{
-    ClipModel, ClipModelWeights, ClipTextConfig, ClipVisionConfig,
-};
+use fuel::lazy_clip::{ClipModel, ClipModelWeights, ClipTextConfig, ClipVisionConfig};
 use fuel::safetensors::MmapedSafetensors;
 use fuel::{Device, Shape};
 
@@ -37,12 +35,11 @@ struct Args {
 
 /// Load image, resize to (image_size, image_size), CHW f32 with
 /// `2/255 * x - 1` affine (eager `clip::ClipModel` preprocessing).
-fn load_image_as_vec<P: AsRef<std::path::Path>>(
-    path: P, image_size: usize,
-) -> Result<Vec<f32>> {
+fn load_image_as_vec<P: AsRef<std::path::Path>>(path: P, image_size: usize) -> Result<Vec<f32>> {
     let img = image::ImageReader::open(path)?.decode()?;
     let img = img.resize_to_fill(
-        image_size as u32, image_size as u32,
+        image_size as u32,
+        image_size as u32,
         image::imageops::FilterType::Triangle,
     );
     let img = img.to_rgb8().into_raw(); // HWC u8
@@ -143,8 +140,7 @@ pub fn main() -> Result<()> {
         let i_norm = l2_norm(ifeat);
         for (j, tfeat) in text_feats.iter().enumerate() {
             let t_norm = l2_norm(tfeat);
-            let dot: f32 = ifeat.iter().zip(tfeat.iter())
-                .map(|(a, b)| a * b).sum();
+            let dot: f32 = ifeat.iter().zip(tfeat.iter()).map(|(a, b)| a * b).sum();
             let denom = (i_norm * t_norm).max(1e-12);
             logits_per_image[i * n_txt + j] = logit_scale * dot / denom;
         }

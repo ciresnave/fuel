@@ -141,17 +141,17 @@ pub use cache::*;
 pub use oracle::ProfileJudgeOracle;
 
 use crate::probe::ProbeReport;
+use fuel_correctness_fixtures::{
+    CorrectnessDrift, CorrectnessFixture, FIXTURE_FILE_VERSION, FixtureFile,
+    validate_against_fixture,
+};
 use fuel_ir::probe::{BackendId, DeviceDescriptor};
 use fuel_ir::{DType, Result, Shape};
-use fuel_correctness_fixtures::{
-    validate_against_fixture, CorrectnessDrift, CorrectnessFixture, FixtureFile,
-    FIXTURE_FILE_VERSION,
-};
 use std::collections::HashMap;
 use std::panic::AssertUnwindSafe;
 use std::path::Path;
-use std::time::Instant;
 use std::sync::{Arc, RwLock};
+use std::time::Instant;
 
 // Re-export the dispatch types (moved to fuel-core-types so
 // `fuel-graph-router`'s Router can consume them without depending
@@ -159,7 +159,7 @@ use std::sync::{Arc, RwLock};
 // keep working — `ProfileReport::save` / `ProfileReport::load` are
 // inherent methods on the moved type.
 pub use fuel_ir::dispatch::{
-    OpKind, ProfileEntry, ProfileReport, SizeClass, PROFILE_REPORT_VERSION,
+    OpKind, PROFILE_REPORT_VERSION, ProfileEntry, ProfileReport, SizeClass,
 };
 
 /// Default filename for the persisted profile report.
@@ -324,8 +324,10 @@ const DECODE_SCORE_CAP_ELEMS: usize = DECODE_HEADS * DECODE_KLEN_CAP;
 const DECODE_KV_HEADS: usize = 4;
 
 pub fn default_report_path() -> Option<std::path::PathBuf> {
-    crate::probe::default_report_path()
-        .and_then(|p| p.parent().map(|parent| parent.join(PROFILE_REPORT_FILENAME)))
+    crate::probe::default_report_path().and_then(|p| {
+        p.parent()
+            .map(|parent| parent.join(PROFILE_REPORT_FILENAME))
+    })
 }
 
 /// How many measurement iterations per (op, dtype, size, backend)
@@ -342,7 +344,7 @@ pub const DEFAULT_WARMUP: u32 = 3;
 /// full measurement matrix, and produces a [`ProfileReport`].
 pub struct Judge {
     pub iterations: u32,
-    pub warmup:     u32,
+    pub warmup: u32,
     /// Optional shrunk size ladder. `None` = use the full default
     /// ladder: three square/general sizes per op (up to 1024×1024
     /// matmul / 2²⁰ elementwise), PLUS decode-shaped cells on the
@@ -371,7 +373,7 @@ impl Default for Judge {
     fn default() -> Self {
         Self {
             iterations: DEFAULT_ITERATIONS,
-            warmup:     DEFAULT_WARMUP,
+            warmup: DEFAULT_WARMUP,
             size_plan_override: None,
             fixtures: None,
         }
@@ -448,8 +450,7 @@ impl Judge {
 
         // Derive the per-cell seed once — capture's `derive_seed`
         // is a pure function of (op, dtype, size_class).
-        let expected_seed =
-            fuel_correctness_fixtures::capture::derive_seed(op, dtype, size_class);
+        let expected_seed = fuel_correctness_fixtures::capture::derive_seed(op, dtype, size_class);
 
         // Lazily regenerate and hash the input only when a fixture's
         // shape + seed agree (the hash is the expensive check).
@@ -469,11 +470,10 @@ impl Judge {
                 continue;
             }
             let actual_hash = *regenerated_hash.get_or_insert_with(|| {
-                let input =
-                    fuel_correctness_fixtures::capture::deterministic_f32_input(
-                        op,
-                        input_elem_count,
-                    );
+                let input = fuel_correctness_fixtures::capture::deterministic_f32_input(
+                    op,
+                    input_elem_count,
+                );
                 fuel_correctness_fixtures::capture::hash_f32_input(&input)
             });
             if f.input_hash != actual_hash {
@@ -505,7 +505,8 @@ impl Judge {
     /// first entry whose op matches and iterates the sizes.
     fn size_plan(&self, op: OpKind) -> Vec<OpSize> {
         if let Some(over) = &self.size_plan_override {
-            return over.iter()
+            return over
+                .iter()
                 .filter(|(k, _)| *k == op)
                 .map(|(_, s)| *s)
                 .collect();
@@ -513,9 +514,21 @@ impl Judge {
         match op {
             OpKind::MatMul => vec![
                 // General square ladder (compute-bound regime).
-                OpSize::MatMul { m: 64,  n: 64,  k: 64  },
-                OpSize::MatMul { m: 256, n: 256, k: 256 },
-                OpSize::MatMul { m: 1024, n: 1024, k: 1024 },
+                OpSize::MatMul {
+                    m: 64,
+                    n: 64,
+                    k: 64,
+                },
+                OpSize::MatMul {
+                    m: 256,
+                    n: 256,
+                    k: 256,
+                },
+                OpSize::MatMul {
+                    m: 1024,
+                    n: 1024,
+                    k: 1024,
+                },
                 // ---- Decode GEMVs (seq_q=1, bandwidth-bound). ----
                 // With the v4 aspect SizeClass every cell below keys as
                 // `matmul(m,n,k)` and the same operand dims yield the
@@ -523,22 +536,38 @@ impl Judge {
                 // are found (no longer square-consistency-constrained).
                 //
                 // Hidden / attention projection `[1,H]×[H,H]`.
-                OpSize::MatMul { m: 1, n: DECODE_HIDDEN, k: DECODE_HIDDEN },
+                OpSize::MatMul {
+                    m: 1,
+                    n: DECODE_HIDDEN,
+                    k: DECODE_HIDDEN,
+                },
                 // FFN up-projection `[1,H]×[H,FFN]` (wide GEMV). Un-
                 // deferred from slice 2: under the old scalar key its
                 // output `m·n=5632` collided with the 64³ square (both
                 // sc12); the aspect key `matmul(1,5632,2048)` separates
                 // them by the `log2(m)=0` byte.
-                OpSize::MatMul { m: 1, n: DECODE_FFN, k: DECODE_HIDDEN },
+                OpSize::MatMul {
+                    m: 1,
+                    n: DECODE_FFN,
+                    k: DECODE_HIDDEN,
+                },
                 // QKᵀ score GEMV, per query head `[1,D]×[D,k_len]` (the
                 // leading Hq batch dim doesn't affect the aspect key —
                 // `for_op` reads the trailing two dims). Contracts over
                 // the head dim D; output width is k_len.
-                OpSize::MatMul { m: 1, n: DECODE_KLEN_SMALL, k: DECODE_HEAD_DIM },
+                OpSize::MatMul {
+                    m: 1,
+                    n: DECODE_KLEN_SMALL,
+                    k: DECODE_HEAD_DIM,
+                },
                 // Attention-output GEMV, per head `[1,k_len]×[k_len,D]`.
                 // Contracts over k_len back down to D — the (n,k)-swapped
                 // mirror of QKᵀ, and the aspect key keeps them distinct.
-                OpSize::MatMul { m: 1, n: DECODE_HEAD_DIM, k: DECODE_KLEN_SMALL },
+                OpSize::MatMul {
+                    m: 1,
+                    n: DECODE_HEAD_DIM,
+                    k: DECODE_KLEN_SMALL,
+                },
             ],
             // Element-wise binary + unary share one ladder. Three sizes
             // span the regime where launch overhead dominates (1 KiB),
@@ -600,14 +629,20 @@ impl Judge {
             // chunk). Total elements 1 KiB / 64 KiB / 1 MiB to align
             // with the elementwise size ladder for cross-family
             // size_class comparison in the dispatch table.
-            OpKind::SumReduce
-            | OpKind::MaxReduce
-            | OpKind::MinReduce
-            | OpKind::MeanReduce => {
+            OpKind::SumReduce | OpKind::MaxReduce | OpKind::MinReduce | OpKind::MeanReduce => {
                 let mut ladder = vec![
-                    OpSize::Reduce { rows: 1 << 4,  cols: 64 },
-                    OpSize::Reduce { rows: 1 << 10, cols: 64 },
-                    OpSize::Reduce { rows: 1 << 14, cols: 64 },
+                    OpSize::Reduce {
+                        rows: 1 << 4,
+                        cols: 64,
+                    },
+                    OpSize::Reduce {
+                        rows: 1 << 10,
+                        cols: 64,
+                    },
+                    OpSize::Reduce {
+                        rows: 1 << 14,
+                        cols: 64,
+                    },
                 ];
                 // Decode-row cells for the softmax reductions: MaxReduce
                 // (row max) + SumReduce (denominator). The reduced dim
@@ -618,8 +653,14 @@ impl Judge {
                 // free in this family's occupied buckets {10,16,20}.
                 // Min/Mean are NOT on the softmax path — no decode cell.
                 if is_decode_softmax_reduction(op) {
-                    ladder.push(OpSize::Reduce { rows: DECODE_HEADS, cols: DECODE_KLEN_SMALL });
-                    ladder.push(OpSize::Reduce { rows: DECODE_HEADS, cols: DECODE_KLEN_CAP });
+                    ladder.push(OpSize::Reduce {
+                        rows: DECODE_HEADS,
+                        cols: DECODE_KLEN_SMALL,
+                    });
+                    ladder.push(OpSize::Reduce {
+                        rows: DECODE_HEADS,
+                        cols: DECODE_KLEN_CAP,
+                    });
                 }
                 ladder
             }
@@ -628,11 +669,19 @@ impl Judge {
             // dim). The canonical autograd-backward shape; broader
             // patterns (multi-axis, mid-rank insertion) follow once
             // the dispatch tables can carry them.
-            OpKind::ReduceSumTo
-            | OpKind::ReduceMaxTo => vec![
-                OpSize::ReduceTo { rows: 1 << 4,  cols: 64 },
-                OpSize::ReduceTo { rows: 1 << 10, cols: 64 },
-                OpSize::ReduceTo { rows: 1 << 14, cols: 64 },
+            OpKind::ReduceSumTo | OpKind::ReduceMaxTo => vec![
+                OpSize::ReduceTo {
+                    rows: 1 << 4,
+                    cols: 64,
+                },
+                OpSize::ReduceTo {
+                    rows: 1 << 10,
+                    cols: 64,
+                },
+                OpSize::ReduceTo {
+                    rows: 1 << 14,
+                    cols: 64,
+                },
             ],
             // Fused decode attention (arm-1 of slice-4's flash-vs-
             // decomposed ranking). Two decode-representative GQA cells at
@@ -644,12 +693,18 @@ impl Judge {
             // naive CPU SDPA is ~Hq·k_len·D ≈ 8.4M MACs per QKᵀ/PV pass.
             OpKind::FlashAttn => vec![
                 OpSize::Attention {
-                    b: 1, hq: DECODE_HEADS, hkv: DECODE_KV_HEADS,
-                    d: DECODE_HEAD_DIM, k_len: DECODE_KLEN_SMALL,
+                    b: 1,
+                    hq: DECODE_HEADS,
+                    hkv: DECODE_KV_HEADS,
+                    d: DECODE_HEAD_DIM,
+                    k_len: DECODE_KLEN_SMALL,
                 },
                 OpSize::Attention {
-                    b: 1, hq: DECODE_HEADS, hkv: DECODE_KV_HEADS,
-                    d: DECODE_HEAD_DIM, k_len: DECODE_KLEN_CAP,
+                    b: 1,
+                    hq: DECODE_HEADS,
+                    hkv: DECODE_KV_HEADS,
+                    d: DECODE_HEAD_DIM,
+                    k_len: DECODE_KLEN_CAP,
                 },
             ],
             // OpKind is `#[non_exhaustive]` — future variants land
@@ -716,9 +771,7 @@ impl Judge {
                     // attention cell this producer profiles is found by the
                     // consumer at bake time. Every other op keys on total
                     // element count.
-                    OpSize::Attention { hq, k_len, d, .. } => {
-                        SizeClass::attention(hq, k_len, d)
-                    }
+                    OpSize::Attention { hq, k_len, d, .. } => SizeClass::attention(hq, k_len, d),
                     _ => SizeClass::from_elem_count(sz.total_elements()),
                 };
 
@@ -752,9 +805,13 @@ impl Judge {
                             // kernel-pointer call. The dispatched
                             // alternative is already covered by the
                             // realizer measurement above.
-                            if let Some(extra_runs) =
-                                self.measure_extra_alternatives(op, dtype, &sz, rep, &dispatched_source)
-                            {
+                            if let Some(extra_runs) = self.measure_extra_alternatives(
+                                op,
+                                dtype,
+                                &sz,
+                                rep,
+                                &dispatched_source,
+                            ) {
                                 for extra in extra_runs {
                                     cell_runs.push(extra);
                                 }
@@ -771,9 +828,8 @@ impl Judge {
                     // locally. When no fixture is present, fall back to
                     // pairwise consensus across the CellRuns at this
                     // cell.
-                    let expected_elem_count = cell_runs.first()
-                        .map(|r| r.output.len())
-                        .unwrap_or(0);
+                    let expected_elem_count =
+                        cell_runs.first().map(|r| r.output.len()).unwrap_or(0);
                     let input_elem_count = sz.input_elements(op);
                     let fixture = self.lookup_fixture(
                         op,
@@ -806,8 +862,7 @@ impl Judge {
                         // Find the equivalence class this run belongs to
                         // (its representative's backend matches `run.backend`).
                         let class_devs = classes.iter().find_map(|(k, devs)| {
-                            if k.backend == run.backend
-                                && devs[0].device_index == run.device_index
+                            if k.backend == run.backend && devs[0].device_index == run.device_index
                             {
                                 Some(devs)
                             } else {
@@ -834,7 +889,10 @@ impl Judge {
             }
         }
 
-        ProfileReport { version: PROFILE_REPORT_VERSION, entries }
+        ProfileReport {
+            version: PROFILE_REPORT_VERSION,
+            entries,
+        }
     }
 
     /// Walk binding-table alternatives at `(op_kind, dtypes, backend)`
@@ -901,9 +959,7 @@ impl Judge {
 
         let mut extra: Vec<CellRun> = Vec::with_capacity(alternatives.len());
         for alt in alternatives {
-            if let Some(run) = self.time_alternative_direct(
-                op, size, device, &prepared, &alt,
-            ) {
+            if let Some(run) = self.time_alternative_direct(op, size, device, &prepared, &alt) {
                 extra.push(run);
             }
         }
@@ -932,7 +988,12 @@ impl Judge {
         for _ in 0..self.warmup {
             let r = std::panic::catch_unwind(AssertUnwindSafe(|| {
                 let mut outs = vec![Arc::clone(&prepared.output)];
-                kernel(&prepared.inputs, &mut outs, &prepared.layouts, &prepared.op_params)
+                kernel(
+                    &prepared.inputs,
+                    &mut outs,
+                    &prepared.layouts,
+                    &prepared.op_params,
+                )
             }));
             if r.is_err() {
                 eprintln!(
@@ -960,7 +1021,12 @@ impl Judge {
             let t0 = Instant::now();
             let res = std::panic::catch_unwind(AssertUnwindSafe(|| {
                 let mut outs = vec![Arc::clone(&prepared.output)];
-                kernel(&prepared.inputs, &mut outs, &prepared.layouts, &prepared.op_params)
+                kernel(
+                    &prepared.inputs,
+                    &mut outs,
+                    &prepared.layouts,
+                    &prepared.op_params,
+                )
             }));
             let elapsed_ns = t0.elapsed().as_nanos() as u64;
             match res {
@@ -1027,9 +1093,7 @@ impl Judge {
         // diagnostic tag that legitimately defaults to `""` (the
         // baracuda CUDA registrations are untagged), so an empty tag
         // does not mean an empty cell.
-        if device.backend != BackendId::Cpu
-            && !has_binding_alternative(op, dtype, device.backend)
-        {
+        if device.backend != BackendId::Cpu && !has_binding_alternative(op, dtype, device.backend) {
             eprintln!(
                 "judge: skipping {op}@{size:?} ({dtype:?}) on {}:{} — no binding-table \
                  alternative registered for this backend/dtype",
@@ -1089,17 +1153,15 @@ impl Judge {
         device: &DeviceDescriptor,
         realizer: &mut dyn crate::factories::LazyRealizer,
     ) -> Option<CellRun> {
-        let tensor = match std::panic::catch_unwind(AssertUnwindSafe(|| {
-            build_input_graph(op, dtype, size)
-        })) {
-            Ok(t) => t,
-            Err(_) => {
-                eprintln!(
-                    "judge: skipping {op}@{size:?} — build_input_graph panicked",
-                );
-                return None;
-            }
-        };
+        let tensor =
+            match std::panic::catch_unwind(AssertUnwindSafe(|| build_input_graph(op, dtype, size)))
+            {
+                Ok(t) => t,
+                Err(_) => {
+                    eprintln!("judge: skipping {op}@{size:?} — build_input_graph panicked",);
+                    return None;
+                }
+            };
 
         // Warmup — discard timings; stabilize kernel caches, warm
         // up any BLAS internal state, fault-in heap, upload Consts
@@ -1211,9 +1273,9 @@ struct DirectCallAlternative {
 /// inputs (a prerequisite for cross-alternative consensus to mean
 /// anything).
 struct PreparedDirectCall {
-    inputs:    Vec<Arc<RwLock<fuel_memory::Storage>>>,
-    output:    Arc<RwLock<fuel_memory::Storage>>,
-    layouts:   Vec<fuel_ir::Layout>,
+    inputs: Vec<Arc<RwLock<fuel_memory::Storage>>>,
+    output: Arc<RwLock<fuel_memory::Storage>>,
+    layouts: Vec<fuel_ir::Layout>,
     op_params: fuel_dispatch::kernel::OpParams,
 }
 
@@ -1384,9 +1446,9 @@ fn canonical_binding_dtypes_for(op: OpKind, dtype: DType) -> Option<Vec<DType>> 
 /// realizer-measured primary alternative (consensus needs aligned
 /// inputs across CellRuns).
 fn prepare_direct_call_inputs(op: OpKind, size: &OpSize) -> Option<PreparedDirectCall> {
-    use fuel_ir::Layout;
     use fuel_cpu_backend::CpuStorageBytes;
     use fuel_dispatch::kernel::OpParams;
+    use fuel_ir::Layout;
     use fuel_memory::{BackendStorage, Storage};
 
     let make_storage = |bytes: CpuStorageBytes| {
@@ -1413,7 +1475,9 @@ fn prepare_direct_call_inputs(op: OpKind, size: &OpSize) -> Option<PreparedDirec
             let op_params = OpParams::Matmul {
                 lhs_batch_dims: Vec::new(),
                 rhs_batch_dims: Vec::new(),
-                m, n, k,
+                m,
+                n,
+                k,
                 // Judge profiles dense static matmuls.
                 m_compute: fuel_dispatch::kernel::MatmulM::All,
             };
@@ -1449,9 +1513,9 @@ fn prepare_direct_call_inputs(op: OpKind, size: &OpSize) -> Option<PreparedDirec
             let needs_nonzero = matches!(
                 op,
                 OpKind::SqrtElementwise
-                | OpKind::LogElementwise
-                | OpKind::RecipElementwise
-                | OpKind::RsqrtElementwise,
+                    | OpKind::LogElementwise
+                    | OpKind::RecipElementwise
+                    | OpKind::RsqrtElementwise,
             );
             let data: Vec<f32> = if needs_nonzero {
                 raw.into_iter().map(|x| x + 1.5).collect()
@@ -1463,10 +1527,7 @@ fn prepare_direct_call_inputs(op: OpKind, size: &OpSize) -> Option<PreparedDirec
                 n * std::mem::size_of::<f32>(),
             ));
             let shape = Shape::from_dims(&[n]);
-            let layouts = vec![
-                Layout::contiguous(shape.clone()),
-                Layout::contiguous(shape),
-            ];
+            let layouts = vec![Layout::contiguous(shape.clone()), Layout::contiguous(shape)];
             Some(PreparedDirectCall {
                 inputs: vec![inp],
                 output: out,
@@ -1481,14 +1542,14 @@ fn prepare_direct_call_inputs(op: OpKind, size: &OpSize) -> Option<PreparedDirec
                 n * std::mem::size_of::<f32>(),
             ));
             let shape = Shape::from_dims(&[n]);
-            let layouts = vec![
-                Layout::contiguous(shape.clone()),
-                Layout::contiguous(shape),
-            ];
+            let layouts = vec![Layout::contiguous(shape.clone()), Layout::contiguous(shape)];
             let op_params = match op {
-                OpKind::Affine           => OpParams::Affine { mul: 2.0, add: 0.0 },
-                OpKind::ClampElementwise => OpParams::Clamp { min: -0.5, max: 0.5 },
-                OpKind::PowIElementwise  => OpParams::PowI { exp: 3 },
+                OpKind::Affine => OpParams::Affine { mul: 2.0, add: 0.0 },
+                OpKind::ClampElementwise => OpParams::Clamp {
+                    min: -0.5,
+                    max: 0.5,
+                },
+                OpKind::PowIElementwise => OpParams::PowI { exp: 3 },
                 _ => unreachable!(),
             };
             Some(PreparedDirectCall {
@@ -1550,7 +1611,13 @@ pub enum OpSize {
     /// `q = [b, hq, 1, d]`, `k = v = [b, hkv, k_len, d]` (`hq % hkv == 0`,
     /// GQA), attending the full `k_len` prefix. Keyed via
     /// [`SizeClass::attention`]`(hq, k_len, d)`.
-    Attention { b: usize, hq: usize, hkv: usize, d: usize, k_len: usize },
+    Attention {
+        b: usize,
+        hq: usize,
+        hkv: usize,
+        d: usize,
+        k_len: usize,
+    },
 }
 
 impl OpSize {
@@ -1584,16 +1651,24 @@ impl OpSize {
         match *self {
             OpSize::MatMul { m, n, k } => m * k + k * n,
             OpSize::Elementwise(n) => {
-                if is_binary_elementwise(op) { 2 * n } else { n }
+                if is_binary_elementwise(op) {
+                    2 * n
+                } else {
+                    n
+                }
             }
             OpSize::Reduce { rows, cols } => rows * cols,
             OpSize::ReduceTo { rows, cols } => rows * cols,
             // q + k + v elements. FlashAttn has no capture-tool fixture
             // (not in the fixture distribution), so this feeds no live
             // fixture-hash path today; kept consistent for completeness.
-            OpSize::Attention { b, hq, hkv, d, k_len } => {
-                b * hq * 1 * d + 2 * (b * hkv * k_len * d)
-            }
+            OpSize::Attention {
+                b,
+                hq,
+                hkv,
+                d,
+                k_len,
+            } => b * hq * 1 * d + 2 * (b * hkv * k_len * d),
         }
     }
 }
@@ -1611,12 +1686,16 @@ fn make_leaf(dtype: DType, data: Vec<f32>, shape: Shape) -> crate::lazy::LazyTen
     match dtype {
         DType::F32 => LazyTensor::from_f32(data, shape, &dev),
         DType::F16 => LazyTensor::from_f16(
-            data.iter().map(|&x| half::f16::from_f32(x)).collect::<Vec<_>>(),
+            data.iter()
+                .map(|&x| half::f16::from_f32(x))
+                .collect::<Vec<_>>(),
             shape,
             &dev,
         ),
         DType::BF16 => LazyTensor::from_bf16(
-            data.iter().map(|&x| half::bf16::from_f32(x)).collect::<Vec<_>>(),
+            data.iter()
+                .map(|&x| half::bf16::from_f32(x))
+                .collect::<Vec<_>>(),
             shape,
             &dev,
         ),
@@ -1636,11 +1715,15 @@ fn make_const_like(
     match dtype {
         DType::F32 => a.const_f32_like(data, shape),
         DType::F16 => a.const_f16_like(
-            data.iter().map(|&x| half::f16::from_f32(x)).collect::<Vec<_>>(),
+            data.iter()
+                .map(|&x| half::f16::from_f32(x))
+                .collect::<Vec<_>>(),
             shape,
         ),
         DType::BF16 => a.const_bf16_like(
-            data.iter().map(|&x| half::bf16::from_f32(x)).collect::<Vec<_>>(),
+            data.iter()
+                .map(|&x| half::bf16::from_f32(x))
+                .collect::<Vec<_>>(),
             shape,
         ),
         other => panic!("build_input_graph: unsupported profiled dtype {other:?}"),
@@ -1715,9 +1798,9 @@ fn build_input_graph(op: OpKind, dtype: DType, size: &OpSize) -> crate::lazy::La
             let data: Vec<f32> = unary_input(n);
             let a = make_leaf(dtype, data, Shape::from_dims(&[n]));
             match op {
-                OpKind::Affine           => a.mul_scalar(2.0),
+                OpKind::Affine => a.mul_scalar(2.0),
                 OpKind::ClampElementwise => a.clamp(-0.5, 0.5),
-                OpKind::PowIElementwise  => a.powi(3),
+                OpKind::PowIElementwise => a.powi(3),
                 _ => unreachable!(),
             }
         }
@@ -1730,9 +1813,9 @@ fn build_input_graph(op: OpKind, dtype: DType, size: &OpSize) -> crate::lazy::La
             let needs_nonzero = matches!(
                 op,
                 OpKind::SqrtElementwise
-                | OpKind::LogElementwise
-                | OpKind::RecipElementwise
-                | OpKind::RsqrtElementwise,
+                    | OpKind::LogElementwise
+                    | OpKind::RecipElementwise
+                    | OpKind::RsqrtElementwise,
             );
             let data: Vec<f32> = if needs_nonzero {
                 raw.into_iter().map(|x| x + 1.5).collect()
@@ -1754,16 +1837,24 @@ fn build_input_graph(op: OpKind, dtype: DType, size: &OpSize) -> crate::lazy::La
         // FlashAttn kernel (naive SDPA, `flash_attn_{f32,f16,bf16}` in
         // fuel-cpu-backend::byte_kernels); f16/bf16 inputs down-convert
         // the deterministic f32 domain, mirroring the other families.
-        (OpKind::FlashAttn, OpSize::Attention { b, hq, hkv, d, k_len }) => {
+        (
+            OpKind::FlashAttn,
+            OpSize::Attention {
+                b,
+                hq,
+                hkv,
+                d,
+                k_len,
+            },
+        ) => {
             let scale = 1.0 / (d as f32).sqrt();
             let q_elems = b * hq * 1 * d;
             let kv_elems = b * hkv * k_len * d;
-            let q_data: Vec<f32> =
-                (0..q_elems).map(|i| ((i as f32) * 1.3e-3).sin()).collect();
-            let k_data: Vec<f32> =
-                (0..kv_elems).map(|i| ((i as f32) * 1.7e-3).cos()).collect();
-            let v_data: Vec<f32> =
-                (0..kv_elems).map(|i| ((i as f32) * 0.9e-3).sin() + 1.0).collect();
+            let q_data: Vec<f32> = (0..q_elems).map(|i| ((i as f32) * 1.3e-3).sin()).collect();
+            let k_data: Vec<f32> = (0..kv_elems).map(|i| ((i as f32) * 1.7e-3).cos()).collect();
+            let v_data: Vec<f32> = (0..kv_elems)
+                .map(|i| ((i as f32) * 0.9e-3).sin() + 1.0)
+                .collect();
             let q = make_leaf(dtype, q_data, Shape::from_dims(&[b, hq, 1, d]));
             let k = make_const_like(&q, dtype, k_data, Shape::from_dims(&[b, hkv, k_len, d]));
             let v = make_const_like(&q, dtype, v_data, Shape::from_dims(&[b, hkv, k_len, d]));
@@ -1781,9 +1872,7 @@ fn build_input_graph(op: OpKind, dtype: DType, size: &OpSize) -> crate::lazy::La
 fn is_scalar_op(op: OpKind) -> bool {
     matches!(
         op,
-        OpKind::Affine
-        | OpKind::ClampElementwise
-        | OpKind::PowIElementwise,
+        OpKind::Affine | OpKind::ClampElementwise | OpKind::PowIElementwise,
     )
 }
 
@@ -1820,10 +1909,7 @@ fn is_decode_softmax_reduction(op: OpKind) -> bool {
 fn is_reduction(op: OpKind) -> bool {
     matches!(
         op,
-        OpKind::SumReduce
-        | OpKind::MaxReduce
-        | OpKind::MinReduce
-        | OpKind::MeanReduce,
+        OpKind::SumReduce | OpKind::MaxReduce | OpKind::MinReduce | OpKind::MeanReduce,
     )
 }
 
@@ -1834,9 +1920,9 @@ fn apply_reduction(op: OpKind, a: &crate::lazy::LazyTensor) -> crate::lazy::Lazy
     // rank-1 `[rows]`.
     let last_dim = a.rank() - 1;
     match op {
-        OpKind::SumReduce  => a.sum_dim(last_dim).unwrap(),
-        OpKind::MaxReduce  => a.max_dim(last_dim).unwrap(),
-        OpKind::MinReduce  => a.min_dim(last_dim).unwrap(),
+        OpKind::SumReduce => a.sum_dim(last_dim).unwrap(),
+        OpKind::MaxReduce => a.max_dim(last_dim).unwrap(),
+        OpKind::MinReduce => a.min_dim(last_dim).unwrap(),
         OpKind::MeanReduce => a.mean_dim(last_dim).unwrap(),
         _ => unreachable!("apply_reduction called on non-reduction OpKind {op:?}"),
     }
@@ -1848,13 +1934,13 @@ fn is_binary_elementwise(op: OpKind) -> bool {
     matches!(
         op,
         OpKind::AddElementwise
-        | OpKind::SubElementwise
-        | OpKind::MulElementwise
-        | OpKind::DivElementwise
-        | OpKind::MaximumElementwise
-        | OpKind::MinimumElementwise
-        | OpKind::PowElementwise
-        | OpKind::RemElementwise,
+            | OpKind::SubElementwise
+            | OpKind::MulElementwise
+            | OpKind::DivElementwise
+            | OpKind::MaximumElementwise
+            | OpKind::MinimumElementwise
+            | OpKind::PowElementwise
+            | OpKind::RemElementwise,
     )
 }
 
@@ -1867,17 +1953,25 @@ fn binary_inputs(op: OpKind, n: usize) -> (Vec<f32>, Vec<f32>) {
     let mut a: Vec<f32> = (0..n).map(|i| ((i as f32) * 2.1e-3).sin()).collect();
     let mut b: Vec<f32> = (0..n).map(|i| ((i as f32) * 1.9e-3).cos()).collect();
     if matches!(op, OpKind::DivElementwise) {
-        for x in &mut b { *x += 1.5; }
+        for x in &mut b {
+            *x += 1.5;
+        }
     }
     if matches!(op, OpKind::PowElementwise) {
         // Both inputs must be positive: pow(neg, non-int) = NaN under
         // IEEE-754 and saturates max_rel_err. Shift both to [0.5, 2.5].
-        for x in &mut a { *x += 1.5; }
-        for x in &mut b { *x += 1.5; }
+        for x in &mut a {
+            *x += 1.5;
+        }
+        for x in &mut b {
+            *x += 1.5;
+        }
     }
     if matches!(op, OpKind::RemElementwise) {
         // Divisor must be away from zero (`a / b` blows up otherwise).
-        for x in &mut b { *x += 1.5; }
+        for x in &mut b {
+            *x += 1.5;
+        }
     }
     (a, b)
 }
@@ -1889,18 +1983,18 @@ fn apply_binary(
     b: &crate::lazy::LazyTensor,
 ) -> crate::lazy::LazyTensor {
     match op {
-        OpKind::AddElementwise     => a.add(b).unwrap(),
-        OpKind::SubElementwise     => a.sub(b).unwrap(),
-        OpKind::MulElementwise     => a.mul(b).unwrap(),
-        OpKind::DivElementwise     => a.div(b).unwrap(),
+        OpKind::AddElementwise => a.add(b).unwrap(),
+        OpKind::SubElementwise => a.sub(b).unwrap(),
+        OpKind::MulElementwise => a.mul(b).unwrap(),
+        OpKind::DivElementwise => a.div(b).unwrap(),
         OpKind::MaximumElementwise => a.maximum(b).unwrap(),
         OpKind::MinimumElementwise => a.minimum(b).unwrap(),
         // Pow/Rem return Result; expect() in Judge's measurement
         // path is fine — inputs are constructed locally here, so a
         // shape/dtype mismatch is a programming bug in the test
         // harness, not a runtime user input.
-        OpKind::PowElementwise     => a.pow(b).expect("judge: pow shape/dtype invariant"),
-        OpKind::RemElementwise     => a.rem(b).expect("judge: rem shape/dtype invariant"),
+        OpKind::PowElementwise => a.pow(b).expect("judge: pow shape/dtype invariant"),
+        OpKind::RemElementwise => a.rem(b).expect("judge: rem shape/dtype invariant"),
         _ => unreachable!("apply_binary called on non-binary OpKind {op:?}"),
     }
 }
@@ -1911,27 +2005,27 @@ fn is_unary_elementwise(op: OpKind) -> bool {
     matches!(
         op,
         OpKind::NegElementwise
-        | OpKind::SqrElementwise
-        | OpKind::SqrtElementwise
-        | OpKind::ExpElementwise
-        | OpKind::LogElementwise
-        | OpKind::SinElementwise
-        | OpKind::CosElementwise
-        | OpKind::TanhElementwise
-        | OpKind::SigmoidElementwise
-        | OpKind::SiluElementwise
-        | OpKind::GeluElementwise
-        | OpKind::ReluElementwise
-        | OpKind::StepElementwise
-        | OpKind::RecipElementwise
-        | OpKind::AbsElementwise
-        | OpKind::FloorElementwise
-        | OpKind::CeilElementwise
-        | OpKind::RoundElementwise
-        | OpKind::SignElementwise
-        | OpKind::ErfElementwise
-        | OpKind::GeluErfElementwise
-        | OpKind::RsqrtElementwise,
+            | OpKind::SqrElementwise
+            | OpKind::SqrtElementwise
+            | OpKind::ExpElementwise
+            | OpKind::LogElementwise
+            | OpKind::SinElementwise
+            | OpKind::CosElementwise
+            | OpKind::TanhElementwise
+            | OpKind::SigmoidElementwise
+            | OpKind::SiluElementwise
+            | OpKind::GeluElementwise
+            | OpKind::ReluElementwise
+            | OpKind::StepElementwise
+            | OpKind::RecipElementwise
+            | OpKind::AbsElementwise
+            | OpKind::FloorElementwise
+            | OpKind::CeilElementwise
+            | OpKind::RoundElementwise
+            | OpKind::SignElementwise
+            | OpKind::ErfElementwise
+            | OpKind::GeluErfElementwise
+            | OpKind::RsqrtElementwise,
     )
 }
 
@@ -1945,28 +2039,28 @@ fn unary_input(n: usize) -> Vec<f32> {
 /// Dispatch one elementwise unary op against `a`.
 fn apply_unary(op: OpKind, a: &crate::lazy::LazyTensor) -> crate::lazy::LazyTensor {
     match op {
-        OpKind::NegElementwise     => a.neg(),
-        OpKind::SqrElementwise     => a.sqr(),
-        OpKind::SqrtElementwise    => a.sqrt(),
-        OpKind::ExpElementwise     => a.exp(),
-        OpKind::LogElementwise     => a.log(),
-        OpKind::TanhElementwise    => a.tanh(),
+        OpKind::NegElementwise => a.neg(),
+        OpKind::SqrElementwise => a.sqr(),
+        OpKind::SqrtElementwise => a.sqrt(),
+        OpKind::ExpElementwise => a.exp(),
+        OpKind::LogElementwise => a.log(),
+        OpKind::TanhElementwise => a.tanh(),
         OpKind::SigmoidElementwise => a.sigmoid(),
-        OpKind::SiluElementwise    => a.silu(),
-        OpKind::GeluElementwise    => a.gelu(),
-        OpKind::ReluElementwise    => a.relu(),
-        OpKind::SinElementwise     => a.sin(),
-        OpKind::CosElementwise     => a.cos(),
-        OpKind::StepElementwise    => a.step(),
-        OpKind::RecipElementwise   => a.recip(),
-        OpKind::AbsElementwise     => a.abs(),
-        OpKind::FloorElementwise   => a.floor(),
-        OpKind::CeilElementwise    => a.ceil(),
-        OpKind::RoundElementwise   => a.round(),
-        OpKind::SignElementwise    => a.sign(),
-        OpKind::ErfElementwise     => a.erf(),
+        OpKind::SiluElementwise => a.silu(),
+        OpKind::GeluElementwise => a.gelu(),
+        OpKind::ReluElementwise => a.relu(),
+        OpKind::SinElementwise => a.sin(),
+        OpKind::CosElementwise => a.cos(),
+        OpKind::StepElementwise => a.step(),
+        OpKind::RecipElementwise => a.recip(),
+        OpKind::AbsElementwise => a.abs(),
+        OpKind::FloorElementwise => a.floor(),
+        OpKind::CeilElementwise => a.ceil(),
+        OpKind::RoundElementwise => a.round(),
+        OpKind::SignElementwise => a.sign(),
+        OpKind::ErfElementwise => a.erf(),
         OpKind::GeluErfElementwise => a.gelu_erf(),
-        OpKind::RsqrtElementwise   => a.rsqrt(),
+        OpKind::RsqrtElementwise => a.rsqrt(),
         _ => unreachable!("apply_unary called on non-unary OpKind {op:?}"),
     }
 }
@@ -1987,7 +2081,9 @@ fn max_rel_err(a: &[f32], b: &[f32]) -> f32 {
         }
         let denom = x.abs().max(y.abs()).max(f32::MIN_POSITIVE);
         let rel = (x - y).abs() / denom;
-        if rel > worst { worst = rel; }
+        if rel > worst {
+            worst = rel;
+        }
     }
     worst
 }
@@ -2135,9 +2231,7 @@ fn compute_pairwise_consensus(runs: &[CellRun]) -> Vec<usize> {
 ///   unvalidated kernel as *perfectly* correct, out-ranking every
 ///   validated peer while the validator certified nothing (GAP-075).
 fn max_rel_err_vs_fixture(out: &[f32], fixture: &CorrectnessFixture) -> f32 {
-    let bytes: Vec<u8> = out.iter()
-        .flat_map(|x| x.to_le_bytes())
-        .collect();
+    let bytes: Vec<u8> = out.iter().flat_map(|x| x.to_le_bytes()).collect();
     match validate_against_fixture(fixture, &bytes) {
         Ok(()) => 0.0,
         Err(CorrectnessDrift::OutOfTolerance { rel_err, .. }) => rel_err as f32,
@@ -2167,15 +2261,18 @@ fn load_fixtures_recursive(
 ) -> Result<HashMap<(OpKind, DType, SizeClass), Vec<CorrectnessFixture>>> {
     let mut map: HashMap<(OpKind, DType, SizeClass), Vec<CorrectnessFixture>> = HashMap::new();
     let mut visit = |p: &Path| -> Result<()> {
-        let raw = std::fs::read_to_string(p)
-            .map_err(|e| crate::error::Error::Msg(format!(
-                "judge: failed to read fixture file {}: {e}", p.display(),
-            )))?;
-        let file: FixtureFile = serde_json::from_str(&raw)
-            .map_err(|e| crate::error::Error::Msg(format!(
+        let raw = std::fs::read_to_string(p).map_err(|e| {
+            crate::error::Error::Msg(format!(
+                "judge: failed to read fixture file {}: {e}",
+                p.display(),
+            ))
+        })?;
+        let file: FixtureFile = serde_json::from_str(&raw).map_err(|e| {
+            crate::error::Error::Msg(format!(
                 "judge: failed to parse fixture file {} as FixtureFile: {e}",
                 p.display(),
-            )))?;
+            ))
+        })?;
         if file.version != FIXTURE_FILE_VERSION {
             eprintln!(
                 "judge: skipping fixture file {} — version {} does not match \
@@ -2193,19 +2290,20 @@ fn load_fixtures_recursive(
         Ok(())
     };
 
-    fn walk(
-        dir: &Path,
-        visit: &mut dyn FnMut(&Path) -> Result<()>,
-    ) -> Result<()> {
+    fn walk(dir: &Path, visit: &mut dyn FnMut(&Path) -> Result<()>) -> Result<()> {
         let entries = std::fs::read_dir(dir).map_err(|e| {
             crate::error::Error::Msg(format!(
-                "judge: failed to read fixture dir {}: {e}", dir.display(),
+                "judge: failed to read fixture dir {}: {e}",
+                dir.display(),
             ))
         })?;
         for entry in entries {
-            let entry = entry.map_err(|e| crate::error::Error::Msg(format!(
-                "judge: failed reading dir entry in {}: {e}", dir.display(),
-            )))?;
+            let entry = entry.map_err(|e| {
+                crate::error::Error::Msg(format!(
+                    "judge: failed reading dir entry in {}: {e}",
+                    dir.display(),
+                ))
+            })?;
             let p = entry.path();
             if p.is_dir() {
                 walk(&p, visit)?;
@@ -2222,7 +2320,8 @@ fn load_fixtures_recursive(
         walk(root, &mut visit)?;
     } else {
         return Err(crate::error::Error::Msg(format!(
-            "judge: fixture path {} does not exist", root.display(),
+            "judge: fixture path {} does not exist",
+            root.display(),
         )));
     }
     Ok(map)
@@ -2232,11 +2331,7 @@ fn load_fixtures_recursive(
 /// consensus cluster. When the consensus contains only `self_idx`
 /// (single backend or every backend disagreed), returns `0.0` —
 /// there's no peer to measure drift against.
-fn max_rel_err_vs_consensus(
-    runs: &[CellRun],
-    consensus: &[usize],
-    self_idx: usize,
-) -> f32 {
+fn max_rel_err_vs_consensus(runs: &[CellRun], consensus: &[usize], self_idx: usize) -> f32 {
     let peers: Vec<usize> = consensus
         .iter()
         .copied()
@@ -2329,10 +2424,7 @@ mod tests {
             src: Option<&'static str>,
         }
         impl crate::factories::LazyRealizer for StubRealizer {
-            fn realize_f32(
-                &mut self,
-                _tensor: &crate::lazy::LazyTensor,
-            ) -> Result<Vec<f32>> {
+            fn realize_f32(&mut self, _tensor: &crate::lazy::LazyTensor) -> Result<Vec<f32>> {
                 Ok(vec![0.0; 8])
             }
             fn last_kernel_source(&self) -> Option<&'static str> {
@@ -2363,7 +2455,9 @@ mod tests {
 
         // Realizer reports a dispatched sibling → CellRun carries it
         // verbatim, regardless of registration order at the cell.
-        let mut reporting = StubRealizer { src: Some("stub-sibling") };
+        let mut reporting = StubRealizer {
+            src: Some("stub-sibling"),
+        };
         let run = judge
             .time_op_capturing(op, DType::F32, &size, &device, &mut reporting)
             .expect("stub realize succeeds");
@@ -2396,7 +2490,14 @@ mod tests {
             iterations: 3,
             warmup: 1,
             size_plan_override: Some(vec![
-                (OpKind::MatMul, OpSize::MatMul { m: 32, n: 32, k: 32 }),
+                (
+                    OpKind::MatMul,
+                    OpSize::MatMul {
+                        m: 32,
+                        n: 32,
+                        k: 32,
+                    },
+                ),
                 (OpKind::AddElementwise, OpSize::Elementwise(1 << 10)),
             ]),
             fixtures: None,
@@ -2410,9 +2511,15 @@ mod tests {
         // non-zero but should stay below the bit-stable floor;
         // when only one alternative is registered rel_err is 0.0
         // (no peers → no drift reference).
-        for e in report.entries.iter().filter(|e| e.backend == BackendId::Cpu) {
-            assert!(e.max_rel_error < 1e-3,
-                "cpu cell rel_err should stay tight ({e:?})");
+        for e in report
+            .entries
+            .iter()
+            .filter(|e| e.backend == BackendId::Cpu)
+        {
+            assert!(
+                e.max_rel_error < 1e-3,
+                "cpu cell rel_err should stay tight ({e:?})"
+            );
             assert!(e.latency_ns > 0);
         }
     }
@@ -2425,27 +2532,44 @@ mod tests {
         // diverges wildly from reference on the cpu backend.
         let probe = ProbeReport::probe_all();
         let unary = [
-            OpKind::NegElementwise, OpKind::SqrElementwise, OpKind::SqrtElementwise,
-            OpKind::ExpElementwise, OpKind::LogElementwise, OpKind::SinElementwise,
-            OpKind::CosElementwise, OpKind::TanhElementwise, OpKind::SigmoidElementwise,
-            OpKind::SiluElementwise, OpKind::GeluElementwise, OpKind::ReluElementwise,
-            OpKind::StepElementwise, OpKind::RecipElementwise, OpKind::AbsElementwise,
-            OpKind::FloorElementwise, OpKind::CeilElementwise,
-            OpKind::RoundElementwise, OpKind::SignElementwise,
-            OpKind::ErfElementwise,   OpKind::GeluErfElementwise,
+            OpKind::NegElementwise,
+            OpKind::SqrElementwise,
+            OpKind::SqrtElementwise,
+            OpKind::ExpElementwise,
+            OpKind::LogElementwise,
+            OpKind::SinElementwise,
+            OpKind::CosElementwise,
+            OpKind::TanhElementwise,
+            OpKind::SigmoidElementwise,
+            OpKind::SiluElementwise,
+            OpKind::GeluElementwise,
+            OpKind::ReluElementwise,
+            OpKind::StepElementwise,
+            OpKind::RecipElementwise,
+            OpKind::AbsElementwise,
+            OpKind::FloorElementwise,
+            OpKind::CeilElementwise,
+            OpKind::RoundElementwise,
+            OpKind::SignElementwise,
+            OpKind::ErfElementwise,
+            OpKind::GeluErfElementwise,
             OpKind::RsqrtElementwise,
         ];
-        let plan: Vec<_> = unary.iter()
+        let plan: Vec<_> = unary
+            .iter()
             .map(|&op| (op, OpSize::Elementwise(1 << 8)))
             .collect();
         let judge = Judge {
-            iterations: 3, warmup: 1,
+            iterations: 3,
+            warmup: 1,
             size_plan_override: Some(plan),
             fixtures: None,
         };
         let report = judge.run(&probe);
         for &op in &unary {
-            let cpu_entries: Vec<_> = report.entries.iter()
+            let cpu_entries: Vec<_> = report
+                .entries
+                .iter()
                 .filter(|e| e.op == op && e.backend == BackendId::Cpu)
                 .collect();
             // Post-v2 (per-alternative measurement): ≥1 — when only the
@@ -2453,17 +2577,21 @@ mod tests {
             // AOCL/MKL feature-gated alternatives it grows. Pick the
             // first entry (the realizer-primary measurement) for the
             // numerical-divergence check.
-            assert!(!cpu_entries.is_empty(),
-                "expected ≥1 cpu entry for {op}, got 0");
+            assert!(
+                !cpu_entries.is_empty(),
+                "expected ≥1 cpu entry for {op}, got 0"
+            );
             let e = cpu_entries[0];
             // Elementwise unary ops are bit-stable on cpu vs reference
             // (no accumulation order to worry about). Allow a
             // generous bound so transcendental approximations
             // (tanh/sigmoid/silu/gelu) on different math libs still
             // pass — but a runaway divergence (>1e-3) flags a bug.
-            assert!(e.max_rel_error < 1e-3,
+            assert!(
+                e.max_rel_error < 1e-3,
                 "cpu vs reference disagreement on {op}: rel_err={}",
-                e.max_rel_error);
+                e.max_rel_error
+            );
             assert!(e.latency_ns > 0);
         }
     }
@@ -2472,28 +2600,42 @@ mod tests {
     fn judge_profiles_all_binary_elementwise_ops() {
         let probe = ProbeReport::probe_all();
         let binary = [
-            OpKind::AddElementwise, OpKind::SubElementwise, OpKind::MulElementwise,
-            OpKind::DivElementwise, OpKind::MaximumElementwise, OpKind::MinimumElementwise,
-            OpKind::PowElementwise, OpKind::RemElementwise,
+            OpKind::AddElementwise,
+            OpKind::SubElementwise,
+            OpKind::MulElementwise,
+            OpKind::DivElementwise,
+            OpKind::MaximumElementwise,
+            OpKind::MinimumElementwise,
+            OpKind::PowElementwise,
+            OpKind::RemElementwise,
         ];
-        let plan: Vec<_> = binary.iter()
+        let plan: Vec<_> = binary
+            .iter()
             .map(|&op| (op, OpSize::Elementwise(1 << 8)))
             .collect();
         let judge = Judge {
-            iterations: 3, warmup: 1,
+            iterations: 3,
+            warmup: 1,
             size_plan_override: Some(plan),
             fixtures: None,
         };
         let report = judge.run(&probe);
         for &op in &binary {
-            let cpu_entries: Vec<_> = report.entries.iter()
+            let cpu_entries: Vec<_> = report
+                .entries
+                .iter()
                 .filter(|e| e.op == op && e.backend == BackendId::Cpu)
                 .collect();
-            assert!(!cpu_entries.is_empty(), "expected >=1 cpu entry for {op}, got 0");
+            assert!(
+                !cpu_entries.is_empty(),
+                "expected >=1 cpu entry for {op}, got 0"
+            );
             let e = cpu_entries[0];
-            assert!(e.max_rel_error < 1e-3,
+            assert!(
+                e.max_rel_error < 1e-3,
                 "cpu vs reference disagreement on {op}: rel_err={}",
-                e.max_rel_error);
+                e.max_rel_error
+            );
             assert!(e.latency_ns > 0);
         }
     }
@@ -2502,29 +2644,40 @@ mod tests {
     fn judge_profiles_all_reductions() {
         let probe = ProbeReport::probe_all();
         let reduce = [
-            OpKind::SumReduce, OpKind::MaxReduce,
-            OpKind::MinReduce, OpKind::MeanReduce,
+            OpKind::SumReduce,
+            OpKind::MaxReduce,
+            OpKind::MinReduce,
+            OpKind::MeanReduce,
         ];
-        let plan: Vec<_> = reduce.iter()
+        let plan: Vec<_> = reduce
+            .iter()
             .map(|&op| (op, OpSize::Reduce { rows: 16, cols: 16 }))
             .collect();
         let judge = Judge {
-            iterations: 3, warmup: 1,
+            iterations: 3,
+            warmup: 1,
             size_plan_override: Some(plan),
             fixtures: None,
         };
         let report = judge.run(&probe);
         for &op in &reduce {
-            let cpu_entries: Vec<_> = report.entries.iter()
+            let cpu_entries: Vec<_> = report
+                .entries
+                .iter()
                 .filter(|e| e.op == op && e.backend == BackendId::Cpu)
                 .collect();
-            assert!(!cpu_entries.is_empty(), "expected >=1 cpu entry for {op}, got 0");
+            assert!(
+                !cpu_entries.is_empty(),
+                "expected >=1 cpu entry for {op}, got 0"
+            );
             let e = cpu_entries[0];
             // Sum-style reductions accumulate in different order on
             // backend vs reference; allow up to 5e-3.
-            assert!(e.max_rel_error < 5e-3,
+            assert!(
+                e.max_rel_error < 5e-3,
                 "cpu vs reference disagreement on {op}: rel_err={}",
-                e.max_rel_error);
+                e.max_rel_error
+            );
             assert!(e.latency_ns > 0);
         }
     }
@@ -2533,24 +2686,33 @@ mod tests {
     fn judge_profiles_all_reduce_to() {
         let probe = ProbeReport::probe_all();
         let reduce_to = [OpKind::ReduceSumTo, OpKind::ReduceMaxTo];
-        let plan: Vec<_> = reduce_to.iter()
+        let plan: Vec<_> = reduce_to
+            .iter()
             .map(|&op| (op, OpSize::ReduceTo { rows: 16, cols: 16 }))
             .collect();
         let judge = Judge {
-            iterations: 3, warmup: 1,
+            iterations: 3,
+            warmup: 1,
             size_plan_override: Some(plan),
             fixtures: None,
         };
         let report = judge.run(&probe);
         for &op in &reduce_to {
-            let cpu_entries: Vec<_> = report.entries.iter()
+            let cpu_entries: Vec<_> = report
+                .entries
+                .iter()
                 .filter(|e| e.op == op && e.backend == BackendId::Cpu)
                 .collect();
-            assert!(!cpu_entries.is_empty(), "expected >=1 cpu entry for {op}, got 0");
+            assert!(
+                !cpu_entries.is_empty(),
+                "expected >=1 cpu entry for {op}, got 0"
+            );
             let e = cpu_entries[0];
-            assert!(e.max_rel_error < 5e-3,
+            assert!(
+                e.max_rel_error < 5e-3,
                 "cpu vs reference disagreement on {op}: rel_err={}",
-                e.max_rel_error);
+                e.max_rel_error
+            );
             assert!(e.latency_ns > 0);
         }
     }
@@ -2559,26 +2721,37 @@ mod tests {
     fn judge_profiles_all_scalar_ops() {
         let probe = ProbeReport::probe_all();
         let scalar = [
-            OpKind::Affine, OpKind::ClampElementwise, OpKind::PowIElementwise,
+            OpKind::Affine,
+            OpKind::ClampElementwise,
+            OpKind::PowIElementwise,
         ];
-        let plan: Vec<_> = scalar.iter()
+        let plan: Vec<_> = scalar
+            .iter()
             .map(|&op| (op, OpSize::Elementwise(1 << 8)))
             .collect();
         let judge = Judge {
-            iterations: 3, warmup: 1,
+            iterations: 3,
+            warmup: 1,
             size_plan_override: Some(plan),
             fixtures: None,
         };
         let report = judge.run(&probe);
         for &op in &scalar {
-            let cpu_entries: Vec<_> = report.entries.iter()
+            let cpu_entries: Vec<_> = report
+                .entries
+                .iter()
                 .filter(|e| e.op == op && e.backend == BackendId::Cpu)
                 .collect();
-            assert!(!cpu_entries.is_empty(), "expected >=1 cpu entry for {op}, got 0");
+            assert!(
+                !cpu_entries.is_empty(),
+                "expected >=1 cpu entry for {op}, got 0"
+            );
             let e = cpu_entries[0];
-            assert!(e.max_rel_error < 1e-3,
+            assert!(
+                e.max_rel_error < 1e-3,
                 "cpu vs reference disagreement on {op}: rel_err={}",
-                e.max_rel_error);
+                e.max_rel_error
+            );
             assert!(e.latency_ns > 0);
         }
     }
@@ -2645,14 +2818,16 @@ mod tests {
         for op in [OpKind::MaxReduce, OpKind::SumReduce] {
             let plan = judge.size_plan(op);
             assert!(
-                plan.iter().any(|s| matches!(s, OpSize::Reduce { cols, .. } if *cols >= 128)),
+                plan.iter()
+                    .any(|s| matches!(s, OpSize::Reduce { cols, .. } if *cols >= 128)),
                 "size_plan({op}) must include a decode-row (wide-cols) reduction cell",
             );
         }
         for op in [OpKind::MinReduce, OpKind::MeanReduce] {
             let plan = judge.size_plan(op);
             assert!(
-                plan.iter().all(|s| matches!(s, OpSize::Reduce { cols, .. } if *cols == 64)),
+                plan.iter()
+                    .all(|s| matches!(s, OpSize::Reduce { cols, .. } if *cols == 64)),
                 "size_plan({op}) is off the decode softmax path — no decode cell expected",
             );
         }
@@ -2692,9 +2867,23 @@ mod tests {
             warmup: 1,
             size_plan_override: Some(vec![
                 // Square (compute-bound) — small enough to stay fast.
-                (OpKind::MatMul, OpSize::MatMul { m: 256, n: 256, k: 256 }),
+                (
+                    OpKind::MatMul,
+                    OpSize::MatMul {
+                        m: 256,
+                        n: 256,
+                        k: 256,
+                    },
+                ),
                 // Decode GEMV (seq_q=1, bandwidth-bound).
-                (OpKind::MatMul, OpSize::MatMul { m: 1, n: 2048, k: 2048 }),
+                (
+                    OpKind::MatMul,
+                    OpSize::MatMul {
+                        m: 1,
+                        n: 2048,
+                        k: 2048,
+                    },
+                ),
             ]),
             fixtures: None,
         };
@@ -2747,9 +2936,14 @@ mod tests {
             // The genuinely non-square FFN-width decode GEMV — the cell
             // slice 2 had to DEFER because its old m·n key collided with
             // the 64³ square.
-            size_plan_override: Some(vec![
-                (OpKind::MatMul, OpSize::MatMul { m: 1, n: 5632, k: 2048 }),
-            ]),
+            size_plan_override: Some(vec![(
+                OpKind::MatMul,
+                OpSize::MatMul {
+                    m: 1,
+                    n: 5632,
+                    k: 2048,
+                },
+            )]),
             fixtures: None,
         };
         let report = judge.run(&probe);
@@ -2775,9 +2969,7 @@ mod tests {
             .entries
             .iter()
             .find(|e| {
-                e.op == OpKind::MatMul
-                    && e.backend == BackendId::Cpu
-                    && e.dtype == DType::F32
+                e.op == OpKind::MatMul && e.backend == BackendId::Cpu && e.dtype == DType::F32
             })
             .expect("Judge produced a CPU f32 matmul entry for the GEMV");
         assert_eq!(
@@ -2825,7 +3017,14 @@ mod tests {
             size_plan_override: Some(vec![
                 (OpKind::AddElementwise, OpSize::Elementwise(1 << 8)),
                 (OpKind::MulElementwise, OpSize::Elementwise(1 << 8)),
-                (OpKind::MatMul, OpSize::MatMul { m: 16, n: 16, k: 16 }),
+                (
+                    OpKind::MatMul,
+                    OpSize::MatMul {
+                        m: 16,
+                        n: 16,
+                        k: 16,
+                    },
+                ),
             ]),
             fixtures: None,
         };
@@ -2842,9 +3041,7 @@ mod tests {
                 let cells: Vec<_> = report
                     .entries
                     .iter()
-                    .filter(|e| {
-                        e.op == op && e.dtype == dtype && e.backend == BackendId::Cpu
-                    })
+                    .filter(|e| e.op == op && e.dtype == dtype && e.backend == BackendId::Cpu)
                     .collect();
                 assert!(
                     !cells.is_empty(),
@@ -2885,8 +3082,7 @@ mod tests {
 
         // Cross-check: exactly the three profiled dtypes appear, none
         // else (no f64 or stray dtype leaked into the matrix).
-        let mut dtypes: Vec<DType> =
-            report.entries.iter().map(|e| e.dtype).collect();
+        let mut dtypes: Vec<DType> = report.entries.iter().map(|e| e.dtype).collect();
         dtypes.sort_by_key(|d| format!("{d:?}"));
         dtypes.dedup();
         assert_eq!(
@@ -2927,15 +3123,24 @@ mod tests {
         let probe = ProbeReport::probe_all();
         // TinyLlama-ish decode GQA: Hq=32, Hkv=4, D=64. Two k_len cells
         // (short + capacity) — kept small enough to stay fast.
-        let small = OpSize::Attention { b: 1, hq: 32, hkv: 4, d: 64, k_len: 128 };
-        let cap   = OpSize::Attention { b: 1, hq: 32, hkv: 4, d: 64, k_len: 512 };
+        let small = OpSize::Attention {
+            b: 1,
+            hq: 32,
+            hkv: 4,
+            d: 64,
+            k_len: 128,
+        };
+        let cap = OpSize::Attention {
+            b: 1,
+            hq: 32,
+            hkv: 4,
+            d: 64,
+            k_len: 512,
+        };
         let judge = Judge {
             iterations: 3,
             warmup: 1,
-            size_plan_override: Some(vec![
-                (OpKind::FlashAttn, small),
-                (OpKind::FlashAttn, cap),
-            ]),
+            size_plan_override: Some(vec![(OpKind::FlashAttn, small), (OpKind::FlashAttn, cap)]),
             fixtures: None,
         };
         let report = judge.run(&probe);
@@ -2944,7 +3149,7 @@ mod tests {
         // the same helper the producer stamps and slice-4's `for_op`
         // consumer derives.
         let sc_small = SizeClass::attention(32, 128, 64);
-        let sc_cap   = SizeClass::attention(32, 512, 64);
+        let sc_cap = SizeClass::attention(32, 512, 64);
         assert_ne!(
             sc_small, sc_cap,
             "short + capacity decode attention must key to different SizeClass",
@@ -3012,9 +3217,17 @@ mod tests {
 
         let probe = ProbeReport::probe_all();
         let judge = Judge {
-            iterations: 3, warmup: 1,
+            iterations: 3,
+            warmup: 1,
             size_plan_override: Some(vec![
-                (OpKind::MatMul, OpSize::MatMul { m: 32, n: 32, k: 32 }),
+                (
+                    OpKind::MatMul,
+                    OpSize::MatMul {
+                        m: 32,
+                        n: 32,
+                        k: 32,
+                    },
+                ),
                 (OpKind::AddElementwise, OpSize::Elementwise(1 << 8)),
                 (OpKind::ReluElementwise, OpSize::Elementwise(1 << 8)),
                 (OpKind::SumReduce, OpSize::Reduce { rows: 16, cols: 16 }),
@@ -3032,28 +3245,52 @@ mod tests {
         // matmul cell keys on its v4 aspect key `matmul(32,32,32)`
         // (the producer no longer keys it on the scalar 32*32=2^10).
         let elementwise_kinds = [
-            OpKind::AddElementwise, OpKind::ReluElementwise,
-            OpKind::SumReduce, OpKind::ReduceSumTo, OpKind::Affine,
+            OpKind::AddElementwise,
+            OpKind::ReluElementwise,
+            OpKind::SumReduce,
+            OpKind::ReduceSumTo,
+            OpKind::Affine,
         ];
         for &op in &elementwise_kinds {
-            for &crit in &[Criterion::Fastest, Criterion::MostAccurate, Criterion::Balanced] {
+            for &crit in &[
+                Criterion::Fastest,
+                Criterion::MostAccurate,
+                Criterion::Balanced,
+            ] {
                 let pick = table.pick(op, DType::F32, SizeClass(8), crit);
-                assert!(pick.is_some(),
-                    "DispatchTable missing pick for {op}@2^8 / {crit:?}");
+                assert!(
+                    pick.is_some(),
+                    "DispatchTable missing pick for {op}@2^8 / {crit:?}"
+                );
             }
         }
         let matmul_pick = table.pick(
-            OpKind::MatMul, DType::F32, SizeClass::matmul(32, 32, 32), Criterion::Fastest,
+            OpKind::MatMul,
+            DType::F32,
+            SizeClass::matmul(32, 32, 32),
+            Criterion::Fastest,
         );
         assert!(matmul_pick.is_some(), "DispatchTable missing matmul pick");
 
         // The table's keys() should include every (op, dtype,
         // size_class) tuple exercised by the plan.
         let keys = table.keys();
-        assert!(keys.iter().any(|(op, _, sc)| *op == OpKind::ReluElementwise && sc.0 == 8));
-        assert!(keys.iter().any(|(op, _, sc)| *op == OpKind::SumReduce && sc.0 == 8));
-        assert!(keys.iter().any(|(op, _, sc)| *op == OpKind::ReduceSumTo && sc.0 == 8));
-        assert!(keys.iter().any(|(op, _, sc)| *op == OpKind::Affine && sc.0 == 8));
+        assert!(
+            keys.iter()
+                .any(|(op, _, sc)| *op == OpKind::ReluElementwise && sc.0 == 8)
+        );
+        assert!(
+            keys.iter()
+                .any(|(op, _, sc)| *op == OpKind::SumReduce && sc.0 == 8)
+        );
+        assert!(
+            keys.iter()
+                .any(|(op, _, sc)| *op == OpKind::ReduceSumTo && sc.0 == 8)
+        );
+        assert!(
+            keys.iter()
+                .any(|(op, _, sc)| *op == OpKind::Affine && sc.0 == 8)
+        );
     }
 
     #[test]
@@ -3072,11 +3309,11 @@ mod tests {
                 kernel_source: String::new(),
             }],
         };
-        let tmp = std::env::temp_dir().join(format!(
-            "fuel-judge-test-{}.json", std::process::id()
-        ));
+        let tmp = std::env::temp_dir().join(format!("fuel-judge-test-{}.json", std::process::id()));
         report.save(&tmp).expect("save");
-        let loaded = ProfileReport::load(&tmp).expect("load").expect("file exists");
+        let loaded = ProfileReport::load(&tmp)
+            .expect("load")
+            .expect("file exists");
         assert_eq!(loaded, report);
         let _ = std::fs::remove_file(&tmp);
     }
@@ -3089,10 +3326,7 @@ mod tests {
         // the answer loosely: should be within a few ULP of that
         // ratio and close to 5e-4.
         let got = max_rel_err(&[1.0, 2.0], &[1.0, 2.001]);
-        assert!(
-            (got - 5.0e-4).abs() < 1e-6,
-            "expected ~0.0005, got {got}",
-        );
+        assert!((got - 5.0e-4).abs() < 1e-6, "expected ~0.0005, got {got}",);
         // Length mismatch → infinity.
         assert!(max_rel_err(&[1.0], &[1.0, 1.0]).is_infinite());
         // NaN in either operand → infinity.
@@ -3112,9 +3346,7 @@ mod tests {
     /// land via the capture pipeline; this test verifies the path.
     #[test]
     fn judge_uses_fixture_when_provided() {
-        use fuel_correctness_fixtures::{
-            CorrectnessFixture, ToleranceBand,
-        };
+        use fuel_correctness_fixtures::{CorrectnessFixture, ToleranceBand};
 
         let probe = ProbeReport::probe_all();
         let elem_count = 1 << 10;
@@ -3131,16 +3363,15 @@ mod tests {
         // `hash_f32_input` the capture tool uses, so the lookup path
         // accepts the (deliberately-wrong-expected-output) fixture.
         let zeros: Vec<u8> = vec![0u8; elem_count * 4];
-        let seed = fuel_correctness_fixtures::capture::derive_seed(
-            OpKind::AddElementwise, DType::F32, sc,
-        );
+        let seed =
+            fuel_correctness_fixtures::capture::derive_seed(OpKind::AddElementwise, DType::F32, sc);
         // AddElementwise is binary: input is the concatenated `[a, b]`
         // buffer of length `2 * n`.
         let input = fuel_correctness_fixtures::capture::deterministic_f32_input(
-            OpKind::AddElementwise, 2 * elem_count,
+            OpKind::AddElementwise,
+            2 * elem_count,
         );
-        let input_hash =
-            fuel_correctness_fixtures::capture::hash_f32_input(&input);
+        let input_hash = fuel_correctness_fixtures::capture::hash_f32_input(&input);
         let bogus_fixture = CorrectnessFixture {
             op: OpKind::AddElementwise,
             dtype: DType::F32,
@@ -3156,19 +3387,23 @@ mod tests {
                 max_absolute: 1e-12,
             },
         };
-        let mut map: HashMap<(OpKind, DType, SizeClass), Vec<CorrectnessFixture>> =
-            HashMap::new();
+        let mut map: HashMap<(OpKind, DType, SizeClass), Vec<CorrectnessFixture>> = HashMap::new();
         map.insert(
-            (OpKind::AddElementwise, DType::F32, SizeClass::from_elem_count(elem_count)),
+            (
+                OpKind::AddElementwise,
+                DType::F32,
+                SizeClass::from_elem_count(elem_count),
+            ),
             vec![bogus_fixture],
         );
 
         let judge = Judge {
             iterations: 3,
             warmup: 1,
-            size_plan_override: Some(vec![
-                (OpKind::AddElementwise, OpSize::Elementwise(elem_count)),
-            ]),
+            size_plan_override: Some(vec![(
+                OpKind::AddElementwise,
+                OpSize::Elementwise(elem_count),
+            )]),
             fixtures: Some(map),
         };
         let report = judge.run(&probe);
@@ -3178,13 +3413,19 @@ mod tests {
         // emits have NO fixture → they take the consensus path → lone
         // CPU backend → rel_err 0.0. Scope this assertion to the F32
         // entries the fixture actually governs.
-        let cpu_entries: Vec<_> = report.entries.iter()
-            .filter(|e| e.op == OpKind::AddElementwise
-                && e.dtype == DType::F32
-                && e.backend == BackendId::Cpu)
+        let cpu_entries: Vec<_> = report
+            .entries
+            .iter()
+            .filter(|e| {
+                e.op == OpKind::AddElementwise
+                    && e.dtype == DType::F32
+                    && e.backend == BackendId::Cpu
+            })
             .collect();
-        assert!(!cpu_entries.is_empty(),
-            "expected ≥1 cpu f32 entry for AddElementwise, got 0");
+        assert!(
+            !cpu_entries.is_empty(),
+            "expected ≥1 cpu f32 entry for AddElementwise, got 0"
+        );
         // The bogus all-zeros fixture is wildly wrong vs the honest
         // sin+cos output, so every cpu entry's max_rel_error should
         // be very large (≥ 1.0 — relative error vs ~zero expected is
@@ -3192,9 +3433,11 @@ mod tests {
         // fixture fast-path this value would be ~0.0 (lone CPU
         // backend → trivial consensus → no peers → 0.0).
         for e in &cpu_entries {
-            assert!(e.max_rel_error >= 1.0,
+            assert!(
+                e.max_rel_error >= 1.0,
                 "expected fixture-derived rel_err ≥1.0 (vs all-zeros fixture), got {} for entry {e:?}",
-                e.max_rel_error);
+                e.max_rel_error
+            );
         }
     }
 
@@ -3204,8 +3447,7 @@ mod tests {
     #[test]
     fn judge_with_fixtures_from_loads_json_file() {
         use fuel_correctness_fixtures::{
-            CorrectnessFixture, FixtureFile, ToleranceBand,
-            FIXTURE_FILE_VERSION,
+            CorrectnessFixture, FIXTURE_FILE_VERSION, FixtureFile, ToleranceBand,
         };
 
         let fixture = CorrectnessFixture {
@@ -3222,9 +3464,8 @@ mod tests {
             version: FIXTURE_FILE_VERSION,
             fixtures: vec![fixture],
         };
-        let dir = std::env::temp_dir().join(format!(
-            "fuel-judge-fixture-load-{}", std::process::id(),
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("fuel-judge-fixture-load-{}", std::process::id(),));
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("matmul_f32.json");
         std::fs::write(&path, serde_json::to_string(&file).unwrap()).unwrap();
@@ -3250,9 +3491,7 @@ mod tests {
     /// in the distribution shouldn't strand the rest of the run.
     #[test]
     fn judge_load_skips_mismatched_version() {
-        use fuel_correctness_fixtures::{
-            CorrectnessFixture, FixtureFile, ToleranceBand,
-        };
+        use fuel_correctness_fixtures::{CorrectnessFixture, FixtureFile, ToleranceBand};
 
         let good_fixture = CorrectnessFixture {
             op: OpKind::MatMul,
@@ -3275,16 +3514,17 @@ mod tests {
                 ..good_fixture
             }],
         };
-        let dir = std::env::temp_dir().join(format!(
-            "fuel-judge-fixture-version-{}", std::process::id(),
-        ));
+        let dir = std::env::temp_dir()
+            .join(format!("fuel-judge-fixture-version-{}", std::process::id(),));
         let _ = std::fs::create_dir_all(&dir);
         let bad_path = dir.join("matmul_f32.json");
         let good_path = dir.join("add_f32.json");
-        std::fs::write(&bad_path, serde_json::to_string(&bad_version_file).unwrap())
-            .unwrap();
-        std::fs::write(&good_path, serde_json::to_string(&good_version_file).unwrap())
-            .unwrap();
+        std::fs::write(&bad_path, serde_json::to_string(&bad_version_file).unwrap()).unwrap();
+        std::fs::write(
+            &good_path,
+            serde_json::to_string(&good_version_file).unwrap(),
+        )
+        .unwrap();
 
         let judge = Judge::with_fixtures_from(&dir).expect("load");
         let map = judge.fixtures.as_ref().expect("fixtures populated");
@@ -3313,9 +3553,7 @@ mod tests {
         let dtype = DType::F32;
         let elem_count = 1 << 10;
         let sc = SizeClass::from_elem_count(elem_count);
-        let input = fuel_correctness_fixtures::capture::deterministic_f32_input(
-            op, 2 * elem_count,
-        );
+        let input = fuel_correctness_fixtures::capture::deterministic_f32_input(op, 2 * elem_count);
         let input_hash = fuel_correctness_fixtures::capture::hash_f32_input(&input);
         // Plant the right hash but the wrong seed — the lookup must
         // skip the fixture even though the hash would have matched.
@@ -3331,10 +3569,12 @@ mod tests {
             output_element_count: elem_count,
             tolerance: ToleranceBand::F32_DEFAULT,
         };
-        let mut map: HashMap<(OpKind, DType, SizeClass), Vec<CorrectnessFixture>> =
-            HashMap::new();
+        let mut map: HashMap<(OpKind, DType, SizeClass), Vec<CorrectnessFixture>> = HashMap::new();
         map.insert((op, dtype, sc), vec![fixture]);
-        let judge = Judge { fixtures: Some(map), ..Judge::default() };
+        let judge = Judge {
+            fixtures: Some(map),
+            ..Judge::default()
+        };
         let got = judge.lookup_fixture(op, dtype, sc, elem_count, 2 * elem_count);
         assert!(
             got.is_none(),
@@ -3353,13 +3593,9 @@ mod tests {
         let dtype = DType::F32;
         let elem_count = 1 << 10;
         let sc = SizeClass::from_elem_count(elem_count);
-        let real_seed =
-            fuel_correctness_fixtures::capture::derive_seed(op, dtype, sc);
-        let input = fuel_correctness_fixtures::capture::deterministic_f32_input(
-            op, 2 * elem_count,
-        );
-        let real_hash =
-            fuel_correctness_fixtures::capture::hash_f32_input(&input);
+        let real_seed = fuel_correctness_fixtures::capture::derive_seed(op, dtype, sc);
+        let input = fuel_correctness_fixtures::capture::deterministic_f32_input(op, 2 * elem_count);
+        let real_hash = fuel_correctness_fixtures::capture::hash_f32_input(&input);
         // Plant the right seed but a wrong hash. The lookup must skip.
         let wrong_hash = real_hash.wrapping_add(0xfeed_face);
         let fixture = CorrectnessFixture {
@@ -3372,10 +3608,12 @@ mod tests {
             output_element_count: elem_count,
             tolerance: ToleranceBand::F32_DEFAULT,
         };
-        let mut map: HashMap<(OpKind, DType, SizeClass), Vec<CorrectnessFixture>> =
-            HashMap::new();
+        let mut map: HashMap<(OpKind, DType, SizeClass), Vec<CorrectnessFixture>> = HashMap::new();
         map.insert((op, dtype, sc), vec![fixture]);
-        let judge = Judge { fixtures: Some(map), ..Judge::default() };
+        let judge = Judge {
+            fixtures: Some(map),
+            ..Judge::default()
+        };
         let got = judge.lookup_fixture(op, dtype, sc, elem_count, 2 * elem_count);
         assert!(
             got.is_none(),
@@ -3395,9 +3633,7 @@ mod tests {
         let elem_count = 1 << 10;
         let sc = SizeClass::from_elem_count(elem_count);
         let seed = fuel_correctness_fixtures::capture::derive_seed(op, dtype, sc);
-        let input = fuel_correctness_fixtures::capture::deterministic_f32_input(
-            op, 2 * elem_count,
-        );
+        let input = fuel_correctness_fixtures::capture::deterministic_f32_input(op, 2 * elem_count);
         let hash = fuel_correctness_fixtures::capture::hash_f32_input(&input);
         let fixture = CorrectnessFixture {
             op,
@@ -3409,10 +3645,12 @@ mod tests {
             output_element_count: elem_count,
             tolerance: ToleranceBand::F32_DEFAULT,
         };
-        let mut map: HashMap<(OpKind, DType, SizeClass), Vec<CorrectnessFixture>> =
-            HashMap::new();
+        let mut map: HashMap<(OpKind, DType, SizeClass), Vec<CorrectnessFixture>> = HashMap::new();
         map.insert((op, dtype, sc), vec![fixture]);
-        let judge = Judge { fixtures: Some(map), ..Judge::default() };
+        let judge = Judge {
+            fixtures: Some(map),
+            ..Judge::default()
+        };
         let got = judge.lookup_fixture(op, dtype, sc, elem_count, 2 * elem_count);
         assert!(got.is_some(), "triple-agreement fixture should be returned");
     }

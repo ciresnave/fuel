@@ -16,6 +16,12 @@
 //! wiring the interpreter prematurely against a probe-synthesis surface that
 //! doesn't exist yet.
 
+// Staged verification machinery (V-FKC-9 Tasks 4.4-4.6), kept awaiting its
+// first consumer — see the NOTE in `fkc/verify/mod.rs`. dead_code is allowed
+// here under `-D warnings` until that consumer lands; re-remove this allow
+// alongside it.
+#![allow(dead_code)]
+
 use crate::fkc::verify::bit_stability::{KernelInvoker, ProbeInputs, VerifyError, VerifyOutcome};
 use crate::kernel::BindingEntry;
 

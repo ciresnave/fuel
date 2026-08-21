@@ -290,11 +290,7 @@ impl LazyTensor {
     /// const_*_like is called). Use [`from_f32`] with an explicit
     /// `&Device` when you need a const on a different device than
     /// `self`.
-    pub fn const_f32_like(
-        &self,
-        data: impl Into<Arc<[f32]>>,
-        shape: impl Into<Shape>,
-    ) -> Self {
+    pub fn const_f32_like(&self, data: impl Into<Arc<[f32]>>, shape: impl Into<Shape>) -> Self {
         Self {
             inner: self.inner.const_f32_like(data, shape),
         }
@@ -351,7 +347,8 @@ impl LazyTensor {
             other => Err(fuel_ir::Error::Msg(format!(
                 "const_like_dtype: unsupported activation dtype {other:?} \
                  (expected F32 or BF16)",
-            )).bt()),
+            ))
+            .bt()),
         }
     }
 
@@ -432,37 +429,49 @@ impl LazyTensor {
     /// surface as typed errors at build time.
     pub fn add(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         self.check_strict_binary("add", other)?;
-        Ok(Self { inner: self.inner.add(&other.inner) })
+        Ok(Self {
+            inner: self.inner.add(&other.inner),
+        })
     }
 
     /// Element-wise subtraction.
     pub fn sub(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         self.check_strict_binary("sub", other)?;
-        Ok(Self { inner: self.inner.sub(&other.inner) })
+        Ok(Self {
+            inner: self.inner.sub(&other.inner),
+        })
     }
 
     /// Element-wise multiplication.
     pub fn mul(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         self.check_strict_binary("mul", other)?;
-        Ok(Self { inner: self.inner.mul(&other.inner) })
+        Ok(Self {
+            inner: self.inner.mul(&other.inner),
+        })
     }
 
     /// Element-wise division.
     pub fn div(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         self.check_strict_binary("div", other)?;
-        Ok(Self { inner: self.inner.div(&other.inner) })
+        Ok(Self {
+            inner: self.inner.div(&other.inner),
+        })
     }
 
     /// Element-wise maximum.
     pub fn maximum(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         self.check_strict_binary("maximum", other)?;
-        Ok(Self { inner: self.inner.maximum(&other.inner) })
+        Ok(Self {
+            inner: self.inner.maximum(&other.inner),
+        })
     }
 
     /// Element-wise minimum.
     pub fn minimum(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         self.check_strict_binary("minimum", other)?;
-        Ok(Self { inner: self.inner.minimum(&other.inner) })
+        Ok(Self {
+            inner: self.inner.minimum(&other.inner),
+        })
     }
 
     /// Element-wise equality (`self == other`) producing a `U8` mask:
@@ -471,7 +480,9 @@ impl LazyTensor {
     /// resulting tensor's dtype is `DType::U8`. Non-differentiable.
     pub fn eq(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         self.check_strict_binary("eq", other)?;
-        Ok(Self { inner: self.inner.eq(&other.inner) })
+        Ok(Self {
+            inner: self.inner.eq(&other.inner),
+        })
     }
 
     /// Element-wise inequality (`self != other`) producing a `U8`
@@ -479,7 +490,9 @@ impl LazyTensor {
     /// Non-differentiable.
     pub fn ne(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         self.check_strict_binary("ne", other)?;
-        Ok(Self { inner: self.inner.ne(&other.inner) })
+        Ok(Self {
+            inner: self.inner.ne(&other.inner),
+        })
     }
 
     /// Element-wise strictly-less (`self < other`) producing a `U8`
@@ -487,21 +500,27 @@ impl LazyTensor {
     /// Non-differentiable.
     pub fn lt(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         self.check_strict_binary("lt", other)?;
-        Ok(Self { inner: self.inner.lt(&other.inner) })
+        Ok(Self {
+            inner: self.inner.lt(&other.inner),
+        })
     }
 
     /// Element-wise less-or-equal (`self <= other`) producing a `U8`
     /// mask. NaN-on-either-side is `0`. Non-differentiable.
     pub fn le(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         self.check_strict_binary("le", other)?;
-        Ok(Self { inner: self.inner.le(&other.inner) })
+        Ok(Self {
+            inner: self.inner.le(&other.inner),
+        })
     }
 
     /// Element-wise strictly-greater (`self > other`) producing a
     /// `U8` mask. NaN-on-either-side is `0`. Non-differentiable.
     pub fn gt(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         self.check_strict_binary("gt", other)?;
-        Ok(Self { inner: self.inner.gt(&other.inner) })
+        Ok(Self {
+            inner: self.inner.gt(&other.inner),
+        })
     }
 
     /// Element-wise greater-or-equal (`self >= other`) producing a
@@ -510,7 +529,9 @@ impl LazyTensor {
     /// `le` / `gt` / `ge`).
     pub fn ge(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         self.check_strict_binary("ge", other)?;
-        Ok(Self { inner: self.inner.ge(&other.inner) })
+        Ok(Self {
+            inner: self.inner.ge(&other.inner),
+        })
     }
 
     /// Ternary select (typically used to consume a comparison-op
@@ -532,13 +553,16 @@ impl LazyTensor {
                 "where_cond: cond mask must be Bool, got {:?} — cast a numeric \
                  mask to Bool explicitly (GAP-168(c))",
                 self.inner.dtype(),
-            )).bt());
+            ))
+            .bt());
         }
         if a.inner.dtype() != b.inner.dtype() {
             return Err(fuel_ir::Error::Msg(format!(
                 "where_cond: branches must share dtype, got a={:?} b={:?}",
-                a.inner.dtype(), b.inner.dtype(),
-            )).bt());
+                a.inner.dtype(),
+                b.inner.dtype(),
+            ))
+            .bt());
         }
         let cond_dims = self.inner.shape();
         let a_dims = a.inner.shape();
@@ -546,8 +570,11 @@ impl LazyTensor {
         if a_dims.dims() != cond_dims.dims() || b_dims.dims() != cond_dims.dims() {
             return Err(fuel_ir::Error::Msg(format!(
                 "where_cond: shapes must match cond, got cond={:?} a={:?} b={:?}",
-                cond_dims.dims(), a_dims.dims(), b_dims.dims(),
-            )).bt());
+                cond_dims.dims(),
+                a_dims.dims(),
+                b_dims.dims(),
+            ))
+            .bt());
         }
         Ok(Self {
             inner: self.inner.where_cond(&a.inner, &b.inner),
@@ -559,51 +586,73 @@ impl LazyTensor {
     /// Element-wise addition with auto-broadcasting.
     pub fn broadcast_add(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         self.check_broadcast_binary("broadcast_add", other)?;
-        Ok(Self { inner: self.inner.broadcast_add(&other.inner) })
+        Ok(Self {
+            inner: self.inner.broadcast_add(&other.inner),
+        })
     }
 
     /// Element-wise subtraction with auto-broadcasting.
     pub fn broadcast_sub(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         self.check_broadcast_binary("broadcast_sub", other)?;
-        Ok(Self { inner: self.inner.broadcast_sub(&other.inner) })
+        Ok(Self {
+            inner: self.inner.broadcast_sub(&other.inner),
+        })
     }
 
     /// Element-wise multiplication with auto-broadcasting.
     pub fn broadcast_mul(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         self.check_broadcast_binary("broadcast_mul", other)?;
-        Ok(Self { inner: self.inner.broadcast_mul(&other.inner) })
+        Ok(Self {
+            inner: self.inner.broadcast_mul(&other.inner),
+        })
     }
 
     /// Element-wise division with auto-broadcasting.
     pub fn broadcast_div(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
         self.check_broadcast_binary("broadcast_div", other)?;
-        Ok(Self { inner: self.inner.broadcast_div(&other.inner) })
+        Ok(Self {
+            inner: self.inner.broadcast_div(&other.inner),
+        })
     }
 
-    fn check_strict_binary(&self, name: &'static str, other: &Self) -> std::result::Result<(), fuel_ir::Error> {
+    fn check_strict_binary(
+        &self,
+        name: &'static str,
+        other: &Self,
+    ) -> std::result::Result<(), fuel_ir::Error> {
         if self.inner.dtype() != other.inner.dtype() {
             return Err(fuel_ir::Error::Msg(format!(
                 "{name}: dtype mismatch lhs={:?} rhs={:?}",
-                self.inner.dtype(), other.inner.dtype(),
-            )).bt());
+                self.inner.dtype(),
+                other.inner.dtype(),
+            ))
+            .bt());
         }
         let a_shape = self.inner.shape();
         let b_shape = other.inner.shape();
         if a_shape.dims() != b_shape.dims() {
             return Err(fuel_ir::Error::Msg(format!(
                 "{name}: shape mismatch lhs={:?} rhs={:?}",
-                a_shape.dims(), b_shape.dims(),
-            )).bt());
+                a_shape.dims(),
+                b_shape.dims(),
+            ))
+            .bt());
         }
         Ok(())
     }
 
-    fn check_broadcast_binary(&self, name: &'static str, other: &Self) -> std::result::Result<(), fuel_ir::Error> {
+    fn check_broadcast_binary(
+        &self,
+        name: &'static str,
+        other: &Self,
+    ) -> std::result::Result<(), fuel_ir::Error> {
         if self.inner.dtype() != other.inner.dtype() {
             return Err(fuel_ir::Error::Msg(format!(
                 "{name}: dtype mismatch lhs={:?} rhs={:?}",
-                self.inner.dtype(), other.inner.dtype(),
-            )).bt());
+                self.inner.dtype(),
+                other.inner.dtype(),
+            ))
+            .bt());
         }
         let a_shape = self.inner.shape();
         let b_shape = other.inner.shape();
@@ -613,13 +662,20 @@ impl LazyTensor {
         // each pair of dims must be equal, or one of them must be 1.
         let rank = a_dims.len().max(b_dims.len());
         for i in 0..rank {
-            let ad = a_dims.get(a_dims.len().wrapping_sub(1 + i)).copied().unwrap_or(1);
-            let bd = b_dims.get(b_dims.len().wrapping_sub(1 + i)).copied().unwrap_or(1);
+            let ad = a_dims
+                .get(a_dims.len().wrapping_sub(1 + i))
+                .copied()
+                .unwrap_or(1);
+            let bd = b_dims
+                .get(b_dims.len().wrapping_sub(1 + i))
+                .copied()
+                .unwrap_or(1);
             if ad != bd && ad != 1 && bd != 1 {
                 return Err(fuel_ir::Error::Msg(format!(
                     "{name}: shapes {:?} and {:?} are not broadcast-compatible",
                     a_dims, b_dims,
-                )).bt());
+                ))
+                .bt());
             }
         }
         Ok(())
@@ -629,90 +685,124 @@ impl LazyTensor {
 
     /// Element-wise negation.
     pub fn neg(&self) -> Self {
-        Self { inner: self.inner.neg() }
+        Self {
+            inner: self.inner.neg(),
+        }
     }
 
     /// Element-wise square.
     pub fn sqr(&self) -> Self {
-        Self { inner: self.inner.sqr() }
+        Self {
+            inner: self.inner.sqr(),
+        }
     }
 
     /// Element-wise square root.
     pub fn sqrt(&self) -> Self {
-        Self { inner: self.inner.sqrt() }
+        Self {
+            inner: self.inner.sqrt(),
+        }
     }
 
     /// Element-wise exponential.
     pub fn exp(&self) -> Self {
-        Self { inner: self.inner.exp() }
+        Self {
+            inner: self.inner.exp(),
+        }
     }
 
     /// Element-wise natural logarithm.
     pub fn log(&self) -> Self {
-        Self { inner: self.inner.log() }
+        Self {
+            inner: self.inner.log(),
+        }
     }
 
     /// Rectified linear unit.
     pub fn relu(&self) -> Self {
-        Self { inner: self.inner.relu() }
+        Self {
+            inner: self.inner.relu(),
+        }
     }
 
     /// SiLU / Swish activation.
     pub fn silu(&self) -> Self {
-        Self { inner: self.inner.silu() }
+        Self {
+            inner: self.inner.silu(),
+        }
     }
 
     /// GELU activation (tanh approximation).
     pub fn gelu(&self) -> Self {
-        Self { inner: self.inner.gelu() }
+        Self {
+            inner: self.inner.gelu(),
+        }
     }
 
     /// Logistic sigmoid.
     pub fn sigmoid(&self) -> Self {
-        Self { inner: self.inner.sigmoid() }
+        Self {
+            inner: self.inner.sigmoid(),
+        }
     }
 
     /// Hyperbolic tangent.
     pub fn tanh(&self) -> Self {
-        Self { inner: self.inner.tanh() }
+        Self {
+            inner: self.inner.tanh(),
+        }
     }
 
     /// Element-wise sine.
     pub fn sin(&self) -> Self {
-        Self { inner: self.inner.sin() }
+        Self {
+            inner: self.inner.sin(),
+        }
     }
 
     /// Element-wise cosine.
     pub fn cos(&self) -> Self {
-        Self { inner: self.inner.cos() }
+        Self {
+            inner: self.inner.cos(),
+        }
     }
 
     /// Heaviside step (`1` where `x > 0`, else `0`) — the derivative
     /// of [`Self::relu`].
     pub fn step(&self) -> Self {
-        Self { inner: self.inner.step() }
+        Self {
+            inner: self.inner.step(),
+        }
     }
 
     /// Element-wise reciprocal (`1 / x`).
     pub fn recip(&self) -> Self {
-        Self { inner: self.inner.recip() }
+        Self {
+            inner: self.inner.recip(),
+        }
     }
 
     /// Element-wise absolute value (`|x|`).
     pub fn abs(&self) -> Self {
-        Self { inner: self.inner.abs() }
+        Self {
+            inner: self.inner.abs(),
+        }
     }
 
     /// Element-wise floor (`⌊x⌋`). Same dtype as input.
     /// Backward is silently zero (non-differentiable almost everywhere).
     pub fn floor(&self) -> Self {
-        Self { inner: self.inner.floor() }
+        Self {
+            inner: self.inner.floor(),
+        }
     }
 
     /// Element-wise ceiling (`⌈x⌉`). Same dtype as input.
     /// Backward is silently zero.
     pub fn ceil(&self) -> Self {
-        Self { inner: self.inner.ceil() }
+        Self {
+            inner: self.inner.ceil(),
+        }
     }
 
     /// Element-wise round-to-nearest with **banker's rounding**
@@ -720,27 +810,35 @@ impl LazyTensor {
     /// zero. Differs from C99 `round()` at exact halves: 0.5 → 0,
     /// 2.5 → 2, etc.
     pub fn round(&self) -> Self {
-        Self { inner: self.inner.round() }
+        Self {
+            inner: self.inner.round(),
+        }
     }
 
     /// Element-wise sign (`-1` / `0` / `1`); `sign(0) = 0` by
     /// subgradient convention. Same dtype as input. Backward is
     /// silently zero.
     pub fn sign(&self) -> Self {
-        Self { inner: self.inner.sign() }
+        Self {
+            inner: self.inner.sign(),
+        }
     }
 
     /// Element-wise Gauss error function (`erf(x)`). Same dtype as
     /// input. Differentiable: `d/dx erf(x) = (2/√π) * exp(-x²)`.
     pub fn erf(&self) -> Self {
-        Self { inner: self.inner.erf() }
+        Self {
+            inner: self.inner.erf(),
+        }
     }
 
     /// GELU activation, **exact erf form** (`0.5 * x * (1 + erf(x/√2))`).
     /// Distinct from [`Self::gelu`] (tanh approximation). Same dtype
     /// as input. Differentiable.
     pub fn gelu_erf(&self) -> Self {
-        Self { inner: self.inner.gelu_erf() }
+        Self {
+            inner: self.inner.gelu_erf(),
+        }
     }
 
     /// Element-wise binary power `pow(self, other)` (real exponent).
@@ -758,7 +856,9 @@ impl LazyTensor {
     /// dtype as input. One op rather than `sqrt(x).recip()` — saves
     /// a kernel launch and matches the RMSNorm shape. Differentiable.
     pub fn rsqrt(&self) -> Self {
-        Self { inner: self.inner.rsqrt() }
+        Self {
+            inner: self.inner.rsqrt(),
+        }
     }
 
     /// Element-wise remainder, **PyTorch convention**:
@@ -778,7 +878,9 @@ impl LazyTensor {
     pub fn flip<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "flip")?;
-        Ok(Self { inner: self.inner.flip(dim)? })
+        Ok(Self {
+            inner: self.inner.flip(dim)?,
+        })
     }
 
     /// Cyclic shift along `dim` by `shift` positions (positive →
@@ -787,7 +889,9 @@ impl LazyTensor {
     pub fn roll<D: Dim>(&self, dim: D, shift: i64) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "roll")?;
-        Ok(Self { inner: self.inner.roll(dim, shift)? })
+        Ok(Self {
+            inner: self.inner.roll(dim, shift)?,
+        })
     }
 
     /// Running cumulative sum along `dim`. Same shape as input.
@@ -796,7 +900,9 @@ impl LazyTensor {
     pub fn cumsum<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "cumsum")?;
-        Ok(Self { inner: self.inner.cumsum(dim)? })
+        Ok(Self {
+            inner: self.inner.cumsum(dim)?,
+        })
     }
 
     /// Multi-dim Pad: `padding[i] = (before, after)` for axis `i`,
@@ -805,7 +911,12 @@ impl LazyTensor {
     /// mode is implemented; Reflect / Replicate exist as enum stubs
     /// that error at realize time. Differentiable for Constant.
     /// **Returns `Result`**: rank mismatch surfaces as a typed error.
-    pub fn pad(&self, padding: Vec<(usize, usize)>, mode: fuel_graph::PadMode, value: f64) -> std::result::Result<Self, fuel_ir::Error> {
+    pub fn pad(
+        &self,
+        padding: Vec<(usize, usize)>,
+        mode: fuel_graph::PadMode,
+        value: f64,
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         Ok(Self {
             inner: self.inner.pad(padding, mode, value)?,
         })
@@ -813,7 +924,9 @@ impl LazyTensor {
 
     /// Element-wise integer power (`x.powi(n)`).
     pub fn powi(&self, n: i32) -> Self {
-        Self { inner: self.inner.powi(n) }
+        Self {
+            inner: self.inner.powi(n),
+        }
     }
 
     // ---- linear algebra & shape ----
@@ -827,16 +940,20 @@ impl LazyTensor {
         if a_dims.len() < 2 || b_dims.len() < 2 {
             return Err(fuel_ir::Error::Msg(format!(
                 "matmul: both operands must be rank >= 2, got lhs={a_dims:?} rhs={b_dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         let a_k = a_dims[a_dims.len() - 1];
         let b_k = b_dims[b_dims.len() - 2];
         if a_k != b_k {
             return Err(fuel_ir::Error::Msg(format!(
                 "matmul: contracting dim mismatch lhs[..., M, {a_k}] vs rhs[..., {b_k}, N]",
-            )).bt());
+            ))
+            .bt());
         }
-        Ok(Self { inner: self.inner.matmul(&other.inner) })
+        Ok(Self {
+            inner: self.inner.matmul(&other.inner),
+        })
     }
 
     /// Data-determined-M matmul (sparse-MoE / capacity-buffer): like
@@ -866,7 +983,9 @@ impl LazyTensor {
             ))
             .bt());
         }
-        Ok(Self { inner: self.inner.matmul_dyn_m(&other.inner, row_count) })
+        Ok(Self {
+            inner: self.inner.matmul_dyn_m(&other.inner, row_count),
+        })
     }
 
     /// Quantized matmul: `C = self @ dequant(W_Q)`. See
@@ -886,33 +1005,39 @@ impl LazyTensor {
     ) -> std::result::Result<Self, fuel_ir::Error> {
         if self.inner.dtype() != fuel_ir::DType::F32 {
             return Err(fuel_ir::Error::Msg(format!(
-                "qmatmul: activations must be F32, got {:?}", self.inner.dtype(),
-            )).bt());
+                "qmatmul: activations must be F32, got {:?}",
+                self.inner.dtype(),
+            ))
+            .bt());
         }
         if weight_bytes.inner.dtype() != fuel_ir::DType::U32 {
             return Err(fuel_ir::Error::Msg(format!(
                 "qmatmul: weight_bytes must be U32 (raw block bytes reinterpreted), got {:?}",
                 weight_bytes.inner.dtype(),
-            )).bt());
+            ))
+            .bt());
         }
         let a_shape = self.inner.shape();
         let a_dims = a_shape.dims();
         if a_dims.len() < 2 {
             return Err(fuel_ir::Error::Msg(format!(
                 "qmatmul: activations must be rank >= 2, got {a_dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         if a_dims[a_dims.len() - 1] != k {
             return Err(fuel_ir::Error::Msg(format!(
                 "qmatmul: last dim of activations ({}) must equal k ({k})",
                 a_dims[a_dims.len() - 1],
-            )).bt());
+            ))
+            .bt());
         }
         let block_size = quant_type.elements_per_block();
         if k % block_size != 0 {
             return Err(fuel_ir::Error::Msg(format!(
                 "qmatmul: k={k} must be a multiple of {quant_type:?}'s block size ({block_size})",
-            )).bt());
+            ))
+            .bt());
         }
         let expected_bytes = n * (k / block_size) * quant_type.bytes_per_block();
         let expected_u32_elems = expected_bytes / 4;
@@ -931,7 +1056,9 @@ impl LazyTensor {
     /// rather than panicking — build-time validation surfaces a useful
     /// diagnostic.
     pub fn transpose(&self) -> std::result::Result<Self, fuel_ir::Error> {
-        Ok(Self { inner: self.inner.try_transpose()? })
+        Ok(Self {
+            inner: self.inner.try_transpose()?,
+        })
     }
 
     /// Permute axes by the given ordering. Accepts any [`Dims`]
@@ -940,13 +1067,17 @@ impl LazyTensor {
     pub fn permute<D: Dims>(&self, axes: D) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let axes = axes.to_indexes(&shape, "permute")?;
-        Ok(Self { inner: self.inner.try_permute(&axes)? })
+        Ok(Self {
+            inner: self.inner.try_permute(&axes)?,
+        })
     }
 
     /// Reshape to a new shape with matching element count.
     /// Element-count mismatch surfaces as a typed error at build time.
     pub fn reshape(&self, shape: impl Into<Shape>) -> std::result::Result<Self, fuel_ir::Error> {
-        Ok(Self { inner: self.inner.try_reshape(shape)? })
+        Ok(Self {
+            inner: self.inner.try_reshape(shape)?,
+        })
     }
 
     /// Drop the size-1 dimension at position `dim` (range `0..rank`).
@@ -959,13 +1090,20 @@ impl LazyTensor {
     pub fn squeeze<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "squeeze")?;
-        Ok(Self { inner: self.inner.squeeze(dim)? })
+        Ok(Self {
+            inner: self.inner.squeeze(dim)?,
+        })
     }
 
     /// Broadcast to a larger shape. Shape-incompatibility surfaces as a
     /// typed error at build time.
-    pub fn broadcast_to(&self, shape: impl Into<Shape>) -> std::result::Result<Self, fuel_ir::Error> {
-        Ok(Self { inner: self.inner.try_broadcast_to(shape)? })
+    pub fn broadcast_to(
+        &self,
+        shape: impl Into<Shape>,
+    ) -> std::result::Result<Self, fuel_ir::Error> {
+        Ok(Self {
+            inner: self.inner.try_broadcast_to(shape)?,
+        })
     }
 
     /// Apply LayerNorm along the last dim with an affine
@@ -978,12 +1116,19 @@ impl LazyTensor {
     /// eps)` helpers that several ports inlined — promoted here so
     /// the call sites stop drifting.
     pub fn layer_norm_affine(
-        &self, gain: std::sync::Arc<[f32]>, bias: std::sync::Arc<[f32]>, eps: f64,
+        &self,
+        gain: std::sync::Arc<[f32]>,
+        bias: std::sync::Arc<[f32]>,
+        eps: f64,
     ) -> std::result::Result<Self, fuel_ir::Error> {
         let hidden = gain.len();
-        debug_assert_eq!(bias.len(), hidden,
+        debug_assert_eq!(
+            bias.len(),
+            hidden,
             "layer_norm_affine: gain ({}) and bias ({}) must have the same length",
-            gain.len(), bias.len());
+            gain.len(),
+            bias.len()
+        );
         let normed = self.layer_norm_last_dim(eps)?;
         let dims_v: Vec<usize> = self.inner.shape().dims().to_vec();
         let mut affine_shape = vec![1_usize; dims_v.len()];
@@ -1008,11 +1153,17 @@ impl LazyTensor {
     /// (some retrieval pipelines), `eps = 0.0` (no epsilon — caller
     /// guarantees no all-zero rows).
     pub fn l2_normalize<D: Dim>(
-        &self, dim: D, eps: f64,
+        &self,
+        dim: D,
+        eps: f64,
     ) -> std::result::Result<Self, fuel_ir::Error> {
         let sq = self.sqr();
         let summed = sq.sum_keepdim(dim)?;
-        let with_eps = if eps == 0.0 { summed } else { summed.add_scalar(eps) };
+        let with_eps = if eps == 0.0 {
+            summed
+        } else {
+            summed.add_scalar(eps)
+        };
         let l2 = with_eps.sqrt();
         let dims_v: Vec<usize> = self.inner.shape().dims().to_vec();
         let l2_bc = l2.broadcast_to(Shape::from_dims(&dims_v))?;
@@ -1027,14 +1178,14 @@ impl LazyTensor {
     /// `repeats == 1` is a no-op clone. `repeats == 0` returns an
     /// error at build time.
     pub fn repeat_interleave<D: Dim>(
-        &self, dim: D, repeats: usize,
+        &self,
+        dim: D,
+        repeats: usize,
     ) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "repeat_interleave")?;
         if repeats == 0 {
-            return Err(fuel_ir::Error::Msg(
-                "repeat_interleave: repeats must be ≥ 1".into(),
-            ).bt());
+            return Err(fuel_ir::Error::Msg("repeat_interleave: repeats must be ≥ 1".into()).bt());
         }
         if repeats == 1 {
             return Ok(self.clone());
@@ -1054,21 +1205,33 @@ impl LazyTensor {
     /// Slice (narrow) along `dim`: take elements `[start, start+len)`.
     /// Bad `dim` / out-of-range slice surfaces as a typed error at build
     /// time. Accepts any [`Dim`].
-    pub fn slice<D: Dim>(&self, dim: D, start: usize, len: usize) -> std::result::Result<Self, fuel_ir::Error> {
+    pub fn slice<D: Dim>(
+        &self,
+        dim: D,
+        start: usize,
+        len: usize,
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "slice")?;
         let dim_size = shape.dims()[dim];
         if start.saturating_add(len) > dim_size {
             return Err(fuel_ir::Error::Msg(format!(
                 "slice: start={start} + len={len} exceeds dim {dim} size {dim_size}",
-            )).bt());
+            ))
+            .bt());
         }
-        Ok(Self { inner: self.inner.slice(dim, start, len) })
+        Ok(Self {
+            inner: self.inner.slice(dim, start, len),
+        })
     }
 
     /// Concatenate two tensors along `dim`. Shape mismatch or bad `dim`
     /// surfaces as a typed error at build time. Accepts any [`Dim`].
-    pub fn concat<D: Dim>(&self, other: &Self, dim: D) -> std::result::Result<Self, fuel_ir::Error> {
+    pub fn concat<D: Dim>(
+        &self,
+        other: &Self,
+        dim: D,
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "concat")?;
         let self_dims = shape.dims().to_vec();
@@ -1076,16 +1239,20 @@ impl LazyTensor {
         if self_dims.len() != other_dims.len() {
             return Err(fuel_ir::Error::Msg(format!(
                 "concat: rank mismatch lhs={self_dims:?} rhs={other_dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         for (i, (&a, &b)) in self_dims.iter().zip(other_dims.iter()).enumerate() {
             if i != dim && a != b {
                 return Err(fuel_ir::Error::Msg(format!(
                     "concat: dim {i} mismatch lhs={a} rhs={b} (concat dim is {dim})",
-                )).bt());
+                ))
+                .bt());
             }
         }
-        Ok(Self { inner: self.inner.concat(&other.inner, dim) })
+        Ok(Self {
+            inner: self.inner.concat(&other.inner, dim),
+        })
     }
 
     /// Add a scalar to every element.
@@ -1108,7 +1275,9 @@ impl LazyTensor {
     pub fn argmax_dim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "argmax_dim")?;
-        Ok(Self { inner: self.inner.argmax_dim(dim) })
+        Ok(Self {
+            inner: self.inner.argmax_dim(dim),
+        })
     }
 
     /// Realize as a `u32` (index) `Vec`.
@@ -1142,22 +1311,30 @@ impl LazyTensor {
 
     /// Sum of all elements, producing a scalar.
     pub fn sum_all(&self) -> Self {
-        Self { inner: self.inner.sum_all() }
+        Self {
+            inner: self.inner.sum_all(),
+        }
     }
 
     /// Arithmetic mean of all elements, producing a scalar.
     pub fn mean_all(&self) -> Self {
-        Self { inner: self.inner.mean_all() }
+        Self {
+            inner: self.inner.mean_all(),
+        }
     }
 
     /// Maximum of every element, producing a scalar.
     pub fn max_all(&self) -> Self {
-        Self { inner: self.inner.max_all() }
+        Self {
+            inner: self.inner.max_all(),
+        }
     }
 
     /// Minimum of every element, producing a scalar.
     pub fn min_all(&self) -> Self {
-        Self { inner: self.inner.min_all() }
+        Self {
+            inner: self.inner.min_all(),
+        }
     }
 
     /// Sum along a single dimension (dim removed from output). Bad
@@ -1165,46 +1342,60 @@ impl LazyTensor {
     pub fn sum_dim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "sum_dim")?;
-        Ok(Self { inner: self.inner.sum_dim(dim) })
+        Ok(Self {
+            inner: self.inner.sum_dim(dim),
+        })
     }
 
     /// Max along a single dimension (dim removed from output).
     pub fn max_dim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "max_dim")?;
-        Ok(Self { inner: self.inner.max_dim(dim) })
+        Ok(Self {
+            inner: self.inner.max_dim(dim),
+        })
     }
 
     /// Min along a single dimension (dim removed from output).
     pub fn min_dim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "min_dim")?;
-        Ok(Self { inner: self.inner.min_dim(dim) })
+        Ok(Self {
+            inner: self.inner.min_dim(dim),
+        })
     }
 
     /// Element-wise clamp to `[min, max]`.
     pub fn clamp(&self, min: f64, max: f64) -> Self {
-        Self { inner: self.inner.clamp(min, max) }
+        Self {
+            inner: self.inner.clamp(min, max),
+        }
     }
 
     /// Mean along a single dimension.
     pub fn mean_dim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "mean_dim")?;
-        Ok(Self { inner: self.inner.mean_dim(dim) })
+        Ok(Self {
+            inner: self.inner.mean_dim(dim),
+        })
     }
 
     /// Sum-reduce to a smaller broadcast-compatible shape. Inverse of
     /// [`Self::broadcast_to`]; reduces over any dim where the source
     /// was broadcast against the target.
     pub fn reduce_sum_to(&self, target: impl Into<Shape>) -> Self {
-        Self { inner: self.inner.reduce_sum_to(target) }
+        Self {
+            inner: self.inner.reduce_sum_to(target),
+        }
     }
 
     /// Max-reduce to a smaller broadcast-compatible shape — the
     /// max-symmetric counterpart of [`Self::reduce_sum_to`].
     pub fn reduce_max_to(&self, target: impl Into<Shape>) -> Self {
-        Self { inner: self.inner.reduce_max_to(target) }
+        Self {
+            inner: self.inner.reduce_max_to(target),
+        }
     }
 
     // ---- compositions ----
@@ -1217,7 +1408,8 @@ impl LazyTensor {
         if dims.is_empty() {
             return Err(fuel_ir::Error::Msg(
                 "softmax_last_dim: input must be rank >= 1, got scalar".into(),
-            ).bt());
+            )
+            .bt());
         }
         Ok(Self {
             inner: self.inner.softmax_last_dim(),
@@ -1227,14 +1419,11 @@ impl LazyTensor {
     /// bitsandbytes-style 4-bit NormalFloat quantized matrix
     /// multiply. See [`fuel_graph::Tensor::nf4_matmul`] for the full
     /// shape contract. v1 covers F32/F16/BF16 activations.
-    pub fn nf4_matmul(
-        &self,
-        w_packed: &Self,
-        absmax: &Self,
-        block_size: usize,
-    ) -> Self {
+    pub fn nf4_matmul(&self, w_packed: &Self, absmax: &Self, block_size: usize) -> Self {
         Self {
-            inner: self.inner.nf4_matmul(&w_packed.inner, &absmax.inner, block_size),
+            inner: self
+                .inner
+                .nf4_matmul(&w_packed.inner, &absmax.inner, block_size),
         }
     }
 
@@ -1251,9 +1440,9 @@ impl LazyTensor {
         chunk_size: usize,
     ) -> Self {
         Self {
-            inner: self.inner.ssd_chunk_scan(
-                &dt.inner, &a.inner, &b.inner, &c.inner, chunk_size,
-            ),
+            inner: self
+                .inner
+                .ssd_chunk_scan(&dt.inner, &a.inner, &b.inner, &c.inner, chunk_size),
         }
     }
 
@@ -1272,7 +1461,11 @@ impl LazyTensor {
     ) -> Self {
         Self {
             inner: self.inner.selective_scan(
-                &delta.inner, &a.inner, &b.inner, &c.inner, delta_softplus,
+                &delta.inner,
+                &a.inner,
+                &b.inner,
+                &c.inner,
+                delta_softplus,
             ),
         }
     }
@@ -1293,7 +1486,11 @@ impl LazyTensor {
         delta_softplus: bool,
     ) -> std::result::Result<(Self, Self), fuel_ir::Error> {
         let (y, last_state) = self.inner.selective_scan_bundled(
-            &delta.inner, &a.inner, &b.inner, &c.inner, delta_softplus,
+            &delta.inner,
+            &a.inner,
+            &b.inner,
+            &c.inner,
+            delta_softplus,
         )?;
         Ok((Self { inner: y }, Self { inner: last_state }))
     }
@@ -1309,9 +1506,9 @@ impl LazyTensor {
         c: &Self,
         chunk_size: usize,
     ) -> std::result::Result<(Self, Self), fuel_ir::Error> {
-        let (y, last_state) = self.inner.ssd_chunk_scan_bundled(
-            &dt.inner, &a.inner, &b.inner, &c.inner, chunk_size,
-        )?;
+        let (y, last_state) = self
+            .inner
+            .ssd_chunk_scan_bundled(&dt.inner, &a.inner, &b.inner, &c.inner, chunk_size)?;
         Ok((Self { inner: y }, Self { inner: last_state }))
     }
 
@@ -1351,14 +1548,11 @@ impl LazyTensor {
     /// — the Mamba-1 / Mamba-2 prefill convolution fusion. See
     /// [`fuel_graph::Tensor::causal_conv1d`] for the full shape
     /// contract (caller must left-pad x with `kernel - 1` zeros).
-    pub fn causal_conv1d(
-        &self,
-        weight: &Self,
-        bias: &Self,
-        use_silu: bool,
-    ) -> Self {
+    pub fn causal_conv1d(&self, weight: &Self, bias: &Self, use_silu: bool) -> Self {
         Self {
-            inner: self.inner.causal_conv1d(&weight.inner, &bias.inner, use_silu),
+            inner: self
+                .inner
+                .causal_conv1d(&weight.inner, &bias.inner, use_silu),
         }
     }
 
@@ -1373,9 +1567,9 @@ impl LazyTensor {
         ignore_index: i64,
     ) -> Self {
         Self {
-            inner: self.inner.fused_softmax_cross_entropy(
-                &targets.inner, reduction, ignore_index,
-            ),
+            inner: self
+                .inner
+                .fused_softmax_cross_entropy(&targets.inner, reduction, ignore_index),
         }
     }
 
@@ -1387,7 +1581,8 @@ impl LazyTensor {
         if dims.last().copied().unwrap_or(0) == 0 {
             return Err(fuel_ir::Error::Msg(format!(
                 "layer_norm_last_dim: input must have non-zero last dim, got {dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         Ok(Self {
             inner: self.inner.layer_norm_last_dim(eps),
@@ -1402,7 +1597,8 @@ impl LazyTensor {
         if dims.last().copied().unwrap_or(0) == 0 {
             return Err(fuel_ir::Error::Msg(format!(
                 "rms_norm_last_dim: input must have non-zero last dim, got {dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         Ok(Self {
             inner: self.inner.rms_norm_last_dim(eps),
@@ -1417,7 +1613,8 @@ impl LazyTensor {
         if dims.len() < 2 {
             return Err(fuel_ir::Error::Msg(format!(
                 "rope: input must have rank >= 2, got {dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         Ok(Self {
             inner: self.inner.rope(base, start_pos),
@@ -1430,12 +1627,17 @@ impl LazyTensor {
     ///
     /// Rank / dtype / table-shape mismatches surface as typed errors
     /// at build time rather than panicking inside `fuel_graph`.
-    pub fn rope_with_tables(&self, cos: &Self, sin: &Self) -> std::result::Result<Self, fuel_ir::Error> {
+    pub fn rope_with_tables(
+        &self,
+        cos: &Self,
+        sin: &Self,
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         if self.inner.dtype() != fuel_ir::DType::F32 {
             return Err(fuel_ir::Error::Msg(format!(
                 "rope: only f32 is supported today, got {:?} (cast explicitly for other dtypes)",
                 self.inner.dtype(),
-            )).bt());
+            ))
+            .bt());
         }
         let in_shape = self.inner.shape();
         let dims = in_shape.dims();
@@ -1443,28 +1645,29 @@ impl LazyTensor {
         if rank < 2 {
             return Err(fuel_ir::Error::Msg(format!(
                 "rope: input must have rank >= 2, got {dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         let seq = dims[rank - 2];
         let d = dims[rank - 1];
         if !d.is_multiple_of(2) {
-            return Err(fuel_ir::Error::Msg(format!(
-                "rope: feature dim {d} must be even",
-            )).bt());
+            return Err(fuel_ir::Error::Msg(format!("rope: feature dim {d} must be even",)).bt());
         }
         let cos_shape = cos.inner.shape();
         let cos_dims = cos_shape.dims();
         if cos_dims != [seq, d] {
             return Err(fuel_ir::Error::Msg(format!(
                 "rope_with_tables: cos shape {cos_dims:?} does not match [seq, d] = [{seq}, {d}]",
-            )).bt());
+            ))
+            .bt());
         }
         let sin_shape = sin.inner.shape();
         let sin_dims = sin_shape.dims();
         if sin_dims != [seq, d] {
             return Err(fuel_ir::Error::Msg(format!(
                 "rope_with_tables: sin shape {sin_dims:?} does not match [seq, d] = [{seq}, {d}]",
-            )).bt());
+            ))
+            .bt());
         }
         Ok(Self {
             inner: self.inner.rope_with_tables(&cos.inner, &sin.inner),
@@ -1487,12 +1690,17 @@ impl LazyTensor {
     ///
     /// Byte-identical semantics to [`Self::rope_with_tables`] (same rotate-half
     /// math); same validation.
-    pub fn rope_with_tables_decomposed(&self, cos: &Self, sin: &Self) -> std::result::Result<Self, fuel_ir::Error> {
+    pub fn rope_with_tables_decomposed(
+        &self,
+        cos: &Self,
+        sin: &Self,
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         if self.inner.dtype() != fuel_ir::DType::F32 {
             return Err(fuel_ir::Error::Msg(format!(
                 "rope: only f32 is supported today, got {:?} (cast explicitly for other dtypes)",
                 self.inner.dtype(),
-            )).bt());
+            ))
+            .bt());
         }
         let in_shape = self.inner.shape();
         let dims = in_shape.dims();
@@ -1500,14 +1708,13 @@ impl LazyTensor {
         if rank < 2 {
             return Err(fuel_ir::Error::Msg(format!(
                 "rope: input must have rank >= 2, got {dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         let seq = dims[rank - 2];
         let d = dims[rank - 1];
         if !d.is_multiple_of(2) {
-            return Err(fuel_ir::Error::Msg(format!(
-                "rope: feature dim {d} must be even",
-            )).bt());
+            return Err(fuel_ir::Error::Msg(format!("rope: feature dim {d} must be even",)).bt());
         }
         let cos_dims = cos.inner.shape();
         if cos_dims.dims() != [seq, d] {
@@ -1524,7 +1731,9 @@ impl LazyTensor {
             )).bt());
         }
         Ok(Self {
-            inner: self.inner.rope_with_tables_decomposed(&cos.inner, &sin.inner),
+            inner: self
+                .inner
+                .rope_with_tables_decomposed(&cos.inner, &sin.inner),
         })
     }
 
@@ -1533,21 +1742,27 @@ impl LazyTensor {
     /// Pick slices along `dim` using a 1-D U32 index tensor. Accepts
     /// any [`Dim`]. Dim bounds / index dtype / index rank mismatches
     /// surface as typed errors at build time.
-    pub fn index_select<D: Dim>(&self, dim: D, indices: &Self) -> std::result::Result<Self, fuel_ir::Error> {
+    pub fn index_select<D: Dim>(
+        &self,
+        dim: D,
+        indices: &Self,
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "index_select")?;
         if indices.inner.dtype() != fuel_ir::DType::U32 {
             return Err(fuel_ir::Error::Msg(format!(
                 "index_select: index tensor must be U32, got {:?}",
                 indices.inner.dtype(),
-            )).bt());
+            ))
+            .bt());
         }
         let idx_shape = indices.inner.shape();
         let idx_dims = idx_shape.dims();
         if idx_dims.len() != 1 {
             return Err(fuel_ir::Error::Msg(format!(
                 "index_select: index tensor must be rank 1, got {idx_dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         Ok(Self {
             inner: self.inner.index_select(dim, &indices.inner),
@@ -1558,14 +1773,19 @@ impl LazyTensor {
     /// rank as `self`; output shape equals the index shape. Accepts
     /// any [`Dim`]. Dim bounds / index dtype / rank mismatches surface
     /// as typed errors at build time.
-    pub fn gather<D: Dim>(&self, dim: D, indices: &Self) -> std::result::Result<Self, fuel_ir::Error> {
+    pub fn gather<D: Dim>(
+        &self,
+        dim: D,
+        indices: &Self,
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "gather")?;
         if indices.inner.dtype() != fuel_ir::DType::U32 {
             return Err(fuel_ir::Error::Msg(format!(
                 "gather: index tensor must be U32, got {:?}",
                 indices.inner.dtype(),
-            )).bt());
+            ))
+            .bt());
         }
         let data_rank = shape.dims().len();
         let idx_shape = indices.inner.shape();
@@ -1573,7 +1793,8 @@ impl LazyTensor {
         if data_rank != idx_rank {
             return Err(fuel_ir::Error::Msg(format!(
                 "gather: data and index must have the same rank, got {data_rank} vs {idx_rank}",
-            )).bt());
+            ))
+            .bt());
         }
         Ok(Self {
             inner: self.inner.gather(dim, &indices.inner),
@@ -1752,10 +1973,7 @@ impl LazyTensor {
     /// const_pool was load-bearing, use the persistent-StorageCache
     /// pattern shipped in Phase E.3 (KVCache migration).
     #[cfg(feature = "cuda")]
-    pub fn realize_f32_cuda(
-        &self,
-        device: &fuel_cuda_backend::CudaDevice,
-    ) -> Vec<f32> {
+    pub fn realize_f32_cuda(&self, device: &fuel_cuda_backend::CudaDevice) -> Vec<f32> {
         let graph = self.inner.graph().clone();
         let target = self.inner.id();
         let fc_device: crate::Device = device.clone().into();
@@ -1885,7 +2103,10 @@ impl crate::persistent_decode::DecodeBackbone for LlamaModel {
     }
 
     fn decode_rope_plan(&self) -> crate::persistent_decode::RopePlan {
-        crate::persistent_decode::RopePlan::single(self.config.rope_base, self.decode_dims().n_layers)
+        crate::persistent_decode::RopePlan::single(
+            self.config.rope_base,
+            self.decode_dims().n_layers,
+        )
     }
 
     fn decode_token_embedding(&self) -> Arc<[f32]> {
@@ -1915,7 +2136,10 @@ impl crate::persistent_decode::DecodeBackbone for LlamaModel {
     fn decode_final_norm_and_head(&self, h: &LazyTensor) -> crate::Result<LazyTensor> {
         let cfg = &self.config;
         let h_norm = apply_affine_rms_norm(h, &self.weights.final_norm_gain, cfg.dim, cfg.norm_eps);
-        Ok(self.weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?)
+        Ok(self
+            .weights
+            .output
+            .apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?)
     }
 }
 
@@ -1985,7 +2209,12 @@ mod tests {
             vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0],
             Shape::from_dims(&[3, 3]),
         );
-        let y = x.rms_norm_last_dim(1e-6).unwrap().matmul(&w).unwrap().relu();
+        let y = x
+            .rms_norm_last_dim(1e-6)
+            .unwrap()
+            .matmul(&w)
+            .unwrap()
+            .relu();
         assert_eq!(y.shape().dims(), &[2, 3]);
         assert_eq!(y.dtype(), DType::F32);
     }
@@ -2022,14 +2251,22 @@ mod tests {
         // paths are compared in the same layout.
         let rope_pool_at = |data: &[f32], start_pos: usize| -> Vec<f32> {
             let k = LazyTensor::from_f32(
-                data.to_vec(), Shape::from_dims(&[bs, n_kv_heads, head_dim]), &dev,
+                data.to_vec(),
+                Shape::from_dims(&[bs, n_kv_heads, head_dim]),
+                &dev,
             );
-            let k4 = k.permute([1, 0, 2]).unwrap()
-                .reshape(Shape::from_dims(&[1, n_kv_heads, bs, head_dim])).unwrap();
+            let k4 = k
+                .permute([1, 0, 2])
+                .unwrap()
+                .reshape(Shape::from_dims(&[1, n_kv_heads, bs, head_dim]))
+                .unwrap();
             let (c, s) = k4.rope_tables_const(theta, start_pos, bs, head_dim);
-            k4.rope_with_tables_decomposed(&c, &s).unwrap()
-                .reshape(Shape::from_dims(&[n_kv_heads, bs, head_dim])).unwrap()
-                .permute([1, 0, 2]).unwrap()
+            k4.rope_with_tables_decomposed(&c, &s)
+                .unwrap()
+                .reshape(Shape::from_dims(&[n_kv_heads, bs, head_dim]))
+                .unwrap()
+                .permute([1, 0, 2])
+                .unwrap()
                 .realize_f32()
         };
         let direct = rope_pool_at(&raw, p0 + m); // rope directly at shifted positions
@@ -2042,7 +2279,10 @@ mod tests {
             .zip(&shifted)
             .map(|(a, b)| (a - b).abs())
             .fold(0.0f32, f32::max);
-        assert!(maxdiff < 1e-5, "delta-rotate == direct shift (maxdiff {maxdiff})");
+        assert!(
+            maxdiff < 1e-5,
+            "delta-rotate == direct shift (maxdiff {maxdiff})"
+        );
     }
 
     #[test]
@@ -2166,9 +2406,18 @@ mod tests {
     /// `h / (hq/hkv)`), out `[hq,sq,d]`.
     #[allow(clippy::too_many_arguments)]
     fn ref_attention(
-        q: &[f32], k: &[f32], v: &[f32],
-        hq: usize, hkv: usize, sq: usize, sk: usize, d: usize,
-        scale: f32, causal: bool, softcap: Option<f32>, alibi: Option<&[f32]>,
+        q: &[f32],
+        k: &[f32],
+        v: &[f32],
+        hq: usize,
+        hkv: usize,
+        sq: usize,
+        sk: usize,
+        d: usize,
+        scale: f32,
+        causal: bool,
+        softcap: Option<f32>,
+        alibi: Option<&[f32]>,
     ) -> Vec<f32> {
         let g = hq / hkv;
         let mut out = vec![0.0f32; hq * sq * d];
@@ -2192,7 +2441,11 @@ mod tests {
                         // alibi bias = slope[h] · (key_pos - query_pos).
                         sc += slopes[h] * (j as f32 - i as f32);
                     }
-                    scores[j] = if causal && j > i { f32::NEG_INFINITY } else { sc };
+                    scores[j] = if causal && j > i {
+                        f32::NEG_INFINITY
+                    } else {
+                        sc
+                    };
                 }
                 let m = scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
                 let mut sum = 0.0f32;
@@ -2222,7 +2475,11 @@ mod tests {
     /// the `Triu` `-inf` causal mask, GQA head-repeat, the `tanh` softcap, and
     /// the alibi bias (which is the sole config that lowers to `Op::Iota`).
     fn flash_decompose_vs_reference(
-        hq: usize, hkv: usize, causal: bool, softcap: Option<f32>, alibi: bool,
+        hq: usize,
+        hkv: usize,
+        causal: bool,
+        softcap: Option<f32>,
+        alibi: bool,
     ) {
         let dev = Device::cpu();
         let (sq, sk, d) = (2usize, 2usize, 2usize);
@@ -2250,14 +2507,24 @@ mod tests {
         // Decompose explicitly, then realize the primitive subgraph.
         let graph = attn.inner.graph().clone();
         let id = attn.inner.id();
-        let roots = fuel_graph::opt::RuleRegistry::lowering_only()
-            .optimize_to_fixpoint(&graph, &[id]);
+        let roots =
+            fuel_graph::opt::RuleRegistry::lowering_only().optimize_to_fixpoint(&graph, &[id]);
         assert_eq!(roots.len(), 1, "lowering should keep a single root");
         let got = crate::pipelined_bridge::realize_one_as::<f32>(&graph, roots[0], &dev)
             .expect("realize decomposed FlashAttn on CPU");
 
         let expected = ref_attention(
-            &q_data, &k_data, &v_data, hq, hkv, sq, sk, d, scale, causal, softcap,
+            &q_data,
+            &k_data,
+            &v_data,
+            hq,
+            hkv,
+            sq,
+            sk,
+            d,
+            scale,
+            causal,
+            softcap,
             alibi_slopes.as_deref(),
         );
         assert_eq!(got.len(), expected.len());
@@ -2309,9 +2576,17 @@ mod tests {
     /// `h → h/(Hq/Hkv)`.
     #[allow(clippy::too_many_arguments)]
     fn ref_decode_attn(
-        q: &[f32], k: &[f32], v: &[f32],
-        hq: usize, hkv: usize, sq: usize, cap: usize, kl: usize, d: usize,
-        scale: f32, causal: bool,
+        q: &[f32],
+        k: &[f32],
+        v: &[f32],
+        hq: usize,
+        hkv: usize,
+        sq: usize,
+        cap: usize,
+        kl: usize,
+        d: usize,
+        scale: f32,
+        causal: bool,
     ) -> Vec<f32> {
         let g = hq / hkv;
         let offset = kl - sq;
@@ -2360,28 +2635,42 @@ mod tests {
     /// offset causal band is exercised, not a Sq=1 no-op), capacity 4, kl=3.
     #[test]
     fn flash_attn_decompose_concrete_klen() {
-        use fuel_graph::registry::FusedOps;
         use fuel_graph::Op;
+        use fuel_graph::registry::FusedOps;
         use fuel_ir::DynScalar;
         let dev = Device::cpu();
         let (hq, hkv, sq, cap, kl, d) = (2usize, 1usize, 2usize, 4usize, 3usize, 2usize);
         let scale = 0.7071f32;
         let causal = true;
         let q_data: Vec<f32> = (0..hq * sq * d).map(|i| (i as f32 * 0.1).sin()).collect();
-        let k_data: Vec<f32> = (0..hkv * cap * d).map(|i| (i as f32 * 0.13).cos()).collect();
+        let k_data: Vec<f32> = (0..hkv * cap * d)
+            .map(|i| (i as f32 * 0.13).cos())
+            .collect();
         let v_data: Vec<f32> = (0..hkv * cap * d).map(|i| i as f32 * 0.07 + 1.0).collect();
         let q = LazyTensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, sq, d]), &dev);
-        let k = q.inner.const_f32_like(k_data.clone(), Shape::from_dims(&[1, hkv, cap, d]));
-        let v = q.inner.const_f32_like(v_data.clone(), Shape::from_dims(&[1, hkv, cap, d]));
+        let k = q
+            .inner
+            .const_f32_like(k_data.clone(), Shape::from_dims(&[1, hkv, cap, d]));
+        let v = q
+            .inner
+            .const_f32_like(v_data.clone(), Shape::from_dims(&[1, hkv, cap, d]));
         // Concrete k_len — the fused node that formerly returned self.
         let attn = q.inner.flash_attn_dyn(
-            &k, &v, None, scale, causal, None, None, None, DynScalar::Concrete(kl),
+            &k,
+            &v,
+            None,
+            scale,
+            causal,
+            None,
+            None,
+            None,
+            DynScalar::Concrete(kl),
         );
 
         let graph = attn.graph().clone();
         let id = attn.id();
-        let roots = fuel_graph::opt::RuleRegistry::lowering_only()
-            .optimize_to_fixpoint(&graph, &[id]);
+        let roots =
+            fuel_graph::opt::RuleRegistry::lowering_only().optimize_to_fixpoint(&graph, &[id]);
         assert_eq!(roots.len(), 1, "lowering should keep a single root");
 
         // Born-red discriminator: no Op::Fused(FLASH_ATTN) reachable from the root.
@@ -2481,10 +2770,7 @@ mod tests {
         // its left-fold sum differs from its right-fold sum, so bit-exact
         // equality of the two spellings is a NON-trivial statement about the
         // backend's accumulation order.
-        let data: Vec<f32> = vec![
-            1e8, 1.0, -1e8, 1.0,
-            3.0e7, 2.0, -3.0e7, -1.0,
-        ];
+        let data: Vec<f32> = vec![1e8, 1.0, -1e8, 1.0, 3.0e7, 2.0, -3.0e7, -1.0];
 
         // Independent host references: fold each row left-to-right and
         // right-to-left in f32. They disagree — the data is adversarial.
@@ -2511,9 +2797,12 @@ mod tests {
         let x = LazyTensor::from_f32(data.clone(), Shape::from_dims(&[rows, cols]), &dev);
         // Recipe spelling: rank-reducing SumDim(last) (chassis `reduce`).
         let sumdim = x.inner.sum_dim(1);
-        let got_sumdim =
-            crate::pipelined_bridge::realize_one_as::<f32>(&sumdim.graph().clone(), sumdim.id(), &dev)
-                .expect("realize SumDim(last) on CPU");
+        let got_sumdim = crate::pipelined_bridge::realize_one_as::<f32>(
+            &sumdim.graph().clone(),
+            sumdim.id(),
+            &dev,
+        )
+        .expect("realize SumDim(last) on CPU");
         // Legacy spelling: ReduceSumTo(keepdim [rows,1]) (chassis `reduce_to`).
         let reducesumto = x.inner.reduce_sum_to(Shape::from_dims(&[rows, 1]));
         let got_reducesumto = crate::pipelined_bridge::realize_one_as::<f32>(
@@ -2534,9 +2823,12 @@ mod tests {
         // dispatches two DIFFERENT CPU kernels; confirm they agree bit-exactly
         // and equal the per-row maximum.
         let maxdim = x.inner.max_dim(1);
-        let got_maxdim =
-            crate::pipelined_bridge::realize_one_as::<f32>(&maxdim.graph().clone(), maxdim.id(), &dev)
-                .expect("realize MaxDim(last) on CPU");
+        let got_maxdim = crate::pipelined_bridge::realize_one_as::<f32>(
+            &maxdim.graph().clone(),
+            maxdim.id(),
+            &dev,
+        )
+        .expect("realize MaxDim(last) on CPU");
         let reducemaxto = x.inner.reduce_max_to(Shape::from_dims(&[rows, 1]));
         let got_reducemaxto = crate::pipelined_bridge::realize_one_as::<f32>(
             &reducemaxto.graph().clone(),
@@ -2545,7 +2837,12 @@ mod tests {
         )
         .expect("realize ReduceMaxTo(keepdim) on CPU");
         let row_max: Vec<f32> = (0..rows)
-            .map(|r| data[r * cols..(r + 1) * cols].iter().cloned().fold(f32::NEG_INFINITY, f32::max))
+            .map(|r| {
+                data[r * cols..(r + 1) * cols]
+                    .iter()
+                    .cloned()
+                    .fold(f32::NEG_INFINITY, f32::max)
+            })
             .collect();
         assert_f32_bits_eq(&got_maxdim, &got_reducemaxto, "MaxDim vs ReduceMaxTo");
         assert_f32_bits_eq(&got_maxdim, &row_max, "MaxDim vs per-row max");
@@ -2586,7 +2883,8 @@ mod tests {
             .expect("softmax recipe build");
         let graph = recipe.inner.graph().clone();
         let id = recipe.inner.id();
-        let roots = fuel_graph::opt::RuleRegistry::lowering_only().optimize_to_fixpoint(&graph, &[id]);
+        let roots =
+            fuel_graph::opt::RuleRegistry::lowering_only().optimize_to_fixpoint(&graph, &[id]);
         assert_eq!(roots.len(), 1, "lowering keeps a single root");
         let recipe_out = crate::pipelined_bridge::realize_one_as::<f32>(&graph, roots[0], &dev)
             .expect("realize recipe-decomposed softmax on CPU");
@@ -2601,9 +2899,12 @@ mod tests {
         let d = e.reduce_sum_to(keepdim());
         let db = d.broadcast_to(shape());
         let legacy = e.div(&db);
-        let legacy_out =
-            crate::pipelined_bridge::realize_one_as::<f32>(&legacy.graph().clone(), legacy.id(), &dev)
-                .expect("realize legacy softmax on CPU");
+        let legacy_out = crate::pipelined_bridge::realize_one_as::<f32>(
+            &legacy.graph().clone(),
+            legacy.id(),
+            &dev,
+        )
+        .expect("realize legacy softmax on CPU");
 
         // PRIMARY: the migration is numerically inert — bit-exact.
         assert_f32_bits_eq(&recipe_out, &legacy_out, "softmax recipe vs legacy");
@@ -2647,7 +2948,8 @@ mod tests {
             .expect("rms_norm recipe build");
         let graph = recipe.inner.graph().clone();
         let id = recipe.inner.id();
-        let roots = fuel_graph::opt::RuleRegistry::lowering_only().optimize_to_fixpoint(&graph, &[id]);
+        let roots =
+            fuel_graph::opt::RuleRegistry::lowering_only().optimize_to_fixpoint(&graph, &[id]);
         assert_eq!(roots.len(), 1, "lowering keeps a single root");
         let recipe_out = crate::pipelined_bridge::realize_one_as::<f32>(&graph, roots[0], &dev)
             .expect("realize recipe-decomposed rms_norm on CPU");
@@ -2662,9 +2964,12 @@ mod tests {
         let denom = denom_sq.sqrt();
         let denom_b = denom.broadcast_to(shape());
         let legacy = x.div(&denom_b);
-        let legacy_out =
-            crate::pipelined_bridge::realize_one_as::<f32>(&legacy.graph().clone(), legacy.id(), &dev)
-                .expect("realize legacy rms_norm on CPU");
+        let legacy_out = crate::pipelined_bridge::realize_one_as::<f32>(
+            &legacy.graph().clone(),
+            legacy.id(),
+            &dev,
+        )
+        .expect("realize legacy rms_norm on CPU");
 
         // PRIMARY: the keepdim swap is metadata-only — bit-exact.
         assert_f32_bits_eq(&recipe_out, &legacy_out, "rms_norm recipe vs legacy");
@@ -2675,7 +2980,12 @@ mod tests {
             .rms_norm_last_dim(eps)
             .expect("rms_norm fused build")
             .realize_f32();
-        assert_f32_within_ulp(&recipe_out, &fused_out, 1, "rms_norm recipe vs fused kernel");
+        assert_f32_within_ulp(
+            &recipe_out,
+            &fused_out,
+            1,
+            "rms_norm recipe vs fused kernel",
+        );
     }
 
     /// Recipe principle (G2/G3 — part 1): SelectiveScan is the constitution's
@@ -2690,8 +3000,8 @@ mod tests {
     /// + the numeric verify oracle.
     #[test]
     fn selective_scan_decompose_lowers_to_scan_and_matches() {
-        use fuel_graph::registry::FusedOps;
         use fuel_graph::Op;
+        use fuel_graph::registry::FusedOps;
         let dev = Device::cpu();
         let u = LazyTensor::from_f32(vec![2.0f32], Shape::from_dims(&[1, 1, 1]), &dev);
         let delta = u.const_f32_like(vec![0.5f32], Shape::from_dims(&[1, 1, 1]));
@@ -2709,7 +3019,8 @@ mod tests {
         // Op::Scan terminal is present; unroll+realize matches h=3,y=12.
         let graph = y.inner.graph().clone();
         let id = y.inner.id();
-        let roots = fuel_graph::opt::RuleRegistry::lowering_only().optimize_to_fixpoint(&graph, &[id]);
+        let roots =
+            fuel_graph::opt::RuleRegistry::lowering_only().optimize_to_fixpoint(&graph, &[id]);
         assert_eq!(roots.len(), 1);
         let scan_id = {
             let g = graph.read().unwrap();
@@ -2717,24 +3028,36 @@ mod tests {
             let mut seen = std::collections::HashSet::new();
             let mut scan_id = None;
             while let Some(nid) = stack.pop() {
-                if !seen.insert(nid) { continue; }
+                if !seen.insert(nid) {
+                    continue;
+                }
                 let node = g.node(nid);
-                assert!(!matches!(node.op, Op::Fused(fid, _) if fid == FusedOps::SELECTIVE_SCAN),
-                    "SelectiveScan must lower to Op::Scan, not remain fused");
-                if matches!(node.op, Op::Scan { .. }) { scan_id = Some(nid); }
-                for &inp in &node.inputs { stack.push(inp); }
+                assert!(
+                    !matches!(node.op, Op::Fused(fid, _) if fid == FusedOps::SELECTIVE_SCAN),
+                    "SelectiveScan must lower to Op::Scan, not remain fused"
+                );
+                if matches!(node.op, Op::Scan { .. }) {
+                    scan_id = Some(nid);
+                }
+                for &inp in &node.inputs {
+                    stack.push(inp);
+                }
             }
             scan_id.expect("an Op::Scan terminal must be present after lowering")
         };
         // Unroll the Op::Scan (seqlen = 1) and realize the ys oracle.
         let ys = {
             let mut g = graph.write().unwrap();
-            fuel_graph::scan::unroll_scan(&mut g, scan_id, 1).expect("unroll").0
+            fuel_graph::scan::unroll_scan(&mut g, scan_id, 1)
+                .expect("unroll")
+                .0
         };
         let oracle = crate::pipelined_bridge::realize_one_as::<f32>(&graph, ys, &dev)
             .expect("realize unrolled selective_scan oracle on CPU");
-        assert!(oracle.iter().any(|&v| (v - 12.0).abs() < 1e-4),
-            "unroll oracle must contain y = 12, got {oracle:?}");
+        assert!(
+            oracle.iter().any(|&v| (v - 12.0).abs() < 1e-4),
+            "unroll oracle must contain y = 12, got {oracle:?}"
+        );
     }
 
     /// Recipe principle (G2/G3 — part 2): SsdChunkScan (Mamba-2's State-Space
@@ -2751,8 +3074,8 @@ mod tests {
     /// `x=2, dt=0.5, a=-1, b=3, c=4` → `exp(0.5·-1)·0 + 0.5·3·2 = 3`, `y = 3·4 = 12`.
     #[test]
     fn ssd_chunk_scan_decompose_lowers_to_scan_and_matches() {
-        use fuel_graph::registry::FusedOps;
         use fuel_graph::Op;
+        use fuel_graph::registry::FusedOps;
         let dev = Device::cpu();
         // x [batch, seqlen, heads, head_dim] = [1,1,1,1]; dt [b,s,h]=[1,1,1];
         // a [heads]=[1]; b/c [b,s,h,state]=[1,1,1,1].
@@ -2765,35 +3088,53 @@ mod tests {
 
         // (a) NON-REGRESSION: the fused kernel still runs and produces 12.0.
         let got = y.realize_f32();
-        assert!((got[0] - 12.0).abs() < 1e-4, "fused ssd kernel y: {}", got[0]);
+        assert!(
+            (got[0] - 12.0).abs() < 1e-4,
+            "fused ssd kernel y: {}",
+            got[0]
+        );
 
         // (b) VERIFICATION: lowering leaves NO Op::Fused(SSD_CHUNK_SCAN); an
         // Op::Scan terminal is present; unroll+realize matches h=3, y=12.
         let graph = y.inner.graph().clone();
         let id = y.inner.id();
-        let roots = fuel_graph::opt::RuleRegistry::lowering_only().optimize_to_fixpoint(&graph, &[id]);
+        let roots =
+            fuel_graph::opt::RuleRegistry::lowering_only().optimize_to_fixpoint(&graph, &[id]);
         let scan_id = {
             let g = graph.read().unwrap();
             let mut stack = vec![roots[0]];
             let mut seen = std::collections::HashSet::new();
             let mut scan_id = None;
             while let Some(nid) = stack.pop() {
-                if !seen.insert(nid) { continue; }
+                if !seen.insert(nid) {
+                    continue;
+                }
                 let node = g.node(nid);
-                assert!(!matches!(node.op, Op::Fused(fid, _) if fid == FusedOps::SSD_CHUNK_SCAN),
-                    "SsdChunkScan must lower to Op::Scan, not remain fused");
-                if matches!(node.op, Op::Scan { .. }) { scan_id = Some(nid); }
-                for &inp in &node.inputs { stack.push(inp); }
+                assert!(
+                    !matches!(node.op, Op::Fused(fid, _) if fid == FusedOps::SSD_CHUNK_SCAN),
+                    "SsdChunkScan must lower to Op::Scan, not remain fused"
+                );
+                if matches!(node.op, Op::Scan { .. }) {
+                    scan_id = Some(nid);
+                }
+                for &inp in &node.inputs {
+                    stack.push(inp);
+                }
             }
             scan_id.expect("an Op::Scan terminal must be present after lowering")
         };
         let ys = {
             let mut g = graph.write().unwrap();
-            fuel_graph::scan::unroll_scan(&mut g, scan_id, 1).expect("unroll").0
+            fuel_graph::scan::unroll_scan(&mut g, scan_id, 1)
+                .expect("unroll")
+                .0
         };
         let oracle = crate::pipelined_bridge::realize_one_as::<f32>(&graph, ys, &dev)
             .expect("realize unrolled ssd_chunk_scan oracle on CPU");
-        assert!(oracle.iter().any(|&v| (v - 12.0).abs() < 1e-4), "oracle y=12, got {oracle:?}");
+        assert!(
+            oracle.iter().any(|&v| (v - 12.0).abs() < 1e-4),
+            "oracle y=12, got {oracle:?}"
+        );
     }
 
     // ---- Op::Scan Phase 2 (C3/C4/C5): numeric BPTT finite-difference gates ---
@@ -2804,75 +3145,147 @@ mod tests {
 
     #[test]
     fn affine_scan_bptt_matches_finite_difference() {
-        use fuel_graph::{Tensor, ScanEmit, Node, Op, ScanRole};
+        use fuel_graph::{Node, Op, ScanEmit, ScanRole, Tensor};
         use fuel_ir::{DType, Shape};
         let dev = Device::cpu();
         // f(init, a, b): carry_{t+1} = a*carry_t + b, carry_0 = init, bound = 3, loss = carry_3.
         // Closed form: carry_3 = a^3*init + b*(a^2 + a + 1). d/dinit = a^3.
-        let build = |init_v: f32, a_v: f32, b_v: f32| -> (std::sync::Arc<std::sync::RwLock<fuel_graph::Graph>>, fuel_graph::NodeId, fuel_graph::Tensor, fuel_graph::Tensor, fuel_graph::Tensor) {
+        let build = |init_v: f32,
+                     a_v: f32,
+                     b_v: f32|
+         -> (
+            std::sync::Arc<std::sync::RwLock<fuel_graph::Graph>>,
+            fuel_graph::NodeId,
+            fuel_graph::Tensor,
+            fuel_graph::Tensor,
+            fuel_graph::Tensor,
+        ) {
             let init = Tensor::from_f32(vec![init_v], Shape::from_dims(&[1]), &*dev.as_dyn());
             let g = init.graph().clone();
-            let a = Tensor::from_existing(g.clone(), init.id()).const_f32_like(vec![a_v], Shape::from_dims(&[1]));
-            let b = Tensor::from_existing(g.clone(), init.id()).const_f32_like(vec![b_v], Shape::from_dims(&[1]));
+            let a = Tensor::from_existing(g.clone(), init.id())
+                .const_f32_like(vec![a_v], Shape::from_dims(&[1]));
+            let b = Tensor::from_existing(g.clone(), init.id())
+                .const_f32_like(vec![b_v], Shape::from_dims(&[1]));
             let nc = {
                 let mut gw = g.write().unwrap();
                 let s = Shape::from_dims(&[1]);
-                let hole = gw.push(Node { op: Op::ScanPlaceholder { role: ScanRole::Carry, index: 0 }, inputs: vec![], shape: s.clone(), dtype: DType::F32 });
-                let ac = gw.push(Node { op: Op::Mul, inputs: vec![a.id(), hole], shape: s.clone(), dtype: DType::F32 });
-                gw.push(Node { op: Op::Add, inputs: vec![ac, b.id()], shape: s.clone(), dtype: DType::F32 })
+                let hole = gw.push(Node {
+                    op: Op::ScanPlaceholder {
+                        role: ScanRole::Carry,
+                        index: 0,
+                    },
+                    inputs: vec![],
+                    shape: s.clone(),
+                    dtype: DType::F32,
+                });
+                let ac = gw.push(Node {
+                    op: Op::Mul,
+                    inputs: vec![a.id(), hole],
+                    shape: s.clone(),
+                    dtype: DType::F32,
+                });
+                gw.push(Node {
+                    op: Op::Add,
+                    inputs: vec![ac, b.id()],
+                    shape: s.clone(),
+                    dtype: DType::F32,
+                })
             };
             let nc_t = Tensor::from_existing(g.clone(), nc);
-            let out = init.scan(&[], &[a.clone(), b.clone()], &nc_t, &nc_t, 3, ScanEmit::Final).expect("scan");
+            let out = init
+                .scan(
+                    &[],
+                    &[a.clone(), b.clone()],
+                    &nc_t,
+                    &nc_t,
+                    3,
+                    ScanEmit::Final,
+                )
+                .expect("scan");
             (g, out.id(), init, a, b)
         };
         // Forward value via unroll+realize (self-consistent oracle).
         let fwd = |init_v: f32, a_v: f32, b_v: f32| -> f32 {
             let (g, out_id, _i, _a, _b) = build(init_v, a_v, b_v);
-            let scan_id = { let gr = g.read().unwrap(); gr.node(out_id).inputs[0] };
-            let carry = { let mut gw = g.write().unwrap();
-                fuel_graph::scan::unroll_scan(&mut gw, scan_id, 3).expect("unroll").0 }; // emit=Final -> selected=final_carry
+            let scan_id = {
+                let gr = g.read().unwrap();
+                gr.node(out_id).inputs[0]
+            };
+            let carry = {
+                let mut gw = g.write().unwrap();
+                fuel_graph::scan::unroll_scan(&mut gw, scan_id, 3)
+                    .expect("unroll")
+                    .0
+            }; // emit=Final -> selected=final_carry
             crate::pipelined_bridge::realize_one_as::<f32>(&g, carry, &dev).expect("realize")[0]
         };
         // Autograd grad w.r.t. init at (1.0, 0.5, 0.1).
         let (g, out_id, init, a, b) = build(1.0, 0.5, 0.1);
         let out = fuel_graph::Tensor::from_existing(g.clone(), out_id);
         let grads = out.backward();
-        let realize_grad = |t: &fuel_graph::Tensor| crate::pipelined_bridge::realize_one_as::<f32>(&g, grads.get(t).expect("grad").id(), &dev).expect("realize grad")[0];
+        let realize_grad = |t: &fuel_graph::Tensor| {
+            crate::pipelined_bridge::realize_one_as::<f32>(
+                &g,
+                grads.get(t).expect("grad").id(),
+                &dev,
+            )
+            .expect("realize grad")[0]
+        };
         let g_init = realize_grad(&init);
         let g_a = realize_grad(&a);
         let g_b = realize_grad(&b);
         // Central finite differences.
         let h = 1e-3f32;
-        let fd = |dinit: f32, da: f32, db: f32| (fwd(1.0+dinit, 0.5+da, 0.1+db) - fwd(1.0-dinit, 0.5-da, 0.1-db)) / (2.0*h);
-        assert!((g_init - fd(h,0.0,0.0)).abs() < 2e-2, "d/dinit: autograd {g_init} vs FD {}", fd(h,0.0,0.0));
-        assert!((g_a - fd(0.0,h,0.0)).abs() < 2e-2, "d/da: autograd {g_a} vs FD {}", fd(0.0,h,0.0));
-        assert!((g_b - fd(0.0,0.0,h)).abs() < 2e-2, "d/db: autograd {g_b} vs FD {}", fd(0.0,0.0,h));
+        let fd = |dinit: f32, da: f32, db: f32| {
+            (fwd(1.0 + dinit, 0.5 + da, 0.1 + db) - fwd(1.0 - dinit, 0.5 - da, 0.1 - db))
+                / (2.0 * h)
+        };
+        assert!(
+            (g_init - fd(h, 0.0, 0.0)).abs() < 2e-2,
+            "d/dinit: autograd {g_init} vs FD {}",
+            fd(h, 0.0, 0.0)
+        );
+        assert!(
+            (g_a - fd(0.0, h, 0.0)).abs() < 2e-2,
+            "d/da: autograd {g_a} vs FD {}",
+            fd(0.0, h, 0.0)
+        );
+        assert!(
+            (g_b - fd(0.0, 0.0, h)).abs() < 2e-2,
+            "d/db: autograd {g_b} vs FD {}",
+            fd(0.0, 0.0, h)
+        );
     }
 
     #[test]
     fn selective_scan_is_differentiable_backward_matches_fd() {
         let dev = Device::cpu();
         let fwd = |u_v: f32| -> f32 {
-            let u = LazyTensor::from_f32(vec![u_v], Shape::from_dims(&[1,1,1]), &dev);
-            let delta = u.const_f32_like(vec![0.5f32], Shape::from_dims(&[1,1,1]));
-            let a = u.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1,1]));
-            let b = u.const_f32_like(vec![3.0f32], Shape::from_dims(&[1,1,1]));
-            let c = u.const_f32_like(vec![4.0f32], Shape::from_dims(&[1,1,1]));
+            let u = LazyTensor::from_f32(vec![u_v], Shape::from_dims(&[1, 1, 1]), &dev);
+            let delta = u.const_f32_like(vec![0.5f32], Shape::from_dims(&[1, 1, 1]));
+            let a = u.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1, 1]));
+            let b = u.const_f32_like(vec![3.0f32], Shape::from_dims(&[1, 1, 1]));
+            let c = u.const_f32_like(vec![4.0f32], Shape::from_dims(&[1, 1, 1]));
             u.selective_scan(&delta, &a, &b, &c, false).realize_f32()[0]
         };
         // Autograd at u=2.0.
-        let u = LazyTensor::from_f32(vec![2.0f32], Shape::from_dims(&[1,1,1]), &dev);
-        let delta = u.const_f32_like(vec![0.5f32], Shape::from_dims(&[1,1,1]));
-        let a = u.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1,1]));
-        let b = u.const_f32_like(vec![3.0f32], Shape::from_dims(&[1,1,1]));
-        let c = u.const_f32_like(vec![4.0f32], Shape::from_dims(&[1,1,1]));
+        let u = LazyTensor::from_f32(vec![2.0f32], Shape::from_dims(&[1, 1, 1]), &dev);
+        let delta = u.const_f32_like(vec![0.5f32], Shape::from_dims(&[1, 1, 1]));
+        let a = u.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1, 1]));
+        let b = u.const_f32_like(vec![3.0f32], Shape::from_dims(&[1, 1, 1]));
+        let c = u.const_f32_like(vec![4.0f32], Shape::from_dims(&[1, 1, 1]));
         let y = u.selective_scan(&delta, &a, &b, &c, false);
         let grads = y.inner.backward();
         let g_u_id = grads.get(u.graph_tensor()).expect("grad u").id();
-        let g_u = crate::pipelined_bridge::realize_one_as::<f32>(&u.inner.graph().clone(), g_u_id, &dev).expect("realize")[0];
+        let g_u =
+            crate::pipelined_bridge::realize_one_as::<f32>(&u.inner.graph().clone(), g_u_id, &dev)
+                .expect("realize")[0];
         let h = 1e-3;
-        let fd = (fwd(2.0+h) - fwd(2.0-h)) / (2.0*h);
-        assert!((g_u - fd).abs() < 5e-2, "selective_scan d/du: autograd {g_u} vs FD {fd}");
+        let fd = (fwd(2.0 + h) - fwd(2.0 - h)) / (2.0 * h);
+        assert!(
+            (g_u - fd).abs() < 5e-2,
+            "selective_scan d/du: autograd {g_u} vs FD {fd}"
+        );
     }
 
     #[test]
@@ -2881,26 +3294,31 @@ mod tests {
         // x [batch,seqlen,heads,head_dim]=[1,1,1,1]; dt [b,s,h]=[1,1,1]; a [heads]=[1];
         // b/c [b,s,h,state]=[1,1,1,1]. Single step: h = dt*b*x = 1.5x, y = c*h = 6x (linear).
         let fwd = |x_v: f32| -> f32 {
-            let x = LazyTensor::from_f32(vec![x_v], Shape::from_dims(&[1,1,1,1]), &dev);
-            let dt = x.const_f32_like(vec![0.5f32], Shape::from_dims(&[1,1,1]));
+            let x = LazyTensor::from_f32(vec![x_v], Shape::from_dims(&[1, 1, 1, 1]), &dev);
+            let dt = x.const_f32_like(vec![0.5f32], Shape::from_dims(&[1, 1, 1]));
             let a = x.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1]));
-            let b = x.const_f32_like(vec![3.0f32], Shape::from_dims(&[1,1,1,1]));
-            let c = x.const_f32_like(vec![4.0f32], Shape::from_dims(&[1,1,1,1]));
+            let b = x.const_f32_like(vec![3.0f32], Shape::from_dims(&[1, 1, 1, 1]));
+            let c = x.const_f32_like(vec![4.0f32], Shape::from_dims(&[1, 1, 1, 1]));
             x.ssd_chunk_scan(&dt, &a, &b, &c, 1).realize_f32()[0]
         };
         // Autograd at x=2.0.
-        let x = LazyTensor::from_f32(vec![2.0f32], Shape::from_dims(&[1,1,1,1]), &dev);
-        let dt = x.const_f32_like(vec![0.5f32], Shape::from_dims(&[1,1,1]));
+        let x = LazyTensor::from_f32(vec![2.0f32], Shape::from_dims(&[1, 1, 1, 1]), &dev);
+        let dt = x.const_f32_like(vec![0.5f32], Shape::from_dims(&[1, 1, 1]));
         let a = x.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1]));
-        let b = x.const_f32_like(vec![3.0f32], Shape::from_dims(&[1,1,1,1]));
-        let c = x.const_f32_like(vec![4.0f32], Shape::from_dims(&[1,1,1,1]));
+        let b = x.const_f32_like(vec![3.0f32], Shape::from_dims(&[1, 1, 1, 1]));
+        let c = x.const_f32_like(vec![4.0f32], Shape::from_dims(&[1, 1, 1, 1]));
         let y = x.ssd_chunk_scan(&dt, &a, &b, &c, 1);
         let grads = y.inner.backward();
         let g_x_id = grads.get(x.graph_tensor()).expect("grad x").id();
-        let g_x = crate::pipelined_bridge::realize_one_as::<f32>(&x.inner.graph().clone(), g_x_id, &dev).expect("realize")[0];
+        let g_x =
+            crate::pipelined_bridge::realize_one_as::<f32>(&x.inner.graph().clone(), g_x_id, &dev)
+                .expect("realize")[0];
         let h = 1e-3;
-        let fd = (fwd(2.0+h) - fwd(2.0-h)) / (2.0*h);
-        assert!((g_x - fd).abs() < 5e-2, "ssd_chunk_scan d/dx: autograd {g_x} vs FD {fd}");
+        let fd = (fwd(2.0 + h) - fwd(2.0 - h)) / (2.0 * h);
+        assert!(
+            (g_x - fd).abs() < 5e-2,
+            "ssd_chunk_scan d/dx: autograd {g_x} vs FD {fd}"
+        );
     }
 
     // Review Fix 2: the seqlen=1 SSM gates above multiply exp(dt*a) by a zero
@@ -2915,33 +3333,47 @@ mod tests {
         // u/delta [batch,seqlen,dim]=[1,2,1]; a [dim,dstate]=[1,1] (< 0, stable gate);
         // b/c [batch,seqlen,dstate]=[1,2,1]. loss = sum(y) (ones-seed over [1,2,1]).
         let fwd = |u_vals: &[f32]| -> f32 {
-            let u = LazyTensor::from_f32(u_vals.to_vec(), Shape::from_dims(&[1,2,1]), &dev);
-            let delta = u.const_f32_like(vec![0.7f32, 0.7], Shape::from_dims(&[1,2,1]));
-            let a = u.const_f32_like(vec![-0.5f32], Shape::from_dims(&[1,1]));
-            let b = u.const_f32_like(vec![1.0f32, 1.0], Shape::from_dims(&[1,2,1]));
-            let c = u.const_f32_like(vec![1.0f32, 1.0], Shape::from_dims(&[1,2,1]));
-            u.selective_scan(&delta, &a, &b, &c, false).realize_f32().iter().sum()
+            let u = LazyTensor::from_f32(u_vals.to_vec(), Shape::from_dims(&[1, 2, 1]), &dev);
+            let delta = u.const_f32_like(vec![0.7f32, 0.7], Shape::from_dims(&[1, 2, 1]));
+            let a = u.const_f32_like(vec![-0.5f32], Shape::from_dims(&[1, 1]));
+            let b = u.const_f32_like(vec![1.0f32, 1.0], Shape::from_dims(&[1, 2, 1]));
+            let c = u.const_f32_like(vec![1.0f32, 1.0], Shape::from_dims(&[1, 2, 1]));
+            u.selective_scan(&delta, &a, &b, &c, false)
+                .realize_f32()
+                .iter()
+                .sum()
         };
         let u0 = vec![1.0f32, 2.0];
-        let u = LazyTensor::from_f32(u0.clone(), Shape::from_dims(&[1,2,1]), &dev);
-        let delta = u.const_f32_like(vec![0.7f32, 0.7], Shape::from_dims(&[1,2,1]));
-        let a = u.const_f32_like(vec![-0.5f32], Shape::from_dims(&[1,1]));
-        let b = u.const_f32_like(vec![1.0f32, 1.0], Shape::from_dims(&[1,2,1]));
-        let c = u.const_f32_like(vec![1.0f32, 1.0], Shape::from_dims(&[1,2,1]));
+        let u = LazyTensor::from_f32(u0.clone(), Shape::from_dims(&[1, 2, 1]), &dev);
+        let delta = u.const_f32_like(vec![0.7f32, 0.7], Shape::from_dims(&[1, 2, 1]));
+        let a = u.const_f32_like(vec![-0.5f32], Shape::from_dims(&[1, 1]));
+        let b = u.const_f32_like(vec![1.0f32, 1.0], Shape::from_dims(&[1, 2, 1]));
+        let c = u.const_f32_like(vec![1.0f32, 1.0], Shape::from_dims(&[1, 2, 1]));
         let y = u.selective_scan(&delta, &a, &b, &c, false);
         let grads = y.inner.backward(); // ones-seed over [1,2,1] == grad of sum(y)
         let g_u_id = grads.get(u.graph_tensor()).expect("grad u").id();
-        let g_u = crate::pipelined_bridge::realize_one_as::<f32>(&u.inner.graph().clone(), g_u_id, &dev).expect("realize");
+        let g_u =
+            crate::pipelined_bridge::realize_one_as::<f32>(&u.inner.graph().clone(), g_u_id, &dev)
+                .expect("realize");
         // FD over u_1 (index 0): d(sum y)/d u_1 = dB + c*exp(dt*a)*dB — the second
         // term is the recurrent gate carrying u_1 into y_2.
         let h = 1e-3f32;
-        let mut up = u0.clone(); up[0] += h;
-        let mut um = u0.clone(); um[0] -= h;
-        let fd0 = (fwd(&up) - fwd(&um)) / (2.0*h);
-        assert!((g_u[0] - fd0).abs() < 5e-2, "selective_scan seqlen2 dL/du_1: autograd {} vs FD {fd0}", g_u[0]);
+        let mut up = u0.clone();
+        up[0] += h;
+        let mut um = u0.clone();
+        um[0] -= h;
+        let fd0 = (fwd(&up) - fwd(&um)) / (2.0 * h);
+        assert!(
+            (g_u[0] - fd0).abs() < 5e-2,
+            "selective_scan seqlen2 dL/du_1: autograd {} vs FD {fd0}",
+            g_u[0]
+        );
         // Non-triviality: the gate contribution makes this strictly > the pure-dB
         // seqlen=1 grad — a real, non-vacuous multi-step gradient (~1.19 here).
-        assert!(g_u[0].abs() > 0.5, "recurrent-gate grad must be non-trivial, got {g_u:?}");
+        assert!(
+            g_u[0].abs() > 0.5,
+            "recurrent-gate grad must be non-trivial, got {g_u:?}"
+        );
     }
 
     #[test]
@@ -2951,31 +3383,45 @@ mod tests {
         // carry passes exp(dt*a) across chunks. x [b,s,h,hd]=[1,4,1,1]; dt [b,s,h]=[1,4,1];
         // a [heads]=[1] (< 0); b/c [b,s,h,state]=[1,4,1,1].
         let fwd = |x_vals: &[f32]| -> f32 {
-            let x = LazyTensor::from_f32(x_vals.to_vec(), Shape::from_dims(&[1,4,1,1]), &dev);
-            let dt = x.const_f32_like(vec![0.6f32, 0.6, 0.6, 0.6], Shape::from_dims(&[1,4,1]));
+            let x = LazyTensor::from_f32(x_vals.to_vec(), Shape::from_dims(&[1, 4, 1, 1]), &dev);
+            let dt = x.const_f32_like(vec![0.6f32, 0.6, 0.6, 0.6], Shape::from_dims(&[1, 4, 1]));
             let a = x.const_f32_like(vec![-0.5f32], Shape::from_dims(&[1]));
-            let b = x.const_f32_like(vec![1.0f32, 1.0, 1.0, 1.0], Shape::from_dims(&[1,4,1,1]));
-            let c = x.const_f32_like(vec![1.0f32, 1.0, 1.0, 1.0], Shape::from_dims(&[1,4,1,1]));
-            x.ssd_chunk_scan(&dt, &a, &b, &c, 2).realize_f32().iter().sum()
+            let b = x.const_f32_like(vec![1.0f32, 1.0, 1.0, 1.0], Shape::from_dims(&[1, 4, 1, 1]));
+            let c = x.const_f32_like(vec![1.0f32, 1.0, 1.0, 1.0], Shape::from_dims(&[1, 4, 1, 1]));
+            x.ssd_chunk_scan(&dt, &a, &b, &c, 2)
+                .realize_f32()
+                .iter()
+                .sum()
         };
         let x0 = vec![1.0f32, 2.0, 3.0, 4.0];
-        let x = LazyTensor::from_f32(x0.clone(), Shape::from_dims(&[1,4,1,1]), &dev);
-        let dt = x.const_f32_like(vec![0.6f32, 0.6, 0.6, 0.6], Shape::from_dims(&[1,4,1]));
+        let x = LazyTensor::from_f32(x0.clone(), Shape::from_dims(&[1, 4, 1, 1]), &dev);
+        let dt = x.const_f32_like(vec![0.6f32, 0.6, 0.6, 0.6], Shape::from_dims(&[1, 4, 1]));
         let a = x.const_f32_like(vec![-0.5f32], Shape::from_dims(&[1]));
-        let b = x.const_f32_like(vec![1.0f32, 1.0, 1.0, 1.0], Shape::from_dims(&[1,4,1,1]));
-        let c = x.const_f32_like(vec![1.0f32, 1.0, 1.0, 1.0], Shape::from_dims(&[1,4,1,1]));
+        let b = x.const_f32_like(vec![1.0f32, 1.0, 1.0, 1.0], Shape::from_dims(&[1, 4, 1, 1]));
+        let c = x.const_f32_like(vec![1.0f32, 1.0, 1.0, 1.0], Shape::from_dims(&[1, 4, 1, 1]));
         let y = x.ssd_chunk_scan(&dt, &a, &b, &c, 2);
         let grads = y.inner.backward();
         let g_x_id = grads.get(x.graph_tensor()).expect("grad x").id();
-        let g_x = crate::pipelined_bridge::realize_one_as::<f32>(&x.inner.graph().clone(), g_x_id, &dev).expect("realize");
+        let g_x =
+            crate::pipelined_bridge::realize_one_as::<f32>(&x.inner.graph().clone(), g_x_id, &dev)
+                .expect("realize");
         // FD over x_0 (a chunk-0 input): its contribution to y_3/y_4 (chunk 1)
         // rides the cross-chunk gate exp(dt*a) — multi-step BPTT.
         let h = 1e-3f32;
-        let mut xp = x0.clone(); xp[0] += h;
-        let mut xm = x0.clone(); xm[0] -= h;
-        let fd0 = (fwd(&xp) - fwd(&xm)) / (2.0*h);
-        assert!((g_x[0] - fd0).abs() < 5e-2, "ssd_chunk_scan seqlen4 dL/dx_0: autograd {} vs FD {fd0}", g_x[0]);
-        assert!(g_x[0].abs() > 0.5, "cross-chunk-gate grad must be non-trivial, got {g_x:?}");
+        let mut xp = x0.clone();
+        xp[0] += h;
+        let mut xm = x0.clone();
+        xm[0] -= h;
+        let fd0 = (fwd(&xp) - fwd(&xm)) / (2.0 * h);
+        assert!(
+            (g_x[0] - fd0).abs() < 5e-2,
+            "ssd_chunk_scan seqlen4 dL/dx_0: autograd {} vs FD {fd0}",
+            g_x[0]
+        );
+        assert!(
+            g_x[0].abs() > 0.5,
+            "cross-chunk-gate grad must be non-trivial, got {g_x:?}"
+        );
     }
 
     // ---- Task 8: general-dimension SSM parity gate (C7 non-regression) ------
@@ -3067,13 +3513,17 @@ mod tests {
         let (batch, seqlen, dim, dstate) = (2usize, 3usize, 2usize, 2usize);
         // [batch, seqlen, dim] — all distinct, mixed signs.
         let u = LazyTensor::from_f32(
-            vec![0.5, -0.3, 1.0, 0.2, -0.5, 0.7, 0.25, 0.9, -0.8, 0.4, 0.6, -0.1],
+            vec![
+                0.5, -0.3, 1.0, 0.2, -0.5, 0.7, 0.25, 0.9, -0.8, 0.4, 0.6, -0.1,
+            ],
             Shape::from_dims(&[batch, seqlen, dim]),
             &dev,
         );
         // [batch, seqlen, dim] — positive (delta is a rate); all distinct.
         let delta = u.const_f32_like(
-            vec![0.1, 0.2, 0.3, 0.15, 0.25, 0.4, 0.35, 0.05, 0.2, 0.3, 0.12, 0.28],
+            vec![
+                0.1, 0.2, 0.3, 0.15, 0.25, 0.4, 0.35, 0.05, 0.2, 0.3, 0.12, 0.28,
+            ],
             Shape::from_dims(&[batch, seqlen, dim]),
         );
         // [dim, dstate] — negative (Mamba a<0 → stable gate in (0,1)); distinct.
@@ -3083,7 +3533,9 @@ mod tests {
         );
         // [batch, seqlen, dstate] — distinct.
         let b = u.const_f32_like(
-            vec![1.0, 0.5, 0.25, 0.75, 0.6, 0.2, 0.8, 0.4, 0.3, 0.9, 0.55, 0.15],
+            vec![
+                1.0, 0.5, 0.25, 0.75, 0.6, 0.2, 0.8, 0.4, 0.3, 0.9, 0.55, 0.15,
+            ],
             Shape::from_dims(&[batch, seqlen, dstate]),
         );
         // [batch, seqlen, dstate] — distinct.
@@ -3105,7 +3557,9 @@ mod tests {
         let scan_id = find_scan_terminal(&graph, roots[0], FusedOps::SELECTIVE_SCAN);
         let ys = {
             let mut g = graph.write().unwrap();
-            fuel_graph::scan::unroll_scan(&mut g, scan_id, seqlen).expect("unroll").0
+            fuel_graph::scan::unroll_scan(&mut g, scan_id, seqlen)
+                .expect("unroll")
+                .0
         };
         let ys_flat = crate::pipelined_bridge::realize_one_as::<f32>(&graph, ys, &dev)
             .expect("realize selective_scan unroll oracle on CPU");
@@ -3170,7 +3624,9 @@ mod tests {
         let scan_id = find_scan_terminal(&graph, roots[0], FusedOps::SELECTIVE_SCAN);
         let ys = {
             let mut g = graph.write().unwrap();
-            fuel_graph::scan::unroll_scan(&mut g, scan_id, seqlen).expect("unroll").0
+            fuel_graph::scan::unroll_scan(&mut g, scan_id, seqlen)
+                .expect("unroll")
+                .0
         };
         let ys_flat = crate::pipelined_bridge::realize_one_as::<f32>(&graph, ys, &dev)
             .expect("realize selective_scan softplus oracle on CPU");
@@ -3208,14 +3664,18 @@ mod tests {
             (2usize, 4usize, 2usize, 2usize, 2usize, 2usize);
         // Distinct value ramps (different base + slope per tensor) guarantee no
         // accidental symmetry; dt stays positive, a stays negative (stable gate).
-        let x_data: Vec<f32> =
-            (0..batch * seqlen * heads * head_dim).map(|i| 0.20 + 0.05 * i as f32).collect();
-        let dt_data: Vec<f32> =
-            (0..batch * seqlen * heads).map(|i| 0.10 + 0.04 * i as f32).collect();
-        let b_data: Vec<f32> =
-            (0..batch * seqlen * heads * state_dim).map(|i| 0.15 + 0.03 * i as f32).collect();
-        let c_data: Vec<f32> =
-            (0..batch * seqlen * heads * state_dim).map(|i| 0.25 + 0.035 * i as f32).collect();
+        let x_data: Vec<f32> = (0..batch * seqlen * heads * head_dim)
+            .map(|i| 0.20 + 0.05 * i as f32)
+            .collect();
+        let dt_data: Vec<f32> = (0..batch * seqlen * heads)
+            .map(|i| 0.10 + 0.04 * i as f32)
+            .collect();
+        let b_data: Vec<f32> = (0..batch * seqlen * heads * state_dim)
+            .map(|i| 0.15 + 0.03 * i as f32)
+            .collect();
+        let c_data: Vec<f32> = (0..batch * seqlen * heads * state_dim)
+            .map(|i| 0.25 + 0.035 * i as f32)
+            .collect();
         let x = LazyTensor::from_f32(
             x_data,
             Shape::from_dims(&[batch, seqlen, heads, head_dim]),
@@ -3239,7 +3699,9 @@ mod tests {
         let scan_id = find_scan_terminal(&graph, roots[0], FusedOps::SSD_CHUNK_SCAN);
         let ys = {
             let mut g = graph.write().unwrap();
-            fuel_graph::scan::unroll_scan(&mut g, scan_id, seqlen).expect("unroll").0
+            fuel_graph::scan::unroll_scan(&mut g, scan_id, seqlen)
+                .expect("unroll")
+                .0
         };
         let ys_flat = crate::pipelined_bridge::realize_one_as::<f32>(&graph, ys, &dev)
             .expect("realize ssd_chunk_scan unroll oracle on CPU");
@@ -3269,29 +3731,32 @@ mod tests {
     /// against the same numbers the fused CPU kernel produces.
     #[test]
     fn nf4_matmul_decompose_matches_kernel() {
-        use fuel_graph::registry::FusedOps;
         use fuel_graph::Op;
+        use fuel_graph::registry::FusedOps;
         let dev = Device::cpu();
         // n=2, k=4, block_size=2; w_packed [2, 2] U8, absmax [2, 2] F32.
         let weight = crate::nf4::nf4_from_bytes(
             vec![247_u8, 247, 127, 127],
             vec![1.0_f32, 2.0, 10.0, 20.0],
-            2, 4, 2, &dev,
+            2,
+            4,
+            2,
+            &dev,
         )
         .expect("nf4_from_bytes");
         let act = LazyTensor::from_graph_tensor(
-            weight.w_packed.graph_tensor().const_f32_like(
-                vec![1.0_f32, 2.0, 2.0, 4.0],
-                Shape::from_dims(&[1, 4]),
-            ),
+            weight
+                .w_packed
+                .graph_tensor()
+                .const_f32_like(vec![1.0_f32, 2.0, 2.0, 4.0], Shape::from_dims(&[1, 4])),
         );
         let y = weight.matmul(&act);
 
         // Decompose explicitly, then realize the primitive subgraph.
         let graph = y.inner.graph().clone();
         let id = y.inner.id();
-        let roots = fuel_graph::opt::RuleRegistry::lowering_only()
-            .optimize_to_fixpoint(&graph, &[id]);
+        let roots =
+            fuel_graph::opt::RuleRegistry::lowering_only().optimize_to_fixpoint(&graph, &[id]);
         assert_eq!(roots.len(), 1, "lowering should keep a single root");
 
         // Born-red discriminator: no Op::Fused(NF4_MATMUL) reachable from the
@@ -3362,10 +3827,7 @@ mod tests {
         let up = x.const_f32_like(up_data.clone(), shape.clone());
         let got = lower_realize_fused(
             &x,
-            fuel_graph::Op::Fused(
-                FusedOps::POWI_BACKWARD,
-                FusedOpParams::PowIBackward { exp },
-            ),
+            fuel_graph::Op::Fused(FusedOps::POWI_BACKWARD, FusedOpParams::PowIBackward { exp }),
             vec![x.inner.id(), up.inner.id()],
             shape,
         );
@@ -3377,7 +3839,10 @@ mod tests {
             .collect();
         assert_eq!(got.len(), expected.len());
         for (i, (&g, &e)) in got.iter().zip(&expected).enumerate() {
-            assert!((g - e).abs() < 1e-4, "powi_backward at {i}: got {g}, expected {e}");
+            assert!(
+                (g - e).abs() < 1e-4,
+                "powi_backward at {i}: got {g}, expected {e}"
+            );
         }
     }
 
@@ -3406,8 +3871,10 @@ mod tests {
             shape,
         );
         // functional affine: out = mul·x + add (scalars pre-cast to f32).
-        let expected: Vec<f32> =
-            x_data.iter().map(|&v| (mul as f32) * v + add as f32).collect();
+        let expected: Vec<f32> = x_data
+            .iter()
+            .map(|&v| (mul as f32) * v + add as f32)
+            .collect();
         assert_eq!(got.len(), expected.len());
         for (i, (&g, &e)) in got.iter().zip(&expected).enumerate() {
             assert_eq!(g, e, "inplace_affine at {i}: got {g}, expected {e}");
@@ -3444,13 +3911,18 @@ mod tests {
         // grad_x = s · (g − sum(g·s, last))
         let mut expected = vec![0.0f32; rows * cols];
         for r in 0..rows {
-            let dot: f32 = (0..cols).map(|c| g_data[r * cols + c] * s_data[r * cols + c]).sum();
+            let dot: f32 = (0..cols)
+                .map(|c| g_data[r * cols + c] * s_data[r * cols + c])
+                .sum();
             for c in 0..cols {
                 expected[r * cols + c] = s_data[r * cols + c] * (g_data[r * cols + c] - dot);
             }
         }
         for (i, (&gv, &ev)) in got.iter().zip(&expected).enumerate() {
-            assert!((gv - ev).abs() < 1e-5, "softmax_bwd at {i}: got {gv}, expected {ev}");
+            assert!(
+                (gv - ev).abs() < 1e-5,
+                "softmax_bwd at {i}: got {gv}, expected {ev}"
+            );
         }
     }
 
@@ -3481,14 +3953,19 @@ mod tests {
             let meansq: f32 = (0..cols).map(|c| x_data[r * cols + c].powi(2)).sum::<f32>() / n;
             let denom = meansq + eps as f32;
             let rrms = 1.0 / denom.sqrt();
-            let s: f32 = (0..cols).map(|c| g_data[r * cols + c] * x_data[r * cols + c]).sum();
+            let s: f32 = (0..cols)
+                .map(|c| g_data[r * cols + c] * x_data[r * cols + c])
+                .sum();
             for c in 0..cols {
                 let term = x_data[r * cols + c] * s / (n * denom);
                 expected[r * cols + c] = rrms * (g_data[r * cols + c] - term);
             }
         }
         for (i, (&gv, &ev)) in got.iter().zip(&expected).enumerate() {
-            assert!((gv - ev).abs() < 1e-4, "rms_norm_bwd at {i}: got {gv}, expected {ev}");
+            assert!(
+                (gv - ev).abs() < 1e-4,
+                "rms_norm_bwd at {i}: got {gv}, expected {ev}"
+            );
         }
     }
 
@@ -3517,19 +3994,29 @@ mod tests {
         let mut expected = vec![0.0f32; rows * cols];
         for r in 0..rows {
             let mean_x: f32 = (0..cols).map(|c| x_data[r * cols + c]).sum::<f32>() / n;
-            let var: f32 =
-                (0..cols).map(|c| (x_data[r * cols + c] - mean_x).powi(2)).sum::<f32>() / n;
+            let var: f32 = (0..cols)
+                .map(|c| (x_data[r * cols + c] - mean_x).powi(2))
+                .sum::<f32>()
+                / n;
             let istd = 1.0 / (var + eps as f32).sqrt();
-            let xhat: Vec<f32> = (0..cols).map(|c| (x_data[r * cols + c] - mean_x) * istd).collect();
+            let xhat: Vec<f32> = (0..cols)
+                .map(|c| (x_data[r * cols + c] - mean_x) * istd)
+                .collect();
             let mean_g: f32 = (0..cols).map(|c| g_data[r * cols + c]).sum::<f32>() / n;
-            let mean_gxh: f32 = (0..cols).map(|c| g_data[r * cols + c] * xhat[c]).sum::<f32>() / n;
+            let mean_gxh: f32 = (0..cols)
+                .map(|c| g_data[r * cols + c] * xhat[c])
+                .sum::<f32>()
+                / n;
             for c in 0..cols {
                 expected[r * cols + c] =
                     istd * (g_data[r * cols + c] - mean_g - xhat[c] * mean_gxh);
             }
         }
         for (i, (&gv, &ev)) in got.iter().zip(&expected).enumerate() {
-            assert!((gv - ev).abs() < 1e-4, "layer_norm_bwd at {i}: got {gv}, expected {ev}");
+            assert!(
+                (gv - ev).abs() < 1e-4,
+                "layer_norm_bwd at {i}: got {gv}, expected {ev}"
+            );
         }
     }
 
@@ -3556,7 +4043,10 @@ mod tests {
         // row0: max 3.0 tied 2× → 10/2 each; row1: max 2.0 unique → full 5.0.
         let expected = vec![0.0f32, 5.0, 5.0, 5.0, 0.0, 0.0];
         for (i, (&gv, &ev)) in got.iter().zip(&expected).enumerate() {
-            assert!((gv - ev).abs() < 1e-5, "reduce_max_bwd at {i}: got {gv}, expected {ev}");
+            assert!(
+                (gv - ev).abs() < 1e-5,
+                "reduce_max_bwd at {i}: got {gv}, expected {ev}"
+            );
         }
     }
 
@@ -3666,7 +4156,14 @@ mod tests {
             }
             let m = scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
             let mut sum = 0.0f32;
-            let e: Vec<f32> = scores.iter().map(|&s| { let x = (s - m).exp(); sum += x; x }).collect();
+            let e: Vec<f32> = scores
+                .iter()
+                .map(|&s| {
+                    let x = (s - m).exp();
+                    sum += x;
+                    x
+                })
+                .collect();
             for j in 0..sk {
                 p[i * sk + j] = e[j] / sum;
             }
@@ -3709,7 +4206,10 @@ mod tests {
         let check = |name: &str, got: &[f32], exp: &[f32]| {
             assert_eq!(got.len(), exp.len(), "{name} length");
             for (i, (&gv, &ev)) in got.iter().zip(exp).enumerate() {
-                assert!((gv - ev).abs() < 1e-4, "{name} at {i}: got {gv}, expected {ev}");
+                assert!(
+                    (gv - ev).abs() < 1e-4,
+                    "{name} at {i}: got {gv}, expected {ev}"
+                );
             }
         };
         check("dQ", &dq, &ref_dq);
@@ -3726,8 +4226,12 @@ mod tests {
         let scale = 1.0f32;
         // k_cache / v_cache: [num_blocks=3, block_size=2, Hkv=1, D=2]. Block 1
         // is unused (not in the block table) and holds sentinel 9s.
-        let kc = vec![1.0f32, 0.0, 0.0, 1.0, 9.0, 9.0, 9.0, 9.0, 1.0, 1.0, 2.0, 0.0];
-        let vc = vec![1.0f32, 2.0, 3.0, 4.0, 0.0, 0.0, 0.0, 0.0, 5.0, 6.0, 7.0, 8.0];
+        let kc = vec![
+            1.0f32, 0.0, 0.0, 1.0, 9.0, 9.0, 9.0, 9.0, 1.0, 1.0, 2.0, 0.0,
+        ];
+        let vc = vec![
+            1.0f32, 2.0, 3.0, 4.0, 0.0, 0.0, 0.0, 0.0, 5.0, 6.0, 7.0, 8.0,
+        ];
         let q_data = vec![0.5f32, 0.5]; // [1,1,1,2]
         let bt = vec![0u32, 2u32]; // block_table [1,2]: sequence uses blocks 0 and 2
         let cl = vec![3u32]; // context_lens [1]: only the first 3 keys are valid
@@ -3771,11 +4275,22 @@ mod tests {
         let mut scores = vec![0.0f32; kv_len];
         for j in 0..kv_len {
             let s = q_data[0] * k_seq[j][0] + q_data[1] * k_seq[j][1];
-            scores[j] = if j >= ctx { f32::NEG_INFINITY } else { scale * s };
+            scores[j] = if j >= ctx {
+                f32::NEG_INFINITY
+            } else {
+                scale * s
+            };
         }
         let m = scores.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
         let mut sum = 0.0f32;
-        let e: Vec<f32> = scores.iter().map(|&s| { let x = (s - m).exp(); sum += x; x }).collect();
+        let e: Vec<f32> = scores
+            .iter()
+            .map(|&s| {
+                let x = (s - m).exp();
+                sum += x;
+                x
+            })
+            .collect();
         let mut expected = vec![0.0f32; 2];
         for j in 0..kv_len {
             for l in 0..2 {
@@ -3783,7 +4298,10 @@ mod tests {
             }
         }
         for (i, (&gv, &ev)) in got.iter().zip(&expected).enumerate() {
-            assert!((gv - ev).abs() < 1e-4, "paged_attn at {i}: got {gv}, expected {ev}");
+            assert!(
+                (gv - ev).abs() < 1e-4,
+                "paged_attn at {i}: got {gv}, expected {ev}"
+            );
         }
     }
 
@@ -3839,8 +4357,11 @@ mod tests {
         let cuda_max = max_lazy.realize_f32_cuda(&cuda);
         for i in 0..4 {
             assert_eq!(
-                cpu_max[i].is_nan(), cuda_max[i].is_nan(),
-                "maximum[{i}] NaN-ness must match: cpu={}, cuda={}", cpu_max[i], cuda_max[i],
+                cpu_max[i].is_nan(),
+                cuda_max[i].is_nan(),
+                "maximum[{i}] NaN-ness must match: cpu={}, cuda={}",
+                cpu_max[i],
+                cuda_max[i],
             );
             if !cpu_max[i].is_nan() {
                 assert_eq!(cpu_max[i], cuda_max[i], "maximum[{i}]");
@@ -3852,8 +4373,11 @@ mod tests {
         let cuda_min = min_lazy.realize_f32_cuda(&cuda);
         for i in 0..4 {
             assert_eq!(
-                cpu_min[i].is_nan(), cuda_min[i].is_nan(),
-                "minimum[{i}] NaN-ness must match: cpu={}, cuda={}", cpu_min[i], cuda_min[i],
+                cpu_min[i].is_nan(),
+                cuda_min[i].is_nan(),
+                "minimum[{i}] NaN-ness must match: cpu={}, cuda={}",
+                cpu_min[i],
+                cuda_min[i],
             );
             if !cpu_min[i].is_nan() {
                 assert_eq!(cpu_min[i], cuda_min[i], "minimum[{i}]");
@@ -3905,8 +4429,11 @@ mod tests {
 
         for i in 0..3 {
             assert_eq!(
-                cpu_result[i].is_nan(), cuda_result[i].is_nan(),
-                "relu[{i}] NaN-ness must match: cpu={}, cuda={}", cpu_result[i], cuda_result[i],
+                cpu_result[i].is_nan(),
+                cuda_result[i].is_nan(),
+                "relu[{i}] NaN-ness must match: cpu={}, cuda={}",
+                cpu_result[i],
+                cuda_result[i],
             );
             if !cpu_result[i].is_nan() {
                 assert_eq!(cpu_result[i], cuda_result[i], "relu[{i}]");
@@ -3932,10 +4459,7 @@ mod tests {
         let cuda = c.realize_f32_cuda(&exe);
         assert_eq!(cpu.len(), cuda.len());
         for (i, (a, b)) in cpu.iter().zip(cuda.iter()).enumerate() {
-            assert!(
-                (a - b).abs() < 1e-3,
-                "matmul[{i}]: cpu={a}, cuda={b}",
-            );
+            assert!((a - b).abs() < 1e-3, "matmul[{i}]: cpu={a}, cuda={b}",);
         }
     }
 
@@ -4020,11 +4544,7 @@ mod tests {
         let data: Vec<f32> = (0..n * last)
             .map(|i| ((i as f32) * 0.13).sin() * 2.0 - 0.7)
             .collect();
-        let x = LazyTensor::from_f32(
-            data,
-            Shape::from_dims(&[n, last]),
-            &Device::cpu(),
-        );
+        let x = LazyTensor::from_f32(data, Shape::from_dims(&[n, last]), &Device::cpu());
         let y = x.softmax_last_dim().unwrap();
 
         // CPU baseline: fused SoftmaxLastDim through the standard
@@ -4041,15 +4561,16 @@ mod tests {
         let remapped = registry.optimize_to_fixpoint(&graph, &[y.inner.id()]);
         let dev = fuel_cuda_backend::CudaDevice::new(0).unwrap();
         let fc_device: crate::Device = dev.clone().into();
-        let cuda = crate::pipelined_bridge::realize_one_as::<f32>(
-            &graph, remapped[0], &fc_device,
-        ).expect("realize lowered softmax on CUDA");
+        let cuda = crate::pipelined_bridge::realize_one_as::<f32>(&graph, remapped[0], &fc_device)
+            .expect("realize lowered softmax on CUDA");
 
         assert_eq!(cpu.len(), cuda.len());
         let mut max_abs_err = 0.0_f32;
         for (i, (&a, &b)) in cpu.iter().zip(cuda.iter()).enumerate() {
             let err = (a - b).abs();
-            if err > max_abs_err { max_abs_err = err; }
+            if err > max_abs_err {
+                max_abs_err = err;
+            }
             assert!(
                 err < 1e-5,
                 "lowered softmax[{i}]: cpu={a} (fused), cuda={b} (composed), err={err}",
@@ -4061,7 +4582,11 @@ mod tests {
     #[test]
     #[cfg(feature = "cuda")]
     fn cuda_executor_matches_cpu_on_concat_slice() {
-        let a = LazyTensor::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[2, 2]), &Device::cpu());
+        let a = LazyTensor::from_f32(
+            vec![1.0, 2.0, 3.0, 4.0],
+            Shape::from_dims(&[2, 2]),
+            &Device::cpu(),
+        );
         let b = a.const_f32_like(vec![5.0, 6.0, 7.0, 8.0], Shape::from_dims(&[2, 2]));
         let cat = a.concat(&b, 1).unwrap(); // [2, 4]
         let sliced = cat.slice(1, 1, 2).unwrap(); // [2, 2]
@@ -4118,14 +4643,22 @@ mod tests {
         // Fake weights (just identities for simplicity — makes the
         // test easy to verify output finiteness without needing to
         // hand-compute).
-        let w_q =
-            x.const_f32_like(identity_matrix(d_model), Shape::from_dims(&[d_model, d_model]));
-        let w_k =
-            x.const_f32_like(identity_matrix(d_model), Shape::from_dims(&[d_model, d_model]));
-        let w_v =
-            x.const_f32_like(identity_matrix(d_model), Shape::from_dims(&[d_model, d_model]));
-        let w_o =
-            x.const_f32_like(identity_matrix(d_model), Shape::from_dims(&[d_model, d_model]));
+        let w_q = x.const_f32_like(
+            identity_matrix(d_model),
+            Shape::from_dims(&[d_model, d_model]),
+        );
+        let w_k = x.const_f32_like(
+            identity_matrix(d_model),
+            Shape::from_dims(&[d_model, d_model]),
+        );
+        let w_v = x.const_f32_like(
+            identity_matrix(d_model),
+            Shape::from_dims(&[d_model, d_model]),
+        );
+        let w_o = x.const_f32_like(
+            identity_matrix(d_model),
+            Shape::from_dims(&[d_model, d_model]),
+        );
 
         // RmsNorm → Q/K/V projection (auto-broadcasting matmul).
         let x_norm = x.rms_norm_last_dim(1e-6).unwrap();
@@ -4135,14 +4668,20 @@ mod tests {
 
         // Split heads: [1, seq, 8] → [1, seq, 2, 4] → [1, 2, seq, 4]
         let q_h = q
-            .reshape(Shape::from_dims(&[1, seq, num_heads, d_head])).unwrap()
-            .permute([0, 2, 1, 3_usize]).unwrap();
+            .reshape(Shape::from_dims(&[1, seq, num_heads, d_head]))
+            .unwrap()
+            .permute([0, 2, 1, 3_usize])
+            .unwrap();
         let k_h = k
-            .reshape(Shape::from_dims(&[1, seq, num_heads, d_head])).unwrap()
-            .permute([0, 2, 1, 3_usize]).unwrap();
+            .reshape(Shape::from_dims(&[1, seq, num_heads, d_head]))
+            .unwrap()
+            .permute([0, 2, 1, 3_usize])
+            .unwrap();
         let v_h = v
-            .reshape(Shape::from_dims(&[1, seq, num_heads, d_head])).unwrap()
-            .permute([0, 2, 1, 3_usize]).unwrap();
+            .reshape(Shape::from_dims(&[1, seq, num_heads, d_head]))
+            .unwrap()
+            .permute([0, 2, 1, 3_usize])
+            .unwrap();
 
         // RoPE on Q and K.
         let q_r = q_h.rope(10000.0, 0).unwrap();
@@ -4156,8 +4695,10 @@ mod tests {
 
         // Merge heads + output projection.
         let merged = attn_v
-            .permute([0, 2, 1, 3_usize]).unwrap()
-            .reshape(Shape::from_dims(&[1, seq, d_model])).unwrap();
+            .permute([0, 2, 1, 3_usize])
+            .unwrap()
+            .reshape(Shape::from_dims(&[1, seq, d_model]))
+            .unwrap();
         let attn_out = merged.matmul(&w_o).unwrap();
         let h = x.add(&attn_out).unwrap();
 
@@ -4165,7 +4706,10 @@ mod tests {
         let result = h.realize_f32();
         assert_eq!(result.len(), seq * d_model);
         for &v in &result {
-            assert!(v.is_finite(), "bridge-based LLaMA block output non-finite: {v}");
+            assert!(
+                v.is_finite(),
+                "bridge-based LLaMA block output non-finite: {v}"
+            );
         }
     }
 
@@ -4184,11 +4728,7 @@ mod tests {
 // `impl` for readability.
 impl LazyTensor {
     /// Build a second const U32 (index) tensor on the same graph.
-    pub fn const_u32_like(
-        &self,
-        data: impl Into<Arc<[u32]>>,
-        shape: impl Into<Shape>,
-    ) -> Self {
+    pub fn const_u32_like(&self, data: impl Into<Arc<[u32]>>, shape: impl Into<Shape>) -> Self {
         Self {
             inner: self.inner.const_u32_like(data, shape),
         }
@@ -4204,11 +4744,7 @@ impl LazyTensor {
     /// into a per-step graph — the graph's legacy storage_map only
     /// holds `fuel_backend_contract::Storage`, so direct binding isn't
     /// possible without a type conversion.
-    pub fn const_placeholder_like(
-        &self,
-        shape: impl Into<Shape>,
-        dtype: fuel_ir::DType,
-    ) -> Self {
+    pub fn const_placeholder_like(&self, shape: impl Into<Shape>, dtype: fuel_ir::DType) -> Self {
         Self {
             inner: self.inner.const_placeholder_like(shape, dtype),
         }
@@ -4225,12 +4761,10 @@ impl LazyTensor {
     ///
     /// **Returns `Result`**: rank/shape/range mismatches surface as a
     /// typed error.
-    pub fn write_slice(
-        &self,
-        source: &Self,
-        ranges: Vec<(usize, usize)>,
-    ) -> crate::Result<Self> {
-        let inner = self.inner.write_slice(&source.inner, ranges)
+    pub fn write_slice(&self, source: &Self, ranges: Vec<(usize, usize)>) -> crate::Result<Self> {
+        let inner = self
+            .inner
+            .write_slice(&source.inner, ranges)
             .map_err(crate::Error::from)?;
         Ok(Self { inner })
     }
@@ -4249,7 +4783,8 @@ impl LazyTensor {
         dyn_axis: usize,
         offset: fuel_ir::DynScalar,
     ) -> crate::Result<Self> {
-        let inner = self.inner
+        let inner = self
+            .inner
             .write_slice_dyn(&source.inner, ranges, dyn_axis, offset)
             .map_err(crate::Error::from)?;
         Ok(Self { inner })
@@ -4277,9 +4812,10 @@ impl LazyTensor {
         modulus: usize,
         ranges: Vec<(usize, usize)>,
     ) -> crate::Result<Self> {
-        let inner = self.inner.write_slice_rotating(
-            &source.inner, &position.inner, axis, modulus, ranges,
-        ).map_err(crate::Error::from)?;
+        let inner = self
+            .inner
+            .write_slice_rotating(&source.inner, &position.inner, axis, modulus, ranges)
+            .map_err(crate::Error::from)?;
         Ok(Self { inner })
     }
 
@@ -4302,9 +4838,10 @@ impl LazyTensor {
         axis: usize,
         ranges: Vec<(usize, usize)>,
     ) -> crate::Result<Self> {
-        let inner = self.inner.write_slice_doff(
-            &source.inner, &offset.inner, axis, ranges,
-        ).map_err(crate::Error::from)?;
+        let inner = self
+            .inner
+            .write_slice_doff(&source.inner, &offset.inner, axis, ranges)
+            .map_err(crate::Error::from)?;
         Ok(Self { inner })
     }
 
@@ -4326,9 +4863,9 @@ impl LazyTensor {
         groups: usize,
     ) -> std::result::Result<Self, fuel_ir::Error> {
         if groups < 1 {
-            return Err(fuel_ir::Error::Msg(format!(
-                "conv2d: groups must be >= 1, got {groups}",
-            )).bt());
+            return Err(
+                fuel_ir::Error::Msg(format!("conv2d: groups must be >= 1, got {groups}",)).bt(),
+            );
         }
         let x_shape = self.inner.shape();
         let x_dims = x_shape.dims();
@@ -4337,12 +4874,14 @@ impl LazyTensor {
         if x_dims.len() != 4 {
             return Err(fuel_ir::Error::Msg(format!(
                 "conv2d: x must be rank 4 [N, Cin, H, W], got {x_dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         if w_dims.len() != 4 {
             return Err(fuel_ir::Error::Msg(format!(
                 "conv2d: weight must be rank 4 [Cout, Cin/groups, Kh, Kw], got {w_dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         let (cin, h_in, w_in) = (x_dims[1], x_dims[2], x_dims[3]);
         let (cout, cin_per_g, kh, kw) = (w_dims[0], w_dims[1], w_dims[2], w_dims[3]);
@@ -4350,12 +4889,14 @@ impl LazyTensor {
             return Err(fuel_ir::Error::Msg(format!(
                 "conv2d: x has {cin} in-channels but weight expects {} ({cin_per_g}*{groups})",
                 cin_per_g * groups,
-            )).bt());
+            ))
+            .bt());
         }
         if cout % groups != 0 {
             return Err(fuel_ir::Error::Msg(format!(
                 "conv2d: Cout={cout} must be divisible by groups={groups}",
-            )).bt());
+            ))
+            .bt());
         }
         if let Some(b) = bias {
             let b_shape = b.inner.shape();
@@ -4363,7 +4904,8 @@ impl LazyTensor {
             if b_dims != [cout] {
                 return Err(fuel_ir::Error::Msg(format!(
                     "conv2d: bias shape {b_dims:?} must match [Cout={cout}]",
-                )).bt());
+                ))
+                .bt());
             }
         }
         let (stride_h, stride_w) = stride;
@@ -4371,14 +4913,16 @@ impl LazyTensor {
         if stride_h < 1 || stride_w < 1 {
             return Err(fuel_ir::Error::Msg(format!(
                 "conv2d: stride must be >= 1, got ({stride_h}, {stride_w})",
-            )).bt());
+            ))
+            .bt());
         }
         let h_padded = h_in + 2 * pad_h;
         let w_padded = w_in + 2 * pad_w;
         if h_padded < kh || w_padded < kw {
             return Err(fuel_ir::Error::Msg(format!(
                 "conv2d: padded input ({h_padded}x{w_padded}) smaller than kernel ({kh}x{kw})",
-            )).bt());
+            ))
+            .bt());
         }
         Ok(Self {
             inner: self.inner.conv2d(
@@ -4420,45 +4964,53 @@ impl LazyTensor {
         if q_dims.len() != 4 {
             return Err(fuel_ir::Error::Msg(format!(
                 "flash_attn: q must be rank 4 [B, Hq, Sq, D], got {q_dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         if k_dims.len() != 4 {
             return Err(fuel_ir::Error::Msg(format!(
                 "flash_attn: k must be rank 4 [B, Hkv, Sk, D], got {k_dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         if v_dims.len() != 4 {
             return Err(fuel_ir::Error::Msg(format!(
                 "flash_attn: v must be rank 4 [B, Hkv, Sk, D], got {v_dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         let (b, hq, _sq, d) = (q_dims[0], q_dims[1], q_dims[2], q_dims[3]);
         let (bk, hkv, sk, dk) = (k_dims[0], k_dims[1], k_dims[2], k_dims[3]);
         let (bv, hkv_v, sk_v, dv) = (v_dims[0], v_dims[1], v_dims[2], v_dims[3]);
         if b != bk || b != bv {
-            return Err(fuel_ir::Error::Msg(format!(
-                "flash_attn: B mismatch q={b} k={bk} v={bv}",
-            )).bt());
+            return Err(fuel_ir::Error::Msg(
+                format!("flash_attn: B mismatch q={b} k={bk} v={bv}",),
+            )
+            .bt());
         }
         if hkv != hkv_v {
             return Err(fuel_ir::Error::Msg(format!(
                 "flash_attn: Hkv mismatch k={hkv} vs v={hkv_v}",
-            )).bt());
+            ))
+            .bt());
         }
         if sk != sk_v {
-            return Err(fuel_ir::Error::Msg(format!(
-                "flash_attn: Sk mismatch k={sk} vs v={sk_v}",
-            )).bt());
+            return Err(fuel_ir::Error::Msg(
+                format!("flash_attn: Sk mismatch k={sk} vs v={sk_v}",),
+            )
+            .bt());
         }
         if d != dk || d != dv {
             return Err(fuel_ir::Error::Msg(format!(
                 "flash_attn: head_dim mismatch q={d} k={dk} v={dv}",
-            )).bt());
+            ))
+            .bt());
         }
         if hkv == 0 || hq % hkv != 0 {
             return Err(fuel_ir::Error::Msg(format!(
                 "flash_attn: Hq={hq} must be a positive multiple of Hkv={hkv}",
-            )).bt());
+            ))
+            .bt());
         }
         if let Some(a) = alibi_slopes {
             let a_shape = a.inner.shape();
@@ -4466,14 +5018,20 @@ impl LazyTensor {
             if a_dims != [hq] {
                 return Err(fuel_ir::Error::Msg(format!(
                     "flash_attn: alibi_slopes must be [Hq={hq}], got {a_dims:?}",
-                )).bt());
+                ))
+                .bt());
             }
         }
         Ok(Self {
             inner: self.inner.flash_attn(
-                &k.inner, &v.inner,
+                &k.inner,
+                &v.inner,
                 alibi_slopes.map(|t| &t.inner),
-                softmax_scale, causal, window_size_left, window_size_right, softcap,
+                softmax_scale,
+                causal,
+                window_size_left,
+                window_size_right,
+                softcap,
             ),
         })
     }
@@ -4499,9 +5057,7 @@ impl LazyTensor {
         softcap: Option<f32>,
     ) -> std::result::Result<Self, fuel_ir::Error> {
         if block_size < 1 {
-            return Err(fuel_ir::Error::Msg(
-                "paged_attn: block_size must be >= 1".into(),
-            ).bt());
+            return Err(fuel_ir::Error::Msg("paged_attn: block_size must be >= 1".into()).bt());
         }
         let q_shape = self.inner.shape();
         let q_dims = q_shape.dims();
@@ -4516,7 +5072,8 @@ impl LazyTensor {
         if q_dims.len() != 4 {
             return Err(fuel_ir::Error::Msg(format!(
                 "paged_attn: q must be rank 4 [B, Hq, Sq, D], got {q_dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         if kc_dims.len() != 4 {
             return Err(fuel_ir::Error::Msg(format!(
@@ -4531,59 +5088,78 @@ impl LazyTensor {
         if bt_dims.len() != 2 {
             return Err(fuel_ir::Error::Msg(format!(
                 "paged_attn: block_table must be rank 2 [B, max_blocks], got {bt_dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         if cl_dims.len() != 1 {
             return Err(fuel_ir::Error::Msg(format!(
                 "paged_attn: context_lens must be rank 1 [B], got {cl_dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         let (b, hq, _sq, d) = (q_dims[0], q_dims[1], q_dims[2], q_dims[3]);
         if kc_dims[1] != block_size {
             return Err(fuel_ir::Error::Msg(format!(
-                "paged_attn: k_cache block dim {} != block_size {block_size}", kc_dims[1],
-            )).bt());
+                "paged_attn: k_cache block dim {} != block_size {block_size}",
+                kc_dims[1],
+            ))
+            .bt());
         }
         if vc_dims[1] != block_size {
             return Err(fuel_ir::Error::Msg(format!(
-                "paged_attn: v_cache block dim {} != block_size {block_size}", vc_dims[1],
-            )).bt());
+                "paged_attn: v_cache block dim {} != block_size {block_size}",
+                vc_dims[1],
+            ))
+            .bt());
         }
         let hkv = kc_dims[2];
         if vc_dims[2] != hkv {
             return Err(fuel_ir::Error::Msg(format!(
-                "paged_attn: Hkv mismatch k_cache={hkv} vs v_cache={}", vc_dims[2],
-            )).bt());
+                "paged_attn: Hkv mismatch k_cache={hkv} vs v_cache={}",
+                vc_dims[2],
+            ))
+            .bt());
         }
         if kc_dims[3] != d || vc_dims[3] != d {
             return Err(fuel_ir::Error::Msg(format!(
-                "paged_attn: D mismatch q={d} k={} v={}", kc_dims[3], vc_dims[3],
-            )).bt());
+                "paged_attn: D mismatch q={d} k={} v={}",
+                kc_dims[3], vc_dims[3],
+            ))
+            .bt());
         }
         if hkv == 0 || hq % hkv != 0 {
             return Err(fuel_ir::Error::Msg(format!(
                 "paged_attn: Hq={hq} must be a positive multiple of Hkv={hkv}",
-            )).bt());
+            ))
+            .bt());
         }
         if bt_dims[0] != b {
             return Err(fuel_ir::Error::Msg(format!(
-                "paged_attn: block_table batch dim {} != B={b}", bt_dims[0],
-            )).bt());
+                "paged_attn: block_table batch dim {} != B={b}",
+                bt_dims[0],
+            ))
+            .bt());
         }
         if cl_dims[0] != b {
             return Err(fuel_ir::Error::Msg(format!(
-                "paged_attn: context_lens len {} != B={b}", cl_dims[0],
-            )).bt());
+                "paged_attn: context_lens len {} != B={b}",
+                cl_dims[0],
+            ))
+            .bt());
         }
         if block_table.inner.dtype() != fuel_ir::DType::U32 {
             return Err(fuel_ir::Error::Msg(format!(
-                "paged_attn: block_table must be U32, got {:?}", block_table.inner.dtype(),
-            )).bt());
+                "paged_attn: block_table must be U32, got {:?}",
+                block_table.inner.dtype(),
+            ))
+            .bt());
         }
         if context_lens.inner.dtype() != fuel_ir::DType::U32 {
             return Err(fuel_ir::Error::Msg(format!(
-                "paged_attn: context_lens must be U32, got {:?}", context_lens.inner.dtype(),
-            )).bt());
+                "paged_attn: context_lens must be U32, got {:?}",
+                context_lens.inner.dtype(),
+            ))
+            .bt());
         }
         if let Some(a) = alibi_slopes {
             let a_shape = a.inner.shape();
@@ -4591,15 +5167,20 @@ impl LazyTensor {
             if a_dims != [hq] {
                 return Err(fuel_ir::Error::Msg(format!(
                     "paged_attn: alibi_slopes must be [Hq={hq}], got {a_dims:?}",
-                )).bt());
+                ))
+                .bt());
             }
         }
         Ok(Self {
             inner: self.inner.paged_attn(
-                &k_cache.inner, &v_cache.inner,
-                &block_table.inner, &context_lens.inner,
+                &k_cache.inner,
+                &v_cache.inner,
+                &block_table.inner,
+                &context_lens.inner,
                 alibi_slopes.map(|t| &t.inner),
-                softmax_scale, block_size, softcap,
+                softmax_scale,
+                block_size,
+                softcap,
             ),
         })
     }
@@ -4624,7 +5205,8 @@ impl LazyTensor {
         if groups < 1 {
             return Err(fuel_ir::Error::Msg(format!(
                 "conv_transpose2d: groups must be >= 1, got {groups}",
-            )).bt());
+            ))
+            .bt());
         }
         let x_shape = self.inner.shape();
         let x_dims = x_shape.dims();
@@ -4633,7 +5215,8 @@ impl LazyTensor {
         if x_dims.len() != 4 {
             return Err(fuel_ir::Error::Msg(format!(
                 "conv_transpose2d: x must be rank 4 [N, Cin, H, W], got {x_dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         if w_dims.len() != 4 {
             return Err(fuel_ir::Error::Msg(format!(
@@ -4645,12 +5228,14 @@ impl LazyTensor {
         if cin != cin_w {
             return Err(fuel_ir::Error::Msg(format!(
                 "conv_transpose2d: x has {cin} in-channels but weight has {cin_w}",
-            )).bt());
+            ))
+            .bt());
         }
         if cin % groups != 0 {
             return Err(fuel_ir::Error::Msg(format!(
                 "conv_transpose2d: Cin={cin} must be divisible by groups={groups}",
-            )).bt());
+            ))
+            .bt());
         }
         let (stride_h, stride_w) = stride;
         let (pad_h, pad_w) = padding;
@@ -4659,12 +5244,14 @@ impl LazyTensor {
         if stride_h < 1 || stride_w < 1 {
             return Err(fuel_ir::Error::Msg(format!(
                 "conv_transpose2d: stride must be >= 1, got ({stride_h}, {stride_w})",
-            )).bt());
+            ))
+            .bt());
         }
         if dil_h < 1 || dil_w < 1 {
             return Err(fuel_ir::Error::Msg(format!(
                 "conv_transpose2d: dilation must be >= 1, got ({dil_h}, {dil_w})",
-            )).bt());
+            ))
+            .bt());
         }
         let h_out = h_in.saturating_sub(1) * stride_h + dil_h * (kh - 1) + out_pad_h + 1;
         let w_out = w_in.saturating_sub(1) * stride_w + dil_w * (kw - 1) + out_pad_w + 1;
@@ -4677,7 +5264,11 @@ impl LazyTensor {
         Ok(Self {
             inner: self.inner.conv_transpose2d(
                 &weight.inner,
-                stride, padding, output_padding, dilation, groups,
+                stride,
+                padding,
+                output_padding,
+                dilation,
+                groups,
             ),
         })
     }
@@ -4707,7 +5298,8 @@ impl LazyTensor {
         if groups < 1 {
             return Err(fuel_ir::Error::Msg(format!(
                 "conv_transpose1d: groups must be >= 1, got {groups}",
-            )).bt());
+            ))
+            .bt());
         }
         let x_shape = self.inner.shape();
         let x_dims = x_shape.dims();
@@ -4716,38 +5308,49 @@ impl LazyTensor {
         if x_dims.len() != 3 {
             return Err(fuel_ir::Error::Msg(format!(
                 "conv_transpose1d: x must be rank 3 [N, Cin, Lin], got {x_dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         if w_dims.len() != 3 {
             return Err(fuel_ir::Error::Msg(format!(
                 "conv_transpose1d: weight must be rank 3 [Cin, Cout/groups, K], got {w_dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         if stride < 1 {
             return Err(fuel_ir::Error::Msg(format!(
                 "conv_transpose1d: stride must be >= 1, got {stride}",
-            )).bt());
+            ))
+            .bt());
         }
         if dilation < 1 {
             return Err(fuel_ir::Error::Msg(format!(
                 "conv_transpose1d: dilation must be >= 1, got {dilation}",
-            )).bt());
+            ))
+            .bt());
         }
         let cin = x_dims[1];
         let cin_w = w_dims[0];
         if cin != cin_w {
             return Err(fuel_ir::Error::Msg(format!(
                 "conv_transpose1d: x has {cin} in-channels but weight has {cin_w}",
-            )).bt());
+            ))
+            .bt());
         }
         if cin % groups != 0 {
             return Err(fuel_ir::Error::Msg(format!(
                 "conv_transpose1d: Cin={cin} must be divisible by groups={groups}",
-            )).bt());
+            ))
+            .bt());
         }
         Ok(Self {
             inner: self.inner.conv_transpose1d(
-                &weight.inner, stride, padding, output_padding, dilation, groups,
+                &weight.inner,
+                stride,
+                padding,
+                output_padding,
+                dilation,
+                groups,
             ),
         })
     }
@@ -4770,7 +5373,9 @@ impl LazyTensor {
     pub fn unsqueeze<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index_plus_one(&shape, "unsqueeze")?;
-        Ok(Self { inner: self.inner.try_unsqueeze(dim)? })
+        Ok(Self {
+            inner: self.inner.try_unsqueeze(dim)?,
+        })
     }
 
     // ---- triangular masking (canonical attention masks) ----
@@ -4778,20 +5383,26 @@ impl LazyTensor {
     /// Upper-triangular mask along the last two dims. `diagonal = 0`
     /// keeps the main diagonal and above; positive shifts higher.
     pub fn triu(&self, diagonal: i64) -> std::result::Result<Self, fuel_ir::Error> {
-        Ok(Self { inner: self.inner.triu(diagonal)? })
+        Ok(Self {
+            inner: self.inner.triu(diagonal)?,
+        })
     }
 
     /// Lower-triangular mask along the last two dims. `tril(0)` is the
     /// canonical causal-attention mask.
     pub fn tril(&self, diagonal: i64) -> std::result::Result<Self, fuel_ir::Error> {
-        Ok(Self { inner: self.inner.tril(diagonal)? })
+        Ok(Self {
+            inner: self.inner.tril(diagonal)?,
+        })
     }
 
     // ---- additional reductions / activations ----
 
     /// `log(softmax(self))` along the last dim, fused into one op.
     pub fn log_softmax_last_dim(&self) -> std::result::Result<Self, fuel_ir::Error> {
-        Ok(Self { inner: self.inner.log_softmax_last_dim()? })
+        Ok(Self {
+            inner: self.inner.log_softmax_last_dim()?,
+        })
     }
 
     /// Numerically-stable softmax along an arbitrary axis. Accepts any
@@ -4839,7 +5450,9 @@ impl LazyTensor {
     pub fn argmin_dim<D: Dim>(&self, dim: D) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "argmin_dim")?;
-        Ok(Self { inner: self.inner.argmin_dim(dim) })
+        Ok(Self {
+            inner: self.inner.argmin_dim(dim),
+        })
     }
 
     // ---- masking / scatter ----
@@ -4852,7 +5465,9 @@ impl LazyTensor {
         mask: &Self,
         value: fuel_ir::Scalar,
     ) -> std::result::Result<Self, fuel_ir::Error> {
-        Ok(Self { inner: self.inner.masked_fill(&mask.inner, value)? })
+        Ok(Self {
+            inner: self.inner.masked_fill(&mask.inner, value)?,
+        })
     }
 
     /// `self + scatter(indices, src, dim=dim)` — accumulate `src` rows
@@ -4860,19 +5475,28 @@ impl LazyTensor {
     /// U32 with length equal to `src.dims()[dim]`. Accepts any [`Dim`].
     /// Dim bounds / index dtype / shape / dtype-parity mismatches
     /// surface as typed errors at build time.
-    pub fn index_add<D: Dim>(&self, dim: D, indices: &Self, src: &Self) -> std::result::Result<Self, fuel_ir::Error> {
+    pub fn index_add<D: Dim>(
+        &self,
+        dim: D,
+        indices: &Self,
+        src: &Self,
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "index_add")?;
         if indices.inner.dtype() != fuel_ir::DType::U32 {
             return Err(fuel_ir::Error::Msg(format!(
-                "index_add: index must be U32, got {:?}", indices.inner.dtype(),
-            )).bt());
+                "index_add: index must be U32, got {:?}",
+                indices.inner.dtype(),
+            ))
+            .bt());
         }
         if self.inner.dtype() != src.inner.dtype() {
             return Err(fuel_ir::Error::Msg(format!(
                 "index_add: base and src dtypes must match, got {:?} vs {:?}",
-                self.inner.dtype(), src.inner.dtype(),
-            )).bt());
+                self.inner.dtype(),
+                src.inner.dtype(),
+            ))
+            .bt());
         }
         let base_dims = shape.dims();
         let src_shape = src.inner.shape();
@@ -4880,52 +5504,71 @@ impl LazyTensor {
         if base_dims.len() != src_dims.len() {
             return Err(fuel_ir::Error::Msg(format!(
                 "index_add: base and src must have the same rank, got {} vs {}",
-                base_dims.len(), src_dims.len(),
-            )).bt());
+                base_dims.len(),
+                src_dims.len(),
+            ))
+            .bt());
         }
         let idx_shape = indices.inner.shape();
         let idx_dims = idx_shape.dims();
         if idx_dims.len() != 1 {
             return Err(fuel_ir::Error::Msg(format!(
                 "index_add: index must be rank 1, got {idx_dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         if src_dims[dim] != idx_dims[0] {
             return Err(fuel_ir::Error::Msg(format!(
                 "index_add: src dim {dim} ({}) must match index length ({})",
                 src_dims[dim], idx_dims[0],
-            )).bt());
+            ))
+            .bt());
         }
-        Ok(Self { inner: self.inner.index_add(dim, &indices.inner, &src.inner) })
+        Ok(Self {
+            inner: self.inner.index_add(dim, &indices.inner, &src.inner),
+        })
     }
 
     /// Functional inverse of [`Self::gather`]. Accumulates `src` into
     /// `self` at positions given by `indices` (substituted at `dim`).
     /// Accepts any [`Dim`]. Dim bounds / index dtype / shape / dtype-
     /// parity mismatches surface as typed errors at build time.
-    pub fn scatter_add<D: Dim>(&self, dim: D, indices: &Self, src: &Self) -> std::result::Result<Self, fuel_ir::Error> {
+    pub fn scatter_add<D: Dim>(
+        &self,
+        dim: D,
+        indices: &Self,
+        src: &Self,
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "scatter_add")?;
         if indices.inner.dtype() != fuel_ir::DType::U32 {
             return Err(fuel_ir::Error::Msg(format!(
-                "scatter_add: index must be U32, got {:?}", indices.inner.dtype(),
-            )).bt());
+                "scatter_add: index must be U32, got {:?}",
+                indices.inner.dtype(),
+            ))
+            .bt());
         }
         if self.inner.dtype() != src.inner.dtype() {
             return Err(fuel_ir::Error::Msg(format!(
                 "scatter_add: base and src dtypes must match, got {:?} vs {:?}",
-                self.inner.dtype(), src.inner.dtype(),
-            )).bt());
+                self.inner.dtype(),
+                src.inner.dtype(),
+            ))
+            .bt());
         }
         let idx_shape = indices.inner.shape();
         let src_shape = src.inner.shape();
         if idx_shape.dims() != src_shape.dims() {
             return Err(fuel_ir::Error::Msg(format!(
                 "scatter_add: index and src must have the same shape, got {:?} vs {:?}",
-                idx_shape.dims(), src_shape.dims(),
-            )).bt());
+                idx_shape.dims(),
+                src_shape.dims(),
+            ))
+            .bt());
         }
-        Ok(Self { inner: self.inner.scatter_add(dim, &indices.inner, &src.inner) })
+        Ok(Self {
+            inner: self.inner.scatter_add(dim, &indices.inner, &src.inner),
+        })
     }
 
     // ---- in-place activations (Phase 4-5 infrastructure, now surfaced) ----
@@ -4938,59 +5581,67 @@ impl LazyTensor {
     /// In-place `max(0, self)`. See [`Self::relu`] for the functional
     /// variant.
     pub fn relu_inplace(&self) -> Self {
-        Self { inner: self.inner.relu_inplace() }
+        Self {
+            inner: self.inner.relu_inplace(),
+        }
     }
 
     /// In-place `self * sigmoid(self)`. See [`Self::silu`] for the
     /// functional variant.
     pub fn silu_inplace(&self) -> Self {
-        Self { inner: self.inner.silu_inplace() }
+        Self {
+            inner: self.inner.silu_inplace(),
+        }
     }
 
     /// In-place tanh-approximation GELU. See [`Self::gelu`] for the
     /// functional variant.
     pub fn gelu_inplace(&self) -> Self {
-        Self { inner: self.inner.gelu_inplace() }
+        Self {
+            inner: self.inner.gelu_inplace(),
+        }
     }
 
     /// In-place `tanh(self)`. See [`Self::tanh`] for the functional
     /// variant.
     pub fn tanh_inplace(&self) -> Self {
-        Self { inner: self.inner.tanh_inplace() }
+        Self {
+            inner: self.inner.tanh_inplace(),
+        }
     }
 
     /// In-place `sigmoid(self)`. See [`Self::sigmoid`] for the
     /// functional variant.
     pub fn sigmoid_inplace(&self) -> Self {
-        Self { inner: self.inner.sigmoid_inplace() }
+        Self {
+            inner: self.inner.sigmoid_inplace(),
+        }
     }
 
     /// In-place `self = mul · self + add`. Single fused-op equivalent
     /// of `self.mul_scalar(mul).add_scalar(add)` plus reassignment.
     pub fn affine_inplace(&self, mul: f64, add: f64) -> Self {
-        Self { inner: self.inner.affine_inplace(mul, add) }
+        Self {
+            inner: self.inner.affine_inplace(mul, add),
+        }
     }
 
     // ---- additional const_*_like factories ----
 
     /// Build a sibling F64 `Const` on the same graph as `self`.
-    pub fn const_f64_like(
-        &self,
-        data: impl Into<Arc<[f64]>>,
-        shape: impl Into<Shape>,
-    ) -> Self {
-        Self { inner: self.inner.const_f64_like(data, shape) }
+    pub fn const_f64_like(&self, data: impl Into<Arc<[f64]>>, shape: impl Into<Shape>) -> Self {
+        Self {
+            inner: self.inner.const_f64_like(data, shape),
+        }
     }
 
     /// Build a sibling I64 `Const` on the same graph. Used by integer-
     /// target ops (e.g. cross-entropy with PyTorch-convention class
     /// indices).
-    pub fn const_i64_like(
-        &self,
-        data: impl Into<Arc<[i64]>>,
-        shape: impl Into<Shape>,
-    ) -> Self {
-        Self { inner: self.inner.const_i64_like(data, shape) }
+    pub fn const_i64_like(&self, data: impl Into<Arc<[i64]>>, shape: impl Into<Shape>) -> Self {
+        Self {
+            inner: self.inner.const_i64_like(data, shape),
+        }
     }
 
     // ---- device residency control ----
@@ -4999,26 +5650,34 @@ impl LazyTensor {
     /// because the placement is a graph-level annotation tied to the
     /// node id rather than a side-effecting operation.
     pub fn on_device(self, device: &Device) -> Self {
-        Self { inner: self.inner.on_device(device.location()) }
+        Self {
+            inner: self.inner.on_device(device.location()),
+        }
     }
 
     /// Append an `Op::Release` node — explicitly drop this tensor's
     /// device-resident storage once the ordering pass has scheduled
     /// every reader before it.
     pub fn release(&self) -> Self {
-        Self { inner: self.inner.release() }
+        Self {
+            inner: self.inner.release(),
+        }
     }
 
     /// Move bytes to `device`, destroying the source. Use when the
     /// source is genuinely dead after the transfer.
     pub fn move_to_device(&self, device: &Device) -> Self {
-        Self { inner: self.inner.move_to_device(device.location()) }
+        Self {
+            inner: self.inner.move_to_device(device.location()),
+        }
     }
 
     /// Copy bytes to `device`, leaving the source resident. Use when
     /// other ops still need the source.
     pub fn copy_to_device(&self, device: &Device) -> Self {
-        Self { inner: self.inner.copy_to_device(device.location()) }
+        Self {
+            inner: self.inner.copy_to_device(device.location()),
+        }
     }
 
     // ---- autograd ----
@@ -5094,7 +5753,8 @@ impl LazyTensor {
         if start_dim > end_dim {
             return Err(fuel_ir::Error::Msg(format!(
                 "flatten: start_dim={start_dim} > end_dim={end_dim}",
-            )).bt());
+            ))
+            .bt());
         }
         let dims = shape.dims();
         let merged: usize = dims[start_dim..=end_dim].iter().product();
@@ -5134,9 +5794,7 @@ impl LazyTensor {
     /// dim). Accepts any [`Dim`].
     pub fn stack<D: Dim>(args: &[&Self], dim: D) -> std::result::Result<Self, fuel_ir::Error> {
         if args.is_empty() {
-            return Err(fuel_ir::Error::Msg(
-                "stack: requires at least one tensor".into(),
-            ).bt());
+            return Err(fuel_ir::Error::Msg("stack: requires at least one tensor".into()).bt());
         }
         let reference_shape = args[0].shape();
         let reference_dims = reference_shape.dims().to_vec();
@@ -5145,8 +5803,10 @@ impl LazyTensor {
             if t.shape().dims() != reference_dims.as_slice() {
                 return Err(fuel_ir::Error::Msg(format!(
                     "stack: tensor {idx} shape {:?} != reference shape {:?}",
-                    t.shape().dims(), reference_dims,
-                )).bt());
+                    t.shape().dims(),
+                    reference_dims,
+                ))
+                .bt());
             }
         }
         // unsqueeze every input at the new dim, then concat.
@@ -5262,12 +5922,15 @@ impl LazyTensor {
         if a.len() != 1 || b.len() != 1 {
             return Err(fuel_ir::Error::Msg(format!(
                 "dot: requires rank-1 inputs, got lhs={a:?} rhs={b:?}",
-            )).bt());
+            ))
+            .bt());
         }
         if a[0] != b[0] {
             return Err(fuel_ir::Error::Msg(format!(
-                "dot: length mismatch lhs={} rhs={}", a[0], b[0],
-            )).bt());
+                "dot: length mismatch lhs={} rhs={}",
+                a[0], b[0],
+            ))
+            .bt());
         }
         Ok(self.mul(rhs).unwrap().sum_all())
     }
@@ -5281,7 +5944,8 @@ impl LazyTensor {
         if a.len() != 2 || b.len() != 1 || a[1] != b[0] {
             return Err(fuel_ir::Error::Msg(format!(
                 "mv: shape mismatch lhs={a:?} rhs={b:?} (need [m,n] · [n])",
-            )).bt());
+            ))
+            .bt());
         }
         // unsqueeze rhs to [n,1], matmul -> [m,1], squeeze trailing dim.
         let rhs_col = rhs.unsqueeze(1_usize)?;
@@ -5321,9 +5985,9 @@ impl LazyTensor {
             DType::F16 => Ok(self.const_f16_like(vec![half::f16::ONE; n], shape)),
             DType::U32 => Ok(self.const_u32_like(vec![1_u32; n], shape)),
             DType::I64 => Ok(self.const_i64_like(vec![1_i64; n], shape)),
-            other => Err(fuel_ir::Error::Msg(format!(
-                "ones_like: unsupported dtype {other:?}",
-            )).bt()),
+            other => {
+                Err(fuel_ir::Error::Msg(format!("ones_like: unsupported dtype {other:?}",)).bt())
+            }
         }
     }
 
@@ -5340,9 +6004,9 @@ impl LazyTensor {
             DType::F16 => Ok(self.const_f16_like(vec![half::f16::ZERO; n], shape)),
             DType::U32 => Ok(self.const_u32_like(vec![0_u32; n], shape)),
             DType::I64 => Ok(self.const_i64_like(vec![0_i64; n], shape)),
-            other => Err(fuel_ir::Error::Msg(format!(
-                "zeros_like: unsupported dtype {other:?}",
-            )).bt()),
+            other => {
+                Err(fuel_ir::Error::Msg(format!("zeros_like: unsupported dtype {other:?}",)).bt())
+            }
         }
     }
 
@@ -5350,7 +6014,9 @@ impl LazyTensor {
     /// Static factory equivalent of eager's `Tensor::ones`. Returns Err for
     /// dtypes outside F32/F64/BF16/F16/U32.
     pub fn ones(
-        shape: impl Into<Shape>, dtype: DType, device: &Device,
+        shape: impl Into<Shape>,
+        dtype: DType,
+        device: &Device,
     ) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = shape.into();
         let n = shape.elem_count();
@@ -5360,9 +6026,7 @@ impl LazyTensor {
             DType::BF16 => Ok(Self::from_bf16(vec![half::bf16::ONE; n], shape, device)),
             DType::F16 => Ok(Self::from_f16(vec![half::f16::ONE; n], shape, device)),
             DType::U32 => Ok(Self::from_u32(vec![1_u32; n], shape, device)),
-            other => Err(fuel_ir::Error::Msg(format!(
-                "ones: unsupported dtype {other:?}",
-            )).bt()),
+            other => Err(fuel_ir::Error::Msg(format!("ones: unsupported dtype {other:?}",)).bt()),
         }
     }
 
@@ -5376,7 +6040,9 @@ impl LazyTensor {
     /// [`zeros_like`](Self::zeros_like) or a `const_*_like` builder. See
     /// [graph affinity](Self#tensors-are-graph-affine--read-this-before-building-anything).
     pub fn zeros(
-        shape: impl Into<Shape>, dtype: DType, device: &Device,
+        shape: impl Into<Shape>,
+        dtype: DType,
+        device: &Device,
     ) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = shape.into();
         let n = shape.elem_count();
@@ -5386,9 +6052,7 @@ impl LazyTensor {
             DType::BF16 => Ok(Self::from_bf16(vec![half::bf16::ZERO; n], shape, device)),
             DType::F16 => Ok(Self::from_f16(vec![half::f16::ZERO; n], shape, device)),
             DType::U32 => Ok(Self::from_u32(vec![0_u32; n], shape, device)),
-            other => Err(fuel_ir::Error::Msg(format!(
-                "zeros: unsupported dtype {other:?}",
-            )).bt()),
+            other => Err(fuel_ir::Error::Msg(format!("zeros: unsupported dtype {other:?}",)).bt()),
         }
     }
 
@@ -5414,8 +6078,10 @@ impl LazyTensor {
             fuel_ir::Scalar::F16(v) => Ok(Self::from_f16(vec![v; n], shape, device)),
             fuel_ir::Scalar::U32(v) => Ok(Self::from_u32(vec![v; n], shape, device)),
             other => Err(fuel_ir::Error::Msg(format!(
-                "full: unsupported scalar dtype {:?}", other.dtype(),
-            )).bt()),
+                "full: unsupported scalar dtype {:?}",
+                other.dtype(),
+            ))
+            .bt()),
         }
     }
 
@@ -5427,7 +6093,11 @@ impl LazyTensor {
             data[i * n + i] = 1.0;
         }
         let base = Self::from_f32(data, vec![n, n], device);
-        if dtype == DType::F32 { base } else { base.to_dtype(dtype).unwrap() }
+        if dtype == DType::F32 {
+            base
+        } else {
+            base.to_dtype(dtype).unwrap()
+        }
     }
 
     /// Split a `(B, N, num_heads * head_dim)` projection into the
@@ -5436,15 +6106,27 @@ impl LazyTensor {
     /// — promoted to a method to retire the per-port reimplementations
     /// of this same composite.
     pub fn split_heads(
-        &self, num_heads: usize, head_dim: usize,
+        &self,
+        num_heads: usize,
+        head_dim: usize,
     ) -> std::result::Result<Self, fuel_ir::Error> {
         let dims = self.inner.shape().dims().to_vec();
-        debug_assert_eq!(dims.len(), 3,
-            "split_heads: input must be rank 3 (B, N, embed), got {dims:?}");
-        debug_assert_eq!(dims[2], num_heads * head_dim,
+        debug_assert_eq!(
+            dims.len(),
+            3,
+            "split_heads: input must be rank 3 (B, N, embed), got {dims:?}"
+        );
+        debug_assert_eq!(
+            dims[2],
+            num_heads * head_dim,
             "split_heads: trailing dim ({}) != num_heads * head_dim ({} * {} = {})",
-            dims[2], num_heads, head_dim, num_heads * head_dim);
-        let b = dims[0]; let n = dims[1];
+            dims[2],
+            num_heads,
+            head_dim,
+            num_heads * head_dim
+        );
+        let b = dims[0];
+        let n = dims[1];
         self.reshape(Shape::from_dims(&[b, n, num_heads, head_dim]))?
             .permute([0, 2, 1, 3_usize])
     }
@@ -5452,13 +6134,17 @@ impl LazyTensor {
     /// Merge a `(B, num_heads, N, head_dim)` attention result back
     /// into the projection layout `(B, N, num_heads * head_dim)`.
     /// Inverse of [`Self::split_heads`].
-    pub fn merge_heads(
-        &self,
-    ) -> std::result::Result<Self, fuel_ir::Error> {
+    pub fn merge_heads(&self) -> std::result::Result<Self, fuel_ir::Error> {
         let dims = self.inner.shape().dims().to_vec();
-        debug_assert_eq!(dims.len(), 4,
-            "merge_heads: input must be rank 4 (B, heads, N, head_dim), got {dims:?}");
-        let b = dims[0]; let num_heads = dims[1]; let n = dims[2]; let head_dim = dims[3];
+        debug_assert_eq!(
+            dims.len(),
+            4,
+            "merge_heads: input must be rank 4 (B, heads, N, head_dim), got {dims:?}"
+        );
+        let b = dims[0];
+        let num_heads = dims[1];
+        let n = dims[2];
+        let head_dim = dims[3];
         self.permute([0, 2, 1, 3_usize])?
             .reshape(Shape::from_dims(&[b, n, num_heads * head_dim]))
     }
@@ -5474,7 +6160,8 @@ impl LazyTensor {
     /// allocated. Several lazy ports inlined this same 3-line
     /// helper as `bias_add` — promoted here to a method.
     pub fn add_trailing_bias(
-        &self, bias: std::sync::Arc<[f32]>,
+        &self,
+        bias: std::sync::Arc<[f32]>,
     ) -> std::result::Result<Self, fuel_ir::Error> {
         let n = bias.len();
         // Build the bias const in `self`'s dtype rather than hardcoding
@@ -5506,18 +6193,10 @@ impl LazyTensor {
     ) -> std::result::Result<Self, fuel_ir::Error> {
         let seq = tokens.len();
         if seq == 0 {
-            return Err(fuel_ir::Error::Msg(
-                "embed_tokens: tokens must be non-empty".into(),
-            ).bt());
+            return Err(fuel_ir::Error::Msg("embed_tokens: tokens must be non-empty".into()).bt());
         }
-        let embed = Self::from_f32(
-            embed_table,
-            Shape::from_dims(&[vocab_size, hidden]),
-            device,
-        );
-        let token_ids = embed.const_u32_like(
-            tokens.to_vec(), Shape::from_dims(&[seq]),
-        );
+        let embed = Self::from_f32(embed_table, Shape::from_dims(&[vocab_size, hidden]), device);
+        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         embed
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[1, seq, hidden]))
@@ -5541,14 +6220,11 @@ impl LazyTensor {
         if seq == 0 {
             return Err(fuel_ir::Error::Msg(
                 "embed_tokens_anchored: tokens must be non-empty".into(),
-            ).bt());
+            )
+            .bt());
         }
-        let embed = self.const_f32_like(
-            embed_table, Shape::from_dims(&[vocab_size, hidden]),
-        );
-        let token_ids = self.const_u32_like(
-            tokens.to_vec(), Shape::from_dims(&[seq]),
-        );
+        let embed = self.const_f32_like(embed_table, Shape::from_dims(&[vocab_size, hidden]));
+        let token_ids = self.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         embed
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[1, seq, hidden]))
@@ -5571,9 +6247,7 @@ impl LazyTensor {
         seq: usize,
         head_dim: usize,
     ) -> (Self, Self) {
-        let (cos_data, sin_data) = fuel_graph::build_rope_tables(
-            theta, start_pos, seq, head_dim,
-        );
+        let (cos_data, sin_data) = fuel_graph::build_rope_tables(theta, start_pos, seq, head_dim);
         let rope_shape = Shape::from_dims(&[seq, head_dim]);
         let rope_cos = self.const_f32_like(cos_data, rope_shape.clone());
         let rope_sin = self.const_f32_like(sin_data, rope_shape);
@@ -5606,7 +6280,10 @@ impl LazyTensor {
             sin.extend_from_slice(&s1);
         }
         let shape = Shape::from_dims(&[rows, head_dim]);
-        (self.const_f32_like(cos, shape.clone()), self.const_f32_like(sin, shape))
+        (
+            self.const_f32_like(cos, shape.clone()),
+            self.const_f32_like(sin, shape),
+        )
     }
 
     /// Uniformly delta-rotate one cached (post-RoPE) K block by θ·`delta`,
@@ -5710,13 +6387,14 @@ impl LazyTensor {
         if rank < 2 {
             return Err(fuel_ir::Error::Msg(format!(
                 "rope_batched: expected rank >= 2, got {dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         let d = dims[rank - 1];
         if !d.is_multiple_of(2) {
-            return Err(fuel_ir::Error::Msg(format!(
-                "rope_batched: head_dim {d} must be even",
-            )).bt());
+            return Err(
+                fuel_ir::Error::Msg(format!("rope_batched: head_dim {d} must be even",)).bt(),
+            );
         }
         let half = d / 2;
         let target = Shape::from_dims(&dims);
@@ -5752,9 +6430,8 @@ impl LazyTensor {
         let dims = self.inner.shape();
         let dims = dims.dims();
         let head_dim = *dims.last().ok_or_else(|| {
-            fuel_ir::Error::Msg(
-                "rope_partial: receiver must have at least one dimension".into(),
-            ).bt()
+            fuel_ir::Error::Msg("rope_partial: receiver must have at least one dimension".into())
+                .bt()
         })?;
         if rope_dim == head_dim {
             return self.rope_with_tables(rope_cos, rope_sin);
@@ -5762,7 +6439,8 @@ impl LazyTensor {
         if rope_dim > head_dim {
             return Err(fuel_ir::Error::Msg(format!(
                 "rope_partial: rope_dim={rope_dim} exceeds head_dim={head_dim}",
-            )).bt());
+            ))
+            .bt());
         }
         let last = dims.len() - 1;
         let pass_dim = head_dim - rope_dim;
@@ -5777,7 +6455,8 @@ impl LazyTensor {
     /// `add_trailing_bias`. Models the `linear_b` / `linear_no_bias`
     /// branch every per-port `optional_bias` / `opt_bias` helper does.
     pub fn add_optional_trailing_bias(
-        &self, bias: Option<&std::sync::Arc<[f32]>>,
+        &self,
+        bias: Option<&std::sync::Arc<[f32]>>,
     ) -> std::result::Result<Self, fuel_ir::Error> {
         match bias {
             None => Ok(self.clone()),
@@ -5813,11 +6492,13 @@ impl LazyTensor {
     /// Materializes the shifted gain on the receiver's graph; one
     /// allocation per call.
     pub fn rms_norm_affine_with_offset(
-        &self, gain: &[f32], offset: f32, eps: f64,
+        &self,
+        gain: &[f32],
+        offset: f32,
+        eps: f64,
     ) -> std::result::Result<Self, fuel_ir::Error> {
-        let shifted: std::sync::Arc<[f32]> = std::sync::Arc::from(
-            gain.iter().map(|g| *g + offset).collect::<Vec<_>>(),
-        );
+        let shifted: std::sync::Arc<[f32]> =
+            std::sync::Arc::from(gain.iter().map(|g| *g + offset).collect::<Vec<_>>());
         self.rms_norm_affine(shifted, eps)
     }
 
@@ -5826,7 +6507,9 @@ impl LazyTensor {
     /// length-`gain.len()` vector materialized fresh on the
     /// receiver's graph and broadcast across all leading dims.
     pub fn rms_norm_affine(
-        &self, gain: std::sync::Arc<[f32]>, eps: f64,
+        &self,
+        gain: std::sync::Arc<[f32]>,
+        eps: f64,
     ) -> std::result::Result<Self, fuel_ir::Error> {
         let hidden = gain.len();
         let normed = self.rms_norm_last_dim(eps)?;
@@ -5843,12 +6526,13 @@ impl LazyTensor {
     /// (ResNet, EfficientNet, ConvMixer, FastViT, MobileNetV4,
     /// MobileOne, RepVGG, ConvNeXt, EfficientViT, etc.) plus the
     /// pre-projection pool inside each squeeze-excite block.
-    pub fn global_avg_pool_2d(
-        &self,
-    ) -> std::result::Result<Self, fuel_ir::Error> {
+    pub fn global_avg_pool_2d(&self) -> std::result::Result<Self, fuel_ir::Error> {
         let dims = self.inner.shape().dims().to_vec();
-        debug_assert_eq!(dims.len(), 4,
-            "global_avg_pool_2d: input must be rank 4 (B, C, H, W), got {dims:?}");
+        debug_assert_eq!(
+            dims.len(),
+            4,
+            "global_avg_pool_2d: input must be rank 4 (B, C, H, W), got {dims:?}"
+        );
         // Reduce W first (dim 3), then H (dim 2 of the H-reduced (B, C, H) tensor).
         self.mean_dim(3_usize)?.mean_dim(2_usize)
     }
@@ -5865,16 +6549,31 @@ impl LazyTensor {
     /// is just this multiply-add. Used by inference-only conv
     /// vision ports (ResNet, EfficientNet, FastViT, etc.).
     pub fn channel_affine_4d(
-        &self, gain: std::sync::Arc<[f32]>, bias: std::sync::Arc<[f32]>,
+        &self,
+        gain: std::sync::Arc<[f32]>,
+        bias: std::sync::Arc<[f32]>,
     ) -> std::result::Result<Self, fuel_ir::Error> {
         let dims = self.inner.shape().dims().to_vec();
-        debug_assert_eq!(dims.len(), 4,
-            "channel_affine_4d: input must be rank 4 (B, C, H, W), got {dims:?}");
+        debug_assert_eq!(
+            dims.len(),
+            4,
+            "channel_affine_4d: input must be rank 4 (B, C, H, W), got {dims:?}"
+        );
         let channels = dims[1];
-        debug_assert_eq!(gain.len(), channels,
-            "channel_affine_4d: gain len ({}) != C ({})", gain.len(), channels);
-        debug_assert_eq!(bias.len(), channels,
-            "channel_affine_4d: bias len ({}) != C ({})", bias.len(), channels);
+        debug_assert_eq!(
+            gain.len(),
+            channels,
+            "channel_affine_4d: gain len ({}) != C ({})",
+            gain.len(),
+            channels
+        );
+        debug_assert_eq!(
+            bias.len(),
+            channels,
+            "channel_affine_4d: bias len ({}) != C ({})",
+            bias.len(),
+            channels
+        );
         let w_t = self
             .const_f32_like(gain, Shape::from_dims(&[channels]))
             .reshape(Shape::from_dims(&[1, channels, 1, 1]))?;
@@ -5915,7 +6614,11 @@ impl LazyTensor {
             }
         }
         let base = Self::from_f32(data, vec![n, n], device);
-        if dtype == DType::F32 { base } else { base.to_dtype(dtype).unwrap() }
+        if dtype == DType::F32 {
+            base
+        } else {
+            base.to_dtype(dtype).unwrap()
+        }
     }
 
     /// Upper-triangular ones matrix `[n, n]`.
@@ -5927,7 +6630,11 @@ impl LazyTensor {
             }
         }
         let base = Self::from_f32(data, vec![n, n], device);
-        if dtype == DType::F32 { base } else { base.to_dtype(dtype).unwrap() }
+        if dtype == DType::F32 {
+            base
+        } else {
+            base.to_dtype(dtype).unwrap()
+        }
     }
 
     // ---- additional deferred-Phase-A items: indexing / multi-dim / RNG ----
@@ -5936,7 +6643,12 @@ impl LazyTensor {
     /// `narrow(dim, start, len)` is `slice(dim, start, len)` —
     /// produces a view of `[start, start+len)` along `dim`. Bad input
     /// surfaces as a typed error at build time. Accepts any [`Dim`].
-    pub fn narrow<D: Dim>(&self, dim: D, start: usize, len: usize) -> std::result::Result<Self, fuel_ir::Error> {
+    pub fn narrow<D: Dim>(
+        &self,
+        dim: D,
+        start: usize,
+        len: usize,
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         self.slice(dim, start, len)
     }
 
@@ -5945,13 +6657,15 @@ impl LazyTensor {
     /// chunks so every chunk's size differs by at most 1. If `dim_size
     /// < chunks`, returns `dim_size` singleton chunks instead of
     /// `chunks` chunks (matches eager / PyTorch). Accepts any [`Dim`].
-    pub fn chunk<D: Dim>(&self, chunks: usize, dim: D) -> std::result::Result<Vec<Self>, fuel_ir::Error> {
+    pub fn chunk<D: Dim>(
+        &self,
+        chunks: usize,
+        dim: D,
+    ) -> std::result::Result<Vec<Self>, fuel_ir::Error> {
         let shape = self.shape();
         let dim = dim.to_index(&shape, "chunk")?;
         if chunks == 0 {
-            return Err(fuel_ir::Error::Msg(
-                "chunk: chunks must be > 0".into(),
-            ).bt());
+            return Err(fuel_ir::Error::Msg("chunk: chunks must be > 0".into()).bt());
         }
         let dims = shape.dims();
         let size = dims[dim];
@@ -5983,7 +6697,11 @@ impl LazyTensor {
     /// Sub-tensor at index along an arbitrary dim. Equivalent to
     /// `self.slice(dim, index, 1).unwrap().squeeze(dim)`. Matches eager's
     /// [`crate::Tensor::get_on_dim`]. Accepts any [`Dim`].
-    pub fn get_on_dim<D: Dim>(&self, dim: D, index: usize) -> std::result::Result<Self, fuel_ir::Error> {
+    pub fn get_on_dim<D: Dim>(
+        &self,
+        dim: D,
+        index: usize,
+    ) -> std::result::Result<Self, fuel_ir::Error> {
         let shape = self.shape();
         let dim = dim.to_index(&shape, "get_on_dim")?;
         self.slice(dim, index, 1).unwrap().squeeze(dim)
@@ -6047,17 +6765,13 @@ impl LazyTensor {
 
     /// Uniform random tensor in `[lo, up)` with shape/dtype/device matching `self`.
     /// Backed by [`rand::thread_rng`]. Returns Err for unsupported dtypes.
-    pub fn rand_like(
-        &self, lo: f64, up: f64,
-    ) -> std::result::Result<Self, fuel_ir::Error> {
+    pub fn rand_like(&self, lo: f64, up: f64) -> std::result::Result<Self, fuel_ir::Error> {
         Self::rand(self.shape(), lo, up, self.dtype(), &Device::cpu())
     }
 
     /// Normal random tensor with shape/dtype/device matching `self`.
     /// Returns Err for unsupported dtypes or invalid stdev.
-    pub fn randn_like(
-        &self, mean: f64, stdev: f64,
-    ) -> std::result::Result<Self, fuel_ir::Error> {
+    pub fn randn_like(&self, mean: f64, stdev: f64) -> std::result::Result<Self, fuel_ir::Error> {
         Self::randn(self.shape(), mean, stdev, self.dtype(), &Device::cpu())
     }
 
@@ -6098,7 +6812,8 @@ impl LazyTensor {
             }
             other => Err(fuel_ir::Error::Msg(format!(
                 "LazyTensor::rand: unsupported dtype {other:?}",
-            )).bt()),
+            ))
+            .bt()),
         }
     }
 
@@ -6116,9 +6831,7 @@ impl LazyTensor {
         let shape = shape.into();
         let n = shape.elem_count();
         let normal = Normal::new(mean, stdev).map_err(|e| {
-            fuel_ir::Error::Msg(format!(
-                "LazyTensor::randn: invalid stdev={stdev}: {e}",
-            )).bt()
+            fuel_ir::Error::Msg(format!("LazyTensor::randn: invalid stdev={stdev}: {e}",)).bt()
         })?;
         let mut rng = rand::rng();
         match dtype {
@@ -6144,7 +6857,8 @@ impl LazyTensor {
             }
             other => Err(fuel_ir::Error::Msg(format!(
                 "LazyTensor::randn: unsupported dtype {other:?}",
-            )).bt()),
+            ))
+            .bt()),
         }
     }
 
@@ -6221,22 +6935,20 @@ impl LazyTensor {
         if x_dims.len() != 3 {
             return Err(fuel_ir::Error::Msg(format!(
                 "conv1d: x must be rank 3 [N, Cin, T], got {x_dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         if w_dims.len() != 3 {
             return Err(fuel_ir::Error::Msg(format!(
                 "conv1d: weight must be rank 3 [Cout, Cin/groups, K], got {w_dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         if groups < 1 {
-            return Err(fuel_ir::Error::Msg(
-                "conv1d: groups must be ≥ 1".into(),
-            ).bt());
+            return Err(fuel_ir::Error::Msg("conv1d: groups must be ≥ 1".into()).bt());
         }
         if stride < 1 {
-            return Err(fuel_ir::Error::Msg(
-                "conv1d: stride must be ≥ 1".into(),
-            ).bt());
+            return Err(fuel_ir::Error::Msg("conv1d: stride must be ≥ 1".into()).bt());
         }
         // Add a unit H dim at index 2 → [N, Cin, 1, T] and [Cout, Cin/g, 1, K].
         let x_4d = self.unsqueeze(2_usize)?;
@@ -6280,23 +6992,21 @@ impl LazyTensor {
         if dims.len() != 4 {
             return Err(fuel_ir::Error::Msg(format!(
                 "avg_pool2d: input must be rank 4 [N, C, H, W], got {dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         let c = dims[1];
         let (kh, kw) = kernel;
         if kh == 0 || kw == 0 {
-            return Err(fuel_ir::Error::Msg(
-                "avg_pool2d: kernel sizes must be positive".into(),
-            ).bt());
+            return Err(
+                fuel_ir::Error::Msg("avg_pool2d: kernel sizes must be positive".into()).bt(),
+            );
         }
         let inv = 1.0_f32 / ((kh * kw) as f32);
         // Depthwise kernel: one filter per input channel, each filter
         // is a constant 1/(kh·kw). Shape [C, 1, kh, kw] with groups=C
         // makes Conv2D compute one independent kernel per channel.
-        let weight = self.const_f32_like(
-            vec![inv; c * kh * kw],
-            Shape::from_dims(&[c, 1, kh, kw]),
-        );
+        let weight = self.const_f32_like(vec![inv; c * kh * kw], Shape::from_dims(&[c, 1, kh, kw]));
         self.conv2d(&weight, None, stride, padding, c)
     }
 
@@ -6353,21 +7063,20 @@ impl LazyTensor {
         if dims.len() != 4 {
             return Err(fuel_ir::Error::Msg(format!(
                 "max_pool2d: input must be rank 4 [N, C, H, W], got {dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         let (n, c, h, w) = (dims[0], dims[1], dims[2], dims[3]);
         let (kh, kw) = kernel;
         let (sh, sw) = stride;
         let (ph, pw) = padding;
         if kh == 0 || kw == 0 {
-            return Err(fuel_ir::Error::Msg(
-                "max_pool2d: kernel sizes must be positive".into(),
-            ).bt());
+            return Err(
+                fuel_ir::Error::Msg("max_pool2d: kernel sizes must be positive".into()).bt(),
+            );
         }
         if sh == 0 || sw == 0 {
-            return Err(fuel_ir::Error::Msg(
-                "max_pool2d: strides must be positive".into(),
-            ).bt());
+            return Err(fuel_ir::Error::Msg("max_pool2d: strides must be positive".into()).bt());
         }
         let h_padded_min = h + 2 * ph;
         let w_padded_min = w + 2 * pw;
@@ -6408,9 +7117,7 @@ impl LazyTensor {
                 });
             }
         }
-        acc.ok_or_else(|| fuel_ir::Error::Msg(
-            "max_pool2d: empty kernel".into(),
-        ).bt())
+        acc.ok_or_else(|| fuel_ir::Error::Msg("max_pool2d: empty kernel".into()).bt())
     }
 
     /// Eager-API parity for `max_pool2d_with_stride`.
@@ -6431,20 +7138,18 @@ impl LazyTensor {
     /// each new dim, then collapse the inflated dims back. Same shape
     /// as the `upsample_nearest_2x` helper in [`crate::lazy_yolov8`]
     /// and [`crate::lazy_sd_unet`], generalized to arbitrary scale.
-    pub fn upsample_nearest2d(
-        &self,
-        scale: usize,
-    ) -> std::result::Result<Self, fuel_ir::Error> {
+    pub fn upsample_nearest2d(&self, scale: usize) -> std::result::Result<Self, fuel_ir::Error> {
         if scale == 0 {
-            return Err(fuel_ir::Error::Msg(
-                "upsample_nearest2d: scale must be positive".into(),
-            ).bt());
+            return Err(
+                fuel_ir::Error::Msg("upsample_nearest2d: scale must be positive".into()).bt(),
+            );
         }
         let dims = self.shape().dims().to_vec();
         if dims.len() != 4 {
             return Err(fuel_ir::Error::Msg(format!(
                 "upsample_nearest2d: input must be rank 4 [N, C, H, W], got {dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         if scale == 1 {
             return Ok(self.clone());
@@ -6453,50 +7158,54 @@ impl LazyTensor {
         // [N, C, H, 1, W, 1]
         let expanded = self.reshape(vec![n, c, h, 1, w, 1])?;
         // Replicate along the new unit dims by concatenating scale copies.
-        let h_expanded = (0..scale).fold(None, |acc: Option<LazyTensor>, _| {
-            Some(match acc {
-                None => expanded.clone(),
-                Some(a) => a.concat(&expanded, 3).unwrap(),
+        let h_expanded = (0..scale)
+            .fold(None, |acc: Option<LazyTensor>, _| {
+                Some(match acc {
+                    None => expanded.clone(),
+                    Some(a) => a.concat(&expanded, 3).unwrap(),
+                })
             })
-        }).unwrap();
-        let h_then_w = (0..scale).fold(None, |acc: Option<LazyTensor>, _| {
-            Some(match acc {
-                None => h_expanded.clone(),
-                Some(a) => a.concat(&h_expanded, 5).unwrap(),
+            .unwrap();
+        let h_then_w = (0..scale)
+            .fold(None, |acc: Option<LazyTensor>, _| {
+                Some(match acc {
+                    None => h_expanded.clone(),
+                    Some(a) => a.concat(&h_expanded, 5).unwrap(),
+                })
             })
-        }).unwrap();
+            .unwrap();
         h_then_w.reshape(vec![n, c, h * scale, w * scale])
     }
 
     /// Nearest-neighbor upsample for 1-D signals `[N, C, T]` by integer
     /// `scale`. Reshape to insert a unit dim, concat scale copies,
     /// reshape back.
-    pub fn upsample_nearest1d(
-        &self,
-        scale: usize,
-    ) -> std::result::Result<Self, fuel_ir::Error> {
+    pub fn upsample_nearest1d(&self, scale: usize) -> std::result::Result<Self, fuel_ir::Error> {
         if scale == 0 {
-            return Err(fuel_ir::Error::Msg(
-                "upsample_nearest1d: scale must be positive".into(),
-            ).bt());
+            return Err(
+                fuel_ir::Error::Msg("upsample_nearest1d: scale must be positive".into()).bt(),
+            );
         }
         let dims = self.shape().dims().to_vec();
         if dims.len() != 3 {
             return Err(fuel_ir::Error::Msg(format!(
                 "upsample_nearest1d: input must be rank 3 [N, C, T], got {dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         if scale == 1 {
             return Ok(self.clone());
         }
         let (n, c, t) = (dims[0], dims[1], dims[2]);
         let expanded = self.reshape(vec![n, c, t, 1])?;
-        let replicated = (0..scale).fold(None, |acc: Option<LazyTensor>, _| {
-            Some(match acc {
-                None => expanded.clone(),
-                Some(a) => a.concat(&expanded, 3).unwrap(),
+        let replicated = (0..scale)
+            .fold(None, |acc: Option<LazyTensor>, _| {
+                Some(match acc {
+                    None => expanded.clone(),
+                    Some(a) => a.concat(&expanded, 3).unwrap(),
+                })
             })
-        }).unwrap();
+            .unwrap();
         replicated.reshape(vec![n, c, t * scale])
     }
 
@@ -6518,14 +7227,16 @@ impl LazyTensor {
         if dims.len() != 4 {
             return Err(fuel_ir::Error::Msg(format!(
                 "interpolate2d: input must be rank 4 [N, C, H, W], got {dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         let h = dims[2];
         let w = dims[3];
         if h == 0 || w == 0 || target_h == 0 || target_w == 0 {
             return Err(fuel_ir::Error::Msg(
                 "interpolate2d: input + target spatial dims must be positive".into(),
-            ).bt());
+            )
+            .bt());
         }
         // Fast-path: identity.
         if target_h == h && target_w == w {
@@ -6546,12 +7257,8 @@ impl LazyTensor {
         let w_idx: Vec<u32> = (0..target_w)
             .map(|oj| ((oj * w) / target_w).min(w - 1) as u32)
             .collect();
-        let h_idx_tensor = self.const_u32_like(
-            h_idx, fuel_ir::Shape::from_dims(&[target_h]),
-        );
-        let w_idx_tensor = self.const_u32_like(
-            w_idx, fuel_ir::Shape::from_dims(&[target_w]),
-        );
+        let h_idx_tensor = self.const_u32_like(h_idx, fuel_ir::Shape::from_dims(&[target_h]));
+        let w_idx_tensor = self.const_u32_like(w_idx, fuel_ir::Shape::from_dims(&[target_w]));
         let after_h = self.index_select(2_usize, &h_idx_tensor)?;
         after_h.index_select(3_usize, &w_idx_tensor)
     }
@@ -6559,21 +7266,19 @@ impl LazyTensor {
     /// 1-D nearest interpolation to an explicit target size. Same
     /// constraints as [`Self::interpolate2d`]: integer-multiple targets
     /// only.
-    pub fn interpolate1d(
-        &self,
-        target_t: usize,
-    ) -> std::result::Result<Self, fuel_ir::Error> {
+    pub fn interpolate1d(&self, target_t: usize) -> std::result::Result<Self, fuel_ir::Error> {
         let dims = self.shape().dims().to_vec();
         if dims.len() != 3 {
             return Err(fuel_ir::Error::Msg(format!(
                 "interpolate1d: input must be rank 3 [N, C, T], got {dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         let t = dims[2];
         if t == 0 {
-            return Err(fuel_ir::Error::Msg(
-                "interpolate1d: input length must be positive".into(),
-            ).bt());
+            return Err(
+                fuel_ir::Error::Msg("interpolate1d: input length must be positive".into()).bt(),
+            );
         }
         if target_t % t != 0 {
             return Err(fuel_ir::Error::Msg(format!(
@@ -6638,7 +7343,8 @@ impl LazyTensor {
         if args.len() < 2 {
             return Err(fuel_ir::Error::Msg(
                 "meshgrid: requires at least two rank-1 tensors".into(),
-            ).bt());
+            )
+            .bt());
         }
         let ordered: Vec<&Self> = if xy_indexing {
             args.iter().rev().copied().collect()
@@ -6651,7 +7357,8 @@ impl LazyTensor {
             if dims.len() != 1 {
                 return Err(fuel_ir::Error::Msg(format!(
                     "meshgrid: input {i} must be rank 1, got shape {dims:?}",
-                )).bt());
+                ))
+                .bt());
             }
             lens.push(dims[0]);
         }
@@ -6687,7 +7394,8 @@ impl LazyTensor {
         } else if self_rank > target_rank {
             return Err(fuel_ir::Error::Msg(format!(
                 "repeat: repeats rank {target_rank} smaller than tensor rank {self_rank}",
-            )).bt());
+            ))
+            .bt());
         } else {
             self.clone()
         };
@@ -6695,7 +7403,8 @@ impl LazyTensor {
             if n == 0 {
                 return Err(fuel_ir::Error::Msg(format!(
                     "repeat: zero repeat count at axis {axis} not supported",
-                )).bt());
+                ))
+                .bt());
             }
             if n == 1 {
                 continue;
@@ -6826,14 +7535,14 @@ impl LazyTensor {
 #[derive(Debug, Clone)]
 pub struct LlamaConfig {
     pub vocab_size: usize,
-    pub dim:        usize,
-    pub n_layers:   usize,
-    pub n_heads:    usize,
+    pub dim: usize,
+    pub n_layers: usize,
+    pub n_heads: usize,
     pub n_kv_heads: usize,
-    pub head_dim:   usize,
-    pub ffn_dim:    usize,
-    pub norm_eps:   f64,
-    pub rope_base:  f64,
+    pub head_dim: usize,
+    pub ffn_dim: usize,
+    pub norm_eps: f64,
+    pub rope_base: f64,
 }
 
 impl LlamaConfig {
@@ -6961,16 +7670,16 @@ pub enum WeightStorage {
     /// The adapter is cheap to apply — for a 2560×2560 projection at
     /// rank 8 the LoRA path is ~0.5% of the base matmul cost.
     WithLoRA {
-        base:          Box<WeightStorage>,
+        base: Box<WeightStorage>,
         /// `[in_features, rank]` adapter A (HF's `lora_A` transposed).
-        lora_a:        Arc<[f32]>,
+        lora_a: Arc<[f32]>,
         /// `[rank, out_features]` adapter B (HF's `lora_B` transposed).
-        lora_b:        Arc<[f32]>,
-        rank:          usize,
+        lora_b: Arc<[f32]>,
+        rank: usize,
         /// LoRA scaling factor; effective scale is `alpha / rank`.
-        alpha:         f32,
-        in_features:   usize,
-        out_features:  usize,
+        alpha: f32,
+        in_features: usize,
+        out_features: usize,
     },
 }
 
@@ -6980,8 +7689,16 @@ impl WeightStorage {
             Self::F32(a) => a.len(),
             Self::BF16(a) => a.len(),
             // Logical element count for a Q4_0 weight matrix is n*k.
-            Self::Q4_0 { in_features, out_features, .. } => *in_features * *out_features,
-            Self::WithLoRA { in_features, out_features, .. } => *in_features * *out_features,
+            Self::Q4_0 {
+                in_features,
+                out_features,
+                ..
+            } => *in_features * *out_features,
+            Self::WithLoRA {
+                in_features,
+                out_features,
+                ..
+            } => *in_features * *out_features,
         }
     }
 
@@ -7010,7 +7727,9 @@ impl WeightStorage {
     /// Returns Err for `WithLoRA` — the base + LoRA update can only be
     /// applied via `apply_linear` so the right graph structure is built.
     pub fn const_like(
-        &self, anchor: &LazyTensor, shape: Shape,
+        &self,
+        anchor: &LazyTensor,
+        shape: Shape,
     ) -> std::result::Result<LazyTensor, fuel_ir::Error> {
         match self {
             Self::F32(a) => Ok(anchor.const_f32_like(a.clone(), shape)),
@@ -7023,8 +7742,10 @@ impl WeightStorage {
             Self::WithLoRA { .. } => Err(fuel_ir::Error::Msg(
                 "WeightStorage::WithLoRA::const_like is not supported \
                  — the base + LoRA update must be applied via \
-                 apply_linear to produce the right graph structure.".into(),
-            ).bt()),
+                 apply_linear to produce the right graph structure."
+                    .into(),
+            )
+            .bt()),
         }
     }
 
@@ -7055,9 +7776,7 @@ impl WeightStorage {
             .bt());
         }
         let projected = self.apply_linear(x, in_features, out_features)?;
-        let bias_t = projected.const_f32_like(
-            bias, Shape::from_dims(&[out_features]),
-        );
+        let bias_t = projected.const_f32_like(bias, Shape::from_dims(&[out_features]));
         projected.broadcast_add(&bias_t)
     }
 
@@ -7105,7 +7824,11 @@ impl WeightStorage {
                 let w = self.const_like(x, Shape::from_dims(&[in_features, out_features]))?;
                 x.matmul(&w)
             }
-            Self::Q4_0 { in_features: expected_in, out_features: expected_out, .. } => {
+            Self::Q4_0 {
+                in_features: expected_in,
+                out_features: expected_out,
+                ..
+            } => {
                 if *expected_in != in_features || *expected_out != out_features {
                     return Err(fuel_ir::Error::Msg(format!(
                         "WeightStorage::Q4_0 shape mismatch: stored \
@@ -7115,11 +7838,21 @@ impl WeightStorage {
                     .bt());
                 }
                 let w_bytes = self.const_like(x, Shape::from_dims(&[in_features, out_features]))?;
-                x.qmatmul(&w_bytes, fuel_graph::QuantType::Q4_0, in_features, out_features)
+                x.qmatmul(
+                    &w_bytes,
+                    fuel_graph::QuantType::Q4_0,
+                    in_features,
+                    out_features,
+                )
             }
             Self::WithLoRA {
-                base, lora_a, lora_b, rank, alpha,
-                in_features: expected_in, out_features: expected_out,
+                base,
+                lora_a,
+                lora_b,
+                rank,
+                alpha,
+                in_features: expected_in,
+                out_features: expected_out,
             } => {
                 if *expected_in != in_features || *expected_out != out_features {
                     return Err(fuel_ir::Error::Msg(format!(
@@ -7132,14 +7865,10 @@ impl WeightStorage {
                 // Base forward (F32, BF16, or Q4_0).
                 let base_out = base.apply_linear(x, in_features, out_features)?;
                 // Low-rank update: y += (alpha/rank) · x @ A @ B.
-                let a_t = x.const_f32_like(
-                    Arc::clone(lora_a),
-                    Shape::from_dims(&[in_features, *rank]),
-                );
-                let b_t = x.const_f32_like(
-                    Arc::clone(lora_b),
-                    Shape::from_dims(&[*rank, out_features]),
-                );
+                let a_t =
+                    x.const_f32_like(Arc::clone(lora_a), Shape::from_dims(&[in_features, *rank]));
+                let b_t =
+                    x.const_f32_like(Arc::clone(lora_b), Shape::from_dims(&[*rank, out_features]));
                 let scale = *alpha as f64 / *rank as f64;
                 // x: [*, in] → @A [*, rank] → @B [*, out] → scale → add base.
                 let lora_path = LazyTensor {
@@ -7200,14 +7929,18 @@ impl WeightStorage {
         out_features: usize,
     ) -> Self {
         assert_eq!(
-            lora_a.len(), in_features * rank,
+            lora_a.len(),
+            in_features * rank,
             "lora_a length {} does not match in_features ({in_features}) × rank ({rank}) = {}",
-            lora_a.len(), in_features * rank,
+            lora_a.len(),
+            in_features * rank,
         );
         assert_eq!(
-            lora_b.len(), rank * out_features,
+            lora_b.len(),
+            rank * out_features,
             "lora_b length {} does not match rank ({rank}) × out_features ({out_features}) = {}",
-            lora_b.len(), rank * out_features,
+            lora_b.len(),
+            rank * out_features,
         );
         assert!(
             !matches!(self, Self::WithLoRA { .. }),
@@ -7215,8 +7948,12 @@ impl WeightStorage {
         );
         Self::WithLoRA {
             base: Box::new(self),
-            lora_a, lora_b, rank, alpha,
-            in_features, out_features,
+            lora_a,
+            lora_b,
+            rank,
+            alpha,
+            in_features,
+            out_features,
         }
     }
 }
@@ -7225,16 +7962,24 @@ impl WeightStorage {
 // compiling through the refactor — the LayerWeights field type
 // widened to WeightStorage but ergonomics don't regress.
 impl From<Arc<[f32]>> for WeightStorage {
-    fn from(a: Arc<[f32]>) -> Self { Self::F32(a) }
+    fn from(a: Arc<[f32]>) -> Self {
+        Self::F32(a)
+    }
 }
 impl From<Vec<f32>> for WeightStorage {
-    fn from(v: Vec<f32>) -> Self { Self::F32(Arc::from(v)) }
+    fn from(v: Vec<f32>) -> Self {
+        Self::F32(Arc::from(v))
+    }
 }
 impl From<Arc<[half::bf16]>> for WeightStorage {
-    fn from(a: Arc<[half::bf16]>) -> Self { Self::BF16(a) }
+    fn from(a: Arc<[half::bf16]>) -> Self {
+        Self::BF16(a)
+    }
 }
 impl From<Vec<half::bf16>> for WeightStorage {
-    fn from(v: Vec<half::bf16>) -> Self { Self::BF16(Arc::from(v)) }
+    fn from(v: Vec<half::bf16>) -> Self {
+        Self::BF16(Arc::from(v))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -7306,7 +8051,7 @@ pub struct LlamaWeights {
 /// this code will move back to `fuel-transformers::models::llama`.
 #[derive(Debug, Clone)]
 pub struct LlamaModel {
-    pub config:  LlamaConfig,
+    pub config: LlamaConfig,
     pub weights: LlamaWeights,
 }
 
@@ -7327,7 +8072,11 @@ impl LlamaModel {
         let weights = &self.weights;
         let seq = tokens.len();
         let batch = 1;
-        assert_eq!(cfg.n_heads * cfg.head_dim, cfg.dim, "LlamaConfig: n_heads * head_dim must equal dim");
+        assert_eq!(
+            cfg.n_heads * cfg.head_dim,
+            cfg.dim,
+            "LlamaConfig: n_heads * head_dim must equal dim"
+        );
 
         // Embedding lookup: build a token embedding const tensor +
         // a U32 index tensor + index_select along dim 0.
@@ -7336,13 +8085,14 @@ impl LlamaModel {
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &Device::cpu(),
         );
-        let token_ids =
-            embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         // index_select(0, token_ids) produces [seq, dim]. Reshape to
         // [1, seq, dim] for the downstream attention code.
         let h = embed
-            .index_select(0, &token_ids).unwrap()
-            .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
+            .index_select(0, &token_ids)
+            .unwrap()
+            .reshape(Shape::from_dims(&[batch, seq, cfg.dim]))
+            .unwrap();
 
         self.forward_embeds(&h, start_pos)
     }
@@ -7360,7 +8110,9 @@ impl LlamaModel {
         let cfg = &self.config;
         let weights = &self.weights;
         let h_norm = self.run_backbone_embeds(embeds, start_pos)?;
-        Ok(weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?)
+        Ok(weights
+            .output
+            .apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?)
     }
 
     /// Like [`forward_embeds`] but skips the LM-head projection
@@ -7390,21 +8142,27 @@ impl LlamaModel {
         assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, dim]");
         let seq = dims[1];
         assert_eq!(dims[2], cfg.dim, "embeds last dim must equal cfg.dim");
-        assert_eq!(cfg.n_heads * cfg.head_dim, cfg.dim, "LlamaConfig: n_heads * head_dim must equal dim");
-
-        let mut h = embeds.clone();
-        let (rope_cos, rope_sin) = h.rope_tables_const(
-            cfg.rope_base, start_pos, seq, cfg.head_dim,
+        assert_eq!(
+            cfg.n_heads * cfg.head_dim,
+            cfg.dim,
+            "LlamaConfig: n_heads * head_dim must equal dim"
         );
 
+        let mut h = embeds.clone();
+        let (rope_cos, rope_sin) = h.rope_tables_const(cfg.rope_base, start_pos, seq, cfg.head_dim);
+
         let mask = LazyTensor::additive_causal_mask_like(embeds, seq)
-            .reshape(Shape::from_dims(&[1, 1, seq, seq])).unwrap();
+            .reshape(Shape::from_dims(&[1, 1, seq, seq]))
+            .unwrap();
 
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, &mask)?;
         }
         Ok(apply_affine_rms_norm(
-            &h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps,
+            &h,
+            &weights.final_norm_gain,
+            cfg.dim,
+            cfg.norm_eps,
         ))
     }
 
@@ -7431,14 +8189,17 @@ impl LlamaModel {
         assert_eq!(dims[2], cfg.dim, "embeds last dim must equal cfg.dim");
 
         let mut h = embeds.clone();
-        let (rope_cos, rope_sin) = h.rope_tables_const(
-            cfg.rope_base, start_pos, seq, cfg.head_dim,
-        );
+        let (rope_cos, rope_sin) = h.rope_tables_const(cfg.rope_base, start_pos, seq, cfg.head_dim);
 
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, attention_mask)?;
         }
-        Ok(apply_affine_rms_norm(&h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps))
+        Ok(apply_affine_rms_norm(
+            &h,
+            &weights.final_norm_gain,
+            cfg.dim,
+            cfg.norm_eps,
+        ))
     }
 
     /// Like [`forward`] but returns the hidden state AFTER the final
@@ -7478,22 +8239,28 @@ impl LlamaModel {
             Shape::from_dims(&[seq]),
         );
         let mut h = embed
-            .index_select(0, &token_ids).unwrap()
-            .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
+            .index_select(0, &token_ids)
+            .unwrap()
+            .reshape(Shape::from_dims(&[batch, seq, cfg.dim]))
+            .unwrap();
 
-        let (rope_cos, rope_sin) = h.rope_tables_const(
-            cfg.rope_base, start_pos, seq, cfg.head_dim,
-        );
+        let (rope_cos, rope_sin) = h.rope_tables_const(cfg.rope_base, start_pos, seq, cfg.head_dim);
 
         // Build the strict-causal mask once for all layers.
         let mask = LazyTensor::additive_causal_mask_like(&h, seq)
-            .reshape(Shape::from_dims(&[1, 1, seq, seq])).unwrap();
+            .reshape(Shape::from_dims(&[1, 1, seq, seq]))
+            .unwrap();
 
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, &mask)?;
         }
 
-        Ok(apply_affine_rms_norm(&h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps))
+        Ok(apply_affine_rms_norm(
+            &h,
+            &weights.final_norm_gain,
+            cfg.dim,
+            cfg.norm_eps,
+        ))
     }
 
     /// Internal entry that runs the LLaMA backbone given pre-built RoPE
@@ -7520,13 +8287,22 @@ impl LlamaModel {
         let dims = dims.dims();
         assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, dim]");
         assert_eq!(dims[2], cfg.dim, "embeds last dim must equal cfg.dim");
-        assert_eq!(cfg.n_heads * cfg.head_dim, cfg.dim, "LlamaConfig: n_heads * head_dim must equal dim");
+        assert_eq!(
+            cfg.n_heads * cfg.head_dim,
+            cfg.dim,
+            "LlamaConfig: n_heads * head_dim must equal dim"
+        );
 
         let mut h = embeds.clone();
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, rope_cos, rope_sin, mask)?;
         }
-        Ok(apply_affine_rms_norm(&h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps))
+        Ok(apply_affine_rms_norm(
+            &h,
+            &weights.final_norm_gain,
+            cfg.dim,
+            cfg.norm_eps,
+        ))
     }
 
     fn apply_layer(
@@ -7551,9 +8327,18 @@ impl LlamaModel {
         // routes F32/BF16 through standard matmul and Q4_0 through
         // fused qmatmul. Under GQA, W_k and W_v have fewer output
         // features (kv_dim instead of dim).
-        let q = layer.attn_q.apply_linear(&x_norm, cfg.dim, cfg.dim)?.add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
-        let k = layer.attn_k.apply_linear(&x_norm, cfg.dim, kv_dim)?.add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
-        let v = layer.attn_v.apply_linear(&x_norm, cfg.dim, kv_dim)?.add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
+        let q = layer
+            .attn_q
+            .apply_linear(&x_norm, cfg.dim, cfg.dim)?
+            .add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
+        let k = layer
+            .attn_k
+            .apply_linear(&x_norm, cfg.dim, kv_dim)?
+            .add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
+        let v = layer
+            .attn_v
+            .apply_linear(&x_norm, cfg.dim, kv_dim)?
+            .add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
 
         // Split heads.
         // Q: [batch, seq, dim] → [batch, seq, n_heads, head_dim] → [batch, n_heads, seq, head_dim]
@@ -7562,10 +8347,20 @@ impl LlamaModel {
             .permute([0, 2, 1, 3_usize])?;
         // K/V: [batch, seq, kv_dim] → [batch, seq, n_kv_heads, head_dim] → [batch, n_kv_heads, seq, head_dim]
         let k_h = k
-            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim]))?
+            .reshape(Shape::from_dims(&[
+                batch,
+                seq,
+                cfg.n_kv_heads,
+                cfg.head_dim,
+            ]))?
             .permute([0, 2, 1, 3_usize])?;
         let v_h = v
-            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim]))?
+            .reshape(Shape::from_dims(&[
+                batch,
+                seq,
+                cfg.n_kv_heads,
+                cfg.head_dim,
+            ]))?
             .permute([0, 2, 1, 3_usize])?;
 
         // RoPE on Q and K (applied per-head; V is NOT rotated). Uses
@@ -7606,15 +8401,16 @@ impl LlamaModel {
         let h1_norm = apply_affine_rms_norm(&h1, &layer.ffn_norm_gain, cfg.dim, cfg.norm_eps);
 
         // SwiGLU FFN (routes through apply_linear → qmatmul for Q4_0).
-        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.dim, cfg.ffn_dim)?;
-        let up   = layer.ffn_up.apply_linear(&h1_norm, cfg.dim, cfg.ffn_dim)?;
+        let gate = layer
+            .ffn_gate
+            .apply_linear(&h1_norm, cfg.dim, cfg.ffn_dim)?;
+        let up = layer.ffn_up.apply_linear(&h1_norm, cfg.dim, cfg.ffn_dim)?;
         let swiglu = gate.silu().mul(&up)?;
         let ffn_out = layer.ffn_down.apply_linear(&swiglu, cfg.ffn_dim, cfg.dim)?;
 
         // Second residual connection.
         h1.add(&ffn_out)
     }
-
 
     // ===== Phase 7.6 step 9c E.3.3.D — host-resident forward retired =====
     //
@@ -7711,7 +8507,7 @@ impl LlamaModel {
         let write_ranges = vec![
             (0, batch),
             (0, cfg.n_kv_heads),
-            (0, seq),                 // axis-2 start is dynamic; width = seq
+            (0, seq), // axis-2 start is dynamic; width = seq
             (0, cfg.head_dim),
         ];
         // Two structurally-distinct KV-write ops, one per decode path:
@@ -7732,7 +8528,8 @@ impl LlamaModel {
             }
             None => {
                 let dyn_off = fuel_ir::DynScalar::Sym(cached_len_sym);
-                let full_k = k_cache_const.write_slice_dyn(&k_r, write_ranges.clone(), 2, dyn_off)?;
+                let full_k =
+                    k_cache_const.write_slice_dyn(&k_r, write_ranges.clone(), 2, dyn_off)?;
                 let full_v = v_cache_const.write_slice_dyn(&v_h, write_ranges, 2, dyn_off)?;
                 (full_k, full_v)
             }
@@ -7786,7 +8583,8 @@ impl LlamaModel {
         )?;
 
         let merged = attn_v_permuted
-            .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
+            .reshape(Shape::from_dims(&[batch, seq, cfg.dim]))
+            .unwrap();
         let attn_out = layer.attn_o.apply_linear(&merged, cfg.dim, cfg.dim)?;
 
         let h1 = x.add(&attn_out).unwrap();
@@ -7847,7 +8645,8 @@ impl LlamaModel {
         if !matches!(act_dtype, DType::F32 | DType::BF16 | DType::F16) {
             return Err(fuel_ir::Error::Msg(format!(
                 "forward_paged_step: unsupported pool dtype {act_dtype:?} (expected F32/BF16/F16)",
-            )).bt());
+            ))
+            .bt());
         }
         // Build + realize on the pool's device so a CUDA pool runs on CUDA.
         let dev = pool.device().clone();
@@ -7856,7 +8655,8 @@ impl LlamaModel {
             return Err(fuel_ir::Error::Msg(format!(
                 "forward_paged_step: pool n_layers {} != model n_layers {}",
                 geom.n_layers, cfg.n_layers,
-            )).bt());
+            ))
+            .bt());
         }
         let block_size = geom.block_size;
 
@@ -7872,7 +8672,10 @@ impl LlamaModel {
         let phys = pool.ensure_writable_block(session, tok_pos / block_size)?;
         let slot = tok_pos % block_size;
         let pt = pool.materialize_block_table(&[session]).map_err(|e| {
-            fuel_ir::Error::Msg(format!("forward_paged_step: block-table materialize failed: {e:?}")).bt()
+            fuel_ir::Error::Msg(format!(
+                "forward_paged_step: block-table materialize failed: {e:?}"
+            ))
+            .bt()
         })?;
 
         // Embed the single token → [1, 1, dim]. The table stays f32 (CUDA
@@ -7884,8 +8687,10 @@ impl LlamaModel {
         );
         let token_ids = embed.const_u32_like(vec![token], Shape::from_dims(&[1]));
         let mut h = embed
-            .index_select(0, &token_ids).unwrap()
-            .reshape(Shape::from_dims(&[1, 1, cfg.dim])).unwrap()
+            .index_select(0, &token_ids)
+            .unwrap()
+            .reshape(Shape::from_dims(&[1, 1, cfg.dim]))
+            .unwrap()
             .to_dtype(act_dtype)?;
 
         // RoPE tables at this token's absolute position (seq = 1).
@@ -7907,21 +8712,39 @@ impl LlamaModel {
             let k_ph = h.const_placeholder_like(pool.pool_shape().clone(), act_dtype);
             let v_ph = h.const_placeholder_like(pool.pool_shape().clone(), act_dtype);
             let k_arc = pool.k_pool(li).ok_or_else(|| {
-                fuel_ir::Error::Msg(format!("forward_paged_step: no K pool buffer for layer {li}")).bt()
+                fuel_ir::Error::Msg(format!(
+                    "forward_paged_step: no K pool buffer for layer {li}"
+                ))
+                .bt()
             })?;
             let v_arc = pool.v_pool(li).ok_or_else(|| {
-                fuel_ir::Error::Msg(format!("forward_paged_step: no V pool buffer for layer {li}")).bt()
+                fuel_ir::Error::Msg(format!(
+                    "forward_paged_step: no V pool buffer for layer {li}"
+                ))
+                .bt()
             })?;
             cache.insert(k_ph.inner.id(), std::sync::Arc::clone(k_arc));
             cache.insert(v_ph.inner.id(), std::sync::Arc::clone(v_arc));
             h = self.apply_layer_paged(
-                &h, layer, pool, &k_ph, &v_ph, &rope_cos, &rope_sin,
-                &block_table, &context_lens, phys, slot, scale,
+                &h,
+                layer,
+                pool,
+                &k_ph,
+                &v_ph,
+                &rope_cos,
+                &rope_sin,
+                &block_table,
+                &context_lens,
+                phys,
+                slot,
+                scale,
             )?;
         }
 
         let h_norm = apply_affine_rms_norm(&h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps);
-        let logits = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?;
+        let logits = weights
+            .output
+            .apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?;
         // Cast to f32 before the f32 realize (a bf16 root is UB — half the byte
         // width); no-op under an f32 pool.
         let logits_root = logits
@@ -7995,7 +8818,8 @@ impl LlamaModel {
             return Err(fuel_ir::Error::Msg(format!(
                 "forward_paged_step_persistent: pool n_layers {} != model n_layers {}",
                 geom.n_layers, cfg.n_layers,
-            )).bt());
+            ))
+            .bt());
         }
 
         // Invalidate a stale held session (different cap / geometry / dtype).
@@ -8004,8 +8828,12 @@ impl LlamaModel {
             // model with different weights invalidates instead of silently
             // reusing a plan baked against the other one's Consts.
             if !s.is_valid_for(
-                max_blocks_cap, geom.n_layers, geom.block_size, act_dtype,
-                self.decode_shape_key(), pool.alloc_id(),
+                max_blocks_cap,
+                geom.n_layers,
+                geom.block_size,
+                act_dtype,
+                self.decode_shape_key(),
+                pool.alloc_id(),
             ) {
                 *decode_session = None;
             }
@@ -8015,7 +8843,11 @@ impl LlamaModel {
             // First paged decode token (or post-invalidation): build + optimize
             // the held graph ONCE.
             return self.build_and_realize_first_paged_token(
-                token, pool, session, max_blocks_cap, decode_session,
+                token,
+                pool,
+                session,
+                max_blocks_cap,
+                decode_session,
             );
         }
 
@@ -8053,16 +8885,21 @@ impl LlamaModel {
             fuel_ir::Error::Msg("forward_paged_step_persistent: unknown session".to_string()).bt()
         })?;
         pool.core_mut().append(session, 1).map_err(|e| {
-            fuel_ir::Error::Msg(format!("forward_paged_step_persistent: block append failed: {e:?}")).bt()
+            fuel_ir::Error::Msg(format!(
+                "forward_paged_step_persistent: block append failed: {e:?}"
+            ))
+            .bt()
         })?;
         let phys = pool.ensure_writable_block(session, tok_pos / block_size)?;
         let slot = tok_pos % block_size;
         let linear = phys as usize * block_size + slot;
-        let pt = pool.materialize_block_table_padded(&[session], max_blocks_cap).map_err(|e| {
-            fuel_ir::Error::Msg(format!(
+        let pt =
+            pool.materialize_block_table_padded(&[session], max_blocks_cap)
+                .map_err(|e| {
+                    fuel_ir::Error::Msg(format!(
                 "forward_paged_step_persistent: padded block-table materialize failed: {e:?}",
             )).bt()
-        })?;
+                })?;
         Ok((tok_pos, linear, pt))
     }
 
@@ -8096,7 +8933,12 @@ impl LlamaModel {
             None
         };
         Ok(crate::inference_context::PagedDecodeTokenData {
-            token_ids, rope_cos, rope_sin, block_table, context_lens, offset,
+            token_ids,
+            rope_cos,
+            rope_sin,
+            block_table,
+            context_lens,
+            offset,
         })
     }
 
@@ -8128,8 +8970,7 @@ impl LlamaModel {
 
         // Advance the pool for THIS token (same bookkeeping the re-planning
         // path does); releases the &mut borrow before the immutable build.
-        let (tok_pos, linear, pt) =
-            Self::advance_paged_session(pool, session, max_blocks_cap)?;
+        let (tok_pos, linear, pt) = Self::advance_paged_session(pool, session, max_blocks_cap)?;
 
         // ---- Build the held graph ONCE with STABLE re-bindable placeholders. ----
         // Embed table stays f32 (CUDA IndexSelect has no bf16 key); cast to the
@@ -8156,9 +8997,8 @@ impl LlamaModel {
         // block_table pinned to [1, max_blocks_cap] (Task 1) + context_lens —
         // STABLE placeholders. `.max(1)` matches the padded materialize's
         // rank-2 well-formedness floor.
-        let block_table = h.const_placeholder_like(
-            Shape::from_dims(&[1, max_blocks_cap.max(1)]), DType::U32,
-        );
+        let block_table =
+            h.const_placeholder_like(Shape::from_dims(&[1, max_blocks_cap.max(1)]), DType::U32);
         let block_table_node = block_table.inner.id();
         let context_lens = h.const_placeholder_like(Shape::from_dims(&[1]), DType::U32);
         let context_lens_node = context_lens.inner.id();
@@ -8183,10 +9023,16 @@ impl LlamaModel {
             let k_ph = h.const_placeholder_like(flat_shape.clone(), act_dtype);
             let v_ph = h.const_placeholder_like(flat_shape.clone(), act_dtype);
             let k_arc = pool.k_pool(li).ok_or_else(|| {
-                fuel_ir::Error::Msg(format!("forward_paged_step_persistent: no K pool buffer for layer {li}")).bt()
+                fuel_ir::Error::Msg(format!(
+                    "forward_paged_step_persistent: no K pool buffer for layer {li}"
+                ))
+                .bt()
             })?;
             let v_arc = pool.v_pool(li).ok_or_else(|| {
-                fuel_ir::Error::Msg(format!("forward_paged_step_persistent: no V pool buffer for layer {li}")).bt()
+                fuel_ir::Error::Msg(format!(
+                    "forward_paged_step_persistent: no V pool buffer for layer {li}"
+                ))
+                .bt()
             })?;
             let k_id = k_ph.inner.id();
             let v_id = v_ph.inner.id();
@@ -8194,13 +9040,25 @@ impl LlamaModel {
             cache.insert(v_id, std::sync::Arc::clone(v_arc));
             kv_nodes.push((k_id, v_id));
             h = self.apply_layer_paged_off(
-                &h, layer, pool, &k_ph, &v_ph, &rope_cos, &rope_sin,
-                &block_table, &context_lens, offset_tensor.as_ref(), write_sym, scale,
+                &h,
+                layer,
+                pool,
+                &k_ph,
+                &v_ph,
+                &rope_cos,
+                &rope_sin,
+                &block_table,
+                &context_lens,
+                offset_tensor.as_ref(),
+                write_sym,
+                scale,
             )?;
         }
 
         let h_norm = apply_affine_rms_norm(&h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps);
-        let logits = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?;
+        let logits = weights
+            .output
+            .apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?;
         // Cast to f32 before the f32 realize (a bf16 root is UB — half the byte
         // width); no-op under an f32 pool.
         let logits_root = logits
@@ -8222,11 +9080,17 @@ impl LlamaModel {
         }
 
         let mut sym_env = fuel_ir::SymEnv::new();
-        sym_env.bind(write_sym, linear).map_err(crate::Error::from)?;
+        sym_env
+            .bind(write_sym, linear)
+            .map_err(crate::Error::from)?;
 
         let (effective_target, optimized, base_cache, logits_vec) =
             crate::pipelined_bridge::prebuild_optimized_env_capturing_cache::<f32>(
-                &graph, logits_node, &dev, cache, &sym_env,
+                &graph,
+                logits_node,
+                &dev,
+                cache,
+                &sym_env,
             )?;
 
         *decode_session = Some(crate::inference_context::PagedDecodeSession::new(
@@ -8273,8 +9137,7 @@ impl LlamaModel {
         // Source of truth for the offset carrier = what the graph was built
         // with (its offset_node presence), so build + rebind never disagree.
         let use_device_offset = decode_session.offset_node().is_some();
-        let (tok_pos, linear, pt) =
-            Self::advance_paged_session(pool, session, max_blocks_cap)?;
+        let (tok_pos, linear, pt) = Self::advance_paged_session(pool, session, max_blocks_cap)?;
         let data =
             self.build_paged_token_data(&dev, token, tok_pos, linear, &pt, use_device_offset)?;
         let sym_env = decode_session.per_token_sym_env(linear)?;
@@ -8312,8 +9175,10 @@ impl LlamaModel {
         if k == 0 || k != sessions.len() {
             return Err(fuel_ir::Error::Msg(format!(
                 "forward_paged_step_batched: {} tokens for {} sessions (need equal, ≥ 1)",
-                k, sessions.len(),
-            )).bt());
+                k,
+                sessions.len(),
+            ))
+            .bt());
         }
         let act_dtype = pool.dtype();
         if !matches!(act_dtype, DType::F32 | DType::BF16 | DType::F16) {
@@ -8327,7 +9192,8 @@ impl LlamaModel {
             return Err(fuel_ir::Error::Msg(format!(
                 "forward_paged_step_batched: pool n_layers {} != model n_layers {}",
                 geom.n_layers, cfg.n_layers,
-            )).bt());
+            ))
+            .bt());
         }
         let block_size = geom.block_size;
 
@@ -8354,11 +9220,15 @@ impl LlamaModel {
             if pos_b % block_size == 0 {
                 needed += 1; // append allocates a fresh block for the new token
             } else {
-                let frontier = pool.core().resident_block(s, pos_b / block_size).ok_or_else(|| {
-                    fuel_ir::Error::Msg(
-                        "forward_paged_step_batched: frontier block not resident".to_string(),
-                    ).bt()
-                })?;
+                let frontier = pool
+                    .core()
+                    .resident_block(s, pos_b / block_size)
+                    .ok_or_else(|| {
+                        fuel_ir::Error::Msg(
+                            "forward_paged_step_batched: frontier block not resident".to_string(),
+                        )
+                        .bt()
+                    })?;
                 if pool.core().block_refcount(frontier) > 1 {
                     needed += 1; // copy-on-write will split this shared block
                 }
@@ -8369,7 +9239,8 @@ impl LlamaModel {
             return Err(fuel_ir::Error::Msg(format!(
                 "forward_paged_step_batched: batch needs {needed} blocks, {free} free — \
                  pre-check capacity (C-1) or evict before batching",
-            )).bt());
+            ))
+            .bt());
         }
 
         // Execute — pre-checked to fit, so no session is left partially advanced.
@@ -8377,14 +9248,20 @@ impl LlamaModel {
         for (bi, &s) in sessions.iter().enumerate() {
             let pos_b = positions[bi];
             pool.core_mut().append(s, 1).map_err(|e| {
-                fuel_ir::Error::Msg(format!("forward_paged_step_batched: block append failed: {e:?}")).bt()
+                fuel_ir::Error::Msg(format!(
+                    "forward_paged_step_batched: block append failed: {e:?}"
+                ))
+                .bt()
             })?;
             // Copy-on-write if this session's frontier block is shared (spliced).
             let phys = pool.ensure_writable_block(s, pos_b / block_size)?;
             writes.push((phys, pos_b % block_size));
         }
         let pt = pool.materialize_block_table(sessions).map_err(|e| {
-            fuel_ir::Error::Msg(format!("forward_paged_step_batched: block-table materialize failed: {e:?}")).bt()
+            fuel_ir::Error::Msg(format!(
+                "forward_paged_step_batched: block-table materialize failed: {e:?}"
+            ))
+            .bt()
         })?;
 
         // Embed K tokens → [K, 1, dim] (f32 table; cast to activation dtype).
@@ -8395,13 +9272,16 @@ impl LlamaModel {
         );
         let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[k]));
         let mut h = embed
-            .index_select(0, &token_ids).unwrap()
-            .reshape(Shape::from_dims(&[k, 1, cfg.dim])).unwrap()
+            .index_select(0, &token_ids)
+            .unwrap()
+            .reshape(Shape::from_dims(&[k, 1, cfg.dim]))
+            .unwrap()
             .to_dtype(act_dtype)?;
 
         // Per-row RoPE: one position per session -> [K,1,1,head_dim] tables.
         // block_table [K, max_blk], context_lens [K] (both already ragged).
-        let (rope_cos, rope_sin) = h.rope_tables_const_batched(cfg.rope_base, &positions, cfg.head_dim);
+        let (rope_cos, rope_sin) =
+            h.rope_tables_const_batched(cfg.rope_base, &positions, cfg.head_dim);
         let scale = (1.0f64 / (cfg.head_dim as f64).sqrt()) as f32;
         let block_table = h.const_u32_like(pt.block_table.clone(), pt.block_table_shape());
         let context_lens = h.const_u32_like(pt.context_lens.clone(), pt.context_lens_shape());
@@ -8411,21 +9291,38 @@ impl LlamaModel {
             let k_ph = h.const_placeholder_like(pool.pool_shape().clone(), act_dtype);
             let v_ph = h.const_placeholder_like(pool.pool_shape().clone(), act_dtype);
             let k_arc = pool.k_pool(li).ok_or_else(|| {
-                fuel_ir::Error::Msg(format!("forward_paged_step_batched: no K pool buffer for layer {li}")).bt()
+                fuel_ir::Error::Msg(format!(
+                    "forward_paged_step_batched: no K pool buffer for layer {li}"
+                ))
+                .bt()
             })?;
             let v_arc = pool.v_pool(li).ok_or_else(|| {
-                fuel_ir::Error::Msg(format!("forward_paged_step_batched: no V pool buffer for layer {li}")).bt()
+                fuel_ir::Error::Msg(format!(
+                    "forward_paged_step_batched: no V pool buffer for layer {li}"
+                ))
+                .bt()
             })?;
             cache.insert(k_ph.inner.id(), std::sync::Arc::clone(k_arc));
             cache.insert(v_ph.inner.id(), std::sync::Arc::clone(v_arc));
             h = self.apply_layer_paged_batched(
-                &h, layer, pool, &k_ph, &v_ph, &rope_cos, &rope_sin,
-                &block_table, &context_lens, &writes, scale,
+                &h,
+                layer,
+                pool,
+                &k_ph,
+                &v_ph,
+                &rope_cos,
+                &rope_sin,
+                &block_table,
+                &context_lens,
+                &writes,
+                scale,
             )?;
         }
 
         let h_norm = apply_affine_rms_norm(&h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps);
-        let logits = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?; // [K, 1, vocab]
+        let logits = weights
+            .output
+            .apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?; // [K, 1, vocab]
         let logits_flat = logits
             .reshape(Shape::from_dims(&[k * cfg.vocab_size]))?
             .to_dtype(DType::F32)?; // f32 for the realize (no-op under an f32 pool)
@@ -8463,11 +9360,21 @@ impl LlamaModel {
         let batch = xs.dims()[0];
         let (q_r, k_r, v_h) = self.project_qkv_roped_batched(x, layer, rope_cos, rope_sin)?;
         let attn = pool.build_decode_attn_batched(
-            k_pool_ph, v_pool_ph, &q_r, &k_r, &v_h, block_table, context_lens, writes, scale,
+            k_pool_ph,
+            v_pool_ph,
+            &q_r,
+            &k_r,
+            &v_h,
+            block_table,
+            context_lens,
+            writes,
+            scale,
         )?;
         let merged = attn
-            .permute([0, 2, 1, 3_usize]).unwrap()
-            .reshape(Shape::from_dims(&[batch, 1, cfg.dim])).unwrap();
+            .permute([0, 2, 1, 3_usize])
+            .unwrap()
+            .reshape(Shape::from_dims(&[batch, 1, cfg.dim]))
+            .unwrap();
         let attn_out = layer.attn_o.apply_linear(&merged, cfg.dim, cfg.dim)?;
         let h1 = x.add(&attn_out).unwrap();
         self.ffn_block(&h1, layer)
@@ -8502,12 +9409,23 @@ impl LlamaModel {
 
         // Paged storage + attention (replaces the contiguous write_slice + sliced SDPA).
         let attn = pool.build_decode_attn(
-            k_pool_ph, v_pool_ph, &q_r, &k_r, &v_h, block_table, context_lens, phys, slot, scale,
+            k_pool_ph,
+            v_pool_ph,
+            &q_r,
+            &k_r,
+            &v_h,
+            block_table,
+            context_lens,
+            phys,
+            slot,
+            scale,
         )?;
 
         let merged = attn
-            .permute([0, 2, 1, 3_usize]).unwrap()
-            .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
+            .permute([0, 2, 1, 3_usize])
+            .unwrap()
+            .reshape(Shape::from_dims(&[batch, seq, cfg.dim]))
+            .unwrap();
         let attn_out = layer.attn_o.apply_linear(&merged, cfg.dim, cfg.dim)?;
         let h1 = x.add(&attn_out).unwrap();
         self.ffn_block(&h1, layer)
@@ -8545,13 +9463,23 @@ impl LlamaModel {
         // Paged storage + attention with a flattened dynamic write offset
         // (structurally step-invariant), replacing the concrete two-axis slab.
         let attn = pool.build_decode_attn_off(
-            k_pool_ph, v_pool_ph, &q_r, &k_r, &v_h, block_table, context_lens,
-            write_off, write_sym, scale,
+            k_pool_ph,
+            v_pool_ph,
+            &q_r,
+            &k_r,
+            &v_h,
+            block_table,
+            context_lens,
+            write_off,
+            write_sym,
+            scale,
         )?;
 
         let merged = attn
-            .permute([0, 2, 1, 3_usize]).unwrap()
-            .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
+            .permute([0, 2, 1, 3_usize])
+            .unwrap()
+            .reshape(Shape::from_dims(&[batch, seq, cfg.dim]))
+            .unwrap();
         let attn_out = layer.attn_o.apply_linear(&merged, cfg.dim, cfg.dim)?;
         let h1 = x.add(&attn_out).unwrap();
         self.ffn_block(&h1, layer)
@@ -8580,22 +9508,52 @@ impl LlamaModel {
         let act_dtype = x.dtype();
 
         let x_norm = apply_affine_rms_norm(x, &layer.attn_norm_gain, cfg.dim, cfg.norm_eps);
-        let q = layer.attn_q.apply_linear(&x_norm, cfg.dim, cfg.dim)?.add_optional_trailing_bias(layer.attn_q_bias.as_ref()).unwrap();
-        let k = layer.attn_k.apply_linear(&x_norm, cfg.dim, kv_dim)?.add_optional_trailing_bias(layer.attn_k_bias.as_ref()).unwrap();
-        let v = layer.attn_v.apply_linear(&x_norm, cfg.dim, kv_dim)?.add_optional_trailing_bias(layer.attn_v_bias.as_ref()).unwrap();
+        let q = layer
+            .attn_q
+            .apply_linear(&x_norm, cfg.dim, cfg.dim)?
+            .add_optional_trailing_bias(layer.attn_q_bias.as_ref())
+            .unwrap();
+        let k = layer
+            .attn_k
+            .apply_linear(&x_norm, cfg.dim, kv_dim)?
+            .add_optional_trailing_bias(layer.attn_k_bias.as_ref())
+            .unwrap();
+        let v = layer
+            .attn_v
+            .apply_linear(&x_norm, cfg.dim, kv_dim)?
+            .add_optional_trailing_bias(layer.attn_v_bias.as_ref())
+            .unwrap();
         let q_h = q
-            .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim])).unwrap()
-            .permute([0, 2, 1, 3_usize]).unwrap();
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim]))
+            .unwrap()
+            .permute([0, 2, 1, 3_usize])
+            .unwrap();
         let k_h = k
-            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim])).unwrap()
-            .permute([0, 2, 1, 3_usize]).unwrap();
+            .reshape(Shape::from_dims(&[
+                batch,
+                seq,
+                cfg.n_kv_heads,
+                cfg.head_dim,
+            ]))
+            .unwrap()
+            .permute([0, 2, 1, 3_usize])
+            .unwrap();
         let v_h = v
-            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim])).unwrap()
-            .permute([0, 2, 1, 3_usize]).unwrap();
-        let q_r = q_h.to_dtype(DType::F32)?
+            .reshape(Shape::from_dims(&[
+                batch,
+                seq,
+                cfg.n_kv_heads,
+                cfg.head_dim,
+            ]))
+            .unwrap()
+            .permute([0, 2, 1, 3_usize])
+            .unwrap();
+        let q_r = q_h
+            .to_dtype(DType::F32)?
             .rope_with_tables_decomposed(rope_cos, rope_sin)?
             .to_dtype(act_dtype)?;
-        let k_r = k_h.to_dtype(DType::F32)?
+        let k_r = k_h
+            .to_dtype(DType::F32)?
             .rope_with_tables_decomposed(rope_cos, rope_sin)?
             .to_dtype(act_dtype)?;
         Ok((q_r, k_r, v_h))
@@ -8624,22 +9582,52 @@ impl LlamaModel {
         let act_dtype = x.dtype();
 
         let x_norm = apply_affine_rms_norm(x, &layer.attn_norm_gain, cfg.dim, cfg.norm_eps);
-        let q = layer.attn_q.apply_linear(&x_norm, cfg.dim, cfg.dim)?.add_optional_trailing_bias(layer.attn_q_bias.as_ref()).unwrap();
-        let k = layer.attn_k.apply_linear(&x_norm, cfg.dim, kv_dim)?.add_optional_trailing_bias(layer.attn_k_bias.as_ref()).unwrap();
-        let v = layer.attn_v.apply_linear(&x_norm, cfg.dim, kv_dim)?.add_optional_trailing_bias(layer.attn_v_bias.as_ref()).unwrap();
+        let q = layer
+            .attn_q
+            .apply_linear(&x_norm, cfg.dim, cfg.dim)?
+            .add_optional_trailing_bias(layer.attn_q_bias.as_ref())
+            .unwrap();
+        let k = layer
+            .attn_k
+            .apply_linear(&x_norm, cfg.dim, kv_dim)?
+            .add_optional_trailing_bias(layer.attn_k_bias.as_ref())
+            .unwrap();
+        let v = layer
+            .attn_v
+            .apply_linear(&x_norm, cfg.dim, kv_dim)?
+            .add_optional_trailing_bias(layer.attn_v_bias.as_ref())
+            .unwrap();
         let q_h = q
-            .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim])).unwrap()
-            .permute([0, 2, 1, 3_usize]).unwrap();
+            .reshape(Shape::from_dims(&[batch, seq, cfg.n_heads, cfg.head_dim]))
+            .unwrap()
+            .permute([0, 2, 1, 3_usize])
+            .unwrap();
         let k_h = k
-            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim])).unwrap()
-            .permute([0, 2, 1, 3_usize]).unwrap();
+            .reshape(Shape::from_dims(&[
+                batch,
+                seq,
+                cfg.n_kv_heads,
+                cfg.head_dim,
+            ]))
+            .unwrap()
+            .permute([0, 2, 1, 3_usize])
+            .unwrap();
         let v_h = v
-            .reshape(Shape::from_dims(&[batch, seq, cfg.n_kv_heads, cfg.head_dim])).unwrap()
-            .permute([0, 2, 1, 3_usize]).unwrap();
-        let q_r = q_h.to_dtype(DType::F32)?
+            .reshape(Shape::from_dims(&[
+                batch,
+                seq,
+                cfg.n_kv_heads,
+                cfg.head_dim,
+            ]))
+            .unwrap()
+            .permute([0, 2, 1, 3_usize])
+            .unwrap();
+        let q_r = q_h
+            .to_dtype(DType::F32)?
             .rope_batched(rope_cos, rope_sin)?
             .to_dtype(act_dtype)?;
-        let k_r = k_h.to_dtype(DType::F32)?
+        let k_r = k_h
+            .to_dtype(DType::F32)?
             .rope_batched(rope_cos, rope_sin)?
             .to_dtype(act_dtype)?;
         Ok((q_r, k_r, v_h))
@@ -8651,7 +9639,9 @@ impl LlamaModel {
     fn ffn_block(&self, h1: &LazyTensor, layer: &LayerWeights) -> crate::Result<LazyTensor> {
         let cfg = &self.config;
         let h1_norm = apply_affine_rms_norm(h1, &layer.ffn_norm_gain, cfg.dim, cfg.norm_eps);
-        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.dim, cfg.ffn_dim)?;
+        let gate = layer
+            .ffn_gate
+            .apply_linear(&h1_norm, cfg.dim, cfg.ffn_dim)?;
         let up = layer.ffn_up.apply_linear(&h1_norm, cfg.dim, cfg.ffn_dim)?;
         let swiglu = gate.silu().mul(&up)?;
         let ffn_out = layer.ffn_down.apply_linear(&swiglu, cfg.ffn_dim, cfg.dim)?;
@@ -8764,7 +9754,12 @@ impl LlamaModel {
         rope_inv_freq: Option<&[f64]>,
     ) -> crate::Result<Vec<f32>> {
         crate::persistent_decode::forward_with_kv_context(
-            self, tokens, cache, ctx, return_all_positions, rope_inv_freq,
+            self,
+            tokens,
+            cache,
+            ctx,
+            return_all_positions,
+            rope_inv_freq,
         )
     }
 
@@ -8887,7 +9882,12 @@ impl LlamaModel {
         rope_inv_freq: Option<&[f64]>,
     ) -> crate::Result<Vec<f32>> {
         crate::persistent_decode::forward_with_kv_context_persistent(
-            self, tokens, cache, ctx, session, rope_inv_freq,
+            self,
+            tokens,
+            cache,
+            ctx,
+            session,
+            rope_inv_freq,
         )
     }
 
@@ -8914,7 +9914,12 @@ impl LlamaModel {
         rope_inv_freq: Option<&[f64]>,
     ) -> crate::Result<Vec<f32>> {
         crate::persistent_decode::build_and_realize_first_decode_token(
-            self, tokens, cache, ctx, session, rope_inv_freq,
+            self,
+            tokens,
+            cache,
+            ctx,
+            session,
+            rope_inv_freq,
         )
     }
 
@@ -8987,8 +9992,7 @@ impl LlamaModel {
         let cached_len = caches[0].cached_len;
         let max_seq_len = caches[0].max_seq_len.ok_or_else(|| {
             fuel_ir::Error::Msg(
-                "build_batched_decode_logits: cache built via with_dims (no capacity)"
-                    .to_string(),
+                "build_batched_decode_logits: cache built via with_dims (no capacity)".to_string(),
             )
             .bt()
         })?;
@@ -9047,8 +10051,11 @@ impl LlamaModel {
 
         // ---- (2) Copy-in: WriteSlice each session's KV history into slot i. ----
         {
-            let anchor =
-                LazyTensor::from_f32(Arc::from(vec![0.0f32]), Shape::from_dims(&[1]), &Device::cpu());
+            let anchor = LazyTensor::from_f32(
+                Arc::from(vec![0.0f32]),
+                Shape::from_dims(&[1]),
+                &Device::cpu(),
+            );
             let mut ctx_in = InferenceContext::new(device.clone());
             let mut targets: Vec<fuel_graph::NodeId> = Vec::with_capacity(2 * cfg.n_layers);
             for l in 0..cfg.n_layers {
@@ -9075,8 +10082,7 @@ impl LlamaModel {
                     })?;
                     ctx_in.insert(sk.inner.id(), k_arc);
                     ctx_in.insert(sv.inner.id(), v_arc);
-                    let ranges =
-                        vec![(i, i + 1), (0, n_kv_heads), (0, max_seq_len), (0, head_dim)];
+                    let ranges = vec![(i, i + 1), (0, n_kv_heads), (0, max_seq_len), (0, head_dim)];
                     acc_k = acc_k.write_slice(&sk, ranges.clone())?;
                     acc_v = acc_v.write_slice(&sv, ranges)?;
                 }
@@ -9114,8 +10120,7 @@ impl LlamaModel {
             cache_dtype,
         )?;
 
-        let cache_shape =
-            Shape::from_dims(&[batch, cfg.n_kv_heads, max_seq_len, cfg.head_dim]);
+        let cache_shape = Shape::from_dims(&[batch, cfg.n_kv_heads, max_seq_len, cfg.head_dim]);
         let mut ctx_dec = InferenceContext::new(device.clone());
         for (l, layer_weights) in weights.layers.iter().enumerate() {
             let k_cache_node = h.const_placeholder_like(cache_shape.clone(), cache_dtype);
@@ -9139,9 +10144,10 @@ impl LlamaModel {
             )?;
         }
 
-        let h_norm =
-            apply_affine_rms_norm(&h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps);
-        let logits = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?;
+        let h_norm = apply_affine_rms_norm(&h, &weights.final_norm_gain, cfg.dim, cfg.norm_eps);
+        let logits = weights
+            .output
+            .apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?;
         let last_pos = seq - 1;
         let logits_root = logits
             .slice(1, last_pos, 1)?
@@ -9156,11 +10162,8 @@ impl LlamaModel {
         sym_env
             .bind(attended_len_sym, cached_len + seq)
             .map_err(crate::Error::from)?;
-        let flat = ctx_dec.realize_one_as_with_env::<f32>(
-            &graph_dec,
-            logits_root.inner.id(),
-            &sym_env,
-        )?;
+        let flat =
+            ctx_dec.realize_one_as_with_env::<f32>(&graph_dec, logits_root.inner.id(), &sym_env)?;
         if flat.len() != k * cfg.vocab_size {
             return Err(fuel_ir::Error::Msg(format!(
                 "build_batched_decode_logits: realize returned {} floats, expected {}",
@@ -9198,8 +10201,11 @@ impl LlamaModel {
         // corruption (a bumped `cached_len` over a half-written position, or a
         // retry that reads stale/partial slots). ----
         {
-            let anchor =
-                LazyTensor::from_f32(Arc::from(vec![0.0f32]), Shape::from_dims(&[1]), &Device::cpu());
+            let anchor = LazyTensor::from_f32(
+                Arc::from(vec![0.0f32]),
+                Shape::from_dims(&[1]),
+                &Device::cpu(),
+            );
             let mut ctx_out = InferenceContext::new(device.clone());
             let mut targets: Vec<fuel_graph::NodeId> = Vec::with_capacity(2 * cfg.n_layers * k);
             for l in 0..cfg.n_layers {
@@ -9233,8 +10239,7 @@ impl LlamaModel {
                             .bt()
                         })?,
                     );
-                    let ranges =
-                        vec![(0, 1), (0, n_kv_heads), (0, max_seq_len), (0, head_dim)];
+                    let ranges = vec![(0, 1), (0, n_kv_heads), (0, max_seq_len), (0, head_dim)];
                     let wk = dst_k.write_slice(&slot_k, ranges.clone())?;
                     let wv = dst_v.write_slice(&slot_v, ranges)?;
                     targets.push(wk.inner.id());
@@ -9287,7 +10292,12 @@ impl LlamaModel {
         rope_inv_freq: Option<&[f64]>,
     ) -> crate::Result<Vec<f32>> {
         crate::persistent_decode::rebind_and_realize_prebuilt(
-            self, tokens, cache, ctx, session, rope_inv_freq,
+            self,
+            tokens,
+            cache,
+            ctx,
+            session,
+            rope_inv_freq,
         )
     }
 
@@ -9316,12 +10326,10 @@ impl LlamaModel {
         // long context) changes on this path. `None` keeps the default, so
         // every pre-existing caller stays bit-identical.
         let (cos_data, sin_data) = match rope_inv_freq {
-            Some(inv) => fuel_graph::build_rope_tables_with_inv_freq(
-                inv, cached_len, seq, cfg.head_dim,
-            ),
-            None => fuel_graph::build_rope_tables(
-                cfg.rope_base, cached_len, seq, cfg.head_dim,
-            ),
+            Some(inv) => {
+                fuel_graph::build_rope_tables_with_inv_freq(inv, cached_len, seq, cfg.head_dim)
+            }
+            None => fuel_graph::build_rope_tables(cfg.rope_base, cached_len, seq, cfg.head_dim),
         };
         let rope_cos = fuel_ir::HostBuffer::F32(cos_data);
         let rope_sin = fuel_ir::HostBuffer::F32(sin_data);
@@ -9351,10 +10359,13 @@ impl LlamaModel {
                     mask_data.iter().map(|&v| half::bf16::from_f32(v)).collect();
                 fuel_ir::HostBuffer::BF16(bf16_data)
             }
-            other => return Err(fuel_ir::Error::Msg(format!(
-                "compute_token_rope_mask_host_data: unsupported cache dtype {other:?} \
+            other => {
+                return Err(fuel_ir::Error::Msg(format!(
+                    "compute_token_rope_mask_host_data: unsupported cache dtype {other:?} \
                  (expected F32 or BF16)",
-            )).bt()),
+                ))
+                .bt());
+            }
         };
 
         // Device-offset path: the KV-write start (`cached_len` as a
@@ -9366,7 +10377,13 @@ impl LlamaModel {
             None
         };
 
-        Ok(TokenDataHost { token_ids, rope_cos, rope_sin, mask, offset })
+        Ok(TokenDataHost {
+            token_ids,
+            rope_cos,
+            rope_sin,
+            mask,
+            offset,
+        })
     }
 
     /// Recompute the per-token host bytes for token-ids / RoPE cos+sin /
@@ -9387,7 +10404,11 @@ impl LlamaModel {
         rope_inv_freq: Option<&[f64]>,
     ) -> crate::Result<crate::inference_context::DecodeTokenData> {
         let host = self.compute_token_rope_mask_host_data(
-            cached_len, tokens, max_seq_len, cache_dtype, with_device_offset,
+            cached_len,
+            tokens,
+            max_seq_len,
+            cache_dtype,
+            with_device_offset,
             rope_inv_freq,
         )?;
         let upload = crate::pipelined_bridge::upload_host_buffer_to_device;
@@ -9423,7 +10444,11 @@ impl LlamaModel {
         rope_inv_freq: Option<&[f64]>,
     ) -> crate::Result<TokenDataBytes> {
         let host = self.compute_token_rope_mask_host_data(
-            cached_len, tokens, max_seq_len, cache_dtype, with_device_offset,
+            cached_len,
+            tokens,
+            max_seq_len,
+            cache_dtype,
+            with_device_offset,
             rope_inv_freq,
         )?;
         Ok(TokenDataBytes {
@@ -9431,7 +10456,10 @@ impl LlamaModel {
             rope_cos: crate::pipelined_bridge::host_buffer_to_bytes(&host.rope_cos),
             rope_sin: crate::pipelined_bridge::host_buffer_to_bytes(&host.rope_sin),
             mask: crate::pipelined_bridge::host_buffer_to_bytes(&host.mask),
-            offset: host.offset.as_ref().map(crate::pipelined_bridge::host_buffer_to_bytes),
+            offset: host
+                .offset
+                .as_ref()
+                .map(crate::pipelined_bridge::host_buffer_to_bytes),
         })
     }
 
@@ -9550,21 +10578,27 @@ impl LlamaModel {
             // Fresh FIXED-address Arcs — these addresses are what every
             // later `replay_token` H2D-overwrites in place.
             let data = self.build_token_rope_mask_arcs(
-                &device, cached_len, tokens, s.max_seq_len(), cache_dtype,
+                &device,
+                cached_len,
+                tokens,
+                s.max_seq_len(),
+                cache_dtype,
                 s.offset_node().is_some(),
                 None, // rope_inv_freq — see the RoPE-SCALING note in this fn's doc
             )?;
 
             // Merged StorageCache: base_cache clone (cheap — Arc-clones
             // only) + overwrite the per-token entries with the fresh Arcs.
-            let mut merged_cache: fuel_dispatch::pipelined::StorageCache =
-                s.base_cache().clone();
+            let mut merged_cache: fuel_dispatch::pipelined::StorageCache = s.base_cache().clone();
             merged_cache.insert(s.token_ids_node(), Arc::clone(&data.token_ids));
             merged_cache.insert(s.rope_cos_node(), Arc::clone(&data.rope_cos));
             merged_cache.insert(s.rope_sin_node(), Arc::clone(&data.rope_sin));
             merged_cache.insert(s.mask_node(), Arc::clone(&data.mask));
             let mut per_token_node_ids: Vec<fuel_graph::NodeId> = vec![
-                s.token_ids_node(), s.rope_cos_node(), s.rope_sin_node(), s.mask_node(),
+                s.token_ids_node(),
+                s.rope_cos_node(),
+                s.rope_sin_node(),
+                s.mask_node(),
             ];
             if let (Some(offset_node), Some(offset_arc)) = (s.offset_node(), data.offset.as_ref()) {
                 merged_cache.insert(offset_node, Arc::clone(offset_arc));
@@ -9634,10 +10668,16 @@ impl LlamaModel {
 
         // ---- 4. Third token onward: pure replay. ----
         let cap = captured.as_ref().expect("captured is Some (checked above)");
-        let s = session.as_ref().expect("session is Some whenever captured is Some");
+        let s = session
+            .as_ref()
+            .expect("session is Some whenever captured is Some");
 
         let bytes = self.build_token_rope_mask_bytes(
-            cached_len, tokens, s.max_seq_len(), cache_dtype, s.offset_node().is_some(),
+            cached_len,
+            tokens,
+            s.max_seq_len(),
+            cache_dtype,
+            s.offset_node().is_some(),
             None, // rope_inv_freq — see the RoPE-SCALING note in this fn's doc
         )?;
         let mut updates: Vec<(fuel_graph::NodeId, &[u8])> = vec![
@@ -9704,8 +10744,15 @@ impl LlamaModel {
         kv: &dyn crate::inference_context::KvRebindSource,
     ) -> SessionDisposition {
         invalidate_decode_pair_if_stale(
-            session, captured, ctx, seq, max_seq_len, cache_dtype,
-            self.config.n_layers, self.decode_shape_key(), kv,
+            session,
+            captured,
+            ctx,
+            seq,
+            max_seq_len,
+            cache_dtype,
+            self.config.n_layers,
+            self.decode_shape_key(),
+            kv,
             |sess, c| self.drop_decode_session(sess, c),
         )
     }
@@ -9729,7 +10776,6 @@ impl LlamaModel {
         crate::persistent_decode::drop_decode_session(session, ctx)
     }
 }
-
 
 // Phase 7.6 step 9c E.3.3.D — host-resident `LlamaKVCache` retired.
 // Its successor is `KvCache` in `crate::inference_context`, which
@@ -9781,7 +10827,14 @@ fn invalidate_decode_pair_if_stale<C>(
     ),
 ) -> SessionDisposition {
     refresh_decode_session(
-        session, ctx, seq, max_seq_len, cache_dtype, n_layers, shape_key, kv,
+        session,
+        ctx,
+        seq,
+        max_seq_len,
+        cache_dtype,
+        n_layers,
+        shape_key,
+        kv,
         // Reader before owner — see the doc comment above. This fires for a
         // re-bind as well as a drop: a capture records FIXED device addresses
         // drawn from `base_cache`, and `rebind_kv` replaces some of them.
@@ -9929,14 +10982,14 @@ fn captured_output_to_f32(
             return Err(fuel_ir::Error::Msg(format!(
                 "captured decode output is BackendStorage::{:?}, expected Cpu or Cuda",
                 std::mem::discriminant(other),
-            )).bt());
+            ))
+            .bt());
         }
     };
     Ok(bytemuck::cast_slice::<u8, f32>(&bytes).to_vec())
 }
 
 /// Broadcast-add a 1-D bias along the last axis of `x`, or return
-
 
 /// RmsNorm with a learned per-channel gain, applied along the last dim.
 /// This is the affine version used by LLaMA: `y = (x / rms) * gain`.
@@ -9989,7 +11042,11 @@ fn realize_kv_write_targets(
     Ok(())
 }
 
-pub(crate) fn build_decode_causal_mask(cached_len: usize, seq: usize, max_seq_len: usize) -> Vec<f32> {
+pub(crate) fn build_decode_causal_mask(
+    cached_len: usize,
+    seq: usize,
+    max_seq_len: usize,
+) -> Vec<f32> {
     let mut mask_data = vec![0.0_f32; seq * max_seq_len];
     for q_idx in 0..seq {
         let abs_q = cached_len + q_idx;
@@ -10091,8 +11148,16 @@ mod decode_mask_tests {
     #[test]
     fn windowed_mask_offsets_each_row_by_cached_len() {
         let m = build_decode_causal_mask_windowed(1, 2, 5, 2);
-        assert_eq!(attendable(&m[0..5]), vec![1, 1, 0, 0, 0], "row 0 = abs pos 1");
-        assert_eq!(attendable(&m[5..10]), vec![0, 1, 1, 0, 0], "row 1 = abs pos 2");
+        assert_eq!(
+            attendable(&m[0..5]),
+            vec![1, 1, 0, 0, 0],
+            "row 0 = abs pos 1"
+        );
+        assert_eq!(
+            attendable(&m[5..10]),
+            vec![0, 1, 1, 0, 0],
+            "row 1 = abs pos 2"
+        );
     }
 
     /// **Non-discrimination control, and it is what keeps the two tests above
@@ -10253,7 +11318,7 @@ pub(crate) fn offer_flash_decode_arm_for_region(
     softcap: Option<f32>,
     cap: fuel_dispatch::decode_flash::FlashArmCapability,
 ) -> crate::Result<Option<fuel_graph::NodeId>> {
-    use fuel_dispatch::decode_flash::{offer_decode_flash_arm, DecodeFlashSpec};
+    use fuel_dispatch::decode_flash::{DecodeFlashSpec, offer_decode_flash_arm};
     let (window_size_left, window_size_right) = flash_window_bounds(attn_window);
     let spec = DecodeFlashSpec {
         q,
@@ -10281,24 +11346,23 @@ pub(crate) fn offer_flash_decode_arm_for_region(
     offer_decode_flash_arm(&mut g, &spec, cap)
 }
 
-fn apply_affine_rms_norm(
-    x: &LazyTensor,
-    gain: &Arc<[f32]>,
-    dim: usize,
-    eps: f64,
-) -> LazyTensor {
-    assert_eq!(gain.len(), dim, "apply_affine_rms_norm: gain length must equal dim");
+fn apply_affine_rms_norm(x: &LazyTensor, gain: &Arc<[f32]>, dim: usize, eps: f64) -> LazyTensor {
+    assert_eq!(
+        gain.len(),
+        dim,
+        "apply_affine_rms_norm: gain length must equal dim"
+    );
     let normalized = x.rms_norm_last_dim(eps).unwrap();
     // The gain is always stored f32 (norm gains are precision-sensitive —
     // see `LayerWeights::attn_norm_gain`'s doc) but must be materialized
     // in `x`'s dtype: under BF16-throughout decode (Phase D increment A)
     // `x` is BF16 and `broadcast_mul` asserts dtype equality, so an f32
     // gain would panic. No-op conversion for f32 activations.
-    let gain_t = x.const_like_dtype(gain, Shape::from_dims(&[dim]), x.dtype())
+    let gain_t = x
+        .const_like_dtype(gain, Shape::from_dims(&[dim]), x.dtype())
         .expect("apply_affine_rms_norm: activation dtype must be F32 or BF16");
     normalized.broadcast_mul(&gain_t).unwrap()
 }
-
 
 // ---- HuggingFace Hub and safetensors weight loading ----------------------
 
@@ -10345,9 +11409,9 @@ pub fn load_tensor_as_f32(
             }
             Ok(out)
         }
-        other => crate::bail!(
-            "load_tensor_as_f32: unsupported dtype {other:?} for tensor {name:?}",
-        ),
+        other => {
+            crate::bail!("load_tensor_as_f32: unsupported dtype {other:?} for tensor {name:?}",)
+        }
     }
 }
 
@@ -10409,7 +11473,8 @@ pub fn load_transposed_matrix_preserve_dtype(
             if bytes.len() != expected * 2 {
                 crate::bail!(
                     "load_transposed_matrix_preserve_dtype: bf16 tensor {name:?} has {} bytes, expected {}",
-                    bytes.len(), expected * 2,
+                    bytes.len(),
+                    expected * 2,
                 );
             }
             // Reinterpret input as [out_features, in_features] of
@@ -10516,10 +11581,8 @@ impl LlamaWeights {
                 cfg.dim,
                 cfg.ffn_dim,
             )?;
-            let attn_norm_gain = load_tensor_as_f32(
-                st,
-                &format!("model.layers.{i}.input_layernorm.weight"),
-            )?;
+            let attn_norm_gain =
+                load_tensor_as_f32(st, &format!("model.layers.{i}.input_layernorm.weight"))?;
             let ffn_norm_gain = load_tensor_as_f32(
                 st,
                 &format!("model.layers.{i}.post_attention_layernorm.weight"),
@@ -10528,24 +11591,18 @@ impl LlamaWeights {
             // so these will return `Err` for LLaMA weights and we
             // store `None`. We don't bail — a missing bias is a
             // legitimate architectural variation, not an error.
-            let attn_q_bias = load_tensor_as_f32(
-                st,
-                &format!("model.layers.{i}.self_attn.q_proj.bias"),
-            )
-            .ok()
-            .map(Arc::from);
-            let attn_k_bias = load_tensor_as_f32(
-                st,
-                &format!("model.layers.{i}.self_attn.k_proj.bias"),
-            )
-            .ok()
-            .map(Arc::from);
-            let attn_v_bias = load_tensor_as_f32(
-                st,
-                &format!("model.layers.{i}.self_attn.v_proj.bias"),
-            )
-            .ok()
-            .map(Arc::from);
+            let attn_q_bias =
+                load_tensor_as_f32(st, &format!("model.layers.{i}.self_attn.q_proj.bias"))
+                    .ok()
+                    .map(Arc::from);
+            let attn_k_bias =
+                load_tensor_as_f32(st, &format!("model.layers.{i}.self_attn.k_proj.bias"))
+                    .ok()
+                    .map(Arc::from);
+            let attn_v_bias =
+                load_tensor_as_f32(st, &format!("model.layers.{i}.self_attn.v_proj.bias"))
+                    .ok()
+                    .map(Arc::from);
             layers.push(LayerWeights {
                 attn_q,
                 attn_q_bias,
@@ -10558,7 +11615,7 @@ impl LlamaWeights {
                 ffn_up,
                 ffn_down,
                 attn_norm_gain: Arc::from(attn_norm_gain),
-                ffn_norm_gain:  Arc::from(ffn_norm_gain),
+                ffn_norm_gain: Arc::from(ffn_norm_gain),
             });
         }
 
@@ -10568,7 +11625,10 @@ impl LlamaWeights {
         // embeddings (`lm_head.weight` absent → reuse embed_tokens) for
         // models that tie input/output weights.
         let output: WeightStorage = match load_transposed_matrix_preserve_dtype(
-            st, "lm_head.weight", cfg.vocab_size, cfg.dim,
+            st,
+            "lm_head.weight",
+            cfg.vocab_size,
+            cfg.dim,
         ) {
             Ok(w) => w,
             Err(_) => {
@@ -10578,8 +11638,7 @@ impl LlamaWeights {
                 let mut transposed = vec![0.0_f32; cfg.dim * cfg.vocab_size];
                 for i in 0..cfg.vocab_size {
                     for j in 0..cfg.dim {
-                        transposed[j * cfg.vocab_size + i] =
-                            token_embedding[i * cfg.dim + j];
+                        transposed[j * cfg.vocab_size + i] = token_embedding[i * cfg.dim + j];
                     }
                 }
                 WeightStorage::F32(Arc::from(transposed))
@@ -10702,8 +11761,12 @@ impl LlamaModel {
         // bitwise token-sequence equivalence with the retired
         // `generate_streaming_on` / `LlamaKVCache` host-resident path.
         self.generate_with_kv_context(
-            prompt_tokens, max_new_tokens, strategy, eos_id,
-            &Device::cpu(), DType::F32,
+            prompt_tokens,
+            max_new_tokens,
+            strategy,
+            eos_id,
+            &Device::cpu(),
+            DType::F32,
         )
     }
 
@@ -10755,7 +11818,8 @@ impl LlamaModel {
         if prompt_tokens.is_empty() {
             return Err(fuel_ir::Error::Msg(
                 "generate_streaming_with_kv_context: prompt is empty".to_string(),
-            ).bt());
+            )
+            .bt());
         }
         let mut tokens: Vec<u32> = prompt_tokens.to_vec();
         let mut rng_state: u64 = match strategy {
@@ -10765,8 +11829,12 @@ impl LlamaModel {
 
         let max_seq_len = prompt_tokens.len() + max_new_tokens;
         let mut cache = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim,
-            max_seq_len, dtype, device,
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            max_seq_len,
+            dtype,
+            device,
         )?;
         let mut ctx = InferenceContext::new(device.clone());
 
@@ -10811,7 +11879,10 @@ impl LlamaModel {
         // Prefill: one forward pass over the full prompt. Always the persistent
         // entry — `seq != 1`, so the captured path would immediately fall back.
         let mut last_logits = self.forward_with_kv_context_persistent(
-            prompt_tokens, &mut cache, &mut ctx, &mut session,
+            prompt_tokens,
+            &mut cache,
+            &mut ctx,
+            &mut session,
         )?;
 
         // Decode loop.
@@ -10827,13 +11898,20 @@ impl LlamaModel {
             #[cfg(feature = "cuda")]
             {
                 last_logits = self.forward_with_kv_context_captured(
-                    &[next], &mut cache, &mut ctx, &mut session, &mut captured,
+                    &[next],
+                    &mut cache,
+                    &mut ctx,
+                    &mut session,
+                    &mut captured,
                 )?;
             }
             #[cfg(not(feature = "cuda"))]
             {
                 last_logits = self.forward_with_kv_context_persistent(
-                    &[next], &mut cache, &mut ctx, &mut session,
+                    &[next],
+                    &mut cache,
+                    &mut ctx,
+                    &mut session,
                 )?;
             }
         }
@@ -10927,7 +12005,8 @@ impl LlamaModel {
         if draft.config.vocab_size != self.config.vocab_size {
             fuel_ir::bail!(
                 "spec-decode: draft vocab {} != target vocab {}",
-                draft.config.vocab_size, self.config.vocab_size,
+                draft.config.vocab_size,
+                self.config.vocab_size,
             );
         }
         if k == 0 {
@@ -10936,7 +12015,8 @@ impl LlamaModel {
         if prompt_tokens.is_empty() {
             return Err(fuel_ir::Error::Msg(
                 "generate_streaming_spec_with_kv_context: prompt is empty".to_string(),
-            ).bt());
+            )
+            .bt());
         }
 
         let mut tokens: Vec<u32> = prompt_tokens.to_vec();
@@ -10958,12 +12038,20 @@ impl LlamaModel {
         // phase / verify phase) before truncation rolls them back.
         let max_seq_len = prompt_tokens.len() + max_new_tokens + k;
         let mut target_cache = KvCache::with_capacity(
-            self.config.n_layers, self.config.n_kv_heads, self.config.head_dim,
-            max_seq_len, dtype, device,
+            self.config.n_layers,
+            self.config.n_kv_heads,
+            self.config.head_dim,
+            max_seq_len,
+            dtype,
+            device,
         )?;
         let mut draft_cache = KvCache::with_capacity(
-            draft.config.n_layers, draft.config.n_kv_heads, draft.config.head_dim,
-            max_seq_len, dtype, device,
+            draft.config.n_layers,
+            draft.config.n_kv_heads,
+            draft.config.head_dim,
+            max_seq_len,
+            dtype,
+            device,
         )?;
         let mut target_ctx = InferenceContext::new(device.clone());
         let mut draft_ctx = InferenceContext::new(device.clone());
@@ -10999,14 +12087,15 @@ impl LlamaModel {
                     }
                 };
                 drafts.push(d);
-                draft_last_logits = draft.forward_with_kv_context(
-                    &[d], &mut draft_cache, &mut draft_ctx,
-                )?;
+                draft_last_logits =
+                    draft.forward_with_kv_context(&[d], &mut draft_cache, &mut draft_ctx)?;
             }
 
             // --- Verify phase: target runs forward on the K drafts.
             let verify_logits = self.forward_with_kv_context_all_positions(
-                &drafts, &mut target_cache, &mut target_ctx,
+                &drafts,
+                &mut target_cache,
+                &mut target_ctx,
             )?;
             debug_assert_eq!(verify_logits.len(), drafts.len() * vocab);
 
@@ -11020,7 +12109,7 @@ impl LlamaModel {
                         let prev_row = if i == 0 {
                             &target_last_logits[..]
                         } else {
-                            &verify_logits[(i - 1) * vocab .. i * vocab]
+                            &verify_logits[(i - 1) * vocab..i * vocab]
                         };
                         let target_pick = spec_argmax(prev_row);
                         if target_pick == drafts[i] {
@@ -11033,7 +12122,7 @@ impl LlamaModel {
                     bonus_token = match mismatched {
                         Some(t) => t,
                         None => spec_argmax(
-                            &verify_logits[(drafts.len() - 1) * vocab .. drafts.len() * vocab],
+                            &verify_logits[(drafts.len() - 1) * vocab..drafts.len() * vocab],
                         ),
                     };
                 }
@@ -11048,7 +12137,7 @@ impl LlamaModel {
                         let prev_row = if i == 0 {
                             &target_last_logits[..]
                         } else {
-                            &verify_logits[(i - 1) * vocab .. i * vocab]
+                            &verify_logits[(i - 1) * vocab..i * vocab]
                         };
                         let target_probs = spec_softmax_temp(prev_row, temp);
                         let draft_probs = &draft_probs_stash[i];
@@ -11061,18 +12150,24 @@ impl LlamaModel {
                             accepted += 1;
                         } else {
                             // Replacement from (p - q)_+ / sum.
-                            let mut residual: Vec<f32> = target_probs.iter().zip(draft_probs.iter())
+                            let mut residual: Vec<f32> = target_probs
+                                .iter()
+                                .zip(draft_probs.iter())
                                 .map(|(&pt, &qt)| (pt - qt).max(0.0))
                                 .collect();
                             let sum: f32 = residual.iter().sum();
                             if sum > 0.0 {
-                                for r in residual.iter_mut() { *r /= sum; }
-                                rejected_replacement = Some(spec_sample_cat(&residual, &mut rng_state));
+                                for r in residual.iter_mut() {
+                                    *r /= sum;
+                                }
+                                rejected_replacement =
+                                    Some(spec_sample_cat(&residual, &mut rng_state));
                             } else {
                                 // Degenerate case (should only happen if
                                 // distributions match exactly — then any
                                 // sample from target_probs is equally valid).
-                                rejected_replacement = Some(spec_sample_cat(&target_probs, &mut rng_state));
+                                rejected_replacement =
+                                    Some(spec_sample_cat(&target_probs, &mut rng_state));
                             }
                             break;
                         }
@@ -11082,7 +12177,8 @@ impl LlamaModel {
                         None => {
                             // All K accepted — sample bonus from target's
                             // last-position distribution.
-                            let last_row = &verify_logits[(drafts.len() - 1) * vocab .. drafts.len() * vocab];
+                            let last_row =
+                                &verify_logits[(drafts.len() - 1) * vocab..drafts.len() * vocab];
                             let probs = spec_softmax_temp(last_row, temp);
                             spec_sample_cat(&probs, &mut rng_state)
                         }
@@ -11108,26 +12204,32 @@ impl LlamaModel {
                 tokens.push(drafts[i]);
                 on_token(drafts[i]);
                 emitted += 1;
-                if emitted >= max_new_tokens { return Ok(tokens); }
-                if eos_id == Some(drafts[i]) { return Ok(tokens); }
+                if emitted >= max_new_tokens {
+                    return Ok(tokens);
+                }
+                if eos_id == Some(drafts[i]) {
+                    return Ok(tokens);
+                }
             }
             tokens.push(bonus_token);
             on_token(bonus_token);
             emitted += 1;
-            if eos_id == Some(bonus_token) { return Ok(tokens); }
-            if emitted >= max_new_tokens { return Ok(tokens); }
+            if eos_id == Some(bonus_token) {
+                return Ok(tokens);
+            }
+            if emitted >= max_new_tokens {
+                return Ok(tokens);
+            }
 
             // --- Advance both caches + both "last_logits" by the bonus
             // token. The draft needs to see the bonus (which it didn't
             // produce); the target writes the bonus K/V at its true
             // position and returns fresh logits for the next
             // accept-check on draft[0].
-            target_last_logits = self.forward_with_kv_context(
-                &[bonus_token], &mut target_cache, &mut target_ctx,
-            )?;
-            draft_last_logits = draft.forward_with_kv_context(
-                &[bonus_token], &mut draft_cache, &mut draft_ctx,
-            )?;
+            target_last_logits =
+                self.forward_with_kv_context(&[bonus_token], &mut target_cache, &mut target_ctx)?;
+            draft_last_logits =
+                draft.forward_with_kv_context(&[bonus_token], &mut draft_cache, &mut draft_ctx)?;
         }
         Ok(tokens)
     }
@@ -11136,11 +12238,7 @@ impl LlamaModel {
 /// Pick the next token from a logits vector using the configured
 /// sampling strategy. Pulled out of `generate` so both the cached and
 /// future non-cached callers can share it.
-pub fn sample_logits(
-    logits: &[f32],
-    strategy: SamplingStrategy,
-    rng_state: &mut u64,
-) -> u32 {
+pub fn sample_logits(logits: &[f32], strategy: SamplingStrategy, rng_state: &mut u64) -> u32 {
     match strategy {
         SamplingStrategy::Greedy => {
             let (i, _) = logits
@@ -11155,10 +12253,7 @@ pub fn sample_logits(
             // then a deterministic multinomial draw.
             let inv_temp = if temp == 0.0 { 1.0 } else { 1.0 / temp as f32 };
             let scaled: Vec<f32> = logits.iter().map(|&x| x * inv_temp).collect();
-            let max = scaled
-                .iter()
-                .cloned()
-                .fold(f32::NEG_INFINITY, f32::max);
+            let max = scaled.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
             let exp: Vec<f32> = scaled.iter().map(|&x| (x - max).exp()).collect();
             let sum: f32 = exp.iter().sum();
             let probs: Vec<f32> = exp.iter().map(|&x| x / sum).collect();
@@ -11178,7 +12273,10 @@ fn spec_argmax(logits: &[f32]) -> u32 {
     let mut best = 0;
     let mut best_v = logits[0];
     for (i, &v) in logits.iter().enumerate().skip(1) {
-        if v > best_v { best_v = v; best = i; }
+        if v > best_v {
+            best_v = v;
+            best = i;
+        }
     }
     best as u32
 }
@@ -11206,7 +12304,9 @@ fn spec_sample_cat(probs: &[f32], state: &mut u64) -> u32 {
     let mut cum = 0.0_f32;
     for (i, &p) in probs.iter().enumerate() {
         cum += p;
-        if u <= cum { return i as u32; }
+        if u <= cum {
+            return i as u32;
+        }
     }
     (probs.len() - 1) as u32
 }
@@ -11273,9 +12373,7 @@ impl LlamaModel {
                 let weight_map = index
                     .get("weight_map")
                     .and_then(|x| x.as_object())
-                    .ok_or_else(|| {
-                        crate::Error::Msg("index.json: missing weight_map".into())
-                    })?;
+                    .ok_or_else(|| crate::Error::Msg("index.json: missing weight_map".into()))?;
                 let mut unique = std::collections::HashSet::new();
                 for v in weight_map.values() {
                     if let Some(s) = v.as_str() {
@@ -11284,9 +12382,9 @@ impl LlamaModel {
                 }
                 let mut paths: Vec<std::path::PathBuf> = Vec::new();
                 for shard_name in unique {
-                    let p = repo.get(&shard_name).map_err(|e| {
-                        crate::Error::Msg(format!("hf-hub {shard_name}: {e}"))
-                    })?;
+                    let p = repo
+                        .get(&shard_name)
+                        .map_err(|e| crate::Error::Msg(format!("hf-hub {shard_name}: {e}")))?;
                     paths.push(p);
                 }
                 paths
@@ -11301,9 +12399,7 @@ impl LlamaModel {
         };
 
         // 3. Memory-map the safetensors files and load the weights.
-        let st = unsafe {
-            crate::safetensors::MmapedSafetensors::multi(&weight_paths)
-        }?;
+        let st = unsafe { crate::safetensors::MmapedSafetensors::multi(&weight_paths) }?;
         let weights = LlamaWeights::load_from_mmapped(&st, &config)?;
 
         Ok(LlamaModel { config, weights })
@@ -11337,20 +12433,20 @@ impl LlamaModel {
 /// and `rotary_dim` fields are Phi-specific.
 #[derive(Debug, Clone)]
 pub struct PhiConfig {
-    pub vocab_size:            usize,
-    pub dim:                   usize,  // hidden_size
-    pub n_layers:              usize,
-    pub n_heads:               usize,
-    pub head_dim:              usize,
-    pub ffn_dim:               usize,  // intermediate_size
-    pub layer_norm_eps:        f64,
-    pub rope_base:             f64,
+    pub vocab_size: usize,
+    pub dim: usize, // hidden_size
+    pub n_layers: usize,
+    pub n_heads: usize,
+    pub head_dim: usize,
+    pub ffn_dim: usize, // intermediate_size
+    pub layer_norm_eps: f64,
+    pub rope_base: f64,
     pub partial_rotary_factor: f64,
     /// Number of dims at the start of head_dim that get rotated.
     /// `rotary_dim = (partial_rotary_factor * head_dim).round() as usize`.
     /// Must be even for the half-split RoPE layout.
-    pub rotary_dim:            usize,
-    pub tie_word_embeddings:   bool,
+    pub rotary_dim: usize,
+    pub tie_word_embeddings: bool,
 }
 
 impl PhiConfig {
@@ -11362,7 +12458,9 @@ impl PhiConfig {
             v.get(key)
                 .and_then(|x| x.as_u64())
                 .map(|x| x as usize)
-                .ok_or_else(|| crate::Error::Msg(format!("config.json: missing/invalid field {key:?}")))
+                .ok_or_else(|| {
+                    crate::Error::Msg(format!("config.json: missing/invalid field {key:?}"))
+                })
         };
         let get_f64 = |key: &str| -> Option<f64> { v.get(key).and_then(|x| x.as_f64()) };
 
@@ -11371,8 +12469,11 @@ impl PhiConfig {
         let n_layers = get_usize("num_hidden_layers")?;
         let n_heads = get_usize("num_attention_heads")?;
         let ffn_dim = get_usize("intermediate_size")?;
-        let head_dim = v.get("head_dim").and_then(|x| x.as_u64())
-            .map(|x| x as usize).unwrap_or(dim / n_heads);
+        let head_dim = v
+            .get("head_dim")
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize)
+            .unwrap_or(dim / n_heads);
         let layer_norm_eps = get_f64("layer_norm_eps").unwrap_or(1e-5);
         let rope_base = get_f64("rope_theta").unwrap_or(10_000.0);
         let partial_rotary_factor = get_f64("partial_rotary_factor").unwrap_or(0.4);
@@ -11382,12 +12483,22 @@ impl PhiConfig {
                 "PhiConfig: rotary_dim {rotary_dim} must be even (partial_rotary_factor={partial_rotary_factor}, head_dim={head_dim})"
             );
         }
-        let tie_word_embeddings = v.get("tie_word_embeddings")
-            .and_then(|x| x.as_bool()).unwrap_or(false);
+        let tie_word_embeddings = v
+            .get("tie_word_embeddings")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false);
 
         Ok(PhiConfig {
-            vocab_size, dim, n_layers, n_heads, head_dim, ffn_dim,
-            layer_norm_eps, rope_base, partial_rotary_factor, rotary_dim,
+            vocab_size,
+            dim,
+            n_layers,
+            n_heads,
+            head_dim,
+            ffn_dim,
+            layer_norm_eps,
+            rope_base,
+            partial_rotary_factor,
+            rotary_dim,
             tie_word_embeddings,
         })
     }
@@ -11427,32 +12538,32 @@ pub enum PhiQkv {
 pub struct PhiLayerWeights {
     pub attn_qkv: PhiQkv,
     /// Output projection (called "dense" in Phi-2, not "o_proj").
-    pub attn_dense:      WeightStorage,
+    pub attn_dense: WeightStorage,
     pub attn_dense_bias: Arc<[f32]>,
-    pub mlp_fc1:         WeightStorage,  // [dim, ffn_dim]
-    pub mlp_fc1_bias:    Arc<[f32]>,
-    pub mlp_fc2:         WeightStorage,  // [ffn_dim, dim]
-    pub mlp_fc2_bias:    Arc<[f32]>,
+    pub mlp_fc1: WeightStorage, // [dim, ffn_dim]
+    pub mlp_fc1_bias: Arc<[f32]>,
+    pub mlp_fc2: WeightStorage, // [ffn_dim, dim]
+    pub mlp_fc2_bias: Arc<[f32]>,
     /// Pre-block LayerNorm (single norm for Phi-2's parallel attn+MLP).
-    pub norm_gain:      Arc<[f32]>,
-    pub norm_bias:      Arc<[f32]>,
+    pub norm_gain: Arc<[f32]>,
+    pub norm_bias: Arc<[f32]>,
 }
 
 #[derive(Debug, Clone)]
 pub struct PhiWeights {
     /// See [`LlamaWeights::instance`].
     pub instance: crate::decode_shape::ModelInstanceId,
-    pub token_embedding: Arc<[f32]>,   // [vocab_size, dim]
-    pub layers:          Vec<PhiLayerWeights>,
+    pub token_embedding: Arc<[f32]>, // [vocab_size, dim]
+    pub layers: Vec<PhiLayerWeights>,
     pub final_norm_gain: Arc<[f32]>,
     pub final_norm_bias: Arc<[f32]>,
-    pub output:          WeightStorage,  // [dim, vocab_size]
-    pub output_bias:     Option<Arc<[f32]>>,
+    pub output: WeightStorage, // [dim, vocab_size]
+    pub output_bias: Option<Arc<[f32]>>,
 }
 
 #[derive(Debug, Clone)]
 pub struct PhiModel {
-    pub config:  PhiConfig,
+    pub config: PhiConfig,
     pub weights: PhiWeights,
 }
 
@@ -11528,24 +12639,40 @@ impl PhiModel {
         let dims = x_shape.dims();
         let batch = dims[0];
         let seq = dims[1];
-        let kv_dim = cfg.n_heads * cfg.head_dim;  // no GQA in Phi-2
+        let kv_dim = cfg.n_heads * cfg.head_dim; // no GQA in Phi-2
 
         // Shared pre-block LayerNorm.
         let x_norm = x.layer_norm_affine(
-            Arc::clone(&layer.norm_gain), Arc::clone(&layer.norm_bias),
+            Arc::clone(&layer.norm_gain),
+            Arc::clone(&layer.norm_bias),
             cfg.layer_norm_eps,
         )?;
 
         // Q/K/V projections with bias — identical to apply_layer_with_cache.
         let (q, k, v) = match &layer.attn_qkv {
-            PhiQkv::Split { q, q_bias, k, k_bias, v, v_bias } => {
-                let q_out = q.apply_linear_with_bias(&x_norm, cfg.dim, cfg.dim, Arc::clone(q_bias))?;
-                let k_out = k.apply_linear_with_bias(&x_norm, cfg.dim, kv_dim, Arc::clone(k_bias))?;
-                let v_out = v.apply_linear_with_bias(&x_norm, cfg.dim, kv_dim, Arc::clone(v_bias))?;
+            PhiQkv::Split {
+                q,
+                q_bias,
+                k,
+                k_bias,
+                v,
+                v_bias,
+            } => {
+                let q_out =
+                    q.apply_linear_with_bias(&x_norm, cfg.dim, cfg.dim, Arc::clone(q_bias))?;
+                let k_out =
+                    k.apply_linear_with_bias(&x_norm, cfg.dim, kv_dim, Arc::clone(k_bias))?;
+                let v_out =
+                    v.apply_linear_with_bias(&x_norm, cfg.dim, kv_dim, Arc::clone(v_bias))?;
                 (q_out, k_out, v_out)
             }
             PhiQkv::Packed { qkv, qkv_bias } => {
-                let combined = qkv.apply_linear_with_bias(&x_norm, cfg.dim, 3 * cfg.dim, Arc::clone(qkv_bias))?;
+                let combined = qkv.apply_linear_with_bias(
+                    &x_norm,
+                    cfg.dim,
+                    3 * cfg.dim,
+                    Arc::clone(qkv_bias),
+                )?;
                 let last = combined.rank() - 1;
                 let q_out = combined.slice(last, 0, cfg.dim)?;
                 let k_out = combined.slice(last, cfg.dim, cfg.dim)?;
@@ -11580,7 +12707,7 @@ impl PhiModel {
         let write_ranges = vec![
             (0, batch),
             (0, cfg.n_heads),
-            (0, seq),                 // axis-2 start is dynamic; width = seq
+            (0, seq), // axis-2 start is dynamic; width = seq
             (0, cfg.head_dim),
         ];
         let dyn_off = fuel_ir::DynScalar::Sym(cached_len_sym);
@@ -11595,7 +12722,9 @@ impl PhiModel {
         let k_t = full_k.transpose()?;
         let scale = 1.0_f64 / (cfg.head_dim as f64).sqrt();
         let scores = q_r.matmul(&k_t)?;
-        let scores_scaled = LazyTensor { inner: scores.inner.mul_scalar(scale) };
+        let scores_scaled = LazyTensor {
+            inner: scores.inner.mul_scalar(scale),
+        };
         let scores_masked = scores_scaled.broadcast_add(mask)?;
         let attn = scores_masked.softmax_last_dim()?;
         let attn_v = attn.matmul(&full_v)?;
@@ -11605,16 +12734,25 @@ impl PhiModel {
             .permute([0, 2, 1, 3_usize])?
             .reshape(Shape::from_dims(&[batch, seq, cfg.dim]))?;
         let attn_out = layer.attn_dense.apply_linear_with_bias(
-            &merged, cfg.dim, cfg.dim, Arc::clone(&layer.attn_dense_bias),
+            &merged,
+            cfg.dim,
+            cfg.dim,
+            Arc::clone(&layer.attn_dense_bias),
         )?;
 
         // MLP branch (shares x_norm with the attention branch).
         let fc1_out = layer.mlp_fc1.apply_linear_with_bias(
-            &x_norm, cfg.dim, cfg.ffn_dim, Arc::clone(&layer.mlp_fc1_bias),
+            &x_norm,
+            cfg.dim,
+            cfg.ffn_dim,
+            Arc::clone(&layer.mlp_fc1_bias),
         )?;
         let gelu_out = fc1_out.gelu();
         let mlp_out = layer.mlp_fc2.apply_linear_with_bias(
-            &gelu_out, cfg.ffn_dim, cfg.dim, Arc::clone(&layer.mlp_fc2_bias),
+            &gelu_out,
+            cfg.ffn_dim,
+            cfg.dim,
+            Arc::clone(&layer.mlp_fc2_bias),
         )?;
 
         // Parallel residual: x + attn_out + mlp_out.
@@ -11642,26 +12780,32 @@ impl PhiModel {
         if seq == 0 {
             return Err(fuel_ir::Error::Msg(
                 "PhiModel::forward_with_kv_context: zero tokens".to_string(),
-            ).bt());
+            )
+            .bt());
         }
         if cache.n_layers() != cfg.n_layers {
             return Err(fuel_ir::Error::Msg(format!(
                 "PhiModel::forward_with_kv_context: cache n_layers {} != model n_layers {}",
-                cache.n_layers(), cfg.n_layers,
-            )).bt());
+                cache.n_layers(),
+                cfg.n_layers,
+            ))
+            .bt());
         }
         let max_seq_len = cache.max_seq_len.ok_or_else(|| {
             fuel_ir::Error::Msg(
                 "PhiModel::forward_with_kv_context: cache was constructed via with_dims \
                  (no pre-allocated buffers); call KvCache::with_capacity(...) for the \
-                 WriteSlice path".to_string(),
-            ).bt()
+                 WriteSlice path"
+                    .to_string(),
+            )
+            .bt()
         })?;
         if cached_len + seq > max_seq_len {
             return Err(fuel_ir::Error::Msg(format!(
                 "PhiModel::forward_with_kv_context: cached_len ({cached_len}) + seq \
                  ({seq}) > max_seq_len ({max_seq_len})",
-            )).bt());
+            ))
+            .bt());
         }
         let cache_dtype = cache.dtype.unwrap_or(DType::F32);
         if cache.n_kv_heads != cfg.n_heads || cache.head_dim != cfg.head_dim {
@@ -11669,7 +12813,8 @@ impl PhiModel {
                 "PhiModel::forward_with_kv_context: cache shape (n_kv_heads={}, \
                  head_dim={}) disagrees with model config (n_heads={}, head_dim={})",
                 cache.n_kv_heads, cache.head_dim, cfg.n_heads, cfg.head_dim,
-            )).bt());
+            ))
+            .bt());
         }
 
         // Embed lookup + reshape to [batch, seq, dim].
@@ -11686,9 +12831,8 @@ impl PhiModel {
         // RoPE tables are sized for `rotary_dim`, not the full
         // head_dim — partial RoPE rotates only the first `rotary_dim`
         // entries.
-        let (rope_cos, rope_sin) = h.rope_tables_const(
-            cfg.rope_base, cached_len, seq, cfg.rotary_dim,
-        );
+        let (rope_cos, rope_sin) =
+            h.rope_tables_const(cfg.rope_base, cached_len, seq, cfg.rotary_dim);
 
         // Phase D · D4: the per-token KV-write offset (`cached_len`) is a
         // runtime symbol bound through the per-pass `SymEnv` at realize,
@@ -11701,29 +12845,26 @@ impl PhiModel {
         // (was one Const per layer) — byte-identical across layers (it
         // depends only on `cached_len` / `seq` / `max_seq_len`).
         let mask_data = build_decode_causal_mask(cached_len, seq, max_seq_len);
-        let mask = h.const_f32_like(
-            mask_data, Shape::from_dims(&[1, 1, seq, max_seq_len]),
-        );
+        let mask = h.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, max_seq_len]));
 
         // Per-layer: bind the cache K + V Arcs to fresh Const NodeIds,
         // dispatch through the WriteSlice variant, clean up the
         // per-step bindings after realize.
-        let cache_shape = Shape::from_dims(
-            &[batch, cfg.n_heads, max_seq_len, cfg.head_dim],
-        );
-        let mut bound_node_ids: Vec<fuel_graph::NodeId> =
-            Vec::with_capacity(2 * cfg.n_layers);
+        let cache_shape = Shape::from_dims(&[batch, cfg.n_heads, max_seq_len, cfg.head_dim]);
+        let mut bound_node_ids: Vec<fuel_graph::NodeId> = Vec::with_capacity(2 * cfg.n_layers);
         for (li, layer_weights) in weights.layers.iter().enumerate() {
             let k_arc = cache.slot_storage(li, KvSlot::K).ok_or_else(|| {
                 fuel_ir::Error::Msg(format!(
                     "PhiModel::forward_with_kv_context: cache layer {li} has no K slot \
                      (with_capacity should have populated all layers)",
-                )).bt()
+                ))
+                .bt()
             })?;
             let v_arc = cache.slot_storage(li, KvSlot::V).ok_or_else(|| {
                 fuel_ir::Error::Msg(format!(
                     "PhiModel::forward_with_kv_context: cache layer {li} has no V slot",
-                )).bt()
+                ))
+                .bt()
             })?;
             let k_cache_node = h.const_placeholder_like(cache_shape.clone(), cache_dtype);
             let v_cache_node = h.const_placeholder_like(cache_shape.clone(), cache_dtype);
@@ -11748,14 +12889,16 @@ impl PhiModel {
 
         // Final LayerNorm, output projection (+ optional bias).
         let h_norm = h.layer_norm_affine(
-            Arc::clone(&weights.final_norm_gain), Arc::clone(&weights.final_norm_bias),
+            Arc::clone(&weights.final_norm_gain),
+            Arc::clone(&weights.final_norm_bias),
             cfg.layer_norm_eps,
         )?;
-        let logits_no_bias = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?;
+        let logits_no_bias = weights
+            .output
+            .apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?;
         let logits = match &weights.output_bias {
             Some(b) => {
-                let b_t = h_norm.const_f32_like(
-                    Arc::clone(b), Shape::from_dims(&[cfg.vocab_size]));
+                let b_t = h_norm.const_f32_like(Arc::clone(b), Shape::from_dims(&[cfg.vocab_size]));
                 logits_no_bias.broadcast_add(&b_t)?
             }
             None => logits_no_bias,
@@ -11771,7 +12914,9 @@ impl PhiModel {
         // supplied for this pass via the `SymEnv`; downstream attention
         // reads the post-write full-capacity buffers.
         let mut sym_env = fuel_ir::SymEnv::new();
-        sym_env.bind(cached_len_sym, cached_len).map_err(crate::Error::from)?;
+        sym_env
+            .bind(cached_len_sym, cached_len)
+            .map_err(crate::Error::from)?;
         let logits_vec = ctx.realize_one_as_with_env::<f32>(
             last_logits.inner.graph(),
             last_logits.inner.id(),
@@ -11837,8 +12982,14 @@ impl PhiModel {
         // in the KV allocation gets a guarded re-bind first (GAP-028). No
         // capture exists on this path, hence the no-op reader retirement.
         refresh_decode_session(
-            session, ctx, seq, max_seq_len, cache_dtype, cfg.n_layers,
-            self.decode_shape_key(), cache,
+            session,
+            ctx,
+            seq,
+            max_seq_len,
+            cache_dtype,
+            cfg.n_layers,
+            self.decode_shape_key(),
+            cache,
             || {},
             |s, c| self.drop_decode_session(s, c),
         );
@@ -11885,19 +13036,23 @@ impl PhiModel {
                 "PhiModel::forward_with_kv_context_persistent: cache built via with_dims \
                  (no pre-allocated buffers); use KvCache::with_capacity"
                     .to_string(),
-            ).bt()
+            )
+            .bt()
         })?;
         if cache.n_layers() != cfg.n_layers {
             return Err(fuel_ir::Error::Msg(format!(
                 "PhiModel::forward_with_kv_context_persistent: cache n_layers {} != model {}",
-                cache.n_layers(), cfg.n_layers,
-            )).bt());
+                cache.n_layers(),
+                cfg.n_layers,
+            ))
+            .bt());
         }
         if cached_len + seq > max_seq_len {
             return Err(fuel_ir::Error::Msg(format!(
                 "PhiModel::forward_with_kv_context_persistent: cached_len ({cached_len}) + \
                  seq ({seq}) > max_seq_len ({max_seq_len})",
-            )).bt());
+            ))
+            .bt());
         }
         let cache_dtype = cache.dtype.unwrap_or(DType::F32);
 
@@ -11908,9 +13063,7 @@ impl PhiModel {
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &Device::cpu(),
         );
-        let token_ids = embed.const_placeholder_like(
-            Shape::from_dims(&[seq]), DType::U32,
-        );
+        let token_ids = embed.const_placeholder_like(Shape::from_dims(&[seq]), DType::U32);
         let token_ids_node = token_ids.inner.id();
         let mut h = embed
             .index_select(0, &token_ids)?
@@ -11925,16 +13078,13 @@ impl PhiModel {
         let rope_sin_node = rope_sin.inner.id();
 
         // Mask: STABLE re-bindable placeholder Const (hoisted; shared).
-        let mask = h.const_placeholder_like(
-            Shape::from_dims(&[1, 1, seq, max_seq_len]), DType::F32,
-        );
+        let mask =
+            h.const_placeholder_like(Shape::from_dims(&[1, 1, seq, max_seq_len]), DType::F32);
         let mask_node = mask.inner.id();
 
         let cached_len_sym = fuel_ir::SymId(0);
         // No GQA in Phi-2: the KV cache carries `n_heads`.
-        let cache_shape = Shape::from_dims(
-            &[batch, cfg.n_heads, max_seq_len, cfg.head_dim],
-        );
+        let cache_shape = Shape::from_dims(&[batch, cfg.n_heads, max_seq_len, cfg.head_dim]);
 
         // Per-layer KV placeholder Consts (STABLE). The Arcs are bound
         // ONCE here and mutate in place via Op::WriteSlice each token.
@@ -11944,12 +13094,14 @@ impl PhiModel {
             let k_arc = cache.slot_storage(li, KvSlot::K).ok_or_else(|| {
                 fuel_ir::Error::Msg(format!(
                     "PhiModel::forward_with_kv_context_persistent: cache layer {li} has no K slot",
-                )).bt()
+                ))
+                .bt()
             })?;
             let v_arc = cache.slot_storage(li, KvSlot::V).ok_or_else(|| {
                 fuel_ir::Error::Msg(format!(
                     "PhiModel::forward_with_kv_context_persistent: cache layer {li} has no V slot",
-                )).bt()
+                ))
+                .bt()
             })?;
             let k_cache_node = h.const_placeholder_like(cache_shape.clone(), cache_dtype);
             let v_cache_node = h.const_placeholder_like(cache_shape.clone(), cache_dtype);
@@ -11973,14 +13125,16 @@ impl PhiModel {
 
         // Final LayerNorm, output projection (+ optional output bias).
         let h_norm = h.layer_norm_affine(
-            Arc::clone(&weights.final_norm_gain), Arc::clone(&weights.final_norm_bias),
+            Arc::clone(&weights.final_norm_gain),
+            Arc::clone(&weights.final_norm_bias),
             cfg.layer_norm_eps,
         )?;
-        let logits_no_bias = weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?;
+        let logits_no_bias = weights
+            .output
+            .apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?;
         let logits = match &weights.output_bias {
             Some(b) => {
-                let b_t = h_norm.const_f32_like(
-                    Arc::clone(b), Shape::from_dims(&[cfg.vocab_size]));
+                let b_t = h_norm.const_f32_like(Arc::clone(b), Shape::from_dims(&[cfg.vocab_size]));
                 logits_no_bias.broadcast_add(&b_t)?
             }
             None => logits_no_bias,
@@ -11998,14 +13152,17 @@ impl PhiModel {
         // KV Arcs were already inserted above. The optimize + realize then
         // runs ONCE, capturing the reusable artifacts + the full realized
         // cache (weights + KV + data) for the held session.
-        let data = self.build_token_rope_mask_arcs(ctx.device(), cached_len, tokens, max_seq_len)?;
+        let data =
+            self.build_token_rope_mask_arcs(ctx.device(), cached_len, tokens, max_seq_len)?;
         ctx.insert(token_ids_node, Arc::clone(&data.token_ids));
         ctx.insert(rope_cos_node, Arc::clone(&data.rope_cos));
         ctx.insert(rope_sin_node, Arc::clone(&data.rope_sin));
         ctx.insert(mask_node, Arc::clone(&data.mask));
 
         let mut sym_env = fuel_ir::SymEnv::new();
-        sym_env.bind(cached_len_sym, cached_len).map_err(crate::Error::from)?;
+        sym_env
+            .bind(cached_len_sym, cached_len)
+            .map_err(crate::Error::from)?;
 
         let (effective_target, optimized, base_cache, logits_vec) =
             ctx.prebuild_optimized_capturing_as_with_env::<f32>(&graph, logits_node, &sym_env)?;
@@ -12112,16 +13269,13 @@ impl PhiModel {
         let cfg = &self.config;
         let seq = tokens.len();
         // Phi's RoPE tables are sized for `rotary_dim` (partial RoPE).
-        let (cos_data, sin_data) = fuel_graph::build_rope_tables(
-            cfg.rope_base, cached_len, seq, cfg.rotary_dim,
-        );
+        let (cos_data, sin_data) =
+            fuel_graph::build_rope_tables(cfg.rope_base, cached_len, seq, cfg.rotary_dim);
         Ok(TokenDataHost {
             token_ids: fuel_ir::HostBuffer::U32(tokens.to_vec()),
             rope_cos: fuel_ir::HostBuffer::F32(cos_data),
             rope_sin: fuel_ir::HostBuffer::F32(sin_data),
-            mask: fuel_ir::HostBuffer::F32(build_decode_causal_mask(
-                cached_len, seq, max_seq_len,
-            )),
+            mask: fuel_ir::HostBuffer::F32(build_decode_causal_mask(cached_len, seq, max_seq_len)),
             // Phi decode stays on the SymEnv `Op::WriteSlice` path — the KV
             // write offset rides `cached_len_sym`, so there is no device-offset
             // operand to rebind. Capture handles this: the offset entry is
@@ -12245,18 +13399,19 @@ impl PhiModel {
             let device = ctx.device().clone();
             let s = session.as_ref().expect("session is Some (checked above)");
 
-            let data = self.build_token_rope_mask_arcs(
-                &device, cached_len, tokens, s.max_seq_len(),
-            )?;
+            let data =
+                self.build_token_rope_mask_arcs(&device, cached_len, tokens, s.max_seq_len())?;
 
-            let mut merged_cache: fuel_dispatch::pipelined::StorageCache =
-                s.base_cache().clone();
+            let mut merged_cache: fuel_dispatch::pipelined::StorageCache = s.base_cache().clone();
             merged_cache.insert(s.token_ids_node(), Arc::clone(&data.token_ids));
             merged_cache.insert(s.rope_cos_node(), Arc::clone(&data.rope_cos));
             merged_cache.insert(s.rope_sin_node(), Arc::clone(&data.rope_sin));
             merged_cache.insert(s.mask_node(), Arc::clone(&data.mask));
             let per_token_node_ids: Vec<fuel_graph::NodeId> = vec![
-                s.token_ids_node(), s.rope_cos_node(), s.rope_sin_node(), s.mask_node(),
+                s.token_ids_node(),
+                s.rope_cos_node(),
+                s.rope_sin_node(),
+                s.mask_node(),
             ];
 
             let sym_env = s.per_token_sym_env(cached_len)?;
@@ -12295,9 +13450,7 @@ impl PhiModel {
             ) {
                 Ok(cd) => cd,
                 Err(_) => {
-                    let res = self.rebind_and_realize_prebuilt(
-                        tokens, cache, &*ctx, &*session,
-                    );
+                    let res = self.rebind_and_realize_prebuilt(tokens, cache, &*ctx, &*session);
                     return res;
                 }
             };
@@ -12317,7 +13470,9 @@ impl PhiModel {
 
         // ---- 4. Third token onward: pure replay. ----
         let cap = captured.as_ref().expect("captured is Some (checked above)");
-        let s = session.as_ref().expect("session is Some whenever captured is Some");
+        let s = session
+            .as_ref()
+            .expect("session is Some whenever captured is Some");
 
         let bytes = self.build_token_rope_mask_bytes(cached_len, tokens, s.max_seq_len())?;
         let updates: Vec<(fuel_graph::NodeId, &[u8])> = vec![
@@ -12376,7 +13531,8 @@ impl PhiModel {
         if prompt_tokens.is_empty() {
             return Err(fuel_ir::Error::Msg(
                 "PhiModel::generate_streaming_with_kv_context: prompt is empty".to_string(),
-            ).bt());
+            )
+            .bt());
         }
         let mut tokens: Vec<u32> = prompt_tokens.to_vec();
         let mut rng_state: u64 = match strategy {
@@ -12386,8 +13542,12 @@ impl PhiModel {
 
         let max_seq_len = prompt_tokens.len() + max_new_tokens;
         let mut cache = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_heads, cfg.head_dim,
-            max_seq_len, dtype, device,
+            cfg.n_layers,
+            cfg.n_heads,
+            cfg.head_dim,
+            max_seq_len,
+            dtype,
+            device,
         )?;
         let mut ctx = InferenceContext::new(device.clone());
 
@@ -12416,7 +13576,10 @@ impl PhiModel {
         // Prefill: one forward pass over the full prompt. Always the persistent
         // entry — `seq != 1`, so the captured path would immediately fall back.
         let mut last_logits = self.forward_with_kv_context_persistent(
-            prompt_tokens, &mut cache, &mut ctx, &mut session,
+            prompt_tokens,
+            &mut cache,
+            &mut ctx,
+            &mut session,
         )?;
 
         // Decode loop.
@@ -12432,13 +13595,20 @@ impl PhiModel {
             #[cfg(feature = "cuda")]
             {
                 last_logits = self.forward_with_kv_context_captured(
-                    &[next], &mut cache, &mut ctx, &mut session, &mut captured,
+                    &[next],
+                    &mut cache,
+                    &mut ctx,
+                    &mut session,
+                    &mut captured,
                 )?;
             }
             #[cfg(not(feature = "cuda"))]
             {
                 last_logits = self.forward_with_kv_context_persistent(
-                    &[next], &mut cache, &mut ctx, &mut session,
+                    &[next],
+                    &mut cache,
+                    &mut ctx,
+                    &mut session,
                 )?;
             }
         }
@@ -12473,7 +13643,8 @@ impl PhiModel {
             .map_err(|e| crate::Error::Msg(format!("hf-hub api init: {e}")))?;
         let repo = api.model(repo_id.to_string());
 
-        let config_path = repo.get("config.json")
+        let config_path = repo
+            .get("config.json")
             .map_err(|e| crate::Error::Msg(format!("hf-hub config.json: {e}")))?;
         let config_str = std::fs::read_to_string(&config_path)?;
         let config = PhiConfig::from_hf_json_str(&config_str)?;
@@ -12483,22 +13654,28 @@ impl PhiModel {
                 let index_str = std::fs::read_to_string(&index_path)?;
                 let index: serde_json::Value = serde_json::from_str(&index_str)
                     .map_err(|e| crate::Error::Msg(format!("parsing index: {e}")))?;
-                let weight_map = index.get("weight_map").and_then(|x| x.as_object())
+                let weight_map = index
+                    .get("weight_map")
+                    .and_then(|x| x.as_object())
                     .ok_or_else(|| crate::Error::Msg("index.json: missing weight_map".into()))?;
                 let mut unique = std::collections::HashSet::new();
                 for v in weight_map.values() {
-                    if let Some(s) = v.as_str() { unique.insert(s.to_string()); }
+                    if let Some(s) = v.as_str() {
+                        unique.insert(s.to_string());
+                    }
                 }
                 let mut paths: Vec<std::path::PathBuf> = Vec::new();
                 for shard_name in unique {
-                    let p = repo.get(&shard_name)
+                    let p = repo
+                        .get(&shard_name)
                         .map_err(|e| crate::Error::Msg(format!("hf-hub {shard_name}: {e}")))?;
                     paths.push(p);
                 }
                 paths
             }
             Err(_) => {
-                let p = repo.get("model.safetensors")
+                let p = repo
+                    .get("model.safetensors")
                     .map_err(|e| crate::Error::Msg(format!("hf-hub model.safetensors: {e}")))?;
                 vec![p]
             }
@@ -12530,13 +13707,13 @@ impl PhiModel {
                 .map_err(|e| crate::Error::Msg(format!("gguf metadata {k:?}: {e:?}")))
         };
         // Phi-2 metadata keys (llama.cpp convention).
-        let dim        = get_u32("phi2.embedding_length")? as usize;
-        let n_layers   = get_u32("phi2.block_count")? as usize;
-        let n_heads    = get_u32("phi2.attention.head_count")? as usize;
-        let ffn_dim    = get_u32("phi2.feed_forward_length")? as usize;
-        let head_dim   = dim / n_heads;
+        let dim = get_u32("phi2.embedding_length")? as usize;
+        let n_layers = get_u32("phi2.block_count")? as usize;
+        let n_heads = get_u32("phi2.attention.head_count")? as usize;
+        let ffn_dim = get_u32("phi2.feed_forward_length")? as usize;
+        let head_dim = dim / n_heads;
         let layer_norm_eps = get_f32("phi2.attention.layer_norm_epsilon").unwrap_or(1e-5) as f64;
-        let rope_base  = get_f32("phi2.rope.freq_base").unwrap_or(10_000.0) as f64;
+        let rope_base = get_f32("phi2.rope.freq_base").unwrap_or(10_000.0) as f64;
         let rotary_dim = get_u32("phi2.rope.dimension_count").unwrap_or(32) as usize;
         let partial_rotary_factor = rotary_dim as f64 / head_dim as f64;
 
@@ -12544,14 +13721,25 @@ impl PhiModel {
         // metadata key for it in GGUF; llama.cpp infers from the
         // tokenizer array which needs a dedicated API). token_embd has
         // shape [vocab, dim].
-        let vocab_size = mc.content()
-            .tensor_infos.get("token_embd.weight")
+        let vocab_size = mc
+            .content()
+            .tensor_infos
+            .get("token_embd.weight")
             .ok_or_else(|| crate::Error::Msg("gguf: missing token_embd.weight".into()))?
-            .shape.dims()[0];
+            .shape
+            .dims()[0];
 
         let config = PhiConfig {
-            vocab_size, dim, n_layers, n_heads, head_dim, ffn_dim,
-            layer_norm_eps, rope_base, partial_rotary_factor, rotary_dim,
+            vocab_size,
+            dim,
+            n_layers,
+            n_heads,
+            head_dim,
+            ffn_dim,
+            layer_norm_eps,
+            rope_base,
+            partial_rotary_factor,
+            rotary_dim,
             tie_word_embeddings: false,
         };
 
@@ -12575,7 +13763,8 @@ impl PhiWeights {
         if token_embedding.len() != cfg.vocab_size * cfg.dim {
             crate::bail!(
                 "embed_tokens: {} elements, expected {}",
-                token_embedding.len(), cfg.vocab_size * cfg.dim,
+                token_embedding.len(),
+                cfg.vocab_size * cfg.dim,
             );
         }
 
@@ -12584,46 +13773,94 @@ impl PhiWeights {
             // Phi-2 uses `dense` for the output projection (not `o_proj`)
             // and `fc1`/`fc2` for the MLP (not `gate_proj`/`up_proj`/`down_proj`).
             let attn_q = load_transposed_matrix_preserve_dtype(
-                st, &format!("model.layers.{i}.self_attn.q_proj.weight"), cfg.dim, cfg.dim)?;
+                st,
+                &format!("model.layers.{i}.self_attn.q_proj.weight"),
+                cfg.dim,
+                cfg.dim,
+            )?;
             let attn_k = load_transposed_matrix_preserve_dtype(
-                st, &format!("model.layers.{i}.self_attn.k_proj.weight"), kv_dim, cfg.dim)?;
+                st,
+                &format!("model.layers.{i}.self_attn.k_proj.weight"),
+                kv_dim,
+                cfg.dim,
+            )?;
             let attn_v = load_transposed_matrix_preserve_dtype(
-                st, &format!("model.layers.{i}.self_attn.v_proj.weight"), kv_dim, cfg.dim)?;
+                st,
+                &format!("model.layers.{i}.self_attn.v_proj.weight"),
+                kv_dim,
+                cfg.dim,
+            )?;
             let attn_dense = load_transposed_matrix_preserve_dtype(
-                st, &format!("model.layers.{i}.self_attn.dense.weight"), cfg.dim, cfg.dim)?;
+                st,
+                &format!("model.layers.{i}.self_attn.dense.weight"),
+                cfg.dim,
+                cfg.dim,
+            )?;
             let mlp_fc1 = load_transposed_matrix_preserve_dtype(
-                st, &format!("model.layers.{i}.mlp.fc1.weight"), cfg.ffn_dim, cfg.dim)?;
+                st,
+                &format!("model.layers.{i}.mlp.fc1.weight"),
+                cfg.ffn_dim,
+                cfg.dim,
+            )?;
             let mlp_fc2 = load_transposed_matrix_preserve_dtype(
-                st, &format!("model.layers.{i}.mlp.fc2.weight"), cfg.dim, cfg.ffn_dim)?;
+                st,
+                &format!("model.layers.{i}.mlp.fc2.weight"),
+                cfg.dim,
+                cfg.ffn_dim,
+            )?;
 
             let attn_q_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("model.layers.{i}.self_attn.q_proj.bias"))?);
+                st,
+                &format!("model.layers.{i}.self_attn.q_proj.bias"),
+            )?);
             let attn_k_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("model.layers.{i}.self_attn.k_proj.bias"))?);
+                st,
+                &format!("model.layers.{i}.self_attn.k_proj.bias"),
+            )?);
             let attn_v_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("model.layers.{i}.self_attn.v_proj.bias"))?);
+                st,
+                &format!("model.layers.{i}.self_attn.v_proj.bias"),
+            )?);
             let attn_dense_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("model.layers.{i}.self_attn.dense.bias"))?);
+                st,
+                &format!("model.layers.{i}.self_attn.dense.bias"),
+            )?);
             let mlp_fc1_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("model.layers.{i}.mlp.fc1.bias"))?);
+                st,
+                &format!("model.layers.{i}.mlp.fc1.bias"),
+            )?);
             let mlp_fc2_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("model.layers.{i}.mlp.fc2.bias"))?);
+                st,
+                &format!("model.layers.{i}.mlp.fc2.bias"),
+            )?);
 
             // Phi-2's pre-block LayerNorm is `input_layernorm.{weight,bias}`.
             let norm_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("model.layers.{i}.input_layernorm.weight"))?);
+                st,
+                &format!("model.layers.{i}.input_layernorm.weight"),
+            )?);
             let norm_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("model.layers.{i}.input_layernorm.bias"))?);
+                st,
+                &format!("model.layers.{i}.input_layernorm.bias"),
+            )?);
 
             layers.push(PhiLayerWeights {
                 attn_qkv: PhiQkv::Split {
-                    q: attn_q, q_bias: attn_q_bias,
-                    k: attn_k, k_bias: attn_k_bias,
-                    v: attn_v, v_bias: attn_v_bias,
+                    q: attn_q,
+                    q_bias: attn_q_bias,
+                    k: attn_k,
+                    k_bias: attn_k_bias,
+                    v: attn_v,
+                    v_bias: attn_v_bias,
                 },
-                attn_dense, attn_dense_bias,
-                mlp_fc1, mlp_fc1_bias, mlp_fc2, mlp_fc2_bias,
-                norm_gain, norm_bias,
+                attn_dense,
+                attn_dense_bias,
+                mlp_fc1,
+                mlp_fc1_bias,
+                mlp_fc2,
+                mlp_fc2_bias,
+                norm_gain,
+                norm_bias,
             });
         }
 
@@ -12647,7 +13884,11 @@ impl PhiWeights {
         Ok(PhiWeights {
             instance: crate::decode_shape::ModelInstanceId::next(),
             token_embedding: Arc::from(token_embedding),
-            layers, final_norm_gain, final_norm_bias, output, output_bias,
+            layers,
+            final_norm_gain,
+            final_norm_bias,
+            output,
+            output_bias,
         })
     }
 
@@ -12675,15 +13916,22 @@ impl PhiWeights {
         let data_off = content.tensor_data_offset as usize;
 
         // Extract a raw byte slice for a tensor.
-        let get_tensor_bytes = |name: &str| -> crate::Result<(&[u8], crate::quantized::GgmlDType, Vec<usize>)> {
-            let info = content.tensor_infos.get(name)
-                .ok_or_else(|| crate::Error::Msg(format!("gguf: missing tensor {name:?}")))?;
-            let elems = info.shape.elem_count();
-            let block_size = info.ggml_dtype.block_size();
-            let bytes_len = elems / block_size * info.ggml_dtype.type_size();
-            let start = data_off + info.offset as usize;
-            Ok((&mmap_bytes[start..start + bytes_len], info.ggml_dtype, info.shape.dims().to_vec()))
-        };
+        let get_tensor_bytes =
+            |name: &str| -> crate::Result<(&[u8], crate::quantized::GgmlDType, Vec<usize>)> {
+                let info = content
+                    .tensor_infos
+                    .get(name)
+                    .ok_or_else(|| crate::Error::Msg(format!("gguf: missing tensor {name:?}")))?;
+                let elems = info.shape.elem_count();
+                let block_size = info.ggml_dtype.block_size();
+                let bytes_len = elems / block_size * info.ggml_dtype.type_size();
+                let start = data_off + info.offset as usize;
+                Ok((
+                    &mmap_bytes[start..start + bytes_len],
+                    info.ggml_dtype,
+                    info.shape.dims().to_vec(),
+                ))
+            };
 
         // Load an F32 vector (for biases, norms, embedding). Dequantizes
         // if necessary.
@@ -12695,7 +13943,10 @@ impl PhiWeights {
         // Load a weight matrix as WeightStorage. For Q4_0 bytes, keep
         // them quantized; for other dtypes, dequantize to F32.
         // `out_features × in_features` is the GGUF/llama.cpp convention.
-        let load_weight = |name: &str, out_features: usize, in_features: usize| -> crate::Result<WeightStorage> {
+        let load_weight = |name: &str,
+                           out_features: usize,
+                           in_features: usize|
+         -> crate::Result<WeightStorage> {
             let (bytes, dt, dims) = get_tensor_bytes(name)?;
             // GGUF stores weights as [out, in] — matches our Q4_0 block layout.
             let expected_elems = out_features * in_features;
@@ -12711,14 +13962,12 @@ impl PhiWeights {
             // known-good computation path.
             let force_f32 = std::env::var("FUEL_FORCE_F32").is_ok();
             match dt {
-                crate::quantized::GgmlDType::Q4_0 if !force_f32 => {
-                    Ok(WeightStorage::Q4_0 {
-                        words: bytes_to_u32_arc(bytes),
-                        bytes_len: bytes.len(),
-                        in_features,
-                        out_features,
-                    })
-                }
+                crate::quantized::GgmlDType::Q4_0 if !force_f32 => Ok(WeightStorage::Q4_0 {
+                    words: bytes_to_u32_arc(bytes),
+                    bytes_len: bytes.len(),
+                    in_features,
+                    out_features,
+                }),
                 _ => {
                     // Dequantized data is in GGUF's native [out, in]
                     // row-major layout. Our standard F32/BF16 matmul
@@ -12741,7 +13990,9 @@ impl PhiWeights {
         if token_embedding.len() != cfg.vocab_size * cfg.dim {
             crate::bail!(
                 "gguf token_embd: {} elems, expected {}×{}",
-                token_embedding.len(), cfg.vocab_size, cfg.dim,
+                token_embedding.len(),
+                cfg.vocab_size,
+                cfg.dim,
             );
         }
 
@@ -12757,18 +14008,21 @@ impl PhiWeights {
             // + slice after (matching Candle's eager approach). This
             // avoids any hazards around byte-level Q/K/V splits on the
             // weight side.
-            let attn_qkv_weight = load_weight(
-                &format!("{prefix}.attn_qkv.weight"),
-                3 * cfg.dim, cfg.dim,
-            )?;
+            let attn_qkv_weight =
+                load_weight(&format!("{prefix}.attn_qkv.weight"), 3 * cfg.dim, cfg.dim)?;
             let qkv_bias_vec = load_f32(&format!("{prefix}.attn_qkv.bias"))?;
             if qkv_bias_vec.len() != 3 * cfg.dim {
-                crate::bail!("gguf attn_qkv.bias: {} elems, expected {}", qkv_bias_vec.len(), 3*cfg.dim);
+                crate::bail!(
+                    "gguf attn_qkv.bias: {} elems, expected {}",
+                    qkv_bias_vec.len(),
+                    3 * cfg.dim
+                );
             }
             let qkv_bias: Arc<[f32]> = Arc::from(qkv_bias_vec);
             let _ = kv_dim; // Phi-2 has no GQA; kv_dim == dim
 
-            let attn_dense = load_weight(&format!("{prefix}.attn_output.weight"), cfg.dim, cfg.dim)?;
+            let attn_dense =
+                load_weight(&format!("{prefix}.attn_output.weight"), cfg.dim, cfg.dim)?;
             let attn_dense_bias = Arc::from(load_f32(&format!("{prefix}.attn_output.bias"))?);
 
             let mlp_fc1 = load_weight(&format!("{prefix}.ffn_up.weight"), cfg.ffn_dim, cfg.dim)?;
@@ -12780,11 +14034,18 @@ impl PhiWeights {
             let norm_bias = Arc::from(load_f32(&format!("{prefix}.attn_norm.bias"))?);
 
             layers.push(PhiLayerWeights {
-                attn_qkv: PhiQkv::Packed { qkv: attn_qkv_weight, qkv_bias },
-                attn_dense, attn_dense_bias,
-                mlp_fc1, mlp_fc1_bias,
-                mlp_fc2, mlp_fc2_bias,
-                norm_gain, norm_bias,
+                attn_qkv: PhiQkv::Packed {
+                    qkv: attn_qkv_weight,
+                    qkv_bias,
+                },
+                attn_dense,
+                attn_dense_bias,
+                mlp_fc1,
+                mlp_fc1_bias,
+                mlp_fc2,
+                mlp_fc2_bias,
+                norm_gain,
+                norm_bias,
             });
         }
 
@@ -12798,7 +14059,11 @@ impl PhiWeights {
         Ok(PhiWeights {
             instance: crate::decode_shape::ModelInstanceId::next(),
             token_embedding: Arc::from(token_embedding),
-            layers, final_norm_gain, final_norm_bias, output, output_bias,
+            layers,
+            final_norm_gain,
+            final_norm_bias,
+            output,
+            output_bias,
         })
     }
 }
@@ -12817,24 +14082,39 @@ fn dequant_gguf_bytes_to_f32(
     match dt {
         GgmlDType::F32 => {
             if bytes.len() % 4 != 0 {
-                crate::bail!("gguf {name}: F32 byte count {} not multiple of 4", bytes.len());
+                crate::bail!(
+                    "gguf {name}: F32 byte count {} not multiple of 4",
+                    bytes.len()
+                );
             }
-            Ok(bytes.chunks_exact(4)
-                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
+            Ok(bytes
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect())
         }
         GgmlDType::F16 => {
             if bytes.len() % 2 != 0 {
-                crate::bail!("gguf {name}: F16 byte count {} not multiple of 2", bytes.len());
+                crate::bail!(
+                    "gguf {name}: F16 byte count {} not multiple of 2",
+                    bytes.len()
+                );
             }
-            Ok(bytes.chunks_exact(2)
-                .map(|c| f16::from_le_bytes([c[0], c[1]]).to_f32()).collect())
+            Ok(bytes
+                .chunks_exact(2)
+                .map(|c| f16::from_le_bytes([c[0], c[1]]).to_f32())
+                .collect())
         }
         GgmlDType::BF16 => {
             if bytes.len() % 2 != 0 {
-                crate::bail!("gguf {name}: BF16 byte count {} not multiple of 2", bytes.len());
+                crate::bail!(
+                    "gguf {name}: BF16 byte count {} not multiple of 2",
+                    bytes.len()
+                );
             }
-            Ok(bytes.chunks_exact(2)
-                .map(|c| bf16::from_le_bytes([c[0], c[1]]).to_f32()).collect())
+            Ok(bytes
+                .chunks_exact(2)
+                .map(|c| bf16::from_le_bytes([c[0], c[1]]).to_f32())
+                .collect())
         }
         GgmlDType::Q4_0 => {
             // Should rarely be requested this way (prefer keeping Q4_0
@@ -12848,7 +14128,9 @@ fn dequant_gguf_bytes_to_f32(
         GgmlDType::Q4K => Ok(cpu_dequant_via_trait::<fuel_quantized::BlockQ4K>(bytes)),
         GgmlDType::Q3K => Ok(cpu_dequant_via_trait::<fuel_quantized::BlockQ3K>(bytes)),
         GgmlDType::Q2K => Ok(cpu_dequant_via_trait::<fuel_quantized::BlockQ2K>(bytes)),
-        other => crate::bail!("gguf {name}: dequant-to-f32 for dtype {other:?} not implemented in lazy loader"),
+        other => crate::bail!(
+            "gguf {name}: dequant-to-f32 for dtype {other:?} not implemented in lazy loader"
+        ),
     }
 }
 
@@ -12859,16 +14141,17 @@ fn dequant_gguf_bytes_to_f32(
 /// don't have a fused on-device dequant kernel (yet).
 fn cpu_dequant_via_trait<T: fuel_quantized::GgmlType>(bytes: &[u8]) -> Vec<f32> {
     let block_bytes = std::mem::size_of::<T>();
-    assert!(bytes.len() % block_bytes == 0,
+    assert!(
+        bytes.len() % block_bytes == 0,
         "cpu_dequant_via_trait: bytes {} not multiple of block_bytes {}",
-        bytes.len(), block_bytes);
+        bytes.len(),
+        block_bytes
+    );
     let n_blocks = bytes.len() / block_bytes;
     // SAFETY: T is #[repr(C)]; GGUF bytes are laid out as a dense array
     // of T structs. The source mmap is 8-byte aligned per memmap2, which
     // satisfies every block struct's alignment (≤ 4 in practice).
-    let blocks: &[T] = unsafe {
-        std::slice::from_raw_parts(bytes.as_ptr() as *const T, n_blocks)
-    };
+    let blocks: &[T] = unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const T, n_blocks) };
     let mut out = vec![0.0_f32; n_blocks * T::BLCK_SIZE];
     T::to_float(blocks, &mut out);
     out
@@ -12878,8 +14161,13 @@ fn cpu_dequant_via_trait<T: fuel_quantized::GgmlType>(bytes: &[u8]) -> Vec<f32> 
 /// u32 words. Input length must be a multiple of 4. This performs one
 /// copy at load time — all subsequent uses are cheap Arc clones.
 fn bytes_to_u32_arc(bytes: &[u8]) -> Arc<[u32]> {
-    assert_eq!(bytes.len() % 4, 0, "bytes_to_u32_arc: len must be multiple of 4");
-    let words: Vec<u32> = bytes.chunks_exact(4)
+    assert_eq!(
+        bytes.len() % 4,
+        0,
+        "bytes_to_u32_arc: len must be multiple of 4"
+    );
+    let words: Vec<u32> = bytes
+        .chunks_exact(4)
         .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     Arc::from(words)
@@ -12899,7 +14187,7 @@ fn cpu_dequant_q4_0_bytes(bytes: &[u8]) -> Vec<f32> {
             let packed = bytes[off + 2 + kk];
             let lo = (packed & 0x0F) as i32 - 8;
             let hi = ((packed >> 4) & 0x0F) as i32 - 8;
-            out[base + kk]      = lo as f32 * d;
+            out[base + kk] = lo as f32 * d;
             out[base + 16 + kk] = hi as f32 * d;
         }
     }
@@ -13038,22 +14326,22 @@ mod generate_tests {
             token_embedding: vec_of(cfg.vocab_size * cfg.dim),
             layers: (0..cfg.n_layers)
                 .map(|_| LayerWeights {
-                    attn_q:         vec_of(cfg.dim * cfg.dim).into(),
-                    attn_q_bias:    None,
-                    attn_k:         vec_of(cfg.dim * kv_dim).into(),
-                    attn_k_bias:    None,
-                    attn_v:         vec_of(cfg.dim * kv_dim).into(),
-                    attn_v_bias:    None,
-                    attn_o:         vec_of(cfg.dim * cfg.dim).into(),
-                    ffn_gate:       vec_of(cfg.dim * cfg.ffn_dim).into(),
-                    ffn_up:         vec_of(cfg.dim * cfg.ffn_dim).into(),
-                    ffn_down:       vec_of(cfg.ffn_dim * cfg.dim).into(),
+                    attn_q: vec_of(cfg.dim * cfg.dim).into(),
+                    attn_q_bias: None,
+                    attn_k: vec_of(cfg.dim * kv_dim).into(),
+                    attn_k_bias: None,
+                    attn_v: vec_of(cfg.dim * kv_dim).into(),
+                    attn_v_bias: None,
+                    attn_o: vec_of(cfg.dim * cfg.dim).into(),
+                    ffn_gate: vec_of(cfg.dim * cfg.ffn_dim).into(),
+                    ffn_up: vec_of(cfg.dim * cfg.ffn_dim).into(),
+                    ffn_down: vec_of(cfg.ffn_dim * cfg.dim).into(),
                     attn_norm_gain: Arc::from(vec![1.0; cfg.dim]),
-                    ffn_norm_gain:  Arc::from(vec![1.0; cfg.dim]),
+                    ffn_norm_gain: Arc::from(vec![1.0; cfg.dim]),
                 })
                 .collect(),
             final_norm_gain: Arc::from(vec![1.0; cfg.dim]),
-            output:          vec_of(cfg.dim * cfg.vocab_size).into(),
+            output: vec_of(cfg.dim * cfg.vocab_size).into(),
         }
     }
 
@@ -13100,20 +14388,24 @@ mod generate_tests {
         LlamaWeights {
             instance: crate::decode_shape::ModelInstanceId::next(),
             token_embedding: f32w.token_embedding,
-            layers: f32w.layers.into_iter().map(|l| LayerWeights {
-                attn_q:         to_bf16(l.attn_q),
-                attn_q_bias:    l.attn_q_bias,
-                attn_k:         to_bf16(l.attn_k),
-                attn_k_bias:    l.attn_k_bias,
-                attn_v:         to_bf16(l.attn_v),
-                attn_v_bias:    l.attn_v_bias,
-                attn_o:         to_bf16(l.attn_o),
-                ffn_gate:       to_bf16(l.ffn_gate),
-                ffn_up:         to_bf16(l.ffn_up),
-                ffn_down:       to_bf16(l.ffn_down),
-                attn_norm_gain: l.attn_norm_gain,
-                ffn_norm_gain:  l.ffn_norm_gain,
-            }).collect(),
+            layers: f32w
+                .layers
+                .into_iter()
+                .map(|l| LayerWeights {
+                    attn_q: to_bf16(l.attn_q),
+                    attn_q_bias: l.attn_q_bias,
+                    attn_k: to_bf16(l.attn_k),
+                    attn_k_bias: l.attn_k_bias,
+                    attn_v: to_bf16(l.attn_v),
+                    attn_v_bias: l.attn_v_bias,
+                    attn_o: to_bf16(l.attn_o),
+                    ffn_gate: to_bf16(l.ffn_gate),
+                    ffn_up: to_bf16(l.ffn_up),
+                    ffn_down: to_bf16(l.ffn_down),
+                    attn_norm_gain: l.attn_norm_gain,
+                    ffn_norm_gain: l.ffn_norm_gain,
+                })
+                .collect(),
             final_norm_gain: f32w.final_norm_gain,
             output: to_bf16(f32w.output),
         }
@@ -13127,33 +14419,39 @@ mod generate_tests {
         // argmax (otherwise the bias code is dead).
         let cfg = LlamaConfig {
             vocab_size: 16,
-            dim:        8,
-            n_layers:   2,
-            n_heads:    4,
+            dim: 8,
+            n_layers: 2,
+            n_heads: 4,
             n_kv_heads: 2,
-            head_dim:   2,
-            ffn_dim:    16,
-            norm_eps:   1e-5,
-            rope_base:  10000.0,
+            head_dim: 2,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
         let tokens = [1_u32, 2, 3];
         let no_bias = LlamaModel {
-            config:  cfg.clone(),
+            config: cfg.clone(),
             weights: make_tiny_weights(&cfg),
         };
         let with_bias = LlamaModel {
-            config:  cfg.clone(),
+            config: cfg.clone(),
             weights: make_tiny_weights_with_qkv_bias(&cfg),
         };
         let no_bias_logits = no_bias
-            .forward(&tokens, 0).unwrap()
-            .slice(1, tokens.len() - 1, 1).unwrap()
-            .reshape(Shape::from_dims(&[cfg.vocab_size])).unwrap()
+            .forward(&tokens, 0)
+            .unwrap()
+            .slice(1, tokens.len() - 1, 1)
+            .unwrap()
+            .reshape(Shape::from_dims(&[cfg.vocab_size]))
+            .unwrap()
             .realize_f32();
         let with_bias_logits = with_bias
-            .forward(&tokens, 0).unwrap()
-            .slice(1, tokens.len() - 1, 1).unwrap()
-            .reshape(Shape::from_dims(&[cfg.vocab_size])).unwrap()
+            .forward(&tokens, 0)
+            .unwrap()
+            .slice(1, tokens.len() - 1, 1)
+            .unwrap()
+            .reshape(Shape::from_dims(&[cfg.vocab_size]))
+            .unwrap()
             .realize_f32();
         for &v in &with_bias_logits {
             assert!(v.is_finite(), "with-bias logit is non-finite: {v}");
@@ -13174,17 +14472,17 @@ mod generate_tests {
         // via the cached path must match a non-cached greedy loop.
         let cfg = LlamaConfig {
             vocab_size: 16,
-            dim:        8,
-            n_layers:   2,
-            n_heads:    4,
+            dim: 8,
+            n_layers: 2,
+            n_heads: 4,
             n_kv_heads: 2,
-            head_dim:   2,
-            ffn_dim:    16,
-            norm_eps:   1e-5,
-            rope_base:  10000.0,
+            head_dim: 2,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
         let model = LlamaModel {
-            config:  cfg.clone(),
+            config: cfg.clone(),
             weights: make_tiny_weights_with_qkv_bias(&cfg),
         };
         let prompt = [1_u32, 2, 3];
@@ -13196,8 +14494,10 @@ mod generate_tests {
             let logits = model.forward(&ref_tokens, 0).unwrap();
             let last_pos = ref_tokens.len() - 1;
             let last = logits
-                .slice(1, last_pos, 1).unwrap()
-                .reshape(Shape::from_dims(&[cfg.vocab_size])).unwrap()
+                .slice(1, last_pos, 1)
+                .unwrap()
+                .reshape(Shape::from_dims(&[cfg.vocab_size]))
+                .unwrap()
                 .realize_f32();
             let next = last
                 .iter()
@@ -13221,17 +14521,17 @@ mod generate_tests {
         // valid vocab indices.
         let cfg = LlamaConfig {
             vocab_size: 16,
-            dim:        8,
-            n_layers:   2,
-            n_heads:    2,
+            dim: 8,
+            n_layers: 2,
+            n_heads: 2,
             n_kv_heads: 2,
-            head_dim:   4,
-            ffn_dim:    16,
-            norm_eps:   1e-5,
-            rope_base:  10000.0,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
         let model = LlamaModel {
-            config:  cfg.clone(),
+            config: cfg.clone(),
             weights: make_tiny_weights(&cfg),
         };
         let out = model
@@ -13251,20 +14551,23 @@ mod generate_tests {
         // Two runs with the same seed must produce identical output.
         let cfg = LlamaConfig {
             vocab_size: 8,
-            dim:        8,
-            n_layers:   1,
-            n_heads:    2,
+            dim: 8,
+            n_layers: 1,
+            n_heads: 2,
             n_kv_heads: 2,
-            head_dim:   4,
-            ffn_dim:    16,
-            norm_eps:   1e-5,
-            rope_base:  10000.0,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
         let model = LlamaModel {
-            config:  cfg.clone(),
+            config: cfg.clone(),
             weights: make_tiny_weights(&cfg),
         };
-        let strategy = SamplingStrategy::Temperature { temp: 1.0, seed: 42 };
+        let strategy = SamplingStrategy::Temperature {
+            temp: 1.0,
+            seed: 42,
+        };
         let a = model.generate(&[0, 1], 3, strategy, None).unwrap();
         let b = model.generate(&[0, 1], 3, strategy, None).unwrap();
         assert_eq!(a, b, "seeded sampling must be deterministic");
@@ -13278,17 +14581,17 @@ mod generate_tests {
         // equals eos).
         let cfg = LlamaConfig {
             vocab_size: 8,
-            dim:        8,
-            n_layers:   1,
-            n_heads:    2,
+            dim: 8,
+            n_layers: 1,
+            n_heads: 2,
             n_kv_heads: 2,
-            head_dim:   4,
-            ffn_dim:    16,
-            norm_eps:   1e-5,
-            rope_base:  10000.0,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
         let model = LlamaModel {
-            config:  cfg.clone(),
+            config: cfg.clone(),
             weights: make_tiny_weights(&cfg),
         };
         let prompt = [1_u32, 2];
@@ -13322,17 +14625,17 @@ mod generate_tests {
         // the public `generate` still having a non-cached path.
         let cfg = LlamaConfig {
             vocab_size: 16,
-            dim:        8,
-            n_layers:   2,
-            n_heads:    2,
+            dim: 8,
+            n_layers: 2,
+            n_heads: 2,
             n_kv_heads: 2,
-            head_dim:   4,
-            ffn_dim:    16,
-            norm_eps:   1e-5,
-            rope_base:  10000.0,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
         let model = LlamaModel {
-            config:  cfg.clone(),
+            config: cfg.clone(),
             weights: make_tiny_weights(&cfg),
         };
         let prompt = [1_u32, 2, 3];
@@ -13344,8 +14647,10 @@ mod generate_tests {
             let logits = model.forward(&ref_tokens, 0).unwrap();
             let last_pos = ref_tokens.len() - 1;
             let last = logits
-                .slice(1, last_pos, 1).unwrap()
-                .reshape(Shape::from_dims(&[cfg.vocab_size])).unwrap()
+                .slice(1, last_pos, 1)
+                .unwrap()
+                .reshape(Shape::from_dims(&[cfg.vocab_size]))
+                .unwrap()
                 .realize_f32();
             let next = last
                 .iter()
@@ -13374,17 +14679,17 @@ mod generate_tests {
     fn generate_with_kv_context_matches_legacy_generate() {
         let cfg = LlamaConfig {
             vocab_size: 16,
-            dim:        8,
-            n_layers:   2,
-            n_heads:    2,
+            dim: 8,
+            n_layers: 2,
+            n_heads: 2,
             n_kv_heads: 2,
-            head_dim:   4,
-            ffn_dim:    16,
-            norm_eps:   1e-5,
-            rope_base:  10000.0,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
         let model = LlamaModel {
-            config:  cfg.clone(),
+            config: cfg.clone(),
             weights: make_tiny_weights(&cfg),
         };
         let prompt = [1_u32, 2, 3];
@@ -13396,10 +14701,16 @@ mod generate_tests {
             .unwrap();
 
         // New: KvCache + InferenceContext + forward_with_kv_context.
-        let new_path = model.generate_with_kv_context(
-            &prompt, max_new, SamplingStrategy::Greedy, None,
-            &Device::cpu(), DType::F32,
-        ).unwrap();
+        let new_path = model
+            .generate_with_kv_context(
+                &prompt,
+                max_new,
+                SamplingStrategy::Greedy,
+                None,
+                &Device::cpu(),
+                DType::F32,
+            )
+            .unwrap();
 
         // Greedy argmax is robust to O(ε) drift in the logits — both
         // paths should pick the same token at every step.
@@ -13413,22 +14724,35 @@ mod generate_tests {
     #[test]
     fn generate_streaming_with_kv_context_fires_callback_per_token() {
         let cfg = LlamaConfig {
-            vocab_size: 16, dim: 4, n_layers: 1, n_heads: 2, n_kv_heads: 2,
-            head_dim: 2, ffn_dim: 8, norm_eps: 1e-5, rope_base: 10000.0,
+            vocab_size: 16,
+            dim: 4,
+            n_layers: 1,
+            n_heads: 2,
+            n_kv_heads: 2,
+            head_dim: 2,
+            ffn_dim: 8,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
         let model = LlamaModel {
-            config:  cfg.clone(),
+            config: cfg.clone(),
             weights: make_tiny_weights(&cfg),
         };
         let prompt = [1_u32, 2];
         let max_new = 3;
 
         let mut streamed: Vec<u32> = Vec::new();
-        let tokens = model.generate_streaming_with_kv_context(
-            &prompt, max_new, SamplingStrategy::Greedy, None,
-            &Device::cpu(), DType::F32,
-            |tok| streamed.push(tok),
-        ).unwrap();
+        let tokens = model
+            .generate_streaming_with_kv_context(
+                &prompt,
+                max_new,
+                SamplingStrategy::Greedy,
+                None,
+                &Device::cpu(),
+                DType::F32,
+                |tok| streamed.push(tok),
+            )
+            .unwrap();
 
         // on_token fires once per GENERATED token (not the prompt).
         assert_eq!(streamed.len(), max_new);
@@ -13443,11 +14767,18 @@ mod generate_tests {
     #[test]
     fn generate_streaming_with_kv_context_stops_on_eos() {
         let cfg = LlamaConfig {
-            vocab_size: 16, dim: 4, n_layers: 1, n_heads: 2, n_kv_heads: 2,
-            head_dim: 2, ffn_dim: 8, norm_eps: 1e-5, rope_base: 10000.0,
+            vocab_size: 16,
+            dim: 4,
+            n_layers: 1,
+            n_heads: 2,
+            n_kv_heads: 2,
+            head_dim: 2,
+            ffn_dim: 8,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
         let model = LlamaModel {
-            config:  cfg.clone(),
+            config: cfg.clone(),
             weights: make_tiny_weights(&cfg),
         };
         let prompt = [1_u32, 2];
@@ -13455,17 +14786,29 @@ mod generate_tests {
 
         // First find what greedy generates without EOS, then set the
         // first generated token as the EOS to confirm short-circuit.
-        let unbounded = model.generate_with_kv_context(
-            &prompt, max_new, SamplingStrategy::Greedy, None,
-            &Device::cpu(), DType::F32,
-        ).unwrap();
+        let unbounded = model
+            .generate_with_kv_context(
+                &prompt,
+                max_new,
+                SamplingStrategy::Greedy,
+                None,
+                &Device::cpu(),
+                DType::F32,
+            )
+            .unwrap();
         assert_eq!(unbounded.len(), prompt.len() + max_new);
         let first_generated = unbounded[prompt.len()];
 
-        let bounded = model.generate_with_kv_context(
-            &prompt, max_new, SamplingStrategy::Greedy, Some(first_generated),
-            &Device::cpu(), DType::F32,
-        ).unwrap();
+        let bounded = model
+            .generate_with_kv_context(
+                &prompt,
+                max_new,
+                SamplingStrategy::Greedy,
+                Some(first_generated),
+                &Device::cpu(),
+                DType::F32,
+            )
+            .unwrap();
         // With EOS = first_generated, generation stops after producing
         // that one token.
         assert_eq!(bounded.len(), prompt.len() + 1);
@@ -13492,21 +14835,21 @@ mod generate_tests {
     fn forward_with_kv_context_decode_matches_non_cached_forward() {
         let cfg = LlamaConfig {
             vocab_size: 16,
-            dim:        8,
-            n_layers:   2,
-            n_heads:    4,
+            dim: 8,
+            n_layers: 2,
+            n_heads: 4,
             n_kv_heads: 2, // exercise GQA (n_rep = 2)
-            head_dim:   4,
-            ffn_dim:    16,
-            norm_eps:   1e-5,
-            rope_base:  10000.0,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
         let cfg = LlamaConfig {
             dim: cfg.n_heads * cfg.head_dim,
             ..cfg
         };
         let model = LlamaModel {
-            config:  cfg.clone(),
+            config: cfg.clone(),
             weights: make_tiny_weights(&cfg),
         };
 
@@ -13518,18 +14861,23 @@ mod generate_tests {
         let full_logits = model.forward(&full, 0).unwrap();
         let last_pos = full.len() - 1;
         let expected = full_logits
-            .slice(1, last_pos, 1).unwrap()
-            .reshape(Shape::from_dims(&[cfg.vocab_size])).unwrap()
+            .slice(1, last_pos, 1)
+            .unwrap()
+            .reshape(Shape::from_dims(&[cfg.vocab_size]))
+            .unwrap()
             .realize_f32();
 
         // New cached path: KvCache::with_capacity + forward_with_kv_context.
         let device = Device::cpu();
         let mut cache = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim,
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
             /*max_seq_len*/ full.len(),
             DType::F32,
             &device,
-        ).expect("with_capacity");
+        )
+        .expect("with_capacity");
         let mut ctx = InferenceContext::new(device);
 
         // Prefill: write the 3-token prompt's K/V into the cache.
@@ -13613,32 +14961,46 @@ mod generate_tests {
     fn llama_attended_len_sym_is_unreferenced_negative_control() {
         let cfg = LlamaConfig {
             vocab_size: 16,
-            dim:        8,
-            n_layers:   2,
-            n_heads:    4,
+            dim: 8,
+            n_layers: 2,
+            n_heads: 4,
             n_kv_heads: 2,
-            head_dim:   4,
-            ffn_dim:    16,
-            norm_eps:   1e-5,
-            rope_base:  10000.0,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
-        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
-        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let cfg = LlamaConfig {
+            dim: cfg.n_heads * cfg.head_dim,
+            ..cfg
+        };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
 
         let prompt = [1_u32, 2, 3];
         let max_seq_len = prompt.len() + 4;
 
         let dev = Device::cpu();
         let mut cache = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &dev,
-        ).expect("with_capacity");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &dev,
+        )
+        .expect("with_capacity");
         let mut ctx = InferenceContext::new(dev.clone());
         let mut session: Option<crate::inference_context::DecodeSession> = None;
 
         // Prefill, then ONE decode token to BUILD the held session.
-        let _ = model.forward_with_kv_context_persistent(&prompt, &mut cache, &mut ctx, &mut session)
+        let _ = model
+            .forward_with_kv_context_persistent(&prompt, &mut cache, &mut ctx, &mut session)
             .expect("prefill");
-        let _ = model.forward_with_kv_context_persistent(&[4], &mut cache, &mut ctx, &mut session)
+        let _ = model
+            .forward_with_kv_context_persistent(&[4], &mut cache, &mut ctx, &mut session)
             .expect("build decode session");
         let s = session.as_ref().expect("session built");
 
@@ -13649,20 +15011,34 @@ mod generate_tests {
         let next = [5_u32];
         let cache_dtype = cache.dtype.unwrap_or(DType::F32);
         let with_off = s.offset_node().is_some();
-        let mk_data = || model
-            .build_token_rope_mask_arcs(
-                &dev, cached_len, &next, s.max_seq_len(), cache_dtype, with_off, None,
-            )
-            .expect("token data");
+        let mk_data = || {
+            model
+                .build_token_rope_mask_arcs(
+                    &dev,
+                    cached_len,
+                    &next,
+                    s.max_seq_len(),
+                    cache_dtype,
+                    with_off,
+                    None,
+                )
+                .expect("token data")
+        };
 
         // Baseline = exactly what production binds (BOTH symbols).
         let baseline = s
-            .realize_token(&dev, mk_data(), &s.per_token_sym_env(cached_len).expect("env"))
+            .realize_token(
+                &dev,
+                mk_data(),
+                &s.per_token_sym_env(cached_len).expect("env"),
+            )
             .expect("baseline");
 
         // --- the measurement: attended_len bound to a WRONG value ---
         let mut env_bad_attended = fuel_ir::SymEnv::new();
-        env_bad_attended.bind(s.cached_len_sym(), cached_len).expect("bind cached_len");
+        env_bad_attended
+            .bind(s.cached_len_sym(), cached_len)
+            .expect("bind cached_len");
         env_bad_attended
             .bind(s.attended_len_sym(), cached_len + 4242)
             .expect("bind attended_len (wrong on purpose)");
@@ -13677,11 +15053,21 @@ mod generate_tests {
         let other = [6_u32];
         let data_other = model
             .build_token_rope_mask_arcs(
-                &dev, cached_len, &other, s.max_seq_len(), cache_dtype, with_off, None,
+                &dev,
+                cached_len,
+                &other,
+                s.max_seq_len(),
+                cache_dtype,
+                with_off,
+                None,
             )
             .expect("token data (different token)");
         let perturbed_data = s
-            .realize_token(&dev, data_other, &s.per_token_sym_env(cached_len).expect("env"))
+            .realize_token(
+                &dev,
+                data_other,
+                &s.per_token_sym_env(cached_len).expect("env"),
+            )
             .expect("realize with different token");
         assert_ne!(
             perturbed_data, baseline,
@@ -13767,16 +15153,19 @@ mod generate_tests {
     fn gap029_golden_cfg() -> LlamaConfig {
         let cfg = LlamaConfig {
             vocab_size: 16,
-            dim:        8,
-            n_layers:   2,
-            n_heads:    4,
+            dim: 8,
+            n_layers: 2,
+            n_heads: 4,
             n_kv_heads: 2, // exercise GQA (n_rep = 2)
-            head_dim:   4,
-            ffn_dim:    16,
-            norm_eps:   1e-5,
-            rope_base:  10000.0,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
-        LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg }
+        LlamaConfig {
+            dim: cfg.n_heads * cfg.head_dim,
+            ..cfg
+        }
     }
 
     /// Prefill 3 tokens, then decode 3 through `path`, returning the decode
@@ -13784,15 +15173,24 @@ mod generate_tests {
     /// over D1 (rebuild per step).
     fn gap029_golden_decode(persistent: bool) -> Vec<f32> {
         let cfg = gap029_golden_cfg();
-        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
         let prompt = [1_u32, 2, 3];
         let decode_tokens = [4_u32, 5, 6];
         let max_seq_len = prompt.len() + decode_tokens.len();
 
         let dev = Device::cpu();
         let mut cache = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &dev,
-        ).expect("with_capacity");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &dev,
+        )
+        .expect("with_capacity");
         let mut ctx = InferenceContext::new(dev);
         let mut session: Option<crate::inference_context::DecodeSession> = None;
 
@@ -13805,7 +15203,10 @@ mod generate_tests {
                 out.extend(
                     model
                         .forward_with_kv_context_persistent(
-                            &[tok], &mut cache, &mut ctx, &mut session,
+                            &[tok],
+                            &mut cache,
+                            &mut ctx,
+                            &mut session,
                         )
                         .expect("decode"),
                 );
@@ -13831,18 +15232,54 @@ mod generate_tests {
     /// 3 prefill tokens then 3 decode steps, flattened — see
     /// [`gap029_golden_decode`].
     const GAP029_LLAMA_DECODE_GOLDEN: [f32; 48] = [
-        0.235882401_f32, 0.079829141_f32, -0.130090356_f32, -0.102592126_f32,
-        -0.065259621_f32, 0.086530462_f32, -0.204395950_f32, 0.017957900_f32,
-        0.064830668_f32, -0.197869897_f32, -0.218223333_f32, 0.039521270_f32,
-        0.181455895_f32, -0.014700335_f32, 0.325861752_f32, 0.119164757_f32,
-        -0.124628991_f32, -0.219824359_f32, 0.088146292_f32, 0.069199830_f32,
-        -0.053305764_f32, -0.030561801_f32, 0.031161062_f32, -0.083186984_f32,
-        -0.013608441_f32, 0.065507233_f32, -0.085608765_f32, -0.016087107_f32,
-        0.061509483_f32, 0.099036664_f32, -0.117331989_f32, -0.176698670_f32,
-        0.132780492_f32, -0.045753848_f32, -0.103880905_f32, -0.083950274_f32,
-        -0.068138495_f32, 0.013806637_f32, -0.149572328_f32, -0.053597312_f32,
-        -0.025251985_f32, -0.027037866_f32, -0.328116179_f32, -0.087185904_f32,
-        0.152396053_f32, -0.154513642_f32, 0.104392514_f32, 0.062370289_f32,
+        0.235882401_f32,
+        0.079829141_f32,
+        -0.130090356_f32,
+        -0.102592126_f32,
+        -0.065259621_f32,
+        0.086530462_f32,
+        -0.204395950_f32,
+        0.017957900_f32,
+        0.064830668_f32,
+        -0.197869897_f32,
+        -0.218223333_f32,
+        0.039521270_f32,
+        0.181455895_f32,
+        -0.014700335_f32,
+        0.325861752_f32,
+        0.119164757_f32,
+        -0.124628991_f32,
+        -0.219824359_f32,
+        0.088146292_f32,
+        0.069199830_f32,
+        -0.053305764_f32,
+        -0.030561801_f32,
+        0.031161062_f32,
+        -0.083186984_f32,
+        -0.013608441_f32,
+        0.065507233_f32,
+        -0.085608765_f32,
+        -0.016087107_f32,
+        0.061509483_f32,
+        0.099036664_f32,
+        -0.117331989_f32,
+        -0.176698670_f32,
+        0.132780492_f32,
+        -0.045753848_f32,
+        -0.103880905_f32,
+        -0.083950274_f32,
+        -0.068138495_f32,
+        0.013806637_f32,
+        -0.149572328_f32,
+        -0.053597312_f32,
+        -0.025251985_f32,
+        -0.027037866_f32,
+        -0.328116179_f32,
+        -0.087185904_f32,
+        0.152396053_f32,
+        -0.154513642_f32,
+        0.104392514_f32,
+        0.062370289_f32,
     ];
 
     /// Node count of `LlamaModel`'s held decode graph — see
@@ -13853,18 +15290,31 @@ mod generate_tests {
     /// the capture and the assertion so the two cannot drift.
     fn gap029_llama_decode_graph_nodes() -> usize {
         let cfg = gap029_golden_cfg();
-        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
         let dev = Device::cpu();
         let mut cache = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, 6, DType::F32, &dev,
-        ).expect("with_capacity");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            6,
+            DType::F32,
+            &dev,
+        )
+        .expect("with_capacity");
         let mut ctx = InferenceContext::new(dev);
         let mut session: Option<crate::inference_context::DecodeSession> = None;
-        model.forward_with_kv_context_persistent(&[1, 2, 3], &mut cache, &mut ctx, &mut session)
+        model
+            .forward_with_kv_context_persistent(&[1, 2, 3], &mut cache, &mut ctx, &mut session)
             .expect("prefill");
-        model.forward_with_kv_context_persistent(&[4], &mut cache, &mut ctx, &mut session)
+        model
+            .forward_with_kv_context_persistent(&[4], &mut cache, &mut ctx, &mut session)
             .expect("decode");
-        session.expect("session built on the first decode token").graph_node_count()
+        session
+            .expect("session built on the first decode token")
+            .graph_node_count()
     }
 
     /// **STRUCTURAL baseline, captured 2026-08-13 BEFORE the Gemma3 seam work
@@ -13929,7 +15379,11 @@ mod generate_tests {
                 GAP029_LLAMA_DECODE_GOLDEN.len(),
                 "{label}: decode step count changed",
             );
-            for (i, (a, b)) in got.iter().zip(GAP029_LLAMA_DECODE_GOLDEN.iter()).enumerate() {
+            for (i, (a, b)) in got
+                .iter()
+                .zip(GAP029_LLAMA_DECODE_GOLDEN.iter())
+                .enumerate()
+            {
                 assert!(
                     (a - b).abs() < 1e-6,
                     "{label}: logit[{i}] drifted across the GAP-029 build-path \
@@ -13950,21 +15404,30 @@ mod generate_tests {
     fn forward_with_kv_context_persistent_plan_once_matches_d1() {
         let cfg = LlamaConfig {
             vocab_size: 16,
-            dim:        8,
-            n_layers:   2,
-            n_heads:    4,
+            dim: 8,
+            n_layers: 2,
+            n_heads: 4,
             n_kv_heads: 2, // exercise GQA (n_rep = 2)
-            head_dim:   4,
-            ffn_dim:    16,
-            norm_eps:   1e-5,
-            rope_base:  10000.0,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
-        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
+        let cfg = LlamaConfig {
+            dim: cfg.n_heads * cfg.head_dim,
+            ..cfg
+        };
 
         // Two byte-identical models: one drives the D2 persistent path,
         // one drives the D1 rebuild path. Identical weights (same seed).
-        let model_d2 = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
-        let model_d1 = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let model_d2 = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
+        let model_d1 = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
 
         let prompt = [1_u32, 2, 3];
         let decode_tokens = [4_u32, 5, 6, 7]; // ≥3 decode tokens
@@ -13975,8 +15438,14 @@ mod generate_tests {
         // measure around the D2 loop. Store the expected logits. ---
         let dev1 = Device::cpu();
         let mut cache1 = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &dev1,
-        ).expect("with_capacity d1");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &dev1,
+        )
+        .expect("with_capacity d1");
         let mut ctx1 = InferenceContext::new(dev1);
         let _ = model_d1
             .forward_with_kv_context(&prompt, &mut cache1, &mut ctx1)
@@ -13993,8 +15462,14 @@ mod generate_tests {
         // --- D2 (persistent) session state ---
         let dev2 = Device::cpu();
         let mut cache2 = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &dev2,
-        ).expect("with_capacity d2");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &dev2,
+        )
+        .expect("with_capacity d2");
         let mut ctx2 = InferenceContext::new(dev2);
         let mut session: Option<crate::inference_context::DecodeSession> = None;
 
@@ -14003,7 +15478,10 @@ mod generate_tests {
         let _ = model_d2
             .forward_with_kv_context_persistent(&prompt, &mut cache2, &mut ctx2, &mut session)
             .expect("d2 prefill");
-        assert!(session.is_none(), "prefill (seq>1) must NOT build the held session");
+        assert!(
+            session.is_none(),
+            "prefill (seq>1) must NOT build the held session"
+        );
 
         // Decode ≥3 tokens through the persistent path ONLY. Snapshot the
         // optimizer count on THIS thread just before the decode loop
@@ -14028,14 +15506,17 @@ mod generate_tests {
 
             // The session must exist after the first decode token and
             // stay valid across the rest.
-            let sess = session.as_ref().expect("session built on first decode token");
+            let sess = session
+                .as_ref()
+                .expect("session built on first decode token");
             let graph_len = sess.graph_node_count();
             if i == 1 {
                 len_at_token2 = Some(graph_len);
             } else if i >= 2 {
                 // (c) node count stable from token 2 onward.
                 assert_eq!(
-                    Some(graph_len), len_at_token2,
+                    Some(graph_len),
+                    len_at_token2,
                     "held graph must NOT grow from token 2 onward (token {i})",
                 );
             }
@@ -14044,7 +15525,8 @@ mod generate_tests {
         // (a) optimize bumped EXACTLY ONCE across all decode tokens.
         let opt_after = crate::pipelined_bridge::optimize_calls_thread_local();
         assert_eq!(
-            opt_after - opt_before, 1,
+            opt_after - opt_before,
+            1,
             "persistent decode must optimize EXACTLY ONCE across {} decode \
              tokens (the first builds the session; the rest skip optimize): \
              {opt_before} -> {opt_after}",
@@ -14090,25 +15572,34 @@ mod generate_tests {
     fn bf16_decode_matches_f32_decode_d1() {
         let cfg = LlamaConfig {
             vocab_size: 16,
-            dim:        16,
-            n_layers:   2,
-            n_heads:    4,
+            dim: 16,
+            n_layers: 2,
+            n_heads: 4,
             n_kv_heads: 2, // exercise GQA (n_rep = 2)
-            head_dim:   4,
-            ffn_dim:    16,
-            norm_eps:   1e-5,
-            rope_base:  10000.0,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
         let prompt = [1_u32, 2, 3];
         let next_token = 4_u32;
         let max_seq_len = prompt.len() + 1;
 
         // F32 reference: F32 weights, F32 cache.
-        let model_f32 = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let model_f32 = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
         let dev_f32 = Device::cpu();
         let mut cache_f32 = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &dev_f32,
-        ).expect("with_capacity f32");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &dev_f32,
+        )
+        .expect("with_capacity f32");
         let mut ctx_f32 = InferenceContext::new(dev_f32);
         let _ = model_f32
             .forward_with_kv_context(&prompt, &mut cache_f32, &mut ctx_f32)
@@ -14119,11 +15610,20 @@ mod generate_tests {
 
         // BF16-throughout: BF16 weights (the only matmul-gate-legal
         // pairing with BF16 activations) + BF16 cache.
-        let model_bf16 = LlamaModel { config: cfg.clone(), weights: make_tiny_weights_bf16(&cfg) };
+        let model_bf16 = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights_bf16(&cfg),
+        };
         let dev_bf16 = Device::cpu();
         let mut cache_bf16 = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::BF16, &dev_bf16,
-        ).expect("with_capacity bf16");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::BF16,
+            &dev_bf16,
+        )
+        .expect("with_capacity bf16");
         let mut ctx_bf16 = InferenceContext::new(dev_bf16);
         let _ = model_bf16
             .forward_with_kv_context(&prompt, &mut cache_bf16, &mut ctx_bf16)
@@ -14136,18 +15636,22 @@ mod generate_tests {
         assert_eq!(f32_logits.len(), cfg.vocab_size);
 
         let argmax = |v: &[f32]| -> usize {
-            v.iter().enumerate()
+            v.iter()
+                .enumerate()
                 .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
                 .map(|(i, _)| i)
                 .unwrap()
         };
         assert_eq!(
-            argmax(&f32_logits), argmax(&bf16_logits),
+            argmax(&f32_logits),
+            argmax(&bf16_logits),
             "BF16-throughout decode must agree with the F32 reference on argmax: \
              f32={f32_logits:?} bf16={bf16_logits:?}",
         );
 
-        let max_abs_diff = f32_logits.iter().zip(bf16_logits.iter())
+        let max_abs_diff = f32_logits
+            .iter()
+            .zip(bf16_logits.iter())
             .map(|(a, b)| (a - b).abs())
             .fold(0.0_f32, f32::max);
         println!("bf16_decode_matches_f32_decode_d1: max abs diff = {max_abs_diff}");
@@ -14192,14 +15696,14 @@ mod generate_tests {
     fn bf16_decode_cuda_matches_cpu() {
         let cfg = LlamaConfig {
             vocab_size: 16,
-            dim:        16,
-            n_layers:   2,
-            n_heads:    4,
+            dim: 16,
+            n_layers: 2,
+            n_heads: 4,
             n_kv_heads: 2, // exercise GQA (n_rep = 2)
-            head_dim:   4,
-            ffn_dim:    16,
-            norm_eps:   1e-5,
-            rope_base:  10000.0,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
         let prompt = [1_u32, 2, 3];
         let next_token = 4_u32;
@@ -14207,11 +15711,20 @@ mod generate_tests {
 
         // CPU leg: BF16-throughout decode (BF16 weights + BF16 cache), the
         // same protocol `bf16_decode_matches_f32_decode_d1`'s BF16 side uses.
-        let model_cpu = LlamaModel { config: cfg.clone(), weights: make_tiny_weights_bf16(&cfg) };
+        let model_cpu = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights_bf16(&cfg),
+        };
         let dev_cpu = Device::cpu();
         let mut cache_cpu = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::BF16, &dev_cpu,
-        ).expect("with_capacity cpu bf16");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::BF16,
+            &dev_cpu,
+        )
+        .expect("with_capacity cpu bf16");
         let mut ctx_cpu = InferenceContext::new(dev_cpu);
         let _ = model_cpu
             .forward_with_kv_context(&prompt, &mut cache_cpu, &mut ctx_cpu)
@@ -14232,10 +15745,19 @@ mod generate_tests {
 
         // CUDA leg: byte-identical model/protocol, BF16 cache on the CUDA
         // device — the homogeneous [bf16;3] CUDA gemm path under test.
-        let model_cuda = LlamaModel { config: cfg.clone(), weights: make_tiny_weights_bf16(&cfg) };
+        let model_cuda = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights_bf16(&cfg),
+        };
         let mut cache_cuda = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::BF16, &cuda_device,
-        ).expect("with_capacity cuda bf16");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::BF16,
+            &cuda_device,
+        )
+        .expect("with_capacity cuda bf16");
         let mut ctx_cuda = InferenceContext::new(cuda_device);
         let _ = model_cuda
             .forward_with_kv_context(&prompt, &mut cache_cuda, &mut ctx_cuda)
@@ -14248,18 +15770,22 @@ mod generate_tests {
         assert_eq!(cpu_logits.len(), cfg.vocab_size);
 
         let argmax = |v: &[f32]| -> usize {
-            v.iter().enumerate()
+            v.iter()
+                .enumerate()
                 .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
                 .map(|(i, _)| i)
                 .unwrap()
         };
         assert_eq!(
-            argmax(&cpu_logits), argmax(&cuda_logits),
+            argmax(&cpu_logits),
+            argmax(&cuda_logits),
             "BF16-throughout CUDA decode must agree with the CPU BF16 leg on argmax: \
              cpu={cpu_logits:?} cuda={cuda_logits:?}",
         );
 
-        let max_abs_diff = cpu_logits.iter().zip(cuda_logits.iter())
+        let max_abs_diff = cpu_logits
+            .iter()
+            .zip(cuda_logits.iter())
             .map(|(a, b)| (a - b).abs())
             .fold(0.0_f32, f32::max);
         println!("bf16_decode_cuda_matches_cpu: max abs diff = {max_abs_diff}");
@@ -14369,20 +15895,39 @@ mod generate_tests {
         use std::collections::{BTreeMap, HashSet};
 
         let cfg = LlamaConfig {
-            vocab_size: 16, dim: 16, n_layers: 2, n_heads: 4, n_kv_heads: 2,
-            head_dim: 4, ffn_dim: 16, norm_eps: 1e-5, rope_base: 10000.0,
+            vocab_size: 16,
+            dim: 16,
+            n_layers: 2,
+            n_heads: 4,
+            n_kv_heads: 2,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
         let dev: Device = match fuel_cuda_backend::CudaDevice::new(0) {
             Ok(d) => d.into(),
-            Err(e) => { eprintln!("no CUDA device; skipping: {e:?}"); return; }
+            Err(e) => {
+                eprintln!("no CUDA device; skipping: {e:?}");
+                return;
+            }
         };
 
         let prompt = [1_u32, 2, 3];
         let msl = prompt.len() + 4;
-        let m = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let m = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
         let mut cache = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, msl, DType::F32, &dev,
-        ).expect("cache");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            msl,
+            DType::F32,
+            &dev,
+        )
+        .expect("cache");
         let mut ctx = InferenceContext::new(dev.clone());
         let mut sess: Option<crate::inference_context::DecodeSession> = None;
         let mut cap: Option<fuel_dispatch::pipelined::CapturedDecodeSession> = None;
@@ -14422,13 +15967,22 @@ mod generate_tests {
         varying.insert(s.rope_cos_node().0);
         varying.insert(s.rope_sin_node().0);
         varying.insert(s.mask_node().0);
-        if let Some(off) = s.offset_node() { varying.insert(off.0); }
-        for (k, v) in s.kv_nodes() { varying.insert(k.0); varying.insert(v.0); }
+        if let Some(off) = s.offset_node() {
+            varying.insert(off.0);
+        }
+        for (k, v) in s.kv_nodes() {
+            varying.insert(k.0);
+            varying.insert(v.0);
+        }
         let seeds = varying.len();
         // Node ids are topologically ordered (a node's inputs precede it), so a
         // single forward sweep is a complete fixpoint — no iteration needed.
         for i in 0..g.len() {
-            if g.node(fuel_graph::NodeId(i)).inputs.iter().any(|inp| varying.contains(&inp.0)) {
+            if g.node(fuel_graph::NodeId(i))
+                .inputs
+                .iter()
+                .any(|inp| varying.contains(&inp.0))
+            {
                 varying.insert(i);
             }
         }
@@ -14454,10 +16008,16 @@ mod generate_tests {
         let mut inv_all_by_op: BTreeMap<String, usize> = BTreeMap::new();
         let mut inv_compute: Vec<(usize, String)> = Vec::new();
         let op_kind = |o: &fuel_graph::Op| {
-            format!("{o:?}").split(['(', ' ', '{']).next().unwrap_or("?").to_string()
+            format!("{o:?}")
+                .split(['(', ' ', '{'])
+                .next()
+                .unwrap_or("?")
+                .to_string()
         };
         for i in 0..g.len() {
-            if varying.contains(&i) { continue; }
+            if varying.contains(&i) {
+                continue;
+            }
             let node = g.node(fuel_graph::NodeId(i));
             let kind = op_kind(&node.op);
             *inv_all_by_op.entry(kind.clone()).or_insert(0) += 1;
@@ -14490,7 +16050,11 @@ mod generate_tests {
         for (id, a) in &snap_a {
             if let Some(b) = snap_b.get(id) {
                 compared += 1;
-                if a.len() != b.len() || a.iter().zip(b.iter()).any(|(x, y)| x.to_bits() != y.to_bits()) {
+                if a.len() != b.len()
+                    || a.iter()
+                        .zip(b.iter())
+                        .any(|(x, y)| x.to_bits() != y.to_bits())
+                {
                     emp_changed.insert(*id);
                 }
             }
@@ -14503,14 +16067,17 @@ mod generate_tests {
         let mut struct_var_emp_changed = 0usize;
         let mut inv_by_op: BTreeMap<String, usize> = BTreeMap::new();
         for id in snap_a.keys() {
-            if snap_b.get(id).is_none() { continue; }
+            if snap_b.get(id).is_none() {
+                continue;
+            }
             let sv = varying.contains(id);
             let ec = emp_changed.contains(id);
             match (sv, ec) {
                 (false, false) => {
                     struct_inv_emp_same += 1;
                     let op = format!("{:?}", g.node(fuel_graph::NodeId(*id)).op);
-                    *inv_by_op.entry(op.split(' ').next().unwrap_or("?").to_string())
+                    *inv_by_op
+                        .entry(op.split(' ').next().unwrap_or("?").to_string())
                         .or_insert(0) += 1;
                 }
                 (false, true) => struct_inv_emp_changed.push(*id),
@@ -14521,15 +16088,24 @@ mod generate_tests {
 
         println!("\n=== token-invariance census (decode step) ===");
         println!("graph nodes: {}   per-token seeds: {seeds}", g.len());
-        println!("structurally VARYING: {}   structurally INVARIANT: {}",
-            varying.len(), g.len() - varying.len());
+        println!(
+            "structurally VARYING: {}   structurally INVARIANT: {}",
+            varying.len(),
+            g.len() - varying.len()
+        );
         println!("retained + comparable across two replays: {compared}");
-        println!("  structurally-invariant & bytes same    : {struct_inv_emp_same}  <- memoization candidates");
+        println!(
+            "  structurally-invariant & bytes same    : {struct_inv_emp_same}  <- memoization candidates"
+        );
         println!("  structurally-varying   & bytes changed : {struct_var_emp_changed}");
-        println!("  structurally-varying   & bytes SAME    : {}  (coincidence on a 16-vocab fixture)",
-            struct_var_emp_same.len());
-        println!("  structurally-invariant & bytes CHANGED : {}  (would be a correctness signal)",
-            struct_inv_emp_changed.len());
+        println!(
+            "  structurally-varying   & bytes SAME    : {}  (coincidence on a 16-vocab fixture)",
+            struct_var_emp_same.len()
+        );
+        println!(
+            "  structurally-invariant & bytes CHANGED : {}  (would be a correctness signal)",
+            struct_inv_emp_changed.len()
+        );
         if !inv_by_op.is_empty() {
             println!("invariant candidates by op:");
             for (op, n) in &inv_by_op {
@@ -14537,15 +16113,20 @@ mod generate_tests {
             }
         }
 
-        println!("\n-- what the structurally-invariant nodes ARE (off the graph, \
-                  independent of what capture retained) --");
+        println!(
+            "\n-- what the structurally-invariant nodes ARE (off the graph, \
+                  independent of what capture retained) --"
+        );
         for (op, n) in &inv_all_by_op {
             println!("    {op:<24} {n}");
         }
         println!(
             "  leaves (Const/Iota — already hoisted by base_cache) : {}",
-            inv_all_by_op.iter().filter(|(k, _)| k.as_str() == "Const" || k.as_str() == "Iota")
-                .map(|(_, n)| *n).sum::<usize>(),
+            inv_all_by_op
+                .iter()
+                .filter(|(k, _)| k.as_str() == "Const" || k.as_str() == "Iota")
+                .map(|(_, n)| *n)
+                .sum::<usize>(),
         );
         println!(
             "  invariant VIEW ops (ViewOf — alias input bytes, no alloc/launch) : {}",
@@ -14562,10 +16143,16 @@ mod generate_tests {
 
         // POSITIVE CONTROL: the comparison actually happened. Without it, zero
         // comparable nodes would report "no varying nodes" and pass vacuously.
-        assert!(compared >= 10, "only {compared} nodes were comparable across replays");
+        assert!(
+            compared >= 10,
+            "only {compared} nodes were comparable across replays"
+        );
         // And the seeds must have been found — an empty seed set makes EVERYTHING
         // look invariant, which is the most flattering possible wrong answer.
-        assert!(seeds >= 4, "only {seeds} per-token seed nodes — the structural pass is blind");
+        assert!(
+            seeds >= 4,
+            "only {seeds} per-token seed nodes — the structural pass is blind"
+        );
         // POSITIVE CONTROL for (1b), and the specific defect it repairs: the
         // enumeration must account for EVERY structurally-invariant node. The
         // bug being fixed here was an empty report read as a negative result, so
@@ -14629,8 +16216,15 @@ mod generate_tests {
     #[ignore = "requires a live CUDA device"]
     fn captured_decode_exposes_per_node_intermediates_cuda() {
         let cfg = LlamaConfig {
-            vocab_size: 16, dim: 16, n_layers: 2, n_heads: 4, n_kv_heads: 2,
-            head_dim: 4, ffn_dim: 16, norm_eps: 1e-5, rope_base: 10000.0,
+            vocab_size: 16,
+            dim: 16,
+            n_layers: 2,
+            n_heads: 4,
+            n_kv_heads: 2,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
         let dev: Device = match fuel_cuda_backend::CudaDevice::new(0) {
             Ok(d) => d.into(),
@@ -14645,39 +16239,71 @@ mod generate_tests {
         let max_seq_len = prompt.len() + decode.len();
 
         // Reference: the persistent path, for the end-to-end agreement check.
-        let m_ref = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let m_ref = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
         let mut c_ref = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &dev,
-        ).expect("ref cache");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &dev,
+        )
+        .expect("ref cache");
         let mut x_ref = InferenceContext::new(dev.clone());
         let mut s_ref: Option<crate::inference_context::DecodeSession> = None;
-        m_ref.forward_with_kv_context_persistent(&prompt, &mut c_ref, &mut x_ref, &mut s_ref)
+        m_ref
+            .forward_with_kv_context_persistent(&prompt, &mut c_ref, &mut x_ref, &mut s_ref)
             .expect("ref prefill");
         let mut ref_logits = Vec::new();
         for &t in &decode {
             ref_logits.push(
-                m_ref.forward_with_kv_context_persistent(&[t], &mut c_ref, &mut x_ref, &mut s_ref)
+                m_ref
+                    .forward_with_kv_context_persistent(&[t], &mut c_ref, &mut x_ref, &mut s_ref)
                     .expect("ref decode"),
             );
         }
 
         // Under test: capture, then read the intermediates it retained.
-        let m_cap = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let m_cap = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
         let mut c_cap = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &dev,
-        ).expect("cap cache");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &dev,
+        )
+        .expect("cap cache");
         let mut x_cap = InferenceContext::new(dev.clone());
         let mut s_cap: Option<crate::inference_context::DecodeSession> = None;
         let mut captured: Option<fuel_dispatch::pipelined::CapturedDecodeSession> = None;
-        m_cap.forward_with_kv_context_captured(
-            &prompt, &mut c_cap, &mut x_cap, &mut s_cap, &mut captured,
-        ).expect("cap prefill");
+        m_cap
+            .forward_with_kv_context_captured(
+                &prompt,
+                &mut c_cap,
+                &mut x_cap,
+                &mut s_cap,
+                &mut captured,
+            )
+            .expect("cap prefill");
         let mut cap_logits = Vec::new();
         for &t in &decode {
             cap_logits.push(
-                m_cap.forward_with_kv_context_captured(
-                    &[t], &mut c_cap, &mut x_cap, &mut s_cap, &mut captured,
-                ).expect("cap decode"),
+                m_cap
+                    .forward_with_kv_context_captured(
+                        &[t],
+                        &mut c_cap,
+                        &mut x_cap,
+                        &mut s_cap,
+                        &mut captured,
+                    )
+                    .expect("cap decode"),
             );
         }
 
@@ -14688,9 +16314,14 @@ mod generate_tests {
         let graph_len = s_cap.as_ref().expect("session").graph_node_count();
 
         // (1) COVERAGE — a real share of the graph, not a token handful.
-        println!("
-=== captured per-node intermediates ===");
-        println!("graph nodes: {graph_len}   retained buffers: {}", outputs.len());
+        println!(
+            "
+=== captured per-node intermediates ==="
+        );
+        println!(
+            "graph nodes: {graph_len}   retained buffers: {}",
+            outputs.len()
+        );
         assert!(
             outputs.len() >= graph_len / 4,
             "capture retained only {} buffers for a {graph_len}-node graph — node_outputs is supposed to expose EVERY compute node's output, so a near-empty map means the inspection surface is not what it claims",
@@ -14708,8 +16339,14 @@ mod generate_tests {
                 checked += 1;
             }
         }
-        println!("readable buffers: {checked}   non-finite: {}", nonfinite.len());
-        assert!(checked > 0, "no retained buffer was readable — the surface is unusable");
+        println!(
+            "readable buffers: {checked}   non-finite: {}",
+            nonfinite.len()
+        );
+        assert!(
+            checked > 0,
+            "no retained buffer was readable — the surface is unusable"
+        );
         assert!(
             nonfinite.is_empty(),
             "retained intermediates contain non-finite values at {nonfinite:?} — the signature of replay against freed/uninitialised memory, which a logits-only check would not localise",
@@ -14723,9 +16360,14 @@ mod generate_tests {
                 "captured token {i} must be byte-identical to the persistent path",
             );
         }
-        println!("end-to-end: byte-identical to the persistent path over {} tokens", decode.len());
-        println!("=== END ===
-");
+        println!(
+            "end-to-end: byte-identical to the persistent path over {} tokens",
+            decode.len()
+        );
+        println!(
+            "=== END ===
+"
+        );
     }
 
     /// Task 4b-δ · GPU gate: [`LlamaModel::forward_with_kv_context_captured`]
@@ -14770,14 +16412,14 @@ mod generate_tests {
         // the lever; using the tiny fixture again here.
         let cfg = LlamaConfig {
             vocab_size: 16,
-            dim:        16,
-            n_layers:   2,
-            n_heads:    4,
+            dim: 16,
+            n_layers: 2,
+            n_heads: 4,
             n_kv_heads: 2, // exercise GQA (n_rep = 2)
-            head_dim:   4,
-            ffn_dim:    16,
-            norm_eps:   1e-5,
-            rope_base:  10000.0,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
 
         // CUDA device or skip cleanly.
@@ -14797,18 +16439,33 @@ mod generate_tests {
         // Two byte-identical F32-weight models on the SAME CUDA device:
         // one drives the reference persistent (D2) path, one drives the
         // new captured (CapturedRun) path under test.
-        let model_persistent = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
-        let model_captured = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let model_persistent = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
+        let model_captured = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
 
         // --- Reference: forward_with_kv_context_persistent ---
         let mut cache_persistent = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &cuda_device,
-        ).expect("with_capacity persistent");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &cuda_device,
+        )
+        .expect("with_capacity persistent");
         let mut ctx_persistent = InferenceContext::new(cuda_device.clone());
         let mut session_persistent: Option<crate::inference_context::DecodeSession> = None;
         let _ = model_persistent
             .forward_with_kv_context_persistent(
-                &prompt, &mut cache_persistent, &mut ctx_persistent, &mut session_persistent,
+                &prompt,
+                &mut cache_persistent,
+                &mut ctx_persistent,
+                &mut session_persistent,
             )
             .expect("persistent prefill");
         let mut persistent_logits: Vec<Vec<f32>> = Vec::with_capacity(decode_tokens.len());
@@ -14816,7 +16473,10 @@ mod generate_tests {
             persistent_logits.push(
                 model_persistent
                     .forward_with_kv_context_persistent(
-                        &[tok], &mut cache_persistent, &mut ctx_persistent, &mut session_persistent,
+                        &[tok],
+                        &mut cache_persistent,
+                        &mut ctx_persistent,
+                        &mut session_persistent,
                     )
                     .expect("persistent decode"),
             );
@@ -14824,22 +16484,38 @@ mod generate_tests {
 
         // --- Under test: forward_with_kv_context_captured ---
         let mut cache_captured = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &cuda_device,
-        ).expect("with_capacity captured");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &cuda_device,
+        )
+        .expect("with_capacity captured");
         let mut ctx_captured = InferenceContext::new(cuda_device);
         let mut session_captured: Option<crate::inference_context::DecodeSession> = None;
         let mut captured: Option<fuel_dispatch::pipelined::CapturedDecodeSession> = None;
         let _ = model_captured
             .forward_with_kv_context_captured(
-                &prompt, &mut cache_captured, &mut ctx_captured,
-                &mut session_captured, &mut captured,
+                &prompt,
+                &mut cache_captured,
+                &mut ctx_captured,
+                &mut session_captured,
+                &mut captured,
             )
             .expect("captured prefill");
-        assert!(session_captured.is_none(), "prefill (seq>1) must NOT build the held session");
-        assert!(captured.is_none(), "prefill (seq>1) must NOT build the capture");
+        assert!(
+            session_captured.is_none(),
+            "prefill (seq>1) must NOT build the held session"
+        );
+        assert!(
+            captured.is_none(),
+            "prefill (seq>1) must NOT build the capture"
+        );
 
         let argmax = |v: &[f32]| -> usize {
-            v.iter().enumerate()
+            v.iter()
+                .enumerate()
                 .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
                 .map(|(i, _)| i)
                 .unwrap()
@@ -14848,8 +16524,11 @@ mod generate_tests {
         for (i, &tok) in decode_tokens.iter().enumerate() {
             let got = model_captured
                 .forward_with_kv_context_captured(
-                    &[tok], &mut cache_captured, &mut ctx_captured,
-                    &mut session_captured, &mut captured,
+                    &[tok],
+                    &mut cache_captured,
+                    &mut ctx_captured,
+                    &mut session_captured,
+                    &mut captured,
                 )
                 .expect("captured decode");
 
@@ -14858,16 +16537,21 @@ mod generate_tests {
             assert_eq!(
                 got, persistent_logits[i],
                 "captured decode token {i} must be byte-identical to the \
-                 persistent path: got={got:?} want={:?}", persistent_logits[i],
+                 persistent path: got={got:?} want={:?}",
+                persistent_logits[i],
             );
             assert_eq!(
-                argmax(&got), argmax(&persistent_logits[i]),
+                argmax(&got),
+                argmax(&persistent_logits[i]),
                 "captured decode token {i} argmax must match the persistent path",
             );
 
             if i == 0 {
                 // First decode token: session builds, capture does not yet.
-                assert!(session_captured.is_some(), "token 1 must build the held session");
+                assert!(
+                    session_captured.is_some(),
+                    "token 1 must build the held session"
+                );
                 assert!(captured.is_none(), "token 1 must NOT build the capture yet");
             } else if i == 1 {
                 // Second decode token: the capture builds.
@@ -14905,19 +16589,25 @@ mod generate_tests {
     fn bf16_decode_matches_f32_decode_d2_plan_once() {
         let cfg = LlamaConfig {
             vocab_size: 16,
-            dim:        16,
-            n_layers:   2,
-            n_heads:    4,
+            dim: 16,
+            n_layers: 2,
+            n_heads: 4,
             n_kv_heads: 2, // exercise GQA (n_rep = 2)
-            head_dim:   4,
-            ffn_dim:    16,
-            norm_eps:   1e-5,
-            rope_base:  10000.0,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
 
         // Two byte-identical BF16-weight models: one drives D2, one D1.
-        let model_d2 = LlamaModel { config: cfg.clone(), weights: make_tiny_weights_bf16(&cfg) };
-        let model_d1 = LlamaModel { config: cfg.clone(), weights: make_tiny_weights_bf16(&cfg) };
+        let model_d2 = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights_bf16(&cfg),
+        };
+        let model_d1 = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights_bf16(&cfg),
+        };
 
         let prompt = [1_u32, 2, 3];
         let decode_tokens = [4_u32, 5, 6, 7]; // >= 3 decode tokens
@@ -14928,8 +16618,14 @@ mod generate_tests {
         // measured around the D2 loop. ---
         let dev1 = Device::cpu();
         let mut cache1 = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::BF16, &dev1,
-        ).expect("with_capacity d1");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::BF16,
+            &dev1,
+        )
+        .expect("with_capacity d1");
         let mut ctx1 = InferenceContext::new(dev1);
         let _ = model_d1
             .forward_with_kv_context(&prompt, &mut cache1, &mut ctx1)
@@ -14946,8 +16642,14 @@ mod generate_tests {
         // --- D2 (persistent) session state ---
         let dev2 = Device::cpu();
         let mut cache2 = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::BF16, &dev2,
-        ).expect("with_capacity d2");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::BF16,
+            &dev2,
+        )
+        .expect("with_capacity d2");
         let mut ctx2 = InferenceContext::new(dev2);
         let mut session: Option<crate::inference_context::DecodeSession> = None;
 
@@ -14955,7 +16657,10 @@ mod generate_tests {
         let _ = model_d2
             .forward_with_kv_context_persistent(&prompt, &mut cache2, &mut ctx2, &mut session)
             .expect("d2 prefill");
-        assert!(session.is_none(), "prefill (seq>1) must NOT build the held session");
+        assert!(
+            session.is_none(),
+            "prefill (seq>1) must NOT build the held session"
+        );
 
         let opt_before = crate::pipelined_bridge::optimize_calls_thread_local();
         let mut len_at_token2: Option<usize> = None;
@@ -14973,13 +16678,16 @@ mod generate_tests {
                  BF16 D1 cached path",
             );
 
-            let sess = session.as_ref().expect("session built on first decode token");
+            let sess = session
+                .as_ref()
+                .expect("session built on first decode token");
             let graph_len = sess.graph_node_count();
             if i == 1 {
                 len_at_token2 = Some(graph_len);
             } else if i >= 2 {
                 assert_eq!(
-                    Some(graph_len), len_at_token2,
+                    Some(graph_len),
+                    len_at_token2,
                     "held graph must NOT grow from token 2 onward (token {i})",
                 );
             }
@@ -14988,7 +16696,8 @@ mod generate_tests {
         // Optimize bumped EXACTLY ONCE across all decode tokens.
         let opt_after = crate::pipelined_bridge::optimize_calls_thread_local();
         assert_eq!(
-            opt_after - opt_before, 1,
+            opt_after - opt_before,
+            1,
             "BF16 persistent decode must optimize EXACTLY ONCE across {} decode \
              tokens: {opt_before} -> {opt_after}",
             decode_tokens.len(),
@@ -15013,16 +16722,19 @@ mod generate_tests {
     fn bf16_decode_graph_dtype_audit() {
         let cfg = LlamaConfig {
             vocab_size: 16,
-            dim:        16,
-            n_layers:   2,
-            n_heads:    4,
+            dim: 16,
+            n_layers: 2,
+            n_heads: 4,
             n_kv_heads: 2,
-            head_dim:   4,
-            ffn_dim:    16,
-            norm_eps:   1e-5,
-            rope_base:  10000.0,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
-        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights_bf16(&cfg) };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights_bf16(&cfg),
+        };
         let next_token = 4_u32;
         let cached_len = 3usize; // as if 3 tokens were already prefilled
         let seq = 1usize;
@@ -15037,48 +16749,60 @@ mod generate_tests {
         );
         let token_ids = embed.const_u32_like(vec![next_token], Shape::from_dims(&[seq]));
         let mut h = embed
-            .index_select(0, &token_ids).unwrap()
-            .reshape(Shape::from_dims(&[batch, seq, cfg.dim])).unwrap();
+            .index_select(0, &token_ids)
+            .unwrap()
+            .reshape(Shape::from_dims(&[batch, seq, cfg.dim]))
+            .unwrap();
         h = h.to_dtype(cache_dtype).unwrap();
 
         let (rope_cos, rope_sin) =
             h.rope_tables_const(cfg.rope_base, cached_len, seq, cfg.head_dim);
 
         let mask_data = build_decode_causal_mask(cached_len, seq, max_seq_len);
-        let mask = h.const_like_dtype(
-            &mask_data, Shape::from_dims(&[1, 1, seq, max_seq_len]), cache_dtype,
-        ).unwrap();
+        let mask = h
+            .const_like_dtype(
+                &mask_data,
+                Shape::from_dims(&[1, 1, seq, max_seq_len]),
+                cache_dtype,
+            )
+            .unwrap();
 
         let cached_len_sym = fuel_ir::SymId(0);
         let attended_len_sym = fuel_ir::SymId(1);
-        let cache_shape = Shape::from_dims(
-            &[batch, cfg.n_kv_heads, max_seq_len, cfg.head_dim],
-        );
+        let cache_shape = Shape::from_dims(&[batch, cfg.n_kv_heads, max_seq_len, cfg.head_dim]);
 
         for layer_weights in &model.weights.layers {
             let k_cache_node = h.const_placeholder_like(cache_shape.clone(), cache_dtype);
             let v_cache_node = h.const_placeholder_like(cache_shape.clone(), cache_dtype);
-            h = model.apply_layer_with_kv_writes(
-                &h,
-                layer_weights,
-                &k_cache_node,
-                &v_cache_node,
-                cached_len_sym,
-                attended_len_sym,
-                None, // dtype-audit test: SymEnv write path (offset carrier irrelevant here)
-                &rope_cos,
-                &rope_sin,
-                &mask,
-                None, // dense
-            ).expect("apply_layer_with_kv_writes");
+            h = model
+                .apply_layer_with_kv_writes(
+                    &h,
+                    layer_weights,
+                    &k_cache_node,
+                    &v_cache_node,
+                    cached_len_sym,
+                    attended_len_sym,
+                    None, // dtype-audit test: SymEnv write path (offset carrier irrelevant here)
+                    &rope_cos,
+                    &rope_sin,
+                    &mask,
+                    None, // dense
+                )
+                .expect("apply_layer_with_kv_writes");
         }
 
         let h_norm =
             apply_affine_rms_norm(&h, &model.weights.final_norm_gain, cfg.dim, cfg.norm_eps);
-        let logits = model.weights.output.apply_linear(&h_norm, cfg.dim, cfg.vocab_size).unwrap();
+        let logits = model
+            .weights
+            .output
+            .apply_linear(&h_norm, cfg.dim, cfg.vocab_size)
+            .unwrap();
         let logits_root = logits
-            .slice(1, seq - 1, 1).unwrap()
-            .reshape(Shape::from_dims(&[cfg.vocab_size])).unwrap();
+            .slice(1, seq - 1, 1)
+            .unwrap()
+            .reshape(Shape::from_dims(&[cfg.vocab_size]))
+            .unwrap();
         // Mirrors the pre-realize cast the production path applies.
         let logits_root = logits_root.to_dtype(DType::F32).unwrap();
 
@@ -15106,10 +16830,14 @@ mod generate_tests {
         // be BF16 — the RoPE F32-cast window doesn't itself contain a
         // matmul, so zero F32 (or other-dtype) matmuls are expected
         // between the post-embed cast and the pre-realize logits cast.
-        assert_eq!(f32_matmuls, 0, "no F32 matmul expected in a BF16-throughout decode graph");
+        assert_eq!(
+            f32_matmuls, 0,
+            "no F32 matmul expected in a BF16-throughout decode graph"
+        );
         assert_eq!(other_matmuls, 0, "no non-BF16/F32 matmul dtype expected");
         assert_eq!(
-            bf16_matmuls, 9 * cfg.n_layers + 1,
+            bf16_matmuls,
+            9 * cfg.n_layers + 1,
             "expected 9 matmuls/layer (Q/K/V, QK^T, attn·V, O, gate/up/down) \
              + 1 lm_head matmul, all BF16 (got {bf16_matmuls})",
         );
@@ -15157,17 +16885,23 @@ mod generate_tests {
     fn generate_loop_persistent_byte_exact_and_plans_once() {
         let cfg = LlamaConfig {
             vocab_size: 16,
-            dim:        8,
-            n_layers:   2,
-            n_heads:    4,
+            dim: 8,
+            n_layers: 2,
+            n_heads: 4,
             n_kv_heads: 2, // exercise GQA (n_rep = 2)
-            head_dim:   4,
-            ffn_dim:    16,
-            norm_eps:   1e-5,
-            rope_base:  10000.0,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
-        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
-        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let cfg = LlamaConfig {
+            dim: cfg.n_heads * cfg.head_dim,
+            ..cfg
+        };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
 
         let prompt = [1_u32, 2, 3];
         let max_new = 5; // N ≥ 4 greedy decode tokens
@@ -15181,8 +16915,14 @@ mod generate_tests {
         // sampling; we capture BOTH the token sequence AND per-step logits.
         let dev1 = Device::cpu();
         let mut cache1 = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &dev1,
-        ).expect("with_capacity d1");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &dev1,
+        )
+        .expect("with_capacity d1");
         let mut ctx1 = InferenceContext::new(dev1);
         let mut rng1: u64 = 0;
         let mut ref_tokens: Vec<u32> = prompt.to_vec();
@@ -15209,8 +16949,14 @@ mod generate_tests {
 
         let dev2 = Device::cpu();
         let mut cache2 = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &dev2,
-        ).expect("with_capacity d2");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &dev2,
+        )
+        .expect("with_capacity d2");
         let mut ctx2 = InferenceContext::new(dev2);
         let mut rng2: u64 = 0;
         let mut session: Option<crate::inference_context::DecodeSession> = None;
@@ -15221,7 +16967,10 @@ mod generate_tests {
         let mut last2 = model
             .forward_with_kv_context_persistent(&prompt, &mut cache2, &mut ctx2, &mut session)
             .expect("d2 prefill");
-        assert!(session.is_none(), "prefill (seq>1) must NOT build the held session");
+        assert!(
+            session.is_none(),
+            "prefill (seq>1) must NOT build the held session"
+        );
         for _ in 0..max_new {
             let next = sample_logits(&last2, strategy, &mut rng2);
             d2_tokens.push(next);
@@ -15245,7 +16994,11 @@ mod generate_tests {
         // (b) Each step's logits exactly == the D1 cached path (bit-exact,
         // NOT epsilon — same plan → same kernel sequence → identical bytes).
         assert_eq!(d2_step_logits.len(), ref_step_logits.len());
-        for (i, (d2, d1)) in d2_step_logits.iter().zip(ref_step_logits.iter()).enumerate() {
+        for (i, (d2, d1)) in d2_step_logits
+            .iter()
+            .zip(ref_step_logits.iter())
+            .enumerate()
+        {
             assert_eq!(
                 d2, d1,
                 "persistent decode step {i} logits must be byte-identical to the \
@@ -15258,7 +17011,8 @@ mod generate_tests {
         // decode token builds the session (1 optimize); decode tokens
         // 2..N skip optimize. Total across prefill + N decode = exactly 2.
         assert_eq!(
-            opt_after - opt_before, 2,
+            opt_after - opt_before,
+            2,
             "persistent generate must optimize EXACTLY twice (1 prefill \
              fallback + 1 decode-session build) regardless of N={max_new} \
              decode tokens: {opt_before} -> {opt_after}",
@@ -15272,9 +17026,9 @@ mod generate_tests {
 
         // ---- Finally, drive the REAL production wrapper and confirm the
         // wiring: the token sequence it returns matches the reference. ----
-        let via_wrapper = model.generate_with_kv_context(
-            &prompt, max_new, strategy, None, &Device::cpu(), DType::F32,
-        ).expect("generate_with_kv_context");
+        let via_wrapper = model
+            .generate_with_kv_context(&prompt, max_new, strategy, None, &Device::cpu(), DType::F32)
+            .expect("generate_with_kv_context");
         assert_eq!(
             via_wrapper, ref_tokens,
             "generate_with_kv_context (wired to the persistent path) must \
@@ -15308,18 +17062,23 @@ mod generate_tests {
     /// dormant; an injected all-available capability drives it on CPU.
     #[test]
     fn flash_arm_wiring_offers_for_f16_region_with_attended_len_sym() {
-        use std::sync::RwLock;
-        use fuel_graph::{Graph, Node, Op};
+        use fuel_dispatch::decode_flash::FlashArmCapability;
         use fuel_graph::registry::{FusedOpParams, FusedOps};
+        use fuel_graph::{Graph, Node, Op};
         use fuel_ir::probe::BackendId;
         use fuel_ir::{DType, DynScalar, Shape, SymId};
-        use fuel_dispatch::decode_flash::FlashArmCapability;
+        use std::sync::RwLock;
 
         let (h, d, sk) = (4usize, 64usize, 37usize);
         let dt = DType::F16;
         let mut g = Graph::new();
         let leaf = |g: &mut Graph, dims: &[usize]| {
-            g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(dims), dtype: dt })
+            g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(dims),
+                dtype: dt,
+            })
         };
         // q [1,H,1,D], k/v capacity buffers [1,H,SK,D], mask [1,H,1,SK].
         let q = leaf(&mut g, &[1, h, 1, d]);
@@ -15328,41 +17087,58 @@ mod generate_tests {
         let mask = leaf(&mut g, &[1, h, 1, sk]);
         // Decomposed region: scores → scale → +mask → softmax → attn_v.
         let kt = g.push(Node {
-            op: Op::Permute(vec![0, 1, 3, 2]), inputs: vec![k],
-            shape: Shape::from_dims(&[1, h, d, sk]), dtype: dt,
+            op: Op::Permute(vec![0, 1, 3, 2]),
+            inputs: vec![k],
+            shape: Shape::from_dims(&[1, h, d, sk]),
+            dtype: dt,
         });
         let scores = g.push(Node {
-            op: Op::MatMul, inputs: vec![q, kt],
-            shape: Shape::from_dims(&[1, h, 1, sk]), dtype: dt,
+            op: Op::MatMul,
+            inputs: vec![q, kt],
+            shape: Shape::from_dims(&[1, h, 1, sk]),
+            dtype: dt,
         });
         let scaled = g.push(Node {
-            op: Op::MulScalar(0.125), inputs: vec![scores],
-            shape: Shape::from_dims(&[1, h, 1, sk]), dtype: dt,
+            op: Op::MulScalar(0.125),
+            inputs: vec![scores],
+            shape: Shape::from_dims(&[1, h, 1, sk]),
+            dtype: dt,
         });
         let masked = g.push(Node {
-            op: Op::Add, inputs: vec![scaled, mask],
-            shape: Shape::from_dims(&[1, h, 1, sk]), dtype: dt,
+            op: Op::Add,
+            inputs: vec![scaled, mask],
+            shape: Shape::from_dims(&[1, h, 1, sk]),
+            dtype: dt,
         });
         let probs = g.push(Node {
             op: Op::Fused(FusedOps::SOFTMAX_LAST_DIM, FusedOpParams::SoftmaxLastDim),
-            inputs: vec![masked], shape: Shape::from_dims(&[1, h, 1, sk]), dtype: dt,
+            inputs: vec![masked],
+            shape: Shape::from_dims(&[1, h, 1, sk]),
+            dtype: dt,
         });
         // decomposed_out — the region's attention output (arm 0 / the oracle).
         let attn_v = g.push(Node {
-            op: Op::MatMul, inputs: vec![probs, v],
-            shape: Shape::from_dims(&[1, h, 1, d]), dtype: dt,
+            op: Op::MatMul,
+            inputs: vec![probs, v],
+            shape: Shape::from_dims(&[1, h, 1, d]),
+            dtype: dt,
         });
         // reconverge — the SOLE consumer of attn_v (the merge).
         let reconverge = g.push(Node {
-            op: Op::Permute(vec![0, 2, 1, 3]), inputs: vec![attn_v],
-            shape: Shape::from_dims(&[1, 1, h, d]), dtype: dt,
+            op: Op::Permute(vec![0, 2, 1, 3]),
+            inputs: vec![attn_v],
+            shape: Shape::from_dims(&[1, 1, h, d]),
+            dtype: dt,
         });
 
         let graph = std::sync::Arc::new(RwLock::new(g));
         let attended = SymId(1);
         // An injected all-available capability (the CPU test box has no CUDA
         // topology, so production() would decline — we drive the gate here).
-        let cap = FlashArmCapability { cuda_flash_kernel: true, cuda_in_topology: true };
+        let cap = FlashArmCapability {
+            cuda_flash_kernel: true,
+            cuda_in_topology: true,
+        };
 
         let branch = super::offer_flash_decode_arm_for_region(
             &graph, q, k, v, attn_v, reconverge, 0.125, attended,
@@ -15374,18 +17150,33 @@ mod generate_tests {
         .expect("supported f16 decode shape + capability ⇒ arm offered");
 
         let g = graph.read().unwrap();
-        assert!(matches!(g.node(branch).op, Op::Branch { .. }), "an Op::Branch was recorded");
+        assert!(
+            matches!(g.node(branch).op, Op::Branch { .. }),
+            "an Op::Branch was recorded"
+        );
         let arms = g.node(branch).inputs.clone();
         assert_eq!(arms.len(), 2, "2-arm branch (decomposed oracle + flash)");
-        assert_eq!(arms[0], attn_v, "arm 0 is the decomposed region output (the oracle)");
+        assert_eq!(
+            arms[0], attn_v,
+            "arm 0 is the decomposed region output (the oracle)"
+        );
         let flash = arms[1];
         match &g.node(flash).op {
-            Op::Fused(fid, FusedOpParams::FlashAttn { k_len, causal, softcap, .. }) => {
+            Op::Fused(
+                fid,
+                FusedOpParams::FlashAttn {
+                    k_len,
+                    causal,
+                    softcap,
+                    ..
+                },
+            ) => {
                 assert_eq!(*fid, FusedOps::FLASH_ATTN, "arm 1 is FLASH_ATTN");
                 // THE headline wiring assertion: k_len is the attended-length
                 // symbol (NOT a concrete value, NOT cached_len_sym).
                 assert_eq!(
-                    *k_len, Some(DynScalar::Sym(attended)),
+                    *k_len,
+                    Some(DynScalar::Sym(attended)),
                     "arm 1 carries k_len = Sym(attended_len_sym)",
                 );
                 assert!(*causal, "decode region is causal");
@@ -15394,7 +17185,11 @@ mod generate_tests {
             other => panic!("arm 1 must be Fused(FLASH_ATTN, FlashAttn), got {other:?}"),
         }
         assert_eq!(g.node(flash).inputs, vec![q, k, v], "flash reads q, k, v");
-        assert_eq!(g.target_backend(flash), Some(BackendId::Cuda), "arm 1 pinned to CUDA");
+        assert_eq!(
+            g.target_backend(flash),
+            Some(BackendId::Cuda),
+            "arm 1 pinned to CUDA"
+        );
         // Arm-0 runnability: the merge still reads the decomposed output.
         assert!(
             g.node(reconverge).inputs.contains(&attn_v),
@@ -15426,11 +17221,11 @@ mod generate_tests {
     /// cited as such.
     #[test]
     fn gap194_windowed_layer_is_declined_and_dense_layer_is_offered() {
-        use std::sync::RwLock;
-        use fuel_graph::{Graph, Node, Op};
-        use fuel_graph::registry::{FusedOpParams, FusedOps};
-        use fuel_ir::{DType, Shape, SymId};
         use fuel_dispatch::decode_flash::FlashArmCapability;
+        use fuel_graph::registry::{FusedOpParams, FusedOps};
+        use fuel_graph::{Graph, Node, Op};
+        use fuel_ir::{DType, Shape, SymId};
+        use std::sync::RwLock;
 
         // One region builder, so the two arms of the comparison differ ONLY in
         // the window argument.
@@ -15440,8 +17235,10 @@ mod generate_tests {
             let mut g = Graph::new();
             let leaf = |g: &mut Graph, dims: &[usize]| {
                 g.push(Node {
-                    op: Op::Const, inputs: vec![],
-                    shape: Shape::from_dims(dims), dtype: dt,
+                    op: Op::Const,
+                    inputs: vec![],
+                    shape: Shape::from_dims(dims),
+                    dtype: dt,
                 })
             };
             let q = leaf(&mut g, &[1, h, 1, d]);
@@ -15449,37 +17246,64 @@ mod generate_tests {
             let v = leaf(&mut g, &[1, h, sk, d]);
             let mask = leaf(&mut g, &[1, h, 1, sk]);
             let kt = g.push(Node {
-                op: Op::Permute(vec![0, 1, 3, 2]), inputs: vec![k],
-                shape: Shape::from_dims(&[1, h, d, sk]), dtype: dt,
+                op: Op::Permute(vec![0, 1, 3, 2]),
+                inputs: vec![k],
+                shape: Shape::from_dims(&[1, h, d, sk]),
+                dtype: dt,
             });
             let scores = g.push(Node {
-                op: Op::MatMul, inputs: vec![q, kt],
-                shape: Shape::from_dims(&[1, h, 1, sk]), dtype: dt,
+                op: Op::MatMul,
+                inputs: vec![q, kt],
+                shape: Shape::from_dims(&[1, h, 1, sk]),
+                dtype: dt,
             });
             let scaled = g.push(Node {
-                op: Op::MulScalar(0.125), inputs: vec![scores],
-                shape: Shape::from_dims(&[1, h, 1, sk]), dtype: dt,
+                op: Op::MulScalar(0.125),
+                inputs: vec![scores],
+                shape: Shape::from_dims(&[1, h, 1, sk]),
+                dtype: dt,
             });
             let masked = g.push(Node {
-                op: Op::Add, inputs: vec![scaled, mask],
-                shape: Shape::from_dims(&[1, h, 1, sk]), dtype: dt,
+                op: Op::Add,
+                inputs: vec![scaled, mask],
+                shape: Shape::from_dims(&[1, h, 1, sk]),
+                dtype: dt,
             });
             let probs = g.push(Node {
                 op: Op::Fused(FusedOps::SOFTMAX_LAST_DIM, FusedOpParams::SoftmaxLastDim),
-                inputs: vec![masked], shape: Shape::from_dims(&[1, h, 1, sk]), dtype: dt,
+                inputs: vec![masked],
+                shape: Shape::from_dims(&[1, h, 1, sk]),
+                dtype: dt,
             });
             let attn_v = g.push(Node {
-                op: Op::MatMul, inputs: vec![probs, v],
-                shape: Shape::from_dims(&[1, h, 1, d]), dtype: dt,
+                op: Op::MatMul,
+                inputs: vec![probs, v],
+                shape: Shape::from_dims(&[1, h, 1, d]),
+                dtype: dt,
             });
             let reconverge = g.push(Node {
-                op: Op::Permute(vec![0, 2, 1, 3]), inputs: vec![attn_v],
-                shape: Shape::from_dims(&[1, 1, h, d]), dtype: dt,
+                op: Op::Permute(vec![0, 2, 1, 3]),
+                inputs: vec![attn_v],
+                shape: Shape::from_dims(&[1, 1, h, d]),
+                dtype: dt,
             });
             let graph = std::sync::Arc::new(RwLock::new(g));
-            let cap = FlashArmCapability { cuda_flash_kernel: true, cuda_in_topology: true };
+            let cap = FlashArmCapability {
+                cuda_flash_kernel: true,
+                cuda_in_topology: true,
+            };
             super::offer_flash_decode_arm_for_region(
-                &graph, q, k, v, attn_v, reconverge, 0.125, SymId(1), window, None, cap,
+                &graph,
+                q,
+                k,
+                v,
+                attn_v,
+                reconverge,
+                0.125,
+                SymId(1),
+                window,
+                None,
+                cap,
             )
             .expect("well-formed region")
         };
@@ -15508,7 +17332,11 @@ mod generate_tests {
     /// "unbounded".
     #[test]
     fn gap194_window_bounds_translation() {
-        assert_eq!(super::flash_window_bounds(None), (None, None), "dense stays causal");
+        assert_eq!(
+            super::flash_window_bounds(None),
+            (None, None),
+            "dense stays causal"
+        );
         assert_eq!(super::flash_window_bounds(Some(1)), (Some(0), Some(0)));
         assert_eq!(super::flash_window_bounds(Some(4)), (Some(3), Some(0)));
         // Degenerate width must NOT silently become "no window" — `(None, None)`
@@ -15526,18 +17354,37 @@ mod generate_tests {
     fn decode_session_allocates_and_binds_attended_len_sym() {
         use fuel_ir::SymId;
         let cfg = LlamaConfig {
-            vocab_size: 16, dim: 8, n_layers: 2, n_heads: 4, n_kv_heads: 2,
-            head_dim: 4, ffn_dim: 16, norm_eps: 1e-5, rope_base: 10000.0,
+            vocab_size: 16,
+            dim: 8,
+            n_layers: 2,
+            n_heads: 4,
+            n_kv_heads: 2,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
-        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
-        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let cfg = LlamaConfig {
+            dim: cfg.n_heads * cfg.head_dim,
+            ..cfg
+        };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
 
         let prompt = [1_u32, 2, 3];
         let max_seq_len = prompt.len() + 2;
         let dev = Device::cpu();
         let mut cache = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &dev,
-        ).expect("with_capacity");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &dev,
+        )
+        .expect("with_capacity");
         let mut ctx = InferenceContext::new(dev);
         let mut session: Option<crate::inference_context::DecodeSession> = None;
 
@@ -15550,21 +17397,29 @@ mod generate_tests {
         let _ = model
             .forward_with_kv_context_persistent(&[4], &mut cache, &mut ctx, &mut session)
             .expect("first decode token builds the session");
-        let s = session.as_ref().expect("session built on first decode token");
+        let s = session
+            .as_ref()
+            .expect("session built on first decode token");
 
         // The two symbols are distinct (cached_len = SymId(0), attended = SymId(1)).
         assert_eq!(s.cached_len_sym(), SymId(0), "cached_len symbol");
         assert_eq!(s.attended_len_sym(), SymId(1), "attended-length symbol");
         assert_ne!(
-            s.attended_len_sym(), s.cached_len_sym(),
+            s.attended_len_sym(),
+            s.cached_len_sym(),
             "attended-length is a SECOND symbol, not aliased to cached_len",
         );
 
         // The per-token env binds BOTH: cached_len = c, attended = c + seq(1).
         let env = s.per_token_sym_env(3).expect("per_token_sym_env");
-        assert_eq!(env.get(s.cached_len_sym()), Some(3), "cached_len bound to 3");
         assert_eq!(
-            env.get(s.attended_len_sym()), Some(4),
+            env.get(s.cached_len_sym()),
+            Some(3),
+            "cached_len bound to 3"
+        );
+        assert_eq!(
+            env.get(s.attended_len_sym()),
+            Some(4),
             "attended_len bound to cached_len + seq = 3 + 1 = 4",
         );
     }
@@ -15578,18 +17433,37 @@ mod generate_tests {
     fn f32_decode_graph_offers_no_flash_arm() {
         use fuel_graph::{NodeId, Op};
         let cfg = LlamaConfig {
-            vocab_size: 16, dim: 8, n_layers: 2, n_heads: 4, n_kv_heads: 2,
-            head_dim: 4, ffn_dim: 16, norm_eps: 1e-5, rope_base: 10000.0,
+            vocab_size: 16,
+            dim: 8,
+            n_layers: 2,
+            n_heads: 4,
+            n_kv_heads: 2,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
-        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
-        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let cfg = LlamaConfig {
+            dim: cfg.n_heads * cfg.head_dim,
+            ..cfg
+        };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
 
         let prompt = [1_u32, 2, 3];
         let max_seq_len = prompt.len() + 2;
         let dev = Device::cpu();
         let mut cache = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &dev,
-        ).expect("with_capacity");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &dev,
+        )
+        .expect("with_capacity");
         let mut ctx = InferenceContext::new(dev);
         let mut session: Option<crate::inference_context::DecodeSession> = None;
         let _ = model
@@ -15642,16 +17516,29 @@ mod generate_tests {
     #[cfg(feature = "cuda")]
     #[ignore = "requires a live CUDA device (topology probe needs real hardware)"]
     fn bf16_cuda_decode_graph_offers_flash_arm() {
-        use fuel_graph::{NodeId, Op};
         use fuel_graph::registry::{FusedOpParams, FusedOps};
+        use fuel_graph::{NodeId, Op};
         use fuel_ir::probe::BackendId;
 
         let cfg = LlamaConfig {
-            vocab_size: 16, dim: 8, n_layers: 2, n_heads: 4, n_kv_heads: 2,
-            head_dim: 4, ffn_dim: 16, norm_eps: 1e-5, rope_base: 10000.0,
+            vocab_size: 16,
+            dim: 8,
+            n_layers: 2,
+            n_heads: 4,
+            n_kv_heads: 2,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
-        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
-        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights_bf16(&cfg) };
+        let cfg = LlamaConfig {
+            dim: cfg.n_heads * cfg.head_dim,
+            ..cfg
+        };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights_bf16(&cfg),
+        };
 
         let cuda = match fuel_cuda_backend::CudaDevice::new(0) {
             Ok(d) => d,
@@ -15665,8 +17552,14 @@ mod generate_tests {
         let prompt = [1_u32, 2, 3];
         let max_seq_len = prompt.len() + 2;
         let mut cache = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::BF16, &cuda_device,
-        ).expect("with_capacity bf16 cuda");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::BF16,
+            &cuda_device,
+        )
+        .expect("with_capacity bf16 cuda");
         let mut ctx = InferenceContext::new(cuda_device);
         let mut session: Option<crate::inference_context::DecodeSession> = None;
         let _ = model
@@ -15703,9 +17596,11 @@ mod generate_tests {
         // fusion program's runtime-id sidecar lookup is untouched), so the
         // arm is offered — one `Op::Branch` per layer.
         assert_eq!(
-            branches.len(), cfg.n_layers,
+            branches.len(),
+            cfg.n_layers,
             "one CUDA flash-decode Op::Branch per layer (n_layers={}), found {}",
-            cfg.n_layers, branches.len(),
+            cfg.n_layers,
+            branches.len(),
         );
         for branch in branches {
             let arms = g.node(branch).inputs.clone();
@@ -15717,7 +17612,11 @@ mod generate_tests {
                 }
                 other => panic!("arm 1 must be Fused(FLASH_ATTN, ..), got {other:?}"),
             }
-            assert_eq!(g.target_backend(flash), Some(BackendId::Cuda), "arm 1 pinned to CUDA");
+            assert_eq!(
+                g.target_backend(flash),
+                Some(BackendId::Cuda),
+                "arm 1 pinned to CUDA"
+            );
         }
     }
 
@@ -15770,17 +17669,23 @@ mod generate_tests {
         // (`forward_with_kv_context_persistent_plan_once_matches_d1`).
         let cfg = LlamaConfig {
             vocab_size: 16,
-            dim:        8,
-            n_layers:   2,
-            n_heads:    4,
+            dim: 8,
+            n_layers: 2,
+            n_heads: 4,
             n_kv_heads: 2, // exercise GQA (n_rep = 2)
-            head_dim:   4,
-            ffn_dim:    16,
-            norm_eps:   1e-5,
-            rope_base:  10000.0,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
-        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
-        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let cfg = LlamaConfig {
+            dim: cfg.n_heads * cfg.head_dim,
+            ..cfg
+        };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
 
         let prompt = [1_u32, 2, 3];
         let max_new = 5usize; // N ≥ 4 greedy decode tokens
@@ -15806,7 +17711,11 @@ mod generate_tests {
             let cpu_device = Device::cpu();
             let cpu_ref = || -> crate::Result<Vec<Vec<f32>>> {
                 let mut cpu_cache = KvCache::with_capacity(
-                    cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32,
+                    cfg.n_layers,
+                    cfg.n_kv_heads,
+                    cfg.head_dim,
+                    max_seq_len,
+                    DType::F32,
                     &cpu_device,
                 )?;
                 let mut cpu_ctx = InferenceContext::new(cpu_device.clone());
@@ -15851,8 +17760,14 @@ mod generate_tests {
         // via `sample_logits` so it is bit-identical to the persistent loop's
         // sampling. Capture BOTH the token sequence AND the per-step logits. ----
         let mut cuda_rebuild_cache = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &cuda_device,
-        ).expect("cuda rebuild with_capacity");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &cuda_device,
+        )
+        .expect("cuda rebuild with_capacity");
         let mut cuda_rebuild_ctx = InferenceContext::new(cuda_device.clone());
         let mut rebuild_rng: u64 = 0;
         let mut rebuild_tokens: Vec<u32> = prompt.to_vec();
@@ -15874,8 +17789,14 @@ mod generate_tests {
         // production path; this is what exercises the per-token GPU re-bind
         // upload arm under test). Capture tokens + per-step logits. ----
         let mut cuda_persist_cache = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &cuda_device,
-        ).expect("cuda persistent with_capacity");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &cuda_device,
+        )
+        .expect("cuda persistent with_capacity");
         let mut cuda_persist_ctx = InferenceContext::new(cuda_device.clone());
         let mut persist_rng: u64 = 0;
         let mut session: Option<crate::inference_context::DecodeSession> = None;
@@ -15883,21 +17804,33 @@ mod generate_tests {
         let mut persist_step_logits: Vec<Vec<f32>> = Vec::with_capacity(max_new);
         let mut last_persist = model
             .forward_with_kv_context_persistent(
-                &prompt, &mut cuda_persist_cache, &mut cuda_persist_ctx, &mut session,
+                &prompt,
+                &mut cuda_persist_cache,
+                &mut cuda_persist_ctx,
+                &mut session,
             )
             .expect("cuda persistent prefill");
-        assert!(session.is_none(), "prefill (seq>1) must NOT build the held session");
+        assert!(
+            session.is_none(),
+            "prefill (seq>1) must NOT build the held session"
+        );
         for _ in 0..max_new {
             let next = sample_logits(&last_persist, strategy, &mut persist_rng);
             persist_tokens.push(next);
             last_persist = model
                 .forward_with_kv_context_persistent(
-                    &[next], &mut cuda_persist_cache, &mut cuda_persist_ctx, &mut session,
+                    &[next],
+                    &mut cuda_persist_cache,
+                    &mut cuda_persist_ctx,
+                    &mut session,
                 )
                 .expect("cuda persistent decode");
             persist_step_logits.push(last_persist.clone());
         }
-        assert!(session.is_some(), "held session survives the CUDA decode loop");
+        assert!(
+            session.is_some(),
+            "held session survives the CUDA decode loop"
+        );
 
         // === (1) HEADLINE GATE: CUDA persistent == CUDA rebuild, BIT-EXACT.
         // Same optimized plan → same kernels → identical bytes. Any diff means
@@ -15908,7 +17841,11 @@ mod generate_tests {
              the CUDA rebuild path over {max_new} tokens",
         );
         assert_eq!(persist_step_logits.len(), rebuild_step_logits.len());
-        for (i, (p, r)) in persist_step_logits.iter().zip(rebuild_step_logits.iter()).enumerate() {
+        for (i, (p, r)) in persist_step_logits
+            .iter()
+            .zip(rebuild_step_logits.iter())
+            .enumerate()
+        {
             assert_eq!(
                 p, r,
                 "CUDA persistent decode step {i} logits must be BIT-EXACT vs the \
@@ -15924,7 +17861,11 @@ mod generate_tests {
         let mut epsilon_checked = false;
         if let Some(cpu_step_logits) = cpu_step_logits.as_ref() {
             assert_eq!(persist_step_logits.len(), cpu_step_logits.len());
-            for (i, (p, c)) in persist_step_logits.iter().zip(cpu_step_logits.iter()).enumerate() {
+            for (i, (p, c)) in persist_step_logits
+                .iter()
+                .zip(cpu_step_logits.iter())
+                .enumerate()
+            {
                 assert_eq!(p.len(), c.len(), "step {i} logit width");
                 for (j, (a, b)) in p.iter().zip(c.iter()).enumerate() {
                     let diff = (a - b).abs();
@@ -15941,9 +17882,7 @@ mod generate_tests {
         // === (3) WIRING: the real production wrapper on CUDA returns the same
         // token sequence as the CUDA rebuild reference. ===
         let via_wrapper = model
-            .generate_with_kv_context(
-                &prompt, max_new, strategy, None, &cuda_device, DType::F32,
-            )
+            .generate_with_kv_context(&prompt, max_new, strategy, None, &cuda_device, DType::F32)
             .expect("generate_with_kv_context on CUDA");
         assert_eq!(
             via_wrapper, rebuild_tokens,
@@ -15956,7 +17895,11 @@ mod generate_tests {
             "CUDA persistent decode VERIFIED: {} tokens + logits BIT-EXACT vs \
              CUDA rebuild path; CPU epsilon cross-check {}. tokens={:?}",
             max_new,
-            if epsilon_checked { "PASSED" } else { "SKIPPED (see note above)" },
+            if epsilon_checked {
+                "PASSED"
+            } else {
+                "SKIPPED (see note above)"
+            },
             persist_tokens,
         );
     }
@@ -15976,11 +17919,24 @@ mod generate_tests {
     #[ignore = "requires a live CUDA device"]
     fn bf16_paged_decode_matches_contiguous_on_cuda() {
         let cfg = LlamaConfig {
-            vocab_size: 32, dim: 16, n_layers: 2, n_heads: 4, n_kv_heads: 4,
-            head_dim: 4, ffn_dim: 32, norm_eps: 1e-5, rope_base: 10000.0,
+            vocab_size: 32,
+            dim: 16,
+            n_layers: 2,
+            n_heads: 4,
+            n_kv_heads: 4,
+            head_dim: 4,
+            ffn_dim: 32,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
-        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
-        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights_bf16(&cfg) };
+        let cfg = LlamaConfig {
+            dim: cfg.n_heads * cfg.head_dim,
+            ..cfg
+        };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights_bf16(&cfg),
+        };
 
         let cuda = match fuel_cuda_backend::CudaDevice::new(0) {
             Ok(d) => d,
@@ -15998,41 +17954,75 @@ mod generate_tests {
 
         // Contiguous bf16 reference on CUDA.
         let mut cache = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::BF16, &dev,
-        ).expect("bf16 KvCache");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::BF16,
+            &dev,
+        )
+        .expect("bf16 KvCache");
         let mut ctx = InferenceContext::new(dev.clone());
         let mut contig: Vec<Vec<f32>> = Vec::new();
-        contig.push(model.forward_with_kv_context(&prompt, &mut cache, &mut ctx).expect("contig prefill"));
+        contig.push(
+            model
+                .forward_with_kv_context(&prompt, &mut cache, &mut ctx)
+                .expect("contig prefill"),
+        );
         for &t in &decode {
-            contig.push(model.forward_with_kv_context(&[t], &mut cache, &mut ctx).expect("contig decode"));
+            contig.push(
+                model
+                    .forward_with_kv_context(&[t], &mut cache, &mut ctx)
+                    .expect("contig decode"),
+            );
         }
 
         // Paged bf16 decode on CUDA — feed every token one at a time.
         let geom = crate::kv_block_pool::KvGeometry {
-            n_layers: cfg.n_layers, num_blocks: 32, block_size: 4,
-            n_kv_heads: cfg.n_kv_heads, head_dim: cfg.head_dim, elem_size: 2,
+            n_layers: cfg.n_layers,
+            num_blocks: 32,
+            block_size: 4,
+            n_kv_heads: cfg.n_kv_heads,
+            head_dim: cfg.head_dim,
+            elem_size: 2,
         };
         let mut pool = crate::kv_block_pool_device::DeviceKvPool::new(geom, DType::BF16, &dev)
             .expect("bf16 DeviceKvPool");
         let session = pool.core_mut().open();
         let mut paged: Vec<Vec<f32>> = Vec::new();
         for &t in &all {
-            paged.push(model.forward_paged_step(t, &mut pool, session).expect("paged bf16 step"));
+            paged.push(
+                model
+                    .forward_paged_step(t, &mut pool, session)
+                    .expect("paged bf16 step"),
+            );
         }
 
         let argmax = |v: &[f32]| {
-            v.iter().enumerate().max_by(|a, b| a.1.partial_cmp(b.1).unwrap()).unwrap().0
+            v.iter()
+                .enumerate()
+                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+                .unwrap()
+                .0
         };
         // Contiguous prefill = position P-1 = paged's P-th step; then each decode.
         let p = prompt.len();
-        assert_eq!(argmax(&paged[p - 1]), argmax(&contig[0]), "prefill-last argmax (bf16 CUDA)");
+        assert_eq!(
+            argmax(&paged[p - 1]),
+            argmax(&contig[0]),
+            "prefill-last argmax (bf16 CUDA)"
+        );
         for i in 0..decode.len() {
             assert_eq!(
-                argmax(&paged[p + i]), argmax(&contig[1 + i]),
+                argmax(&paged[p + i]),
+                argmax(&contig[1 + i]),
                 "decode-{i} argmax (bf16 CUDA paged vs contiguous)",
             );
         }
-        eprintln!("bf16 PAGED decode on CUDA VERIFIED: argmax matches contiguous over {} steps", all.len());
+        eprintln!(
+            "bf16 PAGED decode on CUDA VERIFIED: argmax matches contiguous over {} steps",
+            all.len()
+        );
     }
 
     /// Ragged (non-uniform-position) batched paged decode: `K` sessions sitting
@@ -16051,11 +18041,24 @@ mod generate_tests {
     #[test]
     fn ragged_batched_paged_decode_matches_per_session_serial() {
         let cfg = LlamaConfig {
-            vocab_size: 32, dim: 16, n_layers: 2, n_heads: 4, n_kv_heads: 4,
-            head_dim: 4, ffn_dim: 32, norm_eps: 1e-5, rope_base: 10000.0,
+            vocab_size: 32,
+            dim: 16,
+            n_layers: 2,
+            n_heads: 4,
+            n_kv_heads: 4,
+            head_dim: 4,
+            ffn_dim: 32,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
-        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
-        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let cfg = LlamaConfig {
+            dim: cfg.n_heads * cfg.head_dim,
+            ..cfg
+        };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
         let dev = crate::Device::cpu();
 
         // Staggered histories → DISTINCT positions {2, 5, 3} at the batched step.
@@ -16065,7 +18068,12 @@ mod generate_tests {
 
         let (n_layers, n_kv_heads, head_dim) = (cfg.n_layers, cfg.n_kv_heads, cfg.head_dim);
         let geom = || crate::kv_block_pool::KvGeometry {
-            n_layers, num_blocks: 32, block_size: 4, n_kv_heads, head_dim, elem_size: 4,
+            n_layers,
+            num_blocks: 32,
+            block_size: 4,
+            n_kv_heads,
+            head_dim,
+            elem_size: 4,
         };
 
         // Serial reference: each session ALONE in its own pool, primed
@@ -16076,10 +18084,14 @@ mod generate_tests {
                 .expect("f32 DeviceKvPool (ref)");
             let s = pool.core_mut().open();
             for &t in histories[b] {
-                model.forward_paged_step(t, &mut pool, s).expect("serial prime");
+                model
+                    .forward_paged_step(t, &mut pool, s)
+                    .expect("serial prime");
             }
             reference.push(
-                model.forward_paged_step(decode_tokens[b], &mut pool, s).expect("serial decode"),
+                model
+                    .forward_paged_step(decode_tokens[b], &mut pool, s)
+                    .expect("serial decode"),
             );
         }
 
@@ -16091,12 +18103,15 @@ mod generate_tests {
         for b in 0..k {
             let s = pool.core_mut().open();
             for &t in histories[b] {
-                model.forward_paged_step(t, &mut pool, s).expect("batched prime");
+                model
+                    .forward_paged_step(t, &mut pool, s)
+                    .expect("batched prime");
             }
             sessions.push(s);
         }
         // Guard the premise: the positions really are non-uniform.
-        let positions: Vec<usize> = sessions.iter()
+        let positions: Vec<usize> = sessions
+            .iter()
             .map(|&s| pool.core().filled_tokens(s).unwrap())
             .collect();
         assert_eq!(positions, vec![2, 5, 3], "test setup: staggered positions");
@@ -16107,7 +18122,11 @@ mod generate_tests {
         assert_eq!(batched.len(), k, "one logits row per session");
 
         for b in 0..k {
-            assert_eq!(batched[b].len(), reference[b].len(), "row {b} logits length");
+            assert_eq!(
+                batched[b].len(),
+                reference[b].len(),
+                "row {b} logits length"
+            );
             for (i, (&got, &want)) in batched[b].iter().zip(reference[b].iter()).enumerate() {
                 let diff = (got - want).abs();
                 let denom = got.abs().max(want.abs()).max(f32::MIN_POSITIVE);
@@ -16146,11 +18165,24 @@ mod generate_tests {
         use crate::pipelined_bridge::optimize_calls_thread_local;
 
         let cfg = LlamaConfig {
-            vocab_size: 32, dim: 16, n_layers: 2, n_heads: 4, n_kv_heads: 4,
-            head_dim: 4, ffn_dim: 32, norm_eps: 1e-5, rope_base: 10000.0,
+            vocab_size: 32,
+            dim: 16,
+            n_layers: 2,
+            n_heads: 4,
+            n_kv_heads: 4,
+            head_dim: 4,
+            ffn_dim: 32,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
-        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
-        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let cfg = LlamaConfig {
+            dim: cfg.n_heads * cfg.head_dim,
+            ..cfg
+        };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
         let dev = crate::Device::cpu();
         let prompt: [u32; 3] = [1, 2, 3];
         const MSL: usize = 32;
@@ -16158,19 +18190,30 @@ mod generate_tests {
         // `persistent = false` drives the raw primitive at the same call shape.
         let optimize_calls_for = |n_decode: usize, persistent: bool| -> usize {
             let mut cache = crate::inference_context::KvCache::with_capacity(
-                cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, MSL, DType::F32, &dev,
+                cfg.n_layers,
+                cfg.n_kv_heads,
+                cfg.head_dim,
+                MSL,
+                DType::F32,
+                &dev,
             )
             .expect("kv cache");
             let mut ctx = InferenceContext::new(dev.clone());
             let before = optimize_calls_thread_local();
             // Prefill (seq != 1 — builds no plan on either path).
-            model.forward_decode_step(&prompt, &mut cache, &mut ctx).expect("prefill");
+            model
+                .forward_decode_step(&prompt, &mut cache, &mut ctx)
+                .expect("prefill");
             for t in 0..n_decode {
                 let tok = [(t as u32 % 7) + 1];
                 if persistent {
-                    model.forward_decode_step(&tok, &mut cache, &mut ctx).expect("decode")
+                    model
+                        .forward_decode_step(&tok, &mut cache, &mut ctx)
+                        .expect("decode")
                 } else {
-                    model.forward_with_kv_context(&tok, &mut cache, &mut ctx).expect("decode")
+                    model
+                        .forward_with_kv_context(&tok, &mut cache, &mut ctx)
+                        .expect("decode")
                 };
             }
             optimize_calls_thread_local() - before
@@ -16180,7 +18223,8 @@ mod generate_tests {
         let short = optimize_calls_for(2, true);
         let long = optimize_calls_for(10, true);
         assert_eq!(
-            long, short,
+            long,
+            short,
             "forward_decode_step must reuse ONE decode plan across tokens: delta grew {} \
              between 2 decode tokens ({short}) and 10 ({long})",
             long as i64 - short as i64,
@@ -16202,15 +18246,30 @@ mod generate_tests {
 
         // And the plan is actually HELD on the context, not merely fast.
         let mut cache = crate::inference_context::KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, MSL, DType::F32, &dev,
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            MSL,
+            DType::F32,
+            &dev,
         )
         .expect("kv cache");
         let mut ctx = InferenceContext::new(dev.clone());
         assert!(!ctx.has_decode_session(), "fresh context holds no plan");
-        model.forward_decode_step(&prompt, &mut cache, &mut ctx).expect("prefill");
-        assert!(!ctx.has_decode_session(), "prefill (seq != 1) builds no plan");
-        model.forward_decode_step(&[4], &mut cache, &mut ctx).expect("first decode token");
-        assert!(ctx.has_decode_session(), "the first decode token builds and HOLDS the plan");
+        model
+            .forward_decode_step(&prompt, &mut cache, &mut ctx)
+            .expect("prefill");
+        assert!(
+            !ctx.has_decode_session(),
+            "prefill (seq != 1) builds no plan"
+        );
+        model
+            .forward_decode_step(&[4], &mut cache, &mut ctx)
+            .expect("first decode token");
+        assert!(
+            ctx.has_decode_session(),
+            "the first decode token builds and HOLDS the plan"
+        );
     }
 
     /// **Staleness invalidates the SESSION AND THE CAPTURE TOGETHER** — the
@@ -16256,18 +18315,36 @@ mod generate_tests {
     #[test]
     fn stale_decode_pair_invalidates_session_and_capture_together() {
         let cfg = LlamaConfig {
-            vocab_size: 32, dim: 16, n_layers: 2, n_heads: 4, n_kv_heads: 4,
-            head_dim: 4, ffn_dim: 32, norm_eps: 1e-5, rope_base: 10000.0,
+            vocab_size: 32,
+            dim: 16,
+            n_layers: 2,
+            n_heads: 4,
+            n_kv_heads: 4,
+            head_dim: 4,
+            ffn_dim: 32,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
-        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
-        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let cfg = LlamaConfig {
+            dim: cfg.n_heads * cfg.head_dim,
+            ..cfg
+        };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
         let dev = crate::Device::cpu();
         const MSL: usize = 16;
 
         // Build a REAL held session: prefill (seq>1, no session) then one
         // decode token (seq==1, builds it).
         let mut cache = crate::inference_context::KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, MSL, DType::F32, &dev,
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            MSL,
+            DType::F32,
+            &dev,
         )
         .expect("kv cache");
         let mut ctx = InferenceContext::new(dev.clone());
@@ -16283,10 +18360,19 @@ mod generate_tests {
         // --- Arm 1: key MATCHES the live cache → nothing is invalidated. ---
         let mut captured: Option<()> = Some(());
         let d = model.invalidate_decode_pair_if_stale(
-            &mut session, &mut captured, &mut ctx, 1, Some(MSL), DType::F32,
+            &mut session,
+            &mut captured,
+            &mut ctx,
+            1,
+            Some(MSL),
+            DType::F32,
             &cache,
         );
-        assert_eq!(d, SessionDisposition::Kept, "a matching validity key must NOT invalidate");
+        assert_eq!(
+            d,
+            SessionDisposition::Kept,
+            "a matching validity key must NOT invalidate"
+        );
         assert!(session.is_some(), "valid session survives");
         assert!(captured.is_some(), "valid capture survives");
 
@@ -16295,11 +18381,17 @@ mod generate_tests {
         // so the guard is never consulted. ---
         let mut captured: Option<()> = Some(());
         let d = model.invalidate_decode_pair_if_stale(
-            &mut session, &mut captured, &mut ctx, 1, Some(MSL * 4), DType::F32,
+            &mut session,
+            &mut captured,
+            &mut ctx,
+            1,
+            Some(MSL * 4),
+            DType::F32,
             &cache,
         );
         assert_eq!(
-            d, SessionDisposition::Dropped(None),
+            d,
+            SessionDisposition::Dropped(None),
             "a resized cache must be judged STRUCTURALLY stale, not offered to the \
              re-bind guard — re-binding across `max_seq_len` would feed the plan \
              storage of the wrong extent",
@@ -16318,14 +18410,23 @@ mod generate_tests {
         assert!(session.is_some(), "precondition: session rebuilt");
         let mut captured: Option<()> = Some(());
         let d = model.invalidate_decode_pair_if_stale(
-            &mut session, &mut captured, &mut ctx, 1, Some(MSL), DType::BF16,
+            &mut session,
+            &mut captured,
+            &mut ctx,
+            1,
+            Some(MSL),
+            DType::BF16,
             &cache,
         );
         assert_eq!(
-            d, SessionDisposition::Dropped(None),
+            d,
+            SessionDisposition::Dropped(None),
             "a cache-dtype swap must invalidate structurally",
         );
-        assert!(session.is_none() && captured.is_none(), "both retired on dtype mismatch");
+        assert!(
+            session.is_none() && captured.is_none(),
+            "both retired on dtype mismatch"
+        );
 
         // --- Arm 4 (GAP-014): a cache SWAP at identical geometry. The pair is
         // welded to the KV Arcs baked into `base_cache`, so a same-shaped
@@ -16338,16 +18439,27 @@ mod generate_tests {
             .expect("rebuild the session after invalidation");
         assert!(session.is_some(), "precondition: session rebuilt");
         let fresh = crate::inference_context::KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, MSL, DType::F32, &dev,
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            MSL,
+            DType::F32,
+            &dev,
         )
         .expect("a second cache of IDENTICAL geometry");
         assert_ne!(
-            fresh.alloc_id(), cache.alloc_id(),
+            fresh.alloc_id(),
+            cache.alloc_id(),
             "two allocations must never share an id — the counter is never recycled",
         );
         let mut captured: Option<()> = Some(());
         let d = model.invalidate_decode_pair_if_stale(
-            &mut session, &mut captured, &mut ctx, 1, Some(MSL), DType::F32,
+            &mut session,
+            &mut captured,
+            &mut ctx,
+            1,
+            Some(MSL),
+            DType::F32,
             &fresh,
         );
         // GAP-014 retired the pair here. GAP-028 keeps the plan and re-points
@@ -16356,7 +18468,8 @@ mod generate_tests {
         // FIXED device addresses, and the re-bind is precisely the act of
         // changing some of those addresses.
         assert_eq!(
-            d, SessionDisposition::Rebound,
+            d,
+            SessionDisposition::Rebound,
             "a same-geometry cache swap must RE-BIND the held plan (GAP-028) — \
              every other key field matches, so only the allocation id sees it",
         );
@@ -16370,11 +18483,17 @@ mod generate_tests {
         // takes the `Kept` path rather than re-binding on every step.
         let mut captured2: Option<()> = Some(());
         let d = model.invalidate_decode_pair_if_stale(
-            &mut session, &mut captured2, &mut ctx, 1, Some(MSL), DType::F32,
+            &mut session,
+            &mut captured2,
+            &mut ctx,
+            1,
+            Some(MSL),
+            DType::F32,
             &fresh,
         );
         assert_eq!(
-            d, SessionDisposition::Kept,
+            d,
+            SessionDisposition::Kept,
             "after a re-bind the plan's alloc_id must name the NEW allocation — \
              otherwise every subsequent token re-binds and the guard runs forever",
         );
@@ -16387,22 +18506,27 @@ mod generate_tests {
         // state the storage bytes cannot describe: residency this cache never
         // measured. ---
         let mut unprovable = crate::inference_context::KvCache::with_dims(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim,
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
         );
         unprovable.max_seq_len = Some(MSL);
         unprovable.dtype = Some(DType::F32);
         for li in 0..cfg.n_layers {
             let layer = fresh.layer(li).expect("fresh cache has every layer");
-            unprovable.set_layer(li, crate::inference_context::KvLayer {
-                k: std::sync::Arc::clone(&layer.k),
-                v: std::sync::Arc::clone(&layer.v),
-                k_layout: layer.k_layout.clone(),
-                v_layout: layer.v_layout.clone(),
-                k_version: 0,
-                v_version: 0,
-                k_authority: crate::inference_context::AuthorityState::Host,
-                v_authority: crate::inference_context::AuthorityState::Host,
-            });
+            unprovable.set_layer(
+                li,
+                crate::inference_context::KvLayer {
+                    k: std::sync::Arc::clone(&layer.k),
+                    v: std::sync::Arc::clone(&layer.v),
+                    k_layout: layer.k_layout.clone(),
+                    v_layout: layer.v_layout.clone(),
+                    k_version: 0,
+                    v_version: 0,
+                    k_authority: crate::inference_context::AuthorityState::Host,
+                    v_authority: crate::inference_context::AuthorityState::Host,
+                },
+            );
         }
         // Note what this cache is: byte-for-byte the SAME storage `Arc`s the
         // held plan is already bound to. Every fingerprint check passes; only
@@ -16410,7 +18534,12 @@ mod generate_tests {
         // one guard clause that cannot be derived from the bytes.
         let mut captured: Option<()> = Some(());
         let d = model.invalidate_decode_pair_if_stale(
-            &mut session, &mut captured, &mut ctx, 1, Some(MSL), DType::F32,
+            &mut session,
+            &mut captured,
+            &mut ctx,
+            1,
+            Some(MSL),
+            DType::F32,
             &unprovable,
         );
         assert_eq!(
@@ -16421,7 +18550,10 @@ mod generate_tests {
             "an unprovable residency must be REFUSED, and refused for that reason — \
              a guard that refuses by accident is not a guard",
         );
-        assert!(session.is_none() && captured.is_none(), "both retired on refusal");
+        assert!(
+            session.is_none() && captured.is_none(),
+            "both retired on refusal"
+        );
     }
 
     /// **The CONTIGUOUS generation API is plan-reuse-by-default, and this is the
@@ -16452,11 +18584,24 @@ mod generate_tests {
         use crate::pipelined_bridge::optimize_calls_thread_local;
 
         let cfg = LlamaConfig {
-            vocab_size: 32, dim: 16, n_layers: 2, n_heads: 4, n_kv_heads: 4,
-            head_dim: 4, ffn_dim: 32, norm_eps: 1e-5, rope_base: 10000.0,
+            vocab_size: 32,
+            dim: 16,
+            n_layers: 2,
+            n_heads: 4,
+            n_kv_heads: 4,
+            head_dim: 4,
+            ffn_dim: 32,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
-        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
-        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let cfg = LlamaConfig {
+            dim: cfg.n_heads * cfg.head_dim,
+            ..cfg
+        };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
         let dev = crate::Device::cpu();
         let prompt: [u32; 3] = [1, 2, 3];
 
@@ -16464,7 +18609,12 @@ mod generate_tests {
             let before = optimize_calls_thread_local();
             model
                 .generate_with_kv_context(
-                    &prompt, max_new, SamplingStrategy::Greedy, None, &dev, DType::F32,
+                    &prompt,
+                    max_new,
+                    SamplingStrategy::Greedy,
+                    None,
+                    &dev,
+                    DType::F32,
                 )
                 .expect("greedy generate");
             optimize_calls_thread_local() - before
@@ -16474,7 +18624,8 @@ mod generate_tests {
         let long = optimize_calls_for(10);
 
         assert_eq!(
-            long, short,
+            long,
+            short,
             "contiguous generate must reuse ONE decode plan across tokens: \
              optimize-call delta grew {} between max_new=2 ({short}) and max_new=10 ({long}) \
              — that slope is one re-plan per token, i.e. the held DecodeSession is gone",
@@ -16532,11 +18683,24 @@ mod generate_tests {
         use std::collections::BTreeMap;
 
         let cfg = LlamaConfig {
-            vocab_size: 32, dim: 16, n_layers: 2, n_heads: 4, n_kv_heads: 4,
-            head_dim: 4, ffn_dim: 32, norm_eps: 1e-5, rope_base: 10000.0,
+            vocab_size: 32,
+            dim: 16,
+            n_layers: 2,
+            n_heads: 4,
+            n_kv_heads: 4,
+            head_dim: 4,
+            ffn_dim: 32,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
-        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
-        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let cfg = LlamaConfig {
+            dim: cfg.n_heads * cfg.head_dim,
+            ..cfg
+        };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
         // `Device::new_cuda` was retired; `cuda_backend::new_device` carries its
         // ergonomics (see that module's header).
         let dev = match crate::cuda_backend::new_device(0) {
@@ -16548,8 +18712,12 @@ mod generate_tests {
         };
 
         let geom = crate::kv_block_pool::KvGeometry {
-            n_layers: cfg.n_layers, num_blocks: 32, block_size: 4,
-            n_kv_heads: cfg.n_kv_heads, head_dim: cfg.head_dim, elem_size: 4,
+            n_layers: cfg.n_layers,
+            num_blocks: 32,
+            block_size: 4,
+            n_kv_heads: cfg.n_kv_heads,
+            head_dim: cfg.head_dim,
+            elem_size: 4,
         };
         let mut pool = crate::kv_block_pool_device::DeviceKvPool::new(geom, DType::F32, &dev)
             .expect("CUDA DeviceKvPool");
@@ -16589,7 +18757,11 @@ mod generate_tests {
             );
             let op_name = match &node.op {
                 fuel_graph::Op::Fused(fid, _) => format!("Fused({fid:?})"),
-                other => format!("{other:?}").split(' ').next().unwrap_or("?").to_string(),
+                other => format!("{other:?}")
+                    .split(' ')
+                    .next()
+                    .unwrap_or("?")
+                    .to_string(),
             };
             let place = match opt.placement_of(id) {
                 Some(d) => format!("{d:?}"),
@@ -16604,8 +18776,7 @@ mod generate_tests {
         println!("\n=== paged decode plan: node placement by op (CUDA-pinned) ===");
         println!("total nodes: {}", g.len());
         for (op, places) in &by_op {
-            let rendered: Vec<String> =
-                places.iter().map(|(d, n)| format!("{d}×{n}")).collect();
+            let rendered: Vec<String> = places.iter().map(|(d, n)| format!("{d}×{n}")).collect();
             println!("  {op:<40} {}", rendered.join("  "));
         }
 
@@ -16652,14 +18823,30 @@ mod generate_tests {
     #[test]
     fn paged_session_is_not_reused_across_models_with_different_weights() {
         let cfg = LlamaConfig {
-            vocab_size: 32, dim: 16, n_layers: 2, n_heads: 4, n_kv_heads: 4,
-            head_dim: 4, ffn_dim: 32, norm_eps: 1e-5, rope_base: 10000.0,
+            vocab_size: 32,
+            dim: 16,
+            n_layers: 2,
+            n_heads: 4,
+            n_kv_heads: 4,
+            head_dim: 4,
+            ffn_dim: 32,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
-        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
+        let cfg = LlamaConfig {
+            dim: cfg.n_heads * cfg.head_dim,
+            ..cfg
+        };
 
         // Two models: IDENTICAL config, SEPARATELY constructed weights.
-        let model_a = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
-        let model_b = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let model_a = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
+        let model_b = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
 
         let key_a = model_a.decode_shape_key();
         let key_b = model_b.decode_shape_key();
@@ -16678,20 +18865,30 @@ mod generate_tests {
         // Build a real held paged session for model A on CPU.
         let dev = crate::Device::cpu();
         let geom = crate::kv_block_pool::KvGeometry {
-            n_layers: cfg.n_layers, num_blocks: 32, block_size: 4,
-            n_kv_heads: cfg.n_kv_heads, head_dim: cfg.head_dim, elem_size: 4,
+            n_layers: cfg.n_layers,
+            num_blocks: 32,
+            block_size: 4,
+            n_kv_heads: cfg.n_kv_heads,
+            head_dim: cfg.head_dim,
+            elem_size: 4,
         };
         let mut pool = crate::kv_block_pool_device::DeviceKvPool::new(geom, DType::F32, &dev)
             .expect("f32 DeviceKvPool");
         let handle = pool.core_mut().open();
         for &t in &[1u32, 2, 3] {
-            model_a.forward_paged_step(t, &mut pool, handle).expect("prime");
+            model_a
+                .forward_paged_step(t, &mut pool, handle)
+                .expect("prime");
         }
         let mut ds: Option<crate::inference_context::PagedDecodeSession> = None;
         model_a
             .forward_paged_step_persistent(
-                4, &mut pool, handle, 8,
-                crate::inference_context::PagedDecodePlan::PlanOnce, &mut ds,
+                4,
+                &mut pool,
+                handle,
+                8,
+                crate::inference_context::PagedDecodePlan::PlanOnce,
+                &mut ds,
             )
             .expect("model A builds a held paged plan");
         let s = ds.as_ref().expect("held paged session");
@@ -16715,7 +18912,8 @@ mod generate_tests {
         let pool_b = crate::kv_block_pool_device::DeviceKvPool::new(geom, DType::F32, &dev)
             .expect("a second pool of IDENTICAL geometry");
         assert_ne!(
-            pool_b.alloc_id(), pool_id,
+            pool_b.alloc_id(),
+            pool_id,
             "two pools must never share an id — the counter is never recycled",
         );
         assert!(
@@ -16758,18 +18956,37 @@ mod generate_tests {
     #[test]
     fn held_decode_plan_must_not_execute_over_a_swapped_kv_cache() {
         let cfg = LlamaConfig {
-            vocab_size: 32, dim: 16, n_layers: 2, n_heads: 4, n_kv_heads: 4,
-            head_dim: 4, ffn_dim: 32, norm_eps: 1e-5, rope_base: 10000.0,
+            vocab_size: 32,
+            dim: 16,
+            n_layers: 2,
+            n_heads: 4,
+            n_kv_heads: 4,
+            head_dim: 4,
+            ffn_dim: 32,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
-        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
-        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let cfg = LlamaConfig {
+            dim: cfg.n_heads * cfg.head_dim,
+            ..cfg
+        };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
 
         let dev = Device::cpu();
         let max_seq_len = 8usize;
         let mk_cache = || {
             KvCache::with_capacity(
-                cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &dev,
-            ).expect("with_capacity")
+                cfg.n_layers,
+                cfg.n_kv_heads,
+                cfg.head_dim,
+                max_seq_len,
+                DType::F32,
+                &dev,
+            )
+            .expect("with_capacity")
         };
         // Tolerance for "the same computation": both arms run the identical f32
         // CPU kernels, so agreement is near-exact. Deliberately far below the
@@ -16777,7 +18994,10 @@ mod generate_tests {
         const TOL: f32 = 1e-5;
         fn maxdiff(a: &[f32], b: &[f32]) -> f32 {
             assert_eq!(a.len(), b.len(), "logit rows must be comparable");
-            a.iter().zip(b).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max)
+            a.iter()
+                .zip(b)
+                .map(|(x, y)| (x - y).abs())
+                .fold(0.0f32, f32::max)
         }
 
         let prompt_a = [1u32, 2, 3];
@@ -16850,9 +19070,7 @@ mod generate_tests {
             .forward_with_kv_context(&prompt_b, &mut cache_b, &mut ctx_b)
             .expect("B prefill lands in B's OWN storage");
         let actual_b = model
-            .forward_with_kv_context_persistent(
-                &[next_token], &mut cache_b, &mut ctx, &mut session,
-            )
+            .forward_with_kv_context_persistent(&[next_token], &mut cache_b, &mut ctx, &mut session)
             .expect("B's decode step, offered the plan A built");
 
         let drift = maxdiff(&expected_b, &actual_b);
@@ -16913,16 +19131,35 @@ mod generate_tests {
     #[test]
     fn incompatible_cache_swap_is_rejected_not_rebound() {
         let cfg = LlamaConfig {
-            vocab_size: 32, dim: 16, n_layers: 2, n_heads: 4, n_kv_heads: 4,
-            head_dim: 4, ffn_dim: 32, norm_eps: 1e-5, rope_base: 10000.0,
+            vocab_size: 32,
+            dim: 16,
+            n_layers: 2,
+            n_heads: 4,
+            n_kv_heads: 4,
+            head_dim: 4,
+            ffn_dim: 32,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
-        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
-        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let cfg = LlamaConfig {
+            dim: cfg.n_heads * cfg.head_dim,
+            ..cfg
+        };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
         let dev = Device::cpu();
         let mk = |msl: usize| {
             KvCache::with_capacity(
-                cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, msl, DType::F32, &dev,
-            ).expect("with_capacity")
+                cfg.n_layers,
+                cfg.n_kv_heads,
+                cfg.head_dim,
+                msl,
+                DType::F32,
+                &dev,
+            )
+            .expect("with_capacity")
         };
 
         let mut cache_a = mk(8);
@@ -16934,8 +19171,7 @@ mod generate_tests {
         model
             .forward_with_kv_context_persistent(&[4], &mut cache_a, &mut ctx, &mut session)
             .expect("A builds the plan");
-        let built =
-            std::sync::Arc::clone(session.as_ref().expect("held plan").graph());
+        let built = std::sync::Arc::clone(session.as_ref().expect("held plan").graph());
 
         // A cache whose KV buffers are a DIFFERENT extent. Every other key
         // field matches — same model, same layer count, same dtype — so this
@@ -16948,8 +19184,12 @@ mod generate_tests {
         let expected = {
             let mut c = mk(16);
             let mut x = InferenceContext::new(dev.clone());
-            model.forward_with_kv_context(&[7, 8, 9], &mut c, &mut x).expect("oracle prefill");
-            model.forward_with_kv_context(&[5], &mut c, &mut x).expect("oracle decode")
+            model
+                .forward_with_kv_context(&[7, 8, 9], &mut c, &mut x)
+                .expect("oracle prefill");
+            model
+                .forward_with_kv_context(&[5], &mut c, &mut x)
+                .expect("oracle decode")
         };
 
         let got = model
@@ -16968,7 +19208,11 @@ mod generate_tests {
         );
         let drift = {
             assert_eq!(expected.len(), got.len(), "logit rows must be comparable");
-            expected.iter().zip(&got).map(|(x, y)| (x - y).abs()).fold(0.0f32, f32::max)
+            expected
+                .iter()
+                .zip(&got)
+                .map(|(x, y)| (x - y).abs())
+                .fold(0.0f32, f32::max)
         };
         assert!(
             drift <= 1e-5,
@@ -16990,11 +19234,21 @@ mod generate_tests {
             .expect("rebuild a plan against the wide cache");
         let s = session.as_mut().expect("a held plan to offer the guard");
         let wrong_heads = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads * 2, cfg.head_dim, 16, DType::F32, &dev,
-        ).expect("same max_seq_len, DOUBLE the kv heads");
+            cfg.n_layers,
+            cfg.n_kv_heads * 2,
+            cfg.head_dim,
+            16,
+            DType::F32,
+            &dev,
+        )
+        .expect("same max_seq_len, DOUBLE the kv heads");
         assert_eq!(
             s.validity_for(
-                1, 16, cfg.n_layers, DType::F32, model.decode_shape_key(),
+                1,
+                16,
+                cfg.n_layers,
+                DType::F32,
+                model.decode_shape_key(),
                 wrong_heads.alloc_id(),
             ),
             crate::inference_context::PlanValidity::AllocationChanged,
@@ -17004,9 +19258,7 @@ mod generate_tests {
         );
         assert_eq!(
             s.rebind_kv(&wrong_heads),
-            Err(crate::inference_context::RebindRefusal::StorageDiffers {
-                layer: 0, which: 0,
-            }),
+            Err(crate::inference_context::RebindRefusal::StorageDiffers { layer: 0, which: 0 }),
             "the guard must refuse storage of the wrong EXTENT, and name it — \
              splicing it in would give the baked graph a buffer whose bytes do \
              not match the `Const` shape it was optimized around",
@@ -17024,16 +19276,35 @@ mod generate_tests {
     #[test]
     fn held_decode_plan_survives_same_cache_continuation_and_truncate() {
         let cfg = LlamaConfig {
-            vocab_size: 32, dim: 16, n_layers: 2, n_heads: 4, n_kv_heads: 4,
-            head_dim: 4, ffn_dim: 32, norm_eps: 1e-5, rope_base: 10000.0,
+            vocab_size: 32,
+            dim: 16,
+            n_layers: 2,
+            n_heads: 4,
+            n_kv_heads: 4,
+            head_dim: 4,
+            ffn_dim: 32,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
-        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
-        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let cfg = LlamaConfig {
+            dim: cfg.n_heads * cfg.head_dim,
+            ..cfg
+        };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
 
         let dev = Device::cpu();
         let mut cache = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, 8, DType::F32, &dev,
-        ).expect("with_capacity");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            8,
+            DType::F32,
+            &dev,
+        )
+        .expect("with_capacity");
         let mut ctx = InferenceContext::new(dev.clone());
         let mut session: Option<crate::inference_context::DecodeSession> = None;
 
@@ -17047,8 +19318,7 @@ mod generate_tests {
         // graph-local, so a REBUILT session mints the very same `NodeId(1)`
         // and a NodeId comparison would report "reused" for a rebuild —
         // making both assertions below silently vacuous.
-        let built =
-            std::sync::Arc::clone(session.as_ref().expect("held plan").graph());
+        let built = std::sync::Arc::clone(session.as_ref().expect("held plan").graph());
         let reused = |s: &Option<crate::inference_context::DecodeSession>| {
             s.as_ref()
                 .map(|s| std::sync::Arc::ptr_eq(s.graph(), &built))
@@ -17102,16 +19372,34 @@ mod generate_tests {
         use crate::pipelined_bridge::optimize_calls_thread_local;
 
         let cfg = LlamaConfig {
-            vocab_size: 32, dim: 16, n_layers: 2, n_heads: 4, n_kv_heads: 4,
-            head_dim: 4, ffn_dim: 32, norm_eps: 1e-5, rope_base: 10000.0,
+            vocab_size: 32,
+            dim: 16,
+            n_layers: 2,
+            n_heads: 4,
+            n_kv_heads: 4,
+            head_dim: 4,
+            ffn_dim: 32,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
-        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
-        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let cfg = LlamaConfig {
+            dim: cfg.n_heads * cfg.head_dim,
+            ..cfg
+        };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
         let dev = crate::Device::cpu();
 
         let (n_layers, n_kv_heads, head_dim) = (cfg.n_layers, cfg.n_kv_heads, cfg.head_dim);
         let geom = || crate::kv_block_pool::KvGeometry {
-            n_layers, num_blocks: 32, block_size: 4, n_kv_heads, head_dim, elem_size: 4,
+            n_layers,
+            num_blocks: 32,
+            block_size: 4,
+            n_kv_heads,
+            head_dim,
+            elem_size: 4,
         };
 
         // History of 7 → after priming, filled_tokens == 7. The two decode
@@ -17128,10 +19416,16 @@ mod generate_tests {
             .expect("f32 DeviceKvPool (ref)");
         let rs = ref_pool.core_mut().open();
         for &t in &history {
-            model.forward_paged_step(t, &mut ref_pool, rs).expect("ref prime");
+            model
+                .forward_paged_step(t, &mut ref_pool, rs)
+                .expect("ref prime");
         }
-        let ref0 = model.forward_paged_step(decode[0], &mut ref_pool, rs).expect("ref decode 0");
-        let ref1 = model.forward_paged_step(decode[1], &mut ref_pool, rs).expect("ref decode 1");
+        let ref0 = model
+            .forward_paged_step(decode[0], &mut ref_pool, rs)
+            .expect("ref decode 0");
+        let ref1 = model
+            .forward_paged_step(decode[1], &mut ref_pool, rs)
+            .expect("ref decode 1");
 
         // Persistent: prime identically via the re-planning path, then decode
         // the two tokens via the plan-once persistent path.
@@ -17139,7 +19433,9 @@ mod generate_tests {
             .expect("f32 DeviceKvPool (persistent)");
         let s = pool.core_mut().open();
         for &t in &history {
-            model.forward_paged_step(t, &mut pool, s).expect("persistent prime");
+            model
+                .forward_paged_step(t, &mut pool, s)
+                .expect("persistent prime");
         }
 
         let mut ds: Option<crate::inference_context::PagedDecodeSession> = None;
@@ -17148,8 +19444,12 @@ mod generate_tests {
         let before_build = optimize_calls_thread_local();
         let l0 = model
             .forward_paged_step_persistent(
-                decode[0], &mut pool, s, CAP,
-                crate::inference_context::PagedDecodePlan::PlanOnce, &mut ds,
+                decode[0],
+                &mut pool,
+                s,
+                CAP,
+                crate::inference_context::PagedDecodePlan::PlanOnce,
+                &mut ds,
             )
             .expect("persistent decode 0 (build)");
         let build_delta = optimize_calls_thread_local() - before_build;
@@ -17164,8 +19464,12 @@ mod generate_tests {
         let before_rebind = optimize_calls_thread_local();
         let l1 = model
             .forward_paged_step_persistent(
-                decode[1], &mut pool, s, CAP,
-                crate::inference_context::PagedDecodePlan::PlanOnce, &mut ds,
+                decode[1],
+                &mut pool,
+                s,
+                CAP,
+                crate::inference_context::PagedDecodePlan::PlanOnce,
+                &mut ds,
             )
             .expect("persistent decode 1 (rebind)");
         let rebind_delta = optimize_calls_thread_local() - before_rebind;
@@ -17248,14 +19552,31 @@ mod generate_tests {
     /// Build the tiny CPU f32 model + block geometry shared by the gate tests.
     fn paged_gate_fixture() -> (LlamaModel, crate::kv_block_pool::KvGeometry, Device) {
         let cfg = LlamaConfig {
-            vocab_size: 32, dim: 16, n_layers: 2, n_heads: 4, n_kv_heads: 4,
-            head_dim: 4, ffn_dim: 32, norm_eps: 1e-5, rope_base: 10000.0,
+            vocab_size: 32,
+            dim: 16,
+            n_layers: 2,
+            n_heads: 4,
+            n_kv_heads: 4,
+            head_dim: 4,
+            ffn_dim: 32,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
-        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
-        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let cfg = LlamaConfig {
+            dim: cfg.n_heads * cfg.head_dim,
+            ..cfg
+        };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
         let geom = crate::kv_block_pool::KvGeometry {
-            n_layers: cfg.n_layers, num_blocks: 32, block_size: 4,
-            n_kv_heads: cfg.n_kv_heads, head_dim: cfg.head_dim, elem_size: 4,
+            n_layers: cfg.n_layers,
+            num_blocks: 32,
+            block_size: 4,
+            n_kv_heads: cfg.n_kv_heads,
+            head_dim: cfg.head_dim,
+            elem_size: 4,
         };
         (model, geom, Device::cpu())
     }
@@ -17282,10 +19603,14 @@ mod generate_tests {
         // can only differ if the plan-once rebind is wrong.
         let mut pool_a = Pool::new(geom, DType::F32, dev)?;
         let sa = pool_a.core_mut().open();
-        for &t in history { model.forward_paged_step(t, &mut pool_a, sa)?; }
+        for &t in history {
+            model.forward_paged_step(t, &mut pool_a, sa)?;
+        }
         let mut pool_b = Pool::new(geom, DType::F32, dev)?;
         let sb = pool_b.core_mut().open();
-        for &t in history { model.forward_paged_step(t, &mut pool_b, sb)?; }
+        for &t in history {
+            model.forward_paged_step(t, &mut pool_b, sb)?;
+        }
 
         let mut ds_a: Option<crate::inference_context::PagedDecodeSession> = None;
         let mut ds_b: Option<crate::inference_context::PagedDecodeSession> = None;
@@ -17293,21 +19618,42 @@ mod generate_tests {
         for &tok in decode {
             let hits_before = ds_a.as_ref().map(|s| s.realize_count()).unwrap_or(0);
             let ob = optimize_calls_thread_local();
-            let logits_a =
-                model.forward_paged_step_persistent(tok, &mut pool_a, sa, cap, plan_a, &mut ds_a)?;
+            let logits_a = model.forward_paged_step_persistent(
+                tok,
+                &mut pool_a,
+                sa,
+                cap,
+                plan_a,
+                &mut ds_a,
+            )?;
             let opt_delta_a = optimize_calls_thread_local() - ob;
             let hits_after = ds_a.as_ref().map(|s| s.realize_count()).unwrap_or(0);
             let hit_delta_a = hits_after - hits_before;
 
             let ob2 = optimize_calls_thread_local();
-            let logits_b =
-                model.forward_paged_step_persistent(tok, &mut pool_b, sb, cap, plan_b, &mut ds_b)?;
+            let logits_b = model.forward_paged_step_persistent(
+                tok,
+                &mut pool_b,
+                sb,
+                cap,
+                plan_b,
+                &mut ds_b,
+            )?;
             let opt_delta_b = optimize_calls_thread_local() - ob2;
 
-            steps.push(PagedGateStep { logits_a, logits_b, opt_delta_a, opt_delta_b, hit_delta_a });
+            steps.push(PagedGateStep {
+                logits_a,
+                logits_b,
+                opt_delta_a,
+                opt_delta_b,
+                hit_delta_a,
+            });
         }
         let final_hits_a = ds_a.as_ref().map(|s| s.realize_count()).unwrap_or(0);
-        Ok(PagedGateReport { steps, final_hits_a })
+        Ok(PagedGateReport {
+            steps,
+            final_hits_a,
+        })
     }
 
     /// The gate's invariants, as a NON-panicking checker (so the mutation test
@@ -17372,7 +19718,9 @@ mod generate_tests {
         if report.final_hits_a != n - 1 {
             return Err(format!(
                 "plan-once session must serve exactly {} rebinds (1 build + {} HITs), served {}",
-                n - 1, n - 1, report.final_hits_a,
+                n - 1,
+                n - 1,
+                report.final_hits_a,
             ));
         }
         Ok(())
@@ -17394,9 +19742,16 @@ mod generate_tests {
         let decode: [u32; 4] = [8, 9, 10, 11];
         const CAP: usize = 8;
         let report = run_paged_plan_once_gate(
-            &model, geom, &history, &decode, CAP,
-            PagedDecodePlan::PlanOnce, PagedDecodePlan::Replan, &dev,
-        ).expect("paged plan-once gate run");
+            &model,
+            geom,
+            &history,
+            &decode,
+            CAP,
+            PagedDecodePlan::PlanOnce,
+            PagedDecodePlan::Replan,
+            &dev,
+        )
+        .expect("paged plan-once gate run");
         check_paged_gate(&report)
             .unwrap_or_else(|e| panic!("plan-once gate must hold (identity + HIT + MISS): {e}"));
     }
@@ -17418,9 +19773,16 @@ mod generate_tests {
         // Mutation 1 — plan-once arm forced to re-plan every token (Replan):
         // the HIT invariant (opt_delta_a==0 / one rebind) must break.
         let forced_miss = run_paged_plan_once_gate(
-            &model, geom, &history, &decode, CAP,
-            PagedDecodePlan::Replan, PagedDecodePlan::Replan, &dev,
-        ).expect("gate run (force-miss)");
+            &model,
+            geom,
+            &history,
+            &decode,
+            CAP,
+            PagedDecodePlan::Replan,
+            PagedDecodePlan::Replan,
+            &dev,
+        )
+        .expect("gate run (force-miss)");
         assert!(
             check_paged_gate(&forced_miss).is_err(),
             "forcing the plan-once arm to re-plan every token MUST break the HIT assertion (teeth)",
@@ -17429,9 +19791,16 @@ mod generate_tests {
         // Mutation 2 — control arm forced to reuse the plan (PlanOnce): the
         // MISS invariant (opt_delta_b≥1 every step) must break.
         let forced_hit = run_paged_plan_once_gate(
-            &model, geom, &history, &decode, CAP,
-            PagedDecodePlan::PlanOnce, PagedDecodePlan::PlanOnce, &dev,
-        ).expect("gate run (force-hit)");
+            &model,
+            geom,
+            &history,
+            &decode,
+            CAP,
+            PagedDecodePlan::PlanOnce,
+            PagedDecodePlan::PlanOnce,
+            &dev,
+        )
+        .expect("gate run (force-hit)");
         assert!(
             check_paged_gate(&forced_hit).is_err(),
             "forcing the control arm to reuse the plan MUST break the MISS assertion (teeth)",
@@ -17455,9 +19824,16 @@ mod generate_tests {
             // boundary phase (set by position), only the gather must be valid.
             let decode: Vec<u32> = vec![10, 11, 12]; // 3 decode tokens
             let report = run_paged_plan_once_gate(
-                &model, geom, &history, &decode, CAP,
-                PagedDecodePlan::PlanOnce, PagedDecodePlan::Replan, &dev,
-            ).unwrap_or_else(|e| panic!("ragged gate run (hist_len={hist_len}): {e:?}"));
+                &model,
+                geom,
+                &history,
+                &decode,
+                CAP,
+                PagedDecodePlan::PlanOnce,
+                PagedDecodePlan::Replan,
+                &dev,
+            )
+            .unwrap_or_else(|e| panic!("ragged gate run (hist_len={hist_len}): {e:?}"));
             check_paged_gate(&report)
                 .unwrap_or_else(|e| panic!("ragged plan-once gate (hist_len={hist_len}): {e}"));
         }
@@ -17482,11 +19858,24 @@ mod generate_tests {
         use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
 
         let cfg = LlamaConfig {
-            vocab_size: 16, dim: 8, n_layers: 2, n_heads: 4, n_kv_heads: 2,
-            head_dim: 4, ffn_dim: 16, norm_eps: 1e-5, rope_base: 10000.0,
+            vocab_size: 16,
+            dim: 8,
+            n_layers: 2,
+            n_heads: 4,
+            n_kv_heads: 2,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
-        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
-        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let cfg = LlamaConfig {
+            dim: cfg.n_heads * cfg.head_dim,
+            ..cfg
+        };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
 
         let prompt = [1_u32, 2, 3];
         let max_new = 5usize;
@@ -17504,7 +19893,11 @@ mod generate_tests {
             let cpu_device = Device::cpu();
             let cpu_ref = || -> crate::Result<Vec<Vec<f32>>> {
                 let mut cpu_cache = KvCache::with_capacity(
-                    cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32,
+                    cfg.n_layers,
+                    cfg.n_kv_heads,
+                    cfg.head_dim,
+                    max_seq_len,
+                    DType::F32,
                     &cpu_device,
                 )?;
                 let mut cpu_ctx = InferenceContext::new(cpu_device.clone());
@@ -17543,8 +19936,14 @@ mod generate_tests {
 
         // Vulkan rebuild (D1) reference.
         let mut vk_rebuild_cache = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &vk_device,
-        ).expect("vk rebuild with_capacity");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &vk_device,
+        )
+        .expect("vk rebuild with_capacity");
         let mut vk_rebuild_ctx = InferenceContext::new(vk_device.clone());
         let mut rebuild_rng: u64 = 0;
         let mut rebuild_tokens: Vec<u32> = prompt.to_vec();
@@ -17563,8 +19962,14 @@ mod generate_tests {
 
         // Vulkan persistent (plan-once).
         let mut vk_persist_cache = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &vk_device,
-        ).expect("vk persistent with_capacity");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &vk_device,
+        )
+        .expect("vk persistent with_capacity");
         let mut vk_persist_ctx = InferenceContext::new(vk_device.clone());
         let mut persist_rng: u64 = 0;
         let mut session: Option<crate::inference_context::DecodeSession> = None;
@@ -17572,25 +19977,44 @@ mod generate_tests {
         let mut persist_step_logits: Vec<Vec<f32>> = Vec::with_capacity(max_new);
         let mut last_persist = model
             .forward_with_kv_context_persistent(
-                &prompt, &mut vk_persist_cache, &mut vk_persist_ctx, &mut session,
+                &prompt,
+                &mut vk_persist_cache,
+                &mut vk_persist_ctx,
+                &mut session,
             )
             .expect("vk persistent prefill");
-        assert!(session.is_none(), "prefill (seq>1) must NOT build the held session");
+        assert!(
+            session.is_none(),
+            "prefill (seq>1) must NOT build the held session"
+        );
         for _ in 0..max_new {
             let next = sample_logits(&last_persist, strategy, &mut persist_rng);
             persist_tokens.push(next);
             last_persist = model
                 .forward_with_kv_context_persistent(
-                    &[next], &mut vk_persist_cache, &mut vk_persist_ctx, &mut session,
+                    &[next],
+                    &mut vk_persist_cache,
+                    &mut vk_persist_ctx,
+                    &mut session,
                 )
                 .expect("vk persistent decode");
             persist_step_logits.push(last_persist.clone());
         }
-        assert!(session.is_some(), "held session survives the Vulkan decode loop");
+        assert!(
+            session.is_some(),
+            "held session survives the Vulkan decode loop"
+        );
 
         // (1) BIT-EXACT: Vulkan persistent == Vulkan rebuild.
-        assert_eq!(persist_tokens, rebuild_tokens, "Vulkan persistent token sequence");
-        for (i, (p, r)) in persist_step_logits.iter().zip(rebuild_step_logits.iter()).enumerate() {
+        assert_eq!(
+            persist_tokens, rebuild_tokens,
+            "Vulkan persistent token sequence"
+        );
+        for (i, (p, r)) in persist_step_logits
+            .iter()
+            .zip(rebuild_step_logits.iter())
+            .enumerate()
+        {
             assert_eq!(
                 p, r,
                 "Vulkan persistent decode step {i} logits must be BIT-EXACT vs \
@@ -17601,7 +20025,11 @@ mod generate_tests {
         // (2) EPSILON: Vulkan persistent vs CPU rebuild (best-effort).
         let mut epsilon_checked = false;
         if let Some(cpu_step_logits) = cpu_step_logits.as_ref() {
-            for (i, (p, c)) in persist_step_logits.iter().zip(cpu_step_logits.iter()).enumerate() {
+            for (i, (p, c)) in persist_step_logits
+                .iter()
+                .zip(cpu_step_logits.iter())
+                .enumerate()
+            {
                 for (j, (a, b)) in p.iter().zip(c.iter()).enumerate() {
                     let diff = (a - b).abs();
                     let rel = diff / a.abs().max(b.abs()).max(1e-6);
@@ -17618,12 +20046,19 @@ mod generate_tests {
         let via_wrapper = model
             .generate_with_kv_context(&prompt, max_new, strategy, None, &vk_device, DType::F32)
             .expect("generate_with_kv_context on Vulkan");
-        assert_eq!(via_wrapper, rebuild_tokens, "generate_with_kv_context on Vulkan");
+        assert_eq!(
+            via_wrapper, rebuild_tokens,
+            "generate_with_kv_context on Vulkan"
+        );
 
         eprintln!(
             "VULKAN persistent decode VERIFIED: tokens + logits BIT-EXACT vs \
              Vulkan rebuild path; CPU epsilon cross-check {}. tokens={:?}",
-            if epsilon_checked { "PASSED" } else { "SKIPPED (see note above)" },
+            if epsilon_checked {
+                "PASSED"
+            } else {
+                "SKIPPED (see note above)"
+            },
             persist_tokens,
         );
     }
@@ -17642,15 +20077,31 @@ mod generate_tests {
     #[ignore = "perf scaffold — manual live-CUDA measurement, not a CI gate"]
     fn generate_persistent_decode_cuda_bench_scaffold() {
         let cfg = LlamaConfig {
-            vocab_size: 16, dim: 8, n_layers: 2, n_heads: 4, n_kv_heads: 2,
-            head_dim: 4, ffn_dim: 16, norm_eps: 1e-5, rope_base: 10000.0,
+            vocab_size: 16,
+            dim: 8,
+            n_layers: 2,
+            n_heads: 4,
+            n_kv_heads: 2,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
-        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
-        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let cfg = LlamaConfig {
+            dim: cfg.n_heads * cfg.head_dim,
+            ..cfg
+        };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
 
         let cuda = match fuel_cuda_backend::CudaDevice::new(0) {
             Ok(d) => d,
-            Err(e) => { eprintln!("no CUDA device; skipping: {e:?}"); return; }
+            Err(e) => {
+                eprintln!("no CUDA device; skipping: {e:?}");
+                return;
+            }
         };
         let dev: Device = cuda.into();
 
@@ -17661,22 +20112,38 @@ mod generate_tests {
 
         // D1: rebuild + re-optimize every decode token.
         let mut cache1 = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &dev,
-        ).unwrap();
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &dev,
+        )
+        .unwrap();
         let mut ctx1 = InferenceContext::new(dev.clone());
         let mut rng1 = 0u64;
-        let mut last1 = model.forward_with_kv_context(&prompt, &mut cache1, &mut ctx1).unwrap();
+        let mut last1 = model
+            .forward_with_kv_context(&prompt, &mut cache1, &mut ctx1)
+            .unwrap();
         let t_d1 = std::time::Instant::now();
         for _ in 0..n {
             let next = sample_logits(&last1, strategy, &mut rng1);
-            last1 = model.forward_with_kv_context(&[next], &mut cache1, &mut ctx1).unwrap();
+            last1 = model
+                .forward_with_kv_context(&[next], &mut cache1, &mut ctx1)
+                .unwrap();
         }
         let d1 = t_d1.elapsed();
 
         // D2: plan-once persistent decode.
         let mut cache2 = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &dev,
-        ).unwrap();
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &dev,
+        )
+        .unwrap();
         let mut ctx2 = InferenceContext::new(dev.clone());
         let mut rng2 = 0u64;
         let mut session: Option<crate::inference_context::DecodeSession> = None;
@@ -17696,7 +20163,10 @@ mod generate_tests {
             "CUDA D2c bench (TINY model, N={n}): D1 rebuild = {:?} ({:?}/tok), \
              D2 plan-once = {:?} ({:?}/tok), ratio = {:.2}x — INDICATIVE ONLY; \
              the honest ~1.8x needs a realistic model (tiny model understates).",
-            d1, d1 / n as u32, d2, d2 / n as u32,
+            d1,
+            d1 / n as u32,
+            d2,
+            d2 / n as u32,
             d1.as_secs_f64() / d2.as_secs_f64().max(1e-9),
         );
     }
@@ -17718,11 +20188,24 @@ mod generate_tests {
     #[ignore = "perf scaffold — manual live-GPU measurement, not a CI gate"]
     fn generate_loop_persistent_bench_scaffold() {
         let cfg = LlamaConfig {
-            vocab_size: 16, dim: 8, n_layers: 2, n_heads: 4, n_kv_heads: 2,
-            head_dim: 4, ffn_dim: 16, norm_eps: 1e-5, rope_base: 10000.0,
+            vocab_size: 16,
+            dim: 8,
+            n_layers: 2,
+            n_heads: 4,
+            n_kv_heads: 2,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
-        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
-        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let cfg = LlamaConfig {
+            dim: cfg.n_heads * cfg.head_dim,
+            ..cfg
+        };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
 
         let prompt = [1_u32, 2, 3];
         let n = 64usize;
@@ -17732,22 +20215,38 @@ mod generate_tests {
 
         // D1: rebuild + re-optimize every decode token.
         let mut cache1 = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &dev,
-        ).unwrap();
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &dev,
+        )
+        .unwrap();
         let mut ctx1 = InferenceContext::new(dev.clone());
         let mut rng1 = 0u64;
-        let mut last1 = model.forward_with_kv_context(&prompt, &mut cache1, &mut ctx1).unwrap();
+        let mut last1 = model
+            .forward_with_kv_context(&prompt, &mut cache1, &mut ctx1)
+            .unwrap();
         let t_d1 = std::time::Instant::now();
         for _ in 0..n {
             let next = sample_logits(&last1, strategy, &mut rng1);
-            last1 = model.forward_with_kv_context(&[next], &mut cache1, &mut ctx1).unwrap();
+            last1 = model
+                .forward_with_kv_context(&[next], &mut cache1, &mut ctx1)
+                .unwrap();
         }
         let d1 = t_d1.elapsed();
 
         // D2: plan-once persistent decode (the wired production path).
         let mut cache2 = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &dev,
-        ).unwrap();
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &dev,
+        )
+        .unwrap();
         let mut ctx2 = InferenceContext::new(dev.clone());
         let mut rng2 = 0u64;
         let mut session: Option<crate::inference_context::DecodeSession> = None;
@@ -17767,7 +20266,10 @@ mod generate_tests {
             "D2c bench (CPU, tiny model, N={n}): D1 rebuild = {:?} ({:?}/tok), \
              D2 plan-once = {:?} ({:?}/tok), ratio = {:.2}x (CPU understates; \
              measure the ~1.8x on a live GPU with a realistic model)",
-            d1, d1 / n as u32, d2, d2 / n as u32,
+            d1,
+            d1 / n as u32,
+            d2,
+            d2 / n as u32,
             d1.as_secs_f64() / d2.as_secs_f64().max(1e-9),
         );
         // NO timing assertion — perf is a verify-after gate, not a CI gate.
@@ -17845,8 +20347,13 @@ mod generate_tests {
         let cfg = LlamaConfig::from_hf_json_str(&config_str).expect("parse config.json");
         eprintln!(
             "model config: vocab={} dim={} layers={} q_heads={} kv_heads={} head_dim={} ffn={}",
-            cfg.vocab_size, cfg.dim, cfg.n_layers, cfg.n_heads, cfg.n_kv_heads,
-            cfg.head_dim, cfg.ffn_dim,
+            cfg.vocab_size,
+            cfg.dim,
+            cfg.n_layers,
+            cfg.n_heads,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            cfg.ffn_dim,
         );
         let weights_path = dir.join("model.safetensors");
         let t0 = std::time::Instant::now();
@@ -17858,13 +20365,27 @@ mod generate_tests {
             eprintln!("source safetensors dtype (q_proj.weight): {:?}", v.dtype());
         }
         let raw = LlamaWeights::load_from_mmapped(&st, &cfg).expect("load weights");
-        let weights = if force_f32 { force_weights_f32(raw) } else { raw };
+        let weights = if force_f32 {
+            force_weights_f32(raw)
+        } else {
+            raw
+        };
         let load_secs = t0.elapsed().as_secs_f64();
         eprintln!(
             "weights loaded in {load_secs:.2}s (projections {})",
-            if force_f32 { "upcast to F32" } else { "kept at source dtype" },
+            if force_f32 {
+                "upcast to F32"
+            } else {
+                "kept at source dtype"
+            },
         );
-        Some((LlamaModel { config: cfg, weights }, load_secs))
+        Some((
+            LlamaModel {
+                config: cfg,
+                weights,
+            },
+            load_secs,
+        ))
     }
 
     /// Summarize a slice of per-token durations as (mean, min, max) in ms.
@@ -17874,8 +20395,12 @@ mod generate_tests {
         let mut min = f64::INFINITY;
         let mut max = f64::NEG_INFINITY;
         for &x in &ms {
-            if x < min { min = x; }
-            if x > max { max = x; }
+            if x < min {
+                min = x;
+            }
+            if x > max {
+                max = x;
+            }
         }
         (mean, min, max)
     }
@@ -17927,7 +20452,11 @@ mod generate_tests {
         post_token: Option<&dyn Fn()>,
         cache_dtype: DType,
     ) {
-        let after_step = || { if let Some(f) = post_token { f(); } };
+        let after_step = || {
+            if let Some(f) = post_token {
+                f();
+            }
+        };
         use std::time::Instant;
         let cfg = model.config.clone();
         // Fixed prompt token IDs (all < vocab_size = 32000). We measure
@@ -17970,8 +20499,14 @@ mod generate_tests {
             // fused winner), not merely offered.
             let vb_before = fuel_dispatch::variant_bake::variant_bakes_thread_local();
             let mut cache2 = KvCache::with_capacity(
-                cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, cache_dtype, device,
-            ).expect("d2 with_capacity");
+                cfg.n_layers,
+                cfg.n_kv_heads,
+                cfg.head_dim,
+                max_seq_len,
+                cache_dtype,
+                device,
+            )
+            .expect("d2 with_capacity");
             let mut ctx2 = InferenceContext::new(device.clone());
             let mut session: Option<crate::inference_context::DecodeSession> = None;
             let t_pre2 = Instant::now();
@@ -17981,7 +20516,10 @@ mod generate_tests {
             d2_prefill = t_pre2.elapsed();
             after_step();
             eprintln!("  D2 prefill: {:.1} ms", d2_prefill.as_secs_f64() * 1e3);
-            assert!(session.is_none(), "prefill (seq>1) must NOT build the held session");
+            assert!(
+                session.is_none(),
+                "prefill (seq>1) must NOT build the held session"
+            );
             let opt_after_prefill = crate::pipelined_bridge::optimize_calls_thread_local();
             let mut rng2 = 0u64;
             for i in 0..n {
@@ -17989,7 +20527,12 @@ mod generate_tests {
                 d2_tokens.push(next);
                 let t = Instant::now();
                 last2 = model
-                    .forward_with_kv_context_persistent(&[next], &mut cache2, &mut ctx2, &mut session)
+                    .forward_with_kv_context_persistent(
+                        &[next],
+                        &mut cache2,
+                        &mut ctx2,
+                        &mut session,
+                    )
                     .expect("d2 decode");
                 let dt = t.elapsed();
                 after_step();
@@ -18007,8 +20550,12 @@ mod generate_tests {
                 "  D2 variant-bakes (fused-arm picks, e.g. flash-decode) across the build: {} \
                  ({})",
                 variant_bakes_delta,
-                if variant_bakes_delta > 0 { "flash arm PICKED" } else { "no fused variant picked \
-                 — decode ran the decomposed base map" },
+                if variant_bakes_delta > 0 {
+                    "flash arm PICKED"
+                } else {
+                    "no fused variant picked \
+                 — decode ran the decomposed base map"
+                },
             );
             // cache2/ctx2/session drop here (end of scope): frees D2's
             // device-resident state (base_cache holds the full weight set
@@ -18036,14 +20583,26 @@ mod generate_tests {
         {
             if run_d3 {
                 let mut cache3 = KvCache::with_capacity(
-                    cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, cache_dtype, device,
-                ).expect("d3 with_capacity");
+                    cfg.n_layers,
+                    cfg.n_kv_heads,
+                    cfg.head_dim,
+                    max_seq_len,
+                    cache_dtype,
+                    device,
+                )
+                .expect("d3 with_capacity");
                 let mut ctx3 = InferenceContext::new(device.clone());
                 let mut session3: Option<crate::inference_context::DecodeSession> = None;
                 let mut captured3: Option<fuel_dispatch::pipelined::CapturedDecodeSession> = None;
                 let t_pre3 = Instant::now();
                 let mut last3 = model
-                    .forward_with_kv_context_captured(&prompt, &mut cache3, &mut ctx3, &mut session3, &mut captured3)
+                    .forward_with_kv_context_captured(
+                        &prompt,
+                        &mut cache3,
+                        &mut ctx3,
+                        &mut session3,
+                        &mut captured3,
+                    )
                     .expect("d3 prefill");
                 let d3_prefill = t_pre3.elapsed();
                 after_step();
@@ -18054,7 +20613,13 @@ mod generate_tests {
                     d3_tokens.push(next);
                     let t = Instant::now();
                     last3 = model
-                        .forward_with_kv_context_captured(&[next], &mut cache3, &mut ctx3, &mut session3, &mut captured3)
+                        .forward_with_kv_context_captured(
+                            &[next],
+                            &mut cache3,
+                            &mut ctx3,
+                            &mut session3,
+                            &mut captured3,
+                        )
                         .expect("d3 decode");
                     let dt = t.elapsed();
                     after_step();
@@ -18062,10 +20627,15 @@ mod generate_tests {
                     d3_logits.push(last3.clone());
                     eprintln!("  D3 tok {}/{n}: {:.1} ms", i + 1, dt.as_secs_f64() * 1e3);
                 }
-                assert!(captured3.is_some(), "D3: the capture must build by decode token 2");
+                assert!(
+                    captured3.is_some(),
+                    "D3: the capture must build by decode token 2"
+                );
                 // cache3/ctx3/session3/captured3 drop here — frees before D1.
             } else if run_d2 && cache_dtype != DType::F32 {
-                eprintln!("  D3 captured-replay: SKIPPED (capture is f32-only; cache dtype {cache_dtype:?})");
+                eprintln!(
+                    "  D3 captured-replay: SKIPPED (capture is f32-only; cache dtype {cache_dtype:?})"
+                );
             }
         }
         after_step();
@@ -18083,8 +20653,14 @@ mod generate_tests {
         let mut d1_abort: Option<String> = None;
         if run_d1 {
             let mut cache1 = KvCache::with_capacity(
-                cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, cache_dtype, device,
-            ).expect("d1 with_capacity");
+                cfg.n_layers,
+                cfg.n_kv_heads,
+                cfg.head_dim,
+                max_seq_len,
+                cache_dtype,
+                device,
+            )
+            .expect("d1 with_capacity");
             let mut ctx1 = InferenceContext::new(device.clone());
             let t_pre1 = Instant::now();
             let mut last1 = model
@@ -18100,9 +20676,8 @@ mod generate_tests {
                 match model.forward_with_kv_context(&[next], &mut cache1, &mut ctx1) {
                     Ok(l) => last1 = l,
                     Err(e) => {
-                        d1_abort = Some(format!(
-                            "D1 replan loop ABORTED at token {}: {e:?}", i + 1,
-                        ));
+                        d1_abort =
+                            Some(format!("D1 replan loop ABORTED at token {}: {e:?}", i + 1,));
                         eprintln!("  {}", d1_abort.as_ref().unwrap());
                         break;
                     }
@@ -18128,7 +20703,9 @@ mod generate_tests {
         for (a, b) in d1_logits[..cmp].iter().zip(d2_logits[..cmp].iter()) {
             for (&x, &y) in a.iter().zip(b.iter()) {
                 let d = (x - y).abs();
-                if d > max_abs_diff { max_abs_diff = d; }
+                if d > max_abs_diff {
+                    max_abs_diff = d;
+                }
             }
         }
         let logits_bit_exact = d1_logits[..cmp] == d2_logits[..cmp];
@@ -18137,19 +20714,43 @@ mod generate_tests {
         // D1: mean over all completed tokens, and over the "steady" window
         // (tokens 2..) to match D2's steady window (D2 token 1 is the build).
         let (d1_mean_all, d1_min, d1_max) = ms_stats(&d1_times);
-        let d1_steady = if n1 > 1 { &d1_times[1..] } else { &d1_times[..] };
+        let d1_steady = if n1 > 1 {
+            &d1_times[1..]
+        } else {
+            &d1_times[..]
+        };
         let (d1_mean_steady, _, _) = ms_stats(d1_steady);
         // D2: token 1 is the plan-once BUILD; tokens 2..N are the reuse.
-        let d2_build_ms = if n2 > 0 { d2_times[0].as_secs_f64() * 1e3 } else { 0.0 };
-        let d2_reuse = if n2 > 1 { &d2_times[1..] } else { &d2_times[..] };
+        let d2_build_ms = if n2 > 0 {
+            d2_times[0].as_secs_f64() * 1e3
+        } else {
+            0.0
+        };
+        let d2_reuse = if n2 > 1 {
+            &d2_times[1..]
+        } else {
+            &d2_times[..]
+        };
         let (d2_mean_reuse, d2_min_reuse, d2_max_reuse) = ms_stats(d2_reuse);
         let (d2_mean_all, _, _) = ms_stats(&d2_times);
         let d2_median_reuse = median_ms(d2_reuse);
         // D3: token 1 build (== D2's), token 2 capture-build, tokens 3..N the
         // pure cuGraphLaunch replay window (the number that matters).
-        let d3_build_ms = if n3 > 0 { d3_times[0].as_secs_f64() * 1e3 } else { 0.0 };
-        let d3_capture_ms = if n3 > 1 { d3_times[1].as_secs_f64() * 1e3 } else { 0.0 };
-        let d3_replay = if n3 > 2 { &d3_times[2..] } else { &d3_times[..0] };
+        let d3_build_ms = if n3 > 0 {
+            d3_times[0].as_secs_f64() * 1e3
+        } else {
+            0.0
+        };
+        let d3_capture_ms = if n3 > 1 {
+            d3_times[1].as_secs_f64() * 1e3
+        } else {
+            0.0
+        };
+        let d3_replay = if n3 > 2 {
+            &d3_times[2..]
+        } else {
+            &d3_times[..0]
+        };
         let (d3_mean_replay, d3_min_replay, d3_max_replay) = ms_stats(d3_replay);
         let d3_median_replay = median_ms(d3_replay);
         // D2-vs-D3 byte-exactness (same plan → identical logits) over the
@@ -18169,13 +20770,21 @@ mod generate_tests {
             cfg.n_layers, cfg.n_heads, cfg.n_kv_heads, cfg.dim, cfg.vocab_size,
         );
         eprintln!(" weight load: {load_secs:.2}s");
-        eprintln!(" paths run: {paths_env}   N decode tokens = {n}   prompt len = {}   max_seq_len = {}",
-            prompt.len(), max_seq_len);
-        eprintln!(" prefill (excluded from per-token):  D1 = {:.1} ms   D2 = {:.1} ms",
-            d1_prefill.as_secs_f64() * 1e3, d2_prefill.as_secs_f64() * 1e3);
+        eprintln!(
+            " paths run: {paths_env}   N decode tokens = {n}   prompt len = {}   max_seq_len = {}",
+            prompt.len(),
+            max_seq_len
+        );
+        eprintln!(
+            " prefill (excluded from per-token):  D1 = {:.1} ms   D2 = {:.1} ms",
+            d1_prefill.as_secs_f64() * 1e3,
+            d2_prefill.as_secs_f64() * 1e3
+        );
         if run_d2 {
-            eprintln!(" optimize_graph calls: prefill-fallback +{opt_prefill_delta}, \
-                       decode-loop +{opt_decode_delta} (plan-once ⇒ expect +1)");
+            eprintln!(
+                " optimize_graph calls: prefill-fallback +{opt_prefill_delta}, \
+                       decode-loop +{opt_decode_delta} (plan-once ⇒ expect +1)"
+            );
         }
         eprintln!("------------------------------------------------------------");
         if let Some(msg) = &d1_abort {
@@ -18184,20 +20793,30 @@ mod generate_tests {
         }
         eprintln!(" per-token wall-clock (ms):");
         if n1 > 0 {
-            eprintln!("   D1 replan   : mean({n1} toks)  = {d1_mean_all:8.2}   [min {d1_min:.2}, max {d1_max:.2}]");
+            eprintln!(
+                "   D1 replan   : mean({n1} toks)  = {d1_mean_all:8.2}   [min {d1_min:.2}, max {d1_max:.2}]"
+            );
             eprintln!("   D1 replan   : mean(tok 2..)  = {d1_mean_steady:8.2}");
         } else if run_d1 {
             eprintln!("   D1 replan   : NO tokens completed");
         }
         if n2 > 0 {
             eprintln!("   D2 plan-once: build (tok 1)  = {d2_build_ms:8.2}");
-            eprintln!("   D2 plan-once: mean(tok 2..N) = {d2_mean_reuse:8.2}   [min {d2_min_reuse:.2}, max {d2_max_reuse:.2}]");
+            eprintln!(
+                "   D2 plan-once: mean(tok 2..N) = {d2_mean_reuse:8.2}   [min {d2_min_reuse:.2}, max {d2_max_reuse:.2}]"
+            );
         }
         if n3 > 0 {
-            eprintln!("   D3 captured : build(tok1)={d3_build_ms:8.2}  capture-build(tok2)={d3_capture_ms:8.2}");
-            eprintln!("   D3 captured : replay(tok 3..N) median={d3_median_replay:8.2}  mean={d3_mean_replay:8.2}   [min {d3_min_replay:.2}, max {d3_max_replay:.2}]");
+            eprintln!(
+                "   D3 captured : build(tok1)={d3_build_ms:8.2}  capture-build(tok2)={d3_capture_ms:8.2}"
+            );
+            eprintln!(
+                "   D3 captured : replay(tok 3..N) median={d3_median_replay:8.2}  mean={d3_mean_replay:8.2}   [min {d3_min_replay:.2}, max {d3_max_replay:.2}]"
+            );
         } else if run_d2 && cache_dtype != DType::F32 {
-            eprintln!("   D3 captured : skipped (capture is f32-only; cache dtype {cache_dtype:?})");
+            eprintln!(
+                "   D3 captured : skipped (capture is f32-only; cache dtype {cache_dtype:?})"
+            );
         }
         eprintln!("------------------------------------------------------------");
         if n1 > 0 && n2 > 1 {
@@ -18217,23 +20836,32 @@ mod generate_tests {
         eprintln!(" D1 greedy tokens ({n1}): {d1_tokens:?}");
         eprintln!(" D2 greedy tokens ({n2}): {d2_tokens:?}");
         if run_d1 && run_d2 {
-            eprintln!(" byte-exact D1 vs D2 (over {cmp} tokens): tokens_match={tokens_match}  \
-                       logits_bit_exact={logits_bit_exact}  max_abs_logit_diff={max_abs_diff:.3e}");
+            eprintln!(
+                " byte-exact D1 vs D2 (over {cmp} tokens): tokens_match={tokens_match}  \
+                       logits_bit_exact={logits_bit_exact}  max_abs_logit_diff={max_abs_diff:.3e}"
+            );
         } else {
-            eprintln!(" byte-exact D1 vs D2: n/a (single-path run — compare the token \
-                       sequences across processes)");
+            eprintln!(
+                " byte-exact D1 vs D2: n/a (single-path run — compare the token \
+                       sequences across processes)"
+            );
         }
         if run_d3 {
             eprintln!(" D3 greedy tokens ({n3}): {d3_tokens:?}");
-            eprintln!(" byte-exact D2 vs D3 (over {cmp23} tokens): tokens_match={d3_tokens_match}  \
-                       logits_bit_exact={d3_logits_bit_exact}  (captured replay must equal plan-once)");
+            eprintln!(
+                " byte-exact D2 vs D3 (over {cmp23} tokens): tokens_match={d3_tokens_match}  \
+                       logits_bit_exact={d3_logits_bit_exact}  (captured replay must equal plan-once)"
+            );
         }
         eprintln!("============================================================\n");
 
         // Sanity (not perf) assertions — these SHOULD hold and catch a
         // broken persistent path even in this ignored bench.
         if run_d1 && run_d2 {
-            assert!(tokens_match, "D1 and D2 must generate the same greedy token sequence");
+            assert!(
+                tokens_match,
+                "D1 and D2 must generate the same greedy token sequence"
+            );
         }
         if run_d2 {
             assert_eq!(
@@ -18260,14 +20888,23 @@ mod generate_tests {
     #[test]
     #[ignore = "real-model wall-clock bench — needs FUEL_BENCH_MODEL_DIR + a multi-GB checkpoint"]
     fn bench_persistent_decode_real_model_cpu() {
-        let n = std::env::var("FUEL_BENCH_N").ok()
+        let n = std::env::var("FUEL_BENCH_N")
+            .ok()
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(12);
         let (model, load_secs) = match load_real_llama(true) {
             Some(m) => m,
             None => return,
         };
-        run_persistent_decode_bench(&model, &Device::cpu(), "CPU", load_secs, n, None, DType::F32);
+        run_persistent_decode_bench(
+            &model,
+            &Device::cpu(),
+            "CPU",
+            load_secs,
+            n,
+            None,
+            DType::F32,
+        );
     }
 
     /// Vulkan (live-GPU) persistent-decode wall-clock benchmark on
@@ -18278,7 +20915,8 @@ mod generate_tests {
     #[ignore = "live-GPU wall-clock bench — needs FUEL_BENCH_MODEL_DIR + a Vulkan device"]
     fn bench_persistent_decode_real_model_vulkan() {
         use fuel_vulkan_backend::{DeviceSelection, VulkanBackend};
-        let n = std::env::var("FUEL_BENCH_N").ok()
+        let n = std::env::var("FUEL_BENCH_N")
+            .ok()
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(48);
         // Keep the checkpoint's native BF16 projections: the D1 replan
@@ -18310,7 +20948,13 @@ mod generate_tests {
             }
         };
         run_persistent_decode_bench(
-            &model, &vk_device, "Vulkan (RTX 4070)", load_secs, n, Some(&drain), DType::F32,
+            &model,
+            &vk_device,
+            "Vulkan (RTX 4070)",
+            load_secs,
+            n,
+            Some(&drain),
+            DType::F32,
         );
     }
 
@@ -18342,7 +20986,8 @@ mod generate_tests {
     #[cfg(feature = "cuda")]
     #[ignore = "live-GPU wall-clock bench — needs FUEL_BENCH_MODEL_DIR + a CUDA device"]
     fn bench_persistent_decode_real_model_cuda() {
-        let n = std::env::var("FUEL_BENCH_N").ok()
+        let n = std::env::var("FUEL_BENCH_N")
+            .ok()
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(16);
         // Force F32 weights — the CUDA MatMul family is homogeneous-key
@@ -18359,7 +21004,13 @@ mod generate_tests {
             }
         };
         run_persistent_decode_bench(
-            &model, &cuda_device, "CUDA (RTX 4070)", load_secs, n, None, DType::F32,
+            &model,
+            &cuda_device,
+            "CUDA (RTX 4070)",
+            load_secs,
+            n,
+            None,
+            DType::F32,
         );
     }
 
@@ -18385,7 +21036,8 @@ mod generate_tests {
     #[cfg(feature = "cuda")]
     #[ignore = "live-GPU wall-clock bench — needs FUEL_BENCH_MODEL_DIR + a CUDA device"]
     fn bench_persistent_decode_real_model_cuda_bf16() {
-        let n = std::env::var("FUEL_BENCH_N").ok()
+        let n = std::env::var("FUEL_BENCH_N")
+            .ok()
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(16);
         // Keep native BF16 weights — BF16 activations need BF16 weights
@@ -18402,7 +21054,12 @@ mod generate_tests {
             }
         };
         run_persistent_decode_bench(
-            &model, &cuda_device, "CUDA (RTX 4070) BF16-throughout", load_secs, n, None,
+            &model,
+            &cuda_device,
+            "CUDA (RTX 4070) BF16-throughout",
+            load_secs,
+            n,
+            None,
             DType::BF16,
         );
     }
@@ -18424,11 +21081,24 @@ mod generate_tests {
     #[test]
     fn generate_persistent_is_concurrency_isolated() {
         let cfg = LlamaConfig {
-            vocab_size: 16, dim: 8, n_layers: 2, n_heads: 4, n_kv_heads: 2,
-            head_dim: 4, ffn_dim: 16, norm_eps: 1e-5, rope_base: 10000.0,
+            vocab_size: 16,
+            dim: 8,
+            n_layers: 2,
+            n_heads: 4,
+            n_kv_heads: 2,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
-        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
-        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let cfg = LlamaConfig {
+            dim: cfg.n_heads * cfg.head_dim,
+            ..cfg
+        };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
 
         let prompt = [1_u32, 2, 3];
         let max_new = 6usize;
@@ -18436,7 +21106,12 @@ mod generate_tests {
         // Single-threaded greedy reference (through the wired persistent path).
         let reference = model
             .generate_with_kv_context(
-                &prompt, max_new, SamplingStrategy::Greedy, None, &Device::cpu(), DType::F32,
+                &prompt,
+                max_new,
+                SamplingStrategy::Greedy,
+                None,
+                &Device::cpu(),
+                DType::F32,
             )
             .expect("reference generation");
 
@@ -18449,8 +21124,12 @@ mod generate_tests {
                     s.spawn(|| {
                         model
                             .generate_with_kv_context(
-                                &prompt, max_new, SamplingStrategy::Greedy, None,
-                                &Device::cpu(), DType::F32,
+                                &prompt,
+                                max_new,
+                                SamplingStrategy::Greedy,
+                                None,
+                                &Device::cpu(),
+                                DType::F32,
                             )
                             .expect("concurrent generation")
                     })
@@ -18477,18 +21156,37 @@ mod generate_tests {
     #[test]
     fn forward_with_kv_context_persistent_invalidates_on_non_decode_step() {
         let cfg = LlamaConfig {
-            vocab_size: 16, dim: 8, n_layers: 2, n_heads: 4, n_kv_heads: 2,
-            head_dim: 4, ffn_dim: 16, norm_eps: 1e-5, rope_base: 10000.0,
+            vocab_size: 16,
+            dim: 8,
+            n_layers: 2,
+            n_heads: 4,
+            n_kv_heads: 2,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
-        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
-        let model = LlamaModel { config: cfg.clone(), weights: make_tiny_weights(&cfg) };
+        let cfg = LlamaConfig {
+            dim: cfg.n_heads * cfg.head_dim,
+            ..cfg
+        };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights: make_tiny_weights(&cfg),
+        };
 
         let prompt = [1_u32, 2];
         let max_seq_len = 8;
         let device = Device::cpu();
         let mut cache = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &device,
-        ).expect("with_capacity");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &device,
+        )
+        .expect("with_capacity");
         let mut ctx = InferenceContext::new(device);
         let mut session: Option<crate::inference_context::DecodeSession> = None;
 
@@ -18528,7 +21226,10 @@ mod generate_tests {
         let d2 = model
             .forward_with_kv_context_persistent(&[6], &mut cache, &mut ctx, &mut session)
             .expect("decode after fallback");
-        assert!(session.is_some(), "session rebuilt on the next decode token");
+        assert!(
+            session.is_some(),
+            "session rebuilt on the next decode token"
+        );
         let graph_ptr_2 = Arc::as_ptr(session.as_ref().unwrap().graph());
         assert!(
             graph_ptr_1 != graph_ptr_2,
@@ -18538,13 +21239,27 @@ mod generate_tests {
 
         // Byte-exact vs. a fresh D1 run over the identical token history.
         let mut cache_ref = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, max_seq_len, DType::F32, &Device::cpu(),
-        ).expect("with_capacity ref");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &Device::cpu(),
+        )
+        .expect("with_capacity ref");
         let mut ctx_ref = InferenceContext::new(Device::cpu());
-        let _ = model.forward_with_kv_context(&prompt, &mut cache_ref, &mut ctx_ref).unwrap();
-        let _ = model.forward_with_kv_context(&[3], &mut cache_ref, &mut ctx_ref).unwrap();
-        let _ = model.forward_with_kv_context(&[4, 5], &mut cache_ref, &mut ctx_ref).unwrap();
-        let d1 = model.forward_with_kv_context(&[6], &mut cache_ref, &mut ctx_ref).unwrap();
+        let _ = model
+            .forward_with_kv_context(&prompt, &mut cache_ref, &mut ctx_ref)
+            .unwrap();
+        let _ = model
+            .forward_with_kv_context(&[3], &mut cache_ref, &mut ctx_ref)
+            .unwrap();
+        let _ = model
+            .forward_with_kv_context(&[4, 5], &mut cache_ref, &mut ctx_ref)
+            .unwrap();
+        let d1 = model
+            .forward_with_kv_context(&[6], &mut cache_ref, &mut ctx_ref)
+            .unwrap();
         assert_eq!(d2, d1, "post-fallback decode must match the D1 cached path");
     }
 
@@ -18558,18 +21273,21 @@ mod generate_tests {
     fn forward_with_kv_context_prefill_matches_non_cached_forward() {
         let cfg = LlamaConfig {
             vocab_size: 16,
-            dim:        8,
-            n_layers:   2,
-            n_heads:    4,
+            dim: 8,
+            n_layers: 2,
+            n_heads: 4,
             n_kv_heads: 2,
-            head_dim:   4,
-            ffn_dim:    16,
-            norm_eps:   1e-5,
-            rope_base:  10000.0,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
-        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
+        let cfg = LlamaConfig {
+            dim: cfg.n_heads * cfg.head_dim,
+            ..cfg
+        };
         let model = LlamaModel {
-            config:  cfg.clone(),
+            config: cfg.clone(),
             weights: make_tiny_weights(&cfg),
         };
 
@@ -18579,18 +21297,23 @@ mod generate_tests {
         let full_logits = model.forward(&prompt, 0).unwrap();
         let last_pos = prompt.len() - 1;
         let expected = full_logits
-            .slice(1, last_pos, 1).unwrap()
-            .reshape(Shape::from_dims(&[cfg.vocab_size])).unwrap()
+            .slice(1, last_pos, 1)
+            .unwrap()
+            .reshape(Shape::from_dims(&[cfg.vocab_size]))
+            .unwrap()
             .realize_f32();
 
         // New path, single prefill call.
         let device = Device::cpu();
         let mut cache = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim,
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
             prompt.len(),
             DType::F32,
             &device,
-        ).expect("with_capacity");
+        )
+        .expect("with_capacity");
         let mut ctx = InferenceContext::new(device);
         let actual = model
             .forward_with_kv_context(&prompt, &mut cache, &mut ctx)
@@ -18619,8 +21342,15 @@ mod generate_tests {
     #[test]
     fn forward_with_kv_context_rejects_with_dims_cache() {
         let cfg = LlamaConfig {
-            vocab_size: 4, dim: 4, n_layers: 1, n_heads: 2, n_kv_heads: 2,
-            head_dim: 2, ffn_dim: 4, norm_eps: 1e-5, rope_base: 10000.0,
+            vocab_size: 4,
+            dim: 4,
+            n_layers: 1,
+            n_heads: 2,
+            n_kv_heads: 2,
+            head_dim: 2,
+            ffn_dim: 4,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
         let model = LlamaModel {
             config: cfg.clone(),
@@ -18643,8 +21373,15 @@ mod generate_tests {
     #[test]
     fn forward_with_kv_context_rejects_overflow() {
         let cfg = LlamaConfig {
-            vocab_size: 4, dim: 4, n_layers: 1, n_heads: 2, n_kv_heads: 2,
-            head_dim: 2, ffn_dim: 4, norm_eps: 1e-5, rope_base: 10000.0,
+            vocab_size: 4,
+            dim: 4,
+            n_layers: 1,
+            n_heads: 2,
+            n_kv_heads: 2,
+            head_dim: 2,
+            ffn_dim: 4,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
         let model = LlamaModel {
             config: cfg.clone(),
@@ -18652,9 +21389,14 @@ mod generate_tests {
         };
         let device = Device::cpu();
         let mut cache = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim,
-            /*max_seq_len*/ 2, DType::F32, &device,
-        ).unwrap();
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            /*max_seq_len*/ 2,
+            DType::F32,
+            &device,
+        )
+        .unwrap();
         let mut ctx = InferenceContext::new(device);
 
         // 3 tokens into a cache with max_seq_len=2 → overflow.
@@ -18673,8 +21415,15 @@ mod generate_tests {
     #[test]
     fn forward_with_kv_context_does_not_leak_context_entries() {
         let cfg = LlamaConfig {
-            vocab_size: 4, dim: 4, n_layers: 1, n_heads: 2, n_kv_heads: 2,
-            head_dim: 2, ffn_dim: 4, norm_eps: 1e-5, rope_base: 10000.0,
+            vocab_size: 4,
+            dim: 4,
+            n_layers: 1,
+            n_heads: 2,
+            n_kv_heads: 2,
+            head_dim: 2,
+            ffn_dim: 4,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
         let model = LlamaModel {
             config: cfg.clone(),
@@ -18682,16 +21431,29 @@ mod generate_tests {
         };
         let device = Device::cpu();
         let mut cache = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim,
-            4, DType::F32, &device,
-        ).unwrap();
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            4,
+            DType::F32,
+            &device,
+        )
+        .unwrap();
         let mut ctx = InferenceContext::new(device);
 
         assert_eq!(ctx.len(), 0);
-        model.forward_with_kv_context(&[1_u32, 2], &mut cache, &mut ctx).unwrap();
+        model
+            .forward_with_kv_context(&[1_u32, 2], &mut cache, &mut ctx)
+            .unwrap();
         assert_eq!(ctx.len(), 0, "ctx.persistent should be empty after forward");
-        model.forward_with_kv_context(&[3_u32], &mut cache, &mut ctx).unwrap();
-        assert_eq!(ctx.len(), 0, "ctx.persistent should stay empty across steps");
+        model
+            .forward_with_kv_context(&[3_u32], &mut cache, &mut ctx)
+            .unwrap();
+        assert_eq!(
+            ctx.len(),
+            0,
+            "ctx.persistent should stay empty across steps"
+        );
     }
 
     /// Vulkan parity: prefill+decode through `forward_with_kv_context`
@@ -18741,18 +21503,21 @@ mod generate_tests {
 
         let cfg = LlamaConfig {
             vocab_size: 16,
-            dim:        8,
-            n_layers:   2,
-            n_heads:    4,
+            dim: 8,
+            n_layers: 2,
+            n_heads: 4,
             n_kv_heads: 2,
-            head_dim:   4,
-            ffn_dim:    16,
-            norm_eps:   1e-5,
-            rope_base:  10000.0,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
-        let cfg = LlamaConfig { dim: cfg.n_heads * cfg.head_dim, ..cfg };
+        let cfg = LlamaConfig {
+            dim: cfg.n_heads * cfg.head_dim,
+            ..cfg
+        };
         let model = LlamaModel {
-            config:  cfg.clone(),
+            config: cfg.clone(),
             weights: make_tiny_weights(&cfg),
         };
 
@@ -18763,11 +21528,17 @@ mod generate_tests {
         // CPU reference.
         let cpu_device = Device::cpu();
         let mut cpu_cache = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim,
-            max_seq_len, DType::F32, &cpu_device,
-        ).expect("cpu with_capacity");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &cpu_device,
+        )
+        .expect("cpu with_capacity");
         let mut cpu_ctx = InferenceContext::new(cpu_device);
-        model.forward_with_kv_context(&prompt, &mut cpu_cache, &mut cpu_ctx)
+        model
+            .forward_with_kv_context(&prompt, &mut cpu_cache, &mut cpu_ctx)
             .expect("cpu prefill");
         let expected = model
             .forward_with_kv_context(&[next_token], &mut cpu_cache, &mut cpu_ctx)
@@ -18775,11 +21546,17 @@ mod generate_tests {
 
         // Vulkan path through the new Device wiring.
         let mut vk_cache = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim,
-            max_seq_len, DType::F32, &vk_device,
-        ).expect("vulkan with_capacity");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &vk_device,
+        )
+        .expect("vulkan with_capacity");
         let mut vk_ctx = InferenceContext::new(vk_device);
-        model.forward_with_kv_context(&prompt, &mut vk_cache, &mut vk_ctx)
+        model
+            .forward_with_kv_context(&prompt, &mut vk_cache, &mut vk_ctx)
             .expect("vulkan prefill");
         let actual = model
             .forward_with_kv_context(&[next_token], &mut vk_cache, &mut vk_ctx)
@@ -18808,17 +21585,17 @@ mod generate_tests {
     fn forward_with_kv_context_all_positions_last_row_matches_last_only() {
         let cfg = LlamaConfig {
             vocab_size: 16,
-            dim:        8,
-            n_layers:   2,
-            n_heads:    2,
+            dim: 8,
+            n_layers: 2,
+            n_heads: 2,
             n_kv_heads: 2,
-            head_dim:   4,
-            ffn_dim:    16,
-            norm_eps:   1e-5,
-            rope_base:  10000.0,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
         let model = LlamaModel {
-            config:  cfg.clone(),
+            config: cfg.clone(),
             weights: make_tiny_weights(&cfg),
         };
         let tokens = [1_u32, 2, 3, 4, 5];
@@ -18826,9 +21603,14 @@ mod generate_tests {
 
         // Path A: regular last-only forward.
         let mut cache_a = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim,
-            tokens.len(), DType::F32, &device,
-        ).expect("cache_a");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            tokens.len(),
+            DType::F32,
+            &device,
+        )
+        .expect("cache_a");
         let mut ctx_a = InferenceContext::new(device.clone());
         let last_only = model
             .forward_with_kv_context(&tokens, &mut cache_a, &mut ctx_a)
@@ -18837,9 +21619,14 @@ mod generate_tests {
 
         // Path B: all-positions forward.
         let mut cache_b = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim,
-            tokens.len(), DType::F32, &device,
-        ).expect("cache_b");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            tokens.len(),
+            DType::F32,
+            &device,
+        )
+        .expect("cache_b");
         let mut ctx_b = InferenceContext::new(device.clone());
         let all = model
             .forward_with_kv_context_all_positions(&tokens, &mut cache_b, &mut ctx_b)
@@ -18848,7 +21635,7 @@ mod generate_tests {
 
         // Last row of `all` must match last_only.
         let last_pos = tokens.len() - 1;
-        let all_last = &all[last_pos * cfg.vocab_size .. (last_pos + 1) * cfg.vocab_size];
+        let all_last = &all[last_pos * cfg.vocab_size..(last_pos + 1) * cfg.vocab_size];
         for (i, (a, b)) in all_last.iter().zip(last_only.iter()).enumerate() {
             assert!(
                 (a - b).abs() < 1e-4,
@@ -18871,28 +21658,38 @@ mod generate_tests {
     fn kv_cache_truncate_then_redecode_matches_uninterrupted_decode() {
         let cfg = LlamaConfig {
             vocab_size: 16,
-            dim:        8,
-            n_layers:   2,
-            n_heads:    2,
+            dim: 8,
+            n_layers: 2,
+            n_heads: 2,
             n_kv_heads: 2,
-            head_dim:   4,
-            ffn_dim:    16,
-            norm_eps:   1e-5,
-            rope_base:  10000.0,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
         let model = LlamaModel {
-            config:  cfg.clone(),
+            config: cfg.clone(),
             weights: make_tiny_weights(&cfg),
         };
         let device = Device::cpu();
 
         // Path A (reference): prefill [3,7,1] then decode 9 then 2.
         let mut cache_a = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, 5, DType::F32, &device,
-        ).expect("cache_a");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            5,
+            DType::F32,
+            &device,
+        )
+        .expect("cache_a");
         let mut ctx_a = InferenceContext::new(device.clone());
-        model.forward_with_kv_context(&[3, 7, 1], &mut cache_a, &mut ctx_a).expect("prefill A");
-        model.forward_with_kv_context(&[9], &mut cache_a, &mut ctx_a).expect("decode A1");
+        model
+            .forward_with_kv_context(&[3, 7, 1], &mut cache_a, &mut ctx_a)
+            .expect("prefill A");
+        model
+            .forward_with_kv_context(&[9], &mut cache_a, &mut ctx_a)
+            .expect("decode A1");
         let expected = model
             .forward_with_kv_context(&[2], &mut cache_a, &mut ctx_a)
             .expect("decode A2");
@@ -18901,11 +21698,21 @@ mod generate_tests {
         // position 3, roll it back, then decode [9, 2] through the
         // same positions in one step.
         let mut cache_b = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_kv_heads, cfg.head_dim, 5, DType::F32, &device,
-        ).expect("cache_b");
+            cfg.n_layers,
+            cfg.n_kv_heads,
+            cfg.head_dim,
+            5,
+            DType::F32,
+            &device,
+        )
+        .expect("cache_b");
         let mut ctx_b = InferenceContext::new(device.clone());
-        model.forward_with_kv_context(&[3, 7, 1], &mut cache_b, &mut ctx_b).expect("prefill B");
-        model.forward_with_kv_context(&[11], &mut cache_b, &mut ctx_b).expect("decode B wrong");
+        model
+            .forward_with_kv_context(&[3, 7, 1], &mut cache_b, &mut ctx_b)
+            .expect("prefill B");
+        model
+            .forward_with_kv_context(&[11], &mut cache_b, &mut ctx_b)
+            .expect("decode B wrong");
         assert_eq!(cache_b.cached_len, 4);
         cache_b.truncate_to(3);
         assert_eq!(cache_b.cached_len, 3);
@@ -18936,34 +21743,48 @@ mod generate_tests {
     fn spec_decode_kv_context_self_draft_matches_greedy_baseline() {
         let cfg = LlamaConfig {
             vocab_size: 16,
-            dim:        8,
-            n_layers:   2,
-            n_heads:    2,
+            dim: 8,
+            n_layers: 2,
+            n_heads: 2,
             n_kv_heads: 2,
-            head_dim:   4,
-            ffn_dim:    16,
-            norm_eps:   1e-5,
-            rope_base:  10000.0,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
         let model = LlamaModel {
-            config:  cfg.clone(),
+            config: cfg.clone(),
             weights: make_tiny_weights(&cfg),
         };
         let prompt = [3_u32, 7, 1];
         let max_new = 8;
         let device = Device::cpu();
 
-        let baseline = model.generate_with_kv_context(
-            &prompt, max_new, SamplingStrategy::Greedy, None,
-            &device, DType::F32,
-        ).expect("baseline generate");
+        let baseline = model
+            .generate_with_kv_context(
+                &prompt,
+                max_new,
+                SamplingStrategy::Greedy,
+                None,
+                &device,
+                DType::F32,
+            )
+            .expect("baseline generate");
 
         for k in [2_usize, 4] {
-            let spec_out = model.generate_streaming_spec_with_kv_context(
-                &model, &prompt, max_new, k,
-                SamplingStrategy::Greedy, None,
-                &device, DType::F32, |_| {},
-            ).expect("spec generate");
+            let spec_out = model
+                .generate_streaming_spec_with_kv_context(
+                    &model,
+                    &prompt,
+                    max_new,
+                    k,
+                    SamplingStrategy::Greedy,
+                    None,
+                    &device,
+                    DType::F32,
+                    |_| {},
+                )
+                .expect("spec generate");
             assert_eq!(
                 spec_out, baseline,
                 "K={k}: spec-decode must match baseline when draft == target",
@@ -18989,38 +21810,52 @@ mod generate_tests {
     fn spec_decode_kv_context_divergent_draft_matches_greedy_baseline() {
         let cfg = LlamaConfig {
             vocab_size: 16,
-            dim:        8,
-            n_layers:   2,
-            n_heads:    2,
+            dim: 8,
+            n_layers: 2,
+            n_heads: 2,
             n_kv_heads: 2,
-            head_dim:   4,
-            ffn_dim:    16,
-            norm_eps:   1e-5,
-            rope_base:  10000.0,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
         let target = LlamaModel {
-            config:  cfg.clone(),
+            config: cfg.clone(),
             weights: make_tiny_weights_seeded(&cfg, 9999),
         };
         let draft = LlamaModel {
-            config:  cfg.clone(),
+            config: cfg.clone(),
             weights: make_tiny_weights_seeded(&cfg, 4242),
         };
         let prompt = [3_u32, 7, 1];
         let max_new = 8;
         let device = Device::cpu();
 
-        let baseline = target.generate_with_kv_context(
-            &prompt, max_new, SamplingStrategy::Greedy, None,
-            &device, DType::F32,
-        ).expect("baseline generate");
+        let baseline = target
+            .generate_with_kv_context(
+                &prompt,
+                max_new,
+                SamplingStrategy::Greedy,
+                None,
+                &device,
+                DType::F32,
+            )
+            .expect("baseline generate");
 
         for k in [1_usize, 2, 4] {
-            let spec_out = target.generate_streaming_spec_with_kv_context(
-                &draft, &prompt, max_new, k,
-                SamplingStrategy::Greedy, None,
-                &device, DType::F32, |_| {},
-            ).expect("spec generate");
+            let spec_out = target
+                .generate_streaming_spec_with_kv_context(
+                    &draft,
+                    &prompt,
+                    max_new,
+                    k,
+                    SamplingStrategy::Greedy,
+                    None,
+                    &device,
+                    DType::F32,
+                    |_| {},
+                )
+                .expect("spec generate");
             assert_eq!(
                 spec_out, baseline,
                 "K={k}: greedy spec-decode must be lossless for a divergent draft",
@@ -19039,17 +21874,17 @@ mod generate_tests {
     fn spec_decode_kv_context_sampled_self_draft_produces_valid_tokens() {
         let cfg = LlamaConfig {
             vocab_size: 16,
-            dim:        8,
-            n_layers:   2,
-            n_heads:    2,
+            dim: 8,
+            n_layers: 2,
+            n_heads: 2,
             n_kv_heads: 2,
-            head_dim:   4,
-            ffn_dim:    16,
-            norm_eps:   1e-5,
-            rope_base:  10000.0,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
         let model = LlamaModel {
-            config:  cfg.clone(),
+            config: cfg.clone(),
             weights: make_tiny_weights(&cfg),
         };
         let prompt = [3_u32, 7, 1];
@@ -19057,21 +21892,38 @@ mod generate_tests {
         let device = Device::cpu();
 
         for k in [2_usize, 4] {
-            let out = model.generate_streaming_spec_with_kv_context(
-                &model, &prompt, max_new, k,
-                SamplingStrategy::Temperature { temp: 0.8, seed: 42 },
-                None,
-                &device, DType::F32, |_| {},
-            ).expect("spec sampled generate");
+            let out = model
+                .generate_streaming_spec_with_kv_context(
+                    &model,
+                    &prompt,
+                    max_new,
+                    k,
+                    SamplingStrategy::Temperature {
+                        temp: 0.8,
+                        seed: 42,
+                    },
+                    None,
+                    &device,
+                    DType::F32,
+                    |_| {},
+                )
+                .expect("spec sampled generate");
 
             // The emit loop returns the moment `emitted == max_new`,
             // so the output is exactly prompt + max_new tokens.
-            assert_eq!(out.len(), prompt.len() + max_new,
+            assert_eq!(
+                out.len(),
+                prompt.len() + max_new,
                 "K={k}: expected {} tokens, got {}",
-                prompt.len() + max_new, out.len());
+                prompt.len() + max_new,
+                out.len()
+            );
             assert_eq!(&out[..prompt.len()], &prompt);
             for &t in &out {
-                assert!((t as usize) < cfg.vocab_size, "K={k}: token {t} out of vocab");
+                assert!(
+                    (t as usize) < cfg.vocab_size,
+                    "K={k}: token {t} out of vocab"
+                );
             }
         }
     }
@@ -19087,7 +21939,11 @@ mod generate_tests {
             let idx = sample_multinomial(&probs, &mut state) as usize;
             counts[idx] += 1;
         }
-        assert!(counts[0] > 900, "expected ≥900 samples on index 0, got {}", counts[0]);
+        assert!(
+            counts[0] > 900,
+            "expected ≥900 samples on index 0, got {}",
+            counts[0]
+        );
     }
 
     // ===== Phase 7.6 step 9c E.3.4 — legacy spec-decode tests retired =====
@@ -19168,13 +22024,13 @@ mod phi_kv_context_tests {
     fn tiny_cfg() -> PhiConfig {
         PhiConfig {
             vocab_size: 16,
-            dim:        8,
-            n_layers:   2,
-            n_heads:    2,
-            head_dim:   4,
-            ffn_dim:    16,
+            dim: 8,
+            n_layers: 2,
+            n_heads: 2,
+            head_dim: 4,
+            ffn_dim: 16,
             layer_norm_eps: 1e-5,
-            rope_base:  10000.0,
+            rope_base: 10000.0,
             partial_rotary_factor: 0.5,
             rotary_dim: 2,
             tie_word_embeddings: false,
@@ -19190,7 +22046,7 @@ mod phi_kv_context_tests {
     fn phi_kv_context_decode_consistent_with_monolithic_prefill() {
         let cfg = tiny_cfg();
         let model = PhiModel {
-            config:  cfg.clone(),
+            config: cfg.clone(),
             weights: make_tiny_phi(&cfg, 7777),
         };
         let tokens = [1_u32, 5, 9, 12];
@@ -19198,9 +22054,14 @@ mod phi_kv_context_tests {
 
         // Path A: monolithic prefill over all 4 tokens.
         let mut cache_a = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_heads, cfg.head_dim,
-            tokens.len(), DType::F32, &device,
-        ).expect("cache_a");
+            cfg.n_layers,
+            cfg.n_heads,
+            cfg.head_dim,
+            tokens.len(),
+            DType::F32,
+            &device,
+        )
+        .expect("cache_a");
         let mut ctx_a = InferenceContext::new(device.clone());
         let expected = model
             .forward_with_kv_context(&tokens, &mut cache_a, &mut ctx_a)
@@ -19208,9 +22069,14 @@ mod phi_kv_context_tests {
 
         // Path B: prefill 3, decode 1.
         let mut cache_b = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_heads, cfg.head_dim,
-            tokens.len(), DType::F32, &device,
-        ).expect("cache_b");
+            cfg.n_layers,
+            cfg.n_heads,
+            cfg.head_dim,
+            tokens.len(),
+            DType::F32,
+            &device,
+        )
+        .expect("cache_b");
         let mut ctx_b = InferenceContext::new(device.clone());
         model
             .forward_with_kv_context(&tokens[..3], &mut cache_b, &mut ctx_b)
@@ -19240,7 +22106,7 @@ mod phi_kv_context_tests {
     fn phi_generate_with_kv_context_greedy_is_deterministic() {
         let cfg = tiny_cfg();
         let model = PhiModel {
-            config:  cfg.clone(),
+            config: cfg.clone(),
             weights: make_tiny_phi(&cfg, 7777),
         };
         let prompt = [1_u32, 5, 9];
@@ -19248,19 +22114,36 @@ mod phi_kv_context_tests {
         let device = Device::cpu();
 
         let mut streamed = Vec::new();
-        let run_a = model.generate_streaming_with_kv_context(
-            &prompt, max_new, SamplingStrategy::Greedy, None,
-            &device, DType::F32, |t| streamed.push(t),
-        ).expect("run a");
-        let run_b = model.generate_with_kv_context(
-            &prompt, max_new, SamplingStrategy::Greedy, None,
-            &device, DType::F32,
-        ).expect("run b");
+        let run_a = model
+            .generate_streaming_with_kv_context(
+                &prompt,
+                max_new,
+                SamplingStrategy::Greedy,
+                None,
+                &device,
+                DType::F32,
+                |t| streamed.push(t),
+            )
+            .expect("run a");
+        let run_b = model
+            .generate_with_kv_context(
+                &prompt,
+                max_new,
+                SamplingStrategy::Greedy,
+                None,
+                &device,
+                DType::F32,
+            )
+            .expect("run b");
 
         assert_eq!(run_a, run_b, "greedy generation must be deterministic");
         assert_eq!(run_a.len(), prompt.len() + max_new);
         assert_eq!(&run_a[..prompt.len()], &prompt);
-        assert_eq!(streamed, &run_a[prompt.len()..], "callback sees exactly the new tokens");
+        assert_eq!(
+            streamed,
+            &run_a[prompt.len()..],
+            "callback sees exactly the new tokens"
+        );
         for &t in &run_a {
             assert!((t as usize) < cfg.vocab_size, "token {t} out of vocab");
         }
@@ -19273,7 +22156,7 @@ mod phi_kv_context_tests {
     fn phi_forward_with_kv_context_rejects_invalid_cache() {
         let cfg = tiny_cfg();
         let model = PhiModel {
-            config:  cfg.clone(),
+            config: cfg.clone(),
             weights: make_tiny_phi(&cfg, 7777),
         };
         let device = Device::cpu();
@@ -19288,8 +22171,14 @@ mod phi_kv_context_tests {
 
         // Capacity overflow → typed error.
         let mut small_cache = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_heads, cfg.head_dim, 2, DType::F32, &device,
-        ).expect("small cache");
+            cfg.n_layers,
+            cfg.n_heads,
+            cfg.head_dim,
+            2,
+            DType::F32,
+            &device,
+        )
+        .expect("small cache");
         model
             .forward_with_kv_context(&[1, 2], &mut small_cache, &mut ctx)
             .expect("fits exactly");
@@ -19321,7 +22210,10 @@ mod phi_kv_context_tests {
     #[test]
     fn phi_decode_matches_non_cached_forward() {
         let cfg = tiny_cfg(); // partial RoPE (rotary_dim=2, head_dim=4)
-        let model = PhiModel { config: cfg.clone(), weights: make_tiny_phi(&cfg, 7777) };
+        let model = PhiModel {
+            config: cfg.clone(),
+            weights: make_tiny_phi(&cfg, 7777),
+        };
 
         let prompt = [1_u32, 5, 9];
         let next_token = 12_u32;
@@ -19330,8 +22222,14 @@ mod phi_kv_context_tests {
 
         // Reference: monolithic prefill over all 4 tokens.
         let mut cache_ref = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_heads, cfg.head_dim, full.len(), DType::F32, &device,
-        ).expect("with_capacity ref");
+            cfg.n_layers,
+            cfg.n_heads,
+            cfg.head_dim,
+            full.len(),
+            DType::F32,
+            &device,
+        )
+        .expect("with_capacity ref");
         let mut ctx_ref = InferenceContext::new(device.clone());
         let expected = model
             .forward_with_kv_context(&full, &mut cache_ref, &mut ctx_ref)
@@ -19340,8 +22238,14 @@ mod phi_kv_context_tests {
         // Input-independent path: prefill(3) then decode(1) through the
         // transformed apply_layer_with_kv_writes.
         let mut cache = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_heads, cfg.head_dim, full.len(), DType::F32, &device,
-        ).expect("with_capacity");
+            cfg.n_layers,
+            cfg.n_heads,
+            cfg.head_dim,
+            full.len(),
+            DType::F32,
+            &device,
+        )
+        .expect("with_capacity");
         let mut ctx = InferenceContext::new(device);
         let _prefill = model
             .forward_with_kv_context(&prompt, &mut cache, &mut ctx)
@@ -19388,8 +22292,14 @@ mod phi_kv_context_tests {
         let cfg = tiny_cfg(); // partial RoPE + parallel block + biases
         // Two byte-identical models (same seed): one drives the D2
         // persistent path, one the D1 rebuild path.
-        let model_d2 = PhiModel { config: cfg.clone(), weights: make_tiny_phi(&cfg, 7777) };
-        let model_d1 = PhiModel { config: cfg.clone(), weights: make_tiny_phi(&cfg, 7777) };
+        let model_d2 = PhiModel {
+            config: cfg.clone(),
+            weights: make_tiny_phi(&cfg, 7777),
+        };
+        let model_d1 = PhiModel {
+            config: cfg.clone(),
+            weights: make_tiny_phi(&cfg, 7777),
+        };
 
         let prompt = [1_u32, 5, 9];
         let decode_tokens = [12_u32, 3, 7, 2]; // ≥3 decode tokens
@@ -19400,8 +22310,14 @@ mod phi_kv_context_tests {
         // measure around the D2 loop. ---
         let dev1 = Device::cpu();
         let mut cache1 = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_heads, cfg.head_dim, max_seq_len, DType::F32, &dev1,
-        ).expect("with_capacity d1");
+            cfg.n_layers,
+            cfg.n_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &dev1,
+        )
+        .expect("with_capacity d1");
         let mut ctx1 = InferenceContext::new(dev1);
         let _ = model_d1
             .forward_with_kv_context(&prompt, &mut cache1, &mut ctx1)
@@ -19418,8 +22334,14 @@ mod phi_kv_context_tests {
         // --- D2 (persistent) session state ---
         let dev2 = Device::cpu();
         let mut cache2 = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_heads, cfg.head_dim, max_seq_len, DType::F32, &dev2,
-        ).expect("with_capacity d2");
+            cfg.n_layers,
+            cfg.n_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &dev2,
+        )
+        .expect("with_capacity d2");
         let mut ctx2 = InferenceContext::new(dev2);
         let mut session: Option<crate::inference_context::DecodeSession> = None;
 
@@ -19427,7 +22349,10 @@ mod phi_kv_context_tests {
         let _ = model_d2
             .forward_with_kv_context_persistent(&prompt, &mut cache2, &mut ctx2, &mut session)
             .expect("d2 prefill");
-        assert!(session.is_none(), "prefill (seq>1) must NOT build the held session");
+        assert!(
+            session.is_none(),
+            "prefill (seq>1) must NOT build the held session"
+        );
 
         // Decode ≥3 tokens through the persistent path ONLY. Snapshot the
         // thread-local optimize count just before the loop (isolated from
@@ -19446,14 +22371,17 @@ mod phi_kv_context_tests {
                 "persistent decode token {i} must be byte-identical to the D1 cached path",
             );
 
-            let sess = session.as_ref().expect("session built on first decode token");
+            let sess = session
+                .as_ref()
+                .expect("session built on first decode token");
             let graph_len = sess.graph_node_count();
             if i == 1 {
                 len_at_token2 = Some(graph_len);
             } else if i >= 2 {
                 // (c) node count stable from token 2 onward.
                 assert_eq!(
-                    Some(graph_len), len_at_token2,
+                    Some(graph_len),
+                    len_at_token2,
                     "held graph must NOT grow from token 2 onward (token {i})",
                 );
             }
@@ -19462,7 +22390,8 @@ mod phi_kv_context_tests {
         // (a) optimize bumped EXACTLY ONCE across all decode tokens.
         let opt_after = crate::pipelined_bridge::optimize_calls_thread_local();
         assert_eq!(
-            opt_after - opt_before, 1,
+            opt_after - opt_before,
+            1,
             "persistent decode must optimize EXACTLY ONCE across {} decode tokens \
              (the first builds the session; the rest skip optimize): {opt_before} -> {opt_after}",
             decode_tokens.len(),
@@ -19525,21 +22454,32 @@ mod phi_kv_context_tests {
     #[test]
     fn phi_attended_len_sym_is_unreferenced_negative_control() {
         let cfg = tiny_cfg();
-        let model = PhiModel { config: cfg.clone(), weights: make_tiny_phi(&cfg, 7777) };
+        let model = PhiModel {
+            config: cfg.clone(),
+            weights: make_tiny_phi(&cfg, 7777),
+        };
         let prompt = [1_u32, 5, 9];
         let max_seq_len = prompt.len() + 4;
 
         let dev = Device::cpu();
         let mut cache = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_heads, cfg.head_dim, max_seq_len, DType::F32, &dev,
-        ).expect("with_capacity");
+            cfg.n_layers,
+            cfg.n_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &dev,
+        )
+        .expect("with_capacity");
         let mut ctx = InferenceContext::new(dev.clone());
         let mut session: Option<crate::inference_context::DecodeSession> = None;
 
         // Prefill, then ONE decode token to BUILD the held session.
-        let _ = model.forward_with_kv_context_persistent(&prompt, &mut cache, &mut ctx, &mut session)
+        let _ = model
+            .forward_with_kv_context_persistent(&prompt, &mut cache, &mut ctx, &mut session)
             .expect("prefill");
-        let _ = model.forward_with_kv_context_persistent(&[12], &mut cache, &mut ctx, &mut session)
+        let _ = model
+            .forward_with_kv_context_persistent(&[12], &mut cache, &mut ctx, &mut session)
             .expect("build decode session");
         let s = session.as_ref().expect("session built");
 
@@ -19548,17 +22488,23 @@ mod phi_kv_context_tests {
         // three calls cannot pollute each other.
         let cached_len = cache.cached_len;
         let next = [3_u32];
-        let mk_data = || model
-            .build_token_rope_mask_arcs(&dev, cached_len, &next, s.max_seq_len())
-            .expect("token data");
+        let mk_data = || {
+            model
+                .build_token_rope_mask_arcs(&dev, cached_len, &next, s.max_seq_len())
+                .expect("token data")
+        };
 
         let mut env_ok = fuel_ir::SymEnv::new();
-        env_ok.bind(s.cached_len_sym(), cached_len).expect("bind cached_len");
+        env_ok
+            .bind(s.cached_len_sym(), cached_len)
+            .expect("bind cached_len");
         let baseline = s.realize_token(&dev, mk_data(), &env_ok).expect("baseline");
 
         // --- the measurement: attended_len bound to a WRONG value ---
         let mut env_bad_attended = fuel_ir::SymEnv::new();
-        env_bad_attended.bind(s.cached_len_sym(), cached_len).expect("bind cached_len");
+        env_bad_attended
+            .bind(s.cached_len_sym(), cached_len)
+            .expect("bind cached_len");
         env_bad_attended
             .bind(s.attended_len_sym(), cached_len + 4242)
             .expect("bind attended_len (wrong on purpose)");
@@ -19575,7 +22521,9 @@ mod phi_kv_context_tests {
             .build_token_rope_mask_arcs(&dev, cached_len, &other, s.max_seq_len())
             .expect("token data (different token)");
         let mut env_ok2 = fuel_ir::SymEnv::new();
-        env_ok2.bind(s.cached_len_sym(), cached_len).expect("bind cached_len");
+        env_ok2
+            .bind(s.cached_len_sym(), cached_len)
+            .expect("bind cached_len");
         let perturbed_data = s
             .realize_token(&dev, data_other, &env_ok2)
             .expect("realize with different token");
@@ -19648,7 +22596,10 @@ mod phi_kv_context_tests {
     #[test]
     fn phi_generate_loop_persistent_byte_exact_and_plans_once() {
         let cfg = tiny_cfg();
-        let model = PhiModel { config: cfg.clone(), weights: make_tiny_phi(&cfg, 7777) };
+        let model = PhiModel {
+            config: cfg.clone(),
+            weights: make_tiny_phi(&cfg, 7777),
+        };
 
         let prompt = [1_u32, 5, 9];
         let max_new = 5; // N ≥ 4 greedy decode tokens
@@ -19660,8 +22611,14 @@ mod phi_kv_context_tests {
         // the persistent loop's sampling. ----
         let dev1 = Device::cpu();
         let mut cache1 = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_heads, cfg.head_dim, max_seq_len, DType::F32, &dev1,
-        ).expect("with_capacity d1");
+            cfg.n_layers,
+            cfg.n_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &dev1,
+        )
+        .expect("with_capacity d1");
         let mut ctx1 = InferenceContext::new(dev1);
         let mut rng1: u64 = 0;
         let mut ref_tokens: Vec<u32> = prompt.to_vec();
@@ -19685,8 +22642,14 @@ mod phi_kv_context_tests {
 
         let dev2 = Device::cpu();
         let mut cache2 = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_heads, cfg.head_dim, max_seq_len, DType::F32, &dev2,
-        ).expect("with_capacity d2");
+            cfg.n_layers,
+            cfg.n_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &dev2,
+        )
+        .expect("with_capacity d2");
         let mut ctx2 = InferenceContext::new(dev2);
         let mut rng2: u64 = 0;
         let mut session: Option<crate::inference_context::DecodeSession> = None;
@@ -19695,7 +22658,10 @@ mod phi_kv_context_tests {
         let mut last2 = model
             .forward_with_kv_context_persistent(&prompt, &mut cache2, &mut ctx2, &mut session)
             .expect("d2 prefill");
-        assert!(session.is_none(), "prefill (seq>1) must NOT build the held session");
+        assert!(
+            session.is_none(),
+            "prefill (seq>1) must NOT build the held session"
+        );
         for _ in 0..max_new {
             let next = sample_logits(&last2, strategy, &mut rng2);
             d2_tokens.push(next);
@@ -19716,7 +22682,11 @@ mod phi_kv_context_tests {
 
         // (b) Each step's logits exactly == the D1 cached path (bit-exact).
         assert_eq!(d2_step_logits.len(), ref_step_logits.len());
-        for (i, (d2, d1)) in d2_step_logits.iter().zip(ref_step_logits.iter()).enumerate() {
+        for (i, (d2, d1)) in d2_step_logits
+            .iter()
+            .zip(ref_step_logits.iter())
+            .enumerate()
+        {
             assert_eq!(
                 d2, d1,
                 "persistent decode step {i} logits must be byte-identical to the D1 cached path",
@@ -19726,7 +22696,8 @@ mod phi_kv_context_tests {
         // (c) optimize bumped exactly twice (1 prefill fallback + 1
         // decode-session build) regardless of N.
         assert_eq!(
-            opt_after - opt_before, 2,
+            opt_after - opt_before,
+            2,
             "persistent generate must optimize EXACTLY twice (1 prefill fallback + 1 \
              decode-session build) regardless of N={max_new} decode tokens: \
              {opt_before} -> {opt_after}",
@@ -19737,9 +22708,9 @@ mod phi_kv_context_tests {
         assert_eq!(cache1.cached_len, max_seq_len);
 
         // ---- Drive the REAL production wrapper and confirm the wiring. ----
-        let via_wrapper = model.generate_with_kv_context(
-            &prompt, max_new, strategy, None, &Device::cpu(), DType::F32,
-        ).expect("generate_with_kv_context");
+        let via_wrapper = model
+            .generate_with_kv_context(&prompt, max_new, strategy, None, &Device::cpu(), DType::F32)
+            .expect("generate_with_kv_context");
         assert_eq!(
             via_wrapper, ref_tokens,
             "generate_with_kv_context (wired to the persistent path) must produce the \
@@ -19775,12 +22746,20 @@ mod phi_kv_context_tests {
                 return;
             }
         };
-        let model = PhiModel { config: cfg.clone(), weights: make_tiny_phi(&cfg, 7) };
+        let model = PhiModel {
+            config: cfg.clone(),
+            weights: make_tiny_phi(&cfg, 7),
+        };
         let prompt = [1_u32, 2, 3];
         let max_seq_len = prompt.len() + 4;
 
         let mut cache = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_heads, cfg.head_dim, max_seq_len, DType::F32, &dev,
+            cfg.n_layers,
+            cfg.n_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &dev,
         )
         .expect("with_capacity");
         let mut ctx = InferenceContext::new(dev.clone());
@@ -19806,7 +22785,11 @@ mod phi_kv_context_tests {
             let id = fuel_graph::NodeId(i);
             let op_name = match &g.node(id).op {
                 fuel_graph::Op::Fused(fid, _) => format!("Fused({fid:?})"),
-                other => format!("{other:?}").split(' ').next().unwrap_or("?").to_string(),
+                other => format!("{other:?}")
+                    .split(' ')
+                    .next()
+                    .unwrap_or("?")
+                    .to_string(),
             };
             let place = match opt.placement_of(id) {
                 Some(d) => format!("{d:?}"),
@@ -19818,20 +22801,27 @@ mod phi_kv_context_tests {
             *by_op.entry(op_name).or_default().entry(place).or_insert(0) += 1;
         }
 
-        println!("
-=== Phi decode plan: node placement (CUDA) ===");
+        println!(
+            "
+=== Phi decode plan: node placement (CUDA) ==="
+        );
         println!("total nodes: {}", g.len());
         for (op, places) in &by_op {
             let r: Vec<String> = places.iter().map(|(d, n)| format!("{d}x{n}")).collect();
             println!("  {op:<34} {}", r.join("  "));
         }
-        println!("
---- HOST-PLACED NODES ({}) ---", host_nodes.len());
+        println!(
+            "
+--- HOST-PLACED NODES ({}) ---",
+            host_nodes.len()
+        );
         for h in &host_nodes {
             println!("    {h}");
         }
-        println!("--- END ---
-");
+        println!(
+            "--- END ---
+"
+        );
     }
 
     /// **GPU gate for Phi's CapturedRun decode** — the mirror of
@@ -19878,25 +22868,44 @@ mod phi_kv_context_tests {
 
         // Two models with byte-identical weights (same seed): one drives the
         // reference persistent path, one the captured path under test.
-        let model_ref = PhiModel { config: cfg.clone(), weights: make_tiny_phi(&cfg, 7) };
-        let model_cap = PhiModel { config: cfg.clone(), weights: make_tiny_phi(&cfg, 7) };
+        let model_ref = PhiModel {
+            config: cfg.clone(),
+            weights: make_tiny_phi(&cfg, 7),
+        };
+        let model_cap = PhiModel {
+            config: cfg.clone(),
+            weights: make_tiny_phi(&cfg, 7),
+        };
 
         // --- Reference: forward_with_kv_context_persistent ---
         let mut cache_ref = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_heads, cfg.head_dim, max_seq_len, DType::F32, &dev,
+            cfg.n_layers,
+            cfg.n_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &dev,
         )
         .expect("with_capacity ref");
         let mut ctx_ref = InferenceContext::new(dev.clone());
         let mut sess_ref: Option<crate::inference_context::DecodeSession> = None;
         model_ref
-            .forward_with_kv_context_persistent(&prompt, &mut cache_ref, &mut ctx_ref, &mut sess_ref)
+            .forward_with_kv_context_persistent(
+                &prompt,
+                &mut cache_ref,
+                &mut ctx_ref,
+                &mut sess_ref,
+            )
             .expect("ref prefill");
         let mut ref_logits: Vec<Vec<f32>> = Vec::with_capacity(decode_tokens.len());
         for &tok in &decode_tokens {
             ref_logits.push(
                 model_ref
                     .forward_with_kv_context_persistent(
-                        &[tok], &mut cache_ref, &mut ctx_ref, &mut sess_ref,
+                        &[tok],
+                        &mut cache_ref,
+                        &mut ctx_ref,
+                        &mut sess_ref,
                     )
                     .expect("ref decode"),
             );
@@ -19904,7 +22913,12 @@ mod phi_kv_context_tests {
 
         // --- Under test: forward_with_kv_context_captured ---
         let mut cache_cap = KvCache::with_capacity(
-            cfg.n_layers, cfg.n_heads, cfg.head_dim, max_seq_len, DType::F32, &dev,
+            cfg.n_layers,
+            cfg.n_heads,
+            cfg.head_dim,
+            max_seq_len,
+            DType::F32,
+            &dev,
         )
         .expect("with_capacity captured");
         let mut ctx_cap = InferenceContext::new(dev.clone());
@@ -19912,15 +22926,26 @@ mod phi_kv_context_tests {
         let mut captured: Option<fuel_dispatch::pipelined::CapturedDecodeSession> = None;
         model_cap
             .forward_with_kv_context_captured(
-                &prompt, &mut cache_cap, &mut ctx_cap, &mut sess_cap, &mut captured,
+                &prompt,
+                &mut cache_cap,
+                &mut ctx_cap,
+                &mut sess_cap,
+                &mut captured,
             )
             .expect("captured prefill");
-        assert!(captured.is_none(), "prefill (seq != 1) must NOT build a capture");
+        assert!(
+            captured.is_none(),
+            "prefill (seq != 1) must NOT build a capture"
+        );
 
         for (i, &tok) in decode_tokens.iter().enumerate() {
             let got = model_cap
                 .forward_with_kv_context_captured(
-                    &[tok], &mut cache_cap, &mut ctx_cap, &mut sess_cap, &mut captured,
+                    &[tok],
+                    &mut cache_cap,
+                    &mut ctx_cap,
+                    &mut sess_cap,
+                    &mut captured,
                 )
                 .expect("captured decode");
 
@@ -19965,7 +22990,6 @@ mod phi_kv_context_tests {
             );
         }
     }
-
 }
 
 #[cfg(test)]
@@ -19989,22 +23013,22 @@ mod gqa_tests {
             token_embedding: vec_of(cfg.vocab_size * cfg.dim),
             layers: (0..cfg.n_layers)
                 .map(|_| LayerWeights {
-                    attn_q:         vec_of(cfg.dim * cfg.dim).into(),
-                    attn_q_bias:    None,
-                    attn_k:         vec_of(cfg.dim * kv_dim).into(),
-                    attn_k_bias:    None,
-                    attn_v:         vec_of(cfg.dim * kv_dim).into(),
-                    attn_v_bias:    None,
-                    attn_o:         vec_of(cfg.dim * cfg.dim).into(),
-                    ffn_gate:       vec_of(cfg.dim * cfg.ffn_dim).into(),
-                    ffn_up:         vec_of(cfg.dim * cfg.ffn_dim).into(),
-                    ffn_down:       vec_of(cfg.ffn_dim * cfg.dim).into(),
+                    attn_q: vec_of(cfg.dim * cfg.dim).into(),
+                    attn_q_bias: None,
+                    attn_k: vec_of(cfg.dim * kv_dim).into(),
+                    attn_k_bias: None,
+                    attn_v: vec_of(cfg.dim * kv_dim).into(),
+                    attn_v_bias: None,
+                    attn_o: vec_of(cfg.dim * cfg.dim).into(),
+                    ffn_gate: vec_of(cfg.dim * cfg.ffn_dim).into(),
+                    ffn_up: vec_of(cfg.dim * cfg.ffn_dim).into(),
+                    ffn_down: vec_of(cfg.ffn_dim * cfg.dim).into(),
                     attn_norm_gain: Arc::from(vec![1.0; cfg.dim]),
-                    ffn_norm_gain:  Arc::from(vec![1.0; cfg.dim]),
+                    ffn_norm_gain: Arc::from(vec![1.0; cfg.dim]),
                 })
                 .collect(),
             final_norm_gain: Arc::from(vec![1.0; cfg.dim]),
-            output:          vec_of(cfg.dim * cfg.vocab_size).into(),
+            output: vec_of(cfg.dim * cfg.vocab_size).into(),
         }
     }
 
@@ -20016,17 +23040,20 @@ mod gqa_tests {
         // extreme case (n_rep = 4).
         let cfg = LlamaConfig {
             vocab_size: 16,
-            dim:        8,
-            n_layers:   1,
-            n_heads:    4,
+            dim: 8,
+            n_layers: 1,
+            n_heads: 4,
             n_kv_heads: 1,
-            head_dim:   2,
-            ffn_dim:    16,
-            norm_eps:   1e-5,
-            rope_base:  10000.0,
+            head_dim: 2,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
         let weights = make_tiny_weights(&cfg);
-        let model = LlamaModel { config: cfg.clone(), weights };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights,
+        };
 
         let tokens = vec![0_u32, 1, 2];
         let logits = model.forward(&tokens, 0).unwrap();
@@ -20042,17 +23069,20 @@ mod gqa_tests {
         // n_heads = 4, n_kv_heads = 2 (classic GQA 2:1 ratio).
         let cfg = LlamaConfig {
             vocab_size: 8,
-            dim:        8,
-            n_layers:   2,
-            n_heads:    4,
+            dim: 8,
+            n_layers: 2,
+            n_heads: 4,
             n_kv_heads: 2,
-            head_dim:   2,
-            ffn_dim:    16,
-            norm_eps:   1e-5,
-            rope_base:  10000.0,
+            head_dim: 2,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
         let weights = make_tiny_weights(&cfg);
-        let model = LlamaModel { config: cfg.clone(), weights };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights,
+        };
         let tokens = vec![1_u32, 3];
         let logits = model.forward(&tokens, 0).unwrap().realize_f32();
         assert_eq!(logits.len(), 1 * 2 * cfg.vocab_size);
@@ -20075,22 +23105,20 @@ mod lora_tests {
         let rank = 2;
         let alpha = 8.0_f32;
 
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32; 1],
-            Shape::from_dims(&[1]),
-            &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &Device::cpu());
         // Base weight [in, out].
         let base_vec: Vec<f32> = (0..in_f * out_f).map(|i| (i as f32) * 0.1).collect();
         let lora_a_vec: Vec<f32> = (0..in_f * rank).map(|i| (i as f32) * 0.05).collect();
         let lora_b_vec: Vec<f32> = (0..rank * out_f).map(|i| (i as f32) * 0.02).collect();
 
-        let ws = WeightStorage::F32(Arc::from(base_vec.clone()))
-            .with_lora(
-                Arc::from(lora_a_vec.clone()),
-                Arc::from(lora_b_vec.clone()),
-                rank, alpha, in_f, out_f,
-            );
+        let ws = WeightStorage::F32(Arc::from(base_vec.clone())).with_lora(
+            Arc::from(lora_a_vec.clone()),
+            Arc::from(lora_b_vec.clone()),
+            rank,
+            alpha,
+            in_f,
+            out_f,
+        );
 
         // Activations x [2, in_f].
         let batch = 2;
@@ -20133,9 +23161,9 @@ mod lora_tests {
     #[test]
     #[should_panic(expected = "lora_a length")]
     fn with_lora_rejects_mismatched_a_shape() {
-        let ws = WeightStorage::F32(Arc::from(vec![0.0_f32; 12]));  // 4 x 3
-        let bad_a = Arc::from(vec![0.0_f32; 3]);                     // wrong
-        let b = Arc::from(vec![0.0_f32; 6]);                         // 2 x 3
+        let ws = WeightStorage::F32(Arc::from(vec![0.0_f32; 12])); // 4 x 3
+        let bad_a = Arc::from(vec![0.0_f32; 3]); // wrong
+        let b = Arc::from(vec![0.0_f32; 6]); // 2 x 3
         let _ = ws.with_lora(bad_a, b, 2, 8.0, 4, 3);
     }
 
@@ -20158,7 +23186,9 @@ mod lora_tests {
             Shape::from_dims(&[2, 5]), // trailing dim 5 != in_features 4
             &Device::cpu(),
         );
-        let err = ws.apply_linear(&x, 4, 3).expect_err("must not panic, must Err");
+        let err = ws
+            .apply_linear(&x, 4, 3)
+            .expect_err("must not panic, must Err");
         let msg = err.to_string();
         assert!(
             msg.contains("trailing dim 4"),
@@ -20176,14 +23206,12 @@ mod lora_tests {
             in_features: 4,
             out_features: 4,
         };
-        let x = LazyTensor::from_f32(
-            vec![0.0_f32; 8],
-            Shape::from_dims(&[2, 4]),
-            &Device::cpu(),
-        );
+        let x = LazyTensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[2, 4]), &Device::cpu());
         // Trailing dim matches in_features, so this reaches the stored-shape
         // check rather than the contract check above.
-        let err = ws.apply_linear(&x, 4, 7).expect_err("must not panic, must Err");
+        let err = ws
+            .apply_linear(&x, 4, 7)
+            .expect_err("must not panic, must Err");
         let msg = err.to_string();
         assert!(
             msg.contains("Q4_0 shape mismatch"),
@@ -20194,11 +23222,7 @@ mod lora_tests {
     #[test]
     fn apply_linear_with_bias_errors_on_wrong_bias_length() {
         let ws = WeightStorage::F32(Arc::from(vec![0.0_f32; 12])); // 4 x 3
-        let x = LazyTensor::from_f32(
-            vec![0.0_f32; 8],
-            Shape::from_dims(&[2, 4]),
-            &Device::cpu(),
-        );
+        let x = LazyTensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[2, 4]), &Device::cpu());
         let bias: Arc<[f32]> = Arc::from(vec![0.0_f32; 2]); // wrong: out_features is 3
         let err = ws
             .apply_linear_with_bias(&x, 4, 3, bias)
@@ -20234,22 +23258,22 @@ mod llama_tests {
             token_embedding: vec_of(cfg.vocab_size * cfg.dim),
             layers: (0..cfg.n_layers)
                 .map(|_| LayerWeights {
-                    attn_q:         vec_of(cfg.dim * cfg.dim).into(),
-                    attn_q_bias:    None,
-                    attn_k:         vec_of(cfg.dim * kv_dim).into(),
-                    attn_k_bias:    None,
-                    attn_v:         vec_of(cfg.dim * kv_dim).into(),
-                    attn_v_bias:    None,
-                    attn_o:         vec_of(cfg.dim * cfg.dim).into(),
-                    ffn_gate:       vec_of(cfg.dim * cfg.ffn_dim).into(),
-                    ffn_up:         vec_of(cfg.dim * cfg.ffn_dim).into(),
-                    ffn_down:       vec_of(cfg.ffn_dim * cfg.dim).into(),
+                    attn_q: vec_of(cfg.dim * cfg.dim).into(),
+                    attn_q_bias: None,
+                    attn_k: vec_of(cfg.dim * kv_dim).into(),
+                    attn_k_bias: None,
+                    attn_v: vec_of(cfg.dim * kv_dim).into(),
+                    attn_v_bias: None,
+                    attn_o: vec_of(cfg.dim * cfg.dim).into(),
+                    ffn_gate: vec_of(cfg.dim * cfg.ffn_dim).into(),
+                    ffn_up: vec_of(cfg.dim * cfg.ffn_dim).into(),
+                    ffn_down: vec_of(cfg.ffn_dim * cfg.dim).into(),
                     attn_norm_gain: Arc::from(vec![1.0; cfg.dim]),
-                    ffn_norm_gain:  Arc::from(vec![1.0; cfg.dim]),
+                    ffn_norm_gain: Arc::from(vec![1.0; cfg.dim]),
                 })
                 .collect(),
             final_norm_gain: Arc::from(vec![1.0; cfg.dim]),
-            output:          vec_of(cfg.dim * cfg.vocab_size).into(),
+            output: vec_of(cfg.dim * cfg.vocab_size).into(),
         }
     }
 
@@ -20260,17 +23284,20 @@ mod llama_tests {
         // expected shape.
         let cfg = LlamaConfig {
             vocab_size: 32,
-            dim:        8,
-            n_layers:   2,
-            n_heads:    2,
+            dim: 8,
+            n_layers: 2,
+            n_heads: 2,
             n_kv_heads: 2,
-            head_dim:   4,
-            ffn_dim:    16,
-            norm_eps:   1e-5,
-            rope_base:  10000.0,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
         let weights = make_tiny_weights(&cfg);
-        let model = LlamaModel { config: cfg.clone(), weights };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights,
+        };
 
         let tokens: Vec<u32> = vec![5, 12, 0, 7];
         let logits = model.forward(&tokens, 0).unwrap();
@@ -20283,17 +23310,20 @@ mod llama_tests {
         // output must be finite across the full [1, seq, vocab] tensor.
         let cfg = LlamaConfig {
             vocab_size: 16,
-            dim:        8,
-            n_layers:   2,
-            n_heads:    2,
+            dim: 8,
+            n_layers: 2,
+            n_heads: 2,
             n_kv_heads: 2,
-            head_dim:   4,
-            ffn_dim:    16,
-            norm_eps:   1e-5,
-            rope_base:  10000.0,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
         let weights = make_tiny_weights(&cfg);
-        let model = LlamaModel { config: cfg.clone(), weights };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights,
+        };
 
         let tokens = vec![1_u32, 2, 3];
         let logits = model.forward(&tokens, 0).unwrap();
@@ -20322,17 +23352,20 @@ mod llama_tests {
         // differences change as new tokens arrive.
         let cfg = LlamaConfig {
             vocab_size: 8,
-            dim:        8,
-            n_layers:   1,
-            n_heads:    2,
+            dim: 8,
+            n_layers: 1,
+            n_heads: 2,
             n_kv_heads: 2,
-            head_dim:   4,
-            ffn_dim:    16,
-            norm_eps:   1e-5,
-            rope_base:  10000.0,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
         let weights = make_tiny_weights(&cfg);
-        let model = LlamaModel { config: cfg.clone(), weights };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights,
+        };
 
         let tokens = vec![2_u32, 4];
         let l0 = model.forward(&tokens, 0).unwrap().realize_f32();
@@ -20352,17 +23385,20 @@ mod llama_tests {
         // decode-step primitive a sampling loop would call.
         let cfg = LlamaConfig {
             vocab_size: 16,
-            dim:        8,
-            n_layers:   2,
-            n_heads:    2,
+            dim: 8,
+            n_layers: 2,
+            n_heads: 2,
             n_kv_heads: 2,
-            head_dim:   4,
-            ffn_dim:    16,
-            norm_eps:   1e-5,
-            rope_base:  10000.0,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
         let weights = make_tiny_weights(&cfg);
-        let model = LlamaModel { config: cfg.clone(), weights };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights,
+        };
 
         let tokens = vec![3_u32, 1, 4, 1, 5];
         let logits = model.forward(&tokens, 0).unwrap();
@@ -20389,17 +23425,20 @@ mod llama_tests {
     fn forward_hidden_embeds_with_mask_bidirectional() {
         let cfg = LlamaConfig {
             vocab_size: 16,
-            dim:        8,
-            n_layers:   1,
-            n_heads:    2,
+            dim: 8,
+            n_layers: 1,
+            n_heads: 2,
             n_kv_heads: 2,
-            head_dim:   4,
-            ffn_dim:    16,
-            norm_eps:   1e-5,
-            rope_base:  10000.0,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
         let weights = make_tiny_weights(&cfg);
-        let model = LlamaModel { config: cfg.clone(), weights };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights,
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
 
         // Causal reference path through `forward` → drop the
@@ -20412,17 +23451,19 @@ mod llama_tests {
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &crate::Device::cpu(),
         );
-        let token_ids = embed.const_u32_like(
-            tokens.clone(), Shape::from_dims(&[tokens.len()]),
-        );
+        let token_ids = embed.const_u32_like(tokens.clone(), Shape::from_dims(&[tokens.len()]));
         let embeds = embed
-            .index_select(0_usize, &token_ids).unwrap()
-            .reshape(Shape::from_dims(&[1, tokens.len(), cfg.dim])).unwrap();
+            .index_select(0_usize, &token_ids)
+            .unwrap()
+            .reshape(Shape::from_dims(&[1, tokens.len(), cfg.dim]))
+            .unwrap();
         let zero_mask: Arc<[f32]> = Arc::from(vec![0.0_f32; tokens.len() * tokens.len()]);
         let mask = embeds.const_f32_like(
-            zero_mask, Shape::from_dims(&[1, 1, tokens.len(), tokens.len()]),
+            zero_mask,
+            Shape::from_dims(&[1, 1, tokens.len(), tokens.len()]),
         );
-        let bidir = model.forward_hidden_embeds_with_mask(&embeds, &mask, 0)
+        let bidir = model
+            .forward_hidden_embeds_with_mask(&embeds, &mask, 0)
             .unwrap()
             .realize_f32();
 
@@ -20451,12 +23492,21 @@ mod llama_tests {
     #[test]
     fn forward_hidden_embeds_followed_by_lm_head_matches_forward_embeds() {
         let cfg = LlamaConfig {
-            vocab_size: 16, dim: 8, n_layers: 1, n_heads: 2,
-            n_kv_heads: 2, head_dim: 4, ffn_dim: 16,
-            norm_eps: 1e-5, rope_base: 10000.0,
+            vocab_size: 16,
+            dim: 8,
+            n_layers: 1,
+            n_heads: 2,
+            n_kv_heads: 2,
+            head_dim: 4,
+            ffn_dim: 16,
+            norm_eps: 1e-5,
+            rope_base: 10000.0,
         };
         let weights = make_tiny_weights(&cfg);
-        let model = LlamaModel { config: cfg.clone(), weights };
+        let model = LlamaModel {
+            config: cfg.clone(),
+            weights,
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
 
         let embed = LazyTensor::from_f32(
@@ -20464,25 +23514,30 @@ mod llama_tests {
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &crate::Device::cpu(),
         );
-        let token_ids = embed.const_u32_like(
-            tokens.clone(), Shape::from_dims(&[tokens.len()]),
-        );
+        let token_ids = embed.const_u32_like(tokens.clone(), Shape::from_dims(&[tokens.len()]));
         let embeds = embed
-            .index_select(0_usize, &token_ids).unwrap()
-            .reshape(Shape::from_dims(&[1, tokens.len(), cfg.dim])).unwrap();
+            .index_select(0_usize, &token_ids)
+            .unwrap()
+            .reshape(Shape::from_dims(&[1, tokens.len(), cfg.dim]))
+            .unwrap();
 
         let hidden = model.forward_hidden_embeds(&embeds, 0).unwrap();
-        let logits_from_hidden = model.weights.output
-            .apply_linear(&hidden, cfg.dim, cfg.vocab_size).unwrap().realize_f32();
+        let logits_from_hidden = model
+            .weights
+            .output
+            .apply_linear(&hidden, cfg.dim, cfg.vocab_size)
+            .unwrap()
+            .realize_f32();
         let logits_direct = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
         assert_eq!(logits_from_hidden.len(), logits_direct.len());
         for (a, b) in logits_from_hidden.iter().zip(logits_direct.iter()) {
-            assert!((a - b).abs() < 1e-6,
-                "forward_hidden_embeds + lm_head must match forward_embeds: {a} vs {b}");
+            assert!(
+                (a - b).abs() < 1e-6,
+                "forward_hidden_embeds + lm_head must match forward_embeds: {a} vs {b}"
+            );
         }
     }
 }
-
 
 #[cfg(test)]
 mod safetensors_bridge_tests {
@@ -20513,8 +23568,10 @@ mod safetensors_bridge_tests {
     #[test]
     fn from_safetensors_bytes_round_trip_bf16() {
         let original_f32: Vec<f32> = vec![0.5, -1.0, 2.0, 4.0];
-        let bf16_vec: Vec<half::bf16> =
-            original_f32.iter().map(|&v| half::bf16::from_f32(v)).collect();
+        let bf16_vec: Vec<half::bf16> = original_f32
+            .iter()
+            .map(|&v| half::bf16::from_f32(v))
+            .collect();
         let mut bytes = Vec::with_capacity(bf16_vec.len() * 2);
         for b in &bf16_vec {
             bytes.extend_from_slice(&b.to_bits().to_le_bytes());
@@ -20594,7 +23651,7 @@ mod phase_a1_wrapper_tests {
         // The Dims trait accepts tuples, owned arrays, and slices.
         assert!(t.permute((2_usize, 0_usize, 1_usize)).is_ok());
         assert!(t.permute([2_usize, 0, 1]).is_ok());
-        assert!(t.permute([0_usize, 1]).is_err());     // wrong rank
+        assert!(t.permute([0_usize, 1]).is_err()); // wrong rank
         assert!(t.permute([0_usize, 0, 1]).is_err()); // dup axis
     }
 
@@ -20613,7 +23670,10 @@ mod phase_a1_wrapper_tests {
         assert_eq!(upper.shape().dims(), &[3, 3]);
         assert_eq!(lower.shape().dims(), &[3, 3]);
         // tril(0) of all-ones: 1s on/below diagonal, 0s above
-        assert_eq!(lower.realize_f32(), vec![1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0]);
+        assert_eq!(
+            lower.realize_f32(),
+            vec![1.0, 0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0]
+        );
     }
 
     #[test]
@@ -20645,13 +23705,13 @@ mod phase_a1_wrapper_tests {
         // Lane (b=1, c=1): values [-1,-1,  0]  → exp = [e^-1, e^-1, 1]
         let data: Vec<f32> = vec![
             // b=0
-            -1.0,  0.0,   // r=0, c=0..1
-             0.0, -3.0,   // r=1
-            -2.0, -1.0,   // r=2
+            -1.0, 0.0, // r=0, c=0..1
+            0.0, -3.0, // r=1
+            -2.0, -1.0, // r=2
             // b=1
-            -2.0, -1.0,   // r=0
-            -1.0, -1.0,   // r=1
-             0.0,  0.0,   // r=2
+            -2.0, -1.0, // r=0
+            -1.0, -1.0, // r=1
+            0.0, 0.0, // r=2
         ];
         let t = cpu_f32(data, &[2, 3, 2]);
         let out = t.softmax(1_usize).unwrap();
@@ -20667,10 +23727,10 @@ mod phase_a1_wrapper_tests {
         };
         // Re-extract source lanes
         let lanes: [[f32; 3]; 4] = [
-            [-1.0,  0.0, -2.0],   // (b=0, c=0)
-            [ 0.0, -3.0, -1.0],   // (b=0, c=1)
-            [-2.0, -1.0,  0.0],   // (b=1, c=0)
-            [-1.0, -1.0,  0.0],   // (b=1, c=1)
+            [-1.0, 0.0, -2.0], // (b=0, c=0)
+            [0.0, -3.0, -1.0], // (b=0, c=1)
+            [-2.0, -1.0, 0.0], // (b=1, c=0)
+            [-1.0, -1.0, 0.0], // (b=1, c=1)
         ];
         let refs: Vec<[f32; 3]> = lanes.iter().map(|l| lane_softmax(*l)).collect();
 
@@ -20696,11 +23756,8 @@ mod phase_a1_wrapper_tests {
     #[test]
     fn softmax_last_axis_matches_softmax_last_dim() {
         let data: Vec<f32> = vec![
-            1.0,  2.0, -1.0,  0.5,
-            0.0, -2.0,  3.0,  1.5,
-            // batch dim 2
-            4.0, -1.0,  2.0,  0.0,
-            -3.0, 0.25, 0.75, 1.0,
+            1.0, 2.0, -1.0, 0.5, 0.0, -2.0, 3.0, 1.5, // batch dim 2
+            4.0, -1.0, 2.0, 0.0, -3.0, 0.25, 0.75, 1.0,
         ];
         let t = cpu_f32(data, &[2, 2, 4]);
         let via_general = t.softmax(2_usize).unwrap();
@@ -20722,12 +23779,7 @@ mod phase_a1_wrapper_tests {
         // Same construction as the softmax test, but compare against
         // closed-form log_softmax per (b, c) lane.
         let data: Vec<f32> = vec![
-            -1.0,  0.0,
-             0.0, -3.0,
-            -2.0, -1.0,
-            -2.0, -1.0,
-            -1.0, -1.0,
-             0.0,  0.0,
+            -1.0, 0.0, 0.0, -3.0, -2.0, -1.0, -2.0, -1.0, -1.0, -1.0, 0.0, 0.0,
         ];
         let t = cpu_f32(data, &[2, 3, 2]);
         let out = t.log_softmax(1_usize).unwrap();
@@ -20741,10 +23793,10 @@ mod phase_a1_wrapper_tests {
             [shifted[0] - lse, shifted[1] - lse, shifted[2] - lse]
         };
         let lanes: [[f32; 3]; 4] = [
-            [-1.0,  0.0, -2.0],
-            [ 0.0, -3.0, -1.0],
-            [-2.0, -1.0,  0.0],
-            [-1.0, -1.0,  0.0],
+            [-1.0, 0.0, -2.0],
+            [0.0, -3.0, -1.0],
+            [-2.0, -1.0, 0.0],
+            [-1.0, -1.0, 0.0],
         ];
         let refs: Vec<[f32; 3]> = lanes.iter().map(|l| lane_log_softmax(*l)).collect();
 
@@ -20768,10 +23820,7 @@ mod phase_a1_wrapper_tests {
     #[test]
     fn log_softmax_last_axis_matches_log_softmax_last_dim() {
         let data: Vec<f32> = vec![
-            1.0,  2.0, -1.0,  0.5,
-            0.0, -2.0,  3.0,  1.5,
-            4.0, -1.0,  2.0,  0.0,
-            -3.0, 0.25, 0.75, 1.0,
+            1.0, 2.0, -1.0, 0.5, 0.0, -2.0, 3.0, 1.5, 4.0, -1.0, 2.0, 0.0, -3.0, 0.25, 0.75, 1.0,
         ];
         let t = cpu_f32(data, &[2, 2, 4]);
         let via_general = t.log_softmax(2_usize).unwrap();
@@ -20863,7 +23912,10 @@ mod phase_a1_wrapper_tests {
         );
         // Bool -> U8 keeps the canonical 0/1 (this direction IS byte-preserving,
         // which is fine — it is the OTHER direction that must not be).
-        assert_eq!(mask.to_dtype(DType::U8).unwrap().realize_u8(), vec![0, 1, 1, 0]);
+        assert_eq!(
+            mask.to_dtype(DType::U8).unwrap().realize_u8(),
+            vec![0, 1, 1, 0]
+        );
 
         // FINALLY, the two are not INTERCHANGEABLE at the API, which is what
         // stops a numeric mask being coerced silently: `masked_fill` requires a
@@ -20893,7 +23945,15 @@ mod phase_a1_wrapper_tests {
     #[test]
     fn float_to_bool_lowering_preserves_ieee_semantics() {
         let t = cpu_f32(
-            vec![0.0, -0.0, 5.0, -3.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY],
+            vec![
+                0.0,
+                -0.0,
+                5.0,
+                -3.0,
+                f32::NAN,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+            ],
             &[7],
         );
         let b = t.to_dtype(DType::Bool).unwrap();
@@ -20999,7 +24059,10 @@ mod phase_a2_composite_tests {
     #[test]
     fn t_is_alias_of_transpose_last_two() {
         let t = cpu_f32(vec![1.0, 2.0, 3.0, 4.0], &[2, 2]);
-        assert_eq!(t.t().unwrap().realize_f32(), t.transpose_last_two().unwrap().realize_f32());
+        assert_eq!(
+            t.t().unwrap().realize_f32(),
+            t.transpose_last_two().unwrap().realize_f32()
+        );
     }
 
     #[test]
@@ -21086,7 +24149,10 @@ mod phase_a2_composite_tests {
             let row_data = x_data[row * per_row..(row + 1) * per_row].to_vec();
             let xr = cpu_f32(row_data, &[1, heads, 1, hd]);
             let (c, s) = xr.rope_tables_const(base, pos, 1, hd);
-            let want = xr.rope_with_tables_decomposed(&c, &s).unwrap().realize_f32();
+            let want = xr
+                .rope_with_tables_decomposed(&c, &s)
+                .unwrap()
+                .realize_f32();
             assert_eq!(
                 &got[row * per_row..(row + 1) * per_row],
                 &want[..],
@@ -21155,20 +24221,24 @@ mod phase_a2_composite_tests {
         // row i = (i, i+0.5, i+1) so the lookup result is verifiable.
         let vocab_size = 5;
         let hidden = 3;
-        let table: Vec<f32> = (0..vocab_size).flat_map(|i| {
-            vec![i as f32, i as f32 + 0.5, i as f32 + 1.0]
-        }).collect();
+        let table: Vec<f32> = (0..vocab_size)
+            .flat_map(|i| vec![i as f32, i as f32 + 0.5, i as f32 + 1.0])
+            .collect();
         let tokens = vec![1_u32, 3, 0];
         let out = LazyTensor::embed_tokens(
-            std::sync::Arc::from(table), vocab_size, hidden,
-            &tokens, &crate::Device::cpu(),
-        ).unwrap();
+            std::sync::Arc::from(table),
+            vocab_size,
+            hidden,
+            &tokens,
+            &crate::Device::cpu(),
+        )
+        .unwrap();
         assert_eq!(out.shape().dims(), &[1, 3, hidden]);
         let v = out.realize_f32();
         let want = [
-            1.0_f32, 1.5, 2.0,  // token 1
-            3.0, 3.5, 4.0,      // token 3
-            0.0, 0.5, 1.0,      // token 0
+            1.0_f32, 1.5, 2.0, // token 1
+            3.0, 3.5, 4.0, // token 3
+            0.0, 0.5, 1.0, // token 0
         ];
         for (i, (&got, &exp)) in v.iter().zip(want.iter()).enumerate() {
             assert!((got - exp).abs() < 1e-5, "row {i}: got={got} want={exp}");
@@ -21182,28 +24252,39 @@ mod phase_a2_composite_tests {
         // but only the anchored one can compose with the anchor.
         let vocab_size = 4;
         let hidden = 2;
-        let table: Vec<f32> = (0..vocab_size).flat_map(|i| {
-            vec![i as f32, i as f32 * 2.0]
-        }).collect();
+        let table: Vec<f32> = (0..vocab_size)
+            .flat_map(|i| vec![i as f32, i as f32 * 2.0])
+            .collect();
         let table_arc: std::sync::Arc<[f32]> = std::sync::Arc::from(table);
         let tokens = vec![2_u32, 1];
 
         let anchor = cpu_f32(vec![0.0_f32], &[1]);
-        let embedded = anchor.embed_tokens_anchored(
-            std::sync::Arc::clone(&table_arc), vocab_size, hidden, &tokens,
-        ).unwrap();
+        let embedded = anchor
+            .embed_tokens_anchored(
+                std::sync::Arc::clone(&table_arc),
+                vocab_size,
+                hidden,
+                &tokens,
+            )
+            .unwrap();
         assert_eq!(embedded.shape().dims(), &[1, 2, hidden]);
 
         // Anchored: composes with the anchor.
-        let one_scaled = anchor.const_f32_like(
-            std::sync::Arc::from(vec![1.0_f32]),
-            Shape::from_dims(&[1]),
-        );
-        let _ = embedded.add(&one_scaled.reshape(Shape::from_dims(&[1, 1, 1])).unwrap().broadcast_to(Shape::from_dims(&[1, 2, hidden])).unwrap()).unwrap();
+        let one_scaled =
+            anchor.const_f32_like(std::sync::Arc::from(vec![1.0_f32]), Shape::from_dims(&[1]));
+        let _ = embedded
+            .add(
+                &one_scaled
+                    .reshape(Shape::from_dims(&[1, 1, 1]))
+                    .unwrap()
+                    .broadcast_to(Shape::from_dims(&[1, 2, hidden]))
+                    .unwrap(),
+            )
+            .unwrap();
         let v = embedded.realize_f32();
         let want = [
-            2.0_f32, 4.0,  // token 2
-            1.0, 2.0,      // token 1
+            2.0_f32, 4.0, // token 2
+            1.0, 2.0, // token 1
         ];
         for (i, (&got, &exp)) in v.iter().zip(want.iter()).enumerate() {
             assert!((got - exp).abs() < 1e-5, "row {i}: got={got} want={exp}");
@@ -21213,7 +24294,11 @@ mod phase_a2_composite_tests {
     #[test]
     fn embed_tokens_empty_returns_error() {
         let r = LazyTensor::embed_tokens(
-            std::sync::Arc::from(vec![0.0_f32]), 1, 1, &[], &crate::Device::cpu(),
+            std::sync::Arc::from(vec![0.0_f32]),
+            1,
+            1,
+            &[],
+            &crate::Device::cpu(),
         );
         assert!(r.is_err());
     }
@@ -21226,7 +24311,10 @@ mod phase_a2_composite_tests {
         // tanh(0)=0; tanh(0.5)≈0.4621; tanh(-0.5)≈-0.4621; tanh(3)≈0.9951.
         let expect = [0.0_f32, 4.6212, -4.6212, 9.9505];
         for (i, (&got, &want)) in capped.iter().zip(expect.iter()).enumerate() {
-            assert!((got - want).abs() < 1e-3, "softcap[{i}] got={got} want={want}");
+            assert!(
+                (got - want).abs() < 1e-3,
+                "softcap[{i}] got={got} want={want}"
+            );
         }
     }
 
@@ -21327,8 +24415,7 @@ mod phase_a2_composite_tests {
         // Channel 1: 10, 20, 30, 40, 50, 60, mean = 35.
         let x = cpu_f32(
             vec![
-                1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0,
-                10.0, 20.0, 30.0, 40.0, 50.0, 60.0,
+                1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0,
             ],
             &[1, 2, 2, 3],
         );
@@ -21344,8 +24431,8 @@ mod phase_a2_composite_tests {
         // (1, 2, 2, 2) — two channels, each a 2×2 spatial map.
         let x = cpu_f32(
             vec![
-                1.0_f32, 2.0, 3.0, 4.0,    // channel 0
-                10.0,    20.0, 30.0, 40.0, // channel 1
+                1.0_f32, 2.0, 3.0, 4.0, // channel 0
+                10.0, 20.0, 30.0, 40.0, // channel 1
             ],
             &[1, 2, 2, 2],
         );
@@ -21374,11 +24461,15 @@ mod phase_a2_composite_tests {
             for j in 0..4 {
                 let got = v[i * 4 + j];
                 if j > i {
-                    assert!(got.is_infinite() && got.is_sign_negative(),
-                        "above-diag (i={i}, j={j}) should be -inf, got {got}");
+                    assert!(
+                        got.is_infinite() && got.is_sign_negative(),
+                        "above-diag (i={i}, j={j}) should be -inf, got {got}"
+                    );
                 } else {
-                    assert_eq!(got, 0.0,
-                        "on/below-diag (i={i}, j={j}) should be 0, got {got}");
+                    assert_eq!(
+                        got, 0.0,
+                        "on/below-diag (i={i}, j={j}) should be 0, got {got}"
+                    );
                 }
             }
         }
@@ -21426,8 +24517,8 @@ mod phase_a2_composite_tests {
         let out = a.l2_normalize(1_usize, 1e-12).unwrap();
         assert_eq!(out.shape().dims(), &[2, 3]);
         let v = out.realize_f32();
-        let row0_norm = (v[0]*v[0] + v[1]*v[1] + v[2]*v[2]).sqrt();
-        let row1_norm = (v[3]*v[3] + v[4]*v[4] + v[5]*v[5]).sqrt();
+        let row0_norm = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        let row1_norm = (v[3] * v[3] + v[4] * v[4] + v[5] * v[5]).sqrt();
         assert!((row0_norm - 1.0).abs() < 1e-5, "row 0 norm = {row0_norm}");
         assert!((row1_norm - 1.0).abs() < 1e-5, "row 1 norm = {row1_norm}");
         // Row 0: [3,4,0]/5 → [0.6, 0.8, 0.0].
@@ -21453,9 +24544,10 @@ mod phase_a2_composite_tests {
         let a = cpu_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &[2, 3]);
         let out = a.repeat_interleave(1_usize, 2).unwrap();
         assert_eq!(out.shape().dims(), &[2, 6]);
-        assert_eq!(out.realize_f32(),
-            vec![1.0, 1.0, 2.0, 2.0, 3.0, 3.0,
-                 4.0, 4.0, 5.0, 5.0, 6.0, 6.0]);
+        assert_eq!(
+            out.realize_f32(),
+            vec![1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 5.0, 5.0, 6.0, 6.0]
+        );
     }
 
     #[test]
@@ -21749,9 +24841,7 @@ mod phase_a5_factory_tests {
 
     #[test]
     fn full_with_f32_scalar() {
-        let t = LazyTensor::full(
-            vec![5], fuel_ir::Scalar::F32(2.5), &Device::cpu(),
-        ).unwrap();
+        let t = LazyTensor::full(vec![5], fuel_ir::Scalar::F32(2.5), &Device::cpu()).unwrap();
         assert_eq!(t.realize_f32(), vec![2.5; 5]);
     }
 
@@ -22269,7 +25359,10 @@ mod phase_a5_factory_tests {
 
     #[test]
     fn max_pool2d_3x3_stride1_padding1() {
-        let x = cpu_f32(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0], &[1, 1, 3, 3]);
+        let x = cpu_f32(
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0],
+            &[1, 1, 3, 3],
+        );
         let out = x.max_pool2d((3, 3), (1, 1), (1, 1)).unwrap();
         assert_eq!(out.shape().dims(), &[1, 1, 3, 3]);
         // Center should be the global max 9; corners should be the max of their 2×2 window.
@@ -22287,10 +25380,7 @@ mod phase_a5_factory_tests {
         assert_eq!(
             out.realize_f32(),
             vec![
-                1.0, 1.0, 2.0, 2.0,
-                1.0, 1.0, 2.0, 2.0,
-                3.0, 3.0, 4.0, 4.0,
-                3.0, 3.0, 4.0, 4.0,
+                1.0, 1.0, 2.0, 2.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0, 4.0, 4.0, 3.0, 3.0, 4.0, 4.0,
             ],
         );
     }

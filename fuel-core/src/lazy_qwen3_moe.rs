@@ -13,7 +13,7 @@
 
 use crate::inference_context::{DecodeSession, DecodeTokenData, InferenceContext, KvCache};
 use crate::lazy::{LazyTensor, WeightStorage};
-use crate::lazy_qwen3::{qwen3_attn_with_kv_writes, Qwen3AttnBlock};
+use crate::lazy_qwen3::{Qwen3AttnBlock, qwen3_attn_with_kv_writes};
 use crate::persistent_decode::{
     DecodeBackbone, DecodeDims, DecodeLayerInputs, MaskPlan, PersistentDecodeModel,
 };
@@ -125,34 +125,37 @@ impl Qwen3MoeModel {
 
     /// Multimodal entry point. Skips token embedding; runs the decoder
     /// over pre-embedded inputs. Qwen3-MoE does NOT scale embeddings.
-    pub fn forward_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
         let h_norm = self.run_backbone_embeds(embeds, start_pos)?;
         self.apply_lm_head(&h_norm)
     }
 
     /// Hidden-state variant of [`Self::forward_embeds`].
     pub fn forward_hidden_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
+        &self,
+        embeds: &LazyTensor,
+        start_pos: usize,
     ) -> Result<LazyTensor> {
         self.run_backbone_embeds(embeds, start_pos)
     }
 
     /// Build per-token embeddings without running the decoder.
-    pub fn embed_tokens_anchored(
-        &self, anchor: &LazyTensor, tokens: &[u32],
-    ) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
-            cfg.vocab_size, cfg.hidden_size, tokens,
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
         )
     }
 
     fn apply_lm_head(&self, h_norm: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
-        Ok(self.weights.output.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
+        Ok(self
+            .weights
+            .output
+            .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 
     fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<LazyTensor> {
@@ -162,14 +165,16 @@ impl Qwen3MoeModel {
         assert!(seq > 0);
 
         let h = LazyTensor::embed_tokens(
-            weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
+            weights.token_embedding.clone(),
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
+            &Device::cpu(),
         )?;
         self.run_backbone_embeds(&h, start_pos)
     }
 
-    fn run_backbone_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
-    ) -> Result<LazyTensor> {
+    fn run_backbone_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -182,36 +187,45 @@ impl Qwen3MoeModel {
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(crate::Error::Msg(
-                "Qwen3MoeModel::forward_embeds: seq must be > 0".into(),
-            ).bt());
+            return Err(
+                crate::Error::Msg("Qwen3MoeModel::forward_embeds: seq must be > 0".into()).bt(),
+            );
         }
         if cfg.num_attention_heads * cfg.head_dim != cfg.hidden_size {
             return Err(crate::Error::Msg(
                 "Qwen3MoeConfig: num_attention_heads * head_dim must equal hidden_size".into(),
-            ).bt());
+            )
+            .bt());
         }
         let mut h = embeds.clone();
 
-        let (rope_cos, rope_sin) = h.rope_tables_const(
-            cfg.rope_theta, start_pos, seq, cfg.head_dim,
-        );
+        let (rope_cos, rope_sin) =
+            h.rope_tables_const(cfg.rope_theta, start_pos, seq, cfg.head_dim);
 
         for (layer_idx, layer) in weights.layers.iter().enumerate() {
             let uses_window = cfg.use_sliding_window && layer_idx < cfg.max_window_layers;
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, uses_window)?;
         }
 
-        h.rms_norm_affine(std::sync::Arc::clone(&weights.final_norm_gain), cfg.rms_norm_eps)
+        h.rms_norm_affine(
+            std::sync::Arc::clone(&weights.final_norm_gain),
+            cfg.rms_norm_eps,
+        )
     }
 
     fn build_layer_mask(&self, anchor: &LazyTensor, seq: usize, uses_window: bool) -> LazyTensor {
         let cfg = &self.config;
-        let window = if uses_window { cfg.sliding_window.unwrap_or(seq + 1) } else { seq + 1 };
+        let window = if uses_window {
+            cfg.sliding_window.unwrap_or(seq + 1)
+        } else {
+            seq + 1
+        };
         let mut mask_data = vec![0.0_f32; seq * seq];
         for i in 0..seq {
             for j in 0..seq {
-                if j > i || j + window <= i { mask_data[i * seq + j] = f32::NEG_INFINITY; }
+                if j > i || j + window <= i {
+                    mask_data[i * seq + j] = f32::NEG_INFINITY;
+                }
             }
         }
         anchor.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]))
@@ -232,11 +246,23 @@ impl Qwen3MoeModel {
         let seq = dims[1];
         let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
 
-        let x_norm = x.rms_norm_affine(std::sync::Arc::clone(&layer.attn_norm_gain), cfg.rms_norm_eps)?;
+        let x_norm = x.rms_norm_affine(
+            std::sync::Arc::clone(&layer.attn_norm_gain),
+            cfg.rms_norm_eps,
+        )?;
 
-        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size)?.add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
-        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
-        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
+        let q = layer
+            .attn_q
+            .apply_linear(&x_norm, cfg.hidden_size, cfg.hidden_size)?
+            .add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
+        let k = layer
+            .attn_k
+            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
+            .add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
+        let v = layer
+            .attn_v
+            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
+            .add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
 
         let _ = (batch, seq);
         let q = q.split_heads(cfg.num_attention_heads, cfg.head_dim)?;
@@ -264,10 +290,15 @@ impl Qwen3MoeModel {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        let attn_out = layer.attn_o.apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?;
+        let attn_out = layer
+            .attn_o
+            .apply_linear(&merged, cfg.hidden_size, cfg.hidden_size)?;
 
         let h1 = x.add(&attn_out)?;
-        let h1_norm = h1.rms_norm_affine(std::sync::Arc::clone(&layer.ffn_norm_gain), cfg.rms_norm_eps)?;
+        let h1_norm = h1.rms_norm_affine(
+            std::sync::Arc::clone(&layer.ffn_norm_gain),
+            cfg.rms_norm_eps,
+        )?;
 
         let ffn_out = self.apply_ffn(&h1_norm, &layer.ffn, batch, seq)?;
         h1.add(&ffn_out)
@@ -283,7 +314,11 @@ impl Qwen3MoeModel {
         let cfg = &self.config;
         let h = cfg.hidden_size;
         match ffn {
-            Qwen3MoeFfn::Dense { gate_w, up_w, down_w } => {
+            Qwen3MoeFfn::Dense {
+                gate_w,
+                up_w,
+                down_w,
+            } => {
                 let inter = cfg.intermediate_size;
                 let gate = gate_w.apply_linear(x, h, inter)?;
                 let up = up_w.apply_linear(x, h, inter)?;
@@ -292,10 +327,8 @@ impl Qwen3MoeModel {
             }
             Qwen3MoeFfn::Moe { router_w, experts } => {
                 let inter = cfg.moe_intermediate_size;
-                let router_w_t = x.const_f32_like(
-                    router_w.clone(),
-                    Shape::from_dims(&[h, cfg.num_experts]),
-                );
+                let router_w_t =
+                    x.const_f32_like(router_w.clone(), Shape::from_dims(&[h, cfg.num_experts]));
                 let router_logits = x.matmul(&router_w_t)?;
                 let router_weights = router_logits.softmax_last_dim()?;
 
@@ -335,9 +368,9 @@ impl Qwen3MoeModel {
     pub fn decode_mask_plan(&self) -> MaskPlan {
         let cfg = &self.config;
         match (cfg.use_sliding_window, cfg.sliding_window) {
-            (true, Some(w)) => MaskPlan::split_window(
-                cfg.num_hidden_layers, cfg.max_window_layers, w,
-            ),
+            (true, Some(w)) => {
+                MaskPlan::split_window(cfg.num_hidden_layers, cfg.max_window_layers, w)
+            }
             _ => MaskPlan::dense(cfg.num_hidden_layers),
         }
     }
@@ -422,7 +455,11 @@ impl PersistentDecodeModel for Qwen3MoeModel {
         rope_inv_freq: Option<&[f64]>,
     ) -> Result<DecodeTokenData> {
         let host = crate::persistent_decode::compute_decode_token_host(
-            self, cached_len, tokens, session.max_seq_len(), rope_inv_freq,
+            self,
+            cached_len,
+            tokens,
+            session.max_seq_len(),
+            rope_inv_freq,
         );
         crate::persistent_decode::upload_decode_token_data(
             device,
@@ -460,7 +497,10 @@ impl DecodeBackbone for Qwen3MoeModel {
     }
 
     fn decode_rope_plan(&self) -> crate::persistent_decode::RopePlan {
-        crate::persistent_decode::RopePlan::single(self.config.rope_theta, self.decode_dims().n_layers)
+        crate::persistent_decode::RopePlan::single(
+            self.config.rope_theta,
+            self.decode_dims().n_layers,
+        )
     }
 
     fn decode_token_embedding(&self) -> Arc<[f32]> {
@@ -510,10 +550,12 @@ impl DecodeBackbone for Qwen3MoeModel {
 
     fn decode_final_norm_and_head(&self, h: &LazyTensor) -> Result<LazyTensor> {
         let cfg = &self.config;
-        let h_norm = h.rms_norm_affine(
-            Arc::clone(&self.weights.final_norm_gain), cfg.rms_norm_eps,
-        )?;
-        Ok(self.weights.output.apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size)?)
+        let h_norm =
+            h.rms_norm_affine(Arc::clone(&self.weights.final_norm_gain), cfg.rms_norm_eps)?;
+        Ok(self
+            .weights
+            .output
+            .apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size)?)
     }
 }
 
@@ -526,16 +568,17 @@ impl Qwen3MoeWeights {
         st: &crate::safetensors::MmapedSafetensors,
         cfg: &Qwen3MoeConfig,
     ) -> Result<Self> {
-        use crate::lazy::{load_tensor_as_f32, load_transposed_matrix, load_transposed_matrix_preserve_dtype as ltm};
+        use crate::lazy::{
+            load_tensor_as_f32, load_transposed_matrix,
+            load_transposed_matrix_preserve_dtype as ltm,
+        };
         let h = cfg.hidden_size;
         let kv_dim = cfg.num_key_value_heads * cfg.head_dim;
         let q_dim = cfg.num_attention_heads * cfg.head_dim;
         let inter = cfg.intermediate_size;
         let moe_int = cfg.moe_intermediate_size;
 
-        let token_embedding = Arc::from(load_tensor_as_f32(
-            st, "model.embed_tokens.weight",
-        )?);
+        let token_embedding = Arc::from(load_tensor_as_f32(st, "model.embed_tokens.weight")?);
 
         let opt_bias = |name: String| -> Option<Arc<[f32]>> {
             load_tensor_as_f32(st, &name).ok().map(Arc::from)
@@ -545,36 +588,49 @@ impl Qwen3MoeWeights {
         for i in 0..cfg.num_hidden_layers {
             let p = format!("model.layers.{i}");
             let attn_norm_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.input_layernorm.weight"),
+                st,
+                &format!("{p}.input_layernorm.weight"),
             )?);
             let ffn_norm_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.post_attention_layernorm.weight"),
+                st,
+                &format!("{p}.post_attention_layernorm.weight"),
             )?);
             let attn_q = ltm(st, &format!("{p}.self_attn.q_proj.weight"), q_dim, h)?;
             let attn_q_bias = if cfg.attention_bias {
                 opt_bias(format!("{p}.self_attn.q_proj.bias"))
-            } else { None };
+            } else {
+                None
+            };
             let attn_k = ltm(st, &format!("{p}.self_attn.k_proj.weight"), kv_dim, h)?;
             let attn_k_bias = if cfg.attention_bias {
                 opt_bias(format!("{p}.self_attn.k_proj.bias"))
-            } else { None };
+            } else {
+                None
+            };
             let attn_v = ltm(st, &format!("{p}.self_attn.v_proj.weight"), kv_dim, h)?;
             let attn_v_bias = if cfg.attention_bias {
                 opt_bias(format!("{p}.self_attn.v_proj.bias"))
-            } else { None };
+            } else {
+                None
+            };
             let attn_o = ltm(st, &format!("{p}.self_attn.o_proj.weight"), h, q_dim)?;
             let q_norm_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.self_attn.q_norm.weight"),
+                st,
+                &format!("{p}.self_attn.q_norm.weight"),
             )?);
             let k_norm_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.self_attn.k_norm.weight"),
+                st,
+                &format!("{p}.self_attn.k_norm.weight"),
             )?);
 
             let ffn = if cfg.layer_uses_moe(i) {
                 // HF gate weight: `[num_experts, hidden]`; transpose to
                 // `[hidden, num_experts]` for matmul layout.
                 let router_w = Arc::from(load_transposed_matrix(
-                    st, &format!("{p}.mlp.gate.weight"), cfg.num_experts, h,
+                    st,
+                    &format!("{p}.mlp.gate.weight"),
+                    cfg.num_experts,
+                    h,
                 )?);
                 let mut experts = Vec::with_capacity(cfg.num_experts);
                 for e in 0..cfg.num_experts {
@@ -583,7 +639,9 @@ impl Qwen3MoeWeights {
                     let up_w = ltm(st, &format!("{ep}.up_proj.weight"), moe_int, h)?;
                     let down_w = ltm(st, &format!("{ep}.down_proj.weight"), h, moe_int)?;
                     experts.push(Qwen3MoeExpertWeights {
-                        gate_w: gate_w_e, up_w, down_w,
+                        gate_w: gate_w_e,
+                        up_w,
+                        down_w,
                     });
                 }
                 Qwen3MoeFfn::Moe { router_w, experts }
@@ -591,24 +649,36 @@ impl Qwen3MoeWeights {
                 let gate_w = ltm(st, &format!("{p}.mlp.gate_proj.weight"), inter, h)?;
                 let up_w = ltm(st, &format!("{p}.mlp.up_proj.weight"), inter, h)?;
                 let down_w = ltm(st, &format!("{p}.mlp.down_proj.weight"), h, inter)?;
-                Qwen3MoeFfn::Dense { gate_w, up_w, down_w }
+                Qwen3MoeFfn::Dense {
+                    gate_w,
+                    up_w,
+                    down_w,
+                }
             };
 
             layers.push(Qwen3MoeLayerWeights {
-                attn_norm_gain, ffn_norm_gain,
-                attn_q, attn_q_bias, attn_k, attn_k_bias, attn_v, attn_v_bias, attn_o,
-                q_norm_gain, k_norm_gain,
+                attn_norm_gain,
+                ffn_norm_gain,
+                attn_q,
+                attn_q_bias,
+                attn_k,
+                attn_k_bias,
+                attn_v,
+                attn_v_bias,
+                attn_o,
+                q_norm_gain,
+                k_norm_gain,
                 ffn,
             });
         }
 
-        let final_norm_gain = Arc::from(load_tensor_as_f32(
-            st, "model.norm.weight",
-        )?);
+        let final_norm_gain = Arc::from(load_tensor_as_f32(st, "model.norm.weight")?);
         let output = match ltm(st, "lm_head.weight", cfg.vocab_size, h) {
             Ok(w) => w,
             Err(_) => crate::lazy_llama_full::tied_lm_head_from_embeddings(
-                &token_embedding, cfg.vocab_size, h,
+                &token_embedding,
+                cfg.vocab_size,
+                h,
             ),
         };
 
@@ -621,7 +691,6 @@ impl Qwen3MoeWeights {
         })
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -641,42 +710,62 @@ mod tests {
         let kv = cfg.num_key_value_heads * cfg.head_dim;
         let mut nb: Box<dyn FnMut() -> f32> = Box::new(next);
         let token_embedding = vec_of(cfg.vocab_size * h, &mut *nb);
-        let layers: Vec<Qwen3MoeLayerWeights> = (0..cfg.num_hidden_layers).map(|li| {
-            let ffn = if cfg.layer_uses_moe(li) {
-                let router_w = vec_of(h * cfg.num_experts, &mut *nb);
-                let experts: Vec<Qwen3MoeExpertWeights> = (0..cfg.num_experts).map(|_| {
-                    Qwen3MoeExpertWeights {
-                        gate_w: WeightStorage::F32(vec_of(h * moe_inter, &mut *nb)),
-                        up_w:   WeightStorage::F32(vec_of(h * moe_inter, &mut *nb)),
-                        down_w: WeightStorage::F32(vec_of(moe_inter * h, &mut *nb)),
+        let layers: Vec<Qwen3MoeLayerWeights> = (0..cfg.num_hidden_layers)
+            .map(|li| {
+                let ffn = if cfg.layer_uses_moe(li) {
+                    let router_w = vec_of(h * cfg.num_experts, &mut *nb);
+                    let experts: Vec<Qwen3MoeExpertWeights> = (0..cfg.num_experts)
+                        .map(|_| Qwen3MoeExpertWeights {
+                            gate_w: WeightStorage::F32(vec_of(h * moe_inter, &mut *nb)),
+                            up_w: WeightStorage::F32(vec_of(h * moe_inter, &mut *nb)),
+                            down_w: WeightStorage::F32(vec_of(moe_inter * h, &mut *nb)),
+                        })
+                        .collect();
+                    Qwen3MoeFfn::Moe { router_w, experts }
+                } else {
+                    Qwen3MoeFfn::Dense {
+                        gate_w: WeightStorage::F32(vec_of(h * inter, &mut *nb)),
+                        up_w: WeightStorage::F32(vec_of(h * inter, &mut *nb)),
+                        down_w: WeightStorage::F32(vec_of(inter * h, &mut *nb)),
                     }
-                }).collect();
-                Qwen3MoeFfn::Moe { router_w, experts }
-            } else {
-                Qwen3MoeFfn::Dense {
-                    gate_w: WeightStorage::F32(vec_of(h * inter, &mut *nb)),
-                    up_w:   WeightStorage::F32(vec_of(h * inter, &mut *nb)),
-                    down_w: WeightStorage::F32(vec_of(inter * h, &mut *nb)),
+                };
+                Qwen3MoeLayerWeights {
+                    attn_norm_gain: Arc::from(vec![1.0_f32; h]),
+                    ffn_norm_gain: Arc::from(vec![1.0_f32; h]),
+                    attn_q: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+                    attn_q_bias: if cfg.attention_bias {
+                        Some(vec_of(h, &mut *nb))
+                    } else {
+                        None
+                    },
+                    attn_k: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
+                    attn_k_bias: if cfg.attention_bias {
+                        Some(vec_of(kv, &mut *nb))
+                    } else {
+                        None
+                    },
+                    attn_v: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
+                    attn_v_bias: if cfg.attention_bias {
+                        Some(vec_of(kv, &mut *nb))
+                    } else {
+                        None
+                    },
+                    attn_o: WeightStorage::F32(vec_of(h * h, &mut *nb)),
+                    q_norm_gain: Arc::from(vec![1.0_f32; cfg.head_dim]),
+                    k_norm_gain: Arc::from(vec![1.0_f32; cfg.head_dim]),
+                    ffn,
                 }
-            };
-            Qwen3MoeLayerWeights {
-                attn_norm_gain: Arc::from(vec![1.0_f32; h]),
-                ffn_norm_gain:  Arc::from(vec![1.0_f32; h]),
-                attn_q: WeightStorage::F32(vec_of(h * h, &mut *nb)),
-                attn_q_bias: if cfg.attention_bias { Some(vec_of(h, &mut *nb)) } else { None },
-                attn_k: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
-                attn_k_bias: if cfg.attention_bias { Some(vec_of(kv, &mut *nb)) } else { None },
-                attn_v: WeightStorage::F32(vec_of(h * kv, &mut *nb)),
-                attn_v_bias: if cfg.attention_bias { Some(vec_of(kv, &mut *nb)) } else { None },
-                attn_o: WeightStorage::F32(vec_of(h * h, &mut *nb)),
-                q_norm_gain: Arc::from(vec![1.0_f32; cfg.head_dim]),
-                k_norm_gain: Arc::from(vec![1.0_f32; cfg.head_dim]),
-                ffn,
-            }
-        }).collect();
+            })
+            .collect();
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size, &mut *nb));
-        Qwen3MoeWeights { instance: crate::decode_shape::ModelInstanceId::next(), token_embedding, layers, final_norm_gain, output }
+        Qwen3MoeWeights {
+            instance: crate::decode_shape::ModelInstanceId::next(),
+            token_embedding,
+            layers,
+            final_norm_gain,
+            output,
+        }
     }
 
     #[test]
@@ -684,40 +773,67 @@ mod tests {
         // decoder_sparse_step = 2 → layers 1 and 3 (0-indexed) use MoE,
         // layer 0 and 2 use dense.
         let cfg = Qwen3MoeConfig {
-            vocab_size: 16, hidden_size: 8, intermediate_size: 16,
-            num_hidden_layers: 4, num_attention_heads: 2, head_dim: 4,
-            attention_bias: false, num_key_value_heads: 2,
+            vocab_size: 16,
+            hidden_size: 8,
+            intermediate_size: 16,
+            num_hidden_layers: 4,
+            num_attention_heads: 2,
+            head_dim: 4,
+            attention_bias: false,
+            num_key_value_heads: 2,
             max_position_embeddings: 32,
-            sliding_window: None, max_window_layers: 0, use_sliding_window: false,
-            rope_theta: 10_000.0, rms_norm_eps: 1e-5,
-            decoder_sparse_step: 2, moe_intermediate_size: 8,
-            num_experts: 2, num_experts_per_tok: 1,
+            sliding_window: None,
+            max_window_layers: 0,
+            use_sliding_window: false,
+            rope_theta: 10_000.0,
+            rms_norm_eps: 1e-5,
+            decoder_sparse_step: 2,
+            moe_intermediate_size: 8,
+            num_experts: 2,
+            num_experts_per_tok: 1,
         };
         // Confirm the FFN-mode mapping is what we expect.
         assert_eq!(cfg.layer_uses_moe(0), false);
         assert_eq!(cfg.layer_uses_moe(1), true);
         assert_eq!(cfg.layer_uses_moe(2), false);
         assert_eq!(cfg.layer_uses_moe(3), true);
-        let model = Qwen3MoeModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Qwen3MoeModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let logits = model.forward(&[1, 2, 3], 0).unwrap();
         assert_eq!(logits.shape().dims(), &[1, 3, cfg.vocab_size]);
-        for &v in &logits.realize_f32() { assert!(v.is_finite()); }
+        for &v in &logits.realize_f32() {
+            assert!(v.is_finite());
+        }
     }
 
     #[test]
     fn forward_hidden_shape_and_finite() {
         let cfg = Qwen3MoeConfig {
-            vocab_size: 16, hidden_size: 8, intermediate_size: 16,
-            num_hidden_layers: 4, num_attention_heads: 4, num_key_value_heads: 4,
+            vocab_size: 16,
+            hidden_size: 8,
+            intermediate_size: 16,
+            num_hidden_layers: 4,
+            num_attention_heads: 4,
+            num_key_value_heads: 4,
             head_dim: 2,
             max_position_embeddings: 32,
-            sliding_window: None, max_window_layers: 0, use_sliding_window: false,
-            rope_theta: 10_000.0, rms_norm_eps: 1e-5,
-            decoder_sparse_step: 2, moe_intermediate_size: 8,
-            num_experts: 2, num_experts_per_tok: 1,
+            sliding_window: None,
+            max_window_layers: 0,
+            use_sliding_window: false,
+            rope_theta: 10_000.0,
+            rms_norm_eps: 1e-5,
+            decoder_sparse_step: 2,
+            moe_intermediate_size: 8,
+            num_experts: 2,
+            num_experts_per_tok: 1,
             attention_bias: false,
         };
-        let model = Qwen3MoeModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Qwen3MoeModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
         let hidden = model.forward_hidden(&tokens, 0).unwrap();
         assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
@@ -728,14 +844,23 @@ mod tests {
 
     fn forward_embeds_test_cfg() -> Qwen3MoeConfig {
         Qwen3MoeConfig {
-            vocab_size: 16, hidden_size: 8, intermediate_size: 16,
-            num_hidden_layers: 4, num_attention_heads: 4, num_key_value_heads: 4,
+            vocab_size: 16,
+            hidden_size: 8,
+            intermediate_size: 16,
+            num_hidden_layers: 4,
+            num_attention_heads: 4,
+            num_key_value_heads: 4,
             head_dim: 2,
             max_position_embeddings: 32,
-            sliding_window: None, max_window_layers: 0, use_sliding_window: false,
-            rope_theta: 10_000.0, rms_norm_eps: 1e-5,
-            decoder_sparse_step: 2, moe_intermediate_size: 8,
-            num_experts: 2, num_experts_per_tok: 1,
+            sliding_window: None,
+            max_window_layers: 0,
+            use_sliding_window: false,
+            rope_theta: 10_000.0,
+            rms_norm_eps: 1e-5,
+            decoder_sparse_step: 2,
+            moe_intermediate_size: 8,
+            num_experts: 2,
+            num_experts_per_tok: 1,
             attention_bias: false,
         }
     }
@@ -743,27 +868,37 @@ mod tests {
     #[test]
     fn forward_embeds_matches_forward_after_token_lookup() {
         let cfg = forward_embeds_test_cfg();
-        let model = Qwen3MoeModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Qwen3MoeModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
-        let max_diff = logits_ref.iter().zip(logits_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "Qwen3MoE forward vs forward_embeds must agree (max diff {max_diff})");
+        let max_diff = logits_ref
+            .iter()
+            .zip(logits_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "Qwen3MoE forward vs forward_embeds must agree (max diff {max_diff})"
+        );
     }
 
     #[test]
     fn forward_embeds_rejects_bad_shape() {
         let cfg = forward_embeds_test_cfg();
-        let model = Qwen3MoeModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Qwen3MoeModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let bad = LazyTensor::from_f32(
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
-            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]), &Device::cpu(),
+            Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
+            &Device::cpu(),
         );
         assert!(model.forward_embeds(&bad, 0).is_err());
     }
@@ -771,18 +906,27 @@ mod tests {
     #[test]
     fn forward_hidden_embeds_matches_forward_hidden() {
         let cfg = forward_embeds_test_cfg();
-        let model = Qwen3MoeModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Qwen3MoeModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
-        let h_via_embeds = model.forward_hidden_embeds(&embeds, 0).unwrap().realize_f32();
-        let max_diff = h_ref.iter().zip(h_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "Qwen3MoE forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})");
+        let h_via_embeds = model
+            .forward_hidden_embeds(&embeds, 0)
+            .unwrap()
+            .realize_f32();
+        let max_diff = h_ref
+            .iter()
+            .zip(h_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "Qwen3MoE forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})"
+        );
     }
 
     // ---- GAP-029 increment 3, family 4: persistent decode -------------------
@@ -819,41 +963,68 @@ mod tests {
 
     /// Max |logit diff| per decode step against the per-layer-gated non-cached
     /// forward. `>= 3` decode steps so the assertions reach the REBIND path.
-    fn decode_vs_forward_max_abs(
-        cfg: &Qwen3MoeConfig, tokens: &[u32], prefill: usize,
-    ) -> Vec<f32> {
+    fn decode_vs_forward_max_abs(cfg: &Qwen3MoeConfig, tokens: &[u32], prefill: usize) -> Vec<f32> {
         let n_decode = tokens.len() - prefill;
-        assert!(n_decode >= 3, "need >= 3 decode tokens to reach the rebind path");
-        let model = Qwen3MoeModel { config: cfg.clone(), weights: tiny_weights(cfg) };
+        assert!(
+            n_decode >= 3,
+            "need >= 3 decode tokens to reach the rebind path"
+        );
+        let model = Qwen3MoeModel {
+            config: cfg.clone(),
+            weights: tiny_weights(cfg),
+        };
 
         let dev = Device::cpu();
         let mut cache = KvCache::with_capacity(
-            cfg.num_hidden_layers, cfg.num_key_value_heads, cfg.head_dim,
-            tokens.len(), DType::F32, &dev,
-        ).expect("with_capacity");
+            cfg.num_hidden_layers,
+            cfg.num_key_value_heads,
+            cfg.head_dim,
+            tokens.len(),
+            DType::F32,
+            &dev,
+        )
+        .expect("with_capacity");
         let mut ctx = InferenceContext::new(dev);
         let mut session: Option<DecodeSession> = None;
 
-        model.forward_with_kv_context_persistent(
-            &tokens[..prefill], &mut cache, &mut ctx, &mut session,
-        ).expect("prefill");
-        assert!(session.is_none(), "prefill (seq > 1) must NOT build the held session");
+        model
+            .forward_with_kv_context_persistent(
+                &tokens[..prefill],
+                &mut cache,
+                &mut ctx,
+                &mut session,
+            )
+            .expect("prefill");
+        assert!(
+            session.is_none(),
+            "prefill (seq > 1) must NOT build the held session"
+        );
 
         let mut out = Vec::with_capacity(n_decode);
         for pos in prefill..tokens.len() {
-            let got = model.forward_with_kv_context_persistent(
-                &tokens[pos..=pos], &mut cache, &mut ctx, &mut session,
-            ).expect("decode");
+            let got = model
+                .forward_with_kv_context_persistent(
+                    &tokens[pos..=pos],
+                    &mut cache,
+                    &mut ctx,
+                    &mut session,
+                )
+                .expect("decode");
             assert!(session.is_some(), "decode must hold a session from token 1");
             let full = model.forward(&tokens[..=pos], 0).unwrap().realize_f32();
             let expected = &full[pos * cfg.vocab_size..(pos + 1) * cfg.vocab_size];
             out.push(
-                got.iter().zip(expected.iter())
+                got.iter()
+                    .zip(expected.iter())
                     .map(|(a, b)| (a - b).abs())
                     .fold(0.0_f32, f32::max),
             );
         }
-        assert_eq!(cache.cached_len, tokens.len(), "cache must advance every step");
+        assert_eq!(
+            cache.cached_len,
+            tokens.len(),
+            "cache must advance every step"
+        );
         out
     }
 
@@ -864,7 +1035,10 @@ mod tests {
     /// windowing.
     #[test]
     fn qwen3_moe_decode_matches_forward_when_no_layer_is_windowed() {
-        let cfg = Qwen3MoeConfig { max_window_layers: 0, ..mixed_window_cfg() };
+        let cfg = Qwen3MoeConfig {
+            max_window_layers: 0,
+            ..mixed_window_cfg()
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6];
         let diffs = decode_vs_forward_max_abs(&cfg, &tokens, 3);
         let worst = diffs.iter().copied().fold(0.0_f32, f32::max);
@@ -900,9 +1074,14 @@ mod tests {
     #[test]
     fn qwen3_moe_windowed_decode_matches_per_layer_gated_forward() {
         let cfg = mixed_window_cfg();
-        let window = cfg.sliding_window.expect("mixed config carries a window width");
+        let window = cfg
+            .sliding_window
+            .expect("mixed config carries a window width");
         let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6];
-        assert!(tokens.len() > window, "non-vacuity: the window must actually bite");
+        assert!(
+            tokens.len() > window,
+            "non-vacuity: the window must actually bite"
+        );
         let diffs = decode_vs_forward_max_abs(&cfg, &tokens, 3);
         let worst = diffs.iter().copied().fold(0.0_f32, f32::max);
         assert!(
@@ -940,8 +1119,14 @@ mod tests {
     /// real reason — two FFN cadences, two code paths — not the invented one.
     #[test]
     fn qwen3_moe_dense_ffn_layers_expose_the_windowed_mask() {
-        let cfg = Qwen3MoeConfig { decoder_sparse_step: 2, ..mixed_window_cfg() };
-        assert!(!cfg.layer_uses_moe(0), "layer 0 (the windowed one) must be dense here");
+        let cfg = Qwen3MoeConfig {
+            decoder_sparse_step: 2,
+            ..mixed_window_cfg()
+        };
+        assert!(
+            !cfg.layer_uses_moe(0),
+            "layer 0 (the windowed one) must be dense here"
+        );
         assert!(cfg.layer_uses_moe(1), "layer 1 must still be MoE");
         let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6];
         let diffs = decode_vs_forward_max_abs(&cfg, &tokens, 3);
@@ -964,8 +1149,15 @@ mod tests {
             max_window_layers: 2,
             ..mixed_window_cfg()
         };
-        let plan = Qwen3MoeModel { config: cfg.clone(), weights: tiny_weights(&cfg) }
-            .decode_mask_plan();
-        assert_eq!(plan.n_variants(), 1, "absent width must collapse to one dense variant");
+        let plan = Qwen3MoeModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        }
+        .decode_mask_plan();
+        assert_eq!(
+            plan.n_variants(),
+            1,
+            "absent width must collapse to one dense variant"
+        );
     }
 }

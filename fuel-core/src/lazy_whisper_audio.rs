@@ -30,7 +30,9 @@ pub const N_SAMPLES: usize = CHUNK_LENGTH * SAMPLE_RATE;
 pub fn hann_window(n: usize) -> Vec<f32> {
     let n_t = n as f32;
     let two_pi = 2.0 * std::f32::consts::PI;
-    (0..n).map(|i| 0.5 * (1.0 - (two_pi * (i as f32) / n_t).cos())).collect()
+    (0..n)
+        .map(|i| 0.5 * (1.0 - (two_pi * (i as f32) / n_t).cos()))
+        .collect()
 }
 
 fn dft(inp: &[f32]) -> Vec<f32> {
@@ -213,11 +215,7 @@ pub fn log_mel(
 /// supplied filterbank. Returns a flat `Vec<f32>` of shape
 /// `(n_mels, N_FRAMES)` where `N_FRAMES = N_SAMPLES / HOP_LENGTH + 1
 /// = 3001`.
-pub fn pcm_to_mel(
-    samples: &[f32],
-    mel_filters: &[f32],
-    n_mels: usize,
-) -> Result<Vec<f32>> {
+pub fn pcm_to_mel(samples: &[f32], mel_filters: &[f32], n_mels: usize) -> Result<Vec<f32>> {
     let mut padded = Vec::with_capacity(N_SAMPLES);
     if samples.len() >= N_SAMPLES {
         padded.extend_from_slice(&samples[..N_SAMPLES]);
@@ -282,7 +280,11 @@ mod tests {
         let filt = fake_mel_filters(n_mels, n_bins);
         let samples = vec![0.0f32; N_SAMPLES];
         let mel = pcm_to_mel(&samples, &filt, n_mels).unwrap();
-        assert_eq!(mel.len(), n_mels * 3001, "expected (n_mels=80, n_frames=3001)");
+        assert_eq!(
+            mel.len(),
+            n_mels * 3001,
+            "expected (n_mels=80, n_frames=3001)"
+        );
     }
 
     #[test]
@@ -297,8 +299,17 @@ mod tests {
         }
         let first = mel[0];
         for v in mel.iter() {
-            assert!((*v - first).abs() < 1e-5, "silence not uniform: {} vs {}", v, first);
+            assert!(
+                (*v - first).abs() < 1e-5,
+                "silence not uniform: {} vs {}",
+                v,
+                first
+            );
         }
-        assert!((first - (-1.5)).abs() < 1e-5, "silence floor expected -1.5, got {}", first);
+        assert!(
+            (first - (-1.5)).abs() < 1e-5,
+            "silence floor expected -1.5, got {}",
+            first
+        );
     }
 }

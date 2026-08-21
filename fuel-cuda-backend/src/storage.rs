@@ -1,17 +1,16 @@
-﻿//! Implementation of Backend traits for CUDA device
+//! Implementation of Backend traits for CUDA device
 //!
 
-use fuel_ir::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
-use fuel_ir::dtype::WithDType;
-use fuel_ir::quantized::GgmlDType;
-use fuel_ir::{HostBuffer, DType, Layout, Result};
 use crate::builder_arg as barg;
+use fuel_ir::dtype::WithDType;
+use fuel_ir::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
+use fuel_ir::quantized::GgmlDType;
+use fuel_ir::{DType, HostBuffer, Layout, Result};
 
+use crate::device::{LaunchArgs, LaunchConfig};
 use baracuda_driver::{DeviceBuffer as CudaSlice, DevicePtr};
 use baracuda_types::{DeviceRepr, KernelArg as PushKernelArg, ValidAsZeroBits};
-use crate::device::{LaunchArgs, LaunchConfig};
 use half::{bf16, f16};
-
 
 use crate::device::CudaDevice;
 use crate::error::{CudaError, WrapErr};
@@ -85,7 +84,10 @@ pub(crate) fn dims_strides_strides_usize(dims: &[usize], a: &Layout, b: &Layout)
 // `conv_dims_strides_usize` retired in Phase 5b alongside the PTX
 // Conv*/ConvTranspose* structs that consumed its packed-strides arg.
 
-fn push_scalar_arg<'a>(scalar: &'a fuel_ir::scalar::Scalar, builder: &mut crate::device::LaunchArgs<'a>) {
+fn push_scalar_arg<'a>(
+    scalar: &'a fuel_ir::scalar::Scalar,
+    builder: &mut crate::device::LaunchArgs<'a>,
+) {
     use fuel_ir::scalar::Scalar;
     match scalar {
         Scalar::U8(v) => builder.arg(v),
@@ -217,66 +219,114 @@ impl Map1 for Affine {
         let status = match (dt, contig, &owned_strided) {
             (DType::F32, true, _) => unsafe {
                 sys::baracuda_kernels_affine_f32_run(
-                    el as i64, x_ptr, y_ptr, a64 as f32, b64 as f32,
-                    std::ptr::null_mut(), 0, stream,
+                    el as i64,
+                    x_ptr,
+                    y_ptr,
+                    a64 as f32,
+                    b64 as f32,
+                    std::ptr::null_mut(),
+                    0,
+                    stream,
                 )
             },
             (DType::F32, false, Some((rank, sd, sx, sy))) => unsafe {
                 sys::baracuda_kernels_affine_f32_strided_run(
-                    el as i64, *rank,
+                    el as i64,
+                    *rank,
                     sd.as_raw().0 as *const i32,
                     sx.as_raw().0 as *const i64,
                     sy.as_raw().0 as *const i64,
-                    x_ptr, y_ptr, a64 as f32, b64 as f32,
-                    std::ptr::null_mut(), 0, stream,
+                    x_ptr,
+                    y_ptr,
+                    a64 as f32,
+                    b64 as f32,
+                    std::ptr::null_mut(),
+                    0,
+                    stream,
                 )
             },
             (DType::F64, true, _) => unsafe {
                 sys::baracuda_kernels_affine_f64_run(
-                    el as i64, x_ptr, y_ptr, a64, b64,
-                    std::ptr::null_mut(), 0, stream,
+                    el as i64,
+                    x_ptr,
+                    y_ptr,
+                    a64,
+                    b64,
+                    std::ptr::null_mut(),
+                    0,
+                    stream,
                 )
             },
             (DType::F64, false, Some((rank, sd, sx, sy))) => unsafe {
                 sys::baracuda_kernels_affine_f64_strided_run(
-                    el as i64, *rank,
+                    el as i64,
+                    *rank,
                     sd.as_raw().0 as *const i32,
                     sx.as_raw().0 as *const i64,
                     sy.as_raw().0 as *const i64,
-                    x_ptr, y_ptr, a64, b64,
-                    std::ptr::null_mut(), 0, stream,
+                    x_ptr,
+                    y_ptr,
+                    a64,
+                    b64,
+                    std::ptr::null_mut(),
+                    0,
+                    stream,
                 )
             },
             (DType::F16, true, _) => unsafe {
                 sys::baracuda_kernels_affine_f16_run(
-                    el as i64, x_ptr, y_ptr, a64 as f32, b64 as f32,
-                    std::ptr::null_mut(), 0, stream,
+                    el as i64,
+                    x_ptr,
+                    y_ptr,
+                    a64 as f32,
+                    b64 as f32,
+                    std::ptr::null_mut(),
+                    0,
+                    stream,
                 )
             },
             (DType::F16, false, Some((rank, sd, sx, sy))) => unsafe {
                 sys::baracuda_kernels_affine_f16_strided_run(
-                    el as i64, *rank,
+                    el as i64,
+                    *rank,
                     sd.as_raw().0 as *const i32,
                     sx.as_raw().0 as *const i64,
                     sy.as_raw().0 as *const i64,
-                    x_ptr, y_ptr, a64 as f32, b64 as f32,
-                    std::ptr::null_mut(), 0, stream,
+                    x_ptr,
+                    y_ptr,
+                    a64 as f32,
+                    b64 as f32,
+                    std::ptr::null_mut(),
+                    0,
+                    stream,
                 )
             },
             (DType::BF16, true, _) => unsafe {
                 sys::baracuda_kernels_affine_bf16_run(
-                    el as i64, x_ptr, y_ptr, a64 as f32, b64 as f32,
-                    std::ptr::null_mut(), 0, stream,
+                    el as i64,
+                    x_ptr,
+                    y_ptr,
+                    a64 as f32,
+                    b64 as f32,
+                    std::ptr::null_mut(),
+                    0,
+                    stream,
                 )
             },
             (DType::BF16, false, Some((rank, sd, sx, sy))) => unsafe {
                 sys::baracuda_kernels_affine_bf16_strided_run(
-                    el as i64, *rank,
+                    el as i64,
+                    *rank,
                     sd.as_raw().0 as *const i32,
                     sx.as_raw().0 as *const i64,
                     sy.as_raw().0 as *const i64,
-                    x_ptr, y_ptr, a64 as f32, b64 as f32,
-                    std::ptr::null_mut(), 0, stream,
+                    x_ptr,
+                    y_ptr,
+                    a64 as f32,
+                    b64 as f32,
+                    std::ptr::null_mut(),
+                    0,
+                    stream,
                 )
             },
             (other, _, _) => fuel_ir::bail!("baracuda affine: unsupported dtype {other:?}"),
@@ -334,7 +384,17 @@ fn unary_scalar_baracuda<T: DeviceRepr + WithDType + ValidAsZeroBits>(
     let y_ptr = out.as_raw().0 as *mut std::ffi::c_void;
     let status = if layout.is_contiguous() {
         // SAFETY: pointers + stream validated; workspace null/0.
-        unsafe { contig_fn(el as i64, x_ptr, y_ptr, scalar, std::ptr::null_mut(), 0, stream) }
+        unsafe {
+            contig_fn(
+                el as i64,
+                x_ptr,
+                y_ptr,
+                scalar,
+                std::ptr::null_mut(),
+                0,
+                stream,
+            )
+        }
     } else {
         let dims = layout.shape().dims();
         let rank = dims.len();
@@ -351,10 +411,17 @@ fn unary_scalar_baracuda<T: DeviceRepr + WithDType + ValidAsZeroBits>(
         // per baracuda's ABI).
         unsafe {
             strided_fn(
-                el as i64, rank as i32,
-                shape_i32.as_ptr(), stride_x.as_ptr(), stride_y.as_ptr(),
-                x_ptr, y_ptr, scalar,
-                std::ptr::null_mut(), 0, stream,
+                el as i64,
+                rank as i32,
+                shape_i32.as_ptr(),
+                stride_x.as_ptr(),
+                stride_y.as_ptr(),
+                x_ptr,
+                y_ptr,
+                scalar,
+                std::ptr::null_mut(),
+                0,
+                stream,
             )
         }
     };
@@ -394,7 +461,15 @@ impl Map1 for Elu {
             ),
             other => fuel_ir::bail!("baracuda elu: unsupported dtype {other:?}"),
         };
-        unary_scalar_baracuda(src, dev, layout, self.0 as f32, contig, strided, "unary_elu")
+        unary_scalar_baracuda(
+            src,
+            dev,
+            layout,
+            self.0 as f32,
+            contig,
+            strided,
+            "unary_elu",
+        )
     }
 }
 
@@ -429,7 +504,15 @@ impl Map1 for Powf {
             ),
             other => fuel_ir::bail!("baracuda powf: unsupported dtype {other:?}"),
         };
-        unary_scalar_baracuda(src, dev, layout, self.0 as f32, contig, strided, "unary_powf")
+        unary_scalar_baracuda(
+            src,
+            dev,
+            layout,
+            self.0 as f32,
+            contig,
+            strided,
+            "unary_powf",
+        )
     }
 }
 
@@ -794,9 +877,7 @@ fn fan_out_reduce<T: DeviceRepr + WithDType + ValidAsZeroBits>(
         cur_buf = Some(out);
     }
 
-    cur_buf.ok_or_else(|| {
-        crate::Error::Msg("FastReduce: empty reduce-dim list".to_string()).bt()
-    })
+    cur_buf.ok_or_else(|| crate::Error::Msg("FastReduce: empty reduce-dim list".to_string()).bt())
 }
 
 // Generic unary FFI types — every baracuda `unary_<op>_<dtype>_run` /
@@ -889,8 +970,10 @@ pub fn unary_baracuda<T: DeviceRepr + WithDType + ValidAsZeroBits>(
 ) -> Result<CudaSlice<T>> {
     let dt = T::DTYPE;
     let (contig_fn, strided_fn) = pick_unary_ffi(kernel, dt).ok_or_else(|| {
-        fuel_ir::Error::Msg(format!("baracuda unary: unsupported (op={kernel}, dtype={dt:?})"))
-            .bt()
+        fuel_ir::Error::Msg(format!(
+            "baracuda unary: unsupported (op={kernel}, dtype={dt:?})"
+        ))
+        .bt()
     })?;
     let el = layout.shape().elem_count();
     let src_slice = src.slice(layout.start_offset()..src.len());
@@ -903,9 +986,7 @@ pub fn unary_baracuda<T: DeviceRepr + WithDType + ValidAsZeroBits>(
     let y_ptr = out.as_raw().0 as *mut std::ffi::c_void;
     let status = if layout.is_contiguous() {
         // SAFETY: pointers + stream validated above; workspace null/0.
-        unsafe {
-            contig_fn(el as i64, x_ptr, y_ptr, std::ptr::null_mut(), 0, stream)
-        }
+        unsafe { contig_fn(el as i64, x_ptr, y_ptr, std::ptr::null_mut(), 0, stream) }
     } else {
         let dims = layout.shape().dims();
         let rank = dims.len();
@@ -922,12 +1003,16 @@ pub fn unary_baracuda<T: DeviceRepr + WithDType + ValidAsZeroBits>(
         // baracuda reads them on the host side before the kernel launch.
         unsafe {
             strided_fn(
-                el as i64, rank as i32,
+                el as i64,
+                rank as i32,
                 shape_i32.as_ptr(),
                 stride_x.as_ptr(),
                 stride_y.as_ptr(),
-                x_ptr, y_ptr,
-                std::ptr::null_mut(), 0, stream,
+                x_ptr,
+                y_ptr,
+                std::ptr::null_mut(),
+                0,
+                stream,
             )
         }
     };
@@ -993,7 +1078,9 @@ fn idx_ptr_for_baracuda(
                     el as i64,
                     view.as_raw().0 as *const std::ffi::c_void,
                     i32_buf.as_raw().0 as *mut std::ffi::c_void,
-                    std::ptr::null_mut(), 0, stream,
+                    std::ptr::null_mut(),
+                    0,
+                    stream,
                 )
             };
             crate::baracuda::status::check(status, "cast_u8_i32 (idx)")?;
@@ -1005,7 +1092,8 @@ fn idx_ptr_for_baracuda(
             msg: "idx should be u8/u32/i64",
             expected: DType::U32,
             got: ids_storage.dtype(),
-        }.into()),
+        }
+        .into()),
     }
 }
 
@@ -1032,20 +1120,68 @@ fn pick_index_select_ffi(val_dt: DType, use_i64: bool) -> Option<IndexSelectRun>
         ($variant:ident, $sym32:ident, $sym64:ident) => {
             match (val_dt, use_i64) {
                 (DType::$variant, false) => Some(sys::$sym32 as IndexSelectRun),
-                (DType::$variant, true)  => Some(sys::$sym64 as IndexSelectRun),
+                (DType::$variant, true) => Some(sys::$sym64 as IndexSelectRun),
                 _ => None,
             }
         };
     }
     // Try each value dtype until one matches.
-    if val_dt == DType::F32 { return pick!(F32, baracuda_kernels_index_select_f32_run, baracuda_kernels_index_select_i64idx_f32_run); }
-    if val_dt == DType::F64 { return pick!(F64, baracuda_kernels_index_select_f64_run, baracuda_kernels_index_select_i64idx_f64_run); }
-    if val_dt == DType::I32 { return pick!(I32, baracuda_kernels_index_select_i32_run, baracuda_kernels_index_select_i64idx_i32_run); }
-    if val_dt == DType::U8  { return pick!(U8,  baracuda_kernels_index_select_u8_run,  baracuda_kernels_index_select_i64idx_u8_run); }
-    if val_dt == DType::I8  { return pick!(I8,  baracuda_kernels_index_select_i8_run,  baracuda_kernels_index_select_i64idx_i8_run); }
-    if val_dt == DType::U32 { return pick!(U32, baracuda_kernels_index_select_u32_run, baracuda_kernels_index_select_i64idx_u32_run); }
-    if val_dt == DType::I16 { return pick!(I16, baracuda_kernels_index_select_i16_run, baracuda_kernels_index_select_i64idx_i16_run); }
-    if val_dt == DType::I64 { return pick!(I64, baracuda_kernels_index_select_i64_run, baracuda_kernels_index_select_i64idx_i64_run); }
+    if val_dt == DType::F32 {
+        return pick!(
+            F32,
+            baracuda_kernels_index_select_f32_run,
+            baracuda_kernels_index_select_i64idx_f32_run
+        );
+    }
+    if val_dt == DType::F64 {
+        return pick!(
+            F64,
+            baracuda_kernels_index_select_f64_run,
+            baracuda_kernels_index_select_i64idx_f64_run
+        );
+    }
+    if val_dt == DType::I32 {
+        return pick!(
+            I32,
+            baracuda_kernels_index_select_i32_run,
+            baracuda_kernels_index_select_i64idx_i32_run
+        );
+    }
+    if val_dt == DType::U8 {
+        return pick!(
+            U8,
+            baracuda_kernels_index_select_u8_run,
+            baracuda_kernels_index_select_i64idx_u8_run
+        );
+    }
+    if val_dt == DType::I8 {
+        return pick!(
+            I8,
+            baracuda_kernels_index_select_i8_run,
+            baracuda_kernels_index_select_i64idx_i8_run
+        );
+    }
+    if val_dt == DType::U32 {
+        return pick!(
+            U32,
+            baracuda_kernels_index_select_u32_run,
+            baracuda_kernels_index_select_i64idx_u32_run
+        );
+    }
+    if val_dt == DType::I16 {
+        return pick!(
+            I16,
+            baracuda_kernels_index_select_i16_run,
+            baracuda_kernels_index_select_i64idx_i16_run
+        );
+    }
+    if val_dt == DType::I64 {
+        return pick!(
+            I64,
+            baracuda_kernels_index_select_i64_run,
+            baracuda_kernels_index_select_i64idx_i64_run
+        );
+    }
     None
 }
 
@@ -1100,7 +1236,8 @@ impl Map1 for IndexSelect<'_> {
             crate::Error::Msg(format!(
                 "index_select: no baracuda kernel for value dtype {:?}",
                 T::DTYPE
-            )).bt()
+            ))
+            .bt()
         })?;
         let stream = dev.stream().as_raw() as *mut std::ffi::c_void;
         let status = unsafe {
@@ -1115,7 +1252,9 @@ impl Map1 for IndexSelect<'_> {
                 src.as_raw().0 as *const std::ffi::c_void,
                 idx_ptr,
                 out.as_raw().0 as *mut std::ffi::c_void,
-                std::ptr::null_mut(), 0, stream,
+                std::ptr::null_mut(),
+                0,
+                stream,
             )
         };
         crate::baracuda::status::check(status, "index_select")?;
@@ -1148,16 +1287,16 @@ fn pick_gather_ffi(val_dt: DType, use_i64: bool) -> Option<GatherRun> {
         (DType::F32, false) => Some(sys::baracuda_kernels_gather_f32_run as GatherRun),
         (DType::F64, false) => Some(sys::baracuda_kernels_gather_f64_run as GatherRun),
         (DType::I32, false) => Some(sys::baracuda_kernels_gather_i32_run as GatherRun),
-        (DType::U8,  false) => Some(sys::baracuda_kernels_gather_u8_run  as GatherRun),
-        (DType::I8,  false) => Some(sys::baracuda_kernels_gather_i8_run  as GatherRun),
+        (DType::U8, false) => Some(sys::baracuda_kernels_gather_u8_run as GatherRun),
+        (DType::I8, false) => Some(sys::baracuda_kernels_gather_i8_run as GatherRun),
         (DType::U32, false) => Some(sys::baracuda_kernels_gather_u32_run as GatherRun),
         (DType::I16, false) => Some(sys::baracuda_kernels_gather_i16_run as GatherRun),
         (DType::I64, false) => Some(sys::baracuda_kernels_gather_i64_run as GatherRun),
         (DType::F32, true) => Some(sys::baracuda_kernels_gather_i64idx_f32_run as GatherRun),
         (DType::F64, true) => Some(sys::baracuda_kernels_gather_i64idx_f64_run as GatherRun),
         (DType::I32, true) => Some(sys::baracuda_kernels_gather_i64idx_i32_run as GatherRun),
-        (DType::U8,  true) => Some(sys::baracuda_kernels_gather_i64idx_u8_run  as GatherRun),
-        (DType::I8,  true) => Some(sys::baracuda_kernels_gather_i64idx_i8_run  as GatherRun),
+        (DType::U8, true) => Some(sys::baracuda_kernels_gather_i64idx_u8_run as GatherRun),
+        (DType::I8, true) => Some(sys::baracuda_kernels_gather_i64idx_i8_run as GatherRun),
         (DType::U32, true) => Some(sys::baracuda_kernels_gather_i64idx_u32_run as GatherRun),
         (DType::I16, true) => Some(sys::baracuda_kernels_gather_i64idx_i16_run as GatherRun),
         (DType::I64, true) => Some(sys::baracuda_kernels_gather_i64idx_i64_run as GatherRun),
@@ -1214,7 +1353,8 @@ impl Map1 for Gather<'_> {
             crate::Error::Msg(format!(
                 "gather: no baracuda kernel for value dtype {:?}",
                 T::DTYPE
-            )).bt()
+            ))
+            .bt()
         })?;
         let stream = dev.stream().as_raw() as *mut std::ffi::c_void;
         let status = unsafe {
@@ -1230,7 +1370,9 @@ impl Map1 for Gather<'_> {
                 src.as_raw().0 as *const std::ffi::c_void,
                 idx_ptr,
                 out.as_raw().0 as *mut std::ffi::c_void,
-                std::ptr::null_mut(), 0, stream,
+                std::ptr::null_mut(),
+                0,
+                stream,
             )
         };
         crate::baracuda::status::check(status, "gather")?;
@@ -1259,20 +1401,20 @@ type IndexAddRun = unsafe extern "C" fn(
 fn pick_index_add_ffi(val_dt: DType, use_i64: bool) -> Option<IndexAddRun> {
     use baracuda_kernels_sys as sys;
     match (val_dt, use_i64) {
-        (DType::F32, false)  => Some(sys::baracuda_kernels_index_add_f32_run  as IndexAddRun),
-        (DType::F64, false)  => Some(sys::baracuda_kernels_index_add_f64_run  as IndexAddRun),
-        (DType::F16, false)  => Some(sys::baracuda_kernels_index_add_f16_run  as IndexAddRun),
+        (DType::F32, false) => Some(sys::baracuda_kernels_index_add_f32_run as IndexAddRun),
+        (DType::F64, false) => Some(sys::baracuda_kernels_index_add_f64_run as IndexAddRun),
+        (DType::F16, false) => Some(sys::baracuda_kernels_index_add_f16_run as IndexAddRun),
         (DType::BF16, false) => Some(sys::baracuda_kernels_index_add_bf16_run as IndexAddRun),
-        (DType::I32, false)  => Some(sys::baracuda_kernels_index_add_i32_run  as IndexAddRun),
-        (DType::U32, false)  => Some(sys::baracuda_kernels_index_add_u32_run  as IndexAddRun),
-        (DType::I64, false)  => Some(sys::baracuda_kernels_index_add_i64_run  as IndexAddRun),
-        (DType::F32, true)   => Some(sys::baracuda_kernels_index_add_i64idx_f32_run  as IndexAddRun),
-        (DType::F64, true)   => Some(sys::baracuda_kernels_index_add_i64idx_f64_run  as IndexAddRun),
-        (DType::F16, true)   => Some(sys::baracuda_kernels_index_add_i64idx_f16_run  as IndexAddRun),
-        (DType::BF16, true)  => Some(sys::baracuda_kernels_index_add_i64idx_bf16_run as IndexAddRun),
-        (DType::I32, true)   => Some(sys::baracuda_kernels_index_add_i64idx_i32_run  as IndexAddRun),
-        (DType::U32, true)   => Some(sys::baracuda_kernels_index_add_i64idx_u32_run  as IndexAddRun),
-        (DType::I64, true)   => Some(sys::baracuda_kernels_index_add_i64idx_i64_run  as IndexAddRun),
+        (DType::I32, false) => Some(sys::baracuda_kernels_index_add_i32_run as IndexAddRun),
+        (DType::U32, false) => Some(sys::baracuda_kernels_index_add_u32_run as IndexAddRun),
+        (DType::I64, false) => Some(sys::baracuda_kernels_index_add_i64_run as IndexAddRun),
+        (DType::F32, true) => Some(sys::baracuda_kernels_index_add_i64idx_f32_run as IndexAddRun),
+        (DType::F64, true) => Some(sys::baracuda_kernels_index_add_i64idx_f64_run as IndexAddRun),
+        (DType::F16, true) => Some(sys::baracuda_kernels_index_add_i64idx_f16_run as IndexAddRun),
+        (DType::BF16, true) => Some(sys::baracuda_kernels_index_add_i64idx_bf16_run as IndexAddRun),
+        (DType::I32, true) => Some(sys::baracuda_kernels_index_add_i64idx_i32_run as IndexAddRun),
+        (DType::U32, true) => Some(sys::baracuda_kernels_index_add_i64idx_u32_run as IndexAddRun),
+        (DType::I64, true) => Some(sys::baracuda_kernels_index_add_i64idx_i64_run as IndexAddRun),
         _ => None,
     }
 }
@@ -1329,7 +1471,8 @@ impl Map2InPlace for IndexAdd<'_> {
             crate::Error::Msg(format!(
                 "index_add: no baracuda kernel for value dtype {:?}",
                 T::DTYPE
-            )).bt()
+            ))
+            .bt()
         })?;
         let stream = dev.stream().as_raw() as *mut std::ffi::c_void;
         let status = unsafe {
@@ -1344,7 +1487,9 @@ impl Map2InPlace for IndexAdd<'_> {
                 src.as_raw().0 as *const std::ffi::c_void,
                 idx_ptr,
                 dst.as_raw().0 as *mut std::ffi::c_void,
-                std::ptr::null_mut(), 0, stream,
+                std::ptr::null_mut(),
+                0,
+                stream,
             )
         };
         crate::baracuda::status::check(status, "index_add")?;
@@ -1376,27 +1521,27 @@ fn pick_scatter_ffi(val_dt: DType, use_i64: bool) -> Option<ScatterRun> {
     use baracuda_kernels_sys as sys;
     match (val_dt, use_i64) {
         // FP value dtypes — full coverage (i32idx + i64idx).
-        (DType::F32, false)  => Some(sys::baracuda_kernels_scatter_f32_run  as ScatterRun),
-        (DType::F64, false)  => Some(sys::baracuda_kernels_scatter_f64_run  as ScatterRun),
-        (DType::F16, false)  => Some(sys::baracuda_kernels_scatter_f16_run  as ScatterRun),
+        (DType::F32, false) => Some(sys::baracuda_kernels_scatter_f32_run as ScatterRun),
+        (DType::F64, false) => Some(sys::baracuda_kernels_scatter_f64_run as ScatterRun),
+        (DType::F16, false) => Some(sys::baracuda_kernels_scatter_f16_run as ScatterRun),
         (DType::BF16, false) => Some(sys::baracuda_kernels_scatter_bf16_run as ScatterRun),
-        (DType::F32, true)   => Some(sys::baracuda_kernels_scatter_i64idx_f32_run  as ScatterRun),
-        (DType::F64, true)   => Some(sys::baracuda_kernels_scatter_i64idx_f64_run  as ScatterRun),
-        (DType::F16, true)   => Some(sys::baracuda_kernels_scatter_i64idx_f16_run  as ScatterRun),
-        (DType::BF16, true)  => Some(sys::baracuda_kernels_scatter_i64idx_bf16_run as ScatterRun),
+        (DType::F32, true) => Some(sys::baracuda_kernels_scatter_i64idx_f32_run as ScatterRun),
+        (DType::F64, true) => Some(sys::baracuda_kernels_scatter_i64idx_f64_run as ScatterRun),
+        (DType::F16, true) => Some(sys::baracuda_kernels_scatter_i64idx_f16_run as ScatterRun),
+        (DType::BF16, true) => Some(sys::baracuda_kernels_scatter_i64idx_bf16_run as ScatterRun),
         // Integer value dtypes — full coverage.
-        (DType::U8,  false)  => Some(sys::baracuda_kernels_scatter_u8_run  as ScatterRun),
-        (DType::I8,  false)  => Some(sys::baracuda_kernels_scatter_i8_run  as ScatterRun),
-        (DType::U32, false)  => Some(sys::baracuda_kernels_scatter_u32_run as ScatterRun),
-        (DType::I16, false)  => Some(sys::baracuda_kernels_scatter_i16_run as ScatterRun),
-        (DType::I32, false)  => Some(sys::baracuda_kernels_scatter_i32_run as ScatterRun),
-        (DType::I64, false)  => Some(sys::baracuda_kernels_scatter_i64_run as ScatterRun),
-        (DType::U8,  true)   => Some(sys::baracuda_kernels_scatter_i64idx_u8_run  as ScatterRun),
-        (DType::I8,  true)   => Some(sys::baracuda_kernels_scatter_i64idx_i8_run  as ScatterRun),
-        (DType::U32, true)   => Some(sys::baracuda_kernels_scatter_i64idx_u32_run as ScatterRun),
-        (DType::I16, true)   => Some(sys::baracuda_kernels_scatter_i64idx_i16_run as ScatterRun),
-        (DType::I32, true)   => Some(sys::baracuda_kernels_scatter_i64idx_i32_run as ScatterRun),
-        (DType::I64, true)   => Some(sys::baracuda_kernels_scatter_i64idx_i64_run as ScatterRun),
+        (DType::U8, false) => Some(sys::baracuda_kernels_scatter_u8_run as ScatterRun),
+        (DType::I8, false) => Some(sys::baracuda_kernels_scatter_i8_run as ScatterRun),
+        (DType::U32, false) => Some(sys::baracuda_kernels_scatter_u32_run as ScatterRun),
+        (DType::I16, false) => Some(sys::baracuda_kernels_scatter_i16_run as ScatterRun),
+        (DType::I32, false) => Some(sys::baracuda_kernels_scatter_i32_run as ScatterRun),
+        (DType::I64, false) => Some(sys::baracuda_kernels_scatter_i64_run as ScatterRun),
+        (DType::U8, true) => Some(sys::baracuda_kernels_scatter_i64idx_u8_run as ScatterRun),
+        (DType::I8, true) => Some(sys::baracuda_kernels_scatter_i64idx_i8_run as ScatterRun),
+        (DType::U32, true) => Some(sys::baracuda_kernels_scatter_i64idx_u32_run as ScatterRun),
+        (DType::I16, true) => Some(sys::baracuda_kernels_scatter_i64idx_i16_run as ScatterRun),
+        (DType::I32, true) => Some(sys::baracuda_kernels_scatter_i64idx_i32_run as ScatterRun),
+        (DType::I64, true) => Some(sys::baracuda_kernels_scatter_i64idx_i64_run as ScatterRun),
         _ => None,
     }
 }
@@ -1406,8 +1551,8 @@ fn pick_scatter_add_ffi(val_dt: DType, use_i64: bool) -> Option<ScatterRun> {
     match (val_dt, use_i64) {
         (DType::F32, false) => Some(sys::baracuda_kernels_scatter_add_f32_run as ScatterRun),
         (DType::F64, false) => Some(sys::baracuda_kernels_scatter_add_f64_run as ScatterRun),
-        (DType::F32, true)  => Some(sys::baracuda_kernels_scatter_add_i64idx_f32_run as ScatterRun),
-        (DType::F64, true)  => Some(sys::baracuda_kernels_scatter_add_i64idx_f64_run as ScatterRun),
+        (DType::F32, true) => Some(sys::baracuda_kernels_scatter_add_i64idx_f32_run as ScatterRun),
+        (DType::F64, true) => Some(sys::baracuda_kernels_scatter_add_i64idx_f64_run as ScatterRun),
         _ => None,
     }
 }
@@ -1466,7 +1611,8 @@ fn run_scatter_like<T: DeviceRepr + WithDType + ValidAsZeroBits>(
         crate::Error::Msg(format!(
             "{op_label}: no baracuda kernel for value dtype {:?}",
             T::DTYPE
-        )).bt()
+        ))
+        .bt()
     })?;
     let stream = dev.stream().as_raw() as *mut std::ffi::c_void;
     let status = unsafe {
@@ -1482,7 +1628,9 @@ fn run_scatter_like<T: DeviceRepr + WithDType + ValidAsZeroBits>(
             src.as_raw().0 as *const std::ffi::c_void,
             idx_ptr,
             dst.as_raw().0 as *mut std::ffi::c_void,
-            std::ptr::null_mut(), 0, stream,
+            std::ptr::null_mut(),
+            0,
+            stream,
         )
     };
     crate::baracuda::status::check(status, op_label)?;
@@ -1501,9 +1649,16 @@ impl Map2InPlace for Scatter<'_> {
         dev: &CudaDevice,
     ) -> Result<()> {
         run_scatter_like::<T>(
-            self.0, self.1, self.2,
-            dst, dst_l, src, src_l, dev,
-            pick_scatter_ffi, "scatter",
+            self.0,
+            self.1,
+            self.2,
+            dst,
+            dst_l,
+            src,
+            src_l,
+            dev,
+            pick_scatter_ffi,
+            "scatter",
         )
     }
 }
@@ -1519,13 +1674,19 @@ impl Map2InPlace for ScatterAdd<'_> {
         dev: &CudaDevice,
     ) -> Result<()> {
         run_scatter_like::<T>(
-            self.0, self.1, self.2,
-            dst, dst_l, src, src_l, dev,
-            pick_scatter_add_ffi, "scatter-add",
+            self.0,
+            self.1,
+            self.2,
+            dst,
+            dst_l,
+            src,
+            src_l,
+            dev,
+            pick_scatter_add_ffi,
+            "scatter-add",
         )
     }
 }
-
 
 // Conv1D / Conv2D dispatch — baracuda alpha.38 cuDNN-backed conv FFI.
 // PTX `Conv1D`/`Conv2D` Map2 impls + Fuel's internal `crate::cudnn::
@@ -1559,8 +1720,20 @@ fn baracuda_conv2d_fw<T: DeviceRepr + WithDType + ValidAsZeroBits>(
     let stream = dev.stream().as_raw() as *mut std::ffi::c_void;
     let out_ptr = out.as_raw().0 as *mut std::ffi::c_void;
     let (
-        batch, c_in, c_out, h_in, w_in, kh, kw,
-        stride_h, stride_w, pad_h, pad_w, dilation_h, dilation_w, groups,
+        batch,
+        c_in,
+        c_out,
+        h_in,
+        w_in,
+        kh,
+        kw,
+        stride_h,
+        stride_w,
+        pad_h,
+        pad_w,
+        dilation_h,
+        dilation_w,
+        groups,
     ) = (
         params.b_size as i32,
         params.c_in as i32,
@@ -1569,9 +1742,12 @@ fn baracuda_conv2d_fw<T: DeviceRepr + WithDType + ValidAsZeroBits>(
         params.i_w as i32,
         params.k_h as i32,
         params.k_w as i32,
-        params.stride as i32, params.stride as i32,
-        params.padding as i32, params.padding as i32,
-        params.dilation as i32, params.dilation as i32,
+        params.stride as i32,
+        params.stride as i32,
+        params.padding as i32,
+        params.padding as i32,
+        params.dilation as i32,
+        params.dilation as i32,
         params.groups.max(1) as i32,
     );
     let (h_out, w_out) = (out_h as i32, out_w as i32);
@@ -1581,34 +1757,106 @@ fn baracuda_conv2d_fw<T: DeviceRepr + WithDType + ValidAsZeroBits>(
         // cuDNN-reported workspace bytes.
         DType::F32 => unsafe {
             sys::baracuda_kernels_conv_2d_fw_f32_run(
-                batch, c_in, c_out, h_in, w_in, h_out, w_out, kh, kw,
-                stride_h, stride_w, pad_h, pad_w, dilation_h, dilation_w, groups,
-                inp_ptr, k_ptr, out_ptr,
-                std::ptr::null_mut(), 0, stream,
+                batch,
+                c_in,
+                c_out,
+                h_in,
+                w_in,
+                h_out,
+                w_out,
+                kh,
+                kw,
+                stride_h,
+                stride_w,
+                pad_h,
+                pad_w,
+                dilation_h,
+                dilation_w,
+                groups,
+                inp_ptr,
+                k_ptr,
+                out_ptr,
+                std::ptr::null_mut(),
+                0,
+                stream,
             )
         },
         DType::F64 => unsafe {
             sys::baracuda_kernels_conv_2d_fw_f64_run(
-                batch, c_in, c_out, h_in, w_in, h_out, w_out, kh, kw,
-                stride_h, stride_w, pad_h, pad_w, dilation_h, dilation_w, groups,
-                inp_ptr, k_ptr, out_ptr,
-                std::ptr::null_mut(), 0, stream,
+                batch,
+                c_in,
+                c_out,
+                h_in,
+                w_in,
+                h_out,
+                w_out,
+                kh,
+                kw,
+                stride_h,
+                stride_w,
+                pad_h,
+                pad_w,
+                dilation_h,
+                dilation_w,
+                groups,
+                inp_ptr,
+                k_ptr,
+                out_ptr,
+                std::ptr::null_mut(),
+                0,
+                stream,
             )
         },
         DType::F16 => unsafe {
             sys::baracuda_kernels_conv_2d_fw_f16_run(
-                batch, c_in, c_out, h_in, w_in, h_out, w_out, kh, kw,
-                stride_h, stride_w, pad_h, pad_w, dilation_h, dilation_w, groups,
-                inp_ptr, k_ptr, out_ptr,
-                std::ptr::null_mut(), 0, stream,
+                batch,
+                c_in,
+                c_out,
+                h_in,
+                w_in,
+                h_out,
+                w_out,
+                kh,
+                kw,
+                stride_h,
+                stride_w,
+                pad_h,
+                pad_w,
+                dilation_h,
+                dilation_w,
+                groups,
+                inp_ptr,
+                k_ptr,
+                out_ptr,
+                std::ptr::null_mut(),
+                0,
+                stream,
             )
         },
         DType::BF16 => unsafe {
             sys::baracuda_kernels_conv_2d_fw_bf16_run(
-                batch, c_in, c_out, h_in, w_in, h_out, w_out, kh, kw,
-                stride_h, stride_w, pad_h, pad_w, dilation_h, dilation_w, groups,
-                inp_ptr, k_ptr, out_ptr,
-                std::ptr::null_mut(), 0, stream,
+                batch,
+                c_in,
+                c_out,
+                h_in,
+                w_in,
+                h_out,
+                w_out,
+                kh,
+                kw,
+                stride_h,
+                stride_w,
+                pad_h,
+                pad_w,
+                dilation_h,
+                dilation_w,
+                groups,
+                inp_ptr,
+                k_ptr,
+                out_ptr,
+                std::ptr::null_mut(),
+                0,
+                stream,
             )
         },
         other => fuel_ir::bail!("baracuda conv_2d: unsupported dtype {other:?}"),
@@ -1656,34 +1904,82 @@ fn baracuda_conv1d_fw<T: DeviceRepr + WithDType + ValidAsZeroBits>(
     let status = match dt {
         DType::F32 => unsafe {
             sys::baracuda_kernels_conv_1d_fw_f32_run(
-                batch, c_in, c_out, l_in, l_out_i, l_filt,
-                stride_l, pad_l, dilation_l, groups,
-                inp_ptr, k_ptr, out_ptr,
-                std::ptr::null_mut(), 0, stream,
+                batch,
+                c_in,
+                c_out,
+                l_in,
+                l_out_i,
+                l_filt,
+                stride_l,
+                pad_l,
+                dilation_l,
+                groups,
+                inp_ptr,
+                k_ptr,
+                out_ptr,
+                std::ptr::null_mut(),
+                0,
+                stream,
             )
         },
         DType::F64 => unsafe {
             sys::baracuda_kernels_conv_1d_fw_f64_run(
-                batch, c_in, c_out, l_in, l_out_i, l_filt,
-                stride_l, pad_l, dilation_l, groups,
-                inp_ptr, k_ptr, out_ptr,
-                std::ptr::null_mut(), 0, stream,
+                batch,
+                c_in,
+                c_out,
+                l_in,
+                l_out_i,
+                l_filt,
+                stride_l,
+                pad_l,
+                dilation_l,
+                groups,
+                inp_ptr,
+                k_ptr,
+                out_ptr,
+                std::ptr::null_mut(),
+                0,
+                stream,
             )
         },
         DType::F16 => unsafe {
             sys::baracuda_kernels_conv_1d_fw_f16_run(
-                batch, c_in, c_out, l_in, l_out_i, l_filt,
-                stride_l, pad_l, dilation_l, groups,
-                inp_ptr, k_ptr, out_ptr,
-                std::ptr::null_mut(), 0, stream,
+                batch,
+                c_in,
+                c_out,
+                l_in,
+                l_out_i,
+                l_filt,
+                stride_l,
+                pad_l,
+                dilation_l,
+                groups,
+                inp_ptr,
+                k_ptr,
+                out_ptr,
+                std::ptr::null_mut(),
+                0,
+                stream,
             )
         },
         DType::BF16 => unsafe {
             sys::baracuda_kernels_conv_1d_fw_bf16_run(
-                batch, c_in, c_out, l_in, l_out_i, l_filt,
-                stride_l, pad_l, dilation_l, groups,
-                inp_ptr, k_ptr, out_ptr,
-                std::ptr::null_mut(), 0, stream,
+                batch,
+                c_in,
+                c_out,
+                l_in,
+                l_out_i,
+                l_filt,
+                stride_l,
+                pad_l,
+                dilation_l,
+                groups,
+                inp_ptr,
+                k_ptr,
+                out_ptr,
+                std::ptr::null_mut(),
+                0,
+                stream,
             )
         },
         other => fuel_ir::bail!("baracuda conv_1d: unsupported dtype {other:?}"),
@@ -1714,10 +2010,12 @@ fn conv2d_dispatch(
         (CudaStorageSlice::BF16(i), CudaStorageSlice::BF16(k)) => {
             CudaStorageSlice::BF16(baracuda_conv2d_fw(i, inp_l, k, k_l, params, dev)?)
         }
-        (CudaStorageSlice::U8(_), CudaStorageSlice::U8(_)) => {
-            Err(CudaError::InternalError("conv2d does not support u8 (cuDNN INT8 is signed)"))?
-        }
-        _ => Err(CudaError::InternalError("conv2d: dtype mismatch / unsupported"))?,
+        (CudaStorageSlice::U8(_), CudaStorageSlice::U8(_)) => Err(CudaError::InternalError(
+            "conv2d does not support u8 (cuDNN INT8 is signed)",
+        ))?,
+        _ => Err(CudaError::InternalError(
+            "conv2d: dtype mismatch / unsupported",
+        ))?,
     })
 }
 
@@ -1745,9 +2043,22 @@ fn baracuda_conv_transpose2d_fw<T: DeviceRepr + WithDType + ValidAsZeroBits>(
     let k_ptr = k.as_raw().0 as *const std::ffi::c_void;
     let out_ptr = out.as_raw().0 as *mut std::ffi::c_void;
     let (
-        batch, c_in, c_out, h_in, w_in, kh, kw,
-        stride_h, stride_w, pad_h, pad_w, dilation_h, dilation_w,
-        opad_h, opad_w, groups,
+        batch,
+        c_in,
+        c_out,
+        h_in,
+        w_in,
+        kh,
+        kw,
+        stride_h,
+        stride_w,
+        pad_h,
+        pad_w,
+        dilation_h,
+        dilation_w,
+        opad_h,
+        opad_w,
+        groups,
     ) = (
         params.b_size as i32,
         params.c_in as i32,
@@ -1756,48 +2067,128 @@ fn baracuda_conv_transpose2d_fw<T: DeviceRepr + WithDType + ValidAsZeroBits>(
         params.i_w as i32,
         params.k_h as i32,
         params.k_w as i32,
-        params.stride as i32, params.stride as i32,
-        params.padding as i32, params.padding as i32,
-        params.dilation as i32, params.dilation as i32,
-        params.output_padding as i32, params.output_padding as i32,
+        params.stride as i32,
+        params.stride as i32,
+        params.padding as i32,
+        params.padding as i32,
+        params.dilation as i32,
+        params.dilation as i32,
+        params.output_padding as i32,
+        params.output_padding as i32,
         1_i32,
     );
     let (h_out_i, w_out_i) = (out_h as i32, out_w as i32);
     let status = match dt {
         DType::F32 => unsafe {
             sys::baracuda_kernels_conv_transpose_2d_fw_f32_run(
-                batch, c_in, c_out, h_in, w_in, h_out_i, w_out_i, kh, kw,
-                stride_h, stride_w, pad_h, pad_w, dilation_h, dilation_w,
-                opad_h, opad_w, groups,
-                inp_ptr, k_ptr, out_ptr,
-                std::ptr::null_mut(), 0, stream,
+                batch,
+                c_in,
+                c_out,
+                h_in,
+                w_in,
+                h_out_i,
+                w_out_i,
+                kh,
+                kw,
+                stride_h,
+                stride_w,
+                pad_h,
+                pad_w,
+                dilation_h,
+                dilation_w,
+                opad_h,
+                opad_w,
+                groups,
+                inp_ptr,
+                k_ptr,
+                out_ptr,
+                std::ptr::null_mut(),
+                0,
+                stream,
             )
         },
         DType::F64 => unsafe {
             sys::baracuda_kernels_conv_transpose_2d_fw_f64_run(
-                batch, c_in, c_out, h_in, w_in, h_out_i, w_out_i, kh, kw,
-                stride_h, stride_w, pad_h, pad_w, dilation_h, dilation_w,
-                opad_h, opad_w, groups,
-                inp_ptr, k_ptr, out_ptr,
-                std::ptr::null_mut(), 0, stream,
+                batch,
+                c_in,
+                c_out,
+                h_in,
+                w_in,
+                h_out_i,
+                w_out_i,
+                kh,
+                kw,
+                stride_h,
+                stride_w,
+                pad_h,
+                pad_w,
+                dilation_h,
+                dilation_w,
+                opad_h,
+                opad_w,
+                groups,
+                inp_ptr,
+                k_ptr,
+                out_ptr,
+                std::ptr::null_mut(),
+                0,
+                stream,
             )
         },
         DType::F16 => unsafe {
             sys::baracuda_kernels_conv_transpose_2d_fw_f16_run(
-                batch, c_in, c_out, h_in, w_in, h_out_i, w_out_i, kh, kw,
-                stride_h, stride_w, pad_h, pad_w, dilation_h, dilation_w,
-                opad_h, opad_w, groups,
-                inp_ptr, k_ptr, out_ptr,
-                std::ptr::null_mut(), 0, stream,
+                batch,
+                c_in,
+                c_out,
+                h_in,
+                w_in,
+                h_out_i,
+                w_out_i,
+                kh,
+                kw,
+                stride_h,
+                stride_w,
+                pad_h,
+                pad_w,
+                dilation_h,
+                dilation_w,
+                opad_h,
+                opad_w,
+                groups,
+                inp_ptr,
+                k_ptr,
+                out_ptr,
+                std::ptr::null_mut(),
+                0,
+                stream,
             )
         },
         DType::BF16 => unsafe {
             sys::baracuda_kernels_conv_transpose_2d_fw_bf16_run(
-                batch, c_in, c_out, h_in, w_in, h_out_i, w_out_i, kh, kw,
-                stride_h, stride_w, pad_h, pad_w, dilation_h, dilation_w,
-                opad_h, opad_w, groups,
-                inp_ptr, k_ptr, out_ptr,
-                std::ptr::null_mut(), 0, stream,
+                batch,
+                c_in,
+                c_out,
+                h_in,
+                w_in,
+                h_out_i,
+                w_out_i,
+                kh,
+                kw,
+                stride_h,
+                stride_w,
+                pad_h,
+                pad_w,
+                dilation_h,
+                dilation_w,
+                opad_h,
+                opad_w,
+                groups,
+                inp_ptr,
+                k_ptr,
+                out_ptr,
+                std::ptr::null_mut(),
+                0,
+                stream,
             )
         },
         other => fuel_ir::bail!("baracuda conv_transpose_2d: unsupported dtype {other:?}"),
@@ -1830,10 +2221,7 @@ fn baracuda_conv_transpose1d_fw<T: DeviceRepr + WithDType + ValidAsZeroBits>(
     let inp_ptr = inp.as_raw().0 as *const std::ffi::c_void;
     let k_ptr = k.as_raw().0 as *const std::ffi::c_void;
     let out_ptr = out.as_raw().0 as *mut std::ffi::c_void;
-    let (
-        batch, c_in, c_out, l_in, l_filt,
-        stride_l, pad_l, dilation_l, output_pad_l, groups,
-    ) = (
+    let (batch, c_in, c_out, l_in, l_filt, stride_l, pad_l, dilation_l, output_pad_l, groups) = (
         params.b_size as i32,
         params.c_in as i32,
         params.c_out as i32,
@@ -1849,34 +2237,86 @@ fn baracuda_conv_transpose1d_fw<T: DeviceRepr + WithDType + ValidAsZeroBits>(
     let status = match dt {
         DType::F32 => unsafe {
             sys::baracuda_kernels_conv_transpose_1d_fw_f32_run(
-                batch, c_in, c_out, l_in, l_out_i, l_filt,
-                stride_l, pad_l, dilation_l, output_pad_l, groups,
-                inp_ptr, k_ptr, out_ptr,
-                std::ptr::null_mut(), 0, stream,
+                batch,
+                c_in,
+                c_out,
+                l_in,
+                l_out_i,
+                l_filt,
+                stride_l,
+                pad_l,
+                dilation_l,
+                output_pad_l,
+                groups,
+                inp_ptr,
+                k_ptr,
+                out_ptr,
+                std::ptr::null_mut(),
+                0,
+                stream,
             )
         },
         DType::F64 => unsafe {
             sys::baracuda_kernels_conv_transpose_1d_fw_f64_run(
-                batch, c_in, c_out, l_in, l_out_i, l_filt,
-                stride_l, pad_l, dilation_l, output_pad_l, groups,
-                inp_ptr, k_ptr, out_ptr,
-                std::ptr::null_mut(), 0, stream,
+                batch,
+                c_in,
+                c_out,
+                l_in,
+                l_out_i,
+                l_filt,
+                stride_l,
+                pad_l,
+                dilation_l,
+                output_pad_l,
+                groups,
+                inp_ptr,
+                k_ptr,
+                out_ptr,
+                std::ptr::null_mut(),
+                0,
+                stream,
             )
         },
         DType::F16 => unsafe {
             sys::baracuda_kernels_conv_transpose_1d_fw_f16_run(
-                batch, c_in, c_out, l_in, l_out_i, l_filt,
-                stride_l, pad_l, dilation_l, output_pad_l, groups,
-                inp_ptr, k_ptr, out_ptr,
-                std::ptr::null_mut(), 0, stream,
+                batch,
+                c_in,
+                c_out,
+                l_in,
+                l_out_i,
+                l_filt,
+                stride_l,
+                pad_l,
+                dilation_l,
+                output_pad_l,
+                groups,
+                inp_ptr,
+                k_ptr,
+                out_ptr,
+                std::ptr::null_mut(),
+                0,
+                stream,
             )
         },
         DType::BF16 => unsafe {
             sys::baracuda_kernels_conv_transpose_1d_fw_bf16_run(
-                batch, c_in, c_out, l_in, l_out_i, l_filt,
-                stride_l, pad_l, dilation_l, output_pad_l, groups,
-                inp_ptr, k_ptr, out_ptr,
-                std::ptr::null_mut(), 0, stream,
+                batch,
+                c_in,
+                c_out,
+                l_in,
+                l_out_i,
+                l_filt,
+                stride_l,
+                pad_l,
+                dilation_l,
+                output_pad_l,
+                groups,
+                inp_ptr,
+                k_ptr,
+                out_ptr,
+                std::ptr::null_mut(),
+                0,
+                stream,
             )
         },
         other => fuel_ir::bail!("baracuda conv_transpose_1d: unsupported dtype {other:?}"),
@@ -1907,7 +2347,9 @@ fn conv_transpose2d_dispatch(
         (CudaStorageSlice::BF16(i), CudaStorageSlice::BF16(k)) => {
             CudaStorageSlice::BF16(baracuda_conv_transpose2d_fw(i, inp_l, k, k_l, params, dev)?)
         }
-        _ => Err(CudaError::InternalError("conv_transpose2d: dtype mismatch / unsupported"))?,
+        _ => Err(CudaError::InternalError(
+            "conv_transpose2d: dtype mismatch / unsupported",
+        ))?,
     })
 }
 
@@ -1932,7 +2374,9 @@ fn conv_transpose1d_dispatch(
         (CudaStorageSlice::BF16(i), CudaStorageSlice::BF16(k)) => {
             CudaStorageSlice::BF16(baracuda_conv_transpose1d_fw(i, inp_l, k, k_l, params, dev)?)
         }
-        _ => Err(CudaError::InternalError("conv_transpose1d: dtype mismatch / unsupported"))?,
+        _ => Err(CudaError::InternalError(
+            "conv_transpose1d: dtype mismatch / unsupported",
+        ))?,
     })
 }
 
@@ -1957,7 +2401,9 @@ fn conv1d_dispatch(
         (CudaStorageSlice::BF16(i), CudaStorageSlice::BF16(k)) => {
             CudaStorageSlice::BF16(baracuda_conv1d_fw(i, inp_l, k, k_l, params, dev)?)
         }
-        _ => Err(CudaError::InternalError("conv1d: dtype mismatch / unsupported"))?,
+        _ => Err(CudaError::InternalError(
+            "conv1d: dtype mismatch / unsupported",
+        ))?,
     })
 }
 
@@ -2031,7 +2477,12 @@ fn pool2d_baracuda<T: DeviceRepr + WithDType + ValidAsZeroBits>(
     let x_ptr = inp.as_raw().0 as *const std::ffi::c_void;
     let y_ptr = out.as_raw().0 as *mut std::ffi::c_void;
     let (b, c, hi, wi, ho, wo) = (
-        batch as i32, channels as i32, h_in as i32, w_in as i32, h_out as i32, w_out as i32,
+        batch as i32,
+        channels as i32,
+        h_in as i32,
+        w_in as i32,
+        h_out as i32,
+        w_out as i32,
     );
     let (kh, kw, sh, sw) = (kh as i32, kw as i32, sh as i32, sw as i32);
     let status = match (op, dt) {
@@ -2124,33 +2575,73 @@ fn upsample_nearest2d_baracuda<T: DeviceRepr + WithDType + ValidAsZeroBits>(
     let x_ptr = inp.as_raw().0 as *const std::ffi::c_void;
     let y_ptr = out.as_raw().0 as *mut std::ffi::c_void;
     let (n, c, ih, iw, oh, ow) = (
-        batch as i32, channels as i32, h_in as i32, w_in as i32,
-        target_h as i32, target_w as i32,
+        batch as i32,
+        channels as i32,
+        h_in as i32,
+        w_in as i32,
+        target_h as i32,
+        target_w as i32,
     );
     let status = match dt {
         // SAFETY: device-resident pointers + live stream.
         DType::F32 => unsafe {
             sys::baracuda_kernels_upsample_nearest_2d_fw_f32_run(
-                n, c, ih, iw, oh, ow, x_ptr, y_ptr,
-                scratch.as_raw(), scratch.bytes(), stream,
+                n,
+                c,
+                ih,
+                iw,
+                oh,
+                ow,
+                x_ptr,
+                y_ptr,
+                scratch.as_raw(),
+                scratch.bytes(),
+                stream,
             )
         },
         DType::F64 => unsafe {
             sys::baracuda_kernels_upsample_nearest_2d_fw_f64_run(
-                n, c, ih, iw, oh, ow, x_ptr, y_ptr,
-                scratch.as_raw(), scratch.bytes(), stream,
+                n,
+                c,
+                ih,
+                iw,
+                oh,
+                ow,
+                x_ptr,
+                y_ptr,
+                scratch.as_raw(),
+                scratch.bytes(),
+                stream,
             )
         },
         DType::F16 => unsafe {
             sys::baracuda_kernels_upsample_nearest_2d_fw_f16_run(
-                n, c, ih, iw, oh, ow, x_ptr, y_ptr,
-                scratch.as_raw(), scratch.bytes(), stream,
+                n,
+                c,
+                ih,
+                iw,
+                oh,
+                ow,
+                x_ptr,
+                y_ptr,
+                scratch.as_raw(),
+                scratch.bytes(),
+                stream,
             )
         },
         DType::BF16 => unsafe {
             sys::baracuda_kernels_upsample_nearest_2d_fw_bf16_run(
-                n, c, ih, iw, oh, ow, x_ptr, y_ptr,
-                scratch.as_raw(), scratch.bytes(), stream,
+                n,
+                c,
+                ih,
+                iw,
+                oh,
+                ow,
+                x_ptr,
+                y_ptr,
+                scratch.as_raw(),
+                scratch.bytes(),
+                stream,
             )
         },
         other => fuel_ir::bail!("baracuda upsample_nearest_2d: unsupported dtype {other:?}"),
@@ -2221,7 +2712,12 @@ fn upsample_bilinear2d_baracuda<T: DeviceRepr + WithDType + ValidAsZeroBits>(
     let x_ptr = inp.as_raw().0 as *const std::ffi::c_void;
     let y_ptr = out.as_raw().0 as *mut std::ffi::c_void;
     let (n, c, ih, iw, oh, ow) = (
-        batch as i32, channels as i32, h_in as i32, w_in as i32, out_h as i32, out_w as i32,
+        batch as i32,
+        channels as i32,
+        h_in as i32,
+        w_in as i32,
+        out_h as i32,
+        out_w as i32,
     );
     let align = if align_corners { 1 } else { 0 };
     // Baracuda's override convention: 0.0 = derive from (in, out); nonzero
@@ -2232,30 +2728,74 @@ fn upsample_bilinear2d_baracuda<T: DeviceRepr + WithDType + ValidAsZeroBits>(
         // SAFETY: device-resident pointers + live stream.
         DType::F32 => unsafe {
             sys::baracuda_kernels_interpolate_bilinear_2d_f32_run(
-                n, c, ih, iw, oh, ow, x_ptr, y_ptr,
-                scratch.as_raw(), scratch.bytes(),
-                align, sh, sw, stream,
+                n,
+                c,
+                ih,
+                iw,
+                oh,
+                ow,
+                x_ptr,
+                y_ptr,
+                scratch.as_raw(),
+                scratch.bytes(),
+                align,
+                sh,
+                sw,
+                stream,
             )
         },
         DType::F64 => unsafe {
             sys::baracuda_kernels_interpolate_bilinear_2d_f64_run(
-                n, c, ih, iw, oh, ow, x_ptr, y_ptr,
-                scratch.as_raw(), scratch.bytes(),
-                align, sh, sw, stream,
+                n,
+                c,
+                ih,
+                iw,
+                oh,
+                ow,
+                x_ptr,
+                y_ptr,
+                scratch.as_raw(),
+                scratch.bytes(),
+                align,
+                sh,
+                sw,
+                stream,
             )
         },
         DType::F16 => unsafe {
             sys::baracuda_kernels_interpolate_bilinear_2d_f16_run(
-                n, c, ih, iw, oh, ow, x_ptr, y_ptr,
-                scratch.as_raw(), scratch.bytes(),
-                align, sh, sw, stream,
+                n,
+                c,
+                ih,
+                iw,
+                oh,
+                ow,
+                x_ptr,
+                y_ptr,
+                scratch.as_raw(),
+                scratch.bytes(),
+                align,
+                sh,
+                sw,
+                stream,
             )
         },
         DType::BF16 => unsafe {
             sys::baracuda_kernels_interpolate_bilinear_2d_bf16_run(
-                n, c, ih, iw, oh, ow, x_ptr, y_ptr,
-                scratch.as_raw(), scratch.bytes(),
-                align, sh, sw, stream,
+                n,
+                c,
+                ih,
+                iw,
+                oh,
+                ow,
+                x_ptr,
+                y_ptr,
+                scratch.as_raw(),
+                scratch.bytes(),
+                align,
+                sh,
+                sw,
+                stream,
             )
         },
         other => fuel_ir::bail!("baracuda upsample_bilinear_2d: unsupported dtype {other:?}"),
@@ -2277,16 +2817,44 @@ fn upsample_bilinear2d_dispatch(
 ) -> Result<CudaStorageSlice> {
     Ok(match slice {
         CudaStorageSlice::F32(s) => CudaStorageSlice::F32(upsample_bilinear2d_baracuda(
-            s, dev, l, out_w, out_h, align_corners, scale_h, scale_w,
+            s,
+            dev,
+            l,
+            out_w,
+            out_h,
+            align_corners,
+            scale_h,
+            scale_w,
         )?),
         CudaStorageSlice::F64(s) => CudaStorageSlice::F64(upsample_bilinear2d_baracuda(
-            s, dev, l, out_w, out_h, align_corners, scale_h, scale_w,
+            s,
+            dev,
+            l,
+            out_w,
+            out_h,
+            align_corners,
+            scale_h,
+            scale_w,
         )?),
         CudaStorageSlice::F16(s) => CudaStorageSlice::F16(upsample_bilinear2d_baracuda(
-            s, dev, l, out_w, out_h, align_corners, scale_h, scale_w,
+            s,
+            dev,
+            l,
+            out_w,
+            out_h,
+            align_corners,
+            scale_h,
+            scale_w,
         )?),
         CudaStorageSlice::BF16(s) => CudaStorageSlice::BF16(upsample_bilinear2d_baracuda(
-            s, dev, l, out_w, out_h, align_corners, scale_h, scale_w,
+            s,
+            dev,
+            l,
+            out_w,
+            out_h,
+            align_corners,
+            scale_h,
+            scale_w,
         )?),
         other => fuel_ir::bail!("upsample_bilinear_2d: unsupported storage variant {other:?}"),
     })
@@ -2326,55 +2894,55 @@ fn pick_where_strided(cond_dt: DType, val_dt: DType) -> Option<WhereStridedRun> 
     }
     match (cond_dt, val_dt) {
         // U8 cond + fp values: bare `where_<fp>_strided_run`.
-        (DType::U8, DType::F32)  => sym!(where_f32_strided_run),
-        (DType::U8, DType::F64)  => sym!(where_f64_strided_run),
-        (DType::U8, DType::F16)  => sym!(where_f16_strided_run),
+        (DType::U8, DType::F32) => sym!(where_f32_strided_run),
+        (DType::U8, DType::F64) => sym!(where_f64_strided_run),
+        (DType::U8, DType::F16) => sym!(where_f16_strided_run),
         (DType::U8, DType::BF16) => sym!(where_bf16_strided_run),
         // U8 cond + integer + F8E4M3 values.
-        (DType::U8, DType::U8)     => sym!(where_u8cond_u8_strided_run),
-        (DType::U8, DType::I8)     => sym!(where_u8cond_i8_strided_run),
-        (DType::U8, DType::U32)    => sym!(where_u8cond_u32_strided_run),
-        (DType::U8, DType::I16)    => sym!(where_u8cond_i16_strided_run),
-        (DType::U8, DType::I32)    => sym!(where_u8cond_i32_strided_run),
-        (DType::U8, DType::I64)    => sym!(where_u8cond_i64_strided_run),
+        (DType::U8, DType::U8) => sym!(where_u8cond_u8_strided_run),
+        (DType::U8, DType::I8) => sym!(where_u8cond_i8_strided_run),
+        (DType::U8, DType::U32) => sym!(where_u8cond_u32_strided_run),
+        (DType::U8, DType::I16) => sym!(where_u8cond_i16_strided_run),
+        (DType::U8, DType::I32) => sym!(where_u8cond_i32_strided_run),
+        (DType::U8, DType::I64) => sym!(where_u8cond_i64_strided_run),
         (DType::U8, DType::F8E4M3) => sym!(where_u8cond_fp8e4m3_strided_run),
         // Bool cond (GAP-168(c)): a comparison mask is the canonical `where`
         // cond. Byte-identical to U8, so it reuses the U8-cond kernels — the
         // storage variant differs, the kernel does not.
-        (DType::Bool, DType::F32)    => sym!(where_f32_strided_run),
-        (DType::Bool, DType::F64)    => sym!(where_f64_strided_run),
-        (DType::Bool, DType::F16)    => sym!(where_f16_strided_run),
-        (DType::Bool, DType::BF16)   => sym!(where_bf16_strided_run),
-        (DType::Bool, DType::U8)     => sym!(where_u8cond_u8_strided_run),
-        (DType::Bool, DType::I8)     => sym!(where_u8cond_i8_strided_run),
-        (DType::Bool, DType::U32)    => sym!(where_u8cond_u32_strided_run),
-        (DType::Bool, DType::I16)    => sym!(where_u8cond_i16_strided_run),
-        (DType::Bool, DType::I32)    => sym!(where_u8cond_i32_strided_run),
-        (DType::Bool, DType::I64)    => sym!(where_u8cond_i64_strided_run),
+        (DType::Bool, DType::F32) => sym!(where_f32_strided_run),
+        (DType::Bool, DType::F64) => sym!(where_f64_strided_run),
+        (DType::Bool, DType::F16) => sym!(where_f16_strided_run),
+        (DType::Bool, DType::BF16) => sym!(where_bf16_strided_run),
+        (DType::Bool, DType::U8) => sym!(where_u8cond_u8_strided_run),
+        (DType::Bool, DType::I8) => sym!(where_u8cond_i8_strided_run),
+        (DType::Bool, DType::U32) => sym!(where_u8cond_u32_strided_run),
+        (DType::Bool, DType::I16) => sym!(where_u8cond_i16_strided_run),
+        (DType::Bool, DType::I32) => sym!(where_u8cond_i32_strided_run),
+        (DType::Bool, DType::I64) => sym!(where_u8cond_i64_strided_run),
         (DType::Bool, DType::F8E4M3) => sym!(where_u8cond_fp8e4m3_strided_run),
         // U32 cond + all values.
-        (DType::U32, DType::F32)    => sym!(where_u32cond_f32_strided_run),
-        (DType::U32, DType::F64)    => sym!(where_u32cond_f64_strided_run),
-        (DType::U32, DType::F16)    => sym!(where_u32cond_f16_strided_run),
-        (DType::U32, DType::BF16)   => sym!(where_u32cond_bf16_strided_run),
-        (DType::U32, DType::U8)     => sym!(where_u32cond_u8_strided_run),
-        (DType::U32, DType::I8)     => sym!(where_u32cond_i8_strided_run),
-        (DType::U32, DType::U32)    => sym!(where_u32cond_u32_strided_run),
-        (DType::U32, DType::I16)    => sym!(where_u32cond_i16_strided_run),
-        (DType::U32, DType::I32)    => sym!(where_u32cond_i32_strided_run),
-        (DType::U32, DType::I64)    => sym!(where_u32cond_i64_strided_run),
+        (DType::U32, DType::F32) => sym!(where_u32cond_f32_strided_run),
+        (DType::U32, DType::F64) => sym!(where_u32cond_f64_strided_run),
+        (DType::U32, DType::F16) => sym!(where_u32cond_f16_strided_run),
+        (DType::U32, DType::BF16) => sym!(where_u32cond_bf16_strided_run),
+        (DType::U32, DType::U8) => sym!(where_u32cond_u8_strided_run),
+        (DType::U32, DType::I8) => sym!(where_u32cond_i8_strided_run),
+        (DType::U32, DType::U32) => sym!(where_u32cond_u32_strided_run),
+        (DType::U32, DType::I16) => sym!(where_u32cond_i16_strided_run),
+        (DType::U32, DType::I32) => sym!(where_u32cond_i32_strided_run),
+        (DType::U32, DType::I64) => sym!(where_u32cond_i64_strided_run),
         (DType::U32, DType::F8E4M3) => sym!(where_u32cond_fp8e4m3_strided_run),
         // I64 cond + all values.
-        (DType::I64, DType::F32)    => sym!(where_i64cond_f32_strided_run),
-        (DType::I64, DType::F64)    => sym!(where_i64cond_f64_strided_run),
-        (DType::I64, DType::F16)    => sym!(where_i64cond_f16_strided_run),
-        (DType::I64, DType::BF16)   => sym!(where_i64cond_bf16_strided_run),
-        (DType::I64, DType::U8)     => sym!(where_i64cond_u8_strided_run),
-        (DType::I64, DType::I8)     => sym!(where_i64cond_i8_strided_run),
-        (DType::I64, DType::U32)    => sym!(where_i64cond_u32_strided_run),
-        (DType::I64, DType::I16)    => sym!(where_i64cond_i16_strided_run),
-        (DType::I64, DType::I32)    => sym!(where_i64cond_i32_strided_run),
-        (DType::I64, DType::I64)    => sym!(where_i64cond_i64_strided_run),
+        (DType::I64, DType::F32) => sym!(where_i64cond_f32_strided_run),
+        (DType::I64, DType::F64) => sym!(where_i64cond_f64_strided_run),
+        (DType::I64, DType::F16) => sym!(where_i64cond_f16_strided_run),
+        (DType::I64, DType::BF16) => sym!(where_i64cond_bf16_strided_run),
+        (DType::I64, DType::U8) => sym!(where_i64cond_u8_strided_run),
+        (DType::I64, DType::I8) => sym!(where_i64cond_i8_strided_run),
+        (DType::I64, DType::U32) => sym!(where_i64cond_u32_strided_run),
+        (DType::I64, DType::I16) => sym!(where_i64cond_i16_strided_run),
+        (DType::I64, DType::I32) => sym!(where_i64cond_i32_strided_run),
+        (DType::I64, DType::I64) => sym!(where_i64cond_i64_strided_run),
         (DType::I64, DType::F8E4M3) => sym!(where_i64cond_fp8e4m3_strided_run),
         _ => None,
     }
@@ -2416,7 +2984,7 @@ impl Map2 for WhereCond<'_> {
             s
         };
         let cond_ptr: *const std::ffi::c_void = match &cond_storage.slice {
-            CudaStorageSlice::U8(s)  => {
+            CudaStorageSlice::U8(s) => {
                 let sl = s.slice(cond_layout.start_offset()..s.len());
                 sl.as_raw().0 as *const std::ffi::c_void
             }
@@ -2558,7 +3126,17 @@ fn binary_baracuda_raw(
     let both_contig = lhs_l.is_contiguous() && rhs_l.is_contiguous();
     let status = if both_contig {
         // SAFETY: device-resident a/b/y pointers; ws null/0.
-        unsafe { contig_fn(el as i64, lhs_ptr, rhs_ptr, output_ptr, std::ptr::null_mut(), 0, stream) }
+        unsafe {
+            contig_fn(
+                el as i64,
+                lhs_ptr,
+                rhs_ptr,
+                output_ptr,
+                std::ptr::null_mut(),
+                0,
+                stream,
+            )
+        }
     } else {
         // Strided path: pack (rank, shape, stride_a, stride_b, stride_y).
         // baracuda reads these on the host before launching, so plain Vec
@@ -2578,13 +3156,18 @@ fn binary_baracuda_raw(
         // SAFETY: shape/stride buffers owned through the call.
         unsafe {
             strided_fn(
-                el as i64, rank as i32,
+                el as i64,
+                rank as i32,
                 shape_i32.as_ptr(),
                 stride_a.as_ptr(),
                 stride_b.as_ptr(),
                 stride_y.as_ptr(),
-                lhs_ptr, rhs_ptr, output_ptr,
-                std::ptr::null_mut(), 0, stream,
+                lhs_ptr,
+                rhs_ptr,
+                output_ptr,
+                std::ptr::null_mut(),
+                0,
+                stream,
             )
         }
     };
@@ -2619,7 +3202,12 @@ pub(crate) fn binary_baracuda<T: DeviceRepr + WithDType + ValidAsZeroBits>(
         lhs_slice.as_raw().0 as *const std::ffi::c_void,
         rhs_slice.as_raw().0 as *const std::ffi::c_void,
         out.as_raw().0 as *mut std::ffi::c_void,
-        lhs_l, rhs_l, contig, strided, kernel, dev,
+        lhs_l,
+        rhs_l,
+        contig,
+        strided,
+        kernel,
+        dev,
     )?;
     Ok(out)
 }
@@ -2678,7 +3266,12 @@ impl Map2Any for Cmp {
             lhs_slice.as_raw().0 as *const std::ffi::c_void,
             rhs_slice.as_raw().0 as *const std::ffi::c_void,
             out.as_raw().0 as *mut std::ffi::c_void,
-            lhs_l, rhs_l, contig, strided, kernel, dev,
+            lhs_l,
+            rhs_l,
+            contig,
+            strided,
+            kernel,
+            dev,
         )?;
         Ok(S::Bool(out))
     }
@@ -2835,7 +3428,9 @@ fn pick_cast_ffi(src: DType, dst: DType) -> Option<CastRun> {
         (DType::BF16, DType::F16) => Some(sys::baracuda_kernels_cast_bf16_f16_run as CastRun),
         (DType::BF16, DType::F32) => Some(sys::baracuda_kernels_cast_bf16_f32_run as CastRun),
         (DType::BF16, DType::F64) => Some(sys::baracuda_kernels_cast_bf16_f64_run as CastRun),
-        (DType::BF16, DType::F8E4M3) => Some(sys::baracuda_kernels_cast_bf16_fp8e4m3_run as CastRun),
+        (DType::BF16, DType::F8E4M3) => {
+            Some(sys::baracuda_kernels_cast_bf16_fp8e4m3_run as CastRun)
+        }
         (DType::F16, DType::U8) => Some(sys::baracuda_kernels_cast_f16_u8_run as CastRun),
         (DType::F16, DType::U32) => Some(sys::baracuda_kernels_cast_f16_u32_run as CastRun),
         (DType::F16, DType::I64) => Some(sys::baracuda_kernels_cast_f16_i64_run as CastRun),
@@ -2861,7 +3456,9 @@ fn pick_cast_ffi(src: DType, dst: DType) -> Option<CastRun> {
         (DType::F64, DType::F64) => Some(sys::baracuda_kernels_cast_f64_f64_run as CastRun),
         // F64 → F8E4M3: not in baracuda alpha.50.
         // F8E4M3 → U8/U32/I64/F64/F8E4M3: not in baracuda alpha.50.
-        (DType::F8E4M3, DType::BF16) => Some(sys::baracuda_kernels_cast_fp8e4m3_bf16_run as CastRun),
+        (DType::F8E4M3, DType::BF16) => {
+            Some(sys::baracuda_kernels_cast_fp8e4m3_bf16_run as CastRun)
+        }
         (DType::F8E4M3, DType::F16) => Some(sys::baracuda_kernels_cast_fp8e4m3_f16_run as CastRun),
         (DType::F8E4M3, DType::F32) => Some(sys::baracuda_kernels_cast_fp8e4m3_f32_run as CastRun),
         // ---- GAP-168(c): Bool as a cast SOURCE, routed to the U8 kernels ----
@@ -2915,7 +3512,16 @@ fn cast_baracuda(
     })?;
     let stream = dev.stream().as_raw() as *mut std::ffi::c_void;
     // SAFETY: device-resident pointers; workspace null/0.
-    let status = unsafe { run(numel as i64, src_ptr, out_ptr, std::ptr::null_mut(), 0, stream) };
+    let status = unsafe {
+        run(
+            numel as i64,
+            src_ptr,
+            out_ptr,
+            std::ptr::null_mut(),
+            0,
+            stream,
+        )
+    };
     crate::baracuda::status::check(status, "cast")?;
     dev.synchronize()?;
     Ok(())
@@ -2958,11 +3564,19 @@ fn matmul_q_gguf_baracuda(
     let dst_ptr = out.as_raw().0 as *mut std::ffi::c_void;
     let ws_ptr = workspace.as_raw().0 as *mut std::ffi::c_void;
     let run: unsafe extern "C" fn(
-        i32, i32, i32,
-        *const std::ffi::c_void, *const std::ffi::c_void,
-        *const i32, *const i32,
-        *const f32, *mut std::ffi::c_void, i32,
-        *mut std::ffi::c_void, usize, *mut std::ffi::c_void,
+        i32,
+        i32,
+        i32,
+        *const std::ffi::c_void,
+        *const std::ffi::c_void,
+        *const i32,
+        *const i32,
+        *const f32,
+        *mut std::ffi::c_void,
+        i32,
+        *mut std::ffi::c_void,
+        usize,
+        *mut std::ffi::c_void,
     ) -> i32 = match dtype {
         GgmlDType::Q4_0 => sys::baracuda_kernels_mmvq_q4_0_batched_run,
         GgmlDType::Q4_1 => sys::baracuda_kernels_mmvq_q4_1_batched_run,
@@ -2980,12 +3594,19 @@ fn matmul_q_gguf_baracuda(
     // contract (m_total=1 → 4 bytes); top_k=1 ⇒ plain stores.
     let status = unsafe {
         run(
-            /* n_experts */ 1, nrows as i32, ncols as i32,
-            w_ptr, a_ptr,
-            ids_ptr, off_ptr,
+            /* n_experts */ 1,
+            nrows as i32,
+            ncols as i32,
+            w_ptr,
+            a_ptr,
+            ids_ptr,
+            off_ptr,
             /* topk_weights */ std::ptr::null(),
-            dst_ptr, /* top_k */ 1,
-            ws_ptr, workspace_bytes, stream,
+            dst_ptr,
+            /* top_k */ 1,
+            ws_ptr,
+            workspace_bytes,
+            stream,
         )
     };
     crate::baracuda::status::check(status, "matmul_q_gguf_baracuda")?;
@@ -3015,7 +3636,9 @@ impl CudaStorage {
         // `UnsupportedDtype` for F8E5M2 and F8E6M2, which decline for different
         // reasons).
         if !crate::storage_status::cuda_storage_status(dt).is_present() {
-            return Err(crate::storage_status::storage_unavailable(dt, "transfer_to_device").into());
+            return Err(
+                crate::storage_status::storage_unavailable(dt, "transfer_to_device").into(),
+            );
         }
         let storage_slice = match dt {
             DType::U8 => {
@@ -3108,7 +3731,9 @@ impl CudaStorage {
             // construction arm here, `storage_unavailable` returns its loud
             // stale-arm error — surfacing the incomplete wiring, not panicking.
             DType::F8E5M2 | DType::F8E6M2 => {
-                return Err(crate::storage_status::storage_unavailable(dt, "transfer_to_device").into());
+                return Err(
+                    crate::storage_status::storage_unavailable(dt, "transfer_to_device").into(),
+                );
             }
         };
 
@@ -3296,10 +3921,13 @@ impl CudaStorage {
                 let dst_view = dst_slice.slice(src_o..dst_slice.len());
                 let value = match s {
                     Scalar::$scalar(v) => v as $value_ty,
-                    _ => return Err(CudaError::UnsupportedDtype {
-                        dtype: self.dtype(),
-                        op: "const_set: scalar/storage dtype mismatch",
-                    }.into()),
+                    _ => {
+                        return Err(CudaError::UnsupportedDtype {
+                            dtype: self.dtype(),
+                            op: "const_set: scalar/storage dtype mismatch",
+                        }
+                        .into());
+                    }
                 };
                 let status = unsafe {
                     sys::$run(
@@ -3309,7 +3937,9 @@ impl CudaStorage {
                         stride_y.as_ptr(),
                         value,
                         dst_view.as_raw().0 as *mut std::ffi::c_void,
-                        std::ptr::null_mut(), 0, stream,
+                        std::ptr::null_mut(),
+                        0,
+                        stream,
                     )
                 };
                 crate::baracuda::status::check(status, $label)?;
@@ -3327,10 +3957,13 @@ impl CudaStorage {
                 let dst_view = dst_slice.slice(src_o..dst_slice.len());
                 let value: $half_ty = match s {
                     Scalar::$scalar(v) => v,
-                    _ => return Err(CudaError::UnsupportedDtype {
-                        dtype: self.dtype(),
-                        op: "const_set: scalar/storage dtype mismatch",
-                    }.into()),
+                    _ => {
+                        return Err(CudaError::UnsupportedDtype {
+                            dtype: self.dtype(),
+                            op: "const_set: scalar/storage dtype mismatch",
+                        }
+                        .into());
+                    }
                 };
                 let bits: $bits_ty = value.to_bits();
                 let status = unsafe {
@@ -3341,7 +3974,9 @@ impl CudaStorage {
                         stride_y.as_ptr(),
                         bits,
                         dst_view.as_raw().0 as *mut std::ffi::c_void,
-                        std::ptr::null_mut(), 0, stream,
+                        std::ptr::null_mut(),
+                        0,
+                        stream,
                     )
                 };
                 crate::baracuda::status::check(status, $label)?;
@@ -3350,23 +3985,91 @@ impl CudaStorage {
             }};
         }
         match self.dtype() {
-            DType::U8  => launch!(U8,  U8,  u8,  baracuda_kernels_fill_u8_strided_run,  "fill_u8_strided"),
+            DType::U8 => launch!(
+                U8,
+                U8,
+                u8,
+                baracuda_kernels_fill_u8_strided_run,
+                "fill_u8_strided"
+            ),
             // GAP-168(c): Bool reuses the U8 fill kernel — the storage is one byte
             // per element and byte-identical. No new kernel is needed, and the
             // macro's `v as $value_ty` is `bool as u8`, which Rust defines as
             // exactly 0/1 — so the canonical Bool encoding falls out of the cast
             // rather than being asserted separately. The DESTINATION variant is
             // still `S::Bool`, so a Bool buffer is never filled through U8's arm.
-            DType::Bool => launch!(Bool, Bool, u8, baracuda_kernels_fill_u8_strided_run, "fill_u8_strided"),
-            DType::I8  => launch!(I8,  I8,  i8,  baracuda_kernels_fill_i8_strided_run,  "fill_i8_strided"),
-            DType::U32 => launch!(U32, U32, u32, baracuda_kernels_fill_u32_strided_run, "fill_u32_strided"),
-            DType::I16 => launch!(I16, I16, i16, baracuda_kernels_fill_i16_strided_run, "fill_i16_strided"),
-            DType::I32 => launch!(I32, I32, i32, baracuda_kernels_fill_i32_strided_run, "fill_i32_strided"),
-            DType::I64 => launch!(I64, I64, i64, baracuda_kernels_fill_i64_strided_run, "fill_i64_strided"),
-            DType::F32 => launch!(F32, F32, f32, baracuda_kernels_fill_f32_strided_run, "fill_f32_strided"),
-            DType::F64 => launch!(F64, F64, f64, baracuda_kernels_fill_f64_strided_run, "fill_f64_strided"),
-            DType::F16  => launch_bits!(F16,  F16,  half::f16,  u16, baracuda_kernels_fill_f16_strided_run,  "fill_f16_strided"),
-            DType::BF16 => launch_bits!(BF16, BF16, half::bf16, u16, baracuda_kernels_fill_bf16_strided_run, "fill_bf16_strided"),
+            DType::Bool => launch!(
+                Bool,
+                Bool,
+                u8,
+                baracuda_kernels_fill_u8_strided_run,
+                "fill_u8_strided"
+            ),
+            DType::I8 => launch!(
+                I8,
+                I8,
+                i8,
+                baracuda_kernels_fill_i8_strided_run,
+                "fill_i8_strided"
+            ),
+            DType::U32 => launch!(
+                U32,
+                U32,
+                u32,
+                baracuda_kernels_fill_u32_strided_run,
+                "fill_u32_strided"
+            ),
+            DType::I16 => launch!(
+                I16,
+                I16,
+                i16,
+                baracuda_kernels_fill_i16_strided_run,
+                "fill_i16_strided"
+            ),
+            DType::I32 => launch!(
+                I32,
+                I32,
+                i32,
+                baracuda_kernels_fill_i32_strided_run,
+                "fill_i32_strided"
+            ),
+            DType::I64 => launch!(
+                I64,
+                I64,
+                i64,
+                baracuda_kernels_fill_i64_strided_run,
+                "fill_i64_strided"
+            ),
+            DType::F32 => launch!(
+                F32,
+                F32,
+                f32,
+                baracuda_kernels_fill_f32_strided_run,
+                "fill_f32_strided"
+            ),
+            DType::F64 => launch!(
+                F64,
+                F64,
+                f64,
+                baracuda_kernels_fill_f64_strided_run,
+                "fill_f64_strided"
+            ),
+            DType::F16 => launch_bits!(
+                F16,
+                F16,
+                half::f16,
+                u16,
+                baracuda_kernels_fill_f16_strided_run,
+                "fill_f16_strided"
+            ),
+            DType::BF16 => launch_bits!(
+                BF16,
+                BF16,
+                half::bf16,
+                u16,
+                baracuda_kernels_fill_bf16_strided_run,
+                "fill_bf16_strided"
+            ),
             DType::F8E4M3 => {
                 let dst_slice = match &mut self.slice {
                     S::F8E4M3(s) => s,
@@ -3375,10 +4078,13 @@ impl CudaStorage {
                 let dst_view = dst_slice.slice(src_o..dst_slice.len());
                 let value = match s {
                     Scalar::F8E4M3(v) => v,
-                    _ => return Err(CudaError::UnsupportedDtype {
-                        dtype: self.dtype(),
-                        op: "const_set: scalar/storage dtype mismatch",
-                    }.into()),
+                    _ => {
+                        return Err(CudaError::UnsupportedDtype {
+                            dtype: self.dtype(),
+                            op: "const_set: scalar/storage dtype mismatch",
+                        }
+                        .into());
+                    }
                 };
                 let bits: u8 = value.to_bits();
                 let status = unsafe {
@@ -3389,19 +4095,25 @@ impl CudaStorage {
                         stride_y.as_ptr(),
                         bits,
                         dst_view.as_raw().0 as *mut std::ffi::c_void,
-                        std::ptr::null_mut(), 0, stream,
+                        std::ptr::null_mut(),
+                        0,
+                        stream,
                     )
                 };
                 crate::baracuda::status::check(status, "fill_fp8e4m3_strided")?;
                 dev.synchronize()?;
                 Ok(())
             }
-            DType::F8E5M2 | DType::F4 | DType::F6E2M3 | DType::F6E3M2 | DType::F8E8M0 | DType::F8E6M2 => {
-                Err(CudaError::UnsupportedDtype {
-                    dtype: self.dtype(),
-                    op: "const_set",
-                }.into())
+            DType::F8E5M2
+            | DType::F4
+            | DType::F6E2M3
+            | DType::F6E3M2
+            | DType::F8E8M0
+            | DType::F8E6M2 => Err(CudaError::UnsupportedDtype {
+                dtype: self.dtype(),
+                op: "const_set",
             }
+            .into()),
         }
     }
 
@@ -3449,38 +4161,65 @@ impl CudaStorage {
         let (out_ptr, output_slice) = match dtype {
             DType::U8 => {
                 let buf = unsafe { dev.alloc::<u8>(el)? };
-                (buf.as_raw().0 as *mut std::ffi::c_void, CudaStorageSlice::U8(buf))
+                (
+                    buf.as_raw().0 as *mut std::ffi::c_void,
+                    CudaStorageSlice::U8(buf),
+                )
             }
             DType::U32 => {
                 let buf = unsafe { dev.alloc::<u32>(el)? };
-                (buf.as_raw().0 as *mut std::ffi::c_void, CudaStorageSlice::U32(buf))
+                (
+                    buf.as_raw().0 as *mut std::ffi::c_void,
+                    CudaStorageSlice::U32(buf),
+                )
             }
             DType::I64 => {
                 let buf = unsafe { dev.alloc::<i64>(el)? };
-                (buf.as_raw().0 as *mut std::ffi::c_void, CudaStorageSlice::I64(buf))
+                (
+                    buf.as_raw().0 as *mut std::ffi::c_void,
+                    CudaStorageSlice::I64(buf),
+                )
             }
             DType::BF16 => {
                 let buf = unsafe { dev.alloc::<bf16>(el)? };
-                (buf.as_raw().0 as *mut std::ffi::c_void, CudaStorageSlice::BF16(buf))
+                (
+                    buf.as_raw().0 as *mut std::ffi::c_void,
+                    CudaStorageSlice::BF16(buf),
+                )
             }
             DType::F16 => {
                 let buf = unsafe { dev.alloc::<f16>(el)? };
-                (buf.as_raw().0 as *mut std::ffi::c_void, CudaStorageSlice::F16(buf))
+                (
+                    buf.as_raw().0 as *mut std::ffi::c_void,
+                    CudaStorageSlice::F16(buf),
+                )
             }
             DType::F32 => {
                 let buf = unsafe { dev.alloc::<f32>(el)? };
-                (buf.as_raw().0 as *mut std::ffi::c_void, CudaStorageSlice::F32(buf))
+                (
+                    buf.as_raw().0 as *mut std::ffi::c_void,
+                    CudaStorageSlice::F32(buf),
+                )
             }
             DType::F64 => {
                 let buf = unsafe { dev.alloc::<f64>(el)? };
-                (buf.as_raw().0 as *mut std::ffi::c_void, CudaStorageSlice::F64(buf))
+                (
+                    buf.as_raw().0 as *mut std::ffi::c_void,
+                    CudaStorageSlice::F64(buf),
+                )
             }
             DType::F8E4M3 => {
                 let buf = unsafe { dev.alloc::<float8::F8E4M3>(el)? };
-                (buf.as_raw().0 as *mut std::ffi::c_void, CudaStorageSlice::F8E4M3(buf))
+                (
+                    buf.as_raw().0 as *mut std::ffi::c_void,
+                    CudaStorageSlice::F8E4M3(buf),
+                )
             }
             DType::I8 | DType::I16 | DType::I32 => {
-                return Err(CudaError::InternalError("i8,i16,i32 dtypes are not supported as cast targets").into())
+                return Err(CudaError::InternalError(
+                    "i8,i16,i32 dtypes are not supported as cast targets",
+                )
+                .into());
             }
             // GAP-168(c): Bool declines as a cast TARGET on CUDA. NOT for want of
             // storage — `CudaStorageSlice::Bool` is fully wired. `X -> Bool`
@@ -3527,7 +4266,9 @@ impl CudaStorage {
                 return Err(crate::storage_status::storage_unavailable(dtype, "to_dtype").into());
             }
             DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 => {
-                return Err(CudaError::InternalError("Dummy types not supported in CUDA backend").into());
+                return Err(
+                    CudaError::InternalError("Dummy types not supported in CUDA backend").into(),
+                );
             }
         };
         if el > 0 {
@@ -3581,8 +4322,7 @@ impl CudaStorage {
     /// depend on the concrete op-type structs in fuel-core.
     pub fn unary_by_name(&self, kernel: &'static str, layout: &Layout) -> Result<Self> {
         let device = self.device().clone();
-        let slice = crate::dyn_impl::UnaryKernel(kernel)
-            .map(&self.slice, &device, layout)?;
+        let slice = crate::dyn_impl::UnaryKernel(kernel).map(&self.slice, &device, layout)?;
         Ok(Self { slice, device })
     }
 
@@ -3607,8 +4347,13 @@ impl CudaStorage {
         kernel: &'static str,
     ) -> Result<Self> {
         let device = self.device().clone();
-        let slice = crate::dyn_impl::BinaryKernel(kernel)
-            .map(&self.slice, lhs_l, &rhs.slice, rhs_l, &device)?;
+        let slice = crate::dyn_impl::BinaryKernel(kernel).map(
+            &self.slice,
+            lhs_l,
+            &rhs.slice,
+            rhs_l,
+            &device,
+        )?;
         Ok(Self { slice, device })
     }
 
@@ -3644,25 +4389,45 @@ impl CudaStorage {
                     let out = unsafe { device.alloc::<$ty>(numel)? };
                     let status = unsafe {
                         sys::$run(
-                            numel as i64, rank as i32,
+                            numel as i64,
+                            rank as i32,
                             shape_i32.as_ptr(),
-                            stride_row_major.as_ptr(), stride_row_major.as_ptr(),
-                            (rank - 1) as i32, n_cols as i32, 1_i64, 1_i64,
+                            stride_row_major.as_ptr(),
+                            stride_row_major.as_ptr(),
+                            (rank - 1) as i32,
+                            n_cols as i32,
+                            1_i64,
+                            1_i64,
                             src.as_raw().0 as *const std::ffi::c_void,
                             out.as_raw().0 as *mut std::ffi::c_void,
-                            std::ptr::null_mut(), 0, stream,
+                            std::ptr::null_mut(),
+                            0,
+                            stream,
                         )
                     };
                     crate::baracuda::status::check(status, $label)?;
                     device.synchronize()?;
-                    return Ok(Self { slice: CudaStorageSlice::$variant(out), device });
+                    return Ok(Self {
+                        slice: CudaStorageSlice::$variant(out),
+                        device,
+                    });
                 }
             }};
         }
         launch!(F32, f32, baracuda_kernels_softmax_f32_run, "softmax_f32");
         launch!(F64, f64, baracuda_kernels_softmax_f64_run, "softmax_f64");
-        launch!(F16, half::f16, baracuda_kernels_softmax_f16_run, "softmax_f16");
-        launch!(BF16, half::bf16, baracuda_kernels_softmax_bf16_run, "softmax_bf16");
+        launch!(
+            F16,
+            half::f16,
+            baracuda_kernels_softmax_f16_run,
+            "softmax_f16"
+        );
+        launch!(
+            BF16,
+            half::bf16,
+            baracuda_kernels_softmax_bf16_run,
+            "softmax_bf16"
+        );
         fuel_ir::bail!("softmax_last_dim: unsupported dtype {:?}", self.dtype())
     }
 
@@ -3691,17 +4456,17 @@ impl CudaStorage {
     ) -> Result<Self> {
         if self.dtype() != DType::F32 {
             return fuel_ir::bail!(
-                "CudaStorage::matmul_q4_0: A must be F32, got {:?}", self.dtype());
+                "CudaStorage::matmul_q4_0: A must be F32, got {:?}",
+                self.dtype()
+            );
         }
         if !a_layout.is_contiguous() {
-            return fuel_ir::bail!(
-                "CudaStorage::matmul_q4_0: requires contiguous A");
+            return fuel_ir::bail!("CudaStorage::matmul_q4_0: requires contiguous A");
         }
         let a_dims = a_layout.shape().dims();
         let rank = a_dims.len();
         if rank < 2 {
-            return fuel_ir::bail!(
-                "CudaStorage::matmul_q4_0: A must be rank >= 2");
+            return fuel_ir::bail!("CudaStorage::matmul_q4_0: A must be rank >= 2");
         }
         let m = a_dims[rank - 2];
         let batch: usize = a_dims[..rank - 2].iter().product::<usize>().max(1);
@@ -3709,11 +4474,13 @@ impl CudaStorage {
         if total_rows != 1 {
             return fuel_ir::bail!(
                 "CudaStorage::matmul_q4_0: only M=1 supported on CUDA today; \
-                 got total_rows={total_rows}. Route prefill to Vulkan.");
+                 got total_rows={total_rows}. Route prefill to Vulkan."
+            );
         }
         if k < 64 {
             return fuel_ir::bail!(
-                "CudaStorage::matmul_q4_0: baracuda batched MMVQ requires k >= 64 for type-0/1 quants, got {k}");
+                "CudaStorage::matmul_q4_0: baracuda batched MMVQ requires k >= 64 for type-0/1 quants, got {k}"
+            );
         }
         let device = self.device().clone();
         matmul_q_gguf_baracuda(self, w_q_bytes, a_layout, k, n, GgmlDType::Q4_0, &device)
@@ -3740,17 +4507,17 @@ impl CudaStorage {
     ) -> Result<Self> {
         if self.dtype() != DType::F32 {
             return fuel_ir::bail!(
-                "CudaStorage::matmul_q4_km: A must be F32, got {:?}", self.dtype());
+                "CudaStorage::matmul_q4_km: A must be F32, got {:?}",
+                self.dtype()
+            );
         }
         if !a_layout.is_contiguous() {
-            return fuel_ir::bail!(
-                "CudaStorage::matmul_q4_km: requires contiguous A");
+            return fuel_ir::bail!("CudaStorage::matmul_q4_km: requires contiguous A");
         }
         let a_dims = a_layout.shape().dims();
         let rank = a_dims.len();
         if rank < 2 {
-            return fuel_ir::bail!(
-                "CudaStorage::matmul_q4_km: A must be rank >= 2");
+            return fuel_ir::bail!("CudaStorage::matmul_q4_km: A must be rank >= 2");
         }
         let m = a_dims[rank - 2];
         let batch: usize = a_dims[..rank - 2].iter().product::<usize>().max(1);
@@ -3758,7 +4525,8 @@ impl CudaStorage {
         if total_rows != 1 {
             return fuel_ir::bail!(
                 "CudaStorage::matmul_q4_km: only M=1 supported on CUDA today; \
-                 got total_rows={total_rows}. Route prefill to Vulkan.");
+                 got total_rows={total_rows}. Route prefill to Vulkan."
+            );
         }
         let device = self.device().clone();
         matmul_q_gguf_baracuda(self, w_q_bytes, a_layout, k, n, GgmlDType::Q4K, &device)
@@ -3811,30 +4579,51 @@ impl CudaStorage {
                     let rms_scratch = unsafe { device.alloc::<$ty>(outer_count.max(1))? };
                     let status = unsafe {
                         sys::$run(
-                            eps as f32, numel as i64, rank as i32,
+                            eps as f32,
+                            numel as i64,
+                            rank as i32,
                             shape_i32.as_ptr(),
-                            stride_x.as_ptr(), stride_y.as_ptr(), stride_rms.as_ptr(),
-                            axes_mask, last_dim as i32,
+                            stride_x.as_ptr(),
+                            stride_y.as_ptr(),
+                            stride_rms.as_ptr(),
+                            axes_mask,
+                            last_dim as i32,
                             src.as_raw().0 as *const std::ffi::c_void,
                             std::ptr::null(),
                             out.as_raw().0 as *mut std::ffi::c_void,
                             rms_scratch.as_raw().0 as *mut std::ffi::c_void,
-                            std::ptr::null_mut(), 0, stream,
+                            std::ptr::null_mut(),
+                            0,
+                            stream,
                         )
                     };
                     crate::baracuda::status::check(status, $label)?;
                     device.synchronize()?;
                     drop(rms_scratch);
-                    return Ok(Self { slice: CudaStorageSlice::$variant(out), device });
+                    return Ok(Self {
+                        slice: CudaStorageSlice::$variant(out),
+                        device,
+                    });
                 }
             }};
         }
         launch!(F32, f32, baracuda_kernels_rms_norm_f32_run, "rms_norm_f32");
         launch!(F64, f64, baracuda_kernels_rms_norm_f64_run, "rms_norm_f64");
-        launch!(F16, half::f16, baracuda_kernels_rms_norm_f16_run, "rms_norm_f16");
-        launch!(BF16, half::bf16, baracuda_kernels_rms_norm_bf16_run, "rms_norm_bf16");
+        launch!(
+            F16,
+            half::f16,
+            baracuda_kernels_rms_norm_f16_run,
+            "rms_norm_f16"
+        );
+        launch!(
+            BF16,
+            half::bf16,
+            baracuda_kernels_rms_norm_bf16_run,
+            "rms_norm_bf16"
+        );
         fuel_ir::bail!(
-            "CudaStorage::rms_norm_last_dim: unsupported dtype {:?}", self.dtype()
+            "CudaStorage::rms_norm_last_dim: unsupported dtype {:?}",
+            self.dtype()
         )
     }
 
@@ -3852,7 +4641,8 @@ impl CudaStorage {
         if self.dtype() != gain.dtype() {
             return fuel_ir::bail!(
                 "rms_norm_with_gain: dtype mismatch x={:?} gain={:?}",
-                self.dtype(), gain.dtype()
+                self.dtype(),
+                gain.dtype()
             );
         }
         let dims = layout.shape().dims();
@@ -3896,31 +4686,59 @@ impl CudaStorage {
                     let rms_scratch = unsafe { device.alloc::<$ty>(outer_count.max(1))? };
                     let status = unsafe {
                         sys::$run(
-                            eps as f32, numel as i64, rank as i32,
+                            eps as f32,
+                            numel as i64,
+                            rank as i32,
                             shape_i32.as_ptr(),
-                            stride_x.as_ptr(), stride_y.as_ptr(), stride_rms.as_ptr(),
-                            axes_mask, last_dim as i32,
+                            stride_x.as_ptr(),
+                            stride_y.as_ptr(),
+                            stride_rms.as_ptr(),
+                            axes_mask,
+                            last_dim as i32,
                             src.as_raw().0 as *const std::ffi::c_void,
                             g_slice.as_raw().0 as *const std::ffi::c_void,
                             out.as_raw().0 as *mut std::ffi::c_void,
                             rms_scratch.as_raw().0 as *mut std::ffi::c_void,
-                            std::ptr::null_mut(), 0, stream,
+                            std::ptr::null_mut(),
+                            0,
+                            stream,
                         )
                     };
                     crate::baracuda::status::check(status, $label)?;
                     device.synchronize()?;
                     drop(rms_scratch);
-                    return Ok(Self { slice: CudaStorageSlice::$variant(out), device });
+                    return Ok(Self {
+                        slice: CudaStorageSlice::$variant(out),
+                        device,
+                    });
                 }
             }};
         }
-        launch!(F32, f32, baracuda_kernels_rms_norm_f32_run, "rms_norm_gain_f32");
-        launch!(F64, f64, baracuda_kernels_rms_norm_f64_run, "rms_norm_gain_f64");
-        launch!(F16, half::f16, baracuda_kernels_rms_norm_f16_run, "rms_norm_gain_f16");
-        launch!(BF16, half::bf16, baracuda_kernels_rms_norm_bf16_run, "rms_norm_gain_bf16");
-        fuel_ir::bail!(
-            "rms_norm_with_gain: unsupported dtype {:?}", self.dtype()
-        )
+        launch!(
+            F32,
+            f32,
+            baracuda_kernels_rms_norm_f32_run,
+            "rms_norm_gain_f32"
+        );
+        launch!(
+            F64,
+            f64,
+            baracuda_kernels_rms_norm_f64_run,
+            "rms_norm_gain_f64"
+        );
+        launch!(
+            F16,
+            half::f16,
+            baracuda_kernels_rms_norm_f16_run,
+            "rms_norm_gain_f16"
+        );
+        launch!(
+            BF16,
+            half::bf16,
+            baracuda_kernels_rms_norm_bf16_run,
+            "rms_norm_gain_bf16"
+        );
+        fuel_ir::bail!("rms_norm_with_gain: unsupported dtype {:?}", self.dtype())
     }
 
     /// LayerNorm along the last dimension via baracuda alpha.50's
@@ -3940,7 +4758,9 @@ impl CudaStorage {
         if self.dtype() != gain.dtype() || self.dtype() != bias.dtype() {
             return fuel_ir::bail!(
                 "layer_norm: dtype mismatch x={:?} gain={:?} bias={:?}",
-                self.dtype(), gain.dtype(), bias.dtype(),
+                self.dtype(),
+                gain.dtype(),
+                bias.dtype(),
             );
         }
         let dims = layout.shape().dims();
@@ -3979,7 +4799,8 @@ impl CudaStorage {
                     CudaStorageSlice::$variant(s),
                     CudaStorageSlice::$variant(g),
                     CudaStorageSlice::$variant(b),
-                ) = (&self.slice, &gain.slice, &bias.slice) {
+                ) = (&self.slice, &gain.slice, &bias.slice)
+                {
                     let src = s.slice(layout.start_offset()..s.len());
                     let g_slice = g.slice(0..g.len());
                     let b_slice = b.slice(0..b.len());
@@ -3988,34 +4809,62 @@ impl CudaStorage {
                     let inv_std_scratch = unsafe { device.alloc::<$ty>(outer_count.max(1))? };
                     let status = unsafe {
                         sys::$run(
-                            eps as f32, numel as i64, rank as i32,
+                            eps as f32,
+                            numel as i64,
+                            rank as i32,
                             shape_i32.as_ptr(),
-                            stride_x.as_ptr(), stride_y.as_ptr(), stride_save.as_ptr(),
-                            axes_mask, last_dim as i32,
+                            stride_x.as_ptr(),
+                            stride_y.as_ptr(),
+                            stride_save.as_ptr(),
+                            axes_mask,
+                            last_dim as i32,
                             src.as_raw().0 as *const std::ffi::c_void,
                             g_slice.as_raw().0 as *const std::ffi::c_void,
                             b_slice.as_raw().0 as *const std::ffi::c_void,
                             out.as_raw().0 as *mut std::ffi::c_void,
                             mean_scratch.as_raw().0 as *mut std::ffi::c_void,
                             inv_std_scratch.as_raw().0 as *mut std::ffi::c_void,
-                            std::ptr::null_mut(), 0, stream,
+                            std::ptr::null_mut(),
+                            0,
+                            stream,
                         )
                     };
                     crate::baracuda::status::check(status, $label)?;
                     device.synchronize()?;
                     drop(mean_scratch);
                     drop(inv_std_scratch);
-                    return Ok(Self { slice: CudaStorageSlice::$variant(out), device });
+                    return Ok(Self {
+                        slice: CudaStorageSlice::$variant(out),
+                        device,
+                    });
                 }
             }};
         }
-        launch!(F32, f32, baracuda_kernels_layer_norm_f32_run, "layer_norm_f32");
-        launch!(F64, f64, baracuda_kernels_layer_norm_f64_run, "layer_norm_f64");
-        launch!(F16, half::f16, baracuda_kernels_layer_norm_f16_run, "layer_norm_f16");
-        launch!(BF16, half::bf16, baracuda_kernels_layer_norm_bf16_run, "layer_norm_bf16");
-        fuel_ir::bail!(
-            "layer_norm: unsupported dtype {:?}", self.dtype()
-        )
+        launch!(
+            F32,
+            f32,
+            baracuda_kernels_layer_norm_f32_run,
+            "layer_norm_f32"
+        );
+        launch!(
+            F64,
+            f64,
+            baracuda_kernels_layer_norm_f64_run,
+            "layer_norm_f64"
+        );
+        launch!(
+            F16,
+            half::f16,
+            baracuda_kernels_layer_norm_f16_run,
+            "layer_norm_f16"
+        );
+        launch!(
+            BF16,
+            half::bf16,
+            baracuda_kernels_layer_norm_bf16_run,
+            "layer_norm_bf16"
+        );
+        fuel_ir::bail!("layer_norm: unsupported dtype {:?}", self.dtype())
     }
 
     /// Apply RoPE rotation via baracuda alpha.54's
@@ -4029,17 +4878,13 @@ impl CudaStorage {
     /// (baracuda's ABI; f16/bf16 operands detour through f32 trig
     /// internally). The input must be contiguous. F32/F64/F16/BF16
     /// operand dtypes; cos+sin always F32.
-    pub fn rope(
-        &self,
-        cos: &Self,
-        sin: &Self,
-        x_layout: &Layout,
-    ) -> Result<Self> {
+    pub fn rope(&self, cos: &Self, sin: &Self, x_layout: &Layout) -> Result<Self> {
         use baracuda_kernels_sys as sys;
         if cos.dtype() != DType::F32 || sin.dtype() != DType::F32 {
             return fuel_ir::bail!(
                 "CudaStorage::rope: cos/sin tables must be F32 (baracuda ABI), got cos={:?} sin={:?}",
-                cos.dtype(), sin.dtype(),
+                cos.dtype(),
+                sin.dtype(),
             );
         }
         let dims = x_layout.shape().dims();
@@ -4048,16 +4893,12 @@ impl CudaStorage {
             return fuel_ir::bail!("CudaStorage::rope requires rank >= 2, got {dims:?}");
         }
         if !x_layout.is_contiguous() {
-            return fuel_ir::bail!(
-                "CudaStorage::rope first-cut requires contiguous x_layout"
-            );
+            return fuel_ir::bail!("CudaStorage::rope first-cut requires contiguous x_layout");
         }
         let seq = dims[rank - 2];
         let head_dim = dims[rank - 1];
         if head_dim % 2 != 0 {
-            return fuel_ir::bail!(
-                "CudaStorage::rope head_dim must be even, got {head_dim}"
-            );
+            return fuel_ir::bail!("CudaStorage::rope head_dim must be even, got {head_dim}");
         }
         let outer: usize = dims[..rank - 2].iter().product::<usize>().max(1);
         let bh = outer as i32;
@@ -4086,25 +4927,55 @@ impl CudaStorage {
                     let out = unsafe { device.alloc::<$ty>(numel)? };
                     let status = unsafe {
                         sys::$run(
-                            bh, td, d, stride_b,
+                            bh,
+                            td,
+                            d,
+                            stride_b,
                             src.as_raw().0 as *const std::ffi::c_void,
-                            cos_ptr, sin_ptr,
+                            cos_ptr,
+                            sin_ptr,
                             out.as_raw().0 as *mut std::ffi::c_void,
-                            std::ptr::null_mut(), 0, stream,
+                            std::ptr::null_mut(),
+                            0,
+                            stream,
                         )
                     };
                     crate::baracuda::status::check(status, $label)?;
                     device.synchronize()?;
-                    return Ok(Self { slice: CudaStorageSlice::$variant(out), device });
+                    return Ok(Self {
+                        slice: CudaStorageSlice::$variant(out),
+                        device,
+                    });
                 }
             }};
         }
-        launch!(F32, f32, baracuda_kernels_rope_apply_f32_run, "rope_apply_f32");
-        launch!(F64, f64, baracuda_kernels_rope_apply_f64_run, "rope_apply_f64");
-        launch!(F16, half::f16, baracuda_kernels_rope_apply_f16_run, "rope_apply_f16");
-        launch!(BF16, half::bf16, baracuda_kernels_rope_apply_bf16_run, "rope_apply_bf16");
+        launch!(
+            F32,
+            f32,
+            baracuda_kernels_rope_apply_f32_run,
+            "rope_apply_f32"
+        );
+        launch!(
+            F64,
+            f64,
+            baracuda_kernels_rope_apply_f64_run,
+            "rope_apply_f64"
+        );
+        launch!(
+            F16,
+            half::f16,
+            baracuda_kernels_rope_apply_f16_run,
+            "rope_apply_f16"
+        );
+        launch!(
+            BF16,
+            half::bf16,
+            baracuda_kernels_rope_apply_bf16_run,
+            "rope_apply_bf16"
+        );
         fuel_ir::bail!(
-            "CudaStorage::rope: unsupported operand dtype {:?}", self.dtype()
+            "CudaStorage::rope: unsupported operand dtype {:?}",
+            self.dtype()
         )
     }
 
@@ -4127,7 +4998,8 @@ impl CudaStorage {
         if cos.dtype() != DType::F32 || sin.dtype() != DType::F32 {
             return fuel_ir::bail!(
                 "rope_interleaved: cos/sin must be F32 (baracuda ABI), got cos={:?} sin={:?}",
-                cos.dtype(), sin.dtype(),
+                cos.dtype(),
+                sin.dtype(),
             );
         }
         let device = self.device().clone();
@@ -4150,25 +5022,55 @@ impl CudaStorage {
                     let out = unsafe { device.alloc::<$ty>(numel)? };
                     let status = unsafe {
                         sys::$run(
-                            bh, td, d, stride_b,
+                            bh,
+                            td,
+                            d,
+                            stride_b,
                             src.as_raw().0 as *const std::ffi::c_void,
-                            cos_ptr, sin_ptr,
+                            cos_ptr,
+                            sin_ptr,
                             out.as_raw().0 as *mut std::ffi::c_void,
-                            std::ptr::null_mut(), 0, stream,
+                            std::ptr::null_mut(),
+                            0,
+                            stream,
                         )
                     };
                     crate::baracuda::status::check(status, $label)?;
                     device.synchronize()?;
-                    return Ok(Self { slice: CudaStorageSlice::$variant(out), device });
+                    return Ok(Self {
+                        slice: CudaStorageSlice::$variant(out),
+                        device,
+                    });
                 }
             }};
         }
-        launch!(F32, f32, baracuda_kernels_rope_apply_interleaved_f32_run, "rope_apply_interleaved_f32");
-        launch!(F64, f64, baracuda_kernels_rope_apply_interleaved_f64_run, "rope_apply_interleaved_f64");
-        launch!(F16, half::f16, baracuda_kernels_rope_apply_interleaved_f16_run, "rope_apply_interleaved_f16");
-        launch!(BF16, half::bf16, baracuda_kernels_rope_apply_interleaved_bf16_run, "rope_apply_interleaved_bf16");
+        launch!(
+            F32,
+            f32,
+            baracuda_kernels_rope_apply_interleaved_f32_run,
+            "rope_apply_interleaved_f32"
+        );
+        launch!(
+            F64,
+            f64,
+            baracuda_kernels_rope_apply_interleaved_f64_run,
+            "rope_apply_interleaved_f64"
+        );
+        launch!(
+            F16,
+            half::f16,
+            baracuda_kernels_rope_apply_interleaved_f16_run,
+            "rope_apply_interleaved_f16"
+        );
+        launch!(
+            BF16,
+            half::bf16,
+            baracuda_kernels_rope_apply_interleaved_bf16_run,
+            "rope_apply_interleaved_bf16"
+        );
         fuel_ir::bail!(
-            "rope_interleaved: unsupported operand dtype {:?}", self.dtype()
+            "rope_interleaved: unsupported operand dtype {:?}",
+            self.dtype()
         )
     }
 
@@ -4191,7 +5093,8 @@ impl CudaStorage {
         if cos.dtype() != DType::F32 || sin.dtype() != DType::F32 {
             return fuel_ir::bail!(
                 "rope_thd: cos/sin must be F32 (baracuda ABI), got cos={:?} sin={:?}",
-                cos.dtype(), sin.dtype(),
+                cos.dtype(),
+                sin.dtype(),
             );
         }
         let device = self.device().clone();
@@ -4214,26 +5117,53 @@ impl CudaStorage {
                     let out = unsafe { device.alloc::<$ty>(numel)? };
                     let status = unsafe {
                         sys::$run(
-                            t_outer, h_heads, d, stride_b,
+                            t_outer,
+                            h_heads,
+                            d,
+                            stride_b,
                             src.as_raw().0 as *const std::ffi::c_void,
-                            cos_ptr, sin_ptr,
+                            cos_ptr,
+                            sin_ptr,
                             out.as_raw().0 as *mut std::ffi::c_void,
-                            std::ptr::null_mut(), 0, stream,
+                            std::ptr::null_mut(),
+                            0,
+                            stream,
                         )
                     };
                     crate::baracuda::status::check(status, $label)?;
                     device.synchronize()?;
-                    return Ok(Self { slice: CudaStorageSlice::$variant(out), device });
+                    return Ok(Self {
+                        slice: CudaStorageSlice::$variant(out),
+                        device,
+                    });
                 }
             }};
         }
-        launch!(F32, f32, baracuda_kernels_rope_apply_thd_f32_run, "rope_apply_thd_f32");
-        launch!(F64, f64, baracuda_kernels_rope_apply_thd_f64_run, "rope_apply_thd_f64");
-        launch!(F16, half::f16, baracuda_kernels_rope_apply_thd_f16_run, "rope_apply_thd_f16");
-        launch!(BF16, half::bf16, baracuda_kernels_rope_apply_thd_bf16_run, "rope_apply_thd_bf16");
-        fuel_ir::bail!(
-            "rope_thd: unsupported operand dtype {:?}", self.dtype()
-        )
+        launch!(
+            F32,
+            f32,
+            baracuda_kernels_rope_apply_thd_f32_run,
+            "rope_apply_thd_f32"
+        );
+        launch!(
+            F64,
+            f64,
+            baracuda_kernels_rope_apply_thd_f64_run,
+            "rope_apply_thd_f64"
+        );
+        launch!(
+            F16,
+            half::f16,
+            baracuda_kernels_rope_apply_thd_f16_run,
+            "rope_apply_thd_f16"
+        );
+        launch!(
+            BF16,
+            half::bf16,
+            baracuda_kernels_rope_apply_thd_bf16_run,
+            "rope_apply_thd_bf16"
+        );
+        fuel_ir::bail!("rope_thd: unsupported operand dtype {:?}", self.dtype())
     }
 
     pub fn to_cpu_storage(&self) -> Result<HostBuffer> {
@@ -4356,7 +5286,14 @@ impl CudaStorage {
             k_ref = &k_storage;
             k_l_ref = &k_l_owned;
         }
-        let slice = conv1d_dispatch(&inp_ref.slice, inp_l_ref, &k_ref.slice, k_l_ref, params, &device)?;
+        let slice = conv1d_dispatch(
+            &inp_ref.slice,
+            inp_l_ref,
+            &k_ref.slice,
+            k_l_ref,
+            params,
+            &device,
+        )?;
         Ok(Self { slice, device })
     }
 
@@ -4405,7 +5342,12 @@ impl CudaStorage {
             k_l_ref = &k_l_owned;
         }
         let slice = conv_transpose1d_dispatch(
-            &inp_ref.slice, inp_l_ref, &k_ref.slice, k_l_ref, params, &device,
+            &inp_ref.slice,
+            inp_l_ref,
+            &k_ref.slice,
+            k_l_ref,
+            params,
+            &device,
         )?;
         Ok(Self { slice, device })
     }
@@ -4458,7 +5400,14 @@ impl CudaStorage {
             k_ref = &k_storage;
             k_l_ref = &k_l_owned;
         }
-        let slice = conv2d_dispatch(&inp_ref.slice, inp_l_ref, &k_ref.slice, k_l_ref, params, &device)?;
+        let slice = conv2d_dispatch(
+            &inp_ref.slice,
+            inp_l_ref,
+            &k_ref.slice,
+            k_l_ref,
+            params,
+            &device,
+        )?;
         Ok(Self { slice, device })
     }
 
@@ -4504,18 +5453,33 @@ impl CudaStorage {
             k_l_ref = &k_l_owned;
         }
         let slice = conv_transpose2d_dispatch(
-            &inp_ref.slice, inp_l_ref, &k_ref.slice, k_l_ref, params, &device,
+            &inp_ref.slice,
+            inp_l_ref,
+            &k_ref.slice,
+            k_l_ref,
+            params,
+            &device,
         )?;
         Ok(Self { slice, device })
     }
 
-    pub fn avg_pool2d(&self, l: &Layout, k: (usize, usize), stride: (usize, usize)) -> Result<Self> {
+    pub fn avg_pool2d(
+        &self,
+        l: &Layout,
+        k: (usize, usize),
+        stride: (usize, usize),
+    ) -> Result<Self> {
         let device = self.device().clone();
         let slice = pool2d_dispatch(&self.slice, &device, l, k, stride, PoolOp::Avg)?;
         Ok(Self { slice, device })
     }
 
-    pub fn max_pool2d(&self, l: &Layout, k: (usize, usize), stride: (usize, usize)) -> Result<Self> {
+    pub fn max_pool2d(
+        &self,
+        l: &Layout,
+        k: (usize, usize),
+        stride: (usize, usize),
+    ) -> Result<Self> {
         let device = self.device().clone();
         let slice = pool2d_dispatch(&self.slice, &device, l, k, stride, PoolOp::Max)?;
         Ok(Self { slice, device })
@@ -4542,7 +5506,14 @@ impl CudaStorage {
     ) -> Result<Self> {
         let device = self.device().clone();
         let slice = upsample_bilinear2d_dispatch(
-            &self.slice, &device, l, out_w, out_h, align_corners, scale_h, scale_w,
+            &self.slice,
+            &device,
+            l,
+            out_w,
+            out_h,
+            align_corners,
+            scale_h,
+            scale_w,
         )?;
         Ok(Self { slice, device })
     }
@@ -4663,9 +5634,9 @@ impl CudaStorage {
         src_o: usize,
         dst_o: usize,
     ) -> Result<()> {
-        use baracuda_cuda_sys::driver;
-        use baracuda_cuda_sys::types::{CUmemorytype, CUDA_MEMCPY2D};
         use baracuda_cuda_sys::CUdeviceptr;
+        use baracuda_cuda_sys::driver;
+        use baracuda_cuda_sys::types::{CUDA_MEMCPY2D, CUmemorytype};
         let dev = &self.device;
         if d1 == 0 || d2 == 0 {
             return Ok(());
@@ -4673,49 +5644,75 @@ impl CudaStorage {
         // Get device pointers + element width per (src, dst) dtype pair.
         let (src_dev, dst_dev, elem_bytes): (CUdeviceptr, CUdeviceptr, usize) =
             match (&self.slice, &mut dst.slice) {
-                (S::U8(s), S::U8(d)) => {
-                    (s.slice(src_o..s.len()).as_raw(), d.slice(dst_o..d.len()).as_raw(), 1)
-                }
-                (S::I8(s), S::I8(d)) => {
-                    (s.slice(src_o..s.len()).as_raw(), d.slice(dst_o..d.len()).as_raw(), 1)
-                }
-                (S::U32(s), S::U32(d)) => {
-                    (s.slice(src_o..s.len()).as_raw(), d.slice(dst_o..d.len()).as_raw(), 4)
-                }
-                (S::I16(s), S::I16(d)) => {
-                    (s.slice(src_o..s.len()).as_raw(), d.slice(dst_o..d.len()).as_raw(), 2)
-                }
-                (S::I32(s), S::I32(d)) => {
-                    (s.slice(src_o..s.len()).as_raw(), d.slice(dst_o..d.len()).as_raw(), 4)
-                }
-                (S::I64(s), S::I64(d)) => {
-                    (s.slice(src_o..s.len()).as_raw(), d.slice(dst_o..d.len()).as_raw(), 8)
-                }
-                (S::BF16(s), S::BF16(d)) => {
-                    (s.slice(src_o..s.len()).as_raw(), d.slice(dst_o..d.len()).as_raw(), 2)
-                }
-                (S::F16(s), S::F16(d)) => {
-                    (s.slice(src_o..s.len()).as_raw(), d.slice(dst_o..d.len()).as_raw(), 2)
-                }
-                (S::F32(s), S::F32(d)) => {
-                    (s.slice(src_o..s.len()).as_raw(), d.slice(dst_o..d.len()).as_raw(), 4)
-                }
-                (S::F64(s), S::F64(d)) => {
-                    (s.slice(src_o..s.len()).as_raw(), d.slice(dst_o..d.len()).as_raw(), 8)
-                }
-                (S::F8E4M3(s), S::F8E4M3(d)) => {
-                    (s.slice(src_o..s.len()).as_raw(), d.slice(dst_o..d.len()).as_raw(), 1)
-                }
-                (S::F8E8M0(s), S::F8E8M0(d)) => {
-                    (s.slice(src_o..s.len()).as_raw(), d.slice(dst_o..d.len()).as_raw(), 1)
-                }
+                (S::U8(s), S::U8(d)) => (
+                    s.slice(src_o..s.len()).as_raw(),
+                    d.slice(dst_o..d.len()).as_raw(),
+                    1,
+                ),
+                (S::I8(s), S::I8(d)) => (
+                    s.slice(src_o..s.len()).as_raw(),
+                    d.slice(dst_o..d.len()).as_raw(),
+                    1,
+                ),
+                (S::U32(s), S::U32(d)) => (
+                    s.slice(src_o..s.len()).as_raw(),
+                    d.slice(dst_o..d.len()).as_raw(),
+                    4,
+                ),
+                (S::I16(s), S::I16(d)) => (
+                    s.slice(src_o..s.len()).as_raw(),
+                    d.slice(dst_o..d.len()).as_raw(),
+                    2,
+                ),
+                (S::I32(s), S::I32(d)) => (
+                    s.slice(src_o..s.len()).as_raw(),
+                    d.slice(dst_o..d.len()).as_raw(),
+                    4,
+                ),
+                (S::I64(s), S::I64(d)) => (
+                    s.slice(src_o..s.len()).as_raw(),
+                    d.slice(dst_o..d.len()).as_raw(),
+                    8,
+                ),
+                (S::BF16(s), S::BF16(d)) => (
+                    s.slice(src_o..s.len()).as_raw(),
+                    d.slice(dst_o..d.len()).as_raw(),
+                    2,
+                ),
+                (S::F16(s), S::F16(d)) => (
+                    s.slice(src_o..s.len()).as_raw(),
+                    d.slice(dst_o..d.len()).as_raw(),
+                    2,
+                ),
+                (S::F32(s), S::F32(d)) => (
+                    s.slice(src_o..s.len()).as_raw(),
+                    d.slice(dst_o..d.len()).as_raw(),
+                    4,
+                ),
+                (S::F64(s), S::F64(d)) => (
+                    s.slice(src_o..s.len()).as_raw(),
+                    d.slice(dst_o..d.len()).as_raw(),
+                    8,
+                ),
+                (S::F8E4M3(s), S::F8E4M3(d)) => (
+                    s.slice(src_o..s.len()).as_raw(),
+                    d.slice(dst_o..d.len()).as_raw(),
+                    1,
+                ),
+                (S::F8E8M0(s), S::F8E8M0(d)) => (
+                    s.slice(src_o..s.len()).as_raw(),
+                    d.slice(dst_o..d.len()).as_raw(),
+                    1,
+                ),
                 // GAP-168(c). NOTE: this match ends in a `_` arm, so a missing
                 // Bool pair is NOT a compile error — it would surface as a
                 // runtime "dtype mismatch in copy2d" on any strided Bool copy.
                 // Added deliberately, not by following the compiler.
-                (S::Bool(s), S::Bool(d)) => {
-                    (s.slice(src_o..s.len()).as_raw(), d.slice(dst_o..d.len()).as_raw(), 1)
-                }
+                (S::Bool(s), S::Bool(d)) => (
+                    s.slice(src_o..s.len()).as_raw(),
+                    d.slice(dst_o..d.len()).as_raw(),
+                    1,
+                ),
                 _ => Err(CudaError::InternalError("dtype mismatch in copy2d"))?,
             };
         let p = CUDA_MEMCPY2D {
@@ -4736,9 +5733,9 @@ impl CudaStorage {
         let stream = dev.stream().as_raw();
         let status = unsafe { cu(&p, stream) };
         if status.0 != 0 {
-            return Err(crate::Error::Msg(format!(
-                "cuMemcpy2DAsync failed: status={:?}", status
-            )).bt());
+            return Err(
+                crate::Error::Msg(format!("cuMemcpy2DAsync failed: status={:?}", status)).bt(),
+            );
         }
         dev.synchronize()?;
         Ok(())
@@ -4749,7 +5746,12 @@ impl CudaStorage {
     /// `dev.memcpy_dtod`; the strided path delegates to baracuda's
     /// byte-width contiguize FFI (`contiguize_b{1,2,4,8}_run`) —
     /// Phase 6c.2 migration from the ten `ucopy_<dtype>` PTX kernels.
-    pub fn copy_strided_src(&self, dst: &mut Self, dst_offset: usize, src_l: &Layout) -> Result<()> {
+    pub fn copy_strided_src(
+        &self,
+        dst: &mut Self,
+        dst_offset: usize,
+        src_l: &Layout,
+    ) -> Result<()> {
         let el_count = src_l.shape().elem_count();
         if el_count == 0 {
             return Ok(());

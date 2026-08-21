@@ -69,7 +69,7 @@ fn recycler_reclaims_across_full_realizes_no_unbounded_growth() {
         4 * 1024 * 1024,
         3 * 1024 * 1024,
         2 * 1024 * 1024,
-        1 * 1024 * 1024,
+        1024 * 1024,
     ];
     let working_set: u64 = sizes.iter().map(|&s| s as u64).sum();
 

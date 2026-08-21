@@ -1,4 +1,4 @@
-﻿//! Device abstraction for CPU, CUDA, and Metal backends.
+//! Device abstraction for CPU, CUDA, and Metal backends.
 //!
 //! ```rust
 //! use fuel_core::Device;
@@ -7,7 +7,7 @@
 //! assert_eq!(dev.location(), fuel_core::DeviceLocation::Cpu);
 //! ```
 use crate::dyn_backend::DynBackendDevice;
-use crate::{HostBuffer, DType, Result, Shape, Storage, WithDType};
+use crate::{DType, HostBuffer, Result, Shape, Storage, WithDType};
 use fuel_cpu_backend::dyn_impl::CpuBackendDevice;
 use std::sync::Arc;
 
@@ -413,10 +413,13 @@ impl Device {
     ) -> Result<Storage> {
         // CUDA doesn't support generating F16/BF16 directly; generate as F32 then convert.
         if self.is_cuda() && (dtype == DType::F16 || dtype == DType::BF16) {
-            let storage = Storage::from_dyn(self.inner.rand_uniform_dyn(shape, DType::F32, lo, up)?);
+            let storage =
+                Storage::from_dyn(self.inner.rand_uniform_dyn(shape, DType::F32, lo, up)?);
             storage.to_dtype(&crate::Layout::contiguous(shape), dtype)
         } else {
-            Ok(Storage::from_dyn(self.inner.rand_uniform_dyn(shape, dtype, lo, up)?))
+            Ok(Storage::from_dyn(
+                self.inner.rand_uniform_dyn(shape, dtype, lo, up)?,
+            ))
         }
     }
 
@@ -438,10 +441,13 @@ impl Device {
     ) -> Result<Storage> {
         // CUDA doesn't support generating F16/BF16 directly; generate as F32 then convert.
         if self.is_cuda() && (dtype == DType::F16 || dtype == DType::BF16) {
-            let storage = Storage::from_dyn(self.inner.rand_normal_dyn(shape, DType::F32, mean, std)?);
+            let storage =
+                Storage::from_dyn(self.inner.rand_normal_dyn(shape, DType::F32, mean, std)?);
             storage.to_dtype(&crate::Layout::contiguous(shape), dtype)
         } else {
-            Ok(Storage::from_dyn(self.inner.rand_normal_dyn(shape, dtype, mean, std)?))
+            Ok(Storage::from_dyn(
+                self.inner.rand_normal_dyn(shape, dtype, mean, std)?,
+            ))
         }
     }
 
@@ -466,17 +472,23 @@ impl Device {
 
     pub(crate) fn storage_from_slice<D: WithDType>(&self, data: &[D]) -> Result<Storage> {
         let buf = data.to_cpu_storage();
-        Ok(Storage::from_dyn(self.inner.storage_from_host_buffer_owned_dyn(buf)?))
+        Ok(Storage::from_dyn(
+            self.inner.storage_from_host_buffer_owned_dyn(buf)?,
+        ))
     }
 
     pub(crate) fn storage<A: NdArray>(&self, array: A) -> Result<Storage> {
         let buf = array.to_cpu_storage();
-        Ok(Storage::from_dyn(self.inner.storage_from_host_buffer_owned_dyn(buf)?))
+        Ok(Storage::from_dyn(
+            self.inner.storage_from_host_buffer_owned_dyn(buf)?,
+        ))
     }
 
     pub(crate) fn storage_owned<S: WithDType>(&self, data: Vec<S>) -> Result<Storage> {
         let buf = S::to_cpu_storage_owned(data);
-        Ok(Storage::from_dyn(self.inner.storage_from_host_buffer_owned_dyn(buf)?))
+        Ok(Storage::from_dyn(
+            self.inner.storage_from_host_buffer_owned_dyn(buf)?,
+        ))
     }
 
     /// Synchronizes the device, waiting for all pending operations to complete.

@@ -12,8 +12,8 @@
 //! `byte_storage_live`, which share a process and would race the global counter.
 
 use fuel_vulkan_backend::{
-    mapped_host_visible_bytes, mapped_host_visible_peak_bytes, reset_host_mapped_peak,
-    DeviceSelection, VulkanBackend,
+    DeviceSelection, VulkanBackend, mapped_host_visible_bytes, mapped_host_visible_peak_bytes,
+    reset_host_mapped_peak,
 };
 
 fn backend_or_skip() -> Option<VulkanBackend> {

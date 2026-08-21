@@ -1,7 +1,7 @@
 use anyhow::{Error as E, Result};
 use clap::Parser;
 use image::DynamicImage;
-use pdf2image::{RenderOptionsBuilder, PDF};
+use pdf2image::{PDF, RenderOptionsBuilder};
 use std::sync::Arc;
 use tokenizers::Tokenizer;
 
@@ -11,7 +11,7 @@ use fuel::lazy_gemma::{GemmaActivation, GemmaConfig};
 use fuel::lazy_paligemma::PaligemmaConfig;
 use fuel::lazy_siglip::SiglipVisionConfig;
 use fuel::{Device, Shape};
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 
 fn paligemma_3b_448_config() -> PaligemmaConfig {
     // PaliGemma-3B 448 — SigLIP-So400m image encoder at 448×448 paired with
@@ -157,7 +157,10 @@ fn main() -> Result<()> {
         .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
     let weights = ColPaliWeights::load_from_mmapped(&st, &config)
         .map_err(|e| E::msg(format!("load weights: {e}")))?;
-    let model = ColPaliModel { config: config.clone(), weights };
+    let model = ColPaliModel {
+        config: config.clone(),
+        weights,
+    };
     println!("loaded the model in {:?}", start.elapsed());
 
     let tokenizer = Tokenizer::from_file(tokenizer_filename).map_err(E::msg)?;
@@ -233,7 +236,10 @@ fn main() -> Result<()> {
     let top_k_indices = &indices[0..top];
 
     println!("Prompt: {}", args.prompt);
-    println!("top {} page numbers that contain similarity to the prompt", top);
+    println!(
+        "top {} page numbers that contain similarity to the prompt",
+        top
+    );
     println!("-----------------------------------");
     for index in top_k_indices {
         println!("Page: {:?}", index + 1);

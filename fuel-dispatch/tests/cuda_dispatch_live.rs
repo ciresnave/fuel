@@ -14,9 +14,13 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_ir::{dispatch::OpKind, probe::BackendId, DType, Layout, Shape};
 use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
-use fuel_dispatch::{baracuda_dispatch::register_baracuda_cuda_kernels, dispatch::{register_cuda_kernels, register_cpu_kernels}, kernel::{KernelBindingTable, MatmulM, OpParams}};
+use fuel_dispatch::{
+    baracuda_dispatch::register_baracuda_cuda_kernels,
+    dispatch::{register_cpu_kernels, register_cuda_kernels},
+    kernel::{KernelBindingTable, MatmulM, OpParams},
+};
+use fuel_ir::{DType, Layout, Shape, dispatch::OpKind, probe::BackendId};
 use fuel_memory::{BackendStorage, Storage};
 
 fn dev_or_skip() -> Option<CudaDevice> {
@@ -43,10 +47,7 @@ fn build_storage_cuda(dev: &CudaDevice, src_f32: &[f32]) -> Storage {
 fn assert_close(actual: &[f32], expected: &[f32], eps: f32) {
     assert_eq!(actual.len(), expected.len(), "len mismatch");
     for (i, (a, e)) in actual.iter().zip(expected.iter()).enumerate() {
-        assert!(
-            (a - e).abs() <= eps,
-            "idx {i}: |{a} - {e}| > {eps}",
-        );
+        assert!((a - e).abs() <= eps, "idx {i}: |{a} - {e}| > {eps}",);
     }
 }
 
@@ -87,7 +88,11 @@ fn add_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::AddElementwise, &[DType::F32, DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::AddElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (AddElementwise, F32, Cuda)");
 
     kernel(
@@ -131,7 +136,11 @@ fn sub_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::SubElementwise, &[DType::F32, DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::SubElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (SubElementwise, F32, Cuda)");
 
     kernel(
@@ -172,7 +181,11 @@ fn mul_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::MulElementwise, &[DType::F32, DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::MulElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (MulElementwise, F32, Cuda)");
 
     kernel(
@@ -213,7 +226,11 @@ fn div_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::DivElementwise, &[DType::F32, DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::DivElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (DivElementwise, F32, Cuda)");
 
     kernel(
@@ -254,7 +271,11 @@ fn maximum_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::MaximumElementwise, &[DType::F32, DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::MaximumElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (MaximumElementwise, F32, Cuda)");
 
     kernel(
@@ -295,7 +316,11 @@ fn minimum_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::MinimumElementwise, &[DType::F32, DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::MinimumElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (MinimumElementwise, F32, Cuda)");
 
     kernel(
@@ -361,7 +386,11 @@ fn sub_elementwise_f32_broadcast_through_binding_table() {
     let layouts = vec![lhs_layout, rhs_layout, out_layout];
 
     let kernel = table
-        .lookup(OpKind::SubElementwise, &[DType::F32, DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::SubElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (SubElementwise, F32, Cuda)");
 
     kernel(
@@ -415,7 +444,11 @@ fn relu_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::ReluElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::ReluElementwise,
+            &[DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (ReluElementwise, F32, Cuda)");
 
     kernel(
@@ -454,11 +487,20 @@ fn neg_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::NegElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::NegElementwise,
+            &[DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (NegElementwise, F32, Cuda)");
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &OpParams::None)
-        .expect("kernel call");
+    kernel(
+        &[src_arc.clone()],
+        &mut [out_arc.clone()],
+        &[],
+        &OpParams::None,
+    )
+    .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
     let BackendStorage::Cuda(c) = &result_storage.inner else {
@@ -488,11 +530,20 @@ fn sqr_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::SqrElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::SqrElementwise,
+            &[DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (SqrElementwise, F32, Cuda)");
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &OpParams::None)
-        .expect("kernel call");
+    kernel(
+        &[src_arc.clone()],
+        &mut [out_arc.clone()],
+        &[],
+        &OpParams::None,
+    )
+    .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
     let BackendStorage::Cuda(c) = &result_storage.inner else {
@@ -522,11 +573,20 @@ fn sqrt_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::SqrtElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::SqrtElementwise,
+            &[DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (SqrtElementwise, F32, Cuda)");
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &OpParams::None)
-        .expect("kernel call");
+    kernel(
+        &[src_arc.clone()],
+        &mut [out_arc.clone()],
+        &[],
+        &OpParams::None,
+    )
+    .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
     let BackendStorage::Cuda(c) = &result_storage.inner else {
@@ -556,11 +616,20 @@ fn recip_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::RecipElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::RecipElementwise,
+            &[DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (RecipElementwise, F32, Cuda)");
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &OpParams::None)
-        .expect("kernel call");
+    kernel(
+        &[src_arc.clone()],
+        &mut [out_arc.clone()],
+        &[],
+        &OpParams::None,
+    )
+    .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
     let BackendStorage::Cuda(c) = &result_storage.inner else {
@@ -590,11 +659,20 @@ fn abs_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::AbsElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::AbsElementwise,
+            &[DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (AbsElementwise, F32, Cuda)");
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &OpParams::None)
-        .expect("kernel call");
+    kernel(
+        &[src_arc.clone()],
+        &mut [out_arc.clone()],
+        &[],
+        &OpParams::None,
+    )
+    .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
     let BackendStorage::Cuda(c) = &result_storage.inner else {
@@ -620,19 +698,27 @@ fn tanh_elementwise_f32_through_binding_table() {
 
     let xs = [-2.0_f32, -0.5, 0.0, 0.5, 2.0];
     let src = build_storage_cuda(&dev, &xs);
-    let out_bytes = CudaStorageBytes::alloc(&dev, (xs.len() * 4) as usize)
-        .expect("out alloc");
+    let out_bytes = CudaStorageBytes::alloc(&dev, (xs.len() * 4) as usize).expect("out alloc");
     let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::F32);
 
     let src_arc = Arc::new(RwLock::new(src));
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::TanhElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::TanhElementwise,
+            &[DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (TanhElementwise, F32, Cuda)");
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &OpParams::None)
-        .expect("kernel call");
+    kernel(
+        &[src_arc.clone()],
+        &mut [out_arc.clone()],
+        &[],
+        &OpParams::None,
+    )
+    .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
     let BackendStorage::Cuda(c) = &result_storage.inner else {
@@ -657,19 +743,27 @@ fn exp_elementwise_f32_through_binding_table() {
 
     let xs = [-1.0_f32, 0.0, 0.5, 1.0, 2.0];
     let src = build_storage_cuda(&dev, &xs);
-    let out_bytes = CudaStorageBytes::alloc(&dev, (xs.len() * 4) as usize)
-        .expect("out alloc");
+    let out_bytes = CudaStorageBytes::alloc(&dev, (xs.len() * 4) as usize).expect("out alloc");
     let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::F32);
 
     let src_arc = Arc::new(RwLock::new(src));
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::ExpElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::ExpElementwise,
+            &[DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (ExpElementwise, F32, Cuda)");
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &OpParams::None)
-        .expect("kernel call");
+    kernel(
+        &[src_arc.clone()],
+        &mut [out_arc.clone()],
+        &[],
+        &OpParams::None,
+    )
+    .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
     let BackendStorage::Cuda(c) = &result_storage.inner else {
@@ -694,19 +788,27 @@ fn log_elementwise_f32_through_binding_table() {
 
     let xs = [0.5_f32, 1.0, 2.0, std::f32::consts::E, 10.0];
     let src = build_storage_cuda(&dev, &xs);
-    let out_bytes = CudaStorageBytes::alloc(&dev, (xs.len() * 4) as usize)
-        .expect("out alloc");
+    let out_bytes = CudaStorageBytes::alloc(&dev, (xs.len() * 4) as usize).expect("out alloc");
     let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::F32);
 
     let src_arc = Arc::new(RwLock::new(src));
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::LogElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::LogElementwise,
+            &[DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (LogElementwise, F32, Cuda)");
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &OpParams::None)
-        .expect("kernel call");
+    kernel(
+        &[src_arc.clone()],
+        &mut [out_arc.clone()],
+        &[],
+        &OpParams::None,
+    )
+    .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
     let BackendStorage::Cuda(c) = &result_storage.inner else {
@@ -737,19 +839,27 @@ fn sin_elementwise_f32_through_binding_table() {
         std::f32::consts::PI,
     ];
     let src = build_storage_cuda(&dev, &xs);
-    let out_bytes = CudaStorageBytes::alloc(&dev, (xs.len() * 4) as usize)
-        .expect("out alloc");
+    let out_bytes = CudaStorageBytes::alloc(&dev, (xs.len() * 4) as usize).expect("out alloc");
     let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::F32);
 
     let src_arc = Arc::new(RwLock::new(src));
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::SinElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::SinElementwise,
+            &[DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (SinElementwise, F32, Cuda)");
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &OpParams::None)
-        .expect("kernel call");
+    kernel(
+        &[src_arc.clone()],
+        &mut [out_arc.clone()],
+        &[],
+        &OpParams::None,
+    )
+    .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
     let BackendStorage::Cuda(c) = &result_storage.inner else {
@@ -780,19 +890,27 @@ fn cos_elementwise_f32_through_binding_table() {
         std::f32::consts::PI,
     ];
     let src = build_storage_cuda(&dev, &xs);
-    let out_bytes = CudaStorageBytes::alloc(&dev, (xs.len() * 4) as usize)
-        .expect("out alloc");
+    let out_bytes = CudaStorageBytes::alloc(&dev, (xs.len() * 4) as usize).expect("out alloc");
     let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::F32);
 
     let src_arc = Arc::new(RwLock::new(src));
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::CosElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::CosElementwise,
+            &[DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (CosElementwise, F32, Cuda)");
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &OpParams::None)
-        .expect("kernel call");
+    kernel(
+        &[src_arc.clone()],
+        &mut [out_arc.clone()],
+        &[],
+        &OpParams::None,
+    )
+    .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
     let BackendStorage::Cuda(c) = &result_storage.inner else {
@@ -817,19 +935,27 @@ fn sigmoid_elementwise_f32_through_binding_table() {
 
     let xs = [-2.0_f32, -0.5, 0.0, 0.5, 2.0];
     let src = build_storage_cuda(&dev, &xs);
-    let out_bytes = CudaStorageBytes::alloc(&dev, (xs.len() * 4) as usize)
-        .expect("out alloc");
+    let out_bytes = CudaStorageBytes::alloc(&dev, (xs.len() * 4) as usize).expect("out alloc");
     let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::F32);
 
     let src_arc = Arc::new(RwLock::new(src));
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::SigmoidElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::SigmoidElementwise,
+            &[DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (SigmoidElementwise, F32, Cuda)");
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &OpParams::None)
-        .expect("kernel call");
+    kernel(
+        &[src_arc.clone()],
+        &mut [out_arc.clone()],
+        &[],
+        &OpParams::None,
+    )
+    .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
     let BackendStorage::Cuda(c) = &result_storage.inner else {
@@ -854,19 +980,27 @@ fn silu_elementwise_f32_through_binding_table() {
 
     let xs = [-2.0_f32, -0.5, 0.0, 0.5, 2.0];
     let src = build_storage_cuda(&dev, &xs);
-    let out_bytes = CudaStorageBytes::alloc(&dev, (xs.len() * 4) as usize)
-        .expect("out alloc");
+    let out_bytes = CudaStorageBytes::alloc(&dev, (xs.len() * 4) as usize).expect("out alloc");
     let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::F32);
 
     let src_arc = Arc::new(RwLock::new(src));
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::SiluElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::SiluElementwise,
+            &[DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (SiluElementwise, F32, Cuda)");
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &OpParams::None)
-        .expect("kernel call");
+    kernel(
+        &[src_arc.clone()],
+        &mut [out_arc.clone()],
+        &[],
+        &OpParams::None,
+    )
+    .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
     let BackendStorage::Cuda(c) = &result_storage.inner else {
@@ -893,19 +1027,27 @@ fn gelu_elementwise_f32_through_binding_table() {
 
     let xs = [-2.0_f32, -0.5, 0.0, 0.5, 2.0];
     let src = build_storage_cuda(&dev, &xs);
-    let out_bytes = CudaStorageBytes::alloc(&dev, (xs.len() * 4) as usize)
-        .expect("out alloc");
+    let out_bytes = CudaStorageBytes::alloc(&dev, (xs.len() * 4) as usize).expect("out alloc");
     let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::F32);
 
     let src_arc = Arc::new(RwLock::new(src));
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::GeluElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::GeluElementwise,
+            &[DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (GeluElementwise, F32, Cuda)");
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &OpParams::None)
-        .expect("kernel call");
+    kernel(
+        &[src_arc.clone()],
+        &mut [out_arc.clone()],
+        &[],
+        &OpParams::None,
+    )
+    .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
     let BackendStorage::Cuda(c) = &result_storage.inner else {
@@ -937,19 +1079,27 @@ fn step_elementwise_f32_through_binding_table() {
 
     let xs = [-2.0_f32, -0.5, 0.0, 0.5, 2.0];
     let src = build_storage_cuda(&dev, &xs);
-    let out_bytes = CudaStorageBytes::alloc(&dev, (xs.len() * 4) as usize)
-        .expect("out alloc");
+    let out_bytes = CudaStorageBytes::alloc(&dev, (xs.len() * 4) as usize).expect("out alloc");
     let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::F32);
 
     let src_arc = Arc::new(RwLock::new(src));
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::StepElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::StepElementwise,
+            &[DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (StepElementwise, F32, Cuda)");
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &OpParams::None)
-        .expect("kernel call");
+    kernel(
+        &[src_arc.clone()],
+        &mut [out_arc.clone()],
+        &[],
+        &OpParams::None,
+    )
+    .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
     let BackendStorage::Cuda(c) = &result_storage.inner else {
@@ -985,7 +1135,11 @@ fn sum_reduce_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::SumReduce, &[DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::SumReduce,
+            &[DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (SumReduce, F32, Cuda)");
 
     let params = OpParams::Reduce {
@@ -996,8 +1150,13 @@ fn sum_reduce_f32_through_binding_table() {
     let out_layout = Layout::contiguous(Shape::from_dims(&[2]));
     let layouts = vec![in_layout, out_layout];
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &layouts, &params)
-        .expect("kernel call");
+    kernel(
+        &[src_arc.clone()],
+        &mut [out_arc.clone()],
+        &layouts,
+        &params,
+    )
+    .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
     let BackendStorage::Cuda(c) = &result_storage.inner else {
@@ -1030,7 +1189,11 @@ fn max_reduce_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::MaxReduce, &[DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::MaxReduce,
+            &[DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (MaxReduce, F32, Cuda)");
 
     let params = OpParams::Reduce {
@@ -1041,8 +1204,13 @@ fn max_reduce_f32_through_binding_table() {
     let out_layout = Layout::contiguous(Shape::from_dims(&[2]));
     let layouts = vec![in_layout, out_layout];
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &layouts, &params)
-        .expect("kernel call");
+    kernel(
+        &[src_arc.clone()],
+        &mut [out_arc.clone()],
+        &layouts,
+        &params,
+    )
+    .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
     let BackendStorage::Cuda(c) = &result_storage.inner else {
@@ -1075,7 +1243,11 @@ fn min_reduce_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::MinReduce, &[DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::MinReduce,
+            &[DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (MinReduce, F32, Cuda)");
 
     let params = OpParams::Reduce {
@@ -1086,8 +1258,13 @@ fn min_reduce_f32_through_binding_table() {
     let out_layout = Layout::contiguous(Shape::from_dims(&[2]));
     let layouts = vec![in_layout, out_layout];
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &layouts, &params)
-        .expect("kernel call");
+    kernel(
+        &[src_arc.clone()],
+        &mut [out_arc.clone()],
+        &layouts,
+        &params,
+    )
+    .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
     let BackendStorage::Cuda(c) = &result_storage.inner else {
@@ -1124,7 +1301,11 @@ fn mean_reduce_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::MeanReduce, &[DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::MeanReduce,
+            &[DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (MeanReduce, F32, Cuda)");
 
     let params = OpParams::Reduce {
@@ -1135,8 +1316,13 @@ fn mean_reduce_f32_through_binding_table() {
     let out_layout = Layout::contiguous(Shape::from_dims(&[2]));
     let layouts = vec![in_layout, out_layout];
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &layouts, &params)
-        .expect("kernel call");
+    kernel(
+        &[src_arc.clone()],
+        &mut [out_arc.clone()],
+        &layouts,
+        &params,
+    )
+    .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
     let BackendStorage::Cuda(c) = &result_storage.inner else {
@@ -1174,7 +1360,11 @@ fn matmul_f32_rank2_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::MatMul, &[DType::F32, DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::MatMul,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (MatMul, F32, Cuda)");
 
     let params = OpParams::Matmul {
@@ -1186,8 +1376,13 @@ fn matmul_f32_rank2_through_binding_table() {
         m_compute: MatmulM::All,
     };
 
-    kernel(&[lhs_arc.clone(), rhs_arc.clone()], &mut [out_arc.clone()], &[], &params)
-        .expect("kernel call");
+    kernel(
+        &[lhs_arc.clone(), rhs_arc.clone()],
+        &mut [out_arc.clone()],
+        &[],
+        &params,
+    )
+    .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
     let BackendStorage::Cuda(c) = &result_storage.inner else {
@@ -1220,12 +1415,10 @@ fn matmul_f32_batched_through_binding_table() {
 
     // batch 0: rank-2 inputs from above; batch 1: all ones.
     let lhs_data = [
-        1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0,
-        1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+        1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
     ];
     let rhs_data = [
-        1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0,
-        1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
+        1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
     ];
     let lhs = build_storage_cuda(&dev, &lhs_data);
     let rhs = build_storage_cuda(&dev, &rhs_data);
@@ -1237,7 +1430,11 @@ fn matmul_f32_batched_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::MatMul, &[DType::F32, DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::MatMul,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (MatMul, F32, Cuda)");
 
     let params = OpParams::Matmul {
@@ -1249,8 +1446,13 @@ fn matmul_f32_batched_through_binding_table() {
         m_compute: MatmulM::All,
     };
 
-    kernel(&[lhs_arc.clone(), rhs_arc.clone()], &mut [out_arc.clone()], &[], &params)
-        .expect("kernel call");
+    kernel(
+        &[lhs_arc.clone(), rhs_arc.clone()],
+        &mut [out_arc.clone()],
+        &[],
+        &params,
+    )
+    .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
     let BackendStorage::Cuda(c) = &result_storage.inner else {
@@ -1295,7 +1497,11 @@ fn matmul_f32_gqa_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::MatMul, &[DType::F32, DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::MatMul,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (MatMul, F32, Cuda)");
 
     let params = OpParams::Matmul {
@@ -1307,8 +1513,13 @@ fn matmul_f32_gqa_through_binding_table() {
         m_compute: MatmulM::All,
     };
 
-    kernel(&[lhs_arc.clone(), rhs_arc.clone()], &mut [out_arc.clone()], &[], &params)
-        .expect("kernel call");
+    kernel(
+        &[lhs_arc.clone(), rhs_arc.clone()],
+        &mut [out_arc.clone()],
+        &[],
+        &params,
+    )
+    .expect("kernel call");
 
     // CPU reference: per-lhs-batch, with rhs_batch = lhs_batch / 2.
     let mut expected = vec![0.0_f32; 4 * 2 * 2];
@@ -1321,8 +1532,7 @@ fn matmul_f32_gqa_through_binding_table() {
             for j in 0..2 {
                 let mut acc = 0.0_f32;
                 for kk in 0..3 {
-                    acc += lhs_data[lhs_off + i * 3 + kk]
-                        * rhs_data[rhs_off + kk * 2 + j];
+                    acc += lhs_data[lhs_off + i * 3 + kk] * rhs_data[rhs_off + kk * 2 + j];
                 }
                 expected[out_off + i * 2 + j] = acc;
             }
@@ -1403,7 +1613,11 @@ fn matmul_bf16_rank2_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::MatMul, &[DType::BF16, DType::BF16, DType::BF16], BackendId::Cuda)
+        .lookup(
+            OpKind::MatMul,
+            &[DType::BF16, DType::BF16, DType::BF16],
+            BackendId::Cuda,
+        )
         .expect("lookup (MatMul, BF16, Cuda)");
 
     let params = OpParams::Matmul {
@@ -1415,8 +1629,13 @@ fn matmul_bf16_rank2_through_binding_table() {
         m_compute: MatmulM::All,
     };
 
-    kernel(&[lhs_arc.clone(), rhs_arc.clone()], &mut [out_arc.clone()], &[], &params)
-        .expect("kernel call");
+    kernel(
+        &[lhs_arc.clone(), rhs_arc.clone()],
+        &mut [out_arc.clone()],
+        &[],
+        &params,
+    )
+    .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
     let BackendStorage::Cuda(c) = &result_storage.inner else {
@@ -1450,12 +1669,10 @@ fn matmul_bf16_batched_through_binding_table() {
     let mut b_bf16 = vec![half::bf16::ZERO; batches * k * n];
     for b in 0..batches {
         for i in 0..m * k {
-            a_bf16[b * m * k + i] =
-                half::bf16::from_f32(((b * 1000 + i) as f32 * 0.01).sin());
+            a_bf16[b * m * k + i] = half::bf16::from_f32(((b * 1000 + i) as f32 * 0.01).sin());
         }
         for i in 0..k * n {
-            b_bf16[b * k * n + i] =
-                half::bf16::from_f32(((b * 1000 + i) as f32 * 0.013).cos());
+            b_bf16[b * k * n + i] = half::bf16::from_f32(((b * 1000 + i) as f32 * 0.013).cos());
         }
     }
     let mut expected: Vec<f32> = Vec::with_capacity(batches * m * n);
@@ -1465,7 +1682,9 @@ fn matmul_bf16_batched_through_binding_table() {
         let part = cpu_bf16_matmul_rrr(
             &a_bf16[a_off..a_off + m * k],
             &b_bf16[b_off..b_off + k * n],
-            m, n, k,
+            m,
+            n,
+            k,
         );
         expected.extend(part.iter().map(|x| x.to_f32()));
     }
@@ -1480,7 +1699,11 @@ fn matmul_bf16_batched_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::MatMul, &[DType::BF16, DType::BF16, DType::BF16], BackendId::Cuda)
+        .lookup(
+            OpKind::MatMul,
+            &[DType::BF16, DType::BF16, DType::BF16],
+            BackendId::Cuda,
+        )
         .expect("lookup (MatMul, BF16, Cuda)");
 
     let params = OpParams::Matmul {
@@ -1492,8 +1715,13 @@ fn matmul_bf16_batched_through_binding_table() {
         m_compute: MatmulM::All,
     };
 
-    kernel(&[lhs_arc.clone(), rhs_arc.clone()], &mut [out_arc.clone()], &[], &params)
-        .expect("kernel call");
+    kernel(
+        &[lhs_arc.clone(), rhs_arc.clone()],
+        &mut [out_arc.clone()],
+        &[],
+        &params,
+    )
+    .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
     let BackendStorage::Cuda(c) = &result_storage.inner else {
@@ -1561,7 +1789,11 @@ fn matmul_f16_rank2_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::MatMul, &[DType::F16, DType::F16, DType::F16], BackendId::Cuda)
+        .lookup(
+            OpKind::MatMul,
+            &[DType::F16, DType::F16, DType::F16],
+            BackendId::Cuda,
+        )
         .expect("lookup (MatMul, F16, Cuda)");
 
     let params = OpParams::Matmul {
@@ -1573,8 +1805,13 @@ fn matmul_f16_rank2_through_binding_table() {
         m_compute: MatmulM::All,
     };
 
-    kernel(&[lhs_arc.clone(), rhs_arc.clone()], &mut [out_arc.clone()], &[], &params)
-        .expect("kernel call");
+    kernel(
+        &[lhs_arc.clone(), rhs_arc.clone()],
+        &mut [out_arc.clone()],
+        &[],
+        &params,
+    )
+    .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
     let BackendStorage::Cuda(c) = &result_storage.inner else {
@@ -1604,8 +1841,7 @@ fn affine_f32_through_binding_table() {
 
     let xs = [1.0_f32, 2.0, 3.0, 4.0];
     let src = build_storage_cuda(&dev, &xs);
-    let out_bytes = CudaStorageBytes::alloc(&dev, (xs.len() * 4) as usize)
-        .expect("out alloc");
+    let out_bytes = CudaStorageBytes::alloc(&dev, (xs.len() * 4) as usize).expect("out alloc");
     let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::F32);
 
     let src_arc = Arc::new(RwLock::new(src));
@@ -1615,10 +1851,12 @@ fn affine_f32_through_binding_table() {
         .lookup(OpKind::Affine, &[DType::F32, DType::F32], BackendId::Cuda)
         .expect("lookup (Affine, F32, Cuda)");
 
-    let params = OpParams::Affine { mul: 2.0, add: 10.0 };
+    let params = OpParams::Affine {
+        mul: 2.0,
+        add: 10.0,
+    };
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &params)
-        .expect("kernel call");
+    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &params).expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
     let BackendStorage::Cuda(c) = &result_storage.inner else {
@@ -1712,10 +1950,20 @@ fn cast_f32_to_bf16_through_binding_table() {
 
     let src_f32: &[f32] = &[1.0, 2.0, 3.0, 4.0, -1.5, 0.0, 100.0, 256.0];
     let src_bytes: &[u8] = bytemuck::cast_slice(src_f32);
-    let host = run_cast(&table, &dev, src_bytes, DType::F32, DType::BF16, src_f32.len());
+    let host = run_cast(
+        &table,
+        &dev,
+        src_bytes,
+        DType::F32,
+        DType::BF16,
+        src_f32.len(),
+    );
 
     let bf16_bits: &[u16] = bytemuck::cast_slice(&host);
-    let decoded: Vec<f32> = bf16_bits.iter().map(|&b| half::bf16::from_bits(b).to_f32()).collect();
+    let decoded: Vec<f32> = bf16_bits
+        .iter()
+        .map(|&b| half::bf16::from_bits(b).to_f32())
+        .collect();
     assert_close(&decoded, src_f32, 0.0);
 }
 
@@ -1733,9 +1981,19 @@ fn cast_bf16_to_f32_through_binding_table() {
     register_baracuda_cuda_kernels(&mut table);
 
     let values: &[f32] = &[1.0, 2.0, 3.0, -1.5, 0.0];
-    let bf16_bits: Vec<u16> = values.iter().map(|&v| half::bf16::from_f32(v).to_bits()).collect();
+    let bf16_bits: Vec<u16> = values
+        .iter()
+        .map(|&v| half::bf16::from_f32(v).to_bits())
+        .collect();
     let src_bytes: &[u8] = bytemuck::cast_slice(&bf16_bits);
-    let host = run_cast(&table, &dev, src_bytes, DType::BF16, DType::F32, values.len());
+    let host = run_cast(
+        &table,
+        &dev,
+        src_bytes,
+        DType::BF16,
+        DType::F32,
+        values.len(),
+    );
 
     let host_f32: &[f32] = bytemuck::cast_slice(&host);
     assert_close(host_f32, values, 0.0);
@@ -1756,10 +2014,20 @@ fn cast_f32_to_f16_through_binding_table() {
 
     let src_f32: &[f32] = &[1.0, 2.0, 3.0, 4.0, -1.5, 0.0, 100.0, 256.0];
     let src_bytes: &[u8] = bytemuck::cast_slice(src_f32);
-    let host = run_cast(&table, &dev, src_bytes, DType::F32, DType::F16, src_f32.len());
+    let host = run_cast(
+        &table,
+        &dev,
+        src_bytes,
+        DType::F32,
+        DType::F16,
+        src_f32.len(),
+    );
 
     let f16_bits: &[u16] = bytemuck::cast_slice(&host);
-    let decoded: Vec<f32> = f16_bits.iter().map(|&b| half::f16::from_bits(b).to_f32()).collect();
+    let decoded: Vec<f32> = f16_bits
+        .iter()
+        .map(|&b| half::f16::from_bits(b).to_f32())
+        .collect();
     assert_close(&decoded, src_f32, 0.0);
 }
 
@@ -1776,7 +2044,14 @@ fn cast_f32_to_f64_through_binding_table() {
 
     let src_f32: &[f32] = &[1.0, 2.0, 3.5, -0.25, 1e6, 1e-6];
     let src_bytes: &[u8] = bytemuck::cast_slice(src_f32);
-    let host = run_cast(&table, &dev, src_bytes, DType::F32, DType::F64, src_f32.len());
+    let host = run_cast(
+        &table,
+        &dev,
+        src_bytes,
+        DType::F32,
+        DType::F64,
+        src_f32.len(),
+    );
 
     let host_f64: &[f64] = bytemuck::cast_slice(&host);
     let expected: Vec<f64> = src_f32.iter().map(|&v| v as f64).collect();
@@ -1818,7 +2093,14 @@ fn cast_f32_to_i64_through_binding_table() {
 
     let src_f32: &[f32] = &[0.0, 1.5, -1.5, 100.9, -100.9];
     let src_bytes: &[u8] = bytemuck::cast_slice(src_f32);
-    let host = run_cast(&table, &dev, src_bytes, DType::F32, DType::I64, src_f32.len());
+    let host = run_cast(
+        &table,
+        &dev,
+        src_bytes,
+        DType::F32,
+        DType::I64,
+        src_f32.len(),
+    );
 
     let host_i64: &[i64] = bytemuck::cast_slice(&host);
     // C static_cast<int64_t>(float) truncates toward zero.
@@ -1849,7 +2131,11 @@ fn reduce_sum_to_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::ReduceSumTo, &[DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::ReduceSumTo,
+            &[DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (ReduceSumTo, F32, Cuda)");
 
     let params = OpParams::ReduceSumTo {
@@ -1860,8 +2146,13 @@ fn reduce_sum_to_f32_through_binding_table() {
     let out_layout = Layout::contiguous(Shape::from_dims(&[2, 1]));
     let layouts = vec![in_layout, out_layout];
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &layouts, &params)
-        .expect("kernel call");
+    kernel(
+        &[src_arc.clone()],
+        &mut [out_arc.clone()],
+        &layouts,
+        &params,
+    )
+    .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
     let BackendStorage::Cuda(c) = &result_storage.inner else {
@@ -1895,7 +2186,11 @@ fn reduce_max_to_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::ReduceMaxTo, &[DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::ReduceMaxTo,
+            &[DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (ReduceMaxTo, F32, Cuda)");
 
     let params = OpParams::ReduceMaxTo {
@@ -1906,8 +2201,13 @@ fn reduce_max_to_f32_through_binding_table() {
     let out_layout = Layout::contiguous(Shape::from_dims(&[2, 1]));
     let layouts = vec![in_layout, out_layout];
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &layouts, &params)
-        .expect("kernel call");
+    kernel(
+        &[src_arc.clone()],
+        &mut [out_arc.clone()],
+        &layouts,
+        &params,
+    )
+    .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
     let BackendStorage::Cuda(c) = &result_storage.inner else {
@@ -1937,10 +2237,10 @@ fn index_select_f32_u32_through_binding_table() {
     // Source: 4 rows × 3 columns of F32, distinct values per row so a
     // permutation of rows is easy to verify.
     let src_f32: [f32; 12] = [
-        100.0, 101.0, 102.0,  // row 0
-        200.0, 201.0, 202.0,  // row 1
-        300.0, 301.0, 302.0,  // row 2
-        400.0, 401.0, 402.0,  // row 3
+        100.0, 101.0, 102.0, // row 0
+        200.0, 201.0, 202.0, // row 1
+        300.0, 301.0, 302.0, // row 2
+        400.0, 401.0, 402.0, // row 3
     ];
     let src = build_storage_cuda(&dev, &src_f32);
 
@@ -1994,10 +2294,10 @@ fn index_select_f32_u32_through_binding_table() {
     let host = c.to_cpu_bytes().expect("d2h");
     let host_f32: &[f32] = bytemuck::cast_slice(&host);
     let expected: [f32; 12] = [
-        300.0, 301.0, 302.0,  // row 2
-        100.0, 101.0, 102.0,  // row 0
-        400.0, 401.0, 402.0,  // row 3
-        200.0, 201.0, 202.0,  // row 1
+        300.0, 301.0, 302.0, // row 2
+        100.0, 101.0, 102.0, // row 0
+        400.0, 401.0, 402.0, // row 3
+        200.0, 201.0, 202.0, // row 1
     ];
     assert_eq!(host_f32, &expected);
 }
@@ -2021,8 +2321,8 @@ fn gather_f32_u32_through_binding_table() {
 
     // Source: 2 rows × 4 columns of F32.
     let src_f32: [f32; 8] = [
-        10.0, 11.0, 12.0, 13.0,  // row 0
-        20.0, 21.0, 22.0, 23.0,  // row 1
+        10.0, 11.0, 12.0, 13.0, // row 0
+        20.0, 21.0, 22.0, 23.0, // row 1
     ];
     let src = build_storage_cuda(&dev, &src_f32);
 
@@ -2030,8 +2330,8 @@ fn gather_f32_u32_through_binding_table() {
     // columns by index. Note that indices and source share rank
     // (matching the Gather contract); only `dim` (=1) varies.
     let ids_u32: [u32; 6] = [
-        3, 0, 2,  // row 0 picks src[0,3], src[0,0], src[0,2]
-        1, 2, 0,  // row 1 picks src[1,1], src[1,2], src[1,0]
+        3, 0, 2, // row 0 picks src[0,3], src[0,0], src[0,2]
+        1, 2, 0, // row 1 picks src[1,1], src[1,2], src[1,0]
     ];
     let ids_bytes: &[u8] = bytemuck::cast_slice(&ids_u32);
     let ids = build_storage_cuda_from_bytes(&dev, ids_bytes, DType::U32);
@@ -2077,8 +2377,8 @@ fn gather_f32_u32_through_binding_table() {
     let host = c.to_cpu_bytes().expect("d2h");
     let host_f32: &[f32] = bytemuck::cast_slice(&host);
     let expected: [f32; 6] = [
-        13.0, 10.0, 12.0,  // row 0: src[0,3], src[0,0], src[0,2]
-        21.0, 22.0, 20.0,  // row 1: src[1,1], src[1,2], src[1,0]
+        13.0, 10.0, 12.0, // row 0: src[0,3], src[0,0], src[0,2]
+        21.0, 22.0, 20.0, // row 1: src[1,1], src[1,2], src[1,0]
     ];
     assert_eq!(host_f32, &expected);
 }
@@ -2109,16 +2409,28 @@ fn clamp_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::ClampElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::ClampElementwise,
+            &[DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (ClampElementwise, F32, Cuda)");
 
-    let params = OpParams::Clamp { min: -1.0, max: 2.0 };
+    let params = OpParams::Clamp {
+        min: -1.0,
+        max: 2.0,
+    };
     let in_layout = Layout::contiguous(Shape::from_dims(&[7]));
     let out_layout = Layout::contiguous(Shape::from_dims(&[7]));
     let layouts = vec![in_layout, out_layout];
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &layouts, &params)
-        .expect("kernel call");
+    kernel(
+        &[src_arc.clone()],
+        &mut [out_arc.clone()],
+        &layouts,
+        &params,
+    )
+    .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
     let BackendStorage::Cuda(c) = &result_storage.inner else {
@@ -2155,7 +2467,11 @@ fn powi_elementwise_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::PowIElementwise, &[DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::PowIElementwise,
+            &[DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (PowIElementwise, F32, Cuda)");
 
     let params = OpParams::PowI { exp: 3 };
@@ -2163,8 +2479,13 @@ fn powi_elementwise_f32_through_binding_table() {
     let out_layout = Layout::contiguous(Shape::from_dims(&[5]));
     let layouts = vec![in_layout, out_layout];
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &layouts, &params)
-        .expect("kernel call");
+    kernel(
+        &[src_arc.clone()],
+        &mut [out_arc.clone()],
+        &layouts,
+        &params,
+    )
+    .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
     let BackendStorage::Cuda(c) = &result_storage.inner else {
@@ -2195,18 +2516,18 @@ fn concat_f32_three_inputs_through_binding_table() {
     // Three inputs with shapes [2, 1, 2], [2, 2, 2], [2, 1, 2].
     // outer_count=2, input_dim_sizes=[1, 2, 1], inner_count=2.
     let a_f32: [f32; 4] = [
-        1.0, 2.0,    // outer 0, dim 0
-        9.0, 9.0,    // outer 1, dim 0
+        1.0, 2.0, // outer 0, dim 0
+        9.0, 9.0, // outer 1, dim 0
     ];
     let b_f32: [f32; 8] = [
-        3.0, 4.0,    // outer 0, dim 0
-        5.0, 6.0,    // outer 0, dim 1
-        7.0, 8.0,    // outer 1, dim 0
-        7.5, 8.5,    // outer 1, dim 1
+        3.0, 4.0, // outer 0, dim 0
+        5.0, 6.0, // outer 0, dim 1
+        7.0, 8.0, // outer 1, dim 0
+        7.5, 8.5, // outer 1, dim 1
     ];
     let c_f32: [f32; 4] = [
-        100.0, 200.0,  // outer 0, dim 0
-        300.0, 400.0,  // outer 1, dim 0
+        100.0, 200.0, // outer 0, dim 0
+        300.0, 400.0, // outer 1, dim 0
     ];
     let a = build_storage_cuda(&dev, &a_f32);
     let b = build_storage_cuda(&dev, &b_f32);
@@ -2258,8 +2579,7 @@ fn concat_f32_three_inputs_through_binding_table() {
     // outer 1: a[1,0,*], b[1,0,*], b[1,1,*], c[1,0,*]
     //         = 9,9 | 7,8 | 7.5,8.5 | 300,400
     let expected: [f32; 16] = [
-        1.0, 2.0,  3.0, 4.0,  5.0, 6.0,  100.0, 200.0,
-        9.0, 9.0,  7.0, 8.0,  7.5, 8.5,  300.0, 400.0,
+        1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 100.0, 200.0, 9.0, 9.0, 7.0, 8.0, 7.5, 8.5, 300.0, 400.0,
     ];
     assert_eq!(host_f32, &expected);
 }
@@ -2280,10 +2600,7 @@ fn argmax_dim_f32_through_binding_table() {
     register_baracuda_cuda_kernels(&mut table);
 
     // [2, 3]: row 0 max at idx 1 (5.0), row 1 max at idx 2 (6.0).
-    let xs: [f32; 6] = [
-        1.0, 5.0, 2.0,
-        4.0, 3.0, 6.0,
-    ];
+    let xs: [f32; 6] = [1.0, 5.0, 2.0, 4.0, 3.0, 6.0];
     let src = build_storage_cuda(&dev, &xs);
     let out_bytes = CudaStorageBytes::alloc(&dev, 2 * 4).expect("out alloc");
     let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::U32);
@@ -2292,16 +2609,28 @@ fn argmax_dim_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::ArgMaxDim, &[DType::F32, DType::U32], BackendId::Cuda)
+        .lookup(
+            OpKind::ArgMaxDim,
+            &[DType::F32, DType::U32],
+            BackendId::Cuda,
+        )
         .expect("lookup (ArgMaxDim, [F32, U32], Cuda)");
 
-    let params = OpParams::Reduce { dims: vec![1], keepdim: false };
+    let params = OpParams::Reduce {
+        dims: vec![1],
+        keepdim: false,
+    };
     let in_layout = Layout::contiguous(Shape::from_dims(&[2, 3]));
     let out_layout = Layout::contiguous(Shape::from_dims(&[2]));
     let layouts = vec![in_layout, out_layout];
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &layouts, &params)
-        .expect("kernel call");
+    kernel(
+        &[src_arc.clone()],
+        &mut [out_arc.clone()],
+        &layouts,
+        &params,
+    )
+    .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
     let BackendStorage::Cuda(c) = &result_storage.inner else {
@@ -2326,10 +2655,7 @@ fn argmin_dim_f32_through_binding_table() {
     register_baracuda_cuda_kernels(&mut table);
 
     // [2, 3]: row 0 min at idx 0 (1.0), row 1 min at idx 1 (3.0).
-    let xs: [f32; 6] = [
-        1.0, 5.0, 2.0,
-        4.0, 3.0, 6.0,
-    ];
+    let xs: [f32; 6] = [1.0, 5.0, 2.0, 4.0, 3.0, 6.0];
     let src = build_storage_cuda(&dev, &xs);
     let out_bytes = CudaStorageBytes::alloc(&dev, 2 * 4).expect("out alloc");
     let out = Storage::new(BackendStorage::Cuda(out_bytes), DType::U32);
@@ -2338,16 +2664,28 @@ fn argmin_dim_f32_through_binding_table() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::ArgMinDim, &[DType::F32, DType::U32], BackendId::Cuda)
+        .lookup(
+            OpKind::ArgMinDim,
+            &[DType::F32, DType::U32],
+            BackendId::Cuda,
+        )
         .expect("lookup (ArgMinDim, [F32, U32], Cuda)");
 
-    let params = OpParams::Reduce { dims: vec![1], keepdim: false };
+    let params = OpParams::Reduce {
+        dims: vec![1],
+        keepdim: false,
+    };
     let in_layout = Layout::contiguous(Shape::from_dims(&[2, 3]));
     let out_layout = Layout::contiguous(Shape::from_dims(&[2]));
     let layouts = vec![in_layout, out_layout];
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &layouts, &params)
-        .expect("kernel call");
+    kernel(
+        &[src_arc.clone()],
+        &mut [out_arc.clone()],
+        &layouts,
+        &params,
+    )
+    .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
     let BackendStorage::Cuda(c) = &result_storage.inner else {
@@ -2384,8 +2722,13 @@ fn run_unary_f32(op: OpKind, xs: &[f32]) -> Vec<f32> {
         .lookup(op, &[DType::F32, DType::F32], BackendId::Cuda)
         .unwrap_or_else(|e| panic!("lookup ({op:?}, F32, Cuda): {e:?}"));
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &OpParams::None)
-        .expect("kernel call");
+    kernel(
+        &[src_arc.clone()],
+        &mut [out_arc.clone()],
+        &[],
+        &OpParams::None,
+    )
+    .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
     let BackendStorage::Cuda(c) = &result_storage.inner else {
@@ -2438,7 +2781,9 @@ fn run_binary_f32(op: OpKind, lhs: &[f32], rhs: &[f32]) -> Vec<f32> {
 #[test]
 #[ignore]
 fn floor_elementwise_f32_through_binding_table() {
-    if dev_or_skip().is_none() { return; }
+    if dev_or_skip().is_none() {
+        return;
+    }
     let xs = [-1.5_f32, -0.5, 0.0, 0.5, 1.5, 2.999, -3.001];
     let got = run_unary_f32(OpKind::FloorElementwise, &xs);
     let expected: Vec<f32> = xs.iter().map(|v| v.floor()).collect();
@@ -2449,7 +2794,9 @@ fn floor_elementwise_f32_through_binding_table() {
 #[test]
 #[ignore]
 fn ceil_elementwise_f32_through_binding_table() {
-    if dev_or_skip().is_none() { return; }
+    if dev_or_skip().is_none() {
+        return;
+    }
     let xs = [-1.5_f32, -0.5, 0.0, 0.5, 1.5, 2.999, -3.001];
     let got = run_unary_f32(OpKind::CeilElementwise, &xs);
     let expected: Vec<f32> = xs.iter().map(|v| v.ceil()).collect();
@@ -2465,12 +2812,17 @@ fn ceil_elementwise_f32_through_binding_table() {
 #[test]
 #[ignore]
 fn round_elementwise_f32_halfway_through_binding_table() {
-    if dev_or_skip().is_none() { return; }
+    if dev_or_skip().is_none() {
+        return;
+    }
     let xs = [0.5_f32, 1.5, 2.5, 3.5, -0.5, -1.5, -2.5, 1.4999, 2.5001];
     let got = run_unary_f32(OpKind::RoundElementwise, &xs);
     // Same formula the CPU binding-table kernel uses.
     let expected: Vec<f32> = xs.iter().map(|v| v.round_ties_even()).collect();
-    assert_eq!(got, expected, "round must be ties-to-even, not half-away-from-zero");
+    assert_eq!(
+        got, expected,
+        "round must be ties-to-even, not half-away-from-zero"
+    );
     // Spot-check the halves explicitly so a convention regression
     // reads clearly: 0.5 → 0, 1.5 → 2, 2.5 → 2, -0.5 → -0.
     assert_eq!(&got[..3], &[0.0_f32, 2.0, 2.0]);
@@ -2485,7 +2837,9 @@ fn round_elementwise_f32_halfway_through_binding_table() {
 #[test]
 #[ignore]
 fn erf_elementwise_f32_through_binding_table() {
-    if dev_or_skip().is_none() { return; }
+    if dev_or_skip().is_none() {
+        return;
+    }
     let xs = [0.0_f32, 0.5, 1.0, -1.0, 2.0, -2.0];
     let got = run_unary_f32(OpKind::ErfElementwise, &xs);
     // Reference values (Abramowitz & Stegun / mpmath, f32-rounded).
@@ -2506,7 +2860,9 @@ fn erf_elementwise_f32_through_binding_table() {
 #[test]
 #[ignore]
 fn rsqrt_elementwise_f32_through_binding_table() {
-    if dev_or_skip().is_none() { return; }
+    if dev_or_skip().is_none() {
+        return;
+    }
     let xs = [1.0_f32, 4.0, 0.25, 100.0, 2.0];
     let got = run_unary_f32(OpKind::RsqrtElementwise, &xs);
     let expected: Vec<f32> = xs.iter().map(|v| 1.0 / v.sqrt()).collect();
@@ -2519,7 +2875,9 @@ fn rsqrt_elementwise_f32_through_binding_table() {
 #[test]
 #[ignore]
 fn pow_elementwise_f32_through_binding_table() {
-    if dev_or_skip().is_none() { return; }
+    if dev_or_skip().is_none() {
+        return;
+    }
     let lhs = [2.0_f32, 4.0, -2.0, 9.0, 5.0];
     let rhs = [3.0_f32, 0.5, 2.0, 0.5, 0.0];
     let got = run_binary_f32(OpKind::PowElementwise, &lhs, &rhs);
@@ -2528,7 +2886,11 @@ fn pow_elementwise_f32_through_binding_table() {
 
     // pow(-2, 0.5) = NaN per IEEE-754 (matches CPU `powf`).
     let nan_out = run_binary_f32(OpKind::PowElementwise, &[-2.0], &[0.5]);
-    assert!(nan_out[0].is_nan(), "pow(-2, 0.5) must be NaN, got {}", nan_out[0]);
+    assert!(
+        nan_out[0].is_nan(),
+        "pow(-2, 0.5) must be NaN, got {}",
+        nan_out[0]
+    );
 }
 
 /// End-to-end: RemElementwise F32 through the binding table. Fuel's
@@ -2539,7 +2901,9 @@ fn pow_elementwise_f32_through_binding_table() {
 #[test]
 #[ignore]
 fn rem_elementwise_f32_pytorch_convention_through_binding_table() {
-    if dev_or_skip().is_none() { return; }
+    if dev_or_skip().is_none() {
+        return;
+    }
     let lhs = [5.0_f32, -5.0, 5.0, -5.0, 7.5];
     let rhs = [3.0_f32, 3.0, -3.0, -3.0, 2.0];
     let got = run_binary_f32(OpKind::RemElementwise, &lhs, &rhs);
@@ -2569,7 +2933,9 @@ fn rem_elementwise_f32_pytorch_convention_through_binding_table() {
 #[test]
 #[ignore]
 fn cuda_relu_propagates_nan_f32() {
-    if dev_or_skip().is_none() { return; }
+    if dev_or_skip().is_none() {
+        return;
+    }
     let xs = [f32::NAN, -2.0, 3.0];
     let got = run_unary_f32(OpKind::ReluElementwise, &xs);
     assert!(
@@ -2607,11 +2973,20 @@ fn cuda_relu_propagates_nan_bf16() {
     let out_arc = Arc::new(RwLock::new(out));
 
     let kernel = table
-        .lookup(OpKind::ReluElementwise, &[DType::BF16, DType::BF16], BackendId::Cuda)
+        .lookup(
+            OpKind::ReluElementwise,
+            &[DType::BF16, DType::BF16],
+            BackendId::Cuda,
+        )
         .expect("lookup (ReluElementwise, BF16, Cuda)");
 
-    kernel(&[src_arc.clone()], &mut [out_arc.clone()], &[], &OpParams::None)
-        .expect("kernel call");
+    kernel(
+        &[src_arc.clone()],
+        &mut [out_arc.clone()],
+        &[],
+        &OpParams::None,
+    )
+    .expect("kernel call");
 
     let result_storage = out_arc.read().unwrap();
     let BackendStorage::Cuda(c) = &result_storage.inner else {
@@ -2638,7 +3013,9 @@ fn cuda_relu_propagates_nan_bf16() {
 #[test]
 #[ignore]
 fn cuda_maximum_minimum_propagate_nan_f32() {
-    if dev_or_skip().is_none() { return; }
+    if dev_or_skip().is_none() {
+        return;
+    }
     // Index 0: NaN in lhs only. Index 1: NaN in rhs only. Index 2: NaN
     // in both. Indices 3-4: non-NaN sanity.
     let lhs = [f32::NAN, -2.0, f32::NAN, 1.0, -3.0];
@@ -2692,13 +3069,16 @@ fn cuda_relu_inplace_propagates_nan_f32() {
     let target_arc = Arc::new(RwLock::new(target));
 
     let kernel = table
-        .lookup(OpKind::ReluInplace, &[DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::ReluInplace,
+            &[DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (ReluInplace, F32, Cuda)");
 
     // In-place contract: 0 inputs, 1 output (the target adopted by the
     // executor's WorkItemKind::InplaceKernel arm).
-    kernel(&[], &mut [target_arc.clone()], &[], &OpParams::None)
-        .expect("in-place kernel call");
+    kernel(&[], &mut [target_arc.clone()], &[], &OpParams::None).expect("in-place kernel call");
 
     let result_storage = target_arc.read().unwrap();
     let BackendStorage::Cuda(c) = &result_storage.inner else {
@@ -2755,7 +3135,11 @@ fn write_slice_doff_f32_at_device_offset_cuda() {
     let dest_arc = Arc::new(RwLock::new(dest));
 
     let kernel = table
-        .lookup(OpKind::WriteSliceDoff, &[DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::WriteSliceDoff,
+            &[DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (WriteSliceDoff, F32, Cuda)");
 
     let params = OpParams::WriteSliceDoff {
@@ -2811,7 +3195,11 @@ fn write_slice_doff_f32_decode_loop_cuda() {
     let dest_arc = Arc::new(RwLock::new(dest));
 
     let kernel = table
-        .lookup(OpKind::WriteSliceDoff, &[DType::F32, DType::F32], BackendId::Cuda)
+        .lookup(
+            OpKind::WriteSliceDoff,
+            &[DType::F32, DType::F32],
+            BackendId::Cuda,
+        )
         .expect("lookup (WriteSliceDoff, F32, Cuda)");
 
     let tokens = [

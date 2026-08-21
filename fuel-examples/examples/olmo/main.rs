@@ -9,11 +9,9 @@ use clap::{Parser, ValueEnum};
 use std::io::Write;
 use std::sync::Arc;
 
-use fuel::lazy::{
-    load_tensor_as_f32, load_transposed_matrix_preserve_dtype, WeightStorage,
-};
+use fuel::lazy::{WeightStorage, load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
 use fuel::lazy_olmo::{OlmoConfig, OlmoLayerWeights, OlmoModel, OlmoWeights};
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 use tokenizers::Tokenizer;
 
 #[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
@@ -153,7 +151,10 @@ fn main() -> Result<()> {
     let st = unsafe { fuel::safetensors::MmapedSafetensors::multi(&filenames) }
         .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
     let weights = load_olmo_weights(&st, &cfg)?;
-    let model = OlmoModel { config: cfg.clone(), weights };
+    let model = OlmoModel {
+        config: cfg.clone(),
+        weights,
+    };
 
     let mut tok_stream = fuel_examples::token_output_stream::TokenOutputStream::new(tokenizer);
     print!("{}", args.prompt);
@@ -224,61 +225,93 @@ fn load_olmo_weights(
         let attn_q = load_transposed_matrix_preserve_dtype(
             st,
             &format!("model.layers.{i}.self_attn.q_proj.weight"),
-            cfg.hidden_size, cfg.hidden_size,
-        ).map_err(|e| E::msg(format!("q_proj L{i}: {e}")))?;
+            cfg.hidden_size,
+            cfg.hidden_size,
+        )
+        .map_err(|e| E::msg(format!("q_proj L{i}: {e}")))?;
         let attn_k = load_transposed_matrix_preserve_dtype(
             st,
             &format!("model.layers.{i}.self_attn.k_proj.weight"),
-            kv_dim, cfg.hidden_size,
-        ).map_err(|e| E::msg(format!("k_proj L{i}: {e}")))?;
+            kv_dim,
+            cfg.hidden_size,
+        )
+        .map_err(|e| E::msg(format!("k_proj L{i}: {e}")))?;
         let attn_v = load_transposed_matrix_preserve_dtype(
             st,
             &format!("model.layers.{i}.self_attn.v_proj.weight"),
-            kv_dim, cfg.hidden_size,
-        ).map_err(|e| E::msg(format!("v_proj L{i}: {e}")))?;
+            kv_dim,
+            cfg.hidden_size,
+        )
+        .map_err(|e| E::msg(format!("v_proj L{i}: {e}")))?;
         let attn_o = load_transposed_matrix_preserve_dtype(
             st,
             &format!("model.layers.{i}.self_attn.o_proj.weight"),
-            cfg.hidden_size, cfg.hidden_size,
-        ).map_err(|e| E::msg(format!("o_proj L{i}: {e}")))?;
+            cfg.hidden_size,
+            cfg.hidden_size,
+        )
+        .map_err(|e| E::msg(format!("o_proj L{i}: {e}")))?;
         let ffn_gate = load_transposed_matrix_preserve_dtype(
             st,
             &format!("model.layers.{i}.mlp.gate_proj.weight"),
-            cfg.intermediate_size, cfg.hidden_size,
-        ).map_err(|e| E::msg(format!("gate L{i}: {e}")))?;
+            cfg.intermediate_size,
+            cfg.hidden_size,
+        )
+        .map_err(|e| E::msg(format!("gate L{i}: {e}")))?;
         let ffn_up = load_transposed_matrix_preserve_dtype(
             st,
             &format!("model.layers.{i}.mlp.up_proj.weight"),
-            cfg.intermediate_size, cfg.hidden_size,
-        ).map_err(|e| E::msg(format!("up L{i}: {e}")))?;
+            cfg.intermediate_size,
+            cfg.hidden_size,
+        )
+        .map_err(|e| E::msg(format!("up L{i}: {e}")))?;
         let ffn_down = load_transposed_matrix_preserve_dtype(
             st,
             &format!("model.layers.{i}.mlp.down_proj.weight"),
-            cfg.hidden_size, cfg.intermediate_size,
-        ).map_err(|e| E::msg(format!("down L{i}: {e}")))?;
+            cfg.hidden_size,
+            cfg.intermediate_size,
+        )
+        .map_err(|e| E::msg(format!("down L{i}: {e}")))?;
         let attn_norm_gain: Arc<[f32]> = Arc::from(
             load_tensor_as_f32(st, &format!("model.layers.{i}.input_layernorm.weight"))
                 .map_err(|e| E::msg(format!("input_ln L{i}: {e}")))?,
         );
         let ffn_norm_gain: Arc<[f32]> = Arc::from(
-            load_tensor_as_f32(st, &format!("model.layers.{i}.post_attention_layernorm.weight"))
-                .map_err(|e| E::msg(format!("post_attention_ln L{i}: {e}")))?,
+            load_tensor_as_f32(
+                st,
+                &format!("model.layers.{i}.post_attention_layernorm.weight"),
+            )
+            .map_err(|e| E::msg(format!("post_attention_ln L{i}: {e}")))?,
         );
-        let attn_q_bias = load_tensor_as_f32(st, &format!("model.layers.{i}.self_attn.q_proj.bias"))
-            .ok().map(Arc::from);
-        let attn_k_bias = load_tensor_as_f32(st, &format!("model.layers.{i}.self_attn.k_proj.bias"))
-            .ok().map(Arc::from);
-        let attn_v_bias = load_tensor_as_f32(st, &format!("model.layers.{i}.self_attn.v_proj.bias"))
-            .ok().map(Arc::from);
-        let attn_o_bias = load_tensor_as_f32(st, &format!("model.layers.{i}.self_attn.o_proj.bias"))
-            .ok().map(Arc::from);
+        let attn_q_bias =
+            load_tensor_as_f32(st, &format!("model.layers.{i}.self_attn.q_proj.bias"))
+                .ok()
+                .map(Arc::from);
+        let attn_k_bias =
+            load_tensor_as_f32(st, &format!("model.layers.{i}.self_attn.k_proj.bias"))
+                .ok()
+                .map(Arc::from);
+        let attn_v_bias =
+            load_tensor_as_f32(st, &format!("model.layers.{i}.self_attn.v_proj.bias"))
+                .ok()
+                .map(Arc::from);
+        let attn_o_bias =
+            load_tensor_as_f32(st, &format!("model.layers.{i}.self_attn.o_proj.bias"))
+                .ok()
+                .map(Arc::from);
         layers.push(OlmoLayerWeights {
-            attn_norm_gain, ffn_norm_gain,
-            attn_q, attn_q_bias,
-            attn_k, attn_k_bias,
-            attn_v, attn_v_bias,
-            attn_o, attn_o_bias,
-            ffn_gate, ffn_up, ffn_down,
+            attn_norm_gain,
+            ffn_norm_gain,
+            attn_q,
+            attn_q_bias,
+            attn_k,
+            attn_k_bias,
+            attn_v,
+            attn_v_bias,
+            attn_o,
+            attn_o_bias,
+            ffn_gate,
+            ffn_up,
+            ffn_down,
         });
     }
     let final_norm_gain: Arc<[f32]> = Arc::from(
@@ -287,20 +320,27 @@ fn load_olmo_weights(
     );
     // OLMo ties lm_head to embeddings by default; fall back to embedding.
     let output = match load_transposed_matrix_preserve_dtype(
-        st, "lm_head.weight", cfg.vocab_size, cfg.hidden_size,
+        st,
+        "lm_head.weight",
+        cfg.vocab_size,
+        cfg.hidden_size,
     ) {
         Ok(w) => w,
         Err(_) => WeightStorage::F32(token_embedding.clone()),
     };
-    Ok(OlmoWeights { token_embedding, layers, final_norm_gain, output })
+    Ok(OlmoWeights {
+        token_embedding,
+        layers,
+        final_norm_gain,
+        output,
+    })
 }
 
 fn olmo_config_from_hf_json_str(json: &str) -> Result<OlmoConfig> {
-    let v: serde_json::Value = serde_json::from_str(json)
-        .map_err(|e| E::msg(format!("parsing config.json: {e}")))?;
-    let get_usize = |key: &str| -> Option<usize> {
-        v.get(key).and_then(|x| x.as_u64()).map(|x| x as usize)
-    };
+    let v: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| E::msg(format!("parsing config.json: {e}")))?;
+    let get_usize =
+        |key: &str| -> Option<usize> { v.get(key).and_then(|x| x.as_u64()).map(|x| x as usize) };
     let get_f64 = |key: &str| -> Option<f64> { v.get(key).and_then(|x| x.as_f64()) };
     let get_bool = |key: &str| -> Option<bool> { v.get(key).and_then(|x| x.as_bool()) };
     let vocab_size = get_usize("vocab_size").unwrap_or(50_304);
@@ -310,7 +350,9 @@ fn olmo_config_from_hf_json_str(json: &str) -> Result<OlmoConfig> {
     let num_attention_heads = get_usize("num_attention_heads").unwrap_or(16);
     let num_key_value_heads = get_usize("num_key_value_heads").unwrap_or(num_attention_heads);
     let head_dim = get_usize("head_dim").unwrap_or(hidden_size / num_attention_heads);
-    let layer_norm_eps = get_f64("layer_norm_eps").or_else(|| get_f64("rms_norm_eps")).unwrap_or(1e-5);
+    let layer_norm_eps = get_f64("layer_norm_eps")
+        .or_else(|| get_f64("rms_norm_eps"))
+        .unwrap_or(1e-5);
     let rope_theta = get_f64("rope_theta").unwrap_or(10_000.0);
     let max_position_embeddings = get_usize("max_position_embeddings").unwrap_or(2048);
     let attention_bias = get_bool("attention_bias").unwrap_or(false);
@@ -331,7 +373,9 @@ fn olmo_config_from_hf_json_str(json: &str) -> Result<OlmoConfig> {
 
 fn parse_eos_token_id(json: &str) -> Option<u32> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
-    v.get("eos_token_id").and_then(|x| x.as_u64()).map(|x| x as u32)
+    v.get("eos_token_id")
+        .and_then(|x| x.as_u64())
+        .map(|x| x as u32)
 }
 
 fn apply_repeat_penalty(logits: &mut [f32], penalty: f32, context: &[u32]) {
@@ -368,7 +412,10 @@ fn sample(
     }
     let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let inv_t = 1.0 / temperature.max(1e-6);
-    let mut probs: Vec<f32> = logits.iter().map(|&x| ((x - max_l) * inv_t).exp()).collect();
+    let mut probs: Vec<f32> = logits
+        .iter()
+        .map(|&x| ((x - max_l) * inv_t).exp())
+        .collect();
     let sum: f32 = probs.iter().sum();
     for p in &mut probs {
         *p /= sum.max(1e-30);
@@ -411,7 +458,9 @@ fn sample(
     } else {
         return 0;
     }
-    let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    let mut state = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     state ^= state >> 33;
     state = state.wrapping_mul(0xff51_afd7_ed55_8ccd);
     state ^= state >> 33;

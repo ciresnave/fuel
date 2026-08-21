@@ -35,7 +35,7 @@
 use fuel_core::lazy::LazyTensor;
 use fuel_cuda_backend::CudaDevice;
 use fuel_graph::{NodeId, Op};
-use fuel_ir::{probe::BackendId, DeviceLocation, Shape};
+use fuel_ir::{DeviceLocation, Shape, probe::BackendId};
 
 fn dev_or_skip() -> Option<CudaDevice> {
     match CudaDevice::new(0) {

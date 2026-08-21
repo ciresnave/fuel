@@ -97,7 +97,9 @@ fn build_strided_args(
     for (i, &d) in dims.iter().enumerate() {
         shape_i32.push(i32::try_from(d).map_err(|_| {
             Error::cuda(crate::error::CudaError::BaracudaShapeOverflow {
-                op: op_label, dim_index: i, dim_value: d,
+                op: op_label,
+                dim_index: i,
+                dim_value: d,
             })
         })?);
     }
@@ -146,7 +148,16 @@ fn powi_run(
     let status = if is_contiguous_zero_offset(layout) {
         // SAFETY: pointers + numel validated above; workspace null/0.
         unsafe {
-            contig(numel, x_ptr, y_ptr, p0, 0.0_f32, scratch.as_raw(), scratch.bytes(), stream)
+            contig(
+                numel,
+                x_ptr,
+                y_ptr,
+                p0,
+                0.0_f32,
+                scratch.as_raw(),
+                scratch.bytes(),
+                stream,
+            )
         }
     } else {
         let (shape_i32, stride_x, stride_y) = build_strided_args(layout, op_label)?;
@@ -154,15 +165,27 @@ fn powi_run(
         // SAFETY: shape/stride buffers owned through the call.
         unsafe {
             strided(
-                numel, rank, shape_i32.as_ptr(),
-                stride_x.as_ptr(), stride_y.as_ptr(),
-                x_ptr, y_ptr, p0, 0.0_f32,
-                scratch.as_raw(), scratch.bytes(), stream,
+                numel,
+                rank,
+                shape_i32.as_ptr(),
+                stride_x.as_ptr(),
+                stride_y.as_ptr(),
+                x_ptr,
+                y_ptr,
+                p0,
+                0.0_f32,
+                scratch.as_raw(),
+                scratch.bytes(),
+                stream,
             )
         }
     };
     check(status, op_label)?;
-    Ok(CudaStorageBytes::from_parts(Arc::new(out_buf), device, out_bytes))
+    Ok(CudaStorageBytes::from_parts(
+        Arc::new(out_buf),
+        device,
+        out_bytes,
+    ))
 }
 
 /// Backward `dx = n * x^(n-1) * dy`. The forward kernel's `x` is the
@@ -203,8 +226,17 @@ fn powi_backward_run(
     let status = if is_contiguous_zero_offset(layout) {
         // SAFETY: pointers + numel validated above; workspace null/0.
         unsafe {
-            contig(numel, dy_ptr, x_ptr, dx_ptr, p0, 0.0_f32,
-                   scratch.as_raw(), scratch.bytes(), stream)
+            contig(
+                numel,
+                dy_ptr,
+                x_ptr,
+                dx_ptr,
+                p0,
+                0.0_f32,
+                scratch.as_raw(),
+                scratch.bytes(),
+                stream,
+            )
         }
     } else {
         // Strided BW: x, dy, dx share the same layout (they're all
@@ -219,15 +251,29 @@ fn powi_backward_run(
         // SAFETY: shape/stride buffers owned through the call.
         unsafe {
             strided(
-                numel, rank, shape_i32.as_ptr(),
-                stride_x.as_ptr(), stride_dy.as_ptr(), stride_dx.as_ptr(),
-                x_ptr, dy_ptr, dx_ptr, p0, 0.0_f32,
-                scratch.as_raw(), scratch.bytes(), stream,
+                numel,
+                rank,
+                shape_i32.as_ptr(),
+                stride_x.as_ptr(),
+                stride_dy.as_ptr(),
+                stride_dx.as_ptr(),
+                x_ptr,
+                dy_ptr,
+                dx_ptr,
+                p0,
+                0.0_f32,
+                scratch.as_raw(),
+                scratch.bytes(),
+                stream,
             )
         }
     };
     check(status, op_label)?;
-    Ok(CudaStorageBytes::from_parts(Arc::new(out_buf), device, out_bytes))
+    Ok(CudaStorageBytes::from_parts(
+        Arc::new(out_buf),
+        device,
+        out_bytes,
+    ))
 }
 
 macro_rules! powi_kernel {
@@ -309,8 +355,14 @@ fn powi_inplace_run(
     // validated above.
     let status = unsafe {
         contig(
-            numel, ptr_const, ptr_mut, p0, 0.0_f32,
-            scratch.as_raw(), scratch.bytes(), stream,
+            numel,
+            ptr_const,
+            ptr_mut,
+            p0,
+            0.0_f32,
+            scratch.as_raw(),
+            scratch.bytes(),
+            stream,
         )
     };
     check(status, op_label)?;
@@ -332,7 +384,7 @@ macro_rules! powi_inplace_kernel {
     };
 }
 
-powi_inplace_kernel!(powi_inplace_f32,  f32,  4, "powi_inplace_f32");
-powi_inplace_kernel!(powi_inplace_f64,  f64,  8, "powi_inplace_f64");
-powi_inplace_kernel!(powi_inplace_f16,  f16,  2, "powi_inplace_f16");
+powi_inplace_kernel!(powi_inplace_f32, f32, 4, "powi_inplace_f32");
+powi_inplace_kernel!(powi_inplace_f64, f64, 8, "powi_inplace_f64");
+powi_inplace_kernel!(powi_inplace_f16, f16, 2, "powi_inplace_f16");
 powi_inplace_kernel!(powi_inplace_bf16, bf16, 2, "powi_inplace_bf16");

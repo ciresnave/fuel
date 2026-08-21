@@ -35,9 +35,16 @@ fn rand_f32(shape: &[usize], seed: u32) -> Vec<f32> {
 /// `fuel_reference_backend::attention::attention_naive`. Layout [B, H, S, D]
 /// row-major. Applies a causal mask when `causal` (position `j > i` masked).
 fn naive_attention(
-    q: &[f32], k: &[f32], v: &[f32],
-    b: usize, h: usize, sq: usize, sk: usize, d: usize,
-    scale: f32, causal: bool,
+    q: &[f32],
+    k: &[f32],
+    v: &[f32],
+    b: usize,
+    h: usize,
+    sq: usize,
+    sk: usize,
+    d: usize,
+    scale: f32,
+    causal: bool,
 ) -> Vec<f32> {
     let mut out = vec![0f32; b * h * sq * d];
     for bi in 0..b {
@@ -51,14 +58,18 @@ fn naive_attention(
                 let mut scores = vec![f32::NEG_INFINITY; sk];
                 let mut maxv = f32::NEG_INFINITY;
                 for j in 0..sk {
-                    if causal && j > i { continue; }
+                    if causal && j > i {
+                        continue;
+                    }
                     let mut dot = 0f32;
                     for dd in 0..d {
                         dot += qh[i * d + dd] * kh[j * d + dd];
                     }
                     let s = dot * scale;
                     scores[j] = s;
-                    if s > maxv { maxv = s; }
+                    if s > maxv {
+                        maxv = s;
+                    }
                 }
                 // softmax over j.
                 let mut denom = 0f32;
@@ -108,16 +119,26 @@ fn lazy_flash_attn_matches_composed_attention_basic() {
     let v_data = rand_f32(&[b, h, sk, d], 3);
     let scale = 1.0_f32 / (d as f32).sqrt();
 
-    let q = LazyTensor::from_f32(q_data.clone(), Shape::from_dims(&[b, h, sq, d]), &fuel_core::Device::cpu());
+    let q = LazyTensor::from_f32(
+        q_data.clone(),
+        Shape::from_dims(&[b, h, sq, d]),
+        &fuel_core::Device::cpu(),
+    );
     let k = q.const_f32_like(k_data.clone(), Shape::from_dims(&[b, h, sk, d]));
     let v = q.const_f32_like(v_data.clone(), Shape::from_dims(&[b, h, sk, d]));
 
     // Path A: lazy Op::FlashAttn → hard-CPU realize.
-    let fa_out = q.flash_attn(&k, &v, None, scale, false, None, None, None).unwrap();
+    let fa_out = q
+        .flash_attn(&k, &v, None, scale, false, None, None, None)
+        .unwrap();
     let fa = fa_out.realize_f32_reference();
 
     // Path B: explicit matmul+softmax composition.
-    let q2 = LazyTensor::from_f32(q_data, Shape::from_dims(&[b, h, sq, d]), &fuel_core::Device::cpu());
+    let q2 = LazyTensor::from_f32(
+        q_data,
+        Shape::from_dims(&[b, h, sq, d]),
+        &fuel_core::Device::cpu(),
+    );
     let k2 = q2.const_f32_like(k_data, Shape::from_dims(&[b, h, sk, d]));
     let v2 = q2.const_f32_like(v_data, Shape::from_dims(&[b, h, sk, d]));
     let composed = composed_attention(&q2, &k2, &v2, scale);
@@ -128,7 +149,10 @@ fn lazy_flash_attn_matches_composed_attention_basic() {
         let diff = (a - b).abs();
         let denom = a.abs().max(b.abs()).max(f32::MIN_POSITIVE);
         let rel = diff / denom;
-        assert!(diff < 1e-5 || rel < 1e-5, "[{i}]: flash={a} composed={b} (abs={diff} rel={rel})");
+        assert!(
+            diff < 1e-5 || rel < 1e-5,
+            "[{i}]: flash={a} composed={b} (abs={diff} rel={rel})"
+        );
     }
 }
 
@@ -145,10 +169,17 @@ fn lazy_flash_attn_matches_naive_with_causal_mask() {
     let v_data = rand_f32(&[b, h, sk, d], 6);
     let scale = 1.0_f32 / (d as f32).sqrt();
 
-    let q = LazyTensor::from_f32(q_data.clone(), Shape::from_dims(&[b, h, sq, d]), &fuel_core::Device::cpu());
+    let q = LazyTensor::from_f32(
+        q_data.clone(),
+        Shape::from_dims(&[b, h, sq, d]),
+        &fuel_core::Device::cpu(),
+    );
     let k = q.const_f32_like(k_data.clone(), Shape::from_dims(&[b, h, sk, d]));
     let v = q.const_f32_like(v_data.clone(), Shape::from_dims(&[b, h, sk, d]));
-    let fa_out = q.flash_attn(&k, &v, None, scale, true, None, None, None).unwrap().realize_f32_reference();
+    let fa_out = q
+        .flash_attn(&k, &v, None, scale, true, None, None, None)
+        .unwrap()
+        .realize_f32_reference();
 
     // Inline textbook naive attention (causal) for a known-correct comparison
     // point — the independent oracle that replaced the retired
@@ -160,6 +191,9 @@ fn lazy_flash_attn_matches_naive_with_causal_mask() {
         let diff = (a - b).abs();
         let denom = a.abs().max(b.abs()).max(f32::MIN_POSITIVE);
         let rel = diff / denom;
-        assert!(diff < 1e-5 || rel < 1e-5, "[{i}]: lazy={a} direct={b} (abs={diff} rel={rel})");
+        assert!(
+            diff < 1e-5 || rel < 1e-5,
+            "[{i}]: lazy={a} direct={b} (abs={diff} rel={rel})"
+        );
     }
 }

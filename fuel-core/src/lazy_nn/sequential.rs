@@ -65,18 +65,19 @@ mod tests {
 
     fn tiny_xs(b: usize, d: usize, val: f32) -> LazyTensor {
         let data: Vec<f32> = vec![val; b * d];
-        LazyTensor::from_f32(
-            Arc::from(data),
-            Shape::from_dims(&[b, d]),
-            &Device::cpu(),
-        )
+        LazyTensor::from_f32(Arc::from(data), Shape::from_dims(&[b, d]), &Device::cpu())
     }
 
     #[test]
     fn sequential_chains_two_linears_matches_manual_composition() {
         // L1: (4 -> 6), L2: (6 -> 3). Manual composition: L2(L1(x)).
-        let w1: Arc<[f32]> = Arc::from((0..24).map(|i| (i as f32) * 0.01 - 0.1).collect::<Vec<_>>());
-        let w2: Arc<[f32]> = Arc::from((0..18).map(|i| 0.02 + (i as f32) * 0.005).collect::<Vec<_>>());
+        let w1: Arc<[f32]> =
+            Arc::from((0..24).map(|i| (i as f32) * 0.01 - 0.1).collect::<Vec<_>>());
+        let w2: Arc<[f32]> = Arc::from(
+            (0..18)
+                .map(|i| 0.02 + (i as f32) * 0.005)
+                .collect::<Vec<_>>(),
+        );
         let l1 = LazyLinear::new(WeightStorage::F32(Arc::clone(&w1)), None, 4, 6).unwrap();
         let l2 = LazyLinear::new(WeightStorage::F32(Arc::clone(&w2)), None, 6, 3).unwrap();
 

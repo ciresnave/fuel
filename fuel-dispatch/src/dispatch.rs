@@ -29,9 +29,9 @@ use fuel_ir::dispatch::OpKind;
 use fuel_ir::probe::BackendId;
 use fuel_ir::{DType, DeviceLocation, Error, Layout, Result};
 
-use crate::kernel::{KernelBindingTable, KernelRef, MatmulM, OpParams};
 #[cfg(feature = "cuda")]
 use crate::kernel::KernelCaps;
+use crate::kernel::{KernelBindingTable, MatmulM, OpParams};
 use fuel_memory::{BackendStorage, Storage};
 
 /// Collection of backend capabilities, queried during DAG
@@ -44,7 +44,9 @@ pub struct CapabilityRegistry {
 impl CapabilityRegistry {
     /// Construct an empty registry. Add backends with `register`.
     pub fn new() -> Self {
-        Self { backends: Vec::new() }
+        Self {
+            backends: Vec::new(),
+        }
     }
 
     /// Register a backend's capabilities. Order of registration is
@@ -152,7 +154,9 @@ impl TransferMatrix {
     }
 
     /// All entries in the matrix.
-    pub fn entries(&self) -> impl Iterator<Item = (&(DeviceLocation, DeviceLocation), &TransferPath)> {
+    pub fn entries(
+        &self,
+    ) -> impl Iterator<Item = (&(DeviceLocation, DeviceLocation), &TransferPath)> {
         self.entries.iter()
     }
 }
@@ -174,7 +178,9 @@ pub fn resolve_target_backend(
     op: OpKind,
     dtype: DType,
 ) -> Result<BackendId> {
-    registry.find_backend_for(op, dtype).map(|caps| caps.backend_id)
+    registry
+        .find_backend_for(op, dtype)
+        .map(|caps| caps.backend_id)
 }
 
 /// Residency-aware variant of [`resolve_target_backend`]. Prefers
@@ -225,10 +231,7 @@ pub fn cpu_input(s: &Storage) -> Result<&fuel_cpu_backend::CpuStorageBytes> {
     match &s.inner {
         BackendStorage::Cpu(c) => Ok(c),
         #[allow(unreachable_patterns)]
-        _ => Err(Error::Msg(
-            "cpu kernel wrapper called with non-CPU input".to_string(),
-        )
-        .bt()),
+        _ => Err(Error::Msg("cpu kernel wrapper called with non-CPU input".to_string()).bt()),
     }
 }
 
@@ -241,10 +244,7 @@ pub fn cpu_output(s: &mut Storage) -> Result<&mut fuel_cpu_backend::CpuStorageBy
     match &mut s.inner {
         BackendStorage::Cpu(c) => Ok(c),
         #[allow(unreachable_patterns)]
-        _ => Err(Error::Msg(
-            "cpu kernel wrapper called with non-CPU output".to_string(),
-        )
-        .bt()),
+        _ => Err(Error::Msg("cpu kernel wrapper called with non-CPU output".to_string()).bt()),
     }
 }
 
@@ -252,9 +252,7 @@ pub fn cpu_output(s: &mut Storage) -> Result<&mut fuel_cpu_backend::CpuStorageBy
 /// programming bug (a previous writer panicked while holding the
 /// lock); production code surfaces it as a typed error rather than
 /// re-panicking through `unwrap`.
-pub fn read_storage(
-    arc: &Arc<RwLock<Storage>>,
-) -> Result<std::sync::RwLockReadGuard<'_, Storage>> {
+pub fn read_storage(arc: &Arc<RwLock<Storage>>) -> Result<std::sync::RwLockReadGuard<'_, Storage>> {
     arc.read()
         .map_err(|_| Error::Msg("kernel wrapper: storage RwLock poisoned (read)".to_string()).bt())
 }
@@ -344,140 +342,572 @@ macro_rules! cpu_unary_wrapper {
     };
 }
 
-cpu_binary_wrapper!(add_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::add_f32, "add_elementwise");
-cpu_binary_wrapper!(sub_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::sub_f32, "sub_elementwise");
-cpu_binary_wrapper!(mul_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::mul_f32, "mul_elementwise");
-cpu_binary_wrapper!(div_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::div_f32, "div_elementwise");
+cpu_binary_wrapper!(
+    add_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::add_f32,
+    "add_elementwise"
+);
+cpu_binary_wrapper!(
+    sub_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::sub_f32,
+    "sub_elementwise"
+);
+cpu_binary_wrapper!(
+    mul_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::mul_f32,
+    "mul_elementwise"
+);
+cpu_binary_wrapper!(
+    div_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::div_f32,
+    "div_elementwise"
+);
 
-cpu_unary_wrapper!(relu_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::relu_f32, "relu_elementwise");
-cpu_unary_wrapper!(neg_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::neg_f32, "neg_elementwise");
-cpu_unary_wrapper!(sqr_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::sqr_f32, "sqr_elementwise");
-cpu_unary_wrapper!(sqrt_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::sqrt_f32, "sqrt_elementwise");
-cpu_unary_wrapper!(recip_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::recip_f32, "recip_elementwise");
-cpu_unary_wrapper!(abs_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::abs_f32, "abs_elementwise");
-cpu_unary_wrapper!(tanh_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::tanh_f32, "tanh_elementwise");
-cpu_unary_wrapper!(exp_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::exp_f32, "exp_elementwise");
-cpu_unary_wrapper!(log_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::log_f32, "log_elementwise");
-cpu_unary_wrapper!(sin_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::sin_f32, "sin_elementwise");
-cpu_unary_wrapper!(cos_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::cos_f32, "cos_elementwise");
-cpu_unary_wrapper!(sigmoid_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::sigmoid_f32, "sigmoid_elementwise");
-cpu_unary_wrapper!(silu_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::silu_f32, "silu_elementwise");
-cpu_unary_wrapper!(gelu_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::gelu_f32, "gelu_elementwise");
-cpu_unary_wrapper!(step_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::step_f32, "step_elementwise");
+cpu_unary_wrapper!(
+    relu_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::relu_f32,
+    "relu_elementwise"
+);
+cpu_unary_wrapper!(
+    neg_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::neg_f32,
+    "neg_elementwise"
+);
+cpu_unary_wrapper!(
+    sqr_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::sqr_f32,
+    "sqr_elementwise"
+);
+cpu_unary_wrapper!(
+    sqrt_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::sqrt_f32,
+    "sqrt_elementwise"
+);
+cpu_unary_wrapper!(
+    recip_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::recip_f32,
+    "recip_elementwise"
+);
+cpu_unary_wrapper!(
+    abs_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::abs_f32,
+    "abs_elementwise"
+);
+cpu_unary_wrapper!(
+    tanh_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::tanh_f32,
+    "tanh_elementwise"
+);
+cpu_unary_wrapper!(
+    exp_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::exp_f32,
+    "exp_elementwise"
+);
+cpu_unary_wrapper!(
+    log_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::log_f32,
+    "log_elementwise"
+);
+cpu_unary_wrapper!(
+    sin_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::sin_f32,
+    "sin_elementwise"
+);
+cpu_unary_wrapper!(
+    cos_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::cos_f32,
+    "cos_elementwise"
+);
+cpu_unary_wrapper!(
+    sigmoid_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::sigmoid_f32,
+    "sigmoid_elementwise"
+);
+cpu_unary_wrapper!(
+    silu_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::silu_f32,
+    "silu_elementwise"
+);
+cpu_unary_wrapper!(
+    gelu_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::gelu_f32,
+    "gelu_elementwise"
+);
+cpu_unary_wrapper!(
+    step_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::step_f32,
+    "step_elementwise"
+);
 
 // f64 elementwise wrappers — same wrapper macros, different
 // underlying kernels. The dispatch wrappers themselves are
 // dtype-agnostic (they just call the typed kernel); the
 // (op, dtype, backend) registration in `register_cpu_kernels`
 // is what selects the right one at lookup time.
-cpu_binary_wrapper!(add_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::add_f64, "add_elementwise");
-cpu_binary_wrapper!(sub_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::sub_f64, "sub_elementwise");
-cpu_binary_wrapper!(mul_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::mul_f64, "mul_elementwise");
-cpu_binary_wrapper!(div_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::div_f64, "div_elementwise");
+cpu_binary_wrapper!(
+    add_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::add_f64,
+    "add_elementwise"
+);
+cpu_binary_wrapper!(
+    sub_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::sub_f64,
+    "sub_elementwise"
+);
+cpu_binary_wrapper!(
+    mul_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::mul_f64,
+    "mul_elementwise"
+);
+cpu_binary_wrapper!(
+    div_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::div_f64,
+    "div_elementwise"
+);
 
-cpu_unary_wrapper!(relu_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::relu_f64, "relu_elementwise");
-cpu_unary_wrapper!(neg_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::neg_f64, "neg_elementwise");
-cpu_unary_wrapper!(sqr_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::sqr_f64, "sqr_elementwise");
-cpu_unary_wrapper!(sqrt_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::sqrt_f64, "sqrt_elementwise");
-cpu_unary_wrapper!(recip_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::recip_f64, "recip_elementwise");
-cpu_unary_wrapper!(abs_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::abs_f64, "abs_elementwise");
-cpu_unary_wrapper!(tanh_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::tanh_f64, "tanh_elementwise");
-cpu_unary_wrapper!(exp_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::exp_f64, "exp_elementwise");
-cpu_unary_wrapper!(log_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::log_f64, "log_elementwise");
-cpu_unary_wrapper!(sin_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::sin_f64, "sin_elementwise");
-cpu_unary_wrapper!(cos_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::cos_f64, "cos_elementwise");
-cpu_unary_wrapper!(sigmoid_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::sigmoid_f64, "sigmoid_elementwise");
-cpu_unary_wrapper!(silu_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::silu_f64, "silu_elementwise");
-cpu_unary_wrapper!(gelu_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::gelu_f64, "gelu_elementwise");
-cpu_unary_wrapper!(step_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::step_f64, "step_elementwise");
+cpu_unary_wrapper!(
+    relu_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::relu_f64,
+    "relu_elementwise"
+);
+cpu_unary_wrapper!(
+    neg_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::neg_f64,
+    "neg_elementwise"
+);
+cpu_unary_wrapper!(
+    sqr_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::sqr_f64,
+    "sqr_elementwise"
+);
+cpu_unary_wrapper!(
+    sqrt_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::sqrt_f64,
+    "sqrt_elementwise"
+);
+cpu_unary_wrapper!(
+    recip_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::recip_f64,
+    "recip_elementwise"
+);
+cpu_unary_wrapper!(
+    abs_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::abs_f64,
+    "abs_elementwise"
+);
+cpu_unary_wrapper!(
+    tanh_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::tanh_f64,
+    "tanh_elementwise"
+);
+cpu_unary_wrapper!(
+    exp_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::exp_f64,
+    "exp_elementwise"
+);
+cpu_unary_wrapper!(
+    log_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::log_f64,
+    "log_elementwise"
+);
+cpu_unary_wrapper!(
+    sin_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::sin_f64,
+    "sin_elementwise"
+);
+cpu_unary_wrapper!(
+    cos_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::cos_f64,
+    "cos_elementwise"
+);
+cpu_unary_wrapper!(
+    sigmoid_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::sigmoid_f64,
+    "sigmoid_elementwise"
+);
+cpu_unary_wrapper!(
+    silu_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::silu_f64,
+    "silu_elementwise"
+);
+cpu_unary_wrapper!(
+    gelu_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::gelu_f64,
+    "gelu_elementwise"
+);
+cpu_unary_wrapper!(
+    step_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::step_f64,
+    "step_elementwise"
+);
 
-cpu_binary_wrapper!(maximum_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::maximum_f32, "maximum_elementwise");
-cpu_binary_wrapper!(minimum_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::minimum_f32, "minimum_elementwise");
-cpu_binary_wrapper!(maximum_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::maximum_f64, "maximum_elementwise");
-cpu_binary_wrapper!(minimum_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::minimum_f64, "minimum_elementwise");
+cpu_binary_wrapper!(
+    maximum_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::maximum_f32,
+    "maximum_elementwise"
+);
+cpu_binary_wrapper!(
+    minimum_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::minimum_f32,
+    "minimum_elementwise"
+);
+cpu_binary_wrapper!(
+    maximum_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::maximum_f64,
+    "maximum_elementwise"
+);
+cpu_binary_wrapper!(
+    minimum_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::minimum_f64,
+    "minimum_elementwise"
+);
 
 // bf16 elementwise wrappers (via-f32 round-trip kernels).
-cpu_binary_wrapper!(add_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::add_bf16, "add_elementwise");
-cpu_binary_wrapper!(sub_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::sub_bf16, "sub_elementwise");
-cpu_binary_wrapper!(mul_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::mul_bf16, "mul_elementwise");
-cpu_binary_wrapper!(div_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::div_bf16, "div_elementwise");
-cpu_binary_wrapper!(maximum_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::maximum_bf16, "maximum_elementwise");
-cpu_binary_wrapper!(minimum_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::minimum_bf16, "minimum_elementwise");
+cpu_binary_wrapper!(
+    add_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::add_bf16,
+    "add_elementwise"
+);
+cpu_binary_wrapper!(
+    sub_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::sub_bf16,
+    "sub_elementwise"
+);
+cpu_binary_wrapper!(
+    mul_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::mul_bf16,
+    "mul_elementwise"
+);
+cpu_binary_wrapper!(
+    div_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::div_bf16,
+    "div_elementwise"
+);
+cpu_binary_wrapper!(
+    maximum_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::maximum_bf16,
+    "maximum_elementwise"
+);
+cpu_binary_wrapper!(
+    minimum_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::minimum_bf16,
+    "minimum_elementwise"
+);
 
-cpu_unary_wrapper!(relu_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::relu_bf16, "relu_elementwise");
-cpu_unary_wrapper!(neg_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::neg_bf16, "neg_elementwise");
-cpu_unary_wrapper!(sqr_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::sqr_bf16, "sqr_elementwise");
-cpu_unary_wrapper!(sqrt_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::sqrt_bf16, "sqrt_elementwise");
-cpu_unary_wrapper!(recip_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::recip_bf16, "recip_elementwise");
-cpu_unary_wrapper!(abs_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::abs_bf16, "abs_elementwise");
-cpu_unary_wrapper!(tanh_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::tanh_bf16, "tanh_elementwise");
-cpu_unary_wrapper!(exp_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::exp_bf16, "exp_elementwise");
-cpu_unary_wrapper!(log_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::log_bf16, "log_elementwise");
-cpu_unary_wrapper!(sin_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::sin_bf16, "sin_elementwise");
-cpu_unary_wrapper!(cos_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::cos_bf16, "cos_elementwise");
-cpu_unary_wrapper!(sigmoid_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::sigmoid_bf16, "sigmoid_elementwise");
-cpu_unary_wrapper!(silu_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::silu_bf16, "silu_elementwise");
-cpu_unary_wrapper!(gelu_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::gelu_bf16, "gelu_elementwise");
-cpu_unary_wrapper!(step_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::step_bf16, "step_elementwise");
+cpu_unary_wrapper!(
+    relu_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::relu_bf16,
+    "relu_elementwise"
+);
+cpu_unary_wrapper!(
+    neg_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::neg_bf16,
+    "neg_elementwise"
+);
+cpu_unary_wrapper!(
+    sqr_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::sqr_bf16,
+    "sqr_elementwise"
+);
+cpu_unary_wrapper!(
+    sqrt_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::sqrt_bf16,
+    "sqrt_elementwise"
+);
+cpu_unary_wrapper!(
+    recip_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::recip_bf16,
+    "recip_elementwise"
+);
+cpu_unary_wrapper!(
+    abs_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::abs_bf16,
+    "abs_elementwise"
+);
+cpu_unary_wrapper!(
+    tanh_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::tanh_bf16,
+    "tanh_elementwise"
+);
+cpu_unary_wrapper!(
+    exp_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::exp_bf16,
+    "exp_elementwise"
+);
+cpu_unary_wrapper!(
+    log_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::log_bf16,
+    "log_elementwise"
+);
+cpu_unary_wrapper!(
+    sin_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::sin_bf16,
+    "sin_elementwise"
+);
+cpu_unary_wrapper!(
+    cos_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::cos_bf16,
+    "cos_elementwise"
+);
+cpu_unary_wrapper!(
+    sigmoid_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::sigmoid_bf16,
+    "sigmoid_elementwise"
+);
+cpu_unary_wrapper!(
+    silu_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::silu_bf16,
+    "silu_elementwise"
+);
+cpu_unary_wrapper!(
+    gelu_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::gelu_bf16,
+    "gelu_elementwise"
+);
+cpu_unary_wrapper!(
+    step_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::step_bf16,
+    "step_elementwise"
+);
 
 // f16 elementwise wrappers — direct mirrors of bf16.
-cpu_binary_wrapper!(add_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::add_f16, "add_elementwise");
-cpu_binary_wrapper!(sub_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::sub_f16, "sub_elementwise");
-cpu_binary_wrapper!(mul_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::mul_f16, "mul_elementwise");
-cpu_binary_wrapper!(div_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::div_f16, "div_elementwise");
-cpu_binary_wrapper!(maximum_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::maximum_f16, "maximum_elementwise");
-cpu_binary_wrapper!(minimum_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::minimum_f16, "minimum_elementwise");
+cpu_binary_wrapper!(
+    add_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::add_f16,
+    "add_elementwise"
+);
+cpu_binary_wrapper!(
+    sub_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::sub_f16,
+    "sub_elementwise"
+);
+cpu_binary_wrapper!(
+    mul_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::mul_f16,
+    "mul_elementwise"
+);
+cpu_binary_wrapper!(
+    div_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::div_f16,
+    "div_elementwise"
+);
+cpu_binary_wrapper!(
+    maximum_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::maximum_f16,
+    "maximum_elementwise"
+);
+cpu_binary_wrapper!(
+    minimum_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::minimum_f16,
+    "minimum_elementwise"
+);
 
-cpu_unary_wrapper!(relu_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::relu_f16, "relu_elementwise");
-cpu_unary_wrapper!(neg_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::neg_f16, "neg_elementwise");
-cpu_unary_wrapper!(sqr_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::sqr_f16, "sqr_elementwise");
-cpu_unary_wrapper!(sqrt_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::sqrt_f16, "sqrt_elementwise");
-cpu_unary_wrapper!(recip_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::recip_f16, "recip_elementwise");
-cpu_unary_wrapper!(abs_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::abs_f16, "abs_elementwise");
-cpu_unary_wrapper!(tanh_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::tanh_f16, "tanh_elementwise");
-cpu_unary_wrapper!(exp_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::exp_f16, "exp_elementwise");
-cpu_unary_wrapper!(log_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::log_f16, "log_elementwise");
-cpu_unary_wrapper!(sin_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::sin_f16, "sin_elementwise");
-cpu_unary_wrapper!(cos_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::cos_f16, "cos_elementwise");
-cpu_unary_wrapper!(sigmoid_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::sigmoid_f16, "sigmoid_elementwise");
-cpu_unary_wrapper!(silu_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::silu_f16, "silu_elementwise");
-cpu_unary_wrapper!(gelu_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::gelu_f16, "gelu_elementwise");
-cpu_unary_wrapper!(step_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::step_f16, "step_elementwise");
+cpu_unary_wrapper!(
+    relu_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::relu_f16,
+    "relu_elementwise"
+);
+cpu_unary_wrapper!(
+    neg_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::neg_f16,
+    "neg_elementwise"
+);
+cpu_unary_wrapper!(
+    sqr_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::sqr_f16,
+    "sqr_elementwise"
+);
+cpu_unary_wrapper!(
+    sqrt_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::sqrt_f16,
+    "sqrt_elementwise"
+);
+cpu_unary_wrapper!(
+    recip_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::recip_f16,
+    "recip_elementwise"
+);
+cpu_unary_wrapper!(
+    abs_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::abs_f16,
+    "abs_elementwise"
+);
+cpu_unary_wrapper!(
+    tanh_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::tanh_f16,
+    "tanh_elementwise"
+);
+cpu_unary_wrapper!(
+    exp_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::exp_f16,
+    "exp_elementwise"
+);
+cpu_unary_wrapper!(
+    log_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::log_f16,
+    "log_elementwise"
+);
+cpu_unary_wrapper!(
+    sin_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::sin_f16,
+    "sin_elementwise"
+);
+cpu_unary_wrapper!(
+    cos_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::cos_f16,
+    "cos_elementwise"
+);
+cpu_unary_wrapper!(
+    sigmoid_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::sigmoid_f16,
+    "sigmoid_elementwise"
+);
+cpu_unary_wrapper!(
+    silu_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::silu_f16,
+    "silu_elementwise"
+);
+cpu_unary_wrapper!(
+    gelu_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::gelu_f16,
+    "gelu_elementwise"
+);
+cpu_unary_wrapper!(
+    step_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::step_f16,
+    "step_elementwise"
+);
 
 // Comparison family — typed input, U8 output. The wrapper signature
 // is identical to a regular binary wrapper (3 byte buffers); only the
 // kernel internally casts inputs to `&[T]` and output to `&mut [u8]`.
 // Binding-table key is `[T, T, U8]` so the executor allocates a U8-
 // sized output buffer (1 byte per element) instead of T-sized.
-cpu_binary_wrapper!(eq_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::eq_f32_u8, "eq_elementwise");
-cpu_binary_wrapper!(eq_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::eq_f64_u8, "eq_elementwise");
-cpu_binary_wrapper!(eq_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::eq_bf16_u8, "eq_elementwise");
-cpu_binary_wrapper!(eq_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::eq_f16_u8, "eq_elementwise");
+cpu_binary_wrapper!(
+    eq_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::eq_f32_u8,
+    "eq_elementwise"
+);
+cpu_binary_wrapper!(
+    eq_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::eq_f64_u8,
+    "eq_elementwise"
+);
+cpu_binary_wrapper!(
+    eq_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::eq_bf16_u8,
+    "eq_elementwise"
+);
+cpu_binary_wrapper!(
+    eq_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::eq_f16_u8,
+    "eq_elementwise"
+);
 
-cpu_binary_wrapper!(ne_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::ne_f32_u8, "ne_elementwise");
-cpu_binary_wrapper!(ne_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::ne_f64_u8, "ne_elementwise");
-cpu_binary_wrapper!(ne_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::ne_bf16_u8, "ne_elementwise");
-cpu_binary_wrapper!(ne_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::ne_f16_u8, "ne_elementwise");
+cpu_binary_wrapper!(
+    ne_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::ne_f32_u8,
+    "ne_elementwise"
+);
+cpu_binary_wrapper!(
+    ne_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::ne_f64_u8,
+    "ne_elementwise"
+);
+cpu_binary_wrapper!(
+    ne_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::ne_bf16_u8,
+    "ne_elementwise"
+);
+cpu_binary_wrapper!(
+    ne_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::ne_f16_u8,
+    "ne_elementwise"
+);
 
-cpu_binary_wrapper!(lt_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::lt_f32_u8, "lt_elementwise");
-cpu_binary_wrapper!(lt_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::lt_f64_u8, "lt_elementwise");
-cpu_binary_wrapper!(lt_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::lt_bf16_u8, "lt_elementwise");
-cpu_binary_wrapper!(lt_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::lt_f16_u8, "lt_elementwise");
+cpu_binary_wrapper!(
+    lt_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::lt_f32_u8,
+    "lt_elementwise"
+);
+cpu_binary_wrapper!(
+    lt_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::lt_f64_u8,
+    "lt_elementwise"
+);
+cpu_binary_wrapper!(
+    lt_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::lt_bf16_u8,
+    "lt_elementwise"
+);
+cpu_binary_wrapper!(
+    lt_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::lt_f16_u8,
+    "lt_elementwise"
+);
 
-cpu_binary_wrapper!(le_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::le_f32_u8, "le_elementwise");
-cpu_binary_wrapper!(le_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::le_f64_u8, "le_elementwise");
-cpu_binary_wrapper!(le_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::le_bf16_u8, "le_elementwise");
-cpu_binary_wrapper!(le_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::le_f16_u8, "le_elementwise");
+cpu_binary_wrapper!(
+    le_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::le_f32_u8,
+    "le_elementwise"
+);
+cpu_binary_wrapper!(
+    le_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::le_f64_u8,
+    "le_elementwise"
+);
+cpu_binary_wrapper!(
+    le_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::le_bf16_u8,
+    "le_elementwise"
+);
+cpu_binary_wrapper!(
+    le_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::le_f16_u8,
+    "le_elementwise"
+);
 
-cpu_binary_wrapper!(gt_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::gt_f32_u8, "gt_elementwise");
-cpu_binary_wrapper!(gt_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::gt_f64_u8, "gt_elementwise");
-cpu_binary_wrapper!(gt_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::gt_bf16_u8, "gt_elementwise");
-cpu_binary_wrapper!(gt_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::gt_f16_u8, "gt_elementwise");
+cpu_binary_wrapper!(
+    gt_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::gt_f32_u8,
+    "gt_elementwise"
+);
+cpu_binary_wrapper!(
+    gt_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::gt_f64_u8,
+    "gt_elementwise"
+);
+cpu_binary_wrapper!(
+    gt_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::gt_bf16_u8,
+    "gt_elementwise"
+);
+cpu_binary_wrapper!(
+    gt_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::gt_f16_u8,
+    "gt_elementwise"
+);
 
-cpu_binary_wrapper!(ge_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::ge_f32_u8, "ge_elementwise");
-cpu_binary_wrapper!(ge_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::ge_f64_u8, "ge_elementwise");
-cpu_binary_wrapper!(ge_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::ge_bf16_u8, "ge_elementwise");
-cpu_binary_wrapper!(ge_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::ge_f16_u8, "ge_elementwise");
+cpu_binary_wrapper!(
+    ge_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::ge_f32_u8,
+    "ge_elementwise"
+);
+cpu_binary_wrapper!(
+    ge_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::ge_f64_u8,
+    "ge_elementwise"
+);
+cpu_binary_wrapper!(
+    ge_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::ge_bf16_u8,
+    "ge_elementwise"
+);
+cpu_binary_wrapper!(
+    ge_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::ge_f16_u8,
+    "ge_elementwise"
+);
 
 /// Build a `(3 inputs, 1 output)` CPU dispatch wrapper for the
 /// ternary [`Op::Where`] family. Inputs are `(cond, a, b)` byte
@@ -497,14 +927,16 @@ macro_rules! cpu_where_wrapper {
             if inputs.len() != 3 {
                 return Err(Error::Msg(format!(
                     "{} wrapper expects 3 inputs (cond, a, b), got {}",
-                    $op_name, inputs.len(),
+                    $op_name,
+                    inputs.len(),
                 ))
                 .bt());
             }
             if outputs.len() != 1 {
                 return Err(Error::Msg(format!(
                     "{} wrapper expects 1 output, got {}",
-                    $op_name, outputs.len(),
+                    $op_name,
+                    outputs.len(),
                 ))
                 .bt());
             }
@@ -533,57 +965,217 @@ macro_rules! cpu_where_wrapper {
     };
 }
 
-cpu_where_wrapper!(where_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::where_f32, "where");
-cpu_where_wrapper!(where_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::where_f64, "where");
-cpu_where_wrapper!(where_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::where_bf16, "where");
-cpu_where_wrapper!(where_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::where_f16, "where");
+cpu_where_wrapper!(
+    where_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::where_f32,
+    "where"
+);
+cpu_where_wrapper!(
+    where_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::where_f64,
+    "where"
+);
+cpu_where_wrapper!(
+    where_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::where_bf16,
+    "where"
+);
+cpu_where_wrapper!(
+    where_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::where_f16,
+    "where"
+);
 
 // Rounding family (Floor / Ceil / Round) — same-dtype unary; standard
 // `cpu_unary_wrapper!`.
-cpu_unary_wrapper!(floor_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::floor_f32, "floor_elementwise");
-cpu_unary_wrapper!(floor_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::floor_f64, "floor_elementwise");
-cpu_unary_wrapper!(floor_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::floor_bf16, "floor_elementwise");
-cpu_unary_wrapper!(floor_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::floor_f16, "floor_elementwise");
+cpu_unary_wrapper!(
+    floor_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::floor_f32,
+    "floor_elementwise"
+);
+cpu_unary_wrapper!(
+    floor_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::floor_f64,
+    "floor_elementwise"
+);
+cpu_unary_wrapper!(
+    floor_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::floor_bf16,
+    "floor_elementwise"
+);
+cpu_unary_wrapper!(
+    floor_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::floor_f16,
+    "floor_elementwise"
+);
 
-cpu_unary_wrapper!(ceil_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::ceil_f32, "ceil_elementwise");
-cpu_unary_wrapper!(ceil_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::ceil_f64, "ceil_elementwise");
-cpu_unary_wrapper!(ceil_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::ceil_bf16, "ceil_elementwise");
-cpu_unary_wrapper!(ceil_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::ceil_f16, "ceil_elementwise");
+cpu_unary_wrapper!(
+    ceil_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::ceil_f32,
+    "ceil_elementwise"
+);
+cpu_unary_wrapper!(
+    ceil_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::ceil_f64,
+    "ceil_elementwise"
+);
+cpu_unary_wrapper!(
+    ceil_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::ceil_bf16,
+    "ceil_elementwise"
+);
+cpu_unary_wrapper!(
+    ceil_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::ceil_f16,
+    "ceil_elementwise"
+);
 
-cpu_unary_wrapper!(round_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::round_f32, "round_elementwise");
-cpu_unary_wrapper!(round_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::round_f64, "round_elementwise");
-cpu_unary_wrapper!(round_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::round_bf16, "round_elementwise");
-cpu_unary_wrapper!(round_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::round_f16, "round_elementwise");
+cpu_unary_wrapper!(
+    round_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::round_f32,
+    "round_elementwise"
+);
+cpu_unary_wrapper!(
+    round_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::round_f64,
+    "round_elementwise"
+);
+cpu_unary_wrapper!(
+    round_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::round_bf16,
+    "round_elementwise"
+);
+cpu_unary_wrapper!(
+    round_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::round_f16,
+    "round_elementwise"
+);
 
-cpu_unary_wrapper!(sign_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::sign_f32, "sign_elementwise");
-cpu_unary_wrapper!(sign_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::sign_f64, "sign_elementwise");
-cpu_unary_wrapper!(sign_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::sign_bf16, "sign_elementwise");
-cpu_unary_wrapper!(sign_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::sign_f16, "sign_elementwise");
+cpu_unary_wrapper!(
+    sign_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::sign_f32,
+    "sign_elementwise"
+);
+cpu_unary_wrapper!(
+    sign_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::sign_f64,
+    "sign_elementwise"
+);
+cpu_unary_wrapper!(
+    sign_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::sign_bf16,
+    "sign_elementwise"
+);
+cpu_unary_wrapper!(
+    sign_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::sign_f16,
+    "sign_elementwise"
+);
 
-cpu_unary_wrapper!(erf_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::erf_f32, "erf_elementwise");
-cpu_unary_wrapper!(erf_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::erf_f64, "erf_elementwise");
-cpu_unary_wrapper!(erf_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::erf_bf16, "erf_elementwise");
-cpu_unary_wrapper!(erf_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::erf_f16, "erf_elementwise");
+cpu_unary_wrapper!(
+    erf_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::erf_f32,
+    "erf_elementwise"
+);
+cpu_unary_wrapper!(
+    erf_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::erf_f64,
+    "erf_elementwise"
+);
+cpu_unary_wrapper!(
+    erf_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::erf_bf16,
+    "erf_elementwise"
+);
+cpu_unary_wrapper!(
+    erf_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::erf_f16,
+    "erf_elementwise"
+);
 
-cpu_unary_wrapper!(gelu_erf_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::gelu_erf_f32, "gelu_erf_elementwise");
-cpu_unary_wrapper!(gelu_erf_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::gelu_erf_f64, "gelu_erf_elementwise");
-cpu_unary_wrapper!(gelu_erf_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::gelu_erf_bf16, "gelu_erf_elementwise");
-cpu_unary_wrapper!(gelu_erf_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::gelu_erf_f16, "gelu_erf_elementwise");
+cpu_unary_wrapper!(
+    gelu_erf_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::gelu_erf_f32,
+    "gelu_erf_elementwise"
+);
+cpu_unary_wrapper!(
+    gelu_erf_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::gelu_erf_f64,
+    "gelu_erf_elementwise"
+);
+cpu_unary_wrapper!(
+    gelu_erf_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::gelu_erf_bf16,
+    "gelu_erf_elementwise"
+);
+cpu_unary_wrapper!(
+    gelu_erf_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::gelu_erf_f16,
+    "gelu_erf_elementwise"
+);
 
-cpu_binary_wrapper!(pow_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::pow_f32, "pow_elementwise");
-cpu_binary_wrapper!(pow_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::pow_f64, "pow_elementwise");
-cpu_binary_wrapper!(pow_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::pow_bf16, "pow_elementwise");
-cpu_binary_wrapper!(pow_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::pow_f16, "pow_elementwise");
+cpu_binary_wrapper!(
+    pow_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::pow_f32,
+    "pow_elementwise"
+);
+cpu_binary_wrapper!(
+    pow_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::pow_f64,
+    "pow_elementwise"
+);
+cpu_binary_wrapper!(
+    pow_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::pow_bf16,
+    "pow_elementwise"
+);
+cpu_binary_wrapper!(
+    pow_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::pow_f16,
+    "pow_elementwise"
+);
 
-cpu_unary_wrapper!(rsqrt_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::rsqrt_f32, "rsqrt_elementwise");
-cpu_unary_wrapper!(rsqrt_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::rsqrt_f64, "rsqrt_elementwise");
-cpu_unary_wrapper!(rsqrt_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::rsqrt_bf16, "rsqrt_elementwise");
-cpu_unary_wrapper!(rsqrt_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::rsqrt_f16, "rsqrt_elementwise");
+cpu_unary_wrapper!(
+    rsqrt_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::rsqrt_f32,
+    "rsqrt_elementwise"
+);
+cpu_unary_wrapper!(
+    rsqrt_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::rsqrt_f64,
+    "rsqrt_elementwise"
+);
+cpu_unary_wrapper!(
+    rsqrt_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::rsqrt_bf16,
+    "rsqrt_elementwise"
+);
+cpu_unary_wrapper!(
+    rsqrt_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::rsqrt_f16,
+    "rsqrt_elementwise"
+);
 
-cpu_binary_wrapper!(rem_elementwise_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::rem_f32, "rem_elementwise");
-cpu_binary_wrapper!(rem_elementwise_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::rem_f64, "rem_elementwise");
-cpu_binary_wrapper!(rem_elementwise_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::rem_bf16, "rem_elementwise");
-cpu_binary_wrapper!(rem_elementwise_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::rem_f16, "rem_elementwise");
+cpu_binary_wrapper!(
+    rem_elementwise_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::rem_f32,
+    "rem_elementwise"
+);
+cpu_binary_wrapper!(
+    rem_elementwise_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::rem_f64,
+    "rem_elementwise"
+);
+cpu_binary_wrapper!(
+    rem_elementwise_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::rem_bf16,
+    "rem_elementwise"
+);
+cpu_binary_wrapper!(
+    rem_elementwise_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::rem_f16,
+    "rem_elementwise"
+);
 
 /// Dispatch wrapper for `(Flip, *, Cpu)`. Dtype-agnostic at the byte
 /// level — `dtype_size` flows from the output Storage. Geometry
@@ -598,19 +1190,23 @@ pub(crate) fn flip_cpu_wrapper(
     if inputs.len() != 1 || outputs.len() != 1 {
         return Err(Error::Msg(format!(
             "flip wrapper expects 1 input + 1 output, got {} + {}",
-            inputs.len(), outputs.len(),
+            inputs.len(),
+            outputs.len(),
         ))
         .bt());
     }
     let (outer, dim_size, inner) = match params {
-        OpParams::Flip { outer_count, dim_size, inner_count, .. } => {
-            (*outer_count, *dim_size, *inner_count)
-        }
+        OpParams::Flip {
+            outer_count,
+            dim_size,
+            inner_count,
+            ..
+        } => (*outer_count, *dim_size, *inner_count),
         other => {
             return Err(Error::Msg(format!(
                 "flip wrapper expects OpParams::Flip, got {other:?}",
             ))
-            .bt())
+            .bt());
         }
     };
     let in_guard = read_storage(&inputs[0])?;
@@ -618,9 +1214,7 @@ pub(crate) fn flip_cpu_wrapper(
     let dtype_size = out_guard.dtype.size_in_bytes();
     let in_cpu = cpu_input(&in_guard)?;
     let out_cpu = cpu_output(&mut out_guard)?;
-    fuel_cpu_backend::byte_kernels::flip_cpu(
-        in_cpu, out_cpu, outer, dim_size, inner, dtype_size,
-    )
+    fuel_cpu_backend::byte_kernels::flip_cpu(in_cpu, out_cpu, outer, dim_size, inner, dtype_size)
 }
 
 /// Build a `(1 input, 1 output)` CPU dispatch wrapper for the
@@ -637,14 +1231,19 @@ macro_rules! cpu_cumsum_wrapper {
             if inputs.len() != 1 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
                     "{} wrapper expects 1 input + 1 output, got {} + {}",
-                    $op_name, inputs.len(), outputs.len(),
+                    $op_name,
+                    inputs.len(),
+                    outputs.len(),
                 ))
                 .bt());
             }
             let (outer, dim_size, inner) = match params {
-                OpParams::CumSum { outer_count, dim_size, inner_count, .. } => {
-                    (*outer_count, *dim_size, *inner_count)
-                }
+                OpParams::CumSum {
+                    outer_count,
+                    dim_size,
+                    inner_count,
+                    ..
+                } => (*outer_count, *dim_size, *inner_count),
                 other => {
                     return Err(Error::Msg(format!(
                         "{} wrapper expects OpParams::CumSum, got {other:?}",
@@ -662,10 +1261,26 @@ macro_rules! cpu_cumsum_wrapper {
     };
 }
 
-cpu_cumsum_wrapper!(cumsum_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::cumsum_f32, "cumsum_f32");
-cpu_cumsum_wrapper!(cumsum_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::cumsum_f64, "cumsum_f64");
-cpu_cumsum_wrapper!(cumsum_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::cumsum_bf16, "cumsum_bf16");
-cpu_cumsum_wrapper!(cumsum_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::cumsum_f16, "cumsum_f16");
+cpu_cumsum_wrapper!(
+    cumsum_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::cumsum_f32,
+    "cumsum_f32"
+);
+cpu_cumsum_wrapper!(
+    cumsum_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::cumsum_f64,
+    "cumsum_f64"
+);
+cpu_cumsum_wrapper!(
+    cumsum_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::cumsum_bf16,
+    "cumsum_bf16"
+);
+cpu_cumsum_wrapper!(
+    cumsum_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::cumsum_f16,
+    "cumsum_f16"
+);
 
 /// Triu / Tril share one byte-level kernel; the wrapper picks
 /// keep_upper from the OpKind at dispatch time. Dtype-agnostic.
@@ -675,7 +1290,13 @@ fn triu_cpu_wrapper(
     _layouts: &[Layout],
     params: &OpParams,
 ) -> Result<()> {
-    triangular_wrapper_inner(inputs, outputs, params, /*keep_upper*/ true, "triu_cpu_wrapper")
+    triangular_wrapper_inner(
+        inputs,
+        outputs,
+        params,
+        /*keep_upper*/ true,
+        "triu_cpu_wrapper",
+    )
 }
 
 fn tril_cpu_wrapper(
@@ -684,7 +1305,13 @@ fn tril_cpu_wrapper(
     _layouts: &[Layout],
     params: &OpParams,
 ) -> Result<()> {
-    triangular_wrapper_inner(inputs, outputs, params, /*keep_upper*/ false, "tril_cpu_wrapper")
+    triangular_wrapper_inner(
+        inputs,
+        outputs,
+        params,
+        /*keep_upper*/ false,
+        "tril_cpu_wrapper",
+    )
 }
 
 fn triangular_wrapper_inner(
@@ -697,17 +1324,23 @@ fn triangular_wrapper_inner(
     if inputs.len() != 1 || outputs.len() != 1 {
         return Err(Error::Msg(format!(
             "{op_name}: expects 1 input + 1 output, got {} + {}",
-            inputs.len(), outputs.len(),
-        )).bt());
+            inputs.len(),
+            outputs.len(),
+        ))
+        .bt());
     }
     let (batch, rows, cols, diag) = match params {
-        OpParams::Triangular { batch_count, rows, cols, diagonal } => {
-            (*batch_count, *rows, *cols, *diagonal)
-        }
+        OpParams::Triangular {
+            batch_count,
+            rows,
+            cols,
+            diagonal,
+        } => (*batch_count, *rows, *cols, *diagonal),
         other => {
             return Err(Error::Msg(format!(
                 "{op_name}: expects OpParams::Triangular, got {other:?}",
-            )).bt());
+            ))
+            .bt());
         }
     };
     let in_guard = read_storage(&inputs[0])?;
@@ -733,16 +1366,23 @@ macro_rules! cpu_log_softmax_wrapper {
             if inputs.len() != 1 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
                     "{} wrapper expects 1 input + 1 output, got {} + {}",
-                    $op_name, inputs.len(), outputs.len(),
-                )).bt());
+                    $op_name,
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             let (outer, last_dim) = match params {
-                OpParams::LogSoftmaxLastDim { outer_count, last_dim } => (*outer_count, *last_dim),
+                OpParams::LogSoftmaxLastDim {
+                    outer_count,
+                    last_dim,
+                } => (*outer_count, *last_dim),
                 other => {
                     return Err(Error::Msg(format!(
                         "{} wrapper expects OpParams::LogSoftmaxLastDim, got {other:?}",
                         $op_name,
-                    )).bt());
+                    ))
+                    .bt());
                 }
             };
             let in_guard = read_storage(&inputs[0])?;
@@ -754,10 +1394,26 @@ macro_rules! cpu_log_softmax_wrapper {
     };
 }
 
-cpu_log_softmax_wrapper!(log_softmax_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::log_softmax_last_dim_f32, "log_softmax_f32");
-cpu_log_softmax_wrapper!(log_softmax_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::log_softmax_last_dim_f64, "log_softmax_f64");
-cpu_log_softmax_wrapper!(log_softmax_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::log_softmax_last_dim_bf16, "log_softmax_bf16");
-cpu_log_softmax_wrapper!(log_softmax_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::log_softmax_last_dim_f16, "log_softmax_f16");
+cpu_log_softmax_wrapper!(
+    log_softmax_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::log_softmax_last_dim_f32,
+    "log_softmax_f32"
+);
+cpu_log_softmax_wrapper!(
+    log_softmax_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::log_softmax_last_dim_f64,
+    "log_softmax_f64"
+);
+cpu_log_softmax_wrapper!(
+    log_softmax_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::log_softmax_last_dim_bf16,
+    "log_softmax_bf16"
+);
+cpu_log_softmax_wrapper!(
+    log_softmax_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::log_softmax_last_dim_f16,
+    "log_softmax_f16"
+);
 
 /// Per-dtype log-softmax-backward wrapper. Two inputs (y, g); same
 /// geometry as forward.
@@ -774,16 +1430,23 @@ macro_rules! cpu_log_softmax_backward_wrapper {
             if inputs.len() != 2 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
                     "{} wrapper expects 2 inputs (y, g) + 1 output, got {} + {}",
-                    $op_name, inputs.len(), outputs.len(),
-                )).bt());
+                    $op_name,
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             let (outer, last_dim) = match params {
-                OpParams::LogSoftmaxLastDim { outer_count, last_dim } => (*outer_count, *last_dim),
+                OpParams::LogSoftmaxLastDim {
+                    outer_count,
+                    last_dim,
+                } => (*outer_count, *last_dim),
                 other => {
                     return Err(Error::Msg(format!(
                         "{} wrapper expects OpParams::LogSoftmaxLastDim, got {other:?}",
                         $op_name,
-                    )).bt());
+                    ))
+                    .bt());
                 }
             };
             let y_guard = read_storage(&inputs[0])?;
@@ -797,10 +1460,26 @@ macro_rules! cpu_log_softmax_backward_wrapper {
     };
 }
 
-cpu_log_softmax_backward_wrapper!(log_softmax_backward_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::log_softmax_last_dim_backward_f32, "log_softmax_backward_f32");
-cpu_log_softmax_backward_wrapper!(log_softmax_backward_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::log_softmax_last_dim_backward_f64, "log_softmax_backward_f64");
-cpu_log_softmax_backward_wrapper!(log_softmax_backward_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::log_softmax_last_dim_backward_bf16, "log_softmax_backward_bf16");
-cpu_log_softmax_backward_wrapper!(log_softmax_backward_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::log_softmax_last_dim_backward_f16, "log_softmax_backward_f16");
+cpu_log_softmax_backward_wrapper!(
+    log_softmax_backward_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::log_softmax_last_dim_backward_f32,
+    "log_softmax_backward_f32"
+);
+cpu_log_softmax_backward_wrapper!(
+    log_softmax_backward_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::log_softmax_last_dim_backward_f64,
+    "log_softmax_backward_f64"
+);
+cpu_log_softmax_backward_wrapper!(
+    log_softmax_backward_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::log_softmax_last_dim_backward_bf16,
+    "log_softmax_backward_bf16"
+);
+cpu_log_softmax_backward_wrapper!(
+    log_softmax_backward_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::log_softmax_last_dim_backward_f16,
+    "log_softmax_backward_f16"
+);
 
 /// Softmax-last-dim backward — 2 inputs (y, g) + 1 output, reuses
 /// `OpParams::SoftmaxLastDim` (same outer × last_dim shape contract
@@ -842,16 +1521,20 @@ macro_rules! cpu_softmax_last_dim_backward_wrapper {
 
 cpu_softmax_last_dim_backward_wrapper!(
     softmax_last_dim_backward_f32_cpu_wrapper,
-    fuel_cpu_backend::byte_kernels::softmax_last_dim_backward_f32);
+    fuel_cpu_backend::byte_kernels::softmax_last_dim_backward_f32
+);
 cpu_softmax_last_dim_backward_wrapper!(
     softmax_last_dim_backward_f64_cpu_wrapper,
-    fuel_cpu_backend::byte_kernels::softmax_last_dim_backward_f64);
+    fuel_cpu_backend::byte_kernels::softmax_last_dim_backward_f64
+);
 cpu_softmax_last_dim_backward_wrapper!(
     softmax_last_dim_backward_bf16_cpu_wrapper,
-    fuel_cpu_backend::byte_kernels::softmax_last_dim_backward_bf16);
+    fuel_cpu_backend::byte_kernels::softmax_last_dim_backward_bf16
+);
 cpu_softmax_last_dim_backward_wrapper!(
     softmax_last_dim_backward_f16_cpu_wrapper,
-    fuel_cpu_backend::byte_kernels::softmax_last_dim_backward_f16);
+    fuel_cpu_backend::byte_kernels::softmax_last_dim_backward_f16
+);
 
 /// LayerNorm / RmsNorm backward share `OpParams::NormLastDim` (with
 /// eps). Two inputs (x, g) + 1 output, same outer × last_dim shape.
@@ -868,18 +1551,24 @@ macro_rules! cpu_norm_last_dim_backward_wrapper {
             if inputs.len() != 2 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
                     "{} wrapper expects 2 inputs (x, g) + 1 output, got {} + {}",
-                    $op_name, inputs.len(), outputs.len(),
-                )).bt());
+                    $op_name,
+                    inputs.len(),
+                    outputs.len(),
+                ))
+                .bt());
             }
             let (outer, last_dim, eps) = match params {
-                OpParams::NormLastDim { outer_count, last_dim, eps } => {
-                    (*outer_count, *last_dim, *eps)
-                }
+                OpParams::NormLastDim {
+                    outer_count,
+                    last_dim,
+                    eps,
+                } => (*outer_count, *last_dim, *eps),
                 other => {
                     return Err(Error::Msg(format!(
                         "{} wrapper expects OpParams::NormLastDim, got {other:?}",
                         $op_name,
-                    )).bt());
+                    ))
+                    .bt());
                 }
             };
             let x_guard = read_storage(&inputs[0])?;
@@ -895,29 +1584,45 @@ macro_rules! cpu_norm_last_dim_backward_wrapper {
 
 cpu_norm_last_dim_backward_wrapper!(
     layer_norm_last_dim_backward_f32_cpu_wrapper,
-    fuel_cpu_backend::byte_kernels::layer_norm_last_dim_backward_f32, "layer_norm_backward_f32");
+    fuel_cpu_backend::byte_kernels::layer_norm_last_dim_backward_f32,
+    "layer_norm_backward_f32"
+);
 cpu_norm_last_dim_backward_wrapper!(
     layer_norm_last_dim_backward_f64_cpu_wrapper,
-    fuel_cpu_backend::byte_kernels::layer_norm_last_dim_backward_f64, "layer_norm_backward_f64");
+    fuel_cpu_backend::byte_kernels::layer_norm_last_dim_backward_f64,
+    "layer_norm_backward_f64"
+);
 cpu_norm_last_dim_backward_wrapper!(
     layer_norm_last_dim_backward_bf16_cpu_wrapper,
-    fuel_cpu_backend::byte_kernels::layer_norm_last_dim_backward_bf16, "layer_norm_backward_bf16");
+    fuel_cpu_backend::byte_kernels::layer_norm_last_dim_backward_bf16,
+    "layer_norm_backward_bf16"
+);
 cpu_norm_last_dim_backward_wrapper!(
     layer_norm_last_dim_backward_f16_cpu_wrapper,
-    fuel_cpu_backend::byte_kernels::layer_norm_last_dim_backward_f16, "layer_norm_backward_f16");
+    fuel_cpu_backend::byte_kernels::layer_norm_last_dim_backward_f16,
+    "layer_norm_backward_f16"
+);
 
 cpu_norm_last_dim_backward_wrapper!(
     rms_norm_last_dim_backward_f32_cpu_wrapper,
-    fuel_cpu_backend::byte_kernels::rms_norm_last_dim_backward_f32, "rms_norm_backward_f32");
+    fuel_cpu_backend::byte_kernels::rms_norm_last_dim_backward_f32,
+    "rms_norm_backward_f32"
+);
 cpu_norm_last_dim_backward_wrapper!(
     rms_norm_last_dim_backward_f64_cpu_wrapper,
-    fuel_cpu_backend::byte_kernels::rms_norm_last_dim_backward_f64, "rms_norm_backward_f64");
+    fuel_cpu_backend::byte_kernels::rms_norm_last_dim_backward_f64,
+    "rms_norm_backward_f64"
+);
 cpu_norm_last_dim_backward_wrapper!(
     rms_norm_last_dim_backward_bf16_cpu_wrapper,
-    fuel_cpu_backend::byte_kernels::rms_norm_last_dim_backward_bf16, "rms_norm_backward_bf16");
+    fuel_cpu_backend::byte_kernels::rms_norm_last_dim_backward_bf16,
+    "rms_norm_backward_bf16"
+);
 cpu_norm_last_dim_backward_wrapper!(
     rms_norm_last_dim_backward_f16_cpu_wrapper,
-    fuel_cpu_backend::byte_kernels::rms_norm_last_dim_backward_f16, "rms_norm_backward_f16");
+    fuel_cpu_backend::byte_kernels::rms_norm_last_dim_backward_f16,
+    "rms_norm_backward_f16"
+);
 
 /// ReduceMaxTo backward — 2 inputs (x, upstream) + 1 output. Carries
 /// the shape pair via `OpParams::ReduceMaxToBackward`.
@@ -960,16 +1665,20 @@ macro_rules! cpu_reduce_max_to_backward_wrapper {
 
 cpu_reduce_max_to_backward_wrapper!(
     reduce_max_to_backward_f32_cpu_wrapper,
-    fuel_cpu_backend::byte_kernels::reduce_max_to_backward_f32);
+    fuel_cpu_backend::byte_kernels::reduce_max_to_backward_f32
+);
 cpu_reduce_max_to_backward_wrapper!(
     reduce_max_to_backward_f64_cpu_wrapper,
-    fuel_cpu_backend::byte_kernels::reduce_max_to_backward_f64);
+    fuel_cpu_backend::byte_kernels::reduce_max_to_backward_f64
+);
 cpu_reduce_max_to_backward_wrapper!(
     reduce_max_to_backward_bf16_cpu_wrapper,
-    fuel_cpu_backend::byte_kernels::reduce_max_to_backward_bf16);
+    fuel_cpu_backend::byte_kernels::reduce_max_to_backward_bf16
+);
 cpu_reduce_max_to_backward_wrapper!(
     reduce_max_to_backward_f16_cpu_wrapper,
-    fuel_cpu_backend::byte_kernels::reduce_max_to_backward_f16);
+    fuel_cpu_backend::byte_kernels::reduce_max_to_backward_f16
+);
 
 /// Single dtype-agnostic MaskedFill wrapper. Reads `fill_bytes`
 /// (pre-encoded by `op_to_op_params`) and dtype_size from the output.
@@ -982,15 +1691,18 @@ pub(crate) fn masked_fill_cpu_wrapper(
     if inputs.len() != 2 || outputs.len() != 1 {
         return Err(Error::Msg(format!(
             "masked_fill_cpu_wrapper: expects 2 inputs (x, mask) + 1 output, got {} + {}",
-            inputs.len(), outputs.len(),
-        )).bt());
+            inputs.len(),
+            outputs.len(),
+        ))
+        .bt());
     }
     let fill_bytes = match params {
         OpParams::MaskedFill { fill_bytes } => fill_bytes.clone(),
         other => {
             return Err(Error::Msg(format!(
                 "masked_fill_cpu_wrapper: expects OpParams::MaskedFill, got {other:?}",
-            )).bt());
+            ))
+            .bt());
         }
     };
     let in_guard = read_storage(&inputs[0])?;
@@ -1014,7 +1726,11 @@ pub(crate) fn masked_fill_cpu_wrapper(
     let mask_cpu = cpu_input(&mask_guard)?;
     let out_cpu = cpu_output(&mut out_guard)?;
     fuel_cpu_backend::byte_kernels::masked_fill_cpu(
-        in_cpu, mask_cpu, out_cpu, &fill_bytes, dtype_size,
+        in_cpu,
+        mask_cpu,
+        out_cpu,
+        &fill_bytes,
+        dtype_size,
     )
 }
 
@@ -1032,19 +1748,23 @@ pub(crate) fn pad_cpu_wrapper(
     if inputs.len() != 1 || outputs.len() != 1 {
         return Err(Error::Msg(format!(
             "pad wrapper expects 1 input + 1 output, got {} + {}",
-            inputs.len(), outputs.len(),
+            inputs.len(),
+            outputs.len(),
         ))
         .bt());
     }
     let (in_shape, out_shape, padding, mode_tag, fill_bytes) = match params {
-        OpParams::Pad { in_shape, out_shape, padding, mode_tag, fill_bytes } => {
-            (in_shape, out_shape, padding, *mode_tag, fill_bytes)
-        }
+        OpParams::Pad {
+            in_shape,
+            out_shape,
+            padding,
+            mode_tag,
+            fill_bytes,
+        } => (in_shape, out_shape, padding, *mode_tag, fill_bytes),
         other => {
-            return Err(Error::Msg(format!(
-                "pad wrapper expects OpParams::Pad, got {other:?}",
-            ))
-            .bt())
+            return Err(
+                Error::Msg(format!("pad wrapper expects OpParams::Pad, got {other:?}",)).bt(),
+            );
         }
     };
     let in_guard = read_storage(&inputs[0])?;
@@ -1065,7 +1785,8 @@ pub(crate) fn pad_cpu_wrapper(
                     return Err(Error::Msg(format!(
                         "pad reflect: axis {k} has dim_size {n}; before ({b}) and \
                          after ({a}) must each be <= dim_size - 1",
-                    )).bt());
+                    ))
+                    .bt());
                 }
             }
             fuel_cpu_backend::byte_kernels::pad_reflect_cpu(
@@ -1075,9 +1796,7 @@ pub(crate) fn pad_cpu_wrapper(
         2 => fuel_cpu_backend::byte_kernels::pad_replicate_cpu(
             in_cpu, out_cpu, in_shape, out_shape, padding, dtype_size,
         ),
-        other => Err(Error::Msg(format!(
-            "pad: unknown mode_tag {other}",
-        )).bt()),
+        other => Err(Error::Msg(format!("pad: unknown mode_tag {other}",)).bt()),
     }
 }
 
@@ -1095,14 +1814,19 @@ macro_rules! cpu_pad_backward_wrapper {
             if inputs.len() != 1 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
                     "{} wrapper expects 1 input + 1 output, got {} + {}",
-                    $op_name, inputs.len(), outputs.len(),
+                    $op_name,
+                    inputs.len(),
+                    outputs.len(),
                 ))
                 .bt());
             }
             let (in_shape, out_shape, padding, mode_tag) = match params {
-                OpParams::PadBackward { in_shape, out_shape, padding, mode_tag } => {
-                    (in_shape, out_shape, padding, *mode_tag)
-                }
+                OpParams::PadBackward {
+                    in_shape,
+                    out_shape,
+                    padding,
+                    mode_tag,
+                } => (in_shape, out_shape, padding, *mode_tag),
                 other => {
                     return Err(Error::Msg(format!(
                         "{} wrapper expects OpParams::PadBackward, got {other:?}",
@@ -1120,10 +1844,26 @@ macro_rules! cpu_pad_backward_wrapper {
     };
 }
 
-cpu_pad_backward_wrapper!(pad_backward_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::pad_backward_f32, "pad_backward_f32");
-cpu_pad_backward_wrapper!(pad_backward_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::pad_backward_f64, "pad_backward_f64");
-cpu_pad_backward_wrapper!(pad_backward_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::pad_backward_bf16, "pad_backward_bf16");
-cpu_pad_backward_wrapper!(pad_backward_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::pad_backward_f16, "pad_backward_f16");
+cpu_pad_backward_wrapper!(
+    pad_backward_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::pad_backward_f32,
+    "pad_backward_f32"
+);
+cpu_pad_backward_wrapper!(
+    pad_backward_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::pad_backward_f64,
+    "pad_backward_f64"
+);
+cpu_pad_backward_wrapper!(
+    pad_backward_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::pad_backward_bf16,
+    "pad_backward_bf16"
+);
+cpu_pad_backward_wrapper!(
+    pad_backward_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::pad_backward_f16,
+    "pad_backward_f16"
+);
 
 /// Dispatch wrapper for `(Roll, *, Cpu)`. Dtype-agnostic at the byte
 /// level. Same shape as Flip plus a signed `shift`.
@@ -1136,19 +1876,24 @@ pub(crate) fn roll_cpu_wrapper(
     if inputs.len() != 1 || outputs.len() != 1 {
         return Err(Error::Msg(format!(
             "roll wrapper expects 1 input + 1 output, got {} + {}",
-            inputs.len(), outputs.len(),
+            inputs.len(),
+            outputs.len(),
         ))
         .bt());
     }
     let (outer, dim_size, inner, shift) = match params {
-        OpParams::Roll { outer_count, dim_size, inner_count, shift, .. } => {
-            (*outer_count, *dim_size, *inner_count, *shift)
-        }
+        OpParams::Roll {
+            outer_count,
+            dim_size,
+            inner_count,
+            shift,
+            ..
+        } => (*outer_count, *dim_size, *inner_count, *shift),
         other => {
             return Err(Error::Msg(format!(
                 "roll wrapper expects OpParams::Roll, got {other:?}",
             ))
-            .bt())
+            .bt());
         }
     };
     let in_guard = read_storage(&inputs[0])?;
@@ -1175,7 +1920,9 @@ macro_rules! cpu_arg_dim_wrapper {
             if inputs.len() != 1 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
                     "{} wrapper expects 1 input + 1 output, got {} + {}",
-                    $op_name, inputs.len(), outputs.len(),
+                    $op_name,
+                    inputs.len(),
+                    outputs.len(),
                 ))
                 .bt());
             }
@@ -1244,19 +1991,23 @@ pub(crate) fn index_add_f32_cpu_wrapper(
     if inputs.len() != 3 || outputs.len() != 1 {
         return Err(Error::Msg(format!(
             "index_add wrapper expects 3 inputs (base, indices, src) + 1 output, got {} + {}",
-            inputs.len(), outputs.len(),
+            inputs.len(),
+            outputs.len(),
         ))
         .bt());
     }
     let (outer_count, base_dim_size, n_indices, inner_count) = match params {
         OpParams::IndexAdd {
-            outer_count, base_dim_size, n_indices, inner_count,
+            outer_count,
+            base_dim_size,
+            n_indices,
+            inner_count,
         } => (*outer_count, *base_dim_size, *n_indices, *inner_count),
         other => {
             return Err(Error::Msg(format!(
                 "index_add wrapper expects OpParams::IndexAdd, got {other:?}",
             ))
-            .bt())
+            .bt());
         }
     };
     let base_guard = read_storage(&inputs[0])?;
@@ -1275,8 +2026,14 @@ pub(crate) fn index_add_f32_cpu_wrapper(
     let src_cpu = cpu_input(&src_guard)?;
     let out_cpu = cpu_output(&mut out_guard)?;
     fuel_cpu_backend::byte_kernels::index_add_f32(
-        base_cpu, idx_cpu, src_cpu, out_cpu,
-        outer_count, base_dim_size, n_indices, inner_count,
+        base_cpu,
+        idx_cpu,
+        src_cpu,
+        out_cpu,
+        outer_count,
+        base_dim_size,
+        n_indices,
+        inner_count,
     )
 }
 
@@ -1293,17 +2050,22 @@ pub(crate) fn scatter_add_f32_cpu_wrapper(
     if inputs.len() != 3 || outputs.len() != 1 {
         return Err(Error::Msg(format!(
             "scatter_add wrapper expects 3 inputs (base, indices, src) + 1 output, got {} + {}",
-            inputs.len(), outputs.len(),
+            inputs.len(),
+            outputs.len(),
         ))
         .bt());
     }
     let (base_shape, src_shape, dim) = match params {
-        OpParams::ScatterAdd { base_shape, src_shape, dim } => (base_shape, src_shape, *dim),
+        OpParams::ScatterAdd {
+            base_shape,
+            src_shape,
+            dim,
+        } => (base_shape, src_shape, *dim),
         other => {
             return Err(Error::Msg(format!(
                 "scatter_add wrapper expects OpParams::ScatterAdd, got {other:?}",
             ))
-            .bt())
+            .bt());
         }
     };
     let base_guard = read_storage(&inputs[0])?;
@@ -1322,8 +2084,7 @@ pub(crate) fn scatter_add_f32_cpu_wrapper(
     let src_cpu = cpu_input(&src_guard)?;
     let out_cpu = cpu_output(&mut out_guard)?;
     fuel_cpu_backend::byte_kernels::scatter_add_f32(
-        base_cpu, idx_cpu, src_cpu, out_cpu,
-        base_shape, src_shape, dim,
+        base_cpu, idx_cpu, src_cpu, out_cpu, base_shape, src_shape, dim,
     )
 }
 
@@ -1340,19 +2101,22 @@ pub(crate) fn rope_f32_cpu_wrapper(
     if inputs.len() != 3 || outputs.len() != 1 {
         return Err(Error::Msg(format!(
             "rope wrapper expects 3 inputs (x, cos, sin) + 1 output, got {} + {}",
-            inputs.len(), outputs.len(),
+            inputs.len(),
+            outputs.len(),
         ))
         .bt());
     }
     let (outer_count, seq, head_dim) = match params {
-        OpParams::Rope { outer_count, seq, head_dim } => {
-            (*outer_count, *seq, *head_dim)
-        }
+        OpParams::Rope {
+            outer_count,
+            seq,
+            head_dim,
+        } => (*outer_count, *seq, *head_dim),
         other => {
             return Err(Error::Msg(format!(
                 "rope wrapper expects OpParams::Rope, got {other:?}",
             ))
-            .bt())
+            .bt());
         }
     };
     let x_guard = read_storage(&inputs[0])?;
@@ -1364,8 +2128,13 @@ pub(crate) fn rope_f32_cpu_wrapper(
     let sin_cpu = cpu_input(&sin_guard)?;
     let out_cpu = cpu_output(&mut out_guard)?;
     fuel_cpu_backend::byte_kernels::rope_f32(
-        x_cpu, cos_cpu, sin_cpu, out_cpu,
-        outer_count, seq, head_dim,
+        x_cpu,
+        cos_cpu,
+        sin_cpu,
+        out_cpu,
+        outer_count,
+        seq,
+        head_dim,
     )
 }
 
@@ -1382,19 +2151,22 @@ pub(crate) fn gather_cpu_wrapper(
     if inputs.len() != 2 || outputs.len() != 1 {
         return Err(Error::Msg(format!(
             "gather wrapper expects 2 inputs + 1 output, got {} + {}",
-            inputs.len(), outputs.len(),
+            inputs.len(),
+            outputs.len(),
         ))
         .bt());
     }
     let (source_shape, output_shape, dim) = match params {
-        OpParams::Gather { source_shape, output_shape, dim } => {
-            (source_shape, output_shape, *dim)
-        }
+        OpParams::Gather {
+            source_shape,
+            output_shape,
+            dim,
+        } => (source_shape, output_shape, *dim),
         other => {
             return Err(Error::Msg(format!(
                 "gather wrapper expects OpParams::Gather, got {other:?}",
             ))
-            .bt())
+            .bt());
         }
     };
     let src_guard = read_storage(&inputs[0])?;
@@ -1412,8 +2184,13 @@ pub(crate) fn gather_cpu_wrapper(
     let idx_cpu = cpu_input(&idx_guard)?;
     let out_cpu = cpu_output(&mut out_guard)?;
     fuel_cpu_backend::byte_kernels::gather_cpu(
-        src_cpu, idx_cpu, out_cpu,
-        source_shape, output_shape, dim, dtype_size,
+        src_cpu,
+        idx_cpu,
+        out_cpu,
+        source_shape,
+        output_shape,
+        dim,
+        dtype_size,
     )
 }
 
@@ -1444,13 +2221,16 @@ pub(crate) fn index_select_cpu_wrapper(
     }
     let (outer_count, source_dim_size, n_indices, inner_count) = match params {
         OpParams::IndexSelect {
-            outer_count, source_dim_size, n_indices, inner_count,
+            outer_count,
+            source_dim_size,
+            n_indices,
+            inner_count,
         } => (*outer_count, *source_dim_size, *n_indices, *inner_count),
         other => {
             return Err(Error::Msg(format!(
                 "index_select wrapper expects OpParams::IndexSelect, got {other:?}",
             ))
-            .bt())
+            .bt());
         }
     };
     let src_guard = read_storage(&inputs[0])?;
@@ -1468,8 +2248,14 @@ pub(crate) fn index_select_cpu_wrapper(
     let idx_cpu = cpu_input(&idx_guard)?;
     let out_cpu = cpu_output(&mut out_guard)?;
     fuel_cpu_backend::byte_kernels::index_select_cpu(
-        src_cpu, idx_cpu, out_cpu,
-        outer_count, source_dim_size, n_indices, inner_count, dtype_size,
+        src_cpu,
+        idx_cpu,
+        out_cpu,
+        outer_count,
+        source_dim_size,
+        n_indices,
+        inner_count,
+        dtype_size,
     )
 }
 
@@ -1487,14 +2273,18 @@ macro_rules! cpu_norm_last_dim_wrapper {
             if inputs.len() != 1 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
                     "{} wrapper expects 1 input + 1 output, got {} + {}",
-                    $op_name, inputs.len(), outputs.len(),
+                    $op_name,
+                    inputs.len(),
+                    outputs.len(),
                 ))
                 .bt());
             }
             let (outer_count, last_dim, eps) = match params {
-                OpParams::NormLastDim { outer_count, last_dim, eps } => {
-                    (*outer_count, *last_dim, *eps)
-                }
+                OpParams::NormLastDim {
+                    outer_count,
+                    last_dim,
+                    eps,
+                } => (*outer_count, *last_dim, *eps),
                 other => {
                     return Err(Error::Msg(format!(
                         "{} wrapper expects OpParams::NormLastDim, got {other:?}",
@@ -1570,19 +2360,22 @@ macro_rules! cpu_softmax_last_dim_wrapper {
             if inputs.len() != 1 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
                     "softmax_last_dim wrapper expects 1 input + 1 output, got {} + {}",
-                    inputs.len(), outputs.len(),
+                    inputs.len(),
+                    outputs.len(),
                 ))
                 .bt());
             }
-            let (outer_count, last_dim) = match params {
-                OpParams::SoftmaxLastDim { outer_count, last_dim } => (*outer_count, *last_dim),
-                other => {
-                    return Err(Error::Msg(format!(
+            let (outer_count, last_dim) =
+                match params {
+                    OpParams::SoftmaxLastDim {
+                        outer_count,
+                        last_dim,
+                    } => (*outer_count, *last_dim),
+                    other => return Err(Error::Msg(format!(
                         "softmax_last_dim wrapper expects OpParams::SoftmaxLastDim, got {other:?}",
                     ))
-                    .bt())
-                }
-            };
+                    .bt()),
+                };
             let in_guard = read_storage(&inputs[0])?;
             let mut out_guard = write_storage(&outputs[0])?;
             let in_cpu = cpu_input(&in_guard)?;
@@ -1592,10 +2385,22 @@ macro_rules! cpu_softmax_last_dim_wrapper {
     };
 }
 
-cpu_softmax_last_dim_wrapper!(softmax_last_dim_f32_cpu_wrapper,  fuel_cpu_backend::byte_kernels::softmax_last_dim_f32);
-cpu_softmax_last_dim_wrapper!(softmax_last_dim_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::softmax_last_dim_f64);
-cpu_softmax_last_dim_wrapper!(softmax_last_dim_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::softmax_last_dim_bf16);
-cpu_softmax_last_dim_wrapper!(softmax_last_dim_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::softmax_last_dim_f16);
+cpu_softmax_last_dim_wrapper!(
+    softmax_last_dim_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::softmax_last_dim_f32
+);
+cpu_softmax_last_dim_wrapper!(
+    softmax_last_dim_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::softmax_last_dim_f64
+);
+cpu_softmax_last_dim_wrapper!(
+    softmax_last_dim_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::softmax_last_dim_bf16
+);
+cpu_softmax_last_dim_wrapper!(
+    softmax_last_dim_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::softmax_last_dim_f16
+);
 
 /// Generate a CPU Rope wrapper for any element type. The wrapper
 /// shape is identical across dtypes — three inputs (x, cos, sin)
@@ -1613,14 +2418,17 @@ macro_rules! cpu_rope_wrapper {
             if inputs.len() != 3 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
                     "rope wrapper expects 3 inputs + 1 output, got {} + {}",
-                    inputs.len(), outputs.len(),
+                    inputs.len(),
+                    outputs.len(),
                 ))
                 .bt());
             }
             let (outer_count, seq, head_dim) = match params {
-                OpParams::Rope { outer_count, seq, head_dim } => {
-                    (*outer_count, *seq, *head_dim)
-                }
+                OpParams::Rope {
+                    outer_count,
+                    seq,
+                    head_dim,
+                } => (*outer_count, *seq, *head_dim),
                 other => {
                     return Err(Error::Msg(format!(
                         "rope wrapper expects OpParams::Rope, got {other:?}",
@@ -1641,9 +2449,18 @@ macro_rules! cpu_rope_wrapper {
     };
 }
 
-cpu_rope_wrapper!(rope_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::rope_bf16);
-cpu_rope_wrapper!(rope_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::rope_f16);
-cpu_rope_wrapper!(rope_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::rope_f64);
+cpu_rope_wrapper!(
+    rope_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::rope_bf16
+);
+cpu_rope_wrapper!(
+    rope_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::rope_f16
+);
+cpu_rope_wrapper!(
+    rope_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::rope_f64
+);
 
 /// Dispatch wrapper for `(QMatMul, F32, Cpu)`. Two inputs:
 /// activations (F32) and quantized weight bytes (U32-typed).
@@ -1674,14 +2491,18 @@ pub(crate) fn qmatmul_f32_cpu_wrapper(
         .bt());
     }
     let (quant_type, batch_count, m, n, k) = match params {
-        OpParams::QMatMul { quant_type, batch_count, m, n, k } => {
-            (*quant_type, *batch_count, *m, *n, *k)
-        }
+        OpParams::QMatMul {
+            quant_type,
+            batch_count,
+            m,
+            n,
+            k,
+        } => (*quant_type, *batch_count, *m, *n, *k),
         other => {
             return Err(Error::Msg(format!(
                 "qmatmul wrapper expects OpParams::QMatMul, got {other:?}",
             ))
-            .bt())
+            .bt());
         }
     };
     let act_guard = read_storage(&inputs[0])?;
@@ -1700,37 +2521,103 @@ pub(crate) fn qmatmul_f32_cpu_wrapper(
     use fuel_graph::QuantType;
     match quant_type {
         QuantType::Q4_0 => fuel_cpu_backend::byte_kernels::qmatmul_q4_0_f32(
-            act_cpu, w_cpu, out_cpu, batch_count, m, n, k,
+            act_cpu,
+            w_cpu,
+            out_cpu,
+            batch_count,
+            m,
+            n,
+            k,
         ),
         QuantType::Q4_1 => fuel_cpu_backend::byte_kernels::qmatmul_q4_1_f32(
-            act_cpu, w_cpu, out_cpu, batch_count, m, n, k,
+            act_cpu,
+            w_cpu,
+            out_cpu,
+            batch_count,
+            m,
+            n,
+            k,
         ),
         QuantType::Q5_0 => fuel_cpu_backend::byte_kernels::qmatmul_q5_0_f32(
-            act_cpu, w_cpu, out_cpu, batch_count, m, n, k,
+            act_cpu,
+            w_cpu,
+            out_cpu,
+            batch_count,
+            m,
+            n,
+            k,
         ),
         QuantType::Q5_1 => fuel_cpu_backend::byte_kernels::qmatmul_q5_1_f32(
-            act_cpu, w_cpu, out_cpu, batch_count, m, n, k,
+            act_cpu,
+            w_cpu,
+            out_cpu,
+            batch_count,
+            m,
+            n,
+            k,
         ),
         QuantType::Q8_0 => fuel_cpu_backend::byte_kernels::qmatmul_q8_0_f32(
-            act_cpu, w_cpu, out_cpu, batch_count, m, n, k,
+            act_cpu,
+            w_cpu,
+            out_cpu,
+            batch_count,
+            m,
+            n,
+            k,
         ),
         QuantType::Q8_1 => fuel_cpu_backend::byte_kernels::qmatmul_q8_1_f32(
-            act_cpu, w_cpu, out_cpu, batch_count, m, n, k,
+            act_cpu,
+            w_cpu,
+            out_cpu,
+            batch_count,
+            m,
+            n,
+            k,
         ),
         QuantType::Q2K => fuel_cpu_backend::byte_kernels::qmatmul_q2k_f32(
-            act_cpu, w_cpu, out_cpu, batch_count, m, n, k,
+            act_cpu,
+            w_cpu,
+            out_cpu,
+            batch_count,
+            m,
+            n,
+            k,
         ),
         QuantType::Q3K => fuel_cpu_backend::byte_kernels::qmatmul_q3k_f32(
-            act_cpu, w_cpu, out_cpu, batch_count, m, n, k,
+            act_cpu,
+            w_cpu,
+            out_cpu,
+            batch_count,
+            m,
+            n,
+            k,
         ),
         QuantType::Q4_K_M => fuel_cpu_backend::byte_kernels::qmatmul_q4_k_m_f32(
-            act_cpu, w_cpu, out_cpu, batch_count, m, n, k,
+            act_cpu,
+            w_cpu,
+            out_cpu,
+            batch_count,
+            m,
+            n,
+            k,
         ),
         QuantType::Q5K => fuel_cpu_backend::byte_kernels::qmatmul_q5k_f32(
-            act_cpu, w_cpu, out_cpu, batch_count, m, n, k,
+            act_cpu,
+            w_cpu,
+            out_cpu,
+            batch_count,
+            m,
+            n,
+            k,
         ),
         QuantType::Q6K => fuel_cpu_backend::byte_kernels::qmatmul_q6k_f32(
-            act_cpu, w_cpu, out_cpu, batch_count, m, n, k,
+            act_cpu,
+            w_cpu,
+            out_cpu,
+            batch_count,
+            m,
+            n,
+            k,
         ),
     }
 }
@@ -1752,17 +2639,20 @@ pub(crate) fn write_slice_cpu_wrapper(
         return Err(Error::Msg(format!(
             "write_slice wrapper expects 1 input (source) + 1 output (dest), \
              got {} + {}",
-            inputs.len(), outputs.len(),
+            inputs.len(),
+            outputs.len(),
         ))
         .bt());
     }
     let (dest_shape, ranges) = match params {
-        OpParams::WriteSlice { dest_shape, ranges, .. } => (dest_shape, ranges),
+        OpParams::WriteSlice {
+            dest_shape, ranges, ..
+        } => (dest_shape, ranges),
         other => {
             return Err(Error::Msg(format!(
                 "write_slice wrapper expects OpParams::WriteSlice, got {other:?}",
             ))
-            .bt())
+            .bt());
         }
     };
     let src_guard = read_storage(&inputs[0])?;
@@ -1792,21 +2682,24 @@ pub(crate) fn write_slice_rotating_cpu_wrapper(
         return Err(Error::Msg(format!(
             "write_slice_rotating wrapper expects 2 inputs (source, position) + 1 output (dest), \
              got {} + {}",
-            inputs.len(), outputs.len(),
+            inputs.len(),
+            outputs.len(),
         ))
         .bt());
     }
-    let (dest_shape, axis, modulus, ranges) = match params {
-        OpParams::WriteSliceRotating { dest_shape, axis, modulus, ranges } => {
-            (dest_shape, *axis, *modulus, ranges)
-        }
-        other => {
-            return Err(Error::Msg(format!(
+    let (dest_shape, axis, modulus, ranges) =
+        match params {
+            OpParams::WriteSliceRotating {
+                dest_shape,
+                axis,
+                modulus,
+                ranges,
+            } => (dest_shape, *axis, *modulus, ranges),
+            other => return Err(Error::Msg(format!(
                 "write_slice_rotating wrapper expects OpParams::WriteSliceRotating, got {other:?}",
             ))
-            .bt())
-        }
-    };
+            .bt()),
+        };
     let src_guard = read_storage(&inputs[0])?;
     let src_cpu = cpu_input(&src_guard)?;
     let pos_guard = read_storage(&inputs[1])?;
@@ -1835,19 +2728,22 @@ pub(crate) fn write_slice_doff_cpu_wrapper(
         return Err(Error::Msg(format!(
             "write_slice_doff wrapper expects 2 inputs (source, offset) + 1 output (dest), \
              got {} + {}",
-            inputs.len(), outputs.len(),
+            inputs.len(),
+            outputs.len(),
         ))
         .bt());
     }
     let (dest_shape, axis, ranges) = match params {
-        OpParams::WriteSliceDoff { dest_shape, axis, ranges } => {
-            (dest_shape, *axis, ranges)
-        }
+        OpParams::WriteSliceDoff {
+            dest_shape,
+            axis,
+            ranges,
+        } => (dest_shape, *axis, ranges),
         other => {
             return Err(Error::Msg(format!(
                 "write_slice_doff wrapper expects OpParams::WriteSliceDoff, got {other:?}",
             ))
-            .bt())
+            .bt());
         }
     };
     let src_guard = read_storage(&inputs[0])?;
@@ -1879,14 +2775,17 @@ pub(crate) fn concat_cpu_wrapper(
         .bt());
     }
     let (outer_count, input_dim_sizes, inner_count) = match params {
-        OpParams::Concat { outer_count, input_dim_sizes, inner_count, .. } => {
-            (*outer_count, input_dim_sizes, *inner_count)
-        }
+        OpParams::Concat {
+            outer_count,
+            input_dim_sizes,
+            inner_count,
+            ..
+        } => (*outer_count, input_dim_sizes, *inner_count),
         other => {
             return Err(Error::Msg(format!(
                 "concat wrapper expects OpParams::Concat, got {other:?}",
             ))
-            .bt())
+            .bt());
         }
     };
     if input_dim_sizes.len() != inputs.len() {
@@ -1934,17 +2833,23 @@ macro_rules! cpu_index_add_wrapper {
             if inputs.len() != 3 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
                     "{}: expects 3 inputs + 1 output, got {} + {}",
-                    $idx_ck, inputs.len(), outputs.len(),
+                    $idx_ck,
+                    inputs.len(),
+                    outputs.len(),
                 ))
                 .bt());
             }
             let (outer_count, base_dim_size, n_indices, inner_count) = match params {
                 OpParams::IndexAdd {
-                    outer_count, base_dim_size, n_indices, inner_count,
+                    outer_count,
+                    base_dim_size,
+                    n_indices,
+                    inner_count,
                 } => (*outer_count, *base_dim_size, *n_indices, *inner_count),
                 other => {
                     return Err(Error::Msg(format!(
-                        "{}: expects OpParams::IndexAdd, got {other:?}", $idx_ck,
+                        "{}: expects OpParams::IndexAdd, got {other:?}",
+                        $idx_ck,
                     ))
                     .bt())
                 }
@@ -1952,10 +2857,7 @@ macro_rules! cpu_index_add_wrapper {
             let base_guard = read_storage(&inputs[0])?;
             let idx_guard = read_storage(&inputs[1])?;
             if idx_guard.dtype != DType::U32 {
-                return Err(Error::Msg(format!(
-                    "{}: indices must be U32", $idx_ck,
-                ))
-                .bt());
+                return Err(Error::Msg(format!("{}: indices must be U32", $idx_ck,)).bt());
             }
             let src_guard = read_storage(&inputs[2])?;
             let mut out_guard = write_storage(&outputs[0])?;
@@ -1964,16 +2866,34 @@ macro_rules! cpu_index_add_wrapper {
             let src_cpu = cpu_input(&src_guard)?;
             let out_cpu = cpu_output(&mut out_guard)?;
             $kernel(
-                base_cpu, idx_cpu, src_cpu, out_cpu,
-                outer_count, base_dim_size, n_indices, inner_count,
+                base_cpu,
+                idx_cpu,
+                src_cpu,
+                out_cpu,
+                outer_count,
+                base_dim_size,
+                n_indices,
+                inner_count,
             )
         }
     };
 }
 
-cpu_index_add_wrapper!(index_add_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::index_add_f64,  "index_add_f64");
-cpu_index_add_wrapper!(index_add_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::index_add_bf16, "index_add_bf16");
-cpu_index_add_wrapper!(index_add_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::index_add_f16,  "index_add_f16");
+cpu_index_add_wrapper!(
+    index_add_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::index_add_f64,
+    "index_add_f64"
+);
+cpu_index_add_wrapper!(
+    index_add_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::index_add_bf16,
+    "index_add_bf16"
+);
+cpu_index_add_wrapper!(
+    index_add_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::index_add_f16,
+    "index_add_f16"
+);
 
 /// Generate a CPU ScatterAdd wrapper.
 macro_rules! cpu_scatter_add_wrapper {
@@ -1988,15 +2908,22 @@ macro_rules! cpu_scatter_add_wrapper {
             if inputs.len() != 3 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
                     "{}: expects 3 inputs + 1 output, got {} + {}",
-                    $name_str, inputs.len(), outputs.len(),
+                    $name_str,
+                    inputs.len(),
+                    outputs.len(),
                 ))
                 .bt());
             }
             let (base_shape, src_shape, dim) = match params {
-                OpParams::ScatterAdd { base_shape, src_shape, dim } => (base_shape, src_shape, *dim),
+                OpParams::ScatterAdd {
+                    base_shape,
+                    src_shape,
+                    dim,
+                } => (base_shape, src_shape, *dim),
                 other => {
                     return Err(Error::Msg(format!(
-                        "{}: expects OpParams::ScatterAdd, got {other:?}", $name_str,
+                        "{}: expects OpParams::ScatterAdd, got {other:?}",
+                        $name_str,
                     ))
                     .bt())
                 }
@@ -2004,10 +2931,7 @@ macro_rules! cpu_scatter_add_wrapper {
             let base_guard = read_storage(&inputs[0])?;
             let idx_guard = read_storage(&inputs[1])?;
             if idx_guard.dtype != DType::U32 {
-                return Err(Error::Msg(format!(
-                    "{}: indices must be U32", $name_str,
-                ))
-                .bt());
+                return Err(Error::Msg(format!("{}: indices must be U32", $name_str,)).bt());
             }
             let src_guard = read_storage(&inputs[2])?;
             let mut out_guard = write_storage(&outputs[0])?;
@@ -2016,16 +2940,27 @@ macro_rules! cpu_scatter_add_wrapper {
             let src_cpu = cpu_input(&src_guard)?;
             let out_cpu = cpu_output(&mut out_guard)?;
             $kernel(
-                base_cpu, idx_cpu, src_cpu, out_cpu,
-                base_shape, src_shape, dim,
+                base_cpu, idx_cpu, src_cpu, out_cpu, base_shape, src_shape, dim,
             )
         }
     };
 }
 
-cpu_scatter_add_wrapper!(scatter_add_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::scatter_add_f64,  "scatter_add_f64");
-cpu_scatter_add_wrapper!(scatter_add_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::scatter_add_bf16, "scatter_add_bf16");
-cpu_scatter_add_wrapper!(scatter_add_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::scatter_add_f16,  "scatter_add_f16");
+cpu_scatter_add_wrapper!(
+    scatter_add_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::scatter_add_f64,
+    "scatter_add_f64"
+);
+cpu_scatter_add_wrapper!(
+    scatter_add_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::scatter_add_bf16,
+    "scatter_add_bf16"
+);
+cpu_scatter_add_wrapper!(
+    scatter_add_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::scatter_add_f16,
+    "scatter_add_f16"
+);
 
 /// Build a CPU Affine wrapper for any element type. Cast from f64
 /// scalars in OpParams::Affine to the target arithmetic type
@@ -2056,7 +2991,11 @@ macro_rules! cpu_affine_wrapper_native {
     };
 }
 
-cpu_affine_wrapper_native!(affine_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::affine_f64, f64);
+cpu_affine_wrapper_native!(
+    affine_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::affine_f64,
+    f64
+);
 
 macro_rules! cpu_affine_wrapper_half {
     ($wrapper:ident, $kernel:path) => {
@@ -2084,8 +3023,14 @@ macro_rules! cpu_affine_wrapper_half {
     };
 }
 
-cpu_affine_wrapper_half!(affine_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::affine_bf16);
-cpu_affine_wrapper_half!(affine_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::affine_f16);
+cpu_affine_wrapper_half!(
+    affine_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::affine_bf16
+);
+cpu_affine_wrapper_half!(
+    affine_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::affine_f16
+);
 
 macro_rules! cpu_clamp_wrapper {
     ($wrapper:ident, $kernel:path, $T:ty) => {
@@ -2113,9 +3058,21 @@ macro_rules! cpu_clamp_wrapper {
     };
 }
 
-cpu_clamp_wrapper!(clamp_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::clamp_f64,  f64);
-cpu_clamp_wrapper!(clamp_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::clamp_bf16, f32);
-cpu_clamp_wrapper!(clamp_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::clamp_f16,  f32);
+cpu_clamp_wrapper!(
+    clamp_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::clamp_f64,
+    f64
+);
+cpu_clamp_wrapper!(
+    clamp_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::clamp_bf16,
+    f32
+);
+cpu_clamp_wrapper!(
+    clamp_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::clamp_f16,
+    f32
+);
 
 macro_rules! cpu_powi_wrapper {
     ($wrapper:ident, $kernel:path) => {
@@ -2143,9 +3100,18 @@ macro_rules! cpu_powi_wrapper {
     };
 }
 
-cpu_powi_wrapper!(powi_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::powi_f64);
-cpu_powi_wrapper!(powi_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::powi_bf16);
-cpu_powi_wrapper!(powi_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::powi_f16);
+cpu_powi_wrapper!(
+    powi_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::powi_f64
+);
+cpu_powi_wrapper!(
+    powi_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::powi_bf16
+);
+cpu_powi_wrapper!(
+    powi_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::powi_f16
+);
 
 // ArgMax/ArgMin per-input-dtype wrappers. The existing
 // `cpu_arg_dim_wrapper!` macro hardcodes F32 input — generalize it
@@ -2159,21 +3125,22 @@ macro_rules! cpu_arg_dim_wrapper_typed {
             params: &OpParams,
         ) -> Result<()> {
             if inputs.len() != 1 || outputs.len() != 1 {
-                return Err(Error::Msg(format!(
-                    "{}: 1 input + 1 output", $op_name,
-                ))
-                .bt());
+                return Err(Error::Msg(format!("{}: 1 input + 1 output", $op_name,)).bt());
             }
             let dims = match params {
                 OpParams::Reduce { dims, .. } => dims,
-                other => return Err(Error::Msg(format!(
-                    "{}: expects OpParams::Reduce, got {other:?}", $op_name,
-                ))
-                .bt()),
+                other => {
+                    return Err(Error::Msg(format!(
+                        "{}: expects OpParams::Reduce, got {other:?}",
+                        $op_name,
+                    ))
+                    .bt())
+                }
             };
             if dims.len() != 1 {
                 return Err(Error::Msg(format!(
-                    "{}: expects exactly 1 reduce dim, got {dims:?}", $op_name,
+                    "{}: expects exactly 1 reduce dim, got {dims:?}",
+                    $op_name,
                 ))
                 .bt());
             }
@@ -2216,10 +3183,7 @@ fn argmax_dim_u32_cpu_dispatch(
         DType::F64 => argmax_dim_f64_only_wrapper(inputs, outputs, _layouts, params),
         DType::BF16 => argmax_dim_bf16_only_wrapper(inputs, outputs, _layouts, params),
         DType::F16 => argmax_dim_f16_only_wrapper(inputs, outputs, _layouts, params),
-        other => Err(Error::Msg(format!(
-            "argmax_dim: unsupported input dtype {other:?}",
-        ))
-        .bt()),
+        other => Err(Error::Msg(format!("argmax_dim: unsupported input dtype {other:?}",)).bt()),
     }
 }
 
@@ -2235,19 +3199,46 @@ fn argmin_dim_u32_cpu_dispatch(
         DType::F64 => argmin_dim_f64_only_wrapper(inputs, outputs, _layouts, params),
         DType::BF16 => argmin_dim_bf16_only_wrapper(inputs, outputs, _layouts, params),
         DType::F16 => argmin_dim_f16_only_wrapper(inputs, outputs, _layouts, params),
-        other => Err(Error::Msg(format!(
-            "argmin_dim: unsupported input dtype {other:?}",
-        ))
-        .bt()),
+        other => Err(Error::Msg(format!("argmin_dim: unsupported input dtype {other:?}",)).bt()),
     }
 }
 
-cpu_arg_dim_wrapper_typed!(argmax_dim_f64_only_wrapper,  fuel_cpu_backend::byte_kernels::argmax_dim_f64,  DType::F64,  "argmax_dim_f64");
-cpu_arg_dim_wrapper_typed!(argmin_dim_f64_only_wrapper,  fuel_cpu_backend::byte_kernels::argmin_dim_f64,  DType::F64,  "argmin_dim_f64");
-cpu_arg_dim_wrapper_typed!(argmax_dim_bf16_only_wrapper, fuel_cpu_backend::byte_kernels::argmax_dim_bf16, DType::BF16, "argmax_dim_bf16");
-cpu_arg_dim_wrapper_typed!(argmin_dim_bf16_only_wrapper, fuel_cpu_backend::byte_kernels::argmin_dim_bf16, DType::BF16, "argmin_dim_bf16");
-cpu_arg_dim_wrapper_typed!(argmax_dim_f16_only_wrapper,  fuel_cpu_backend::byte_kernels::argmax_dim_f16,  DType::F16,  "argmax_dim_f16");
-cpu_arg_dim_wrapper_typed!(argmin_dim_f16_only_wrapper,  fuel_cpu_backend::byte_kernels::argmin_dim_f16,  DType::F16,  "argmin_dim_f16");
+cpu_arg_dim_wrapper_typed!(
+    argmax_dim_f64_only_wrapper,
+    fuel_cpu_backend::byte_kernels::argmax_dim_f64,
+    DType::F64,
+    "argmax_dim_f64"
+);
+cpu_arg_dim_wrapper_typed!(
+    argmin_dim_f64_only_wrapper,
+    fuel_cpu_backend::byte_kernels::argmin_dim_f64,
+    DType::F64,
+    "argmin_dim_f64"
+);
+cpu_arg_dim_wrapper_typed!(
+    argmax_dim_bf16_only_wrapper,
+    fuel_cpu_backend::byte_kernels::argmax_dim_bf16,
+    DType::BF16,
+    "argmax_dim_bf16"
+);
+cpu_arg_dim_wrapper_typed!(
+    argmin_dim_bf16_only_wrapper,
+    fuel_cpu_backend::byte_kernels::argmin_dim_bf16,
+    DType::BF16,
+    "argmin_dim_bf16"
+);
+cpu_arg_dim_wrapper_typed!(
+    argmax_dim_f16_only_wrapper,
+    fuel_cpu_backend::byte_kernels::argmax_dim_f16,
+    DType::F16,
+    "argmax_dim_f16"
+);
+cpu_arg_dim_wrapper_typed!(
+    argmin_dim_f16_only_wrapper,
+    fuel_cpu_backend::byte_kernels::argmin_dim_f16,
+    DType::F16,
+    "argmin_dim_f16"
+);
 
 /// Dispatch wrapper for `(Affine, F32, Cpu)`. Extracts scalar
 /// coefficients from `OpParams::Affine`.
@@ -2260,7 +3251,8 @@ pub(crate) fn affine_f32_cpu_wrapper(
     if inputs.len() != 1 || outputs.len() != 1 {
         return Err(Error::Msg(format!(
             "affine wrapper expects 1 input + 1 output, got {} + {}",
-            inputs.len(), outputs.len(),
+            inputs.len(),
+            outputs.len(),
         ))
         .bt());
     }
@@ -2270,7 +3262,7 @@ pub(crate) fn affine_f32_cpu_wrapper(
             return Err(Error::Msg(format!(
                 "affine wrapper expects OpParams::Affine, got {other:?}",
             ))
-            .bt())
+            .bt());
         }
     };
     let in_guard = read_storage(&inputs[0])?;
@@ -2294,9 +3286,12 @@ macro_rules! cpu_affine_inplace_wrapper {
         ) -> Result<()> {
             if !inputs.is_empty() || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
-                    concat!(stringify!($name),
-                        ": expected 0 inputs + 1 output (target adopted by executor), got {} + {}"),
-                    inputs.len(), outputs.len(),
+                    concat!(
+                        stringify!($name),
+                        ": expected 0 inputs + 1 output (target adopted by executor), got {} + {}"
+                    ),
+                    inputs.len(),
+                    outputs.len(),
                 ))
                 .bt());
             }
@@ -2324,9 +3319,12 @@ macro_rules! cpu_affine_inplace_wrapper {
         ) -> Result<()> {
             if !inputs.is_empty() || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
-                    concat!(stringify!($name),
-                        ": expected 0 inputs + 1 output (target adopted by executor), got {} + {}"),
-                    inputs.len(), outputs.len(),
+                    concat!(
+                        stringify!($name),
+                        ": expected 0 inputs + 1 output (target adopted by executor), got {} + {}"
+                    ),
+                    inputs.len(),
+                    outputs.len(),
                 ))
                 .bt());
             }
@@ -2349,8 +3347,18 @@ macro_rules! cpu_affine_inplace_wrapper {
 
 cpu_affine_inplace_wrapper!(inplace_affine_f32_cpu_wrapper, affine_inplace_f32, f32);
 cpu_affine_inplace_wrapper!(inplace_affine_f64_cpu_wrapper, affine_inplace_f64, f64);
-cpu_affine_inplace_wrapper!(inplace_affine_bf16_cpu_wrapper, affine_inplace_bf16, f64, half);
-cpu_affine_inplace_wrapper!(inplace_affine_f16_cpu_wrapper,  affine_inplace_f16,  f64, half);
+cpu_affine_inplace_wrapper!(
+    inplace_affine_bf16_cpu_wrapper,
+    affine_inplace_bf16,
+    f64,
+    half
+);
+cpu_affine_inplace_wrapper!(
+    inplace_affine_f16_cpu_wrapper,
+    affine_inplace_f16,
+    f64,
+    half
+);
 
 /// Dispatch wrapper macro for in-place clamp on CPU. Same shape as
 /// `cpu_affine_inplace_wrapper!` (no inputs, target as outputs[0]),
@@ -2365,9 +3373,12 @@ macro_rules! cpu_clamp_inplace_wrapper {
         ) -> Result<()> {
             if !inputs.is_empty() || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
-                    concat!(stringify!($name),
-                        ": expected 0 inputs + 1 output (target adopted by executor), got {} + {}"),
-                    inputs.len(), outputs.len(),
+                    concat!(
+                        stringify!($name),
+                        ": expected 0 inputs + 1 output (target adopted by executor), got {} + {}"
+                    ),
+                    inputs.len(),
+                    outputs.len(),
                 ))
                 .bt());
             }
@@ -2395,9 +3406,12 @@ macro_rules! cpu_clamp_inplace_wrapper {
         ) -> Result<()> {
             if !inputs.is_empty() || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
-                    concat!(stringify!($name),
-                        ": expected 0 inputs + 1 output (target adopted by executor), got {} + {}"),
-                    inputs.len(), outputs.len(),
+                    concat!(
+                        stringify!($name),
+                        ": expected 0 inputs + 1 output (target adopted by executor), got {} + {}"
+                    ),
+                    inputs.len(),
+                    outputs.len(),
                 ))
                 .bt());
             }
@@ -2418,10 +3432,15 @@ macro_rules! cpu_clamp_inplace_wrapper {
     };
 }
 
-cpu_clamp_inplace_wrapper!(clamp_inplace_f32_cpu_wrapper,  clamp_inplace_f32,  f32);
-cpu_clamp_inplace_wrapper!(clamp_inplace_f64_cpu_wrapper,  clamp_inplace_f64,  f64);
-cpu_clamp_inplace_wrapper!(clamp_inplace_bf16_cpu_wrapper, clamp_inplace_bf16, f64, half);
-cpu_clamp_inplace_wrapper!(clamp_inplace_f16_cpu_wrapper,  clamp_inplace_f16,  f64, half);
+cpu_clamp_inplace_wrapper!(clamp_inplace_f32_cpu_wrapper, clamp_inplace_f32, f32);
+cpu_clamp_inplace_wrapper!(clamp_inplace_f64_cpu_wrapper, clamp_inplace_f64, f64);
+cpu_clamp_inplace_wrapper!(
+    clamp_inplace_bf16_cpu_wrapper,
+    clamp_inplace_bf16,
+    f64,
+    half
+);
+cpu_clamp_inplace_wrapper!(clamp_inplace_f16_cpu_wrapper, clamp_inplace_f16, f64, half);
 
 /// Dispatch wrapper macro for in-place powi on CPU. Pulls `exp` from
 /// `OpParams::PowI`.
@@ -2435,9 +3454,12 @@ macro_rules! cpu_powi_inplace_wrapper {
         ) -> Result<()> {
             if !inputs.is_empty() || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
-                    concat!(stringify!($name),
-                        ": expected 0 inputs + 1 output (target adopted by executor), got {} + {}"),
-                    inputs.len(), outputs.len(),
+                    concat!(
+                        stringify!($name),
+                        ": expected 0 inputs + 1 output (target adopted by executor), got {} + {}"
+                    ),
+                    inputs.len(),
+                    outputs.len(),
                 ))
                 .bt());
             }
@@ -2458,10 +3480,10 @@ macro_rules! cpu_powi_inplace_wrapper {
     };
 }
 
-cpu_powi_inplace_wrapper!(powi_inplace_f32_cpu_wrapper,  powi_inplace_f32);
-cpu_powi_inplace_wrapper!(powi_inplace_f64_cpu_wrapper,  powi_inplace_f64);
+cpu_powi_inplace_wrapper!(powi_inplace_f32_cpu_wrapper, powi_inplace_f32);
+cpu_powi_inplace_wrapper!(powi_inplace_f64_cpu_wrapper, powi_inplace_f64);
 cpu_powi_inplace_wrapper!(powi_inplace_bf16_cpu_wrapper, powi_inplace_bf16);
-cpu_powi_inplace_wrapper!(powi_inplace_f16_cpu_wrapper,  powi_inplace_f16);
+cpu_powi_inplace_wrapper!(powi_inplace_f16_cpu_wrapper, powi_inplace_f16);
 
 /// Dispatch wrapper macro for in-place elementwise unary ops on CPU.
 /// Same shape as `cpu_affine_inplace_wrapper!` (inputs empty, target
@@ -2477,9 +3499,12 @@ macro_rules! cpu_unary_inplace_wrapper {
         ) -> Result<()> {
             if !inputs.is_empty() || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
-                    concat!(stringify!($name),
-                        ": expected 0 inputs + 1 output (target adopted by executor), got {} + {}"),
-                    inputs.len(), outputs.len(),
+                    concat!(
+                        stringify!($name),
+                        ": expected 0 inputs + 1 output (target adopted by executor), got {} + {}"
+                    ),
+                    inputs.len(),
+                    outputs.len(),
                 ))
                 .bt());
             }
@@ -2490,112 +3515,112 @@ macro_rules! cpu_unary_inplace_wrapper {
     };
 }
 
-cpu_unary_inplace_wrapper!(relu_inplace_f32_cpu_wrapper,    relu_inplace_f32);
-cpu_unary_inplace_wrapper!(silu_inplace_f32_cpu_wrapper,    silu_inplace_f32);
-cpu_unary_inplace_wrapper!(gelu_inplace_f32_cpu_wrapper,    gelu_inplace_f32);
-cpu_unary_inplace_wrapper!(tanh_inplace_f32_cpu_wrapper,    tanh_inplace_f32);
+cpu_unary_inplace_wrapper!(relu_inplace_f32_cpu_wrapper, relu_inplace_f32);
+cpu_unary_inplace_wrapper!(silu_inplace_f32_cpu_wrapper, silu_inplace_f32);
+cpu_unary_inplace_wrapper!(gelu_inplace_f32_cpu_wrapper, gelu_inplace_f32);
+cpu_unary_inplace_wrapper!(tanh_inplace_f32_cpu_wrapper, tanh_inplace_f32);
 cpu_unary_inplace_wrapper!(sigmoid_inplace_f32_cpu_wrapper, sigmoid_inplace_f32);
 
-cpu_unary_inplace_wrapper!(relu_inplace_f64_cpu_wrapper,    relu_inplace_f64);
-cpu_unary_inplace_wrapper!(silu_inplace_f64_cpu_wrapper,    silu_inplace_f64);
-cpu_unary_inplace_wrapper!(gelu_inplace_f64_cpu_wrapper,    gelu_inplace_f64);
-cpu_unary_inplace_wrapper!(tanh_inplace_f64_cpu_wrapper,    tanh_inplace_f64);
+cpu_unary_inplace_wrapper!(relu_inplace_f64_cpu_wrapper, relu_inplace_f64);
+cpu_unary_inplace_wrapper!(silu_inplace_f64_cpu_wrapper, silu_inplace_f64);
+cpu_unary_inplace_wrapper!(gelu_inplace_f64_cpu_wrapper, gelu_inplace_f64);
+cpu_unary_inplace_wrapper!(tanh_inplace_f64_cpu_wrapper, tanh_inplace_f64);
 cpu_unary_inplace_wrapper!(sigmoid_inplace_f64_cpu_wrapper, sigmoid_inplace_f64);
 
-cpu_unary_inplace_wrapper!(relu_inplace_bf16_cpu_wrapper,    relu_inplace_bf16);
-cpu_unary_inplace_wrapper!(silu_inplace_bf16_cpu_wrapper,    silu_inplace_bf16);
-cpu_unary_inplace_wrapper!(gelu_inplace_bf16_cpu_wrapper,    gelu_inplace_bf16);
-cpu_unary_inplace_wrapper!(tanh_inplace_bf16_cpu_wrapper,    tanh_inplace_bf16);
+cpu_unary_inplace_wrapper!(relu_inplace_bf16_cpu_wrapper, relu_inplace_bf16);
+cpu_unary_inplace_wrapper!(silu_inplace_bf16_cpu_wrapper, silu_inplace_bf16);
+cpu_unary_inplace_wrapper!(gelu_inplace_bf16_cpu_wrapper, gelu_inplace_bf16);
+cpu_unary_inplace_wrapper!(tanh_inplace_bf16_cpu_wrapper, tanh_inplace_bf16);
 cpu_unary_inplace_wrapper!(sigmoid_inplace_bf16_cpu_wrapper, sigmoid_inplace_bf16);
 
-cpu_unary_inplace_wrapper!(relu_inplace_f16_cpu_wrapper,    relu_inplace_f16);
-cpu_unary_inplace_wrapper!(silu_inplace_f16_cpu_wrapper,    silu_inplace_f16);
-cpu_unary_inplace_wrapper!(gelu_inplace_f16_cpu_wrapper,    gelu_inplace_f16);
-cpu_unary_inplace_wrapper!(tanh_inplace_f16_cpu_wrapper,    tanh_inplace_f16);
+cpu_unary_inplace_wrapper!(relu_inplace_f16_cpu_wrapper, relu_inplace_f16);
+cpu_unary_inplace_wrapper!(silu_inplace_f16_cpu_wrapper, silu_inplace_f16);
+cpu_unary_inplace_wrapper!(gelu_inplace_f16_cpu_wrapper, gelu_inplace_f16);
+cpu_unary_inplace_wrapper!(tanh_inplace_f16_cpu_wrapper, tanh_inplace_f16);
 cpu_unary_inplace_wrapper!(sigmoid_inplace_f16_cpu_wrapper, sigmoid_inplace_f16);
 
 // In-place unary op family expansion (2026-05-30) — 16 new ops × 4
 // dtypes. Each wrapper is identical in shape to the original 5-op
 // starter set; the chassis handles per-dtype math.
-cpu_unary_inplace_wrapper!(neg_inplace_f32_cpu_wrapper,    neg_inplace_f32);
-cpu_unary_inplace_wrapper!(neg_inplace_f64_cpu_wrapper,    neg_inplace_f64);
-cpu_unary_inplace_wrapper!(neg_inplace_bf16_cpu_wrapper,   neg_inplace_bf16);
-cpu_unary_inplace_wrapper!(neg_inplace_f16_cpu_wrapper,    neg_inplace_f16);
+cpu_unary_inplace_wrapper!(neg_inplace_f32_cpu_wrapper, neg_inplace_f32);
+cpu_unary_inplace_wrapper!(neg_inplace_f64_cpu_wrapper, neg_inplace_f64);
+cpu_unary_inplace_wrapper!(neg_inplace_bf16_cpu_wrapper, neg_inplace_bf16);
+cpu_unary_inplace_wrapper!(neg_inplace_f16_cpu_wrapper, neg_inplace_f16);
 
-cpu_unary_inplace_wrapper!(abs_inplace_f32_cpu_wrapper,    abs_inplace_f32);
-cpu_unary_inplace_wrapper!(abs_inplace_f64_cpu_wrapper,    abs_inplace_f64);
-cpu_unary_inplace_wrapper!(abs_inplace_bf16_cpu_wrapper,   abs_inplace_bf16);
-cpu_unary_inplace_wrapper!(abs_inplace_f16_cpu_wrapper,    abs_inplace_f16);
+cpu_unary_inplace_wrapper!(abs_inplace_f32_cpu_wrapper, abs_inplace_f32);
+cpu_unary_inplace_wrapper!(abs_inplace_f64_cpu_wrapper, abs_inplace_f64);
+cpu_unary_inplace_wrapper!(abs_inplace_bf16_cpu_wrapper, abs_inplace_bf16);
+cpu_unary_inplace_wrapper!(abs_inplace_f16_cpu_wrapper, abs_inplace_f16);
 
-cpu_unary_inplace_wrapper!(sqr_inplace_f32_cpu_wrapper,    sqr_inplace_f32);
-cpu_unary_inplace_wrapper!(sqr_inplace_f64_cpu_wrapper,    sqr_inplace_f64);
-cpu_unary_inplace_wrapper!(sqr_inplace_bf16_cpu_wrapper,   sqr_inplace_bf16);
-cpu_unary_inplace_wrapper!(sqr_inplace_f16_cpu_wrapper,    sqr_inplace_f16);
+cpu_unary_inplace_wrapper!(sqr_inplace_f32_cpu_wrapper, sqr_inplace_f32);
+cpu_unary_inplace_wrapper!(sqr_inplace_f64_cpu_wrapper, sqr_inplace_f64);
+cpu_unary_inplace_wrapper!(sqr_inplace_bf16_cpu_wrapper, sqr_inplace_bf16);
+cpu_unary_inplace_wrapper!(sqr_inplace_f16_cpu_wrapper, sqr_inplace_f16);
 
-cpu_unary_inplace_wrapper!(sqrt_inplace_f32_cpu_wrapper,   sqrt_inplace_f32);
-cpu_unary_inplace_wrapper!(sqrt_inplace_f64_cpu_wrapper,   sqrt_inplace_f64);
-cpu_unary_inplace_wrapper!(sqrt_inplace_bf16_cpu_wrapper,  sqrt_inplace_bf16);
-cpu_unary_inplace_wrapper!(sqrt_inplace_f16_cpu_wrapper,   sqrt_inplace_f16);
+cpu_unary_inplace_wrapper!(sqrt_inplace_f32_cpu_wrapper, sqrt_inplace_f32);
+cpu_unary_inplace_wrapper!(sqrt_inplace_f64_cpu_wrapper, sqrt_inplace_f64);
+cpu_unary_inplace_wrapper!(sqrt_inplace_bf16_cpu_wrapper, sqrt_inplace_bf16);
+cpu_unary_inplace_wrapper!(sqrt_inplace_f16_cpu_wrapper, sqrt_inplace_f16);
 
-cpu_unary_inplace_wrapper!(rsqrt_inplace_f32_cpu_wrapper,  rsqrt_inplace_f32);
-cpu_unary_inplace_wrapper!(rsqrt_inplace_f64_cpu_wrapper,  rsqrt_inplace_f64);
+cpu_unary_inplace_wrapper!(rsqrt_inplace_f32_cpu_wrapper, rsqrt_inplace_f32);
+cpu_unary_inplace_wrapper!(rsqrt_inplace_f64_cpu_wrapper, rsqrt_inplace_f64);
 cpu_unary_inplace_wrapper!(rsqrt_inplace_bf16_cpu_wrapper, rsqrt_inplace_bf16);
-cpu_unary_inplace_wrapper!(rsqrt_inplace_f16_cpu_wrapper,  rsqrt_inplace_f16);
+cpu_unary_inplace_wrapper!(rsqrt_inplace_f16_cpu_wrapper, rsqrt_inplace_f16);
 
-cpu_unary_inplace_wrapper!(recip_inplace_f32_cpu_wrapper,  recip_inplace_f32);
-cpu_unary_inplace_wrapper!(recip_inplace_f64_cpu_wrapper,  recip_inplace_f64);
+cpu_unary_inplace_wrapper!(recip_inplace_f32_cpu_wrapper, recip_inplace_f32);
+cpu_unary_inplace_wrapper!(recip_inplace_f64_cpu_wrapper, recip_inplace_f64);
 cpu_unary_inplace_wrapper!(recip_inplace_bf16_cpu_wrapper, recip_inplace_bf16);
-cpu_unary_inplace_wrapper!(recip_inplace_f16_cpu_wrapper,  recip_inplace_f16);
+cpu_unary_inplace_wrapper!(recip_inplace_f16_cpu_wrapper, recip_inplace_f16);
 
-cpu_unary_inplace_wrapper!(exp_inplace_f32_cpu_wrapper,    exp_inplace_f32);
-cpu_unary_inplace_wrapper!(exp_inplace_f64_cpu_wrapper,    exp_inplace_f64);
-cpu_unary_inplace_wrapper!(exp_inplace_bf16_cpu_wrapper,   exp_inplace_bf16);
-cpu_unary_inplace_wrapper!(exp_inplace_f16_cpu_wrapper,    exp_inplace_f16);
+cpu_unary_inplace_wrapper!(exp_inplace_f32_cpu_wrapper, exp_inplace_f32);
+cpu_unary_inplace_wrapper!(exp_inplace_f64_cpu_wrapper, exp_inplace_f64);
+cpu_unary_inplace_wrapper!(exp_inplace_bf16_cpu_wrapper, exp_inplace_bf16);
+cpu_unary_inplace_wrapper!(exp_inplace_f16_cpu_wrapper, exp_inplace_f16);
 
-cpu_unary_inplace_wrapper!(log_inplace_f32_cpu_wrapper,    log_inplace_f32);
-cpu_unary_inplace_wrapper!(log_inplace_f64_cpu_wrapper,    log_inplace_f64);
-cpu_unary_inplace_wrapper!(log_inplace_bf16_cpu_wrapper,   log_inplace_bf16);
-cpu_unary_inplace_wrapper!(log_inplace_f16_cpu_wrapper,    log_inplace_f16);
+cpu_unary_inplace_wrapper!(log_inplace_f32_cpu_wrapper, log_inplace_f32);
+cpu_unary_inplace_wrapper!(log_inplace_f64_cpu_wrapper, log_inplace_f64);
+cpu_unary_inplace_wrapper!(log_inplace_bf16_cpu_wrapper, log_inplace_bf16);
+cpu_unary_inplace_wrapper!(log_inplace_f16_cpu_wrapper, log_inplace_f16);
 
-cpu_unary_inplace_wrapper!(sin_inplace_f32_cpu_wrapper,    sin_inplace_f32);
-cpu_unary_inplace_wrapper!(sin_inplace_f64_cpu_wrapper,    sin_inplace_f64);
-cpu_unary_inplace_wrapper!(sin_inplace_bf16_cpu_wrapper,   sin_inplace_bf16);
-cpu_unary_inplace_wrapper!(sin_inplace_f16_cpu_wrapper,    sin_inplace_f16);
+cpu_unary_inplace_wrapper!(sin_inplace_f32_cpu_wrapper, sin_inplace_f32);
+cpu_unary_inplace_wrapper!(sin_inplace_f64_cpu_wrapper, sin_inplace_f64);
+cpu_unary_inplace_wrapper!(sin_inplace_bf16_cpu_wrapper, sin_inplace_bf16);
+cpu_unary_inplace_wrapper!(sin_inplace_f16_cpu_wrapper, sin_inplace_f16);
 
-cpu_unary_inplace_wrapper!(cos_inplace_f32_cpu_wrapper,    cos_inplace_f32);
-cpu_unary_inplace_wrapper!(cos_inplace_f64_cpu_wrapper,    cos_inplace_f64);
-cpu_unary_inplace_wrapper!(cos_inplace_bf16_cpu_wrapper,   cos_inplace_bf16);
-cpu_unary_inplace_wrapper!(cos_inplace_f16_cpu_wrapper,    cos_inplace_f16);
+cpu_unary_inplace_wrapper!(cos_inplace_f32_cpu_wrapper, cos_inplace_f32);
+cpu_unary_inplace_wrapper!(cos_inplace_f64_cpu_wrapper, cos_inplace_f64);
+cpu_unary_inplace_wrapper!(cos_inplace_bf16_cpu_wrapper, cos_inplace_bf16);
+cpu_unary_inplace_wrapper!(cos_inplace_f16_cpu_wrapper, cos_inplace_f16);
 
-cpu_unary_inplace_wrapper!(sign_inplace_f32_cpu_wrapper,   sign_inplace_f32);
-cpu_unary_inplace_wrapper!(sign_inplace_f64_cpu_wrapper,   sign_inplace_f64);
-cpu_unary_inplace_wrapper!(sign_inplace_bf16_cpu_wrapper,  sign_inplace_bf16);
-cpu_unary_inplace_wrapper!(sign_inplace_f16_cpu_wrapper,   sign_inplace_f16);
+cpu_unary_inplace_wrapper!(sign_inplace_f32_cpu_wrapper, sign_inplace_f32);
+cpu_unary_inplace_wrapper!(sign_inplace_f64_cpu_wrapper, sign_inplace_f64);
+cpu_unary_inplace_wrapper!(sign_inplace_bf16_cpu_wrapper, sign_inplace_bf16);
+cpu_unary_inplace_wrapper!(sign_inplace_f16_cpu_wrapper, sign_inplace_f16);
 
-cpu_unary_inplace_wrapper!(floor_inplace_f32_cpu_wrapper,  floor_inplace_f32);
-cpu_unary_inplace_wrapper!(floor_inplace_f64_cpu_wrapper,  floor_inplace_f64);
+cpu_unary_inplace_wrapper!(floor_inplace_f32_cpu_wrapper, floor_inplace_f32);
+cpu_unary_inplace_wrapper!(floor_inplace_f64_cpu_wrapper, floor_inplace_f64);
 cpu_unary_inplace_wrapper!(floor_inplace_bf16_cpu_wrapper, floor_inplace_bf16);
-cpu_unary_inplace_wrapper!(floor_inplace_f16_cpu_wrapper,  floor_inplace_f16);
+cpu_unary_inplace_wrapper!(floor_inplace_f16_cpu_wrapper, floor_inplace_f16);
 
-cpu_unary_inplace_wrapper!(ceil_inplace_f32_cpu_wrapper,   ceil_inplace_f32);
-cpu_unary_inplace_wrapper!(ceil_inplace_f64_cpu_wrapper,   ceil_inplace_f64);
-cpu_unary_inplace_wrapper!(ceil_inplace_bf16_cpu_wrapper,  ceil_inplace_bf16);
-cpu_unary_inplace_wrapper!(ceil_inplace_f16_cpu_wrapper,   ceil_inplace_f16);
+cpu_unary_inplace_wrapper!(ceil_inplace_f32_cpu_wrapper, ceil_inplace_f32);
+cpu_unary_inplace_wrapper!(ceil_inplace_f64_cpu_wrapper, ceil_inplace_f64);
+cpu_unary_inplace_wrapper!(ceil_inplace_bf16_cpu_wrapper, ceil_inplace_bf16);
+cpu_unary_inplace_wrapper!(ceil_inplace_f16_cpu_wrapper, ceil_inplace_f16);
 
-cpu_unary_inplace_wrapper!(round_inplace_f32_cpu_wrapper,  round_inplace_f32);
-cpu_unary_inplace_wrapper!(round_inplace_f64_cpu_wrapper,  round_inplace_f64);
+cpu_unary_inplace_wrapper!(round_inplace_f32_cpu_wrapper, round_inplace_f32);
+cpu_unary_inplace_wrapper!(round_inplace_f64_cpu_wrapper, round_inplace_f64);
 cpu_unary_inplace_wrapper!(round_inplace_bf16_cpu_wrapper, round_inplace_bf16);
-cpu_unary_inplace_wrapper!(round_inplace_f16_cpu_wrapper,  round_inplace_f16);
+cpu_unary_inplace_wrapper!(round_inplace_f16_cpu_wrapper, round_inplace_f16);
 
-cpu_unary_inplace_wrapper!(erf_inplace_f32_cpu_wrapper,    erf_inplace_f32);
-cpu_unary_inplace_wrapper!(erf_inplace_f64_cpu_wrapper,    erf_inplace_f64);
-cpu_unary_inplace_wrapper!(erf_inplace_bf16_cpu_wrapper,   erf_inplace_bf16);
-cpu_unary_inplace_wrapper!(erf_inplace_f16_cpu_wrapper,    erf_inplace_f16);
+cpu_unary_inplace_wrapper!(erf_inplace_f32_cpu_wrapper, erf_inplace_f32);
+cpu_unary_inplace_wrapper!(erf_inplace_f64_cpu_wrapper, erf_inplace_f64);
+cpu_unary_inplace_wrapper!(erf_inplace_bf16_cpu_wrapper, erf_inplace_bf16);
+cpu_unary_inplace_wrapper!(erf_inplace_f16_cpu_wrapper, erf_inplace_f16);
 
-cpu_unary_inplace_wrapper!(gelu_erf_inplace_f32_cpu_wrapper,  gelu_erf_inplace_f32);
-cpu_unary_inplace_wrapper!(gelu_erf_inplace_f64_cpu_wrapper,  gelu_erf_inplace_f64);
+cpu_unary_inplace_wrapper!(gelu_erf_inplace_f32_cpu_wrapper, gelu_erf_inplace_f32);
+cpu_unary_inplace_wrapper!(gelu_erf_inplace_f64_cpu_wrapper, gelu_erf_inplace_f64);
 cpu_unary_inplace_wrapper!(gelu_erf_inplace_bf16_cpu_wrapper, gelu_erf_inplace_bf16);
-cpu_unary_inplace_wrapper!(gelu_erf_inplace_f16_cpu_wrapper,  gelu_erf_inplace_f16);
+cpu_unary_inplace_wrapper!(gelu_erf_inplace_f16_cpu_wrapper, gelu_erf_inplace_f16);
 
 /// Dispatch wrapper for `(ClampElementwise, F32, Cpu)`.
 pub(crate) fn clamp_elementwise_f32_cpu_wrapper(
@@ -2607,7 +3632,8 @@ pub(crate) fn clamp_elementwise_f32_cpu_wrapper(
     if inputs.len() != 1 || outputs.len() != 1 {
         return Err(Error::Msg(format!(
             "clamp wrapper expects 1 input + 1 output, got {} + {}",
-            inputs.len(), outputs.len(),
+            inputs.len(),
+            outputs.len(),
         ))
         .bt());
     }
@@ -2617,7 +3643,7 @@ pub(crate) fn clamp_elementwise_f32_cpu_wrapper(
             return Err(Error::Msg(format!(
                 "clamp wrapper expects OpParams::Clamp, got {other:?}",
             ))
-            .bt())
+            .bt());
         }
     };
     let in_guard = read_storage(&inputs[0])?;
@@ -2637,7 +3663,8 @@ pub(crate) fn powi_elementwise_f32_cpu_wrapper(
     if inputs.len() != 1 || outputs.len() != 1 {
         return Err(Error::Msg(format!(
             "powi wrapper expects 1 input + 1 output, got {} + {}",
-            inputs.len(), outputs.len(),
+            inputs.len(),
+            outputs.len(),
         ))
         .bt());
     }
@@ -2647,7 +3674,7 @@ pub(crate) fn powi_elementwise_f32_cpu_wrapper(
             return Err(Error::Msg(format!(
                 "powi wrapper expects OpParams::PowI, got {other:?}",
             ))
-            .bt())
+            .bt());
         }
     };
     let in_guard = read_storage(&inputs[0])?;
@@ -2672,7 +3699,9 @@ macro_rules! cpu_powi_backward_wrapper {
             if inputs.len() != 2 || outputs.len() != 1 {
                 return Err(Error::Msg(format!(
                     "{} wrapper expects 2 inputs + 1 output, got {} + {}",
-                    $op_name, inputs.len(), outputs.len(),
+                    $op_name,
+                    inputs.len(),
+                    outputs.len(),
                 ))
                 .bt());
             }
@@ -2779,24 +3808,88 @@ macro_rules! cpu_reduce_wrapper {
     };
 }
 
-cpu_reduce_wrapper!(sum_reduce_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::sum_reduce_f32, "sum_reduce");
-cpu_reduce_wrapper!(max_reduce_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::max_reduce_f32, "max_reduce");
-cpu_reduce_wrapper!(min_reduce_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::min_reduce_f32, "min_reduce");
-cpu_reduce_wrapper!(mean_reduce_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::mean_reduce_f32, "mean_reduce");
-cpu_reduce_wrapper!(sum_reduce_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::sum_reduce_f64, "sum_reduce");
-cpu_reduce_wrapper!(max_reduce_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::max_reduce_f64, "max_reduce");
-cpu_reduce_wrapper!(min_reduce_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::min_reduce_f64, "min_reduce");
-cpu_reduce_wrapper!(mean_reduce_f64_cpu_wrapper, fuel_cpu_backend::byte_kernels::mean_reduce_f64, "mean_reduce");
+cpu_reduce_wrapper!(
+    sum_reduce_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::sum_reduce_f32,
+    "sum_reduce"
+);
+cpu_reduce_wrapper!(
+    max_reduce_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::max_reduce_f32,
+    "max_reduce"
+);
+cpu_reduce_wrapper!(
+    min_reduce_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::min_reduce_f32,
+    "min_reduce"
+);
+cpu_reduce_wrapper!(
+    mean_reduce_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::mean_reduce_f32,
+    "mean_reduce"
+);
+cpu_reduce_wrapper!(
+    sum_reduce_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::sum_reduce_f64,
+    "sum_reduce"
+);
+cpu_reduce_wrapper!(
+    max_reduce_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::max_reduce_f64,
+    "max_reduce"
+);
+cpu_reduce_wrapper!(
+    min_reduce_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::min_reduce_f64,
+    "min_reduce"
+);
+cpu_reduce_wrapper!(
+    mean_reduce_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::mean_reduce_f64,
+    "mean_reduce"
+);
 
-cpu_reduce_wrapper!(sum_reduce_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::sum_reduce_bf16, "sum_reduce");
-cpu_reduce_wrapper!(max_reduce_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::max_reduce_bf16, "max_reduce");
-cpu_reduce_wrapper!(min_reduce_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::min_reduce_bf16, "min_reduce");
-cpu_reduce_wrapper!(mean_reduce_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::mean_reduce_bf16, "mean_reduce");
+cpu_reduce_wrapper!(
+    sum_reduce_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::sum_reduce_bf16,
+    "sum_reduce"
+);
+cpu_reduce_wrapper!(
+    max_reduce_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::max_reduce_bf16,
+    "max_reduce"
+);
+cpu_reduce_wrapper!(
+    min_reduce_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::min_reduce_bf16,
+    "min_reduce"
+);
+cpu_reduce_wrapper!(
+    mean_reduce_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::mean_reduce_bf16,
+    "mean_reduce"
+);
 
-cpu_reduce_wrapper!(sum_reduce_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::sum_reduce_f16, "sum_reduce");
-cpu_reduce_wrapper!(max_reduce_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::max_reduce_f16, "max_reduce");
-cpu_reduce_wrapper!(min_reduce_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::min_reduce_f16, "min_reduce");
-cpu_reduce_wrapper!(mean_reduce_f16_cpu_wrapper, fuel_cpu_backend::byte_kernels::mean_reduce_f16, "mean_reduce");
+cpu_reduce_wrapper!(
+    sum_reduce_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::sum_reduce_f16,
+    "sum_reduce"
+);
+cpu_reduce_wrapper!(
+    max_reduce_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::max_reduce_f16,
+    "max_reduce"
+);
+cpu_reduce_wrapper!(
+    min_reduce_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::min_reduce_f16,
+    "min_reduce"
+);
+cpu_reduce_wrapper!(
+    mean_reduce_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::mean_reduce_f16,
+    "mean_reduce"
+);
 
 /// Generate a dispatch wrapper for `(Cast, <target>, Cpu)`. The
 /// binding-table key is keyed on the *target* dtype (= the
@@ -2881,8 +3974,16 @@ macro_rules! cpu_conv2d_wrapper {
             }
             let (x_shape, w_shape, out_shape, stride, padding, dilation, groups) = match params {
                 OpParams::Conv2D {
-                    x_shape, w_shape, out_shape, stride, padding, dilation, groups,
-                } => (*x_shape, *w_shape, *out_shape, *stride, *padding, *dilation, *groups),
+                    x_shape,
+                    w_shape,
+                    out_shape,
+                    stride,
+                    padding,
+                    dilation,
+                    groups,
+                } => (
+                    *x_shape, *w_shape, *out_shape, *stride, *padding, *dilation, *groups,
+                ),
                 other => {
                     return Err(Error::Msg(format!(
                         "conv2d wrapper expects OpParams::Conv2D, got {other:?}",
@@ -2905,18 +4006,29 @@ macro_rules! cpu_conv2d_wrapper {
             };
             let out_cpu = cpu_output(&mut out_guard)?;
             $kernel(
-                x_cpu, w_cpu, bias_cpu, out_cpu,
-                x_shape, w_shape, out_shape,
-                stride, padding, dilation, groups,
+                x_cpu, w_cpu, bias_cpu, out_cpu, x_shape, w_shape, out_shape, stride, padding,
+                dilation, groups,
             )
         }
     };
 }
 
-cpu_conv2d_wrapper!(conv2d_f32_cpu_wrapper,  fuel_cpu_backend::byte_kernels::conv2d_f32);
-cpu_conv2d_wrapper!(conv2d_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::conv2d_f64);
-cpu_conv2d_wrapper!(conv2d_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::conv2d_bf16);
-cpu_conv2d_wrapper!(conv2d_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::conv2d_f16);
+cpu_conv2d_wrapper!(
+    conv2d_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::conv2d_f32
+);
+cpu_conv2d_wrapper!(
+    conv2d_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::conv2d_f64
+);
+cpu_conv2d_wrapper!(
+    conv2d_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::conv2d_bf16
+);
+cpu_conv2d_wrapper!(
+    conv2d_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::conv2d_f16
+);
 
 /// Dispatch wrapper for `(ConvTranspose2D, *, Cpu)`. Two or three
 /// inputs (x, weight, [bias]). Geometry flows through
@@ -2945,18 +4057,25 @@ macro_rules! cpu_conv_transpose2d_wrapper {
                 ))
                 .bt());
             }
-            let (x_shape, w_shape, out_shape, stride, padding, dilation, groups) = match params {
-                OpParams::ConvTranspose2D {
-                    x_shape, w_shape, out_shape, stride, padding,
-                    output_padding: _, dilation, groups,
-                } => (*x_shape, *w_shape, *out_shape, *stride, *padding, *dilation, *groups),
-                other => {
-                    return Err(Error::Msg(format!(
+            let (x_shape, w_shape, out_shape, stride, padding, dilation, groups) =
+                match params {
+                    OpParams::ConvTranspose2D {
+                        x_shape,
+                        w_shape,
+                        out_shape,
+                        stride,
+                        padding,
+                        output_padding: _,
+                        dilation,
+                        groups,
+                    } => (
+                        *x_shape, *w_shape, *out_shape, *stride, *padding, *dilation, *groups,
+                    ),
+                    other => return Err(Error::Msg(format!(
                         "conv_transpose2d wrapper expects OpParams::ConvTranspose2D, got {other:?}",
                     ))
-                    .bt())
-                }
-            };
+                    .bt()),
+                };
             let x_guard = read_storage(&inputs[0])?;
             let w_guard = read_storage(&inputs[1])?;
             let bias_guard = match inputs.get(2) {
@@ -2972,18 +4091,29 @@ macro_rules! cpu_conv_transpose2d_wrapper {
             };
             let out_cpu = cpu_output(&mut out_guard)?;
             $kernel(
-                x_cpu, w_cpu, bias_cpu, out_cpu,
-                x_shape, w_shape, out_shape,
-                stride, padding, dilation, groups,
+                x_cpu, w_cpu, bias_cpu, out_cpu, x_shape, w_shape, out_shape, stride, padding,
+                dilation, groups,
             )
         }
     };
 }
 
-cpu_conv_transpose2d_wrapper!(conv_transpose2d_f32_cpu_wrapper,  fuel_cpu_backend::byte_kernels::conv_transpose2d_f32);
-cpu_conv_transpose2d_wrapper!(conv_transpose2d_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::conv_transpose2d_f64);
-cpu_conv_transpose2d_wrapper!(conv_transpose2d_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::conv_transpose2d_bf16);
-cpu_conv_transpose2d_wrapper!(conv_transpose2d_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::conv_transpose2d_f16);
+cpu_conv_transpose2d_wrapper!(
+    conv_transpose2d_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::conv_transpose2d_f32
+);
+cpu_conv_transpose2d_wrapper!(
+    conv_transpose2d_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::conv_transpose2d_f64
+);
+cpu_conv_transpose2d_wrapper!(
+    conv_transpose2d_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::conv_transpose2d_bf16
+);
+cpu_conv_transpose2d_wrapper!(
+    conv_transpose2d_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::conv_transpose2d_f16
+);
 
 /// Dispatch wrapper for `(ReduceSumTo, *, Cpu)`. Single input → single
 /// output; shapes flow through `OpParams::ReduceSumTo`.
@@ -3012,9 +4142,10 @@ macro_rules! cpu_reduce_sum_to_wrapper {
                 .bt());
             }
             let (input_shape, output_shape) = match params {
-                OpParams::ReduceSumTo { input_shape, output_shape } => {
-                    (input_shape.clone(), output_shape.clone())
-                }
+                OpParams::ReduceSumTo {
+                    input_shape,
+                    output_shape,
+                } => (input_shape.clone(), output_shape.clone()),
                 other => {
                     return Err(Error::Msg(format!(
                         "reduce_sum_to wrapper expects OpParams::ReduceSumTo, got {other:?}",
@@ -3031,10 +4162,22 @@ macro_rules! cpu_reduce_sum_to_wrapper {
     };
 }
 
-cpu_reduce_sum_to_wrapper!(reduce_sum_to_f32_cpu_wrapper,  fuel_cpu_backend::byte_kernels::reduce_sum_to_f32);
-cpu_reduce_sum_to_wrapper!(reduce_sum_to_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::reduce_sum_to_f64);
-cpu_reduce_sum_to_wrapper!(reduce_sum_to_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::reduce_sum_to_bf16);
-cpu_reduce_sum_to_wrapper!(reduce_sum_to_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::reduce_sum_to_f16);
+cpu_reduce_sum_to_wrapper!(
+    reduce_sum_to_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::reduce_sum_to_f32
+);
+cpu_reduce_sum_to_wrapper!(
+    reduce_sum_to_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::reduce_sum_to_f64
+);
+cpu_reduce_sum_to_wrapper!(
+    reduce_sum_to_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::reduce_sum_to_bf16
+);
+cpu_reduce_sum_to_wrapper!(
+    reduce_sum_to_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::reduce_sum_to_f16
+);
 
 /// Dispatch wrapper for `(ReduceMaxTo, *, Cpu)`. Single input → single
 /// output; shapes flow through `OpParams::ReduceMaxTo`.
@@ -3063,9 +4206,10 @@ macro_rules! cpu_reduce_max_to_wrapper {
                 .bt());
             }
             let (input_shape, output_shape) = match params {
-                OpParams::ReduceMaxTo { input_shape, output_shape } => {
-                    (input_shape.clone(), output_shape.clone())
-                }
+                OpParams::ReduceMaxTo {
+                    input_shape,
+                    output_shape,
+                } => (input_shape.clone(), output_shape.clone()),
                 other => {
                     return Err(Error::Msg(format!(
                         "reduce_max_to wrapper expects OpParams::ReduceMaxTo, got {other:?}",
@@ -3082,10 +4226,22 @@ macro_rules! cpu_reduce_max_to_wrapper {
     };
 }
 
-cpu_reduce_max_to_wrapper!(reduce_max_to_f32_cpu_wrapper,  fuel_cpu_backend::byte_kernels::reduce_max_to_f32);
-cpu_reduce_max_to_wrapper!(reduce_max_to_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::reduce_max_to_f64);
-cpu_reduce_max_to_wrapper!(reduce_max_to_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::reduce_max_to_bf16);
-cpu_reduce_max_to_wrapper!(reduce_max_to_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::reduce_max_to_f16);
+cpu_reduce_max_to_wrapper!(
+    reduce_max_to_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::reduce_max_to_f32
+);
+cpu_reduce_max_to_wrapper!(
+    reduce_max_to_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::reduce_max_to_f64
+);
+cpu_reduce_max_to_wrapper!(
+    reduce_max_to_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::reduce_max_to_bf16
+);
+cpu_reduce_max_to_wrapper!(
+    reduce_max_to_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::reduce_max_to_f16
+);
 
 /// Dispatch wrapper for `(FusedLinear, *, Cpu)`. Three inputs
 /// (lhs, rhs, bias). Reuses `OpParams::Matmul` for shape.
@@ -3114,9 +4270,14 @@ macro_rules! cpu_fused_linear_wrapper {
                 .bt());
             }
             let (lhs_batch_dims, rhs_batch_dims, m, n, k) = match params {
-                OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k, .. } => {
-                    (lhs_batch_dims, rhs_batch_dims, *m, *n, *k)
-                }
+                OpParams::Matmul {
+                    lhs_batch_dims,
+                    rhs_batch_dims,
+                    m,
+                    n,
+                    k,
+                    ..
+                } => (lhs_batch_dims, rhs_batch_dims, *m, *n, *k),
                 other => {
                     return Err(Error::Msg(format!(
                         "fused_linear wrapper expects OpParams::Matmul, got {other:?}",
@@ -3133,17 +4294,36 @@ macro_rules! cpu_fused_linear_wrapper {
             let bias_cpu = cpu_input(&bias_guard)?;
             let out_cpu = cpu_output(&mut out_guard)?;
             $kernel(
-                lhs_cpu, rhs_cpu, bias_cpu, out_cpu,
-                lhs_batch_dims, rhs_batch_dims, m, n, k,
+                lhs_cpu,
+                rhs_cpu,
+                bias_cpu,
+                out_cpu,
+                lhs_batch_dims,
+                rhs_batch_dims,
+                m,
+                n,
+                k,
             )
         }
     };
 }
 
-cpu_fused_linear_wrapper!(fused_linear_f32_cpu_wrapper,  fuel_cpu_backend::byte_kernels::fused_linear_f32);
-cpu_fused_linear_wrapper!(fused_linear_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::fused_linear_f64);
-cpu_fused_linear_wrapper!(fused_linear_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::fused_linear_bf16);
-cpu_fused_linear_wrapper!(fused_linear_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::fused_linear_f16);
+cpu_fused_linear_wrapper!(
+    fused_linear_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::fused_linear_f32
+);
+cpu_fused_linear_wrapper!(
+    fused_linear_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::fused_linear_f64
+);
+cpu_fused_linear_wrapper!(
+    fused_linear_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::fused_linear_bf16
+);
+cpu_fused_linear_wrapper!(
+    fused_linear_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::fused_linear_f16
+);
 
 /// Per-dtype FusedSoftmaxCrossEntropy dispatch wrapper. Two inputs
 /// (logits T, targets I64) → one F32 output (the FSCE declared dtype,
@@ -3242,13 +4422,19 @@ macro_rules! cpu_causal_conv1d_wrapper {
             }
             if outputs.len() != 1 {
                 return Err(Error::Msg(format!(
-                    "causal_conv1d wrapper expects 1 output, got {}", outputs.len(),
+                    "causal_conv1d wrapper expects 1 output, got {}",
+                    outputs.len(),
                 ))
                 .bt());
             }
             let (batch, channels, seq_in, seq_out, kernel, use_silu) = match params {
                 OpParams::CausalConv1d {
-                    batch, channels, seq_in, seq_out, kernel, use_silu,
+                    batch,
+                    channels,
+                    seq_in,
+                    seq_out,
+                    kernel,
+                    use_silu,
                 } => (*batch, *channels, *seq_in, *seq_out, *kernel, *use_silu),
                 other => {
                     return Err(Error::Msg(format!(
@@ -3266,17 +4452,28 @@ macro_rules! cpu_causal_conv1d_wrapper {
             let bias_cpu = cpu_input(&bias_guard)?;
             let out_cpu = cpu_output(&mut out_guard)?;
             $kernel(
-                x_cpu, w_cpu, bias_cpu, out_cpu,
-                batch, channels, seq_in, seq_out, kernel, use_silu,
+                x_cpu, w_cpu, bias_cpu, out_cpu, batch, channels, seq_in, seq_out, kernel, use_silu,
             )
         }
     };
 }
 
-cpu_causal_conv1d_wrapper!(causal_conv1d_f32_cpu_wrapper,  fuel_cpu_backend::byte_kernels::causal_conv1d_f32);
-cpu_causal_conv1d_wrapper!(causal_conv1d_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::causal_conv1d_f64);
-cpu_causal_conv1d_wrapper!(causal_conv1d_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::causal_conv1d_bf16);
-cpu_causal_conv1d_wrapper!(causal_conv1d_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::causal_conv1d_f16);
+cpu_causal_conv1d_wrapper!(
+    causal_conv1d_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::causal_conv1d_f32
+);
+cpu_causal_conv1d_wrapper!(
+    causal_conv1d_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::causal_conv1d_f64
+);
+cpu_causal_conv1d_wrapper!(
+    causal_conv1d_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::causal_conv1d_bf16
+);
+cpu_causal_conv1d_wrapper!(
+    causal_conv1d_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::causal_conv1d_f16
+);
 
 /// Per-dtype SelectiveScan dispatch wrapper. Five inputs (u, delta,
 /// a, b, c) → one output (y). Geometry + `delta_softplus` flow
@@ -3299,13 +4496,18 @@ macro_rules! cpu_selective_scan_wrapper {
             }
             if outputs.len() != 1 {
                 return Err(Error::Msg(format!(
-                    "selective_scan wrapper expects 1 output, got {}", outputs.len(),
+                    "selective_scan wrapper expects 1 output, got {}",
+                    outputs.len(),
                 ))
                 .bt());
             }
             let (batch, seqlen, dim, dstate, delta_softplus) = match params {
                 OpParams::SelectiveScan {
-                    batch, seqlen, dim, dstate, delta_softplus,
+                    batch,
+                    seqlen,
+                    dim,
+                    dstate,
+                    delta_softplus,
                 } => (*batch, *seqlen, *dim, *dstate, *delta_softplus),
                 other => {
                     return Err(Error::Msg(format!(
@@ -3327,17 +4529,38 @@ macro_rules! cpu_selective_scan_wrapper {
             let c_cpu = cpu_input(&c_guard)?;
             let out_cpu = cpu_output(&mut out_guard)?;
             $kernel(
-                u_cpu, delta_cpu, a_cpu, b_cpu, c_cpu, out_cpu,
-                batch, seqlen, dim, dstate, delta_softplus,
+                u_cpu,
+                delta_cpu,
+                a_cpu,
+                b_cpu,
+                c_cpu,
+                out_cpu,
+                batch,
+                seqlen,
+                dim,
+                dstate,
+                delta_softplus,
             )
         }
     };
 }
 
-cpu_selective_scan_wrapper!(selective_scan_f32_cpu_wrapper,  fuel_cpu_backend::byte_kernels::selective_scan_f32);
-cpu_selective_scan_wrapper!(selective_scan_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::selective_scan_f64);
-cpu_selective_scan_wrapper!(selective_scan_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::selective_scan_bf16);
-cpu_selective_scan_wrapper!(selective_scan_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::selective_scan_f16);
+cpu_selective_scan_wrapper!(
+    selective_scan_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::selective_scan_f32
+);
+cpu_selective_scan_wrapper!(
+    selective_scan_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::selective_scan_f64
+);
+cpu_selective_scan_wrapper!(
+    selective_scan_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::selective_scan_bf16
+);
+cpu_selective_scan_wrapper!(
+    selective_scan_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::selective_scan_f16
+);
 
 /// Per-input-dtype NonZeroIndices dispatch wrapper. One input `x`
 /// (the value tensor) → one bundled output `[indices [capacity] U32 ;
@@ -3385,8 +4608,14 @@ macro_rules! cpu_nonzero_indices_wrapper {
     };
 }
 
-cpu_nonzero_indices_wrapper!(nonzero_indices_f32_cpu_wrapper, fuel_cpu_backend::byte_kernels::nonzero_indices_f32);
-cpu_nonzero_indices_wrapper!(nonzero_indices_u32_cpu_wrapper, fuel_cpu_backend::byte_kernels::nonzero_indices_u32);
+cpu_nonzero_indices_wrapper!(
+    nonzero_indices_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::nonzero_indices_f32
+);
+cpu_nonzero_indices_wrapper!(
+    nonzero_indices_u32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::nonzero_indices_u32
+);
 
 /// Per-dtype SsdChunkScan dispatch wrapper. Five inputs (x, dt, a,
 /// b, c) → one output (y). Geometry + `chunk_size` flow through
@@ -3409,13 +4638,19 @@ macro_rules! cpu_ssd_chunk_scan_wrapper {
             }
             if outputs.len() != 1 {
                 return Err(Error::Msg(format!(
-                    "ssd_chunk_scan wrapper expects 1 output, got {}", outputs.len(),
+                    "ssd_chunk_scan wrapper expects 1 output, got {}",
+                    outputs.len(),
                 ))
                 .bt());
             }
             let (batch, seqlen, heads, head_dim, state_dim, chunk_size) = match params {
                 OpParams::SsdChunkScan {
-                    batch, seqlen, heads, head_dim, state_dim, chunk_size,
+                    batch,
+                    seqlen,
+                    heads,
+                    head_dim,
+                    state_dim,
+                    chunk_size,
                 } => (*batch, *seqlen, *heads, *head_dim, *state_dim, *chunk_size),
                 other => {
                     return Err(Error::Msg(format!(
@@ -3437,17 +4672,29 @@ macro_rules! cpu_ssd_chunk_scan_wrapper {
             let c_cpu = cpu_input(&c_guard)?;
             let out_cpu = cpu_output(&mut out_guard)?;
             $kernel(
-                x_cpu, dt_cpu, a_cpu, b_cpu, c_cpu, out_cpu,
-                batch, seqlen, heads, head_dim, state_dim, chunk_size,
+                x_cpu, dt_cpu, a_cpu, b_cpu, c_cpu, out_cpu, batch, seqlen, heads, head_dim,
+                state_dim, chunk_size,
             )
         }
     };
 }
 
-cpu_ssd_chunk_scan_wrapper!(ssd_chunk_scan_f32_cpu_wrapper,  fuel_cpu_backend::byte_kernels::ssd_chunk_scan_f32);
-cpu_ssd_chunk_scan_wrapper!(ssd_chunk_scan_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::ssd_chunk_scan_f64);
-cpu_ssd_chunk_scan_wrapper!(ssd_chunk_scan_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::ssd_chunk_scan_bf16);
-cpu_ssd_chunk_scan_wrapper!(ssd_chunk_scan_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::ssd_chunk_scan_f16);
+cpu_ssd_chunk_scan_wrapper!(
+    ssd_chunk_scan_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::ssd_chunk_scan_f32
+);
+cpu_ssd_chunk_scan_wrapper!(
+    ssd_chunk_scan_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::ssd_chunk_scan_f64
+);
+cpu_ssd_chunk_scan_wrapper!(
+    ssd_chunk_scan_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::ssd_chunk_scan_bf16
+);
+cpu_ssd_chunk_scan_wrapper!(
+    ssd_chunk_scan_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::ssd_chunk_scan_f16
+);
 
 /// Per-dtype Nf4Matmul wrapper. Three inputs (activations, w_packed
 /// U8, absmax F32) → one output of the activations' dtype.
@@ -3469,14 +4716,19 @@ macro_rules! cpu_nf4_matmul_wrapper {
             }
             if outputs.len() != 1 {
                 return Err(Error::Msg(format!(
-                    "nf4_matmul wrapper expects 1 output, got {}", outputs.len(),
+                    "nf4_matmul wrapper expects 1 output, got {}",
+                    outputs.len(),
                 ))
                 .bt());
             }
             let (batch, m, n, k, block_size) = match params {
-                OpParams::Nf4Matmul { batch, m, n, k, block_size } => {
-                    (*batch, *m, *n, *k, *block_size)
-                }
+                OpParams::Nf4Matmul {
+                    batch,
+                    m,
+                    n,
+                    k,
+                    block_size,
+                } => (*batch, *m, *n, *k, *block_size),
                 other => {
                     return Err(Error::Msg(format!(
                         "nf4_matmul wrapper expects OpParams::Nf4Matmul, got {other:?}",
@@ -3497,9 +4749,18 @@ macro_rules! cpu_nf4_matmul_wrapper {
     };
 }
 
-cpu_nf4_matmul_wrapper!(nf4_matmul_f32_cpu_wrapper,  fuel_cpu_backend::byte_kernels::nf4_matmul_f32);
-cpu_nf4_matmul_wrapper!(nf4_matmul_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::nf4_matmul_f16);
-cpu_nf4_matmul_wrapper!(nf4_matmul_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::nf4_matmul_bf16);
+cpu_nf4_matmul_wrapper!(
+    nf4_matmul_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::nf4_matmul_f32
+);
+cpu_nf4_matmul_wrapper!(
+    nf4_matmul_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::nf4_matmul_f16
+);
+cpu_nf4_matmul_wrapper!(
+    nf4_matmul_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::nf4_matmul_bf16
+);
 
 /// Dispatch wrapper for `(FlashAttn, *, Cpu)`. Three or four inputs
 /// (q, k, v, optional alibi_slopes). Geometry + math params flow
@@ -3530,13 +4791,31 @@ macro_rules! cpu_flash_attn_wrapper {
             }
             let (b, hq, hkv, sq, sk, d, k_len, scale, causal, wl, wr, softcap) = match params {
                 OpParams::FlashAttn {
-                    b, hq, hkv, sq, sk, d, k_len,
-                    softmax_scale, causal,
-                    window_size_left, window_size_right, softcap,
+                    b,
+                    hq,
+                    hkv,
+                    sq,
+                    sk,
+                    d,
+                    k_len,
+                    softmax_scale,
+                    causal,
+                    window_size_left,
+                    window_size_right,
+                    softcap,
                 } => (
-                    *b, *hq, *hkv, *sq, *sk, *d, *k_len,
-                    *softmax_scale, *causal,
-                    *window_size_left, *window_size_right, *softcap,
+                    *b,
+                    *hq,
+                    *hkv,
+                    *sq,
+                    *sk,
+                    *d,
+                    *k_len,
+                    *softmax_scale,
+                    *causal,
+                    *window_size_left,
+                    *window_size_right,
+                    *softcap,
                 ),
                 other => {
                     return Err(Error::Msg(format!(
@@ -3562,18 +4841,29 @@ macro_rules! cpu_flash_attn_wrapper {
             };
             let out_cpu = cpu_output(&mut out_guard)?;
             $kernel(
-                q_cpu, k_cpu, v_cpu, alibi_cpu, out_cpu,
-                b, hq, hkv, sq, sk, d, k_len,
-                scale, causal, wl, wr, softcap,
+                q_cpu, k_cpu, v_cpu, alibi_cpu, out_cpu, b, hq, hkv, sq, sk, d, k_len, scale,
+                causal, wl, wr, softcap,
             )
         }
     };
 }
 
-cpu_flash_attn_wrapper!(flash_attn_f32_cpu_wrapper,  fuel_cpu_backend::byte_kernels::flash_attn_f32);
-cpu_flash_attn_wrapper!(flash_attn_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::flash_attn_f64);
-cpu_flash_attn_wrapper!(flash_attn_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::flash_attn_bf16);
-cpu_flash_attn_wrapper!(flash_attn_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::flash_attn_f16);
+cpu_flash_attn_wrapper!(
+    flash_attn_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::flash_attn_f32
+);
+cpu_flash_attn_wrapper!(
+    flash_attn_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::flash_attn_f64
+);
+cpu_flash_attn_wrapper!(
+    flash_attn_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::flash_attn_bf16
+);
+cpu_flash_attn_wrapper!(
+    flash_attn_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::flash_attn_f16
+);
 
 /// Dispatch wrapper for `(FlashAttnBackward{Q,K,V}, *, Cpu)`. Four or
 /// five inputs `(q, k, v, do, [alibi])`; one output (one of dQ/dK/dV).
@@ -3650,18 +4940,66 @@ macro_rules! cpu_flash_attn_backward_wrapper {
     };
 }
 
-cpu_flash_attn_backward_wrapper!(flash_attn_backward_q_f32_cpu_wrapper,  fuel_cpu_backend::byte_kernels::flash_attn_backward_f32,  fuel_cpu_backend::byte_kernels::FaBackwardWhich::Q);
-cpu_flash_attn_backward_wrapper!(flash_attn_backward_k_f32_cpu_wrapper,  fuel_cpu_backend::byte_kernels::flash_attn_backward_f32,  fuel_cpu_backend::byte_kernels::FaBackwardWhich::K);
-cpu_flash_attn_backward_wrapper!(flash_attn_backward_v_f32_cpu_wrapper,  fuel_cpu_backend::byte_kernels::flash_attn_backward_f32,  fuel_cpu_backend::byte_kernels::FaBackwardWhich::V);
-cpu_flash_attn_backward_wrapper!(flash_attn_backward_q_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::flash_attn_backward_f64,  fuel_cpu_backend::byte_kernels::FaBackwardWhich::Q);
-cpu_flash_attn_backward_wrapper!(flash_attn_backward_k_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::flash_attn_backward_f64,  fuel_cpu_backend::byte_kernels::FaBackwardWhich::K);
-cpu_flash_attn_backward_wrapper!(flash_attn_backward_v_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::flash_attn_backward_f64,  fuel_cpu_backend::byte_kernels::FaBackwardWhich::V);
-cpu_flash_attn_backward_wrapper!(flash_attn_backward_q_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::flash_attn_backward_bf16, fuel_cpu_backend::byte_kernels::FaBackwardWhich::Q);
-cpu_flash_attn_backward_wrapper!(flash_attn_backward_k_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::flash_attn_backward_bf16, fuel_cpu_backend::byte_kernels::FaBackwardWhich::K);
-cpu_flash_attn_backward_wrapper!(flash_attn_backward_v_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::flash_attn_backward_bf16, fuel_cpu_backend::byte_kernels::FaBackwardWhich::V);
-cpu_flash_attn_backward_wrapper!(flash_attn_backward_q_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::flash_attn_backward_f16,  fuel_cpu_backend::byte_kernels::FaBackwardWhich::Q);
-cpu_flash_attn_backward_wrapper!(flash_attn_backward_k_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::flash_attn_backward_f16,  fuel_cpu_backend::byte_kernels::FaBackwardWhich::K);
-cpu_flash_attn_backward_wrapper!(flash_attn_backward_v_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::flash_attn_backward_f16,  fuel_cpu_backend::byte_kernels::FaBackwardWhich::V);
+cpu_flash_attn_backward_wrapper!(
+    flash_attn_backward_q_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::flash_attn_backward_f32,
+    fuel_cpu_backend::byte_kernels::FaBackwardWhich::Q
+);
+cpu_flash_attn_backward_wrapper!(
+    flash_attn_backward_k_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::flash_attn_backward_f32,
+    fuel_cpu_backend::byte_kernels::FaBackwardWhich::K
+);
+cpu_flash_attn_backward_wrapper!(
+    flash_attn_backward_v_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::flash_attn_backward_f32,
+    fuel_cpu_backend::byte_kernels::FaBackwardWhich::V
+);
+cpu_flash_attn_backward_wrapper!(
+    flash_attn_backward_q_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::flash_attn_backward_f64,
+    fuel_cpu_backend::byte_kernels::FaBackwardWhich::Q
+);
+cpu_flash_attn_backward_wrapper!(
+    flash_attn_backward_k_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::flash_attn_backward_f64,
+    fuel_cpu_backend::byte_kernels::FaBackwardWhich::K
+);
+cpu_flash_attn_backward_wrapper!(
+    flash_attn_backward_v_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::flash_attn_backward_f64,
+    fuel_cpu_backend::byte_kernels::FaBackwardWhich::V
+);
+cpu_flash_attn_backward_wrapper!(
+    flash_attn_backward_q_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::flash_attn_backward_bf16,
+    fuel_cpu_backend::byte_kernels::FaBackwardWhich::Q
+);
+cpu_flash_attn_backward_wrapper!(
+    flash_attn_backward_k_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::flash_attn_backward_bf16,
+    fuel_cpu_backend::byte_kernels::FaBackwardWhich::K
+);
+cpu_flash_attn_backward_wrapper!(
+    flash_attn_backward_v_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::flash_attn_backward_bf16,
+    fuel_cpu_backend::byte_kernels::FaBackwardWhich::V
+);
+cpu_flash_attn_backward_wrapper!(
+    flash_attn_backward_q_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::flash_attn_backward_f16,
+    fuel_cpu_backend::byte_kernels::FaBackwardWhich::Q
+);
+cpu_flash_attn_backward_wrapper!(
+    flash_attn_backward_k_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::flash_attn_backward_f16,
+    fuel_cpu_backend::byte_kernels::FaBackwardWhich::K
+);
+cpu_flash_attn_backward_wrapper!(
+    flash_attn_backward_v_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::flash_attn_backward_f16,
+    fuel_cpu_backend::byte_kernels::FaBackwardWhich::V
+);
 
 /// Dispatch wrapper for `(PagedAttn, *, Cpu)`. 5 or 6 inputs (q,
 /// k_cache, v_cache, block_table, context_lens, optional alibi_slopes).
@@ -3693,13 +5031,27 @@ macro_rules! cpu_paged_attn_wrapper {
             let (b, hq, hkv, sq, d, block_size, max_blocks_per_seq, num_blocks, scale, softcap) =
                 match params {
                     OpParams::PagedAttn {
-                        b, hq, hkv, sq, d,
-                        block_size, max_blocks_per_seq, num_blocks,
-                        softmax_scale, softcap,
+                        b,
+                        hq,
+                        hkv,
+                        sq,
+                        d,
+                        block_size,
+                        max_blocks_per_seq,
+                        num_blocks,
+                        softmax_scale,
+                        softcap,
                     } => (
-                        *b, *hq, *hkv, *sq, *d,
-                        *block_size, *max_blocks_per_seq, *num_blocks,
-                        *softmax_scale, *softcap,
+                        *b,
+                        *hq,
+                        *hkv,
+                        *sq,
+                        *d,
+                        *block_size,
+                        *max_blocks_per_seq,
+                        *num_blocks,
+                        *softmax_scale,
+                        *softcap,
                     ),
                     other => {
                         return Err(Error::Msg(format!(
@@ -3736,19 +5088,44 @@ macro_rules! cpu_paged_attn_wrapper {
             };
             let out_cpu = cpu_output(&mut out_guard)?;
             $kernel(
-                q_cpu, kc_cpu, vc_cpu, bt_cpu, cl_cpu, alibi_cpu, out_cpu,
-                b, hq, hkv, sq, d,
-                block_size, max_blocks_per_seq, num_blocks,
-                scale, softcap,
+                q_cpu,
+                kc_cpu,
+                vc_cpu,
+                bt_cpu,
+                cl_cpu,
+                alibi_cpu,
+                out_cpu,
+                b,
+                hq,
+                hkv,
+                sq,
+                d,
+                block_size,
+                max_blocks_per_seq,
+                num_blocks,
+                scale,
+                softcap,
             )
         }
     };
 }
 
-cpu_paged_attn_wrapper!(paged_attn_f32_cpu_wrapper,  fuel_cpu_backend::byte_kernels::paged_attn_f32);
-cpu_paged_attn_wrapper!(paged_attn_f64_cpu_wrapper,  fuel_cpu_backend::byte_kernels::paged_attn_f64);
-cpu_paged_attn_wrapper!(paged_attn_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::paged_attn_bf16);
-cpu_paged_attn_wrapper!(paged_attn_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::paged_attn_f16);
+cpu_paged_attn_wrapper!(
+    paged_attn_f32_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::paged_attn_f32
+);
+cpu_paged_attn_wrapper!(
+    paged_attn_f64_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::paged_attn_f64
+);
+cpu_paged_attn_wrapper!(
+    paged_attn_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::paged_attn_bf16
+);
+cpu_paged_attn_wrapper!(
+    paged_attn_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::paged_attn_f16
+);
 
 // Cast wrappers — one per TARGET dtype, each matching every other source
 // dtype. Together they cover the full 11×10 = 110 directed pair matrix
@@ -4004,14 +5381,19 @@ pub(crate) fn matmul_f32_cpu_wrapper(
         .bt());
     }
     let (lhs_batch_dims, rhs_batch_dims, m, n, k, m_compute) = match params {
-        OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k, m_compute } => {
-            (lhs_batch_dims, rhs_batch_dims, *m, *n, *k, m_compute)
-        }
+        OpParams::Matmul {
+            lhs_batch_dims,
+            rhs_batch_dims,
+            m,
+            n,
+            k,
+            m_compute,
+        } => (lhs_batch_dims, rhs_batch_dims, *m, *n, *k, m_compute),
         other => {
             return Err(Error::Msg(format!(
                 "matmul wrapper expects OpParams::Matmul, got {other:?}",
             ))
-            .bt())
+            .bt());
         }
     };
     // Data-determined-M (sparse MoE): `m` is the row capacity; compute only
@@ -4063,20 +5445,27 @@ macro_rules! cpu_matmul_wrapper {
         ) -> Result<()> {
             if inputs.len() != 2 {
                 return Err(Error::Msg(format!(
-                    "matmul wrapper expects 2 inputs, got {}", inputs.len(),
+                    "matmul wrapper expects 2 inputs, got {}",
+                    inputs.len(),
                 ))
                 .bt());
             }
             if outputs.len() != 1 {
                 return Err(Error::Msg(format!(
-                    "matmul wrapper expects 1 output, got {}", outputs.len(),
+                    "matmul wrapper expects 1 output, got {}",
+                    outputs.len(),
                 ))
                 .bt());
             }
             let (lhs_batch_dims, rhs_batch_dims, m, n, k) = match params {
-                OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k, .. } => {
-                    (lhs_batch_dims, rhs_batch_dims, *m, *n, *k)
-                }
+                OpParams::Matmul {
+                    lhs_batch_dims,
+                    rhs_batch_dims,
+                    m,
+                    n,
+                    k,
+                    ..
+                } => (lhs_batch_dims, rhs_batch_dims, *m, *n, *k),
                 other => {
                     return Err(Error::Msg(format!(
                         "matmul wrapper expects OpParams::Matmul, got {other:?}",
@@ -4092,17 +5481,39 @@ macro_rules! cpu_matmul_wrapper {
             let out_cpu = cpu_output(&mut out_guard)?;
             let _ = $type_name;
             $kernel(
-                lhs_cpu, rhs_cpu, out_cpu,
-                lhs_batch_dims, rhs_batch_dims, m, n, k,
+                lhs_cpu,
+                rhs_cpu,
+                out_cpu,
+                lhs_batch_dims,
+                rhs_batch_dims,
+                m,
+                n,
+                k,
             )
         }
     };
 }
 
-cpu_matmul_wrapper!(matmul_bf16_cpu_wrapper, fuel_cpu_backend::byte_kernels::matmul_bf16, "matmul_bf16");
-cpu_matmul_wrapper!(matmul_f16_cpu_wrapper,  fuel_cpu_backend::byte_kernels::matmul_f16,  "matmul_f16");
-cpu_matmul_wrapper!(matmul_i8_cpu_wrapper,   fuel_cpu_backend::byte_kernels::matmul_i8,   "matmul_i8");
-cpu_matmul_wrapper!(matmul_u8_cpu_wrapper,   fuel_cpu_backend::byte_kernels::matmul_u8,   "matmul_u8");
+cpu_matmul_wrapper!(
+    matmul_bf16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::matmul_bf16,
+    "matmul_bf16"
+);
+cpu_matmul_wrapper!(
+    matmul_f16_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::matmul_f16,
+    "matmul_f16"
+);
+cpu_matmul_wrapper!(
+    matmul_i8_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::matmul_i8,
+    "matmul_i8"
+);
+cpu_matmul_wrapper!(
+    matmul_u8_cpu_wrapper,
+    fuel_cpu_backend::byte_kernels::matmul_u8,
+    "matmul_u8"
+);
 
 /// f64 mirror of [`matmul_f32_cpu_wrapper`]. Same OpKind
 /// (MatMul); the binding-table key picks this entry when the
@@ -4131,14 +5542,19 @@ pub(crate) fn matmul_f64_cpu_wrapper(
         .bt());
     }
     let (lhs_batch_dims, rhs_batch_dims, m, n, k) = match params {
-        OpParams::Matmul { lhs_batch_dims, rhs_batch_dims, m, n, k, .. } => {
-            (lhs_batch_dims, rhs_batch_dims, *m, *n, *k)
-        }
+        OpParams::Matmul {
+            lhs_batch_dims,
+            rhs_batch_dims,
+            m,
+            n,
+            k,
+            ..
+        } => (lhs_batch_dims, rhs_batch_dims, *m, *n, *k),
         other => {
             return Err(Error::Msg(format!(
                 "matmul wrapper expects OpParams::Matmul, got {other:?}",
             ))
-            .bt())
+            .bt());
         }
     };
     let lhs_guard = read_storage(&inputs[0])?;
@@ -4148,8 +5564,14 @@ pub(crate) fn matmul_f64_cpu_wrapper(
     let rhs_cpu = cpu_input(&rhs_guard)?;
     let out_cpu = cpu_output(&mut out_guard)?;
     fuel_cpu_backend::byte_kernels::matmul_f64(
-        lhs_cpu, rhs_cpu, out_cpu,
-        lhs_batch_dims, rhs_batch_dims, m, n, k,
+        lhs_cpu,
+        rhs_cpu,
+        out_cpu,
+        lhs_batch_dims,
+        rhs_batch_dims,
+        m,
+        n,
+        k,
     )
 }
 
@@ -4187,8 +5609,10 @@ fn copy_from_cpu_wrapper(
     if inputs.len() != 1 || outputs.len() != 1 {
         return Err(Error::Msg(format!(
             "copy_from_cpu_wrapper: expected 1 input + 1 output, got {} + {}",
-            inputs.len(), outputs.len(),
-        )).bt());
+            inputs.len(),
+            outputs.len(),
+        ))
+        .bt());
     }
     let in_guard = read_storage(&inputs[0])?;
     let src = cpu_input(&in_guard)?;
@@ -4227,12 +5651,19 @@ fn copy_from_cpu_wrapper(
         }
         #[cfg(feature = "vulkan")]
         BackendStorage::Vulkan(dst) => {
-            let backend = dst.backend().ok_or_else(|| Error::Msg(
-                "copy_from_cpu_wrapper: Vulkan output has no attached \
+            let backend = dst
+                .backend()
+                .ok_or_else(|| {
+                    Error::Msg(
+                        "copy_from_cpu_wrapper: Vulkan output has no attached \
                  backend handle. The executor's Op::Copy arm must allocate \
                  via VulkanBackend::alloc_bytes_handle (which attaches \
-                 the handle).".to_string()
-            ).bt())?.clone();
+                 the handle)."
+                            .to_string(),
+                    )
+                    .bt()
+                })?
+                .clone();
             if n == n_out {
                 backend.write_bytes(dst, src_slice)?;
             } else {
@@ -4247,7 +5678,8 @@ fn copy_from_cpu_wrapper(
                 "copy_from_cpu_wrapper: output backend not wired ({other:?}); \
                  CPU + CUDA + Vulkan covered, Metal extends when its \
                  byte-storage substrate is ready.",
-            )).bt());
+            ))
+            .bt());
         }
     }
     Ok(())
@@ -4292,20 +5724,22 @@ const CPU_ELEMENTWISE_BINARY_CONTRACT: &str =
 /// It cannot fail for a runtime-data reason — the contract is `include_str!`'d
 /// into the binary and the link registry is exhaustive for this family.
 fn register_cpu_binary_from_contract(table: &mut KernelBindingTable) {
-    let provider =
-        crate::fkc::import_bundle_str(CPU_ELEMENTWISE_BINARY_CONTRACT, &crate::fkc::CpuLinkRegistry)
-            .expect(
-                "authored CPU elementwise-binary contract must import \
+    let provider = crate::fkc::import_bundle_str(
+        CPU_ELEMENTWISE_BINARY_CONTRACT,
+        &crate::fkc::CpuLinkRegistry,
+    )
+    .expect(
+        "authored CPU elementwise-binary contract must import \
                  (embedded via include_str!, resolved through CpuLinkRegistry)",
-            );
+    );
     debug_assert!(
         provider.fused.is_empty(),
         "elementwise-binary contract declares no fused ops",
     );
     let mut fused = crate::fused::FusedKernelRegistry::new();
-    provider.register_into(table, &mut fused).expect(
-        "CPU elementwise-binary contract must register into the binding table",
-    );
+    provider
+        .register_into(table, &mut fused)
+        .expect("CPU elementwise-binary contract must register into the binding table");
 }
 
 /// The authored CPU affine / clamp / powi kernel contract, embedded into the
@@ -4351,9 +5785,9 @@ fn register_cpu_affine_clamp_powi_from_contract(table: &mut KernelBindingTable) 
         "affine/clamp/powi contract declares no fused ops",
     );
     let mut fused = crate::fused::FusedKernelRegistry::new();
-    provider.register_into(table, &mut fused).expect(
-        "CPU affine/clamp/powi contract must register into the binding table",
-    );
+    provider
+        .register_into(table, &mut fused)
+        .expect("CPU affine/clamp/powi contract must register into the binding table");
 }
 
 /// The authored CPU elementwise-unary kernel contract, embedded into the binary
@@ -4400,9 +5834,9 @@ fn register_cpu_unary_from_contract(table: &mut KernelBindingTable) {
         "elementwise-unary contract declares no fused ops",
     );
     let mut fused = crate::fused::FusedKernelRegistry::new();
-    provider.register_into(table, &mut fused).expect(
-        "CPU elementwise-unary contract must register into the binding table",
-    );
+    provider
+        .register_into(table, &mut fused)
+        .expect("CPU elementwise-unary contract must register into the binding table");
 }
 
 /// The authored CPU compare + where kernel contract, embedded into the binary
@@ -4451,16 +5885,15 @@ fn register_cpu_compare_where_from_contract(table: &mut KernelBindingTable) {
         "compare/where contract declares no fused ops",
     );
     let mut fused = crate::fused::FusedKernelRegistry::new();
-    provider.register_into(table, &mut fused).expect(
-        "CPU compare/where contract must register into the binding table",
-    );
+    provider
+        .register_into(table, &mut fused)
+        .expect("CPU compare/where contract must register into the binding table");
 }
 
 /// The authored CPU reduce kernel contract, embedded into the binary (the
 /// PRODUCTION `include_str!`). `register_cpu_reduce_from_contract` parses +
 /// lowers it and binds the family FROM THE CONTRACT.
-const CPU_REDUCE_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cpu/reduce.fkc.md");
+const CPU_REDUCE_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cpu/reduce.fkc.md");
 
 /// Register the CPU per-axis reduce family (Sum/Mean/Max/Min × 4 dtypes = 16
 /// bindings) by IMPORTING its FKC kernel contract, the fifth production FKC
@@ -4492,20 +5925,19 @@ const CPU_REDUCE_CONTRACT: &str =
 /// below). The family declares NO fused ops, so `register_into`'s required fused
 /// argument is a local throwaway that provably stays empty.
 fn register_cpu_reduce_from_contract(table: &mut KernelBindingTable) {
-    let provider =
-        crate::fkc::import_bundle_str(CPU_REDUCE_CONTRACT, &crate::fkc::CpuLinkRegistry)
-            .expect(
-                "authored CPU reduce contract must import \
+    let provider = crate::fkc::import_bundle_str(CPU_REDUCE_CONTRACT, &crate::fkc::CpuLinkRegistry)
+        .expect(
+            "authored CPU reduce contract must import \
                  (embedded via include_str!, resolved through CpuLinkRegistry)",
-            );
+        );
     debug_assert!(
         provider.fused.is_empty(),
         "reduce contract declares no fused ops",
     );
     let mut fused = crate::fused::FusedKernelRegistry::new();
-    provider.register_into(table, &mut fused).expect(
-        "CPU reduce contract must register into the binding table",
-    );
+    provider
+        .register_into(table, &mut fused)
+        .expect("CPU reduce contract must register into the binding table");
 }
 
 /// The authored CPU reduce-to kernel contract, embedded into the binary (the
@@ -4547,26 +5979,24 @@ const CPU_REDUCE_TO_CONTRACT: &str =
 /// argument is a local throwaway that provably stays empty.
 fn register_cpu_reduce_to_from_contract(table: &mut KernelBindingTable) {
     let provider =
-        crate::fkc::import_bundle_str(CPU_REDUCE_TO_CONTRACT, &crate::fkc::CpuLinkRegistry)
-            .expect(
-                "authored CPU reduce-to contract must import \
+        crate::fkc::import_bundle_str(CPU_REDUCE_TO_CONTRACT, &crate::fkc::CpuLinkRegistry).expect(
+            "authored CPU reduce-to contract must import \
                  (embedded via include_str!, resolved through CpuLinkRegistry)",
-            );
+        );
     debug_assert!(
         provider.fused.is_empty(),
         "reduce-to contract declares no fused ops",
     );
     let mut fused = crate::fused::FusedKernelRegistry::new();
-    provider.register_into(table, &mut fused).expect(
-        "CPU reduce-to contract must register into the binding table",
-    );
+    provider
+        .register_into(table, &mut fused)
+        .expect("CPU reduce-to contract must register into the binding table");
 }
 
 /// The authored CPU norm (forward) kernel contract, embedded into the binary
 /// (the PRODUCTION `include_str!`). `register_cpu_norm_from_contract` parses +
 /// lowers it and binds the family FROM THE CONTRACT.
-const CPU_NORM_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cpu/norm.fkc.md");
+const CPU_NORM_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cpu/norm.fkc.md");
 
 /// Register the CPU last-dim NORM (forward) family (Softmax / LogSoftmax /
 /// RmsNorm / LayerNorm × 4 dtypes = 16 bindings, key `[T, T]`) by IMPORTING its
@@ -4603,20 +6033,19 @@ const CPU_NORM_CONTRACT: &str =
 /// The family declares NO fused ops, so `register_into`'s required fused argument
 /// is a local throwaway that provably stays empty.
 fn register_cpu_norm_from_contract(table: &mut KernelBindingTable) {
-    let provider =
-        crate::fkc::import_bundle_str(CPU_NORM_CONTRACT, &crate::fkc::CpuLinkRegistry)
-            .expect(
-                "authored CPU norm contract must import \
+    let provider = crate::fkc::import_bundle_str(CPU_NORM_CONTRACT, &crate::fkc::CpuLinkRegistry)
+        .expect(
+            "authored CPU norm contract must import \
                  (embedded via include_str!, resolved through CpuLinkRegistry)",
-            );
+        );
     debug_assert!(
         provider.fused.is_empty(),
         "norm forward contract declares no fused ops",
     );
     let mut fused = crate::fused::FusedKernelRegistry::new();
-    provider.register_into(table, &mut fused).expect(
-        "CPU norm contract must register into the binding table",
-    );
+    provider
+        .register_into(table, &mut fused)
+        .expect("CPU norm contract must register into the binding table");
 }
 
 /// The authored CPU norm-BACKWARD kernel contract, embedded into the binary
@@ -4670,16 +6099,15 @@ fn register_cpu_norm_backward_from_contract(table: &mut KernelBindingTable) {
         "norm backward contract declares no fused ops",
     );
     let mut fused = crate::fused::FusedKernelRegistry::new();
-    provider.register_into(table, &mut fused).expect(
-        "CPU norm-backward contract must register into the binding table",
-    );
+    provider
+        .register_into(table, &mut fused)
+        .expect("CPU norm-backward contract must register into the binding table");
 }
 
 /// The authored CPU RoPE kernel contract, embedded into the binary (the
 /// PRODUCTION `include_str!`). `register_cpu_rope_from_contract` parses +
 /// lowers it and binds the family FROM THE CONTRACT.
-const CPU_ROPE_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cpu/rope.fkc.md");
+const CPU_ROPE_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cpu/rope.fkc.md");
 
 /// Register the CPU RoPE family (rotary position embedding; 1 op × 4 dtypes =
 /// 4 bindings, key `[T, T, T, T]`) by IMPORTING its FKC kernel contract, the
@@ -4715,27 +6143,25 @@ const CPU_ROPE_CONTRACT: &str =
 /// family declares NO fused ops, so `register_into`'s required fused argument is
 /// a local throwaway that provably stays empty.
 fn register_cpu_rope_from_contract(table: &mut KernelBindingTable) {
-    let provider =
-        crate::fkc::import_bundle_str(CPU_ROPE_CONTRACT, &crate::fkc::CpuLinkRegistry)
-            .expect(
-                "authored CPU rope contract must import \
+    let provider = crate::fkc::import_bundle_str(CPU_ROPE_CONTRACT, &crate::fkc::CpuLinkRegistry)
+        .expect(
+            "authored CPU rope contract must import \
                  (embedded via include_str!, resolved through CpuLinkRegistry)",
-            );
+        );
     debug_assert!(
         provider.fused.is_empty(),
         "rope contract declares no fused ops",
     );
     let mut fused = crate::fused::FusedKernelRegistry::new();
-    provider.register_into(table, &mut fused).expect(
-        "CPU rope contract must register into the binding table",
-    );
+    provider
+        .register_into(table, &mut fused)
+        .expect("CPU rope contract must register into the binding table");
 }
 
 /// The authored CPU SSM / Mamba kernel contract, embedded into the binary (the
 /// PRODUCTION `include_str!`). `register_cpu_ssm_from_contract` parses + lowers
 /// it and binds the MIGRATED subset of the family FROM THE CONTRACT.
-const CPU_SSM_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cpu/ssm.fkc.md");
+const CPU_SSM_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cpu/ssm.fkc.md");
 
 /// Register the ENTIRE CPU SSM / Mamba family —
 /// FusedSoftmaxCrossEntropy (key `[T, I64, F32]`) + CausalConv1d (key
@@ -4776,28 +6202,26 @@ const CPU_SSM_CONTRACT: &str =
 /// an intra-op softmax+NLL fusion, not a graph `FusedOpId`), so `register_into`'s
 /// required fused argument is a local throwaway that provably stays empty.
 fn register_cpu_ssm_from_contract(table: &mut KernelBindingTable) {
-    let provider =
-        crate::fkc::import_bundle_str(CPU_SSM_CONTRACT, &crate::fkc::CpuLinkRegistry)
-            .expect(
-                "authored CPU ssm contract must import \
+    let provider = crate::fkc::import_bundle_str(CPU_SSM_CONTRACT, &crate::fkc::CpuLinkRegistry)
+        .expect(
+            "authored CPU ssm contract must import \
                  (embedded via include_str!, resolved through CpuLinkRegistry)",
-            );
+        );
     debug_assert!(
         provider.fused.is_empty(),
         "ssm contract declares no fused ops",
     );
     let mut fused = crate::fused::FusedKernelRegistry::new();
-    provider.register_into(table, &mut fused).expect(
-        "CPU ssm contract must register into the binding table",
-    );
+    provider
+        .register_into(table, &mut fused)
+        .expect("CPU ssm contract must register into the binding table");
 }
 
 /// The authored CPU 2D-convolution kernel contract, embedded into the binary
 /// (the PRODUCTION `include_str!`). `register_cpu_conv_from_contract` parses +
 /// lowers it and binds the MIGRATED (with-bias) subset of the family FROM THE
 /// CONTRACT.
-const CPU_CONV_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cpu/conv.fkc.md");
+const CPU_CONV_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cpu/conv.fkc.md");
 
 /// Register the CPU 2D-convolution family FULLY — Conv2D + ConvTranspose2D at
 /// BOTH the no-bias key `[T, T, T]` (x, weight + out) and the with-bias key
@@ -4839,28 +6263,26 @@ const CPU_CONV_CONTRACT: &str =
 /// `register_default_fused_kernels`, and stays untouched), so `register_into`'s
 /// required fused argument is a local throwaway that provably stays empty.
 fn register_cpu_conv_from_contract(table: &mut KernelBindingTable) {
-    let provider =
-        crate::fkc::import_bundle_str(CPU_CONV_CONTRACT, &crate::fkc::CpuLinkRegistry)
-            .expect(
-                "authored CPU conv contract must import \
+    let provider = crate::fkc::import_bundle_str(CPU_CONV_CONTRACT, &crate::fkc::CpuLinkRegistry)
+        .expect(
+            "authored CPU conv contract must import \
                  (embedded via include_str!, resolved through CpuLinkRegistry)",
-            );
+        );
     debug_assert!(
         provider.fused.is_empty(),
         "conv contract declares no fused ops",
     );
     let mut fused = crate::fused::FusedKernelRegistry::new();
-    provider.register_into(table, &mut fused).expect(
-        "CPU conv contract must register into the binding table",
-    );
+    provider
+        .register_into(table, &mut fused)
+        .expect("CPU conv contract must register into the binding table");
 }
 
 /// The authored CPU **padding** kernel contract, embedded into the binary (the
 /// PRODUCTION `include_str!`). `register_cpu_padding_from_contract` parses +
 /// lowers it and binds the FULL family (mode-unified forward `Pad` +
 /// `PadBackward`) FROM THE CONTRACT.
-const CPU_PADDING_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cpu/padding.fkc.md");
+const CPU_PADDING_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cpu/padding.fkc.md");
 
 /// Register the FULL CPU padding family — mode-unified forward `Pad` × 6 dtypes
 /// = 6 + `PadBackward` × 4 dtypes = 4 bindings (all key `[T, T]`) — by IMPORTING
@@ -4899,19 +6321,18 @@ const CPU_PADDING_CONTRACT: &str =
 /// required fused argument is a local throwaway that provably stays empty.
 fn register_cpu_padding_from_contract(table: &mut KernelBindingTable) {
     let provider =
-        crate::fkc::import_bundle_str(CPU_PADDING_CONTRACT, &crate::fkc::CpuLinkRegistry)
-            .expect(
-                "authored CPU padding contract must import \
+        crate::fkc::import_bundle_str(CPU_PADDING_CONTRACT, &crate::fkc::CpuLinkRegistry).expect(
+            "authored CPU padding contract must import \
                  (embedded via include_str!, resolved through CpuLinkRegistry)",
-            );
+        );
     debug_assert!(
         provider.fused.is_empty(),
         "padding contract declares no fused ops",
     );
     let mut fused = crate::fused::FusedKernelRegistry::new();
-    provider.register_into(table, &mut fused).expect(
-        "CPU padding contract must register into the binding table",
-    );
+    provider
+        .register_into(table, &mut fused)
+        .expect("CPU padding contract must register into the binding table");
 }
 
 /// The authored CPU **shape-ops** kernel contract, embedded into the binary (the
@@ -4962,26 +6383,24 @@ const CPU_SHAPE_OPS_CONTRACT: &str =
 /// required fused argument is a local throwaway that provably stays empty.
 fn register_cpu_shape_ops_from_contract(table: &mut KernelBindingTable) {
     let provider =
-        crate::fkc::import_bundle_str(CPU_SHAPE_OPS_CONTRACT, &crate::fkc::CpuLinkRegistry)
-            .expect(
-                "authored CPU shape-ops contract must import \
+        crate::fkc::import_bundle_str(CPU_SHAPE_OPS_CONTRACT, &crate::fkc::CpuLinkRegistry).expect(
+            "authored CPU shape-ops contract must import \
                  (embedded via include_str!, resolved through CpuLinkRegistry)",
-            );
+        );
     debug_assert!(
         provider.fused.is_empty(),
         "shape-ops contract declares no fused ops",
     );
     let mut fused = crate::fused::FusedKernelRegistry::new();
-    provider.register_into(table, &mut fused).expect(
-        "CPU shape-ops contract must register into the binding table",
-    );
+    provider
+        .register_into(table, &mut fused)
+        .expect("CPU shape-ops contract must register into the binding table");
 }
 
 /// The authored CPU **matmul** kernel contract, embedded into the binary (the
 /// PRODUCTION `include_str!`). `register_cpu_matmul_from_contract` parses +
 /// lowers it and binds the FULL portable family FROM THE CONTRACT.
-const CPU_MATMUL_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cpu/matmul.fkc.md");
+const CPU_MATMUL_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cpu/matmul.fkc.md");
 
 /// Register the CPU **matmul** family FULLY — bare batched `MatMul` (6 dtypes,
 /// key `[T, T, T]`) + fused `FusedLinear` (matmul + bias-add, 4 dtypes, key
@@ -5028,20 +6447,19 @@ const CPU_MATMUL_CONTRACT: &str =
 /// provably stays empty. The quant `QMatMul` / `Nf4Matmul` OpKinds have their
 /// own contracts and stay hand-written.
 fn register_cpu_matmul_from_contract(table: &mut KernelBindingTable) {
-    let provider =
-        crate::fkc::import_bundle_str(CPU_MATMUL_CONTRACT, &crate::fkc::CpuLinkRegistry)
-            .expect(
-                "authored CPU matmul contract must import \
+    let provider = crate::fkc::import_bundle_str(CPU_MATMUL_CONTRACT, &crate::fkc::CpuLinkRegistry)
+        .expect(
+            "authored CPU matmul contract must import \
                  (embedded via include_str!, resolved through CpuLinkRegistry)",
-            );
+        );
     debug_assert!(
         provider.fused.is_empty(),
         "matmul contract declares no fused ops",
     );
     let mut fused = crate::fused::FusedKernelRegistry::new();
-    provider.register_into(table, &mut fused).expect(
-        "CPU matmul contract must register into the binding table",
-    );
+    provider
+        .register_into(table, &mut fused)
+        .expect("CPU matmul contract must register into the binding table");
 }
 
 /// The authored CPU **attention** kernel contract, embedded into the binary (the
@@ -5108,19 +6526,18 @@ const CPU_ATTENTION_CONTRACT: &str =
 /// (`register_default_fused_kernels`) is hand-written and stays untouched.
 fn register_cpu_attention_from_contract(table: &mut KernelBindingTable) {
     let provider =
-        crate::fkc::import_bundle_str(CPU_ATTENTION_CONTRACT, &crate::fkc::CpuLinkRegistry)
-            .expect(
-                "authored CPU attention contract must import \
+        crate::fkc::import_bundle_str(CPU_ATTENTION_CONTRACT, &crate::fkc::CpuLinkRegistry).expect(
+            "authored CPU attention contract must import \
                  (embedded via include_str!, resolved through CpuLinkRegistry)",
-            );
+        );
     debug_assert!(
         provider.fused.is_empty(),
         "attention contract declares no fused ops (all op_kind, incl. PagedAttn)",
     );
     let mut fused = crate::fused::FusedKernelRegistry::new();
-    provider.register_into(table, &mut fused).expect(
-        "CPU attention contract must register into the binding table",
-    );
+    provider
+        .register_into(table, &mut fused)
+        .expect("CPU attention contract must register into the binding table");
 }
 
 /// The authored CPU **in-place scalar-param** kernel contract, embedded into the
@@ -5170,26 +6587,24 @@ const CPU_INPLACE_CONTRACT: &str =
 /// stays empty.
 fn register_cpu_inplace_from_contract(table: &mut KernelBindingTable) {
     let provider =
-        crate::fkc::import_bundle_str(CPU_INPLACE_CONTRACT, &crate::fkc::CpuLinkRegistry)
-            .expect(
-                "authored CPU in-place contract must import \
+        crate::fkc::import_bundle_str(CPU_INPLACE_CONTRACT, &crate::fkc::CpuLinkRegistry).expect(
+            "authored CPU in-place contract must import \
                  (embedded via include_str!, resolved through CpuLinkRegistry)",
-            );
+        );
     debug_assert!(
         provider.fused.is_empty(),
         "in-place contract declares no fused ops (all op_kind or describe-only umbrella)",
     );
     let mut fused = crate::fused::FusedKernelRegistry::new();
-    provider.register_into(table, &mut fused).expect(
-        "CPU in-place contract must register into the binding table",
-    );
+    provider
+        .register_into(table, &mut fused)
+        .expect("CPU in-place contract must register into the binding table");
 }
 
 /// The authored CPU **cast** kernel contract, embedded into the binary (the
 /// PRODUCTION `include_str!`). `register_cpu_cast_from_contract` parses + lowers
 /// it and binds the FULL directed-pair matrix FROM THE CONTRACT.
-const CPU_CAST_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cpu/cast.fkc.md");
+const CPU_CAST_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cpu/cast.fkc.md");
 
 /// Register the CPU **cast** family FULLY — the COMPLETE directed-pair matrix,
 /// every ordered pair of the 11 real numeric dtypes
@@ -5221,28 +6636,26 @@ const CPU_CAST_CONTRACT: &str =
 /// CPU primitive gets. The family declares NO fused ops, so `register_into`'s
 /// required fused argument is a local throwaway that provably stays empty.
 fn register_cpu_cast_from_contract(table: &mut KernelBindingTable) {
-    let provider =
-        crate::fkc::import_bundle_str(CPU_CAST_CONTRACT, &crate::fkc::CpuLinkRegistry)
-            .expect(
-                "authored CPU cast contract must import \
+    let provider = crate::fkc::import_bundle_str(CPU_CAST_CONTRACT, &crate::fkc::CpuLinkRegistry)
+        .expect(
+            "authored CPU cast contract must import \
                  (embedded via include_str!, resolved through CpuLinkRegistry)",
-            );
+        );
     debug_assert!(
         provider.fused.is_empty(),
         "cast contract declares no fused ops",
     );
     let mut fused = crate::fused::FusedKernelRegistry::new();
-    provider.register_into(table, &mut fused).expect(
-        "CPU cast contract must register into the binding table",
-    );
+    provider
+        .register_into(table, &mut fused)
+        .expect("CPU cast contract must register into the binding table");
 }
 
 /// The authored CPU **indexing / gather / scatter** kernel contract, embedded
 /// into the binary (the PRODUCTION `include_str!`).
 /// `register_cpu_indexing_from_contract` parses + lowers it and binds the FULL
 /// family (IndexSelect + Gather + IndexAdd + ScatterAdd) FROM THE CONTRACT.
-const CPU_INDEXING_CONTRACT: &str =
-    include_str!("../../docs/kernel-contracts/cpu/indexing.fkc.md");
+const CPU_INDEXING_CONTRACT: &str = include_str!("../../docs/kernel-contracts/cpu/indexing.fkc.md");
 
 /// Register the FULL CPU indexing family — IndexSelect (9 dtypes, key
 /// `[T, U32, T]`) + Gather (9 dtypes, key `[T, U32, T]`) + IndexAdd (4 dtypes,
@@ -5284,19 +6697,18 @@ const CPU_INDEXING_CONTRACT: &str =
 /// required fused argument is a local throwaway that provably stays empty.
 fn register_cpu_indexing_from_contract(table: &mut KernelBindingTable) {
     let provider =
-        crate::fkc::import_bundle_str(CPU_INDEXING_CONTRACT, &crate::fkc::CpuLinkRegistry)
-            .expect(
-                "authored CPU indexing contract must import \
+        crate::fkc::import_bundle_str(CPU_INDEXING_CONTRACT, &crate::fkc::CpuLinkRegistry).expect(
+            "authored CPU indexing contract must import \
                  (embedded via include_str!, resolved through CpuLinkRegistry)",
-            );
+        );
     debug_assert!(
         provider.fused.is_empty(),
         "indexing contract declares no fused ops",
     );
     let mut fused = crate::fused::FusedKernelRegistry::new();
-    provider.register_into(table, &mut fused).expect(
-        "CPU indexing contract must register into the binding table",
-    );
+    provider
+        .register_into(table, &mut fused)
+        .expect("CPU indexing contract must register into the binding table");
 }
 
 /// Register CPU dispatch wrappers in the binding table. Call once
@@ -5310,19 +6722,19 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     let f32_dt = DType::F32;
     let f64_dt = DType::F64;
     let bf16_dt = DType::BF16;
-    let f16_dt  = DType::F16;
+    let f16_dt = DType::F16;
     let u32_dt = DType::U32;
 
     // Per-operand dtype-list shape helpers. The list captures all
     // operands the kernel sees — inputs in order, then outputs.
     // Variadic Concat uses the `unary` shape as a canonical
     // shorthand for "uniform-dtype across N inputs + output."
-    let unary  = |t: DType| [t, t];                             // (in, out)
+    let unary = |t: DType| [t, t]; // (in, out)
     // (MatMul's (lhs, rhs, out) key shape is now built by the FKC importer from
     // docs/kernel-contracts/cpu/matmul.fkc.md — see
     // register_cpu_matmul_from_contract; the hand-written `binary` closure was
     // removed with its regs.)
-    let u8_dt  = DType::U8;
+    let u8_dt = DType::U8;
     // (Rope's (x, cos, sin, out) key shape is now built by the FKC importer
     // from docs/kernel-contracts/cpu/rope.fkc.md — see
     // register_cpu_rope_from_contract; the hand-written `rope_dts` closure was
@@ -5500,8 +6912,18 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // BEFORE the `fill_unset_cpu_*` passes so the entries pick up the CPU
     // precision + cost fill (UNAUDITED → PRIMITIVE_DETERMINISTIC_CPU,
     // unknown_cost → the OpKind cost fn).
-    table.register(NonZeroIndices, &[f32_dt, u32_dt], cpu, nonzero_indices_f32_cpu_wrapper);
-    table.register(NonZeroIndices, &[u32_dt, u32_dt], cpu, nonzero_indices_u32_cpu_wrapper);
+    table.register(
+        NonZeroIndices,
+        &[f32_dt, u32_dt],
+        cpu,
+        nonzero_indices_f32_cpu_wrapper,
+    );
+    table.register(
+        NonZeroIndices,
+        &[u32_dt, u32_dt],
+        cpu,
+        nonzero_indices_u32_cpu_wrapper,
+    );
 
     // CPU 2D-convolution family — FULLY contract-sourced: Conv2D +
     // ConvTranspose2D at BOTH the no-bias key [T, T, T] (x, weight, out) AND the
@@ -5767,18 +7189,18 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // the sole path.)
 
     // Triu / Tril share one byte-level kernel (dtype-agnostic).
-    table.register(Triu, &unary(f32_dt),  cpu, triu_cpu_wrapper);
-    table.register(Triu, &unary(f64_dt),  cpu, triu_cpu_wrapper);
+    table.register(Triu, &unary(f32_dt), cpu, triu_cpu_wrapper);
+    table.register(Triu, &unary(f64_dt), cpu, triu_cpu_wrapper);
     table.register(Triu, &unary(bf16_dt), cpu, triu_cpu_wrapper);
-    table.register(Triu, &unary(f16_dt),  cpu, triu_cpu_wrapper);
-    table.register(Triu, &unary(u32_dt),  cpu, triu_cpu_wrapper);
-    table.register(Triu, &unary(u8_dt),   cpu, triu_cpu_wrapper);
-    table.register(Tril, &unary(f32_dt),  cpu, tril_cpu_wrapper);
-    table.register(Tril, &unary(f64_dt),  cpu, tril_cpu_wrapper);
+    table.register(Triu, &unary(f16_dt), cpu, triu_cpu_wrapper);
+    table.register(Triu, &unary(u32_dt), cpu, triu_cpu_wrapper);
+    table.register(Triu, &unary(u8_dt), cpu, triu_cpu_wrapper);
+    table.register(Tril, &unary(f32_dt), cpu, tril_cpu_wrapper);
+    table.register(Tril, &unary(f64_dt), cpu, tril_cpu_wrapper);
     table.register(Tril, &unary(bf16_dt), cpu, tril_cpu_wrapper);
-    table.register(Tril, &unary(f16_dt),  cpu, tril_cpu_wrapper);
-    table.register(Tril, &unary(u32_dt),  cpu, tril_cpu_wrapper);
-    table.register(Tril, &unary(u8_dt),   cpu, tril_cpu_wrapper);
+    table.register(Tril, &unary(f16_dt), cpu, tril_cpu_wrapper);
+    table.register(Tril, &unary(u32_dt), cpu, tril_cpu_wrapper);
+    table.register(Tril, &unary(u8_dt), cpu, tril_cpu_wrapper);
 
     // (LogSoftmaxLastDim × 4 dtypes is now registered FROM the norm FKC contract
     // via register_cpu_norm_from_contract near the top of this fn, alongside
@@ -5849,7 +7271,12 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // (register_default_fused_kernels, FusedOps::ROPE) stays hand-written.)
 
     // QMatMul: F32 activations, U32 weight blocks, F32 output.
-    table.register(QMatMul, &[f32_dt, u32_dt, f32_dt], cpu, qmatmul_f32_cpu_wrapper);
+    table.register(
+        QMatMul,
+        &[f32_dt, u32_dt, f32_dt],
+        cpu,
+        qmatmul_f32_cpu_wrapper,
+    );
 
     // (IndexAdd / ScatterAdd × 4 dtypes (key [T, U32, T, T]) are now registered
     // FROM the indexing FKC contract via register_cpu_indexing_from_contract
@@ -5881,7 +7308,15 @@ pub fn register_cpu_kernels(table: &mut KernelBindingTable) {
     // here let direct executor tests round-trip through OpKind::Copy
     // on the universal fallback).
     let copy_dtypes = [
-        f32_dt, f64_dt, bf16_dt, f16_dt, u32_dt, u8_dt, DType::I16, DType::I32, DType::I64,
+        f32_dt,
+        f64_dt,
+        bf16_dt,
+        f16_dt,
+        u32_dt,
+        u8_dt,
+        DType::I16,
+        DType::I32,
+        DType::I64,
         // GAP-168(c): Bool (a comparison mask) must be copyable — realize splices
         // Op::Copy to materialize a result to host.
         DType::Bool,
@@ -5949,10 +7384,7 @@ pub(crate) fn cuda_input(s: &Storage) -> Result<&fuel_cuda_backend::CudaStorageB
     match &s.inner {
         BackendStorage::Cuda(c) => Ok(c),
         #[allow(unreachable_patterns)]
-        _ => Err(Error::Msg(
-            "cuda kernel wrapper called with non-CUDA input".to_string(),
-        )
-        .bt()),
+        _ => Err(Error::Msg("cuda kernel wrapper called with non-CUDA input".to_string()).bt()),
     }
 }
 
@@ -5962,10 +7394,7 @@ pub(crate) fn cuda_output(s: &mut Storage) -> Result<&mut fuel_cuda_backend::Cud
     match &mut s.inner {
         BackendStorage::Cuda(c) => Ok(c),
         #[allow(unreachable_patterns)]
-        _ => Err(Error::Msg(
-            "cuda kernel wrapper called with non-CUDA output".to_string(),
-        )
-        .bt()),
+        _ => Err(Error::Msg("cuda kernel wrapper called with non-CUDA output".to_string()).bt()),
     }
 }
 
@@ -6001,8 +7430,10 @@ fn copy_from_cuda_wrapper(
     if inputs.len() != 1 || outputs.len() != 1 {
         return Err(Error::Msg(format!(
             "copy_from_cuda_wrapper: expected 1 input + 1 output, got {} + {}",
-            inputs.len(), outputs.len(),
-        )).bt());
+            inputs.len(),
+            outputs.len(),
+        ))
+        .bt());
     }
     let in_guard = read_storage(&inputs[0])?;
     let cuda_src = cuda_input(&in_guard)?;
@@ -6045,7 +7476,8 @@ fn copy_from_cuda_wrapper(
              (CUDA sources copy to CPU or CUDA outputs only; cross-vendor \
              GPU transfer goes through host staging as two Copy hops)",
             std::mem::discriminant(other),
-        )).bt()),
+        ))
+        .bt()),
     }
 }
 
@@ -6077,8 +7509,15 @@ pub fn register_cuda_kernels(table: &mut KernelBindingTable) {
     // key (= Cuda); the wrapper produces a CPU output, copying through
     // `CudaStorageBytes::to_cpu_bytes`. Bridge-retirement Phase 2.
     let copy_dtypes = [
-        DType::F32, DType::BF16, DType::F16, DType::U32,
-        DType::F64, DType::U8, DType::I16, DType::I32, DType::I64,
+        DType::F32,
+        DType::BF16,
+        DType::F16,
+        DType::U32,
+        DType::F64,
+        DType::U8,
+        DType::I16,
+        DType::I32,
+        DType::I64,
         // GAP-168(c): Bool (a comparison mask) must be copyable — realize splices
         // `Op::Copy { target: Cpu }` to materialize a device result to host, so
         // WITHOUT this every realized CUDA comparison fails to dispatch. This is a
@@ -6200,11 +7639,11 @@ fn device_inflight_table() -> &'static RwLock<HashMap<DeviceLocation, AtomicU32>
 pub fn inflight_inc(loc: DeviceLocation) {
     let table = device_inflight_table();
     // Fast path: slot already exists — read lock + relaxed add, no map mutation.
-    if let Ok(guard) = table.read() {
-        if let Some(slot) = guard.get(&loc) {
-            slot.fetch_add(1, Ordering::Relaxed);
-            return;
-        }
+    if let Ok(guard) = table.read()
+        && let Some(slot) = guard.get(&loc)
+    {
+        slot.fetch_add(1, Ordering::Relaxed);
+        return;
     }
     // Slow path: create the slot. `entry().or_insert` is idempotent under the
     // write lock, so a racing inc that took the same slow path is harmless —
@@ -6226,13 +7665,13 @@ pub fn inflight_inc(loc: DeviceLocation) {
 /// actually fires; it is pure defense.)
 pub fn inflight_dec(loc: DeviceLocation) {
     let table = device_inflight_table();
-    if let Ok(guard) = table.read() {
-        if let Some(slot) = guard.get(&loc) {
-            // saturating: never wrap below 0.
-            let _ = slot.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-                Some(v.saturating_sub(1))
-            });
-        }
+    if let Ok(guard) = table.read()
+        && let Some(slot) = guard.get(&loc)
+    {
+        // saturating: never wrap below 0.
+        let _ = slot.try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+            Some(v.saturating_sub(1))
+        });
     }
 }
 
@@ -6312,8 +7751,8 @@ fn bindings_cell() -> &'static RwLock<Arc<KernelBindingTable>> {
 }
 
 fn default_cpu_caps() -> BackendCapabilities {
-    use std::collections::HashSet;
     use OpKind::*;
+    use std::collections::HashSet;
     let mut op_dtype_support = HashSet::new();
     // The CPU coverage set must stay in lockstep with
     // `register_cpu_kernels`: each (op, dtype) pair registered there
@@ -6448,13 +7887,34 @@ fn default_cpu_caps() -> BackendCapabilities {
     // Rope, Conv2D, ConvTranspose2D, ReduceSumTo, ReduceMaxTo,
     // FusedLinear, FlashAttn, PagedAttn) — all use the f32-accumulator
     // pattern.
-    for op in [SoftmaxLastDim, RmsNormLastDim, LayerNormLastDim, Rope, Conv2D, ConvTranspose2D, ReduceSumTo, ReduceMaxTo, FusedLinear, FlashAttn, PagedAttn] {
+    for op in [
+        SoftmaxLastDim,
+        RmsNormLastDim,
+        LayerNormLastDim,
+        Rope,
+        Conv2D,
+        ConvTranspose2D,
+        ReduceSumTo,
+        ReduceMaxTo,
+        FusedLinear,
+        FlashAttn,
+        PagedAttn,
+    ] {
         op_dtype_support.insert((op, DType::BF16));
         op_dtype_support.insert((op, DType::F16));
     }
     // Concat / IndexSelect / Gather are dtype-agnostic at the
     // byte level — advertised across the universal float/int set.
-    for dt in [DType::F64, DType::BF16, DType::F16, DType::U32, DType::U8, DType::I16, DType::I32, DType::I64] {
+    for dt in [
+        DType::F64,
+        DType::BF16,
+        DType::F16,
+        DType::U32,
+        DType::U8,
+        DType::I16,
+        DType::I32,
+        DType::I64,
+    ] {
         op_dtype_support.insert((Concat, dt));
         op_dtype_support.insert((IndexSelect, dt));
         op_dtype_support.insert((Gather, dt));
@@ -6737,10 +8197,7 @@ fn register_optional_backends(table: &mut KernelBindingTable) {
         // uses (op FLOPs/bytes are backend-agnostic; per-backend
         // throughput is a Layer-2 / Part-C refinement). Without this,
         // even a *capped* CUDA candidate would price at zero.
-        table.fill_unset_cost_for_backend(
-            BackendId::Cuda,
-            crate::cost::default_cost_for_op_kind,
-        );
+        table.fill_unset_cost_for_backend(BackendId::Cuda, crate::cost::default_cost_for_op_kind);
     }
     #[cfg(feature = "vulkan")]
     {
@@ -7007,11 +8464,8 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
     // IMPORTED from their `audited: true` FKC contracts (below), so their cost fns
     // + `*_CPU_PRECISION` consts are no longer imported into this fn.
     use crate::fused::{
-        cost_attn_backward_cpu, cost_attn_cpu,
-        cost_nf4_matmul_cpu,
-        ATTN_BACKWARD_CPU_PRECISION,
-        ATTN_CPU_PRECISION,
-        NF4_MATMUL_CPU_PRECISION,
+        ATTN_BACKWARD_CPU_PRECISION, ATTN_CPU_PRECISION, NF4_MATMUL_CPU_PRECISION,
+        cost_attn_backward_cpu, cost_attn_cpu, cost_nf4_matmul_cpu,
     };
     use crate::register_fused;
     use fuel_graph::registry::FusedOps;
@@ -7027,36 +8481,136 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
 
     // FlashAttn: (q, k, v, [alibi], out) — no-alibi 4-tuple,
     // with-alibi 5-tuple. Same wrapper handles both.
-    const FA_F32_NOA:  &[DType] = &[DType::F32,  DType::F32,  DType::F32,  DType::F32];
-    const FA_F32_A:    &[DType] = &[DType::F32,  DType::F32,  DType::F32,  DType::F32,  DType::F32];
-    const FA_F64_NOA:  &[DType] = &[DType::F64,  DType::F64,  DType::F64,  DType::F64];
-    const FA_F64_A:    &[DType] = &[DType::F64,  DType::F64,  DType::F64,  DType::F64,  DType::F64];
+    const FA_F32_NOA: &[DType] = &[DType::F32, DType::F32, DType::F32, DType::F32];
+    const FA_F32_A: &[DType] = &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32];
+    const FA_F64_NOA: &[DType] = &[DType::F64, DType::F64, DType::F64, DType::F64];
+    const FA_F64_A: &[DType] = &[DType::F64, DType::F64, DType::F64, DType::F64, DType::F64];
     const FA_BF16_NOA: &[DType] = &[DType::BF16, DType::BF16, DType::BF16, DType::BF16];
-    const FA_BF16_A:   &[DType] = &[DType::BF16, DType::BF16, DType::BF16, DType::BF16, DType::BF16];
-    const FA_F16_NOA:  &[DType] = &[DType::F16,  DType::F16,  DType::F16,  DType::F16];
-    const FA_F16_A:    &[DType] = &[DType::F16,  DType::F16,  DType::F16,  DType::F16,  DType::F16];
+    const FA_BF16_A: &[DType] = &[
+        DType::BF16,
+        DType::BF16,
+        DType::BF16,
+        DType::BF16,
+        DType::BF16,
+    ];
+    const FA_F16_NOA: &[DType] = &[DType::F16, DType::F16, DType::F16, DType::F16];
+    const FA_F16_A: &[DType] = &[DType::F16, DType::F16, DType::F16, DType::F16, DType::F16];
 
     // FlashAttnBackward{Q,K,V}: (q, k, v, do, [alibi], out) —
     // no-alibi 5-tuple, with-alibi 6-tuple. Mirrors the binding-table
     // `fa_bw_no_alibi` / `fa_bw_with_alibi` key shapes.
-    const FAB_F32_NOA:  &[DType] = &[DType::F32,  DType::F32,  DType::F32,  DType::F32,  DType::F32];
-    const FAB_F32_A:    &[DType] = &[DType::F32,  DType::F32,  DType::F32,  DType::F32,  DType::F32,  DType::F32];
-    const FAB_F64_NOA:  &[DType] = &[DType::F64,  DType::F64,  DType::F64,  DType::F64,  DType::F64];
-    const FAB_F64_A:    &[DType] = &[DType::F64,  DType::F64,  DType::F64,  DType::F64,  DType::F64,  DType::F64];
-    const FAB_BF16_NOA: &[DType] = &[DType::BF16, DType::BF16, DType::BF16, DType::BF16, DType::BF16];
-    const FAB_BF16_A:   &[DType] = &[DType::BF16, DType::BF16, DType::BF16, DType::BF16, DType::BF16, DType::BF16];
-    const FAB_F16_NOA:  &[DType] = &[DType::F16,  DType::F16,  DType::F16,  DType::F16,  DType::F16];
-    const FAB_F16_A:    &[DType] = &[DType::F16,  DType::F16,  DType::F16,  DType::F16,  DType::F16,  DType::F16];
+    const FAB_F32_NOA: &[DType] = &[DType::F32, DType::F32, DType::F32, DType::F32, DType::F32];
+    const FAB_F32_A: &[DType] = &[
+        DType::F32,
+        DType::F32,
+        DType::F32,
+        DType::F32,
+        DType::F32,
+        DType::F32,
+    ];
+    const FAB_F64_NOA: &[DType] = &[DType::F64, DType::F64, DType::F64, DType::F64, DType::F64];
+    const FAB_F64_A: &[DType] = &[
+        DType::F64,
+        DType::F64,
+        DType::F64,
+        DType::F64,
+        DType::F64,
+        DType::F64,
+    ];
+    const FAB_BF16_NOA: &[DType] = &[
+        DType::BF16,
+        DType::BF16,
+        DType::BF16,
+        DType::BF16,
+        DType::BF16,
+    ];
+    const FAB_BF16_A: &[DType] = &[
+        DType::BF16,
+        DType::BF16,
+        DType::BF16,
+        DType::BF16,
+        DType::BF16,
+        DType::BF16,
+    ];
+    const FAB_F16_NOA: &[DType] = &[DType::F16, DType::F16, DType::F16, DType::F16, DType::F16];
+    const FAB_F16_A: &[DType] = &[
+        DType::F16,
+        DType::F16,
+        DType::F16,
+        DType::F16,
+        DType::F16,
+        DType::F16,
+    ];
 
     // PagedAttn: (q, kc, vc, bt:U32, cl:U32, [alibi], out).
-    const PA_F32_NOA:  &[DType] = &[DType::F32,  DType::F32,  DType::F32,  DType::U32, DType::U32, DType::F32];
-    const PA_F32_A:    &[DType] = &[DType::F32,  DType::F32,  DType::F32,  DType::U32, DType::U32, DType::F32,  DType::F32];
-    const PA_F64_NOA:  &[DType] = &[DType::F64,  DType::F64,  DType::F64,  DType::U32, DType::U32, DType::F64];
-    const PA_F64_A:    &[DType] = &[DType::F64,  DType::F64,  DType::F64,  DType::U32, DType::U32, DType::F64,  DType::F64];
-    const PA_BF16_NOA: &[DType] = &[DType::BF16, DType::BF16, DType::BF16, DType::U32, DType::U32, DType::BF16];
-    const PA_BF16_A:   &[DType] = &[DType::BF16, DType::BF16, DType::BF16, DType::U32, DType::U32, DType::BF16, DType::BF16];
-    const PA_F16_NOA:  &[DType] = &[DType::F16,  DType::F16,  DType::F16,  DType::U32, DType::U32, DType::F16];
-    const PA_F16_A:    &[DType] = &[DType::F16,  DType::F16,  DType::F16,  DType::U32, DType::U32, DType::F16,  DType::F16];
+    const PA_F32_NOA: &[DType] = &[
+        DType::F32,
+        DType::F32,
+        DType::F32,
+        DType::U32,
+        DType::U32,
+        DType::F32,
+    ];
+    const PA_F32_A: &[DType] = &[
+        DType::F32,
+        DType::F32,
+        DType::F32,
+        DType::U32,
+        DType::U32,
+        DType::F32,
+        DType::F32,
+    ];
+    const PA_F64_NOA: &[DType] = &[
+        DType::F64,
+        DType::F64,
+        DType::F64,
+        DType::U32,
+        DType::U32,
+        DType::F64,
+    ];
+    const PA_F64_A: &[DType] = &[
+        DType::F64,
+        DType::F64,
+        DType::F64,
+        DType::U32,
+        DType::U32,
+        DType::F64,
+        DType::F64,
+    ];
+    const PA_BF16_NOA: &[DType] = &[
+        DType::BF16,
+        DType::BF16,
+        DType::BF16,
+        DType::U32,
+        DType::U32,
+        DType::BF16,
+    ];
+    const PA_BF16_A: &[DType] = &[
+        DType::BF16,
+        DType::BF16,
+        DType::BF16,
+        DType::U32,
+        DType::U32,
+        DType::BF16,
+        DType::BF16,
+    ];
+    const PA_F16_NOA: &[DType] = &[
+        DType::F16,
+        DType::F16,
+        DType::F16,
+        DType::U32,
+        DType::U32,
+        DType::F16,
+    ];
+    const PA_F16_A: &[DType] = &[
+        DType::F16,
+        DType::F16,
+        DType::F16,
+        DType::U32,
+        DType::U32,
+        DType::F16,
+        DType::F16,
+    ];
 
     // (QMatMul's `(a:F32, w_q:U32, out:F32)` tuple is gone — QMATMUL is now
     // imported from the linear-quant FKC contract. The `[T, T, T]` backward-helper
@@ -7107,175 +8661,375 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
     // in `fuel-cuda-backend` ready for that kernel.
 
     // FlashAttn × 4 dtypes × {no-alibi, with-alibi}.
-    register_fused!(r, FusedOps::FLASH_ATTN, cpu, FA_F32_NOA,
+    register_fused!(
+        r,
+        FusedOps::FLASH_ATTN,
+        cpu,
+        FA_F32_NOA,
         flash_attn_f32_cpu_wrapper,
         cost = cost_attn_cpu,
-        precision = ATTN_CPU_PRECISION);
-    register_fused!(r, FusedOps::FLASH_ATTN, cpu, FA_F32_A,
+        precision = ATTN_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::FLASH_ATTN,
+        cpu,
+        FA_F32_A,
         flash_attn_f32_cpu_wrapper,
         cost = cost_attn_cpu,
-        precision = ATTN_CPU_PRECISION);
-    register_fused!(r, FusedOps::FLASH_ATTN, cpu, FA_F64_NOA,
+        precision = ATTN_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::FLASH_ATTN,
+        cpu,
+        FA_F64_NOA,
         flash_attn_f64_cpu_wrapper,
         cost = cost_attn_cpu,
-        precision = ATTN_CPU_PRECISION);
-    register_fused!(r, FusedOps::FLASH_ATTN, cpu, FA_F64_A,
+        precision = ATTN_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::FLASH_ATTN,
+        cpu,
+        FA_F64_A,
         flash_attn_f64_cpu_wrapper,
         cost = cost_attn_cpu,
-        precision = ATTN_CPU_PRECISION);
-    register_fused!(r, FusedOps::FLASH_ATTN, cpu, FA_BF16_NOA,
+        precision = ATTN_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::FLASH_ATTN,
+        cpu,
+        FA_BF16_NOA,
         flash_attn_bf16_cpu_wrapper,
         cost = cost_attn_cpu,
-        precision = ATTN_CPU_PRECISION);
-    register_fused!(r, FusedOps::FLASH_ATTN, cpu, FA_BF16_A,
+        precision = ATTN_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::FLASH_ATTN,
+        cpu,
+        FA_BF16_A,
         flash_attn_bf16_cpu_wrapper,
         cost = cost_attn_cpu,
-        precision = ATTN_CPU_PRECISION);
-    register_fused!(r, FusedOps::FLASH_ATTN, cpu, FA_F16_NOA,
+        precision = ATTN_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::FLASH_ATTN,
+        cpu,
+        FA_F16_NOA,
         flash_attn_f16_cpu_wrapper,
         cost = cost_attn_cpu,
-        precision = ATTN_CPU_PRECISION);
-    register_fused!(r, FusedOps::FLASH_ATTN, cpu, FA_F16_A,
+        precision = ATTN_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::FLASH_ATTN,
+        cpu,
+        FA_F16_A,
         flash_attn_f16_cpu_wrapper,
         cost = cost_attn_cpu,
-        precision = ATTN_CPU_PRECISION);
+        precision = ATTN_CPU_PRECISION
+    );
 
     // FlashAttnBackward{Q,K,V} × 4 dtypes × {no-alibi, with-alibi}.
     // Reuses the binding-table dispatch wrappers — the CPU kernel
     // computes all three gradients each call and the wrapper persists
     // the one matching the OpKind; the cost model accounts for that.
-    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_Q, cpu, FAB_F32_NOA,
+    register_fused!(
+        r,
+        FusedOps::FLASH_ATTN_BACKWARD_Q,
+        cpu,
+        FAB_F32_NOA,
         flash_attn_backward_q_f32_cpu_wrapper,
         cost = cost_attn_backward_cpu,
-        precision = ATTN_BACKWARD_CPU_PRECISION);
-    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_Q, cpu, FAB_F32_A,
+        precision = ATTN_BACKWARD_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::FLASH_ATTN_BACKWARD_Q,
+        cpu,
+        FAB_F32_A,
         flash_attn_backward_q_f32_cpu_wrapper,
         cost = cost_attn_backward_cpu,
-        precision = ATTN_BACKWARD_CPU_PRECISION);
-    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_Q, cpu, FAB_F64_NOA,
+        precision = ATTN_BACKWARD_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::FLASH_ATTN_BACKWARD_Q,
+        cpu,
+        FAB_F64_NOA,
         flash_attn_backward_q_f64_cpu_wrapper,
         cost = cost_attn_backward_cpu,
-        precision = ATTN_BACKWARD_CPU_PRECISION);
-    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_Q, cpu, FAB_F64_A,
+        precision = ATTN_BACKWARD_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::FLASH_ATTN_BACKWARD_Q,
+        cpu,
+        FAB_F64_A,
         flash_attn_backward_q_f64_cpu_wrapper,
         cost = cost_attn_backward_cpu,
-        precision = ATTN_BACKWARD_CPU_PRECISION);
-    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_Q, cpu, FAB_BF16_NOA,
+        precision = ATTN_BACKWARD_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::FLASH_ATTN_BACKWARD_Q,
+        cpu,
+        FAB_BF16_NOA,
         flash_attn_backward_q_bf16_cpu_wrapper,
         cost = cost_attn_backward_cpu,
-        precision = ATTN_BACKWARD_CPU_PRECISION);
-    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_Q, cpu, FAB_BF16_A,
+        precision = ATTN_BACKWARD_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::FLASH_ATTN_BACKWARD_Q,
+        cpu,
+        FAB_BF16_A,
         flash_attn_backward_q_bf16_cpu_wrapper,
         cost = cost_attn_backward_cpu,
-        precision = ATTN_BACKWARD_CPU_PRECISION);
-    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_Q, cpu, FAB_F16_NOA,
+        precision = ATTN_BACKWARD_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::FLASH_ATTN_BACKWARD_Q,
+        cpu,
+        FAB_F16_NOA,
         flash_attn_backward_q_f16_cpu_wrapper,
         cost = cost_attn_backward_cpu,
-        precision = ATTN_BACKWARD_CPU_PRECISION);
-    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_Q, cpu, FAB_F16_A,
+        precision = ATTN_BACKWARD_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::FLASH_ATTN_BACKWARD_Q,
+        cpu,
+        FAB_F16_A,
         flash_attn_backward_q_f16_cpu_wrapper,
         cost = cost_attn_backward_cpu,
-        precision = ATTN_BACKWARD_CPU_PRECISION);
+        precision = ATTN_BACKWARD_CPU_PRECISION
+    );
 
-    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_K, cpu, FAB_F32_NOA,
+    register_fused!(
+        r,
+        FusedOps::FLASH_ATTN_BACKWARD_K,
+        cpu,
+        FAB_F32_NOA,
         flash_attn_backward_k_f32_cpu_wrapper,
         cost = cost_attn_backward_cpu,
-        precision = ATTN_BACKWARD_CPU_PRECISION);
-    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_K, cpu, FAB_F32_A,
+        precision = ATTN_BACKWARD_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::FLASH_ATTN_BACKWARD_K,
+        cpu,
+        FAB_F32_A,
         flash_attn_backward_k_f32_cpu_wrapper,
         cost = cost_attn_backward_cpu,
-        precision = ATTN_BACKWARD_CPU_PRECISION);
-    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_K, cpu, FAB_F64_NOA,
+        precision = ATTN_BACKWARD_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::FLASH_ATTN_BACKWARD_K,
+        cpu,
+        FAB_F64_NOA,
         flash_attn_backward_k_f64_cpu_wrapper,
         cost = cost_attn_backward_cpu,
-        precision = ATTN_BACKWARD_CPU_PRECISION);
-    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_K, cpu, FAB_F64_A,
+        precision = ATTN_BACKWARD_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::FLASH_ATTN_BACKWARD_K,
+        cpu,
+        FAB_F64_A,
         flash_attn_backward_k_f64_cpu_wrapper,
         cost = cost_attn_backward_cpu,
-        precision = ATTN_BACKWARD_CPU_PRECISION);
-    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_K, cpu, FAB_BF16_NOA,
+        precision = ATTN_BACKWARD_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::FLASH_ATTN_BACKWARD_K,
+        cpu,
+        FAB_BF16_NOA,
         flash_attn_backward_k_bf16_cpu_wrapper,
         cost = cost_attn_backward_cpu,
-        precision = ATTN_BACKWARD_CPU_PRECISION);
-    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_K, cpu, FAB_BF16_A,
+        precision = ATTN_BACKWARD_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::FLASH_ATTN_BACKWARD_K,
+        cpu,
+        FAB_BF16_A,
         flash_attn_backward_k_bf16_cpu_wrapper,
         cost = cost_attn_backward_cpu,
-        precision = ATTN_BACKWARD_CPU_PRECISION);
-    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_K, cpu, FAB_F16_NOA,
+        precision = ATTN_BACKWARD_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::FLASH_ATTN_BACKWARD_K,
+        cpu,
+        FAB_F16_NOA,
         flash_attn_backward_k_f16_cpu_wrapper,
         cost = cost_attn_backward_cpu,
-        precision = ATTN_BACKWARD_CPU_PRECISION);
-    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_K, cpu, FAB_F16_A,
+        precision = ATTN_BACKWARD_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::FLASH_ATTN_BACKWARD_K,
+        cpu,
+        FAB_F16_A,
         flash_attn_backward_k_f16_cpu_wrapper,
         cost = cost_attn_backward_cpu,
-        precision = ATTN_BACKWARD_CPU_PRECISION);
+        precision = ATTN_BACKWARD_CPU_PRECISION
+    );
 
-    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_V, cpu, FAB_F32_NOA,
+    register_fused!(
+        r,
+        FusedOps::FLASH_ATTN_BACKWARD_V,
+        cpu,
+        FAB_F32_NOA,
         flash_attn_backward_v_f32_cpu_wrapper,
         cost = cost_attn_backward_cpu,
-        precision = ATTN_BACKWARD_CPU_PRECISION);
-    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_V, cpu, FAB_F32_A,
+        precision = ATTN_BACKWARD_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::FLASH_ATTN_BACKWARD_V,
+        cpu,
+        FAB_F32_A,
         flash_attn_backward_v_f32_cpu_wrapper,
         cost = cost_attn_backward_cpu,
-        precision = ATTN_BACKWARD_CPU_PRECISION);
-    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_V, cpu, FAB_F64_NOA,
+        precision = ATTN_BACKWARD_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::FLASH_ATTN_BACKWARD_V,
+        cpu,
+        FAB_F64_NOA,
         flash_attn_backward_v_f64_cpu_wrapper,
         cost = cost_attn_backward_cpu,
-        precision = ATTN_BACKWARD_CPU_PRECISION);
-    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_V, cpu, FAB_F64_A,
+        precision = ATTN_BACKWARD_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::FLASH_ATTN_BACKWARD_V,
+        cpu,
+        FAB_F64_A,
         flash_attn_backward_v_f64_cpu_wrapper,
         cost = cost_attn_backward_cpu,
-        precision = ATTN_BACKWARD_CPU_PRECISION);
-    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_V, cpu, FAB_BF16_NOA,
+        precision = ATTN_BACKWARD_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::FLASH_ATTN_BACKWARD_V,
+        cpu,
+        FAB_BF16_NOA,
         flash_attn_backward_v_bf16_cpu_wrapper,
         cost = cost_attn_backward_cpu,
-        precision = ATTN_BACKWARD_CPU_PRECISION);
-    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_V, cpu, FAB_BF16_A,
+        precision = ATTN_BACKWARD_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::FLASH_ATTN_BACKWARD_V,
+        cpu,
+        FAB_BF16_A,
         flash_attn_backward_v_bf16_cpu_wrapper,
         cost = cost_attn_backward_cpu,
-        precision = ATTN_BACKWARD_CPU_PRECISION);
-    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_V, cpu, FAB_F16_NOA,
+        precision = ATTN_BACKWARD_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::FLASH_ATTN_BACKWARD_V,
+        cpu,
+        FAB_F16_NOA,
         flash_attn_backward_v_f16_cpu_wrapper,
         cost = cost_attn_backward_cpu,
-        precision = ATTN_BACKWARD_CPU_PRECISION);
-    register_fused!(r, FusedOps::FLASH_ATTN_BACKWARD_V, cpu, FAB_F16_A,
+        precision = ATTN_BACKWARD_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::FLASH_ATTN_BACKWARD_V,
+        cpu,
+        FAB_F16_A,
         flash_attn_backward_v_f16_cpu_wrapper,
         cost = cost_attn_backward_cpu,
-        precision = ATTN_BACKWARD_CPU_PRECISION);
+        precision = ATTN_BACKWARD_CPU_PRECISION
+    );
 
     // PagedAttn × 4 dtypes × {no-alibi, with-alibi}.
-    register_fused!(r, FusedOps::PAGED_ATTN, cpu, PA_F32_NOA,
+    register_fused!(
+        r,
+        FusedOps::PAGED_ATTN,
+        cpu,
+        PA_F32_NOA,
         paged_attn_f32_cpu_wrapper,
         cost = cost_attn_cpu,
-        precision = ATTN_CPU_PRECISION);
-    register_fused!(r, FusedOps::PAGED_ATTN, cpu, PA_F32_A,
+        precision = ATTN_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::PAGED_ATTN,
+        cpu,
+        PA_F32_A,
         paged_attn_f32_cpu_wrapper,
         cost = cost_attn_cpu,
-        precision = ATTN_CPU_PRECISION);
-    register_fused!(r, FusedOps::PAGED_ATTN, cpu, PA_F64_NOA,
+        precision = ATTN_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::PAGED_ATTN,
+        cpu,
+        PA_F64_NOA,
         paged_attn_f64_cpu_wrapper,
         cost = cost_attn_cpu,
-        precision = ATTN_CPU_PRECISION);
-    register_fused!(r, FusedOps::PAGED_ATTN, cpu, PA_F64_A,
+        precision = ATTN_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::PAGED_ATTN,
+        cpu,
+        PA_F64_A,
         paged_attn_f64_cpu_wrapper,
         cost = cost_attn_cpu,
-        precision = ATTN_CPU_PRECISION);
-    register_fused!(r, FusedOps::PAGED_ATTN, cpu, PA_BF16_NOA,
+        precision = ATTN_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::PAGED_ATTN,
+        cpu,
+        PA_BF16_NOA,
         paged_attn_bf16_cpu_wrapper,
         cost = cost_attn_cpu,
-        precision = ATTN_CPU_PRECISION);
-    register_fused!(r, FusedOps::PAGED_ATTN, cpu, PA_BF16_A,
+        precision = ATTN_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::PAGED_ATTN,
+        cpu,
+        PA_BF16_A,
         paged_attn_bf16_cpu_wrapper,
         cost = cost_attn_cpu,
-        precision = ATTN_CPU_PRECISION);
-    register_fused!(r, FusedOps::PAGED_ATTN, cpu, PA_F16_NOA,
+        precision = ATTN_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::PAGED_ATTN,
+        cpu,
+        PA_F16_NOA,
         paged_attn_f16_cpu_wrapper,
         cost = cost_attn_cpu,
-        precision = ATTN_CPU_PRECISION);
-    register_fused!(r, FusedOps::PAGED_ATTN, cpu, PA_F16_A,
+        precision = ATTN_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::PAGED_ATTN,
+        cpu,
+        PA_F16_A,
         paged_attn_f16_cpu_wrapper,
         cost = cost_attn_cpu,
-        precision = ATTN_CPU_PRECISION);
+        precision = ATTN_CPU_PRECISION
+    );
 
     // (QMATMUL × F32 activations × U32 weights — 1 impl — is now IMPORTED from
     // the linear-quant FKC contract, above. The `[T, T, T]` backward helpers
@@ -7287,21 +9041,36 @@ pub fn register_default_fused_kernels(r: &mut crate::fused::FusedKernelRegistry)
 
     // NF4_MATMUL — four-tuple (activations T, w_packed U8, absmax
     // F32, out T), 3 dtype variants (T ∈ {F32, F16, BF16}).
-    const NF4_F32:  &[DType] = &[DType::F32,  DType::U8, DType::F32, DType::F32];
-    const NF4_F16:  &[DType] = &[DType::F16,  DType::U8, DType::F32, DType::F16];
+    const NF4_F32: &[DType] = &[DType::F32, DType::U8, DType::F32, DType::F32];
+    const NF4_F16: &[DType] = &[DType::F16, DType::U8, DType::F32, DType::F16];
     const NF4_BF16: &[DType] = &[DType::BF16, DType::U8, DType::F32, DType::BF16];
-    register_fused!(r, FusedOps::NF4_MATMUL, cpu, NF4_F32,
+    register_fused!(
+        r,
+        FusedOps::NF4_MATMUL,
+        cpu,
+        NF4_F32,
         nf4_matmul_f32_cpu_wrapper,
         cost = cost_nf4_matmul_cpu,
-        precision = NF4_MATMUL_CPU_PRECISION);
-    register_fused!(r, FusedOps::NF4_MATMUL, cpu, NF4_F16,
+        precision = NF4_MATMUL_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::NF4_MATMUL,
+        cpu,
+        NF4_F16,
         nf4_matmul_f16_cpu_wrapper,
         cost = cost_nf4_matmul_cpu,
-        precision = NF4_MATMUL_CPU_PRECISION);
-    register_fused!(r, FusedOps::NF4_MATMUL, cpu, NF4_BF16,
+        precision = NF4_MATMUL_CPU_PRECISION
+    );
+    register_fused!(
+        r,
+        FusedOps::NF4_MATMUL,
+        cpu,
+        NF4_BF16,
         nf4_matmul_bf16_cpu_wrapper,
         cost = cost_nf4_matmul_cpu,
-        precision = NF4_MATMUL_CPU_PRECISION);
+        precision = NF4_MATMUL_CPU_PRECISION
+    );
 }
 
 #[cfg(test)]
@@ -7345,10 +9114,22 @@ mod tests {
 
         // --- FUSED_LINEAR: 4 dtypes, key [T, T, T, T] ---
         for (dt, expected) in [
-            (DType::F32,  fused_linear_f32_cpu_wrapper as usize),
-            (DType::F64,  fused_linear_f64_cpu_wrapper as usize),
-            (DType::BF16, fused_linear_bf16_cpu_wrapper as usize),
-            (DType::F16,  fused_linear_f16_cpu_wrapper as usize),
+            (
+                DType::F32,
+                fused_linear_f32_cpu_wrapper as *const () as usize,
+            ),
+            (
+                DType::F64,
+                fused_linear_f64_cpu_wrapper as *const () as usize,
+            ),
+            (
+                DType::BF16,
+                fused_linear_bf16_cpu_wrapper as *const () as usize,
+            ),
+            (
+                DType::F16,
+                fused_linear_f16_cpu_wrapper as *const () as usize,
+            ),
         ] {
             let got = r
                 .lookup_by_dtypes(FusedOps::FUSED_LINEAR, BackendId::Cpu, &[dt, dt, dt, dt])
@@ -7358,7 +9139,8 @@ mod tests {
                 "FUSED_LINEAR {dt:?} binds its exact per-dtype production wrapper",
             );
             assert_ne!(
-                got.revision, KernelRevisionHash::UNTRACKED,
+                got.revision,
+                KernelRevisionHash::UNTRACKED,
                 "FKC-imported FUSED_LINEAR {dt:?} carries the contract's real revision \
                  (hand-written register_fused! stamps UNTRACKED)",
             );
@@ -7372,15 +9154,30 @@ mod tests {
                 &[DType::F32, DType::U32, DType::F32],
             )
             .expect("QMATMUL migrated impl present at [F32, U32, F32]");
-        assert_eq!(qm.kernel as usize, qmatmul_f32_cpu_wrapper as usize);
+        assert_eq!(
+            qm.kernel as usize,
+            qmatmul_f32_cpu_wrapper as *const () as usize
+        );
         assert_ne!(qm.revision, KernelRevisionHash::UNTRACKED);
 
         // --- INPLACE_AFFINE: 4 dtypes, key [T, T] ---
         for (dt, expected) in [
-            (DType::F32,  inplace_affine_f32_cpu_wrapper as usize),
-            (DType::F64,  inplace_affine_f64_cpu_wrapper as usize),
-            (DType::BF16, inplace_affine_bf16_cpu_wrapper as usize),
-            (DType::F16,  inplace_affine_f16_cpu_wrapper as usize),
+            (
+                DType::F32,
+                inplace_affine_f32_cpu_wrapper as *const () as usize,
+            ),
+            (
+                DType::F64,
+                inplace_affine_f64_cpu_wrapper as *const () as usize,
+            ),
+            (
+                DType::BF16,
+                inplace_affine_bf16_cpu_wrapper as *const () as usize,
+            ),
+            (
+                DType::F16,
+                inplace_affine_f16_cpu_wrapper as *const () as usize,
+            ),
         ] {
             let got = r
                 .lookup_by_dtypes(FusedOps::INPLACE_AFFINE, BackendId::Cpu, &[dt, dt])
@@ -7391,10 +9188,22 @@ mod tests {
 
         // --- FUSED_SOFTMAX_CROSS_ENTROPY: 4 dtypes, key [T, I64, F32] ---
         for (dt, expected) in [
-            (DType::F32,  fused_softmax_cross_entropy_f32_cpu_wrapper as usize),
-            (DType::F64,  fused_softmax_cross_entropy_f64_cpu_wrapper as usize),
-            (DType::BF16, fused_softmax_cross_entropy_bf16_cpu_wrapper as usize),
-            (DType::F16,  fused_softmax_cross_entropy_f16_cpu_wrapper as usize),
+            (
+                DType::F32,
+                fused_softmax_cross_entropy_f32_cpu_wrapper as *const () as usize,
+            ),
+            (
+                DType::F64,
+                fused_softmax_cross_entropy_f64_cpu_wrapper as *const () as usize,
+            ),
+            (
+                DType::BF16,
+                fused_softmax_cross_entropy_bf16_cpu_wrapper as *const () as usize,
+            ),
+            (
+                DType::F16,
+                fused_softmax_cross_entropy_f16_cpu_wrapper as *const () as usize,
+            ),
         ] {
             let got = r
                 .lookup_by_dtypes(
@@ -7415,9 +9224,13 @@ mod tests {
                 &[DType::F32, DType::F32, DType::F32, DType::F32],
             )
             .expect("FLASH_ATTN hand-written impl present");
-        assert_eq!(fa.kernel as usize, flash_attn_f32_cpu_wrapper as usize);
         assert_eq!(
-            fa.revision, KernelRevisionHash::UNTRACKED,
+            fa.kernel as usize,
+            flash_attn_f32_cpu_wrapper as *const () as usize
+        );
+        assert_eq!(
+            fa.revision,
+            KernelRevisionHash::UNTRACKED,
             "unmigrated FLASH_ATTN keeps its hand-written UNTRACKED revision",
         );
 
@@ -7429,9 +9242,13 @@ mod tests {
                 &[DType::F32, DType::U8, DType::F32, DType::F32],
             )
             .expect("NF4_MATMUL hand-written impl present (AFFINE_BLOCK deferred)");
-        assert_eq!(nf4.kernel as usize, nf4_matmul_f32_cpu_wrapper as usize);
         assert_eq!(
-            nf4.revision, KernelRevisionHash::UNTRACKED,
+            nf4.kernel as usize,
+            nf4_matmul_f32_cpu_wrapper as *const () as usize
+        );
+        assert_eq!(
+            nf4.revision,
+            KernelRevisionHash::UNTRACKED,
             "deferred NF4_MATMUL keeps its hand-written UNTRACKED revision",
         );
     }
@@ -7473,28 +9290,28 @@ mod tests {
             (
                 FusedOps::SOFTMAX_LAST_DIM,
                 [
-                    softmax_last_dim_f32_cpu_wrapper as usize,
-                    softmax_last_dim_f64_cpu_wrapper as usize,
-                    softmax_last_dim_bf16_cpu_wrapper as usize,
-                    softmax_last_dim_f16_cpu_wrapper as usize,
+                    softmax_last_dim_f32_cpu_wrapper as *const () as usize,
+                    softmax_last_dim_f64_cpu_wrapper as *const () as usize,
+                    softmax_last_dim_bf16_cpu_wrapper as *const () as usize,
+                    softmax_last_dim_f16_cpu_wrapper as *const () as usize,
                 ],
             ),
             (
                 FusedOps::RMS_NORM_LAST_DIM,
                 [
-                    rms_norm_last_dim_f32_cpu_wrapper as usize,
-                    rms_norm_last_dim_f64_cpu_wrapper as usize,
-                    rms_norm_last_dim_bf16_cpu_wrapper as usize,
-                    rms_norm_last_dim_f16_cpu_wrapper as usize,
+                    rms_norm_last_dim_f32_cpu_wrapper as *const () as usize,
+                    rms_norm_last_dim_f64_cpu_wrapper as *const () as usize,
+                    rms_norm_last_dim_bf16_cpu_wrapper as *const () as usize,
+                    rms_norm_last_dim_f16_cpu_wrapper as *const () as usize,
                 ],
             ),
             (
                 FusedOps::LAYER_NORM_LAST_DIM,
                 [
-                    layer_norm_last_dim_f32_cpu_wrapper as usize,
-                    layer_norm_last_dim_f64_cpu_wrapper as usize,
-                    layer_norm_last_dim_bf16_cpu_wrapper as usize,
-                    layer_norm_last_dim_f16_cpu_wrapper as usize,
+                    layer_norm_last_dim_f32_cpu_wrapper as *const () as usize,
+                    layer_norm_last_dim_f64_cpu_wrapper as *const () as usize,
+                    layer_norm_last_dim_bf16_cpu_wrapper as *const () as usize,
+                    layer_norm_last_dim_f16_cpu_wrapper as *const () as usize,
                 ],
             ),
         ];
@@ -7511,7 +9328,8 @@ mod tests {
                     "{id:?} {dt:?} binds its exact per-dtype production wrapper",
                 );
                 assert_ne!(
-                    got.revision, KernelRevisionHash::UNTRACKED,
+                    got.revision,
+                    KernelRevisionHash::UNTRACKED,
                     "FKC-imported {id:?} {dt:?} carries the contract's real revision \
                      (hand-written register_fused! stamps UNTRACKED)",
                 );
@@ -7529,46 +9347,46 @@ mod tests {
             (
                 FusedOps::SOFTMAX_LAST_DIM_BACKWARD,
                 [
-                    softmax_last_dim_backward_f32_cpu_wrapper as usize,
-                    softmax_last_dim_backward_f64_cpu_wrapper as usize,
-                    softmax_last_dim_backward_bf16_cpu_wrapper as usize,
-                    softmax_last_dim_backward_f16_cpu_wrapper as usize,
+                    softmax_last_dim_backward_f32_cpu_wrapper as *const () as usize,
+                    softmax_last_dim_backward_f64_cpu_wrapper as *const () as usize,
+                    softmax_last_dim_backward_bf16_cpu_wrapper as *const () as usize,
+                    softmax_last_dim_backward_f16_cpu_wrapper as *const () as usize,
                 ],
             ),
             (
                 FusedOps::LAYER_NORM_LAST_DIM_BACKWARD,
                 [
-                    layer_norm_last_dim_backward_f32_cpu_wrapper as usize,
-                    layer_norm_last_dim_backward_f64_cpu_wrapper as usize,
-                    layer_norm_last_dim_backward_bf16_cpu_wrapper as usize,
-                    layer_norm_last_dim_backward_f16_cpu_wrapper as usize,
+                    layer_norm_last_dim_backward_f32_cpu_wrapper as *const () as usize,
+                    layer_norm_last_dim_backward_f64_cpu_wrapper as *const () as usize,
+                    layer_norm_last_dim_backward_bf16_cpu_wrapper as *const () as usize,
+                    layer_norm_last_dim_backward_f16_cpu_wrapper as *const () as usize,
                 ],
             ),
             (
                 FusedOps::RMS_NORM_LAST_DIM_BACKWARD,
                 [
-                    rms_norm_last_dim_backward_f32_cpu_wrapper as usize,
-                    rms_norm_last_dim_backward_f64_cpu_wrapper as usize,
-                    rms_norm_last_dim_backward_bf16_cpu_wrapper as usize,
-                    rms_norm_last_dim_backward_f16_cpu_wrapper as usize,
+                    rms_norm_last_dim_backward_f32_cpu_wrapper as *const () as usize,
+                    rms_norm_last_dim_backward_f64_cpu_wrapper as *const () as usize,
+                    rms_norm_last_dim_backward_bf16_cpu_wrapper as *const () as usize,
+                    rms_norm_last_dim_backward_f16_cpu_wrapper as *const () as usize,
                 ],
             ),
             (
                 FusedOps::REDUCE_MAX_TO_BACKWARD,
                 [
-                    reduce_max_to_backward_f32_cpu_wrapper as usize,
-                    reduce_max_to_backward_f64_cpu_wrapper as usize,
-                    reduce_max_to_backward_bf16_cpu_wrapper as usize,
-                    reduce_max_to_backward_f16_cpu_wrapper as usize,
+                    reduce_max_to_backward_f32_cpu_wrapper as *const () as usize,
+                    reduce_max_to_backward_f64_cpu_wrapper as *const () as usize,
+                    reduce_max_to_backward_bf16_cpu_wrapper as *const () as usize,
+                    reduce_max_to_backward_f16_cpu_wrapper as *const () as usize,
                 ],
             ),
             (
                 FusedOps::POWI_BACKWARD,
                 [
-                    powi_backward_f32_cpu_wrapper as usize,
-                    powi_backward_f64_cpu_wrapper as usize,
-                    powi_backward_bf16_cpu_wrapper as usize,
-                    powi_backward_f16_cpu_wrapper as usize,
+                    powi_backward_f32_cpu_wrapper as *const () as usize,
+                    powi_backward_f64_cpu_wrapper as *const () as usize,
+                    powi_backward_bf16_cpu_wrapper as *const () as usize,
+                    powi_backward_f16_cpu_wrapper as *const () as usize,
                 ],
             ),
         ];
@@ -7582,7 +9400,8 @@ mod tests {
                     .unwrap_or_else(|| panic!("{id:?} {dt:?} migrated impl present"));
                 assert_eq!(got.kernel as usize, expected);
                 assert_ne!(
-                    got.revision, KernelRevisionHash::UNTRACKED,
+                    got.revision,
+                    KernelRevisionHash::UNTRACKED,
                     "FKC-imported {id:?} {dt:?} carries the contract's real revision",
                 );
                 assert!(
@@ -7602,7 +9421,8 @@ mod tests {
             )
             .expect("FLASH_ATTN hand-written impl present");
         assert_eq!(
-            fa.revision, KernelRevisionHash::UNTRACKED,
+            fa.revision,
+            KernelRevisionHash::UNTRACKED,
             "unmigrated FLASH_ATTN keeps its hand-written UNTRACKED revision",
         );
     }
@@ -7637,17 +9457,21 @@ mod tests {
 
         // ROPE — key [T, T, T, T] (x, cos, sin + out).
         let rope_w = [
-            rope_f32_cpu_wrapper as usize,
-            rope_f64_cpu_wrapper as usize,
-            rope_bf16_cpu_wrapper as usize,
-            rope_f16_cpu_wrapper as usize,
+            rope_f32_cpu_wrapper as *const () as usize,
+            rope_f64_cpu_wrapper as *const () as usize,
+            rope_bf16_cpu_wrapper as *const () as usize,
+            rope_f16_cpu_wrapper as *const () as usize,
         ];
         for (dt, expected) in dts.iter().zip(rope_w) {
             let got = r
                 .lookup_by_dtypes(FusedOps::ROPE, BackendId::Cpu, &[*dt, *dt, *dt, *dt])
                 .unwrap_or_else(|| panic!("ROPE {dt:?} migrated impl present"));
             assert_eq!(got.kernel as usize, expected);
-            assert_ne!(got.revision, KernelRevisionHash::UNTRACKED, "ROPE {dt:?} real revision");
+            assert_ne!(
+                got.revision,
+                KernelRevisionHash::UNTRACKED,
+                "ROPE {dt:?} real revision"
+            );
             assert!(
                 got.precision.bit_stable_on_same_hardware,
                 "audited:true rode through bit-stable for ROPE {dt:?}",
@@ -7660,19 +9484,19 @@ mod tests {
             (
                 FusedOps::CONV2D,
                 [
-                    conv2d_f32_cpu_wrapper as usize,
-                    conv2d_f64_cpu_wrapper as usize,
-                    conv2d_bf16_cpu_wrapper as usize,
-                    conv2d_f16_cpu_wrapper as usize,
+                    conv2d_f32_cpu_wrapper as *const () as usize,
+                    conv2d_f64_cpu_wrapper as *const () as usize,
+                    conv2d_bf16_cpu_wrapper as *const () as usize,
+                    conv2d_f16_cpu_wrapper as *const () as usize,
                 ],
             ),
             (
                 FusedOps::CONV_TRANSPOSE2D,
                 [
-                    conv_transpose2d_f32_cpu_wrapper as usize,
-                    conv_transpose2d_f64_cpu_wrapper as usize,
-                    conv_transpose2d_bf16_cpu_wrapper as usize,
-                    conv_transpose2d_f16_cpu_wrapper as usize,
+                    conv_transpose2d_f32_cpu_wrapper as *const () as usize,
+                    conv_transpose2d_f64_cpu_wrapper as *const () as usize,
+                    conv_transpose2d_bf16_cpu_wrapper as *const () as usize,
+                    conv_transpose2d_f16_cpu_wrapper as *const () as usize,
                 ],
             ),
         ];
@@ -7687,7 +9511,8 @@ mod tests {
                         });
                     assert_eq!(got.kernel as usize, expected);
                     assert_ne!(
-                        got.revision, KernelRevisionHash::UNTRACKED,
+                        got.revision,
+                        KernelRevisionHash::UNTRACKED,
                         "{id:?} {dt:?} (with_bias={with_bias}) real revision",
                     );
                     assert!(
@@ -7700,10 +9525,10 @@ mod tests {
 
         // CAUSAL_CONV1D — key [T, T, T, T] (x, weight, bias + out).
         let cc1d_w = [
-            causal_conv1d_f32_cpu_wrapper as usize,
-            causal_conv1d_f64_cpu_wrapper as usize,
-            causal_conv1d_bf16_cpu_wrapper as usize,
-            causal_conv1d_f16_cpu_wrapper as usize,
+            causal_conv1d_f32_cpu_wrapper as *const () as usize,
+            causal_conv1d_f64_cpu_wrapper as *const () as usize,
+            causal_conv1d_bf16_cpu_wrapper as *const () as usize,
+            causal_conv1d_f16_cpu_wrapper as *const () as usize,
         ];
         for (dt, expected) in dts.iter().zip(cc1d_w) {
             let got = r
@@ -7724,19 +9549,19 @@ mod tests {
             (
                 FusedOps::SELECTIVE_SCAN,
                 [
-                    selective_scan_f32_cpu_wrapper as usize,
-                    selective_scan_f64_cpu_wrapper as usize,
-                    selective_scan_bf16_cpu_wrapper as usize,
-                    selective_scan_f16_cpu_wrapper as usize,
+                    selective_scan_f32_cpu_wrapper as *const () as usize,
+                    selective_scan_f64_cpu_wrapper as *const () as usize,
+                    selective_scan_bf16_cpu_wrapper as *const () as usize,
+                    selective_scan_f16_cpu_wrapper as *const () as usize,
                 ],
             ),
             (
                 FusedOps::SSD_CHUNK_SCAN,
                 [
-                    ssd_chunk_scan_f32_cpu_wrapper as usize,
-                    ssd_chunk_scan_f64_cpu_wrapper as usize,
-                    ssd_chunk_scan_bf16_cpu_wrapper as usize,
-                    ssd_chunk_scan_f16_cpu_wrapper as usize,
+                    ssd_chunk_scan_f32_cpu_wrapper as *const () as usize,
+                    ssd_chunk_scan_f64_cpu_wrapper as *const () as usize,
+                    ssd_chunk_scan_bf16_cpu_wrapper as *const () as usize,
+                    ssd_chunk_scan_f16_cpu_wrapper as *const () as usize,
                 ],
             ),
         ];
@@ -7747,7 +9572,8 @@ mod tests {
                     .unwrap_or_else(|| panic!("{id:?} {dt:?} migrated impl present"));
                 assert_eq!(got.kernel as usize, expected);
                 assert_ne!(
-                    got.revision, KernelRevisionHash::UNTRACKED,
+                    got.revision,
+                    KernelRevisionHash::UNTRACKED,
                     "{id:?} {dt:?} real revision",
                 );
                 assert!(
@@ -7767,7 +9593,8 @@ mod tests {
             )
             .expect("NF4_MATMUL hand-written impl present");
         assert_eq!(
-            nf4.revision, KernelRevisionHash::UNTRACKED,
+            nf4.revision,
+            KernelRevisionHash::UNTRACKED,
             "deferred NF4_MATMUL keeps its hand-written UNTRACKED revision",
         );
     }
@@ -7821,48 +9648,83 @@ mod tests {
         // CPU coverage."
         const ALL_OP_KINDS: &[OpKind] = &[
             OpKind::MatMul,
-            OpKind::AddElementwise, OpKind::SubElementwise,
-            OpKind::MulElementwise, OpKind::DivElementwise,
-            OpKind::ReluElementwise, OpKind::NegElementwise,
-            OpKind::SqrElementwise, OpKind::SqrtElementwise,
-            OpKind::RecipElementwise, OpKind::AbsElementwise,
-            OpKind::TanhElementwise, OpKind::ExpElementwise,
-            OpKind::LogElementwise, OpKind::SinElementwise,
-            OpKind::CosElementwise, OpKind::SigmoidElementwise,
-            OpKind::SiluElementwise, OpKind::GeluElementwise,
+            OpKind::AddElementwise,
+            OpKind::SubElementwise,
+            OpKind::MulElementwise,
+            OpKind::DivElementwise,
+            OpKind::ReluElementwise,
+            OpKind::NegElementwise,
+            OpKind::SqrElementwise,
+            OpKind::SqrtElementwise,
+            OpKind::RecipElementwise,
+            OpKind::AbsElementwise,
+            OpKind::TanhElementwise,
+            OpKind::ExpElementwise,
+            OpKind::LogElementwise,
+            OpKind::SinElementwise,
+            OpKind::CosElementwise,
+            OpKind::SigmoidElementwise,
+            OpKind::SiluElementwise,
+            OpKind::GeluElementwise,
             OpKind::StepElementwise,
-            OpKind::SumReduce, OpKind::MaxReduce,
-            OpKind::MinReduce, OpKind::MeanReduce,
+            OpKind::SumReduce,
+            OpKind::MaxReduce,
+            OpKind::MinReduce,
+            OpKind::MeanReduce,
             OpKind::Cast,
-            OpKind::Conv2D, OpKind::ConvTranspose2D,
-            OpKind::ReduceSumTo, OpKind::ReduceMaxTo,
+            OpKind::Conv2D,
+            OpKind::ConvTranspose2D,
+            OpKind::ReduceSumTo,
+            OpKind::ReduceMaxTo,
             OpKind::FusedLinear,
-            OpKind::FlashAttn, OpKind::PagedAttn,
-            OpKind::Affine, OpKind::ClampElementwise,
+            OpKind::FlashAttn,
+            OpKind::PagedAttn,
+            OpKind::Affine,
+            OpKind::ClampElementwise,
             OpKind::PowIElementwise,
-            OpKind::MaximumElementwise, OpKind::MinimumElementwise,
-            OpKind::EqualElementwise, OpKind::NotEqualElementwise,
-            OpKind::LessElementwise, OpKind::LessEqualElementwise,
-            OpKind::GreaterElementwise, OpKind::GreaterEqualElementwise,
+            OpKind::MaximumElementwise,
+            OpKind::MinimumElementwise,
+            OpKind::EqualElementwise,
+            OpKind::NotEqualElementwise,
+            OpKind::LessElementwise,
+            OpKind::LessEqualElementwise,
+            OpKind::GreaterElementwise,
+            OpKind::GreaterEqualElementwise,
             OpKind::Where,
-            OpKind::FloorElementwise, OpKind::CeilElementwise,
-            OpKind::RoundElementwise, OpKind::SignElementwise,
-            OpKind::ErfElementwise, OpKind::GeluErfElementwise,
-            OpKind::PowElementwise, OpKind::RsqrtElementwise,
+            OpKind::FloorElementwise,
+            OpKind::CeilElementwise,
+            OpKind::RoundElementwise,
+            OpKind::SignElementwise,
+            OpKind::ErfElementwise,
+            OpKind::GeluErfElementwise,
+            OpKind::PowElementwise,
+            OpKind::RsqrtElementwise,
             OpKind::RemElementwise,
-            OpKind::Flip, OpKind::Roll, OpKind::CumSum,
-            OpKind::Pad, OpKind::PadBackward,
-            OpKind::Triu, OpKind::Tril,
-            OpKind::LogSoftmaxLastDim, OpKind::LogSoftmaxLastDimBackward,
-            OpKind::MaskedFill, OpKind::Concat,
-            OpKind::SoftmaxLastDim, OpKind::SoftmaxLastDimBackward,
-            OpKind::RmsNormLastDim, OpKind::RmsNormLastDimBackward,
-            OpKind::LayerNormLastDim, OpKind::LayerNormLastDimBackward,
+            OpKind::Flip,
+            OpKind::Roll,
+            OpKind::CumSum,
+            OpKind::Pad,
+            OpKind::PadBackward,
+            OpKind::Triu,
+            OpKind::Tril,
+            OpKind::LogSoftmaxLastDim,
+            OpKind::LogSoftmaxLastDimBackward,
+            OpKind::MaskedFill,
+            OpKind::Concat,
+            OpKind::SoftmaxLastDim,
+            OpKind::SoftmaxLastDimBackward,
+            OpKind::RmsNormLastDim,
+            OpKind::RmsNormLastDimBackward,
+            OpKind::LayerNormLastDim,
+            OpKind::LayerNormLastDimBackward,
             OpKind::ReduceMaxToBackward,
-            OpKind::IndexSelect, OpKind::Gather,
+            OpKind::IndexSelect,
+            OpKind::Gather,
             OpKind::Rope,
-            OpKind::IndexAdd, OpKind::ScatterAdd,
-            OpKind::ArgMaxDim, OpKind::ArgMinDim,
+            OpKind::IndexAdd,
+            OpKind::ScatterAdd,
+            OpKind::ArgMaxDim,
+            OpKind::ArgMinDim,
             OpKind::QMatMul,
             OpKind::Copy,
             OpKind::FusedSoftmaxCrossEntropy,
@@ -7908,9 +9770,8 @@ mod tests {
                 continue;
             }
             let precisions = by_op_kind.get(&op);
-            let has_bit_stable_cpu = precisions.is_some_and(|ps| {
-                ps.iter().any(|p| p.bit_stable_on_same_hardware)
-            });
+            let has_bit_stable_cpu =
+                precisions.is_some_and(|ps| ps.iter().any(|p| p.bit_stable_on_same_hardware));
             if has_bit_stable_cpu {
                 covered += 1;
             } else {
@@ -7941,10 +9802,7 @@ mod tests {
         // registration set. If a new variant lands in the enum
         // without being added here, the test's value is reduced —
         // catch the case by asserting the count.
-        assert!(
-            covered > 0,
-            "lint covered 0 OpKinds — table appears empty",
-        );
+        assert!(covered > 0, "lint covered 0 OpKinds — table appears empty",);
         // Sanity: every OpKind we enumerated should have ≥1 dtype
         // registration. The fill pass should have populated
         // precision for each.
@@ -7985,48 +9843,83 @@ mod tests {
 
         const ALL_OP_KINDS: &[OpKind] = &[
             OpKind::MatMul,
-            OpKind::AddElementwise, OpKind::SubElementwise,
-            OpKind::MulElementwise, OpKind::DivElementwise,
-            OpKind::ReluElementwise, OpKind::NegElementwise,
-            OpKind::SqrElementwise, OpKind::SqrtElementwise,
-            OpKind::RecipElementwise, OpKind::AbsElementwise,
-            OpKind::TanhElementwise, OpKind::ExpElementwise,
-            OpKind::LogElementwise, OpKind::SinElementwise,
-            OpKind::CosElementwise, OpKind::SigmoidElementwise,
-            OpKind::SiluElementwise, OpKind::GeluElementwise,
+            OpKind::AddElementwise,
+            OpKind::SubElementwise,
+            OpKind::MulElementwise,
+            OpKind::DivElementwise,
+            OpKind::ReluElementwise,
+            OpKind::NegElementwise,
+            OpKind::SqrElementwise,
+            OpKind::SqrtElementwise,
+            OpKind::RecipElementwise,
+            OpKind::AbsElementwise,
+            OpKind::TanhElementwise,
+            OpKind::ExpElementwise,
+            OpKind::LogElementwise,
+            OpKind::SinElementwise,
+            OpKind::CosElementwise,
+            OpKind::SigmoidElementwise,
+            OpKind::SiluElementwise,
+            OpKind::GeluElementwise,
             OpKind::StepElementwise,
-            OpKind::SumReduce, OpKind::MaxReduce,
-            OpKind::MinReduce, OpKind::MeanReduce,
+            OpKind::SumReduce,
+            OpKind::MaxReduce,
+            OpKind::MinReduce,
+            OpKind::MeanReduce,
             OpKind::Cast,
-            OpKind::Conv2D, OpKind::ConvTranspose2D,
-            OpKind::ReduceSumTo, OpKind::ReduceMaxTo,
+            OpKind::Conv2D,
+            OpKind::ConvTranspose2D,
+            OpKind::ReduceSumTo,
+            OpKind::ReduceMaxTo,
             OpKind::FusedLinear,
-            OpKind::FlashAttn, OpKind::PagedAttn,
-            OpKind::Affine, OpKind::ClampElementwise,
+            OpKind::FlashAttn,
+            OpKind::PagedAttn,
+            OpKind::Affine,
+            OpKind::ClampElementwise,
             OpKind::PowIElementwise,
-            OpKind::MaximumElementwise, OpKind::MinimumElementwise,
-            OpKind::EqualElementwise, OpKind::NotEqualElementwise,
-            OpKind::LessElementwise, OpKind::LessEqualElementwise,
-            OpKind::GreaterElementwise, OpKind::GreaterEqualElementwise,
+            OpKind::MaximumElementwise,
+            OpKind::MinimumElementwise,
+            OpKind::EqualElementwise,
+            OpKind::NotEqualElementwise,
+            OpKind::LessElementwise,
+            OpKind::LessEqualElementwise,
+            OpKind::GreaterElementwise,
+            OpKind::GreaterEqualElementwise,
             OpKind::Where,
-            OpKind::FloorElementwise, OpKind::CeilElementwise,
-            OpKind::RoundElementwise, OpKind::SignElementwise,
-            OpKind::ErfElementwise, OpKind::GeluErfElementwise,
-            OpKind::PowElementwise, OpKind::RsqrtElementwise,
+            OpKind::FloorElementwise,
+            OpKind::CeilElementwise,
+            OpKind::RoundElementwise,
+            OpKind::SignElementwise,
+            OpKind::ErfElementwise,
+            OpKind::GeluErfElementwise,
+            OpKind::PowElementwise,
+            OpKind::RsqrtElementwise,
             OpKind::RemElementwise,
-            OpKind::Flip, OpKind::Roll, OpKind::CumSum,
-            OpKind::Pad, OpKind::PadBackward,
-            OpKind::Triu, OpKind::Tril,
-            OpKind::LogSoftmaxLastDim, OpKind::LogSoftmaxLastDimBackward,
-            OpKind::MaskedFill, OpKind::Concat,
-            OpKind::SoftmaxLastDim, OpKind::SoftmaxLastDimBackward,
-            OpKind::RmsNormLastDim, OpKind::RmsNormLastDimBackward,
-            OpKind::LayerNormLastDim, OpKind::LayerNormLastDimBackward,
+            OpKind::Flip,
+            OpKind::Roll,
+            OpKind::CumSum,
+            OpKind::Pad,
+            OpKind::PadBackward,
+            OpKind::Triu,
+            OpKind::Tril,
+            OpKind::LogSoftmaxLastDim,
+            OpKind::LogSoftmaxLastDimBackward,
+            OpKind::MaskedFill,
+            OpKind::Concat,
+            OpKind::SoftmaxLastDim,
+            OpKind::SoftmaxLastDimBackward,
+            OpKind::RmsNormLastDim,
+            OpKind::RmsNormLastDimBackward,
+            OpKind::LayerNormLastDim,
+            OpKind::LayerNormLastDimBackward,
             OpKind::ReduceMaxToBackward,
-            OpKind::IndexSelect, OpKind::Gather,
+            OpKind::IndexSelect,
+            OpKind::Gather,
             OpKind::Rope,
-            OpKind::IndexAdd, OpKind::ScatterAdd,
-            OpKind::ArgMaxDim, OpKind::ArgMinDim,
+            OpKind::IndexAdd,
+            OpKind::ScatterAdd,
+            OpKind::ArgMaxDim,
+            OpKind::ArgMinDim,
             OpKind::QMatMul,
             OpKind::Copy,
             OpKind::FusedSoftmaxCrossEntropy,
@@ -8040,17 +9933,15 @@ mod tests {
         register_cpu_kernels(&mut table);
 
         // Group cost functions by OpKind for CPU registrations.
-        let mut by_op_kind: std::collections::HashMap<
-            OpKind,
-            Vec<crate::kernel::CostFn>,
-        > = std::collections::HashMap::new();
+        let mut by_op_kind: std::collections::HashMap<OpKind, Vec<crate::kernel::CostFn>> =
+            std::collections::HashMap::new();
         for (op, _dtypes, backend, cost) in table.iter_cost() {
             if backend == BackendId::Cpu {
                 by_op_kind.entry(op).or_default().push(cost);
             }
         }
 
-        let unknown_sentinel = crate::kernel::unknown_cost as usize;
+        let unknown_sentinel = crate::kernel::unknown_cost as *const () as usize;
 
         let mut failures: Vec<String> = Vec::new();
         for op in ALL_OP_KINDS.iter().copied() {
@@ -8069,9 +9960,8 @@ mod tests {
                 continue;
             }
             let costs = by_op_kind.get(&op);
-            let has_real_cost = costs.is_some_and(|cs| {
-                cs.iter().any(|c| (*c as usize) != unknown_sentinel)
-            });
+            let has_real_cost =
+                costs.is_some_and(|cs| cs.iter().any(|c| (*c as usize) != unknown_sentinel));
             if !has_real_cost {
                 failures.push(format!(
                     "OpKind::{op:?} has no non-default cost fn in any CPU \
@@ -8158,7 +10048,7 @@ mod tests {
     #[test]
     fn find_backends_order_preserved() {
         let mut r = CapabilityRegistry::new();
-        r.register(cuda_caps());  // registered first → wins ties
+        r.register(cuda_caps()); // registered first → wins ties
         r.register(cpu_caps());
 
         let backends = r.find_backends(OpKind::MatMul, DType::F32);
@@ -8333,7 +10223,11 @@ mod tests {
         assert!(!table.is_empty());
         // The (AddElementwise, F32, Cpu) binding lands.
         let _kernel = table
-            .lookup(OpKind::AddElementwise, &[DType::F32, DType::F32, DType::F32], BackendId::Cpu)
+            .lookup(
+                OpKind::AddElementwise,
+                &[DType::F32, DType::F32, DType::F32],
+                BackendId::Cpu,
+            )
             .expect("registered");
     }
 
@@ -8360,30 +10254,78 @@ mod tests {
 
         // (op, [f32, f64, bf16, f16] production wrappers) for all 8 ops.
         let families: &[(OpKind, [crate::kernel::KernelRef; 4])] = &[
-            (OpKind::AddElementwise, [
-                add_elementwise_f32_cpu_wrapper, add_elementwise_f64_cpu_wrapper,
-                add_elementwise_bf16_cpu_wrapper, add_elementwise_f16_cpu_wrapper]),
-            (OpKind::SubElementwise, [
-                sub_elementwise_f32_cpu_wrapper, sub_elementwise_f64_cpu_wrapper,
-                sub_elementwise_bf16_cpu_wrapper, sub_elementwise_f16_cpu_wrapper]),
-            (OpKind::MulElementwise, [
-                mul_elementwise_f32_cpu_wrapper, mul_elementwise_f64_cpu_wrapper,
-                mul_elementwise_bf16_cpu_wrapper, mul_elementwise_f16_cpu_wrapper]),
-            (OpKind::DivElementwise, [
-                div_elementwise_f32_cpu_wrapper, div_elementwise_f64_cpu_wrapper,
-                div_elementwise_bf16_cpu_wrapper, div_elementwise_f16_cpu_wrapper]),
-            (OpKind::MaximumElementwise, [
-                maximum_elementwise_f32_cpu_wrapper, maximum_elementwise_f64_cpu_wrapper,
-                maximum_elementwise_bf16_cpu_wrapper, maximum_elementwise_f16_cpu_wrapper]),
-            (OpKind::MinimumElementwise, [
-                minimum_elementwise_f32_cpu_wrapper, minimum_elementwise_f64_cpu_wrapper,
-                minimum_elementwise_bf16_cpu_wrapper, minimum_elementwise_f16_cpu_wrapper]),
-            (OpKind::PowElementwise, [
-                pow_elementwise_f32_cpu_wrapper, pow_elementwise_f64_cpu_wrapper,
-                pow_elementwise_bf16_cpu_wrapper, pow_elementwise_f16_cpu_wrapper]),
-            (OpKind::RemElementwise, [
-                rem_elementwise_f32_cpu_wrapper, rem_elementwise_f64_cpu_wrapper,
-                rem_elementwise_bf16_cpu_wrapper, rem_elementwise_f16_cpu_wrapper]),
+            (
+                OpKind::AddElementwise,
+                [
+                    add_elementwise_f32_cpu_wrapper,
+                    add_elementwise_f64_cpu_wrapper,
+                    add_elementwise_bf16_cpu_wrapper,
+                    add_elementwise_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::SubElementwise,
+                [
+                    sub_elementwise_f32_cpu_wrapper,
+                    sub_elementwise_f64_cpu_wrapper,
+                    sub_elementwise_bf16_cpu_wrapper,
+                    sub_elementwise_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::MulElementwise,
+                [
+                    mul_elementwise_f32_cpu_wrapper,
+                    mul_elementwise_f64_cpu_wrapper,
+                    mul_elementwise_bf16_cpu_wrapper,
+                    mul_elementwise_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::DivElementwise,
+                [
+                    div_elementwise_f32_cpu_wrapper,
+                    div_elementwise_f64_cpu_wrapper,
+                    div_elementwise_bf16_cpu_wrapper,
+                    div_elementwise_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::MaximumElementwise,
+                [
+                    maximum_elementwise_f32_cpu_wrapper,
+                    maximum_elementwise_f64_cpu_wrapper,
+                    maximum_elementwise_bf16_cpu_wrapper,
+                    maximum_elementwise_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::MinimumElementwise,
+                [
+                    minimum_elementwise_f32_cpu_wrapper,
+                    minimum_elementwise_f64_cpu_wrapper,
+                    minimum_elementwise_bf16_cpu_wrapper,
+                    minimum_elementwise_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::PowElementwise,
+                [
+                    pow_elementwise_f32_cpu_wrapper,
+                    pow_elementwise_f64_cpu_wrapper,
+                    pow_elementwise_bf16_cpu_wrapper,
+                    pow_elementwise_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::RemElementwise,
+                [
+                    rem_elementwise_f32_cpu_wrapper,
+                    rem_elementwise_f64_cpu_wrapper,
+                    rem_elementwise_bf16_cpu_wrapper,
+                    rem_elementwise_f16_cpu_wrapper,
+                ],
+            ),
         ];
         let dts = [DType::F32, DType::F64, DType::BF16, DType::F16];
 
@@ -8439,15 +10381,33 @@ mod tests {
 
         // Single-input forward ops → key [dt, dt].
         let forward: &[(OpKind, [crate::kernel::KernelRef; 4])] = &[
-            (OpKind::Affine, [
-                affine_f32_cpu_wrapper, affine_f64_cpu_wrapper,
-                affine_bf16_cpu_wrapper, affine_f16_cpu_wrapper]),
-            (OpKind::ClampElementwise, [
-                clamp_elementwise_f32_cpu_wrapper, clamp_f64_cpu_wrapper,
-                clamp_bf16_cpu_wrapper, clamp_f16_cpu_wrapper]),
-            (OpKind::PowIElementwise, [
-                powi_elementwise_f32_cpu_wrapper, powi_f64_cpu_wrapper,
-                powi_bf16_cpu_wrapper, powi_f16_cpu_wrapper]),
+            (
+                OpKind::Affine,
+                [
+                    affine_f32_cpu_wrapper,
+                    affine_f64_cpu_wrapper,
+                    affine_bf16_cpu_wrapper,
+                    affine_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::ClampElementwise,
+                [
+                    clamp_elementwise_f32_cpu_wrapper,
+                    clamp_f64_cpu_wrapper,
+                    clamp_bf16_cpu_wrapper,
+                    clamp_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::PowIElementwise,
+                [
+                    powi_elementwise_f32_cpu_wrapper,
+                    powi_f64_cpu_wrapper,
+                    powi_bf16_cpu_wrapper,
+                    powi_f16_cpu_wrapper,
+                ],
+            ),
         ];
 
         let mut checked = 0usize;
@@ -8486,11 +10446,17 @@ mod tests {
 
         // Two-input backward op → key [dt, dt, dt].
         let bw: [crate::kernel::KernelRef; 4] = [
-            powi_backward_f32_cpu_wrapper, powi_backward_f64_cpu_wrapper,
-            powi_backward_bf16_cpu_wrapper, powi_backward_f16_cpu_wrapper];
+            powi_backward_f32_cpu_wrapper,
+            powi_backward_f64_cpu_wrapper,
+            powi_backward_bf16_cpu_wrapper,
+            powi_backward_f16_cpu_wrapper,
+        ];
         for (dt, expected) in dts.iter().zip(bw.iter()) {
             let alts = table.lookup_alternatives(
-                OpKind::PowIElementwiseBackward, &[*dt, *dt, *dt], BackendId::Cpu);
+                OpKind::PowIElementwiseBackward,
+                &[*dt, *dt, *dt],
+                BackendId::Cpu,
+            );
             let entry = alts
                 .iter()
                 .find(|e| e.kernel as usize == *expected as usize)
@@ -8541,72 +10507,204 @@ mod tests {
 
         // (op, [f32, f64, bf16, f16] production wrappers) for all 22 ops.
         let families: &[(OpKind, [crate::kernel::KernelRef; 4])] = &[
-            (OpKind::ReluElementwise, [
-                relu_elementwise_f32_cpu_wrapper, relu_elementwise_f64_cpu_wrapper,
-                relu_elementwise_bf16_cpu_wrapper, relu_elementwise_f16_cpu_wrapper]),
-            (OpKind::NegElementwise, [
-                neg_elementwise_f32_cpu_wrapper, neg_elementwise_f64_cpu_wrapper,
-                neg_elementwise_bf16_cpu_wrapper, neg_elementwise_f16_cpu_wrapper]),
-            (OpKind::SqrElementwise, [
-                sqr_elementwise_f32_cpu_wrapper, sqr_elementwise_f64_cpu_wrapper,
-                sqr_elementwise_bf16_cpu_wrapper, sqr_elementwise_f16_cpu_wrapper]),
-            (OpKind::SqrtElementwise, [
-                sqrt_elementwise_f32_cpu_wrapper, sqrt_elementwise_f64_cpu_wrapper,
-                sqrt_elementwise_bf16_cpu_wrapper, sqrt_elementwise_f16_cpu_wrapper]),
-            (OpKind::RecipElementwise, [
-                recip_elementwise_f32_cpu_wrapper, recip_elementwise_f64_cpu_wrapper,
-                recip_elementwise_bf16_cpu_wrapper, recip_elementwise_f16_cpu_wrapper]),
-            (OpKind::AbsElementwise, [
-                abs_elementwise_f32_cpu_wrapper, abs_elementwise_f64_cpu_wrapper,
-                abs_elementwise_bf16_cpu_wrapper, abs_elementwise_f16_cpu_wrapper]),
-            (OpKind::TanhElementwise, [
-                tanh_elementwise_f32_cpu_wrapper, tanh_elementwise_f64_cpu_wrapper,
-                tanh_elementwise_bf16_cpu_wrapper, tanh_elementwise_f16_cpu_wrapper]),
-            (OpKind::ExpElementwise, [
-                exp_elementwise_f32_cpu_wrapper, exp_elementwise_f64_cpu_wrapper,
-                exp_elementwise_bf16_cpu_wrapper, exp_elementwise_f16_cpu_wrapper]),
-            (OpKind::LogElementwise, [
-                log_elementwise_f32_cpu_wrapper, log_elementwise_f64_cpu_wrapper,
-                log_elementwise_bf16_cpu_wrapper, log_elementwise_f16_cpu_wrapper]),
-            (OpKind::SinElementwise, [
-                sin_elementwise_f32_cpu_wrapper, sin_elementwise_f64_cpu_wrapper,
-                sin_elementwise_bf16_cpu_wrapper, sin_elementwise_f16_cpu_wrapper]),
-            (OpKind::CosElementwise, [
-                cos_elementwise_f32_cpu_wrapper, cos_elementwise_f64_cpu_wrapper,
-                cos_elementwise_bf16_cpu_wrapper, cos_elementwise_f16_cpu_wrapper]),
-            (OpKind::SigmoidElementwise, [
-                sigmoid_elementwise_f32_cpu_wrapper, sigmoid_elementwise_f64_cpu_wrapper,
-                sigmoid_elementwise_bf16_cpu_wrapper, sigmoid_elementwise_f16_cpu_wrapper]),
-            (OpKind::SiluElementwise, [
-                silu_elementwise_f32_cpu_wrapper, silu_elementwise_f64_cpu_wrapper,
-                silu_elementwise_bf16_cpu_wrapper, silu_elementwise_f16_cpu_wrapper]),
-            (OpKind::StepElementwise, [
-                step_elementwise_f32_cpu_wrapper, step_elementwise_f64_cpu_wrapper,
-                step_elementwise_bf16_cpu_wrapper, step_elementwise_f16_cpu_wrapper]),
-            (OpKind::GeluElementwise, [
-                gelu_elementwise_f32_cpu_wrapper, gelu_elementwise_f64_cpu_wrapper,
-                gelu_elementwise_bf16_cpu_wrapper, gelu_elementwise_f16_cpu_wrapper]),
-            (OpKind::FloorElementwise, [
-                floor_elementwise_f32_cpu_wrapper, floor_elementwise_f64_cpu_wrapper,
-                floor_elementwise_bf16_cpu_wrapper, floor_elementwise_f16_cpu_wrapper]),
-            (OpKind::CeilElementwise, [
-                ceil_elementwise_f32_cpu_wrapper, ceil_elementwise_f64_cpu_wrapper,
-                ceil_elementwise_bf16_cpu_wrapper, ceil_elementwise_f16_cpu_wrapper]),
-            (OpKind::RoundElementwise, [
-                round_elementwise_f32_cpu_wrapper, round_elementwise_f64_cpu_wrapper,
-                round_elementwise_bf16_cpu_wrapper, round_elementwise_f16_cpu_wrapper]),
-            (OpKind::SignElementwise, [
-                sign_elementwise_f32_cpu_wrapper, sign_elementwise_f64_cpu_wrapper,
-                sign_elementwise_bf16_cpu_wrapper, sign_elementwise_f16_cpu_wrapper]),
-            (OpKind::ErfElementwise, [
-                erf_elementwise_f32_cpu_wrapper, erf_elementwise_f64_cpu_wrapper,
-                erf_elementwise_bf16_cpu_wrapper, erf_elementwise_f16_cpu_wrapper]),
-            (OpKind::GeluErfElementwise, [
-                gelu_erf_elementwise_f32_cpu_wrapper, gelu_erf_elementwise_f64_cpu_wrapper,
-                gelu_erf_elementwise_bf16_cpu_wrapper, gelu_erf_elementwise_f16_cpu_wrapper]),
-            (OpKind::RsqrtElementwise, [
-                rsqrt_elementwise_f32_cpu_wrapper, rsqrt_elementwise_f64_cpu_wrapper,
-                rsqrt_elementwise_bf16_cpu_wrapper, rsqrt_elementwise_f16_cpu_wrapper]),
+            (
+                OpKind::ReluElementwise,
+                [
+                    relu_elementwise_f32_cpu_wrapper,
+                    relu_elementwise_f64_cpu_wrapper,
+                    relu_elementwise_bf16_cpu_wrapper,
+                    relu_elementwise_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::NegElementwise,
+                [
+                    neg_elementwise_f32_cpu_wrapper,
+                    neg_elementwise_f64_cpu_wrapper,
+                    neg_elementwise_bf16_cpu_wrapper,
+                    neg_elementwise_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::SqrElementwise,
+                [
+                    sqr_elementwise_f32_cpu_wrapper,
+                    sqr_elementwise_f64_cpu_wrapper,
+                    sqr_elementwise_bf16_cpu_wrapper,
+                    sqr_elementwise_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::SqrtElementwise,
+                [
+                    sqrt_elementwise_f32_cpu_wrapper,
+                    sqrt_elementwise_f64_cpu_wrapper,
+                    sqrt_elementwise_bf16_cpu_wrapper,
+                    sqrt_elementwise_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::RecipElementwise,
+                [
+                    recip_elementwise_f32_cpu_wrapper,
+                    recip_elementwise_f64_cpu_wrapper,
+                    recip_elementwise_bf16_cpu_wrapper,
+                    recip_elementwise_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::AbsElementwise,
+                [
+                    abs_elementwise_f32_cpu_wrapper,
+                    abs_elementwise_f64_cpu_wrapper,
+                    abs_elementwise_bf16_cpu_wrapper,
+                    abs_elementwise_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::TanhElementwise,
+                [
+                    tanh_elementwise_f32_cpu_wrapper,
+                    tanh_elementwise_f64_cpu_wrapper,
+                    tanh_elementwise_bf16_cpu_wrapper,
+                    tanh_elementwise_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::ExpElementwise,
+                [
+                    exp_elementwise_f32_cpu_wrapper,
+                    exp_elementwise_f64_cpu_wrapper,
+                    exp_elementwise_bf16_cpu_wrapper,
+                    exp_elementwise_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::LogElementwise,
+                [
+                    log_elementwise_f32_cpu_wrapper,
+                    log_elementwise_f64_cpu_wrapper,
+                    log_elementwise_bf16_cpu_wrapper,
+                    log_elementwise_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::SinElementwise,
+                [
+                    sin_elementwise_f32_cpu_wrapper,
+                    sin_elementwise_f64_cpu_wrapper,
+                    sin_elementwise_bf16_cpu_wrapper,
+                    sin_elementwise_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::CosElementwise,
+                [
+                    cos_elementwise_f32_cpu_wrapper,
+                    cos_elementwise_f64_cpu_wrapper,
+                    cos_elementwise_bf16_cpu_wrapper,
+                    cos_elementwise_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::SigmoidElementwise,
+                [
+                    sigmoid_elementwise_f32_cpu_wrapper,
+                    sigmoid_elementwise_f64_cpu_wrapper,
+                    sigmoid_elementwise_bf16_cpu_wrapper,
+                    sigmoid_elementwise_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::SiluElementwise,
+                [
+                    silu_elementwise_f32_cpu_wrapper,
+                    silu_elementwise_f64_cpu_wrapper,
+                    silu_elementwise_bf16_cpu_wrapper,
+                    silu_elementwise_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::StepElementwise,
+                [
+                    step_elementwise_f32_cpu_wrapper,
+                    step_elementwise_f64_cpu_wrapper,
+                    step_elementwise_bf16_cpu_wrapper,
+                    step_elementwise_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::GeluElementwise,
+                [
+                    gelu_elementwise_f32_cpu_wrapper,
+                    gelu_elementwise_f64_cpu_wrapper,
+                    gelu_elementwise_bf16_cpu_wrapper,
+                    gelu_elementwise_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::FloorElementwise,
+                [
+                    floor_elementwise_f32_cpu_wrapper,
+                    floor_elementwise_f64_cpu_wrapper,
+                    floor_elementwise_bf16_cpu_wrapper,
+                    floor_elementwise_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::CeilElementwise,
+                [
+                    ceil_elementwise_f32_cpu_wrapper,
+                    ceil_elementwise_f64_cpu_wrapper,
+                    ceil_elementwise_bf16_cpu_wrapper,
+                    ceil_elementwise_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::RoundElementwise,
+                [
+                    round_elementwise_f32_cpu_wrapper,
+                    round_elementwise_f64_cpu_wrapper,
+                    round_elementwise_bf16_cpu_wrapper,
+                    round_elementwise_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::SignElementwise,
+                [
+                    sign_elementwise_f32_cpu_wrapper,
+                    sign_elementwise_f64_cpu_wrapper,
+                    sign_elementwise_bf16_cpu_wrapper,
+                    sign_elementwise_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::ErfElementwise,
+                [
+                    erf_elementwise_f32_cpu_wrapper,
+                    erf_elementwise_f64_cpu_wrapper,
+                    erf_elementwise_bf16_cpu_wrapper,
+                    erf_elementwise_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::GeluErfElementwise,
+                [
+                    gelu_erf_elementwise_f32_cpu_wrapper,
+                    gelu_erf_elementwise_f64_cpu_wrapper,
+                    gelu_erf_elementwise_bf16_cpu_wrapper,
+                    gelu_erf_elementwise_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::RsqrtElementwise,
+                [
+                    rsqrt_elementwise_f32_cpu_wrapper,
+                    rsqrt_elementwise_f64_cpu_wrapper,
+                    rsqrt_elementwise_bf16_cpu_wrapper,
+                    rsqrt_elementwise_f16_cpu_wrapper,
+                ],
+            ),
         ];
 
         let mut checked = 0usize;
@@ -8671,24 +10769,60 @@ mod tests {
 
         // -- COMPARE: 6 ops × 4 dtypes, key [T, T, BOOL] (GAP-168c) --
         let compare_families: &[(OpKind, [crate::kernel::KernelRef; 4])] = &[
-            (OpKind::EqualElementwise, [
-                eq_elementwise_f32_cpu_wrapper, eq_elementwise_f64_cpu_wrapper,
-                eq_elementwise_bf16_cpu_wrapper, eq_elementwise_f16_cpu_wrapper]),
-            (OpKind::NotEqualElementwise, [
-                ne_elementwise_f32_cpu_wrapper, ne_elementwise_f64_cpu_wrapper,
-                ne_elementwise_bf16_cpu_wrapper, ne_elementwise_f16_cpu_wrapper]),
-            (OpKind::LessElementwise, [
-                lt_elementwise_f32_cpu_wrapper, lt_elementwise_f64_cpu_wrapper,
-                lt_elementwise_bf16_cpu_wrapper, lt_elementwise_f16_cpu_wrapper]),
-            (OpKind::LessEqualElementwise, [
-                le_elementwise_f32_cpu_wrapper, le_elementwise_f64_cpu_wrapper,
-                le_elementwise_bf16_cpu_wrapper, le_elementwise_f16_cpu_wrapper]),
-            (OpKind::GreaterElementwise, [
-                gt_elementwise_f32_cpu_wrapper, gt_elementwise_f64_cpu_wrapper,
-                gt_elementwise_bf16_cpu_wrapper, gt_elementwise_f16_cpu_wrapper]),
-            (OpKind::GreaterEqualElementwise, [
-                ge_elementwise_f32_cpu_wrapper, ge_elementwise_f64_cpu_wrapper,
-                ge_elementwise_bf16_cpu_wrapper, ge_elementwise_f16_cpu_wrapper]),
+            (
+                OpKind::EqualElementwise,
+                [
+                    eq_elementwise_f32_cpu_wrapper,
+                    eq_elementwise_f64_cpu_wrapper,
+                    eq_elementwise_bf16_cpu_wrapper,
+                    eq_elementwise_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::NotEqualElementwise,
+                [
+                    ne_elementwise_f32_cpu_wrapper,
+                    ne_elementwise_f64_cpu_wrapper,
+                    ne_elementwise_bf16_cpu_wrapper,
+                    ne_elementwise_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::LessElementwise,
+                [
+                    lt_elementwise_f32_cpu_wrapper,
+                    lt_elementwise_f64_cpu_wrapper,
+                    lt_elementwise_bf16_cpu_wrapper,
+                    lt_elementwise_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::LessEqualElementwise,
+                [
+                    le_elementwise_f32_cpu_wrapper,
+                    le_elementwise_f64_cpu_wrapper,
+                    le_elementwise_bf16_cpu_wrapper,
+                    le_elementwise_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::GreaterElementwise,
+                [
+                    gt_elementwise_f32_cpu_wrapper,
+                    gt_elementwise_f64_cpu_wrapper,
+                    gt_elementwise_bf16_cpu_wrapper,
+                    gt_elementwise_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::GreaterEqualElementwise,
+                [
+                    ge_elementwise_f32_cpu_wrapper,
+                    ge_elementwise_f64_cpu_wrapper,
+                    ge_elementwise_bf16_cpu_wrapper,
+                    ge_elementwise_f16_cpu_wrapper,
+                ],
+            ),
         ];
 
         let mut checked = 0usize;
@@ -8729,12 +10863,18 @@ mod tests {
 
         // -- WHERE: 1 op × 4 dtypes, key [U8, T, T, T] (fan-out + passthrough(a)) --
         let where_wrappers: [crate::kernel::KernelRef; 4] = [
-            where_f32_cpu_wrapper, where_f64_cpu_wrapper,
-            where_bf16_cpu_wrapper, where_f16_cpu_wrapper,
+            where_f32_cpu_wrapper,
+            where_f64_cpu_wrapper,
+            where_bf16_cpu_wrapper,
+            where_f16_cpu_wrapper,
         ];
         for (dt, expected) in dts.iter().zip(where_wrappers.iter()) {
             // Ternary-select list: [U8 cond, T a, T b, T out].
-            let alts = table.lookup_alternatives(OpKind::Where, &[DType::Bool, *dt, *dt, *dt], BackendId::Cpu);
+            let alts = table.lookup_alternatives(
+                OpKind::Where,
+                &[DType::Bool, *dt, *dt, *dt],
+                BackendId::Cpu,
+            );
             let entry = alts
                 .iter()
                 .find(|e| e.kernel as usize == *expected as usize)
@@ -8786,18 +10926,42 @@ mod tests {
 
         // Sum/Mean/Max/Min × {f32,f64,bf16,f16}, key [T, T].
         let reduce_families: &[(OpKind, [crate::kernel::KernelRef; 4])] = &[
-            (OpKind::SumReduce, [
-                sum_reduce_f32_cpu_wrapper, sum_reduce_f64_cpu_wrapper,
-                sum_reduce_bf16_cpu_wrapper, sum_reduce_f16_cpu_wrapper]),
-            (OpKind::MeanReduce, [
-                mean_reduce_f32_cpu_wrapper, mean_reduce_f64_cpu_wrapper,
-                mean_reduce_bf16_cpu_wrapper, mean_reduce_f16_cpu_wrapper]),
-            (OpKind::MaxReduce, [
-                max_reduce_f32_cpu_wrapper, max_reduce_f64_cpu_wrapper,
-                max_reduce_bf16_cpu_wrapper, max_reduce_f16_cpu_wrapper]),
-            (OpKind::MinReduce, [
-                min_reduce_f32_cpu_wrapper, min_reduce_f64_cpu_wrapper,
-                min_reduce_bf16_cpu_wrapper, min_reduce_f16_cpu_wrapper]),
+            (
+                OpKind::SumReduce,
+                [
+                    sum_reduce_f32_cpu_wrapper,
+                    sum_reduce_f64_cpu_wrapper,
+                    sum_reduce_bf16_cpu_wrapper,
+                    sum_reduce_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::MeanReduce,
+                [
+                    mean_reduce_f32_cpu_wrapper,
+                    mean_reduce_f64_cpu_wrapper,
+                    mean_reduce_bf16_cpu_wrapper,
+                    mean_reduce_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::MaxReduce,
+                [
+                    max_reduce_f32_cpu_wrapper,
+                    max_reduce_f64_cpu_wrapper,
+                    max_reduce_bf16_cpu_wrapper,
+                    max_reduce_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::MinReduce,
+                [
+                    min_reduce_f32_cpu_wrapper,
+                    min_reduce_f64_cpu_wrapper,
+                    min_reduce_bf16_cpu_wrapper,
+                    min_reduce_f16_cpu_wrapper,
+                ],
+            ),
         ];
 
         let mut checked = 0usize;
@@ -8855,19 +11019,36 @@ mod tests {
 
         // ReduceSumTo / ReduceMaxTo — single input + passthrough output, key [T, T].
         let unary_families: &[(OpKind, [crate::kernel::KernelRef; 4])] = &[
-            (OpKind::ReduceSumTo, [
-                reduce_sum_to_f32_cpu_wrapper, reduce_sum_to_f64_cpu_wrapper,
-                reduce_sum_to_bf16_cpu_wrapper, reduce_sum_to_f16_cpu_wrapper]),
-            (OpKind::ReduceMaxTo, [
-                reduce_max_to_f32_cpu_wrapper, reduce_max_to_f64_cpu_wrapper,
-                reduce_max_to_bf16_cpu_wrapper, reduce_max_to_f16_cpu_wrapper]),
+            (
+                OpKind::ReduceSumTo,
+                [
+                    reduce_sum_to_f32_cpu_wrapper,
+                    reduce_sum_to_f64_cpu_wrapper,
+                    reduce_sum_to_bf16_cpu_wrapper,
+                    reduce_sum_to_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::ReduceMaxTo,
+                [
+                    reduce_max_to_f32_cpu_wrapper,
+                    reduce_max_to_f64_cpu_wrapper,
+                    reduce_max_to_bf16_cpu_wrapper,
+                    reduce_max_to_f16_cpu_wrapper,
+                ],
+            ),
         ];
         // ReduceMaxToBackward — two inputs (x, upstream) + passthrough(x)
         // output, key [T, T, T].
         let backward_family: (OpKind, [crate::kernel::KernelRef; 4]) = (
-            OpKind::ReduceMaxToBackward, [
-                reduce_max_to_backward_f32_cpu_wrapper, reduce_max_to_backward_f64_cpu_wrapper,
-                reduce_max_to_backward_bf16_cpu_wrapper, reduce_max_to_backward_f16_cpu_wrapper]);
+            OpKind::ReduceMaxToBackward,
+            [
+                reduce_max_to_backward_f32_cpu_wrapper,
+                reduce_max_to_backward_f64_cpu_wrapper,
+                reduce_max_to_backward_bf16_cpu_wrapper,
+                reduce_max_to_backward_f16_cpu_wrapper,
+            ],
+        );
 
         // Assert one (op, key, expected-wrapper) is bound FROM the contract.
         let assert_contract_bound =
@@ -8936,18 +11117,42 @@ mod tests {
         // Softmax / LogSoftmax / RmsNorm / LayerNorm — single input +
         // passthrough output, key [T, T]. Wrapper order matches `dts`.
         let norm_families: &[(OpKind, [crate::kernel::KernelRef; 4])] = &[
-            (OpKind::SoftmaxLastDim, [
-                softmax_last_dim_f32_cpu_wrapper, softmax_last_dim_f64_cpu_wrapper,
-                softmax_last_dim_bf16_cpu_wrapper, softmax_last_dim_f16_cpu_wrapper]),
-            (OpKind::LogSoftmaxLastDim, [
-                log_softmax_f32_cpu_wrapper, log_softmax_f64_cpu_wrapper,
-                log_softmax_bf16_cpu_wrapper, log_softmax_f16_cpu_wrapper]),
-            (OpKind::RmsNormLastDim, [
-                rms_norm_last_dim_f32_cpu_wrapper, rms_norm_last_dim_f64_cpu_wrapper,
-                rms_norm_last_dim_bf16_cpu_wrapper, rms_norm_last_dim_f16_cpu_wrapper]),
-            (OpKind::LayerNormLastDim, [
-                layer_norm_last_dim_f32_cpu_wrapper, layer_norm_last_dim_f64_cpu_wrapper,
-                layer_norm_last_dim_bf16_cpu_wrapper, layer_norm_last_dim_f16_cpu_wrapper]),
+            (
+                OpKind::SoftmaxLastDim,
+                [
+                    softmax_last_dim_f32_cpu_wrapper,
+                    softmax_last_dim_f64_cpu_wrapper,
+                    softmax_last_dim_bf16_cpu_wrapper,
+                    softmax_last_dim_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::LogSoftmaxLastDim,
+                [
+                    log_softmax_f32_cpu_wrapper,
+                    log_softmax_f64_cpu_wrapper,
+                    log_softmax_bf16_cpu_wrapper,
+                    log_softmax_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::RmsNormLastDim,
+                [
+                    rms_norm_last_dim_f32_cpu_wrapper,
+                    rms_norm_last_dim_f64_cpu_wrapper,
+                    rms_norm_last_dim_bf16_cpu_wrapper,
+                    rms_norm_last_dim_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::LayerNormLastDim,
+                [
+                    layer_norm_last_dim_f32_cpu_wrapper,
+                    layer_norm_last_dim_f64_cpu_wrapper,
+                    layer_norm_last_dim_bf16_cpu_wrapper,
+                    layer_norm_last_dim_f16_cpu_wrapper,
+                ],
+            ),
         ];
 
         let mut checked = 0usize;
@@ -9012,18 +11217,42 @@ mod tests {
         // from its `log_softmax_last_dim_backward_*` contract symbol — the same
         // fn-vs-symbol split as the forward `log_softmax` case.)
         let backward_families: &[(OpKind, [crate::kernel::KernelRef; 4])] = &[
-            (OpKind::SoftmaxLastDimBackward, [
-                softmax_last_dim_backward_f32_cpu_wrapper, softmax_last_dim_backward_f64_cpu_wrapper,
-                softmax_last_dim_backward_bf16_cpu_wrapper, softmax_last_dim_backward_f16_cpu_wrapper]),
-            (OpKind::LogSoftmaxLastDimBackward, [
-                log_softmax_backward_f32_cpu_wrapper, log_softmax_backward_f64_cpu_wrapper,
-                log_softmax_backward_bf16_cpu_wrapper, log_softmax_backward_f16_cpu_wrapper]),
-            (OpKind::LayerNormLastDimBackward, [
-                layer_norm_last_dim_backward_f32_cpu_wrapper, layer_norm_last_dim_backward_f64_cpu_wrapper,
-                layer_norm_last_dim_backward_bf16_cpu_wrapper, layer_norm_last_dim_backward_f16_cpu_wrapper]),
-            (OpKind::RmsNormLastDimBackward, [
-                rms_norm_last_dim_backward_f32_cpu_wrapper, rms_norm_last_dim_backward_f64_cpu_wrapper,
-                rms_norm_last_dim_backward_bf16_cpu_wrapper, rms_norm_last_dim_backward_f16_cpu_wrapper]),
+            (
+                OpKind::SoftmaxLastDimBackward,
+                [
+                    softmax_last_dim_backward_f32_cpu_wrapper,
+                    softmax_last_dim_backward_f64_cpu_wrapper,
+                    softmax_last_dim_backward_bf16_cpu_wrapper,
+                    softmax_last_dim_backward_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::LogSoftmaxLastDimBackward,
+                [
+                    log_softmax_backward_f32_cpu_wrapper,
+                    log_softmax_backward_f64_cpu_wrapper,
+                    log_softmax_backward_bf16_cpu_wrapper,
+                    log_softmax_backward_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::LayerNormLastDimBackward,
+                [
+                    layer_norm_last_dim_backward_f32_cpu_wrapper,
+                    layer_norm_last_dim_backward_f64_cpu_wrapper,
+                    layer_norm_last_dim_backward_bf16_cpu_wrapper,
+                    layer_norm_last_dim_backward_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::RmsNormLastDimBackward,
+                [
+                    rms_norm_last_dim_backward_f32_cpu_wrapper,
+                    rms_norm_last_dim_backward_f64_cpu_wrapper,
+                    rms_norm_last_dim_backward_bf16_cpu_wrapper,
+                    rms_norm_last_dim_backward_f16_cpu_wrapper,
+                ],
+            ),
         ];
 
         let mut checked = 0usize;
@@ -9173,7 +11402,10 @@ mod tests {
                  got {:?}",
                 entry.kernel_source,
             );
-            assert!(!entry.caps.strided_input, "{label}: caps preserved (contiguous-only)");
+            assert!(
+                !entry.caps.strided_input,
+                "{label}: caps preserved (contiguous-only)"
+            );
             assert!(
                 entry.precision.bit_stable_on_same_hardware,
                 "{label}: contract's bit-stable claim rode through",
@@ -9226,7 +11458,10 @@ mod tests {
 
             checked += 1;
         }
-        assert_eq!(checked, 4, "4 ops × 4 dtypes checked (16 contract-sourced bindings)");
+        assert_eq!(
+            checked, 4,
+            "4 ops × 4 dtypes checked (16 contract-sourced bindings)"
+        );
     }
 
     /// Gate for the CPU conv family FULLY migrated to FKC-contract registration.
@@ -9394,14 +11629,19 @@ mod tests {
         // wrapper, like Flip/Roll/Concat). in_shape/out_shape/padding/mode_tag/
         // fill_bytes ride in OpParams::Pad, NOT the dtype-list.
         let pad_forward_dts = [
-            DType::U8, DType::U32, DType::BF16, DType::F16, DType::F32, DType::F64,
+            DType::U8,
+            DType::U32,
+            DType::BF16,
+            DType::F16,
+            DType::F32,
+            DType::F64,
         ];
         for dt in pad_forward_dts {
             let key: &[DType] = &[dt, dt];
             let alts = table.lookup_alternatives(OpKind::Pad, key, BackendId::Cpu);
             let entry = alts
                 .iter()
-                .find(|e| e.kernel as usize == pad_cpu_wrapper as usize)
+                .find(|e| e.kernel as usize == pad_cpu_wrapper as *const () as usize)
                 .unwrap_or_else(|| {
                     panic!(
                         "Pad/{dt:?}/Cpu: the production wrapper must be bound \
@@ -9471,40 +11711,46 @@ mod tests {
         let mut checked = 0usize;
 
         // Assert a (op, key) resolves to `expected` with the contract provenance.
-        let mut check = |op: OpKind, key: &[DType], expected: crate::kernel::KernelRef, label: &str| {
-            let alts = table.lookup_alternatives(op, key, BackendId::Cpu);
-            let entry = alts
-                .iter()
-                .find(|e| e.kernel as usize == expected as usize)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "{op:?}/{label}/Cpu: the production wrapper must be bound \
+        let mut check =
+            |op: OpKind, key: &[DType], expected: crate::kernel::KernelRef, label: &str| {
+                let alts = table.lookup_alternatives(op, key, BackendId::Cpu);
+                let entry = alts
+                    .iter()
+                    .find(|e| e.kernel as usize == expected as usize)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{op:?}/{label}/Cpu: the production wrapper must be bound \
                          FROM the shape-ops contract in global_bindings() — found {} \
                          alternative(s) with sources {:?}",
-                        alts.len(),
-                        alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
-                    )
-                });
-            assert_eq!(
-                entry.kernel_source, "portable-cpu",
-                "{op:?}/{label}: family must be contract-sourced \
+                            alts.len(),
+                            alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                        )
+                    });
+                assert_eq!(
+                    entry.kernel_source, "portable-cpu",
+                    "{op:?}/{label}: family must be contract-sourced \
                  (kernel_source=\"portable-cpu\"); got {:?}",
-                entry.kernel_source,
-            );
-            assert!(
-                !entry.caps.strided_input,
-                "{op:?}/{label}: caps preserved (contiguous-only)",
-            );
-            assert!(
-                entry.precision.bit_stable_on_same_hardware,
-                "{op:?}/{label}: contract's bit-stable claim rode through",
-            );
-            checked += 1;
-        };
+                    entry.kernel_source,
+                );
+                assert!(
+                    !entry.caps.strided_input,
+                    "{op:?}/{label}: caps preserved (contiguous-only)",
+                );
+                assert!(
+                    entry.precision.bit_stable_on_same_hardware,
+                    "{op:?}/{label}: contract's bit-stable claim rode through",
+                );
+                checked += 1;
+            };
 
         // Flip / Roll — key [T, T], one dtype-agnostic wrapper fanned per dtype.
         let byte_dts = [
-            DType::F32, DType::F64, DType::BF16, DType::F16, DType::U32, DType::U8,
+            DType::F32,
+            DType::F64,
+            DType::BF16,
+            DType::F16,
+            DType::U32,
+            DType::U8,
         ];
         for dt in byte_dts {
             check(OpKind::Flip, &[dt, dt], flip_cpu_wrapper, "flip");
@@ -9512,7 +11758,7 @@ mod tests {
             // MaskedFill — key [T, U8, T].
             check(
                 OpKind::MaskedFill,
-                &[dt, DType::Bool, dt],   // GAP-168(c): mask slot is Bool; the outer dt list is DATA dtypes
+                &[dt, DType::Bool, dt], // GAP-168(c): mask slot is Bool; the outer dt list is DATA dtypes
                 masked_fill_cpu_wrapper,
                 "masked_fill",
             );
@@ -9532,8 +11778,15 @@ mod tests {
 
         // Concat — variadic uniform-dtype collapsed to [T, T], 9 dtypes.
         let concat_dts = [
-            DType::F32, DType::F64, DType::BF16, DType::F16,
-            DType::U32, DType::U8, DType::I16, DType::I32, DType::I64,
+            DType::F32,
+            DType::F64,
+            DType::BF16,
+            DType::F16,
+            DType::U32,
+            DType::U8,
+            DType::I16,
+            DType::I32,
+            DType::I64,
         ];
         for dt in concat_dts {
             check(OpKind::Concat, &[dt, dt], concat_cpu_wrapper, "concat");
@@ -9546,7 +11799,12 @@ mod tests {
         // 6 production dtypes (F32/F64/BF16/F16/U32/U8). The offset/modulus/axis/
         // ranges ride in OpParams::{WriteSlice,WriteSliceRotating}.
         let scatter_dts = [
-            DType::F32, DType::F64, DType::BF16, DType::F16, DType::U32, DType::U8,
+            DType::F32,
+            DType::F64,
+            DType::BF16,
+            DType::F16,
+            DType::U32,
+            DType::U8,
         ];
         for dt in scatter_dts {
             check(
@@ -9614,42 +11872,50 @@ mod tests {
         let mut checked = 0usize;
 
         // Assert a (op, key) resolves to `expected` with the contract provenance.
-        let mut check = |op: OpKind, key: &[DType], expected: crate::kernel::KernelRef, label: &str| {
-            let alts = table.lookup_alternatives(op, key, BackendId::Cpu);
-            let entry = alts
-                .iter()
-                .find(|e| e.kernel as usize == expected as usize)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "{op:?}/{label}/Cpu: the production wrapper must be bound \
+        let mut check =
+            |op: OpKind, key: &[DType], expected: crate::kernel::KernelRef, label: &str| {
+                let alts = table.lookup_alternatives(op, key, BackendId::Cpu);
+                let entry = alts
+                    .iter()
+                    .find(|e| e.kernel as usize == expected as usize)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{op:?}/{label}/Cpu: the production wrapper must be bound \
                          FROM the indexing contract in global_bindings() — found {} \
                          alternative(s) with sources {:?}",
-                        alts.len(),
-                        alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
-                    )
-                });
-            assert_eq!(
-                entry.kernel_source, "portable-cpu",
-                "{op:?}/{label}: family must be contract-sourced \
+                            alts.len(),
+                            alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                        )
+                    });
+                assert_eq!(
+                    entry.kernel_source, "portable-cpu",
+                    "{op:?}/{label}: family must be contract-sourced \
                  (kernel_source=\"portable-cpu\"); got {:?}",
-                entry.kernel_source,
-            );
-            assert!(
-                !entry.caps.strided_input,
-                "{op:?}/{label}: caps preserved (contiguous-only)",
-            );
-            assert!(
-                entry.precision.bit_stable_on_same_hardware,
-                "{op:?}/{label}: contract's bit-stable claim rode through",
-            );
-            checked += 1;
-        };
+                    entry.kernel_source,
+                );
+                assert!(
+                    !entry.caps.strided_input,
+                    "{op:?}/{label}: caps preserved (contiguous-only)",
+                );
+                assert!(
+                    entry.precision.bit_stable_on_same_hardware,
+                    "{op:?}/{label}: contract's bit-stable claim rode through",
+                );
+                checked += 1;
+            };
 
         // IndexSelect / Gather — dtype-agnostic byte copy, key [T, U32, T], one
         // wrapper fanned per dtype (9 production dtypes; I8 trimmed).
         let byte_dts = [
-            DType::F32, DType::F64, DType::BF16, DType::F16,
-            DType::U32, DType::U8, DType::I16, DType::I32, DType::I64,
+            DType::F32,
+            DType::F64,
+            DType::BF16,
+            DType::F16,
+            DType::U32,
+            DType::U8,
+            DType::I16,
+            DType::I32,
+            DType::I64,
         ];
         for dt in byte_dts {
             check(
@@ -9743,40 +12009,46 @@ mod tests {
         // Assert a (op, key) resolves to `expected` (the portable wrapper) with
         // the contract provenance — `find`ing it among any BLAS-sibling
         // alternatives at the same key (never asserting single-alternative).
-        let mut check = |op: OpKind, key: &[DType], expected: crate::kernel::KernelRef, label: &str| {
-            let alts = table.lookup_alternatives(op, key, BackendId::Cpu);
-            let entry = alts
-                .iter()
-                .find(|e| e.kernel as usize == expected as usize)
-                .unwrap_or_else(|| {
-                    panic!(
-                        "{op:?}/{label}/Cpu: the portable wrapper must be bound \
+        let mut check =
+            |op: OpKind, key: &[DType], expected: crate::kernel::KernelRef, label: &str| {
+                let alts = table.lookup_alternatives(op, key, BackendId::Cpu);
+                let entry = alts
+                    .iter()
+                    .find(|e| e.kernel as usize == expected as usize)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{op:?}/{label}/Cpu: the portable wrapper must be bound \
                          FROM the matmul contract in global_bindings() — found {} \
                          alternative(s) with sources {:?}",
-                        alts.len(),
-                        alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
-                    )
-                });
-            assert_eq!(
-                entry.kernel_source, "portable-cpu",
-                "{op:?}/{label}: portable kernel must be contract-sourced \
+                            alts.len(),
+                            alts.iter().map(|e| e.kernel_source).collect::<Vec<_>>(),
+                        )
+                    });
+                assert_eq!(
+                    entry.kernel_source, "portable-cpu",
+                    "{op:?}/{label}: portable kernel must be contract-sourced \
                  (kernel_source=\"portable-cpu\"); got {:?}",
-                entry.kernel_source,
-            );
-            assert!(
-                !entry.caps.strided_input,
-                "{op:?}/{label}: caps preserved (contiguous-only)",
-            );
-            assert!(
-                entry.precision.bit_stable_on_same_hardware,
-                "{op:?}/{label}: contract's bit-stable claim rode through",
-            );
-            checked += 1;
-        };
+                    entry.kernel_source,
+                );
+                assert!(
+                    !entry.caps.strided_input,
+                    "{op:?}/{label}: caps preserved (contiguous-only)",
+                );
+                assert!(
+                    entry.precision.bit_stable_on_same_hardware,
+                    "{op:?}/{label}: contract's bit-stable claim rode through",
+                );
+                checked += 1;
+            };
 
         // MatMul — key [T, T, T], per-dtype wrapper resolved AS-IS. 6 dtypes.
         let mm_dts = [
-            DType::F32, DType::F64, DType::BF16, DType::F16, DType::I8, DType::U8,
+            DType::F32,
+            DType::F64,
+            DType::BF16,
+            DType::F16,
+            DType::I8,
+            DType::U8,
         ];
         let mm_wrappers: [crate::kernel::KernelRef; 6] = [
             matmul_f32_cpu_wrapper,
@@ -10014,36 +12286,252 @@ mod tests {
         // 21 in-place unary ops × 4 dtypes (wrapper order matches `dts`).
         // Each row: (OpKind, label, [f32, f64, bf16, f16] wrappers).
         let unary_family: &[(OpKind, &str, [crate::kernel::KernelRef; 4])] = &[
-            (OpKind::ReluInplace, "relu", [relu_inplace_f32_cpu_wrapper, relu_inplace_f64_cpu_wrapper, relu_inplace_bf16_cpu_wrapper, relu_inplace_f16_cpu_wrapper]),
-            (OpKind::SiluInplace, "silu", [silu_inplace_f32_cpu_wrapper, silu_inplace_f64_cpu_wrapper, silu_inplace_bf16_cpu_wrapper, silu_inplace_f16_cpu_wrapper]),
-            (OpKind::GeluInplace, "gelu", [gelu_inplace_f32_cpu_wrapper, gelu_inplace_f64_cpu_wrapper, gelu_inplace_bf16_cpu_wrapper, gelu_inplace_f16_cpu_wrapper]),
-            (OpKind::TanhInplace, "tanh", [tanh_inplace_f32_cpu_wrapper, tanh_inplace_f64_cpu_wrapper, tanh_inplace_bf16_cpu_wrapper, tanh_inplace_f16_cpu_wrapper]),
-            (OpKind::SigmoidInplace, "sigmoid", [sigmoid_inplace_f32_cpu_wrapper, sigmoid_inplace_f64_cpu_wrapper, sigmoid_inplace_bf16_cpu_wrapper, sigmoid_inplace_f16_cpu_wrapper]),
-            (OpKind::NegInplace, "neg", [neg_inplace_f32_cpu_wrapper, neg_inplace_f64_cpu_wrapper, neg_inplace_bf16_cpu_wrapper, neg_inplace_f16_cpu_wrapper]),
-            (OpKind::AbsInplace, "abs", [abs_inplace_f32_cpu_wrapper, abs_inplace_f64_cpu_wrapper, abs_inplace_bf16_cpu_wrapper, abs_inplace_f16_cpu_wrapper]),
-            (OpKind::SqrInplace, "sqr", [sqr_inplace_f32_cpu_wrapper, sqr_inplace_f64_cpu_wrapper, sqr_inplace_bf16_cpu_wrapper, sqr_inplace_f16_cpu_wrapper]),
-            (OpKind::SqrtInplace, "sqrt", [sqrt_inplace_f32_cpu_wrapper, sqrt_inplace_f64_cpu_wrapper, sqrt_inplace_bf16_cpu_wrapper, sqrt_inplace_f16_cpu_wrapper]),
-            (OpKind::RsqrtInplace, "rsqrt", [rsqrt_inplace_f32_cpu_wrapper, rsqrt_inplace_f64_cpu_wrapper, rsqrt_inplace_bf16_cpu_wrapper, rsqrt_inplace_f16_cpu_wrapper]),
-            (OpKind::RecipInplace, "recip", [recip_inplace_f32_cpu_wrapper, recip_inplace_f64_cpu_wrapper, recip_inplace_bf16_cpu_wrapper, recip_inplace_f16_cpu_wrapper]),
-            (OpKind::ExpInplace, "exp", [exp_inplace_f32_cpu_wrapper, exp_inplace_f64_cpu_wrapper, exp_inplace_bf16_cpu_wrapper, exp_inplace_f16_cpu_wrapper]),
-            (OpKind::LogInplace, "log", [log_inplace_f32_cpu_wrapper, log_inplace_f64_cpu_wrapper, log_inplace_bf16_cpu_wrapper, log_inplace_f16_cpu_wrapper]),
-            (OpKind::SinInplace, "sin", [sin_inplace_f32_cpu_wrapper, sin_inplace_f64_cpu_wrapper, sin_inplace_bf16_cpu_wrapper, sin_inplace_f16_cpu_wrapper]),
-            (OpKind::CosInplace, "cos", [cos_inplace_f32_cpu_wrapper, cos_inplace_f64_cpu_wrapper, cos_inplace_bf16_cpu_wrapper, cos_inplace_f16_cpu_wrapper]),
-            (OpKind::SignInplace, "sign", [sign_inplace_f32_cpu_wrapper, sign_inplace_f64_cpu_wrapper, sign_inplace_bf16_cpu_wrapper, sign_inplace_f16_cpu_wrapper]),
-            (OpKind::FloorInplace, "floor", [floor_inplace_f32_cpu_wrapper, floor_inplace_f64_cpu_wrapper, floor_inplace_bf16_cpu_wrapper, floor_inplace_f16_cpu_wrapper]),
-            (OpKind::CeilInplace, "ceil", [ceil_inplace_f32_cpu_wrapper, ceil_inplace_f64_cpu_wrapper, ceil_inplace_bf16_cpu_wrapper, ceil_inplace_f16_cpu_wrapper]),
-            (OpKind::RoundInplace, "round", [round_inplace_f32_cpu_wrapper, round_inplace_f64_cpu_wrapper, round_inplace_bf16_cpu_wrapper, round_inplace_f16_cpu_wrapper]),
-            (OpKind::ErfInplace, "erf", [erf_inplace_f32_cpu_wrapper, erf_inplace_f64_cpu_wrapper, erf_inplace_bf16_cpu_wrapper, erf_inplace_f16_cpu_wrapper]),
-            (OpKind::GeluErfInplace, "gelu_erf", [gelu_erf_inplace_f32_cpu_wrapper, gelu_erf_inplace_f64_cpu_wrapper, gelu_erf_inplace_bf16_cpu_wrapper, gelu_erf_inplace_f16_cpu_wrapper]),
+            (
+                OpKind::ReluInplace,
+                "relu",
+                [
+                    relu_inplace_f32_cpu_wrapper,
+                    relu_inplace_f64_cpu_wrapper,
+                    relu_inplace_bf16_cpu_wrapper,
+                    relu_inplace_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::SiluInplace,
+                "silu",
+                [
+                    silu_inplace_f32_cpu_wrapper,
+                    silu_inplace_f64_cpu_wrapper,
+                    silu_inplace_bf16_cpu_wrapper,
+                    silu_inplace_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::GeluInplace,
+                "gelu",
+                [
+                    gelu_inplace_f32_cpu_wrapper,
+                    gelu_inplace_f64_cpu_wrapper,
+                    gelu_inplace_bf16_cpu_wrapper,
+                    gelu_inplace_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::TanhInplace,
+                "tanh",
+                [
+                    tanh_inplace_f32_cpu_wrapper,
+                    tanh_inplace_f64_cpu_wrapper,
+                    tanh_inplace_bf16_cpu_wrapper,
+                    tanh_inplace_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::SigmoidInplace,
+                "sigmoid",
+                [
+                    sigmoid_inplace_f32_cpu_wrapper,
+                    sigmoid_inplace_f64_cpu_wrapper,
+                    sigmoid_inplace_bf16_cpu_wrapper,
+                    sigmoid_inplace_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::NegInplace,
+                "neg",
+                [
+                    neg_inplace_f32_cpu_wrapper,
+                    neg_inplace_f64_cpu_wrapper,
+                    neg_inplace_bf16_cpu_wrapper,
+                    neg_inplace_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::AbsInplace,
+                "abs",
+                [
+                    abs_inplace_f32_cpu_wrapper,
+                    abs_inplace_f64_cpu_wrapper,
+                    abs_inplace_bf16_cpu_wrapper,
+                    abs_inplace_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::SqrInplace,
+                "sqr",
+                [
+                    sqr_inplace_f32_cpu_wrapper,
+                    sqr_inplace_f64_cpu_wrapper,
+                    sqr_inplace_bf16_cpu_wrapper,
+                    sqr_inplace_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::SqrtInplace,
+                "sqrt",
+                [
+                    sqrt_inplace_f32_cpu_wrapper,
+                    sqrt_inplace_f64_cpu_wrapper,
+                    sqrt_inplace_bf16_cpu_wrapper,
+                    sqrt_inplace_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::RsqrtInplace,
+                "rsqrt",
+                [
+                    rsqrt_inplace_f32_cpu_wrapper,
+                    rsqrt_inplace_f64_cpu_wrapper,
+                    rsqrt_inplace_bf16_cpu_wrapper,
+                    rsqrt_inplace_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::RecipInplace,
+                "recip",
+                [
+                    recip_inplace_f32_cpu_wrapper,
+                    recip_inplace_f64_cpu_wrapper,
+                    recip_inplace_bf16_cpu_wrapper,
+                    recip_inplace_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::ExpInplace,
+                "exp",
+                [
+                    exp_inplace_f32_cpu_wrapper,
+                    exp_inplace_f64_cpu_wrapper,
+                    exp_inplace_bf16_cpu_wrapper,
+                    exp_inplace_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::LogInplace,
+                "log",
+                [
+                    log_inplace_f32_cpu_wrapper,
+                    log_inplace_f64_cpu_wrapper,
+                    log_inplace_bf16_cpu_wrapper,
+                    log_inplace_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::SinInplace,
+                "sin",
+                [
+                    sin_inplace_f32_cpu_wrapper,
+                    sin_inplace_f64_cpu_wrapper,
+                    sin_inplace_bf16_cpu_wrapper,
+                    sin_inplace_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::CosInplace,
+                "cos",
+                [
+                    cos_inplace_f32_cpu_wrapper,
+                    cos_inplace_f64_cpu_wrapper,
+                    cos_inplace_bf16_cpu_wrapper,
+                    cos_inplace_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::SignInplace,
+                "sign",
+                [
+                    sign_inplace_f32_cpu_wrapper,
+                    sign_inplace_f64_cpu_wrapper,
+                    sign_inplace_bf16_cpu_wrapper,
+                    sign_inplace_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::FloorInplace,
+                "floor",
+                [
+                    floor_inplace_f32_cpu_wrapper,
+                    floor_inplace_f64_cpu_wrapper,
+                    floor_inplace_bf16_cpu_wrapper,
+                    floor_inplace_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::CeilInplace,
+                "ceil",
+                [
+                    ceil_inplace_f32_cpu_wrapper,
+                    ceil_inplace_f64_cpu_wrapper,
+                    ceil_inplace_bf16_cpu_wrapper,
+                    ceil_inplace_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::RoundInplace,
+                "round",
+                [
+                    round_inplace_f32_cpu_wrapper,
+                    round_inplace_f64_cpu_wrapper,
+                    round_inplace_bf16_cpu_wrapper,
+                    round_inplace_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::ErfInplace,
+                "erf",
+                [
+                    erf_inplace_f32_cpu_wrapper,
+                    erf_inplace_f64_cpu_wrapper,
+                    erf_inplace_bf16_cpu_wrapper,
+                    erf_inplace_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::GeluErfInplace,
+                "gelu_erf",
+                [
+                    gelu_erf_inplace_f32_cpu_wrapper,
+                    gelu_erf_inplace_f64_cpu_wrapper,
+                    gelu_erf_inplace_bf16_cpu_wrapper,
+                    gelu_erf_inplace_f16_cpu_wrapper,
+                ],
+            ),
         ];
 
         // Affine / clamp / powi — scalar-param single sections. Note the affine
         // wrapper name is `inplace_affine_<dt>_cpu_wrapper` (words swapped vs the
         // `affine_inplace_<dt>` symbol).
         let scalar_family: &[(OpKind, &str, [crate::kernel::KernelRef; 4])] = &[
-            (OpKind::InplaceAffine, "affine", [inplace_affine_f32_cpu_wrapper, inplace_affine_f64_cpu_wrapper, inplace_affine_bf16_cpu_wrapper, inplace_affine_f16_cpu_wrapper]),
-            (OpKind::ClampInplace, "clamp", [clamp_inplace_f32_cpu_wrapper, clamp_inplace_f64_cpu_wrapper, clamp_inplace_bf16_cpu_wrapper, clamp_inplace_f16_cpu_wrapper]),
-            (OpKind::PowIInplace, "powi", [powi_inplace_f32_cpu_wrapper, powi_inplace_f64_cpu_wrapper, powi_inplace_bf16_cpu_wrapper, powi_inplace_f16_cpu_wrapper]),
+            (
+                OpKind::InplaceAffine,
+                "affine",
+                [
+                    inplace_affine_f32_cpu_wrapper,
+                    inplace_affine_f64_cpu_wrapper,
+                    inplace_affine_bf16_cpu_wrapper,
+                    inplace_affine_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::ClampInplace,
+                "clamp",
+                [
+                    clamp_inplace_f32_cpu_wrapper,
+                    clamp_inplace_f64_cpu_wrapper,
+                    clamp_inplace_bf16_cpu_wrapper,
+                    clamp_inplace_f16_cpu_wrapper,
+                ],
+            ),
+            (
+                OpKind::PowIInplace,
+                "powi",
+                [
+                    powi_inplace_f32_cpu_wrapper,
+                    powi_inplace_f64_cpu_wrapper,
+                    powi_inplace_bf16_cpu_wrapper,
+                    powi_inplace_f16_cpu_wrapper,
+                ],
+            ),
         ];
 
         let mut checked = 0usize;
@@ -10100,8 +12588,17 @@ mod tests {
             (DType::I64, cast_to_i64_cpu_wrapper),
         ];
         let all_dts: [DType; 11] = [
-            DType::F32, DType::F64, DType::F16, DType::BF16, DType::F8E4M3,
-            DType::U8, DType::I8, DType::U32, DType::I16, DType::I32, DType::I64,
+            DType::F32,
+            DType::F64,
+            DType::F16,
+            DType::BF16,
+            DType::F8E4M3,
+            DType::U8,
+            DType::I8,
+            DType::U32,
+            DType::I16,
+            DType::I32,
+            DType::I64,
         ];
 
         let mut checked = 0usize;
@@ -10155,7 +12652,11 @@ mod tests {
         // I64 isn't registered for any elementwise op — must error.
         // (BF16/F16/F32/F64 all have AddElementwise wrappers as of
         // Phase C's multi-dtype expansion.)
-        let result = table.lookup(OpKind::AddElementwise, &[DType::I64, DType::I64, DType::I64], BackendId::Cpu);
+        let result = table.lookup(
+            OpKind::AddElementwise,
+            &[DType::I64, DType::I64, DType::I64],
+            BackendId::Cpu,
+        );
         assert!(result.is_err());
     }
 
@@ -10198,12 +12699,8 @@ mod tests {
         registry.register(cpu_caps());
 
         // 2. Resolve which backend handles (AddElementwise, F32).
-        let backend = resolve_target_backend(
-            &registry,
-            OpKind::AddElementwise,
-            DType::F32,
-        )
-        .expect("resolve");
+        let backend =
+            resolve_target_backend(&registry, OpKind::AddElementwise, DType::F32).expect("resolve");
         assert_eq!(backend, BackendId::Cpu);
 
         // 3. Build binding table + register CPU wrappers.
@@ -10246,7 +12743,11 @@ mod tests {
         let mut bindings = KernelBindingTable::new();
         register_cpu_kernels(&mut bindings);
         let kernel = bindings
-            .lookup(OpKind::AddElementwise, &[DType::F32, DType::F32, DType::F32], BackendId::Cpu)
+            .lookup(
+                OpKind::AddElementwise,
+                &[DType::F32, DType::F32, DType::F32],
+                BackendId::Cpu,
+            )
             .unwrap();
 
         // Only one input — should error, not panic.
@@ -10317,7 +12818,10 @@ mod tests {
 
         match rx.recv_timeout(Duration::from_secs(30)) {
             Ok((before, after)) => {
-                assert!(before, "CPU AddElementwise+F32 should resolve in the snapshot");
+                assert!(
+                    before,
+                    "CPU AddElementwise+F32 should resolve in the snapshot"
+                );
                 assert!(
                     after,
                     "snapshot must stay readable after a concurrent table swap"
@@ -10347,8 +12851,15 @@ mod tests {
     #[test]
     fn global_bindings_auto_registers_cpu_wrappers() {
         let b = global_bindings();
-        let result = b.lookup(OpKind::AddElementwise, &[DType::F32, DType::F32, DType::F32], BackendId::Cpu);
-        assert!(result.is_ok(), "CPU AddElementwise+F32 should be registered");
+        let result = b.lookup(
+            OpKind::AddElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cpu,
+        );
+        assert!(
+            result.is_ok(),
+            "CPU AddElementwise+F32 should be registered"
+        );
     }
 
     /// When the `cuda` feature is on, `register_cuda_kernels` (the
@@ -10368,7 +12879,10 @@ mod tests {
             &[DType::F32, DType::F32, DType::F32],
             BackendId::Cuda,
         );
-        assert!(cublas.is_ok(), "cuBLAS F32 MatMul should be auto-registered on Cuda");
+        assert!(
+            cublas.is_ok(),
+            "cuBLAS F32 MatMul should be auto-registered on Cuda"
+        );
 
         // Baracuda path: int8 MatMul exists only via baracuda. If this
         // resolves, both paths fired.
@@ -10416,8 +12930,8 @@ mod tests {
         // (backend, n_alts_within_backend). Iterates via iter_precision
         // because that already exposes per-alternative tuples.
         // OpKind/DType aren't Ord, so we use Vec-based group lookup.
-        let mut grouped: Vec<((OpKind, Vec<DType>), Vec<(BackendId, usize)>)> =
-            Vec::new();
+        #[allow(clippy::type_complexity)]
+        let mut grouped: Vec<((OpKind, Vec<DType>), Vec<(BackendId, usize)>)> = Vec::new();
         for (op, dtypes, backend, _precision) in b.iter_precision() {
             let key = (op, dtypes.to_vec());
             if let Some((_, entry)) = grouped.iter_mut().find(|(k, _)| *k == key) {
@@ -10507,7 +13021,11 @@ mod tests {
         const N: u32 = 7;
         for i in 0..N {
             inflight_inc(loc);
-            assert_eq!(inflight_count(loc), base + i + 1, "inc must raise the count");
+            assert_eq!(
+                inflight_count(loc),
+                base + i + 1,
+                "inc must raise the count"
+            );
         }
         assert_eq!(inflight_count(loc), base + N);
 
@@ -10535,7 +13053,11 @@ mod tests {
         let untouched = DeviceLocation::Vulkan { gpu_id: 99_002 };
         // Never incremented: dec must not create a wrapped count.
         inflight_dec(untouched);
-        assert_eq!(inflight_count(untouched), 0, "dec on an untouched device stays 0");
+        assert_eq!(
+            inflight_count(untouched),
+            0,
+            "dec on an untouched device stays 0"
+        );
 
         let loc = DeviceLocation::Vulkan { gpu_id: 99_003 };
         inflight_inc(loc);
@@ -10543,7 +13065,11 @@ mod tests {
         assert_eq!(inflight_count(loc), 0);
         // One extra dec past zero (the over-drain guard).
         inflight_dec(loc);
-        assert_eq!(inflight_count(loc), 0, "extra dec past zero must saturate, not wrap");
+        assert_eq!(
+            inflight_count(loc),
+            0,
+            "extra dec past zero must saturate, not wrap"
+        );
     }
 
     /// Distinct `DeviceLocation`s have independent slots — incrementing one
@@ -10607,12 +13133,27 @@ mod tests {
 
         let mut table = KernelBindingTable::new();
         // A CPU key that MUST NOT bleed into the Vulkan derivation.
-        table.register(OpKind::AddElementwise, &[DType::F32, DType::F32, DType::F32], BackendId::Cpu, stub);
+        table.register(
+            OpKind::AddElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cpu,
+            stub,
+        );
         // Vulkan: an elementwise key (single output dtype) ...
-        table.register(OpKind::MulElementwise, &[DType::F32, DType::F32, DType::F32], BackendId::Vulkan, stub_b);
+        table.register(
+            OpKind::MulElementwise,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Vulkan,
+            stub_b,
+        );
         // ... and a MIXED-dtype key: inputs F16/F16, OUTPUT F32. The
         // derived pair must key on the OUTPUT dtype (F32), not an input.
-        table.register(OpKind::MatMul, &[DType::F16, DType::F16, DType::F32], BackendId::Vulkan, stub_c);
+        table.register(
+            OpKind::MatMul,
+            &[DType::F16, DType::F16, DType::F32],
+            BackendId::Vulkan,
+            stub_c,
+        );
 
         let vk0 = DeviceLocation::Vulkan { gpu_id: 0 };
         let caps = derive_backend_caps(BackendId::Vulkan, vk0, &table);
@@ -10621,12 +13162,26 @@ mod tests {
         assert_eq!(caps.device_location, vk0);
         assert_eq!(caps.storage_substrate, SubstrateClass::VulkanBuffer);
         // Elementwise output dtype advertised.
-        assert!(caps.op_dtype_support.contains(&(OpKind::MulElementwise, DType::F32)));
+        assert!(
+            caps.op_dtype_support
+                .contains(&(OpKind::MulElementwise, DType::F32))
+        );
         // Multi-dtype key advertises the OUTPUT dtype (F32), not F16.
-        assert!(caps.op_dtype_support.contains(&(OpKind::MatMul, DType::F32)));
-        assert!(!caps.op_dtype_support.contains(&(OpKind::MatMul, DType::F16)));
+        assert!(
+            caps.op_dtype_support
+                .contains(&(OpKind::MatMul, DType::F32))
+        );
+        assert!(
+            !caps
+                .op_dtype_support
+                .contains(&(OpKind::MatMul, DType::F16))
+        );
         // The CPU key is NOT attributed to Vulkan.
-        assert!(!caps.op_dtype_support.contains(&(OpKind::AddElementwise, DType::F32)));
+        assert!(
+            !caps
+                .op_dtype_support
+                .contains(&(OpKind::AddElementwise, DType::F32))
+        );
         // A universal host-staging path back to CPU is advertised so the
         // transfer matrix can price GPU↔CPU crossings.
         assert!(caps
@@ -10659,21 +13214,27 @@ mod tests {
         let src_data: Vec<f32> = (0..17).map(|i| i as f32 * 1.5 - 3.0).collect();
         let src_bytes: Vec<u8> = src_data.iter().flat_map(|f| f.to_le_bytes()).collect();
         let src_cb = CudaStorageBytes::from_cpu_bytes(&dev, &src_bytes).expect("h2d src");
-        let src_arc: Arc<RwLock<Storage>> =
-            Arc::new(RwLock::new(Storage::new(BackendStorage::Cuda(src_cb), DType::F32)));
+        let src_arc: Arc<RwLock<Storage>> = Arc::new(RwLock::new(Storage::new(
+            BackendStorage::Cuda(src_cb),
+            DType::F32,
+        )));
 
         // Pre-allocated output filled with distinguishable garbage — proves
         // the write-into path actually overwrites every byte, not just
         // reads through stale garbage by luck.
         let garbage: Vec<u8> = vec![0xAAu8; src_bytes.len()];
         let dst_cb = CudaStorageBytes::from_cpu_bytes(&dev, &garbage).expect("h2d garbage");
-        let dst_arc: Arc<RwLock<Storage>> =
-            Arc::new(RwLock::new(Storage::new(BackendStorage::Cuda(dst_cb), DType::F32)));
+        let dst_arc: Arc<RwLock<Storage>> = Arc::new(RwLock::new(Storage::new(
+            BackendStorage::Cuda(dst_cb),
+            DType::F32,
+        )));
 
         // Destination buffer identity BEFORE the wrapper runs.
         let before_ptr = {
             let g = dst_arc.read().unwrap();
-            let BackendStorage::Cuda(c) = &g.inner else { panic!("not cuda") };
+            let BackendStorage::Cuda(c) = &g.inner else {
+                panic!("not cuda")
+            };
             c.buffer() as *const _ as usize
         };
 
@@ -10684,7 +13245,9 @@ mod tests {
 
         let after_ptr = {
             let g = dst_arc.read().unwrap();
-            let BackendStorage::Cuda(c) = &g.inner else { panic!("not cuda") };
+            let BackendStorage::Cuda(c) = &g.inner else {
+                panic!("not cuda")
+            };
             c.buffer() as *const _ as usize
         };
         assert_eq!(
@@ -10694,7 +13257,9 @@ mod tests {
 
         let new_bytes = {
             let g = dst_arc.read().unwrap();
-            let BackendStorage::Cuda(c) = &g.inner else { panic!("not cuda") };
+            let BackendStorage::Cuda(c) = &g.inner else {
+                panic!("not cuda")
+            };
             c.to_cpu_bytes().expect("d2h new")
         };
 
@@ -10702,7 +13267,9 @@ mod tests {
         // (`slot_copy_to_new`) from the SAME source, for comparison.
         let old_bytes = {
             let g = src_arc.read().unwrap();
-            let BackendStorage::Cuda(c) = &g.inner else { panic!("not cuda") };
+            let BackendStorage::Cuda(c) = &g.inner else {
+                panic!("not cuda")
+            };
             let copied = c
                 .slot_copy_to_new(0, c.len_bytes())
                 .expect("slot_copy_to_new (old allocate-and-replace path)");

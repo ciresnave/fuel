@@ -52,7 +52,11 @@ pub enum CorpusError {
     #[error("corpus schema error in {file}: {detail}")]
     Schema { file: &'static str, detail: String },
     #[error("corpus hex parse error in {file} (tcId {tc_id}): {detail}")]
-    Hex { file: &'static str, tc_id: u64, detail: String },
+    Hex {
+        file: &'static str,
+        tc_id: u64,
+        detail: String,
+    },
 }
 
 /// One `kiss-oracle-vectors-v1` test vector: a fixed input tuple and its single
@@ -94,12 +98,18 @@ impl Corpus {
 
     /// Every vector for this `(op, dtype)` cell (empty when uncovered).
     pub fn cells(&self, op: &str, dtype: &str) -> Vec<&CorpusVector> {
-        self.vectors.iter().filter(|v| v.op == op && v.dtype == dtype).collect()
+        self.vectors
+            .iter()
+            .filter(|v| v.op == op && v.dtype == dtype)
+            .collect()
     }
 
     /// The set of covered `(op, dtype)` cells.
     pub fn covered_cells(&self) -> BTreeSet<(String, String)> {
-        self.vectors.iter().map(|v| (v.op.clone(), v.dtype.clone())).collect()
+        self.vectors
+            .iter()
+            .map(|v| (v.op.clone(), v.dtype.clone()))
+            .collect()
     }
 
     /// True iff the manifest's `declared_coverage_set` names this op.
@@ -142,7 +152,7 @@ fn parse_hex_bytes(s: &str, file: &'static str, tc_id: u64) -> Result<Vec<u8>, C
                     file,
                     tc_id,
                     detail: format!("non-hex digit in {s:?}"),
-                })
+                });
             }
         }
     }
@@ -153,13 +163,20 @@ fn parse_hex_bytes(s: &str, file: &'static str, tc_id: u64) -> Result<Vec<u8>, C
 /// exact-byte vectors). Pure over the embedded constants; never panics.
 pub fn load_vendored_corpus() -> Result<Corpus, CorpusError> {
     // --- op_manifest.json: metadata (op names, transcendental atoms, coverage).
-    let manifest: serde_json::Value = serde_json::from_str(OP_MANIFEST_JSON)
-        .map_err(|source| CorpusError::Json { file: "op_manifest.json", source })?;
+    let manifest: serde_json::Value =
+        serde_json::from_str(OP_MANIFEST_JSON).map_err(|source| CorpusError::Json {
+            file: "op_manifest.json",
+            source,
+        })?;
     let string_list = |key: &str| -> Vec<String> {
         manifest
             .get(key)
             .and_then(|v| v.as_array())
-            .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default()
     };
     let all_ops = string_list("all_ops");
@@ -167,8 +184,11 @@ pub fn load_vendored_corpus() -> Result<Corpus, CorpusError> {
     let declared_coverage = string_list("declared_coverage_set");
 
     // --- ops-arith.json: the exact-byte vectors.
-    let arith: serde_json::Value = serde_json::from_str(OPS_ARITH_JSON)
-        .map_err(|source| CorpusError::Json { file: "ops-arith.json", source })?;
+    let arith: serde_json::Value =
+        serde_json::from_str(OPS_ARITH_JSON).map_err(|source| CorpusError::Json {
+            file: "ops-arith.json",
+            source,
+        })?;
     let arr = arith
         .get("vectors")
         .and_then(|v| v.as_array())
@@ -192,22 +212,34 @@ pub fn load_vendored_corpus() -> Result<Corpus, CorpusError> {
         };
         let op = req_str("op")?;
         let dtype = req_str("dtype")?;
-        let rounding = v.get("rounding").and_then(|x| x.as_str()).unwrap_or("").to_string();
-        let class = v.get("class").and_then(|x| x.as_str()).unwrap_or("").to_string();
+        let rounding = v
+            .get("rounding")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
+        let class = v
+            .get("class")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .to_string();
         let ulp_bound = v.get("ulp_bound").and_then(|x| x.as_u64()).unwrap_or(0);
 
         let inputs_arr =
-            v.get("inputs").and_then(|x| x.as_array()).ok_or_else(|| CorpusError::Schema {
-                file,
-                detail: format!("tcId {tc_id}: missing `inputs` array"),
-            })?;
+            v.get("inputs")
+                .and_then(|x| x.as_array())
+                .ok_or_else(|| CorpusError::Schema {
+                    file,
+                    detail: format!("tcId {tc_id}: missing `inputs` array"),
+                })?;
         let mut inputs = Vec::with_capacity(inputs_arr.len());
         for inp in inputs_arr {
             let bits =
-                inp.get("bits").and_then(|x| x.as_str()).ok_or_else(|| CorpusError::Schema {
-                    file,
-                    detail: format!("tcId {tc_id}: input missing `bits`"),
-                })?;
+                inp.get("bits")
+                    .and_then(|x| x.as_str())
+                    .ok_or_else(|| CorpusError::Schema {
+                        file,
+                        detail: format!("tcId {tc_id}: input missing `bits`"),
+                    })?;
             inputs.push(parse_hex_bytes(bits, file, tc_id)?);
         }
 
@@ -233,7 +265,12 @@ pub fn load_vendored_corpus() -> Result<Corpus, CorpusError> {
         });
     }
 
-    Ok(Corpus { all_ops, transcendental_atoms, declared_coverage, vectors })
+    Ok(Corpus {
+        all_ops,
+        transcendental_atoms,
+        declared_coverage,
+        vectors,
+    })
 }
 
 #[cfg(test)]
@@ -249,9 +286,17 @@ mod tests {
             "op_manifest declared_coverage_set should include add"
         );
         // ops-arith.json has exactly 5 add/f32 exact-byte vectors.
-        assert!(corpus.covers("add", "f32"), "corpus should cover (add, f32)");
+        assert!(
+            corpus.covers("add", "f32"),
+            "corpus should cover (add, f32)"
+        );
         let cells = corpus.cells("add", "f32");
-        assert_eq!(cells.len(), 5, "expected 5 add/f32 vectors, got {}", cells.len());
+        assert_eq!(
+            cells.len(),
+            5,
+            "expected 5 add/f32 vectors, got {}",
+            cells.len()
+        );
         for c in &cells {
             assert_eq!(c.class, "exact-byte");
             assert_eq!(c.ulp_bound, 0);
@@ -264,8 +309,14 @@ mod tests {
         );
         assert_eq!(tc4.expected, vec![0x40, 0x00, 0x00, 0x00]);
         // Uncovered cells report no coverage (None-for-everything-else contract).
-        assert!(!corpus.covers("add", "f64"), "corpus should NOT cover (add, f64)");
-        assert!(!corpus.covers("mul", "f32"), "corpus should NOT cover (mul, f32)");
+        assert!(
+            !corpus.covers("add", "f64"),
+            "corpus should NOT cover (add, f64)"
+        );
+        assert!(
+            !corpus.covers("mul", "f32"),
+            "corpus should NOT cover (mul, f32)"
+        );
         assert!(corpus.cells("mul", "f32").is_empty());
     }
 

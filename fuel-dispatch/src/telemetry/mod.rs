@@ -55,7 +55,7 @@ pub use baracuda_provider::BaracudaStructureKeyProvider;
 pub use config::{TelemetryConfig, TelemetryMode};
 pub use hooks::TelemetryHooks;
 pub use impl_id::ImplId;
-pub use miss::{detect_miss, detect_miss_precomputed, is_generic_contract, AdmittedContract};
+pub use miss::{AdmittedContract, detect_miss, detect_miss_precomputed, is_generic_contract};
 pub use record::{Candidate, DispatchRecord, HwStamp, MissRecord, TELEMETRY_SCHEMA_VERSION};
 pub use sink::TelemetrySink;
 pub use structure_key::{

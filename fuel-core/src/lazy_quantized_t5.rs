@@ -35,11 +35,11 @@
 //!   (`enc.blk.{i}.*` and `dec.blk.{i}.*`), keeping Q4_0 tensors
 //!   quantized and dequantizing other GGML dtypes to F32.
 
+use crate::lazy::WeightStorage;
 use crate::lazy_t5::{
     T5AttentionWeights, T5Config, T5DecoderLayerWeights, T5EncoderLayerWeights, T5FfnWeights,
     T5Model, T5Weights,
 };
-use crate::lazy::WeightStorage;
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -61,7 +61,11 @@ impl QuantizedT5Model {
     /// Full seq2seq forward: encode `src_tokens`, decode
     /// `tgt_tokens` against the encoder output, return logits
     /// `(1, tgt_len, vocab_size)`.
-    pub fn forward(&self, src_tokens: &[u32], tgt_tokens: &[u32]) -> Result<crate::lazy::LazyTensor> {
+    pub fn forward(
+        &self,
+        src_tokens: &[u32],
+        tgt_tokens: &[u32],
+    ) -> Result<crate::lazy::LazyTensor> {
         self.inner.forward(src_tokens, tgt_tokens)
     }
 
@@ -74,7 +78,8 @@ impl QuantizedT5Model {
     /// Encoder-only forward over pre-computed embeddings. Skips the
     /// token-embedding lookup. Returns `(1, src_len, d_model)`.
     pub fn forward_encoder_embeds(
-        &self, src_embeds: &crate::lazy::LazyTensor,
+        &self,
+        src_embeds: &crate::lazy::LazyTensor,
     ) -> Result<crate::lazy::LazyTensor> {
         self.inner.forward_encoder_embeds(src_embeds)
     }
@@ -82,7 +87,9 @@ impl QuantizedT5Model {
     /// Decoder-only forward against a cached encoder output.
     /// Returns logits `(1, tgt_len, vocab_size)`.
     pub fn forward_decoder(
-        &self, tgt_tokens: &[u32], encoder_out: &crate::lazy::LazyTensor,
+        &self,
+        tgt_tokens: &[u32],
+        encoder_out: &crate::lazy::LazyTensor,
     ) -> Result<crate::lazy::LazyTensor> {
         self.inner.forward_decoder(tgt_tokens, encoder_out)
     }
@@ -106,25 +113,32 @@ impl QuantizedT5Model {
         tgt_embeds: &crate::lazy::LazyTensor,
         encoder_out: &crate::lazy::LazyTensor,
     ) -> Result<crate::lazy::LazyTensor> {
-        self.inner.forward_decoder_hidden_embeds(tgt_embeds, encoder_out)
+        self.inner
+            .forward_decoder_hidden_embeds(tgt_embeds, encoder_out)
     }
 
     /// Build per-token embeddings without running encoder or
     /// decoder. T5 has tied src/tgt embeddings; one table serves
     /// both sides. Returns `(1, seq, d_model)`.
     pub fn embed_tokens_anchored(
-        &self, anchor: &crate::lazy::LazyTensor, tokens: &[u32],
+        &self,
+        anchor: &crate::lazy::LazyTensor,
+        tokens: &[u32],
     ) -> Result<crate::lazy::LazyTensor> {
         self.inner.embed_tokens_anchored(anchor, tokens)
     }
 
     /// Model configuration.
-    pub fn config(&self) -> &T5Config { &self.inner.config }
+    pub fn config(&self) -> &T5Config {
+        &self.inner.config
+    }
 
     /// Underlying [`T5Model`] for direct access to the lazy graph
     /// API. The wrapper exists solely to label the quantization
     /// origin.
-    pub fn inner(&self) -> &T5Model { &self.inner }
+    pub fn inner(&self) -> &T5Model {
+        &self.inner
+    }
 
     /// Convenience: load f32 T5 weights from HF safetensors and
     /// quantize each Linear weight to Q4_0. Equivalent to
@@ -156,21 +170,27 @@ impl QuantizedT5Model {
         check_q4_0_divisible("inner_dim (= num_heads * d_kv)", inner)?;
         check_q4_0_divisible("d_ff", d_ff)?;
 
-        let quantize_linear = |w: &WeightStorage, in_features: usize, out_features: usize| -> Result<WeightStorage> {
-            let f32_in_out = match w {
+        let quantize_linear =
+            |w: &WeightStorage, in_features: usize, out_features: usize| -> Result<WeightStorage> {
+                let f32_in_out = match w {
                 WeightStorage::F32(a) => a.to_vec(),
                 _ => return Err(crate::Error::Msg(
-                    "QuantizedT5Model::from_f32_bake: source weights must be WeightStorage::F32".into(),
-                ).bt()),
+                    "QuantizedT5Model::from_f32_bake: source weights must be WeightStorage::F32"
+                        .into(),
+                )
+                .bt()),
             };
-            if f32_in_out.len() != in_features * out_features {
-                return Err(crate::Error::Msg(format!(
-                    "QuantizedT5Model::from_f32_bake: weight has {} elems, expected {}×{}",
-                    f32_in_out.len(), in_features, out_features,
-                )).bt());
-            }
-            quantize_in_out_to_q4_0(&f32_in_out, in_features, out_features)
-        };
+                if f32_in_out.len() != in_features * out_features {
+                    return Err(crate::Error::Msg(format!(
+                        "QuantizedT5Model::from_f32_bake: weight has {} elems, expected {}×{}",
+                        f32_in_out.len(),
+                        in_features,
+                        out_features,
+                    ))
+                    .bt());
+                }
+                quantize_in_out_to_q4_0(&f32_in_out, in_features, out_features)
+            };
 
         let quantize_attn = |a: &T5AttentionWeights, name: &str| -> Result<T5AttentionWeights> {
             let q = quantize_linear(&a.q, d, inner)
@@ -210,8 +230,8 @@ impl QuantizedT5Model {
         for (idx, layer) in src.encoder_layers.into_iter().enumerate() {
             let self_attn = quantize_attn(&layer.self_attn, "self_attn")
                 .map_err(|e| layer_err(idx, "encoder.self_attn", e))?;
-            let ffn = quantize_ffn(&layer.ffn, "ffn")
-                .map_err(|e| layer_err(idx, "encoder.ffn", e))?;
+            let ffn =
+                quantize_ffn(&layer.ffn, "ffn").map_err(|e| layer_err(idx, "encoder.ffn", e))?;
             encoder_layers.push(T5EncoderLayerWeights {
                 self_attn_norm_gain: layer.self_attn_norm_gain,
                 self_attn,
@@ -227,8 +247,8 @@ impl QuantizedT5Model {
                 .map_err(|e| layer_err(idx, "decoder.self_attn", e))?;
             let cross_attn = quantize_attn(&layer.cross_attn, "cross_attn")
                 .map_err(|e| layer_err(idx, "decoder.cross_attn", e))?;
-            let ffn = quantize_ffn(&layer.ffn, "ffn")
-                .map_err(|e| layer_err(idx, "decoder.ffn", e))?;
+            let ffn =
+                quantize_ffn(&layer.ffn, "ffn").map_err(|e| layer_err(idx, "decoder.ffn", e))?;
             decoder_layers.push(T5DecoderLayerWeights {
                 self_attn_norm_gain: layer.self_attn_norm_gain,
                 self_attn,
@@ -293,9 +313,7 @@ impl QuantizedT5Model {
     ///     final RmsNorm gains.
     ///   * `output.weight` — LM head; tied to `token_embd.weight`
     ///     when absent.
-    pub fn from_gguf<P: AsRef<std::path::Path>>(
-        path: P, cfg: &T5Config,
-    ) -> Result<Self> {
+    pub fn from_gguf<P: AsRef<std::path::Path>>(path: P, cfg: &T5Config) -> Result<Self> {
         use crate::quantized::gguf_mmap::MmapedContent;
         let mc = MmapedContent::from_path(path)?;
         let content = mc.content();
@@ -303,23 +321,32 @@ impl QuantizedT5Model {
         let mmap_bytes: &[u8] = &mmap_arc[..];
         let data_off = content.tensor_data_offset as usize;
 
-        let get_tensor_bytes = |name: &str| -> Result<(&[u8], crate::quantized::GgmlDType, Vec<usize>)> {
-            let info = content.tensor_infos.get(name).ok_or_else(|| {
-                crate::Error::Msg(format!("gguf: missing tensor {name:?}"))
-            })?;
-            let elems = info.shape.elem_count();
-            let block_size = info.ggml_dtype.block_size();
-            let bytes_len = elems / block_size * info.ggml_dtype.type_size();
-            let start = data_off + info.offset as usize;
-            Ok((&mmap_bytes[start..start + bytes_len], info.ggml_dtype, info.shape.dims().to_vec()))
-        };
+        let get_tensor_bytes =
+            |name: &str| -> Result<(&[u8], crate::quantized::GgmlDType, Vec<usize>)> {
+                let info = content
+                    .tensor_infos
+                    .get(name)
+                    .ok_or_else(|| crate::Error::Msg(format!("gguf: missing tensor {name:?}")))?;
+                let elems = info.shape.elem_count();
+                let block_size = info.ggml_dtype.block_size();
+                let bytes_len = elems / block_size * info.ggml_dtype.type_size();
+                let start = data_off + info.offset as usize;
+                Ok((
+                    &mmap_bytes[start..start + bytes_len],
+                    info.ggml_dtype,
+                    info.shape.dims().to_vec(),
+                ))
+            };
 
         let load_f32 = |name: &str| -> Result<Vec<f32>> {
             let (bytes, dt, _) = get_tensor_bytes(name)?;
             dequant_bytes_to_f32(bytes, dt, name)
         };
 
-        let load_weight = |name: &str, out_features: usize, in_features: usize| -> Result<WeightStorage> {
+        let load_weight = |name: &str,
+                           out_features: usize,
+                           in_features: usize|
+         -> Result<WeightStorage> {
             let (bytes, dt, dims) = get_tensor_bytes(name)?;
             let expected = out_features * in_features;
             let actual: usize = dims.iter().product();
@@ -361,8 +388,11 @@ impl QuantizedT5Model {
         if shared_embedding.len() != cfg.vocab_size * d {
             return Err(crate::Error::Msg(format!(
                 "gguf token_embd.weight: {} elems, expected {}×{}",
-                shared_embedding.len(), cfg.vocab_size, d,
-            )).bt());
+                shared_embedding.len(),
+                cfg.vocab_size,
+                d,
+            ))
+            .bt());
         }
 
         // Relative-attention bias tables: [num_buckets, n_heads].
@@ -373,18 +403,27 @@ impl QuantizedT5Model {
             return Err(crate::Error::Msg(format!(
                 "gguf enc.blk.0.attn_rel_b.weight: {} elems, expected {}×{}",
                 encoder_rel_bias.len(),
-                cfg.relative_attention_num_buckets, cfg.num_heads,
-            )).bt());
+                cfg.relative_attention_num_buckets,
+                cfg.num_heads,
+            ))
+            .bt());
         }
         if decoder_rel_bias.len() != expected_rel {
             return Err(crate::Error::Msg(format!(
                 "gguf dec.blk.0.attn_rel_b.weight: {} elems, expected {}×{}",
                 decoder_rel_bias.len(),
-                cfg.relative_attention_num_buckets, cfg.num_heads,
-            )).bt());
+                cfg.relative_attention_num_buckets,
+                cfg.num_heads,
+            ))
+            .bt());
         }
 
-        let load_attn = |prefix: &str, q_name: &str, k_name: &str, v_name: &str, o_name: &str| -> Result<T5AttentionWeights> {
+        let load_attn = |prefix: &str,
+                         q_name: &str,
+                         k_name: &str,
+                         v_name: &str,
+                         o_name: &str|
+         -> Result<T5AttentionWeights> {
             let q = load_weight(&format!("{prefix}.{q_name}.weight"), inner, d)?;
             let k = load_weight(&format!("{prefix}.{k_name}.weight"), inner, d)?;
             let v = load_weight(&format!("{prefix}.{v_name}.weight"), inner, d)?;
@@ -395,12 +434,12 @@ impl QuantizedT5Model {
         let load_ffn = |prefix: &str| -> Result<T5FfnWeights> {
             if gated {
                 let wi_0 = load_weight(&format!("{prefix}.ffn_gate.weight"), d_ff, d)?;
-                let wi_1 = load_weight(&format!("{prefix}.ffn_up.weight"),   d_ff, d)?;
-                let wo   = load_weight(&format!("{prefix}.ffn_down.weight"), d,    d_ff)?;
+                let wi_1 = load_weight(&format!("{prefix}.ffn_up.weight"), d_ff, d)?;
+                let wo = load_weight(&format!("{prefix}.ffn_down.weight"), d, d_ff)?;
                 Ok(T5FfnWeights::Gated { wi_0, wi_1, wo })
             } else {
-                let wi = load_weight(&format!("{prefix}.ffn_up.weight"),   d_ff, d)?;
-                let wo = load_weight(&format!("{prefix}.ffn_down.weight"), d,    d_ff)?;
+                let wi = load_weight(&format!("{prefix}.ffn_up.weight"), d_ff, d)?;
+                let wo = load_weight(&format!("{prefix}.ffn_down.weight"), d, d_ff)?;
                 Ok(T5FfnWeights::Dense { wi, wo })
             }
         };
@@ -415,7 +454,10 @@ impl QuantizedT5Model {
                 Arc::from(load_f32(&format!("{prefix}.ffn_norm.weight"))?);
             let ffn = load_ffn(&prefix)?;
             encoder_layers.push(T5EncoderLayerWeights {
-                self_attn_norm_gain, self_attn, ffn_norm_gain, ffn,
+                self_attn_norm_gain,
+                self_attn,
+                ffn_norm_gain,
+                ffn,
             });
         }
 
@@ -429,22 +471,26 @@ impl QuantizedT5Model {
                 Arc::from(load_f32(&format!("{prefix}.cross_attn_norm.weight"))?);
             let cross_attn = load_attn(
                 &prefix,
-                "cross_attn_q", "cross_attn_k", "cross_attn_v", "cross_attn_o",
+                "cross_attn_q",
+                "cross_attn_k",
+                "cross_attn_v",
+                "cross_attn_o",
             )?;
             let ffn_norm_gain: Arc<[f32]> =
                 Arc::from(load_f32(&format!("{prefix}.ffn_norm.weight"))?);
             let ffn = load_ffn(&prefix)?;
             decoder_layers.push(T5DecoderLayerWeights {
-                self_attn_norm_gain, self_attn,
-                cross_attn_norm_gain, cross_attn,
-                ffn_norm_gain, ffn,
+                self_attn_norm_gain,
+                self_attn,
+                cross_attn_norm_gain,
+                cross_attn,
+                ffn_norm_gain,
+                ffn,
             });
         }
 
-        let encoder_final_norm_gain: Arc<[f32]> =
-            Arc::from(load_f32("enc.output_norm.weight")?);
-        let decoder_final_norm_gain: Arc<[f32]> =
-            Arc::from(load_f32("dec.output_norm.weight")?);
+        let encoder_final_norm_gain: Arc<[f32]> = Arc::from(load_f32("enc.output_norm.weight")?);
+        let decoder_final_norm_gain: Arc<[f32]> = Arc::from(load_f32("dec.output_norm.weight")?);
 
         // Tied embeddings: T5 by default ties the LM head to the
         // shared embedding table. If `output.weight` is present we
@@ -458,7 +504,8 @@ impl QuantizedT5Model {
         } else {
             return Err(crate::Error::Msg(
                 "gguf: output.weight absent and config has tie_word_embeddings=false".into(),
-            ).bt());
+            )
+            .bt());
         };
 
         let inner_model = T5Model {
@@ -467,8 +514,10 @@ impl QuantizedT5Model {
                 shared_embedding: Arc::from(shared_embedding),
                 encoder_rel_bias: Arc::from(encoder_rel_bias),
                 decoder_rel_bias: Arc::from(decoder_rel_bias),
-                encoder_layers, decoder_layers,
-                encoder_final_norm_gain, decoder_final_norm_gain,
+                encoder_layers,
+                decoder_layers,
+                encoder_final_norm_gain,
+                decoder_final_norm_gain,
                 lm_head,
             },
         };
@@ -496,14 +545,17 @@ fn check_q4_0_divisible(name: &str, n: usize) -> Result<()> {
 /// `[in, out] → [out, in]` transpose first, then runs the per-row
 /// Q4_0 quantization.
 fn quantize_in_out_to_q4_0(
-    f32_in_out: &[f32], in_features: usize, out_features: usize,
+    f32_in_out: &[f32],
+    in_features: usize,
+    out_features: usize,
 ) -> Result<WeightStorage> {
     use fuel_quantized::{BlockQ4_0, GgmlType};
     const QK4_0: usize = 32;
     if !in_features.is_multiple_of(QK4_0) {
         return Err(crate::Error::Msg(format!(
             "Q4_0 quantize: in_features ({in_features}) must be divisible by {QK4_0}"
-        )).bt());
+        ))
+        .bt());
     }
 
     // Transpose [in, out] → [out, in] so each row is contiguous in K.
@@ -520,15 +572,15 @@ fn quantize_in_out_to_q4_0(
 
     // BlockQ4_0 is repr(C) and exactly 18 bytes; reinterpret as bytes.
     let bytes_len = n_blocks * std::mem::size_of::<BlockQ4_0>();
-    let byte_slice: &[u8] = unsafe {
-        std::slice::from_raw_parts(blocks.as_ptr() as *const u8, bytes_len)
-    };
+    let byte_slice: &[u8] =
+        unsafe { std::slice::from_raw_parts(blocks.as_ptr() as *const u8, bytes_len) };
     // Q4_0 storage holds u32 words; pad bytes to a multiple of 4 by
     // copying into a Vec<u8> first.
     let padded_len = bytes_len.div_ceil(4) * 4;
     let mut padded = vec![0_u8; padded_len];
     padded[..bytes_len].copy_from_slice(byte_slice);
-    let words: Vec<u32> = padded.chunks_exact(4)
+    let words: Vec<u32> = padded
+        .chunks_exact(4)
         .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     Ok(WeightStorage::Q4_0 {
@@ -543,7 +595,8 @@ fn bytes_to_u32_arc(bytes: &[u8]) -> Arc<[u32]> {
     let padded_len = bytes.len().div_ceil(4) * 4;
     let mut padded = vec![0_u8; padded_len];
     padded[..bytes.len()].copy_from_slice(bytes);
-    let words: Vec<u32> = padded.chunks_exact(4)
+    let words: Vec<u32> = padded
+        .chunks_exact(4)
         .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     Arc::from(words)
@@ -553,7 +606,9 @@ fn bytes_to_u32_arc(bytes: &[u8]) -> Arc<[u32]> {
 /// Self-contained so this module stays independent of other lazy
 /// quantized modules.
 fn dequant_bytes_to_f32(
-    bytes: &[u8], dt: crate::quantized::GgmlDType, name: &str,
+    bytes: &[u8],
+    dt: crate::quantized::GgmlDType,
+    name: &str,
 ) -> Result<Vec<f32>> {
     use crate::quantized::GgmlDType;
     use half::{bf16, f16};
@@ -561,34 +616,47 @@ fn dequant_bytes_to_f32(
         GgmlDType::F32 => {
             if bytes.len() % 4 != 0 {
                 return Err(crate::Error::Msg(format!(
-                    "gguf {name}: F32 byte count {} not multiple of 4", bytes.len(),
-                )).bt());
+                    "gguf {name}: F32 byte count {} not multiple of 4",
+                    bytes.len(),
+                ))
+                .bt());
             }
-            Ok(bytes.chunks_exact(4)
-                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
+            Ok(bytes
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect())
         }
         GgmlDType::F16 => {
             if bytes.len() % 2 != 0 {
                 return Err(crate::Error::Msg(format!(
-                    "gguf {name}: F16 byte count {} not multiple of 2", bytes.len(),
-                )).bt());
+                    "gguf {name}: F16 byte count {} not multiple of 2",
+                    bytes.len(),
+                ))
+                .bt());
             }
-            Ok(bytes.chunks_exact(2)
-                .map(|c| f16::from_le_bytes([c[0], c[1]]).to_f32()).collect())
+            Ok(bytes
+                .chunks_exact(2)
+                .map(|c| f16::from_le_bytes([c[0], c[1]]).to_f32())
+                .collect())
         }
         GgmlDType::BF16 => {
             if bytes.len() % 2 != 0 {
                 return Err(crate::Error::Msg(format!(
-                    "gguf {name}: BF16 byte count {} not multiple of 2", bytes.len(),
-                )).bt());
+                    "gguf {name}: BF16 byte count {} not multiple of 2",
+                    bytes.len(),
+                ))
+                .bt());
             }
-            Ok(bytes.chunks_exact(2)
-                .map(|c| bf16::from_le_bytes([c[0], c[1]]).to_f32()).collect())
+            Ok(bytes
+                .chunks_exact(2)
+                .map(|c| bf16::from_le_bytes([c[0], c[1]]).to_f32())
+                .collect())
         }
         GgmlDType::Q4_0 => Ok(cpu_dequant_q4_0_bytes(bytes)),
         other => Err(crate::Error::Msg(format!(
             "gguf {name}: dequant of {other:?} is not supported by lazy_quantized_t5",
-        )).bt()),
+        ))
+        .bt()),
     }
 }
 
@@ -606,7 +674,7 @@ fn cpu_dequant_q4_0_bytes(bytes: &[u8]) -> Vec<f32> {
             let packed = bytes[off + 2 + kk];
             let lo = (packed & 0x0F) as i32 - 8;
             let hi = ((packed >> 4) & 0x0F) as i32 - 8;
-            out[base + kk]      = lo as f32 * d;
+            out[base + kk] = lo as f32 * d;
             out[base + 16 + kk] = hi as f32 * d;
         }
     }
@@ -625,8 +693,11 @@ mod tests {
         //   d_ff = 64.
         T5Config {
             vocab_size: 32,
-            d_model: 32, d_kv: 8, d_ff: 64,
-            num_layers: 2, num_decoder_layers: None,
+            d_model: 32,
+            d_kv: 8,
+            d_ff: 64,
+            num_layers: 2,
+            num_decoder_layers: None,
             num_heads: 4,
             relative_attention_num_buckets: 8,
             relative_attention_max_distance: 32,
@@ -643,9 +714,8 @@ mod tests {
             s = s.wrapping_mul(1103515245).wrapping_add(12345);
             ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
         };
-        let mut vec_of = |n: usize| -> Arc<[f32]> {
-            Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
-        };
+        let mut vec_of =
+            |n: usize| -> Arc<[f32]> { Arc::from((0..n).map(|_| next()).collect::<Vec<_>>()) };
         let d = cfg.d_model;
         let inner = cfg.inner_dim();
         let d_ff = cfg.d_ff;
@@ -661,7 +731,7 @@ mod tests {
                 T5FfnWeights::Gated {
                     wi_0: WeightStorage::F32(vec_of(d * d_ff)),
                     wi_1: WeightStorage::F32(vec_of(d * d_ff)),
-                    wo:   WeightStorage::F32(vec_of(d_ff * d)),
+                    wo: WeightStorage::F32(vec_of(d_ff * d)),
                 }
             } else {
                 T5FfnWeights::Dense {
@@ -675,24 +745,24 @@ mod tests {
         let encoder_rel_bias = vec_of(cfg.relative_attention_num_buckets * cfg.num_heads);
         let decoder_rel_bias = vec_of(cfg.relative_attention_num_buckets * cfg.num_heads);
 
-        let encoder_layers: Vec<T5EncoderLayerWeights> = (0..cfg.num_layers).map(|_| {
-            T5EncoderLayerWeights {
+        let encoder_layers: Vec<T5EncoderLayerWeights> = (0..cfg.num_layers)
+            .map(|_| T5EncoderLayerWeights {
                 self_attn_norm_gain: Arc::from(vec![1.0_f32; d]),
                 self_attn: mk_attn(&mut vec_of),
                 ffn_norm_gain: Arc::from(vec![1.0_f32; d]),
                 ffn: mk_ffn(&mut vec_of),
-            }
-        }).collect();
-        let decoder_layers: Vec<T5DecoderLayerWeights> = (0..cfg.num_decoder_layers_resolved()).map(|_| {
-            T5DecoderLayerWeights {
+            })
+            .collect();
+        let decoder_layers: Vec<T5DecoderLayerWeights> = (0..cfg.num_decoder_layers_resolved())
+            .map(|_| T5DecoderLayerWeights {
                 self_attn_norm_gain: Arc::from(vec![1.0_f32; d]),
                 self_attn: mk_attn(&mut vec_of),
                 cross_attn_norm_gain: Arc::from(vec![1.0_f32; d]),
                 cross_attn: mk_attn(&mut vec_of),
                 ffn_norm_gain: Arc::from(vec![1.0_f32; d]),
                 ffn: mk_ffn(&mut vec_of),
-            }
-        }).collect();
+            })
+            .collect();
         let encoder_final_norm_gain = Arc::from(vec![1.0_f32; d]);
         let decoder_final_norm_gain = Arc::from(vec![1.0_f32; d]);
         let lm_head = if cfg.tie_word_embeddings {
@@ -702,9 +772,12 @@ mod tests {
         };
         T5Weights {
             shared_embedding,
-            encoder_rel_bias, decoder_rel_bias,
-            encoder_layers, decoder_layers,
-            encoder_final_norm_gain, decoder_final_norm_gain,
+            encoder_rel_bias,
+            decoder_rel_bias,
+            encoder_layers,
+            decoder_layers,
+            encoder_final_norm_gain,
+            decoder_final_norm_gain,
             lm_head,
         }
     }
@@ -735,7 +808,10 @@ mod tests {
         let src_tokens = [1_u32, 2, 3, 4];
         let tgt_tokens = [5_u32, 6, 7];
         let logits = model.forward(&src_tokens, &tgt_tokens).unwrap();
-        assert_eq!(logits.shape().dims(), &[1, tgt_tokens.len(), cfg.vocab_size]);
+        assert_eq!(
+            logits.shape().dims(),
+            &[1, tgt_tokens.len(), cfg.vocab_size]
+        );
         for &v in &logits.realize_f32() {
             assert!(v.is_finite(), "non-finite logit: {v}");
         }
@@ -755,28 +831,42 @@ mod tests {
             T5FfnWeights::Gated { wi_0, wi_1, wo } => {
                 assert!(matches!(wi_0, WeightStorage::Q4_0 { .. }));
                 assert!(matches!(wi_1, WeightStorage::Q4_0 { .. }));
-                assert!(matches!(wo,   WeightStorage::Q4_0 { .. }));
+                assert!(matches!(wo, WeightStorage::Q4_0 { .. }));
             }
             _ => panic!("expected gated FFN"),
         }
         let src_tokens = [1_u32, 2, 3];
         let tgt_tokens = [4_u32, 5];
         let logits = model.forward(&src_tokens, &tgt_tokens).unwrap();
-        assert_eq!(logits.shape().dims(), &[1, tgt_tokens.len(), cfg.vocab_size]);
+        assert_eq!(
+            logits.shape().dims(),
+            &[1, tgt_tokens.len(), cfg.vocab_size]
+        );
     }
 
     #[test]
     fn separate_lm_head_quantized_when_untied() {
-        let cfg = T5Config { tie_word_embeddings: false, ..test_cfg() };
+        let cfg = T5Config {
+            tie_word_embeddings: false,
+            ..test_cfg()
+        };
         let src = tiny_weights(&cfg);
         let model = QuantizedT5Model::from_f32_bake(cfg.clone(), src).unwrap();
-        let lm_head = model.inner().weights.lm_head.as_ref().expect("lm_head present");
+        let lm_head = model
+            .inner()
+            .weights
+            .lm_head
+            .as_ref()
+            .expect("lm_head present");
         assert!(matches!(lm_head, WeightStorage::Q4_0 { .. }));
     }
 
     #[test]
     fn rejects_non_q4_0_divisible_d_model() {
-        let cfg = T5Config { d_model: 30, ..test_cfg() };
+        let cfg = T5Config {
+            d_model: 30,
+            ..test_cfg()
+        };
         let src = tiny_weights(&cfg);
         assert!(QuantizedT5Model::from_f32_bake(cfg, src).is_err());
     }
@@ -788,14 +878,20 @@ mod tests {
         let model = QuantizedT5Model::from_f32_bake(cfg.clone(), src).unwrap();
         let src_tokens = [1_u32, 2, 3];
         let enc_ref = model.forward_encoder(&src_tokens).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let src_embeds = model.embed_tokens_anchored(&anchor, &src_tokens).unwrap();
-        let enc_via_embeds = model.forward_encoder_embeds(&src_embeds).unwrap().realize_f32();
-        let max_diff = enc_ref.iter().zip(enc_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-4,
-            "Quantized T5 forward_encoder vs forward_encoder_embeds must agree (max diff {max_diff})");
+        let enc_via_embeds = model
+            .forward_encoder_embeds(&src_embeds)
+            .unwrap()
+            .realize_f32();
+        let max_diff = enc_ref
+            .iter()
+            .zip(enc_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-4,
+            "Quantized T5 forward_encoder vs forward_encoder_embeds must agree (max diff {max_diff})"
+        );
     }
 }

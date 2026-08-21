@@ -27,8 +27,8 @@
 //!   - F32 weights and activations.
 //!   - `batch == 1`.
 
-use crate::lazy::{LazyTensor, WeightStorage};
 use crate::Result;
+use crate::lazy::{LazyTensor, WeightStorage};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -191,9 +191,7 @@ impl DacModel {
                 Some(s) => s.add(&z_q)?,
             });
         }
-        sum.ok_or_else(|| {
-            fuel_ir::Error::Msg("DAC RVQ: no codebooks".into()).bt()
-        })
+        sum.ok_or_else(|| fuel_ir::Error::Msg("DAC RVQ: no codebooks".into()).bt())
     }
 
     fn decoder_forward(&self, latent: &LazyTensor) -> Result<LazyTensor> {
@@ -217,13 +215,21 @@ impl DacModel {
 /// audio codec ports — they all dispatch dilated Conv1d through
 /// the plain Conv1d primitive using this weight-expansion trick.
 pub fn expand_conv1d_weight_for_dilation_if_needed(
-    w: &[f32], c_out: usize, c_in: usize, k: usize, dilation: usize,
+    w: &[f32],
+    c_out: usize,
+    c_in: usize,
+    k: usize,
+    dilation: usize,
 ) -> (Vec<f32>, usize) {
     expand_conv1d_weight_for_dilation(w, c_out, c_in, k, dilation)
 }
 
 fn expand_conv1d_weight_for_dilation(
-    w: &[f32], c_out: usize, c_in: usize, k: usize, dilation: usize,
+    w: &[f32],
+    c_out: usize,
+    c_in: usize,
+    k: usize,
+    dilation: usize,
 ) -> (Vec<f32>, usize) {
     if dilation <= 1 {
         return (w.to_vec(), k);
@@ -242,21 +248,15 @@ fn expand_conv1d_weight_for_dilation(
     (out, k_expanded)
 }
 
-fn apply_conv1d(
-    x: &LazyTensor,
-    c: &Conv1dWeights,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
-    let (w_data, k_eff) = expand_conv1d_weight_for_dilation(
-        &c.w, c.c_out, c.c_in, c.k, c.dilation,
-    );
+fn apply_conv1d(x: &LazyTensor, c: &Conv1dWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
+    let (w_data, k_eff) = expand_conv1d_weight_for_dilation(&c.w, c.c_out, c.c_in, c.k, c.dilation);
     let w = anchor.const_f32_like(
         Arc::<[f32]>::from(w_data),
         Shape::from_dims(&[c.c_out, c.c_in, k_eff]),
     );
-    let bias = c.b.as_ref().map(|b| {
-        anchor.const_f32_like(Arc::clone(b), Shape::from_dims(&[c.c_out]))
-    });
+    let bias =
+        c.b.as_ref()
+            .map(|b| anchor.const_f32_like(Arc::clone(b), Shape::from_dims(&[c.c_out])));
     x.conv1d(&w, bias.as_ref(), c.stride, c.pad, 1)
 }
 
@@ -265,10 +265,7 @@ fn apply_conv_transpose1d(
     c: &ConvTranspose1dWeights,
     anchor: &LazyTensor,
 ) -> Result<LazyTensor> {
-    let w = anchor.const_f32_like(
-        Arc::clone(&c.w),
-        Shape::from_dims(&[c.c_in, c.c_out, c.k]),
-    );
+    let w = anchor.const_f32_like(Arc::clone(&c.w), Shape::from_dims(&[c.c_in, c.c_out, c.k]));
     let mut out = x.conv_transpose1d(&w, c.stride, c.pad, 0, 1, 1)?;
     if let Some(b) = &c.b {
         let bias = anchor
@@ -280,15 +277,14 @@ fn apply_conv_transpose1d(
 }
 
 /// `Snake(x) = x + sin²(α · x) / (α + 1e-9)` with per-channel α.
-fn apply_snake1d(
-    x: &LazyTensor,
-    s: &Snake1dWeights,
-    anchor: &LazyTensor,
-) -> Result<LazyTensor> {
+fn apply_snake1d(x: &LazyTensor, s: &Snake1dWeights, anchor: &LazyTensor) -> Result<LazyTensor> {
     let dims = x.shape();
     let dims = dims.dims();
-    assert_eq!(dims[1], s.channels,
-        "snake1d: channel mismatch {} vs {}", dims[1], s.channels);
+    assert_eq!(
+        dims[1], s.channels,
+        "snake1d: channel mismatch {} vs {}",
+        dims[1], s.channels
+    );
     let alpha = anchor
         .const_f32_like(Arc::clone(&s.alpha), Shape::from_dims(&[s.channels]))
         .reshape(Shape::from_dims(&[1, s.channels, 1]))?
@@ -346,12 +342,17 @@ fn apply_decoder_block(
 /// `weight_v` is stored as `[c_out, c_in, k]` and `weight_g` as `[c_out, 1, 1]`
 /// (flattened to length `c_out`).
 fn fuse_weight_norm_conv1d(
-    weight_v: &[f32], weight_g: &[f32], c_out: usize, c_in: usize, k: usize,
+    weight_v: &[f32],
+    weight_g: &[f32],
+    c_out: usize,
+    c_in: usize,
+    k: usize,
 ) -> crate::Result<Vec<f32>> {
     if weight_v.len() != c_out * c_in * k {
         crate::bail!(
             "fuse_weight_norm_conv1d: weight_v has {} elements, expected {} ({c_out}×{c_in}×{k})",
-            weight_v.len(), c_out * c_in * k,
+            weight_v.len(),
+            c_out * c_in * k,
         );
     }
     if weight_g.len() != c_out {
@@ -383,12 +384,17 @@ fn fuse_weight_norm_conv1d(
 /// dims (per-input-channel), matching the eager
 /// `weight_v.sqr()?.sum_keepdim((1, 2))?.sqrt()?` recipe.
 fn fuse_weight_norm_conv_transpose1d(
-    weight_v: &[f32], weight_g: &[f32], c_in: usize, c_out: usize, k: usize,
+    weight_v: &[f32],
+    weight_g: &[f32],
+    c_in: usize,
+    c_out: usize,
+    k: usize,
 ) -> crate::Result<Vec<f32>> {
     if weight_v.len() != c_in * c_out * k {
         crate::bail!(
             "fuse_weight_norm_conv_transpose1d: weight_v has {} elements, expected {} ({c_in}×{c_out}×{k})",
-            weight_v.len(), c_in * c_out * k,
+            weight_v.len(),
+            c_in * c_out * k,
         );
     }
     if weight_g.len() != c_in {
@@ -420,8 +426,12 @@ fn fuse_weight_norm_conv_transpose1d(
 fn load_wn_conv1d(
     st: &crate::safetensors::MmapedSafetensors,
     prefix: &str,
-    c_in: usize, c_out: usize, k: usize,
-    stride: usize, pad: usize, dilation: usize,
+    c_in: usize,
+    c_out: usize,
+    k: usize,
+    stride: usize,
+    pad: usize,
+    dilation: usize,
 ) -> crate::Result<Conv1dWeights> {
     let weight_g = crate::lazy::load_tensor_as_f32(st, &format!("{prefix}.weight_g"))?;
     let weight_v = crate::lazy::load_tensor_as_f32(st, &format!("{prefix}.weight_v"))?;
@@ -436,7 +446,12 @@ fn load_wn_conv1d(
     Ok(Conv1dWeights {
         w: Arc::from(fused),
         b: Some(Arc::from(bias)),
-        c_in, c_out, k, stride, pad, dilation,
+        c_in,
+        c_out,
+        k,
+        stride,
+        pad,
+        dilation,
     })
 }
 
@@ -444,8 +459,11 @@ fn load_wn_conv1d(
 fn load_wn_conv_transpose1d(
     st: &crate::safetensors::MmapedSafetensors,
     prefix: &str,
-    c_in: usize, c_out: usize, k: usize,
-    stride: usize, pad: usize,
+    c_in: usize,
+    c_out: usize,
+    k: usize,
+    stride: usize,
+    pad: usize,
 ) -> crate::Result<ConvTranspose1dWeights> {
     let weight_g = crate::lazy::load_tensor_as_f32(st, &format!("{prefix}.weight_g"))?;
     let weight_v = crate::lazy::load_tensor_as_f32(st, &format!("{prefix}.weight_v"))?;
@@ -460,7 +478,11 @@ fn load_wn_conv_transpose1d(
     Ok(ConvTranspose1dWeights {
         w: Arc::from(fused),
         b: Some(Arc::from(bias)),
-        c_in, c_out, k, stride, pad,
+        c_in,
+        c_out,
+        k,
+        stride,
+        pad,
     })
 }
 
@@ -514,7 +536,13 @@ fn load_decoder_block(
     Ok(DecoderBlockWeights {
         snake1: load_snake(st, &format!("{p}.0"), in_dim)?,
         conv_tr1: load_wn_conv_transpose1d(
-            st, &format!("{p}.1"), in_dim, out_dim, 2 * stride, stride, pad,
+            st,
+            &format!("{p}.1"),
+            in_dim,
+            out_dim,
+            2 * stride,
+            stride,
+            pad,
         )?,
         res1: load_residual_unit(st, &format!("{p}.2"), out_dim, 1)?,
         res2: load_residual_unit(st, &format!("{p}.3"), out_dim, 3)?,
@@ -554,16 +582,26 @@ impl DacWeights {
         for i in 0..cfg.num_codebooks {
             let p = format!("quantizer.quantizers.{i}");
             let in_proj = load_wn_conv1d(
-                st, &format!("{p}.in_proj"),
-                cfg.latent_dim, cfg.codebook_dim, 1, 1, 0, 1,
+                st,
+                &format!("{p}.in_proj"),
+                cfg.latent_dim,
+                cfg.codebook_dim,
+                1,
+                1,
+                0,
+                1,
             )?;
             let out_proj = load_wn_conv1d(
-                st, &format!("{p}.out_proj"),
-                cfg.codebook_dim, cfg.latent_dim, 1, 1, 0, 1,
+                st,
+                &format!("{p}.out_proj"),
+                cfg.codebook_dim,
+                cfg.latent_dim,
+                1,
+                1,
+                0,
+                1,
             )?;
-            let codebook = crate::lazy::load_tensor_as_f32(
-                st, &format!("{p}.codebook.weight"),
-            )?;
+            let codebook = crate::lazy::load_tensor_as_f32(st, &format!("{p}.codebook.weight"))?;
             let expected = cfg.codebook_size * cfg.codebook_dim;
             if codebook.len() != expected {
                 crate::bail!(
@@ -572,7 +610,8 @@ impl DacWeights {
                 );
             }
             quantizers.push(VectorQuantizerWeights {
-                in_proj, out_proj,
+                in_proj,
+                out_proj,
                 codebook: Arc::from(codebook),
             });
         }
@@ -580,31 +619,40 @@ impl DacWeights {
         // Decoder: `decoder.model.{i}` for i=0..N+2.
         let n = cfg.decoder_rates.len();
         let mut channels = cfg.decoder_initial_channels;
-        let conv1 = load_wn_conv1d(
-            st, "decoder.model.0",
-            cfg.latent_dim, channels, 7, 1, 3, 1,
-        )?;
+        let conv1 = load_wn_conv1d(st, "decoder.model.0", cfg.latent_dim, channels, 7, 1, 3, 1)?;
         let mut blocks = Vec::with_capacity(n);
         for (idx, &stride) in cfg.decoder_rates.iter().enumerate() {
             let in_dim = channels;
             let out_dim = channels / 2;
             blocks.push(load_decoder_block(
-                st, &format!("decoder.model.{}", idx + 1),
-                in_dim, out_dim, stride,
+                st,
+                &format!("decoder.model.{}", idx + 1),
+                in_dim,
+                out_dim,
+                stride,
             )?);
             channels = out_dim;
         }
-        let snake1 = load_snake(
-            st, &format!("decoder.model.{}", n + 1), channels,
-        )?;
+        let snake1 = load_snake(st, &format!("decoder.model.{}", n + 1), channels)?;
         let conv2 = load_wn_conv1d(
-            st, &format!("decoder.model.{}", n + 2),
-            channels, cfg.decoder_out_channels, 7, 1, 3, 1,
+            st,
+            &format!("decoder.model.{}", n + 2),
+            channels,
+            cfg.decoder_out_channels,
+            7,
+            1,
+            3,
+            1,
         )?;
 
         Ok(Self {
             quantizers,
-            decoder: DecoderWeights { conv1, blocks, snake1, conv2 },
+            decoder: DecoderWeights {
+                conv1,
+                blocks,
+                snake1,
+                conv2,
+            },
         })
     }
 }
@@ -629,24 +677,44 @@ mod tests {
     }
 
     fn conv1d_w(
-        c_in: usize, c_out: usize, k: usize, stride: usize, pad: usize, dilation: usize,
-        bias: bool, nb: &mut dyn FnMut() -> f32,
+        c_in: usize,
+        c_out: usize,
+        k: usize,
+        stride: usize,
+        pad: usize,
+        dilation: usize,
+        bias: bool,
+        nb: &mut dyn FnMut() -> f32,
     ) -> Conv1dWeights {
         Conv1dWeights {
             w: vec_of(c_out * c_in * k, nb),
             b: if bias { Some(vec_of(c_out, nb)) } else { None },
-            c_in, c_out, k, stride, pad, dilation,
+            c_in,
+            c_out,
+            k,
+            stride,
+            pad,
+            dilation,
         }
     }
 
     fn conv_transpose1d_w(
-        c_in: usize, c_out: usize, k: usize, stride: usize, pad: usize, bias: bool,
+        c_in: usize,
+        c_out: usize,
+        k: usize,
+        stride: usize,
+        pad: usize,
+        bias: bool,
         nb: &mut dyn FnMut() -> f32,
     ) -> ConvTranspose1dWeights {
         ConvTranspose1dWeights {
             w: vec_of(c_in * c_out * k, nb),
             b: if bias { Some(vec_of(c_out, nb)) } else { None },
-            c_in, c_out, k, stride, pad,
+            c_in,
+            c_out,
+            k,
+            stride,
+            pad,
         }
     }
 
@@ -668,7 +736,10 @@ mod tests {
     }
 
     fn decoder_block_w(
-        in_dim: usize, out_dim: usize, stride: usize, nb: &mut dyn FnMut() -> f32,
+        in_dim: usize,
+        out_dim: usize,
+        stride: usize,
+        nb: &mut dyn FnMut() -> f32,
     ) -> DecoderBlockWeights {
         let pad = stride.div_ceil(2);
         DecoderBlockWeights {
@@ -694,13 +765,13 @@ mod tests {
 
     fn tiny_dac_weights(cfg: &DacConfig) -> DacWeights {
         let mut nb = rng_seed(2026);
-        let quantizers: Vec<VectorQuantizerWeights> = (0..cfg.num_codebooks).map(|_| {
-            VectorQuantizerWeights {
+        let quantizers: Vec<VectorQuantizerWeights> = (0..cfg.num_codebooks)
+            .map(|_| VectorQuantizerWeights {
                 in_proj: conv1d_w(cfg.latent_dim, cfg.codebook_dim, 1, 1, 0, 1, true, &mut nb),
                 out_proj: conv1d_w(cfg.codebook_dim, cfg.latent_dim, 1, 1, 0, 1, true, &mut nb),
                 codebook: vec_of(cfg.codebook_size * cfg.codebook_dim, &mut nb),
-            }
-        }).collect();
+            })
+            .collect();
 
         let mut channels = cfg.decoder_initial_channels;
         let conv1 = conv1d_w(cfg.latent_dim, channels, 7, 1, 3, 1, true, &mut nb);
@@ -711,11 +782,25 @@ mod tests {
             channels = next;
         }
         let snake1 = snake_w(channels, &mut nb);
-        let conv2 = conv1d_w(channels, cfg.decoder_out_channels, 7, 1, 3, 1, true, &mut nb);
+        let conv2 = conv1d_w(
+            channels,
+            cfg.decoder_out_channels,
+            7,
+            1,
+            3,
+            1,
+            true,
+            &mut nb,
+        );
 
         DacWeights {
             quantizers,
-            decoder: DecoderWeights { conv1, blocks, snake1, conv2 },
+            decoder: DecoderWeights {
+                conv1,
+                blocks,
+                snake1,
+                conv2,
+            },
         }
     }
 
@@ -769,7 +854,10 @@ mod tests {
     fn decode_codes_shape_and_finite() {
         let cfg = tiny_dac_config();
         let weights = tiny_dac_weights(&cfg);
-        let model = DacModel { config: cfg.clone(), weights };
+        let model = DacModel {
+            config: cfg.clone(),
+            weights,
+        };
         let time = 4_usize;
         // codes shape: (1, num_codebooks, time), each entry in [0, codebook_size).
         let mut data: Vec<u32> = Vec::with_capacity(cfg.num_codebooks * time);
@@ -778,12 +866,8 @@ mod tests {
                 data.push(((c + t) % cfg.codebook_size) as u32);
             }
         }
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32; 1], Shape::from_dims(&[1]), &Device::cpu(),
-        );
-        let codes = anchor.const_u32_like(
-            data, Shape::from_dims(&[1, cfg.num_codebooks, time]),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &Device::cpu());
+        let codes = anchor.const_u32_like(data, Shape::from_dims(&[1, cfg.num_codebooks, time]));
         let audio = model.decode_codes(&codes).unwrap();
         let dims = audio.shape();
         let dims = dims.dims();
@@ -800,15 +884,15 @@ mod tests {
 
     // ---- Safetensors loader round-trip --------------------------------
 
-    fn write_tmp_safetensors(
-        tensors: &[(String, Vec<usize>, Vec<f32>)],
-    ) -> std::path::PathBuf {
+    fn write_tmp_safetensors(tensors: &[(String, Vec<usize>, Vec<f32>)]) -> std::path::PathBuf {
         use safetensors::tensor::TensorView;
         use std::collections::HashMap;
-        let bytes_store: Vec<Vec<u8>> = tensors.iter()
+        let bytes_store: Vec<Vec<u8>> = tensors
+            .iter()
             .map(|(_, _, data)| data.iter().flat_map(|f| f.to_le_bytes()).collect())
             .collect();
-        let views: HashMap<String, TensorView<'_>> = tensors.iter()
+        let views: HashMap<String, TensorView<'_>> = tensors
+            .iter()
             .zip(bytes_store.iter())
             .map(|((name, shape, _), bytes)| {
                 let v = TensorView::new(safetensors::Dtype::F32, shape.clone(), bytes)
@@ -820,7 +904,10 @@ mod tests {
         let bytes_out = safetensors::serialize(&views, metadata).unwrap();
         let path = std::env::temp_dir().join(format!(
             "fuel_lazy_dac_test_{}.safetensors",
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
         ));
         std::fs::write(&path, bytes_out).unwrap();
         path
@@ -829,7 +916,11 @@ mod tests {
     /// Emit a weight-normed conv1d at `prefix` plus an explicit bias.
     /// Uses constant weights so the test mainly exercises shape/name wiring.
     fn wn_conv1d_tensors(
-        prefix: &str, c_in: usize, c_out: usize, k: usize, seed: u32,
+        prefix: &str,
+        c_in: usize,
+        c_out: usize,
+        k: usize,
+        seed: u32,
     ) -> Vec<(String, Vec<usize>, Vec<f32>)> {
         let mut s = seed;
         let mut next = || -> f32 {
@@ -847,7 +938,11 @@ mod tests {
     }
 
     fn wn_conv_transpose1d_tensors(
-        prefix: &str, c_in: usize, c_out: usize, k: usize, seed: u32,
+        prefix: &str,
+        c_in: usize,
+        c_out: usize,
+        k: usize,
+        seed: u32,
     ) -> Vec<(String, Vec<usize>, Vec<f32>)> {
         let mut s = seed;
         let mut next = || -> f32 {
@@ -864,9 +959,11 @@ mod tests {
         ]
     }
 
-    fn snake_tensors(prefix: &str, channels: usize, seed: u32)
-        -> Vec<(String, Vec<usize>, Vec<f32>)>
-    {
+    fn snake_tensors(
+        prefix: &str,
+        channels: usize,
+        seed: u32,
+    ) -> Vec<(String, Vec<usize>, Vec<f32>)> {
         let mut s = seed;
         let mut next = || -> f32 {
             s = s.wrapping_mul(1103515245).wrapping_add(12345);
@@ -876,29 +973,63 @@ mod tests {
         vec![(format!("{prefix}.alpha"), vec![1, channels, 1], alpha)]
     }
 
-    fn res_unit_tensors(prefix: &str, dim: usize, seed: u32)
-        -> Vec<(String, Vec<usize>, Vec<f32>)>
-    {
+    fn res_unit_tensors(
+        prefix: &str,
+        dim: usize,
+        seed: u32,
+    ) -> Vec<(String, Vec<usize>, Vec<f32>)> {
         let mut out = Vec::new();
         out.extend(snake_tensors(&format!("{prefix}.block.0"), dim, seed));
         // k=7 dilated conv. dilation is irrelevant for the on-disk tensor.
-        out.extend(wn_conv1d_tensors(&format!("{prefix}.block.1"), dim, dim, 7, seed + 1));
+        out.extend(wn_conv1d_tensors(
+            &format!("{prefix}.block.1"),
+            dim,
+            dim,
+            7,
+            seed + 1,
+        ));
         out.extend(snake_tensors(&format!("{prefix}.block.2"), dim, seed + 2));
-        out.extend(wn_conv1d_tensors(&format!("{prefix}.block.3"), dim, dim, 1, seed + 3));
+        out.extend(wn_conv1d_tensors(
+            &format!("{prefix}.block.3"),
+            dim,
+            dim,
+            1,
+            seed + 3,
+        ));
         out
     }
 
     fn decoder_block_tensors(
-        prefix: &str, in_dim: usize, out_dim: usize, stride: usize, seed: u32,
+        prefix: &str,
+        in_dim: usize,
+        out_dim: usize,
+        stride: usize,
+        seed: u32,
     ) -> Vec<(String, Vec<usize>, Vec<f32>)> {
         let mut out = Vec::new();
         out.extend(snake_tensors(&format!("{prefix}.block.0"), in_dim, seed));
         out.extend(wn_conv_transpose1d_tensors(
-            &format!("{prefix}.block.1"), in_dim, out_dim, 2 * stride, seed + 10,
+            &format!("{prefix}.block.1"),
+            in_dim,
+            out_dim,
+            2 * stride,
+            seed + 10,
         ));
-        out.extend(res_unit_tensors(&format!("{prefix}.block.2"), out_dim, seed + 20));
-        out.extend(res_unit_tensors(&format!("{prefix}.block.3"), out_dim, seed + 30));
-        out.extend(res_unit_tensors(&format!("{prefix}.block.4"), out_dim, seed + 40));
+        out.extend(res_unit_tensors(
+            &format!("{prefix}.block.2"),
+            out_dim,
+            seed + 20,
+        ));
+        out.extend(res_unit_tensors(
+            &format!("{prefix}.block.3"),
+            out_dim,
+            seed + 30,
+        ));
+        out.extend(res_unit_tensors(
+            &format!("{prefix}.block.4"),
+            out_dim,
+            seed + 40,
+        ));
         out
     }
 
@@ -913,14 +1044,23 @@ mod tests {
         for i in 0..cfg.num_codebooks {
             let p = format!("quantizer.quantizers.{i}");
             tensors.extend(wn_conv1d_tensors(
-                &format!("{p}.in_proj"), cfg.latent_dim, cfg.codebook_dim, 1, 100 + i as u32,
+                &format!("{p}.in_proj"),
+                cfg.latent_dim,
+                cfg.codebook_dim,
+                1,
+                100 + i as u32,
             ));
             tensors.extend(wn_conv1d_tensors(
-                &format!("{p}.out_proj"), cfg.codebook_dim, cfg.latent_dim, 1, 200 + i as u32,
+                &format!("{p}.out_proj"),
+                cfg.codebook_dim,
+                cfg.latent_dim,
+                1,
+                200 + i as u32,
             ));
             // codebook.weight has shape [cb_size, cb_dim].
             let cb: Vec<f32> = (0..cfg.codebook_size * cfg.codebook_dim)
-                .map(|j| (j as f32 + i as f32) * 0.01).collect();
+                .map(|j| (j as f32 + i as f32) * 0.01)
+                .collect();
             tensors.push((
                 format!("{p}.codebook.weight"),
                 vec![cfg.codebook_size, cfg.codebook_dim],
@@ -932,23 +1072,35 @@ mod tests {
         let n = cfg.decoder_rates.len();
         let mut channels = cfg.decoder_initial_channels;
         tensors.extend(wn_conv1d_tensors(
-            "decoder.model.0", cfg.latent_dim, channels, 7, 500,
+            "decoder.model.0",
+            cfg.latent_dim,
+            channels,
+            7,
+            500,
         ));
         for (idx, &stride) in cfg.decoder_rates.iter().enumerate() {
             let in_dim = channels;
             let out_dim = channels / 2;
             tensors.extend(decoder_block_tensors(
                 &format!("decoder.model.{}", idx + 1),
-                in_dim, out_dim, stride, 1000 + idx as u32 * 100,
+                in_dim,
+                out_dim,
+                stride,
+                1000 + idx as u32 * 100,
             ));
             channels = out_dim;
         }
         tensors.extend(snake_tensors(
-            &format!("decoder.model.{}", n + 1), channels, 7000,
+            &format!("decoder.model.{}", n + 1),
+            channels,
+            7000,
         ));
         tensors.extend(wn_conv1d_tensors(
             &format!("decoder.model.{}", n + 2),
-            channels, cfg.decoder_out_channels, 7, 8000,
+            channels,
+            cfg.decoder_out_channels,
+            7,
+            8000,
         ));
 
         let path = write_tmp_safetensors(&tensors);
@@ -960,8 +1112,11 @@ mod tests {
             assert_eq!(q.in_proj.c_out, cfg.codebook_dim);
             assert_eq!(q.out_proj.c_in, cfg.codebook_dim);
             assert_eq!(q.out_proj.c_out, cfg.latent_dim);
-            assert_eq!(q.codebook.len(), cfg.codebook_size * cfg.codebook_dim,
-                "codebook {i} length");
+            assert_eq!(
+                q.codebook.len(),
+                cfg.codebook_size * cfg.codebook_dim,
+                "codebook {i} length"
+            );
         }
         assert_eq!(weights.decoder.blocks.len(), n);
         assert_eq!(weights.decoder.conv1.c_in, cfg.latent_dim);
@@ -991,13 +1146,22 @@ mod tests {
         for i in 0..cfg.num_codebooks {
             let p = format!("quantizer.quantizers.{i}");
             tensors.extend(wn_conv1d_tensors(
-                &format!("{p}.in_proj"), cfg.latent_dim, cfg.codebook_dim, 1, 100 + i as u32,
+                &format!("{p}.in_proj"),
+                cfg.latent_dim,
+                cfg.codebook_dim,
+                1,
+                100 + i as u32,
             ));
             tensors.extend(wn_conv1d_tensors(
-                &format!("{p}.out_proj"), cfg.codebook_dim, cfg.latent_dim, 1, 200 + i as u32,
+                &format!("{p}.out_proj"),
+                cfg.codebook_dim,
+                cfg.latent_dim,
+                1,
+                200 + i as u32,
             ));
             let cb: Vec<f32> = (0..cfg.codebook_size * cfg.codebook_dim)
-                .map(|j| (j as f32 + i as f32) * 0.01).collect();
+                .map(|j| (j as f32 + i as f32) * 0.01)
+                .collect();
             tensors.push((
                 format!("{p}.codebook.weight"),
                 vec![cfg.codebook_size, cfg.codebook_dim],
@@ -1007,35 +1171,48 @@ mod tests {
         let n = cfg.decoder_rates.len();
         let mut channels = cfg.decoder_initial_channels;
         tensors.extend(wn_conv1d_tensors(
-            "decoder.model.0", cfg.latent_dim, channels, 7, 500,
+            "decoder.model.0",
+            cfg.latent_dim,
+            channels,
+            7,
+            500,
         ));
         for (idx, &stride) in cfg.decoder_rates.iter().enumerate() {
             let in_dim = channels;
             let out_dim = channels / 2;
             tensors.extend(decoder_block_tensors(
                 &format!("decoder.model.{}", idx + 1),
-                in_dim, out_dim, stride, 1000 + idx as u32 * 100,
+                in_dim,
+                out_dim,
+                stride,
+                1000 + idx as u32 * 100,
             ));
             channels = out_dim;
         }
         tensors.extend(snake_tensors(
-            &format!("decoder.model.{}", n + 1), channels, 7000,
+            &format!("decoder.model.{}", n + 1),
+            channels,
+            7000,
         ));
         tensors.extend(wn_conv1d_tensors(
             &format!("decoder.model.{}", n + 2),
-            channels, cfg.decoder_out_channels, 7, 8000,
+            channels,
+            cfg.decoder_out_channels,
+            7,
+            8000,
         ));
 
         let path = write_tmp_safetensors(&tensors);
         let st = unsafe { crate::safetensors::MmapedSafetensors::new(&path).unwrap() };
         let weights = DacWeights::load_from_mmapped(&st, &cfg).unwrap();
-        let model = DacModel { config: cfg.clone(), weights };
+        let model = DacModel {
+            config: cfg.clone(),
+            weights,
+        };
 
         let time = 4_usize;
         let dev = Device::cpu();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev,
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
         let codes = anchor.const_u32_like(
             vec![1_u32; cfg.num_codebooks * time],
             Shape::from_dims(&[1, cfg.num_codebooks, time]),
@@ -1055,12 +1232,13 @@ mod tests {
     fn decode_codes_responds_to_codes() {
         let cfg = tiny_dac_config();
         let weights = tiny_dac_weights(&cfg);
-        let model = DacModel { config: cfg.clone(), weights };
+        let model = DacModel {
+            config: cfg.clone(),
+            weights,
+        };
         let time = 4_usize;
         let dev = Device::cpu();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev,
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
         let codes_a = anchor.const_u32_like(
             vec![0_u32; cfg.num_codebooks * time],
             Shape::from_dims(&[1, cfg.num_codebooks, time]),
@@ -1075,7 +1253,9 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-7,
-            "decoded audio must respond to code changes, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-7,
+            "decoded audio must respond to code changes, max_diff = {max_diff}"
+        );
     }
 }

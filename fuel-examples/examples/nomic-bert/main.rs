@@ -12,7 +12,7 @@ use fuel::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
 use fuel::lazy_nomic_bert::{
     NomicBertActivation, NomicBertConfig, NomicBertLayerWeights, NomicBertModel, NomicBertWeights,
 };
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 use tokenizers::{PaddingParams, Tokenizer};
 
 #[derive(Parser, Debug)]
@@ -55,9 +55,8 @@ fn nomic_bert_config_from_hf_json_str(json: &str) -> Result<NomicBertConfig> {
             .map(|x| x as usize)
             .unwrap_or(default)
     };
-    let get_f64_or = |key: &str, default: f64| -> f64 {
-        v.get(key).and_then(|x| x.as_f64()).unwrap_or(default)
-    };
+    let get_f64_or =
+        |key: &str, default: f64| -> f64 { v.get(key).and_then(|x| x.as_f64()).unwrap_or(default) };
     let get_bool_or = |key: &str, default: bool| -> bool {
         v.get(key).and_then(|x| x.as_bool()).unwrap_or(default)
     };
@@ -72,7 +71,7 @@ fn nomic_bert_config_from_hf_json_str(json: &str) -> Result<NomicBertConfig> {
         other => {
             return Err(E::msg(format!(
                 "unsupported activation_function {other:?} in nomic-bert config"
-            )))
+            )));
         }
     };
     Ok(NomicBertConfig {

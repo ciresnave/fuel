@@ -5,9 +5,13 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_ir::{dispatch::OpKind, probe::BackendId, DType, Layout, Result, Shape};
 use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
-use fuel_dispatch::{baracuda_dispatch::register_baracuda_cuda_kernels, dispatch::register_cuda_kernels, kernel::{KernelBindingTable, OpParams}};
+use fuel_dispatch::{
+    baracuda_dispatch::register_baracuda_cuda_kernels,
+    dispatch::register_cuda_kernels,
+    kernel::{KernelBindingTable, OpParams},
+};
+use fuel_ir::{DType, Layout, Result, Shape, dispatch::OpKind, probe::BackendId};
 use fuel_memory::{BackendStorage, Storage};
 
 fn dev_or_skip() -> Option<CudaDevice> {
@@ -33,8 +37,7 @@ fn pick_alt(
     op: OpKind,
     expected: fuel_dispatch::KernelRef,
 ) -> fuel_dispatch::KernelRef {
-    let alternatives =
-        table.lookup_alternatives(op, &[DType::F32, DType::F32], BackendId::Cuda);
+    let alternatives = table.lookup_alternatives(op, &[DType::F32, DType::F32], BackendId::Cuda);
     let expected_ptr = expected as usize;
     for alt in alternatives {
         if (alt.kernel as usize) == expected_ptr {

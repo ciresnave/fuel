@@ -13,6 +13,12 @@
 //! for every operand, call the kernel fn-pointer directly, then read the
 //! output bytes back out.
 
+// Staged verification machinery (V-FKC-9 Tasks 4.4-4.6), kept awaiting its
+// first consumer — see the NOTE in `fkc/verify/mod.rs`. dead_code is allowed
+// here under `-D warnings` until that consumer lands; re-remove this allow
+// alongside it.
+#![allow(dead_code)]
+
 use std::sync::{Arc, RwLock};
 
 use fuel_ir::{DType, Layout, Shape};
@@ -35,7 +41,11 @@ impl CpuInvoker {
     /// with no auxiliary op params (`OpParams::None` — elementwise unary/
     /// binary, shape-only ops, etc.).
     pub fn new(out_dtype: DType, out_shape: Vec<usize>) -> Self {
-        Self { out_dtype, out_shape, params: OpParams::None }
+        Self {
+            out_dtype,
+            out_shape,
+            params: OpParams::None,
+        }
     }
 
     /// Builder-style override for ops that need non-`None` `OpParams`
@@ -47,7 +57,11 @@ impl CpuInvoker {
 }
 
 impl KernelInvoker for CpuInvoker {
-    fn invoke(&self, entry: &BindingEntry, inputs: &[HostTensor]) -> Result<HostTensor, VerifyError> {
+    fn invoke(
+        &self,
+        entry: &BindingEntry,
+        inputs: &[HostTensor],
+    ) -> Result<HostTensor, VerifyError> {
         // Wrap each host-resident probe input in a CPU `Storage`. `from_slice`
         // is called with `T = u8` here (the byte buffer itself), which never
         // panics regardless of the logical `dtype` tag — `u8`'s size (1) and
@@ -58,9 +72,9 @@ impl KernelInvoker for CpuInvoker {
             .iter()
             .map(|t| {
                 Arc::new(RwLock::new(fuel_memory::Storage::new(
-                    fuel_memory::BackendStorage::Cpu(fuel_cpu_backend::CpuStorageBytes::from_slice(
-                        &t.bytes,
-                    )),
+                    fuel_memory::BackendStorage::Cpu(
+                        fuel_cpu_backend::CpuStorageBytes::from_slice(&t.bytes),
+                    ),
                     t.dtype,
                 )))
             })
@@ -75,15 +89,17 @@ impl KernelInvoker for CpuInvoker {
         let layouts: Vec<Layout> = inputs
             .iter()
             .map(|t| Layout::contiguous(Shape::from_dims(&t.shape)))
-            .chain(std::iter::once(Layout::contiguous(Shape::from_dims(&self.out_shape))))
+            .chain(std::iter::once(Layout::contiguous(Shape::from_dims(
+                &self.out_shape,
+            ))))
             .collect();
 
         (entry.kernel)(&ins, &mut outs, &layouts, &self.params)
             .map_err(|e| VerifyError::Invoke(format!("{e:?}")))?;
 
-        let guard = out
-            .read()
-            .map_err(|_| VerifyError::Backend("CpuInvoker: output storage RwLock poisoned".to_string()))?;
+        let guard = out.read().map_err(|_| {
+            VerifyError::Backend("CpuInvoker: output storage RwLock poisoned".to_string())
+        })?;
         // NOTE: deliberately NOT `fuel_memory::dispatch_storage!` here — that
         // macro expands the SAME body (`s.bytes().to_vec()`) across every
         // backend variant enabled for the crate, and only `CpuStorageBytes`
@@ -101,7 +117,11 @@ impl KernelInvoker for CpuInvoker {
             .bytes()
             .to_vec();
 
-        Ok(HostTensor { dtype: self.out_dtype, shape: self.out_shape.clone(), bytes })
+        Ok(HostTensor {
+            dtype: self.out_dtype,
+            shape: self.out_shape.clone(),
+            bytes,
+        })
     }
 }
 

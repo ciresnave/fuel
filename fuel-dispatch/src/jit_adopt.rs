@@ -150,19 +150,19 @@ pub(crate) fn dtype_to_element_kind(dt: DType) -> Option<ElementKind> {
         // No seam `ElementKind` for these Fuel dtypes — decline rather than a
         // lossy substitution. Enumerated (never `_`) so a new `DType` is a
         // COMPILE ERROR here instead of a silent decline. GAP-177 (i).
-        DType::I16
-        | DType::F6E2M3
-        | DType::F6E3M2
-        | DType::F4
-        | DType::F8E8M0
-        | DType::F8E6M2 => return None,
+        DType::I16 | DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 | DType::F8E6M2 => {
+            return None;
+        }
     })
 }
 
 /// The per-operand Fuel dtypes from the request operands (the binding-key
 /// metadata `adopt` stamps on the runtime op).
 fn operand_dtypes(operands: &[OperandDesc]) -> Vec<DType> {
-    operands.iter().filter_map(|o| element_kind_to_dtype(o.dtype)).collect()
+    operands
+        .iter()
+        .filter_map(|o| element_kind_to_dtype(o.dtype))
+        .collect()
 }
 
 /// Run the JIT adopt loop for `req.region`. Returns the adopted runtime
@@ -182,14 +182,22 @@ pub fn adopt_from_response(
         JitResponse::Synthesized { entry_point } => entry_point,
         JitResponse::Declined { .. } => return Ok(None),
     };
-    let art = synth
-        .take_kernel(&entry_point)
-        .ok_or_else(|| Error::Msg(format!("take_kernel({entry_point}): synthesizer retained nothing")))?;
+    let art = synth.take_kernel(&entry_point).ok_or_else(|| {
+        Error::Msg(format!(
+            "take_kernel({entry_point}): synthesizer retained nothing"
+        ))
+    })?;
     let kernel = load_kernel(&art)?;
     let dtypes = operand_dtypes(&req.operands);
     // req.region IS the recipe's decompose (fuel_graph::jit::PatternNode re-exports
     // the envelope's PatternNode), so adopt registers it as the runtime op's recipe.
-    Ok(adopt_runtime_fused(entry_point, req.region.clone(), kernel, dtypes, backend))
+    Ok(adopt_runtime_fused(
+        entry_point,
+        req.region.clone(),
+        kernel,
+        dtypes,
+        backend,
+    ))
 }
 
 #[cfg(test)]
@@ -215,13 +223,20 @@ mod tests {
         use fuel_ir::DType;
 
         const MAPPED: &[DType] = &[
-            DType::U8, DType::I8, DType::I32, DType::I64,
-            DType::BF16, DType::F16, DType::F32, DType::F64,
+            DType::U8,
+            DType::I8,
+            DType::I32,
+            DType::I64,
+            DType::BF16,
+            DType::F16,
+            DType::F32,
+            DType::F64,
             DType::U32,
             // FP8 (GAP-177 (ii)). Same OCP format on both sides — pinned exactly
             // by `fp8_maps_to_baracuda_ocp_element_kinds` below — so they
             // round-trip like the rest.
-            DType::F8E4M3, DType::F8E5M2,
+            DType::F8E4M3,
+            DType::F8E5M2,
         ];
 
         for &dt in MAPPED {
@@ -285,12 +300,24 @@ mod tests {
 
         // Outbound: Fuel FP8 dtype -> the OCP seam kind (exact, not just
         // round-trip-consistent).
-        assert_eq!(dtype_to_element_kind(DType::F8E4M3), Some(ElementKind::Fp8E4M3));
-        assert_eq!(dtype_to_element_kind(DType::F8E5M2), Some(ElementKind::Fp8E5M2));
+        assert_eq!(
+            dtype_to_element_kind(DType::F8E4M3),
+            Some(ElementKind::Fp8E4M3)
+        );
+        assert_eq!(
+            dtype_to_element_kind(DType::F8E5M2),
+            Some(ElementKind::Fp8E5M2)
+        );
         // Inbound: required by the round-trip invariant and by the caller that
         // reads a returned contract's FP8 operands back into Fuel dtypes.
-        assert_eq!(element_kind_to_dtype(ElementKind::Fp8E4M3), Some(DType::F8E4M3));
-        assert_eq!(element_kind_to_dtype(ElementKind::Fp8E5M2), Some(DType::F8E5M2));
+        assert_eq!(
+            element_kind_to_dtype(ElementKind::Fp8E4M3),
+            Some(DType::F8E4M3)
+        );
+        assert_eq!(
+            element_kind_to_dtype(ElementKind::Fp8E5M2),
+            Some(DType::F8E5M2)
+        );
     }
 
     use super::*;
@@ -323,11 +350,14 @@ mod tests {
     fn abs_sub() -> PatternNode {
         PatternNode::Op {
             op: OpTag::Abs,
-            attrs: OpAttrs::default(),
+            attrs: Box::new(OpAttrs::default()),
             operands: vec![PatternNode::Op {
                 op: OpTag::Sub,
-                attrs: OpAttrs::default(),
-                operands: vec![PatternNode::Bind { index: 0 }, PatternNode::Bind { index: 1 }],
+                attrs: Box::new(OpAttrs::default()),
+                operands: vec![
+                    PatternNode::Bind { index: 0 },
+                    PatternNode::Bind { index: 1 },
+                ],
             }],
         }
     }
@@ -354,9 +384,13 @@ mod tests {
     impl Synthesizer for MockSynth {
         fn synthesize(&self, _req: &JitRequest) -> JitResponse {
             if self.decline {
-                JitResponse::Declined { reason: "mock decline".into() }
+                JitResponse::Declined {
+                    reason: "mock decline".into(),
+                }
             } else {
-                JitResponse::Synthesized { entry_point: "mock::abs_sub".into() }
+                JitResponse::Synthesized {
+                    entry_point: "mock::abs_sub".into(),
+                }
             }
         }
         fn take_kernel(&self, _entry_point: &str) -> Option<SynthArtifact> {
@@ -372,14 +406,18 @@ mod tests {
                 OperandDesc::new(1, &[4], &[1], ElementKind::F32, 256),
             ],
             arch: baracuda_kernels_types::ArchSku::Sm89,
-            budget: JitBudget { max_compile_ms: 250 },
+            budget: JitBudget {
+                max_compile_ms: 250,
+            },
         }
     }
 
     #[test]
     fn adopts_a_synthesized_kernel_end_to_end() {
-        let synth =
-            MockSynth { decline: false, art: Mutex::new(Some(artifact("mock::abs_sub"))) };
+        let synth = MockSynth {
+            decline: false,
+            art: Mutex::new(Some(artifact("mock::abs_sub"))),
+        };
         // The load_kernel seam: a real backend loads art.artifact as a module +
         // resolves art.link.symbol; here it just yields a no-op KernelRef.
         let id = adopt_from_response(&synth, &req(), BackendId::Cpu, |_art| {
@@ -397,7 +435,10 @@ mod tests {
 
     #[test]
     fn declined_synthesis_adopts_nothing() {
-        let synth = MockSynth { decline: true, art: Mutex::new(None) };
+        let synth = MockSynth {
+            decline: true,
+            art: Mutex::new(None),
+        };
         let out = adopt_from_response(&synth, &req(), BackendId::Cpu, |_art| {
             panic!("load_kernel must not run on a decline")
         })

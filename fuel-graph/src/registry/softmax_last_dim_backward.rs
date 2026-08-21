@@ -22,12 +22,12 @@
 //! primitives" recipe, though: the closed-form backward expression
 //! is a real 6-node primitive subgraph (the same `SumDim` + keepdim
 //! + `BroadcastTo` idiom the forward `softmax_last_dim` recipe uses),
-//! so per G2 it decomposes totally — never a basis-gap self-return.
-//! T8 (Increment C slice 1) migrated that subgraph from an imperative
-//! builder to the portable [`recipe`] datum, and in doing so exercised
-//! the registry's `BackwardKind::Fused(id)` edge end-to-end on a data
-//! recipe for the first time. Beyond the recipe, the registry entry
-//! also exists to:
+//!   so per G2 it decomposes totally — never a basis-gap self-return.
+//!   T8 (Increment C slice 1) migrated that subgraph from an imperative
+//!   builder to the portable [`recipe`] datum, and in doing so exercised
+//!   the registry's `BackwardKind::Fused(id)` edge end-to-end on a data
+//!   recipe for the first time. Beyond the recipe, the registry entry
+//!   also exists to:
 //!
 //! - declare the op's identity (FusedOpId, FusedOpParams variant,
 //!   shape/dtype rules);
@@ -44,8 +44,8 @@
 //! `backward` field reflects this: [`BackwardKind::NotDifferentiable`].
 
 use crate::registry::{
-    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps,
-    PatternMatch, SubgraphPattern, decompose_via_recipe,
+    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps, PatternMatch,
+    SubgraphPattern, decompose_via_recipe,
 };
 use crate::{Graph, NodeId};
 use fuel_ir::{DType, Shape};
@@ -57,12 +57,12 @@ use std::sync::OnceLock;
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
         destructive_input: None,
-        id:         FusedOps::SOFTMAX_LAST_DIM_BACKWARD,
-        name:       "SoftmaxLastDimBackward",
-        family:     FusedOpFamily::Backward,
-        pattern:    SubgraphPattern::Callable(canonical_pattern),
+        id: FusedOps::SOFTMAX_LAST_DIM_BACKWARD,
+        name: "SoftmaxLastDimBackward",
+        family: FusedOpFamily::Backward,
+        pattern: SubgraphPattern::Callable(canonical_pattern),
         decompose,
-        backward:   BackwardKind::NotDifferentiable,
+        backward: BackwardKind::NotDifferentiable,
         shape_rule,
         dtype_rule,
         output_views: None,
@@ -72,7 +72,8 @@ pub fn entry() -> FusedOpEntry {
 /// Shape rule: output equals input 0 (the forward softmax output).
 fn shape_rule(input_shapes: &[Shape], _params: &FusedOpParams) -> Shape {
     debug_assert_eq!(
-        input_shapes.len(), 2,
+        input_shapes.len(),
+        2,
         "SoftmaxLastDimBackward takes 2 inputs (y, upstream)",
     );
     input_shapes[0].clone()
@@ -81,7 +82,8 @@ fn shape_rule(input_shapes: &[Shape], _params: &FusedOpParams) -> Shape {
 /// Dtype rule: output dtype equals input 0 (the forward softmax output).
 fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
     debug_assert_eq!(
-        input_dtypes.len(), 2,
+        input_dtypes.len(),
+        2,
         "SoftmaxLastDimBackward takes 2 inputs",
     );
     input_dtypes[0]
@@ -114,27 +116,48 @@ fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
 fn recipe() -> &'static PatternNode {
     static RECIPE: OnceLock<PatternNode> = OnceLock::new();
     RECIPE.get_or_init(|| {
-        let axis_last = || OpAttrs { axis_last: true, ..OpAttrs::default() };
+        let axis_last = || OpAttrs {
+            axis_last: true,
+            ..OpAttrs::default()
+        };
         let same_as_s = || OpAttrs {
             target_shape_rel: Some(ShapeExpr::SameAs { operand: 0 }),
             ..OpAttrs::default()
         };
-        let op = |op, attrs, operands| PatternNode::Op { op, attrs, operands };
+        let op = |op, attrs, operands| PatternNode::Op {
+            op,
+            attrs: Box::new(attrs),
+            operands,
+        };
         let s = || PatternNode::Bind { index: 0 };
         let g = || PatternNode::Bind { index: 1 };
-        op(OpTag::Mul, OpAttrs::default(), vec![
-            s(),
-            op(OpTag::Sub, OpAttrs::default(), vec![
-                g(),
-                op(OpTag::BroadcastTo, same_as_s(), vec![
-                    op(OpTag::Unsqueeze, axis_last(), vec![
-                        op(OpTag::SumDim, axis_last(), vec![
-                            op(OpTag::Mul, OpAttrs::default(), vec![g(), s()]),
-                        ]),
-                    ]),
-                ]),
-            ]),
-        ])
+        op(
+            OpTag::Mul,
+            OpAttrs::default(),
+            vec![
+                s(),
+                op(
+                    OpTag::Sub,
+                    OpAttrs::default(),
+                    vec![
+                        g(),
+                        op(
+                            OpTag::BroadcastTo,
+                            same_as_s(),
+                            vec![op(
+                                OpTag::Unsqueeze,
+                                axis_last(),
+                                vec![op(
+                                    OpTag::SumDim,
+                                    axis_last(),
+                                    vec![op(OpTag::Mul, OpAttrs::default(), vec![g(), s()])],
+                                )],
+                            )],
+                        ),
+                    ],
+                ),
+            ],
+        )
     })
 }
 

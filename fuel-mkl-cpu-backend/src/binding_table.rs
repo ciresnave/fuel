@@ -26,9 +26,14 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_ir::{dispatch::OpKind, probe::BackendId, DType, Error, Layout, Result};
-use fuel_dispatch::{dispatch::{cpu_input, cpu_output, read_storage, write_storage}, fused::PrecisionGuarantee, kernel::OpParams, KernelBindingTable};
-use fuel_memory::{Storage};
+use fuel_dispatch::{
+    KernelBindingTable,
+    dispatch::{cpu_input, cpu_output, read_storage, write_storage},
+    fused::PrecisionGuarantee,
+    kernel::OpParams,
+};
+use fuel_ir::{DType, Error, Layout, Result, dispatch::OpKind, probe::BackendId};
+use fuel_memory::Storage;
 
 /// Register MKL's CPU-side wrappers as sibling alternatives on the
 /// unified binding table. Trust the caller has already probed MKL (the
@@ -138,7 +143,7 @@ fn matmul_f32_mkl_cpu_wrapper(
             return Err(Error::Msg(format!(
                 "matmul_f32_mkl wrapper expects OpParams::Matmul, got {other:?}",
             ))
-            .bt())
+            .bt());
         }
     };
 
@@ -209,9 +214,15 @@ fn matmul_f32_mkl_bytes(
     let out_per_batch = m.saturating_mul(n);
     let lhs_batch_count: usize = lhs_batch_dims.iter().product::<usize>().max(1);
     let rhs_batch_count: usize = rhs_batch_dims.iter().product::<usize>().max(1);
-    let need_lhs = lhs_batch_count.saturating_mul(lhs_per_batch).saturating_mul(elem);
-    let need_rhs = rhs_batch_count.saturating_mul(rhs_per_batch).saturating_mul(elem);
-    let need_out = lhs_batch_count.saturating_mul(out_per_batch).saturating_mul(elem);
+    let need_lhs = lhs_batch_count
+        .saturating_mul(lhs_per_batch)
+        .saturating_mul(elem);
+    let need_rhs = rhs_batch_count
+        .saturating_mul(rhs_per_batch)
+        .saturating_mul(elem);
+    let need_out = lhs_batch_count
+        .saturating_mul(out_per_batch)
+        .saturating_mul(elem);
     if lhs.len_bytes() != need_lhs {
         return Err(Error::Msg(format!(
             "matmul_f32_mkl: lhs bytes={} doesn't match shape {:?} + [{m}, {k}] (f32)",
@@ -325,12 +336,14 @@ fn conv2d_f32_mkl_cpu_wrapper(
             padding,
             dilation,
             groups,
-        } => (*x_shape, *w_shape, *out_shape, *stride, *padding, *dilation, *groups),
+        } => (
+            *x_shape, *w_shape, *out_shape, *stride, *padding, *dilation, *groups,
+        ),
         other => {
             return Err(Error::Msg(format!(
                 "conv2d_f32_mkl wrapper expects OpParams::Conv2D, got {other:?}",
             ))
-            .bt())
+            .bt());
         }
     };
 
@@ -354,8 +367,8 @@ fn conv2d_f32_mkl_cpu_wrapper(
     // fails validation. The scalar kernel already handles all of these.
     if dilation != (1, 1) {
         return fuel_cpu_backend::byte_kernels::conv2d_f32(
-            x_cpu, w_cpu, bias_cpu, out_cpu,
-            x_shape, w_shape, out_shape, stride, padding, dilation, groups,
+            x_cpu, w_cpu, bias_cpu, out_cpu, x_shape, w_shape, out_shape, stride, padding,
+            dilation, groups,
         );
     }
     let s = fuel_conv::ConvShape {
@@ -372,8 +385,8 @@ fn conv2d_f32_mkl_cpu_wrapper(
     };
     if s.validate().is_err() {
         return fuel_cpu_backend::byte_kernels::conv2d_f32(
-            x_cpu, w_cpu, bias_cpu, out_cpu,
-            x_shape, w_shape, out_shape, stride, padding, dilation, groups,
+            x_cpu, w_cpu, bias_cpu, out_cpu, x_shape, w_shape, out_shape, stride, padding,
+            dilation, groups,
         );
     }
 
@@ -392,14 +405,17 @@ fn conv2d_f32_mkl_cpu_wrapper(
     match onemkl::service::AlignedBuffer::<f32>::new(s.im2col_len(), 64) {
         Ok(mut patches) => {
             run_mkl_conv2d_via_gemm(
-                x_view, w_view, bias_view, &s, out_view, patches.as_mut_slice(),
+                x_view,
+                w_view,
+                bias_view,
+                &s,
+                out_view,
+                patches.as_mut_slice(),
             );
         }
         Err(_) => {
             let mut patches = vec![0.0_f32; s.im2col_len()];
-            run_mkl_conv2d_via_gemm(
-                x_view, w_view, bias_view, &s, out_view, &mut patches,
-            );
+            run_mkl_conv2d_via_gemm(x_view, w_view, bias_view, &s, out_view, &mut patches);
         }
     }
     Ok(())
@@ -418,29 +434,31 @@ fn run_mkl_conv2d_via_gemm(
 ) {
     use onemkl::enums::{Layout as MklLayout, Transpose};
     use onemkl::matrix::{MatrixMut, MatrixRef};
-    fuel_conv::conv2d_via_gemm(
-        x, w, bias, s, out, patches,
-        |m, n, k, a, b, c| {
-            let a_ref = MatrixRef::new(a, m, k, MklLayout::RowMajor)
-                .expect("MatrixRef::new(a) in conv2d_via_gemm");
-            let b_ref = MatrixRef::new(b, k, n, MklLayout::RowMajor)
-                .expect("MatrixRef::new(b) in conv2d_via_gemm");
-            let mut c_mut = MatrixMut::new(c, m, n, MklLayout::RowMajor)
-                .expect("MatrixMut::new(c) in conv2d_via_gemm");
-            onemkl::blas::level3::gemm(
-                Transpose::NoTrans, Transpose::NoTrans,
-                1.0_f32, &a_ref, &b_ref, 0.0_f32, &mut c_mut,
-            )
-            .expect("onemkl::gemm in conv2d_via_gemm");
-        },
-    );
+    fuel_conv::conv2d_via_gemm(x, w, bias, s, out, patches, |m, n, k, a, b, c| {
+        let a_ref = MatrixRef::new(a, m, k, MklLayout::RowMajor)
+            .expect("MatrixRef::new(a) in conv2d_via_gemm");
+        let b_ref = MatrixRef::new(b, k, n, MklLayout::RowMajor)
+            .expect("MatrixRef::new(b) in conv2d_via_gemm");
+        let mut c_mut = MatrixMut::new(c, m, n, MklLayout::RowMajor)
+            .expect("MatrixMut::new(c) in conv2d_via_gemm");
+        onemkl::blas::level3::gemm(
+            Transpose::NoTrans,
+            Transpose::NoTrans,
+            1.0_f32,
+            &a_ref,
+            &b_ref,
+            0.0_f32,
+            &mut c_mut,
+        )
+        .expect("onemkl::gemm in conv2d_via_gemm");
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel_ir::probe::BackendId;
     use fuel_dispatch::dispatch::register_cpu_kernels;
+    use fuel_ir::probe::BackendId;
 
     /// Registration smoke: after `register_mkl_cpu_kernels`, the
     /// MatMul/F32 binding has at least 2 alternatives (scalar CPU +
@@ -450,11 +468,19 @@ mod tests {
         let mut table = KernelBindingTable::new();
         register_cpu_kernels(&mut table);
         let before = table
-            .lookup_alternatives(OpKind::MatMul, &[DType::F32, DType::F32, DType::F32], BackendId::Cpu)
+            .lookup_alternatives(
+                OpKind::MatMul,
+                &[DType::F32, DType::F32, DType::F32],
+                BackendId::Cpu,
+            )
             .len();
         register_mkl_cpu_kernels(&mut table);
         let after = table
-            .lookup_alternatives(OpKind::MatMul, &[DType::F32, DType::F32, DType::F32], BackendId::Cpu)
+            .lookup_alternatives(
+                OpKind::MatMul,
+                &[DType::F32, DType::F32, DType::F32],
+                BackendId::Cpu,
+            )
             .len();
         assert_eq!(
             after,
@@ -474,14 +500,22 @@ mod tests {
             .lookup_alternatives(OpKind::Conv2D, &[f32_dt, f32_dt, f32_dt], BackendId::Cpu)
             .len();
         let with_bias_before = table
-            .lookup_alternatives(OpKind::Conv2D, &[f32_dt, f32_dt, f32_dt, f32_dt], BackendId::Cpu)
+            .lookup_alternatives(
+                OpKind::Conv2D,
+                &[f32_dt, f32_dt, f32_dt, f32_dt],
+                BackendId::Cpu,
+            )
             .len();
         register_mkl_cpu_kernels(&mut table);
         let no_bias_after = table
             .lookup_alternatives(OpKind::Conv2D, &[f32_dt, f32_dt, f32_dt], BackendId::Cpu)
             .len();
         let with_bias_after = table
-            .lookup_alternatives(OpKind::Conv2D, &[f32_dt, f32_dt, f32_dt, f32_dt], BackendId::Cpu)
+            .lookup_alternatives(
+                OpKind::Conv2D,
+                &[f32_dt, f32_dt, f32_dt, f32_dt],
+                BackendId::Cpu,
+            )
             .len();
         assert_eq!(no_bias_after, no_bias_before + 1, "no-bias Conv2D");
         assert_eq!(with_bias_after, with_bias_before + 1, "with-bias Conv2D");
@@ -492,9 +526,9 @@ mod tests {
     /// isn't loadable (probe_mkl_loadable errors).
     #[test]
     fn mkl_matmul_matches_scalar_when_available() {
+        use fuel_dispatch::kernel::OpParams;
         use fuel_ir::dispatch::OpKind;
-        use fuel_dispatch::{kernel::OpParams};
-use fuel_memory::{BackendStorage, Storage};
+        use fuel_memory::{BackendStorage, Storage};
 
         if crate::probe_mkl_loadable().is_err() {
             eprintln!("MKL not available, skipping");
@@ -565,7 +599,10 @@ use fuel_memory::{BackendStorage, Storage};
             for (j, (&a, &r)) in alt_out.iter().zip(ref_out.iter()).enumerate() {
                 let denom = a.abs().max(r.abs()).max(f32::MIN_POSITIVE);
                 let rel = (a - r).abs() / denom;
-                assert!(rel < 1e-4, "alt {i}, idx {j}: mkl-ish={a}, scalar-ish={r} (rel {rel})");
+                assert!(
+                    rel < 1e-4,
+                    "alt {i}, idx {j}: mkl-ish={a}, scalar-ish={r} (rel {rel})"
+                );
             }
         }
     }
@@ -631,12 +668,12 @@ use fuel_memory::{BackendStorage, Storage};
         };
 
         let f32_dt = DType::F32;
-        let alternatives = table.lookup_alternatives(
-            OpKind::Conv2D,
-            &[f32_dt, f32_dt, f32_dt],
-            BackendId::Cpu,
+        let alternatives =
+            table.lookup_alternatives(OpKind::Conv2D, &[f32_dt, f32_dt, f32_dt], BackendId::Cpu);
+        assert!(
+            alternatives.len() >= 2,
+            "need both CPU + MKL conv2d alternatives"
         );
-        assert!(alternatives.len() >= 2, "need both CPU + MKL conv2d alternatives");
 
         let mut outputs: Vec<Vec<f32>> = Vec::with_capacity(alternatives.len());
         for alt in alternatives {
@@ -659,7 +696,10 @@ use fuel_memory::{BackendStorage, Storage};
             for (j, (&a, &r)) in alt_out.iter().zip(ref_out.iter()).enumerate() {
                 let denom = a.abs().max(r.abs()).max(f32::MIN_POSITIVE);
                 let rel = (a - r).abs() / denom;
-                assert!(rel < 1e-4, "alt {i}, idx {j}: mkl={a}, scalar={r} (rel {rel})");
+                assert!(
+                    rel < 1e-4,
+                    "alt {i}, idx {j}: mkl={a}, scalar={r} (rel {rel})"
+                );
             }
         }
     }

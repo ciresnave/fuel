@@ -33,9 +33,9 @@
 //! length-`(num_images + 1)` slice of cumulative patch counts; the
 //! last entry must equal `N`.
 
+use crate::Result;
 use crate::lazy::{LazyTensor, WeightStorage};
 use crate::lazy_conv3d::Conv3dTemporal2Weights;
-use crate::Result;
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -253,9 +253,11 @@ impl Qwen3VlVisionModel {
             for (ds_idx, &capture_at) in cfg.deepstack_visual_indexes.iter().enumerate() {
                 if capture_at == layer_idx && capture_at < cfg.depth {
                     let projector = &weights.deepstack[ds_idx];
-                    let projected = projector
-                        .weight
-                        .apply_linear(&hidden, cfg.hidden_size, cfg.out_hidden_size)?;
+                    let projected = projector.weight.apply_linear(
+                        &hidden,
+                        cfg.hidden_size,
+                        cfg.out_hidden_size,
+                    )?;
                     let bias_t = hidden.const_f32_like(
                         Arc::clone(&projector.bias),
                         Shape::from_dims(&[cfg.out_hidden_size]),
@@ -307,16 +309,25 @@ impl Qwen3VlVisionModel {
         let qkv = qkv
             .reshape(Shape::from_dims(&[n, 3, num_heads, head_dim]))?
             .permute([1, 0, 2, 3_usize])?;
-        let q = qkv.slice(0_usize, 0, 1)?.reshape(Shape::from_dims(&[n, num_heads, head_dim]))?;
-        let k = qkv.slice(0_usize, 1, 1)?.reshape(Shape::from_dims(&[n, num_heads, head_dim]))?;
-        let v = qkv.slice(0_usize, 2, 1)?.reshape(Shape::from_dims(&[n, num_heads, head_dim]))?;
+        let q = qkv
+            .slice(0_usize, 0, 1)?
+            .reshape(Shape::from_dims(&[n, num_heads, head_dim]))?;
+        let k = qkv
+            .slice(0_usize, 1, 1)?
+            .reshape(Shape::from_dims(&[n, num_heads, head_dim]))?;
+        let v = qkv
+            .slice(0_usize, 2, 1)?
+            .reshape(Shape::from_dims(&[n, num_heads, head_dim]))?;
 
         // (1, num_heads, N, head_dim) for matmul.
-        let q = q.reshape(Shape::from_dims(&[1, n, num_heads, head_dim]))?
+        let q = q
+            .reshape(Shape::from_dims(&[1, n, num_heads, head_dim]))?
             .permute([0, 2, 1, 3_usize])?;
-        let k = k.reshape(Shape::from_dims(&[1, n, num_heads, head_dim]))?
+        let k = k
+            .reshape(Shape::from_dims(&[1, n, num_heads, head_dim]))?
             .permute([0, 2, 1, 3_usize])?;
-        let v = v.reshape(Shape::from_dims(&[1, n, num_heads, head_dim]))?
+        let v = v
+            .reshape(Shape::from_dims(&[1, n, num_heads, head_dim]))?
             .permute([0, 2, 1, 3_usize])?;
 
         let scale = 1.0_f64 / (head_dim as f64).sqrt();
@@ -387,10 +398,7 @@ impl Qwen3VlVisionWeights {
 
         // ---- Conv3D patch embedding -------------------------------------
         // HF layout: (out=hidden, in=in_channels, T=temporal_patch_size, kH, kW)
-        let conv_raw = load_tensor_as_f32(
-            st,
-            &format!("{prefix}.patch_embed.proj.weight"),
-        )?;
+        let conv_raw = load_tensor_as_f32(st, &format!("{prefix}.patch_embed.proj.weight"))?;
         let patch_embed = Conv3dTemporal2Weights::from_raw_weight(
             &conv_raw,
             cfg.hidden_size,
@@ -402,13 +410,11 @@ impl Qwen3VlVisionWeights {
                 ..Default::default()
             },
         )?;
-        let patch_embed_bias: Arc<[f32]> = load_tensor_as_f32(
-            st,
-            &format!("{prefix}.patch_embed.proj.bias"),
-        )
-        .ok()
-        .map(Arc::from)
-        .unwrap_or_else(|| Arc::from(vec![0.0_f32; h]));
+        let patch_embed_bias: Arc<[f32]> =
+            load_tensor_as_f32(st, &format!("{prefix}.patch_embed.proj.bias"))
+                .ok()
+                .map(Arc::from)
+                .unwrap_or_else(|| Arc::from(vec![0.0_f32; h]));
 
         // ---- Transformer blocks -----------------------------------------
         let mut layers: Vec<Qwen3VlVisionLayerWeights> = Vec::with_capacity(cfg.depth);
@@ -441,12 +447,8 @@ impl Qwen3VlVisionWeights {
                 .unwrap_or_else(|| Arc::from(vec![0.0_f32; 3 * h]));
 
             // proj: [hidden, hidden] in HF → [hidden, hidden] for matmul.
-            let proj = load_transposed_matrix_preserve_dtype(
-                st,
-                &format!("{p}.attn.proj.weight"),
-                h,
-                h,
-            )?;
+            let proj =
+                load_transposed_matrix_preserve_dtype(st, &format!("{p}.attn.proj.weight"), h, h)?;
             let proj_bias: Arc<[f32]> = load_tensor_as_f32(st, &format!("{p}.attn.proj.bias"))
                 .ok()
                 .map(Arc::from)
@@ -459,11 +461,10 @@ impl Qwen3VlVisionWeights {
                 inter,
                 h,
             )?;
-            let fc1_bias: Arc<[f32]> =
-                load_tensor_as_f32(st, &format!("{p}.mlp.linear_fc1.bias"))
-                    .ok()
-                    .map(Arc::from)
-                    .unwrap_or_else(|| Arc::from(vec![0.0_f32; inter]));
+            let fc1_bias: Arc<[f32]> = load_tensor_as_f32(st, &format!("{p}.mlp.linear_fc1.bias"))
+                .ok()
+                .map(Arc::from)
+                .unwrap_or_else(|| Arc::from(vec![0.0_f32; inter]));
 
             // MLP fc2: [hidden, intermediate] in HF → [intermediate, hidden].
             let fc2 = load_transposed_matrix_preserve_dtype(
@@ -472,11 +473,10 @@ impl Qwen3VlVisionWeights {
                 h,
                 inter,
             )?;
-            let fc2_bias: Arc<[f32]> =
-                load_tensor_as_f32(st, &format!("{p}.mlp.linear_fc2.bias"))
-                    .ok()
-                    .map(Arc::from)
-                    .unwrap_or_else(|| Arc::from(vec![0.0_f32; h]));
+            let fc2_bias: Arc<[f32]> = load_tensor_as_f32(st, &format!("{p}.mlp.linear_fc2.bias"))
+                .ok()
+                .map(Arc::from)
+                .unwrap_or_else(|| Arc::from(vec![0.0_f32; h]));
 
             layers.push(Qwen3VlVisionLayerWeights {
                 norm1_gain,
@@ -498,20 +498,16 @@ impl Qwen3VlVisionWeights {
         // The eager port's PatchMerger applies an LN on `hidden_size`
         // immediately before its two linears. The lazy port skips the
         // merger but keeps the final LN, so we reuse that LN's affine.
-        let final_norm_gain: Arc<[f32]> = load_tensor_as_f32(
-            st,
-            &format!("{prefix}.merger.norm.weight"),
-        )
-        .ok()
-        .map(Arc::from)
-        .unwrap_or_else(|| Arc::from(vec![1.0_f32; h]));
-        let final_norm_bias: Arc<[f32]> = load_tensor_as_f32(
-            st,
-            &format!("{prefix}.merger.norm.bias"),
-        )
-        .ok()
-        .map(Arc::from)
-        .unwrap_or_else(|| Arc::from(vec![0.0_f32; h]));
+        let final_norm_gain: Arc<[f32]> =
+            load_tensor_as_f32(st, &format!("{prefix}.merger.norm.weight"))
+                .ok()
+                .map(Arc::from)
+                .unwrap_or_else(|| Arc::from(vec![1.0_f32; h]));
+        let final_norm_bias: Arc<[f32]> =
+            load_tensor_as_f32(st, &format!("{prefix}.merger.norm.bias"))
+                .ok()
+                .map(Arc::from)
+                .unwrap_or_else(|| Arc::from(vec![0.0_f32; h]));
 
         // ---- DeepStack projections --------------------------------------
         // Eager checkpoint has `deepstack_merger_list.{i}.{norm,linear_fc1,linear_fc2}`
@@ -525,15 +521,9 @@ impl Qwen3VlVisionWeights {
             Vec::with_capacity(cfg.deepstack_visual_indexes.len());
         for i in 0..cfg.deepstack_visual_indexes.len() {
             let p = format!("{prefix}.deepstack_merger_list.{i}");
-            let weight = load_transposed_matrix_preserve_dtype(
-                st,
-                &format!("{p}.linear_fc2.weight"),
-                oh,
-                h,
-            )
-            .unwrap_or_else(|_| {
-                WeightStorage::F32(Arc::from(vec![0.0_f32; h * oh]))
-            });
+            let weight =
+                load_transposed_matrix_preserve_dtype(st, &format!("{p}.linear_fc2.weight"), oh, h)
+                    .unwrap_or_else(|_| WeightStorage::F32(Arc::from(vec![0.0_f32; h * oh])));
             let bias: Arc<[f32]> = load_tensor_as_f32(st, &format!("{p}.linear_fc2.bias"))
                 .ok()
                 .map(Arc::from)
@@ -594,8 +584,7 @@ mod tests {
 
         // Conv3D weight: (out_channels=hidden, in_channels/groups=in_channels,
         //                  2, kH=patch, kW=patch).
-        let conv_raw_len =
-            cfg.hidden_size * cfg.in_channels * 2 * cfg.patch_size * cfg.patch_size;
+        let conv_raw_len = cfg.hidden_size * cfg.in_channels * 2 * cfg.patch_size * cfg.patch_size;
         let conv_raw: Vec<f32> = (0..conv_raw_len).map(|_| (*nb)()).collect();
         let patch_embed = Conv3dTemporal2Weights::from_raw_weight(
             &conv_raw,
@@ -651,9 +640,11 @@ mod tests {
     /// caller has already extracted patches across all images.
     /// `total_patches = num_images * (T_frames / temporal_patch_size) * (H/patch) * (W/patch)`.
     fn tiny_pixels(cfg: &Qwen3VlVisionConfig, n_patches: usize) -> LazyTensor {
-        let numel = n_patches * cfg.in_channels * cfg.temporal_patch_size
-            * cfg.patch_size * cfg.patch_size;
-        let data: Vec<f32> = (0..numel).map(|i| (i as f32 / numel as f32) - 0.5).collect();
+        let numel =
+            n_patches * cfg.in_channels * cfg.temporal_patch_size * cfg.patch_size * cfg.patch_size;
+        let data: Vec<f32> = (0..numel)
+            .map(|i| (i as f32 / numel as f32) - 0.5)
+            .collect();
         LazyTensor::from_f32(
             Arc::from(data),
             Shape::from_dims(&[
@@ -787,14 +778,22 @@ mod tests {
         let pixels_a = LazyTensor::from_f32(
             Arc::from(pixels_a_data),
             Shape::from_dims(&[
-                n, cfg.in_channels, cfg.temporal_patch_size, cfg.patch_size, cfg.patch_size,
+                n,
+                cfg.in_channels,
+                cfg.temporal_patch_size,
+                cfg.patch_size,
+                cfg.patch_size,
             ]),
             &Device::cpu(),
         );
         let pixels_b = LazyTensor::from_f32(
             Arc::from(pixels_b_data),
             Shape::from_dims(&[
-                n, cfg.in_channels, cfg.temporal_patch_size, cfg.patch_size, cfg.patch_size,
+                n,
+                cfg.in_channels,
+                cfg.temporal_patch_size,
+                cfg.patch_size,
+                cfg.patch_size,
             ]),
             &Device::cpu(),
         );
@@ -809,7 +808,10 @@ mod tests {
         // across the block boundary.
         let first_block_len = 4 * cfg.hidden_size;
         let mut max_diff_first = 0.0_f32;
-        for (x, y) in emb_a[..first_block_len].iter().zip(emb_b[..first_block_len].iter()) {
+        for (x, y) in emb_a[..first_block_len]
+            .iter()
+            .zip(emb_b[..first_block_len].iter())
+        {
             max_diff_first = max_diff_first.max((x - y).abs());
         }
         assert!(
@@ -821,7 +823,10 @@ mod tests {
         // perturbation runs — sanity check that the model itself is
         // sensitive to its input.
         let mut max_diff_second = 0.0_f32;
-        for (x, y) in emb_a[first_block_len..].iter().zip(emb_b[first_block_len..].iter()) {
+        for (x, y) in emb_a[first_block_len..]
+            .iter()
+            .zip(emb_b[first_block_len..].iter())
+        {
             max_diff_second = max_diff_second.max((x - y).abs());
         }
         assert!(

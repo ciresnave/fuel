@@ -290,7 +290,10 @@ pub enum KvAllocError {
     /// donor_filled`). Only FULLY-filled whole blocks may be shared, so the
     /// sharer's fill stays block-aligned and its first suffix write lands on a
     /// fresh (unshared) block. Refused before any mutation.
-    PrefixNotFullyFilled { prefix_blocks: usize, donor_filled: usize },
+    PrefixNotFullyFilled {
+        prefix_blocks: usize,
+        donor_filled: usize,
+    },
     /// A [`PrefixId`](PrefixId) named a prefix that isn't registered (never
     /// minted, or already [`release_prefix`](KvBlockPool::release_prefix)d).
     UnknownPrefix,
@@ -396,7 +399,9 @@ impl KvBlockPool {
     /// geometry ever makes the per-sequence cost non-additive. Requested by the
     /// first real consumer's batched-decode admit path.
     pub fn blocks_required_batch(&self, seqs: &[(usize, usize)]) -> usize {
-        seqs.iter().map(|&(filled, add)| self.blocks_required(filled, add)).sum()
+        seqs.iter()
+            .map(|&(filled, add)| self.blocks_required(filled, add))
+            .sum()
     }
 
     // --- C-4: one measured-cost bite -------------------------------------
@@ -426,7 +431,13 @@ impl KvBlockPool {
     pub fn open(&mut self) -> SessionHandle {
         let h = SessionHandle(self.next_session);
         self.next_session += 1;
-        self.tables.insert(h, BlockTable { slots: Vec::new(), filled_tokens: 0 });
+        self.tables.insert(
+            h,
+            BlockTable {
+                slots: Vec::new(),
+                filled_tokens: 0,
+            },
+        );
         h
     }
 
@@ -468,7 +479,10 @@ impl KvBlockPool {
         let want_blocks = blocks_for(cur_filled + add_tokens, bs);
         let new_blocks = want_blocks.saturating_sub(cur_blocks);
         if new_blocks > self.free.len() {
-            return Err(KvAllocError::OutOfBlocks { need: new_blocks, have: self.free.len() });
+            return Err(KvAllocError::OutOfBlocks {
+                need: new_blocks,
+                have: self.free.len(),
+            });
         }
         for _ in 0..new_blocks {
             let p = self.take_free()?;
@@ -499,10 +513,7 @@ impl KvBlockPool {
     /// session. `Err(UnknownSession)` if not open; `Err(SessionNotResident)`
     /// if any slot is externalized (the caller must `restore` first — routing
     /// attention through a reclaimed block would be silent corruption).
-    pub fn session_block_table(
-        &self,
-        s: SessionHandle,
-    ) -> Result<Vec<PhysBlockId>, KvAllocError> {
+    pub fn session_block_table(&self, s: SessionHandle) -> Result<Vec<PhysBlockId>, KvAllocError> {
         let t = self.tables.get(&s).ok_or(KvAllocError::UnknownSession)?;
         let mut out = Vec::with_capacity(t.slots.len());
         for (i, slot) in t.slots.iter().enumerate() {
@@ -552,7 +563,10 @@ impl KvBlockPool {
         };
         for &i in indices {
             if i >= n_slots {
-                return Err(KvAllocError::BadBlockIndex { index: i, session_blocks: n_slots });
+                return Err(KvAllocError::BadBlockIndex {
+                    index: i,
+                    session_blocks: n_slots,
+                });
             }
         }
         let mut externalized_slots = Vec::new();
@@ -603,7 +617,12 @@ impl KvBlockPool {
     /// Evict a session's ENTIRE resident state (the whole-session convenience —
     /// part 1's shape, unchanged). Suspends the session; `restore` un-suspends.
     pub fn evict(&mut self, s: SessionHandle) -> Result<EvictReport, KvAllocError> {
-        let n = self.tables.get(&s).ok_or(KvAllocError::UnknownSession)?.slots.len();
+        let n = self
+            .tables
+            .get(&s)
+            .ok_or(KvAllocError::UnknownSession)?
+            .slots
+            .len();
         let all: Vec<usize> = (0..n).collect();
         self.evict_blocks(s, &all)
     }
@@ -618,7 +637,10 @@ impl KvBlockPool {
         to: usize,
     ) -> Result<EvictReport, KvAllocError> {
         if from > to {
-            return Err(KvAllocError::BadBlockIndex { index: from, session_blocks: to });
+            return Err(KvAllocError::BadBlockIndex {
+                index: from,
+                session_blocks: to,
+            });
         }
         let range: Vec<usize> = (from..to).collect();
         self.evict_blocks(s, &range)
@@ -634,7 +656,10 @@ impl KvBlockPool {
         }
         let need = handle.externalized_slots.len();
         if need > self.free.len() {
-            return Err(KvAllocError::OutOfBlocks { need, have: self.free.len() });
+            return Err(KvAllocError::OutOfBlocks {
+                need,
+                have: self.free.len(),
+            });
         }
         for &i in &handle.externalized_slots {
             let p = self.take_free()?;
@@ -729,7 +754,13 @@ impl KvBlockPool {
     /// physical block the integration should write into. A no-op (returns the
     /// existing block) when already exclusive.
     pub fn cow_break(&mut self, s: SessionHandle, i: usize) -> Result<PhysBlockId, KvAllocError> {
-        let p = match self.tables.get(&s).ok_or(KvAllocError::UnknownSession)?.slots.get(i) {
+        let p = match self
+            .tables
+            .get(&s)
+            .ok_or(KvAllocError::UnknownSession)?
+            .slots
+            .get(i)
+        {
             Some(Slot::Resident(p)) => *p,
             _ => return Err(KvAllocError::BadSpliceRange),
         };
@@ -779,7 +810,13 @@ impl KvBlockPool {
     ) -> Result<usize, KvAllocError> {
         // ---- Validate BEFORE any mutation (transactional). ----
         // `dst` must be open and EMPTY.
-        if !self.tables.get(&dst).ok_or(KvAllocError::UnknownSession)?.slots.is_empty() {
+        if !self
+            .tables
+            .get(&dst)
+            .ok_or(KvAllocError::UnknownSession)?
+            .slots
+            .is_empty()
+        {
             return Err(KvAllocError::PrefixTargetNotEmpty);
         }
         // `src` must be open; the shared range must fit and be fully filled.
@@ -792,7 +829,10 @@ impl KvBlockPool {
         };
         let shared_tokens = prefix_blocks * self.geom.block_size;
         if shared_tokens > src_filled {
-            return Err(KvAllocError::PrefixNotFullyFilled { prefix_blocks, donor_filled: src_filled });
+            return Err(KvAllocError::PrefixNotFullyFilled {
+                prefix_blocks,
+                donor_filled: src_filled,
+            });
         }
         // ---- Mutate. `splice` is itself transactional for its own range/residency
         // checks; all our preconditions passed, so nothing is left partial. ----
@@ -823,7 +863,13 @@ impl KvBlockPool {
             Ok(_shared_tokens) => {
                 let id = PrefixId(self.next_prefix);
                 self.next_prefix += 1;
-                self.prefixes.insert(id, PrefixOwner { owner, prefix_blocks });
+                self.prefixes.insert(
+                    id,
+                    PrefixOwner {
+                        owner,
+                        prefix_blocks,
+                    },
+                );
                 Ok(id)
             }
             Err(e) => {
@@ -840,7 +886,10 @@ impl KvBlockPool {
     /// no live sharer still references it. Sharers that spliced the prefix keep
     /// their copies alive independently.
     pub fn release_prefix(&mut self, id: PrefixId) -> Result<(), KvAllocError> {
-        let owner = self.prefixes.remove(&id).ok_or(KvAllocError::UnknownPrefix)?;
+        let owner = self
+            .prefixes
+            .remove(&id)
+            .ok_or(KvAllocError::UnknownPrefix)?;
         self.discard(owner.owner);
         Ok(())
     }
@@ -867,7 +916,10 @@ impl KvBlockPool {
         dst: SessionHandle,
     ) -> Result<usize, KvAllocError> {
         let (owner, prefix_blocks) = {
-            let o = self.prefixes.get(&prefix).ok_or(KvAllocError::UnknownPrefix)?;
+            let o = self
+                .prefixes
+                .get(&prefix)
+                .ok_or(KvAllocError::UnknownPrefix)?;
             (o.owner, o.prefix_blocks)
         };
         self.splice_prefix(owner, dst, prefix_blocks)
@@ -898,12 +950,22 @@ impl KvBlockPool {
         dst: SessionHandle,
     ) -> Result<(usize, Vec<(PhysBlockId, PhysBlockId)>), KvAllocError> {
         let bs = self.geom.block_size;
-        let m = self.tables.get(&dst).ok_or(KvAllocError::UnknownSession)?.filled_tokens;
+        let m = self
+            .tables
+            .get(&dst)
+            .ok_or(KvAllocError::UnknownSession)?
+            .filled_tokens;
         if m % bs != 0 {
-            return Err(KvAllocError::OffsetNotBlockAligned { filled: m, block_size: bs });
+            return Err(KvAllocError::OffsetNotBlockAligned {
+                filled: m,
+                block_size: bs,
+            });
         }
         let (owner, prefix_blocks) = {
-            let o = self.prefixes.get(&prefix).ok_or(KvAllocError::UnknownPrefix)?;
+            let o = self
+                .prefixes
+                .get(&prefix)
+                .ok_or(KvAllocError::UnknownPrefix)?;
             (o.owner, o.prefix_blocks)
         };
         let owner_filled = self
@@ -912,14 +974,23 @@ impl KvBlockPool {
             .ok_or(KvAllocError::UnknownSession)?
             .filled_tokens;
         if prefix_blocks * bs > owner_filled {
-            return Err(KvAllocError::PrefixNotFullyFilled { prefix_blocks, donor_filled: owner_filled });
+            return Err(KvAllocError::PrefixNotFullyFilled {
+                prefix_blocks,
+                donor_filled: owner_filled,
+            });
         }
         if prefix_blocks > self.free.len() {
-            return Err(KvAllocError::OutOfBlocks { need: prefix_blocks, have: self.free.len() });
+            return Err(KvAllocError::OutOfBlocks {
+                need: prefix_blocks,
+                have: self.free.len(),
+            });
         }
         // All preconditions passed — allocate + append (infallible from here).
         let src: Vec<PhysBlockId> = (0..prefix_blocks)
-            .map(|i| self.resident_block(owner, i).expect("registered prefix owner block is resident"))
+            .map(|i| {
+                self.resident_block(owner, i)
+                    .expect("registered prefix owner block is resident")
+            })
             .collect();
         let mut pairs = Vec::with_capacity(prefix_blocks);
         for s in src {
@@ -938,7 +1009,14 @@ mod tests {
     use super::*;
 
     fn geom(num_blocks: usize, block_size: usize) -> KvGeometry {
-        KvGeometry { n_layers: 1, num_blocks, block_size, n_kv_heads: 2, head_dim: 4, elem_size: 2 }
+        KvGeometry {
+            n_layers: 1,
+            num_blocks,
+            block_size,
+            n_kv_heads: 2,
+            head_dim: 4,
+            elem_size: 2,
+        }
     }
 
     #[test]
@@ -966,14 +1044,23 @@ mod tests {
     fn filled_tokens_is_the_context_len_source_not_blocks_times_block_size() {
         let mut pool = KvBlockPool::new(geom(16, 4));
         let s = pool.open();
-        assert_eq!(pool.filled_tokens(s), Some(0), "fresh session: 0 filled tokens");
+        assert_eq!(
+            pool.filled_tokens(s),
+            Some(0),
+            "fresh session: 0 filled tokens"
+        );
         pool.append(s, 6).unwrap(); // 6 tokens → 2 blocks, last block half full
         assert_eq!(pool.session_blocks(s), Some(2));
         assert_eq!(
-            pool.filled_tokens(s), Some(6),
+            pool.filled_tokens(s),
+            Some(6),
             "context_len is the token count (6), NOT blocks×block_size (8)",
         );
-        assert_eq!(pool.filled_tokens(SessionHandle(999)), None, "unknown session → None");
+        assert_eq!(
+            pool.filled_tokens(SessionHandle(999)),
+            None,
+            "unknown session → None"
+        );
     }
 
     #[test]
@@ -984,7 +1071,10 @@ mod tests {
         let bt = pool.session_block_table(s).unwrap();
         let expected: Vec<PhysBlockId> =
             (0..3).map(|i| pool.resident_block(s, i).unwrap()).collect();
-        assert_eq!(bt, expected, "block table = per-slot resident physical id, in order");
+        assert_eq!(
+            bt, expected,
+            "block table = per-slot resident physical id, in order"
+        );
         assert_eq!(
             pool.session_block_table(SessionHandle(999)),
             Err(KvAllocError::UnknownSession),
@@ -1037,20 +1127,40 @@ mod tests {
 
         // Evict A. Only p2 (exclusive) is detachable; p0,p1 are shared → kept.
         let rep = pool.evict(a).unwrap();
-        assert_eq!(rep.freed, vec![2], "only the exclusive block (index 2) frees");
-        assert_eq!(rep.still_shared, vec![0, 1], "the two shared blocks reported by index");
-        assert_eq!(pool.free_blocks(), free_before + 1, "exactly one block returned");
+        assert_eq!(
+            rep.freed,
+            vec![2],
+            "only the exclusive block (index 2) frees"
+        );
+        assert_eq!(
+            rep.still_shared,
+            vec![0, 1],
+            "the two shared blocks reported by index"
+        );
+        assert_eq!(
+            pool.free_blocks(),
+            free_before + 1,
+            "exactly one block returned"
+        );
 
         // The sharer B is intact: its blocks still resolve to the SAME physical
         // blocks, which are still allocated (refcount dropped 2→1, not freed).
-        assert_eq!(pool.resident_block(b, 0), Some(p0), "B's shared prefix intact");
+        assert_eq!(
+            pool.resident_block(b, 0),
+            Some(p0),
+            "B's shared prefix intact"
+        );
         assert_eq!(pool.resident_block(b, 1), Some(p1));
         // A retains its refs on the shared blocks: evict is PARTIAL for shared
         // blocks — they aren't A's alone to reclaim, and the Q9 self-contained-
         // restore rule forbids copying a shared block's bytes into A's handle. So
         // p0/p1 stay allocated at refcount 2 (A + B). A naive detach-all evict
         // would drop them to 0 and free them out from under B — the hazard.
-        assert_eq!(pool.block_refcount(p0), 2, "still shared by A and B, not freed");
+        assert_eq!(
+            pool.block_refcount(p0),
+            2,
+            "still shared by A and B, not freed"
+        );
         assert_eq!(pool.block_refcount(p1), 2);
         // The freed block p2 is genuinely reusable and not referenced by B.
         assert_ne!(pool.resident_block(b, 0), Some(p2));
@@ -1072,7 +1182,10 @@ mod tests {
         // Donor A: 2 filled blocks (the prefix), both exclusive.
         let a = pool.open();
         pool.append(a, 8).unwrap();
-        let (p0, p1) = (pool.resident_block(a, 0).unwrap(), pool.resident_block(a, 1).unwrap());
+        let (p0, p1) = (
+            pool.resident_block(a, 0).unwrap(),
+            pool.resident_block(a, 1).unwrap(),
+        );
         // Target B is NON-EMPTY (already holds one block) — the refusal trigger.
         let b = pool.open();
         pool.append(b, 4).unwrap();
@@ -1086,28 +1199,56 @@ mod tests {
 
         // Refuse: cannot splice a prefix into a non-empty target.
         let res = pool.splice_prefix(a, b, 2);
-        assert!(res.is_err(), "splice_prefix into a non-empty target must refuse");
+        assert!(
+            res.is_err(),
+            "splice_prefix into a non-empty target must refuse"
+        );
 
         // THE GUARD — assert on the POOL, not the Err. A validate-after-splice impl
         // would have appended A's 2 blocks to B (B → 3 blocks) and bumped p0/p1 to
         // refcount 2 before erroring; every assertion below then fails.
-        assert_eq!(pool.session_blocks(b), b_blocks_before, "B's block count unchanged (no prefix appended)");
+        assert_eq!(
+            pool.session_blocks(b),
+            b_blocks_before,
+            "B's block count unchanged (no prefix appended)"
+        );
         assert_eq!(pool.filled_tokens(b), b_filled_before, "B's fill unchanged");
-        assert_eq!(pool.resident_block(b, 0), Some(q0), "B's own block untouched");
+        assert_eq!(
+            pool.resident_block(b, 0),
+            Some(q0),
+            "B's own block untouched"
+        );
         assert_eq!(pool.resident_block(b, 1), None, "B gained no second block");
-        assert_eq!(pool.block_refcount(p0), rc_p0, "donor refcount not bumped by a refused splice");
+        assert_eq!(
+            pool.block_refcount(p0),
+            rc_p0,
+            "donor refcount not bumped by a refused splice"
+        );
         assert_eq!(pool.block_refcount(p1), rc_p1);
         assert_eq!(pool.free_blocks(), free_before, "free list unmoved");
 
         // And the refusal did not poison the donor for a later legitimate caller:
         // splicing the same prefix into a FRESH empty session still succeeds.
         let c = pool.open();
-        let shared = pool.splice_prefix(a, c, 2).expect("legit prefix splice into empty target");
-        assert_eq!(shared, 8, "2 blocks × block_size 4 = 8 shared tokens (donor fully filled)");
-        assert_eq!(pool.filled_tokens(c), Some(8), "C inherits the prefix's fill");
+        let shared = pool
+            .splice_prefix(a, c, 2)
+            .expect("legit prefix splice into empty target");
+        assert_eq!(
+            shared, 8,
+            "2 blocks × block_size 4 = 8 shared tokens (donor fully filled)"
+        );
+        assert_eq!(
+            pool.filled_tokens(c),
+            Some(8),
+            "C inherits the prefix's fill"
+        );
         assert_eq!(pool.block_refcount(p0), 2, "now genuinely shared A+C");
         assert_eq!(pool.block_refcount(p1), 2);
-        assert_eq!(pool.resident_block(c, 0), Some(p0), "C reads A's exact prefix blocks (zero-copy)");
+        assert_eq!(
+            pool.resident_block(c, 0),
+            Some(p0),
+            "C reads A's exact prefix blocks (zero-copy)"
+        );
         assert_eq!(pool.resident_block(c, 1), Some(p1));
     }
 
@@ -1127,11 +1268,22 @@ mod tests {
         let c = pool.open();
         assert_eq!(
             pool.splice_prefix(a, c, 2),
-            Err(KvAllocError::PrefixNotFullyFilled { prefix_blocks: 2, donor_filled: 6 }),
+            Err(KvAllocError::PrefixNotFullyFilled {
+                prefix_blocks: 2,
+                donor_filled: 6
+            }),
             "a partial last block cannot be shared (would misalign the sharer's fill)",
         );
-        assert_eq!(pool.session_blocks(c), Some(0), "refused share leaves C empty");
-        assert_eq!(pool.free_blocks(), free_before, "free list unmoved by the refusal");
+        assert_eq!(
+            pool.session_blocks(c),
+            Some(0),
+            "refused share leaves C empty"
+        );
+        assert_eq!(
+            pool.free_blocks(),
+            free_before,
+            "free list unmoved by the refusal"
+        );
 
         // Sharing the ONE fully-filled block is aligned and succeeds.
         assert_eq!(
@@ -1139,7 +1291,11 @@ mod tests {
             4,
             "one full block = 4 shared tokens (block-aligned)",
         );
-        assert_eq!(pool.filled_tokens(c), Some(4), "sharer fill is block-aligned");
+        assert_eq!(
+            pool.filled_tokens(c),
+            Some(4),
+            "sharer fill is block-aligned"
+        );
     }
 
     #[test]
@@ -1158,11 +1314,22 @@ mod tests {
         let free0 = pool.free_blocks();
         assert_eq!(
             pool.alloc_shifted_prefix_slots(pid, dst),
-            Err(KvAllocError::OffsetNotBlockAligned { filled: 5, block_size: 4 }),
+            Err(KvAllocError::OffsetNotBlockAligned {
+                filled: 5,
+                block_size: 4
+            }),
         );
         assert_eq!(pool.free_blocks(), free0, "refusal allocates nothing");
-        assert_eq!(pool.filled_tokens(dst), Some(5), "refusal does not bump fill");
-        assert_eq!(pool.session_blocks(dst), Some(2), "refusal does not extend the table");
+        assert_eq!(
+            pool.filled_tokens(dst),
+            Some(5),
+            "refusal does not bump fill"
+        );
+        assert_eq!(
+            pool.session_blocks(dst),
+            Some(2),
+            "refusal does not extend the table"
+        );
 
         // Block-aligned target (M=8) → allocates 2 fresh copy-target blocks.
         let dst2 = pool.open();
@@ -1170,10 +1337,21 @@ mod tests {
         let (m, pairs) = pool.alloc_shifted_prefix_slots(pid, dst2).unwrap();
         assert_eq!(m, 8, "offset is the target's block-aligned fill");
         assert_eq!(pairs.len(), 2, "one copy pair per prefix block");
-        assert_eq!(pool.filled_tokens(dst2), Some(16), "fill bumped by 2*block_size");
+        assert_eq!(
+            pool.filled_tokens(dst2),
+            Some(16),
+            "fill bumped by 2*block_size"
+        );
         for (src, fresh) in &pairs {
-            assert_eq!(pool.block_refcount(*fresh), 1, "fresh dst block is exclusive (a COPY target)");
-            assert_ne!(src, fresh, "dst block is a copy target, not the shared original");
+            assert_eq!(
+                pool.block_refcount(*fresh),
+                1,
+                "fresh dst block is exclusive (a COPY target)"
+            );
+            assert_ne!(
+                src, fresh,
+                "dst block is a copy target, not the shared original"
+            );
         }
     }
 
@@ -1181,7 +1359,11 @@ mod tests {
     fn capacity_is_geometry_keyed_and_tracks_the_free_list() {
         let mut pool = KvBlockPool::new(geom(10, 4));
         let cap = pool.capacity();
-        assert_eq!(cap.geometry, geom(10, 4), "geometry-keyed for cross-pool admission");
+        assert_eq!(
+            cap.geometry,
+            geom(10, 4),
+            "geometry-keyed for cross-pool admission"
+        );
         assert_eq!(cap.total_blocks, 10);
         assert_eq!(cap.free_blocks, 10);
         let s = pool.open();
@@ -1238,7 +1420,11 @@ mod tests {
         let free_after_alloc = pool.free_blocks();
 
         let rep = pool.evict(s).unwrap();
-        assert_eq!(rep.freed, vec![0, 1, 2], "all exclusive → all freed, by index");
+        assert_eq!(
+            rep.freed,
+            vec![0, 1, 2],
+            "all exclusive → all freed, by index"
+        );
         assert!(rep.still_shared.is_empty());
         assert_eq!(pool.free_blocks(), free_after_alloc + 3);
         assert_eq!(rep.handle.fidelity(), Fidelity::Lossy);
@@ -1289,7 +1475,11 @@ mod tests {
         pool.splice(a, b, 0, 2).unwrap(); // A's blocks 0,1 shared with B
         let rep = pool.evict_blocks(a, &[1, 2, 3]).unwrap(); // straddles shared + exclusive
         assert_eq!(rep.freed, vec![2, 3], "exclusive blocks freed, by index");
-        assert_eq!(rep.still_shared, vec![1], "the shared block reported, not freed");
+        assert_eq!(
+            rep.still_shared,
+            vec![1],
+            "the shared block reported, not freed"
+        );
         // Block 1 untouched: A still holds it, B still resolves to it, refcount 2.
         assert!(pool.resident_block(a, 1).is_some());
         assert_eq!(pool.block_refcount(pool.resident_block(b, 1).unwrap()), 2);
@@ -1302,9 +1492,19 @@ mod tests {
         pool.append(s, 12).unwrap(); // 3 blocks
         let free_before = pool.free_blocks();
         let err = pool.evict_blocks(s, &[0, 5]).unwrap_err(); // 5 is out of range
-        assert!(matches!(err, KvAllocError::BadBlockIndex { index: 5, session_blocks: 3 }));
+        assert!(matches!(
+            err,
+            KvAllocError::BadBlockIndex {
+                index: 5,
+                session_blocks: 3
+            }
+        ));
         // Atomic: the valid block 0 was NOT evicted despite appearing in the set.
-        assert_eq!(pool.free_blocks(), free_before, "nothing evicted on a bad set");
+        assert_eq!(
+            pool.free_blocks(),
+            free_before,
+            "nothing evicted on a bad set"
+        );
         assert!(pool.resident_block(s, 0).is_some());
     }
 
@@ -1324,12 +1524,19 @@ mod tests {
         let mut pool = KvBlockPool::new(geom(8, 4));
         let a = pool.open();
         pool.append(a, 8).unwrap(); // p0,p1
-        let (p0, p1) = (pool.resident_block(a, 0).unwrap(), pool.resident_block(a, 1).unwrap());
+        let (p0, p1) = (
+            pool.resident_block(a, 0).unwrap(),
+            pool.resident_block(a, 1).unwrap(),
+        );
         let b = pool.open();
         pool.splice(a, b, 0, 2).unwrap();
         let free_before = pool.free_blocks();
         pool.discard(a); // A gone, but B still references p0,p1
-        assert_eq!(pool.free_blocks(), free_before, "shared blocks NOT freed — B holds them");
+        assert_eq!(
+            pool.free_blocks(),
+            free_before,
+            "shared blocks NOT freed — B holds them"
+        );
         assert_eq!(pool.resident_block(b, 0), Some(p0));
         assert_eq!(pool.resident_block(b, 1), Some(p1));
         assert_eq!(pool.block_refcount(p0), 1);
@@ -1349,7 +1556,11 @@ mod tests {
         let q = pool.cow_break(b, 0).unwrap();
         assert_ne!(q, p0, "fresh block, not the shared one");
         assert_eq!(pool.resident_block(b, 0), Some(q));
-        assert_eq!(pool.resident_block(a, 0), Some(p0), "A (the sharer) unchanged");
+        assert_eq!(
+            pool.resident_block(a, 0),
+            Some(p0),
+            "A (the sharer) unchanged"
+        );
         assert_eq!(pool.block_refcount(p0), 1, "back to exclusive for A");
         assert_eq!(pool.block_refcount(q), 1);
 
@@ -1366,7 +1577,11 @@ mod tests {
         assert_eq!(pool.kv_bytes_resident(), 2 * per);
         let b = pool.open();
         pool.splice(a, b, 0, 2).unwrap(); // shares — no new physical blocks
-        assert_eq!(pool.kv_bytes_resident(), 2 * per, "sharing adds no resident bytes");
+        assert_eq!(
+            pool.kv_bytes_resident(),
+            2 * per,
+            "sharing adds no resident bytes"
+        );
         pool.append(b, 4).unwrap(); // B grows by 1 exclusive block
         assert_eq!(pool.kv_bytes_resident(), 3 * per);
     }
@@ -1376,7 +1591,10 @@ mod tests {
         let mut pool = KvBlockPool::new(geom(16, 4));
         let a = pool.open();
         pool.append(a, 8).unwrap(); // 2 FULL blocks (block_size 4)
-        let (p0, p1) = (pool.resident_block(a, 0).unwrap(), pool.resident_block(a, 1).unwrap());
+        let (p0, p1) = (
+            pool.resident_block(a, 0).unwrap(),
+            pool.resident_block(a, 1).unwrap(),
+        );
         assert_eq!(pool.block_refcount(p0), 1);
         assert_eq!(pool.block_refcount(p1), 1);
 
@@ -1392,9 +1610,17 @@ mod tests {
         // consumer's prefix reference no longer races the donor's teardown.
         let free_before = pool.free_blocks();
         pool.discard(a);
-        assert_eq!(pool.block_refcount(p0), 1, "owner alone still references p0");
+        assert_eq!(
+            pool.block_refcount(p0),
+            1,
+            "owner alone still references p0"
+        );
         assert_eq!(pool.block_refcount(p1), 1);
-        assert_eq!(pool.free_blocks(), free_before, "no block freed — the owner holds them");
+        assert_eq!(
+            pool.free_blocks(),
+            free_before,
+            "no block freed — the owner holds them"
+        );
 
         // THE OWNER-ONLY still_shared PIN (silent-corruption trap): a block held
         // ONLY by a prefix owner (refcount 1) must report `still_shared`, NEVER
@@ -1404,20 +1630,38 @@ mod tests {
         // tokens as reclaimed and re-prefill over a live prefix. Evict-query the
         // owner's own blocks at their sharpest (sole reference).
         let owner_h = pool.prefixes[&id].owner; // tests reach the internal owner
-        let rep = pool.evict_blocks(owner_h, &[0, 1]).expect("evict-query owner blocks");
+        let rep = pool
+            .evict_blocks(owner_h, &[0, 1])
+            .expect("evict-query owner blocks");
         assert_eq!(
-            rep.still_shared, vec![0, 1],
+            rep.still_shared,
+            vec![0, 1],
             "owner-only prefix blocks must report still_shared (eviction-immune)",
         );
-        assert!(rep.freed.is_empty(), "a registered prefix's blocks are NEVER freed by evict");
-        assert_eq!(pool.block_refcount(p0), 1, "still resident — evict did not detach it");
+        assert!(
+            rep.freed.is_empty(),
+            "a registered prefix's blocks are NEVER freed by evict"
+        );
+        assert_eq!(
+            pool.block_refcount(p0),
+            1,
+            "still resident — evict did not detach it"
+        );
         assert_eq!(pool.block_refcount(p1), 1);
 
         // Only release_prefix frees them: owner-only → refcount 0 → back to the pool.
         pool.release_prefix(id).unwrap();
-        assert_eq!(pool.block_refcount(p0), 0, "release_prefix frees the owner-only block");
+        assert_eq!(
+            pool.block_refcount(p0),
+            0,
+            "release_prefix frees the owner-only block"
+        );
         assert_eq!(pool.block_refcount(p1), 0);
-        assert_eq!(pool.free_blocks(), free_before + 2, "both prefix blocks back in the pool");
+        assert_eq!(
+            pool.free_blocks(),
+            free_before + 2,
+            "both prefix blocks back in the pool"
+        );
 
         // A released id is a typed error on every path, never a panic.
         assert_eq!(pool.release_prefix(id), Err(KvAllocError::UnknownPrefix));
@@ -1429,18 +1673,31 @@ mod tests {
         let mut pool = KvBlockPool::new(geom(16, 4));
         let a = pool.open();
         pool.append(a, 8).unwrap(); // 2 full blocks
-        let (p0, p1) = (pool.resident_block(a, 0).unwrap(), pool.resident_block(a, 1).unwrap());
+        let (p0, p1) = (
+            pool.resident_block(a, 0).unwrap(),
+            pool.resident_block(a, 1).unwrap(),
+        );
         let id = pool.register_prefix(a, 2).unwrap();
         pool.discard(a); // donor gone; the owner keeps the prefix alive (refcount 1)
         assert_eq!(pool.block_refcount(p0), 1);
 
         // A fresh consumer splices the registered prefix — no donor needed.
         let c = pool.open();
-        let shared = pool.splice_prefix_from(id, c).expect("splice registered prefix");
+        let shared = pool
+            .splice_prefix_from(id, c)
+            .expect("splice registered prefix");
         assert_eq!(shared, 8, "2 blocks × block_size 4 = 8 shared tokens");
-        assert_eq!(pool.filled_tokens(c), Some(8), "consumer fill = shared prefix length");
+        assert_eq!(
+            pool.filled_tokens(c),
+            Some(8),
+            "consumer fill = shared prefix length"
+        );
         assert_eq!(pool.session_blocks(c), Some(2));
-        assert_eq!(pool.block_refcount(p0), 2, "owner + consumer reference the prefix block");
+        assert_eq!(
+            pool.block_refcount(p0),
+            2,
+            "owner + consumer reference the prefix block"
+        );
         assert_eq!(pool.block_refcount(p1), 2);
         // Zero-copy: the consumer's slots point at the SAME physical blocks.
         assert_eq!(pool.resident_block(c, 0).unwrap(), p0);
@@ -1449,11 +1706,17 @@ mod tests {
         // Same transactional guard as splice_prefix: refuses a non-empty target.
         let d = pool.open();
         pool.append(d, 4).unwrap();
-        assert_eq!(pool.splice_prefix_from(id, d), Err(KvAllocError::PrefixTargetNotEmpty));
+        assert_eq!(
+            pool.splice_prefix_from(id, d),
+            Err(KvAllocError::PrefixTargetNotEmpty)
+        );
 
         // After release, the id is unknown → typed error, never a panic.
         pool.release_prefix(id).unwrap();
         let e = pool.open();
-        assert_eq!(pool.splice_prefix_from(id, e), Err(KvAllocError::UnknownPrefix));
+        assert_eq!(
+            pool.splice_prefix_from(id, e),
+            Err(KvAllocError::UnknownPrefix)
+        );
     }
 }

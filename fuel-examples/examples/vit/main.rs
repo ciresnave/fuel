@@ -19,9 +19,11 @@ use std::sync::Arc;
 fn load_image224_imagenet_norm<P: AsRef<std::path::Path>>(p: P) -> anyhow::Result<Vec<f32>> {
     const MEAN: [f32; 3] = [0.485, 0.456, 0.406];
     const STD: [f32; 3] = [0.229, 0.224, 0.225];
-    let img = image::ImageReader::open(p)?
-        .decode()?
-        .resize_to_fill(224, 224, image::imageops::FilterType::Triangle);
+    let img = image::ImageReader::open(p)?.decode()?.resize_to_fill(
+        224,
+        224,
+        image::imageops::FilterType::Triangle,
+    );
     let img = img.to_rgb8();
     let raw = img.into_raw();
     let h = 224usize;

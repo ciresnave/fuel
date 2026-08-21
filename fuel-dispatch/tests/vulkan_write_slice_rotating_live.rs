@@ -14,8 +14,11 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_ir::{dispatch::OpKind, probe::BackendId, DType, Layout, Shape};
-use fuel_dispatch::{kernel::{KernelBindingTable, OpParams}, vulkan_dispatch::register_vulkan_kernels};
+use fuel_dispatch::{
+    kernel::{KernelBindingTable, OpParams},
+    vulkan_dispatch::register_vulkan_kernels,
+};
+use fuel_ir::{DType, Layout, Shape, dispatch::OpKind, probe::BackendId};
 use fuel_memory::{BackendStorage, Storage};
 use fuel_vulkan_backend::VulkanBackend;
 
@@ -48,12 +51,11 @@ fn download_f32(backend: &Arc<VulkanBackend>, s: &Storage) -> Vec<f32> {
 }
 
 fn lookup_rotating_kernel(table: &KernelBindingTable) -> fuel_dispatch::kernel::KernelRef {
-    table
-        .lookup_alternatives(
-            OpKind::WriteSliceRotating,
-            &[DType::F32, DType::F32],
-            BackendId::Vulkan,
-        )[0]
+    table.lookup_alternatives(
+        OpKind::WriteSliceRotating,
+        &[DType::F32, DType::F32],
+        BackendId::Vulkan,
+    )[0]
     .kernel
 }
 
@@ -61,7 +63,9 @@ fn lookup_rotating_kernel(table: &KernelBindingTable) -> fuel_dispatch::kernel::
 #[test]
 #[ignore]
 fn vulkan_dispatch_write_slice_rotating_within_window() {
-    let Some(backend) = backend_or_skip() else { return };
+    let Some(backend) = backend_or_skip() else {
+        return;
+    };
     let mut table = KernelBindingTable::new();
     register_vulkan_kernels(&mut table);
 
@@ -93,7 +97,8 @@ fn vulkan_dispatch_write_slice_rotating_within_window() {
             modulus: 4,
             ranges: vec![(0, 1), (0, 2)],
         },
-    ).expect("write_slice_rotating dispatch");
+    )
+    .expect("write_slice_rotating dispatch");
 
     let got = download_f32(&backend, &dst_arc.read().unwrap());
     assert_eq!(got, vec![0.0, 0.0, 7.0, 8.0, 0.0, 0.0, 0.0, 0.0]);
@@ -104,7 +109,9 @@ fn vulkan_dispatch_write_slice_rotating_within_window() {
 #[test]
 #[ignore]
 fn vulkan_dispatch_write_slice_rotating_splits_across_boundary() {
-    let Some(backend) = backend_or_skip() else { return };
+    let Some(backend) = backend_or_skip() else {
+        return;
+    };
     let mut table = KernelBindingTable::new();
     register_vulkan_kernels(&mut table);
 
@@ -135,7 +142,8 @@ fn vulkan_dispatch_write_slice_rotating_splits_across_boundary() {
             modulus: 4,
             ranges: vec![(0, 2), (0, 2)],
         },
-    ).expect("write_slice_rotating dispatch");
+    )
+    .expect("write_slice_rotating dispatch");
 
     let got = download_f32(&backend, &dst_arc.read().unwrap());
     // row 3 = (10, 11), wrapped to row 0 = (20, 21).
@@ -146,7 +154,9 @@ fn vulkan_dispatch_write_slice_rotating_splits_across_boundary() {
 #[test]
 #[ignore]
 fn vulkan_dispatch_write_slice_rotating_wraps_position() {
-    let Some(backend) = backend_or_skip() else { return };
+    let Some(backend) = backend_or_skip() else {
+        return;
+    };
     let mut table = KernelBindingTable::new();
     register_vulkan_kernels(&mut table);
 
@@ -177,7 +187,8 @@ fn vulkan_dispatch_write_slice_rotating_wraps_position() {
             modulus: 4,
             ranges: vec![(0, 1), (0, 2)],
         },
-    ).expect("write_slice_rotating dispatch");
+    )
+    .expect("write_slice_rotating dispatch");
 
     let got = download_f32(&backend, &dst_arc.read().unwrap());
     // position 4 % 4 = 0 → writes to row 0.

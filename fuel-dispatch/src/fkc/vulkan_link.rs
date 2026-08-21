@@ -52,20 +52,56 @@ macro_rules! vk_ep {
 /// `registrable: false` describe-only entry to omit.
 pub static VULKAN_CAST_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     // Pair-packed half casts (f32↔f16, f32↔bf16) → cast_f32_half.
-    vk_ep!("cast_f32_to_f16",  crate::vulkan_dispatch::cast::cast_f32_half),
-    vk_ep!("cast_f16_to_f32",  crate::vulkan_dispatch::cast::cast_f32_half),
-    vk_ep!("cast_f32_to_bf16", crate::vulkan_dispatch::cast::cast_f32_half),
-    vk_ep!("cast_bf16_to_f32", crate::vulkan_dispatch::cast::cast_f32_half),
+    vk_ep!(
+        "cast_f32_to_f16",
+        crate::vulkan_dispatch::cast::cast_f32_half
+    ),
+    vk_ep!(
+        "cast_f16_to_f32",
+        crate::vulkan_dispatch::cast::cast_f32_half
+    ),
+    vk_ep!(
+        "cast_f32_to_bf16",
+        crate::vulkan_dispatch::cast::cast_f32_half
+    ),
+    vk_ep!(
+        "cast_bf16_to_f32",
+        crate::vulkan_dispatch::cast::cast_f32_half
+    ),
     // One-per-element wide casts (f32↔f64) → cast_f32_f64.
-    vk_ep!("cast_f32_to_f64",  crate::vulkan_dispatch::cast::cast_f32_f64),
-    vk_ep!("cast_f64_to_f32",  crate::vulkan_dispatch::cast::cast_f32_f64),
+    vk_ep!(
+        "cast_f32_to_f64",
+        crate::vulkan_dispatch::cast::cast_f32_f64
+    ),
+    vk_ep!(
+        "cast_f64_to_f32",
+        crate::vulkan_dispatch::cast::cast_f32_f64
+    ),
     // Byte-packed F8E4M3 casts (F8E4M3 ↔ {f32, f16, bf16}) → cast_f8e4m3.
-    vk_ep!("cast_f32_to_f8e4m3",  crate::vulkan_dispatch::cast_f8e4m3::cast_f8e4m3),
-    vk_ep!("cast_f8e4m3_to_f32",  crate::vulkan_dispatch::cast_f8e4m3::cast_f8e4m3),
-    vk_ep!("cast_f16_to_f8e4m3",  crate::vulkan_dispatch::cast_f8e4m3::cast_f8e4m3),
-    vk_ep!("cast_f8e4m3_to_f16",  crate::vulkan_dispatch::cast_f8e4m3::cast_f8e4m3),
-    vk_ep!("cast_bf16_to_f8e4m3", crate::vulkan_dispatch::cast_f8e4m3::cast_f8e4m3),
-    vk_ep!("cast_f8e4m3_to_bf16", crate::vulkan_dispatch::cast_f8e4m3::cast_f8e4m3),
+    vk_ep!(
+        "cast_f32_to_f8e4m3",
+        crate::vulkan_dispatch::cast_f8e4m3::cast_f8e4m3
+    ),
+    vk_ep!(
+        "cast_f8e4m3_to_f32",
+        crate::vulkan_dispatch::cast_f8e4m3::cast_f8e4m3
+    ),
+    vk_ep!(
+        "cast_f16_to_f8e4m3",
+        crate::vulkan_dispatch::cast_f8e4m3::cast_f8e4m3
+    ),
+    vk_ep!(
+        "cast_f8e4m3_to_f16",
+        crate::vulkan_dispatch::cast_f8e4m3::cast_f8e4m3
+    ),
+    vk_ep!(
+        "cast_bf16_to_f8e4m3",
+        crate::vulkan_dispatch::cast_f8e4m3::cast_f8e4m3
+    ),
+    vk_ep!(
+        "cast_f8e4m3_to_bf16",
+        crate::vulkan_dispatch::cast_f8e4m3::cast_f8e4m3
+    ),
 ];
 
 /// The Vulkan elementwise family's `symbol → production wrapper` map — the
@@ -87,95 +123,122 @@ pub static VULKAN_CAST_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// `strided_input=false` (the deleted plain `register_with_precision` regs).
 pub static VULKAN_ELEMENTWISE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     // ----- Unary: 16 ops, strided f32/f16/f64 fan + contiguous bf16 (64 symbols). -----
-    vk_ep!("neg_f32",  crate::vulkan_dispatch::unary::neg_f32),
-    vk_ep!("neg_f16",  crate::vulkan_dispatch::unary_f16::neg_f16),
-    vk_ep!("neg_f64",  crate::vulkan_dispatch::unary_f64::neg_f64),
+    vk_ep!("neg_f32", crate::vulkan_dispatch::unary::neg_f32),
+    vk_ep!("neg_f16", crate::vulkan_dispatch::unary_f16::neg_f16),
+    vk_ep!("neg_f64", crate::vulkan_dispatch::unary_f64::neg_f64),
     vk_ep!("neg_bf16", crate::vulkan_dispatch::unary_bf16::neg_bf16),
-    vk_ep!("sqr_f32",  crate::vulkan_dispatch::unary::sqr_f32),
-    vk_ep!("sqr_f16",  crate::vulkan_dispatch::unary_f16::sqr_f16),
-    vk_ep!("sqr_f64",  crate::vulkan_dispatch::unary_f64::sqr_f64),
+    vk_ep!("sqr_f32", crate::vulkan_dispatch::unary::sqr_f32),
+    vk_ep!("sqr_f16", crate::vulkan_dispatch::unary_f16::sqr_f16),
+    vk_ep!("sqr_f64", crate::vulkan_dispatch::unary_f64::sqr_f64),
     vk_ep!("sqr_bf16", crate::vulkan_dispatch::unary_bf16::sqr_bf16),
-    vk_ep!("sqrt_f32",  crate::vulkan_dispatch::unary::sqrt_f32),
-    vk_ep!("sqrt_f16",  crate::vulkan_dispatch::unary_f16::sqrt_f16),
-    vk_ep!("sqrt_f64",  crate::vulkan_dispatch::unary_f64::sqrt_f64),
+    vk_ep!("sqrt_f32", crate::vulkan_dispatch::unary::sqrt_f32),
+    vk_ep!("sqrt_f16", crate::vulkan_dispatch::unary_f16::sqrt_f16),
+    vk_ep!("sqrt_f64", crate::vulkan_dispatch::unary_f64::sqrt_f64),
     vk_ep!("sqrt_bf16", crate::vulkan_dispatch::unary_bf16::sqrt_bf16),
-    vk_ep!("exp_f32",  crate::vulkan_dispatch::unary::exp_f32),
-    vk_ep!("exp_f16",  crate::vulkan_dispatch::unary_f16::exp_f16),
-    vk_ep!("exp_f64",  crate::vulkan_dispatch::unary_f64::exp_f64),
+    vk_ep!("exp_f32", crate::vulkan_dispatch::unary::exp_f32),
+    vk_ep!("exp_f16", crate::vulkan_dispatch::unary_f16::exp_f16),
+    vk_ep!("exp_f64", crate::vulkan_dispatch::unary_f64::exp_f64),
     vk_ep!("exp_bf16", crate::vulkan_dispatch::unary_bf16::exp_bf16),
-    vk_ep!("log_f32",  crate::vulkan_dispatch::unary::log_f32),
-    vk_ep!("log_f16",  crate::vulkan_dispatch::unary_f16::log_f16),
-    vk_ep!("log_f64",  crate::vulkan_dispatch::unary_f64::log_f64),
+    vk_ep!("log_f32", crate::vulkan_dispatch::unary::log_f32),
+    vk_ep!("log_f16", crate::vulkan_dispatch::unary_f16::log_f16),
+    vk_ep!("log_f64", crate::vulkan_dispatch::unary_f64::log_f64),
     vk_ep!("log_bf16", crate::vulkan_dispatch::unary_bf16::log_bf16),
-    vk_ep!("sin_f32",  crate::vulkan_dispatch::unary::sin_f32),
-    vk_ep!("sin_f16",  crate::vulkan_dispatch::unary_f16::sin_f16),
-    vk_ep!("sin_f64",  crate::vulkan_dispatch::unary_f64::sin_f64),
+    vk_ep!("sin_f32", crate::vulkan_dispatch::unary::sin_f32),
+    vk_ep!("sin_f16", crate::vulkan_dispatch::unary_f16::sin_f16),
+    vk_ep!("sin_f64", crate::vulkan_dispatch::unary_f64::sin_f64),
     vk_ep!("sin_bf16", crate::vulkan_dispatch::unary_bf16::sin_bf16),
-    vk_ep!("cos_f32",  crate::vulkan_dispatch::unary::cos_f32),
-    vk_ep!("cos_f16",  crate::vulkan_dispatch::unary_f16::cos_f16),
-    vk_ep!("cos_f64",  crate::vulkan_dispatch::unary_f64::cos_f64),
+    vk_ep!("cos_f32", crate::vulkan_dispatch::unary::cos_f32),
+    vk_ep!("cos_f16", crate::vulkan_dispatch::unary_f16::cos_f16),
+    vk_ep!("cos_f64", crate::vulkan_dispatch::unary_f64::cos_f64),
     vk_ep!("cos_bf16", crate::vulkan_dispatch::unary_bf16::cos_bf16),
-    vk_ep!("tanh_f32",  crate::vulkan_dispatch::unary::tanh_f32),
-    vk_ep!("tanh_f16",  crate::vulkan_dispatch::unary_f16::tanh_f16),
-    vk_ep!("tanh_f64",  crate::vulkan_dispatch::unary_f64::tanh_f64),
+    vk_ep!("tanh_f32", crate::vulkan_dispatch::unary::tanh_f32),
+    vk_ep!("tanh_f16", crate::vulkan_dispatch::unary_f16::tanh_f16),
+    vk_ep!("tanh_f64", crate::vulkan_dispatch::unary_f64::tanh_f64),
     vk_ep!("tanh_bf16", crate::vulkan_dispatch::unary_bf16::tanh_bf16),
-    vk_ep!("sigmoid_f32",  crate::vulkan_dispatch::unary::sigmoid_f32),
-    vk_ep!("sigmoid_f16",  crate::vulkan_dispatch::unary_f16::sigmoid_f16),
-    vk_ep!("sigmoid_f64",  crate::vulkan_dispatch::unary_f64::sigmoid_f64),
-    vk_ep!("sigmoid_bf16", crate::vulkan_dispatch::unary_bf16::sigmoid_bf16),
-    vk_ep!("silu_f32",  crate::vulkan_dispatch::unary::silu_f32),
-    vk_ep!("silu_f16",  crate::vulkan_dispatch::unary_f16::silu_f16),
-    vk_ep!("silu_f64",  crate::vulkan_dispatch::unary_f64::silu_f64),
+    vk_ep!("sigmoid_f32", crate::vulkan_dispatch::unary::sigmoid_f32),
+    vk_ep!(
+        "sigmoid_f16",
+        crate::vulkan_dispatch::unary_f16::sigmoid_f16
+    ),
+    vk_ep!(
+        "sigmoid_f64",
+        crate::vulkan_dispatch::unary_f64::sigmoid_f64
+    ),
+    vk_ep!(
+        "sigmoid_bf16",
+        crate::vulkan_dispatch::unary_bf16::sigmoid_bf16
+    ),
+    vk_ep!("silu_f32", crate::vulkan_dispatch::unary::silu_f32),
+    vk_ep!("silu_f16", crate::vulkan_dispatch::unary_f16::silu_f16),
+    vk_ep!("silu_f64", crate::vulkan_dispatch::unary_f64::silu_f64),
     vk_ep!("silu_bf16", crate::vulkan_dispatch::unary_bf16::silu_bf16),
-    vk_ep!("gelu_f32",  crate::vulkan_dispatch::unary::gelu_f32),
-    vk_ep!("gelu_f16",  crate::vulkan_dispatch::unary_f16::gelu_f16),
-    vk_ep!("gelu_f64",  crate::vulkan_dispatch::unary_f64::gelu_f64),
+    vk_ep!("gelu_f32", crate::vulkan_dispatch::unary::gelu_f32),
+    vk_ep!("gelu_f16", crate::vulkan_dispatch::unary_f16::gelu_f16),
+    vk_ep!("gelu_f64", crate::vulkan_dispatch::unary_f64::gelu_f64),
     vk_ep!("gelu_bf16", crate::vulkan_dispatch::unary_bf16::gelu_bf16),
-    vk_ep!("relu_f32",  crate::vulkan_dispatch::unary::relu_f32),
-    vk_ep!("relu_f16",  crate::vulkan_dispatch::unary_f16::relu_f16),
-    vk_ep!("relu_f64",  crate::vulkan_dispatch::unary_f64::relu_f64),
+    vk_ep!("relu_f32", crate::vulkan_dispatch::unary::relu_f32),
+    vk_ep!("relu_f16", crate::vulkan_dispatch::unary_f16::relu_f16),
+    vk_ep!("relu_f64", crate::vulkan_dispatch::unary_f64::relu_f64),
     vk_ep!("relu_bf16", crate::vulkan_dispatch::unary_bf16::relu_bf16),
-    vk_ep!("step_f32",  crate::vulkan_dispatch::unary::step_f32),
-    vk_ep!("step_f16",  crate::vulkan_dispatch::unary_f16::step_f16),
-    vk_ep!("step_f64",  crate::vulkan_dispatch::unary_f64::step_f64),
+    vk_ep!("step_f32", crate::vulkan_dispatch::unary::step_f32),
+    vk_ep!("step_f16", crate::vulkan_dispatch::unary_f16::step_f16),
+    vk_ep!("step_f64", crate::vulkan_dispatch::unary_f64::step_f64),
     vk_ep!("step_bf16", crate::vulkan_dispatch::unary_bf16::step_bf16),
-    vk_ep!("abs_f32",  crate::vulkan_dispatch::unary::abs_f32),
-    vk_ep!("abs_f16",  crate::vulkan_dispatch::unary_f16::abs_f16),
-    vk_ep!("abs_f64",  crate::vulkan_dispatch::unary_f64::abs_f64),
+    vk_ep!("abs_f32", crate::vulkan_dispatch::unary::abs_f32),
+    vk_ep!("abs_f16", crate::vulkan_dispatch::unary_f16::abs_f16),
+    vk_ep!("abs_f64", crate::vulkan_dispatch::unary_f64::abs_f64),
     vk_ep!("abs_bf16", crate::vulkan_dispatch::unary_bf16::abs_bf16),
-    vk_ep!("sign_f32",  crate::vulkan_dispatch::unary::sign_f32),
-    vk_ep!("sign_f16",  crate::vulkan_dispatch::unary_f16::sign_f16),
-    vk_ep!("sign_f64",  crate::vulkan_dispatch::unary_f64::sign_f64),
+    vk_ep!("sign_f32", crate::vulkan_dispatch::unary::sign_f32),
+    vk_ep!("sign_f16", crate::vulkan_dispatch::unary_f16::sign_f16),
+    vk_ep!("sign_f64", crate::vulkan_dispatch::unary_f64::sign_f64),
     vk_ep!("sign_bf16", crate::vulkan_dispatch::unary_bf16::sign_bf16),
-    vk_ep!("recip_f32",  crate::vulkan_dispatch::unary::recip_f32),
-    vk_ep!("recip_f16",  crate::vulkan_dispatch::unary_f16::recip_f16),
-    vk_ep!("recip_f64",  crate::vulkan_dispatch::unary_f64::recip_f64),
+    vk_ep!("recip_f32", crate::vulkan_dispatch::unary::recip_f32),
+    vk_ep!("recip_f16", crate::vulkan_dispatch::unary_f16::recip_f16),
+    vk_ep!("recip_f64", crate::vulkan_dispatch::unary_f64::recip_f64),
     vk_ep!("recip_bf16", crate::vulkan_dispatch::unary_bf16::recip_bf16),
     // ----- Binary: 6 ops, strided f32/f16/f64/bf16 fan (24 symbols). -----
-    vk_ep!("add_f32",  crate::vulkan_dispatch::binary::add_f32),
-    vk_ep!("add_f16",  crate::vulkan_dispatch::binary_f16::add_f16),
-    vk_ep!("add_f64",  crate::vulkan_dispatch::binary_f64::add_f64),
+    vk_ep!("add_f32", crate::vulkan_dispatch::binary::add_f32),
+    vk_ep!("add_f16", crate::vulkan_dispatch::binary_f16::add_f16),
+    vk_ep!("add_f64", crate::vulkan_dispatch::binary_f64::add_f64),
     vk_ep!("add_bf16", crate::vulkan_dispatch::binary_bf16::add_bf16),
-    vk_ep!("sub_f32",  crate::vulkan_dispatch::binary::sub_f32),
-    vk_ep!("sub_f16",  crate::vulkan_dispatch::binary_f16::sub_f16),
-    vk_ep!("sub_f64",  crate::vulkan_dispatch::binary_f64::sub_f64),
+    vk_ep!("sub_f32", crate::vulkan_dispatch::binary::sub_f32),
+    vk_ep!("sub_f16", crate::vulkan_dispatch::binary_f16::sub_f16),
+    vk_ep!("sub_f64", crate::vulkan_dispatch::binary_f64::sub_f64),
     vk_ep!("sub_bf16", crate::vulkan_dispatch::binary_bf16::sub_bf16),
-    vk_ep!("mul_f32",  crate::vulkan_dispatch::binary::mul_f32),
-    vk_ep!("mul_f16",  crate::vulkan_dispatch::binary_f16::mul_f16),
-    vk_ep!("mul_f64",  crate::vulkan_dispatch::binary_f64::mul_f64),
+    vk_ep!("mul_f32", crate::vulkan_dispatch::binary::mul_f32),
+    vk_ep!("mul_f16", crate::vulkan_dispatch::binary_f16::mul_f16),
+    vk_ep!("mul_f64", crate::vulkan_dispatch::binary_f64::mul_f64),
     vk_ep!("mul_bf16", crate::vulkan_dispatch::binary_bf16::mul_bf16),
-    vk_ep!("div_f32",  crate::vulkan_dispatch::binary::div_f32),
-    vk_ep!("div_f16",  crate::vulkan_dispatch::binary_f16::div_f16),
-    vk_ep!("div_f64",  crate::vulkan_dispatch::binary_f64::div_f64),
+    vk_ep!("div_f32", crate::vulkan_dispatch::binary::div_f32),
+    vk_ep!("div_f16", crate::vulkan_dispatch::binary_f16::div_f16),
+    vk_ep!("div_f64", crate::vulkan_dispatch::binary_f64::div_f64),
     vk_ep!("div_bf16", crate::vulkan_dispatch::binary_bf16::div_bf16),
-    vk_ep!("maximum_f32",  crate::vulkan_dispatch::binary::maximum_f32),
-    vk_ep!("maximum_f16",  crate::vulkan_dispatch::binary_f16::maximum_f16),
-    vk_ep!("maximum_f64",  crate::vulkan_dispatch::binary_f64::maximum_f64),
-    vk_ep!("maximum_bf16", crate::vulkan_dispatch::binary_bf16::maximum_bf16),
-    vk_ep!("minimum_f32",  crate::vulkan_dispatch::binary::minimum_f32),
-    vk_ep!("minimum_f16",  crate::vulkan_dispatch::binary_f16::minimum_f16),
-    vk_ep!("minimum_f64",  crate::vulkan_dispatch::binary_f64::minimum_f64),
-    vk_ep!("minimum_bf16", crate::vulkan_dispatch::binary_bf16::minimum_bf16),
+    vk_ep!("maximum_f32", crate::vulkan_dispatch::binary::maximum_f32),
+    vk_ep!(
+        "maximum_f16",
+        crate::vulkan_dispatch::binary_f16::maximum_f16
+    ),
+    vk_ep!(
+        "maximum_f64",
+        crate::vulkan_dispatch::binary_f64::maximum_f64
+    ),
+    vk_ep!(
+        "maximum_bf16",
+        crate::vulkan_dispatch::binary_bf16::maximum_bf16
+    ),
+    vk_ep!("minimum_f32", crate::vulkan_dispatch::binary::minimum_f32),
+    vk_ep!(
+        "minimum_f16",
+        crate::vulkan_dispatch::binary_f16::minimum_f16
+    ),
+    vk_ep!(
+        "minimum_f64",
+        crate::vulkan_dispatch::binary_f64::minimum_f64
+    ),
+    vk_ep!(
+        "minimum_bf16",
+        crate::vulkan_dispatch::binary_bf16::minimum_bf16
+    ),
     // ----- Affine: strided f32/f16/f64 fan + contiguous bf16 (all in the `affine` module). -----
     vk_ep!("affine_f32", crate::vulkan_dispatch::affine::affine_f32),
     vk_ep!("affine_f16", crate::vulkan_dispatch::affine::affine_f16),
@@ -183,14 +246,14 @@ pub static VULKAN_ELEMENTWISE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     vk_ep!("affine_bf16", crate::vulkan_dispatch::affine::affine_bf16),
     // ----- Clamp / PowI: single-dtype f32. -----
     vk_ep!("clamp_f32", crate::vulkan_dispatch::clamp::clamp_f32),
-    vk_ep!("powi_f32",  crate::vulkan_dispatch::powi::powi_f32),
+    vk_ep!("powi_f32", crate::vulkan_dispatch::powi::powi_f32),
 ];
 
 /// The Vulkan matmul family's `symbol → production wrapper` map — the FULL
 /// family: 6 per-combo `(MatMul, [lhs,rhs,out])` wrapper bindings. Contract:
 /// `docs/kernel-contracts/vulkan/matmul.fkc.md`, re-authored per-combo (the cast
 /// family's per-pair precedent). Each section declares a single dtype per operand
-/// + a `fixed(OUT)` / `passthrough(lhs)` output, so none of them dtype-fan — the
+/// and a `fixed(OUT)` / `passthrough(lhs)` output, so none of them dtype-fan — the
 /// importer keys `[lhs, rhs, out]` (inputs-then-output), byte-for-byte the deleted
 /// hand-written `table.register_with_precision(OpKind::MatMul, &[lhs, rhs, out], …)`
 /// regs.
@@ -206,17 +269,32 @@ pub static VULKAN_ELEMENTWISE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// auto-Contiguized first).
 pub static VULKAN_MATMUL_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     // f32 GEMM/GEMV wrapper (matvec / reg-tile / tiled route-pick).
-    vk_ep!("matmul_f32",           crate::vulkan_dispatch::matmul::matmul_f32),
+    vk_ep!("matmul_f32", crate::vulkan_dispatch::matmul::matmul_f32),
     // Mixed-precision f32 × bf16 → f32 (matvec_bf16_b / matmul_tiled_bf16_b / coop).
-    vk_ep!("matmul_f32_bf16_b",    crate::vulkan_dispatch::matmul::matmul_f32_bf16_b),
+    vk_ep!(
+        "matmul_f32_bf16_b",
+        crate::vulkan_dispatch::matmul::matmul_f32_bf16_b
+    ),
     // Cooperative-matrix bf16 × bf16 → f32 (coop + matmul_small_bf16_bf16_f32).
-    vk_ep!("matmul_bf16_bf16_f32", crate::vulkan_dispatch::matmul::matmul_bf16_bf16_f32),
+    vk_ep!(
+        "matmul_bf16_bf16_f32",
+        crate::vulkan_dispatch::matmul::matmul_bf16_bf16_f32
+    ),
     // Cooperative-matrix bf16 × bf16 → bf16, downcast store (coop + small).
-    vk_ep!("matmul_bf16_bf16_bf16", crate::vulkan_dispatch::matmul::matmul_bf16_bf16_bf16),
+    vk_ep!(
+        "matmul_bf16_bf16_bf16",
+        crate::vulkan_dispatch::matmul::matmul_bf16_bf16_bf16
+    ),
     // Cooperative-matrix f16 × f16 → f16, downcast store (coop + small).
-    vk_ep!("matmul_f16_f16_f16",   crate::vulkan_dispatch::matmul::matmul_f16_f16_f16),
+    vk_ep!(
+        "matmul_f16_f16_f16",
+        crate::vulkan_dispatch::matmul::matmul_f16_f16_f16
+    ),
     // Cooperative-matrix f16 × f16 → f32 (coop + matmul_small_f16_f16_f32).
-    vk_ep!("matmul_f16_f16_f32",   crate::vulkan_dispatch::matmul::matmul_f16_f16_f32),
+    vk_ep!(
+        "matmul_f16_f16_f32",
+        crate::vulkan_dispatch::matmul::matmul_f16_f16_f32
+    ),
 ];
 
 /// The Vulkan conv2d family's `symbol → production wrapper` map — the FULL
@@ -240,11 +318,11 @@ pub static VULKAN_MATMUL_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// auto-Contiguized first.
 pub static VULKAN_CONV_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     // f32 conv (im2col + f32 GEMM route-pick).
-    vk_ep!("conv2d_f32",  crate::vulkan_dispatch::conv2d::conv2d_f32),
+    vk_ep!("conv2d_f32", crate::vulkan_dispatch::conv2d::conv2d_f32),
     // bf16 conv (im2col_bf16 + cooperative-matrix bf16 GEMM).
     vk_ep!("conv2d_bf16", crate::vulkan_dispatch::conv2d::conv2d_bf16),
     // f16 conv (im2col + cooperative-matrix f16 GEMM).
-    vk_ep!("conv2d_f16",  crate::vulkan_dispatch::conv2d::conv2d_f16),
+    vk_ep!("conv2d_f16", crate::vulkan_dispatch::conv2d::conv2d_f16),
 ];
 
 /// The Vulkan **select** family's `symbol → production wrapper` map — the FULL
@@ -267,24 +345,54 @@ pub static VULKAN_CONV_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// operand is auto-Contiguized first.
 pub static VULKAN_SELECT_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     // IndexSelect: 4 distinct per-dtype wrappers.
-    vk_ep!("index_select_f32",  crate::vulkan_dispatch::indexing::index_select_f32),
-    vk_ep!("index_select_f16",  crate::vulkan_dispatch::indexing::index_select_f16),
-    vk_ep!("index_select_bf16", crate::vulkan_dispatch::indexing::index_select_bf16),
-    vk_ep!("index_select_f64",  crate::vulkan_dispatch::indexing::index_select_f64),
+    vk_ep!(
+        "index_select_f32",
+        crate::vulkan_dispatch::indexing::index_select_f32
+    ),
+    vk_ep!(
+        "index_select_f16",
+        crate::vulkan_dispatch::indexing::index_select_f16
+    ),
+    vk_ep!(
+        "index_select_bf16",
+        crate::vulkan_dispatch::indexing::index_select_bf16
+    ),
+    vk_ep!(
+        "index_select_f64",
+        crate::vulkan_dispatch::indexing::index_select_f64
+    ),
     // Gather: 6 dtype symbols → the ONE dtype-agnostic gather wrapper.
-    vk_ep!("gather_f32",  crate::vulkan_dispatch::gather::gather),
-    vk_ep!("gather_f16",  crate::vulkan_dispatch::gather::gather),
+    vk_ep!("gather_f32", crate::vulkan_dispatch::gather::gather),
+    vk_ep!("gather_f16", crate::vulkan_dispatch::gather::gather),
     vk_ep!("gather_bf16", crate::vulkan_dispatch::gather::gather),
-    vk_ep!("gather_f64",  crate::vulkan_dispatch::gather::gather),
-    vk_ep!("gather_u8",   crate::vulkan_dispatch::gather::gather),
-    vk_ep!("gather_u32",  crate::vulkan_dispatch::gather::gather),
+    vk_ep!("gather_f64", crate::vulkan_dispatch::gather::gather),
+    vk_ep!("gather_u8", crate::vulkan_dispatch::gather::gather),
+    vk_ep!("gather_u32", crate::vulkan_dispatch::gather::gather),
     // MaskedFill: 6 dtype symbols → the ONE dtype-agnostic masked_fill wrapper.
-    vk_ep!("masked_fill_f32",  crate::vulkan_dispatch::masked_fill::masked_fill),
-    vk_ep!("masked_fill_f16",  crate::vulkan_dispatch::masked_fill::masked_fill),
-    vk_ep!("masked_fill_bf16", crate::vulkan_dispatch::masked_fill::masked_fill),
-    vk_ep!("masked_fill_f64",  crate::vulkan_dispatch::masked_fill::masked_fill),
-    vk_ep!("masked_fill_u8",   crate::vulkan_dispatch::masked_fill::masked_fill),
-    vk_ep!("masked_fill_u32",  crate::vulkan_dispatch::masked_fill::masked_fill),
+    vk_ep!(
+        "masked_fill_f32",
+        crate::vulkan_dispatch::masked_fill::masked_fill
+    ),
+    vk_ep!(
+        "masked_fill_f16",
+        crate::vulkan_dispatch::masked_fill::masked_fill
+    ),
+    vk_ep!(
+        "masked_fill_bf16",
+        crate::vulkan_dispatch::masked_fill::masked_fill
+    ),
+    vk_ep!(
+        "masked_fill_f64",
+        crate::vulkan_dispatch::masked_fill::masked_fill
+    ),
+    vk_ep!(
+        "masked_fill_u8",
+        crate::vulkan_dispatch::masked_fill::masked_fill
+    ),
+    vk_ep!(
+        "masked_fill_u32",
+        crate::vulkan_dispatch::masked_fill::masked_fill
+    ),
 ];
 
 /// The Vulkan **scatter** family's `symbol → production wrapper` map — the FULL
@@ -303,15 +411,39 @@ pub static VULKAN_SELECT_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// accumulate, scheduler-dependent order).
 pub static VULKAN_SCATTER_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     // IndexAdd: 4 distinct per-dtype wrappers.
-    vk_ep!("index_add_f32",  crate::vulkan_dispatch::index_add::index_add_f32),
-    vk_ep!("index_add_f64",  crate::vulkan_dispatch::index_add::index_add_f64),
-    vk_ep!("index_add_bf16", crate::vulkan_dispatch::index_add::index_add_bf16),
-    vk_ep!("index_add_f16",  crate::vulkan_dispatch::index_add::index_add_f16),
+    vk_ep!(
+        "index_add_f32",
+        crate::vulkan_dispatch::index_add::index_add_f32
+    ),
+    vk_ep!(
+        "index_add_f64",
+        crate::vulkan_dispatch::index_add::index_add_f64
+    ),
+    vk_ep!(
+        "index_add_bf16",
+        crate::vulkan_dispatch::index_add::index_add_bf16
+    ),
+    vk_ep!(
+        "index_add_f16",
+        crate::vulkan_dispatch::index_add::index_add_f16
+    ),
     // ScatterAdd: 4 distinct per-dtype wrappers.
-    vk_ep!("scatter_add_f32",  crate::vulkan_dispatch::scatter_add::scatter_add_f32),
-    vk_ep!("scatter_add_f64",  crate::vulkan_dispatch::scatter_add::scatter_add_f64),
-    vk_ep!("scatter_add_bf16", crate::vulkan_dispatch::scatter_add::scatter_add_bf16),
-    vk_ep!("scatter_add_f16",  crate::vulkan_dispatch::scatter_add::scatter_add_f16),
+    vk_ep!(
+        "scatter_add_f32",
+        crate::vulkan_dispatch::scatter_add::scatter_add_f32
+    ),
+    vk_ep!(
+        "scatter_add_f64",
+        crate::vulkan_dispatch::scatter_add::scatter_add_f64
+    ),
+    vk_ep!(
+        "scatter_add_bf16",
+        crate::vulkan_dispatch::scatter_add::scatter_add_bf16
+    ),
+    vk_ep!(
+        "scatter_add_f16",
+        crate::vulkan_dispatch::scatter_add::scatter_add_f16
+    ),
 ];
 
 /// The Vulkan **movement** family's `symbol → production wrapper` map — the FULL
@@ -328,14 +460,14 @@ pub static VULKAN_SCATTER_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// pointwise precedent).
 pub static VULKAN_MOVEMENT_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     // Concat: 4 distinct per-dtype wrappers.
-    vk_ep!("concat_f32",  crate::vulkan_dispatch::concat::concat_f32),
-    vk_ep!("concat_f16",  crate::vulkan_dispatch::concat::concat_f16),
+    vk_ep!("concat_f32", crate::vulkan_dispatch::concat::concat_f32),
+    vk_ep!("concat_f16", crate::vulkan_dispatch::concat::concat_f16),
     vk_ep!("concat_bf16", crate::vulkan_dispatch::concat::concat_bf16),
-    vk_ep!("concat_f64",  crate::vulkan_dispatch::concat::concat_f64),
+    vk_ep!("concat_f64", crate::vulkan_dispatch::concat::concat_f64),
     // CumSum: 4 distinct per-dtype wrappers.
-    vk_ep!("cumsum_f32",  crate::vulkan_dispatch::cumsum::cumsum_f32),
-    vk_ep!("cumsum_f64",  crate::vulkan_dispatch::cumsum::cumsum_f64),
-    vk_ep!("cumsum_f16",  crate::vulkan_dispatch::cumsum::cumsum_f16),
+    vk_ep!("cumsum_f32", crate::vulkan_dispatch::cumsum::cumsum_f32),
+    vk_ep!("cumsum_f64", crate::vulkan_dispatch::cumsum::cumsum_f64),
+    vk_ep!("cumsum_f16", crate::vulkan_dispatch::cumsum::cumsum_f16),
     vk_ep!("cumsum_bf16", crate::vulkan_dispatch::cumsum::cumsum_bf16),
 ];
 
@@ -355,37 +487,37 @@ pub static VULKAN_MOVEMENT_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// proof. All are byte-exact (bitwise, `max_ulp: 0`).
 pub static VULKAN_SHAPE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     // Triu: 7 dtype symbols → the ONE dtype-agnostic triu wrapper.
-    vk_ep!("triu_f32",  crate::vulkan_dispatch::triangular::triu),
-    vk_ep!("triu_f16",  crate::vulkan_dispatch::triangular::triu),
+    vk_ep!("triu_f32", crate::vulkan_dispatch::triangular::triu),
+    vk_ep!("triu_f16", crate::vulkan_dispatch::triangular::triu),
     vk_ep!("triu_bf16", crate::vulkan_dispatch::triangular::triu),
-    vk_ep!("triu_f64",  crate::vulkan_dispatch::triangular::triu),
-    vk_ep!("triu_i32",  crate::vulkan_dispatch::triangular::triu),
-    vk_ep!("triu_u32",  crate::vulkan_dispatch::triangular::triu),
-    vk_ep!("triu_i64",  crate::vulkan_dispatch::triangular::triu),
+    vk_ep!("triu_f64", crate::vulkan_dispatch::triangular::triu),
+    vk_ep!("triu_i32", crate::vulkan_dispatch::triangular::triu),
+    vk_ep!("triu_u32", crate::vulkan_dispatch::triangular::triu),
+    vk_ep!("triu_i64", crate::vulkan_dispatch::triangular::triu),
     // Tril: 7 dtype symbols → the ONE dtype-agnostic tril wrapper.
-    vk_ep!("tril_f32",  crate::vulkan_dispatch::triangular::tril),
-    vk_ep!("tril_f16",  crate::vulkan_dispatch::triangular::tril),
+    vk_ep!("tril_f32", crate::vulkan_dispatch::triangular::tril),
+    vk_ep!("tril_f16", crate::vulkan_dispatch::triangular::tril),
     vk_ep!("tril_bf16", crate::vulkan_dispatch::triangular::tril),
-    vk_ep!("tril_f64",  crate::vulkan_dispatch::triangular::tril),
-    vk_ep!("tril_i32",  crate::vulkan_dispatch::triangular::tril),
-    vk_ep!("tril_u32",  crate::vulkan_dispatch::triangular::tril),
-    vk_ep!("tril_i64",  crate::vulkan_dispatch::triangular::tril),
+    vk_ep!("tril_f64", crate::vulkan_dispatch::triangular::tril),
+    vk_ep!("tril_i32", crate::vulkan_dispatch::triangular::tril),
+    vk_ep!("tril_u32", crate::vulkan_dispatch::triangular::tril),
+    vk_ep!("tril_i64", crate::vulkan_dispatch::triangular::tril),
     // Flip: 7 dtype symbols → the ONE dtype-agnostic flip wrapper (stride-aware).
-    vk_ep!("flip_f32",  crate::vulkan_dispatch::flip::flip),
-    vk_ep!("flip_f16",  crate::vulkan_dispatch::flip::flip),
+    vk_ep!("flip_f32", crate::vulkan_dispatch::flip::flip),
+    vk_ep!("flip_f16", crate::vulkan_dispatch::flip::flip),
     vk_ep!("flip_bf16", crate::vulkan_dispatch::flip::flip),
-    vk_ep!("flip_f64",  crate::vulkan_dispatch::flip::flip),
-    vk_ep!("flip_i32",  crate::vulkan_dispatch::flip::flip),
-    vk_ep!("flip_u32",  crate::vulkan_dispatch::flip::flip),
-    vk_ep!("flip_i64",  crate::vulkan_dispatch::flip::flip),
+    vk_ep!("flip_f64", crate::vulkan_dispatch::flip::flip),
+    vk_ep!("flip_i32", crate::vulkan_dispatch::flip::flip),
+    vk_ep!("flip_u32", crate::vulkan_dispatch::flip::flip),
+    vk_ep!("flip_i64", crate::vulkan_dispatch::flip::flip),
     // Roll: 7 dtype symbols → the ONE dtype-agnostic roll wrapper (stride-aware).
-    vk_ep!("roll_f32",  crate::vulkan_dispatch::roll::roll),
-    vk_ep!("roll_f16",  crate::vulkan_dispatch::roll::roll),
+    vk_ep!("roll_f32", crate::vulkan_dispatch::roll::roll),
+    vk_ep!("roll_f16", crate::vulkan_dispatch::roll::roll),
     vk_ep!("roll_bf16", crate::vulkan_dispatch::roll::roll),
-    vk_ep!("roll_f64",  crate::vulkan_dispatch::roll::roll),
-    vk_ep!("roll_i32",  crate::vulkan_dispatch::roll::roll),
-    vk_ep!("roll_u32",  crate::vulkan_dispatch::roll::roll),
-    vk_ep!("roll_i64",  crate::vulkan_dispatch::roll::roll),
+    vk_ep!("roll_f64", crate::vulkan_dispatch::roll::roll),
+    vk_ep!("roll_i32", crate::vulkan_dispatch::roll::roll),
+    vk_ep!("roll_u32", crate::vulkan_dispatch::roll::roll),
+    vk_ep!("roll_i64", crate::vulkan_dispatch::roll::roll),
 ];
 
 /// The Vulkan **pad-copy** family's `symbol → production wrapper` map — the FULL
@@ -400,29 +532,44 @@ pub static VULKAN_SHAPE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// `strided_input == false`); precision byte-exact (bitwise, `max_ulp: 0`).
 pub static VULKAN_PAD_COPY_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     // Pad: 6 dtype symbols → the ONE dtype-agnostic pad_const wrapper.
-    vk_ep!("pad_f32",  crate::vulkan_dispatch::pad::pad_const),
-    vk_ep!("pad_f16",  crate::vulkan_dispatch::pad::pad_const),
+    vk_ep!("pad_f32", crate::vulkan_dispatch::pad::pad_const),
+    vk_ep!("pad_f16", crate::vulkan_dispatch::pad::pad_const),
     vk_ep!("pad_bf16", crate::vulkan_dispatch::pad::pad_const),
-    vk_ep!("pad_f64",  crate::vulkan_dispatch::pad::pad_const),
-    vk_ep!("pad_u8",   crate::vulkan_dispatch::pad::pad_const),
-    vk_ep!("pad_u32",  crate::vulkan_dispatch::pad::pad_const),
+    vk_ep!("pad_f64", crate::vulkan_dispatch::pad::pad_const),
+    vk_ep!("pad_u8", crate::vulkan_dispatch::pad::pad_const),
+    vk_ep!("pad_u32", crate::vulkan_dispatch::pad::pad_const),
     // PadBackward: 6 dtype symbols → the ONE dtype-agnostic pad_backward wrapper.
-    vk_ep!("pad_backward_f32",  crate::vulkan_dispatch::pad::pad_backward),
-    vk_ep!("pad_backward_f16",  crate::vulkan_dispatch::pad::pad_backward),
-    vk_ep!("pad_backward_bf16", crate::vulkan_dispatch::pad::pad_backward),
-    vk_ep!("pad_backward_f64",  crate::vulkan_dispatch::pad::pad_backward),
-    vk_ep!("pad_backward_u8",   crate::vulkan_dispatch::pad::pad_backward),
-    vk_ep!("pad_backward_u32",  crate::vulkan_dispatch::pad::pad_backward),
+    vk_ep!(
+        "pad_backward_f32",
+        crate::vulkan_dispatch::pad::pad_backward
+    ),
+    vk_ep!(
+        "pad_backward_f16",
+        crate::vulkan_dispatch::pad::pad_backward
+    ),
+    vk_ep!(
+        "pad_backward_bf16",
+        crate::vulkan_dispatch::pad::pad_backward
+    ),
+    vk_ep!(
+        "pad_backward_f64",
+        crate::vulkan_dispatch::pad::pad_backward
+    ),
+    vk_ep!("pad_backward_u8", crate::vulkan_dispatch::pad::pad_backward),
+    vk_ep!(
+        "pad_backward_u32",
+        crate::vulkan_dispatch::pad::pad_backward
+    ),
     // Copy: 9 dtype symbols → the ONE dtype-agnostic D2H copy wrapper.
-    vk_ep!("copy_f32",  crate::vulkan_dispatch::copy_to_cpu_vulkan),
-    vk_ep!("copy_f16",  crate::vulkan_dispatch::copy_to_cpu_vulkan),
+    vk_ep!("copy_f32", crate::vulkan_dispatch::copy_to_cpu_vulkan),
+    vk_ep!("copy_f16", crate::vulkan_dispatch::copy_to_cpu_vulkan),
     vk_ep!("copy_bf16", crate::vulkan_dispatch::copy_to_cpu_vulkan),
-    vk_ep!("copy_f64",  crate::vulkan_dispatch::copy_to_cpu_vulkan),
-    vk_ep!("copy_u32",  crate::vulkan_dispatch::copy_to_cpu_vulkan),
-    vk_ep!("copy_u8",   crate::vulkan_dispatch::copy_to_cpu_vulkan),
-    vk_ep!("copy_i16",  crate::vulkan_dispatch::copy_to_cpu_vulkan),
-    vk_ep!("copy_i32",  crate::vulkan_dispatch::copy_to_cpu_vulkan),
-    vk_ep!("copy_i64",  crate::vulkan_dispatch::copy_to_cpu_vulkan),
+    vk_ep!("copy_f64", crate::vulkan_dispatch::copy_to_cpu_vulkan),
+    vk_ep!("copy_u32", crate::vulkan_dispatch::copy_to_cpu_vulkan),
+    vk_ep!("copy_u8", crate::vulkan_dispatch::copy_to_cpu_vulkan),
+    vk_ep!("copy_i16", crate::vulkan_dispatch::copy_to_cpu_vulkan),
+    vk_ep!("copy_i32", crate::vulkan_dispatch::copy_to_cpu_vulkan),
+    vk_ep!("copy_i64", crate::vulkan_dispatch::copy_to_cpu_vulkan),
 ];
 
 /// The Vulkan **write-slice** family's `symbol → production wrapper` map — the
@@ -438,25 +585,79 @@ pub static VULKAN_PAD_COPY_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// precision byte-exact (bitwise, `max_ulp: 0`).
 pub static VULKAN_WRITE_SLICE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     // WriteSlice: 9 dtype symbols → 4 byte-width wrappers (b4/b2/b8/b1).
-    vk_ep!("write_slice_f32",  crate::vulkan_dispatch::write_slice::write_slice_b4),
-    vk_ep!("write_slice_i32",  crate::vulkan_dispatch::write_slice::write_slice_b4),
-    vk_ep!("write_slice_u32",  crate::vulkan_dispatch::write_slice::write_slice_b4),
-    vk_ep!("write_slice_f16",  crate::vulkan_dispatch::write_slice::write_slice_b2),
-    vk_ep!("write_slice_bf16", crate::vulkan_dispatch::write_slice::write_slice_b2),
-    vk_ep!("write_slice_f64",  crate::vulkan_dispatch::write_slice::write_slice_b8),
-    vk_ep!("write_slice_i64",  crate::vulkan_dispatch::write_slice::write_slice_b8),
-    vk_ep!("write_slice_u8",   crate::vulkan_dispatch::write_slice::write_slice_b1),
-    vk_ep!("write_slice_i8",   crate::vulkan_dispatch::write_slice::write_slice_b1),
+    vk_ep!(
+        "write_slice_f32",
+        crate::vulkan_dispatch::write_slice::write_slice_b4
+    ),
+    vk_ep!(
+        "write_slice_i32",
+        crate::vulkan_dispatch::write_slice::write_slice_b4
+    ),
+    vk_ep!(
+        "write_slice_u32",
+        crate::vulkan_dispatch::write_slice::write_slice_b4
+    ),
+    vk_ep!(
+        "write_slice_f16",
+        crate::vulkan_dispatch::write_slice::write_slice_b2
+    ),
+    vk_ep!(
+        "write_slice_bf16",
+        crate::vulkan_dispatch::write_slice::write_slice_b2
+    ),
+    vk_ep!(
+        "write_slice_f64",
+        crate::vulkan_dispatch::write_slice::write_slice_b8
+    ),
+    vk_ep!(
+        "write_slice_i64",
+        crate::vulkan_dispatch::write_slice::write_slice_b8
+    ),
+    vk_ep!(
+        "write_slice_u8",
+        crate::vulkan_dispatch::write_slice::write_slice_b1
+    ),
+    vk_ep!(
+        "write_slice_i8",
+        crate::vulkan_dispatch::write_slice::write_slice_b1
+    ),
     // WriteSliceRotating: 9 dtype symbols → 4 byte-width rotating wrappers.
-    vk_ep!("write_slice_rotating_f32",  crate::vulkan_dispatch::write_slice_rotating::write_slice_rotating_b4),
-    vk_ep!("write_slice_rotating_i32",  crate::vulkan_dispatch::write_slice_rotating::write_slice_rotating_b4),
-    vk_ep!("write_slice_rotating_u32",  crate::vulkan_dispatch::write_slice_rotating::write_slice_rotating_b4),
-    vk_ep!("write_slice_rotating_f16",  crate::vulkan_dispatch::write_slice_rotating::write_slice_rotating_b2),
-    vk_ep!("write_slice_rotating_bf16", crate::vulkan_dispatch::write_slice_rotating::write_slice_rotating_b2),
-    vk_ep!("write_slice_rotating_f64",  crate::vulkan_dispatch::write_slice_rotating::write_slice_rotating_b8),
-    vk_ep!("write_slice_rotating_i64",  crate::vulkan_dispatch::write_slice_rotating::write_slice_rotating_b8),
-    vk_ep!("write_slice_rotating_u8",   crate::vulkan_dispatch::write_slice_rotating::write_slice_rotating_b1),
-    vk_ep!("write_slice_rotating_i8",   crate::vulkan_dispatch::write_slice_rotating::write_slice_rotating_b1),
+    vk_ep!(
+        "write_slice_rotating_f32",
+        crate::vulkan_dispatch::write_slice_rotating::write_slice_rotating_b4
+    ),
+    vk_ep!(
+        "write_slice_rotating_i32",
+        crate::vulkan_dispatch::write_slice_rotating::write_slice_rotating_b4
+    ),
+    vk_ep!(
+        "write_slice_rotating_u32",
+        crate::vulkan_dispatch::write_slice_rotating::write_slice_rotating_b4
+    ),
+    vk_ep!(
+        "write_slice_rotating_f16",
+        crate::vulkan_dispatch::write_slice_rotating::write_slice_rotating_b2
+    ),
+    vk_ep!(
+        "write_slice_rotating_bf16",
+        crate::vulkan_dispatch::write_slice_rotating::write_slice_rotating_b2
+    ),
+    vk_ep!(
+        "write_slice_rotating_f64",
+        crate::vulkan_dispatch::write_slice_rotating::write_slice_rotating_b8
+    ),
+    vk_ep!(
+        "write_slice_rotating_i64",
+        crate::vulkan_dispatch::write_slice_rotating::write_slice_rotating_b8
+    ),
+    vk_ep!(
+        "write_slice_rotating_u8",
+        crate::vulkan_dispatch::write_slice_rotating::write_slice_rotating_b1
+    ),
+    vk_ep!(
+        "write_slice_rotating_i8",
+        crate::vulkan_dispatch::write_slice_rotating::write_slice_rotating_b1
+    ),
 ];
 
 /// The Vulkan **rope** family's `symbol → production wrapper` map — the FULL
@@ -471,9 +672,9 @@ pub static VULKAN_WRITE_SLICE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// caps-through-import proof; precision is the conservative UNAUDITED author seed
 /// (the elementwise pointwise precedent).
 pub static VULKAN_ROPE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
-    vk_ep!("rope_f32",  crate::vulkan_dispatch::attention::rope_f32),
-    vk_ep!("rope_f16",  crate::vulkan_dispatch::attention::rope_f16),
-    vk_ep!("rope_f64",  crate::vulkan_dispatch::attention::rope_f64),
+    vk_ep!("rope_f32", crate::vulkan_dispatch::attention::rope_f32),
+    vk_ep!("rope_f16", crate::vulkan_dispatch::attention::rope_f16),
+    vk_ep!("rope_f64", crate::vulkan_dispatch::attention::rope_f64),
     vk_ep!("rope_bf16", crate::vulkan_dispatch::attention::rope_bf16),
 ];
 
@@ -491,31 +692,58 @@ pub static VULKAN_ROPE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// exact.
 pub static VULKAN_REDUCE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     // Value reduces: 4 ops × 4 dtypes → 16 distinct wrappers.
-    vk_ep!("reduce_sum_f32",  crate::vulkan_dispatch::reduce::sum_f32),
-    vk_ep!("reduce_sum_f16",  crate::vulkan_dispatch::reduce::sum_f16),
+    vk_ep!("reduce_sum_f32", crate::vulkan_dispatch::reduce::sum_f32),
+    vk_ep!("reduce_sum_f16", crate::vulkan_dispatch::reduce::sum_f16),
     vk_ep!("reduce_sum_bf16", crate::vulkan_dispatch::reduce::sum_bf16),
-    vk_ep!("reduce_sum_f64",  crate::vulkan_dispatch::reduce::sum_f64),
-    vk_ep!("reduce_max_f32",  crate::vulkan_dispatch::reduce::max_f32),
-    vk_ep!("reduce_max_f16",  crate::vulkan_dispatch::reduce::max_f16),
+    vk_ep!("reduce_sum_f64", crate::vulkan_dispatch::reduce::sum_f64),
+    vk_ep!("reduce_max_f32", crate::vulkan_dispatch::reduce::max_f32),
+    vk_ep!("reduce_max_f16", crate::vulkan_dispatch::reduce::max_f16),
     vk_ep!("reduce_max_bf16", crate::vulkan_dispatch::reduce::max_bf16),
-    vk_ep!("reduce_max_f64",  crate::vulkan_dispatch::reduce::max_f64),
-    vk_ep!("reduce_min_f32",  crate::vulkan_dispatch::reduce::min_f32),
-    vk_ep!("reduce_min_f16",  crate::vulkan_dispatch::reduce::min_f16),
+    vk_ep!("reduce_max_f64", crate::vulkan_dispatch::reduce::max_f64),
+    vk_ep!("reduce_min_f32", crate::vulkan_dispatch::reduce::min_f32),
+    vk_ep!("reduce_min_f16", crate::vulkan_dispatch::reduce::min_f16),
     vk_ep!("reduce_min_bf16", crate::vulkan_dispatch::reduce::min_bf16),
-    vk_ep!("reduce_min_f64",  crate::vulkan_dispatch::reduce::min_f64),
-    vk_ep!("reduce_mean_f32",  crate::vulkan_dispatch::reduce::mean_f32),
-    vk_ep!("reduce_mean_f16",  crate::vulkan_dispatch::reduce::mean_f16),
-    vk_ep!("reduce_mean_bf16", crate::vulkan_dispatch::reduce::mean_bf16),
-    vk_ep!("reduce_mean_f64",  crate::vulkan_dispatch::reduce::mean_f64),
+    vk_ep!("reduce_min_f64", crate::vulkan_dispatch::reduce::min_f64),
+    vk_ep!("reduce_mean_f32", crate::vulkan_dispatch::reduce::mean_f32),
+    vk_ep!("reduce_mean_f16", crate::vulkan_dispatch::reduce::mean_f16),
+    vk_ep!(
+        "reduce_mean_bf16",
+        crate::vulkan_dispatch::reduce::mean_bf16
+    ),
+    vk_ep!("reduce_mean_f64", crate::vulkan_dispatch::reduce::mean_f64),
     // Index reduces: 2 ops × 4 dtypes → 8 distinct wrappers.
-    vk_ep!("arg_max_f32",  crate::vulkan_dispatch::arg_reduce::argmax_f32),
-    vk_ep!("arg_max_f16",  crate::vulkan_dispatch::arg_reduce::argmax_f16),
-    vk_ep!("arg_max_bf16", crate::vulkan_dispatch::arg_reduce::argmax_bf16),
-    vk_ep!("arg_max_f64",  crate::vulkan_dispatch::arg_reduce::argmax_f64),
-    vk_ep!("arg_min_f32",  crate::vulkan_dispatch::arg_reduce::argmin_f32),
-    vk_ep!("arg_min_f16",  crate::vulkan_dispatch::arg_reduce::argmin_f16),
-    vk_ep!("arg_min_bf16", crate::vulkan_dispatch::arg_reduce::argmin_bf16),
-    vk_ep!("arg_min_f64",  crate::vulkan_dispatch::arg_reduce::argmin_f64),
+    vk_ep!(
+        "arg_max_f32",
+        crate::vulkan_dispatch::arg_reduce::argmax_f32
+    ),
+    vk_ep!(
+        "arg_max_f16",
+        crate::vulkan_dispatch::arg_reduce::argmax_f16
+    ),
+    vk_ep!(
+        "arg_max_bf16",
+        crate::vulkan_dispatch::arg_reduce::argmax_bf16
+    ),
+    vk_ep!(
+        "arg_max_f64",
+        crate::vulkan_dispatch::arg_reduce::argmax_f64
+    ),
+    vk_ep!(
+        "arg_min_f32",
+        crate::vulkan_dispatch::arg_reduce::argmin_f32
+    ),
+    vk_ep!(
+        "arg_min_f16",
+        crate::vulkan_dispatch::arg_reduce::argmin_f16
+    ),
+    vk_ep!(
+        "arg_min_bf16",
+        crate::vulkan_dispatch::arg_reduce::argmin_bf16
+    ),
+    vk_ep!(
+        "arg_min_f64",
+        crate::vulkan_dispatch::arg_reduce::argmin_f64
+    ),
 ];
 
 /// The Vulkan **norm** family's `symbol → production wrapper` map — the FULL
@@ -532,28 +760,88 @@ pub static VULKAN_REDUCE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// (per-row subgroup-tree FADD order).
 pub static VULKAN_NORM_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     // Softmax forward + backward.
-    vk_ep!("softmax_last_dim_f32",  crate::vulkan_dispatch::softmax::softmax_f32),
-    vk_ep!("softmax_last_dim_f16",  crate::vulkan_dispatch::softmax::softmax_f16),
-    vk_ep!("softmax_last_dim_bf16", crate::vulkan_dispatch::softmax::softmax_bf16),
-    vk_ep!("softmax_last_dim_f64",  crate::vulkan_dispatch::softmax::softmax_f64),
-    vk_ep!("softmax_last_dim_backward_f32",  crate::vulkan_dispatch::softmax::softmax_last_dim_backward_f32),
-    vk_ep!("softmax_last_dim_backward_f16",  crate::vulkan_dispatch::softmax::softmax_last_dim_backward_f16),
-    vk_ep!("softmax_last_dim_backward_bf16", crate::vulkan_dispatch::softmax::softmax_last_dim_backward_bf16),
-    vk_ep!("softmax_last_dim_backward_f64",  crate::vulkan_dispatch::softmax::softmax_last_dim_backward_f64),
+    vk_ep!(
+        "softmax_last_dim_f32",
+        crate::vulkan_dispatch::softmax::softmax_f32
+    ),
+    vk_ep!(
+        "softmax_last_dim_f16",
+        crate::vulkan_dispatch::softmax::softmax_f16
+    ),
+    vk_ep!(
+        "softmax_last_dim_bf16",
+        crate::vulkan_dispatch::softmax::softmax_bf16
+    ),
+    vk_ep!(
+        "softmax_last_dim_f64",
+        crate::vulkan_dispatch::softmax::softmax_f64
+    ),
+    vk_ep!(
+        "softmax_last_dim_backward_f32",
+        crate::vulkan_dispatch::softmax::softmax_last_dim_backward_f32
+    ),
+    vk_ep!(
+        "softmax_last_dim_backward_f16",
+        crate::vulkan_dispatch::softmax::softmax_last_dim_backward_f16
+    ),
+    vk_ep!(
+        "softmax_last_dim_backward_bf16",
+        crate::vulkan_dispatch::softmax::softmax_last_dim_backward_bf16
+    ),
+    vk_ep!(
+        "softmax_last_dim_backward_f64",
+        crate::vulkan_dispatch::softmax::softmax_last_dim_backward_f64
+    ),
     // LayerNorm forward + backward.
-    vk_ep!("layer_norm_last_dim_f32",  crate::vulkan_dispatch::norm::layer_norm_f32),
-    vk_ep!("layer_norm_last_dim_f16",  crate::vulkan_dispatch::norm::layer_norm_f16),
-    vk_ep!("layer_norm_last_dim_bf16", crate::vulkan_dispatch::norm::layer_norm_bf16),
-    vk_ep!("layer_norm_last_dim_f64",  crate::vulkan_dispatch::norm::layer_norm_f64),
-    vk_ep!("layer_norm_last_dim_backward_f32",  crate::vulkan_dispatch::norm::layer_norm_backward_f32),
-    vk_ep!("layer_norm_last_dim_backward_f16",  crate::vulkan_dispatch::norm::layer_norm_backward_f16),
-    vk_ep!("layer_norm_last_dim_backward_bf16", crate::vulkan_dispatch::norm::layer_norm_backward_bf16),
-    vk_ep!("layer_norm_last_dim_backward_f64",  crate::vulkan_dispatch::norm::layer_norm_backward_f64),
+    vk_ep!(
+        "layer_norm_last_dim_f32",
+        crate::vulkan_dispatch::norm::layer_norm_f32
+    ),
+    vk_ep!(
+        "layer_norm_last_dim_f16",
+        crate::vulkan_dispatch::norm::layer_norm_f16
+    ),
+    vk_ep!(
+        "layer_norm_last_dim_bf16",
+        crate::vulkan_dispatch::norm::layer_norm_bf16
+    ),
+    vk_ep!(
+        "layer_norm_last_dim_f64",
+        crate::vulkan_dispatch::norm::layer_norm_f64
+    ),
+    vk_ep!(
+        "layer_norm_last_dim_backward_f32",
+        crate::vulkan_dispatch::norm::layer_norm_backward_f32
+    ),
+    vk_ep!(
+        "layer_norm_last_dim_backward_f16",
+        crate::vulkan_dispatch::norm::layer_norm_backward_f16
+    ),
+    vk_ep!(
+        "layer_norm_last_dim_backward_bf16",
+        crate::vulkan_dispatch::norm::layer_norm_backward_bf16
+    ),
+    vk_ep!(
+        "layer_norm_last_dim_backward_f64",
+        crate::vulkan_dispatch::norm::layer_norm_backward_f64
+    ),
     // RmsNorm forward.
-    vk_ep!("rms_norm_last_dim_f32",  crate::vulkan_dispatch::norm::rms_f32),
-    vk_ep!("rms_norm_last_dim_f16",  crate::vulkan_dispatch::norm::rms_f16),
-    vk_ep!("rms_norm_last_dim_bf16", crate::vulkan_dispatch::norm::rms_bf16),
-    vk_ep!("rms_norm_last_dim_f64",  crate::vulkan_dispatch::norm::rms_f64),
+    vk_ep!(
+        "rms_norm_last_dim_f32",
+        crate::vulkan_dispatch::norm::rms_f32
+    ),
+    vk_ep!(
+        "rms_norm_last_dim_f16",
+        crate::vulkan_dispatch::norm::rms_f16
+    ),
+    vk_ep!(
+        "rms_norm_last_dim_bf16",
+        crate::vulkan_dispatch::norm::rms_bf16
+    ),
+    vk_ep!(
+        "rms_norm_last_dim_f64",
+        crate::vulkan_dispatch::norm::rms_f64
+    ),
 ];
 
 /// The Vulkan **QMatMul** family's `symbol → production wrapper` map — the FULL
@@ -573,9 +861,10 @@ pub static VULKAN_NORM_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// key. Caps ride through contiguous-only (`requires_contiguous` ⇒
 /// `strided_input == false`): the GGML weight stream has a fixed per-block layout,
 /// so a strided operand is auto-Contiguized first.
-pub static VULKAN_QMATMUL_ENTRY_POINTS: &[(&str, KernelRef)] = &[
-    vk_ep!("qmatmul_vk", crate::vulkan_dispatch::qmatmul::qmatmul_vk),
-];
+pub static VULKAN_QMATMUL_ENTRY_POINTS: &[(&str, KernelRef)] = &[vk_ep!(
+    "qmatmul_vk",
+    crate::vulkan_dispatch::qmatmul::qmatmul_vk
+)];
 
 /// The Vulkan **FlashAttention** family's `symbol → production wrapper` map —
 /// the FULL family: 6 sections resolving to 6 distinct wrappers, keyed as 12
@@ -599,13 +888,31 @@ pub static VULKAN_QMATMUL_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// `VULKAN_{FLOAT,HALF}_POINTWISE_PRECISION` consts over-claimed bit-stability).
 pub static VULKAN_ATTENTION_ENTRY_POINTS: &[(&str, KernelRef)] = &[
     // Forward: 3 distinct per-dtype wrappers.
-    vk_ep!("flash_attn_f32",  crate::vulkan_dispatch::flash_attn::flash_attn_f32),
-    vk_ep!("flash_attn_bf16", crate::vulkan_dispatch::flash_attn::flash_attn_bf16),
-    vk_ep!("flash_attn_f16",  crate::vulkan_dispatch::flash_attn::flash_attn_f16),
+    vk_ep!(
+        "flash_attn_f32",
+        crate::vulkan_dispatch::flash_attn::flash_attn_f32
+    ),
+    vk_ep!(
+        "flash_attn_bf16",
+        crate::vulkan_dispatch::flash_attn::flash_attn_bf16
+    ),
+    vk_ep!(
+        "flash_attn_f16",
+        crate::vulkan_dispatch::flash_attn::flash_attn_f16
+    ),
     // Backward Q/K/V: f32-only distinct per-selector wrappers.
-    vk_ep!("flash_attn_backward_q_f32", crate::vulkan_dispatch::flash_attn::flash_attn_backward_q_f32),
-    vk_ep!("flash_attn_backward_k_f32", crate::vulkan_dispatch::flash_attn::flash_attn_backward_k_f32),
-    vk_ep!("flash_attn_backward_v_f32", crate::vulkan_dispatch::flash_attn::flash_attn_backward_v_f32),
+    vk_ep!(
+        "flash_attn_backward_q_f32",
+        crate::vulkan_dispatch::flash_attn::flash_attn_backward_q_f32
+    ),
+    vk_ep!(
+        "flash_attn_backward_k_f32",
+        crate::vulkan_dispatch::flash_attn::flash_attn_backward_k_f32
+    ),
+    vk_ep!(
+        "flash_attn_backward_v_f32",
+        crate::vulkan_dispatch::flash_attn::flash_attn_backward_v_f32
+    ),
 ];
 
 /// The built-in Vulkan backend's [`LinkRegistry`] — resolves a contract's

@@ -8,7 +8,7 @@ use anyhow::{Error as E, Result};
 use clap::Parser;
 use fuel::lazy_mistral::MistralConfig;
 use fuel::lazy_nvembed_v2::{NvEmbedV2Config, NvEmbedV2Model, NvEmbedV2Weights};
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 use tokenizers::{PaddingDirection, PaddingParams, Tokenizer, TruncationParams};
 
 #[derive(Parser, Debug)]
@@ -102,7 +102,10 @@ fn build_model_and_tokenizer(args: &Args) -> Result<(NvEmbedV2Model, Tokenizer)>
         .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
     let weights = NvEmbedV2Weights::load_from_mmapped(&st, &cfg)
         .map_err(|e| E::msg(format!("load weights: {e}")))?;
-    let model = NvEmbedV2Model { config: cfg, weights };
+    let model = NvEmbedV2Model {
+        config: cfg,
+        weights,
+    };
 
     Ok((model, tokenizer))
 }
@@ -129,7 +132,7 @@ fn encode(
     let eos_token = tokenizer
         .get_padding()
         .map(|p| p.pad_token.clone())
-        .unwrap_or_else(|| "".to_string());
+        .unwrap_or_default();
     let bos = "<s>".to_string();
     let input_texts: Vec<String> = examples
         .iter()
@@ -198,7 +201,7 @@ fn main() -> Result<()> {
 
         let passages = [
             "Since you're reading this, you are probably someone from a judo background or someone who is just wondering how judo techniques can be applied under wrestling rules. So without further ado, let's get to the question. Are Judo throws allowed in wrestling? Yes, judo throws are allowed in freestyle and folkstyle wrestling. You only need to be careful to follow the slam rules when executing judo throws. In wrestling, a slam is lifting and returning an opponent to the mat with unnecessary force.",
-            "Below are the basic steps to becoming a radiologic technologist in Michigan:Earn a high school diploma. As with most careers in health care, a high school education is the first step to finding entry-level employment. Taking classes in math and science, such as anatomy, biology, chemistry, physiology, and physics, can help prepare students for their college studies and future careers.Earn an associate degree. Entry-level radiologic positions typically require at least an Associate of Applied Science. Before enrolling in one of these degree programs, students should make sure it has been properly accredited by the Joint Review Committee on Education in Radiologic Technology (JRCERT).Get licensed or certified in the state of Michigan."
+            "Below are the basic steps to becoming a radiologic technologist in Michigan:Earn a high school diploma. As with most careers in health care, a high school education is the first step to finding entry-level employment. Taking classes in math and science, such as anatomy, biology, chemistry, physiology, and physics, can help prepare students for their college studies and future careers.Earn an associate degree. Entry-level radiologic positions typically require at least an Associate of Applied Science. Before enrolling in one of these degree programs, students should make sure it has been properly accredited by the Joint Review Committee on Education in Radiologic Technology (JRCERT).Get licensed or certified in the state of Michigan.",
         ];
         let passage_instruction = "".to_string();
         let query_instruction =
@@ -237,23 +240,23 @@ fn main() -> Result<()> {
 /// `latent_attention_*` extras. Unknown fields fall back to the
 /// preset.
 fn nvembed_config_from_hf_json_str(json: &str) -> Result<NvEmbedV2Config> {
-    let v: serde_json::Value = serde_json::from_str(json)
-        .map_err(|e| E::msg(format!("parsing config.json: {e}")))?;
+    let v: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| E::msg(format!("parsing config.json: {e}")))?;
     let preset = NvEmbedV2Config::nv_embed_v2();
-    let get_usize = |key: &str| -> Option<usize> {
-        v.get(key).and_then(|x| x.as_u64()).map(|x| x as usize)
-    };
+    let get_usize =
+        |key: &str| -> Option<usize> { v.get(key).and_then(|x| x.as_u64()).map(|x| x as usize) };
     let get_f64 = |key: &str| -> Option<f64> { v.get(key).and_then(|x| x.as_f64()) };
 
     // Many NV-Embed-v2 config.jsons wrap the backbone under a
     // `text_config` sub-object — fall back to the top level otherwise.
     let text_cfg = v.get("text_config").unwrap_or(&v);
     let get_text_usize = |key: &str| -> Option<usize> {
-        text_cfg.get(key).and_then(|x| x.as_u64()).map(|x| x as usize)
+        text_cfg
+            .get(key)
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize)
     };
-    let get_text_f64 = |key: &str| -> Option<f64> {
-        text_cfg.get(key).and_then(|x| x.as_f64())
-    };
+    let get_text_f64 = |key: &str| -> Option<f64> { text_cfg.get(key).and_then(|x| x.as_f64()) };
 
     let vocab_size = get_text_usize("vocab_size").unwrap_or(preset.backbone.vocab_size);
     let hidden_size = get_text_usize("hidden_size").unwrap_or(preset.backbone.hidden_size);
@@ -263,8 +266,7 @@ fn nvembed_config_from_hf_json_str(json: &str) -> Result<NvEmbedV2Config> {
         get_text_usize("num_hidden_layers").unwrap_or(preset.backbone.num_hidden_layers);
     let num_attention_heads =
         get_text_usize("num_attention_heads").unwrap_or(preset.backbone.num_attention_heads);
-    let num_key_value_heads =
-        get_text_usize("num_key_value_heads").unwrap_or(num_attention_heads);
+    let num_key_value_heads = get_text_usize("num_key_value_heads").unwrap_or(num_attention_heads);
     let head_dim = get_text_usize("head_dim").unwrap_or(hidden_size / num_attention_heads);
     let rms_norm_eps = get_text_f64("rms_norm_eps").unwrap_or(preset.backbone.rms_norm_eps);
     let rope_theta = get_text_f64("rope_theta").unwrap_or(preset.backbone.rope_theta);
@@ -291,8 +293,7 @@ fn nvembed_config_from_hf_json_str(json: &str) -> Result<NvEmbedV2Config> {
 
     let num_latents = get_usize("num_latents").unwrap_or(preset.num_latents);
     let latent_heads = get_usize("latent_attention_heads").unwrap_or(preset.latent_heads);
-    let latent_head_dim =
-        get_usize("latent_attention_head_dim").unwrap_or(preset.latent_head_dim);
+    let latent_head_dim = get_usize("latent_attention_head_dim").unwrap_or(preset.latent_head_dim);
     let ff_mult = get_usize("ff_mult").unwrap_or(preset.ff_mult);
     let layer_norm_eps = get_f64("layer_norm_eps").unwrap_or(preset.layer_norm_eps);
 

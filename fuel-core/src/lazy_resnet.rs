@@ -68,19 +68,39 @@ pub struct ResNetConfig {
 
 impl ResNetConfig {
     pub fn resnet18(nclasses: Option<usize>) -> Self {
-        Self { kind: ResNetKind::Basic, blocks_per_stage: [2, 2, 2, 2], nclasses }
+        Self {
+            kind: ResNetKind::Basic,
+            blocks_per_stage: [2, 2, 2, 2],
+            nclasses,
+        }
     }
     pub fn resnet34(nclasses: Option<usize>) -> Self {
-        Self { kind: ResNetKind::Basic, blocks_per_stage: [3, 4, 6, 3], nclasses }
+        Self {
+            kind: ResNetKind::Basic,
+            blocks_per_stage: [3, 4, 6, 3],
+            nclasses,
+        }
     }
     pub fn resnet50(nclasses: Option<usize>) -> Self {
-        Self { kind: ResNetKind::Bottleneck, blocks_per_stage: [3, 4, 6, 3], nclasses }
+        Self {
+            kind: ResNetKind::Bottleneck,
+            blocks_per_stage: [3, 4, 6, 3],
+            nclasses,
+        }
     }
     pub fn resnet101(nclasses: Option<usize>) -> Self {
-        Self { kind: ResNetKind::Bottleneck, blocks_per_stage: [3, 4, 23, 3], nclasses }
+        Self {
+            kind: ResNetKind::Bottleneck,
+            blocks_per_stage: [3, 4, 23, 3],
+            nclasses,
+        }
     }
     pub fn resnet152(nclasses: Option<usize>) -> Self {
-        Self { kind: ResNetKind::Bottleneck, blocks_per_stage: [3, 8, 36, 3], nclasses }
+        Self {
+            kind: ResNetKind::Bottleneck,
+            blocks_per_stage: [3, 8, 36, 3],
+            nclasses,
+        }
     }
     /// Feature width after the final stage: 512 (basic) or
     /// 2048 (bottleneck).
@@ -166,11 +186,11 @@ impl ResNetModel {
         match &self.weights.fc {
             None => Ok(pooled),
             Some((w, b)) => {
-                let n = cfg.nclasses.expect("config nclasses must be Some when fc is present");
+                let n = cfg
+                    .nclasses
+                    .expect("config nclasses must be Some when fc is present");
                 let logits = w.apply_linear(&pooled, cfg.features(), n)?;
-                let bias_t = pooled.const_f32_like(
-                    Arc::clone(b), Shape::from_dims(&[n]),
-                );
+                let bias_t = pooled.const_f32_like(Arc::clone(b), Shape::from_dims(&[n]));
                 logits.broadcast_add(&bias_t)
             }
         }
@@ -191,9 +211,10 @@ impl ResNetModel {
         assert_eq!(dims.len(), 4, "image must be rank 4 [N, 3, H, W]");
         assert_eq!(dims[1], 3, "image must have 3 input channels");
 
-        let stem_w = self.weights.stem_conv.const_like(
-            image, Shape::from_dims(&[64, 3, 7, 7]),
-        )?;
+        let stem_w = self
+            .weights
+            .stem_conv
+            .const_like(image, Shape::from_dims(&[64, 3, 7, 7]))?;
         let mut x = image.conv2d(&stem_w, None, (2, 2), (3, 3), 1)?;
         x = apply_bn(&x, &self.weights.stem_bn, 64)?.relu();
         x = x.max_pool2d((3, 3), (2, 2), (1, 1))?;
@@ -206,31 +227,23 @@ impl ResNetModel {
         Ok(x)
     }
 
-    fn apply_block(
-        &self,
-        x: &LazyTensor,
-        block: &ResNetBlockWeights,
-    ) -> Result<LazyTensor> {
+    fn apply_block(&self, x: &LazyTensor, block: &ResNetBlockWeights) -> Result<LazyTensor> {
         match self.config.kind {
             ResNetKind::Basic => self.apply_basic_block(x, block),
             ResNetKind::Bottleneck => self.apply_bottleneck_block(x, block),
         }
     }
 
-    fn apply_basic_block(
-        &self,
-        x: &LazyTensor,
-        block: &ResNetBlockWeights,
-    ) -> Result<LazyTensor> {
+    fn apply_basic_block(&self, x: &LazyTensor, block: &ResNetBlockWeights) -> Result<LazyTensor> {
         let c_in = block.c_in;
         let c_out = block.c_out;
         let s = block.stride;
-        let conv1_w = block.conv1.const_like(
-            x, Shape::from_dims(&[c_out, c_in, 3, 3]),
-        )?;
-        let conv2_w = block.conv2.const_like(
-            x, Shape::from_dims(&[c_out, c_out, 3, 3]),
-        )?;
+        let conv1_w = block
+            .conv1
+            .const_like(x, Shape::from_dims(&[c_out, c_in, 3, 3]))?;
+        let conv2_w = block
+            .conv2
+            .const_like(x, Shape::from_dims(&[c_out, c_out, 3, 3]))?;
         let y = x.conv2d(&conv1_w, None, (s, s), (1, 1), 1)?;
         let y = apply_bn(&y, &block.bn1, c_out)?.relu();
         let y = y.conv2d(&conv2_w, None, (1, 1), (1, 1), 1)?;
@@ -248,17 +261,18 @@ impl ResNetModel {
         let c_out = block.c_out;
         let c_expanded = 4 * c_out;
         let s = block.stride;
-        let conv1_w = block.conv1.const_like(
-            x, Shape::from_dims(&[c_out, c_in, 1, 1]),
-        )?;
-        let conv2_w = block.conv2.const_like(
-            x, Shape::from_dims(&[c_out, c_out, 3, 3]),
-        )?;
-        let conv3 = block.conv3.as_ref().expect("bottleneck block must carry conv3");
+        let conv1_w = block
+            .conv1
+            .const_like(x, Shape::from_dims(&[c_out, c_in, 1, 1]))?;
+        let conv2_w = block
+            .conv2
+            .const_like(x, Shape::from_dims(&[c_out, c_out, 3, 3]))?;
+        let conv3 = block
+            .conv3
+            .as_ref()
+            .expect("bottleneck block must carry conv3");
         let bn3 = block.bn3.as_ref().expect("bottleneck block must carry bn3");
-        let conv3_w = conv3.const_like(
-            x, Shape::from_dims(&[c_expanded, c_out, 1, 1]),
-        )?;
+        let conv3_w = conv3.const_like(x, Shape::from_dims(&[c_expanded, c_out, 1, 1]))?;
 
         let y = x.conv2d(&conv1_w, None, (1, 1), (0, 0), 1)?;
         let y = apply_bn(&y, &block.bn1, c_out)?.relu();
@@ -284,9 +298,9 @@ impl ResNetModel {
             Some(ds) => {
                 let c_in = block.c_in;
                 let s = block.stride;
-                let w = ds.conv.const_like(
-                    x, Shape::from_dims(&[block_out, c_in, 1, 1]),
-                )?;
+                let w = ds
+                    .conv
+                    .const_like(x, Shape::from_dims(&[block_out, c_in, 1, 1]))?;
                 let y = x.conv2d(&w, None, (s, s), (0, 0), 1)?;
                 apply_bn(&y, &ds.bn, block_out)
             }
@@ -307,7 +321,9 @@ trait LazyTensorResultExt {
     fn to_result(self) -> Result<LazyTensor>;
 }
 impl LazyTensorResultExt for LazyTensor {
-    fn to_result(self) -> Result<LazyTensor> { Ok(self) }
+    fn to_result(self) -> Result<LazyTensor> {
+        Ok(self)
+    }
 }
 
 // ---- Safetensors loader ----------------------------------------------------
@@ -335,12 +351,21 @@ impl ResNetWeights {
 
         // Four residual stages.
         let kind = cfg.kind;
-        let stage1 = resnet_load_stage(st, 1, kind, 64,  64, 1, cfg.blocks_per_stage[0], EPS)?;
-        let in2 = match kind { ResNetKind::Basic => 64,  ResNetKind::Bottleneck => 256 };
+        let stage1 = resnet_load_stage(st, 1, kind, 64, 64, 1, cfg.blocks_per_stage[0], EPS)?;
+        let in2 = match kind {
+            ResNetKind::Basic => 64,
+            ResNetKind::Bottleneck => 256,
+        };
         let stage2 = resnet_load_stage(st, 2, kind, in2, 128, 2, cfg.blocks_per_stage[1], EPS)?;
-        let in3 = match kind { ResNetKind::Basic => 128, ResNetKind::Bottleneck => 512 };
+        let in3 = match kind {
+            ResNetKind::Basic => 128,
+            ResNetKind::Bottleneck => 512,
+        };
         let stage3 = resnet_load_stage(st, 3, kind, in3, 256, 2, cfg.blocks_per_stage[2], EPS)?;
-        let in4 = match kind { ResNetKind::Basic => 256, ResNetKind::Bottleneck => 1024 };
+        let in4 = match kind {
+            ResNetKind::Basic => 256,
+            ResNetKind::Bottleneck => 1024,
+        };
         let stage4 = resnet_load_stage(st, 4, kind, in4, 512, 2, cfg.blocks_per_stage[3], EPS)?;
 
         // Classifier head.
@@ -379,7 +404,9 @@ fn resnet_load_stage(
     for bi in 0..n_blocks {
         let l_in = if bi == 0 { c_in } else { block_out };
         let s = if bi == 0 { stride } else { 1 };
-        blocks.push(resnet_load_block(st, stage_idx, bi, kind, l_in, c_out, s, eps)?);
+        blocks.push(resnet_load_block(
+            st, stage_idx, bi, kind, l_in, c_out, s, eps,
+        )?);
     }
     Ok(ResNetStageWeights { blocks })
 }
@@ -395,14 +422,23 @@ fn resnet_load_block(
     eps: f64,
 ) -> crate::Result<ResNetBlockWeights> {
     let p = format!("layer{stage_idx}.{block_idx}");
-    let conv1 = WeightStorage::F32(Arc::from(resnet_load_f32(st, &format!("{p}.conv1.weight"))?));
+    let conv1 = WeightStorage::F32(Arc::from(resnet_load_f32(
+        st,
+        &format!("{p}.conv1.weight"),
+    )?));
     let bn1 = resnet_load_bn(st, &format!("{p}.bn1"), c_out, eps)?;
-    let conv2 = WeightStorage::F32(Arc::from(resnet_load_f32(st, &format!("{p}.conv2.weight"))?));
+    let conv2 = WeightStorage::F32(Arc::from(resnet_load_f32(
+        st,
+        &format!("{p}.conv2.weight"),
+    )?));
     let bn2 = resnet_load_bn(st, &format!("{p}.bn2"), c_out, eps)?;
     let (conv3, bn3) = match kind {
         ResNetKind::Basic => (None, None),
         ResNetKind::Bottleneck => (
-            Some(WeightStorage::F32(Arc::from(resnet_load_f32(st, &format!("{p}.conv3.weight"))?))),
+            Some(WeightStorage::F32(Arc::from(resnet_load_f32(
+                st,
+                &format!("{p}.conv3.weight"),
+            )?))),
             Some(resnet_load_bn(st, &format!("{p}.bn3"), 4 * c_out, eps)?),
         ),
     };
@@ -413,7 +449,8 @@ fn resnet_load_block(
     let needs_ds = stride != 1 || c_in != block_out;
     let downsample = if needs_ds {
         let conv = WeightStorage::F32(Arc::from(resnet_load_f32(
-            st, &format!("{p}.downsample.0.weight"),
+            st,
+            &format!("{p}.downsample.0.weight"),
         )?));
         let bn = resnet_load_bn(st, &format!("{p}.downsample.1"), block_out, eps)?;
         Some(DownsampleWeights { conv, bn })
@@ -421,7 +458,16 @@ fn resnet_load_block(
         None
     };
     Ok(ResNetBlockWeights {
-        stride, c_in, c_out, conv1, bn1, conv2, bn2, conv3, bn3, downsample,
+        stride,
+        c_in,
+        c_out,
+        conv1,
+        bn1,
+        conv2,
+        bn2,
+        conv3,
+        bn3,
+        downsample,
     })
 }
 
@@ -435,15 +481,28 @@ fn resnet_load_bn(
     let bias = resnet_load_f32(st, &format!("{prefix}.bias"))?;
     let running_mean = resnet_load_f32(st, &format!("{prefix}.running_mean"))?;
     let running_var = resnet_load_f32(st, &format!("{prefix}.running_var"))?;
-    if gain.len() != channels || bias.len() != channels
-        || running_mean.len() != channels || running_var.len() != channels {
+    if gain.len() != channels
+        || bias.len() != channels
+        || running_mean.len() != channels
+        || running_var.len() != channels
+    {
         return Err(crate::Error::Msg(format!(
             "ResNet load_bn {prefix}: expected {channels} elements per stat, \
              got gain={} bias={} mean={} var={}",
-            gain.len(), bias.len(), running_mean.len(), running_var.len(),
-        )).bt());
+            gain.len(),
+            bias.len(),
+            running_mean.len(),
+            running_var.len(),
+        ))
+        .bt());
     }
-    Ok(BatchNormParams::from_raw(&gain, &bias, &running_mean, &running_var, eps))
+    Ok(BatchNormParams::from_raw(
+        &gain,
+        &bias,
+        &running_mean,
+        &running_var,
+        eps,
+    ))
 }
 
 fn resnet_load_f32(
@@ -481,7 +540,8 @@ fn resnet_load_f32(
         }
         other => Err(crate::Error::Msg(format!(
             "resnet load_f32: unsupported dtype {other:?} for {name:?}",
-        )).bt()),
+        ))
+        .bt()),
     }
 }
 
@@ -495,8 +555,10 @@ fn resnet_load_transposed(
     if flat.len() != out_features * in_features {
         return Err(crate::Error::Msg(format!(
             "resnet load_transposed {name:?}: has {} elements, expected {}",
-            flat.len(), out_features * in_features,
-        )).bt());
+            flat.len(),
+            out_features * in_features,
+        ))
+        .bt());
     }
     let mut out = vec![0.0_f32; out_features * in_features];
     for i in 0..out_features {
@@ -523,10 +585,7 @@ impl ResNetModel {
     /// classic torchvision `lmz/fuel-resnet` repo stores per-variant
     /// files — pass `&filename` to `from_hub_with_filename` if you need
     /// to point at a specific one).
-    pub fn from_hub_with_config(
-        repo_id: &str,
-        config: ResNetConfig,
-    ) -> crate::Result<Self> {
+    pub fn from_hub_with_config(repo_id: &str, config: ResNetConfig) -> crate::Result<Self> {
         Self::from_hub_with_filename(repo_id, "model.safetensors", config)
     }
 
@@ -613,7 +672,16 @@ mod tests {
             None
         };
         ResNetBlockWeights {
-            stride, c_in, c_out, conv1, bn1, conv2, bn2, conv3, bn3, downsample,
+            stride,
+            c_in,
+            c_out,
+            conv1,
+            bn1,
+            conv2,
+            bn2,
+            conv3,
+            bn3,
+            downsample,
         }
     }
 
@@ -644,11 +712,20 @@ mod tests {
         let stem_bn = tiny_bn(64, &mut nb);
         let kind = cfg.kind;
         let stage1 = build_stage(kind, 64, 64, 1, cfg.blocks_per_stage[0], &mut nb);
-        let in2 = match kind { ResNetKind::Basic => 64, ResNetKind::Bottleneck => 256 };
+        let in2 = match kind {
+            ResNetKind::Basic => 64,
+            ResNetKind::Bottleneck => 256,
+        };
         let stage2 = build_stage(kind, in2, 128, 2, cfg.blocks_per_stage[1], &mut nb);
-        let in3 = match kind { ResNetKind::Basic => 128, ResNetKind::Bottleneck => 512 };
+        let in3 = match kind {
+            ResNetKind::Basic => 128,
+            ResNetKind::Bottleneck => 512,
+        };
         let stage3 = build_stage(kind, in3, 256, 2, cfg.blocks_per_stage[2], &mut nb);
-        let in4 = match kind { ResNetKind::Basic => 256, ResNetKind::Bottleneck => 1024 };
+        let in4 = match kind {
+            ResNetKind::Basic => 256,
+            ResNetKind::Bottleneck => 1024,
+        };
         let stage4 = build_stage(kind, in4, 512, 2, cfg.blocks_per_stage[3], &mut nb);
         let fc = cfg.nclasses.map(|n| {
             (
@@ -666,9 +743,7 @@ mod tests {
 
     fn tiny_image(h: usize, w: usize) -> LazyTensor {
         let mut nb = rng_seed(42);
-        let data: Arc<[f32]> = Arc::from(
-            (0..3 * h * w).map(|_| nb()).collect::<Vec<_>>()
-        );
+        let data: Arc<[f32]> = Arc::from((0..3 * h * w).map(|_| nb()).collect::<Vec<_>>());
         LazyTensor::from_f32(data, Shape::from_dims(&[1, 3, h, w]), &Device::cpu())
     }
 
@@ -676,7 +751,10 @@ mod tests {
     fn resnet18_with_classifier_shape() {
         let cfg = ResNetConfig::resnet18(Some(10));
         let weights = build_tiny_weights(&cfg, 1234);
-        let model = ResNetModel { config: cfg, weights };
+        let model = ResNetModel {
+            config: cfg,
+            weights,
+        };
         let img = tiny_image(64, 64);
         let logits = model.forward(&img).unwrap();
         assert_eq!(logits.shape().dims(), &[1, 10]);
@@ -689,7 +767,10 @@ mod tests {
     fn resnet18_no_classifier_returns_features() {
         let cfg = ResNetConfig::resnet18(None);
         let weights = build_tiny_weights(&cfg, 7777);
-        let model = ResNetModel { config: cfg, weights };
+        let model = ResNetModel {
+            config: cfg,
+            weights,
+        };
         let img = tiny_image(64, 64);
         let feats = model.forward(&img).unwrap();
         assert_eq!(feats.shape().dims(), &[1, 512]);
@@ -702,7 +783,10 @@ mod tests {
     fn resnet50_bottleneck_features_2048() {
         let cfg = ResNetConfig::resnet50(None);
         let weights = build_tiny_weights(&cfg, 5555);
-        let model = ResNetModel { config: cfg, weights };
+        let model = ResNetModel {
+            config: cfg,
+            weights,
+        };
         // Use a smaller-than-real input to keep test fast; ResNet
         // still works on small images because spatial downsampling
         // happens up to 32x.
@@ -724,7 +808,10 @@ mod tests {
         // H=64 → 16 → 16 → 8 → 4 → 2.
         let cfg = ResNetConfig::resnet18(None);
         let weights = build_tiny_weights(&cfg, 4321);
-        let model = ResNetModel { config: cfg, weights };
+        let model = ResNetModel {
+            config: cfg,
+            weights,
+        };
         let img = tiny_image(64, 64);
         // Forward computes the full chain, so the only direct
         // observation is the final pooled feature shape — but
@@ -738,7 +825,10 @@ mod tests {
     fn forward_features_shape_and_finite() {
         let cfg = ResNetConfig::resnet18(Some(10));
         let weights = build_tiny_weights(&cfg, 3333);
-        let model = ResNetModel { config: cfg, weights };
+        let model = ResNetModel {
+            config: cfg,
+            weights,
+        };
         let img = tiny_image(64, 64);
         let feats = model.forward_features(&img).unwrap();
         let shape = feats.shape();

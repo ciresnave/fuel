@@ -124,7 +124,11 @@ impl MixFormerModel {
         assert!(seq > 0, "MixFormerModel: tokens must be non-empty");
 
         let h = LazyTensor::embed_tokens(
-            weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
+            weights.token_embedding.clone(),
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
+            &Device::cpu(),
         )?;
 
         self.forward_embeds(&h, start_pos)
@@ -144,7 +148,8 @@ impl MixFormerModel {
         assert_eq!(dims[2], cfg.hidden_size);
         let head_dim = cfg.head_dim();
         assert_eq!(
-            cfg.num_attention_heads * head_dim, cfg.hidden_size,
+            cfg.num_attention_heads * head_dim,
+            cfg.hidden_size,
             "MixFormerConfig: hidden_size must be divisible by num_attention_heads",
         );
         let rotary_dim = cfg.effective_rotary_dim();
@@ -155,15 +160,17 @@ impl MixFormerModel {
 
         let mut h = embeds.clone();
 
-        let (rope_cos, rope_sin) = h.rope_tables_const(
-            cfg.rope_theta, start_pos, seq, rotary_dim,
-        );
+        let (rope_cos, rope_sin) = h.rope_tables_const(cfg.rope_theta, start_pos, seq, rotary_dim);
 
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, head_dim, rotary_dim)?;
         }
 
-        let h_norm = h.layer_norm_affine(std::sync::Arc::clone(&weights.final_ln_gain), std::sync::Arc::clone(&weights.final_ln_bias), cfg.layer_norm_eps)?;
+        let h_norm = h.layer_norm_affine(
+            std::sync::Arc::clone(&weights.final_ln_gain),
+            std::sync::Arc::clone(&weights.final_ln_bias),
+            cfg.layer_norm_eps,
+        )?;
         let lm_w = match &weights.lm_head {
             Some(w) => w.clone(),
             None => WeightStorage::F32(weights.token_embedding.clone()),
@@ -189,10 +196,17 @@ impl MixFormerModel {
         let weights = &self.weights;
         let seq = tokens.len();
         let batch = 1;
-        assert!(seq > 0, "MixFormerModel::forward_hidden: tokens must be non-empty");
+        assert!(
+            seq > 0,
+            "MixFormerModel::forward_hidden: tokens must be non-empty"
+        );
 
         let h = LazyTensor::embed_tokens(
-            weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
+            weights.token_embedding.clone(),
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
+            &Device::cpu(),
         )?;
         self.forward_hidden_embeds(&h, start_pos)
     }
@@ -200,7 +214,11 @@ impl MixFormerModel {
     /// Like [`Self::forward_embeds`] but skips the `lm_head`
     /// projection + bias and returns the post-LayerNorm hidden
     /// states.
-    pub fn forward_hidden_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
+    pub fn forward_hidden_embeds(
+        &self,
+        embeds: &LazyTensor,
+        start_pos: usize,
+    ) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
         let dims = embeds.shape();
@@ -212,13 +230,15 @@ impl MixFormerModel {
         let rotary_dim = cfg.effective_rotary_dim();
 
         let mut h = embeds.clone();
-        let (rope_cos, rope_sin) = h.rope_tables_const(
-            cfg.rope_theta, start_pos, seq, rotary_dim,
-        );
+        let (rope_cos, rope_sin) = h.rope_tables_const(cfg.rope_theta, start_pos, seq, rotary_dim);
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, head_dim, rotary_dim)?;
         }
-        Ok(h.layer_norm_affine(std::sync::Arc::clone(&weights.final_ln_gain), std::sync::Arc::clone(&weights.final_ln_bias), cfg.layer_norm_eps)?)
+        Ok(h.layer_norm_affine(
+            std::sync::Arc::clone(&weights.final_ln_gain),
+            std::sync::Arc::clone(&weights.final_ln_bias),
+            cfg.layer_norm_eps,
+        )?)
     }
 
     fn apply_layer(
@@ -239,14 +259,16 @@ impl MixFormerModel {
         let n_heads = cfg.num_attention_heads;
 
         // Single LN feeds BOTH attention and MLP paths (parallel block).
-        let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&layer.ln_gain), std::sync::Arc::clone(&layer.ln_bias), cfg.layer_norm_eps)?;
+        let x_norm = x.layer_norm_affine(
+            std::sync::Arc::clone(&layer.ln_gain),
+            std::sync::Arc::clone(&layer.ln_bias),
+            cfg.layer_norm_eps,
+        )?;
 
         // ---- Attention path: fused Wqkv -------------------------------------
         let qkv_lin = layer.wqkv.apply_linear(&x_norm, h, 3 * h)?;
-        let qkv_b_t = x_norm.const_f32_like(
-            Arc::clone(&layer.wqkv_bias),
-            Shape::from_dims(&[3 * h]),
-        );
+        let qkv_b_t =
+            x_norm.const_f32_like(Arc::clone(&layer.wqkv_bias), Shape::from_dims(&[3 * h]));
         let qkv = qkv_lin.broadcast_add(&qkv_b_t)?;
         let q = qkv.slice(2_usize, 0, h)?;
         let k = qkv.slice(2_usize, h, h)?;
@@ -274,29 +296,20 @@ impl MixFormerModel {
 
         let merged = attn_v.merge_heads()?;
         let attn_out_lin = layer.out_proj.apply_linear(&merged, h, h)?;
-        let out_bias_t = x.const_f32_like(
-            Arc::clone(&layer.out_proj_bias),
-            Shape::from_dims(&[h]),
-        );
+        let out_bias_t = x.const_f32_like(Arc::clone(&layer.out_proj_bias), Shape::from_dims(&[h]));
         let attn_out = attn_out_lin.broadcast_add(&out_bias_t)?;
 
         // ---- MLP path (uses the same x_norm) -------------------------------
         let inner = cfg.inner_dim();
         let fc1_lin = layer.fc1.apply_linear(&x_norm, h, inner)?;
-        let fc1_b_t = x.const_f32_like(
-            Arc::clone(&layer.fc1_bias),
-            Shape::from_dims(&[inner]),
-        );
+        let fc1_b_t = x.const_f32_like(Arc::clone(&layer.fc1_bias), Shape::from_dims(&[inner]));
         let fc1_out = fc1_lin.broadcast_add(&fc1_b_t)?;
         let activated = match cfg.hidden_activation {
             MixFormerActivation::Gelu => fc1_out.gelu_erf(),
             MixFormerActivation::GeluPytorchTanh => fc1_out.gelu(),
         };
         let fc2_lin = layer.fc2.apply_linear(&activated, inner, h)?;
-        let fc2_b_t = x.const_f32_like(
-            Arc::clone(&layer.fc2_bias),
-            Shape::from_dims(&[h]),
-        );
+        let fc2_b_t = x.const_f32_like(Arc::clone(&layer.fc2_bias), Shape::from_dims(&[h]));
         let mlp_out = fc2_lin.broadcast_add(&fc2_b_t)?;
 
         // Parallel combine: residual + attn + mlp.
@@ -318,47 +331,38 @@ impl MixFormerWeights {
         let h = cfg.hidden_size;
         let inter = cfg.inner_dim();
 
-        let token_embedding = Arc::from(load_tensor_as_f32(
-            st, "transformer.embd.wte.weight",
-        )?);
+        let token_embedding = Arc::from(load_tensor_as_f32(st, "transformer.embd.wte.weight")?);
 
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         for i in 0..cfg.num_hidden_layers {
             let p = format!("transformer.h.{i}");
-            let ln_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.ln.weight"),
-            )?);
-            let ln_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.ln.bias"),
-            )?);
+            let ln_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.ln.weight"))?);
+            let ln_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.ln.bias"))?);
             let wqkv = ltm(st, &format!("{p}.mixer.Wqkv.weight"), 3 * h, h)?;
-            let wqkv_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.mixer.Wqkv.bias"),
-            )?);
+            let wqkv_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.mixer.Wqkv.bias"))?);
             let out_proj = ltm(st, &format!("{p}.mixer.out_proj.weight"), h, h)?;
-            let out_proj_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.mixer.out_proj.bias"),
-            )?);
+            let out_proj_bias =
+                Arc::from(load_tensor_as_f32(st, &format!("{p}.mixer.out_proj.bias"))?);
             let fc1 = ltm(st, &format!("{p}.mlp.fc1.weight"), inter, h)?;
-            let fc1_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.mlp.fc1.bias"),
-            )?);
+            let fc1_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.mlp.fc1.bias"))?);
             let fc2 = ltm(st, &format!("{p}.mlp.fc2.weight"), h, inter)?;
-            let fc2_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.mlp.fc2.bias"),
-            )?);
+            let fc2_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.mlp.fc2.bias"))?);
             layers.push(MixFormerLayerWeights {
-                ln_gain, ln_bias, wqkv, wqkv_bias, out_proj, out_proj_bias,
-                fc1, fc1_bias, fc2, fc2_bias,
+                ln_gain,
+                ln_bias,
+                wqkv,
+                wqkv_bias,
+                out_proj,
+                out_proj_bias,
+                fc1,
+                fc1_bias,
+                fc2,
+                fc2_bias,
             });
         }
 
-        let final_ln_gain = Arc::from(load_tensor_as_f32(
-            st, "lm_head.ln.weight",
-        )?);
-        let final_ln_bias = Arc::from(load_tensor_as_f32(
-            st, "lm_head.ln.bias",
-        )?);
+        let final_ln_gain = Arc::from(load_tensor_as_f32(st, "lm_head.ln.weight")?);
+        let final_ln_bias = Arc::from(load_tensor_as_f32(st, "lm_head.ln.bias")?);
 
         let lm_head = if cfg.tie_word_embeddings {
             None
@@ -366,12 +370,17 @@ impl MixFormerWeights {
             Some(ltm(st, "lm_head.linear.weight", cfg.vocab_size, h)?)
         };
         let lm_head_bias = load_tensor_as_f32(st, "lm_head.linear.bias")
-            .ok().map(Arc::from)
+            .ok()
+            .map(Arc::from)
             .unwrap_or_else(|| Arc::from(vec![0.0_f32; cfg.vocab_size]));
 
         Ok(Self {
-            token_embedding, layers, final_ln_gain, final_ln_bias,
-            lm_head, lm_head_bias,
+            token_embedding,
+            layers,
+            final_ln_gain,
+            final_ln_bias,
+            lm_head,
+            lm_head_bias,
         })
     }
 }
@@ -417,19 +426,26 @@ mod tests {
         };
         let lm_head_bias = vec_of(cfg.vocab_size, &mut *nb);
         MixFormerWeights {
-            token_embedding, layers,
-            final_ln_gain, final_ln_bias,
-            lm_head, lm_head_bias,
+            token_embedding,
+            layers,
+            final_ln_gain,
+            final_ln_bias,
+            lm_head,
+            lm_head_bias,
         }
     }
 
     fn tiny_config() -> MixFormerConfig {
         MixFormerConfig {
-            vocab_size: 32, hidden_size: 16,
+            vocab_size: 32,
+            hidden_size: 16,
             n_inner: Some(32),
-            num_hidden_layers: 2, num_attention_heads: 4,
-            rotary_dim: 2, layer_norm_eps: 1e-5,
-            max_position_embeddings: 64, rope_theta: 10_000.0,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            rotary_dim: 2,
+            layer_norm_eps: 1e-5,
+            max_position_embeddings: 64,
+            rope_theta: 10_000.0,
             hidden_activation: MixFormerActivation::GeluPytorchTanh,
             tie_word_embeddings: false,
         }
@@ -438,7 +454,10 @@ mod tests {
     #[test]
     fn forward_shape_and_finite() {
         let cfg = tiny_config();
-        let model = MixFormerModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = MixFormerModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4, 5];
         let logits = model.forward(&tokens, 0).unwrap();
         assert_eq!(logits.shape().dims(), &[1, tokens.len(), cfg.vocab_size]);
@@ -449,16 +468,25 @@ mod tests {
 
     #[test]
     fn n_inner_defaults_to_4x_hidden() {
-        let cfg = MixFormerConfig { n_inner: None, ..tiny_config() };
+        let cfg = MixFormerConfig {
+            n_inner: None,
+            ..tiny_config()
+        };
         assert_eq!(cfg.inner_dim(), 4 * cfg.hidden_size);
     }
 
     #[test]
     fn tied_lm_head() {
-        let cfg = MixFormerConfig { tie_word_embeddings: true, ..tiny_config() };
+        let cfg = MixFormerConfig {
+            tie_word_embeddings: true,
+            ..tiny_config()
+        };
         let weights = tiny_weights(&cfg);
         assert!(weights.lm_head.is_none());
-        let model = MixFormerModel { config: cfg.clone(), weights };
+        let model = MixFormerModel {
+            config: cfg.clone(),
+            weights,
+        };
         let logits = model.forward(&[2, 3, 5], 0).unwrap().realize_f32();
         assert_eq!(logits.len(), 3 * cfg.vocab_size);
     }
@@ -468,7 +496,10 @@ mod tests {
     /// "unfused" model and compare — they should match exactly.
     #[test]
     fn fused_wqkv_matches_independent_qkv_slicing() {
-        let cfg = MixFormerConfig { num_hidden_layers: 1, ..tiny_config() };
+        let cfg = MixFormerConfig {
+            num_hidden_layers: 1,
+            ..tiny_config()
+        };
         let mut weights = tiny_weights(&cfg);
         let h = cfg.hidden_size;
         // Sanity: the layer's Wqkv has shape (h, 3*h) and bias (3*h).
@@ -486,7 +517,10 @@ mod tests {
         // attention output (proves V slice is actually used). Same
         // for K. Run three forwards: baseline, Wqkv with V columns
         // zeroed, Wqkv with K columns zeroed. All three must differ.
-        let baseline = MixFormerModel { config: cfg.clone(), weights: weights.clone() };
+        let baseline = MixFormerModel {
+            config: cfg.clone(),
+            weights: weights.clone(),
+        };
         let a = baseline.forward(&[1, 2, 3], 0).unwrap().realize_f32();
 
         // Zero V columns (last h cols of Wqkv).
@@ -505,14 +539,19 @@ mod tests {
         }
         weights.layers[0].wqkv = WeightStorage::F32(Arc::from(wqkv_no_v));
         weights.layers[0].wqkv_bias = Arc::from(wqkv_bias_no_v);
-        let m_no_v = MixFormerModel { config: cfg.clone(), weights };
+        let m_no_v = MixFormerModel {
+            config: cfg.clone(),
+            weights,
+        };
         let b = m_no_v.forward(&[1, 2, 3], 0).unwrap().realize_f32();
 
         let mut max_diff = 0.0_f32;
         for (av, bv) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((av - bv).abs());
         }
-        assert!(max_diff > 1e-6,
-            "zeroing V columns of fused Wqkv must change attention output, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-6,
+            "zeroing V columns of fused Wqkv must change attention output, max_diff = {max_diff}"
+        );
     }
 }

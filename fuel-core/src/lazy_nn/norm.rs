@@ -44,45 +44,58 @@ impl LazyLayerNorm {
         if gain.len() != last_dim {
             return Err(crate::Error::Msg(format!(
                 "LazyLayerNorm::new: gain has length {} but last_dim = {}",
-                gain.len(), last_dim,
-            )).bt());
+                gain.len(),
+                last_dim,
+            ))
+            .bt());
         }
         if let Some(b) = bias.as_ref() {
             if b.len() != last_dim {
                 return Err(crate::Error::Msg(format!(
                     "LazyLayerNorm::new: bias has length {} but last_dim = {}",
-                    b.len(), last_dim,
-                )).bt());
+                    b.len(),
+                    last_dim,
+                ))
+                .bt());
             }
         }
-        Ok(Self { gain, bias, eps, last_dim })
+        Ok(Self {
+            gain,
+            bias,
+            eps,
+            last_dim,
+        })
     }
 
     /// Reference to the gain (scale) buffer.
-    pub fn gain(&self) -> &Arc<[f32]> { &self.gain }
+    pub fn gain(&self) -> &Arc<[f32]> {
+        &self.gain
+    }
 
     /// Reference to the bias buffer, if present.
-    pub fn bias(&self) -> Option<&Arc<[f32]>> { self.bias.as_ref() }
+    pub fn bias(&self) -> Option<&Arc<[f32]>> {
+        self.bias.as_ref()
+    }
 
     /// Epsilon for numerical stability.
-    pub fn eps(&self) -> f64 { self.eps }
+    pub fn eps(&self) -> f64 {
+        self.eps
+    }
 
     /// Normalized last-dim size.
-    pub fn last_dim(&self) -> usize { self.last_dim }
+    pub fn last_dim(&self) -> usize {
+        self.last_dim
+    }
 }
 
 impl LazyModule for LazyLayerNorm {
     fn forward(&self, xs: &LazyTensor) -> Result<LazyTensor> {
         match &self.bias {
-            Some(b) => xs.layer_norm_affine(
-                Arc::clone(&self.gain), Arc::clone(b), self.eps,
-            ),
+            Some(b) => xs.layer_norm_affine(Arc::clone(&self.gain), Arc::clone(b), self.eps),
             None => {
                 let normed = xs.layer_norm_last_dim(self.eps)?;
-                let g = normed.const_f32_like(
-                    Arc::clone(&self.gain),
-                    Shape::from_dims(&[self.last_dim]),
-                );
+                let g = normed
+                    .const_f32_like(Arc::clone(&self.gain), Shape::from_dims(&[self.last_dim]));
                 normed.broadcast_mul(&g)
             }
         }
@@ -106,20 +119,32 @@ impl LazyRmsNorm {
         if gain.len() != last_dim {
             return Err(crate::Error::Msg(format!(
                 "LazyRmsNorm::new: gain has length {} but last_dim = {}",
-                gain.len(), last_dim,
-            )).bt());
+                gain.len(),
+                last_dim,
+            ))
+            .bt());
         }
-        Ok(Self { gain, eps, last_dim })
+        Ok(Self {
+            gain,
+            eps,
+            last_dim,
+        })
     }
 
     /// Reference to the gain buffer.
-    pub fn gain(&self) -> &Arc<[f32]> { &self.gain }
+    pub fn gain(&self) -> &Arc<[f32]> {
+        &self.gain
+    }
 
     /// Epsilon for numerical stability.
-    pub fn eps(&self) -> f64 { self.eps }
+    pub fn eps(&self) -> f64 {
+        self.eps
+    }
 
     /// Normalized last-dim size.
-    pub fn last_dim(&self) -> usize { self.last_dim }
+    pub fn last_dim(&self) -> usize {
+        self.last_dim
+    }
 }
 
 impl LazyModule for LazyRmsNorm {
@@ -158,45 +183,66 @@ impl LazyGroupNorm {
         eps: f64,
     ) -> Result<Self> {
         if num_groups == 0 {
-            return Err(crate::Error::Msg(
-                "LazyGroupNorm::new: num_groups must be ≥ 1".into(),
-            ).bt());
+            return Err(
+                crate::Error::Msg("LazyGroupNorm::new: num_groups must be ≥ 1".into()).bt(),
+            );
         }
         if num_channels % num_groups != 0 {
             return Err(crate::Error::Msg(format!(
                 "LazyGroupNorm::new: num_groups ({num_groups}) must divide \
                  num_channels ({num_channels})",
-            )).bt());
+            ))
+            .bt());
         }
         if gain.len() != num_channels {
             return Err(crate::Error::Msg(format!(
                 "LazyGroupNorm::new: gain has length {} but num_channels = {}",
-                gain.len(), num_channels,
-            )).bt());
+                gain.len(),
+                num_channels,
+            ))
+            .bt());
         }
         if bias.len() != num_channels {
             return Err(crate::Error::Msg(format!(
                 "LazyGroupNorm::new: bias has length {} but num_channels = {}",
-                bias.len(), num_channels,
-            )).bt());
+                bias.len(),
+                num_channels,
+            ))
+            .bt());
         }
-        Ok(Self { gain, bias, num_groups, num_channels, eps })
+        Ok(Self {
+            gain,
+            bias,
+            num_groups,
+            num_channels,
+            eps,
+        })
     }
 
     /// Reference to the gain buffer.
-    pub fn gain(&self) -> &Arc<[f32]> { &self.gain }
+    pub fn gain(&self) -> &Arc<[f32]> {
+        &self.gain
+    }
 
     /// Reference to the bias buffer.
-    pub fn bias(&self) -> &Arc<[f32]> { &self.bias }
+    pub fn bias(&self) -> &Arc<[f32]> {
+        &self.bias
+    }
 
     /// Number of channel groups.
-    pub fn num_groups(&self) -> usize { self.num_groups }
+    pub fn num_groups(&self) -> usize {
+        self.num_groups
+    }
 
     /// Total channel count (`gain.len() == bias.len()`).
-    pub fn num_channels(&self) -> usize { self.num_channels }
+    pub fn num_channels(&self) -> usize {
+        self.num_channels
+    }
 
     /// Epsilon for numerical stability.
-    pub fn eps(&self) -> f64 { self.eps }
+    pub fn eps(&self) -> f64 {
+        self.eps
+    }
 }
 
 impl LazyModule for LazyGroupNorm {
@@ -205,7 +251,8 @@ impl LazyModule for LazyGroupNorm {
         if in_dims.len() < 3 {
             return Err(crate::Error::Msg(format!(
                 "LazyGroupNorm::forward: input rank must be ≥ 3, got {in_dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         let b_sz = in_dims[0];
         let c = in_dims[1];
@@ -213,15 +260,14 @@ impl LazyModule for LazyGroupNorm {
             return Err(crate::Error::Msg(format!(
                 "LazyGroupNorm::forward: input channel dim {c} != num_channels = {}",
                 self.num_channels,
-            )).bt());
+            ))
+            .bt());
         }
         let spatial: usize = in_dims[2..].iter().product();
         let channels_per_group = self.num_channels / self.num_groups;
         let hidden_per_group = channels_per_group * spatial;
 
-        let grouped = xs.reshape(
-            Shape::from_dims(&[b_sz, self.num_groups, hidden_per_group]),
-        )?;
+        let grouped = xs.reshape(Shape::from_dims(&[b_sz, self.num_groups, hidden_per_group]))?;
         let normed = grouped.layer_norm_last_dim(self.eps)?;
         let restored = normed.reshape(Shape::from_dims(&in_dims))?;
 
@@ -229,12 +275,14 @@ impl LazyModule for LazyGroupNorm {
         affine_shape[1] = self.num_channels;
         let g_t = restored
             .const_f32_like(
-                Arc::clone(&self.gain), Shape::from_dims(&[self.num_channels]),
+                Arc::clone(&self.gain),
+                Shape::from_dims(&[self.num_channels]),
             )
             .reshape(Shape::from_dims(&affine_shape))?;
         let b_t = restored
             .const_f32_like(
-                Arc::clone(&self.bias), Shape::from_dims(&[self.num_channels]),
+                Arc::clone(&self.bias),
+                Shape::from_dims(&[self.num_channels]),
             )
             .reshape(Shape::from_dims(&affine_shape))?;
         restored.broadcast_mul(&g_t)?.broadcast_add(&b_t)
@@ -279,37 +327,57 @@ impl LazyBatchNorm2d {
             if buf.len() != num_features {
                 return Err(crate::Error::Msg(format!(
                     "LazyBatchNorm2d::new: {name} has length {} but num_features = {}",
-                    buf.len(), num_features,
-                )).bt());
+                    buf.len(),
+                    num_features,
+                ))
+                .bt());
             }
         }
         if eps < 0.0 {
             return Err(crate::Error::Msg(format!(
                 "LazyBatchNorm2d::new: eps must be ≥ 0, got {eps}",
-            )).bt());
+            ))
+            .bt());
         }
         Ok(Self {
-            weight, bias, running_mean, running_var, eps, num_features,
+            weight,
+            bias,
+            running_mean,
+            running_var,
+            eps,
+            num_features,
         })
     }
 
     /// Reference to the per-channel weight (γ) buffer.
-    pub fn weight(&self) -> &Arc<[f32]> { &self.weight }
+    pub fn weight(&self) -> &Arc<[f32]> {
+        &self.weight
+    }
 
     /// Reference to the per-channel bias (β) buffer.
-    pub fn bias(&self) -> &Arc<[f32]> { &self.bias }
+    pub fn bias(&self) -> &Arc<[f32]> {
+        &self.bias
+    }
 
     /// Reference to the running mean buffer.
-    pub fn running_mean(&self) -> &Arc<[f32]> { &self.running_mean }
+    pub fn running_mean(&self) -> &Arc<[f32]> {
+        &self.running_mean
+    }
 
     /// Reference to the running variance buffer.
-    pub fn running_var(&self) -> &Arc<[f32]> { &self.running_var }
+    pub fn running_var(&self) -> &Arc<[f32]> {
+        &self.running_var
+    }
 
     /// Epsilon used inside `sqrt(var + eps)`.
-    pub fn eps(&self) -> f64 { self.eps }
+    pub fn eps(&self) -> f64 {
+        self.eps
+    }
 
     /// Channel count (`C`).
-    pub fn num_features(&self) -> usize { self.num_features }
+    pub fn num_features(&self) -> usize {
+        self.num_features
+    }
 
     fn fused_gain_bias(&self) -> (Arc<[f32]>, Arc<[f32]>) {
         let eps32 = self.eps as f32;
@@ -330,13 +398,15 @@ impl LazyModule for LazyBatchNorm2d {
         if dims.len() != 4 {
             return Err(crate::Error::Msg(format!(
                 "LazyBatchNorm2d::forward: input must be rank 4 (N, C, H, W), got {dims:?}",
-            )).bt());
+            ))
+            .bt());
         }
         if dims[1] != self.num_features {
             return Err(crate::Error::Msg(format!(
                 "LazyBatchNorm2d::forward: input channel dim {} != num_features = {}",
                 dims[1], self.num_features,
-            )).bt());
+            ))
+            .bt());
         }
         let (gain, bias) = self.fused_gain_bias();
         xs.channel_affine_4d(gain, bias)
@@ -360,15 +430,9 @@ mod tests {
         let bias: Vec<f32> = ramp_f32(last_dim, 0.02, -0.1);
         let x_data: Vec<f32> = ramp_f32(seq * last_dim, 0.03, -0.5);
 
-        let ln = LazyLayerNorm::new(
-            Arc::from(gain),
-            Some(Arc::from(bias)),
-            1e-5,
-            last_dim,
-        ).unwrap();
-        let x = LazyTensor::from_f32(
-            x_data, Shape::from_dims(&[seq, last_dim]), &Device::cpu(),
-        );
+        let ln =
+            LazyLayerNorm::new(Arc::from(gain), Some(Arc::from(bias)), 1e-5, last_dim).unwrap();
+        let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[seq, last_dim]), &Device::cpu());
         let y = ln.forward(&x).unwrap();
         assert_eq!(y.shape().dims(), &[seq, last_dim]);
         let got = y.realize_f32();
@@ -386,23 +450,16 @@ mod tests {
         let bias = vec![0.0_f32; last_dim];
         let x_data: Vec<f32> = ramp_f32(seq * last_dim, 0.4, -1.0);
 
-        let ln = LazyLayerNorm::new(
-            Arc::from(gain),
-            Some(Arc::from(bias)),
-            0.0,
-            last_dim,
-        ).unwrap();
-        let x = LazyTensor::from_f32(
-            x_data, Shape::from_dims(&[seq, last_dim]), &Device::cpu(),
-        );
+        let ln = LazyLayerNorm::new(Arc::from(gain), Some(Arc::from(bias)), 0.0, last_dim).unwrap();
+        let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[seq, last_dim]), &Device::cpu());
         let y = ln.forward(&x).unwrap();
         let got = y.realize_f32();
         assert_eq!(got.len(), seq * last_dim);
         for row in 0..seq {
             let slice = &got[row * last_dim..(row + 1) * last_dim];
             let mean: f32 = slice.iter().sum::<f32>() / (last_dim as f32);
-            let var: f32 = slice.iter().map(|v| (v - mean).powi(2)).sum::<f32>()
-                / (last_dim as f32);
+            let var: f32 =
+                slice.iter().map(|v| (v - mean).powi(2)).sum::<f32>() / (last_dim as f32);
             assert!(mean.abs() < 1e-5, "row {row} mean = {mean}");
             assert!((var - 1.0).abs() < 1e-4, "row {row} var = {var}");
         }
@@ -415,19 +472,16 @@ mod tests {
         let gain: Vec<f32> = ramp_f32(last_dim, 0.07, 0.3);
         let x_data: Vec<f32> = ramp_f32(seq * last_dim, 0.05, -0.4);
 
-        let rn = LazyRmsNorm::new(
-            Arc::from(gain.clone()), 1e-6, last_dim,
-        ).unwrap();
+        let rn = LazyRmsNorm::new(Arc::from(gain.clone()), 1e-6, last_dim).unwrap();
         let x = LazyTensor::from_f32(
             x_data.clone(),
-            Shape::from_dims(&[seq, last_dim]), &Device::cpu(),
+            Shape::from_dims(&[seq, last_dim]),
+            &Device::cpu(),
         );
         let y = rn.forward(&x).unwrap();
         let got = y.realize_f32();
 
-        let x2 = LazyTensor::from_f32(
-            x_data, Shape::from_dims(&[seq, last_dim]), &Device::cpu(),
-        );
+        let x2 = LazyTensor::from_f32(x_data, Shape::from_dims(&[seq, last_dim]), &Device::cpu());
         let expected = x2
             .rms_norm_affine(Arc::from(gain), 1e-6)
             .unwrap()
@@ -435,10 +489,7 @@ mod tests {
 
         assert_eq!(got.len(), expected.len());
         for (i, (a, e)) in got.iter().zip(expected.iter()).enumerate() {
-            assert!(
-                (a - e).abs() < 1e-6,
-                "rms_norm[{i}] expected {e}, got {a}",
-            );
+            assert!((a - e).abs() < 1e-6, "rms_norm[{i}] expected {e}, got {a}",);
         }
     }
 
@@ -459,10 +510,12 @@ mod tests {
             num_groups,
             num_channels,
             1e-5,
-        ).unwrap();
+        )
+        .unwrap();
         let x = LazyTensor::from_f32(
             x_data,
-            Shape::from_dims(&[b, num_channels, h, w]), &Device::cpu(),
+            Shape::from_dims(&[b, num_channels, h, w]),
+            &Device::cpu(),
         );
         let y = gn.forward(&x).unwrap();
         assert_eq!(y.shape().dims(), &[b, num_channels, h, w]);
@@ -494,10 +547,12 @@ mod tests {
             Arc::from(running_var),
             0.0,
             num_features,
-        ).unwrap();
+        )
+        .unwrap();
         let x = LazyTensor::from_f32(
             x_data,
-            Shape::from_dims(&[n, num_features, h, w]), &Device::cpu(),
+            Shape::from_dims(&[n, num_features, h, w]),
+            &Device::cpu(),
         );
         let y = bn.forward(&x).unwrap();
         assert_eq!(y.shape().dims(), &[n, num_features, h, w]);
@@ -534,10 +589,12 @@ mod tests {
             Arc::from(running_var),
             0.0,
             num_features,
-        ).unwrap();
+        )
+        .unwrap();
         let x = LazyTensor::from_f32(
             x_data,
-            Shape::from_dims(&[n, num_features, h, w]), &Device::cpu(),
+            Shape::from_dims(&[n, num_features, h, w]),
+            &Device::cpu(),
         );
         let got = bn.forward(&x).unwrap().realize_f32();
         let expected = vec![5.0_f32, 5.0_f32, 4.0_f32, 4.0_f32];

@@ -271,9 +271,14 @@ impl SamImageEncoderVit {
         let img = cfg.img_size;
         let ch = cfg.in_chans;
         assert_eq!(
-            image_chw.len(), ch * img * img,
+            image_chw.len(),
+            ch * img * img,
             "SAM image: expected {} elements ({}×{}×{}), got {}",
-            ch * img * img, ch, img, img, image_chw.len(),
+            ch * img * img,
+            ch,
+            img,
+            img,
+            image_chw.len(),
         );
 
         // ---- Patch embedding: Conv2d(k=patch_size, s=patch_size) -----------
@@ -292,10 +297,11 @@ impl SamImageEncoderVit {
             Shape::from_dims(&[cfg.embed_dim]),
         );
         let patches = x.conv2d(
-            &conv_w, Some(&conv_b),
-            (cfg.patch_size, cfg.patch_size),  // stride
-            (0, 0),                            // padding
-            1,                                 // groups
+            &conv_w,
+            Some(&conv_b),
+            (cfg.patch_size, cfg.patch_size), // stride
+            (0, 0),                           // padding
+            1,                                // groups
         )?;
         // (1, embed_dim, pps, pps) → (1, pps, pps, embed_dim).
         let mut x = patches.permute([0, 2, 3, 1_usize])?;
@@ -315,7 +321,7 @@ impl SamImageEncoderVit {
         }
 
         // ---- Neck: permute → conv1 → LN2d → conv2 → LN2d -------------------
-        let x = x.permute([0, 3, 1, 2_usize])?;  // (1, embed_dim, pps, pps)
+        let x = x.permute([0, 3, 1, 2_usize])?; // (1, embed_dim, pps, pps)
         let neck1_w = x.const_f32_like(
             Arc::clone(&weights.neck_conv1_w),
             Shape::from_dims(&[cfg.out_chans, cfg.embed_dim, 1, 1]),
@@ -330,18 +336,15 @@ impl SamImageEncoderVit {
         layer_norm_2d(&x, &weights.neck_ln2, cfg.out_chans, 1e-6)
     }
 
-    fn apply_block(
-        &self,
-        x: &LazyTensor,
-        blk: &SamBlockWeights,
-        pps: usize,
-    ) -> Result<LazyTensor> {
+    fn apply_block(&self, x: &LazyTensor, blk: &SamBlockWeights, pps: usize) -> Result<LazyTensor> {
         let cfg = &self.config;
         let embed_dim = cfg.embed_dim;
 
         // Pre-LN1 → window-partition → attention → window-unpartition.
         let normed = x.layer_norm_affine(
-            Arc::clone(&blk.norm1.gain), Arc::clone(&blk.norm1.bias), 1e-6,
+            Arc::clone(&blk.norm1.gain),
+            Arc::clone(&blk.norm1.bias),
+            1e-6,
         )?;
         // Window-partition if windowed; else operate on the full grid.
         let window = blk.attn.input_size;
@@ -351,9 +354,7 @@ impl SamImageEncoderVit {
         } else {
             window_partition(&normed, window, pps, pps, embed_dim)?
         };
-        let attn_out = apply_attention(
-            &input_for_attn, &blk.attn, cfg.num_heads, cfg.head_dim(),
-        )?;
+        let attn_out = apply_attention(&input_for_attn, &blk.attn, cfg.num_heads, cfg.head_dim())?;
         let attn_out = if is_global {
             attn_out
         } else {
@@ -363,13 +364,25 @@ impl SamImageEncoderVit {
 
         // Pre-LN2 → MLP (Linear → GELU → Linear) → residual add.
         let normed = x1.layer_norm_affine(
-            Arc::clone(&blk.norm2.gain), Arc::clone(&blk.norm2.bias), 1e-6,
+            Arc::clone(&blk.norm2.gain),
+            Arc::clone(&blk.norm2.bias),
+            1e-6,
         )?;
-        let mlp_hidden = blk.mlp.fc1.apply_linear_with_bias(
-            &normed, embed_dim, embed_dim * 4, Arc::clone(&blk.mlp.fc1_bias),
-        )?.gelu();
+        let mlp_hidden = blk
+            .mlp
+            .fc1
+            .apply_linear_with_bias(
+                &normed,
+                embed_dim,
+                embed_dim * 4,
+                Arc::clone(&blk.mlp.fc1_bias),
+            )?
+            .gelu();
         let mlp_out = blk.mlp.fc2.apply_linear_with_bias(
-            &mlp_hidden, embed_dim * 4, embed_dim, Arc::clone(&blk.mlp.fc2_bias),
+            &mlp_hidden,
+            embed_dim * 4,
+            embed_dim,
+            Arc::clone(&blk.mlp.fc2_bias),
         )?;
         x1.add(&mlp_out)
     }
@@ -393,13 +406,18 @@ pub(crate) fn layer_norm_2d(
     let dims = x.shape();
     let dims = dims.dims();
     assert_eq!(dims.len(), 4, "layer_norm_2d: expected rank-4 input");
-    let n = dims[0]; let h = dims[2]; let w = dims[3];
+    let n = dims[0];
+    let h = dims[2];
+    let w = dims[3];
 
-    let u = x.mean_dim(1_usize)?
+    let u = x
+        .mean_dim(1_usize)?
         .reshape(Shape::from_dims(&[n, 1, h, w]))?
         .broadcast_to(Shape::from_dims(&[n, num_channels, h, w]))?;
     let xs = x.sub(&u)?;
-    let s = xs.mul(&xs)?.mean_dim(1_usize)?
+    let s = xs
+        .mul(&xs)?
+        .mean_dim(1_usize)?
         .reshape(Shape::from_dims(&[n, 1, h, w]))?
         .broadcast_to(Shape::from_dims(&[n, num_channels, h, w]))?;
     let denom = s.add_scalar(eps).sqrt();
@@ -428,7 +446,10 @@ fn apply_attention(
     let dims = x.shape();
     let dims = dims.dims();
     assert_eq!(dims.len(), 4, "SAM attn: expected rank-4 input");
-    let batch = dims[0]; let h = dims[1]; let wid = dims[2]; let c = dims[3];
+    let batch = dims[0];
+    let h = dims[1];
+    let wid = dims[2];
+    let c = dims[3];
     let nh = num_heads;
     let hd = head_dim;
     assert_eq!(nh * hd, c, "SAM attn: num_heads * head_dim != embed_dim");
@@ -438,20 +459,23 @@ fn apply_attention(
     let x_flat = x.reshape(Shape::from_dims(&[batch, h * wid, c]))?;
 
     // qkv: Linear(c → 3c). Result (b, hw, 3c).
-    let qkv = w.qkv.apply_linear_with_bias(
-        &x_flat, c, 3 * c, Arc::clone(&w.qkv_bias),
-    )?;
+    let qkv = w
+        .qkv
+        .apply_linear_with_bias(&x_flat, c, 3 * c, Arc::clone(&w.qkv_bias))?;
     // Reshape to (b, hw, 3, nh, hd) → permute to (3, b, nh, hw, hd).
     let qkv = qkv
         .reshape(Shape::from_dims(&[batch, h * wid, 3, nh, hd]))?
         .permute([2, 0, 3, 1, 4_usize])?;
 
     // Slice along the first dim for q/k/v.
-    let q = qkv.slice(0_usize, 0, 1)?
+    let q = qkv
+        .slice(0_usize, 0, 1)?
         .reshape(Shape::from_dims(&[batch * nh, h * wid, hd]))?;
-    let k = qkv.slice(0_usize, 1, 1)?
+    let k = qkv
+        .slice(0_usize, 1, 1)?
         .reshape(Shape::from_dims(&[batch * nh, h * wid, hd]))?;
-    let v = qkv.slice(0_usize, 2, 1)?
+    let v = qkv
+        .slice(0_usize, 2, 1)?
         .reshape(Shape::from_dims(&[batch * nh, h * wid, hd]))?;
 
     // attn = (q * scale) @ k.T → (b*nh, hw, hw).
@@ -462,9 +486,9 @@ fn apply_attention(
 
     // Decomposed rel-pos.
     let attn = match (&w.rel_pos_h, &w.rel_pos_w) {
-        (Some(rph), Some(rpw)) => add_decomposed_rel_pos(
-            &attn, &q, rph, rpw, batch * nh, h, wid, hd, w.input_size,
-        )?,
+        (Some(rph), Some(rpw)) => {
+            add_decomposed_rel_pos(&attn, &q, rph, rpw, batch * nh, h, wid, hd, w.input_size)?
+        }
         _ => attn,
     };
 
@@ -479,9 +503,9 @@ fn apply_attention(
         .reshape(Shape::from_dims(&[batch, h, wid, nh * hd]))?;
     // Flatten for output projection: (b, h*w, c) → proj → reshape back.
     let ctx_flat = ctx.reshape(Shape::from_dims(&[batch, h * wid, c]))?;
-    let projected = w.proj.apply_linear_with_bias(
-        &ctx_flat, c, c, Arc::clone(&w.proj_bias),
-    )?;
+    let projected = w
+        .proj
+        .apply_linear_with_bias(&ctx_flat, c, c, Arc::clone(&w.proj_bias))?;
     projected.reshape(Shape::from_dims(&[batch, h, wid, c]))
 }
 
@@ -514,19 +538,19 @@ fn add_decomposed_rel_pos(
     let rh_bc = rh
         .reshape(Shape::from_dims(&[1, q_h, q_h, head_dim]))?
         .broadcast_to(Shape::from_dims(&[b_nh, q_h, q_h, head_dim]))?;
-    let rh_t = rh_bc.permute([0, 1, 3, 2_usize])?;  // (b*nh, q_h, head_dim, q_h)
-    let rel_h = r_q.matmul(&rh_t)?;  // (b*nh, q_h, q_w, q_h)
+    let rh_t = rh_bc.permute([0, 1, 3, 2_usize])?; // (b*nh, q_h, head_dim, q_h)
+    let rel_h = r_q.matmul(&rh_t)?; // (b*nh, q_h, q_w, q_h)
 
     // rel_w = einsum("bhwc,wkc->bhwk", r_q, rw)
     // Reshape r_q via transpose to put w first: (b*nh, q_h, q_w, head_dim)
     // → (b*nh, q_w, q_h, head_dim).
-    let r_q_w = r_q.permute([0, 2, 1, 3_usize])?;  // (b*nh, q_w, q_h, head_dim)
+    let r_q_w = r_q.permute([0, 2, 1, 3_usize])?; // (b*nh, q_w, q_h, head_dim)
     let rw_bc = rw
         .reshape(Shape::from_dims(&[1, q_w, q_w, head_dim]))?
         .broadcast_to(Shape::from_dims(&[b_nh, q_w, q_w, head_dim]))?;
-    let rw_t = rw_bc.permute([0, 1, 3, 2_usize])?;  // (b*nh, q_w, head_dim, q_w)
-    let rel_w_pre = r_q_w.matmul(&rw_t)?;  // (b*nh, q_w, q_h, q_w)
-    let rel_w = rel_w_pre.permute([0, 2, 1, 3_usize])?;  // (b*nh, q_h, q_w, q_w)
+    let rw_t = rw_bc.permute([0, 1, 3, 2_usize])?; // (b*nh, q_w, head_dim, q_w)
+    let rel_w_pre = r_q_w.matmul(&rw_t)?; // (b*nh, q_w, q_h, q_w)
+    let rel_w = rel_w_pre.permute([0, 2, 1, 3_usize])?; // (b*nh, q_h, q_w, q_w)
 
     // Final fused-add: attn (reshaped to b*nh, q_h, q_w, q_h, q_w) + broadcast(rel_h, rel_w)
     let attn_grid = attn.reshape(Shape::from_dims(&[b_nh, q_h, q_w, q_h, q_w]))?;
@@ -554,7 +578,8 @@ fn get_rel_pos(
         return Err(crate::Error::Msg(format!(
             "get_rel_pos: interpolation not yet supported (q_size={q_size}, \
              k_size={k_size}, max_rel_dist={max_rel_dist})",
-        )).bt());
+        ))
+        .bt());
     }
     // Build the integer relative-coordinate index table host-side.
     let q_scale = f64::max(1.0, k_size as f64 / q_size as f64);
@@ -597,10 +622,10 @@ fn window_partition(
         // (b, h, w, c) — pad along H (axis 1) and W (axis 2) with zeros.
         // Use pad with mode=Constant 0.
         let padding: Vec<(usize, usize)> = vec![
-            (0, 0),       // batch
-            (0, pad_h),   // H
-            (0, pad_w),   // W
-            (0, 0),       // C
+            (0, 0),     // batch
+            (0, pad_h), // H
+            (0, pad_w), // W
+            (0, 0),     // C
         ];
         x.pad(padding, fuel_graph::PadMode::Constant, 0.0)?
     } else {
@@ -611,15 +636,19 @@ fn window_partition(
     let windows = xs
         .reshape(Shape::from_dims(&[
             b,
-            h_p / window, window,
-            w_p / window, window,
+            h_p / window,
+            window,
+            w_p / window,
+            window,
             c,
         ]))?
         // (b, h_blocks, win, w_blocks, win, c) → (b, h_blocks, w_blocks, win, win, c)
         .permute([0, 1, 3, 2, 4, 5_usize])?
         .reshape(Shape::from_dims(&[
             b * (h_p / window) * (w_p / window),
-            window, window, c,
+            window,
+            window,
+            c,
         ]))?;
     Ok((windows, (h_p, w_p)))
 }
@@ -642,8 +671,16 @@ fn window_unpartition(
         .permute([0, 1, 3, 2, 4, 5_usize])?
         .reshape(Shape::from_dims(&[b, h_p, w_p, c]))?;
     // Trim the padding back to (h, w) if it was added.
-    let xs = if h_p > h { xs.slice(1_usize, 0, h)? } else { xs };
-    let xs = if w_p > w { xs.slice(2_usize, 0, w)? } else { xs };
+    let xs = if h_p > h {
+        xs.slice(1_usize, 0, h)?
+    } else {
+        xs
+    };
+    let xs = if w_p > w {
+        xs.slice(2_usize, 0, w)?
+    } else {
+        xs
+    };
     Ok(xs)
 }
 
@@ -742,10 +779,8 @@ impl SamPromptEncoder {
                 coords.push((yi as f32 + 0.5) / h as f32);
             }
         }
-        let coords_t = anchor.const_f32_like(
-            Arc::<[f32]>::from(coords),
-            Shape::from_dims(&[h, w, 2]),
-        );
+        let coords_t =
+            anchor.const_f32_like(Arc::<[f32]>::from(coords), Shape::from_dims(&[h, w, 2]));
         // pe_encoding: project, scale, sin+cos cat, then transpose.
         let pe = self.pe_encoding(anchor, &coords_t)?;
         // (h, w, embed_dim) → (1, embed_dim, h, w).
@@ -765,13 +800,21 @@ impl SamPromptEncoder {
     /// Pass `pad=true` when only points (no boxes) are supplied —
     /// this matches the official SAM forward path.
     pub fn embed_points(
-        &self, anchor: &LazyTensor, points_xy: &[f32], labels: &[f32], pad: bool,
+        &self,
+        anchor: &LazyTensor,
+        points_xy: &[f32],
+        labels: &[f32],
+        pad: bool,
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
         let n = labels.len();
-        assert_eq!(points_xy.len(), n * 2,
+        assert_eq!(
+            points_xy.len(),
+            n * 2,
             "embed_points: {} points, expected {} (2 coords per point)",
-            points_xy.len() / 2, n);
+            points_xy.len() / 2,
+            n
+        );
 
         // Apply +0.5 cell-center shift and optionally pad.
         let mut coords_owned: Vec<f32> = points_xy.iter().map(|&v| v + 0.5).collect();
@@ -809,33 +852,32 @@ impl SamPromptEncoder {
             .reshape(Shape::from_dims(&[1, n_padded, 1]))?
             .broadcast_to(Shape::from_dims(&[1, n_padded, cfg.embed_dim]))?;
 
-        let not_a_point = self.broadcast_per_point_emb(
-            anchor, &self.weights.not_a_point_embed, n_padded)?;
-        let neg1_mask = labels_bc.eq(&labels_bc.const_f32_like(
-            Arc::<[f32]>::from(vec![-1.0_f32; 1]),
-            Shape::from_dims(&[1]),
-        ).broadcast_to(Shape::from_dims(&[1, n_padded, cfg.embed_dim]))?)?;
+        let not_a_point =
+            self.broadcast_per_point_emb(anchor, &self.weights.not_a_point_embed, n_padded)?;
+        let neg1_mask = labels_bc.eq(&labels_bc
+            .const_f32_like(
+                Arc::<[f32]>::from(vec![-1.0_f32; 1]),
+                Shape::from_dims(&[1]),
+            )
+            .broadcast_to(Shape::from_dims(&[1, n_padded, cfg.embed_dim]))?)?;
         let pos_emb = neg1_mask.where_cond(&not_a_point, &pos_emb)?;
 
-        let bg_emb = self.broadcast_per_point_emb(
-            anchor, &self.weights.point_embeddings[0], n_padded)?;
-        let zeros = pos_emb.const_f32_like(
-            Arc::<[f32]>::from(vec![0.0_f32; 1]),
-            Shape::from_dims(&[1]),
-        ).broadcast_to(Shape::from_dims(&[1, n_padded, cfg.embed_dim]))?;
-        let zero_mask = labels_bc.eq(&labels_bc.const_f32_like(
-            Arc::<[f32]>::from(vec![0.0_f32; 1]),
-            Shape::from_dims(&[1]),
-        ).broadcast_to(Shape::from_dims(&[1, n_padded, cfg.embed_dim]))?)?;
+        let bg_emb =
+            self.broadcast_per_point_emb(anchor, &self.weights.point_embeddings[0], n_padded)?;
+        let zeros = pos_emb
+            .const_f32_like(Arc::<[f32]>::from(vec![0.0_f32; 1]), Shape::from_dims(&[1]))
+            .broadcast_to(Shape::from_dims(&[1, n_padded, cfg.embed_dim]))?;
+        let zero_mask = labels_bc.eq(&labels_bc
+            .const_f32_like(Arc::<[f32]>::from(vec![0.0_f32; 1]), Shape::from_dims(&[1]))
+            .broadcast_to(Shape::from_dims(&[1, n_padded, cfg.embed_dim]))?)?;
         let label0_contrib = zero_mask.where_cond(&bg_emb, &zeros)?;
         let pos_emb = pos_emb.add(&label0_contrib)?;
 
-        let fg_emb = self.broadcast_per_point_emb(
-            anchor, &self.weights.point_embeddings[1], n_padded)?;
-        let one_mask = labels_bc.eq(&labels_bc.const_f32_like(
-            Arc::<[f32]>::from(vec![1.0_f32; 1]),
-            Shape::from_dims(&[1]),
-        ).broadcast_to(Shape::from_dims(&[1, n_padded, cfg.embed_dim]))?)?;
+        let fg_emb =
+            self.broadcast_per_point_emb(anchor, &self.weights.point_embeddings[1], n_padded)?;
+        let one_mask = labels_bc.eq(&labels_bc
+            .const_f32_like(Arc::<[f32]>::from(vec![1.0_f32; 1]), Shape::from_dims(&[1]))
+            .broadcast_to(Shape::from_dims(&[1, n_padded, cfg.embed_dim]))?)?;
         let label1_contrib = one_mask.where_cond(&fg_emb, &zeros)?;
         pos_emb.add(&label1_contrib)
     }
@@ -846,8 +888,12 @@ impl SamPromptEncoder {
     /// box, one for each corner.
     pub fn embed_boxes(&self, anchor: &LazyTensor, boxes_xyxy: &[f32]) -> Result<LazyTensor> {
         let cfg = &self.config;
-        assert_eq!(boxes_xyxy.len() % 4, 0,
-            "embed_boxes: input length {} not divisible by 4", boxes_xyxy.len());
+        assert_eq!(
+            boxes_xyxy.len() % 4,
+            0,
+            "embed_boxes: input length {} not divisible by 4",
+            boxes_xyxy.len()
+        );
         let n_boxes = boxes_xyxy.len() / 4;
 
         // Reshape to `(n_boxes, 2, 2)` and apply +0.5 cell-center.
@@ -857,7 +903,7 @@ impl SamPromptEncoder {
         }
         // Normalize: x coords by W, y coords by H.
         for i in 0..n_boxes {
-            corners[4 * i]     /= cfg.input_image_size.1 as f32;
+            corners[4 * i] /= cfg.input_image_size.1 as f32;
             corners[4 * i + 1] /= cfg.input_image_size.0 as f32;
             corners[4 * i + 2] /= cfg.input_image_size.1 as f32;
             corners[4 * i + 3] /= cfg.input_image_size.0 as f32;
@@ -867,17 +913,17 @@ impl SamPromptEncoder {
             Arc::<[f32]>::from(corners),
             Shape::from_dims(&[n_boxes, 2, 2]),
         );
-        let pe = self.pe_encoding(anchor, &coords_t)?;  // (n_boxes, 2, embed_dim)
+        let pe = self.pe_encoding(anchor, &coords_t)?; // (n_boxes, 2, embed_dim)
 
         // Add per-corner type embeddings:
         //   corner 0 (top-left) gets point_embeddings[2]
         //   corner 1 (bottom-right) gets point_embeddings[3]
-        let tl = self.broadcast_per_point_emb(
-            anchor, &self.weights.point_embeddings[2], 1)?
+        let tl = self
+            .broadcast_per_point_emb(anchor, &self.weights.point_embeddings[2], 1)?
             .reshape(Shape::from_dims(&[1, 1, cfg.embed_dim]))?
             .broadcast_to(Shape::from_dims(&[n_boxes, 1, cfg.embed_dim]))?;
-        let br = self.broadcast_per_point_emb(
-            anchor, &self.weights.point_embeddings[3], 1)?
+        let br = self
+            .broadcast_per_point_emb(anchor, &self.weights.point_embeddings[3], 1)?
             .reshape(Shape::from_dims(&[1, 1, cfg.embed_dim]))?
             .broadcast_to(Shape::from_dims(&[n_boxes, 1, cfg.embed_dim]))?;
         let pe_tl = pe.slice(1_usize, 0, 1)?.add(&tl)?;
@@ -897,14 +943,9 @@ impl SamPromptEncoder {
         let mi = cfg.mask_in_chans;
         let q = mi / 4;
         // Conv1: 1 → mi/4, k=2, s=2.
-        let conv1_w = masks.const_f32_like(
-            Arc::clone(&w.mask_conv1_w),
-            Shape::from_dims(&[q, 1, 2, 2]),
-        );
-        let conv1_b = masks.const_f32_like(
-            Arc::clone(&w.mask_conv1_b),
-            Shape::from_dims(&[q]),
-        );
+        let conv1_w =
+            masks.const_f32_like(Arc::clone(&w.mask_conv1_w), Shape::from_dims(&[q, 1, 2, 2]));
+        let conv1_b = masks.const_f32_like(Arc::clone(&w.mask_conv1_b), Shape::from_dims(&[q]));
         let x = masks.conv2d(&conv1_w, Some(&conv1_b), (2, 2), (0, 0), 1)?;
         let x = layer_norm_2d(&x, &w.mask_ln1, q, 1e-6)?;
         let x = x.gelu();
@@ -913,10 +954,7 @@ impl SamPromptEncoder {
             Arc::clone(&w.mask_conv2_w),
             Shape::from_dims(&[mi, q, 2, 2]),
         );
-        let conv2_b = masks.const_f32_like(
-            Arc::clone(&w.mask_conv2_b),
-            Shape::from_dims(&[mi]),
-        );
+        let conv2_b = masks.const_f32_like(Arc::clone(&w.mask_conv2_b), Shape::from_dims(&[mi]));
         let x = x.conv2d(&conv2_w, Some(&conv2_b), (2, 2), (0, 0), 1)?;
         let x = layer_norm_2d(&x, &w.mask_ln2, mi, 1e-6)?;
         let x = x.gelu();
@@ -1025,9 +1063,15 @@ fn sam_decoder_attention(
     let hd = internal / w.num_heads;
 
     // Project to internal dim. Inputs are (b, n_*, d).
-    let q = w.q_proj.apply_linear_with_bias(q_in, d, internal, Arc::clone(&w.q_bias))?;
-    let k = w.k_proj.apply_linear_with_bias(k_in, d, internal, Arc::clone(&w.k_bias))?;
-    let v = w.v_proj.apply_linear_with_bias(v_in, d, internal, Arc::clone(&w.v_bias))?;
+    let q = w
+        .q_proj
+        .apply_linear_with_bias(q_in, d, internal, Arc::clone(&w.q_bias))?;
+    let k = w
+        .k_proj
+        .apply_linear_with_bias(k_in, d, internal, Arc::clone(&w.k_bias))?;
+    let v = w
+        .v_proj
+        .apply_linear_with_bias(v_in, d, internal, Arc::clone(&w.v_bias))?;
 
     // (b, n, internal) → (b, num_heads, n, hd) via split_heads.
     let q = q.split_heads(w.num_heads, hd)?;
@@ -1044,7 +1088,8 @@ fn sam_decoder_attention(
     // Merge heads back: (b, num_heads, n, hd) → (b, n, internal)
     let merged = ctx.merge_heads()?;
     // Output projection back to d.
-    w.out_proj.apply_linear_with_bias(&merged, internal, d, Arc::clone(&w.out_bias))
+    w.out_proj
+        .apply_linear_with_bias(&merged, internal, d, Arc::clone(&w.out_bias))
 }
 
 /// LayerNorm weights with explicit hidden size carried alongside,
@@ -1078,16 +1123,15 @@ pub enum SamMlpActivation {
 }
 
 fn apply_sam_mlp(x: &LazyTensor, w: &SamMlpBlockWeights) -> Result<LazyTensor> {
-    let h = w.lin1.apply_linear_with_bias(
-        x, w.embedding_dim, w.mlp_dim, Arc::clone(&w.lin1_bias),
-    )?;
+    let h =
+        w.lin1
+            .apply_linear_with_bias(x, w.embedding_dim, w.mlp_dim, Arc::clone(&w.lin1_bias))?;
     let h = match w.activation {
         SamMlpActivation::Relu => h.relu(),
         SamMlpActivation::Gelu => h.gelu(),
     };
-    w.lin2.apply_linear_with_bias(
-        &h, w.mlp_dim, w.embedding_dim, Arc::clone(&w.lin2_bias),
-    )
+    w.lin2
+        .apply_linear_with_bias(&h, w.mlp_dim, w.embedding_dim, Arc::clone(&w.lin2_bias))
 }
 
 /// One layer of the bidirectional cross-attention transformer.
@@ -1123,7 +1167,9 @@ fn apply_two_way_block(
         queries.add(&attn_out)?
     };
     let queries = queries.layer_norm_affine(
-        Arc::clone(&blk.norm1.gain), Arc::clone(&blk.norm1.bias), 1e-5,
+        Arc::clone(&blk.norm1.gain),
+        Arc::clone(&blk.norm1.bias),
+        1e-5,
     )?;
 
     // Cross-attention: tokens attending to image.
@@ -1132,14 +1178,18 @@ fn apply_two_way_block(
     let attn_out = sam_decoder_attention(&blk.cross_attn_token_to_image, &q_in, &k_in, keys)?;
     let queries = queries.add(&attn_out)?;
     let queries = queries.layer_norm_affine(
-        Arc::clone(&blk.norm2.gain), Arc::clone(&blk.norm2.bias), 1e-5,
+        Arc::clone(&blk.norm2.gain),
+        Arc::clone(&blk.norm2.bias),
+        1e-5,
     )?;
 
     // MLP.
     let mlp_out = apply_sam_mlp(&queries, &blk.mlp)?;
     let queries = queries.add(&mlp_out)?;
     let queries = queries.layer_norm_affine(
-        Arc::clone(&blk.norm3.gain), Arc::clone(&blk.norm3.bias), 1e-5,
+        Arc::clone(&blk.norm3.gain),
+        Arc::clone(&blk.norm3.bias),
+        1e-5,
     )?;
 
     // Cross-attention: image attending to tokens (note: keys is the
@@ -1147,12 +1197,12 @@ fn apply_two_way_block(
     // labels them deliberately backwards in this branch).
     let q_in = queries.add(query_pe)?;
     let k_in = keys.add(key_pe)?;
-    let attn_out = sam_decoder_attention(
-        &blk.cross_attn_image_to_token, &k_in, &q_in, &queries,
-    )?;
+    let attn_out = sam_decoder_attention(&blk.cross_attn_image_to_token, &k_in, &q_in, &queries)?;
     let keys = keys.add(&attn_out)?;
     let keys = keys.layer_norm_affine(
-        Arc::clone(&blk.norm4.gain), Arc::clone(&blk.norm4.bias), 1e-5,
+        Arc::clone(&blk.norm4.gain),
+        Arc::clone(&blk.norm4.bias),
+        1e-5,
     )?;
 
     Ok((queries, keys))
@@ -1177,8 +1227,15 @@ pub fn apply_two_way_transformer(
 ) -> Result<(LazyTensor, LazyTensor)> {
     let ie_dims = image_embedding.shape();
     let ie_dims = ie_dims.dims();
-    assert_eq!(ie_dims.len(), 4, "two-way transformer: image_embedding must be (b, c, h, w)");
-    let b = ie_dims[0]; let c = ie_dims[1]; let h = ie_dims[2]; let w_dim = ie_dims[3];
+    assert_eq!(
+        ie_dims.len(),
+        4,
+        "two-way transformer: image_embedding must be (b, c, h, w)"
+    );
+    let b = ie_dims[0];
+    let c = ie_dims[1];
+    let h = ie_dims[2];
+    let w_dim = ie_dims[3];
 
     // (b, c, h, w) → (b, h*w, c).
     let ie = image_embedding
@@ -1199,9 +1256,7 @@ pub fn apply_two_way_transformer(
     // Final cross-attention + LN on queries.
     let q_in = queries.add(point_embedding)?;
     let k_in = keys.add(&ipe)?;
-    let attn_out = sam_decoder_attention(
-        &w.final_attn_token_to_image, &q_in, &k_in, &keys,
-    )?;
+    let attn_out = sam_decoder_attention(&w.final_attn_token_to_image, &q_in, &k_in, &keys)?;
     let queries = queries.add(&attn_out)?;
     let queries = queries.layer_norm_affine(
         Arc::clone(&w.norm_final_attn.gain),
@@ -1227,21 +1282,24 @@ pub struct SamMlpMaskDecoderWeights {
     pub sigmoid_output: bool,
 }
 
-fn apply_mlp_mask_decoder(
-    w: &SamMlpMaskDecoderWeights,
-    x: &LazyTensor,
-) -> Result<LazyTensor> {
+fn apply_mlp_mask_decoder(w: &SamMlpMaskDecoderWeights, x: &LazyTensor) -> Result<LazyTensor> {
     let n = w.layers.len();
-    assert_eq!(n, w.biases.len(), "SamMlpMaskDecoder: layers/biases length mismatch");
+    assert_eq!(
+        n,
+        w.biases.len(),
+        "SamMlpMaskDecoder: layers/biases length mismatch"
+    );
     assert!(n >= 1, "SamMlpMaskDecoder: at least 1 layer required");
 
     let mut h = x.clone();
     for i in 0..n {
         let in_dim = if i == 0 { w.input_dim } else { w.hidden_dim };
-        let out_dim = if i + 1 == n { w.output_dim } else { w.hidden_dim };
-        h = w.layers[i].apply_linear_with_bias(
-            &h, in_dim, out_dim, Arc::clone(&w.biases[i]),
-        )?;
+        let out_dim = if i + 1 == n {
+            w.output_dim
+        } else {
+            w.hidden_dim
+        };
+        h = w.layers[i].apply_linear_with_bias(&h, in_dim, out_dim, Arc::clone(&w.biases[i]))?;
         if i + 1 < n {
             h = h.relu();
         }
@@ -1358,12 +1416,10 @@ impl SamMaskDecoder {
         let td = cfg.transformer_dim;
 
         // Output tokens = [iou_token; mask_tokens] of shape (1 + nmt, td).
-        let iou_t = sparse_prompt_embeddings.const_f32_like(
-            Arc::clone(&w.iou_token), Shape::from_dims(&[1, td]),
-        );
-        let mask_t = sparse_prompt_embeddings.const_f32_like(
-            Arc::clone(&w.mask_tokens), Shape::from_dims(&[nmt, td]),
-        );
+        let iou_t = sparse_prompt_embeddings
+            .const_f32_like(Arc::clone(&w.iou_token), Shape::from_dims(&[1, td]));
+        let mask_t = sparse_prompt_embeddings
+            .const_f32_like(Arc::clone(&w.mask_tokens), Shape::from_dims(&[nmt, td]));
         let output_tokens = iou_t.concat(&mask_t, 0_usize)?;
         let sp_dims = sparse_prompt_embeddings.shape();
         let sp_dims = sp_dims.dims();
@@ -1398,9 +1454,10 @@ impl SamMaskDecoder {
 
         // Take the IoU token and each mask token from the queries.
         // hs shape: (b, 1 + nmt + n_prompts, td)
-        let iou_token_out = hs.slice(1_usize, 0, 1)?
+        let iou_token_out = hs
+            .slice(1_usize, 0, 1)?
             .reshape(Shape::from_dims(&[b_, td]))?;
-        let mask_tokens_out = hs.slice(1_usize, 1, nmt)?;  // (b, nmt, td)
+        let mask_tokens_out = hs.slice(1_usize, 1, nmt)?; // (b, nmt, td)
 
         // Upscale the (now-transformed) keys back to (b, td, h, w) then
         // do the 2× ConvTranspose2d stack with LayerNorm2d in between.
@@ -1411,33 +1468,22 @@ impl SamMaskDecoder {
             Arc::clone(&w.upsample_conv1_w),
             Shape::from_dims(&[td, td / 4, 2, 2]),
         );
-        let ct1_b = src_grid.const_f32_like(
-            Arc::clone(&w.upsample_conv1_b),
-            Shape::from_dims(&[td / 4]),
-        );
-        let up1 = src_grid.conv_transpose2d(
-            &ct1_w, (2, 2), (0, 0), (0, 0), (1, 1), 1,
-        )?;
+        let ct1_b =
+            src_grid.const_f32_like(Arc::clone(&w.upsample_conv1_b), Shape::from_dims(&[td / 4]));
+        let up1 = src_grid.conv_transpose2d(&ct1_w, (2, 2), (0, 0), (0, 0), (1, 1), 1)?;
         // Add bias (broadcast across spatial dims).
-        let up1 = up1.broadcast_add(
-            &ct1_b.reshape(Shape::from_dims(&[1, td / 4, 1, 1]))?,
-        )?;
+        let up1 = up1.broadcast_add(&ct1_b.reshape(Shape::from_dims(&[1, td / 4, 1, 1]))?)?;
         let up1 = layer_norm_2d(&up1, &w.upsample_ln, td / 4, 1e-6)?;
         let up1 = up1.gelu();
         let ct2_w = src_grid.const_f32_like(
             Arc::clone(&w.upsample_conv2_w),
             Shape::from_dims(&[td / 4, td / 8, 2, 2]),
         );
-        let ct2_b = src_grid.const_f32_like(
-            Arc::clone(&w.upsample_conv2_b),
-            Shape::from_dims(&[td / 8]),
-        );
-        let upscaled = up1.conv_transpose2d(
-            &ct2_w, (2, 2), (0, 0), (0, 0), (1, 1), 1,
-        )?;
-        let upscaled = upscaled.broadcast_add(
-            &ct2_b.reshape(Shape::from_dims(&[1, td / 8, 1, 1]))?,
-        )?;
+        let ct2_b =
+            src_grid.const_f32_like(Arc::clone(&w.upsample_conv2_b), Shape::from_dims(&[td / 8]));
+        let upscaled = up1.conv_transpose2d(&ct2_w, (2, 2), (0, 0), (0, 0), (1, 1), 1)?;
+        let upscaled =
+            upscaled.broadcast_add(&ct2_b.reshape(Shape::from_dims(&[1, td / 8, 1, 1]))?)?;
         let upscaled = upscaled.gelu();
 
         // Run each mask-token's hypernetwork MLP. Stack to
@@ -1446,9 +1492,10 @@ impl SamMaskDecoder {
         // the predicted masks (b, nmt, H, W).
         let mut hyper_outs: Vec<LazyTensor> = Vec::with_capacity(nmt);
         for (i, mlp) in w.hypernetwork_mlps.iter().enumerate() {
-            let mt_i = mask_tokens_out.slice(1_usize, i, 1)?
+            let mt_i = mask_tokens_out
+                .slice(1_usize, i, 1)?
                 .reshape(Shape::from_dims(&[b_, td]))?;
-            let h_i = apply_mlp_mask_decoder(mlp, &mt_i)?;  // (b, td/8)
+            let h_i = apply_mlp_mask_decoder(mlp, &mt_i)?; // (b, td/8)
             hyper_outs.push(h_i.reshape(Shape::from_dims(&[b_, 1, td / 8]))?);
         }
         let mut hyper_in = hyper_outs[0].clone();
@@ -1459,13 +1506,9 @@ impl SamMaskDecoder {
         let up_dims = upscaled.shape();
         let up_dims = up_dims.dims();
         let (h_out, w_out) = (up_dims[2], up_dims[3]);
-        let upscaled_flat = upscaled.reshape(
-            Shape::from_dims(&[b_, td / 8, h_out * w_out]),
-        )?;
+        let upscaled_flat = upscaled.reshape(Shape::from_dims(&[b_, td / 8, h_out * w_out]))?;
         let masks_flat = hyper_in.matmul(&upscaled_flat)?;
-        let masks = masks_flat.reshape(
-            Shape::from_dims(&[b_, nmt, h_out, w_out]),
-        )?;
+        let masks = masks_flat.reshape(Shape::from_dims(&[b_, nmt, h_out, w_out]))?;
 
         // IoU prediction head.
         let iou_pred = apply_mlp_mask_decoder(&w.iou_prediction_head, &iou_token_out)?;
@@ -1513,7 +1556,11 @@ impl SamModelConfig {
             transformer_dim: oc,
             ..SamMaskDecoderConfig::sam_default()
         };
-        Self { image_encoder, prompt_encoder, mask_decoder }
+        Self {
+            image_encoder,
+            prompt_encoder,
+            mask_decoder,
+        }
     }
 
     /// SAM ViT-B preset (img_size=1024, depth=12, embed_dim=768).
@@ -1565,7 +1612,12 @@ impl SamModel {
             config: config.mask_decoder.clone(),
             weights: mask_decoder_weights,
         };
-        Self { config, image_encoder, prompt_encoder, mask_decoder }
+        Self {
+            config,
+            image_encoder,
+            prompt_encoder,
+            mask_decoder,
+        }
     }
 
     /// Host-side preprocess: subtract ImageNet RGB mean, divide by std,
@@ -1578,13 +1630,18 @@ impl SamModel {
         if h > s || w > s {
             return Err(crate::Error::Msg(format!(
                 "SAM preprocess: image ({w}x{h}) exceeds max side {s}",
-            )).bt());
+            ))
+            .bt());
         }
         if image_chw.len() != 3 * h * w {
             return Err(crate::Error::Msg(format!(
                 "SAM preprocess: expected {} f32s (3x{}x{}), got {}",
-                3 * h * w, h, w, image_chw.len(),
-            )).bt());
+                3 * h * w,
+                h,
+                w,
+                image_chw.len(),
+            ))
+            .bt());
         }
         let mut out = vec![0.0_f32; 3 * s * s];
         for c in 0..3 {
@@ -1631,28 +1688,36 @@ impl SamModel {
     pub fn forward_for_embeddings(
         &self,
         img_embeddings: &LazyTensor,
-        orig_h: usize, orig_w: usize,
-        points_xy: &[f32], point_labels: &[f32],
+        orig_h: usize,
+        orig_w: usize,
+        points_xy: &[f32],
+        point_labels: &[f32],
         multimask_output: bool,
     ) -> Result<(LazyTensor, LazyTensor)> {
         if point_labels.is_empty() {
             return Err(crate::Error::Msg(
                 "SAM forward: no prompts supplied (point_labels is empty)".into(),
-            ).bt());
+            )
+            .bt());
         }
         let img_size = self.config.image_encoder.img_size;
         if orig_h == 0 || orig_w == 0 || orig_h > img_size || orig_w > img_size {
             return Err(crate::Error::Msg(format!(
                 "SAM forward: orig ({orig_w}x{orig_h}) must be within (0, {img_size}]",
-            )).bt());
+            ))
+            .bt());
         }
         let dense_pe = self.prompt_encoder.dense_pe(img_embeddings)?;
-        let sparse = self.prompt_encoder.embed_points(
-            img_embeddings, points_xy, point_labels, true,
-        )?;
+        let sparse =
+            self.prompt_encoder
+                .embed_points(img_embeddings, points_xy, point_labels, true)?;
         let dense = self.prompt_encoder.no_mask_dense(img_embeddings)?;
         let (low_res, iou) = self.mask_decoder.forward(
-            img_embeddings, &dense_pe, &sparse, &dense, multimask_output,
+            img_embeddings,
+            &dense_pe,
+            &sparse,
+            &dense,
+            multimask_output,
         )?;
         let pps = self.config.image_encoder.patches_per_side();
         let decoder_side = 4 * pps;
@@ -1674,13 +1739,21 @@ impl SamModel {
     /// encode → mask decode → upsample → crop.
     pub fn forward(
         &self,
-        image_chw: &[f32], orig_h: usize, orig_w: usize,
-        points_xy: &[f32], point_labels: &[f32],
+        image_chw: &[f32],
+        orig_h: usize,
+        orig_w: usize,
+        points_xy: &[f32],
+        point_labels: &[f32],
         multimask_output: bool,
     ) -> Result<(LazyTensor, LazyTensor)> {
         let img_embeddings = self.embeddings(image_chw, orig_h, orig_w)?;
         self.forward_for_embeddings(
-            &img_embeddings, orig_h, orig_w, points_xy, point_labels, multimask_output,
+            &img_embeddings,
+            orig_h,
+            orig_w,
+            points_xy,
+            point_labels,
+            multimask_output,
         )
     }
 }
@@ -1698,8 +1771,9 @@ impl SamImageEncoderWeights {
             "SamImageEncoderWeights::load_from_mmapped: HF SAM checkpoint \
              tensor naming pending; construct via explicit struct literal \
              or contribute the loader."
-            .to_string()
-        ).bt())
+                .to_string(),
+        )
+        .bt())
     }
 }
 
@@ -1709,9 +1783,9 @@ impl SamPromptEncoderWeights {
         _cfg: &SamPromptEncoderConfig,
     ) -> Result<Self> {
         Err(crate::Error::Msg(
-            "SamPromptEncoderWeights::load_from_mmapped: pending — see lazy_sam."
-            .to_string()
-        ).bt())
+            "SamPromptEncoderWeights::load_from_mmapped: pending — see lazy_sam.".to_string(),
+        )
+        .bt())
     }
 }
 
@@ -1721,9 +1795,9 @@ impl SamMaskDecoderWeights {
         _cfg: &SamMaskDecoderConfig,
     ) -> Result<Self> {
         Err(crate::Error::Msg(
-            "SamMaskDecoderWeights::load_from_mmapped: pending — see lazy_sam."
-            .to_string()
-        ).bt())
+            "SamMaskDecoderWeights::load_from_mmapped: pending — see lazy_sam.".to_string(),
+        )
+        .bt())
     }
 }
 
@@ -1745,61 +1819,62 @@ mod tests {
         // Tiny config — small enough to test forward shape & finiteness
         // without burning seconds per assertion.
         SamImageEncoderConfig {
-            img_size: 32,     // 32 / 4 = 8 patches per side
+            img_size: 32, // 32 / 4 = 8 patches per side
             patch_size: 4,
             in_chans: 3,
-            embed_dim: 16,    // 2 heads × 8 head_dim
+            embed_dim: 16, // 2 heads × 8 head_dim
             depth: 2,
             num_heads: 2,
             out_chans: 8,
             qkv_bias: true,
             use_rel_pos: true,
             use_abs_pos: true,
-            window_size: 4,   // 4×4 window over 8×8 grid (2×2 windows)
-            global_attn_indexes: vec![1],  // layer 1 is global; layer 0 is windowed
+            window_size: 4,               // 4×4 window over 8×8 grid (2×2 windows)
+            global_attn_indexes: vec![1], // layer 1 is global; layer 0 is windowed
         }
     }
 
     fn tiny_weights(cfg: &SamImageEncoderConfig) -> SamImageEncoderWeights {
         let mut next = rng(12345);
-        let mut vec_of = |n: usize| -> Arc<[f32]> {
-            Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
-        };
+        let mut vec_of =
+            |n: usize| -> Arc<[f32]> { Arc::from((0..n).map(|_| next()).collect::<Vec<_>>()) };
         let e = cfg.embed_dim;
         let pps = cfg.patches_per_side();
-        let blocks: Vec<SamBlockWeights> = (0..cfg.depth).map(|i| {
-            let window = if cfg.global_attn_indexes.contains(&i) {
-                pps  // global attention
-            } else {
-                cfg.window_size
-            };
-            let rel_dist = 2 * window - 1;
-            SamBlockWeights {
-                norm1: SamLayerNormWeights {
-                    gain: Arc::from(vec![1.0_f32; e]),
-                    bias: Arc::from(vec![0.0_f32; e]),
-                },
-                attn: SamAttentionWeights {
-                    qkv: WeightStorage::F32(vec_of(e * 3 * e)),
-                    qkv_bias: vec_of(3 * e),
-                    proj: WeightStorage::F32(vec_of(e * e)),
-                    proj_bias: vec_of(e),
-                    rel_pos_h: Some(vec_of(rel_dist * cfg.head_dim())),
-                    rel_pos_w: Some(vec_of(rel_dist * cfg.head_dim())),
-                    input_size: window,
-                },
-                norm2: SamLayerNormWeights {
-                    gain: Arc::from(vec![1.0_f32; e]),
-                    bias: Arc::from(vec![0.0_f32; e]),
-                },
-                mlp: SamMlpWeights {
-                    fc1: WeightStorage::F32(vec_of(e * e * 4)),
-                    fc1_bias: vec_of(e * 4),
-                    fc2: WeightStorage::F32(vec_of(e * 4 * e)),
-                    fc2_bias: vec_of(e),
-                },
-            }
-        }).collect();
+        let blocks: Vec<SamBlockWeights> = (0..cfg.depth)
+            .map(|i| {
+                let window = if cfg.global_attn_indexes.contains(&i) {
+                    pps // global attention
+                } else {
+                    cfg.window_size
+                };
+                let rel_dist = 2 * window - 1;
+                SamBlockWeights {
+                    norm1: SamLayerNormWeights {
+                        gain: Arc::from(vec![1.0_f32; e]),
+                        bias: Arc::from(vec![0.0_f32; e]),
+                    },
+                    attn: SamAttentionWeights {
+                        qkv: WeightStorage::F32(vec_of(e * 3 * e)),
+                        qkv_bias: vec_of(3 * e),
+                        proj: WeightStorage::F32(vec_of(e * e)),
+                        proj_bias: vec_of(e),
+                        rel_pos_h: Some(vec_of(rel_dist * cfg.head_dim())),
+                        rel_pos_w: Some(vec_of(rel_dist * cfg.head_dim())),
+                        input_size: window,
+                    },
+                    norm2: SamLayerNormWeights {
+                        gain: Arc::from(vec![1.0_f32; e]),
+                        bias: Arc::from(vec![0.0_f32; e]),
+                    },
+                    mlp: SamMlpWeights {
+                        fc1: WeightStorage::F32(vec_of(e * e * 4)),
+                        fc1_bias: vec_of(e * 4),
+                        fc2: WeightStorage::F32(vec_of(e * 4 * e)),
+                        fc2_bias: vec_of(e),
+                    },
+                }
+            })
+            .collect();
 
         SamImageEncoderWeights {
             patch_embed_w: vec_of(e * cfg.in_chans * cfg.patch_size * cfg.patch_size),
@@ -1823,9 +1898,13 @@ mod tests {
     fn forward_shape_and_finite_tiny() {
         let cfg = tiny_cfg();
         let weights = tiny_weights(&cfg);
-        let encoder = SamImageEncoderVit { config: cfg.clone(), weights };
+        let encoder = SamImageEncoderVit {
+            config: cfg.clone(),
+            weights,
+        };
         let img: Vec<f32> = (0..cfg.in_chans * cfg.img_size * cfg.img_size)
-            .map(|i| ((i as f32) * 0.001) - 0.05).collect();
+            .map(|i| ((i as f32) * 0.001) - 0.05)
+            .collect();
         let out = encoder.forward(&img).unwrap();
         let pps = cfg.patches_per_side();
         assert_eq!(out.shape().dims(), &[1, cfg.out_chans, pps, pps]);
@@ -1856,8 +1935,8 @@ mod tests {
         assert_eq!(cfg.depth, 24);
         assert_eq!(cfg.num_heads, 16);
         assert_eq!(cfg.global_attn_indexes, vec![5, 11, 17, 23]);
-        assert_eq!(cfg.head_dim(), 64);  // 1024 / 16
-        assert_eq!(cfg.patches_per_side(), 64);  // image+patch size unchanged
+        assert_eq!(cfg.head_dim(), 64); // 1024 / 16
+        assert_eq!(cfg.patches_per_side(), 64); // image+patch size unchanged
     }
 
     #[test]
@@ -1867,7 +1946,7 @@ mod tests {
         assert_eq!(cfg.depth, 32);
         assert_eq!(cfg.num_heads, 16);
         assert_eq!(cfg.global_attn_indexes, vec![7, 15, 23, 31]);
-        assert_eq!(cfg.head_dim(), 80);  // 1280 / 16
+        assert_eq!(cfg.head_dim(), 80); // 1280 / 16
         assert_eq!(cfg.patches_per_side(), 64);
     }
 
@@ -1875,14 +1954,17 @@ mod tests {
     fn layer_norm_2d_is_per_channel() {
         // Constant-per-pixel input → variance is zero → output should
         // be the bias (since gain·0 + bias = bias).
-        let n = 1; let c = 4; let h = 3; let w = 5;
-        let data: Vec<f32> = (0..n * c * h * w).map(|i| {
-            // Set each channel to a different constant.
-            ((i / (h * w)) % c) as f32
-        }).collect();
-        let x = LazyTensor::from_f32(
-            data, Shape::from_dims(&[n, c, h, w]), &Device::cpu(),
-        );
+        let n = 1;
+        let c = 4;
+        let h = 3;
+        let w = 5;
+        let data: Vec<f32> = (0..n * c * h * w)
+            .map(|i| {
+                // Set each channel to a different constant.
+                ((i / (h * w)) % c) as f32
+            })
+            .collect();
+        let x = LazyTensor::from_f32(data, Shape::from_dims(&[n, c, h, w]), &Device::cpu());
         let ln = SamLayerNormWeights {
             gain: Arc::from(vec![2.0_f32; c]),
             bias: Arc::from(vec![1.0_f32; c]),
@@ -1901,7 +1983,9 @@ mod tests {
                     let idx = ci * h * w + hi * w + wi;
                     assert!(
                         (out[idx] - expected[ci]).abs() < 1e-2,
-                        "channel {ci}: got {} expected {}", out[idx], expected[ci],
+                        "channel {ci}: got {} expected {}",
+                        out[idx],
+                        expected[ci],
                     );
                 }
             }
@@ -1910,7 +1994,7 @@ mod tests {
 
     fn tiny_prompt_cfg() -> SamPromptEncoderConfig {
         SamPromptEncoderConfig {
-            embed_dim: 8,                       // 2 × num_pos_feats (4)
+            embed_dim: 8, // 2 × num_pos_feats (4)
             image_embedding_size: (4, 4),
             input_image_size: (64, 64),
             mask_in_chans: 16,
@@ -1919,9 +2003,8 @@ mod tests {
 
     fn tiny_prompt_weights(cfg: &SamPromptEncoderConfig) -> SamPromptEncoderWeights {
         let mut next = rng(98765);
-        let mut vec_of = |n: usize| -> Arc<[f32]> {
-            Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
-        };
+        let mut vec_of =
+            |n: usize| -> Arc<[f32]> { Arc::from((0..n).map(|_| next()).collect::<Vec<_>>()) };
         let mi = cfg.mask_in_chans;
         let q = mi / 4;
         SamPromptEncoderWeights {
@@ -1959,7 +2042,10 @@ mod tests {
     fn dense_pe_shape_and_finite() {
         let cfg = tiny_prompt_cfg();
         let weights = tiny_prompt_weights(&cfg);
-        let enc = SamPromptEncoder { config: cfg.clone(), weights };
+        let enc = SamPromptEncoder {
+            config: cfg.clone(),
+            weights,
+        };
         let anchor = dummy_anchor();
         let pe = enc.dense_pe(&anchor).unwrap();
         assert_eq!(pe.shape().dims(), &[1, cfg.embed_dim, 4, 4]);
@@ -1972,12 +2058,17 @@ mod tests {
     fn embed_points_no_pad_shape() {
         let cfg = tiny_prompt_cfg();
         let weights = tiny_prompt_weights(&cfg);
-        let enc = SamPromptEncoder { config: cfg.clone(), weights };
+        let enc = SamPromptEncoder {
+            config: cfg.clone(),
+            weights,
+        };
         let anchor = dummy_anchor();
         // 3 points: 2 foreground (label 1) + 1 background (label 0).
         let points = vec![10.0_f32, 20.0, 30.0, 30.0, 50.0, 5.0];
         let labels = vec![1.0_f32, 1.0, 0.0];
-        let out = enc.embed_points(&anchor, &points, &labels, /* pad */ false).unwrap();
+        let out = enc
+            .embed_points(&anchor, &points, &labels, /* pad */ false)
+            .unwrap();
         assert_eq!(out.shape().dims(), &[1, 3, cfg.embed_dim]);
         for &v in &out.realize_f32() {
             assert!(v.is_finite(), "non-finite point embedding: {v}");
@@ -1988,25 +2079,30 @@ mod tests {
     fn embed_points_with_pad_adds_padding_slot() {
         let cfg = tiny_prompt_cfg();
         let weights = tiny_prompt_weights(&cfg);
-        let enc = SamPromptEncoder { config: cfg.clone(), weights };
+        let enc = SamPromptEncoder {
+            config: cfg.clone(),
+            weights,
+        };
         let anchor = dummy_anchor();
         let points = vec![10.0_f32, 20.0, 30.0, 30.0];
         let labels = vec![1.0_f32, 0.0];
-        let out = enc.embed_points(&anchor, &points, &labels, /* pad */ true).unwrap();
-        assert_eq!(out.shape().dims(), &[1, 3, cfg.embed_dim]);  // +1 padding row
+        let out = enc
+            .embed_points(&anchor, &points, &labels, /* pad */ true)
+            .unwrap();
+        assert_eq!(out.shape().dims(), &[1, 3, cfg.embed_dim]); // +1 padding row
     }
 
     #[test]
     fn embed_boxes_shape() {
         let cfg = tiny_prompt_cfg();
         let weights = tiny_prompt_weights(&cfg);
-        let enc = SamPromptEncoder { config: cfg.clone(), weights };
+        let enc = SamPromptEncoder {
+            config: cfg.clone(),
+            weights,
+        };
         let anchor = dummy_anchor();
         // 2 boxes (4 corners total).
-        let boxes = vec![
-            5.0_f32, 10.0, 30.0, 40.0,
-            15.0,    20.0, 50.0, 55.0,
-        ];
+        let boxes = vec![5.0_f32, 10.0, 30.0, 40.0, 15.0, 20.0, 50.0, 55.0];
         let out = enc.embed_boxes(&anchor, &boxes).unwrap();
         assert_eq!(out.shape().dims(), &[1, 4, cfg.embed_dim]);
         for &v in &out.realize_f32() {
@@ -2018,11 +2114,18 @@ mod tests {
     fn embed_masks_downscales_4x() {
         let cfg = tiny_prompt_cfg();
         let weights = tiny_prompt_weights(&cfg);
-        let enc = SamPromptEncoder { config: cfg.clone(), weights };
+        let enc = SamPromptEncoder {
+            config: cfg.clone(),
+            weights,
+        };
         // Input masks: 4× image_embedding_size = 16 × 16.
-        let (h_in, w_in) = (4 * cfg.image_embedding_size.0, 4 * cfg.image_embedding_size.1);
+        let (h_in, w_in) = (
+            4 * cfg.image_embedding_size.0,
+            4 * cfg.image_embedding_size.1,
+        );
         let masks_data: Vec<f32> = (0..1 * 1 * h_in * w_in)
-            .map(|i| ((i as f32) * 0.001) - 0.05).collect();
+            .map(|i| ((i as f32) * 0.001) - 0.05)
+            .collect();
         let masks = LazyTensor::from_f32(
             masks_data,
             Shape::from_dims(&[1, 1, h_in, w_in]),
@@ -2032,7 +2135,12 @@ mod tests {
         // After two stride-2 convs the spatial dims drop by 4×.
         assert_eq!(
             out.shape().dims(),
-            &[1, cfg.embed_dim, cfg.image_embedding_size.0, cfg.image_embedding_size.1],
+            &[
+                1,
+                cfg.embed_dim,
+                cfg.image_embedding_size.0,
+                cfg.image_embedding_size.1
+            ],
         );
         for &v in &out.realize_f32() {
             assert!(v.is_finite(), "non-finite mask embedding: {v}");
@@ -2043,12 +2151,20 @@ mod tests {
     fn no_mask_dense_broadcasts_correctly() {
         let cfg = tiny_prompt_cfg();
         let weights = tiny_prompt_weights(&cfg);
-        let enc = SamPromptEncoder { config: cfg.clone(), weights };
+        let enc = SamPromptEncoder {
+            config: cfg.clone(),
+            weights,
+        };
         let anchor = dummy_anchor();
         let out = enc.no_mask_dense(&anchor).unwrap();
         assert_eq!(
             out.shape().dims(),
-            &[1, cfg.embed_dim, cfg.image_embedding_size.0, cfg.image_embedding_size.1],
+            &[
+                1,
+                cfg.embed_dim,
+                cfg.image_embedding_size.0,
+                cfg.image_embedding_size.1
+            ],
         );
         // Every spatial cell should equal the per-channel no_mask_embed
         // value (the broadcast is along the spatial axes).
@@ -2071,7 +2187,7 @@ mod tests {
 
     fn tiny_decoder_cfg() -> SamMaskDecoderConfig {
         SamMaskDecoderConfig {
-            transformer_dim: 8,         // 4 heads × 2 hd at downsample=1, or 4 × 1 at ds=2
+            transformer_dim: 8, // 4 heads × 2 hd at downsample=1, or 4 × 1 at ds=2
             num_multimask_outputs: 3,
             iou_head_depth: 2,
             iou_head_hidden_dim: 8,
@@ -2087,9 +2203,8 @@ mod tests {
         num_heads: usize,
         downsample_rate: usize,
     ) -> SamDecoderAttentionWeights {
-        let mut vec_of = |n: usize| -> Arc<[f32]> {
-            Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
-        };
+        let mut vec_of =
+            |n: usize| -> Arc<[f32]> { Arc::from((0..n).map(|_| next()).collect::<Vec<_>>()) };
         let internal = embedding_dim / downsample_rate;
         SamDecoderAttentionWeights {
             q_proj: WeightStorage::F32(vec_of(embedding_dim * internal)),
@@ -2123,8 +2238,11 @@ mod tests {
             biases.push(Arc::from((0..od).map(|_| next()).collect::<Vec<_>>()));
         }
         SamMlpMaskDecoderWeights {
-            layers, biases,
-            input_dim: in_dim, hidden_dim, output_dim: out_dim,
+            layers,
+            biases,
+            input_dim: in_dim,
+            hidden_dim,
+            output_dim: out_dim,
             sigmoid_output: false,
         }
     }
@@ -2153,7 +2271,8 @@ mod tests {
             activation: SamMlpActivation::Relu,
         };
         SamTwoWayAttentionBlockWeights {
-            self_attn, cross_attn_token_to_image: cross_attn_t2i,
+            self_attn,
+            cross_attn_token_to_image: cross_attn_t2i,
             cross_attn_image_to_token: cross_attn_i2t,
             mlp,
             norm1: SamSimpleLnWeights {
@@ -2202,7 +2321,11 @@ mod tests {
             hypernetwork_mlps.push(tiny_mlp_weights(&mut next, td, td, td / 8, 3));
         }
         let iou_prediction_head = tiny_mlp_weights(
-            &mut next, td, cfg.iou_head_hidden_dim, nmt, cfg.iou_head_depth,
+            &mut next,
+            td,
+            cfg.iou_head_hidden_dim,
+            nmt,
+            cfg.iou_head_depth,
         );
 
         let iou_token = make_arc_vec(&mut next, td);
@@ -2213,14 +2336,17 @@ mod tests {
         let upsample_conv2_b = make_arc_vec(&mut next, td / 8);
 
         SamMaskDecoderWeights {
-            iou_token, mask_tokens,
+            iou_token,
+            mask_tokens,
             transformer,
-            upsample_conv1_w, upsample_conv1_b,
+            upsample_conv1_w,
+            upsample_conv1_b,
             upsample_ln: SamLayerNormWeights {
                 gain: Arc::from(vec![1.0_f32; td / 4]),
                 bias: Arc::from(vec![0.0_f32; td / 4]),
             },
-            upsample_conv2_w, upsample_conv2_b,
+            upsample_conv2_w,
+            upsample_conv2_b,
             hypernetwork_mlps,
             iou_prediction_head,
         }
@@ -2230,18 +2356,23 @@ mod tests {
     fn mask_decoder_forward_shape_singlemask() {
         let cfg = tiny_decoder_cfg();
         let weights = tiny_decoder_weights(&cfg);
-        let decoder = SamMaskDecoder { config: cfg.clone(), weights };
+        let decoder = SamMaskDecoder {
+            config: cfg.clone(),
+            weights,
+        };
 
         // (1, td, 4, 4) image embedding, (1, td, 4, 4) PE, (1, n_prompts, td) prompts.
         let td = cfg.transformer_dim;
-        let h = 4; let w = 4;
-        let img_data: Vec<f32> = (0..1 * td * h * w).map(|i| ((i as f32) * 0.001) - 0.05).collect();
-        let img = LazyTensor::from_f32(
-            img_data, Shape::from_dims(&[1, td, h, w]), &Device::cpu(),
-        );
+        let h = 4;
+        let w = 4;
+        let img_data: Vec<f32> = (0..1 * td * h * w)
+            .map(|i| ((i as f32) * 0.001) - 0.05)
+            .collect();
+        let img = LazyTensor::from_f32(img_data, Shape::from_dims(&[1, td, h, w]), &Device::cpu());
         let pe_data: Vec<f32> = (0..1 * td * h * w).map(|i| ((i as f32) * 0.0007)).collect();
         let pe = img.const_f32_like(
-            Arc::<[f32]>::from(pe_data), Shape::from_dims(&[1, td, h, w]),
+            Arc::<[f32]>::from(pe_data),
+            Shape::from_dims(&[1, td, h, w]),
         );
         let n_prompts = 2;
         let sparse_data: Vec<f32> = (0..1 * n_prompts * td).map(|i| (i as f32) * 0.01).collect();
@@ -2251,12 +2382,15 @@ mod tests {
         );
         let dense_data: Vec<f32> = (0..1 * td * h * w).map(|i| ((i as f32) * 0.0005)).collect();
         let dense = img.const_f32_like(
-            Arc::<[f32]>::from(dense_data), Shape::from_dims(&[1, td, h, w]),
+            Arc::<[f32]>::from(dense_data),
+            Shape::from_dims(&[1, td, h, w]),
         );
 
-        let (masks, iou_pred) = decoder.forward(
-            &img, &pe, &sparse, &dense, /* multimask_output */ false,
-        ).unwrap();
+        let (masks, iou_pred) = decoder
+            .forward(
+                &img, &pe, &sparse, &dense, /* multimask_output */ false,
+            )
+            .unwrap();
         // After 2× ConvTranspose2d, spatial dims grow 4× (2 × 2). h=4→8→16.
         assert_eq!(masks.shape().dims(), &[1, 1, 16, 16]);
         assert_eq!(iou_pred.shape().dims(), &[1, 1]);
@@ -2269,14 +2403,18 @@ mod tests {
     fn mask_decoder_forward_shape_multimask() {
         let cfg = tiny_decoder_cfg();
         let weights = tiny_decoder_weights(&cfg);
-        let decoder = SamMaskDecoder { config: cfg.clone(), weights };
+        let decoder = SamMaskDecoder {
+            config: cfg.clone(),
+            weights,
+        };
 
         let td = cfg.transformer_dim;
-        let h = 4; let w = 4;
-        let img_data: Vec<f32> = (0..1 * td * h * w).map(|i| ((i as f32) * 0.001) - 0.05).collect();
-        let img = LazyTensor::from_f32(
-            img_data, Shape::from_dims(&[1, td, h, w]), &Device::cpu(),
-        );
+        let h = 4;
+        let w = 4;
+        let img_data: Vec<f32> = (0..1 * td * h * w)
+            .map(|i| ((i as f32) * 0.001) - 0.05)
+            .collect();
+        let img = LazyTensor::from_f32(img_data, Shape::from_dims(&[1, td, h, w]), &Device::cpu());
         let pe = img.const_f32_like(
             Arc::<[f32]>::from(vec![0.001_f32; 1 * td * h * w]),
             Shape::from_dims(&[1, td, h, w]),
@@ -2291,11 +2429,14 @@ mod tests {
             Shape::from_dims(&[1, td, h, w]),
         );
 
-        let (masks, iou_pred) = decoder.forward(
-            &img, &pe, &sparse, &dense, /* multimask_output */ true,
-        ).unwrap();
+        let (masks, iou_pred) = decoder
+            .forward(&img, &pe, &sparse, &dense, /* multimask_output */ true)
+            .unwrap();
         // 3 multi-task masks at 16×16.
-        assert_eq!(masks.shape().dims(), &[1, cfg.num_multimask_outputs, 16, 16]);
+        assert_eq!(
+            masks.shape().dims(),
+            &[1, cfg.num_multimask_outputs, 16, 16]
+        );
         assert_eq!(iou_pred.shape().dims(), &[1, cfg.num_multimask_outputs]);
     }
 
@@ -2331,14 +2472,21 @@ mod tests {
             transformer_num_heads: 4,
             transformer_mlp_dim: 16,
         };
-        SamModelConfig { image_encoder, prompt_encoder, mask_decoder }
+        SamModelConfig {
+            image_encoder,
+            prompt_encoder,
+            mask_decoder,
+        }
     }
 
     #[test]
     fn sam_model_config_vit_b_is_consistent() {
         let cfg = SamModelConfig::vit_b();
         assert_eq!(cfg.image_encoder.out_chans, cfg.prompt_encoder.embed_dim);
-        assert_eq!(cfg.image_encoder.out_chans, cfg.mask_decoder.transformer_dim);
+        assert_eq!(
+            cfg.image_encoder.out_chans,
+            cfg.mask_decoder.transformer_dim
+        );
         let pps = cfg.image_encoder.patches_per_side();
         assert_eq!(cfg.prompt_encoder.image_embedding_size, (pps, pps));
         assert_eq!(
@@ -2384,8 +2532,10 @@ mod tests {
                 for x in 0..img_size {
                     let v = out[c * img_size * img_size + y * img_size + x];
                     if y < h && x < w {
-                        assert!((v - 0.0).abs() < 1e-6,
-                            "(c={c},y={y},x={x}): expected 0 (mean-subtracted) got {v}");
+                        assert!(
+                            (v - 0.0).abs() < 1e-6,
+                            "(c={c},y={y},x={x}): expected 0 (mean-subtracted) got {v}"
+                        );
                     } else {
                         assert_eq!(v, 0.0, "pad at (c={c},y={y},x={x}) should be 0");
                     }
@@ -2422,9 +2572,9 @@ mod tests {
         let raw: Vec<f32> = (0..3 * h * w).map(|i| (i as f32) * 0.1).collect();
         let points_xy = vec![5.0_f32, 7.0, 12.0, 15.0];
         let point_labels = vec![1.0_f32, 0.0];
-        let (masks, iou) = model.forward(
-            &raw, h, w, &points_xy, &point_labels, false,
-        ).unwrap();
+        let (masks, iou) = model
+            .forward(&raw, h, w, &points_xy, &point_labels, false)
+            .unwrap();
         // singlemask → 1 mask channel, cropped to (h, w).
         // decoder_side = 4 * pps = 32 == img_size → scale=1.
         // upsample (1, 1, 32, 32) → narrow to (1, 1, 24, 28) → squeeze → (1, 24, 28).
@@ -2452,9 +2602,9 @@ mod tests {
         let raw: Vec<f32> = (0..3 * h * w).map(|i| (i as f32) * 0.05).collect();
         let points_xy = vec![3.0_f32, 4.0];
         let point_labels = vec![1.0_f32];
-        let (masks, iou) = model.forward(
-            &raw, h, w, &points_xy, &point_labels, true,
-        ).unwrap();
+        let (masks, iou) = model
+            .forward(&raw, h, w, &points_xy, &point_labels, true)
+            .unwrap();
         // multimask → 3 mask channels.
         assert_eq!(masks.shape().dims(), &[3, h, w]);
         assert_eq!(iou.shape().dims(), &[1, 3]);
@@ -2489,12 +2639,12 @@ mod tests {
         // Precompute embeddings once, then exercise mask decode twice with
         // different prompts off the same embeddings.
         let img_embeddings = model.embeddings(&raw, h, w).unwrap();
-        let (m1, _) = model.forward_for_embeddings(
-            &img_embeddings, h, w, &[5.0, 7.0], &[1.0], false,
-        ).unwrap();
-        let (m2, _) = model.forward_for_embeddings(
-            &img_embeddings, h, w, &[12.0, 15.0], &[0.0], false,
-        ).unwrap();
+        let (m1, _) = model
+            .forward_for_embeddings(&img_embeddings, h, w, &[5.0, 7.0], &[1.0], false)
+            .unwrap();
+        let (m2, _) = model
+            .forward_for_embeddings(&img_embeddings, h, w, &[12.0, 15.0], &[0.0], false)
+            .unwrap();
         assert_eq!(m1.shape().dims(), &[1, h, w]);
         assert_eq!(m2.shape().dims(), &[1, h, w]);
     }
@@ -2502,10 +2652,15 @@ mod tests {
     #[test]
     fn window_partition_then_unpartition_round_trips() {
         // 4×4×8 grid, window=2 → 2×2 = 4 windows, no padding.
-        let b = 1; let h = 4; let w = 4; let c = 8;
+        let b = 1;
+        let h = 4;
+        let w = 4;
+        let c = 8;
         let data: Vec<f32> = (0..b * h * w * c).map(|i| i as f32).collect();
         let x = LazyTensor::from_f32(
-            data.clone(), Shape::from_dims(&[b, h, w, c]), &Device::cpu(),
+            data.clone(),
+            Shape::from_dims(&[b, h, w, c]),
+            &Device::cpu(),
         );
         let (windows, (h_p, w_p)) = window_partition(&x, 2, h, w, c).unwrap();
         assert_eq!(windows.shape().dims(), &[4, 2, 2, c]);

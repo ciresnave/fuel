@@ -32,9 +32,9 @@
 //! plumbing through the SeaNet / transformer sub-modules — out of
 //! scope for the composition port.
 
+use crate::Result;
 use crate::lazy::LazyTensor;
 use crate::lazy_mimi::{MimiConfig, MimiModel, MimiWeights};
-use crate::Result;
 use fuel_ir::Shape;
 
 /// How the codec resamples between the SeaNet encoder frame rate
@@ -351,7 +351,9 @@ impl MimiEncodecDecodeState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Device;
     use crate::lazy::WeightStorage;
+    use crate::lazy_encodec::PadMode;
     use crate::lazy_mimi_quantization::{
         EuclideanCodebookWeights, ResidualVectorQuantizationWeights,
         ResidualVectorQuantizerWeights, SplitResidualVectorQuantizerWeights,
@@ -366,8 +368,6 @@ mod tests {
         LayerNormWeights, MimiAttentionWeights, MimiMlpWeights, MimiTransformerConfig,
         MimiTransformerLayerWeights, MimiTransformerWeights, ProjectedTransformerWeights,
     };
-    use crate::lazy_encodec::PadMode;
-    use crate::Device;
     use std::sync::Arc;
 
     fn rng_seed(seed: u32) -> impl FnMut() -> f32 {
@@ -383,31 +383,53 @@ mod tests {
     }
 
     fn conv_w(
-        in_c: usize, out_c: usize, k: usize, stride: usize, dilation: usize, groups: usize,
-        bias: bool, nb: &mut dyn FnMut() -> f32,
+        in_c: usize,
+        out_c: usize,
+        k: usize,
+        stride: usize,
+        dilation: usize,
+        groups: usize,
+        bias: bool,
+        nb: &mut dyn FnMut() -> f32,
     ) -> LazyConv1dWeights {
         LazyConv1dWeights {
             weight: vec_of(out_c * (in_c / groups) * k, nb),
             bias: if bias { Some(vec_of(out_c, nb)) } else { None },
-            in_channels: in_c, out_channels: out_c,
-            kernel_size: k, stride, dilation, groups,
+            in_channels: in_c,
+            out_channels: out_c,
+            kernel_size: k,
+            stride,
+            dilation,
+            groups,
         }
     }
 
     fn conv_tr_w(
-        in_c: usize, out_c: usize, k: usize, stride: usize, groups: usize,
-        bias: bool, nb: &mut dyn FnMut() -> f32,
+        in_c: usize,
+        out_c: usize,
+        k: usize,
+        stride: usize,
+        groups: usize,
+        bias: bool,
+        nb: &mut dyn FnMut() -> f32,
     ) -> LazyConvTranspose1dWeights {
         LazyConvTranspose1dWeights {
             weight: vec_of(in_c * (out_c / groups) * k, nb),
             bias: if bias { Some(vec_of(out_c, nb)) } else { None },
-            in_channels: in_c, out_channels: out_c,
-            kernel_size: k, stride, groups,
+            in_channels: in_c,
+            out_channels: out_c,
+            kernel_size: k,
+            stride,
+            groups,
         }
     }
 
     fn resnet_block_w(
-        dim: usize, k: usize, dilation: usize, compress: usize, true_skip: bool,
+        dim: usize,
+        k: usize,
+        dilation: usize,
+        compress: usize,
+        true_skip: bool,
         nb: &mut dyn FnMut() -> f32,
     ) -> SeaNetResnetBlockWeights {
         let hidden = dim / compress;
@@ -416,27 +438,38 @@ mod tests {
                 conv_w(dim, hidden, k, 1, dilation, 1, true, nb),
                 conv_w(hidden, dim, 1, 1, 1, 1, true, nb),
             ],
-            shortcut: if true_skip { None } else { Some(conv_w(dim, dim, 1, 1, 1, 1, true, nb)) },
+            shortcut: if true_skip {
+                None
+            } else {
+                Some(conv_w(dim, dim, 1, 1, 1, 1, true, nb))
+            },
         }
     }
 
     fn tiny_seanet_cfg() -> SeaNetConfig {
         SeaNetConfig {
-            dimension: 8, channels: 1,
+            dimension: 8,
+            channels: 1,
             n_filters: 2,
             n_residual_layers: 1,
             ratios: vec![2, 2],
             activation: SeaNetActivation::Elu1,
-            kernel_size: 3, residual_kernel_size: 3, last_kernel_size: 3,
-            dilation_base: 2, pad_mode: PadMode::Constant,
-            true_skip: true, compress: 2,
+            kernel_size: 3,
+            residual_kernel_size: 3,
+            last_kernel_size: 3,
+            dilation_base: 2,
+            pad_mode: PadMode::Constant,
+            true_skip: true,
+            compress: 2,
             final_activation: None,
         }
     }
 
     fn tiny_transformer_cfg() -> MimiTransformerConfig {
         MimiTransformerConfig {
-            d_model: 8, num_heads: 2, num_layers: 1,
+            d_model: 8,
+            num_heads: 2,
+            num_layers: 1,
             dim_feedforward: 16,
             max_period: 10_000.0,
             conv_layout: true,
@@ -456,7 +489,9 @@ mod tests {
     }
 
     fn build_transformer_layer(
-        d: usize, ff: usize, nb: &mut dyn FnMut() -> f32,
+        d: usize,
+        ff: usize,
+        nb: &mut dyn FnMut() -> f32,
     ) -> MimiTransformerLayerWeights {
         MimiTransformerLayerWeights {
             norm1: ln_w(d),
@@ -477,13 +512,16 @@ mod tests {
     }
 
     fn build_projected_transformer(
-        cfg: &MimiTransformerConfig, nb: &mut dyn FnMut() -> f32,
+        cfg: &MimiTransformerConfig,
+        nb: &mut dyn FnMut() -> f32,
     ) -> ProjectedTransformerWeights {
         let d = cfg.d_model;
         let ff = cfg.dim_feedforward;
         ProjectedTransformerWeights {
             transformer: MimiTransformerWeights {
-                layers: (0..cfg.num_layers).map(|_| build_transformer_layer(d, ff, nb)).collect(),
+                layers: (0..cfg.num_layers)
+                    .map(|_| build_transformer_layer(d, ff, nb))
+                    .collect(),
             },
             // input_dim == d → no input projection.
             input_proj: None,
@@ -492,33 +530,74 @@ mod tests {
         }
     }
 
-    fn build_seanet_encoder(cfg: &SeaNetConfig, nb: &mut dyn FnMut() -> f32) -> SeaNetEncoderWeights {
+    fn build_seanet_encoder(
+        cfg: &SeaNetConfig,
+        nb: &mut dyn FnMut() -> f32,
+    ) -> SeaNetEncoderWeights {
         let mut mult = 1_usize;
-        let init_conv = conv_w(cfg.channels, mult * cfg.n_filters, cfg.kernel_size, 1, 1, 1, true, nb);
+        let init_conv = conv_w(
+            cfg.channels,
+            mult * cfg.n_filters,
+            cfg.kernel_size,
+            1,
+            1,
+            1,
+            true,
+            nb,
+        );
         let mut layers = Vec::with_capacity(cfg.ratios.len());
         for ratio in cfg.ratios.iter().rev() {
             let dim = mult * cfg.n_filters;
             let mut residuals = Vec::with_capacity(cfg.n_residual_layers);
             for j in 0..cfg.n_residual_layers {
                 residuals.push(resnet_block_w(
-                    dim, cfg.residual_kernel_size,
+                    dim,
+                    cfg.residual_kernel_size,
                     cfg.dilation_base.pow(j as u32),
-                    cfg.compress, cfg.true_skip, nb,
+                    cfg.compress,
+                    cfg.true_skip,
+                    nb,
                 ));
             }
             let downsample = conv_w(dim, dim * 2, ratio * 2, *ratio, 1, 1, true, nb);
-            layers.push(SeaNetEncoderLayerWeights { residuals, downsample });
+            layers.push(SeaNetEncoderLayerWeights {
+                residuals,
+                downsample,
+            });
             mult *= 2;
         }
         let final_conv = conv_w(
-            mult * cfg.n_filters, cfg.dimension, cfg.last_kernel_size, 1, 1, 1, true, nb,
+            mult * cfg.n_filters,
+            cfg.dimension,
+            cfg.last_kernel_size,
+            1,
+            1,
+            1,
+            true,
+            nb,
         );
-        SeaNetEncoderWeights { init_conv, layers, final_conv }
+        SeaNetEncoderWeights {
+            init_conv,
+            layers,
+            final_conv,
+        }
     }
 
-    fn build_seanet_decoder(cfg: &SeaNetConfig, nb: &mut dyn FnMut() -> f32) -> SeaNetDecoderWeights {
+    fn build_seanet_decoder(
+        cfg: &SeaNetConfig,
+        nb: &mut dyn FnMut() -> f32,
+    ) -> SeaNetDecoderWeights {
         let mut mult = 1_usize << cfg.ratios.len();
-        let init_conv = conv_w(cfg.dimension, mult * cfg.n_filters, cfg.kernel_size, 1, 1, 1, true, nb);
+        let init_conv = conv_w(
+            cfg.dimension,
+            mult * cfg.n_filters,
+            cfg.kernel_size,
+            1,
+            1,
+            1,
+            true,
+            nb,
+        );
         let mut layers = Vec::with_capacity(cfg.ratios.len());
         for ratio in cfg.ratios.iter() {
             let dim = mult * cfg.n_filters;
@@ -527,22 +606,41 @@ mod tests {
             let mut residuals = Vec::with_capacity(cfg.n_residual_layers);
             for j in 0..cfg.n_residual_layers {
                 residuals.push(resnet_block_w(
-                    out_dim, cfg.residual_kernel_size,
+                    out_dim,
+                    cfg.residual_kernel_size,
                     cfg.dilation_base.pow(j as u32),
-                    cfg.compress, cfg.true_skip, nb,
+                    cfg.compress,
+                    cfg.true_skip,
+                    nb,
                 ));
             }
-            layers.push(SeaNetDecoderLayerWeights { upsample, residuals });
+            layers.push(SeaNetDecoderLayerWeights {
+                upsample,
+                residuals,
+            });
             mult /= 2;
         }
         let final_conv = conv_w(
-            cfg.n_filters, cfg.channels, cfg.last_kernel_size, 1, 1, 1, true, nb,
+            cfg.n_filters,
+            cfg.channels,
+            cfg.last_kernel_size,
+            1,
+            1,
+            1,
+            true,
+            nb,
         );
-        SeaNetDecoderWeights { init_conv, layers, final_conv }
+        SeaNetDecoderWeights {
+            init_conv,
+            layers,
+            final_conv,
+        }
     }
 
     fn tiny_codebook(
-        codebook_size: usize, codebook_dim: usize, nb: &mut dyn FnMut() -> f32,
+        codebook_size: usize,
+        codebook_dim: usize,
+        nb: &mut dyn FnMut() -> f32,
     ) -> EuclideanCodebookWeights {
         let emb = vec_of(codebook_size * codebook_dim, nb);
         let mut c2_v = Vec::with_capacity(codebook_size);
@@ -562,17 +660,26 @@ mod tests {
         }
     }
 
-    fn tiny_vq(dim: usize, codebook_size: usize, nb: &mut dyn FnMut() -> f32) -> VectorQuantizationWeights {
+    fn tiny_vq(
+        dim: usize,
+        codebook_size: usize,
+        nb: &mut dyn FnMut() -> f32,
+    ) -> VectorQuantizationWeights {
         VectorQuantizationWeights {
             codebook: tiny_codebook(codebook_size, dim, nb),
-            project_in_w: None, project_in_b: None,
-            project_out_w: None, project_out_b: None,
+            project_in_w: None,
+            project_in_b: None,
+            project_out_w: None,
+            project_out_b: None,
             dim,
         }
     }
 
     fn tiny_rvq_quantizer(
-        n_q: usize, internal_dim: usize, external_dim: usize, codebook_size: usize,
+        n_q: usize,
+        internal_dim: usize,
+        external_dim: usize,
+        codebook_size: usize,
         nb: &mut dyn FnMut() -> f32,
     ) -> ResidualVectorQuantizerWeights {
         // 1x1 projections wired when internal_dim != external_dim.
@@ -588,7 +695,9 @@ mod tests {
         };
         ResidualVectorQuantizerWeights {
             vq: ResidualVectorQuantizationWeights {
-                layers: (0..n_q).map(|_| tiny_vq(internal_dim, codebook_size, nb)).collect(),
+                layers: (0..n_q)
+                    .map(|_| tiny_vq(internal_dim, codebook_size, nb))
+                    .collect(),
             },
             input_proj_w,
             output_proj_w,
@@ -712,10 +821,10 @@ mod tests {
         // A "few-second" synthetic PCM scaled to the tiny config —
         // the only invariant is divisibility by total_stride.
         let t_audio = total_stride * 6;
-        let pcm: Vec<f32> = (0..t_audio).map(|i| ((i as f32) * 0.01).sin() * 0.1).collect();
-        let pcm = LazyTensor::from_f32(
-            pcm, Shape::from_dims(&[1, 1, t_audio]), &Device::cpu(),
-        );
+        let pcm: Vec<f32> = (0..t_audio)
+            .map(|i| ((i as f32) * 0.01).sin() * 0.1)
+            .collect();
+        let pcm = LazyTensor::from_f32(pcm, Shape::from_dims(&[1, 1, t_audio]), &Device::cpu());
         let codes = model.encode(&pcm).unwrap();
         let code_dims = codes.shape().dims().to_vec();
         assert_eq!(code_dims, vec![1, n_q, t_audio / total_stride]);
@@ -737,9 +846,8 @@ mod tests {
         // exercises the decode streaming path. 4 code frames.
         let t_codes = 4;
         let codes: Vec<u32> = (0..(1 * n_q * t_codes)).map(|i| (i as u32) % 4).collect();
-        let codes_t = LazyTensor::from_u32(
-            codes, Shape::from_dims(&[1, n_q, t_codes]), &Device::cpu(),
-        );
+        let codes_t =
+            LazyTensor::from_u32(codes, Shape::from_dims(&[1, n_q, t_codes]), &Device::cpu());
 
         let one_shot = model.decode(&codes_t).unwrap().realize_f32();
         assert_eq!(one_shot.len(), t_codes * total_stride);
@@ -756,14 +864,19 @@ mod tests {
                 emitted.extend(v);
             }
         }
-        assert_eq!(emitted.len(), one_shot.len(),
-            "streamed length must equal one-shot length");
+        assert_eq!(
+            emitted.len(),
+            one_shot.len(),
+            "streamed length must equal one-shot length"
+        );
         // Tolerance covers re-association inside the conv stack — the
         // streaming path re-runs forward on the cumulative input, so
         // results match up to floating-point noise.
         for (i, (s, o)) in emitted.iter().zip(one_shot.iter()).enumerate() {
-            assert!((s - o).abs() < 1e-5,
-                "streaming/one-shot mismatch at {i}: streaming={s} one_shot={o}");
+            assert!(
+                (s - o).abs() < 1e-5,
+                "streaming/one-shot mismatch at {i}: streaming={s} one_shot={o}"
+            );
         }
     }
 
@@ -776,9 +889,13 @@ mod tests {
         // 3 frames of synthetic PCM.
         let t_codes = 3;
         let t_audio = t_codes * total_stride;
-        let pcm: Vec<f32> = (0..t_audio).map(|i| ((i as f32) * 0.03).cos() * 0.1).collect();
+        let pcm: Vec<f32> = (0..t_audio)
+            .map(|i| ((i as f32) * 0.03).cos() * 0.1)
+            .collect();
         let pcm_t = LazyTensor::from_f32(
-            pcm.clone(), Shape::from_dims(&[1, 1, t_audio]), &Device::cpu(),
+            pcm.clone(),
+            Shape::from_dims(&[1, 1, t_audio]),
+            &Device::cpu(),
         );
         let one_shot = model.encode(&pcm_t).unwrap().realize_u32();
         assert_eq!(one_shot.len(), 1 * n_q * t_codes);
@@ -795,9 +912,8 @@ mod tests {
         while cursor < t_audio {
             let take = chunk_size.min(t_audio - cursor);
             let chunk_data: Vec<f32> = pcm[cursor..cursor + take].to_vec();
-            let chunk = LazyTensor::from_f32(
-                chunk_data, Shape::from_dims(&[1, 1, take]), &Device::cpu(),
-            );
+            let chunk =
+                LazyTensor::from_f32(chunk_data, Shape::from_dims(&[1, 1, take]), &Device::cpu());
             let (new_state, out) = model.encode_step(state, &chunk).unwrap();
             state = new_state;
             if let Some(codes) = out {

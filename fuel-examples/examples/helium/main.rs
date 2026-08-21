@@ -9,7 +9,7 @@ use clap::Parser;
 
 use fuel::lazy::{LlamaConfig, LlamaWeights};
 use fuel::lazy_helium::{HeliumConfig, HeliumModel, HeliumWeights};
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 use std::io::Write;
 use tokenizers::Tokenizer;
 
@@ -145,14 +145,14 @@ fn main() -> Result<()> {
     // the result.
     let llama_cfg = LlamaConfig {
         vocab_size: helium_cfg.vocab_size,
-        dim:        helium_cfg.hidden_size,
-        n_layers:   helium_cfg.num_hidden_layers,
-        n_heads:    helium_cfg.num_attention_heads,
+        dim: helium_cfg.hidden_size,
+        n_layers: helium_cfg.num_hidden_layers,
+        n_heads: helium_cfg.num_attention_heads,
         n_kv_heads: helium_cfg.num_key_value_heads,
-        head_dim:   helium_cfg.head_dim,
-        ffn_dim:    helium_cfg.intermediate_size,
-        norm_eps:   helium_cfg.rms_norm_eps,
-        rope_base:  helium_cfg.rope_theta,
+        head_dim: helium_cfg.head_dim,
+        ffn_dim: helium_cfg.intermediate_size,
+        norm_eps: helium_cfg.rms_norm_eps,
+        rope_base: helium_cfg.rope_theta,
     };
     let st = unsafe { fuel::safetensors::MmapedSafetensors::multi(&filenames) }
         .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
@@ -164,7 +164,10 @@ fn main() -> Result<()> {
         final_norm_gain: llama_weights.final_norm_gain,
         output: llama_weights.output,
     };
-    let model = HeliumModel { config: helium_cfg.clone(), weights };
+    let model = HeliumModel {
+        config: helium_cfg.clone(),
+        weights,
+    };
     println!("loaded the model in {:?}", start.elapsed());
 
     let mut tok_stream = fuel_examples::token_output_stream::TokenOutputStream::new(tokenizer);
@@ -226,8 +229,8 @@ fn main() -> Result<()> {
 }
 
 fn helium_config_from_hf_json_str(json: &str) -> Result<HeliumConfig> {
-    let v: serde_json::Value = serde_json::from_str(json)
-        .map_err(|e| E::msg(format!("parsing config.json: {e}")))?;
+    let v: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| E::msg(format!("parsing config.json: {e}")))?;
     let get_usize = |key: &str| -> Result<usize> {
         v.get(key)
             .and_then(|x| x.as_u64())
@@ -283,12 +286,16 @@ fn helium_config_from_hf_json_str(json: &str) -> Result<HeliumConfig> {
 
 fn parse_eos_token_id(json: &str) -> Option<u32> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
-    v.get("eos_token_id").and_then(|x| x.as_u64()).map(|x| x as u32)
+    v.get("eos_token_id")
+        .and_then(|x| x.as_u64())
+        .map(|x| x as u32)
 }
 
 fn parse_bos_token_id(json: &str) -> Option<u32> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
-    v.get("bos_token_id").and_then(|x| x.as_u64()).map(|x| x as u32)
+    v.get("bos_token_id")
+        .and_then(|x| x.as_u64())
+        .map(|x| x as u32)
 }
 
 fn apply_repeat_penalty(logits: &mut [f32], penalty: f32, context: &[u32]) {
@@ -325,7 +332,10 @@ fn sample(
     }
     let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let inv_t = 1.0 / temperature.max(1e-6);
-    let mut probs: Vec<f32> = logits.iter().map(|&x| ((x - max_l) * inv_t).exp()).collect();
+    let mut probs: Vec<f32> = logits
+        .iter()
+        .map(|&x| ((x - max_l) * inv_t).exp())
+        .collect();
     let sum: f32 = probs.iter().sum();
     for p in &mut probs {
         *p /= sum.max(1e-30);
@@ -368,7 +378,9 @@ fn sample(
     } else {
         return 0;
     }
-    let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    let mut state = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     state ^= state >> 33;
     state = state.wrapping_mul(0xff51_afd7_ed55_8ccd);
     state ^= state >> 33;

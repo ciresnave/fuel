@@ -37,8 +37,8 @@
 //! `depth` followed by one SingleStreamBlock layer per `depth`, with
 //! AdaLN conditioning derived from `timestep` + `y`.
 
-use crate::lazy::{LazyTensor, WeightStorage};
 use crate::Result;
+use crate::lazy::{LazyTensor, WeightStorage};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -186,8 +186,7 @@ impl MmDitModel {
         // ---- DoubleStream stack ----------------------------------------
         let (mut txt_h, mut img_h) = (txt.clone(), img.clone());
         for blk in &self.weights.double_blocks {
-            let (new_txt, new_img) =
-                apply_double_stream(&txt_h, &img_h, &c, blk, cfg)?;
+            let (new_txt, new_img) = apply_double_stream(&txt_h, &img_h, &c, blk, cfg)?;
             txt_h = new_txt;
             img_h = new_img;
         }
@@ -220,12 +219,15 @@ fn build_conditioning(
         return Err(crate::Error::Msg(format!(
             "build_conditioning: timestep must be rank-1, got rank {}",
             dims_t.len()
-        )).bt());
+        ))
+        .bt());
     }
     let batch = dims_t[0];
 
     let t_feat = timestep_sinusoidal_embed(timestep, w.frequency_embedding_size)?;
-    let t1 = w.t_fc1.apply_linear(&t_feat, w.frequency_embedding_size, dim)?;
+    let t1 = w
+        .t_fc1
+        .apply_linear(&t_feat, w.frequency_embedding_size, dim)?;
     let t1 = t1.add_trailing_bias(Arc::clone(&w.t_fc1_bias))?;
     let t1 = t1.silu();
     let t_emb = w.t_fc2.apply_linear(&t1, dim, dim)?;
@@ -243,7 +245,8 @@ fn build_conditioning(
         return Err(crate::Error::Msg(format!(
             "build_conditioning: c shape {:?} != expected ({}, {})",
             c_dims, batch, dim
-        )).bt());
+        ))
+        .bt());
     }
     Ok(c)
 }
@@ -255,7 +258,8 @@ fn timestep_sinusoidal_embed(t: &LazyTensor, dim: usize) -> Result<LazyTensor> {
     if !dim.is_multiple_of(2) {
         return Err(crate::Error::Msg(format!(
             "timestep_sinusoidal_embed: dim {dim} must be even"
-        )).bt());
+        ))
+        .bt());
     }
     let half = dim / 2;
     let batch = t.shape().dims()[0];
@@ -309,7 +313,8 @@ pub fn apply_modulation(
         return Err(crate::Error::Msg(format!(
             "apply_modulation: x must be rank-3 (B, S, dim), got rank {}",
             x_dims.len()
-        )).bt());
+        ))
+        .bt());
     }
     let (b, s, dim) = (x_dims[0], x_dims[1], x_dims[2]);
 
@@ -339,7 +344,8 @@ fn compute_modulation(
         return Err(crate::Error::Msg(format!(
             "compute_modulation: expected 6 chunks, got {}",
             chunks.len()
-        )).bt());
+        ))
+        .bt());
     }
     Ok(ModulationChunks {
         shift_msa: chunks[0].clone(),
@@ -363,14 +369,16 @@ fn split_qkv(
         return Err(crate::Error::Msg(format!(
             "split_qkv: input must be rank-3 (B, S, 3*dim), got rank {}",
             dims.len()
-        )).bt());
+        ))
+        .bt());
     }
     let (b, s, three_dim) = (dims[0], dims[1], dims[2]);
     let dim = num_heads * head_dim;
     if three_dim != 3 * dim {
         return Err(crate::Error::Msg(format!(
             "split_qkv: last dim {three_dim} != 3 * num_heads ({num_heads}) * head_dim ({head_dim})"
-        )).bt());
+        ))
+        .bt());
     }
     let q = qkv.narrow(2_usize, 0, dim)?;
     let k = qkv.narrow(2_usize, dim, dim)?;
@@ -397,7 +405,12 @@ fn project_qkv(
 
 // ---- Joint scaled dot-product attention -------------------------------------
 
-fn attention(q: &LazyTensor, k: &LazyTensor, v: &LazyTensor, head_dim: usize) -> Result<LazyTensor> {
+fn attention(
+    q: &LazyTensor,
+    k: &LazyTensor,
+    v: &LazyTensor,
+    head_dim: usize,
+) -> Result<LazyTensor> {
     let k_t = k.transpose()?;
     let scale = 1.0_f64 / (head_dim as f64).sqrt();
     let scores = q.matmul(&k_t)?.mul_scalar(scale);
@@ -432,10 +445,18 @@ pub fn apply_double_stream(
     let img_mod_x = apply_modulation(&img_norm, &img_mod.scale_msa, &img_mod.shift_msa)?;
 
     let (txt_q, txt_k, txt_v) = project_qkv(
-        &txt_mod_x, &weights.text.qkv_proj, &weights.text.qkv_bias, num_heads, head_dim,
+        &txt_mod_x,
+        &weights.text.qkv_proj,
+        &weights.text.qkv_bias,
+        num_heads,
+        head_dim,
     )?;
     let (img_q, img_k, img_v) = project_qkv(
-        &img_mod_x, &weights.image.qkv_proj, &weights.image.qkv_bias, num_heads, head_dim,
+        &img_mod_x,
+        &weights.image.qkv_proj,
+        &weights.image.qkv_bias,
+        num_heads,
+        head_dim,
     )?;
 
     let s_txt = txt_q.shape().dims()[2];
@@ -463,17 +484,14 @@ pub fn apply_double_stream(
 }
 
 /// `x + gate.unsqueeze(1) * delta` along the sequence axis.
-fn gated_residual(
-    x: &LazyTensor,
-    delta: &LazyTensor,
-    gate: &LazyTensor,
-) -> Result<LazyTensor> {
+fn gated_residual(x: &LazyTensor, delta: &LazyTensor, gate: &LazyTensor) -> Result<LazyTensor> {
     let x_dims = x.shape().dims().to_vec();
     if x_dims.len() != 3 {
         return Err(crate::Error::Msg(format!(
             "gated_residual: x must be rank-3, got rank {}",
             x_dims.len()
-        )).bt());
+        ))
+        .bt());
     }
     let (b, s, dim) = (x_dims[0], x_dims[1], x_dims[2]);
     let gate_bc = gate
@@ -522,7 +540,11 @@ pub fn apply_single_stream(
     let x_mod = apply_modulation(&x_norm, &m.scale_msa, &m.shift_msa)?;
 
     let (q, k, v) = project_qkv(
-        &x_mod, &weights.qkv_proj, &weights.qkv_bias, num_heads, head_dim,
+        &x_mod,
+        &weights.qkv_proj,
+        &weights.qkv_bias,
+        num_heads,
+        head_dim,
     )?;
     let attn = attention(&q, &k, &v, head_dim)?;
     let attn_out = weights.out_proj.apply_linear(&attn, dim, dim)?;
@@ -582,35 +604,43 @@ fn load_stream_weights(
     use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
     Ok(StreamWeights {
         adaln_proj: load_transposed_matrix_preserve_dtype(
-            st, &format!("{prefix}.adaLN_modulation.1.weight"), 6 * dim, dim,
+            st,
+            &format!("{prefix}.adaLN_modulation.1.weight"),
+            6 * dim,
+            dim,
         )?,
         adaln_bias: Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}.adaLN_modulation.1.bias"),
+            st,
+            &format!("{prefix}.adaLN_modulation.1.bias"),
         )?),
         qkv_proj: load_transposed_matrix_preserve_dtype(
-            st, &format!("{prefix}.attn.qkv.weight"), 3 * dim, dim,
+            st,
+            &format!("{prefix}.attn.qkv.weight"),
+            3 * dim,
+            dim,
         )?,
-        qkv_bias: Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}.attn.qkv.bias"),
-        )?),
+        qkv_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.attn.qkv.bias"))?),
         out_proj: load_transposed_matrix_preserve_dtype(
-            st, &format!("{prefix}.attn.proj.weight"), dim, dim,
+            st,
+            &format!("{prefix}.attn.proj.weight"),
+            dim,
+            dim,
         )?,
-        out_bias: Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}.attn.proj.bias"),
-        )?),
+        out_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.attn.proj.bias"))?),
         fc1: load_transposed_matrix_preserve_dtype(
-            st, &format!("{prefix}.mlp.fc1.weight"), mlp_hidden, dim,
+            st,
+            &format!("{prefix}.mlp.fc1.weight"),
+            mlp_hidden,
+            dim,
         )?,
-        fc1_bias: Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}.mlp.fc1.bias"),
-        )?),
+        fc1_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.mlp.fc1.bias"))?),
         fc2: load_transposed_matrix_preserve_dtype(
-            st, &format!("{prefix}.mlp.fc2.weight"), dim, mlp_hidden,
+            st,
+            &format!("{prefix}.mlp.fc2.weight"),
+            dim,
+            mlp_hidden,
         )?,
-        fc2_bias: Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}.mlp.fc2.bias"),
-        )?),
+        fc2_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.mlp.fc2.bias"))?),
     })
 }
 
@@ -623,35 +653,43 @@ fn load_single_stream_weights(
     use crate::lazy::{load_tensor_as_f32, load_transposed_matrix_preserve_dtype};
     Ok(SingleStreamBlockWeights {
         adaln_proj: load_transposed_matrix_preserve_dtype(
-            st, &format!("{prefix}.adaLN_modulation.1.weight"), 6 * dim, dim,
+            st,
+            &format!("{prefix}.adaLN_modulation.1.weight"),
+            6 * dim,
+            dim,
         )?,
         adaln_bias: Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}.adaLN_modulation.1.bias"),
+            st,
+            &format!("{prefix}.adaLN_modulation.1.bias"),
         )?),
         qkv_proj: load_transposed_matrix_preserve_dtype(
-            st, &format!("{prefix}.attn.qkv.weight"), 3 * dim, dim,
+            st,
+            &format!("{prefix}.attn.qkv.weight"),
+            3 * dim,
+            dim,
         )?,
-        qkv_bias: Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}.attn.qkv.bias"),
-        )?),
+        qkv_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.attn.qkv.bias"))?),
         out_proj: load_transposed_matrix_preserve_dtype(
-            st, &format!("{prefix}.attn.proj.weight"), dim, dim,
+            st,
+            &format!("{prefix}.attn.proj.weight"),
+            dim,
+            dim,
         )?,
-        out_bias: Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}.attn.proj.bias"),
-        )?),
+        out_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.attn.proj.bias"))?),
         fc1: load_transposed_matrix_preserve_dtype(
-            st, &format!("{prefix}.mlp.fc1.weight"), mlp_hidden, dim,
+            st,
+            &format!("{prefix}.mlp.fc1.weight"),
+            mlp_hidden,
+            dim,
         )?,
-        fc1_bias: Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}.mlp.fc1.bias"),
-        )?),
+        fc1_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.mlp.fc1.bias"))?),
         fc2: load_transposed_matrix_preserve_dtype(
-            st, &format!("{prefix}.mlp.fc2.weight"), dim, mlp_hidden,
+            st,
+            &format!("{prefix}.mlp.fc2.weight"),
+            dim,
+            mlp_hidden,
         )?,
-        fc2_bias: Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}.mlp.fc2.bias"),
-        )?),
+        fc2_bias: Arc::from(load_tensor_as_f32(st, &format!("{prefix}.mlp.fc2.bias"))?),
     })
 }
 
@@ -684,20 +722,22 @@ impl MmDitWeights {
         let mlp_hidden = dim * cfg.mlp_ratio;
         let conditioning = ConditioningWeights {
             t_fc1: load_transposed_matrix_preserve_dtype(
-                st, "t_embedder.mlp.0.weight", dim, frequency_embedding_size,
+                st,
+                "t_embedder.mlp.0.weight",
+                dim,
+                frequency_embedding_size,
             )?,
             t_fc1_bias: Arc::from(load_tensor_as_f32(st, "t_embedder.mlp.0.bias")?),
-            t_fc2: load_transposed_matrix_preserve_dtype(
-                st, "t_embedder.mlp.2.weight", dim, dim,
-            )?,
+            t_fc2: load_transposed_matrix_preserve_dtype(st, "t_embedder.mlp.2.weight", dim, dim)?,
             t_fc2_bias: Arc::from(load_tensor_as_f32(st, "t_embedder.mlp.2.bias")?),
             y_fc1: load_transposed_matrix_preserve_dtype(
-                st, "y_embedder.mlp.0.weight", dim, adm_in_channels,
+                st,
+                "y_embedder.mlp.0.weight",
+                dim,
+                adm_in_channels,
             )?,
             y_fc1_bias: Arc::from(load_tensor_as_f32(st, "y_embedder.mlp.0.bias")?),
-            y_fc2: load_transposed_matrix_preserve_dtype(
-                st, "y_embedder.mlp.2.weight", dim, dim,
-            )?,
+            y_fc2: load_transposed_matrix_preserve_dtype(st, "y_embedder.mlp.2.weight", dim, dim)?,
             y_fc2_bias: Arc::from(load_tensor_as_f32(st, "y_embedder.mlp.2.bias")?),
             frequency_embedding_size,
             adm_in_channels,
@@ -705,17 +745,34 @@ impl MmDitWeights {
         let mut double_blocks = Vec::with_capacity(cfg.depth_double);
         for i in 0..cfg.depth_double {
             double_blocks.push(DoubleStreamBlockWeights {
-                text:  load_stream_weights(st, &format!("joint_blocks.{i}.context_block"), dim, mlp_hidden)?,
-                image: load_stream_weights(st, &format!("joint_blocks.{i}.x_block"),       dim, mlp_hidden)?,
+                text: load_stream_weights(
+                    st,
+                    &format!("joint_blocks.{i}.context_block"),
+                    dim,
+                    mlp_hidden,
+                )?,
+                image: load_stream_weights(
+                    st,
+                    &format!("joint_blocks.{i}.x_block"),
+                    dim,
+                    mlp_hidden,
+                )?,
             });
         }
         let mut single_blocks = Vec::with_capacity(cfg.depth_single);
         for i in 0..cfg.depth_single {
             single_blocks.push(load_single_stream_weights(
-                st, &format!("single_blocks.{i}"), dim, mlp_hidden,
+                st,
+                &format!("single_blocks.{i}"),
+                dim,
+                mlp_hidden,
             )?);
         }
-        Ok(MmDitWeights { conditioning, double_blocks, single_blocks })
+        Ok(MmDitWeights {
+            conditioning,
+            double_blocks,
+            single_blocks,
+        })
     }
 }
 
@@ -967,14 +1024,16 @@ impl MmDitFullModel {
             return Err(crate::Error::Msg(format!(
                 "MmDitFullModel::forward: x must be rank-4 (N, C, H, W), got rank {}",
                 x_dims.len()
-            )).bt());
+            ))
+            .bt());
         }
         let (_n_lat, c_in_lat, h_lat, w_lat) = (x_dims[0], x_dims[1], x_dims[2], x_dims[3]);
         if c_in_lat != cfg.in_channels {
             return Err(crate::Error::Msg(format!(
                 "MmDitFullModel::forward: x has {c_in_lat} in-channels, config expects {}",
                 cfg.in_channels,
-            )).bt());
+            ))
+            .bt());
         }
 
         // ---- Patch embed: conv2d, then (N, hidden, h, w) -> (N, h*w, hidden).
@@ -1005,20 +1064,23 @@ impl MmDitFullModel {
             return Err(crate::Error::Msg(format!(
                 "MmDitFullModel::forward: context must be rank-3 (N, S, C), got rank {}",
                 ctx_dims.len()
-            )).bt());
+            ))
+            .bt());
         }
         if ctx_dims[2] != cfg.context_embed_size {
             return Err(crate::Error::Msg(format!(
                 "MmDitFullModel::forward: context last-dim {} != config.context_embed_size {}",
                 ctx_dims[2], cfg.context_embed_size,
-            )).bt());
+            ))
+            .bt());
         }
         let ctx_proj = self.weights.context_embedder.weight.apply_linear(
-            context, cfg.context_embed_size, hidden,
+            context,
+            cfg.context_embed_size,
+            hidden,
         )?;
-        let ctx_proj = ctx_proj.add_trailing_bias(
-            Arc::clone(&self.weights.context_embedder.bias),
-        )?;
+        let ctx_proj =
+            ctx_proj.add_trailing_bias(Arc::clone(&self.weights.context_embedder.bias))?;
 
         // ---- Joint-block stack (first depth - 1 blocks).
         let (mut txt_h, mut img_h) = (ctx_proj, img_seq);
@@ -1028,8 +1090,7 @@ impl MmDitFullModel {
                     continue;
                 }
             }
-            let (new_txt, new_img) =
-                apply_double_stream(&txt_h, &img_h, &c, blk, &inner_cfg)?;
+            let (new_txt, new_img) = apply_double_stream(&txt_h, &img_h, &c, blk, &inner_cfg)?;
             txt_h = new_txt;
             img_h = new_img;
         }
@@ -1038,24 +1099,26 @@ impl MmDitFullModel {
         //      eligible for SLG skipping, matching the eager
         //      ComfyUI/MMDiTCore implementation).
         let img_h = apply_context_qkv_only_joint(
-            &txt_h, &img_h, &c, &self.weights.final_block, &inner_cfg,
+            &txt_h,
+            &img_h,
+            &c,
+            &self.weights.final_block,
+            &inner_cfg,
         )?;
 
         // ---- Final layer: 2-chunk AdaLN, then linear to
         //      patch²*out_channels per token.
         let out_seq = apply_final_layer(
-            &img_h, &c, &self.weights.final_layer, hidden,
-            cfg.patch_size, cfg.out_channels,
+            &img_h,
+            &c,
+            &self.weights.final_layer,
+            hidden,
+            cfg.patch_size,
+            cfg.out_channels,
         )?;
 
         // ---- Unpatchify (N, S, P²·Cout) -> (N, Cout, H_patch·P, W_patch·P).
-        let unpatch = unpatchify(
-            &out_seq,
-            cfg.patch_size,
-            cfg.out_channels,
-            h_lat,
-            w_lat,
-        )?;
+        let unpatch = unpatchify(&out_seq, cfg.patch_size, cfg.out_channels, h_lat, w_lat)?;
 
         // ---- Crop down to the original (H, W) — matches the eager
         //      `narrow(2, 0, h)?.narrow(3, 0, w)` pattern that strips
@@ -1076,17 +1139,8 @@ fn patch_embed(
 ) -> Result<LazyTensor> {
     let w_shape = Shape::from_dims(&[hidden, in_channels, patch_size, patch_size]);
     let w_t = weights.proj_weight.const_like(x, w_shape)?;
-    let bias_t = x.const_f32_like(
-        Arc::clone(&weights.proj_bias),
-        Shape::from_dims(&[hidden]),
-    );
-    let x_conv = x.conv2d(
-        &w_t,
-        Some(&bias_t),
-        (patch_size, patch_size),
-        (0, 0),
-        1,
-    )?;
+    let bias_t = x.const_f32_like(Arc::clone(&weights.proj_bias), Shape::from_dims(&[hidden]));
+    let x_conv = x.conv2d(&w_t, Some(&bias_t), (patch_size, patch_size), (0, 0), 1)?;
     // (N, hidden, h_patch, w_patch) -> (N, hidden, h_patch * w_patch)
     //                                -> (N, S, hidden).
     let dims = x_conv.shape().dims().to_vec();
@@ -1094,7 +1148,8 @@ fn patch_embed(
         return Err(crate::Error::Msg(format!(
             "patch_embed: conv2d output should be rank-4, got rank {}",
             dims.len()
-        )).bt());
+        ))
+        .bt());
     }
     let (b, c, h, w) = (dims[0], dims[1], dims[2], dims[3]);
     let flat = x_conv.reshape(Shape::from_dims(&[b, c, h * w]))?;
@@ -1127,15 +1182,18 @@ fn cropped_pos_embed(
             "cropped_pos_embed: patch resolution ({h}x{w}) exceeds \
              pos_embed_max_size ({pos_embed_max_size}). Re-train or \
              enlarge the pos-embed grid.",
-        )).bt());
+        ))
+        .bt());
     }
     let expected = pos_embed_max_size * pos_embed_max_size * hidden;
     if pos_embed.len() != expected {
         return Err(crate::Error::Msg(format!(
             "cropped_pos_embed: pos_embed has {} elements, expected {} \
              (= pos_embed_max_size² * hidden = {pos_embed_max_size}² * {hidden})",
-            pos_embed.len(), expected,
-        )).bt());
+            pos_embed.len(),
+            expected,
+        ))
+        .bt());
     }
     let top = (pos_embed_max_size - h) / 2;
     let left = (pos_embed_max_size - w) / 2;
@@ -1169,31 +1227,41 @@ fn apply_context_qkv_only_joint(
     let head_dim = cfg.head_dim();
 
     // Image stream — same modulation chunks as a DoubleStream image branch.
-    let img_mod = compute_modulation(
-        c, &weights.image.adaln_proj, &weights.image.adaln_bias, dim,
-    )?;
+    let img_mod = compute_modulation(c, &weights.image.adaln_proj, &weights.image.adaln_bias, dim)?;
     let img_norm = img.layer_norm_last_dim(cfg.eps)?;
     let img_mod_x = apply_modulation(&img_norm, &img_mod.scale_msa, &img_mod.shift_msa)?;
     let (img_q, img_k, img_v) = project_qkv(
-        &img_mod_x, &weights.image.qkv_proj, &weights.image.qkv_bias, num_heads, head_dim,
+        &img_mod_x,
+        &weights.image.qkv_proj,
+        &weights.image.qkv_bias,
+        num_heads,
+        head_dim,
     )?;
 
     // Context stream — 2-chunk AdaLN (shift, scale), QKV only.
     let txt_c_act = c.silu();
-    let m = weights.context.adaln_proj.apply_linear(&txt_c_act, dim, 2 * dim)?;
+    let m = weights
+        .context
+        .adaln_proj
+        .apply_linear(&txt_c_act, dim, 2 * dim)?;
     let m = m.add_trailing_bias(Arc::clone(&weights.context.adaln_bias))?;
     let chunks = m.chunk(2, 1_usize)?;
     if chunks.len() != 2 {
         return Err(crate::Error::Msg(format!(
             "apply_context_qkv_only_joint: expected 2 context-adaln chunks, got {}",
             chunks.len()
-        )).bt());
+        ))
+        .bt());
     }
     let (txt_shift, txt_scale) = (chunks[0].clone(), chunks[1].clone());
     let txt_norm = txt.layer_norm_last_dim(cfg.eps)?;
     let txt_mod_x = apply_modulation(&txt_norm, &txt_scale, &txt_shift)?;
     let (txt_q, txt_k, txt_v) = project_qkv(
-        &txt_mod_x, &weights.context.qkv_proj, &weights.context.qkv_bias, num_heads, head_dim,
+        &txt_mod_x,
+        &weights.context.qkv_proj,
+        &weights.context.qkv_bias,
+        num_heads,
+        head_dim,
     )?;
 
     // Joint attention — same shape contract as `apply_double_stream`.
@@ -1225,21 +1293,27 @@ fn apply_final_layer(
     out_channels: usize,
 ) -> Result<LazyTensor> {
     let c_act = c.silu();
-    let m = weights.adaln_proj.apply_linear(&c_act, hidden, 2 * hidden)?;
+    let m = weights
+        .adaln_proj
+        .apply_linear(&c_act, hidden, 2 * hidden)?;
     let m = m.add_trailing_bias(Arc::clone(&weights.adaln_bias))?;
     let chunks = m.chunk(2, 1_usize)?;
     if chunks.len() != 2 {
         return Err(crate::Error::Msg(format!(
             "apply_final_layer: expected 2 adaln chunks, got {}",
             chunks.len()
-        )).bt());
+        ))
+        .bt());
     }
     let (shift, scale) = (chunks[0].clone(), chunks[1].clone());
 
     let x_norm = x.layer_norm_last_dim(1e-6_f64)?;
     let x_mod = apply_modulation(&x_norm, &scale, &shift)?;
 
-    let out = weights.linear.apply_linear(&x_mod, hidden, patch_size * patch_size * out_channels)?;
+    let out =
+        weights
+            .linear
+            .apply_linear(&x_mod, hidden, patch_size * patch_size * out_channels)?;
     out.add_trailing_bias(Arc::clone(&weights.linear_bias))
 }
 
@@ -1263,7 +1337,8 @@ fn unpatchify(
         return Err(crate::Error::Msg(format!(
             "unpatchify: x must be rank-3 (N, S, P²·Cout), got rank {}",
             dims.len()
-        )).bt());
+        ))
+        .bt());
     }
     let (b, s, c_per_token) = (dims[0], dims[1], dims[2]);
     let expected_s = h_patch * w_patch;
@@ -1271,15 +1346,24 @@ fn unpatchify(
     if s != expected_s || c_per_token != expected_c {
         return Err(crate::Error::Msg(format!(
             "unpatchify: token tensor {dims:?} != expected (B, {expected_s}, {expected_c})",
-        )).bt());
+        ))
+        .bt());
     }
     // (B, h, w, p, p, Cout) -> permute to (B, Cout, h, p, w, p) -> reshape.
     let x = x.reshape(Shape::from_dims(&[
-        b, h_patch, w_patch, patch_size, patch_size, out_channels,
+        b,
+        h_patch,
+        w_patch,
+        patch_size,
+        patch_size,
+        out_channels,
     ]))?;
     let x = x.permute([0_usize, 5, 1, 3, 2, 4])?;
     x.reshape(Shape::from_dims(&[
-        b, out_channels, patch_size * h_patch, patch_size * w_patch,
+        b,
+        out_channels,
+        patch_size * h_patch,
+        patch_size * w_patch,
     ]))
 }
 
@@ -1295,17 +1379,24 @@ fn load_context_qkv_only_block_weights(
     let image = load_stream_weights(st, &format!("{prefix}.x_block"), dim, mlp_hidden)?;
     let context = ContextQkvOnlyContextWeights {
         adaln_proj: load_transposed_matrix_preserve_dtype(
-            st, &format!("{prefix}.context_block.adaLN_modulation.1.weight"),
-            2 * dim, dim,
+            st,
+            &format!("{prefix}.context_block.adaLN_modulation.1.weight"),
+            2 * dim,
+            dim,
         )?,
         adaln_bias: Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}.context_block.adaLN_modulation.1.bias"),
+            st,
+            &format!("{prefix}.context_block.adaLN_modulation.1.bias"),
         )?),
         qkv_proj: load_transposed_matrix_preserve_dtype(
-            st, &format!("{prefix}.context_block.attn.qkv.weight"), 3 * dim, dim,
+            st,
+            &format!("{prefix}.context_block.attn.qkv.weight"),
+            3 * dim,
+            dim,
         )?,
         qkv_bias: Arc::from(load_tensor_as_f32(
-            st, &format!("{prefix}.context_block.attn.qkv.bias"),
+            st,
+            &format!("{prefix}.context_block.attn.qkv.bias"),
         )?),
     };
     Ok(ContextQkvOnlyBlockWeights { image, context })
@@ -1335,7 +1426,8 @@ impl MmDitFullWeights {
         if cfg.depth == 0 {
             return Err(crate::Error::Msg(
                 "MmDitFullWeights::load_from_mmapped: cfg.depth must be >= 1".into(),
-            ).bt());
+            )
+            .bt());
         }
         let hidden = cfg.hidden_size();
         let mlp_hidden = hidden * 4;
@@ -1349,8 +1441,12 @@ impl MmDitFullWeights {
             return Err(crate::Error::Msg(format!(
                 "load_from_mmapped: x_embedder.proj.weight has {} elements, \
                  expected {} (hidden * in_channels * patch² = {hidden} * {} * {}²)",
-                pe_weight_data.len(), expected_pe, cfg.in_channels, cfg.patch_size,
-            )).bt());
+                pe_weight_data.len(),
+                expected_pe,
+                cfg.in_channels,
+                cfg.patch_size,
+            ))
+            .bt());
         }
         let patch_embedder = PatchEmbedderWeights {
             proj_weight: WeightStorage::F32(Arc::from(pe_weight_data)),
@@ -1364,33 +1460,51 @@ impl MmDitFullWeights {
             return Err(crate::Error::Msg(format!(
                 "load_from_mmapped: pos_embed has {} elements, expected {} \
                  (pos_embed_max_size² * hidden = {}² * {hidden})",
-                pe_data.len(), expected_pos, cfg.pos_embed_max_size,
-            )).bt());
+                pe_data.len(),
+                expected_pos,
+                cfg.pos_embed_max_size,
+            ))
+            .bt());
         }
         let pos_embed: Arc<[f32]> = Arc::from(pe_data);
 
         let context_embedder = ContextEmbedderWeights {
             weight: load_transposed_matrix_preserve_dtype(
-                st, "context_embedder.weight", hidden, cfg.context_embed_size,
+                st,
+                "context_embedder.weight",
+                hidden,
+                cfg.context_embed_size,
             )?,
             bias: Arc::from(load_tensor_as_f32(st, "context_embedder.bias")?),
         };
 
         let conditioning = ConditioningWeights {
             t_fc1: load_transposed_matrix_preserve_dtype(
-                st, "t_embedder.mlp.0.weight", hidden, cfg.frequency_embedding_size,
+                st,
+                "t_embedder.mlp.0.weight",
+                hidden,
+                cfg.frequency_embedding_size,
             )?,
             t_fc1_bias: Arc::from(load_tensor_as_f32(st, "t_embedder.mlp.0.bias")?),
             t_fc2: load_transposed_matrix_preserve_dtype(
-                st, "t_embedder.mlp.2.weight", hidden, hidden,
+                st,
+                "t_embedder.mlp.2.weight",
+                hidden,
+                hidden,
             )?,
             t_fc2_bias: Arc::from(load_tensor_as_f32(st, "t_embedder.mlp.2.bias")?),
             y_fc1: load_transposed_matrix_preserve_dtype(
-                st, "y_embedder.mlp.0.weight", hidden, cfg.adm_in_channels,
+                st,
+                "y_embedder.mlp.0.weight",
+                hidden,
+                cfg.adm_in_channels,
             )?,
             y_fc1_bias: Arc::from(load_tensor_as_f32(st, "y_embedder.mlp.0.bias")?),
             y_fc2: load_transposed_matrix_preserve_dtype(
-                st, "y_embedder.mlp.2.weight", hidden, hidden,
+                st,
+                "y_embedder.mlp.2.weight",
+                hidden,
+                hidden,
             )?,
             y_fc2_bias: Arc::from(load_tensor_as_f32(st, "y_embedder.mlp.2.bias")?),
             frequency_embedding_size: cfg.frequency_embedding_size,
@@ -1400,22 +1514,42 @@ impl MmDitFullWeights {
         let mut joint_blocks = Vec::with_capacity(cfg.depth - 1);
         for i in 0..(cfg.depth - 1) {
             joint_blocks.push(DoubleStreamBlockWeights {
-                text:  load_stream_weights(st, &format!("joint_blocks.{i}.context_block"), hidden, mlp_hidden)?,
-                image: load_stream_weights(st, &format!("joint_blocks.{i}.x_block"),       hidden, mlp_hidden)?,
+                text: load_stream_weights(
+                    st,
+                    &format!("joint_blocks.{i}.context_block"),
+                    hidden,
+                    mlp_hidden,
+                )?,
+                image: load_stream_weights(
+                    st,
+                    &format!("joint_blocks.{i}.x_block"),
+                    hidden,
+                    mlp_hidden,
+                )?,
             });
         }
         let final_idx = cfg.depth - 1;
         let final_block = load_context_qkv_only_block_weights(
-            st, &format!("joint_blocks.{final_idx}"), hidden, mlp_hidden,
+            st,
+            &format!("joint_blocks.{final_idx}"),
+            hidden,
+            mlp_hidden,
         )?;
 
         let final_layer = FinalLayerWeights {
             adaln_proj: load_transposed_matrix_preserve_dtype(
-                st, "final_layer.adaLN_modulation.1.weight", 2 * hidden, hidden,
+                st,
+                "final_layer.adaLN_modulation.1.weight",
+                2 * hidden,
+                hidden,
             )?,
-            adaln_bias: Arc::from(load_tensor_as_f32(st, "final_layer.adaLN_modulation.1.bias")?),
+            adaln_bias: Arc::from(load_tensor_as_f32(
+                st,
+                "final_layer.adaLN_modulation.1.bias",
+            )?),
             linear: load_transposed_matrix_preserve_dtype(
-                st, "final_layer.linear.weight",
+                st,
+                "final_layer.linear.weight",
                 cfg.patch_size * cfg.patch_size * cfg.out_channels,
                 hidden,
             )?,
@@ -1474,7 +1608,11 @@ mod tests {
         })
     }
 
-    fn stream_weights(dim: usize, mlp_ratio: usize, nb: &mut Box<dyn FnMut() -> f32>) -> StreamWeights {
+    fn stream_weights(
+        dim: usize,
+        mlp_ratio: usize,
+        nb: &mut Box<dyn FnMut() -> f32>,
+    ) -> StreamWeights {
         let mlp_h = dim * mlp_ratio;
         StreamWeights {
             adaln_proj: WeightStorage::F32(vec_of(dim * 6 * dim, &mut **nb)),
@@ -1490,7 +1628,11 @@ mod tests {
         }
     }
 
-    fn single_weights(dim: usize, mlp_ratio: usize, nb: &mut Box<dyn FnMut() -> f32>) -> SingleStreamBlockWeights {
+    fn single_weights(
+        dim: usize,
+        mlp_ratio: usize,
+        nb: &mut Box<dyn FnMut() -> f32>,
+    ) -> SingleStreamBlockWeights {
         let mlp_h = dim * mlp_ratio;
         SingleStreamBlockWeights {
             adaln_proj: WeightStorage::F32(vec_of(dim * 6 * dim, &mut **nb)),
@@ -1529,11 +1671,18 @@ mod tests {
         let single_blocks = (0..cfg.depth_single)
             .map(|_| single_weights(cfg.dim, cfg.mlp_ratio, &mut nb))
             .collect();
-        MmDitWeights { conditioning, double_blocks, single_blocks }
+        MmDitWeights {
+            conditioning,
+            double_blocks,
+            single_blocks,
+        }
     }
 
     fn tiny_inputs(
-        cfg: &MmDitConfig, seq_text: usize, seq_image: usize, adm_in: usize,
+        cfg: &MmDitConfig,
+        seq_text: usize,
+        seq_image: usize,
+        adm_in: usize,
     ) -> (LazyTensor, LazyTensor, LazyTensor, LazyTensor) {
         let dev = Device::cpu();
         let mut s: u32 = 0xBADF00D;
@@ -1545,8 +1694,15 @@ mod tests {
         let img_data: Vec<f32> = (0..(1 * seq_image * cfg.dim)).map(|_| rng()).collect();
         let y_data: Vec<f32> = (0..(1 * adm_in)).map(|_| rng()).collect();
         let t_data: Vec<f32> = vec![0.5_f32];
-        let txt = LazyTensor::from_f32(Arc::from(txt_data), Shape::from_dims(&[1, seq_text, cfg.dim]), &dev);
-        let img = txt.const_f32_like(Arc::from(img_data), Shape::from_dims(&[1, seq_image, cfg.dim]));
+        let txt = LazyTensor::from_f32(
+            Arc::from(txt_data),
+            Shape::from_dims(&[1, seq_text, cfg.dim]),
+            &dev,
+        );
+        let img = txt.const_f32_like(
+            Arc::from(img_data),
+            Shape::from_dims(&[1, seq_image, cfg.dim]),
+        );
         let y = txt.const_f32_like(Arc::from(y_data), Shape::from_dims(&[1, adm_in]));
         let t = txt.const_f32_like(Arc::from(t_data), Shape::from_dims(&[1]));
         (txt, img, t, y)
@@ -1558,7 +1714,10 @@ mod tests {
         let adm_in = 32;
         let freq_embed = 16;
         let w = tiny_weights(&cfg, adm_in, freq_embed);
-        let model = MmDitModel { config: cfg.clone(), weights: w };
+        let model = MmDitModel {
+            config: cfg.clone(),
+            weights: w,
+        };
         let (txt, img, t, y) = tiny_inputs(&cfg, 8, 16, adm_in);
         let out = model.forward(&img, &txt, &t, &y).unwrap();
         assert_eq!(out.shape().dims(), &[1, 16, cfg.dim]);
@@ -1590,7 +1749,10 @@ mod tests {
         for (x, y) in a.iter().zip(bv.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff < 1e-5, "zero-scale-and-shift modulation should equal plain norm, max_diff = {max_diff}");
+        assert!(
+            max_diff < 1e-5,
+            "zero-scale-and-shift modulation should equal plain norm, max_diff = {max_diff}"
+        );
     }
 
     #[test]
@@ -1618,20 +1780,23 @@ mod tests {
         for (x, y) in a.iter().zip(bv.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff < 1e-6, "zero-gate residual should equal x, max_diff = {max_diff}");
+        assert!(
+            max_diff < 1e-6,
+            "zero-gate residual should equal x, max_diff = {max_diff}"
+        );
     }
 
     // ---- Safetensors loader round-trip --------------------------------
 
-    fn write_tmp_safetensors(
-        tensors: &[(String, Vec<usize>, Vec<f32>)],
-    ) -> std::path::PathBuf {
+    fn write_tmp_safetensors(tensors: &[(String, Vec<usize>, Vec<f32>)]) -> std::path::PathBuf {
         use safetensors::tensor::TensorView;
         use std::collections::HashMap;
-        let bytes_store: Vec<Vec<u8>> = tensors.iter()
+        let bytes_store: Vec<Vec<u8>> = tensors
+            .iter()
             .map(|(_, _, data)| data.iter().flat_map(|f| f.to_le_bytes()).collect())
             .collect();
-        let views: HashMap<String, TensorView<'_>> = tensors.iter()
+        let views: HashMap<String, TensorView<'_>> = tensors
+            .iter()
             .zip(bytes_store.iter())
             .map(|((name, shape, _), bytes)| {
                 let v = TensorView::new(safetensors::Dtype::F32, shape.clone(), bytes)
@@ -1643,15 +1808,21 @@ mod tests {
         let bytes_out = safetensors::serialize(&views, metadata).unwrap();
         let path = std::env::temp_dir().join(format!(
             "fuel_lazy_mmdit_test_{}.safetensors",
-            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
         ));
         std::fs::write(&path, bytes_out).unwrap();
         path
     }
 
-    fn linear_tensors(prefix: &str, in_f: usize, out_f: usize, seed: u32)
-        -> Vec<(String, Vec<usize>, Vec<f32>)>
-    {
+    fn linear_tensors(
+        prefix: &str,
+        in_f: usize,
+        out_f: usize,
+        seed: u32,
+    ) -> Vec<(String, Vec<usize>, Vec<f32>)> {
         let mut s = seed;
         let mut next = || -> f32 {
             s = s.wrapping_mul(1103515245).wrapping_add(12345);
@@ -1661,7 +1832,7 @@ mod tests {
         let b_data: Vec<f32> = (0..out_f).map(|_| next()).collect();
         vec![
             (format!("{prefix}.weight"), vec![out_f, in_f], w_data),
-            (format!("{prefix}.bias"),   vec![out_f], b_data),
+            (format!("{prefix}.bias"), vec![out_f], b_data),
         ]
     }
 
@@ -1671,8 +1842,12 @@ mod tests {
     #[test]
     fn load_from_mmapped_round_trip_tiny() {
         let cfg = MmDitConfig {
-            dim: 8, num_heads: 2, depth_double: 1, depth_single: 0,
-            mlp_ratio: 2, eps: 1e-6,
+            dim: 8,
+            num_heads: 2,
+            depth_double: 1,
+            depth_single: 0,
+            mlp_ratio: 2,
+            eps: 1e-6,
         };
         let dim = cfg.dim;
         let mlp_h = dim * cfg.mlp_ratio;
@@ -1687,11 +1862,36 @@ mod tests {
         tensors.extend(linear_tensors("y_embedder.mlp.2", dim, dim, 4));
         // joint_blocks.0 (DoubleStreamBlock) — text=context_block, image=x_block.
         for (which, seed_base) in [("context_block", 10), ("x_block", 50)] {
-            tensors.extend(linear_tensors(&format!("joint_blocks.0.{which}.adaLN_modulation.1"), dim, 6 * dim, seed_base));
-            tensors.extend(linear_tensors(&format!("joint_blocks.0.{which}.attn.qkv"), dim, 3 * dim, seed_base + 1));
-            tensors.extend(linear_tensors(&format!("joint_blocks.0.{which}.attn.proj"), dim, dim, seed_base + 2));
-            tensors.extend(linear_tensors(&format!("joint_blocks.0.{which}.mlp.fc1"), dim, mlp_h, seed_base + 3));
-            tensors.extend(linear_tensors(&format!("joint_blocks.0.{which}.mlp.fc2"), mlp_h, dim, seed_base + 4));
+            tensors.extend(linear_tensors(
+                &format!("joint_blocks.0.{which}.adaLN_modulation.1"),
+                dim,
+                6 * dim,
+                seed_base,
+            ));
+            tensors.extend(linear_tensors(
+                &format!("joint_blocks.0.{which}.attn.qkv"),
+                dim,
+                3 * dim,
+                seed_base + 1,
+            ));
+            tensors.extend(linear_tensors(
+                &format!("joint_blocks.0.{which}.attn.proj"),
+                dim,
+                dim,
+                seed_base + 2,
+            ));
+            tensors.extend(linear_tensors(
+                &format!("joint_blocks.0.{which}.mlp.fc1"),
+                dim,
+                mlp_h,
+                seed_base + 3,
+            ));
+            tensors.extend(linear_tensors(
+                &format!("joint_blocks.0.{which}.mlp.fc2"),
+                mlp_h,
+                dim,
+                seed_base + 4,
+            ));
         }
 
         let path = write_tmp_safetensors(&tensors);
@@ -1731,12 +1931,14 @@ mod tests {
         let mlp_h = hidden * 4;
         let patch_embedder = PatchEmbedderWeights {
             proj_weight: WeightStorage::F32(vec_of(
-                hidden * cfg.in_channels * cfg.patch_size * cfg.patch_size, &mut *nb,
+                hidden * cfg.in_channels * cfg.patch_size * cfg.patch_size,
+                &mut *nb,
             )),
             proj_bias: vec_of(hidden, &mut *nb),
         };
         let pos_embed: Arc<[f32]> = vec_of(
-            cfg.pos_embed_max_size * cfg.pos_embed_max_size * hidden, &mut *nb,
+            cfg.pos_embed_max_size * cfg.pos_embed_max_size * hidden,
+            &mut *nb,
         );
         let context_embedder = ContextEmbedderWeights {
             weight: WeightStorage::F32(vec_of(cfg.context_embed_size * hidden, &mut *nb)),
@@ -1756,7 +1958,7 @@ mod tests {
         };
         let joint_blocks = (0..(cfg.depth - 1))
             .map(|_| DoubleStreamBlockWeights {
-                text:  stream_weights(hidden, 4, &mut nb),
+                text: stream_weights(hidden, 4, &mut nb),
                 image: stream_weights(hidden, 4, &mut nb),
             })
             .collect();
@@ -1774,18 +1976,27 @@ mod tests {
             adaln_proj: WeightStorage::F32(vec_of(hidden * 2 * hidden, &mut *nb)),
             adaln_bias: vec_of(2 * hidden, &mut *nb),
             linear: WeightStorage::F32(vec_of(
-                hidden * cfg.patch_size * cfg.patch_size * cfg.out_channels, &mut *nb,
+                hidden * cfg.patch_size * cfg.patch_size * cfg.out_channels,
+                &mut *nb,
             )),
             linear_bias: vec_of(cfg.patch_size * cfg.patch_size * cfg.out_channels, &mut *nb),
         };
         MmDitFullWeights {
-            patch_embedder, pos_embed, context_embedder, conditioning,
-            joint_blocks, final_block, final_layer,
+            patch_embedder,
+            pos_embed,
+            context_embedder,
+            conditioning,
+            joint_blocks,
+            final_block,
+            final_layer,
         }
     }
 
     fn tiny_full_inputs(
-        cfg: &MmDitFullConfig, h: usize, w: usize, s_context: usize,
+        cfg: &MmDitFullConfig,
+        h: usize,
+        w: usize,
+        s_context: usize,
     ) -> (LazyTensor, LazyTensor, LazyTensor, LazyTensor) {
         let dev = Device::cpu();
         let mut s: u32 = 0xFADE;
@@ -1805,7 +2016,10 @@ mod tests {
             &dev,
         );
         let t = x.const_f32_like(Arc::from(t_data), Shape::from_dims(&[1]));
-        let y = x.const_f32_like(Arc::from(y_data), Shape::from_dims(&[1, cfg.adm_in_channels]));
+        let y = x.const_f32_like(
+            Arc::from(y_data),
+            Shape::from_dims(&[1, cfg.adm_in_channels]),
+        );
         let ctx = x.const_f32_like(
             Arc::from(ctx_data),
             Shape::from_dims(&[1, s_context, cfg.context_embed_size]),
@@ -1818,7 +2032,10 @@ mod tests {
     fn mmdit_full_forward_shape_and_finite_tiny() {
         let cfg = tiny_full_config();
         let w = tiny_full_weights(&cfg);
-        let model = MmDitFullModel { config: cfg.clone(), weights: w };
+        let model = MmDitFullModel {
+            config: cfg.clone(),
+            weights: w,
+        };
         let h = 8;
         let w_lat = 8;
         let s_context = 6;
@@ -1839,13 +2056,19 @@ mod tests {
     fn mmdit_full_slg_changes_output() {
         let cfg = tiny_full_config();
         let w = tiny_full_weights(&cfg);
-        let model = MmDitFullModel { config: cfg.clone(), weights: w };
+        let model = MmDitFullModel {
+            config: cfg.clone(),
+            weights: w,
+        };
         let h = 8;
         let w_lat = 8;
         let s_context = 6;
         let (x, t, y_t, ctx) = tiny_full_inputs(&cfg, h, w_lat, s_context);
 
-        let baseline = model.forward(&x, &t, &y_t, &ctx, None).unwrap().realize_f32();
+        let baseline = model
+            .forward(&x, &t, &y_t, &ctx, None)
+            .unwrap()
+            .realize_f32();
         // Skip the first block of the full-DoubleStream stack.
         let slg = model
             .forward(&x, &t, &y_t, &ctx, Some(&[0]))
@@ -1901,7 +2124,9 @@ mod tests {
             .map(|i| i as f32 * 0.01)
             .collect();
         let x = LazyTensor::from_f32(
-            Arc::from(data), Shape::from_dims(&[1, s, c_per_token]), &dev,
+            Arc::from(data),
+            Shape::from_dims(&[1, s, c_per_token]),
+            &dev,
         );
         let out = unpatchify(&x, patch_size, out_channels, h_lat, w_lat).unwrap();
         assert_eq!(
@@ -1956,33 +2181,58 @@ mod tests {
 
         // Context embedder + conditioning (matrices stored HF-style
         // [out, in] — `linear_tensors` already produces that layout).
-        tensors.extend(linear_tensors("context_embedder", cfg.context_embed_size, hidden, 100));
-        tensors.extend(linear_tensors("t_embedder.mlp.0", cfg.frequency_embedding_size, hidden, 101));
+        tensors.extend(linear_tensors(
+            "context_embedder",
+            cfg.context_embed_size,
+            hidden,
+            100,
+        ));
+        tensors.extend(linear_tensors(
+            "t_embedder.mlp.0",
+            cfg.frequency_embedding_size,
+            hidden,
+            101,
+        ));
         tensors.extend(linear_tensors("t_embedder.mlp.2", hidden, hidden, 102));
-        tensors.extend(linear_tensors("y_embedder.mlp.0", cfg.adm_in_channels, hidden, 103));
+        tensors.extend(linear_tensors(
+            "y_embedder.mlp.0",
+            cfg.adm_in_channels,
+            hidden,
+            103,
+        ));
         tensors.extend(linear_tensors("y_embedder.mlp.2", hidden, hidden, 104));
 
         // joint_blocks.0 = full DoubleStream.
         for (which, seed_base) in [("context_block", 200_u32), ("x_block", 250)] {
             tensors.extend(linear_tensors(
                 &format!("joint_blocks.0.{which}.adaLN_modulation.1"),
-                hidden, 6 * hidden, seed_base,
+                hidden,
+                6 * hidden,
+                seed_base,
             ));
             tensors.extend(linear_tensors(
                 &format!("joint_blocks.0.{which}.attn.qkv"),
-                hidden, 3 * hidden, seed_base + 1,
+                hidden,
+                3 * hidden,
+                seed_base + 1,
             ));
             tensors.extend(linear_tensors(
                 &format!("joint_blocks.0.{which}.attn.proj"),
-                hidden, hidden, seed_base + 2,
+                hidden,
+                hidden,
+                seed_base + 2,
             ));
             tensors.extend(linear_tensors(
                 &format!("joint_blocks.0.{which}.mlp.fc1"),
-                hidden, mlp_h, seed_base + 3,
+                hidden,
+                mlp_h,
+                seed_base + 3,
             ));
             tensors.extend(linear_tensors(
                 &format!("joint_blocks.0.{which}.mlp.fc2"),
-                mlp_h, hidden, seed_base + 4,
+                mlp_h,
+                hidden,
+                seed_base + 4,
             ));
         }
 
@@ -1991,42 +2241,59 @@ mod tests {
         let seed_base = 300_u32;
         tensors.extend(linear_tensors(
             "joint_blocks.1.x_block.adaLN_modulation.1",
-            hidden, 6 * hidden, seed_base,
+            hidden,
+            6 * hidden,
+            seed_base,
         ));
         tensors.extend(linear_tensors(
             "joint_blocks.1.x_block.attn.qkv",
-            hidden, 3 * hidden, seed_base + 1,
+            hidden,
+            3 * hidden,
+            seed_base + 1,
         ));
         tensors.extend(linear_tensors(
             "joint_blocks.1.x_block.attn.proj",
-            hidden, hidden, seed_base + 2,
+            hidden,
+            hidden,
+            seed_base + 2,
         ));
         tensors.extend(linear_tensors(
             "joint_blocks.1.x_block.mlp.fc1",
-            hidden, mlp_h, seed_base + 3,
+            hidden,
+            mlp_h,
+            seed_base + 3,
         ));
         tensors.extend(linear_tensors(
             "joint_blocks.1.x_block.mlp.fc2",
-            mlp_h, hidden, seed_base + 4,
+            mlp_h,
+            hidden,
+            seed_base + 4,
         ));
         // Context side = adaln (2 chunks) + qkv only.
         tensors.extend(linear_tensors(
             "joint_blocks.1.context_block.adaLN_modulation.1",
-            hidden, 2 * hidden, seed_base + 10,
+            hidden,
+            2 * hidden,
+            seed_base + 10,
         ));
         tensors.extend(linear_tensors(
             "joint_blocks.1.context_block.attn.qkv",
-            hidden, 3 * hidden, seed_base + 11,
+            hidden,
+            3 * hidden,
+            seed_base + 11,
         ));
 
         // Final layer.
         tensors.extend(linear_tensors(
             "final_layer.adaLN_modulation.1",
-            hidden, 2 * hidden, 400,
+            hidden,
+            2 * hidden,
+            400,
         ));
         tensors.extend(linear_tensors(
             "final_layer.linear",
-            hidden, cfg.patch_size * cfg.patch_size * cfg.out_channels,
+            hidden,
+            cfg.patch_size * cfg.patch_size * cfg.out_channels,
             401,
         ));
 
@@ -2042,7 +2309,10 @@ mod tests {
             weights.patch_embedder.proj_weight.elem_count(),
             hidden * cfg.in_channels * cfg.patch_size * cfg.patch_size,
         );
-        assert_eq!(weights.conditioning.frequency_embedding_size, cfg.frequency_embedding_size);
+        assert_eq!(
+            weights.conditioning.frequency_embedding_size,
+            cfg.frequency_embedding_size
+        );
         assert_eq!(weights.conditioning.adm_in_channels, cfg.adm_in_channels);
 
         let _ = std::fs::remove_file(&path);

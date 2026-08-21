@@ -46,7 +46,7 @@
 
 use fuel_ir::DeviceLocation;
 
-use crate::fused::{CostEstimate, PrecisionGuarantee};
+use crate::fused::PrecisionGuarantee;
 
 use super::candidate::Candidate;
 use super::cost::{composite_ns, default_backend_rates};
@@ -217,11 +217,11 @@ impl CostVector {
         if !no_worse {
             return false;
         }
-        let strictly_better = self.time < other.time
+
+        self.time < other.time
             || self.memory.strictly_better_on_some(&other.memory)
             || self.precision > other.precision
-            || self.accuracy > other.accuracy;
-        strictly_better
+            || self.accuracy > other.accuracy
     }
 
     /// Total-order key that keeps the **winner time-first**: the
@@ -376,12 +376,7 @@ mod tests {
             bytes_moved: 8192,
             kernel_overhead_ns: 0,
         };
-        let c = candidate(
-            DeviceLocation::Cpu,
-            cost,
-            0,
-            PrecisionGuarantee::REFERENCE,
-        );
+        let c = candidate(DeviceLocation::Cpu, cost, 0, PrecisionGuarantee::REFERENCE);
         let v = CostVector::from_candidate(&c);
         assert_eq!(v.memory.host_ram_bytes, 8192, "CPU loads host RAM");
         assert_eq!(v.memory.device_vram_bytes, 0, "no VRAM on CPU");

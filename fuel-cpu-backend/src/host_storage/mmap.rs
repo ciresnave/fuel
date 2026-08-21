@@ -79,8 +79,8 @@ impl MmappedHostStorage {
         elem_count: usize,
     ) -> Result<Self> {
         // SAFETY: caller upheld the "file won't be mutated" precondition.
-        let mmap = unsafe { Mmap::map(file) }
-            .map_err(|e| Error::Msg(format!("mmap failed: {e}")).bt())?;
+        let mmap =
+            unsafe { Mmap::map(file) }.map_err(|e| Error::Msg(format!("mmap failed: {e}")).bt())?;
         // SAFETY: caller upheld the bit-pattern precondition.
         unsafe { Self::from_shared_mmap(Arc::new(mmap), dtype, byte_offset, elem_count) }
     }
@@ -104,7 +104,7 @@ impl MmappedHostStorage {
         if elem_size == 0 {
             return Err(Error::Msg("dtype has zero size".into()).bt());
         }
-        if byte_offset % elem_size != 0 {
+        if !byte_offset.is_multiple_of(elem_size) {
             return Err(Error::Msg(format!(
                 "mmap byte_offset {byte_offset} not aligned to {elem_size}-byte dtype {dtype:?}",
             ))
@@ -195,12 +195,16 @@ impl HostStorage for MmappedHostStorage {
                 // exists yet — a DELIBERATE UNDER-SHIPMENT, not an unauthored
                 // encoding.
                 DType::F8E5M2 => {
-                    return Err(Error::UnsupportedDTypeForOp(self.dtype, "as_host_buffer_ref").bt())
+                    return Err(
+                        Error::UnsupportedDTypeForOp(self.dtype, "as_host_buffer_ref").bt(),
+                    );
                 }
                 // F8E6M2 is a token-only (non-OCP-standard) dtype with no host
                 // storage variant — unsupported for typed host access.
                 DType::F8E6M2 => {
-                    return Err(Error::UnsupportedDTypeForOp(self.dtype, "as_host_buffer_ref").bt())
+                    return Err(
+                        Error::UnsupportedDTypeForOp(self.dtype, "as_host_buffer_ref").bt(),
+                    );
                 }
                 // GAP-168(c): Bool bytes reinterpret as u8 (byte-identical).
                 DType::Bool => HostBufferRef::Bool(self.typed_slice::<u8>()),
@@ -235,10 +239,8 @@ mod tests {
         let mut f = tempfile::NamedTempFile::new().unwrap();
         f.write_all(bytes).unwrap();
         f.flush().unwrap();
-        let storage = unsafe {
-            MmappedHostStorage::from_file(f.as_file(), dtype, 0, elem_count)
-        }
-        .unwrap();
+        let storage =
+            unsafe { MmappedHostStorage::from_file(f.as_file(), dtype, 0, elem_count) }.unwrap();
         (f, storage)
     }
 
@@ -262,10 +264,8 @@ mod tests {
         let mut f = tempfile::NamedTempFile::new().unwrap();
         f.write_all(&bytes).unwrap();
         f.flush().unwrap();
-        let err = unsafe {
-            MmappedHostStorage::from_file(f.as_file(), DType::F32, 1, 1)
-        }
-        .unwrap_err();
+        let err =
+            unsafe { MmappedHostStorage::from_file(f.as_file(), DType::F32, 1, 1) }.unwrap_err();
         assert!(
             format!("{err}").contains("not aligned"),
             "expected alignment error, got: {err}"
@@ -279,10 +279,8 @@ mod tests {
         f.write_all(&bytes).unwrap();
         f.flush().unwrap();
         // 3 f32 = 12 bytes > 8
-        let err = unsafe {
-            MmappedHostStorage::from_file(f.as_file(), DType::F32, 0, 3)
-        }
-        .unwrap_err();
+        let err =
+            unsafe { MmappedHostStorage::from_file(f.as_file(), DType::F32, 0, 3) }.unwrap_err();
         assert!(
             format!("{err}").contains("out of bounds"),
             "expected OOB error, got: {err}"
@@ -298,9 +296,8 @@ mod tests {
         // macOS/Windows mmap of zero-length files can fail; we test
         // explicitly for f32 with elem_count=0 over a zero-length file.
         // If the mmap call itself fails, skip the rest.
-        let storage = match unsafe {
-            MmappedHostStorage::from_file(f.as_file(), DType::F32, 0, 0)
-        } {
+        let storage = match unsafe { MmappedHostStorage::from_file(f.as_file(), DType::F32, 0, 0) }
+        {
             Ok(s) => s,
             Err(e) if format!("{e}").contains("mmap failed") => return,
             Err(e) => panic!("unexpected error: {e}"),
@@ -330,14 +327,9 @@ mod tests {
         f.write_all(bytes).unwrap();
         f.flush().unwrap();
         let mmap = Arc::new(unsafe { Mmap::map(f.as_file()) }.unwrap());
-        let head = unsafe {
-            MmappedHostStorage::from_shared_mmap(mmap.clone(), DType::F32, 0, 2)
-        }
-        .unwrap();
-        let tail = unsafe {
-            MmappedHostStorage::from_shared_mmap(mmap, DType::F32, 8, 2)
-        }
-        .unwrap();
+        let head = unsafe { MmappedHostStorage::from_shared_mmap(mmap.clone(), DType::F32, 0, 2) }
+            .unwrap();
+        let tail = unsafe { MmappedHostStorage::from_shared_mmap(mmap, DType::F32, 8, 2) }.unwrap();
         let (h, t) = (
             head.as_host_buffer_ref().unwrap(),
             tail.as_host_buffer_ref().unwrap(),

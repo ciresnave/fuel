@@ -216,15 +216,16 @@ impl BandwidthMatrix {
     /// Atomic JSON write (sibling `.tmp` + rename).
     pub fn save(&self, path: &Path) -> Result<()> {
         let json = serde_json::to_vec_pretty(self)
-            .map_err(|e| fuel_ir::Error::Msg(
-                format!("transfer_cost: JSON encode failed: {e}")))?;
+            .map_err(|e| fuel_ir::Error::Msg(format!("transfer_cost: JSON encode failed: {e}")))?;
         let tmp = path.with_extension("tmp");
-        std::fs::write(&tmp, &json)
-            .map_err(|e| fuel_ir::Error::Msg(
-                format!("transfer_cost: write {tmp:?} failed: {e}")))?;
-        std::fs::rename(&tmp, path)
-            .map_err(|e| fuel_ir::Error::Msg(
-                format!("transfer_cost: rename {tmp:?} → {path:?} failed: {e}")))?;
+        std::fs::write(&tmp, &json).map_err(|e| {
+            fuel_ir::Error::Msg(format!("transfer_cost: write {tmp:?} failed: {e}"))
+        })?;
+        std::fs::rename(&tmp, path).map_err(|e| {
+            fuel_ir::Error::Msg(format!(
+                "transfer_cost: rename {tmp:?} → {path:?} failed: {e}"
+            ))
+        })?;
         Ok(())
     }
 
@@ -234,12 +235,15 @@ impl BandwidthMatrix {
         let bytes = match std::fs::read(path) {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(e) => return Err(fuel_ir::Error::Msg(
-                format!("transfer_cost: read {path:?} failed: {e}"))),
+            Err(e) => {
+                return Err(fuel_ir::Error::Msg(format!(
+                    "transfer_cost: read {path:?} failed: {e}"
+                )));
+            }
         };
-        let report: Self = serde_json::from_slice(&bytes)
-            .map_err(|e| fuel_ir::Error::Msg(
-                format!("transfer_cost: parse {path:?} failed: {e}")))?;
+        let report: Self = serde_json::from_slice(&bytes).map_err(|e| {
+            fuel_ir::Error::Msg(format!("transfer_cost: parse {path:?} failed: {e}"))
+        })?;
         if report.version != BANDWIDTH_REPORT_VERSION {
             return Ok(None);
         }
@@ -247,7 +251,7 @@ impl BandwidthMatrix {
     }
 }
 
-pub const DEFAULT_MEASUREMENT_BYTES: usize = 1 << 24;  // 16 MiB
+pub const DEFAULT_MEASUREMENT_BYTES: usize = 1 << 24; // 16 MiB
 pub const DEFAULT_ITERATIONS: u32 = 5;
 
 /// CPU-to-CPU bandwidth — just a memcpy. Used as a baseline for
@@ -284,19 +288,16 @@ fn measure_cpu_memcpy(bytes: usize, iters: u32) -> f64 {
 /// — the last code-level legacy-executor reference in fuel-core.
 /// Re-pointed onto the calibration substrate (executor-unification
 /// Session 6); iteration count is the probe's [`CALIBRATION_ITERS`].
-fn measure_h2d_d2h(
-    device: &fuel_ir::probe::DeviceDescriptor,
-    bytes: usize,
-) -> Option<(f64, f64)> {
-    let (h2d, d2h) = match device.backend {
+fn measure_h2d_d2h(device: &fuel_ir::probe::DeviceDescriptor, bytes: usize) -> Option<(f64, f64)> {
+    let per_byte = |e: TransferEstimate| e.estimate_ns(bytes as u64) as f64 / bytes.max(1) as f64;
+    let probe = match device.backend {
         #[cfg(feature = "cuda")]
-        BackendId::Cuda => probe_cuda_device(device.device_index as usize)?,
+        BackendId::Cuda => probe_cuda_device(device.device_index as usize),
         #[cfg(feature = "vulkan")]
-        BackendId::Vulkan => probe_vulkan_device(device.device_index as usize)?,
-        _ => return None,
+        BackendId::Vulkan => probe_vulkan_device(device.device_index as usize),
+        _ => None,
     };
-    let per_byte =
-        |e: TransferEstimate| e.estimate_ns(bytes as u64) as f64 / bytes.max(1) as f64;
+    let (h2d, d2h) = probe?;
     Some((per_byte(h2d), per_byte(d2h)))
 }
 
@@ -613,16 +614,16 @@ mod tests {
         ProbeReport {
             version: crate::probe::PROBE_REPORT_VERSION,
             devices: vec![DeviceDescriptor {
-                backend:            BackendId::Cpu,
-                device_index:       0,
-                hardware_sku:       "test cpu".to_string(),
-                vendor_id:          0,
-                device_id:          0,
+                backend: BackendId::Cpu,
+                device_index: 0,
+                hardware_sku: "test cpu".to_string(),
+                vendor_id: 0,
+                device_id: 0,
                 compute_capability: None,
-                subgroup_width:     None,
-                driver_version:     "test".to_string(),
+                subgroup_width: None,
+                driver_version: "test".to_string(),
                 total_memory_bytes: 0,
-                location:           DeviceLocation::Cpu,
+                location: DeviceLocation::Cpu,
             }],
         }
     }
@@ -637,14 +638,18 @@ mod tests {
         assert_eq!(cpu_self.dst, BackendId::Cpu);
         // Sanity: ns_per_byte should be small but positive.
         assert!(cpu_self.ns_per_byte >= 0.0);
-        assert!(cpu_self.ns_per_byte < 1000.0,
-            "cpu memcpy should be well under 1µs/byte; got {}", cpu_self.ns_per_byte);
+        assert!(
+            cpu_self.ns_per_byte < 1000.0,
+            "cpu memcpy should be well under 1µs/byte; got {}",
+            cpu_self.ns_per_byte
+        );
     }
 
     #[test]
     fn cost_ns_scales_linearly() {
         let c = TransferCost {
-            src: BackendId::Cpu, dst: BackendId::Cuda,
+            src: BackendId::Cpu,
+            dst: BackendId::Cuda,
             ns_per_byte: 0.1,
         };
         assert_eq!(c.cost_ns(0), 0);
@@ -658,16 +663,29 @@ mod tests {
             version: BANDWIDTH_REPORT_VERSION,
             measurement_bytes: 1 << 20,
             entries: vec![
-                TransferCost { src: BackendId::Cpu, dst: BackendId::Cpu, ns_per_byte: 0.05 },
-                TransferCost { src: BackendId::Cpu, dst: BackendId::Cuda, ns_per_byte: 0.5 },
-                TransferCost { src: BackendId::Cuda, dst: BackendId::Cpu, ns_per_byte: 0.6 },
+                TransferCost {
+                    src: BackendId::Cpu,
+                    dst: BackendId::Cpu,
+                    ns_per_byte: 0.05,
+                },
+                TransferCost {
+                    src: BackendId::Cpu,
+                    dst: BackendId::Cuda,
+                    ns_per_byte: 0.5,
+                },
+                TransferCost {
+                    src: BackendId::Cuda,
+                    dst: BackendId::Cpu,
+                    ns_per_byte: 0.6,
+                },
             ],
         };
-        let tmp = std::env::temp_dir().join(format!(
-            "fuel-bandwidth-test-{}.json", std::process::id()
-        ));
+        let tmp =
+            std::env::temp_dir().join(format!("fuel-bandwidth-test-{}.json", std::process::id()));
         report.save(&tmp).expect("save");
-        let loaded = BandwidthMatrix::load(&tmp).expect("load").expect("file exists");
+        let loaded = BandwidthMatrix::load(&tmp)
+            .expect("load")
+            .expect("file exists");
         assert_eq!(loaded, report);
         let _ = std::fs::remove_file(&tmp);
     }
@@ -675,7 +693,8 @@ mod tests {
     #[test]
     fn load_missing_file_returns_none() {
         let tmp = std::env::temp_dir().join(format!(
-            "fuel-bandwidth-test-nonexistent-{}.json", std::process::id()
+            "fuel-bandwidth-test-nonexistent-{}.json",
+            std::process::id()
         ));
         let _ = std::fs::remove_file(&tmp);
         let loaded = BandwidthMatrix::load(&tmp).expect("missing file is not an error");
@@ -685,7 +704,8 @@ mod tests {
     #[test]
     fn load_wrong_version_returns_none() {
         let tmp = std::env::temp_dir().join(format!(
-            "fuel-bandwidth-test-oldver-{}.json", std::process::id()
+            "fuel-bandwidth-test-oldver-{}.json",
+            std::process::id()
         ));
         let ancient = serde_json::json!({
             "version": 0,
@@ -694,14 +714,17 @@ mod tests {
         });
         std::fs::write(&tmp, serde_json::to_vec(&ancient).unwrap()).unwrap();
         let loaded = BandwidthMatrix::load(&tmp).expect("old version parses, not errors");
-        assert!(loaded.is_none(), "old-version reports should be treated as cache miss");
+        assert!(
+            loaded.is_none(),
+            "old-version reports should be treated as cache miss"
+        );
         let _ = std::fs::remove_file(&tmp);
     }
 
     // ===== Stage 1 — transfer calibration =====
 
     /// Synthetic perfectly-linear data: 2 bytes/ns (2 GB/s) bandwidth
-    /// + 10 µs fixed latency. The two-point fit must recover both
+    /// plus 10 µs fixed latency. The two-point fit must recover both
     /// exactly.
     #[test]
     fn fit_recovers_synthetic_linear() {
@@ -765,7 +788,10 @@ mod tests {
         // No panic / overflow at u64::MAX bytes.
         let _ = est.estimate_ns(u64::MAX);
         // Zero bandwidth is clamped, not divided by.
-        let degenerate = TransferEstimate { bandwidth_bytes_per_sec: 0, latency_ns: 0 };
+        let degenerate = TransferEstimate {
+            bandwidth_bytes_per_sec: 0,
+            latency_ns: 0,
+        };
         let _ = degenerate.estimate_ns(1 << 30);
     }
 
@@ -805,8 +831,14 @@ mod tests {
         assert_eq!(staged.bandwidth_bytes_per_sec, 4_000_000_000);
         assert_eq!(staged.latency_ns, 60_000);
         // Asymmetric: 1/bw = 1/12e9 + 1/4e9 → 3e9.
-        let fast = TransferEstimate { bandwidth_bytes_per_sec: 12_000_000_000, latency_ns: 1_000 };
-        let slow = TransferEstimate { bandwidth_bytes_per_sec: 4_000_000_000, latency_ns: 2_000 };
+        let fast = TransferEstimate {
+            bandwidth_bytes_per_sec: 12_000_000_000,
+            latency_ns: 1_000,
+        };
+        let slow = TransferEstimate {
+            bandwidth_bytes_per_sec: 4_000_000_000,
+            latency_ns: 2_000,
+        };
         let mixed = TransferEstimate::compose_staged(fast, slow);
         assert_eq!(mixed.bandwidth_bytes_per_sec, 3_000_000_000);
         assert_eq!(mixed.latency_ns, 3_000);
@@ -823,10 +855,17 @@ mod tests {
     #[test]
     fn calibration_probed_lookup() {
         let cuda0 = DeviceLocation::Cuda { gpu_id: 0 };
-        let h2d = TransferEstimate { bandwidth_bytes_per_sec: 10_000_000_000, latency_ns: 9_000 };
+        let h2d = TransferEstimate {
+            bandwidth_bytes_per_sec: 10_000_000_000,
+            latency_ns: 9_000,
+        };
         let cal = TransferCalibration::from_entries([((DeviceLocation::Cpu, cuda0), h2d)]);
         assert_eq!(cal.probed(DeviceLocation::Cpu, cuda0), Some(h2d));
-        assert_eq!(cal.probed(cuda0, DeviceLocation::Cpu), None, "reverse path not probed");
+        assert_eq!(
+            cal.probed(cuda0, DeviceLocation::Cpu),
+            None,
+            "reverse path not probed"
+        );
         assert!(!cal.is_empty());
         assert_eq!(cal.probed_paths().len(), 1);
     }

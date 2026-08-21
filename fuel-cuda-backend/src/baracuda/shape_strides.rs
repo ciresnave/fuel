@@ -33,11 +33,7 @@ impl ShapeStridesI32 {
     ///
     /// Both layouts must share the same shape; `op_label` is folded
     /// into any overflow / mismatch error.
-    pub fn from_two(
-        x_layout: &Layout,
-        y_layout: &Layout,
-        op_label: &'static str,
-    ) -> Result<Self> {
+    pub fn from_two(x_layout: &Layout, y_layout: &Layout, op_label: &'static str) -> Result<Self> {
         let dims = x_layout.shape().dims();
         let y_dims = y_layout.shape().dims();
         if dims != y_dims {

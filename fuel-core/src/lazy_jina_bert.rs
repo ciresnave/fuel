@@ -191,10 +191,7 @@ impl JinaBertModel {
             Shape::from_dims(&[cfg.vocab_size, h]),
             &Device::cpu(),
         );
-        let token_ids = word_emb_t.const_u32_like(
-            tokens.to_vec(),
-            Shape::from_dims(&[seq]),
-        );
+        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         let word_embeds = word_emb_t
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, h]))?;
@@ -209,7 +206,11 @@ impl JinaBertModel {
             .index_select(0_usize, &tt_ids)?
             .reshape(Shape::from_dims(&[batch, seq, h]))?;
 
-        let mut x = word_embeds.add(&tt_embeds)?.layer_norm_affine(std::sync::Arc::clone(&weights.embed_ln_gain), std::sync::Arc::clone(&weights.embed_ln_bias), cfg.layer_norm_eps)?;
+        let mut x = word_embeds.add(&tt_embeds)?.layer_norm_affine(
+            std::sync::Arc::clone(&weights.embed_ln_gain),
+            std::sync::Arc::clone(&weights.embed_ln_bias),
+            cfg.layer_norm_eps,
+        )?;
 
         // ---- ALiBi bias (shared across layers) -----------------------------
         let alibi_data = build_alibi_bias(n_heads, seq);
@@ -282,9 +283,7 @@ impl JinaBertModel {
             Shape::from_dims(&[cfg.vocab_size, h]),
             &Device::cpu(),
         );
-        let token_ids = word_emb_t.const_u32_like(
-            tokens.to_vec(), Shape::from_dims(&[seq]),
-        );
+        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         let word_embeds = word_emb_t
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, h]))?;
@@ -292,13 +291,15 @@ impl JinaBertModel {
             Arc::clone(&weights.token_type_embedding),
             Shape::from_dims(&[cfg.type_vocab_size, h]),
         );
-        let tt_ids = word_emb_t.const_u32_like(
-            vec![0_u32; seq], Shape::from_dims(&[seq]),
-        );
+        let tt_ids = word_emb_t.const_u32_like(vec![0_u32; seq], Shape::from_dims(&[seq]));
         let tt_embeds = tte_t
             .index_select(0_usize, &tt_ids)?
             .reshape(Shape::from_dims(&[batch, seq, h]))?;
-        let mut x = word_embeds.add(&tt_embeds)?.layer_norm_affine(std::sync::Arc::clone(&weights.embed_ln_gain), std::sync::Arc::clone(&weights.embed_ln_bias), cfg.layer_norm_eps)?;
+        let mut x = word_embeds.add(&tt_embeds)?.layer_norm_affine(
+            std::sync::Arc::clone(&weights.embed_ln_gain),
+            std::sync::Arc::clone(&weights.embed_ln_bias),
+            cfg.layer_norm_eps,
+        )?;
 
         // Shared ALiBi bias (optionally folded with pad mask).
         let alibi_data = build_alibi_bias(n_heads, seq);
@@ -360,7 +361,11 @@ impl JinaBertModel {
         let attn_out = attn_out.add_trailing_bias(std::sync::Arc::clone(&layer.attn_out_bias))?;
 
         // Post-LN attention residual: LN(x + attn).
-        let h1 = x.add(&attn_out)?.layer_norm_affine(std::sync::Arc::clone(&layer.attn_ln_gain), std::sync::Arc::clone(&layer.attn_ln_bias), cfg.layer_norm_eps)?;
+        let h1 = x.add(&attn_out)?.layer_norm_affine(
+            std::sync::Arc::clone(&layer.attn_ln_gain),
+            std::sync::Arc::clone(&layer.attn_ln_bias),
+            cfg.layer_norm_eps,
+        )?;
 
         // ---- GeGLU MLP -----------------------------------------------------
         let i = cfg.intermediate_size;
@@ -378,7 +383,11 @@ impl JinaBertModel {
         let down = down.add_trailing_bias(std::sync::Arc::clone(&layer.mlp_wo_bias))?;
 
         // Post-LN MLP residual: LN(h1 + mlp).
-        Ok(h1.add(&down)?.layer_norm_affine(std::sync::Arc::clone(&layer.mlp_ln_gain), std::sync::Arc::clone(&layer.mlp_ln_bias), cfg.layer_norm_eps)?)
+        Ok(h1.add(&down)?.layer_norm_affine(
+            std::sync::Arc::clone(&layer.mlp_ln_gain),
+            std::sync::Arc::clone(&layer.mlp_ln_bias),
+            cfg.layer_norm_eps,
+        )?)
     }
 }
 
@@ -395,72 +404,84 @@ impl JinaBertWeights {
         let h = cfg.hidden_size;
         let inter = cfg.intermediate_size;
 
-        let word_embedding = Arc::from(load_tensor_as_f32(
-            st, "embeddings.word_embeddings.weight",
-        )?);
+        let word_embedding =
+            Arc::from(load_tensor_as_f32(st, "embeddings.word_embeddings.weight")?);
         let token_type_embedding = Arc::from(load_tensor_as_f32(
-            st, "embeddings.token_type_embeddings.weight",
+            st,
+            "embeddings.token_type_embeddings.weight",
         )?);
-        let embed_ln_gain = Arc::from(load_tensor_as_f32(
-            st, "embeddings.LayerNorm.weight",
-        )?);
-        let embed_ln_bias = Arc::from(load_tensor_as_f32(
-            st, "embeddings.LayerNorm.bias",
-        )?);
+        let embed_ln_gain = Arc::from(load_tensor_as_f32(st, "embeddings.LayerNorm.weight")?);
+        let embed_ln_bias = Arc::from(load_tensor_as_f32(st, "embeddings.LayerNorm.bias")?);
 
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         for i in 0..cfg.num_hidden_layers {
             let p = format!("encoder.layer.{i}");
             let q = ltm(st, &format!("{p}.attention.self.query.weight"), h, h)?;
             let q_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.attention.self.query.bias"),
+                st,
+                &format!("{p}.attention.self.query.bias"),
             )?);
             let k = ltm(st, &format!("{p}.attention.self.key.weight"), h, h)?;
             let k_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.attention.self.key.bias"),
+                st,
+                &format!("{p}.attention.self.key.bias"),
             )?);
             let v = ltm(st, &format!("{p}.attention.self.value.weight"), h, h)?;
             let v_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.attention.self.value.bias"),
+                st,
+                &format!("{p}.attention.self.value.bias"),
             )?);
             let attn_out = ltm(st, &format!("{p}.attention.output.dense.weight"), h, h)?;
             let attn_out_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.attention.output.dense.bias"),
+                st,
+                &format!("{p}.attention.output.dense.bias"),
             )?);
             let attn_ln_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.attention.output.LayerNorm.weight"),
+                st,
+                &format!("{p}.attention.output.LayerNorm.weight"),
             )?);
             let attn_ln_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.attention.output.LayerNorm.bias"),
+                st,
+                &format!("{p}.attention.output.LayerNorm.bias"),
             )?);
             // Jina-BERT GeGLU is stored as one fused [2*inter, hidden] matrix.
-            let gated_layers = ltm(
-                st, &format!("{p}.mlp.gated_layers.weight"), 2 * inter, h,
-            )?;
+            let gated_layers = ltm(st, &format!("{p}.mlp.gated_layers.weight"), 2 * inter, h)?;
             let mlp_wo = ltm(st, &format!("{p}.mlp.wo.weight"), h, inter)?;
-            let mlp_wo_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.mlp.wo.bias"),
-            )?);
+            let mlp_wo_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.mlp.wo.bias"))?);
             let mlp_ln_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.mlp.layernorm.weight"),
+                st,
+                &format!("{p}.mlp.layernorm.weight"),
             )?);
-            let mlp_ln_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.mlp.layernorm.bias"),
-            )?);
+            let mlp_ln_bias =
+                Arc::from(load_tensor_as_f32(st, &format!("{p}.mlp.layernorm.bias"))?);
             layers.push(JinaLayerWeights {
-                q, q_bias, k, k_bias, v, v_bias,
-                attn_out, attn_out_bias, attn_ln_gain, attn_ln_bias,
-                gated_layers, mlp_wo, mlp_wo_bias, mlp_ln_gain, mlp_ln_bias,
+                q,
+                q_bias,
+                k,
+                k_bias,
+                v,
+                v_bias,
+                attn_out,
+                attn_out_bias,
+                attn_ln_gain,
+                attn_ln_bias,
+                gated_layers,
+                mlp_wo,
+                mlp_wo_bias,
+                mlp_ln_gain,
+                mlp_ln_bias,
             });
         }
 
         Ok(Self {
-            word_embedding, token_type_embedding,
-            embed_ln_gain, embed_ln_bias, layers,
+            word_embedding,
+            token_type_embedding,
+            embed_ln_gain,
+            embed_ln_bias,
+            layers,
         })
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -529,7 +550,10 @@ mod tests {
     #[test]
     fn forward_shape_and_finite() {
         let cfg = tiny_cfg();
-        let model = JinaBertModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = JinaBertModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens = [1_u32, 2, 3, 4, 5, 6];
         let out = model.forward(&tokens, None).unwrap();
         assert_eq!(out.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
@@ -542,7 +566,10 @@ mod tests {
     #[test]
     fn bidirectional_attention() {
         let cfg = tiny_cfg();
-        let model = JinaBertModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = JinaBertModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let toks_a = [1_u32, 2, 3, 4];
         let toks_b = [1_u32, 2, 3, 15];
         let a = model.forward(&toks_a, None).unwrap().realize_f32();
@@ -552,8 +579,10 @@ mod tests {
         for i in 0..h {
             max_diff = max_diff.max((a[i] - b[i]).abs());
         }
-        assert!(max_diff > 1e-7,
-            "last-token change must affect position 0 (bidirectional), max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-7,
+            "last-token change must affect position 0 (bidirectional), max_diff = {max_diff}"
+        );
     }
 
     /// ALiBi slope table for n_heads = power of 2 follows the
@@ -567,12 +596,19 @@ mod tests {
             assert!(v < 0.0, "slopes must be negative, got {v}");
         }
         for w in s.windows(2) {
-            assert!(w[0].abs() > w[1].abs(),
+            assert!(
+                w[0].abs() > w[1].abs(),
                 "slope magnitudes must shrink across heads: {} → {}",
-                w[0], w[1]);
+                w[0],
+                w[1]
+            );
         }
         // s[0] = -1/2^1 = -0.5 exactly.
-        assert!((s[0] + 0.5).abs() < 1e-7, "head-0 slope expected -0.5, got {}", s[0]);
+        assert!(
+            (s[0] + 0.5).abs() < 1e-7,
+            "head-0 slope expected -0.5, got {}",
+            s[0]
+        );
     }
 
     /// ALiBi slope table for non-power-of-2 head counts uses
@@ -598,7 +634,10 @@ mod tests {
     #[test]
     fn alibi_distinguishes_positions() {
         let cfg = tiny_cfg();
-        let model = JinaBertModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = JinaBertModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let toks = [5_u32, 5, 5, 5, 5, 30];
         let out = model.forward(&toks, None).unwrap().realize_f32();
         let h = cfg.hidden_size;
@@ -610,9 +649,11 @@ mod tests {
             let p4 = out[4 * h + j];
             max_diff = max_diff.max((p0 - p4).abs());
         }
-        assert!(max_diff > 1e-7,
+        assert!(
+            max_diff > 1e-7,
             "ALiBi should weigh the distinct token differently at distance 5 \
-             vs distance 1, but position 0 and 4 outputs are identical: max_diff = {max_diff}");
+             vs distance 1, but position 0 and 4 outputs are identical: max_diff = {max_diff}"
+        );
     }
 
     /// `forward_intermediate_layers` returns one tensor per
@@ -621,9 +662,14 @@ mod tests {
     #[test]
     fn forward_intermediate_layers_shape() {
         let cfg = tiny_cfg();
-        let model = JinaBertModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = JinaBertModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let toks = [1_u32, 2, 3, 4];
-        let outs = model.forward_intermediate_layers(&toks, &[0_usize, 1], None).unwrap();
+        let outs = model
+            .forward_intermediate_layers(&toks, &[0_usize, 1], None)
+            .unwrap();
         assert_eq!(outs.len(), 2);
         for out in &outs {
             assert_eq!(out.shape().dims(), &[1, toks.len(), cfg.hidden_size]);
@@ -637,7 +683,9 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-7,
-            "layer 0 and layer 1 intermediates must differ, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-7,
+            "layer 0 and layer 1 intermediates must differ, max_diff = {max_diff}"
+        );
     }
 }

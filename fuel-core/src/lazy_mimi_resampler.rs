@@ -20,9 +20,9 @@
 //! Forward-only inference. Streaming `step` API not supported here
 //! — see [`crate::lazy_mimi_seanet`] for the same design choice.
 
-use crate::lazy::LazyTensor;
-use crate::lazy_encodec::{pad1d, PadMode};
 use crate::Result;
+use crate::lazy::LazyTensor;
+use crate::lazy_encodec::{PadMode, pad1d};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -77,10 +77,7 @@ impl ConvTrUpsample1dModel {
     pub fn forward(&self, x: &LazyTensor) -> Result<LazyTensor> {
         let w = &self.weights;
         let kernel = 2 * w.stride;
-        let weight = x.const_f32_like(
-            Arc::clone(&w.weight),
-            Shape::from_dims(&[w.dim, 1, kernel]),
-        );
+        let weight = x.const_f32_like(Arc::clone(&w.weight), Shape::from_dims(&[w.dim, 1, kernel]));
         let y = x.conv_transpose1d(
             &weight, w.stride, /* padding */ 0, /* output_padding */ 0,
             /* dilation */ 1, /* groups */ w.dim,
@@ -190,64 +187,84 @@ mod tests {
     #[test]
     fn downsample_shapes() {
         let mut nb = rng_seed(2026);
-        let dim = 4; let stride = 2;
+        let dim = 4;
+        let stride = 2;
         let model = ConvDownsample1dModel {
             weights: ConvDownsample1dWeights {
                 weight: vec_of(dim * dim * 2 * stride, &mut nb),
-                dim, stride,
+                dim,
+                stride,
             },
         };
         let t_in = 8;
         let x = LazyTensor::from_f32(
-            (0..(1 * dim * t_in)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, dim, t_in]), &Device::cpu(),
+            (0..(1 * dim * t_in))
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, dim, t_in]),
+            &Device::cpu(),
         );
         let y = model.forward(&x).unwrap();
         assert_eq!(y.shape().dims(), &[1, dim, t_in / stride]);
-        for &v in &y.realize_f32() { assert!(v.is_finite()); }
+        for &v in &y.realize_f32() {
+            assert!(v.is_finite());
+        }
     }
 
     #[test]
     fn upsample_shapes() {
         let mut nb = rng_seed(2027);
-        let dim = 4; let stride = 2;
+        let dim = 4;
+        let stride = 2;
         let model = ConvTrUpsample1dModel {
             weights: ConvTrUpsample1dWeights {
                 weight: vec_of(dim * 1 * 2 * stride, &mut nb),
-                dim, stride,
+                dim,
+                stride,
             },
         };
         let t_in = 5;
         let x = LazyTensor::from_f32(
-            (0..(1 * dim * t_in)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, dim, t_in]), &Device::cpu(),
+            (0..(1 * dim * t_in))
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, dim, t_in]),
+            &Device::cpu(),
         );
         let y = model.forward(&x).unwrap();
         // Causal-trimmed output length = T · stride exactly.
         assert_eq!(y.shape().dims(), &[1, dim, t_in * stride]);
-        for &v in &y.realize_f32() { assert!(v.is_finite()); }
+        for &v in &y.realize_f32() {
+            assert!(v.is_finite());
+        }
     }
 
     #[test]
     fn downsample_then_upsample_shape_round_trip() {
         let mut nb = rng_seed(2028);
-        let dim = 4; let stride = 2;
+        let dim = 4;
+        let stride = 2;
         let dn = ConvDownsample1dModel {
             weights: ConvDownsample1dWeights {
                 weight: vec_of(dim * dim * 2 * stride, &mut nb),
-                dim, stride,
+                dim,
+                stride,
             },
         };
         let up = ConvTrUpsample1dModel {
             weights: ConvTrUpsample1dWeights {
                 weight: vec_of(dim * 1 * 2 * stride, &mut nb),
-                dim, stride,
+                dim,
+                stride,
             },
         };
         let t_in = 6;
         let x = LazyTensor::from_f32(
-            (0..(1 * dim * t_in)).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
-            Shape::from_dims(&[1, dim, t_in]), &Device::cpu(),
+            (0..(1 * dim * t_in))
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[1, dim, t_in]),
+            &Device::cpu(),
         );
         let mid = dn.forward(&x).unwrap();
         assert_eq!(mid.shape().dims(), &[1, dim, t_in / stride]);

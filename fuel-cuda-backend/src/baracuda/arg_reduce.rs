@@ -190,11 +190,59 @@ macro_rules! arg_reduce_kernel {
 // `[F64, U32]` / `[F16, U32]` / `[BF16, U32]` binding-table keys.
 // ---------------------------------------------------------------------------
 
-arg_reduce_kernel!(argmax_dim_u32_f32, argmax_f32_u32, 4, 4, "argmax_dim_u32_f32");
-arg_reduce_kernel!(argmin_dim_u32_f32, argmin_f32_u32, 4, 4, "argmin_dim_u32_f32");
-arg_reduce_kernel!(argmax_dim_u32_f64, argmax_f64_u32, 8, 4, "argmax_dim_u32_f64");
-arg_reduce_kernel!(argmin_dim_u32_f64, argmin_f64_u32, 8, 4, "argmin_dim_u32_f64");
-arg_reduce_kernel!(argmax_dim_u32_f16, argmax_f16_u32, 2, 4, "argmax_dim_u32_f16");
-arg_reduce_kernel!(argmin_dim_u32_f16, argmin_f16_u32, 2, 4, "argmin_dim_u32_f16");
-arg_reduce_kernel!(argmax_dim_u32_bf16, argmax_bf16_u32, 2, 4, "argmax_dim_u32_bf16");
-arg_reduce_kernel!(argmin_dim_u32_bf16, argmin_bf16_u32, 2, 4, "argmin_dim_u32_bf16");
+arg_reduce_kernel!(
+    argmax_dim_u32_f32,
+    argmax_f32_u32,
+    4,
+    4,
+    "argmax_dim_u32_f32"
+);
+arg_reduce_kernel!(
+    argmin_dim_u32_f32,
+    argmin_f32_u32,
+    4,
+    4,
+    "argmin_dim_u32_f32"
+);
+arg_reduce_kernel!(
+    argmax_dim_u32_f64,
+    argmax_f64_u32,
+    8,
+    4,
+    "argmax_dim_u32_f64"
+);
+arg_reduce_kernel!(
+    argmin_dim_u32_f64,
+    argmin_f64_u32,
+    8,
+    4,
+    "argmin_dim_u32_f64"
+);
+arg_reduce_kernel!(
+    argmax_dim_u32_f16,
+    argmax_f16_u32,
+    2,
+    4,
+    "argmax_dim_u32_f16"
+);
+arg_reduce_kernel!(
+    argmin_dim_u32_f16,
+    argmin_f16_u32,
+    2,
+    4,
+    "argmin_dim_u32_f16"
+);
+arg_reduce_kernel!(
+    argmax_dim_u32_bf16,
+    argmax_bf16_u32,
+    2,
+    4,
+    "argmax_dim_u32_bf16"
+);
+arg_reduce_kernel!(
+    argmin_dim_u32_bf16,
+    argmin_bf16_u32,
+    2,
+    4,
+    "argmin_dim_u32_bf16"
+);

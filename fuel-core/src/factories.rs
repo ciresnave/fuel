@@ -38,9 +38,9 @@
 //! No edits to judge.rs or probe.rs.
 
 use crate::lazy::LazyTensor;
+use fuel_dispatch::pipelined::StorageCache;
 use fuel_ir::probe::BackendId;
 use fuel_ir::{DType, Error, Result};
-use fuel_dispatch::pipelined::StorageCache;
 
 /// Object-safe realize seam used by judge.rs. Realizes the tensor's
 /// graph on the realizer's pinned device through the pipelined
@@ -106,7 +106,11 @@ struct BridgeRealizer {
 
 impl BridgeRealizer {
     fn new(device: crate::Device) -> Self {
-        Self { device, cache: StorageCache::new(), last_kernel_source: None }
+        Self {
+            device,
+            cache: StorageCache::new(),
+            last_kernel_source: None,
+        }
     }
 
     /// Realize `tensor` on the pinned device, reading the output
@@ -224,9 +228,7 @@ pub trait BackendFactory: Send + Sync {
 /// rest gate on cargo features.
 pub fn registry() -> Vec<&'static dyn BackendFactory> {
     #[allow(unused_mut)]
-    let mut v: Vec<&'static dyn BackendFactory> = vec![
-        &CpuFactory,
-    ];
+    let mut v: Vec<&'static dyn BackendFactory> = vec![&CpuFactory];
     #[cfg(feature = "cuda")]
     v.push(&CudaFactory);
     #[cfg(feature = "vulkan")]
@@ -247,7 +249,9 @@ pub fn factory_for(id: BackendId) -> Option<&'static dyn BackendFactory> {
 pub struct CpuFactory;
 
 impl BackendFactory for CpuFactory {
-    fn id(&self) -> BackendId { BackendId::Cpu }
+    fn id(&self) -> BackendId {
+        BackendId::Cpu
+    }
     fn try_make_realizer(&self, _device_index: u32) -> Result<Box<dyn LazyRealizer>> {
         Ok(Box::new(BridgeRealizer::new(crate::Device::cpu())))
     }
@@ -269,12 +273,13 @@ pub struct CudaFactory;
 
 #[cfg(feature = "cuda")]
 impl BackendFactory for CudaFactory {
-    fn id(&self) -> BackendId { BackendId::Cuda }
+    fn id(&self) -> BackendId {
+        BackendId::Cuda
+    }
     fn try_make_realizer(&self, device_index: u32) -> Result<Box<dyn LazyRealizer>> {
-        let dev = fuel_cuda_backend::CudaDevice::new(device_index as usize)
-            .map_err(|e| fuel_ir::Error::Msg(
-                format!("CudaDevice::new({device_index}) failed: {e}")
-            ))?;
+        let dev = fuel_cuda_backend::CudaDevice::new(device_index as usize).map_err(|e| {
+            fuel_ir::Error::Msg(format!("CudaDevice::new({device_index}) failed: {e}"))
+        })?;
         Ok(Box::new(BridgeRealizer::new(dev.into())))
     }
 }
@@ -288,13 +293,14 @@ pub struct VulkanFactory;
 
 #[cfg(feature = "vulkan")]
 impl BackendFactory for VulkanFactory {
-    fn id(&self) -> BackendId { BackendId::Vulkan }
+    fn id(&self) -> BackendId {
+        BackendId::Vulkan
+    }
     fn try_make_realizer(&self, device_index: u32) -> Result<Box<dyn LazyRealizer>> {
         let backend = fuel_vulkan_backend::VulkanBackend::with_selection(
             fuel_vulkan_backend::DeviceSelection::Index(device_index as usize),
-        ).map_err(|e| fuel_ir::Error::Msg(
-            format!("VulkanBackend init failed: {e}")
-        ))?;
+        )
+        .map_err(|e| fuel_ir::Error::Msg(format!("VulkanBackend init failed: {e}")))?;
         Ok(Box::new(BridgeRealizer::new(backend.into())))
     }
 }

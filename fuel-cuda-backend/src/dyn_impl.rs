@@ -12,15 +12,13 @@
 //! `UnaryOp`/`BinaryOp` enum variants to kernel name strings and reuse the
 //! exact same CUDA kernel launch infrastructure.
 
-use fuel_ir::conv::{
-    ParamsConv1D, ParamsConv2D, ParamsConvTranspose1D, ParamsConvTranspose2D,
-};
-use fuel_backend_contract::dyn_backend::{DynBackendDevice, DynBackendStorage};
-use fuel_ir::op::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
-use fuel_ir::{HostBuffer, DType, DeviceLocation, Error, Layout, Result, Scalar, Shape};
+use crate::device::LaunchConfig;
 use baracuda_driver::DeviceBuffer as CudaSlice;
 use baracuda_types::{DeviceRepr, KernelArg as PushKernelArg, ValidAsZeroBits};
-use crate::device::LaunchConfig;
+use fuel_backend_contract::dyn_backend::{DynBackendDevice, DynBackendStorage};
+use fuel_ir::conv::{ParamsConv1D, ParamsConv2D, ParamsConvTranspose1D, ParamsConvTranspose2D};
+use fuel_ir::op::{BinaryOp, CmpOp, ReduceOp, UnaryOp};
+use fuel_ir::{DType, DeviceLocation, Error, HostBuffer, Layout, Result, Scalar, Shape};
 use std::any::Any;
 use std::sync::Arc;
 
@@ -46,30 +44,26 @@ pub type CudaBackendDevice = CudaDevice;
 // ---------------------------------------------------------------------------
 
 fn downcast(s: &dyn DynBackendStorage) -> Result<&CudaStorage> {
-    s.as_any()
-        .downcast_ref::<CudaStorage>()
-        .ok_or_else(|| {
-            Error::DeviceMismatchBinaryOp {
-                lhs: DeviceLocation::Cuda { gpu_id: 0 },
-                rhs: s.device_dyn().location_dyn(),
-                op: "cuda_dyn_backend",
-            }
-            .bt()
-        })
+    s.as_any().downcast_ref::<CudaStorage>().ok_or_else(|| {
+        Error::DeviceMismatchBinaryOp {
+            lhs: DeviceLocation::Cuda { gpu_id: 0 },
+            rhs: s.device_dyn().location_dyn(),
+            op: "cuda_dyn_backend",
+        }
+        .bt()
+    })
 }
 
 fn downcast_mut(s: &mut dyn DynBackendStorage) -> Result<&mut CudaStorage> {
     let loc = s.device_dyn().location_dyn();
-    s.as_any_mut()
-        .downcast_mut::<CudaStorage>()
-        .ok_or_else(|| {
-            Error::DeviceMismatchBinaryOp {
-                lhs: DeviceLocation::Cuda { gpu_id: 0 },
-                rhs: loc,
-                op: "cuda_dyn_backend",
-            }
-            .bt()
-        })
+    s.as_any_mut().downcast_mut::<CudaStorage>().ok_or_else(|| {
+        Error::DeviceMismatchBinaryOp {
+            lhs: DeviceLocation::Cuda { gpu_id: 0 },
+            rhs: loc,
+            op: "cuda_dyn_backend",
+        }
+        .bt()
+    })
 }
 
 fn wrap(s: CudaStorage) -> Box<dyn DynBackendStorage> {
@@ -227,7 +221,10 @@ impl DynBackendStorage for CudaStorage {
     fn unary_op_dyn(&self, layout: &Layout, op: UnaryOp) -> Result<Box<dyn DynBackendStorage>> {
         let kname = unary_kernel_name(op);
         let slice = UnaryKernel(kname).map(&self.slice, &self.device, layout)?;
-        Ok(wrap(CudaStorage { slice, device: self.device.clone() }))
+        Ok(wrap(CudaStorage {
+            slice,
+            device: self.device.clone(),
+        }))
     }
 
     fn binary_op_dyn(
@@ -246,7 +243,10 @@ impl DynBackendStorage for CudaStorage {
             rhs_layout,
             &self.device,
         )?;
-        Ok(wrap(CudaStorage { slice, device: self.device.clone() }))
+        Ok(wrap(CudaStorage {
+            slice,
+            device: self.device.clone(),
+        }))
     }
 
     fn where_cond_dyn(
@@ -339,7 +339,8 @@ impl DynBackendStorage for CudaStorage {
         target_h: usize,
         target_w: usize,
     ) -> Result<Box<dyn DynBackendStorage>> {
-        self.upsample_nearest2d(layout, target_h, target_w).map(wrap)
+        self.upsample_nearest2d(layout, target_h, target_w)
+            .map(wrap)
     }
 
     fn upsample_bilinear2d_dyn(
@@ -404,7 +405,8 @@ impl DynBackendStorage for CudaStorage {
         dim: usize,
     ) -> Result<Box<dyn DynBackendStorage>> {
         let ids = downcast(ids)?;
-        self.index_select(ids, src_layout, ids_layout, dim).map(wrap)
+        self.index_select(ids, src_layout, ids_layout, dim)
+            .map(wrap)
     }
 
     fn index_add_dyn(
@@ -454,7 +456,15 @@ impl DynBackendStorage for CudaStorage {
         dst_offset: usize,
     ) -> Result<()> {
         let dst = downcast_mut(dst)?;
-        self.copy2d(dst, d1, d2, src_stride1, dst_stride1, src_offset, dst_offset)
+        self.copy2d(
+            dst,
+            d1,
+            d2,
+            src_stride1,
+            dst_stride1,
+            src_offset,
+            dst_offset,
+        )
     }
 
     fn const_set_dyn(&mut self, value: Scalar, layout: &Layout) -> Result<()> {

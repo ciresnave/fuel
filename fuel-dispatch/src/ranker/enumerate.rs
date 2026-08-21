@@ -111,7 +111,7 @@ pub fn enumerate_candidates(
 mod tests {
     use super::*;
     use crate::fused::PrecisionGuarantee;
-    use crate::kernel::{unknown_cost, KernelCaps};
+    use crate::kernel::{KernelCaps, unknown_cost};
     use fuel_ir::{Layout, Result};
     use fuel_memory::Storage;
     use std::sync::{Arc, RwLock};
@@ -151,7 +151,18 @@ mod tests {
         KernelBindingTable::new()
     }
 
-    fn table_with(entries: &[(BackendId, fn(&[Arc<RwLock<Storage>>], &mut [Arc<RwLock<Storage>>], &[Layout], &OpParams) -> Result<()>)]) -> KernelBindingTable {
+    #[allow(clippy::type_complexity)]
+    fn table_with(
+        entries: &[(
+            BackendId,
+            fn(
+                &[Arc<RwLock<Storage>>],
+                &mut [Arc<RwLock<Storage>>],
+                &[Layout],
+                &OpParams,
+            ) -> Result<()>,
+        )],
+    ) -> KernelBindingTable {
         let mut t = KernelBindingTable::new();
         for &(backend, kernel) in entries {
             t.register_full(
@@ -231,15 +242,18 @@ mod tests {
             &bindings,
         );
         assert_eq!(set.len(), 3);
-        let backends: Vec<BackendId> = set
-            .alternatives()
-            .iter()
-            .map(|c| c.backend)
-            .collect();
-        assert_eq!(backends, vec![BackendId::Cpu, BackendId::Cuda, BackendId::Vulkan]);
+        let backends: Vec<BackendId> = set.alternatives().iter().map(|c| c.backend).collect();
+        assert_eq!(
+            backends,
+            vec![BackendId::Cpu, BackendId::Cuda, BackendId::Vulkan]
+        );
         // All three are at DeviceLocation::Cpu — the CPU storage
         // substrate is shared so no Op::Copy is needed between them.
-        assert!(set.alternatives().iter().all(|c| c.device == DeviceLocation::Cpu));
+        assert!(
+            set.alternatives()
+                .iter()
+                .all(|c| c.device == DeviceLocation::Cpu)
+        );
     }
 
     #[test]
@@ -326,14 +340,14 @@ mod tests {
 
     #[test]
     fn op_params_cloned_onto_every_candidate() {
-        let bindings = table_with(&[
-            (BackendId::Cpu, noop_a),
-            (BackendId::Cuda, noop_b),
-        ]);
+        let bindings = table_with(&[(BackendId::Cpu, noop_a), (BackendId::Cuda, noop_b)]);
         // Use a non-None variant to verify the clone is actually
         // happening rather than every candidate getting the trivial
         // default.
-        let params = OpParams::Reduce { dims: vec![0, 2], keepdim: false };
+        let params = OpParams::Reduce {
+            dims: vec![0, 2],
+            keepdim: false,
+        };
         let set = enumerate_candidates(
             OpKind::AddElementwise,
             &one_dtype_key(),

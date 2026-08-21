@@ -75,7 +75,10 @@ const DIVERGENCES: &[(&str, &str)] = &[
 const MIN_EXPECTED_CLAUSES: usize = 5;
 
 fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf()
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf()
 }
 
 fn spec_path() -> PathBuf {
@@ -98,8 +101,12 @@ fn derive_clauses_from_prose() -> BTreeSet<String> {
         let Some(end) = after.find(']') else { continue };
         let tok = &after[..end];
         // Shape: FKC-<section>-<4 digits>, section being digits and dots.
-        let Some(rest) = tok.strip_prefix("FKC-") else { continue };
-        let Some((sec, num)) = rest.rsplit_once('-') else { continue };
+        let Some(rest) = tok.strip_prefix("FKC-") else {
+            continue;
+        };
+        let Some((sec, num)) = rest.rsplit_once('-') else {
+            continue;
+        };
         if !sec.is_empty()
             && sec.chars().all(|c| c.is_ascii_digit() || c == '.')
             && num.len() == 4
@@ -138,18 +145,25 @@ fn citations() -> BTreeMap<String, Vec<String>> {
             if p.extension().is_none_or(|x| x != "rs") {
                 continue;
             }
-            let Ok(src) = std::fs::read_to_string(&p) else { continue };
+            let Ok(src) = std::fs::read_to_string(&p) else {
+                continue;
+            };
             // Skip this file: it NAMES every clause (in DIVERGENCES /
             // ENFORCED_ELSEWHERE) without testing any of them. Counting itself
             // would make the gate self-satisfying — the purest vacuity.
-            if p.file_name().is_some_and(|n| n == "fkc_prose_clause_coverage.rs") {
+            if p.file_name()
+                .is_some_and(|n| n == "fkc_prose_clause_coverage.rs")
+            {
                 continue;
             }
             let label = p.file_name().unwrap().to_string_lossy().to_string();
             for line in src.lines() {
-                let Some(idx) = line.find("FKC-CLAUSE:") else { continue };
+                let Some(idx) = line.find("FKC-CLAUSE:") else {
+                    continue;
+                };
                 for tok in line[idx + "FKC-CLAUSE:".len()..].split_whitespace() {
-                    let tok = tok.trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '.');
+                    let tok =
+                        tok.trim_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '.');
                     if tok.starts_with("FKC-") {
                         let entry = found.entry(tok.to_string()).or_default();
                         if !entry.contains(&label) {
@@ -198,7 +212,11 @@ fn every_prose_clause_is_cited_or_recorded() {
          Add `FKC-CLAUSE: <id>` to the test that enforces it, or record why it \
          is not enforced here.",
         unaccounted.len(),
-        unaccounted.iter().map(|c| format!("  - {c}")).collect::<Vec<_>>().join("\n")
+        unaccounted
+            .iter()
+            .map(|c| format!("  - {c}"))
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 }
 
@@ -211,7 +229,10 @@ fn every_prose_clause_is_cited_or_recorded() {
 #[test]
 fn no_orphan_citations() {
     let clauses = derive_clauses_from_prose();
-    assert!(clauses.len() >= MIN_EXPECTED_CLAUSES, "prose clause parse collapsed");
+    assert!(
+        clauses.len() >= MIN_EXPECTED_CLAUSES,
+        "prose clause parse collapsed"
+    );
 
     let mut orphans: Vec<String> = Vec::new();
     for (c, files) in citations() {

@@ -37,9 +37,9 @@ use crate::judge::{Criterion, DispatchOptions, DispatchTable, Pick};
 use crate::judge::{Judge, OpKind, ProfileEntry, ProfileReport, SizeClass};
 use crate::probe::{HardwareChange, ProbeReport};
 use crate::transfer_cost::BandwidthMatrix;
+use fuel_graph::{Graph, NodeId, Op};
 use fuel_ir::probe::BackendId;
 use fuel_ir::{DType, DeviceLocation, Result};
-use fuel_graph::{Graph, NodeId, Op};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -72,13 +72,13 @@ pub struct ScheduleOptions {
 impl Default for ScheduleOptions {
     fn default() -> Self {
         Self {
-            probe_path:                None,
-            profile_path:              None,
-            bandwidth_path:            None,
-            force_rejudge:             false,
+            probe_path: None,
+            profile_path: None,
+            bandwidth_path: None,
+            force_rejudge: false,
             force_remeasure_bandwidth: false,
-            judge:                     Judge::default(),
-            dispatch:                  DispatchOptions::default(),
+            judge: Judge::default(),
+            dispatch: DispatchOptions::default(),
         }
     }
 }
@@ -88,12 +88,14 @@ impl Default for ScheduleOptions {
 /// profile report it was built from (callers often want the raw
 /// measurements too — for logging, debugging, or a custom secondary
 /// dispatch table).
-pub fn prepare_dispatch_table(
-    opts: ScheduleOptions,
-) -> Result<(DispatchTable, ProfileReport)> {
-    let probe_path = opts.probe_path.clone()
+pub fn prepare_dispatch_table(opts: ScheduleOptions) -> Result<(DispatchTable, ProfileReport)> {
+    let probe_path = opts
+        .probe_path
+        .clone()
         .or_else(crate::probe::default_report_path);
-    let profile_path = opts.profile_path.clone()
+    let profile_path = opts
+        .profile_path
+        .clone()
         .or_else(crate::judge::default_report_path);
 
     let current_probe = ProbeReport::probe_all();
@@ -145,18 +147,24 @@ pub fn prepare_dispatch_table(
 fn op_to_kind(op: &Op) -> Option<OpKind> {
     match op {
         Op::MatMul => Some(OpKind::MatMul),
-        Op::Add    => Some(OpKind::AddElementwise),
-        _          => None,
+        Op::Add => Some(OpKind::AddElementwise),
+        _ => None,
     }
 }
 
 /// Convert a dispatch-table [`Pick`] into the Fuel placement enum.
 fn pick_to_location(pick: Pick) -> Option<DeviceLocation> {
     match pick.backend {
-        BackendId::Cpu       => Some(DeviceLocation::Cpu),
-        BackendId::Cuda      => Some(DeviceLocation::Cuda   { gpu_id: pick.device_index as usize }),
-        BackendId::Vulkan    => Some(DeviceLocation::Vulkan { gpu_id: pick.device_index as usize }),
-        BackendId::Metal     => Some(DeviceLocation::Metal  { gpu_id: pick.device_index as usize }),
+        BackendId::Cpu => Some(DeviceLocation::Cpu),
+        BackendId::Cuda => Some(DeviceLocation::Cuda {
+            gpu_id: pick.device_index as usize,
+        }),
+        BackendId::Vulkan => Some(DeviceLocation::Vulkan {
+            gpu_id: pick.device_index as usize,
+        }),
+        BackendId::Metal => Some(DeviceLocation::Metal {
+            gpu_id: pick.device_index as usize,
+        }),
         // BackendId is #[non_exhaustive]; future variants get the
         // CPU fallback until they have a placement rule of their own.
         _ => Some(DeviceLocation::Cpu),
@@ -301,8 +309,10 @@ pub fn auto_place_and_route(
 /// Default cache path for the bandwidth report — `bandwidth.json`
 /// next to `probe.json` in the OS cache dir.
 fn default_bandwidth_path() -> Option<PathBuf> {
-    crate::probe::default_report_path()
-        .and_then(|p| p.parent().map(|parent| parent.join(crate::transfer_cost::BANDWIDTH_REPORT_FILENAME)))
+    crate::probe::default_report_path().and_then(|p| {
+        p.parent()
+            .map(|parent| parent.join(crate::transfer_cost::BANDWIDTH_REPORT_FILENAME))
+    })
 }
 
 /// Probe → load-or-judge → load-or-measure-bandwidth, returning all
@@ -316,8 +326,14 @@ fn default_bandwidth_path() -> Option<PathBuf> {
 pub fn prepare_dp_inputs(
     opts: ScheduleOptions,
 ) -> Result<(ProbeReport, ProfileReport, BandwidthMatrix)> {
-    let probe_path     = opts.probe_path.clone().or_else(crate::probe::default_report_path);
-    let profile_path   = opts.profile_path.clone().or_else(crate::judge::default_report_path);
+    let probe_path = opts
+        .probe_path
+        .clone()
+        .or_else(crate::probe::default_report_path);
+    let profile_path = opts
+        .profile_path
+        .clone()
+        .or_else(crate::judge::default_report_path);
     let bandwidth_path = opts.bandwidth_path.clone().or_else(default_bandwidth_path);
 
     let current_probe = ProbeReport::probe_all();
@@ -411,7 +427,14 @@ pub fn auto_place_and_route_with_transfer_cost(
     }
     let plan = {
         let g = graph.read().unwrap();
-        dp_plan(&g, roots, &profile, &bandwidth, &available_backends, fallback_device)
+        dp_plan(
+            &g,
+            roots,
+            &profile,
+            &bandwidth,
+            &available_backends,
+            fallback_device,
+        )
     };
     apply_placement_plan(graph, &plan);
     Ok(fuel_graph::opt::insert_copies(graph, roots))
@@ -514,12 +537,17 @@ pub fn dp_plan(
                 let mut best = f64::INFINITY;
                 let mut best_b = backends[0];
                 for &b_i in &backends {
-                    let prior = cost.get(&(input, b_i)).map(|(c, _)| *c).unwrap_or(f64::INFINITY);
-                    if !prior.is_finite() { continue; }
+                    let prior = cost
+                        .get(&(input, b_i))
+                        .map(|(c, _)| *c)
+                        .unwrap_or(f64::INFINITY);
+                    if !prior.is_finite() {
+                        continue;
+                    }
                     let xfer = transfer_cost_with_cpu_fallback(bandwidth, b_i, b, bytes);
                     let candidate = prior + xfer;
                     if candidate < best {
-                        best   = candidate;
+                        best = candidate;
                         best_b = b_i;
                     }
                 }
@@ -546,7 +574,7 @@ pub fn dp_plan(
         for &b in &backends {
             if let Some(&(c, _)) = cost.get(&(root, b)).map(|x| x).iter().next().copied() {
                 if c < best {
-                    best   = c;
+                    best = c;
                     best_b = b;
                 }
             }
@@ -559,7 +587,7 @@ pub fn dp_plan(
     while let Some(id) = stack.pop() {
         let chosen_b = match placement.get(&id) {
             Some(&b) => b,
-            None     => continue,
+            None => continue,
         };
         if let Some((_, inputs_chosen)) = cost.get(&(id, chosen_b)).cloned() {
             let node = graph.node(id);
@@ -579,7 +607,11 @@ pub fn dp_plan(
     placement
         .into_iter()
         .map(|(id, b)| {
-            let pick = crate::judge::Pick { backend: b, device_index: 0, kernel_source: "" };
+            let pick = crate::judge::Pick {
+                backend: b,
+                device_index: 0,
+                kernel_source: "",
+            };
             (id, pick_to_location(pick).unwrap_or(fallback_device))
         })
         .collect()
@@ -605,7 +637,7 @@ fn transfer_cost_with_cpu_fallback(
     let leg2 = bandwidth.lookup(BackendId::Cpu, dst).map(|t| t.ns_per_byte);
     match (leg1, leg2) {
         (Some(a), Some(b)) => (a + b) * bytes as f64,
-        _ => f64::INFINITY,  // unreachable pair
+        _ => f64::INFINITY, // unreachable pair
     }
 }
 
@@ -615,8 +647,8 @@ fn dtype_size_bytes(d: DType) -> usize {
         DType::F64 | DType::I64 => 8,
         DType::F16 | DType::BF16 | DType::I16 => 2,
         DType::U8 | DType::I8 | DType::F8E4M3 | DType::F8E5M2 | DType::F8E8M0 | DType::F8E6M2 => 1,
-        DType::Bool => 1,       // one byte per element (storage width == u8)
-        DType::F4 => 1,         // packed; per-element fractional, round up
+        DType::Bool => 1, // one byte per element (storage width == u8)
+        DType::F4 => 1,   // packed; per-element fractional, round up
         DType::F6E2M3 | DType::F6E3M2 => 1,
     }
 }
@@ -635,21 +667,26 @@ fn profile_lookup_latency_ns(
     backend: BackendId,
 ) -> Option<f64> {
     // Exact size-class match first.
-    if let Some(e) = profile.entries.iter().find(|e|
+    if let Some(e) = profile.entries.iter().find(|e| {
         e.op == op && e.dtype == dtype && e.size_class == size_class && e.backend == backend
-    ) {
+    }) {
         return Some(e.latency_ns as f64);
     }
     // Nearest-size fallback (same op/dtype/backend, closest size).
-    let candidates: Vec<&ProfileEntry> = profile.entries.iter()
+    let candidates: Vec<&ProfileEntry> = profile
+        .entries
+        .iter()
         .filter(|e| e.op == op && e.dtype == dtype && e.backend == backend)
         .collect();
-    if candidates.is_empty() { return None; }
+    if candidates.is_empty() {
+        return None;
+    }
     let target = size_class.0 as i32;
     // `candidates` is non-empty (checked above) so `min_by_key` yields Some —
     // but this fn already returns `Option`, so `?` states that without a panic
     // path and stays correct if the guard above ever moves.
-    let nearest = candidates.iter()
+    let nearest = candidates
+        .iter()
         .min_by_key(|e| (e.size_class.0 as i32 - target).abs())?;
     Some(nearest.latency_ns as f64)
 }
@@ -659,7 +696,7 @@ fn profile_lookup_latency_ns(
 /// it when other backends DO have profiles, but not infinite — a
 /// genuine "no choice" case (every backend missing) should still
 /// produce a placement rather than panicking.
-const UNPROFILED_BACKEND_PENALTY_NS: f64 = 1_000_000_000.0;  // 1 second
+const UNPROFILED_BACKEND_PENALTY_NS: f64 = 1_000_000_000.0; // 1 second
 
 /// Compute cost for ops whose op kind isn't profiled. Should be
 /// small relative to transfer costs so unprofiled ops route along
@@ -707,23 +744,27 @@ mod tests {
     /// persist, reload).
     #[test]
     fn end_to_end_probe_judge_dispatch() {
-        let scratch = std::env::temp_dir().join(format!(
-            "fuel-schedule-test-{}", std::process::id()
-        ));
+        let scratch =
+            std::env::temp_dir().join(format!("fuel-schedule-test-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&scratch);
 
         let opts = ScheduleOptions {
-            probe_path:                Some(scratch.join("probe.json")),
-            profile_path:              Some(scratch.join("judge.json")),
-            bandwidth_path:            Some(scratch.join("bandwidth.json")),
-            force_rejudge:             true,
+            probe_path: Some(scratch.join("probe.json")),
+            profile_path: Some(scratch.join("judge.json")),
+            bandwidth_path: Some(scratch.join("bandwidth.json")),
+            force_rejudge: true,
             force_remeasure_bandwidth: true,
             judge: Judge {
                 iterations: 3,
                 warmup: 1,
-                size_plan_override: Some(vec![
-                    (OpKind::MatMul, OpSize::MatMul { m: 32, n: 32, k: 32 }),
-                ]),
+                size_plan_override: Some(vec![(
+                    OpKind::MatMul,
+                    OpSize::MatMul {
+                        m: 32,
+                        n: 32,
+                        k: 32,
+                    },
+                )]),
                 fixtures: None,
             },
             dispatch: Default::default(),
@@ -735,8 +776,13 @@ mod tests {
         // profile entries are CPU ones.
         assert!(
             profile.entries.iter().any(|e| e.backend == BackendId::Cpu),
-            "profile should have at least one cpu entry, got {:?}", profile.entries);
-        assert!(table.len() >= 1, "dispatch table should have at least one entry");
+            "profile should have at least one cpu entry, got {:?}",
+            profile.entries
+        );
+        assert!(
+            table.len() >= 1,
+            "dispatch table should have at least one entry"
+        );
 
         // Both files should exist now.
         assert!(scratch.join("probe.json").exists());
@@ -752,50 +798,59 @@ mod tests {
     /// varies, but entry count should be stable.
     #[test]
     fn reuses_profile_when_hardware_unchanged() {
-        let scratch = std::env::temp_dir().join(format!(
-            "fuel-schedule-reuse-{}", std::process::id()
-        ));
+        let scratch =
+            std::env::temp_dir().join(format!("fuel-schedule-reuse-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&scratch);
 
         let tiny_judge = || Judge {
-            iterations: 3, warmup: 1,
-            size_plan_override: Some(vec![
-                (OpKind::MatMul, OpSize::MatMul { m: 16, n: 16, k: 16 }),
-            ]),
+            iterations: 3,
+            warmup: 1,
+            size_plan_override: Some(vec![(
+                OpKind::MatMul,
+                OpSize::MatMul {
+                    m: 16,
+                    n: 16,
+                    k: 16,
+                },
+            )]),
             fixtures: None,
         };
 
         let first = prepare_dispatch_table(ScheduleOptions {
-            probe_path:                Some(scratch.join("probe.json")),
-            profile_path:              Some(scratch.join("judge.json")),
-            bandwidth_path:            Some(scratch.join("bandwidth.json")),
-            force_rejudge:             true,
+            probe_path: Some(scratch.join("probe.json")),
+            profile_path: Some(scratch.join("judge.json")),
+            bandwidth_path: Some(scratch.join("bandwidth.json")),
+            force_rejudge: true,
             force_remeasure_bandwidth: true,
-            judge:                     tiny_judge(),
-            dispatch:                  Default::default(),
-        }).expect("first run");
+            judge: tiny_judge(),
+            dispatch: Default::default(),
+        })
+        .expect("first run");
 
         let second = prepare_dispatch_table(ScheduleOptions {
-            probe_path:                Some(scratch.join("probe.json")),
-            profile_path:              Some(scratch.join("judge.json")),
-            bandwidth_path:            Some(scratch.join("bandwidth.json")),
-            force_rejudge:             false,  // reuse eligible
+            probe_path: Some(scratch.join("probe.json")),
+            profile_path: Some(scratch.join("judge.json")),
+            bandwidth_path: Some(scratch.join("bandwidth.json")),
+            force_rejudge: false, // reuse eligible
             force_remeasure_bandwidth: false,
-            judge:                     tiny_judge(),
-            dispatch:                  Default::default(),
-        }).expect("second run");
+            judge: tiny_judge(),
+            dispatch: Default::default(),
+        })
+        .expect("second run");
 
         // Second run's profile should equal first's (loaded from disk,
         // not re-measured). Latency fields would differ on re-measure
         // — identical if loaded from disk.
-        assert_eq!(first.1, second.1,
-            "hardware unchanged + no force_rejudge should yield identical profile");
+        assert_eq!(
+            first.1, second.1,
+            "hardware unchanged + no force_rejudge should yield identical profile"
+        );
 
         let _ = std::fs::remove_dir_all(&scratch);
     }
 
     use crate::judge::Criterion;
-    use crate::judge::{ProfileEntry, ProfileReport, PROFILE_REPORT_VERSION};
+    use crate::judge::{PROFILE_REPORT_VERSION, ProfileEntry, ProfileReport};
     use fuel_graph::Tensor;
     use fuel_ir::Shape;
     use std::sync::Arc;
@@ -823,23 +878,27 @@ mod tests {
             version: PROFILE_REPORT_VERSION,
             entries: vec![
                 // size 12 (≈ 64×64 matmul): CPU wins (10μs vs 2ms CUDA launch overhead)
-                mk(BackendId::Cpu,  12,    10_000),
+                mk(BackendId::Cpu, 12, 10_000),
                 mk(BackendId::Cuda, 12, 2_000_000),
                 // size 20 (≈ 1024×1024 matmul): CUDA wins (5ms vs 50ms CPU)
-                mk(BackendId::Cpu,  20, 50_000_000),
-                mk(BackendId::Cuda, 20,  5_000_000),
+                mk(BackendId::Cpu, 20, 50_000_000),
+                mk(BackendId::Cuda, 20, 5_000_000),
             ],
         };
         let table = DispatchTable::build(&report);
 
         // -- 2) build a graph with two matmuls + one unprofiled op
         //       — all derived from a single root so they share a graph.
-        let small_a = Tensor::from_f32(vec![0.0_f32; 64 * 64], Shape::from_dims(&[64, 64]), crate::Device::cpu().as_dyn());
+        let small_a = Tensor::from_f32(
+            vec![0.0_f32; 64 * 64],
+            Shape::from_dims(&[64, 64]),
+            crate::Device::cpu().as_dyn(),
+        );
         let small_b = small_a.const_f32_like(
             Arc::<[f32]>::from(vec![0.0_f32; 64 * 64]),
             Shape::from_dims(&[64, 64]),
         );
-        let small_mm = small_a.matmul(&small_b);  // size_class = 12 (4096 elements)
+        let small_mm = small_a.matmul(&small_b); // size_class = 12 (4096 elements)
 
         // Build the big matmul as constants on the SAME graph as small_a.
         let big_a = small_a.const_f32_like(
@@ -850,7 +909,7 @@ mod tests {
             Arc::<[f32]>::from(vec![0.0_f32; 1024 * 1024]),
             Shape::from_dims(&[1024, 1024]),
         );
-        let big_mm = big_a.matmul(&big_b);  // size_class = 20
+        let big_mm = big_a.matmul(&big_b); // size_class = 20
 
         // Unprofiled op (Sub) on small tensors — should fall back.
         let unprofiled = small_mm.sub(&small_b);
@@ -860,12 +919,7 @@ mod tests {
         // they were built from the same `from_f32` root.
         let graph = small_a.graph().read().unwrap();
 
-        let plan = recommend_placement(
-            &graph,
-            &table,
-            Criterion::Fastest,
-            DeviceLocation::Cpu,
-        );
+        let plan = recommend_placement(&graph, &table, Criterion::Fastest, DeviceLocation::Cpu);
 
         // small matmul → CPU (size_class 12 winner)
         assert_eq!(plan[&small_mm.id()], DeviceLocation::Cpu);
@@ -883,23 +937,51 @@ mod tests {
     #[test]
     fn apply_placement_plan_skips_pre_set_hints() {
         let entries = vec![
-            ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(20),
-                backend: BackendId::Cpu,  device_index: 0, latency_ns: 50_000_000, iterations: 1, max_rel_error: 0.0, kernel_source: String::new() },
-            ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(20),
-                backend: BackendId::Cuda, device_index: 0, latency_ns:  5_000_000, iterations: 1, max_rel_error: 0.0, kernel_source: String::new() },
+            ProfileEntry {
+                op: OpKind::MatMul,
+                dtype: DType::F32,
+                size_class: SizeClass(20),
+                backend: BackendId::Cpu,
+                device_index: 0,
+                latency_ns: 50_000_000,
+                iterations: 1,
+                max_rel_error: 0.0,
+                kernel_source: String::new(),
+            },
+            ProfileEntry {
+                op: OpKind::MatMul,
+                dtype: DType::F32,
+                size_class: SizeClass(20),
+                backend: BackendId::Cuda,
+                device_index: 0,
+                latency_ns: 5_000_000,
+                iterations: 1,
+                max_rel_error: 0.0,
+                kernel_source: String::new(),
+            },
         ];
-        let report = ProfileReport { version: PROFILE_REPORT_VERSION, entries };
+        let report = ProfileReport {
+            version: PROFILE_REPORT_VERSION,
+            entries,
+        };
         let table = DispatchTable::build(&report);
 
-        let a = Tensor::from_f32(vec![0.0_f32; 1024 * 1024], Shape::from_dims(&[1024, 1024]), crate::Device::cpu().as_dyn());
+        let a = Tensor::from_f32(
+            vec![0.0_f32; 1024 * 1024],
+            Shape::from_dims(&[1024, 1024]),
+            crate::Device::cpu().as_dyn(),
+        );
         let b = a.const_f32_like(
             Arc::<[f32]>::from(vec![0.0_f32; 1024 * 1024]),
             Shape::from_dims(&[1024, 1024]),
         );
-        let mm = a.matmul(&b);  // dispatch table would pick CUDA
+        let mm = a.matmul(&b); // dispatch table would pick CUDA
 
         // User pins it to CPU explicitly.
-        a.graph().write().unwrap().set_placement(mm.id(), DeviceLocation::Cpu);
+        a.graph()
+            .write()
+            .unwrap()
+            .set_placement(mm.id(), DeviceLocation::Cpu);
 
         let plan = recommend_placement(
             &a.graph().read().unwrap(),
@@ -923,13 +1005,16 @@ mod tests {
     /// persisted reports are written.
     #[test]
     fn end_to_end_dp_orchestrator() {
-        let scratch = std::env::temp_dir().join(format!(
-            "fuel-dp-orch-test-{}", std::process::id()
-        ));
+        let scratch =
+            std::env::temp_dir().join(format!("fuel-dp-orch-test-{}", std::process::id()));
         let _ = std::fs::create_dir_all(&scratch);
 
         // Build a small graph the planner will actually route.
-        let a = Tensor::from_f32(vec![0.0_f32; 64 * 64], Shape::from_dims(&[64, 64]), crate::Device::cpu().as_dyn());
+        let a = Tensor::from_f32(
+            vec![0.0_f32; 64 * 64],
+            Shape::from_dims(&[64, 64]),
+            crate::Device::cpu().as_dyn(),
+        );
         let b = a.const_f32_like(
             Arc::<[f32]>::from(vec![0.0_f32; 64 * 64]),
             Shape::from_dims(&[64, 64]),
@@ -937,17 +1022,22 @@ mod tests {
         let mm = a.matmul(&b);
 
         let opts = ScheduleOptions {
-            probe_path:                Some(scratch.join("probe.json")),
-            profile_path:              Some(scratch.join("judge.json")),
-            bandwidth_path:            Some(scratch.join("bandwidth.json")),
-            force_rejudge:             true,
+            probe_path: Some(scratch.join("probe.json")),
+            profile_path: Some(scratch.join("judge.json")),
+            bandwidth_path: Some(scratch.join("bandwidth.json")),
+            force_rejudge: true,
             force_remeasure_bandwidth: true,
             judge: Judge {
                 iterations: 3,
                 warmup: 1,
-                size_plan_override: Some(vec![
-                    (OpKind::MatMul, OpSize::MatMul { m: 32, n: 32, k: 32 }),
-                ]),
+                size_plan_override: Some(vec![(
+                    OpKind::MatMul,
+                    OpSize::MatMul {
+                        m: 32,
+                        n: 32,
+                        k: 32,
+                    },
+                )]),
                 fixtures: None,
             },
             dispatch: Default::default(),
@@ -958,7 +1048,8 @@ mod tests {
             &[mm.id()],
             opts,
             DeviceLocation::Cpu,
-        ).expect("orchestrator");
+        )
+        .expect("orchestrator");
 
         // We don't assert specific placement (depends on rig) — just
         // that the orchestrator runs without panic and emits roots.
@@ -977,18 +1068,39 @@ mod tests {
     /// CUDA; with it, CPU wins.
     #[test]
     fn dp_plan_avoids_costly_transfers() {
-        use crate::transfer_cost::{BandwidthMatrix, TransferCost, BANDWIDTH_REPORT_VERSION};
+        use crate::transfer_cost::{BANDWIDTH_REPORT_VERSION, BandwidthMatrix, TransferCost};
         // CUDA is the winner of dispatch (small compute cost penalty)
         // but every byte costs 100ns to upload + 100ns to download.
         // Even a tiny tensor crosses the threshold where keeping it
         // on CPU is cheaper.
         let entries = vec![
-            ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(12),
-                backend: BackendId::Cpu,  device_index: 0, latency_ns:    10_000, iterations: 1, max_rel_error: 0.0, kernel_source: String::new() },
-            ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(12),
-                backend: BackendId::Cuda, device_index: 0, latency_ns:     5_000, iterations: 1, max_rel_error: 0.0, kernel_source: String::new() },
+            ProfileEntry {
+                op: OpKind::MatMul,
+                dtype: DType::F32,
+                size_class: SizeClass(12),
+                backend: BackendId::Cpu,
+                device_index: 0,
+                latency_ns: 10_000,
+                iterations: 1,
+                max_rel_error: 0.0,
+                kernel_source: String::new(),
+            },
+            ProfileEntry {
+                op: OpKind::MatMul,
+                dtype: DType::F32,
+                size_class: SizeClass(12),
+                backend: BackendId::Cuda,
+                device_index: 0,
+                latency_ns: 5_000,
+                iterations: 1,
+                max_rel_error: 0.0,
+                kernel_source: String::new(),
+            },
         ];
-        let report = ProfileReport { version: PROFILE_REPORT_VERSION, entries };
+        let report = ProfileReport {
+            version: PROFILE_REPORT_VERSION,
+            entries,
+        };
         let table = DispatchTable::build(&report);
 
         // Punitive bandwidth: 100 ns/byte each way. A 64×64 f32
@@ -999,13 +1111,29 @@ mod tests {
             version: BANDWIDTH_REPORT_VERSION,
             measurement_bytes: 1 << 24,
             entries: vec![
-                TransferCost { src: BackendId::Cpu,  dst: BackendId::Cpu,  ns_per_byte:   0.05 },
-                TransferCost { src: BackendId::Cpu,  dst: BackendId::Cuda, ns_per_byte: 100.0  },
-                TransferCost { src: BackendId::Cuda, dst: BackendId::Cpu,  ns_per_byte: 100.0  },
+                TransferCost {
+                    src: BackendId::Cpu,
+                    dst: BackendId::Cpu,
+                    ns_per_byte: 0.05,
+                },
+                TransferCost {
+                    src: BackendId::Cpu,
+                    dst: BackendId::Cuda,
+                    ns_per_byte: 100.0,
+                },
+                TransferCost {
+                    src: BackendId::Cuda,
+                    dst: BackendId::Cpu,
+                    ns_per_byte: 100.0,
+                },
             ],
         };
 
-        let small_a = Tensor::from_f32(vec![0.0_f32; 64 * 64], Shape::from_dims(&[64, 64]), crate::Device::cpu().as_dyn());
+        let small_a = Tensor::from_f32(
+            vec![0.0_f32; 64 * 64],
+            Shape::from_dims(&[64, 64]),
+            crate::Device::cpu().as_dyn(),
+        );
         let small_b = small_a.const_f32_like(
             Arc::<[f32]>::from(vec![0.0_f32; 64 * 64]),
             Shape::from_dims(&[64, 64]),
@@ -1024,8 +1152,11 @@ mod tests {
         // The dispatch table's first-choice would have been CUDA
         // (`recommend_placement` produces CUDA here too). The DP
         // planner accounts for the transfer cost and picks CPU.
-        assert_eq!(plan[&mm.id()], DeviceLocation::Cpu,
-            "DP planner should pick CPU when transfer cost dominates");
+        assert_eq!(
+            plan[&mm.id()],
+            DeviceLocation::Cpu,
+            "DP planner should pick CPU when transfer cost dominates"
+        );
     }
 
     /// Phase 6c: when transfer is cheap enough, the DP planner DOES
@@ -1033,27 +1164,64 @@ mod tests {
     /// isn't pessimistically pinning everything to CPU.
     #[test]
     fn dp_plan_picks_dispatch_winner_when_transfer_is_cheap() {
-        use crate::transfer_cost::{BandwidthMatrix, TransferCost, BANDWIDTH_REPORT_VERSION};
+        use crate::transfer_cost::{BANDWIDTH_REPORT_VERSION, BandwidthMatrix, TransferCost};
         let entries = vec![
-            ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(20),
-                backend: BackendId::Cpu,  device_index: 0, latency_ns: 50_000_000, iterations: 1, max_rel_error: 0.0, kernel_source: String::new() },
-            ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(20),
-                backend: BackendId::Cuda, device_index: 0, latency_ns:  5_000_000, iterations: 1, max_rel_error: 0.0, kernel_source: String::new() },
+            ProfileEntry {
+                op: OpKind::MatMul,
+                dtype: DType::F32,
+                size_class: SizeClass(20),
+                backend: BackendId::Cpu,
+                device_index: 0,
+                latency_ns: 50_000_000,
+                iterations: 1,
+                max_rel_error: 0.0,
+                kernel_source: String::new(),
+            },
+            ProfileEntry {
+                op: OpKind::MatMul,
+                dtype: DType::F32,
+                size_class: SizeClass(20),
+                backend: BackendId::Cuda,
+                device_index: 0,
+                latency_ns: 5_000_000,
+                iterations: 1,
+                max_rel_error: 0.0,
+                kernel_source: String::new(),
+            },
         ];
-        let report = ProfileReport { version: PROFILE_REPORT_VERSION, entries };
+        let report = ProfileReport {
+            version: PROFILE_REPORT_VERSION,
+            entries,
+        };
         let table = DispatchTable::build(&report);
         // Realistic-ish PCIe bandwidth: 0.15 ns/byte (≈6.5 GB/s).
         let bandwidth = BandwidthMatrix {
             version: BANDWIDTH_REPORT_VERSION,
             measurement_bytes: 1 << 24,
             entries: vec![
-                TransferCost { src: BackendId::Cpu,  dst: BackendId::Cpu,  ns_per_byte: 0.05 },
-                TransferCost { src: BackendId::Cpu,  dst: BackendId::Cuda, ns_per_byte: 0.15 },
-                TransferCost { src: BackendId::Cuda, dst: BackendId::Cpu,  ns_per_byte: 0.20 },
+                TransferCost {
+                    src: BackendId::Cpu,
+                    dst: BackendId::Cpu,
+                    ns_per_byte: 0.05,
+                },
+                TransferCost {
+                    src: BackendId::Cpu,
+                    dst: BackendId::Cuda,
+                    ns_per_byte: 0.15,
+                },
+                TransferCost {
+                    src: BackendId::Cuda,
+                    dst: BackendId::Cpu,
+                    ns_per_byte: 0.20,
+                },
             ],
         };
 
-        let big_a = Tensor::from_f32(vec![0.0_f32; 1024 * 1024], Shape::from_dims(&[1024, 1024]), crate::Device::cpu().as_dyn());
+        let big_a = Tensor::from_f32(
+            vec![0.0_f32; 1024 * 1024],
+            Shape::from_dims(&[1024, 1024]),
+            crate::Device::cpu().as_dyn(),
+        );
         let big_b = big_a.const_f32_like(
             Arc::<[f32]>::from(vec![0.0_f32; 1024 * 1024]),
             Shape::from_dims(&[1024, 1024]),
@@ -1079,24 +1247,67 @@ mod tests {
     #[test]
     fn auto_place_and_route_inserts_copies_for_split_graph() {
         let entries = vec![
-            ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(12),
-                backend: BackendId::Cpu,  device_index: 0, latency_ns:    10_000, iterations: 1, max_rel_error: 0.0, kernel_source: String::new() },
-            ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(12),
-                backend: BackendId::Cuda, device_index: 0, latency_ns: 2_000_000, iterations: 1, max_rel_error: 0.0, kernel_source: String::new() },
-            ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(20),
-                backend: BackendId::Cpu,  device_index: 0, latency_ns: 50_000_000, iterations: 1, max_rel_error: 0.0, kernel_source: String::new() },
-            ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(20),
-                backend: BackendId::Cuda, device_index: 0, latency_ns:  5_000_000, iterations: 1, max_rel_error: 0.0, kernel_source: String::new() },
+            ProfileEntry {
+                op: OpKind::MatMul,
+                dtype: DType::F32,
+                size_class: SizeClass(12),
+                backend: BackendId::Cpu,
+                device_index: 0,
+                latency_ns: 10_000,
+                iterations: 1,
+                max_rel_error: 0.0,
+                kernel_source: String::new(),
+            },
+            ProfileEntry {
+                op: OpKind::MatMul,
+                dtype: DType::F32,
+                size_class: SizeClass(12),
+                backend: BackendId::Cuda,
+                device_index: 0,
+                latency_ns: 2_000_000,
+                iterations: 1,
+                max_rel_error: 0.0,
+                kernel_source: String::new(),
+            },
+            ProfileEntry {
+                op: OpKind::MatMul,
+                dtype: DType::F32,
+                size_class: SizeClass(20),
+                backend: BackendId::Cpu,
+                device_index: 0,
+                latency_ns: 50_000_000,
+                iterations: 1,
+                max_rel_error: 0.0,
+                kernel_source: String::new(),
+            },
+            ProfileEntry {
+                op: OpKind::MatMul,
+                dtype: DType::F32,
+                size_class: SizeClass(20),
+                backend: BackendId::Cuda,
+                device_index: 0,
+                latency_ns: 5_000_000,
+                iterations: 1,
+                max_rel_error: 0.0,
+                kernel_source: String::new(),
+            },
         ];
-        let report = ProfileReport { version: PROFILE_REPORT_VERSION, entries };
+        let report = ProfileReport {
+            version: PROFILE_REPORT_VERSION,
+            entries,
+        };
         let table = DispatchTable::build(&report);
 
-        let small_a = Tensor::from_f32(vec![0.0_f32; 64 * 64], Shape::from_dims(&[64, 64]), crate::Device::cpu().as_dyn());
+        let small_a = Tensor::from_f32(
+            vec![0.0_f32; 64 * 64],
+            Shape::from_dims(&[64, 64]),
+            crate::Device::cpu().as_dyn(),
+        );
         let small_b = small_a.const_f32_like(
             Arc::<[f32]>::from(vec![0.0_f32; 64 * 64]),
             Shape::from_dims(&[64, 64]),
         );
-        let small_mm = small_a.matmul(&small_b);  // → CPU
+        let small_mm = small_a.matmul(&small_b); // → CPU
 
         let big_a = small_a.const_f32_like(
             Arc::<[f32]>::from(vec![0.0_f32; 1024 * 1024]),
@@ -1106,7 +1317,7 @@ mod tests {
             Arc::<[f32]>::from(vec![0.0_f32; 1024 * 1024]),
             Shape::from_dims(&[1024, 1024]),
         );
-        let big_mm = big_a.matmul(&big_b);  // → CUDA
+        let big_mm = big_a.matmul(&big_b); // → CUDA
 
         let n_before = small_a.graph().read().unwrap().len();
         let _new_roots = auto_place_and_route(
@@ -1143,25 +1354,68 @@ mod tests {
     fn apply_then_insert_copies_emits_copies_at_device_boundaries() {
         // Hand-craft a dispatch table: size 12 → CPU, size 20 → CUDA.
         let entries = vec![
-            ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(12),
-                backend: BackendId::Cpu,  device_index: 0, latency_ns:    10_000, iterations: 1, max_rel_error: 0.0, kernel_source: String::new() },
-            ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(12),
-                backend: BackendId::Cuda, device_index: 0, latency_ns: 2_000_000, iterations: 1, max_rel_error: 0.0, kernel_source: String::new() },
-            ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(20),
-                backend: BackendId::Cpu,  device_index: 0, latency_ns: 50_000_000, iterations: 1, max_rel_error: 0.0, kernel_source: String::new() },
-            ProfileEntry { op: OpKind::MatMul, dtype: DType::F32, size_class: SizeClass(20),
-                backend: BackendId::Cuda, device_index: 0, latency_ns:  5_000_000, iterations: 1, max_rel_error: 0.0, kernel_source: String::new() },
+            ProfileEntry {
+                op: OpKind::MatMul,
+                dtype: DType::F32,
+                size_class: SizeClass(12),
+                backend: BackendId::Cpu,
+                device_index: 0,
+                latency_ns: 10_000,
+                iterations: 1,
+                max_rel_error: 0.0,
+                kernel_source: String::new(),
+            },
+            ProfileEntry {
+                op: OpKind::MatMul,
+                dtype: DType::F32,
+                size_class: SizeClass(12),
+                backend: BackendId::Cuda,
+                device_index: 0,
+                latency_ns: 2_000_000,
+                iterations: 1,
+                max_rel_error: 0.0,
+                kernel_source: String::new(),
+            },
+            ProfileEntry {
+                op: OpKind::MatMul,
+                dtype: DType::F32,
+                size_class: SizeClass(20),
+                backend: BackendId::Cpu,
+                device_index: 0,
+                latency_ns: 50_000_000,
+                iterations: 1,
+                max_rel_error: 0.0,
+                kernel_source: String::new(),
+            },
+            ProfileEntry {
+                op: OpKind::MatMul,
+                dtype: DType::F32,
+                size_class: SizeClass(20),
+                backend: BackendId::Cuda,
+                device_index: 0,
+                latency_ns: 5_000_000,
+                iterations: 1,
+                max_rel_error: 0.0,
+                kernel_source: String::new(),
+            },
         ];
-        let report = ProfileReport { version: PROFILE_REPORT_VERSION, entries };
+        let report = ProfileReport {
+            version: PROFILE_REPORT_VERSION,
+            entries,
+        };
         let table = DispatchTable::build(&report);
 
         // Build the heterogeneous graph (small + big matmul).
-        let small_a = Tensor::from_f32(vec![0.0_f32; 64 * 64], Shape::from_dims(&[64, 64]), crate::Device::cpu().as_dyn());
+        let small_a = Tensor::from_f32(
+            vec![0.0_f32; 64 * 64],
+            Shape::from_dims(&[64, 64]),
+            crate::Device::cpu().as_dyn(),
+        );
         let small_b = small_a.const_f32_like(
             Arc::<[f32]>::from(vec![0.0_f32; 64 * 64]),
             Shape::from_dims(&[64, 64]),
         );
-        let small_mm = small_a.matmul(&small_b);  // size 12 → CPU
+        let small_mm = small_a.matmul(&small_b); // size 12 → CPU
 
         let big_a = small_a.const_f32_like(
             Arc::<[f32]>::from(vec![0.0_f32; 1024 * 1024]),
@@ -1171,7 +1425,7 @@ mod tests {
             Arc::<[f32]>::from(vec![0.0_f32; 1024 * 1024]),
             Shape::from_dims(&[1024, 1024]),
         );
-        let big_mm = big_a.matmul(&big_b);  // size 20 → CUDA
+        let big_mm = big_a.matmul(&big_b); // size 20 → CUDA
 
         let n_before = small_a.graph().read().unwrap().len();
 
@@ -1199,8 +1453,10 @@ mod tests {
                 }
             }
         }
-        assert!(cuda_copies >= 2,
+        assert!(
+            cuda_copies >= 2,
             "expected ≥2 Copy(_, Cuda) nodes for big_a + big_b; got {cuda_copies} \
-             (n_before={n_before} n_after={n_after})");
+             (n_before={n_before} n_after={n_after})"
+        );
     }
 }

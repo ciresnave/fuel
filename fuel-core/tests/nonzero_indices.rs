@@ -52,7 +52,11 @@ fn nonzero_indices_all_nonzero() {
     let mut symgen = SymGen::new();
     let (indices, count) = x.nonzero_indices_bundled(symgen.fresh()).unwrap();
     assert_eq!(count.realize_u32(), vec![4], "every element nonzero");
-    assert_eq!(indices.realize_u32(), vec![0, 1, 2, 3], "identity index map");
+    assert_eq!(
+        indices.realize_u32(),
+        vec![0, 1, 2, 3],
+        "identity index map"
+    );
 }
 
 /// Increment 2b — the consumer half, end-to-end: a **data-determined**

@@ -9,8 +9,8 @@ use clap::{Parser, ValueEnum};
 use std::io::Write;
 use tokenizers::Tokenizer;
 
-use fuel::lazy_qwen3::Qwen3Config;
 use fuel::lazy_quantized_qwen3::QuantizedQwen3Model;
+use fuel::lazy_qwen3::Qwen3Config;
 use fuel::quantized::gguf_mmap::MmapedContent;
 use fuel_transformers::generation::{LogitsProcessor, Sampling};
 
@@ -166,7 +166,8 @@ fn format_size(size_in_bytes: usize) -> String {
 fn qwen3_cfg_from_gguf(mc: &MmapedContent) -> Result<Qwen3Config> {
     let md = mc.metadata();
     let get = |k: &str| -> Result<&fuel::quantized::gguf_file::Value> {
-        md.get(k).ok_or_else(|| E::msg(format!("gguf metadata: missing key {k:?}")))
+        md.get(k)
+            .ok_or_else(|| E::msg(format!("gguf metadata: missing key {k:?}")))
     };
     let num_attention_heads = get("qwen3.attention.head_count")?.to_u32()? as usize;
     let num_key_value_heads = get("qwen3.attention.head_count_kv")?.to_u32()? as usize;
@@ -253,7 +254,7 @@ fn main() -> anyhow::Result<()> {
     let mmaped = MmapedContent::from_path(&model_path).map_err(|e| e.with_path(&model_path))?;
     let metadata_done = start.elapsed();
     let mut total_size_in_bytes = 0;
-    for (_, tensor) in mmaped.content().tensor_infos.iter() {
+    for tensor in mmaped.content().tensor_infos.values() {
         let elem_count = tensor.shape.elem_count();
         total_size_in_bytes +=
             elem_count * tensor.ggml_dtype.type_size() / tensor.ggml_dtype.block_size();
@@ -261,7 +262,7 @@ fn main() -> anyhow::Result<()> {
     println!(
         "mmapped {:?} tensors ({}); header in {:.2}s",
         mmaped.content().tensor_infos.len(),
-        &format_size(total_size_in_bytes),
+        format_size(total_size_in_bytes),
         metadata_done.as_secs_f32(),
     );
 
@@ -269,10 +270,7 @@ fn main() -> anyhow::Result<()> {
     drop(mmaped);
     let model = QuantizedQwen3Model::from_gguf(&model_path, &cfg)
         .map_err(|e| E::msg(format!("from_gguf: {e}")))?;
-    println!(
-        "model built in {:.2}s total",
-        start.elapsed().as_secs_f32()
-    );
+    println!("model built in {:.2}s total", start.elapsed().as_secs_f32());
 
     let tokenizer = args.tokenizer()?;
     let mut tos = TokenOutputStream::new(tokenizer);
@@ -282,7 +280,7 @@ fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|| DEFAULT_PROMPT.to_string());
 
     let prompt_str = format!("<|im_start|>user\n{prompt_str}<|im_end|>\n<|im_start|>assistant\n");
-    print!("formatted prompt: {}", &prompt_str);
+    print!("formatted prompt: {}", prompt_str);
 
     let tokens = tos
         .tokenizer()

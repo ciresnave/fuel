@@ -25,8 +25,8 @@
 //!     concern, not handled here).
 //!   - Bidirectional and packed sequences are out of scope.
 
-use crate::lazy::LazyTensor;
 use crate::Result;
+use crate::lazy::LazyTensor;
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -75,34 +75,27 @@ impl LstmStack {
 }
 
 /// Single-layer LSTM forward, unrolled over time.
-fn lstm_layer_forward(
-    x: &LazyTensor, w: &LstmCellWeights,
-) -> Result<LazyTensor> {
+fn lstm_layer_forward(x: &LazyTensor, w: &LstmCellWeights) -> Result<LazyTensor> {
     let dims = x.shape();
     let dims = dims.dims();
     assert_eq!(dims.len(), 3, "LSTM input must be rank 3 [B, T, D_in]");
     let b = dims[0];
     let t = dims[1];
     let d_in = dims[2];
-    assert_eq!(d_in, w.input_dim,
-        "input dim mismatch: got {d_in}, expected {}", w.input_dim);
+    assert_eq!(
+        d_in, w.input_dim,
+        "input dim mismatch: got {d_in}, expected {}",
+        w.input_dim
+    );
     assert!(t > 0, "LSTM requires non-empty time axis");
     let h_dim = w.hidden_dim;
     let four_h = 4 * h_dim;
 
     // Weight + bias constants on the input's graph.
-    let w_ih = x.const_f32_like(
-        Arc::clone(&w.w_ih), Shape::from_dims(&[four_h, d_in]),
-    );
-    let w_hh = x.const_f32_like(
-        Arc::clone(&w.w_hh), Shape::from_dims(&[four_h, h_dim]),
-    );
-    let b_ih = x.const_f32_like(
-        Arc::clone(&w.b_ih), Shape::from_dims(&[four_h]),
-    );
-    let b_hh = x.const_f32_like(
-        Arc::clone(&w.b_hh), Shape::from_dims(&[four_h]),
-    );
+    let w_ih = x.const_f32_like(Arc::clone(&w.w_ih), Shape::from_dims(&[four_h, d_in]));
+    let w_hh = x.const_f32_like(Arc::clone(&w.w_hh), Shape::from_dims(&[four_h, h_dim]));
+    let b_ih = x.const_f32_like(Arc::clone(&w.b_ih), Shape::from_dims(&[four_h]));
+    let b_hh = x.const_f32_like(Arc::clone(&w.b_hh), Shape::from_dims(&[four_h]));
     let b_combined = b_ih.add(&b_hh)?;
     // Broadcast bias to (B, 4·H) for elementwise add per time step.
     let bias = b_combined
@@ -170,8 +163,15 @@ mod tests {
     /// zero initial state, applied to a single batch and explicit
     /// gate values. Hidden / input dims are 2 in this fixture.
     fn lstm_layer_reference(
-        x: &[f32], b: usize, t: usize, d_in: usize, d_h: usize,
-        w_ih: &[f32], w_hh: &[f32], b_ih: &[f32], b_hh: &[f32],
+        x: &[f32],
+        b: usize,
+        t: usize,
+        d_in: usize,
+        d_h: usize,
+        w_ih: &[f32],
+        w_hh: &[f32],
+        b_ih: &[f32],
+        b_hh: &[f32],
     ) -> Vec<f32> {
         let four_h = 4 * d_h;
         assert_eq!(x.len(), b * t * d_in);
@@ -224,26 +224,35 @@ mod tests {
         out
     }
 
-    fn sigmoid(x: f32) -> f32 { 1.0 / (1.0 + (-x).exp()) }
-    fn tanh(x: f32) -> f32 { x.tanh() }
+    fn sigmoid(x: f32) -> f32 {
+        1.0 / (1.0 + (-x).exp())
+    }
+    fn tanh(x: f32) -> f32 {
+        x.tanh()
+    }
 
     #[test]
     fn single_layer_matches_reference() {
-        let b = 1; let t = 4; let d_in = 2; let d_h = 2;
+        let b = 1;
+        let t = 4;
+        let d_in = 2;
+        let d_h = 2;
         let four_h = 4 * d_h;
-        let x_data: Vec<f32> = (0..(b * t * d_in)).map(|i| (i as f32) * 0.1 - 0.5).collect();
-        let w_ih: Vec<f32> = (0..(four_h * d_in)).map(|i| (i as f32) * 0.05 - 0.3).collect();
-        let w_hh: Vec<f32> = (0..(four_h * d_h)).map(|i| (i as f32) * 0.07 - 0.2).collect();
+        let x_data: Vec<f32> = (0..(b * t * d_in))
+            .map(|i| (i as f32) * 0.1 - 0.5)
+            .collect();
+        let w_ih: Vec<f32> = (0..(four_h * d_in))
+            .map(|i| (i as f32) * 0.05 - 0.3)
+            .collect();
+        let w_hh: Vec<f32> = (0..(four_h * d_h))
+            .map(|i| (i as f32) * 0.07 - 0.2)
+            .collect();
         let b_ih: Vec<f32> = (0..four_h).map(|i| (i as f32) * 0.02).collect();
         let b_hh: Vec<f32> = (0..four_h).map(|i| (i as f32) * 0.03 - 0.1).collect();
 
-        let expected = lstm_layer_reference(
-            &x_data, b, t, d_in, d_h, &w_ih, &w_hh, &b_ih, &b_hh,
-        );
+        let expected = lstm_layer_reference(&x_data, b, t, d_in, d_h, &w_ih, &w_hh, &b_ih, &b_hh);
 
-        let x = LazyTensor::from_f32(
-            x_data, Shape::from_dims(&[b, t, d_in]), &Device::cpu(),
-        );
+        let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[b, t, d_in]), &Device::cpu());
         let stack = LstmStack {
             layers: vec![LstmCellWeights {
                 w_ih: Arc::from(w_ih),
@@ -259,55 +268,66 @@ mod tests {
         let got = out.realize_f32();
         assert_eq!(got.len(), expected.len());
         for (i, (a, e)) in got.iter().zip(expected.iter()).enumerate() {
-            assert!((a - e).abs() < 1e-5,
-                "lstm[{i}] expected {e}, got {a}");
+            assert!((a - e).abs() < 1e-5, "lstm[{i}] expected {e}, got {a}");
         }
     }
 
     #[test]
     fn two_layer_stack_chain_is_correct() {
         // Layer 1: d_in=3 → d_h=4. Layer 2: d_in=4 → d_h=4.
-        let b = 1; let t = 3;
-        let d_in1 = 3; let d_h1 = 4;
-        let d_in2 = d_h1; let d_h2 = 4;
+        let b = 1;
+        let t = 3;
+        let d_in1 = 3;
+        let d_h1 = 4;
+        let d_in2 = d_h1;
+        let d_h2 = 4;
         let x_data: Vec<f32> = (0..(b * t * d_in1)).map(|i| (i as f32) * 0.1).collect();
-        let w_ih1: Vec<f32> = (0..(4 * d_h1 * d_in1)).map(|i| (i as f32) * 0.03 - 0.4).collect();
-        let w_hh1: Vec<f32> = (0..(4 * d_h1 * d_h1)).map(|i| (i as f32) * 0.04 - 0.3).collect();
+        let w_ih1: Vec<f32> = (0..(4 * d_h1 * d_in1))
+            .map(|i| (i as f32) * 0.03 - 0.4)
+            .collect();
+        let w_hh1: Vec<f32> = (0..(4 * d_h1 * d_h1))
+            .map(|i| (i as f32) * 0.04 - 0.3)
+            .collect();
         let b_ih1: Vec<f32> = (0..(4 * d_h1)).map(|i| (i as f32) * 0.01).collect();
         let b_hh1: Vec<f32> = (0..(4 * d_h1)).map(|i| (i as f32) * 0.015 - 0.05).collect();
-        let w_ih2: Vec<f32> = (0..(4 * d_h2 * d_in2)).map(|i| (i as f32) * 0.025 - 0.2).collect();
-        let w_hh2: Vec<f32> = (0..(4 * d_h2 * d_h2)).map(|i| (i as f32) * 0.035 - 0.25).collect();
+        let w_ih2: Vec<f32> = (0..(4 * d_h2 * d_in2))
+            .map(|i| (i as f32) * 0.025 - 0.2)
+            .collect();
+        let w_hh2: Vec<f32> = (0..(4 * d_h2 * d_h2))
+            .map(|i| (i as f32) * 0.035 - 0.25)
+            .collect();
         let b_ih2: Vec<f32> = (0..(4 * d_h2)).map(|i| (i as f32) * 0.005).collect();
         let b_hh2: Vec<f32> = (0..(4 * d_h2)).map(|i| (i as f32) * 0.008 - 0.03).collect();
 
-        let after_l1 = lstm_layer_reference(
-            &x_data, b, t, d_in1, d_h1, &w_ih1, &w_hh1, &b_ih1, &b_hh1,
-        );
-        let expected = lstm_layer_reference(
-            &after_l1, b, t, d_in2, d_h2, &w_ih2, &w_hh2, &b_ih2, &b_hh2,
-        );
+        let after_l1 =
+            lstm_layer_reference(&x_data, b, t, d_in1, d_h1, &w_ih1, &w_hh1, &b_ih1, &b_hh1);
+        let expected =
+            lstm_layer_reference(&after_l1, b, t, d_in2, d_h2, &w_ih2, &w_hh2, &b_ih2, &b_hh2);
 
-        let x = LazyTensor::from_f32(
-            x_data, Shape::from_dims(&[b, t, d_in1]), &Device::cpu(),
-        );
+        let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[b, t, d_in1]), &Device::cpu());
         let stack = LstmStack {
             layers: vec![
                 LstmCellWeights {
-                    w_ih: Arc::from(w_ih1), w_hh: Arc::from(w_hh1),
-                    b_ih: Arc::from(b_ih1), b_hh: Arc::from(b_hh1),
-                    input_dim: d_in1, hidden_dim: d_h1,
+                    w_ih: Arc::from(w_ih1),
+                    w_hh: Arc::from(w_hh1),
+                    b_ih: Arc::from(b_ih1),
+                    b_hh: Arc::from(b_hh1),
+                    input_dim: d_in1,
+                    hidden_dim: d_h1,
                 },
                 LstmCellWeights {
-                    w_ih: Arc::from(w_ih2), w_hh: Arc::from(w_hh2),
-                    b_ih: Arc::from(b_ih2), b_hh: Arc::from(b_hh2),
-                    input_dim: d_in2, hidden_dim: d_h2,
+                    w_ih: Arc::from(w_ih2),
+                    w_hh: Arc::from(w_hh2),
+                    b_ih: Arc::from(b_ih2),
+                    b_hh: Arc::from(b_hh2),
+                    input_dim: d_in2,
+                    hidden_dim: d_h2,
                 },
             ],
         };
         let got = stack.forward(&x).unwrap().realize_f32();
         for (i, (a, e)) in got.iter().zip(expected.iter()).enumerate() {
-            assert!((a - e).abs() < 1e-4,
-                "two-layer[{i}] expected {e}, got {a}");
+            assert!((a - e).abs() < 1e-4, "two-layer[{i}] expected {e}, got {a}");
         }
     }
 
@@ -315,7 +335,9 @@ mod tests {
     /// `input_dim == hidden_dim` so the shapes match.
     #[test]
     fn forward_with_residual_adds_input() {
-        let b = 1; let t = 2; let d = 3;
+        let b = 1;
+        let t = 2;
+        let d = 3;
         let four_d = 4 * d;
         let x_data: Vec<f32> = vec![0.5_f32, 0.25, -0.1, 0.7, 0.3, -0.4];
         let w_ih: Vec<f32> = vec![0.0_f32; four_d * d];
@@ -328,14 +350,15 @@ mod tests {
         // for all t. h_t = 0.5 * tanh(0) = 0 for all t. So plain
         // `forward` output is all zeros; `forward_with_residual` output
         // must equal the input.
-        let x = LazyTensor::from_f32(
-            x_data.clone(), Shape::from_dims(&[b, t, d]), &Device::cpu(),
-        );
+        let x = LazyTensor::from_f32(x_data.clone(), Shape::from_dims(&[b, t, d]), &Device::cpu());
         let stack = LstmStack {
             layers: vec![LstmCellWeights {
-                w_ih: Arc::from(w_ih), w_hh: Arc::from(w_hh),
-                b_ih: Arc::from(b_ih), b_hh: Arc::from(b_hh),
-                input_dim: d, hidden_dim: d,
+                w_ih: Arc::from(w_ih),
+                w_hh: Arc::from(w_hh),
+                b_ih: Arc::from(b_ih),
+                b_hh: Arc::from(b_hh),
+                input_dim: d,
+                hidden_dim: d,
             }],
         };
         let plain = stack.forward(&x).unwrap().realize_f32();
@@ -344,34 +367,47 @@ mod tests {
         }
         let with_res = stack.forward_with_residual(&x).unwrap().realize_f32();
         for (i, (a, e)) in with_res.iter().zip(x_data.iter()).enumerate() {
-            assert!((a - e).abs() < 1e-6,
-                "residual[{i}] expected {e}, got {a}");
+            assert!((a - e).abs() < 1e-6, "residual[{i}] expected {e}, got {a}");
         }
     }
 
     /// Sanity: input changes propagate to output.
     #[test]
     fn responds_to_input() {
-        let b = 1; let t = 4; let d_in = 4; let d_h = 4;
+        let b = 1;
+        let t = 4;
+        let d_in = 4;
+        let d_h = 4;
         let four_h = 4 * d_h;
         let w_ih: Vec<f32> = (0..(four_h * d_in)).map(|i| (i as f32) * 0.02).collect();
-        let w_hh: Vec<f32> = (0..(four_h * d_h)).map(|i| (i as f32) * 0.02 - 0.05).collect();
+        let w_hh: Vec<f32> = (0..(four_h * d_h))
+            .map(|i| (i as f32) * 0.02 - 0.05)
+            .collect();
         let b_ih: Vec<f32> = vec![0.0_f32; four_h];
         let b_hh: Vec<f32> = vec![0.0_f32; four_h];
         let stack = LstmStack {
             layers: vec![LstmCellWeights {
-                w_ih: Arc::from(w_ih), w_hh: Arc::from(w_hh),
-                b_ih: Arc::from(b_ih), b_hh: Arc::from(b_hh),
-                input_dim: d_in, hidden_dim: d_h,
+                w_ih: Arc::from(w_ih),
+                w_hh: Arc::from(w_hh),
+                b_ih: Arc::from(b_ih),
+                b_hh: Arc::from(b_hh),
+                input_dim: d_in,
+                hidden_dim: d_h,
             }],
         };
         let xa = LazyTensor::from_f32(
-            (0..(b * t * d_in)).map(|i| (i as f32) * 0.05).collect::<Vec<_>>(),
-            Shape::from_dims(&[b, t, d_in]), &Device::cpu(),
+            (0..(b * t * d_in))
+                .map(|i| (i as f32) * 0.05)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[b, t, d_in]),
+            &Device::cpu(),
         );
         let xb = LazyTensor::from_f32(
-            (0..(b * t * d_in)).map(|i| (i as f32) * 0.05 + 0.3).collect::<Vec<_>>(),
-            Shape::from_dims(&[b, t, d_in]), &Device::cpu(),
+            (0..(b * t * d_in))
+                .map(|i| (i as f32) * 0.05 + 0.3)
+                .collect::<Vec<_>>(),
+            Shape::from_dims(&[b, t, d_in]),
+            &Device::cpu(),
         );
         let oa = stack.forward(&xa).unwrap().realize_f32();
         let ob = stack.forward(&xb).unwrap().realize_f32();
@@ -379,7 +415,9 @@ mod tests {
         for (a, b) in oa.iter().zip(ob.iter()) {
             max_diff = max_diff.max((a - b).abs());
         }
-        assert!(max_diff > 1e-7,
-            "LSTM must respond to input changes, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-7,
+            "LSTM must respond to input changes, max_diff = {max_diff}"
+        );
     }
 }

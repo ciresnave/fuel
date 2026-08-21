@@ -102,7 +102,8 @@ pub fn probe_mkl_loadable() -> Result<()> {
         &b_ref,
         0.0_f32,
         &mut c_mut,
-    ).map_err(|e| fuel_ir::Error::Msg(format!("MKL probe gemm failed: {e}")))?;
+    )
+    .map_err(|e| fuel_ir::Error::Msg(format!("MKL probe gemm failed: {e}")))?;
 
     if c != [1.0, 2.0, 3.0, 4.0] {
         return Err(fuel_ir::Error::Msg(format!(

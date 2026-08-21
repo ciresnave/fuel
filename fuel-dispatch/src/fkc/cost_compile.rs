@@ -1,11 +1,11 @@
 //! Compile a contract's parsed cost AST into the live ranking cost path (§2.3).
 //! The parser/evaluator (`cost_expr.rs`) is complete; this only adds wiring.
-use std::sync::{Mutex, OnceLock};
-use crate::fkc::cost_expr::{eval, CompiledCostExpr, CostEvalError};
-use crate::fkc::lower::{ResolvedPrimitive, ResolvedFused};
+use crate::fkc::cost_expr::{CompiledCostExpr, CostEvalError, eval};
+use crate::fkc::lower::{ResolvedFused, ResolvedPrimitive};
 use crate::fused::CostEstimate;
 use fuel_graph::registry::FusedOpParams;
 use fuel_ir::{DType, Shape};
+use std::sync::{Mutex, OnceLock};
 
 /// The closed classification of a contract's `cost:` block (§2.3 / V-FKC-9).
 /// Every non-placeholder cost must map to exactly one of these; `None` from
@@ -28,8 +28,15 @@ pub enum CostClassKind {
 /// to `Some(kind)`. `class: free` is the only no-expression license for a
 /// `declared` block; otherwise `declared` needs a pinned `cost_fn` OR a usable
 /// `flops`/`bytes_moved` expression to not be a bare placeholder.
-pub fn classify_cost(provenance: &str, class: &str, has_any_expr: bool, has_cost_fn: bool) -> Option<CostClassKind> {
-    if class == "free" { return Some(CostClassKind::Free); }
+pub fn classify_cost(
+    provenance: &str,
+    class: &str,
+    has_any_expr: bool,
+    has_cost_fn: bool,
+) -> Option<CostClassKind> {
+    if class == "free" {
+        return Some(CostClassKind::Free);
+    }
     match provenance {
         "judge_measured" => Some(CostClassKind::JudgeMeasured),
         "declared" if has_cost_fn => Some(CostClassKind::VendorSpec),
@@ -40,11 +47,15 @@ pub fn classify_cost(provenance: &str, class: &str, has_any_expr: bool, has_cost
 
 /// Bounded, dedup'd process-lifetime leak (mirrors `register::intern`). Unknown → None.
 pub fn intern_cost_expr(expr: &CompiledCostExpr) -> Option<&'static CompiledCostExpr> {
-    if matches!(expr, CompiledCostExpr::Unknown) { return None; }
+    if matches!(expr, CompiledCostExpr::Unknown) {
+        return None;
+    }
     static POOL: OnceLock<Mutex<Vec<&'static CompiledCostExpr>>> = OnceLock::new();
     let pool = POOL.get_or_init(|| Mutex::new(Vec::new()));
     let mut g = pool.lock().expect("cost_expr interner poisoned");
-    if let Some(&e) = g.iter().find(|&&x| x == expr) { return Some(e); }
+    if let Some(&e) = g.iter().find(|&&x| x == expr) {
+        return Some(e);
+    }
     let leaked: &'static CompiledCostExpr = Box::leak(Box::new(expr.clone()));
     g.push(leaked);
     Some(leaked)
@@ -53,7 +64,9 @@ pub fn intern_cost_expr(expr: &CompiledCostExpr) -> Option<&'static CompiledCost
 /// A contract-pinned cost_fn wins outright (stays on entry.cost); the declared
 /// AST does not compete with it, so return None when a fn is pinned.
 pub fn stamp_primitive_cost_expr(p: &ResolvedPrimitive) -> Option<&'static CompiledCostExpr> {
-    if p.cost_fn.is_some() { return None; }
+    if p.cost_fn.is_some() {
+        return None;
+    }
     intern_cost_expr(&p.cost)
 }
 /// Intern a fused op's declared cost AST. Consumed by the fused registration
@@ -65,12 +78,23 @@ pub fn stamp_fused_cost_expr(f: &ResolvedFused) -> Option<&'static CompiledCostE
 /// Minimal fused-cost symbol binder: `n` (last input elem_count) + `dtype_bytes`.
 /// A fused (m,n,k) formula would under-bind and eval-error → the caller falls
 /// back to the compose-from-decompose estimate (already a non-zero cost).
-pub fn fused_cost_estimate(expr: &CompiledCostExpr, input_shapes: &[Shape], input_dtypes: &[DType], _params: &FusedOpParams)
-    -> Result<CostEstimate, CostEvalError> {
+pub fn fused_cost_estimate(
+    expr: &CompiledCostExpr,
+    input_shapes: &[Shape],
+    input_dtypes: &[DType],
+    _params: &FusedOpParams,
+) -> Result<CostEstimate, CostEvalError> {
     let mut b = std::collections::HashMap::new();
-    if let Some(s) = input_shapes.last() { b.insert("n".to_string(), s.elem_count() as f64); }
-    if let Some(d) = input_dtypes.last() { b.insert("dtype_bytes".to_string(), d.size_in_bytes() as f64); }
-    Ok(CostEstimate { flops: eval(expr, &b)?.max(0.0) as u64, ..Default::default() })
+    if let Some(s) = input_shapes.last() {
+        b.insert("n".to_string(), s.elem_count() as f64);
+    }
+    if let Some(d) = input_dtypes.last() {
+        b.insert("dtype_bytes".to_string(), d.size_in_bytes() as f64);
+    }
+    Ok(CostEstimate {
+        flops: eval(expr, &b)?.max(0.0) as u64,
+        ..Default::default()
+    })
 }
 
 #[cfg(test)]

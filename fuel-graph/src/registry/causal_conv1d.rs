@@ -57,8 +57,8 @@
 //! Mamba training consumer materializes.
 
 use crate::registry::{
-    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps,
-    PatternMatch, SubgraphPattern, decompose_via_recipe,
+    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps, PatternMatch,
+    SubgraphPattern, decompose_via_recipe,
 };
 use crate::{Graph, NodeId};
 use fuel_ir::{DType, Shape};
@@ -68,12 +68,12 @@ use fuel_kernel_seam_types::{OpAttrs, OpTag, PatternNode};
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
         destructive_input: None,
-        id:         FusedOps::CAUSAL_CONV1D,
-        name:       "CausalConv1d",
-        family:     FusedOpFamily::Forward,
-        pattern:    SubgraphPattern::Callable(canonical_pattern),
+        id: FusedOps::CAUSAL_CONV1D,
+        name: "CausalConv1d",
+        family: FusedOpFamily::Forward,
+        pattern: SubgraphPattern::Callable(canonical_pattern),
         decompose,
-        backward:   BackwardKind::NotDifferentiable,
+        backward: BackwardKind::NotDifferentiable,
         shape_rule,
         dtype_rule,
         output_views: None,
@@ -85,13 +85,22 @@ pub fn entry() -> FusedOpEntry {
 /// (weight is `[channels, 1, kernel]`).
 fn shape_rule(input_shapes: &[Shape], _params: &FusedOpParams) -> Shape {
     debug_assert_eq!(
-        input_shapes.len(), 3,
+        input_shapes.len(),
+        3,
         "CausalConv1d takes 3 inputs (x, weight, bias)",
     );
     let x_dims = input_shapes[0].dims();
     let w_dims = input_shapes[1].dims();
-    debug_assert_eq!(x_dims.len(), 3, "CausalConv1d: x must be rank 3 [batch, channels, seq+pad], got {x_dims:?}");
-    debug_assert_eq!(w_dims.len(), 3, "CausalConv1d: weight must be rank 3 [channels, 1, kernel], got {w_dims:?}");
+    debug_assert_eq!(
+        x_dims.len(),
+        3,
+        "CausalConv1d: x must be rank 3 [batch, channels, seq+pad], got {x_dims:?}"
+    );
+    debug_assert_eq!(
+        w_dims.len(),
+        3,
+        "CausalConv1d: weight must be rank 3 [channels, 1, kernel], got {w_dims:?}"
+    );
     let batch = x_dims[0];
     let channels = x_dims[1];
     let x_seq = x_dims[2];
@@ -99,7 +108,9 @@ fn shape_rule(input_shapes: &[Shape], _params: &FusedOpParams) -> Shape {
     debug_assert!(
         x_seq >= kernel - 1,
         "CausalConv1d: x time dim {x_seq} must be ≥ kernel - 1 = {} \
-         (caller must pre-pad with {} zeros)", kernel - 1, kernel - 1,
+         (caller must pre-pad with {} zeros)",
+        kernel - 1,
+        kernel - 1,
     );
     let out_seq = x_seq - (kernel - 1);
     Shape::from_dims(&[batch, channels, out_seq])
@@ -109,7 +120,8 @@ fn shape_rule(input_shapes: &[Shape], _params: &FusedOpParams) -> Shape {
 /// must agree at construction time (the builder validates).
 fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
     debug_assert_eq!(
-        input_dtypes.len(), 3,
+        input_dtypes.len(),
+        3,
         "CausalConv1d takes 3 inputs (x, weight, bias)",
     );
     input_dtypes[0]
@@ -170,11 +182,17 @@ fn recipe(
     use_silu: bool,
 ) -> PatternNode {
     use OpTag as T;
-    let op = |op, attrs, operands| PatternNode::Op { op, attrs, operands };
+    let op = |op, attrs, operands| PatternNode::Op {
+        op,
+        attrs: Box::new(attrs),
+        operands,
+    };
     let bind = |i: u8| PatternNode::Bind { index: i };
     // A baked absolute `target_shape` attr for a shape-changer (Reshape/BroadcastTo).
-    let shape_attr =
-        |dims: &[usize]| OpAttrs { target_shape: dims.iter().map(|&d| d as i64).collect(), ..OpAttrs::default() };
+    let shape_attr = |dims: &[usize]| OpAttrs {
+        target_shape: dims.iter().map(|&d| d as i64).collect(),
+        ..OpAttrs::default()
+    };
     // A baked concrete `Slice { dim, start, len }` attr (`tag_to_op` reads these).
     let slice_attr = |dim: i64, start: u64, len: u64| OpAttrs {
         axis: Some(dim),
@@ -187,7 +205,11 @@ fn recipe(
     // acc = Σ_k weight[:,0,k] · x[:, :, k : k+out_seq]  — the extent-driven unroll.
     let mut acc: Option<PatternNode> = None;
     for tap in 0..kernel {
-        let x_k = op(T::Slice, slice_attr(2, tap as u64, out_seq as u64), vec![bind(0)]);
+        let x_k = op(
+            T::Slice,
+            slice_attr(2, tap as u64, out_seq as u64),
+            vec![bind(0)],
+        );
         let w_k = op(T::Slice, slice_attr(2, tap as u64, 1), vec![bind(1)]);
         let w_re = op(T::Reshape, shape_attr(&per_channel), vec![w_k]);
         let w_b = op(T::BroadcastTo, shape_attr(out_dims), vec![w_re]);
@@ -290,7 +312,13 @@ mod tests {
     ) -> NodeId {
         let (x_id, w_id, b_id, out_shape, dtype) = {
             let n = graph.node(id);
-            (n.inputs[0], n.inputs[1], n.inputs[2], n.shape.clone(), n.dtype)
+            (
+                n.inputs[0],
+                n.inputs[1],
+                n.inputs[2],
+                n.shape.clone(),
+                n.dtype,
+            )
         };
         let use_silu = match params {
             FusedOpParams::CausalConv1d { use_silu } => *use_silu,
@@ -401,9 +429,18 @@ mod tests {
         let na = g.node(a);
         let nb = g.node(b);
         assert_eq!(na.op, nb.op, "op mismatch: {:?} vs {:?}", na.op, nb.op);
-        assert_eq!(na.shape, nb.shape, "shape mismatch at {:?}: {:?} vs {:?}", na.op, na.shape, nb.shape);
+        assert_eq!(
+            na.shape, nb.shape,
+            "shape mismatch at {:?}: {:?} vs {:?}",
+            na.op, na.shape, nb.shape
+        );
         assert_eq!(na.dtype, nb.dtype, "dtype mismatch at {:?}", na.op);
-        assert_eq!(na.inputs.len(), nb.inputs.len(), "arity mismatch at {:?}", na.op);
+        assert_eq!(
+            na.inputs.len(),
+            nb.inputs.len(),
+            "arity mismatch at {:?}",
+            na.op
+        );
         for (&ia, &ib) in na.inputs.iter().zip(nb.inputs.iter()) {
             assert_structural_eq(g, ia, ib);
         }
@@ -482,7 +519,8 @@ mod tests {
                          b={b}, c={c}, seq={seq})"
                     );
                     assert_eq!(
-                        g.node(new_root).shape, out_shape,
+                        g.node(new_root).shape,
+                        out_shape,
                         "output shape matches shape_rule (kernel={kernel}, use_silu={use_silu})"
                     );
                     assert_eq!(g.node(new_root).dtype, DType::F32, "output dtype is F32");

@@ -20,8 +20,8 @@
 
 use crate::lazy::{LazyTensor, WeightStorage};
 use crate::lazy_lfm2::{
-    LFM2AttentionWeights, LFM2BlockType, LFM2Config, LFM2ConvWeights,
-    LFM2LayerWeights, LFM2MixerWeights, LFM2Model, LFM2Weights,
+    LFM2AttentionWeights, LFM2BlockType, LFM2Config, LFM2ConvWeights, LFM2LayerWeights,
+    LFM2MixerWeights, LFM2Model, LFM2Weights,
 };
 use crate::{Device, Result};
 use fuel_ir::Shape;
@@ -46,9 +46,7 @@ impl QuantizedLFM2Model {
     /// Forward over pre-computed embeddings, skipping the
     /// token-embedding lookup. Embeds must have shape
     /// `(1, seq, hidden_size)`.
-    pub fn forward_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
-    ) -> Result<LazyTensor> {
+    pub fn forward_embeds(&self, embeds: &LazyTensor, start_pos: usize) -> Result<LazyTensor> {
         self.inner.forward_embeds(embeds, start_pos)
     }
 
@@ -60,24 +58,28 @@ impl QuantizedLFM2Model {
 
     /// Pre-embedded variant of [`Self::forward_hidden`].
     pub fn forward_hidden_embeds(
-        &self, embeds: &LazyTensor, start_pos: usize,
+        &self,
+        embeds: &LazyTensor,
+        start_pos: usize,
     ) -> Result<LazyTensor> {
         self.inner.forward_hidden_embeds(embeds, start_pos)
     }
 
     /// Build per-token embeddings without running the decoder.
-    pub fn embed_tokens_anchored(
-        &self, anchor: &LazyTensor, tokens: &[u32],
-    ) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
         self.inner.embed_tokens_anchored(anchor, tokens)
     }
 
     /// Model configuration.
-    pub fn config(&self) -> &LFM2Config { &self.inner.config }
+    pub fn config(&self) -> &LFM2Config {
+        &self.inner.config
+    }
 
     /// Underlying [`LFM2Model`] for direct access to the lazy graph
     /// API. The wrapper exists solely to label the quantization origin.
-    pub fn inner(&self) -> &LFM2Model { &self.inner }
+    pub fn inner(&self) -> &LFM2Model {
+        &self.inner
+    }
 
     /// Convenience: load f32 LFM2 weights from HF safetensors and
     /// quantize each Linear weight to Q4_0. Equivalent to
@@ -115,16 +117,24 @@ impl QuantizedLFM2Model {
         // * head_dim, attn_k / attn_v) and the conv in_proj's
         // 3 * hidden are only ever out_features and need no
         // divisibility (mirrors the gemma3 gate).
-        check_q4_0_divisible("hidden_size (attn_q/k/v, conv in/out_proj, ffn_gate/up, output in-features)", h)?;
+        check_q4_0_divisible(
+            "hidden_size (attn_q/k/v, conv in/out_proj, ffn_gate/up, output in-features)",
+            h,
+        )?;
         check_q4_0_divisible("intermediate_size (ffn_down in-features)", inter)?;
         check_q4_0_divisible("num_attention_heads * head_dim (attn_o in-features)", q_dim)?;
 
-        let quantize_linear = |w: &WeightStorage, in_features: usize, out_features: usize| -> Result<WeightStorage> {
+        let quantize_linear = |w: &WeightStorage,
+                               in_features: usize,
+                               out_features: usize|
+         -> Result<WeightStorage> {
             let f32_in_out = match w {
                 WeightStorage::F32(a) => a.to_vec(),
                 _ => return Err(crate::Error::Msg(
-                    "QuantizedLFM2Model::from_f32_bake: source weights must be WeightStorage::F32".into(),
-                ).bt()),
+                    "QuantizedLFM2Model::from_f32_bake: source weights must be WeightStorage::F32"
+                        .into(),
+                )
+                .bt()),
             };
             if f32_in_out.len() != in_features * out_features {
                 return Err(crate::Error::Msg(format!(
@@ -140,18 +150,24 @@ impl QuantizedLFM2Model {
             let mixer = match layer.mixer {
                 LFM2MixerWeights::Attention(a) => {
                     LFM2MixerWeights::Attention(LFM2AttentionWeights {
-                        attn_q: quantize_linear(&a.attn_q, h,  q_dim).map_err(|e| layer_err(idx, "attn_q",  e))?,
-                        attn_k: quantize_linear(&a.attn_k, h, kv_dim).map_err(|e| layer_err(idx, "attn_k",  e))?,
-                        attn_v: quantize_linear(&a.attn_v, h, kv_dim).map_err(|e| layer_err(idx, "attn_v",  e))?,
-                        attn_o: quantize_linear(&a.attn_o, q_dim, h).map_err(|e| layer_err(idx, "attn_o",  e))?,
+                        attn_q: quantize_linear(&a.attn_q, h, q_dim)
+                            .map_err(|e| layer_err(idx, "attn_q", e))?,
+                        attn_k: quantize_linear(&a.attn_k, h, kv_dim)
+                            .map_err(|e| layer_err(idx, "attn_k", e))?,
+                        attn_v: quantize_linear(&a.attn_v, h, kv_dim)
+                            .map_err(|e| layer_err(idx, "attn_v", e))?,
+                        attn_o: quantize_linear(&a.attn_o, q_dim, h)
+                            .map_err(|e| layer_err(idx, "attn_o", e))?,
                         q_norm_gain: a.q_norm_gain,
                         k_norm_gain: a.k_norm_gain,
                     })
                 }
                 LFM2MixerWeights::Conv(c) => {
                     LFM2MixerWeights::Conv(LFM2ConvWeights {
-                        in_proj:  quantize_linear(&c.in_proj,  h, 3 * h).map_err(|e| layer_err(idx, "conv.in_proj",  e))?,
-                        out_proj: quantize_linear(&c.out_proj, h, h    ).map_err(|e| layer_err(idx, "conv.out_proj", e))?,
+                        in_proj: quantize_linear(&c.in_proj, h, 3 * h)
+                            .map_err(|e| layer_err(idx, "conv.in_proj", e))?,
+                        out_proj: quantize_linear(&c.out_proj, h, h)
+                            .map_err(|e| layer_err(idx, "conv.out_proj", e))?,
                         conv_weight: c.conv_weight, // stays F32
                     })
                 }
@@ -160,9 +176,12 @@ impl QuantizedLFM2Model {
                 operator_norm_gain: layer.operator_norm_gain,
                 ffn_norm_gain: layer.ffn_norm_gain,
                 mixer,
-                ffn_gate: quantize_linear(&layer.ffn_gate, h, inter).map_err(|e| layer_err(idx, "ffn_gate", e))?,
-                ffn_up:   quantize_linear(&layer.ffn_up,   h, inter).map_err(|e| layer_err(idx, "ffn_up",   e))?,
-                ffn_down: quantize_linear(&layer.ffn_down, inter, h).map_err(|e| layer_err(idx, "ffn_down", e))?,
+                ffn_gate: quantize_linear(&layer.ffn_gate, h, inter)
+                    .map_err(|e| layer_err(idx, "ffn_gate", e))?,
+                ffn_up: quantize_linear(&layer.ffn_up, h, inter)
+                    .map_err(|e| layer_err(idx, "ffn_up", e))?,
+                ffn_down: quantize_linear(&layer.ffn_down, inter, h)
+                    .map_err(|e| layer_err(idx, "ffn_down", e))?,
             });
         }
 
@@ -187,9 +206,7 @@ impl QuantizedLFM2Model {
     /// are dequantized to F32 — matching the SmolLM3 loader policy.
     /// Embedding and `lm_head` share storage when `output.weight` is
     /// absent (tied embeddings).
-    pub fn from_gguf<P: AsRef<std::path::Path>>(
-        path: P, cfg: &LFM2Config,
-    ) -> Result<Self> {
+    pub fn from_gguf<P: AsRef<std::path::Path>>(path: P, cfg: &LFM2Config) -> Result<Self> {
         use crate::quantized::gguf_mmap::MmapedContent;
         cfg.validate()?;
         let mc = MmapedContent::from_path(path)?;
@@ -198,16 +215,22 @@ impl QuantizedLFM2Model {
         let mmap_bytes: &[u8] = &mmap_arc[..];
         let data_off = content.tensor_data_offset as usize;
 
-        let get_tensor_bytes = |name: &str| -> Result<(&[u8], crate::quantized::GgmlDType, Vec<usize>)> {
-            let info = content.tensor_infos.get(name).ok_or_else(|| {
-                crate::Error::Msg(format!("gguf: missing tensor {name:?}"))
-            })?;
-            let elems = info.shape.elem_count();
-            let block_size = info.ggml_dtype.block_size();
-            let bytes_len = elems / block_size * info.ggml_dtype.type_size();
-            let start = data_off + info.offset as usize;
-            Ok((&mmap_bytes[start..start + bytes_len], info.ggml_dtype, info.shape.dims().to_vec()))
-        };
+        let get_tensor_bytes =
+            |name: &str| -> Result<(&[u8], crate::quantized::GgmlDType, Vec<usize>)> {
+                let info = content
+                    .tensor_infos
+                    .get(name)
+                    .ok_or_else(|| crate::Error::Msg(format!("gguf: missing tensor {name:?}")))?;
+                let elems = info.shape.elem_count();
+                let block_size = info.ggml_dtype.block_size();
+                let bytes_len = elems / block_size * info.ggml_dtype.type_size();
+                let start = data_off + info.offset as usize;
+                Ok((
+                    &mmap_bytes[start..start + bytes_len],
+                    info.ggml_dtype,
+                    info.shape.dims().to_vec(),
+                ))
+            };
 
         let load_f32 = |name: &str| -> Result<Vec<f32>> {
             let (bytes, dt, _) = get_tensor_bytes(name)?;
@@ -222,10 +245,14 @@ impl QuantizedLFM2Model {
             }
             Err(crate::Error::Msg(format!(
                 "gguf: none of the tensors {candidates:?} are present",
-            )).bt())
+            ))
+            .bt())
         };
 
-        let load_weight = |name: &str, out_features: usize, in_features: usize| -> Result<WeightStorage> {
+        let load_weight = |name: &str,
+                           out_features: usize,
+                           in_features: usize|
+         -> Result<WeightStorage> {
             let (bytes, dt, dims) = get_tensor_bytes(name)?;
             let expected = out_features * in_features;
             let actual: usize = dims.iter().product();
@@ -254,7 +281,10 @@ impl QuantizedLFM2Model {
                 }
             }
         };
-        let load_weight_any = |candidates: &[&str], out_features: usize, in_features: usize| -> Result<WeightStorage> {
+        let load_weight_any = |candidates: &[&str],
+                               out_features: usize,
+                               in_features: usize|
+         -> Result<WeightStorage> {
             for name in candidates {
                 if content.tensor_infos.contains_key(*name) {
                     return load_weight(name, out_features, in_features);
@@ -262,7 +292,8 @@ impl QuantizedLFM2Model {
             }
             Err(crate::Error::Msg(format!(
                 "gguf: none of the tensors {candidates:?} are present",
-            )).bt())
+            ))
+            .bt())
         };
 
         let h = cfg.hidden_size;
@@ -279,8 +310,11 @@ impl QuantizedLFM2Model {
         if token_embedding.len() != cfg.vocab_size * h {
             return Err(crate::Error::Msg(format!(
                 "gguf token embedding: {} elems, expected {}*{}",
-                token_embedding.len(), cfg.vocab_size, h,
-            )).bt());
+                token_embedding.len(),
+                cfg.vocab_size,
+                h,
+            ))
+            .bt());
         }
 
         let mut layers: Vec<LFM2LayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
@@ -297,37 +331,65 @@ impl QuantizedLFM2Model {
                 &format!("{prefix}.ffn_norm"),
             ])?);
 
-            let ffn_gate = load_weight_any(&[
-                &format!("{prefix}.ffn_gate.weight"),
-                &format!("{prefix}.feed_forward.w1.weight"),
-            ], inter, h)?;
-            let ffn_up = load_weight_any(&[
-                &format!("{prefix}.ffn_up.weight"),
-                &format!("{prefix}.feed_forward.w3.weight"),
-            ], inter, h)?;
-            let ffn_down = load_weight_any(&[
-                &format!("{prefix}.ffn_down.weight"),
-                &format!("{prefix}.feed_forward.w2.weight"),
-            ], h, inter)?;
+            let ffn_gate = load_weight_any(
+                &[
+                    &format!("{prefix}.ffn_gate.weight"),
+                    &format!("{prefix}.feed_forward.w1.weight"),
+                ],
+                inter,
+                h,
+            )?;
+            let ffn_up = load_weight_any(
+                &[
+                    &format!("{prefix}.ffn_up.weight"),
+                    &format!("{prefix}.feed_forward.w3.weight"),
+                ],
+                inter,
+                h,
+            )?;
+            let ffn_down = load_weight_any(
+                &[
+                    &format!("{prefix}.ffn_down.weight"),
+                    &format!("{prefix}.feed_forward.w2.weight"),
+                ],
+                h,
+                inter,
+            )?;
 
             let mixer = match block {
                 LFM2BlockType::Attention => {
-                    let attn_q = load_weight_any(&[
-                        &format!("{prefix}.attn_q.weight"),
-                        &format!("{prefix}.self_attn.q_proj.weight"),
-                    ], q_dim, h)?;
-                    let attn_k = load_weight_any(&[
-                        &format!("{prefix}.attn_k.weight"),
-                        &format!("{prefix}.self_attn.k_proj.weight"),
-                    ], kv_dim, h)?;
-                    let attn_v = load_weight_any(&[
-                        &format!("{prefix}.attn_v.weight"),
-                        &format!("{prefix}.self_attn.v_proj.weight"),
-                    ], kv_dim, h)?;
-                    let attn_o = load_weight_any(&[
-                        &format!("{prefix}.attn_output.weight"),
-                        &format!("{prefix}.self_attn.o_proj.weight"),
-                    ], h, q_dim)?;
+                    let attn_q = load_weight_any(
+                        &[
+                            &format!("{prefix}.attn_q.weight"),
+                            &format!("{prefix}.self_attn.q_proj.weight"),
+                        ],
+                        q_dim,
+                        h,
+                    )?;
+                    let attn_k = load_weight_any(
+                        &[
+                            &format!("{prefix}.attn_k.weight"),
+                            &format!("{prefix}.self_attn.k_proj.weight"),
+                        ],
+                        kv_dim,
+                        h,
+                    )?;
+                    let attn_v = load_weight_any(
+                        &[
+                            &format!("{prefix}.attn_v.weight"),
+                            &format!("{prefix}.self_attn.v_proj.weight"),
+                        ],
+                        kv_dim,
+                        h,
+                    )?;
+                    let attn_o = load_weight_any(
+                        &[
+                            &format!("{prefix}.attn_output.weight"),
+                            &format!("{prefix}.self_attn.o_proj.weight"),
+                        ],
+                        h,
+                        q_dim,
+                    )?;
                     let q_norm_gain: Arc<[f32]> = Arc::from(load_f32_any(&[
                         &format!("{prefix}.attn_q_norm.weight"),
                         &format!("{prefix}.self_attn.q_layernorm.weight"),
@@ -339,19 +401,31 @@ impl QuantizedLFM2Model {
                         &format!("{prefix}.attention.k_norm.weight"),
                     ])?);
                     LFM2MixerWeights::Attention(LFM2AttentionWeights {
-                        attn_q, attn_k, attn_v, attn_o,
-                        q_norm_gain, k_norm_gain,
+                        attn_q,
+                        attn_k,
+                        attn_v,
+                        attn_o,
+                        q_norm_gain,
+                        k_norm_gain,
                     })
                 }
                 LFM2BlockType::Conv => {
-                    let in_proj = load_weight_any(&[
-                        &format!("{prefix}.shortconv.in_proj.weight"),
-                        &format!("{prefix}.conv.in_proj.weight"),
-                    ], 3 * h, h)?;
-                    let out_proj = load_weight_any(&[
-                        &format!("{prefix}.shortconv.out_proj.weight"),
-                        &format!("{prefix}.conv.out_proj.weight"),
-                    ], h, h)?;
+                    let in_proj = load_weight_any(
+                        &[
+                            &format!("{prefix}.shortconv.in_proj.weight"),
+                            &format!("{prefix}.conv.in_proj.weight"),
+                        ],
+                        3 * h,
+                        h,
+                    )?;
+                    let out_proj = load_weight_any(
+                        &[
+                            &format!("{prefix}.shortconv.out_proj.weight"),
+                            &format!("{prefix}.conv.out_proj.weight"),
+                        ],
+                        h,
+                        h,
+                    )?;
                     let raw = load_f32_any(&[
                         &format!("{prefix}.shortconv.conv.weight"),
                         &format!("{prefix}.conv.conv.weight"),
@@ -359,16 +433,20 @@ impl QuantizedLFM2Model {
                     ])?;
                     let normalized = normalize_conv_kernel(raw, h, k, i)?;
                     LFM2MixerWeights::Conv(LFM2ConvWeights {
-                        in_proj, out_proj,
+                        in_proj,
+                        out_proj,
                         conv_weight: Arc::from(normalized),
                     })
                 }
             };
 
             layers.push(LFM2LayerWeights {
-                operator_norm_gain, ffn_norm_gain,
+                operator_norm_gain,
+                ffn_norm_gain,
                 mixer,
-                ffn_gate, ffn_up, ffn_down,
+                ffn_gate,
+                ffn_up,
+                ffn_down,
             });
         }
 
@@ -402,7 +480,9 @@ impl QuantizedLFM2Model {
             config: cfg.clone(),
             weights: LFM2Weights {
                 token_embedding: Arc::from(token_embedding),
-                layers, final_norm_gain, output,
+                layers,
+                final_norm_gain,
+                output,
             },
         };
         Ok(Self { inner })
@@ -429,7 +509,10 @@ fn check_q4_0_divisible(name: &str, n: usize) -> Result<()> {
 /// the eager loader, which treats the data as already in
 /// `[hidden, k]` order (modulo a trailing singleton dim).
 fn normalize_conv_kernel(
-    raw: Vec<f32>, hidden: usize, k: usize, layer_idx: usize,
+    raw: Vec<f32>,
+    hidden: usize,
+    k: usize,
+    layer_idx: usize,
 ) -> Result<Vec<f32>> {
     let want = hidden * k;
     if raw.len() != want {
@@ -447,14 +530,17 @@ fn normalize_conv_kernel(
 /// `[in, out] -> [out, in]` transpose first, then runs the per-row
 /// Q4_0 quantization.
 fn quantize_in_out_to_q4_0(
-    f32_in_out: &[f32], in_features: usize, out_features: usize,
+    f32_in_out: &[f32],
+    in_features: usize,
+    out_features: usize,
 ) -> Result<WeightStorage> {
     use fuel_quantized::{BlockQ4_0, GgmlType};
     const QK4_0: usize = 32;
     if !in_features.is_multiple_of(QK4_0) {
         return Err(crate::Error::Msg(format!(
             "Q4_0 quantize: in_features ({in_features}) must be divisible by {QK4_0}"
-        )).bt());
+        ))
+        .bt());
     }
 
     let mut f32_out_in = vec![0.0_f32; out_features * in_features];
@@ -469,13 +555,13 @@ fn quantize_in_out_to_q4_0(
     BlockQ4_0::from_float(&f32_out_in, &mut blocks);
 
     let bytes_len = n_blocks * std::mem::size_of::<BlockQ4_0>();
-    let byte_slice: &[u8] = unsafe {
-        std::slice::from_raw_parts(blocks.as_ptr() as *const u8, bytes_len)
-    };
+    let byte_slice: &[u8] =
+        unsafe { std::slice::from_raw_parts(blocks.as_ptr() as *const u8, bytes_len) };
     let padded_len = bytes_len.div_ceil(4) * 4;
     let mut padded = vec![0_u8; padded_len];
     padded[..bytes_len].copy_from_slice(byte_slice);
-    let words: Vec<u32> = padded.chunks_exact(4)
+    let words: Vec<u32> = padded
+        .chunks_exact(4)
         .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     Ok(WeightStorage::Q4_0 {
@@ -490,7 +576,8 @@ fn bytes_to_u32_arc(bytes: &[u8]) -> Arc<[u32]> {
     let padded_len = bytes.len().div_ceil(4) * 4;
     let mut padded = vec![0_u8; padded_len];
     padded[..bytes.len()].copy_from_slice(bytes);
-    let words: Vec<u32> = padded.chunks_exact(4)
+    let words: Vec<u32> = padded
+        .chunks_exact(4)
         .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     Arc::from(words)
@@ -500,7 +587,9 @@ fn bytes_to_u32_arc(bytes: &[u8]) -> Arc<[u32]> {
 /// Mirrors the SmolLM3 helper; lives here so this module stays
 /// independent of other lazy-quantized loaders.
 fn dequant_bytes_to_f32(
-    bytes: &[u8], dt: crate::quantized::GgmlDType, name: &str,
+    bytes: &[u8],
+    dt: crate::quantized::GgmlDType,
+    name: &str,
 ) -> Result<Vec<f32>> {
     use crate::quantized::GgmlDType;
     use half::{bf16, f16};
@@ -508,36 +597,49 @@ fn dequant_bytes_to_f32(
         GgmlDType::F32 => {
             if bytes.len() % 4 != 0 {
                 return Err(crate::Error::Msg(format!(
-                    "gguf {name}: F32 byte count {} not multiple of 4", bytes.len(),
-                )).bt());
+                    "gguf {name}: F32 byte count {} not multiple of 4",
+                    bytes.len(),
+                ))
+                .bt());
             }
-            Ok(bytes.chunks_exact(4)
-                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
+            Ok(bytes
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect())
         }
         GgmlDType::F16 => {
             if bytes.len() % 2 != 0 {
                 return Err(crate::Error::Msg(format!(
-                    "gguf {name}: F16 byte count {} not multiple of 2", bytes.len(),
-                )).bt());
+                    "gguf {name}: F16 byte count {} not multiple of 2",
+                    bytes.len(),
+                ))
+                .bt());
             }
-            Ok(bytes.chunks_exact(2)
-                .map(|c| f16::from_le_bytes([c[0], c[1]]).to_f32()).collect())
+            Ok(bytes
+                .chunks_exact(2)
+                .map(|c| f16::from_le_bytes([c[0], c[1]]).to_f32())
+                .collect())
         }
         GgmlDType::BF16 => {
             if bytes.len() % 2 != 0 {
                 return Err(crate::Error::Msg(format!(
-                    "gguf {name}: BF16 byte count {} not multiple of 2", bytes.len(),
-                )).bt());
+                    "gguf {name}: BF16 byte count {} not multiple of 2",
+                    bytes.len(),
+                ))
+                .bt());
             }
-            Ok(bytes.chunks_exact(2)
-                .map(|c| bf16::from_le_bytes([c[0], c[1]]).to_f32()).collect())
+            Ok(bytes
+                .chunks_exact(2)
+                .map(|c| bf16::from_le_bytes([c[0], c[1]]).to_f32())
+                .collect())
         }
         GgmlDType::Q4_0 => Ok(cpu_dequant_q4_0_bytes(bytes)),
         other => Err(crate::Error::Msg(format!(
             "gguf {name}: dequant of {other:?} is not supported by lazy_quantized_lfm2 \
              (Q4_K_M and other block formats must be re-quantized upstream or loaded \
               via a future native Q4_K_M matmul path)",
-        )).bt()),
+        ))
+        .bt()),
     }
 }
 
@@ -555,7 +657,7 @@ fn cpu_dequant_q4_0_bytes(bytes: &[u8]) -> Vec<f32> {
             let packed = bytes[off + 2 + kk];
             let lo = (packed & 0x0F) as i32 - 8;
             let hi = ((packed >> 4) & 0x0F) as i32 - 8;
-            out[base + kk]      = lo as f32 * d;
+            out[base + kk] = lo as f32 * d;
             out[base + 16 + kk] = hi as f32 * d;
         }
     }
@@ -565,7 +667,7 @@ fn cpu_dequant_q4_0_bytes(bytes: &[u8]) -> Vec<f32> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lazy_lfm2::{LFM2BlockType, LFM2ConvWeights, LFM2AttentionWeights};
+    use crate::lazy_lfm2::{LFM2AttentionWeights, LFM2BlockType, LFM2ConvWeights};
 
     fn test_cfg() -> LFM2Config {
         // hidden/intermediate/q_dim/kv_dim all multiples of 32.
@@ -591,9 +693,8 @@ mod tests {
             s = s.wrapping_mul(1103515245).wrapping_add(12345);
             ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
         };
-        let mut vec_of = |n: usize| -> Arc<[f32]> {
-            Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
-        };
+        let mut vec_of =
+            |n: usize| -> Arc<[f32]> { Arc::from((0..n).map(|_| next()).collect::<Vec<_>>()) };
         let h = cfg.hidden_size;
         let i = cfg.intermediate_size;
         let q_dim = cfg.num_attention_heads * cfg.head_dim;
@@ -612,7 +713,7 @@ mod tests {
                     k_norm_gain: Arc::from(vec![1.0_f32; cfg.head_dim]),
                 }),
                 LFM2BlockType::Conv => LFM2MixerWeights::Conv(LFM2ConvWeights {
-                    in_proj:  WeightStorage::F32(vec_of(h * 3 * h)),
+                    in_proj: WeightStorage::F32(vec_of(h * 3 * h)),
                     out_proj: WeightStorage::F32(vec_of(h * h)),
                     conv_weight: vec_of(h * k),
                 }),
@@ -622,13 +723,18 @@ mod tests {
                 ffn_norm_gain: Arc::from(vec![1.0_f32; h]),
                 mixer,
                 ffn_gate: WeightStorage::F32(vec_of(h * i)),
-                ffn_up:   WeightStorage::F32(vec_of(h * i)),
+                ffn_up: WeightStorage::F32(vec_of(h * i)),
                 ffn_down: WeightStorage::F32(vec_of(i * h)),
             });
         }
         let final_norm_gain = Arc::from(vec![1.0_f32; h]);
         let output = WeightStorage::F32(vec_of(h * cfg.vocab_size));
-        LFM2Weights { token_embedding, layers, final_norm_gain, output }
+        LFM2Weights {
+            token_embedding,
+            layers,
+            final_norm_gain,
+            output,
+        }
     }
 
     #[test]
@@ -650,7 +756,7 @@ mod tests {
         let l1 = &model.inner().weights.layers[1];
         match &l1.mixer {
             LFM2MixerWeights::Conv(c) => {
-                assert!(matches!(c.in_proj,  WeightStorage::Q4_0 { .. }));
+                assert!(matches!(c.in_proj, WeightStorage::Q4_0 { .. }));
                 assert!(matches!(c.out_proj, WeightStorage::Q4_0 { .. }));
                 // Conv kernel itself stays F32.
                 assert_eq!(c.conv_weight.len(), cfg.hidden_size * cfg.conv_kernel_size);
@@ -658,9 +764,12 @@ mod tests {
             _ => panic!("layer 1 should be conv per the test config"),
         }
         assert!(matches!(l0.ffn_gate, WeightStorage::Q4_0 { .. }));
-        assert!(matches!(l0.ffn_up,   WeightStorage::Q4_0 { .. }));
+        assert!(matches!(l0.ffn_up, WeightStorage::Q4_0 { .. }));
         assert!(matches!(l0.ffn_down, WeightStorage::Q4_0 { .. }));
-        assert!(matches!(model.inner().weights.output, WeightStorage::Q4_0 { .. }));
+        assert!(matches!(
+            model.inner().weights.output,
+            WeightStorage::Q4_0 { .. }
+        ));
 
         let logits = model.forward(&[1, 2, 3, 4], 0).unwrap();
         assert_eq!(logits.shape().dims(), &[1, 4, cfg.vocab_size]);
@@ -676,14 +785,17 @@ mod tests {
         let model = QuantizedLFM2Model::from_f32_bake(cfg.clone(), src).unwrap();
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
-        let max_diff = logits_ref.iter().zip(logits_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-4,
-            "Quantized LFM2 forward vs forward_embeds must agree (max diff {max_diff})");
+        let max_diff = logits_ref
+            .iter()
+            .zip(logits_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-4,
+            "Quantized LFM2 forward vs forward_embeds must agree (max diff {max_diff})"
+        );
     }
 }

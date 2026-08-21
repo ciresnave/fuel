@@ -19,7 +19,13 @@ fn rotating_within_window() {
     let src = dest.const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]));
     let position = dest.const_u32_like(vec![1_u32], Shape::from_dims(&[]));
     let post_write = dest
-        .write_slice_rotating(&src, &position, /* axis */ 0, /* modulus */ 4, vec![(0, 1), (0, 2)])
+        .write_slice_rotating(
+            &src,
+            &position,
+            /* axis */ 0,
+            /* modulus */ 4,
+            vec![(0, 1), (0, 2)],
+        )
         .expect("write_slice_rotating builds");
     let out = post_write.realize_f32();
     assert_eq!(out, vec![0.0, 0.0, 7.0, 8.0, 0.0, 0.0, 0.0, 0.0]);
@@ -45,10 +51,7 @@ fn rotating_wraps_position_at_modulus() {
 fn rotating_splits_across_boundary() {
     let device = fuel_core::Device::cpu();
     let dest = LazyTensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
-    let src = dest.const_f32_like(
-        vec![10.0_f32, 11.0, 20.0, 21.0],
-        Shape::from_dims(&[2, 2]),
-    );
+    let src = dest.const_f32_like(vec![10.0_f32, 11.0, 20.0, 21.0], Shape::from_dims(&[2, 2]));
     let position = dest.const_u32_like(vec![3_u32], Shape::from_dims(&[]));
     let post_write = dest
         .write_slice_rotating(&src, &position, 0, 4, vec![(0, 2), (0, 2)])
@@ -135,7 +138,13 @@ fn rotating_rejects_modulus_exceeds_dest_dim() {
     let dest = LazyTensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
     let src = dest.const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]));
     let position = dest.const_u32_like(vec![0_u32], Shape::from_dims(&[]));
-    let r = dest.write_slice_rotating(&src, &position, 0, /* modulus */ 5, vec![(0, 1), (0, 2)]);
+    let r = dest.write_slice_rotating(
+        &src,
+        &position,
+        0,
+        /* modulus */ 5,
+        vec![(0, 1), (0, 2)],
+    );
     assert!(r.is_err(), "modulus > dest dim must error at build time");
 }
 

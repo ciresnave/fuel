@@ -20,8 +20,8 @@
 //! see [`decompose`]'s doc for why this is NOT a basis gap.
 
 use crate::registry::{
-    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps,
-    PatternMatch, SubgraphPattern, decompose_via_recipe,
+    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps, PatternMatch,
+    SubgraphPattern, decompose_via_recipe,
 };
 use crate::{Graph, NodeId};
 use fuel_ir::{DType, Shape};
@@ -31,12 +31,12 @@ use std::sync::OnceLock;
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
         destructive_input: Some(0),
-        id:         FusedOps::INPLACE_AFFINE,
-        name:       "InplaceAffine",
-        family:     FusedOpFamily::Forward,
-        pattern:    SubgraphPattern::Callable(canonical_pattern),
+        id: FusedOps::INPLACE_AFFINE,
+        name: "InplaceAffine",
+        family: FusedOpFamily::Forward,
+        pattern: SubgraphPattern::Callable(canonical_pattern),
         decompose,
-        backward:   BackwardKind::NotDifferentiable,
+        backward: BackwardKind::NotDifferentiable,
         shape_rule,
         dtype_rule,
         output_views: None,
@@ -45,17 +45,15 @@ pub fn entry() -> FusedOpEntry {
 
 fn shape_rule(input_shapes: &[Shape], _params: &FusedOpParams) -> Shape {
     debug_assert_eq!(
-        input_shapes.len(), 1,
+        input_shapes.len(),
+        1,
         "InplaceAffine takes 1 input (the mutated tensor)",
     );
     input_shapes[0].clone()
 }
 
 fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
-    debug_assert_eq!(
-        input_dtypes.len(), 1,
-        "InplaceAffine takes 1 input",
-    );
+    debug_assert_eq!(input_dtypes.len(), 1, "InplaceAffine takes 1 input",);
     input_dtypes[0]
 }
 
@@ -74,7 +72,11 @@ fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
 fn recipe() -> &'static PatternNode {
     static RECIPE: OnceLock<PatternNode> = OnceLock::new();
     RECIPE.get_or_init(|| {
-        let op = |op, attrs, operands| PatternNode::Op { op, attrs, operands };
+        let op = |op, attrs, operands| PatternNode::Op {
+            op,
+            attrs: Box::new(attrs),
+            operands,
+        };
         let x = || PatternNode::Bind { index: 0 };
         // mul_x = MulScalar[open](x) — empty scalars = an open slot (filled 2nd).
         let mul_x = op(OpTag::MulScalar, OpAttrs::default(), vec![x()]);
@@ -139,10 +141,10 @@ mod tests {
     /// `(mul, add)` params (single input — the mutated tensor).
     fn fused_inplace_affine(g: &mut Graph, dims: &[usize], mul: f64, add: f64) -> NodeId {
         let x = g.push(Node {
-            op:     Op::Const,
+            op: Op::Const,
             inputs: vec![],
-            shape:  Shape::from_dims(dims),
-            dtype:  DType::F32,
+            shape: Shape::from_dims(dims),
+            dtype: DType::F32,
         });
         g.push(Node {
             op: Op::Fused(
@@ -150,8 +152,8 @@ mod tests {
                 FusedOpParams::InplaceAffine { mul, add },
             ),
             inputs: vec![x],
-            shape:  Shape::from_dims(dims),
-            dtype:  DType::F32,
+            shape: Shape::from_dims(dims),
+            dtype: DType::F32,
         })
     }
 
@@ -172,20 +174,33 @@ mod tests {
 
         let root = decompose(&mut g, fused, &params);
 
-        assert_ne!(root, fused, "InplaceAffine now lowers to a functional subgraph");
+        assert_ne!(
+            root, fused,
+            "InplaceAffine now lowers to a functional subgraph"
+        );
         // root = AddScalar(add)(...)
         assert!(
             matches!(g.node(root).op, Op::AddScalar(v) if v == add),
-            "root is AddScalar(add); got {:?}", g.node(root).op,
+            "root is AddScalar(add); got {:?}",
+            g.node(root).op,
         );
         // operand = MulScalar(mul)(x)
         let ms = g.node(root).inputs[0];
         assert!(
             matches!(g.node(ms).op, Op::MulScalar(v) if v == mul),
-            "operand is MulScalar(mul); got {:?}", g.node(ms).op,
+            "operand is MulScalar(mul); got {:?}",
+            g.node(ms).op,
         );
-        assert_eq!(g.node(ms).inputs, vec![x], "MulScalar reads the fused node's input 0");
-        assert_eq!(g.node(root).shape, out_shape, "value form preserves the input shape");
+        assert_eq!(
+            g.node(ms).inputs,
+            vec![x],
+            "MulScalar reads the fused node's input 0"
+        );
+        assert_eq!(
+            g.node(root).shape,
+            out_shape,
+            "value form preserves the input shape"
+        );
         assert_eq!(g.node(root).dtype, DType::F32);
     }
 
@@ -201,7 +216,8 @@ mod tests {
             FusedOpParams::InplaceAffine { mul: 2.0, add: 1.0 },
         );
         assert_eq!(
-            op.destructive_input(), Some(0),
+            op.destructive_input(),
+            Some(0),
             "INPLACE_AFFINE still marks input 0 destructive after the decompose migration",
         );
     }

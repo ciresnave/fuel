@@ -4,10 +4,10 @@ extern crate intel_mkl_src;
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
 
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use clap::{Parser, ValueEnum};
-use fuel::lazy::LazyTensor;
 use fuel::Device;
+use fuel::lazy::LazyTensor;
 use fuel_examples::save_image;
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -73,12 +73,9 @@ pub fn main() -> Result<()> {
             &[0.485_f32, 0.456, 0.406],
             &[0.229_f32, 0.224, 0.225],
         )?,
-        Which::EsrGan => load_image_chw_f32(
-            &args.image,
-            128,
-            &[0.0_f32, 0.0, 0.0],
-            &[1.0_f32, 1.0, 1.0],
-        )?,
+        Which::EsrGan => {
+            load_image_chw_f32(&args.image, 128, &[0.0_f32, 0.0, 0.0], &[1.0_f32, 1.0, 1.0])?
+        }
     };
 
     let image_lazy = LazyTensor::from_f32(image_chw, image_shape, &device);

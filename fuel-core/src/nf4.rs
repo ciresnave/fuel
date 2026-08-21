@@ -49,8 +49,8 @@
 //! the fused op expects, including the reshape from bnb's flat
 //! layouts to Fuel's 2D ones.
 
-use crate::lazy::LazyTensor;
 use crate::Device;
+use crate::lazy::LazyTensor;
 use fuel_ir::{Result, Shape};
 
 /// A bitsandbytes-style NF4-quantized weight, materialized as the two
@@ -106,41 +106,45 @@ pub fn nf4_from_bytes(
     if k == 0 || k % 2 != 0 {
         return Err(fuel_ir::Error::Msg(format!(
             "nf4_from_bytes: k={k} must be even and non-zero",
-        )).bt());
+        ))
+        .bt());
     }
     if block_size == 0 || k % block_size != 0 {
         return Err(fuel_ir::Error::Msg(format!(
             "nf4_from_bytes: k={k} must be a positive multiple of block_size={block_size}",
-        )).bt());
+        ))
+        .bt());
     }
     let w_expected = n.saturating_mul(k / 2);
     if w_packed.len() != w_expected {
         return Err(fuel_ir::Error::Msg(format!(
             "nf4_from_bytes: w_packed has {} bytes, expected {w_expected} (n={n} × k/2={})",
-            w_packed.len(), k / 2,
-        )).bt());
+            w_packed.len(),
+            k / 2,
+        ))
+        .bt());
     }
     let abs_expected = n.saturating_mul(k / block_size);
     if absmax.len() != abs_expected {
         return Err(fuel_ir::Error::Msg(format!(
             "nf4_from_bytes: absmax has {} f32 elements, expected {abs_expected} \
              (n={n} × k/block_size={})",
-            absmax.len(), k / block_size,
-        )).bt());
+            absmax.len(),
+            k / block_size,
+        ))
+        .bt());
     }
     // Build the LazyTensors. const_u8_like / const_f32_like need a
     // host tensor as the "graph anchor"; we anchor on a tiny f32
     // scalar built directly from `device`. Once both are pushed onto
     // the same graph, they're ready to feed nf4_matmul.
     let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), device);
-    let w_packed_tensor = anchor.graph_tensor().const_u8_like(
-        w_packed,
-        Shape::from_dims(&[n, k / 2]),
-    );
-    let absmax_tensor = anchor.graph_tensor().const_f32_like(
-        absmax,
-        Shape::from_dims(&[n, k / block_size]),
-    );
+    let w_packed_tensor = anchor
+        .graph_tensor()
+        .const_u8_like(w_packed, Shape::from_dims(&[n, k / 2]));
+    let absmax_tensor = anchor
+        .graph_tensor()
+        .const_f32_like(absmax, Shape::from_dims(&[n, k / block_size]));
     Ok(Nf4Weight {
         w_packed: LazyTensor::from_graph_tensor(w_packed_tensor),
         absmax: LazyTensor::from_graph_tensor(absmax_tensor),
@@ -212,10 +216,7 @@ pub struct BnbQuantState {
 /// original weight dtype), `device`, and any future bnb additions.
 pub fn parse_bnb_quant_state(json_bytes: &[u8]) -> fuel_ir::Result<BnbQuantState> {
     let v: serde_json::Value = serde_json::from_slice(json_bytes).map_err(|e| {
-        fuel_ir::Error::Msg(format!(
-            "parse_bnb_quant_state: failed to parse JSON: {e}",
-        ))
-        .bt()
+        fuel_ir::Error::Msg(format!("parse_bnb_quant_state: failed to parse JSON: {e}",)).bt()
     })?;
     let obj = v.as_object().ok_or_else(|| {
         fuel_ir::Error::Msg(
@@ -225,12 +226,15 @@ pub fn parse_bnb_quant_state(json_bytes: &[u8]) -> fuel_ir::Result<BnbQuantState
     })?;
     // Discriminator: must be "nf4". bnb also has "fp4" + variants;
     // we explicitly reject those so the caller knows v1 scope.
-    let quant_type = obj.get("quant_type").and_then(|v| v.as_str()).ok_or_else(|| {
-        fuel_ir::Error::Msg(
-            "parse_bnb_quant_state: missing or non-string 'quant_type' field".to_string(),
-        )
-        .bt()
-    })?;
+    let quant_type = obj
+        .get("quant_type")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "parse_bnb_quant_state: missing or non-string 'quant_type' field".to_string(),
+            )
+            .bt()
+        })?;
     if quant_type != "nf4" {
         return Err(fuel_ir::Error::Msg(format!(
             "parse_bnb_quant_state: only quant_type=\"nf4\" is supported, \
@@ -254,10 +258,8 @@ pub fn parse_bnb_quant_state(json_bytes: &[u8]) -> fuel_ir::Result<BnbQuantState
     }
     // shape: [N, K]
     let shape = obj.get("shape").and_then(|v| v.as_array()).ok_or_else(|| {
-        fuel_ir::Error::Msg(
-            "parse_bnb_quant_state: missing or non-array 'shape' field".to_string(),
-        )
-        .bt()
+        fuel_ir::Error::Msg("parse_bnb_quant_state: missing or non-array 'shape' field".to_string())
+            .bt()
     })?;
     if shape.len() != 2 {
         return Err(fuel_ir::Error::Msg(format!(
@@ -267,18 +269,27 @@ pub fn parse_bnb_quant_state(json_bytes: &[u8]) -> fuel_ir::Result<BnbQuantState
         .bt());
     }
     let n = shape[0].as_u64().ok_or_else(|| {
-        fuel_ir::Error::Msg("parse_bnb_quant_state: shape[0] (N) must be a non-negative integer".to_string()).bt()
-    })? as usize;
-    let k = shape[1].as_u64().ok_or_else(|| {
-        fuel_ir::Error::Msg("parse_bnb_quant_state: shape[1] (K) must be a non-negative integer".to_string()).bt()
-    })? as usize;
-    // blocksize
-    let block_size = obj.get("blocksize").and_then(|v| v.as_u64()).ok_or_else(|| {
         fuel_ir::Error::Msg(
-            "parse_bnb_quant_state: missing or non-integer 'blocksize' field".to_string(),
+            "parse_bnb_quant_state: shape[0] (N) must be a non-negative integer".to_string(),
         )
         .bt()
     })? as usize;
+    let k = shape[1].as_u64().ok_or_else(|| {
+        fuel_ir::Error::Msg(
+            "parse_bnb_quant_state: shape[1] (K) must be a non-negative integer".to_string(),
+        )
+        .bt()
+    })? as usize;
+    // blocksize
+    let block_size = obj
+        .get("blocksize")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| {
+            fuel_ir::Error::Msg(
+                "parse_bnb_quant_state: missing or non-integer 'blocksize' field".to_string(),
+            )
+            .bt()
+        })? as usize;
     if block_size == 0 {
         return Err(fuel_ir::Error::Msg(
             "parse_bnb_quant_state: blocksize must be positive".to_string(),
@@ -417,7 +428,9 @@ mod tests {
         let weight = nf4_from_bytes(
             vec![247_u8, 247, 127, 127],
             vec![1.0_f32, 2.0, 10.0, 20.0],
-            /* n */ 2, /* k */ 4, /* block_size */ 2,
+            /* n */ 2,
+            /* k */ 4,
+            /* block_size */ 2,
             &device,
         )
         .expect("nf4_from_bytes");
@@ -428,10 +441,10 @@ mod tests {
         );
         // Must be on the same graph as the weight tensors — go
         // through the weight's graph anchor.
-        let activations_t = weight.w_packed.graph_tensor().const_f32_like(
-            vec![1.0_f32, 2.0, 2.0, 4.0],
-            Shape::from_dims(&[1, 4]),
-        );
+        let activations_t = weight
+            .w_packed
+            .graph_tensor()
+            .const_f32_like(vec![1.0_f32, 2.0, 2.0, 4.0], Shape::from_dims(&[1, 4]));
         let _ = activations; // keep the original visible for symmetry in the docs
         let act = LazyTensor::from_graph_tensor(activations_t);
         let y = weight.matmul(&act).realize_f32();
@@ -446,7 +459,9 @@ mod tests {
         let r = nf4_from_bytes(
             vec![0_u8; 6],
             vec![0.0_f32; 2],
-            /* n */ 2, /* k */ 3, /* block_size */ 1,
+            /* n */ 2,
+            /* k */ 3,
+            /* block_size */ 1,
             &Device::cpu(),
         );
         assert!(r.is_err());
@@ -458,7 +473,9 @@ mod tests {
         let r = nf4_from_bytes(
             vec![0_u8; 4],
             vec![0.0_f32; 2],
-            /* n */ 2, /* k */ 4, /* block_size */ 3,
+            /* n */ 2,
+            /* k */ 4,
+            /* block_size */ 3,
             &Device::cpu(),
         );
         assert!(r.is_err());
@@ -470,7 +487,9 @@ mod tests {
         let r = nf4_from_bytes(
             vec![0_u8; 5], // wrong: should be 4
             vec![0.0_f32; 2],
-            /* n */ 2, /* k */ 4, /* block_size */ 2,
+            /* n */ 2,
+            /* k */ 4,
+            /* block_size */ 2,
             &Device::cpu(),
         );
         assert!(r.is_err());
@@ -481,7 +500,14 @@ mod tests {
     fn parse_bnb_quant_state_minimal_nf4() {
         let json = br#"{"quant_type":"nf4","shape":[256,128],"blocksize":64,"dtype":"float16"}"#;
         let qs = parse_bnb_quant_state(json).expect("parse_bnb_quant_state");
-        assert_eq!(qs, BnbQuantState { n: 256, k: 128, block_size: 64 });
+        assert_eq!(
+            qs,
+            BnbQuantState {
+                n: 256,
+                k: 128,
+                block_size: 64
+            }
+        );
     }
 
     /// Quant-state parser: rejects non-nf4 quant_type with a clear error.
@@ -497,10 +523,14 @@ mod tests {
     /// pointer to the workaround.
     #[test]
     fn parse_bnb_quant_state_rejects_nested_absmax() {
-        let json = br#"{"quant_type":"nf4","shape":[256,128],"blocksize":64,"nested_absmax":[1.0,2.0]}"#;
+        let json =
+            br#"{"quant_type":"nf4","shape":[256,128],"blocksize":64,"nested_absmax":[1.0,2.0]}"#;
         let r = parse_bnb_quant_state(json);
         let err = r.unwrap_err().to_string();
-        assert!(err.contains("double-quantization"), "error should mention double-quantization: {err}");
+        assert!(
+            err.contains("double-quantization"),
+            "error should mention double-quantization: {err}"
+        );
     }
 
     /// Quant-state parser: rejects blocksize that doesn't divide K.
@@ -509,8 +539,10 @@ mod tests {
         let json = br#"{"quant_type":"nf4","shape":[256,130],"blocksize":64}"#;
         let r = parse_bnb_quant_state(json);
         let err = r.unwrap_err().to_string();
-        assert!(err.contains("doesn't divide K") || err.contains("must be even"),
-            "error should flag misalignment: {err}");
+        assert!(
+            err.contains("doesn't divide K") || err.contains("must be even"),
+            "error should flag misalignment: {err}"
+        );
     }
 
     /// Quant-state parser: rejects odd K (NF4 packs 2 codes/byte).
@@ -519,7 +551,10 @@ mod tests {
         let json = br#"{"quant_type":"nf4","shape":[256,127],"blocksize":1}"#;
         let r = parse_bnb_quant_state(json);
         let err = r.unwrap_err().to_string();
-        assert!(err.contains("must be even"), "error should flag odd K: {err}");
+        assert!(
+            err.contains("must be even"),
+            "error should flag odd K: {err}"
+        );
     }
 
     /// Quant-state parser: gracefully errors on malformed JSON.
@@ -559,10 +594,7 @@ mod tests {
 
         // absmax bytes: [N * K / block_size] = 4 f32 = 16 bytes.
         let absmax_floats: Vec<f32> = vec![1.0, 2.0, 10.0, 20.0];
-        let absmax_bytes: Vec<u8> = absmax_floats
-            .iter()
-            .flat_map(|f| f.to_le_bytes())
-            .collect();
+        let absmax_bytes: Vec<u8> = absmax_floats.iter().flat_map(|f| f.to_le_bytes()).collect();
 
         // quant_state: UTF-8 JSON blob.
         let quant_state_json = format!(
@@ -573,12 +605,8 @@ mod tests {
         // Build TensorViews. safetensors::TensorView::new takes
         // (dtype, shape, data) — shape is just metadata, data is
         // the raw bytes.
-        let weight_view = TensorView::new(
-            safetensors::Dtype::U8,
-            vec![n * k / 2],
-            &weight_bytes,
-        )
-        .expect("weight TensorView");
+        let weight_view = TensorView::new(safetensors::Dtype::U8, vec![n * k / 2], &weight_bytes)
+            .expect("weight TensorView");
         let absmax_view = TensorView::new(
             safetensors::Dtype::F32,
             vec![n * k / block_size],
@@ -601,24 +629,23 @@ mod tests {
             quant_state_view,
         );
         let metadata: Option<std::collections::HashMap<String, String>> = None;
-        let serialized = safetensors::serialize(&tensors, metadata.clone())
-            .expect("safetensors::serialize");
+        let serialized =
+            safetensors::serialize(&tensors, metadata.clone()).expect("safetensors::serialize");
 
         // Deserialize + load via the new loader.
-        let st = safetensors::SafeTensors::deserialize(&serialized)
-            .expect("SafeTensors::deserialize");
-        let weight = load_nf4_layer(&st, "layer", &Device::cpu())
-            .expect("load_nf4_layer");
+        let st =
+            safetensors::SafeTensors::deserialize(&serialized).expect("SafeTensors::deserialize");
+        let weight = load_nf4_layer(&st, "layer", &Device::cpu()).expect("load_nf4_layer");
         assert_eq!(weight.n, n);
         assert_eq!(weight.k, k);
         assert_eq!(weight.block_size, block_size);
 
         // Sanity matmul: same expected output as nf4_weight_matmul_round_trip.
         let act = LazyTensor::from_graph_tensor(
-            weight.w_packed.graph_tensor().const_f32_like(
-                vec![1.0_f32, 2.0, 2.0, 4.0],
-                Shape::from_dims(&[1, 4]),
-            ),
+            weight
+                .w_packed
+                .graph_tensor()
+                .const_f32_like(vec![1.0_f32, 2.0, 2.0, 4.0], Shape::from_dims(&[1, 4])),
         );
         let y = weight.matmul(&act).realize_f32();
         assert!((y[0] - 10.0).abs() < 1e-5, "out 0: {}", y[0]);
@@ -644,7 +671,12 @@ mod tests {
         );
         tensors.insert(
             "layer.weight.quant_state.bitsandbytes__nf4".to_string(),
-            TensorView::new(safetensors::Dtype::U8, vec![quant_state_bytes.len()], &quant_state_bytes).unwrap(),
+            TensorView::new(
+                safetensors::Dtype::U8,
+                vec![quant_state_bytes.len()],
+                &quant_state_bytes,
+            )
+            .unwrap(),
         );
         let metadata: Option<HashMap<String, String>> = None;
         let serialized = safetensors::serialize(&tensors, metadata.clone()).unwrap();
@@ -655,6 +687,9 @@ mod tests {
             Ok(_) => panic!("expected an error from load_nf4_layer with missing weight tensor"),
             Err(e) => e.to_string(),
         };
-        assert!(err.contains("layer.weight"), "error should mention the missing tensor: {err}");
+        assert!(
+            err.contains("layer.weight"),
+            "error should mention the missing tensor: {err}"
+        );
     }
 }

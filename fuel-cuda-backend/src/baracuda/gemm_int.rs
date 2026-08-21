@@ -133,13 +133,22 @@ fn gemm_int8_run(
     let out_buf = device.alloc_zeros::<u8>(need_out)?;
 
     let m_i32 = i32::try_from(m).map_err(|_| {
-        Error::Msg(format!("{op_label}: m={m} exceeds i32 (baracuda's shape dtype)")).bt()
+        Error::Msg(format!(
+            "{op_label}: m={m} exceeds i32 (baracuda's shape dtype)"
+        ))
+        .bt()
     })?;
     let n_i32 = i32::try_from(n).map_err(|_| {
-        Error::Msg(format!("{op_label}: n={n} exceeds i32 (baracuda's shape dtype)")).bt()
+        Error::Msg(format!(
+            "{op_label}: n={n} exceeds i32 (baracuda's shape dtype)"
+        ))
+        .bt()
     })?;
     let k_i32 = i32::try_from(k).map_err(|_| {
-        Error::Msg(format!("{op_label}: k={k} exceeds i32 (baracuda's shape dtype)")).bt()
+        Error::Msg(format!(
+            "{op_label}: k={k} exceeds i32 (baracuda's shape dtype)"
+        ))
+        .bt()
     })?;
 
     // Workspace query first so the alloc is right-sized for the

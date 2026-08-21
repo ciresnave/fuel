@@ -28,8 +28,8 @@
 //! host; the matcher is always stubbed — autograd emits the fused node).
 
 use crate::registry::{
-    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps,
-    PatternMatch, SubgraphPattern, decompose_via_recipe,
+    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps, PatternMatch,
+    SubgraphPattern, decompose_via_recipe,
 };
 use crate::{Graph, NodeId};
 use fuel_ir::{DType, Shape};
@@ -39,12 +39,12 @@ use fuel_kernel_seam_types::{OpAttrs, OpTag, PatternNode};
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
         destructive_input: None,
-        id:         FusedOps::POWI_BACKWARD,
-        name:       "PowIBackward",
-        family:     FusedOpFamily::Backward,
-        pattern:    SubgraphPattern::Callable(canonical_pattern),
+        id: FusedOps::POWI_BACKWARD,
+        name: "PowIBackward",
+        family: FusedOpFamily::Backward,
+        pattern: SubgraphPattern::Callable(canonical_pattern),
         decompose,
-        backward:   BackwardKind::NotDifferentiable,
+        backward: BackwardKind::NotDifferentiable,
         shape_rule,
         dtype_rule,
         output_views: None,
@@ -53,7 +53,8 @@ pub fn entry() -> FusedOpEntry {
 
 fn shape_rule(input_shapes: &[Shape], _params: &FusedOpParams) -> Shape {
     debug_assert_eq!(
-        input_shapes.len(), 2,
+        input_shapes.len(),
+        2,
         "PowIBackward takes 2 inputs (x, upstream)",
     );
     // grad_x preserves x's shape.
@@ -61,10 +62,7 @@ fn shape_rule(input_shapes: &[Shape], _params: &FusedOpParams) -> Shape {
 }
 
 fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
-    debug_assert_eq!(
-        input_dtypes.len(), 2,
-        "PowIBackward takes 2 inputs",
-    );
+    debug_assert_eq!(input_dtypes.len(), 2, "PowIBackward takes 2 inputs",);
     input_dtypes[0]
 }
 
@@ -104,19 +102,29 @@ fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
 ///   grad_x = Mul(scaled, upstream)
 /// ```
 fn recipe(exp: i32) -> PatternNode {
-    let op = |op, attrs, operands| PatternNode::Op { op, attrs, operands };
+    let op = |op, attrs, operands| PatternNode::Op {
+        op,
+        attrs: Box::new(attrs),
+        operands,
+    };
     let x = || PatternNode::Bind { index: 0 };
     let up = || PatternNode::Bind { index: 1 };
     // pow = PowI(exp-1)(x) — the exponent rides scalars[0] (the A3 carrier).
     let pow = op(
         OpTag::PowI,
-        OpAttrs { scalars: vec![(exp - 1) as f64], ..OpAttrs::default() },
+        OpAttrs {
+            scalars: vec![(exp - 1) as f64],
+            ..OpAttrs::default()
+        },
         vec![x()],
     );
     // scaled = MulScalar(exp)(pow) — a baked constant, not an open slot.
     let scaled = op(
         OpTag::MulScalar,
-        OpAttrs { scalars: vec![exp as f64], ..OpAttrs::default() },
+        OpAttrs {
+            scalars: vec![exp as f64],
+            ..OpAttrs::default()
+        },
         vec![pow],
     );
     // grad_x = Mul(scaled, upstream).

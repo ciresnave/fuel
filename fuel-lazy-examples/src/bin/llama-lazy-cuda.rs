@@ -17,9 +17,9 @@ fn main() {
 
 #[cfg(feature = "cuda")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    use fuel::DType;
     use fuel::lazy::{LlamaTokenizer, SamplingStrategy};
     use fuel::lazy_llama2c::Llama2cModel;
-    use fuel::DType;
     use std::io::Write;
     use std::time::Instant;
 
@@ -57,9 +57,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .include_args(true)
             .build();
         use tracing_subscriber::prelude::*;
-        tracing_subscriber::registry()
-            .with(chrome_layer)
-            .init();
+        tracing_subscriber::registry().with(chrome_layer).init();
         eprintln!("Tracing enabled → trace.json");
         Some(guard)
     } else {
@@ -71,9 +69,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     const DEFAULT_MAX_NEW: usize = 32;
 
     let args: Vec<String> = std::env::args().collect();
-    let model_id = args.get(1).cloned().unwrap_or_else(|| DEFAULT_MODEL.to_string());
-    let prompt = args.get(2).cloned().unwrap_or_else(|| DEFAULT_PROMPT.to_string());
-    let max_new: usize = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(DEFAULT_MAX_NEW);
+    let model_id = args
+        .get(1)
+        .cloned()
+        .unwrap_or_else(|| DEFAULT_MODEL.to_string());
+    let prompt = args
+        .get(2)
+        .cloned()
+        .unwrap_or_else(|| DEFAULT_PROMPT.to_string());
+    let max_new: usize = args
+        .get(3)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(DEFAULT_MAX_NEW);
 
     eprintln!("=== fuel llama-lazy-cuda ===");
     eprintln!("Model:  {model_id}");
@@ -97,8 +104,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("done in {:.2?}", t0.elapsed());
     eprintln!(
         "  config: dim={}  layers={}  heads={}  kv_heads={}  vocab={}  rope_theta={}",
-        model.config.dim, model.config.n_layers, model.config.n_heads,
-        model.config.n_kv_heads, model.config.vocab_size, model.config.rope_theta,
+        model.config.dim,
+        model.config.n_layers,
+        model.config.n_heads,
+        model.config.n_kv_heads,
+        model.config.vocab_size,
+        model.config.rope_theta,
     );
 
     eprint!("Loading tokenizer...             ");
@@ -121,7 +132,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output_tokens = model.generate_streaming_with_kv_context(
         &prompt_tokens,
         max_new,
-        SamplingStrategy::Temperature { temp: 0.8, seed: 42 },
+        SamplingStrategy::Temperature {
+            temp: 0.8,
+            seed: 42,
+        },
         tokenizer.eos_id(),
         &device,
         DType::F32,

@@ -7,7 +7,18 @@
 //! [`KernelInvoker`]s, so unit tests here use fake in-process invokers; the
 //! real CPU-reference-vs-CUDA-candidate wiring is Task 4.5.
 
-use crate::fkc::verify::bit_stability::{HostTensor, KernelInvoker, ProbeInputs, VerifyError, VerifyOutcome};
+// Staged verification machinery (V-FKC-9 Tasks 4.4-4.6), kept awaiting its
+// first consumer — see the NOTE in `fkc/verify/mod.rs`. dead_code is allowed
+// here under `-D warnings` until that consumer lands; re-remove this allow
+// alongside it. The `Bound` enum's all-`Max`-prefixed variants (dead
+// machinery) also trip `clippy::enum_variant_names`; renaming is churn, so
+// that lint is allowed for the same reason.
+#![allow(dead_code)]
+#![allow(clippy::enum_variant_names)]
+
+use crate::fkc::verify::bit_stability::{
+    HostTensor, KernelInvoker, ProbeInputs, VerifyError, VerifyOutcome,
+};
 use crate::kernel::BindingEntry;
 use fuel_graph::jit::{OpTag, PatternNode};
 
@@ -73,7 +84,7 @@ pub fn verify_precision_bound(
         let a: HostTensor = cand.invoke(entry, probe)?;
         let b: HostTensor = refr.invoke(entry, probe)?;
 
-        if a.bytes.len() % 4 != 0 || b.bytes.len() % 4 != 0 {
+        if !a.bytes.len().is_multiple_of(4) || !b.bytes.len().is_multiple_of(4) {
             return Ok(VerifyOutcome::Fail {
                 detail: format!(
                     "probe {probe_idx}: output byte length not a multiple of 4 (cand {}, ref {}) — cannot reinterpret as f32",
@@ -114,7 +125,10 @@ pub fn verify_precision_bound(
 /// classification so the two never drift.
 pub(crate) fn is_transcendental(tag: OpTag) -> bool {
     use OpTag::*;
-    matches!(tag, Exp | Log | Sin | Cos | Tanh | Sigmoid | Silu | Gelu | GeluErf | Erf | Rsqrt)
+    matches!(
+        tag,
+        Exp | Log | Sin | Cos | Tanh | Sigmoid | Silu | Gelu | GeluErf | Erf | Rsqrt
+    )
 }
 
 /// Whether a recipe region contains any transcendental atom. A
@@ -151,14 +165,17 @@ pub fn widen_bound_for_transcendental(bound: Bound) -> Bound {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_transcendental, region_contains_transcendental, ulp_distance,
-        widen_bound_for_transcendental, Bound,
+        Bound, is_transcendental, region_contains_transcendental, ulp_distance,
+        widen_bound_for_transcendental,
     };
     use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
 
     #[test]
     fn widen_doubles_each_bound() {
-        assert!(matches!(widen_bound_for_transcendental(Bound::MaxUlp(4)), Bound::MaxUlp(8)));
+        assert!(matches!(
+            widen_bound_for_transcendental(Bound::MaxUlp(4)),
+            Bound::MaxUlp(8)
+        ));
         match widen_bound_for_transcendental(Bound::MaxRelative(1e-6)) {
             Bound::MaxRelative(m) => assert!((m - 2e-6).abs() < 1e-18),
             other => panic!("expected MaxRelative, got {other:?}"),
@@ -177,13 +194,29 @@ mod tests {
     #[test]
     fn is_transcendental_classifies_exactly() {
         for t in [
-            OpTag::Exp, OpTag::Log, OpTag::Sin, OpTag::Cos, OpTag::Tanh, OpTag::Sigmoid,
-            OpTag::Silu, OpTag::Gelu, OpTag::GeluErf, OpTag::Erf, OpTag::Rsqrt,
+            OpTag::Exp,
+            OpTag::Log,
+            OpTag::Sin,
+            OpTag::Cos,
+            OpTag::Tanh,
+            OpTag::Sigmoid,
+            OpTag::Silu,
+            OpTag::Gelu,
+            OpTag::GeluErf,
+            OpTag::Erf,
+            OpTag::Rsqrt,
         ] {
             assert!(is_transcendental(t), "{t:?} should be transcendental");
         }
         // Sqrt/Recip are IEEE correctly-rounded — NOT band-widened.
-        for t in [OpTag::Sqrt, OpTag::Recip, OpTag::Relu, OpTag::Neg, OpTag::Abs, OpTag::Sqr] {
+        for t in [
+            OpTag::Sqrt,
+            OpTag::Recip,
+            OpTag::Relu,
+            OpTag::Neg,
+            OpTag::Abs,
+            OpTag::Sqr,
+        ] {
             assert!(!is_transcendental(t), "{t:?} should NOT be transcendental");
         }
     }
@@ -194,27 +227,33 @@ mod tests {
         let inner = PatternNode::Op {
             op: OpTag::Exp,
             operands: vec![PatternNode::Bind { index: 0 }],
-            attrs: OpAttrs::default(),
+            attrs: Box::new(OpAttrs::default()),
         };
         let outer = PatternNode::Op {
             op: OpTag::Neg,
             operands: vec![inner],
-            attrs: OpAttrs::default(),
+            attrs: Box::new(OpAttrs::default()),
         };
-        assert!(region_contains_transcendental(&outer), "nested Exp must be found");
+        assert!(
+            region_contains_transcendental(&outer),
+            "nested Exp must be found"
+        );
 
         // Op{Neg, [Op{Sqr, [Bind0]}]} — no transcendental atom.
         let inner2 = PatternNode::Op {
             op: OpTag::Sqr,
             operands: vec![PatternNode::Bind { index: 0 }],
-            attrs: OpAttrs::default(),
+            attrs: Box::new(OpAttrs::default()),
         };
         let outer2 = PatternNode::Op {
             op: OpTag::Neg,
             operands: vec![inner2],
-            attrs: OpAttrs::default(),
+            attrs: Box::new(OpAttrs::default()),
         };
-        assert!(!region_contains_transcendental(&outer2), "no transcendental atom present");
+        assert!(
+            !region_contains_transcendental(&outer2),
+            "no transcendental atom present"
+        );
     }
 
     #[test]

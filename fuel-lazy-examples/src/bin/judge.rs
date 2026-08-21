@@ -20,7 +20,8 @@ use fuel::probe::ProbeReport;
 fn main() {
     eprintln!("Probing devices...");
     let probe = ProbeReport::probe_all();
-    eprintln!("  {} device(s) total, {} equivalence class(es)",
+    eprintln!(
+        "  {} device(s) total, {} equivalence class(es)",
         probe.devices.len(),
         probe.equivalence_classes().len(),
     );
@@ -30,7 +31,11 @@ fn main() {
     let judge = Judge::default();
     let t0 = std::time::Instant::now();
     let report = judge.run(&probe);
-    eprintln!("  {} profile entries in {:.2?}", report.entries.len(), t0.elapsed());
+    eprintln!(
+        "  {} profile entries in {:.2?}",
+        report.entries.len(),
+        t0.elapsed()
+    );
     eprintln!();
 
     print_table(&report.entries);
@@ -53,14 +58,17 @@ fn print_table(entries: &[ProfileEntry]) {
     // friendly order the Judge emits.
     let mut sorted: Vec<&ProfileEntry> = entries.iter().collect();
     sorted.sort_by(|a, b| {
-        a.op.as_str().cmp(b.op.as_str())
+        a.op.as_str()
+            .cmp(b.op.as_str())
             .then(a.size_class.0.cmp(&b.size_class.0))
             .then(a.backend.as_str().cmp(b.backend.as_str()))
             .then(a.device_index.cmp(&b.device_index))
     });
 
-    println!("{:<10}  {:<5}  {:<6}  {:<12}  {:>14}  {:>10}", "op", "dtype", "2^n",
-        "backend:dev", "latency", "rel err");
+    println!(
+        "{:<10}  {:<5}  {:<6}  {:<12}  {:>14}  {:>10}",
+        "op", "dtype", "2^n", "backend:dev", "latency", "rel err"
+    );
     println!("{}", "-".repeat(72));
     for e in &sorted {
         let latency_str = human_ns(e.latency_ns);
@@ -79,13 +87,17 @@ fn print_table(entries: &[ProfileEntry]) {
 fn print_dispatch_summary(report: &fuel::judge::ProfileReport) {
     let tbl = DispatchTable::build(report);
     println!("Dispatch winners (reference excluded):");
-    println!("{:<10}  {:<5}  {:<4}  {:<14}  {:<14}  {:<14}", "op", "dtype",
-        "2^n", "fastest", "accurate", "balanced");
+    println!(
+        "{:<10}  {:<5}  {:<4}  {:<14}  {:<14}  {:<14}",
+        "op", "dtype", "2^n", "fastest", "accurate", "balanced"
+    );
     println!("{}", "-".repeat(72));
     for (op, dtype, size) in tbl.keys() {
-        let pick = |c| tbl.pick(op, dtype, size, c)
-            .map(|p| format!("{}:{}", p.backend, p.device_index))
-            .unwrap_or_else(|| "-".to_string());
+        let pick = |c| {
+            tbl.pick(op, dtype, size, c)
+                .map(|p| format!("{}:{}", p.backend, p.device_index))
+                .unwrap_or_else(|| "-".to_string())
+        };
         println!(
             "{:<10}  {:<5}  {:<4}  {:<14}  {:<14}  {:<14}",
             op.to_string(),
@@ -99,8 +111,13 @@ fn print_dispatch_summary(report: &fuel::judge::ProfileReport) {
 }
 
 fn human_ns(ns: u64) -> String {
-    if ns < 10_000                      { format!("{} ns",  ns) }
-    else if ns < 10_000_000             { format!("{:.2} μs", ns as f64 / 1_000.0) }
-    else if ns < 10_000_000_000         { format!("{:.2} ms", ns as f64 / 1_000_000.0) }
-    else                                { format!("{:.2} s",  ns as f64 / 1e9) }
+    if ns < 10_000 {
+        format!("{} ns", ns)
+    } else if ns < 10_000_000 {
+        format!("{:.2} μs", ns as f64 / 1_000.0)
+    } else if ns < 10_000_000_000 {
+        format!("{:.2} ms", ns as f64 / 1_000_000.0)
+    } else {
+        format!("{:.2} s", ns as f64 / 1e9)
+    }
 }

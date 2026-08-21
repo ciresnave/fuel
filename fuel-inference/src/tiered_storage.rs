@@ -1,4 +1,4 @@
-﻿//! Tiered KV cache storage: GPU → CPU → Disk.
+//! Tiered KV cache storage: GPU → CPU → Disk.
 //!
 //! When KV cache memory on the GPU is scarce, cold segments can be *demoted*
 //! to cheaper storage tiers and *promoted* back when needed.  This module
@@ -256,11 +256,8 @@ impl TieredStore {
     /// Returns keys of candidate segments sorted by access count (least
     /// accessed first), stopping once the freed total ≥ `needed`.
     pub fn candidates_for_demotion(&self, tier: Tier, needed: usize) -> Vec<String> {
-        let mut on_tier: Vec<&SegmentMeta> = self
-            .segments
-            .values()
-            .filter(|s| s.tier == tier)
-            .collect();
+        let mut on_tier: Vec<&SegmentMeta> =
+            self.segments.values().filter(|s| s.tier == tier).collect();
 
         // Least-accessed first
         on_tier.sort_by_key(|s| s.access_count);
@@ -289,14 +286,30 @@ impl TieredStore {
 
     // ── Capacity queries ──────────────────────────────────────────────
 
-    pub fn gpu_budget(&self) -> usize { self.gpu_budget }
-    pub fn cpu_budget(&self) -> usize { self.cpu_budget }
-    pub fn gpu_used(&self) -> usize { self.gpu_used }
-    pub fn cpu_used(&self) -> usize { self.cpu_used }
-    pub fn disk_used(&self) -> usize { self.disk_used }
-    pub fn gpu_free(&self) -> usize { self.gpu_budget.saturating_sub(self.gpu_used) }
-    pub fn cpu_free(&self) -> usize { self.cpu_budget.saturating_sub(self.cpu_used) }
-    pub fn num_segments(&self) -> usize { self.segments.len() }
+    pub fn gpu_budget(&self) -> usize {
+        self.gpu_budget
+    }
+    pub fn cpu_budget(&self) -> usize {
+        self.cpu_budget
+    }
+    pub fn gpu_used(&self) -> usize {
+        self.gpu_used
+    }
+    pub fn cpu_used(&self) -> usize {
+        self.cpu_used
+    }
+    pub fn disk_used(&self) -> usize {
+        self.disk_used
+    }
+    pub fn gpu_free(&self) -> usize {
+        self.gpu_budget.saturating_sub(self.gpu_used)
+    }
+    pub fn cpu_free(&self) -> usize {
+        self.cpu_budget.saturating_sub(self.cpu_used)
+    }
+    pub fn num_segments(&self) -> usize {
+        self.segments.len()
+    }
 
     /// Iterate over all segments.
     pub fn iter(&self) -> impl Iterator<Item = &SegmentMeta> {

@@ -48,9 +48,11 @@ const SEP_TOKEN_ID: u32 = 102;
 /// normalization, and returns a flat row-major Vec<f32> of length
 /// `3 * 384 * 384` laid out as (C, H, W).
 fn load_image_as_vec<P: AsRef<std::path::Path>>(p: P) -> Result<Vec<f32>> {
-    let img = image::ImageReader::open(p)?
-        .decode()?
-        .resize_to_fill(384, 384, image::imageops::FilterType::Triangle);
+    let img = image::ImageReader::open(p)?.decode()?.resize_to_fill(
+        384,
+        384,
+        image::imageops::FilterType::Triangle,
+    );
     let img = img.to_rgb8();
     let raw = img.into_raw(); // (H, W, C) row-major, u8
 

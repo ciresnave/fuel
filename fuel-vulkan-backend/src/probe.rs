@@ -12,8 +12,8 @@
 
 use fuel_ir::probe::{BackendId, BackendProbe, DeviceDescriptor};
 use fuel_ir::{DeviceLocation, Error, Result};
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::OnceLock;
 use vulkane::safe::*;
 
 /// Memoized result of the one real loader probe this process performs.
@@ -23,8 +23,7 @@ use vulkane::safe::*;
 /// loader that is missing now will not appear later in the same run, and
 /// caching the failure is what stops a box without Vulkan from re-entering
 /// `Instance::new` on every single call.
-static DEVICE_CACHE: OnceLock<std::result::Result<Vec<DeviceDescriptor>, String>> =
-    OnceLock::new();
+static DEVICE_CACHE: OnceLock<std::result::Result<Vec<DeviceDescriptor>, String>> = OnceLock::new();
 
 /// How many times the loader was *actually* probed — i.e. how many
 /// `vkCreateInstance` calls this process has made from here — as opposed to
@@ -166,61 +165,65 @@ pub fn enumerate_devices_uncached() -> Result<Vec<DeviceDescriptor>> {
     })?;
     let physicals = instance.enumerate_physical_devices().map_err(vk_err)?;
 
-    Ok(physicals.iter().enumerate().map(|(idx, p)| {
-        let props = p.properties();
-        let name = props.device_name();
-        let vendor_id = props.vendor_id();
-        let device_id = props.device_id();
-        let driver_version = props.driver_version();
-        // Vulkan's raw `driver_version` is a bare u32 whose bit-packing is
-        // VENDOR-DEFINED — NVIDIA packs (22,14,6,10), AMD (22,10,10,10),
-        // Intel-on-Windows (18,14) — so it cannot be decoded portably and is
-        // good only for equality. Worse, it does not distinguish ICDs: RADV
-        // and AMDVLK drive the same silicon, make different codegen choices,
-        // and therefore profile differently, but can present the same u32.
-        //
-        // vulkane 0.9.0's `driver_properties()` (VK_KHR_driver_properties,
-        // Vulkan 1.2 core) gives a portable, legible identity instead, with
-        // `driver_id` naming the ICD exactly. That is the right axis for both
-        // shader-cache keys and driver-quirk gating.
-        //
-        // CACHE NOTE: `driver_version` is a field of `EquivalenceKey`, so
-        // changing its FORMAT invalidates every cached Judge profile exactly
-        // once. That is intended and is the same "cheap insurance" the key's
-        // own docs describe for a driver upgrade — the new key is strictly
-        // more discriminating. Falls back to the raw hex when the device
-        // declines (pre-1.2 effective API and no VK_KHR_driver_properties),
-        // so the descriptor is still total.
-        let driver_version_str = match p.driver_properties() {
-            Some(d) => format!("{:?} {} {}", d.driver_id, d.driver_name, d.driver_info),
-            None => format!("0x{driver_version:08x}"),
-        };
-        // Subgroup ("wave"/"warp") width — the single most important Vulkan
-        // kernel-specialization axis. `None` on a pre-1.1 effective API,
-        // where the property struct would read back zeroed; vulkane declines
-        // honestly rather than reporting 0 as an answer.
-        //
-        // NOTE: `SubgroupProperties::size_control` (the pinnable min/max
-        // range) is Vulkan 1.3 core / VK_EXT_subgroup_size_control, and our
-        // instances are created at V1_2 — so it is always `None` here today.
-        // Raising the instance to V1_3 would unlock it, but that changes
-        // instance-creation compatibility and belongs in its own change.
-        let subgroup_width = p.subgroup_properties().map(|s| s.subgroup_size);
-        let total_mem = total_device_local_memory(p);
+    Ok(physicals
+        .iter()
+        .enumerate()
+        .map(|(idx, p)| {
+            let props = p.properties();
+            let name = props.device_name();
+            let vendor_id = props.vendor_id();
+            let device_id = props.device_id();
+            let driver_version = props.driver_version();
+            // Vulkan's raw `driver_version` is a bare u32 whose bit-packing is
+            // VENDOR-DEFINED — NVIDIA packs (22,14,6,10), AMD (22,10,10,10),
+            // Intel-on-Windows (18,14) — so it cannot be decoded portably and is
+            // good only for equality. Worse, it does not distinguish ICDs: RADV
+            // and AMDVLK drive the same silicon, make different codegen choices,
+            // and therefore profile differently, but can present the same u32.
+            //
+            // vulkane 0.9.0's `driver_properties()` (VK_KHR_driver_properties,
+            // Vulkan 1.2 core) gives a portable, legible identity instead, with
+            // `driver_id` naming the ICD exactly. That is the right axis for both
+            // shader-cache keys and driver-quirk gating.
+            //
+            // CACHE NOTE: `driver_version` is a field of `EquivalenceKey`, so
+            // changing its FORMAT invalidates every cached Judge profile exactly
+            // once. That is intended and is the same "cheap insurance" the key's
+            // own docs describe for a driver upgrade — the new key is strictly
+            // more discriminating. Falls back to the raw hex when the device
+            // declines (pre-1.2 effective API and no VK_KHR_driver_properties),
+            // so the descriptor is still total.
+            let driver_version_str = match p.driver_properties() {
+                Some(d) => format!("{:?} {} {}", d.driver_id, d.driver_name, d.driver_info),
+                None => format!("0x{driver_version:08x}"),
+            };
+            // Subgroup ("wave"/"warp") width — the single most important Vulkan
+            // kernel-specialization axis. `None` on a pre-1.1 effective API,
+            // where the property struct would read back zeroed; vulkane declines
+            // honestly rather than reporting 0 as an answer.
+            //
+            // NOTE: `SubgroupProperties::size_control` (the pinnable min/max
+            // range) is Vulkan 1.3 core / VK_EXT_subgroup_size_control, and our
+            // instances are created at V1_2 — so it is always `None` here today.
+            // Raising the instance to V1_3 would unlock it, but that changes
+            // instance-creation compatibility and belongs in its own change.
+            let subgroup_width = p.subgroup_properties().map(|s| s.subgroup_size);
+            let total_mem = total_device_local_memory(p);
 
-        DeviceDescriptor {
-            backend:            BackendId::Vulkan,
-            device_index:       idx as u32,
-            hardware_sku:       name,
-            vendor_id,
-            device_id,
-            compute_capability: None,
-            subgroup_width,
-            driver_version:     driver_version_str,
-            total_memory_bytes: total_mem,
-            location:           DeviceLocation::Vulkan { gpu_id: idx },
-        }
-    }).collect())
+            DeviceDescriptor {
+                backend: BackendId::Vulkan,
+                device_index: idx as u32,
+                hardware_sku: name,
+                vendor_id,
+                device_id,
+                compute_capability: None,
+                subgroup_width,
+                driver_version: driver_version_str,
+                total_memory_bytes: total_mem,
+                location: DeviceLocation::Vulkan { gpu_id: idx },
+            }
+        })
+        .collect())
 }
 
 fn total_device_local_memory(p: &PhysicalDevice) -> u64 {
@@ -463,7 +466,9 @@ mod tests {
             // `{e:?}` rather than `{e}`: this error is Debug-only, and dropping
             // it to use the Display-bounded helper would trade a diagnosable
             // failure for a mysterious one.
-            instance.enumerate_physical_devices().map_err(|e| format!("{e:?}")),
+            instance
+                .enumerate_physical_devices()
+                .map_err(|e| format!("{e:?}")),
         );
         eprintln!("=== V1_3 instance bump: {} device(s) ===", physicals.len());
         for (i, p) in physicals.iter().enumerate() {
@@ -472,7 +477,8 @@ mod tests {
             eprintln!(
                 "  [{i}] {}\n       effective_api = {}.{}\n       subgroup_size = {:?} (DEFAULT, not the admissible set)",
                 p.properties().device_name(),
-                eff.major(), eff.minor(),
+                eff.major(),
+                eff.minor(),
                 sg.as_ref().map(|s| s.subgroup_size),
             );
             // The admissible SET is what decides whether wave-width
@@ -483,11 +489,13 @@ mod tests {
                 Some(sc) => eprintln!(
                     "       size_control  = min={} max={} max_wg_subgroups={} compute_stage={}\n       \
                      pinnable(32)={} pinnable(64)={}",
-                    sc.min_subgroup_size, sc.max_subgroup_size,
+                    sc.min_subgroup_size,
+                    sc.max_subgroup_size,
                     sc.max_compute_workgroup_subgroups,
                     sc.required_subgroup_size_stages
                         .contains(ShaderStageFlags::COMPUTE),
-                    sc.permits_in_compute(32), sc.permits_in_compute(64),
+                    sc.permits_in_compute(32),
+                    sc.permits_in_compute(64),
                 ),
                 None => eprintln!("       size_control  = None (not pinnable)"),
             }
@@ -497,7 +505,8 @@ mod tests {
             assert!(
                 eff.major() < 1 || (eff.major() == 1 && eff.minor() <= 3),
                 "effective_api_version {}.{} exceeds the requested V1_3",
-                eff.major(), eff.minor(),
+                eff.major(),
+                eff.minor(),
             );
         }
     }
@@ -532,15 +541,23 @@ mod tests {
                         let d = p.driver_properties();
                         (
                             p.properties().device_name(),
-                            d.as_ref().map(|d| format!("{:?} {} {}", d.driver_id, d.driver_name, d.driver_info)),
+                            d.as_ref().map(|d| {
+                                format!("{:?} {} {}", d.driver_id, d.driver_name, d.driver_info)
+                            }),
                         )
                     })
                     .collect();
                 Some(v)
             })
         };
-        let at_1_2 = required("a live Vulkan device at instance API V1_2", mk(ApiVersion::V1_2));
-        let at_1_3 = required("a live Vulkan device at instance API V1_3", mk(ApiVersion::V1_3));
+        let at_1_2 = required(
+            "a live Vulkan device at instance API V1_2",
+            mk(ApiVersion::V1_2),
+        );
+        let at_1_3 = required(
+            "a live Vulkan device at instance API V1_3",
+            mk(ApiVersion::V1_3),
+        );
         eprintln!("V1_2: {at_1_2:#?}");
         eprintln!("V1_3: {at_1_3:#?}");
         assert_eq!(

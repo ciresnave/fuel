@@ -59,7 +59,10 @@ pub fn main() -> anyhow::Result<()> {
 
     let st = unsafe { MmapedSafetensors::new(&model_file) }?;
     let weights = Dinov2Weights::load_from_mmapped(&st, &cfg)?;
-    let model = Dinov2Model { config: cfg, weights };
+    let model = Dinov2Model {
+        config: cfg,
+        weights,
+    };
     println!("model built");
 
     let logits = model.forward(&image)?;

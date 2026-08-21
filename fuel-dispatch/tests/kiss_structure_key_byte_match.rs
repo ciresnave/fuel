@@ -71,8 +71,8 @@
 
 use fuel_dispatch::telemetry::structure_key::FdxOperandDesc;
 use fuel_dispatch::telemetry::structure_key_derive::{
-    derive_structure_key_token_with_acc_mp, AccMp, FuelOpCategory, GemCell, GemMathPrecision,
-    ReduceAxes,
+    AccMp, FuelOpCategory, GemCell, GemMathPrecision, ReduceAxes,
+    derive_structure_key_token_with_acc_mp,
 };
 use fuel_ir::{DType, Layout, Shape, StrideVec};
 use std::collections::{BTreeMap, BTreeSet};
@@ -174,7 +174,12 @@ impl Cell {
 }
 
 fn cell(op: FuelOpCategory, operands: Vec<FdxOperandDesc>, target: &'static str) -> Cell {
-    Cell { op, operands, target, acc_mp: None }
+    Cell {
+        op,
+        operands,
+        target,
+        acc_mp: None,
+    }
 }
 
 fn cell_acc_mp(
@@ -188,7 +193,10 @@ fn cell_acc_mp(
         op,
         operands,
         target,
-        acc_mp: Some(AccMp { acc_dtype, math_precision }),
+        acc_mp: Some(AccMp {
+            acc_dtype,
+            math_precision,
+        }),
     }
 }
 
@@ -215,13 +223,21 @@ fn cells() -> BTreeMap<&'static str, Cell> {
     );
     m.insert(
         "binary_two_operands",
-        cell(BinaryElementwise, vec![f32c(&[128, 256]), f32c(&[128, 256])], "cuda:sm89"),
+        cell(
+            BinaryElementwise,
+            vec![f32c(&[128, 256]), f32c(&[128, 256])],
+            "cuda:sm89",
+        ),
     );
     // GAP-168 op-family increment: the two formerly-excluded positives.
     // `une` — two f16 v8 operands, work class `grid` (>1024 frame elements).
     m.insert(
         "unary_f16_v8",
-        cell(UnaryElementwise, vec![f16c(&[8, 4096]), f16c(&[8, 4096])], "cuda:sm89"),
+        cell(
+            UnaryElementwise,
+            vec![f16c(&[8, 4096]), f16c(&[8, 4096])],
+            "cuda:sm89",
+        ),
     );
     // `scn` — two f32 v4 operands, work class `warp` (<=32 frame elements), and
     // the §6.7-0013 non-contraction precision coordinate `f32/rm`: accumulator
@@ -239,7 +255,11 @@ fn cells() -> BTreeMap<&'static str, Cell> {
     );
     m.insert(
         "relu_add_generated_r1",
-        cell(BinaryElementwise, vec![f32c(&[4096]), f32c(&[4096]), f32c(&[4096])], "cuda:sm89"),
+        cell(
+            BinaryElementwise,
+            vec![f32c(&[4096]), f32c(&[4096]), f32c(&[4096])],
+            "cuda:sm89",
+        ),
     );
     // Middle operand broadcasts on axis 0: extent-128 axis at stride 0.
     let bcast = FdxOperandDesc::from_layout(
@@ -264,10 +284,17 @@ fn cells() -> BTreeMap<&'static str, Cell> {
         "reduction_trailing_axis",
         cell(Reduction(ReduceAxes::TrailingAxis), red_ops(), "cuda:sm89"),
     );
-    m.insert("reduction_all_axes", cell(Reduction(ReduceAxes::All), red_ops(), "cuda:sm89"));
+    m.insert(
+        "reduction_all_axes",
+        cell(Reduction(ReduceAxes::All), red_ops(), "cuda:sm89"),
+    );
     m.insert(
         "reduction_rank1_all_axes",
-        cell(Reduction(ReduceAxes::All), vec![f32c(&[8]), f32c(&[1])], "cuda:sm89"),
+        cell(
+            Reduction(ReduceAxes::All),
+            vec![f32c(&[8]), f32c(&[1])],
+            "cuda:sm89",
+        ),
     );
     m.insert(
         "reduction_subset_mask",
@@ -294,7 +321,10 @@ fn cells() -> BTreeMap<&'static str, Cell> {
             "vulkan:sg64.ops-abr.arith-f16.cm-none.cv-none",
         ),
     );
-    m.insert("simt_f32", cell(Contraction(gem_f32(8, 4096, 4096)), gem_ops(), "cuda:sm90"));
+    m.insert(
+        "simt_f32",
+        cell(Contraction(gem_f32(8, 4096, 4096)), gem_ops(), "cuda:sm90"),
+    );
     m.insert(
         "tf32",
         cell(
@@ -309,7 +339,10 @@ fn cells() -> BTreeMap<&'static str, Cell> {
     m.insert(
         "gem_batched_cell",
         cell(
-            Contraction(GemCell { batch: Some(256), ..gem_f32(256, 4096, 4096) }),
+            Contraction(GemCell {
+                batch: Some(256),
+                ..gem_f32(256, 4096, 4096)
+            }),
             vec![f32c(&[256, 4096]), f32c(&[4096, 4096]), f32c(&[256, 4096])],
             "cuda:sm90",
         ),
@@ -396,11 +429,15 @@ fn strs(v: &serde_json::Value, key: &str) -> Vec<String> {
 }
 
 fn vectors<'a>(v: &'a serde_json::Value, key: &str) -> &'a Vec<serde_json::Value> {
-    v[key].as_array().unwrap_or_else(|| panic!("corpus key `{key}` must be an array"))
+    v[key]
+        .as_array()
+        .unwrap_or_else(|| panic!("corpus key `{key}` must be an array"))
 }
 
 fn field<'a>(v: &'a serde_json::Value, key: &str) -> &'a str {
-    v[key].as_str().unwrap_or_else(|| panic!("vector is missing string field `{key}`"))
+    v[key]
+        .as_str()
+        .unwrap_or_else(|| panic!("vector is missing string field `{key}`"))
 }
 
 // ---- tests ---------------------------------------------------------------
@@ -431,7 +468,10 @@ fn corpus_is_the_artifact_this_leg_was_bound_to() {
     // at the namespace doc. Pinning it here means a vocabulary bump reddens
     // this leg instead of passing through it.
     assert_eq!(c["namespace_vocabulary_versions"]["cuda"].as_u64(), Some(1));
-    assert_eq!(c["namespace_vocabulary_versions"]["vulkan"].as_u64(), Some(4));
+    assert_eq!(
+        c["namespace_vocabulary_versions"]["vulkan"].as_u64(),
+        Some(4)
+    );
     assert_eq!(vectors(&c, "positive_vectors").len(), 20);
     assert_eq!(vectors(&c, "decline_vectors").len(), 17);
 }
@@ -446,13 +486,17 @@ fn corpus_is_the_artifact_this_leg_was_bound_to() {
 #[test]
 fn constructed_and_excluded_partition_the_positive_vectors() {
     let c = corpus();
-    let published: BTreeSet<String> =
-        vectors(&c, "positive_vectors").iter().map(|v| field(v, "name").to_string()).collect();
+    let published: BTreeSet<String> = vectors(&c, "positive_vectors")
+        .iter()
+        .map(|v| field(v, "name").to_string())
+        .collect();
     assert_eq!(published.len(), 20, "vector names must be unique");
 
     let constructed: BTreeSet<String> = cells().keys().map(|s| s.to_string()).collect();
-    let excluded: BTreeSet<String> =
-        OP_FAMILY_EXCLUSIONS.iter().map(|(n, _)| n.to_string()).collect();
+    let excluded: BTreeSet<String> = OP_FAMILY_EXCLUSIONS
+        .iter()
+        .map(|(n, _)| n.to_string())
+        .collect();
 
     assert!(
         constructed.is_disjoint(&excluded),
@@ -461,7 +505,8 @@ fn constructed_and_excluded_partition_the_positive_vectors() {
     );
     let covered: BTreeSet<String> = constructed.union(&excluded).cloned().collect();
     assert_eq!(
-        covered, published,
+        covered,
+        published,
         "unhandled upstream vectors: {:?} / stale local names: {:?}",
         published.difference(&covered).collect::<Vec<_>>(),
         covered.difference(&published).collect::<Vec<_>>()
@@ -488,7 +533,9 @@ fn positive_vectors_byte_match() {
 
     for v in vectors(&c, "positive_vectors") {
         let name = field(v, "name");
-        let Some(cell) = cells.get(name) else { continue };
+        let Some(cell) = cells.get(name) else {
+            continue;
+        };
         let expected = field(v, "token");
         match cell.derive() {
             // A `None` here is NOT an exclusion — it is a cell Fuel claims to
@@ -505,7 +552,11 @@ fn positive_vectors_byte_match() {
         }
     }
 
-    assert!(mismatches.is_empty(), "byte-match failures:\n{}", mismatches.join("\n"));
+    assert!(
+        mismatches.is_empty(),
+        "byte-match failures:\n{}",
+        mismatches.join("\n")
+    );
     // Non-vacuity: a lookup bug that matched nothing would otherwise pass.
     // GAP-168 op-family increment: 18 -> 20. `une` and `scn` were the only two
     // inexpressible positives and both are now spelled, so EVERY published
@@ -559,7 +610,10 @@ fn fuel_never_emits_a_published_decline_token() {
             "cell `{name}` emitted the token published as decline `{}`",
             declines[token.as_str()]
         );
-        assert!(token.starts_with("sk4|"), "cell `{name}` emitted a non-sk4 prefix: {token}");
+        assert!(
+            token.starts_with("sk4|"),
+            "cell `{name}` emitted a non-sk4 prefix: {token}"
+        );
     }
 }
 
@@ -599,7 +653,11 @@ fn redundant_acc_mp_is_unrepresentable_on_the_emit_path() {
     .derive()
     .expect("the all-default (acc + mp) cell must still derive a token");
 
-    assert_ne!(token, field(redundant, "token"), "emitted the rule-(d) redundant form");
+    assert_ne!(
+        token,
+        field(redundant, "token"),
+        "emitted the rule-(d) redundant form"
+    );
     assert_eq!(token, field(field_absent, "token"));
     // The two vectors really do differ only by the trailing field — otherwise
     // the assertion above would be passing for an unrelated reason.
@@ -622,15 +680,24 @@ fn fuel_emits_only_recognized_sk4_dtype_spellings() {
     let recognized: BTreeSet<String> = strs(&c, "dtype_recognition_set").into_iter().collect();
     let reserved: BTreeSet<String> = strs(&c, "reserved_dtypes").into_iter().collect();
 
-    let emitted: BTreeSet<String> =
-        DType::ALL.iter().filter_map(|&dt| fuel_ir::sk4_token(dt)).map(String::from).collect();
+    let emitted: BTreeSet<String> = DType::ALL
+        .iter()
+        .filter_map(|&dt| fuel_ir::sk4_token(dt))
+        .map(String::from)
+        .collect();
 
     let expected: BTreeSet<String> = FUEL_SK4_SPELLINGS.iter().map(|s| s.to_string()).collect();
     assert_eq!(emitted, expected, "Fuel's sk4 spelling set moved");
 
     for tok in &emitted {
-        assert!(recognized.contains(tok), "`{tok}` is outside the closed sk4 vocabulary");
-        assert!(!reserved.contains(tok), "`{tok}` is RESERVED at sk4 and must never be emitted");
+        assert!(
+            recognized.contains(tok),
+            "`{tok}` is outside the closed sk4 vocabulary"
+        );
+        assert!(
+            !reserved.contains(tok),
+            "`{tok}` is RESERVED at sk4 and must never be emitted"
+        );
     }
     // Non-vacuity, and the discrimination check: the set is neither empty nor
     // everything, so `is-a-subset` is a real constraint here.

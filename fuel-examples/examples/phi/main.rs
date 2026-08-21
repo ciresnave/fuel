@@ -9,10 +9,10 @@ use clap::{Parser, ValueEnum};
 
 use fuel_examples::token_output_stream::TokenOutputStream;
 
-use fuel::lazy_phi::PhiModel;
 use fuel::DType;
+use fuel::lazy_phi::PhiModel;
 use fuel_transformers::generation::LogitsProcessor;
-use hf_hub::{api::sync::Api, Repo, RepoType};
+use hf_hub::{Repo, RepoType, api::sync::Api};
 use tokenizers::Tokenizer;
 
 struct TextGeneration {
@@ -256,7 +256,11 @@ fn main() -> Result<()> {
         None => "microsoft/phi-2".to_string(),
     };
     let revision = args.revision.unwrap_or_else(|| "main".to_string());
-    let repo = api.repo(Repo::with_revision(model_id.clone(), RepoType::Model, revision));
+    let repo = api.repo(Repo::with_revision(
+        model_id.clone(),
+        RepoType::Model,
+        revision,
+    ));
     let tokenizer_filename = match args.tokenizer {
         Some(file) => std::path::PathBuf::from(file),
         None => repo.get("tokenizer.json")?,
@@ -271,7 +275,9 @@ fn main() -> Result<()> {
         // The lazy port runs f32 only for now; honor an explicit f32 selection, error on others.
         match dtype {
             "f32" => {}
-            other => anyhow::bail!("lazy phi binary: only --dtype f32 is supported (got {other:?})"),
+            other => {
+                anyhow::bail!("lazy phi binary: only --dtype f32 is supported (got {other:?})")
+            }
         }
     }
     let _ = DType::F32;
@@ -341,9 +347,9 @@ fn mmlu<P: AsRef<std::path::Path>>(
             let answer_d = row.get(4).unwrap();
             let answer = row.get(5).unwrap();
             let prompt = format!(
-                    "{} {theme}.\n{question}\nA. {answer_a}\nB. {answer_b}\nC. {answer_c}\nD. {answer_d}\nAnswer:\n",
-                    "The following are multiple choice questions (with answers) about"
-                );
+                "{} {theme}.\n{question}\nA. {answer_a}\nB. {answer_b}\nC. {answer_c}\nD. {answer_d}\nAnswer:\n",
+                "The following are multiple choice questions (with answers) about"
+            );
             let tokens = tokenizer.encode(prompt.as_str(), true).map_err(E::msg)?;
             let token_ids = tokens.get_ids().to_vec();
             // Lazy forward: returns LazyTensor of shape (1, seq, vocab).

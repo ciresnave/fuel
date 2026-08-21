@@ -35,8 +35,8 @@
 //! self-return.
 
 use crate::registry::{
-    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps,
-    PatternMatch, SubgraphPattern, decompose_via_recipe,
+    BackwardKind, FusedOpEntry, FusedOpFamily, FusedOpParams, FusedOps, PatternMatch,
+    SubgraphPattern, decompose_via_recipe,
 };
 use crate::{Graph, NodeId};
 use fuel_ir::{DType, Shape};
@@ -48,12 +48,12 @@ use std::sync::OnceLock;
 pub fn entry() -> FusedOpEntry {
     FusedOpEntry {
         destructive_input: None,
-        id:         FusedOps::RMS_NORM_LAST_DIM_BACKWARD,
-        name:       "RmsNormLastDimBackward",
-        family:     FusedOpFamily::Backward,
-        pattern:    SubgraphPattern::Callable(canonical_pattern),
+        id: FusedOps::RMS_NORM_LAST_DIM_BACKWARD,
+        name: "RmsNormLastDimBackward",
+        family: FusedOpFamily::Backward,
+        pattern: SubgraphPattern::Callable(canonical_pattern),
         decompose,
-        backward:   BackwardKind::NotDifferentiable,
+        backward: BackwardKind::NotDifferentiable,
         shape_rule,
         dtype_rule,
         output_views: None,
@@ -63,7 +63,8 @@ pub fn entry() -> FusedOpEntry {
 /// Shape rule: output equals input 0 (the forward rms-norm input `x`).
 fn shape_rule(input_shapes: &[Shape], _params: &FusedOpParams) -> Shape {
     debug_assert_eq!(
-        input_shapes.len(), 2,
+        input_shapes.len(),
+        2,
         "RmsNormLastDimBackward takes 2 inputs (x, upstream)",
     );
     input_shapes[0].clone()
@@ -72,7 +73,8 @@ fn shape_rule(input_shapes: &[Shape], _params: &FusedOpParams) -> Shape {
 /// Dtype rule: output dtype equals input 0.
 fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
     debug_assert_eq!(
-        input_dtypes.len(), 2,
+        input_dtypes.len(),
+        2,
         "RmsNormLastDimBackward takes 2 inputs",
     );
     input_dtypes[0]
@@ -123,7 +125,10 @@ fn dtype_rule(input_dtypes: &[DType], _params: &FusedOpParams) -> DType {
 fn recipe() -> &'static PatternNode {
     static RECIPE: OnceLock<PatternNode> = OnceLock::new();
     RECIPE.get_or_init(|| {
-        let axis_last = || OpAttrs { axis_last: true, ..OpAttrs::default() };
+        let axis_last = || OpAttrs {
+            axis_last: true,
+            ..OpAttrs::default()
+        };
         let same_as_x = || OpAttrs {
             target_shape_rel: Some(ShapeExpr::SameAs { operand: 0 }),
             ..OpAttrs::default()
@@ -131,34 +136,50 @@ fn recipe() -> &'static PatternNode {
         // n = extent of x's last axis (the reduced_count), filled from x's shape
         // at emit time — the A1 shape-derived scalar carrier.
         let n_scalar = || OpAttrs {
-            scalar_rel: Some(Dim::Extent { operand: 0, axis: LAST }),
+            scalar_rel: Some(Dim::Extent {
+                operand: 0,
+                axis: LAST,
+            }),
             ..OpAttrs::default()
         };
-        let op = |op, attrs, operands| PatternNode::Op { op, attrs, operands };
+        let op = |op, attrs, operands| PatternNode::Op {
+            op,
+            attrs: Box::new(attrs),
+            operands,
+        };
         let x = || PatternNode::Bind { index: 0 };
         let up = || PatternNode::Bind { index: 1 };
         // reduce_kd(tag, src) = Unsqueeze(append)(tag(axis_last)(src)) — the
         // rank-reduced last-axis reduce with the keepdim restored (D3 swap).
         let reduce_kd = |tag, src: PatternNode| -> PatternNode {
-            op(OpTag::Unsqueeze, axis_last(), vec![
-                op(tag, axis_last(), vec![src]),
-            ])
+            op(
+                OpTag::Unsqueeze,
+                axis_last(),
+                vec![op(tag, axis_last(), vec![src])],
+            )
         };
         // bcast(src) = BroadcastTo(SameAs 0)(src) — back to x's full shape (D2).
-        let bcast = |src: PatternNode| -> PatternNode {
-            op(OpTag::BroadcastTo, same_as_x(), vec![src])
-        };
+        let bcast =
+            |src: PatternNode| -> PatternNode { op(OpTag::BroadcastTo, same_as_x(), vec![src]) };
         // denom_kd = AddScalar[open eps](reduce_kd(MeanDim, Sqr(x))); carries the
         // eps OPEN slot, so each occurrence re-emits (RISK-A — two use sites).
         let denom_kd = || {
-            op(OpTag::AddScalar, OpAttrs::default(), vec![
-                reduce_kd(OpTag::MeanDim, op(OpTag::Sqr, OpAttrs::default(), vec![x()])),
-            ])
+            op(
+                OpTag::AddScalar,
+                OpAttrs::default(),
+                vec![reduce_kd(
+                    OpTag::MeanDim,
+                    op(OpTag::Sqr, OpAttrs::default(), vec![x()]),
+                )],
+            )
         };
         // r_rms broadcast = bcast(Rsqrt(denom_kd)).
         let rrms_b = bcast(op(OpTag::Rsqrt, OpAttrs::default(), vec![denom_kd()]));
         // s broadcast = bcast(reduce_kd(SumDim, Mul(up, x))).
-        let s_b = bcast(reduce_kd(OpTag::SumDim, op(OpTag::Mul, OpAttrs::default(), vec![up(), x()])));
+        let s_b = bcast(reduce_kd(
+            OpTag::SumDim,
+            op(OpTag::Mul, OpAttrs::default(), vec![up(), x()]),
+        ));
         // n·denom broadcast = bcast(MulScalar[n = shape-derived](denom_kd)).
         let ndenom_b = bcast(op(OpTag::MulScalar, n_scalar(), vec![denom_kd()]));
         // term = Div(Mul(x, s_b), ndenom_b).
@@ -181,9 +202,10 @@ fn recipe() -> &'static PatternNode {
 /// is trivially satisfied).
 fn scalars(params: &FusedOpParams) -> Option<Vec<f64>> {
     match params {
-        FusedOpParams::RmsNormLastDimBackward { eps } => {
-            Some(vec![*eps; crate::runtime_fused::count_scalar_slots(recipe())])
-        }
+        FusedOpParams::RmsNormLastDimBackward { eps } => Some(vec![
+                *eps;
+                crate::runtime_fused::count_scalar_slots(recipe())
+            ]),
         _ => None,
     }
 }

@@ -190,10 +190,7 @@ impl NomicBertModel {
             Shape::from_dims(&[cfg.vocab_size, cfg.n_embd]),
             &Device::cpu(),
         );
-        let token_ids = word_emb_t.const_u32_like(
-            tokens.to_vec(),
-            Shape::from_dims(&[seq]),
-        );
+        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         let mut embeds = word_emb_t
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.n_embd]))?;
@@ -205,28 +202,31 @@ impl NomicBertModel {
             );
             let tt_ids: Vec<u32> = match token_type_ids {
                 Some(ids) => {
-                    assert_eq!(ids.len(), seq, "token_type_ids length must match tokens length");
+                    assert_eq!(
+                        ids.len(),
+                        seq,
+                        "token_type_ids length must match tokens length"
+                    );
                     ids.to_vec()
                 }
                 None => vec![0; seq],
             };
-            let tt_id_t = word_emb_t.const_u32_like(
-                tt_ids,
-                Shape::from_dims(&[seq]),
-            );
+            let tt_id_t = word_emb_t.const_u32_like(tt_ids, Shape::from_dims(&[seq]));
             let tt_emb = tte_t
                 .index_select(0_usize, &tt_id_t)?
                 .reshape(Shape::from_dims(&[batch, seq, cfg.n_embd]))?;
             embeds = embeds.add(&tt_emb)?;
         }
 
-        let mut h = embeds.layer_norm_affine(std::sync::Arc::clone(&weights.embed_ln_gain), std::sync::Arc::clone(&weights.embed_ln_bias), cfg.layer_norm_epsilon)?;
+        let mut h = embeds.layer_norm_affine(
+            std::sync::Arc::clone(&weights.embed_ln_gain),
+            std::sync::Arc::clone(&weights.embed_ln_bias),
+            cfg.layer_norm_epsilon,
+        )?;
 
         // ---- RoPE tables ----------------------------------------------------
         let rope_dim = cfg.rotary_emb_dim();
-        let (rope_cos, rope_sin) = h.rope_tables_const(
-            cfg.rotary_emb_base, 0, seq, rope_dim,
-        );
+        let (rope_cos, rope_sin) = h.rope_tables_const(cfg.rotary_emb_base, 0, seq, rope_dim);
 
         // ---- Encoder blocks -------------------------------------------------
         for layer in &weights.layers {
@@ -291,9 +291,7 @@ impl NomicBertModel {
             Shape::from_dims(&[cfg.vocab_size, cfg.n_embd]),
             &Device::cpu(),
         );
-        let token_ids = word_emb_t.const_u32_like(
-            tokens.to_vec(), Shape::from_dims(&[seq]),
-        );
+        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         let mut embeds = word_emb_t
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.n_embd]))?;
@@ -304,7 +302,11 @@ impl NomicBertModel {
             );
             let tt_ids: Vec<u32> = match token_type_ids {
                 Some(ids) => {
-                    assert_eq!(ids.len(), seq, "token_type_ids length must match tokens length");
+                    assert_eq!(
+                        ids.len(),
+                        seq,
+                        "token_type_ids length must match tokens length"
+                    );
                     ids.to_vec()
                 }
                 None => vec![0; seq],
@@ -315,12 +317,14 @@ impl NomicBertModel {
                 .reshape(Shape::from_dims(&[batch, seq, cfg.n_embd]))?;
             embeds = embeds.add(&tt_emb)?;
         }
-        let mut h = embeds.layer_norm_affine(std::sync::Arc::clone(&weights.embed_ln_gain), std::sync::Arc::clone(&weights.embed_ln_bias), cfg.layer_norm_epsilon)?;
+        let mut h = embeds.layer_norm_affine(
+            std::sync::Arc::clone(&weights.embed_ln_gain),
+            std::sync::Arc::clone(&weights.embed_ln_bias),
+            cfg.layer_norm_epsilon,
+        )?;
 
         let rope_dim = cfg.rotary_emb_dim();
-        let (rope_cos, rope_sin) = h.rope_tables_const(
-            cfg.rotary_emb_base, 0, seq, rope_dim,
-        );
+        let (rope_cos, rope_sin) = h.rope_tables_const(cfg.rotary_emb_base, 0, seq, rope_dim);
 
         let mut out = Vec::with_capacity(layer_ids.len());
         let mut next_capture = 0;
@@ -345,18 +349,34 @@ impl NomicBertModel {
         let cfg = &self.config;
         if cfg.prenorm {
             // Pre-LN: y = x + attn(LN(x)); z = y + ffn(LN(y)).
-            let x_norm = x.layer_norm_affine(std::sync::Arc::clone(&layer.norm1_gain), std::sync::Arc::clone(&layer.norm1_bias), cfg.layer_norm_epsilon)?;
+            let x_norm = x.layer_norm_affine(
+                std::sync::Arc::clone(&layer.norm1_gain),
+                std::sync::Arc::clone(&layer.norm1_bias),
+                cfg.layer_norm_epsilon,
+            )?;
             let attn = self.attention(&x_norm, layer, rope_cos, rope_sin, attention_mask)?;
             let y = x.add(&attn)?;
-            let y_norm = y.layer_norm_affine(std::sync::Arc::clone(&layer.norm2_gain), std::sync::Arc::clone(&layer.norm2_bias), cfg.layer_norm_epsilon)?;
+            let y_norm = y.layer_norm_affine(
+                std::sync::Arc::clone(&layer.norm2_gain),
+                std::sync::Arc::clone(&layer.norm2_bias),
+                cfg.layer_norm_epsilon,
+            )?;
             let mlp = self.mlp(&y_norm, layer)?;
             y.add(&mlp)
         } else {
             // Post-LN (BERT-shape): y = LN(x + attn(x)); z = LN(y + ffn(y)).
             let attn = self.attention(x, layer, rope_cos, rope_sin, attention_mask)?;
-            let y = x.add(&attn)?.layer_norm_affine(std::sync::Arc::clone(&layer.norm1_gain), std::sync::Arc::clone(&layer.norm1_bias), cfg.layer_norm_epsilon)?;
+            let y = x.add(&attn)?.layer_norm_affine(
+                std::sync::Arc::clone(&layer.norm1_gain),
+                std::sync::Arc::clone(&layer.norm1_bias),
+                cfg.layer_norm_epsilon,
+            )?;
             let mlp = self.mlp(&y, layer)?;
-            Ok(y.add(&mlp)?.layer_norm_affine(std::sync::Arc::clone(&layer.norm2_gain), std::sync::Arc::clone(&layer.norm2_bias), cfg.layer_norm_epsilon)?)
+            Ok(y.add(&mlp)?.layer_norm_affine(
+                std::sync::Arc::clone(&layer.norm2_gain),
+                std::sync::Arc::clone(&layer.norm2_bias),
+                cfg.layer_norm_epsilon,
+            )?)
         }
     }
 
@@ -391,8 +411,22 @@ impl NomicBertModel {
 
         // RoPE on the rotary prefix.
         let rope_dim = cfg.rotary_emb_dim();
-        let q_r = apply_rope(&q, rope_cos, rope_sin, head_dim, rope_dim, cfg.rotary_emb_interleaved)?;
-        let k_r = apply_rope(&k, rope_cos, rope_sin, head_dim, rope_dim, cfg.rotary_emb_interleaved)?;
+        let q_r = apply_rope(
+            &q,
+            rope_cos,
+            rope_sin,
+            head_dim,
+            rope_dim,
+            cfg.rotary_emb_interleaved,
+        )?;
+        let k_r = apply_rope(
+            &k,
+            rope_cos,
+            rope_sin,
+            head_dim,
+            rope_dim,
+            cfg.rotary_emb_interleaved,
+        )?;
 
         let scale = 1.0 / (head_dim as f64).sqrt();
         let scores = q_r.matmul(&k_r.transpose()?)?.mul_scalar(scale);
@@ -482,21 +516,17 @@ impl NomicBertWeights {
         let h = cfg.n_embd;
         let inter = cfg.n_inner;
 
-        let word_embedding = Arc::from(load_tensor_as_f32(
-            st, "embeddings.word_embeddings.weight",
-        )?);
+        let word_embedding =
+            Arc::from(load_tensor_as_f32(st, "embeddings.word_embeddings.weight")?);
         let token_type_embedding = if cfg.type_vocab_size > 0 {
             load_tensor_as_f32(st, "embeddings.token_type_embeddings.weight")
-                .ok().map(Arc::from)
+                .ok()
+                .map(Arc::from)
         } else {
             None
         };
-        let embed_ln_gain = Arc::from(load_tensor_as_f32(
-            st, "emb_ln.weight",
-        )?);
-        let embed_ln_bias = Arc::from(load_tensor_as_f32(
-            st, "emb_ln.bias",
-        )?);
+        let embed_ln_gain = Arc::from(load_tensor_as_f32(st, "emb_ln.weight")?);
+        let embed_ln_bias = Arc::from(load_tensor_as_f32(st, "emb_ln.bias")?);
 
         let opt_bias = |name: String| -> Option<Arc<[f32]>> {
             load_tensor_as_f32(st, &name).ok().map(Arc::from)
@@ -508,49 +538,61 @@ impl NomicBertWeights {
             let wqkv = ltm(st, &format!("{p}.attn.Wqkv.weight"), 3 * h, h)?;
             let wqkv_bias = if cfg.qkv_proj_bias {
                 opt_bias(format!("{p}.attn.Wqkv.bias"))
-            } else { None };
+            } else {
+                None
+            };
             let out_proj = ltm(st, &format!("{p}.attn.out_proj.weight"), h, h)?;
             let out_proj_bias = opt_bias(format!("{p}.attn.out_proj.bias"));
-            let norm1_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.norm1.weight"),
-            )?);
-            let norm1_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.norm1.bias"),
-            )?);
+            let norm1_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.norm1.weight"))?);
+            let norm1_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.norm1.bias"))?);
             // Nomic SwiGLU stores fc11/fc12 separately.
             let fc11 = ltm(st, &format!("{p}.mlp.fc11.weight"), inter, h)?;
             let fc11_bias = if cfg.mlp_fc1_bias {
                 opt_bias(format!("{p}.mlp.fc11.bias"))
-            } else { None };
+            } else {
+                None
+            };
             let fc12 = ltm(st, &format!("{p}.mlp.fc12.weight"), inter, h)?;
             let fc12_bias = if cfg.mlp_fc1_bias {
                 opt_bias(format!("{p}.mlp.fc12.bias"))
-            } else { None };
+            } else {
+                None
+            };
             let fc2 = ltm(st, &format!("{p}.mlp.fc2.weight"), h, inter)?;
             let fc2_bias = if cfg.mlp_fc2_bias {
                 opt_bias(format!("{p}.mlp.fc2.bias"))
-            } else { None };
-            let norm2_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.norm2.weight"),
-            )?);
-            let norm2_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.norm2.bias"),
-            )?);
+            } else {
+                None
+            };
+            let norm2_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.norm2.weight"))?);
+            let norm2_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.norm2.bias"))?);
             layers.push(NomicBertLayerWeights {
-                wqkv, wqkv_bias, out_proj, out_proj_bias,
-                norm1_gain, norm1_bias,
-                fc11, fc11_bias, fc12, fc12_bias, fc2, fc2_bias,
-                norm2_gain, norm2_bias,
+                wqkv,
+                wqkv_bias,
+                out_proj,
+                out_proj_bias,
+                norm1_gain,
+                norm1_bias,
+                fc11,
+                fc11_bias,
+                fc12,
+                fc12_bias,
+                fc2,
+                fc2_bias,
+                norm2_gain,
+                norm2_bias,
             });
         }
 
         Ok(Self {
-            word_embedding, token_type_embedding,
-            embed_ln_gain, embed_ln_bias, layers,
+            word_embedding,
+            token_type_embedding,
+            embed_ln_gain,
+            embed_ln_bias,
+            layers,
         })
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -602,17 +644,37 @@ mod tests {
         let layers: Vec<NomicBertLayerWeights> = (0..cfg.n_layer)
             .map(|_| NomicBertLayerWeights {
                 wqkv: WeightStorage::F32(vec_of(d * 3 * d, &mut *nb)),
-                wqkv_bias: if cfg.qkv_proj_bias { Some(vec_of(3 * d, &mut *nb)) } else { None },
+                wqkv_bias: if cfg.qkv_proj_bias {
+                    Some(vec_of(3 * d, &mut *nb))
+                } else {
+                    None
+                },
                 out_proj: WeightStorage::F32(vec_of(d * d, &mut *nb)),
-                out_proj_bias: if cfg.qkv_proj_bias { Some(vec_of(d, &mut *nb)) } else { None },
+                out_proj_bias: if cfg.qkv_proj_bias {
+                    Some(vec_of(d, &mut *nb))
+                } else {
+                    None
+                },
                 norm1_gain: Arc::from(vec![1.0_f32; d]),
                 norm1_bias: Arc::from(vec![0.0_f32; d]),
                 fc11: WeightStorage::F32(vec_of(d * n_inner, &mut *nb)),
-                fc11_bias: if cfg.mlp_fc1_bias { Some(vec_of(n_inner, &mut *nb)) } else { None },
+                fc11_bias: if cfg.mlp_fc1_bias {
+                    Some(vec_of(n_inner, &mut *nb))
+                } else {
+                    None
+                },
                 fc12: WeightStorage::F32(vec_of(d * n_inner, &mut *nb)),
-                fc12_bias: if cfg.mlp_fc1_bias { Some(vec_of(n_inner, &mut *nb)) } else { None },
+                fc12_bias: if cfg.mlp_fc1_bias {
+                    Some(vec_of(n_inner, &mut *nb))
+                } else {
+                    None
+                },
                 fc2: WeightStorage::F32(vec_of(n_inner * d, &mut *nb)),
-                fc2_bias: if cfg.mlp_fc2_bias { Some(vec_of(d, &mut *nb)) } else { None },
+                fc2_bias: if cfg.mlp_fc2_bias {
+                    Some(vec_of(d, &mut *nb))
+                } else {
+                    None
+                },
                 norm2_gain: Arc::from(vec![1.0_f32; d]),
                 norm2_bias: Arc::from(vec![0.0_f32; d]),
             })
@@ -630,7 +692,10 @@ mod tests {
     #[test]
     fn forward_shape_and_finite() {
         let cfg = tiny_cfg();
-        let model = NomicBertModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = NomicBertModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens = [1_u32, 2, 3, 4];
         let out = model.forward(&tokens, None, None).unwrap();
         assert_eq!(out.shape().dims(), &[1, tokens.len(), cfg.n_embd]);
@@ -644,7 +709,10 @@ mod tests {
     #[test]
     fn bidirectional_attention() {
         let cfg = tiny_cfg();
-        let model = NomicBertModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = NomicBertModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let toks_a = [1_u32, 2, 3, 4];
         let toks_b = [1_u32, 2, 3, 15];
         let a = model.forward(&toks_a, None, None).unwrap().realize_f32();
@@ -654,8 +722,10 @@ mod tests {
         for i in 0..d {
             max_diff = max_diff.max((a[i] - b[i]).abs());
         }
-        assert!(max_diff > 1e-6,
-            "last-token change must affect position 0 (bidirectional), max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-6,
+            "last-token change must affect position 0 (bidirectional), max_diff = {max_diff}"
+        );
     }
 
     /// Token type embedding is wired — changing the row 0 of the
@@ -672,12 +742,18 @@ mod tests {
         let mut modified = base.clone();
         modified.token_type_embedding = Some(Arc::from(tte));
         // Reset base's TTE to make sure we're not aliasing.
-        base.token_type_embedding = Some(
-            Arc::from(base.token_type_embedding.as_ref().unwrap().to_vec())
-        );
+        base.token_type_embedding = Some(Arc::from(
+            base.token_type_embedding.as_ref().unwrap().to_vec(),
+        ));
 
-        let m_a = NomicBertModel { config: cfg.clone(), weights: base };
-        let m_b = NomicBertModel { config: cfg, weights: modified };
+        let m_a = NomicBertModel {
+            config: cfg.clone(),
+            weights: base,
+        };
+        let m_b = NomicBertModel {
+            config: cfg,
+            weights: modified,
+        };
         let toks = [1_u32, 2, 3, 4];
         let a = m_a.forward(&toks, None, None).unwrap().realize_f32();
         let b = m_b.forward(&toks, None, None).unwrap().realize_f32();
@@ -685,8 +761,10 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-6,
-            "token-type change must alter output, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-6,
+            "token-type change must alter output, max_diff = {max_diff}"
+        );
     }
 
     /// SwiGLU MLP — verify the gate path is wired. Replace `fc12`
@@ -704,8 +782,14 @@ mod tests {
         let d = cfg.n_embd;
         modified.layers[0].fc12 = WeightStorage::F32(Arc::from(vec![0.0_f32; d * h]));
 
-        let m_a = NomicBertModel { config: cfg.clone(), weights: base };
-        let m_b = NomicBertModel { config: cfg, weights: modified };
+        let m_a = NomicBertModel {
+            config: cfg.clone(),
+            weights: base,
+        };
+        let m_b = NomicBertModel {
+            config: cfg,
+            weights: modified,
+        };
         let toks = [1_u32, 2, 3, 4];
         let a = m_a.forward(&toks, None, None).unwrap().realize_f32();
         let b = m_b.forward(&toks, None, None).unwrap().realize_f32();
@@ -713,8 +797,10 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-6,
-            "zeroing fc12 (gate) must alter output (SwiGLU MLP zeroed out), max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-6,
+            "zeroing fc12 (gate) must alter output (SwiGLU MLP zeroed out), max_diff = {max_diff}"
+        );
     }
 
     /// Interleaved-RoPE variant runs end-to-end with finite output.
@@ -722,7 +808,10 @@ mod tests {
     fn interleaved_rope_runs() {
         let mut cfg = tiny_cfg();
         cfg.rotary_emb_interleaved = true;
-        let model = NomicBertModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = NomicBertModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens = [1_u32, 2, 3, 4];
         let out = model.forward(&tokens, None, None).unwrap();
         assert_eq!(out.shape().dims(), &[1, tokens.len(), cfg.n_embd]);
@@ -736,7 +825,10 @@ mod tests {
     fn prenorm_runs() {
         let mut cfg = tiny_cfg();
         cfg.prenorm = true;
-        let model = NomicBertModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = NomicBertModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens = [1_u32, 2, 3, 4];
         let out = model.forward(&tokens, None, None).unwrap();
         assert_eq!(out.shape().dims(), &[1, tokens.len(), cfg.n_embd]);
@@ -750,9 +842,14 @@ mod tests {
     #[test]
     fn forward_intermediate_layers_shape() {
         let cfg = tiny_cfg();
-        let model = NomicBertModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = NomicBertModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens = [1_u32, 2, 3, 4];
-        let outs = model.forward_intermediate_layers(&tokens, &[0_usize, 1], None, None).unwrap();
+        let outs = model
+            .forward_intermediate_layers(&tokens, &[0_usize, 1], None, None)
+            .unwrap();
         assert_eq!(outs.len(), 2);
         for out in &outs {
             assert_eq!(out.shape().dims(), &[1, tokens.len(), cfg.n_embd]);
@@ -766,7 +863,9 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-7,
-            "layer 0 and layer 1 intermediates must differ, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-7,
+            "layer 0 and layer 1 intermediates must differ, max_diff = {max_diff}"
+        );
     }
 }

@@ -34,26 +34,29 @@ pub struct SamplingOutput {
     pub valid: CudaStorageBytes,
 }
 
-fn alloc_pair(device: &crate::CudaDevice, batch: usize) -> Result<(CudaStorageBytes, CudaStorageBytes)> {
+fn alloc_pair(
+    device: &crate::CudaDevice,
+    batch: usize,
+) -> Result<(CudaStorageBytes, CudaStorageBytes)> {
     let bytes = batch * std::mem::size_of::<i32>();
     let tokens_buf = device.alloc_zeros::<u8>(bytes)?;
-    let valid_buf  = device.alloc_zeros::<u8>(bytes)?;
+    let valid_buf = device.alloc_zeros::<u8>(bytes)?;
     Ok((
         CudaStorageBytes::from_parts(Arc::new(tokens_buf), device.clone(), bytes),
-        CudaStorageBytes::from_parts(Arc::new(valid_buf),  device.clone(), bytes),
+        CudaStorageBytes::from_parts(Arc::new(valid_buf), device.clone(), bytes),
     ))
 }
 
-fn batch_vocab_i32(
-    op: &'static str,
-    batch: usize,
-    vocab: usize,
-) -> Result<(i32, i32)> {
+fn batch_vocab_i32(op: &'static str, batch: usize, vocab: usize) -> Result<(i32, i32)> {
     let b = i32::try_from(batch).map_err(|_| crate::error::CudaError::BaracudaShapeOverflow {
-        op, dim_index: 0, dim_value: batch,
+        op,
+        dim_index: 0,
+        dim_value: batch,
     })?;
     let v = i32::try_from(vocab).map_err(|_| crate::error::CudaError::BaracudaShapeOverflow {
-        op, dim_index: 1, dim_value: vocab,
+        op,
+        dim_index: 1,
+        dim_value: vocab,
     })?;
     Ok((b, v))
 }
@@ -76,12 +79,15 @@ pub fn top_k_sampling_f32(
     let stream = device.stream().as_raw() as *mut std::ffi::c_void;
     let status = unsafe {
         sys::baracuda_kernels_flashinfer_top_k_sampling_f32_run(
-            b, v, top_k_val,
+            b,
+            v,
+            top_k_val,
             if deterministic { 1 } else { 0 },
-            seed_val, offset_val,
+            seed_val,
+            offset_val,
             probs.buffer().as_raw().0 as *const std::ffi::c_void,
             tokens.buffer().as_raw().0 as *mut std::ffi::c_void,
-            valid.buffer().as_raw().0  as *mut std::ffi::c_void,
+            valid.buffer().as_raw().0 as *mut std::ffi::c_void,
             stream,
         )
     };
@@ -107,12 +113,15 @@ pub fn top_p_sampling_f32(
     let stream = device.stream().as_raw() as *mut std::ffi::c_void;
     let status = unsafe {
         sys::baracuda_kernels_flashinfer_top_p_sampling_f32_run(
-            b, v, top_p_val,
+            b,
+            v,
+            top_p_val,
             if deterministic { 1 } else { 0 },
-            seed_val, offset_val,
+            seed_val,
+            offset_val,
             probs.buffer().as_raw().0 as *const std::ffi::c_void,
             tokens.buffer().as_raw().0 as *mut std::ffi::c_void,
-            valid.buffer().as_raw().0  as *mut std::ffi::c_void,
+            valid.buffer().as_raw().0 as *mut std::ffi::c_void,
             stream,
         )
     };
@@ -138,12 +147,15 @@ pub fn min_p_sampling_f32(
     let stream = device.stream().as_raw() as *mut std::ffi::c_void;
     let status = unsafe {
         sys::baracuda_kernels_flashinfer_min_p_sampling_f32_run(
-            b, v, min_p_val,
+            b,
+            v,
+            min_p_val,
             if deterministic { 1 } else { 0 },
-            seed_val, offset_val,
+            seed_val,
+            offset_val,
             probs.buffer().as_raw().0 as *const std::ffi::c_void,
             tokens.buffer().as_raw().0 as *mut std::ffi::c_void,
-            valid.buffer().as_raw().0  as *mut std::ffi::c_void,
+            valid.buffer().as_raw().0 as *mut std::ffi::c_void,
             stream,
         )
     };
@@ -171,12 +183,16 @@ pub fn top_k_top_p_sampling_f32(
     let stream = device.stream().as_raw() as *mut std::ffi::c_void;
     let status = unsafe {
         sys::baracuda_kernels_flashinfer_top_k_top_p_sampling_f32_run(
-            b, v, top_k_val, top_p_val,
+            b,
+            v,
+            top_k_val,
+            top_p_val,
             if deterministic { 1 } else { 0 },
-            seed_val, offset_val,
+            seed_val,
+            offset_val,
             probs.buffer().as_raw().0 as *const std::ffi::c_void,
             tokens.buffer().as_raw().0 as *mut std::ffi::c_void,
-            valid.buffer().as_raw().0  as *mut std::ffi::c_void,
+            valid.buffer().as_raw().0 as *mut std::ffi::c_void,
             stream,
         )
     };

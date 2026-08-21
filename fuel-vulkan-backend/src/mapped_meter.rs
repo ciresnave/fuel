@@ -57,7 +57,10 @@ impl MappedByteMeter {
     /// A fresh meter reading zero. `const` so a process-global `static` instance
     /// can be constructed without lazy initialization.
     pub const fn new() -> Self {
-        Self { current: AtomicU64::new(0), peak: AtomicU64::new(0) }
+        Self {
+            current: AtomicU64::new(0),
+            peak: AtomicU64::new(0),
+        }
     }
 
     /// Record `bytes` newly mapped. Saturating add on `current`, then bump the
@@ -327,7 +330,11 @@ mod tests {
         // Every map is matched by an unmap, so the net must be exactly zero…
         assert_eq!(m.current(), 0);
         // …but the peak observed at least one concurrently-held mapping.
-        assert!(m.peak() >= 64, "peak should have observed live mappings, got {}", m.peak());
+        assert!(
+            m.peak() >= 64,
+            "peak should have observed live mappings, got {}",
+            m.peak()
+        );
     }
 
     #[test]

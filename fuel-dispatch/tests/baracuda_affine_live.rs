@@ -11,9 +11,13 @@
 
 use std::sync::{Arc, RwLock};
 
-use fuel_ir::{dispatch::OpKind, probe::BackendId, DType};
 use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
-use fuel_dispatch::{baracuda_dispatch::register_baracuda_cuda_kernels, dispatch::register_cuda_kernels, kernel::{KernelBindingTable, OpParams}};
+use fuel_dispatch::{
+    baracuda_dispatch::register_baracuda_cuda_kernels,
+    dispatch::register_cuda_kernels,
+    kernel::{KernelBindingTable, OpParams},
+};
+use fuel_ir::{DType, dispatch::OpKind, probe::BackendId};
 use fuel_memory::{BackendStorage, Storage};
 
 fn dev_or_skip() -> Option<CudaDevice> {
@@ -225,8 +229,10 @@ fn run_affine_inplace<T: bytemuck::Pod>(
     let target = upload(&dev, dt, target_initial);
     let target_arc = Arc::new(RwLock::new(target));
     let alternatives = table.lookup_alternatives(OpKind::InplaceAffine, &[dt, dt], BackendId::Cuda);
-    assert!(!alternatives.is_empty(),
-        "no alternatives at (OpKind::InplaceAffine, [{dt:?}, {dt:?}], Cuda)");
+    assert!(
+        !alternatives.is_empty(),
+        "no alternatives at (OpKind::InplaceAffine, [{dt:?}, {dt:?}], Cuda)"
+    );
     let expected_ptr = expected as usize;
     let kernel = alternatives
         .iter()
@@ -286,8 +292,12 @@ fn baracuda_affine_inplace_bf16() {
     use half::bf16;
     let Some(_dev) = dev_or_skip() else { return };
     let table = dual_table();
-    let input: Vec<bf16> = vec![bf16::from_f32(1.0), bf16::from_f32(2.0),
-                                bf16::from_f32(3.0), bf16::from_f32(4.0)];
+    let input: Vec<bf16> = vec![
+        bf16::from_f32(1.0),
+        bf16::from_f32(2.0),
+        bf16::from_f32(3.0),
+        bf16::from_f32(4.0),
+    ];
     let out = run_affine_inplace(
         &table,
         DType::BF16,
@@ -300,8 +310,11 @@ fn baracuda_affine_inplace_bf16() {
     // bf16 has ~3 decimal digits of precision; use coarse tolerance.
     let want = [2.5_f32, 4.5, 6.5, 8.5];
     for (i, &w) in want.iter().enumerate() {
-        assert!((got[i].to_f32() - w).abs() < 0.05,
-            "slot {i}: got {} want {w}", got[i].to_f32());
+        assert!(
+            (got[i].to_f32() - w).abs() < 0.05,
+            "slot {i}: got {} want {w}",
+            got[i].to_f32()
+        );
     }
 }
 
@@ -311,8 +324,12 @@ fn baracuda_affine_inplace_f16() {
     use half::f16;
     let Some(_dev) = dev_or_skip() else { return };
     let table = dual_table();
-    let input: Vec<f16> = vec![f16::from_f32(1.0), f16::from_f32(2.0),
-                               f16::from_f32(3.0), f16::from_f32(4.0)];
+    let input: Vec<f16> = vec![
+        f16::from_f32(1.0),
+        f16::from_f32(2.0),
+        f16::from_f32(3.0),
+        f16::from_f32(4.0),
+    ];
     let out = run_affine_inplace(
         &table,
         DType::F16,
@@ -324,7 +341,10 @@ fn baracuda_affine_inplace_f16() {
     let got: &[f16] = bytemuck::cast_slice(&out);
     let want = [2.5_f32, 4.5, 6.5, 8.5];
     for (i, &w) in want.iter().enumerate() {
-        assert!((got[i].to_f32() - w).abs() < 0.01,
-            "slot {i}: got {} want {w}", got[i].to_f32());
+        assert!(
+            (got[i].to_f32() - w).abs() < 0.01,
+            "slot {i}: got {} want {w}",
+            got[i].to_f32()
+        );
     }
 }

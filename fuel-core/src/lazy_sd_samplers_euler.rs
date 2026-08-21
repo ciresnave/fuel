@@ -92,21 +92,30 @@ impl EulerAncestralDiscreteScheduler {
                 .map(|s| s * step_ratio + cfg.steps_offset)
                 .rev()
                 .collect(),
-            TimestepSpacing::Trailing => {
-                std::iter::successors(Some(cfg.train_timesteps), |n| {
-                    if *n > step_ratio { Some(n - step_ratio) } else { None }
-                })
-                .map(|n| n - 1)
-                .collect()
+            TimestepSpacing::Trailing => std::iter::successors(Some(cfg.train_timesteps), |n| {
+                if *n > step_ratio {
+                    Some(n - step_ratio)
+                } else {
+                    None
+                }
+            })
+            .map(|n| n - 1)
+            .collect(),
+            TimestepSpacing::Linspace => {
+                linspace(0.0, (cfg.train_timesteps - 1) as f64, inference_steps)
+                    .into_iter()
+                    .map(|f| f as usize)
+                    .rev()
+                    .collect()
             }
-            TimestepSpacing::Linspace => linspace(0.0, (cfg.train_timesteps - 1) as f64, inference_steps)
-                .into_iter()
-                .map(|f| f as usize)
-                .rev()
-                .collect(),
         };
 
-        let betas = build_betas(cfg.beta_schedule, cfg.beta_start, cfg.beta_end, cfg.train_timesteps);
+        let betas = build_betas(
+            cfg.beta_schedule,
+            cfg.beta_start,
+            cfg.beta_end,
+            cfg.train_timesteps,
+        );
         let alphas_cumprod = build_alphas_cumprod(&betas);
         let train_sigmas: Vec<f64> = alphas_cumprod
             .iter()
@@ -142,7 +151,11 @@ impl EulerAncestralDiscreteScheduler {
 
     /// Scales the denoiser input by `1 / sqrt(sigma_t^2 + 1)`, matching
     /// the K-LMS convention used by k-diffusion samplers.
-    pub fn scale_model_input(&self, sample: &LazyTensor, timestep_idx: usize) -> Result<LazyTensor> {
+    pub fn scale_model_input(
+        &self,
+        sample: &LazyTensor,
+        timestep_idx: usize,
+    ) -> Result<LazyTensor> {
         if timestep_idx >= self.sigmas.len() {
             return Err(Error::Msg(format!(
                 "scale_model_input: timestep_idx {timestep_idx} out of bounds (sigmas.len={})",
@@ -186,7 +199,8 @@ impl EulerAncestralDiscreteScheduler {
             }
             PredictionType::Sample => {
                 return Err(Error::Msg(
-                    "EulerAncestralDiscreteScheduler: PredictionType::Sample not implemented".into(),
+                    "EulerAncestralDiscreteScheduler: PredictionType::Sample not implemented"
+                        .into(),
                 )
                 .bt());
             }
@@ -195,7 +209,9 @@ impl EulerAncestralDiscreteScheduler {
         let sigma_from_sq = sigma_from * sigma_from;
         let sigma_to_sq = sigma_to * sigma_to;
         let sigma_up = if sigma_from_sq > 0.0 {
-            (sigma_to_sq * (sigma_from_sq - sigma_to_sq) / sigma_from_sq).max(0.0).sqrt()
+            (sigma_to_sq * (sigma_from_sq - sigma_to_sq) / sigma_from_sq)
+                .max(0.0)
+                .sqrt()
         } else {
             0.0
         };
@@ -315,9 +331,8 @@ fn linspace(start: f64, stop: f64, steps: usize) -> Vec<f64> {
 }
 
 fn betas_for_alpha_bar(num_diffusion_timesteps: usize, max_beta: f64) -> Vec<f64> {
-    let alpha_bar = |t: usize| {
-        f64::cos((t as f64 + 0.008) / 1.008 * std::f64::consts::FRAC_PI_2).powi(2)
-    };
+    let alpha_bar =
+        |t: usize| f64::cos((t as f64 + 0.008) / 1.008 * std::f64::consts::FRAC_PI_2).powi(2);
     let mut betas = Vec::with_capacity(num_diffusion_timesteps);
     for i in 0..num_diffusion_timesteps {
         let t1 = i / num_diffusion_timesteps;
@@ -368,7 +383,11 @@ fn interp(x: &[f64], xp: &[f64], fp: &[f64]) -> Vec<f64> {
             let y_l = fp[idx];
             let y_h = fp[idx + 1];
             let dx = x_h - x_l;
-            if dx > 0.0 { y_l + (xi - x_l) / dx * (y_h - y_l) } else { y_l }
+            if dx > 0.0 {
+                y_l + (xi - x_l) / dx * (y_h - y_l)
+            } else {
+                y_l
+            }
         })
         .collect()
 }
@@ -377,9 +396,8 @@ fn randn_like_on_graph(anchor: &LazyTensor, mean: f64, stdev: f64) -> Result<Laz
     use rand_distr::{Distribution, Normal};
     let shape = anchor.shape();
     let n = shape.elem_count();
-    let normal = Normal::new(mean, stdev).map_err(|e| {
-        Error::Msg(format!("randn_like_on_graph: invalid stdev={stdev}: {e}")).bt()
-    })?;
+    let normal = Normal::new(mean, stdev)
+        .map_err(|e| Error::Msg(format!("randn_like_on_graph: invalid stdev={stdev}: {e}")).bt())?;
     let mut rng = rand::rng();
     let data: Vec<f32> = (0..n).map(|_| normal.sample(&mut rng) as f32).collect();
     Ok(anchor.const_f32_like(data, Shape::from_dims(shape.dims())))
@@ -418,16 +436,16 @@ mod tests {
             EulerAncestralDiscreteSchedulerConfig::default(),
         )
         .unwrap();
-        let (sample, model_out) = paired(
-            &[0.1, -0.2, 0.3, 0.0],
-            &[0.05, 0.01, -0.04, 0.02],
-            &[1, 4],
-        );
+        let (sample, model_out) =
+            paired(&[0.1, -0.2, 0.3, 0.0], &[0.05, 0.01, -0.04, 0.02], &[1, 4]);
         let noise = sample.const_f32_like(vec![0.0; 4], Shape::from_dims(&[1, 4]));
         let next = sched.step(&model_out, 0, &sample, &noise).unwrap();
         let out = next.realize_f32();
         assert_eq!(out.len(), 4);
-        assert!(out.iter().all(|v| v.is_finite()), "non-finite output: {out:?}");
+        assert!(
+            out.iter().all(|v| v.is_finite()),
+            "non-finite output: {out:?}"
+        );
     }
 
     #[test]

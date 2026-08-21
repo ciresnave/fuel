@@ -28,8 +28,14 @@ const DEFAULT_PROMPT: &str = "a photo of an astronaut riding a horse on mars";
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
-    let repo_id = args.get(1).cloned().unwrap_or_else(|| DEFAULT_REPO.to_string());
-    let prompt = args.get(2).cloned().unwrap_or_else(|| DEFAULT_PROMPT.to_string());
+    let repo_id = args
+        .get(1)
+        .cloned()
+        .unwrap_or_else(|| DEFAULT_REPO.to_string());
+    let prompt = args
+        .get(2)
+        .cloned()
+        .unwrap_or_else(|| DEFAULT_PROMPT.to_string());
 
     eprintln!("=== fuel sd-text-lazy ===");
     eprintln!("Repo:   {repo_id}");
@@ -57,8 +63,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("done in {:.2?}", t0.elapsed());
 
     let tokens = tokenizer.encode_padded(&prompt)?;
-    let nonpad = tokens.iter().take_while(|&&t| t != model.config.pad_token_id).count();
-    eprintln!("Prompt tokens ({} non-pad of {} padded): {:?}", nonpad, tokens.len(), &tokens[..nonpad.min(20)]);
+    let nonpad = tokens
+        .iter()
+        .take_while(|&&t| t != model.config.pad_token_id)
+        .count();
+    eprintln!(
+        "Prompt tokens ({} non-pad of {} padded): {:?}",
+        nonpad,
+        tokens.len(),
+        &tokens[..nonpad.min(20)]
+    );
     eprintln!();
 
     eprintln!("Running forward pass...");

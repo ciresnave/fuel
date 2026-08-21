@@ -70,7 +70,10 @@ use fuel::{Device, Shape};
 #[command(author, version, about, long_about = None)]
 struct Args {
     /// Text to synthesize.
-    #[arg(long, default_value = "This is a demo of text to speech by MetaVoice-1B.")]
+    #[arg(
+        long,
+        default_value = "This is a demo of text to speech by MetaVoice-1B."
+    )]
     prompt: String,
 
     /// Path to the speaker encoder safetensors. Accepts either:
@@ -279,7 +282,7 @@ fn main() -> Result<()> {
                 codes_flat.push(c.min(cap.saturating_sub(1)));
             }
         } else {
-            codes_flat.extend(std::iter::repeat(0_u32).take(gen_len));
+            codes_flat.extend(std::iter::repeat_n(0_u32, gen_len));
         }
     }
     let anchor = LazyTensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &Device::cpu());
@@ -338,7 +341,7 @@ fn load_speaker_embed(args: &Args, cfg: &MetaVoiceConfig) -> Result<LazyTensor> 
                 if let Ok(view) = st.get("spk_emb") {
                     let bytes = view.data();
                     let mut out: Vec<f32> = Vec::with_capacity(bytes.len() / 4);
-                    for chunk in bytes.chunks_exact(4) {
+                    for chunk in bytes.as_chunks::<4>().0 {
                         out.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
                     }
                     if out.len() == cfg.speaker_emb_dim {
@@ -383,9 +386,7 @@ fn load_speaker_embed(args: &Args, cfg: &MetaVoiceConfig) -> Result<LazyTensor> 
 /// fuel-transformers tree and has not been lazy-ported.
 fn byte_level_encode(text: &str, vocab_size: usize) -> Vec<u32> {
     let cap = vocab_size as u32;
-    text.bytes()
-        .map(|b| (b as u32) % cap.max(1))
-        .collect()
+    text.bytes().map(|b| (b as u32) % cap.max(1)).collect()
 }
 
 /// Host-side BS.1770 loudness normalization, mirroring the encodec

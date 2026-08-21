@@ -108,7 +108,11 @@ impl Gemma4VisionModel {
         let weights = &self.weights;
         let dims = pixel_values.shape();
         let dims = dims.dims();
-        assert_eq!(dims.len(), 4, "pixel_values must be rank 4 [batch, c, h, w]");
+        assert_eq!(
+            dims.len(),
+            4,
+            "pixel_values must be rank 4 [batch, c, h, w]"
+        );
         let batch = dims[0];
         assert_eq!(batch, 1, "v1 supports batch == 1");
         let c = dims[1];
@@ -133,14 +137,14 @@ impl Gemma4VisionModel {
         // Scale into [-1, 1]: (patches - 0.5) * 2.
         let patches = patches.add_scalar(-0.5).mul_scalar(2.0);
         // Linear projection to hidden_size.
-        let mut h_states = weights.input_proj.apply_linear(
-            &patches, ps * ps * c, cfg.hidden_size,
-        )?;
+        let mut h_states =
+            weights
+                .input_proj
+                .apply_linear(&patches, ps * ps * c, cfg.hidden_size)?;
 
         // ---- 2D positional embedding -----------------------------------------
-        let (pos_emb, cos_xy, sin_xy) = self.build_position_aux(
-            pixel_values, ph, pw, num_patches,
-        )?;
+        let (pos_emb, cos_xy, sin_xy) =
+            self.build_position_aux(pixel_values, ph, pw, num_patches)?;
         h_states = h_states.add(&pos_emb)?;
 
         // ---- Encoder layers --------------------------------------------------
@@ -275,23 +279,37 @@ impl Gemma4VisionModel {
 
         // Pre-attn norm.
         let residual = x.clone();
-        let x_norm = x.rms_norm_affine_with_offset(&layer.input_norm_gain, 1.0, cfg.rms_norm_eps)?;
+        let x_norm =
+            x.rms_norm_affine_with_offset(&layer.input_norm_gain, 1.0, cfg.rms_norm_eps)?;
         let attn = self.attention(&x_norm, layer, cos, sin)?;
-        let attn_normed = attn.rms_norm_affine_with_offset(&layer.post_attn_norm_gain, 1.0, cfg.rms_norm_eps)?;
+        let attn_normed =
+            attn.rms_norm_affine_with_offset(&layer.post_attn_norm_gain, 1.0, cfg.rms_norm_eps)?;
         let h1 = residual.add(&attn_normed)?;
 
         // Pre-FFN norm.
         let residual2 = h1.clone();
-        let h1_norm = h1.rms_norm_affine_with_offset(&layer.pre_ffn_norm_gain, 1.0, cfg.rms_norm_eps)?;
-        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
-        let up = layer.ffn_up.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let h1_norm =
+            h1.rms_norm_affine_with_offset(&layer.pre_ffn_norm_gain, 1.0, cfg.rms_norm_eps)?;
+        let gate = layer
+            .ffn_gate
+            .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let up = layer
+            .ffn_up
+            .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
         let activated = match cfg.hidden_activation {
             Gemma4VisionActivation::Gelu => gate.gelu_erf(),
             Gemma4VisionActivation::GeluPytorchTanh => gate.gelu(),
         };
         let ffn_inner = activated.mul(&up)?;
-        let ffn_out = layer.ffn_down.apply_linear(&ffn_inner, cfg.intermediate_size, cfg.hidden_size)?;
-        let ffn_normed = ffn_out.rms_norm_affine_with_offset(&layer.post_ffn_norm_gain, 1.0, cfg.rms_norm_eps)?;
+        let ffn_out =
+            layer
+                .ffn_down
+                .apply_linear(&ffn_inner, cfg.intermediate_size, cfg.hidden_size)?;
+        let ffn_normed = ffn_out.rms_norm_affine_with_offset(
+            &layer.post_ffn_norm_gain,
+            1.0,
+            cfg.rms_norm_eps,
+        )?;
         residual2.add(&ffn_normed)
     }
 
@@ -392,10 +410,8 @@ impl Gemma4VisionModel {
                 }
             }
         }
-        let idx_tensor = x.const_u32_like(
-            idx_full,
-            Shape::from_dims(&[batch, num_patches, hidden]),
-        );
+        let idx_tensor =
+            x.const_u32_like(idx_full, Shape::from_dims(&[batch, num_patches, hidden]));
 
         // Scale by 1/k² BEFORE scatter so the scatter sum becomes a mean.
         let x_scaled = x.mul_scalar(1.0 / ((k * k) as f64));
@@ -491,49 +507,75 @@ impl Gemma4VisionWeights {
             );
         }
 
-        let mut layers: Vec<Gemma4VisionLayerWeights> =
-            Vec::with_capacity(cfg.num_hidden_layers);
+        let mut layers: Vec<Gemma4VisionLayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
         for li in 0..cfg.num_hidden_layers {
             let p = format!("{prefix}encoder.layers.{li}");
             let q_proj = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.q_proj.weight"), q_dim, h,
+                st,
+                &format!("{p}.self_attn.q_proj.weight"),
+                q_dim,
+                h,
             )?;
             let k_proj = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.k_proj.weight"), kv_dim, h,
+                st,
+                &format!("{p}.self_attn.k_proj.weight"),
+                kv_dim,
+                h,
             )?;
             let v_proj = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.v_proj.weight"), kv_dim, h,
+                st,
+                &format!("{p}.self_attn.v_proj.weight"),
+                kv_dim,
+                h,
             )?;
             let o_proj = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.o_proj.weight"), h, q_dim,
+                st,
+                &format!("{p}.self_attn.o_proj.weight"),
+                h,
+                q_dim,
             )?;
-            let q_norm_gain = Arc::from(
-                load_tensor_as_f32(st, &format!("{p}.self_attn.q_norm.weight"))?,
-            );
-            let k_norm_gain = Arc::from(
-                load_tensor_as_f32(st, &format!("{p}.self_attn.k_norm.weight"))?,
-            );
+            let q_norm_gain = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.self_attn.q_norm.weight"),
+            )?);
+            let k_norm_gain = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.self_attn.k_norm.weight"),
+            )?);
             let ffn_gate = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.mlp.gate_proj.weight"), i_dim, h,
+                st,
+                &format!("{p}.mlp.gate_proj.weight"),
+                i_dim,
+                h,
             )?;
             let ffn_up = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.mlp.up_proj.weight"), i_dim, h,
+                st,
+                &format!("{p}.mlp.up_proj.weight"),
+                i_dim,
+                h,
             )?;
             let ffn_down = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.mlp.down_proj.weight"), h, i_dim,
+                st,
+                &format!("{p}.mlp.down_proj.weight"),
+                h,
+                i_dim,
             )?;
-            let input_norm_gain = Arc::from(
-                load_tensor_as_f32(st, &format!("{p}.input_layernorm.weight"))?,
-            );
-            let post_attn_norm_gain = Arc::from(
-                load_tensor_as_f32(st, &format!("{p}.post_attention_layernorm.weight"))?,
-            );
-            let pre_ffn_norm_gain = Arc::from(
-                load_tensor_as_f32(st, &format!("{p}.pre_feedforward_layernorm.weight"))?,
-            );
-            let post_ffn_norm_gain = Arc::from(
-                load_tensor_as_f32(st, &format!("{p}.post_feedforward_layernorm.weight"))?,
-            );
+            let input_norm_gain = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.input_layernorm.weight"),
+            )?);
+            let post_attn_norm_gain = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.post_attention_layernorm.weight"),
+            )?);
+            let pre_ffn_norm_gain = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.pre_feedforward_layernorm.weight"),
+            )?);
+            let post_ffn_norm_gain = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.post_feedforward_layernorm.weight"),
+            )?);
 
             layers.push(Gemma4VisionLayerWeights {
                 input_norm_gain,
@@ -559,7 +601,6 @@ impl Gemma4VisionWeights {
         })
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -607,7 +648,11 @@ mod tests {
             })
             .collect();
 
-        Gemma4VisionWeights { input_proj, position_embedding_table, layers }
+        Gemma4VisionWeights {
+            input_proj,
+            position_embedding_table,
+            layers,
+        }
     }
 
     fn tiny_config() -> Gemma4VisionConfig {
@@ -632,7 +677,10 @@ mod tests {
     #[test]
     fn forward_shape_and_finite() {
         let cfg = tiny_config();
-        let model = Gemma4VisionModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Gemma4VisionModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         // 24×24 image at patch_size=4 → 6×6=36 patches; pool k=3 → 4 tokens.
         let h_img = 24;
         let w_img = 24;
@@ -662,14 +710,22 @@ mod tests {
         let n_pix = 1 * 3 * h_img * w_img;
         let img_a: Vec<f32> = (0..n_pix).map(|i| (i as f32 / n_pix as f32)).collect();
         let mut img_b = img_a.clone();
-        for v in img_b.iter_mut() { *v = 1.0 - *v; }
+        for v in img_b.iter_mut() {
+            *v = 1.0 - *v;
+        }
 
         // Build two independent models (one per graph anchor) sharing
         // the same weights so the only difference between forwards is
         // the input pixels.
         let weights = tiny_weights(&cfg);
-        let model_a = Gemma4VisionModel { config: cfg.clone(), weights: weights.clone() };
-        let model_b = Gemma4VisionModel { config: cfg, weights };
+        let model_a = Gemma4VisionModel {
+            config: cfg.clone(),
+            weights: weights.clone(),
+        };
+        let model_b = Gemma4VisionModel {
+            config: cfg,
+            weights,
+        };
 
         let pix_a = LazyTensor::from_f32(
             Arc::from(img_a),
@@ -687,8 +743,10 @@ mod tests {
         for (a, b) in out_a.iter().zip(out_b.iter()) {
             max_diff = max_diff.max((a - b).abs());
         }
-        assert!(max_diff > 1e-6,
-            "pixel-value change must alter encoder output, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-6,
+            "pixel-value change must alter encoder output, max_diff = {max_diff}"
+        );
     }
 
     /// Spatial pooling reduces num_patches by k² with mean-shape
@@ -696,7 +754,10 @@ mod tests {
     #[test]
     fn pooling_reduces_count() {
         let cfg = tiny_config();
-        let model = Gemma4VisionModel { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Gemma4VisionModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let h_img = 12;
         let w_img = 12;
         // 3×3=9 patches with k=3 → 1 output token.

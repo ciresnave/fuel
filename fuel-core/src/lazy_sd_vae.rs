@@ -88,11 +88,15 @@ impl SdVaeConfig {
 
 #[derive(Debug, Clone)]
 pub struct ResnetWeights {
-    pub n1_g: Arc<[f32]>, pub n1_b: Arc<[f32]>,
+    pub n1_g: Arc<[f32]>,
+    pub n1_b: Arc<[f32]>,
     /// [Cout, Cin, 3, 3] (HF order, used by `conv2d_k3_s1_p1`).
-    pub c1_w: Arc<[f32]>, pub c1_b: Arc<[f32]>,
-    pub n2_g: Arc<[f32]>, pub n2_b: Arc<[f32]>,
-    pub c2_w: Arc<[f32]>, pub c2_b: Arc<[f32]>,
+    pub c1_w: Arc<[f32]>,
+    pub c1_b: Arc<[f32]>,
+    pub n2_g: Arc<[f32]>,
+    pub n2_b: Arc<[f32]>,
+    pub c2_w: Arc<[f32]>,
+    pub c2_b: Arc<[f32]>,
     /// Optional 1×1 shortcut when in_channels != out_channels.
     /// Shape `[Cout, Cin, 1, 1]`.
     pub shortcut_w: Option<Arc<[f32]>>,
@@ -101,13 +105,18 @@ pub struct ResnetWeights {
 
 #[derive(Debug, Clone)]
 pub struct AttnWeights {
-    pub gn_g: Arc<[f32]>, pub gn_b: Arc<[f32]>,
+    pub gn_g: Arc<[f32]>,
+    pub gn_b: Arc<[f32]>,
     /// Stored row-major `[C, C]` (not a conv). Load-time transpose
     /// gives `[C, C]` suitable for `x @ W`.
-    pub q_w: Arc<[f32]>, pub q_b: Arc<[f32]>,
-    pub k_w: Arc<[f32]>, pub k_b: Arc<[f32]>,
-    pub v_w: Arc<[f32]>, pub v_b: Arc<[f32]>,
-    pub out_w: Arc<[f32]>, pub out_b: Arc<[f32]>,
+    pub q_w: Arc<[f32]>,
+    pub q_b: Arc<[f32]>,
+    pub k_w: Arc<[f32]>,
+    pub k_b: Arc<[f32]>,
+    pub v_w: Arc<[f32]>,
+    pub v_b: Arc<[f32]>,
+    pub out_w: Arc<[f32]>,
+    pub out_b: Arc<[f32]>,
 }
 
 #[derive(Debug, Clone)]
@@ -128,7 +137,7 @@ pub struct SdVaeDecoderWeights {
     pub conv_in_b: Arc<[f32]>,
     /// Mid block: ResNet + Attention + ResNet, all at dim[0].
     pub mid_resnet_1: ResnetWeights,
-    pub mid_attn:     AttnWeights,
+    pub mid_attn: AttnWeights,
     pub mid_resnet_2: ResnetWeights,
     pub up_blocks: Vec<UpBlockWeights>,
     pub conv_norm_out_g: Arc<[f32]>,
@@ -141,7 +150,7 @@ pub struct SdVaeDecoderWeights {
 
 #[derive(Debug, Clone)]
 pub struct SdVaeDecoder {
-    pub config:  SdVaeConfig,
+    pub config: SdVaeConfig,
     pub weights: SdVaeDecoderWeights,
 }
 
@@ -155,24 +164,60 @@ impl SdVaeDecoder {
         let cfg = &self.config;
         let lc = cfg.latent_channels;
         assert_eq!(
-            latent.len(), lc * h_lat * w_lat,
-            "decode: latent has {} elements, expected {lc}×{h_lat}×{w_lat}", latent.len()
+            latent.len(),
+            lc * h_lat * w_lat,
+            "decode: latent has {} elements, expected {lc}×{h_lat}×{w_lat}",
+            latent.len()
         );
-        let x = LazyTensor::from_f32(latent.to_vec(), Shape::from_dims(&[1, lc, h_lat, w_lat]), &crate::Device::cpu());
+        let x = LazyTensor::from_f32(
+            latent.to_vec(),
+            Shape::from_dims(&[1, lc, h_lat, w_lat]),
+            &crate::Device::cpu(),
+        );
 
         // post_quant_conv (1×1 conv on the raw latent).
-        let x = conv2d_k1_s1_p0(&x, &self.weights.post_quant_conv_w, &self.weights.post_quant_conv_b,
-            lc, lc, h_lat, w_lat)?;
+        let x = conv2d_k1_s1_p0(
+            &x,
+            &self.weights.post_quant_conv_w,
+            &self.weights.post_quant_conv_b,
+            lc,
+            lc,
+            h_lat,
+            w_lat,
+        )?;
 
         // conv_in: 3×3 conv, [1, 4, H, W] → [1, dim[0], H, W].
         let d_mid = cfg.dims[0];
-        let x = conv2d_k3_s1_p1(&x, &self.weights.conv_in_w, &self.weights.conv_in_b,
-            lc, d_mid, h_lat, w_lat)?;
+        let x = conv2d_k3_s1_p1(
+            &x,
+            &self.weights.conv_in_w,
+            &self.weights.conv_in_b,
+            lc,
+            d_mid,
+            h_lat,
+            w_lat,
+        )?;
 
         // mid block: ResNet + Attention + ResNet (all at d_mid).
-        let x = resnet(&x, &self.weights.mid_resnet_1, cfg, d_mid, d_mid, h_lat, w_lat)?;
+        let x = resnet(
+            &x,
+            &self.weights.mid_resnet_1,
+            cfg,
+            d_mid,
+            d_mid,
+            h_lat,
+            w_lat,
+        )?;
         let x = vae_spatial_attention(&x, &self.weights.mid_attn, cfg, d_mid, h_lat, w_lat)?;
-        let x = resnet(&x, &self.weights.mid_resnet_2, cfg, d_mid, d_mid, h_lat, w_lat)?;
+        let x = resnet(
+            &x,
+            &self.weights.mid_resnet_2,
+            cfg,
+            d_mid,
+            d_mid,
+            h_lat,
+            w_lat,
+        )?;
 
         // up blocks: 4 stages. dims[1..] gives the output channel for each.
         let mut x = x;
@@ -195,11 +240,26 @@ impl SdVaeDecoder {
         }
 
         // Final norm + SiLU + 3×3 conv → [1, 3, H, W].
-        let x = group_norm(&x, &self.weights.conv_norm_out_g, &self.weights.conv_norm_out_b,
-            cfg.norm_num_groups, cfg.norm_eps, c, h, w)?;
+        let x = group_norm(
+            &x,
+            &self.weights.conv_norm_out_g,
+            &self.weights.conv_norm_out_b,
+            cfg.norm_num_groups,
+            cfg.norm_eps,
+            c,
+            h,
+            w,
+        )?;
         let x = x.silu();
-        conv2d_k3_s1_p1(&x, &self.weights.conv_out_w, &self.weights.conv_out_b,
-            c, cfg.out_channels, h, w)
+        conv2d_k3_s1_p1(
+            &x,
+            &self.weights.conv_out_w,
+            &self.weights.conv_out_b,
+            c,
+            cfg.out_channels,
+            h,
+            w,
+        )
     }
 }
 
@@ -214,10 +274,28 @@ fn resnet(
     h: usize,
     w: usize,
 ) -> crate::Result<LazyTensor> {
-    let h1 = group_norm(x, &rw.n1_g, &rw.n1_b, cfg.norm_num_groups, cfg.norm_eps, c_in, h, w)?;
+    let h1 = group_norm(
+        x,
+        &rw.n1_g,
+        &rw.n1_b,
+        cfg.norm_num_groups,
+        cfg.norm_eps,
+        c_in,
+        h,
+        w,
+    )?;
     let h1 = h1.silu();
     let h1 = conv2d_k3_s1_p1(&h1, &rw.c1_w, &rw.c1_b, c_in, c_out, h, w)?;
-    let h2 = group_norm(&h1, &rw.n2_g, &rw.n2_b, cfg.norm_num_groups, cfg.norm_eps, c_out, h, w)?;
+    let h2 = group_norm(
+        &h1,
+        &rw.n2_g,
+        &rw.n2_b,
+        cfg.norm_num_groups,
+        cfg.norm_eps,
+        c_out,
+        h,
+        w,
+    )?;
     let h2 = h2.silu();
     let h2 = conv2d_k3_s1_p1(&h2, &rw.c2_w, &rw.c2_b, c_out, c_out, h, w)?;
     let shortcut = match (&rw.shortcut_w, &rw.shortcut_b) {
@@ -242,7 +320,16 @@ fn vae_spatial_attention(
     w: usize,
 ) -> crate::Result<LazyTensor> {
     let n = h * w;
-    let x_norm = group_norm(x, &aw.gn_g, &aw.gn_b, cfg.norm_num_groups, cfg.norm_eps, c, h, w)?;
+    let x_norm = group_norm(
+        x,
+        &aw.gn_g,
+        &aw.gn_b,
+        cfg.norm_num_groups,
+        cfg.norm_eps,
+        c,
+        h,
+        w,
+    )?;
     // [1, C, H, W] → [1, H*W, C].
     let xf = x_norm
         .permute([0, 2, 3, 1_usize])?
@@ -253,10 +340,10 @@ fn vae_spatial_attention(
     // scores = q @ k^T / sqrt(C).
     // Shapes: q, k, v are [1, n, c]; reshape to [1, 1, n, c] for the
     // matmul pattern we already use, or stay 3D via transpose + matmul.
-    let k_t = k.permute([0, 2, 1_usize])?;  // [1, C, N]
-    let scores = q.matmul(&k_t)?.mul_scalar(1.0 / (c as f64).sqrt());  // [1, N, N]
+    let k_t = k.permute([0, 2, 1_usize])?; // [1, C, N]
+    let scores = q.matmul(&k_t)?.mul_scalar(1.0 / (c as f64).sqrt()); // [1, N, N]
     let probs = scores.softmax_last_dim()?;
-    let ctx = probs.matmul(&v)?;  // [1, N, C]
+    let ctx = probs.matmul(&v)?; // [1, N, C]
     let out = linear(&ctx, &aw.out_w, Some(&aw.out_b), c, c, n)?;
     // Reshape back to [1, C, H, W] and residual-add.
     let out_chw = out
@@ -283,24 +370,28 @@ fn group_norm(
     h: usize,
     w: usize,
 ) -> crate::Result<LazyTensor> {
-    assert_eq!(c % groups, 0, "group_norm: C={c} not divisible by groups={groups}");
+    assert_eq!(
+        c % groups,
+        0,
+        "group_norm: C={c} not divisible by groups={groups}"
+    );
     let cpg = c / groups;
-    let m = cpg * h * w;  // elements per group
+    let m = cpg * h * w; // elements per group
 
     // Reshape [1, C, H, W] → [1, groups, cpg*H*W].
     let x_flat = x.reshape(Shape::from_dims(&[1, groups, m]))?;
-    let mean = x_flat.mean_dim(2)?;  // [1, groups]
+    let mean = x_flat.mean_dim(2)?; // [1, groups]
     let mean_bc = mean
         .reshape(Shape::from_dims(&[1, groups, 1]))?
         .broadcast_to(Shape::from_dims(&[1, groups, m]))?;
     let centered = x_flat.sub(&mean_bc)?;
     let sq = centered.mul(&centered)?;
-    let var = sq.mean_dim(2)?;  // [1, groups]
+    let var = sq.mean_dim(2)?; // [1, groups]
     let std = var.add_scalar(eps).sqrt();
     let std_bc = std
         .reshape(Shape::from_dims(&[1, groups, 1]))?
         .broadcast_to(Shape::from_dims(&[1, groups, m]))?;
-    let normed = centered.div(&std_bc)?;  // [1, groups, m]
+    let normed = centered.div(&std_bc)?; // [1, groups, m]
     // Back to [1, C, H, W] and affine.
     let normed_chw = normed.reshape(Shape::from_dims(&[1, c, h, w]))?;
     let g = x
@@ -408,7 +499,7 @@ impl SdVaeDecoderWeights {
 
         let mut up_blocks = Vec::with_capacity(4);
         for si in 0..4 {
-            let c_in = cfg.dims[si];  // input channel for block si (= output of previous)
+            let c_in = cfg.dims[si]; // input channel for block si (= output of previous)
             let c_out = cfg.dims[si + 1];
             let mut resnets = Vec::with_capacity(cfg.layers_per_block);
             for ri in 0..cfg.layers_per_block {
@@ -416,7 +507,8 @@ impl SdVaeDecoderWeights {
                 let r = load_resnet(
                     st,
                     &format!("decoder.up_blocks.{si}.resnets.{ri}"),
-                    in_c, c_out,
+                    in_c,
+                    c_out,
                 )?;
                 resnets.push(r);
             }
@@ -429,7 +521,10 @@ impl SdVaeDecoderWeights {
                 let ub = load_f32(st, &format!("{p}.bias"))?;
                 Some((Arc::from(uw), Arc::from(ub)))
             };
-            up_blocks.push(UpBlockWeights { resnets, upsample_conv });
+            up_blocks.push(UpBlockWeights {
+                resnets,
+                upsample_conv,
+            });
         }
 
         let conv_norm_out_g = load_f32(st, "decoder.conv_norm_out.weight")?;
@@ -438,14 +533,17 @@ impl SdVaeDecoderWeights {
         let conv_out_b = load_f32(st, "decoder.conv_out.bias")?;
 
         // Sanity check shapes.
-        let _ = lc; let _ = oc;
+        let _ = lc;
+        let _ = oc;
 
         Ok(Self {
             post_quant_conv_w: Arc::from(post_quant_conv_w),
             post_quant_conv_b: Arc::from(post_quant_conv_b),
             conv_in_w: Arc::from(conv_in_w),
             conv_in_b: Arc::from(conv_in_b),
-            mid_resnet_1, mid_attn, mid_resnet_2,
+            mid_resnet_1,
+            mid_attn,
+            mid_resnet_2,
             up_blocks,
             conv_norm_out_g: Arc::from(conv_norm_out_g),
             conv_norm_out_b: Arc::from(conv_norm_out_b),
@@ -477,11 +575,16 @@ fn load_resnet(
         (None, None)
     };
     Ok(ResnetWeights {
-        n1_g: Arc::from(n1_g), n1_b: Arc::from(n1_b),
-        c1_w: Arc::from(c1_w), c1_b: Arc::from(c1_b),
-        n2_g: Arc::from(n2_g), n2_b: Arc::from(n2_b),
-        c2_w: Arc::from(c2_w), c2_b: Arc::from(c2_b),
-        shortcut_w, shortcut_b,
+        n1_g: Arc::from(n1_g),
+        n1_b: Arc::from(n1_b),
+        c1_w: Arc::from(c1_w),
+        c1_b: Arc::from(c1_b),
+        n2_g: Arc::from(n2_g),
+        n2_b: Arc::from(n2_b),
+        c2_w: Arc::from(c2_w),
+        c2_b: Arc::from(c2_b),
+        shortcut_w,
+        shortcut_b,
     })
 }
 
@@ -504,18 +607,20 @@ fn load_attn(
     let out_w = load_transposed(st, &format!("{prefix}.proj_attn.weight"), c, c)?;
     let out_b = load_f32(st, &format!("{prefix}.proj_attn.bias"))?;
     Ok(AttnWeights {
-        gn_g: Arc::from(gn_g), gn_b: Arc::from(gn_b),
-        q_w: Arc::from(q_w), q_b: Arc::from(q_b),
-        k_w: Arc::from(k_w), k_b: Arc::from(k_b),
-        v_w: Arc::from(v_w), v_b: Arc::from(v_b),
-        out_w: Arc::from(out_w), out_b: Arc::from(out_b),
+        gn_g: Arc::from(gn_g),
+        gn_b: Arc::from(gn_b),
+        q_w: Arc::from(q_w),
+        q_b: Arc::from(q_b),
+        k_w: Arc::from(k_w),
+        k_b: Arc::from(k_b),
+        v_w: Arc::from(v_w),
+        v_b: Arc::from(v_b),
+        out_w: Arc::from(out_w),
+        out_b: Arc::from(out_b),
     })
 }
 
-fn load_f32(
-    st: &crate::safetensors::MmapedSafetensors,
-    name: &str,
-) -> crate::Result<Vec<f32>> {
+fn load_f32(st: &crate::safetensors::MmapedSafetensors, name: &str) -> crate::Result<Vec<f32>> {
     use safetensors::Dtype;
     let view = st
         .get(name)
@@ -551,7 +656,8 @@ fn load_transposed(
     if flat.len() != out_features * in_features {
         crate::bail!(
             "vae load_transposed: {name:?} has {} elements, expected {}",
-            flat.len(), out_features * in_features,
+            flat.len(),
+            out_features * in_features,
         );
     }
     let mut out = vec![0.0_f32; out_features * in_features];
@@ -589,7 +695,9 @@ impl SdVaeDecoder {
 mod tests {
     use super::*;
 
-    fn arc(v: Vec<f32>) -> Arc<[f32]> { Arc::from(v) }
+    fn arc(v: Vec<f32>) -> Arc<[f32]> {
+        Arc::from(v)
+    }
 
     #[test]
     fn sd_v1_config_dims() {
@@ -616,11 +724,19 @@ mod tests {
         let z = |n| arc(vec![0.0_f32; n]);
         let o = |n| arc(vec![1.0_f32; n]);
         ResnetWeights {
-            n1_g: o(c_in), n1_b: z(c_in),
-            c1_w: z(c_out * c_in * 9), c1_b: z(c_out),
-            n2_g: o(c_out), n2_b: z(c_out),
-            c2_w: z(c_out * c_out * 9), c2_b: z(c_out),
-            shortcut_w: if c_in != c_out { Some(z(c_out * c_in)) } else { None },
+            n1_g: o(c_in),
+            n1_b: z(c_in),
+            c1_w: z(c_out * c_in * 9),
+            c1_b: z(c_out),
+            n2_g: o(c_out),
+            n2_b: z(c_out),
+            c2_w: z(c_out * c_out * 9),
+            c2_b: z(c_out),
+            shortcut_w: if c_in != c_out {
+                Some(z(c_out * c_in))
+            } else {
+                None
+            },
             shortcut_b: if c_in != c_out { Some(z(c_out)) } else { None },
         }
     }
@@ -629,11 +745,16 @@ mod tests {
         let z = |n| arc(vec![0.0_f32; n]);
         let o = |n| arc(vec![1.0_f32; n]);
         AttnWeights {
-            gn_g: o(c), gn_b: z(c),
-            q_w: z(c * c), q_b: z(c),
-            k_w: z(c * c), k_b: z(c),
-            v_w: z(c * c), v_b: z(c),
-            out_w: z(c * c), out_b: z(c),
+            gn_g: o(c),
+            gn_b: z(c),
+            q_w: z(c * c),
+            q_b: z(c),
+            k_w: z(c * c),
+            k_b: z(c),
+            v_w: z(c * c),
+            v_b: z(c),
+            out_w: z(c * c),
+            out_b: z(c),
         }
     }
 
@@ -652,27 +773,35 @@ mod tests {
             mid_resnet_1: zero_resnet(d_mid, d_mid),
             mid_attn: zero_attn(d_mid),
             mid_resnet_2: zero_resnet(d_mid, d_mid),
-            up_blocks: (0..4).map(|si| {
-                let c_in = cfg.dims[si];
-                let c_out = cfg.dims[si + 1];
-                let mut resnets = Vec::new();
-                for ri in 0..cfg.layers_per_block {
-                    let in_c = if ri == 0 { c_in } else { c_out };
-                    resnets.push(zero_resnet(in_c, c_out));
-                }
-                let upsample_conv = if si == 3 {
-                    None
-                } else {
-                    Some((z(c_out * c_out * 9), z(c_out)))
-                };
-                UpBlockWeights { resnets, upsample_conv }
-            }).collect(),
+            up_blocks: (0..4)
+                .map(|si| {
+                    let c_in = cfg.dims[si];
+                    let c_out = cfg.dims[si + 1];
+                    let mut resnets = Vec::new();
+                    for ri in 0..cfg.layers_per_block {
+                        let in_c = if ri == 0 { c_in } else { c_out };
+                        resnets.push(zero_resnet(in_c, c_out));
+                    }
+                    let upsample_conv = if si == 3 {
+                        None
+                    } else {
+                        Some((z(c_out * c_out * 9), z(c_out)))
+                    };
+                    UpBlockWeights {
+                        resnets,
+                        upsample_conv,
+                    }
+                })
+                .collect(),
             conv_norm_out_g: arc(vec![1.0_f32; *cfg.dims.last().unwrap()]),
             conv_norm_out_b: z(*cfg.dims.last().unwrap()),
             conv_out_w: z(oc * cfg.dims.last().unwrap() * 9),
             conv_out_b: z(oc),
         };
-        let decoder = SdVaeDecoder { config: cfg.clone(), weights };
+        let decoder = SdVaeDecoder {
+            config: cfg.clone(),
+            weights,
+        };
         // Tiny 4x4 latent → 32x32 output (8× upsample through 3 stages of 2×).
         let latent = vec![0.0_f32; lc * 4 * 4];
         let out = decoder.decode(&latent, 4, 4).unwrap();

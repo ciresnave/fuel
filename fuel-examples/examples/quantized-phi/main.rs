@@ -162,7 +162,7 @@ fn format_size(size_in_bytes: usize) -> String {
 /// holds a `QuantizedXModel` whose `forward(tokens, start_pos)` returns
 /// a `LazyTensor` of shape `(1, seq, vocab_size)`.
 enum Model {
-    Phi3(QuantizedPhi3Model, usize),  // (model, vocab_size)
+    Phi3(QuantizedPhi3Model, usize), // (model, vocab_size)
     Phi3b(QuantizedLlama3Model, usize),
 }
 
@@ -181,8 +181,14 @@ impl Model {
     /// `Vec<f32>` suitable for `LogitsProcessor::sample`.
     fn forward_last_logits(&self, tokens: &[u32], start_pos: usize) -> anyhow::Result<Vec<f32>> {
         let (logits_flat, vocab) = match self {
-            Self::Phi3(m, v) => (m.forward(tokens, start_pos).map_err(E::msg)?.realize_f32(), *v),
-            Self::Phi3b(m, v) => (m.forward(tokens, start_pos).map_err(E::msg)?.realize_f32(), *v),
+            Self::Phi3(m, v) => (
+                m.forward(tokens, start_pos).map_err(E::msg)?.realize_f32(),
+                *v,
+            ),
+            Self::Phi3b(m, v) => (
+                m.forward(tokens, start_pos).map_err(E::msg)?.realize_f32(),
+                *v,
+            ),
         };
         let seq = tokens.len();
         if seq == 0 {
@@ -355,7 +361,7 @@ fn main() -> anyhow::Result<()> {
         let header_done = start.elapsed();
         let model_content = mmaped.content();
         let mut total_size_in_bytes = 0;
-        for (_, tensor) in model_content.tensor_infos.iter() {
+        for tensor in model_content.tensor_infos.values() {
             let elem_count = tensor.shape.elem_count();
             total_size_in_bytes +=
                 elem_count * tensor.ggml_dtype.type_size() / tensor.ggml_dtype.block_size();
@@ -363,7 +369,7 @@ fn main() -> anyhow::Result<()> {
         println!(
             "mmapped {:?} tensors ({}); header in {:.2}s",
             model_content.tensor_infos.len(),
-            &format_size(total_size_in_bytes),
+            format_size(total_size_in_bytes),
             header_done.as_secs_f32(),
         );
         match args.which {
@@ -398,7 +404,7 @@ fn main() -> anyhow::Result<()> {
     let tokenizer = args.tokenizer()?;
     let mut tos = TokenOutputStream::new(tokenizer);
     let prompt_str = args.prompt.unwrap_or_else(|| DEFAULT_PROMPT.to_string());
-    print!("{}", &prompt_str);
+    print!("{}", prompt_str);
     let tokens = tos
         .tokenizer()
         .encode(prompt_str, true)

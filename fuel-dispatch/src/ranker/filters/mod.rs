@@ -94,22 +94,18 @@ mod tests {
 
     fn ctx<'a>() -> FilterContext<'a> {
         static LAYOUTS: std::sync::OnceLock<Vec<Layout>> = std::sync::OnceLock::new();
-        let layouts = LAYOUTS.get_or_init(|| {
-            vec![Layout::contiguous(Shape::from(vec![4]))]
-        });
+        let layouts = LAYOUTS.get_or_init(|| vec![Layout::contiguous(Shape::from(vec![4]))]);
         FilterContext::new(OpKind::AddElementwise, &[DType::F32], layouts)
     }
 
     #[test]
     fn default_chain_unconstrained_passes_everything() {
         let chain = default_chain(PrecisionRequirement::default());
-        let mut set = AlternativeSet::from_candidates(
-            vec![
-                candidate(false, false),
-                candidate(true, false),
-                candidate(false, true),
-            ],
-        );
+        let mut set = AlternativeSet::from_candidates(vec![
+            candidate(false, false),
+            candidate(true, false),
+            candidate(false, true),
+        ]);
         apply_filter_chain(&mut set, &chain, &ctx()).expect("chain");
         // Precision floor unconstrained → all pass.
         // Strided-input pref: input is contiguous → no-op.
@@ -122,9 +118,8 @@ mod tests {
     #[test]
     fn default_chain_bit_stable_required_drops_unstable() {
         let chain = default_chain(PrecisionRequirement::BIT_STABLE);
-        let mut set = AlternativeSet::from_candidates(
-            vec![candidate(false, false), candidate(true, false)],
-        );
+        let mut set =
+            AlternativeSet::from_candidates(vec![candidate(false, false), candidate(true, false)]);
         apply_filter_chain(&mut set, &chain, &ctx()).expect("chain");
         assert_eq!(set.len(), 1);
         assert!(set.winner().unwrap().precision.bit_stable_on_same_hardware);
@@ -136,9 +131,8 @@ mod tests {
         // the hard precision-floor filter empties the set →
         // FilterRejected.
         let chain = default_chain(PrecisionRequirement::BIT_STABLE);
-        let mut set = AlternativeSet::from_candidates(
-            vec![candidate(false, false), candidate(false, true)],
-        );
+        let mut set =
+            AlternativeSet::from_candidates(vec![candidate(false, false), candidate(false, true)]);
         let err = apply_filter_chain(&mut set, &chain, &ctx()).unwrap_err();
         match err {
             fuel_ir::Error::FilterRejected { filter, .. } => {
@@ -153,9 +147,8 @@ mod tests {
         // No bit-stable, precision unconstrained → bit-stable pref
         // is soft → it returns empty → skipped → all survive.
         let chain = default_chain(PrecisionRequirement::default());
-        let mut set = AlternativeSet::from_candidates(
-            vec![candidate(false, false), candidate(false, true)],
-        );
+        let mut set =
+            AlternativeSet::from_candidates(vec![candidate(false, false), candidate(false, true)]);
         apply_filter_chain(&mut set, &chain, &ctx()).expect("chain");
         assert_eq!(set.len(), 2, "no bit-stable + soft pref → no narrowing");
     }

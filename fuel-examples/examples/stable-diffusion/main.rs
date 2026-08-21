@@ -28,12 +28,8 @@ use anyhow::{Error as E, Result};
 use clap::Parser;
 use rand::{Rng, SeedableRng};
 
-use fuel::lazy_sd_samplers::{
-    DdimScheduler, DdimSchedulerConfig, SdScheduler,
-};
-use fuel::lazy_sd_text_encoder::{
-    ClipTextConfig, ClipTextWeights, SdTextEncoder, SdTextTokenizer,
-};
+use fuel::lazy_sd_samplers::{DdimScheduler, DdimSchedulerConfig, SdScheduler};
+use fuel::lazy_sd_text_encoder::{ClipTextConfig, ClipTextWeights, SdTextEncoder, SdTextTokenizer};
 use fuel::lazy_sd_unet::{SdUnet, SdUnetConfig, SdUnetWeights};
 use fuel::lazy_sd_vae::{SdVaeConfig, SdVaeDecoder, SdVaeDecoderWeights};
 
@@ -142,10 +138,7 @@ impl ModelFile {
             Some(filename) => Ok(std::path::PathBuf::from(filename)),
             None => {
                 let (repo, path) = match self {
-                    Self::Tokenizer => (
-                        "laion/CLIP-ViT-L-14-laion2B-s32B-b82K",
-                        "tokenizer.json",
-                    ),
+                    Self::Tokenizer => ("laion/CLIP-ViT-L-14-laion2B-s32B-b82K", "tokenizer.json"),
                     Self::Clip => (version.repo(), "text_encoder/model.safetensors"),
                     Self::Unet => (version.repo(), "unet/diffusion_pytorch_model.safetensors"),
                     Self::Vae => (version.repo(), "vae/diffusion_pytorch_model.safetensors"),

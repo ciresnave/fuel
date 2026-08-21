@@ -88,8 +88,8 @@
 
 use std::collections::HashMap;
 
-use fuel_ir::DeviceLocation;
 use fuel_graph::NodeId;
+use fuel_ir::DeviceLocation;
 use smallvec::SmallVec;
 
 use super::cost::TransferEstimator;
@@ -210,8 +210,7 @@ impl PlacementDp {
     ) {
         let mut devices = DeviceVec::new();
         let mut best = CostVec::new();
-        let mut back: Vec<Vec<(NodeId, DeviceLocation)>> =
-            Vec::with_capacity(device_costs.len());
+        let mut back: Vec<Vec<(NodeId, DeviceLocation)>> = Vec::with_capacity(device_costs.len());
 
         for &(d, kernel_ns) in device_costs {
             let mut acc = kernel_ns;
@@ -248,10 +247,10 @@ impl PlacementDp {
 
         // The consumed producers are no longer frontier states.
         for ci in chain_inputs {
-            if let Some(&p_idx) = self.by_node.get(&ci.producer) {
-                if self.rows[p_idx].status == RowStatus::Open {
-                    self.rows[p_idx].status = RowStatus::Chained;
-                }
+            if let Some(&p_idx) = self.by_node.get(&ci.producer)
+                && self.rows[p_idx].status == RowStatus::Open
+            {
+                self.rows[p_idx].status = RowStatus::Chained;
             }
         }
 
@@ -332,11 +331,7 @@ impl PlacementDp {
             for (j, &d) in row.devices.iter().enumerate() {
                 let mut t = row.best[j];
                 if let Some(loc) = exit_loc {
-                    t = t.saturating_add(est.estimate_transfer_ns(
-                        d,
-                        loc,
-                        exit_bytes(row.node),
-                    ));
+                    t = t.saturating_add(est.estimate_transfer_ns(d, loc, exit_bytes(row.node)));
                 }
                 if choice.is_none_or(|(_, c)| t < c) {
                     choice = Some((d, t));
@@ -383,8 +378,7 @@ impl PlacementDp {
             self.rows[idx].status = RowStatus::Committed;
             self.rows[idx].committed = Some(dev);
             out.push((self.rows[idx].node, dev));
-            let Some(di) = self.rows[idx].devices.iter().position(|&d| d == dev)
-            else {
+            let Some(di) = self.rows[idx].devices.iter().position(|&d| d == dev) else {
                 // Defensive: unknown arrival device → no backpointers
                 // to follow; the finish() tail commits the chain.
                 continue;
@@ -423,24 +417,40 @@ mod tests {
             if src == dst {
                 return 0;
             }
-            self.latency.saturating_add(bytes.saturating_mul(self.per_byte))
+            self.latency
+                .saturating_add(bytes.saturating_mul(self.per_byte))
         }
     }
 
     fn chain(producer: NodeId, bytes: u64) -> ChainInput {
-        ChainInput { producer, edge_bytes: smallvec![bytes] }
+        ChainInput {
+            producer,
+            edge_bytes: smallvec![bytes],
+        }
     }
 
     #[test]
     fn extension_carries_accumulated_cost_and_backpointers() {
-        let est = Est { latency: 1000, per_byte: 0 };
+        let est = Est {
+            latency: 1000,
+            per_byte: 0,
+        };
         let mut dp = PlacementDp::new();
         // n0: CPU 800, GPU 100; input fixed on CPU.
         dp.push_row(NodeId(0), &[(CPU, 800), (GPU, 100)], &[(CPU, 4)], &[], &est);
         assert!(dp.is_open(NodeId(0)));
         // n1 chains n0: CPU 800, GPU 100.
-        dp.push_row(NodeId(1), &[(CPU, 800), (GPU, 100)], &[], &[chain(NodeId(0), 4)], &est);
-        assert!(!dp.is_open(NodeId(0)), "chained producer leaves the frontier");
+        dp.push_row(
+            NodeId(1),
+            &[(CPU, 800), (GPU, 100)],
+            &[],
+            &[chain(NodeId(0), 4)],
+            &est,
+        );
+        assert!(
+            !dp.is_open(NodeId(0)),
+            "chained producer leaves the frontier"
+        );
         assert!(dp.is_open(NodeId(1)));
         // best_n0 = [800, 1100]; best_n1[CPU] = 800 + min(800, 2100)
         // = 1600 (via CPU); best_n1[GPU] = 100 + min(1800, 1100) =
@@ -455,7 +465,10 @@ mod tests {
 
     #[test]
     fn exit_pricing_flips_the_local_winner() {
-        let est = Est { latency: 1000, per_byte: 0 };
+        let est = Est {
+            latency: 1000,
+            per_byte: 0,
+        };
         let mut dp = PlacementDp::new();
         // Locally GPU wins: CPU 1050 vs GPU 100. Exit to CPU adds
         // 1000 to GPU → CPU wins.
@@ -472,7 +485,10 @@ mod tests {
 
     #[test]
     fn close_toward_prices_the_boundary_crossing() {
-        let est = Est { latency: 10, per_byte: 1 };
+        let est = Est {
+            latency: 10,
+            per_byte: 1,
+        };
         let mut dp = PlacementDp::new();
         // GPU locally cheaper (100 vs 300) but the consumer sits on
         // CPU and the boundary is 1024 bytes: GPU 100 + 1034 = 1134
@@ -487,11 +503,17 @@ mod tests {
 
     #[test]
     fn duplicated_edges_price_per_occurrence() {
-        let est = Est { latency: 1000, per_byte: 0 };
+        let est = Est {
+            latency: 1000,
+            per_byte: 0,
+        };
         let mut dp = PlacementDp::new();
         dp.push_row(NodeId(0), &[(CPU, 0), (GPU, 0)], &[], &[], &est);
         // Add(x, x): two edges from the same producer.
-        let ci = ChainInput { producer: NodeId(0), edge_bytes: smallvec![4, 4] };
+        let ci = ChainInput {
+            producer: NodeId(0),
+            edge_bytes: smallvec![4, 4],
+        };
         dp.push_row(NodeId(1), &[(CPU, 0), (GPU, 0)], &[], &[ci], &est);
         // Arriving GPU from a CPU producer pays two crossings
         // (2000); same-device pays zero, so ties keep everything on
@@ -504,7 +526,10 @@ mod tests {
     #[test]
     fn aliases_flatten_through_view_chains() {
         let mut dp = PlacementDp::new();
-        let est = Est { latency: 0, per_byte: 0 };
+        let est = Est {
+            latency: 0,
+            per_byte: 0,
+        };
         dp.push_row(NodeId(0), &[(CPU, 0)], &[], &[], &est);
         dp.add_alias(NodeId(1), NodeId(0));
         dp.add_alias(NodeId(2), NodeId(1));
@@ -516,7 +541,10 @@ mod tests {
 
     #[test]
     fn saturating_costs_never_overflow() {
-        let est = Est { latency: u64::MAX, per_byte: u64::MAX };
+        let est = Est {
+            latency: u64::MAX,
+            per_byte: u64::MAX,
+        };
         let mut dp = PlacementDp::new();
         dp.push_row(
             NodeId(0),

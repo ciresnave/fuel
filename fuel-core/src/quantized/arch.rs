@@ -106,9 +106,9 @@ pub fn detect_from_gguf(content: &Content) -> Architecture {
 /// layouts actually differ on.
 pub fn detect_from_tensor_names<'a, I: IntoIterator<Item = &'a str>>(names: I) -> Architecture {
     let mut has_blk_any = false;
-    let mut has_expert = false;       // MoE marker
-    let mut has_gpt2_style = false;   // transformer.h.N.attn.c_attn.weight
-    let mut has_neox_style = false;   // gpt_neox.layers.N.attention
+    let mut has_expert = false; // MoE marker
+    let mut has_gpt2_style = false; // transformer.h.N.attn.c_attn.weight
+    let mut has_neox_style = false; // gpt_neox.layers.N.attention
     for n in names {
         if n.starts_with("blk.") {
             has_blk_any = true;
@@ -147,11 +147,26 @@ mod tests {
 
     #[test]
     fn normalizes_architecture_names() {
-        assert_eq!(Architecture::from_metadata_string("Qwen3-MoE"), Architecture::Qwen3Moe);
-        assert_eq!(Architecture::from_metadata_string("qwen3_moe"), Architecture::Qwen3Moe);
-        assert_eq!(Architecture::from_metadata_string("LLaMA"), Architecture::Llama);
-        assert_eq!(Architecture::from_metadata_string("phi2"), Architecture::Phi);
-        assert_eq!(Architecture::from_metadata_string("something-new"), Architecture::Unknown);
+        assert_eq!(
+            Architecture::from_metadata_string("Qwen3-MoE"),
+            Architecture::Qwen3Moe
+        );
+        assert_eq!(
+            Architecture::from_metadata_string("qwen3_moe"),
+            Architecture::Qwen3Moe
+        );
+        assert_eq!(
+            Architecture::from_metadata_string("LLaMA"),
+            Architecture::Llama
+        );
+        assert_eq!(
+            Architecture::from_metadata_string("phi2"),
+            Architecture::Phi
+        );
+        assert_eq!(
+            Architecture::from_metadata_string("something-new"),
+            Architecture::Unknown
+        );
     }
 
     #[test]
@@ -161,24 +176,36 @@ mod tests {
             "blk.0.ffn_gate_exps.weight",
             "blk.0.ffn_down_exps.weight",
         ];
-        assert_eq!(detect_from_tensor_names(names.iter().copied()), Architecture::Qwen3Moe);
+        assert_eq!(
+            detect_from_tensor_names(names.iter().copied()),
+            Architecture::Qwen3Moe
+        );
     }
 
     #[test]
     fn tensor_name_fallback_picks_llama_family() {
         let names = ["blk.0.attn_q.weight", "blk.0.attn_k.weight"];
-        assert_eq!(detect_from_tensor_names(names.iter().copied()), Architecture::Llama);
+        assert_eq!(
+            detect_from_tensor_names(names.iter().copied()),
+            Architecture::Llama
+        );
     }
 
     #[test]
     fn tensor_name_fallback_picks_gpt2() {
         let names = ["transformer.h.0.attn.c_attn.weight"];
-        assert_eq!(detect_from_tensor_names(names.iter().copied()), Architecture::Gpt2);
+        assert_eq!(
+            detect_from_tensor_names(names.iter().copied()),
+            Architecture::Gpt2
+        );
     }
 
     #[test]
     fn tensor_name_fallback_unknown_when_empty() {
         let names: [&str; 0] = [];
-        assert_eq!(detect_from_tensor_names(names.iter().copied()), Architecture::Unknown);
+        assert_eq!(
+            detect_from_tensor_names(names.iter().copied()),
+            Architecture::Unknown
+        );
     }
 }

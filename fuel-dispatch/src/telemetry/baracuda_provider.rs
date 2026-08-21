@@ -61,7 +61,7 @@
 //!   SKU Baracuda ships per family (`sm_90` → `Sm90a`).
 
 use baracuda_kernels_types::{
-    structure_key_token, ArchSku, ElementKind, OpCategory, OperandDesc, MAX_RANK,
+    ArchSku, ElementKind, MAX_RANK, OpCategory, OperandDesc, structure_key_token,
 };
 use fuel_ir::DType;
 
@@ -189,7 +189,9 @@ fn map_element_kind(dt: DType) -> Option<ElementKind> {
 /// the locked `baracuda-kernel-vocab 0.0.1-alpha.78` to map `"90"` onto. See
 /// [`arch_sku_digits`] for the compile-time trap that fires when that changes.
 fn map_arch_sku(arch: &str) -> Option<ArchSku> {
-    let digits = arch.strip_prefix("sm_").or_else(|| arch.strip_prefix("sm"))?;
+    let digits = arch
+        .strip_prefix("sm_")
+        .or_else(|| arch.strip_prefix("sm"))?;
     Some(match digits {
         "80" => ArchSku::Sm80,
         "89" => ArchSku::Sm89,
@@ -261,12 +263,23 @@ fn map_op_category(op_class: &str, n_inputs: usize) -> Option<OpCategory> {
         "Conv2D" | "ConvTranspose2D" | "CausalConv1d" => OpCategory::Convolution,
         "FlashAttn" | "FlashAttnBackwardQ" | "FlashAttnBackwardK" | "FlashAttnBackwardV"
         | "PagedAttn" | "Rope" => OpCategory::Attention,
-        "SoftmaxLastDim" | "SoftmaxLastDimBackward" | "LogSoftmaxLastDim"
+        "SoftmaxLastDim"
+        | "SoftmaxLastDimBackward"
+        | "LogSoftmaxLastDim"
         | "LogSoftmaxLastDimBackward" => OpCategory::Softmax,
-        "RmsNormLastDim" | "RmsNormLastDimBackward" | "LayerNormLastDim"
+        "RmsNormLastDim"
+        | "RmsNormLastDimBackward"
+        | "LayerNormLastDim"
         | "LayerNormLastDimBackward" => OpCategory::Normalization,
-        "SumReduce" | "MaxReduce" | "MinReduce" | "MeanReduce" | "ReduceSumTo" | "ReduceMaxTo"
-        | "ReduceMaxToBackward" | "ArgMaxDim" | "ArgMinDim" => OpCategory::Reduction,
+        "SumReduce"
+        | "MaxReduce"
+        | "MinReduce"
+        | "MeanReduce"
+        | "ReduceSumTo"
+        | "ReduceMaxTo"
+        | "ReduceMaxToBackward"
+        | "ArgMaxDim"
+        | "ArgMinDim" => OpCategory::Reduction,
         "CumSum" | "SelectiveScan" | "SsdChunkScan" => OpCategory::Scan,
         "IndexSelect" | "Gather" | "IndexAdd" | "ScatterAdd" | "MaskedFill" => OpCategory::Indexing,
         "Flip" | "Roll" | "Pad" | "PadBackward" | "Triu" | "Tril" | "Concat" | "Copy"
@@ -349,7 +362,10 @@ mod tests {
         assert_eq!(mapped.dtype, ElementKind::F16);
         assert_eq!(mapped.align_bytes, od.align_bytes);
         assert!(mapped.quant.is_none(), "v1 does not fabricate quant facts");
-        assert!(mapped.symbolic.is_none(), "v1 does not fabricate symbolic facts");
+        assert!(
+            mapped.symbolic.is_none(),
+            "v1 does not fabricate symbolic facts"
+        );
     }
 
     /// **GAP-171, asserted as BEHAVIOUR rather than as a table entry — because
@@ -364,7 +380,10 @@ mod tests {
     #[test]
     fn a_u32_operand_now_derives_a_key_where_it_previously_derived_none() {
         let p = BaracudaStructureKeyProvider;
-        let u32s = [contig_of(&[128, 256], DType::U32), contig_of(&[128, 256], DType::U32)];
+        let u32s = [
+            contig_of(&[128, 256], DType::U32),
+            contig_of(&[128, 256], DType::U32),
+        ];
         let t = p
             .structure_key("MatMul", &u32s, "sm_89")
             .expect("a u32 operand must derive a key — before GAP-171 this was None");
@@ -372,10 +391,14 @@ mod tests {
 
         // The dtype must actually REACH the key. Without this, a mapping that
         // silently collapsed u32 onto some other kind would still pass above.
-        let f16s = [contig_of(&[128, 256], DType::F16), contig_of(&[128, 256], DType::F16)];
+        let f16s = [
+            contig_of(&[128, 256], DType::F16),
+            contig_of(&[128, 256], DType::F16),
+        ];
         assert_ne!(
             t,
-            p.structure_key("MatMul", &f16s, "sm_89").expect("f16 derives"),
+            p.structure_key("MatMul", &f16s, "sm_89")
+                .expect("f16 derives"),
             "u32 must key DIFFERENTLY from f16, or the dtype is being dropped",
         );
 
@@ -506,7 +529,10 @@ mod tests {
         assert_eq!(map_arch_sku("sm_90"), Some(ArchSku::Sm90a));
         assert_eq!(map_arch_sku("sm89"), Some(ArchSku::Sm89));
         assert_eq!(map_arch_sku("cpu"), None);
-        assert!(matches!(map_op_category("MatMul", 2), Some(OpCategory::Gemm)));
+        assert!(matches!(
+            map_op_category("MatMul", 2),
+            Some(OpCategory::Gemm)
+        ));
         assert!(matches!(
             map_op_category("AddElementwise", 2),
             Some(OpCategory::BinaryElementwise)
@@ -548,7 +574,8 @@ mod tests {
         // BEHAVIOUR change, and it reached a test that never mentioned GAP-171.
         let i16op = [contig_of(&[8, 16], DType::I16)];
         assert!(
-            p.structure_key("ReluElementwise", &i16op, "sm_89").is_none(),
+            p.structure_key("ReluElementwise", &i16op, "sm_89")
+                .is_none(),
             "unmappable dtype ⇒ no key"
         );
     }
@@ -560,7 +587,8 @@ mod tests {
         let p = BaracudaStructureKeyProvider;
         let big = contig_f16(&[2, 2, 2, 2, 2, 2, 2, 2, 2]);
         assert!(
-            p.structure_key("ReluElementwise", &[big], "sm_89").is_none(),
+            p.structure_key("ReluElementwise", &[big], "sm_89")
+                .is_none(),
             "rank > MAX_RANK must decline, not panic"
         );
     }

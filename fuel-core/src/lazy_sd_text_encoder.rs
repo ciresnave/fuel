@@ -55,27 +55,29 @@ pub enum ClipTextActivation {
 }
 
 impl Default for ClipTextActivation {
-    fn default() -> Self { Self::QuickGelu }
+    fn default() -> Self {
+        Self::QuickGelu
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct ClipTextConfig {
-    pub vocab_size:              usize,
-    pub hidden_size:             usize,
-    pub num_hidden_layers:       usize,
-    pub num_attention_heads:     usize,
-    pub intermediate_size:       usize,
+    pub vocab_size: usize,
+    pub hidden_size: usize,
+    pub num_hidden_layers: usize,
+    pub num_attention_heads: usize,
+    pub intermediate_size: usize,
     pub max_position_embeddings: usize,
     #[serde(default = "default_layer_norm_eps")]
-    pub layer_norm_eps:          f64,
-    pub bos_token_id:            u32,
-    pub eos_token_id:            u32,
-    pub pad_token_id:            u32,
+    pub layer_norm_eps: f64,
+    pub bos_token_id: u32,
+    pub eos_token_id: u32,
+    pub pad_token_id: u32,
     /// Defaults to `QuickGelu` for backwards compatibility with
     /// SD 1.5-shape weights; SDXL TE2 / SD 2.x preset constructors
     /// override to `Gelu`.
     #[serde(default)]
-    pub activation:              ClipTextActivation,
+    pub activation: ClipTextActivation,
 }
 
 fn default_layer_norm_eps() -> f64 {
@@ -87,17 +89,17 @@ impl ClipTextConfig {
     /// 12 layers, QuickGelu).
     pub fn sd_v1() -> Self {
         Self {
-            vocab_size:              49408,
-            hidden_size:              768,
-            num_hidden_layers:         12,
-            num_attention_heads:       12,
-            intermediate_size:       3072,
-            max_position_embeddings:   77,
-            layer_norm_eps:          1e-5,
-            bos_token_id:               0,
-            eos_token_id:               2,
-            pad_token_id:               1,
-            activation:              ClipTextActivation::QuickGelu,
+            vocab_size: 49408,
+            hidden_size: 768,
+            num_hidden_layers: 12,
+            num_attention_heads: 12,
+            intermediate_size: 3072,
+            max_position_embeddings: 77,
+            layer_norm_eps: 1e-5,
+            bos_token_id: 0,
+            eos_token_id: 2,
+            pad_token_id: 1,
+            activation: ClipTextActivation::QuickGelu,
         }
     }
 
@@ -105,17 +107,17 @@ impl ClipTextConfig {
     /// 23 layers, Gelu).
     pub fn sd_v2_1() -> Self {
         Self {
-            vocab_size:              49408,
-            hidden_size:             1024,
-            num_hidden_layers:         23,
-            num_attention_heads:       16,
-            intermediate_size:       4096,
-            max_position_embeddings:   77,
-            layer_norm_eps:          1e-5,
-            bos_token_id:               0,
-            eos_token_id:               2,
-            pad_token_id:               1,
-            activation:              ClipTextActivation::Gelu,
+            vocab_size: 49408,
+            hidden_size: 1024,
+            num_hidden_layers: 23,
+            num_attention_heads: 16,
+            intermediate_size: 4096,
+            max_position_embeddings: 77,
+            layer_norm_eps: 1e-5,
+            bos_token_id: 0,
+            eos_token_id: 2,
+            pad_token_id: 1,
+            activation: ClipTextActivation::Gelu,
         }
     }
 
@@ -131,17 +133,17 @@ impl ClipTextConfig {
     /// 32 layers, Gelu).
     pub fn sdxl_te2() -> Self {
         Self {
-            vocab_size:              49408,
-            hidden_size:             1280,
-            num_hidden_layers:         32,
-            num_attention_heads:       20,
-            intermediate_size:       5120,
-            max_position_embeddings:   77,
-            layer_norm_eps:          1e-5,
-            bos_token_id:               0,
-            eos_token_id:               2,
-            pad_token_id:           49407,
-            activation:              ClipTextActivation::Gelu,
+            vocab_size: 49408,
+            hidden_size: 1280,
+            num_hidden_layers: 32,
+            num_attention_heads: 20,
+            intermediate_size: 5120,
+            max_position_embeddings: 77,
+            layer_norm_eps: 1e-5,
+            bos_token_id: 0,
+            eos_token_id: 2,
+            pad_token_id: 49407,
+            activation: ClipTextActivation::Gelu,
         }
     }
 
@@ -181,19 +183,19 @@ pub struct ClipLayerWeights {
 #[derive(Debug, Clone)]
 pub struct ClipTextWeights {
     /// Shape `[vocab_size, hidden_size]`.
-    pub token_embedding:    Arc<[f32]>,
+    pub token_embedding: Arc<[f32]>,
     /// Shape `[max_position_embeddings, hidden_size]`.
     pub position_embedding: Arc<[f32]>,
-    pub layers:             Vec<ClipLayerWeights>,
-    pub final_ln_g:         Arc<[f32]>,
-    pub final_ln_b:         Arc<[f32]>,
+    pub layers: Vec<ClipLayerWeights>,
+    pub final_ln_g: Arc<[f32]>,
+    pub final_ln_b: Arc<[f32]>,
 }
 
 // ---- Model -----------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 pub struct SdTextEncoder {
-    pub config:  ClipTextConfig,
+    pub config: ClipTextConfig,
     pub weights: ClipTextWeights,
 }
 
@@ -208,9 +210,11 @@ impl SdTextEncoder {
     pub fn forward(&self, tokens: &[u32]) -> crate::Result<LazyTensor> {
         let cfg = &self.config;
         assert_eq!(
-            tokens.len(), cfg.max_position_embeddings,
+            tokens.len(),
+            cfg.max_position_embeddings,
             "SdTextEncoder::forward: expected exactly {} tokens, got {}",
-            cfg.max_position_embeddings, tokens.len(),
+            cfg.max_position_embeddings,
+            tokens.len(),
         );
         let seq = tokens.len();
         let h = cfg.hidden_size;
@@ -237,7 +241,14 @@ impl SdTextEncoder {
         for lw in &self.weights.layers {
             x = encoder_layer(&x, lw, cfg, seq)?;
         }
-        Ok(layer_norm_affine(&x, &self.weights.final_ln_g, &self.weights.final_ln_b, cfg.layer_norm_eps, h, seq)?)
+        Ok(layer_norm_affine(
+            &x,
+            &self.weights.final_ln_g,
+            &self.weights.final_ln_b,
+            cfg.layer_norm_eps,
+            h,
+            seq,
+        )?)
     }
 
     /// Run the forward pass and return the per-layer hidden
@@ -293,14 +304,20 @@ impl SdTextEncoder {
     ) -> crate::Result<(LazyTensor, LazyTensor)> {
         let cfg = &self.config;
         assert_eq!(
-            tokens.len(), cfg.max_position_embeddings,
+            tokens.len(),
+            cfg.max_position_embeddings,
             "SdTextEncoder::forward_until_encoder_layer: expected exactly {} tokens, got {}",
-            cfg.max_position_embeddings, tokens.len(),
+            cfg.max_position_embeddings,
+            tokens.len(),
         );
         let seq = tokens.len();
         let h = cfg.hidden_size;
         let n_layers = self.weights.layers.len() as isize;
-        let until = if until_layer < 0 { n_layers + until_layer } else { until_layer };
+        let until = if until_layer < 0 {
+            n_layers + until_layer
+        } else {
+            until_layer
+        };
         assert!(
             until >= 0 && (until as usize) < self.weights.layers.len(),
             "until_layer {until_layer} resolves to {until} out of range [0, {})",
@@ -327,15 +344,23 @@ impl SdTextEncoder {
             }
         }
         let final_out = layer_norm_affine(
-            &x, &self.weights.final_ln_g, &self.weights.final_ln_b,
-            cfg.layer_norm_eps, h, seq,
+            &x,
+            &self.weights.final_ln_g,
+            &self.weights.final_ln_b,
+            cfg.layer_norm_eps,
+            h,
+            seq,
         )?;
         let intermediate = intermediate.expect("until_idx is in range so intermediate is set");
         // Apply final LN to the intermediate too — SDXL's
         // ConditioningProvider expects normalized features.
         let intermediate_normed = layer_norm_affine(
-            &intermediate, &self.weights.final_ln_g, &self.weights.final_ln_b,
-            cfg.layer_norm_eps, h, seq,
+            &intermediate,
+            &self.weights.final_ln_g,
+            &self.weights.final_ln_b,
+            cfg.layer_norm_eps,
+            h,
+            seq,
         )?;
         Ok((final_out, intermediate_normed))
     }
@@ -371,9 +396,7 @@ fn encoder_layer(
         .broadcast_to(Shape::from_dims(&[1, n_heads, seq, seq]))?;
     scores = scores.add(&mask_t)?;
     let probs = scores.softmax_last_dim()?;
-    let ctx = probs
-        .matmul(&v)?
-        .merge_heads()?;
+    let ctx = probs.matmul(&v)?.merge_heads()?;
     let attn_out = linear(&ctx, &lw.out_w, Some(&lw.out_b), h, h, seq)?;
     let x = x.add(&attn_out)?;
 
@@ -383,8 +406,8 @@ fn encoder_layer(
     let mid = linear(&x_ln, &lw.fc1_w, Some(&lw.fc1_b), h, h_ff, seq)?;
     let mid = match cfg.activation {
         ClipTextActivation::QuickGelu => quick_gelu(&mid)?,
-        ClipTextActivation::Gelu      => mid.gelu(),
-        ClipTextActivation::GeluErf   => mid.gelu_erf(),
+        ClipTextActivation::Gelu => mid.gelu(),
+        ClipTextActivation::GeluErf => mid.gelu_erf(),
     };
     let ffn = linear(&mid, &lw.fc2_w, Some(&lw.fc2_b), h_ff, h, seq)?;
     x.add(&ffn)
@@ -465,10 +488,8 @@ impl ClipTextWeights {
         cfg: &ClipTextConfig,
     ) -> crate::Result<Self> {
         let h = cfg.hidden_size;
-        let token_embedding =
-            load_f32(st, "text_model.embeddings.token_embedding.weight")?;
-        let position_embedding =
-            load_f32(st, "text_model.embeddings.position_embedding.weight")?;
+        let token_embedding = load_f32(st, "text_model.embeddings.token_embedding.weight")?;
+        let position_embedding = load_f32(st, "text_model.embeddings.position_embedding.weight")?;
 
         let mut layers = Vec::with_capacity(cfg.num_hidden_layers);
         for i in 0..cfg.num_hidden_layers {
@@ -485,26 +506,36 @@ impl ClipTextWeights {
             let out_b = load_f32(st, &format!("{p}.self_attn.out_proj.bias"))?;
             let ln2_g = load_f32(st, &format!("{p}.layer_norm2.weight"))?;
             let ln2_b = load_f32(st, &format!("{p}.layer_norm2.bias"))?;
-            let fc1_w = load_transposed(st, &format!("{p}.mlp.fc1.weight"), cfg.intermediate_size, h)?;
+            let fc1_w =
+                load_transposed(st, &format!("{p}.mlp.fc1.weight"), cfg.intermediate_size, h)?;
             let fc1_b = load_f32(st, &format!("{p}.mlp.fc1.bias"))?;
-            let fc2_w = load_transposed(st, &format!("{p}.mlp.fc2.weight"), h, cfg.intermediate_size)?;
+            let fc2_w =
+                load_transposed(st, &format!("{p}.mlp.fc2.weight"), h, cfg.intermediate_size)?;
             let fc2_b = load_f32(st, &format!("{p}.mlp.fc2.bias"))?;
             layers.push(ClipLayerWeights {
-                ln1_g: Arc::from(ln1_g), ln1_b: Arc::from(ln1_b),
-                q_w: Arc::from(q_w), q_b: Arc::from(q_b),
-                k_w: Arc::from(k_w), k_b: Arc::from(k_b),
-                v_w: Arc::from(v_w), v_b: Arc::from(v_b),
-                out_w: Arc::from(out_w), out_b: Arc::from(out_b),
-                ln2_g: Arc::from(ln2_g), ln2_b: Arc::from(ln2_b),
-                fc1_w: Arc::from(fc1_w), fc1_b: Arc::from(fc1_b),
-                fc2_w: Arc::from(fc2_w), fc2_b: Arc::from(fc2_b),
+                ln1_g: Arc::from(ln1_g),
+                ln1_b: Arc::from(ln1_b),
+                q_w: Arc::from(q_w),
+                q_b: Arc::from(q_b),
+                k_w: Arc::from(k_w),
+                k_b: Arc::from(k_b),
+                v_w: Arc::from(v_w),
+                v_b: Arc::from(v_b),
+                out_w: Arc::from(out_w),
+                out_b: Arc::from(out_b),
+                ln2_g: Arc::from(ln2_g),
+                ln2_b: Arc::from(ln2_b),
+                fc1_w: Arc::from(fc1_w),
+                fc1_b: Arc::from(fc1_b),
+                fc2_w: Arc::from(fc2_w),
+                fc2_b: Arc::from(fc2_b),
             });
         }
         let final_ln_g = load_f32(st, "text_model.final_layer_norm.weight")?;
         let final_ln_b = load_f32(st, "text_model.final_layer_norm.bias")?;
 
         Ok(Self {
-            token_embedding:    Arc::from(token_embedding),
+            token_embedding: Arc::from(token_embedding),
             position_embedding: Arc::from(position_embedding),
             layers,
             final_ln_g: Arc::from(final_ln_g),
@@ -513,10 +544,7 @@ impl ClipTextWeights {
     }
 }
 
-fn load_f32(
-    st: &crate::safetensors::MmapedSafetensors,
-    name: &str,
-) -> crate::Result<Vec<f32>> {
+fn load_f32(st: &crate::safetensors::MmapedSafetensors, name: &str) -> crate::Result<Vec<f32>> {
     use safetensors::Dtype;
     let view = st
         .get(name)
@@ -560,7 +588,8 @@ fn load_transposed(
     if flat.len() != out_features * in_features {
         crate::bail!(
             "clip load_transposed: {name:?} has {} elements, expected {}",
-            flat.len(), out_features * in_features,
+            flat.len(),
+            out_features * in_features,
         );
     }
     let mut out = vec![0.0_f32; out_features * in_features];
@@ -583,18 +612,15 @@ impl SdTextEncoder {
         Self::from_hub_with_config(repo_id, ClipTextConfig::sd_v1())
     }
 
-    pub fn from_hub_with_config(
-        repo_id: &str,
-        config: ClipTextConfig,
-    ) -> crate::Result<Self> {
+    pub fn from_hub_with_config(repo_id: &str, config: ClipTextConfig) -> crate::Result<Self> {
         let api = hf_hub::api::sync::Api::new()
             .map_err(|e| crate::Error::Msg(format!("hf-hub api init: {e}")))?;
         let repo = api.model(repo_id.to_string());
         // Diffusers repos ship one safetensors per subcomponent; SD 1.5
         // puts the text encoder at text_encoder/model.safetensors.
-        let path = repo
-            .get("text_encoder/model.safetensors")
-            .map_err(|e| crate::Error::Msg(format!("hf-hub text_encoder/model.safetensors: {e}")))?;
+        let path = repo.get("text_encoder/model.safetensors").map_err(|e| {
+            crate::Error::Msg(format!("hf-hub text_encoder/model.safetensors: {e}"))
+        })?;
         let st = unsafe { crate::safetensors::MmapedSafetensors::new(&path) }?;
         let weights = ClipTextWeights::load_from_mmapped(&st, &config)?;
         Ok(Self { config, weights })
@@ -639,10 +665,7 @@ impl SdTextTokenizer {
         Self::from_hub_with_config(_repo_id, &ClipTextConfig::sd_v1())
     }
 
-    pub fn from_hub_with_config(
-        _repo_id: &str,
-        cfg: &ClipTextConfig,
-    ) -> crate::Result<Self> {
+    pub fn from_hub_with_config(_repo_id: &str, cfg: &ClipTextConfig) -> crate::Result<Self> {
         // The _repo_id parameter is reserved for future support of
         // diffusers repos that do ship tokenizer/tokenizer.json. The
         // laion mirror is the default fallback — it's the canonical
@@ -684,7 +707,9 @@ impl SdTextTokenizer {
 mod tests {
     use super::*;
 
-    fn arc(v: Vec<f32>) -> Arc<[f32]> { Arc::from(v) }
+    fn arc(v: Vec<f32>) -> Arc<[f32]> {
+        Arc::from(v)
+    }
 
     #[test]
     fn sd_v1_config_shape() {
@@ -699,11 +724,16 @@ mod tests {
     fn forward_shape_and_finite() {
         // Tiny synthetic config for a shape smoke test.
         let cfg = ClipTextConfig {
-            vocab_size: 100, hidden_size: 16,
-            num_hidden_layers: 2, num_attention_heads: 4,
-            intermediate_size: 32, max_position_embeddings: 8,
+            vocab_size: 100,
+            hidden_size: 16,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            intermediate_size: 32,
+            max_position_embeddings: 8,
             layer_norm_eps: 1e-5,
-            bos_token_id: 0, eos_token_id: 2, pad_token_id: 1,
+            bos_token_id: 0,
+            eos_token_id: 2,
+            pad_token_id: 1,
             activation: ClipTextActivation::QuickGelu,
         };
         let h = cfg.hidden_size;
@@ -714,20 +744,31 @@ mod tests {
             position_embedding: z(cfg.max_position_embeddings * h),
             layers: (0..cfg.num_hidden_layers)
                 .map(|_| ClipLayerWeights {
-                    ln1_g: o(h), ln1_b: z(h),
-                    q_w: z(h * h), q_b: z(h),
-                    k_w: z(h * h), k_b: z(h),
-                    v_w: z(h * h), v_b: z(h),
-                    out_w: z(h * h), out_b: z(h),
-                    ln2_g: o(h), ln2_b: z(h),
+                    ln1_g: o(h),
+                    ln1_b: z(h),
+                    q_w: z(h * h),
+                    q_b: z(h),
+                    k_w: z(h * h),
+                    k_b: z(h),
+                    v_w: z(h * h),
+                    v_b: z(h),
+                    out_w: z(h * h),
+                    out_b: z(h),
+                    ln2_g: o(h),
+                    ln2_b: z(h),
                     fc1_w: z(h * cfg.intermediate_size),
                     fc1_b: z(cfg.intermediate_size),
                     fc2_w: z(cfg.intermediate_size * h),
                     fc2_b: z(h),
-                }).collect(),
-            final_ln_g: o(h), final_ln_b: z(h),
+                })
+                .collect(),
+            final_ln_g: o(h),
+            final_ln_b: z(h),
         };
-        let model = SdTextEncoder { config: cfg.clone(), weights };
+        let model = SdTextEncoder {
+            config: cfg.clone(),
+            weights,
+        };
         let tokens: Vec<u32> = (0..cfg.max_position_embeddings as u32).collect();
         let hidden = model.forward(&tokens).unwrap();
         let flat = hidden.realize_f32();
@@ -758,11 +799,16 @@ mod tests {
 
     fn tiny_cfg(activation: ClipTextActivation, n_layers: usize) -> ClipTextConfig {
         ClipTextConfig {
-            vocab_size: 100, hidden_size: 16,
-            num_hidden_layers: n_layers, num_attention_heads: 4,
-            intermediate_size: 32, max_position_embeddings: 8,
+            vocab_size: 100,
+            hidden_size: 16,
+            num_hidden_layers: n_layers,
+            num_attention_heads: 4,
+            intermediate_size: 32,
+            max_position_embeddings: 8,
             layer_norm_eps: 1e-5,
-            bos_token_id: 0, eos_token_id: 2, pad_token_id: 1,
+            bos_token_id: 0,
+            eos_token_id: 2,
+            pad_token_id: 1,
             activation,
         }
     }
@@ -780,20 +826,30 @@ mod tests {
         let mut nb_box: Box<dyn FnMut() -> f32> = Box::new(nb);
         let token_embedding = vec_of(cfg.vocab_size * h, &mut *nb_box);
         let position_embedding = vec_of(cfg.max_position_embeddings * h, &mut *nb_box);
-        let layers: Vec<ClipLayerWeights> = (0..cfg.num_hidden_layers).map(|_| ClipLayerWeights {
-            ln1_g: arc(vec![1.0_f32; h]), ln1_b: arc(vec![0.0_f32; h]),
-            q_w: vec_of(h * h, &mut *nb_box), q_b: vec_of(h, &mut *nb_box),
-            k_w: vec_of(h * h, &mut *nb_box), k_b: vec_of(h, &mut *nb_box),
-            v_w: vec_of(h * h, &mut *nb_box), v_b: vec_of(h, &mut *nb_box),
-            out_w: vec_of(h * h, &mut *nb_box), out_b: vec_of(h, &mut *nb_box),
-            ln2_g: arc(vec![1.0_f32; h]), ln2_b: arc(vec![0.0_f32; h]),
-            fc1_w: vec_of(h * cfg.intermediate_size, &mut *nb_box),
-            fc1_b: vec_of(cfg.intermediate_size, &mut *nb_box),
-            fc2_w: vec_of(cfg.intermediate_size * h, &mut *nb_box),
-            fc2_b: vec_of(h, &mut *nb_box),
-        }).collect();
+        let layers: Vec<ClipLayerWeights> = (0..cfg.num_hidden_layers)
+            .map(|_| ClipLayerWeights {
+                ln1_g: arc(vec![1.0_f32; h]),
+                ln1_b: arc(vec![0.0_f32; h]),
+                q_w: vec_of(h * h, &mut *nb_box),
+                q_b: vec_of(h, &mut *nb_box),
+                k_w: vec_of(h * h, &mut *nb_box),
+                k_b: vec_of(h, &mut *nb_box),
+                v_w: vec_of(h * h, &mut *nb_box),
+                v_b: vec_of(h, &mut *nb_box),
+                out_w: vec_of(h * h, &mut *nb_box),
+                out_b: vec_of(h, &mut *nb_box),
+                ln2_g: arc(vec![1.0_f32; h]),
+                ln2_b: arc(vec![0.0_f32; h]),
+                fc1_w: vec_of(h * cfg.intermediate_size, &mut *nb_box),
+                fc1_b: vec_of(cfg.intermediate_size, &mut *nb_box),
+                fc2_w: vec_of(cfg.intermediate_size * h, &mut *nb_box),
+                fc2_b: vec_of(h, &mut *nb_box),
+            })
+            .collect();
         ClipTextWeights {
-            token_embedding, position_embedding, layers,
+            token_embedding,
+            position_embedding,
+            layers,
             final_ln_g: arc(vec![1.0_f32; h]),
             final_ln_b: arc(vec![0.0_f32; h]),
         }
@@ -807,8 +863,14 @@ mod tests {
         let cfg_qg = tiny_cfg(ClipTextActivation::QuickGelu, 2);
         let cfg_g = tiny_cfg(ClipTextActivation::Gelu, 2);
         let weights = tiny_weights(&cfg_qg, 7);
-        let m_qg = SdTextEncoder { config: cfg_qg.clone(), weights: weights.clone() };
-        let m_g = SdTextEncoder { config: cfg_g, weights };
+        let m_qg = SdTextEncoder {
+            config: cfg_qg.clone(),
+            weights: weights.clone(),
+        };
+        let m_g = SdTextEncoder {
+            config: cfg_g,
+            weights,
+        };
         let tokens: Vec<u32> = (0..cfg_qg.max_position_embeddings as u32).collect();
         let a = m_qg.forward(&tokens).unwrap().realize_f32();
         let b = m_g.forward(&tokens).unwrap().realize_f32();
@@ -816,8 +878,10 @@ mod tests {
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-6,
-            "QuickGelu and Gelu activations should produce different outputs, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-6,
+            "QuickGelu and Gelu activations should produce different outputs, max_diff = {max_diff}"
+        );
     }
 
     /// `forward_until_encoder_layer(tokens, -1)` returns the
@@ -827,17 +891,23 @@ mod tests {
     fn forward_until_minus_one_matches_forward() {
         let cfg = tiny_cfg(ClipTextActivation::QuickGelu, 4);
         let model = SdTextEncoder {
-            config: cfg.clone(), weights: tiny_weights(&cfg, 11),
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg, 11),
         };
         let tokens: Vec<u32> = (0..cfg.max_position_embeddings as u32).collect();
         let a = model.forward(&tokens).unwrap().realize_f32();
         let (b, intermediate) = model.forward_until_encoder_layer(&tokens, -1).unwrap();
         let b = b.realize_f32();
         let intermediate = intermediate.realize_f32();
-        assert_eq!(a, b, "forward and forward_until_layer(-1)::final must match");
+        assert_eq!(
+            a, b,
+            "forward and forward_until_layer(-1)::final must match"
+        );
         // With until=-1, intermediate == final.
-        assert_eq!(intermediate, b,
-            "with until=-1 the intermediate slot should equal final");
+        assert_eq!(
+            intermediate, b,
+            "with until=-1 the intermediate slot should equal final"
+        );
     }
 
     /// Penultimate (-2) intermediate must differ from final
@@ -846,7 +916,8 @@ mod tests {
     fn penultimate_intermediate_differs_from_final() {
         let cfg = tiny_cfg(ClipTextActivation::Gelu, 4);
         let model = SdTextEncoder {
-            config: cfg.clone(), weights: tiny_weights(&cfg, 22),
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg, 22),
         };
         let tokens: Vec<u32> = (0..cfg.max_position_embeddings as u32).collect();
         let (final_out, penultimate) = model.forward_until_encoder_layer(&tokens, -2).unwrap();
@@ -857,17 +928,31 @@ mod tests {
         for (x, y) in final_out.iter().zip(penultimate.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-7,
-            "penultimate must differ from final, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-7,
+            "penultimate must differ from final, max_diff = {max_diff}"
+        );
     }
 
     /// Preset configs have the right activation choice.
     #[test]
     fn preset_activations() {
-        assert_eq!(ClipTextConfig::sd_v1().activation, ClipTextActivation::QuickGelu);
-        assert_eq!(ClipTextConfig::sd_v2_1().activation, ClipTextActivation::Gelu);
-        assert_eq!(ClipTextConfig::sdxl_te1().activation, ClipTextActivation::QuickGelu);
-        assert_eq!(ClipTextConfig::sdxl_te2().activation, ClipTextActivation::Gelu);
+        assert_eq!(
+            ClipTextConfig::sd_v1().activation,
+            ClipTextActivation::QuickGelu
+        );
+        assert_eq!(
+            ClipTextConfig::sd_v2_1().activation,
+            ClipTextActivation::Gelu
+        );
+        assert_eq!(
+            ClipTextConfig::sdxl_te1().activation,
+            ClipTextActivation::QuickGelu
+        );
+        assert_eq!(
+            ClipTextConfig::sdxl_te2().activation,
+            ClipTextActivation::Gelu
+        );
         assert_eq!(ClipTextConfig::sdxl_te2().hidden_size, 1280);
         assert_eq!(ClipTextConfig::sdxl_te2().num_hidden_layers, 32);
     }

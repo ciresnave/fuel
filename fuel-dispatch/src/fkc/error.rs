@@ -339,7 +339,9 @@ pub enum FkcError {
     /// PerBlock`, an `AFFINE_*` with a bad granularity, an `AFFINE_BLOCK`
     /// missing its block geometry, a `ggml_dtype` that is not a real
     /// `GgmlDType` variant, a sub-byte operand with no `fdx.quant`, etc.
-    #[error("FKC §10.6 (V-FKC-6): kernel `{section}` operand `{operand}` quant is incoherent: {reason}")]
+    #[error(
+        "FKC §10.6 (V-FKC-6): kernel `{section}` operand `{operand}` quant is incoherent: {reason}"
+    )]
     QuantIncoherent {
         section: String,
         operand: String,
@@ -392,7 +394,10 @@ pub enum FkcError {
         "FKC §10.8a: kernel `{section}` cost.provenance is missing or invalid (got {found:?}; \
          expected `declared` or `judge_measured`)"
     )]
-    CostProvenanceMissing { section: String, found: Option<String> },
+    CostProvenanceMissing {
+        section: String,
+        found: Option<String>,
+    },
 
     /// A cost block is a bare / placeholder / zero-sentinel cost under either
     /// provenance marker (V-FKC §10.8a) — not the honest `class: free`
@@ -422,12 +427,23 @@ pub enum FkcError {
         "FKC §5 (V-FKC-7): kernel `{section}` output `{role}` declared return rule disagrees with \
          the registered fused fn (declared {expected}, real {actual})"
     )]
-    ShapeRuleMismatch { section: String, role: String, expected: String, actual: String },
+    ShapeRuleMismatch {
+        section: String,
+        role: String,
+        expected: String,
+        actual: String,
+    },
 
     /// A `return.bundle` slot count disagrees with the registered
     /// `output_views` arity (V-FKC-7, Finding 5.2).
-    #[error("FKC §5.5 (V-FKC-7): kernel `{section}` declares {actual} bundle slots but output_views has {expected}")]
-    BundleArityMismatch { section: String, expected: usize, actual: usize },
+    #[error(
+        "FKC §5.5 (V-FKC-7): kernel `{section}` declares {actual} bundle slots but output_views has {expected}"
+    )]
+    BundleArityMismatch {
+        section: String,
+        expected: usize,
+        actual: usize,
+    },
 
     /// A `shape_constraint:` segment committed to §3.5 vocabulary but its
     /// argument is malformed (`rank=banana`, an unclosed `divisible(`, an empty
@@ -437,13 +453,19 @@ pub enum FkcError {
         "FKC §3.5: kernel `{section}` operand `{operand}` shape_constraint segment `{raw}` \
          uses vocabulary but is malformed"
     )]
-    UnparseableShapeConstraint { section: String, operand: String, raw: String },
+    UnparseableShapeConstraint {
+        section: String,
+        operand: String,
+        raw: String,
+    },
 
     /// A paged/gather operand is incoherent (V-FKC §10.14): `kind:
     /// paged_blocks` without `requires_ext: true` / `symbolic_extent:
     /// required`, or `block_table`/`context_lens` naming a non-existent
     /// `accept.inputs` role.
-    #[error("FKC §10.14 (V-FKC): kernel `{section}` operand `{operand}` gather is incoherent: {reason}")]
+    #[error(
+        "FKC §10.14 (V-FKC): kernel `{section}` operand `{operand}` gather is incoherent: {reason}"
+    )]
     GatherIncoherent {
         section: String,
         operand: String,
@@ -453,7 +475,9 @@ pub enum FkcError {
     /// A gather-bearing operand reached registration before the FDX gather
     /// codes / `Capability::DlpackExtGather` landed (V-FKC §10.14; the
     /// `MxNotYetRegistrable` discipline for gather).
-    #[error("FKC §3.9.1/§10.14: kernel `{section}` operand `{operand}` uses gather, not yet supported")]
+    #[error(
+        "FKC §3.9.1/§10.14: kernel `{section}` operand `{operand}` uses gather, not yet supported"
+    )]
     GatherNotYetSupported { section: String, operand: String },
 
     /// A dtype / quant family / granularity / ggml_dtype token is not a

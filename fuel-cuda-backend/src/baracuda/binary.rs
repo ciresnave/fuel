@@ -142,8 +142,16 @@ fn binary_run(
     let out_buf = device.alloc_zeros::<u8>(out_bytes)?;
     let out = CudaStorageBytes::from_parts(Arc::new(out_buf), device, out_bytes);
     binary_run_into(
-        lhs, rhs, lhs_layout, rhs_layout, &out, contig_run, strided_run, op_label,
-        dtype_size_bytes, out_dtype_size_bytes,
+        lhs,
+        rhs,
+        lhs_layout,
+        rhs_layout,
+        &out,
+        contig_run,
+        strided_run,
+        op_label,
+        dtype_size_bytes,
+        out_dtype_size_bytes,
     )?;
     Ok(out)
 }

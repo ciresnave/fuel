@@ -10,15 +10,17 @@
 #![cfg(feature = "cuda")]
 
 use fuel_core::lazy::LazyTensor;
-use fuel_ir::{probe::BackendId, Shape};
+use fuel_ir::{Shape, probe::BackendId};
 use std::sync::Arc;
 
 fn gen_lcg(seed: u32, n: usize) -> Vec<f32> {
     let mut s = seed;
-    (0..n).map(|_| {
-        s = s.wrapping_mul(1103515245).wrapping_add(12345);
-        ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.1
-    }).collect()
+    (0..n)
+        .map(|_| {
+            s = s.wrapping_mul(1103515245).wrapping_add(12345);
+            ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.1
+        })
+        .collect()
 }
 
 /// A live CUDA device is **required** here, not optional.
@@ -46,27 +48,37 @@ fn realize_both(t: &LazyTensor) -> (Vec<f32>, Vec<f32>) {
     // cross-device placement so the reference isn't offloaded onto (and
     // crashed by / made non-independent of) the CUDA device under test.
     let reference = t.realize_f32_reference();
-    let cuda_device = fuel_cuda_backend::CudaDevice::new(0)
-        .expect("cuda device 0 should be available");
+    let cuda_device =
+        fuel_cuda_backend::CudaDevice::new(0).expect("cuda device 0 should be available");
     let cuda = t.realize_f32_cuda(&cuda_device);
     (reference, cuda)
 }
 
 fn report(label: &str, ref_out: &[f32], cuda_out: &[f32]) {
-    assert_eq!(ref_out.len(), cuda_out.len(),
+    assert_eq!(
+        ref_out.len(),
+        cuda_out.len(),
         "{label}: length mismatch ref {} vs cuda {}",
-        ref_out.len(), cuda_out.len());
+        ref_out.len(),
+        cuda_out.len()
+    );
     let mut max_abs = 0.0_f32;
     let mut max_rel = 0.0_f32;
     for (&r, &c) in ref_out.iter().zip(cuda_out.iter()) {
         let abs = (r - c).abs();
         let denom = r.abs().max(c.abs()).max(f32::MIN_POSITIVE);
         let rel = abs / denom;
-        if abs > max_abs { max_abs = abs; }
-        if rel > max_rel { max_rel = rel; }
+        if abs > max_abs {
+            max_abs = abs;
+        }
+        if rel > max_rel {
+            max_rel = rel;
+        }
     }
-    println!("{label}:  max_abs = {max_abs:.4e}  max_rel = {max_rel:.4e}  (n={})",
-        ref_out.len());
+    println!(
+        "{label}:  max_abs = {max_abs:.4e}  max_rel = {max_rel:.4e}  (n={})",
+        ref_out.len()
+    );
     println!("  ref[0..4]:  {:?}", &ref_out[..4.min(ref_out.len())]);
     println!("  cuda[0..4]: {:?}", &cuda_out[..4.min(cuda_out.len())]);
 }
@@ -74,9 +86,9 @@ fn report(label: &str, ref_out: &[f32], cuda_out: &[f32]) {
 /// Same shapes as the failing composed test, so the comparison
 /// is apples-to-apples across the bisect cases below.
 struct Inputs {
-    x:    LazyTensor,
-    w1:   LazyTensor,
-    w2:   LazyTensor,
+    x: LazyTensor,
+    w1: LazyTensor,
+    w2: LazyTensor,
 }
 
 fn build_inputs() -> Inputs {
@@ -85,7 +97,11 @@ fn build_inputs() -> Inputs {
     let dim_mid = 32_usize;
     let dim_out = 8_usize;
     let x_data: Vec<f32> = gen_lcg(12345, seq * dim_in);
-    let x = LazyTensor::from_f32(x_data, Shape::from_dims(&[1, seq, dim_in]), &fuel_core::Device::cpu());
+    let x = LazyTensor::from_f32(
+        x_data,
+        Shape::from_dims(&[1, seq, dim_in]),
+        &fuel_core::Device::cpu(),
+    );
     let w1 = x.const_f32_like(
         Arc::<[f32]>::from(gen_lcg(24691, dim_in * dim_mid)),
         Shape::from_dims(&[dim_in, dim_mid]),
@@ -129,7 +145,11 @@ fn bisect_c_just_rmsnorm() -> Result<(), Box<dyn std::error::Error>> {
     let seq = 8_usize;
     let dim_mid = 32_usize;
     let data: Vec<f32> = gen_lcg(12345, seq * dim_mid);
-    let x = LazyTensor::from_f32(data, Shape::from_dims(&[1, seq, dim_mid]), &fuel_core::Device::cpu());
+    let x = LazyTensor::from_f32(
+        data,
+        Shape::from_dims(&[1, seq, dim_mid]),
+        &fuel_core::Device::cpu(),
+    );
     let y = x.rms_norm_last_dim(1e-5)?;
     let (r, c) = realize_both(&y);
     report("C: rms_norm only", &r, &c);
@@ -144,7 +164,11 @@ fn bisect_d_rmsnorm_then_matmul() -> Result<(), Box<dyn std::error::Error>> {
     let dim_mid = 32_usize;
     let dim_out = 8_usize;
     let data: Vec<f32> = gen_lcg(12345, seq * dim_mid);
-    let x = LazyTensor::from_f32(data, Shape::from_dims(&[1, seq, dim_mid]), &fuel_core::Device::cpu());
+    let x = LazyTensor::from_f32(
+        data,
+        Shape::from_dims(&[1, seq, dim_mid]),
+        &fuel_core::Device::cpu(),
+    );
     let w2 = x.const_f32_like(
         Arc::<[f32]>::from(gen_lcg(37037, dim_mid * dim_out)),
         Shape::from_dims(&[dim_mid, dim_out]),

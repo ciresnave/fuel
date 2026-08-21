@@ -62,11 +62,17 @@ impl Mamba2Config {
         let pad = self.pad_vocab_size_multiple.max(1);
         self.vocab_size.div_ceil(pad) * pad
     }
-    pub fn d_inner(&self) -> usize { self.d_model * self.expand }
-    pub fn n_heads(&self) -> usize { self.d_inner() / self.head_dim }
+    pub fn d_inner(&self) -> usize {
+        self.d_model * self.expand
+    }
+    pub fn n_heads(&self) -> usize {
+        self.d_inner() / self.head_dim
+    }
     /// Size of the `[x, b, c]` concatenation on the inner dim. The
     /// eager code calls this `d_xbc`.
-    pub fn d_xbc(&self) -> usize { self.d_inner() + 2 * self.ngroups * self.d_state }
+    pub fn d_xbc(&self) -> usize {
+        self.d_inner() + 2 * self.ngroups * self.d_state
+    }
 
     /// `state-spaces/mamba2-130m`-class.
     pub fn mamba2_130m() -> Self {
@@ -133,9 +139,9 @@ impl Mamba2Model {
         let cfg = &self.config;
         let weights = &self.weights;
         let h_norm = self.run_backbone(tokens)?;
-        Ok(weights.output.apply_linear(
-            &h_norm, cfg.d_model, cfg.vocab_size(),
-        )?)
+        Ok(weights
+            .output
+            .apply_linear(&h_norm, cfg.d_model, cfg.vocab_size())?)
     }
 
     /// Run the Mamba-2 SSD stack forward up to the final
@@ -161,13 +167,20 @@ impl Mamba2Model {
         let vocab_padded = cfg.vocab_size();
 
         let mut h = LazyTensor::embed_tokens(
-            weights.token_embedding.clone(), vocab_padded, cfg.d_model, tokens, &Device::cpu(),
+            weights.token_embedding.clone(),
+            vocab_padded,
+            cfg.d_model,
+            tokens,
+            &Device::cpu(),
         )?;
 
         for layer in &weights.layers {
             h = self.apply_residual_block(&h, layer)?;
         }
-        Ok(h.rms_norm_affine(std::sync::Arc::clone(&weights.final_norm_gain), cfg.rms_norm_eps)?)
+        Ok(h.rms_norm_affine(
+            std::sync::Arc::clone(&weights.final_norm_gain),
+            cfg.rms_norm_eps,
+        )?)
     }
 
     fn apply_residual_block(
@@ -176,16 +189,13 @@ impl Mamba2Model {
         layer: &Mamba2LayerWeights,
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
-        let x_norm = x.rms_norm_affine(std::sync::Arc::clone(&layer.norm_gain), cfg.rms_norm_eps)?;
+        let x_norm =
+            x.rms_norm_affine(std::sync::Arc::clone(&layer.norm_gain), cfg.rms_norm_eps)?;
         let mixer_out = self.apply_mixer(&x_norm, layer)?;
         x.add(&mixer_out)
     }
 
-    fn apply_mixer(
-        &self,
-        x: &LazyTensor,
-        layer: &Mamba2LayerWeights,
-    ) -> Result<LazyTensor> {
+    fn apply_mixer(&self, x: &LazyTensor, layer: &Mamba2LayerWeights) -> Result<LazyTensor> {
         let cfg = &self.config;
         let d_inner = cfg.d_inner();
         let d_xbc = cfg.d_xbc();
@@ -207,16 +217,13 @@ impl Mamba2Model {
         // Conv1d on xbc (depthwise). Pad left D_CONV-1 zeros then call
         // causal_conv1d with use_silu=true (matches eager's silu post-conv).
         let xbc_t = xbc
-            .permute([0, 2, 1_usize])?  // [batch, d_xbc, seq]
+            .permute([0, 2, 1_usize])? // [batch, d_xbc, seq]
             .pad_with_zeros(2_usize, D_CONV - 1, 0)?;
         let conv_w = x.const_f32_like(
             layer.conv1d_weight.clone(),
             Shape::from_dims(&[d_xbc, 1, D_CONV]),
         );
-        let conv_b = x.const_f32_like(
-            layer.conv1d_bias.clone(),
-            Shape::from_dims(&[d_xbc]),
-        );
+        let conv_b = x.const_f32_like(layer.conv1d_bias.clone(), Shape::from_dims(&[d_xbc]));
         let xbc_conv = xbc_t.causal_conv1d(&conv_w, &conv_b, /* use_silu */ true);
         // Back to [batch, seq, d_xbc].
         let xbc_conv = xbc_conv.permute([0, 2, 1_usize])?;
@@ -247,11 +254,13 @@ impl Mamba2Model {
                 // [batch, seq, ngroups, d_state] → [batch, seq, ngroups, 1, d_state]
                 // → broadcast to [batch, seq, ngroups, n_per_group, d_state]
                 // → reshape to [batch, seq, n_heads, d_state].
-                let s5 = t.reshape(Shape::from_dims(&[
-                    batch, seq, cfg.ngroups, 1, d_state,
-                ]))?;
+                let s5 = t.reshape(Shape::from_dims(&[batch, seq, cfg.ngroups, 1, d_state]))?;
                 let bcast = s5.broadcast_to(Shape::from_dims(&[
-                    batch, seq, cfg.ngroups, n_per_group, d_state,
+                    batch,
+                    seq,
+                    cfg.ngroups,
+                    n_per_group,
+                    d_state,
                 ]))?;
                 bcast.reshape(Shape::from_dims(&[batch, seq, n_heads, d_state]))
             };
@@ -261,19 +270,13 @@ impl Mamba2Model {
         // dt: add learned bias + softplus. The ssd_chunk_scan op takes
         // dt as `[batch, seq, n_heads]`; the eager code applies softplus
         // BEFORE passing into the scan. We replicate that here.
-        let dt_bias_t = x.const_f32_like(
-            layer.dt_bias.clone(),
-            Shape::from_dims(&[n_heads]),
-        );
+        let dt_bias_t = x.const_f32_like(layer.dt_bias.clone(), Shape::from_dims(&[n_heads]));
         let dt_biased = dt.broadcast_add(&dt_bias_t)?;
         // softplus(x) = ln(1 + exp(x)). Use the existing primitive chain.
         let dt_soft = dt_biased.exp().add_scalar(1.0).log();
 
         // a = -exp(a_log). a_log is `[n_heads]`.
-        let a_log = x.const_f32_like(
-            layer.a_log.clone(),
-            Shape::from_dims(&[n_heads]),
-        );
+        let a_log = x.const_f32_like(layer.a_log.clone(), Shape::from_dims(&[n_heads]));
         let a = a_log.exp().neg();
 
         // SSD scan: y = ssd_chunk_scan(x_heads, dt, a, b, c, chunk_size).
@@ -281,10 +284,7 @@ impl Mamba2Model {
         let y = x_heads.ssd_chunk_scan(&dt_soft, &a, &b_heads, &c_heads, cfg.chunk_size);
 
         // Skip path: y + x_heads * d (per-head).
-        let d_t = x.const_f32_like(
-            layer.d.clone(),
-            Shape::from_dims(&[n_heads]),
-        );
+        let d_t = x.const_f32_like(layer.d.clone(), Shape::from_dims(&[n_heads]));
         // Broadcast d from [n_heads] across [batch, seq, n_heads, head_dim]
         // (last-axis broadcast multiplication via reshape).
         let d_per_head = d_t.reshape(Shape::from_dims(&[1, 1, n_heads, 1]))?;
@@ -295,7 +295,10 @@ impl Mamba2Model {
         let y_flat = y_with_skip.reshape(Shape::from_dims(&[batch, seq, d_inner]))?;
 
         // RMS-normed gate path: out_norm(y_flat) * silu(z).
-        let y_normed = y_flat.rms_norm_affine(std::sync::Arc::clone(&layer.out_norm_gain), cfg.rms_norm_eps)?;
+        let y_normed = y_flat.rms_norm_affine(
+            std::sync::Arc::clone(&layer.out_norm_gain),
+            cfg.rms_norm_eps,
+        )?;
         let gated = y_normed.mul(&z.silu())?;
 
         // out_proj: d_inner → d_model.
@@ -333,46 +336,44 @@ impl Mamba2Weights {
         let mut layers = Vec::with_capacity(cfg.n_layer);
         for i in 0..cfg.n_layer {
             let p = format!("backbone.layers.{i}");
-            let norm_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.norm.weight"),
-            )?);
+            let norm_gain = Arc::from(load_tensor_as_f32(st, &format!("{p}.norm.weight"))?);
             let in_proj = ltm(st, &format!("{p}.mixer.in_proj.weight"), in_proj_out, d)?;
-            let conv1d_weight = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.mixer.conv1d.weight"),
-            )?);
-            let conv1d_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.mixer.conv1d.bias"),
-            )?);
-            let a_log = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.mixer.A_log"),
-            )?);
-            let d_skip = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.mixer.D"),
-            )?);
-            let dt_bias = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.mixer.dt_bias"),
-            )?);
-            let out_norm_gain = Arc::from(load_tensor_as_f32(
-                st, &format!("{p}.mixer.norm.weight"),
-            )?);
+            let conv1d_weight =
+                Arc::from(load_tensor_as_f32(st, &format!("{p}.mixer.conv1d.weight"))?);
+            let conv1d_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.mixer.conv1d.bias"))?);
+            let a_log = Arc::from(load_tensor_as_f32(st, &format!("{p}.mixer.A_log"))?);
+            let d_skip = Arc::from(load_tensor_as_f32(st, &format!("{p}.mixer.D"))?);
+            let dt_bias = Arc::from(load_tensor_as_f32(st, &format!("{p}.mixer.dt_bias"))?);
+            let out_norm_gain =
+                Arc::from(load_tensor_as_f32(st, &format!("{p}.mixer.norm.weight"))?);
             let out_proj = ltm(st, &format!("{p}.mixer.out_proj.weight"), d, d_inner)?;
             layers.push(Mamba2LayerWeights {
-                norm_gain, in_proj, conv1d_weight, conv1d_bias,
-                a_log, d: d_skip, dt_bias, out_norm_gain, out_proj,
+                norm_gain,
+                in_proj,
+                conv1d_weight,
+                conv1d_bias,
+                a_log,
+                d: d_skip,
+                dt_bias,
+                out_norm_gain,
+                out_proj,
             });
         }
 
-        let final_norm_gain = Arc::from(load_tensor_as_f32(
-            st, "backbone.norm_f.weight",
-        )?);
+        let final_norm_gain = Arc::from(load_tensor_as_f32(st, "backbone.norm_f.weight")?);
         let output = match ltm(st, "lm_head.weight", v_padded, d) {
             Ok(w) => w,
-            Err(_) => crate::lazy_llama_full::tied_lm_head_from_embeddings(
-                &token_embedding, v_padded, d,
-            ),
+            Err(_) => {
+                crate::lazy_llama_full::tied_lm_head_from_embeddings(&token_embedding, v_padded, d)
+            }
         };
 
-        Ok(Self { token_embedding, layers, final_norm_gain, output })
+        Ok(Self {
+            token_embedding,
+            layers,
+            final_norm_gain,
+            output,
+        })
     }
 }
 
@@ -397,20 +398,31 @@ mod tests {
         let mut next_box: Box<dyn FnMut() -> f32> = Box::new(next);
         let token_embedding = vec_of(vocab * d_model, &mut *next_box);
         let proj_size = d_inner + d_xbc + n_heads;
-        let layers: Vec<Mamba2LayerWeights> = (0..cfg.n_layer).map(|_| Mamba2LayerWeights {
-            norm_gain:       Arc::from(vec![1.0_f32; d_model]),
-            in_proj:         WeightStorage::F32(vec_of(d_model * proj_size, &mut *next_box)),
-            conv1d_weight:   vec_of(d_xbc * D_CONV, &mut *next_box),
-            conv1d_bias:     vec_of(d_xbc, &mut *next_box),
-            a_log:           Arc::from((0..n_heads).map(|i| -1.0 - 0.01 * i as f32).collect::<Vec<_>>()),
-            d:               vec_of(n_heads, &mut *next_box),
-            dt_bias:         vec_of(n_heads, &mut *next_box),
-            out_norm_gain:   Arc::from(vec![1.0_f32; d_inner]),
-            out_proj:        WeightStorage::F32(vec_of(d_inner * d_model, &mut *next_box)),
-        }).collect();
+        let layers: Vec<Mamba2LayerWeights> = (0..cfg.n_layer)
+            .map(|_| Mamba2LayerWeights {
+                norm_gain: Arc::from(vec![1.0_f32; d_model]),
+                in_proj: WeightStorage::F32(vec_of(d_model * proj_size, &mut *next_box)),
+                conv1d_weight: vec_of(d_xbc * D_CONV, &mut *next_box),
+                conv1d_bias: vec_of(d_xbc, &mut *next_box),
+                a_log: Arc::from(
+                    (0..n_heads)
+                        .map(|i| -1.0 - 0.01 * i as f32)
+                        .collect::<Vec<_>>(),
+                ),
+                d: vec_of(n_heads, &mut *next_box),
+                dt_bias: vec_of(n_heads, &mut *next_box),
+                out_norm_gain: Arc::from(vec![1.0_f32; d_inner]),
+                out_proj: WeightStorage::F32(vec_of(d_inner * d_model, &mut *next_box)),
+            })
+            .collect();
         let final_norm_gain = Arc::from(vec![1.0_f32; d_model]);
         let output = WeightStorage::F32(vec_of(d_model * vocab, &mut *next_box));
-        Mamba2Weights { token_embedding, layers, final_norm_gain, output }
+        Mamba2Weights {
+            token_embedding,
+            layers,
+            final_norm_gain,
+            output,
+        }
     }
 
     /// Smoke test on a chunk-aligned sequence. seq must be a multiple
@@ -429,7 +441,10 @@ mod tests {
             chunk_size: 4,
             rms_norm_eps: 1e-5,
         };
-        let model = Mamba2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Mamba2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         // seq = 8 (multiple of chunk_size = 4).
         let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6, 7, 8];
         let logits = model.forward(&tokens).unwrap();
@@ -453,11 +468,21 @@ mod tests {
     #[test]
     fn forward_hidden_shape_and_finite() {
         let cfg = Mamba2Config {
-            d_model: 16, n_layer: 2, vocab_size: 32, d_state: 8,
-            expand: 2, head_dim: 4, ngroups: 1, pad_vocab_size_multiple: 8,
-            chunk_size: 4, rms_norm_eps: 1e-5,
+            d_model: 16,
+            n_layer: 2,
+            vocab_size: 32,
+            d_state: 8,
+            expand: 2,
+            head_dim: 4,
+            ngroups: 1,
+            pad_vocab_size_multiple: 8,
+            chunk_size: 4,
+            rms_norm_eps: 1e-5,
         };
-        let model = Mamba2Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Mamba2Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6, 7, 8];
         let hidden = model.forward_hidden(&tokens).unwrap();
         assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.d_model]);

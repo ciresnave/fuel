@@ -146,7 +146,9 @@ impl Gemma3Model {
     /// lazy_llava / lazy_voxtral so the multimodal composition
     /// layer owns the scaling decision.
     pub fn forward_embeds(
-        &self, scaled_embeds: &LazyTensor, start_pos: usize,
+        &self,
+        scaled_embeds: &LazyTensor,
+        start_pos: usize,
     ) -> Result<LazyTensor> {
         let h_norm = self.decode_from_scaled_embeds(scaled_embeds, start_pos)?;
         self.apply_lm_head(&h_norm)
@@ -156,7 +158,9 @@ impl Gemma3Model {
     /// post-final-RmsNorm states `(1, seq, hidden_size)`. Used by
     /// retrieval / embedding consumers.
     pub fn forward_hidden_embeds(
-        &self, scaled_embeds: &LazyTensor, start_pos: usize,
+        &self,
+        scaled_embeds: &LazyTensor,
+        start_pos: usize,
     ) -> Result<LazyTensor> {
         self.decode_from_scaled_embeds(scaled_embeds, start_pos)
     }
@@ -168,13 +172,13 @@ impl Gemma3Model {
     ///
     /// Returns shape `(1, seq, hidden_size)`. The caller is responsible
     /// for the `sqrt(hidden_size)` scaling.
-    pub fn embed_tokens_anchored(
-        &self, anchor: &LazyTensor, tokens: &[u32],
-    ) -> Result<LazyTensor> {
+    pub fn embed_tokens_anchored(&self, anchor: &LazyTensor, tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         anchor.embed_tokens_anchored(
             self.weights.token_embedding.clone(),
-            cfg.vocab_size, cfg.hidden_size, tokens,
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
         )
     }
 
@@ -195,14 +199,20 @@ impl Gemma3Model {
         assert!(seq > 0, "Gemma3Model: tokens must be non-empty");
 
         let h = LazyTensor::embed_tokens(
-            weights.token_embedding.clone(), cfg.vocab_size, cfg.hidden_size, tokens, &Device::cpu(),
+            weights.token_embedding.clone(),
+            cfg.vocab_size,
+            cfg.hidden_size,
+            tokens,
+            &Device::cpu(),
         )?;
         let h = h.mul_scalar((cfg.hidden_size as f64).sqrt());
         self.decode_from_scaled_embeds(&h, start_pos)
     }
 
     fn decode_from_scaled_embeds(
-        &self, scaled_embeds: &LazyTensor, start_pos: usize,
+        &self,
+        scaled_embeds: &LazyTensor,
+        start_pos: usize,
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
         let weights = &self.weights;
@@ -213,32 +223,34 @@ impl Gemma3Model {
                 "Gemma3Model::forward_embeds: expected scaled_embeds shape \
                  (1, seq, hidden_size={}), got {:?}",
                 cfg.hidden_size, dims,
-            )).bt());
+            ))
+            .bt());
         }
         let seq = dims[1];
         if seq == 0 {
-            return Err(crate::Error::Msg(
-                "Gemma3Model::forward_embeds: seq must be > 0".into(),
-            ).bt());
+            return Err(
+                crate::Error::Msg("Gemma3Model::forward_embeds: seq must be > 0".into()).bt(),
+            );
         }
         if cfg.num_attention_heads % cfg.num_key_value_heads != 0 {
             return Err(crate::Error::Msg(
-                "Gemma3Config: num_attention_heads must be a multiple of num_key_value_heads".into(),
-            ).bt());
+                "Gemma3Config: num_attention_heads must be a multiple of num_key_value_heads"
+                    .into(),
+            )
+            .bt());
         }
         if cfg.sliding_window_pattern == 0 {
             return Err(crate::Error::Msg(
                 "Gemma3Config: sliding_window_pattern must be > 0".into(),
-            ).bt());
+            )
+            .bt());
         }
         let mut h = scaled_embeds.clone();
 
-        let (rope_cos_g, rope_sin_g) = h.rope_tables_const(
-            cfg.rope_theta, start_pos, seq, cfg.head_dim,
-        );
-        let (rope_cos_l, rope_sin_l) = h.rope_tables_const(
-            cfg.rope_local_base_freq, start_pos, seq, cfg.head_dim,
-        );
+        let (rope_cos_g, rope_sin_g) =
+            h.rope_tables_const(cfg.rope_theta, start_pos, seq, cfg.head_dim);
+        let (rope_cos_l, rope_sin_l) =
+            h.rope_tables_const(cfg.rope_local_base_freq, start_pos, seq, cfg.head_dim);
 
         let full_mask = self.build_mask(&h, seq, None);
         let sliding_mask = self.build_mask(&h, seq, Some(cfg.sliding_window));
@@ -250,7 +262,11 @@ impl Gemma3Model {
             } else {
                 (&rope_cos_g, &rope_sin_g)
             };
-            let mask = if uses_window { &sliding_mask } else { &full_mask };
+            let mask = if uses_window {
+                &sliding_mask
+            } else {
+                &full_mask
+            };
             h = self.apply_layer(&h, layer, rope_cos, rope_sin, mask)?;
         }
         h.rms_norm_affine_with_offset(&weights.final_norm_gain, 1.0, cfg.rms_norm_eps)
@@ -287,13 +303,23 @@ impl Gemma3Model {
 
         // Pre-attention offset RmsNorm.
         let residual = x.clone();
-        let x_norm = x.rms_norm_affine_with_offset(&layer.input_norm_gain, 1.0, cfg.rms_norm_eps)?;
+        let x_norm =
+            x.rms_norm_affine_with_offset(&layer.input_norm_gain, 1.0, cfg.rms_norm_eps)?;
 
         // Q / K / V projections; note Q goes to num_heads*head_dim
         // which is NOT necessarily equal to hidden_size.
-        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, q_dim)?.add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
-        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
-        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?.add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
+        let q = layer
+            .attn_q
+            .apply_linear(&x_norm, cfg.hidden_size, q_dim)?
+            .add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
+        let k = layer
+            .attn_k
+            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
+            .add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
+        let v = layer
+            .attn_v
+            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
+            .add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
 
         // (b, seq, n_heads, head_dim) -> (b, n_heads, seq, head_dim).
         let _ = (batch, seq);
@@ -327,26 +353,45 @@ impl Gemma3Model {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        let attn_out = layer.attn_o.apply_linear(&merged, q_dim, cfg.hidden_size)?.add_optional_trailing_bias(layer.attn_o_bias.as_ref())?;
+        let attn_out = layer
+            .attn_o
+            .apply_linear(&merged, q_dim, cfg.hidden_size)?
+            .add_optional_trailing_bias(layer.attn_o_bias.as_ref())?;
         // post_attention_layernorm wraps the attn output BEFORE the residual add.
-        let attn_out_norm = attn_out.rms_norm_affine_with_offset(&layer.post_attn_norm_gain, 1.0, cfg.rms_norm_eps)?;
+        let attn_out_norm = attn_out.rms_norm_affine_with_offset(
+            &layer.post_attn_norm_gain,
+            1.0,
+            cfg.rms_norm_eps,
+        )?;
         let h1 = residual.add(&attn_out_norm)?;
 
         // Pre-FFN offset RmsNorm.
         let residual2 = h1.clone();
-        let h1_norm = h1.rms_norm_affine_with_offset(&layer.pre_ffn_norm_gain, 1.0, cfg.rms_norm_eps)?;
+        let h1_norm =
+            h1.rms_norm_affine_with_offset(&layer.pre_ffn_norm_gain, 1.0, cfg.rms_norm_eps)?;
 
         // GELU gated FFN.
-        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
-        let up = layer.ffn_up.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let gate = layer
+            .ffn_gate
+            .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let up = layer
+            .ffn_up
+            .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
         let activated = match cfg.hidden_activation {
             GemmaActivation::Gelu => gate.gelu_erf(),
             GemmaActivation::GeluPytorchTanh => gate.gelu(),
         };
         let ffn_in = activated.mul(&up)?;
-        let ffn_out = layer.ffn_down.apply_linear(&ffn_in, cfg.intermediate_size, cfg.hidden_size)?;
+        let ffn_out =
+            layer
+                .ffn_down
+                .apply_linear(&ffn_in, cfg.intermediate_size, cfg.hidden_size)?;
         // post_feedforward_layernorm wraps the FFN output BEFORE the residual add.
-        let ffn_out_norm = ffn_out.rms_norm_affine_with_offset(&layer.post_ffn_norm_gain, 1.0, cfg.rms_norm_eps)?;
+        let ffn_out_norm = ffn_out.rms_norm_affine_with_offset(
+            &layer.post_ffn_norm_gain,
+            1.0,
+            cfg.rms_norm_eps,
+        )?;
 
         residual2.add(&ffn_out_norm)
     }
@@ -378,9 +423,9 @@ impl Gemma3Model {
     /// `split_window`.
     pub fn decode_mask_plan(&self) -> MaskPlan {
         let cfg = &self.config;
-        MaskPlan::per_layer_window(
-            cfg.num_hidden_layers, cfg.sliding_window, |i| self.layer_uses_sliding(i),
-        )
+        MaskPlan::per_layer_window(cfg.num_hidden_layers, cfg.sliding_window, |i| {
+            self.layer_uses_sliding(i)
+        })
     }
 
     /// Per-layer RoPE **base** — the axis no other family needs.
@@ -490,13 +535,20 @@ impl Gemma3Model {
         let act_dtype = x.dtype();
 
         let residual = x.clone();
-        let x_norm = x.rms_norm_affine_with_offset(&layer.input_norm_gain, 1.0, cfg.rms_norm_eps)?;
+        let x_norm =
+            x.rms_norm_affine_with_offset(&layer.input_norm_gain, 1.0, cfg.rms_norm_eps)?;
 
-        let q = layer.attn_q.apply_linear(&x_norm, cfg.hidden_size, q_dim)?
+        let q = layer
+            .attn_q
+            .apply_linear(&x_norm, cfg.hidden_size, q_dim)?
             .add_optional_trailing_bias(layer.attn_q_bias.as_ref())?;
-        let k = layer.attn_k.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
+        let k = layer
+            .attn_k
+            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
             .add_optional_trailing_bias(layer.attn_k_bias.as_ref())?;
-        let v = layer.attn_v.apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
+        let v = layer
+            .attn_v
+            .apply_linear(&x_norm, cfg.hidden_size, kv_dim)?
             .add_optional_trailing_bias(layer.attn_v_bias.as_ref())?;
 
         let q = q.split_heads(cfg.num_attention_heads, cfg.head_dim)?;
@@ -508,10 +560,12 @@ impl Gemma3Model {
         let q = q.rms_norm_affine_with_offset(&layer.q_norm_gain, 1.0, cfg.rms_norm_eps)?;
         let k = k.rms_norm_affine_with_offset(&layer.k_norm_gain, 1.0, cfg.rms_norm_eps)?;
 
-        let q_r = q.to_dtype(DType::F32)?
+        let q_r = q
+            .to_dtype(DType::F32)?
             .rope_with_tables(inputs.rope_cos, inputs.rope_sin)?
             .to_dtype(act_dtype)?;
-        let k_r = k.to_dtype(DType::F32)?
+        let k_r = k
+            .to_dtype(DType::F32)?
             .rope_with_tables(inputs.rope_cos, inputs.rope_sin)?
             .to_dtype(act_dtype)?;
 
@@ -523,14 +577,22 @@ impl Gemma3Model {
         ];
         let (full_k, full_v) = match inputs.offset {
             Some(off) => (
-                inputs.k_cache.write_slice_doff(&k_r, off, 2, write_ranges.clone())?,
-                inputs.v_cache.write_slice_doff(&v_h, off, 2, write_ranges)?,
+                inputs
+                    .k_cache
+                    .write_slice_doff(&k_r, off, 2, write_ranges.clone())?,
+                inputs
+                    .v_cache
+                    .write_slice_doff(&v_h, off, 2, write_ranges)?,
             ),
             None => {
                 let dyn_off = fuel_ir::DynScalar::Sym(inputs.cached_len_sym);
                 (
-                    inputs.k_cache.write_slice_dyn(&k_r, write_ranges.clone(), 2, dyn_off)?,
-                    inputs.v_cache.write_slice_dyn(&v_h, write_ranges, 2, dyn_off)?,
+                    inputs
+                        .k_cache
+                        .write_slice_dyn(&k_r, write_ranges.clone(), 2, dyn_off)?,
+                    inputs
+                        .v_cache
+                        .write_slice_dyn(&v_h, write_ranges, 2, dyn_off)?,
                 )
             }
         };
@@ -571,26 +633,41 @@ impl Gemma3Model {
             fuel_dispatch::decode_flash::FlashArmCapability::production(),
         )?;
         let merged = attn_v_permuted.reshape(Shape::from_dims(&[batch, seq, q_dim]))?;
-        let attn_out = layer.attn_o.apply_linear(&merged, q_dim, cfg.hidden_size)?
+        let attn_out = layer
+            .attn_o
+            .apply_linear(&merged, q_dim, cfg.hidden_size)?
             .add_optional_trailing_bias(layer.attn_o_bias.as_ref())?;
         // post_attention_layernorm wraps the attn output BEFORE the residual add.
-        let attn_out_norm = attn_out
-            .rms_norm_affine_with_offset(&layer.post_attn_norm_gain, 1.0, cfg.rms_norm_eps)?;
+        let attn_out_norm = attn_out.rms_norm_affine_with_offset(
+            &layer.post_attn_norm_gain,
+            1.0,
+            cfg.rms_norm_eps,
+        )?;
         let h1 = residual.add(&attn_out_norm)?;
 
         let residual2 = h1.clone();
-        let h1_norm = h1
-            .rms_norm_affine_with_offset(&layer.pre_ffn_norm_gain, 1.0, cfg.rms_norm_eps)?;
-        let gate = layer.ffn_gate.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
-        let up = layer.ffn_up.apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let h1_norm =
+            h1.rms_norm_affine_with_offset(&layer.pre_ffn_norm_gain, 1.0, cfg.rms_norm_eps)?;
+        let gate = layer
+            .ffn_gate
+            .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
+        let up = layer
+            .ffn_up
+            .apply_linear(&h1_norm, cfg.hidden_size, cfg.intermediate_size)?;
         let activated = match cfg.hidden_activation {
             GemmaActivation::Gelu => gate.gelu_erf(),
             GemmaActivation::GeluPytorchTanh => gate.gelu(),
         };
         let ffn_in = activated.mul(&up)?;
-        let ffn_out = layer.ffn_down.apply_linear(&ffn_in, cfg.intermediate_size, cfg.hidden_size)?;
-        let ffn_out_norm = ffn_out
-            .rms_norm_affine_with_offset(&layer.post_ffn_norm_gain, 1.0, cfg.rms_norm_eps)?;
+        let ffn_out =
+            layer
+                .ffn_down
+                .apply_linear(&ffn_in, cfg.intermediate_size, cfg.hidden_size)?;
+        let ffn_out_norm = ffn_out.rms_norm_affine_with_offset(
+            &layer.post_ffn_norm_gain,
+            1.0,
+            cfg.rms_norm_eps,
+        )?;
 
         residual2.add(&ffn_out_norm)
     }
@@ -656,7 +733,11 @@ impl PersistentDecodeModel for Gemma3Model {
         rope_inv_freq: Option<&[f64]>,
     ) -> Result<DecodeTokenData> {
         let host = crate::persistent_decode::compute_decode_token_host(
-            self, cached_len, tokens, session.max_seq_len(), rope_inv_freq,
+            self,
+            cached_len,
+            tokens,
+            session.max_seq_len(),
+            rope_inv_freq,
         );
         crate::persistent_decode::upload_decode_token_data(
             device,
@@ -721,7 +802,9 @@ impl DecodeBackbone for Gemma3Model {
     /// `output` weight) + final logit softcapping.
     fn decode_final_norm_and_head(&self, h: &LazyTensor) -> Result<LazyTensor> {
         let h_norm = h.rms_norm_affine_with_offset(
-            &self.weights.final_norm_gain, 1.0, self.config.rms_norm_eps,
+            &self.weights.final_norm_gain,
+            1.0,
+            self.config.rms_norm_eps,
         )?;
         self.apply_lm_head(&h_norm)
     }
@@ -770,86 +853,132 @@ impl Gemma3Weights {
         if token_embedding.len() != cfg.vocab_size * h {
             crate::bail!(
                 "model.embed_tokens.weight: {} elts, expected {} ({}×{})",
-                token_embedding.len(), cfg.vocab_size * h, cfg.vocab_size, h,
+                token_embedding.len(),
+                cfg.vocab_size * h,
+                cfg.vocab_size,
+                h,
             );
         }
 
-        let mut layers: Vec<Gemma3LayerWeights> =
-            Vec::with_capacity(cfg.num_hidden_layers);
+        let mut layers: Vec<Gemma3LayerWeights> = Vec::with_capacity(cfg.num_hidden_layers);
         for li in 0..cfg.num_hidden_layers {
             let p = format!("model.layers.{li}");
             let attn_q = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.q_proj.weight"), q_dim, h,
+                st,
+                &format!("{p}.self_attn.q_proj.weight"),
+                q_dim,
+                h,
             )?;
             let attn_k = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.k_proj.weight"), kv_dim, h,
+                st,
+                &format!("{p}.self_attn.k_proj.weight"),
+                kv_dim,
+                h,
             )?;
             let attn_v = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.v_proj.weight"), kv_dim, h,
+                st,
+                &format!("{p}.self_attn.v_proj.weight"),
+                kv_dim,
+                h,
             )?;
             let attn_o = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.self_attn.o_proj.weight"), h, q_dim,
+                st,
+                &format!("{p}.self_attn.o_proj.weight"),
+                h,
+                q_dim,
             )?;
             let attn_q_bias = if cfg.attention_bias {
                 load_tensor_as_f32(st, &format!("{p}.self_attn.q_proj.bias"))
-                    .ok().map(Arc::from)
-            } else { None };
+                    .ok()
+                    .map(Arc::from)
+            } else {
+                None
+            };
             let attn_k_bias = if cfg.attention_bias {
                 load_tensor_as_f32(st, &format!("{p}.self_attn.k_proj.bias"))
-                    .ok().map(Arc::from)
-            } else { None };
+                    .ok()
+                    .map(Arc::from)
+            } else {
+                None
+            };
             let attn_v_bias = if cfg.attention_bias {
                 load_tensor_as_f32(st, &format!("{p}.self_attn.v_proj.bias"))
-                    .ok().map(Arc::from)
-            } else { None };
+                    .ok()
+                    .map(Arc::from)
+            } else {
+                None
+            };
             let attn_o_bias = if cfg.attention_bias {
                 load_tensor_as_f32(st, &format!("{p}.self_attn.o_proj.bias"))
-                    .ok().map(Arc::from)
-            } else { None };
-            let q_norm_gain = Arc::from(
-                load_tensor_as_f32(st, &format!("{p}.self_attn.q_norm.weight"))?,
-            );
-            let k_norm_gain = Arc::from(
-                load_tensor_as_f32(st, &format!("{p}.self_attn.k_norm.weight"))?,
-            );
-            let input_norm_gain = Arc::from(
-                load_tensor_as_f32(st, &format!("{p}.input_layernorm.weight"))?,
-            );
-            let post_attn_norm_gain = Arc::from(
-                load_tensor_as_f32(st, &format!("{p}.post_attention_layernorm.weight"))?,
-            );
-            let pre_ffn_norm_gain = Arc::from(
-                load_tensor_as_f32(st, &format!("{p}.pre_feedforward_layernorm.weight"))?,
-            );
-            let post_ffn_norm_gain = Arc::from(
-                load_tensor_as_f32(st, &format!("{p}.post_feedforward_layernorm.weight"))?,
-            );
+                    .ok()
+                    .map(Arc::from)
+            } else {
+                None
+            };
+            let q_norm_gain = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.self_attn.q_norm.weight"),
+            )?);
+            let k_norm_gain = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.self_attn.k_norm.weight"),
+            )?);
+            let input_norm_gain = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.input_layernorm.weight"),
+            )?);
+            let post_attn_norm_gain = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.post_attention_layernorm.weight"),
+            )?);
+            let pre_ffn_norm_gain = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.pre_feedforward_layernorm.weight"),
+            )?);
+            let post_ffn_norm_gain = Arc::from(load_tensor_as_f32(
+                st,
+                &format!("{p}.post_feedforward_layernorm.weight"),
+            )?);
             let ffn_gate = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.mlp.gate_proj.weight"), i_dim, h,
+                st,
+                &format!("{p}.mlp.gate_proj.weight"),
+                i_dim,
+                h,
             )?;
             let ffn_up = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.mlp.up_proj.weight"), i_dim, h,
+                st,
+                &format!("{p}.mlp.up_proj.weight"),
+                i_dim,
+                h,
             )?;
             let ffn_down = load_transposed_matrix_preserve_dtype(
-                st, &format!("{p}.mlp.down_proj.weight"), h, i_dim,
+                st,
+                &format!("{p}.mlp.down_proj.weight"),
+                h,
+                i_dim,
             )?;
             layers.push(Gemma3LayerWeights {
-                attn_q, attn_q_bias,
-                attn_k, attn_k_bias,
-                attn_v, attn_v_bias,
-                attn_o, attn_o_bias,
-                q_norm_gain, k_norm_gain,
+                attn_q,
+                attn_q_bias,
+                attn_k,
+                attn_k_bias,
+                attn_v,
+                attn_v_bias,
+                attn_o,
+                attn_o_bias,
+                q_norm_gain,
+                k_norm_gain,
                 input_norm_gain,
                 post_attn_norm_gain,
                 pre_ffn_norm_gain,
                 post_ffn_norm_gain,
-                ffn_gate, ffn_up, ffn_down,
+                ffn_gate,
+                ffn_up,
+                ffn_down,
             });
         }
 
-        let final_norm_gain = Arc::from(
-            load_tensor_as_f32(st, "model.norm.weight")?,
-        );
+        let final_norm_gain = Arc::from(load_tensor_as_f32(st, "model.norm.weight")?);
 
         Ok(Gemma3Weights {
             instance: crate::decode_shape::ModelInstanceId::next(),
@@ -859,7 +988,6 @@ impl Gemma3Weights {
         })
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -883,13 +1011,29 @@ mod tests {
         let layers: Vec<Gemma3LayerWeights> = (0..cfg.num_hidden_layers)
             .map(|_| Gemma3LayerWeights {
                 attn_q: WeightStorage::F32(vec_of(h * q_dim, &mut *next_box)),
-                attn_q_bias: if cfg.attention_bias { Some(vec_of(q_dim, &mut *next_box)) } else { None },
+                attn_q_bias: if cfg.attention_bias {
+                    Some(vec_of(q_dim, &mut *next_box))
+                } else {
+                    None
+                },
                 attn_k: WeightStorage::F32(vec_of(h * kv, &mut *next_box)),
-                attn_k_bias: if cfg.attention_bias { Some(vec_of(kv, &mut *next_box)) } else { None },
+                attn_k_bias: if cfg.attention_bias {
+                    Some(vec_of(kv, &mut *next_box))
+                } else {
+                    None
+                },
                 attn_v: WeightStorage::F32(vec_of(h * kv, &mut *next_box)),
-                attn_v_bias: if cfg.attention_bias { Some(vec_of(kv, &mut *next_box)) } else { None },
+                attn_v_bias: if cfg.attention_bias {
+                    Some(vec_of(kv, &mut *next_box))
+                } else {
+                    None
+                },
                 attn_o: WeightStorage::F32(vec_of(q_dim * h, &mut *next_box)),
-                attn_o_bias: if cfg.attention_bias { Some(vec_of(h, &mut *next_box)) } else { None },
+                attn_o_bias: if cfg.attention_bias {
+                    Some(vec_of(h, &mut *next_box))
+                } else {
+                    None
+                },
                 q_norm_gain: Arc::from(vec![0.05_f32; cfg.head_dim]),
                 k_norm_gain: Arc::from(vec![0.05_f32; cfg.head_dim]),
                 input_norm_gain: Arc::from(vec![0.05_f32; h]),
@@ -902,7 +1046,12 @@ mod tests {
             })
             .collect();
         let final_norm_gain = Arc::from(vec![0.05_f32; h]);
-        Gemma3Weights { instance: crate::decode_shape::ModelInstanceId::next(), token_embedding, layers, final_norm_gain }
+        Gemma3Weights {
+            instance: crate::decode_shape::ModelInstanceId::next(),
+            token_embedding,
+            layers,
+            final_norm_gain,
+        }
     }
 
     fn tiny_config() -> Gemma3Config {
@@ -915,7 +1064,7 @@ mod tests {
             num_hidden_layers: 4, // exercise both global + local layers (pattern=3)
             num_attention_heads: 4,
             num_key_value_heads: 2,
-            head_dim: 4,           // q_dim=16, kv_dim=8 — neither matches hidden_size.
+            head_dim: 4, // q_dim=16, kv_dim=8 — neither matches hidden_size.
             rms_norm_eps: 1e-6,
             rope_theta: 10_000.0,
             rope_local_base_freq: 10_000.0, // same as global for the "tables match" test
@@ -932,7 +1081,10 @@ mod tests {
     #[test]
     fn forward_shape_and_finite() {
         let cfg = tiny_config();
-        let model = Gemma3Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Gemma3Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4, 5];
         let logits = model.forward(&tokens, 0).unwrap();
         assert_eq!(logits.shape().dims(), &[1, tokens.len(), cfg.vocab_size]);
@@ -959,8 +1111,14 @@ mod tests {
         cfg_b.rope_local_base_freq = 50_000.0;
         // Reuse the SAME weights for both.
         let weights = tiny_weights(&cfg_a);
-        let m_a = Gemma3Model { config: cfg_a.clone(), weights: weights.clone() };
-        let m_b = Gemma3Model { config: cfg_b.clone(), weights };
+        let m_a = Gemma3Model {
+            config: cfg_a.clone(),
+            weights: weights.clone(),
+        };
+        let m_b = Gemma3Model {
+            config: cfg_b.clone(),
+            weights,
+        };
         let toks: Vec<u32> = vec![3, 7, 2, 9, 1];
         let a = m_a.forward(&toks, 0).unwrap().realize_f32();
         let b = m_b.forward(&toks, 0).unwrap().realize_f32();
@@ -968,8 +1126,10 @@ mod tests {
         for (av, bv) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((av - bv).abs());
         }
-        assert!(max_diff > 1e-6,
-            "pattern change must alter output, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-6,
+            "pattern change must alter output, max_diff = {max_diff}"
+        );
     }
 
     /// With sliding_window_pattern=1 (all global), and local RoPE
@@ -986,8 +1146,14 @@ mod tests {
         let mut cfg_yes = tiny_config();
         cfg_yes.attn_logit_softcapping = Some(20.0);
         let weights = tiny_weights(&cfg_no);
-        let m_no = Gemma3Model { config: cfg_no, weights: weights.clone() };
-        let m_yes = Gemma3Model { config: cfg_yes, weights };
+        let m_no = Gemma3Model {
+            config: cfg_no,
+            weights: weights.clone(),
+        };
+        let m_yes = Gemma3Model {
+            config: cfg_yes,
+            weights,
+        };
         let toks: Vec<u32> = vec![1, 2, 3];
         let a = m_no.forward(&toks, 0).unwrap().realize_f32();
         let b = m_yes.forward(&toks, 0).unwrap().realize_f32();
@@ -995,8 +1161,10 @@ mod tests {
         for (av, bv) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((av - bv).abs());
         }
-        assert!(max_diff > 1e-6,
-            "attn soft-cap must alter output, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-6,
+            "attn soft-cap must alter output, max_diff = {max_diff}"
+        );
     }
 
     /// Final-logit soft-cap must change output (bounds the
@@ -1008,8 +1176,14 @@ mod tests {
         let mut cfg_yes = tiny_config();
         cfg_yes.final_logit_softcapping = Some(5.0);
         let weights = tiny_weights(&cfg_no);
-        let m_no = Gemma3Model { config: cfg_no, weights: weights.clone() };
-        let m_yes = Gemma3Model { config: cfg_yes, weights };
+        let m_no = Gemma3Model {
+            config: cfg_no,
+            weights: weights.clone(),
+        };
+        let m_yes = Gemma3Model {
+            config: cfg_yes,
+            weights,
+        };
         let toks: Vec<u32> = vec![4, 5, 6];
         let a = m_no.forward(&toks, 0).unwrap().realize_f32();
         let b = m_yes.forward(&toks, 0).unwrap().realize_f32();
@@ -1017,8 +1191,10 @@ mod tests {
         for (av, bv) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((av - bv).abs());
         }
-        assert!(max_diff > 1e-6,
-            "final soft-cap must alter output, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-6,
+            "final soft-cap must alter output, max_diff = {max_diff}"
+        );
     }
 
     /// With sliding_window_pattern=2 and 4 layers, layers 0 and 2
@@ -1028,7 +1204,10 @@ mod tests {
     fn layer_pattern_assignment() {
         let mut cfg = tiny_config();
         cfg.sliding_window_pattern = 2;
-        let model = Gemma3Model { config: cfg, weights: tiny_weights(&tiny_config()) };
+        let model = Gemma3Model {
+            config: cfg,
+            weights: tiny_weights(&tiny_config()),
+        };
         // (i + 1) % 2 > 0  →  i is even (0, 2 → local) ; odd (1, 3 → global)
         assert!(model.layer_uses_sliding(0));
         assert!(!model.layer_uses_sliding(1));
@@ -1039,7 +1218,10 @@ mod tests {
     #[test]
     fn forward_hidden_shape_and_finite() {
         let cfg = tiny_config();
-        let model = Gemma3Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Gemma3Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3, 4];
         let hidden = model.forward_hidden(&tokens, 0).unwrap();
         assert_eq!(hidden.shape().dims(), &[1, tokens.len(), cfg.hidden_size]);
@@ -1051,26 +1233,35 @@ mod tests {
     #[test]
     fn forward_embeds_matches_forward_after_token_lookup() {
         let cfg = tiny_config();
-        let model = Gemma3Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Gemma3Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let scaled = embeds.mul_scalar((cfg.hidden_size as f64).sqrt());
         let logits_via_embeds = model.forward_embeds(&scaled, 0).unwrap().realize_f32();
         assert_eq!(logits_ref.len(), logits_via_embeds.len());
-        let max_diff = logits_ref.iter().zip(logits_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "Gemma3 forward vs forward_embeds (post-scale) must agree (max diff {max_diff})");
+        let max_diff = logits_ref
+            .iter()
+            .zip(logits_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "Gemma3 forward vs forward_embeds (post-scale) must agree (max diff {max_diff})"
+        );
     }
 
     #[test]
     fn forward_embeds_rejects_bad_shape() {
         let cfg = tiny_config();
-        let model = Gemma3Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Gemma3Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let bad_embeds = LazyTensor::from_f32(
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
             Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
@@ -1078,7 +1269,8 @@ mod tests {
         );
         assert!(model.forward_embeds(&bad_embeds, 0).is_err());
         let rank2 = LazyTensor::from_f32(
-            vec![0.0_f32; cfg.hidden_size], Shape::from_dims(&[1, cfg.hidden_size]),
+            vec![0.0_f32; cfg.hidden_size],
+            Shape::from_dims(&[1, cfg.hidden_size]),
             &Device::cpu(),
         );
         assert!(model.forward_embeds(&rank2, 0).is_err());
@@ -1087,19 +1279,28 @@ mod tests {
     #[test]
     fn forward_hidden_embeds_matches_forward_hidden() {
         let cfg = tiny_config();
-        let model = Gemma3Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Gemma3Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
-        let anchor = LazyTensor::from_f32(
-            vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu(),
-        );
+        let anchor = LazyTensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let scaled = embeds.mul_scalar((cfg.hidden_size as f64).sqrt());
-        let h_via_embeds = model.forward_hidden_embeds(&scaled, 0).unwrap().realize_f32();
-        let max_diff = h_ref.iter().zip(h_via_embeds.iter())
-            .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max);
-        assert!(max_diff < 1e-5,
-            "Gemma3 forward_hidden vs forward_hidden_embeds (post-scale) must agree (max diff {max_diff})");
+        let h_via_embeds = model
+            .forward_hidden_embeds(&scaled, 0)
+            .unwrap()
+            .realize_f32();
+        let max_diff = h_ref
+            .iter()
+            .zip(h_via_embeds.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0_f32, f32::max);
+        assert!(
+            max_diff < 1e-5,
+            "Gemma3 forward_hidden vs forward_hidden_embeds (post-scale) must agree (max diff {max_diff})"
+        );
     }
 
     // ---- GAP-029 · persistent decode ---------------------------------------
@@ -1124,46 +1325,77 @@ mod tests {
     /// So this overrides the local base. `sliding_window_pattern: 3` over 4
     /// layers keeps the mask axis mixed too (layers 0/1/3 sliding, layer 2 full).
     fn decode_cfg() -> Gemma3Config {
-        Gemma3Config { rope_local_base_freq: 1_000.0, ..tiny_config() }
+        Gemma3Config {
+            rope_local_base_freq: 1_000.0,
+            ..tiny_config()
+        }
     }
 
     /// Max |logit diff| per decode step against the non-cached forward at the
     /// same absolute position. `>= 3` decode steps so assertions reach the
     /// per-token REBIND path rather than only the held-graph build.
-    fn decode_vs_forward_max_abs(
-        cfg: &Gemma3Config, tokens: &[u32], prefill: usize,
-    ) -> Vec<f32> {
+    fn decode_vs_forward_max_abs(cfg: &Gemma3Config, tokens: &[u32], prefill: usize) -> Vec<f32> {
         let n_decode = tokens.len() - prefill;
-        assert!(n_decode >= 3, "need >= 3 decode tokens to reach the rebind path");
-        let model = Gemma3Model { config: cfg.clone(), weights: tiny_weights(cfg) };
+        assert!(
+            n_decode >= 3,
+            "need >= 3 decode tokens to reach the rebind path"
+        );
+        let model = Gemma3Model {
+            config: cfg.clone(),
+            weights: tiny_weights(cfg),
+        };
 
         let dev = Device::cpu();
         let mut cache = KvCache::with_capacity(
-            cfg.num_hidden_layers, cfg.num_key_value_heads, cfg.head_dim,
-            tokens.len(), DType::F32, &dev,
-        ).expect("with_capacity");
+            cfg.num_hidden_layers,
+            cfg.num_key_value_heads,
+            cfg.head_dim,
+            tokens.len(),
+            DType::F32,
+            &dev,
+        )
+        .expect("with_capacity");
         let mut ctx = InferenceContext::new(dev);
         let mut session: Option<DecodeSession> = None;
 
-        model.forward_with_kv_context_persistent(
-            &tokens[..prefill], &mut cache, &mut ctx, &mut session,
-        ).expect("prefill");
-        assert!(session.is_none(), "prefill (seq > 1) must NOT build the held session");
+        model
+            .forward_with_kv_context_persistent(
+                &tokens[..prefill],
+                &mut cache,
+                &mut ctx,
+                &mut session,
+            )
+            .expect("prefill");
+        assert!(
+            session.is_none(),
+            "prefill (seq > 1) must NOT build the held session"
+        );
 
         let mut out = Vec::with_capacity(n_decode);
         for pos in prefill..tokens.len() {
-            let got = model.forward_with_kv_context_persistent(
-                &tokens[pos..=pos], &mut cache, &mut ctx, &mut session,
-            ).expect("decode");
+            let got = model
+                .forward_with_kv_context_persistent(
+                    &tokens[pos..=pos],
+                    &mut cache,
+                    &mut ctx,
+                    &mut session,
+                )
+                .expect("decode");
             assert!(session.is_some(), "decode must hold a session from token 1");
             let full = model.forward(&tokens[..=pos], 0).unwrap().realize_f32();
             let expected = &full[pos * cfg.vocab_size..(pos + 1) * cfg.vocab_size];
             out.push(
-                got.iter().zip(expected.iter())
-                    .map(|(a, b)| (a - b).abs()).fold(0.0_f32, f32::max),
+                got.iter()
+                    .zip(expected.iter())
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0_f32, f32::max),
             );
         }
-        assert_eq!(cache.cached_len, tokens.len(), "cache must advance every step");
+        assert_eq!(
+            cache.cached_len,
+            tokens.len(),
+            "cache must advance every step"
+        );
         out
     }
 
@@ -1175,10 +1407,24 @@ mod tests {
     /// rebind path, and it certifies **nothing** about per-layer variation.
     #[test]
     fn gemma3_decode_matches_forward_when_no_layer_varies() {
-        let cfg = Gemma3Config { sliding_window_pattern: 1, ..decode_cfg() };
-        let model = Gemma3Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
-        assert_eq!(model.decode_mask_plan().n_variants(), 1, "control must be uniform");
-        assert_eq!(model.decode_rope_plan().n_variants(), 1, "control must be uniform");
+        let cfg = Gemma3Config {
+            sliding_window_pattern: 1,
+            ..decode_cfg()
+        };
+        let model = Gemma3Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
+        assert_eq!(
+            model.decode_mask_plan().n_variants(),
+            1,
+            "control must be uniform"
+        );
+        assert_eq!(
+            model.decode_rope_plan().n_variants(),
+            1,
+            "control must be uniform"
+        );
 
         let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6];
         let diffs = decode_vs_forward_max_abs(&cfg, &tokens, 3);
@@ -1204,7 +1450,10 @@ mod tests {
     #[test]
     fn gemma3_per_layer_mask_and_rope_decode_matches_forward() {
         let cfg = decode_cfg();
-        let model = Gemma3Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Gemma3Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
 
         // --- non-vacuity of the INPUT, then of the DERIVED structure ---
         assert_ne!(
@@ -1213,11 +1462,13 @@ mod tests {
              passes under a single-base port",
         );
         assert_eq!(
-            model.decode_rope_plan().n_variants(), 2,
+            model.decode_rope_plan().n_variants(),
+            2,
             "the dual-base path must actually be live, not merely configured",
         );
         assert_eq!(
-            model.decode_mask_plan().n_variants(), 2,
+            model.decode_mask_plan().n_variants(),
+            2,
             "the per-layer mask path must actually be live",
         );
         let tokens: Vec<u32> = vec![1, 2, 3, 4, 5, 6];
@@ -1250,9 +1501,13 @@ mod tests {
             "the shipped fixture is expected to be RoPE-degenerate; if this changes, \
              `decode_cfg`'s override may no longer be needed",
         );
-        let model = Gemma3Model { config: cfg.clone(), weights: tiny_weights(&cfg) };
+        let model = Gemma3Model {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
         assert_eq!(
-            model.decode_rope_plan().n_variants(), 1,
+            model.decode_rope_plan().n_variants(),
+            1,
             "equal bases must collapse — otherwise the graph would carry two \
              identical tables and `n_variants` would stop being a vacuity signal",
         );

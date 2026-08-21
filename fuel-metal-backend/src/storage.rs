@@ -1,10 +1,8 @@
-﻿//! Implementation of Backend traits for Metal
+//! Implementation of Backend traits for Metal
 //!
-use fuel_ir::conv::{
-    ParamsConv1D, ParamsConv2D, ParamsConvTranspose1D, ParamsConvTranspose2D,
-};
+use fuel_ir::conv::{ParamsConv1D, ParamsConv2D, ParamsConvTranspose1D, ParamsConvTranspose2D};
 use fuel_ir::op::{BinaryOpT, CmpOp, ReduceOp, UnaryOpT};
-use fuel_ir::{HostBuffer, HostBufferRef, DType, Error, Layout, Result, Shape};
+use fuel_ir::{DType, Error, HostBuffer, HostBufferRef, Layout, Result, Shape};
 use fuel_metal_kernels::{
     BufferOffset, CallConvTranspose2dCfg, Kernels, RESOURCE_OPTIONS,
     metal::{Buffer, Commands, Device},
@@ -129,9 +127,14 @@ impl MetalStorage {
             // decline is correct for a reason that will expire). The arm below
             // is dtype-parameterised, so joining it names the dtype and asserts
             // nothing false about the format.
-            DType::F8E5M2 | DType::F6E2M3 | DType::F6E3M2 | DType::F4 | DType::F8E8M0 | DType::F8E6M2 => Err(
-                fuel_ir::Error::UnsupportedDTypeForOp(self.dtype, "to_cpu_storage").bt(),
-            ),
+            DType::F8E5M2
+            | DType::F6E2M3
+            | DType::F6E3M2
+            | DType::F4
+            | DType::F8E8M0
+            | DType::F8E6M2 => {
+                Err(fuel_ir::Error::UnsupportedDTypeForOp(self.dtype, "to_cpu_storage").bt())
+            }
         }
     }
 
@@ -367,9 +370,7 @@ impl MetalStorage {
                 (ReduceOp::ArgMin, DType::U8) => ("fast_argmin_u8", true, true),
                 (ReduceOp::ArgMax, DType::U8) => ("fast_argmax_u8", true, true),
                 (k, dtype) => {
-                    fuel_ir::bail!(
-                        "Metal contiguous reduce op {k:?} {dtype:?} not implemented"
-                    )
+                    fuel_ir::bail!("Metal contiguous reduce op {k:?} {dtype:?} not implemented")
                 }
             };
             if check_empty && layout.shape().elem_count() == 0 {
@@ -468,9 +469,7 @@ impl MetalStorage {
 
     pub fn const_set(&mut self, s: fuel_ir::Scalar, l: &Layout) -> Result<()> {
         use fuel_ir::Scalar;
-        fn set<
-            S: fuel_ir::dtype::WithDType + fuel_metal_kernels::utils::EncoderParam,
-        >(
+        fn set<S: fuel_ir::dtype::WithDType + fuel_metal_kernels::utils::EncoderParam>(
             self_: &mut MetalStorage,
             s: S,
             l: &Layout,
@@ -629,9 +628,7 @@ impl MetalStorage {
                 (DType::BF16, DType::U8) => "cast_bf16_u8",
 
                 (left, right) => {
-                    fuel_ir::bail!(
-                        "Metal contiguous to_dtype {left:?} {right:?} not implemented"
-                    )
+                    fuel_ir::bail!("Metal contiguous to_dtype {left:?} {right:?} not implemented")
                 }
             };
             fuel_metal_kernels::call_cast_contiguous(
@@ -684,9 +681,7 @@ impl MetalStorage {
                 (DType::U8, DType::U32) => "cast_u8_u32_strided",
 
                 (left, right) => {
-                    fuel_ir::bail!(
-                        "Metal strided to_dtype {left:?} {right:?} not implemented"
-                    )
+                    fuel_ir::bail!("Metal strided to_dtype {left:?} {right:?} not implemented")
                 }
             };
             fuel_metal_kernels::call_cast_strided(
@@ -780,9 +775,7 @@ impl MetalStorage {
                 ("usign", DType::BF16) => contiguous::sign::BFLOAT,
                 ("usign", DType::I64) => contiguous::sign::I64,
                 (name, dtype) => {
-                    fuel_ir::bail!(
-                        "Metal contiguous unary {name} {dtype:?} not implemented"
-                    )
+                    fuel_ir::bail!("Metal contiguous unary {name} {dtype:?} not implemented")
                 }
             };
 
@@ -1236,16 +1229,12 @@ impl MetalStorage {
 
         let dims = l.dims();
         if dims.len() != 4 {
-            fuel_ir::bail!(
-                "unexpected input shape for conv_transpose2d {dims:?}, expected 4"
-            )
+            fuel_ir::bail!("unexpected input shape for conv_transpose2d {dims:?}, expected 4")
         }
 
         let k_dims = kernel_l.dims();
         if k_dims.len() != 4 {
-            fuel_ir::bail!(
-                "unexpected kernel shape for conv_transpose2d {k_dims:?}, expected 4"
-            )
+            fuel_ir::bail!("unexpected kernel shape for conv_transpose2d {k_dims:?}, expected 4")
         }
 
         let buffer = self
@@ -1668,9 +1657,7 @@ impl MetalStorage {
             (DType::I64, DType::BF16) => "is_i64_bf16",
 
             (left, right) => {
-                fuel_ir::bail!(
-                    "Metal contiguous index_select {left:?} {right:?} not implemented"
-                )
+                fuel_ir::bail!("Metal contiguous index_select {left:?} {right:?} not implemented")
             }
         };
         let encoder = self.device.command_encoder()?;

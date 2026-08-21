@@ -120,7 +120,11 @@ fn contiguize_with(
             )
         };
         check(status, "contiguize_b*_scalar")?;
-        return Ok(CudaStorageBytes::from_parts(Arc::new(dest), device, dest_bytes));
+        return Ok(CudaStorageBytes::from_parts(
+            Arc::new(dest),
+            device,
+            dest_bytes,
+        ));
     }
     if rank > 8 {
         return Err(Error::Msg(format!(
@@ -178,7 +182,11 @@ fn contiguize_with(
         )
     };
     check(status, "contiguize_b*")?;
-    Ok(CudaStorageBytes::from_parts(Arc::new(dest), device, dest_bytes))
+    Ok(CudaStorageBytes::from_parts(
+        Arc::new(dest),
+        device,
+        dest_bytes,
+    ))
 }
 
 /// Write-into sibling of [`contiguize_to_fresh`] (CapturedRun executor
@@ -396,6 +404,9 @@ mod tests {
         // Correct size is 12 * 4 = 48 bytes; give it a too-small dest.
         let dest = CudaStorageBytes::alloc(&dev, 16).unwrap();
         let err = contiguize_into(&source, &layout, &dest, 4);
-        assert!(err.is_err(), "mismatched dest size must be a typed error, not a panic");
+        assert!(
+            err.is_err(),
+            "mismatched dest size must be a typed error, not a panic"
+        );
     }
 }

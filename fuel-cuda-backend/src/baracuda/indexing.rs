@@ -260,10 +260,7 @@ type GatherRun = unsafe extern "C" fn(
 
 /// Build i32 shape + i64 stride buffers from a `Vec<usize>` source
 /// shape. Stride convention: row-major contiguous.
-fn shape_strides_for(
-    shape: &[usize],
-    op_label: &'static str,
-) -> Result<(Vec<i32>, Vec<i64>)> {
+fn shape_strides_for(shape: &[usize], op_label: &'static str) -> Result<(Vec<i32>, Vec<i64>)> {
     let rank = shape.len();
     let mut shape_i32 = Vec::with_capacity(rank);
     for (i, &d) in shape.iter().enumerate() {

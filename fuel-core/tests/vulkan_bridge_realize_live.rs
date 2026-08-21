@@ -38,7 +38,9 @@ fn backend_or_skip() -> Option<Arc<VulkanBackend>> {
 #[test]
 #[ignore = "requires a live Vulkan device"]
 fn mul_add_realize_on_vulkan_matches_reference() {
-    let Some(backend) = backend_or_skip() else { return };
+    let Some(backend) = backend_or_skip() else {
+        return;
+    };
 
     let a = LazyTensor::from_f32(
         vec![1.0_f32, 2.0, 3.0, 4.0],
@@ -70,7 +72,9 @@ fn mul_add_realize_on_vulkan_matches_reference() {
 #[test]
 #[ignore = "requires a live Vulkan device"]
 fn deep_chain_realize_on_vulkan_matches_reference() {
-    let Some(backend) = backend_or_skip() else { return };
+    let Some(backend) = backend_or_skip() else {
+        return;
+    };
 
     let a = LazyTensor::from_f32(
         vec![1.0_f32, 2.0, 3.0, 4.0],

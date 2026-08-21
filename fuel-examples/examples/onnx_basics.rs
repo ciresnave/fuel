@@ -1,4 +1,4 @@
-﻿use anyhow::Result;
+use anyhow::Result;
 use fuel::lazy::LazyTensor;
 use fuel::{Device, Shape};
 use std::sync::Arc;
@@ -60,13 +60,17 @@ pub fn main() -> Result<()> {
                         })?;
                         let shape = tt.shape.as_ref().expect("no tensortype.shape for input");
                         let dims = shape
-                                .dim
-                                .iter()
-                                .map(|dim| match dim.value.as_ref().expect("no dim value") {
-                                    fuel_onnx::onnx::tensor_shape_proto::dimension::Value::DimValue(v) => Ok(*v as usize),
-                                    fuel_onnx::onnx::tensor_shape_proto::dimension::Value::DimParam(_) => Ok(42),
-                                })
-                                .collect::<Result<Vec<usize>>>()?;
+                            .dim
+                            .iter()
+                            .map(|dim| match dim.value.as_ref().expect("no dim value") {
+                                fuel_onnx::onnx::tensor_shape_proto::dimension::Value::DimValue(
+                                    v,
+                                ) => Ok(*v as usize),
+                                fuel_onnx::onnx::tensor_shape_proto::dimension::Value::DimParam(
+                                    _,
+                                ) => Ok(42),
+                            })
+                            .collect::<Result<Vec<usize>>>()?;
                         let n: usize = dims.iter().product();
                         let zeros: Arc<[f32]> = Arc::from(vec![0f32; n]);
                         let t = match &anchor {
@@ -85,7 +89,12 @@ pub fn main() -> Result<()> {
                 if anchor.is_none() {
                     anchor = Some(value.clone());
                 }
-                println!("input {}: shape {:?} dtype {:?}", input.name, value.shape().dims(), value.dtype());
+                println!(
+                    "input {}: shape {:?} dtype {:?}",
+                    input.name,
+                    value.shape().dims(),
+                    value.dtype()
+                );
                 inputs.insert(input.name.clone(), value);
             }
             let outputs = fuel_onnx::LazyOnnxEval::from_model(model).run(&inputs)?;

@@ -94,7 +94,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .realize_f32();
         let next = fuel::lazy::sample_logits(
             &last_logits,
-            SamplingStrategy::Temperature { temp: 0.7, seed: 42 },
+            SamplingStrategy::Temperature {
+                temp: 0.7,
+                seed: 42,
+            },
             &mut rng_state,
         );
         all_tokens.push(next);
@@ -105,11 +108,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             printed_text = full;
         }
-        if let Some(eos) = tokenizer.eos_id() {
-            if next == eos {
+        if let Some(eos) = tokenizer.eos_id()
+            && next == eos {
                 break;
             }
-        }
     }
     let elapsed = t0.elapsed();
     println!();

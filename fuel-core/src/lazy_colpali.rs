@@ -23,10 +23,10 @@
 //!
 //! v1 scope: F32, batch == 1, prefill only.
 
+use crate::Result;
 use crate::lazy::{LazyTensor, WeightStorage};
 use crate::lazy_gemma::GemmaModel;
 use crate::lazy_paligemma::{PaligemmaConfig, PaligemmaModel, PaligemmaWeights};
-use crate::Result;
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -68,10 +68,7 @@ impl ColPaliModel {
 
     /// Encode a text-only token sequence into per-token 128-d
     /// L2-normalized embeddings `(1, text_len, 128)`.
-    pub fn forward_text(
-        &self,
-        text_tokens: &[u32],
-    ) -> Result<LazyTensor> {
+    pub fn forward_text(&self, text_tokens: &[u32]) -> Result<LazyTensor> {
         let cfg = &self.config;
         let gemma = GemmaModel {
             config: cfg.text_config.clone(),
@@ -90,9 +87,10 @@ impl ColPaliModel {
     ) -> Result<LazyTensor> {
         let cfg = &self.config;
         let h_dim = cfg.text_config.hidden_size;
-        let projected = self.weights.custom_text_projection.apply_linear(
-            hidden, h_dim, COLPALI_PROJ_DIM,
-        )?;
+        let projected =
+            self.weights
+                .custom_text_projection
+                .apply_linear(hidden, h_dim, COLPALI_PROJ_DIM)?;
         let bias = anchor.const_f32_like(
             Arc::clone(&self.weights.custom_text_projection_bias),
             Shape::from_dims(&[COLPALI_PROJ_DIM]),
@@ -121,25 +119,30 @@ impl ColPaliWeights {
         let paligemma = PaligemmaWeights::load_from_mmapped(st, cfg)?;
         let text_hidden = cfg.text_config.hidden_size;
         let custom_text_projection = load_transposed_matrix_preserve_dtype(
-            st, "custom_text_proj.weight", COLPALI_PROJ_DIM, text_hidden,
+            st,
+            "custom_text_proj.weight",
+            COLPALI_PROJ_DIM,
+            text_hidden,
         )?;
-        let custom_text_projection_bias = Arc::from(
-            load_tensor_as_f32(st, "custom_text_proj.bias")?,
-        );
-        Ok(Self { paligemma, custom_text_projection, custom_text_projection_bias })
+        let custom_text_projection_bias =
+            Arc::from(load_tensor_as_f32(st, "custom_text_proj.bias")?);
+        Ok(Self {
+            paligemma,
+            custom_text_projection,
+            custom_text_projection_bias,
+        })
     }
 }
-
 
 // ---- Tests -----------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Device;
     use crate::lazy_gemma::{GemmaConfig, GemmaWeights};
     use crate::lazy_paligemma::PaligemmaWeights;
-    use crate::lazy_siglip::{SiglipVisionConfig, SiglipVisionWeights, SiglipActivation};
-    use crate::Device;
+    use crate::lazy_siglip::{SiglipActivation, SiglipVisionConfig, SiglipVisionWeights};
 
     fn vec_of(n: usize, next: &mut dyn FnMut() -> f32) -> Arc<[f32]> {
         Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
@@ -159,9 +162,13 @@ mod tests {
 
     fn tiny_vision_cfg() -> SiglipVisionConfig {
         SiglipVisionConfig {
-            hidden_size: 8, intermediate_size: 16,
-            num_hidden_layers: 1, num_attention_heads: 2,
-            num_channels: 3, image_size: 8, patch_size: 4,
+            hidden_size: 8,
+            intermediate_size: 16,
+            num_hidden_layers: 1,
+            num_attention_heads: 2,
+            num_channels: 3,
+            image_size: 8,
+            patch_size: 4,
             hidden_activation: SiglipActivation::GeluPytorchTanh,
             layer_norm_eps: 1e-6,
         }
@@ -169,10 +176,15 @@ mod tests {
 
     fn tiny_text_cfg() -> GemmaConfig {
         GemmaConfig {
-            vocab_size: 16, hidden_size: 8, intermediate_size: 16,
-            num_hidden_layers: 2, num_attention_heads: 2,
-            num_key_value_heads: 1, head_dim: 4,
-            rms_norm_eps: 1e-6, rope_theta: 10_000.0,
+            vocab_size: 16,
+            hidden_size: 8,
+            intermediate_size: 16,
+            num_hidden_layers: 2,
+            num_attention_heads: 2,
+            num_key_value_heads: 1,
+            head_dim: 4,
+            rms_norm_eps: 1e-6,
+            rope_theta: 10_000.0,
             max_position_embeddings: 64,
             attention_bias: false,
             hidden_activation: crate::lazy_gemma::GemmaActivation::GeluPytorchTanh,
@@ -181,34 +193,38 @@ mod tests {
 
     /// Tiny synthetic weights — small enough to exercise the
     /// graph in milliseconds. Mirrors the PaliGemma test scaffolding.
-    fn tiny_colpali_weights(
-        v_cfg: &SiglipVisionConfig, t_cfg: &GemmaConfig,
-    ) -> ColPaliWeights {
+    fn tiny_colpali_weights(v_cfg: &SiglipVisionConfig, t_cfg: &GemmaConfig) -> ColPaliWeights {
         use crate::lazy::LayerWeights;
         let mut nb = rng_seed(2026);
         let v_h = v_cfg.hidden_size;
         let i_size = v_cfg.intermediate_size;
         let np = v_cfg.num_patches();
-        let layers: Vec<crate::lazy_siglip::SiglipEncoderLayerWeights> =
-            (0..v_cfg.num_hidden_layers).map(|_| {
-                crate::lazy_siglip::SiglipEncoderLayerWeights {
-                    ln1_gain: Arc::from(vec![1.0_f32; v_h]),
-                    ln1_bias: Arc::from(vec![0.0_f32; v_h]),
-                    q_proj: ws(v_h * v_h, &mut nb), q_proj_bias: vec_of(v_h, &mut nb),
-                    k_proj: ws(v_h * v_h, &mut nb), k_proj_bias: vec_of(v_h, &mut nb),
-                    v_proj: ws(v_h * v_h, &mut nb), v_proj_bias: vec_of(v_h, &mut nb),
-                    out_proj: ws(v_h * v_h, &mut nb),
-                    out_proj_bias: vec_of(v_h, &mut nb),
-                    ln2_gain: Arc::from(vec![1.0_f32; v_h]),
-                    ln2_bias: Arc::from(vec![0.0_f32; v_h]),
-                    fc1: ws(v_h * i_size, &mut nb),
-                    fc1_bias: vec_of(i_size, &mut nb),
-                    fc2: ws(i_size * v_h, &mut nb),
-                    fc2_bias: vec_of(v_h, &mut nb),
-                }
-            }).collect();
+        let layers: Vec<crate::lazy_siglip::SiglipEncoderLayerWeights> = (0..v_cfg
+            .num_hidden_layers)
+            .map(|_| crate::lazy_siglip::SiglipEncoderLayerWeights {
+                ln1_gain: Arc::from(vec![1.0_f32; v_h]),
+                ln1_bias: Arc::from(vec![0.0_f32; v_h]),
+                q_proj: ws(v_h * v_h, &mut nb),
+                q_proj_bias: vec_of(v_h, &mut nb),
+                k_proj: ws(v_h * v_h, &mut nb),
+                k_proj_bias: vec_of(v_h, &mut nb),
+                v_proj: ws(v_h * v_h, &mut nb),
+                v_proj_bias: vec_of(v_h, &mut nb),
+                out_proj: ws(v_h * v_h, &mut nb),
+                out_proj_bias: vec_of(v_h, &mut nb),
+                ln2_gain: Arc::from(vec![1.0_f32; v_h]),
+                ln2_bias: Arc::from(vec![0.0_f32; v_h]),
+                fc1: ws(v_h * i_size, &mut nb),
+                fc1_bias: vec_of(i_size, &mut nb),
+                fc2: ws(i_size * v_h, &mut nb),
+                fc2_bias: vec_of(v_h, &mut nb),
+            })
+            .collect();
         let vision = SiglipVisionWeights {
-            patch_proj: vec_of(v_h * v_cfg.num_channels * v_cfg.patch_size * v_cfg.patch_size, &mut nb),
+            patch_proj: vec_of(
+                v_h * v_cfg.num_channels * v_cfg.patch_size * v_cfg.patch_size,
+                &mut nb,
+            ),
             patch_proj_bias: vec_of(v_h, &mut nb),
             position_embedding: vec_of(np * v_h, &mut nb),
             layers,
@@ -221,17 +237,22 @@ mod tests {
         let i_t = t_cfg.intermediate_size;
         let n_kv = t_cfg.num_key_value_heads;
         let kv_dim = n_kv * t_cfg.head_dim;
-        let gemma_layers: Vec<LayerWeights> = (0..t_cfg.num_hidden_layers).map(|_| LayerWeights {
-            attn_q: ws(t_h * t_h, &mut nb), attn_q_bias: None,
-            attn_k: ws(t_h * kv_dim, &mut nb), attn_k_bias: None,
-            attn_v: ws(t_h * kv_dim, &mut nb), attn_v_bias: None,
-            attn_o: ws(t_h * t_h, &mut nb),
-            ffn_gate: ws(t_h * i_t, &mut nb),
-            ffn_up:   ws(t_h * i_t, &mut nb),
-            ffn_down: ws(i_t * t_h, &mut nb),
-            attn_norm_gain: Arc::from(vec![1.0_f32; t_h]),
-            ffn_norm_gain:  Arc::from(vec![1.0_f32; t_h]),
-        }).collect();
+        let gemma_layers: Vec<LayerWeights> = (0..t_cfg.num_hidden_layers)
+            .map(|_| LayerWeights {
+                attn_q: ws(t_h * t_h, &mut nb),
+                attn_q_bias: None,
+                attn_k: ws(t_h * kv_dim, &mut nb),
+                attn_k_bias: None,
+                attn_v: ws(t_h * kv_dim, &mut nb),
+                attn_v_bias: None,
+                attn_o: ws(t_h * t_h, &mut nb),
+                ffn_gate: ws(t_h * i_t, &mut nb),
+                ffn_up: ws(t_h * i_t, &mut nb),
+                ffn_down: ws(i_t * t_h, &mut nb),
+                attn_norm_gain: Arc::from(vec![1.0_f32; t_h]),
+                ffn_norm_gain: Arc::from(vec![1.0_f32; t_h]),
+            })
+            .collect();
         let text = GemmaWeights {
             token_embedding: vec_of(t_cfg.vocab_size * t_h, &mut nb),
             layers: gemma_layers,
@@ -265,7 +286,10 @@ mod tests {
     fn forward_text_shape_and_l2_normalized() {
         let cfg = tiny_cfg();
         let weights = tiny_colpali_weights(&cfg.vision_config, &cfg.text_config);
-        let model = ColPaliModel { config: cfg.clone(), weights };
+        let model = ColPaliModel {
+            config: cfg.clone(),
+            weights,
+        };
         let tokens = vec![1_u32, 2, 3, 4];
         let out = model.forward_text(&tokens).unwrap();
         assert_eq!(out.shape().dims(), &[1, tokens.len(), COLPALI_PROJ_DIM]);
@@ -278,8 +302,10 @@ mod tests {
                 sum_sq += v * v;
                 assert!(v.is_finite(), "non-finite at t={t} d={d}: {v}");
             }
-            assert!((sum_sq - 1.0).abs() < 1e-4,
-                "L2 norm not unit at t={t}: sum_sq = {sum_sq}");
+            assert!(
+                (sum_sq - 1.0).abs() < 1e-4,
+                "L2 norm not unit at t={t}: sum_sq = {sum_sq}"
+            );
         }
     }
 
@@ -287,18 +313,25 @@ mod tests {
     fn forward_images_shape_and_l2_normalized() {
         let cfg = tiny_cfg();
         let weights = tiny_colpali_weights(&cfg.vision_config, &cfg.text_config);
-        let model = ColPaliModel { config: cfg.clone(), weights };
+        let model = ColPaliModel {
+            config: cfg.clone(),
+            weights,
+        };
         let img_size = cfg.vision_config.image_size;
         let pixel_values = LazyTensor::from_f32(
             (0..(3 * img_size * img_size))
-                .map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
+                .map(|i| (i as f32) * 0.01)
+                .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, img_size, img_size]),
             &Device::cpu(),
         );
         let tokens = vec![5_u32, 6, 7];
         let out = model.forward_images(&pixel_values, &tokens).unwrap();
         let np = cfg.vision_config.num_patches();
-        assert_eq!(out.shape().dims(), &[1, np + tokens.len(), COLPALI_PROJ_DIM]);
+        assert_eq!(
+            out.shape().dims(),
+            &[1, np + tokens.len(), COLPALI_PROJ_DIM]
+        );
         let data = out.realize_f32();
         for t in 0..(np + tokens.len()) {
             let mut sum_sq = 0.0_f32;
@@ -307,8 +340,10 @@ mod tests {
                 sum_sq += v * v;
                 assert!(v.is_finite(), "non-finite at t={t} d={d}: {v}");
             }
-            assert!((sum_sq - 1.0).abs() < 1e-4,
-                "image embeddings L2 norm not unit at t={t}: sum_sq = {sum_sq}");
+            assert!(
+                (sum_sq - 1.0).abs() < 1e-4,
+                "image embeddings L2 norm not unit at t={t}: sum_sq = {sum_sq}"
+            );
         }
     }
 
@@ -318,14 +353,19 @@ mod tests {
     fn forward_text_responds_to_tokens() {
         let cfg = tiny_cfg();
         let weights = tiny_colpali_weights(&cfg.vision_config, &cfg.text_config);
-        let model = ColPaliModel { config: cfg, weights };
+        let model = ColPaliModel {
+            config: cfg,
+            weights,
+        };
         let a = model.forward_text(&[1_u32, 2, 3]).unwrap().realize_f32();
         let b = model.forward_text(&[5_u32, 6, 7]).unwrap().realize_f32();
         let mut max_diff = 0.0_f32;
         for (x, y) in a.iter().zip(b.iter()) {
             max_diff = max_diff.max((x - y).abs());
         }
-        assert!(max_diff > 1e-7,
-            "text embeddings must respond to token changes, max_diff = {max_diff}");
+        assert!(
+            max_diff > 1e-7,
+            "text embeddings must respond to token changes, max_diff = {max_diff}"
+        );
     }
 }

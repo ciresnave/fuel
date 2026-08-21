@@ -79,14 +79,14 @@
 
 use std::collections::{HashMap, HashSet};
 
+use fuel_graph::opt::insert_cross_device_copies;
+use fuel_graph::{Graph, NodeId, Op, extract_runs_multi, topo_order_multi};
 use fuel_ir::probe::BackendId;
 use fuel_ir::{DType, DeviceLocation, Result};
-use fuel_graph::opt::insert_cross_device_copies;
-use fuel_graph::{extract_runs_multi, topo_order_multi, Graph, NodeId, Op};
 
 use crate::driver::{OptimizationContext, PassRegistry};
 use crate::kernel::KernelBindingTable;
-use crate::plan::{compile_plan, ExecutionPlan, PlanOptions};
+use crate::plan::{ExecutionPlan, PlanOptions, compile_plan};
 use crate::topology::SystemTopology;
 
 /// The transient *view* [`optimize_graph`] returns — the realize-roots
@@ -247,7 +247,13 @@ pub fn optimize_graph(
     bindings_table: &KernelBindingTable,
     opts: &PlanOptions<'_>,
 ) -> Result<OptimizedGraph> {
-    optimize_graph_with_passes(graph, roots, bindings_table, opts, PassRegistry::default_passes())
+    optimize_graph_with_passes(
+        graph,
+        roots,
+        bindings_table,
+        opts,
+        PassRegistry::default_passes(),
+    )
 }
 
 /// [`optimize_graph`] with the runtime-fusion pathfinder registered
@@ -386,7 +392,11 @@ fn optimize_graph_with_passes(
         // own input, and surfacing it is what makes `OptimizedGraph::placement_of`
         // an observation rather than an inference.
         resolved_placements = Some(insert_residency_copies(
-            graph, roots, &plan, pinned, opts.input_residency,
+            graph,
+            roots,
+            &plan,
+            pinned,
+            opts.input_residency,
         ));
         // Cleanup Step B (layout): insert `Op::Contiguize` before any kernel
         // whose chosen winner rejects strided inputs and whose input layout is
@@ -486,8 +496,7 @@ fn insert_dtype_fixups(
         // here (e.g. "does any registered backend serve it?") lets a backend
         // the node can never run on suppress the reconciliation the node needs,
         // and `compile_plan` below then dead-ends at `NoBackendForOp`.
-        let candidates =
-            crate::plan::candidate_backends_for(graph, options, id, graph.node(id));
+        let candidates = crate::plan::candidate_backends_for(graph, options, id, graph.node(id));
         let servable = |key: &[DType]| {
             candidates
                 .iter()
@@ -500,12 +509,18 @@ fn insert_dtype_fixups(
         // Promotion target = the output dtype ("compute dtype"), taken ONLY when
         // every input can losslessly upcast to it — else decline.
         let target = out_dtype;
-        if !inputs.iter().all(|&i| lossless_upcast(graph.node(i).dtype, target)) {
+        if !inputs
+            .iter()
+            .all(|&i| lossless_upcast(graph.node(i).dtype, target))
+        {
             continue;
         }
         // Uniform promoted key `[target, …, target, out]` (target == out).
-        let promoted_key: Vec<DType> =
-            inputs.iter().map(|_| target).chain(std::iter::once(out_dtype)).collect();
+        let promoted_key: Vec<DType> = inputs
+            .iter()
+            .map(|_| target)
+            .chain(std::iter::once(out_dtype))
+            .collect();
         if promoted_key == native_key {
             continue; // inputs already == target; nothing to promote
         }
@@ -674,7 +689,10 @@ fn insert_residency_copies(
         if a == DeviceLocation::Cpu || b == DeviceLocation::Cpu {
             return false;
         }
-        matches!(topology.transfer_path(a, b), fuel_ir::backend::TransferPath::HostStaging)
+        matches!(
+            topology.transfer_path(a, b),
+            fuel_ir::backend::TransferPath::HostStaging
+        )
     };
     let inserted = insert_cross_device_copies(
         graph,
@@ -692,15 +710,18 @@ fn insert_residency_copies(
     // consumer-side hop with `Cpu` (its bytes come FROM the CPU intermediate,
     // so its Copy kernel is the CPU `copy_from_cpu_wrapper`).
     let src_location = |graph: &Graph, src: NodeId| -> Option<DeviceLocation> {
-        placements.get(&src).copied().or_else(|| graph.placement(src))
+        placements
+            .get(&src)
+            .copied()
+            .or_else(|| graph.placement(src))
     };
     // Stamp the new copies: target_backend = SOURCE backend. The pass only
     // inserts a copy when the producer's placement resolved to Some.
     for &copy_id in &inserted {
-        if let Some(&src) = graph.node(copy_id).inputs.first() {
-            if let Some(src_loc) = src_location(graph, src) {
-                graph.set_target_backend(copy_id, location_to_backend_id(src_loc));
-            }
+        if let Some(&src) = graph.node(copy_id).inputs.first()
+            && let Some(src_loc) = src_location(graph, src)
+        {
+            graph.set_target_backend(copy_id, location_to_backend_id(src_loc));
         }
     }
     // Re-stamp ALL copies/moves with their SOURCE backend — graph rewrites are
@@ -722,8 +743,12 @@ fn insert_residency_copies(
         if !matches!(graph.node(id).op, Op::Copy { .. } | Op::Move { .. }) {
             continue;
         }
-        let Some(&src) = graph.node(id).inputs.first() else { continue };
-        let Some(src_loc) = src_location(graph, src) else { continue };
+        let Some(&src) = graph.node(id).inputs.first() else {
+            continue;
+        };
+        let Some(src_loc) = src_location(graph, src) else {
+            continue;
+        };
         graph.set_target_backend(id, location_to_backend_id(src_loc));
     }
 
@@ -754,8 +779,7 @@ fn effective_placements(
     input_residency: Option<&dyn Fn(NodeId) -> Option<DeviceLocation>>,
 ) -> HashMap<NodeId, DeviceLocation> {
     let order = topo_order_multi(g, roots);
-    let mut map: HashMap<NodeId, DeviceLocation> =
-        HashMap::with_capacity(order.len());
+    let mut map: HashMap<NodeId, DeviceLocation> = HashMap::with_capacity(order.len());
     for &id in &order {
         let node = g.node(id);
         match node.op {
@@ -781,12 +805,10 @@ fn effective_placements(
             map.insert(id, pinned_loc);
             continue;
         }
-        if node.op.is_view_op()
-            || matches!(node.op, Op::Reshape(_) | Op::Contiguize)
+        if (node.op.is_view_op() || matches!(node.op, Op::Reshape(_) | Op::Contiguize))
+            && let Some(&loc) = node.inputs.first().and_then(|i| map.get(i))
         {
-            if let Some(&loc) = node.inputs.first().and_then(|i| map.get(i)) {
-                map.insert(id, loc);
-            }
+            map.insert(id, loc);
         }
     }
     map
@@ -815,12 +837,12 @@ fn location_to_backend_id(loc: DeviceLocation) -> BackendId {
 mod tests {
     use super::*;
     use crate::fused::PrecisionGuarantee;
-    use crate::kernel::{unknown_cost, KernelCaps, OpParams};
+    use crate::kernel::{KernelCaps, OpParams, unknown_cost};
+    use fuel_graph::opt::execution_plan;
+    use fuel_graph::{Node, Op};
     use fuel_ir::dispatch::OpKind;
     use fuel_ir::probe::BackendId;
     use fuel_ir::{DType, DeviceLocation, Layout, Result as FuelResult, Shape};
-    use fuel_graph::opt::execution_plan;
-    use fuel_graph::{Node, Op};
     use fuel_memory::Storage;
     use std::sync::{Arc, RwLock};
 
@@ -833,11 +855,7 @@ mod tests {
         Ok(())
     }
 
-    fn register_elementwise(
-        table: &mut KernelBindingTable,
-        op: OpKind,
-        n_in: usize,
-    ) {
+    fn register_elementwise(table: &mut KernelBindingTable, op: OpKind, n_in: usize) {
         let mut dtypes = vec![DType::F32; n_in];
         dtypes.push(DType::F32); // output dtype
         table.register_full(
@@ -926,10 +944,25 @@ mod tests {
         let _optimized = optimize_graph(&mut g, &[root], &table, &cpu_opts())
             .expect("optimize_graph on a straight-line CPU graph");
 
-        assert_eq!(g.target_backend(b), Some(BackendId::Cpu), "Relu stamped Cpu");
-        assert_eq!(g.target_backend(c), Some(BackendId::Cpu), "Silu stamped Cpu");
-        assert_eq!(g.target_backend(d), Some(BackendId::Cpu), "Tanh stamped Cpu");
-        assert!(g.target_backend(a).is_none(), "Op::Const leaf is not stamped");
+        assert_eq!(
+            g.target_backend(b),
+            Some(BackendId::Cpu),
+            "Relu stamped Cpu"
+        );
+        assert_eq!(
+            g.target_backend(c),
+            Some(BackendId::Cpu),
+            "Silu stamped Cpu"
+        );
+        assert_eq!(
+            g.target_backend(d),
+            Some(BackendId::Cpu),
+            "Tanh stamped Cpu"
+        );
+        assert!(
+            g.target_backend(a).is_none(),
+            "Op::Const leaf is not stamped"
+        );
     }
 
     /// `OptimizedGraph::placement_of` makes the placement DECISION observable,
@@ -958,9 +991,21 @@ mod tests {
         );
         // POSITIVE CONTROL: concrete values, not merely "not None". An empty or
         // never-populated map would fail here instead of passing quietly.
-        assert_eq!(optimized.placement_of(b), Some(DeviceLocation::Cpu), "Relu placed Cpu");
-        assert_eq!(optimized.placement_of(c), Some(DeviceLocation::Cpu), "Silu placed Cpu");
-        assert_eq!(optimized.placement_of(d), Some(DeviceLocation::Cpu), "Tanh placed Cpu");
+        assert_eq!(
+            optimized.placement_of(b),
+            Some(DeviceLocation::Cpu),
+            "Relu placed Cpu"
+        );
+        assert_eq!(
+            optimized.placement_of(c),
+            Some(DeviceLocation::Cpu),
+            "Silu placed Cpu"
+        );
+        assert_eq!(
+            optimized.placement_of(d),
+            Some(DeviceLocation::Cpu),
+            "Tanh placed Cpu"
+        );
         assert!(
             optimized.placements().count() >= 3,
             "the map must actually be populated, got {} entries",
@@ -1011,13 +1056,22 @@ mod tests {
         let bindings = crate::dispatch::global_bindings(); // real populated CPU table
         let mut g = Graph::new();
         let lhs = g.push(Node {
-            op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[2, 3]),
+            dtype: DType::F32,
         });
         let rhs = g.push(Node {
-            op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[3, 2]), dtype: DType::BF16,
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[3, 2]),
+            dtype: DType::BF16,
         });
         let mm = g.push(Node {
-            op: Op::MatMul, inputs: vec![lhs, rhs], shape: Shape::from_dims(&[2, 2]), dtype: DType::F32,
+            op: Op::MatMul,
+            inputs: vec![lhs, rhs],
+            shape: Shape::from_dims(&[2, 2]),
+            dtype: DType::F32,
         });
 
         // Born-red baseline: without the fixup this errors with NoBackendForOp.
@@ -1030,9 +1084,16 @@ mod tests {
         assert_eq!(mm_inputs[0], lhs, "lhs (already F32) untouched");
         let cast_id = mm_inputs[1];
         assert_ne!(cast_id, rhs, "rhs was rewired to a Cast");
-        assert!(matches!(g.node(cast_id).op, Op::Cast(DType::F32)), "rhs cast to F32");
+        assert!(
+            matches!(g.node(cast_id).op, Op::Cast(DType::F32)),
+            "rhs cast to F32"
+        );
         assert_eq!(g.node(cast_id).dtype, DType::F32);
-        assert_eq!(g.node(cast_id).inputs, vec![rhs], "cast reads the original BF16 weight");
+        assert_eq!(
+            g.node(cast_id).inputs,
+            vec![rhs],
+            "cast reads the original BF16 weight"
+        );
     }
 
     fn register_matmul(table: &mut KernelBindingTable, dtypes: &[DType], backend: BackendId) {
@@ -1066,13 +1127,22 @@ mod tests {
     fn mixed_matmul_graph() -> (Graph, NodeId, NodeId, NodeId) {
         let mut g = Graph::new();
         let lhs = g.push(Node {
-            op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[2, 3]), dtype: DType::F32,
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[2, 3]),
+            dtype: DType::F32,
         });
         let rhs = g.push(Node {
-            op: Op::Const, inputs: vec![], shape: Shape::from_dims(&[3, 2]), dtype: DType::BF16,
+            op: Op::Const,
+            inputs: vec![],
+            shape: Shape::from_dims(&[3, 2]),
+            dtype: DType::BF16,
         });
         let mm = g.push(Node {
-            op: Op::MatMul, inputs: vec![lhs, rhs], shape: Shape::from_dims(&[2, 2]), dtype: DType::F32,
+            op: Op::MatMul,
+            inputs: vec![lhs, rhs],
+            shape: Shape::from_dims(&[2, 2]),
+            dtype: DType::F32,
         });
         (g, lhs, rhs, mm)
     }
@@ -1096,9 +1166,17 @@ mod tests {
     fn dtype_reconciliation_ignores_kernels_on_non_candidate_backends() {
         let mut table = KernelBindingTable::new();
         // The pinned backend serves only the uniform key...
-        register_matmul(&mut table, &[DType::F32, DType::F32, DType::F32], BackendId::Cpu);
+        register_matmul(
+            &mut table,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cpu,
+        );
         // ...while a backend this graph will never run on owns the mixed key.
-        register_matmul(&mut table, &[DType::F32, DType::BF16, DType::F32], BackendId::Vulkan);
+        register_matmul(
+            &mut table,
+            &[DType::F32, DType::BF16, DType::F32],
+            BackendId::Vulkan,
+        );
         register_cast(&mut table, DType::BF16, DType::F32, BackendId::Cpu);
 
         let (mut g, lhs, rhs, mm) = mixed_matmul_graph();
@@ -1111,8 +1189,15 @@ mod tests {
         assert_eq!(mm_inputs[0], lhs, "lhs (already F32) untouched");
         let cast_id = mm_inputs[1];
         assert_ne!(cast_id, rhs, "rhs was rewired to a Cast");
-        assert!(matches!(g.node(cast_id).op, Op::Cast(DType::F32)), "rhs cast to F32");
-        assert_eq!(g.node(cast_id).inputs, vec![rhs], "cast reads the original BF16 weight");
+        assert!(
+            matches!(g.node(cast_id).op, Op::Cast(DType::F32)),
+            "rhs cast to F32"
+        );
+        assert_eq!(
+            g.node(cast_id).inputs,
+            vec![rhs],
+            "cast reads the original BF16 weight"
+        );
     }
 
     /// The converse guard — the fix must not over-cast. When the node's own
@@ -1122,7 +1207,11 @@ mod tests {
     #[test]
     fn dtype_reconciliation_declines_when_the_candidate_backend_serves_it_natively() {
         let mut table = KernelBindingTable::new();
-        register_matmul(&mut table, &[DType::F32, DType::BF16, DType::F32], BackendId::Cpu);
+        register_matmul(
+            &mut table,
+            &[DType::F32, DType::BF16, DType::F32],
+            BackendId::Cpu,
+        );
 
         let (mut g, lhs, rhs, mm) = mixed_matmul_graph();
         optimize_graph(&mut g, &[mm], &table, &cpu_opts()).expect("native mixed kernel plans");
@@ -1142,8 +1231,16 @@ mod tests {
     #[test]
     fn dtype_reconciliation_counts_admitted_off_device_fallback_as_a_candidate() {
         let mut table = KernelBindingTable::new();
-        register_matmul(&mut table, &[DType::F32, DType::F32, DType::F32], BackendId::Cpu);
-        register_matmul(&mut table, &[DType::F32, DType::BF16, DType::F32], BackendId::Vulkan);
+        register_matmul(
+            &mut table,
+            &[DType::F32, DType::F32, DType::F32],
+            BackendId::Cpu,
+        );
+        register_matmul(
+            &mut table,
+            &[DType::F32, DType::BF16, DType::F32],
+            BackendId::Vulkan,
+        );
 
         let fallback = |_from: DeviceLocation| -> Vec<(BackendId, DeviceLocation)> {
             vec![(BackendId::Vulkan, DeviceLocation::Vulkan { gpu_id: 0 })]
@@ -1239,11 +1336,13 @@ mod tests {
         let c2 = f32_node(&mut g, Op::Const, vec![]);
         let add = f32_node(&mut g, Op::Add, vec![c1, c2]);
         g.set_target_backend(add, BackendId::Cpu);
-        let residency =
-            |id: NodeId| (id == c1 || id == c2).then_some(DeviceLocation::Cpu);
+        let residency = |id: NodeId| (id == c1 || id == c2).then_some(DeviceLocation::Cpu);
         let pre = g.len();
         insert_residency_copies(
-            &mut g, &[add], &ExecutionPlan::empty(), DeviceLocation::Cpu,
+            &mut g,
+            &[add],
+            &ExecutionPlan::empty(),
+            DeviceLocation::Cpu,
             Some(&residency),
         );
         assert_eq!(g.len(), pre, "co-located graph must be a no-op");
@@ -1267,7 +1366,11 @@ mod tests {
 
         let pre = g.len();
         insert_residency_copies(
-            &mut g, &[neg, sqr], &ExecutionPlan::empty(), cuda0, Some(&residency),
+            &mut g,
+            &[neg, sqr],
+            &ExecutionPlan::empty(),
+            cuda0,
+            Some(&residency),
         );
 
         assert_eq!(g.len(), pre + 1, "one crossing → one copy, CSE-deduped");
@@ -1278,15 +1381,18 @@ mod tests {
         let copy = g.node(neg_in);
         assert!(
             matches!(copy.op, Op::Copy { target } if target == cuda0),
-            "copy targets the consumer device; got {:?}", copy.op,
+            "copy targets the consumer device; got {:?}",
+            copy.op,
         );
         assert_eq!(copy.inputs, vec![c1], "copy reads the resident slot");
         assert_eq!(
-            g.target_backend(neg_in), Some(BackendId::Cpu),
+            g.target_backend(neg_in),
+            Some(BackendId::Cpu),
             "stamped with the SOURCE backend (H2D runs on the CPU wrapper)",
         );
         assert_eq!(
-            g.placement(neg_in), Some(cuda0),
+            g.placement(neg_in),
+            Some(cuda0),
             "copy output placed on the consumer device",
         );
     }
@@ -1304,7 +1410,11 @@ mod tests {
         let residency = |id: NodeId| (id == c1).then_some(DeviceLocation::Cpu);
 
         insert_residency_copies(
-            &mut g, &[neg], &ExecutionPlan::empty(), cuda0, Some(&residency),
+            &mut g,
+            &[neg],
+            &ExecutionPlan::empty(),
+            cuda0,
+            Some(&residency),
         );
         let copy_id = g.node(neg).inputs[0];
         // Simulate stamp_plan_backends clobbering the copy with the pinned backend.
@@ -1312,11 +1422,16 @@ mod tests {
 
         let pre = g.len();
         insert_residency_copies(
-            &mut g, &[neg], &ExecutionPlan::empty(), cuda0, Some(&residency),
+            &mut g,
+            &[neg],
+            &ExecutionPlan::empty(),
+            cuda0,
+            Some(&residency),
         );
         assert_eq!(g.len(), pre, "re-run inserts nothing");
         assert_eq!(
-            g.target_backend(copy_id), Some(BackendId::Cpu),
+            g.target_backend(copy_id),
+            Some(BackendId::Cpu),
             "re-stamp sweep restores the source-backend stamp",
         );
     }
@@ -1386,13 +1501,18 @@ mod tests {
         let (mut g, _branch, diverge, arm0, arm1, post) = residency_diamond(cuda0);
 
         insert_residency_copies(
-            &mut g, &[post], &ExecutionPlan::empty(), DeviceLocation::Cpu, None,
+            &mut g,
+            &[post],
+            &ExecutionPlan::empty(),
+            DeviceLocation::Cpu,
+            None,
         );
 
         // arm-0 is CPU, same substrate as the CPU producer ⇒ its input edge
         // does NOT cross ⇒ no copy (and must stay reading `diverge`).
         assert_eq!(
-            g.node(arm0).inputs, vec![diverge],
+            g.node(arm0).inputs,
+            vec![diverge],
             "arm-0 is co-located with its producer ⇒ no copy, edge untouched",
         );
 
@@ -1411,10 +1531,12 @@ mod tests {
         let copy = g.node(arm1_in);
         assert!(
             matches!(copy.op, Op::Copy { target } if target == cuda0),
-            "arm-1's inbound copy must target CUDA; got {:?}", copy.op,
+            "arm-1's inbound copy must target CUDA; got {:?}",
+            copy.op,
         );
         assert_eq!(
-            copy.inputs, vec![diverge],
+            copy.inputs,
+            vec![diverge],
             "arm-1's copy reads the shared CPU producer",
         );
     }
@@ -1591,8 +1713,8 @@ mod tests {
         let out = f32_node(&mut g, Op::Add, vec![c0, c1]);
         let opts = two_backend_opts();
 
-        let optimized = optimize_graph(&mut g, &[out], &table, &opts)
-            .expect("optimize_graph succeeds");
+        let optimized =
+            optimize_graph(&mut g, &[out], &table, &opts).expect("optimize_graph succeeds");
         assert_eq!(
             optimized.branch_count(&g),
             0,
@@ -1613,8 +1735,8 @@ mod tests {
         // this is the order realize must reproduce on arm-0.
         let pre_order = execution_plan(&g, &[root]);
 
-        let optimized = optimize_graph(&mut g, &[root], &table, &opts)
-            .expect("optimize_graph succeeds");
+        let optimized =
+            optimize_graph(&mut g, &[root], &table, &opts).expect("optimize_graph succeeds");
         assert_eq!(optimized.branch_count(&g), 1, "exactly one branch");
 
         // The arm-1 node is the branch's second input — it must NOT
@@ -1655,8 +1777,8 @@ mod tests {
         let (mut g, _prod, fork, _tail, root) = build_single_fork_graph(&mut table);
         let opts = two_backend_opts();
 
-        let optimized = optimize_graph(&mut g, &[root], &table, &opts)
-            .expect("optimize_graph succeeds");
+        let optimized =
+            optimize_graph(&mut g, &[root], &table, &opts).expect("optimize_graph succeeds");
         assert_eq!(optimized.branch_count(&g), 1);
         let branch_id = (0..g.len())
             .map(NodeId)
@@ -1729,13 +1851,13 @@ mod tests {
         let opts = cpu_opts();
 
         let nodes_before = g.len();
-        let first = optimize_graph(&mut g, &[root], &table, &opts)
-            .expect("first optimize succeeds");
+        let first =
+            optimize_graph(&mut g, &[root], &table, &opts).expect("first optimize succeeds");
         let order_first = first.dispatch_order(&g);
         let nodes_after_first = g.len();
 
-        let second = optimize_graph(&mut g, &[root], &table, &opts)
-            .expect("second optimize succeeds");
+        let second =
+            optimize_graph(&mut g, &[root], &table, &opts).expect("second optimize succeeds");
         let order_second = second.dispatch_order(&g);
         let nodes_after_second = g.len();
 
@@ -1781,8 +1903,8 @@ mod tests {
     //        driver. =====
 
     use crate::driver::{
-        FrontierConvergenceOptimizer, OptimizationContext, Optimizer, PassRegistry,
-        Pathfinder, PlacementForkPathfinder,
+        FrontierConvergenceOptimizer, OptimizationContext, Optimizer, PassRegistry, Pathfinder,
+        PlacementForkPathfinder,
     };
     use std::collections::HashSet;
 
@@ -1818,8 +1940,7 @@ mod tests {
         //     legacy order (propose, then prune) onto a freshly compiled
         //     plan — exactly what the pre-B3 hardcoded sequence did.
         let mut ref_table = KernelBindingTable::new();
-        let (mut ref_g, _prod, ref_fork, _tail, ref_root) =
-            build_single_fork_graph(&mut ref_table);
+        let (mut ref_g, _prod, ref_fork, _tail, ref_root) = build_single_fork_graph(&mut ref_table);
         let opts = two_backend_opts();
         let ref_order = execution_plan(&ref_g, &[ref_root]);
         let ref_plan = compile_plan(&ref_g, &ref_order, &ref_table, &opts)
@@ -1848,8 +1969,8 @@ mod tests {
         //     PassRegistry::default_passes().run_lockstep.
         let mut table = KernelBindingTable::new();
         let (mut g, _p, fork, _t, root) = build_single_fork_graph(&mut table);
-        let optimized = optimize_graph(&mut g, &[root], &table, &opts)
-            .expect("optimize_graph succeeds");
+        let optimized =
+            optimize_graph(&mut g, &[root], &table, &opts).expect("optimize_graph succeeds");
         let got_snapshot = branch_snapshot(&g);
         let got_dispatch = optimized.dispatch_order(&g);
 
@@ -1886,8 +2007,7 @@ mod tests {
         let opts = cpu_opts();
 
         let order = execution_plan(&g, &[root]);
-        let plan = compile_plan(&g, &order, &table, &opts)
-            .expect("compile_plan succeeds");
+        let plan = compile_plan(&g, &order, &table, &opts).expect("compile_plan succeeds");
 
         let dispatch_before = fuel_graph::lower_runs_arm0(&g, &[root]);
         let nodes_before = g.len();
@@ -1950,11 +2070,7 @@ mod tests {
             fn name(&self) -> &'static str {
                 "RecordOptimizer"
             }
-            fn prune(
-                &self,
-                _g: &mut Graph,
-                _ctx: &OptimizationContext<'_>,
-            ) -> fuel_ir::Result<()> {
+            fn prune(&self, _g: &mut Graph, _ctx: &OptimizationContext<'_>) -> fuel_ir::Result<()> {
                 self.0.lock().unwrap().push("prune");
                 Ok(())
             }
@@ -2037,7 +2153,12 @@ mod tests {
 
         let mut g = Graph::new();
         let leaf = |g: &mut Graph, dims: &[usize], dtype: DType| {
-            g.push(Node { op: Op::Const, inputs: vec![], shape: Shape::from_dims(dims), dtype })
+            g.push(Node {
+                op: Op::Const,
+                inputs: vec![],
+                shape: Shape::from_dims(dims),
+                dtype,
+            })
         };
         let q = leaf(&mut g, &[B, HQ, SQ, D], DType::F32);
         let kc = leaf(&mut g, &[NUM_BLOCKS, BLOCK_SIZE, HKV, D], DType::F32);
@@ -2089,7 +2210,11 @@ mod tests {
         // fact this table must reproduce.
         assert!(
             table
-                .lookup(OpKind::MatMul, &[DType::F32, DType::F32, DType::F32], BackendId::Cuda)
+                .lookup(
+                    OpKind::MatMul,
+                    &[DType::F32, DType::F32, DType::F32],
+                    BackendId::Cuda
+                )
                 .is_ok(),
             "INSTRUMENT BROKEN: the binding table has no CUDA MatMul, so every \
              'no CUDA support' conclusion below would be an artifact of the \
@@ -2112,8 +2237,7 @@ mod tests {
             let Some(kind) = crate::pipelined::op_to_op_kind(&node.op) else {
                 continue; // Const / view / fused — not a binding-table lookup
             };
-            let mut dtypes: Vec<DType> =
-                node.inputs.iter().map(|&i| g.node(i).dtype).collect();
+            let mut dtypes: Vec<DType> = node.inputs.iter().map(|&i| g.node(i).dtype).collect();
             dtypes.push(node.dtype); // binding key is [inputs.., output]
             let sig = format!(
                 "{kind:?}{:?}",
@@ -2154,8 +2278,7 @@ mod tests {
             missing_cuda.len()
         );
 
-        let opts = PlanOptions::new()
-            .with_pinned_device(DeviceLocation::Cuda { gpu_id: 0 });
+        let opts = PlanOptions::new().with_pinned_device(DeviceLocation::Cuda { gpu_id: 0 });
         let optimized = match optimize_graph(&mut g, &[root], &table, &opts) {
             Ok(o) => o,
             Err(e) => {
@@ -2179,7 +2302,11 @@ mod tests {
             let id = NodeId(i);
             let op_name = match &g.node(id).op {
                 Op::Fused(fid, _) => format!("Fused({fid:?})"),
-                other => format!("{other:?}").split(' ').next().unwrap_or("?").to_string(),
+                other => format!("{other:?}")
+                    .split(' ')
+                    .next()
+                    .unwrap_or("?")
+                    .to_string(),
             };
             let place = match optimized.placement_of(id) {
                 Some(d) => format!("{d:?}"),
@@ -2192,10 +2319,14 @@ mod tests {
         }
 
         println!("\n=== PagedAttn DECOMPOSED arm: node placement (CUDA-pinned) ===");
-        println!("total nodes: {} (fused node #{} lowered to root #{})", g.len(), fused.0, root.0);
+        println!(
+            "total nodes: {} (fused node #{} lowered to root #{})",
+            g.len(),
+            fused.0,
+            root.0
+        );
         for (op, places) in &by_op {
-            let rendered: Vec<String> =
-                places.iter().map(|(d, n)| format!("{d}×{n}")).collect();
+            let rendered: Vec<String> = places.iter().map(|(d, n)| format!("{d}×{n}")).collect();
             println!("  {op:<40} {}", rendered.join("  "));
         }
 
