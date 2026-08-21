@@ -1955,6 +1955,7 @@ dependencies = [
  "fuel-memory",
  "fuel-metal-backend",
  "fuel-quantized",
+ "fuel-test-support",
  "fuel-vulkan-backend",
  "half",
  "kiss-ops-vocab",
