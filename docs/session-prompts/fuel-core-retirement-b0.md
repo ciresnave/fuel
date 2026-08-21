@@ -58,7 +58,7 @@ of other programs (eager-dispatch retirement B6), not B0.
 >
 > **First separable piece, measured 2026-08-19: `fuel-nn`.** The NN surface is
 > 22 files / ~8,855 lines (`lazy_nn_*.rs` + `lazy_nn/`) with **zero** eager-
-> `Tensor` dependency — the one apparent exception, `lazy_nn_optim.rs:167`, is
+> `Tensor` dependency — the one apparent exception, `lazy_nn_optim.rs`'s `NodeHandle` import, is
 > `fuel_graph::NodeHandle`, the graph handle from a crate already BELOW `fuel-core`.
 > `lazy.rs` references `lazy_nn` zero times, so there is no cycle. It goes
 > **above** `fuel-core` as a consumer crate and re-points its `use` lines when
