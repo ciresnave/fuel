@@ -650,3 +650,31 @@ The single-writer gate (GAP-210) correctly refused a second writer into the ledg
 ### A footnote: the born-red was available in a stronger form than the obvious one
 
 The obvious born-red for *"these entries no longer depend on the fill"* is **delete the fill and see what survives** — destructive, and it perturbs everything else. **The contract-derived table is built by `register_into`, which never applies the fill at all** — so the backed count measured there **IS** the post-retirement number, obtained by reading a path that already excludes the fill rather than by removing it. **Look for a code path that already lacks the thing you were about to delete.**
+
+---
+
+## eliminating-one-hypothesis-does-not-support-the-next
+
+> **Index line (in CLAUDE.md):** **A test that correctly ELIMINATES one hypothesis does not thereby SUPPORT the next one.** Refuting *“it is X”* leaves *“it is Y”* exactly as unevidenced as before — and the relief of having ruled something out is what makes the unearned conclusion feel earned. **Two people made this error on the same artifact, hours apart, from two different correct tests.**
+
+**2026-08-21, `fuel-ci-fix`: 655 uncommitted tracked files, five days old, 120 commits behind main, claimed by nobody — the only uncommitted work anywhere in the portfolio.** The question was whether it was lost authored work.
+
+**The PM's test (01:58): does the tree MATCH `origin/main`?** It differed by 897 files → concluded *real edits*. **A binary match test cannot see “an OLDER main” — it renders it identically to “someone's edits.”** Correct test, correct result, wrong inference.
+
+**The architect's test (03:50): is the diff WHITESPACE-ONLY?** Hypothesis was *an abandoned rustfmt sweep, already superseded.* `git diff -w --ignore-blank-lines` → **650 of 655 files still carried real changes**, killing it. **And that refutation was then read as support for “real authored edits” — which was also wrong.**
+
+**What it actually was: a working tree brought forward to a newer commit without the branch ref moving. Its content was main MINUS that day's commits.**
+
+### The discriminator that worked is not a match test
+
+**(1) THE DIRECTION OF THE DIFF.** `main` had **~21k lines MORE** than the tree, and the largest gaps were *that day's work missing from it* — the verified ledger `+3825/-17396` in main's favour, `probe_recipes.rs` −827, `seed_cpu_ledger.rs` −759. **Content flowing the wrong way is not what authored work looks like.**
+
+**(2) THE SHAPE OF THE SMALL DIFFS.** **415 of 906 files differed from main by 1-3 lines, and the sampled difference was a single line: an SPDX header added to main that day.** That is **the fingerprint of one commit's absence**, not of anybody editing.
+
+**Replacement check, computable in one pass and immune to the older-main collapse: *is the MASS of the diff in main's favour, and do MOST files differ by a handful of lines?*** — the PM's formulation, adopted.
+
+### Why this is worth a rule and not just an anecdote
+
+**Both tests were correct. Both results were correct. Both inferences were wrong, in the same direction, from opposite evidence** — one from *“it does not match”*, one from *“it is not whitespace”*. **The common step is treating the elimination of a hypothesis as evidence FOR whatever you were going to conclude next**, and it is seductive precisely because a refutation feels like progress. **Ruling out X narrows the space; it does not populate it.**
+
+**PRACTICE: after a test refutes a hypothesis, state the NEXT hypothesis as a hypothesis and ask what would distinguish it — do not let the refutation carry it.** And prefer a discriminator that **measures a direction or a distribution** over one that asks **match / no-match**: a binary test collapses every not-matching state into one answer, and the states you most need to tell apart are all on that side.
