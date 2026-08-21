@@ -133,6 +133,11 @@ enum CompareMode {
 /// stated refusal, never a verdict about the wrong bytes.
 fn compare_mode(dt: DType) -> Option<(CompareMode, usize)> {
     Some(match dt {
+        // E4M3FN: sign in bit 7, monotone magnitude in bits 6-0 — the same
+        // key construction as f16/bf16, one width down. Only the NaN
+        // predicate is per-format, which is exactly where f16 and bf16 differ
+        // from each other too.
+        DType::F8E4M3 => (CompareMode::UlpFloat, 1),
         DType::F16 | DType::BF16 => (CompareMode::UlpFloat, 2),
         DType::F32 => (CompareMode::UlpFloat, 4),
         DType::F64 => (CompareMode::UlpFloat, 8),
@@ -152,6 +157,26 @@ fn compare_mode(dt: DType) -> Option<(CompareMode, usize)> {
 fn elem_at(dt: DType, bytes: &[u8], i: usize, width: usize) -> Option<Elem> {
     let b = bytes.get(i * width..(i + 1) * width)?;
     Some(match dt {
+        DType::F8E4M3 => {
+            let bits = b[0];
+            Elem {
+                key: if bits & 0x80 != 0 {
+                    -i128::from(bits & 0x7F)
+                } else {
+                    i128::from(bits)
+                },
+                // The REAL value, from the one E4M3FN decoder (in
+                // `exact_ref`), not a placeholder. A `f64::NAN` here would
+                // have made every value-space bound on an fp8 output fail
+                // silently while `is_nan` said the element was finite — a
+                // wrong verdict from a field nobody would look at.
+                value: super::exact_ref::f8e4m3_decode(bits),
+                // E4M3FN reserves EXACTLY `S.1111.111` — two encodings, one
+                // per sign. Exponent `1111` is NOT wholly reserved: mantissas
+                // 000-110 are ordinary finite values, the largest 448.
+                is_nan: (bits & 0x7F) == 0x7F,
+            }
+        }
         DType::F16 => {
             let bits = u16::from_le_bytes([b[0], b[1]]);
             Elem {
@@ -353,9 +378,19 @@ pub fn verify_precision_bound(
             };
             if !ok {
                 let detail = match bound {
+                    // Include the RAW BYTES, not just the distance. "2 ULP
+                    // apart" names the size of a disagreement and not its
+                    // content, and for a narrow format the bit patterns are
+                    // what identify it — an overflow that saturated one way
+                    // and another looks identical to a rounding difference
+                    // when only the distance is reported.
                     Bound::MaxUlp(_) => format!(
-                        "probe {probe_idx} elem {i}: {:?} candidate and reference are {dist} ULP apart, exceeds {bound:?}",
-                        a.dtype
+                        "probe {probe_idx} elem {i}: {:?} candidate {:02x?} ({}) vs reference {:02x?} ({}) are {dist} ULP apart, exceeds {bound:?}",
+                        a.dtype,
+                        &a.bytes[i * width..(i + 1) * width],
+                        x.value,
+                        &b.bytes[i * width..(i + 1) * width],
+                        y.value,
                     ),
                     _ => format!(
                         "probe {probe_idx} elem {i}: {:?} candidate {} vs reference {} exceeds {bound:?}",
@@ -640,7 +675,14 @@ mod tests {
                 _inputs: &[HostTensor],
             ) -> Result<HostTensor, VerifyError> {
                 Ok(HostTensor {
-                    dtype: fuel_ir::DType::F8E4M3,
+                    // ⚠️ This test named F8E4M3 until F8E4M3 was implemented,
+                    // at which point it failed — a test whose fixture is
+                    // "something unsupported" expires as support grows, the
+                    // same way a hand-picked entry and a hand-picked contract
+                    // set did. F8E5M2 is unimplemented today; when it is not,
+                    // this expires again and the durable fix is a dtype that
+                    // is unsupported BY CONSTRUCTION rather than by schedule.
+                    dtype: fuel_ir::DType::F8E5M2,
                     shape: vec![4],
                     bytes: vec![0x30, 0x31, 0x32, 0x33],
                 })
@@ -668,12 +710,12 @@ mod tests {
         match out {
             VerifyOutcome::Fail { detail } => {
                 assert!(
-                    detail.contains("F8E4M3") && detail.contains("refused"),
+                    detail.contains("F8E5M2") && detail.contains("refused"),
                     "the refusal must NAME the dtype it refused; got: {detail}"
                 );
             }
             other => panic!(
-                "two IDENTICAL F8E4M3 buffers returned {other:?}. A Pass here is the \
+                "two IDENTICAL F8E5M2 buffers returned {other:?}. A Pass here is the \
                  defect: it would be a verdict produced without an implemented \
                  comparison, and identical inputs are exactly how such a verdict \
                  looks correct."

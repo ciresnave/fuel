@@ -461,19 +461,54 @@ fn gap_077_bit_stable_coverage_under_simulated_gap_058_flip() {
     // Cause, not correlation: the entries are UNAUDITED because the V-FKC-9
     // ledger gate (`gate_precision`, wired at register.rs:389/398) collapses
     // every unbacked machine-checkable claim at import.
-    let downgrade_warnings = count_downgrade_warnings(&contracts);
-    assert!(
-        downgrade_warnings > 0,
-        "expected the V-FKC-9 ledger gate to emit downgrade warnings — with \
-         0 warnings AND 0 bit-stable entries, the contracts may simply never \
-         have declared bit-stability, which is a different world with a \
-         different answer.",
-    );
     let unaudited_notes = PrecisionGuarantee::UNAUDITED.notes;
     let unaudited_entries = base
         .iter_precision()
         .filter(|(_, _, _, p)| p.notes == unaudited_notes)
         .count();
+
+    // ⚠️ THIS ASSERTION DESCRIBED A WORLD THAT NO LONGER EXISTS, AND ITS OWN
+    // MESSAGE ONLY ANTICIPATED HALF OF ITS DISAPPEARANCE.
+    //
+    // It demanded `downgrade_warnings > 0` to establish CAUSE: the entries are
+    // UNAUDITED *because* the gate collapsed unbacked claims. Its failure text
+    // covered the case "0 warnings AND 0 bit-stable" (contracts declaring
+    // nothing). The case that actually arrived is the opposite one — 0
+    // warnings and EVERYTHING bit-stable, because every declared CPU claim is
+    // now earned. Demanding a downgrade warning had become demanding that the
+    // program not have succeeded.
+    //
+    // The invariant that survives is the BICONDITIONAL: entries are UNAUDITED
+    // if and only if the gate downgraded something. Both directions are real
+    // — warnings with nothing unaudited would mean the downgrade is not
+    // landing, and unaudited entries with no warnings would mean they are
+    // UNAUDITED for some reason this harness has not identified.
+    // ⚠️ AND THE BICONDITIONAL I FIRST WROTE HERE WAS ALSO WRONG — it fired
+    // immediately, and in firing it measured something GAP-226 had left
+    // explicitly UNMEASURED.
+    //
+    // I asserted "UNAUDITED entries exist IF AND ONLY IF the gate downgraded
+    // something", which assumes downgrade is the ONLY route to UNAUDITED. It
+    // is not. An entry declaring NO machine-checkable claim arrives UNAUDITED
+    // without ever being downgraded: the gate has nothing to reject, so it
+    // emits no warning and no census of downgrades can see it.
+    //
+    // Measured: 0 downgrade warnings, 320 UNAUDITED entries. GAP-226 listed
+    // two readings that fit the arithmetic equally well and declined to pick;
+    // this is the first of them, at entry level — 303 backed, 320 declaring
+    // nothing, 0 downgraded.
+    //
+    // So only ONE direction is an invariant: a downgrade implies an UNAUDITED
+    // entry. The converse is false by construction.
+    let downgrade_warnings = count_downgrade_warnings(&contracts);
+    assert!(
+        downgrade_warnings == 0 || unaudited_entries > 0,
+        "{downgrade_warnings} downgrade warning(s) but {unaudited_entries} UNAUDITED entries — a downgrade collapses a guarantee to the UNAUDITED sentinel, so warnings without unaudited entries means the downgrade is not landing",
+    );
+    eprintln!(
+        "GAP-226 (entry level): {} backed, {unaudited_entries} UNAUDITED with {downgrade_warnings} downgrade warnings — the UNAUDITED entries that were never downgraded declare no machine-checkable claim at all, so nothing rejects them and no census of downgrades can see them.",
+        entries - unaudited_entries,
+    );
     assert_eq!(
         unaudited_entries + bit_stable_entries,
         entries,
@@ -818,9 +853,18 @@ fn gap_225_what_actually_blocks_the_downgraded_cpu_entries() {
     // Non-triviality: a parse that silently produced nothing would print an
     // empty table and read as "no downgrades", which is the answer this
     // census exists to disprove or confirm.
-    assert!(
-        total > 0,
-        "no downgrade warnings at all — either the ledger now backs every declared CPU claim (which would be the finding of the program, not a quiet pass) or the warning text changed and this census is parsing nothing"
+    // ⚠️ FLIPPED 2026-08-20: this asserted `total > 0` while there was a
+    // population to characterise. There is not — every declared CPU claim is
+    // now backed. The census's job changes from DESCRIBING the residue to
+    // GUARDING that it stays empty, which is a stronger gate than it ever was
+    // as a report: it now fires the moment a contract declares a claim nobody
+    // earned.
+    assert_eq!(
+        total, 0,
+        "{total} declared CPU claim(s) are unbacked again. Either a contract added a \
+         claim without a ledger record earning it, or a kernel revision changed and \
+         invalidated one — the ledger keys on the revision hash, so an edit silently \
+         un-earns every claim for that kernel. The per-claim tally above says which."
     );
     assert_eq!(
         unparsed, 0,
@@ -918,9 +962,13 @@ fn gap_225_family_split_of_the_remaining_max_ulp_downgrades() {
         "[gap-225-split] NOTE: every `max_ulp` line in the contracts owning these {total} declares `max_ulp: 0`, several with an inline reason (\"exact: f32 is a strict subset of f64\"). That is a measurement of CONTRACT TEXT LINES, not of declarations per downgraded entry — the lowered value is unavailable after `import_bundle_str`, which gates before returning. Stated as the weaker construct it is."
     );
 
-    assert!(
-        total > 0,
-        "no max_ulp downgrades found — either they are all earned now (which is the finding, not a quiet pass) or this is parsing nothing"
+    // Flipped for the same reason as the sibling census: the residue this
+    // split existed to describe is empty, so the assertion becomes the guard.
+    assert_eq!(
+        total, 0,
+        "{total} max_ulp downgrade(s) are back. The per-op split above names them; a \
+         kernel revision change is the usual cause, because the ledger keys on the \
+         revision hash and an edit un-earns every claim for that kernel."
     );
     assert_eq!(
         unattributed, 0,

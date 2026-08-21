@@ -44,8 +44,106 @@ enum Scalar {
     I(i128),
 }
 
+/// Decode an `F8E4M3` (OCP **E4M3FN**) bit pattern to its exact value.
+///
+/// FN = **f**inite, **n**o infinities. Sign in bit 7, 4-bit exponent (bias 7)
+/// in bits 6-3, 3-bit mantissa in bits 2-0. `S.1111.111` is the ONLY reserved
+/// pattern (two encodings, one per sign); `1111.000`-`1111.110` are ordinary
+/// finite values, the largest being 448.
+///
+/// ⚠️ **Written from the format, deliberately NOT from `float8`** — which is
+/// what Fuel's cast kernel delegates to (`byte_kernels.rs:3792`
+/// `float8::F8E4M3::from_f32`). A reference built on the same crate would
+/// compare that crate against itself and pass unconditionally: `max_ulp` in
+/// name, `agrees_with_float8` in fact, which is GAP-227's defect arriving in
+/// a new place.
+///
+/// **The independence this buys is real but bounded, and the bound is worth
+/// stating:** because the kernel is a thin delegation, a pass here mostly
+/// certifies `float8` against this reading of the E4M3FN spec, plus Fuel's
+/// byte plumbing around it. That is a weaker claim than for the ops Fuel
+/// implements itself — and it is still worth having, because a disagreement
+/// would mean one of the two readings of the format is wrong.
+pub(super) fn f8e4m3_decode(bits: u8) -> f64 {
+    let sign = if bits & 0x80 != 0 { -1.0 } else { 1.0 };
+    let exp = ((bits >> 3) & 0x0F) as i32;
+    let mant = (bits & 0x07) as f64;
+    if (bits & 0x7F) == 0x7F {
+        return f64::NAN;
+    }
+    if exp == 0 {
+        // Subnormal: no implicit leading 1, fixed exponent 2^(1-bias).
+        sign * (mant / 8.0) * 2f64.powi(1 - 7)
+    } else {
+        sign * (1.0 + mant / 8.0) * 2f64.powi(exp - 7)
+    }
+}
+
+/// Encode `v` into `F8E4M3` by choosing the NEAREST representable value,
+/// ties to even.
+///
+/// Brute force over all 256 patterns rather than bit-twiddling an exponent
+/// and mantissa. It is 256 comparisons, it is correct by construction for
+/// round-to-nearest, and it cannot carry the subnormal / saturation / tie
+/// bugs that a hand-rolled shift-and-round is prone to — which matters
+/// especially for a reference, where a subtle bug produces a confident wrong
+/// verdict about someone else's kernel.
+fn f8e4m3_encode(v: f64) -> u8 {
+    if v.is_nan() {
+        return 0x7F;
+    }
+    // ⚠️ SATURATE EXPLICITLY BEFORE THE SEARCH, because the search's own
+    // arithmetic loses resolution on large inputs — a precision bug inside a
+    // precision harness.
+    //
+    // `(cand - v).abs()` is computed in f64. For `v` around 4.5e18 the f64
+    // ULP is ~512, so the distances to -448 and -384 ROUND TO THE SAME
+    // NUMBER; a strict ordering becomes a spurious tie and the tie-break
+    // picks the lower bit pattern. That produced `Cast [I64, F8E4M3]`:
+    // candidate `0xfe` (-448, Fuel, correct) vs reference `0xfc` (-384).
+    //
+    // E4M3FN has no infinities, so an out-of-range magnitude saturates to the
+    // largest finite value, 448 (`0x7E` / `0xFE`). Handling it here also
+    // makes the intent explicit rather than an emergent property of a
+    // distance comparison.
+    const MAX_FINITE: f64 = 448.0;
+    if v.abs() >= MAX_FINITE {
+        return if v < 0.0 { 0xFE } else { 0x7E };
+    }
+    let mut best: Option<(f64, u8)> = None;
+    for bits in 0u16..256 {
+        let b = bits as u8;
+        if (b & 0x7F) == 0x7F {
+            continue; // NaN encodings are not candidates for a finite value
+        }
+        let cand = f8e4m3_decode(b);
+        let d = (cand - v).abs();
+        best = match best {
+            None => Some((d, b)),
+            Some((bd, bb)) => {
+                if d < bd {
+                    Some((d, b))
+                } else if d == bd {
+                    // Tie -> even mantissa LSB. Also prefers +0 over -0,
+                    // whose mantissa bits are both zero, by keeping the
+                    // first-seen (lower) pattern when both are even.
+                    if (b & 1) == 0 && (bb & 1) != 0 {
+                        Some((d, b))
+                    } else {
+                        Some((bd, bb))
+                    }
+                } else {
+                    Some((bd, bb))
+                }
+            }
+        };
+    }
+    best.map(|(_, b)| b).unwrap_or(0)
+}
+
 fn width_of(dt: DType) -> Option<usize> {
     Some(match dt {
+        DType::F8E4M3 => 1,
         DType::Bool | DType::U8 | DType::I8 => 1,
         DType::F16 | DType::BF16 | DType::I16 => 2,
         DType::F32 | DType::U32 | DType::I32 => 4,
@@ -56,6 +154,7 @@ fn width_of(dt: DType) -> Option<usize> {
 
 fn decode(dt: DType, b: &[u8]) -> Option<Scalar> {
     Some(match dt {
+        DType::F8E4M3 => Scalar::F(f8e4m3_decode(b[0])),
         DType::Bool | DType::U8 => Scalar::I(i128::from(b[0])),
         DType::I8 => Scalar::I(i128::from(b[0] as i8)),
         DType::I16 => Scalar::I(i128::from(i16::from_le_bytes([b[0], b[1]]))),
@@ -195,6 +294,7 @@ fn encode(dt: DType, s: Scalar) -> Option<Vec<u8>> {
             };
             v.to_le_bytes().to_vec()
         }
+        DType::F8E4M3 => vec![f8e4m3_encode(as_f(s))],
         DType::F16 => half::f16::from_f64(as_f(s)).to_le_bytes().to_vec(),
         DType::BF16 => half::bf16::from_f64(as_f(s)).to_le_bytes().to_vec(),
         DType::F32 => (as_f(s) as f32).to_le_bytes().to_vec(),
