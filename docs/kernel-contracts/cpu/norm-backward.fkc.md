@@ -113,7 +113,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "native f32 dot + write; deterministic fixed-order per-row reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
+  notes: "native f32 dot + write; deterministic fixed-order per-row reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -184,7 +184,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "native f64 dot + write; deterministic fixed-order per-row reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
+  notes: "native f64 dot + write; deterministic fixed-order per-row reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -256,7 +256,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "bf16 widened to f32, dot accumulated in f32, narrowed to bf16 on store; deterministic per-row reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
+  notes: "bf16 widened to f32, dot accumulated in f32, narrowed to bf16 on store; deterministic per-row reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -327,7 +327,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "f16 widened to f32, dot accumulated in f32, narrowed to f16 on store; deterministic per-row reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
+  notes: "f16 widened to f32, dot accumulated in f32, narrowed to f16 on store; deterministic per-row reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -400,7 +400,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "out = g - exp(y)*sum(g); per-row g_sum in f32 accumulator; deterministic fixed-order reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
+  notes: "out = g - exp(y)*sum(g); per-row g_sum in f32 accumulator; deterministic fixed-order reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -471,7 +471,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "out = g - exp(y)*sum(g); native f64, f64 g_sum accumulator; deterministic per-row reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
+  notes: "out = g - exp(y)*sum(g); native f64, f64 g_sum accumulator; deterministic per-row reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -542,7 +542,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "bf16 widened to f32, g_sum + exp in f32, narrowed to bf16 on store; deterministic per-row reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
+  notes: "bf16 widened to f32, g_sum + exp in f32, narrowed to bf16 on store; deterministic per-row reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -613,7 +613,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "f16 widened to f32, g_sum + exp in f32, narrowed to f16 on store; deterministic per-row reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
+  notes: "f16 widened to f32, g_sum + exp in f32, narrowed to f16 on store; deterministic per-row reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -689,7 +689,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "native f32; recomputes mean/var/rstd; eps narrowed to f32; deterministic per-row passes. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
+  notes: "native f32; recomputes mean/var/rstd; eps narrowed to f32; deterministic per-row passes. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -762,7 +762,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "native f64 throughout; eps used in f64; deterministic per-row passes. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
+  notes: "native f64 throughout; eps used in f64; deterministic per-row passes. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -835,7 +835,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "bf16 widened to f32, stats + combine in f32, eps narrowed to f32, narrowed to bf16 on store; deterministic per-row passes. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
+  notes: "bf16 widened to f32, stats + combine in f32, eps narrowed to f32, narrowed to bf16 on store; deterministic per-row passes. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -908,7 +908,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "f16 widened to f32, stats + combine in f32, eps narrowed to f32, narrowed to f16 on store; deterministic per-row passes. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
+  notes: "f16 widened to f32, stats + combine in f32, eps narrowed to f32, narrowed to f16 on store; deterministic per-row passes. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -983,7 +983,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "native f32; one fused sum_sq/sum_gx pass; eps narrowed to f32; deterministic per-row reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
+  notes: "native f32; one fused sum_sq/sum_gx pass; eps narrowed to f32; deterministic per-row reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1055,7 +1055,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "native f64 throughout; eps used in f64; deterministic per-row reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
+  notes: "native f64 throughout; eps used in f64; deterministic per-row reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1128,7 +1128,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "bf16 widened to f32, sum_sq/sum_gx + derived in f32, eps narrowed to f32, narrowed to bf16 on store; deterministic per-row reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
+  notes: "bf16 widened to f32, sum_sq/sum_gx + derived in f32, eps narrowed to f32, narrowed to bf16 on store; deterministic per-row reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1201,7 +1201,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "f16 widened to f32, sum_sq/sum_gx + derived in f32, eps narrowed to f32, narrowed to f16 on store; deterministic per-row reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
+  notes: "f16 widened to f32, sum_sq/sum_gx + derived in f32, eps narrowed to f32, narrowed to f16 on store; deterministic per-row reduction. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```

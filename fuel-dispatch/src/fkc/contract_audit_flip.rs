@@ -40,10 +40,42 @@ use crate::fused::PrecisionGuarantee;
 pub(crate) fn evidence_clause() -> String {
     format!(
         "[evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype \
-         — {ITERS} byte-identical repeat invocations of ONE probe on the recording \
-         hardware. Not a source-level determinism argument, and not evidence about \
-         other inputs or other machines.]"
+         — {ITERS} byte-identical repeat invocations of ONE probe, on the recording \
+         hardware and under the pinned toolchain ({}). Not a source-level determinism \
+         argument, and not evidence about other inputs, other machines, or other \
+         compilers.]",
+        pinned_toolchain()
     )
+}
+
+/// The channel from `rust-toolchain.toml`, for the clause to name.
+///
+/// ⚠️ **The clause used to disclose the HARDWARE and not the TOOLCHAIN, and
+/// that was an incomplete coverage statement on the axis that matters.**
+/// Float results can differ across compiler versions (FMA contraction,
+/// autovectorisation), so "bit-stable on the recording hardware" is
+/// implicitly also "under the recording compiler". When the clause was first
+/// emitted, Fuel had NO toolchain file and the records came from the box
+/// default — an unnamed nightly.
+///
+/// This names the PINNED channel rather than the running `rustc`, and the
+/// difference is worth stating: the pin is what governs every build of this
+/// repo, and it is re-derivable from the tree. It is not proof that a given
+/// seeding run used it — that proof is the pin file being present and
+/// `rustup` honouring it, which is a property of the repo rather than of
+/// this string.
+fn pinned_toolchain() -> String {
+    let f = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../rust-toolchain.toml");
+    let text = std::fs::read_to_string(&f)
+        .unwrap_or_else(|e| panic!("the clause must name a pinned toolchain; read {f:?}: {e}"));
+    for line in text.lines() {
+        if let Some(rest) = line.split_once("channel") {
+            if let Some(v) = rest.1.split('"').nth(1) {
+                return format!("rust-toolchain.toml channel = {v}");
+            }
+        }
+    }
+    panic!("no `channel` in {f:?} — refusing to emit a clause that names no toolchain")
 }
 
 #[cfg(test)]
@@ -149,8 +181,20 @@ mod tests {
                 .and_then(|n| n.to_str())
                 .unwrap_or_default()
                 .to_string();
-            let Some((_, ops)) = flippable.iter().find(|(n, _)| *n == name) else {
-                continue;
+            // ⚠️ The per-FILE skip had the same pre-flip-state dependency as
+            // the per-SECTION one, and it short-circuits first — so fixing the
+            // section check alone changed nothing and the re-emission run
+            // still reported success having refreshed zero clauses.
+            //
+            // A file is in scope if it has something to FLIP (`flippable`) or
+            // something to REFRESH (a clause already in its text). The second
+            // is read from the file, so it does not evaporate when the flip
+            // succeeds.
+            let empty_ops: Vec<String> = Vec::new();
+            let ops = match flippable.iter().find(|(n, _)| *n == name) {
+                Some((_, o)) => o,
+                None if text.contains("[evidence: bit_stable_on_same_hardware") => &empty_ops,
+                None => continue,
             };
             let lines: Vec<&str> = text.lines().collect();
             let mut out: Vec<String> = Vec::with_capacity(lines.len());
@@ -193,11 +237,48 @@ mod tests {
             // clauses PER FILE, which is a check worth keeping precisely
             // because the entry-level delta was exactly right anyway: the
             // count that mattered for the ruling could not see this.
+            // A SECTION IS ELIGIBLE FOR THE CLAUSE IF THIS RUN FLIPPED IT
+            // *OR* IT ALREADY CARRIES ONE, and the second half is what makes
+            // re-emission possible at all.
+            //
+            // The first version keyed eligibility solely on "this run flipped
+            // it". Re-running after everything was already `audited: true`
+            // therefore flipped 0 and refreshed 0 clauses: the generator could
+            // EMIT but not RE-EMIT, which is useless in exactly the case it
+            // will be needed for -- the evidence changing under a toolchain
+            // pin or a re-seed.
+            //
+            // Keying on the existing clause is also the precise
+            // discriminator: it marks the sections whose attestation rests on
+            // the LEDGER. A section audited by SOURCE reasoning carries no
+            // clause and must never acquire one, which is exactly the
+            // misattachment this generator committed on its first run.
+            let mut has_clause = vec![false; starts.len().max(1)];
+            for (i, l) in lines.iter().enumerate() {
+                if l.contains("[evidence: bit_stable_on_same_hardware")
+                    && section_of[i] != usize::MAX
+                {
+                    has_clause[section_of[i]] = true;
+                }
+            }
             let mut flipped_sections = vec![false; starts.len().max(1)];
             let mut changed = false;
             for (i, l) in lines.iter().enumerate() {
                 let sec = section_of[i];
-                let in_flip = sec != usize::MAX && section_flip[sec];
+                // ⚠️ ELIGIBILITY MUST NOT BE DERIVED SOLELY FROM THE
+                // PRE-FLIP STATE, and this is the third time that shape has
+                // bitten in one increment.
+                //
+                // `section_flip` comes from `flippable`, which lists ops whose
+                // entries are currently UNAUDITED. After the flip those
+                // entries are BACKED, so they vanish from that list and every
+                // already-flipped section becomes ineligible — the re-emission
+                // run then matched nothing and silently refreshed 0 clauses
+                // while reporting success.
+                //
+                // `has_clause` is read from the FILE TEXT, so it survives the
+                // state change that erases `flippable`.
+                let in_flip = sec != usize::MAX && (section_flip[sec] || has_clause[sec]);
                 let t = l.trim_start();
                 if in_flip && t.starts_with("audited: false") {
                     let indent = &l[..l.len() - t.len()];
@@ -210,21 +291,46 @@ mod tests {
                 } else if in_flip
                     && t.starts_with("notes:")
                     && sec != usize::MAX
-                    && flipped_sections[sec]
+                    && (flipped_sections[sec] || has_clause[sec])
                 {
-                    // Append the clause inside the existing quoted string.
-                    if let Some(last) = l.rfind('"') {
-                        let mut s2 = l.to_string();
-                        s2.insert_str(last, &format!(" {clause}"));
-                        out.push(s2);
-                    } else {
-                        out.push(l.to_string());
+                    // Append the clause inside the existing quoted string —
+                    // after STRIPPING any clause already there.
+                    //
+                    // Idempotence is not tidiness here. This generator will be
+                    // re-run whenever the evidence changes (a toolchain pin, a
+                    // re-seed), and an append-only version would stack a second
+                    // clause beside a now-false first one — leaving two
+                    // coverage statements where the stale one reads exactly as
+                    // authoritative as the current one.
+                    let mut base = l.to_string();
+                    if let Some(start) = base.find("[evidence: bit_stable_on_same_hardware") {
+                        if let Some(rel_end) = base[start..].find(']') {
+                            let end = start + rel_end + 1;
+                            // also swallow one leading space, if present
+                            let cut_from = if start > 0 && base.as_bytes()[start - 1] == b' ' {
+                                start - 1
+                            } else {
+                                start
+                            };
+                            base.replace_range(cut_from..end, "");
+                        }
                     }
+                    if let Some(last) = base.rfind('"') {
+                        base.insert_str(last, &format!(" {clause}"));
+                    }
+                    out.push(base);
                 } else {
                     out.push(l.to_string());
                 }
             }
-            if changed {
+            let refreshed = out.join(
+                "
+",
+            ) != lines.join(
+                "
+",
+            );
+            if changed || refreshed {
                 let mut joined = out.join("\n");
                 if text.ends_with('\n') {
                     joined.push('\n');
@@ -237,10 +343,11 @@ mod tests {
             "[gap-228] flipped {flipped} `audited:` line(s) across {} file(s)",
             files.len()
         );
-        assert!(
-            flipped > 0,
-            "no section was flipped — the op_kind match found nothing"
-        );
+        println!("[gap-228] clause in use: {}", evidence_clause());
+        // NOT `flipped > 0`: a re-emission run legitimately flips nothing
+        // and refreshes every clause. Asserting on flips would make the
+        // generator fail precisely when doing the job it was extended to do.
+        println!("[gap-228] (0 flips is expected on a re-emission run)");
     }
 
     /// **GAP-228 pre-flight: which `audited: false` SECTIONS are wholesale
