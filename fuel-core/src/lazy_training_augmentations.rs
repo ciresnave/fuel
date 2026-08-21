@@ -137,8 +137,12 @@ impl LrSchedule for StepSchedule {
 /// realized as an `f32` scalar via `realize_f32` and compared eagerly,
 /// so the lazy graph downstream stays branch-free.
 ///
-/// Errors when `max_norm <= 0.0`, `norm_type <= 0.0`, or `grads` is
-/// empty.
+/// Errors when `max_norm` or `norm_type` is not strictly positive.
+/// This is intentionally stronger than `<= 0.0`: the guards are written
+/// `!(x > 0.0)` rather than `x <= 0.0`, so a `NaN` threshold is rejected
+/// rather than admitted. Admitting one would make `max_norm / total_norm`
+/// evaluate to `NaN` and silently scale every gradient to `NaN`. The
+/// function also errors when `grads` is empty.
 pub fn clip_grad_norm(
     grads: &HashMap<String, Tensor>,
     max_norm: f64,
