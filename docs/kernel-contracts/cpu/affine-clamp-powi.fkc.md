@@ -91,7 +91,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "native f32 mul-then-add; deterministic positional loop; bit-stable on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
+  notes: "native f32 mul-then-add; deterministic positional loop; bit-stable on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -155,7 +155,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "native f64 mul-then-add; deterministic positional loop; bit-stable on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
+  notes: "native f64 mul-then-add; deterministic positional loop; bit-stable on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -220,7 +220,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "widen to f32, mul-then-add in f32, narrow to bf16 on store; deterministic; bit-stable same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
+  notes: "widen to f32, mul-then-add in f32, narrow to bf16 on store; deterministic; bit-stable same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -284,7 +284,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "widen to f32, mul-then-add in f32, narrow to f16 on store; deterministic; bit-stable same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
+  notes: "widen to f32, mul-then-add in f32, narrow to f16 on store; deterministic; bit-stable same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -351,7 +351,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "f32::clamp; exact (no rounding); IEEE NaN propagates; min>max is a typed Error, not a panic. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
+  notes: "f32::clamp; exact (no rounding); IEEE NaN propagates; min>max is a typed Error, not a panic. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -415,7 +415,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "f64::clamp; exact; IEEE NaN propagates; min>max is a typed Error, not a panic. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
+  notes: "f64::clamp; exact; IEEE NaN propagates; min>max is a typed Error, not a panic. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -480,7 +480,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "widen to f32, clamp in f32, narrow to bf16 on store; IEEE NaN; min>max is a typed Error; bit-stable same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
+  notes: "widen to f32, clamp in f32, narrow to bf16 on store; IEEE NaN; min>max is a typed Error; bit-stable same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -543,7 +543,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "widen to f32, clamp in f32, narrow to f16 on store; IEEE NaN; min>max is a typed Error; bit-stable same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
+  notes: "widen to f32, clamp in f32, narrow to f16 on store; IEEE NaN; min>max is a typed Error; bit-stable same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -609,7 +609,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "native f32::powi (integer-exponent mul chain, not powf); exp==0 -> 1.0; deterministic; bit-stable same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
+  notes: "native f32::powi (integer-exponent mul chain, not powf); exp==0 -> 1.0; deterministic; bit-stable same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -671,7 +671,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "native f64::powi (integer-exponent mul chain, not powf); exp==0 -> 1.0; deterministic; bit-stable same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
+  notes: "native f64::powi (integer-exponent mul chain, not powf); exp==0 -> 1.0; deterministic; bit-stable same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -733,7 +733,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "widen to f32, f32::powi, narrow to bf16 on store; exp==0 -> 1.0; deterministic; bit-stable same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
+  notes: "widen to f32, f32::powi, narrow to bf16 on store; exp==0 -> 1.0; deterministic; bit-stable same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -795,7 +795,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "widen to f32, f32::powi, narrow to f16 on store; exp==0 -> 1.0; deterministic; bit-stable same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe on the recording hardware. Not a source-level determinism argument, and not evidence about other inputs or other machines.]"
+  notes: "widen to f32, f32::powi, narrow to f16 on store; exp==0 -> 1.0; deterministic; bit-stable same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
