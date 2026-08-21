@@ -905,6 +905,21 @@ pub fn run_cpu_primitive_verification() -> (Vec<LedgerRecord>, Vec<SeedAttempt>)
 /// as a fail — and a disagreement here is a FINDING about the kernel or about
 /// the reference, not a harness defect to be tuned away.
 pub fn run_cpu_max_ulp_verification() -> (Vec<LedgerRecord>, Vec<SeedAttempt>) {
+    run_cpu_max_ulp_verification_inner(None)
+}
+
+/// [`run_cpu_max_ulp_verification`], optionally corrupting the reference for
+/// ONE op so the attachment of references to ops can be tested.
+///
+/// **Attachment is the property a record count cannot see.** A reference
+/// bound to the wrong op yields exactly the right number of passes — the same
+/// blindness that let GAP-228(a)'s generator misattach a clause while its
+/// delta held exactly. Poisoning one family and checking the failures are
+/// exactly that family's registrations is a control over a DIFFERENT
+/// construct, which is the only kind that catches this.
+pub(crate) fn run_cpu_max_ulp_verification_inner(
+    #[allow(unused_variables)] poison_op: Option<fuel_ir::dispatch::OpKind>,
+) -> (Vec<LedgerRecord>, Vec<SeedAttempt>) {
     use crate::fkc::verify::exact_ref::{ExactRefInvoker, has_exact_reference};
     use crate::fkc::verify::probe_recipes::{build_primitive_probe, probe_seed};
     use crate::fkc::verify::ulp::{Bound, verify_precision_bound};
@@ -953,6 +968,8 @@ pub fn run_cpu_max_ulp_verification() -> (Vec<LedgerRecord>, Vec<SeedAttempt>) {
             out_dtype: probe.out_dtype,
             out_shape: probe.out_shape.clone(),
             params: probe.params.clone(),
+            #[cfg(test)]
+            poison: poison_op == Some(op),
         };
         let inputs = probe.inputs.clone();
         let attempt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1020,6 +1037,96 @@ fn verified_at_string() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Every exact reference is attached to the op it claims to be about —
+    /// tested per family, because no COUNT can see attachment.**
+    ///
+    /// GAP-228(a)'s generator misattached an evidence clause and its
+    /// justifying delta was exactly right anyway: attaching something to the
+    /// wrong subject moves nothing between buckets. **A reference bound to
+    /// the wrong `(op, dtypes)` has the same shape** — it would yield exactly
+    /// the right number of earned `max_ulp` records while the evidence sat on
+    /// a kernel it was never about.
+    ///
+    /// So this poisons ONE family's reference at a time and asserts the
+    /// failures are EXACTLY that family's registrations: **no fewer** (the
+    /// reference is reached for every one of them, so none is silently
+    /// skipped) and **no more** (it is not also standing in for another op).
+    ///
+    /// Applied retroactively to the records already landed, which is the
+    /// point — the 174 `max_ulp` passes were justified by a count that could
+    /// not have detected this.
+    #[test]
+    fn every_exact_reference_is_attached_to_the_op_it_claims() {
+        use fuel_ir::dispatch::OpKind;
+
+        // Baseline: which registrations pass with no poison.
+        let (_, clean) = run_cpu_max_ulp_verification_inner(None);
+        let passing: Vec<(String, Vec<DType>)> = clean
+            .iter()
+            .filter(|a| a.outcome == "pass")
+            .map(|a| (a.op_name.clone(), a.dtypes.clone()))
+            .collect();
+        assert!(
+            !passing.is_empty(),
+            "no registration passes at all — this control would then be vacuous for \
+             every family below"
+        );
+
+        for op in [
+            OpKind::Cast,
+            OpKind::Gather,
+            OpKind::IndexSelect,
+            OpKind::AddElementwise,
+            OpKind::SubElementwise,
+            OpKind::MulElementwise,
+            OpKind::DivElementwise,
+            OpKind::MaximumElementwise,
+            OpKind::MinimumElementwise,
+        ] {
+            let name = format!("{op:?}");
+            let expected: Vec<&(String, Vec<DType>)> =
+                passing.iter().filter(|(n, _)| *n == name).collect();
+            if expected.is_empty() {
+                // A family with no passing registration cannot be tested for
+                // attachment, and saying so beats skipping silently.
+                println!("[attach] {name}: no passing registration — not testable");
+                continue;
+            }
+
+            let (_, poisoned) = run_cpu_max_ulp_verification_inner(Some(op));
+            let failed: Vec<(String, Vec<DType>)> = poisoned
+                .iter()
+                .filter(|a| a.outcome.starts_with("fail:"))
+                .map(|a| (a.op_name.clone(), a.dtypes.clone()))
+                .collect();
+
+            let wrong_op: Vec<&String> = failed
+                .iter()
+                .map(|(n, _)| n)
+                .filter(|n| **n != name)
+                .collect();
+            assert!(
+                wrong_op.is_empty(),
+                "poisoning {name}'s reference also failed {wrong_op:?} — that reference \
+                 is standing in for an op it does not claim to be about, and the record \
+                 count cannot see it"
+            );
+            assert_eq!(
+                failed.len(),
+                expected.len(),
+                "poisoning {name}'s reference failed {} of its {} passing registrations. \
+                 FEWER means some registration does not actually reach this reference — \
+                 its pass was earned from something else.",
+                failed.len(),
+                expected.len()
+            );
+            println!(
+                "[attach] {name}: {} registration(s), all and only",
+                failed.len()
+            );
+        }
+    }
 
     /// **GAP-226 split of the entries that declare nothing: how much can
     /// start now, and how much waits on a vocabulary decision.** Reports;
