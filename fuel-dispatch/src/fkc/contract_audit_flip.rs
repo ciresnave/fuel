@@ -68,19 +68,72 @@ fn pinned_toolchain() -> String {
     let f = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../rust-toolchain.toml");
     let text = std::fs::read_to_string(&f)
         .unwrap_or_else(|e| panic!("the clause must name a pinned toolchain; read {f:?}: {e}"));
+    parse_pinned_channel(&text).unwrap_or_else(|| {
+        panic!("no `channel` in {f:?}; refusing to emit a clause that names no toolchain")
+    })
+}
+
+/// The parse half of [`pinned_toolchain`], split out so the REFUSAL is
+/// testable.
+///
+/// The doc comment above claims this "refuses to emit a clause that names no
+/// toolchain". That was a claim about a `panic!` I had written and never
+/// executed — and verifying it in place would have meant moving the real
+/// toolchain file, which changes the active compiler and forces a full
+/// rebuild. **Separating I/O from parsing makes the guard's own claim cheap
+/// to check**, which is the difference between a guard that is asserted and
+/// one that is tested.
+///
+/// ⚠️ **A checkout WITHOUT the pin file resolves to the box default**, so the
+/// panic is not paranoia: it is the case where a clause would otherwise name
+/// a toolchain that is not the one in use. Refusing beats emitting a
+/// confident wrong disclosure.
+fn parse_pinned_channel(text: &str) -> Option<String> {
     for line in text.lines() {
         if let Some(rest) = line.split_once("channel") {
             if let Some(v) = rest.1.split('"').nth(1) {
-                return format!("rust-toolchain.toml channel = {v}");
+                return Some(format!("rust-toolchain.toml channel = {v}"));
             }
         }
     }
-    panic!("no `channel` in {f:?} — refusing to emit a clause that names no toolchain")
+    None
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The toolchain guard REFUSES rather than emitting an unnamed compiler.
+    ///
+    /// Both directions, because a parser that always returns `None` would
+    /// satisfy the refusal half alone and silently break every real emission.
+    #[test]
+    fn the_toolchain_guard_refuses_a_file_with_no_channel() {
+        assert_eq!(
+            parse_pinned_channel(
+                "[toolchain]
+channel = \"1.98.0\"
+"
+            )
+            .as_deref(),
+            Some("rust-toolchain.toml channel = 1.98.0"),
+            "a real pin file must parse, or every emission breaks"
+        );
+        assert_eq!(
+            parse_pinned_channel(
+                "[toolchain]
+components = [\"rustfmt\"]
+"
+            ),
+            None,
+            "a file with no channel must REFUSE — emitting a clause that names no              toolchain is worse than emitting none, because a checkout without the pin              resolves to the box default and the clause would be confidently wrong"
+        );
+        assert_eq!(
+            parse_pinned_channel(""),
+            None,
+            "an empty file must refuse too"
+        );
+    }
 
     /// **GAP-228: flip the fully-backed `audited: false` sections and emit
     /// their evidence clause.** `#[ignore]`d — it rewrites checked-in
