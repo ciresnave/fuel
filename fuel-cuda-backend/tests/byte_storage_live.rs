@@ -6,14 +6,14 @@
 
 use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
 
-fn dev_or_skip() -> Option<CudaDevice> {
-    match CudaDevice::new(0) {
-        Ok(d) => Some(d),
-        Err(e) => {
-            eprintln!("no CUDA device; skipping: {e:?}");
-            None
-        }
-    }
+/// Acquire CUDA device 0 for a live test. GAP-224: asserts the machine-wide GPU
+/// mutex is held (`require_gpu_run_lock`); GAP-157: a missing device is a FAILURE
+/// (`required_ok`), not a silent skip. On a device-less box, an `--ignored` run of
+/// this file now FAILS loudly (intended) rather than passing green having asserted
+/// nothing.
+fn dev() -> CudaDevice {
+    fuel_test_support::require_gpu_run_lock();
+    fuel_test_support::required_ok("CUDA device 0", CudaDevice::new(0))
 }
 
 /// Smoke: alloc(byte_count) produces a zero-initialized buffer
@@ -21,7 +21,7 @@ fn dev_or_skip() -> Option<CudaDevice> {
 #[test]
 #[ignore]
 fn alloc_then_read_is_zero() {
-    let Some(dev) = dev_or_skip() else { return };
+    let dev = dev();
     let storage = CudaStorageBytes::alloc(&dev, 32).expect("alloc");
     assert_eq!(storage.len_bytes(), 32);
     let bytes = storage.to_cpu_bytes().expect("d2h");
@@ -34,7 +34,7 @@ fn alloc_then_read_is_zero() {
 #[test]
 #[ignore]
 fn h2d_d2h_roundtrip_preserves_bytes() {
-    let Some(dev) = dev_or_skip() else { return };
+    let dev = dev();
     let src: Vec<u8> = (0..=255).collect();
     let storage = CudaStorageBytes::from_cpu_bytes(&dev, &src).expect("h2d");
     assert_eq!(storage.len_bytes(), src.len());
@@ -48,7 +48,7 @@ fn h2d_d2h_roundtrip_preserves_bytes() {
 #[test]
 #[ignore]
 fn zero_length_transfers_round_trip() {
-    let Some(dev) = dev_or_skip() else { return };
+    let dev = dev();
     let storage = CudaStorageBytes::alloc(&dev, 0).expect("alloc 0");
     assert_eq!(storage.len_bytes(), 0);
     let bytes = storage.to_cpu_bytes().expect("d2h 0");
@@ -63,7 +63,7 @@ fn zero_length_transfers_round_trip() {
 #[test]
 #[ignore]
 fn one_mib_roundtrip_preserves_bytes() {
-    let Some(dev) = dev_or_skip() else { return };
+    let dev = dev();
     let src: Vec<u8> = (0..1024 * 1024).map(|i| (i & 0xFF) as u8).collect();
     let storage = CudaStorageBytes::from_cpu_bytes(&dev, &src).expect("h2d");
     let got = storage.to_cpu_bytes().expect("d2h");

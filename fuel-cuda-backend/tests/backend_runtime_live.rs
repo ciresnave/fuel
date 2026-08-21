@@ -9,14 +9,14 @@ use fuel_backend_contract::backend::BackendRuntime;
 use fuel_cuda_backend::CudaDevice;
 use fuel_ir::backend::FitStatus;
 
-fn dev_or_skip() -> Option<CudaDevice> {
-    match CudaDevice::new(0) {
-        Ok(d) => Some(d),
-        Err(e) => {
-            eprintln!("no CUDA device; skipping: {e:?}");
-            None
-        }
-    }
+/// Acquire CUDA device 0 for a live test. GAP-224: asserts the machine-wide GPU
+/// mutex is held (`require_gpu_run_lock`); GAP-157: a missing device is a FAILURE
+/// (`required_ok`), not a silent skip. On a device-less box, an `--ignored` run of
+/// this file now FAILS loudly (intended) rather than passing green having asserted
+/// nothing.
+fn dev() -> CudaDevice {
+    fuel_test_support::require_gpu_run_lock();
+    fuel_test_support::required_ok("CUDA device 0", CudaDevice::new(0))
 }
 
 /// `available_bytes` / `total_bytes` report real, self-consistent
@@ -25,7 +25,7 @@ fn dev_or_skip() -> Option<CudaDevice> {
 #[test]
 #[ignore]
 fn cuda_backend_runtime_reports_sensible_memory() {
-    let Some(dev) = dev_or_skip() else { return };
+    let dev = dev();
 
     let avail = dev.available_bytes();
     let total = dev.total_bytes();
@@ -48,7 +48,7 @@ fn cuda_backend_runtime_reports_sensible_memory() {
 #[test]
 #[ignore]
 fn cuda_backend_runtime_would_fit_classifies() {
-    let Some(dev) = dev_or_skip() else { return };
+    let dev = dev();
     let Some(total) = dev.total_bytes() else {
         panic!("live GPU should report a total")
     };
@@ -70,7 +70,7 @@ fn cuda_backend_runtime_would_fit_classifies() {
 #[test]
 #[ignore]
 fn cuda_backend_runtime_works_off_dispatch_thread() {
-    let Some(dev) = dev_or_skip() else { return };
+    let dev = dev();
     let handle = std::thread::spawn(move || dev.available_bytes());
     let avail = handle.join().expect("polling thread panicked");
     assert!(

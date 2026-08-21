@@ -21,8 +21,14 @@
 use fuel_cuda_backend::{CudaDevice, CudaStorageBytes, baracuda::contiguize::contiguize_to_fresh};
 use fuel_ir::{DimVec, Layout, Shape, StrideVec};
 
-fn dev_or_skip() -> Option<CudaDevice> {
-    CudaDevice::new(0).ok()
+/// Acquire CUDA device 0 for a live test. GAP-224: asserts the machine-wide GPU
+/// mutex is held (`require_gpu_run_lock`); GAP-157: a missing device is a FAILURE
+/// (`required_ok`), not a silent skip. On a device-less box, an `--ignored` run of
+/// this file now FAILS loudly (intended) rather than passing green having asserted
+/// nothing.
+fn dev() -> CudaDevice {
+    fuel_test_support::require_gpu_run_lock();
+    fuel_test_support::required_ok("CUDA device 0", CudaDevice::new(0))
 }
 
 fn upload_f32(dev: &CudaDevice, host: &[f32]) -> CudaStorageBytes {
@@ -41,7 +47,7 @@ fn download_f32(s: &CudaStorageBytes) -> Vec<f32> {
 #[test]
 #[ignore]
 fn baracuda_contiguize_f32_transpose_2d() {
-    let Some(dev) = dev_or_skip() else { return };
+    let dev = dev();
     // Source row-major [2, 3]:
     //   [[1, 2, 3],
     //    [4, 5, 6]]
@@ -66,7 +72,7 @@ fn baracuda_contiguize_f32_transpose_2d() {
 #[test]
 #[ignore]
 fn baracuda_contiguize_f32_broadcast_zero_stride() {
-    let Some(dev) = dev_or_skip() else { return };
+    let dev = dev();
     let src_host = vec![10.0_f32, 20.0, 30.0];
     let src = upload_f32(&dev, &src_host);
 
@@ -87,7 +93,7 @@ fn baracuda_contiguize_f32_broadcast_zero_stride() {
 #[test]
 #[ignore]
 fn baracuda_contiguize_f32_slice_offset() {
-    let Some(dev) = dev_or_skip() else { return };
+    let dev = dev();
     let src_host = vec![100.0_f32, 200.0, 300.0, 400.0, 500.0];
     let src = upload_f32(&dev, &src_host);
 
@@ -108,7 +114,7 @@ fn baracuda_contiguize_f32_slice_offset() {
 #[test]
 #[ignore]
 fn baracuda_contiguize_f32_flip_negative_stride() {
-    let Some(dev) = dev_or_skip() else { return };
+    let dev = dev();
     let src_host = vec![1.0_f32, 2.0, 3.0, 4.0];
     let src = upload_f32(&dev, &src_host);
 
@@ -131,7 +137,7 @@ fn baracuda_contiguize_f32_flip_negative_stride() {
 #[test]
 #[ignore]
 fn baracuda_contiguize_f32_already_contig_fast_path() {
-    let Some(dev) = dev_or_skip() else { return };
+    let dev = dev();
     let src_host: Vec<f32> = (0..12).map(|i| i as f32).collect();
     let src = upload_f32(&dev, &src_host);
 
@@ -146,7 +152,7 @@ fn baracuda_contiguize_f32_already_contig_fast_path() {
 #[test]
 #[ignore]
 fn baracuda_contiguize_f64_transpose_2d() {
-    let Some(dev) = dev_or_skip() else { return };
+    let dev = dev();
     let src_host = vec![1.0_f64, 2.0, 3.0, 4.0, 5.0, 6.0];
     let bytes: &[u8] = bytemuck::cast_slice(&src_host);
     let src = CudaStorageBytes::from_cpu_bytes(&dev, bytes).expect("h2d");
