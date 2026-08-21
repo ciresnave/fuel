@@ -2286,6 +2286,7 @@ dependencies = [
  "fancy-regex",
  "fuel-core",
  "fuel-cpu-backend",
+ "fuel-nn",
  "intel-mkl-src",
  "num-traits",
  "rand",

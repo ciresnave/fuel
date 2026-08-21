@@ -31,3 +31,15 @@ cuda = ["fuel/cuda"]
 cudnn = ["fuel/cudnn"]
 mkl = ["dep:intel-mkl-src", "fuel/mkl"]
 metal = ["fuel/metal"]
+
+# Doctest-only. The crate-level "Quick start" example names
+# `fuel_nn::varbuilder::VarBuilder`, which this crate does NOT depend on at
+# build time — models here are constructed FROM a VarBuilder by the caller. The
+# doctest still has to COMPILE, so the dependency is a dev-dep rather than the
+# example being demoted to ```text: an illustrative block nothing checks is how
+# a doc drifts from the API it describes.
+#
+# It broke because the fuel-nn EXTRACTION (2026-08-19) moved VarBuilder out of
+# fuel-core, and `--all-targets` does NOT build doctests, so no gate here saw it.
+[dev-dependencies]
+fuel-nn = { workspace = true }

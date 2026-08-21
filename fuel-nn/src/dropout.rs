@@ -67,7 +67,7 @@ use std::sync::Arc;
 ///
 /// ```rust,no_run
 /// # use fuel::{Device, lazy::Tensor};
-/// # use fuel::lazy_nn_dropout::Dropout;
+/// # use fuel_nn::dropout::Dropout;
 /// # use fuel_ir::Shape;
 /// let device = Device::cpu();
 /// let x = Tensor::from_f32(
