@@ -154,10 +154,10 @@ impl Rwkv6Model {
 
     fn apply_lm_head(&self, h_norm: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
-        Ok(self
+        self
             .weights
             .head
-            .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
+            .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)
     }
 
     fn run_backbone(&self, tokens: &[u32]) -> Result<Tensor> {
@@ -414,7 +414,7 @@ impl Rwkv6Model {
             1e-5,
         )?;
         let gated = out.mul(&g)?;
-        Ok(layer.attn_output.apply_linear(&gated, h, h)?)
+        layer.attn_output.apply_linear(&gated, h, h)
     }
 
     fn channel_mix(

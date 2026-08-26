@@ -1508,7 +1508,7 @@ impl ZImageModel {
 
         // 5. VAE decode. (Strip the leading `F=1` axis for the conv stack.)
         let latent4 = latent.squeeze(2_usize)?;
-        Ok(self.vae.decode(&latent4)?)
+        self.vae.decode(&latent4)
     }
 }
 

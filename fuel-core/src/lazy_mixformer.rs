@@ -231,11 +231,11 @@ impl MixFormerModel {
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, head_dim, rotary_dim)?;
         }
-        Ok(h.layer_norm_affine(
+        h.layer_norm_affine(
             std::sync::Arc::clone(&weights.final_ln_gain),
             std::sync::Arc::clone(&weights.final_ln_bias),
             cfg.layer_norm_eps,
-        )?)
+        )
     }
 
     fn apply_layer(

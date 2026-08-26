@@ -48,6 +48,7 @@ use std::path::PathBuf;
 /// [`prepare_dp_inputs`] / [`auto_place_and_route_with_transfer_cost`]
 /// — lets callers override paths, force re-measurement, and tune
 /// dispatch-table construction.
+#[derive(Default)]
 pub struct ScheduleOptions {
     /// Explicit path for the probe report. `None` = OS cache default.
     pub probe_path: Option<PathBuf>,
@@ -70,19 +71,6 @@ pub struct ScheduleOptions {
     pub dispatch: DispatchOptions,
 }
 
-impl Default for ScheduleOptions {
-    fn default() -> Self {
-        Self {
-            probe_path: None,
-            profile_path: None,
-            bandwidth_path: None,
-            force_rejudge: false,
-            force_remeasure_bandwidth: false,
-            judge: Judge::default(),
-            dispatch: DispatchOptions::default(),
-        }
-    }
-}
 
 /// Probe → [load / re-Judge] → build dispatch. Persists both reports
 /// on a fresh Judge run. Returns the dispatch table paired with the
@@ -103,15 +91,12 @@ pub fn prepare_dispatch_table(opts: ScheduleOptions) -> Result<(DispatchTable, P
 
     // Step 1: decide if the persisted profile is reusable.
     let mut reuse_profile = false;
-    if !opts.force_rejudge {
-        if let Some(pp) = probe_path.as_ref() {
-            if let Ok(Some(prior)) = ProbeReport::load(pp) {
-                if matches!(current_probe.diff(&prior), HardwareChange::Unchanged) {
+    if !opts.force_rejudge
+        && let Some(pp) = probe_path.as_ref()
+            && let Ok(Some(prior)) = ProbeReport::load(pp)
+                && matches!(current_probe.diff(&prior), HardwareChange::Unchanged) {
                     reuse_profile = true;
                 }
-            }
-        }
-    }
 
     let profile = if reuse_profile {
         if let Some(pp) = profile_path.as_ref() {
@@ -342,13 +327,11 @@ pub fn prepare_dp_inputs(
     // Decide reuse eligibility once — same rule for both judge and
     // bandwidth caches. Hardware-change diff is the source of truth.
     let mut hardware_unchanged = false;
-    if let Some(pp) = probe_path.as_ref() {
-        if let Ok(Some(prior)) = ProbeReport::load(pp) {
-            if matches!(current_probe.diff(&prior), HardwareChange::Unchanged) {
+    if let Some(pp) = probe_path.as_ref()
+        && let Ok(Some(prior)) = ProbeReport::load(pp)
+            && matches!(current_probe.diff(&prior), HardwareChange::Unchanged) {
                 hardware_unchanged = true;
             }
-        }
-    }
 
     // -- Profile report --
     let profile = if hardware_unchanged && !opts.force_rejudge {
@@ -573,12 +556,11 @@ pub fn dp_plan(
         let mut best = f64::INFINITY;
         let mut best_b = backends[0];
         for &b in &backends {
-            if let Some(&(c, _)) = cost.get(&(root, b)).map(|x| x).iter().next().copied() {
-                if c < best {
+            if let Some(&(c, _)) = cost.get(&(root, b)).map(|x| x).iter().next().copied()
+                && c < best {
                     best = c;
                     best_b = b;
                 }
-            }
         }
         placement.insert(root, best_b);
     }
@@ -593,12 +575,11 @@ pub fn dp_plan(
         if let Some((_, inputs_chosen)) = cost.get(&(id, chosen_b)).cloned() {
             let node = graph.node(id);
             for (idx, &input) in node.inputs.iter().enumerate() {
-                if let Some(&b_i) = inputs_chosen.get(idx) {
-                    if !placement.contains_key(&input) {
-                        placement.insert(input, b_i);
+                if let Some(&b_i) = inputs_chosen.get(idx)
+                    && let std::collections::hash_map::Entry::Vacant(e) = placement.entry(input) {
+                        e.insert(b_i);
                         stack.push(input);
                     }
-                }
             }
         }
     }
@@ -781,7 +762,7 @@ mod tests {
             profile.entries
         );
         assert!(
-            table.len() >= 1,
+            !table.is_empty(),
             "dispatch table should have at least one entry"
         );
 
@@ -1336,11 +1317,10 @@ mod tests {
         let g = small_a.graph().read().unwrap();
         let mut cuda_copies = 0;
         for i in n_before..n_after {
-            if let fuel_graph::Op::Copy { target } = &g.node(NodeId(i)).op {
-                if matches!(target, DeviceLocation::Cuda { .. }) {
+            if let fuel_graph::Op::Copy { target } = &g.node(NodeId(i)).op
+                && matches!(target, DeviceLocation::Cuda { .. }) {
                     cuda_copies += 1;
                 }
-            }
         }
         assert!(
             cuda_copies >= 2,
@@ -1448,11 +1428,10 @@ mod tests {
         // which is placed on CUDA → 2 Copy nodes get inserted.
         let mut cuda_copies = 0;
         for i in n_before..n_after {
-            if let fuel_graph::Op::Copy { target } = &g.node(NodeId(i)).op {
-                if matches!(target, DeviceLocation::Cuda { .. }) {
+            if let fuel_graph::Op::Copy { target } = &g.node(NodeId(i)).op
+                && matches!(target, DeviceLocation::Cuda { .. }) {
                     cuda_copies += 1;
                 }
-            }
         }
         assert!(
             cuda_copies >= 2,

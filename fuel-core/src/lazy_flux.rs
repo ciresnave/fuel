@@ -299,7 +299,7 @@ pub struct FluxWeights {
 /// then `sin` half. Input `(B,)` host-side scalars are interpreted as
 /// `t * 1000`. Output `(B, dim)`.
 fn timestep_embedding(t: &Tensor, dim: usize) -> Result<Tensor> {
-    if dim % 2 != 0 {
+    if !dim.is_multiple_of(2) {
         return Err(crate::Error::Msg(format!("timestep_embedding: dim {dim} must be even",)).bt());
     }
     let time_factor = 1000.0_f64;
@@ -335,7 +335,7 @@ fn timestep_embedding(t: &Tensor, dim: usize) -> Result<Tensor> {
 /// `(b, n, dim/2, 2, 2)` where the trailing 2x2 is the rotation matrix
 /// `[[cos, -sin], [sin, cos]]`.
 fn rope_axis(pos: &Tensor, dim: usize, theta: usize) -> Result<Tensor> {
-    if dim % 2 != 0 {
+    if !dim.is_multiple_of(2) {
         return Err(crate::Error::Msg(format!("rope_axis: dim {dim} must be even",)).bt());
     }
     let theta_f = theta as f64;
@@ -781,7 +781,7 @@ fn bake_mlp_embedder(m: &mut FluxMlpEmbedder) -> Result<()> {
 }
 
 fn bake_linear(l: &mut FluxLinear) -> Result<()> {
-    if l.in_features % 32 != 0 {
+    if !l.in_features.is_multiple_of(32) {
         return Ok(()); // leave as F32
     }
     let f32_in_out = match &l.weight {
@@ -806,7 +806,7 @@ fn quantize_in_out_to_q4_0(
 ) -> Result<WeightStorage> {
     use fuel_quantized::{BlockQ4_0, GgmlType};
     const QK4_0: usize = 32;
-    if in_features % QK4_0 != 0 {
+    if !in_features.is_multiple_of(QK4_0) {
         return Err(crate::Error::Msg(format!(
             "quantize_in_out_to_q4_0: in_features ({in_features}) must be divisible by {QK4_0}",
         ))
@@ -1100,8 +1100,8 @@ fn vae_spatial_attention(x: &Tensor, aw: &VaeAttnWeights, cfg: &FluxVaeConfig) -
     // (B, C, H, W) → (B, H*W, C)
     let n = h * w;
     let to_seq = |t: &Tensor| -> Result<Tensor> {
-        Ok(t.reshape(Shape::from_dims(&[b, c, n]))?
-            .permute([0, 2, 1_usize])?)
+        t.reshape(Shape::from_dims(&[b, c, n]))?
+            .permute([0, 2, 1_usize])
     };
     let q = to_seq(&q)?;
     let k = to_seq(&k)?;
@@ -1171,7 +1171,7 @@ fn group_norm(
     h: usize,
     w: usize,
 ) -> Result<Tensor> {
-    if c % groups != 0 {
+    if !c.is_multiple_of(groups) {
         return Err(crate::Error::Msg(format!(
             "group_norm: C={c} not divisible by groups={groups}",
         ))
@@ -1203,7 +1203,7 @@ fn group_norm(
         .const_f32_like(Arc::clone(beta), Shape::from_dims(&[c]))
         .reshape(Shape::from_dims(&[1, c, 1, 1]))?
         .broadcast_to(Shape::from_dims(&[b, c, h, w]))?;
-    Ok(normed_chw.mul(&g)?.add(&bb)?)
+    normed_chw.mul(&g)?.add(&bb)
 }
 
 // ---- Scheduler -------------------------------------------------------------

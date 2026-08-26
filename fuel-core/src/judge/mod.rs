@@ -953,10 +953,7 @@ impl Judge {
 
         // Build the inputs once — every alternative consumes the same
         // input data, so this is shared across the per-alt timing loop.
-        let prepared = match prepare_direct_call_inputs(op, size) {
-            Some(p) => p,
-            None => return None,
-        };
+        let prepared = prepare_direct_call_inputs(op, size)?;
 
         let mut extra: Vec<CellRun> = Vec::with_capacity(alternatives.len());
         for alt in alternatives {

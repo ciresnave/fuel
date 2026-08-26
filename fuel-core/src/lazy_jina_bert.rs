@@ -375,11 +375,11 @@ impl JinaBertModel {
         let down = down.add_trailing_bias(std::sync::Arc::clone(&layer.mlp_wo_bias))?;
 
         // Post-LN MLP residual: LN(h1 + mlp).
-        Ok(h1.add(&down)?.layer_norm_affine(
+        h1.add(&down)?.layer_norm_affine(
             std::sync::Arc::clone(&layer.mlp_ln_gain),
             std::sync::Arc::clone(&layer.mlp_ln_bias),
             cfg.layer_norm_eps,
-        )?)
+        )
     }
 }
 

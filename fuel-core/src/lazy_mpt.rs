@@ -84,7 +84,7 @@ impl MptConfig {
             // Interleave: odd indices first, then even.
             let evens: Vec<f32> = slopes.iter().step_by(2).copied().collect();
             let odds: Vec<f32> = slopes.iter().skip(1).step_by(2).copied().collect();
-            odds.into_iter().chain(evens.into_iter()).take(n).collect()
+            odds.into_iter().chain(evens).take(n).collect()
         }
     }
 }
@@ -185,10 +185,10 @@ impl MptModel {
 
     fn apply_lm_head(&self, h_norm: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
-        Ok(self
+        self
             .weights
             .output
-            .apply_linear(h_norm, cfg.d_model, cfg.vocab_size)?)
+            .apply_linear(h_norm, cfg.d_model, cfg.vocab_size)
     }
 
     fn run_backbone(&self, tokens: &[u32]) -> Result<Tensor> {
@@ -229,7 +229,7 @@ impl MptModel {
             )
             .bt());
         }
-        if cfg.n_heads % cfg.kv_n_heads != 0 {
+        if !cfg.n_heads.is_multiple_of(cfg.kv_n_heads) {
             return Err(crate::Error::Msg(
                 "MptConfig: n_heads must be a multiple of kv_n_heads".into(),
             )

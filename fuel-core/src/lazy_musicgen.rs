@@ -448,7 +448,7 @@ impl MusicGenModel {
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v)?;
         let merged = ctx.merge_heads()?;
-        Ok(w.out_proj.apply_linear(&merged, inner, inner)?)
+        w.out_proj.apply_linear(&merged, inner, inner)
     }
 }
 

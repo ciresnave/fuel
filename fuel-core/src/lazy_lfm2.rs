@@ -105,7 +105,7 @@ impl LFM2Config {
             ))
             .bt());
         }
-        if self.num_attention_heads % self.num_key_value_heads != 0 {
+        if !self.num_attention_heads.is_multiple_of(self.num_key_value_heads) {
             return Err(crate::Error::Msg(format!(
                 "LFM2Config: num_attention_heads ({}) must be a multiple of num_key_value_heads ({})",
                 self.num_attention_heads, self.num_key_value_heads,
@@ -228,10 +228,10 @@ impl LFM2Model {
 
     fn apply_lm_head(&self, h_norm: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
-        Ok(self
+        self
             .weights
             .output
-            .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
+            .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)
     }
 
     fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
@@ -334,9 +334,9 @@ impl LFM2Model {
             .ffn_up
             .apply_linear(x, cfg.hidden_size, cfg.intermediate_size)?;
         let swiglu = gate.silu().mul(&up)?;
-        Ok(layer
+        layer
             .ffn_down
-            .apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size)?)
+            .apply_linear(&swiglu, cfg.intermediate_size, cfg.hidden_size)
     }
 
     fn apply_attention(
@@ -385,7 +385,7 @@ impl LFM2Model {
         let attn_v = attn.matmul(&v_full)?;
 
         let merged = attn_v.merge_heads()?;
-        Ok(a.attn_o.apply_linear(&merged, q_dim, cfg.hidden_size)?)
+        a.attn_o.apply_linear(&merged, q_dim, cfg.hidden_size)
     }
 
     /// Apply the LFM2 ShortConv (LIV) mixer.
@@ -451,7 +451,7 @@ impl LFM2Model {
         let gated = c_gate.mul(&conv_out)?;
         let _ = seq;
         let out_t = gated.permute([0, 2, 1_usize])?;
-        Ok(c.out_proj.apply_linear(&out_t, hidden, hidden)?)
+        c.out_proj.apply_linear(&out_t, hidden, hidden)
     }
 }
 

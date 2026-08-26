@@ -58,11 +58,11 @@ impl Gemma4MmEmbedder {
         // Step 1: RMS normalize over the last dim (no learnable gain).
         let normed = soft_features.rms_norm_last_dim(cfg.eps)?;
         // Step 2: Linear projection (no bias).
-        Ok(self.weights.projection.apply_linear(
+        self.weights.projection.apply_linear(
             &normed,
             cfg.multimodal_hidden_size,
             cfg.text_hidden_size,
-        )?)
+        )
     }
 }
 

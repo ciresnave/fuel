@@ -84,10 +84,10 @@ impl GraniteModel {
 
     fn apply_lm_head(&self, h_norm: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
-        Ok(self
+        self
             .weights
             .output
-            .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
+            .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)
     }
 
     fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
@@ -130,7 +130,7 @@ impl GraniteModel {
             )
             .bt());
         }
-        if cfg.num_attention_heads % cfg.num_key_value_heads != 0 {
+        if !cfg.num_attention_heads.is_multiple_of(cfg.num_key_value_heads) {
             return Err(crate::Error::Msg(
                 "GraniteConfig: num_attention_heads must be a multiple of num_key_value_heads"
                     .into(),

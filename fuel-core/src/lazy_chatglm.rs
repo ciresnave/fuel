@@ -212,11 +212,11 @@ impl ChatGlmModel {
 
     fn apply_lm_head(&self, h_post: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
-        Ok(self.weights.output_layer.apply_linear(
+        self.weights.output_layer.apply_linear(
             h_post,
             cfg.hidden_size,
             cfg.padded_vocab_size,
-        )?)
+        )
     }
 
     fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
@@ -253,14 +253,14 @@ impl ChatGlmModel {
             );
         }
         let rope_dim = cfg.rope_dim();
-        if rope_dim == 0 || rope_dim % 2 != 0 {
+        if rope_dim == 0 || !rope_dim.is_multiple_of(2) {
             return Err(crate::Error::Msg(format!(
                 "ChatGlmConfig: kv_channels ({}) must be even and >= 2 for halved-pair RoPE",
                 cfg.head_dim(),
             ))
             .bt());
         }
-        if cfg.num_attention_heads % cfg.multi_query_group_num != 0 {
+        if !cfg.num_attention_heads.is_multiple_of(cfg.multi_query_group_num) {
             return Err(crate::Error::Msg(format!(
                 "num_attention_heads ({}) must be a multiple of multi_query_group_num ({})",
                 cfg.num_attention_heads, cfg.multi_query_group_num,

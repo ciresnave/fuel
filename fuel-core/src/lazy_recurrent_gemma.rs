@@ -285,14 +285,14 @@ impl RecurrentGemmaModel {
             ))
             .bt());
         }
-        if cfg.num_attention_heads % cfg.num_key_value_heads != 0 {
+        if !cfg.num_attention_heads.is_multiple_of(cfg.num_key_value_heads) {
             return Err(crate::Error::Msg(
                 "num_attention_heads must be a multiple of num_key_value_heads".into(),
             )
             .bt());
         }
         let lru_width = cfg.lru_width_or_default();
-        if lru_width % cfg.num_attention_heads != 0 {
+        if !lru_width.is_multiple_of(cfg.num_attention_heads) {
             return Err(crate::Error::Msg(format!(
                 "lru_width ({lru_width}) must be a multiple of num_attention_heads ({})",
                 cfg.num_attention_heads,

@@ -1722,7 +1722,7 @@ impl SamModel {
         )?;
         let pps = self.config.image_encoder.patches_per_side();
         let decoder_side = 4 * pps;
-        if img_size % decoder_side != 0 {
+        if !img_size.is_multiple_of(decoder_side) {
             return Err(crate::Error::Msg(format!(
                 "SAM upsample: img_size={img_size} not divisible by decoder spatial side {decoder_side}",
             )).bt());

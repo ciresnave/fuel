@@ -150,7 +150,7 @@ impl HFLlavaConfig {
                 t.hidden_size,
             );
         }
-        if t.hidden_size % t.num_attention_heads != 0 {
+        if !t.hidden_size.is_multiple_of(t.num_attention_heads) {
             crate::bail!(
                 "llava: text hidden_size ({}) not divisible by num_attention_heads ({})",
                 t.hidden_size,
@@ -383,11 +383,11 @@ impl LlavaModel {
         let patches_only = h.slice(1_usize, 1, np)?;
 
         // Post-LayerNorm on the patch tokens.
-        Ok(patches_only.layer_norm_affine(
+        patches_only.layer_norm_affine(
             std::sync::Arc::clone(&weights.post_ln_gain),
             std::sync::Arc::clone(&weights.post_ln_bias),
             1e-5,
-        )?)
+        )
     }
 }
 

@@ -281,14 +281,14 @@ impl WhisperModel {
         }
 
         // --- final LN ---------------------------------------------------
-        Ok(layer_norm_affine(
+        layer_norm_affine(
             &x,
             &self.weights.encoder.final_ln_g,
             &self.weights.encoder.final_ln_b,
             1e-5,
             d,
             t_half,
-        )?)
+        )
     }
 
     /// Run the decoder for a given token prefix, attending into a
@@ -339,7 +339,7 @@ impl WhisperModel {
         // Tied output projection: logits = x @ embed^T → [1, seq, vocab].
         // embed is [vocab, d] row-major; transpose to [d, vocab] and matmul.
         let embed_t = embed.transpose()?; // [d, vocab]
-        Ok(x.matmul(&embed_t)?)
+        x.matmul(&embed_t)
     }
 
     /// Greedy decode for `max_new_tokens` steps starting from

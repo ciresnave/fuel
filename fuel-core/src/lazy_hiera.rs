@@ -271,7 +271,7 @@ fn unroll(x: &Tensor, b: usize, c: usize) -> Result<Tensor> {
         b_cur *= 4;
     }
     // (64B, 7, 7, C) → (B, 3136, C)
-    Ok(xs.reshape(Shape::from_dims(&[b, NUM_TOKENS, c]))?)
+    xs.reshape(Shape::from_dims(&[b, NUM_TOKENS, c]))
 }
 
 fn apply_block(x: &Tensor, blk: &HieraBlockWeights, anchor: &Tensor) -> Result<Tensor> {
@@ -298,10 +298,10 @@ fn apply_block(x: &Tensor, blk: &HieraBlockWeights, anchor: &Tensor) -> Result<T
             // The pool stride here is fixed at 4 in the eager port.
             let stride = 4;
             assert_eq!(n_in % stride, 0);
-            let pooled = projected
+            
+            projected
                 .reshape(Shape::from_dims(&[b, stride, n_in / stride, c_out]))?
-                .max_dim(1_usize)?;
-            pooled
+                .max_dim(1_usize)?
         }
     };
 

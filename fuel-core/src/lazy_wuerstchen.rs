@@ -668,7 +668,7 @@ impl PriorModel {
         let a1 = &ab[1];
         let denom = a1.add_scalar(-1.0_f64).abs().add_scalar(1e-5_f64);
         let num = x_in.sub(a0)?;
-        Ok(num.div(&denom)?)
+        num.div(&denom)
     }
 }
 
@@ -705,7 +705,7 @@ impl DiffNextModel {
             )
             .bt());
         }
-        if h_in % p != 0 || w_in % p != 0 {
+        if !h_in.is_multiple_of(p) || !w_in.is_multiple_of(p) {
             return Err(crate::Error::Msg(format!(
                 "DiffNextModel.forward: spatial dims ({h_in}, {w_in}) must be divisible by patch_size {p}",
             )).bt());
@@ -833,7 +833,7 @@ impl DiffNextModel {
         let eps_b = 1e-3_f64;
         let b = b_raw.sigmoid().affine(1.0 - 2.0 * eps_b, eps_b);
         let num = x_in.sub(a)?;
-        Ok(num.div(&b)?)
+        num.div(&b)
     }
 }
 

@@ -192,10 +192,10 @@ impl Rwkv7Model {
 
     fn apply_lm_head(&self, h_norm: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
-        Ok(self
+        self
             .weights
             .head
-            .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
+            .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)
     }
 
     fn run_backbone(&self, tokens: &[u32]) -> Result<Tensor> {
@@ -543,7 +543,7 @@ impl Rwkv7Model {
 
         // k = relu(k @ key)^2
         let k = cm.key.apply_linear(&k_in, h, dim_ffn)?.relu().sqr();
-        Ok(cm.value.apply_linear(&k, dim_ffn, h)?)
+        cm.value.apply_linear(&k, dim_ffn, h)
     }
 }
 

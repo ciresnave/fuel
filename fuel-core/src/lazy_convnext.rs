@@ -285,7 +285,7 @@ impl ConvNextModel {
             c,
             1,
         )?;
-        Ok(linear(
+        linear(
             &normed,
             &self.weights.head_fc_w,
             Some(&self.weights.head_fc_b),
@@ -293,7 +293,7 @@ impl ConvNextModel {
             cfg.num_classes,
             1,
         )?
-        .reshape(Shape::from_dims(&[1, cfg.num_classes]))?)
+        .reshape(Shape::from_dims(&[1, cfg.num_classes]))
     }
 
     /// Run the backbone (stem + stages) and return the final

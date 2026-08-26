@@ -71,7 +71,7 @@ impl ProfileJudgeOracle {
                 inner.measured_latency_ns(e.op, e.dtype, e.size_class, e.backend, &e.kernel_source);
             // Keep the minimum across duplicate keys (multi-device
             // entries at one cell — see module docs).
-            if prev.map_or(true, |p| e.latency_ns < p) {
+            if prev.is_none_or(|p| e.latency_ns < p) {
                 inner.insert(
                     e.op,
                     e.dtype,

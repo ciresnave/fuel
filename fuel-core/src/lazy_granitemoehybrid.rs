@@ -385,7 +385,7 @@ impl GraniteMoeHybridModel {
             )
             .bt());
         }
-        if cfg.num_attention_heads % cfg.num_key_value_heads != 0 {
+        if !cfg.num_attention_heads.is_multiple_of(cfg.num_key_value_heads) {
             return Err(crate::Error::Msg(
                 "num_attention_heads must be a multiple of num_key_value_heads".into(),
             )
@@ -464,10 +464,10 @@ impl GraniteMoeHybridModel {
             }
         }
 
-        Ok(h.rms_norm_affine(
+        h.rms_norm_affine(
             std::sync::Arc::clone(&weights.final_norm_gain),
             cfg.rms_norm_eps,
-        )?)
+        )
     }
 
     fn apply_attn_block(
@@ -547,7 +547,7 @@ impl GraniteMoeHybridModel {
         let probs = scores_masked.softmax_last_dim()?;
         let ctx = probs.matmul(&v_full)?;
         let merged = ctx.merge_heads()?;
-        Ok(w.o_proj.apply_linear(&merged, q_dim, cfg.hidden_size)?)
+        w.o_proj.apply_linear(&merged, q_dim, cfg.hidden_size)
     }
 
     fn apply_mlp(&self, x: &Tensor, w: &GraniteMoeHybridMlpWeights) -> Result<Tensor> {
@@ -558,7 +558,7 @@ impl GraniteMoeHybridModel {
         let left = fused.slice(2_usize, 0, inter)?;
         let right = fused.slice(2_usize, inter, inter)?;
         let gated = left.silu().mul(&right)?;
-        Ok(w.output_linear.apply_linear(&gated, inter, h)?)
+        w.output_linear.apply_linear(&gated, inter, h)
     }
 }
 
@@ -573,7 +573,7 @@ fn build_granite_rope_tables(
     head_dim: usize,
     rope_scaling: Option<&GraniteRopeScaling>,
 ) -> (Vec<f32>, Vec<f32>) {
-    assert!(head_dim % 2 == 0);
+    assert!(head_dim.is_multiple_of(2));
     let half = head_dim / 2;
     // Compute per-i base frequencies.
     let mut inv_freqs: Vec<f32> = (0..half)

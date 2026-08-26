@@ -160,7 +160,7 @@ impl Glm4Model {
             Some(w) => w.clone(),
             None => WeightStorage::F32(self.weights.token_embedding.clone()),
         };
-        Ok(lm_head_w.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
+        lm_head_w.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)
     }
 
     /// Run the decoder forward up to the final RmsNorm and
@@ -202,14 +202,14 @@ impl Glm4Model {
                 crate::Error::Msg("Glm4Model::forward_embeds: seq must be > 0".into()).bt(),
             );
         }
-        if cfg.num_attention_heads % cfg.num_key_value_heads != 0 {
+        if !cfg.num_attention_heads.is_multiple_of(cfg.num_key_value_heads) {
             return Err(crate::Error::Msg(
                 "Glm4Config: num_attention_heads must be a multiple of num_key_value_heads".into(),
             )
             .bt());
         }
         let rope_dim = cfg.rope_dim();
-        if rope_dim == 0 || rope_dim > cfg.head_dim || rope_dim % 2 != 0 {
+        if rope_dim == 0 || rope_dim > cfg.head_dim || !rope_dim.is_multiple_of(2) {
             return Err(crate::Error::Msg(format!(
                 "Glm4Config: rope_dim ({rope_dim}) must be even and in (0, head_dim ({})]",
                 cfg.head_dim,

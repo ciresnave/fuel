@@ -162,10 +162,10 @@ impl FalconModel {
 
     fn apply_lm_head(&self, h_norm: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
-        Ok(self
+        self
             .weights
             .output
-            .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
+            .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)
     }
 
     /// Shared backbone: embed → RoPE → per-layer parallel
@@ -211,7 +211,7 @@ impl FalconModel {
             )
             .bt());
         }
-        if cfg.n_head_kv == 0 || cfg.num_attention_heads % cfg.n_head_kv != 0 {
+        if cfg.n_head_kv == 0 || !cfg.num_attention_heads.is_multiple_of(cfg.n_head_kv) {
             return Err(crate::Error::Msg(
                 "FalconConfig: num_attention_heads must be a positive multiple of n_head_kv".into(),
             )
@@ -268,8 +268,8 @@ impl FalconModel {
             let h1 = x.add(&attn_output)?;
             let h1_ln = match &layer.post_attn_ln {
                 Some((g, b)) => h1.layer_norm_affine(
-                    std::sync::Arc::clone(&g),
-                    std::sync::Arc::clone(&b),
+                    std::sync::Arc::clone(g),
+                    std::sync::Arc::clone(b),
                     cfg.layer_norm_epsilon,
                 )?,
                 None => h1.clone(),
@@ -321,7 +321,7 @@ impl FalconModel {
         let scale = 1.0_f64 / (head_dim as f64).sqrt();
         let scores = q_r.matmul(&k_t)?;
         let scores_scaled = scores.mul_scalar(scale);
-        let mask = Tensor::additive_causal_mask_like(&x_ln, seq)
+        let mask = Tensor::additive_causal_mask_like(x_ln, seq)
             .reshape(Shape::from_dims(&[1, 1, seq, seq]))?;
         let scores_masked = scores_scaled.broadcast_add(&mask)?;
         let attn = scores_masked.softmax_last_dim()?;

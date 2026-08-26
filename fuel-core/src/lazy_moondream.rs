@@ -267,11 +267,11 @@ impl MoondreamModel {
         }
 
         // ---- Final LayerNorm ---------------------------------------------
-        Ok(h.layer_norm_affine(
+        h.layer_norm_affine(
             std::sync::Arc::clone(&weights.norm_gain),
             std::sync::Arc::clone(&weights.norm_bias),
             cfg.layer_norm_eps,
-        )?)
+        )
     }
 
     fn apply_block(&self, x: &Tensor, block: &MoondreamVisionBlockWeights) -> Result<Tensor> {

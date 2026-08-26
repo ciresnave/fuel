@@ -49,17 +49,14 @@ use std::sync::Arc;
 /// weights — match the trained baseline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ClipTextActivation {
+    #[default]
     QuickGelu,
     Gelu,
     GeluErf,
 }
 
-impl Default for ClipTextActivation {
-    fn default() -> Self {
-        Self::QuickGelu
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct ClipTextConfig {
@@ -242,14 +239,14 @@ impl SdTextEncoder {
         for lw in &self.weights.layers {
             x = encoder_layer(&x, lw, cfg, seq)?;
         }
-        Ok(layer_norm_affine(
+        layer_norm_affine(
             &x,
             &self.weights.final_ln_g,
             &self.weights.final_ln_b,
             cfg.layer_norm_eps,
             h,
             seq,
-        )?)
+        )
     }
 
     /// Run the forward pass and return the per-layer hidden

@@ -361,9 +361,9 @@ impl VoxtralMultiModalProjector {
             self.linear_1
                 .apply_linear(audio, self.audio_intermediate_size, self.text_hidden)?;
         let x = x.gelu();
-        Ok(self
+        self
             .linear_2
-            .apply_linear(&x, self.text_hidden, self.text_hidden)?)
+            .apply_linear(&x, self.text_hidden, self.text_hidden)
     }
 }
 
@@ -462,9 +462,9 @@ impl VoxtralTextModel {
             h = apply_text_layer(&h, layer, cfg, &rope_cos, &rope_sin)?;
         }
         let h_norm = h.rms_norm_affine(Arc::clone(&weights.final_norm_gain), cfg.rms_norm_eps)?;
-        Ok(weights
+        weights
             .lm_head
-            .apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size)?)
+            .apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size)
     }
 }
 

@@ -174,11 +174,11 @@ impl OpenClipTextModel {
         for layer in &w.layers {
             x = apply_layer(&x, layer, cfg, &token_table)?;
         }
-        Ok(x.layer_norm_affine(
+        x.layer_norm_affine(
             Arc::clone(&w.final_ln.gain),
             Arc::clone(&w.final_ln.bias),
             1e-5,
-        )?)
+        )
     }
 }
 

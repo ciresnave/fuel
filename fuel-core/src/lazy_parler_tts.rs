@@ -386,7 +386,7 @@ fn apply_attention(
     let probs = scores.softmax_last_dim()?;
     let ctx = probs.matmul(&v)?.merge_heads()?;
     let _ = (b, q_out_dim);
-    Ok(w.out_proj.apply_linear(&ctx, q_out_dim, q_out_dim)?)
+    w.out_proj.apply_linear(&ctx, q_out_dim, q_out_dim)
 }
 
 /// Repeat K/V along the head dim: `(B, n_kv, L, D) → (B, n_kv * n_rep, L, D)`

@@ -366,7 +366,7 @@ impl Gemma4VisionModel {
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v_full)?;
         let merged = ctx.merge_heads()?;
-        Ok(layer.o_proj.apply_linear(&merged, q_dim, cfg.hidden_size)?)
+        layer.o_proj.apply_linear(&merged, q_dim, cfg.hidden_size)
     }
 
     /// Spatial average pooling via scatter_add by patch (col, row).

@@ -122,7 +122,7 @@ impl PaddleOcrVlModel {
 
         match image_pixels {
             None => {
-                if text_tokens.iter().any(|&t| t == image_token_id) {
+                if text_tokens.contains(&image_token_id) {
                     return Err(crate::Error::Msg(
                         "PaddleOcrVlModel: text_tokens contain image_token_id but image_pixels is None".into(),
                     ).bt());
@@ -697,7 +697,7 @@ mod tests {
         let num_image_tokens = per_tile_merged;
         // Surround placeholders with two text tokens on each side.
         let mut tokens: Vec<u32> = vec![3, 5];
-        tokens.extend(std::iter::repeat(image_token_id).take(num_image_tokens));
+        tokens.extend(std::iter::repeat_n(image_token_id, num_image_tokens));
         tokens.extend_from_slice(&[7, 11]);
 
         let img_a = tiny_image(&model, v_cfg.image_size, v_cfg.image_size);
@@ -814,7 +814,7 @@ mod tests {
 
         let mut tokens: Vec<u32> = Vec::new();
         tokens.push(2);
-        tokens.extend(std::iter::repeat(image_token_id).take(num_image_tokens));
+        tokens.extend(std::iter::repeat_n(image_token_id, num_image_tokens));
         tokens.push(4);
         tokens.push(6);
 

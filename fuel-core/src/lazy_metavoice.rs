@@ -513,7 +513,7 @@ impl MetaVoiceWeights {
         // fallback materializes the same transposed `[hidden, vocab]`
         // buffer once and shares it via `Arc::clone` across heads.
         let mut lm_heads: Vec<WeightStorage> = Vec::with_capacity(cfg.num_codebooks);
-        let first_head_name = format!("lm_heads.0.weight");
+        let first_head_name = "lm_heads.0.weight".to_string();
         if st.get(&first_head_name).is_ok() {
             for ci in 0..cfg.num_codebooks {
                 let head = load_transposed_matrix_preserve_dtype(
