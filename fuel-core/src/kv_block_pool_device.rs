@@ -960,6 +960,11 @@ impl DeviceKvPool {
     }
 }
 
+/// The pool's K and V storages as two parallel columns, indexed by layer.
+/// Kept as two `Vec`s rather than a `Vec` of pairs because the device pool
+/// allocates each column as one contiguous run.
+type KvStorageColumns = (Vec<Arc<RwLock<Storage>>>, Vec<Arc<RwLock<Storage>>>);
+
 /// Allocate `n_layers` pairs of zero-initialized `shape` buffers on `device`,
 /// returning `(k_pools, v_pools)`. Mirrors [`crate::inference_context::KvCache::
 /// with_capacity`]'s `Op::Alloc → Op::ZeroFill → realize_many` path: one Alloc
@@ -970,7 +975,7 @@ fn alloc_layer_buffers(
     dtype: DType,
     device: &Device,
     n_layers: usize,
-) -> Result<(Vec<Arc<RwLock<Storage>>>, Vec<Arc<RwLock<Storage>>>)> {
+) -> Result<KvStorageColumns> {
     let target_loc = device.location();
     let graph = Arc::new(RwLock::new(Graph::new()));
     let mut cache = StorageCache::new();

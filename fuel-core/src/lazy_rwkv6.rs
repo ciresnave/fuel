@@ -48,7 +48,7 @@
 //! Forward-only prefill: zero initial state, batch == 1, F32.
 //! The recurrent time loop is unrolled at graph-build time.
 
-use crate::lazy::{Tensor, WeightStorage};
+use crate::lazy::{LayerNormPair, Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -62,7 +62,7 @@ pub struct Rwkv6LayerWeights {
     pub ln2_gain: Arc<[f32]>,
     pub ln2_bias: Arc<[f32]>,
     /// Only on layer 0.
-    pub pre_ln: Option<(Arc<[f32]>, Arc<[f32]>)>,
+    pub pre_ln: Option<LayerNormPair>,
 
     // ---- Time-mix (attention) ----
     pub attn_time_mix_x: Arc<[f32]>, // [hidden] — first-stage mix

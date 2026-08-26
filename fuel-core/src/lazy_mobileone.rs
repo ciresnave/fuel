@@ -574,11 +574,16 @@ fn fuse_conv_bn_kernel(
     (w_out, b_out)
 }
 
+/// A BatchNorm's four host-side parameter vectors, each length `channels`:
+/// `(gain, bias, running_mean, running_var)`. Order matters and is the same
+/// order MobileOne's reparameterisation folds them in.
+type BatchNormParams = (Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>);
+
 fn mobileone_load_bn(
     st: &crate::safetensors::MmapedSafetensors,
     prefix: &str,
     channels: usize,
-) -> crate::Result<(Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>)> {
+) -> crate::Result<BatchNormParams> {
     let gain = mobileone_load_check(st, &format!("{prefix}.weight"), channels)?;
     let bias = mobileone_load_check(st, &format!("{prefix}.bias"), channels)?;
     let mean = mobileone_load_check(st, &format!("{prefix}.running_mean"), channels)?;

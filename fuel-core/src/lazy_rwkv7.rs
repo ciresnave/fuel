@@ -45,7 +45,7 @@
 //! [1]: crate::lazy_rwkv5
 //! [2]: crate::lazy_rwkv6
 
-use crate::lazy::{Tensor, WeightStorage};
+use crate::lazy::{LayerNormPair, Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -131,7 +131,7 @@ pub struct Rwkv7LayerWeights {
     pub ln2_gain: Arc<[f32]>,
     pub ln2_bias: Arc<[f32]>,
     /// Only on layer 0.
-    pub pre_ln: Option<(Arc<[f32]>, Arc<[f32]>)>,
+    pub pre_ln: Option<LayerNormPair>,
     pub time_mix: Rwkv7TimeMixWeights,
     pub channel_mix: Rwkv7ChannelMixWeights,
 }

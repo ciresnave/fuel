@@ -926,6 +926,14 @@ pub fn realize_many_as_with_initial_env<T: bytemuck::Pod>(
     Ok(out)
 }
 
+/// What a split realize returns: the host-side rows actually read back (one
+/// `Vec<T>` per host target) and the device-side targets left resident, each
+/// paired with the [`Layout`] it was realized under.
+///
+/// `pub` because `InferenceContext` delegates to this function and its own
+/// signature has to name the same type rather than restate the tuple.
+pub type SplitRealizeOutput<T> = (Vec<Vec<T>>, Vec<(Arc<RwLock<Storage>>, Layout)>);
+
 /// Realize-split: realize `targets` in ONE executor pass, download
 /// only the first `n_host` results to host bytes, and return the
 /// remaining results as device-resident storage Arcs + layouts.
@@ -947,7 +955,7 @@ pub fn realize_split_as_with_initial<T: bytemuck::Pod>(
     n_host: usize,
     device: &Device,
     initial: StorageCache,
-) -> Result<(Vec<Vec<T>>, Vec<(Arc<RwLock<Storage>>, Layout)>)> {
+) -> Result<SplitRealizeOutput<T>> {
     if n_host > targets.len() {
         return Err(Error::Msg(format!(
             "realize_split_as_with_initial: n_host ({n_host}) exceeds \

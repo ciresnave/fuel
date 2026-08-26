@@ -33,7 +33,7 @@
 //! stay independent (one can be edited or retired without touching
 //! the other).
 
-use crate::lazy::Tensor;
+use crate::lazy::{ConvWeightBias, Tensor};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -123,7 +123,7 @@ pub struct UpBlock3Weights {
     pub resnets: Vec<Resnet3Weights>,
     /// Upsampler's 3×3 conv (applied after 2× nearest upsample). None
     /// for the last up-block (SD3's `up_blocks.3`).
-    pub upsample_conv: Option<(Arc<[f32]>, Arc<[f32]>)>,
+    pub upsample_conv: Option<ConvWeightBias>,
 }
 
 #[derive(Debug, Clone)]

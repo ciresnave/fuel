@@ -58,7 +58,7 @@
 //! v1 dtype — `Self::layers_are_rescaled` is always false for
 //! F32 weights.
 
-use crate::lazy::{Tensor, WeightStorage};
+use crate::lazy::{LayerNormPair, Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -102,7 +102,7 @@ pub struct Rwkv5LayerWeights {
     pub ln2_gain: Arc<[f32]>,
     pub ln2_bias: Arc<[f32]>,
     /// Only present on layer 0 (mirrors HF `pre_ln`).
-    pub pre_ln: Option<(Arc<[f32]>, Arc<[f32]>)>,
+    pub pre_ln: Option<LayerNormPair>,
 
     // ---- Time-mix (attention) ----
     pub attn_time_mix_key: Arc<[f32]>,        // [hidden_size]
