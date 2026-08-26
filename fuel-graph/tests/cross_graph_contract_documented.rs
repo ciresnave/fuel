@@ -113,9 +113,9 @@ fn public_fns(src: &str) -> Vec<PubFn> {
 
         // Body: to the closing brace at this function's own indentation.
         let mut end = lines.len();
-        for j in i + 1..lines.len() {
-            let t = lines[j].trim_end();
-            if t.len() == my_indent + 1 && t.trim_start() == "}" && indent(lines[j]) == my_indent {
+        for (j, line) in lines.iter().enumerate().skip(i + 1) {
+            let t = line.trim_end();
+            if t.len() == my_indent + 1 && t.trim_start() == "}" && indent(line) == my_indent {
                 end = j + 1;
                 break;
             }

@@ -658,9 +658,10 @@ fn avg_pool_op(node: &onnx::NodeProto, values: &mut HashMap<String, Tensor>) -> 
     Ok(())
 }
 
-fn parse_pool_attrs(
-    node: &onnx::NodeProto,
-) -> Result<((usize, usize), (usize, usize), (usize, usize))> {
+/// `(kernel, stride, padding)`, each as `(h, w)`.
+type PoolAttrs = ((usize, usize), (usize, usize), (usize, usize));
+
+fn parse_pool_attrs(node: &onnx::NodeProto) -> Result<PoolAttrs> {
     let auto_pad = parse_auto_pad(node)?;
     check_dilations(node)?;
     if get_attr_int_opt(node, "ceil_mode").unwrap_or(0) != 0 {

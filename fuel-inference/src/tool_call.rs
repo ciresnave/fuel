@@ -403,8 +403,7 @@ fn find_matching_brace(text: &str, open: usize) -> Option<usize> {
     let mut in_string = false;
     let mut escape_next = false;
 
-    for i in open..bytes.len() {
-        let b = bytes[i];
+    for (i, &b) in bytes.iter().enumerate().skip(open) {
         if escape_next {
             escape_next = false;
             continue;

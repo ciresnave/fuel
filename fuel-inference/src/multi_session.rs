@@ -1862,9 +1862,7 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel::lazy::{
-        LayerWeights, LlamaConfig, LlamaModel, LlamaWeights, SamplingStrategy, WeightStorage,
-    };
+    use fuel::lazy::{LayerWeights, LlamaConfig, LlamaModel, LlamaWeights, SamplingStrategy};
     // NOTE: `fuel_ir::Device` does not exist — the device type is `fuel::Device`
     // (fuel_core::Device), which is what `KvCache::with_capacity` takes. `DType`
     // is `fuel_ir::DType`. This mirrors the `use` lines at the top of

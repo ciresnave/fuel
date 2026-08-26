@@ -375,6 +375,9 @@ fn run(args: Args) -> Result<()> {
             let c_lat = 16usize;
             let h_lat = height.div_ceil(16) * 2;
             let w_lat = width.div_ceil(16) * 2;
+            // Grouped to spell BADF00D twice; 4-digit regrouping splits the
+            // word, and padding to 16 digits would change the value.
+            #[allow(clippy::unusual_byte_groupings)]
             let noise_seed = seed.unwrap_or(0xBADF_00D_BADF_00Du64);
             let noise = deterministic_noise(noise_seed, batch * c_lat * h_lat * w_lat);
             let noise_t = Tensor::from_f32(

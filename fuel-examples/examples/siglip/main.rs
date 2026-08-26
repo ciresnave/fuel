@@ -113,6 +113,9 @@ struct HfTextConfig {
     max_position_embeddings: usize,
     #[serde(default = "default_text_layer_norm_eps")]
     layer_norm_eps: f64,
+    // Mirrors SigLIP's config.json. Parsed so the struct documents the
+    // full upstream schema; this example never consumes it.
+    #[allow(dead_code)]
     #[serde(default = "default_text_pad_token_id")]
     pad_token_id: u32,
 }

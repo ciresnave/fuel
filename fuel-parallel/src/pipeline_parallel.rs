@@ -244,7 +244,9 @@ impl PipelineConfig {
 
         let mut per_stage: Vec<Vec<ScheduleStep>> = vec![Vec::new(); s];
 
-        for stage in 0..s {
+        // `per_stage` is built with exactly `s` entries just above, so
+        // enumerating it is the same traversal as `0..s`.
+        for (stage, steps) in per_stage.iter_mut().enumerate() {
             let warmup = s - 1 - stage;
             let mut fwd_idx: usize = 0;
             let mut bwd_idx: usize = 0;
@@ -262,8 +264,6 @@ impl PipelineConfig {
                     });
                 }
             }
-
-            let steps = &mut per_stage[stage];
 
             // Warmup: forward-only
             for _ in 0..warmup.min(m) {

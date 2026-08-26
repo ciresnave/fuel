@@ -217,7 +217,7 @@ fn hash_tokens(tokens: &[u32]) -> PrefixHash {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel::{DType, Device};
+    use fuel::Device;
 
     fn make_kv(layers: usize, seq_len: usize) -> Vec<LayerKvState> {
         (0..layers)

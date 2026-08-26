@@ -248,11 +248,10 @@ pub fn verify_draft(
 
     let mut accepted = Vec::with_capacity(k);
 
-    for i in 0..k {
+    for (i, &token) in draft_tokens.iter().enumerate().take(k) {
         let draft_probs = softmax_1d(row(draft_logprobs, i, "draft_logprobs")?);
         let target_probs = softmax_1d(row(target_logprobs, i, "target_logprobs")?);
 
-        let token = draft_tokens[i];
         let draft_p = prob_of_token(&draft_probs, token)?;
         let target_p = prob_of_token(&target_probs, token)?;
 
@@ -400,7 +399,7 @@ mod tests {
 
     #[test]
     fn all_accepted_when_distributions_match() -> Result<()> {
-        let device = Device::cpu();
+        let _device = Device::cpu();
         let vocab = 50;
         let k = 3;
         let draft_tokens = vec![5u32, 10, 15];
@@ -479,7 +478,7 @@ mod tests {
 
     #[test]
     fn empty_draft_returns_bonus_token() -> Result<()> {
-        let device = Device::cpu();
+        let _device = Device::cpu();
         let vocab = 50;
 
         // No draft tokens
@@ -505,7 +504,7 @@ mod tests {
 
     #[test]
     fn rejection_with_divergent_distributions() -> Result<()> {
-        let device = Device::cpu();
+        let _device = Device::cpu();
         let vocab = 10;
         let k = 3;
 
@@ -549,7 +548,7 @@ mod tests {
 
     #[test]
     fn verify_result_invariants() -> Result<()> {
-        let device = Device::cpu();
+        let _device = Device::cpu();
         let vocab = 20;
         let k = 5;
 

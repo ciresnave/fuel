@@ -34,6 +34,11 @@ use fuel::lazy_rwkv5::{Rwkv5Config, Rwkv5Model, Rwkv5Weights};
 use fuel::lazy_rwkv7::{Rwkv7Config, Rwkv7Model, Rwkv7Weights};
 use hf_hub::{Repo, RepoType, api::sync::Api};
 
+/// One decode step for whichever RWKV variant was selected: takes the token
+/// history and returns the logits row. Boxed because the variants are
+/// distinct model types chosen at runtime.
+type LogitsStep = Box<dyn Fn(&[u32]) -> Result<Vec<f32>>>;
+
 /// Which RWKV variant to run. Selected via `--variant 5` or `--variant 7`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum Variant {
@@ -152,43 +157,42 @@ fn main() -> Result<()> {
         .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;
 
     let start_load = std::time::Instant::now();
-    let (vocab_size, logits_step): (usize, Box<dyn Fn(&[u32]) -> Result<Vec<f32>>>) =
-        match args.variant {
-            Variant::V5 => {
-                let cfg = rwkv5_config_from_hf(config_file.as_deref())?;
-                let weights = Rwkv5Weights::load_from_mmapped(&st, &cfg)
-                    .map_err(|e| E::msg(format!("load v5 weights: {e}")))?;
-                let model = Rwkv5Model {
-                    config: cfg.clone(),
-                    weights,
-                };
-                let v = cfg.vocab_size;
-                let step: Box<dyn Fn(&[u32]) -> Result<Vec<f32>>> = Box::new(move |toks| {
-                    let logits = model
-                        .forward(toks)
-                        .map_err(|e| E::msg(format!("forward v5: {e}")))?;
-                    Ok(logits.realize_f32())
-                });
-                (v, step)
-            }
-            Variant::V7 => {
-                let cfg = rwkv7_config_from_hf(config_file.as_deref(), &st)?;
-                let weights = Rwkv7Weights::load_from_mmapped(&st, &cfg)
-                    .map_err(|e| E::msg(format!("load v7 weights: {e}")))?;
-                let model = Rwkv7Model {
-                    config: cfg.clone(),
-                    weights,
-                };
-                let v = cfg.vocab_size;
-                let step: Box<dyn Fn(&[u32]) -> Result<Vec<f32>>> = Box::new(move |toks| {
-                    let logits = model
-                        .forward(toks)
-                        .map_err(|e| E::msg(format!("forward v7: {e}")))?;
-                    Ok(logits.realize_f32())
-                });
-                (v, step)
-            }
-        };
+    let (vocab_size, logits_step): (usize, LogitsStep) = match args.variant {
+        Variant::V5 => {
+            let cfg = rwkv5_config_from_hf(config_file.as_deref())?;
+            let weights = Rwkv5Weights::load_from_mmapped(&st, &cfg)
+                .map_err(|e| E::msg(format!("load v5 weights: {e}")))?;
+            let model = Rwkv5Model {
+                config: cfg.clone(),
+                weights,
+            };
+            let v = cfg.vocab_size;
+            let step: LogitsStep = Box::new(move |toks| {
+                let logits = model
+                    .forward(toks)
+                    .map_err(|e| E::msg(format!("forward v5: {e}")))?;
+                Ok(logits.realize_f32())
+            });
+            (v, step)
+        }
+        Variant::V7 => {
+            let cfg = rwkv7_config_from_hf(config_file.as_deref(), &st)?;
+            let weights = Rwkv7Weights::load_from_mmapped(&st, &cfg)
+                .map_err(|e| E::msg(format!("load v7 weights: {e}")))?;
+            let model = Rwkv7Model {
+                config: cfg.clone(),
+                weights,
+            };
+            let v = cfg.vocab_size;
+            let step: LogitsStep = Box::new(move |toks| {
+                let logits = model
+                    .forward(toks)
+                    .map_err(|e| E::msg(format!("forward v7: {e}")))?;
+                Ok(logits.realize_f32())
+            });
+            (v, step)
+        }
+    };
     eprintln!("loaded model in {:?}", start_load.elapsed());
 
     // Encode prompt, echo it, then sample.

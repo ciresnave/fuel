@@ -55,6 +55,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let lc = unet.config.in_channels;
     let latent = vec![0.0_f32; lc * h_lat * w_lat];
+    // `1 * 77 * cross_attention_dim` is the SHAPE [1, 77, cross_attention_dim]
+    // written as its element count. The `1` is the batch dimension; removing
+    // it would leave a product that no longer names the tensor's shape.
+    #[allow(clippy::identity_op)]
     let text = vec![0.0_f32; 1 * 77 * unet.config.cross_attention_dim];
 
     eprintln!("Running one denoising step...");
