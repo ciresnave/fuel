@@ -24,6 +24,7 @@ use fuel_ir::dispatch::OpKind;
 
 use super::bit_stability::{HostTensor, ProbeInputs, fill_deterministic};
 use crate::kernel::{MatmulM, OpParams};
+use fuel_graph::registry::Reduction;
 
 /// Encode `vals` into `dt`'s byte representation, covering every dtype any
 /// backend's probe recipes need — the float set PLUS the integer / fp8 / bool
@@ -1065,6 +1066,156 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
                 },
                 out_dtype: dt,
                 out_shape: vec![batch * channels * seq_out],
+                out_seed: None,
+            })
+        }
+
+        // --- the four small non-conv surfaces (GAP-228 residue) -----------
+        //
+        // Like conv, every one of these sections declares `max_ulp: ~`, so only
+        // `bit_stable_on_same_hardware` needs earning and no exact reference is
+        // required. Shapes mirror `seed_cpu_ledger::build_probe`'s FUSED arms
+        // for the same families and are deliberately NOT unified with them
+        // (GAP-220 — whether the two builders encode the same obligation is a
+        // question about their CALLERS, not one to answer with a refactor).
+        //
+        // Every arity below was MEASURED off the live binding table, not
+        // inferred from the fused arm: PowIElementwiseBackward 3,
+        // FusedLinear 4, FusedSoftmaxCrossEntropy 3 (with `I64` targets and an
+        // `F32` output regardless of the logits dtype), SelectiveScan 6,
+        // SsdChunkScan 6. All four dtypes (F32/F64/BF16/F16) register for each.
+        OpKind::PowIElementwiseBackward => {
+            if dtypes.len() != 3 {
+                return None;
+            }
+            let x = ht(dt, vec![4], &fill_deterministic(4, seed))?;
+            let up = ht(dt, vec![4], &fill_deterministic(4, seed ^ 0xDEAD_BEEF))?;
+            Some(Probe {
+                inputs: vec![x, up],
+                params: OpParams::PowI { exp: 2 },
+                out_dtype: dt,
+                out_shape: vec![4],
+                out_seed: None,
+            })
+        }
+
+        OpKind::FusedLinear => {
+            if dtypes.len() != 4 {
+                return None;
+            }
+            let (m, n, k) = (2usize, 2usize, 2usize);
+            let lhs = ht(dt, vec![m * k], &fill_deterministic(m * k, seed))?;
+            let rhs = ht(dt, vec![k * n], &fill_deterministic(k * n, seed ^ 0x1234))?;
+            let bias = ht(dt, vec![n], &fill_deterministic(n, seed ^ 0x5678))?;
+            Some(Probe {
+                inputs: vec![lhs, rhs, bias],
+                params: OpParams::Matmul {
+                    lhs_batch_dims: vec![],
+                    rhs_batch_dims: vec![],
+                    m,
+                    n,
+                    k,
+                    m_compute: MatmulM::All,
+                },
+                out_dtype: dt,
+                out_shape: vec![m * n],
+                out_seed: None,
+            })
+        }
+
+        // Targets are a literal `[1, 3]` rather than a generated fill: they are
+        // INDICES into the vocab, and a fill that produced 4 or -7 would be an
+        // out-of-range target rather than a harder test. The LOGITS carry the
+        // seed, so the probe still varies with it.
+        OpKind::FusedSoftmaxCrossEntropy => {
+            if dtypes.len() != 3 || dtypes[1] != DType::I64 {
+                return None;
+            }
+            let (n_rows, vocab) = (2usize, 4usize);
+            let logits = ht(
+                dt,
+                vec![n_rows * vocab],
+                &fill_deterministic(n_rows * vocab, seed),
+            )?;
+            let targets = HostTensor {
+                dtype: DType::I64,
+                shape: vec![n_rows],
+                bytes: bytemuck::cast_slice(&[1i64, 3i64]).to_vec(),
+            };
+            Some(Probe {
+                inputs: vec![logits, targets],
+                params: OpParams::FusedSoftmaxCrossEntropy {
+                    n_rows,
+                    vocab,
+                    reduction: Reduction::Mean,
+                    ignore_index: -100,
+                },
+                // The output is F32 for every logits dtype, which is why this
+                // arm does not use `dt` here. Measured, not assumed: all four
+                // registrations are `[<logits>, I64, F32]`.
+                out_dtype: DType::F32,
+                out_shape: vec![1],
+                out_seed: None,
+            })
+        }
+
+        // ⚠️ THE TWO SCANS CARRY HAND-VERIFIED LITERALS, NOT A SEEDED FILL, and
+        // that is a deliberate trade with a consequence worth stating: the
+        // values come from `fuel-cpu-backend`'s own minimal-case tests, so a
+        // drift in the calling convention fails loudly instead of producing
+        // plausible garbage — but it also means THESE PROBES DO NOT VARY WITH
+        // `seed`, so a seed-perturbation control is inert on them by
+        // construction. `the_scan_and_small_surface_probes_respond_to_input`
+        // uses the output-variation mechanism for these two and says so.
+        OpKind::SelectiveScan => {
+            if dtypes.len() != 6 {
+                return None;
+            }
+            // `selective_scan_f32_single_step_seqlen_1`:
+            // batch=seqlen=dim=dstate=1, u=3, delta=1, a=-1, b=2, c=0.5 -> y=3.0
+            let u = ht(dt, vec![1], &[3.0])?;
+            let delta = ht(dt, vec![1], &[1.0])?;
+            let a = ht(dt, vec![1], &[-1.0])?;
+            let b = ht(dt, vec![1], &[2.0])?;
+            let c = ht(dt, vec![1], &[0.5])?;
+            Some(Probe {
+                inputs: vec![u, delta, a, b, c],
+                params: OpParams::SelectiveScan {
+                    batch: 1,
+                    seqlen: 1,
+                    dim: 1,
+                    dstate: 1,
+                    delta_softplus: false,
+                },
+                out_dtype: dt,
+                out_shape: vec![2],
+                out_seed: None,
+            })
+        }
+
+        OpKind::SsdChunkScan => {
+            if dtypes.len() != 6 {
+                return None;
+            }
+            // `ssd_chunk_scan_f32_minimal`: batch=heads=head_dim=state_dim=
+            // seqlen=chunk_size=1, x=3, dt=1, a=-1, b=2, c=0.5 -> y=3.0
+            let x = ht(dt, vec![1], &[3.0])?;
+            let dtp = ht(dt, vec![1], &[1.0])?;
+            let a = ht(dt, vec![1], &[-1.0])?;
+            let b = ht(dt, vec![1], &[2.0])?;
+            let c = ht(dt, vec![1], &[0.5])?;
+            Some(Probe {
+                inputs: vec![x, dtp, a, b, c],
+                params: OpParams::SsdChunkScan {
+                    batch: 1,
+                    seqlen: 1,
+                    heads: 1,
+                    head_dim: 1,
+                    state_dim: 1,
+                    chunk_size: 1,
+                },
+                out_dtype: dt,
+                out_shape: vec![2],
                 out_seed: None,
             })
         }

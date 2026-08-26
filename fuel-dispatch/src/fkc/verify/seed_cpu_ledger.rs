@@ -1352,6 +1352,123 @@ mod tests {
         );
     }
 
+    /// **The four small non-conv surfaces actually read their inputs.**
+    ///
+    /// Same obligation as `the_conv_probes_produce_a_non_constant_output` and
+    /// the same reason: **a kernel that ignored its inputs entirely would be
+    /// perfectly bit-stable**, so a clean sweep says nothing about whether the
+    /// probe reached anything. The all-zeros integer probes were exactly that,
+    /// and no pass count could see them.
+    ///
+    /// ⚠️ **TWO MECHANISMS, BECAUSE ONE OF THEM IS INERT ON HALF THE
+    /// POPULATION — and picking the wrong one here would be a control that
+    /// cannot move, which is the failure this project has already paid for
+    /// once (an attachment control whose chosen sibling was unreferenced on
+    /// the path under test).**
+    ///
+    /// - **Seed perturbation** for `PowIElementwiseBackward`, `FusedLinear`
+    ///   and `FusedSoftmaxCrossEntropy`: their operands come from
+    ///   `fill_deterministic(.., seed)`, so a different seed is a different
+    ///   input, and the output must move. This is the stronger check — it
+    ///   proves the pipeline is live end to end — and it is the ONLY one
+    ///   available to `FusedSoftmaxCrossEntropy`, whose output is a single
+    ///   scalar and therefore can never have two distinct elements.
+    /// - **Output variation** for `SelectiveScan` and `SsdChunkScan`: their
+    ///   probes carry HAND-VERIFIED LITERALS from `fuel-cpu-backend`'s own
+    ///   minimal-case tests rather than a fill, so **they do not vary with
+    ///   `seed` at all** and a seed-perturbation control would be inert by
+    ///   construction. The test asserts the inputs are seed-invariant rather
+    ///   than assuming it, so this arm cannot silently become vacuous if the
+    ///   probes are later reseeded.
+    #[test]
+    fn the_small_surface_probes_respond_to_their_inputs() {
+        use crate::fkc::verify::bit_stability::KernelInvoker;
+        use crate::fkc::verify::probe_recipes::{build_primitive_probe, probe_seed};
+        use fuel_ir::dispatch::OpKind;
+
+        let mut table = crate::kernel::KernelBindingTable::new();
+        crate::dispatch::register_cpu_kernels(&mut table);
+
+        let mut checked = 0usize;
+        let mut inert: Vec<String> = Vec::new();
+        for (op, dtypes, backend, entry) in table.iter_entries() {
+            let seeded = match op {
+                OpKind::PowIElementwiseBackward
+                | OpKind::FusedLinear
+                | OpKind::FusedSoftmaxCrossEntropy => true,
+                OpKind::SelectiveScan | OpKind::SsdChunkScan => false,
+                _ => continue,
+            };
+            if backend != BackendId::Cpu {
+                continue;
+            }
+            let seed = probe_seed(op, dtypes);
+            let Some(probe) = build_primitive_probe(op, dtypes, seed) else {
+                continue;
+            };
+            let inv = CpuInvoker::new(probe.out_dtype, probe.out_shape.clone())
+                .with_params(probe.params.clone());
+            let Ok(out) = inv.invoke(entry, &probe.inputs) else {
+                continue;
+            };
+            checked += 1;
+
+            let other = build_primitive_probe(op, dtypes, seed ^ 0xA5A5_A5A5)
+                .expect("a recipe that built once must build again");
+            let same_inputs = other.inputs.iter().map(|t| &t.bytes).collect::<Vec<_>>()
+                == probe.inputs.iter().map(|t| &t.bytes).collect::<Vec<_>>();
+
+            if seeded {
+                // The claim and its own precondition, so this arm cannot go
+                // vacuous if someone later replaces the fill with literals.
+                if same_inputs {
+                    inert.push(format!(
+                        "{op:?} {dtypes:?}: listed as seed-driven but a different seed \
+                         produced IDENTICAL inputs, so the check below proves nothing"
+                    ));
+                    continue;
+                }
+                let out2 = inv
+                    .invoke(entry, &other.inputs)
+                    .expect("second invocation of a probe that already ran");
+                if out2.bytes == out.bytes {
+                    inert.push(format!(
+                        "{op:?} {dtypes:?}: different inputs, IDENTICAL output — the \
+                         kernel is not reading them, and it would be bit-stable anyway"
+                    ));
+                }
+            } else {
+                if !same_inputs {
+                    inert.push(format!(
+                        "{op:?} {dtypes:?}: listed as literal-valued but the seed changed \
+                         its inputs — use the seed mechanism for it, it is stronger"
+                    ));
+                    continue;
+                }
+                let w = probe.out_dtype.size_in_bytes();
+                let distinct: std::collections::HashSet<&[u8]> = out.bytes.chunks(w).collect();
+                if distinct.len() < 2 {
+                    inert.push(format!(
+                        "{op:?} {dtypes:?}: constant output ({} distinct), so a kernel \
+                         ignoring its inputs would pass identically",
+                        distinct.len()
+                    ));
+                }
+            }
+        }
+
+        assert_eq!(
+            checked, 20,
+            "expected 20 registrations across the four small surfaces to invoke; got \
+             {checked}. Fewer means a probe or kernel did not run and its record rests \
+             on nothing this test saw."
+        );
+        assert!(
+            inert.is_empty(),
+            "these probes do not demonstrably reach their kernel: {inert:?}"
+        );
+    }
+
     /// **GAP-226 split of the entries that declare nothing: how much can
     /// start now, and how much waits on a vocabulary decision.** Reports;
     /// asserts only invariants.
@@ -1467,8 +1584,12 @@ mod tests {
         // by removing the fill and seeing what survives.
         //
         // The numbers are pinned, not floating: after GAP-228(a) flipped 240
-        // entries' worth of sections and (b) flipped conv's 20, `nothing` must
-        // be 60 and the backed count 563.
+        // entries' worth of sections, (b) flipped conv's 20 and (c) flipped the
+        // four small non-conv surfaces' 20, `nothing` must be 40 and the backed
+        // count 583. The 40 that remain are ENTIRELY attention (FlashAttn,
+        // BackwardK/Q/V, PagedAttn — 8 each), taken as its own increment
+        // precisely so a tractable surface could not set the estimate for an
+        // untractable one.
         //
         // THIS COMMENT READ "80 ... 543" UNTIL THE BUCKET SWEEP FOUND IT. I
         // updated the assertion's own message from 80 to 60 and left its twin
@@ -1488,13 +1609,13 @@ mod tests {
         // produced is decoration; a pin edited to a figure predicted in
         // advance is the record of a prediction that held.
         assert_eq!(
-            nothing, 60,
-            "expected exactly 60 entries still declaring nothing after GAP-228's flip              (80 before, conv's 20 flipped). {nothing} means a declaration was not evidenced              by the record it was supposed to rest on, or a kernel revision moved and              silently un-earned one."
+            nothing, 40,
+            "expected exactly 40 entries still declaring nothing after GAP-228's flip              (60 before, the four small non-conv surfaces' 20 flipped). {nothing} means a declaration was not evidenced              by the record it was supposed to rest on, or a kernel revision moved and              silently un-earned one."
         );
         assert_eq!(
             total - nothing,
-            563,
-            "expected 563 contract-derived entries backed WITHOUT the fill. This table              is built by `register_into`, which does not apply              `fill_unset_cpu_precision` — so this count IS the post-fill-retirement              number for these entries, and a drop means the backing did not actually              move from the fill to contract + record."
+            583,
+            "expected 583 contract-derived entries backed WITHOUT the fill. This table              is built by `register_into`, which does not apply              `fill_unset_cpu_precision` — so this count IS the post-fill-retirement              number for these entries, and a drop means the backing did not actually              move from the fill to contract + record."
         );
         assert_eq!(
             neither, nothing,
