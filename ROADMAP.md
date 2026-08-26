@@ -2418,6 +2418,161 @@ interrupt the eager-retirement program or the picker arc.
 
 ---
 
+### Phase 11 — Model modernization: inexact substitution as a declared capability trade (research-flavoured)
+
+*Not urgent. Future-facing. Do not pull forward. Explicitly LOWER priority
+than Phase 10, which it depends on conceptually. Recorded from a 2026-08-26
+design discussion with CireSnave so the shape survives; nothing here should
+interrupt any current program.*
+
+#### Why Phase 11 exists, and how it differs from Phase 10
+
+Phase 10 searches among **mathematically equivalent** subgraphs — same math,
+different shape, chosen by cost. Its entire safety argument is that the result
+is unchanged.
+
+Phase 11 is the other half: substitutions that **change what the model
+computes**, adopted deliberately. Two motivations, and the second corrected the
+framing:
+
+1. **Modernization.** A technique that did not exist when a model shipped may
+   compute *nearly* the same thing far more cheaply.
+2. **CAPABILITY TRADE — the direction Phase 10 cannot express.** A user may
+   want a substitution that is *worse* on speed or memory because it is
+   *better* on something they care about (context length, memory ceiling,
+   batch behaviour). **Substitution is not always optimization.**
+
+⚠️ **THOSE TWO NEED DIFFERENT VERIFICATION SHAPES, and conflating them is the
+first trap.** An optimization must prove **nothing changed**. A trade must
+prove **the expected thing changed, and ONLY that**. A single
+"variance-within-budget" gate answers the first question and is meaningless for
+the second.
+
+#### The classifier already exists: base-map equality
+
+`decompose` is total and the primitive basis is build-time closed, so every
+fused op has a canonical primitive form and `lower_to_base_map` dissolves any
+fused op back to it. Recipe identity is already defined as **base-map-hash
+equality against Fuel's own recipe**.
+
+So *"is this replacement the same function?"* is **mechanically decidable
+here** — which most frameworks cannot do — and it is the right authority
+boundary:
+
+- **base maps agree** → exact rewrite → Phase 10 / the existing optimizer. No
+  consent needed; verified by FKC precision contracts.
+- **base maps differ** → a different function → Phase 11, requiring an explicit
+  per-model opt-in.
+
+**Use the structural test as the boundary, not a tolerance.**
+
+#### The axis that matters on the inexact side
+
+Not exact-vs-approximate. **BOUNDED A PRIORI vs OBSERVED ON A SAMPLE.**
+
+- **Bounded a priori** — the error is a property of the *encoding* and holds for
+  every input. **Quantization is the shipped precedent** (`qmatmul`,
+  `nf4_matmul`, QuantizedLlama): Fuel already accepts a function-changing swap
+  on numerical grounds, because the bound is known before anything runs.
+  KV-cache quantization is the obvious next member.
+- **Observed on a sample** — the error is input-dependent and unbounded.
+  "Within budget across the runs we did" is a **sample statistic, not a bound**.
+  Two sequences agreeing on an eval set can diverge arbitrarily on an input
+  nobody tested.
+
+⚠️ **THE FAILURE MODE IS NOT ELEVATED AVERAGE ERROR — IT IS RARE CATASTROPHIC
+DIVERGENCE ON SPECIFIC INPUT CLASSES**, and the cheap metric cannot see it.
+Linear attention's published weakness is *long-range recall*; a variance check
+over general prompts looks excellent while the model has lost exactly that.
+**The metric that would pass is the metric that cannot see the failure** — the
+vacuous-fixture defect one level up, with the *eval corpus* collapsing the axis
+under test.
+
+#### Weight compatibility is a first-class field, not a footnote
+
+*Recalled, NOT measured here — verify before building on it:* post-hoc
+linearization of a softmax-trained model does not degrade gracefully, it
+collapses. Published approaches that make it work (SUPRA, LoLCATs,
+Mamba-in-Llama) all include a distillation or finetuning step. The weights
+encode softmax attention's inductive bias.
+
+So each substitution declares:
+
+- **WEIGHT-COMPATIBLE** — applies to existing weights (RoPE scaling / YaRN,
+  sliding-window, quantization). Fuel can perform it.
+- **REQUIRES CONVERSION** — needs training Fuel does not do. Fuel's honest
+  output is to **say so and name what it would take**, not to attempt it.
+
+#### The output shape is a MENU WITH COSTS, not accept/reject
+
+For *"I want longer context on this model"*:
+
+| route | weight-compatible | cost |
+|---|---|---|
+| RoPE scaling / YaRN / LongRoPE | **yes** — already in-tree (`rope_scaling`) | quality loss at extended lengths |
+| sliding-window attention | **yes** | loses long-range recall by construction |
+| linear attention | **no** — needs distillation | not a substitution Fuel can perform alone |
+
+**Fuel telling a user "the thing you asked for needs a training step, but here
+are two that do not" is a better product than Fuel attempting it.**
+
+#### Consent is capability-level, and the object does not exist yet
+
+⚠️ **MEASURED 2026-08-26: Fuel has NO model-level variance budget.** The
+precision contracts are **per-kernel, per-dtype**, and their own evidence clause
+reads *"not evidence about other inputs, OTHER PARAMETER CONFIGURATIONS, other
+machines, or other compilers."* **A per-kernel `max_ulp` cannot authorize an
+architectural swap** — that is justification-scope mismatch, the GAP-166 shape.
+
+The consent object must be **built**, and should name a **capability** rather
+than a scalar: *"I accept up to X% degradation on long-context retrieval"* is
+something a user can mean. *"1e-3 variance"* is a number whose relationship to
+what they care about is unknown.
+
+#### Verification: adversarial to the DECLARED weakness
+
+Every approximate substitution's registry entry carries **what it is known to
+degrade**, and its acceptance suite probes *that*, not aggregate variance.
+`linear-attention: degrades long-range recall` → a retrieval probe at full
+context. `kv-quant: degrades rare-token precision` → probe that. Structurally
+the same obligation GAP-228 made mandatory for precision attestations: **a claim
+carries its basis AND its coverage.**
+
+#### The substitution-effects registry
+
+Store **effects**, not verdicts — a capability/cost profile per
+`(model, substitution)`. Architecturally the same object as the precision ledger
+(`(kernel, dtype) → earned record with basis and coverage`); reuse that
+machinery rather than inventing one. Three requirements, each learned
+expensively elsewhere in this repo:
+
+1. **Every effect carries its coverage.** An effect measured at 4k context says
+   nothing about 32k.
+2. ⚠️ **EFFECTS MEASURED IN ISOLATION DO NOT COMPOSE — and this will bite the
+   re-attempt engine hardest, because combining is its whole job.** If an
+   attention swap costs 3% retrieval and KV-quant costs 2%, **you cannot
+   conclude the pair costs 5%.** They interact. A profile built from isolated
+   measurements is a set of per-item claims standing in for a claim about the
+   whole.
+3. **A rejection needs a re-check trigger or it is permanent by inertia.**
+   *"Rejected for Llama-2"* was true against one Fuel version, one kernel set,
+   one hardware target. Tie it to a checkpoint that will occur.
+
+And **make optimization goals a declared object**: then the re-attempt set when
+goals change is a **query over the profile**, not a re-derivation.
+
+#### Phase 11 honest caveats
+
+Research-flavoured, and unlike Phase 10 it **does need new foundation** — the
+consent object, the adversarial probe suites, and the effects registry do not
+exist. The population of genuinely weight-compatible modernizations is **much
+smaller than the framing suggests**, and is dominated by the exact cases Phase
+10 already covers plus the a-priori-bounded ones (quantization) Fuel already
+ships. **The honest near-term value is probably KV-cache quantization, and the
+menu-with-costs answer for context extension.** Everything past that is genuine
+research.
+---
+
 ## Eager-retirement follow-ups (post-Phase γ)
 
 Phase γ (the Eager Tensor retirement program) shipped the bulk of the migration
