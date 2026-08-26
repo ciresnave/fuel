@@ -46,6 +46,11 @@ use fuel::Result;
 use prost::Message;
 
 pub mod onnx {
+    // prost-generated from `onnx.proto3` by build.rs. The doc comments are
+    // copied verbatim from the .proto, so their list indentation is ONNX's,
+    // not ours, and it is regenerated on every build -- there is no source
+    // file here to fix. Scoped to this module so it cannot mask our own docs.
+    #![allow(clippy::doc_overindented_list_items)]
     include!(concat!(env!("OUT_DIR"), "/onnx.rs"));
 }
 

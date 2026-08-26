@@ -295,6 +295,11 @@ mod tests {
         // log_probs[i, target[i]] gives [-0.1054, -0.1054]; mean
         // of -(log probs) ≈ 0.1054.
         let device = Device::cpu();
+        // -2.3026 is ln(0.1), sitting in a textbook log-probability row
+        // beside ln(0.9) and ln(0.001). That it equals -LN_10 is a
+        // coincidence of this fixture, not a spelled-out constant:
+        // substituting `-LN_10` would hide the series and change the value.
+        #[allow(clippy::approx_constant)]
         let log_probs = Tensor::from_f32(
             vec![-0.1054_f32, -2.3026, -6.9078, -2.3026, -0.1054, -6.9078],
             Shape::from_dims(&[2, 3]),

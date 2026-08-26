@@ -250,6 +250,11 @@ pub fn run(args: Args) -> anyhow::Result<()> {
         // Convert HWC u8 → CHW f32 normalized to [0,1].
         let (h_u, w_u) = (height, width);
         let mut chw = vec![0.0_f32; 3 * h_u * w_u];
+        // `0 *` and `1 *` are CHANNEL INDICES into a CHW plane layout,
+        // matched against `2 *` on the third line. The leading factor is
+        // the datum; dropping it would break the R/G/B parallel and make
+        // three lines that say one thing each read as three different ones.
+        #[allow(clippy::erasing_op, clippy::identity_op)]
         for y in 0..h_u {
             for x in 0..w_u {
                 let p = rgb.get_pixel(x as u32, y as u32);
