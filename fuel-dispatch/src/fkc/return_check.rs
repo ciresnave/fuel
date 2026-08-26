@@ -600,25 +600,26 @@ pub fn cross_check_fused_section(
             // point (never an `unwrap_or` fallback — a params-matching
             // dtype_rule may read its fields).
             if let Some(rule) = out.dtype_rule.as_deref()
-                && let Some(declared) = eval_dtype_rule(rule, combo, section)? {
-                    // Never-panic guard: a registry fn that `debug_assert`s an
-                    // arity the probe combo doesn't satisfy → warn + skip this
-                    // point (see `guard_rule`; the arity pre-check above already
-                    // skips the known under-arity cases in BOTH build modes).
-                    let Some(real) = guard_rule(warnings, section, "dtype_rule", || {
-                        (entry.dtype_rule)(&in_dtypes, p)
-                    }) else {
-                        continue;
-                    };
-                    if declared != real {
-                        return Err(FkcError::ShapeRuleMismatch {
-                            section: section.into(),
-                            role: role_name.into(),
-                            expected: format!("dtype {declared:?}"),
-                            actual: format!("dtype {real:?}"),
-                        });
-                    }
+                && let Some(declared) = eval_dtype_rule(rule, combo, section)?
+            {
+                // Never-panic guard: a registry fn that `debug_assert`s an
+                // arity the probe combo doesn't satisfy → warn + skip this
+                // point (see `guard_rule`; the arity pre-check above already
+                // skips the known under-arity cases in BOTH build modes).
+                let Some(real) = guard_rule(warnings, section, "dtype_rule", || {
+                    (entry.dtype_rule)(&in_dtypes, p)
+                }) else {
+                    continue;
+                };
+                if declared != real {
+                    return Err(FkcError::ShapeRuleMismatch {
+                        section: section.into(),
+                        role: role_name.into(),
+                        expected: format!("dtype {declared:?}"),
+                        actual: format!("dtype {real:?}"),
+                    });
                 }
+            }
             if let Some(rule) = out.shape_rule.as_deref() {
                 // C-4 T3: the SAME point feeds both sides — `ints` to the
                 // declared-rule evaluator (`param(N)` indexes it) and `p` to
@@ -657,76 +658,78 @@ pub fn cross_check_fused_section(
     // (never-panic) exactly like `shape_rule`/`dtype_rule`.
     if let (Some(bundle), Some(output_views), Some(p)) =
         (ret.bundle.as_ref(), entry.output_views, single.as_ref())
-        && let Some(combo) = combos.first() {
-            // Finding 3: run the bundle differential over a ROLE-DISTINCT probe so
-            // a same-rank operand-role drift in a slot rule (`same_as(b)` for
-            // `same_as(u)`) diverges from the `output_views` oracle instead of
-            // evaluating equal (twin-rank operands seed identically). Both the
-            // oracle (`output_views(in_shapes, ..)`) and the declared slot eval
-            // read the SAME distinct probe, so the UNMUTATED contract still
-            // matches (declared slot 0 == the u-derived view), while a drift is
-            // caught. Still §4: the reference is `output_views` (role/vocab-
-            // derived), never `entry.decompose`.
-            let distinct = distinct_role_probe(combo);
-            let in_shapes: Vec<Shape> = distinct.iter().map(|(_, s, _)| s.clone()).collect();
-            let in_dtypes: Vec<DType> = distinct.iter().map(|(_, _, d)| *d).collect();
-            // Never-panic guard (see `guard_rule`): an `output_views` fn that
-            // asserts an arity the probe doesn't satisfy → warn + skip the bundle checks.
-            if let Some(views) = guard_rule(warnings, section, "output_views", || {
-                output_views(&in_shapes, &in_dtypes, p)
-            }) {
-                check_bundle_arity(section, views.len(), bundle)?;
-                // Rule 13 (Finding 5.3): rank-check every bundle slot whose
-                // `shape_rule` is EVALUABLE against this probe combo. The static
-                // `shape:`-literal branch is already rank-checked pre-registration
-                // in `validate.rs::check_bundle_ranks`; this covers the DERIVED
-                // case that check never could (no statically-knowable rank for a
-                // `shape_rule` string without evaluating it against a real probe).
-                if let serde_yaml_ng::Value::Sequence(slots) = bundle {
-                    for (i, slot) in slots.iter().enumerate() {
-                        let serde_yaml_ng::Value::Mapping(map) = slot else {
-                            continue;
-                        };
-                        let slot_name = map
-                            .get(serde_yaml_ng::Value::String("name".into()))
-                            .and_then(|v| v.as_str())
-                            .map(str::to_string)
-                            .unwrap_or_else(|| format!("slot{i}"));
-                        if let Some(rule) = map
-                            .get(serde_yaml_ng::Value::String("shape_rule".into()))
-                            .and_then(|v| v.as_str())
+        && let Some(combo) = combos.first()
+    {
+        // Finding 3: run the bundle differential over a ROLE-DISTINCT probe so
+        // a same-rank operand-role drift in a slot rule (`same_as(b)` for
+        // `same_as(u)`) diverges from the `output_views` oracle instead of
+        // evaluating equal (twin-rank operands seed identically). Both the
+        // oracle (`output_views(in_shapes, ..)`) and the declared slot eval
+        // read the SAME distinct probe, so the UNMUTATED contract still
+        // matches (declared slot 0 == the u-derived view), while a drift is
+        // caught. Still §4: the reference is `output_views` (role/vocab-
+        // derived), never `entry.decompose`.
+        let distinct = distinct_role_probe(combo);
+        let in_shapes: Vec<Shape> = distinct.iter().map(|(_, s, _)| s.clone()).collect();
+        let in_dtypes: Vec<DType> = distinct.iter().map(|(_, _, d)| *d).collect();
+        // Never-panic guard (see `guard_rule`): an `output_views` fn that
+        // asserts an arity the probe doesn't satisfy → warn + skip the bundle checks.
+        if let Some(views) = guard_rule(warnings, section, "output_views", || {
+            output_views(&in_shapes, &in_dtypes, p)
+        }) {
+            check_bundle_arity(section, views.len(), bundle)?;
+            // Rule 13 (Finding 5.3): rank-check every bundle slot whose
+            // `shape_rule` is EVALUABLE against this probe combo. The static
+            // `shape:`-literal branch is already rank-checked pre-registration
+            // in `validate.rs::check_bundle_ranks`; this covers the DERIVED
+            // case that check never could (no statically-knowable rank for a
+            // `shape_rule` string without evaluating it against a real probe).
+            if let serde_yaml_ng::Value::Sequence(slots) = bundle {
+                for (i, slot) in slots.iter().enumerate() {
+                    let serde_yaml_ng::Value::Mapping(map) = slot else {
+                        continue;
+                    };
+                    let slot_name = map
+                        .get(serde_yaml_ng::Value::String("name".into()))
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                        .unwrap_or_else(|| format!("slot{i}"));
+                    if let Some(rule) = map
+                        .get(serde_yaml_ng::Value::String("shape_rule".into()))
+                        .and_then(|v| v.as_str())
+                    {
+                        // C-4 T3: bundle slot rules see the same `key().ints`
+                        // flattening as the primary output (one `param(N)`
+                        // convention). Both bundle-bearing ops are
+                        // params-independent (single-synth), so `p` is the
+                        // one point for the whole bundle differential.
+                        if let Some(shape) =
+                            eval_shape_rule(rule, &distinct, &p.key().ints, section)?
                         {
-                            // C-4 T3: bundle slot rules see the same `key().ints`
-                            // flattening as the primary output (one `param(N)`
-                            // convention). Both bundle-bearing ops are
-                            // params-independent (single-synth), so `p` is the
-                            // one point for the whole bundle differential.
-                            if let Some(shape) =
-                                eval_shape_rule(rule, &distinct, &p.key().ints, section)?
+                            check_slot_rank(section, &slot_name, &shape)?;
+                            // Finding 3: differentially compare the evaluated slot
+                            // shape to the `output_views` oracle for the SAME slot
+                            // (mirrors the primary-output differential above). A
+                            // slot whose `shape_rule` is not evaluable (e.g.
+                            // `from_params(last_state)`) yields `None` and stays a
+                            // documented skip; only an evaluable, mismatching slot
+                            // is rejected.
+                            if let Some(view) = views.get(i)
+                                && shape != view.shape
                             {
-                                check_slot_rank(section, &slot_name, &shape)?;
-                                // Finding 3: differentially compare the evaluated slot
-                                // shape to the `output_views` oracle for the SAME slot
-                                // (mirrors the primary-output differential above). A
-                                // slot whose `shape_rule` is not evaluable (e.g.
-                                // `from_params(last_state)`) yields `None` and stays a
-                                // documented skip; only an evaluable, mismatching slot
-                                // is rejected.
-                                if let Some(view) = views.get(i)
-                                    && shape != view.shape {
-                                        return Err(FkcError::ShapeRuleMismatch {
-                                            section: section.into(),
-                                            role: slot_name.clone(),
-                                            expected: format!("shape {:?}", view.shape),
-                                            actual: format!("shape {shape:?}"),
-                                        });
-                                    }
+                                return Err(FkcError::ShapeRuleMismatch {
+                                    section: section.into(),
+                                    role: slot_name.clone(),
+                                    expected: format!("shape {:?}", view.shape),
+                                    actual: format!("shape {shape:?}"),
+                                });
                             }
                         }
                     }
                 }
             }
         }
+    }
     Ok(())
 }
 
@@ -797,13 +800,14 @@ pub fn check_bundle_arity(
     bundle: &serde_yaml_ng::Value,
 ) -> Result<(), FkcError> {
     if let Some(declared) = bundle_slot_count(bundle)
-        && declared != output_views_arity {
-            return Err(FkcError::BundleArityMismatch {
-                section: section.into(),
-                expected: output_views_arity,
-                actual: declared,
-            });
-        }
+        && declared != output_views_arity
+    {
+        return Err(FkcError::BundleArityMismatch {
+            section: section.into(),
+            expected: output_views_arity,
+            actual: declared,
+        });
+    }
     Ok(())
 }
 

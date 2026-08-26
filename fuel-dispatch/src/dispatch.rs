@@ -7641,10 +7641,11 @@ pub fn inflight_inc(loc: DeviceLocation) {
     let table = device_inflight_table();
     // Fast path: slot already exists — read lock + relaxed add, no map mutation.
     if let Ok(guard) = table.read()
-        && let Some(slot) = guard.get(&loc) {
-            slot.fetch_add(1, Ordering::Relaxed);
-            return;
-        }
+        && let Some(slot) = guard.get(&loc)
+    {
+        slot.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
     // Slow path: create the slot. `entry().or_insert` is idempotent under the
     // write lock, so a racing inc that took the same slow path is harmless —
     // whichever lands second sees the slot and adds to it.
@@ -7666,12 +7667,13 @@ pub fn inflight_inc(loc: DeviceLocation) {
 pub fn inflight_dec(loc: DeviceLocation) {
     let table = device_inflight_table();
     if let Ok(guard) = table.read()
-        && let Some(slot) = guard.get(&loc) {
-            // saturating: never wrap below 0.
-            let _ = slot.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
-                Some(v.saturating_sub(1))
-            });
-        }
+        && let Some(slot) = guard.get(&loc)
+    {
+        // saturating: never wrap below 0.
+        let _ = slot.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+            Some(v.saturating_sub(1))
+        });
+    }
 }
 
 /// Read the current in-flight async-op count for `loc`. The signal a
@@ -9113,10 +9115,22 @@ mod tests {
 
         // --- FUSED_LINEAR: 4 dtypes, key [T, T, T, T] ---
         for (dt, expected) in [
-            (DType::F32, fused_linear_f32_cpu_wrapper as *const () as usize),
-            (DType::F64, fused_linear_f64_cpu_wrapper as *const () as usize),
-            (DType::BF16, fused_linear_bf16_cpu_wrapper as *const () as usize),
-            (DType::F16, fused_linear_f16_cpu_wrapper as *const () as usize),
+            (
+                DType::F32,
+                fused_linear_f32_cpu_wrapper as *const () as usize,
+            ),
+            (
+                DType::F64,
+                fused_linear_f64_cpu_wrapper as *const () as usize,
+            ),
+            (
+                DType::BF16,
+                fused_linear_bf16_cpu_wrapper as *const () as usize,
+            ),
+            (
+                DType::F16,
+                fused_linear_f16_cpu_wrapper as *const () as usize,
+            ),
         ] {
             let got = r
                 .lookup_by_dtypes(FusedOps::FUSED_LINEAR, BackendId::Cpu, &[dt, dt, dt, dt])
@@ -9141,15 +9155,30 @@ mod tests {
                 &[DType::F32, DType::U32, DType::F32],
             )
             .expect("QMATMUL migrated impl present at [F32, U32, F32]");
-        assert_eq!(qm.kernel as usize, qmatmul_f32_cpu_wrapper as *const () as usize);
+        assert_eq!(
+            qm.kernel as usize,
+            qmatmul_f32_cpu_wrapper as *const () as usize
+        );
         assert_ne!(qm.revision, KernelRevisionHash::UNTRACKED);
 
         // --- INPLACE_AFFINE: 4 dtypes, key [T, T] ---
         for (dt, expected) in [
-            (DType::F32, inplace_affine_f32_cpu_wrapper as *const () as usize),
-            (DType::F64, inplace_affine_f64_cpu_wrapper as *const () as usize),
-            (DType::BF16, inplace_affine_bf16_cpu_wrapper as *const () as usize),
-            (DType::F16, inplace_affine_f16_cpu_wrapper as *const () as usize),
+            (
+                DType::F32,
+                inplace_affine_f32_cpu_wrapper as *const () as usize,
+            ),
+            (
+                DType::F64,
+                inplace_affine_f64_cpu_wrapper as *const () as usize,
+            ),
+            (
+                DType::BF16,
+                inplace_affine_bf16_cpu_wrapper as *const () as usize,
+            ),
+            (
+                DType::F16,
+                inplace_affine_f16_cpu_wrapper as *const () as usize,
+            ),
         ] {
             let got = r
                 .lookup_by_dtypes(FusedOps::INPLACE_AFFINE, BackendId::Cpu, &[dt, dt])
@@ -9196,7 +9225,10 @@ mod tests {
                 &[DType::F32, DType::F32, DType::F32, DType::F32],
             )
             .expect("FLASH_ATTN hand-written impl present");
-        assert_eq!(fa.kernel as usize, flash_attn_f32_cpu_wrapper as *const () as usize);
+        assert_eq!(
+            fa.kernel as usize,
+            flash_attn_f32_cpu_wrapper as *const () as usize
+        );
         assert_eq!(
             fa.revision,
             KernelRevisionHash::UNTRACKED,
@@ -9211,7 +9243,10 @@ mod tests {
                 &[DType::F32, DType::U8, DType::F32, DType::F32],
             )
             .expect("NF4_MATMUL hand-written impl present (AFFINE_BLOCK deferred)");
-        assert_eq!(nf4.kernel as usize, nf4_matmul_f32_cpu_wrapper as *const () as usize);
+        assert_eq!(
+            nf4.kernel as usize,
+            nf4_matmul_f32_cpu_wrapper as *const () as usize
+        );
         assert_eq!(
             nf4.revision,
             KernelRevisionHash::UNTRACKED,

@@ -310,14 +310,18 @@ fn enforce_restricted_yaml(chunk: &str, base_line: usize) -> Result<(), FkcError
         for tok in content.split_whitespace() {
             // An anchor sigil `&name` appears as a token starting with `&`.
             if let Some(rest) = tok.strip_prefix('&')
-                && !rest.is_empty() && is_anchor_name(rest) {
-                    return Err(FkcError::AnchorDisallowed { line });
-                }
+                && !rest.is_empty()
+                && is_anchor_name(rest)
+            {
+                return Err(FkcError::AnchorDisallowed { line });
+            }
             // An alias `*name` appears as a token starting with `*`.
             if let Some(rest) = tok.strip_prefix('*')
-                && !rest.is_empty() && is_anchor_name(rest) {
-                    return Err(FkcError::AliasDisallowed { line });
-                }
+                && !rest.is_empty()
+                && is_anchor_name(rest)
+            {
+                return Err(FkcError::AliasDisallowed { line });
+            }
         }
 
         // --- Norway tokens in a scalar VALUE position ---

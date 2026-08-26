@@ -731,9 +731,10 @@ fn assemble_dtype_variants(
                         fan,
                         optional_last,
                         section,
-                    )? {
-                        output_dtypes.push(dt);
-                    }
+                    )?
+                {
+                    output_dtypes.push(dt);
+                }
             }
             // §5.5 multi-output bundle (Option C): a `return.bundle` packs
             // several logical slots into ONE output buffer whose PRIMARY
@@ -747,16 +748,11 @@ fn assemble_dtype_variants(
             // (the migrated per-(op,dtype) families stay byte-identical).
             if let Some(bundle) = &ret.bundle
                 && let Some((slot, rule)) = bundle_primary_dtype_rule(bundle)
-                    && let Some(dt) = resolve_output_slot_dtype(
-                        &rule,
-                        &slot,
-                        &inputs,
-                        fan,
-                        optional_last,
-                        section,
-                    )? {
-                        output_dtypes.push(dt);
-                    }
+                && let Some(dt) =
+                    resolve_output_slot_dtype(&rule, &slot, &inputs, fan, optional_last, section)?
+            {
+                output_dtypes.push(dt);
+            }
         }
 
         if optional_last {
@@ -940,9 +936,10 @@ fn compile_cost(block: Option<&CostBlock>, section: &str) -> Result<CompiledCost
     // overhead_ns / memory.device_bytes are raw scalars (number or `~`);
     // when they are an expression STRING they are parse-validated too.
     if let Some(mem) = &cost.memory
-        && let Some(serde_yaml_ng::Value::String(s)) = &mem.device_bytes {
-            let _ = parse("memory.device_bytes", Some(s))?;
-        }
+        && let Some(serde_yaml_ng::Value::String(s)) = &mem.device_bytes
+    {
+        let _ = parse("memory.device_bytes", Some(s))?;
+    }
     if let Some(serde_yaml_ng::Value::String(s)) = &cost.overhead_ns {
         let _ = parse("overhead_ns", Some(s))?;
     }

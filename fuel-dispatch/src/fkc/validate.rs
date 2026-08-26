@@ -204,9 +204,10 @@ pub fn validate_kernel(kernel: &FkcKernel) -> Result<(), FkcError> {
         // describe-only section (no resolved dispatch target to bind against).
         if !describe_only
             && let Some(op_params) = &accept.op_params
-                && let Some(variant) = op_params.variant.as_deref() {
-                    validate_op_params_namespace(section, variant, is_fused)?;
-                }
+            && let Some(variant) = op_params.variant.as_deref()
+        {
+            validate_op_params_namespace(section, variant, is_fused)?;
+        }
     }
 
     // Rule 16 also covers the OUTPUT dtype tokens (`fixed(DType)` rules) — and
@@ -564,26 +565,28 @@ fn quant_coherence(
     }
     // Rule 16: granularity token ∈ FDX table (when present, non-null).
     if let Some(g) = quant.granularity.as_deref()
-        && !is_fdx_granularity(g) {
-            return Err(FkcError::FdxTokenNotInTable {
-                section: section.to_string(),
-                field: format!("{operand}.fdx.quant.granularity"),
-                token: g.to_string(),
-            });
-        }
+        && !is_fdx_granularity(g)
+    {
+        return Err(FkcError::FdxTokenNotInTable {
+            section: section.to_string(),
+            field: format!("{operand}.fdx.quant.granularity"),
+            token: g.to_string(),
+        });
+    }
     // Rule 16 + 3: ggml_dtype is a real GgmlDType variant (by code).
     if let Some(g) = quant.ggml_dtype.as_deref()
-        && ggml_dtype_code(g).is_none() {
-            // `Q4_K_M` (GGUF name, NOT a variant) lands here.
-            return Err(FkcError::QuantIncoherent {
-                section: section.to_string(),
-                operand: operand.to_string(),
-                reason: format!(
-                    "ggml_dtype `{g}` is not a real GgmlDType variant (matched by code; \
+        && ggml_dtype_code(g).is_none()
+    {
+        // `Q4_K_M` (GGUF name, NOT a variant) lands here.
+        return Err(FkcError::QuantIncoherent {
+            section: section.to_string(),
+            operand: operand.to_string(),
+            reason: format!(
+                "ggml_dtype `{g}` is not a real GgmlDType variant (matched by code; \
                      `Q4_K_M` is a GGUF file-format name → use `Q4K`)"
-                ),
-            });
-        }
+            ),
+        });
+    }
 
     // Scale single-place rule: a separate scale_operand XOR a sidecar scale,
     // never both for the same scale. We model the "sidecar scale" as a
@@ -817,13 +820,14 @@ fn extent_coherence(
 ) -> Result<(), FkcError> {
     // symbolic_extent ∈ {rejected, tolerated, required} (when present).
     if let Some(se) = fdx.symbolic_extent.as_deref()
-        && !matches!(se, "rejected" | "tolerated" | "required") {
-            return Err(FkcError::UnknownAdmissibilityEnum {
-                section: section.to_string(),
-                field: format!("{operand}.fdx.symbolic_extent"),
-                value: se.to_string(),
-            });
-        }
+        && !matches!(se, "rejected" | "tolerated" | "required")
+    {
+        return Err(FkcError::UnknownAdmissibilityEnum {
+            section: section.to_string(),
+            field: format!("{operand}.fdx.symbolic_extent"),
+            value: se.to_string(),
+        });
+    }
     // extent_kind ∈ {rejected, scalar, range, affine} (when present).
     if let Some(ek) = fdx.extent_kind.as_deref() {
         if !matches!(ek, "rejected" | "scalar" | "range" | "affine") {
@@ -1075,13 +1079,14 @@ fn check_bundle_ranks(section: &str, bundle: &serde_yaml_ng::Value) -> Result<()
         // A static `shape:` literal list is rank-checkable.
         if let Some(serde_yaml_ng::Value::Sequence(dims)) =
             map.get(serde_yaml_ng::Value::String("shape".into()))
-            && dims.len() > 6 {
-                return Err(FkcError::BundleSlotRankExceeded {
-                    section: section.to_string(),
-                    slot: slot_name,
-                    rank: dims.len(),
-                });
-            }
+            && dims.len() > 6
+        {
+            return Err(FkcError::BundleSlotRankExceeded {
+                section: section.to_string(),
+                slot: slot_name,
+                rank: dims.len(),
+            });
+        }
     }
     Ok(())
 }

@@ -162,29 +162,30 @@ pub fn parse_shape_constraint(
             continue;
         }
         if seg.starts_with("dim[")
-            && let Some(close) = seg.find(']') {
-                let idx = &seg["dim[".len()..close];
-                let after = seg[close + 1..].trim_start();
-                match (parse_axis(idx), after.strip_prefix('=')) {
-                    // committed `dim[<int>]=<expr>` with a SINGLE '=' (not `==`)
-                    (Some(axis), Some(rhs)) if !rhs.starts_with('=') => {
-                        let rhs = rhs.trim();
-                        if rhs.is_empty() {
-                            return Err(unparse());
-                        }
-                        out.atoms.push(ShapeAtom::DimEq {
-                            axis,
-                            expr: parse_cost_expr(rhs).map_err(|_| unparse())?,
-                        });
-                        continue;
+            && let Some(close) = seg.find(']')
+        {
+            let idx = &seg["dim[".len()..close];
+            let after = seg[close + 1..].trim_start();
+            match (parse_axis(idx), after.strip_prefix('=')) {
+                // committed `dim[<int>]=<expr>` with a SINGLE '=' (not `==`)
+                (Some(axis), Some(rhs)) if !rhs.starts_with('=') => {
+                    let rhs = rhs.trim();
+                    if rhs.is_empty() {
+                        return Err(unparse());
                     }
-                    // symbolic index (`dim[i]`) or `==` ⇒ pseudocode ⇒ free text
-                    _ => {
-                        out.freetext.push(seg.to_string());
-                        continue;
-                    }
+                    out.atoms.push(ShapeAtom::DimEq {
+                        axis,
+                        expr: parse_cost_expr(rhs).map_err(|_| unparse())?,
+                    });
+                    continue;
+                }
+                // symbolic index (`dim[i]`) or `==` ⇒ pseudocode ⇒ free text
+                _ => {
+                    out.freetext.push(seg.to_string());
+                    continue;
                 }
             }
+        }
         out.freetext.push(seg.to_string()); // no recognized keyword ⇒ §3.5 notes-style free text
     }
     Ok(out)
@@ -241,9 +242,10 @@ fn seed_axis(profile: SeedProfile, axis: usize, rank: usize) -> i64 {
 /// -> `F32`, matching the pre-Task-1.5 inline match's behavior.
 fn first_probe_dtype(d: &TensorDesc) -> DType {
     if let Some(tok) = d.dtypes.first()
-        && let Ok(dt) = crate::fkc::lower::lower_dtype(tok, "", "") {
-            return dt;
-        }
+        && let Ok(dt) = crate::fkc::lower::lower_dtype(tok, "", "")
+    {
+        return dt;
+    }
     match d.dtype_class.as_deref() {
         Some(class) => crate::fkc::lower::expand_dtype_class(class, &[], "", "")
             .ok()
@@ -356,9 +358,10 @@ fn warn(section: &str, message: String) -> ImportWarning {
 fn dep_sources(atoms: &[ShapeAtom], input_roles: &HashSet<String>) -> Vec<String> {
     fn collect(n: &CostNode, roles: &HashSet<String>, out: &mut Vec<String>) {
         if let Some((Some(r), _)) = as_dim_ref(n)
-            && roles.contains(&r) {
-                out.push(r);
-            }
+            && roles.contains(&r)
+        {
+            out.push(r);
+        }
         match n {
             CostNode::Bin { lhs, rhs, .. } => {
                 collect(lhs, roles, out);
@@ -439,13 +442,14 @@ fn topo_order(
         out.push(cur.clone());
         for r in order_in {
             if let Some(deps) = edges.get(r)
-                && deps.contains(cur) {
-                    let e = indeg.get_mut(r).unwrap();
-                    *e = e.saturating_sub(1);
-                    if *e == 0 && !out.contains(r) && !queue.contains(&r) {
-                        queue.push(r);
-                    }
+                && deps.contains(cur)
+            {
+                let e = indeg.get_mut(r).unwrap();
+                *e = e.saturating_sub(1);
+                if *e == 0 && !out.contains(r) && !queue.contains(&r) {
+                    queue.push(r);
                 }
+            }
         }
     }
     if out.len() < order_in.len() {
@@ -466,9 +470,10 @@ fn topo_order(
 fn set_axis(s: &mut Solve, role: &str, axis: AxisIndex, rank: usize, v: i64) {
     if let Some(idx) = axis_to_index(axis, rank)
         && let Some(d) = s.dims.get_mut(role)
-            && idx < d.len() {
-                d[idx] = v.max(1);
-            }
+        && idx < d.len()
+    {
+        d[idx] = v.max(1);
+    }
 }
 
 fn apply_atom(
@@ -520,52 +525,54 @@ fn apply_atom(
                     let target = role.as_deref().unwrap_or(self_role).to_string();
                     let trank = *ranks.get(&target).unwrap_or(&0);
                     if let Some(idx) = axis_to_index(axis, trank)
-                        && let Some(cur) = s.dims.get(&target).and_then(|d| d.get(idx).copied()) {
-                            // Checked ceil-round: `cur + (v-1)` then `* v` can each
-                            // overflow i64 on an adversarial-but-parseable input;
-                            // SKIP the round (leave the axis unrounded) rather than
-                            // panic under `overflow-checks = true` (Finding 1).
-                            if let Some(rounded) = cur
-                                .checked_add(v - 1)
-                                .map(|x| x / v)
-                                .and_then(|q| q.checked_mul(v))
-                            {
-                                // §3.5 GQA distinctness (review Finding 2). A
-                                // CROSS-operand `divisible(other.dim[i], self.dim[j])`
-                                // (attention's `divisible(q.dim[1], k.dim[1])`,
-                                // Hq % Hkv == 0) seeds both operands identically, so
-                                // the coincidental round leaves target == divisor
-                                // (Hq == Hkv, the degenerate NON-grouped case).
-                                // Promote it to a genuine group ratio (Hq = 2·Hkv) so
-                                // the divisor operand is strictly SMALLER than the
-                                // target — otherwise an operand-role swap in a return
-                                // rule (`same_as(k)` vs `same_as(q)`) evaluates equal
-                                // and the shape-oracle cross-check can't discriminate
-                                // it. ONLY the cross-operand case (`target` role !=
-                                // the constraint owner); a self-target
-                                // `divisible(dim[i], lit)` (rope, matmul's shared `k`)
-                                // keeps its exact round untouched.
-                                let final_val = if target != self_role && rounded == v {
-                                    rounded.checked_mul(2).unwrap_or(rounded)
-                                } else {
-                                    rounded
-                                };
-                                set_axis(s, &target, axis, trank, final_val);
-                            }
-                        }
-                }
-            } else if let CostNode::Sym(k) = lhs
-                && let Some(v) = eval_dim_expr(rhs, s, ranks, self_role)
-                    && v > 0 {
-                        let e = s.sym.entry(k.clone()).or_insert(s.base);
-                        if let Some(rounded) = e
+                        && let Some(cur) = s.dims.get(&target).and_then(|d| d.get(idx).copied())
+                    {
+                        // Checked ceil-round: `cur + (v-1)` then `* v` can each
+                        // overflow i64 on an adversarial-but-parseable input;
+                        // SKIP the round (leave the axis unrounded) rather than
+                        // panic under `overflow-checks = true` (Finding 1).
+                        if let Some(rounded) = cur
                             .checked_add(v - 1)
                             .map(|x| x / v)
                             .and_then(|q| q.checked_mul(v))
                         {
-                            *e = rounded;
+                            // §3.5 GQA distinctness (review Finding 2). A
+                            // CROSS-operand `divisible(other.dim[i], self.dim[j])`
+                            // (attention's `divisible(q.dim[1], k.dim[1])`,
+                            // Hq % Hkv == 0) seeds both operands identically, so
+                            // the coincidental round leaves target == divisor
+                            // (Hq == Hkv, the degenerate NON-grouped case).
+                            // Promote it to a genuine group ratio (Hq = 2·Hkv) so
+                            // the divisor operand is strictly SMALLER than the
+                            // target — otherwise an operand-role swap in a return
+                            // rule (`same_as(k)` vs `same_as(q)`) evaluates equal
+                            // and the shape-oracle cross-check can't discriminate
+                            // it. ONLY the cross-operand case (`target` role !=
+                            // the constraint owner); a self-target
+                            // `divisible(dim[i], lit)` (rope, matmul's shared `k`)
+                            // keeps its exact round untouched.
+                            let final_val = if target != self_role && rounded == v {
+                                rounded.checked_mul(2).unwrap_or(rounded)
+                            } else {
+                                rounded
+                            };
+                            set_axis(s, &target, axis, trank, final_val);
                         }
                     }
+                }
+            } else if let CostNode::Sym(k) = lhs
+                && let Some(v) = eval_dim_expr(rhs, s, ranks, self_role)
+                && v > 0
+            {
+                let e = s.sym.entry(k.clone()).or_insert(s.base);
+                if let Some(rounded) = e
+                    .checked_add(v - 1)
+                    .map(|x| x / v)
+                    .and_then(|q| q.checked_mul(v))
+                {
+                    *e = rounded;
+                }
+            }
         }
     }
 }
@@ -640,11 +647,13 @@ pub fn solve_probe_shapes(
             .filter(|n| !n.is_empty())
             .unwrap_or_else(|| format!("#unnamed{i}"));
         if let Some(name) = d.name.as_deref().filter(|n| !n.is_empty())
-            && !seen_names.insert(name.to_string()) && warned_dup_names.insert(name.to_string()) {
-                warnings.push(warn(section, format!(
+            && !seen_names.insert(name.to_string())
+            && warned_dup_names.insert(name.to_string())
+        {
+            warnings.push(warn(section, format!(
                     "operand name `{name}` is declared more than once; references to it are ambiguous and only one operand's shape constraints are applied"
                 )));
-            }
+        }
         let rank_spec = resolve_rank_spec_field(d.rank.as_ref());
         // Soft diagnostic: `rank:` PRESENT but unrecognized (neither a plain
         // integer, `any`, nor a `lo..`/`lo..=hi` range) silently defaulted to

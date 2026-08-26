@@ -474,9 +474,10 @@ impl KernelInvoker for ExactRefInvoker {
             }
             #[cfg(test)]
             if self.poison
-                && let Some(b) = out.first_mut() {
-                    *b ^= 0x01;
-                }
+                && let Some(b) = out.first_mut()
+            {
+                *b ^= 0x01;
+            }
             return Ok(HostTensor {
                 dtype: self.out_dtype,
                 shape: self.out_shape.clone(),

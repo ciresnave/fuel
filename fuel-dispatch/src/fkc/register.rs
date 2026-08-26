@@ -749,7 +749,11 @@ mod tests {
             // parity. Each unique symbol gets a stable pointer; the keys
             // in the elementwise-binary corpus are unique per section so
             // two pointers suffice to avoid same-key collisions there.
-            let k: KernelRef = if g.len().is_multiple_of(2) { dummy_a } else { dummy_b };
+            let k: KernelRef = if g.len().is_multiple_of(2) {
+                dummy_a
+            } else {
+                dummy_b
+            };
             g.insert(symbol.to_string(), k);
             Some(k)
         }
@@ -845,7 +849,11 @@ mod tests {
             if let Some(k) = g.get(symbol) {
                 return Some(*k);
             }
-            let k: KernelRef = if g.len().is_multiple_of(2) { dummy_a } else { dummy_b };
+            let k: KernelRef = if g.len().is_multiple_of(2) {
+                dummy_a
+            } else {
+                dummy_b
+            };
             g.insert(symbol.to_string(), k);
             Some(k)
         }
@@ -1217,28 +1225,40 @@ mod tests {
             (
                 FusedOps::SOFTMAX_LAST_DIM_BACKWARD,
                 [
-                    crate::dispatch::softmax_last_dim_backward_f32_cpu_wrapper as *const () as usize,
-                    crate::dispatch::softmax_last_dim_backward_f64_cpu_wrapper as *const () as usize,
-                    crate::dispatch::softmax_last_dim_backward_bf16_cpu_wrapper as *const () as usize,
-                    crate::dispatch::softmax_last_dim_backward_f16_cpu_wrapper as *const () as usize,
+                    crate::dispatch::softmax_last_dim_backward_f32_cpu_wrapper as *const ()
+                        as usize,
+                    crate::dispatch::softmax_last_dim_backward_f64_cpu_wrapper as *const ()
+                        as usize,
+                    crate::dispatch::softmax_last_dim_backward_bf16_cpu_wrapper as *const ()
+                        as usize,
+                    crate::dispatch::softmax_last_dim_backward_f16_cpu_wrapper as *const ()
+                        as usize,
                 ],
             ),
             (
                 FusedOps::LAYER_NORM_LAST_DIM_BACKWARD,
                 [
-                    crate::dispatch::layer_norm_last_dim_backward_f32_cpu_wrapper as *const () as usize,
-                    crate::dispatch::layer_norm_last_dim_backward_f64_cpu_wrapper as *const () as usize,
-                    crate::dispatch::layer_norm_last_dim_backward_bf16_cpu_wrapper as *const () as usize,
-                    crate::dispatch::layer_norm_last_dim_backward_f16_cpu_wrapper as *const () as usize,
+                    crate::dispatch::layer_norm_last_dim_backward_f32_cpu_wrapper as *const ()
+                        as usize,
+                    crate::dispatch::layer_norm_last_dim_backward_f64_cpu_wrapper as *const ()
+                        as usize,
+                    crate::dispatch::layer_norm_last_dim_backward_bf16_cpu_wrapper as *const ()
+                        as usize,
+                    crate::dispatch::layer_norm_last_dim_backward_f16_cpu_wrapper as *const ()
+                        as usize,
                 ],
             ),
             (
                 FusedOps::RMS_NORM_LAST_DIM_BACKWARD,
                 [
-                    crate::dispatch::rms_norm_last_dim_backward_f32_cpu_wrapper as *const () as usize,
-                    crate::dispatch::rms_norm_last_dim_backward_f64_cpu_wrapper as *const () as usize,
-                    crate::dispatch::rms_norm_last_dim_backward_bf16_cpu_wrapper as *const () as usize,
-                    crate::dispatch::rms_norm_last_dim_backward_f16_cpu_wrapper as *const () as usize,
+                    crate::dispatch::rms_norm_last_dim_backward_f32_cpu_wrapper as *const ()
+                        as usize,
+                    crate::dispatch::rms_norm_last_dim_backward_f64_cpu_wrapper as *const ()
+                        as usize,
+                    crate::dispatch::rms_norm_last_dim_backward_bf16_cpu_wrapper as *const ()
+                        as usize,
+                    crate::dispatch::rms_norm_last_dim_backward_f16_cpu_wrapper as *const ()
+                        as usize,
                 ],
             ),
             (
@@ -3044,7 +3064,11 @@ determinism: same_hardware_bitwise
             if let Some(k) = g.get(symbol) {
                 return Some(*k);
             }
-            let k: KernelRef = if g.len().is_multiple_of(2) { dummy_a } else { dummy_b };
+            let k: KernelRef = if g.len().is_multiple_of(2) {
+                dummy_a
+            } else {
+                dummy_b
+            };
             g.insert(symbol.to_string(), k);
             Some(k)
         }

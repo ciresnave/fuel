@@ -720,9 +720,10 @@ fn insert_residency_copies(
     // inserts a copy when the producer's placement resolved to Some.
     for &copy_id in &inserted {
         if let Some(&src) = graph.node(copy_id).inputs.first()
-            && let Some(src_loc) = src_location(graph, src) {
-                graph.set_target_backend(copy_id, location_to_backend_id(src_loc));
-            }
+            && let Some(src_loc) = src_location(graph, src)
+        {
+            graph.set_target_backend(copy_id, location_to_backend_id(src_loc));
+        }
     }
     // Re-stamp ALL copies/moves with their SOURCE backend — graph rewrites are
     // sticky and `stamp_plan_backends` just overwrote pre-existing ones (e.g.
@@ -806,9 +807,10 @@ fn effective_placements(
             continue;
         }
         if (node.op.is_view_op() || matches!(node.op, Op::Reshape(_) | Op::Contiguize))
-            && let Some(&loc) = node.inputs.first().and_then(|i| map.get(i)) {
-                map.insert(id, loc);
-            }
+            && let Some(&loc) = node.inputs.first().and_then(|i| map.get(i))
+        {
+            map.insert(id, loc);
+        }
     }
     map
 }

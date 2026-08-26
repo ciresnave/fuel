@@ -317,14 +317,13 @@ impl AlternativeSet {
                         .iter()
                         .filter(|&&i| self.candidates[i].backend == b)
                         .min_by_key(|&&i| vectors[i].total_order_key())
-                    {
-                        frontier.push(best);
-                    }
+                {
+                    frontier.push(best);
+                }
             }
 
             // The global winner must never be dropped from its bucket.
-            if !self.candidates.is_empty() && _dev == &winner_device && !frontier.contains(&0)
-            {
+            if !self.candidates.is_empty() && _dev == &winner_device && !frontier.contains(&0) {
                 frontier.push(0);
             }
 

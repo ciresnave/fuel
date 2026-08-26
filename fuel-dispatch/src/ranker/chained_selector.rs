@@ -189,9 +189,10 @@ impl ChainedSelector {
                     ctx.size_class,
                     c.backend,
                     c.kernel_source,
-                ) {
-                    return measured;
-                }
+                )
+            {
+                return measured;
+            }
             let (cr, bw) = default_backend_rates(c.backend);
             composite_ns(&c.static_cost, cr, bw)
         })();

@@ -218,7 +218,7 @@ impl CostVector {
         if !no_worse {
             return false;
         }
-        
+
         self.time < other.time
             || self.memory.strictly_better_on_some(&other.memory)
             || self.precision > other.precision

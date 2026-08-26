@@ -90,19 +90,20 @@ fn canonical_form(k: &FkcKernel) -> String {
                 );
             }
             if let Some(fdx) = &d.fdx
-                && let Some(q) = &fdx.quant {
-                    push(
-                        &format!("in{i}.quant"),
-                        &format!(
-                            "{}|{}|{}|{}|{}",
-                            q.family.as_deref().unwrap_or(""),
-                            q.ggml_dtype.as_deref().unwrap_or(""),
-                            q.granularity.as_deref().unwrap_or(""),
-                            q.role.as_deref().unwrap_or(""),
-                            q.scale_operand.as_deref().unwrap_or(""),
-                        ),
-                    );
-                }
+                && let Some(q) = &fdx.quant
+            {
+                push(
+                    &format!("in{i}.quant"),
+                    &format!(
+                        "{}|{}|{}|{}|{}",
+                        q.family.as_deref().unwrap_or(""),
+                        q.ggml_dtype.as_deref().unwrap_or(""),
+                        q.granularity.as_deref().unwrap_or(""),
+                        q.role.as_deref().unwrap_or(""),
+                        q.scale_operand.as_deref().unwrap_or(""),
+                    ),
+                );
+            }
         }
         if let Some(op_params) = &accept.op_params {
             push(

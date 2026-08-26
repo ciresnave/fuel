@@ -108,9 +108,10 @@ impl TelemetryFingerprint {
                 }
                 seen.push(b);
                 if let Some(handle) = lookup(b, default_device_for(b))
-                    && let Some(free) = handle.available_bytes() {
-                        buckets.push((b, free_bytes_bucket(free)));
-                    }
+                    && let Some(free) = handle.available_bytes()
+                {
+                    buckets.push((b, free_bytes_bucket(free)));
+                }
             }
         }
         buckets.sort_by_key(|&(b, _)| b as u8);
@@ -172,10 +173,11 @@ impl RouteCache {
         let fingerprint = TelemetryFingerprint::sample(&backends, lookup);
 
         if let Some((cached_fp, cached_route)) = &self.cached
-            && *cached_fp == fingerprint {
-                self.hits += 1;
-                return cached_route.clone();
-            }
+            && *cached_fp == fingerprint
+        {
+            self.hits += 1;
+            return cached_route.clone();
+        }
 
         let route = pick_route(graph, roots, bindings, selector, lookup);
         self.resolves += 1;
@@ -192,9 +194,10 @@ fn route_backends(graph: &Graph, roots: &[NodeId]) -> Vec<BackendId> {
     for branch in branches_in_topo_order(graph, roots) {
         for &arm in &graph.node(branch).inputs {
             if let Some(b) = graph.target_backend(arm)
-                && !backends.contains(&b) {
-                    backends.push(b);
-                }
+                && !backends.contains(&b)
+            {
+                backends.push(b);
+            }
         }
     }
     backends

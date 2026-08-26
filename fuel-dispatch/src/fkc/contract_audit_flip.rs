@@ -37,13 +37,37 @@ use crate::fused::PrecisionGuarantee;
 /// is precisely why input coverage is the axis to disclose — a claim earned
 /// against a degenerate probe reads identically to one earned against real
 /// data unless the note says which.
+///
+/// THE "OTHER PARAMETER CONFIGURATIONS" LIMB WAS ADDED AFTER THE CLAUSE HAD
+/// ALREADY BEEN EMITTED ONTO 591 ENTRIES, AND ITS ABSENCE WAS AN ENUMERATION
+/// HAZARD RATHER THAN A MERE OMISSION. The clause excluded "other inputs,
+/// other machines, or other compilers" -- and an enumeration naming three
+/// categories while omitting a fourth invites the reading that the fourth IS
+/// covered. `softcap`, `window_size_*` and `causal` are PARAMS, not operands,
+/// so "other inputs" never reached them: FlashAttn's record attests
+/// bit-stability for a family whose probe took exactly one of several
+/// branches, and the scope limit lived only in a peer message that no reader
+/// of the contract will ever see.
+///
+/// That is the justification-scope defect in its exact form -- evidence
+/// covering a strict subset of what the attestation is read to claim -- and it
+/// is worse in an emitted clause than in prose, because the clause is the very
+/// thing a downstream consumer quotes.
+///
+/// The generic wording is deliberate: EVERY probe fixes one parameterisation,
+/// so this is true of every op and needs no per-op text. Re-emitting it across
+/// the already-flipped sections is precisely what the `has_clause`-keyed
+/// eligibility in `gap_228_flip_fully_backed_sections` was built for, back
+/// when the generator could emit but not RE-emit -- against exactly this
+/// case: the evidence wording changing under a correction.
 pub(crate) fn evidence_clause() -> String {
     format!(
         "[evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype \
          — {ITERS} byte-identical repeat invocations of ONE probe, on the recording \
          hardware and under the pinned toolchain ({}). Not a source-level determinism \
-         argument, and not evidence about other inputs, other machines, or other \
-         compilers.]",
+         argument, and not evidence about other inputs, OTHER PARAMETER CONFIGURATIONS \
+         (one probe fixes one; branches such as causal/softcap/window go untaken), \
+         other machines, or other compilers.]",
         pinned_toolchain()
     )
 }
@@ -91,9 +115,10 @@ fn pinned_toolchain() -> String {
 fn parse_pinned_channel(text: &str) -> Option<String> {
     for line in text.lines() {
         if let Some(rest) = line.split_once("channel")
-            && let Some(v) = rest.1.split('"').nth(1) {
-                return Some(format!("rust-toolchain.toml channel = {v}"));
-            }
+            && let Some(v) = rest.1.split('"').nth(1)
+        {
+            return Some(format!("rust-toolchain.toml channel = {v}"));
+        }
     }
     None
 }
@@ -356,16 +381,17 @@ components = [\"rustfmt\"]
                     // authoritative as the current one.
                     let mut base = l.to_string();
                     if let Some(start) = base.find("[evidence: bit_stable_on_same_hardware")
-                        && let Some(rel_end) = base[start..].find(']') {
-                            let end = start + rel_end + 1;
-                            // also swallow one leading space, if present
-                            let cut_from = if start > 0 && base.as_bytes()[start - 1] == b' ' {
-                                start - 1
-                            } else {
-                                start
-                            };
-                            base.replace_range(cut_from..end, "");
-                        }
+                        && let Some(rel_end) = base[start..].find(']')
+                    {
+                        let end = start + rel_end + 1;
+                        // also swallow one leading space, if present
+                        let cut_from = if start > 0 && base.as_bytes()[start - 1] == b' ' {
+                            start - 1
+                        } else {
+                            start
+                        };
+                        base.replace_range(cut_from..end, "");
+                    }
                     if let Some(last) = base.rfind('"') {
                         base.insert_str(last, &format!(" {clause}"));
                     }
