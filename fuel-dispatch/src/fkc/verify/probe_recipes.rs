@@ -1294,6 +1294,104 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
             })
         }
 
+        // --- FlashAttn backward, ONE arm parameterised on `which` (GAP-228(e)) ---
+        //
+        // Three OpKinds, ONE recipe, because the differences are two: one extra
+        // operand and a two-way output-shape switch. Read at head rather than
+        // assumed — `byte_kernels.rs`'s backward wrapper computes
+        // `need_out = match which { Q => q_n, K => kv_n, V => kv_n }`:
+        // **three arms, TWO distinct values.** Splitting this into three
+        // recipes would triplicate a two-way switch and give three chances to
+        // get the same thing subtly different.
+        //
+        // Relative to `OpKind::FlashAttn` the delta is exactly:
+        //   * one more operand, `do` (upstream gradient), shaped like the
+        //     forward OUTPUT — inputs are `(q, k, v, do, alibi?)`, measured off
+        //     the live binding table as 4 dtypes x {5-tuple, 6-tuple};
+        //   * the output is q-shaped for Q and kv-shaped for K and V;
+        //   * the params struct is `OpParams::FlashAttn` REUSED OUTRIGHT, on
+        //     identical geometry.
+        //
+        // ⚠️ **`k_len == sk` HERE, AND THAT IS NOT AN OVERSIGHT — IT IS THE
+        // OPPOSITE OF FLASHATTN'S CHOICE, FOR A MEASURED REASON.** The forward
+        // probe deliberately takes `k_len < sk` to reach the live-prefix
+        // parameterisation. **The backward has no such parameterisation to
+        // reach**: the wrapper binds `k_len: _` with the comment *"Backward is
+        // the static (full-K) training path; the recompute attends the full K
+        // extent. k_len ignored."* Setting `k_len < sk` here would produce a
+        // probe whose params say one thing and whose kernel does another, and
+        // an assertion mirroring FlashAttn's would be TRUE AND MEANINGLESS —
+        // a control that cannot move, which is the failure this harness has
+        // now caught three times. So: `k_len == sk`, stated.
+        //
+        // NOT exercised, same as the forward and named for the same reason:
+        // `softcap`, `window_size_*`, `causal=false`.
+        OpKind::FlashAttnBackwardQ | OpKind::FlashAttnBackwardK | OpKind::FlashAttnBackwardV => {
+            let with_alibi = match dtypes.len() {
+                5 => false,
+                6 => true,
+                _ => return None,
+            };
+            // sq = 3, NOT the forward's 2, AND THE REASON IS A DEFECT THIS
+            // FIXTURE HAD UNTIL THE ASSERTION WAS WRITTEN.
+            //
+            // With the forward's geometry (sq = 2) the two output-shape classes
+            // come out NUMERICALLY EQUAL: q_len = 1*2*2*2 = 8 and
+            // kv_len = 1*1*4*2 = 8. The `which` switch is the entire reason
+            // these three OpKinds are one arm, and a fixture that collapses
+            // q-shaped and kv-shaped into the same number CANNOT SEE IT: a bug
+            // routing every `which` to the wrong branch would produce a
+            // correctly-sized buffer every time, and the sweep passed 24/24
+            // against exactly that fixture before this was noticed.
+            //
+            // sq = 3 gives q_len = 12 against kv_len = 8. The axis under test
+            // is the output-shape class, so the fixture must separate it — a
+            // green from a collapsed axis is the vacuous-oracle route that no
+            // pass count can reveal.
+            let (b, hq, hkv, sq, sk, d) = (1usize, 2usize, 1usize, 3usize, 4usize, 2usize);
+            let q_len = b * hq * sq * d;
+            let kv_len = b * hkv * sk * d;
+            // The separation is GATED IN THE TEST, not asserted here. A
+            // `debug_assert` in the recipe would shadow the test's diagnostic
+            // in debug builds -- and the recipe is also called from the sweep,
+            // where a panic surfaces as a confusing kernel-side failure rather
+            // than as the finding it is.
+            let q = ht(dt, vec![q_len], &fill_deterministic(q_len, seed))?;
+            let k = ht(dt, vec![kv_len], &fill_deterministic(kv_len, seed ^ 0x11))?;
+            let v = ht(dt, vec![kv_len], &fill_deterministic(kv_len, seed ^ 0x22))?;
+            // `do` is shaped like the FORWARD output, not like `out`.
+            let d_out = ht(dt, vec![q_len], &fill_deterministic(q_len, seed ^ 0x44))?;
+            let mut inputs = vec![q, k, v, d_out];
+            if with_alibi {
+                inputs.push(ht(dt, vec![hq], &fill_deterministic(hq, seed ^ 0x33))?);
+            }
+            let out_len = match op {
+                OpKind::FlashAttnBackwardQ => q_len,
+                _ => kv_len,
+            };
+            Some(Probe {
+                inputs,
+                params: OpParams::FlashAttn {
+                    b,
+                    hq,
+                    hkv,
+                    sq,
+                    sk,
+                    d,
+                    // Full-K: see the note above. The wrapper ignores this.
+                    k_len: sk,
+                    softmax_scale: 0.5,
+                    causal: true,
+                    window_size_left: None,
+                    window_size_right: None,
+                    softcap: None,
+                },
+                out_dtype: dt,
+                out_shape: vec![out_len],
+                out_seed: None,
+            })
+        }
+
         // Residue still without a recipe, so the next reader is not guessing:
         // attention (FlashAttn x4 variants, PagedAttn), conv (Conv2D,
         // ConvTranspose2D, CausalConv1d), MatMul / QMatMul / Nf4Matmul,
