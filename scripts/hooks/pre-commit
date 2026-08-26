@@ -3,7 +3,15 @@
 #
 # ⚠️ INSTALL THIS, or it does nothing:
 #
-#     git config core.hooksPath scripts/hooks
+#     sh scripts/install-hooks.sh
+#
+# ⚠️ NOT `git config core.hooksPath scripts/hooks`. That was this file's first
+# instruction, it was FOLLOWED, and it silently disabled every hook in the
+# repository for about a minute on 2026-08-26. `core.hooksPath` is one shared
+# value but a RELATIVE path resolves per worktree, and exactly ONE of Fuel's 28
+# worktrees contained this file -- the others are behind main. Git accepts a
+# hooksPath pointing at nothing and runs NO hooks, with no error. See
+# scripts/install-hooks.sh for the full account.
 #
 # This file is VERSION CONTROLLED; the hook git actually runs is not. That
 # distinction is the whole reason this file exists. Fuel had a working
