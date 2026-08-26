@@ -59,7 +59,9 @@
 //!   rewrite the post-write buffer NodeId in place: the rewrite sees
 //!   one logical owner, the most recent cache.
 
-use crate::{DType, Device, lazy::Tensor};
+#[cfg(test)]
+use crate::Device;
+use crate::{DType, lazy::Tensor};
 use fuel_ir::Shape;
 use std::sync::Arc;
 

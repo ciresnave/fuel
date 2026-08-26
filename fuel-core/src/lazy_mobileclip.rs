@@ -13,7 +13,9 @@ use crate::Result;
 use crate::lazy::{Tensor, WeightStorage};
 use crate::lazy_fastvit::{FastVitConfig, FastVitModel, FastVitWeights};
 use crate::lazy_openclip_text::{OpenClipTextConfig, OpenClipTextModel, OpenClipTextWeights};
+#[cfg(test)]
 use fuel_ir::Shape;
+#[cfg(test)]
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]

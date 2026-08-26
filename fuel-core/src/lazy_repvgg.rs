@@ -57,8 +57,10 @@
 //! checkpoint distributed by the RepVGG authors) can plug in
 //! the same way without going through `fuse_repvgg_block`.
 
+#[cfg(test)]
+use crate::Device;
+use crate::Result;
 use crate::lazy::{Tensor, WeightStorage, load_tensor_as_f32};
-use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
 

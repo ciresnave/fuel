@@ -16,9 +16,12 @@
 //!   GGUF file, keeping Q4_0 tensors quantized and dequantizing other
 //!   GGML dtypes to F32. Mirrors the Phi-2 loader convention.
 
+#[cfg(test)]
+use crate::Device;
+use crate::Result;
 use crate::lazy::{LayerWeights, Tensor, WeightStorage};
 use crate::lazy_smollm3::{SmolLm3Config, SmolLm3Model, SmolLm3Weights};
-use crate::{Device, Result};
+#[cfg(test)]
 use fuel_ir::Shape;
 use std::sync::Arc;
 

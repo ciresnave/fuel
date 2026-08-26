@@ -29,6 +29,9 @@
 //! v1 returns logits for the entire combined sequence in one
 //! pass.
 
+#[cfg(test)]
+use crate::Device;
+use crate::Result;
 use crate::lazy::{
     LayerWeights, Tensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
 };
@@ -36,7 +39,6 @@ use crate::lazy_gemma::{GemmaConfig, GemmaModel, GemmaWeights};
 use crate::lazy_siglip::{
     SiglipEncoderLayerWeights, SiglipVisionConfig, SiglipVisionModel, SiglipVisionWeights,
 };
-use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
 

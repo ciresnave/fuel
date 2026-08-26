@@ -4,7 +4,7 @@
 //! both via reference and via the CPU executor.
 
 use fuel_core::lazy::Tensor;
-use fuel_graph::{Op, opt};
+use fuel_graph::opt;
 use fuel_ir::Shape;
 
 fn rand_f32(shape: &[usize], seed: u32) -> Vec<f32> {

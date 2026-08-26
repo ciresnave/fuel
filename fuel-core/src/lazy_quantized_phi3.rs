@@ -27,9 +27,12 @@
 //!   that loads f32 HF safetensors via `Phi3Weights::load_from_mmapped`
 //!   and then bakes them down to Q4_0.
 
+#[cfg(test)]
+use crate::Device;
+use crate::Result;
 use crate::lazy::{LayerWeights, Tensor, WeightStorage};
 use crate::lazy_phi3::{Phi3Config, Phi3Model, Phi3Weights};
-use crate::{Device, Result};
+#[cfg(test)]
 use fuel_ir::Shape;
 use std::sync::Arc;
 

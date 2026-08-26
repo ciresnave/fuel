@@ -44,9 +44,11 @@
 //! is 512 (basic) or 2048 (bottleneck). The `_no_final_layer`
 //! variant is just `nclasses = None` at config time.
 
+#[cfg(test)]
+use crate::Device;
+use crate::Result;
 use crate::lazy::{Tensor, WeightStorage};
 use crate::lazy_convmixer::BatchNormParams;
-use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
 

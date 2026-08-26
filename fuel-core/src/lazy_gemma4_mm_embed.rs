@@ -17,6 +17,7 @@
 
 use crate::Result;
 use crate::lazy::{Tensor, WeightStorage};
+#[cfg(test)]
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]

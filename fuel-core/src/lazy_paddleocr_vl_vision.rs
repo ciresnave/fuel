@@ -50,10 +50,12 @@
 //! projector / loader machinery — the NaViT extension is additive,
 //! not a rewrite.
 
+#[cfg(test)]
+use crate::Device;
+use crate::Result;
 use crate::lazy::{
     Tensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
 };
-use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

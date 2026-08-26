@@ -26,9 +26,11 @@
 //!
 //! Forward-only, single image + single token sequence, F32.
 
+#[cfg(test)]
+use crate::Device;
+use crate::Result;
 use crate::lazy::{Tensor, WeightStorage};
 use crate::lazy_mixformer::{MixFormerConfig, MixFormerModel, MixFormerWeights};
-use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
 

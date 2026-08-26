@@ -26,9 +26,12 @@
 //!   GGUF file, keeping Q4_0 tensors quantized and dequantizing other
 //!   GGML dtypes to F32. Mirrors the SmolLM3 loader policy.
 
+#[cfg(test)]
+use crate::Device;
+use crate::Result;
 use crate::lazy::{LayerWeights, Tensor, WeightStorage};
 use crate::lazy_qwen3::{Qwen3Config, Qwen3LayerExtras, Qwen3Model, Qwen3Weights};
-use crate::{Device, Result};
+#[cfg(test)]
 use fuel_ir::Shape;
 use std::sync::Arc;
 

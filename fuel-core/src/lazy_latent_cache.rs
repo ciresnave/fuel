@@ -44,7 +44,9 @@
 //! [`crate::inference_context::KvCache`] pattern) is the same documented
 //! follow-up it is for `LazyKvCache`.
 
-use crate::{DType, Device, lazy::Tensor};
+#[cfg(test)]
+use crate::Device;
+use crate::{DType, lazy::Tensor};
 use fuel_ir::Shape;
 
 /// Per-forward-pass, N-slot latent cache. See module docs for the shape

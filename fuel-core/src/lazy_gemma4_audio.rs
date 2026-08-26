@@ -46,8 +46,10 @@
 //! and that all frames are valid. Mask-aware audio batching is a
 //! follow-up.
 
+#[cfg(test)]
+use crate::Device;
+use crate::Result;
 use crate::lazy::{Tensor, WeightStorage};
-use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
 

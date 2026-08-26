@@ -36,12 +36,15 @@
 //!   (`enc.blk.{i}.*` and `dec.blk.{i}.*`), keeping Q4_0 tensors
 //!   quantized and dequantizing other GGML dtypes to F32.
 
+#[cfg(test)]
+use crate::Device;
+use crate::Result;
 use crate::lazy::WeightStorage;
 use crate::lazy_t5::{
     T5AttentionWeights, T5Config, T5DecoderLayerWeights, T5EncoderLayerWeights, T5FfnWeights,
     T5Model, T5Weights,
 };
-use crate::{Device, Result};
+#[cfg(test)]
 use fuel_ir::Shape;
 use std::sync::Arc;
 

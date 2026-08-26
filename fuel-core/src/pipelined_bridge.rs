@@ -67,7 +67,6 @@
 //! resident across steps. The legacy generic-over-`B` family retired
 //! in Unification Session 4 (E.3.4).
 
-use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use fuel_backend_contract::backend::{BackendRuntime, BackendStreams};

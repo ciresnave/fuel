@@ -77,9 +77,11 @@
 //! `(1, nclasses)`. Input is `(1, 3, H, W)`; H and W are
 //! free but typically 224 (B0) up to 600 (B7).
 
+#[cfg(test)]
+use crate::Device;
+use crate::Result;
 use crate::lazy::{Tensor, WeightStorage};
 use crate::lazy_convmixer::BatchNormParams;
-use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
