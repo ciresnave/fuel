@@ -197,7 +197,7 @@ impl VggModel {
         assert_eq!(dims[1], 3, "image must have 3 input channels");
         assert_eq!(dims[2], dims[3], "VGG expects square inputs");
         assert!(
-            dims[2] % 32 == 0,
+            dims[2].is_multiple_of(32),
             "VGG input H must be divisible by 32 (5 stride-2 pools), got {}",
             dims[2],
         );

@@ -156,9 +156,9 @@ impl GemmaModel {
         // Final offset RmsNorm + lm_head.
         let h_norm =
             h.rms_norm_affine_with_offset(&weights.final_norm_gain, 1.0, cfg.rms_norm_eps)?;
-        Ok(weights
+        weights
             .output
-            .apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size)?)
+            .apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size)
     }
 
     /// Run the decoder forward up to the final offset RmsNorm

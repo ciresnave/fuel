@@ -206,7 +206,7 @@ impl BasedModel {
     fn apply_lm_head(&self, h_norm: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
         let lm_head = WeightStorage::F32(self.weights.token_embedding.clone());
-        Ok(lm_head.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
+        lm_head.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)
     }
 
     fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
@@ -434,7 +434,7 @@ impl BasedModel {
         let out_h = aqk_v.mul(&z_bc)?;
 
         let merged = out_h.merge_heads()?;
-        Ok(w.out_proj.apply_linear(&merged, h, h)?)
+        w.out_proj.apply_linear(&merged, h, h)
     }
 
     fn apply_sliding(
@@ -486,7 +486,7 @@ impl BasedModel {
         let probs = scores_masked.softmax_last_dim()?;
         let attn_v = probs.matmul(&v)?;
         let merged = attn_v.merge_heads()?;
-        Ok(w.out_proj.apply_linear(&merged, h, h)?)
+        w.out_proj.apply_linear(&merged, h, h)
     }
 
     fn apply_mlp(&self, x: &Tensor, fc1: &WeightStorage, fc2: &WeightStorage) -> Result<Tensor> {
@@ -499,7 +499,7 @@ impl BasedModel {
         let right = projected.slice(2_usize, 2 * h, 2 * h)?;
         // Eager swap: `silu(right) * left`.
         let gated = right.silu().mul(&left)?;
-        Ok(fc2.apply_linear(&gated, inter, h)?)
+        fc2.apply_linear(&gated, inter, h)
     }
 }
 

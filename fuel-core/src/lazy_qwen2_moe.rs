@@ -181,7 +181,7 @@ impl Qwen2MoeModel {
             self.weights.lm_head.clone(),
             Shape::from_dims(&[cfg.hidden_size, cfg.vocab_size]),
         );
-        Ok(h_norm.matmul(&lm)?)
+        h_norm.matmul(&lm)
     }
 
     /// Shared backbone: embed → per-layer attn+MoE → final
@@ -226,13 +226,13 @@ impl Qwen2MoeModel {
         for lw in &self.weights.layers {
             x = decoder_layer(&x, lw, cfg, seq)?;
         }
-        Ok(rms_norm_affine(
+        rms_norm_affine(
             &x,
             &self.weights.final_ln,
             cfg.rms_norm_eps,
             h,
             seq,
-        )?)
+        )
     }
 }
 

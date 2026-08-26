@@ -48,7 +48,7 @@ pub enum BlockKind {
 }
 
 fn msg_err(s: String) -> crate::Error {
-    crate::Error::from(fuel_ir::Error::Msg(s).bt())
+    fuel_ir::Error::Msg(s).bt()
 }
 
 fn alloc_err(e: KvAllocError) -> crate::Error {
@@ -487,9 +487,7 @@ impl DeviceKvPool {
             block.node_id(),
             &self.device,
             cache,
-        )
-        .map_err(crate::Error::from)
-    }
+        )}
 
     /// Byte width of one pool element for byte-level movement. F32/BF16 only (the
     /// activation dtypes the CUDA bf16 leg needs); F16 movement is a trivial

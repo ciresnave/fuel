@@ -265,7 +265,7 @@ impl EfficientNetModel {
             x = self.apply_mbconv(&x, block)?;
         }
         x = self.apply_conv_bn(&x, &self.weights.final_cna)?;
-        Ok(swish(&x)?)
+        swish(&x)
     }
 
     fn apply_conv_bn(&self, x: &Tensor, cb: &ConvBN) -> Result<Tensor> {

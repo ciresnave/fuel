@@ -403,7 +403,7 @@ fn apply_cga_attn(
     let ys = ys.narrow(1_usize, 0, h)?;
     let ys = ys.narrow(2_usize, 0, w_)?;
     // NHWC → NCHW.
-    Ok(ys.permute([0, 3, 1, 2_usize])?)
+    ys.permute([0, 3, 1, 2_usize])
 }
 
 /// CGA forward without windowing — assumes input fits as-is.

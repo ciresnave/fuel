@@ -1068,11 +1068,10 @@ impl MmDitFullModel {
         // ---- Joint-block stack (first depth - 1 blocks).
         let (mut txt_h, mut img_h) = (ctx_proj, img_seq);
         for (i, blk) in self.weights.joint_blocks.iter().enumerate() {
-            if let Some(skips) = skip_layers {
-                if skips.contains(&i) {
+            if let Some(skips) = skip_layers
+                && skips.contains(&i) {
                     continue;
                 }
-            }
             let (new_txt, new_img) = apply_double_stream(&txt_h, &img_h, &c, blk, &inner_cfg)?;
             txt_h = new_txt;
             img_h = new_img;

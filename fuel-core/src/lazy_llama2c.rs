@@ -1285,7 +1285,7 @@ mod tests {
             bytes.extend_from_slice(&v.to_le_bytes());
         }
         let mut reader = std::io::Cursor::new(&bytes);
-        let err = load_llama2c_bin(&mut reader).err().expect("should reject");
+        let err = load_llama2c_bin(&mut reader).expect_err("should reject");
         let msg = format!("{err}");
         assert!(msg.contains("dim=7"), "unexpected error: {msg}");
     }

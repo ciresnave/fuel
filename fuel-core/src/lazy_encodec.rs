@@ -1100,10 +1100,7 @@ impl EncodecWeights {
         // (e.g. when distributing only the synthesis half). If any
         // encoder tensor is missing we simply leave `encoder = None` so
         // the rest of the model still works for `decode` / `decode_codes`.
-        let encoder = match load_encoder_weights(st, cfg) {
-            Ok(enc) => Some(enc),
-            Err(_) => None,
-        };
+        let encoder = load_encoder_weights(st, cfg).ok();
 
         Ok(EncodecWeights {
             quantizers,

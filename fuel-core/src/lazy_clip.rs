@@ -238,11 +238,11 @@ impl ClipTextModel {
         }
 
         // Final LayerNorm.
-        Ok(h.layer_norm_affine(
+        h.layer_norm_affine(
             std::sync::Arc::clone(&weights.final_ln_gain),
             std::sync::Arc::clone(&weights.final_ln_bias),
             1e-5,
-        )?)
+        )
     }
 
     /// Pool the last hidden state by selecting position `eos_pos`,
@@ -415,11 +415,11 @@ impl ClipVisionModel {
         let cls_pooled = h
             .slice(1_usize, 0, 1)?
             .reshape(Shape::from_dims(&[batch, cfg.embed_dim]))?;
-        Ok(cls_pooled.layer_norm_affine(
+        cls_pooled.layer_norm_affine(
             std::sync::Arc::clone(&weights.post_ln_gain),
             std::sync::Arc::clone(&weights.post_ln_bias),
             1e-5,
-        )?)
+        )
     }
 
     /// Extract per-token features at the requested layer
@@ -530,11 +530,11 @@ impl ClipModel {
             weights: self.weights.vision.clone(),
         };
         let pooled = v_model.forward(pixel_values)?;
-        Ok(self.weights.visual_projection.apply_linear(
+        self.weights.visual_projection.apply_linear(
             &pooled,
             self.vision_config.embed_dim,
             self.vision_config.projection_dim,
-        )?)
+        )
     }
 
     /// Encode a single token sequence at `eos_pos` (pooled) and
@@ -545,11 +545,11 @@ impl ClipModel {
             weights: self.weights.text.clone(),
         };
         let pooled = t_model.pool_eos(tokens, eos_pos)?;
-        Ok(self.weights.text_projection.apply_linear(
+        self.weights.text_projection.apply_linear(
             &pooled,
             self.text_config.embed_dim,
             self.text_config.projection_dim,
-        )?)
+        )
     }
 }
 

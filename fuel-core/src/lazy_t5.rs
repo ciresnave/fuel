@@ -196,7 +196,7 @@ impl T5Model {
         } else {
             dec_out
         };
-        Ok(lm_head.apply_linear(&dec_scaled, cfg.d_model, cfg.vocab_size)?)
+        lm_head.apply_linear(&dec_scaled, cfg.d_model, cfg.vocab_size)
     }
 
     /// Run only the T5 encoder and return its hidden states
@@ -257,7 +257,7 @@ impl T5Model {
         } else {
             dec_out
         };
-        Ok(lm_head.apply_linear(&dec_scaled, cfg.d_model, cfg.vocab_size)?)
+        lm_head.apply_linear(&dec_scaled, cfg.d_model, cfg.vocab_size)
     }
 
     /// Hidden-state variant of [`Self::forward_decoder_embeds`].
@@ -317,7 +317,7 @@ impl T5Model {
         } else {
             dec_out
         };
-        Ok(lm_head.apply_linear(&dec_scaled, cfg.d_model, cfg.vocab_size)?)
+        lm_head.apply_linear(&dec_scaled, cfg.d_model, cfg.vocab_size)
     }
 
     fn encode(&self, embed: &Tensor, src: &[u32]) -> Result<Tensor> {
@@ -527,7 +527,7 @@ impl T5Model {
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v)?;
         let merged = ctx.merge_heads()?;
-        Ok(w.o.apply_linear(&merged, inner, cfg.d_model)?)
+        w.o.apply_linear(&merged, inner, cfg.d_model)
     }
 
     fn feed_forward(&self, x: &Tensor, ffn: &T5FfnWeights) -> Result<Tensor> {

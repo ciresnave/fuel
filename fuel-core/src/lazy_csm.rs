@@ -282,7 +282,7 @@ impl CsmModel {
         let mask = anchor.const_f32_like(mask_f32, Shape::from_dims(&[1, seq, cb + 1, 1]));
         let mask_b = mask.broadcast_to(Shape::from_dims(&[1, seq, cb + 1, bd]))?;
         let gated = combined.mul(&mask_b)?;
-        Ok(gated.sum_dim(2_usize)?)
+        gated.sum_dim(2_usize)
     }
 
     /// Apply the `codebook0_head` linear to the backbone hidden state.
@@ -470,7 +470,7 @@ mod tests {
         // All-zero mask → result is the zero vector.
         let zero_mask = vec![0_u8; 1 * (cb + 1)];
         let zero_out = model
-            .embed_frame(&vec![0_u32; cb], &vec![0_u32], &zero_mask, &a)
+            .embed_frame(&vec![0_u32; cb], &[0_u32], &zero_mask, &a)
             .unwrap()
             .realize_f32();
         for &v in &zero_out {
@@ -480,7 +480,7 @@ mod tests {
         // overwhelming probability under random init).
         let one_mask = vec![1_u8; 1 * (cb + 1)];
         let one_out = model
-            .embed_frame(&vec![0_u32; cb], &vec![0_u32], &one_mask, &a)
+            .embed_frame(&vec![0_u32; cb], &[0_u32], &one_mask, &a)
             .unwrap()
             .realize_f32();
         let any_nonzero = one_out.iter().any(|v| v.abs() > 1e-9);

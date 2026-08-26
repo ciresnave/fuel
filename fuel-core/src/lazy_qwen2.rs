@@ -128,9 +128,9 @@ impl Qwen2Model {
         let cfg = &self.config;
         let weights = &self.weights;
         let h_norm = self.run_backbone(tokens, start_pos)?;
-        Ok(weights
+        weights
             .output
-            .apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size)?)
+            .apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size)
     }
 
     /// Run the encoder forward up to the final RmsNorm and
@@ -184,10 +184,10 @@ impl Qwen2Model {
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, attention_mask)?;
         }
-        Ok(h.rms_norm_affine(
+        h.rms_norm_affine(
             std::sync::Arc::clone(&weights.final_norm_gain),
             cfg.rms_norm_eps,
-        )?)
+        )
     }
 
     /// Shared backbone for the causal-mask paths
@@ -267,10 +267,10 @@ impl Qwen2Model {
             };
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, mask)?;
         }
-        Ok(h.rms_norm_affine(
+        h.rms_norm_affine(
             std::sync::Arc::clone(&weights.final_norm_gain),
             cfg.rms_norm_eps,
-        )?)
+        )
     }
 
     /// Build the attention mask for one layer. `uses_window == true`
@@ -740,10 +740,10 @@ impl DecodeBackbone for Qwen2Model {
         let cfg = &self.config;
         let h_norm =
             h.rms_norm_affine(Arc::clone(&self.weights.final_norm_gain), cfg.rms_norm_eps)?;
-        Ok(self
+        self
             .weights
             .output
-            .apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size)?)
+            .apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size)
     }
 }
 

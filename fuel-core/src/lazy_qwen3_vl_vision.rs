@@ -171,7 +171,7 @@ impl Qwen3VlVisionModel {
     pub fn forward(&self, pixels: &Tensor, cu_seqlens: &[usize]) -> Result<Qwen3VlVisionOutput> {
         let cfg = &self.config;
         let weights = &self.weights;
-        if cfg.hidden_size % cfg.num_heads != 0 {
+        if !cfg.hidden_size.is_multiple_of(cfg.num_heads) {
             return Err(crate::Error::Msg(format!(
                 "Qwen3VlVisionModel: hidden_size ({}) must be divisible by num_heads ({})",
                 cfg.hidden_size, cfg.num_heads,

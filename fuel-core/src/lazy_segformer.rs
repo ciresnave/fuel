@@ -296,9 +296,9 @@ fn layer_norm_chw(x: &Tensor, ln: &LayerNormWeights, eps: f64) -> Result<Tensor>
         .reshape(Shape::from_dims(&[b, c, h * w]))?
         .permute([0, 2, 1_usize])?;
     let normed = seq.layer_norm_affine(Arc::clone(&ln.gain), Arc::clone(&ln.bias), eps)?;
-    Ok(normed
+    normed
         .permute([0, 2, 1_usize])?
-        .reshape(Shape::from_dims(&[b, c, h, w]))?)
+        .reshape(Shape::from_dims(&[b, c, h, w]))
 }
 
 fn apply_segformer_layer(
@@ -354,9 +354,9 @@ fn apply_segformer_layer(
         .reshape(Shape::from_dims(&[b, c, h * w_sp]))?
         .permute([0, 2, 1_usize])?;
     let out_seq = hidden.add(&mlp_seq)?;
-    Ok(out_seq
+    out_seq
         .permute([0, 2, 1_usize])?
-        .reshape(Shape::from_dims(&[b, c, h, w_sp]))?)
+        .reshape(Shape::from_dims(&[b, c, h, w_sp]))
 }
 
 /// Efficient self-attention. Input is (B, C, H, W); output is
@@ -479,9 +479,9 @@ fn apply_mix_ffn(
         hidden_size,
         std::sync::Arc::clone(&m.dense2_bias),
     )?;
-    Ok(h3
+    h3
         .permute([0, 2, 1_usize])?
-        .reshape(Shape::from_dims(&[b, hidden_size, h, w_sp]))?)
+        .reshape(Shape::from_dims(&[b, hidden_size, h, w_sp]))
 }
 
 fn decode_head_forward(
@@ -512,7 +512,7 @@ fn decode_head_forward(
             &seq,
             c,
             cfg.decoder_hidden_size,
-            std::sync::Arc::clone(&bias),
+            std::sync::Arc::clone(bias),
         )?;
         let chw = projected
             .permute([0, 2, 1_usize])?

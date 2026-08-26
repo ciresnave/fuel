@@ -290,11 +290,10 @@ impl TokenizerFromGguf for Tokenizer {
                 let ty = gguf_value_to_u32(v)?;
                 // Aligns with llama_token_type: treat non-normal/non-byte tokens as special.
                 let is_special = matches!(ty, 2..=5);
-                if is_special {
-                    if let Some(tok) = tokens.get(idx) {
+                if is_special
+                    && let Some(tok) = tokens.get(idx) {
                         specials.push(AddedToken::from(tok.clone(), true));
                     }
-                }
             }
             if !specials.is_empty() {
                 // tokenizers 0.23 takes an owned-item iterator (was `&[AddedToken]`)

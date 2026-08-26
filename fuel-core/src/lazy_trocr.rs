@@ -267,11 +267,11 @@ fn apply_decoder_layer(
     };
     let h_ffn = w.fc2.apply_linear(&h_ffn, cfg.decoder_ffn_dim, d)?;
     let h3 = h2.add(&h_ffn)?;
-    Ok(h3.layer_norm_affine(
+    h3.layer_norm_affine(
         std::sync::Arc::clone(&w.final_ln_gain),
         std::sync::Arc::clone(&w.final_ln_bias),
         1e-5,
-    )?)
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -317,7 +317,7 @@ fn apply_attention(
     let ctx = probs.matmul(&v)?;
     let _ = (batch, q_len, kv_len, d_model);
     let ctx = ctx.merge_heads()?;
-    Ok(w.out_proj.apply_linear(&ctx, d_model, d_model)?)
+    w.out_proj.apply_linear(&ctx, d_model, d_model)
 }
 
 // ---- Safetensors loader ----------------------------------------------------

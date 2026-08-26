@@ -329,11 +329,11 @@ impl XlmrModel {
         let fc2 = fc2.add_trailing_bias(std::sync::Arc::clone(&layer.fc2_bias))?;
 
         // Post-LN: LN(ffn + h1).
-        Ok(h1.add(&fc2)?.layer_norm_affine(
+        h1.add(&fc2)?.layer_norm_affine(
             std::sync::Arc::clone(&layer.ffn_ln_gain),
             std::sync::Arc::clone(&layer.ffn_ln_bias),
             cfg.layer_norm_eps,
-        )?)
+        )
     }
 }
 

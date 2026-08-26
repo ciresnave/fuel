@@ -250,7 +250,7 @@ impl SdVae3Decoder {
             w,
         )?;
         let x = x.silu();
-        Ok(conv2d_k3_s1_p1(
+        conv2d_k3_s1_p1(
             &x,
             &self.weights.conv_out_w,
             &self.weights.conv_out_b,
@@ -258,7 +258,7 @@ impl SdVae3Decoder {
             cfg.out_channels,
             h,
             w,
-        )?)
+        )
     }
 }
 

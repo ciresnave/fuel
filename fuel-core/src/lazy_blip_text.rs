@@ -280,7 +280,7 @@ fn apply_decoder_layer(
     // Cross-attention to encoder states.
     let residual = x.clone();
     let cross_out = apply_attention(
-        &x,
+        x,
         Some(enc_states),
         &w.cross_attn,
         cfg.num_attention_heads,
@@ -305,7 +305,7 @@ fn apply_decoder_layer(
     // FFN.
     let residual = x.clone();
     let inter = w.ffn.intermediate.apply_linear_with_bias(
-        &x,
+        x,
         h,
         cfg.intermediate_size,
         std::sync::Arc::clone(&w.ffn.intermediate_bias),

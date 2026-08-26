@@ -1034,7 +1034,7 @@ impl Tensor {
             .bt());
         }
         let block_size = quant_type.elements_per_block();
-        if k % block_size != 0 {
+        if !k.is_multiple_of(block_size) {
             return Err(fuel_ir::Error::Msg(format!(
                 "qmatmul: k={k} must be a multiple of {quant_type:?}'s block size ({block_size})",
             ))
@@ -2137,10 +2137,10 @@ impl crate::persistent_decode::DecodeBackbone for LlamaModel {
     fn decode_final_norm_and_head(&self, h: &Tensor) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let h_norm = apply_affine_rms_norm(h, &self.weights.final_norm_gain, cfg.dim, cfg.norm_eps);
-        Ok(self
+        self
             .weights
             .output
-            .apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?)
+            .apply_linear(&h_norm, cfg.dim, cfg.vocab_size)
     }
 }
 
@@ -3160,7 +3160,7 @@ mod tests {
             fuel_graph::NodeHandle,
             fuel_graph::NodeHandle,
         ) {
-            let init = NodeHandle::from_f32(vec![init_v], Shape::from_dims(&[1]), &*dev.as_dyn());
+            let init = NodeHandle::from_f32(vec![init_v], Shape::from_dims(&[1]), dev.as_dyn());
             let g = init.graph().clone();
             let a = NodeHandle::from_existing(g.clone(), init.id())
                 .const_f32_like(vec![a_v], Shape::from_dims(&[1]));
@@ -4764,8 +4764,7 @@ impl Tensor {
     pub fn write_slice(&self, source: &Self, ranges: Vec<(usize, usize)>) -> crate::Result<Self> {
         let inner = self
             .inner
-            .write_slice(&source.inner, ranges)
-            .map_err(crate::Error::from)?;
+            .write_slice(&source.inner, ranges)?;
         Ok(Self { inner })
     }
 
@@ -4785,8 +4784,7 @@ impl Tensor {
     ) -> crate::Result<Self> {
         let inner = self
             .inner
-            .write_slice_dyn(&source.inner, ranges, dyn_axis, offset)
-            .map_err(crate::Error::from)?;
+            .write_slice_dyn(&source.inner, ranges, dyn_axis, offset)?;
         Ok(Self { inner })
     }
 
@@ -4814,8 +4812,7 @@ impl Tensor {
     ) -> crate::Result<Self> {
         let inner = self
             .inner
-            .write_slice_rotating(&source.inner, &position.inner, axis, modulus, ranges)
-            .map_err(crate::Error::from)?;
+            .write_slice_rotating(&source.inner, &position.inner, axis, modulus, ranges)?;
         Ok(Self { inner })
     }
 
@@ -4840,8 +4837,7 @@ impl Tensor {
     ) -> crate::Result<Self> {
         let inner = self
             .inner
-            .write_slice_doff(&source.inner, &offset.inner, axis, ranges)
-            .map_err(crate::Error::from)?;
+            .write_slice_doff(&source.inner, &offset.inner, axis, ranges)?;
         Ok(Self { inner })
     }
 
@@ -5337,7 +5333,7 @@ impl Tensor {
             ))
             .bt());
         }
-        if cin % groups != 0 {
+        if !cin.is_multiple_of(groups) {
             return Err(fuel_ir::Error::Msg(format!(
                 "conv_transpose1d: Cin={cin} must be divisible by groups={groups}",
             ))
@@ -7244,7 +7240,7 @@ impl Tensor {
         // Fast-path: integer-multiple uniform scale → existing
         // `upsample_nearest2d` (more cache-friendly than the
         // index_select composite for the common 2× / 4× case).
-        if target_h % h == 0 && target_w % w == 0 && target_h / h == target_w / w {
+        if target_h.is_multiple_of(h) && target_w.is_multiple_of(w) && target_h / h == target_w / w {
             return self.upsample_nearest2d(target_h / h);
         }
         // General case: build per-axis source-index tensors and
@@ -7279,7 +7275,7 @@ impl Tensor {
                 fuel_ir::Error::Msg("interpolate1d: input length must be positive".into()).bt(),
             );
         }
-        if target_t % t != 0 {
+        if !target_t.is_multiple_of(t) {
             return Err(fuel_ir::Error::Msg(format!(
                 "interpolate1d: target {target_t} must be integer multiple of input {t}; non-integer ratios are future work",
             )).bt());
@@ -7348,7 +7344,7 @@ impl Tensor {
         let ordered: Vec<&Self> = if xy_indexing {
             args.iter().rev().copied().collect()
         } else {
-            args.iter().copied().collect()
+            args.to_vec()
         };
         let mut lens = Vec::with_capacity(ordered.len());
         for (i, t) in ordered.iter().enumerate() {
@@ -8105,9 +8101,9 @@ impl LlamaModel {
         let cfg = &self.config;
         let weights = &self.weights;
         let h_norm = self.run_backbone_embeds(embeds, start_pos)?;
-        Ok(weights
+        weights
             .output
-            .apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?)
+            .apply_linear(&h_norm, cfg.dim, cfg.vocab_size)
     }
 
     /// Like [`forward_embeds`] but skips the LM-head projection
@@ -8226,7 +8222,7 @@ impl LlamaModel {
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
         );
         let token_ids = anchor.const_u32_like(
-            tokens.iter().copied().collect::<Vec<u32>>(),
+            tokens.to_vec(),
             Shape::from_dims(&[seq]),
         );
         let mut h = embed
@@ -9072,8 +9068,7 @@ impl LlamaModel {
 
         let mut sym_env = fuel_ir::SymEnv::new();
         sym_env
-            .bind(write_sym, linear)
-            .map_err(crate::Error::from)?;
+            .bind(write_sym, linear)?;
 
         let (effective_target, optimized, base_cache, logits_vec) =
             crate::pipelined_bridge::prebuild_optimized_env_capturing_cache::<f32>(
@@ -10148,11 +10143,9 @@ impl LlamaModel {
 
         let mut sym_env = fuel_ir::SymEnv::new();
         sym_env
-            .bind(cached_len_sym, cached_len)
-            .map_err(crate::Error::from)?;
+            .bind(cached_len_sym, cached_len)?;
         sym_env
-            .bind(attended_len_sym, cached_len + seq)
-            .map_err(crate::Error::from)?;
+            .bind(attended_len_sym, cached_len + seq)?;
         let flat =
             ctx_dec.realize_one_as_with_env::<f32>(&graph_dec, logits_root.inner.id(), &sym_env)?;
         if flat.len() != k * cfg.vocab_size {
@@ -11708,8 +11701,10 @@ impl LlamaTokenizer {
 
 /// Sampling strategy for decode loops.
 #[derive(Debug, Clone, Copy)]
+#[derive(Default)]
 pub enum SamplingStrategy {
     /// Greedy: always pick the highest-probability token.
+    #[default]
     Greedy,
     /// Temperature-scaled sampling with a deterministic seed. `temp`
     /// is the softmax temperature (`1.0` is unscaled, `0.0` is
@@ -11718,11 +11713,6 @@ pub enum SamplingStrategy {
     Temperature { temp: f32, seed: u64 },
 }
 
-impl Default for SamplingStrategy {
-    fn default() -> Self {
-        SamplingStrategy::Greedy
-    }
-}
 
 impl LlamaModel {
     /// Run greedy or temperature-sampled token generation for
@@ -11882,11 +11872,10 @@ impl LlamaModel {
             let next = sample_logits(&last_logits, strategy, &mut rng_state);
             tokens.push(next);
             on_token(next);
-            if let Some(eos) = eos_id {
-                if next == eos {
+            if let Some(eos) = eos_id
+                && next == eos {
                     break;
                 }
-            }
             #[cfg(feature = "cuda")]
             {
                 last_logits = self.forward_with_kv_context_captured(
@@ -12093,8 +12082,8 @@ impl LlamaModel {
 
             // --- Accept phase: strategy-specific. ---
             let mut accepted = 0usize;
-            let bonus_token: u32;
-            match strategy {
+            
+            let bonus_token: u32 = match strategy {
                 SamplingStrategy::Greedy => {
                     let mut mismatched: Option<u32> = None;
                     for i in 0..drafts.len() {
@@ -12111,12 +12100,12 @@ impl LlamaModel {
                             break;
                         }
                     }
-                    bonus_token = match mismatched {
+                    match mismatched {
                         Some(t) => t,
                         None => spec_argmax(
                             &verify_logits[(drafts.len() - 1) * vocab..drafts.len() * vocab],
                         ),
-                    };
+                    }
                 }
                 SamplingStrategy::Temperature { .. } => {
                     // Leviathan accept rule. For each i:
@@ -12164,7 +12153,7 @@ impl LlamaModel {
                             break;
                         }
                     }
-                    bonus_token = match rejected_replacement {
+                    match rejected_replacement {
                         Some(t) => t,
                         None => {
                             // All K accepted — sample bonus from target's
@@ -12174,9 +12163,9 @@ impl LlamaModel {
                             let probs = spec_softmax_temp(last_row, temp);
                             spec_sample_cat(&probs, &mut rng_state)
                         }
-                    };
+                    }
                 }
-            }
+            };
 
             // --- Roll back both caches to the committed prefix. ---
             // Both caches advanced by K during draft/verify, but only
@@ -12470,7 +12459,7 @@ impl PhiConfig {
         let rope_base = get_f64("rope_theta").unwrap_or(10_000.0);
         let partial_rotary_factor = get_f64("partial_rotary_factor").unwrap_or(0.4);
         let rotary_dim = (partial_rotary_factor * head_dim as f64).round() as usize;
-        if rotary_dim % 2 != 0 {
+        if !rotary_dim.is_multiple_of(2) {
             crate::bail!(
                 "PhiConfig: rotary_dim {rotary_dim} must be even (partial_rotary_factor={partial_rotary_factor}, head_dim={head_dim})"
             );
@@ -12907,8 +12896,7 @@ impl PhiModel {
         // reads the post-write full-capacity buffers.
         let mut sym_env = fuel_ir::SymEnv::new();
         sym_env
-            .bind(cached_len_sym, cached_len)
-            .map_err(crate::Error::from)?;
+            .bind(cached_len_sym, cached_len)?;
         let logits_vec = ctx.realize_one_as_with_env::<f32>(
             last_logits.inner.graph(),
             last_logits.inner.id(),
@@ -13153,8 +13141,7 @@ impl PhiModel {
 
         let mut sym_env = fuel_ir::SymEnv::new();
         sym_env
-            .bind(cached_len_sym, cached_len)
-            .map_err(crate::Error::from)?;
+            .bind(cached_len_sym, cached_len)?;
 
         let (effective_target, optimized, base_cache, logits_vec) =
             ctx.prebuild_optimized_capturing_as_with_env::<f32>(&graph, logits_node, &sym_env)?;
@@ -13579,11 +13566,10 @@ impl PhiModel {
             let next = sample_logits(&last_logits, strategy, &mut rng_state);
             tokens.push(next);
             on_token(next);
-            if let Some(eos) = eos_id {
-                if next == eos {
+            if let Some(eos) = eos_id
+                && next == eos {
                     break;
                 }
-            }
             #[cfg(feature = "cuda")]
             {
                 last_logits = self.forward_with_kv_context_captured(
@@ -14073,7 +14059,7 @@ fn dequant_gguf_bytes_to_f32(
     use half::{bf16, f16};
     match dt {
         GgmlDType::F32 => {
-            if bytes.len() % 4 != 0 {
+            if !bytes.len().is_multiple_of(4) {
                 crate::bail!(
                     "gguf {name}: F32 byte count {} not multiple of 4",
                     bytes.len()
@@ -14085,7 +14071,7 @@ fn dequant_gguf_bytes_to_f32(
                 .collect())
         }
         GgmlDType::F16 => {
-            if bytes.len() % 2 != 0 {
+            if !bytes.len().is_multiple_of(2) {
                 crate::bail!(
                     "gguf {name}: F16 byte count {} not multiple of 2",
                     bytes.len()
@@ -14097,7 +14083,7 @@ fn dequant_gguf_bytes_to_f32(
                 .collect())
         }
         GgmlDType::BF16 => {
-            if bytes.len() % 2 != 0 {
+            if !bytes.len().is_multiple_of(2) {
                 crate::bail!(
                     "gguf {name}: BF16 byte count {} not multiple of 2",
                     bytes.len()
@@ -14134,7 +14120,7 @@ fn dequant_gguf_bytes_to_f32(
 fn cpu_dequant_via_trait<T: fuel_quantized::GgmlType>(bytes: &[u8]) -> Vec<f32> {
     let block_bytes = std::mem::size_of::<T>();
     assert!(
-        bytes.len() % block_bytes == 0,
+        bytes.len().is_multiple_of(block_bytes),
         "cpu_dequant_via_trait: bytes {} not multiple of block_bytes {}",
         bytes.len(),
         block_bytes
@@ -15224,54 +15210,54 @@ mod generate_tests {
     /// 3 prefill tokens then 3 decode steps, flattened — see
     /// [`gap029_golden_decode`].
     const GAP029_LLAMA_DECODE_GOLDEN: [f32; 48] = [
-        0.235882401_f32,
-        0.079829141_f32,
-        -0.130090356_f32,
+        0.235_882_4_f32,
+        0.079_829_14_f32,
+        -0.130_090_36_f32,
         -0.102592126_f32,
-        -0.065259621_f32,
-        0.086530462_f32,
-        -0.204395950_f32,
-        0.017957900_f32,
-        0.064830668_f32,
-        -0.197869897_f32,
-        -0.218223333_f32,
-        0.039521270_f32,
-        0.181455895_f32,
+        -0.065_259_62_f32,
+        0.086_530_46_f32,
+        -0.204_395_95_f32,
+        0.017_957_9_f32,
+        0.064_830_67_f32,
+        -0.197_869_9_f32,
+        -0.218_223_33_f32,
+        0.039_521_27_f32,
+        0.181_455_9_f32,
         -0.014700335_f32,
-        0.325861752_f32,
-        0.119164757_f32,
-        -0.124628991_f32,
-        -0.219824359_f32,
-        0.088146292_f32,
-        0.069199830_f32,
+        0.325_861_75_f32,
+        0.119_164_76_f32,
+        -0.124_628_99_f32,
+        -0.219_824_36_f32,
+        0.088_146_29_f32,
+        0.069_199_83_f32,
         -0.053305764_f32,
         -0.030561801_f32,
         0.031161062_f32,
         -0.083186984_f32,
         -0.013608441_f32,
-        0.065507233_f32,
+        0.065_507_23_f32,
         -0.085608765_f32,
         -0.016087107_f32,
         0.061509483_f32,
         0.099036664_f32,
-        -0.117331989_f32,
-        -0.176698670_f32,
-        0.132780492_f32,
+        -0.117_331_99_f32,
+        -0.176_698_67_f32,
+        0.132_780_49_f32,
         -0.045753848_f32,
         -0.103880905_f32,
-        -0.083950274_f32,
+        -0.083_950_27_f32,
         -0.068138495_f32,
         0.013806637_f32,
-        -0.149572328_f32,
+        -0.149_572_33_f32,
         -0.053597312_f32,
         -0.025251985_f32,
         -0.027037866_f32,
-        -0.328116179_f32,
+        -0.328_116_18_f32,
         -0.087185904_f32,
-        0.152396053_f32,
-        -0.154513642_f32,
-        0.104392514_f32,
-        0.062370289_f32,
+        0.152_396_05_f32,
+        -0.154_513_64_f32,
+        0.104_392_51_f32,
+        0.062_370_29_f32,
     ];
 
     /// Node count of `LlamaModel`'s held decode graph — see
@@ -20407,7 +20393,7 @@ mod generate_tests {
         let mut ms: Vec<f64> = times.iter().map(|d| d.as_secs_f64() * 1e3).collect();
         ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let mid = ms.len() / 2;
-        if ms.len() % 2 == 0 {
+        if ms.len().is_multiple_of(2) {
             (ms[mid - 1] + ms[mid]) / 2.0
         } else {
             ms[mid]

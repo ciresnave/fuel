@@ -446,7 +446,7 @@ impl QuantizedWhisperModel {
             seq,
         )?;
         let embed_t = embed.transpose()?;
-        Ok(x.matmul(&embed_t)?)
+        x.matmul(&embed_t)
     }
 
     /// Greedy generation paralleling `WhisperModel::generate_greedy`:
@@ -511,7 +511,7 @@ fn layer_norm_affine(
         .const_f32_like(Arc::clone(beta), Shape::from_dims(&[hidden]))
         .reshape(Shape::from_dims(&[1, 1, hidden]))?
         .broadcast_to(Shape::from_dims(&[1, seq, hidden]))?;
-    Ok(normed.mul(&g)?.add(&b)?)
+    normed.mul(&g)?.add(&b)
 }
 
 /// Q4_0 linear with optional broadcast bias add. `in_f`/`out_f` are the
@@ -612,7 +612,7 @@ fn encoder_layer(
     let h_ff = cfg.encoder_ffn_dim;
     let mid = q_linear(&x_ln, &lw.fc1_w, Some(&lw.fc1_b), d, h_ff, seq)?.gelu();
     let ffn = q_linear(&mid, &lw.fc2_w, Some(&lw.fc2_b), h_ff, d, seq)?;
-    Ok(x.add(&ffn)?)
+    x.add(&ffn)
 }
 
 fn decoder_layer(
@@ -681,7 +681,7 @@ fn decoder_layer(
     let h_ff = cfg.decoder_ffn_dim;
     let mid = q_linear(&x_ln, &lw.fc1_w, Some(&lw.fc1_b), d, h_ff, q_seq)?.gelu();
     let ffn = q_linear(&mid, &lw.fc2_w, Some(&lw.fc2_b), h_ff, d, q_seq)?;
-    Ok(x.add(&ffn)?)
+    x.add(&ffn)
 }
 
 // ---- Tests ----------------------------------------------------------------

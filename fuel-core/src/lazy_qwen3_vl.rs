@@ -485,8 +485,8 @@ fn build_deepstack_per_layer(
     let mut out: Vec<Option<Tensor>> = Vec::with_capacity(len);
     for layer_idx in 0..len {
         let mut accum: Option<Tensor> = None;
-        if let Some(img) = image {
-            if layer_idx < img.deepstack_projected.len() {
+        if let Some(img) = image
+            && layer_idx < img.deepstack_projected.len() {
                 let t = scatter_visual_residual(
                     anchor,
                     &img.deepstack_projected[layer_idx],
@@ -496,9 +496,8 @@ fn build_deepstack_per_layer(
                 )?;
                 accum = Some(t);
             }
-        }
-        if let Some(vid) = video {
-            if layer_idx < vid.deepstack_projected.len() {
+        if let Some(vid) = video
+            && layer_idx < vid.deepstack_projected.len() {
                 let t = scatter_visual_residual(
                     anchor,
                     &vid.deepstack_projected[layer_idx],
@@ -511,7 +510,6 @@ fn build_deepstack_per_layer(
                     None => t,
                 });
             }
-        }
         out.push(accum);
     }
     Ok(out)

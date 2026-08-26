@@ -613,7 +613,7 @@ fn dequant_bytes_to_f32(
     use half::{bf16, f16};
     match dt {
         GgmlDType::F32 => {
-            if bytes.len() % 4 != 0 {
+            if !bytes.len().is_multiple_of(4) {
                 return Err(crate::Error::Msg(format!(
                     "gguf {name}: F32 byte count {} not multiple of 4",
                     bytes.len(),
@@ -626,7 +626,7 @@ fn dequant_bytes_to_f32(
                 .collect())
         }
         GgmlDType::F16 => {
-            if bytes.len() % 2 != 0 {
+            if !bytes.len().is_multiple_of(2) {
                 return Err(crate::Error::Msg(format!(
                     "gguf {name}: F16 byte count {} not multiple of 2",
                     bytes.len(),
@@ -639,7 +639,7 @@ fn dequant_bytes_to_f32(
                 .collect())
         }
         GgmlDType::BF16 => {
-            if bytes.len() % 2 != 0 {
+            if !bytes.len().is_multiple_of(2) {
                 return Err(crate::Error::Msg(format!(
                     "gguf {name}: BF16 byte count {} not multiple of 2",
                     bytes.len(),

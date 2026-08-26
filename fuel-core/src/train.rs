@@ -815,12 +815,12 @@ mod tests {
         assert_eq!(per_row.len(), 2);
         // Hand-computed (see byte_kernels.rs unit test).
         assert!(
-            (per_row[0] - 2.44018972).abs() < 1e-5,
+            (per_row[0] - 2.440_189_8).abs() < 1e-5,
             "row 0: {}",
             per_row[0]
         );
         assert!(
-            (per_row[1] - 1.38629436).abs() < 1e-5,
+            (per_row[1] - 1.386_294_4).abs() < 1e-5,
             "row 1: {}",
             per_row[1]
         );
@@ -839,7 +839,7 @@ mod tests {
             .realize_f32()[0];
         // Only row 0 contributes; mean of one value is itself.
         assert!(
-            (loss_val - 2.44018972).abs() < 1e-5,
+            (loss_val - 2.440_189_8).abs() < 1e-5,
             "got {loss_val}, expected ~2.44019",
         );
     }

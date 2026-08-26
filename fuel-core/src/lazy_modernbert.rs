@@ -198,11 +198,11 @@ impl ModernBertModel {
         }
 
         // Final LN (no bias).
-        Ok(x.layer_norm_affine(
+        x.layer_norm_affine(
             std::sync::Arc::clone(&weights.final_norm_gain),
             Arc::<[f32]>::from(vec![0.0_f32; h]),
             cfg.layer_norm_eps,
-        )?)
+        )
     }
 
     /// Extract per-token features at the requested layer
@@ -330,7 +330,7 @@ impl ModernBertModel {
         let x_normed = match &layer.attn_norm_gain {
             None => x.clone(),
             Some(gain) => x.layer_norm_affine(
-                std::sync::Arc::clone(&gain),
+                std::sync::Arc::clone(gain),
                 std::sync::Arc::clone(&zero_bias),
                 cfg.layer_norm_eps,
             )?,
@@ -388,7 +388,7 @@ impl ModernBertModel {
         let probs = scores.softmax_last_dim()?;
         let ctx = probs.matmul(&v)?;
         let merged = ctx.merge_heads()?;
-        Ok(layer.wo.apply_linear(&merged, h, h)?)
+        layer.wo.apply_linear(&merged, h, h)
     }
 
     fn geglu(&self, x: &Tensor, layer: &ModernBertLayerWeights) -> Result<Tensor> {
@@ -401,7 +401,7 @@ impl ModernBertModel {
         let gate = up.slice(2_usize, 0, i)?;
         let value = up.slice(2_usize, i, i)?;
         let inner = gate.gelu_erf().mul(&value)?;
-        Ok(layer.mlp_wo.apply_linear(&inner, i, h)?)
+        layer.mlp_wo.apply_linear(&inner, i, h)
     }
 }
 

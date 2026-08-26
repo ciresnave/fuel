@@ -140,9 +140,9 @@ impl Mamba2Model {
         let cfg = &self.config;
         let weights = &self.weights;
         let h_norm = self.run_backbone(tokens)?;
-        Ok(weights
+        weights
             .output
-            .apply_linear(&h_norm, cfg.d_model, cfg.vocab_size())?)
+            .apply_linear(&h_norm, cfg.d_model, cfg.vocab_size())
     }
 
     /// Run the Mamba-2 SSD stack forward up to the final
@@ -160,7 +160,7 @@ impl Mamba2Model {
         let batch = 1;
         assert!(seq > 0, "Mamba2Model::forward: tokens must be non-empty");
         assert!(
-            seq % cfg.chunk_size == 0,
+            seq.is_multiple_of(cfg.chunk_size),
             "Mamba2Model::forward: seq ({seq}) must be a multiple of chunk_size ({}). \
              Right-pad to the next multiple before calling.",
             cfg.chunk_size,
@@ -178,10 +178,10 @@ impl Mamba2Model {
         for layer in &weights.layers {
             h = self.apply_residual_block(&h, layer)?;
         }
-        Ok(h.rms_norm_affine(
+        h.rms_norm_affine(
             std::sync::Arc::clone(&weights.final_norm_gain),
             cfg.rms_norm_eps,
-        )?)
+        )
     }
 
     fn apply_residual_block(&self, x: &Tensor, layer: &Mamba2LayerWeights) -> Result<Tensor> {
@@ -242,7 +242,7 @@ impl Mamba2Model {
             (b_g, c_g)
         } else {
             assert!(
-                n_heads % cfg.ngroups == 0,
+                n_heads.is_multiple_of(cfg.ngroups),
                 "Mamba2: n_heads ({n_heads}) must be a multiple of ngroups ({})",
                 cfg.ngroups,
             );
@@ -299,7 +299,7 @@ impl Mamba2Model {
         let gated = y_normed.mul(&z.silu())?;
 
         // out_proj: d_inner → d_model.
-        Ok(layer.out_proj.apply_linear(&gated, d_inner, cfg.d_model)?)
+        layer.out_proj.apply_linear(&gated, d_inner, cfg.d_model)
     }
 }
 

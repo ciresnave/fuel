@@ -988,13 +988,13 @@ impl PaddleOcrVlNaVitModel {
             "PaddleOcrVlNaVitModel::forward: H and W must be positive, got ({h}, {w})",
         );
         assert!(
-            h % cfg.patch_size == 0,
+            h.is_multiple_of(cfg.patch_size),
             "PaddleOcrVlNaVitModel::forward: H ({h}) is not a multiple of patch_size ({}); \
              pad host-side before calling forward",
             cfg.patch_size,
         );
         assert!(
-            w % cfg.patch_size == 0,
+            w.is_multiple_of(cfg.patch_size),
             "PaddleOcrVlNaVitModel::forward: W ({w}) is not a multiple of patch_size ({}); \
              pad host-side before calling forward",
             cfg.patch_size,
@@ -1006,7 +1006,7 @@ impl PaddleOcrVlNaVitModel {
         let merge = cfg.spatial_merge_size;
         assert!(merge >= 1, "spatial_merge_size must be >= 1, got {merge}");
         assert!(
-            h_patches % merge == 0 && w_patches % merge == 0,
+            h_patches.is_multiple_of(merge) && w_patches.is_multiple_of(merge),
             "PaddleOcrVlNaVitModel::forward: patch grid ({h_patches}, {w_patches}) is not a \
              multiple of spatial_merge_size ({merge}) on both axes",
         );

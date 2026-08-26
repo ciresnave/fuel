@@ -146,9 +146,9 @@ impl MambaModel {
         let cfg = &self.config;
         let weights = &self.weights;
         let h_norm = self.run_backbone(tokens)?;
-        Ok(weights
+        weights
             .output
-            .apply_linear(&h_norm, cfg.d_model, cfg.vocab_size())?)
+            .apply_linear(&h_norm, cfg.d_model, cfg.vocab_size())
     }
 
     /// Run the Mamba SSM stack forward up to the final RmsNorm
@@ -178,10 +178,10 @@ impl MambaModel {
         for layer in &weights.layers {
             h = self.apply_residual_block(&h, layer)?;
         }
-        Ok(h.rms_norm_affine(
+        h.rms_norm_affine(
             std::sync::Arc::clone(&weights.final_norm_gain),
             cfg.rms_norm_eps,
-        )?)
+        )
     }
 
     fn apply_residual_block(&self, x: &Tensor, layer: &MambaLayerWeights) -> Result<Tensor> {
@@ -259,7 +259,7 @@ impl MambaModel {
         let gated = y_with_skip.mul(&z_silu)?;
 
         // out_proj: d_inner → d_model.
-        Ok(layer.out_proj.apply_linear(&gated, d_inner, cfg.d_model)?)
+        layer.out_proj.apply_linear(&gated, d_inner, cfg.d_model)
     }
 }
 

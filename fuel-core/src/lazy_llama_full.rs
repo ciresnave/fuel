@@ -97,7 +97,7 @@ impl LlamaEosToks {
     pub fn is_eos(&self, tok: u32) -> bool {
         match self {
             Self::Single(s) => *s == tok,
-            Self::Multiple(v) => v.iter().any(|t| *t == tok),
+            Self::Multiple(v) => v.contains(&tok),
         }
     }
 }
@@ -172,7 +172,7 @@ impl LlamaFullConfig {
 
         let rope_scaling = v
             .get("rope_scaling")
-            .and_then(|s| parse_llama3_rope_scaling(s));
+            .and_then(parse_llama3_rope_scaling);
 
         Ok(Self {
             hidden_size,
@@ -431,9 +431,9 @@ impl Llama3Model {
         let cfg = &self.inner.config;
         let weights = &self.inner.weights;
         let h_norm = self.run_backbone_embeds(embeds, start_pos)?;
-        Ok(weights
+        weights
             .output
-            .apply_linear(&h_norm, cfg.dim, cfg.vocab_size)?)
+            .apply_linear(&h_norm, cfg.dim, cfg.vocab_size)
     }
 
     /// Forward from pre-computed embeddings; skip the LM head and

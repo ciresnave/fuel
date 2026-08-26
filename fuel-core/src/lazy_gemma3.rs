@@ -118,7 +118,7 @@ pub struct Gemma3Model {
 impl Gemma3Model {
     /// True if layer `i` uses sliding-window + local RoPE.
     fn layer_uses_sliding(&self, layer_idx: usize) -> bool {
-        (layer_idx + 1) % self.config.sliding_window_pattern > 0
+        !(layer_idx + 1).is_multiple_of(self.config.sliding_window_pattern)
     }
 
     pub fn forward(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
@@ -229,7 +229,7 @@ impl Gemma3Model {
                 crate::Error::Msg("Gemma3Model::forward_embeds: seq must be > 0".into()).bt(),
             );
         }
-        if cfg.num_attention_heads % cfg.num_key_value_heads != 0 {
+        if !cfg.num_attention_heads.is_multiple_of(cfg.num_key_value_heads) {
             return Err(crate::Error::Msg(
                 "Gemma3Config: num_attention_heads must be a multiple of num_key_value_heads"
                     .into(),

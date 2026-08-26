@@ -48,7 +48,7 @@ pub struct Qwen3MoeConfig {
 
 impl Qwen3MoeConfig {
     pub fn layer_uses_moe(&self, layer_idx: usize) -> bool {
-        self.num_experts > 0 && (layer_idx + 1) % self.decoder_sparse_step == 0
+        self.num_experts > 0 && (layer_idx + 1).is_multiple_of(self.decoder_sparse_step)
     }
 }
 
@@ -149,10 +149,10 @@ impl Qwen3MoeModel {
 
     fn apply_lm_head(&self, h_norm: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
-        Ok(self
+        self
             .weights
             .output
-            .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
+            .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)
     }
 
     fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
@@ -543,10 +543,10 @@ impl DecodeBackbone for Qwen3MoeModel {
         let cfg = &self.config;
         let h_norm =
             h.rms_norm_affine(Arc::clone(&self.weights.final_norm_gain), cfg.rms_norm_eps)?;
-        Ok(self
+        self
             .weights
             .output
-            .apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size)?)
+            .apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size)
     }
 }
 
@@ -784,10 +784,10 @@ mod tests {
             num_experts_per_tok: 1,
         };
         // Confirm the FFN-mode mapping is what we expect.
-        assert_eq!(cfg.layer_uses_moe(0), false);
-        assert_eq!(cfg.layer_uses_moe(1), true);
-        assert_eq!(cfg.layer_uses_moe(2), false);
-        assert_eq!(cfg.layer_uses_moe(3), true);
+        assert!(!cfg.layer_uses_moe(0));
+        assert!(cfg.layer_uses_moe(1));
+        assert!(!cfg.layer_uses_moe(2));
+        assert!(cfg.layer_uses_moe(3));
         let model = Qwen3MoeModel {
             config: cfg.clone(),
             weights: tiny_weights(&cfg),

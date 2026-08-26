@@ -31,7 +31,7 @@
 //! D batch B: dense routing (full softmax × every expert),
 //! plus an always-on **shared-expert** branch (`n_shared_experts
 //! > 0`). The `first_k_dense_replace` config skips MoE for the
-//! first K layers (they use a plain SwiGLU MLP instead).
+//! > first K layers (they use a plain SwiGLU MLP instead).
 //!
 //! v1 deferrals:
 //!   - **YaRN / Su / Dynamic / Linear RoPE scaling**. v1 uses
@@ -101,7 +101,7 @@ impl DeepSeek2Config {
         let n_routed = self.n_routed_experts.unwrap_or(0);
         n_routed > 0
             && layer_idx >= self.first_k_dense_replace
-            && (layer_idx - self.first_k_dense_replace) % self.moe_layer_freq == 0
+            && (layer_idx - self.first_k_dense_replace).is_multiple_of(self.moe_layer_freq)
     }
 }
 
@@ -924,8 +924,7 @@ impl DeepSeek2Model {
         // reads the post-write full-capacity buffers.
         let mut sym_env = fuel_ir::SymEnv::new();
         sym_env
-            .bind(cached_len_sym, cached_len)
-            .map_err(crate::Error::from)?;
+            .bind(cached_len_sym, cached_len)?;
         let logits_vec = ctx.realize_one_as_with_env::<f32>(
             logits_root.graph_handle(),
             logits_root.node_id(),
@@ -1427,11 +1426,9 @@ impl DeepSeek2Model {
 
         let mut sym_env = fuel_ir::SymEnv::new();
         sym_env
-            .bind(cached_len_sym, cached_len)
-            .map_err(crate::Error::from)?;
+            .bind(cached_len_sym, cached_len)?;
         sym_env
-            .bind(attended_len_sym, cached_len + seq)
-            .map_err(crate::Error::from)?;
+            .bind(attended_len_sym, cached_len + seq)?;
 
         let (effective_target, optimized, base_cache, logits_vec) =
             ctx.prebuild_optimized_capturing_as_with_env::<f32>(&graph, logits_node, &sym_env)?;
@@ -1644,11 +1641,10 @@ impl DeepSeek2Model {
             let next = crate::lazy::sample_logits(&last_logits, strategy, &mut rng_state);
             tokens.push(next);
             on_token(next);
-            if let Some(eos) = eos_id {
-                if next == eos {
+            if let Some(eos) = eos_id
+                && next == eos {
                     break;
                 }
-            }
             last_logits = self.forward_with_latent_kv_context_persistent(
                 &[next],
                 &mut cache,
@@ -1792,7 +1788,7 @@ impl DeepSeek2Model {
             Some(w) => w.clone(),
             None => WeightStorage::F32(self.weights.token_embedding.clone()),
         };
-        Ok(lm_head_w.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
+        lm_head_w.apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)
     }
 
     fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
@@ -2282,8 +2278,8 @@ impl DeepSeek2Model {
         let ctx = probs.matmul(&v)?; // (b, n_heads, seq, v_dim)
 
         let merged = ctx.merge_heads()?;
-        Ok(w.o_proj
-            .apply_linear(&merged, n_heads * v_dim, cfg.hidden_size)?)
+        w.o_proj
+            .apply_linear(&merged, n_heads * v_dim, cfg.hidden_size)
     }
 
     fn apply_dense_mlp(&self, x: &Tensor, w: &DeepSeek2DenseMlpWeights) -> Result<Tensor> {
@@ -2297,7 +2293,7 @@ impl DeepSeek2Model {
             DeepSeek2Activation::Gelu => gate.gelu_erf(),
         };
         let inner = activated.mul(&up)?;
-        Ok(w.down.apply_linear(&inner, inter, h)?)
+        w.down.apply_linear(&inner, inter, h)
     }
 
     fn apply_moe(&self, x: &Tensor, w: &DeepSeek2MoeWeights) -> Result<Tensor> {

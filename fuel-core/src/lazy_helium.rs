@@ -101,10 +101,10 @@ impl HeliumModel {
 
     fn apply_lm_head(&self, h_norm: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
-        Ok(self
+        self
             .weights
             .output
-            .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)?)
+            .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)
     }
 
     fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {

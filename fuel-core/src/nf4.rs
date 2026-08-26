@@ -104,13 +104,13 @@ pub fn nf4_from_bytes(
 ) -> Result<Nf4Weight> {
     let w_packed: Vec<u8> = w_packed.into();
     let absmax: Vec<f32> = absmax.into();
-    if k == 0 || k % 2 != 0 {
+    if k == 0 || !k.is_multiple_of(2) {
         return Err(fuel_ir::Error::Msg(format!(
             "nf4_from_bytes: k={k} must be even and non-zero",
         ))
         .bt());
     }
-    if block_size == 0 || k % block_size != 0 {
+    if block_size == 0 || !k.is_multiple_of(block_size) {
         return Err(fuel_ir::Error::Msg(format!(
             "nf4_from_bytes: k={k} must be a positive multiple of block_size={block_size}",
         ))
@@ -297,7 +297,7 @@ pub fn parse_bnb_quant_state(json_bytes: &[u8]) -> fuel_ir::Result<BnbQuantState
         )
         .bt());
     }
-    if k % block_size != 0 {
+    if !k.is_multiple_of(block_size) {
         return Err(fuel_ir::Error::Msg(format!(
             "parse_bnb_quant_state: blocksize={block_size} doesn't divide K={k} \
              (this would leave a partial block at the end of each row, which \
@@ -306,7 +306,7 @@ pub fn parse_bnb_quant_state(json_bytes: &[u8]) -> fuel_ir::Result<BnbQuantState
         ))
         .bt());
     }
-    if k % 2 != 0 {
+    if !k.is_multiple_of(2) {
         return Err(fuel_ir::Error::Msg(format!(
             "parse_bnb_quant_state: K={k} must be even (NF4 packs 2 codes per byte)",
         ))

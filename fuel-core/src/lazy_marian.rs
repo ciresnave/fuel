@@ -476,11 +476,11 @@ impl MarianModel {
             &layer.fc2_bias,
             cfg.encoder_ffn_dim,
         )?;
-        Ok(h1.add(&ffn)?.layer_norm_affine(
+        h1.add(&ffn)?.layer_norm_affine(
             std::sync::Arc::clone(&layer.final_ln_gain),
             std::sync::Arc::clone(&layer.final_ln_bias),
             1e-5,
-        )?)
+        )
     }
 
     fn apply_decoder_layer(
@@ -527,11 +527,11 @@ impl MarianModel {
             &layer.fc2_bias,
             cfg.decoder_ffn_dim,
         )?;
-        Ok(h2.add(&ffn)?.layer_norm_affine(
+        h2.add(&ffn)?.layer_norm_affine(
             std::sync::Arc::clone(&layer.final_ln_gain),
             std::sync::Arc::clone(&layer.final_ln_bias),
             1e-5,
-        )?)
+        )
     }
 
     /// Generic multi-head attention. `q_src` provides Q; `kv_src`

@@ -191,9 +191,9 @@ impl MistralModel {
             std::sync::Arc::clone(&weights.final_norm_gain),
             cfg.rms_norm_eps,
         )?;
-        Ok(weights
+        weights
             .output
-            .apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size)?)
+            .apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size)
     }
 
     /// Run the decoder forward up to the final RmsNorm and
@@ -278,10 +278,10 @@ impl MistralModel {
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &rope_cos, &rope_sin, mask)?;
         }
-        Ok(h.rms_norm_affine(
+        h.rms_norm_affine(
             std::sync::Arc::clone(&weights.final_norm_gain),
             cfg.rms_norm_eps,
-        )?)
+        )
     }
 
     /// Build the sliding-window causal mask for a single forward
