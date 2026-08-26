@@ -535,7 +535,7 @@ A lane paid a **66m26s** cold forge, then rebased 26 commits and checked that `t
 
 ## evidence-that-is-not-independent
 
-> **Index line (in CLAUDE.md):** Two artifacts agreeing is not two pieces of evidence **if one was written from the other** — and data that arrives ADJACENT to a question is not thereby the question's population. Both feel like corroboration and neither is.
+> **Index line (in CLAUDE.md):** Two artifacts agreeing is not two pieces of evidence **if one was written from the other** — and data that arrives ADJACENT to a question is not thereby the question's population. **And two INDEPENDENT implementations can be wrong the SAME way when the failure mode is inherent to the TASK — independence of authorship does not give independence of error.** All three feel like corroboration and none is.
 
 **Two mechanisms found 2026-08-20, by two different people, both producing a confident wrong answer from something that looked like support.**
 
@@ -560,6 +560,22 @@ A lane reported five op families for the **bit-stable-blocked** class in the sam
 **Note the shape both share with the rest of this file: nothing in the OUTPUT looked wrong.** Two agreeing documents look like verification; two adjacent numbers look like one dataset. **The defect is in the provenance, which is not visible in the artifact.**
 
 ---
+
+### (c) CONVERGENT ERROR — two INDEPENDENT implementations, wrong the same way, because the failure mode is inherent to the TASK
+
+**2026-08-26.** Two people, working separately and neither reading the other's code, each wrote a counter for **unescaped** `|` characters in `docs/gaps.md` — one in `awk` with a `gsub`, one in a heredoc-mangled Python regex. **Both were wrong. Both were wrong IN THE SAME DIRECTION** (inflating the count), and **their two wrong answers agreed with each other.**
+
+**That agreement was far more persuasive than either answer alone, and it was one message away from being filed as a confirmed defect in a gate that was working correctly.** The gate's `NONE` was right; every flagged row carried exactly six unescaped pipes, the excess being escaped `\|` inside prose, which the gate deliberately skips.
+
+**THIS IS NOT DERIVED CORROBORATION — the distinction matters because the defence differs.** In (a) the second artifact was *copied from* the first, so checking provenance exposes it. **Here the implementations were genuinely independent and the provenance is clean.** What they shared was the TASK, and **the task has a failure mode that is easy to hit and hard to see: forgetting the escape case is precisely what is easy to get wrong about counting delimiters.** So two competent independent attempts converge on it, *because* they are competent attempts at the same hard thing.
+
+> **INDEPENDENCE OF AUTHORSHIP DOES NOT GIVE INDEPENDENCE OF ERROR.**
+
+**And the self-diagnosis was wrong too, one level down** — the author first explained their mangled regex as *"matches empty and removes nothing"*. Measured, it is an alternation of *(literal backslash)* OR *(empty)*, so it **strips the backslash and LEAVES the pipe**, which then counts as a separator. **The count was INFLATED, not unchanged.** A wrong diagnosis of a real error, corrected by printing it rather than reasoning about it.
+
+**THE TEST THAT SEPARATES THE THREE MECHANISMS: ask where the shared blind spot LIVES.** In a common SOURCE → derived, and provenance exposes it. In a common TASK → convergent, and **provenance is clean while the agreement is still worthless.** In a common ADJACENCY → the data merely arrived together. **All three feel like corroboration and none is.**
+
+**PRACTICE: when two instruments agree, ask what they SHARE before treating it as confirmation — and for a fiddly primitive, EXTRACT IT ONCE AND CALL IT EVERYWHERE, with the incident in its docstring.** The fix here was one function replacing every ad-hoc reimplementation, and the reason is written at the site **so nobody later "tidies" it back into two.** *Fix the generator, not the output* — where the generator is the temptation to re-derive a primitive that already exists.
 
 ## a-reference-must-be-able-to-indict-itself
 
