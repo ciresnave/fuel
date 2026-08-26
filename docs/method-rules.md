@@ -969,3 +969,48 @@ Fixed to: *"...other inputs, OTHER PARAMETER CONFIGURATIONS (one probe fixes one
 **Scope of that correction, stated plainly because it is the kind of thing that gets over-read: the RECORDS were unaffected.** Every one was earned by 16 byte-identical repeat invocations and still is. **What changed is what the contract SAYS they cover** — no re-seed, no re-verification, no downgrade.
 
 **PRACTICE: when writing a scope limitation, enumerate the AXES OF VARIATION, not the ones you happen to have thought of — and if the list is not exhaustive, say so in the list.** Related but distinct from the **"a true justification attached to a wider claim than it supports"** rule in `CLAUDE.md` (GAP-166) — *cited to the file that actually carries it: there is no `justification-scope-mismatch` section here, and a link to one would have been a dangling citation inside the rule about citations*: there a true reason silently licenses a wider claim; **here an explicit list manufactures the wider claim by omission.** The first is an overreach nobody wrote down; the second is written down, in the very sentence intended to constrain it.
+## commands-dont-rot-by-breaking
+
+> **Index line (in CLAUDE.md):** Third and last citation population. **Cited commands were 0% dead (10/10 alive).** They do not rot by breaking — breakage is loud and gets fixed. They rot by **SCOPE**: still running, still exiting 0, no longer answering the question they were cited for.
+
+**MEASURED 2026-08-25, completing the taxonomy:**
+
+```
+paths / symbols / GAP ids     0% defective  (19, 25)   rot-proof by NAMING something stable
+line numbers                 67% defective  (9)        fix by DELETING the number
+counts                    exact 0/2 survived, hedged 2/2  no stable form: BOUND it
+commands                      0% dead       (10/10)    fix is not about liveness at all
+```
+
+**47 distinct commands cited; 13 are templates with placeholders and cannot be run
+as cited; 34 runnable, of which 7 are expensive (workspace / CUDA / forge). Every
+one of the 10 cheap read-only ones ran.**
+
+**So the fix for commands is not "check it still runs" — that check passes.** The
+failure mode is a command that succeeds and misleads, and CLAUDE.md already
+documents three of them: `cargo check --workspace` **is a CUDA forge**;
+`git log HEAD --not --remotes` **reports false unpushed work after a branch
+reap**; a warm cache **suppresses the `Checking` line and the warnings both**.
+Each runs perfectly. **PRACTICE: cite what the command must SHOW, not just the
+command** — the expected output, or the property being established.
+
+**⚠️ AND THE INSTRUMENT WAS WRONG MORE OFTEN THAN THE CORPUS — FOUR TIMES IN ONE
+SWEEP, EVERY TIME TOWARD A MORE INTERESTING NUMBER:**
+
+1. **4 "missing" paths** — 3 were shorthand, 1 a legitimate cross-repo citation.
+   Would have reported a **21% path-defect rate that was entirely mine**.
+2. **A phrase grep missed a hedge that WRAPPED ACROSS TWO LINES**, reading as
+   *"the cited sentence is gone"* when it was merely folded.
+3. **4 commands classified DEAD on `rc=124`** — which is the *timeout firing*, not
+   a failure. They are cargo invocations that pull the kernel forge. **I had
+   written the rule "classify by what a command DOES, not what it looks like" two
+   days earlier and then built a filter that classified by what it looks like.**
+4. **A `grep` with no file argument inside a `while read` loop CONSUMED THE LOOP'S
+   STDIN**, silently eating 3 of 10 inputs — the run reported 7 and I only noticed
+   because `wc -l` said 10. Fix: `< /dev/null` on the inner command.
+
+**Every one of the four inflated the finding.** An instrument error that makes the
+corpus look worse is the one least likely to be questioned, because it agrees with
+why the sweep was commissioned. **Validate the instrument before reporting through
+it, and reconcile any count that disagrees with itself.**
+
