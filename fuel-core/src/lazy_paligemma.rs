@@ -613,7 +613,7 @@ mod tests {
 
     fn tiny_image(cfg: &SiglipVisionConfig) -> Tensor {
         let n_pix = 1 * cfg.num_channels * cfg.image_size * cfg.image_size;
-        let img_data: Vec<f32> = (0..n_pix).map(|i| (i as f32 / n_pix as f32)).collect();
+        let img_data: Vec<f32> = (0..n_pix).map(|i| i as f32 / n_pix as f32).collect();
         Tensor::from_f32(
             Arc::from(img_data),
             Shape::from_dims(&[1, cfg.num_channels, cfg.image_size, cfg.image_size]),
@@ -696,7 +696,7 @@ mod tests {
         };
 
         let n_pix = 1 * v_cfg.num_channels * v_cfg.image_size * v_cfg.image_size;
-        let img_a_data: Vec<f32> = (0..n_pix).map(|i| (i as f32 / n_pix as f32)).collect();
+        let img_a_data: Vec<f32> = (0..n_pix).map(|i| i as f32 / n_pix as f32).collect();
         let img_b_data: Vec<f32> = img_a_data.iter().map(|x| 1.0 - x).collect();
         let img_a = Tensor::from_f32(
             Arc::from(img_a_data),

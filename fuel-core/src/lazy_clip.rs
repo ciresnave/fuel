@@ -984,7 +984,7 @@ mod tests {
 
     fn tiny_image(cfg: &ClipVisionConfig) -> Tensor {
         let n_pix = 1 * cfg.num_channels * cfg.image_size * cfg.image_size;
-        let img_data: Vec<f32> = (0..n_pix).map(|i| (i as f32 / n_pix as f32)).collect();
+        let img_data: Vec<f32> = (0..n_pix).map(|i| i as f32 / n_pix as f32).collect();
         Tensor::from_f32(
             Arc::from(img_data),
             Shape::from_dims(&[1, cfg.num_channels, cfg.image_size, cfg.image_size]),

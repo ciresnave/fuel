@@ -1570,7 +1570,7 @@ mod tests {
 
     fn tiny_pixels(cfg: &PaddleOcrVlVisionConfig, num_tiles: usize) -> Tensor {
         let n_pix = num_tiles * cfg.num_channels * cfg.image_size * cfg.image_size;
-        let data: Vec<f32> = (0..n_pix).map(|i| (i as f32 / n_pix as f32)).collect();
+        let data: Vec<f32> = (0..n_pix).map(|i| i as f32 / n_pix as f32).collect();
         Tensor::from_f32(
             Arc::from(data),
             Shape::from_dims(&[num_tiles, cfg.num_channels, cfg.image_size, cfg.image_size]),
