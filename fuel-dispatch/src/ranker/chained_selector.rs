@@ -182,8 +182,8 @@ impl ChainedSelector {
     /// the selector's scale consistent with the plan rank.
     fn latency_ns(&self, c: &Candidate, ctx: Option<&DecisionContext>) -> u64 {
         let kernel_ns = (|| {
-            if let (Some(judge), Some(ctx)) = (self.judge.as_ref(), ctx) {
-                if let Some(measured) = judge.measured_latency_ns(
+            if let (Some(judge), Some(ctx)) = (self.judge.as_ref(), ctx)
+                && let Some(measured) = judge.measured_latency_ns(
                     ctx.op,
                     ctx.principal_dtype,
                     ctx.size_class,
@@ -192,7 +192,6 @@ impl ChainedSelector {
                 ) {
                     return measured;
                 }
-            }
             let (cr, bw) = default_backend_rates(c.backend);
             composite_ns(&c.static_cost, cr, bw)
         })();
@@ -236,7 +235,7 @@ impl RuntimeSelector for ChainedSelector {
                 FitStatus::Tight => 1u8,
             };
             let key = (pressure_tier, load_tier, self.latency_ns(c, ctx), i);
-            if best.map_or(true, |b| key < b) {
+            if best.is_none_or(|b| key < b) {
                 best = Some(key);
             }
         }

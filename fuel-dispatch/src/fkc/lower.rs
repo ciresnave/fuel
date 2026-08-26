@@ -401,7 +401,7 @@ pub(crate) fn lower_dtype(token: &str, section: &str, operand: &str) -> Result<D
     if let Some(dt) = mapped {
         // Exhaustiveness anchor (no wildcard): a new DType variant breaks
         // this match, forcing the token table above to grow.
-        let _assert_exhaustive = match dt {
+        match dt {
             DType::U8
             | DType::I8
             | DType::U32
@@ -723,8 +723,8 @@ fn assemble_dtype_variants(
         if let Some(ret) = &kernel.return_ {
             for out in &ret.outputs {
                 let operand = out.name.as_deref().unwrap_or("<output>");
-                if let Some(rule) = out.dtype_rule.as_deref() {
-                    if let Some(dt) = resolve_output_slot_dtype(
+                if let Some(rule) = out.dtype_rule.as_deref()
+                    && let Some(dt) = resolve_output_slot_dtype(
                         rule,
                         operand,
                         &inputs,
@@ -734,7 +734,6 @@ fn assemble_dtype_variants(
                     )? {
                         output_dtypes.push(dt);
                     }
-                }
             }
             // §5.5 multi-output bundle (Option C): a `return.bundle` packs
             // several logical slots into ONE output buffer whose PRIMARY
@@ -746,9 +745,9 @@ fn assemble_dtype_variants(
             // with a `passthrough(u)` bundle keys `[T; 6]`, byte-for-byte the
             // deleted hand-written reg. A section with NO bundle is unaffected
             // (the migrated per-(op,dtype) families stay byte-identical).
-            if let Some(bundle) = &ret.bundle {
-                if let Some((slot, rule)) = bundle_primary_dtype_rule(bundle) {
-                    if let Some(dt) = resolve_output_slot_dtype(
+            if let Some(bundle) = &ret.bundle
+                && let Some((slot, rule)) = bundle_primary_dtype_rule(bundle)
+                    && let Some(dt) = resolve_output_slot_dtype(
                         &rule,
                         &slot,
                         &inputs,
@@ -758,8 +757,6 @@ fn assemble_dtype_variants(
                     )? {
                         output_dtypes.push(dt);
                     }
-                }
-            }
         }
 
         if optional_last {
@@ -942,11 +939,10 @@ fn compile_cost(block: Option<&CostBlock>, section: &str) -> Result<CompiledCost
     let _bytes_moved = parse("bytes_moved", cost.bytes_moved.as_deref())?;
     // overhead_ns / memory.device_bytes are raw scalars (number or `~`);
     // when they are an expression STRING they are parse-validated too.
-    if let Some(mem) = &cost.memory {
-        if let Some(serde_yaml_ng::Value::String(s)) = &mem.device_bytes {
+    if let Some(mem) = &cost.memory
+        && let Some(serde_yaml_ng::Value::String(s)) = &mem.device_bytes {
             let _ = parse("memory.device_bytes", Some(s))?;
         }
-    }
     if let Some(serde_yaml_ng::Value::String(s)) = &cost.overhead_ns {
         let _ = parse("overhead_ns", Some(s))?;
     }

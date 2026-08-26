@@ -218,7 +218,7 @@ impl RuntimeSelector for DeviceLoadSelector {
         let mut best: Option<(u8, usize)> = None;
         for (i, c) in alts.iter().enumerate() {
             let key = (load_tier_for(self.lookup.as_ref(), c), i);
-            if best.map_or(true, |b| key < b) {
+            if best.is_none_or(|b| key < b) {
                 best = Some(key);
             }
         }

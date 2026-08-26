@@ -161,8 +161,8 @@ pub fn parse_shape_constraint(
             });
             continue;
         }
-        if seg.starts_with("dim[") {
-            if let Some(close) = seg.find(']') {
+        if seg.starts_with("dim[")
+            && let Some(close) = seg.find(']') {
                 let idx = &seg["dim[".len()..close];
                 let after = seg[close + 1..].trim_start();
                 match (parse_axis(idx), after.strip_prefix('=')) {
@@ -185,7 +185,6 @@ pub fn parse_shape_constraint(
                     }
                 }
             }
-        }
         out.freetext.push(seg.to_string()); // no recognized keyword ⇒ §3.5 notes-style free text
     }
     Ok(out)
@@ -241,11 +240,10 @@ fn seed_axis(profile: SeedProfile, axis: usize, rank: usize) -> i64 {
 /// non-empty `d.dtypes` returns early above), so it falls through to `None`
 /// -> `F32`, matching the pre-Task-1.5 inline match's behavior.
 fn first_probe_dtype(d: &TensorDesc) -> DType {
-    if let Some(tok) = d.dtypes.first() {
-        if let Ok(dt) = crate::fkc::lower::lower_dtype(tok, "", "") {
+    if let Some(tok) = d.dtypes.first()
+        && let Ok(dt) = crate::fkc::lower::lower_dtype(tok, "", "") {
             return dt;
         }
-    }
     match d.dtype_class.as_deref() {
         Some(class) => crate::fkc::lower::expand_dtype_class(class, &[], "", "")
             .ok()
@@ -357,11 +355,10 @@ fn warn(section: &str, message: String) -> ImportWarning {
 /// name it), so it naturally gets no incoming edges.
 fn dep_sources(atoms: &[ShapeAtom], input_roles: &HashSet<String>) -> Vec<String> {
     fn collect(n: &CostNode, roles: &HashSet<String>, out: &mut Vec<String>) {
-        if let Some((Some(r), _)) = as_dim_ref(n) {
-            if roles.contains(&r) {
+        if let Some((Some(r), _)) = as_dim_ref(n)
+            && roles.contains(&r) {
                 out.push(r);
             }
-        }
         match n {
             CostNode::Bin { lhs, rhs, .. } => {
                 collect(lhs, roles, out);
@@ -441,15 +438,14 @@ fn topo_order(
         i += 1;
         out.push(cur.clone());
         for r in order_in {
-            if let Some(deps) = edges.get(r) {
-                if deps.contains(cur) {
+            if let Some(deps) = edges.get(r)
+                && deps.contains(cur) {
                     let e = indeg.get_mut(r).unwrap();
                     *e = e.saturating_sub(1);
                     if *e == 0 && !out.contains(r) && !queue.contains(&r) {
                         queue.push(r);
                     }
                 }
-            }
         }
     }
     if out.len() < order_in.len() {
@@ -468,13 +464,11 @@ fn topo_order(
 }
 
 fn set_axis(s: &mut Solve, role: &str, axis: AxisIndex, rank: usize, v: i64) {
-    if let Some(idx) = axis_to_index(axis, rank) {
-        if let Some(d) = s.dims.get_mut(role) {
-            if idx < d.len() {
+    if let Some(idx) = axis_to_index(axis, rank)
+        && let Some(d) = s.dims.get_mut(role)
+            && idx < d.len() {
                 d[idx] = v.max(1);
             }
-        }
-    }
 }
 
 fn apply_atom(
@@ -525,8 +519,8 @@ fn apply_atom(
                 if v > 0 {
                     let target = role.as_deref().unwrap_or(self_role).to_string();
                     let trank = *ranks.get(&target).unwrap_or(&0);
-                    if let Some(idx) = axis_to_index(axis, trank) {
-                        if let Some(cur) = s.dims.get(&target).and_then(|d| d.get(idx).copied()) {
+                    if let Some(idx) = axis_to_index(axis, trank)
+                        && let Some(cur) = s.dims.get(&target).and_then(|d| d.get(idx).copied()) {
                             // Checked ceil-round: `cur + (v-1)` then `* v` can each
                             // overflow i64 on an adversarial-but-parseable input;
                             // SKIP the round (leave the axis unrounded) rather than
@@ -559,11 +553,10 @@ fn apply_atom(
                                 set_axis(s, &target, axis, trank, final_val);
                             }
                         }
-                    }
                 }
-            } else if let CostNode::Sym(k) = lhs {
-                if let Some(v) = eval_dim_expr(rhs, s, ranks, self_role) {
-                    if v > 0 {
+            } else if let CostNode::Sym(k) = lhs
+                && let Some(v) = eval_dim_expr(rhs, s, ranks, self_role)
+                    && v > 0 {
                         let e = s.sym.entry(k.clone()).or_insert(s.base);
                         if let Some(rounded) = e
                             .checked_add(v - 1)
@@ -573,8 +566,6 @@ fn apply_atom(
                             *e = rounded;
                         }
                     }
-                }
-            }
         }
     }
 }
@@ -648,13 +639,12 @@ pub fn solve_probe_shapes(
             .clone()
             .filter(|n| !n.is_empty())
             .unwrap_or_else(|| format!("#unnamed{i}"));
-        if let Some(name) = d.name.as_deref().filter(|n| !n.is_empty()) {
-            if !seen_names.insert(name.to_string()) && warned_dup_names.insert(name.to_string()) {
+        if let Some(name) = d.name.as_deref().filter(|n| !n.is_empty())
+            && !seen_names.insert(name.to_string()) && warned_dup_names.insert(name.to_string()) {
                 warnings.push(warn(section, format!(
                     "operand name `{name}` is declared more than once; references to it are ambiguous and only one operand's shape constraints are applied"
                 )));
             }
-        }
         let rank_spec = resolve_rank_spec_field(d.rank.as_ref());
         // Soft diagnostic: `rank:` PRESENT but unrecognized (neither a plain
         // integer, `any`, nor a `lo..`/`lo..=hi` range) silently defaulted to

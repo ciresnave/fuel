@@ -1454,14 +1454,13 @@ mod tests {
                     .iter()
                     .any(|&op| build_primitive_probe(op, dts, SEED).is_some()),
             };
-            if let Some(dts) = &parsed {
-                if !matches!(
+            if let Some(dts) = &parsed
+                && !matches!(
                     dts.first(),
                     Some(DType::F32 | DType::F64 | DType::BF16 | DType::F16)
                 ) {
                     non_float_first_tuples += 1;
                 }
-            }
             verdicts.push((rec.dtypes.clone(), ok));
         }
 

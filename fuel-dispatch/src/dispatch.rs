@@ -32,7 +32,7 @@ use fuel_ir::{DType, DeviceLocation, Error, Layout, Result};
 
 #[cfg(feature = "cuda")]
 use crate::kernel::KernelCaps;
-use crate::kernel::{KernelBindingTable, KernelRef, MatmulM, OpParams};
+use crate::kernel::{KernelBindingTable, MatmulM, OpParams};
 use fuel_memory::{BackendStorage, Storage};
 
 /// Collection of backend capabilities, queried during DAG
@@ -7640,12 +7640,11 @@ fn device_inflight_table() -> &'static RwLock<HashMap<DeviceLocation, AtomicU32>
 pub fn inflight_inc(loc: DeviceLocation) {
     let table = device_inflight_table();
     // Fast path: slot already exists — read lock + relaxed add, no map mutation.
-    if let Ok(guard) = table.read() {
-        if let Some(slot) = guard.get(&loc) {
+    if let Ok(guard) = table.read()
+        && let Some(slot) = guard.get(&loc) {
             slot.fetch_add(1, Ordering::Relaxed);
             return;
         }
-    }
     // Slow path: create the slot. `entry().or_insert` is idempotent under the
     // write lock, so a racing inc that took the same slow path is harmless —
     // whichever lands second sees the slot and adds to it.
@@ -7666,14 +7665,13 @@ pub fn inflight_inc(loc: DeviceLocation) {
 /// actually fires; it is pure defense.)
 pub fn inflight_dec(loc: DeviceLocation) {
     let table = device_inflight_table();
-    if let Ok(guard) = table.read() {
-        if let Some(slot) = guard.get(&loc) {
+    if let Ok(guard) = table.read()
+        && let Some(slot) = guard.get(&loc) {
             // saturating: never wrap below 0.
             let _ = slot.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
                 Some(v.saturating_sub(1))
             });
         }
-    }
 }
 
 /// Read the current in-flight async-op count for `loc`. The signal a
@@ -9115,10 +9113,10 @@ mod tests {
 
         // --- FUSED_LINEAR: 4 dtypes, key [T, T, T, T] ---
         for (dt, expected) in [
-            (DType::F32, fused_linear_f32_cpu_wrapper as usize),
-            (DType::F64, fused_linear_f64_cpu_wrapper as usize),
-            (DType::BF16, fused_linear_bf16_cpu_wrapper as usize),
-            (DType::F16, fused_linear_f16_cpu_wrapper as usize),
+            (DType::F32, fused_linear_f32_cpu_wrapper as *const () as usize),
+            (DType::F64, fused_linear_f64_cpu_wrapper as *const () as usize),
+            (DType::BF16, fused_linear_bf16_cpu_wrapper as *const () as usize),
+            (DType::F16, fused_linear_f16_cpu_wrapper as *const () as usize),
         ] {
             let got = r
                 .lookup_by_dtypes(FusedOps::FUSED_LINEAR, BackendId::Cpu, &[dt, dt, dt, dt])
@@ -9143,15 +9141,15 @@ mod tests {
                 &[DType::F32, DType::U32, DType::F32],
             )
             .expect("QMATMUL migrated impl present at [F32, U32, F32]");
-        assert_eq!(qm.kernel as usize, qmatmul_f32_cpu_wrapper as usize);
+        assert_eq!(qm.kernel as usize, qmatmul_f32_cpu_wrapper as *const () as usize);
         assert_ne!(qm.revision, KernelRevisionHash::UNTRACKED);
 
         // --- INPLACE_AFFINE: 4 dtypes, key [T, T] ---
         for (dt, expected) in [
-            (DType::F32, inplace_affine_f32_cpu_wrapper as usize),
-            (DType::F64, inplace_affine_f64_cpu_wrapper as usize),
-            (DType::BF16, inplace_affine_bf16_cpu_wrapper as usize),
-            (DType::F16, inplace_affine_f16_cpu_wrapper as usize),
+            (DType::F32, inplace_affine_f32_cpu_wrapper as *const () as usize),
+            (DType::F64, inplace_affine_f64_cpu_wrapper as *const () as usize),
+            (DType::BF16, inplace_affine_bf16_cpu_wrapper as *const () as usize),
+            (DType::F16, inplace_affine_f16_cpu_wrapper as *const () as usize),
         ] {
             let got = r
                 .lookup_by_dtypes(FusedOps::INPLACE_AFFINE, BackendId::Cpu, &[dt, dt])
@@ -9164,19 +9162,19 @@ mod tests {
         for (dt, expected) in [
             (
                 DType::F32,
-                fused_softmax_cross_entropy_f32_cpu_wrapper as usize,
+                fused_softmax_cross_entropy_f32_cpu_wrapper as *const () as usize,
             ),
             (
                 DType::F64,
-                fused_softmax_cross_entropy_f64_cpu_wrapper as usize,
+                fused_softmax_cross_entropy_f64_cpu_wrapper as *const () as usize,
             ),
             (
                 DType::BF16,
-                fused_softmax_cross_entropy_bf16_cpu_wrapper as usize,
+                fused_softmax_cross_entropy_bf16_cpu_wrapper as *const () as usize,
             ),
             (
                 DType::F16,
-                fused_softmax_cross_entropy_f16_cpu_wrapper as usize,
+                fused_softmax_cross_entropy_f16_cpu_wrapper as *const () as usize,
             ),
         ] {
             let got = r
@@ -9198,7 +9196,7 @@ mod tests {
                 &[DType::F32, DType::F32, DType::F32, DType::F32],
             )
             .expect("FLASH_ATTN hand-written impl present");
-        assert_eq!(fa.kernel as usize, flash_attn_f32_cpu_wrapper as usize);
+        assert_eq!(fa.kernel as usize, flash_attn_f32_cpu_wrapper as *const () as usize);
         assert_eq!(
             fa.revision,
             KernelRevisionHash::UNTRACKED,
@@ -9213,7 +9211,7 @@ mod tests {
                 &[DType::F32, DType::U8, DType::F32, DType::F32],
             )
             .expect("NF4_MATMUL hand-written impl present (AFFINE_BLOCK deferred)");
-        assert_eq!(nf4.kernel as usize, nf4_matmul_f32_cpu_wrapper as usize);
+        assert_eq!(nf4.kernel as usize, nf4_matmul_f32_cpu_wrapper as *const () as usize);
         assert_eq!(
             nf4.revision,
             KernelRevisionHash::UNTRACKED,
@@ -9258,28 +9256,28 @@ mod tests {
             (
                 FusedOps::SOFTMAX_LAST_DIM,
                 [
-                    softmax_last_dim_f32_cpu_wrapper as usize,
-                    softmax_last_dim_f64_cpu_wrapper as usize,
-                    softmax_last_dim_bf16_cpu_wrapper as usize,
-                    softmax_last_dim_f16_cpu_wrapper as usize,
+                    softmax_last_dim_f32_cpu_wrapper as *const () as usize,
+                    softmax_last_dim_f64_cpu_wrapper as *const () as usize,
+                    softmax_last_dim_bf16_cpu_wrapper as *const () as usize,
+                    softmax_last_dim_f16_cpu_wrapper as *const () as usize,
                 ],
             ),
             (
                 FusedOps::RMS_NORM_LAST_DIM,
                 [
-                    rms_norm_last_dim_f32_cpu_wrapper as usize,
-                    rms_norm_last_dim_f64_cpu_wrapper as usize,
-                    rms_norm_last_dim_bf16_cpu_wrapper as usize,
-                    rms_norm_last_dim_f16_cpu_wrapper as usize,
+                    rms_norm_last_dim_f32_cpu_wrapper as *const () as usize,
+                    rms_norm_last_dim_f64_cpu_wrapper as *const () as usize,
+                    rms_norm_last_dim_bf16_cpu_wrapper as *const () as usize,
+                    rms_norm_last_dim_f16_cpu_wrapper as *const () as usize,
                 ],
             ),
             (
                 FusedOps::LAYER_NORM_LAST_DIM,
                 [
-                    layer_norm_last_dim_f32_cpu_wrapper as usize,
-                    layer_norm_last_dim_f64_cpu_wrapper as usize,
-                    layer_norm_last_dim_bf16_cpu_wrapper as usize,
-                    layer_norm_last_dim_f16_cpu_wrapper as usize,
+                    layer_norm_last_dim_f32_cpu_wrapper as *const () as usize,
+                    layer_norm_last_dim_f64_cpu_wrapper as *const () as usize,
+                    layer_norm_last_dim_bf16_cpu_wrapper as *const () as usize,
+                    layer_norm_last_dim_f16_cpu_wrapper as *const () as usize,
                 ],
             ),
         ];
@@ -9315,46 +9313,46 @@ mod tests {
             (
                 FusedOps::SOFTMAX_LAST_DIM_BACKWARD,
                 [
-                    softmax_last_dim_backward_f32_cpu_wrapper as usize,
-                    softmax_last_dim_backward_f64_cpu_wrapper as usize,
-                    softmax_last_dim_backward_bf16_cpu_wrapper as usize,
-                    softmax_last_dim_backward_f16_cpu_wrapper as usize,
+                    softmax_last_dim_backward_f32_cpu_wrapper as *const () as usize,
+                    softmax_last_dim_backward_f64_cpu_wrapper as *const () as usize,
+                    softmax_last_dim_backward_bf16_cpu_wrapper as *const () as usize,
+                    softmax_last_dim_backward_f16_cpu_wrapper as *const () as usize,
                 ],
             ),
             (
                 FusedOps::LAYER_NORM_LAST_DIM_BACKWARD,
                 [
-                    layer_norm_last_dim_backward_f32_cpu_wrapper as usize,
-                    layer_norm_last_dim_backward_f64_cpu_wrapper as usize,
-                    layer_norm_last_dim_backward_bf16_cpu_wrapper as usize,
-                    layer_norm_last_dim_backward_f16_cpu_wrapper as usize,
+                    layer_norm_last_dim_backward_f32_cpu_wrapper as *const () as usize,
+                    layer_norm_last_dim_backward_f64_cpu_wrapper as *const () as usize,
+                    layer_norm_last_dim_backward_bf16_cpu_wrapper as *const () as usize,
+                    layer_norm_last_dim_backward_f16_cpu_wrapper as *const () as usize,
                 ],
             ),
             (
                 FusedOps::RMS_NORM_LAST_DIM_BACKWARD,
                 [
-                    rms_norm_last_dim_backward_f32_cpu_wrapper as usize,
-                    rms_norm_last_dim_backward_f64_cpu_wrapper as usize,
-                    rms_norm_last_dim_backward_bf16_cpu_wrapper as usize,
-                    rms_norm_last_dim_backward_f16_cpu_wrapper as usize,
+                    rms_norm_last_dim_backward_f32_cpu_wrapper as *const () as usize,
+                    rms_norm_last_dim_backward_f64_cpu_wrapper as *const () as usize,
+                    rms_norm_last_dim_backward_bf16_cpu_wrapper as *const () as usize,
+                    rms_norm_last_dim_backward_f16_cpu_wrapper as *const () as usize,
                 ],
             ),
             (
                 FusedOps::REDUCE_MAX_TO_BACKWARD,
                 [
-                    reduce_max_to_backward_f32_cpu_wrapper as usize,
-                    reduce_max_to_backward_f64_cpu_wrapper as usize,
-                    reduce_max_to_backward_bf16_cpu_wrapper as usize,
-                    reduce_max_to_backward_f16_cpu_wrapper as usize,
+                    reduce_max_to_backward_f32_cpu_wrapper as *const () as usize,
+                    reduce_max_to_backward_f64_cpu_wrapper as *const () as usize,
+                    reduce_max_to_backward_bf16_cpu_wrapper as *const () as usize,
+                    reduce_max_to_backward_f16_cpu_wrapper as *const () as usize,
                 ],
             ),
             (
                 FusedOps::POWI_BACKWARD,
                 [
-                    powi_backward_f32_cpu_wrapper as usize,
-                    powi_backward_f64_cpu_wrapper as usize,
-                    powi_backward_bf16_cpu_wrapper as usize,
-                    powi_backward_f16_cpu_wrapper as usize,
+                    powi_backward_f32_cpu_wrapper as *const () as usize,
+                    powi_backward_f64_cpu_wrapper as *const () as usize,
+                    powi_backward_bf16_cpu_wrapper as *const () as usize,
+                    powi_backward_f16_cpu_wrapper as *const () as usize,
                 ],
             ),
         ];
@@ -9425,10 +9423,10 @@ mod tests {
 
         // ROPE — key [T, T, T, T] (x, cos, sin + out).
         let rope_w = [
-            rope_f32_cpu_wrapper as usize,
-            rope_f64_cpu_wrapper as usize,
-            rope_bf16_cpu_wrapper as usize,
-            rope_f16_cpu_wrapper as usize,
+            rope_f32_cpu_wrapper as *const () as usize,
+            rope_f64_cpu_wrapper as *const () as usize,
+            rope_bf16_cpu_wrapper as *const () as usize,
+            rope_f16_cpu_wrapper as *const () as usize,
         ];
         for (dt, expected) in dts.iter().zip(rope_w) {
             let got = r
@@ -9452,19 +9450,19 @@ mod tests {
             (
                 FusedOps::CONV2D,
                 [
-                    conv2d_f32_cpu_wrapper as usize,
-                    conv2d_f64_cpu_wrapper as usize,
-                    conv2d_bf16_cpu_wrapper as usize,
-                    conv2d_f16_cpu_wrapper as usize,
+                    conv2d_f32_cpu_wrapper as *const () as usize,
+                    conv2d_f64_cpu_wrapper as *const () as usize,
+                    conv2d_bf16_cpu_wrapper as *const () as usize,
+                    conv2d_f16_cpu_wrapper as *const () as usize,
                 ],
             ),
             (
                 FusedOps::CONV_TRANSPOSE2D,
                 [
-                    conv_transpose2d_f32_cpu_wrapper as usize,
-                    conv_transpose2d_f64_cpu_wrapper as usize,
-                    conv_transpose2d_bf16_cpu_wrapper as usize,
-                    conv_transpose2d_f16_cpu_wrapper as usize,
+                    conv_transpose2d_f32_cpu_wrapper as *const () as usize,
+                    conv_transpose2d_f64_cpu_wrapper as *const () as usize,
+                    conv_transpose2d_bf16_cpu_wrapper as *const () as usize,
+                    conv_transpose2d_f16_cpu_wrapper as *const () as usize,
                 ],
             ),
         ];
@@ -9493,10 +9491,10 @@ mod tests {
 
         // CAUSAL_CONV1D — key [T, T, T, T] (x, weight, bias + out).
         let cc1d_w = [
-            causal_conv1d_f32_cpu_wrapper as usize,
-            causal_conv1d_f64_cpu_wrapper as usize,
-            causal_conv1d_bf16_cpu_wrapper as usize,
-            causal_conv1d_f16_cpu_wrapper as usize,
+            causal_conv1d_f32_cpu_wrapper as *const () as usize,
+            causal_conv1d_f64_cpu_wrapper as *const () as usize,
+            causal_conv1d_bf16_cpu_wrapper as *const () as usize,
+            causal_conv1d_f16_cpu_wrapper as *const () as usize,
         ];
         for (dt, expected) in dts.iter().zip(cc1d_w) {
             let got = r
@@ -9517,19 +9515,19 @@ mod tests {
             (
                 FusedOps::SELECTIVE_SCAN,
                 [
-                    selective_scan_f32_cpu_wrapper as usize,
-                    selective_scan_f64_cpu_wrapper as usize,
-                    selective_scan_bf16_cpu_wrapper as usize,
-                    selective_scan_f16_cpu_wrapper as usize,
+                    selective_scan_f32_cpu_wrapper as *const () as usize,
+                    selective_scan_f64_cpu_wrapper as *const () as usize,
+                    selective_scan_bf16_cpu_wrapper as *const () as usize,
+                    selective_scan_f16_cpu_wrapper as *const () as usize,
                 ],
             ),
             (
                 FusedOps::SSD_CHUNK_SCAN,
                 [
-                    ssd_chunk_scan_f32_cpu_wrapper as usize,
-                    ssd_chunk_scan_f64_cpu_wrapper as usize,
-                    ssd_chunk_scan_bf16_cpu_wrapper as usize,
-                    ssd_chunk_scan_f16_cpu_wrapper as usize,
+                    ssd_chunk_scan_f32_cpu_wrapper as *const () as usize,
+                    ssd_chunk_scan_f64_cpu_wrapper as *const () as usize,
+                    ssd_chunk_scan_bf16_cpu_wrapper as *const () as usize,
+                    ssd_chunk_scan_f16_cpu_wrapper as *const () as usize,
                 ],
             ),
         ];
@@ -9909,7 +9907,7 @@ mod tests {
             }
         }
 
-        let unknown_sentinel = crate::kernel::unknown_cost as usize;
+        let unknown_sentinel = crate::kernel::unknown_cost as *const () as usize;
 
         let mut failures: Vec<String> = Vec::new();
         for op in ALL_OP_KINDS.iter().copied() {
@@ -11609,7 +11607,7 @@ mod tests {
             let alts = table.lookup_alternatives(OpKind::Pad, key, BackendId::Cpu);
             let entry = alts
                 .iter()
-                .find(|e| e.kernel as usize == pad_cpu_wrapper as usize)
+                .find(|e| e.kernel as usize == pad_cpu_wrapper as *const () as usize)
                 .unwrap_or_else(|| {
                     panic!(
                         "Pad/{dt:?}/Cpu: the production wrapper must be bound \

@@ -147,15 +147,14 @@ fn production_pipeline_emits_the_fused_arm_and_reset_disarms_it() {
     assert_eq!(fused, 1, "one Op::Fused(runtime) arm emitted");
     // The fused arm is pinned to the adopted backend by the emitter.
     for i in 0..g.len() {
-        if let Op::Fused(fid, FusedOpParams::Runtime { .. }) = &g.node(NodeId(i)).op {
-            if *fid == rid {
+        if let Op::Fused(fid, FusedOpParams::Runtime { .. }) = &g.node(NodeId(i)).op
+            && *fid == rid {
                 assert_eq!(
                     g.target_backend(NodeId(i)),
                     Some(BackendId::Cpu),
                     "the emitter pinned the arm's backend",
                 );
             }
-        }
     }
 
     // (3) The BARE entry never scans the sidecar — hermetic by construction.

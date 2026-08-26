@@ -225,7 +225,7 @@ pub fn cost_reduce_to_cpu(
 /// rhs_batch_dims }` from `OpParams` to compute the exact FLOP
 /// count (`2·batch·M·N·K`).
 pub fn cost_matmul_cpu(
-    shapes: &[Shape],
+    _shapes: &[Shape],
     dtypes: &[DType],
     params: &OpParams,
     _caps: &BackendCapabilities,

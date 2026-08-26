@@ -1537,8 +1537,8 @@ impl PipelinedExecutor {
                     }
                 }
                 let leaving = current_chunk_backend;
-                if let Some(prev) = leaving {
-                    if prev != item.target_backend {
+                if let Some(prev) = leaving
+                    && prev != item.target_backend {
                         // A real backend switch occurred — this realize is
                         // genuinely multi-backend.
                         multi_backend = true;
@@ -1551,7 +1551,6 @@ impl PipelinedExecutor {
                             eager_submit_all_vulkan(&cache, &mut inflight_vulkan)?;
                         }
                     }
-                }
                 current_chunk_backend = Some(item.target_backend);
             }
             // Step E A4b-4 (Invariant E — same-device cross-chunk RAW safety):
@@ -1613,9 +1612,9 @@ impl PipelinedExecutor {
             )
             .map_err(|e| with_node_location(&graph, item.node_id, e))?;
             store_handle(&mut handles, item.node_id, handle);
-            if let Some(d_idx) = item.destructive_input {
-                if let Some(&destroyed) = item.inputs.get(d_idx) {
-                    if destroyed != target {
+            if let Some(d_idx) = item.destructive_input
+                && let Some(&destroyed) = item.inputs.get(d_idx)
+                    && destroyed != target {
                         // Step E A2.1 (in-flight-batch DATA-BUFFER lifetime — the
                         // UAF guard, now DEFERRED-DELETION instead of a drain). A
                         // `SubmittedBatch` owns its CB/descriptors/transients but
@@ -1651,8 +1650,6 @@ impl PipelinedExecutor {
                         // meaningful. The free itself is stream-ordered-safe (A3).
                         handles.remove(&destroyed);
                     }
-                }
-            }
         }
 
         compiler
@@ -1953,14 +1950,13 @@ impl PipelinedExecutor {
                     }
                 }
                 let leaving = current_chunk_backend;
-                if let Some(prev) = leaving {
-                    if prev != item.target_backend {
+                if let Some(prev) = leaving
+                    && prev != item.target_backend {
                         multi_backend = true;
                         if prev == BackendId::Vulkan {
                             eager_submit_all_vulkan(&cache, &mut inflight_vulkan)?;
                         }
                     }
-                }
                 current_chunk_backend = Some(item.target_backend);
             }
             // Step E A4b-4 (Invariant E): wait in-flight Vulkan before recording a
@@ -2005,9 +2001,9 @@ impl PipelinedExecutor {
             )
             .map_err(|e| with_node_location(&graph, item.node_id, e))?;
             store_handle(&mut handles, item.node_id, handle);
-            if let Some(d_idx) = item.destructive_input {
-                if let Some(&destroyed) = item.inputs.get(d_idx) {
-                    if !target_set.contains(&destroyed) {
+            if let Some(d_idx) = item.destructive_input
+                && let Some(&destroyed) = item.inputs.get(d_idx)
+                    && !target_set.contains(&destroyed) {
                         // Step E A2.1 (in-flight DATA-BUFFER lifetime — UAF guard,
                         // now DEFERRED-DELETION instead of a drain): retain the
                         // evicted buffer until the reader fences signal — eager-
@@ -2033,8 +2029,6 @@ impl PipelinedExecutor {
                         // handle so the realize-end empty-map assert stays valid.
                         handles.remove(&destroyed);
                     }
-                }
-            }
         }
 
         compiler
@@ -2165,11 +2159,10 @@ fn build_wait_set(graph: &Graph, order: &[NodeId]) -> HashSet<NodeId> {
     let mut set = HashSet::new();
     for &id in order {
         let node = graph.node(id);
-        if matches!(node.op, Op::Copy { .. } | Op::Move { .. }) {
-            if let Some(&producer) = node.inputs.first() {
+        if matches!(node.op, Op::Copy { .. } | Op::Move { .. })
+            && let Some(&producer) = node.inputs.first() {
                 set.insert(producer);
             }
-        }
     }
     set
 }
@@ -2565,8 +2558,8 @@ fn compile_one(
             | Op::ZeroFill
             | Op::Release
             | Op::Move { .. },
-    ) {
-        if let Some(target_idx) = node.op.destructive_input() {
+    )
+        && let Some(target_idx) = node.op.destructive_input() {
             if inputs.len() <= target_idx {
                 return Err(Error::Msg(format!(
                     "in-place op {:?} declares destructive_input={target_idx} \
@@ -2608,7 +2601,6 @@ fn compile_one(
                 output_bundle: None,
             });
         }
-    }
 
     if matches!(node.op, Op::WriteSlice { .. }) {
         // WriteSlice: kernel lookup happens like a normal kernel, but
@@ -3053,8 +3045,8 @@ fn compile_one(
     // optimizer's gate emitted the arm only when this kernel was bound, and
     // pinned `target_backend` (`runtime-fused-op-registration.md` §6). The
     // guards are invariant checks, never live fallbacks.
-    if let Op::Fused(fid, _) = &node.op {
-        if fid.is_runtime() {
+    if let Op::Fused(fid, _) = &node.op
+        && fid.is_runtime() {
             let target_backend = graph.target_backend(id).ok_or_else(|| {
                 Error::Msg(format!(
                     "PipelinedExecutor: runtime fused op {:?} (node {:?}) has no \
@@ -3116,7 +3108,6 @@ fn compile_one(
                 output_bundle: None,
             });
         }
-    }
 
     let target_backend = graph.target_backend(id).ok_or_else(|| {
         Error::Msg(format!(
@@ -5761,7 +5752,7 @@ fn execute_work_item(
             // per-backend device handle by searching the input cache
             // for any storage on the target backend (callers seed this
             // via `pipelined_bridge::device_seed_storage`).
-            let n_bytes = item.elem_count * item.dtype.size_in_bytes();
+            let _n_bytes = item.elem_count * item.dtype.size_in_bytes();
             let alloced: Storage = match target_location {
                 // CPU has no separate uninit alloc primitive in safe
                 // Rust (`vec![0; n]` is the canonical path). Op::Alloc
@@ -6081,7 +6072,7 @@ fn execute_work_item(
             // find_vulkan_backend_in_cache); callers seed the cache
             // (e.g. `pipelined_bridge::device_seed_storage`) before
             // realizing.
-            let n_bytes = item.elem_count * item.dtype.size_in_bytes();
+            let _n_bytes = item.elem_count * item.dtype.size_in_bytes();
             let input_arcs = vec![src_input];
             let mut output_arcs = if let Some(arc) = reuse_arc {
                 vec![arc]
@@ -6170,11 +6161,10 @@ fn execute_work_item(
             // identical device address. No-op in Reuse mode (the buffer came
             // FROM the map) and in None mode. Mirrors the Kernel arm's
             // Record-mode snapshot (above) exactly.
-            if let Some(p) = persistent.as_deref_mut() {
-                if p.mode == PersistentMode::Record {
+            if let Some(p) = persistent.as_deref_mut()
+                && p.mode == PersistentMode::Record {
                     p.map.insert(item.node_id, Arc::clone(&arc));
                 }
-            }
             cache.insert(item.node_id, arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
             Ok(handle)
@@ -6231,11 +6221,10 @@ fn execute_work_item(
             } else {
                 // Allocate + copy via the contiguize kernel.
                 let arc = auto_contiguize(&input_arc, &input_layout)?;
-                if let Some(p) = persistent.as_deref_mut() {
-                    if p.mode == PersistentMode::Record {
+                if let Some(p) = persistent.as_deref_mut()
+                    && p.mode == PersistentMode::Record {
                         p.map.insert(item.node_id, Arc::clone(&arc));
                     }
-                }
                 arc
             };
             cache.insert(item.node_id, out_arc);
@@ -6499,11 +6488,10 @@ fn execute_work_item(
             // fixed output buffer so the capture run reuses the identical
             // device address. No-op in Reuse mode (the buffer came FROM the
             // map) and in None mode.
-            if let Some(p) = persistent.as_deref_mut() {
-                if p.mode == PersistentMode::Record {
+            if let Some(p) = persistent
+                && p.mode == PersistentMode::Record {
                     p.map.insert(item.node_id, Arc::clone(&arc));
                 }
-            }
 
             // Data-determined dynamic-shapes seam (increment 2a): a
             // producer that computes a runtime count publishes it into the
@@ -14011,12 +13999,12 @@ mod tests {
         };
         let out: &[f32] = c.as_slice().unwrap();
         let expected = [
-            -2.4076059,
+            -2.407_606,
             -1.4076059,
             -0.40760595_f32,
             -0.40760595,
             -1.4076059,
-            -2.4076059,
+            -2.407_606,
         ];
         for (a, b) in out.iter().zip(expected.iter()) {
             assert!((a - b).abs() < 1e-5, "log_softmax mismatch: {a} vs {b}");

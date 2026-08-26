@@ -1296,7 +1296,7 @@ impl KernelBindingTable {
         backend: BackendId,
         dispatcher: fn(OpKind) -> CostFn,
     ) {
-        let sentinel = unknown_cost as usize;
+        let sentinel = unknown_cost as *const () as usize;
         for ((key, _, this_backend), alts) in self.bindings.iter_mut() {
             if *this_backend != backend {
                 continue;
@@ -1735,12 +1735,8 @@ mod tests {
                 #[allow(unreachable_patterns)]
                 _ => return Ok(()),
             };
-            match &mut out_guard.inner {
-                fuel_memory::BackendStorage::Cpu(s) => {
-                    s.bytes_mut().copy_from_slice(in_bytes);
-                }
-                #[allow(unreachable_patterns)]
-                _ => {}
+            if let fuel_memory::BackendStorage::Cpu(s) = &mut out_guard.inner {
+                s.bytes_mut().copy_from_slice(in_bytes);
             }
             Ok(())
         }

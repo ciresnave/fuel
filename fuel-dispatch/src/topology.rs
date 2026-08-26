@@ -138,11 +138,10 @@ impl SystemTopology {
     pub fn current() -> Arc<SystemTopology> {
         let cur_gen = topology_generation();
         // Fast path: cached snapshot is current.
-        if let Some(t) = CURRENT_TOPOLOGY.read().unwrap().as_ref() {
-            if t.generation == cur_gen {
+        if let Some(t) = CURRENT_TOPOLOGY.read().unwrap().as_ref()
+            && t.generation == cur_gen {
                 return Arc::clone(t);
             }
-        }
         // Slow path: rebuild. We may race with another rebuild; the
         // last writer wins and both produce an internally-consistent
         // view (the build re-reads the counter inside `build_at` —
@@ -324,14 +323,13 @@ impl SystemTopology {
         if let Some(e) = cal.probed(src, dst) {
             return e;
         }
-        if src != DeviceLocation::Cpu && dst != DeviceLocation::Cpu {
-            if let (Some(d2h), Some(h2d)) = (
+        if src != DeviceLocation::Cpu && dst != DeviceLocation::Cpu
+            && let (Some(d2h), Some(h2d)) = (
                 cal.probed(src, DeviceLocation::Cpu),
                 cal.probed(DeviceLocation::Cpu, dst),
             ) {
                 return TransferEstimate::compose_staged(d2h, h2d);
             }
-        }
         TransferEstimate::fallback_for(self.transfer_path(src, dst))
     }
 

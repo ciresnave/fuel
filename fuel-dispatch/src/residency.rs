@@ -355,7 +355,7 @@ fn find_gap_consumers(g: &Graph, candidate: NodeId) -> Option<(NodeId, Vec<NodeI
     // Positions of candidate's consumers in topo order.
     let mut positions: Vec<(usize, NodeId)> = Vec::new();
     for (i, &nid) in order.iter().enumerate() {
-        if g.node(nid).inputs.iter().any(|&inp| inp == candidate) {
+        if g.node(nid).inputs.contains(&candidate) {
             positions.push((i, nid));
         }
     }

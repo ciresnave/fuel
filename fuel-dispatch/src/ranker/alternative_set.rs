@@ -312,19 +312,18 @@ impl AlternativeSet {
             }
             for &b in &backends_in_bucket {
                 let on_frontier = frontier.iter().any(|&i| self.candidates[i].backend == b);
-                if !on_frontier {
-                    if let Some(&best) = bucket
+                if !on_frontier
+                    && let Some(&best) = bucket
                         .iter()
                         .filter(|&&i| self.candidates[i].backend == b)
                         .min_by_key(|&&i| vectors[i].total_order_key())
                     {
                         frontier.push(best);
                     }
-                }
             }
 
             // The global winner must never be dropped from its bucket.
-            if self.candidates.first().is_some() && _dev == &winner_device && !frontier.contains(&0)
+            if !self.candidates.is_empty() && _dev == &winner_device && !frontier.contains(&0)
             {
                 frontier.push(0);
             }
@@ -764,7 +763,7 @@ mod tests {
 
     #[test]
     fn retain_indices_keeps_selected_entries() {
-        let mut s = AlternativeSet::from_candidates((0..5).map(|i| dummy_candidate(i)).collect());
+        let mut s = AlternativeSet::from_candidates((0..5).map(dummy_candidate).collect());
         s.retain_indices(&[0, 2, 4]);
         let flops: Vec<u64> = s
             .alternatives()
