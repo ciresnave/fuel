@@ -1055,11 +1055,11 @@ mod tests {
             .2;
         // Decode f32 elements from raw bytes.
         let mut raw_3x3_f: Vec<f32> = Vec::with_capacity(c_out * c_in * 9);
-        for chunk in raw_3x3.chunks_exact(4) {
+        for chunk in raw_3x3.as_chunks::<4>().0.iter() {
             raw_3x3_f.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
         }
         let mut raw_1x1_f: Vec<f32> = Vec::with_capacity(c_out * c_in);
-        for chunk in raw_1x1.chunks_exact(4) {
+        for chunk in raw_1x1.as_chunks::<4>().0.iter() {
             raw_1x1_f.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
         }
         // For each (o, i, kx, ky), expected = bn_scale * (W3 + delta_center * W1).

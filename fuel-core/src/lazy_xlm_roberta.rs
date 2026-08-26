@@ -130,7 +130,7 @@ impl XlmrModel {
         assert!(seq > 0);
         // RoBERTa position-id offset by `padding_idx + 1`.
         assert!(
-            seq + cfg.pad_token_id as usize + 1 <= cfg.max_position_embeddings,
+            seq + (cfg.pad_token_id as usize) < cfg.max_position_embeddings,
             "seq + padding_idx + 1 ({}) exceeds max_position_embeddings ({})",
             seq + cfg.pad_token_id as usize + 1,
             cfg.max_position_embeddings,
@@ -207,7 +207,7 @@ impl XlmrModel {
         let batch = 1;
         assert!(seq > 0);
         assert!(
-            seq + cfg.pad_token_id as usize + 1 <= cfg.max_position_embeddings,
+            seq + (cfg.pad_token_id as usize) < cfg.max_position_embeddings,
             "seq + padding_idx + 1 ({}) exceeds max_position_embeddings ({})",
             seq + cfg.pad_token_id as usize + 1,
             cfg.max_position_embeddings,

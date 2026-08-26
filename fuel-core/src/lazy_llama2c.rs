@@ -442,7 +442,7 @@ fn read_f32_vec<R: std::io::Read>(r: &mut R, n: usize) -> Result<Vec<f32>> {
         ))
     })?;
     let mut out = vec![0.0_f32; n];
-    for (i, chunk) in bytes.chunks_exact(4).enumerate() {
+    for (i, chunk) in bytes.as_chunks::<4>().0.iter().enumerate() {
         out[i] = f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
     }
     Ok(out)

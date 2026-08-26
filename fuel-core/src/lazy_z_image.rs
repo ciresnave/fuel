@@ -1533,7 +1533,7 @@ fn lcg_noise(seed: u64, n: usize) -> Vec<f32> {
     while out.len() + 1 < n {
         let u1 = next_f32();
         let u2 = next_f32();
-        let r = ((-2.0 * (u1 as f64).ln()) as f64).sqrt();
+        let r = (-2.0 * (u1 as f64).ln()).sqrt();
         let theta = 2.0 * std::f64::consts::PI * u2 as f64;
         out.push((r * theta.cos()) as f32);
         out.push((r * theta.sin()) as f32);
@@ -1541,7 +1541,7 @@ fn lcg_noise(seed: u64, n: usize) -> Vec<f32> {
     if out.len() < n {
         let u1 = next_f32();
         let u2 = next_f32();
-        let r = ((-2.0 * (u1 as f64).ln()) as f64).sqrt();
+        let r = (-2.0 * (u1 as f64).ln()).sqrt();
         out.push((r * (2.0 * std::f64::consts::PI * u2 as f64).cos()) as f32);
     }
     out
