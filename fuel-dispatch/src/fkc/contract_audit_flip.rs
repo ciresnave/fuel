@@ -589,14 +589,14 @@ components = [\"rustfmt\"]
         const REQUIRED_PINS: &[(&str, &str, &str)] = &[
             (
                 "seed_cpu_ledger.rs",
-                "nothing, 40,",
+                "nothing, 32,",
                 "the count of contract entries still declaring NO precision claim \
                  (GAP-226/228). Without it, a regression that un-earns entries reads \
                  as a pass.",
             ),
             (
                 "seed_cpu_ledger.rs",
-                "expected 583 contract-derived entries backed WITHOUT the fill",
+                "expected 591 contract-derived entries backed WITHOUT the fill",
                 "the count backed by contract + record rather than by \
                  `fill_unset_cpu_precision`. This is the number the whole program \
                  exists to move; unpinned, the fill could come back unnoticed.",
@@ -617,6 +617,11 @@ components = [\"rustfmt\"]
                 "seed_cpu_ledger.rs",
                 "must not merge",
                 "the guard that a harness gap (no recipe written) and a verifier result                  (no reference available) never share a bucket again. They did, through                  a shared `starts_with` prefix.",
+            ),
+            (
+                "seed_cpu_ledger.rs",
+                "expected 8 FlashAttn registrations to invoke",
+                "the FlashAttn probes that must reach their kernel AND carry                  `k_len < sk` with a non-zero causal offset. Without it the family's                  records could silently become evidence about the static path only.",
             ),
             (
                 "seed_cpu_ledger.rs",

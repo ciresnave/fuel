@@ -1469,6 +1469,110 @@ mod tests {
         );
     }
 
+    /// **The FlashAttn probe reads its inputs AND reaches the live-prefix
+    /// parameterisation it claims to.**
+    ///
+    /// Two obligations, and the second is the one the architect asked for by
+    /// name: **a probe that only reaches one configuration and reports
+    /// bit-stability for the whole family is the conformance defect** —
+    /// supplying the thing being classified.
+    ///
+    /// **Mechanism: seed perturbation.** FlashAttn's q/k/v come from
+    /// `fill_deterministic(.., seed)`, so a different seed is a different
+    /// input and the output must move. The arm asserts that precondition
+    /// itself rather than assuming it, so it cannot go vacuous if the probe is
+    /// later rebuilt on literals the way the two scans are.
+    ///
+    /// **Arm reached, ASSERTED rather than documented.** Read at head, the CPU
+    /// kernel is ONE loop parameterised by `k_len`
+    /// (`flash_attn_native_kernel!`): `causal_offset = k_len.saturating_sub(sq)`
+    /// and the score loop runs `0..k_len` over K/V of capacity `sk`. There is
+    /// no separate decode arm and no separate prefill arm — the lowering sets
+    /// `k_len == sk` for the static path and `k_len < sk` for decode over a
+    /// fixed-capacity cache. This test requires the probe to carry
+    /// `k_len < sk` and a non-zero `causal_offset`, which is the strictly
+    /// stronger configuration: `k_len == sk` reads the whole buffer and
+    /// exercises a strict subset. **A comment claiming that would rot; an
+    /// assertion cannot.**
+    #[test]
+    fn the_flash_attn_probe_reaches_the_live_prefix_path_and_reads_its_inputs() {
+        use crate::fkc::verify::bit_stability::KernelInvoker;
+        use crate::fkc::verify::probe_recipes::{build_primitive_probe, probe_seed};
+        use fuel_ir::dispatch::OpKind;
+
+        let mut table = crate::kernel::KernelBindingTable::new();
+        crate::dispatch::register_cpu_kernels(&mut table);
+
+        let mut checked = 0usize;
+        let mut problems: Vec<String> = Vec::new();
+        for (op, dtypes, backend, entry) in table.iter_entries() {
+            if backend != BackendId::Cpu || op != OpKind::FlashAttn {
+                continue;
+            }
+            let seed = probe_seed(op, dtypes);
+            let Some(probe) = build_primitive_probe(op, dtypes, seed) else {
+                continue;
+            };
+
+            // The arm-reached claim, as an assertion.
+            match &probe.params {
+                OpParams::FlashAttn { sq, sk, k_len, .. } => {
+                    if k_len >= sk {
+                        problems.push(format!(
+                            "{dtypes:?}: k_len({k_len}) >= sk({sk}) — the probe reads the \
+                             whole K extent, so this record is evidence about the static \
+                             path only and the live-prefix range is untouched"
+                        ));
+                    }
+                    if k_len.saturating_sub(*sq) == 0 {
+                        problems.push(format!(
+                            "{dtypes:?}: causal_offset is 0 (k_len={k_len}, sq={sq}) — the \
+                             bottom-right alignment is not exercised"
+                        ));
+                    }
+                }
+                other => problems.push(format!("{dtypes:?}: unexpected params {other:?}")),
+            }
+
+            let inv = CpuInvoker::new(probe.out_dtype, probe.out_shape.clone())
+                .with_params(probe.params.clone());
+            let Ok(out) = inv.invoke(entry, &probe.inputs) else {
+                problems.push(format!("{dtypes:?}: probe did not invoke"));
+                continue;
+            };
+            checked += 1;
+
+            let other = build_primitive_probe(op, dtypes, seed ^ 0xA5A5_A5A5)
+                .expect("a recipe that built once must build again");
+            // Precondition of the seed mechanism, asserted not assumed.
+            if other.inputs.iter().map(|t| &t.bytes).collect::<Vec<_>>()
+                == probe.inputs.iter().map(|t| &t.bytes).collect::<Vec<_>>()
+            {
+                problems.push(format!(
+                    "{dtypes:?}: a different seed produced IDENTICAL inputs, so the \
+                     response check below proves nothing"
+                ));
+                continue;
+            }
+            let out2 = inv
+                .invoke(entry, &other.inputs)
+                .expect("second invocation of a probe that already ran");
+            if out2.bytes == out.bytes {
+                problems.push(format!(
+                    "{dtypes:?}: different inputs, IDENTICAL output — the kernel is not \
+                     reading them, and it would be bit-stable anyway"
+                ));
+            }
+        }
+
+        assert_eq!(
+            checked, 8,
+            "expected 8 FlashAttn registrations to invoke (4 dtypes x {{with, without}} \
+             alibi_slopes); got {checked}"
+        );
+        assert!(problems.is_empty(), "{problems:?}");
+    }
+
     /// **GAP-226 split of the entries that declare nothing: how much can
     /// start now, and how much waits on a vocabulary decision.** Reports;
     /// asserts only invariants.
@@ -1584,12 +1688,14 @@ mod tests {
         // by removing the fill and seeing what survives.
         //
         // The numbers are pinned, not floating: after GAP-228(a) flipped 240
-        // entries' worth of sections, (b) flipped conv's 20 and (c) flipped the
-        // four small non-conv surfaces' 20, `nothing` must be 40 and the backed
-        // count 583. The 40 that remain are ENTIRELY attention (FlashAttn,
-        // BackwardK/Q/V, PagedAttn — 8 each), taken as its own increment
-        // precisely so a tractable surface could not set the estimate for an
-        // untractable one.
+        // entries' worth of sections, (b) flipped conv's 20, (c) the four small
+        // non-conv surfaces' 20 and (d) FlashAttn's 8, `nothing` must be 32 and
+        // the backed count 591. The 32 that remain are FlashAttnBackwardK/Q/V
+        // (8 each) and PagedAttn (8) — split from FlashAttn deliberately,
+        // because they do NOT mirror it: the backwards take one more operand
+        // (`do`) and PagedAttn is a different surface entirely. Letting
+        // FlashAttn's tractability size either would be the error this program
+        // has now refused three times.
         //
         // THIS COMMENT READ "80 ... 543" UNTIL THE BUCKET SWEEP FOUND IT. I
         // updated the assertion's own message from 80 to 60 and left its twin
@@ -1609,13 +1715,13 @@ mod tests {
         // produced is decoration; a pin edited to a figure predicted in
         // advance is the record of a prediction that held.
         assert_eq!(
-            nothing, 40,
-            "expected exactly 40 entries still declaring nothing after GAP-228's flip              (60 before, the four small non-conv surfaces' 20 flipped). {nothing} means a declaration was not evidenced              by the record it was supposed to rest on, or a kernel revision moved and              silently un-earned one."
+            nothing, 32,
+            "expected exactly 32 entries still declaring nothing after GAP-228's flip              (40 before, FlashAttn's 8 flipped). {nothing} means a declaration was not evidenced              by the record it was supposed to rest on, or a kernel revision moved and              silently un-earned one."
         );
         assert_eq!(
             total - nothing,
-            583,
-            "expected 583 contract-derived entries backed WITHOUT the fill. This table              is built by `register_into`, which does not apply              `fill_unset_cpu_precision` — so this count IS the post-fill-retirement              number for these entries, and a drop means the backing did not actually              move from the fill to contract + record."
+            591,
+            "expected 591 contract-derived entries backed WITHOUT the fill. This table              is built by `register_into`, which does not apply              `fill_unset_cpu_precision` — so this count IS the post-fill-retirement              number for these entries, and a drop means the backing did not actually              move from the fill to contract + record."
         );
         assert_eq!(
             neither, nothing,
