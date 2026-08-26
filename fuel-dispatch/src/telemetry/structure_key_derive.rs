@@ -582,12 +582,13 @@ fn operand_sub_key(o: &FdxOperandDesc, frame: &[i64], innermost_reduced: bool) -
 }
 
 /// Layout tag (§6.5-0002), the pinned 4-step algorithm over `|stride|`,
-/// active non-unit axes, innermost first: **(1)** `br` if any axis of extent
-/// > 1 has stride 0; **(2)** `co` if each active non-unit axis's `|stride|`
-/// equals the running product of the inner active non-unit extents (a fully
-/// reversed view is therefore `co` — the reversal lives in the flipped flag);
-/// **(3)** `ic` if the innermost active non-unit axis has `|stride| == 1`;
-/// **(4)** else `st`. No active axis of extent > 1 ⇒ `co` (empty product).
+/// active non-unit axes, innermost first: **(1)** `br` if any axis of
+/// extent > 1 has stride 0; **(2)** `co` if each active non-unit axis's
+/// `|stride|` equals the running product of the inner active non-unit
+/// extents (a fully reversed view is therefore `co` — the reversal lives in
+/// the flipped flag); **(3)** `ic` if the innermost active non-unit axis has
+/// `|stride| == 1`; **(4)** else `st`. No active axis of extent > 1 ⇒ `co`
+/// (empty product).
 fn layout_code(ext: &[i64], strides: &[i64]) -> &'static str {
     if ext.iter().zip(strides).any(|(&e, &s)| e > 1 && s == 0) {
         return "br";

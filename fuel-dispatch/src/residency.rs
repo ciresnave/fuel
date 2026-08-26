@@ -633,6 +633,7 @@ mod tests {
     /// Idempotence guard: re-running the pass after the budget can't
     /// be met must not grow the graph unboundedly (the `evicted` set
     /// + `progressed` exit cover it within a run; `max_rounds` caps
+    ///
     /// across rounds).
     #[test]
     fn eviction_terminates_when_budget_unreachable() {

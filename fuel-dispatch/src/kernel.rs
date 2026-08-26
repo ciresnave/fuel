@@ -1715,6 +1715,7 @@ mod tests {
     ///   1. allocate output via fuel_memory::alloc_cpu_zeroed
     ///   2. wrap inputs as &[Arc<RwLock<Storage>>]
     ///   3. call the kernel
+    ///
     /// Phase B5 lands the first such migration; B1 just type-checks
     /// the surface.
     #[test]

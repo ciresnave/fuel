@@ -3189,6 +3189,7 @@ mod tests {
     ///     win (100 → ~3 ns) can't overcome the 200 ns transfer.
     ///   - LARGE op (10 M FLOPs) → moves to CUDA: the throughput win
     ///     (10 M → ~333 k ns) dwarfs the 200 ns transfer.
+    ///
     /// Under the pre-Part-C FIXED 1-FLOP/ns prior the GPU's compute-ns
     /// EQUALS the CPU's for equal FLOPs, so it can never overcome the
     /// transfer and the large-op case wrongly stays on CPU — that is

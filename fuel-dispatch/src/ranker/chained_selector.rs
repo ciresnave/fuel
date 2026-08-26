@@ -30,6 +30,7 @@
 //!    - [`FitStatus::Comfortable`] / [`FitStatus::Unknown`] →
 //!      tier 0. Unknown is honest "no signal", NOT pressure — it
 //!      ties with Comfortable (post-remediation semantics).
+//!
 //!    No runtime lookup configured, or no handle for the pair, also
 //!    yields Unknown.
 //! 2. **Load tier (the live-load re-pick — Step E Phase C / C2).** A

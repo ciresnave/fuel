@@ -542,6 +542,7 @@ enum WorkItemKind {
     /// Reshape-style adoption: the output is contiguous in
     /// `output_layout.shape()`. If the input is already contiguous
     /// + zero offset, the output Arc is the input Arc (zero copy).
+    ///
     /// Otherwise, the executor auto-contiguizes the input into a
     /// fresh Arc and uses that.
     ContiguizeOf { input: NodeId },
@@ -5086,6 +5087,7 @@ fn op_to_op_params(
 /// - `Kernel` — gather input Arcs, allocate the output, run the
 ///   compiled kernel, store the result; record the contiguous
 ///   layout from the WorkItem.
+///
 /// Best-effort: prefix a realize-time node error with the failing node's graph
 /// location — `Graph::describe_node` renders `Node#N (op, out shape, dtype,
 /// inputs=[...])`, enough to grep-locate the offending op in a large graph. The
@@ -9788,6 +9790,7 @@ mod tests {
     /// E2E: Const + Slice — slice is metadata-only; the output Arc
     /// shares bytes with the input, and the Layout's start_offset
     /// + narrowed shape reflect the slice. Stage 3 of Layout-on-Node
+    ///
     /// extended to cover Op::Slice via Layout::narrow.
     #[test]
     fn pipelined_realize_slice_is_metadata_only() {
@@ -10216,6 +10219,7 @@ mod tests {
 
     /// E2E: Op::Lt F32 → Bool mask. Confirms strict-less-than semantics
     /// + IEEE-754 NaN handling (any comparison with NaN is unordered →
+    ///
     /// `0`).
     #[test]
     fn pipelined_realize_lt_f32_to_bool_mask() {
