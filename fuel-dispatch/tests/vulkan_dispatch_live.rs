@@ -95,6 +95,10 @@ fn download_f32(backend: &Arc<VulkanBackend>, s: &Storage) -> Vec<f32> {
 #[test]
 #[ignore]
 fn vulkan_dispatch_binary_add_f32_direct_wrapper() {
+    // GAP-233 BORN-RED SEED (test target) — reverted before merge. Proves the
+    // vulkan step reaches fuel-dispatch's OWN vulkan-gated test targets, not
+    // just its lib (that is the whole point of the two-crate --all-targets form).
+    let _gap233_born_red: u32 = __gap233_nonexistent_symbol_born_red__;
     let Some(backend) = backend_or_skip() else {
         return;
     };
