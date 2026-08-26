@@ -1801,8 +1801,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false                         # CPU primitive-class: family default applies (§4.8/§12.4)
-  notes: "native f32 throughout; implicit causal; max-subtract stable softmax; deterministic; not bit-stable cross-hardware."
+  audited: true
+  notes: "native f32 throughout; implicit causal; max-subtract stable softmax; deterministic; not bit-stable cross-hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, OTHER PARAMETER CONFIGURATIONS (one probe fixes one; branches such as causal/softcap/window go untaken), other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1901,8 +1901,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "native f64 throughout; widest precision of the family (no widen/narrow round-trip); implicit causal; deterministic; not bit-stable cross-hardware."
+  audited: true
+  notes: "native f64 throughout; widest precision of the family (no widen/narrow round-trip); implicit causal; deterministic; not bit-stable cross-hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, OTHER PARAMETER CONFIGURATIONS (one probe fixes one; branches such as causal/softcap/window go untaken), other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -2002,8 +2002,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "compute in f32 (widen on load, narrow on store); bf16 K/V/Q/out I/O (block_table/context_lens U32); implicit causal; deterministic; not bit-stable cross-hardware."
+  audited: true
+  notes: "compute in f32 (widen on load, narrow on store); bf16 K/V/Q/out I/O (block_table/context_lens U32); implicit causal; deterministic; not bit-stable cross-hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, OTHER PARAMETER CONFIGURATIONS (one probe fixes one; branches such as causal/softcap/window go untaken), other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -2102,8 +2102,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "compute in f32 (widen on load, narrow on store); f16 K/V/Q/out I/O (IEEE half; block_table/context_lens U32); implicit causal; deterministic; not bit-stable cross-hardware."
+  audited: true
+  notes: "compute in f32 (widen on load, narrow on store); f16 K/V/Q/out I/O (IEEE half; block_table/context_lens U32); implicit causal; deterministic; not bit-stable cross-hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, OTHER PARAMETER CONFIGURATIONS (one probe fixes one; branches such as causal/softcap/window go untaken), other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```

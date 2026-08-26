@@ -1392,6 +1392,96 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
             })
         }
 
+        // --- PagedAttn (GAP-228(f)) ---------------------------------------
+        //
+        // ⚠️ **THE INDEX OPERANDS ARE HAND-CONSTRUCTED, AND THAT IS THE WHOLE
+        // POINT OF THIS RECIPE.** `block_table` and `context_lens` are U32
+        // INDICES into a paged cache, so what makes this probe meaningful is
+        // their VALIDITY, not their value — the one case where a generated
+        // fill is not merely arbitrary.
+        //
+        // Measured at head before choosing, because the hazard is not where it
+        // first appears:
+        //
+        // 1. **OUT-OF-RANGE ALWAYS TRAPS.** The kernel bounds-checks both
+        //    (`physical_block >= num_blocks` -> typed `Err`, and
+        //    `ctx_len > max_blocks_per_seq * block_size` -> typed `Err`).
+        //    There is no silent wrong-block read for an invalid index.
+        // 2. **THE NAIVE FILL FAILS SAFE.** `fill_deterministic` through the
+        //    `DType::U32` arm yields ~2e9, out of range for any probe-sized
+        //    cache, so a generated table would trap loudly rather than
+        //    quietly. The obvious wrong thing is not the dangerous one here.
+        // 3. **THE ACTUAL HAZARD IS AN IN-RANGE DEGENERATE TABLE**, which is
+        //    valid, silent and perfectly bit-stable:
+        //      * **all-zeros / any constant** maps every logical block onto one
+        //        physical block, so the indirection is exercised trivially;
+        //      * **the IDENTITY `[0, 1, 2]`** is worse, because a kernel that
+        //        IGNORED `block_table` entirely and used `logical_block`
+        //        directly would produce a BYTE-IDENTICAL answer.
+        //    Both are the all-zeros-integer-probe defect wearing a valid value.
+        //
+        // So the table below is deliberately **distinct and NON-IDENTITY**:
+        // logical 0,1,2 -> physical 2,0,1, every entry < num_blocks, and
+        // physical block 3 never addressed (so a mis-indexed read lands on
+        // different data rather than on a copy of the right data).
+        //
+        // Geometry: ctx_len = 5 spans logical blocks 0..=2 via
+        // `logical_block = kj / block_size`; `q_pos_abs = ctx_len + qi - sq` is
+        // a usize, so `ctx_len >= sq` is required, not merely tidy.
+        //
+        // NOT exercised, named as elsewhere: `softcap`.
+        OpKind::PagedAttn => {
+            let with_alibi = match dtypes.len() {
+                6 => false,
+                7 => true,
+                _ => return None,
+            };
+            let (b, hq, hkv, sq, d) = (1usize, 2usize, 1usize, 2usize, 2usize);
+            let (block_size, max_blocks_per_seq, num_blocks) = (2usize, 3usize, 4usize);
+            let q_len = b * hq * sq * d;
+            let cache_len = num_blocks * block_size * hkv * d;
+
+            let q = ht(dt, vec![q_len], &fill_deterministic(q_len, seed))?;
+            let k_cache = ht(dt, vec![cache_len], &fill_deterministic(cache_len, seed ^ 0x11))?;
+            let v_cache = ht(dt, vec![cache_len], &fill_deterministic(cache_len, seed ^ 0x22))?;
+
+            // Distinct, non-identity, all < num_blocks. NOT seeded: see above.
+            let block_table = HostTensor {
+                dtype: DType::U32,
+                shape: vec![b * max_blocks_per_seq],
+                bytes: bytemuck::cast_slice(&[2u32, 0u32, 1u32]).to_vec(),
+            };
+            // 5 <= max_blocks_per_seq * block_size (6) and >= sq (2).
+            let context_lens = HostTensor {
+                dtype: DType::U32,
+                shape: vec![b],
+                bytes: bytemuck::cast_slice(&[5u32]).to_vec(),
+            };
+
+            let mut inputs = vec![q, k_cache, v_cache, block_table, context_lens];
+            if with_alibi {
+                inputs.push(ht(dt, vec![hq], &fill_deterministic(hq, seed ^ 0x33))?);
+            }
+            Some(Probe {
+                inputs,
+                params: OpParams::PagedAttn {
+                    b,
+                    hq,
+                    hkv,
+                    sq,
+                    d,
+                    block_size,
+                    max_blocks_per_seq,
+                    num_blocks,
+                    softmax_scale: 0.5,
+                    softcap: None,
+                },
+                out_dtype: dt,
+                out_shape: vec![q_len],
+                out_seed: None,
+            })
+        }
+
         // Residue still without a recipe, so the next reader is not guessing:
         // attention (FlashAttn x4 variants, PagedAttn), conv (Conv2D,
         // ConvTranspose2D, CausalConv1d), MatMul / QMatMul / Nf4Matmul,

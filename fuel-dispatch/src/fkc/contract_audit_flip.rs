@@ -615,14 +615,14 @@ components = [\"rustfmt\"]
         const REQUIRED_PINS: &[(&str, &str, &str)] = &[
             (
                 "seed_cpu_ledger.rs",
-                "nothing, 8,",
+                "nothing, 0,",
                 "the count of contract entries still declaring NO precision claim \
                  (GAP-226/228). Without it, a regression that un-earns entries reads \
                  as a pass.",
             ),
             (
                 "seed_cpu_ledger.rs",
-                "expected 615 contract-derived entries backed WITHOUT the fill",
+                "expected all 623 contract-derived entries backed WITHOUT the fill",
                 "the count backed by contract + record rather than by \
                  `fill_unset_cpu_precision`. This is the number the whole program \
                  exists to move; unpinned, the fill could come back unnoticed.",
@@ -643,6 +643,13 @@ components = [\"rustfmt\"]
                 "seed_cpu_ledger.rs",
                 "must not merge",
                 "the guard that a harness gap (no recipe written) and a verifier result                  (no reference available) never share a bucket again. They did, through                  a shared `starts_with` prefix.",
+            ),
+            (
+                "seed_cpu_ledger.rs",
+                "is the IDENTITY",
+                "the guard that PagedAttn's block table is non-degenerate. An identity \
+                 table is IN RANGE and silent, and a kernel ignoring block_table \
+                 entirely would return byte-identical output under it.",
             ),
             (
                 "seed_cpu_ledger.rs",
