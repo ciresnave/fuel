@@ -285,7 +285,10 @@ impl RecurrentGemmaModel {
             ))
             .bt());
         }
-        if !cfg.num_attention_heads.is_multiple_of(cfg.num_key_value_heads) {
+        if !cfg
+            .num_attention_heads
+            .is_multiple_of(cfg.num_key_value_heads)
+        {
             return Err(crate::Error::Msg(
                 "num_attention_heads must be a multiple of num_key_value_heads".into(),
             )

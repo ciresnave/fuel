@@ -149,8 +149,7 @@ impl Qwen3MoeModel {
 
     fn apply_lm_head(&self, h_norm: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
-        self
-            .weights
+        self.weights
             .output
             .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)
     }
@@ -543,8 +542,7 @@ impl DecodeBackbone for Qwen3MoeModel {
         let cfg = &self.config;
         let h_norm =
             h.rms_norm_affine(Arc::clone(&self.weights.final_norm_gain), cfg.rms_norm_eps)?;
-        self
-            .weights
+        self.weights
             .output
             .apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size)
     }

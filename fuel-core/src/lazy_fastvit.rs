@@ -452,8 +452,7 @@ fn apply_fastvit_attention(
     let bias_t = anchor.const_f32_like(Arc::clone(&w.proj_bias), Shape::from_dims(&[c]));
     let out = projected.broadcast_add(&bias_t)?;
     // Back to (B, C, H, W).
-    out
-        .permute([0, 2, 1_usize])?
+    out.permute([0, 2, 1_usize])?
         .reshape(Shape::from_dims(&[b, c, h, ww]))
 }
 

@@ -54,7 +54,10 @@ fn workspace_root() -> PathBuf {
         {
             return dir;
         }
-        assert!(dir.pop(), "no Cargo.toml with [workspace] above CARGO_MANIFEST_DIR");
+        assert!(
+            dir.pop(),
+            "no Cargo.toml with [workspace] above CARGO_MANIFEST_DIR"
+        );
     }
 }
 
@@ -64,7 +67,11 @@ fn sections(method_rules: &str) -> Vec<String> {
         .lines()
         .filter_map(|l| l.strip_prefix("## "))
         .map(str::trim)
-        .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'))
+        .filter(|s| {
+            !s.is_empty()
+                && s.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        })
         .map(str::to_owned)
         .collect()
 }
@@ -90,14 +97,19 @@ fn cited_anchors(claude: &str) -> Vec<String> {
 
 /// ARM A: a section nobody indexed is unreachable from the session-loaded file.
 fn unindexed(method_rules: &str, claude: &str) -> Vec<String> {
-    sections(method_rules).into_iter().filter(|s| !claude.contains(s.as_str())).collect()
+    sections(method_rules)
+        .into_iter()
+        .filter(|s| !claude.contains(s.as_str()))
+        .collect()
 }
 
 /// ARM B: a link to nothing damages trust in every other link.
 fn dangling(method_rules: &str, claude: &str) -> Vec<String> {
     let have = sections(method_rules);
-    let mut out: Vec<String> =
-        cited_anchors(claude).into_iter().filter(|a| !have.contains(a)).collect();
+    let mut out: Vec<String> = cited_anchors(claude)
+        .into_iter()
+        .filter(|a| !have.contains(a))
+        .collect();
     out.sort();
     out.dedup();
     out
@@ -153,8 +165,12 @@ fn arm_a_scanner_can_see_an_unindexed_section() {
 #[test]
 fn arm_b_scanner_can_see_a_dangling_anchor() {
     let mr = "## alpha-rule\ntext\n";
-    let cm = "see [`justification-scope-mismatch`](docs/method-rules.md#justification-scope-mismatch)";
-    assert_eq!(dangling(mr, cm), vec!["justification-scope-mismatch".to_string()]);
+    let cm =
+        "see [`justification-scope-mismatch`](docs/method-rules.md#justification-scope-mismatch)";
+    assert_eq!(
+        dangling(mr, cm),
+        vec!["justification-scope-mismatch".to_string()]
+    );
 }
 
 /// Negative control: Arm B must key on the LINK TARGET, not the backticked
@@ -164,5 +180,8 @@ fn arm_b_scanner_can_see_a_dangling_anchor() {
 fn arm_b_keys_on_the_link_target_not_the_link_text() {
     let mr = "## real-section\ntext\n";
     let cm = "see [`totally-made-up-name`](docs/method-rules.md#real-section)";
-    assert!(dangling(mr, cm).is_empty(), "resolving target -> real-section, so not dangling");
+    assert!(
+        dangling(mr, cm).is_empty(),
+        "resolving target -> real-section, so not dangling"
+    );
 }

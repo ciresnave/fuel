@@ -229,7 +229,10 @@ impl Gemma3Model {
                 crate::Error::Msg("Gemma3Model::forward_embeds: seq must be > 0".into()).bt(),
             );
         }
-        if !cfg.num_attention_heads.is_multiple_of(cfg.num_key_value_heads) {
+        if !cfg
+            .num_attention_heads
+            .is_multiple_of(cfg.num_key_value_heads)
+        {
             return Err(crate::Error::Msg(
                 "Gemma3Config: num_attention_heads must be a multiple of num_key_value_heads"
                     .into(),

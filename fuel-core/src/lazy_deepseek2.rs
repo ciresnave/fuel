@@ -923,8 +923,7 @@ impl DeepSeek2Model {
         // supplied for this pass via the SymEnv; downstream attention
         // reads the post-write full-capacity buffers.
         let mut sym_env = fuel_ir::SymEnv::new();
-        sym_env
-            .bind(cached_len_sym, cached_len)?;
+        sym_env.bind(cached_len_sym, cached_len)?;
         let logits_vec = ctx.realize_one_as_with_env::<f32>(
             logits_root.graph_handle(),
             logits_root.node_id(),
@@ -1425,10 +1424,8 @@ impl DeepSeek2Model {
         ctx.insert(mask_node, Arc::clone(&data.mask));
 
         let mut sym_env = fuel_ir::SymEnv::new();
-        sym_env
-            .bind(cached_len_sym, cached_len)?;
-        sym_env
-            .bind(attended_len_sym, cached_len + seq)?;
+        sym_env.bind(cached_len_sym, cached_len)?;
+        sym_env.bind(attended_len_sym, cached_len + seq)?;
 
         let (effective_target, optimized, base_cache, logits_vec) =
             ctx.prebuild_optimized_capturing_as_with_env::<f32>(&graph, logits_node, &sym_env)?;
@@ -1642,9 +1639,10 @@ impl DeepSeek2Model {
             tokens.push(next);
             on_token(next);
             if let Some(eos) = eos_id
-                && next == eos {
-                    break;
-                }
+                && next == eos
+            {
+                break;
+            }
             last_logits = self.forward_with_latent_kv_context_persistent(
                 &[next],
                 &mut cache,

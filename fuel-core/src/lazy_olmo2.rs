@@ -116,8 +116,7 @@ impl Olmo2Model {
 
     fn apply_lm_head(&self, h_norm: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
-        self
-            .weights
+        self.weights
             .output
             .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)
     }

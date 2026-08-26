@@ -226,13 +226,7 @@ impl Qwen2MoeModel {
         for lw in &self.weights.layers {
             x = decoder_layer(&x, lw, cfg, seq)?;
         }
-        rms_norm_affine(
-            &x,
-            &self.weights.final_ln,
-            cfg.rms_norm_eps,
-            h,
-            seq,
-        )
+        rms_norm_affine(&x, &self.weights.final_ln, cfg.rms_norm_eps, h, seq)
     }
 }
 

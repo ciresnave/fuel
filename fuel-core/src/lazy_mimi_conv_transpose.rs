@@ -157,13 +157,14 @@ impl StreamableConvTranspose1dWeights {
             )));
         }
         if let Some(b) = &bias
-            && b.len() != out_channels {
-                return Err(crate::Error::Msg(format!(
-                    "StreamableConvTranspose1dWeights: bias length {} != out_channels {}",
-                    b.len(),
-                    out_channels,
-                )));
-            }
+            && b.len() != out_channels
+        {
+            return Err(crate::Error::Msg(format!(
+                "StreamableConvTranspose1dWeights: bias length {} != out_channels {}",
+                b.len(),
+                out_channels,
+            )));
+        }
         Ok(Self {
             weight,
             bias,

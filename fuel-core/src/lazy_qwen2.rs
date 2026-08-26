@@ -740,8 +740,7 @@ impl DecodeBackbone for Qwen2Model {
         let cfg = &self.config;
         let h_norm =
             h.rms_norm_affine(Arc::clone(&self.weights.final_norm_gain), cfg.rms_norm_eps)?;
-        self
-            .weights
+        self.weights
             .output
             .apply_linear(&h_norm, cfg.hidden_size, cfg.vocab_size)
     }

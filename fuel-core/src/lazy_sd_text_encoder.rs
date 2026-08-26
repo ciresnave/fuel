@@ -57,7 +57,6 @@ pub enum ClipTextActivation {
     GeluErf,
 }
 
-
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct ClipTextConfig {
     pub vocab_size: usize,

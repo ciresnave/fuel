@@ -169,7 +169,9 @@ fn submit_pending_then_wait_submitted_computes_and_releases() {
 
     let got = b.download_bytes(&out).expect("d2h out");
     let got_f32: Vec<f32> = got
-        .as_chunks::<4>().0.iter()
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     assert_eq!(got_f32, vec![3.0_f32, 5.0, 7.0, 9.0]);
@@ -225,7 +227,9 @@ fn submitted_batch_dropped_without_wait_is_uaf_safe() {
     // The GPU finished (the Drop waited the fence), so the output is correct.
     let got = b.download_bytes(&out).expect("d2h out");
     let got_f32: Vec<f32> = got
-        .as_chunks::<4>().0.iter()
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     assert_eq!(got_f32, vec![3.0_f32, 5.0, 7.0, 9.0]);

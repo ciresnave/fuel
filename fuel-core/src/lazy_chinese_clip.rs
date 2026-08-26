@@ -115,8 +115,7 @@ impl ChineseClipModel {
         let cls = hidden
             .narrow(1_usize, 0, 1)?
             .reshape(Shape::from_dims(&[1, h]))?;
-        self
-            .weights
+        self.weights
             .text_projection
             .apply_linear(&cls, h, self.config.projection_dim)
     }

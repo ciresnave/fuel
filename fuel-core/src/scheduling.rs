@@ -71,7 +71,6 @@ pub struct ScheduleOptions {
     pub dispatch: DispatchOptions,
 }
 
-
 /// Probe → [load / re-Judge] → build dispatch. Persists both reports
 /// on a fresh Judge run. Returns the dispatch table paired with the
 /// profile report it was built from (callers often want the raw
@@ -93,10 +92,11 @@ pub fn prepare_dispatch_table(opts: ScheduleOptions) -> Result<(DispatchTable, P
     let mut reuse_profile = false;
     if !opts.force_rejudge
         && let Some(pp) = probe_path.as_ref()
-            && let Ok(Some(prior)) = ProbeReport::load(pp)
-                && matches!(current_probe.diff(&prior), HardwareChange::Unchanged) {
-                    reuse_profile = true;
-                }
+        && let Ok(Some(prior)) = ProbeReport::load(pp)
+        && matches!(current_probe.diff(&prior), HardwareChange::Unchanged)
+    {
+        reuse_profile = true;
+    }
 
     let profile = if reuse_profile {
         if let Some(pp) = profile_path.as_ref() {
@@ -329,9 +329,10 @@ pub fn prepare_dp_inputs(
     let mut hardware_unchanged = false;
     if let Some(pp) = probe_path.as_ref()
         && let Ok(Some(prior)) = ProbeReport::load(pp)
-            && matches!(current_probe.diff(&prior), HardwareChange::Unchanged) {
-                hardware_unchanged = true;
-            }
+        && matches!(current_probe.diff(&prior), HardwareChange::Unchanged)
+    {
+        hardware_unchanged = true;
+    }
 
     // -- Profile report --
     let profile = if hardware_unchanged && !opts.force_rejudge {
@@ -557,10 +558,11 @@ pub fn dp_plan(
         let mut best_b = backends[0];
         for &b in &backends {
             if let Some(&(c, _)) = cost.get(&(root, b)).map(|x| x).iter().next().copied()
-                && c < best {
-                    best = c;
-                    best_b = b;
-                }
+                && c < best
+            {
+                best = c;
+                best_b = b;
+            }
         }
         placement.insert(root, best_b);
     }
@@ -576,10 +578,11 @@ pub fn dp_plan(
             let node = graph.node(id);
             for (idx, &input) in node.inputs.iter().enumerate() {
                 if let Some(&b_i) = inputs_chosen.get(idx)
-                    && let std::collections::hash_map::Entry::Vacant(e) = placement.entry(input) {
-                        e.insert(b_i);
-                        stack.push(input);
-                    }
+                    && let std::collections::hash_map::Entry::Vacant(e) = placement.entry(input)
+                {
+                    e.insert(b_i);
+                    stack.push(input);
+                }
             }
         }
     }
@@ -1318,9 +1321,10 @@ mod tests {
         let mut cuda_copies = 0;
         for i in n_before..n_after {
             if let fuel_graph::Op::Copy { target } = &g.node(NodeId(i)).op
-                && matches!(target, DeviceLocation::Cuda { .. }) {
-                    cuda_copies += 1;
-                }
+                && matches!(target, DeviceLocation::Cuda { .. })
+            {
+                cuda_copies += 1;
+            }
         }
         assert!(
             cuda_copies >= 2,
@@ -1429,9 +1433,10 @@ mod tests {
         let mut cuda_copies = 0;
         for i in n_before..n_after {
             if let fuel_graph::Op::Copy { target } = &g.node(NodeId(i)).op
-                && matches!(target, DeviceLocation::Cuda { .. }) {
-                    cuda_copies += 1;
-                }
+                && matches!(target, DeviceLocation::Cuda { .. })
+            {
+                cuda_copies += 1;
+            }
         }
         assert!(
             cuda_copies >= 2,

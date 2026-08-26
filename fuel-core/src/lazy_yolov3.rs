@@ -885,7 +885,10 @@ pub fn decode_and_nms(
 ) -> Vec<YoloV3Detection> {
     let attrs = 5 + num_classes;
     let flat = raw.predictions.realize_f32();
-    assert!(flat.len().is_multiple_of(attrs), "predictions length mismatch");
+    assert!(
+        flat.len().is_multiple_of(attrs),
+        "predictions length mismatch"
+    );
     let n = flat.len() / attrs;
 
     let mut per_class: Vec<Vec<(f32, [f32; 4])>> = vec![Vec::new(); num_classes];
