@@ -876,3 +876,50 @@ being off by seven — but they were written as point values, so a reader checki
 them finds a discrepancy and doubts the whole clause.** Over-precision does not
 merely decay; it converts a durable argument into a fragile one.
 
+
+---
+## a-defence-can-outlive-its-defect
+
+> **Index line (in CLAUDE.md):** **A REMEMBERED CONTROL THAT HAS BEEN REPLACED BY A STRUCTURAL ONE DOES NOT GO NEUTRAL — IT COMPETES WITH ITS REPLACEMENT.** Worse than ordinary staleness: it does not merely stop being useful, **it acquires the OPPOSITE effect at a future date nobody is watching for, and it looks like compliance while doing it.** When a discipline becomes structural, RETIRE the remembered version explicitly and state the mechanism.
+
+**2026-08-25, the architect's own standing order.** *"Use `+1.98.0`, never `+stable`"* was **correct and load-bearing** when written: nothing pinned the toolchain, this box's ambient default was **1.99.0-nightly**, `+stable` was **1.97.1**, and CI resolved `stable` **fresh per run**. Three compilers, and the order was the only thing between a lane and a wrong-compiler measurement. It worked.
+
+Then `rust-toolchain.toml` landed, and the order **inverted**, on a fact nobody had needed before:
+
+```
+rustup precedence:  1  explicit +toolchain on the command line   <- WINS
+                    3  directory override
+                    4  rust-toolchain.toml
+                    5  rustup default
+```
+
+**An explicit `+toolchain` BEATS the pin.** So from the day the pin is bumped, every lane still obeying the order stays silently on the old compiler **while CI moves** — local greens diverging from CI, **the exact condition the order existed to eliminate.** Each such lane is *following the documented rule*, so the divergence presents as diligence.
+
+**WHY THIS IS ITS OWN CLASS.** Its neighbours describe rules that go **inert**: `staleness-by-workaround` stays TRUE and stops being CHEAPEST; a plain stale fact stops being true and misleads once. **This one stays grammatical, stays obeyed, and REVERSES SIGN.** Its harm is *created by compliance*, so the usual detector — noticing the rule is wrong — never fires, because the rule is not wrong, it is inverted.
+
+**AND NOTE WHAT DID NOT CATCH IT.** A full doc-currency sweep had passed **35/35 session-prompts and 7/7 specs** and was **CORRECT when it ran**. The line expired *afterwards*, at the pin commit. **A complete currency audit does not immunise a corpus against a line that expires after the audit.**
+
+**PRACTICE: when a discipline moves from REMEMBERED to STRUCTURAL, the retirement is part of landing the structure.** Name the old rule, say it is retired, state the mechanism that replaced it. **A rule stated without its reason gets re-broken by the next person with a good reason to type the forbidden thing** — and this one reads as harmless to them.
+
+---
+## cite-what-cannot-move
+
+> **Index line (in CLAUDE.md):** **THREE CITATION FORMS, THREE DECAY RATES, AND THREE DIFFERENT FIXES — measured: paths/symbols/GAP ids 0% defective, LINE NUMBERS 67%, COUNTS no stable form at all.** Fix a path by NAMING something stable; fix a line number by DELETING it and keeping the name; **you cannot name your way out of a COUNT — its only durable forms are a BOUND, a date+ref, or the PROPERTY the number was doing work for.**
+
+**2026-08-25, measured by a lane sweeping the ~25 normative bullets' embedded citations, then extended to its own text.**
+
+```
+paths / symbols / GAP ids   0% defective   -> rot-proof by NAMING something stable
+line numbers               67% defective   -> fix by DELETING the number, keep the name
+counts                     no stable form  -> fix by WEAKENING the claim
+```
+
+**The line-number mechanism is obvious once separated and invisible while aggregated:** a path survives because editing a file does not rename it; **a line number rots on every insertion ABOVE it**, which is most commits — it decays on a schedule set by unrelated work.
+
+**THE COUNT HALF IS NOT RESTATED HERE** — it is measured and owned by [`a-count-has-no-rename-resistant-form-so-bound-it`](#a-count-has-no-rename-resistant-form-so-bound-it), which carries the controlled comparison (hedged **2/2** survived, exact **0/2**, four days apart), the three-case practice for choosing a count's weakest sufficient form, and the corollary that **a positive control asserts a PREDICATE, not a VALUE.** Deliberately a POINTER AND NOT A SUMMARY: **this file's own rule is that a second copy is a divergence generator**, and that finding is the lane's measurement rather than mine. The one line that belongs here is the taxonomy it completes — **you cannot NAME your way out of a count, so its fix differs in KIND from the two forms above, not in degree.**
+
+**INDEPENDENTLY CONFIRMED on a bullet nobody had flagged.** The `never panic on production paths` rule cited its own violation and was wrong in **three particulars at once** — type renamed, line moved, and the construct was an `assert_eq!` not the `.expect()` named. **The rule was eternally true; only every detail of how to FIND it was wrong.** Re-anchoring on a **prose string from the panic message** — unreachable by any rename — fixed it, **and immediately found a SECOND violation site the bullet had never named**, against a positive control (437 `assert_eq!` in that file) proving the query could find things where they exist.
+
+**WHY THE ASYMMETRY MATTERS MORE THAN THE RATE.** A wrong path fails loudly — no such file. **A wrong line number silently points at REAL CODE that is not the code meant**, and a reader finding something plausible concludes the citation is fine. **The failure mode of the 67% is not a broken link, it is confident mis-reading.**
+
+**PRACTICE: cite a symbol, a distinctive string, or a test name, and give the grep; give a line number only as a convenience beside a durable anchor, never as the anchor. For a count, write the BOUND you actually rely on, or the property, or a date+ref — and treat a normative rule's citation as the likeliest to have rotted, precisely because the principle above it is unimpeachable and stops anyone checking.**
