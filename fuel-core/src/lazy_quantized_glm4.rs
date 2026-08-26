@@ -38,9 +38,12 @@
 //! A tied lm_head (`tie_word_embeddings`) is honored automatically when
 //! `output.weight` is absent in the GGUF file.
 
+#[cfg(test)]
+use crate::Device;
+use crate::Result;
 use crate::lazy::{Tensor, WeightStorage};
 use crate::lazy_glm4::{Glm4Config, Glm4LayerWeights, Glm4Model, Glm4Weights};
-use crate::{Device, Result};
+#[cfg(test)]
 use fuel_ir::Shape;
 use std::sync::Arc;
 

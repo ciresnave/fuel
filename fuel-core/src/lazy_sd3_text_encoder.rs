@@ -61,9 +61,9 @@
 
 use crate::Result;
 use crate::lazy::{Tensor, WeightStorage};
-use crate::lazy_sd_text_encoder::{
-    ClipTextActivation, ClipTextConfig, ClipTextWeights, SdTextEncoder,
-};
+#[cfg(test)]
+use crate::lazy_sd_text_encoder::ClipTextActivation;
+use crate::lazy_sd_text_encoder::{ClipTextConfig, ClipTextWeights, SdTextEncoder};
 use crate::lazy_t5::{T5Config, T5Model, T5Weights};
 use fuel_ir::Shape;
 

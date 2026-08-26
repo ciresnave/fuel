@@ -58,7 +58,7 @@
 //! - Forward-only. YOLOv8 training has a custom loss (box/cls/dfl
 //!   weighted sum) that's outside Phase 6a's scope.
 
-use crate::lazy::{Tensor, load_tensor_as_f32};
+use crate::lazy::Tensor;
 use fuel_ir::Shape;
 use std::sync::Arc;
 

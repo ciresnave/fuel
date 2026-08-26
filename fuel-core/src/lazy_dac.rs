@@ -29,7 +29,7 @@
 //!   - `batch == 1`.
 
 use crate::Result;
-use crate::lazy::{Tensor, WeightStorage};
+use crate::lazy::Tensor;
 use fuel_ir::Shape;
 use std::sync::Arc;
 

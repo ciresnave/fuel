@@ -40,8 +40,10 @@
 //! Forward-only, single fixed-size image (`image_size` ×
 //! `image_size`), F32.
 
+#[cfg(test)]
+use crate::Device;
+use crate::Result;
 use crate::lazy::{Tensor, WeightStorage};
-use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
 

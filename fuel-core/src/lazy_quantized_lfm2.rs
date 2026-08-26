@@ -19,12 +19,15 @@
 //!   lazy graph emits a Q4_0 matmul kernel only, so mixed-block-format
 //!   GGUFs run as F32 except for the Q4_0 tensors.
 
+#[cfg(test)]
+use crate::Device;
+use crate::Result;
 use crate::lazy::{Tensor, WeightStorage};
 use crate::lazy_lfm2::{
     LFM2AttentionWeights, LFM2BlockType, LFM2Config, LFM2ConvWeights, LFM2LayerWeights,
     LFM2MixerWeights, LFM2Model, LFM2Weights,
 };
-use crate::{Device, Result};
+#[cfg(test)]
 use fuel_ir::Shape;
 use std::sync::Arc;
 

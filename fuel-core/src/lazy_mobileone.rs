@@ -55,8 +55,10 @@
 //! Forward-only, batch == 1, F32. Returns `(1, nclasses)`
 //! with the classifier head or `(1, last_channels)` without.
 
+#[cfg(test)]
+use crate::Device;
+use crate::Result;
 use crate::lazy::{Tensor, WeightStorage, load_tensor_as_f32};
-use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
 

@@ -41,12 +41,15 @@
 //!     `blk.{i}.ffn_gate.{e}.weight` / `ffn_up.{e}.weight` /
 //!     `ffn_down.{e}.weight` per expert.
 
+#[cfg(test)]
+use crate::Device;
+use crate::Result;
 use crate::lazy::{Tensor, WeightStorage};
 use crate::lazy_qwen3_moe::{
     Qwen3MoeConfig, Qwen3MoeExpertWeights, Qwen3MoeFfn, Qwen3MoeLayerWeights, Qwen3MoeModel,
     Qwen3MoeWeights,
 };
-use crate::{Device, Result};
+#[cfg(test)]
 use fuel_ir::Shape;
 use std::sync::Arc;
 

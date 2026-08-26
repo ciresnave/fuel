@@ -38,12 +38,14 @@
 //! Forward-only, single image + single token sequence, F32.
 //! Multi-image / anyres / `image_newline` injection deferred.
 
+#[cfg(test)]
+use crate::Device;
+use crate::Result;
 use crate::lazy::{
     LayerWeights, LlamaConfig, LlamaModel, LlamaWeights, Tensor, WeightStorage, load_tensor_as_f32,
     load_transposed_matrix_preserve_dtype,
 };
 use crate::lazy_clip::{ClipEncoderLayerWeights, ClipVisionConfig, ClipVisionWeights};
-use crate::{Device, Result};
 use fuel_ir::Shape;
 use serde::Deserialize;
 use std::sync::Arc;

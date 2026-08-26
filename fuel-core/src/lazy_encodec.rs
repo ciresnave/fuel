@@ -35,7 +35,7 @@
 //!     the conv weight pre-realize.
 
 use crate::Result;
-use crate::lazy::{Tensor, WeightStorage, load_tensor_as_f32};
+use crate::lazy::{Tensor, load_tensor_as_f32};
 use crate::lazy_dac::expand_conv1d_weight_for_dilation_if_needed;
 use crate::lazy_lstm::{LstmCellWeights, LstmStack};
 use fuel_ir::Shape;

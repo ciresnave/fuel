@@ -976,8 +976,6 @@ impl Judge {
         prepared: &PreparedDirectCall,
         alt: &DirectCallAlternative,
     ) -> Option<CellRun> {
-        use fuel_dispatch::kernel::OpParams as _; // ensure visible in scope
-
         // Warmup — discard timings. A backend whose kernel panics
         // mid-warmup is treated as if the alternative didn't exist
         // (skip this CellRun); the primary realizer-measured run

@@ -44,13 +44,15 @@
 //! sequence, F32. Subsampled positions / variable image sizes
 //! and the attention mask path deferred.
 
+#[cfg(test)]
+use crate::Device;
+use crate::Result;
 use crate::lazy::{
     Tensor, WeightStorage, load_tensor_as_f32, load_transposed_matrix_preserve_dtype,
 };
 use crate::lazy_mistral::{
     MistralConfig, MistralModel, MistralWeights, load_mistral_weights_with_prefix,
 };
-use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
 

@@ -18,7 +18,7 @@
 //! cos/sin tables from `rope_dim` (not `head_dim`); the suffix
 //! never sees RoPE.
 
-use crate::lazy::{LayerWeights, Tensor, WeightStorage};
+use crate::lazy::{Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;

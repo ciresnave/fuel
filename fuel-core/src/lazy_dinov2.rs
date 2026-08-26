@@ -33,8 +33,10 @@
 //! interpolation deferred (eager uses bicubic which is a
 //! larger op we don't have on the lazy surface yet).
 
+#[cfg(test)]
+use crate::Device;
+use crate::Result;
 use crate::lazy::{Tensor, WeightStorage};
-use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
 

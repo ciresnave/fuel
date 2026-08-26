@@ -49,8 +49,10 @@
 //! `H == W` and divisible by 32 (typically 224). Returns
 //! `(1, nclasses)` after the final FC + ReLU.
 
+#[cfg(test)]
+use crate::Device;
+use crate::Result;
 use crate::lazy::{Tensor, WeightStorage};
-use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
 

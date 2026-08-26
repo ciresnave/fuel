@@ -32,8 +32,10 @@
 //!   `axes_dim = [16, 56, 56]` partitions the head dim across three
 //!   independent rotary frequency bands).
 
+#[cfg(test)]
+use crate::Device;
+use crate::Result;
 use crate::lazy::{Tensor, WeightStorage};
-use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
