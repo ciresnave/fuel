@@ -603,24 +603,22 @@ fn load_f32(st: &crate::safetensors::MmapedSafetensors, name: &str) -> crate::Re
     match view.dtype() {
         Dtype::F32 => {
             let mut out = Vec::with_capacity(bytes.len() / 4);
-            for chunk in bytes.chunks_exact(4) {
+            for chunk in bytes.as_chunks::<4>().0.iter() {
                 out.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
             }
             Ok(out)
         }
         Dtype::F64 => {
             let mut out = Vec::with_capacity(bytes.len() / 8);
-            for chunk in bytes.chunks_exact(8) {
-                let arr: [u8; 8] = chunk
-                    .try_into()
-                    .expect("chunks_exact(8) always yields 8 bytes");
+            for chunk in bytes.as_chunks::<8>().0.iter() {
+                let arr: [u8; 8] = *chunk;
                 out.push(f64::from_le_bytes(arr) as f32);
             }
             Ok(out)
         }
         Dtype::BF16 => {
             let mut out = Vec::with_capacity(bytes.len() / 2);
-            for chunk in bytes.chunks_exact(2) {
+            for chunk in bytes.as_chunks::<2>().0.iter() {
                 let raw = u16::from_le_bytes([chunk[0], chunk[1]]);
                 out.push(half::bf16::from_bits(raw).to_f32());
             }
@@ -628,7 +626,7 @@ fn load_f32(st: &crate::safetensors::MmapedSafetensors, name: &str) -> crate::Re
         }
         Dtype::F16 => {
             let mut out = Vec::with_capacity(bytes.len() / 2);
-            for chunk in bytes.chunks_exact(2) {
+            for chunk in bytes.as_chunks::<2>().0.iter() {
                 let raw = u16::from_le_bytes([chunk[0], chunk[1]]);
                 out.push(half::f16::from_bits(raw).to_f32());
             }

@@ -985,11 +985,11 @@ mod tests {
             .unwrap()
             .2;
         let raw_3x3_f: Vec<f32> = raw_3x3
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         let raw_1x1_f: Vec<f32> = raw_1x1
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         for o in 0..stem_dim {

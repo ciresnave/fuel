@@ -1621,7 +1621,7 @@ mod tests {
             .unwrap()
             .2;
         let raw_stem_f: Vec<f32> = raw_stem
-            .chunks_exact(4)
+            .as_chunks::<4>().0.iter()
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         for (i, expected) in raw_stem_f.iter().enumerate() {

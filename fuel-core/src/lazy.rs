@@ -7453,7 +7453,7 @@ impl Tensor {
             Dtype::F32 => {
                 check_len(elem_count * 4)?;
                 let mut data = Vec::with_capacity(elem_count);
-                for chunk in bytes.chunks_exact(4) {
+                for chunk in bytes.as_chunks::<4>().0.iter() {
                     data.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
                 }
                 Ok(Self::from_f32(data, shape_obj, device))
@@ -7461,8 +7461,8 @@ impl Tensor {
             Dtype::F64 => {
                 check_len(elem_count * 8)?;
                 let mut data = Vec::with_capacity(elem_count);
-                for chunk in bytes.chunks_exact(8) {
-                    let arr: [u8; 8] = chunk.try_into().unwrap();
+                for chunk in bytes.as_chunks::<8>().0.iter() {
+                    let arr: [u8; 8] = *chunk;
                     data.push(f64::from_le_bytes(arr));
                 }
                 Ok(Self::from_f64(data, shape_obj, device))
@@ -7470,7 +7470,7 @@ impl Tensor {
             Dtype::BF16 => {
                 check_len(elem_count * 2)?;
                 let mut data = Vec::with_capacity(elem_count);
-                for chunk in bytes.chunks_exact(2) {
+                for chunk in bytes.as_chunks::<2>().0.iter() {
                     let raw = u16::from_le_bytes([chunk[0], chunk[1]]);
                     data.push(half::bf16::from_bits(raw));
                 }
@@ -7479,7 +7479,7 @@ impl Tensor {
             Dtype::F16 => {
                 check_len(elem_count * 2)?;
                 let mut data = Vec::with_capacity(elem_count);
-                for chunk in bytes.chunks_exact(2) {
+                for chunk in bytes.as_chunks::<2>().0.iter() {
                     let raw = u16::from_le_bytes([chunk[0], chunk[1]]);
                     data.push(half::f16::from_bits(raw));
                 }
@@ -7488,7 +7488,7 @@ impl Tensor {
             Dtype::U32 => {
                 check_len(elem_count * 4)?;
                 let mut data = Vec::with_capacity(elem_count);
-                for chunk in bytes.chunks_exact(4) {
+                for chunk in bytes.as_chunks::<4>().0.iter() {
                     data.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
                 }
                 Ok(Self::from_u32(data, shape_obj, device))
@@ -11365,22 +11365,22 @@ pub fn load_tensor_as_f32(
     match view.dtype() {
         Dtype::F32 => {
             let mut out = Vec::with_capacity(bytes.len() / 4);
-            for chunk in bytes.chunks_exact(4) {
+            for chunk in bytes.as_chunks::<4>().0.iter() {
                 out.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
             }
             Ok(out)
         }
         Dtype::F64 => {
             let mut out = Vec::with_capacity(bytes.len() / 8);
-            for chunk in bytes.chunks_exact(8) {
-                let arr: [u8; 8] = chunk.try_into().unwrap();
+            for chunk in bytes.as_chunks::<8>().0.iter() {
+                let arr: [u8; 8] = *chunk;
                 out.push(f64::from_le_bytes(arr) as f32);
             }
             Ok(out)
         }
         Dtype::BF16 => {
             let mut out = Vec::with_capacity(bytes.len() / 2);
-            for chunk in bytes.chunks_exact(2) {
+            for chunk in bytes.as_chunks::<2>().0.iter() {
                 let raw = u16::from_le_bytes([chunk[0], chunk[1]]);
                 out.push(half::bf16::from_bits(raw).to_f32());
             }
@@ -11388,7 +11388,7 @@ pub fn load_tensor_as_f32(
         }
         Dtype::F16 => {
             let mut out = Vec::with_capacity(bytes.len() / 2);
-            for chunk in bytes.chunks_exact(2) {
+            for chunk in bytes.as_chunks::<2>().0.iter() {
                 let raw = u16::from_le_bytes([chunk[0], chunk[1]]);
                 out.push(half::f16::from_bits(raw).to_f32());
             }
@@ -12232,7 +12232,7 @@ pub fn sample_logits(logits: &[f32], strategy: SamplingStrategy, rng_state: &mut
         SamplingStrategy::Temperature { temp, .. } => {
             // Stable softmax over optionally temperature-scaled logits,
             // then a deterministic multinomial draw.
-            let inv_temp = if temp == 0.0 { 1.0 } else { 1.0 / temp as f32 };
+            let inv_temp = if temp == 0.0 { 1.0 } else { 1.0 / temp };
             let scaled: Vec<f32> = logits.iter().map(|&x| x * inv_temp).collect();
             let max = scaled.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
             let exp: Vec<f32> = scaled.iter().map(|&x| (x - max).exp()).collect();
@@ -14066,7 +14066,7 @@ fn dequant_gguf_bytes_to_f32(
                 );
             }
             Ok(bytes
-                .chunks_exact(4)
+                .as_chunks::<4>().0.iter()
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect())
         }
@@ -14078,7 +14078,7 @@ fn dequant_gguf_bytes_to_f32(
                 );
             }
             Ok(bytes
-                .chunks_exact(2)
+                .as_chunks::<2>().0.iter()
                 .map(|c| f16::from_le_bytes([c[0], c[1]]).to_f32())
                 .collect())
         }
@@ -14090,7 +14090,7 @@ fn dequant_gguf_bytes_to_f32(
                 );
             }
             Ok(bytes
-                .chunks_exact(2)
+                .as_chunks::<2>().0.iter()
                 .map(|c| bf16::from_le_bytes([c[0], c[1]]).to_f32())
                 .collect())
         }
@@ -14145,7 +14145,7 @@ fn bytes_to_u32_arc(bytes: &[u8]) -> Arc<[u32]> {
         "bytes_to_u32_arc: len must be multiple of 4"
     );
     let words: Vec<u32> = bytes
-        .chunks_exact(4)
+        .as_chunks::<4>().0.iter()
         .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     Arc::from(words)

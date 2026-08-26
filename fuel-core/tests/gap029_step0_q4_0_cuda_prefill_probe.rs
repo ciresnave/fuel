@@ -83,7 +83,7 @@ fn realize_q4_0(m: usize, k: usize, n: usize, dev: &Device) -> (Outcome, Vec<f32
     .to_vec();
     assert_eq!(w_bytes.len() % 4, 0, "block bytes must pack into u32");
     let w_u32: Vec<u32> = w_bytes
-        .chunks_exact(4)
+        .as_chunks::<4>().0.iter()
         .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
 

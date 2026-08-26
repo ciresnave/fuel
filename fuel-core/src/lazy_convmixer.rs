@@ -375,7 +375,7 @@ mod tests {
             mean[i] += nb() * 0.05;
             var[i] += nb().abs() * 0.05;
         }
-        BatchNormParams::from_raw(&gain, &bias, &mean, &var, cfg.bn_eps as f64)
+        BatchNormParams::from_raw(&gain, &bias, &mean, &var, cfg.bn_eps)
     }
 
     fn tiny_weights(cfg: &ConvMixerConfig) -> ConvMixerWeights {

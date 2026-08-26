@@ -193,7 +193,7 @@ fn quantize_in_out_to_q4_0(
         padded_bytes.as_slice()
     };
     let mut words: Vec<u32> = Vec::with_capacity(padded_byte_len / 4);
-    for chunk in bytes_for_words.chunks_exact(4) {
+    for chunk in bytes_for_words.as_chunks::<4>().0.iter() {
         words.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
     }
     drop(blocks);
