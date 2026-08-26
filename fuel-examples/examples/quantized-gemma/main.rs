@@ -359,7 +359,7 @@ fn main() -> anyhow::Result<()> {
         let header_done = start.elapsed();
         let (_mmap, model_content) = mmaped.into_parts();
         let mut total_size_in_bytes = 0;
-        for (_, tensor) in model_content.tensor_infos.iter() {
+        for tensor in model_content.tensor_infos.values() {
             let elem_count = tensor.shape.elem_count();
             total_size_in_bytes +=
                 elem_count * tensor.ggml_dtype.type_size() / tensor.ggml_dtype.block_size();
@@ -367,7 +367,7 @@ fn main() -> anyhow::Result<()> {
         println!(
             "mmapped {:?} tensors ({}); header in {:.2}s",
             model_content.tensor_infos.len(),
-            &format_size(total_size_in_bytes),
+            format_size(total_size_in_bytes),
             header_done.as_secs_f32(),
         );
         gemma3_config_from_gguf(&model_content)?
@@ -411,7 +411,7 @@ fn main() -> anyhow::Result<()> {
                 format!("<start_of_turn> user\n{prompt}<end_of_turn>\n<start_of_turn> model\n")
             }
         };
-        print!("{}", &prompt_str);
+        print!("{}", prompt_str);
 
         let tokens = tos
             .tokenizer()

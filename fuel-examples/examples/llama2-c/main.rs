@@ -170,10 +170,8 @@ fn run_inference(args: &InferenceCmd, common_args: &Args) -> Result<()> {
 
     let _device = fuel_examples::device(common_args.cpu)?;
 
-    let is_gguf = config_path.extension().map_or(false, |v| v == "gguf");
-    let is_safetensors = config_path
-        .extension()
-        .map_or(false, |v| v == "safetensors");
+    let is_gguf = config_path.extension().is_some_and(|v| v == "gguf");
+    let is_safetensors = config_path.extension().is_some_and(|v| v == "safetensors");
     if is_gguf {
         anyhow::bail!(
             "GGUF llama2.c weights aren't supported by the lazy port yet; \

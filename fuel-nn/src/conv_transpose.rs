@@ -193,16 +193,16 @@ impl ConvTranspose1d {
             ))
             .bt());
         }
-        if let Some(b) = bias.as_ref() {
-            if b.len() != out_channels {
-                return Err(fuel::Error::Msg(format!(
-                    "ConvTranspose1d::new: bias has length {} but \
+        if let Some(b) = bias.as_ref()
+            && b.len() != out_channels
+        {
+            return Err(fuel::Error::Msg(format!(
+                "ConvTranspose1d::new: bias has length {} but \
                      out_channels = {}",
-                    b.len(),
-                    out_channels,
-                ))
-                .bt());
-            }
+                b.len(),
+                out_channels,
+            ))
+            .bt());
         }
         Ok(Self {
             weight,
@@ -438,16 +438,16 @@ impl ConvTranspose2d {
             ))
             .bt());
         }
-        if let Some(b) = bias.as_ref() {
-            if b.len() != out_channels {
-                return Err(fuel::Error::Msg(format!(
-                    "ConvTranspose2d::new: bias has length {} but \
+        if let Some(b) = bias.as_ref()
+            && b.len() != out_channels
+        {
+            return Err(fuel::Error::Msg(format!(
+                "ConvTranspose2d::new: bias has length {} but \
                      out_channels = {}",
-                    b.len(),
-                    out_channels,
-                ))
-                .bt());
-            }
+                b.len(),
+                out_channels,
+            ))
+            .bt());
         }
         Ok(Self {
             weight,

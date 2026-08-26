@@ -369,22 +369,22 @@ pub fn extract_tool_calls(text: &str) -> Vec<ToolCall> {
     for start in text.match_indices('{').map(|(i, _)| i) {
         if let Some(end) = find_matching_brace(text, start) {
             let candidate = &text[start..=end];
-            if let Ok(val) = serde_json::from_str::<serde_json::Value>(candidate) {
-                if let (Some(name), Some(args)) = (
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(candidate)
+                && let (Some(name), Some(args)) = (
                     val.get("name").and_then(|v| v.as_str()),
                     val.get("arguments"),
-                ) {
-                    let args_str = if args.is_string() {
-                        args.as_str().unwrap().to_string()
-                    } else {
-                        args.to_string()
-                    };
-                    let mut call = ToolCall::new(name, args_str);
-                    if let Some(id) = val.get("call_id").and_then(|v| v.as_str()) {
-                        call = call.with_call_id(id);
-                    }
-                    calls.push(call);
+                )
+            {
+                let args_str = if args.is_string() {
+                    args.as_str().unwrap().to_string()
+                } else {
+                    args.to_string()
+                };
+                let mut call = ToolCall::new(name, args_str);
+                if let Some(id) = val.get("call_id").and_then(|v| v.as_str()) {
+                    call = call.with_call_id(id);
                 }
+                calls.push(call);
             }
         }
     }

@@ -236,7 +236,7 @@ mod sabotage {
         let _ = std::fs::create_dir_all(&dir);
         let f = dir.join("commented.rs");
         std::fs::write(&f, "// mentions IngestionService in prose\nfn x() {}\n").unwrap();
-        let hits = trigger_refs(&[f.clone()], &dir);
+        let hits = trigger_refs(std::slice::from_ref(&f), &dir);
         assert!(
             hits.is_empty(),
             "a `//` comment mentioning the symbol must not read as a provider: {hits:?}"

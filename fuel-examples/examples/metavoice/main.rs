@@ -283,7 +283,7 @@ fn main() -> Result<()> {
                 codes_flat.push(c.min(cap.saturating_sub(1)));
             }
         } else {
-            codes_flat.extend(std::iter::repeat(0_u32).take(gen_len));
+            codes_flat.extend(std::iter::repeat_n(0_u32, gen_len));
         }
     }
     let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &Device::cpu());
@@ -342,7 +342,7 @@ fn load_speaker_embed(args: &Args, cfg: &MetaVoiceConfig) -> Result<Tensor> {
                 if let Ok(view) = st.get("spk_emb") {
                     let bytes = view.data();
                     let mut out: Vec<f32> = Vec::with_capacity(bytes.len() / 4);
-                    for chunk in bytes.chunks_exact(4) {
+                    for chunk in bytes.as_chunks::<4>().0 {
                         out.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
                     }
                     if out.len() == cfg.speaker_emb_dim {

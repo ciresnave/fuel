@@ -168,7 +168,7 @@ fn main() -> Result<()> {
     if args.verbose {
         println!("Starting the inference loop:");
     } else {
-        print!("{}", &args.prompt);
+        print!("{}", args.prompt);
         std::io::stdout().flush()?;
     }
     let mut tokens = tok_stream

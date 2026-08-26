@@ -386,14 +386,12 @@ fn infer_v7_shape(st: &fuel::safetensors::MmapedSafetensors) -> Result<(usize, u
 
     let mut max_layer: i64 = -1;
     for n in &names {
-        if let Some(rest) = n.strip_prefix("rwkv.blocks.") {
-            if let Some(dot) = rest.find('.') {
-                if let Ok(i) = rest[..dot].parse::<i64>() {
-                    if i > max_layer {
-                        max_layer = i;
-                    }
-                }
-            }
+        if let Some(rest) = n.strip_prefix("rwkv.blocks.")
+            && let Some(dot) = rest.find('.')
+            && let Ok(i) = rest[..dot].parse::<i64>()
+            && i > max_layer
+        {
+            max_layer = i;
         }
     }
     if max_layer < 0 {

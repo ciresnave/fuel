@@ -95,7 +95,7 @@ impl VarMap {
                 view.map(|v| (name.clone(), v))
             })
             .collect::<Result<Vec<_>>>()?;
-        safetensors::tensor::serialize_to_file(views.into_iter(), None, path.as_ref())
+        safetensors::tensor::serialize_to_file(views, None, path.as_ref())
             .map_err(|e| fuel::Error::Msg(format!("VarMap::save: {e}")).bt())?;
         Ok(())
     }
@@ -144,7 +144,7 @@ impl VarMap {
                 .bt());
             }
             let mut values = Vec::with_capacity(raw.len() / 4);
-            for chunk in raw.chunks_exact(4) {
+            for chunk in raw.as_chunks::<4>().0 {
                 values.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
             }
             var.set(values)?;

@@ -352,7 +352,7 @@ fn main() -> anyhow::Result<()> {
         .map_err(|e| E::msg(format!("mmap {}: {e}", model_path.display())))?;
     let header_done = start.elapsed();
     let mut total_size_in_bytes = 0;
-    for (_, tensor) in mmaped.content().tensor_infos.iter() {
+    for tensor in mmaped.content().tensor_infos.values() {
         let elem_count = tensor.shape.elem_count();
         total_size_in_bytes +=
             elem_count * tensor.ggml_dtype.type_size() / tensor.ggml_dtype.block_size();
@@ -360,7 +360,7 @@ fn main() -> anyhow::Result<()> {
     println!(
         "mmapped {:?} tensors ({}); header in {:.2}s",
         mmaped.content().tensor_infos.len(),
-        &format_size(total_size_in_bytes),
+        format_size(total_size_in_bytes),
         header_done.as_secs_f32(),
     );
 
@@ -378,7 +378,7 @@ fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|| DEFAULT_PROMPT.to_string());
 
     let prompt_str = format!("<|im_start|>user\n{prompt_str}<|im_end|>\n<|im_start|>assistant\n");
-    print!("formatted prompt: {}", &prompt_str);
+    print!("formatted prompt: {}", prompt_str);
 
     let tokens = tos
         .tokenizer()

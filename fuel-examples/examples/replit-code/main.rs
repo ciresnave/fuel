@@ -86,7 +86,7 @@ struct Args {
 ///   - `transformer.wte.weight`                                 — token embedding
 ///   - `transformer.blocks.{i}.norm_1.{weight,bias}`            — pre-attn LN
 ///   - `transformer.blocks.{i}.attn.Wqkv.weight`                — fused QKV
-///                                                                ([d_model + 2*kv_dim, d_model])
+///     ([d_model + 2*kv_dim, d_model])
 ///   - `transformer.blocks.{i}.attn.out_proj.weight`
 ///   - `transformer.blocks.{i}.norm_2.{weight,bias}`            — pre-FFN LN
 ///   - `transformer.blocks.{i}.ffn.up_proj.weight`

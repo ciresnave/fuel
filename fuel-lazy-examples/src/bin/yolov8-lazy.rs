@@ -35,7 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     let image_size: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(64);
 
-    if image_size % 32 != 0 {
+    if !image_size.is_multiple_of(32) {
         return Err(format!(
             "image size {image_size} must be divisible by 32 (YOLOv8 has 5 stride-2 downsamples)"
         )

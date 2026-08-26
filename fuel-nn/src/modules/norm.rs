@@ -50,15 +50,15 @@ impl LayerNorm {
             ))
             .bt());
         }
-        if let Some(b) = bias.as_ref() {
-            if b.len() != last_dim {
-                return Err(fuel::Error::Msg(format!(
-                    "LayerNorm::new: bias has length {} but last_dim = {}",
-                    b.len(),
-                    last_dim,
-                ))
-                .bt());
-            }
+        if let Some(b) = bias.as_ref()
+            && b.len() != last_dim
+        {
+            return Err(fuel::Error::Msg(format!(
+                "LayerNorm::new: bias has length {} but last_dim = {}",
+                b.len(),
+                last_dim,
+            ))
+            .bt());
         }
         Ok(Self {
             gain,
@@ -186,7 +186,7 @@ impl GroupNorm {
         if num_groups == 0 {
             return Err(fuel::Error::Msg("GroupNorm::new: num_groups must be ≥ 1".into()).bt());
         }
-        if num_channels % num_groups != 0 {
+        if !num_channels.is_multiple_of(num_groups) {
             return Err(fuel::Error::Msg(format!(
                 "GroupNorm::new: num_groups ({num_groups}) must divide \
                  num_channels ({num_channels})",
@@ -594,7 +594,7 @@ mod tests {
             &Device::cpu(),
         );
         let got = bn.forward(&x).unwrap().realize_f32();
-        let expected = vec![5.0_f32, 5.0_f32, 4.0_f32, 4.0_f32];
+        let expected = [5.0_f32, 5.0_f32, 4.0_f32, 4.0_f32];
         for (i, (a, e)) in got.iter().zip(expected.iter()).enumerate() {
             assert!(
                 (a - e).abs() < 1e-6,

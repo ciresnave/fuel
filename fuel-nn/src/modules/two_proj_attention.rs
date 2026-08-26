@@ -85,7 +85,7 @@ impl TwoProjAttention {
         if hidden_size == 0 {
             fuel::bail!("TwoProjAttention::new: hidden_size must be >= 1");
         }
-        if n_heads % n_kv_heads != 0 {
+        if !n_heads.is_multiple_of(n_kv_heads) {
             fuel::bail!(
                 "TwoProjAttention::new: n_kv_heads ({n_kv_heads}) must evenly \
                  divide n_heads ({n_heads})",

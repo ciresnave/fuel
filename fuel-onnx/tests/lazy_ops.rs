@@ -139,7 +139,7 @@ type In<'a> = (&'a str, Vec<f32>, Vec<usize>);
 ///
 /// All inputs are placed on ONE graph — see the module docs.
 fn run(model: &ModelProto, inputs: &[In]) -> Result<Vec<f32>> {
-    Ok(run_named(model, inputs, OUT)?)
+    run_named(model, inputs, OUT)
 }
 
 fn run_named(model: &ModelProto, inputs: &[In], want: &str) -> Result<Vec<f32>> {
@@ -288,7 +288,11 @@ fn logical_ops_on_zero_one_masks() -> Result<()> {
         assert_close(&run(&m, &[a.clone(), b.clone()])?, &want, op);
     }
     let m = single_node("Not", &["a"], vec![]);
-    assert_close(&run(&m, &[a.clone()])?, &[1.0, 1.0, 0.0, 0.0], "Not");
+    assert_close(
+        &run(&m, std::slice::from_ref(&a))?,
+        &[1.0, 1.0, 0.0, 0.0],
+        "Not",
+    );
     Ok(())
 }
 
@@ -394,7 +398,11 @@ fn clip_from_attributes_and_from_inputs() -> Result<()> {
         &["x"],
         vec![attr_f("min", -1.0), attr_f("max", 1.0)],
     );
-    assert_close(&run(&m, &[x.clone()])?, &[-1.0, 0.0, 1.0], "Clip attrs");
+    assert_close(
+        &run(&m, std::slice::from_ref(&x))?,
+        &[-1.0, 0.0, 1.0],
+        "Clip attrs",
+    );
 
     // opset 11+: min/max as inputs
     let m = single_node("Clip", &["x", "lo", "hi"], vec![]);
@@ -432,10 +440,14 @@ fn clip_treats_an_empty_input_name_as_absent() -> Result<()> {
 fn shape_and_size_report_metadata() -> Result<()> {
     let x = ("x", vec![0.0; 24], vec![2usize, 3, 4]);
     let m = single_node("Shape", &["x"], vec![]);
-    assert_close(&run(&m, &[x.clone()])?, &[2.0, 3.0, 4.0], "Shape");
+    assert_close(
+        &run(&m, std::slice::from_ref(&x))?,
+        &[2.0, 3.0, 4.0],
+        "Shape",
+    );
 
     let m = single_node("Size", &["x"], vec![]);
-    assert_close(&run(&m, &[x.clone()])?, &[24.0], "Size");
+    assert_close(&run(&m, std::slice::from_ref(&x))?, &[24.0], "Size");
     Ok(())
 }
 
@@ -524,13 +536,13 @@ fn trilu_upper_default_and_lower() -> Result<()> {
     // upper defaults to 1
     let m = single_node("Trilu", &["x"], vec![]);
     assert_close(
-        &run(&m, &[x.clone()])?,
+        &run(&m, std::slice::from_ref(&x))?,
         &[1.0, 2.0, 3.0, 0.0, 5.0, 6.0, 0.0, 0.0, 9.0],
         "Trilu upper",
     );
     let m = single_node("Trilu", &["x"], vec![attr_i("upper", 0)]);
     assert_close(
-        &run(&m, &[x.clone()])?,
+        &run(&m, std::slice::from_ref(&x))?,
         &[1.0, 0.0, 0.0, 4.0, 5.0, 0.0, 7.0, 8.0, 9.0],
         "Trilu lower",
     );
@@ -556,9 +568,9 @@ fn argmax_argmin_keepdims_default_and_off() -> Result<()> {
     let x = ("x", vec![1.0f32, 9.0, 3.0, 2.0], vec![2usize, 2]);
     // keepdims defaults to 1
     let m = single_node("ArgMax", &["x"], vec![attr_i("axis", 1)]);
-    assert_close(&run(&m, &[x.clone()])?, &[1.0, 0.0], "ArgMax");
+    assert_close(&run(&m, std::slice::from_ref(&x))?, &[1.0, 0.0], "ArgMax");
     let m = single_node("ArgMin", &["x"], vec![attr_i("axis", 1)]);
-    assert_close(&run(&m, &[x.clone()])?, &[0.0, 1.0], "ArgMin");
+    assert_close(&run(&m, std::slice::from_ref(&x))?, &[0.0, 1.0], "ArgMin");
     Ok(())
 }
 

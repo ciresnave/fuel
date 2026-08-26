@@ -211,6 +211,11 @@ pub fn huber(inp: &Tensor, target: &Tensor, delta: f64, reduction: Reduction) ->
         ))
         .bt());
     }
+    // `!(delta > 0.0)` rather than `delta <= 0.0`: the two differ for NaN.
+    // `!(NaN > 0.0)` is TRUE, so a NaN delta is REJECTED here; `NaN <= 0.0`
+    // is FALSE and would let it through into the loss. Clippy's suggested
+    // rewrite would silently delete this validator's NaN case.
+    #[allow(clippy::neg_cmp_op_on_partial_ord)]
     if !(delta > 0.0) {
         return Err(fuel::Error::Msg(format!("huber: delta must be > 0, got {delta}",)).bt());
     }

@@ -130,7 +130,7 @@ impl Conv1d {
             ))
             .bt());
         }
-        if in_channels % cfg.groups != 0 {
+        if !in_channels.is_multiple_of(cfg.groups) {
             return Err(fuel::Error::Msg(format!(
                 "Conv1d::new: in_channels ({}) must be divisible \
                  by groups ({})",
@@ -138,7 +138,7 @@ impl Conv1d {
             ))
             .bt());
         }
-        if out_channels % cfg.groups != 0 {
+        if !out_channels.is_multiple_of(cfg.groups) {
             return Err(fuel::Error::Msg(format!(
                 "Conv1d::new: out_channels ({}) must be divisible \
                  by groups ({})",
@@ -160,16 +160,16 @@ impl Conv1d {
             ))
             .bt());
         }
-        if let Some(b) = bias.as_ref() {
-            if b.len() != out_channels {
-                return Err(fuel::Error::Msg(format!(
-                    "Conv1d::new: bias has length {} but \
+        if let Some(b) = bias.as_ref()
+            && b.len() != out_channels
+        {
+            return Err(fuel::Error::Msg(format!(
+                "Conv1d::new: bias has length {} but \
                      out_channels = {}",
-                    b.len(),
-                    out_channels,
-                ))
-                .bt());
-            }
+                b.len(),
+                out_channels,
+            ))
+            .bt());
         }
         Ok(Self {
             weight,
@@ -267,7 +267,7 @@ impl Conv2d {
             ))
             .bt());
         }
-        if in_channels % cfg.groups != 0 {
+        if !in_channels.is_multiple_of(cfg.groups) {
             return Err(fuel::Error::Msg(format!(
                 "Conv2d::new: in_channels ({}) must be divisible \
                  by groups ({})",
@@ -275,7 +275,7 @@ impl Conv2d {
             ))
             .bt());
         }
-        if out_channels % cfg.groups != 0 {
+        if !out_channels.is_multiple_of(cfg.groups) {
             return Err(fuel::Error::Msg(format!(
                 "Conv2d::new: out_channels ({}) must be divisible \
                  by groups ({})",
@@ -298,16 +298,16 @@ impl Conv2d {
             ))
             .bt());
         }
-        if let Some(b) = bias.as_ref() {
-            if b.len() != out_channels {
-                return Err(fuel::Error::Msg(format!(
-                    "Conv2d::new: bias has length {} but \
+        if let Some(b) = bias.as_ref()
+            && b.len() != out_channels
+        {
+            return Err(fuel::Error::Msg(format!(
+                "Conv2d::new: bias has length {} but \
                      out_channels = {}",
-                    b.len(),
-                    out_channels,
-                ))
-                .bt());
-            }
+                b.len(),
+                out_channels,
+            ))
+            .bt());
         }
         Ok(Self {
             weight,

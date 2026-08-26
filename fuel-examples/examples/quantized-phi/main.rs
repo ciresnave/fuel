@@ -362,7 +362,7 @@ fn main() -> anyhow::Result<()> {
         let header_done = start.elapsed();
         let model_content = mmaped.content();
         let mut total_size_in_bytes = 0;
-        for (_, tensor) in model_content.tensor_infos.iter() {
+        for tensor in model_content.tensor_infos.values() {
             let elem_count = tensor.shape.elem_count();
             total_size_in_bytes +=
                 elem_count * tensor.ggml_dtype.type_size() / tensor.ggml_dtype.block_size();
@@ -370,7 +370,7 @@ fn main() -> anyhow::Result<()> {
         println!(
             "mmapped {:?} tensors ({}); header in {:.2}s",
             model_content.tensor_infos.len(),
-            &format_size(total_size_in_bytes),
+            format_size(total_size_in_bytes),
             header_done.as_secs_f32(),
         );
         match args.which {
@@ -405,7 +405,7 @@ fn main() -> anyhow::Result<()> {
     let tokenizer = args.tokenizer()?;
     let mut tos = TokenOutputStream::new(tokenizer);
     let prompt_str = args.prompt.unwrap_or_else(|| DEFAULT_PROMPT.to_string());
-    print!("{}", &prompt_str);
+    print!("{}", prompt_str);
     let tokens = tos
         .tokenizer()
         .encode(prompt_str, true)

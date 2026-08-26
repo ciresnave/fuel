@@ -52,16 +52,16 @@ impl Linear {
             ))
             .bt());
         }
-        if let Some(b) = bias.as_ref() {
-            if b.len() != out_features {
-                return Err(fuel::Error::Msg(format!(
-                    "Linear::new: bias has length {} but \
+        if let Some(b) = bias.as_ref()
+            && b.len() != out_features
+        {
+            return Err(fuel::Error::Msg(format!(
+                "Linear::new: bias has length {} but \
                      out_features = {}",
-                    b.len(),
-                    out_features,
-                ))
-                .bt());
-            }
+                b.len(),
+                out_features,
+            ))
+            .bt());
         }
         Ok(Self {
             weight,

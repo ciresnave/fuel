@@ -211,11 +211,12 @@ fn main() -> Result<()> {
         _ => SamplingStrategy::Greedy,
     };
 
-    let device = if args.cpu {
-        Device::cpu()
-    } else {
-        Device::cpu()
-    };
+    // This example is CPU-only. The branch that used to be here returned
+    // Device::cpu() from BOTH arms, so `--cpu` never selected anything --
+    // it read as a device choice the code does not make. The flag stays for
+    // CLI parity with the sibling examples; the branch does not.
+    let _cpu_requested = args.cpu;
+    let device = Device::cpu();
 
     let start_gen = std::time::Instant::now();
     let output_tokens = model.generate_streaming_with_kv_context(

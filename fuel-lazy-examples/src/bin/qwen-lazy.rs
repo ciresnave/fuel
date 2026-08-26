@@ -129,10 +129,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         elapsed,
         elapsed.as_secs_f64() / new_tokens.max(1) as f64,
     );
-    if let Some(eos) = tokenizer.eos_id() {
-        if output_tokens.last() == Some(&eos) {
-            eprintln!("(stopped early on EOS token {eos})");
-        }
+    if let Some(eos) = tokenizer.eos_id()
+        && output_tokens.last() == Some(&eos)
+    {
+        eprintln!("(stopped early on EOS token {eos})");
     }
 
     Ok(())

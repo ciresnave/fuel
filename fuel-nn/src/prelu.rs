@@ -112,8 +112,8 @@ impl PReLU {
         // shape we need.
         let weight = if self.num_parameters == 1 {
             // Rank-0 scalar; broadcasts against anything.
-            let w = x.const_f32_like(Arc::clone(&self.weight), Shape::from_dims(&[]));
-            w
+
+            x.const_f32_like(Arc::clone(&self.weight), Shape::from_dims(&[]))
         } else {
             // Per-channel — require rank >= 2 and channel-axis match.
             let dims = x.shape();
@@ -180,7 +180,7 @@ impl PReLU {
 /// `x.minimum(&zero)` lands in the strict-shape path. Promotes the
 /// scalar via `broadcast_to`.
 fn broadcast_zero_like(zero_scalar: &Tensor, like: &Tensor) -> Result<Tensor> {
-    Ok(zero_scalar.broadcast_to(like.shape())?)
+    zero_scalar.broadcast_to(like.shape())
 }
 
 // ---- Tests -----------------------------------------------------------------

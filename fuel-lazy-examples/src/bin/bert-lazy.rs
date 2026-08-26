@@ -70,7 +70,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let token_ids = tokenizer.encode(&prompt, true)?;
-    eprintln!("Prompt tokens ({}): {:?}", token_ids.len(), &token_ids);
+    eprintln!("Prompt tokens ({}): {:?}", token_ids.len(), token_ids);
     eprintln!();
 
     eprintln!("Running forward pass...");

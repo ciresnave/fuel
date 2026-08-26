@@ -503,7 +503,7 @@ mod tests {
         let config = PipelineConfig::new(2, 4);
         let sched = config.build_schedule(ScheduleKind::GPipe);
         let ratio = sched.bubble_ratio();
-        assert!(ratio >= 0.0 && ratio <= 1.0);
+        assert!((0.0..=1.0).contains(&ratio));
     }
 
     #[test]

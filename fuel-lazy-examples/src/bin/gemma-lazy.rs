@@ -109,10 +109,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             printed_text = full;
         }
-        if let Some(eos) = tokenizer.eos_id() {
-            if next == eos {
-                break;
-            }
+        if let Some(eos) = tokenizer.eos_id()
+            && next == eos
+        {
+            break;
         }
     }
     let elapsed = t0.elapsed();

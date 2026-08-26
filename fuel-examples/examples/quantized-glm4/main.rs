@@ -287,7 +287,7 @@ fn main() -> anyhow::Result<()> {
         .map_err(|e| e.with_path(&model_path))?;
     let header_done = start.elapsed();
     let mut total_size_in_bytes = 0;
-    for (_, tensor) in mc.content().tensor_infos.iter() {
+    for tensor in mc.content().tensor_infos.values() {
         let elem_count = tensor.shape.elem_count();
         total_size_in_bytes +=
             elem_count * tensor.ggml_dtype.type_size() / tensor.ggml_dtype.block_size();
@@ -295,7 +295,7 @@ fn main() -> anyhow::Result<()> {
     println!(
         "mmapped {:?} tensors ({}); header in {:.2}s",
         mc.content().tensor_infos.len(),
-        &format_size(total_size_in_bytes),
+        format_size(total_size_in_bytes),
         header_done.as_secs_f32(),
     );
 

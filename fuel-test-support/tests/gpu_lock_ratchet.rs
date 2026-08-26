@@ -71,7 +71,7 @@ const GUARD_CALL: &str = "require_gpu_run_lock()";
 /// `*_live.rs` device helpers (`pinned`, `byte_storage`, `backend_runtime`,
 /// `baracuda_contiguize`) — each `dev_or_skip -> dev` with `require_gpu_run_lock`
 /// + `required_ok`. Four real acquisition sites now guarded (all GUARDS, no
-/// string-corrections this batch), verified per site (none remain unguarded).
+///   string-corrections this batch), verified per site (none remain unguarded).
 const BUDGET: usize = 54;
 
 fn repo_root() -> PathBuf {

@@ -131,12 +131,12 @@ pub fn pressure_rule_from(scheduler: &MemoryScheduler) -> MemoryPressureRule {
 /// depend on.
 pub fn _placement_devices(placement: &Placement) -> Vec<DeviceLocation> {
     let mut seen = Vec::new();
-    for (_, dev) in placement {
+    for dev in placement.values() {
         if !seen
             .iter()
             .any(|d| std::mem::discriminant(d) == std::mem::discriminant(dev))
         {
-            seen.push(dev.clone());
+            seen.push(*dev);
         }
     }
     seen

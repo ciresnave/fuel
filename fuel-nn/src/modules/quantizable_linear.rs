@@ -61,16 +61,16 @@ impl QuantizableLinear {
             ))
             .bt());
         }
-        if let Some(b) = bias.as_ref() {
-            if b.len() != out_features {
-                return Err(fuel::Error::Msg(format!(
-                    "QuantizableLinear::new: bias has length {} but \
+        if let Some(b) = bias.as_ref()
+            && b.len() != out_features
+        {
+            return Err(fuel::Error::Msg(format!(
+                "QuantizableLinear::new: bias has length {} but \
                      out_features = {}",
-                    b.len(),
-                    out_features,
-                ))
-                .bt());
-            }
+                b.len(),
+                out_features,
+            ))
+            .bt());
         }
         Ok(Self {
             weight,
@@ -168,7 +168,9 @@ mod tests {
         let mut padded = vec![0_u8; padded_len];
         padded[..bytes_len].copy_from_slice(byte_slice);
         let words: Vec<u32> = padded
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect();
         WeightStorage::Q4_0 {
