@@ -831,3 +831,48 @@ suppresses re-derivation — CLAUDE.md's `no rust-toolchain.toml (checked)` went
 false in a day) **but this sweep does not measure it as a rate, and should not be
 cited as if it did.**
 
+## a-count-has-no-rename-resistant-form-so-bound-it
+
+> **Index line (in CLAUDE.md):** Paths and symbols can be made rot-proof by naming something stable. **A COUNT CANNOT — it is inherently a claim about a moment.** Its analogue is a **BOUND** (`>= 20`), a **date+ref**, or **the property the number is doing work for** (usually just "non-zero"). Write the point value only when the exact figure IS the claim, and date it.
+
+**MEASURED ON MY OWN TEXT, FOUR DAYS APART (2026-08-21 -> 2026-08-25), which is
+the shortest interval any claim in this file has been tested over:**
+
+```
+form                                     written   now    survived
+>= 20  fkc .rs files          (HEDGED)      >=20     35      YES
+>= 10  telemetry .rs files    (HEDGED)      >=10     10      YES
+190    fuel-core/src/*.rs     (CONTROL)      190    190      YES
+210    gaps.md live rows      (EXACT)        210    217      NO
+175    rows carrying an owner (EXACT)        175    180      NO
+```
+
+**Both hedged claims survived; both exact claims failed. 2/2 against 0/2.**
+
+**This completes the citation taxonomy and the fix differs by KIND, not degree:**
+
+- **paths / symbols / GAP ids** — 0% defective; rot-proof by *naming something
+  stable*.
+- **line numbers** — 67% defective; fix by *deleting the number and keeping the
+  name*, because the name was already there.
+- **counts** — no stable form exists. **You cannot name your way out of a count.**
+  Fix by *weakening the claim to what the number is actually doing*.
+
+**PRACTICE — ask what work the number is doing, then write the weakest form that
+does it:**
+
+- proving a query is not broken -> **"non-zero"** is the whole claim; the value is
+  decoration. (My structural controls said `-> 190`; what they NEEDED was
+  `-> non-zero`.)
+- establishing a magnitude ("the registry is substantial") -> **a floor**.
+- the exact figure IS the finding ("6 of 9 drifted") -> **exact, and dated with a
+  ref**, because it is a measurement rather than a fact.
+
+**AND THE FAILURE IS SILENT IN THE FLATTERING DIRECTION.** A rotted count still
+reads as precise, still carries whatever authority precision confers, and its
+wrongness is invisible without re-running the measurement. **210 and 175 were
+written as evidence that a registry mechanism was real — a claim that survives
+being off by seven — but they were written as point values, so a reader checking
+them finds a discrepancy and doubts the whole clause.** Over-precision does not
+merely decay; it converts a durable argument into a fragile one.
+
