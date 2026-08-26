@@ -464,6 +464,23 @@ first getting hurt by it.
 
 ---
 
+### THE FAMILY — four variants, four detectors, and a currency audit catches NONE of them
+
+**Consolidated 2026-08-26.** All four share the property that made this class worth naming: ***"is this claim still true?" passes.*** Every sentence in the artifact remains true. **What has changed is outside the sentence**, so re-reading cannot find it. They differ in WHERE the change happened, and therefore in what would detect it.
+
+| # | variant | what changed | the only detector |
+|---|---------|--------------|-------------------|
+| 1 | **PROHIBITION whose forbidden path stopped failing** | the obstacle went away | **RE-ATTEMPT the forbidden thing** — or, when that is expensive, record the measured PRECONDITION so it can be checked without triggering the failure |
+| 2 | **PRESCRIPTION whose recommended path stopped working for a SUBSET of arguments** | the instrument's DOMAIN narrowed | **state the argument shapes the instrument does NOT cover** — a re-attempt does not find it either, because it succeeds on almost everything |
+| 3 | **REMEDY verified on the axis it was CHOSEN for and never on the axis it was REPLACING** | nothing — the remedy was always half-wrong | **re-verify the replacement on the property the ORIGINAL was chosen for** |
+| 4 | **STATUS whose REFERENT dissolved** | the thing it defines itself against ENDED | **notice the referent is gone** — nothing inside the artifact can tell you |
+
+**(1)** is the base case above. **(2)** and **(3)** are the MSYS path-conversion incident: `git show origin/main:.github/…` silently returns zero bytes for a slashed-ref-plus-leading-dot path, and the obvious fix — drop the slash, use `main:` — **cures the mangling by reintroducing the staleness the rule existed to prevent**, since `main:` reads the stale local branch. *"It does not mangle"* and *"it is not current"* are both true, and only the first is tested when you check whether the workaround works.
+
+**(4) IS THE NEWEST AND HAS THE WORST DETECTOR PROBLEM.** Two registry rows carried the status *"not blocking GAP-229's remaining legs."* **GAP-229 finished.** Neither cell was wrong — every claim in both remained true — **and both had stopped saying anything while still READING as a considered position rather than an expired one.** A status expressed as a RELATIONSHIP goes vacuous the moment its referent ends, **and nothing about the cell changes to show it.** Surfaced only because a reader checked the status cells against the world rather than against themselves.
+
+**THE PRACTICAL FORM: when you write a status, prefer one that is FALSIFIABLE ON ITS OWN TERMS over one that is true-by-reference.** *"Unallocated; hand-review per site, ~119 sites"* survives its neighbours dying. *"Not blocking X"* does not — **and it degrades into a sentence that passes every check and informs nobody.**
+
 ## which-number-moves-if-it-became-a-no-op
 
 > **Index line (in CLAUDE.md):** Ask of any mechanism you ship: **"if this silently became a no-op, which number would move?"** If the honest answer is *none*, the metric is not measuring the mechanism — and the mechanism's own greenness is the thing least able to tell you.
