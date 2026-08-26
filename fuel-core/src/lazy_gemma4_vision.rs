@@ -690,7 +690,7 @@ mod tests {
         let h_img = 24;
         let w_img = 24;
         let n_pix = 1 * 3 * h_img * w_img;
-        let img_data: Vec<f32> = (0..n_pix).map(|i| (i as f32 / n_pix as f32)).collect();
+        let img_data: Vec<f32> = (0..n_pix).map(|i| i as f32 / n_pix as f32).collect();
         let pixel_values = Tensor::from_f32(
             Arc::from(img_data),
             Shape::from_dims(&[1, 3, h_img, w_img]),
@@ -713,7 +713,7 @@ mod tests {
         let h_img = 24; // 6×6=36 patches, k=3 → 4 output tokens.
         let w_img = 24;
         let n_pix = 1 * 3 * h_img * w_img;
-        let img_a: Vec<f32> = (0..n_pix).map(|i| (i as f32 / n_pix as f32)).collect();
+        let img_a: Vec<f32> = (0..n_pix).map(|i| i as f32 / n_pix as f32).collect();
         let mut img_b = img_a.clone();
         for v in img_b.iter_mut() {
             *v = 1.0 - *v;
@@ -767,7 +767,7 @@ mod tests {
         let w_img = 12;
         // 3×3=9 patches with k=3 → 1 output token.
         let n_pix = 1 * 3 * h_img * w_img;
-        let img_data: Vec<f32> = (0..n_pix).map(|i| (i as f32 / n_pix as f32)).collect();
+        let img_data: Vec<f32> = (0..n_pix).map(|i| i as f32 / n_pix as f32).collect();
         let pix = Tensor::from_f32(
             Arc::from(img_data),
             Shape::from_dims(&[1, 3, h_img, w_img]),

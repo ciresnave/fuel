@@ -2370,7 +2370,7 @@ mod tests {
             .map(|i| ((i as f32) * 0.001) - 0.05)
             .collect();
         let img = Tensor::from_f32(img_data, Shape::from_dims(&[1, td, h, w]), &Device::cpu());
-        let pe_data: Vec<f32> = (0..1 * td * h * w).map(|i| ((i as f32) * 0.0007)).collect();
+        let pe_data: Vec<f32> = (0..1 * td * h * w).map(|i| (i as f32) * 0.0007).collect();
         let pe = img.const_f32_like(
             Arc::<[f32]>::from(pe_data),
             Shape::from_dims(&[1, td, h, w]),
@@ -2381,7 +2381,7 @@ mod tests {
             Arc::<[f32]>::from(sparse_data),
             Shape::from_dims(&[1, n_prompts, td]),
         );
-        let dense_data: Vec<f32> = (0..1 * td * h * w).map(|i| ((i as f32) * 0.0005)).collect();
+        let dense_data: Vec<f32> = (0..1 * td * h * w).map(|i| (i as f32) * 0.0005).collect();
         let dense = img.const_f32_like(
             Arc::<[f32]>::from(dense_data),
             Shape::from_dims(&[1, td, h, w]),

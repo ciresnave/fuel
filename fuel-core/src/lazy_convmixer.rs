@@ -338,7 +338,7 @@ fn tiny_image(h: usize, w: usize, device: &Device) -> Tensor {
         (0..3 * h * w)
             .map(|_| {
                 s = s.wrapping_mul(1103515245).wrapping_add(12345);
-                ((s >> 16) as u16 as f32 / 65535.0 - 0.5)
+                (s >> 16) as u16 as f32 / 65535.0 - 0.5
             })
             .collect::<Vec<_>>(),
     );

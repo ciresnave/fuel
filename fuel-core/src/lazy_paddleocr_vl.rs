@@ -644,7 +644,7 @@ mod tests {
     fn tiny_image(model: &PaddleOcrVlModel, height: usize, width: usize) -> Tensor {
         let cfg = &model.config.vision;
         let n_pix = cfg.num_channels * height * width;
-        let data: Vec<f32> = (0..n_pix).map(|i| (i as f32 / n_pix as f32)).collect();
+        let data: Vec<f32> = (0..n_pix).map(|i| i as f32 / n_pix as f32).collect();
         Tensor::from_f32(
             Arc::from(data),
             Shape::from_dims(&[cfg.num_channels, height, width]),
@@ -704,10 +704,7 @@ mod tests {
         // Reversed pixel values -> distinctly different image content.
         let cfg = v_cfg;
         let n_pix = cfg.num_channels * cfg.image_size * cfg.image_size;
-        let data_b: Vec<f32> = (0..n_pix)
-            .rev()
-            .map(|i| (i as f32 / n_pix as f32))
-            .collect();
+        let data_b: Vec<f32> = (0..n_pix).rev().map(|i| i as f32 / n_pix as f32).collect();
         let img_b = Tensor::from_f32(
             Arc::from(data_b),
             Shape::from_dims(&[cfg.num_channels, cfg.image_size, cfg.image_size]),
