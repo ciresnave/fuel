@@ -2606,6 +2606,7 @@ mod tests {
     ///     registered recipe lowers to the same primitive base map), and
     ///   - FALSE for a `Mul` region (a different function → a different base
     ///     map → not the same op).
+    ///
     /// This exercises the genuine lower-both-and-compare path (emit → lower to
     /// base map → `base_map_hash`), not a stub.
     #[test]

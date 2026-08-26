@@ -479,6 +479,7 @@ pub fn synth_probe_param_points(
 ///   with a warning;
 /// - **backstop**: [`guard_rule`] (catch_unwind + warn) stays the last-resort
 ///   never-panic guard for anything unforeseen.
+///
 /// A real fn is still invoked ONLY when the contract's declared rule is
 /// EVALUABLE (`eval_dtype_rule`/`eval_shape_rule` returned `Some`) and a
 /// param point exists for the variant.

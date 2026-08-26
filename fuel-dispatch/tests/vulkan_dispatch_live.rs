@@ -1110,6 +1110,13 @@ fn vulkan_dispatch_unary_exp_f64() {
     };
     // Cover the full natural range: tiny, small, 1, larger, near-overflow,
     // negative, very negative (underflow neighborhood).
+    // `2.71828` is a DELIBERATE decimal approximation sitting alongside the
+    // exact `E` on the line above -- two distinct inputs, chosen so the sweep
+    // covers both an exactly-representable constant and a nearby value that is
+    // not. Clippy suggests replacing it WITH `E`, which would collapse the two
+    // into a duplicate entry and silently DROP a test input. The lint is right
+    // about what the literal approximates and wrong about what to do here.
+    #[allow(clippy::approx_constant)]
     let host = vec![
         0.0,
         1e-10,
@@ -1573,6 +1580,12 @@ fn vulkan_dispatch_write_slice_b2_f16_kv_cache() {
         _ => panic!(),
     };
     let got: Vec<f16> = bytemuck::cast_slice::<u8, f16>(&raw).to_vec();
+    // `0 * head_dim + j` is the ROW-MAJOR INDEX IDIOM in a matched series with
+    // rows 1..3 below. The multiply is alignment, not arithmetic: writing bare
+    // `j` for row 0 makes the row index invisible on exactly one line of four
+    // and breaks the visual correspondence a reader checks the rows by.
+    // Same disposition as the three sites in `fuel-core`.
+    #[allow(clippy::erasing_op)]
     for j in 0..head_dim {
         let row0 = got[0 * head_dim + j];
         let row1 = got[1 * head_dim + j];
@@ -1693,6 +1706,8 @@ fn vulkan_dispatch_write_slice_b4_kv_cache_shape() {
 
     let got = download_f32(&backend, &dst_arc.read().unwrap());
     // Rows 0, 1 stay -1; row 2 = src; row 3 stays -1.
+    // Row-major index idiom in a matched series -- see the note above.
+    #[allow(clippy::erasing_op)]
     for j in 0..head_dim {
         assert_eq!(got[0 * head_dim + j], -1.0);
         assert_eq!(got[1 * head_dim + j], -1.0);
@@ -10976,6 +10991,7 @@ fn vulkan_dispatch_copy_f32_registered() {
 /// Allocates an uninit Vulkan buffer via `alloc_bytes_handle`,
 /// invokes `VulkanBackend::fill_bytes_zero` directly, then downloads
 /// + checks every byte is zero. Catches regressions in the
+///
 /// vkCmdFillBuffer recording path.
 #[test]
 #[ignore]

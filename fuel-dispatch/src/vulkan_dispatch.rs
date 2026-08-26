@@ -5211,6 +5211,7 @@ const VULKAN_QMATMUL_CONTRACT: &str =
 ///    DType-logical / SType-physical split in `docs/specs/storage-encoding.md`);
 ///    the `fdx.quant` GGML_BLOCK block keeps the physical byte-honesty
 ///    (`quant_coherence` does not pin the operand base dtype for GGML_BLOCK).
+///
 /// and flips the two corpus fused sections to `registrable: false` describe-only
 /// cross-referencing it (the matmul_mixed_precision precedent).
 ///
@@ -5322,6 +5323,7 @@ const VULKAN_SCATTER_CONTRACT: &str =
 ///
 /// Each section fans a BASE `entry_point` over `[F32, F64, BF16, F16]` (the `base`
 /// + `src` operands share the list ⇒ they fan together, §3.4), resolving
+///
 /// `<base>_<suffix>` to each distinct per-dtype wrapper and keying the 4-slot
 /// `[base, U32, src, out]` (`passthrough(base)` output), byte-for-byte the deleted
 /// regs. Caps ride through contiguous-only (`requires_contiguous` ⇒
@@ -5400,6 +5402,7 @@ const VULKAN_SHAPE_CONTRACT: &str = include_str!("../../docs/kernel-contracts/vu
 
 /// Register the Vulkan shape family (28 (op, dtype) bindings — Triu (7) + Tril (7)
 /// + Flip (7) + Roll (7)) by IMPORTING its FKC kernel contract — the EIGHTH
+///
 /// Vulkan-backend FKC consumer. FKC is unconditional core infrastructure, so this
 /// is the ONE registration path for the family: the hand-written
 /// `register_with_precision(OpKind::{Triu,Tril}, …)` +
@@ -5485,6 +5488,7 @@ const VULKAN_WRITE_SLICE_CONTRACT: &str =
 
 /// Register the Vulkan write-slice family (18 (op, dtype) bindings — WriteSlice (9)
 /// + WriteSliceRotating (9)) by IMPORTING its FKC kernel contract — the TENTH
+///
 /// Vulkan-backend FKC consumer. FKC is unconditional core infrastructure, so this
 /// is the ONE registration path for the family: the hand-written
 /// `register_with_precision(OpKind::{WriteSlice,WriteSliceRotating}, …)` regs are
@@ -5613,6 +5617,7 @@ const VULKAN_NORM_CONTRACT: &str = include_str!("../../docs/kernel-contracts/vul
 /// Register the Vulkan norm family (20 (op, dtype) bindings — SoftmaxLastDim (4) +
 /// SoftmaxLastDimBackward (4) + LayerNormLastDim (4) + LayerNormLastDimBackward (4)
 /// + RmsNormLastDim (4)) by IMPORTING its FKC kernel contract — the THIRTEENTH
+///
 /// Vulkan-backend FKC consumer. FKC is unconditional core infrastructure, so this
 /// is the ONE registration path for the family: the hand-written
 /// `register_with_precision(OpKind::{SoftmaxLastDim,…,RmsNormLastDim}, …)` regs are

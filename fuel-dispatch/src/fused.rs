@@ -2093,6 +2093,7 @@ mod tests {
     /// Step 6 + backward-helper follow-up — coverage assertion for
     /// the 12 ops that gained BackendImpls (8 forwards from step 6
     /// + 4 backward helpers from the follow-up), plus the
+    ///
     /// FlashAttnBackward{Q,K,V} trio (4 dtypes × 2 alibi shapes
     /// each, reusing the binding-table CPU wrappers). Each entry
     /// should have at least the expected CPU impl count after

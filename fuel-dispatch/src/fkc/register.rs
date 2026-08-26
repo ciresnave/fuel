@@ -1341,6 +1341,7 @@ mod tests {
     /// `sdpa_vector` sections. Its declared FLASH_ATTN registry fn
     /// `debug_assert!`s 4-or-5 inputs, so a 3-input probe panics in DEBUG (caught
     /// + skipped) but is stripped in RELEASE (fn reads operand 0) — the
+    ///
     /// debug-vs-release split. The arity pre-check must skip it CONSISTENTLY in
     /// both build modes with a warning (not a silent debug-only skip).
     const SYNTH_FLASH_ATTN_3IN: &str = r#"---

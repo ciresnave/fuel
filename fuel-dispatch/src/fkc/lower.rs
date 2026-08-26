@@ -625,6 +625,7 @@ fn resolve_operand_dtypes(
 /// - A section with NO optional operand behaves EXACTLY as before (one key per
 ///   dtype variant) — the already-migrated per-(op,dtype) families stay
 ///   byte-identical.
+///
 /// The PRESENT (full-operand) key is emitted FIRST so the fused path's
 /// representative (first) variant is unchanged (`lower_fused` takes `.next()`).
 fn assemble_dtype_variants(

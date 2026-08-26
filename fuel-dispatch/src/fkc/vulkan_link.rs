@@ -255,6 +255,7 @@ pub static VULKAN_ELEMENTWISE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// `docs/kernel-contracts/vulkan/matmul.fkc.md`, re-authored per-combo (the cast
 /// family's per-pair precedent). Each section declares a single dtype per operand
 /// + a `fixed(OUT)` / `passthrough(lhs)` output, so none of them dtype-fan — the
+///
 /// importer keys `[lhs, rhs, out]` (inputs-then-output), byte-for-byte the deleted
 /// hand-written `table.register_with_precision(OpKind::MatMul, &[lhs, rhs, out], …)`
 /// regs.
