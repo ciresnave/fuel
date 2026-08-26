@@ -944,3 +944,28 @@ counts                     no stable form  -> fix by WEAKENING the claim
 - **When you cannot name the link, say the licence is provisional and ask for a report** rather than pre-authorising.
 - **As grantee: check the link BEFORE the trigger fires**, not after. Verifying a proxy is not verifying a licence.
 - **Corollary for verdicts: when a yes/no question is malformed, return the STRUCTURE rather than the answer.** Asked *"do the backwards mirror FlashAttn?"*, "no" would have bought a fresh-surface estimate for work that reuses the params struct outright, and "yes" a copy-paste estimate for work that adds an operand and a per-variant output shape. **The delta was the thing being asked for; neither branch of the binary carried it.**
+
+---
+## a-partial-exclusion-list-implies-coverage
+
+> **Index line (in CLAUDE.md):** **AN ENUMERATION THAT NAMES THREE EXCLUSIONS AND OMITS A FOURTH DOES NOT READ AS SILENT ON THE FOURTH — IT READS AS COVERING IT.** A scope statement is not merely incomplete when it under-enumerates; **it makes a positive claim it was never intended to make.** An exclusion list must be exhaustive, or must say that it is not.
+
+**2026-08-26, found by the precision lane while confirming a scope clause the architect had challenged for being in the wrong PLACE.** The real defect was worse than placement.
+
+The emitted evidence clause read:
+
+> *"...not evidence about other inputs, other machines, or other compilers."*
+
+`softcap`, `window_size_*` and `causal` are **parameters, not operands.** So *"other inputs"* never reached them — the clause was silent on parameterisation. **And silence, inside a three-item enumeration, is not neutral.** A reader who sees inputs / machines / compilers carved out concludes the author enumerated the axes of variation, and that **anything unnamed is inside the attestation.** The clause did not merely fail to exclude parameter configurations; **it implied they were covered.**
+
+Fixed to: *"...other inputs, OTHER PARAMETER CONFIGURATIONS (one probe fixes one; branches such as causal/softcap/window go untaken), other machines, or other compilers."*
+
+**WHY THE GENERIC FIX WAS RIGHT AND THE SPECIFIC ONE WOULD HAVE BEEN A TRAP.** The lane made the new limb **generic rather than attention-specific**, because *every* probe fixes one parameterisation — the hole was **in the clause, not in FlashAttn's row.** An attention-specific sentence would have closed one family and left the identical implicature standing in the other nineteen, while *looking* like the problem was solved. **Fix the generator, not the instance** — and here the "generator" is a sentence emitted 148 times.
+
+**THE RE-EMISSION IS ITSELF THE CONTROL.** 11 files, **148 insertions / 148 deletions** — a pure swap, verified as one: **148** clauses carry the new limb, **0** carry the old, and attention's own count is **unchanged at 4**. That last check is the misattachment defect from GAP-228(a) pointed backwards: a count that MOVED would have meant the clause had been re-attached to the wrong sections. **A pure-swap edit has a pre-declarable shape, and checking the shape is what distinguishes it from a rewrite.**
+
+**AND A MECHANISM BUILT FOR ONE TRIGGER CAUGHT A DIFFERENT ONE.** Clause eligibility had been re-keyed on `has_clause` rather than *"this run flipped it"*, justified at the time as *"useless for exactly the case it will be needed in — the evidence changing under a toolchain pin or a re-seed."* **It changed under a CORRECTION instead, and the mechanism did not care which.** Worth keeping as evidence for building the general re-emission path rather than the predicted one: **the trigger you name when justifying a mechanism is rarely the trigger that fires it.**
+
+**Scope of that correction, stated plainly because it is the kind of thing that gets over-read: the RECORDS were unaffected.** Every one was earned by 16 byte-identical repeat invocations and still is. **What changed is what the contract SAYS they cover** — no re-seed, no re-verification, no downgrade.
+
+**PRACTICE: when writing a scope limitation, enumerate the AXES OF VARIATION, not the ones you happen to have thought of — and if the list is not exhaustive, say so in the list.** Related but distinct from the **"a true justification attached to a wider claim than it supports"** rule in `CLAUDE.md` (GAP-166) — *cited to the file that actually carries it: there is no `justification-scope-mismatch` section here, and a link to one would have been a dangling citation inside the rule about citations*: there a true reason silently licenses a wider claim; **here an explicit list manufactures the wider claim by omission.** The first is an overreach nobody wrote down; the second is written down, in the very sentence intended to constrain it.
