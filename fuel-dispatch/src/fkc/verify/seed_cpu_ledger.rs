@@ -1573,6 +1573,130 @@ mod tests {
         assert!(problems.is_empty(), "{problems:?}");
     }
 
+    /// **The FlashAttn backward probes read their inputs AND separate the two
+    /// output-shape classes.**
+    ///
+    /// ⚠️ **THE SECOND HALF EXISTS BECAUSE THE FIXTURE FAILED IT, AND THE
+    /// SWEEP WAS GREEN ANYWAY — 24 of 24 passing against a fixture that could
+    /// not see the thing the increment is organised around.**
+    ///
+    /// Three OpKinds are ONE recipe because the wrapper's only real branch is
+    /// `need_out = match which { Q => q_n, K => kv_n, V => kv_n }`. With the
+    /// forward's geometry (`sq = 2`) those two classes come out NUMERICALLY
+    /// EQUAL — `q_len = 1*2*2*2 = 8` and `kv_len = 1*1*4*2 = 8` — so a bug
+    /// routing every `which` to the wrong branch would still allocate a
+    /// correctly-sized buffer and every probe would still be bit-stable.
+    /// **The axis the arm is parameterised on was collapsed by the fixture,
+    /// and no pass count could reveal it.** `sq = 3` separates them (12 vs 8).
+    ///
+    /// So this test asserts what the sweep cannot: that **both classes are
+    /// actually observed** (not merely that each probe is self-consistent),
+    /// and that each `which` lands in the right one. A test that only checked
+    /// "Q is q-shaped" would pass on a fixture where q-shaped and kv-shaped
+    /// are the same size — which is precisely the state this was written in.
+    ///
+    /// **Mechanism for the input half: seed perturbation**, with its own
+    /// precondition asserted, as for the forward.
+    ///
+    /// **No live-prefix assertion here, and its ABSENCE is deliberate.** The
+    /// forward gate requires `k_len < sk`; the backward wrapper binds
+    /// `k_len: _` (*"Backward is the static (full-K) training path"*), so
+    /// there is no live-prefix parameterisation to reach and an assertion
+    /// mirroring the forward's would be TRUE AND MEANINGLESS — a control that
+    /// cannot move. Carrying it over would look like more rigour and be less.
+    #[test]
+    fn the_flash_attn_backward_probes_separate_both_output_shape_classes() {
+        use crate::fkc::verify::bit_stability::KernelInvoker;
+        use crate::fkc::verify::probe_recipes::{build_primitive_probe, probe_seed};
+        use fuel_ir::dispatch::OpKind;
+
+        let mut table = crate::kernel::KernelBindingTable::new();
+        crate::dispatch::register_cpu_kernels(&mut table);
+
+        let mut checked = 0usize;
+        let mut problems: Vec<String> = Vec::new();
+        let mut q_shaped: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        let mut kv_shaped: std::collections::HashSet<usize> = std::collections::HashSet::new();
+
+        for (op, dtypes, backend, entry) in table.iter_entries() {
+            let is_q = match op {
+                OpKind::FlashAttnBackwardQ => true,
+                OpKind::FlashAttnBackwardK | OpKind::FlashAttnBackwardV => false,
+                _ => continue,
+            };
+            if backend != BackendId::Cpu {
+                continue;
+            }
+            let seed = probe_seed(op, dtypes);
+            let Some(probe) = build_primitive_probe(op, dtypes, seed) else {
+                continue;
+            };
+            let out_len = probe.out_shape.iter().product::<usize>();
+            if is_q {
+                q_shaped.insert(out_len);
+            } else {
+                kv_shaped.insert(out_len);
+            }
+
+            let inv = CpuInvoker::new(probe.out_dtype, probe.out_shape.clone())
+                .with_params(probe.params.clone());
+            let Ok(out) = inv.invoke(entry, &probe.inputs) else {
+                problems.push(format!("{op:?} {dtypes:?}: probe did not invoke"));
+                continue;
+            };
+            checked += 1;
+
+            let other = build_primitive_probe(op, dtypes, seed ^ 0xA5A5_A5A5)
+                .expect("a recipe that built once must build again");
+            if other.inputs.iter().map(|t| &t.bytes).collect::<Vec<_>>()
+                == probe.inputs.iter().map(|t| &t.bytes).collect::<Vec<_>>()
+            {
+                problems.push(format!(
+                    "{op:?} {dtypes:?}: a different seed produced IDENTICAL inputs, so the \
+                     response check proves nothing"
+                ));
+                continue;
+            }
+            let out2 = inv
+                .invoke(entry, &other.inputs)
+                .expect("second invocation of a probe that already ran");
+            if out2.bytes == out.bytes {
+                problems.push(format!(
+                    "{op:?} {dtypes:?}: different inputs, IDENTICAL output — the kernel is \
+                     not reading them, and it would be bit-stable anyway"
+                ));
+            }
+        }
+
+        assert_eq!(
+            checked, 24,
+            "expected 24 backward registrations to invoke (3 ops x 4 dtypes x \
+             {{with, without}} alibi_slopes); got {checked}"
+        );
+        assert!(problems.is_empty(), "{problems:?}");
+
+        // THE ASSERTION THE SWEEP CANNOT MAKE. Both classes must exist AND
+        // differ; equal sizes mean the `which` switch is untested by every
+        // probe above, however many of them passed.
+        assert_eq!(
+            q_shaped.len(),
+            1,
+            "Q probes disagree on their output length: {q_shaped:?}"
+        );
+        assert_eq!(
+            kv_shaped.len(),
+            1,
+            "K/V probes disagree on their output length: {kv_shaped:?}"
+        );
+        assert_ne!(
+            q_shaped, kv_shaped,
+            "the q-shaped and kv-shaped output classes are the SAME SIZE, so a `which` \
+             switch routing every variant to the wrong branch would allocate correctly \
+             and stay bit-stable. The fixture has collapsed the axis this arm is \
+             parameterised on — separate them (q_len = b*hq*sq*d, kv_len = b*hkv*sk*d)."
+        );
+    }
+
     /// **GAP-226 split of the entries that declare nothing: how much can
     /// start now, and how much waits on a vocabulary decision.** Reports;
     /// asserts only invariants.
@@ -1688,14 +1812,17 @@ mod tests {
         // by removing the fill and seeing what survives.
         //
         // The numbers are pinned, not floating: after GAP-228(a) flipped 240
-        // entries' worth of sections, (b) flipped conv's 20, (c) the four small
-        // non-conv surfaces' 20 and (d) FlashAttn's 8, `nothing` must be 32 and
-        // the backed count 591. The 32 that remain are FlashAttnBackwardK/Q/V
-        // (8 each) and PagedAttn (8) — split from FlashAttn deliberately,
-        // because they do NOT mirror it: the backwards take one more operand
-        // (`do`) and PagedAttn is a different surface entirely. Letting
-        // FlashAttn's tractability size either would be the error this program
-        // has now refused three times.
+        // entries' worth of sections, (b) conv's 20, (c) the four small non-conv
+        // surfaces' 20, (d) FlashAttn's 8 and (e) the three backwards' 24,
+        // `nothing` must be 8 and the backed count 615.
+        //
+        // The 8 that remain are PagedAttn, kept separate on the ruling that
+        // paging and block tables have no counterpart in the dense path — so
+        // FlashAttn's tractability must not size it. That refusal has now been
+        // made four times in this program (conv, the small surfaces, the
+        // backwards, PagedAttn) and been RIGHT every time the reason was
+        // checked: each surface turned out cheap or dear for a reason the
+        // previous one did not share.
         //
         // THIS COMMENT READ "80 ... 543" UNTIL THE BUCKET SWEEP FOUND IT. I
         // updated the assertion's own message from 80 to 60 and left its twin
@@ -1715,13 +1842,13 @@ mod tests {
         // produced is decoration; a pin edited to a figure predicted in
         // advance is the record of a prediction that held.
         assert_eq!(
-            nothing, 32,
-            "expected exactly 32 entries still declaring nothing after GAP-228's flip              (40 before, FlashAttn's 8 flipped). {nothing} means a declaration was not evidenced              by the record it was supposed to rest on, or a kernel revision moved and              silently un-earned one."
+            nothing, 8,
+            "expected exactly 8 entries still declaring nothing after GAP-228's flip              (32 before, the three FlashAttn backwards' 24 flipped). {nothing} means a declaration was not evidenced              by the record it was supposed to rest on, or a kernel revision moved and              silently un-earned one."
         );
         assert_eq!(
             total - nothing,
-            591,
-            "expected 591 contract-derived entries backed WITHOUT the fill. This table              is built by `register_into`, which does not apply              `fill_unset_cpu_precision` — so this count IS the post-fill-retirement              number for these entries, and a drop means the backing did not actually              move from the fill to contract + record."
+            615,
+            "expected 615 contract-derived entries backed WITHOUT the fill. This table              is built by `register_into`, which does not apply              `fill_unset_cpu_precision` — so this count IS the post-fill-retirement              number for these entries, and a drop means the backing did not actually              move from the fill to contract + record."
         );
         assert_eq!(
             neither, nothing,
