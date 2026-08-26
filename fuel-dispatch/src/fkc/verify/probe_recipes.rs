@@ -1220,6 +1220,80 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
             })
         }
 
+        // --- FlashAttn (GAP-228(d)) ---------------------------------------
+        //
+        // Authored rather than mirrored: the attention family has NO arm in
+        // `seed_cpu_ledger::build_probe` to copy, which is exactly why the
+        // architect scoped it separately from the four small surfaces (those
+        // were cheap BECAUSE a known-good shape already existed).
+        //
+        // Registrations MEASURED off the live binding table: 4 dtypes x
+        // {4-tuple, 5-tuple} = 8. The tuple counts the OUTPUT, so 4 means
+        // `(q, k, v, out)` and 5 means `(q, k, v, alibi_slopes, out)`.
+        //
+        // ⚠️ **WHICH PARAMETERISATION THIS PROBE REACHES, stated because a
+        // probe that only reaches one configuration and reports bit-stability
+        // for the whole family is the conformance defect — supplying the thing
+        // being classified.**
+        //
+        // Read at head: the CPU kernel is ONE loop parameterised by `k_len`
+        // (`byte_kernels.rs`, `flash_attn_native_kernel!`), with
+        // `causal_offset = k_len.saturating_sub(sq)` and the score loop
+        // running `0..k_len` over K/V buffers of capacity `sk`. **There is no
+        // separate decode arm and no separate prefill arm** — the lowering
+        // sets `k_len == sk` for the static path and `k_len < sk` for decode
+        // over a fixed-capacity cache, and both traverse the same body.
+        //
+        // So this probe deliberately picks the STRICTLY STRONGER
+        // configuration: `k_len (3) < sk (4)` with `sq = 2`, which gives a
+        // NON-ZERO `causal_offset` of 1 and leaves the K/V tail outside the
+        // attended range. `k_len == sk` would collapse the offset to `sk - sq`
+        // and read the whole buffer, exercising a strict subset. `hq=2, hkv=1`
+        // makes it GQA rather than the degenerate `hq == hkv`.
+        //
+        // NOT exercised, and named so nobody reads more into the record than
+        // it carries: `softcap` (None here — the tanh branch), `window_size_*`
+        // (None — the sliding-window admissibility branch), and `causal=false`.
+        // Each is a separate branch in the same body; this record is evidence
+        // about the causal, uncapped, unwindowed configuration only.
+        OpKind::FlashAttn => {
+            let with_alibi = match dtypes.len() {
+                4 => false,
+                5 => true,
+                _ => return None,
+            };
+            let (b, hq, hkv, sq, sk, d, k_len) = (1usize, 2usize, 1usize, 2usize, 4usize, 2usize, 3usize);
+            let q_len = b * hq * sq * d;
+            let kv_len = b * hkv * sk * d;
+            let q = ht(dt, vec![q_len], &fill_deterministic(q_len, seed))?;
+            let k = ht(dt, vec![kv_len], &fill_deterministic(kv_len, seed ^ 0x11))?;
+            let v = ht(dt, vec![kv_len], &fill_deterministic(kv_len, seed ^ 0x22))?;
+            let mut inputs = vec![q, k, v];
+            if with_alibi {
+                inputs.push(ht(dt, vec![hq], &fill_deterministic(hq, seed ^ 0x33))?);
+            }
+            Some(Probe {
+                inputs,
+                params: OpParams::FlashAttn {
+                    b,
+                    hq,
+                    hkv,
+                    sq,
+                    sk,
+                    d,
+                    k_len,
+                    softmax_scale: 0.5,
+                    causal: true,
+                    window_size_left: None,
+                    window_size_right: None,
+                    softcap: None,
+                },
+                out_dtype: dt,
+                out_shape: vec![q_len],
+                out_seed: None,
+            })
+        }
+
         // Residue still without a recipe, so the next reader is not guessing:
         // attention (FlashAttn x4 variants, PagedAttn), conv (Conv2D,
         // ConvTranspose2D, CausalConv1d), MatMul / QMatMul / Nf4Matmul,
