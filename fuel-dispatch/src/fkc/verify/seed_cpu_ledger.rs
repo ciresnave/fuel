@@ -1697,6 +1697,165 @@ mod tests {
         );
     }
 
+    /// **The PagedAttn probe's block table is VALID, NON-DEGENERATE, and
+    /// actually dereferenced by the kernel.**
+    ///
+    /// The architect made the index-operand question the deliverable rather
+    /// than a detail, and measuring it moved the hazard rather than removing
+    /// it. What is true at head:
+    ///
+    /// * **Out-of-range always traps.** The kernel bounds-checks
+    ///   `physical_block >= num_blocks` and
+    ///   `ctx_len > max_blocks_per_seq * block_size`, both to a typed `Err`.
+    ///   There is no silent wrong-block read for an invalid index.
+    /// * **The naive fill fails safe.** `fill_deterministic` through the U32
+    ///   arm yields ~2e9, out of range for any probe-sized cache. The obvious
+    ///   wrong thing is the loud one.
+    /// * **The real hazard is an IN-RANGE DEGENERATE table** — valid, silent,
+    ///   perfectly bit-stable. A constant table collapses every logical block
+    ///   onto one physical block; **the IDENTITY is worse still, because a
+    ///   kernel that ignored `block_table` entirely and used `logical_block`
+    ///   directly would return a BYTE-IDENTICAL answer.**
+    ///
+    /// So the structural checks below are necessary but not sufficient, and
+    /// the last check is the one that actually earns the record: **swap in the
+    /// identity table and require the output to CHANGE.** That is a
+    /// behavioural test of the indirection, not an assertion about the
+    /// fixture's shape — if the kernel never dereferences the table, the two
+    /// runs agree and this fails.
+    ///
+    /// **Mechanism note (a third pattern, after seeded and literal): this
+    /// probe is PARTIALLY seeded.** q/k_cache/v_cache carry the seed; the two
+    /// index operands are literals and MUST be seed-invariant, because a
+    /// "different" table would have to be independently proven valid. Both
+    /// halves are asserted rather than assumed.
+    #[test]
+    fn the_paged_attn_block_table_is_valid_and_actually_dereferenced() {
+        use crate::fkc::verify::bit_stability::KernelInvoker;
+        use crate::fkc::verify::probe_recipes::{build_primitive_probe, probe_seed};
+        use fuel_ir::dispatch::OpKind;
+
+        let mut table = crate::kernel::KernelBindingTable::new();
+        crate::dispatch::register_cpu_kernels(&mut table);
+
+        let mut checked = 0usize;
+        let mut problems: Vec<String> = Vec::new();
+        for (op, dtypes, backend, entry) in table.iter_entries() {
+            if backend != BackendId::Cpu || op != OpKind::PagedAttn {
+                continue;
+            }
+            let seed = probe_seed(op, dtypes);
+            let Some(probe) = build_primitive_probe(op, dtypes, seed) else {
+                continue;
+            };
+            let (num_blocks, block_size, max_bps, sq) = match &probe.params {
+                OpParams::PagedAttn {
+                    num_blocks,
+                    block_size,
+                    max_blocks_per_seq,
+                    sq,
+                    ..
+                } => (*num_blocks, *block_size, *max_blocks_per_seq, *sq),
+                other => {
+                    problems.push(format!("{dtypes:?}: unexpected params {other:?}"));
+                    continue;
+                }
+            };
+
+            let bt: Vec<u32> = bytemuck::cast_slice(&probe.inputs[3].bytes).to_vec();
+            let cl: Vec<u32> = bytemuck::cast_slice(&probe.inputs[4].bytes).to_vec();
+
+            if bt.iter().any(|&x| x as usize >= num_blocks) {
+                problems.push(format!("{dtypes:?}: block_table {bt:?} out of range"));
+            }
+            let distinct: std::collections::HashSet<u32> = bt.iter().copied().collect();
+            if distinct.len() != bt.len() {
+                problems.push(format!(
+                    "{dtypes:?}: block_table {bt:?} repeats a physical block, so several \
+                     logical blocks alias one page and the indirection is exercised \
+                     trivially"
+                ));
+            }
+            if bt.iter().enumerate().all(|(i, &x)| x as usize == i) {
+                problems.push(format!(
+                    "{dtypes:?}: block_table {bt:?} is the IDENTITY — a kernel ignoring it \
+                     entirely would return the same bytes, so the record would attest \
+                     nothing about paging"
+                ));
+            }
+            if cl
+                .iter()
+                .any(|&c| c as usize > max_bps * block_size || (c as usize) < sq)
+            {
+                problems.push(format!(
+                    "{dtypes:?}: context_lens {cl:?} outside [sq={sq}, capacity={}]",
+                    max_bps * block_size
+                ));
+            }
+
+            let inv = CpuInvoker::new(probe.out_dtype, probe.out_shape.clone())
+                .with_params(probe.params.clone());
+            let Ok(out) = inv.invoke(entry, &probe.inputs) else {
+                problems.push(format!("{dtypes:?}: probe did not invoke"));
+                continue;
+            };
+            checked += 1;
+
+            // THE CHECK THAT EARNS THE RECORD: swap the identity table in and
+            // require the answer to move. Structure-only checks above cannot
+            // tell a dereferenced table from an ignored one.
+            let mut ident = probe.inputs.clone();
+            let identity: Vec<u32> = (0..bt.len() as u32).collect();
+            ident[3].bytes = bytemuck::cast_slice(&identity).to_vec();
+            match inv.invoke(entry, &ident) {
+                Ok(out_ident) if out_ident.bytes == out.bytes => problems.push(format!(
+                    "{dtypes:?}: remapping the block table {bt:?} -> {identity:?} did not \
+                     change the output — the kernel is NOT dereferencing block_table, and \
+                     every paged record would be bit-stable regardless"
+                )),
+                Ok(_) => {}
+                Err(e) => problems.push(format!("{dtypes:?}: identity-table control: {e:?}")),
+            }
+
+            // Partially-seeded: the float operands must move with the seed,
+            // the index operands must NOT.
+            let other = build_primitive_probe(op, dtypes, seed ^ 0xA5A5_A5A5)
+                .expect("a recipe that built once must build again");
+            if other.inputs[3].bytes != probe.inputs[3].bytes
+                || other.inputs[4].bytes != probe.inputs[4].bytes
+            {
+                problems.push(format!(
+                    "{dtypes:?}: the seed changed an INDEX operand. A generated index is \
+                     not merely arbitrary — it is potentially invalid, and its validity is \
+                     what makes this probe mean anything."
+                ));
+            }
+            if other.inputs[0].bytes == probe.inputs[0].bytes {
+                problems.push(format!(
+                    "{dtypes:?}: a different seed left q unchanged, so the response check \
+                     below proves nothing"
+                ));
+                continue;
+            }
+            let out2 = inv
+                .invoke(entry, &other.inputs)
+                .expect("second invocation of a probe that already ran");
+            if out2.bytes == out.bytes {
+                problems.push(format!(
+                    "{dtypes:?}: different q/k/v, IDENTICAL output — the kernel is not \
+                     reading them, and it would be bit-stable anyway"
+                ));
+            }
+        }
+
+        assert_eq!(
+            checked, 8,
+            "expected 8 PagedAttn registrations to invoke (4 dtypes x \
+             {{with, without}} alibi_slopes); got {checked}"
+        );
+        assert!(problems.is_empty(), "{problems:?}");
+    }
+
     /// **GAP-226 split of the entries that declare nothing: how much can
     /// start now, and how much waits on a vocabulary decision.** Reports;
     /// asserts only invariants.
@@ -1813,16 +1972,22 @@ mod tests {
         //
         // The numbers are pinned, not floating: after GAP-228(a) flipped 240
         // entries' worth of sections, (b) conv's 20, (c) the four small non-conv
-        // surfaces' 20, (d) FlashAttn's 8 and (e) the three backwards' 24,
-        // `nothing` must be 8 and the backed count 615.
+        // surfaces' 20, (d) FlashAttn's 8, (e) the three backwards' 24 and
+        // (f) PagedAttn's 8, `nothing` must be ZERO and the backed count the
+        // full 623.
         //
-        // The 8 that remain are PagedAttn, kept separate on the ruling that
-        // paging and block tables have no counterpart in the dense path — so
-        // FlashAttn's tractability must not size it. That refusal has now been
-        // made four times in this program (conv, the small surfaces, the
-        // backwards, PagedAttn) and been RIGHT every time the reason was
-        // checked: each surface turned out cheap or dear for a reason the
-        // previous one did not share.
+        // ⚠️ THIS PIN IS NOW A RATCHET RATHER THAN A PROGRESS MARKER, and it
+        // still discriminates: a new registration lands in `nothing` until a
+        // record is earned for it, and a kernel revision that moves silently
+        // un-earns one. Zero is the ONLY value that means what it says here —
+        // every other value is a declaration resting on nothing.
+        //
+        // What the zero licenses, stated narrowly: EVERY entry in the
+        // CONTRACT-DERIVED table is backed by contract + earned record without
+        // `fill_unset_cpu_precision`, because `register_into` never applies it.
+        // It does NOT by itself license retiring the fill from
+        // `register_cpu_kernels`, which builds a different (production) table —
+        // that comparison is its own measurement and has not been made here.
         //
         // THIS COMMENT READ "80 ... 543" UNTIL THE BUCKET SWEEP FOUND IT. I
         // updated the assertion's own message from 80 to 60 and left its twin
@@ -1842,13 +2007,13 @@ mod tests {
         // produced is decoration; a pin edited to a figure predicted in
         // advance is the record of a prediction that held.
         assert_eq!(
-            nothing, 8,
-            "expected exactly 8 entries still declaring nothing after GAP-228's flip              (32 before, the three FlashAttn backwards' 24 flipped). {nothing} means a declaration was not evidenced              by the record it was supposed to rest on, or a kernel revision moved and              silently un-earned one."
+            nothing, 0,
+            "expected ZERO entries still declaring nothing after GAP-228's flip              (8 before, PagedAttn's 8 flipped). {nothing} means a declaration was not evidenced              by the record it was supposed to rest on, or a kernel revision moved and              silently un-earned one."
         );
         assert_eq!(
             total - nothing,
-            615,
-            "expected 615 contract-derived entries backed WITHOUT the fill. This table              is built by `register_into`, which does not apply              `fill_unset_cpu_precision` — so this count IS the post-fill-retirement              number for these entries, and a drop means the backing did not actually              move from the fill to contract + record."
+            623,
+            "expected all 623 contract-derived entries backed WITHOUT the fill. This table              is built by `register_into`, which does not apply              `fill_unset_cpu_precision` — so this count IS the post-fill-retirement              number for these entries, and a drop means the backing did not actually              move from the fill to contract + record."
         );
         assert_eq!(
             neither, nothing,
@@ -1860,11 +2025,30 @@ mod tests {
             nothing,
             "the four buckets do not partition the entries that declare nothing"
         );
+        // ⚠️ THIS GUARD FIRED, AND FIRING IS WHAT IT WAS FOR.
+        //
+        // It used to read `assert!(nothing > 0, "no contract-derived CPU entry
+        // declares nothing any more — that would be the program finishing, not
+        // a quiet pass, and THIS test is then the stale thing")`. It was a
+        // tripwire against the test going vacuous while the program was still
+        // in flight: with `nothing` at 320, a zero could only have meant a
+        // broken instrument, and a broken instrument reporting the goal state
+        // is the worst possible failure for a ledger.
+        //
+        // The program finished, so the tripwire went off. **Converting it is
+        // the required response, not deleting it** — the non-vacuity job it
+        // did is now done by `assert_eq!(nothing, 0)` above, which is strictly
+        // stronger: it fails on a broken instrument AND on a regression, where
+        // `nothing > 0` failed on neither once the count reached zero.
+        //
+        // What remains necessary is a floor on the POPULATION, because
+        // `nothing == 0` is trivially true of an empty table — the one way
+        // this test could still pass while measuring nothing at all.
         assert!(
-            nothing > 0,
-            "no contract-derived CPU entry declares nothing any more — that would be \
-             the program finishing, not a quiet pass, and THIS test is then the stale \
-             thing"
+            total > 100,
+            "only {total} contract-derived CPU entries — `nothing == 0` is trivially \
+             true of a table this small, so the ratchet above would pass while \
+             measuring nothing"
         );
     }
 
