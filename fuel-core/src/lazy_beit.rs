@@ -437,6 +437,9 @@ impl BeitModel {
 ///   + ((c_a - c_b) + W - 1)`.
 /// - CLS-to-patch, patch-to-CLS, CLS-to-CLS: the last three
 ///   buckets `(nrd - 3, nrd - 2, nrd - 1)`.
+// documentary row-major coordinate idiom: idx[0*nb+j] (CLS, row 0) is the matched
+// pair of idx[i*nb+0] (col 0) below; the `0 *` names the coordinate, not dead arithmetic.
+#[allow(clippy::erasing_op)]
 fn build_relative_position_index(num_patches_per_side: usize) -> Vec<u32> {
     let w = num_patches_per_side;
     let w_area = w * w;

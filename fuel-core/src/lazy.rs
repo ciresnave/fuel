@@ -2486,6 +2486,9 @@ mod tests {
         let q_data: Vec<f32> = (0..hq * sq * d).map(|i| (i as f32 * 0.1).sin()).collect();
         let k_data: Vec<f32> = (0..hkv * sk * d).map(|i| (i as f32 * 0.13).cos()).collect();
         let v_data: Vec<f32> = (0..hkv * sk * d).map(|i| i as f32 * 0.07 + 1.0).collect();
+        // 4-digit test scale (~1/sqrt(2)), deliberately NOT FRAC_1_SQRT_2 (0.70710678);
+        // swapping the exact constant would perturb these attention-scale parity tests.
+        #[allow(clippy::approx_constant)]
         let scale = 0.7071f32;
         let q = Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, sq, d]), &dev);
         let k = q.const_f32_like(k_data.clone(), Shape::from_dims(&[1, hkv, sk, d]));
@@ -2639,6 +2642,9 @@ mod tests {
         use fuel_ir::DynScalar;
         let dev = Device::cpu();
         let (hq, hkv, sq, cap, kl, d) = (2usize, 1usize, 2usize, 4usize, 3usize, 2usize);
+        // 4-digit test scale (~1/sqrt(2)), deliberately NOT FRAC_1_SQRT_2 (0.70710678);
+        // swapping the exact constant would perturb these attention-scale parity tests.
+        #[allow(clippy::approx_constant)]
         let scale = 0.7071f32;
         let causal = true;
         let q_data: Vec<f32> = (0..hq * sq * d).map(|i| (i as f32 * 0.1).sin()).collect();
@@ -4104,6 +4110,9 @@ mod tests {
         use fuel_graph::registry::{FusedOpParams, FusedOps};
         let dev = Device::cpu();
         let (sq, sk, d) = (2usize, 2usize, 2usize);
+        // 4-digit test scale (~1/sqrt(2)), deliberately NOT FRAC_1_SQRT_2 (0.70710678);
+        // swapping the exact constant would perturb these attention-scale parity tests.
+        #[allow(clippy::approx_constant)]
         let scale = 0.7071f32;
         let q_data = vec![0.1f32, -0.2, 0.3, 0.5]; // [Sq,D]
         let k_data = vec![0.4f32, 0.1, -0.3, 0.2]; // [Sk,D]

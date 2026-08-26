@@ -757,6 +757,7 @@ pub fn decode_and_nms(
         let stride = raw.strides[i];
         let cx = raw.grid_xy[2 * i] * stride;
         let cy = raw.grid_xy[2 * i + 1] * stride;
+        #[allow(clippy::erasing_op)] // planar channel 0 (l); pairs with reg[1|2|3 * n + i] below
         let l = reg[0 * n + i] * stride;
         let t = reg[1 * n + i] * stride;
         let r = reg[2 * n + i] * stride;

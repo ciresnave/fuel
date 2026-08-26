@@ -1000,6 +1000,8 @@ mod tests {
     }
 
     #[test]
+    // documentary index idiom: expected[0*t_seq+3] (i=0,j=3) pairs with expected[3*t_seq+0]
+    #[allow(clippy::erasing_op)]
     fn rel_pos_bias_table_lookup() {
         // Hand-trace the (i, j) → bucket assignment with tiny config.
         let cfg = tiny_config();
