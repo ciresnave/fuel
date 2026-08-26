@@ -2881,7 +2881,7 @@ fn vulkan_dispatch_matmul_bf16_bf16_bf16_small() {
     let a_storage = Storage::new(BackendStorage::Vulkan(a_vk), DType::BF16);
     let b_storage = Storage::new(BackendStorage::Vulkan(b_vk), DType::BF16);
     let out_bytes_h = backend
-        .alloc_bytes_handle(((m * n * 2 + 3) & !3) as usize)
+        .alloc_bytes_handle((m * n * 2 + 3) & !3)
         .expect("alloc");
     let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes_h), DType::BF16);
 
@@ -3352,7 +3352,7 @@ fn vulkan_dispatch_matmul_f16_f16_f16_small() {
     let a_storage = Storage::new(BackendStorage::Vulkan(a_vk), DType::F16);
     let b_storage = Storage::new(BackendStorage::Vulkan(b_vk), DType::F16);
     let out_bytes_h = backend
-        .alloc_bytes_handle(((m * n * 2 + 3) & !3) as usize)
+        .alloc_bytes_handle((m * n * 2 + 3) & !3)
         .expect("alloc");
     let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes_h), DType::F16);
 
@@ -10371,7 +10371,7 @@ fn vulkan_dispatch_conv2d_bf16() {
     let in_storage = upload_bf16(&backend, &input_bf16);
     let w_storage = upload_bf16(&backend, &weight_bf16);
     let out_bytes_h = backend
-        .alloc_bytes_handle(((n_out * 2 + 3) & !3) as usize)
+        .alloc_bytes_handle((n_out * 2 + 3) & !3)
         .expect("alloc");
     let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes_h), DType::BF16);
     let in_arc = Arc::new(RwLock::new(in_storage));
@@ -10490,7 +10490,7 @@ fn vulkan_dispatch_conv2d_f16() {
     let in_storage = upload_f16(&backend, &input_f16);
     let w_storage = upload_f16(&backend, &weight_f16);
     let out_bytes_h = backend
-        .alloc_bytes_handle(((n_out * 2 + 3) & !3) as usize)
+        .alloc_bytes_handle((n_out * 2 + 3) & !3)
         .expect("alloc");
     let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes_h), DType::F16);
     let in_arc = Arc::new(RwLock::new(in_storage));
