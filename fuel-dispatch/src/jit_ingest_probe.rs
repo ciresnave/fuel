@@ -20,6 +20,7 @@ use baracuda_kernels_types::OperandDesc;
 use crate::fkc::verify::{HostTensor, fill_deterministic, to_bytes};
 use crate::jit_adopt::element_kind_to_dtype;
 
+use crate::jit_ingest::VerifyVerdict;
 #[cfg(feature = "cuda")]
 use crate::pipelined::{PipelinedExecutor, StorageCache};
 #[cfg(feature = "cuda")]
@@ -89,6 +90,74 @@ pub fn admission_probes(operands: &[OperandDesc], seed: u64) -> Vec<Vec<HostTens
         .into_iter()
         .chain(special_value_probe_from_operands(operands))
         .collect()
+}
+
+/// Combine the per-probe verdicts of one candidate into its overall verdict.
+///
+/// **This is the half of the admission loop that is backend-neutral, and it is
+/// here so it can be TESTED WITHOUT A GPU.** The per-probe body genuinely
+/// cannot move: it takes `&CudaDevice` and performs a real CUDA invoke to
+/// produce both the candidate output and Fuel's realized reference. What does
+/// not need a device is the POLICY — how N per-probe outcomes become one
+/// answer — and that policy is where a probe set can be silently wasted.
+///
+/// Policy, and each clause exists because its opposite is a real failure mode:
+///
+/// * **Any `Fail` fails the candidate**, and the detail NAMES the probe index.
+///   A candidate that is faithful on the seeded fill and unfaithful on the
+///   special values must not be admitted, and the reader must be able to see
+///   WHICH input class rejected it — `fmaxf` lifted as `Max` fails only on
+///   probe 1, and a detail that omits that reads as a flaky numeric miss.
+/// * **Otherwise any `Inconclusive` is inconclusive**, never `Pass`. Escalation
+///   outranks silence.
+/// * **An EMPTY set is a `Fail`, never a `Pass`.** Nothing was verified, and a
+///   verdict of `Pass` over zero evidence is precisely the shape this whole
+///   program exists to eliminate.
+///
+/// It deliberately does NOT short-circuit on the first failure: every probe is
+/// examined so the detail can report the full picture, and so that a future
+/// caller cannot make "we only ran probe 0" invisible.
+pub fn combine_probe_verdicts(per_probe: Vec<VerifyVerdict>) -> VerifyVerdict {
+    if per_probe.is_empty() {
+        return VerifyVerdict::Fail {
+            claim: "probe",
+            detail: "no probes were run, so no claim was verified — an empty probe set \
+                     must never read as a pass"
+                .to_string(),
+        };
+    }
+
+    let mut failures: Vec<String> = Vec::new();
+    let mut inconclusive: Option<(&'static str, String)> = None;
+    for (i, v) in per_probe.iter().enumerate() {
+        match v {
+            VerifyVerdict::Pass => {}
+            VerifyVerdict::Fail { claim, detail } => {
+                failures.push(format!("probe {i} ({claim}): {detail}"));
+            }
+            VerifyVerdict::Inconclusive { claim, detail } => {
+                if inconclusive.is_none() {
+                    inconclusive = Some((claim, detail.clone()));
+                }
+            }
+        }
+    }
+
+    if !failures.is_empty() {
+        return VerifyVerdict::Fail {
+            claim: "probe_set",
+            detail: format!(
+                "{} of {} probes failed: {}",
+                failures.len(),
+                per_probe.len(),
+                failures.join("; ")
+            ),
+        };
+    }
+    if let Some((claim, detail)) = inconclusive {
+        return VerifyVerdict::Inconclusive { claim, detail };
+    }
+    VerifyVerdict::Pass
 }
 
 /// The eight special float values the admission probe must reach.
@@ -442,6 +511,87 @@ mod tests {
     use baracuda_kernels_types::ElementKind;
     use fuel_ir::DType;
 
+    /// **The whole probe set is examined — a failure in the LAST probe still
+    /// fails the candidate.**
+    ///
+    /// This is the load-bearing half of "does the gate look at the inputs it
+    /// claims to", and unlike the call-site binding it needs no GPU.
+    ///
+    /// **It is the exact shape GAP-236 is about.** A candidate that lifts
+    /// `fmaxf` while claiming `Max` is faithful on the seeded fill (probe 0)
+    /// and unfaithful only on the special values (probe 1). **An admission
+    /// loop that short-circuited on the first probe's `Pass`, or that only
+    /// ever ran `probes[0]`, would admit it while appearing to consult the
+    /// whole set** — and every count in the harness would look identical.
+    #[test]
+    fn a_failure_in_the_last_probe_still_fails_the_candidate() {
+        let v = combine_probe_verdicts(vec![
+            VerifyVerdict::Pass,
+            VerifyVerdict::Fail {
+                claim: "max_ulp",
+                detail: "elem 3: NaN vs 1.0".to_string(),
+            },
+        ]);
+        match v {
+            VerifyVerdict::Fail { detail, .. } => {
+                // The index must be NAMED. "a probe failed" does not tell a
+                // reader that it was the special-value arm, and a numeric miss
+                // on the seeded fill means something entirely different.
+                assert!(
+                    detail.contains("probe 1"),
+                    "the failing probe index is not named in: {detail}"
+                );
+            }
+            other => panic!("a failure in the last probe must fail the candidate, got {other:?}"),
+        }
+    }
+
+    /// **An empty probe set is a `Fail`, never a `Pass`.**
+    ///
+    /// Nothing was verified. A `Pass` over zero evidence is exactly the shape
+    /// this program exists to eliminate, and it is reachable in practice:
+    /// `probe_from_operands` returns `None` for an operand it cannot encode,
+    /// so a candidate whose operands are all unencodable yields an EMPTY set
+    /// rather than an error.
+    #[test]
+    fn an_empty_probe_set_is_a_fail_not_a_pass() {
+        match combine_probe_verdicts(Vec::new()) {
+            VerifyVerdict::Fail { claim, .. } => assert_eq!(claim, "probe"),
+            other => panic!("an empty probe set must not pass; got {other:?}"),
+        }
+    }
+
+    /// **`Inconclusive` outranks silence but not failure.**
+    ///
+    /// Escalation must survive a set where other probes passed, and must NOT
+    /// mask a real failure elsewhere in the same set.
+    #[test]
+    fn inconclusive_survives_a_pass_and_yields_to_a_fail() {
+        let esc = || VerifyVerdict::Inconclusive {
+            claim: "max_ulp",
+            detail: "live reference only".to_string(),
+        };
+        let fail = || VerifyVerdict::Fail {
+            claim: "max_ulp",
+            detail: "diverged".to_string(),
+        };
+
+        assert!(
+            matches!(
+                combine_probe_verdicts(vec![VerifyVerdict::Pass, esc()]),
+                VerifyVerdict::Inconclusive { .. }
+            ),
+            "an inconclusive probe must not be swallowed by a passing one"
+        );
+        assert!(
+            matches!(
+                combine_probe_verdicts(vec![esc(), fail()]),
+                VerifyVerdict::Fail { .. }
+            ),
+            "a real failure must outrank an inconclusive in the same set"
+        );
+    }
+
     /// **GAP-236 increment 2: the admission path must actually CONSUME the
     /// probe set.**
     ///
@@ -461,6 +611,21 @@ mod tests {
     ///
     /// **When the wiring lands, DELETE THE `#[ignore]`** — this becomes a
     /// permanent guard that the gate looks at the inputs it claims to.
+    ///
+    /// ⚠️ **WHAT REMAINS IGNORED IS NOW ONLY THE BINDING, NOT THE LOGIC.** The
+    /// load-bearing half — *does the admission loop actually consume every
+    /// probe in the set* — is a LIVE test at `cfg(jit)`:
+    /// `a_failure_in_the_last_probe_still_fails_the_candidate`, which a
+    /// short-circuit-on-first or a `probes[0]`-only loop both fail. Together
+    /// with `an_empty_probe_set_is_a_fail_not_a_pass` and
+    /// `inconclusive_survives_a_pass_and_yields_to_a_fail`, the POLICY is
+    /// verified without a GPU and each was born-red by its own sabotage.
+    ///
+    /// **So the unverified surface is one call-site name.** That is deliberate:
+    /// the per-probe body cannot move to the neutral side — it takes
+    /// `&CudaDevice` and performs a real CUDA invoke to produce both the
+    /// candidate output and Fuel's realized reference — but the POLICY it
+    /// feeds can, and has.
     ///
     /// It scans `jit_ingest.rs` rather than living in it, because a
     /// source-scanning check inside the file it scans matches its own anchors
