@@ -923,3 +923,24 @@ counts                     no stable form  -> fix by WEAKENING the claim
 **WHY THE ASYMMETRY MATTERS MORE THAN THE RATE.** A wrong path fails loudly — no such file. **A wrong line number silently points at REAL CODE that is not the code meant**, and a reader finding something plausible concludes the citation is fine. **The failure mode of the 67% is not a broken link, it is confident mis-reading.**
 
 **PRACTICE: cite a symbol, a distinctive string, or a test name, and give the grep; give a line number only as a convenience beside a durable anchor, never as the anchor. For a count, write the BOUND you actually rely on, or the property, or a date+ref — and treat a normative rule's citation as the likeliest to have rotted, precisely because the principle above it is unimpeachable and stops anyone checking.**
+
+---
+## state-the-link-not-the-proxy
+
+> **Index line (in CLAUDE.md):** **A CONDITIONAL LICENCE MUST STATE THE CAUSAL LINK, NOT THE PROXY** — *"if X, proceed"* is only as good as the unstated connection between X and the thing being licensed. **State the link and the grantee can check it; state only the proxy and the licence is UNFALSIFIABLE — the grantee cannot test it and the grantor never learns it was wrong.** The failure is silent in the direction where the proxy HOLDS.
+
+**2026-08-26, the architect's own delegation, caught by the lane it was handed to.** The licence: *"if the four small precision surfaces turn out to be as cheap as conv, take attention immediately and do not wait for me."*
+
+**COST was the proxy. The actual variable was WHETHER A KNOWN-GOOD SHAPE EXISTED TO MIRROR.** The small surfaces were cheap *because* all five families already carried a fused arm in the probe builder that could be mirrored into the primitive builder. **Attention has none** — measured with a positive control so the zero is absence rather than a broken query: **10** references for the families that had arms, **0** for FlashAttn/PagedAttn.
+
+**So the proxy held perfectly and the mechanism under it did not transfer at all.** The lane reported instead of spending the licence.
+
+**WHY THIS IS WORSE THAN AN ORDINARY WRONG INSTRUCTION.** A wrong instruction can be checked against its own terms. **A licence conditioned on a proxy cannot** — the grantee can verify the proxy (cost was low, truthfully) and still be authorised to do the wrong thing, because the sentence never mentioned the property that actually decides it. **Nothing in the licence is available to be contradicted.**
+
+**AND THE ORDERING HAZARD, WHICH IS THE LANE'S OWN CORRECTION AND THE SHARPEST PART:** they only examined the causal link *after* the small surfaces came in cheap. **Had those surfaces come in EXPENSIVE, they would have reported cost, the licence would never have been exercised, and nobody would ever have discovered it was unfalsifiable as written.** The defect is only observable on the branch where the proxy is satisfied — so a licence like this can sit unspent and undetected indefinitely, and be reissued.
+
+**PRACTICE:**
+- **Write the link, not the trigger.** *"Take attention if a mirrorable arm exists for it"* is checkable. *"Take attention if the small ones were cheap"* is not.
+- **When you cannot name the link, say the licence is provisional and ask for a report** rather than pre-authorising.
+- **As grantee: check the link BEFORE the trigger fires**, not after. Verifying a proxy is not verifying a licence.
+- **Corollary for verdicts: when a yes/no question is malformed, return the STRUCTURE rather than the answer.** Asked *"do the backwards mirror FlashAttn?"*, "no" would have bought a fresh-surface estimate for work that reuses the params struct outright, and "yes" a copy-paste estimate for work that adds an operand and a per-variant output shape. **The delta was the thing being asked for; neither branch of the binary carried it.**
