@@ -42,6 +42,22 @@
 //!   This crate hosts the dispatch *wrappers* that bridge erased
 //!   `Storage` ↔ typed backend storage.
 
+// GAP-229: `clippy::identity_op` fires 128x across fuel-core+fuel-dispatch and is a
+// defect in 0 of 128 — it measures a house idiom, not debt, so it is allowed at the
+// crate root (a MEASURED claim: "identity ops in THIS crate are intentional"; a firing
+// in a third crate is a deliberate TRIPWIRE — it reds the gate so someone looks and rules).
+// Two intentional classes:
+//   * DOC-INDEX: an explicit `0 *`/`1 *` NAMES an index (`idx[i*nb + 0]`, `got[1*head_dim + j]`);
+//     the `0 *` partner is separately load-bearing (CLAUDE.md: never delete it), so its `1 *`
+//     sibling must survive too — auto-fixing it would strand a bare unexplained `0 *`.
+//   * DOC-SHAPE: an explicit unit/batch dim in a shape product (`1 * C * H * W`) mirrors
+//     `Shape::from_dims(&[1, C, H, W])`.
+// RESIDUAL, named not gated: this ALSO hides FLOAT identity ops, where `x + 0.0` normalizes
+// -0.0 -> +0.0 — a real hazard whose population is ZERO today (measured). A float identity op
+// landing later is silently admitted; re-measure at the next rust-toolchain.toml pin bump
+// (owner-tracked, docs/gaps.md GAP-229) and drop this allow if precision is no longer 0/N.
+#![allow(clippy::identity_op)]
+
 pub mod baracuda_dispatch;
 pub mod cast_fusion;
 pub mod compiled;
