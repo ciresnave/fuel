@@ -294,7 +294,7 @@ mod tests {
         let _guard = PathGuard(path.clone());
         let rf = ResidencyFile::create(&path, 256).unwrap();
         let s1 = rf.alloc(200).unwrap();
-        rf.write(s1, &vec![1u8; 200]);
+        rf.write(s1, &[1u8; 200]);
         rf.free(s1);
         // Next alloc of same size reuses the same offset.
         let s2 = rf.alloc(200).unwrap();
