@@ -5758,7 +5758,13 @@ fn execute_work_item(
             // per-backend device handle by searching the input cache
             // for any storage on the target backend (callers seed this
             // via `pipelined_bridge::device_seed_storage`).
-            let _n_bytes = item.elem_count * item.dtype.size_in_bytes();
+            // Used only by the Vulkan arm below (alloc_bytes_handle); a
+            // default-feature build sees it unused. GAP-229: 68161981's
+            // unused_variables --fix renamed it `_n_bytes` at default
+            // features and broke `--features vulkan` (E0425). Guard the
+            // decline instead of the name so the binding stays usable.
+            #[cfg_attr(not(feature = "vulkan"), allow(unused_variables))]
+            let n_bytes = item.elem_count * item.dtype.size_in_bytes();
             let alloced: Storage = match target_location {
                 // CPU has no separate uninit alloc primitive in safe
                 // Rust (`vec![0; n]` is the canonical path). Op::Alloc
@@ -6078,7 +6084,13 @@ fn execute_work_item(
             // find_vulkan_backend_in_cache); callers seed the cache
             // (e.g. `pipelined_bridge::device_seed_storage`) before
             // realizing.
-            let _n_bytes = item.elem_count * item.dtype.size_in_bytes();
+            // Used only by the Vulkan arm below (alloc_bytes_handle); a
+            // default-feature build sees it unused. GAP-229: 68161981's
+            // unused_variables --fix renamed it `_n_bytes` at default
+            // features and broke `--features vulkan` (E0425). Guard the
+            // decline instead of the name so the binding stays usable.
+            #[cfg_attr(not(feature = "vulkan"), allow(unused_variables))]
+            let n_bytes = item.elem_count * item.dtype.size_in_bytes();
             let input_arcs = vec![src_input];
             let mut output_arcs = if let Some(arc) = reuse_arc {
                 vec![arc]
