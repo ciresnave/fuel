@@ -163,7 +163,7 @@ impl MambaModel {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
-        let batch = 1;
+        let _batch = 1;
         assert!(seq > 0, "MambaModel::forward: tokens must be non-empty");
         let vocab_padded = cfg.vocab_size();
 
@@ -198,8 +198,8 @@ impl MambaModel {
         let dt_rank = cfg.dt_rank();
         let x_shape = x.shape();
         let x_dims = x_shape.dims();
-        let batch = x_dims[0];
-        let seq = x_dims[1];
+        let _batch = x_dims[0];
+        let _seq = x_dims[1];
 
         // in_proj: x → [x_path, z_path] each `[batch, seq, d_inner]`.
         let xz = layer.in_proj.apply_linear(x, cfg.d_model, 2 * d_inner)?;

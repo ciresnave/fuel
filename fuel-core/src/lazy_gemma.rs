@@ -98,7 +98,7 @@ impl GemmaModel {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
-        let batch = 1;
+        let _batch = 1;
         assert!(seq > 0, "GemmaModel::forward: tokens must be non-empty");
         assert_eq!(
             cfg.num_attention_heads * cfg.head_dim,
@@ -171,7 +171,7 @@ impl GemmaModel {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
-        let batch = 1;
+        let _batch = 1;
         assert!(
             seq > 0,
             "GemmaModel::forward_hidden: tokens must be non-empty"

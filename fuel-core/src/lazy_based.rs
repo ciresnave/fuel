@@ -280,7 +280,7 @@ impl BasedModel {
         rope_sin: &Tensor,
     ) -> Result<Tensor> {
         let cfg = &self.config;
-        let h = cfg.hidden_size;
+        let _h = cfg.hidden_size;
         let x_norm = x.rms_norm_affine(
             std::sync::Arc::clone(&layer.norm1_gain),
             cfg.layer_norm_epsilon,
@@ -324,7 +324,7 @@ impl BasedModel {
         let x_shape = x.shape();
         let dims = x_shape.dims();
         let batch = dims[0];
-        let seq = dims[1];
+        let _seq = dims[1];
         let h = cfg.hidden_size;
         let dim2 = 2 * h;
         let kernel = 3;

@@ -233,7 +233,7 @@ fn apply_attention(
     x: &Tensor,
     w: &BlipVisionAttentionWeights,
     cfg: &BlipVisionConfig,
-    anchor: &Tensor,
+    _anchor: &Tensor,
 ) -> Result<Tensor> {
     let dims = x.shape();
     let dims = dims.dims();
@@ -274,7 +274,7 @@ fn apply_mlp(
     x: &Tensor,
     m: &BlipMlpWeights,
     cfg: &BlipVisionConfig,
-    anchor: &Tensor,
+    _anchor: &Tensor,
 ) -> Result<Tensor> {
     let h1 = m.fc1.apply_linear_with_bias(
         x,

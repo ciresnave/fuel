@@ -255,8 +255,8 @@ impl MptModel {
         let head_dim = cfg.head_dim();
         let x_shape = x.shape();
         let dims = x_shape.dims();
-        let batch = dims[0];
-        let seq = dims[1];
+        let _batch = dims[0];
+        let _seq = dims[1];
         let kv_dim = cfg.kv_n_heads * head_dim;
 
         let x_norm = x.layer_norm_affine(

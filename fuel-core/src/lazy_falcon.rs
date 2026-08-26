@@ -392,7 +392,7 @@ impl FalconWeights {
 
         let h = cfg.hidden_size;
         let head_dim = cfg.head_dim();
-        let kv_dim = cfg.n_head_kv * head_dim;
+        let _kv_dim = cfg.n_head_kv * head_dim;
         let q_dim = cfg.num_attention_heads * head_dim;
 
         let token_embedding = Arc::from(load_tensor_as_f32(

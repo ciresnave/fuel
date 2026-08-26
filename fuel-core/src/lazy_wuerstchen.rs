@@ -978,7 +978,13 @@ fn apply_paella_mixing_res(
 
 /// Replication-pad 2D by `pad` on every side. Input `[1, C, H, W]` →
 /// output `[1, C, H + 2*pad, W + 2*pad]`.
-fn replicate_pad_2d(x: &Tensor, c: usize, h: usize, w: usize, pad: usize) -> crate::Result<Tensor> {
+fn replicate_pad_2d(
+    x: &Tensor,
+    _c: usize,
+    h: usize,
+    w: usize,
+    pad: usize,
+) -> crate::Result<Tensor> {
     if pad == 0 {
         return Ok(x.clone());
     }

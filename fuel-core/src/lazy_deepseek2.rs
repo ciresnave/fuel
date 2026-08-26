@@ -1854,7 +1854,7 @@ impl DeepSeek2Model {
         rope_sin: &Tensor,
     ) -> Result<Tensor> {
         let cfg = &self.config;
-        let h = cfg.hidden_size;
+        let _h = cfg.hidden_size;
 
         let x_norm = x.rms_norm_affine(
             std::sync::Arc::clone(&layer.input_norm_gain),

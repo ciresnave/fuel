@@ -137,7 +137,7 @@ impl MistralModel {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
-        let batch = 1;
+        let _batch = 1;
         assert!(seq > 0, "MistralModel::forward: tokens must be non-empty");
 
         // Embedding lookup.
@@ -206,7 +206,7 @@ impl MistralModel {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
-        let batch = 1;
+        let _batch = 1;
         assert!(
             seq > 0,
             "MistralModel::forward_hidden: tokens must be non-empty"
@@ -228,7 +228,7 @@ impl MistralModel {
     /// pre-computed embeddings with a custom pooling head.
     pub fn forward_hidden_embeds(&self, embeds: &Tensor, start_pos: usize) -> Result<Tensor> {
         let cfg = &self.config;
-        let weights = &self.weights;
+        let _weights = &self.weights;
         let dims = embeds.shape();
         let dims = dims.dims();
         assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, hidden]");

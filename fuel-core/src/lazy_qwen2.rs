@@ -211,7 +211,7 @@ impl Qwen2Model {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
-        let batch = 1;
+        let _batch = 1;
         assert!(seq > 0, "Qwen2Model: tokens must be non-empty");
 
         let h = Tensor::embed_tokens(
