@@ -274,6 +274,12 @@ fn main() -> Result<()> {
     //    populated rows.
     let enc_num_cb = enc_model.weights.quantizers.len();
     let mut codes_flat: Vec<u32> = Vec::with_capacity(enc_num_cb * gen_len);
+    // NOT an iterator loop: this ranges over `enc_num_cb`, which may EXCEED
+    // `codes_per_cb.len()` (== num_codebooks). The `cb < num_codebooks` guard
+    // below is what makes the indexing safe, and the else-branch deliberately
+    // runs for the trailing codebooks that have no source data. Iterating
+    // `codes_per_cb` would stop at the shorter length and drop them.
+    #[allow(clippy::needless_range_loop)]
     for cb in 0..enc_num_cb {
         if cb < num_codebooks {
             // Clamp to encodec vocabulary just in case the metavoice

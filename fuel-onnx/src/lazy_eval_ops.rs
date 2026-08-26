@@ -13,8 +13,8 @@
 //! attribute migrations) are the actual content.
 
 use crate::lazy_eval::{
-    ensure_anchor, get_attr_float_opt, get_attr_int, get_attr_ints_opt, normalize_axis,
-    realize_i64_vec, set_output,
+    ensure_anchor, get_attr_float_opt, get_attr_ints_opt, normalize_axis, realize_i64_vec,
+    set_output,
 };
 use crate::onnx;
 use fuel::lazy::Tensor;

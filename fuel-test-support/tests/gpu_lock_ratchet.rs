@@ -120,9 +120,9 @@ fn enclosing_fn_is_guarded(lines: &[&str], site: usize) -> bool {
     let my_indent = indent(lines[start]);
 
     let mut end = lines.len();
-    for j in start + 1..lines.len() {
-        let t = lines[j].trim_end();
-        if t.trim_start() == "}" && indent(lines[j]) == my_indent {
+    for (j, line) in lines.iter().enumerate().skip(start + 1) {
+        let t = line.trim_end();
+        if t.trim_start() == "}" && indent(line) == my_indent {
             end = j + 1;
             break;
         }

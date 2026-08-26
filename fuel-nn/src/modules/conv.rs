@@ -911,6 +911,9 @@ mod tests {
             groups: c,
         };
 
+        // [c, 1, kh, kw] -- a DEPTHWISE weight: groups = c, so in-channels
+        // per group is exactly 1. The `1` names that dimension.
+        #[allow(clippy::identity_op)]
         let weight: Vec<f32> = ramp_f32(c * 1 * kh * kw, 0.07, -0.1);
         let layer = Conv2d::new(
             WeightStorage::F32(Arc::from(weight)),

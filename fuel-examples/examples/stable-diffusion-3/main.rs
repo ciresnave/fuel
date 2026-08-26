@@ -347,6 +347,8 @@ fn main() -> Result<()> {
     let c_lat = mmdit_cfg.in_channels;
     let h_lat = height / 8;
     let w_lat = width / 8;
+    // Grouped to spell BADF00D twice; see the same literal in the flux example.
+    #[allow(clippy::unusual_byte_groupings)]
     let noise_seed = seed.unwrap_or(0xBADF_00D_BADF_00D_u64);
     let noise = deterministic_noise(noise_seed, c_lat * h_lat * w_lat);
     let latent = Tensor::from_f32(

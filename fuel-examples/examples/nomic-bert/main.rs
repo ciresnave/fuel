@@ -357,8 +357,8 @@ fn main() -> Result<()> {
         // Mean-pool over tokens weighted by attention_mask, then L2-normalize.
         let mut pooled = vec![0.0_f32; n_embd];
         let mut keep: f32 = 0.0;
-        for t in 0..seq {
-            let m = mask[t] as f32;
+        for (t, &mask_t) in mask.iter().enumerate().take(seq) {
+            let m = mask_t as f32;
             if m == 0.0 {
                 continue;
             }

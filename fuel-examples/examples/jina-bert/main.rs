@@ -179,8 +179,7 @@ fn main() -> Result<()> {
         let mut similarities = vec![];
         for i in 0..n_sentences {
             let e_i = &all_embeds[i];
-            for j in (i + 1)..n_sentences {
-                let e_j = &all_embeds[j];
+            for (j, e_j) in all_embeds.iter().enumerate().take(n_sentences).skip(i + 1) {
                 let sum_ij: f32 = e_i.iter().zip(e_j.iter()).map(|(a, b)| a * b).sum();
                 let sum_i2: f32 = e_i.iter().map(|a| a * a).sum();
                 let sum_j2: f32 = e_j.iter().map(|a| a * a).sum();

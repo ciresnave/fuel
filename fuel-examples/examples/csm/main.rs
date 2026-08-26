@@ -213,12 +213,16 @@ fn main() -> Result<()> {
     let tokens_bytes = tokens_view.data();
     let tokens_all_u32: Vec<u32> = match tokens_view.dtype() {
         safetensors::Dtype::I64 => tokens_bytes
-            .chunks_exact(8)
-            .map(|b| i64::from_le_bytes([b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7]]) as u32)
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|b| i64::from_le_bytes(*b) as u32)
             .collect(),
         safetensors::Dtype::U32 => tokens_bytes
-            .chunks_exact(4)
-            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| u32::from_le_bytes(*b))
             .collect(),
         other => bail!("voice tokens: unexpected dtype {other:?}"),
     };
