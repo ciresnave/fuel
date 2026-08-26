@@ -1,0 +1,101 @@
+#!/bin/sh
+# Fuel pre-commit gates.
+#
+# ⚠️ INSTALL THIS, or it does nothing:
+#
+#     git config core.hooksPath scripts/hooks
+#
+# This file is VERSION CONTROLLED; the hook git actually runs is not. That
+# distinction is the whole reason this file exists. Fuel had a working
+# pre-commit gate living only in `.git/hooks/pre-commit` — untracked, therefore
+# absent from every fresh clone and invisible to code review. A gate nobody can
+# see is a gate nobody can maintain, and one that silently does not exist in
+# your checkout is worse than none, because its absence is indistinguishable
+# from its success.
+#
+# Both gates below fire ONLY on the relevant STAGED files, so a lane is blocked
+# by its own drift and never by someone else's.
+
+# ---------------------------------------------------------------------------
+# 1. Table integrity for docs/gaps.md
+# ---------------------------------------------------------------------------
+# Run as a hook because the COORDINATOR kept bypassing it by hand. Four times in
+# one session the gate was correct and was defeated by HOW git was invoked: once
+# by `echo`ing its exit code inside an && chain, once by piping it through
+# `tail` (losing the violating line), and twice by re-running a failed
+# `git commit` on its own after a staging error -- dropping the gate from the
+# chain while working around something unrelated.
+#
+# Every one of those pushed a corrupted row to main. The gate never failed; the
+# invocation did. A hook takes the invocation out of the loop.
+if git diff --cached --name-only | grep -q '^docs/gaps\.md$'; then
+    python scripts/check-gaps-table.py || {
+        echo ""
+        echo "pre-commit: docs/gaps.md table integrity FAILED (see above)."
+        echo "  A row is one line; escape every literal '|' inside a code span as \|."
+        exit 1
+    }
+fi
+
+# ---------------------------------------------------------------------------
+# 2. Formatting, on staged .rs files only
+# ---------------------------------------------------------------------------
+# WHY THIS EXISTS: `cargo fmt --all` has now been landed TWICE in seven days.
+# a63d8f55 (2026-08-19, 647 files) is titled "closes the Rustfmt gate"; 212
+# commits later the tree had re-accumulated 158 hunks across 72 files, about
+# 0.75 hunks per commit, and b25164e6 had to close it again.
+#
+# The Rustfmt CI job was not broken -- it went green on 2026-08-20 and red again
+# as drift accumulated. Its signal was destroyed by AGGREGATION: the run badge
+# stayed red for a permanently-failing Clippy sibling, and nobody reads a red
+# badge to ask which job flipped. One always-red job makes every other job in
+# that run unreadable.
+#
+# So the drift was never anyone's fault and never anyone's signal. This catches
+# it at the commit, where the person who caused it is standing.
+staged_rs=$(git diff --cached --name-only --diff-filter=ACM | grep '\.rs$')
+if [ -n "$staged_rs" ]; then
+    # A missing rustfmt must FAIL, not skip. A gate that passes silently when
+    # its tool is absent is the "absence indistinguishable from success" trap,
+    # and rust-toolchain.toml pins rustfmt as a component precisely so this
+    # cannot legitimately happen.
+    if ! command -v rustfmt >/dev/null 2>&1; then
+        echo ""
+        echo "pre-commit: rustfmt NOT FOUND, so the formatting gate cannot run."
+        echo "  This is a hard failure, not a skip -- a gate that passes when its"
+        echo "  tool is missing reports success it did not verify."
+        echo "  rust-toolchain.toml pins rustfmt as a component; try \`rustup component add rustfmt\`."
+        exit 1
+    fi
+
+    # NOTE: rustfmt reads the WORKING TREE, not the staged blob. For a partially
+    # staged file the two differ, and this checks the file on disk. Accepted:
+    # the failure direction is a false RED on unstaged edits, which is loud and
+    # obvious, never a false green.
+    #
+    # Checked one file at a time and reported by the path GIT gave us, rather
+    # than by parsing rustfmt's output. The first version of this gate parsed
+    # `Diff in <path>` and printed `\\?\C:\Projects\...` -- a Windows extended
+    # path -- because rustfmt emits `Diff in <path>:<line>:` here and not the
+    # `at line N` form the parse assumed. The verdict was right and the message
+    # was unusable; not parsing at all removes the failure mode instead of
+    # patching it.
+    unformatted=""
+    for f in $staged_rs; do
+        rustfmt --edition 2024 --check "$f" >/dev/null 2>&1 || unformatted="$unformatted
+$f"
+    done
+    unformatted=$(echo "$unformatted" | sed '/^$/d')
+    if [ -n "$unformatted" ]; then
+        echo ""
+        echo "pre-commit: staged Rust files are NOT rustfmt-clean:"
+        echo "$unformatted" | sed 's/^/    /'
+        echo ""
+        echo "  Fix:  cargo fmt        (then re-stage)"
+        echo ""
+        echo "  This gate exists because \`cargo fmt --all\` was landed twice in one"
+        echo "  week. Drift is cheap to prevent here and costs a 72-file landing"
+        echo "  against ~27 live worktrees to clean up later."
+        exit 1
+    fi
+fi
