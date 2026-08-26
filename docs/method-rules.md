@@ -1072,3 +1072,22 @@ the false-positive rate against a real corpus before proposing the mechanism —
 "no gate is possible here, and here is why" is a complete result, and cheaper
 than a guard that reds on honest numbers and trains reflexive allowlisting.**
 
+
+---
+## a-rule-bound-to-an-instrument-does-not-transfer
+
+> **Index line (in CLAUDE.md):** **A DISCIPLINE STATED ABOUT AN INSTRUMENT DOES NOT GENERALISE TO OTHER INSTRUMENTS WITH THE SAME FAILURE MODE — even for the person who wrote it, on the same day, having applied it correctly a dozen times.** *"Never pipe the GATE through `head`"* is obeyed faithfully while the identical truncation is committed on a comment thread. **State rules in terms of the PROPERTY that fails (never act on a truncated document) rather than the TOOL you first met it on.**
+
+**2026-08-26. Three instances, two people, one night.**
+
+**(1) THE WORKED EXAMPLE.** The portfolio PM's standing instructions carry, verbatim: *"Never pipe the gate's output through `head`/`tail` — truncating it is how a merge got hidden from me once already."* They applied it to the merge gate **all night, faithfully**. Then, surveying a PR thread, they ran `.body[0:700]` across a **3,474-character** architect ruling and dispatched off the fragment. **The disposition — *"Recorded as: Baracuda cosigned; Fuel non-responsive … cosign requirement DISCHARGED"* — sat in the 79% they discarded**, and a five-day-old "blocker" was dispatched that had been closed six hours earlier. **They did not read a stale document; they read a live document badly.**
+
+**(2) THE SAME PERSON, TWO HOURS EARLIER, SAME DEFECT.** A `grep -c` returned `1` for a retracted phrase and was read as *live* — when the `1` was **the retraction quoting the sentence it deleted.** A count standing in for the document. **The lesson did not survive two hours, because it had been filed against `head`/`tail` rather than against *substituting a fragment for the whole*.**
+
+**(3) A DIFFERENT PERSON, DIFFERENT SURFACE.** A lane wrote *"classify by what a command DOES, not what it looks like"* and **two days later built a filter that classified by what a command looks like** — misreading `rc=124` (a timeout) as a dead command. **Having the rule, in their own words, in a file they had just edited, did not prevent applying its inverse.**
+
+**THE MECHANISM.** A rule learned from an incident gets filed under **the tool the incident happened on**, because that is the salient detail while it stings. Recall is then keyed on the tool: pipe a gate → rule fires; slice a comment body → nothing fires, **even though the failure is identical and the person is the same person.** **The rule is not forgotten; it is not INDEXED under the situation.**
+
+**WHY THIS IS THE STRONGEST AVAILABLE ARGUMENT FOR STRUCTURE OVER VIGILANCE**, and it is stronger than any specific defect: these three were committed by people **actively applying** the very rule they were violating, on the same day, with the text in front of them. **Vigilance did not fail through inattention — it failed through correct application to the wrong index.** A gate does not need the situation to remind it of itself.
+
+**PRACTICE: when you write a rule from an incident, name the PROPERTY that failed and then ask which OTHER surfaces have it.** *"Never truncate a document you are about to act on"* covers gate output, comment bodies, `grep -c` results, PR descriptions, and summary lines. *"Never pipe the gate through `head`"* covers one. **And when a rule proves it does not transfer, that is the moment to make it structural — the failures above are exactly the ones a check would have caught and a memory did not.**
