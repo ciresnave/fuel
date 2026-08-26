@@ -264,7 +264,7 @@ fn outcome_from_nonadopt_verdict(
             let diff_summary = records
                 .iter()
                 .find(|r| r.claim == "kiss_ref_advisory")
-                .map(|r| kiss_advisory_diff_summary(r));
+                .map(kiss_advisory_diff_summary);
             IngestOutcome::Flagged(FlagReport {
                 entry_point: entry_point.to_string(),
                 claim,
@@ -322,47 +322,50 @@ fn single_primitive_optag(
     Some(*op)
 }
 
-/// Reinterpret little-endian `f32` bytes as an owned `Vec<f32>`. Safe:
-/// `chunks_exact(4)` never yields a short chunk, so the array build can't panic.
+/// Reinterpret little-endian `f32` bytes as an owned `Vec<f32>`.
+///
+/// `as_chunks::<4>()` yields `&[u8; 4]` directly, so `from_le_bytes` takes the
+/// array whole. There is no index-and-rebuild step left to justify -- the
+/// earlier note that "the array build can't panic" described a construction
+/// this no longer performs. A trailing partial chunk is discarded exactly as
+/// `chunks_exact` discarded it.
 #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 fn bytes_to_f32(bytes: &[u8]) -> Vec<f32> {
-    bytes
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect()
+    let (chunks, _rest) = bytes.as_chunks::<4>();
+    chunks.iter().map(|c| f32::from_le_bytes(*c)).collect()
 }
 
 /// Reinterpret little-endian `f64` bytes as an owned `Vec<f64>`. Mirrors
-/// [`bytes_to_f32`]: `chunks_exact(8)` never yields a short chunk.
+/// [`bytes_to_f32`]: `as_chunks::<8>()` yields `[u8; 8]` directly.
 // Consumed by the cuda advisory block's dtype dispatch (`run_region_diff`);
 // dead only in the CPU-only (`jit` without `cuda`) build.
 #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 fn bytes_to_f64(bytes: &[u8]) -> Vec<f64> {
-    bytes
-        .chunks_exact(8)
-        .map(|c| f64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
-        .collect()
+    let (chunks, _rest) = bytes.as_chunks::<8>();
+    chunks.iter().map(|c| f64::from_le_bytes(*c)).collect()
 }
 
 /// Reinterpret little-endian `f16` bytes as an owned `Vec<half::f16>`. Mirrors
-/// [`bytes_to_f32`]: `chunks_exact(2)` never yields a short chunk.
+/// [`bytes_to_f32`]: `as_chunks::<2>()` yields `[u8; 2]` directly.
 // See `bytes_to_f64`: consumed by `run_region_diff`, dead only CPU-only.
 #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 fn bytes_to_f16(bytes: &[u8]) -> Vec<half::f16> {
-    bytes
-        .chunks_exact(2)
-        .map(|c| half::f16::from_le_bytes([c[0], c[1]]))
+    let (chunks, _rest) = bytes.as_chunks::<2>();
+    chunks
+        .iter()
+        .map(|c| half::f16::from_le_bytes(*c))
         .collect()
 }
 
 /// Reinterpret little-endian `bf16` bytes as an owned `Vec<half::bf16>`.
-/// Mirrors [`bytes_to_f32`]: `chunks_exact(2)` never yields a short chunk.
+/// Mirrors [`bytes_to_f32`]: `as_chunks::<2>()` yields `[u8; 2]` directly.
 // See `bytes_to_f64`: consumed by `run_region_diff`, dead only CPU-only.
 #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
 fn bytes_to_bf16(bytes: &[u8]) -> Vec<half::bf16> {
-    bytes
-        .chunks_exact(2)
-        .map(|c| half::bf16::from_le_bytes([c[0], c[1]]))
+    let (chunks, _rest) = bytes.as_chunks::<2>();
+    chunks
+        .iter()
+        .map(|c| half::bf16::from_le_bytes(*c))
         .collect()
 }
 

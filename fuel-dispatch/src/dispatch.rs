@@ -12931,7 +12931,9 @@ mod tests {
         // (backend, n_alts_within_backend). Iterates via iter_precision
         // because that already exposes per-alternative tuples.
         // OpKind/DType aren't Ord, so we use Vec-based group lookup.
-        let mut grouped: Vec<((OpKind, Vec<DType>), Vec<(BackendId, usize)>)> = Vec::new();
+        /// `((op, dtypes), [(backend, count)])` -- one coverage group.
+        type CoverageGroup = ((OpKind, Vec<DType>), Vec<(BackendId, usize)>);
+        let mut grouped: Vec<CoverageGroup> = Vec::new();
         for (op, dtypes, backend, _precision) in b.iter_precision() {
             let key = (op, dtypes.to_vec());
             if let Some((_, entry)) = grouped.iter_mut().find(|(k, _)| *k == key) {

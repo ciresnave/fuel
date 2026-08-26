@@ -560,7 +560,7 @@ fn operand_sub_key(o: &FdxOperandDesc, frame: &[i64], innermost_reduced: bool) -
             // VACUOUSLY true at E=0 (every L divides 0), mis-deriving v4 for an
             // empty run — the §6.5-0009(c) zero-extent trap (KISS #82 F4 / #87).
             if vbytes <= 16
-                && o.align_bytes % vbytes == 0
+                && o.align_bytes.is_multiple_of(vbytes)
                 && inner_extent >= l
                 && inner_extent % l == 0
             {
@@ -609,10 +609,10 @@ fn layout_code(ext: &[i64], strides: &[i64]) -> &'static str {
     if contiguous {
         return "co";
     }
-    if let Some(i) = (0..ext.len()).rev().find(|&i| ext[i] > 1) {
-        if strides[i].unsigned_abs() == 1 {
-            return "ic";
-        }
+    if let Some(i) = (0..ext.len()).rev().find(|&i| ext[i] > 1)
+        && strides[i].unsigned_abs() == 1
+    {
+        return "ic";
     }
     "st"
 }
@@ -769,7 +769,7 @@ mod tests {
             FuelOpCategory::Loss,
         ];
         for cat in cats {
-            let token = derive_structure_key_token(cat, &[op.clone()], "cuda:sm89")
+            let token = derive_structure_key_token(cat, std::slice::from_ref(&op), "cuda:sm89")
                 .unwrap_or_else(|| panic!("{:?} must derive", cat));
             assert!(token.starts_with("sk4|"), "{token} lacks the sk4 prefix");
             assert!(!token.contains("sk2"), "{token} carries sk2 bytes");

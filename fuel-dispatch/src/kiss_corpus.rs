@@ -129,7 +129,7 @@ fn parse_hex_bytes(s: &str, file: &'static str, tc_id: u64) -> Result<Vec<u8>, C
         // '·' (U+00B7) is multibyte in UTF-8; drop its bytes too.
         .filter(|b| *b != 0xC2 && *b != 0xB7)
         .collect();
-    if cleaned.len() % 2 != 0 {
+    if !cleaned.len().is_multiple_of(2) {
         return Err(CorpusError::Hex {
             file,
             tc_id,
@@ -145,7 +145,10 @@ fn parse_hex_bytes(s: &str, file: &'static str, tc_id: u64) -> Result<Vec<u8>, C
         }
     };
     let mut out = Vec::with_capacity(cleaned.len() / 2);
-    for pair in cleaned.chunks_exact(2) {
+    // `as_chunks::<2>()` yields `&[u8; 2]`, so the pair indexing below is
+    // array indexing rather than slice indexing -- same code, no bounds risk.
+    let (pairs, _odd_tail) = cleaned.as_chunks::<2>();
+    for pair in pairs {
         match (hexval(pair[0]), hexval(pair[1])) {
             (Some(hi), Some(lo)) => out.push((hi << 4) | lo),
             _ => {

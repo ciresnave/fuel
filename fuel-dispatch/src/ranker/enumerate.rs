@@ -152,17 +152,15 @@ mod tests {
         KernelBindingTable::new()
     }
 
-    fn table_with(
-        entries: &[(
-            BackendId,
-            fn(
-                &[Arc<RwLock<Storage>>],
-                &mut [Arc<RwLock<Storage>>],
-                &[Layout],
-                &OpParams,
-            ) -> Result<()>,
-        )],
-    ) -> KernelBindingTable {
+    /// The raw kernel-function pointer shape a binding registers under.
+    type KernelFn = fn(
+        &[Arc<RwLock<Storage>>],
+        &mut [Arc<RwLock<Storage>>],
+        &[Layout],
+        &OpParams,
+    ) -> Result<()>;
+
+    fn table_with(entries: &[(BackendId, KernelFn)]) -> KernelBindingTable {
         let mut t = KernelBindingTable::new();
         for &(backend, kernel) in entries {
             t.register_full(

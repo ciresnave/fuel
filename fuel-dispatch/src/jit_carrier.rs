@@ -99,10 +99,9 @@ pub fn jit_request_for_unplaceable_fused(
     key_dtypes.push(node.dtype);
     if let Some(op_kind) =
         crate::runtime_fused_kernels::static_fused_id_to_binding_table_op_kind(fused_id)
+        && table.lookup(op_kind, &key_dtypes, backend).is_ok()
     {
-        if table.lookup(op_kind, &key_dtypes, backend).is_ok() {
-            return None; // already runnable here — the seam is for gaps
-        }
+        return None; // already runnable here — the seam is for gaps
     }
 
     // The region, as data, without touching the graph.

@@ -53,6 +53,18 @@ use smallvec::SmallVec;
 /// is ≤ 4. Bumping later is one constant change.
 pub type KernelDTypes = SmallVec<[DType; 8]>;
 
+/// One entry of the coverage diagnostic: `(backend, op, operand dtypes)`.
+///
+/// Named rather than spelled out because the bare 3-tuple appears in a return
+/// position where it was unreadable, and `#[allow(type_complexity)]` would
+/// have asserted the tuple is fine as-is. It is not — the alias is the fix and
+/// the lint was right.
+///
+/// NOT `BindingKey`: that name is already a distinct `pub enum` in this
+/// module (`Static` / …). The compiler caught the collision; the lesson is
+/// that a type alias introduced for a lint still needs a name check.
+pub type CoverageBinding = (BackendId, OpKind, Vec<DType>);
+
 /// Per-binding capability flags. Today carries one flag — `strided_input`
 /// — that signals "this kernel walks input strides explicitly and so
 /// can consume non-contiguous input layouts (including stride-0
@@ -1565,7 +1577,7 @@ impl KernelBindingTable {
     /// backend is registered" and misdirects diagnosis — a mixed-precision
     /// `(op, dtypes)` gap is not an empty registry (observed in the wild:
     /// `[F32, BF16, F32]` matmul reported as "available backends: []").
-    pub fn coverage_diagnostic(&self) -> (Vec<BackendId>, Vec<(BackendId, OpKind, Vec<DType>)>) {
+    pub fn coverage_diagnostic(&self) -> (Vec<BackendId>, Vec<CoverageBinding>) {
         let available_backends: Vec<BackendId> = self
             .bindings
             .keys()

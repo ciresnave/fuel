@@ -890,7 +890,7 @@ fn vulkan_dispatch_unary_relu_f16() {
         .map(f16::from_f32)
         .collect();
     let got = run_unary_f16(&backend, OpKind::ReluElementwise, &host);
-    let expected = vec![0.0, 0.0, 1.0, 0.0, 2.5];
+    let expected = [0.0, 0.0, 1.0, 0.0, 2.5];
     for (g, e) in got.iter().zip(expected.iter()) {
         assert!(
             (g.to_f32() - e).abs() < 1e-3,
@@ -1584,8 +1584,9 @@ fn vulkan_dispatch_write_slice_b2_f16_kv_cache() {
     // rows 1..3 below. The multiply is alignment, not arithmetic: writing bare
     // `j` for row 0 makes the row index invisible on exactly one line of four
     // and breaks the visual correspondence a reader checks the rows by.
-    // Same disposition as the three sites in `fuel-core`.
-    #[allow(clippy::erasing_op)]
+    // Same disposition as the three sites in `fuel-core`. `0 *` trips
+    // `erasing_op` and `1 *` trips `identity_op` -- one idiom, two lint names.
+    #[allow(clippy::erasing_op, clippy::identity_op)]
     for j in 0..head_dim {
         let row0 = got[0 * head_dim + j];
         let row1 = got[1 * head_dim + j];
@@ -1707,7 +1708,7 @@ fn vulkan_dispatch_write_slice_b4_kv_cache_shape() {
     let got = download_f32(&backend, &dst_arc.read().unwrap());
     // Rows 0, 1 stay -1; row 2 = src; row 3 stays -1.
     // Row-major index idiom in a matched series -- see the note above.
-    #[allow(clippy::erasing_op)]
+    #[allow(clippy::erasing_op, clippy::identity_op)]
     for j in 0..head_dim {
         assert_eq!(got[0 * head_dim + j], -1.0);
         assert_eq!(got[1 * head_dim + j], -1.0);
@@ -2363,7 +2364,7 @@ fn vulkan_dispatch_matmul_f32_bf16_b_small_m() {
     .expect("mixed-bf16 matmul dispatch");
 
     let got = download_f32(&backend, &out_arc.read().unwrap());
-    let expected = vec![22.0_f32, 28.0, 49.0, 64.0];
+    let expected = [22.0_f32, 28.0, 49.0, 64.0];
     for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
         // bf16 has ~7-bit mantissa; small integer values are exact but
         // the multiply-accumulate can accumulate small drift. Tolerance
@@ -3443,6 +3444,9 @@ fn vulkan_dispatch_matmul_f32_bf16_b_matvec() {
     let b_vk = backend.upload_bytes_handle(b_bytes).expect("b upload");
     let a_storage = Storage::new(BackendStorage::Vulkan(a_vk), DType::F32);
     let b_storage = Storage::new(BackendStorage::Vulkan(b_vk), DType::BF16);
+    // `1 * 2` is the output SHAPE [1, 2] written as its dimensions, not an
+    // arithmetic identity. Folding it to `2` deletes the rank.
+    #[allow(clippy::identity_op)]
     let out_n = 1 * 2;
     let out_bytes_h = backend.alloc_bytes_handle(out_n * 4).expect("alloc");
     let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes_h), DType::F32);
@@ -3478,7 +3482,7 @@ fn vulkan_dispatch_matmul_f32_bf16_b_matvec() {
     .expect("mixed-bf16 matvec dispatch");
 
     let got = download_f32(&backend, &out_arc.read().unwrap());
-    let expected = vec![22.0_f32, 28.0];
+    let expected = [22.0_f32, 28.0];
     for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
         assert!(
             (g - e).abs() < 0.5,
@@ -6899,7 +6903,7 @@ fn vulkan_dispatch_pad_replicate_f16_2d() {
     // Replicate col map: same shape.
     let row_map = [0_usize, 0, 1, 1];
     let col_map = [0_usize, 0, 1, 1];
-    let mut expected = vec![0.0_f32; 4 * 4];
+    let mut expected = [0.0_f32; 4 * 4];
     for r in 0..4 {
         for c in 0..4 {
             expected[r * 4 + c] = in_2d(row_map[r], col_map[c]);
@@ -7023,7 +7027,7 @@ fn vulkan_dispatch_pad_reflect_bf16_2d() {
     //   c=4 → in_c=1 (i=3 (>=3) → 2*2-3=1)
     // Composing: out[r,c] = in[reflect_row(r), reflect_col(c)]
     let in_2d = |r: usize, c: usize| input_f32[r * 3 + c];
-    let mut expected = vec![0.0_f32; 4 * 5];
+    let mut expected = [0.0_f32; 4 * 5];
     let row_map = [1usize, 0, 1, 0];
     let col_map = [1usize, 0, 1, 2, 1];
     for r in 0..4 {
@@ -7180,6 +7184,9 @@ fn vulkan_dispatch_pad_const_f16() {
     let fill = half::f16::from_f32(0.0);
 
     let in_storage = upload_f16(&backend, &input);
+    // `1 * 6 * 2` is out=[1,6] (see the comment above) times 2 bytes per f16.
+    // Every factor names a dimension; folding the leading 1 hides the batch.
+    #[allow(clippy::identity_op)]
     let out_bytes = backend.alloc_bytes_handle(1 * 6 * 2).expect("alloc");
     let out_storage = Storage::new(BackendStorage::Vulkan(out_bytes), DType::F16);
     let in_arc = Arc::new(RwLock::new(in_storage));
@@ -9552,7 +9559,7 @@ fn vulkan_dispatch_cumsum_f16_1d() {
     let mut table = KernelBindingTable::new();
     register_vulkan_kernels(&mut table);
 
-    let host_f32 = vec![1.0_f32, 2.0, 3.0, 4.0];
+    let host_f32 = [1.0_f32, 2.0, 3.0, 4.0];
     let host: Vec<half::f16> = host_f32.iter().map(|&v| half::f16::from_f32(v)).collect();
     let kernel =
         table.lookup_alternatives(OpKind::CumSum, &[DType::F16, DType::F16], BackendId::Vulkan)[0]
@@ -9788,6 +9795,11 @@ fn vulkan_dispatch_cast_f8e4m3_roundtrip() {
 
 #[test]
 #[ignore]
+// Row-major expectations: `1 * 8 + c` and `2 * 8 + c` are a matched series
+// over an 8-wide row stride. The `1 *` is the row index, not a redundant
+// multiply -- folding it would make row 1 read differently from row 2 for no
+// reason other than its index happening to be one.
+#[allow(clippy::identity_op)]
 fn vulkan_dispatch_write_slice_b1_u8() {
     use fuel_dispatch::kernel::OpParams;
     let Some(backend) = backend_or_skip() else {

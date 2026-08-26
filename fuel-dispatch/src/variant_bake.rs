@@ -158,8 +158,13 @@ pub fn bake_variant_branches(
         // arm 0 (the conservative oracle default).
         let mut best: Option<(usize, u64)> = None;
         let mut tie_at_best = false;
-        for w in 1..arms.len() {
-            let Some(cw) = arm_cost(graph, branch, w, &interiors[w]) else {
+        // Iterating `interiors` rather than `0..arms.len()` is behaviour-
+        // identical because both derive from `graph.node(branch).inputs`:
+        // `arms` clones it and `arm_interiors` maps over it, so the lengths
+        // are equal by construction. Worth stating — if they could differ,
+        // this rewrite would silently truncate where the index form panicked.
+        for (w, interior) in interiors.iter().enumerate().skip(1) {
+            let Some(cw) = arm_cost(graph, branch, w, interior) else {
                 continue; // unknown / capability-missing ⇒ cannot win
             };
             if cw >= c0 {
