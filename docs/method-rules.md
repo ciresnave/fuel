@@ -1014,3 +1014,45 @@ corpus look worse is the one least likely to be questioned, because it agrees wi
 why the sweep was commissioned. **Validate the instrument before reporting through
 it, and reconcile any count that disagrees with itself.**
 
+## measure-the-gate-before-building-it
+
+> **Index line (in CLAUDE.md):** Asked whether the citation findings could be made into a gate, the answer is **split, and only measurement separates the halves**: a **counts** gate is INFEASIBLE (~90% false positives, 157 flags), a **line-number** gate is FEASIBLE (6 flags, syntactically unambiguous), and **commands** need no gate because their rot is semantic.
+
+**MEASURED 2026-08-26 BEFORE BUILDING ANYTHING, on the architect's instruction
+after three unmeasured mechanisms were specified and caught the same night.**
+
+**COUNTS GATE — INFEASIBLE, and the reason is structural rather than fixable.**
+A rule of the form *"an exact count in normative text must be dated or a bound"*
+raises **157 flags** in CLAUDE.md. A 16-item random sample contains: three dates
+(`2026`), two exit codes (`101`), a `_MSC_VER` value (`1959`), a CUTLASS warning
+code (`#177-D`), a GPU model number (`4070`), a Visual Studio version (`18`), a
+model dimension (`130`), a filename (`10-decisions-log.md`), a line number
+already covered by the other rule (`3934`), and **at most two** actual rot-prone
+counts. **~90% false positive.**
+
+**And it cannot be fixed by a better regex**, which is the load-bearing part: the
+discriminating property is *"is this a count of a CURRENT repo state"*, and the
+token `13` is a lint count, an exit code, and a version number depending on a
+noun the pattern cannot resolve. **An exact number is sometimes exactly right —
+`6 of 9 drifted` IS a finding — and nothing syntactic separates that from a
+rotting point-value.**
+
+**LINE-NUMBER GATE — FEASIBLE.** `path.ext:NNN` is syntactically distinctive and
+raises **6 flags total**, every one genuinely a line-anchored citation: 3 verified
+correct, 3 cross-repo. **An allowlist of six entries each carrying a reason is
+tractable; an allowlist of 157 is a shredder** — it degrades to noise and takes
+the guard's signal with it, which is GAP-141's prose-hedge guard exactly.
+
+**COMMANDS — NO GATE POSSIBLE OR NEEDED.** 0% dead; they rot by SCOPE (still
+runs, still exits 0, no longer answers the cited question). **A syntactic gate
+cannot see semantics, and a gate that only checks liveness would pass every real
+instance.**
+
+**THE GENERAL SHAPE: a finding being true does not make it gateable, and
+feasibility varies by POPULATION rather than by how good the finding was.** The
+counts result is the strongest of the three (a controlled 2/2-vs-0/2 on the same
+author's text in four days) and it is the one that cannot be enforced. **Measure
+the false-positive rate against a real corpus before proposing the mechanism —
+"no gate is possible here, and here is why" is a complete result, and cheaper
+than a guard that reds on honest numbers and trains reflexive allowlisting.**
+
