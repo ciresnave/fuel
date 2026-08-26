@@ -76,8 +76,8 @@ pub enum LazyPadMode {
 /// Pad a `(B, C, T)` tensor along the temporal dim by `left` zeros /
 /// edge-replications on the left and `right` on the right.
 ///
-/// Replicate is implemented via `narrow(T, 0, 1).repeat(..., left)`
-/// + concat — works against the existing `Op::Pad` (Constant only)
+/// Replicate is implemented via `narrow(T, 0, 1).repeat(..., left)` +
+/// concat — works against the existing `Op::Pad` (Constant only)
 /// gap until the executor's Replicate path lands.
 pub fn pad_last_1d(xs: &Tensor, left: usize, right: usize, mode: LazyPadMode) -> Result<Tensor> {
     if left == 0 && right == 0 {

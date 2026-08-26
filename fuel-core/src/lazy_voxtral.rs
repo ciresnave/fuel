@@ -718,9 +718,9 @@ impl VoxtralWeights {
     /// - `audio_tower.layer_norm.{weight,bias}` — encoder final LN.
     /// - `multi_modal_projector.linear_{1,2}.weight` — bias-free.
     /// - `language_model.model.embed_tokens.weight` — `[V, hidden]`.
-    /// - `language_model.model.layers.{i}.{input,post_attention}_layernorm.weight`
-    ///   + `language_model.model.layers.{i}.self_attn.{q,k,v,o}_proj.weight`
-    ///   + `language_model.model.layers.{i}.mlp.{gate,up,down}_proj.weight`.
+    /// - `language_model.model.layers.{i}.{input,post_attention}_layernorm.weight` +
+    ///   `language_model.model.layers.{i}.self_attn.{q,k,v,o}_proj.weight` +
+    ///   `language_model.model.layers.{i}.mlp.{gate,up,down}_proj.weight`.
     ///   Q/K/V are non-square because `head_dim` is explicit.
     /// - `language_model.model.norm.weight` — final RmsNorm gain.
     /// - `language_model.lm_head.weight` — `[V, hidden]` output.

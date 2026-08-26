@@ -11,6 +11,7 @@
 //!   2. an intermediate dropped while its kernel is still in flight is freed
 //!      *after* that kernel (stream-ordered), so the pool can't hand its block
 //!      to a later alloc that overwrites a value still being read.
+//!
 //! A UAF or ordering regression in the async change corrupts the output; a sync
 //! version and a correct async version both produce the references below (so
 //! this is a correctness-regression guard, not a born-red test — removing the

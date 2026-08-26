@@ -696,8 +696,8 @@ impl DecodeBackbone for Qwen3Model {
 impl Qwen3Weights {
     /// Load Qwen3 weights from HF safetensors (e.g. `Qwen/Qwen3-7B`).
     /// HF naming follows LLaMA + per-head QK-norm:
-    ///   model.embed_tokens / model.layers.{i}.self_attn.{q,k,v,o}_proj
-    ///   + .q_norm / .k_norm + model.layers.{i}.{input_layernorm,
+    ///   model.embed_tokens / model.layers.{i}.self_attn.{q,k,v,o}_proj +
+    ///   .q_norm / .k_norm + model.layers.{i}.{input_layernorm,
     ///   post_attention_layernorm}.weight + model.layers.{i}.mlp.{gate,up,down}_proj
     ///   + model.norm + lm_head (or tied).
     pub fn load_from_mmapped(

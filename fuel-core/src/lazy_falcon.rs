@@ -3,8 +3,8 @@
 //!
 //! Phase D LLM port. Falcon is architecturally distinct from
 //! LLaMA-cousins:
-//!   1. **Parallel attention + FFN** — `out = attn(ln(x)) + mlp(ln(x))
-//!      + x` with a shared LayerNorm input. Two branches sum into one
+//!   1. **Parallel attention + FFN** — `out = attn(ln(x)) + mlp(ln(x)) +
+//!      x` with a shared LayerNorm input. Two branches sum into one
 //!      residual instead of LLaMA's serial two-residual flow.
 //!   2. **LayerNorm** (with bias) — not RmsNorm. Both `gamma` and
 //!      `beta` live per layer.

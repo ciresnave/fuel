@@ -327,8 +327,8 @@ pub struct Llama3Model {
 }
 
 impl Llama3Model {
-    /// Construct from an existing [`LlamaModel`] plus optional scaling
-    /// + EOS metadata. The model's `cfg.rope_base` stays unchanged —
+    /// Construct from an existing [`LlamaModel`] plus optional scaling +
+    /// EOS metadata. The model's `cfg.rope_base` stays unchanged —
     /// scaling is applied on top.
     pub fn new(
         inner: LlamaModel,

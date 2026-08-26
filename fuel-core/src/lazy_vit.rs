@@ -23,11 +23,14 @@
 //!      controlled by `qkv_bias`. Score scaling by
 //!      `1 / sqrt(head_dim)`.
 //!   4. **Pre-LN block** (HF ViT convention):
-//!        `xs = LN_before(x); xs = SelfAttention(xs);
-//!         xs = Output(SelfAttention output);
-//!         xs = xs + x;            // first residual
-//!         ys = LN_after(xs); ys = Intermediate(ys);
-//!         out = Output_mlp(ys) + xs   // second residual`
+//!
+//!      ```text
+//!      xs = LN_before(x); xs = SelfAttention(xs);
+//!      xs = Output(SelfAttention output);
+//!      xs = xs + x;            // first residual
+//!      ys = LN_after(xs); ys = Intermediate(ys);
+//!      out = Output_mlp(ys) + xs   // second residual
+//!      ```
 //!   5. **Sequential MLP.** `Intermediate` projects
 //!      `hidden → intermediate` and applies the configured
 //!      activation; `Output_mlp` projects back to `hidden`

@@ -6,8 +6,8 @@
 //!
 //!   1. **`BasedConv`** (default) — gated depthwise 1-D causal
 //!      convolution: project hidden to `4 * hidden`, chunk into
-//!      `(u_conv, gate)` each `2 * hidden`; run `silu(conv(u_conv))
-//!      * gate` then project back. Conv is depthwise (groups =
+//!      `(u_conv, gate)` each `2 * hidden`; run `silu(conv(u_conv)) *
+//!      gate` then project back. Conv is depthwise (groups =
 //!      channels), kernel 3, with `padding = 2` ⇒ caller left-pads
 //!      with 2 zeros, runs causal_conv1d, then narrows to seq.
 //!   2. **`LinearAttention`** — Taylor-expansion feature-map

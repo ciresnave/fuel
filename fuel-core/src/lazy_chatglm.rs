@@ -6,8 +6,8 @@
 //! from later GLMs:
 //!
 //!   1. **Fused QKV projection with MQA** —
-//!      `query_key_value: hidden → n_heads * head_dim + 2 * group_num
-//!      * head_dim`. The fused linear's output is sliced into
+//!      `query_key_value: hidden → n_heads * head_dim + 2 * group_num *
+//!      head_dim`. The fused linear's output is sliced into
 //!      Q (the first `n_heads * head_dim` columns), K and V
 //!      (each `group_num * head_dim`). With
 //!      `multi_query_group_num=2` and `num_attention_heads=32`,

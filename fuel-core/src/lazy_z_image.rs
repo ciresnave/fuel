@@ -1563,7 +1563,7 @@ impl ZImageTransformerWeights {
     /// `var_builder` calls. Per-block layout:
     /// - `layers.{i}.attention.{to_q,to_k,to_v,to_out.0}.weight`
     /// - `layers.{i}.attention.norm_q.weight`, `norm_k.weight`
-    ///    (only if `cfg.qk_norm`)
+    ///   (only if `cfg.qk_norm`)
     /// - `layers.{i}.attention_norm{1,2}.weight`
     /// - `layers.{i}.feed_forward.{w1,w2,w3}.weight`
     /// - `layers.{i}.ffn_norm{1,2}.weight`

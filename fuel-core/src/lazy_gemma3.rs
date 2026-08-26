@@ -27,8 +27,8 @@
 //! FFN, optional Q/K/V/O biases via `attention_bias`.
 //!
 //! Gemma 3 also adds per-head Q/K RmsNorm (post-reshape, on
-//! `head_dim`), four norms per block (input + post-attn + pre-FFN
-//! + post-FFN), and tied lm_head/embeddings. `num_heads * head_dim`
+//! `head_dim`), four norms per block (input + post-attn + pre-FFN +
+//! post-FFN), and tied lm_head/embeddings. `num_heads * head_dim`
 //! is **not** required to equal `hidden_size` — Gemma 3 uses
 //! independent attention head/embedding sizes (e.g. 1B has
 //! `hidden_size=1152`, `num_heads=4`, `head_dim=256`).
@@ -129,8 +129,8 @@ impl Gemma3Model {
     /// Run the decoder forward up to the final offset RmsNorm
     /// and return per-token hidden states `(1, seq, hidden_size)`.
     /// Skips the tied `lm_head` matmul AND the final logit
-    /// softcapping. Gemma3-specific: dual-RoPE (global + local)
-    /// + per-layer sliding-window pattern + sqrt(hidden_size)
+    /// softcapping. Gemma3-specific: dual-RoPE (global + local) +
+    /// per-layer sliding-window pattern + sqrt(hidden_size)
     /// embedding scaling — all honored by the shared backbone.
     pub fn forward_hidden(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
         self.run_backbone(tokens, start_pos)
