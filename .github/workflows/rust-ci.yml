@@ -217,11 +217,22 @@ jobs:
       # is exactly the property a cfg gate manufactures — and the sweep that
       # generated it (GAP-229) is ongoing.
       #
-      # BORN-RED, measured before this step existed: re-seeding that `_n_bytes`
-      # rename makes the vulkan step below exit 101 with E0425, while
-      # `cargo check -p fuel-core` at DEFAULT features stays exit 0 — the
-      # regression is invisible at default, which is the whole point. A gate
-      # nobody has seen fail is not a gate; this one has.
+      # BORN-RED, OBSERVED IN CI (not inferred) — a CI job whose failure nobody
+      # recorded becomes an unproven gate again in six weeks, so both runs are
+      # named here:
+      #   * LIB regression: re-seeding the `_n_bytes` rename makes THIS step fail
+      #     `could not compile fuel-dispatch (lib)` E0425, while "Run normal cpu"
+      #     (--workspace, DEFAULT features) and the telemetry step both PASS — the
+      #     seed is invisible at default, which is the whole point.
+      #     PR #20, run 32934164792, step "Check vulkan-gated compilation".
+      #   * TEST-TARGET regression: a nonexistent symbol inside the vulkan-gated
+      #     test `vulkan_dispatch_live` makes THIS step fail `could not compile
+      #     fuel-dispatch (test "vulkan_dispatch_live")` E0425 — proving the
+      #     two-crate `--all-targets` form reaches fuel-dispatch's OWN test
+      #     targets, not merely its lib (the one-crate form already caught lib
+      #     regressions; the test target is what this change bought).
+      #     Run 32935028995, same step.
+      #   Both seeds were reverted before merge.
       #
       # Pure-host, seconds-scale: neither feature pulls a baracuda dependency,
       # so no nvcc, no forge, no SDK. One OS deliberately — feature-gated
