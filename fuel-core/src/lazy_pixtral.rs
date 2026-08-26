@@ -627,7 +627,7 @@ mod tests {
 
     fn tiny_vision_weights(cfg: &PixtralVisionConfig) -> PixtralVisionWeights {
         let mut s: u32 = 89898;
-        let mut next = move || -> f32 {
+        let next = move || -> f32 {
             s = s.wrapping_mul(1103515245).wrapping_add(12345);
             ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
         };
@@ -661,7 +661,7 @@ mod tests {
 
     fn tiny_projector_weights(cfg: &PixtralProjectorConfig) -> PixtralProjectorWeights {
         let mut s: u32 = 11212;
-        let mut next = move || -> f32 {
+        let next = move || -> f32 {
             s = s.wrapping_mul(1103515245).wrapping_add(12345);
             ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
         };
@@ -676,7 +676,7 @@ mod tests {
 
     fn tiny_text_weights(cfg: &MistralConfig) -> MistralWeights {
         let mut s: u32 = 33445;
-        let mut next = move || -> f32 {
+        let next = move || -> f32 {
             s = s.wrapping_mul(1103515245).wrapping_add(12345);
             ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
         };

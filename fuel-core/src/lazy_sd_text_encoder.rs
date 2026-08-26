@@ -812,7 +812,7 @@ mod tests {
 
     fn tiny_weights(cfg: &ClipTextConfig, seed: u32) -> ClipTextWeights {
         let mut s = seed;
-        let mut nb = || -> f32 {
+        let nb = || -> f32 {
             s = s.wrapping_mul(1103515245).wrapping_add(12345);
             ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
         };

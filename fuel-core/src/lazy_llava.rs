@@ -820,7 +820,7 @@ mod tests {
 
     fn tiny_vision_weights(cfg: &ClipVisionConfig) -> ClipVisionWeights {
         let mut s: u32 = 12121;
-        let mut next = move || -> f32 {
+        let next = move || -> f32 {
             s = s.wrapping_mul(1103515245).wrapping_add(12345);
             ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
         };
@@ -848,7 +848,7 @@ mod tests {
 
     fn tiny_llama_weights(cfg: &LlamaConfig) -> LlamaWeights {
         let mut s: u32 = 34343;
-        let mut next = move || -> f32 {
+        let next = move || -> f32 {
             s = s.wrapping_mul(1103515245).wrapping_add(12345);
             ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
         };
@@ -899,7 +899,7 @@ mod tests {
         let v_cfg = tiny_vision_cfg();
         let t_cfg = tiny_text_cfg();
         let mut s: u32 = 56565;
-        let mut next = move || -> f32 {
+        let next = move || -> f32 {
             s = s.wrapping_mul(1103515245).wrapping_add(12345);
             ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
         };

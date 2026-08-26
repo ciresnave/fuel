@@ -863,7 +863,7 @@ mod tests {
 
     fn tiny_weights(cfg: &Qwen2Config) -> Qwen2Weights {
         let mut s: u32 = 7777;
-        let mut next = || -> f32 {
+        let next = || -> f32 {
             s = s.wrapping_mul(1103515245).wrapping_add(12345);
             ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
         };
@@ -979,7 +979,7 @@ mod tests {
     /// the all-dense run on sequences longer than the window.
     #[test]
     fn window_layers_diverge_from_dense() {
-        let mut cfg_window = Qwen2Config {
+        let cfg_window = Qwen2Config {
             vocab_size: 16,
             hidden_size: 8,
             intermediate_size: 16,
