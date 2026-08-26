@@ -15,16 +15,36 @@ from collections import Counter
 # the count RANGED OVER was never stated, so it was never checked.
 
 lines = io.open('docs/gaps.md', encoding='utf-8').read().split('\n')
+
+
+def unescaped_pipes(l):
+    """Count '|' that are NOT escaped as '\\|'.
+
+    ONE implementation, used by every check in this file, and that is
+    deliberate rather than tidy.
+
+    On 2026-08-26 TWO PEOPLE INDEPENDENTLY REIMPLEMENTED THIS AND BOTH GOT
+    IT WRONG IN THE SAME DIRECTION -- one in awk (`gsub` escaping ate the
+    pattern), one in Python (a shell heredoc ate a backslash, leaving the
+    regex `\\|`, i.e. the alternation "literal backslash OR empty", which
+    strips the BACKSLASH and LEAVES THE PIPE so it then counts as a
+    separator). Both produced rows that looked catastrophically malformed
+    and were fine -- GAP-183 reads as 16 cells and has 6.
+
+    THEIR TWO WRONG ANSWERS AGREED WITH EACH OTHER, which is far more
+    persuasive than one wrong answer, and was nearly filed as a confirmed
+    defect in THIS gate. Agreement between instruments that share a blind
+    spot is not corroboration. Hence: one function, called everywhere.
+    """
+    return sum(1 for k, ch in enumerate(l)
+               if ch == '|' and (k == 0 or l[k - 1] != '\\'))
+
+
 rows = []
 for l in lines:
     if re.match(r'^\| ~*GAP-', l):
-        # count pipes that are NOT escaped (not preceded by a backslash)
-        delim = 0
-        for k, ch in enumerate(l):
-            if ch == '|' and (k == 0 or l[k - 1] != '\\'):
-                delim += 1
         rid = re.match(r'^\| (~*GAP-[0-9]+)', l).group(1)
-        rows.append((rid, delim, l))
+        rows.append((rid, unescaped_pipes(l), l))
 
 struck = [r for r in rows if r[0].startswith('~~')]
 live = [r for r in rows if not r[0].startswith('~~')]
@@ -58,5 +78,62 @@ print('!! TWO CLOSE CONVENTIONS COEXIST (strikethrough vs the word CLOSED in the
 print('   status cell), so "how many are open" has no single answer from this')
 print('   table alone. Quote the construct with the number.')
 
-if odd or no_pipe:
+# ---------------------------------------------------------------------------
+# HEADERS MUST AGREE WITH THE ROWS BENEATH THEM, IN ARITY AND IN NAME.
+#
+# EVERY CHECK ABOVE EXAMINES ONLY `^| ~*GAP-` ROWS. NOT ONE OF THEM LOOKS AT
+# A HEADER, so a table could carry a 4-column header over 5-column rows and
+# this gate would print a clean bill of health -- which is exactly what
+# happened. The Meta table declared `| ID | Owner | Gap | Status |` while 86
+# of its 90 rows carried five columns, so every label rendered one position
+# off and each row's Status cell had NOWHERE TO GO. The gate was honest
+# about a different question than the one being asked, which is scope, not
+# a lie -- but the silence read as coverage.
+#
+# ARITY IS THE HALF THAT SILENTLY EATS A CELL, and it is the half that was
+# actually wrong. A check for the word `Owner` alone would not have caught
+# it: the label was renamed twice before anyone noticed a column was
+# MISSING.
+#
+# Also caught here: a PARTIAL rename. Thirteen headers, one renamed, twelve
+# left -- which converts a DETECTABLE inconsistency (uniformly wrong, and
+# systematic enough that a reader found it) into an undetectable one
+# (sample line 24 and the file looks correct; sample any other and it looks
+# like the old defect; nothing tells you which you sampled).
+header_problems = []
+cur = None          # (line_no, text, pipes)
+counts = []         # unescaped-pipe counts of GAP rows under `cur`
+
+def close_table():
+    if cur is None or not counts:
+        return
+    modal = Counter(counts).most_common(1)[0][0]
+    if cur[2] != modal:
+        header_problems.append(
+            'line %d: header has %d columns, but %d of its %d rows have %d '
+            '-- %s' % (cur[0], cur[2] - 1, counts.count(modal), len(counts),
+                       modal - 1, cur[1].strip()))
+    cells = [c.strip() for c in cur[1].strip().strip('|').split('|')]
+    if 'Owner' in cells:
+        header_problems.append(
+            'line %d: header names a column `Owner`; the third column is TIER '
+            '(ruled 2026-08-26) -- %s' % (cur[0], cur[1].strip()))
+
+for n, l in enumerate(lines, 1):
+    if re.match(r'^\| ID\b', l):
+        close_table()
+        cur, counts = (n, l, unescaped_pipes(l)), []
+    elif re.match(r'^\| ~*GAP-', l):
+        counts.append(unescaped_pipes(l))
+    elif not l.startswith('|'):
+        close_table()
+        cur, counts = None, []
+close_table()
+
+print()
+print('headers checked against the rows beneath them: %d'
+      % sum(1 for l in lines if re.match(r'^\| ID\b', l)))
+print('headers DISAGREEING with their rows:', header_problems if header_problems else 'NONE')
+
+if odd or no_pipe or header_problems:
     sys.exit(1)
