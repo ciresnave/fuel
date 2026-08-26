@@ -338,7 +338,7 @@ fn apply_attention(
     q_in_dim: usize,
     kv_in_dim: usize,
     mask: Option<&Tensor>,
-    anchor: &Tensor,
+    _anchor: &Tensor,
 ) -> Result<Tensor> {
     let q_dims = q_input.shape();
     let q_dims = q_dims.dims();

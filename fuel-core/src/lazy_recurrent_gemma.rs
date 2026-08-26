@@ -322,7 +322,7 @@ impl RecurrentGemmaModel {
         rope_sin: &Tensor,
     ) -> Result<Tensor> {
         let cfg = &self.config;
-        let h = cfg.hidden_size;
+        let _h = cfg.hidden_size;
 
         // Temporal sublayer: pre_norm → temporal_block → residual add.
         let residual = x.clone();

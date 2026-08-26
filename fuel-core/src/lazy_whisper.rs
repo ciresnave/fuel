@@ -446,7 +446,7 @@ fn linear(
 /// Zero-pad `x: [1, C, T]` by 1 along the time axis, returning
 /// `[1, C, T+2]`. Built via concat with a const zero tensor — no
 /// native `Pad` op is needed since we only use this one padding.
-fn pad_t_axis_one_each_side(x: &Tensor, c: usize, t: usize) -> crate::Result<Tensor> {
+fn pad_t_axis_one_each_side(x: &Tensor, c: usize, _t: usize) -> crate::Result<Tensor> {
     let zeros = x.const_f32_like(vec![0.0_f32; c], Shape::from_dims(&[1, c, 1]));
     zeros.concat(x, 2)?.concat(&zeros, 2) // [1, c, t+2]
 }

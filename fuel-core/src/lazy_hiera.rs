@@ -330,7 +330,7 @@ fn apply_block(x: &Tensor, blk: &HieraBlockWeights, anchor: &Tensor) -> Result<T
     after_attn.add(&mlp_out)
 }
 
-fn apply_attention(x: &Tensor, blk: &HieraBlockWeights, anchor: &Tensor) -> Result<Tensor> {
+fn apply_attention(x: &Tensor, blk: &HieraBlockWeights, _anchor: &Tensor) -> Result<Tensor> {
     let dims = x.shape();
     let dims = dims.dims();
     let b = dims[0];

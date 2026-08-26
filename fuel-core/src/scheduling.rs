@@ -1086,7 +1086,7 @@ mod tests {
             version: PROFILE_REPORT_VERSION,
             entries,
         };
-        let table = DispatchTable::build(&report);
+        let _table = DispatchTable::build(&report);
 
         // Punitive bandwidth: 100 ns/byte each way. A 64×64 f32
         // matmul output is 64*64*4 = 16384 bytes = 1.6ms one-way
@@ -1178,7 +1178,7 @@ mod tests {
             version: PROFILE_REPORT_VERSION,
             entries,
         };
-        let table = DispatchTable::build(&report);
+        let _table = DispatchTable::build(&report);
         // Realistic-ish PCIe bandwidth: 0.15 ns/byte (≈6.5 GB/s).
         let bandwidth = BandwidthMatrix {
             version: BANDWIDTH_REPORT_VERSION,

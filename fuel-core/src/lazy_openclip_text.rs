@@ -209,7 +209,7 @@ fn apply_attention(
     x: &Tensor,
     w: &OpenClipAttentionWeights,
     cfg: &OpenClipTextConfig,
-    anchor: &Tensor,
+    _anchor: &Tensor,
 ) -> Result<Tensor> {
     let dims = x.shape();
     let dims = dims.dims();
@@ -251,7 +251,7 @@ fn apply_mlp(
     m: &MlpWeights,
     in_dim: usize,
     hidden_dim: usize,
-    anchor: &Tensor,
+    _anchor: &Tensor,
 ) -> Result<Tensor> {
     let h1 =
         m.fc1

@@ -121,7 +121,7 @@ impl MixFormerModel {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
-        let batch = 1;
+        let _batch = 1;
         assert!(seq > 0, "MixFormerModel: tokens must be non-empty");
 
         let h = Tensor::embed_tokens(
@@ -196,7 +196,7 @@ impl MixFormerModel {
         let cfg = &self.config;
         let weights = &self.weights;
         let seq = tokens.len();
-        let batch = 1;
+        let _batch = 1;
         assert!(
             seq > 0,
             "MixFormerModel::forward_hidden: tokens must be non-empty"

@@ -361,7 +361,7 @@ fn apply_decoder_block(
 
 /// Local multi-head attention without rotary. Pre-LN → qkv linear
 /// → softmax attention → out linear → +residual.
-fn apply_local_mha(x: &Tensor, w: &LocalMhaWeights, anchor: &Tensor) -> Result<Tensor> {
+fn apply_local_mha(x: &Tensor, w: &LocalMhaWeights, _anchor: &Tensor) -> Result<Tensor> {
     let dims = x.shape();
     let dims = dims.dims();
     let b = dims[0];
