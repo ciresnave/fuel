@@ -43,6 +43,16 @@ pub(crate) fn ulp_distance(x: f32, y: f32) -> u64 {
 /// Mirrors the FKC precision block's machine-checkable claims
 /// (`max_ulp` / `max_relative` / `max_absolute`).
 #[derive(Debug, Clone, Copy)]
+// The shared `Max` prefix is SEMANTIC, not noise: every variant names an
+// UPPER bound, and `Bound` alone does not say whether it is a maximum or a
+// minimum. Dropping it gives `Bound::Ulp(4)`, which reads as "the ULP bound"
+// rather than "at most 4 ULP".
+//
+// It is also a `pub` enum. Renaming public variants to satisfy a style lint is
+// an API change out of proportion to the lint, and a clippy sweep is the wrong
+// change to carry one. (Nothing outside `fuel-dispatch` names `Bound::Max*`
+// in-repo today -- checked -- but "no in-repo user" is not "no user".)
+#[allow(clippy::enum_variant_names)]
 pub enum Bound {
     /// Maximum allowed ULP (units-in-last-place) distance between candidate
     /// and reference bit patterns.

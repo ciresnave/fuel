@@ -1949,7 +1949,7 @@ mod tests {
         let keys = |t: &crate::kernel::KernelBindingTable| -> std::collections::HashMap<Key, PrecisionGuarantee> {
             t.iter_entries()
                 .filter(|(_, _, b, _)| *b == BackendId::Cpu)
-                .map(|(op, dt, _, e)| ((format!("{op:?}"), dt.to_vec()), e.precision.clone()))
+                .map(|(op, dt, _, e)| ((format!("{op:?}"), dt.to_vec()), e.precision))
                 .collect()
         };
         let c = keys(&contract);
@@ -1975,10 +1975,10 @@ mod tests {
         // And where BOTH tables have the entry, does production disagree?
         let mut disagree: Vec<String> = Vec::new();
         for (k, cv) in &c {
-            if let Some(pv) = p.get(k) {
-                if cv.notes != pv.notes {
-                    disagree.push(format!("{} {:?}", k.0, k.1));
-                }
+            if let Some(pv) = p.get(k)
+                && cv.notes != pv.notes
+            {
+                disagree.push(format!("{} {:?}", k.0, k.1));
             }
         }
         disagree.sort();

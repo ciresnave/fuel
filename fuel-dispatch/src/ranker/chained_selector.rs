@@ -394,7 +394,7 @@ mod tests {
     /// Per-backend `(available, total, pending, capacity)` lookup handing
     /// out the combined VRAM+load handle; absent backends ⇒ `None`.
     fn load_lookup_for(
-        entries: Vec<(BackendId, Option<u64>, Option<u64>, Option<u32>, u32)>,
+        entries: Vec<crate::ranker::device_load::MockCombinedEntry>,
     ) -> BackendRuntimeLookup {
         Arc::new(move |b, _d| {
             entries

@@ -491,9 +491,7 @@ fn apply_atom(
             Some(src_dims) => {
                 let n = self_rank.min(src_dims.len());
                 if let Some(d) = s.dims.get_mut(self_role) {
-                    for a in 0..n {
-                        d[a] = src_dims[a];
-                    }
+                    d[..n].copy_from_slice(&src_dims[..n]);
                 }
             }
             None => w.push(warn(

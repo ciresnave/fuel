@@ -4373,12 +4373,12 @@ pub mod flash_attn {
                 )).bt());
             }
         }
-        if let Some(g) = &alibi_guard {
-            if g.dtype != expected_dtype {
-                return Err(Error::Msg(format!(
-                    "vulkan_dispatch::flash_attn::{debug_name}: alibi must be {expected_dtype:?}, got {:?}", g.dtype,
-                )).bt());
-            }
+        if let Some(g) = &alibi_guard
+            && g.dtype != expected_dtype
+        {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::flash_attn::{debug_name}: alibi must be {expected_dtype:?}, got {:?}", g.dtype,
+            )).bt());
         }
         let mut out_guard = write_storage(&outputs[0])?;
         let q = vulkan_input(&q_guard)?;
@@ -4572,14 +4572,14 @@ pub mod flash_attn {
                 .bt());
             }
         }
-        if let Some(g) = &alibi_guard {
-            if g.dtype != DType::F32 {
-                return Err(Error::Msg(format!(
-                    "vulkan_dispatch::flash_attn::{debug_name}: alibi must be F32, got {:?}",
-                    g.dtype,
-                ))
-                .bt());
-            }
+        if let Some(g) = &alibi_guard
+            && g.dtype != DType::F32
+        {
+            return Err(Error::Msg(format!(
+                "vulkan_dispatch::flash_attn::{debug_name}: alibi must be F32, got {:?}",
+                g.dtype,
+            ))
+            .bt());
         }
         let mut out_guard = write_storage(&outputs[0])?;
         let q = vulkan_input(&q_guard)?;

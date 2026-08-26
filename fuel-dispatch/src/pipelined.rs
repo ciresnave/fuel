@@ -7020,13 +7020,12 @@ fn eager_submit_all_vulkan(
         let guard = arc
             .read()
             .map_err(|_| poisoned("storage lock during eager vulkan submit"))?;
-        if let fuel_memory::BackendStorage::Vulkan(v) = &guard.inner {
-            if let Some(backend) = v.backend() {
-                if !seen.contains(&backend.gpu_id) {
-                    seen.push(backend.gpu_id);
-                    backends.push(backend.clone());
-                }
-            }
+        if let fuel_memory::BackendStorage::Vulkan(v) = &guard.inner
+            && let Some(backend) = v.backend()
+            && !seen.contains(&backend.gpu_id)
+        {
+            seen.push(backend.gpu_id);
+            backends.push(backend.clone());
         }
     }
     for backend in backends {
@@ -7154,10 +7153,10 @@ fn force_flush_vulkan(arc: &Arc<RwLock<Storage>>) -> Result<()> {
     let guard = arc
         .read()
         .map_err(|_| poisoned("storage lock during vulkan force_flush"))?;
-    if let fuel_memory::BackendStorage::Vulkan(v) = &guard.inner {
-        if let Some(backend) = v.backend() {
-            backend.force_flush()?;
-        }
+    if let fuel_memory::BackendStorage::Vulkan(v) = &guard.inner
+        && let Some(backend) = v.backend()
+    {
+        backend.force_flush()?;
     }
     Ok(())
 }
@@ -7295,12 +7294,11 @@ fn find_vulkan_backend_in_cache(
 ) -> Option<std::sync::Arc<fuel_vulkan_backend::VulkanBackend>> {
     for arc in cache.values() {
         let guard = arc.read().ok()?;
-        if let fuel_memory::BackendStorage::Vulkan(v) = &guard.inner {
-            if let Some(backend) = v.backend() {
-                if backend.gpu_id == gpu_id {
-                    return Some(backend.clone());
-                }
-            }
+        if let fuel_memory::BackendStorage::Vulkan(v) = &guard.inner
+            && let Some(backend) = v.backend()
+            && backend.gpu_id == gpu_id
+        {
+            return Some(backend.clone());
         }
     }
     None

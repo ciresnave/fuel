@@ -685,6 +685,14 @@ mod tests {
     #[test]
     fn gap_236_the_admission_probe_reaches_the_nan_divergence_set() {
         // NaN-suppressing (IEEE maxNum / C `fmaxf`): a NaN operand is ignored.
+        //
+        // The first arm and the last both yield `b`, which clippy reads as a
+        // duplicated branch. They are DIFFERENT CASES that happen to agree:
+        // the first is NaN SUPPRESSION (`a` is NaN, so `b` wins by rule), the
+        // last is ORDINARY COMPARISON (`a <= b`, so `b` wins by value).
+        // Collapsing them would delete the very distinction this test exists
+        // to draw against `max_prop` below.
+        #[allow(clippy::if_same_then_else)]
         fn fmax_ieee(a: f32, b: f32) -> f32 {
             if a.is_nan() {
                 b
@@ -715,10 +723,8 @@ mod tests {
         for seed in 0..256u64 {
             for probe in admission_probes(&[od, od], seed ^ 0xA11CE) {
                 let dec = |t: &HostTensor| -> Vec<f32> {
-                    t.bytes
-                        .chunks_exact(4)
-                        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                        .collect()
+                    let (chunks, _rest) = t.bytes.as_chunks::<4>();
+                    chunks.iter().map(|c| f32::from_le_bytes(*c)).collect()
                 };
                 let (a, b) = (dec(&probe[0]), dec(&probe[1]));
                 for (&x, &y) in a.iter().zip(b.iter()) {

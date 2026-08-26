@@ -339,12 +339,19 @@ impl fuel_backend_contract::backend::BackendStreams for MockCombinedRuntime {
 
 /// Build a combined VRAM+load lookup from
 /// `(backend, available, total, pending, capacity)` entries — one
+/// One mock runtime entry: `(backend, vram_total, vram_free, inflight,
+/// capacity)`.
+///
+/// A five-tuple is unreadable at the call site — nothing in
+/// `(BackendId, Option<u64>, Option<u64>, Option<u32>, u32)` says which
+/// `Option<u64>` is total and which is free. The alias carries the field
+/// order that the type cannot.
+pub type MockCombinedEntry = (BackendId, Option<u64>, Option<u64>, Option<u32>, u32);
+
 /// [`MockCombinedRuntime`] per backend, answering both the VRAM guard and
 /// the load leg, exactly like the production `DeviceRuntimeHandle`.
 /// Backends not listed resolve to `None`.
-pub fn mock_combined_lookup(
-    entries: Vec<(BackendId, Option<u64>, Option<u64>, Option<u32>, u32)>,
-) -> LoadLookup {
+pub fn mock_combined_lookup(entries: Vec<MockCombinedEntry>) -> LoadLookup {
     use std::sync::Arc;
     Arc::new(move |b: BackendId, _d: DeviceLocation| {
         entries.iter().find(|(eb, _, _, _, _)| *eb == b).map(
