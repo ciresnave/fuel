@@ -26,8 +26,7 @@
 //! - `token_embd.weight`                — token embedding
 //! - `output_norm.weight`               — final RmsNorm gain
 //! - `output.weight`                    — lm_head (tied to
-//!                                        `token_embd.weight` when
-//!                                        absent)
+//!   `token_embd.weight` when absent)
 //! - `blk.{i}.attn_norm.weight`         — input layernorm gain
 //! - `blk.{i}.ffn_norm.weight`          — post-attention layernorm
 //! - `blk.{i}.attn_q.weight`            — Q projection

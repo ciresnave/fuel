@@ -1529,8 +1529,8 @@ impl DiffNextWeights {
     /// Expected tensors (mirrors eager `WDiffNeXt`):
     /// - `clip_mapper.weight` / `.bias`
     /// - `embedding.1.weight` / `.bias` (the unshuffle stack stores
-    ///    the 1×1 conv at sequential index `.1`; index `.0` is
-    ///    PixelUnshuffle and has no params)
+    ///   the 1×1 conv at sequential index `.1`; index `.0` is
+    ///   PixelUnshuffle and has no params)
     /// - `down_blocks.{i}.{0,1,...}.{0,1,2}.*` per sub-block triple
     /// - `up_blocks.{i}.{0,1,...}.{0,1,2}.*` per sub-block triple
     /// - `clf.1.weight` / `.bias` (1×1 conv to `2*c_out*p²`)

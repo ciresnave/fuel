@@ -10,8 +10,8 @@
 //!   SingleStreamBlocks operating on the concatenated stream with a
 //!   parallel attention + MLP merge.
 //! - [`FluxVae`] — the 16-channel, 8x-downsampling autoencoder. Encoder
-//!   maps `(B, 3, H, W)` images to `(B, 2*z_channels, H/8, W/8)` mean
-//!   + log-var latents, then `(z - shift) * scale` scales them into the
+//!   maps `(B, 3, H, W)` images to `(B, 2*z_channels, H/8, W/8)` mean +
+//!   log-var latents, then `(z - shift) * scale` scales them into the
 //!   DiT's input range. Decoder reverses the process.
 //! - [`FlowMatchScheduler`] — linear (or shifted-linear) flow-matching
 //!   schedule. Pure host scalars; no graph ops.

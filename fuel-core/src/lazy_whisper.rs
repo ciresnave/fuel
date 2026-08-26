@@ -738,8 +738,8 @@ impl WhisperWeights {
     /// `model.encoder.{conv1,conv2,embed_positions,layers.{i},layer_norm}`
     /// for the encoder and
     /// `model.decoder.{embed_tokens,embed_positions,layers.{i},layer_norm}`
-    /// for the decoder. Each encoder layer carries `self_attn_layer_norm`
-    /// + `self_attn.{q,k,v,out}_proj` + `final_layer_norm` + `fc{1,2}`;
+    /// for the decoder. Each encoder layer carries `self_attn_layer_norm` +
+    /// `self_attn.{q,k,v,out}_proj` + `final_layer_norm` + `fc{1,2}`;
     /// each decoder layer adds `encoder_attn_layer_norm` +
     /// `encoder_attn.{q,k,v,out}_proj` for cross-attention. `k_proj`
     /// never has a bias.

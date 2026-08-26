@@ -12,8 +12,8 @@
 //!   `microbatches` calls of [`GradAccumulator::accumulate`] and produces
 //!   the mean on [`GradAccumulator::take_and_scale`].
 //!
-//! - **Mixed precision** — [`MixedPrecisionConfig`] + [`cast_for_forward`]
-//!   + [`cast_grads_back`]. Forward dtype is typically `BF16` (compute
+//! - **Mixed precision** — [`MixedPrecisionConfig`] + [`cast_for_forward`] +
+//!   [`cast_grads_back`]. Forward dtype is typically `BF16` (compute
 //!   precision); master dtype is typically `F32` (optimizer-state
 //!   precision).
 //!

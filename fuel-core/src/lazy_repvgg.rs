@@ -438,8 +438,8 @@ impl RepVggWeights {
     ///   transpose to `[in, out]` for `WeightStorage::apply_linear`),
     ///   `head.fc.bias`.
     ///
-    /// Each RepVGG block fuses its three branches into a single 3×3 conv
-    /// + bias at load time via [`fuse_repvgg_block`], following the
+    /// Each RepVGG block fuses its three branches into a single 3×3 conv +
+    /// bias at load time via [`fuse_repvgg_block`], following the
     /// "deploy-time" reparameterization from the paper.
     pub fn load_from_mmapped(
         st: &crate::safetensors::MmapedSafetensors,

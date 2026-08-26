@@ -408,6 +408,7 @@ impl LFM2Model {
     ///     `l_cache` axis, append the new `bx[:, :, 0]` column, then
     ///     compute `out = sum_keepdim(state * conv_weight, dim=2)`.
     ///   - Persist the rolled state for the next step.
+    ///
     /// Until then `start_pos > 0` calls just re-run prefill from zero.
     fn apply_short_conv(&self, x: &Tensor, c: &LFM2ConvWeights) -> Result<Tensor> {
         let cfg = &self.config;

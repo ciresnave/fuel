@@ -8,8 +8,8 @@
 //! [`Tensor::mul_scalar`] / [`Tensor::add_scalar`] — no new
 //! graph ops are introduced.
 //!
-//! This sub-port covers the [`SdScheduler`] trait + [`DdimScheduler`]
-//! + [`DdpmScheduler`]. UniPC, Euler-ancestral and the SD attention
+//! This sub-port covers the [`SdScheduler`] trait + [`DdimScheduler`] +
+//! [`DdpmScheduler`]. UniPC, Euler-ancestral and the SD attention
 //! blocks ship in separate sub-ports.
 
 use crate::lazy::Tensor;
@@ -67,8 +67,8 @@ pub trait SdScheduler {
     /// One reverse-diffusion update. Returns the next-step sample.
     fn step(&mut self, model_output: &Tensor, timestep: usize, sample: &Tensor) -> Result<Tensor>;
 
-    /// Forward-process noising: `sqrt(alpha_bar_t) * original
-    /// + sqrt(1 - alpha_bar_t) * noise`. `timesteps[0]` is the
+    /// Forward-process noising: `sqrt(alpha_bar_t) * original +
+    /// sqrt(1 - alpha_bar_t) * noise`. `timesteps[0]` is the
     /// (single, batched) timestep used to look up the schedule.
     fn add_noise(&self, original: &Tensor, noise: &Tensor, timesteps: &[usize]) -> Result<Tensor>;
 }

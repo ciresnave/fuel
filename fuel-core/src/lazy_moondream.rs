@@ -9,8 +9,8 @@
 //!     patch embedding** (NOT Conv2d like standard ViT — the
 //!     image is reshaped into per-patch flat vectors and
 //!     projected with a single linear layer).
-//!   - A **vision projection** MLP (Linear + GeluPytorchTanh
-//!     + Linear) that maps vision embeddings into the
+//!   - A **vision projection** MLP (Linear + GeluPytorchTanh +
+//!     Linear) that maps vision embeddings into the
 //!     language-model space.
 //!   - **MixFormer** (Phi-1.5 family) as the text decoder
 //!     ([`crate::lazy_mixformer::MixFormerModel`]).

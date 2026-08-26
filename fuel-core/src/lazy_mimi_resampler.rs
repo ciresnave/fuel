@@ -72,8 +72,8 @@ impl ConvDownsample1dModel {
 
 impl ConvTrUpsample1dModel {
     /// `(1, dim, T)` → `(1, dim, T · stride)`. Depthwise causal
-    /// transpose-conv: natural output length is `(T - 1) · stride
-    /// + kernel`; trim the trailing `kernel - stride` samples for
+    /// transpose-conv: natural output length is `(T - 1) · stride +
+    /// kernel`; trim the trailing `kernel - stride` samples for
     /// causality.
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let w = &self.weights;

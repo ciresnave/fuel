@@ -18,14 +18,16 @@
 //!
 //! The composer returns two tensors:
 //!
-//!   - `y`        — pooled vector `(1, 2048)` =
-//!                  `cat([clip_l_pooled (768), clip_g_pooled_projected (1280)], dim=-1)`.
-//!                  Fed into MMDiT's `y_embedder`.
-//!   - `context`  — per-token sequence `(1, 154, 4096)`:
-//!                  1. `clip_concat = cat([clip_l_pen (1,77,768), clip_g_pen (1,77,1280)], -1)` → `(1, 77, 2048)`,
-//!                  2. `clip_padded = pad_zeros(clip_concat, -1, 0, 2048)` → `(1, 77, 4096)`,
-//!                  3. `cat([clip_padded, t5 (1,77,4096)], -2)` → `(1, 154, 4096)`.
-//!                  Fed into MMDiT's `context_embedder`.
+//!   - `y` — pooled vector `(1, 2048)` =
+//!     `cat([clip_l_pooled (768), clip_g_pooled_projected (1280)], dim=-1)`.
+//!     Fed into MMDiT's `y_embedder`.
+//!   - `context` — per-token sequence `(1, 154, 4096)`:
+//!
+//!     1. `clip_concat = cat([clip_l_pen (1,77,768), clip_g_pen (1,77,1280)], -1)` → `(1, 77, 2048)`,
+//!     2. `clip_padded = pad_zeros(clip_concat, -1, 0, 2048)` → `(1, 77, 4096)`,
+//!     3. `cat([clip_padded, t5 (1,77,4096)], -2)` → `(1, 154, 4096)`.
+//!
+//!     Fed into MMDiT's `context_embedder`.
 //!
 //! # Substrate choice
 //!
@@ -379,8 +381,8 @@ impl Sd3TripleClipWeights {
     /// design doc in `docs/session-prompts/lazy-sd3-port.md` —
     /// the simplest path is a prefix-stripping wrapper around
     /// `MmapedSafetensors` that the binary owns. The shape
-    /// contract of this loader (three sub-encoder weight bundles
-    /// + the CLIP-G text projection) is what matters for
+    /// contract of this loader (three sub-encoder weight bundles +
+    /// the CLIP-G text projection) is what matters for
     /// downstream pipeline composition.
     pub fn load_from_mmapped(
         st_clip_l: &crate::safetensors::MmapedSafetensors,

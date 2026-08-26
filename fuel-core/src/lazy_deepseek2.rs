@@ -1710,8 +1710,8 @@ impl DeepSeek2Model {
     /// `ContiguizeOf` arm zero-copy ADOPTS the input Arc for contiguous
     /// offset-0 inputs, leaving readers past a reshape hop unpinned
     /// against a destructive write (isolated repros:
-    /// `pipelined_write_slice_reshape_adopted_arc_reader_reads_pre_write_bytes`
-    /// + the 2-layer MLA-shaped variant in fuel-dispatch). Same-graph
+    /// `pipelined_write_slice_reshape_adopted_arc_reader_reads_pre_write_bytes` +
+    /// the 2-layer MLA-shaped variant in fuel-dispatch). Same-graph
     /// multi-step decode is now correct without this rebind. The rebind
     /// stays because it is independently useful: it caps unbounded graph
     /// growth across decode steps (each call would otherwise replay every

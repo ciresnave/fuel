@@ -9552,8 +9552,8 @@ impl LlamaModel {
         Ok((q_r, k_r, v_h))
     }
 
-    /// Per-row RoPE sibling of [`Self::project_qkv_roped`]: identical projection
-    /// + head reshape, but applies RoPE via [`Tensor::rope_batched`] with
+    /// Per-row RoPE sibling of [`Self::project_qkv_roped`]: identical projection +
+    /// head reshape, but applies RoPE via [`Tensor::rope_batched`] with
     /// `[batch, 1, 1, head_dim]` cos/sin tables (one position per row) instead of
     /// the shared single-position `rope_with_tables_decomposed`. Uniform
     /// positions are a bit-identical special case, so this subsumes the shared
@@ -9664,6 +9664,7 @@ impl LlamaModel {
     ///   only, same as [`Self::forward_with_cache_on`].
     /// - Backends: CPU, CUDA, and Vulkan all run this path via the
     ///   pipelined executor + binding-table dispatch.
+    ///
     /// The [`crate::decode_shape`] key a held decode plan for THIS model is
     /// baked against: family + the config values that change graph structure +
     /// this weight set's identity.
@@ -21449,8 +21450,8 @@ mod generate_tests {
     /// model + prompt. Closes the runtime Device-abstraction gate that
     /// the audit memo `project_phase_7_6_step_9c_parity_audit.md`
     /// flagged: previously `Device::new(...)` rejected Vulkan because
-    /// no `DynBackendDevice` impl existed, so `KvCache::with_capacity`
-    /// + `InferenceContext` could not run on Vulkan even though every
+    /// no `DynBackendDevice` impl existed, so `KvCache::with_capacity` +
+    /// `InferenceContext` could not run on Vulkan even though every
     /// kernel-side gate (WriteSlice b1/b2/b4/b8 + byte-storage Vulkan
     /// D2H) was open. With `VulkanBackendDevice` wired through
     /// `Device::custom`, the pipelined executor + binding-table

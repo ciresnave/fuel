@@ -7,7 +7,7 @@
 //!   2. Decoder:
 //!      - init_conv (Conv1d) → init_lstm (with stack residual)
 //!      - For each upsampling ratio:
-//!          ELU → ConvTranspose1d (stride = ratio) → N ResnetBlocks
+//!        ELU → ConvTranspose1d (stride = ratio) → N ResnetBlocks
 //!      - ELU → final_conv → waveform (B, audio_channels, T_out)
 //!
 //! Padding: EnCodec uses left-only causal padding (when

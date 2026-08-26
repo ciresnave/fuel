@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Qwen3-MoE decoder ported to the lazy-graph API.
 //!
-//! Phase D LLM port. Qwen3-MoE = Qwen3 attention (per-head QK-norm
-//! + per-layer sliding-window gating + optional Q/K/V/O biases) +
+//! Phase D LLM port. Qwen3-MoE = Qwen3 attention (per-head QK-norm +
+//! per-layer sliding-window gating + optional Q/K/V/O biases) +
 //! per-layer FFN alternation between a dense SwiGLU MLP and a
 //! Mixtral-style sparse MoE. `decoder_sparse_step` controls the
 //! cadence: layer `i` uses MoE when `(i + 1) % decoder_sparse_step

@@ -1704,8 +1704,8 @@ mod tests {
     /// blocks via `write_block` at the *core-assigned* (non-identity) physical
     /// positions, then read by `Op::PagedAttn` through the *materialized*
     /// block_table, must equal a hand-computed dense attention over the logical
-    /// sequence. This composes every Part-2 piece — core placement + write_block
-    /// + materialize_block_table + the real fused op bound to the real pool
+    /// sequence. This composes every Part-2 piece — core placement + write_block +
+    /// materialize_block_table + the real fused op bound to the real pool
     /// buffers. The physical layout is a permutation (blocks 2,3,4, not 0,1,2),
     /// so a paged_attn that ignored the block_table would read the wrong blocks
     /// and fail.
