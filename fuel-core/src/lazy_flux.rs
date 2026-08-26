@@ -35,7 +35,7 @@
 #[cfg(test)]
 use crate::Device;
 use crate::Result;
-use crate::lazy::{Tensor, WeightStorage};
+use crate::lazy::{ConvWeightBias, Tensor, WeightStorage};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -914,13 +914,13 @@ pub struct VaeAttnWeights {
 #[derive(Debug, Clone)]
 pub struct VaeDownBlock {
     pub resnets: Vec<VaeResnetWeights>,
-    pub downsample_conv: Option<(Arc<[f32]>, Arc<[f32]>)>,
+    pub downsample_conv: Option<ConvWeightBias>,
 }
 
 #[derive(Debug, Clone)]
 pub struct VaeUpBlock {
     pub resnets: Vec<VaeResnetWeights>,
-    pub upsample_conv: Option<(Arc<[f32]>, Arc<[f32]>)>,
+    pub upsample_conv: Option<ConvWeightBias>,
 }
 
 #[derive(Debug, Clone)]

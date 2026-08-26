@@ -33,7 +33,7 @@
 //! - No ALiBi, no `new_decoder_architecture` (Falcon-180B uses it;
 //!   add when needed).
 
-use crate::lazy::{Tensor, WeightStorage};
+use crate::lazy::{LayerNormPair, Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -89,7 +89,7 @@ pub struct FalconLayerWeights {
     pub input_ln_bias: Arc<[f32]>,
     /// Present only when `parallel_attn == false` (Falcon-7B leaves
     /// this `None`).
-    pub post_attn_ln: Option<(Arc<[f32]>, Arc<[f32]>)>,
+    pub post_attn_ln: Option<LayerNormPair>,
     pub attn_q: WeightStorage,
     pub attn_q_bias: Option<Arc<[f32]>>,
     pub attn_k: WeightStorage,

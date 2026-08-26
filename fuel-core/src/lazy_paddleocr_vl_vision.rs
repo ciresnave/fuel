@@ -844,9 +844,13 @@ pub struct PaddleOcrVlNaVitWeights {
 /// interpolated tensor data (`Arc<[f32]>`) so that re-hits avoid
 /// recomputing the bilinear stencil; the Tensor side rebuilds
 /// the const node fresh against the active graph each call.
+/// `(h_patches, w_patches)` -> `(interpolated host data, hit count)`. The
+/// count is the LFU frequency, not a length.
+type PosEmbedEntries = HashMap<(usize, usize), (Arc<[f32]>, usize)>;
+
 #[derive(Debug, Default)]
 struct PosEmbedLfuCache {
-    entries: HashMap<(usize, usize), (Arc<[f32]>, usize)>,
+    entries: PosEmbedEntries,
     max_size: usize,
 }
 

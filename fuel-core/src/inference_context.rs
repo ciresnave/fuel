@@ -467,6 +467,10 @@ impl KvCache {
     }
 }
 
+/// One layer's `(K, V)` cache storages. A KV cache is a `Vec` of these, one
+/// per layer, and the two halves are always allocated and dropped together.
+type KvStoragePair = (Arc<RwLock<Storage>>, Arc<RwLock<Storage>>);
+
 /// Allocate `n_layers` pairs of zero-initialized `[k, n_kv_heads,
 /// max_seq_len, head_dim]` K/V buffers on `device` with `dtype` — the shared
 /// batch-slot KV buffer for the multi-session batched decode arm (serving
@@ -485,7 +489,7 @@ pub(crate) fn alloc_batched_kv(
     max_seq_len: usize,
     dtype: DType,
     device: &Device,
-) -> Result<Vec<(Arc<RwLock<Storage>>, Arc<RwLock<Storage>>)>> {
+) -> Result<Vec<KvStoragePair>> {
     let shape = Shape::from_dims(&[k, n_kv_heads, max_seq_len, head_dim]);
     let target_loc = device.location();
 
@@ -2151,7 +2155,7 @@ impl InferenceContext {
         graph: &Arc<RwLock<Graph>>,
         targets: &[NodeId],
         n_host: usize,
-    ) -> Result<(Vec<Vec<T>>, Vec<(Arc<RwLock<Storage>>, Layout)>)> {
+    ) -> Result<crate::pipelined_bridge::SplitRealizeOutput<T>> {
         crate::pipelined_bridge::realize_split_as_with_initial::<T>(
             graph,
             targets,

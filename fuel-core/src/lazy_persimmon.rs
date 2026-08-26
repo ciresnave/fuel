@@ -15,7 +15,7 @@
 //! Custom `PersimmonLayerWeights` because the LN+bias surface and
 //! QK-LN structure don't fit `LayerWeights`.
 
-use crate::lazy::{Tensor, WeightStorage};
+use crate::lazy::{LayerNormPair, Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
 use std::sync::Arc;
@@ -58,8 +58,8 @@ pub struct PersimmonLayerWeights {
     pub attn_o: WeightStorage,
     pub attn_o_bias: Arc<[f32]>,
     /// QK-LN gain + bias (present iff `cfg.qk_layernorm`).
-    pub q_norm: Option<(Arc<[f32]>, Arc<[f32]>)>,
-    pub k_norm: Option<(Arc<[f32]>, Arc<[f32]>)>,
+    pub q_norm: Option<LayerNormPair>,
+    pub k_norm: Option<LayerNormPair>,
     /// `[hidden_size, intermediate_size]`.
     pub mlp_up: WeightStorage,
     pub mlp_up_bias: Arc<[f32]>,

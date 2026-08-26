@@ -7612,6 +7612,16 @@ impl LlamaConfig {
     }
 }
 
+/// A LayerNorm's learned `(gain, bias)`, both length `[dim]`. Wrapped in
+/// `Option` at sites where the norm is conditional — present only on layer 0
+/// (RWKV `pre_ln`), or only when a config flag is set (Persimmon QK-LN).
+pub type LayerNormPair = (Arc<[f32]>, Arc<[f32]>);
+
+/// A convolution's `(weight, bias)`: the flattened `[out, in, kh, kw]` kernel
+/// and its `[out]` bias. Distinct from [`LayerNormPair`] despite the identical
+/// shape — the two are not interchangeable and naming them apart is the point.
+pub type ConvWeightBias = (Arc<[f32]>, Arc<[f32]>);
+
 /// Weight tensor storage that preserves source precision.
 ///
 /// Projection weights (Q/K/V/O for attention, gate/up/down for FFN,

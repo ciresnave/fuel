@@ -67,7 +67,7 @@
 //!   encoder for tractability) runs `transformer -> scheduler ->
 //!   VAE.decode` to produce a finite image of the expected shape.
 
-use crate::lazy::Tensor;
+use crate::lazy::{ConvWeightBias, Tensor};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -987,13 +987,13 @@ pub struct VaeAttnWeights {
 pub struct VaeDownBlockWeights {
     pub resnets: Vec<VaeResnetWeights>,
     /// `[c, c, 3, 3]` + bias. Optional: last down block has no downsampler.
-    pub downsample_conv: Option<(Arc<[f32]>, Arc<[f32]>)>,
+    pub downsample_conv: Option<ConvWeightBias>,
 }
 
 #[derive(Debug, Clone)]
 pub struct VaeUpBlockWeights {
     pub resnets: Vec<VaeResnetWeights>,
-    pub upsample_conv: Option<(Arc<[f32]>, Arc<[f32]>)>,
+    pub upsample_conv: Option<ConvWeightBias>,
 }
 
 #[derive(Debug, Clone)]

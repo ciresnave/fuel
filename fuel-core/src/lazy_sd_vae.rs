@@ -44,7 +44,7 @@
 //!   than the old slice+concat+matmul composition but still unoptimized
 //!   — GPU dispatch and tiled CPU kernels are later work.
 
-use crate::lazy::Tensor;
+use crate::lazy::{ConvWeightBias, Tensor};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -125,7 +125,7 @@ pub struct UpBlockWeights {
     pub resnets: Vec<ResnetWeights>,
     /// Upsampler's 3×3 conv (applied after 2× nearest upsample). None
     /// for the last up-block (SD 1.5's `up_blocks.3`).
-    pub upsample_conv: Option<(Arc<[f32]>, Arc<[f32]>)>,
+    pub upsample_conv: Option<ConvWeightBias>,
 }
 
 #[derive(Debug, Clone)]
