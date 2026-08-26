@@ -18,3 +18,8 @@ a63d8f55cdc16ac3a84333b7f46edb4b9476dec0
 # Mechanical: one comment line prepended per file. No copyright line — that is
 # a separate claim and it waits on the Candle attribution work.
 62b0e36b2e57f817b0329edf7059a3ee328da322
+
+# style: cargo fmt --all, run to fixpoint (2026-08-26).
+# Mechanical: rustfmt output only, 72 files. Second fmt landing in seven days —
+# a63d8f55 (2026-08-19) closed the same gate and 212 commits reopened it.
+b25164e64e5ee100c5e5b3b6da79a85c6dd9d503
