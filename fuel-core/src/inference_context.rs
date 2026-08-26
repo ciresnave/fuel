@@ -797,9 +797,10 @@ impl LatentKvCache {
     /// [`KvCache::bump_version`].
     pub fn bump_version(&mut self, layer_idx: usize, slot: usize) {
         if let Some(Some(layer)) = self.layers.get_mut(layer_idx)
-            && let Some(s) = layer.get_mut(slot) {
-                s.version += 1;
-            }
+            && let Some(s) = layer.get_mut(slot)
+        {
+            s.version += 1;
+        }
     }
 
     pub fn n_layers(&self) -> usize {

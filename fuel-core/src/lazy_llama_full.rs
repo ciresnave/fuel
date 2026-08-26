@@ -170,9 +170,7 @@ impl LlamaFullConfig {
             }
         });
 
-        let rope_scaling = v
-            .get("rope_scaling")
-            .and_then(parse_llama3_rope_scaling);
+        let rope_scaling = v.get("rope_scaling").and_then(parse_llama3_rope_scaling);
 
         Ok(Self {
             hidden_size,

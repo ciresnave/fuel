@@ -2137,8 +2137,7 @@ impl crate::persistent_decode::DecodeBackbone for LlamaModel {
     fn decode_final_norm_and_head(&self, h: &Tensor) -> crate::Result<Tensor> {
         let cfg = &self.config;
         let h_norm = apply_affine_rms_norm(h, &self.weights.final_norm_gain, cfg.dim, cfg.norm_eps);
-        self
-            .weights
+        self.weights
             .output
             .apply_linear(&h_norm, cfg.dim, cfg.vocab_size)
     }
@@ -4762,9 +4761,7 @@ impl Tensor {
     /// **Returns `Result`**: rank/shape/range mismatches surface as a
     /// typed error.
     pub fn write_slice(&self, source: &Self, ranges: Vec<(usize, usize)>) -> crate::Result<Self> {
-        let inner = self
-            .inner
-            .write_slice(&source.inner, ranges)?;
+        let inner = self.inner.write_slice(&source.inner, ranges)?;
         Ok(Self { inner })
     }
 
@@ -4810,9 +4807,13 @@ impl Tensor {
         modulus: usize,
         ranges: Vec<(usize, usize)>,
     ) -> crate::Result<Self> {
-        let inner = self
-            .inner
-            .write_slice_rotating(&source.inner, &position.inner, axis, modulus, ranges)?;
+        let inner = self.inner.write_slice_rotating(
+            &source.inner,
+            &position.inner,
+            axis,
+            modulus,
+            ranges,
+        )?;
         Ok(Self { inner })
     }
 
@@ -7240,7 +7241,8 @@ impl Tensor {
         // Fast-path: integer-multiple uniform scale → existing
         // `upsample_nearest2d` (more cache-friendly than the
         // index_select composite for the common 2× / 4× case).
-        if target_h.is_multiple_of(h) && target_w.is_multiple_of(w) && target_h / h == target_w / w {
+        if target_h.is_multiple_of(h) && target_w.is_multiple_of(w) && target_h / h == target_w / w
+        {
             return self.upsample_nearest2d(target_h / h);
         }
         // General case: build per-axis source-index tensors and
@@ -8221,10 +8223,7 @@ impl LlamaModel {
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
         );
-        let token_ids = anchor.const_u32_like(
-            tokens.to_vec(),
-            Shape::from_dims(&[seq]),
-        );
+        let token_ids = anchor.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         let mut h = embed
             .index_select(0, &token_ids)
             .unwrap()
@@ -9067,8 +9066,7 @@ impl LlamaModel {
         }
 
         let mut sym_env = fuel_ir::SymEnv::new();
-        sym_env
-            .bind(write_sym, linear)?;
+        sym_env.bind(write_sym, linear)?;
 
         let (effective_target, optimized, base_cache, logits_vec) =
             crate::pipelined_bridge::prebuild_optimized_env_capturing_cache::<f32>(
@@ -10142,10 +10140,8 @@ impl LlamaModel {
         let graph_dec = logits_root.inner.graph().clone();
 
         let mut sym_env = fuel_ir::SymEnv::new();
-        sym_env
-            .bind(cached_len_sym, cached_len)?;
-        sym_env
-            .bind(attended_len_sym, cached_len + seq)?;
+        sym_env.bind(cached_len_sym, cached_len)?;
+        sym_env.bind(attended_len_sym, cached_len + seq)?;
         let flat =
             ctx_dec.realize_one_as_with_env::<f32>(&graph_dec, logits_root.inner.id(), &sym_env)?;
         if flat.len() != k * cfg.vocab_size {
@@ -11700,8 +11696,7 @@ impl LlamaTokenizer {
 }
 
 /// Sampling strategy for decode loops.
-#[derive(Debug, Clone, Copy)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub enum SamplingStrategy {
     /// Greedy: always pick the highest-probability token.
     #[default]
@@ -11712,7 +11707,6 @@ pub enum SamplingStrategy {
     /// The seed makes sampling reproducible.
     Temperature { temp: f32, seed: u64 },
 }
-
 
 impl LlamaModel {
     /// Run greedy or temperature-sampled token generation for
@@ -11873,9 +11867,10 @@ impl LlamaModel {
             tokens.push(next);
             on_token(next);
             if let Some(eos) = eos_id
-                && next == eos {
-                    break;
-                }
+                && next == eos
+            {
+                break;
+            }
             #[cfg(feature = "cuda")]
             {
                 last_logits = self.forward_with_kv_context_captured(
@@ -12082,7 +12077,7 @@ impl LlamaModel {
 
             // --- Accept phase: strategy-specific. ---
             let mut accepted = 0usize;
-            
+
             let bonus_token: u32 = match strategy {
                 SamplingStrategy::Greedy => {
                     let mut mismatched: Option<u32> = None;
@@ -12895,8 +12890,7 @@ impl PhiModel {
         // supplied for this pass via the `SymEnv`; downstream attention
         // reads the post-write full-capacity buffers.
         let mut sym_env = fuel_ir::SymEnv::new();
-        sym_env
-            .bind(cached_len_sym, cached_len)?;
+        sym_env.bind(cached_len_sym, cached_len)?;
         let logits_vec = ctx.realize_one_as_with_env::<f32>(
             last_logits.inner.graph(),
             last_logits.inner.id(),
@@ -13140,8 +13134,7 @@ impl PhiModel {
         ctx.insert(mask_node, Arc::clone(&data.mask));
 
         let mut sym_env = fuel_ir::SymEnv::new();
-        sym_env
-            .bind(cached_len_sym, cached_len)?;
+        sym_env.bind(cached_len_sym, cached_len)?;
 
         let (effective_target, optimized, base_cache, logits_vec) =
             ctx.prebuild_optimized_capturing_as_with_env::<f32>(&graph, logits_node, &sym_env)?;
@@ -13567,9 +13560,10 @@ impl PhiModel {
             tokens.push(next);
             on_token(next);
             if let Some(eos) = eos_id
-                && next == eos {
-                    break;
-                }
+                && next == eos
+            {
+                break;
+            }
             #[cfg(feature = "cuda")]
             {
                 last_logits = self.forward_with_kv_context_captured(
@@ -14066,7 +14060,9 @@ fn dequant_gguf_bytes_to_f32(
                 );
             }
             Ok(bytes
-                .as_chunks::<4>().0.iter()
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect())
         }
@@ -14078,7 +14074,9 @@ fn dequant_gguf_bytes_to_f32(
                 );
             }
             Ok(bytes
-                .as_chunks::<2>().0.iter()
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| f16::from_le_bytes([c[0], c[1]]).to_f32())
                 .collect())
         }
@@ -14090,7 +14088,9 @@ fn dequant_gguf_bytes_to_f32(
                 );
             }
             Ok(bytes
-                .as_chunks::<2>().0.iter()
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| bf16::from_le_bytes([c[0], c[1]]).to_f32())
                 .collect())
         }
@@ -14145,7 +14145,9 @@ fn bytes_to_u32_arc(bytes: &[u8]) -> Arc<[u32]> {
         "bytes_to_u32_arc: len must be multiple of 4"
     );
     let words: Vec<u32> = bytes
-        .as_chunks::<4>().0.iter()
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     Arc::from(words)

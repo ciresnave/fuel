@@ -479,8 +479,7 @@ fn apply_mix_ffn(
         hidden_size,
         std::sync::Arc::clone(&m.dense2_bias),
     )?;
-    h3
-        .permute([0, 2, 1_usize])?
+    h3.permute([0, 2, 1_usize])?
         .reshape(Shape::from_dims(&[b, hidden_size, h, w_sp]))
 }
 

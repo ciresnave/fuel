@@ -486,30 +486,32 @@ fn build_deepstack_per_layer(
     for layer_idx in 0..len {
         let mut accum: Option<Tensor> = None;
         if let Some(img) = image
-            && layer_idx < img.deepstack_projected.len() {
-                let t = scatter_visual_residual(
-                    anchor,
-                    &img.deepstack_projected[layer_idx],
-                    image_slots,
-                    seq,
-                    text_hidden,
-                )?;
-                accum = Some(t);
-            }
+            && layer_idx < img.deepstack_projected.len()
+        {
+            let t = scatter_visual_residual(
+                anchor,
+                &img.deepstack_projected[layer_idx],
+                image_slots,
+                seq,
+                text_hidden,
+            )?;
+            accum = Some(t);
+        }
         if let Some(vid) = video
-            && layer_idx < vid.deepstack_projected.len() {
-                let t = scatter_visual_residual(
-                    anchor,
-                    &vid.deepstack_projected[layer_idx],
-                    video_slots,
-                    seq,
-                    text_hidden,
-                )?;
-                accum = Some(match accum {
-                    Some(prev) => prev.add(&t)?,
-                    None => t,
-                });
-            }
+            && layer_idx < vid.deepstack_projected.len()
+        {
+            let t = scatter_visual_residual(
+                anchor,
+                &vid.deepstack_projected[layer_idx],
+                video_slots,
+                seq,
+                text_hidden,
+            )?;
+            accum = Some(match accum {
+                Some(prev) => prev.add(&t)?,
+                None => t,
+            });
+        }
         out.push(accum);
     }
     Ok(out)

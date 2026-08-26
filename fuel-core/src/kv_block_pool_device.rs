@@ -487,7 +487,8 @@ impl DeviceKvPool {
             block.node_id(),
             &self.device,
             cache,
-        )}
+        )
+    }
 
     /// Byte width of one pool element for byte-level movement. F32/BF16 only (the
     /// activation dtypes the CUDA bf16 leg needs); F16 movement is a trivial

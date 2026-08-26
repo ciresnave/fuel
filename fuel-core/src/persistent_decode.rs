@@ -383,10 +383,7 @@ impl MaskPlan {
         let per_layer: Vec<usize> = (0..n_layers)
             .map(|i| usize::from(!uses_window(i)))
             .collect();
-        match (
-            per_layer.contains(&0),
-            per_layer.contains(&1),
-        ) {
+        match (per_layer.contains(&0), per_layer.contains(&1)) {
             (true, false) => Self {
                 windows: vec![Some(window)],
                 per_layer: vec![0; n_layers],
@@ -527,10 +524,7 @@ impl RopePlan {
             return Self::single(base_when_true, n_layers);
         }
         let per_layer: Vec<usize> = (0..n_layers).map(|i| usize::from(!uses_first(i))).collect();
-        match (
-            per_layer.contains(&0),
-            per_layer.contains(&1),
-        ) {
+        match (per_layer.contains(&0), per_layer.contains(&1)) {
             (true, false) => Self::single(base_when_true, n_layers),
             (false, true) => Self::single(base_when_false, n_layers),
             _ => Self {

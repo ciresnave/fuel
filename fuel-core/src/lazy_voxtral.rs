@@ -361,8 +361,7 @@ impl VoxtralMultiModalProjector {
             self.linear_1
                 .apply_linear(audio, self.audio_intermediate_size, self.text_hidden)?;
         let x = x.gelu();
-        self
-            .linear_2
+        self.linear_2
             .apply_linear(&x, self.text_hidden, self.text_hidden)
     }
 }

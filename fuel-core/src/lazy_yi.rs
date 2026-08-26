@@ -98,8 +98,7 @@ impl YiModel {
 
     fn apply_lm_head(&self, h_norm: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
-        self
-            .weights
+        self.weights
             .output
             .apply_linear(h_norm, cfg.hidden_size, cfg.vocab_size)
     }
@@ -142,7 +141,10 @@ impl YiModel {
             )
             .bt());
         }
-        if !cfg.num_attention_heads.is_multiple_of(cfg.num_key_value_heads) {
+        if !cfg
+            .num_attention_heads
+            .is_multiple_of(cfg.num_key_value_heads)
+        {
             return Err(crate::Error::Msg(
                 "YiConfig: num_attention_heads must be a multiple of num_key_value_heads".into(),
             )

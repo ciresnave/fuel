@@ -474,7 +474,9 @@ fn quantize_in_out_to_q4_0(
     let mut padded = vec![0_u8; padded_len];
     padded[..bytes_len].copy_from_slice(byte_slice);
     let words: Vec<u32> = padded
-        .as_chunks::<4>().0.iter()
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     Ok(WeightStorage::Q4_0 {
@@ -490,7 +492,9 @@ fn bytes_to_u32_arc(bytes: &[u8]) -> Arc<[u32]> {
     let mut padded = vec![0_u8; padded_len];
     padded[..bytes.len()].copy_from_slice(bytes);
     let words: Vec<u32> = padded
-        .as_chunks::<4>().0.iter()
+        .as_chunks::<4>()
+        .0
+        .iter()
         .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]))
         .collect();
     Arc::from(words)
@@ -516,7 +520,9 @@ fn dequant_bytes_to_f32(
                 .bt());
             }
             Ok(bytes
-                .as_chunks::<4>().0.iter()
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
                 .collect())
         }
@@ -529,7 +535,9 @@ fn dequant_bytes_to_f32(
                 .bt());
             }
             Ok(bytes
-                .as_chunks::<2>().0.iter()
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| f16::from_le_bytes([c[0], c[1]]).to_f32())
                 .collect())
         }
@@ -542,7 +550,9 @@ fn dequant_bytes_to_f32(
                 .bt());
             }
             Ok(bytes
-                .as_chunks::<2>().0.iter()
+                .as_chunks::<2>()
+                .0
+                .iter()
                 .map(|c| bf16::from_le_bytes([c[0], c[1]]).to_f32())
                 .collect())
         }

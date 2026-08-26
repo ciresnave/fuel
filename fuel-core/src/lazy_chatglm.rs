@@ -212,11 +212,9 @@ impl ChatGlmModel {
 
     fn apply_lm_head(&self, h_post: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
-        self.weights.output_layer.apply_linear(
-            h_post,
-            cfg.hidden_size,
-            cfg.padded_vocab_size,
-        )
+        self.weights
+            .output_layer
+            .apply_linear(h_post, cfg.hidden_size, cfg.padded_vocab_size)
     }
 
     fn run_backbone(&self, tokens: &[u32], start_pos: usize) -> Result<Tensor> {
@@ -260,7 +258,10 @@ impl ChatGlmModel {
             ))
             .bt());
         }
-        if !cfg.num_attention_heads.is_multiple_of(cfg.multi_query_group_num) {
+        if !cfg
+            .num_attention_heads
+            .is_multiple_of(cfg.multi_query_group_num)
+        {
             return Err(crate::Error::Msg(format!(
                 "num_attention_heads ({}) must be a multiple of multi_query_group_num ({})",
                 cfg.num_attention_heads, cfg.multi_query_group_num,

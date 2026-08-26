@@ -213,7 +213,10 @@ impl PaddleOcrVlTextModel {
             )
             .bt());
         }
-        if !cfg.num_attention_heads.is_multiple_of(cfg.num_key_value_heads) {
+        if !cfg
+            .num_attention_heads
+            .is_multiple_of(cfg.num_key_value_heads)
+        {
             return Err(crate::Error::Msg(format!(
                 "PaddleOcrVlTextConfig: num_attention_heads ({}) must be a multiple of num_key_value_heads ({})",
                 cfg.num_attention_heads, cfg.num_key_value_heads,

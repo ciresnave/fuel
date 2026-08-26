@@ -60,7 +60,10 @@ fn workspace_root() -> PathBuf {
         {
             return dir;
         }
-        assert!(dir.pop(), "no Cargo.toml with [workspace] above CARGO_MANIFEST_DIR");
+        assert!(
+            dir.pop(),
+            "no Cargo.toml with [workspace] above CARGO_MANIFEST_DIR"
+        );
     }
 }
 
@@ -120,8 +123,15 @@ fn claude_md_carries_no_bare_line_number_anchor() {
 #[test]
 fn the_scanner_can_see_an_anchor_when_one_exists() {
     let hits = find_line_anchors("see `fuel-graph/src/lib.rs:3931` and `a/b.toml:41` for detail");
-    assert_eq!(hits.len(), 2, "scanner must find both anchors, got {hits:?}");
-    assert!(hits.iter().any(|(_, a)| a.ends_with(":3931")), "got {hits:?}");
+    assert_eq!(
+        hits.len(),
+        2,
+        "scanner must find both anchors, got {hits:?}"
+    );
+    assert!(
+        hits.iter().any(|(_, a)| a.ends_with(":3931")),
+        "got {hits:?}"
+    );
 }
 
 /// Negative control: a plain path is the FIX, so flagging it would make the gate

@@ -954,7 +954,12 @@ impl GgmlType for BlockQ2K {
 
             let mut is = 0;
 
-            for (y_block, qs) in y.as_chunks_mut::<128>().0.iter_mut().zip(block.qs.as_chunks::<32>().0.iter()) {
+            for (y_block, qs) in y
+                .as_chunks_mut::<128>()
+                .0
+                .iter_mut()
+                .zip(block.qs.as_chunks::<32>().0.iter())
+            {
                 // Step by 32 over q.
                 let mut shift = 0;
                 let mut y_block_index = 0;
@@ -1329,11 +1334,19 @@ impl GgmlType for BlockQ3K {
             // Dequantize both 128 long blocks
             // 32 qs values per 128 long block
             // Each 16 elements get a scale
-            for (y, qs) in y.as_chunks_mut::<128>().0.iter_mut().zip(block.qs.as_chunks::<32>().0.iter()) {
+            for (y, qs) in y
+                .as_chunks_mut::<128>()
+                .0
+                .iter_mut()
+                .zip(block.qs.as_chunks::<32>().0.iter())
+            {
                 let mut shift = 0;
                 for shift_scoped_y in y.as_chunks_mut::<32>().0.iter_mut() {
-                    for (scale_index, scale_scoped_y) in
-                        shift_scoped_y.as_chunks_mut::<16>().0.iter_mut().enumerate()
+                    for (scale_index, scale_scoped_y) in shift_scoped_y
+                        .as_chunks_mut::<16>()
+                        .0
+                        .iter_mut()
+                        .enumerate()
                     {
                         let dl = d_all * (scales[is] as f32 - 32.0);
                         for (i, inner_y) in scale_scoped_y.iter_mut().enumerate() {
