@@ -379,12 +379,6 @@ impl Qwen2Model {
     }
 }
 
-/// Add an optional `[last_dim]` bias to `x`'s last dim via
-/// `broadcast_add`. Returns `x` unchanged when `bias` is `None`.
-/// Delegates to `Tensor::add_optional_trailing_bias` — the
-/// per-port wrapper is preserved so call sites inside this module
-/// keep their existing signature.
-
 // ---- GAP-029 increment 3 · persistent-KV decode -----------------------------
 //
 // Qwen2 is family 1 of the eleven. It does NOT get its own build path: the

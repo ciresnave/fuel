@@ -7612,18 +7612,6 @@ impl LlamaConfig {
     }
 }
 
-/// Per-layer weights of a LLaMA transformer block. All tensors are
-/// stored as `Arc<[f32]>` so they can be loaded once and shared across
-/// every forward pass with zero copy — each call to
-/// [`LlamaModel::forward`] clones the `Arc` (a refcount bump) when it
-/// builds fresh const nodes for this layer.
-///
-
-/// LLaMA proper has no biases anywhere in the attention block, so the
-/// `*_bias` fields are `None` for LLaMA family models. Qwen2 and a few
-/// related architectures do add biases on Q/K/V (but not on the output
-/// projection), so the loader stores them here when the safetensors
-/// file contains them.
 /// Weight tensor storage that preserves source precision.
 ///
 /// Projection weights (Q/K/V/O for attention, gate/up/down for FFN,
@@ -7988,6 +7976,17 @@ impl From<Vec<half::bf16>> for WeightStorage {
     }
 }
 
+/// Per-layer weights of a LLaMA transformer block. All tensors are
+/// stored as `Arc<[f32]>` so they can be loaded once and shared across
+/// every forward pass with zero copy — each call to
+/// [`LlamaModel::forward`] clones the `Arc` (a refcount bump) when it
+/// builds fresh const nodes for this layer.
+///
+/// LLaMA proper has no biases anywhere in the attention block, so the
+/// `*_bias` fields are `None` for LLaMA family models. Qwen2 and a few
+/// related architectures do add biases on Q/K/V (but not on the output
+/// projection), so the loader stores them here when the safetensors
+/// file contains them.
 #[derive(Debug, Clone)]
 pub struct LayerWeights {
     /// `[dim, dim]` query projection. Supports bf16 or f32.
@@ -10979,30 +10978,6 @@ fn captured_output_to_f32(
     Ok(bytemuck::cast_slice::<u8, f32>(&bytes).to_vec())
 }
 
-/// Broadcast-add a 1-D bias along the last axis of `x`, or return
-
-/// RmsNorm with a learned per-channel gain, applied along the last dim.
-/// This is the affine version used by LLaMA: `y = (x / rms) * gain`.
-///
-/// `gain` is taken as `&Arc<[f32]>` so we can clone it into the const
-/// node without copying the underlying slice — the same refcount-bump
-/// pattern used for every other weight in the model.
-/// Build the strict lower-triangular causal mask for one
-/// LlamaModel forward pass. Shape `[1, 1, seq, seq]` with
-/// `0` at `j <= i` and `-inf` at `j > i`, ready to
-/// broadcast-add onto attention scores. Anchored on `g` so
-/// the mask shares its graph with the rest of the model.
-/// Build the fixed-capacity causal mask for the input-independent decode
-/// graph (Phase D · D1/D2b). Shape `[seq, max_seq_len]` flattened
-/// row-major: `-inf` where `k > cached_len + q` (masks future positions
-/// AND the zero-init stale tail), `0` otherwise. Hoisted to ONE shared
-/// Const (was per-layer); the per-token re-bind on the persistent decode
-/// path recomputes exactly this each token (the `-inf` boundary shifts
-/// with `cached_len`).
-///
-/// `pub(crate)`: also consumed by the DeepSeek-V2 MLA cached-decode path
-/// (`lazy_deepseek2.rs`), which shares this exact mask shape/semantics
-/// across its `LatentCache`-threaded layers.
 /// Realize a set of `Op::WriteSlice` target nodes purely for their in-place
 /// side effect (KV copy-in/copy-out for the batched decode arm). The returned
 /// host data is discarded — the realize just forces the writes to execute. The
@@ -12552,13 +12527,6 @@ pub struct PhiModel {
     pub config: PhiConfig,
     pub weights: PhiWeights,
 }
-
-/// Apply LayerNorm with affine gain + bias along the last dim.
-/// `y = (x - mean) / sqrt(var + eps) * gain + bias`, where gain and
-/// bias are per-channel vectors of length `dim`.
-/// Apply `x @ W + b` where `W` is a `WeightStorage` projection and
-/// `b` is a `[out_features]` bias vector. Dispatches to qmatmul for
-/// Q4_0 weights.
 
 impl PhiModel {
     /// See [`LlamaModel::decode_shape_key`].

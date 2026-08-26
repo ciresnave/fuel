@@ -397,7 +397,7 @@ impl Gemma3Model {
     }
 }
 
-/// Gemma's offset RmsNorm: `y = (x / rms) * (gain + 1)`.
+// Gemma's offset RmsNorm: `y = (x / rms) * (gain + 1)`.
 
 // ---- GAP-029 · persistent-KV decode ----------------------------------------
 //
