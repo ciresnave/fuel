@@ -1825,68 +1825,6 @@ impl VulkanBackend {
         )
     }
 
-    /// Dispatch a 3-storage + 1-uniform compute shader.
-    fn dispatch_3buf(
-        &self,
-        op_name: &'static str,
-        pipeline: &ComputePipeline,
-        pipe_layout: &PipelineLayout,
-        a: &VulkanStorage,
-        b: &VulkanStorage,
-        output: &VulkanStorage,
-        params_buf: Buffer,
-        params_alloc: Allocation,
-        params_size: u64,
-        groups_x: u32,
-        groups_y: u32,
-        groups_z: u32,
-    ) -> fuel_ir::Result<()> {
-        let desc = self
-            .pipelines
-            .allocate_desc(&self.pipelines.layout_3s1u)
-            .map_err(vk_err)?;
-        desc.write_buffer(
-            0,
-            DescriptorType::STORAGE_BUFFER,
-            a.buffer(),
-            0,
-            a.byte_size(),
-        );
-        desc.write_buffer(
-            1,
-            DescriptorType::STORAGE_BUFFER,
-            b.buffer(),
-            0,
-            b.byte_size(),
-        );
-        desc.write_buffer(
-            2,
-            DescriptorType::STORAGE_BUFFER,
-            output.buffer(),
-            0,
-            output.byte_size(),
-        );
-        desc.write_buffer(
-            3,
-            DescriptorType::UNIFORM_BUFFER,
-            &params_buf,
-            0,
-            params_size,
-        );
-        let rb = [a.buffer().raw(), b.buffer().raw()];
-        let wb = [output.buffer().raw()];
-        self.record_dispatch_batched(
-            op_name,
-            pipeline,
-            pipe_layout,
-            desc,
-            (groups_x, groups_y, groups_z),
-            vec![(params_buf, params_alloc)],
-            &rb,
-            &wb,
-        )
-    }
-
     fn workgroups(n: usize) -> u32 {
         n.div_ceil(256) as u32
     }

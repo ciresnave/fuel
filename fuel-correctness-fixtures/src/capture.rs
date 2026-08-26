@@ -357,11 +357,11 @@ pub fn compute_pairwise_consensus(outputs: &[MeasuredOutput], epsilon: f32) -> V
     let mut best: Vec<usize> = vec![0];
     for i in 0..n {
         let mut cluster = vec![i];
-        for j in 0..n {
+        for (j, agree_j) in agree.iter().enumerate() {
             if j == i {
                 continue;
             }
-            if cluster.iter().all(|&k| agree[j][k]) {
+            if cluster.iter().all(|&k| agree_j[k]) {
                 cluster.push(j);
             }
         }
@@ -607,8 +607,7 @@ pub fn write_fixture_file(
     if let Some(parent) = full.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let json = serde_json::to_string_pretty(file)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let json = serde_json::to_string_pretty(file).map_err(std::io::Error::other)?;
     std::fs::write(&full, json)?;
     Ok(full)
 }

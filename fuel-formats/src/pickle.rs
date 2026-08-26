@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::io::BufRead;
 
 use byteorder::{LittleEndian, ReadBytesExt};
-use fuel_ir::{Context, DType, DimVec, Error as E, Layout, Result, Shape, bail};
+use fuel_ir::{Context, DType, Error as E, Layout, Result, Shape, bail};
 
 const VERBOSE: bool = false;
 

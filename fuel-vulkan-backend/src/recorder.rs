@@ -469,27 +469,4 @@ impl Recorder {
 
         Ok(Some(batch))
     }
-
-    /// Drain without submitting (for cleanup).
-    pub fn drain(&mut self, device: &Device, queue_family: u32) -> Result<()> {
-        if self.batch_cb.is_some() {
-            // There's an active batch — need to end + discard it.
-            // End the recording so the CB transitions out of recording
-            // state before we drop it.
-            let cmd = self.batch_cb.take().unwrap();
-            let dt = device.dispatch();
-            unsafe {
-                if let Some(end) = dt.vkEndCommandBuffer {
-                    end(cmd.raw());
-                }
-            }
-            drop(cmd);
-        }
-        self.batch_transients.clear();
-        self.batch_descs.clear();
-        self.batch_count = 0;
-        self.dirty_buffers.clear();
-        self.pool = CommandPool::new(device, queue_family)?;
-        Ok(())
-    }
 }
