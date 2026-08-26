@@ -557,9 +557,10 @@ impl SessionState {
         self.tokens.push(next);
         self.new_tokens.push(next);
         self.remaining = self.remaining.saturating_sub(1);
-        if self.eos_id == Some(next) {
-            self.phase = SessionPhase::Finished;
-        } else if self.remaining == 0 {
+        // Two distinct reasons to stop -- hit EOS, or ran out of budget --
+        // but `Finished` is not reason-parameterised, so the distinction was
+        // never carried by the value. Merging loses nothing the type holds.
+        if self.eos_id == Some(next) || self.remaining == 0 {
             self.phase = SessionPhase::Finished;
         } else {
             self.phase = SessionPhase::Decode;
@@ -1118,7 +1119,7 @@ impl<'m, M: DecodeModel> SessionScheduler<'m, M> {
         let id = self.add_session(prompt, SamplingStrategy::Greedy, None, max_new)?;
         if let Some(s) = self.sessions.last_mut() {
             // Corrupt the real cache so the real forward path errors.
-            s.cache.layers.truncate(0);
+            s.cache.layers.clear();
         }
         Ok(id)
     }

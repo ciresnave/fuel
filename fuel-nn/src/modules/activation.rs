@@ -80,8 +80,8 @@ impl Module for Elu {
         let zero = xs.mul_scalar(0.0);
         let min_x_zero = {
             let diff = xs.sub(&zero)?;
-            let neg_part = diff.neg().relu().neg();
-            neg_part
+
+            diff.neg().relu().neg()
         };
         let exp_min = min_x_zero.exp();
         let neg_branch = exp_min.add_scalar(-1.0).mul_scalar(self.alpha);

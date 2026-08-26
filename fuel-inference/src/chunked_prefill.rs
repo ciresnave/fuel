@@ -139,7 +139,7 @@ impl<'a> ChunkedPrefill<'a> {
         let total_chunks = if tokens.is_empty() {
             0
         } else {
-            (tokens.len() + chunk_size - 1) / chunk_size
+            tokens.len().div_ceil(chunk_size)
         };
         Self {
             tokens,
@@ -380,7 +380,7 @@ mod tests {
         let mut last_was_last = false;
         while let Some(c) = prefill.next_chunk() {
             assert!(c.len() <= 512);
-            assert!(c.len() > 0);
+            assert!(!c.is_empty());
             assert_eq!(c.index_pos(), chunk_count * 512);
             last_was_last = c.is_last();
             chunk_count += 1;

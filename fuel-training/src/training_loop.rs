@@ -161,23 +161,23 @@ impl TrainingLoop {
             global_step: self.global_step,
         };
 
-        if let Some(interval) = self.log_interval {
-            if self.global_step % interval == 0 {
-                match grad_norm {
-                    Some(gn) => tracing::info!(
-                        step = self.global_step,
-                        loss = loss_val,
-                        lr = lr,
-                        grad_norm = gn,
-                        "training step"
-                    ),
-                    None => tracing::info!(
-                        step = self.global_step,
-                        loss = loss_val,
-                        lr = lr,
-                        "training step"
-                    ),
-                }
+        if let Some(interval) = self.log_interval
+            && self.global_step.is_multiple_of(interval)
+        {
+            match grad_norm {
+                Some(gn) => tracing::info!(
+                    step = self.global_step,
+                    loss = loss_val,
+                    lr = lr,
+                    grad_norm = gn,
+                    "training step"
+                ),
+                None => tracing::info!(
+                    step = self.global_step,
+                    loss = loss_val,
+                    lr = lr,
+                    "training step"
+                ),
             }
         }
 

@@ -76,7 +76,9 @@ pub fn normal(mean: f32, std: f32, n: usize, rng: &mut StdRng) -> Result<Vec<f32
 /// Uniform-distribution initializer. Returns `n` i.i.d. samples from
 /// `U(lo, hi)`. Requires `lo < hi`.
 pub fn uniform(lo: f32, hi: f32, n: usize, rng: &mut StdRng) -> Result<Vec<f32>> {
-    if !lo.is_finite() || !hi.is_finite() || !(lo < hi) {
+    // `lo >= hi` is safe HERE only because the two is_finite() checks
+    // short-circuit first, so neither operand can be NaN by this point.
+    if !lo.is_finite() || !hi.is_finite() || lo >= hi {
         return Err(fuel::Error::Msg(format!(
             "uniform: require lo < hi and both finite, got lo={lo} hi={hi}",
         ))

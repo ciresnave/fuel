@@ -140,7 +140,7 @@ fn pixtral_config_from_hf_json_str(json: &str) -> Result<PixtralConfig> {
         head_dim: get_usize(&tc, "head_dim", 128),
         rms_norm_eps: get_f64(&tc, "rms_norm_eps", 1e-5),
         rope_theta: get_f64(&tc, "rope_theta", 1_000_000.0),
-        max_position_embeddings: get_usize(&tc, "max_position_embeddings", 1024_000),
+        max_position_embeddings: get_usize(&tc, "max_position_embeddings", 1_024_000),
         sliding_window: get_usize_opt(&tc, "sliding_window"),
     };
 

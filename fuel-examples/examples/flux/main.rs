@@ -229,9 +229,7 @@ fn deterministic_noise(seed: u64, n: usize) -> Vec<f32> {
         (state >> 32) as u32
     };
     let mut next_f32 = || -> f32 {
-        let u = (next_u32() as f64 / u32::MAX as f64)
-            .max(1e-9)
-            .min(1.0 - 1e-9);
+        let u = (next_u32() as f64 / u32::MAX as f64).clamp(1e-9, 1.0 - 1e-9);
         u as f32
     };
     let mut out = Vec::with_capacity(n);

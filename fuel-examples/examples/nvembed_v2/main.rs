@@ -133,7 +133,7 @@ fn encode(
     let eos_token = tokenizer
         .get_padding()
         .map(|p| p.pad_token.clone())
-        .unwrap_or_else(|| "".to_string());
+        .unwrap_or_default();
     let bos = "<s>".to_string();
     let input_texts: Vec<String> = examples
         .iter()

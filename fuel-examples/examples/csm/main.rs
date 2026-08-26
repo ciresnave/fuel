@@ -33,15 +33,19 @@
 //!      from `codebook0_head` applied directly to the embedding.
 //!   2. Implement the 31-step decoder loop with a fresh decoder KV cache
 //!      per generated audio frame:
-//!        h0 = backbone.forward_embeds(emb, pos);
-//!        c0 = sample(codebook0_logits(h0[:,-1,:]));
-//!        curr = concat(h0[:,-1,:], audio_embed_for_code(c0, 0));
-//!        curr = project_to_decoder(curr);  // (1, 2, decoder_dim)
-//!        for i in 1..num_codebooks {
-//!            di = decoder.forward_embeds(curr, dec_pos);
-//!            ci = sample(audio_head_logits(di[:,-1,:], i));
-//!            curr = audio_embed_for_code(ci, i);
-//!        }
+//!
+//!      ```text
+//!      h0 = backbone.forward_embeds(emb, pos);
+//!      c0 = sample(codebook0_logits(h0[:,-1,:]));
+//!      curr = concat(h0[:,-1,:], audio_embed_for_code(c0, 0));
+//!      curr = project_to_decoder(curr);  // (1, 2, decoder_dim)
+//!      for i in 1..num_codebooks {
+//!          di = decoder.forward_embeds(curr, dec_pos);
+//!          ci = sample(audio_head_logits(di[:,-1,:], i));
+//!          curr = audio_embed_for_code(ci, i);
+//!      }
+//!      ```
+//!
 //!   3. Feed the generated audio codes back into a fresh interleaved
 //!      frame (with `tokens_mask` set so the new audio columns are active
 //!      and text column is zero) and re-enter the backbone for the next

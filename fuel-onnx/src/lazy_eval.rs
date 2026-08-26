@@ -689,7 +689,7 @@ fn int64_data_vec(t: &onnx::TensorProto) -> Result<Vec<i64>> {
     } else if !t.raw_data.is_empty() {
         let n = t.raw_data.len() / 8;
         let mut out = Vec::with_capacity(n);
-        for chunk in t.raw_data.chunks_exact(8) {
+        for chunk in t.raw_data.as_chunks::<8>().0 {
             out.push(i64::from_le_bytes([
                 chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
             ]));
@@ -706,7 +706,7 @@ fn float_data(t: &onnx::TensorProto) -> Result<Arc<[f32]>> {
     } else if !t.raw_data.is_empty() {
         let n = t.raw_data.len() / 4;
         let mut out = Vec::with_capacity(n);
-        for chunk in t.raw_data.chunks_exact(4) {
+        for chunk in t.raw_data.as_chunks::<4>().0 {
             out.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
         }
         Ok(Arc::<[f32]>::from(out))
@@ -721,7 +721,7 @@ fn double_data(t: &onnx::TensorProto) -> Result<Arc<[f64]>> {
     } else if !t.raw_data.is_empty() {
         let n = t.raw_data.len() / 8;
         let mut out = Vec::with_capacity(n);
-        for chunk in t.raw_data.chunks_exact(8) {
+        for chunk in t.raw_data.as_chunks::<8>().0 {
             out.push(f64::from_le_bytes([
                 chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
             ]));
@@ -744,7 +744,7 @@ fn u32_data(t: &onnx::TensorProto) -> Result<Arc<[u32]>> {
     } else if !t.raw_data.is_empty() {
         let n = t.raw_data.len() / 4;
         let mut out = Vec::with_capacity(n);
-        for chunk in t.raw_data.chunks_exact(4) {
+        for chunk in t.raw_data.as_chunks::<4>().0 {
             out.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
         }
         Ok(Arc::<[u32]>::from(out))

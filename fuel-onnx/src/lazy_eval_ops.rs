@@ -78,7 +78,7 @@ fn nonzero_f32(x: &Tensor) -> Result<Tensor> {
     let xf = x.to_dtype(DType::F32)?;
     let zero = xf.zeros_like()?;
     // `ne` yields U8; widen straight back to F32 so callers can compose.
-    Ok(xf.ne(&zero)?.to_dtype(DType::F32)?)
+    xf.ne(&zero)?.to_dtype(DType::F32)
 }
 
 /// Fetch a required positional input, erroring with the node name.

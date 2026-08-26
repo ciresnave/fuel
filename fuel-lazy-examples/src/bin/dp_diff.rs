@@ -193,6 +193,12 @@ fn op_short_name(op: &Op) -> &'static str {
     }
 }
 
+// The pushes below are interleaved with comments explaining WHY each anchor
+// is in the set (and why SD VAE is not), and a later push is separated by a
+// five-line rationale. A `vec![...]` literal would have to either drop those
+// comments or scatter them inside the literal, so the push form is the
+// readable one here.
+#[allow(clippy::vec_init_then_push)]
 fn build_anchors() -> Vec<AnchorBuild> {
     let mut out = Vec::new();
     out.push(build_bert());

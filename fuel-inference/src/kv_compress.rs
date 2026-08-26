@@ -167,7 +167,7 @@ impl CompressedKv for KiviCompressed {
     fn compressed_size_bytes(&self) -> usize {
         // codes (packed) + scale + zero_point
         let packed_bits = self.codes.len() * self.bits as usize;
-        let packed_bytes = (packed_bits + 7) / 8;
+        let packed_bytes = packed_bits.div_ceil(8);
         packed_bytes + 4 + 4 // scale(f32) + zero_point(f32)
     }
 }
