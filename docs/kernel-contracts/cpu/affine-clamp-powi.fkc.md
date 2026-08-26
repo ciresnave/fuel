@@ -867,8 +867,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "native f32: coeff(exp) * x.powi(exp-1) * upstream; deterministic; bit-stable same hardware."
+  audited: true
+  notes: "native f32: coeff(exp) * x.powi(exp-1) * upstream; deterministic; bit-stable same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -935,8 +935,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "native f64: coeff(exp) * x.powi(exp-1) * upstream; deterministic; bit-stable same hardware."
+  audited: true
+  notes: "native f64: coeff(exp) * x.powi(exp-1) * upstream; deterministic; bit-stable same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1004,8 +1004,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "widen x+upstream to f32, coeff*x.powi(exp-1)*upstream in f32, narrow to bf16 on store; deterministic; bit-stable same hardware."
+  audited: true
+  notes: "widen x+upstream to f32, coeff*x.powi(exp-1)*upstream in f32, narrow to bf16 on store; deterministic; bit-stable same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1073,8 +1073,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "widen x+upstream to f32, coeff*x.powi(exp-1)*upstream in f32, narrow to f16 on store; deterministic; bit-stable same hardware."
+  audited: true
+  notes: "widen x+upstream to f32, coeff*x.powi(exp-1)*upstream in f32, narrow to f16 on store; deterministic; bit-stable same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```

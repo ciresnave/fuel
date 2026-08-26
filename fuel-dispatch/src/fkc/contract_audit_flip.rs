@@ -591,21 +591,21 @@ components = [\"rustfmt\"]
         const REQUIRED_PINS: &[(&str, &str, &str)] = &[
             (
                 "seed_cpu_ledger.rs",
-                "nothing, 60,",
+                "nothing, 40,",
                 "the count of contract entries still declaring NO precision claim \
                  (GAP-226/228). Without it, a regression that un-earns entries reads \
                  as a pass.",
             ),
             (
                 "seed_cpu_ledger.rs",
-                "expected 563 contract-derived entries backed WITHOUT the fill",
+                "expected 583 contract-derived entries backed WITHOUT the fill",
                 "the count backed by contract + record rather than by \
                  `fill_unset_cpu_precision`. This is the number the whole program \
                  exists to move; unpinned, the fill could come back unnoticed.",
             ),
             (
                 "seed_cpu_ledger.rs",
-                "checked, 20,",
+                "expected 20 conv registrations to invoke",
                 "the conv registrations that must actually invoke (GAP-228(b)). \
                  Without it, a probe that stops building leaves the loop covering \
                  fewer ops and still reporting no constant output.",
@@ -619,6 +619,11 @@ components = [\"rustfmt\"]
                 "seed_cpu_ledger.rs",
                 "must not merge",
                 "the guard that a harness gap (no recipe written) and a verifier result                  (no reference available) never share a bucket again. They did, through                  a shared `starts_with` prefix.",
+            ),
+            (
+                "seed_cpu_ledger.rs",
+                "expected 20 registrations across the four small surfaces",
+                "the four small non-conv surfaces that must demonstrably reach their                  kernel (GAP-228(c)). Without it, a probe that stops building leaves                  the loop checking fewer ops and still reporting none inert.",
             ),
             (
                 "seed_cpu_ledger.rs",

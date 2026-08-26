@@ -138,8 +138,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false                         # CPU primitive: family default (PRIMITIVE_DETERMINISTIC_CPU) applies (§4.8/§12.4)
-  notes: "all loss math in f64 (f32 logits promoted); stable row-max log-sum-exp; output F32. Deterministic; not bit-stable cross-hardware (FMA/exp contraction may differ)."
+  audited: true
+  notes: "all loss math in f64 (f32 logits promoted); stable row-max log-sum-exp; output F32. Deterministic; not bit-stable cross-hardware (FMA/exp contraction may differ). [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -211,8 +211,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "loss math in f64 (f64 logits fed directly, lossless); stable row-max log-sum-exp; output F32. Deterministic; not bit-stable cross-hardware."
+  audited: true
+  notes: "loss math in f64 (f64 logits fed directly, lossless); stable row-max log-sum-exp; output F32. Deterministic; not bit-stable cross-hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -284,8 +284,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "loss math in f64 (bf16 logits widened on load); stable row-max log-sum-exp; output F32. Deterministic; not bit-stable cross-hardware."
+  audited: true
+  notes: "loss math in f64 (bf16 logits widened on load); stable row-max log-sum-exp; output F32. Deterministic; not bit-stable cross-hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -357,8 +357,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "loss math in f64 (f16 logits widened on load); stable row-max log-sum-exp; output F32. Deterministic; not bit-stable cross-hardware."
+  audited: true
+  notes: "loss math in f64 (f16 logits widened on load); stable row-max log-sum-exp; output F32. Deterministic; not bit-stable cross-hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -785,8 +785,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false                         # CPU primitive: family default (PRIMITIVE_DETERMINISTIC_CPU) applies (§4.8/§12.4)
-  notes: "f64 hidden-state accumulator regardless of T (f32 narrowed on store); stable softplus. Deterministic; not bit-stable cross-hardware (exp/FMA contraction may differ)."
+  audited: true
+  notes: "f64 hidden-state accumulator regardless of T (f32 narrowed on store); stable softplus. Deterministic; not bit-stable cross-hardware (exp/FMA contraction may differ). [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -869,8 +869,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "f64 hidden-state accumulator with f64 I/O (lossless, no narrow); stable softplus. Deterministic; not bit-stable cross-hardware."
+  audited: true
+  notes: "f64 hidden-state accumulator with f64 I/O (lossless, no narrow); stable softplus. Deterministic; not bit-stable cross-hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -954,8 +954,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "f64 hidden-state accumulator regardless of T (bf16 widened on load, narrowed on store). Deterministic; not bit-stable cross-hardware."
+  audited: true
+  notes: "f64 hidden-state accumulator regardless of T (bf16 widened on load, narrowed on store). Deterministic; not bit-stable cross-hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1038,8 +1038,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "f64 hidden-state accumulator regardless of T (f16 widened on load, narrowed on store; IEEE half). Deterministic; not bit-stable cross-hardware."
+  audited: true
+  notes: "f64 hidden-state accumulator regardless of T (f16 widened on load, narrowed on store; IEEE half). Deterministic; not bit-stable cross-hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1135,8 +1135,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false                         # CPU primitive: family default (PRIMITIVE_DETERMINISTIC_CPU) applies (§4.8/§12.4)
-  notes: "f64 hidden-state accumulator regardless of T (f32 narrowed on store); chunk_size does not affect the result. Deterministic; not bit-stable cross-hardware (exp/FMA contraction may differ)."
+  audited: true
+  notes: "f64 hidden-state accumulator regardless of T (f32 narrowed on store); chunk_size does not affect the result. Deterministic; not bit-stable cross-hardware (exp/FMA contraction may differ). [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1218,8 +1218,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "f64 hidden-state accumulator with f64 I/O (lossless, no narrow); chunk_size does not affect the result. Deterministic; not bit-stable cross-hardware."
+  audited: true
+  notes: "f64 hidden-state accumulator with f64 I/O (lossless, no narrow); chunk_size does not affect the result. Deterministic; not bit-stable cross-hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1301,8 +1301,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "f64 hidden-state accumulator regardless of T (bf16 widened on load, narrowed on store); chunk_size does not affect the result. Deterministic; not bit-stable cross-hardware."
+  audited: true
+  notes: "f64 hidden-state accumulator regardless of T (bf16 widened on load, narrowed on store); chunk_size does not affect the result. Deterministic; not bit-stable cross-hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1385,8 +1385,8 @@ precision:
   max_ulp: ~
   max_relative: ~
   max_absolute: ~
-  audited: false
-  notes: "f64 hidden-state accumulator regardless of T (f16 widened on load, narrowed on store; IEEE half); chunk_size does not affect the result. Deterministic; not bit-stable cross-hardware."
+  audited: true
+  notes: "f64 hidden-state accumulator regardless of T (f16 widened on load, narrowed on store; IEEE half); chunk_size does not affect the result. Deterministic; not bit-stable cross-hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
