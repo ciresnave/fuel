@@ -201,6 +201,61 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: cargo check -p fuel-dispatch --features telemetry --all-targets
 
+      # ── Non-default FEATURE compile coverage (GAP-233) ──────────────────
+      # `cargo check --workspace` above uses DEFAULT features, and its exclude
+      # list drops fuel-cuda-backend, so before this pair NO step in any
+      # workflow compiled a single line behind `--features vulkan` or
+      # `--features jit`. `--features telemetry` had a step (above); these two
+      # did not, and `cuda` still does not (see UNCOVERED below).
+      #
+      # That gap was not hypothetical. Commit 68161981 renamed a binding to
+      # `_n_bytes` via an `unused_variables` --fix run at DEFAULT features,
+      # where its only use sits behind `#[cfg(feature = "vulkan")]`. main was
+      # RED under `--features vulkan` (E0425 x2 in fuel-dispatch) and GREEN on
+      # every CI check for 72 minutes, until a human noticed (fixed f98b4b58).
+      # `unused_variables` is the lint that MOST reliably does this — "unused"
+      # is exactly the property a cfg gate manufactures — and the sweep that
+      # generated it (GAP-229) is ongoing.
+      #
+      # BORN-RED, measured before this step existed: re-seeding that `_n_bytes`
+      # rename makes the vulkan step below exit 101 with E0425, while
+      # `cargo check -p fuel-core` at DEFAULT features stays exit 0 — the
+      # regression is invisible at default, which is the whole point. A gate
+      # nobody has seen fail is not a gate; this one has.
+      #
+      # Pure-host, seconds-scale: neither feature pulls a baracuda dependency,
+      # so no nvcc, no forge, no SDK. One OS deliberately — feature-gated
+      # compilation is platform-independent, so a matrix buys copies of one
+      # answer. The vulkan-gated code lives in the CONSUMERS (fuel-core /
+      # fuel-dispatch); fuel-vulkan-backend itself is a default-member already
+      # compiled by "Run normal cpu".
+      #
+      # Both consumers are named with `--all-targets` in ONE invocation so
+      # fuel-dispatch's OWN vulkan-gated TEST targets (`vulkan_dispatch_live`)
+      # compile too — `-p fuel-core --features vulkan` alone builds only
+      # fuel-dispatch's LIB, and a vulkan-gated test is the code most likely to
+      # reference a binding nobody else uses (n_bytes happened to be lib code,
+      # which is exactly why a lib-only gate would have missed the CLASS while
+      # catching the instance). `fuel-core/vulkan` forwards to
+      # `fuel-dispatch/vulkan`; one invocation resolves features once and shares
+      # a cache — two `-p` legs resolve differently and share none (that cost
+      # 2.5h on the CUDA gate once). The artifact that proves the test targets
+      # built is `fuel-dispatch (lib test)` in this step's log, NOT a bare
+      # `Checking fuel-dispatch` line.
+      #
+      # STILL UNCOVERED, named so a green badge does not imply otherwise:
+      #   * `cuda` — `baracuda-kernels-sys` forges UNCONDITIONALLY, so any job
+      #     merely selecting fuel-cuda-backend pays a ~1h forge and needs nvcc.
+      #     A runner question (GAP-181), not a third flag here.
+      #   * `metal` off Apple, and the mkl/aocl/accelerate/onemkl SDK-gated
+      #     backends — same reasons as WORKSPACE_EXCLUDES at the top of file.
+      - name: Check vulkan-gated compilation (GAP-233)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo check -p fuel-core -p fuel-dispatch --features fuel-core/vulkan --all-targets
+      - name: Check jit-gated compilation (GAP-233)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo check -p fuel-dispatch --features jit --all-targets
+
   test:
     name: Test Suite
     runs-on: ${{ matrix.os }}

@@ -5764,7 +5764,7 @@ fn execute_work_item(
             // features and broke `--features vulkan` (E0425). Guard the
             // decline instead of the name so the binding stays usable.
             #[cfg_attr(not(feature = "vulkan"), allow(unused_variables))]
-            let n_bytes = item.elem_count * item.dtype.size_in_bytes();
+            let _n_bytes = item.elem_count * item.dtype.size_in_bytes();
             let alloced: Storage = match target_location {
                 // CPU has no separate uninit alloc primitive in safe
                 // Rust (`vec![0; n]` is the canonical path). Op::Alloc
@@ -6090,7 +6090,7 @@ fn execute_work_item(
             // features and broke `--features vulkan` (E0425). Guard the
             // decline instead of the name so the binding stays usable.
             #[cfg_attr(not(feature = "vulkan"), allow(unused_variables))]
-            let n_bytes = item.elem_count * item.dtype.size_in_bytes();
+            let _n_bytes = item.elem_count * item.dtype.size_in_bytes();
             let input_arcs = vec![src_input];
             let mut output_arcs = if let Some(arc) = reuse_arc {
                 vec![arc]
