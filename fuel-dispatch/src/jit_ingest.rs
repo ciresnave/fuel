@@ -1500,10 +1500,32 @@ fn resolve_reference_failure(
     }
 }
 
-/// Empirically verify a received [`CandidateKernel`] on a synthetic probe:
-/// compare it to the reference realized from its `decompose` and check every
-/// DECLARED, machine-checkable precision claim (bit-stability + the numeric
-/// bounds). Returns the [`VerifyVerdict`] plus the earned [`LedgerRecord`]s
+/// Empirically verify a received [`CandidateKernel`] on a synthetic probe and
+/// check every DECLARED, machine-checkable precision claim (bit-stability +
+/// the numeric bounds).
+///
+/// REFERENCE RESOLUTION (corrected 2026-08-26 — this comment said "the
+/// reference realized from its `decompose`", which has been WRONG since
+/// Increment 1 landed in 2026-07 and cost a cross-project answer: an editor
+/// of record asked what this gate checks, and the STALE COMMENT was read as
+/// the behaviour). The live precedence is in `verify_candidate_impl` above
+/// the `if numeric_declared` block:
+///
+/// - corpus (`corpus_verdict`) — sole verdict authority, DORMANT today,
+///   precedence live;
+/// - `claimed_op.is_some()` → FUEL's OWN REGISTERED RECIPE for the claimed
+///   op, plus a structural `recipe_identity_matches` pre-check that the
+///   submitted decompose lowers to the SAME primitive base map — so a
+///   candidate is checked against what FUEL says the op computes, never
+///   against its own possibly-wrong decompose;
+/// - `claimed_op.is_none()` → the candidate's own `decompose` (the original
+///   Spec B path, defensive: adoption requires a decompose anyway).
+///
+/// KNOWN LIMIT, GAP-236: the comparison runs on a probe of `[-0.5, 0.5)`, so
+/// STRUCTURAL infidelity is caught (a differing base map fails before any GPU
+/// work — the interleaved-rope-vs-rotate-half rejection is the shipped proof)
+/// while NUMERICAL infidelity INSIDE a matching structure is not: `fmaxf` vs
+/// a NaN-propagating `Max` agree on every input the probe can reach. Returns the [`VerifyVerdict`] plus the earned [`LedgerRecord`]s
 /// (one per checked claim), in a fresh candidate-local ledger — the embedded
 /// ledger is never touched.
 ///
