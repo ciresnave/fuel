@@ -1856,6 +1856,164 @@ mod tests {
         assert!(problems.is_empty(), "{problems:?}");
     }
 
+    /// **What `fill_unset_cpu_precision` still supplies in PRODUCTION that the
+    /// contract does not — a MEASUREMENT, not a retirement.**
+    ///
+    /// GAP-228 drove the contract-derived table to zero UNAUDITED entries, and
+    /// that table is built by `register_into`, which **never applies the
+    /// fill**. It is tempting to read the zero as "the fill is now redundant".
+    /// **It is not, and the two tables differ BY CONSTRUCTION**: production
+    /// (`register_cpu_kernels`) registers kernels that no `.fkc.md` describes,
+    /// so the answer is a measurement rather than an inference from the zero.
+    ///
+    /// This test reports the delta and asserts only what it has measured:
+    ///
+    /// * how many production entries have NO contract-derived counterpart —
+    ///   these are the only places the fill can still be load-bearing;
+    /// * how many contract-derived entries are absent from production;
+    /// * of the orphans, how many the fill actually UPGRADES (i.e. would be
+    ///   UNAUDITED without it), which is the number a retirement proposal
+    ///   would have to answer for.
+    ///
+    /// **It deliberately does NOT assert that number is zero.** Pinning it
+    /// would turn a measurement into a claim the evidence does not support,
+    /// and the point of this program is that a precision claim nobody measured
+    /// is exactly what `fill_unset_cpu_precision` was doing.
+    ///
+    /// ## Result, measured 2026-08-26
+    ///
+    /// ```text
+    /// contract-derived CPU entries : 623
+    /// production CPU entries       : 659
+    /// production-only (orphans)    : 36
+    /// contract-only (missing)      : 0
+    /// orphans the FILL upgrades    : 36   (ALL of them)
+    /// shared entries that DISAGREE : 0
+    /// ```
+    ///
+    /// By op: ArgMaxDim 4, ArgMinDim 4, Copy 10, Nf4Matmul 3, NonZeroIndices 2,
+    /// QMatMul 1, Tril 6, Triu 6.
+    ///
+    /// **So `fill_unset_cpu_precision` is NOT redundant, and its scope is now
+    /// exactly bounded: it supplies NOTHING for the 623 entries a contract
+    /// covers (0 disagreements), and it fabricates a
+    /// `PRIMITIVE_DETERMINISTIC_CPU` claim for 36 registrations that have NO
+    /// CONTRACT AT ALL.** Retiring it is therefore a contract-authoring
+    /// question about eight ops, not a precision question — and the 36 would
+    /// become UNAUDITED the moment it went, which is the honest state until
+    /// those contracts exist.
+    ///
+    /// ⚠️ **THE ATTRIBUTION WAS MEASURED, NOT INFERRED.** "An orphan with a
+    /// non-UNAUDITED precision can only have been filled" is a plausible
+    /// inference and it is not evidence — some other path could set it.
+    /// Control: comment out the `fill_unset_cpu_precision` call in
+    /// `register_cpu_kernels` and re-run. **`orphans the FILL upgrades` drops
+    /// 36 -> 0**, while `production-only` stays 36 and `DISAGREE` stays 0. The
+    /// control cannot live in the suite because it edits production code, so
+    /// it is recorded here with the exact method rather than asserted.
+    #[test]
+    fn gap_228_what_the_production_fill_still_supplies() {
+        use crate::fused::PrecisionGuarantee;
+
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/kernel-contracts/cpu");
+        let mut contract = crate::kernel::KernelBindingTable::new();
+        let mut fused = crate::fused::FusedKernelRegistry::new();
+        let mut n_contracts = 0usize;
+        for e in std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("read {dir:?}: {e}")) {
+            let path = e.expect("dir entry").path();
+            if path.extension().and_then(|x| x.to_str()) != Some("md") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            let Ok(provider) = crate::fkc::import_bundle_str(&text, &crate::fkc::CpuLinkRegistry)
+            else {
+                continue;
+            };
+            if provider.register_into(&mut contract, &mut fused).is_ok() {
+                n_contracts += 1;
+            }
+        }
+        assert!(
+            n_contracts >= 10,
+            "only {n_contracts} CPU contracts registered — the delta below would be \
+             measured against a subset and would overstate what the fill supplies"
+        );
+
+        let mut prod = crate::kernel::KernelBindingTable::new();
+        crate::dispatch::register_cpu_kernels(&mut prod);
+
+        type Key = (String, Vec<DType>);
+        let keys = |t: &crate::kernel::KernelBindingTable| -> std::collections::HashMap<Key, PrecisionGuarantee> {
+            t.iter_entries()
+                .filter(|(_, _, b, _)| *b == BackendId::Cpu)
+                .map(|(op, dt, _, e)| ((format!("{op:?}"), dt.to_vec()), e.precision.clone()))
+                .collect()
+        };
+        let c = keys(&contract);
+        let p = keys(&prod);
+
+        let unaudited = PrecisionGuarantee::UNAUDITED.notes;
+        let mut orphans: Vec<&Key> = p.keys().filter(|k| !c.contains_key(*k)).collect();
+        // DType is not Ord, so order by the rendered key rather than the tuple.
+        orphans.sort_by_key(|k| format!("{} {:?}", k.0, k.1));
+        let mut missing: Vec<&Key> = c.keys().filter(|k| !p.contains_key(*k)).collect();
+        missing.sort_by_key(|k| format!("{} {:?}", k.0, k.1));
+
+        // Of the production-only entries, which ones does the fill UPGRADE?
+        // A non-UNAUDITED entry with no contract behind it can only have been
+        // filled — nothing else in that path sets a precision.
+        let mut filled_by_op: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
+        for k in &orphans {
+            if p[*k].notes != unaudited {
+                *filled_by_op.entry(k.0.clone()).or_default() += 1;
+            }
+        }
+        // And where BOTH tables have the entry, does production disagree?
+        let mut disagree: Vec<String> = Vec::new();
+        for (k, cv) in &c {
+            if let Some(pv) = p.get(k) {
+                if cv.notes != pv.notes {
+                    disagree.push(format!("{} {:?}", k.0, k.1));
+                }
+            }
+        }
+        disagree.sort();
+
+        println!("[gap-228] contract-derived CPU entries : {}", c.len());
+        println!("[gap-228] production CPU entries       : {}", p.len());
+        println!("[gap-228] production-only (orphans)    : {}", orphans.len());
+        println!("[gap-228] contract-only (missing)      : {}", missing.len());
+        println!(
+            "[gap-228] orphans the FILL upgrades    : {}",
+            filled_by_op.values().sum::<usize>()
+        );
+        for (op, n) in &filled_by_op {
+            println!("[gap-228]     {n:>3}  {op}");
+        }
+        println!(
+            "[gap-228] shared entries that DISAGREE : {}",
+            disagree.len()
+        );
+        for d in disagree.iter().take(20) {
+            println!("[gap-228]     {d}");
+        }
+
+        // The only assertions are non-vacuity ones. The delta itself is
+        // REPORTED, not pinned: pinning it would assert a conclusion this
+        // measurement does not license.
+        assert!(
+            c.len() > 100 && p.len() > 100,
+            "one of the tables is nearly empty ({} contract, {} production), so every \
+             number above is measured against nothing",
+            c.len(),
+            p.len()
+        );
+    }
+
     /// **GAP-226 split of the entries that declare nothing: how much can
     /// start now, and how much waits on a vocabulary decision.** Reports;
     /// asserts only invariants.
