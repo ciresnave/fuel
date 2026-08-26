@@ -281,11 +281,15 @@ mod tests {
             forward_dtype: DType::BF16,
             master_dtype: DType::F32,
         };
+        // 3.14159 is arbitrary test data round-tripped through BF16, not the constant PI.
+        #[allow(clippy::approx_constant)]
         let param = cpu_f32(vec![1.0, 0.5, -2.0, 3.14159], &[4]);
         let fwd = cast_for_forward(&param, &cfg).unwrap();
         assert_eq!(fwd.dtype(), DType::BF16);
         let host = fwd.realize_bf16();
         assert_eq!(host.len(), 4);
+        // matches the param test data above; not PI.
+        #[allow(clippy::approx_constant)]
         let expected = [1.0_f32, 0.5, -2.0, 3.14159];
         for (got, exp) in host.iter().zip(expected.iter()) {
             let got_f32 = got.to_f32();

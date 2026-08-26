@@ -209,6 +209,8 @@ impl Gemma4VisionModel {
             // Bound-clamp positions to the table's extent.
             let px_c = px.min(pe_size - 1);
             let py_c = py.min(pe_size - 1);
+            #[allow(clippy::erasing_op)]
+            // stacked-table selector 0; pairs with off_y = 1 * table_total below
             let off_x = 0 * table_total + px_c * h_dim;
             let off_y = 1 * table_total + py_c * h_dim;
             for k in 0..h_dim {
