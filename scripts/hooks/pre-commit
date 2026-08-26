@@ -88,9 +88,40 @@ if [ -n "$staged_rs" ]; then
     # `at line N` form the parse assumed. The verdict was right and the message
     # was unusable; not parsing at all removes the failure mode instead of
     # patching it.
+    # ⚠️ THE EDITION MUST BE RESOLVED PER FILE, NOT HARDCODED. The first version
+    # of this gate ran `rustfmt --edition 2024` on everything. Two crates declare
+    # their own edition -- `fuel-onnx` and `fuel-metal-kernels` are edition 2021 --
+    # so their files were checked against a style edition they are not written in.
+    #
+    # That is worse than a false positive: it is UNSATISFIABLE BY ITS OWN ADVICE.
+    # The hook says "run cargo fmt", cargo fmt formats to the crate's real edition
+    # 2021, and the hook rejects the result again. A gate that cannot be satisfied
+    # by following its own instructions teaches people to `--no-verify`, and the
+    # bypass habit is a worse outcome than the drift this gate exists to prevent.
+    # It also names files the committer never touched, which reads as the gate
+    # being broken rather than the code being wrong -- and it was.
+    #
+    # `cargo fmt` was right and this gate was wrong: `cargo fmt -p fuel-onnx
+    # --check` exits 0 on the same file this gate rejected. cargo passes each
+    # crate its real edition; a bare `rustfmt` does not.
     unformatted=""
     for f in $staged_rs; do
-        rustfmt --edition 2024 --check "$f" >/dev/null 2>&1 || unformatted="$unformatted
+        # Walk up to the owning crate's Cargo.toml.
+        crate_dir=$(dirname "$f")
+        while [ "$crate_dir" != "." ] && [ "$crate_dir" != "/" ] && [ ! -f "$crate_dir/Cargo.toml" ]; do
+            crate_dir=$(dirname "$crate_dir")
+        done
+        # Match ONLY an explicit `edition = "NNNN"`. The 34 crates that write
+        # `edition.workspace = true` must fall through to the default: a looser
+        # pattern returns that whole line unmatched rather than empty, so an
+        # is-it-empty check never fires and the edition becomes garbage.
+        ed=""
+        if [ -f "$crate_dir/Cargo.toml" ]; then
+            ed=$(grep -m1 -E '^edition[[:space:]]*=[[:space:]]*"[0-9]+"' "$crate_dir/Cargo.toml" 2>/dev/null \
+                 | sed -E 's/.*"([0-9]+)".*/\1/')
+        fi
+        [ -z "$ed" ] && ed=2024   # workspace default
+        rustfmt --edition "$ed" --check "$f" >/dev/null 2>&1 || unformatted="$unformatted
 $f"
     done
     unformatted=$(echo "$unformatted" | sed '/^$/d')
