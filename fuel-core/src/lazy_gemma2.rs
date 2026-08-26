@@ -365,9 +365,9 @@ impl Gemma2Model {
     }
 }
 
-/// Gemma-style RmsNorm: scale by `gamma + 1.0` rather than
-/// `gamma`. The +1 is folded into a separate constant tensor
-/// on the graph so the underlying RmsNorm op stays standard.
+// Gemma-style RmsNorm: scale by `gamma + 1.0` rather than
+// `gamma`. The +1 is folded into a separate constant tensor
+// on the graph so the underlying RmsNorm op stays standard.
 
 // ---- HuggingFace config + weight loading ----------------------------------
 

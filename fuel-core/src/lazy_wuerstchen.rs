@@ -1870,7 +1870,6 @@ mod tests {
         }
     }
 
-    /// End-to-end generate: tiny config; text → 32×32 RGB image; finite
     // ---- Safetensors loader smoke tests -------------------------------
 
     fn write_tmp_safetensors_w(tensors: &[(String, Vec<usize>, Vec<f32>)]) -> std::path::PathBuf {
@@ -2022,6 +2021,7 @@ mod tests {
 
     /// and within `[-1, 1]` (tanh activation at decoder output).
     #[test]
+    /// End-to-end generate: tiny config; text → 32×32 RGB image; finite
     fn end_to_end_generate_tiny() {
         let cfg = WuerstchenConfig::tiny();
         let prior = PriorModel {

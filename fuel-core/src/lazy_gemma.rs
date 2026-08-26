@@ -310,8 +310,8 @@ impl GemmaModel {
     }
 }
 
-/// Gemma's offset RmsNorm: `y = (x / rms) * (gamma + 1)`. The `+ 1`
-/// matches the reference Gemma forward pass.
+// Gemma's offset RmsNorm: `y = (x / rms) * (gamma + 1)`. The `+ 1`
+// matches the reference Gemma forward pass.
 
 // ---- Safetensors loader ----------------------------------------------------
 
