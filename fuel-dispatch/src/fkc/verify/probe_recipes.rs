@@ -1407,10 +1407,11 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
         //    (`physical_block >= num_blocks` -> typed `Err`, and
         //    `ctx_len > max_blocks_per_seq * block_size` -> typed `Err`).
         //    There is no silent wrong-block read for an invalid index.
-        // 2. **THE NAIVE FILL FAILS SAFE.** `fill_deterministic` through the
-        //    `DType::U32` arm yields ~2e9, out of range for any probe-sized
-        //    cache, so a generated table would trap loudly rather than
-        //    quietly. The obvious wrong thing is not the dangerous one here.
+        // 2. **THE NAIVE FILL FAILS SAFE.** GAP(GAP-236)
+        //    `fill_deterministic` through the `DType::U32` arm yields ~2e9,
+        //    out of range for any probe-sized cache, so a generated table
+        //    would trap loudly rather than quietly. The obvious wrong thing
+        //    is not the dangerous one here.
         // 3. **THE ACTUAL HAZARD IS AN IN-RANGE DEGENERATE TABLE**, which is
         //    valid, silent and perfectly bit-stable:
         //      * **all-zeros / any constant** maps every logical block onto one

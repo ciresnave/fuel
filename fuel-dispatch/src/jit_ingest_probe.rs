@@ -71,7 +71,7 @@ use std::sync::{Arc, RwLock};
 /// born-red is measured against the FINAL subject rather than against a
 /// stand-in that gets swapped later.
 ///
-/// ⚠️⚠️ **THE HOLE IS NOT CLOSED YET AND THIS FUNCTION IS NOT YET CONSUMED.**
+/// ⚠️⚠️ **THE HOLE IS NOT CLOSED YET AND THIS FUNCTION IS NOT YET CONSUMED.** GAP(GAP-236)
 /// `verify_candidate_impl` (`jit_ingest.rs`, the `// (1) Probe synthesis`
 /// block) still calls [`probe_from_operands`] directly, so production
 /// admission still runs on the seeded fill alone. That call site is
