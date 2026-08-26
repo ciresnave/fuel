@@ -377,12 +377,10 @@ mod tests {
         for i in before..g.len() {
             if let Op::Fused(fid, fuel_graph::registry::FusedOpParams::Runtime { scalars }) =
                 &g.node(NodeId(i)).op
-            {
-                if *fid == rid {
+                && *fid == rid {
                     assert_eq!(scalars, &vec![7.25], "the LIVE value rode into the arm");
                     found = true;
                 }
-            }
         }
         assert!(found, "an Op::Fused(rid, Runtime) arm was emitted");
     }

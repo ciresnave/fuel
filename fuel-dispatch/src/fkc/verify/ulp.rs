@@ -318,7 +318,7 @@ pub fn verify_precision_bound(
                 ),
             });
         }
-        if a.bytes.len() % width != 0 {
+        if !a.bytes.len().is_multiple_of(width) {
             return Ok(VerifyOutcome::Fail {
                 detail: format!(
                     "probe {probe_idx}: {} bytes is not a whole number of {:?} elements",
@@ -703,7 +703,7 @@ mod tests {
             &F8Invoker,
             &F8Invoker,
             &entry,
-            &vec![vec![]],
+            &[vec![]],
             Bound::MaxUlp(0),
         )
         .expect("no infrastructure error");

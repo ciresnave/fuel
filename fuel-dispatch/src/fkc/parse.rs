@@ -309,17 +309,15 @@ fn enforce_restricted_yaml(chunk: &str, base_line: usize) -> Result<(), FkcError
         // to spaces), so a `&`/`*` only triggers when it is a YAML sigil.
         for tok in content.split_whitespace() {
             // An anchor sigil `&name` appears as a token starting with `&`.
-            if let Some(rest) = tok.strip_prefix('&') {
-                if !rest.is_empty() && is_anchor_name(rest) {
+            if let Some(rest) = tok.strip_prefix('&')
+                && !rest.is_empty() && is_anchor_name(rest) {
                     return Err(FkcError::AnchorDisallowed { line });
                 }
-            }
             // An alias `*name` appears as a token starting with `*`.
-            if let Some(rest) = tok.strip_prefix('*') {
-                if !rest.is_empty() && is_anchor_name(rest) {
+            if let Some(rest) = tok.strip_prefix('*')
+                && !rest.is_empty() && is_anchor_name(rest) {
                     return Err(FkcError::AliasDisallowed { line });
                 }
-            }
         }
 
         // --- Norway tokens in a scalar VALUE position ---
@@ -361,11 +359,11 @@ fn is_anchor_name(s: &str) -> bool {
 /// sigil/Norway scans look only at unquoted content.
 fn strip_comment_and_quotes(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
-    let mut chars = raw.chars().peekable();
+    let chars = raw.chars().peekable();
     let mut in_single = false;
     let mut in_double = false;
 
-    while let Some(c) = chars.next() {
+    for c in chars {
         match c {
             '\'' if !in_double => {
                 in_single = !in_single;

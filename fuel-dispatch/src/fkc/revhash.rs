@@ -89,8 +89,8 @@ fn canonical_form(k: &FkcKernel) -> String {
                     ),
                 );
             }
-            if let Some(fdx) = &d.fdx {
-                if let Some(q) = &fdx.quant {
+            if let Some(fdx) = &d.fdx
+                && let Some(q) = &fdx.quant {
                     push(
                         &format!("in{i}.quant"),
                         &format!(
@@ -103,7 +103,6 @@ fn canonical_form(k: &FkcKernel) -> String {
                         ),
                     );
                 }
-            }
         }
         if let Some(op_params) = &accept.op_params {
             push(

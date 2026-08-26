@@ -406,7 +406,7 @@ impl KernelInvoker for ExactRefInvoker {
                     .ok_or_else(|| VerifyError::Backend(format!("index short at {k}")))?;
                 Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize)
             };
-            let mut copy_from = |src_elem: usize, out: &mut Vec<u8>| -> Result<(), VerifyError> {
+            let copy_from = |src_elem: usize, out: &mut Vec<u8>| -> Result<(), VerifyError> {
                 let b = src
                     .bytes
                     .get(src_elem * w..(src_elem + 1) * w)
@@ -473,11 +473,10 @@ impl KernelInvoker for ExactRefInvoker {
                 }
             }
             #[cfg(test)]
-            if self.poison {
-                if let Some(b) = out.first_mut() {
+            if self.poison
+                && let Some(b) = out.first_mut() {
                     *b ^= 0x01;
                 }
-            }
             return Ok(HostTensor {
                 dtype: self.out_dtype,
                 shape: self.out_shape.clone(),

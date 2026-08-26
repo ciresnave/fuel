@@ -90,11 +90,10 @@ fn pinned_toolchain() -> String {
 /// confident wrong disclosure.
 fn parse_pinned_channel(text: &str) -> Option<String> {
     for line in text.lines() {
-        if let Some(rest) = line.split_once("channel") {
-            if let Some(v) = rest.1.split('"').nth(1) {
+        if let Some(rest) = line.split_once("channel")
+            && let Some(v) = rest.1.split('"').nth(1) {
                 return Some(format!("rust-toolchain.toml channel = {v}"));
             }
-        }
     }
     None
 }
@@ -356,8 +355,8 @@ components = [\"rustfmt\"]
                     // coverage statements where the stale one reads exactly as
                     // authoritative as the current one.
                     let mut base = l.to_string();
-                    if let Some(start) = base.find("[evidence: bit_stable_on_same_hardware") {
-                        if let Some(rel_end) = base[start..].find(']') {
+                    if let Some(start) = base.find("[evidence: bit_stable_on_same_hardware")
+                        && let Some(rel_end) = base[start..].find(']') {
                             let end = start + rel_end + 1;
                             // also swallow one leading space, if present
                             let cut_from = if start > 0 && base.as_bytes()[start - 1] == b' ' {
@@ -367,7 +366,6 @@ components = [\"rustfmt\"]
                             };
                             base.replace_range(cut_from..end, "");
                         }
-                    }
                     if let Some(last) = base.rfind('"') {
                         base.insert_str(last, &format!(" {clause}"));
                     }

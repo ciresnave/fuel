@@ -539,7 +539,7 @@ mod gate_tests {
             embedded.len()
         );
         assert!(
-            merged.records().iter().any(|r| *r == witness),
+            merged.records().contains(&witness),
             "record {:?}/{:?} present before the merge is missing after it",
             witness.backend,
             witness.kernel_ref

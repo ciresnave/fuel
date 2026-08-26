@@ -749,7 +749,7 @@ mod tests {
             // parity. Each unique symbol gets a stable pointer; the keys
             // in the elementwise-binary corpus are unique per section so
             // two pointers suffice to avoid same-key collisions there.
-            let k: KernelRef = if g.len() % 2 == 0 { dummy_a } else { dummy_b };
+            let k: KernelRef = if g.len().is_multiple_of(2) { dummy_a } else { dummy_b };
             g.insert(symbol.to_string(), k);
             Some(k)
         }
@@ -845,7 +845,7 @@ mod tests {
             if let Some(k) = g.get(symbol) {
                 return Some(*k);
             }
-            let k: KernelRef = if g.len() % 2 == 0 { dummy_a } else { dummy_b };
+            let k: KernelRef = if g.len().is_multiple_of(2) { dummy_a } else { dummy_b };
             g.insert(symbol.to_string(), k);
             Some(k)
         }
@@ -1100,14 +1100,14 @@ mod tests {
             .unwrap();
         assert_eq!(
             add_f32 as usize,
-            crate::dispatch::add_elementwise_f32_cpu_wrapper as usize,
+            crate::dispatch::add_elementwise_f32_cpu_wrapper as *const () as usize,
         );
         let pow_bf16 = table
             .lookup(OpKind::PowElementwise, &[DType::BF16; 3], BackendId::Cpu)
             .unwrap();
         assert_eq!(
             pow_bf16 as usize,
-            crate::dispatch::pow_elementwise_bf16_cpu_wrapper as usize,
+            crate::dispatch::pow_elementwise_bf16_cpu_wrapper as *const () as usize,
         );
 
         assert!(
@@ -1169,28 +1169,28 @@ mod tests {
             (
                 FusedOps::SOFTMAX_LAST_DIM,
                 [
-                    crate::dispatch::softmax_last_dim_f32_cpu_wrapper as usize,
-                    crate::dispatch::softmax_last_dim_f64_cpu_wrapper as usize,
-                    crate::dispatch::softmax_last_dim_bf16_cpu_wrapper as usize,
-                    crate::dispatch::softmax_last_dim_f16_cpu_wrapper as usize,
+                    crate::dispatch::softmax_last_dim_f32_cpu_wrapper as *const () as usize,
+                    crate::dispatch::softmax_last_dim_f64_cpu_wrapper as *const () as usize,
+                    crate::dispatch::softmax_last_dim_bf16_cpu_wrapper as *const () as usize,
+                    crate::dispatch::softmax_last_dim_f16_cpu_wrapper as *const () as usize,
                 ],
             ),
             (
                 FusedOps::RMS_NORM_LAST_DIM,
                 [
-                    crate::dispatch::rms_norm_last_dim_f32_cpu_wrapper as usize,
-                    crate::dispatch::rms_norm_last_dim_f64_cpu_wrapper as usize,
-                    crate::dispatch::rms_norm_last_dim_bf16_cpu_wrapper as usize,
-                    crate::dispatch::rms_norm_last_dim_f16_cpu_wrapper as usize,
+                    crate::dispatch::rms_norm_last_dim_f32_cpu_wrapper as *const () as usize,
+                    crate::dispatch::rms_norm_last_dim_f64_cpu_wrapper as *const () as usize,
+                    crate::dispatch::rms_norm_last_dim_bf16_cpu_wrapper as *const () as usize,
+                    crate::dispatch::rms_norm_last_dim_f16_cpu_wrapper as *const () as usize,
                 ],
             ),
             (
                 FusedOps::LAYER_NORM_LAST_DIM,
                 [
-                    crate::dispatch::layer_norm_last_dim_f32_cpu_wrapper as usize,
-                    crate::dispatch::layer_norm_last_dim_f64_cpu_wrapper as usize,
-                    crate::dispatch::layer_norm_last_dim_bf16_cpu_wrapper as usize,
-                    crate::dispatch::layer_norm_last_dim_f16_cpu_wrapper as usize,
+                    crate::dispatch::layer_norm_last_dim_f32_cpu_wrapper as *const () as usize,
+                    crate::dispatch::layer_norm_last_dim_f64_cpu_wrapper as *const () as usize,
+                    crate::dispatch::layer_norm_last_dim_bf16_cpu_wrapper as *const () as usize,
+                    crate::dispatch::layer_norm_last_dim_f16_cpu_wrapper as *const () as usize,
                 ],
             ),
         ];
@@ -1217,46 +1217,46 @@ mod tests {
             (
                 FusedOps::SOFTMAX_LAST_DIM_BACKWARD,
                 [
-                    crate::dispatch::softmax_last_dim_backward_f32_cpu_wrapper as usize,
-                    crate::dispatch::softmax_last_dim_backward_f64_cpu_wrapper as usize,
-                    crate::dispatch::softmax_last_dim_backward_bf16_cpu_wrapper as usize,
-                    crate::dispatch::softmax_last_dim_backward_f16_cpu_wrapper as usize,
+                    crate::dispatch::softmax_last_dim_backward_f32_cpu_wrapper as *const () as usize,
+                    crate::dispatch::softmax_last_dim_backward_f64_cpu_wrapper as *const () as usize,
+                    crate::dispatch::softmax_last_dim_backward_bf16_cpu_wrapper as *const () as usize,
+                    crate::dispatch::softmax_last_dim_backward_f16_cpu_wrapper as *const () as usize,
                 ],
             ),
             (
                 FusedOps::LAYER_NORM_LAST_DIM_BACKWARD,
                 [
-                    crate::dispatch::layer_norm_last_dim_backward_f32_cpu_wrapper as usize,
-                    crate::dispatch::layer_norm_last_dim_backward_f64_cpu_wrapper as usize,
-                    crate::dispatch::layer_norm_last_dim_backward_bf16_cpu_wrapper as usize,
-                    crate::dispatch::layer_norm_last_dim_backward_f16_cpu_wrapper as usize,
+                    crate::dispatch::layer_norm_last_dim_backward_f32_cpu_wrapper as *const () as usize,
+                    crate::dispatch::layer_norm_last_dim_backward_f64_cpu_wrapper as *const () as usize,
+                    crate::dispatch::layer_norm_last_dim_backward_bf16_cpu_wrapper as *const () as usize,
+                    crate::dispatch::layer_norm_last_dim_backward_f16_cpu_wrapper as *const () as usize,
                 ],
             ),
             (
                 FusedOps::RMS_NORM_LAST_DIM_BACKWARD,
                 [
-                    crate::dispatch::rms_norm_last_dim_backward_f32_cpu_wrapper as usize,
-                    crate::dispatch::rms_norm_last_dim_backward_f64_cpu_wrapper as usize,
-                    crate::dispatch::rms_norm_last_dim_backward_bf16_cpu_wrapper as usize,
-                    crate::dispatch::rms_norm_last_dim_backward_f16_cpu_wrapper as usize,
+                    crate::dispatch::rms_norm_last_dim_backward_f32_cpu_wrapper as *const () as usize,
+                    crate::dispatch::rms_norm_last_dim_backward_f64_cpu_wrapper as *const () as usize,
+                    crate::dispatch::rms_norm_last_dim_backward_bf16_cpu_wrapper as *const () as usize,
+                    crate::dispatch::rms_norm_last_dim_backward_f16_cpu_wrapper as *const () as usize,
                 ],
             ),
             (
                 FusedOps::REDUCE_MAX_TO_BACKWARD,
                 [
-                    crate::dispatch::reduce_max_to_backward_f32_cpu_wrapper as usize,
-                    crate::dispatch::reduce_max_to_backward_f64_cpu_wrapper as usize,
-                    crate::dispatch::reduce_max_to_backward_bf16_cpu_wrapper as usize,
-                    crate::dispatch::reduce_max_to_backward_f16_cpu_wrapper as usize,
+                    crate::dispatch::reduce_max_to_backward_f32_cpu_wrapper as *const () as usize,
+                    crate::dispatch::reduce_max_to_backward_f64_cpu_wrapper as *const () as usize,
+                    crate::dispatch::reduce_max_to_backward_bf16_cpu_wrapper as *const () as usize,
+                    crate::dispatch::reduce_max_to_backward_f16_cpu_wrapper as *const () as usize,
                 ],
             ),
             (
                 FusedOps::POWI_BACKWARD,
                 [
-                    crate::dispatch::powi_backward_f32_cpu_wrapper as usize,
-                    crate::dispatch::powi_backward_f64_cpu_wrapper as usize,
-                    crate::dispatch::powi_backward_bf16_cpu_wrapper as usize,
-                    crate::dispatch::powi_backward_f16_cpu_wrapper as usize,
+                    crate::dispatch::powi_backward_f32_cpu_wrapper as *const () as usize,
+                    crate::dispatch::powi_backward_f64_cpu_wrapper as *const () as usize,
+                    crate::dispatch::powi_backward_bf16_cpu_wrapper as *const () as usize,
+                    crate::dispatch::powi_backward_f16_cpu_wrapper as *const () as usize,
                 ],
             ),
         ];
@@ -3044,7 +3044,7 @@ determinism: same_hardware_bitwise
             if let Some(k) = g.get(symbol) {
                 return Some(*k);
             }
-            let k: KernelRef = if g.len() % 2 == 0 { dummy_a } else { dummy_b };
+            let k: KernelRef = if g.len().is_multiple_of(2) { dummy_a } else { dummy_b };
             g.insert(symbol.to_string(), k);
             Some(k)
         }
@@ -3568,12 +3568,12 @@ determinism: same_hardware_bitwise
         // (2) register_into stamped the PINNED cost fn, NOT the unknown_cost sentinel.
         let cost_before = table.lookup_cost(OpKind::AddElementwise, &key, BackendId::Cpu);
         assert_eq!(
-            cost_before as usize, test_pinned_cost as usize,
+            cost_before as usize, test_pinned_cost as *const () as usize,
             "register_into must stamp the contract-pinned CostFn (not unknown_cost)",
         );
         assert_ne!(
             cost_before as usize,
-            crate::kernel::unknown_cost as usize,
+            crate::kernel::unknown_cost as *const () as usize,
             "the pinned CostFn must not be the unknown_cost sentinel",
         );
 
@@ -3581,12 +3581,12 @@ determinism: same_hardware_bitwise
         table.fill_unset_cpu_cost(crate::cost::default_cost_for_op_kind);
         let cost_after = table.lookup_cost(OpKind::AddElementwise, &key, BackendId::Cpu);
         assert_eq!(
-            cost_after as usize, test_pinned_cost as usize,
+            cost_after as usize, test_pinned_cost as *const () as usize,
             "fill_unset must leave the contract-pinned CostFn untouched",
         );
         assert_ne!(
             cost_after as usize,
-            crate::cost::cost_elementwise_binary_cpu as usize,
+            crate::cost::cost_elementwise_binary_cpu as *const () as usize,
             "the pinned cost must NOT have been clobbered by the op-family default",
         );
 

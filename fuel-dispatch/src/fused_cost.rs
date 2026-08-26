@@ -56,7 +56,7 @@ fn elem_count(shape: &Shape) -> u64 {
 pub fn is_fused_cost_sentinel(
     cost: fn(&[Shape], &FusedOpParams, &BackendCapabilities) -> CostEstimate,
 ) -> bool {
-    cost as *const () as usize == crate::fkc::fused_unknown_cost as *const () as usize
+    std::ptr::eq(cost as *const (), crate::fkc::fused_unknown_cost as *const ())
 }
 
 /// The fused-op Layer-1 cost accessor (spec §4 shape A — the sentinel
@@ -87,13 +87,12 @@ pub fn fused_layer1_cost(
     // hand-written `cost` fn and the decompose-derived fallback below — it's
     // the contract's own priced formula, layered above "composed" and below
     // "measured" (spec §5: measured › declared › composed › never zero).
-    if let Some(expr) = impl_.cost_expr {
-        if let Ok(est) =
+    if let Some(expr) = impl_.cost_expr
+        && let Ok(est) =
             crate::fkc::cost_compile::fused_cost_estimate(expr, input_shapes, input_dtypes, params)
         {
             return est;
         }
-    }
     if is_fused_cost_sentinel(impl_.cost) {
         cost_from_decompose(id, params, input_shapes, input_dtypes, caps)
     } else {

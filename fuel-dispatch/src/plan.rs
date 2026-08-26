@@ -696,8 +696,8 @@ pub fn compile_plan(
         // verbatim; its residency commits with the same priority
         // order the full walk uses (early rules, then the stored
         // winner's device — the priority-4 "plan winner" rule).
-        if let Some(base) = options.reuse_plan {
-            if let Some(set) = base.alternatives(id) {
+        if let Some(base) = options.reuse_plan
+            && let Some(set) = base.alternatives(id) {
                 let resident = early_residency(graph, options, id, node)
                     .or_else(|| set.winner().map(|w| w.device));
                 if let Some(loc) = resident {
@@ -706,7 +706,6 @@ pub fn compile_plan(
                 alternatives_map.insert(id, set.clone());
                 continue;
             }
-        }
 
         // Residency priorities 1–3: definitional transfer/alloc
         // targets, explicit placements, already-resident inputs.
@@ -744,11 +743,10 @@ pub fn compile_plan(
                     // fallbacks), close any open producer rows toward
                     // it FIRST so the close prices the crossing and
                     // the finalize prices the edge.
-                    if let Some(est) = options.transfer_estimator {
-                        if let [single] = devices.as_slice() {
+                    if let Some(est) = options.transfer_estimator
+                        && let [single] = devices.as_slice() {
                             close_open_inputs(&mut dp, graph, node, *single, est, &mut residency);
                         }
-                    }
                     let set = finalize_node_greedy(
                         graph,
                         node,
@@ -761,11 +759,10 @@ pub fn compile_plan(
                     // Multi-device greedy sets (legacy missing-impl
                     // fallback shapes) learn their device only after
                     // ranking — close producers toward the winner.
-                    if devices.len() > 1 {
-                        if let (Some(est), Some(wd)) = (options.transfer_estimator, dev) {
+                    if devices.len() > 1
+                        && let (Some(est), Some(wd)) = (options.transfer_estimator, dev) {
                             close_open_inputs(&mut dp, graph, node, wd, est, &mut residency);
                         }
-                    }
                     alternatives_map.insert(id, set);
                     dev
                 }
@@ -776,11 +773,10 @@ pub fn compile_plan(
                 // the chain at its transfer target (the production
                 // realize-root splice is exactly this shape — closing
                 // here IS the exit pricing through an explicit node).
-                if let fuel_graph::Op::Copy { target } | fuel_graph::Op::Move { target } = node.op {
-                    if let Some(est) = options.transfer_estimator {
+                if let fuel_graph::Op::Copy { target } | fuel_graph::Op::Move { target } = node.op
+                    && let Some(est) = options.transfer_estimator {
                         close_open_inputs(&mut dp, graph, node, target, est, &mut residency);
                     }
-                }
                 None
             }
         };
@@ -861,11 +857,10 @@ pub fn compile_plan(
                 continue;
             }
             let node = graph.node(id);
-            if is_passthrough(node) {
-                if let Some(&loc) = node.inputs.first().and_then(|i| residency.get(i)) {
+            if is_passthrough(node)
+                && let Some(&loc) = node.inputs.first().and_then(|i| residency.get(i)) {
                     residency.insert(id, loc);
                 }
-            }
         }
         // Finalize deferred rows in topo order: price inbound
         // transfers from the final residencies, rank, prune to the
@@ -1276,11 +1271,10 @@ fn close_open_inputs(
                 residency.insert(n, d);
             }
         }
-        if !residency.contains_key(&input) {
-            if let Some(d) = dp.committed_device(root) {
+        if !residency.contains_key(&input)
+            && let Some(d) = dp.committed_device(root) {
                 residency.insert(input, d);
             }
-        }
     }
 }
 
@@ -1471,8 +1465,8 @@ fn build_node_draft(
         // plan-time picker decision (the bridge stitches residency
         // via Op::Copy insertion around the off-device winner)
         // instead of a realize-time error.
-        if set.is_empty() && fallback_allowed {
-            if let Some(fallback) = options.fallback_placements_for {
+        if set.is_empty() && fallback_allowed
+            && let Some(fallback) = options.fallback_placements_for {
                 let fb_placements = fallback(target_device);
                 if !fb_placements.is_empty() {
                     set = enumerate_candidates(
@@ -1485,7 +1479,6 @@ fn build_node_draft(
                     from_fallback = !set.is_empty();
                 }
             }
-        }
     }
 
     // Fail-fast: if enumeration found nothing (on the decision
@@ -1649,8 +1642,8 @@ fn finalize_node_greedy(
     // across one device so the selector's relative ranking is
     // unaffected. Pruned BEFORE truncation so same-device
     // alternatives fill the top-N.
-    if relaxed {
-        if let Some(winner_device) = set.winner().map(|c| c.device) {
+    if relaxed
+        && let Some(winner_device) = set.winner().map(|c| c.device) {
             let keep: Vec<usize> = set
                 .alternatives()
                 .iter()
@@ -1661,7 +1654,6 @@ fn finalize_node_greedy(
                 set.retain_indices(&keep);
             }
         }
-    }
 
     // PR-B2: retire the fixed top-N. Retain the per-ending-device
     // Pareto frontier (crowding-capped at KEEP_PER_DEVICE) instead of

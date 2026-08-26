@@ -864,7 +864,7 @@ pub fn cost_nf4_matmul_cpu(
         .map(|d| *d as u64)
         .product::<u64>()
         .max(1);
-    if block_size == 0 || k % block_size != 0 {
+    if block_size == 0 || !k.is_multiple_of(block_size) {
         return CostEstimate::default();
     }
     // 2 FLOPs per FMA (mul + add). Dequant lookup is one mul per k step.

@@ -599,8 +599,8 @@ pub fn cross_check_fused_section(
             // dtype_rule: the real fn is called only with a matching-variant
             // point (never an `unwrap_or` fallback — a params-matching
             // dtype_rule may read its fields).
-            if let Some(rule) = out.dtype_rule.as_deref() {
-                if let Some(declared) = eval_dtype_rule(rule, combo, section)? {
+            if let Some(rule) = out.dtype_rule.as_deref()
+                && let Some(declared) = eval_dtype_rule(rule, combo, section)? {
                     // Never-panic guard: a registry fn that `debug_assert`s an
                     // arity the probe combo doesn't satisfy → warn + skip this
                     // point (see `guard_rule`; the arity pre-check above already
@@ -619,7 +619,6 @@ pub fn cross_check_fused_section(
                         });
                     }
                 }
-            }
             if let Some(rule) = out.shape_rule.as_deref() {
                 // C-4 T3: the SAME point feeds both sides — `ints` to the
                 // declared-rule evaluator (`param(N)` indexes it) and `p` to
@@ -658,8 +657,7 @@ pub fn cross_check_fused_section(
     // (never-panic) exactly like `shape_rule`/`dtype_rule`.
     if let (Some(bundle), Some(output_views), Some(p)) =
         (ret.bundle.as_ref(), entry.output_views, single.as_ref())
-    {
-        if let Some(combo) = combos.first() {
+        && let Some(combo) = combos.first() {
             // Finding 3: run the bundle differential over a ROLE-DISTINCT probe so
             // a same-rank operand-role drift in a slot rule (`same_as(b)` for
             // `same_as(u)`) diverges from the `output_views` oracle instead of
@@ -714,8 +712,8 @@ pub fn cross_check_fused_section(
                                 // `from_params(last_state)`) yields `None` and stays a
                                 // documented skip; only an evaluable, mismatching slot
                                 // is rejected.
-                                if let Some(view) = views.get(i) {
-                                    if shape != view.shape {
+                                if let Some(view) = views.get(i)
+                                    && shape != view.shape {
                                         return Err(FkcError::ShapeRuleMismatch {
                                             section: section.into(),
                                             role: slot_name.clone(),
@@ -723,14 +721,12 @@ pub fn cross_check_fused_section(
                                             actual: format!("shape {shape:?}"),
                                         });
                                     }
-                                }
                             }
                         }
                     }
                 }
             }
         }
-    }
     Ok(())
 }
 
@@ -800,15 +796,14 @@ pub fn check_bundle_arity(
     output_views_arity: usize,
     bundle: &serde_yaml_ng::Value,
 ) -> Result<(), FkcError> {
-    if let Some(declared) = bundle_slot_count(bundle) {
-        if declared != output_views_arity {
+    if let Some(declared) = bundle_slot_count(bundle)
+        && declared != output_views_arity {
             return Err(FkcError::BundleArityMismatch {
                 section: section.into(),
                 expected: output_views_arity,
                 actual: declared,
             });
         }
-    }
     Ok(())
 }
 

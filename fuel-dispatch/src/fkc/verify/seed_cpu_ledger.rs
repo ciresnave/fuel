@@ -1829,8 +1829,8 @@ mod tests {
                 None => unclassified.push(a.outcome.clone()),
             }
         }
-        let no_recipe = buckets.get("no_recipe").copied().unwrap_or(0);
-        let failed = buckets.get("fail").copied().unwrap_or(0);
+        let _no_recipe = buckets.get("no_recipe").copied().unwrap_or(0);
+        let _failed = buckets.get("fail").copied().unwrap_or(0);
         println!("[gap-207] CPU primitive bit-stability sweep over {cpu_entries} registrations:");
         for (name, n) in &buckets {
             println!("[gap-207]     {n:>4}  {name}");

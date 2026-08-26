@@ -450,7 +450,7 @@ impl FrontierConvergenceOptimizer {
         let mut seen: Vec<(String, Vec<NodeId>, Option<BackendId>)> = Vec::new();
         for &arm in arms {
             let k = Self::arm_key(graph, arm);
-            if !seen.iter().any(|s| *s == k) {
+            if !seen.contains(&k) {
                 seen.push(k);
             }
         }
