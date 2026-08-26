@@ -27,7 +27,7 @@
 //! Today: version 1.
 
 use fuel_ir::Result;
-use fuel_ir::probe::{BackendId, DeviceDescriptor, EquivalenceKey};
+use fuel_ir::probe::{DeviceDescriptor, EquivalenceKey};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -229,6 +229,9 @@ pub fn default_report_path() -> Option<std::path::PathBuf> {
 mod tests {
     use super::*;
     use fuel_ir::DeviceLocation;
+    // Used only by the fixtures below, so it belongs here and not in the
+    // lib import, where it reads as unused on a non-test build.
+    use fuel_ir::probe::BackendId;
 
     fn sample_cuda_descriptor(idx: u32) -> DeviceDescriptor {
         DeviceDescriptor {

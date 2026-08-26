@@ -66,6 +66,9 @@ fn recycler_reclaims_across_full_realizes_no_unbounded_growth() {
     // A ~10 MB working set of distinct recurring sizes (stand-in for a
     // model's weight tensors). Distinct sizes exercise several buckets;
     // recurrence is what a correct recycler must exploit for reuse.
+    // `1 * 1024 * 1024` closes the 4/3/2/1 descending series above; the
+    // leading factor is the datum and dropping it breaks the column.
+    #[allow(clippy::identity_op)]
     let sizes: [usize; 4] = [
         4 * 1024 * 1024,
         3 * 1024 * 1024,

@@ -240,7 +240,7 @@ impl Storage {
     /// Element count = `len_bytes / dtype.size_in_bytes()`.
     pub fn elem_count(&self) -> usize {
         let bps = self.dtype.size_in_bytes();
-        if bps == 0 { 0 } else { self.len_bytes() / bps }
+        self.len_bytes().checked_div(bps).unwrap_or(0)
     }
 
     /// Attach an encoding scheme to this storage (consuming builder).

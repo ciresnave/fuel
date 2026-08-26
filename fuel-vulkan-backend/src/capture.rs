@@ -156,6 +156,7 @@ mod tests {
     ///   1. replay after capture — correct on the original operands;
     ///   2. rebind onto NEW operand buffers (re-record with a fresh
     ///      descriptor set), then replay — operand rebasing.
+    ///
     /// Mode 2's output buffer is freshly allocated (zeroed) and only holds
     /// the correct values if the rebound command buffer genuinely
     /// re-executes against the new operands, so the test fails if rebind

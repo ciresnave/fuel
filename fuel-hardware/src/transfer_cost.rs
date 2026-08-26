@@ -723,9 +723,8 @@ mod tests {
 
     // ===== Stage 1 — transfer calibration =====
 
-    /// Synthetic perfectly-linear data: 2 bytes/ns (2 GB/s) bandwidth
-    /// + 10 µs fixed latency. The two-point fit must recover both
-    /// exactly.
+    /// Synthetic perfectly-linear data: 2 bytes/ns (2 GB/s) bandwidth plus
+    /// 10 µs fixed latency. The two-point fit must recover both exactly.
     #[test]
     fn fit_recovers_synthetic_linear() {
         let bw_bytes_per_ns = 2_u64;
