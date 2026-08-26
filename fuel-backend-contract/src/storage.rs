@@ -763,8 +763,7 @@ mod multi_output_specs {
     #[test]
     fn compose_bundle_rejects_empty() {
         let err = compose_bundle(&[])
-            .err()
-            .expect("empty spec list must error");
+            .expect_err("empty spec list must error");
         assert!(format!("{err}").contains("non-empty"));
     }
 
@@ -781,8 +780,7 @@ mod multi_output_specs {
             name: None,
         };
         let err = compose_bundle(&[bad])
-            .err()
-            .expect("shape/layout mismatch must error");
+            .expect_err("shape/layout mismatch must error");
         assert!(format!("{err}").contains("disagrees"));
     }
 
