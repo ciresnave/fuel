@@ -1740,7 +1740,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "f32::powf — libm-class transcendental, not a hardware-exact op; ULP bound depends on the platform powf and is left for the Judge to calibrate. IEEE NaN (e.g. negative base, fractional exponent → NaN). Deterministic on same hardware (same powf implementation). [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
+  notes: "f32::powf — libm-class transcendental, not a hardware-exact op; ULP bound depends on the platform powf and is left for the Judge to calibrate. IEEE NaN (e.g. negative base, fractional exponent → NaN). Deterministic on same hardware (same powf implementation). [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, OTHER PARAMETER CONFIGURATIONS (one probe fixes one; branches such as causal/softcap/window go untaken), other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1804,7 +1804,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "f64::powf — libm-class transcendental; ULP bound platform-dependent, left for the Judge. IEEE NaN (negative base, fractional exponent → NaN). Deterministic on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
+  notes: "f64::powf — libm-class transcendental; ULP bound platform-dependent, left for the Judge. IEEE NaN (negative base, fractional exponent → NaN). Deterministic on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, OTHER PARAMETER CONFIGURATIONS (one probe fixes one; branches such as causal/softcap/window go untaken), other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1869,7 +1869,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "Widen to f32, f32::powf, narrow to bf16 on store. Transcendental ULP platform-dependent (Judge calibrates) plus one bf16 rounding. IEEE NaN. Deterministic on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
+  notes: "Widen to f32, f32::powf, narrow to bf16 on store. Transcendental ULP platform-dependent (Judge calibrates) plus one bf16 rounding. IEEE NaN. Deterministic on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, OTHER PARAMETER CONFIGURATIONS (one probe fixes one; branches such as causal/softcap/window go untaken), other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -1933,7 +1933,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "Widen to f32, f32::powf, narrow to f16 on store. Transcendental ULP platform-dependent (Judge calibrates) plus one f16 rounding. IEEE NaN. Deterministic on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
+  notes: "Widen to f32, f32::powf, narrow to f16 on store. Transcendental ULP platform-dependent (Judge calibrates) plus one f16 rounding. IEEE NaN. Deterministic on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, OTHER PARAMETER CONFIGURATIONS (one probe fixes one; branches such as causal/softcap/window go untaken), other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```

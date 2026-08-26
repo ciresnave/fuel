@@ -699,14 +699,9 @@ mod tests {
             kernel_revision_hash: 0,
             cost_expr: None,
         };
-        let out = verify_precision_bound(
-            &F8Invoker,
-            &F8Invoker,
-            &entry,
-            &[vec![]],
-            Bound::MaxUlp(0),
-        )
-        .expect("no infrastructure error");
+        let out =
+            verify_precision_bound(&F8Invoker, &F8Invoker, &entry, &[vec![]], Bound::MaxUlp(0))
+                .expect("no infrastructure error");
         match out {
             VerifyOutcome::Fail { detail } => {
                 assert!(

@@ -249,9 +249,10 @@ impl PlacementDp {
         // The consumed producers are no longer frontier states.
         for ci in chain_inputs {
             if let Some(&p_idx) = self.by_node.get(&ci.producer)
-                && self.rows[p_idx].status == RowStatus::Open {
-                    self.rows[p_idx].status = RowStatus::Chained;
-                }
+                && self.rows[p_idx].status == RowStatus::Open
+            {
+                self.rows[p_idx].status = RowStatus::Chained;
+            }
         }
 
         let idx = self.rows.len();

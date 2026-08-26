@@ -1538,19 +1538,20 @@ impl PipelinedExecutor {
                 }
                 let leaving = current_chunk_backend;
                 if let Some(prev) = leaving
-                    && prev != item.target_backend {
-                        // A real backend switch occurred — this realize is
-                        // genuinely multi-backend.
-                        multi_backend = true;
-                        // Leaving a Vulkan chunk → submit it NOW so it runs on the
-                        // iGPU while we record/dispatch the next chunk. Whole-chunk
-                        // granularity (the open batch IS the just-finished Vulkan
-                        // chunk with all its intra-CB barriers) — UAF/race-safe per
-                        // `eager_submit_all_vulkan`'s contract.
-                        if prev == BackendId::Vulkan {
-                            eager_submit_all_vulkan(&cache, &mut inflight_vulkan)?;
-                        }
+                    && prev != item.target_backend
+                {
+                    // A real backend switch occurred — this realize is
+                    // genuinely multi-backend.
+                    multi_backend = true;
+                    // Leaving a Vulkan chunk → submit it NOW so it runs on the
+                    // iGPU while we record/dispatch the next chunk. Whole-chunk
+                    // granularity (the open batch IS the just-finished Vulkan
+                    // chunk with all its intra-CB barriers) — UAF/race-safe per
+                    // `eager_submit_all_vulkan`'s contract.
+                    if prev == BackendId::Vulkan {
+                        eager_submit_all_vulkan(&cache, &mut inflight_vulkan)?;
                     }
+                }
                 current_chunk_backend = Some(item.target_backend);
             }
             // Step E A4b-4 (Invariant E — same-device cross-chunk RAW safety):
@@ -1614,42 +1615,43 @@ impl PipelinedExecutor {
             store_handle(&mut handles, item.node_id, handle);
             if let Some(d_idx) = item.destructive_input
                 && let Some(&destroyed) = item.inputs.get(d_idx)
-                    && destroyed != target {
-                        // Step E A2.1 (in-flight-batch DATA-BUFFER lifetime — the
-                        // UAF guard, now DEFERRED-DELETION instead of a drain). A
-                        // `SubmittedBatch` owns its CB/descriptors/transients but
-                        // NOT the DATA buffers it reads (those live here in the
-                        // cache); recycling a data buffer an in-flight/open CB still
-                        // reads is a use-after-free. PRE-A2.1 we host-blocked here —
-                        // `drain_inflight_vulkan` (wait every in-flight batch) +
-                        // `force_flush` (submit+wait the open batch) — which stalled
-                        // the iGPU work we were overlapping with CUDA at EVERY such
-                        // eviction. A2.1 instead RETAINS the evicted buffer until the
-                        // reader fences signal: it eager-submits the open batch (no
-                        // wait → it becomes a fenced in-flight batch) and moves a
-                        // refcount clone of the buffer into every in-flight batch, so
-                        // the buffer frees POST-fence on each batch's `Drop`
-                        // (follow-on #2) with NO host block. Conservative over all
-                        // batches (no cheap buffer→batch map — the same reason the old
-                        // drain waited all of them). CUDA eviction is stream-ordered-
-                        // safe via A3. Single-device (multi_backend == false) keeps the
-                        // pre-A2.1 blocking force_flush of the OPEN batch (the else
-                        // branch) — byte-identical + UAF-safe there; the deferred path is
-                        // unsafe single-device (no eager-submit/in-flight tracking, and the
-                        // cross-batch RAW guard at :832 doesn't run — see
-                        // force_flush_vulkan's doc).
-                        if multi_backend {
-                            defer_evicted_vulkan_buffer(&cache, destroyed, &mut inflight_vulkan)?;
-                        } else if let Some(d_arc) = cache.get(&destroyed) {
-                            force_flush_vulkan(d_arc)?;
-                        }
-                        cache.remove(&destroyed);
-                        layout_cache.remove(&destroyed);
-                        // Drop the evicted node's CUDA handle (if still present)
-                        // so the realize-end drain's empty-map assert stays
-                        // meaningful. The free itself is stream-ordered-safe (A3).
-                        handles.remove(&destroyed);
-                    }
+                && destroyed != target
+            {
+                // Step E A2.1 (in-flight-batch DATA-BUFFER lifetime — the
+                // UAF guard, now DEFERRED-DELETION instead of a drain). A
+                // `SubmittedBatch` owns its CB/descriptors/transients but
+                // NOT the DATA buffers it reads (those live here in the
+                // cache); recycling a data buffer an in-flight/open CB still
+                // reads is a use-after-free. PRE-A2.1 we host-blocked here —
+                // `drain_inflight_vulkan` (wait every in-flight batch) +
+                // `force_flush` (submit+wait the open batch) — which stalled
+                // the iGPU work we were overlapping with CUDA at EVERY such
+                // eviction. A2.1 instead RETAINS the evicted buffer until the
+                // reader fences signal: it eager-submits the open batch (no
+                // wait → it becomes a fenced in-flight batch) and moves a
+                // refcount clone of the buffer into every in-flight batch, so
+                // the buffer frees POST-fence on each batch's `Drop`
+                // (follow-on #2) with NO host block. Conservative over all
+                // batches (no cheap buffer→batch map — the same reason the old
+                // drain waited all of them). CUDA eviction is stream-ordered-
+                // safe via A3. Single-device (multi_backend == false) keeps the
+                // pre-A2.1 blocking force_flush of the OPEN batch (the else
+                // branch) — byte-identical + UAF-safe there; the deferred path is
+                // unsafe single-device (no eager-submit/in-flight tracking, and the
+                // cross-batch RAW guard at :832 doesn't run — see
+                // force_flush_vulkan's doc).
+                if multi_backend {
+                    defer_evicted_vulkan_buffer(&cache, destroyed, &mut inflight_vulkan)?;
+                } else if let Some(d_arc) = cache.get(&destroyed) {
+                    force_flush_vulkan(d_arc)?;
+                }
+                cache.remove(&destroyed);
+                layout_cache.remove(&destroyed);
+                // Drop the evicted node's CUDA handle (if still present)
+                // so the realize-end drain's empty-map assert stays
+                // meaningful. The free itself is stream-ordered-safe (A3).
+                handles.remove(&destroyed);
+            }
         }
 
         compiler
@@ -1951,12 +1953,13 @@ impl PipelinedExecutor {
                 }
                 let leaving = current_chunk_backend;
                 if let Some(prev) = leaving
-                    && prev != item.target_backend {
-                        multi_backend = true;
-                        if prev == BackendId::Vulkan {
-                            eager_submit_all_vulkan(&cache, &mut inflight_vulkan)?;
-                        }
+                    && prev != item.target_backend
+                {
+                    multi_backend = true;
+                    if prev == BackendId::Vulkan {
+                        eager_submit_all_vulkan(&cache, &mut inflight_vulkan)?;
                     }
+                }
                 current_chunk_backend = Some(item.target_backend);
             }
             // Step E A4b-4 (Invariant E): wait in-flight Vulkan before recording a
@@ -2003,32 +2006,33 @@ impl PipelinedExecutor {
             store_handle(&mut handles, item.node_id, handle);
             if let Some(d_idx) = item.destructive_input
                 && let Some(&destroyed) = item.inputs.get(d_idx)
-                    && !target_set.contains(&destroyed) {
-                        // Step E A2.1 (in-flight DATA-BUFFER lifetime — UAF guard,
-                        // now DEFERRED-DELETION instead of a drain): retain the
-                        // evicted buffer until the reader fences signal — eager-
-                        // submit the open batch (no wait) + move a refcount clone of
-                        // the buffer into every in-flight batch, freeing it post-
-                        // fence on each batch's `Drop` with NO host block. Replaces
-                        // the pre-A2.1 `drain_inflight_vulkan` + open-batch
-                        // `force_flush` (two host-blocking fence waits). See
-                        // `defer_evicted_vulkan_buffer` / realize_inner for the
-                        // UAF/leak argument. CUDA eviction is A3 stream-safe.
-                        // Single-device (multi_backend == false) keeps the pre-A2.1
-                        // blocking force_flush of the OPEN batch (the else branch) —
-                        // byte-identical + UAF-safe; the deferred path is unsafe there
-                        // (see force_flush_vulkan's doc).
-                        if multi_backend {
-                            defer_evicted_vulkan_buffer(&cache, destroyed, &mut inflight_vulkan)?;
-                        } else if let Some(d_arc) = cache.get(&destroyed) {
-                            force_flush_vulkan(d_arc)?;
-                        }
-                        cache.remove(&destroyed);
-                        layout_cache.remove(&destroyed);
-                        // CUDA eviction is stream-ordered-safe (A3); drop the
-                        // handle so the realize-end empty-map assert stays valid.
-                        handles.remove(&destroyed);
-                    }
+                && !target_set.contains(&destroyed)
+            {
+                // Step E A2.1 (in-flight DATA-BUFFER lifetime — UAF guard,
+                // now DEFERRED-DELETION instead of a drain): retain the
+                // evicted buffer until the reader fences signal — eager-
+                // submit the open batch (no wait) + move a refcount clone of
+                // the buffer into every in-flight batch, freeing it post-
+                // fence on each batch's `Drop` with NO host block. Replaces
+                // the pre-A2.1 `drain_inflight_vulkan` + open-batch
+                // `force_flush` (two host-blocking fence waits). See
+                // `defer_evicted_vulkan_buffer` / realize_inner for the
+                // UAF/leak argument. CUDA eviction is A3 stream-safe.
+                // Single-device (multi_backend == false) keeps the pre-A2.1
+                // blocking force_flush of the OPEN batch (the else branch) —
+                // byte-identical + UAF-safe; the deferred path is unsafe there
+                // (see force_flush_vulkan's doc).
+                if multi_backend {
+                    defer_evicted_vulkan_buffer(&cache, destroyed, &mut inflight_vulkan)?;
+                } else if let Some(d_arc) = cache.get(&destroyed) {
+                    force_flush_vulkan(d_arc)?;
+                }
+                cache.remove(&destroyed);
+                layout_cache.remove(&destroyed);
+                // CUDA eviction is stream-ordered-safe (A3); drop the
+                // handle so the realize-end empty-map assert stays valid.
+                handles.remove(&destroyed);
+            }
         }
 
         compiler
@@ -2160,9 +2164,10 @@ fn build_wait_set(graph: &Graph, order: &[NodeId]) -> HashSet<NodeId> {
     for &id in order {
         let node = graph.node(id);
         if matches!(node.op, Op::Copy { .. } | Op::Move { .. })
-            && let Some(&producer) = node.inputs.first() {
-                set.insert(producer);
-            }
+            && let Some(&producer) = node.inputs.first()
+        {
+            set.insert(producer);
+        }
     }
     set
 }
@@ -2558,49 +2563,49 @@ fn compile_one(
             | Op::ZeroFill
             | Op::Release
             | Op::Move { .. },
-    )
-        && let Some(target_idx) = node.op.destructive_input() {
-            if inputs.len() <= target_idx {
-                return Err(Error::Msg(format!(
-                    "in-place op {:?} declares destructive_input={target_idx} \
+    ) && let Some(target_idx) = node.op.destructive_input()
+    {
+        if inputs.len() <= target_idx {
+            return Err(Error::Msg(format!(
+                "in-place op {:?} declares destructive_input={target_idx} \
                      but has only {} input(s)",
-                    node.op,
-                    inputs.len(),
-                ))
-                .bt());
-            }
-            let target_backend = graph.target_backend(id).ok_or_else(|| {
-                Error::Msg(format!(
-                    "PipelinedExecutor: in-place op node {id:?} has no target_backend set",
-                ))
-                .bt()
-            })?;
-            let op_kind = op_to_op_kind(&node.op).ok_or_else(|| {
-                Error::Msg(format!(
-                    "PipelinedExecutor: in-place op {:?} has no op_to_op_kind mapping",
-                    node.op,
-                ))
-                .bt()
-            })?;
-            let op_params = op_to_op_params(graph, node, id, layout_cache, sym_env)?;
-            let dtypes = build_lookup_dtypes(graph, node);
-            let compiled = resolve_compiled(op_kind, &dtypes, target_backend, op_params, bindings)?;
-            // Output adopts target's Layout (same Storage Arc, same shape).
-            let output_layout = graph.layout(inputs[target_idx]);
-            layout_cache.insert(id, output_layout.clone());
-            return Ok(WorkItem {
-                node_id: id,
-                inputs: inputs.clone(),
-                elem_count,
-                dtype: node.dtype,
-                target_backend,
-                kind: WorkItemKind::InplaceKernel { target_idx },
-                compiled: Some(compiled),
-                output_layout,
-                destructive_input,
-                output_bundle: None,
-            });
+                node.op,
+                inputs.len(),
+            ))
+            .bt());
         }
+        let target_backend = graph.target_backend(id).ok_or_else(|| {
+            Error::Msg(format!(
+                "PipelinedExecutor: in-place op node {id:?} has no target_backend set",
+            ))
+            .bt()
+        })?;
+        let op_kind = op_to_op_kind(&node.op).ok_or_else(|| {
+            Error::Msg(format!(
+                "PipelinedExecutor: in-place op {:?} has no op_to_op_kind mapping",
+                node.op,
+            ))
+            .bt()
+        })?;
+        let op_params = op_to_op_params(graph, node, id, layout_cache, sym_env)?;
+        let dtypes = build_lookup_dtypes(graph, node);
+        let compiled = resolve_compiled(op_kind, &dtypes, target_backend, op_params, bindings)?;
+        // Output adopts target's Layout (same Storage Arc, same shape).
+        let output_layout = graph.layout(inputs[target_idx]);
+        layout_cache.insert(id, output_layout.clone());
+        return Ok(WorkItem {
+            node_id: id,
+            inputs: inputs.clone(),
+            elem_count,
+            dtype: node.dtype,
+            target_backend,
+            kind: WorkItemKind::InplaceKernel { target_idx },
+            compiled: Some(compiled),
+            output_layout,
+            destructive_input,
+            output_bundle: None,
+        });
+    }
 
     if matches!(node.op, Op::WriteSlice { .. }) {
         // WriteSlice: kernel lookup happens like a normal kernel, but
@@ -3046,68 +3051,69 @@ fn compile_one(
     // pinned `target_backend` (`runtime-fused-op-registration.md` §6). The
     // guards are invariant checks, never live fallbacks.
     if let Op::Fused(fid, _) = &node.op
-        && fid.is_runtime() {
-            let target_backend = graph.target_backend(id).ok_or_else(|| {
-                Error::Msg(format!(
-                    "PipelinedExecutor: runtime fused op {:?} (node {:?}) has no \
+        && fid.is_runtime()
+    {
+        let target_backend = graph.target_backend(id).ok_or_else(|| {
+            Error::Msg(format!(
+                "PipelinedExecutor: runtime fused op {:?} (node {:?}) has no \
                      target_backend — the arm emitter pins it at emission",
-                    fid, id,
-                ))
-                .bt()
-            })?;
-            // v1: single-output only. Reject a multi-output bundle explicitly
-            // rather than silently dropping it.
-            if graph.output_views_arc(id).is_some() {
-                return Err(Error::Msg(format!(
-                    "PipelinedExecutor: runtime fused op {:?} (node {:?}) carries a \
+                fid, id,
+            ))
+            .bt()
+        })?;
+        // v1: single-output only. Reject a multi-output bundle explicitly
+        // rather than silently dropping it.
+        if graph.output_views_arc(id).is_some() {
+            return Err(Error::Msg(format!(
+                "PipelinedExecutor: runtime fused op {:?} (node {:?}) carries a \
                      multi-output bundle — synthesized kernels are single-output in v1",
-                    fid, id,
-                ))
-                .bt());
-            }
-            let dtypes = build_lookup_dtypes(graph, node);
-            let (kernel, caps) = bindings.lookup_with_caps(
-                crate::kernel::BindingKey::RuntimeFused(*fid),
-                &dtypes,
-                target_backend,
-            )?;
-            let output_layout = Layout::contiguous(node.shape.clone());
-            layout_cache.insert(id, output_layout.clone());
-            // Deliberate, not a fallthrough to `op_to_op_params` (which doesn't
-            // know runtime ops): the node's `Runtime { scalars }` — the live
-            // `extract:` values, pattern pre-order — becomes `JitScalars` (the
-            // launch appends them as the kernel's trailing `p{i}` args); a
-            // param-free op carries `None` (its launch is layout-driven:
-            // pointers + element count).
-            let op_params = match &node.op {
-                Op::Fused(_, FusedOpParams::Runtime { scalars }) if !scalars.is_empty() => {
-                    OpParams::JitScalars {
-                        scalars: scalars.clone(),
-                    }
-                }
-                _ => OpParams::None,
-            };
-            let compiled = CompiledNode {
-                op: OpKind::RuntimeFused,
-                dtypes: KernelDTypes::from_slice(&dtypes),
-                backend: target_backend,
-                kernel,
-                caps,
-                op_params,
-            };
-            return Ok(WorkItem {
-                node_id: id,
-                inputs,
-                elem_count,
-                dtype: node.dtype,
-                target_backend,
-                kind: WorkItemKind::Kernel,
-                compiled: Some(compiled),
-                output_layout,
-                destructive_input,
-                output_bundle: None,
-            });
+                fid, id,
+            ))
+            .bt());
         }
+        let dtypes = build_lookup_dtypes(graph, node);
+        let (kernel, caps) = bindings.lookup_with_caps(
+            crate::kernel::BindingKey::RuntimeFused(*fid),
+            &dtypes,
+            target_backend,
+        )?;
+        let output_layout = Layout::contiguous(node.shape.clone());
+        layout_cache.insert(id, output_layout.clone());
+        // Deliberate, not a fallthrough to `op_to_op_params` (which doesn't
+        // know runtime ops): the node's `Runtime { scalars }` — the live
+        // `extract:` values, pattern pre-order — becomes `JitScalars` (the
+        // launch appends them as the kernel's trailing `p{i}` args); a
+        // param-free op carries `None` (its launch is layout-driven:
+        // pointers + element count).
+        let op_params = match &node.op {
+            Op::Fused(_, FusedOpParams::Runtime { scalars }) if !scalars.is_empty() => {
+                OpParams::JitScalars {
+                    scalars: scalars.clone(),
+                }
+            }
+            _ => OpParams::None,
+        };
+        let compiled = CompiledNode {
+            op: OpKind::RuntimeFused,
+            dtypes: KernelDTypes::from_slice(&dtypes),
+            backend: target_backend,
+            kernel,
+            caps,
+            op_params,
+        };
+        return Ok(WorkItem {
+            node_id: id,
+            inputs,
+            elem_count,
+            dtype: node.dtype,
+            target_backend,
+            kind: WorkItemKind::Kernel,
+            compiled: Some(compiled),
+            output_layout,
+            destructive_input,
+            output_bundle: None,
+        });
+    }
 
     let target_backend = graph.target_backend(id).ok_or_else(|| {
         Error::Msg(format!(
@@ -6162,9 +6168,10 @@ fn execute_work_item(
             // FROM the map) and in None mode. Mirrors the Kernel arm's
             // Record-mode snapshot (above) exactly.
             if let Some(p) = persistent.as_deref_mut()
-                && p.mode == PersistentMode::Record {
-                    p.map.insert(item.node_id, Arc::clone(&arc));
-                }
+                && p.mode == PersistentMode::Record
+            {
+                p.map.insert(item.node_id, Arc::clone(&arc));
+            }
             cache.insert(item.node_id, arc);
             layout_cache.insert(item.node_id, item.output_layout.clone());
             Ok(handle)
@@ -6222,9 +6229,10 @@ fn execute_work_item(
                 // Allocate + copy via the contiguize kernel.
                 let arc = auto_contiguize(&input_arc, &input_layout)?;
                 if let Some(p) = persistent.as_deref_mut()
-                    && p.mode == PersistentMode::Record {
-                        p.map.insert(item.node_id, Arc::clone(&arc));
-                    }
+                    && p.mode == PersistentMode::Record
+                {
+                    p.map.insert(item.node_id, Arc::clone(&arc));
+                }
                 arc
             };
             cache.insert(item.node_id, out_arc);
@@ -6489,9 +6497,10 @@ fn execute_work_item(
             // device address. No-op in Reuse mode (the buffer came FROM the
             // map) and in None mode.
             if let Some(p) = persistent
-                && p.mode == PersistentMode::Record {
-                    p.map.insert(item.node_id, Arc::clone(&arc));
-                }
+                && p.mode == PersistentMode::Record
+            {
+                p.map.insert(item.node_id, Arc::clone(&arc));
+            }
 
             // Data-determined dynamic-shapes seam (increment 2a): a
             // producer that computes a runtime count publishes it into the

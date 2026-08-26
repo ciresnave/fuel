@@ -99,7 +99,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "Native f32 accumulate, fixed (i,k,j) loop order; deterministic on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
+  notes: "Native f32 accumulate, fixed (i,k,j) loop order; deterministic on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, OTHER PARAMETER CONFIGURATIONS (one probe fixes one; branches such as causal/softcap/window go untaken), other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -171,7 +171,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "Native f64 accumulate, fixed (i,k,j) loop order; deterministic on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
+  notes: "Native f64 accumulate, fixed (i,k,j) loop order; deterministic on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, OTHER PARAMETER CONFIGURATIONS (one probe fixes one; branches such as causal/softcap/window go untaken), other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -244,7 +244,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "bf16 I/O widened to f32 for multiply-accumulate; f32 accumulator; narrow on store; deterministic on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
+  notes: "bf16 I/O widened to f32 for multiply-accumulate; f32 accumulator; narrow on store; deterministic on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, OTHER PARAMETER CONFIGURATIONS (one probe fixes one; branches such as causal/softcap/window go untaken), other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -317,7 +317,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "f16 I/O widened to f32 for multiply-accumulate; f32 accumulator; narrow on store; deterministic on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
+  notes: "f16 I/O widened to f32 for multiply-accumulate; f32 accumulator; narrow on store; deterministic on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, OTHER PARAMETER CONFIGURATIONS (one probe fixes one; branches such as causal/softcap/window go untaken), other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -547,7 +547,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "Native f32 accumulate seeded with bias; fixed (i,k,j) loop order; deterministic on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
+  notes: "Native f32 accumulate seeded with bias; fixed (i,k,j) loop order; deterministic on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, OTHER PARAMETER CONFIGURATIONS (one probe fixes one; branches such as causal/softcap/window go untaken), other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -624,7 +624,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "Native f64 accumulate seeded with bias; fixed (i,k,j) loop order; deterministic on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
+  notes: "Native f64 accumulate seeded with bias; fixed (i,k,j) loop order; deterministic on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, OTHER PARAMETER CONFIGURATIONS (one probe fixes one; branches such as causal/softcap/window go untaken), other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -702,7 +702,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "bf16 I/O widened to f32; f32 accumulator seeded with bias; narrow on store; deterministic on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
+  notes: "bf16 I/O widened to f32; f32 accumulator seeded with bias; narrow on store; deterministic on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, OTHER PARAMETER CONFIGURATIONS (one probe fixes one; branches such as causal/softcap/window go untaken), other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -780,7 +780,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "f16 I/O widened to f32; f32 accumulator seeded with bias; narrow on store; deterministic on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, other machines, or other compilers.]"
+  notes: "f16 I/O widened to f32; f32 accumulator seeded with bias; narrow on store; deterministic on same hardware. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, OTHER PARAMETER CONFIGURATIONS (one probe fixes one; branches such as causal/softcap/window go untaken), other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
