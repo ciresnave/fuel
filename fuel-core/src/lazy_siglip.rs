@@ -936,7 +936,7 @@ mod tests {
 
     fn tiny_text_weights(cfg: &SiglipTextConfig) -> SiglipTextWeights {
         let mut s: u32 = 56565;
-        let mut next = move || -> f32 {
+        let next = move || -> f32 {
             s = s.wrapping_mul(1103515245).wrapping_add(12345);
             ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
         };
@@ -990,7 +990,7 @@ mod tests {
 
     fn tiny_vision_weights(cfg: &SiglipVisionConfig, with_head: bool) -> SiglipVisionWeights {
         let mut s: u32 = 78787;
-        let mut next = move || -> f32 {
+        let next = move || -> f32 {
             s = s.wrapping_mul(1103515245).wrapping_add(12345);
             ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
         };

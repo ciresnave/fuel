@@ -524,14 +524,14 @@ mod tests {
 
     fn tiny_weights(cfg: &LlamaConfig) -> LlamaWeights {
         let mut s: u32 = 12345;
-        let mut next = move || -> f32 {
+        let next = move || -> f32 {
             s = s.wrapping_mul(1103515245).wrapping_add(12345);
             ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
         };
         let h = cfg.dim;
         let i = cfg.ffn_dim;
         let kv = cfg.n_kv_heads * cfg.head_dim;
-        let mut buf = |n: usize, next: &mut dyn FnMut() -> f32| -> Arc<[f32]> {
+        let buf = |n: usize, next: &mut dyn FnMut() -> f32| -> Arc<[f32]> {
             Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
         };
         let mut next_box: Box<dyn FnMut() -> f32> = Box::new(next);

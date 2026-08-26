@@ -715,7 +715,7 @@ mod tests {
             rope_theta: 10_000.0,
         };
         let mut s: u32 = 24680;
-        let mut next = || -> f32 {
+        let next = || -> f32 {
             s = s.wrapping_mul(1103515245).wrapping_add(12345);
             ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
         };
@@ -799,7 +799,7 @@ mod tests {
             rope_theta: 10_000.0,
         };
         let mut s: u32 = 13579;
-        let mut next = || -> f32 {
+        let next = || -> f32 {
             s = s.wrapping_mul(1103515245).wrapping_add(12345);
             ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
         };
@@ -895,7 +895,7 @@ mod tests {
             rope_theta: 10_000.0,
         };
         let mut s: u32 = 86420;
-        let mut next = || -> f32 {
+        let next = || -> f32 {
             s = s.wrapping_mul(1103515245).wrapping_add(12345);
             ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
         };
@@ -1008,7 +1008,7 @@ mod tests {
             rope_theta: 10_000.0,
         };
         let mut s: u32 = 99999;
-        let mut next = || -> f32 {
+        let next = || -> f32 {
             s = s.wrapping_mul(1103515245).wrapping_add(12345);
             ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
         };
@@ -1082,7 +1082,7 @@ mod tests {
             rope_theta: 10_000.0,
         };
         let mut s: u32 = 31415;
-        let mut next = || -> f32 {
+        let next = || -> f32 {
             s = s.wrapping_mul(1103515245).wrapping_add(12345);
             ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
         };

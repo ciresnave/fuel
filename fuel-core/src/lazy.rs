@@ -20532,8 +20532,15 @@ mod generate_tests {
         // every feature set; the capture leg itself is CUDA-only (the capture
         // APIs `forward_with_kv_context_captured` / `CapturedDecodeSession` are
         // `#[cfg(feature = "cuda")]`), so on a non-cuda build these stay empty.
+        // Pushed only inside the `#[cfg(feature = "cuda")]` block below; read
+        // (empty) by the report/stats on a non-cuda build. `mut` is therefore
+        // used under cuda and unused at default features — gate the lint, don't
+        // drop `mut`, or `--features cuda` fails to borrow these as mutable.
+        #[cfg_attr(not(feature = "cuda"), allow(unused_mut))]
         let mut d3_tokens: Vec<u32> = Vec::with_capacity(n);
+        #[cfg_attr(not(feature = "cuda"), allow(unused_mut))]
         let mut d3_logits: Vec<Vec<f32>> = Vec::with_capacity(n);
+        #[cfg_attr(not(feature = "cuda"), allow(unused_mut))]
         let mut d3_times: Vec<std::time::Duration> = Vec::with_capacity(n);
         let run_d3 = cfg!(feature = "cuda") && run_d2 && cache_dtype == DType::F32;
         #[cfg(feature = "cuda")]

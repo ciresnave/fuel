@@ -520,7 +520,7 @@ mod tests {
 
     fn tiny_vision_weights(cfg: &SiglipVisionConfig) -> SiglipVisionWeights {
         let mut s: u32 = 90909;
-        let mut next = move || -> f32 {
+        let next = move || -> f32 {
             s = s.wrapping_mul(1103515245).wrapping_add(12345);
             ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
         };
@@ -564,7 +564,7 @@ mod tests {
 
     fn tiny_gemma_weights(cfg: &GemmaConfig) -> GemmaWeights {
         let mut s: u32 = 80808;
-        let mut next = move || -> f32 {
+        let next = move || -> f32 {
             s = s.wrapping_mul(1103515245).wrapping_add(12345);
             ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
         };
@@ -626,7 +626,7 @@ mod tests {
         let v_cfg = tiny_vision_cfg();
         let t_cfg = tiny_text_cfg();
         let mut s: u32 = 70707;
-        let mut next = move || -> f32 {
+        let next = move || -> f32 {
             s = s.wrapping_mul(1103515245).wrapping_add(12345);
             ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
         };
@@ -668,7 +668,7 @@ mod tests {
         let v_cfg = tiny_vision_cfg();
         let t_cfg = tiny_text_cfg();
         let mut s: u32 = 60606;
-        let mut next = move || -> f32 {
+        let next = move || -> f32 {
             s = s.wrapping_mul(1103515245).wrapping_add(12345);
             ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
         };

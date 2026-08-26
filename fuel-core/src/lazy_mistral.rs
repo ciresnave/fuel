@@ -540,7 +540,7 @@ mod tests {
     /// kept small so the forward stays in normal-float range.
     fn tiny_weights(cfg: &MistralConfig) -> MistralWeights {
         let mut s: u32 = 12345;
-        let mut next = || -> f32 {
+        let next = || -> f32 {
             s = s.wrapping_mul(1103515245).wrapping_add(12345);
             ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
         };
