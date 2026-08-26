@@ -416,6 +416,131 @@ components = [\"rustfmt\"]
     ///
     /// So this reports the sections in three buckets: fully backed (flippable
     /// now), partly backed (must not be flipped wholesale), and unbacked.
+    /// **THE DECLARATION CENSUS THE ARCHITECT RULED FOR: what do the entries
+    /// that are still unflipped actually DECLARE?**
+    ///
+    /// The ruling was *measure the declaration before I rule the semantics* —
+    /// because settling accumulation-order (attention) and scan-order (SSM)
+    /// for a population nobody has measured gives the ruling a scope its
+    /// evidence does not cover.
+    ///
+    /// **The answer is that every unflipped section declares `max_ulp: ~`.**
+    /// Not one declares a bound, so not one needs an exact reference, so not
+    /// one needs a spec decision at all. The whole residue is reachable on
+    /// GAP-228(b)'s conv pattern: write a probe recipe, earn
+    /// `bit_stable_on_same_hardware`, flip with the evidence clause.
+    ///
+    /// ⚠️ **THE FIRST RUN OF THIS CENSUS WAS WRONG AND ITS ANSWER LOOKED
+    /// CLEAN.** The predicate was `^\s*audited:\s*false\s*$`, and many
+    /// sections write `audited: false     # CPU primitive-class: family
+    /// default applies`. The `$` anchor dropped **7 of 42** sections —
+    /// including `flash_attn_f32` — and reported a tidy, confident,
+    /// undercounted result. Nothing in the output looked wrong. It was caught
+    /// only because the SECTION count would not reconcile with the ENTRY
+    /// count already known from `gap_226_split_of_the_entries_that_declare_nothing`:
+    /// five ops appeared to be missing their f32 section while their entry
+    /// counts said otherwise. **A disagreement between two constructs is what
+    /// found it; nothing about the number itself could have.**
+    ///
+    /// Two constructs, stated separately because they differ and a single
+    /// number would hide it: **42 SECTIONS** carry `audited: false`, of which
+    /// **2 are `registrable: false`** describe-only chassis umbrellas that
+    /// bind no `OpKind` and contribute **zero entries**. The remaining **40
+    /// registrable sections** are the **60 ENTRIES** of GAP-226's residue.
+    #[test]
+    fn every_unflipped_cpu_section_declares_no_ulp_bound() {
+        let dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/kernel-contracts/cpu");
+        let mut unflipped = 0usize;
+        let mut describe_only = 0usize;
+        let mut declares_a_bound: Vec<String> = Vec::new();
+        // Vacuity control: this assertion is meaningless unless SOME section
+        // somewhere declares a real bound. If every section in the tree said
+        // `~`, "the unflipped ones all say `~`" would be true of nothing.
+        let mut bounded_elsewhere = 0usize;
+        let mut files = 0usize;
+
+        let entries =
+            std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("cannot read {dir:?}: {e}"));
+        for entry in entries {
+            let path = entry.expect("dir entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                continue;
+            }
+            files += 1;
+            let src = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("cannot read {path:?}: {e}"));
+            let lines: Vec<&str> = src.lines().collect();
+            let starts: Vec<usize> = lines
+                .iter()
+                .enumerate()
+                .filter(|(_, l)| l.starts_with("## "))
+                .map(|(i, _)| i)
+                .collect();
+            for (si, &i) in starts.iter().enumerate() {
+                let end = starts.get(si + 1).copied().unwrap_or(lines.len());
+                let body = &lines[i..end];
+                let field = |key: &str| -> Option<String> {
+                    body.iter().find_map(|l| {
+                        let t = l.trim_start();
+                        t.strip_prefix(key).map(|v| {
+                            // Value ends at a trailing `#` comment. THE FIRST
+                            // VERSION OF THIS CENSUS ANCHORED ON END-OF-LINE
+                            // AND SILENTLY DROPPED EVERY COMMENTED FIELD.
+                            v.split('#').next().unwrap_or("").trim().to_string()
+                        })
+                    })
+                };
+                let audited = field("audited:");
+                let max_ulp = field("max_ulp:");
+                let name = lines[i][3..].split("  ").next().unwrap_or("?").trim();
+
+                if audited.as_deref() == Some("false") {
+                    unflipped += 1;
+                    if field("registrable:").as_deref() == Some("false") {
+                        describe_only += 1;
+                    }
+                    match max_ulp.as_deref() {
+                        Some("~") | None => {}
+                        Some(v) => declares_a_bound.push(format!("{name}: max_ulp: {v}")),
+                    }
+                } else if matches!(max_ulp.as_deref(), Some(v) if v != "~") {
+                    bounded_elsewhere += 1;
+                }
+            }
+        }
+
+        assert!(
+            files >= 5 && unflipped > 0,
+            "read {files} contract files and found {unflipped} unflipped sections — the \
+             census is looking in the wrong place and would pass vacuously"
+        );
+        assert!(
+            bounded_elsewhere > 0,
+            "no CPU contract section anywhere declares a non-`~` max_ulp, so the \
+             assertion below is true of nothing and this census cannot discriminate"
+        );
+        println!(
+            "[gap-228] unflipped CPU sections: {unflipped} ({describe_only} describe-only, \
+             {} registrable); sections declaring a bound elsewhere: {bounded_elsewhere}",
+            unflipped - describe_only
+        );
+        assert!(
+            declares_a_bound.is_empty(),
+            "these unflipped sections DECLARE a ulp bound, so they need an exact \
+             reference and therefore a semantics ruling before they can be earned: \
+             {declares_a_bound:?}. Everything else in the residue needs only \
+             bit-stability and is reachable on the conv pattern with no ruling at all."
+        );
+        assert_eq!(
+            describe_only, 2,
+            "expected exactly 2 `registrable: false` describe-only sections among the \
+             unflipped ones (the elementwise-unary and inplace-unary-affine chassis \
+             umbrellas). They bind no OpKind and contribute ZERO entries, which is why \
+             42 sections correspond to 60 entries and not to 63."
+        );
+    }
+
     /// **A DELETED ASSERTION AND A SATISFIED ASSERTION ARE INDISTINGUISHABLE
     /// TO A SUITE THAT ONLY RUNS THE ASSERTIONS IT FINDS.**
     ///
