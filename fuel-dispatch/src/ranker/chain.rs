@@ -111,6 +111,7 @@ mod tests {
             op_params: OpParams::None,
             coupling: Vec::new(),
             kernel_source: "",
+            kernel_revision_hash: 0,
         }
     }
 

@@ -67,10 +67,30 @@ impl ProfileJudgeOracle {
             return Self { inner };
         }
         for e in &report.entries {
-            let prev =
-                inner.measured_latency_ns(e.op, e.dtype, e.size_class, e.backend, &e.kernel_source);
-            // Keep the minimum across duplicate keys (multi-device
-            // entries at one cell — see module docs).
+            // `device.backend` is a redundant co-encoding of the `backend`
+            // axis; a divergence means a producer stamped a device identity
+            // that disagrees with the backend it measured on. Nothing downstream
+            // re-derives one from the other, so this is the only thing keeping
+            // the two in step — catch a producer bug at its source, in tests.
+            debug_assert_eq!(
+                e.backend, e.device.backend,
+                "ProfileEntry backend ({:?}) and device.backend ({:?}) disagree",
+                e.backend, e.device.backend
+            );
+            let prev = inner.measured_latency_ns(
+                e.op,
+                e.dtype,
+                e.size_class,
+                e.backend,
+                &e.kernel_source,
+                e.kernel_revision_hash,
+            );
+            // Keep the minimum across GENUINE duplicate keys — multi-device
+            // entries at ONE `(op, dtype, size_class, backend, kernel_source,
+            // kernel_revision_hash)` cell (see module docs). Distinct
+            // revisions are distinct keys, so variant siblings no longer
+            // collapse here: they land in separate cells and each keeps its
+            // own measured latency.
             if prev.is_none_or(|p| e.latency_ns < p) {
                 inner.insert(
                     e.op,
@@ -79,6 +99,7 @@ impl ProfileJudgeOracle {
                     e.backend,
                     &e.kernel_source,
                     e.latency_ns,
+                    e.kernel_revision_hash,
                 );
             }
         }
@@ -105,15 +126,23 @@ impl JudgeOracle for ProfileJudgeOracle {
         size_class: SizeClass,
         backend: BackendId,
         kernel_source: &str,
+        kernel_revision_hash: u64,
     ) -> Option<u64> {
-        self.inner
-            .measured_latency_ns(op, dtype, size_class, backend, kernel_source)
+        self.inner.measured_latency_ns(
+            op,
+            dtype,
+            size_class,
+            backend,
+            kernel_source,
+            kernel_revision_hash,
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::judge::test_equiv_key;
     use fuel_ir::dispatch::ProfileEntry;
 
     fn entry(
@@ -134,6 +163,8 @@ mod tests {
             iterations: 7,
             max_rel_error: 1e-6,
             kernel_source: kernel_source.to_string(),
+            kernel_revision_hash: 0,
+            device: test_equiv_key(backend),
         }
     }
 
@@ -153,6 +184,7 @@ mod tests {
                     SizeClass(16),
                     BackendId::Cpu,
                     "",
+                    0,
                 )
                 .is_none()
         );
@@ -187,6 +219,7 @@ mod tests {
                 SizeClass(16),
                 BackendId::Cpu,
                 src,
+                0,
             )
         };
         assert_eq!(cell("portable-cpu"), Some(1_000_000));
@@ -218,6 +251,7 @@ mod tests {
                 SizeClass(20),
                 BackendId::Cuda,
                 "cublas",
+                0,
             ),
             Some(300_000),
         );
@@ -238,6 +272,7 @@ mod tests {
                 SizeClass(20),
                 BackendId::Cuda,
                 "cublas",
+                0,
             ),
             Some(300_000),
         );
@@ -258,6 +293,7 @@ mod tests {
             SizeClass(16),
             BackendId::Cpu,
             "",
+            0,
         );
         assert_eq!(hit, Some(1_000));
         assert!(
@@ -268,6 +304,7 @@ mod tests {
                     SizeClass(16),
                     BackendId::Cuda,
                     "",
+                    0,
                 )
                 .is_none()
         );
@@ -279,6 +316,7 @@ mod tests {
                     SizeClass(16),
                     BackendId::Cpu,
                     "",
+                    0,
                 )
                 .is_none()
         );
@@ -290,6 +328,7 @@ mod tests {
                     SizeClass(17),
                     BackendId::Cpu,
                     "",
+                    0,
                 )
                 .is_none()
         );
@@ -301,6 +340,7 @@ mod tests {
                     SizeClass(16),
                     BackendId::Cpu,
                     "",
+                    0,
                 )
                 .is_none()
         );
@@ -337,7 +377,63 @@ mod tests {
                 SizeClass(16),
                 BackendId::Cpu,
                 "aocl",
+                0,
             );
         assert_eq!(queried, Some(1_000));
+    }
+
+    /// Two entries at the SAME `(op, dtype, size, backend, kernel_source)`
+    /// cell differing ONLY in `kernel_revision_hash` — both NON-ZERO — occupy
+    /// TWO distinct oracle cells via the REAL cache path (`from_report`).
+    /// This is the variant-sibling collapse `kernel_revision_hash` exists to
+    /// prevent: forty tilings of one provider share the `kernel_source` tag
+    /// (`"baracuda"`), so without the revision in the key they collapse into
+    /// one cell and thirty-nine become invisible with no error. Both revisions
+    /// are nonzero deliberately — a `0`-vs-nonzero test would pass while real
+    /// siblings still collapsed. Born-red: before the revision joined the key
+    /// this produced `len() == 1` and both lookups returned the min latency.
+    #[test]
+    fn sibling_kernel_revisions_do_not_collide_via_report() {
+        let mk = |rev: u64, latency: u64| ProfileEntry {
+            op: OpKind::MatMul,
+            dtype: DType::F32,
+            size_class: SizeClass(16),
+            backend: BackendId::Cuda,
+            device_index: 0,
+            latency_ns: latency,
+            iterations: 7,
+            max_rel_error: 1e-6,
+            kernel_source: "baracuda".to_string(),
+            kernel_revision_hash: rev,
+            device: test_equiv_key(BackendId::Cuda),
+        };
+        let report = ProfileReport {
+            version: PROFILE_REPORT_VERSION,
+            entries: vec![
+                mk(0x1111_1111_1111_1111, 5_000),
+                mk(0x2222_2222_2222_2222, 9_000),
+            ],
+        };
+        let oracle = ProfileJudgeOracle::from_report(&report);
+        assert_eq!(
+            oracle.len(),
+            2,
+            "distinct non-zero revisions are distinct cells"
+        );
+        let cell = |rev: u64| {
+            oracle.measured_latency_ns(
+                OpKind::MatMul,
+                DType::F32,
+                SizeClass(16),
+                BackendId::Cuda,
+                "baracuda",
+                rev,
+            )
+        };
+        assert_eq!(cell(0x1111_1111_1111_1111), Some(5_000));
+        assert_eq!(cell(0x2222_2222_2222_2222), Some(9_000));
+        // An untracked (0) revision at the same tag is its OWN cell — no
+        // fallthrough to either measured sibling.
+        assert!(cell(0).is_none());
     }
 }

@@ -208,14 +208,19 @@ fn try_load_persisted() -> Option<CachedJudge> {
         return None;
     }
     let judge_path = super::default_report_path()?;
-    let report = ProfileReport::load(&judge_path).ok().flatten()?;
+    // Judge item 7: the load gate refuses a report measured on hardware this
+    // machine does not have (one run, one machine). Pass this box's device
+    // equivalence classes as the identity to validate the persisted report
+    // against — a profile written on another GPU is a cache miss, not data.
+    let current: Vec<_> = now_probe.equivalence_classes().into_keys().collect();
+    let report = ProfileReport::load(&judge_path, &current).ok().flatten()?;
     Some(CachedJudge::from_report(&report))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::judge::PROFILE_REPORT_VERSION;
+    use crate::judge::{PROFILE_REPORT_VERSION, test_equiv_key};
     use fuel_ir::DType;
     use fuel_ir::probe::BackendId;
 
@@ -230,6 +235,8 @@ mod tests {
             iterations: 7,
             max_rel_error: err,
             kernel_source: String::new(),
+            kernel_revision_hash: 0,
+            device: test_equiv_key(backend),
         }
     }
 
@@ -255,6 +262,8 @@ mod tests {
             iterations: 7,
             max_rel_error: err,
             kernel_source: kernel_source.to_string(),
+            kernel_revision_hash: 0,
+            device: test_equiv_key(backend),
         }
     }
 
@@ -289,6 +298,7 @@ mod tests {
                 backend: BackendId::Cuda,
                 device_index: 0,
                 kernel_source: "",
+                kernel_revision_hash: 0,
             }
         );
     }
@@ -311,6 +321,7 @@ mod tests {
                 backend: BackendId::Cpu,
                 device_index: 0,
                 kernel_source: "",
+                kernel_revision_hash: 0,
             }
         );
     }
@@ -334,6 +345,7 @@ mod tests {
                 backend: BackendId::Cpu,
                 device_index: 0,
                 kernel_source: "",
+                kernel_revision_hash: 0,
             }
         );
     }

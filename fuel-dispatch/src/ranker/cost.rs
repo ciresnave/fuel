@@ -284,9 +284,15 @@ pub fn compute_static_costs(
     for i in 0..set.len() {
         let backend = set.alternatives()[i].backend;
         let kernel_source = set.alternatives()[i].kernel_source;
-        let Some(latency_ns) =
-            judge.measured_latency_ns(op_kind, principal_dtype, size_class, backend, kernel_source)
-        else {
+        let kernel_revision_hash = set.alternatives()[i].kernel_revision_hash;
+        let Some(latency_ns) = judge.measured_latency_ns(
+            op_kind,
+            principal_dtype,
+            size_class,
+            backend,
+            kernel_source,
+            kernel_revision_hash,
+        ) else {
             continue;
         };
         // Convert latency to a CostEstimate that composite_ns will
@@ -365,6 +371,7 @@ mod tests {
             op_params: OpParams::None,
             coupling: Vec::new(),
             kernel_source: "",
+            kernel_revision_hash: 0,
         }
     }
 
@@ -864,6 +871,7 @@ mod tests {
             BackendId::Cpu,
             "",
             250,
+            0,
         );
 
         compute_static_costs(
@@ -1013,6 +1021,7 @@ mod tests {
             BackendId::Cpu,
             "",
             500,
+            0,
         );
         judge.insert(
             OpKind::AddElementwise,
@@ -1021,6 +1030,7 @@ mod tests {
             BackendId::Cuda,
             "",
             100,
+            0,
         );
 
         compute_static_costs(
@@ -1110,6 +1120,7 @@ mod tests {
             BackendId::Cuda,
             "",
             20,
+            0,
         );
 
         compute_static_costs(
@@ -1167,6 +1178,7 @@ mod tests {
             BackendId::Cpu,
             "",
             u64::MAX,
+            0,
         );
         compute_static_costs(
             &mut set,
