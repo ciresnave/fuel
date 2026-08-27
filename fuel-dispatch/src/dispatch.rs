@@ -13209,8 +13209,10 @@ mod tests {
         use fuel_cuda_backend::{CudaDevice, CudaStorageBytes};
 
         let Ok(dev) = CudaDevice::new(0) else {
-            eprintln!("no CUDA device; skipping");
-            return;
+            return fuel_test_support::hardware::skip(
+                fuel_test_support::hardware::Hardware::Cuda,
+                fuel_test_support::hardware::Missing::device("CudaDevice::new(0) failed"),
+            );
         };
 
         let src_data: Vec<f32> = (0..17).map(|i| i as f32 * 1.5 - 3.0).collect();

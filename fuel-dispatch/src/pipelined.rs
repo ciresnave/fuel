@@ -7908,8 +7908,10 @@ mod tests {
         use fuel_memory::BackendStorage;
 
         let Ok(dev) = CudaDevice::new(0) else {
-            eprintln!("no CUDA device; skipping");
-            return;
+            return fuel_test_support::hardware::skip(
+                fuel_test_support::hardware::Hardware::Cuda,
+                fuel_test_support::hardware::Missing::device("CudaDevice::new(0) failed"),
+            );
         };
 
         // z = (a + b) * c, shape [4]. `y = a + b` is a persistent
@@ -8337,8 +8339,10 @@ mod tests {
         use fuel_memory::BackendStorage;
 
         let Ok(dev) = CudaDevice::new(0) else {
-            eprintln!("no CUDA device; skipping");
-            return;
+            return fuel_test_support::hardware::skip(
+                fuel_test_support::hardware::Hardware::Cuda,
+                fuel_test_support::hardware::Missing::device("CudaDevice::new(0) failed"),
+            );
         };
         const H: usize = 6;
         let eps = 1e-5f64;
@@ -8458,8 +8462,10 @@ mod tests {
         use fuel_memory::BackendStorage;
 
         let Ok(dev) = CudaDevice::new(0) else {
-            eprintln!("no CUDA device; skipping");
-            return;
+            return fuel_test_support::hardware::skip(
+                fuel_test_support::hardware::Hardware::Cuda,
+                fuel_test_support::hardware::Missing::device("CudaDevice::new(0) failed"),
+            );
         };
 
         let build = || -> (Arc<RwLock<Graph>>, NodeId, NodeId, NodeId) {
@@ -8605,8 +8611,10 @@ mod tests {
         use fuel_memory::BackendStorage;
 
         let Ok(dev) = CudaDevice::new(0) else {
-            eprintln!("no CUDA device; skipping");
-            return;
+            return fuel_test_support::hardware::skip(
+                fuel_test_support::hardware::Hardware::Cuda,
+                fuel_test_support::hardware::Missing::device("CudaDevice::new(0) failed"),
+            );
         };
 
         let build = || -> (Arc<RwLock<Graph>>, NodeId, NodeId, NodeId) {
@@ -8740,8 +8748,10 @@ mod tests {
         use fuel_memory::BackendStorage;
 
         let Ok(dev) = CudaDevice::new(0) else {
-            eprintln!("no CUDA device; skipping");
-            return;
+            return fuel_test_support::hardware::skip(
+                fuel_test_support::hardware::Hardware::Cuda,
+                fuel_test_support::hardware::Missing::device("CudaDevice::new(0) failed"),
+            );
         };
 
         let graph = Arc::new(RwLock::new(Graph::new()));
@@ -8804,8 +8814,10 @@ mod tests {
         use fuel_memory::BackendStorage;
 
         let Ok(dev) = CudaDevice::new(0) else {
-            eprintln!("no CUDA device; skipping");
-            return;
+            return fuel_test_support::hardware::skip(
+                fuel_test_support::hardware::Hardware::Cuda,
+                fuel_test_support::hardware::Missing::device("CudaDevice::new(0) failed"),
+            );
         };
         const H: usize = 6;
         let eps = 1e-5f64;

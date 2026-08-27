@@ -4349,8 +4349,12 @@ mod tests {
         let cuda = match fuel_cuda_backend::CudaDevice::new(0) {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("no CUDA device; skipping: {e:?}");
-                return;
+                return fuel_test_support::hardware::skip(
+                    fuel_test_support::hardware::Hardware::Cuda,
+                    fuel_test_support::hardware::Missing::device(format!(
+                        "CudaDevice::new(0): {e:?}"
+                    )),
+                );
             }
         };
         let a = Tensor::from_f32(
@@ -4422,8 +4426,12 @@ mod tests {
         let cuda = match fuel_cuda_backend::CudaDevice::new(0) {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("no CUDA device; skipping: {e:?}");
-                return;
+                return fuel_test_support::hardware::skip(
+                    fuel_test_support::hardware::Hardware::Cuda,
+                    fuel_test_support::hardware::Missing::device(format!(
+                        "CudaDevice::new(0): {e:?}"
+                    )),
+                );
             }
         };
         let a = Tensor::from_f32(
@@ -15720,8 +15728,12 @@ mod generate_tests {
         let cuda = match fuel_cuda_backend::CudaDevice::new(0) {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("no CUDA device; skipping: {e:?}");
-                return;
+                return fuel_test_support::hardware::skip(
+                    fuel_test_support::hardware::Hardware::Cuda,
+                    fuel_test_support::hardware::Missing::device(format!(
+                        "CudaDevice::new(0): {e:?}"
+                    )),
+                );
             }
         };
         let cuda_device: Device = cuda.into();
@@ -15891,8 +15903,12 @@ mod generate_tests {
         let dev: Device = match fuel_cuda_backend::CudaDevice::new(0) {
             Ok(d) => d.into(),
             Err(e) => {
-                eprintln!("no CUDA device; skipping: {e:?}");
-                return;
+                return fuel_test_support::hardware::skip(
+                    fuel_test_support::hardware::Hardware::Cuda,
+                    fuel_test_support::hardware::Missing::device(format!(
+                        "CudaDevice::new(0): {e:?}"
+                    )),
+                );
             }
         };
 
@@ -16212,8 +16228,12 @@ mod generate_tests {
         let dev: Device = match fuel_cuda_backend::CudaDevice::new(0) {
             Ok(d) => d.into(),
             Err(e) => {
-                eprintln!("no CUDA device; skipping: {e:?}");
-                return;
+                return fuel_test_support::hardware::skip(
+                    fuel_test_support::hardware::Hardware::Cuda,
+                    fuel_test_support::hardware::Missing::device(format!(
+                        "CudaDevice::new(0): {e:?}"
+                    )),
+                );
             }
         };
 
@@ -16409,8 +16429,12 @@ mod generate_tests {
         let cuda = match fuel_cuda_backend::CudaDevice::new(0) {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("no CUDA device; skipping: {e:?}");
-                return;
+                return fuel_test_support::hardware::skip(
+                    fuel_test_support::hardware::Hardware::Cuda,
+                    fuel_test_support::hardware::Missing::device(format!(
+                        "CudaDevice::new(0): {e:?}"
+                    )),
+                );
             }
         };
         let cuda_device: Device = cuda.into();
@@ -17526,8 +17550,12 @@ mod generate_tests {
         let cuda = match fuel_cuda_backend::CudaDevice::new(0) {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("no CUDA device; skipping: {e:?}");
-                return;
+                return fuel_test_support::hardware::skip(
+                    fuel_test_support::hardware::Hardware::Cuda,
+                    fuel_test_support::hardware::Missing::device(format!(
+                        "CudaDevice::new(0): {e:?}"
+                    )),
+                );
             }
         };
         let cuda_device: Device = cuda.into();
@@ -17732,8 +17760,12 @@ mod generate_tests {
         let cuda = match fuel_cuda_backend::CudaDevice::new(0) {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("no CUDA device; skipping: {e:?}");
-                return;
+                return fuel_test_support::hardware::skip(
+                    fuel_test_support::hardware::Hardware::Cuda,
+                    fuel_test_support::hardware::Missing::device(format!(
+                        "CudaDevice::new(0): {e:?}"
+                    )),
+                );
             }
         };
         let cuda_device: Device = cuda.into();
@@ -17924,8 +17956,12 @@ mod generate_tests {
         let cuda = match fuel_cuda_backend::CudaDevice::new(0) {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("no CUDA device; skipping: {e:?}");
-                return;
+                return fuel_test_support::hardware::skip(
+                    fuel_test_support::hardware::Hardware::Cuda,
+                    fuel_test_support::hardware::Missing::device(format!(
+                        "CudaDevice::new(0): {e:?}"
+                    )),
+                );
             }
         };
         let dev: Device = cuda.into();
@@ -18693,8 +18729,12 @@ mod generate_tests {
         let dev = match crate::cuda_backend::new_device(0) {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("no CUDA device; skipping placement report: {e:?}");
-                return;
+                return fuel_test_support::hardware::skip(
+                    fuel_test_support::hardware::Hardware::Cuda,
+                    fuel_test_support::hardware::Missing::device(format!(
+                        "CudaDevice::new(0) (placement report): {e:?}"
+                    )),
+                );
             }
         };
 
@@ -20090,8 +20130,12 @@ mod generate_tests {
         let cuda = match fuel_cuda_backend::CudaDevice::new(0) {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("no CUDA device; skipping: {e:?}");
-                return;
+                return fuel_test_support::hardware::skip(
+                    fuel_test_support::hardware::Hardware::Cuda,
+                    fuel_test_support::hardware::Missing::device(format!(
+                        "CudaDevice::new(0): {e:?}"
+                    )),
+                );
             }
         };
         let dev: Device = cuda.into();
@@ -21000,8 +21044,12 @@ mod generate_tests {
         let cuda_device = match crate::cuda_backend::new_device(0) {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("no CUDA device; skipping: {e:?}");
-                return;
+                return fuel_test_support::hardware::skip(
+                    fuel_test_support::hardware::Hardware::Cuda,
+                    fuel_test_support::hardware::Missing::device(format!(
+                        "CudaDevice::new(0): {e:?}"
+                    )),
+                );
             }
         };
         run_persistent_decode_bench(
@@ -21050,8 +21098,12 @@ mod generate_tests {
         let cuda_device = match crate::cuda_backend::new_device(0) {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("no CUDA device; skipping: {e:?}");
-                return;
+                return fuel_test_support::hardware::skip(
+                    fuel_test_support::hardware::Hardware::Cuda,
+                    fuel_test_support::hardware::Missing::device(format!(
+                        "CudaDevice::new(0): {e:?}"
+                    )),
+                );
             }
         };
         run_persistent_decode_bench(
@@ -22743,8 +22795,12 @@ mod phi_kv_context_tests {
         let dev: Device = match fuel_cuda_backend::CudaDevice::new(0) {
             Ok(d) => d.into(),
             Err(e) => {
-                eprintln!("no CUDA device; skipping: {e:?}");
-                return;
+                return fuel_test_support::hardware::skip(
+                    fuel_test_support::hardware::Hardware::Cuda,
+                    fuel_test_support::hardware::Missing::device(format!(
+                        "CudaDevice::new(0): {e:?}"
+                    )),
+                );
             }
         };
         let model = PhiModel {
@@ -22857,8 +22913,12 @@ mod phi_kv_context_tests {
         let cuda = match fuel_cuda_backend::CudaDevice::new(0) {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("no CUDA device; skipping: {e:?}");
-                return;
+                return fuel_test_support::hardware::skip(
+                    fuel_test_support::hardware::Hardware::Cuda,
+                    fuel_test_support::hardware::Missing::device(format!(
+                        "CudaDevice::new(0): {e:?}"
+                    )),
+                );
             }
         };
         let dev: Device = cuda.into();

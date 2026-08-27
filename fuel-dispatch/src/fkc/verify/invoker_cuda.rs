@@ -128,8 +128,10 @@ mod tests {
     #[ignore = "requires a live CUDA device"]
     fn cuda_invoker_runs_add_elementwise_f32_end_to_end() {
         let Ok(dev) = CudaDevice::new(0) else {
-            eprintln!("no CUDA device; skipping");
-            return;
+            return fuel_test_support::hardware::skip(
+                fuel_test_support::hardware::Hardware::Cuda,
+                fuel_test_support::hardware::Missing::device("CudaDevice::new(0) failed"),
+            );
         };
         // The real CUDA add wrapper (`fkc::cuda_link::CUDA_BINARY_ENTRY_POINTS`'s
         // `add_f32` entry point) — NOT the CPU wrapper, which would error on
