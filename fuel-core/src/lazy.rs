@@ -7631,8 +7631,7 @@ impl LlamaConfig {
     /// - `vocab_size` → `vocab_size`
     /// - `rms_norm_eps` → `norm_eps`
     /// - `rope_theta` → `rope_base` (defaults to 10000 when absent)
-    /// - `head_dim` is taken directly when present, or computed as
-    ///   `hidden_size / num_attention_heads` otherwise.
+    /// - `head_dim` is taken directly when present, else computed as `hidden_size / num_attention_heads`.
     ///
     /// [`LlamaConfigRaw`] is the wire shape under HF's own field names;
     /// [`LlamaConfigRaw::resolve`] applies the two cross-field defaults and
