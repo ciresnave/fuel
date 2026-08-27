@@ -442,7 +442,6 @@ impl Llama2cConfig {
     ///
     /// Compatible with TinyLlama, Llama-2-7B, Llama-3, Mistral, and
     /// any Llama-shape HF checkpoint.
-    /// Parse a HuggingFace `config.json` into a [`Llama2cConfig`].
     ///
     /// Two stages. [`Llama2cConfigRaw`] is the wire shape under HF's own
     /// field names and is pure `serde`; [`Llama2cConfigRaw::resolve`] applies

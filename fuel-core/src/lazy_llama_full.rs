@@ -240,7 +240,6 @@ impl LlamaFullConfig {
     /// Parse HF `config.json` text. Missing optional fields fall back
     /// to LLaMA's documented defaults (`rope_theta=10000.0`,
     /// `rms_norm_eps=1e-5`, `tie_word_embeddings=false`, no scaling).
-    /// Parse a HuggingFace `config.json` into a [`LlamaFullConfig`].
     ///
     /// [`LlamaFullConfigRaw`] is the wire shape; [`LlamaFullConfigRaw::resolve`]
     /// applies the two cross-field defaults and the two TOLERANT sub-object

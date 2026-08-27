@@ -7633,7 +7633,6 @@ impl LlamaConfig {
     /// - `rope_theta` → `rope_base` (defaults to 10000 when absent)
     /// - `head_dim` is taken directly when present, or computed as
     ///   `hidden_size / num_attention_heads` otherwise.
-    /// Parse a HuggingFace `config.json` into a [`LlamaConfig`].
     ///
     /// [`LlamaConfigRaw`] is the wire shape under HF's own field names;
     /// [`LlamaConfigRaw::resolve`] applies the two cross-field defaults and
