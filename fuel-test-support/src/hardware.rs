@@ -214,7 +214,7 @@ pub fn skips_are_fatal(hw: Hardware) -> bool {
 
 /// Declare a [`Missing`], routing to the right behaviour by its class.
 ///
-/// Returns `()`, so a call site declares and bails in one statement:
+/// Returns `()`, so a call site can declare and return in one statement:
 ///
 /// ```ignore
 /// let dev = match CudaDevice::new(0) {
