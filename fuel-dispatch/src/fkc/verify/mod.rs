@@ -158,6 +158,10 @@ pub use harness::run_fkc_verify_harness;
 #[cfg(feature = "cuda")]
 pub use invoker_cuda::CudaInvoker;
 #[cfg(feature = "vulkan")]
+#[allow(
+    unused_imports,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 pub use invoker_vulkan::VulkanInvoker;
 #[cfg(feature = "jit")]
 pub(crate) use seed_cpu_ledger::to_bytes;

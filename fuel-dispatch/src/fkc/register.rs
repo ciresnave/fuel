@@ -652,6 +652,10 @@ mod tests {
     /// had picked to search. **A hand-picked search SET expires exactly like a
     /// hand-picked fixture.** The population is now "all of them", which is
     /// the only version that does not need re-picking as coverage grows.
+    #[allow(
+        dead_code,
+        reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+    )]
     fn all_cpu_contracts() -> Vec<(String, String)> {
         let dir =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/kernel-contracts/cpu");
@@ -683,6 +687,10 @@ mod tests {
 
     /// Find an imported primitive whose guarantee was downgraded, together
     /// with the claims the gate reported unbacked.
+    #[allow(
+        dead_code,
+        reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+    )]
     fn find_downgraded() -> Option<(String, Vec<String>)> {
         for (_name, text) in all_cpu_contracts() {
             let link = EntryPointLink::new();

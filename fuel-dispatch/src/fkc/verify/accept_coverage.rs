@@ -52,6 +52,10 @@ use crate::kernel::BindingEntry;
 /// rather than to an event that may not: if `verify_accept_coverage` still
 /// has no consumer when the accept-coverage claim is next touched, it and its
 /// variant come out together.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 pub fn verify_accept_coverage(
     inv: &dyn KernelInvoker,
     entry: &BindingEntry,

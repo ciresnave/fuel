@@ -28,6 +28,10 @@ use crate::kernel::{BindingEntry, OpParams};
 
 /// A Vulkan kernel invoker. Owns the `Arc<VulkanBackend>` handle used to
 /// stage every probe input up and read the output back down.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 pub struct VulkanInvoker {
     backend: Arc<VulkanBackend>,
     out_dtype: DType,
@@ -38,6 +42,10 @@ pub struct VulkanInvoker {
 impl VulkanInvoker {
     /// New invoker bound to `backend`, for an op whose output is
     /// `out_dtype`/`out_shape`, with no auxiliary op params.
+    #[allow(
+        dead_code,
+        reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+    )]
     pub fn new(backend: Arc<VulkanBackend>, out_dtype: DType, out_shape: Vec<usize>) -> Self {
         Self {
             backend,
@@ -48,6 +56,10 @@ impl VulkanInvoker {
     }
 
     /// Builder-style override for ops that need non-`None` `OpParams`.
+    #[allow(
+        dead_code,
+        reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+    )]
     pub fn with_params(mut self, p: OpParams) -> Self {
         self.params = p;
         self

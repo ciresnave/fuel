@@ -23,6 +23,10 @@ use fuel_ir::DType;
 /// harness's hardware-free wire format — no `Storage`/device handle, so
 /// probes and outputs can be constructed and compared in plain `cargo test`.
 #[derive(Debug, Clone, PartialEq)]
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 pub struct HostTensor {
     pub dtype: DType,
     pub shape: Vec<usize>,
@@ -31,6 +35,10 @@ pub struct HostTensor {
 
 /// The probe inputs for one verification call — one [`HostTensor`] per
 /// kernel input operand.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 pub type ProbeInputs = Vec<HostTensor>;
 
 /// Errors from invoking a kernel through a [`KernelInvoker`]. Distinct from
@@ -45,17 +53,37 @@ pub type ProbeInputs = Vec<HostTensor>;
 /// derived-`Debug` use as a field READ. The lint is correct about field
 /// access and wrong about usefulness, which is the direction that gets a
 /// payload deleted for tidiness.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 pub enum VerifyError {
     /// The invoker's underlying kernel call itself returned an error.
+    #[allow(
+        dead_code,
+        reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+    )]
     Invoke(String),
     /// No reference implementation was available to compare against.
+    #[allow(
+        dead_code,
+        reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+    )]
     NoReference,
     /// A backend-specific failure (device unavailable, launch failure, ...).
+    #[allow(
+        dead_code,
+        reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+    )]
     Backend(String),
 }
 
 /// The result of running a verification check.
 #[derive(Debug, PartialEq)]
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 pub enum VerifyOutcome {
     /// The claim held for every probe.
     Pass,
@@ -71,6 +99,10 @@ pub enum VerifyOutcome {
     /// trace note there (GAP-217b). Every `NoReference` match arm in the
     /// seeders is therefore dead today. Kept deliberately, with the
     /// expiry tied to that function rather than restated here.
+    #[allow(
+        dead_code,
+        reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+    )]
     NoReference,
 }
 
@@ -80,6 +112,10 @@ pub enum VerifyOutcome {
 /// device kernels are Task 4.5. Unit tests in this module use fake in-process
 /// invokers (`ConstInvoker`, `FlakyInvoker`) to exercise the verification
 /// logic without any hardware.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 pub trait KernelInvoker {
     fn invoke(
         &self,
@@ -100,6 +136,10 @@ pub trait KernelInvoker {
 /// degenerate call count. An empty `probes` list also trivially passes —
 /// there is nothing to falsify, which mirrors the "no verifiable claim"
 /// posture the ledger gate already uses upstream (see `ledger::gate_precision`).
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 pub fn verify_bit_stability(
     inv: &dyn KernelInvoker,
     entry: &BindingEntry,
@@ -129,6 +169,10 @@ pub fn verify_bit_stability(
 /// empty vec; `seed == 0` degenerates to an all-zero xorshift stream (a
 /// known xorshift64* fixed point), which is a valid — if uninteresting —
 /// deterministic fill, not a crash.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 pub fn fill_deterministic(len: usize, mut seed: u64) -> Vec<f32> {
     let mut v = Vec::with_capacity(len);
     for _ in 0..len {
