@@ -22,6 +22,7 @@
 use crate::lazy::{Tensor, WeightStorage};
 use crate::{DType, Result};
 use fuel_ir::Shape;
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -52,6 +53,76 @@ pub struct DebertaV2Config {
     /// Optional `id2label` map (present on most fine-tuned task
     /// checkpoints; absent on raw encoder bases).
     pub id2label: Option<Id2Label>,
+}
+
+fn default_layer_norm_eps() -> f64 {
+    1e-7
+}
+fn default_position_buckets() -> usize {
+    256
+}
+
+/// A DeBERTa-v2 `config.json` exactly as HuggingFace ships it.
+///
+/// ⚠️ THIS IS THE ONE CONFIG IN THE SET THAT USES NEITHER SHARED RULE.
+/// It derives no `head_dim` and no `num_key_value_heads`; its only
+/// cross-field default is the `max_relative_positions` sentinel below, which
+/// is specific to DeBERTa's relative-position bucketing and belongs here
+/// rather than in [`crate::hf_config`]. A rule with one call site is not
+/// shared infrastructure.
+///
+/// `max_relative_positions` is `i64` on purpose: **HF ships `-1` to mean
+/// "use `max_position_embeddings`"**, so the value has to survive as a signed
+/// number long enough for `resolve` to read the sentinel. Deserializing it
+/// straight into `usize` would fail on every real DeBERTa config.
+///
+/// `id2label` stays a raw `Value` for the same reason `rope_scaling` does in
+/// `lazy_llama_full`: [`parse_id2label`] is deliberately tolerant, returning
+/// `None` if any key is not a `u32` or any value is not a string, where a
+/// derived `Deserialize` would hard-error.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct DebertaV2ConfigRaw {
+    vocab_size: usize,
+    hidden_size: usize,
+    num_hidden_layers: usize,
+    num_attention_heads: usize,
+    intermediate_size: usize,
+    max_position_embeddings: usize,
+    #[serde(default = "default_layer_norm_eps")]
+    layer_norm_eps: f64,
+    #[serde(default = "default_position_buckets")]
+    position_buckets: usize,
+    #[serde(default)]
+    max_relative_positions: Option<i64>,
+    #[serde(default)]
+    id2label: Option<serde_json::Value>,
+}
+
+impl DebertaV2ConfigRaw {
+    fn from_json_str(json: &str) -> crate::Result<Self> {
+        serde_json::from_str(json)
+            .map_err(|e| crate::Error::Msg(format!("parsing deberta-v2 config.json: {e}")).bt())
+    }
+
+    fn resolve(self) -> crate::Result<DebertaV2Config> {
+        Ok(DebertaV2Config {
+            vocab_size: self.vocab_size,
+            hidden_size: self.hidden_size,
+            num_hidden_layers: self.num_hidden_layers,
+            num_attention_heads: self.num_attention_heads,
+            intermediate_size: self.intermediate_size,
+            max_position_embeddings: self.max_position_embeddings,
+            layer_norm_eps: self.layer_norm_eps,
+            position_buckets: self.position_buckets,
+            // HF ships -1 to mean "use max_position_embeddings", and so does
+            // absence. Anything >= 1 is taken literally.
+            max_relative_positions: match self.max_relative_positions {
+                Some(n) if n >= 1 => n as usize,
+                _ => self.max_position_embeddings,
+            },
+            id2label: parse_id2label(self.id2label.as_ref()),
+        })
+    }
 }
 
 impl DebertaV2Config {
@@ -114,59 +185,11 @@ impl DebertaV2Config {
     /// - `max_relative_positions` (defaults to `max_position_embeddings`)
     /// - `layer_norm_eps` (defaults to 1e-7)
     /// - `id2label` (string-keyed JSON object → `u32 → String`)
+    ///
+    /// [`DebertaV2ConfigRaw`] is the wire shape; [`DebertaV2ConfigRaw::resolve`]
+    /// applies the `-1` sentinel and the tolerant `id2label` parse.
     pub fn from_hf_json_str(s: &str) -> crate::Result<Self> {
-        let v: serde_json::Value = serde_json::from_str(s)
-            .map_err(|e| crate::Error::Msg(format!("parsing deberta-v2 config.json: {e}")).bt())?;
-
-        let get_usize = |key: &str| -> crate::Result<usize> {
-            v.get(key)
-                .and_then(|x| x.as_u64())
-                .map(|x| x as usize)
-                .ok_or_else(|| {
-                    crate::Error::Msg(format!(
-                        "deberta-v2 config.json: missing/invalid field {key:?}",
-                    ))
-                    .bt()
-                })
-        };
-
-        let vocab_size = get_usize("vocab_size")?;
-        let hidden_size = get_usize("hidden_size")?;
-        let num_hidden_layers = get_usize("num_hidden_layers")?;
-        let num_attention_heads = get_usize("num_attention_heads")?;
-        let intermediate_size = get_usize("intermediate_size")?;
-        let max_position_embeddings = get_usize("max_position_embeddings")?;
-
-        let layer_norm_eps = v
-            .get("layer_norm_eps")
-            .and_then(|x| x.as_f64())
-            .unwrap_or(1e-7);
-        let position_buckets = v
-            .get("position_buckets")
-            .and_then(|x| x.as_u64())
-            .map(|x| x as usize)
-            .unwrap_or(256);
-        // HF ships -1 to mean "use max_position_embeddings"; accept that.
-        let max_relative_positions = match v.get("max_relative_positions").and_then(|x| x.as_i64())
-        {
-            Some(n) if n >= 1 => n as usize,
-            _ => max_position_embeddings,
-        };
-
-        let id2label = parse_id2label(v.get("id2label"));
-
-        Ok(Self {
-            vocab_size,
-            hidden_size,
-            num_hidden_layers,
-            num_attention_heads,
-            intermediate_size,
-            max_position_embeddings,
-            layer_norm_eps,
-            position_buckets,
-            max_relative_positions,
-            id2label,
-        })
+        DebertaV2ConfigRaw::from_json_str(s)?.resolve()
     }
 }
 
@@ -848,6 +871,66 @@ impl DebertaV2SeqClassificationWeights {
 // ---- Tests -----------------------------------------------------------------
 
 #[cfg(test)]
+impl DebertaV2Config {
+    /// The hand-rolled parser this type used before the `serde` split, kept
+    /// verbatim and test-only as the differential's oracle.
+    pub(crate) fn from_hf_json_str_legacy(s: &str) -> crate::Result<Self> {
+        let v: serde_json::Value = serde_json::from_str(s)
+            .map_err(|e| crate::Error::Msg(format!("parsing deberta-v2 config.json: {e}")).bt())?;
+
+        let get_usize = |key: &str| -> crate::Result<usize> {
+            v.get(key)
+                .and_then(|x| x.as_u64())
+                .map(|x| x as usize)
+                .ok_or_else(|| {
+                    crate::Error::Msg(format!(
+                        "deberta-v2 config.json: missing/invalid field {key:?}",
+                    ))
+                    .bt()
+                })
+        };
+
+        let vocab_size = get_usize("vocab_size")?;
+        let hidden_size = get_usize("hidden_size")?;
+        let num_hidden_layers = get_usize("num_hidden_layers")?;
+        let num_attention_heads = get_usize("num_attention_heads")?;
+        let intermediate_size = get_usize("intermediate_size")?;
+        let max_position_embeddings = get_usize("max_position_embeddings")?;
+
+        let layer_norm_eps = v
+            .get("layer_norm_eps")
+            .and_then(|x| x.as_f64())
+            .unwrap_or(1e-7);
+        let position_buckets = v
+            .get("position_buckets")
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize)
+            .unwrap_or(256);
+        // HF ships -1 to mean "use max_position_embeddings"; accept that.
+        let max_relative_positions = match v.get("max_relative_positions").and_then(|x| x.as_i64())
+        {
+            Some(n) if n >= 1 => n as usize,
+            _ => max_position_embeddings,
+        };
+
+        let id2label = parse_id2label(v.get("id2label"));
+
+        Ok(Self {
+            vocab_size,
+            hidden_size,
+            num_hidden_layers,
+            num_attention_heads,
+            intermediate_size,
+            max_position_embeddings,
+            layer_norm_eps,
+            position_buckets,
+            max_relative_positions,
+            id2label,
+        })
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1222,6 +1305,98 @@ mod tests {
             assert!(v.is_finite(), "non-finite seq-class logit after load: {v}");
         }
         let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// Every `config.json` fixture this module exercises, as ONE corpus.
+    ///
+    /// **Corpus: 4 fixtures — 2 pre-existing, 2 added.**
+    ///
+    /// This config uses NEITHER shared rule, so the `head_dim` /
+    /// `num_key_value_heads` coverage question does not apply. Its own
+    /// cross-field rule is the `max_relative_positions` sentinel, and it
+    /// arrives with the SAME collapse as `head_dim` did elsewhere:
+    ///
+    /// | behaviour                              | pre-existing fixture discriminates it? |
+    /// |----------------------------------------|----------------------------------------|
+    /// | `-1` means "use max_position_embeddings"| YES — fixture 1 ships `-1`            |
+    /// | absent means the same                   | YES — fixture 2 omits it              |
+    /// | an explicit `>= 1` is taken LITERALLY   | NO — a resolver that ALWAYS used
+    /// |                                        | `max_position_embeddings` passes both
+    /// |                                        | pre-existing fixtures. Fixture 3 added.|
+    /// | `id2label` TOLERANCE (malformed -> None)| NO — fixture 4 added                  |
+    const DIFFERENTIAL_CORPUS: &[(&str, &str)] = &[
+        (
+            "deberta-v3-base with id2label and the -1 sentinel",
+            r#"{
+                "vocab_size": 128100, "hidden_size": 768, "num_hidden_layers": 12,
+                "num_attention_heads": 12, "intermediate_size": 3072,
+                "max_position_embeddings": 512, "layer_norm_eps": 1e-7,
+                "position_buckets": 256, "max_relative_positions": -1,
+                "id2label": {"0": "O", "1": "B-PER", "2": "I-PER"}
+            }"#,
+        ),
+        (
+            "minimal (no id2label, no max_relative_positions)",
+            r#"{
+                "vocab_size": 100, "hidden_size": 16, "num_hidden_layers": 2,
+                "num_attention_heads": 4, "intermediate_size": 32,
+                "max_position_embeddings": 32
+            }"#,
+        ),
+        (
+            "ADDED: explicit max_relative_positions = 128, must NOT become 512",
+            r#"{
+                "vocab_size": 100, "hidden_size": 16, "num_hidden_layers": 2,
+                "num_attention_heads": 4, "intermediate_size": 32,
+                "max_position_embeddings": 512, "max_relative_positions": 128
+            }"#,
+        ),
+        (
+            "ADDED: malformed id2label (non-numeric key) must degrade to None",
+            r#"{
+                "vocab_size": 100, "hidden_size": 16, "num_hidden_layers": 2,
+                "num_attention_heads": 4, "intermediate_size": 32,
+                "max_position_embeddings": 32,
+                "id2label": {"not_a_number": "O"}
+            }"#,
+        ),
+    ];
+
+    #[test]
+    fn serde_path_agrees_with_the_legacy_parser_on_every_fixture() {
+        assert_eq!(DIFFERENTIAL_CORPUS.len(), 4, "corpus shrank");
+        for (name, json) in DIFFERENTIAL_CORPUS {
+            let new = DebertaV2Config::from_hf_json_str(json);
+            let old = DebertaV2Config::from_hf_json_str_legacy(json);
+            match (new, old) {
+                (Ok(a), Ok(b)) => assert_eq!(a, b, "differential mismatch on {name}"),
+                (Err(_), Err(_)) => {}
+                (Ok(_), Err(e)) => panic!("{name}: serde accepted, legacy rejected: {e}"),
+                (Err(e), Ok(_)) => panic!("{name}: serde rejected, legacy accepted: {e}"),
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_max_relative_positions_is_taken_literally() {
+        // Both pre-existing fixtures reach `max_position_embeddings` — one via
+        // the -1 sentinel, one via absence — so neither can tell a correct
+        // resolver from one that ignores an explicit value. 128 != 512.
+        let cfg = DebertaV2Config::from_hf_json_str(DIFFERENTIAL_CORPUS[2].1).unwrap();
+        assert_eq!(cfg.max_relative_positions, 128);
+        assert_ne!(cfg.max_relative_positions, cfg.max_position_embeddings);
+    }
+
+    #[test]
+    fn id2label_stays_tolerant_under_serde() {
+        // `parse_id2label` returns None if any key fails to parse as u32.
+        // A derived `Deserialize` into HashMap<u32, String> would hard-error,
+        // so a config that loads today would start failing.
+        let cfg = DebertaV2Config::from_hf_json_str(DIFFERENTIAL_CORPUS[3].1).unwrap();
+        assert!(
+            cfg.id2label.is_none(),
+            "malformed id2label degrades to None, it does not error"
+        );
     }
 
     #[test]
