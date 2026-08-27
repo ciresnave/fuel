@@ -1,0 +1,50 @@
+# `too_many_arguments` is CALIBRATED for this domain, not suppressed — and this
+# file is where the justification now lives, because it previously lived in 54
+# copies of one sentence.
+#
+# The lint still fires, at a bound chosen for a tensor library instead of
+# clippy's default of 7. Kernel entry points here carry the operand buffers,
+# strides and dims of an op ABI: input / weight / bias / scale / zero_point /
+# stride / padding / dilation / groups is nine before anything unusual happens.
+# Bundling them into a struct obscures the signature rather than clarifying it.
+#
+# MEASURED at head over CI's own clippy scope — `--workspace --tests --examples
+# --benches` minus the five WORKSPACE_EXCLUDES crates — with
+# `target/debug/.fingerprint` CLEARED, since a warm cache suppresses warnings
+# and a census over one is an undercount:
+#
+#     62 distinct sites
+#       8 args : 41      <- the median offender
+#       9 args : 13
+#      10 args :  6
+#      11 args :  1
+#      12 args :  1
+#     by crate:  fuel-core 56 · fuel-dispatch 4 · fuel-nn 2
+#
+# THE MEDIAN OFFENDER HAS EIGHT ARGUMENTS AGAINST A DEFAULT OF SEVEN.
+#
+# WHY A THRESHOLD RATHER THAN PER-SITE ATTRIBUTES, given that
+# `#[expect(...)]` self-invalidates and a config line never does:
+# the population was ALREADY classified, and the classification was uniform.
+# 68 `#[expect(clippy::too_many_arguments, reason = "...")]` attributes across
+# fuel-vulkan-backend, fuel-cpu-backend and fuel-graph carried just SIX distinct
+# reason strings, one of them repeated 46 times. That is not 46 per-site
+# judgements; it is one policy written 46 times because there was nowhere to
+# put it once. This is that place.
+#
+# The threshold does not REPLACE the self-invalidating mechanism, it PARTITIONS
+# the population. 14 of those 68 attributes cover functions that genuinely
+# exceed 10 arguments: they stay fulfilled, stay in the source, and will still
+# report if they ever stop being exceptional. Config carries the uniform case;
+# `#[expect]` keeps watching the outliers.
+#
+# 10 is chosen so the lint still catches them: clippy fires ABOVE the threshold,
+# so 11+ still warns. That leaves exactly two functions, both in
+# fuel-core/src/lazy.rs — `apply_layer_with_kv_writes` (12) and
+# `offer_flash_decode_arm_for_region` (11) — reviewed individually.
+#
+# A third existed, `dispatch_3buf` in fuel-vulkan-backend at 13 arguments, the
+# worst in the tree. It is absent because it was DELETED rather than allowed:
+# zero callers anywhere in the repo, and private, so it carried both this lint
+# and a `dead_code` warning. Removing it cleared both.
+too-many-arguments-threshold = 10
