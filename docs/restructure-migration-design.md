@@ -482,9 +482,58 @@ path-set diff is what catches that; the test suite is not.
 - **No 147-crate model explosion** — rejected by the ratified stopping rule.
 - **No `fuel-error` up front** — it lands when two crates need it and cannot
   share a nearer home.
-- **No changes to `fuel-dispatch`'s 138k lines.** It is the second-largest crate
-  and dissolving it is not on any critical path. The stopping rule cuts both
-  ways: absence of a consumer boundary is a reason *not* to split.
+- **No changes to `fuel-dispatch` in this restructure — but the reason first given
+  here was WRONG, and correcting it is worth more than the conclusion.**
+
+  ⚠️ **This bullet used to read:** *"dissolving it is not on any critical path.
+  The stopping rule cuts both ways: **absence of a consumer boundary** is a reason
+  not to split."* **Measured 2026-08-27 after CireSnave asked why `fuel-core`
+  dissolves and `fuel-dispatch` does not: there IS a consumer boundary, it is a
+  quarter of the crate, and it has two named external would-be consumers.**
+
+  ```
+  fuel-dispatch/src/   115,052 lines   (138,772 including tests/ and benches/)
+
+    fkc/                30,171   26.2%   35 files   <- kernel contracts + verification
+    pipelined.rs        15,758   13.7%              <- the executor
+    dispatch.rs         13,287   11.5%
+    ranker/              9,703    8.4%   20 files
+    vulkan_dispatch.rs   8,426    7.3%
+    baracuda_dispatch.rs 6,881    6.0%
+    plan.rs              5,135    4.5%
+    jit_ingest.rs        4,195    3.6%
+    telemetry/           4,158    3.6%   10 files
+  ```
+
+  **`fkc` is 26% of the crate, and a kernel PROVIDER wants contracts and
+  verification without wanting the executor.** That is a real class — **Vulkane
+  and Unpopped are both in it** — and it is precisely what **GAP-236** is about.
+
+  **The correct reasons it does not dissolve *in this restructure*:**
+
+  1. **No publish blocker.** `fuel-dispatch` is **free** on crates.io (measured,
+     with a negative control). `fuel-core` is a 125-version blockchain client —
+     **that is the forcing function, and it does not apply here.**
+  2. **02-layers does not ratify it as dissolving.** It ratifies `fuel-core`
+     dissolving and names `fuel-dispatch` as a Foundation crate with a defined
+     role. **Dissolving it would be a NEW architectural decision, not the
+     execution of an existing one** — and this document's whole premise is that
+     it is a path to a ratified destination, not a redesign.
+  3. **It is coherent in the way `fuel-core` is not.** `fuel-core` is **73% model
+     zoo** — content sitting in a framework crate. `fuel-dispatch` is dispatch
+     machinery and kernel contracts: **all of it framework.** Size is not the
+     argument; composition is.
+
+  **So the honest statement is: `fuel-dispatch` is not dissolving, but it may
+  SPLIT — and the split is gated on GAP-236, which is CireSnave's open
+  decision.** Publishing `fkc::verify` as a provider-facing surface is the thing
+  that would justify pulling `fkc` out; **until that is decided, extracting it
+  would be building a crate boundary for a consumer we have not agreed to have.**
+
+  **Note what the wrong reason would have cost:** *"no consumer boundary"* is an
+  absence claim, and it was made without measuring the composition. Had it stood,
+  the restructure would have carried a stated finding that the crate is
+  indivisible — into exactly the period when GAP-236 gets decided.
 - **No trait-only crates.** CireSnave corrected this explicitly: *trait-centered*
   and *trait-only* are not the same thing, and nothing here proposes the latter.
 
