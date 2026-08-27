@@ -160,13 +160,19 @@ pub fn enumerate_devices_uncached() -> Result<Vec<DeviceDescriptor>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // GAP-157: these tests REQUIRE a live CUDA device. They are `#[ignore]`d,
-    // so they run only when explicitly asked for — which makes a missing device
-    // a FAILURE, not a silent early return that reports `ok` having asserted
-    // nothing. Run them with the documented runner:
+    // GAP-157/GAP-243: these tests REQUIRE a live CUDA device. They are
+    // `#[ignore]`d, so they run only when explicitly asked for — which makes a
+    // missing device a FAILURE, not a silent early return that reports `ok`
+    // having asserted nothing. Run them with the documented runner:
     //   pwsh scripts/gpu-run.ps1 -Project fuel -- \
     //       cargo test -p fuel-cuda-backend --features cuda -- --ignored
-    use fuel_test_support::required_ok;
+    //
+    // The policy now lives in `fuel_test_support::hardware`, whose CUDA default
+    // is `Fatal` for the same reason this note gives — every call site is an
+    // `#[ignore]`d test, so running one is itself the declaration. Behaviour is
+    // therefore unchanged where a device exists; what is new is that
+    // `FUEL_REQUIRE_CUDA=0` can deliberately disarm it, so a wrong default is a
+    // nuisance rather than a wall.
 
     /// On machines without any CUDA device (headless CI, for example)
     /// the probe should return `Ok(vec![])`, not error. Where a GPU
@@ -175,7 +181,36 @@ mod tests {
     #[ignore = "requires a live CUDA device"]
     #[test]
     fn cuda_probe_is_total() {
-        let devices = required_ok("a live CUDA device", enumerate_devices());
+        // ⚠️ GAP-243. This took `required_ok`, which panics only on `Err` —
+        // but `enumerate_devices_uncached` returns **`Ok(vec![])`** when
+        // `Device::count()` is 0, which is what a CUDA RUNTIME WITH NO USABLE
+        // DEVICE reports (the doc comment above says so in as many words). So
+        // on such a box the empty vec sailed through the guard, the loop below
+        // iterated ZERO times, and this test reported `ok` having asserted
+        // nothing — GAP-243's exact defect, inside the file carrying the
+        // GAP-157 fix, because the guard was aimed at *enumeration failing*
+        // rather than at *the device being absent*.
+        //
+        // Not an exotic configuration: a box with the CUDA SDK and no usable
+        // GPU is ordinary (it is compile-only CI), and the same state arises
+        // from a GPU claimed by another process or a driver/runtime mismatch.
+        let devices = match enumerate_devices() {
+            Ok(d) if !d.is_empty() => d,
+            Ok(_) => {
+                return fuel_test_support::hardware::skip(
+                    fuel_test_support::hardware::Hardware::Cuda,
+                    fuel_test_support::hardware::Missing::device(
+                        "the CUDA runtime loaded but reported 0 devices",
+                    ),
+                );
+            }
+            Err(e) => {
+                return fuel_test_support::hardware::skip(
+                    fuel_test_support::hardware::Hardware::Cuda,
+                    fuel_test_support::hardware::Missing::device(format!("enumerate_devices: {e}")),
+                );
+            }
+        };
         for d in &devices {
             assert_eq!(d.backend, BackendId::Cuda);
             assert_eq!(d.vendor_id, NVIDIA_VENDOR_ID);
@@ -194,7 +229,13 @@ mod probe_memoization_tests {
     use super::*;
     // GAP-157: `#[ignore]`d — see the note in `tests` above. A missing CUDA
     // runtime is a FAILURE here, not a silent `return` that reports `ok`.
-    use fuel_test_support::require;
+    // GAP-243: these two require the RUNTIME, not a device, and that is
+    // correct rather than an oversight — their property is the number of real
+    // driver probes, which holds perfectly well when `Device::count()` is 0. Do
+    // NOT "fix" them to demand a non-empty device list: that would make them
+    // fail on a machine where the thing they actually measure works. Only
+    // `cuda_probe_is_total` needed strengthening, because its assertions live
+    // inside a `for` over the device list and an empty list skips them all.
 
     /// K threads racing a cold probe must produce **exactly one** real driver
     /// enumeration.
@@ -220,7 +261,12 @@ mod probe_memoization_tests {
     #[ignore = "requires a live CUDA device"]
     #[test]
     fn concurrent_enumeration_probes_the_driver_exactly_once() {
-        require("a live CUDA runtime", enumerate_devices().is_ok());
+        if let Err(e) = enumerate_devices() {
+            return fuel_test_support::hardware::skip(
+                fuel_test_support::hardware::Hardware::Cuda,
+                fuel_test_support::hardware::Missing::device(format!("no CUDA runtime: {e}")),
+            );
+        }
         let before = memoized_probe_call_count();
 
         let threads: Vec<_> = (0..16)
@@ -253,7 +299,12 @@ mod probe_memoization_tests {
     #[ignore = "requires a live CUDA device"]
     #[test]
     fn uncached_enumeration_really_does_re_probe() {
-        require("a live CUDA runtime", enumerate_devices().is_ok());
+        if let Err(e) = enumerate_devices() {
+            return fuel_test_support::hardware::skip(
+                fuel_test_support::hardware::Hardware::Cuda,
+                fuel_test_support::hardware::Missing::device(format!("no CUDA runtime: {e}")),
+            );
+        }
         let before = probe_call_count();
         let _ = enumerate_devices_uncached();
         let _ = enumerate_devices_uncached();
