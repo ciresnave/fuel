@@ -37,6 +37,7 @@
 use crate::lazy::{Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
+use serde::Deserialize;
 use std::sync::Arc;
 
 /// Which GELU variant the MLP's activation uses.
@@ -68,6 +69,87 @@ pub struct PhiConfig {
     /// LayerNorm applied post-reshape — left to follow-up.
     pub qk_layernorm: bool,
     pub hidden_activation: PhiActivation,
+}
+
+fn default_layer_norm_eps() -> f64 {
+    1e-5
+}
+fn default_rope_theta() -> f64 {
+    10_000.0
+}
+fn default_partial_rotary_factor() -> f64 {
+    0.4
+}
+
+/// A Phi `config.json` exactly as HuggingFace ships it.
+///
+/// Every field here is either present in the file or has a constant default,
+/// so this struct is pure `serde` and carries no logic. Anything that has to
+/// look at a *sibling* field — which `#[serde(default = "...")]` cannot do —
+/// lives in [`PhiConfigRaw::resolve`] instead. That split is the whole reason
+/// this type exists; see [`crate::hf_config`] for the measurement behind it.
+///
+/// `head_dim` and `num_key_value_heads` are `Option` on purpose: absent and
+/// present-but-equal-to-the-default are different facts, and collapsing them
+/// here would discard the distinction before `resolve` can act on it.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct PhiConfigRaw {
+    vocab_size: usize,
+    hidden_size: usize,
+    intermediate_size: usize,
+    num_hidden_layers: usize,
+    num_attention_heads: usize,
+    #[serde(default)]
+    num_key_value_heads: Option<usize>,
+    #[serde(default)]
+    head_dim: Option<usize>,
+    #[serde(default = "default_layer_norm_eps")]
+    layer_norm_eps: f64,
+    #[serde(default = "default_rope_theta")]
+    rope_theta: f64,
+    max_position_embeddings: usize,
+    #[serde(default = "default_partial_rotary_factor")]
+    partial_rotary_factor: f64,
+    #[serde(default)]
+    qk_layernorm: bool,
+}
+
+impl PhiConfigRaw {
+    fn from_json_str(json: &str) -> Result<Self> {
+        serde_json::from_str(json)
+            .map_err(|e| crate::Error::Msg(format!("parsing Phi config.json: {e}")))
+    }
+
+    /// Apply the cross-field defaults and the v1 validation.
+    fn resolve(self) -> Result<PhiConfig> {
+        if self.qk_layernorm {
+            return Err(crate::Error::Msg(
+                "Phi: qk_layernorm=true is not yet supported by the standalone port (v1)".into(),
+            )
+            .bt());
+        }
+        Ok(PhiConfig {
+            vocab_size: self.vocab_size,
+            hidden_size: self.hidden_size,
+            intermediate_size: self.intermediate_size,
+            num_hidden_layers: self.num_hidden_layers,
+            num_attention_heads: self.num_attention_heads,
+            // Deliberately NOT resolved: `PhiConfig` keeps the `Option`, and
+            // the MHA fallback happens at use site rather than at parse time.
+            num_key_value_heads: self.num_key_value_heads,
+            head_dim: crate::hf_config::head_dim(
+                self.head_dim,
+                self.hidden_size,
+                self.num_attention_heads,
+            ),
+            layer_norm_eps: self.layer_norm_eps,
+            rope_theta: self.rope_theta,
+            max_position_embeddings: self.max_position_embeddings,
+            partial_rotary_factor: self.partial_rotary_factor,
+            qk_layernorm: self.qk_layernorm,
+            hidden_activation: PhiActivation::GeluPytorchTanh,
+        })
+    }
 }
 
 impl PhiConfig {
@@ -372,61 +454,14 @@ impl PhiConfig {
     ///   `partial_rotary_factor` → `partial_rotary_factor` (defaults to 0.4 — Phi-2's),
     ///   `qk_layernorm` → `qk_layernorm` (defaults to false; v1 only
     ///   supports false — set to true bails at load time).
+    /// Parse a HuggingFace `config.json` into a [`PhiConfig`].
+    ///
+    /// Two stages, because they answer different questions. `PhiConfigRaw`
+    /// is the wire shape and is pure `serde`; [`PhiConfigRaw::resolve`]
+    /// applies the defaults `serde` cannot express — those that read another
+    /// field — and the one validation this port enforces.
     pub fn from_hf_json_str(json: &str) -> Result<Self> {
-        let v: serde_json::Value = serde_json::from_str(json)
-            .map_err(|e| crate::Error::Msg(format!("parsing Phi config.json: {e}")))?;
-        let get_usize = |key: &str| -> Result<usize> {
-            v.get(key)
-                .and_then(|x| x.as_u64())
-                .map(|x| x as usize)
-                .ok_or_else(|| {
-                    crate::Error::Msg(format!("Phi config.json: missing/invalid {key:?}"))
-                })
-        };
-        let get_f64 = |key: &str| -> Option<f64> { v.get(key).and_then(|x| x.as_f64()) };
-        let get_bool = |key: &str| -> Option<bool> { v.get(key).and_then(|x| x.as_bool()) };
-
-        let vocab_size = get_usize("vocab_size")?;
-        let hidden_size = get_usize("hidden_size")?;
-        let intermediate_size = get_usize("intermediate_size")?;
-        let num_hidden_layers = get_usize("num_hidden_layers")?;
-        let num_attention_heads = get_usize("num_attention_heads")?;
-        let num_key_value_heads = v
-            .get("num_key_value_heads")
-            .and_then(|x| x.as_u64())
-            .map(|x| x as usize);
-        let head_dim = v
-            .get("head_dim")
-            .and_then(|x| x.as_u64())
-            .map(|x| x as usize)
-            .unwrap_or(hidden_size / num_attention_heads);
-        let layer_norm_eps = get_f64("layer_norm_eps").unwrap_or(1e-5);
-        let rope_theta = get_f64("rope_theta").unwrap_or(10_000.0);
-        let max_position_embeddings = get_usize("max_position_embeddings")?;
-        let partial_rotary_factor = get_f64("partial_rotary_factor").unwrap_or(0.4);
-        let qk_layernorm = get_bool("qk_layernorm").unwrap_or(false);
-        if qk_layernorm {
-            return Err(crate::Error::Msg(
-                "Phi: qk_layernorm=true is not yet supported by the standalone port (v1)".into(),
-            )
-            .bt());
-        }
-
-        Ok(PhiConfig {
-            vocab_size,
-            hidden_size,
-            intermediate_size,
-            num_hidden_layers,
-            num_attention_heads,
-            num_key_value_heads,
-            head_dim,
-            layer_norm_eps,
-            rope_theta,
-            max_position_embeddings,
-            partial_rotary_factor,
-            qk_layernorm,
-            hidden_activation: PhiActivation::GeluPytorchTanh,
-        })
+        PhiConfigRaw::from_json_str(json)?.resolve()
     }
 }
 
@@ -563,6 +598,73 @@ impl PhiModel {
 }
 
 #[cfg(test)]
+impl PhiConfig {
+    /// The hand-rolled parser this type used before the `serde` split, kept
+    /// verbatim and test-only as the differential's oracle.
+    ///
+    /// It is NOT dead code awaiting deletion: a differential that ran once at
+    /// refactor time proves the two agreed at one commit, and a differential
+    /// that keeps running proves they still do. Deleting this turns the first
+    /// into the only claim anyone can make.
+    pub(crate) fn from_hf_json_str_legacy(json: &str) -> Result<Self> {
+        let v: serde_json::Value = serde_json::from_str(json)
+            .map_err(|e| crate::Error::Msg(format!("parsing Phi config.json: {e}")))?;
+        let get_usize = |key: &str| -> Result<usize> {
+            v.get(key)
+                .and_then(|x| x.as_u64())
+                .map(|x| x as usize)
+                .ok_or_else(|| {
+                    crate::Error::Msg(format!("Phi config.json: missing/invalid {key:?}"))
+                })
+        };
+        let get_f64 = |key: &str| -> Option<f64> { v.get(key).and_then(|x| x.as_f64()) };
+        let get_bool = |key: &str| -> Option<bool> { v.get(key).and_then(|x| x.as_bool()) };
+
+        let vocab_size = get_usize("vocab_size")?;
+        let hidden_size = get_usize("hidden_size")?;
+        let intermediate_size = get_usize("intermediate_size")?;
+        let num_hidden_layers = get_usize("num_hidden_layers")?;
+        let num_attention_heads = get_usize("num_attention_heads")?;
+        let num_key_value_heads = v
+            .get("num_key_value_heads")
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize);
+        let head_dim = v
+            .get("head_dim")
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize)
+            .unwrap_or(hidden_size / num_attention_heads);
+        let layer_norm_eps = get_f64("layer_norm_eps").unwrap_or(1e-5);
+        let rope_theta = get_f64("rope_theta").unwrap_or(10_000.0);
+        let max_position_embeddings = get_usize("max_position_embeddings")?;
+        let partial_rotary_factor = get_f64("partial_rotary_factor").unwrap_or(0.4);
+        let qk_layernorm = get_bool("qk_layernorm").unwrap_or(false);
+        if qk_layernorm {
+            return Err(crate::Error::Msg(
+                "Phi: qk_layernorm=true is not yet supported by the standalone port (v1)".into(),
+            )
+            .bt());
+        }
+
+        Ok(PhiConfig {
+            vocab_size,
+            hidden_size,
+            intermediate_size,
+            num_hidden_layers,
+            num_attention_heads,
+            num_key_value_heads,
+            head_dim,
+            layer_norm_eps,
+            rope_theta,
+            max_position_embeddings,
+            partial_rotary_factor,
+            qk_layernorm,
+            hidden_activation: PhiActivation::GeluPytorchTanh,
+        })
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -612,6 +714,90 @@ mod tests {
             lm_head,
             lm_head_bias,
         }
+    }
+
+    /// Every `config.json` fixture exercised in this module, as ONE corpus.
+    ///
+    /// Stated as a population rather than scattered through the tests: the
+    /// differential below is only as good as this list, and a differential
+    /// over three fixtures and one over three hundred are the same green tick.
+    /// **Corpus: 4 fixtures, covering the sole `PhiConfig` parser in this file
+    /// — the target is fully covered, which is a claim worth making rather
+    /// than an absence worth assuming.**
+    const DIFFERENTIAL_CORPUS: &[(&str, &str)] = &[
+        (
+            "phi-2 canonical (explicit head_dim, explicit kv_heads)",
+            r#"{
+                "vocab_size": 51200, "hidden_size": 2560, "intermediate_size": 10240,
+                "num_hidden_layers": 32, "num_attention_heads": 32,
+                "num_key_value_heads": 32, "head_dim": 80,
+                "layer_norm_eps": 1e-5, "rope_theta": 10000.0,
+                "max_position_embeddings": 2048, "partial_rotary_factor": 0.4
+            }"#,
+        ),
+        (
+            "minimal (every optional absent - exercises all defaults)",
+            r#"{
+                "vocab_size": 51200, "hidden_size": 1024, "intermediate_size": 4096,
+                "num_hidden_layers": 16, "num_attention_heads": 16,
+                "max_position_embeddings": 2048
+            }"#,
+        ),
+        (
+            "qk_layernorm = true (both paths must REJECT)",
+            r#"{
+                "vocab_size": 51200, "hidden_size": 1024, "intermediate_size": 4096,
+                "num_hidden_layers": 16, "num_attention_heads": 16,
+                "max_position_embeddings": 2048, "qk_layernorm": true
+            }"#,
+        ),
+        (
+            "explicit head_dim that DISAGREES with hidden_size/num_attention_heads",
+            r#"{
+                "vocab_size": 51200, "hidden_size": 2560, "intermediate_size": 10240,
+                "num_hidden_layers": 32, "num_attention_heads": 32, "head_dim": 96,
+                "max_position_embeddings": 2048
+            }"#,
+        ),
+    ];
+
+    #[test]
+    fn serde_path_agrees_with_the_legacy_parser_on_every_fixture() {
+        assert_eq!(
+            DIFFERENTIAL_CORPUS.len(),
+            4,
+            "corpus shrank - a differential silently covering less is the failure              mode this assert exists for",
+        );
+        for (name, json) in DIFFERENTIAL_CORPUS {
+            let new = PhiConfig::from_hf_json_str(json);
+            let old = PhiConfig::from_hf_json_str_legacy(json);
+            match (new, old) {
+                // VALUES, not shapes: PhiConfig's PartialEq compares every
+                // field, so two configs with the same field SET and different
+                // numbers fail here.
+                (Ok(a), Ok(b)) => assert_eq!(a, b, "differential mismatch on {name}"),
+                (Err(_), Err(_)) => {}
+                (Ok(_), Err(e)) => panic!("{name}: serde path accepted, legacy rejected: {e}"),
+                (Err(e), Ok(_)) => panic!("{name}: serde path rejected, legacy accepted: {e}"),
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_head_dim_survives_both_paths() {
+        // The property the corpus alone cannot check: every in-tree fixture
+        // that specifies head_dim specifies the QUOTIENT (phi-2 ships 80
+        // against 2560/32), so a resolver that ignored the explicit value
+        // would pass the differential. 96 != 2560/32 = 80.
+        let json = DIFFERENTIAL_CORPUS[3].1;
+        let cfg = PhiConfig::from_hf_json_str(json).unwrap();
+        assert_eq!(
+            cfg.head_dim, 96,
+            "explicit head_dim must not be overwritten"
+        );
+        assert_ne!(cfg.head_dim, 2560 / 32);
+        let legacy = PhiConfig::from_hf_json_str_legacy(json).unwrap();
+        assert_eq!(legacy.head_dim, 96, "legacy must agree - it is the oracle");
     }
 
     #[test]
