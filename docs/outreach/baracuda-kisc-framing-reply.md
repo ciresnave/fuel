@@ -66,8 +66,8 @@ non-base kernel *data* — flows through the one KISC-framed importer.
 
 | Ask | Fuel's position |
 |---|---|
-| **1. Thumbs-up on KISC framing on the shared seam** | **Yes — and broader.** Adopt KISC as the single import frame for the local corpus *and* the wire. It's Fuel's own logged gap ([conformance §2.B](kiss-conformance-and-divergences.md): "no contract framing/checksum") + RFC #23 (reference wire codec). |
-| **2. Capability bit for negotiated cutover** | **Yes**, but allocate it in the **KISS FEAT range (bit 32+)**, co-assigned with Baracuda and recorded in [`kernel-seam-interop.md`](../specs/kernel-seam-interop.md). Do **not** repeat the placement of [`SEAM_CAP_JIT_ON_REQUEST` at bit 16](../../fuel-kernel-seam-announce/src/lib.rs), which sits in KISS's EXT-experimental range rather than FEAT ([conformance §2.B](kiss-conformance-and-divergences.md)). |
+| **1. Thumbs-up on KISC framing on the shared seam** | **Yes — and broader.** Adopt KISC as the single import frame for the local corpus *and* the wire. It's Fuel's own logged gap ([Fuel's conformance record §2.B](kiss-conformance-and-divergences.md): "no contract framing/checksum") + RFC #23 (reference wire codec). |
+| **2. Capability bit for negotiated cutover** | **Yes**, but allocate it in the **KISS FEAT range (bit 32+)**, co-assigned with Baracuda and recorded in [`kernel-seam-interop.md`](../specs/kernel-seam-interop.md). Do **not** repeat the placement of [`SEAM_CAP_JIT_ON_REQUEST` at bit 16](../../fuel-kernel-seam-announce/src/lib.rs), which sits in KISS's EXT-experimental range rather than FEAT (per [Fuel's conformance record §2.B](kiss-conformance-and-divergences.md) — Fuel's own assessment, not a KISS section number). |
 | **3. Importer → per-document hard-reject + isolation** | **Hard-reject: already shipped** (`OrphanFkcBlock`, above), and it will apply to *every* document once framing is KISC. **Isolation: yes on the wire; no on the local corpus** — the local build stays fail-fast (see refinement #3). Unifying the *frame* does not force unifying the *failure policy*. |
 
 ## Three refinements (engineering, not objections)

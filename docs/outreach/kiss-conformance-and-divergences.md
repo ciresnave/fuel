@@ -3,6 +3,29 @@
 **Date:** 2026-07-14 · **Status:** living record · **Scope:** the kernel seam only
 (advertise / describe / discover / provision / verify), never the optimizer/executor/IR internals.
 
+> **OWNER: FUEL.** This is **Fuel's assessment of the Fuel↔KISS seam**, written and
+> maintained here. It is **not a KISS document** and KISS has never held a copy.
+>
+> **Cite it as Fuel's** — GAP-246 records a letter of ours that cited it back to
+> KISS as *"your own"*, which the architect then relayed to the KISS architect as
+> KISS's position. The KISS architect measured for it in their repo and it was
+> never there.
+>
+> **⚠️ The section numbers below are THIS DOCUMENT'S.** §1, §2.A, §2.B are
+> Fuel's headings. KISS-Contract has its own §-numbering with **colliding numbers
+> and field names**, so a bare *"§2.A"* cited from the wrong document **resolves
+> cleanly and means something else**. Always name the owner in the citation text,
+> not only in the link target.
+>
+> **OUTSTANDING COMMITMENT — not yet honoured.**
+> [`kiss-reconciliation-D1-D8-reply.md:66`](kiss-reconciliation-D1-D8-reply.md)
+> tells KISS: *"Fuel will fold its record toward this reconciliation (or the
+> umbrella) so the next reviewer has one map, not three."* **That fold has not
+> happened.** It is a content merge against KISS's reconciliation, not an
+> attribution fix, so it was deliberately left out of the GAP-246 sweep rather
+> than done by halves — recorded here so the promise is visible to the next
+> reader instead of quietly lapsing.
+
 Fuel's kernel seam (FDX + FKC + `fuel-kernel-seam*` + the `SeamHello` handshake) is the named
 reference **seed** for the public **KISS — Kernel Interface Standards Suite**
 (github.com/ThinkersJournal/KISS, CC0, pre-1.0 draft), co-developed by the same author. So "will
