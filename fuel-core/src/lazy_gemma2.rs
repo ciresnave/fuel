@@ -47,6 +47,7 @@
 use crate::lazy::{Tensor, WeightStorage};
 use crate::{Device, Result};
 use fuel_ir::Shape;
+use serde::Deserialize;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -65,6 +66,78 @@ pub struct Gemma2Config {
     pub attn_logit_softcapping: Option<f64>,
     pub final_logit_softcapping: Option<f64>,
     pub sliding_window: Option<usize>,
+}
+
+fn default_rms_norm_eps() -> f64 {
+    1e-6
+}
+fn default_rope_theta() -> f64 {
+    10_000.0
+}
+
+/// A Gemma-2 `config.json` exactly as HuggingFace ships it.
+///
+/// Pure `serde`: every field is present in the file or has a constant
+/// default. The two defaults that read a sibling live in [`Self::resolve`].
+/// `num_key_value_heads` and `head_dim` are `Option` so that absent stays
+/// distinguishable from present-and-equal-to-the-default.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct Gemma2ConfigRaw {
+    vocab_size: usize,
+    hidden_size: usize,
+    intermediate_size: usize,
+    num_hidden_layers: usize,
+    num_attention_heads: usize,
+    #[serde(default)]
+    num_key_value_heads: Option<usize>,
+    #[serde(default)]
+    head_dim: Option<usize>,
+    #[serde(default = "default_rms_norm_eps")]
+    rms_norm_eps: f64,
+    #[serde(default = "default_rope_theta")]
+    rope_theta: f64,
+    #[serde(default)]
+    attention_bias: bool,
+    max_position_embeddings: usize,
+    #[serde(default)]
+    attn_logit_softcapping: Option<f64>,
+    #[serde(default)]
+    final_logit_softcapping: Option<f64>,
+    #[serde(default)]
+    sliding_window: Option<usize>,
+}
+
+impl Gemma2ConfigRaw {
+    fn from_json_str(json: &str) -> crate::Result<Self> {
+        serde_json::from_str(json)
+            .map_err(|e| crate::Error::Msg(format!("parsing Gemma2 config.json: {e}")))
+    }
+
+    fn resolve(self) -> crate::Result<Gemma2Config> {
+        Ok(Gemma2Config {
+            vocab_size: self.vocab_size,
+            hidden_size: self.hidden_size,
+            intermediate_size: self.intermediate_size,
+            num_hidden_layers: self.num_hidden_layers,
+            num_attention_heads: self.num_attention_heads,
+            num_key_value_heads: crate::hf_config::num_key_value_heads(
+                self.num_key_value_heads,
+                self.num_attention_heads,
+            ),
+            head_dim: crate::hf_config::head_dim(
+                self.head_dim,
+                self.hidden_size,
+                self.num_attention_heads,
+            ),
+            rms_norm_eps: self.rms_norm_eps,
+            rope_theta: self.rope_theta,
+            attention_bias: self.attention_bias,
+            max_position_embeddings: self.max_position_embeddings,
+            attn_logit_softcapping: self.attn_logit_softcapping,
+            final_logit_softcapping: self.final_logit_softcapping,
+            sliding_window: self.sliding_window,
+        })
+    }
 }
 
 impl Gemma2Config {
@@ -390,62 +463,13 @@ impl Gemma2Config {
     ///   `attn_logit_softcapping` → `attn_logit_softcapping`,
     ///   `final_logit_softcapping` → `final_logit_softcapping`,
     ///   `sliding_window` → `sliding_window`.
+    /// Parse a HuggingFace `config.json` into a [`Gemma2Config`].
+    ///
+    /// [`Gemma2ConfigRaw`] is the wire shape and is pure `serde`;
+    /// [`Gemma2ConfigRaw::resolve`] applies the two defaults that read a
+    /// sibling field, which `#[serde(default)]` cannot express.
     pub fn from_hf_json_str(json: &str) -> crate::Result<Self> {
-        let v: serde_json::Value = serde_json::from_str(json)
-            .map_err(|e| crate::Error::Msg(format!("parsing Gemma2 config.json: {e}")))?;
-        let get_usize = |key: &str| -> crate::Result<usize> {
-            v.get(key)
-                .and_then(|x| x.as_u64())
-                .map(|x| x as usize)
-                .ok_or_else(|| {
-                    crate::Error::Msg(format!("Gemma2 config.json: missing/invalid {key:?}"))
-                })
-        };
-        let get_f64 = |key: &str| -> Option<f64> { v.get(key).and_then(|x| x.as_f64()) };
-        let get_bool = |key: &str| -> Option<bool> { v.get(key).and_then(|x| x.as_bool()) };
-
-        let vocab_size = get_usize("vocab_size")?;
-        let hidden_size = get_usize("hidden_size")?;
-        let num_hidden_layers = get_usize("num_hidden_layers")?;
-        let num_attention_heads = get_usize("num_attention_heads")?;
-        let num_key_value_heads = v
-            .get("num_key_value_heads")
-            .and_then(|x| x.as_u64())
-            .map(|x| x as usize)
-            .unwrap_or(num_attention_heads);
-        let intermediate_size = get_usize("intermediate_size")?;
-        let head_dim = v
-            .get("head_dim")
-            .and_then(|x| x.as_u64())
-            .map(|x| x as usize)
-            .unwrap_or(hidden_size / num_attention_heads);
-        let rms_norm_eps = get_f64("rms_norm_eps").unwrap_or(1e-6);
-        let rope_theta = get_f64("rope_theta").unwrap_or(10000.0);
-        let attention_bias = get_bool("attention_bias").unwrap_or(false);
-        let max_position_embeddings = get_usize("max_position_embeddings")?;
-        let attn_logit_softcapping = get_f64("attn_logit_softcapping");
-        let final_logit_softcapping = get_f64("final_logit_softcapping");
-        let sliding_window = v
-            .get("sliding_window")
-            .and_then(|x| x.as_u64())
-            .map(|x| x as usize);
-
-        Ok(Self {
-            vocab_size,
-            hidden_size,
-            intermediate_size,
-            num_hidden_layers,
-            num_attention_heads,
-            num_key_value_heads,
-            head_dim,
-            rms_norm_eps,
-            rope_theta,
-            attention_bias,
-            max_position_embeddings,
-            attn_logit_softcapping,
-            final_logit_softcapping,
-            sliding_window,
-        })
+        Gemma2ConfigRaw::from_json_str(json)?.resolve()
     }
 }
 
@@ -567,6 +591,71 @@ impl Gemma2Model {
 }
 
 #[cfg(test)]
+impl Gemma2Config {
+    /// The hand-rolled parser this type used before the `serde` split, kept
+    /// verbatim and test-only as the differential's oracle. A differential
+    /// that ran once proves the paths agreed at ONE commit; one that keeps
+    /// running proves they still do.
+    pub(crate) fn from_hf_json_str_legacy(json: &str) -> crate::Result<Self> {
+        let v: serde_json::Value = serde_json::from_str(json)
+            .map_err(|e| crate::Error::Msg(format!("parsing Gemma2 config.json: {e}")))?;
+        let get_usize = |key: &str| -> crate::Result<usize> {
+            v.get(key)
+                .and_then(|x| x.as_u64())
+                .map(|x| x as usize)
+                .ok_or_else(|| {
+                    crate::Error::Msg(format!("Gemma2 config.json: missing/invalid {key:?}"))
+                })
+        };
+        let get_f64 = |key: &str| -> Option<f64> { v.get(key).and_then(|x| x.as_f64()) };
+        let get_bool = |key: &str| -> Option<bool> { v.get(key).and_then(|x| x.as_bool()) };
+
+        let vocab_size = get_usize("vocab_size")?;
+        let hidden_size = get_usize("hidden_size")?;
+        let num_hidden_layers = get_usize("num_hidden_layers")?;
+        let num_attention_heads = get_usize("num_attention_heads")?;
+        let num_key_value_heads = v
+            .get("num_key_value_heads")
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize)
+            .unwrap_or(num_attention_heads);
+        let intermediate_size = get_usize("intermediate_size")?;
+        let head_dim = v
+            .get("head_dim")
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize)
+            .unwrap_or(hidden_size / num_attention_heads);
+        let rms_norm_eps = get_f64("rms_norm_eps").unwrap_or(1e-6);
+        let rope_theta = get_f64("rope_theta").unwrap_or(10000.0);
+        let attention_bias = get_bool("attention_bias").unwrap_or(false);
+        let max_position_embeddings = get_usize("max_position_embeddings")?;
+        let attn_logit_softcapping = get_f64("attn_logit_softcapping");
+        let final_logit_softcapping = get_f64("final_logit_softcapping");
+        let sliding_window = v
+            .get("sliding_window")
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize);
+
+        Ok(Self {
+            vocab_size,
+            hidden_size,
+            intermediate_size,
+            num_hidden_layers,
+            num_attention_heads,
+            num_key_value_heads,
+            head_dim,
+            rms_norm_eps,
+            rope_theta,
+            attention_bias,
+            max_position_embeddings,
+            attn_logit_softcapping,
+            final_logit_softcapping,
+            sliding_window,
+        })
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -580,6 +669,82 @@ mod tests {
             s = s.wrapping_mul(1103515245).wrapping_add(12345);
             ((s >> 16) as u16 as f32 / 65535.0 - 0.5) * 0.05
         }
+    }
+
+    /// Every `config.json` fixture this module exercises, as ONE corpus.
+    ///
+    /// **Corpus: 2 fixtures, both PRE-EXISTING — nothing synthetic added.**
+    ///
+    /// Per-rule coverage, which does not travel between rules and so is
+    /// stated per rule rather than per config:
+    ///
+    /// | rule                  | discriminated by a real fixture?              |
+    /// |-----------------------|----------------------------------------------|
+    /// | `head_dim`            | YES — gemma-2-2b ships 256 against a quotient of 2304/8 = 288 |
+    /// | `num_key_value_heads` | YES — gemma-2-2b ships 4 against 8 heads      |
+    ///
+    /// This is the first of the seven where the real corpus discriminates
+    /// BOTH rules, so no synthetic fixture was needed. "I added a fixture"
+    /// and "the corpus already covered it" are different facts and only the
+    /// second is evidence about configs people actually ship.
+    const DIFFERENTIAL_CORPUS: &[(&str, &str)] = &[
+        (
+            "gemma-2-2b (head_dim 256 != 2304/8, kv_heads 4 != 8 — both rules live)",
+            r#"{
+                "vocab_size": 256000, "hidden_size": 2304, "intermediate_size": 9216,
+                "num_hidden_layers": 26, "num_attention_heads": 8,
+                "num_key_value_heads": 4, "head_dim": 256, "rms_norm_eps": 1e-6,
+                "rope_theta": 10000.0, "attention_bias": false,
+                "max_position_embeddings": 8192, "attn_logit_softcapping": 50.0,
+                "final_logit_softcapping": 30.0, "sliding_window": 4096
+            }"#,
+        ),
+        (
+            "minimal (every optional absent — both rules take their fallback)",
+            r#"{
+                "vocab_size": 100, "hidden_size": 64, "intermediate_size": 128,
+                "num_hidden_layers": 2, "num_attention_heads": 4,
+                "max_position_embeddings": 512
+            }"#,
+        ),
+    ];
+
+    #[test]
+    fn serde_path_agrees_with_the_legacy_parser_on_every_fixture() {
+        assert_eq!(
+            DIFFERENTIAL_CORPUS.len(),
+            2,
+            "corpus shrank - a differential silently covering less is the              failure mode this assert exists for",
+        );
+        for (name, json) in DIFFERENTIAL_CORPUS {
+            let new = Gemma2Config::from_hf_json_str(json);
+            let old = Gemma2Config::from_hf_json_str_legacy(json);
+            match (new, old) {
+                (Ok(a), Ok(b)) => assert_eq!(a, b, "differential mismatch on {name}"),
+                (Err(_), Err(_)) => {}
+                (Ok(_), Err(e)) => panic!("{name}: serde accepted, legacy rejected: {e}"),
+                (Err(e), Ok(_)) => panic!("{name}: serde rejected, legacy accepted: {e}"),
+            }
+        }
+    }
+
+    #[test]
+    fn both_cross_field_rules_are_discriminated_by_the_real_fixture() {
+        // Neither assertion here needs an invented config: gemma-2-2b ships
+        // values that disagree with both fallbacks, so a resolver ignoring
+        // the explicit values fails on a REAL file rather than a contrived one.
+        let cfg = Gemma2Config::from_hf_json_str(DIFFERENTIAL_CORPUS[0].1).unwrap();
+        assert_eq!(
+            cfg.head_dim, 256,
+            "explicit head_dim must not be overwritten"
+        );
+        assert_ne!(
+            cfg.head_dim,
+            2304 / 8,
+            "fixture would not discriminate if these matched"
+        );
+        assert_eq!(cfg.num_key_value_heads, 4, "GQA count must survive");
+        assert_ne!(cfg.num_key_value_heads, cfg.num_attention_heads);
     }
 
     #[test]
