@@ -934,8 +934,10 @@ mod flag_not_verdict_tests {
         use fuel_ir::probe::BackendId;
 
         let Ok(dev) = CudaDevice::new(0) else {
-            eprintln!("no CUDA device; skipping");
-            return;
+            return fuel_test_support::hardware::skip(
+                fuel_test_support::hardware::Hardware::Cuda,
+                fuel_test_support::hardware::Missing::device("CudaDevice::new(0) failed"),
+            );
         };
         let decompose = PatternNode::Op {
             op: OpTag::Add,
@@ -990,8 +992,10 @@ mod flag_not_verdict_tests {
         use fuel_ir::probe::BackendId;
 
         let Ok(dev) = CudaDevice::new(0) else {
-            eprintln!("no CUDA device; skipping");
-            return;
+            return fuel_test_support::hardware::skip(
+                fuel_test_support::hardware::Hardware::Cuda,
+                fuel_test_support::hardware::Missing::device("CudaDevice::new(0) failed"),
+            );
         };
         // relu(add(bind0, bind1)) — a 2-op region.
         let decompose = PatternNode::Op {
@@ -1055,8 +1059,10 @@ mod flag_not_verdict_tests {
         use fuel_ir::probe::BackendId;
 
         let Ok(dev) = CudaDevice::new(0) else {
-            eprintln!("no CUDA device; skipping");
-            return;
+            return fuel_test_support::hardware::skip(
+                fuel_test_support::hardware::Hardware::Cuda,
+                fuel_test_support::hardware::Missing::device("CudaDevice::new(0) failed"),
+            );
         };
         // Register an `add(bind0, bind1)` region under a runtime FusedOpId; the
         // candidate claims it WITHOUT submitting its own decompose.
@@ -2672,8 +2678,10 @@ mod tests {
         use fuel_ir::probe::BackendId;
 
         let Ok(dev) = CudaDevice::new(0) else {
-            eprintln!("no CUDA device; skipping");
-            return;
+            return fuel_test_support::hardware::skip(
+                fuel_test_support::hardware::Hardware::Cuda,
+                fuel_test_support::hardware::Missing::device("CudaDevice::new(0) failed"),
+            );
         };
 
         let decompose = PatternNode::Op {
@@ -2757,8 +2765,10 @@ mod tests {
         use fuel_ir::probe::BackendId;
 
         let Ok(dev) = CudaDevice::new(0) else {
-            eprintln!("no CUDA device; skipping");
-            return;
+            return fuel_test_support::hardware::skip(
+                fuel_test_support::hardware::Hardware::Cuda,
+                fuel_test_support::hardware::Missing::device("CudaDevice::new(0) failed"),
+            );
         };
 
         // An UNMAPPED-op region (MatMul): kiss-ref has no equivalent, so
@@ -2836,8 +2846,10 @@ mod tests {
         use fuel_ir::probe::BackendId;
 
         let Ok(dev) = CudaDevice::new(0) else {
-            eprintln!("no CUDA device; skipping");
-            return;
+            return fuel_test_support::hardware::skip(
+                fuel_test_support::hardware::Hardware::Cuda,
+                fuel_test_support::hardware::Missing::device("CudaDevice::new(0) failed"),
+            );
         };
 
         let decompose = PatternNode::Op {
@@ -2922,8 +2934,10 @@ mod tests {
         use fuel_ir::probe::BackendId;
 
         let Ok(dev) = CudaDevice::new(0) else {
-            eprintln!("no CUDA device; skipping");
-            return;
+            return fuel_test_support::hardware::skip(
+                fuel_test_support::hardware::Hardware::Cuda,
+                fuel_test_support::hardware::Missing::device("CudaDevice::new(0) failed"),
+            );
         };
 
         let decompose = PatternNode::Op {
@@ -2989,8 +3003,10 @@ mod tests {
         use fuel_ir::probe::BackendId;
 
         let Ok(dev) = CudaDevice::new(0) else {
-            eprintln!("no CUDA device; skipping");
-            return;
+            return fuel_test_support::hardware::skip(
+                fuel_test_support::hardware::Hardware::Cuda,
+                fuel_test_support::hardware::Missing::device("CudaDevice::new(0) failed"),
+            );
         };
 
         let decompose = PatternNode::Op {
@@ -3141,8 +3157,10 @@ mod tests {
         use fuel_ir::probe::BackendId;
 
         let Ok(dev) = CudaDevice::new(0) else {
-            eprintln!("no CUDA device; skipping");
-            return;
+            return fuel_test_support::hardware::skip(
+                fuel_test_support::hardware::Hardware::Cuda,
+                fuel_test_support::hardware::Missing::device("CudaDevice::new(0) failed"),
+            );
         };
 
         let (seq, head_dim) = (4usize, 8usize); // head_dim even (baracuda rope)
@@ -3240,8 +3258,10 @@ mod tests {
         use fuel_ir::probe::BackendId;
 
         let Ok(dev) = CudaDevice::new(0) else {
-            eprintln!("no CUDA device; skipping");
-            return;
+            return fuel_test_support::hardware::skip(
+                fuel_test_support::hardware::Hardware::Cuda,
+                fuel_test_support::hardware::Missing::device("CudaDevice::new(0) failed"),
+            );
         };
 
         // A runtime-registered Add op is the CLAIMED op; the candidate submits
@@ -4039,8 +4059,10 @@ mod tests {
         use fuel_ir::probe::BackendId;
 
         let Ok(dev) = CudaDevice::new(0) else {
-            eprintln!("no CUDA device; skipping");
-            return;
+            return fuel_test_support::hardware::skip(
+                fuel_test_support::hardware::Hardware::Cuda,
+                fuel_test_support::hardware::Missing::device("CudaDevice::new(0) failed"),
+            );
         };
 
         let svc = IngestionService::start(dev, IngestionConfig::default());
@@ -4088,8 +4110,10 @@ mod tests {
     #[cfg(feature = "cuda")]
     fn ingestion_service_rejects_a_mismatched_mul_candidate_e2e() {
         let Ok(dev) = CudaDevice::new(0) else {
-            eprintln!("no CUDA device; skipping");
-            return;
+            return fuel_test_support::hardware::skip(
+                fuel_test_support::hardware::Hardware::Cuda,
+                fuel_test_support::hardware::Missing::device("CudaDevice::new(0) failed"),
+            );
         };
 
         let svc = IngestionService::start(dev, IngestionConfig::default());
@@ -4143,8 +4167,10 @@ mod tests {
     #[cfg(feature = "cuda")]
     fn ingestion_service_flags_an_f64_add_candidate_e2e() {
         let Ok(dev) = CudaDevice::new(0) else {
-            eprintln!("no CUDA device; skipping");
-            return;
+            return fuel_test_support::hardware::skip(
+                fuel_test_support::hardware::Hardware::Cuda,
+                fuel_test_support::hardware::Missing::device("CudaDevice::new(0) failed"),
+            );
         };
 
         let svc = IngestionService::start(dev, IngestionConfig::default());

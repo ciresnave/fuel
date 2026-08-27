@@ -350,8 +350,10 @@ mod tests {
         use super::{RopeTableCache, RopeTableSlot};
         use crate::CudaDevice;
         let Ok(device) = CudaDevice::new(0) else {
-            eprintln!("no CUDA device; skipping");
-            return;
+            return fuel_test_support::hardware::skip(
+                fuel_test_support::hardware::Hardware::Cuda,
+                fuel_test_support::hardware::Missing::device("CudaDevice::new(0) failed"),
+            );
         };
         let cache = RopeTableCache::new();
         const N: usize = 2 * 2 * 4; // seq=2, head_dim/2=2, F32 → 16 bytes

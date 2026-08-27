@@ -897,8 +897,10 @@ mod tests {
         use fuel_graph::registry::{FusedOpParams, FusedOps};
 
         let Ok(dev) = CudaDevice::new(0) else {
-            eprintln!("no CUDA device; skipping");
-            return;
+            return fuel_test_support::hardware::skip(
+                fuel_test_support::hardware::Hardware::Cuda,
+                fuel_test_support::hardware::Missing::device("CudaDevice::new(0) failed"),
+            );
         };
         let (seq, head_dim, base) = (4usize, 8usize, 10000.0f64);
         let (x, cos_t, sin_t, x_shape) = rope_probe(seq, head_dim, base);
@@ -940,8 +942,10 @@ mod tests {
         use fuel_graph::jit::{OpAttrs, OpTag, PatternNode};
 
         let Ok(dev) = CudaDevice::new(0) else {
-            eprintln!("no CUDA device; skipping");
-            return;
+            return fuel_test_support::hardware::skip(
+                fuel_test_support::hardware::Hardware::Cuda,
+                fuel_test_support::hardware::Missing::device("CudaDevice::new(0) failed"),
+            );
         };
         let region = PatternNode::Op {
             op: OpTag::Add,
