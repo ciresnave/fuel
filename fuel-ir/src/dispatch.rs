@@ -1083,19 +1083,32 @@ pub struct Pick {
     pub kernel_revision_hash: u64,
 }
 
-/// Intern a kernel-source string into a `&'static str` matching the
-/// well-known conventional tags. Unknown tags fall back to `""`
-/// (diagnostic-only field — losing an unknown tag is preferable to
-/// leaking a heap allocation through `Box::leak`). The set mirrors
-/// the documented convention on
+/// Intern a kernel-source string into a `&'static str`. Well-known conventional
+/// tags return their static literal (the fast path); any OTHER non-empty tag is
+/// interned through a process-static pool (leaked once per distinct string) so
+/// it round-trips unchanged. The set mirrors the documented convention on
 /// [`BindingEntry::kernel_source`](../../fuel_dispatch/struct.BindingEntry.html#structfield.kernel_source).
 ///
-/// Unknown tags trigger a `debug_assert!` panic in dev builds and
-/// a `eprintln!` warning in release builds — silently dropping an
-/// unfamiliar tag was previously masking router gaps (the router
-/// can't resolve `(backend, device, "")` to the right sibling kernel
-/// when multiple alternatives register at the same backend slot).
-/// Add new tags here as new vendor backends land.
+/// An unknown tag is NEVER collapsed to `""`. `""` is the pre-v2
+/// "undifferentiated" marker, so returning it for a new provider's kernel makes
+/// that kernel indistinguishable from an untagged one — a category error in a
+/// field that keys persisted profiles (the router then cannot resolve
+/// `(backend, device, "")` to the right same-backend sibling). A new provider's
+/// tag is legitimate; preserve it. The bounded leak — one allocation per
+/// distinct tag a process ever sees, and providers are few — is the right trade
+/// for never losing kernel identity. (This reverses an earlier decision that
+/// preferred dropping the tag over the leak; the collision cost was underpriced.)
+///
+/// SAFETY of the leak — an ASSUMPTION this code relies on but does not enforce:
+/// it is bounded only because the tag SET is bounded, and the bound is a property
+/// of the data path, not of the type. The input CAN be a deserialized `String`
+/// (`ProfileEntry::kernel_source` comes from JSON), not only a compile-time
+/// `&'static str`. Tags stay bounded because they derive from bindings registered
+/// on THIS machine and `ProfileReport::load`'s hardware gate refuses foreign
+/// reports, so a persisted profile cannot smuggle in arbitrary tags. What would
+/// break it: a profile carrying unbounded distinct tags — an untrusted or
+/// machine-generated one — would leak without bound, at which point this interner
+/// needs a cap.
 pub fn kernel_source_intern(s: &str) -> &'static str {
     match s {
         "" => "",
@@ -1106,19 +1119,26 @@ pub fn kernel_source_intern(s: &str) -> &'static str {
         "cutlass" => "cutlass",
         "baracuda" => "baracuda",
         "slang" => "slang",
-        tag => {
-            debug_assert!(
-                false,
-                "kernel_source_intern: unknown tag {tag:?}; map silently drops it. \
-                 Add it to the known-set in fuel-core-types/src/dispatch.rs."
-            );
-            eprintln!(
-                "warning: kernel_source_intern: unknown tag {tag:?} dropped to \"\"; \
-                 router will not be able to disambiguate same-backend siblings."
-            );
-            ""
-        }
+        other => intern_unknown_kernel_source(other),
     }
+}
+
+/// Intern an unfamiliar kernel-source tag into a stable `&'static str`, leaking
+/// it exactly once. Bounded by the number of distinct tags a process ever sees
+/// (a handful of providers), so the leak does not grow unboundedly. Preserving
+/// the tag beats collapsing it to `""` — see [`kernel_source_intern`].
+fn intern_unknown_kernel_source(s: &str) -> &'static str {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    static POOL: OnceLock<Mutex<HashSet<&'static str>>> = OnceLock::new();
+    let pool = POOL.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut set = pool.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(&existing) = set.get(s) {
+        return existing;
+    }
+    let leaked: &'static str = Box::leak(s.to_owned().into_boxed_str());
+    set.insert(leaked);
+    leaked
 }
 
 /// Options for building a [`DispatchTable`].
@@ -1307,6 +1327,33 @@ impl DispatchTable {
 #[cfg(test)]
 mod size_class_tests {
     use super::*;
+
+    /// The interner must NEVER collapse a non-empty unknown tag to `""` — `""`
+    /// is the pre-v2 "undifferentiated" marker, so an unknown provider's tag
+    /// coming back as `""` makes its kernel indistinguishable from an untagged
+    /// one, in a field that keys persisted profiles. An ARBITRARY never-known
+    /// tag must round-trip. Born-red: the pre-interner unknown arm `debug_assert`s
+    /// and returns `""`, so this panics in a debug/test build.
+    #[test]
+    fn intern_preserves_an_arbitrary_unknown_tag() {
+        // No provider registers this and it is not in the known set — the point
+        // is that the floor holds for any FUTURE provider, not just a named one.
+        let unknown = "some-future-provider-xyz";
+        assert_eq!(
+            kernel_source_intern(unknown),
+            unknown,
+            "an unknown tag must be preserved, never collapsed to \"\""
+        );
+        assert_ne!(kernel_source_intern(unknown), "");
+        // Interning is idempotent: the same tag returns the same pointer.
+        assert!(std::ptr::eq(
+            kernel_source_intern(unknown),
+            kernel_source_intern(unknown)
+        ));
+        // Known tags still fast-path to their literal; empty stays empty.
+        assert_eq!(kernel_source_intern("slang"), "slang");
+        assert_eq!(kernel_source_intern(""), "");
+    }
 
     /// The shared matmul key derivation gives producer == consumer for a
     /// NON-SQUARE matmul (SizeClass v4, slice 2.5).
