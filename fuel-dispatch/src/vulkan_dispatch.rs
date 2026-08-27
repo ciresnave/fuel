@@ -30,6 +30,25 @@
 
 use std::sync::{Arc, RwLock};
 
+// ⚠️ NOT UNUSED — `rustc` IS WRONG HERE, AND DELETING IT COSTS 177 ERRORS.
+//
+// `OpKind` is named on 178 code lines in this file, but 177 of them are inside
+// inner `mod`s that reach it through `use super::*`. `unused_imports` does not
+// count a use that arrives via a child module's glob, so it reports the import
+// as dead while the file cannot compile without it.
+//
+// Measured, not argued, and twice independently: removing this line and
+// building `--features vulkan --all-targets` gives
+// `could not compile fuel-dispatch (lib test) due to 177 previous errors`,
+// all `E0425: cannot find type/value OpKind in this scope`. Restored both
+// times.
+//
+// An `#[allow]` rather than a removal, and the reason is the point: "unused"
+// and "named on 178 lines" cannot both be true, so the lint is the thing that
+// is wrong. (Counting those errors with `grep -c '^error\[E0425\]'` gives 14,
+// not 177 -- rustc does not repeat the code prefix at line start for every
+// instance. Count the message text.)
+#[allow(unused_imports)]
 use fuel_ir::dispatch::OpKind;
 use fuel_ir::probe::BackendId;
 use fuel_ir::{DType, Error, Layout, Result};

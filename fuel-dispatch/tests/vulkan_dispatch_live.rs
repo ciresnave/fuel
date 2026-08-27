@@ -10947,7 +10947,12 @@ fn vulkan_dispatch_per_kernel_precision_and_cost_coverage() {
     }
 
     let mut cost_failures: Vec<String> = Vec::new();
-    let unknown_cost_sentinel = fuel_dispatch::kernel::unknown_cost as usize;
+    // Cast through the fn-POINTER type before the integer, which is what
+    // `function_casts_as_integer` asks for: `item as usize` hides a coercion
+    // from a zero-sized fn item to a pointer, and the explicit form says which
+    // signature is being compared.
+    let unknown_cost_sentinel =
+        fuel_dispatch::kernel::unknown_cost as fuel_dispatch::kernel::CostFn as usize;
     for (op, dtypes, backend, cost) in table.iter_cost() {
         if backend != BackendId::Vulkan {
             continue;
