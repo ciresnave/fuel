@@ -180,9 +180,45 @@ act rather than the artifact — which is what distinguishes the two things.
 into a manifest**, because a crate name is the one decision that is expensive to
 revisit after publish.
 
-**Registry check still owed on all of them**: `fuel-core` on crates.io is an
-unrelated blockchain project. No name in this document has been checked against
-the registry yet, and every one must be before it is fixed.
+**Registry checked 2026-08-26** (raised by the portfolio PM, re-verified here
+against `index.crates.io` with HTTP status codes and a negative control —
+`fuel-nonexistent-xyzzy-control` returns 404, the same as the free names, so the
+instrument discriminates in both directions):
+
+```
+TAKEN   fuel         0.1.0,    1 version,  live     <- see the warning below
+TAKEN   fuel-core    0.48.2, 125 versions, live     <- the unrelated blockchain client
+FREE    fuel-author · fuel-model · fuel-model-core · fuel-tensor · fuel-error
+```
+
+**Every candidate name in §4 is free, so availability does not decide the
+collision — the argument there is purely semantic.**
+
+### ⚠️ But `fuel` itself is taken, and §3's lever is named after it
+
+`fuel 0.1.0`, one version, no successor, unyanked — the classic squat shape, and
+crates.io does not reclaim those on request.
+
+**This does not break the lever; it splits it in two, and the distinction is the
+PM's:**
+
+- **In-tree, the lever is untouched.** `fuel = { path = "./fuel-core", package =
+  "fuel-core" }` is a *local rename*; the registry is irrelevant to it. Every
+  claim in §3 about imports not changing holds exactly as measured. Lightbulb
+  consumes Fuel **by git rev**, not from the registry, so their guarantee holds
+  too.
+- **At publish, the facade cannot be called `fuel` on crates.io.** The published
+  name and the path root can differ, and **the consumer controls the path root
+  themselves**: `fuel = { package = "<published-name>", version = "…" }` in their
+  manifest keeps every `use fuel::…` working. So this costs a name, not the
+  design.
+
+**And note what the 1018-vs-18 measurement does and does not license.** It is a
+fact about **paths**. `fuel` as a *registry name* is a different axis, and the
+ratio speaks to neither its availability nor its publishability. **A true
+measurement attached to a wider claim than it supports** — the defect this
+document's own §6 is full of, arriving in its headline argument. The lever
+survives; the sentence needed splitting.
 
 ---
 
@@ -311,6 +347,30 @@ Each stage is gated, and the gates are chosen so that a false green is hard:
 1. **Facade path-set diff** — the public path set under `fuel::` is byte-identical
    before and after every move. This is the load-bearing gate and it is
    mechanical.
+
+   ⚠️ **AND A PATH-SET DIFF IS NOT SUFFICIENT — Lightbulb's catch, 2026-08-26, on
+   a gate that would have encoded a false claim.** A path diff compares **names**.
+   A re-export resolving to a **different type** at the same path passes it:
+   `fuel::Device` could point at `fuel_core::device::Device` before and a
+   newly-written `fuel_hardware::Device` after, and **Fuel compiles while a
+   downstream `impl From<CudaDevice> for Device` silently targets a different
+   type.** The gate as first written claimed *API stability* and delivered *name
+   stability*.
+
+   **Closing it, cheapest first:**
+
+   - **Type-identity assertions for every type an external consumer names** — one
+     line each, compile-time, no runtime cost:
+     ```rust
+     const _: () = { fn _same(x: fuel::Device) -> fuel_hardware::Device { x } };
+     ```
+     Compiles **only** if the two are literally the same type. Add one per
+     externally-named type at Stage 1, before anything moves.
+   - **Diff rendered item signatures with fully-qualified defining paths**
+     (`cargo public-api`), not the bare set of paths.
+   - **A downstream compile fixture is what actually closes it.** The mechanical
+     gates narrow the hole; only compiling a consumer's usage against the facade
+     shuts it. Saying that plainly is better than claiming the diff covers it.
 2. **`fuel-examples` compiles untouched** — 553 `fuel::` imports, the heaviest
    consumer in the tree, and per the working agreement it is a *constructing*
    crate for most model weights structs, so it catches field-level breakage a
@@ -353,9 +413,9 @@ path-set diff is what catches that; the test suite is not.
 | 3 | Judge's destination (§5, Stage 3) | architect | Stage 3 only |
 | 4 | Serving/decode destination (§5, Stage 3) | architect | Stage 3 only |
 | 5 | GAP-236 / publish `fkc::verify` | CireSnave | Stage 4 |
-| 6 | Does Lightbulb import via `fuel::` or `fuel_core::`? | Lightbulb | Stage 1 notice |
+| 6 | ~~Does Lightbulb import via `fuel::` or `fuel_core::`?~~ **ANSWERED 2026-08-26 — `fuel_core::` = 0, `fuel::` = 71, positive-controlled (the same `git grep -c` returns 71, so the zero is real). Lightbulb is in the 98.3% and has NO PORT under the facade lever.** Their other direct roots, measured rather than assumed: `fuel_inference::` 2 (tests only), `fuel_cuda_backend::` 2 (1 production, `device.rs:25`), and `fuel_graph::`/`fuel_ir::`/`fuel_dispatch::` **comment-only — 5 sites, zero code**, named explicitly because they would inflate a census. | Lightbulb | ✅ closed |
 
-**Only #1 blocks starting.** Stages 1 and 2 — the lever and 73% of the mass —
+**Only #1 blocks starting**, and #6 is now closed by measurement. Stages 1 and 2 — the lever and 73% of the mass —
 depend on nothing in this table except the name of a crate that does not yet
 exist, and Stage 1 does not even need that.
 
@@ -376,6 +436,11 @@ agreeing, and each made it smaller:
   contrary to how the job had been described.
 - **Three CLAUDE.md claims are false at head** (§2), found incidentally while
   establishing the current state.
+
+- **Lightbulb** answered §9 #6 from measurement with a positive control, and
+  caught that the load-bearing gate compared names rather than types.
+- **The portfolio PM** checked registry availability for every name and found
+  `fuel` itself occupied — the one name the central lever is built on.
 
 The single most consequential fact in this document — **1018 `fuel::` versus 18
 `fuel_core::`** — was a two-second query that nobody had run, and it turns the
