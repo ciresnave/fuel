@@ -82,6 +82,7 @@ mod device;
 mod dtype;
 pub mod dyn_backend;
 pub mod error;
+pub mod hf_config;
 pub mod layout;
 pub mod lazy;
 pub mod lazy_based;
