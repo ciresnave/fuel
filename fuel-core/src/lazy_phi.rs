@@ -454,7 +454,6 @@ impl PhiConfig {
     ///   `partial_rotary_factor` → `partial_rotary_factor` (defaults to 0.4 — Phi-2's),
     ///   `qk_layernorm` → `qk_layernorm` (defaults to false; v1 only
     ///   supports false — set to true bails at load time).
-    /// Parse a HuggingFace `config.json` into a [`PhiConfig`].
     ///
     /// Two stages, because they answer different questions. `PhiConfigRaw`
     /// is the wire shape and is pure `serde`; [`PhiConfigRaw::resolve`]

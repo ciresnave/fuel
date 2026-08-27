@@ -463,7 +463,6 @@ impl Gemma2Config {
     ///   `attn_logit_softcapping` → `attn_logit_softcapping`,
     ///   `final_logit_softcapping` → `final_logit_softcapping`,
     ///   `sliding_window` → `sliding_window`.
-    /// Parse a HuggingFace `config.json` into a [`Gemma2Config`].
     ///
     /// [`Gemma2ConfigRaw`] is the wire shape and is pure `serde`;
     /// [`Gemma2ConfigRaw::resolve`] applies the two defaults that read a
