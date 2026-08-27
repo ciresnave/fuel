@@ -18,6 +18,8 @@ members = [
     "fuel-datasets",
     "fuel-examples",
     "fuel-formats",
+    "fuel-model-core",
+    "fuel-model-fixture",
     "fuel-graph",
     "fuel-kernel-seam-announce",
     "fuel-kernel-seam-types",

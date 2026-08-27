@@ -1,0 +1,29 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+[package]
+name = "fuel-model-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Model registry + AutoModel for Fuel — the model tier's core (02-layers v0.5)."
+
+[dependencies]
+# Link-time distributed registration, per 02-layers v0.5: "merely depending on
+# a `fuel-model-*` crate makes it appear in the registry, so 'no feature gates'
+# works and the scaffolder can emit a self-registering crate without editing a
+# central dispatch file."
+#
+# `inventory` over `linkme`: both were ratified as acceptable and neither was a
+# workspace dependency before this crate. `inventory` is chosen for the
+# narrower reason that its failure mode is the one this crate GATES for --
+# see `tests/registry.rs` arm 3, which is the only arm that tests the promise
+# above rather than the mechanism underneath it.
+inventory = "0.3"
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# ⚠️ DEPENDED ON AND DELIBERATELY NEVER REFERENCED IN ANY TEST SOURCE.
+# That is not an oversight -- it is arm 3 of the gate. See tests/registry.rs.
+fuel-model-fixture = { path = "../fuel-model-fixture" }
+tempfile = { workspace = true }
