@@ -64,7 +64,24 @@ use serde::{Deserialize, Serialize};
 /// `ProfileReport::load` / `ProfileJudgeOracle::from_report` version
 /// gates reject the older schema so no scalar matmul key leaks into
 /// the aspect-keyed lookup path.
-pub const PROFILE_REPORT_VERSION: u32 = 4;
+///
+/// **v5 (2026-08-27)**: device + kernel IDENTITY landed — [`ProfileEntry`]
+/// gains `kernel_revision_hash` (variant-granular kernel identity, so the many
+/// tilings of one provider stop collapsing into one Judge cell) and `device`
+/// (the profiled hardware's [`EquivalenceKey`](crate::probe::EquivalenceKey),
+/// so a report is REFUSED on hardware it was not measured on rather than
+/// answering for a device it never saw — `device_index` was an ordinal that
+/// rebinds across boots and under `CUDA_VISIBLE_DEVICES`). The bump is
+/// REQUIRED, not merely serde-forced: a v4 report read by v5 code would
+/// `#[serde(default)]` `kernel_revision_hash` to `0`, landing on the untracked
+/// sentinel and collapsing every sibling; and every v4 report was keyed by an
+/// ordinal that may ALREADY be wrong on a multi-GPU or re-imaged box.
+/// Discarding them (load → `Ok(None)`) is the correct outcome — anything
+/// written pre-v5 is indistinguishable from a right report and may be
+/// mis-attributed. This is also the cheapest re-profile there will ever be
+/// (baseline, siblings ≈ 1); every later one, once candidate kernels exist,
+/// costs strictly more.
+pub const PROFILE_REPORT_VERSION: u32 = 5;
 
 /// Op kinds the Judge profiles. Adding a variant + a Judge match
 /// arm extends the profile matrix; existing reports parse forward
@@ -851,6 +868,60 @@ pub struct ProfileEntry {
     /// via `.to_string()` at measurement time.
     #[cfg_attr(feature = "serde", serde(default))]
     pub kernel_source: String,
+    /// Content-derived revision of the exact kernel build that produced
+    /// this measurement. Mirrors `BindingEntry::kernel_revision_hash`
+    /// (`fuel-dispatch`) and the FKC ledger key's `kernel_revision_hash`;
+    /// with `kernel_source` it completes Fuel's canonical kernel identity
+    /// `ImplId = (backend, op, dtypes, kernel_source, kernel_revision_hash)`.
+    ///
+    /// `kernel_source` is provider-granular (`"cublas"`, `"baracuda"`, …);
+    /// `kernel_revision_hash` is *variant*-granular — forty tilings of one
+    /// provider emit forty distinct source strings and forty distinct
+    /// content-derived hashes, so they no longer collapse into one Judge
+    /// cell. `0` means "untracked" (the pre-v5 default and the value test
+    /// fixtures use when the axis is irrelevant); the Judge keys on it, so
+    /// two DISTINCT non-zero revisions occupy two distinct cells.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub kernel_revision_hash: u64,
+    /// The hardware identity this measurement was taken on — the
+    /// [`EquivalenceKey`](crate::probe::EquivalenceKey) of the profiled
+    /// device: `(backend, vendor_id, device_id, compute_capability,
+    /// driver_version)`. A `ProfileReport` is one Judge run on ONE machine.
+    /// `device_index` above is a within-run ORDINAL that rebinds across boots
+    /// and under `CUDA_VISIBLE_DEVICES`, so it is NOT a portable identity —
+    /// worse than none, because it answers confidently for a different
+    /// physical device. The ordinal is retained for within-run indexing; this
+    /// field is what `ProfileReport::load` validates against the loading
+    /// machine's hardware, so a report written on a 4070 Laptop is REFUSED on
+    /// a Radeon VII instead of loading and mis-ranking. `backend` here always
+    /// equals the sibling `backend` field above (checked on ingest).
+    ///
+    /// `#[serde(default)]` supplies a sentinel identity ONLY so a pre-v5
+    /// report — which lacks this field — still deserializes and is then
+    /// rejected by the version gate; the sentinel matches no real device (see
+    /// `default_device_identity`).
+    #[cfg_attr(feature = "serde", serde(default = "default_device_identity"))]
+    pub device: crate::probe::EquivalenceKey,
+}
+
+/// Sentinel hardware identity for the `#[serde(default)]` on
+/// [`ProfileEntry::device`]. Reached ONLY on the pre-v5 deserialize path (a
+/// v4 report lacks the field → deserializes with this → the version gate then
+/// returns `Ok(None)` before it is ever consulted). Deliberately matches NO
+/// real device — an `driver_version` string no backend reports — so that if a
+/// future reordering ever let it past the version gate, it would refuse every
+/// load (loud) rather than silently match the wrong hardware. Applied by hand
+/// rather than a blanket `Default`, precisely so the value is a deliberate
+/// refuse-everything sentinel and not a zero that could coincidentally match.
+#[cfg(feature = "serde")]
+fn default_device_identity() -> crate::probe::EquivalenceKey {
+    crate::probe::EquivalenceKey {
+        backend: BackendId::Cpu,
+        vendor_id: 0,
+        device_id: 0,
+        compute_capability: None,
+        driver_version: "<unset: pre-v5 profile, rejected by the version gate>".to_string(),
+    }
 }
 
 /// A persistable table of every profile measurement the Judge
@@ -877,10 +948,35 @@ impl ProfileReport {
         Ok(())
     }
 
-    /// Load a previously-persisted report. Returns `Ok(None)` on a
-    /// missing file or schema-version mismatch (both are "cache miss,
-    /// re-run the Judge" signals).
-    pub fn load(path: &std::path::Path) -> crate::Result<Option<Self>> {
+    /// Load a previously-persisted report, validated against the hardware of
+    /// the loading machine. `current` is that machine's device equivalence
+    /// classes (via [`crate::probe::equivalence_classes`]); requiring it in the
+    /// signature makes it impossible to load without declaring what hardware
+    /// you are on — the gate cannot be forgotten by a caller.
+    ///
+    /// Returns:
+    /// - `Ok(None)` on a missing file.
+    /// - `Ok(None)` on a schema-version mismatch **that still deserializes**
+    ///   (an additive change: the pre-v5 fields `#[serde(default)]` in, then
+    ///   this version gate rejects the report).
+    /// - `Ok(None)` on FOREIGN HARDWARE. A `ProfileReport` is the output of ONE
+    ///   Judge run on ONE machine, so if ANY entry's `device` identity is not
+    ///   among `current`, the run happened elsewhere and the WHOLE report is
+    ///   refused — the entries that do match are not a valid subset, they are a
+    ///   foreign report with coincidental overlap, and the `device_index` it
+    ///   was keyed by rebinds across machines.
+    /// - `Err` on a NON-ADDITIVE schema change that fails to PARSE. Such a
+    ///   change never reaches the version gate above, because deserialization
+    ///   fails first — which is exactly why every new field carries
+    ///   `#[serde(default)]`. A future "check the version first, it's cheaper"
+    ///   cleanup MUST preserve `Ok(None)` for a deserializable stale report;
+    ///   `v4_report_yields_no_oracle_entries` pins that invariant.
+    ///
+    /// All three `Ok(None)` cases are "cache miss, re-run the Judge" signals.
+    pub fn load(
+        path: &std::path::Path,
+        current: &[crate::probe::EquivalenceKey],
+    ) -> crate::Result<Option<Self>> {
         let bytes = match std::fs::read(path) {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -893,6 +989,12 @@ impl ProfileReport {
         let report: Self = serde_json::from_slice(&bytes)
             .map_err(|e| crate::Error::Msg(format!("judge: parse {path:?} failed: {e}")))?;
         if report.version != PROFILE_REPORT_VERSION {
+            return Ok(None);
+        }
+        // Whole-report hardware validation: one run, one machine. Any entry
+        // measured on a device this machine does not have means the report is
+        // foreign — refuse it entirely rather than serve a coincidental subset.
+        if report.entries.iter().any(|e| !current.contains(&e.device)) {
             return Ok(None);
         }
         Ok(Some(report))
@@ -973,6 +1075,12 @@ pub struct Pick {
     /// Diagnostic tag from the winning [`ProfileEntry::kernel_source`].
     /// `""` when no sibling distinguishes the cell.
     pub kernel_source: &'static str,
+    /// Revision of the winning kernel build, from
+    /// [`ProfileEntry::kernel_revision_hash`]. Completes the kernel
+    /// identity that `kernel_source` alone (provider-granular) leaves
+    /// ambiguous among the variant siblings of one provider. `0` when
+    /// untracked. `u64` is `Copy`, so `Pick` stays `Copy`.
+    pub kernel_revision_hash: u64,
 }
 
 /// Intern a kernel-source string into a `&'static str` matching the
@@ -1091,6 +1199,7 @@ impl DispatchTable {
                             backend: winner.backend,
                             device_index: winner.device_index,
                             kernel_source: kernel_source_intern(&winner.kernel_source),
+                            kernel_revision_hash: winner.kernel_revision_hash,
                         },
                     );
                 }

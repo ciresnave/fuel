@@ -190,6 +190,7 @@ impl ChainedSelector {
                     ctx.size_class,
                     c.backend,
                     c.kernel_source,
+                    c.kernel_revision_hash,
                 )
             {
                 return measured;
@@ -293,6 +294,7 @@ mod tests {
             op_params: OpParams::None,
             coupling: Vec::new(),
             kernel_source: "",
+            kernel_revision_hash: 0,
         }
     }
 
@@ -628,6 +630,7 @@ mod tests {
             BackendId::Cpu,
             "",
             50,
+            0,
         );
         let chained = ChainedSelector::with_default_estimator(
             Some(Arc::new(judge) as Arc<dyn JudgeOracle>),
@@ -649,6 +652,7 @@ mod tests {
             BackendId::Cpu,
             "",
             5_000,
+            0,
         );
         let chained = ChainedSelector::with_default_estimator(
             Some(Arc::new(judge) as Arc<dyn JudgeOracle>),
@@ -677,6 +681,7 @@ mod tests {
             BackendId::Cuda,
             "",
             1,
+            0,
         );
         // ...but CUDA can't fit the output.
         let lookup = lookup_for(vec![
@@ -730,6 +735,7 @@ mod tests {
             BackendId::Cuda,
             "",
             1,
+            0,
         );
         judge.insert(
             c.op,
@@ -738,6 +744,7 @@ mod tests {
             BackendId::Cpu,
             "",
             90,
+            0,
         );
         judge.insert(
             c.op,
@@ -746,6 +753,7 @@ mod tests {
             BackendId::Vulkan,
             "",
             40,
+            0,
         );
 
         let chained = ChainedSelector::with_default_estimator(
@@ -782,6 +790,7 @@ mod tests {
             BackendId::Cpu,
             "aocl",
             9_000,
+            0,
         );
         judge.insert(
             c.op,
@@ -790,6 +799,7 @@ mod tests {
             BackendId::Cpu,
             "mkl",
             1_000,
+            0,
         );
         let chained = ChainedSelector::with_default_estimator(
             Some(Arc::new(judge) as Arc<dyn JudgeOracle>),
@@ -816,7 +826,15 @@ mod tests {
         // NOTE: no set_context.
 
         let mut judge = HashMapJudge::new();
-        judge.insert(c.op, c.principal_dtype, c.size_class, BackendId::Cpu, "", 1);
+        judge.insert(
+            c.op,
+            c.principal_dtype,
+            c.size_class,
+            BackendId::Cpu,
+            "",
+            1,
+            0,
+        );
         let chained = ChainedSelector::with_default_estimator(
             Some(Arc::new(judge) as Arc<dyn JudgeOracle>),
             None,

@@ -125,11 +125,13 @@ impl JudgeAwareSelector {
 
     /// Look up the candidate's measured latency, if any.
     ///
-    /// Threads the candidate's `kernel_source` through the Judge so
-    /// sibling kernels at the same `(backend, device)` slot (e.g.
-    /// AOCL vs MKL vs portable-cpu under `BackendId::Cpu`) get their
-    /// own measurement, instead of collapsing onto whichever
-    /// registered last.
+    /// Threads the candidate's `kernel_source` AND `kernel_revision_hash`
+    /// through the Judge so sibling kernels at the same `(backend,
+    /// device)` slot get their own measurement, instead of collapsing
+    /// onto whichever registered last. `kernel_source` separates
+    /// providers (AOCL vs MKL vs portable-cpu under `BackendId::Cpu`);
+    /// `kernel_revision_hash` separates variant siblings of one provider
+    /// (forty tilings of one generator), which the tag alone cannot.
     fn measured_latency(&self, c: &Candidate) -> Option<u64> {
         self.judge.measured_latency_ns(
             self.op,
@@ -137,6 +139,7 @@ impl JudgeAwareSelector {
             self.size_class,
             c.backend,
             c.kernel_source,
+            c.kernel_revision_hash,
         )
     }
 }
@@ -238,6 +241,7 @@ mod tests {
             op_params: OpParams::None,
             coupling: Vec::new(),
             kernel_source: "",
+            kernel_revision_hash: 0,
         }
     }
 
@@ -279,6 +283,7 @@ mod tests {
             BackendId::Cuda,
             "",
             10_000_000,
+            0,
         );
         judge.insert(
             OpKind::MatMul,
@@ -287,6 +292,7 @@ mod tests {
             BackendId::Cpu,
             "",
             1_000_000,
+            0,
         );
 
         let sel = make_selector(judge);
@@ -323,6 +329,7 @@ mod tests {
             BackendId::Cpu,
             "",
             500_000,
+            0,
         );
         let sel = make_selector(judge);
         let pick = sel.select(&set).expect("non-empty");
@@ -345,6 +352,7 @@ mod tests {
             BackendId::Cpu,
             "",
             500,
+            0,
         );
         let sel = make_selector(judge);
         let pick = sel.select(&set).expect("non-empty");
@@ -371,6 +379,7 @@ mod tests {
             BackendId::Cuda,
             "",
             10_000,
+            0,
         );
         judge.insert(
             OpKind::MatMul,
@@ -379,6 +388,7 @@ mod tests {
             BackendId::Cpu,
             "",
             5_000,
+            0,
         );
         judge.insert(
             OpKind::MatMul,
@@ -387,6 +397,7 @@ mod tests {
             BackendId::Vulkan,
             "",
             1_000,
+            0,
         );
 
         let sel = make_selector(judge);
@@ -416,6 +427,7 @@ mod tests {
             BackendId::Cpu,
             "",
             1_000,
+            0,
         );
 
         // Selector configured for MatMul.
@@ -445,6 +457,7 @@ mod tests {
             BackendId::Cuda,
             "",
             5_000,
+            0,
         );
         judge.insert(
             OpKind::MatMul,
@@ -453,6 +466,7 @@ mod tests {
             BackendId::Cpu,
             "",
             5_000,
+            0,
         );
 
         let sel = make_selector(judge);
@@ -527,6 +541,7 @@ mod tests {
             BackendId::Cpu,
             "aocl",
             10_000_000,
+            0,
         );
         judge.insert(
             OpKind::MatMul,
@@ -535,6 +550,7 @@ mod tests {
             BackendId::Cpu,
             "mkl",
             1_000_000,
+            0,
         );
 
         let sel = make_selector(judge);
@@ -562,6 +578,7 @@ mod tests {
             BackendId::Cpu,
             "aocl",
             500_000,
+            0,
         );
         judge.insert(
             OpKind::MatMul,
@@ -570,6 +587,7 @@ mod tests {
             BackendId::Cpu,
             "mkl",
             5_000_000,
+            0,
         );
         let sel = make_selector(judge);
         let pick = sel.select(&set).expect("non-empty");

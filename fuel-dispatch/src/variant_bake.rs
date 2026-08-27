@@ -413,7 +413,7 @@ fn node_measured_ns(
         .map(|&i| graph.node(i).shape.clone())
         .collect();
     let size_class = SizeClass::for_op(kind, &input_shapes);
-    judge.measured_latency_ns(kind, principal_dtype, size_class, backend, "")
+    judge.measured_latency_ns(kind, principal_dtype, size_class, backend, "", 0)
 }
 
 /// Layer-1 [`CostEstimate`] for one interior node (see [`decode_arm_composite_ns`]).
@@ -1090,9 +1090,9 @@ mod tests {
         // measured matmuls (500 + 500 = 1000 ns) — flash's algorithm-changing
         // win Layer-1 can't see (FLOP tie / CPU-build capability gate).
         let mut judge = HashMapJudge::new();
-        judge.insert(OpKind::MatMul, dt, k_scores, BackendId::Cuda, "", 500);
-        judge.insert(OpKind::MatMul, dt, k_attn, BackendId::Cuda, "", 500);
-        judge.insert(OpKind::FlashAttn, dt, k_flash, BackendId::Cuda, "", 400);
+        judge.insert(OpKind::MatMul, dt, k_scores, BackendId::Cuda, "", 500, 0);
+        judge.insert(OpKind::MatMul, dt, k_attn, BackendId::Cuda, "", 500, 0);
+        judge.insert(OpKind::FlashAttn, dt, k_flash, BackendId::Cuda, "", 400, 0);
 
         let cost = |g: &Graph, b: NodeId, arm: usize, i: &[NodeId]| -> Option<u64> {
             decode_arm_composite_ns_judged(g, b, arm, i, BackendId::Cuda, Some(&judge))
@@ -1133,9 +1133,9 @@ mod tests {
         let dt = DType::F16;
         let (k_scores, k_attn, k_flash) = decode_keys();
         let mut judge = HashMapJudge::new();
-        judge.insert(OpKind::MatMul, dt, k_scores, BackendId::Cuda, "", 500);
-        judge.insert(OpKind::MatMul, dt, k_attn, BackendId::Cuda, "", 500);
-        judge.insert(OpKind::FlashAttn, dt, k_flash, BackendId::Cuda, "", 2000);
+        judge.insert(OpKind::MatMul, dt, k_scores, BackendId::Cuda, "", 500, 0);
+        judge.insert(OpKind::MatMul, dt, k_attn, BackendId::Cuda, "", 500, 0);
+        judge.insert(OpKind::FlashAttn, dt, k_flash, BackendId::Cuda, "", 2000, 0);
         let cost = |g: &Graph, b: NodeId, arm: usize, i: &[NodeId]| -> Option<u64> {
             decode_arm_composite_ns_judged(g, b, arm, i, BackendId::Cuda, Some(&judge))
         };
@@ -1194,8 +1194,8 @@ mod tests {
         let dt = DType::F16;
         let (k_scores, k_attn, _k_flash) = decode_keys();
         let mut judge = HashMapJudge::new();
-        judge.insert(OpKind::MatMul, dt, k_scores, BackendId::Cuda, "", 1);
-        judge.insert(OpKind::MatMul, dt, k_attn, BackendId::Cuda, "", 1);
+        judge.insert(OpKind::MatMul, dt, k_scores, BackendId::Cuda, "", 1, 0);
+        judge.insert(OpKind::MatMul, dt, k_attn, BackendId::Cuda, "", 1, 0);
         let cost = |g: &Graph, b: NodeId, arm: usize, i: &[NodeId]| -> Option<u64> {
             decode_arm_composite_ns_judged(g, b, arm, i, BackendId::Cuda, Some(&judge))
         };
@@ -1218,8 +1218,8 @@ mod tests {
         let dt = DType::F16;
         let (k_scores, _k_attn, k_flash) = decode_keys();
         let mut judge = HashMapJudge::new();
-        judge.insert(OpKind::MatMul, dt, k_scores, BackendId::Cuda, "", 500); // scores only
-        judge.insert(OpKind::FlashAttn, dt, k_flash, BackendId::Cuda, "", 400);
+        judge.insert(OpKind::MatMul, dt, k_scores, BackendId::Cuda, "", 500, 0); // scores only
+        judge.insert(OpKind::FlashAttn, dt, k_flash, BackendId::Cuda, "", 400, 0);
 
         // The region arm's hybrid cost == measured scores (500) + Layer-1 attn.
         let region = arm_interiors(&g, branch)[0].clone();
@@ -1259,7 +1259,7 @@ mod tests {
         let dt = DType::F16;
         let (_ks, _ka, k_flash) = decode_keys();
         let mut judge = HashMapJudge::new();
-        judge.insert(OpKind::FlashAttn, dt, k_flash, BackendId::Cpu, "", 1);
+        judge.insert(OpKind::FlashAttn, dt, k_flash, BackendId::Cpu, "", 1, 0);
         let cost = |g: &Graph, b: NodeId, arm: usize, i: &[NodeId]| -> Option<u64> {
             let backend = g.target_backend(g.node(b).inputs.first().copied()?)?;
             decode_arm_composite_ns_judged(g, b, arm, i, backend, Some(&judge))

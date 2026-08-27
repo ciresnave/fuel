@@ -105,22 +105,27 @@ pub fn compile_node(
     })
 }
 
-/// The diagnostic `kernel_source` tag the executor dispatches for `node`,
-/// derived from the SAME graph stamp + registry the executor resolves
-/// through: `op_to_op_kind` + `build_lookup_dtypes` + `graph.target_backend`
-/// → the first-registered binding at `(op, dtypes, backend)` (the entry
-/// [`compile_node`]'s `lookup_with_caps` picks). `None` when the node has no
-/// dispatch mapping (view/structural op) or no registered binding.
+/// The `(kernel_source, kernel_revision_hash)` identity of the kernel the
+/// executor dispatches for `node`, derived from the SAME graph stamp +
+/// registry the executor resolves through: `op_to_op_kind` +
+/// `build_lookup_dtypes` + `graph.target_backend` → the first-registered
+/// binding at `(op, dtypes, backend)` (the entry [`compile_node`]'s
+/// `lookup_with_caps` picks). `None` when the node has no dispatch mapping
+/// (view/structural op) or no registered binding.
 ///
-/// This is the post-realize attribution the bridge reports for the Judge
-/// telemetry. Step D moved it off the plan's `AlternativeSet::winner()`: the
+/// Both fields come from the ONE `find()` — the same [`BindingEntry`] — so
+/// the tag and the revision describe the same kernel by construction; a
+/// second lookup keyed on the tag could not disambiguate variant siblings
+/// that share it, which is precisely the collapse the revision exists to
+/// prevent. This is the post-realize attribution the bridge reports for the
+/// Judge. Step D moved it off the plan's `AlternativeSet::winner()`: the
 /// production realize path dispatches via the binding-table lookup (no plan),
 /// so the first-registered binding IS the matching attribution.
-pub fn dispatched_kernel_source(
+pub fn dispatched_kernel_ident(
     graph: &Graph,
     node: NodeId,
     bindings: &KernelBindingTable,
-) -> Option<&'static str> {
+) -> Option<(&'static str, u64)> {
     let n = graph.node(node);
     let op = crate::pipelined::op_to_op_kind(&n.op)?;
     let dtypes = crate::pipelined::build_lookup_dtypes(graph, n);
@@ -132,7 +137,7 @@ pub fn dispatched_kernel_source(
         .lookup_alternatives(op, &dtypes, backend)
         .iter()
         .find(|e| !e.caps.requires_broadcast)
-        .map(|e| e.kernel_source)
+        .map(|e| (e.kernel_source, e.kernel_revision_hash))
 }
 
 /// Run a compiled node against the given inputs/outputs. The output

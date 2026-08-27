@@ -102,6 +102,9 @@ pub fn enumerate_candidates(
                 op_params: op_params.clone(),
                 coupling: Vec::new(),
                 kernel_source: entry.kernel_source,
+                // Same BindingEntry as kernel_source, so the tag and the
+                // revision describe the same kernel by construction.
+                kernel_revision_hash: entry.kernel_revision_hash,
             });
         }
     }

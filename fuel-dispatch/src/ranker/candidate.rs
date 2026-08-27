@@ -88,6 +88,14 @@ pub struct Candidate {
     /// diagnostics so logs can name which kernel won at a decision
     /// point even when several share `(backend, device)`.
     pub kernel_source: &'static str,
+    /// Content-derived revision of this candidate's kernel build, copied
+    /// from the same `BindingEntry::kernel_revision_hash` as
+    /// `kernel_source`. Together they form the variant-granular identity
+    /// the Judge oracle keys on, so the cost composer's
+    /// `measured_latency_ns` lookup hits the cell measured for THIS
+    /// build rather than a sibling that shares the `kernel_source` tag.
+    /// `0` for synthetic candidates and untracked kernels.
+    pub kernel_revision_hash: u64,
 }
 
 /// One conditional cost contribution attached to a [`Candidate`].
@@ -150,6 +158,7 @@ mod tests {
             op_params: OpParams::None,
             coupling: Vec::new(),
             kernel_source: "",
+            kernel_revision_hash: 0,
         };
         assert_eq!(c.backend, BackendId::Cpu);
         assert_eq!(c.static_cost.flops, 100);

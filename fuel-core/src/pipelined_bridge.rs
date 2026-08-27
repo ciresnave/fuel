@@ -72,7 +72,7 @@ use std::sync::{Arc, RwLock};
 use fuel_backend_contract::backend::{BackendRuntime, BackendStreams};
 use fuel_backend_contract::dyn_backend::DynBackendDevice;
 use fuel_dispatch::dispatch::global_bindings;
-use fuel_dispatch::dispatched_kernel_source;
+use fuel_dispatch::dispatched_kernel_ident;
 use fuel_dispatch::optimize::{OptimizedGraph, optimize_graph_with_runtime_fusion};
 use fuel_dispatch::pipelined::{PipelinedExecutor, StorageCache};
 use fuel_dispatch::plan::PlanOptions;
@@ -86,6 +86,13 @@ use fuel_memory::{BackendStorage, Storage};
 
 use crate::Device;
 use crate::topology::SystemTopology;
+
+/// The picker's attribution of a realize root's dispatched kernel:
+/// `(kernel_source tag, kernel_revision_hash)`, threaded out of the reporting
+/// realize path. `None` when the picker did not attribute the dispatch (no plan
+/// `AlternativeSet` for the root, or a best-effort lookup miss) — the Judge's
+/// conservative cut then writes no row rather than guess an identity.
+type RootKernelIdent = Option<(&'static str, u64)>;
 
 // ---------------------------------------------------------------------------
 // Optimize-call telemetry (Phase D · D2a)
@@ -321,7 +328,7 @@ pub fn realize_one_as_with_initial_reporting<T: bytemuck::Pod>(
     device: &Device,
     initial: StorageCache,
     sym_env: &SymEnv,
-) -> Result<(Vec<T>, Option<&'static str>)> {
+) -> Result<(Vec<T>, RootKernelIdent)> {
     // Production realize: cost-based cross-device auto-placement enabled.
     realize_one_as_reporting_impl::<T>(graph, target, device, initial, sym_env, true)
 }
@@ -356,7 +363,7 @@ fn realize_one_as_reporting_impl<T: bytemuck::Pod>(
     initial: StorageCache,
     sym_env: &SymEnv,
     allow_cost_placement: bool,
-) -> Result<(Vec<T>, Option<&'static str>)> {
+) -> Result<(Vec<T>, RootKernelIdent)> {
     let (cache, _backend_id, mut effective_targets) = prepare(graph, &[target], device, initial)?;
     let Some(cpu_target) = effective_targets.pop() else {
         return Err(Error::Msg(
@@ -810,7 +817,7 @@ fn dispatch_with_plan_retry(
     report_node: NodeId,
     sym_env: &SymEnv,
     allow_cost_placement: bool,
-) -> Result<(Arc<RwLock<Storage>>, Option<&'static str>)> {
+) -> Result<(Arc<RwLock<Storage>>, RootKernelIdent)> {
     let pinned_loc = device.location();
     let mut retry = TopologyRetryState::new();
     // Hold a clone of `cache` outside the loop; the inner clone per-
@@ -882,7 +889,7 @@ fn dispatch_with_plan_retry(
                 let dispatched = graph
                     .read()
                     .ok()
-                    .and_then(|g| dispatched_kernel_source(&g, report_node, &global_bindings()));
+                    .and_then(|g| dispatched_kernel_ident(&g, report_node, &global_bindings()));
                 return Ok((storage, dispatched));
             }
             Err(e) if matches!(e, Error::TopologyChanged { .. }) && retry.permit_retry() => {
@@ -2467,7 +2474,7 @@ mod tests {
         .expect("reporting realize");
         assert_eq!(out, vec![11.0, 22.0, 33.0, 44.0]);
 
-        let src = root_kernel_source
+        let (src, rev) = root_kernel_source
             .expect("plan covers the Add root → dispatched-sibling report present");
         let bindings = global_bindings();
         let alts = bindings.lookup_alternatives(
@@ -2476,9 +2483,11 @@ mod tests {
             BackendId::Cpu,
         );
         assert!(
-            alts.iter().any(|e| e.kernel_source == src),
-            "reported kernel_source {src:?} must be a registered sibling at \
-             the (AddElementwise, [F32;3], Cpu) cell",
+            alts.iter()
+                .any(|e| e.kernel_source == src && e.kernel_revision_hash == rev),
+            "reported (kernel_source {src:?}, revision {rev:#x}) must be a \
+             registered sibling at the (AddElementwise, [F32;3], Cpu) cell — \
+             the tag and the revision come from ONE find() so they agree",
         );
     }
 

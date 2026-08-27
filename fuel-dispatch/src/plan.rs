@@ -1114,6 +1114,12 @@ fn build_candidates(
                     ctx.size_class,
                     cand.backend,
                     cand.kernel_source,
+                    // Same `revision` the `ImplId` above is keyed by (one
+                    // binding, two uses) — NOT a literal 0, which would query
+                    // the untracked cell and collapse variant siblings, the
+                    // exact regression per-variant `kernel_revision_hash` keys
+                    // the oracle to prevent.
+                    revision,
                 ),
                 _ => None,
             };
@@ -2258,6 +2264,7 @@ mod tests {
             BackendId::Cpu,
             "",
             5_000,
+            0,
         );
         judge.insert(
             OpKind::AddElementwise,
@@ -2266,6 +2273,7 @@ mod tests {
             BackendId::Cuda,
             "",
             20,
+            0,
         );
 
         let opts = PlanOptions::new()
@@ -4894,6 +4902,7 @@ mod tests {
                 BackendId::Cpu,
                 "portable-cpu",
                 41_230,
+                0,
             );
 
             let sink = Mutex::new(TelemetrySink::new());

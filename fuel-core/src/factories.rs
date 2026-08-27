@@ -87,6 +87,17 @@ pub trait Realizer {
     fn last_kernel_source(&self) -> Option<&'static str> {
         None
     }
+
+    /// The `kernel_revision_hash` of the sibling the picker dispatched for
+    /// the realize root — taken from the SAME picker result as
+    /// [`Realizer::last_kernel_source`], never a re-lookup keyed on the tag
+    /// (a shared tag cannot disambiguate variant siblings, which is exactly
+    /// the collapse the revision exists to prevent). `None` on the same
+    /// conditions as `last_kernel_source`. Defaulted so test stubs without a
+    /// picker stay one-method.
+    fn last_kernel_revision(&self) -> Option<u64> {
+        None
+    }
 }
 
 /// Bridge-backed realizer pinned to one [`crate::Device`].
@@ -103,6 +114,10 @@ struct BridgeRealizer {
     /// Picker attribution from the most recent realize — see
     /// [`Realizer::last_kernel_source`].
     last_kernel_source: Option<&'static str>,
+    /// Revision half of the same attribution — see
+    /// [`Realizer::last_kernel_revision`]. Set from the same picker result
+    /// as `last_kernel_source`, so the two never describe different kernels.
+    last_kernel_revision: Option<u64>,
 }
 
 impl BridgeRealizer {
@@ -111,6 +126,7 @@ impl BridgeRealizer {
             device,
             cache: StorageCache::new(),
             last_kernel_source: None,
+            last_kernel_revision: None,
         }
     }
 
@@ -162,7 +178,7 @@ impl BridgeRealizer {
             }
         }
 
-        let (bytes, root_kernel_source) =
+        let (bytes, root_ident) =
             crate::pipelined_bridge::realize_one_as_with_initial_reporting::<T>(
                 &graph,
                 target,
@@ -170,7 +186,11 @@ impl BridgeRealizer {
                 self.cache.clone(),
                 &fuel_ir::SymEnv::default(),
             )?;
-        self.last_kernel_source = root_kernel_source;
+        // Split the single (source, revision) attribution — one picker
+        // result, so the tag and the revision cannot disagree about which
+        // kernel ran.
+        self.last_kernel_source = root_ident.map(|(s, _)| s);
+        self.last_kernel_revision = root_ident.map(|(_, r)| r);
         Ok(bytes)
     }
 }
@@ -208,6 +228,10 @@ impl Realizer for BridgeRealizer {
 
     fn last_kernel_source(&self) -> Option<&'static str> {
         self.last_kernel_source
+    }
+
+    fn last_kernel_revision(&self) -> Option<u64> {
+        self.last_kernel_revision
     }
 }
 
