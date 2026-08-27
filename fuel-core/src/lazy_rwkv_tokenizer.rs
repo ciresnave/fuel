@@ -126,11 +126,9 @@ mod tests {
     fn tiny_vocab() -> HashMap<String, u32> {
         let mut v = HashMap::new();
         // Single-byte tokens for each character we encode below.
-        // Ids are arbitrary but unique.
-        let mut next_id: u32 = 1;
-        for ch in b"abcdefghijklmnopqrstuvwxyz ,!" {
-            v.insert((*ch as char).to_string(), next_id);
-            next_id += 1;
+        // Ids are arbitrary but unique (1-based).
+        for (idx, ch) in b"abcdefghijklmnopqrstuvwxyz ,!".iter().enumerate() {
+            v.insert((*ch as char).to_string(), idx as u32 + 1);
         }
         // Multi-byte merges: prefer longest greedy match.
         v.insert("ab".to_string(), 100);

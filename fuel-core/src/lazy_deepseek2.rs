@@ -1234,7 +1234,7 @@ impl DeepSeek2Model {
                 let res = self.rebind_and_realize_prebuilt_mla(tokens, cache, &*ctx, &*session);
                 match res {
                     Ok(logits) => Ok(logits),
-                    Err(e) if matches!(e, crate::Error::TopologyChanged { .. }) => {
+                    Err(crate::Error::TopologyChanged { .. }) => {
                         // Stale cached generation — drop the session and
                         // rebuild via the D1 path this token; the session
                         // rebuilds on the next decode token.

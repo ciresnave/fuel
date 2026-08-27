@@ -385,9 +385,7 @@ mod tests {
     fn ids_are_not_recycled_across_drops() {
         let first = {
             let id = ModelInstanceId::next();
-            let k = id.get();
-            drop(id);
-            k
+            id.get()
         };
         let second = ModelInstanceId::next().get();
         assert!(

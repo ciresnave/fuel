@@ -401,9 +401,10 @@ impl Judge {
     /// consensus path.
     pub fn with_fixtures_from(path: &Path) -> Result<Self> {
         let fixtures = load_fixtures_recursive(path)?;
-        let mut judge = Self::default();
-        judge.fixtures = Some(fixtures);
-        Ok(judge)
+        Ok(Self {
+            fixtures: Some(fixtures),
+            ..Self::default()
+        })
     }
 
     /// Look up a fixture matching `(op, dtype, size_class)` and the

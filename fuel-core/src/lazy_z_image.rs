@@ -1524,9 +1524,8 @@ fn lcg_noise(seed: u64, n: usize) -> Vec<f32> {
     };
     let mut next_f32 = || -> f32 {
         // uniform in (0, 1).
-        let u = (next_u32() as f64 / u32::MAX as f64)
-            .max(1e-9)
-            .min(1.0 - 1e-9);
+        // Input is `u32 / u32::MAX` ∈ [0, 1], never NaN, so clamp is exact here.
+        let u = (next_u32() as f64 / u32::MAX as f64).clamp(1e-9, 1.0 - 1e-9);
         u as f32
     };
     let mut out = Vec::with_capacity(n);

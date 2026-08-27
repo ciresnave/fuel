@@ -143,6 +143,10 @@ impl LrSchedule for StepSchedule {
 /// rather than admitted. Admitting one would make `max_norm / total_norm`
 /// evaluate to `NaN` and silently scale every gradient to `NaN`. The
 /// function also errors when `grads` is empty.
+// `!(x > 0.0)` is deliberate (see doc above): it REJECTS NaN, where the
+// clippy-suggested `x <= 0.0` is false for NaN and would admit a NaN
+// max_norm/norm_type straight through this validation guard.
+#[allow(clippy::neg_cmp_op_on_partial_ord)]
 pub fn clip_grad_norm(
     grads: &HashMap<String, Tensor>,
     max_norm: f64,
