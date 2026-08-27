@@ -46,6 +46,32 @@
       parent holds. We export GPU_RUN_HELD into the child environment; a nested
       invocation detects it and PASSES THROUGH (logs, does not re-acquire).
 
+  DECLARE THE HARDWARE YOU EXPECT: FUEL_REQUIRE_<FAMILY> (GAP-243)
+    A Fuel test whose device is absent calls `fuel_test_support::hardware::skip`,
+    which either FAILS or reports a declared skip. Set the family's variable to
+    make absence FAIL:
+
+      $env:FUEL_REQUIRE_CUDA = '1'   # also _VULKAN, _AOCL, _MKL
+      $env:FUEL_REQUIRE_AOCL = '0'   # '0' DISARMS; empty/unset = family default
+
+    Defaults are per family: CUDA and Vulkan are already FATAL (every call site
+    is an `#[ignore]`d test, so running one is itself the opt-in), while AOCL and
+    MKL are PERMISSIVE (`--features aocl` compiles with no AMD DLLs present, so
+    building it implies nothing about the hardware).
+
+    So on a machine that HAS AOCL or MKL, set the variable — otherwise those
+    families skip and the run's green carries no information. For CUDA/Vulkan the
+    default already does the right thing; set '0' only to deliberately tolerate
+    absence.
+
+    THIS IS BRACES, NOT THE BELT. Correctness must not depend on anyone
+    remembering to come through this wrapper — the same reasoning as "THE HARNESS
+    TAKES THE LOCK, NOT THE AGENT" above, and for the same reason: a peer once ran
+    a GPU workload with no wrapper at all while the rule sat in their own notes.
+    The belt is the per-family default in `fuel-test-support/src/hardware.rs`,
+    whose assumption is enforced by
+    `fuel-test-support/tests/skip_sites_are_opt_in.rs`.
+
 .PARAMETER Project
   Label recorded in the lockfile: fuel | baracuda | vulkane | ...
 
@@ -53,6 +79,11 @@
   The command + args to run under the lock (everything after `--`).
 
 .EXAMPLE
+  pwsh scripts/gpu-run.ps1 -Project fuel -- cargo test -p fuel-core --features cuda -- --ignored
+
+.EXAMPLE
+  # Demand the device: absence becomes a FAILURE rather than a declared skip.
+  $env:FUEL_REQUIRE_CUDA = '1'
   pwsh scripts/gpu-run.ps1 -Project fuel -- cargo test -p fuel-core --features cuda -- --ignored
 
 .EXAMPLE
