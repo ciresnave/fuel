@@ -1111,3 +1111,54 @@ than a guard that reds on honest numbers and trains reflexive allowlisting.**
 **WHY THIS IS THE STRONGEST AVAILABLE ARGUMENT FOR STRUCTURE OVER VIGILANCE**, and it is stronger than any specific defect: these three were committed by people **actively applying** the very rule they were violating, on the same day, with the text in front of them. **Vigilance did not fail through inattention — it failed through correct application to the wrong index.** A gate does not need the situation to remind it of itself.
 
 **PRACTICE: when you write a rule from an incident, name the PROPERTY that failed and then ask which OTHER surfaces have it.** *"Never truncate a document you are about to act on"* covers gate output, comment bodies, `grep -c` results, PR descriptions, and summary lines. *"Never pipe the gate through `head`"* covers one. **And when a rule proves it does not transfer, that is the moment to make it structural — the failures above are exactly the ones a check would have caught and a memory did not.**
+
+## fixing-a-thing-can-make-the-next-fix-dearer
+
+**Two correct fixes, and landing them in the wrong order makes the second one
+cost more than it does today. The usual intuition — defer the bigger change,
+it will keep — is backwards whenever the first fix makes broken data VALID.**
+
+**Worked example, 2026-08-27, caught before it landed.** Fuel's Vulkan backend
+stamps `kernel_source = "vulkan-slang"`, a tag absent from
+`kernel_source_intern`'s closed allowlist. Two fixes were queued:
+
+```
+PR 1  MECHANISM   allowlist -> interner; an unknown tag is preserved,
+                  never silently coerced to ""
+PR 2  PRODUCER    vulkan-slang -> slang  (21 FKC sites)
+```
+
+**Measured before PR 1: the rename was PROVABLY FREE.** `kernel_source` is part
+of `ProfileEntry`'s key, so a rename normally orphans persisted profiles — but
+every `vulkan-slang` profile was *already* broken, because the tag collapsed to
+`""` or tripped a `debug_assert` at `DispatchTable`-build time. **Nothing valid
+keyed on it, so renaming orphaned nothing.**
+
+**PR 1 changes that.** Once the interner preserves the tag, profiles written
+under it become valid — **and from that moment the rename starts orphaning real
+data.** The window is empty today and opens the instant the mechanism lands.
+
+**And the second-order version is worse than the accounting one: A FIX THAT
+MAKES A WRONG THING *FUNCTION* REMOVES THE PRESSURE TO MAKE IT RIGHT.** While
+`vulkan-slang` is broken it is a forcing function — somebody trips over it.
+Afterwards it works, and **a category error that works is one nobody comes back
+to.**
+
+**PRACTICE.** When two fixes queue against one defect, ask **which of them makes
+the other's precondition disappear**, and land that one *second* — or land them
+back-to-back and say so, so a slip is visible rather than silent. Concretely:
+
+- **Ask what becomes VALID after fix 1** that is currently broken. Anything in
+  that set is data fix 2 will now have to migrate.
+- **Do not fold the cheap-today change into a deferred umbrella row** because it
+  shares a blast radius with it. Shared *code* is not shared *timing*, and the
+  umbrella's schedule is what makes the cheap change expensive.
+- **Re-verify the free-ness at LAND time, not at ruling time.** The subject
+  changes between the two, which is
+  [`reverify-differential-after-rebase-before-push`](#reverify-differential-after-rebase-before-push)
+  with the mutation coming from your own queue rather than a peer's.
+
+**The tell that you are in this situation:** the deferred change is described as
+*"free"* or *"orphans nothing"* **on the strength of the current broken state.**
+That freeness is a property of the bug, not of the change — and the other fix is
+about to remove the bug.
