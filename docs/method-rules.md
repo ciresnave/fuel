@@ -1297,6 +1297,28 @@ prerequisites, and pointed at a sequencing plan.
 - **Never file a claim whose supporting passage you have not read.** A relayed
   reading is a claim about a passage, not the passage.
 
+**COROLLARY — A RETRACTION BOUNDS NOTHING. Finding one instance of a class does
+not tell you the class's SIZE, and it is most misleading when the instance was
+found by the very sweep that had not finished.**
+
+**Worked example, same incident, two hops downstream.** After the retraction, a
+count of **21** was already on the project owner's desk. Both the architect and
+the portfolio PM independently reached for **`21 − 1`**, and the PM caught it:
+*"that is arithmetic, not a measurement, and the other 20 have not been
+re-dispositioned."* **Then it turned out to be worse — the remaining ~14 had not
+even been polarity-checked**, because the lens had been applied to the file group
+only.
+
+**So `21 − 1` does not merely substitute arithmetic for measurement. It assumes
+EXACTLY ONE instance of a class nobody has finished looking for, and it claims
+completeness on behalf of the incomplete pass that produced the retraction.**
+
+⚠️ **The same fallacy hides in prose. *"Stale by one"* names a size for a class
+nobody has counted.** The honest form is **"stale by an unknown amount, bounded
+below by one"** — and the remedy is to carry the ORIGINAL figure marked
+provisional, with the reason, until the sweep that would bound it actually runs.
+**A number corrected by subtraction is a new claim, not a repair.**
+
 **Related: [`a-defence-can-outlive-its-defect`](#a-defence-can-outlive-its-defect)
 — there a remedy survives its cause; here a CONCLUSION survives the arrival of the
 thing that would have refuted it.**
