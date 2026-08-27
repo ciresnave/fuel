@@ -19915,8 +19915,12 @@ mod generate_tests {
         let vk_backend = match VulkanBackend::with_selection(DeviceSelection::PreferDiscrete) {
             Ok(b) => b,
             Err(e) => {
-                eprintln!("no Vulkan device; skipping: {e:?}");
-                return;
+                return fuel_test_support::hardware::skip(
+                    fuel_test_support::hardware::Hardware::Vulkan,
+                    fuel_test_support::hardware::Missing::device(format!(
+                        "VulkanBackend::with_selection: {e:?}"
+                    )),
+                );
             }
         };
         let vk_device: Device = vk_backend.into();
@@ -20924,8 +20928,12 @@ mod generate_tests {
         let vk_backend = match VulkanBackend::with_selection(DeviceSelection::PreferDiscrete) {
             Ok(b) => b,
             Err(e) => {
-                eprintln!("no Vulkan device; skipping: {e:?}");
-                return;
+                return fuel_test_support::hardware::skip(
+                    fuel_test_support::hardware::Hardware::Vulkan,
+                    fuel_test_support::hardware::Missing::device(format!(
+                        "VulkanBackend::with_selection: {e:?}"
+                    )),
+                );
             }
         };
         let vk_arc = std::sync::Arc::new(vk_backend);

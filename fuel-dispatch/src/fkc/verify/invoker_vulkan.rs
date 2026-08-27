@@ -157,9 +157,16 @@ mod tests {
     #[test]
     #[ignore = "requires a live Vulkan device"]
     fn vulkan_invoker_runs_add_elementwise_f32_end_to_end() {
-        let Ok(backend) = VulkanBackend::new() else {
-            eprintln!("no Vulkan device; skipping");
-            return;
+        let backend = match VulkanBackend::new() {
+            Ok(b) => b,
+            Err(e) => {
+                return fuel_test_support::hardware::skip(
+                    fuel_test_support::hardware::Hardware::Vulkan,
+                    fuel_test_support::hardware::Missing::device(format!(
+                        "VulkanBackend::new: {e:?}"
+                    )),
+                );
+            }
         };
         let backend = Arc::new(backend);
         // The real Vulkan add wrapper (`fkc::vulkan_link::VULKAN_BINARY_ENTRY_POINTS`'s
