@@ -263,7 +263,7 @@ Now a normal-sized refactor, and only now are the boundaries visible:
 |---|---|---|
 | `lazy.rs` (25.5k) | **`fuel-tensor`** | ratified; Lightbulb is the named consumer |
 | runtime bridge (`pipelined_bridge`, `factories`, `scheduling`) | **`fuel-dispatch`** | joins the ranker/executor already there |
-| the **Judge** (4.4k) | **open — see §6.3** | a profiler, not a dispatcher |
+| the **Judge** (4.4k) | **open** — was blocked on §6.3's retracted premise; now unblocked, ruling owed | a profiler, not a dispatcher |
 | serving / decode (8.1k) | **open** | plausibly `fuel-inference` (exists) |
 | `train.rs` | **`fuel-training`** (exists) | |
 | the rest (5.5k, 31 files) | distribute | `nf4`→`fuel-quantized`, `device`→`fuel-hardware`, … |
@@ -324,8 +324,40 @@ against their own tree, rather than us inferring it.**
 
 Vulkane measured the seam at `7954f73c`: `KernelInvoker` and `HostTensor` are
 already backend-neutral; the coupling is `&CudaDevice` at the entry points, plus
-`fkc::verify` being private. `Storage` is a separate, larger coupling that must
-not be conflated with this one.
+`fkc::verify` being private.
+
+⚠️ **RETRACTED 2026-08-27, BY THE PARTY WHO SUPPLIED IT.** This paragraph
+previously ended *"`Storage` is a separate, larger coupling that must not be
+conflated with this one."* **Vulkane withdrew that sentence in both directions at
+once**, and the corrected version is more useful than the original:
+
+- **`Storage` IS on the provider critical path.** `CudaInvoker::invoke` does not
+  merely take host bytes and return host bytes — it **constructs
+  `fuel_memory::Storage`** to call the kernel, and *any* `KernelInvoker` must,
+  because `BindingEntry.kernel` is a `KernelRef` over `Arc<RwLock<Storage>>`.
+  **The trait's SIGNATURE is host-only; its CONTRACT is "run this entry", and
+  running one touches `Storage`.** In their words: *"I read the signature and
+  stopped."*
+- **And it does not matter, because `BackendStorage::Vulkan` already exists**
+  (`fuel-memory/src/lib.rs:73`, behind the `vulkan` feature). So the correct
+  sentence is **"on the path, and already satisfied"**, not "separate and
+  larger". The decision to leave `Storage` alone stands; the stated reason for it
+  was wrong.
+
+⚠️ **AND A SECOND CORRECTION, THIS ONE OF THE ARCHITECT'S.** I told Vulkane that
+a trait with one implementor is a shape drawn around existing code, they
+generalised it back, and **the premise was false for this trait.**
+`KernelInvoker` has **ten implementors** — `CpuInvoker`, `CudaInvoker`,
+`VulkanInvoker`, `ExactRefInvoker`, `FixedOutput`, plus five test fakes — **three
+of them real backends.** Its neutrality is **already a measurement, not a
+claim.**
+
+**The trap survives, aimed correctly:** `reference_from_registered_recipe` and
+`reference_output` take `&CudaDevice` with **no trait at all**. So *"one
+implementor on both sides launders a dependency as an abstraction"* applies to
+the **reference realizer**, which has zero abstraction — not to `KernelInvoker`,
+which has nine siblings. **A general rule was stated and pointed at the one role
+where it does not apply.**
 
 **This is GAP-236 and it is CireSnave's decision, not this design's**, but the
 restructure changes its shape: publishing a provider-facing surface is a very
@@ -437,6 +469,11 @@ agreeing, and each made it smaller:
 - **Three CLAUDE.md claims are false at head** (§2), found incidentally while
   establishing the current state.
 
+- **Vulkane** ran Fuel's never-executed `VulkanInvoker` on real hardware
+  unprompted (it works — `add_f32` over Vulkan-resident storage is correct), and
+  their **positive control** found that the test passes with **no Vulkan device
+  at all**: GAP-243, a class of **49** such tests across 13 files that nobody had
+  enumerated.
 - **Lightbulb** answered §9 #6 from measurement with a positive control, and
   caught that the load-bearing gate compared names rather than types.
 - **The portfolio PM** checked registry availability for every name and found
