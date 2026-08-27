@@ -12447,7 +12447,7 @@ impl LlamaModel {
 /// Phi-2 model hyperparameters. Field semantics match the LLaMA config
 /// where they overlap; the `layer_norm_eps`, `partial_rotary_factor`,
 /// and `rotary_dim` fields are Phi-specific.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PhiConfig {
     pub vocab_size: usize,
     pub dim: usize, // hidden_size
@@ -12465,58 +12465,92 @@ pub struct PhiConfig {
     pub tie_word_embeddings: bool,
 }
 
-impl PhiConfig {
-    pub fn from_hf_json_str(json: &str) -> crate::Result<Self> {
-        let v: serde_json::Value = serde_json::from_str(json)
-            .map_err(|e| crate::Error::Msg(format!("parsing config.json: {e}")))?;
+fn default_phi_layer_norm_eps() -> f64 {
+    1e-5
+}
+fn default_phi_rope_base() -> f64 {
+    10_000.0
+}
+fn default_partial_rotary_factor() -> f64 {
+    0.4
+}
 
-        let get_usize = |key: &str| -> crate::Result<usize> {
-            v.get(key)
-                .and_then(|x| x.as_u64())
-                .map(|x| x as usize)
-                .ok_or_else(|| {
-                    crate::Error::Msg(format!("config.json: missing/invalid field {key:?}"))
-                })
-        };
-        let get_f64 = |key: &str| -> Option<f64> { v.get(key).and_then(|x| x.as_f64()) };
+/// A Phi `config.json` under HuggingFace's field names.
+///
+/// ⚠️ THIS IS THE ONE CONFIG WHOSE RESOLUTION IS A CHAIN RATHER THAN A MAP,
+/// which is why it was converted last: the shape had to be settled by the
+/// other six before the constraint could be honoured rather than discovered.
+///
+/// ```text
+///   head_dim   <- "head_dim" if present, else dim / n_heads
+///   rotary_dim <- round(partial_rotary_factor * head_dim)     depends on ^
+///   then rotary_dim must be even
+/// ```
+///
+/// `rotary_dim` is derived from the RESOLVED `head_dim`, not from the raw
+/// field, so `resolve` computes `head_dim` into a binding first and uses that
+/// binding. Writing the two as sibling entries in a struct literal would
+/// happen to work — Rust evaluates fields in source order — but it would
+/// encode the ordering as an accident of layout rather than as a dependency,
+/// and a later field reshuffle would silently change the result.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct PhiConfigRaw {
+    vocab_size: usize,
+    hidden_size: usize,
+    num_hidden_layers: usize,
+    num_attention_heads: usize,
+    intermediate_size: usize,
+    #[serde(default)]
+    head_dim: Option<usize>,
+    #[serde(default = "default_phi_layer_norm_eps")]
+    layer_norm_eps: f64,
+    #[serde(default = "default_phi_rope_base", rename = "rope_theta")]
+    rope_base: f64,
+    #[serde(default = "default_partial_rotary_factor")]
+    partial_rotary_factor: f64,
+    #[serde(default)]
+    tie_word_embeddings: bool,
+}
 
-        let vocab_size = get_usize("vocab_size")?;
-        let dim = get_usize("hidden_size")?;
-        let n_layers = get_usize("num_hidden_layers")?;
-        let n_heads = get_usize("num_attention_heads")?;
-        let ffn_dim = get_usize("intermediate_size")?;
-        let head_dim = v
-            .get("head_dim")
-            .and_then(|x| x.as_u64())
-            .map(|x| x as usize)
-            .unwrap_or(dim / n_heads);
-        let layer_norm_eps = get_f64("layer_norm_eps").unwrap_or(1e-5);
-        let rope_base = get_f64("rope_theta").unwrap_or(10_000.0);
-        let partial_rotary_factor = get_f64("partial_rotary_factor").unwrap_or(0.4);
-        let rotary_dim = (partial_rotary_factor * head_dim as f64).round() as usize;
+impl PhiConfigRaw {
+    fn from_json_str(json: &str) -> crate::Result<Self> {
+        serde_json::from_str(json)
+            .map_err(|e| crate::Error::Msg(format!("parsing config.json: {e}")))
+    }
+
+    fn resolve(self) -> crate::Result<PhiConfig> {
+        // ORDERED, not a flat map: rotary_dim reads the resolved head_dim.
+        let head_dim =
+            crate::hf_config::head_dim(self.head_dim, self.hidden_size, self.num_attention_heads);
+        let rotary_dim = (self.partial_rotary_factor * head_dim as f64).round() as usize;
         if !rotary_dim.is_multiple_of(2) {
             crate::bail!(
-                "PhiConfig: rotary_dim {rotary_dim} must be even (partial_rotary_factor={partial_rotary_factor}, head_dim={head_dim})"
+                "PhiConfig: rotary_dim {rotary_dim} must be even (partial_rotary_factor={}, head_dim={head_dim})",
+                self.partial_rotary_factor
             );
         }
-        let tie_word_embeddings = v
-            .get("tie_word_embeddings")
-            .and_then(|x| x.as_bool())
-            .unwrap_or(false);
-
         Ok(PhiConfig {
-            vocab_size,
-            dim,
-            n_layers,
-            n_heads,
+            vocab_size: self.vocab_size,
+            dim: self.hidden_size,
+            n_layers: self.num_hidden_layers,
+            n_heads: self.num_attention_heads,
             head_dim,
-            ffn_dim,
-            layer_norm_eps,
-            rope_base,
-            partial_rotary_factor,
+            ffn_dim: self.intermediate_size,
+            layer_norm_eps: self.layer_norm_eps,
+            rope_base: self.rope_base,
+            partial_rotary_factor: self.partial_rotary_factor,
             rotary_dim,
-            tie_word_embeddings,
+            tie_word_embeddings: self.tie_word_embeddings,
         })
+    }
+}
+
+impl PhiConfig {
+    ///
+    /// [`PhiConfigRaw`] is the wire shape; [`PhiConfigRaw::resolve`] applies
+    /// the CHAINED derivation and the evenness check.
+    pub fn from_hf_json_str(json: &str) -> crate::Result<Self> {
+        PhiConfigRaw::from_json_str(json)?.resolve()
     }
 }
 
@@ -14296,6 +14330,162 @@ impl LlamaConfig {
             norm_eps,
             rope_base,
         })
+    }
+}
+
+#[cfg(test)]
+impl PhiConfig {
+    /// The hand-rolled parser this type used before the `serde` split, kept
+    /// verbatim and test-only as the differential's oracle.
+    pub(crate) fn from_hf_json_str_legacy(json: &str) -> crate::Result<Self> {
+        let v: serde_json::Value = serde_json::from_str(json)
+            .map_err(|e| crate::Error::Msg(format!("parsing config.json: {e}")))?;
+
+        let get_usize = |key: &str| -> crate::Result<usize> {
+            v.get(key)
+                .and_then(|x| x.as_u64())
+                .map(|x| x as usize)
+                .ok_or_else(|| {
+                    crate::Error::Msg(format!("config.json: missing/invalid field {key:?}"))
+                })
+        };
+        let get_f64 = |key: &str| -> Option<f64> { v.get(key).and_then(|x| x.as_f64()) };
+
+        let vocab_size = get_usize("vocab_size")?;
+        let dim = get_usize("hidden_size")?;
+        let n_layers = get_usize("num_hidden_layers")?;
+        let n_heads = get_usize("num_attention_heads")?;
+        let ffn_dim = get_usize("intermediate_size")?;
+        let head_dim = v
+            .get("head_dim")
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize)
+            .unwrap_or(dim / n_heads);
+        let layer_norm_eps = get_f64("layer_norm_eps").unwrap_or(1e-5);
+        let rope_base = get_f64("rope_theta").unwrap_or(10_000.0);
+        let partial_rotary_factor = get_f64("partial_rotary_factor").unwrap_or(0.4);
+        let rotary_dim = (partial_rotary_factor * head_dim as f64).round() as usize;
+        if !rotary_dim.is_multiple_of(2) {
+            crate::bail!(
+                "PhiConfig: rotary_dim {rotary_dim} must be even (partial_rotary_factor={partial_rotary_factor}, head_dim={head_dim})"
+            );
+        }
+        let tie_word_embeddings = v
+            .get("tie_word_embeddings")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false);
+
+        Ok(PhiConfig {
+            vocab_size,
+            dim,
+            n_layers,
+            n_heads,
+            head_dim,
+            ffn_dim,
+            layer_norm_eps,
+            rope_base,
+            partial_rotary_factor,
+            rotary_dim,
+            tie_word_embeddings,
+        })
+    }
+}
+
+#[cfg(test)]
+mod phi_config_tests {
+    use super::PhiConfig;
+
+    /// ⚠️ THIS CONFIG HAD NO TEST FIXTURES AT ALL BEFORE THIS CORPUS.
+    ///
+    /// Its only caller was `PhiModel::from_hub`, which reads `config.json`
+    /// over the network — so the parser had never been exercised by anything
+    /// runnable offline. Seventh config in the increment and the most extreme
+    /// coverage case: not a collapsed axis, not a partially-covered rule, but
+    /// an EMPTY corpus. **All 4 fixtures are ADDED; none is pre-existing.**
+    ///
+    /// | behaviour                          | pre-existing fixture? |
+    /// |------------------------------------|-----------------------|
+    /// | anything at all                    | NO — there were none  |
+    const DIFFERENTIAL_CORPUS: &[(&str, &str)] = &[
+        (
+            "ADDED: phi-2 shaped, explicit head_dim equal to the quotient",
+            r#"{
+                "vocab_size": 51200, "hidden_size": 2560, "num_hidden_layers": 32,
+                "num_attention_heads": 32, "intermediate_size": 10240,
+                "head_dim": 80, "layer_norm_eps": 1e-5, "rope_theta": 10000.0,
+                "partial_rotary_factor": 0.4
+            }"#,
+        ),
+        (
+            "ADDED: minimal — every optional absent, head_dim derived",
+            r#"{
+                "vocab_size": 51200, "hidden_size": 1024, "num_hidden_layers": 16,
+                "num_attention_heads": 16, "intermediate_size": 4096
+            }"#,
+        ),
+        (
+            "ADDED: explicit head_dim 96 != 2560/32 = 80, and rotary_dim CHAINS off it",
+            r#"{
+                "vocab_size": 51200, "hidden_size": 2560, "num_hidden_layers": 32,
+                "num_attention_heads": 32, "intermediate_size": 10240,
+                "head_dim": 96, "partial_rotary_factor": 0.4
+            }"#,
+        ),
+        (
+            "ADDED: odd rotary_dim — both paths must REJECT (0.5 * 10 = 5)",
+            r#"{
+                "vocab_size": 100, "hidden_size": 40, "num_hidden_layers": 2,
+                "num_attention_heads": 4, "intermediate_size": 80,
+                "partial_rotary_factor": 0.5
+            }"#,
+        ),
+    ];
+
+    #[test]
+    fn serde_path_agrees_with_the_legacy_parser_on_every_fixture() {
+        assert_eq!(DIFFERENTIAL_CORPUS.len(), 4, "corpus shrank");
+        for (name, json) in DIFFERENTIAL_CORPUS {
+            let new = PhiConfig::from_hf_json_str(json);
+            let old = PhiConfig::from_hf_json_str_legacy(json);
+            match (new, old) {
+                (Ok(a), Ok(b)) => assert_eq!(a, b, "differential mismatch on {name}"),
+                (Err(_), Err(_)) => {}
+                (Ok(_), Err(e)) => panic!("{name}: serde accepted, legacy rejected: {e}"),
+                (Err(e), Ok(_)) => panic!("{name}: serde rejected, legacy accepted: {e}"),
+            }
+        }
+    }
+
+    #[test]
+    fn rotary_dim_chains_off_the_resolved_head_dim() {
+        // The ordering constraint, made falsifiable. With head_dim explicit at
+        // 96, rotary_dim must be round(0.4 * 96) = 38. If the chain read the
+        // QUOTIENT instead (2560/32 = 80) it would be round(0.4 * 80) = 32.
+        // Both are even, so the evenness check cannot tell them apart — only
+        // this assertion can.
+        let cfg = PhiConfig::from_hf_json_str(DIFFERENTIAL_CORPUS[2].1).unwrap();
+        assert_eq!(cfg.head_dim, 96, "explicit head_dim must survive");
+        assert_eq!(
+            cfg.rotary_dim, 38,
+            "rotary_dim must chain off the RESOLVED head_dim"
+        );
+        assert_ne!(
+            cfg.rotary_dim, 32,
+            "32 is what reading the raw quotient would give"
+        );
+    }
+
+    #[test]
+    fn odd_rotary_dim_is_rejected_by_both_paths() {
+        let json = DIFFERENTIAL_CORPUS[3].1;
+        assert!(
+            PhiConfig::from_hf_json_str(json).is_err(),
+            "0.5 * 10 = 5 is odd"
+        );
+        assert!(
+            PhiConfig::from_hf_json_str_legacy(json).is_err(),
+            "legacy must agree"
+        );
     }
 }
 
