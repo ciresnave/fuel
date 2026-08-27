@@ -714,10 +714,6 @@ pub(crate) fn recompute_probs(
 /// Repeat a `[B, Hkv, S, D]` K/V tensor's heads up to `Hq` (GQA/MQA) via
 /// `Reshape → BroadcastTo → Reshape`. Identity when `Hq == Hkv`. Shared with
 /// `paged_attn` (hkv-major / g-minor ordering).
-#[expect(
-    clippy::too_many_arguments,
-    reason = "graph-op builder: the parameters are the operand dims / config of the GQA head-repeat"
-)]
 pub(crate) fn repeat_kv_heads(
     graph: &mut Graph,
     x_id: NodeId,
@@ -755,10 +751,6 @@ pub(crate) fn repeat_kv_heads(
 /// Build the ALiBi bias `slope[h] · (j - i)` broadcast to `[B, Hq, Sq, Sk]`,
 /// cast to `dtype`. Uses `Op::Iota` for the row/column position indices.
 /// Shared with `paged_attn` (`Sk` = the paged `kv_len`).
-#[expect(
-    clippy::too_many_arguments,
-    reason = "graph-op builder: the parameters are the operand dims / config of the ALiBi bias term"
-)]
 pub(crate) fn alibi_bias(
     graph: &mut Graph,
     alibi_id: NodeId,

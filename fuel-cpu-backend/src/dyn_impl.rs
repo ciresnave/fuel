@@ -1617,10 +1617,6 @@ fn cpu_copy_strided_src(
     Ok(())
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "kernel entry point: the parameters are the operand buffers / strides / dims of the op ABI; bundling into a struct would obscure the signature, not clarify it"
-)]
 fn cpu_copy2d(
     src: &HostBuffer,
     dst: &mut HostBuffer,

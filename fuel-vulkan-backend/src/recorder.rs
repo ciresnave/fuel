@@ -253,10 +253,6 @@ impl Recorder {
     /// Only inserts a pipeline barrier when a READ buffer overlaps
     /// with a previously-written (dirty) buffer — independent ops
     /// can overlap on the GPU without barriers.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "Vulkan batch-dispatch recorder: the parameters are the pipeline, descriptor set, push/uniform buffers and workgroup dims of one recorded dispatch"
-    )]
     pub fn record_batch_dispatch(
         &mut self,
         device: &Device,

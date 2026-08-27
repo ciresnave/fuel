@@ -4962,10 +4962,6 @@ impl NodeHandle {
     /// `[B, Hq, Sq, D]`; `k` and `v` are `[B, Hkv, Sk, D]` with
     /// `Hq` a multiple of `Hkv` (GQA). `alibi_slopes` (optional) is
     /// `[Hq]`. Returns a tensor with `q`'s shape.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "public flash-attention builder: the parameters are the Q/K/V tensors + attention config; the surface is the op's ABI"
-    )]
     /// Build the `flash_attn` node.
     ///
     /// # Panics
