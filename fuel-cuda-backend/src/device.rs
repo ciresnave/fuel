@@ -446,29 +446,6 @@ impl CudaDevice {
         true
     }
 
-    #[cfg(all(feature = "ug", not(target_arch = "wasm32")))]
-    pub fn compile(
-        &self,
-        func_name: &'static str,
-        kernel: fuel_ug::lang::ssa::Kernel,
-    ) -> Result<CudaFunc> {
-        let mut buf = vec![];
-        fuel_ug::cuda::code_gen::r#gen(&mut buf, func_name, &kernel)?;
-        let cuda_code = String::from_utf8(buf)?;
-        let opts = baracuda_nvrtc::CompileOptions {
-            use_fast_math: Some(true),
-            ..Default::default()
-        };
-        // `compile_with` returns the PTX text directly (String).
-        let ptx = baracuda_nvrtc::Program::compile_with(&cuda_code, func_name, &opts).w()?;
-        let module = baracuda_driver::Module::load_ptx(&self.context, &ptx).w()?;
-        let func = module.get_function(func_name).w()?;
-        Ok(CudaFunc {
-            func,
-            stream: self.stream.clone(),
-        })
-    }
-
     pub fn id(&self) -> DeviceId {
         self.id
     }

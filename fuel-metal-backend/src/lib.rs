@@ -18,8 +18,6 @@ pub mod dyn_impl;
 pub mod quantized;
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub mod storage;
-#[cfg(all(any(target_os = "macos", target_os = "ios"), feature = "ug"))]
-pub mod ug;
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 pub use fuel_ir::{D, DType, Error, Layout, Result, Shape};

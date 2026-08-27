@@ -48,10 +48,8 @@
     cudnn   = ["dep:baracuda-cudnn", "dep:baracuda-cudnn-sys"]
     default = []
     nccl    = ["dep:baracuda-nccl"]
-    ug      = ["dep:fuel-ug"]
 
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))'.dependencies]
-    fuel-ug = { workspace = true, optional = true }
 
 [dev-dependencies]
 # GAP-157: `require`/`required_ok` — a missing device is a FAILURE, not a

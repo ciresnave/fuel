@@ -65,7 +65,6 @@ zip = { workspace = true }
 tokenizers = { workspace = true, features = ["fancy-regex"] }
 
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))'.dependencies]
-fuel-ug = { workspace = true, optional = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
@@ -101,7 +100,6 @@ cuda = [
     "fuel-dispatch/cuda",
     "fuel-memory/cuda",
     "fuel-hardware/cuda",
-    "fuel-ug?/cuda",
 ]
 
 # Enables cuda + cuDNN accelerated convolution and normalization.
@@ -141,7 +139,6 @@ metal = [
     "dep:fuel-metal-kernels",
     "fuel-dispatch/metal",
     "fuel-memory/metal",
-    "fuel-ug?/metal",
 ]
 
 # Cross-vendor GPU backend via Vulkan (vulkane + precompiled SPIR-V).
@@ -149,11 +146,9 @@ metal = [
 # time — shaders are precompiled and committed.
 vulkan = ["dep:fuel-vulkan-backend", "fuel-dispatch/vulkan", "fuel-memory/vulkan", "fuel-hardware/vulkan"]
 
-# fuel-ug (μGPU) experimental backend.
 # Pipes the `ug` feature through to fuel-cuda-backend and fuel-metal-backend so the
 # per-backend `XxxUgIOp1::new(..., device)` constructors are available
 # whenever `cuda`/`metal` is also enabled.
-ug = ["dep:fuel-ug", "fuel-ir/ug", "fuel-cuda-backend?/ug", "fuel-metal-backend?/ug"]
 
 # NOTE: fuel-core has no examples. The four that lived here (`basics`,
 # `cuda_basics`, `metal_basics`, `cuda_sum_benchmark`) were all eager-`Tensor`

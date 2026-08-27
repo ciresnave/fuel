@@ -265,7 +265,7 @@ pub enum Error {
 
     #[cfg(all(not(target_arch = "wasm32"), not(target_os = "ios"), feature = "ug"))]
     #[error(transparent)]
-    Ug(#[from] fuel_ug::Error),
+    Ug(Box<dyn std::error::Error + Send + Sync>),
 
     #[error(transparent)]
     TryFromIntError(#[from] core::num::TryFromIntError),

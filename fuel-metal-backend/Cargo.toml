@@ -25,7 +25,5 @@
 
 [features]
     default = []
-    ug      = ["dep:fuel-ug"]
 
 [target.'cfg(all(any(target_os = "macos", target_os = "ios"), not(target_arch = "wasm32")))'.dependencies]
-    fuel-ug = { workspace = true, optional = true }
