@@ -238,7 +238,6 @@ pub struct EvictReport {
 pub struct Externalized {
     fidelity: Fidelity,
     covers: Vec<StateKind>,
-    filled_tokens: usize,
     /// Logical slot indices that were externalized (need re-materializing).
     externalized_slots: Vec<usize>,
     /// Logical slot indices still backed by a resident (shared) block, and the
@@ -558,9 +557,9 @@ impl KvBlockPool {
         s: SessionHandle,
         indices: &[usize],
     ) -> Result<EvictReport, KvAllocError> {
-        let (n_slots, filled) = {
+        let n_slots = {
             let t = self.tables.get(&s).ok_or(KvAllocError::UnknownSession)?;
-            (t.slots.len(), t.filled_tokens)
+            t.slots.len()
         };
         for &i in indices {
             if i >= n_slots {
@@ -608,7 +607,6 @@ impl KvBlockPool {
             handle: Externalized {
                 fidelity: Fidelity::Lossy,
                 covers: vec![StateKind::KvBlocks],
-                filled_tokens: filled,
                 externalized_slots,
                 resident_slots,
             },
@@ -678,11 +676,10 @@ impl KvBlockPool {
             }
             t.slots[i] = Slot::Resident(p);
         }
-        // Deliberately does NOT touch `filled_tokens`: `evict` never changes it
-        // (a session's logical length is unchanged — only block residency is), so
-        // a PARTIAL evict of a still-decoding session that grew its fill after the
-        // evict must not be reset to the stale handle value. The handle's
-        // `filled_tokens` is informational (the fill level at evict time).
+        // Deliberately does NOT touch the session's `filled_tokens`: `evict`
+        // never changes it (a session's logical length is unchanged — only block
+        // residency is). A PARTIAL evict of a still-decoding session that grew
+        // its fill after the evict must keep the live value.
         Ok(())
     }
 
