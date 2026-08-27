@@ -20,6 +20,7 @@ members = [
     "fuel-formats",
     "fuel-model-core",
     "fuel-model-fixture",
+    "fuel-model-umbrella-fixture",
     "fuel-graph",
     "fuel-kernel-seam-announce",
     "fuel-kernel-seam-types",

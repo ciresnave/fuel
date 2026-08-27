@@ -2147,6 +2147,7 @@ name = "fuel-model-core"
 version = "0.10.3"
 dependencies = [
  "fuel-model-fixture",
+ "fuel-model-umbrella-fixture",
  "inventory",
  "serde_json",
  "tempfile",
@@ -2158,6 +2159,15 @@ name = "fuel-model-fixture"
 version = "0.10.3"
 dependencies = [
  "fuel-model-core",
+ "inventory",
+]
+
+[[package]]
+name = "fuel-model-umbrella-fixture"
+version = "0.10.3"
+dependencies = [
+ "fuel-model-core",
+ "fuel-model-fixture",
  "inventory",
 ]
 
