@@ -101,6 +101,44 @@ impl Hardware {
             Hardware::Mkl => "FUEL_REQUIRE_MKL",
         }
     }
+
+    /// What absence means for this family when nothing overrides it.
+    ///
+    /// # ⚠️ This keys on a PROXY, and the proxy's assumption is enforced elsewhere
+    ///
+    /// The tempting justification is *"building `--features cuda` proves you
+    /// have CUDA hardware"*. **That is false and must not be written here.**
+    /// Measured 2026-08-27: `baracuda-kernels-sys/build.rs:604` expects `nvcc`
+    /// (and `:198` skips it under `DOCS_RS=1` -- an escape hatch exists because
+    /// the requirement is otherwise real), so `--features cuda` requires the
+    /// **SDK**. An SDK is a *compiler*, not a *device*: a box with CUDA
+    /// installed and no GPU is an ordinary configuration, and is exactly what
+    /// the `DOCS_RS` path serves.
+    ///
+    /// What actually justifies `Fatal` is that **every CUDA and Vulkan call
+    /// site is inside an `#[ignore]`d test**, so running one requires an
+    /// explicit `-- --ignored`, which IS a declaration that the device is
+    /// expected. `#[ignore]` is a libtest attribute this code cannot observe at
+    /// runtime, so the default cannot key on it directly -- it keys on the
+    /// family, which merely *correlates*.
+    ///
+    /// **That correlation is not an assumption left implicit.**
+    /// `tests/skip_sites_are_opt_in.rs` scans every call site and fails if a
+    /// `Fatal`-default family is used outside an `#[ignore]`d test. When the
+    /// proxy stops holding, that guard says so.
+    ///
+    /// AOCL and MKL are `Permissive` for a measured reason rather than a
+    /// symmetric one: `--features aocl` compiles from a sibling checkout with
+    /// **no AMD DLLs present at all**, and the resulting test binary cannot even
+    /// launch (`STATUS_DLL_NOT_FOUND`, measured on this box), so the probe it
+    /// would gate never executes. For those families, compiling the feature
+    /// carries no hardware implication whatsoever.
+    pub const fn default_policy(self) -> Policy {
+        match self {
+            Hardware::Cuda | Hardware::Vulkan => Policy::Fatal,
+            Hardware::Aocl | Hardware::Mkl => Policy::Permissive,
+        }
+    }
 }
 
 /// What a test needed and did not get -- carrying **which class of absence it
@@ -131,23 +169,47 @@ impl Missing {
     }
 }
 
-/// Decide fatality from a variable's raw value, without touching the process
-/// environment.
+/// What happens when a device of some family is absent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Policy {
+    /// Absence is a test failure.
+    Fatal,
+    /// Absence is a declared skip.
+    Permissive,
+}
+
+/// Resolve the policy from the family default and an environment override,
+/// without touching the process environment.
 ///
 /// Split out from [`skips_are_fatal`] so the reading rule is testable directly.
 /// `std::env::set_var` is `unsafe` in edition 2024 and racy under the parallel
 /// test harness, so a test that mutated the real environment would be both
 /// unsound and flaky -- this function lets every branch be covered with neither.
 ///
-/// Absent or empty is **not** set: `FUEL_REQUIRE_CUDA=` from a shell that always
-/// exports its variables must not arm the gate.
-pub fn value_arms_the_gate(value: Option<&OsStr>) -> bool {
-    value.is_some_and(|v| !v.is_empty())
+/// Value semantics, and note that **`0` is not the same as unset**:
+///
+/// | `FUEL_REQUIRE_<FAM>` | result                       |
+/// |----------------------|------------------------------|
+/// | absent, or empty     | [`Hardware::default_policy`] |
+/// | `0`                  | [`Policy::Permissive`]       |
+/// | anything else        | [`Policy::Fatal`]            |
+///
+/// Empty resolves to the default rather than to `Fatal` because a shell that
+/// exports every variable it names would otherwise arm every family at once.
+/// `0` disarms **explicitly**, in both directions, so a wrong default is a
+/// nuisance rather than a wall.
+pub fn resolve_policy(hw: Hardware, value: Option<&OsStr>) -> Policy {
+    match value {
+        None => hw.default_policy(),
+        Some(v) if v.is_empty() => hw.default_policy(),
+        Some(v) if v == OsStr::new("0") => Policy::Permissive,
+        Some(_) => Policy::Fatal,
+    }
 }
 
 /// Whether device-absence for `hw` is currently fatal.
 pub fn skips_are_fatal(hw: Hardware) -> bool {
-    value_arms_the_gate(std::env::var_os(hw.require_var()).as_deref())
+    resolve_policy(hw, std::env::var_os(hw.require_var()).as_deref()) == Policy::Fatal
 }
 
 /// Declare a [`Missing`], routing to the right behaviour by its class.
@@ -274,19 +336,58 @@ mod tests {
         assert_eq!(seen.len(), Hardware::ALL.len());
     }
 
-    /// Absent and empty must both leave the gate unarmed.
+    /// Absent and empty fall through to the family default; `0` disarms.
+    ///
+    /// An earlier revision of this module treated ANY non-empty value as
+    /// arming, so `FUEL_REQUIRE_CUDA=0` armed the gate. That was changed
+    /// deliberately when per-family defaults landed: with a default of `Fatal`
+    /// there has to be a way to say *no*, and `=0` is the obvious one. Recorded
+    /// because it is a behaviour change, not a bug fix -- a script that set `=0`
+    /// meaning "off" was previously getting "on".
     #[test]
-    fn only_a_non_empty_value_arms_the_gate() {
-        assert!(!value_arms_the_gate(None), "absent must not arm");
-        assert!(
-            !value_arms_the_gate(Some(OsStr::new(""))),
-            "empty must not arm: a shell that exports every variable would \
-             otherwise arm every family it names"
+    fn absent_and_empty_take_the_default_and_zero_disarms() {
+        // Fatal-default family.
+        assert_eq!(resolve_policy(Hardware::Cuda, None), Policy::Fatal);
+        assert_eq!(
+            resolve_policy(Hardware::Cuda, Some(OsStr::new(""))),
+            Policy::Fatal,
+            "empty must fall through to the default: a shell that exports every \
+             variable it names must not change any family's behaviour"
         );
-        assert!(value_arms_the_gate(Some(OsStr::new("1"))));
-        assert!(
-            value_arms_the_gate(Some(OsStr::new("0"))),
-            "non-empty is set"
+        assert_eq!(
+            resolve_policy(Hardware::Cuda, Some(OsStr::new("0"))),
+            Policy::Permissive,
+            "`0` must disarm, or a wrong default is a wall instead of a nuisance"
         );
+
+        // Permissive-default family: the override works in the other direction.
+        assert_eq!(resolve_policy(Hardware::Aocl, None), Policy::Permissive);
+        assert_eq!(
+            resolve_policy(Hardware::Aocl, Some(OsStr::new("1"))),
+            Policy::Fatal,
+            "a machine that DOES have AOCL must be able to demand it"
+        );
+        assert_eq!(
+            resolve_policy(Hardware::Aocl, Some(OsStr::new("0"))),
+            Policy::Permissive
+        );
+    }
+
+    /// The defaults are a deliberate split, not an accident of ordering.
+    ///
+    /// Pinned by family so that adding a variant forces a decision here rather
+    /// than silently inheriting whichever arm a wildcard would have caught --
+    /// `default_policy` has no wildcard, so a new family is a compile error.
+    #[test]
+    fn the_family_defaults_are_the_measured_split() {
+        assert_eq!(Hardware::Cuda.default_policy(), Policy::Fatal);
+        assert_eq!(Hardware::Vulkan.default_policy(), Policy::Fatal);
+        assert_eq!(
+            Hardware::Aocl.default_policy(),
+            Policy::Permissive,
+            "`--features aocl` compiles with no AMD DLLs present, so compiling \
+             it implies nothing about hardware -- see `default_policy`'s docs"
+        );
+        assert_eq!(Hardware::Mkl.default_policy(), Policy::Permissive);
     }
 }
