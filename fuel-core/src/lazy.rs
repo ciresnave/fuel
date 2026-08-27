@@ -8473,6 +8473,12 @@ impl LlamaModel {
     /// layers — it depends only on `cached_len`, `seq`, `max_seq_len`);
     /// it also cuts the per-token data-Const re-bind count on the
     /// persistent path from `n_layers` to 1.
+    // 12 distinct per-layer decode inputs (activation, weights, K/V cache
+    // consts, two symbolic lengths, offset, RoPE cos/sin, mask, this layer's
+    // window) threaded through one attention application. They are heterogeneous
+    // graph/sym handles, not a reusable cluster — a struct would obscure the
+    // seam without removing an argument. Exceeds even the raised (10) threshold.
+    #[allow(clippy::too_many_arguments)]
     fn apply_layer_with_kv_writes(
         &self,
         x: &Tensor,
@@ -11281,6 +11287,11 @@ pub(crate) fn flash_window_bounds(window: Option<usize>) -> (Option<usize>, Opti
     }
 }
 
+// 11 independent graph handles (q/k/v/decomposed/reconverge node ids) plus the
+// scalar rewrite parameters (scale, attended-len sym, window, softcap, backend
+// capability) for one flash-decode-arm offer. Each is a distinct graph node or
+// scalar, not a bundle-able struct. Exceeds even the raised (10) threshold.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn offer_flash_decode_arm_for_region(
     graph: &fuel_graph::SharedGraph,
     q: fuel_graph::NodeId,
