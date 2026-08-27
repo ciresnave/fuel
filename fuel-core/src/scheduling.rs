@@ -557,7 +557,7 @@ pub fn dp_plan(
         let mut best = f64::INFINITY;
         let mut best_b = backends[0];
         for &b in &backends {
-            if let Some(&(c, _)) = cost.get(&(root, b)).map(|x| x).iter().next().copied()
+            if let Some(&(c, _)) = cost.get(&(root, b)).iter().next().copied()
                 && c < best
             {
                 best = c;

@@ -8862,7 +8862,7 @@ impl LlamaModel {
         };
         match res {
             Ok(logits) => Ok(logits),
-            Err(e) if matches!(e, crate::Error::TopologyChanged { .. }) => {
+            Err(crate::Error::TopologyChanged { .. }) => {
                 // Stale cached generation — drop the session and re-plan this
                 // token via the D1 paged path; the session rebuilds next token.
                 *decode_session = None;
@@ -12967,7 +12967,7 @@ impl PhiModel {
                 let res = self.rebind_and_realize_prebuilt(tokens, cache, &*ctx, &*session);
                 match res {
                     Ok(logits) => Ok(logits),
-                    Err(e) if matches!(e, crate::Error::TopologyChanged { .. }) => {
+                    Err(crate::Error::TopologyChanged { .. }) => {
                         self.drop_decode_session(session, ctx);
                         self.forward_with_kv_context(tokens, cache, ctx)
                     }

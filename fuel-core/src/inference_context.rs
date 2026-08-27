@@ -2462,6 +2462,11 @@ mod tests {
     /// elements of the requested dtype, zero-initialized, with the
     /// `[1, n_kv_heads, max_seq_len, head_dim]` layout pre-populated.
     #[test]
+    // `BackendStorage::{Cuda,Vulkan,Metal}` are cfg-gated, so at default
+    // features `Cpu` is the only variant and this `if let` is irrefutable;
+    // under --features cuda/vulkan/metal the pattern is refutable, so a plain
+    // `let` would be an E0005 there. Allow the default-features lint.
+    #[allow(irrefutable_let_patterns)]
     fn kv_cache_with_capacity_allocates_all_layers_on_cpu() {
         let device = Device::cpu();
         let cache = KvCache::with_capacity(
@@ -2582,6 +2587,10 @@ mod tests {
     /// zero-initialized buffers on the CPU device, one per (layer, slot),
     /// shaped `[max_seq_len, ...slot_trailing[s]]`.
     #[test]
+    // Irrefutable only at default features: `BackendStorage::{Cuda,Vulkan,
+    // Metal}` are cfg-gated, so under --features cuda/vulkan/metal this pattern
+    // is refutable and a plain `let` would be an E0005. Allow the default lint.
+    #[allow(irrefutable_let_patterns)]
     fn latent_kv_cache_with_capacity_allocates_all_layers_on_cpu() {
         let device = Device::cpu();
         let cache = LatentKvCache::with_capacity(

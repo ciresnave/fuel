@@ -11,6 +11,10 @@
 //! Parler-TTS, MetaVoice, CSM) which all need transposed-conv
 //! upsampling on quantized latents to reconstruct waveforms.
 
+// The `* 1` factors in shape products (batch * channels * spatial) document
+// the dimension decomposition and are intentional, not simplifiable.
+#![allow(clippy::identity_op)]
+
 use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
 

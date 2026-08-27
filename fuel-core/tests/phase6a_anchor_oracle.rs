@@ -18,6 +18,10 @@
 //! No feature gating, no skip-if-missing: this is a load-bearing CI
 //! gate that must run on every PR.
 
+// The `* 1` factors in shape products (batch * channels * spatial) document
+// the dimension decomposition and are intentional, not simplifiable.
+#![allow(clippy::identity_op)]
+
 use fuel_core::lazy::{LayerWeights, LlamaWeights, Tensor};
 use fuel_core::lazy_convnext::ConvNextModel;
 use fuel_core::lazy_llama2c::{Llama2cConfig, Llama2cModel};

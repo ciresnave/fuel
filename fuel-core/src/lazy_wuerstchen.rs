@@ -1912,6 +1912,9 @@ mod tests {
     /// matching the eager Wuerstchen WPrior naming and verifies the loader
     /// reconstructs the bag with the expected per-tensor shapes.
     #[test]
+    // Incremental fixture builder: 40+ pushes interleaved with prefix
+    // bindings and format!-keyed names; a vec![] literal would not fit.
+    #[allow(clippy::vec_init_then_push)]
     fn load_prior_weights_from_mmapped_tiny() {
         let cfg = WuerstchenConfig::tiny();
         let c = cfg.prior_c;

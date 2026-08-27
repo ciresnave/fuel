@@ -113,6 +113,10 @@ pub struct GraniteMoeHybridMlpWeights {
 }
 
 #[derive(Debug, Clone)]
+// Variants are distinct block/layer weight sets with inherently
+// different sizes; boxing the largest would add indirection on the
+// weight-access path.
+#[allow(clippy::large_enum_variant)]
 pub enum GraniteMoeHybridLayerWeights {
     Attention {
         input_norm_gain: Arc<[f32]>,

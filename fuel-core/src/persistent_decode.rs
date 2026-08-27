@@ -1281,7 +1281,7 @@ pub fn forward_with_kv_context_persistent<M: DecodeBackbone + ?Sized>(
             match rebind_and_realize_prebuilt(model, tokens, cache, &*ctx, &*session, rope_inv_freq)
             {
                 Ok(logits) => Ok(logits),
-                Err(e) if matches!(e, crate::Error::TopologyChanged { .. }) => {
+                Err(crate::Error::TopologyChanged { .. }) => {
                     // Stale cached generation — drop the session and serve this
                     // token through D1; the session rebuilds on the next one.
                     drop_decode_session(session, ctx);

@@ -279,6 +279,10 @@ pub struct MqaWeights {
 
 /// Per-block weights, tagged to match the spec.
 #[derive(Debug, Clone)]
+// Variants are distinct block/layer weight sets with inherently
+// different sizes; boxing the largest would add indirection on the
+// weight-access path.
+#[allow(clippy::large_enum_variant)]
 pub enum BlockWeights {
     Convolutional(Conv2dBnWeights),
     EdgeResidual(EdgeResidualWeights),
