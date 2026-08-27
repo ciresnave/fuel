@@ -36,6 +36,7 @@ fn build_conv_graph(
     );
     let weight = x.const_f32_like(w_data, Shape::from_dims(&[c_out, c_in, k, k]));
     x.conv2d(&weight, None, stride, padding, 1)
+        .expect("conv2d is a graph-build call; a failure here is a Fuel defect, not a hardware one")
 }
 
 fn assert_finite_and_sane(out: &[f32], label: &str) {

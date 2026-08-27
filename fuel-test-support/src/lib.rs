@@ -65,6 +65,7 @@
 //! there is no gating to get wrong.
 
 pub mod gpu_run_lock;
+pub mod hardware;
 
 pub use gpu_run_lock::{GpuRunLock, UNGUARDED_VAR, require_gpu_run_lock};
 
