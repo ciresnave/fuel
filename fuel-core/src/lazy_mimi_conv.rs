@@ -133,6 +133,9 @@ pub fn pad_last_1d(xs: &Tensor, left: usize, right: usize, mode: LazyPadMode) ->
 /// returning the effective weight in plain `(Cout, Cin/groups, K)`
 /// row-major layout — indistinguishable from a non-WN-baked
 /// checkpoint downstream.
+// needless_range_loop here: the index feeds computed stride/offset addressing into a
+// flat buffer (base = i*inner + j), which .iter() cannot express.
+#[allow(clippy::needless_range_loop)]
 pub fn bake_weight_norm(
     weight_g: &[f32],
     weight_v: &[f32],

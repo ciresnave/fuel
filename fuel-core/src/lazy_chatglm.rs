@@ -778,6 +778,9 @@ mod tests {
     /// columns belongs to V, not K. Zero the V section of the
     /// fused QKV → output should change (proves V is sliced).
     #[test]
+    // needless_range_loop here: the loop walks an offset sub-range (start != 0), not a
+    // whole collection.
+    #[allow(clippy::needless_range_loop)]
     fn fused_qkv_slicing_layout() {
         let cfg = ChatGlmConfig {
             num_layers: 1,

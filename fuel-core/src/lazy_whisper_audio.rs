@@ -103,6 +103,9 @@ fn fft(inp: &[f32]) -> Vec<f32> {
 /// `n_fft / 2 + 1` non-negative power bins. Power is computed as
 /// `|X[k]|^2 + |X[N-k]|^2` (one-sided, folded) for k in
 /// `1..n_fft/2`, matching the eager whisper.cpp pipeline.
+// needless_range_loop here: the loop walks an offset sub-range (start != 0), not a
+// whole collection.
+#[allow(clippy::needless_range_loop)]
 pub fn stft(samples: &[f32], n_fft: usize, hop: usize) -> Vec<Vec<f32>> {
     let hann = hann_window(n_fft);
     let n_bins = n_fft / 2 + 1;

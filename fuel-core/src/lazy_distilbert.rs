@@ -549,6 +549,10 @@ mod tests {
     /// position embedding row corresponding to position 0
     /// alters the output at position 0.
     #[test]
+    // needless_range_loop here: the bound is a semantic count that need not equal the
+    // indexed buffer len, so a mechanical .iter()/.take() risks silently dropping
+    // iterations.
+    #[allow(clippy::needless_range_loop)]
     fn position_embedding_is_wired() {
         let cfg = tiny_cfg();
         let mut base = tiny_weights(&cfg);

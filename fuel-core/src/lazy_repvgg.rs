@@ -775,6 +775,10 @@ mod tests {
     /// var=1, eps=0` reduces the identity branch to a pure
     /// delta-kernel + zero-bias contribution. Verify the math.
     #[test]
+    // needless_range_loop here: the bound is a semantic count that need not equal the
+    // indexed buffer len, so a mechanical .iter()/.take() risks silently dropping
+    // iterations.
+    #[allow(clippy::needless_range_loop)]
     fn fuse_identity_bn_is_identity() {
         let c_out = 4;
         let c_in_per_group = 4;
@@ -815,6 +819,9 @@ mod tests {
     /// zero conv (each branch contributes only its bias-from-BN
     /// term, and with `beta=0, mean=0` that term is zero too).
     #[test]
+    // needless_range_loop here: the index is used as a value
+    // (assert/message/push/compare), not only to index.
+    #[allow(clippy::needless_range_loop)]
     fn fuse_full_block_zero_branches() {
         let c_in = 4;
         let c_out = 4;

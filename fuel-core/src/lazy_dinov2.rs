@@ -621,6 +621,9 @@ mod tests {
     /// Fused Wqkv slicing: zero the V columns of block 0's qkv
     /// (the last `embed_dim` cols) and the output must change.
     #[test]
+    // needless_range_loop here: the loop walks an offset sub-range (start != 0), not a
+    // whole collection.
+    #[allow(clippy::needless_range_loop)]
     fn fused_wqkv_slicing_layout() {
         let cfg = tiny_config();
         let h = cfg.embed_dim;

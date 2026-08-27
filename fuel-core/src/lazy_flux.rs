@@ -376,6 +376,9 @@ fn rope_axis(pos: &Tensor, dim: usize, theta: usize) -> Result<Tensor> {
 /// half-dim. Returns the joint RoPE freq tensor with a head-dim of size
 /// 1 unsqueezed at position 1 — shape
 /// `(B, 1, N, sum(axes_dim)/2, 2, 2)`.
+// needless_range_loop here: the index feeds computed stride/offset addressing into a
+// flat buffer (base = i*inner + j), which .iter() cannot express.
+#[allow(clippy::needless_range_loop)]
 fn embed_nd(ids: &Tensor, axes_dim: &[usize], theta: usize) -> Result<Tensor> {
     let dims = ids.shape().dims().to_vec();
     if dims.len() != 3 {

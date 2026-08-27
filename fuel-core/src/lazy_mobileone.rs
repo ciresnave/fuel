@@ -880,6 +880,9 @@ mod tests {
     /// (k=1, no SE) and verify the loader reproduces the same fused stem
     /// weight that hand-fusion would produce.
     #[test]
+    // needless_range_loop here: the loop walks an offset sub-range (start != 0), not a
+    // whole collection.
+    #[allow(clippy::needless_range_loop)]
     fn load_from_mmapped_round_trip_mobileone_s1_no_head() {
         use safetensors::tensor::TensorView;
         use std::collections::HashMap;

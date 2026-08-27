@@ -331,6 +331,9 @@ impl SeaNetDecoderModel {
 /// `Conv1d` that's `out_channels`; for `ConvTranspose1d` it's
 /// `in_channels`. Mirrors the eager port's
 /// `weight_v · weight_g / ||weight_v||` reparameterization.
+// needless_range_loop here: the index feeds computed stride/offset addressing into a
+// flat buffer (base = i*inner + j), which .iter() cannot express.
+#[allow(clippy::needless_range_loop)]
 fn fuse_weight_norm(
     weight_g: &[f32],
     weight_v: &[f32],

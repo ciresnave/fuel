@@ -94,6 +94,9 @@ impl MptConfig {
 /// entry is `-inf`. For `j <= i`, the entry is
 /// `slope[h] * (j - i)` (zero on the diagonal, more negative as `j`
 /// recedes).
+// needless_range_loop here: the index feeds computed stride/offset addressing into a
+// flat buffer (base = i*inner + j), which .iter() cannot express.
+#[allow(clippy::needless_range_loop)]
 pub fn build_alibi_causal_mask(seq: usize, slopes: &[f32]) -> Vec<f32> {
     let n_heads = slopes.len();
     let mut out = vec![0.0_f32; n_heads * seq * seq];

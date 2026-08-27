@@ -689,6 +689,11 @@ mod tests {
     }
 
     #[test]
+    // needless_range_loop here: the bound is a semantic count that need not equal the
+    // indexed buffer len, so a mechanical .iter()/.take() risks silently dropping
+    // iterations; the index feeds computed stride/offset addressing into a flat buffer
+    // (base = i*inner + j), which .iter() cannot express.
+    #[allow(clippy::needless_range_loop)]
     fn causal_mask_enforces_position() {
         // Run forward over a sequence; mutate the last token's input
         // and verify earlier-position outputs are unchanged.

@@ -217,6 +217,10 @@ impl DepthAnythingV2Model {
     /// Run the DPT head on 4 intermediate ViT features. Each
     /// `features[i]` is `[1, num_patches + 1, embed_dim]` — CLS
     /// at slot 0, patches at slots 1..=N.
+    // needless_range_loop here: the bound is a semantic count that need not equal the
+    // indexed buffer len, so a mechanical .iter()/.take() risks silently dropping
+    // iterations.
+    #[allow(clippy::needless_range_loop)]
     fn depth_head_forward(&self, anchor: &Tensor, features: &[Tensor]) -> Result<Tensor> {
         assert_eq!(features.len(), 4, "DPT head expects 4 feature levels");
         let cfg = &self.config;

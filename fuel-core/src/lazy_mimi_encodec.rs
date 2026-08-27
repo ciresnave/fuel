@@ -881,6 +881,10 @@ mod tests {
     }
 
     #[test]
+    // needless_range_loop here: the bound is a semantic count that need not equal the
+    // indexed buffer len, so a mechanical .iter()/.take() risks silently dropping
+    // iterations.
+    #[allow(clippy::needless_range_loop)]
     fn streaming_encode_equals_one_shot() {
         let n_q = 2;
         let resampler_stride = 2;

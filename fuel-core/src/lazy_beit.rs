@@ -765,6 +765,9 @@ mod tests {
     /// the patch-to-patch quadrant and the same patch pair gets
     /// the same bucket. CLS↔* pairs get the special buckets.
     #[test]
+    // needless_range_loop here: the loop walks an offset sub-range (start != 0), not a
+    // whole collection.
+    #[allow(clippy::needless_range_loop)]
     fn relative_position_index_structure() {
         let idx = build_relative_position_index(2);
         // 2×2 grid + 1 CLS = 5 tokens. NB = 5, idx is 25 entries.
