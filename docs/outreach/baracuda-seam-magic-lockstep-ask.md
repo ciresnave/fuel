@@ -65,7 +65,7 @@ but it keeps the two implementations bit-for-bit aligned with the [C reference i
 - KISS-ANNOUNCE §6.1-0004 (magic value) + §6.2-0011 (reserved hard-reject) — github.com/ThinkersJournal/KISS.
 - Fuel fix: commit `1849bc9a`, `fuel-kernel-seam-announce/src/lib.rs` (const + `reserved1` field + `SeamError::ReservedNonZero`), tests `seam_magic_wire_bytes_spell_seam` / `validate_rejects_nonzero_reserved`.
 - C reference struct + `#define`: [`docs/specs/kernel-seam-interop.md`](../specs/kernel-seam-interop.md) §3.1.
-- Context: [`docs/outreach/kiss-conformance-and-divergences.md`](kiss-conformance-and-divergences.md) §1.
+- Context: Fuel's own [`docs/outreach/kiss-conformance-and-divergences.md`](kiss-conformance-and-divergences.md) §1 — Fuel’s record, and §1 is its section numbering, not KISS’s.
 
 ## 5. Baracuda reply (inbound 2026-07-14) — DONE in lockstep
 
