@@ -49,6 +49,10 @@ use crate::kernel::{BindingEntry, MatmulM, OpParams};
 
 /// Repeat-call count per probe for the `bit_stable_on_same_hardware`
 /// check — `>= 16` per the task's floor.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 pub(crate) const ITERS: usize = 16;
 
 /// Which shape/`OpParams` recipe a given `FusedOpId` needs. One variant
@@ -58,6 +62,10 @@ pub(crate) const ITERS: usize = 16;
 /// through `OpParams`, so a probe only needs the RIGHT ELEMENT COUNTS +
 /// dtype bytes, not a real `Layout`).
 #[derive(Debug, Clone, Copy)]
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 enum Family {
     /// SoftmaxLastDim forward: 1 input, `OpParams::SoftmaxLastDim`.
     SoftmaxFwd,
@@ -85,6 +93,10 @@ enum Family {
 /// CPU registration: real inputs the kernel can run on without crashing,
 /// the `OpParams` it needs, and the output dtype/shape `CpuInvoker`
 /// should allocate.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 struct Probe {
     inputs: ProbeInputs,
     params: OpParams,
@@ -108,6 +120,10 @@ struct Probe {
 /// flipped to `audited: true` on 2026-07-03. `name` is a diagnostic tag
 /// only (the ledger's match key is `(kernel_revision_hash, backend,
 /// dtypes, claim)` — see `ledger::VerificationLedger::has_pass`).
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 const TARGETS: &[(FusedOpId, Family, &str)] = &[
     (
         FusedOps::SOFTMAX_LAST_DIM,
@@ -208,6 +224,10 @@ const TARGETS: &[(FusedOpId, Family, &str)] = &[
 /// orphaned 228 of 530 Vulkan records behind a green build. **Two encoders
 /// whose narrowness and whose breadth are each independently asserted is the
 /// correct shape; one shared encoder cannot satisfy both tests.**
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 pub(crate) fn to_bytes(dt: DType, vals: &[f32]) -> Option<Vec<u8>> {
     Some(match dt {
         DType::F32 => bytemuck::cast_slice(vals).to_vec(),
@@ -229,6 +249,10 @@ pub(crate) fn to_bytes(dt: DType, vals: &[f32]) -> Option<Vec<u8>> {
 
 /// Build a `HostTensor` for `dt` from logical float values. `None` if
 /// `dt` isn't an encodable float dtype (see [`to_bytes`]).
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 fn ht(dt: DType, shape: Vec<usize>, vals: &[f32]) -> Option<HostTensor> {
     Some(HostTensor {
         dtype: dt,
@@ -243,6 +267,10 @@ fn ht(dt: DType, shape: Vec<usize>, vals: &[f32]) -> Option<HostTensor> {
 /// probe (dtype-tuple shape didn't match what the family expects) — the
 /// caller records this as unverified and skips; it never becomes a
 /// fabricated ledger entry.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 fn build_probe(family: Family, dtypes: &[DType], seed: u64) -> Option<Probe> {
     match family {
         Family::SoftmaxFwd | Family::NormFwd => {
@@ -659,6 +687,10 @@ fn build_probe(family: Family, dtypes: &[DType], seed: u64) -> Option<Probe> {
 /// REAL hash the FKC importer threaded onto `imp.revision` — the SAME
 /// hash the (future) gate will look up, so a ledger entry keyed on it is
 /// exactly what the gate needs.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 fn to_binding_entry(imp: &BackendImpl) -> BindingEntry {
     BindingEntry {
         kernel: imp.kernel,
@@ -676,6 +708,10 @@ fn to_binding_entry(imp: &BackendImpl) -> BindingEntry {
 /// registration — kept even for skips/failures so the harness (and the
 /// report) can show exactly what did and didn't verify, never silently.
 #[derive(Debug)]
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 pub struct SeedAttempt {
     /// `String`, not `&'static str`: the primitive pass names its subject with
     /// `format!("{op:?}")` off a live `OpKind`, which has no static name.
@@ -697,6 +733,10 @@ pub struct SeedAttempt {
 /// errors OR panics (caught via `catch_unwind` so one bad probe recipe
 /// can't take down the whole harness) is recorded as unverified and
 /// contributes no ledger entry.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 pub fn run_cpu_verification() -> (Vec<LedgerRecord>, Vec<SeedAttempt>) {
     let registry = default_kernel_registry();
     let mut records = Vec::new();
@@ -802,6 +842,10 @@ pub fn run_cpu_verification() -> (Vec<LedgerRecord>, Vec<SeedAttempt>) {
 /// and appears in the log as unverified with its reason. The log is
 /// exhaustive: one entry per CPU `BindingEntry` examined, so pass + fail +
 /// unverified always reconciles against the table's own count.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 pub fn run_cpu_primitive_verification() -> (Vec<LedgerRecord>, Vec<SeedAttempt>) {
     use crate::fkc::verify::probe_recipes::{build_primitive_probe, probe_seed};
 
@@ -904,6 +948,10 @@ pub fn run_cpu_primitive_verification() -> (Vec<LedgerRecord>, Vec<SeedAttempt>)
 /// and appears in the log; so does a probe that errors. A `fail` is recorded
 /// as a fail — and a disagreement here is a FINDING about the kernel or about
 /// the reference, not a harness defect to be tuned away.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 pub fn run_cpu_max_ulp_verification() -> (Vec<LedgerRecord>, Vec<SeedAttempt>) {
     run_cpu_max_ulp_verification_inner(None)
 }
@@ -917,6 +965,10 @@ pub fn run_cpu_max_ulp_verification() -> (Vec<LedgerRecord>, Vec<SeedAttempt>) {
 /// delta held exactly. Poisoning one family and checking the failures are
 /// exactly that family's registrations is a control over a DIFFERENT
 /// construct, which is the only kind that catches this.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 pub(crate) fn run_cpu_max_ulp_verification_inner(
     #[allow(unused_variables)] poison_op: Option<fuel_ir::dispatch::OpKind>,
 ) -> (Vec<LedgerRecord>, Vec<SeedAttempt>) {
@@ -1025,6 +1077,10 @@ pub(crate) fn run_cpu_max_ulp_verification_inner(
 /// `epoch:<unix seconds>` — a fixed, dependency-free timestamp (no
 /// `chrono`, per house convention). Informational only (`LedgerRecord`
 /// doesn't match on it).
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 fn verified_at_string() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()

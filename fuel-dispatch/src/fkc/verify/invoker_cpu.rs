@@ -25,6 +25,10 @@ use crate::kernel::{BindingEntry, OpParams};
 /// knows these from the contract's declared return shape/dtype — Task 4.5
 /// doesn't infer them) plus whatever `OpParams` the op under test needs
 /// (`OpParams::None` for elementwise ops, the default).
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 pub struct CpuInvoker {
     out_dtype: DType,
     out_shape: Vec<usize>,
@@ -37,6 +41,10 @@ impl CpuInvoker {
     /// New invoker for an op whose output is `out_dtype`/`out_shape`,
     /// with no auxiliary op params (`OpParams::None` — elementwise unary/
     /// binary, shape-only ops, etc.).
+    #[allow(
+        dead_code,
+        reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+    )]
     pub fn new(out_dtype: DType, out_shape: Vec<usize>) -> Self {
         Self {
             out_dtype,
@@ -63,6 +71,10 @@ impl CpuInvoker {
     /// silently truncating, because a short seed would leave a zeroed tail
     /// and quietly reintroduce the same weak evidence over part of the
     /// buffer.
+    #[allow(
+        dead_code,
+        reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+    )]
     pub fn with_seeded_output(mut self, bytes: Vec<u8>) -> Self {
         self.out_seed = Some(bytes);
         self
@@ -70,6 +82,10 @@ impl CpuInvoker {
 
     /// Builder-style override for ops that need non-`None` `OpParams`
     /// (reductions, matmul, ...).
+    #[allow(
+        dead_code,
+        reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+    )]
     pub fn with_params(mut self, p: OpParams) -> Self {
         self.params = p;
         self

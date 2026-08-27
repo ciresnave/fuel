@@ -92,11 +92,19 @@ impl VerificationLedger {
     /// Build a ledger directly from records (e.g. for tests or programmatic
     /// construction, ahead of the invoker back ends that will append to the
     /// checked-in file).
+    #[allow(
+        dead_code,
+        reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+    )]
     pub fn from_records(records: Vec<LedgerRecord>) -> Self {
         Self { records }
     }
 
     /// The ledger's records, in file order.
+    #[allow(
+        dead_code,
+        reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+    )]
     pub fn records(&self) -> &[LedgerRecord] {
         &self.records
     }
@@ -107,6 +115,10 @@ impl VerificationLedger {
     /// a re-run of a seeding/acceptance harness UPDATES an op's entry in place
     /// rather than appending a duplicate (a verification ledger records the
     /// latest verdict per key, not a history of runs).
+    #[allow(
+        dead_code,
+        reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+    )]
     pub fn upsert(&mut self, r: LedgerRecord) {
         self.records.retain(|e| {
             !(e.backend == r.backend
@@ -118,11 +130,19 @@ impl VerificationLedger {
     }
 
     /// Number of records.
+    #[allow(
+        dead_code,
+        reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+    )]
     pub fn len(&self) -> usize {
         self.records.len()
     }
 
     /// True iff the ledger has no records.
+    #[allow(
+        dead_code,
+        reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+    )]
     pub fn is_empty(&self) -> bool {
         self.records.is_empty()
     }

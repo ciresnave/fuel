@@ -48,9 +48,17 @@ use crate::kernel::KernelBindingTable;
 
 /// Repeat-call count per probe for `bit_stable_on_same_hardware` (≥16 floor,
 /// same as the CPU/CUDA seeders).
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 const ITERS: usize = 16;
 
 /// The bit-stability claim every Vulkan contract declares.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 const CLAIM: &str = "bit_stable_on_same_hardware";
 
 /// Op kinds whose contract declares byte-exact `max_ulp: 0` — pure data
@@ -58,6 +66,10 @@ const CLAIM: &str = "bit_stable_on_same_hardware";
 /// arg-reduces (exact integer indices). These get a SECOND, byte-exact ledger
 /// entry (Vulkan output == CPU reference output). Arithmetic ops (elementwise,
 /// CumSum, Rope) leave `max_ulp: ~` and need only the bit-stable claim.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 const BYTE_EXACT_OPS: &[OpKind] = &[
     OpKind::Copy,
     OpKind::Flip,
@@ -80,6 +92,10 @@ const BYTE_EXACT_OPS: &[OpKind] = &[
 /// One attempt outcome, kept even for skips/failures so the report shows
 /// exactly what did and didn't verify.
 #[derive(Debug)]
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 pub struct VulkanSeedAttempt {
     pub op: String,
     pub dtypes: Vec<DType>,
@@ -88,6 +104,10 @@ pub struct VulkanSeedAttempt {
 }
 
 /// `epoch:<unix seconds>` — dependency-free timestamp (house convention).
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 fn verified_at_string() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
@@ -101,6 +121,10 @@ fn verified_at_string() -> String {
 /// probe recipe for, returning a ledger seeded from the EMBEDDED (checked-in)
 /// records plus freshly-earned Vulkan `bit_stable` + byte-exact `max_ulp`
 /// entries, together with a full attempt log. Requires a live Vulkan device.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 pub fn run_vulkan_verification(
     force: bool,
 ) -> std::result::Result<(VerificationLedger, Vec<VulkanSeedAttempt>), VerifyError> {
@@ -126,6 +150,10 @@ pub fn run_vulkan_verification(
 /// same keys, different hardware, no signal anywhere. Use this to COMPARE
 /// adapters; seed only from the one adapter the ledger's records are understood
 /// to describe.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 pub fn run_vulkan_verification_on(
     selection: fuel_vulkan_backend::DeviceSelection,
     force: bool,

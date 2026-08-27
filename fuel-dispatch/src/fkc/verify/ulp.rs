@@ -35,6 +35,10 @@ use fuel_ir::DType;
 /// wrongly *pass* a `MaxUlp` bound when the NaN and number keys happened to land
 /// close). Widened to `u64` at the boundary so the `Bound::MaxUlp(u32)` call
 /// sites are unchanged.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 pub(crate) fn ulp_distance(x: f32, y: f32) -> u64 {
     u64::from(kiss_ref_core::ulp_distance_f32(x, y))
 }
@@ -58,8 +62,16 @@ pub enum Bound {
     /// and reference bit patterns.
     MaxUlp(u32),
     /// Maximum allowed `|cand - ref| / |ref|` (reference-relative error).
+    #[allow(
+        dead_code,
+        reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+    )]
     MaxRelative(f64),
     /// Maximum allowed `|cand - ref|` (absolute error).
+    #[allow(
+        dead_code,
+        reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+    )]
     MaxAbsolute(f64),
 }
 
@@ -70,6 +82,10 @@ pub enum Bound {
 /// the signed key orders the whole format and `|k_a - k_b|` counts
 /// REPRESENTABLE STEPS — which is what a ULP is.
 #[derive(Debug, Clone, Copy)]
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 struct Elem {
     /// Total-order key in the dtype's own bit width. ULP space.
     key: i128,
@@ -95,6 +111,10 @@ struct Elem {
 ///
 /// NaN detection is the part that genuinely differs between the two formats
 /// (5-bit vs 8-bit exponent), and it is done per-format in `elem_at`.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 fn key16(bits: u16) -> i128 {
     if bits & 0x8000 != 0 {
         -i128::from(bits & 0x7FFF)
@@ -103,6 +123,10 @@ fn key16(bits: u16) -> i128 {
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 fn key32(bits: u32) -> i128 {
     if bits & 0x8000_0000 != 0 {
         -i128::from(bits & 0x7FFF_FFFF)
@@ -111,6 +135,10 @@ fn key32(bits: u32) -> i128 {
     }
 }
 
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 fn key64(bits: u64) -> i128 {
     if bits & 0x8000_0000_0000_0000 != 0 {
         -i128::from(bits & 0x7FFF_FFFF_FFFF_FFFF)
@@ -123,6 +151,10 @@ fn key64(bits: u64) -> i128 {
 /// the dtype: ULP is a floating-point concept with no meaning for an integer,
 /// where the only sensible bound is bit-exactness.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 enum CompareMode {
     /// Count representable steps in the dtype's own space.
     UlpFloat,
@@ -141,6 +173,10 @@ enum CompareMode {
 /// **Refusing is the point.** The previous version reinterpreted every output
 /// as `f32` and compared whatever fell out; an unhandled dtype must produce a
 /// stated refusal, never a verdict about the wrong bytes.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 fn compare_mode(dt: DType) -> Option<(CompareMode, usize)> {
     Some(match dt {
         // E4M3FN: sign in bit 7, monotone magnitude in bits 6-0 — the same
@@ -164,6 +200,10 @@ fn compare_mode(dt: DType) -> Option<(CompareMode, usize)> {
 }
 
 /// Decode one element at index `i`, in its own dtype.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 fn elem_at(dt: DType, bytes: &[u8], i: usize, width: usize) -> Option<Elem> {
     let b = bytes.get(i * width..(i + 1) * width)?;
     Some(match dt {
@@ -292,6 +332,10 @@ fn elem_at(dt: DType, bytes: &[u8], i: usize, width: usize) -> Option<Elem> {
 ///
 /// Never panics: every decode is bounds-checked, and a short, mismatched or
 /// misaligned buffer is reported as a `Fail`.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 pub fn verify_precision_bound(
     cand: &dyn KernelInvoker,
     refr: &dyn KernelInvoker,
@@ -420,6 +464,10 @@ pub fn verify_precision_bound(
 /// `Exp`/`Log`/`Sin`/`Cos`/`Tanh`/`Sigmoid`/`Silu`/`Gelu`/`GeluErf`/`Erf`/
 /// `Rsqrt` are. Mirrors `cost.rs`'s `cost_elementwise_unary_transcendental_cpu`
 /// classification so the two never drift.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 pub(crate) fn is_transcendental(tag: OpTag) -> bool {
     use OpTag::*;
     matches!(
@@ -432,6 +480,10 @@ pub(crate) fn is_transcendental(tag: OpTag) -> bool {
 /// transcendental-containing region gets the widened comparison band on the
 /// live kiss-ref / CPU-oracle path (see [`widen_bound_for_transcendental`]).
 /// `Bind`/`Any` are leaves (no op); `SeeThrough` recurses.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 pub fn region_contains_transcendental(region: &PatternNode) -> bool {
     match region {
         PatternNode::Op { op, operands, .. } => {
@@ -451,6 +503,10 @@ pub fn region_contains_transcendental(region: &PatternNode) -> bool {
 /// Tight transcendental verification defers to the frozen wide-precision
 /// corpus, not to this live path (KISS, 2026-07-18). `MaxUlp` saturates so a
 /// huge declared ceiling can never overflow (never-panic).
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 pub fn widen_bound_for_transcendental(bound: Bound) -> Bound {
     match bound {
         Bound::MaxUlp(m) => Bound::MaxUlp(m.saturating_mul(2)),

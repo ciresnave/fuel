@@ -39,6 +39,10 @@ use crate::kernel::{BindingEntry, OpParams};
 /// survive `f64`, so an integer path that went through `f64` would silently
 /// lose exactly the elements a bit-exactness claim is about.
 #[derive(Debug, Clone, Copy)]
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 enum Scalar {
     F(f64),
     I(i128),
@@ -64,6 +68,10 @@ enum Scalar {
 /// byte plumbing around it. That is a weaker claim than for the ops Fuel
 /// implements itself — and it is still worth having, because a disagreement
 /// would mean one of the two readings of the format is wrong.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 pub(super) fn f8e4m3_decode(bits: u8) -> f64 {
     let sign = if bits & 0x80 != 0 { -1.0 } else { 1.0 };
     let exp = ((bits >> 3) & 0x0F) as i32;
@@ -88,6 +96,10 @@ pub(super) fn f8e4m3_decode(bits: u8) -> f64 {
 /// bugs that a hand-rolled shift-and-round is prone to — which matters
 /// especially for a reference, where a subtle bug produces a confident wrong
 /// verdict about someone else's kernel.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 fn f8e4m3_encode(v: f64) -> u8 {
     if v.is_nan() {
         return 0x7F;
@@ -141,6 +153,10 @@ fn f8e4m3_encode(v: f64) -> u8 {
     best.map(|(_, b)| b).unwrap_or(0)
 }
 
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 fn width_of(dt: DType) -> Option<usize> {
     Some(match dt {
         DType::F8E4M3 => 1,
@@ -152,6 +168,10 @@ fn width_of(dt: DType) -> Option<usize> {
     })
 }
 
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 fn decode(dt: DType, b: &[u8]) -> Option<Scalar> {
     Some(match dt {
         DType::F8E4M3 => Scalar::F(f8e4m3_decode(b[0])),
@@ -200,6 +220,10 @@ fn decode(dt: DType, b: &[u8]) -> Option<Scalar> {
 ///
 /// Degenerate probes hid this completely: zero is in range for every target,
 /// so saturation and truncation agree on it.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 fn encode(dt: DType, s: Scalar) -> Option<Vec<u8>> {
     let as_f = |s: Scalar| match s {
         Scalar::F(v) => v,
@@ -309,6 +333,10 @@ fn encode(dt: DType, s: Scalar) -> Option<Vec<u8>> {
 /// [`super::ulp::verify_precision_bound`] as the reference side — the same
 /// seam a device invoker uses, which is what keeps "candidate vs reference"
 /// one comparison rather than two code paths.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 pub(crate) struct ExactRefInvoker {
     pub(crate) op: OpKind,
     pub(crate) out_dtype: DType,
@@ -336,6 +364,10 @@ pub(crate) struct ExactRefInvoker {
 /// width for F8E4M3` — a REFUSAL wearing an ERROR's label. They are the same
 /// outcome for the ledger (no record either way) and NOT the same thing for a
 /// reader: an error invites debugging, a refusal is a stated limit.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 pub(crate) fn has_exact_reference(op: OpKind, dtypes: &[DType]) -> bool {
     if !dtypes.iter().all(|d| width_of(*d).is_some()) {
         return false;

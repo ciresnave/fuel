@@ -48,6 +48,10 @@ use fuel_graph::registry::Reduction;
 /// Deliberately NOT shared with `seed_cpu_ledger::to_bytes`, which is the
 /// narrower JIT-ingest encoder whose narrowness is itself load-bearing and
 /// asserted by a test — see the note there.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 fn to_bytes(dt: DType, vals: &[f32]) -> Option<Vec<u8>> {
     Some(match dt {
         DType::F32 => bytemuck::cast_slice(vals).to_vec(),
@@ -158,6 +162,10 @@ fn to_bytes(dt: DType, vals: &[f32]) -> Option<Vec<u8>> {
     })
 }
 
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 pub(crate) fn ht(dt: DType, shape: Vec<usize>, vals: &[f32]) -> Option<HostTensor> {
     Some(HostTensor {
         dtype: dt,
@@ -183,6 +191,10 @@ pub(crate) fn ht(dt: DType, shape: Vec<usize>, vals: &[f32]) -> Option<HostTenso
 /// the new module's scope. That check is required after `23785514`, where a
 /// "pure move" silently rebound `to_bytes` to a same-signature encoder with a
 /// smaller domain.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 pub(crate) fn probe_seed(op: OpKind, dtypes: &[DType]) -> u64 {
     0x2545_F491_4F6C_DD1D_u64
         ^ (op as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
@@ -190,6 +202,10 @@ pub(crate) fn probe_seed(op: OpKind, dtypes: &[DType]) -> u64 {
 }
 
 /// A synthesized, safe, valid probe for one `(OpKind, dtypes)` registration.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 pub(crate) struct Probe {
     pub(crate) inputs: ProbeInputs,
     pub(crate) params: OpParams,
@@ -216,6 +232,10 @@ pub(crate) struct Probe {
 /// Build a real, valid probe for a primitive `op` at the registered
 /// `dtypes`. `None` ⇒ no recipe for that op/dtype yet (logged + skipped, never
 /// a fabricated entry).
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> Option<Probe> {
     let dt = *dtypes.first()?;
 
@@ -1501,6 +1521,10 @@ pub(crate) fn build_primitive_probe(op: OpKind, dtypes: &[DType], seed: u64) -> 
 /// verified against all zeros — byte-identical across repeats, and evidence
 /// of nothing (GAP-222). `to_bytes` returning `None` for a dtype propagates
 /// as "no probe", never as an unseeded one.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 fn inplace_probe(dt: DType, params: OpParams, seed: u64) -> Option<Probe> {
     Some(Probe {
         inputs: vec![],
@@ -1517,6 +1541,10 @@ fn inplace_probe(dt: DType, params: OpParams, seed: u64) -> Option<Probe> {
 /// and an inline `match` in each would be a second place to forget a variant.
 /// Returns `None` for anything outside the family — a caller that reaches here
 /// with another op gets no probe rather than a wrong one.
+#[allow(
+    dead_code,
+    reason = "GAP-236 (unpublished verify API): fkc::verify's modules are private, so nothing outside this crate can reach it. Does NOT retire itself -- the expiry lives in GAP-236 and in Unpopped's handback precondition guard, which fires on their side when the API is named."
+)]
 fn last_dim_params(op: OpKind, outer: usize, last: usize) -> Option<OpParams> {
     Some(match op {
         OpKind::SoftmaxLastDim | OpKind::SoftmaxLastDimBackward => OpParams::SoftmaxLastDim {
