@@ -422,4 +422,23 @@ jobs:
       # clippy compiles what it lints, and would die on `objc2` exactly as
       # `cargo check` does.
       - run: cargo clippy --workspace --tests --examples --benches ${{ env.WORKSPACE_EXCLUDES }} -- -D warnings
+      # GAP-242: the workspace leg above enables `fuel-dispatch/vulkan` through
+      # feature unification, so it never lints the crate at DEFAULT features --
+      # the configuration a developer gets from the natural
+      # `cargo clippy -p fuel-dispatch`. That gap hid 110 warnings from every
+      # CI job while the terminal showed them, and it regenerates every time
+      # someone runs the obvious command.
+      #
+      # Scoped to `-p fuel-dispatch` rather than the workspace: this leg exists
+      # to close a divergence measured in THIS crate, and a workspace-wide
+      # default-features run is a different, larger claim nobody has measured.
+      #
+      # `--no-deps` is load-bearing, not tidiness: `-p <crate>` LINTS PATH
+      # DEPENDENCIES TOO, so without it `-D warnings` promotes a dependency's
+      # warnings into this leg's failure. Measured while writing this step --
+      # the first version died on `fuel-hardware` (lib), a crate this leg makes
+      # no claim about. A gate that fails for something outside its own scope
+      # reports the wrong subject.
+      - name: Clippy (fuel-dispatch, DEFAULT features - GAP-242)
+        run: cargo clippy -p fuel-dispatch --no-deps --all-targets -- -D warnings
  
