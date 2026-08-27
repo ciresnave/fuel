@@ -509,9 +509,11 @@ mod tests {
     fn aocl_matmul_matches_scalar_when_available() {
         use fuel_memory::{BackendStorage, Storage};
 
-        if crate::probe_aocl_loadable().is_err() {
-            eprintln!("AOCL not available, skipping");
-            return;
+        if let Err(e) = crate::probe_aocl_loadable() {
+            return fuel_test_support::hardware::skip(
+                fuel_test_support::hardware::Hardware::Aocl,
+                fuel_test_support::hardware::Missing::device(format!("probe_aocl_loadable: {e:?}")),
+            );
         }
 
         let mut table = KernelBindingTable::new();
@@ -552,6 +554,7 @@ mod tests {
             m: 3,
             n: 5,
             k: 4,
+            m_compute: fuel_dispatch::kernel::MatmulM::All,
         };
 
         let mut outputs: Vec<Vec<f32>> = Vec::with_capacity(alternatives.len());
@@ -591,9 +594,11 @@ mod tests {
     fn aocl_conv2d_matches_scalar_when_available() {
         use fuel_memory::{BackendStorage, Storage};
 
-        if crate::probe_aocl_loadable().is_err() {
-            eprintln!("AOCL not available, skipping");
-            return;
+        if let Err(e) = crate::probe_aocl_loadable() {
+            return fuel_test_support::hardware::skip(
+                fuel_test_support::hardware::Hardware::Aocl,
+                fuel_test_support::hardware::Missing::device(format!("probe_aocl_loadable: {e:?}")),
+            );
         }
 
         let mut table = KernelBindingTable::new();

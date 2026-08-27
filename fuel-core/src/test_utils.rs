@@ -63,10 +63,36 @@ pub fn assert_cuda_matches_reference(t: &crate::lazy::Tensor, atol: f32, rtol: f
         .devices
         .iter()
         .any(|d| d.backend == fuel_ir::probe::BackendId::Cuda);
-    if !has_cuda {
-        eprintln!("assert_cuda_matches_reference: no CUDA device, skipping");
-        return;
-    }
+    // GAP-243. NO SKIP PATH, BY DESIGN — and the reason is the same axis the
+    // per-family defaults in `fuel_test_support::hardware` are built on.
+    //
+    // That module makes CUDA absence fatal by default because every CUDA call
+    // site is an `#[ignore]`d test, so running one requires an explicit
+    // `-- --ignored`, and *that* is the declaration. This function has no
+    // `#[ignore]` to key on — but it does not need one: **naming it and passing
+    // it tensors IS the declaration**, and a stronger one than `--ignored`,
+    // which is a blanket flag that sweeps in tests nobody thought about. Nobody
+    // calls `assert_cuda_matches_reference` by accident.
+    //
+    // ⚠️ It CANNOT use `fuel_test_support::hardware::skip`, and a future reader
+    // will otherwise try to wire it up: `fuel-test-support` is a
+    // **dev-dependency**, while this is ordinary library code (`pub mod
+    // test_utils`, ungated). The mechanism is simply not in scope here, and
+    // bringing it into scope would mean promoting a test-only crate into the
+    // production dependency graph.
+    //
+    // Until 2026-08-27 this returned silently, so a caller asking for an
+    // assertion got a green having asserted nothing — with zero callers it was
+    // latent, which is the only reason it never lied to anyone.
+    assert!(
+        has_cuda,
+        "assert_cuda_matches_reference REQUIRES a live CUDA device and the probe \
+         found none.\n\n\
+         This helper has no skip path by design: a caller that invokes it has \
+         declared the requirement, so returning early would report success \
+         having compared nothing. If you want to tolerate a missing device, take \
+         that decision at the CALL SITE and do not call this."
+    );
     let reference = t.realize_f32_reference();
     let dev = fuel_cuda_backend::CudaDevice::new(0)
         .expect("cuda device 0 available since probe found one");
