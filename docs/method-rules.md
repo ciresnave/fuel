@@ -1257,3 +1257,46 @@ this one               gate INSIDE the chain, but its
 verdict that nothing acts on — and has a different cause and a different fix.**
 There, an assertion fired and the shell continued. Here, nothing fired at all.
 **Grouping them under "put the gate in the chain" would fix neither.**
+
+## a-new-lens-does-not-re-audit-old-findings
+
+**Discovering a defect class does not retroactively re-audit the findings you
+already made. A claim formed BEFORE the lens exists never meets the lens unless
+you deliberately re-run it — and the claims most likely to have escaped are your
+earliest and most confident ones.**
+
+**Worked example, 2026-08-27, the doc-vs-code audit.** A lane auditing 15
+architecture documents found, in its **second** pass, a defect class it had not
+been given: **a satisfied non-goal** — an absence that CONFIRMS the constitution,
+which a *named-but-missing* grep reports as a violation.
+
+**They wrote the class down, swept it FORWARD over the remaining documents, and
+never swept it BACKWARD over the four they had already done.** Their flagship
+finding — reported to the architect as the audit's strongest result, and filed by
+the architect as a roadmap headline — **was an instance of exactly that class.**
+The document declared the surface unbuilt, **in bold, twice**, named its
+prerequisites, and pointed at a sequencing plan.
+
+**Two failures compounded, and they are separable:**
+
+- **Forward-only sweep.** The lens was applied from the moment of discovery
+  onward. **Nothing connects a new class to old conclusions except a deliberate
+  re-run**, and the earlier work is where the confident claims live.
+- **Filing ahead of the evidence.** The architect made it a headline and
+  requested the supporting passages *afterwards*. **The passages requested were
+  the passages that refuted it.** One message, in the other order, would have
+  prevented it.
+
+**PRACTICE:**
+
+- **When you discover a defect class mid-task, re-run it over everything you have
+  already concluded, and say that you did.** "Swept forward" and "swept" are
+  different claims.
+- **Re-check the FLAGSHIP finding first.** It was formed earliest, with the least
+  calibration, and it is the one already in flight to someone else.
+- **Never file a claim whose supporting passage you have not read.** A relayed
+  reading is a claim about a passage, not the passage.
+
+**Related: [`a-defence-can-outlive-its-defect`](#a-defence-can-outlive-its-defect)
+— there a remedy survives its cause; here a CONCLUSION survives the arrival of the
+thing that would have refuted it.**
