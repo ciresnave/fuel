@@ -47,6 +47,7 @@
 use crate::lazy::{LlamaConfig, LlamaModel, LlamaWeights, Tensor};
 use crate::{Error, Result};
 use fuel_ir::Shape;
+use serde::Deserialize;
 use std::f64::consts::PI;
 use std::sync::Arc;
 
@@ -127,67 +128,125 @@ pub struct LlamaFullConfig {
     pub tie_word_embeddings: bool,
 }
 
+fn default_rms_norm_eps() -> f64 {
+    1e-5
+}
+fn default_rope_theta() -> f64 {
+    10_000.0
+}
+fn default_max_position_embeddings() -> usize {
+    4096
+}
+
+/// HF's `eos_token_id` is either a single integer or a list, and anything
+/// else is treated as absent rather than as an error.
+///
+/// Kept as a hand parse rather than `#[serde(untagged)]` because the two are
+/// not equivalent: `untagged` REJECTS a third shape, and this accepts it as
+/// `None`. Preserving that tolerance is the point — the differential compares
+/// against the parser that shipped, not against a stricter one.
+fn parse_eos_token_id(v: &serde_json::Value) -> Option<LlamaEosToks> {
+    if let Some(n) = v.as_u64() {
+        Some(LlamaEosToks::Single(n as u32))
+    } else if let Some(arr) = v.as_array() {
+        let vec: Option<Vec<u32>> = arr.iter().map(|e| e.as_u64().map(|n| n as u32)).collect();
+        vec.map(LlamaEosToks::Multiple)
+    } else {
+        None
+    }
+}
+
+/// A Llama `config.json` as HuggingFace ships it.
+///
+/// ⚠️ TWO FIELDS ARE HELD AS RAW `serde_json::Value` ON PURPOSE, and this is
+/// the first config in the set that needs it. `eos_token_id` and
+/// `rope_scaling` are parsed by functions that are DELIBERATELY TOLERANT:
+/// `parse_llama3_rope_scaling` returns `None` if any field is missing,
+/// accepts `rope_type` OR `type` as the key, and falls back to
+/// `Llama3RopeType::Default` on an unrecognised value. Every one of those is
+/// a hard error under `#[derive(Deserialize)]`.
+///
+/// Making them typed here would be a behaviour change wearing a refactor's
+/// clothes: configs that parse today would start failing. `serde` handles the
+/// flat fields; the tolerant shapes stay with the code that was written to be
+/// tolerant.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct LlamaFullConfigRaw {
+    hidden_size: usize,
+    intermediate_size: usize,
+    vocab_size: usize,
+    num_hidden_layers: usize,
+    num_attention_heads: usize,
+    #[serde(default)]
+    num_key_value_heads: Option<usize>,
+    #[serde(default)]
+    head_dim: Option<usize>,
+    #[serde(default = "default_rms_norm_eps")]
+    rms_norm_eps: f64,
+    #[serde(default = "default_rope_theta")]
+    rope_theta: f64,
+    #[serde(default = "default_max_position_embeddings")]
+    max_position_embeddings: usize,
+    #[serde(default)]
+    bos_token_id: Option<u32>,
+    #[serde(default)]
+    eos_token_id: Option<serde_json::Value>,
+    #[serde(default)]
+    rope_scaling: Option<serde_json::Value>,
+    #[serde(default)]
+    tie_word_embeddings: bool,
+}
+
+impl LlamaFullConfigRaw {
+    fn from_json_str(json: &str) -> Result<Self> {
+        serde_json::from_str(json).map_err(|e| {
+            Error::Msg(format!(
+                "LlamaFullConfig::from_hf_json_str: parsing config.json: {e}"
+            ))
+        })
+    }
+
+    fn resolve(self) -> Result<LlamaFullConfig> {
+        Ok(LlamaFullConfig {
+            hidden_size: self.hidden_size,
+            intermediate_size: self.intermediate_size,
+            vocab_size: self.vocab_size,
+            num_hidden_layers: self.num_hidden_layers,
+            num_attention_heads: self.num_attention_heads,
+            num_key_value_heads: crate::hf_config::num_key_value_heads(
+                self.num_key_value_heads,
+                self.num_attention_heads,
+            ),
+            head_dim: crate::hf_config::head_dim(
+                self.head_dim,
+                self.hidden_size,
+                self.num_attention_heads,
+            ),
+            rms_norm_eps: self.rms_norm_eps,
+            rope_theta: self.rope_theta,
+            max_position_embeddings: self.max_position_embeddings,
+            bos_token_id: self.bos_token_id,
+            eos_token_id: self.eos_token_id.as_ref().and_then(parse_eos_token_id),
+            rope_scaling: self
+                .rope_scaling
+                .as_ref()
+                .and_then(parse_llama3_rope_scaling),
+            tie_word_embeddings: self.tie_word_embeddings,
+        })
+    }
+}
+
 impl LlamaFullConfig {
     /// Parse HF `config.json` text. Missing optional fields fall back
     /// to LLaMA's documented defaults (`rope_theta=10000.0`,
     /// `rms_norm_eps=1e-5`, `tie_word_embeddings=false`, no scaling).
+    /// Parse a HuggingFace `config.json` into a [`LlamaFullConfig`].
+    ///
+    /// [`LlamaFullConfigRaw`] is the wire shape; [`LlamaFullConfigRaw::resolve`]
+    /// applies the two cross-field defaults and the two TOLERANT sub-object
+    /// parses that `serde` deliberately is not asked to perform.
     pub fn from_hf_json_str(json: &str) -> Result<Self> {
-        let v: serde_json::Value = serde_json::from_str(json).map_err(|e| {
-            Error::Msg(format!(
-                "LlamaFullConfig::from_hf_json_str: parsing config.json: {e}"
-            ))
-        })?;
-
-        let get_usize = |key: &str| -> Result<usize> {
-            v.get(key)
-                .and_then(|x| x.as_u64())
-                .map(|x| x as usize)
-                .ok_or_else(|| Error::Msg(format!("config.json: missing/invalid field {key:?}")))
-        };
-        let opt_usize = |key: &str| -> Option<usize> {
-            v.get(key).and_then(|x| x.as_u64()).map(|x| x as usize)
-        };
-        let opt_u32 =
-            |key: &str| -> Option<u32> { v.get(key).and_then(|x| x.as_u64()).map(|x| x as u32) };
-        let opt_f64 = |key: &str| -> Option<f64> { v.get(key).and_then(|x| x.as_f64()) };
-        let opt_bool = |key: &str| -> Option<bool> { v.get(key).and_then(|x| x.as_bool()) };
-
-        let hidden_size = get_usize("hidden_size")?;
-        let num_attention_heads = get_usize("num_attention_heads")?;
-        let num_key_value_heads = opt_usize("num_key_value_heads").unwrap_or(num_attention_heads);
-        let head_dim = opt_usize("head_dim").unwrap_or(hidden_size / num_attention_heads);
-
-        // eos_token_id is either a u64 or an array of u64.
-        let eos_token_id = v.get("eos_token_id").and_then(|x| {
-            if let Some(n) = x.as_u64() {
-                Some(LlamaEosToks::Single(n as u32))
-            } else if let Some(arr) = x.as_array() {
-                let vec: Option<Vec<u32>> =
-                    arr.iter().map(|e| e.as_u64().map(|n| n as u32)).collect();
-                vec.map(LlamaEosToks::Multiple)
-            } else {
-                None
-            }
-        });
-
-        let rope_scaling = v.get("rope_scaling").and_then(parse_llama3_rope_scaling);
-
-        Ok(Self {
-            hidden_size,
-            intermediate_size: get_usize("intermediate_size")?,
-            vocab_size: get_usize("vocab_size")?,
-            num_hidden_layers: get_usize("num_hidden_layers")?,
-            num_attention_heads,
-            num_key_value_heads,
-            head_dim,
-            rms_norm_eps: opt_f64("rms_norm_eps").unwrap_or(1e-5),
-            rope_theta: opt_f64("rope_theta").unwrap_or(10_000.0),
-            max_position_embeddings: opt_usize("max_position_embeddings").unwrap_or(4096),
-            bos_token_id: opt_u32("bos_token_id"),
-            eos_token_id,
-            rope_scaling,
-            tie_word_embeddings: opt_bool("tie_word_embeddings").unwrap_or(false),
-        })
+        LlamaFullConfigRaw::from_json_str(json)?.resolve()
     }
 
     /// Convert to the lower-level [`LlamaConfig`] consumed by the model
@@ -518,6 +577,70 @@ pub fn build_llama3_model(cfg: &LlamaFullConfig, weights: LlamaWeights) -> Llama
 }
 
 #[cfg(test)]
+impl LlamaFullConfig {
+    /// The hand-rolled parser this type used before the `serde` split, kept
+    /// verbatim and test-only as the differential's oracle.
+    pub(crate) fn from_hf_json_str_legacy(json: &str) -> Result<Self> {
+        let v: serde_json::Value = serde_json::from_str(json).map_err(|e| {
+            Error::Msg(format!(
+                "LlamaFullConfig::from_hf_json_str: parsing config.json: {e}"
+            ))
+        })?;
+
+        let get_usize = |key: &str| -> Result<usize> {
+            v.get(key)
+                .and_then(|x| x.as_u64())
+                .map(|x| x as usize)
+                .ok_or_else(|| Error::Msg(format!("config.json: missing/invalid field {key:?}")))
+        };
+        let opt_usize = |key: &str| -> Option<usize> {
+            v.get(key).and_then(|x| x.as_u64()).map(|x| x as usize)
+        };
+        let opt_u32 =
+            |key: &str| -> Option<u32> { v.get(key).and_then(|x| x.as_u64()).map(|x| x as u32) };
+        let opt_f64 = |key: &str| -> Option<f64> { v.get(key).and_then(|x| x.as_f64()) };
+        let opt_bool = |key: &str| -> Option<bool> { v.get(key).and_then(|x| x.as_bool()) };
+
+        let hidden_size = get_usize("hidden_size")?;
+        let num_attention_heads = get_usize("num_attention_heads")?;
+        let num_key_value_heads = opt_usize("num_key_value_heads").unwrap_or(num_attention_heads);
+        let head_dim = opt_usize("head_dim").unwrap_or(hidden_size / num_attention_heads);
+
+        // eos_token_id is either a u64 or an array of u64.
+        let eos_token_id = v.get("eos_token_id").and_then(|x| {
+            if let Some(n) = x.as_u64() {
+                Some(LlamaEosToks::Single(n as u32))
+            } else if let Some(arr) = x.as_array() {
+                let vec: Option<Vec<u32>> =
+                    arr.iter().map(|e| e.as_u64().map(|n| n as u32)).collect();
+                vec.map(LlamaEosToks::Multiple)
+            } else {
+                None
+            }
+        });
+
+        let rope_scaling = v.get("rope_scaling").and_then(parse_llama3_rope_scaling);
+
+        Ok(Self {
+            hidden_size,
+            intermediate_size: get_usize("intermediate_size")?,
+            vocab_size: get_usize("vocab_size")?,
+            num_hidden_layers: get_usize("num_hidden_layers")?,
+            num_attention_heads,
+            num_key_value_heads,
+            head_dim,
+            rms_norm_eps: opt_f64("rms_norm_eps").unwrap_or(1e-5),
+            rope_theta: opt_f64("rope_theta").unwrap_or(10_000.0),
+            max_position_embeddings: opt_usize("max_position_embeddings").unwrap_or(4096),
+            bos_token_id: opt_u32("bos_token_id"),
+            eos_token_id,
+            rope_scaling,
+            tie_word_embeddings: opt_bool("tie_word_embeddings").unwrap_or(false),
+        })
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::lazy::{LayerWeights, WeightStorage};
@@ -696,6 +819,127 @@ mod tests {
     }
 
     /// Round-trip a realistic LLaMA-3.1-8B `config.json` fragment.
+    /// Every `config.json` fixture this module exercises, as ONE corpus.
+    ///
+    /// **Corpus: 5 fixtures — 2 pre-existing, 3 added.** Per-rule coverage,
+    /// stated because it travels neither between configs nor between rules:
+    ///
+    /// | rule / behaviour        | discriminated by a PRE-EXISTING fixture?          |
+    /// |-------------------------|--------------------------------------------------|
+    /// | `num_key_value_heads`   | YES — llama3.1-8b ships 8 against 32 heads        |
+    /// | `head_dim`              | NO — llama3.1-8b ships 128 against a quotient of 4096/32 = 128, so the axis is COLLAPSED, and llama2 omits it entirely. Fixture 3 added. |
+    /// | `eos_token_id` scalar   | YES — llama2 ships `2`                            |
+    /// | `eos_token_id` array    | YES — llama3.1-8b ships `[128001, 128008, 128009]`|
+    /// | rope_scaling TOLERANCE  | NO — nothing exercised a malformed or alternately-keyed block. Fixtures 4 and 5 added. |
+    ///
+    /// A COLLAPSED axis is the dangerous one: the fixture exercises the rule
+    /// and cannot tell a correct implementation from one that ignores it,
+    /// because the two answers coincide.
+    const DIFFERENTIAL_CORPUS: &[(&str, &str)] = &[
+        (
+            "llama3.1-8b (kv_heads 8 != 32 discriminates; head_dim 128 == 4096/32 does NOT)",
+            r#"{
+                "architectures": ["LlamaForCausalLM"], "bos_token_id": 128000,
+                "eos_token_id": [128001, 128008, 128009],
+                "hidden_size": 4096, "intermediate_size": 14336,
+                "num_attention_heads": 32, "num_hidden_layers": 32,
+                "num_key_value_heads": 8, "head_dim": 128, "vocab_size": 128256,
+                "max_position_embeddings": 131072, "rms_norm_eps": 1.0e-5,
+                "rope_theta": 500000.0, "tie_word_embeddings": false,
+                "rope_scaling": {
+                    "factor": 8.0, "low_freq_factor": 1.0, "high_freq_factor": 4.0,
+                    "original_max_position_embeddings": 8192, "rope_type": "llama3"
+                }
+            }"#,
+        ),
+        (
+            "llama2 (no GQA, no head_dim, no rope_scaling, scalar eos)",
+            r#"{
+                "architectures": ["LlamaForCausalLM"], "bos_token_id": 1,
+                "eos_token_id": 2, "hidden_size": 4096, "intermediate_size": 11008,
+                "num_attention_heads": 32, "num_hidden_layers": 32, "vocab_size": 32000,
+                "max_position_embeddings": 4096, "rms_norm_eps": 1.0e-6,
+                "tie_word_embeddings": false
+            }"#,
+        ),
+        (
+            "ADDED: explicit head_dim DISAGREEING with hidden_size/num_attention_heads",
+            r#"{
+                "hidden_size": 4096, "intermediate_size": 11008,
+                "num_attention_heads": 32, "num_hidden_layers": 32,
+                "vocab_size": 32000, "head_dim": 96
+            }"#,
+        ),
+        (
+            "ADDED: rope_scaling MISSING a field - must yield None, not an error",
+            r#"{
+                "hidden_size": 4096, "intermediate_size": 11008,
+                "num_attention_heads": 32, "num_hidden_layers": 32, "vocab_size": 32000,
+                "rope_scaling": { "factor": 8.0, "rope_type": "llama3" }
+            }"#,
+        ),
+        (
+            "ADDED: rope_scaling keyed `type` instead of `rope_type` (HF ships both)",
+            r#"{
+                "hidden_size": 4096, "intermediate_size": 11008,
+                "num_attention_heads": 32, "num_hidden_layers": 32, "vocab_size": 32000,
+                "rope_scaling": {
+                    "factor": 8.0, "low_freq_factor": 1.0, "high_freq_factor": 4.0,
+                    "original_max_position_embeddings": 8192, "type": "llama3"
+                }
+            }"#,
+        ),
+    ];
+
+    #[test]
+    fn serde_path_agrees_with_the_legacy_parser_on_every_fixture() {
+        assert_eq!(DIFFERENTIAL_CORPUS.len(), 5, "corpus shrank");
+        for (name, json) in DIFFERENTIAL_CORPUS {
+            let new = LlamaFullConfig::from_hf_json_str(json);
+            let old = LlamaFullConfig::from_hf_json_str_legacy(json);
+            match (new, old) {
+                (Ok(a), Ok(b)) => assert_eq!(a, b, "differential mismatch on {name}"),
+                (Err(_), Err(_)) => {}
+                (Ok(_), Err(e)) => panic!("{name}: serde accepted, legacy rejected: {e}"),
+                (Err(e), Ok(_)) => panic!("{name}: serde rejected, legacy accepted: {e}"),
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_head_dim_survives_both_paths() {
+        let json = DIFFERENTIAL_CORPUS[2].1;
+        let cfg = LlamaFullConfig::from_hf_json_str(json).unwrap();
+        assert_eq!(
+            cfg.head_dim, 96,
+            "explicit head_dim must not be overwritten"
+        );
+        assert_ne!(
+            cfg.head_dim,
+            4096 / 32,
+            "the pre-existing fixture cannot make this distinction"
+        );
+    }
+
+    #[test]
+    fn rope_scaling_stays_tolerant_under_serde() {
+        // The whole reason `rope_scaling` is held as a raw Value: these two
+        // shapes are ACCEPTED by the parser that shipped. Under a derived
+        // `Deserialize` the first is a missing-field error and the second an
+        // unknown-key/missing-key error, so configs that load today would
+        // start failing - a behaviour change wearing a refactor's clothes.
+        let missing_field = LlamaFullConfig::from_hf_json_str(DIFFERENTIAL_CORPUS[3].1).unwrap();
+        assert!(
+            missing_field.rope_scaling.is_none(),
+            "an incomplete rope_scaling block degrades to None, it does not error",
+        );
+        let alt_key = LlamaFullConfig::from_hf_json_str(DIFFERENTIAL_CORPUS[4].1).unwrap();
+        assert!(
+            alt_key.rope_scaling.is_some(),
+            "HF ships `type` as well as `rope_type` and both must parse",
+        );
+    }
+
     #[test]
     fn from_hf_json_str_parses_llama3_1_8b() {
         let json = r#"{
