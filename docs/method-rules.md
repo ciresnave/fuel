@@ -1162,3 +1162,51 @@ back-to-back and say so, so a slip is visible rather than silent. Concretely:
 *"free"* or *"orphans nothing"* **on the strength of the current broken state.**
 That freeness is a property of the bug, not of the change — and the other fix is
 about to remove the bug.
+
+## a-sabotage-that-never-applied
+
+**A perturbation that FAILS TO APPLY reports absence-of-sensitivity as
+presence. The green is real, the code under it was never sabotaged, and the
+conclusion — "this test does not discriminate" — is a finding that is wrong.**
+
+**This is the INVERSE of the usual sabotage failure and it is quieter.** The
+known one is a passing sabotage caused by a warm cache
+([`sabotage-calibrated-tolerances`](#sabotage-calibrated-tolerances)): the source
+changed, the binary did not. **This one is worse — the SOURCE never changed
+either**, so a `git status` is clean, a recompile is honest, and every artifact
+agrees.
+
+**Worked example, 2026-08-27, item 8 (II).** A perturbation hard-wiring
+`rope_scaling` to `None` reported **14 passed, 0 failed** — read naively, *the
+tolerance test is vacuous*. It was not: **`cargo fmt` had rewrapped the target
+across four lines, so the exact-string anchor matched 0 occurrences.**
+
+⚠️ **AND THE GATE WORKED. THE SHELL IGNORED IT.** The script asserted
+`count == 1` and **that assertion FIRED** — then bash carried on and ran the
+tests anyway, because a non-zero exit from the perturbation step was not fatal to
+the surrounding shell. **A correct gate, correctly failing, with its verdict
+discarded by the thing that called it** — the same defect as piping a gate or
+echoing its exit code into an `&&` chain
+([`validating-a-gate-means-reading-it`](#validating-a-gate-means-reading-it)),
+arriving through the harness rather than the invocation.
+
+**Re-run with a wrap-tolerant regex and `set -e`: 11 passed, 3 FAILED**, the
+tolerance test among them.
+
+**PRACTICE, and the third is the standing form:**
+
+- **`set -e`, or check the perturbation's exit status before believing the test
+  run.** A harness that continues past a failed perturbation **cannot
+  distinguish *"the test is vacuous"* from *"the sabotage never happened"* —
+  both present as a pass.**
+- **Anchor perturbations with a formatting-tolerant regex, or perturb BEFORE
+  running `cargo fmt`.** Any exact-string anchor spanning a method chain is
+  fragile by construction, and a formatter is entitled to rewrap it.
+- ⚠️ **A PASSING SABOTAGE IS A RED FLAG, NOT A RESULT. Suspect the harness
+  before the subject — the base rate favours it and the check costs one grep.**
+
+**What caught it was domain judgement, not an instrument:** `rope_scaling: None`
+*must* break an assertion reading `.is_some()`, so the pass was implausible on
+its face. **That is the same detector as disbelieving a config with a documented
+`-1` sentinel that scored zero cross-field defaults — and in both cases every
+automated check agreed with the wrong answer.**
