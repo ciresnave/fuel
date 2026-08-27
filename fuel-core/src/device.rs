@@ -478,33 +478,6 @@ impl Device {
         Ok(Storage::from_dyn(self.inner.zeros_impl_dyn(shape, dtype)?))
     }
 
-    pub(crate) unsafe fn alloc_uninit(&self, shape: &Shape, dtype: DType) -> Result<Storage> {
-        Ok(Storage::from_dyn(unsafe {
-            self.inner.alloc_uninit_dyn(shape, dtype)?
-        }))
-    }
-
-    pub(crate) fn storage_from_slice<D: WithDType>(&self, data: &[D]) -> Result<Storage> {
-        let buf = data.to_cpu_storage();
-        Ok(Storage::from_dyn(
-            self.inner.storage_from_host_buffer_owned_dyn(buf)?,
-        ))
-    }
-
-    pub(crate) fn storage<A: NdArray>(&self, array: A) -> Result<Storage> {
-        let buf = array.to_cpu_storage();
-        Ok(Storage::from_dyn(
-            self.inner.storage_from_host_buffer_owned_dyn(buf)?,
-        ))
-    }
-
-    pub(crate) fn storage_owned<S: WithDType>(&self, data: Vec<S>) -> Result<Storage> {
-        let buf = S::to_cpu_storage_owned(data);
-        Ok(Storage::from_dyn(
-            self.inner.storage_from_host_buffer_owned_dyn(buf)?,
-        ))
-    }
-
     /// Synchronizes the device, waiting for all pending operations to complete.
     ///
     /// This is a no-op on CPU.
