@@ -1210,3 +1210,50 @@ tolerance test among them.
 its face. **That is the same detector as disbelieving a config with a documented
 `-1` sentinel that scored zero cross-field defaults — and in both cases every
 automated check agreed with the wrong answer.**
+
+## a-report-is-not-a-gate
+
+**`&&` only helps if the gate's EXIT CODE encodes its verdict. A step that
+COUNTS and PRINTS is a report; a step that EXITS NON-ZERO is a gate — and in a
+chain they are indistinguishable until one of them lets something through.**
+
+**This is the second half of
+[`validating-a-gate-means-reading-it`](#validating-a-gate-means-reading-it),
+and the half that was missing.** That rule says: put the gate IN the `&&` chain,
+never pipe it, never route its status through `echo`. **Necessary, and not
+sufficient.**
+
+**Worked example, 2026-08-27, item 8 (II).** A lane chained
+`cargo clippy … && git commit && git push`, **saw the gate print
+`fuel-core clippy: 1`, and pushed the regression anyway.**
+
+**The chain was correct. The gate was not.** `cargo clippy` **exits 0 on
+warnings** unless given `-D warnings` — so the verdict went to stdout and the
+exit status said *fine*. **Every structural rule was obeyed and the defect
+shipped.**
+
+```
+the recorded failure   gate OUTSIDE the chain             -> put it in the chain
+this one               gate INSIDE the chain, but its
+                       exit code does not carry its       -> make it FAIL,
+                       verdict                               not merely REPORT
+```
+
+**PRACTICE:**
+
+- **For a counting gate, convert the count into an exit status** — `-D warnings`,
+  or an explicit `[ "$n" -eq 0 ] || exit 1` after it. **Do not rely on reading
+  the number**, because the whole point of a chain is that nobody has to.
+- **Ask of any step you put in an `&&` chain: what makes this exit non-zero?**
+  If the answer is *"the tool crashing"* rather than *"the condition I care
+  about"*, it is a report wearing a gate's position.
+- **The tell is a tool with a `-D` / `--strict` / `--check` flag you did not
+  pass.** Formatters, linters and validators overwhelmingly default to
+  reporting; the strict flag is what turns them into gates, and its absence is
+  invisible in a chain.
+
+**Shares a root with
+[`a-sabotage-that-never-applied`](#a-sabotage-that-never-applied) — a correct
+verdict that nothing acts on — and has a different cause and a different fix.**
+There, an assertion fired and the shell continued. Here, nothing fired at all.
+**Grouping them under "put the gate in the chain" would fix neither.**
