@@ -16,6 +16,7 @@ use crate::lazy::{
     LayerWeights, LlamaConfig, LlamaModel, LlamaWeights, SamplingStrategy, Tensor, WeightStorage,
 };
 use crate::{DType, Device, Result};
+use serde::Deserialize;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -32,6 +33,71 @@ pub struct Llama2cConfig {
     pub head_dim: usize,
     pub norm_eps: f64,
     pub rope_theta: f64,
+}
+
+fn default_norm_eps() -> f64 {
+    1e-5
+}
+fn default_rope_theta() -> f64 {
+    10_000.0
+}
+
+/// A Llama-family `config.json` under **HuggingFace's** field names.
+///
+/// Deliberately mirrors the wire format rather than this crate's vocabulary:
+/// `Llama2cConfig` calls the same quantities `dim`, `hidden_dim`, `n_layers`
+/// and so on, and doing the rename here would hide it inside a `serde`
+/// attribute. It happens in [`Self::resolve`], where it is one visible block.
+///
+/// `n_kv_heads` and `head_dim` are `Option` because absent and
+/// present-and-equal-to-the-default are different facts — see
+/// [`crate::hf_config`].
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct Llama2cConfigRaw {
+    vocab_size: usize,
+    hidden_size: usize,
+    intermediate_size: usize,
+    num_hidden_layers: usize,
+    num_attention_heads: usize,
+    #[serde(default)]
+    num_key_value_heads: Option<usize>,
+    #[serde(default)]
+    head_dim: Option<usize>,
+    #[serde(default = "default_norm_eps", rename = "rms_norm_eps")]
+    norm_eps: f64,
+    #[serde(default = "default_rope_theta")]
+    rope_theta: f64,
+}
+
+impl Llama2cConfigRaw {
+    fn from_json_str(json: &str) -> Result<Self> {
+        serde_json::from_str(json)
+            .map_err(|e| crate::Error::Msg(format!("parsing Llama2c config.json: {e}")))
+    }
+
+    /// Apply the two cross-field defaults, then rename into this crate's
+    /// vocabulary. Both rules live in [`crate::hf_config`] because they are
+    /// shared, not because they are complicated.
+    fn resolve(self) -> Result<Llama2cConfig> {
+        Ok(Llama2cConfig {
+            dim: self.hidden_size,
+            hidden_dim: self.intermediate_size,
+            n_layers: self.num_hidden_layers,
+            n_heads: self.num_attention_heads,
+            n_kv_heads: crate::hf_config::num_key_value_heads(
+                self.num_key_value_heads,
+                self.num_attention_heads,
+            ),
+            vocab_size: self.vocab_size,
+            head_dim: crate::hf_config::head_dim(
+                self.head_dim,
+                self.hidden_size,
+                self.num_attention_heads,
+            ),
+            norm_eps: self.norm_eps,
+            rope_theta: self.rope_theta,
+        })
+    }
 }
 
 impl Llama2cConfig {
@@ -376,49 +442,14 @@ impl Llama2cConfig {
     ///
     /// Compatible with TinyLlama, Llama-2-7B, Llama-3, Mistral, and
     /// any Llama-shape HF checkpoint.
+    /// Parse a HuggingFace `config.json` into a [`Llama2cConfig`].
+    ///
+    /// Two stages. [`Llama2cConfigRaw`] is the wire shape under HF's own
+    /// field names and is pure `serde`; [`Llama2cConfigRaw::resolve`] applies
+    /// the defaults that read a sibling field — which `#[serde(default)]`
+    /// cannot — and renames into this crate's vocabulary.
     pub fn from_hf_json_str(json: &str) -> Result<Self> {
-        let v: serde_json::Value = serde_json::from_str(json)
-            .map_err(|e| crate::Error::Msg(format!("parsing Llama2c config.json: {e}")))?;
-
-        let get_usize = |key: &str| -> Result<usize> {
-            v.get(key)
-                .and_then(|x| x.as_u64())
-                .map(|x| x as usize)
-                .ok_or_else(|| {
-                    crate::Error::Msg(format!("Llama2c config.json: missing/invalid {key:?}"))
-                })
-        };
-        let get_f64 = |key: &str| -> Option<f64> { v.get(key).and_then(|x| x.as_f64()) };
-
-        let vocab_size = get_usize("vocab_size")?;
-        let dim = get_usize("hidden_size")?;
-        let n_layers = get_usize("num_hidden_layers")?;
-        let n_heads = get_usize("num_attention_heads")?;
-        let n_kv_heads = v
-            .get("num_key_value_heads")
-            .and_then(|x| x.as_u64())
-            .map(|x| x as usize)
-            .unwrap_or(n_heads);
-        let hidden_dim = get_usize("intermediate_size")?;
-        let head_dim = v
-            .get("head_dim")
-            .and_then(|x| x.as_u64())
-            .map(|x| x as usize)
-            .unwrap_or(dim / n_heads);
-        let norm_eps = get_f64("rms_norm_eps").unwrap_or(1e-5);
-        let rope_theta = get_f64("rope_theta").unwrap_or(10_000.0);
-
-        Ok(Self {
-            dim,
-            hidden_dim,
-            n_layers,
-            n_heads,
-            n_kv_heads,
-            vocab_size,
-            head_dim,
-            norm_eps,
-            rope_theta,
-        })
+        Llama2cConfigRaw::from_json_str(json)?.resolve()
     }
 }
 
@@ -648,9 +679,154 @@ pub fn load_llama2c_bin_path<P: AsRef<std::path::Path>>(path: P) -> Result<Llama
 }
 
 #[cfg(test)]
+impl Llama2cConfig {
+    /// The hand-rolled parser this type used before the `serde` split, kept
+    /// verbatim and test-only as the differential's oracle.
+    ///
+    /// Not dead code awaiting deletion: a differential that ran once proves
+    /// the two paths agreed at ONE commit; one that keeps running proves they
+    /// still do. Deleting this turns the first into the only claim anyone can
+    /// make.
+    pub(crate) fn from_hf_json_str_legacy(json: &str) -> Result<Self> {
+        let v: serde_json::Value = serde_json::from_str(json)
+            .map_err(|e| crate::Error::Msg(format!("parsing Llama2c config.json: {e}")))?;
+
+        let get_usize = |key: &str| -> Result<usize> {
+            v.get(key)
+                .and_then(|x| x.as_u64())
+                .map(|x| x as usize)
+                .ok_or_else(|| {
+                    crate::Error::Msg(format!("Llama2c config.json: missing/invalid {key:?}"))
+                })
+        };
+        let get_f64 = |key: &str| -> Option<f64> { v.get(key).and_then(|x| x.as_f64()) };
+
+        let vocab_size = get_usize("vocab_size")?;
+        let dim = get_usize("hidden_size")?;
+        let n_layers = get_usize("num_hidden_layers")?;
+        let n_heads = get_usize("num_attention_heads")?;
+        let n_kv_heads = v
+            .get("num_key_value_heads")
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize)
+            .unwrap_or(n_heads);
+        let hidden_dim = get_usize("intermediate_size")?;
+        let head_dim = v
+            .get("head_dim")
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize)
+            .unwrap_or(dim / n_heads);
+        let norm_eps = get_f64("rms_norm_eps").unwrap_or(1e-5);
+        let rope_theta = get_f64("rope_theta").unwrap_or(10_000.0);
+
+        Ok(Self {
+            dim,
+            hidden_dim,
+            n_layers,
+            n_heads,
+            n_kv_heads,
+            vocab_size,
+            head_dim,
+            norm_eps,
+            rope_theta,
+        })
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use fuel_ir::Shape;
+
+    /// Every `config.json` fixture this module exercises, as ONE corpus.
+    ///
+    /// **Corpus: 4 fixtures, covering the sole `Llama2cConfig` parser here.**
+    /// Stated as a population because a differential over four fixtures and
+    /// one over four hundred are the same green tick.
+    const DIFFERENTIAL_CORPUS: &[(&str, &str)] = &[
+        (
+            "TinyLlama-1.1B (GQA: explicit num_key_value_heads = 4)",
+            r#"{
+                "vocab_size": 32000, "hidden_size": 2048, "intermediate_size": 5632,
+                "num_hidden_layers": 22, "num_attention_heads": 32,
+                "num_key_value_heads": 4, "rms_norm_eps": 1e-5,
+                "rope_theta": 10000.0, "max_position_embeddings": 2048
+            }"#,
+        ),
+        (
+            "Llama-2-7B shape (every optional absent)",
+            r#"{
+                "vocab_size": 32000, "hidden_size": 4096, "intermediate_size": 11008,
+                "num_hidden_layers": 32, "num_attention_heads": 32
+            }"#,
+        ),
+        (
+            "round-trip fixture (no eps/theta overrides)",
+            r#"{
+                "vocab_size": 32000, "hidden_size": 2048, "intermediate_size": 5632,
+                "num_hidden_layers": 22, "num_attention_heads": 32,
+                "num_key_value_heads": 4
+            }"#,
+        ),
+        (
+            "explicit head_dim DISAGREEING with hidden_size/num_attention_heads",
+            r#"{
+                "vocab_size": 32000, "hidden_size": 2048, "intermediate_size": 5632,
+                "num_hidden_layers": 22, "num_attention_heads": 32, "head_dim": 96
+            }"#,
+        ),
+    ];
+
+    #[test]
+    fn serde_path_agrees_with_the_legacy_parser_on_every_fixture() {
+        assert_eq!(
+            DIFFERENTIAL_CORPUS.len(),
+            4,
+            "corpus shrank - a differential silently covering less is the failure              mode this assert exists for",
+        );
+        for (name, json) in DIFFERENTIAL_CORPUS {
+            let new = Llama2cConfig::from_hf_json_str(json);
+            let old = Llama2cConfig::from_hf_json_str_legacy(json);
+            match (new, old) {
+                // VALUES, not shapes: PartialEq compares every field, so two
+                // configs with the same field SET and different numbers fail.
+                (Ok(a), Ok(b)) => assert_eq!(a, b, "differential mismatch on {name}"),
+                (Err(_), Err(_)) => {}
+                (Ok(_), Err(e)) => panic!("{name}: serde accepted, legacy rejected: {e}"),
+                (Err(e), Ok(_)) => panic!("{name}: serde rejected, legacy accepted: {e}"),
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_head_dim_survives_both_paths() {
+        // ⚠️ NONE of this module's three pre-existing fixtures specifies
+        // `head_dim` at all, so take-if-present was entirely unexercised here
+        // — a stronger version of the phi-2 collapse, where the fixture at
+        // least specified the value and merely happened to match the
+        // quotient. 96 != 2048/32 = 64.
+        let json = DIFFERENTIAL_CORPUS[3].1;
+        let cfg = Llama2cConfig::from_hf_json_str(json).unwrap();
+        assert_eq!(
+            cfg.head_dim, 96,
+            "explicit head_dim must not be overwritten"
+        );
+        assert_ne!(cfg.head_dim, 2048 / 32);
+        let legacy = Llama2cConfig::from_hf_json_str_legacy(json).unwrap();
+        assert_eq!(legacy.head_dim, 96, "legacy must agree - it is the oracle");
+    }
+
+    #[test]
+    fn explicit_kv_heads_survives_both_paths() {
+        // This one the corpus DOES cover: TinyLlama ships 4 against 32 heads.
+        let json = DIFFERENTIAL_CORPUS[0].1;
+        let cfg = Llama2cConfig::from_hf_json_str(json).unwrap();
+        assert_eq!(
+            cfg.n_kv_heads, 4,
+            "GQA count must not be overwritten by the MHA default"
+        );
+        assert_ne!(cfg.n_kv_heads, cfg.n_heads);
+    }
 
     #[test]
     fn from_hf_json_str_parses_canonical_tinyllama_fields() {
