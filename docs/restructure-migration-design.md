@@ -263,10 +263,64 @@ Now a normal-sized refactor, and only now are the boundaries visible:
 |---|---|---|
 | `lazy.rs` (25.5k) | **`fuel-tensor`** | ratified; Lightbulb is the named consumer |
 | runtime bridge (`pipelined_bridge`, `factories`, `scheduling`) | **`fuel-dispatch`** | joins the ranker/executor already there |
-| the **Judge** (4.4k) | **open** — was blocked on §6.3's retracted premise; now unblocked, ruling owed | a profiler, not a dispatcher |
+| the **Judge** (4.8k) | **RULED — split. See §5.1.** | runner is a leaf tool; the oracle is not |
 | serving / decode (8.1k) | **open** | plausibly `fuel-inference` (exists) |
 | `train.rs` | **`fuel-training`** (exists) | |
 | the rest (5.5k, 31 files) | distribute | `nf4`→`fuel-quantized`, `device`→`fuel-hardware`, … |
+
+### 5.1 The Judge splits, and the line is already drawn in its file layout
+
+**Ruled 2026-08-27.** This was left open in the first draft, then blocked on a
+premise §6.3 has since retracted. Settling it rather than leaving it hanging.
+
+**Measured shape:**
+
+```
+fuel-core/src/judge/mod.rs      3910   the RUNNER  — builds graphs, realizes,
+                                                    times, catch_unwinds per cell
+fuel-core/src/judge/oracle.rs    439   CONSUMPTION — ProfileReport -> JudgeOracle
+fuel-core/src/judge/cache.rs     412   CONSUMPTION — process-wide DispatchTable cache
+```
+
+**The stopping rule is satisfied, one-directionally, which is enough:**
+
+- **Ranker without runner is a real class, and it is the majority.** Every
+  inference consumer reads a profile and never produces one; with no profile the
+  ranker falls back to Layer-1 static costs and works. **Lightbulb is exactly
+  this consumer.** Today they would link **3,910 lines of profiler they never
+  execute.**
+- **Runner without ranker is not a class.** The Judge's output has one consumer.
+
+So the split is **not** symmetric and does not need to be. The test is *"a class
+of consumer that uses one side and not the other"* — one such class is sufficient.
+
+**Ruling:**
+
+| | destination | why |
+|---|---|---|
+| `judge/mod.rs` — the runner | **`fuel-judge`** (new, leaf) | nothing depends on it; it belongs in 02-layers' *Use-Case Orchestration* tier beside `fuel-inference` and `fuel-training`, which that tier already describes as *"leaf crates — nothing depends on either"* |
+| `judge/oracle.rs` + `judge/cache.rs` | **`fuel-dispatch`** | they sit next to the ranker that consumes them; `pipelined_bridge` already calls `cached_oracle()` on the realize path |
+
+**The schema is already where it belongs and does not move:** `ProfileEntry`,
+`ProfileReport`, `DispatchTable` and `PROFILE_REPORT_VERSION` are in **`fuel-ir`**
+— the crate the restructure keeps. Producer, consumer and schema were always three
+things; only the first two were in one crate.
+
+⚠️ **One coupling must invert, and it is the whole cost of this split.**
+`cache.rs:160` calls `Judge::default().run(&probe)` — the *consumption* side
+invoking the *runner* to auto-populate on a cache miss. **That single call is what
+would drag the profiler into every consumer's binary.**
+
+**Fix:** `populate_dispatch_table()` takes a report (or a producer trait) rather
+than constructing a `Judge`. **Convenience coupling, not structural** — the
+auto-populate behaviour survives, it just gets injected instead of hard-wired,
+and `fuel-judge` becomes the thing that injects it.
+
+**Name.** `fuel-judge` — free on the registry (measured, with a negative
+control), and it matches every existing doc comment, which all say "the Judge".
+**Note this name leaked once as exploratory and a downstream project built a live
+trigger on it** (§10); settling it deliberately is what makes reusing it safe
+rather than confusing.
 
 **No `fuel-autograd` split is proposed here.** 02-layers names it, but the
 stopping rule requires a consumer that wants one side and not the other, and that
