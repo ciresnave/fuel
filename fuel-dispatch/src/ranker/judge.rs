@@ -41,16 +41,20 @@ use fuel_ir::probe::BackendId;
 /// Layer-2 refinement source.
 pub trait JudgeOracle: Send + Sync {
     /// Median wall-clock latency in nanoseconds for the
-    /// `(op, dtype, size_class, backend, kernel_source)` cell.
-    /// Returns `None` when the cell isn't profiled. Callers MUST
-    /// treat absence as "no measurement" — not "zero" — so the
-    /// static estimate stays the fallback.
+    /// `(op, dtype, size_class, backend, kernel_source,
+    /// kernel_revision_hash)` cell. Returns `None` when the cell isn't
+    /// profiled. Callers MUST treat absence as "no measurement" — not
+    /// "zero" — so the static estimate stays the fallback.
     ///
     /// `kernel_source` is the [`fuel_ir::dispatch::Pick::kernel_source`]
     /// tag (e.g. `"aocl"`, `"mkl"`, `"cublas"`, `"cutlass"`,
-    /// `"portable-cpu"`, `"slang"`) — required to disambiguate
-    /// sibling kernels at the same `(backend, device)` slot. Pass
-    /// `""` for legacy / single-impl cells.
+    /// `"portable-cpu"`, `"slang"`) — the *provider*-granular axis. It
+    /// alone does not disambiguate variant siblings of one provider
+    /// (forty tilings of `"baracuda"`), so `kernel_revision_hash` — the
+    /// content-derived *variant*-granular axis, completing
+    /// `ImplId = (backend, op, dtypes, kernel_source, revision)` — is
+    /// part of the key. Two distinct non-zero revisions are two cells.
+    /// Pass `""` / `0` for legacy / single-impl / untracked cells.
     fn measured_latency_ns(
         &self,
         op: OpKind,
@@ -58,6 +62,7 @@ pub trait JudgeOracle: Send + Sync {
         size_class: SizeClass,
         backend: BackendId,
         kernel_source: &str,
+        kernel_revision_hash: u64,
     ) -> Option<u64>;
 }
 
@@ -72,7 +77,7 @@ pub trait JudgeOracle: Send + Sync {
 /// changes.
 #[derive(Debug, Default, Clone)]
 pub struct HashMapJudge {
-    entries: std::collections::HashMap<(OpKind, DType, SizeClass, BackendId, String), u64>,
+    entries: std::collections::HashMap<(OpKind, DType, SizeClass, BackendId, String, u64), u64>,
 }
 
 impl HashMapJudge {
@@ -89,6 +94,11 @@ impl HashMapJudge {
     /// `(backend, device)` slot — see [`JudgeOracle::measured_latency_ns`].
     /// The owned `String` is stored as part of the key; pass `""`
     /// for legacy single-impl cells.
+    /// `kernel_revision_hash` is last in the parameter list (after the
+    /// `latency_ns` value) deliberately: the key tuple's canonical order
+    /// keeps it beside `kernel_source`, but placing it last here lets the
+    /// many existing call sites append the argument rather than splice it
+    /// mid-call. `0` is the untracked / single-impl default.
     pub fn insert(
         &mut self,
         op: OpKind,
@@ -97,9 +107,17 @@ impl HashMapJudge {
         backend: BackendId,
         kernel_source: &str,
         latency_ns: u64,
+        kernel_revision_hash: u64,
     ) {
         self.entries.insert(
-            (op, dtype, size_class, backend, kernel_source.to_string()),
+            (
+                op,
+                dtype,
+                size_class,
+                backend,
+                kernel_source.to_string(),
+                kernel_revision_hash,
+            ),
             latency_ns,
         );
     }
@@ -123,6 +141,7 @@ impl JudgeOracle for HashMapJudge {
         size_class: SizeClass,
         backend: BackendId,
         kernel_source: &str,
+        kernel_revision_hash: u64,
     ) -> Option<u64> {
         // Look up via the borrowed-key trick: build a tuple with an
         // owned `String` only when needed. Most cells use `""` or a
@@ -130,7 +149,14 @@ impl JudgeOracle for HashMapJudge {
         // borrow-trait keys for tuples-with-String don't work
         // out-of-the-box.
         self.entries
-            .get(&(op, dtype, size_class, backend, kernel_source.to_string()))
+            .get(&(
+                op,
+                dtype,
+                size_class,
+                backend,
+                kernel_source.to_string(),
+                kernel_revision_hash,
+            ))
             .copied()
     }
 }
@@ -150,6 +176,7 @@ mod tests {
             BackendId::Cuda,
             "cublas",
             5_000_000,
+            0,
         );
         assert_eq!(j.len(), 1);
         assert_eq!(
@@ -159,6 +186,7 @@ mod tests {
                 SizeClass(16),
                 BackendId::Cuda,
                 "cublas",
+                0,
             ),
             Some(5_000_000),
         );
@@ -174,6 +202,7 @@ mod tests {
                 SizeClass(8),
                 BackendId::Cpu,
                 "",
+                0,
             )
             .is_none()
         );
@@ -191,6 +220,7 @@ mod tests {
             BackendId::Cpu,
             "aocl",
             1_000,
+            0,
         );
         j.insert(
             OpKind::MatMul,
@@ -199,6 +229,7 @@ mod tests {
             BackendId::Cpu,
             "aocl",
             2_000,
+            0,
         );
         assert_eq!(
             j.measured_latency_ns(
@@ -207,6 +238,7 @@ mod tests {
                 SizeClass(16),
                 BackendId::Cpu,
                 "aocl",
+                0,
             ),
             Some(2_000),
         );
@@ -219,6 +251,7 @@ mod tests {
             BackendId::Cpu,
             "mkl",
             1_500,
+            0,
         );
         assert_eq!(j.len(), 2);
         assert_eq!(
@@ -228,6 +261,7 @@ mod tests {
                 SizeClass(16),
                 BackendId::Cpu,
                 "mkl",
+                0,
             ),
             Some(1_500),
         );
@@ -238,6 +272,7 @@ mod tests {
                 SizeClass(16),
                 BackendId::Cpu,
                 "aocl",
+                0,
             ),
             Some(2_000),
         );
@@ -250,6 +285,7 @@ mod tests {
                 SizeClass(16),
                 BackendId::Cpu,
                 "portable-cpu",
+                0,
             )
             .is_none()
         );
@@ -259,18 +295,18 @@ mod tests {
     fn hashmap_judge_distinguishes_backends_at_same_key() {
         let mut j = HashMapJudge::new();
         let (op, dt, sc) = (OpKind::MatMul, DType::F32, SizeClass(16));
-        j.insert(op, dt, sc, BackendId::Cpu, "", 1_000_000);
-        j.insert(op, dt, sc, BackendId::Cuda, "", 100_000);
+        j.insert(op, dt, sc, BackendId::Cpu, "", 1_000_000, 0);
+        j.insert(op, dt, sc, BackendId::Cuda, "", 100_000, 0);
         assert_eq!(
-            j.measured_latency_ns(op, dt, sc, BackendId::Cpu, ""),
+            j.measured_latency_ns(op, dt, sc, BackendId::Cpu, "", 0),
             Some(1_000_000)
         );
         assert_eq!(
-            j.measured_latency_ns(op, dt, sc, BackendId::Cuda, ""),
+            j.measured_latency_ns(op, dt, sc, BackendId::Cuda, "", 0),
             Some(100_000)
         );
         assert!(
-            j.measured_latency_ns(op, dt, sc, BackendId::Vulkan, "")
+            j.measured_latency_ns(op, dt, sc, BackendId::Vulkan, "", 0)
                 .is_none()
         );
     }
@@ -286,8 +322,42 @@ mod tests {
                 SizeClass(0),
                 BackendId::Cpu,
                 "",
+                0,
             )
             .is_none()
         );
+    }
+
+    /// Two entries at the same `(op, dtype, size, backend, kernel_source)`
+    /// cell differing ONLY in `kernel_revision_hash` — both NON-ZERO —
+    /// resolve to DISTINCT latencies. `kernel_source` alone (`"baracuda"`)
+    /// cannot tell forty tilings of one provider apart, so without the
+    /// revision in the key they would collapse to one cell. Both revisions
+    /// are nonzero deliberately: a `0`-vs-nonzero variant would pass while
+    /// real siblings still collapsed.
+    #[test]
+    fn sibling_kernel_revisions_do_not_collide() {
+        let mut j = HashMapJudge::new();
+        let (op, dt, sc, be, src) = (
+            OpKind::MatMul,
+            DType::F32,
+            SizeClass(16),
+            BackendId::Cuda,
+            "baracuda",
+        );
+        j.insert(op, dt, sc, be, src, 5_000, 0x1111_1111_1111_1111);
+        j.insert(op, dt, sc, be, src, 9_000, 0x2222_2222_2222_2222);
+        assert_eq!(j.len(), 2, "distinct non-zero revisions are distinct cells");
+        assert_eq!(
+            j.measured_latency_ns(op, dt, sc, be, src, 0x1111_1111_1111_1111),
+            Some(5_000),
+        );
+        assert_eq!(
+            j.measured_latency_ns(op, dt, sc, be, src, 0x2222_2222_2222_2222),
+            Some(9_000),
+        );
+        // An untracked (0) revision at the same tag is its OWN cell — no
+        // fallthrough to either measured sibling.
+        assert!(j.measured_latency_ns(op, dt, sc, be, src, 0).is_none());
     }
 }

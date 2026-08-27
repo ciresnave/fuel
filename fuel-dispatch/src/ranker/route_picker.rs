@@ -444,6 +444,7 @@ fn synthetic_candidate(backend: BackendId, device: DeviceLocation) -> Candidate 
         op_params: OpParams::None,
         coupling: Vec::new(),
         kernel_source: "route-picker-synthetic",
+        kernel_revision_hash: 0,
     }
 }
 

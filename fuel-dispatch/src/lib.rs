@@ -103,7 +103,7 @@ pub mod variant_bake;
 pub mod vulkan_dispatch;
 
 pub use compiled::{
-    CompiledNode, Completion, CompletionHandle, compile_node, dispatched_kernel_source,
+    CompiledNode, Completion, CompletionHandle, compile_node, dispatched_kernel_ident,
     execute_compiled,
 };
 pub use driver::{

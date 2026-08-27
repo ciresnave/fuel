@@ -166,6 +166,22 @@ pub use fuel_ir::dispatch::{
 /// Default filename for the persisted profile report.
 pub const PROFILE_REPORT_FILENAME: &str = "judge.json";
 
+/// A synthetic device identity for fixtures, stamped with the given
+/// `backend` so `ProfileEntry::device.backend` agrees with the entry's
+/// own `backend` axis (the `from_report` `debug_assert` that keeps the
+/// co-encoding honest). Fixtures never load through the hardware gate,
+/// so the vendor/device ids are irrelevant here — only the backend is.
+#[cfg(test)]
+pub(crate) fn test_equiv_key(backend: BackendId) -> fuel_ir::probe::EquivalenceKey {
+    fuel_ir::probe::EquivalenceKey {
+        backend,
+        vendor_id: 0,
+        device_id: 0,
+        compute_capability: None,
+        driver_version: String::new(),
+    }
+}
+
 /// Op kinds the Judge currently profiles. Each entry must have a
 /// matching `size_plan` arm (returning a non-empty ladder) and a
 /// matching `build_input_graph` arm. New families land here as they
@@ -798,6 +814,11 @@ impl Judge {
                         let rep = devs[0];
                         if let Some(run) = self.measure_on_device_capturing(op, dtype, &sz, rep) {
                             let dispatched_source = run.kernel_source.clone();
+                            // The dispatched kernel's FULL identity — the tag
+                            // alone no longer picks a sibling out (see
+                            // `direct_call_alternatives`). Captured before the
+                            // move below.
+                            let dispatched_revision = run.kernel_revision_hash;
                             cell_runs.push(run);
 
                             // Per-alternative measurement: walk the
@@ -813,6 +834,7 @@ impl Judge {
                                 &sz,
                                 rep,
                                 &dispatched_source,
+                                dispatched_revision,
                             ) {
                                 for extra in extra_runs {
                                     cell_runs.push(extra);
@@ -883,6 +905,15 @@ impl Judge {
                                     iterations: run.iterations,
                                     max_rel_error: rel_err,
                                     kernel_source: run.kernel_source.clone(),
+                                    kernel_revision_hash: run.kernel_revision_hash,
+                                    // The device this row was measured on. `d`
+                                    // is a member of the equivalence class whose
+                                    // key `k.backend == run.backend`, so this
+                                    // identity's backend agrees with `backend`
+                                    // above by construction (from_report asserts
+                                    // it). The load gate refuses the whole report
+                                    // on any box that lacks this device.
+                                    device: d.equivalence_key(),
                                 });
                             }
                         }
@@ -924,6 +955,7 @@ impl Judge {
         size: &OpSize,
         device: &DeviceDescriptor,
         dispatched_kernel_source: &str,
+        dispatched_kernel_revision: u64,
     ) -> Option<Vec<CellRun>> {
         // Direct kernel-pointer calls are only meaningful on the CPU
         // backend today — CUDA / Vulkan storage handles are backend-
@@ -947,7 +979,8 @@ impl Judge {
             return None;
         }
 
-        let alternatives = direct_call_alternatives(op, dispatched_kernel_source);
+        let alternatives =
+            direct_call_alternatives(op, dispatched_kernel_source, dispatched_kernel_revision);
         if alternatives.is_empty() {
             return None;
         }
@@ -1052,6 +1085,9 @@ impl Judge {
             latency_ns: median,
             iterations: self.iterations,
             kernel_source: alt.kernel_source.to_string(),
+            // Direct-call sibling: a real, attributed revision from the
+            // alternative's own binding — never a guess.
+            kernel_revision_hash: alt.kernel_revision_hash,
         })
     }
 
@@ -1235,9 +1271,25 @@ impl Judge {
         // realizer impl without a picker) falls back to the
         // first-registered tag — exactly the alternative the
         // executor's `compile_node` fallback dispatches in that case.
-        let kernel_source = match realizer.last_kernel_source() {
-            Some(src) => src.to_string(),
-            None => primary_kernel_source(op, dtype, device.backend).to_string(),
+        // The tag AND its revision come from the SAME picker result
+        // (`last_kernel_source` / `last_kernel_revision`, set together in the
+        // bridge realizer), so they are both `Some` or both `None`.
+        // Conservative cut (Judge item 7, Option A): when the picker did not
+        // attribute this dispatch — no plan `AlternativeSet` for the root, or
+        // a best-effort lock/lookup miss — write NO row. `alts.first()`'s
+        // revision would be a plausible GUESS about a real sibling, filed
+        // against a measurement we could not attribute; a `0` would claim
+        // "untracked" about a kernel that actually ran. Both are rows that
+        // LIE about kernel identity — the identity `kernel_revision_hash`
+        // exists to make trustworthy — so an absent row is the honest outcome
+        // (an absent cell just misses in the oracle: Layer-1 static costs
+        // stand). The dropped-row count is reported in the re-profile commit.
+        let (kernel_source, kernel_revision_hash) = match (
+            realizer.last_kernel_source(),
+            realizer.last_kernel_revision(),
+        ) {
+            (Some(src), Some(rev)) => (src.to_string(), rev),
+            _ => return None,
         };
 
         Some(CellRun {
@@ -1247,6 +1299,7 @@ impl Judge {
             latency_ns: median,
             iterations: self.iterations,
             kernel_source,
+            kernel_revision_hash,
         })
     }
 }
@@ -1262,6 +1315,9 @@ impl Judge {
 struct DirectCallAlternative {
     kernel: fuel_dispatch::kernel::KernelRef,
     kernel_source: &'static str,
+    /// Revision of this alternative's binding, from the same `BindingEntry`
+    /// as `kernel_source` (so tag and revision agree by construction).
+    kernel_revision_hash: u64,
 }
 
 /// Shared inputs/outputs/layouts/op_params for one (op, size) cell.
@@ -1276,31 +1332,19 @@ struct PreparedDirectCall {
     op_params: fuel_dispatch::kernel::OpParams,
 }
 
-/// Look up the `kernel_source` of the FIRST alternative at the
-/// binding-table cell. Post-Session-3-rider this is the FALLBACK
-/// attribution only — used when the realizer reports no dispatched
-/// sibling ([`crate::factories::Realizer::last_kernel_source`]
-/// returned `None`, i.e. the plan had no entry for the measured root
-/// and the executor's `compile_node` fallback dispatched the
-/// first-registered binding). Returns `""` when no alternative is
-/// registered at all.
-fn primary_kernel_source(op: OpKind, dtype: DType, backend: BackendId) -> &'static str {
-    let dtypes = match canonical_binding_dtypes_for(op, dtype) {
-        Some(d) => d,
-        None => return "",
-    };
-    let table = fuel_dispatch::dispatch::global_bindings();
-    let alts = table.lookup_alternatives(op, &dtypes, backend);
-    alts.first().map(|e| e.kernel_source).unwrap_or("")
-}
-
 /// Does the binding table hold ANY alternative at the cell's
 /// canonical F32 `(op, dtypes, backend)` key? Existence check for
-/// the Judge's native-implementation gate — deliberately distinct
-/// from [`primary_kernel_source`], whose `""` return conflates
-/// "no alternative" with "first alternative carries the default
-/// empty kernel_source tag" (untagged registrations are legal and
-/// common — every baracuda CUDA binding is untagged).
+/// the Judge's native-implementation gate.
+///
+/// Judge item 7 removed the first-registered `kernel_source` fallback
+/// that used to attribute a dispatched measurement when the realizer
+/// reported no picker sibling: the tag alone was already lossy (an empty
+/// tag conflated "no alternative" with an untagged registration — every
+/// baracuda CUDA binding is untagged), and it carries no revision at all.
+/// The dispatched-path attribution now comes solely from the realizer's
+/// picker report (`last_kernel_source` + `last_kernel_revision`), so a
+/// cell with no attribution produces no measurement row rather than an
+/// untagged, zero-revision guess.
 ///
 /// Ops without a canonical dtype mapping return `false` — the gate
 /// then skips the (non-CPU) cell rather than risk recording an
@@ -1315,6 +1359,22 @@ fn has_binding_alternative(op: OpKind, dtype: DType, backend: BackendId) -> bool
     !table.lookup_alternatives(op, &dtypes, backend).is_empty()
 }
 
+/// Whether `alt` (identified by its `kernel_source` tag and
+/// `kernel_revision_hash`) IS the dispatched kernel. Matched on the FULL
+/// identity — BOTH fields — because variant siblings of one provider share a
+/// tag and differ only by revision, so the tag alone no longer picks a sibling
+/// out. Keying the skip on the tag would skip the wrong sibling; this is the
+/// one place that identity is compared, so it cannot drift from the key
+/// `ProfileEntry`/`Candidate`/`Pick` carry.
+fn is_dispatched_alt(
+    alt_source: &str,
+    alt_revision: u64,
+    dispatched_source: &str,
+    dispatched_revision: u64,
+) -> bool {
+    alt_source == dispatched_source && alt_revision == dispatched_revision
+}
+
 /// Collect every binding-table alternative at the cell EXCEPT the
 /// dispatched one (already timed via the realizer). Returns a fresh
 /// `Vec` of [`DirectCallAlternative`] — empty when the cell has only
@@ -1322,6 +1382,7 @@ fn has_binding_alternative(op: OpKind, dtype: DType, backend: BackendId) -> bool
 fn direct_call_alternatives(
     op: OpKind,
     dispatched_kernel_source: &str,
+    dispatched_kernel_revision: u64,
 ) -> Vec<DirectCallAlternative> {
     // Direct-call path is F32-only (see `measure_extra_alternatives`'s
     // dtype gate + `prepare_direct_call_inputs`), so the binding key is
@@ -1335,22 +1396,36 @@ fn direct_call_alternatives(
     if alts.len() < 2 {
         return Vec::new();
     }
-    // Skip the alternative the realizer already measured — the FIRST
-    // entry whose tag matches `dispatched_kernel_source`, wherever it
-    // sits in registration order (the picker is free to dispatch a
-    // non-first sibling). If no tag matches (off-cell dispatch — a
-    // fallback placement ran the root elsewhere), nothing is skipped:
-    // every CPU sibling at the cell is then unmeasured work.
+    // Skip the alternative the realizer already measured. Its identity is
+    // (kernel_source, kernel_revision_hash) — the tag ALONE no longer picks a
+    // sibling out, now that variant siblings of one provider share a tag and
+    // differ only by revision, so keying the skip on the tag could skip the
+    // WRONG sibling (leaving the dispatched one to be re-measured as an extra
+    // AND dropping a genuine sibling). Skip the FIRST entry matching BOTH
+    // fields, wherever it sits in registration order (the picker is free to
+    // dispatch a non-first sibling). If nothing matches — off-cell dispatch, or
+    // a revision the current binding table no longer holds — nothing is skipped:
+    // every CPU sibling at the cell is then unmeasured work. That is a redundant
+    // measurement (the oracle min-collapses the duplicate at the identical
+    // (source, revision) key), never a wrong one.
     let mut extras = Vec::with_capacity(alts.len().saturating_sub(1));
     let mut skipped_dispatched = false;
     for alt in alts.iter() {
-        if !skipped_dispatched && alt.kernel_source == dispatched_kernel_source {
+        if !skipped_dispatched
+            && is_dispatched_alt(
+                alt.kernel_source,
+                alt.kernel_revision_hash,
+                dispatched_kernel_source,
+                dispatched_kernel_revision,
+            )
+        {
             skipped_dispatched = true;
             continue;
         }
         extras.push(DirectCallAlternative {
             kernel: alt.kernel,
             kernel_source: alt.kernel_source,
+            kernel_revision_hash: alt.kernel_revision_hash,
         });
     }
     extras
@@ -2143,6 +2218,12 @@ struct CellRun {
     /// binding-table cell. `""` for cells with a single alternative
     /// or when the kernel-source tag is unknown.
     kernel_source: String,
+    /// Content-derived revision of the kernel that produced this run,
+    /// paired with `kernel_source` from a single attribution so the two
+    /// never describe different kernels. Always a real, attributed value:
+    /// a run whose revision could not be attributed is not recorded (see
+    /// the dispatched-path conservative cut) rather than stamped `0`.
+    kernel_revision_hash: u64,
 }
 
 /// Compute the largest mutually-close cluster across `runs`. Returns
@@ -2411,17 +2492,27 @@ mod tests {
         );
     }
 
-    /// Session 3 rider: the realizer-measured CellRun records the
-    /// `kernel_source` the realizer REPORTS — the picker's dispatched
-    /// sibling — not the binding table's first-registered alternative.
-    /// A realizer with no report (`last_kernel_source() == None`,
-    /// e.g. the plan had no entry for the root) falls back to the
-    /// first-registered tag, matching the executor's `compile_node`
-    /// fallback at exactly that decision point.
+    /// Session 3 rider + Judge item 7 (device+kernel identity): the
+    /// realizer-measured CellRun records the `(kernel_source,
+    /// kernel_revision_hash)` the realizer REPORTS — the picker's dispatched
+    /// sibling — both fields from ONE attribution so they cannot disagree
+    /// about which kernel ran.
+    ///
+    /// When the realizer has NO attribution (`last_kernel_source` /
+    /// `last_kernel_revision` both `None` — the plan had no entry for the
+    /// root, or a best-effort lock/lookup miss), NO CellRun is produced. This
+    /// is the conservative cut: `alts.first()`'s revision would be a plausible
+    /// GUESS about a real sibling, and `0` would claim "untracked" about a
+    /// kernel that actually ran — both are rows that LIE about the identity
+    /// `kernel_revision_hash` exists to make trustworthy. An absent row is the
+    /// honest outcome (the cell then simply misses in the oracle; Layer-1
+    /// static costs stand). Born-red: before the cut, the `None` case wrote a
+    /// row stamped with the first-registered fallback tag and a `0` revision.
     #[test]
-    fn cell_run_kernel_source_comes_from_realizer_report() {
+    fn cell_run_carries_attribution_or_is_dropped() {
         struct StubRealizer {
             src: Option<&'static str>,
+            rev: Option<u64>,
         }
         impl crate::factories::Realizer for StubRealizer {
             fn realize_f32(&mut self, _tensor: &crate::lazy::Tensor) -> Result<Vec<f32>> {
@@ -2429,6 +2520,9 @@ mod tests {
             }
             fn last_kernel_source(&self) -> Option<&'static str> {
                 self.src
+            }
+            fn last_kernel_revision(&self) -> Option<u64> {
+                self.rev
             }
         }
 
@@ -2453,25 +2547,29 @@ mod tests {
         let op = OpKind::AddElementwise;
         let size = OpSize::Elementwise(8);
 
-        // Realizer reports a dispatched sibling → CellRun carries it
-        // verbatim, regardless of registration order at the cell.
+        // Attributed: source AND revision from one picker result → the CellRun
+        // carries both verbatim, regardless of registration order at the cell.
         let mut reporting = StubRealizer {
             src: Some("stub-sibling"),
+            rev: Some(0x00AB_CDEF),
         };
         let run = judge
             .time_op_capturing(op, DType::F32, &size, &device, &mut reporting)
-            .expect("stub realize succeeds");
+            .expect("attributed dispatch produces a CellRun");
         assert_eq!(run.kernel_source, "stub-sibling");
+        assert_eq!(run.kernel_revision_hash, 0x00AB_CDEF);
 
-        // No report → first-registered fallback attribution.
-        let mut silent = StubRealizer { src: None };
-        let run = judge
-            .time_op_capturing(op, DType::F32, &size, &device, &mut silent)
-            .expect("stub realize succeeds");
-        assert_eq!(
-            run.kernel_source,
-            primary_kernel_source(op, DType::F32, BackendId::Cpu),
-            "no realizer report → first-registered binding-table tag",
+        // No attribution (both None) → NO CellRun. The conservative cut writes
+        // nothing rather than a guessed or fabricated revision.
+        let mut silent = StubRealizer {
+            src: None,
+            rev: None,
+        };
+        assert!(
+            judge
+                .time_op_capturing(op, DType::F32, &size, &device, &mut silent)
+                .is_none(),
+            "unattributed dispatch must produce NO row, not a guessed/fabricated one",
         );
     }
 
@@ -2986,6 +3084,10 @@ mod tests {
             ranker_key,
             BackendId::Cpu,
             cpu_entry.kernel_source.as_str(),
+            // The round trip must key on the SAME revision the producer wrote,
+            // not 0 — the produced entry now carries a real attributed
+            // revision, so a 0 query would miss.
+            cpu_entry.kernel_revision_hash,
         );
         assert!(
             hit.is_some(),
@@ -3307,15 +3409,166 @@ mod tests {
                 iterations: 7,
                 max_rel_error: 1e-7,
                 kernel_source: String::new(),
+                kernel_revision_hash: 0,
+                device: test_equiv_key(BackendId::Cpu),
             }],
         };
         let tmp = std::env::temp_dir().join(format!("fuel-judge-test-{}.json", std::process::id()));
         report.save(&tmp).expect("save");
-        let loaded = ProfileReport::load(&tmp)
+        // Positive control: the loading machine declares it HAS the CPU device
+        // the report was stamped with, so the hardware gate admits it.
+        let loaded = ProfileReport::load(&tmp, &[test_equiv_key(BackendId::Cpu)])
             .expect("load")
             .expect("file exists");
         assert_eq!(loaded, report);
         let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// (a) device-identity gate. A `ProfileReport` is the output of ONE Judge
+    /// run on ONE machine, so a report stamped with device X must be REFUSED
+    /// WHOLE when loaded on a machine whose hardware is Y — the `device_index`
+    /// ordinal it was keyed by rebinds across machines, so a coincidental
+    /// overlap is a foreign report, not a valid subset. The paired positive
+    /// control (`current = [X]`) proves the `None` is the hardware gate firing,
+    /// not `load()` failing for a parse/version reason that would `None` either
+    /// way. X and Y share a backend and differ only in vendor/device id, so the
+    /// gate must discriminate on the FULL key, not merely the backend axis.
+    #[test]
+    fn load_refuses_a_report_measured_on_foreign_hardware() {
+        use fuel_ir::probe::EquivalenceKey;
+        let device_x = EquivalenceKey {
+            backend: BackendId::Cuda,
+            vendor_id: 0x10de, // NVIDIA
+            device_id: 0x2820,
+            compute_capability: Some((8, 9)),
+            driver_version: "560.0".to_string(),
+        };
+        let device_y = EquivalenceKey {
+            backend: BackendId::Cuda,
+            vendor_id: 0x1002, // AMD
+            device_id: 0x1234,
+            compute_capability: None,
+            driver_version: "24.0".to_string(),
+        };
+        assert_ne!(device_x, device_y);
+
+        let report = ProfileReport {
+            version: PROFILE_REPORT_VERSION,
+            entries: vec![ProfileEntry {
+                op: OpKind::MatMul,
+                dtype: DType::F32,
+                size_class: SizeClass(8),
+                backend: BackendId::Cuda,
+                device_index: 0,
+                latency_ns: 5_000,
+                iterations: 7,
+                max_rel_error: 1e-7,
+                kernel_source: String::new(),
+                kernel_revision_hash: 0,
+                device: device_x.clone(),
+            }],
+        };
+        let tmp =
+            std::env::temp_dir().join(format!("fuel-judge-foreign-{}.json", std::process::id()));
+        report.save(&tmp).expect("save");
+
+        // Loaded on a machine that has ONLY device Y: the report is foreign, so
+        // the whole thing is refused -> Ok(None).
+        let refused = ProfileReport::load(&tmp, std::slice::from_ref(&device_y)).expect("load ok");
+        assert!(
+            refused.is_none(),
+            "a report stamped on device X must be refused on a Y-only machine"
+        );
+
+        // Positive control: loaded on a machine that HAS device X, the SAME
+        // bytes load as Some — so the None above is the gate, not a parse or
+        // version failure that would fail regardless of hardware.
+        let admitted = ProfileReport::load(&tmp, std::slice::from_ref(&device_x)).expect("load ok");
+        assert_eq!(
+            admitted.expect("positive control: device X is present, report must load"),
+            report
+        );
+
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// `load()` deserializes BEFORE it checks the version, so a report from an
+    /// OLDER schema (missing today's fields) must still DESERIALIZE — otherwise
+    /// a stale report `Err`s where it should be a clean cache miss. This pins
+    /// that every field added since v4 carries `#[serde(default)]`: a v4-shaped
+    /// JSON (no `device`, no `kernel_revision_hash`) loads as `Ok(None)` (the
+    /// version gate), never `Err` (a parse failure). If a future field drops
+    /// its default, this goes red.
+    #[test]
+    fn v4_report_yields_no_oracle_entries() {
+        let report = ProfileReport {
+            version: PROFILE_REPORT_VERSION,
+            entries: vec![ProfileEntry {
+                op: OpKind::MatMul,
+                dtype: DType::F32,
+                size_class: SizeClass(8),
+                backend: BackendId::Cpu,
+                device_index: 0,
+                latency_ns: 12_345,
+                iterations: 7,
+                max_rel_error: 1e-7,
+                kernel_source: String::new(),
+                kernel_revision_hash: 0,
+                device: test_equiv_key(BackendId::Cpu),
+            }],
+        };
+        // Strip the current report back to the v4 wire shape: version 4, and
+        // drop the two fields v4 never had.
+        let mut v: serde_json::Value = serde_json::to_value(&report).expect("to_value");
+        v["version"] = serde_json::json!(4);
+        for e in v["entries"].as_array_mut().unwrap() {
+            let obj = e.as_object_mut().unwrap();
+            obj.remove("device");
+            obj.remove("kernel_revision_hash");
+        }
+        let tmp = std::env::temp_dir().join(format!("fuel-judge-v4-{}.json", std::process::id()));
+        std::fs::write(&tmp, serde_json::to_vec(&v).unwrap()).expect("write");
+
+        // Ok(None): the missing fields default in (deserialization succeeds —
+        // proving the `#[serde(default)]`s), then the version gate rejects the
+        // stale schema. An `Err` here would mean a new field lost its default
+        // and a stale report now crashes the load path instead of missing.
+        let loaded = ProfileReport::load(&tmp, &[test_equiv_key(BackendId::Cpu)]);
+        assert!(
+            matches!(loaded, Ok(None)),
+            "a v4-shaped report must load as Ok(None) (version gate), got {loaded:?}"
+        );
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    /// F2 born-red: the dispatched-alternative skip keys on the FULL identity
+    /// (kernel_source AND kernel_revision_hash), not the tag alone. Now that
+    /// variant siblings of one provider share a tag and differ only by revision,
+    /// a tag-only match would skip the WRONG sibling — leaving the dispatched one
+    /// re-measured and dropping a real sibling. This pins `is_dispatched_alt`,
+    /// the single place the skip identity is compared. Sabotage: drop the
+    /// revision check (tag-only) and the first assertion flips true → red.
+    #[test]
+    fn dispatched_alt_is_matched_on_source_and_revision() {
+        // A sibling sharing the tag but a DIFFERENT revision is NOT dispatched.
+        assert!(!is_dispatched_alt(
+            "portable-cpu",
+            0xAAAA,
+            "portable-cpu",
+            0xBBBB
+        ));
+        // The exact (source, revision) IS the dispatched kernel.
+        assert!(is_dispatched_alt(
+            "portable-cpu",
+            0xBBBB,
+            "portable-cpu",
+            0xBBBB
+        ));
+        // A different provider at the same revision is NOT dispatched.
+        assert!(!is_dispatched_alt("aocl", 0xBBBB, "portable-cpu", 0xBBBB));
+        // Untracked revision (0) still requires the tag to agree.
+        assert!(is_dispatched_alt("", 0, "", 0));
+        assert!(!is_dispatched_alt("mkl", 0, "", 0));
     }
 
     #[test]

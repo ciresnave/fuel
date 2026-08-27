@@ -100,7 +100,8 @@ pub fn prepare_dispatch_table(opts: ScheduleOptions) -> Result<(DispatchTable, P
 
     let profile = if reuse_profile {
         if let Some(pp) = profile_path.as_ref() {
-            match ProfileReport::load(pp)? {
+            let current: Vec<_> = current_probe.equivalence_classes().into_keys().collect();
+            match ProfileReport::load(pp, &current)? {
                 Some(r) => r,
                 None => run_and_persist(&current_probe, &opts, &probe_path, &profile_path)?,
             }
@@ -337,7 +338,8 @@ pub fn prepare_dp_inputs(
     // -- Profile report --
     let profile = if hardware_unchanged && !opts.force_rejudge {
         if let Some(pp) = profile_path.as_ref() {
-            ProfileReport::load(pp)?.unwrap_or_else(|| opts.judge.run(&current_probe))
+            let current: Vec<_> = current_probe.equivalence_classes().into_keys().collect();
+            ProfileReport::load(pp, &current)?.unwrap_or_else(|| opts.judge.run(&current_probe))
         } else {
             opts.judge.run(&current_probe)
         }
@@ -596,6 +598,7 @@ pub fn dp_plan(
                 backend: b,
                 device_index: 0,
                 kernel_source: "",
+                kernel_revision_hash: 0,
             };
             (id, pick_to_location(pick).unwrap_or(fallback_device))
         })
@@ -722,6 +725,7 @@ fn run_and_persist(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::judge::test_equiv_key;
     use crate::judge::{OpKind, OpSize};
 
     /// Force-rejudge on a fresh scratch dir — verifies the full
@@ -858,6 +862,8 @@ mod tests {
             iterations: 1,
             max_rel_error: 0.0,
             kernel_source: String::new(),
+            kernel_revision_hash: 0,
+            device: test_equiv_key(backend),
         };
         let report = ProfileReport {
             version: PROFILE_REPORT_VERSION,
@@ -932,6 +938,8 @@ mod tests {
                 iterations: 1,
                 max_rel_error: 0.0,
                 kernel_source: String::new(),
+                kernel_revision_hash: 0,
+                device: test_equiv_key(BackendId::Cpu),
             },
             ProfileEntry {
                 op: OpKind::MatMul,
@@ -943,6 +951,8 @@ mod tests {
                 iterations: 1,
                 max_rel_error: 0.0,
                 kernel_source: String::new(),
+                kernel_revision_hash: 0,
+                device: test_equiv_key(BackendId::Cuda),
             },
         ];
         let report = ProfileReport {
@@ -1069,6 +1079,8 @@ mod tests {
                 iterations: 1,
                 max_rel_error: 0.0,
                 kernel_source: String::new(),
+                kernel_revision_hash: 0,
+                device: test_equiv_key(BackendId::Cpu),
             },
             ProfileEntry {
                 op: OpKind::MatMul,
@@ -1080,6 +1092,8 @@ mod tests {
                 iterations: 1,
                 max_rel_error: 0.0,
                 kernel_source: String::new(),
+                kernel_revision_hash: 0,
+                device: test_equiv_key(BackendId::Cuda),
             },
         ];
         let report = ProfileReport {
@@ -1161,6 +1175,8 @@ mod tests {
                 iterations: 1,
                 max_rel_error: 0.0,
                 kernel_source: String::new(),
+                kernel_revision_hash: 0,
+                device: test_equiv_key(BackendId::Cpu),
             },
             ProfileEntry {
                 op: OpKind::MatMul,
@@ -1172,6 +1188,8 @@ mod tests {
                 iterations: 1,
                 max_rel_error: 0.0,
                 kernel_source: String::new(),
+                kernel_revision_hash: 0,
+                device: test_equiv_key(BackendId::Cuda),
             },
         ];
         let report = ProfileReport {
@@ -1242,6 +1260,8 @@ mod tests {
                 iterations: 1,
                 max_rel_error: 0.0,
                 kernel_source: String::new(),
+                kernel_revision_hash: 0,
+                device: test_equiv_key(BackendId::Cpu),
             },
             ProfileEntry {
                 op: OpKind::MatMul,
@@ -1253,6 +1273,8 @@ mod tests {
                 iterations: 1,
                 max_rel_error: 0.0,
                 kernel_source: String::new(),
+                kernel_revision_hash: 0,
+                device: test_equiv_key(BackendId::Cuda),
             },
             ProfileEntry {
                 op: OpKind::MatMul,
@@ -1264,6 +1286,8 @@ mod tests {
                 iterations: 1,
                 max_rel_error: 0.0,
                 kernel_source: String::new(),
+                kernel_revision_hash: 0,
+                device: test_equiv_key(BackendId::Cpu),
             },
             ProfileEntry {
                 op: OpKind::MatMul,
@@ -1275,6 +1299,8 @@ mod tests {
                 iterations: 1,
                 max_rel_error: 0.0,
                 kernel_source: String::new(),
+                kernel_revision_hash: 0,
+                device: test_equiv_key(BackendId::Cuda),
             },
         ];
         let report = ProfileReport {
@@ -1349,6 +1375,8 @@ mod tests {
                 iterations: 1,
                 max_rel_error: 0.0,
                 kernel_source: String::new(),
+                kernel_revision_hash: 0,
+                device: test_equiv_key(BackendId::Cpu),
             },
             ProfileEntry {
                 op: OpKind::MatMul,
@@ -1360,6 +1388,8 @@ mod tests {
                 iterations: 1,
                 max_rel_error: 0.0,
                 kernel_source: String::new(),
+                kernel_revision_hash: 0,
+                device: test_equiv_key(BackendId::Cuda),
             },
             ProfileEntry {
                 op: OpKind::MatMul,
@@ -1371,6 +1401,8 @@ mod tests {
                 iterations: 1,
                 max_rel_error: 0.0,
                 kernel_source: String::new(),
+                kernel_revision_hash: 0,
+                device: test_equiv_key(BackendId::Cpu),
             },
             ProfileEntry {
                 op: OpKind::MatMul,
@@ -1382,6 +1414,8 @@ mod tests {
                 iterations: 1,
                 max_rel_error: 0.0,
                 kernel_source: String::new(),
+                kernel_revision_hash: 0,
+                device: test_equiv_key(BackendId::Cuda),
             },
         ];
         let report = ProfileReport {
