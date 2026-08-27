@@ -15,6 +15,9 @@ use fuel_ir::Shape;
 
 /// Reproduce the eager UpsampleNearest2D convention in plain
 /// Rust so the lazy output can be checked element-wise.
+// needless_range_loop here: the index feeds computed stride/offset addressing into a
+// flat buffer (base = i*inner + j), which .iter() cannot express.
+#[allow(clippy::needless_range_loop)]
 fn nearest_oracle(
     src: &[f32],
     n: usize,

@@ -1952,6 +1952,9 @@ mod tests {
     }
 
     #[test]
+    // needless_range_loop here: the index feeds computed stride/offset addressing into
+    // a flat buffer (base = i*inner + j), which .iter() cannot express.
+    #[allow(clippy::needless_range_loop)]
     fn layer_norm_2d_is_per_channel() {
         // Constant-per-pixel input → variance is zero → output should
         // be the bias (since gain·0 + bias = bias).

@@ -407,6 +407,8 @@ fn apply_cga_attn(
 }
 
 /// CGA forward without windowing — assumes input fits as-is.
+// needless_range_loop here: the index addresses more than one collection in lock-step.
+#[allow(clippy::needless_range_loop)]
 fn cga_core(
     x: &Tensor,
     w: &CgaWeights,

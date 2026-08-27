@@ -492,6 +492,9 @@ mod tests {
     /// running three separate Q/K/V linears. Build an equivalent
     /// "unfused" model and compare — they should match exactly.
     #[test]
+    // needless_range_loop here: the loop walks an offset sub-range (start != 0), not a
+    // whole collection.
+    #[allow(clippy::needless_range_loop)]
     fn fused_wqkv_matches_independent_qkv_slicing() {
         let cfg = MixFormerConfig {
             num_hidden_layers: 1,

@@ -359,6 +359,8 @@ fn raw_conv_1x1_bias(
 /// Decode one raw detection tensor `[1, 3*(5+nc), H, W]` into per-anchor
 /// `[1, 3*H*W, 5+nc]` rows of `(cx, cy, w, h, obj, class[..])`. All
 /// outputs are in **pixel space** (network input resolution).
+// needless_range_loop here: the index addresses more than one collection in lock-step.
+#[allow(clippy::needless_range_loop)]
 fn decode_scale(
     raw: &Tensor,
     anchors: &[(usize, usize); 3],
@@ -878,6 +880,10 @@ impl Default for YoloV3NmsConfig {
 /// `(cx, cy, w, h, obj, class[..])` — `obj` and `class[..]` are
 /// already sigmoid-activated. We multiply `obj * class` to get the
 /// final confidence per class.
+// needless_range_loop here: the bound is a semantic count that need not equal the
+// indexed buffer len, so a mechanical .iter()/.take() risks silently dropping
+// iterations.
+#[allow(clippy::needless_range_loop)]
 pub fn decode_and_nms(
     raw: &YoloV3RawOutput,
     num_classes: usize,
@@ -1117,6 +1123,9 @@ mod tests {
     }
 
     #[test]
+    // needless_range_loop here: the index feeds computed stride/offset addressing into
+    // a flat buffer (base = i*inner + j), which .iter() cannot express.
+    #[allow(clippy::needless_range_loop)]
     fn detection_decode_geometry_is_pixel_space() {
         // Synthetic raw scale: anchors = [(20,30)], stride = 32, grid 2×2.
         // We hand-craft a [1, (5+nc)*3, H, W] tensor where every cell

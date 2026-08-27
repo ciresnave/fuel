@@ -751,6 +751,9 @@ mod tests {
     /// verify by comparing logits when the second image's pixels
     /// change: the first image's output must stay identical.
     #[test]
+    // needless_range_loop here: the loop walks an offset sub-range (start != 0), not a
+    // whole collection.
+    #[allow(clippy::needless_range_loop)]
     fn cu_seqlens_isolates_blocks_in_forward() {
         let cfg = tiny_config(vec![]);
         let model = Qwen3VlVisionModel {

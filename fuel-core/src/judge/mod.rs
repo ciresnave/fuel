@@ -2165,6 +2165,9 @@ struct CellRun {
 ///   validated.
 /// - Three runs with one outlier: consensus is the two that agree;
 ///   the outlier reports its rel_err against the cluster.
+// needless_range_loop here: the index is used as a value
+// (assert/message/push/compare), not only to index.
+#[allow(clippy::needless_range_loop)]
 fn compute_pairwise_consensus(runs: &[CellRun]) -> Vec<usize> {
     let n = runs.len();
     if n == 0 {

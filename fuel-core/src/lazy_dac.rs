@@ -334,6 +334,9 @@ fn apply_decoder_block(x: &Tensor, b: &DecoderBlockWeights, anchor: &Tensor) -> 
 ///
 /// `weight_v` is stored as `[c_out, c_in, k]` and `weight_g` as `[c_out, 1, 1]`
 /// (flattened to length `c_out`).
+// needless_range_loop here: the index feeds computed stride/offset addressing into a
+// flat buffer (base = i*inner + j), which .iter() cannot express.
+#[allow(clippy::needless_range_loop)]
 fn fuse_weight_norm_conv1d(
     weight_v: &[f32],
     weight_g: &[f32],
@@ -376,6 +379,9 @@ fn fuse_weight_norm_conv1d(
 /// `weight_g` is `[c_in, 1, 1]`. The normalisation is over the last two
 /// dims (per-input-channel), matching the eager
 /// `weight_v.sqr()?.sum_keepdim((1, 2))?.sqrt()?` recipe.
+// needless_range_loop here: the index feeds computed stride/offset addressing into a
+// flat buffer (base = i*inner + j), which .iter() cannot express.
+#[allow(clippy::needless_range_loop)]
 fn fuse_weight_norm_conv_transpose1d(
     weight_v: &[f32],
     weight_g: &[f32],

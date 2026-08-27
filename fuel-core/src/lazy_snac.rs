@@ -417,6 +417,9 @@ fn apply_local_mha(x: &Tensor, w: &LocalMhaWeights, _anchor: &Tensor) -> Result<
 /// `leading_dim` is `c_out` for Conv1d and `c_in` for ConvTranspose1d
 /// (the dim along which both `g` is stored and the reduction is
 /// *not* taken).
+// needless_range_loop here: the index feeds computed stride/offset addressing into a
+// flat buffer (base = i*inner + j), which .iter() cannot express.
+#[allow(clippy::needless_range_loop)]
 fn fuse_weight_norm(
     g: &[f32],
     v: &[f32],

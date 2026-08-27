@@ -35,6 +35,10 @@ fn rand_f32(shape: &[usize], seed: u32) -> Vec<f32> {
 /// known-correct oracle for the causal case, replacing the retired
 /// `fuel_reference_backend::attention::attention_naive`. Layout [B, H, S, D]
 /// row-major. Applies a causal mask when `causal` (position `j > i` masked).
+// needless_range_loop here: the bound is a semantic count that need not equal the
+// indexed buffer len, so a mechanical .iter()/.take() risks silently dropping
+// iterations.
+#[allow(clippy::needless_range_loop)]
 fn naive_attention(
     q: &[f32],
     k: &[f32],

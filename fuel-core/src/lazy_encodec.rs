@@ -775,6 +775,9 @@ pub fn pad1d(
 /// (i.e. one scalar per output channel). We fuse the norm back into
 /// the dense weight at load time so the rest of the lazy pipeline can
 /// treat the conv as a plain constant kernel.
+// needless_range_loop here: the index feeds computed stride/offset addressing into a
+// flat buffer (base = i*inner + j), which .iter() cannot express.
+#[allow(clippy::needless_range_loop)]
 fn fuse_weight_norm_conv1d(
     st: &crate::safetensors::MmapedSafetensors,
     name_prefix: &str,

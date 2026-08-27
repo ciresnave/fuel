@@ -733,6 +733,10 @@ mod tests {
     /// token-type table (the default type id at every position
     /// when `token_type_ids` is `None`) must alter the output.
     #[test]
+    // needless_range_loop here: the bound is a semantic count that need not equal the
+    // indexed buffer len, so a mechanical .iter()/.take() risks silently dropping
+    // iterations.
+    #[allow(clippy::needless_range_loop)]
     fn token_type_embedding_is_wired() {
         let cfg = tiny_cfg();
         let mut base = tiny_weights(&cfg);

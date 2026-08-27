@@ -739,6 +739,10 @@ impl Default for NmsConfig {
 /// Decode YOLOv8 raw output into per-class scored xyxy boxes, then run
 /// per-class NMS and return the surviving detections sorted by score
 /// descending.
+// needless_range_loop here: the bound is a semantic count that need not equal the
+// indexed buffer len, so a mechanical .iter()/.take() risks silently dropping
+// iterations.
+#[allow(clippy::needless_range_loop)]
 pub fn decode_and_nms(
     raw: &YoloV8RawOutput,
     num_classes: usize,

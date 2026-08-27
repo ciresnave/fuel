@@ -11961,6 +11961,10 @@ impl LlamaModel {
     /// - Both models share the same tokenizer (caller's
     ///   responsibility).
     #[allow(clippy::too_many_arguments)]
+    // needless_range_loop here: the bound is a semantic count that need not equal the
+    // indexed buffer len, so a mechanical .iter()/.take() risks silently dropping
+    // iterations.
+    #[allow(clippy::needless_range_loop)]
     pub fn generate_streaming_spec_with_kv_context(
         &self,
         draft: &LlamaModel,
@@ -18007,6 +18011,10 @@ mod generate_tests {
     /// serial reference. A fixed-offset heterogeneous schedule would pass
     /// vacuously even with that bug; distinct absolute positions do not.
     #[test]
+    // needless_range_loop here: the bound is a semantic count that need not equal the
+    // indexed buffer len, so a mechanical .iter()/.take() risks silently dropping
+    // iterations.
+    #[allow(clippy::needless_range_loop)]
     fn ragged_batched_paged_decode_matches_per_session_serial() {
         let cfg = LlamaConfig {
             vocab_size: 32,
