@@ -198,6 +198,16 @@ pub fn dl_dtype(d: DType) -> crate::Result<DLDataType> {
                  rather than asserting a bit-width a consumer would stride on",
             ));
         }
+        // GAP-247. Spec-backed, NOT an analogy: FDX §6.1 assigns bool three
+        // times over — `kDLBool = 6` in the `DLDataTypeCode` enum
+        // (`dlpack-extension.md:724`), the mapping "bool → `kDLBool`" (`:1049`),
+        // and the table row "`BOOL` … 8 bits … DLPack `kDLBool`" (`:1029`).
+        //
+        // Contrast the fp8 declines above, which exist precisely because no
+        // authority had made the call. Here one had, and the arm was simply
+        // never added when `Bool` shipped — `K_DL_BOOL` has been sitting in
+        // `abi.rs:29` unused, because no gate builds `--features dlpack`.
+        DType::Bool => (K_DL_BOOL, 8),
         DType::U8 => (K_DL_UINT, 8),
         DType::I8 => (K_DL_INT, 8),
         DType::U32 => (K_DL_UINT, 32),
