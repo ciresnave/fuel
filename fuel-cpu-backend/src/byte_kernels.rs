@@ -1001,10 +1001,6 @@ pub fn cumsum_f16(
 /// or `!keep_upper && j as i64 <= i as i64 + diagonal`; zeros
 /// everywhere else. Dtype-agnostic at the byte level: the caller
 /// supplies `dtype_size_in_bytes` and the kernel walks bytes.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "kernel entry point: the parameters are the operand buffers / strides / dims of the op ABI; bundling into a struct would obscure the signature, not clarify it"
-)]
 pub fn triangular_cpu(
     input: &CpuStorageBytes,
     out: &mut CpuStorageBytes,
@@ -1424,10 +1420,6 @@ pub fn contiguize_cpu(
 /// Updates: `out[outer, indices[i], inner] += src[outer, i, inner]`
 /// for each `i ∈ 0..n_indices`. Out-of-bounds indices return a
 /// typed Error.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "kernel entry point: the parameters are the operand buffers / strides / dims of the op ABI; bundling into a struct would obscure the signature, not clarify it"
-)]
 pub fn index_add_f32(
     base: &CpuStorageBytes,
     indices: &CpuStorageBytes,
@@ -1504,10 +1496,6 @@ pub fn index_add_f32(
 /// type `$T` (f32 / f64). Accumulates in-place using `$T`'s `+=`.
 macro_rules! index_add_native_kernel {
     ($name:ident, $T:ty, $T_size:expr) => {
-        #[expect(
-            clippy::too_many_arguments,
-            reason = "kernel entry point: the parameters are the operand buffers / strides / dims of the op ABI; bundling into a struct would obscure the signature, not clarify it"
-        )]
         pub fn $name(
             base: &CpuStorageBytes,
             indices: &CpuStorageBytes,
@@ -1584,10 +1572,6 @@ index_add_native_kernel!(index_add_f64, f64, std::mem::size_of::<f64>());
 /// Accumulates in f32 (widen → +=  → narrow back).
 macro_rules! index_add_half_kernel {
     ($name:ident, $T:ty, $T_size:expr) => {
-        #[expect(
-            clippy::too_many_arguments,
-            reason = "kernel entry point: the parameters are the operand buffers / strides / dims of the op ABI; bundling into a struct would obscure the signature, not clarify it"
-        )]
         pub fn $name(
             base: &CpuStorageBytes,
             indices: &CpuStorageBytes,
@@ -1965,10 +1949,6 @@ pub fn scatter_add_f32(
 /// Each output element at `(outer, j, inner)` reads from source
 /// at `(outer, indices[j], inner)`. Out-of-bounds indices return
 /// a typed error rather than reading garbage.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "kernel entry point: the parameters are the operand buffers / strides / dims of the op ABI; bundling into a struct would obscure the signature, not clarify it"
-)]
 pub fn index_select_cpu(
     source: &CpuStorageBytes,
     indices: &CpuStorageBytes,
@@ -4692,10 +4672,6 @@ cast_kernel!(
 ///
 /// This is correctness-first; vendor BLAS backends will eclipse
 /// it on performance once they're wired into the unified path.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "kernel entry point: the parameters are the operand buffers / strides / dims of the op ABI; bundling into a struct would obscure the signature, not clarify it"
-)]
 pub fn matmul_f32(
     lhs: &CpuStorageBytes,
     rhs: &CpuStorageBytes,
@@ -4863,10 +4839,6 @@ pub fn matmul_f32_capacity(
 /// cuDNN use to keep matmul numerically stable on half floats.
 macro_rules! matmul_half_kernel {
     ($name:ident, $T:ty, $type_name:literal) => {
-        #[expect(
-            clippy::too_many_arguments,
-            reason = "kernel entry point: the parameters are the operand buffers / strides / dims of the op ABI; bundling into a struct would obscure the signature, not clarify it"
-        )]
         pub fn $name(
             lhs: &CpuStorageBytes,
             rhs: &CpuStorageBytes,
@@ -5005,10 +4977,6 @@ matmul_half_kernel!(matmul_f16, half::f16, "matmul_f16");
 /// (textbook (i, k, j) triple loop) and not a performance target.
 macro_rules! matmul_int_kernel {
     ($name:ident, $T:ty, $type_name:literal) => {
-        #[expect(
-            clippy::too_many_arguments,
-            reason = "kernel entry point: the parameters are the operand buffers / strides / dims of the op ABI; bundling into a struct would obscure the signature, not clarify it"
-        )]
         pub fn $name(
             lhs: &CpuStorageBytes,
             rhs: &CpuStorageBytes,
@@ -5148,10 +5116,6 @@ matmul_int_kernel!(matmul_u8, u8, "matmul_u8");
 /// Batched row-major `f64` matrix multiply — a direct mirror of
 /// [`matmul_f32`] with f64 element type and accumulator. Same
 /// per-axis matched/GQA contract; same (i, k, j) inner loop.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "kernel entry point: the parameters are the operand buffers / strides / dims of the op ABI; bundling into a struct would obscure the signature, not clarify it"
-)]
 pub fn matmul_f64(
     lhs: &CpuStorageBytes,
     rhs: &CpuStorageBytes,
@@ -5310,10 +5274,6 @@ fn block_slice_from_bytes<'a, T>(name: &str, bytes: &'a [u8]) -> Result<&'a [T]>
     Ok(unsafe { std::slice::from_raw_parts(ptr as *const T, bytes.len() / size) })
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "kernel entry point: the parameters are the operand buffers / strides / dims of the op ABI; bundling into a struct would obscure the signature, not clarify it"
-)]
 fn qmatmul_generic_f32<T: fuel_quantized::GgmlType>(
     name: &str,
     activations: &CpuStorageBytes,
@@ -6134,10 +6094,6 @@ pub fn reduce_max_to_f16(
 // batch prefixes). The fused form simply seeds the accumulator with
 // bias[j] before the inner product.
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "shape-validation helper: the parameters are the per-operand byte sizes it cross-checks; inherent to the op's operand count, not a design smell"
-)]
 fn fused_linear_check<T>(
     name: &str,
     lhs: &CpuStorageBytes,
@@ -6392,10 +6348,6 @@ pub const REDUCTION_NONE: u8 = 2;
 /// reduction tag:
 ///   - `REDUCTION_MEAN` / `REDUCTION_SUM`: 4 bytes (one f32 scalar).
 ///   - `REDUCTION_NONE`: `n_rows * 4` bytes.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "shape-validation helper: the parameters are the per-operand byte sizes it cross-checks; inherent to the op's operand count, not a design smell"
-)]
 fn fused_softmax_cross_entropy_check_shapes(
     name: &str,
     logits_elem_bytes: usize,
