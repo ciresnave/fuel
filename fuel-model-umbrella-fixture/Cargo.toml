@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+[package]
+name = "fuel-model-umbrella-fixture"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Test fixture: an umbrella crate that re-exports a fuel-model-* leaf, per 02-layers' fuel-transformers shape."
+publish = false
+
+[dependencies]
+fuel-model-core = { path = "../fuel-model-core" }
+fuel-model-fixture = { path = "../fuel-model-fixture" }
+inventory = "0.3"
