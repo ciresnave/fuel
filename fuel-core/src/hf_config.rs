@@ -62,6 +62,23 @@ pub fn num_key_value_heads(explicit: Option<usize>, num_attention_heads: usize) 
 mod tests {
     use super::*;
 
+    // EACH ARM BELOW WAS SABOTAGED INDIVIDUALLY, and each sabotage failed
+    // exactly one arm while the other three stayed green. That is the claim
+    // worth recording: not "the suite went red once", but that every arm is
+    // sensitive to a DISTINCT regression and none is decoration.
+    //
+    //   arm                                        sabotage that fails it alone
+    //   head_dim_prefers_the_explicit_value...     ignore `explicit`, always derive
+    //   head_dim_derives_only_when_absent          derive as `hidden_size` (drop /heads)
+    //   kv_heads_preserves_true_mqa                ignore `explicit`, always use heads
+    //   kv_heads_absent_means_mha                  fall back to 1 instead of heads
+    //
+    // Done while the harness was warm. An arm whose failure cannot be
+    // provoked alone is redundant with another or asserts something the code
+    // cannot violate -- either way a finding, and one that is nearly
+    // impossible to reconstruct later because nobody remembers what each arm
+    // was aimed at.
+
     #[test]
     fn head_dim_prefers_the_explicit_value_over_the_quotient() {
         // The case the corpus cannot exercise: every in-tree fixture that
