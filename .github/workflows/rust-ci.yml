@@ -266,6 +266,22 @@ jobs:
       - name: Check jit-gated compilation (GAP-233)
         if: matrix.os == 'ubuntu-latest'
         run: cargo check -p fuel-dispatch --features jit --all-targets
+      # `dlpack` is default-off and, before this step, NO workflow compiled a line
+      # behind `--features dlpack` — so fuel-ir's exhaustive `DType`→FDX match
+      # (`dlpack::convert::dtype_to_fdx`, the §6.1 wire codec) had no gate at all.
+      # That match went RED on `DType::Bool` (E0004, convert.rs:62) while every
+      # default CI check stayed GREEN — exactly the invisible-behind-a-feature
+      # class this section documents. Pure-host, seconds: no baracuda, no SDK, no
+      # GPU. `--all-targets` so fuel-ir's OWN dlpack test targets (the born-red
+      # `bool_rides_the_base_*`) compile — the artifact that proves that is
+      # `fuel-ir (lib test)` in this log, not a bare `Checking fuel-ir` line.
+      # (fuel-memory's `dlpack_view` consumer is NOT gated here: it carries a
+      # pre-existing dead-code warning, `PACKING_BYTE_ALIGNED`, whose disposition
+      # is the owner's; extend this to `-p fuel-ir -p fuel-memory
+      # --features fuel-memory/dlpack` once that is cleared.)
+      - name: Check dlpack-gated fuel-ir (GAP-233; §6.1 wire codec)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo check -p fuel-ir --features dlpack --all-targets
 
   test:
     name: Test Suite
