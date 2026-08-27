@@ -573,12 +573,21 @@ mod tests {
             .collect();
         let metadata: Option<HashMap<String, String>> = None;
         let bytes_out = safetensors::serialize(&views, metadata).unwrap();
+        // PID + nanos + a process-local counter. On Windows the system clock
+        // advances every 100 ns and `as_nanos()` merely reports that value in
+        // nanosecond units, so a timestamp ALONE is not unique: measured at
+        // 64836 collisions in 80000 concurrent samples (81%). Two tests in one
+        // binary then share a path and clobber each other's data, which surfaces
+        // as a round-trip mismatch rather than an IO error.
+        static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let path = std::env::temp_dir().join(format!(
-            "fuel_lazy_csm_test_{}.safetensors",
+            "fuel_lazy_csm_test_{}_{}_{}.safetensors",
+            std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos(),
+            TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         ));
         std::fs::write(&path, bytes_out).unwrap();
         path
