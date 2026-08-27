@@ -139,7 +139,39 @@ fn matmul_f32_mkl_cpu_wrapper(
             m,
             n,
             k,
-        } => (lhs_batch_dims, rhs_batch_dims, *m, *n, *k),
+            m_compute,
+        } => {
+            // Data-determined-M (sparse MoE): `m` is the row CAPACITY and only
+            // `m_compute` rows hold real data; the tail is uninitialized
+            // capacity. `matmul_f32_mkl` hands `m` straight to a BLAS gemm,
+            // which has no row-limit concept — so for anything but `All` it
+            // would compute rows past the valid data and write
+            // plausible-looking garbage. DECLINE loudly rather than fabricate.
+            //
+            // Matched exhaustively on purpose (no `..`, no wildcard): a new
+            // `MatmulM` variant must be a compile error here, not a silent
+            // fallthrough into the all-rows path.
+            //
+            // The sibling arm in `fuel-aocl-cpu-backend` says the same thing
+            // and was written when `m_compute` was added. THIS crate never got
+            // it — and nothing noticed, because no gate compiles
+            // `fuel-mkl-cpu-backend`: it is not a `default-member` and CI
+            // excludes it, so the lib AND its tests have been uncompilable
+            // since that field landed (GAP-247 class, found 2026-08-27 while
+            // closing GAP-243's last two sites).
+            match m_compute {
+                fuel_dispatch::kernel::MatmulM::All => {}
+                other => {
+                    return Err(Error::Msg(format!(
+                        "matmul_f32_mkl wrapper: only MatmulM::All is supported; the MKL \
+                         BLAS gemm path computes all {m} rows and cannot honour a reduced \
+                         row count, got {other:?}",
+                    ))
+                    .bt());
+                }
+            }
+            (lhs_batch_dims, rhs_batch_dims, *m, *n, *k)
+        }
         other => {
             return Err(Error::Msg(format!(
                 "matmul_f32_mkl wrapper expects OpParams::Matmul, got {other:?}",
@@ -531,9 +563,11 @@ mod tests {
         use fuel_ir::dispatch::OpKind;
         use fuel_memory::{BackendStorage, Storage};
 
-        if crate::probe_mkl_loadable().is_err() {
-            eprintln!("MKL not available, skipping");
-            return;
+        if let Err(e) = crate::probe_mkl_loadable() {
+            return fuel_test_support::hardware::skip(
+                fuel_test_support::hardware::Hardware::Mkl,
+                fuel_test_support::hardware::Missing::device(format!("probe_mkl_loadable: {e:?}")),
+            );
         }
 
         // Build the binding table with both CPU + MKL.
@@ -576,6 +610,7 @@ mod tests {
             m: 3,
             n: 5,
             k: 4,
+            m_compute: fuel_dispatch::kernel::MatmulM::All,
         };
 
         // Run each alternative; collect outputs.
@@ -616,9 +651,11 @@ mod tests {
     fn mkl_conv2d_matches_scalar_when_available() {
         use fuel_memory::{BackendStorage, Storage};
 
-        if crate::probe_mkl_loadable().is_err() {
-            eprintln!("MKL not available, skipping");
-            return;
+        if let Err(e) = crate::probe_mkl_loadable() {
+            return fuel_test_support::hardware::skip(
+                fuel_test_support::hardware::Hardware::Mkl,
+                fuel_test_support::hardware::Missing::device(format!("probe_mkl_loadable: {e:?}")),
+            );
         }
 
         let mut table = KernelBindingTable::new();

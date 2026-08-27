@@ -2140,6 +2140,7 @@ dependencies = [
  "fuel-dispatch",
  "fuel-ir",
  "fuel-memory",
+ "fuel-test-support",
  "onemkl",
 ]
 
