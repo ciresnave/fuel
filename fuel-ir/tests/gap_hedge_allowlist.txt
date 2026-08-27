@@ -85,7 +85,6 @@ fuel-cuda-backend/src/lib.rs	// The baracuda FA2 launcher (`flash_attn::launch`)
 fuel-cuda-backend/src/probe.rs	// TODO(cuda): CUDA *can* report this — it is
 fuel-cuda-backend/src/storage.rs	// stays on PTX for now because baracuda's interpolate-bilinear FFI
 fuel-cuda-backend/src/storage.rs	/// supported on CUDA today. Prefill (m > 1) bails; the caller
-fuel-cuda-backend/src/ug.rs	// TODO: support more dtypes.
 fuel-dispatch/src/baracuda_dispatch.rs	// Bias / BiasRelu / BiasGelu / BiasSilu epilogues are not yet wired
 fuel-dispatch/src/dispatch.rs	// dtype). Registered DIRECTLY (not yet FKC-contract-sourced): the
 fuel-dispatch/src/dispatch.rs	/// SUBMITTED but not yet observed completed, per device. It is a
@@ -183,7 +182,6 @@ fuel-kernels-source/src/lib.rs	//!   co-located there; Slang→CUDA unification 
 fuel-lazy-examples/src/bin/yolov8-lazy.rs	// `sigmoid(0) = 0.5` and every anchor passes a naive threshold. To
 fuel-memory/src/dlpack_view.rs	// the GPU path is explicitly TODO rather than silently wrong.
 fuel-memory/src/dlpack_view.rs	//! A naive "store a pointer into my own field" is unsound: moving the
-fuel-metal-backend/src/ug.rs	// TODO: support more dtypes.
 fuel-metal-kernels/src/kernels/sdpa.rs	/// - final type != bf16 (TODO maybe just template this kernel too?)
 fuel-metal-kernels/src/metal/commands.rs	// TODO: Avoid redundant allocation before drop
 fuel-nn/src/conv_transpose.rs	//!   carry it yet (the eager `// TODO: support groups.` comment will

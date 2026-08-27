@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 use fuel_ir::{DType, Result};
 
-#[cfg(feature = "ug")]
-use fuel_metal_kernels::metal::ComputePipeline;
 use fuel_metal_kernels::{
     Kernels,
     metal::{
@@ -97,29 +95,6 @@ impl std::ops::Deref for MetalDevice {
 }
 
 impl MetalDevice {
-    #[cfg(all(feature = "ug", not(target_arch = "wasm32"), not(target_os = "ios")))]
-    pub fn compile(
-        &self,
-        func_name: &'static str,
-        kernel: fuel_ug::lang::ssa::Kernel,
-    ) -> Result<ComputePipeline> {
-        let mut buf = vec![];
-        fuel_ug::metal::code_gen::r#gen(&mut buf, func_name, &kernel)?;
-        let metal_code = String::from_utf8(buf)?;
-        let lib = self
-            .device
-            .new_library_with_source(&metal_code, None)
-            .map_err(MetalError::from)?;
-        let func = lib
-            .get_function(func_name, None)
-            .map_err(MetalError::from)?;
-        let pl = self
-            .device
-            .new_compute_pipeline_state_with_function(&func)
-            .map_err(MetalError::from)?;
-        Ok(pl)
-    }
-
     pub fn id(&self) -> DeviceId {
         self.id
     }

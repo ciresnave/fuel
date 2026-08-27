@@ -21,15 +21,22 @@
     zip         = { workspace = true }
 
 [target.'cfg(all(not(target_arch = "wasm32"), not(target_os = "ios")))'.dependencies]
-    fuel-ug = { workspace = true, optional = true }
 
 [features]
+# Declared but EMPTY, and deliberately so. `ug` no longer pulls a dependency —
+# the ug integration was removed wholesale (it was Candle-inherited, feature-gated,
+# and Fuel never constructed a ug::Kernel). This flag survives only to keep the
+# `Error::Ug` variant compiling for anyone who enabled it, so its removal is a
+# deliberate act at the next BREAKING release rather than a side effect of this
+# cleanup. Without the declaration the variant's `#[cfg(feature = "ug")]` becomes
+# an `unexpected_cfgs` warning, which CI denies.
+# DELETE the feature AND the Error::Ug variant together at the next major bump.
+ug      = []
     default = []
     # FDX — the Fuel DLPack eXtension (docs/specs/dlpack-extension.md): a
     # versioned, optional sidecar over standard DLPack for the kernel boundary.
     # POD structs + the normative FDX code tables; no extra deps yet.
     dlpack  = []
-    ug      = ["dep:fuel-ug"]
     # Enable `#[derive(Serialize, Deserialize)]` on persistence-shaped types
     # (device probe descriptors, later Judge output). Kept opt-in so downstream
     # crates that don't need serde avoid the compile cost. Pulls serde_json so

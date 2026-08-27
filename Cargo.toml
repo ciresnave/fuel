@@ -39,7 +39,6 @@ members = [
     "fuel-memory",
     "fuel-training",
     "fuel-transformers",
-    "fuel-ug",
     "fuel-tensor-tools",
     "fuel-test-support",
 ]
@@ -74,7 +73,6 @@ default-members = [
     "fuel-quantized",
     "fuel-transformers",
     "fuel-training",
-    "fuel-ug",
     # Dependency-free and toolchain-free, so it belongs in the DEFAULT set: a
     # plain `cargo check` must build the helper that every live test's gate now
     # routes through (GAP-157).
@@ -143,7 +141,6 @@ fuel-quantized = { path = "./fuel-quantized", version = "0.10.3" }
 fuel-memory = { path = "./fuel-memory", version = "0.10.3" }
 fuel-training = { path = "./fuel-training", version = "0.10.3" }
 fuel-transformers = { path = "./fuel-transformers", version = "0.10.3" }
-fuel-ug = { path = "./fuel-ug", version = "0.10.3" }
 clap = { version = "4", features = ["derive"] }
 criterion = { version = "0.8", default-features = false }
 # --- CUDA FFI layer: baracuda -----------------------------------------------
@@ -384,9 +381,6 @@ tokenizers = { version = "0.23.1", default-features = false }
 tracing = "0.1.37"
 tracing-chrome = "0.7.1"
 tracing-subscriber = "0.3.23"
-ug = "0.5.0"
-ug-cuda = "0.5.0"
-ug-metal = "0.5.0"
 yoke = { version = "0.8", features = ["derive"] }
 zip = { version = "8.5.0", default-features = false }
 objc2 = { version = "0.6" }

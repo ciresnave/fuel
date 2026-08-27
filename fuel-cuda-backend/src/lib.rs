@@ -62,8 +62,6 @@ pub mod probe;
 pub mod quantized;
 pub mod storage;
 pub mod storage_status;
-#[cfg(feature = "ug")]
-pub mod ug;
 pub mod utils;
 
 /// Step E A4b-1: the async-completion primitive the executor defers waits on.
