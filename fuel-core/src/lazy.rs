@@ -42,6 +42,7 @@
 use crate::inference_context::{InferenceContext, KvCache, KvSlot};
 use crate::{DType, Device, Shape};
 use fuel_ir::shape::{Dim, Dims};
+use serde::Deserialize;
 use std::sync::Arc;
 
 /// A lazy tensor that builds a `fuel_graph::Graph` as its methods are
@@ -7546,7 +7547,7 @@ impl Tensor {
 /// - `norm_eps` is the epsilon of the RmsNorm layers.
 /// - `rope_base` is the frequency base for rotary position embeddings
 ///   (`10_000` in original LLaMA, `500_000` in LLaMA 3).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct LlamaConfig {
     pub vocab_size: usize,
     pub dim: usize,
@@ -7557,6 +7558,64 @@ pub struct LlamaConfig {
     pub ffn_dim: usize,
     pub norm_eps: f64,
     pub rope_base: f64,
+}
+
+fn default_llama_norm_eps() -> f64 {
+    1e-5
+}
+fn default_llama_rope_base() -> f64 {
+    10_000.0
+}
+
+/// A Llama `config.json` under HuggingFace's field names.
+///
+/// Mirrors the wire format rather than this crate's vocabulary: `LlamaConfig`
+/// calls these `dim`, `n_layers`, `n_heads`, `ffn_dim`, `rope_base`, and
+/// doing the rename in `#[serde(rename)]` attributes would scatter it. It
+/// happens in [`Self::resolve`] as one visible block.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct LlamaConfigRaw {
+    vocab_size: usize,
+    hidden_size: usize,
+    num_hidden_layers: usize,
+    num_attention_heads: usize,
+    intermediate_size: usize,
+    #[serde(default)]
+    num_key_value_heads: Option<usize>,
+    #[serde(default)]
+    head_dim: Option<usize>,
+    #[serde(default = "default_llama_norm_eps", rename = "rms_norm_eps")]
+    norm_eps: f64,
+    #[serde(default = "default_llama_rope_base", rename = "rope_theta")]
+    rope_base: f64,
+}
+
+impl LlamaConfigRaw {
+    fn from_json_str(json: &str) -> crate::Result<Self> {
+        serde_json::from_str(json)
+            .map_err(|e| crate::Error::Msg(format!("parsing config.json: {e}")))
+    }
+
+    fn resolve(self) -> crate::Result<LlamaConfig> {
+        Ok(LlamaConfig {
+            vocab_size: self.vocab_size,
+            dim: self.hidden_size,
+            n_layers: self.num_hidden_layers,
+            n_heads: self.num_attention_heads,
+            n_kv_heads: crate::hf_config::num_key_value_heads(
+                self.num_key_value_heads,
+                self.num_attention_heads,
+            ),
+            head_dim: crate::hf_config::head_dim(
+                self.head_dim,
+                self.hidden_size,
+                self.num_attention_heads,
+            ),
+            ffn_dim: self.intermediate_size,
+            norm_eps: self.norm_eps,
+            rope_base: self.rope_base,
+        })
+    }
 }
 
 impl LlamaConfig {
@@ -7574,49 +7633,13 @@ impl LlamaConfig {
     /// - `rope_theta` → `rope_base` (defaults to 10000 when absent)
     /// - `head_dim` is taken directly when present, or computed as
     ///   `hidden_size / num_attention_heads` otherwise.
+    /// Parse a HuggingFace `config.json` into a [`LlamaConfig`].
+    ///
+    /// [`LlamaConfigRaw`] is the wire shape under HF's own field names;
+    /// [`LlamaConfigRaw::resolve`] applies the two cross-field defaults and
+    /// renames into this crate's vocabulary.
     pub fn from_hf_json_str(json: &str) -> crate::Result<Self> {
-        let v: serde_json::Value = serde_json::from_str(json)
-            .map_err(|e| crate::Error::Msg(format!("parsing config.json: {e}")))?;
-
-        let get_usize = |key: &str| -> crate::Result<usize> {
-            v.get(key)
-                .and_then(|x| x.as_u64())
-                .map(|x| x as usize)
-                .ok_or_else(|| {
-                    crate::Error::Msg(format!("config.json: missing/invalid field {key:?}"))
-                })
-        };
-        let get_f64 = |key: &str| -> Option<f64> { v.get(key).and_then(|x| x.as_f64()) };
-
-        let vocab_size = get_usize("vocab_size")?;
-        let dim = get_usize("hidden_size")?;
-        let n_layers = get_usize("num_hidden_layers")?;
-        let n_heads = get_usize("num_attention_heads")?;
-        let n_kv_heads = v
-            .get("num_key_value_heads")
-            .and_then(|x| x.as_u64())
-            .map(|x| x as usize)
-            .unwrap_or(n_heads);
-        let ffn_dim = get_usize("intermediate_size")?;
-        let head_dim = v
-            .get("head_dim")
-            .and_then(|x| x.as_u64())
-            .map(|x| x as usize)
-            .unwrap_or(dim / n_heads);
-        let norm_eps = get_f64("rms_norm_eps").unwrap_or(1e-5);
-        let rope_base = get_f64("rope_theta").unwrap_or(10_000.0);
-
-        Ok(LlamaConfig {
-            vocab_size,
-            dim,
-            n_layers,
-            n_heads,
-            n_kv_heads,
-            head_dim,
-            ffn_dim,
-            norm_eps,
-            rope_base,
-        })
+        LlamaConfigRaw::from_json_str(json)?.resolve()
     }
 }
 
@@ -14228,8 +14251,138 @@ fn partial_rope(
 }
 
 #[cfg(test)]
+impl LlamaConfig {
+    /// The hand-rolled parser this type used before the `serde` split, kept
+    /// verbatim and test-only as the differential's oracle.
+    pub(crate) fn from_hf_json_str_legacy(json: &str) -> crate::Result<Self> {
+        let v: serde_json::Value = serde_json::from_str(json)
+            .map_err(|e| crate::Error::Msg(format!("parsing config.json: {e}")))?;
+
+        let get_usize = |key: &str| -> crate::Result<usize> {
+            v.get(key)
+                .and_then(|x| x.as_u64())
+                .map(|x| x as usize)
+                .ok_or_else(|| {
+                    crate::Error::Msg(format!("config.json: missing/invalid field {key:?}"))
+                })
+        };
+        let get_f64 = |key: &str| -> Option<f64> { v.get(key).and_then(|x| x.as_f64()) };
+
+        let vocab_size = get_usize("vocab_size")?;
+        let dim = get_usize("hidden_size")?;
+        let n_layers = get_usize("num_hidden_layers")?;
+        let n_heads = get_usize("num_attention_heads")?;
+        let n_kv_heads = v
+            .get("num_key_value_heads")
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize)
+            .unwrap_or(n_heads);
+        let ffn_dim = get_usize("intermediate_size")?;
+        let head_dim = v
+            .get("head_dim")
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize)
+            .unwrap_or(dim / n_heads);
+        let norm_eps = get_f64("rms_norm_eps").unwrap_or(1e-5);
+        let rope_base = get_f64("rope_theta").unwrap_or(10_000.0);
+
+        Ok(LlamaConfig {
+            vocab_size,
+            dim,
+            n_layers,
+            n_heads,
+            n_kv_heads,
+            head_dim,
+            ffn_dim,
+            norm_eps,
+            rope_base,
+        })
+    }
+}
+
+#[cfg(test)]
 mod hub_tests {
     use super::*;
+
+    /// Every `config.json` fixture this module exercises, as ONE corpus.
+    ///
+    /// **Corpus: 4 fixtures — 3 pre-existing, 1 added.** Per-rule coverage:
+    ///
+    /// | rule                  | discriminated by a PRE-EXISTING fixture?                |
+    /// |-----------------------|---------------------------------------------------------|
+    /// | `num_key_value_heads` | YES — llama3-8b ships 8 against 32 heads                 |
+    /// | `head_dim`            | NO — llama3-8b ships 128 against a quotient of 4096/32 = 128, so the axis is COLLAPSED; the legacy fixture omits it. Fixture 4 added. |
+    ///
+    /// Fifth config in this increment and the third `head_dim` collapse: real
+    /// configs usually ship the quotient, so the axis arrives pre-collapsed
+    /// almost everywhere and each conversion needs its own non-quotient case.
+    const DIFFERENTIAL_CORPUS: &[(&str, &str)] = &[
+        (
+            "llama3-8b (kv_heads 8 != 32 discriminates; head_dim 128 == 4096/32 does NOT)",
+            r#"{
+                "architectures": ["LlamaForCausalLM"], "hidden_size": 4096,
+                "intermediate_size": 14336, "num_hidden_layers": 32,
+                "num_attention_heads": 32, "num_key_value_heads": 8,
+                "vocab_size": 128256, "rms_norm_eps": 1e-5, "rope_theta": 500000.0,
+                "head_dim": 128, "max_position_embeddings": 8192,
+                "torch_dtype": "bfloat16"
+            }"#,
+        ),
+        (
+            "legacy LLaMA-1 (no GQA, no rope_theta, no head_dim)",
+            r#"{
+                "hidden_size": 64, "intermediate_size": 256, "num_hidden_layers": 2,
+                "num_attention_heads": 4, "vocab_size": 128, "rms_norm_eps": 1e-5
+            }"#,
+        ),
+        (
+            "missing required fields — both paths must REJECT",
+            r#"{"hidden_size": 64}"#,
+        ),
+        (
+            "ADDED: explicit head_dim DISAGREEING with hidden_size/num_attention_heads",
+            r#"{
+                "hidden_size": 4096, "intermediate_size": 14336, "num_hidden_layers": 32,
+                "num_attention_heads": 32, "vocab_size": 128256, "head_dim": 96
+            }"#,
+        ),
+    ];
+
+    #[test]
+    fn serde_path_agrees_with_the_legacy_parser_on_every_fixture() {
+        assert_eq!(DIFFERENTIAL_CORPUS.len(), 4, "corpus shrank");
+        for (name, json) in DIFFERENTIAL_CORPUS {
+            let new = LlamaConfig::from_hf_json_str(json);
+            let old = LlamaConfig::from_hf_json_str_legacy(json);
+            match (new, old) {
+                // `LlamaConfig` gained `PartialEq` for this: a hand-written
+                // field-by-field comparison can silently OMIT a field, which
+                // would make the differential blind to exactly that field.
+                // The derive covers every field by construction.
+                (Ok(a), Ok(b)) => assert_eq!(a, b, "differential mismatch on {name}"),
+                (Err(_), Err(_)) => {}
+                (Ok(_), Err(e)) => panic!("{name}: serde accepted, legacy rejected: {e}"),
+                (Err(e), Ok(_)) => panic!("{name}: serde rejected, legacy accepted: {e}"),
+            }
+        }
+    }
+
+    #[test]
+    fn explicit_head_dim_survives_both_paths() {
+        let json = DIFFERENTIAL_CORPUS[3].1;
+        let cfg = LlamaConfig::from_hf_json_str(json).unwrap();
+        assert_eq!(
+            cfg.head_dim, 96,
+            "explicit head_dim must not be overwritten"
+        );
+        assert_ne!(
+            cfg.head_dim,
+            4096 / 32,
+            "llama3-8b cannot make this distinction"
+        );
+        let legacy = LlamaConfig::from_hf_json_str_legacy(json).unwrap();
+        assert_eq!(legacy.head_dim, 96, "legacy must agree - it is the oracle");
+    }
 
     #[test]
     fn parse_llama3_style_hf_config() {
