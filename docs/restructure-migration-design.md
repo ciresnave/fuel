@@ -543,14 +543,14 @@ path-set diff is what catches that; the test suite is not.
 
 | # | Decision | Owner | Blocking |
 |---|---|---|---|
-| 1 | `fuel-model` name collision — §4, recommend **A** (`fuel-author`) | CireSnave | any manifest change |
+| 1 | ~~`fuel-model` name collision~~ **SETTLED — `fuel-model` IS the authoring surface.** Resolved with CireSnave in the same conversation that raised it: the ratified tier is `fuel-model-core` + `fuel-model-*`, and **a bare `fuel-model` was never defined by 02-layers**, so it was adjacency confusion rather than a collision. **And the adjacency is CORRECT once the relationship is stated: `fuel-model-*` crates are WRITTEN IN the `fuel-model` language, so naming them as its leaves is accurate.** Zero renames, no ratified tier touched, and the language is Rust (build-time), so **no `fuel-model-macros` proc-macro crate is required** — an ergonomics call for later, not a structural one now. ⚠️ **This was settled and then left on the portfolio PM's decision queue for hours because the architect never went back to close it** — see §10. | CireSnave | ✅ closed |
 | 2 | Registry availability for every new crate name | — | Stage 4 publish |
 | 3 | Judge's destination (§5, Stage 3) | architect | Stage 3 only |
 | 4 | Serving/decode destination (§5, Stage 3) | architect | Stage 3 only |
 | 5 | GAP-236 / publish `fkc::verify` | CireSnave | Stage 4 |
 | 6 | ~~Does Lightbulb import via `fuel::` or `fuel_core::`?~~ **ANSWERED 2026-08-26 — `fuel_core::` = 0, `fuel::` = 71, positive-controlled (the same `git grep -c` returns 71, so the zero is real). Lightbulb is in the 98.3% and has NO PORT under the facade lever.** Their other direct roots, measured rather than assumed: `fuel_inference::` 2 (tests only), `fuel_cuda_backend::` 2 (1 production, `device.rs:25`), and `fuel_graph::`/`fuel_ir::`/`fuel_dispatch::` **comment-only — 5 sites, zero code**, named explicitly because they would inflate a census. | Lightbulb | ✅ closed |
 
-**Only #1 blocks starting**, and #6 is now closed by measurement. Stages 1 and 2 — the lever and 73% of the mass —
+**NOTHING NOW BLOCKS STARTING.** #1 was settled in conversation, #6 closed by Lightbulb's measurement, and #2 (registry availability) is measured — every candidate name is free except `fuel` and `fuel-core` themselves, which costs a published name rather than the design (§4). Stages 1 and 2 — the lever and 73% of the mass —
 depend on nothing in this table except the name of a crate that does not yet
 exist, and Stage 1 does not even need that.
 
@@ -581,6 +581,14 @@ agreeing, and each made it smaller:
   caught that the load-bearing gate compared names rather than types.
 - **The portfolio PM** checked registry availability for every name and found
   `fuel` itself occupied — the one name the central lever is built on.
+
+- **A decision of the author's own aged into a false one.** The `fuel-model` name was
+  **settled with CireSnave in the conversation that raised it**, and the architect had
+  already told the portfolio PM it was open with a different recommendation. **He never
+  went back.** It sat on CireSnave's decision queue under a wrong label until *he* asked
+  *"I thought that was settled — was it not?"* **A blocked-on record with no expiry ages
+  into a confident lie**, and the person best placed to notice is the one who created it
+  and therefore never re-reads it.
 
 The single most consequential fact in this document — **1018 `fuel::` versus 18
 `fuel_core::`** — was a two-second query that nobody had run, and it turns the
