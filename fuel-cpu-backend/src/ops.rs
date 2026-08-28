@@ -1669,8 +1669,8 @@ impl Map2 for MatMul {
         let lhs = &lhs[lhs_l.start_offset()..];
         let rhs = &rhs[rhs_l.start_offset()..];
 
-        let lhs_stride = lhs_l.stride();
-        let rhs_stride = rhs_l.stride();
+        let lhs_stride = lhs_l.stride_unsigned();
+        let rhs_stride = rhs_l.stride_unsigned();
 
         let (a_skip, b_skip) = self.ab_skip(lhs_l, rhs_l)?;
         let c_skip: usize = m * n;
@@ -1704,9 +1704,9 @@ impl Map2 for MatMul {
                     let rhs_p = &rhs[step * b_skip..];
                     let dst_p = &mut dst[step * c_skip..];
                     unsafe {
-                        let a = rhs_p.as_ptr() as *const f16;
-                        let b = lhs_p.as_ptr() as *const f16;
-                        let c = dst_p.as_mut_ptr() as *mut f16;
+                        let a = rhs_p.as_ptr() as *const half::f16;
+                        let b = lhs_p.as_ptr() as *const half::f16;
+                        let c = dst_p.as_mut_ptr() as *mut half::f16;
                         let a = std::slice::from_raw_parts(a, a_skip);
                         let b = std::slice::from_raw_parts(b, b_skip);
                         let c = std::slice::from_raw_parts_mut(c, c_skip);
@@ -1716,12 +1716,12 @@ impl Map2 for MatMul {
                             /* m= */ n as i32,
                             /* n= */ m as i32,
                             /* k= */ k as i32,
-                            /* alpha= */ f16::ONE,
+                            /* alpha= */ half::f16::ONE,
                             /* a= */ a,
                             /* lda= */ lda,
                             /* b= */ b,
                             /* ldb= */ ldb,
-                            /* beta= */ f16::ZERO,
+                            /* beta= */ half::f16::ZERO,
                             /* c= */ c,
                             /* ldc= */ n as i32,
                         )
