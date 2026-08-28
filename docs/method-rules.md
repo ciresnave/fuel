@@ -1583,3 +1583,45 @@ prefer separate clauses over a comma list** — a list invites the reader to
 sample, and separate claims each have to stand on their own. Related:
 [`verify-the-population-not-the-instance`](#verify-the-population-not-the-instance),
 [`enumerate-the-population-not-the-strings`](#enumerate-the-population-not-the-strings).
+
+## a-guard-exists-is-not-the-guard-protects-this
+
+**"A GUARD EXISTS" AND "THE GUARD PROTECTS *THIS* PROPERTY" ARE DIFFERENT
+CLAIMS. The guard is correct in both instances below — the error is in the
+READER, which is why no amount of hardening the guard prevents it.**
+
+**Two instances, 2026-08-28, hours apart, one caught and one nearly committed:**
+
+```
+NEON      "the CI matrix HAS an aarch64 runner"
+          inferred: "so the neon-dotprod cell is LIVE there"
+          FALSE -- the cell is triply gated and its intrinsic is nightly-only.
+          The runner exists; the cell still compiles itself away.
+          Cost: a coordinator corrected a lane's TRUE statement into a false
+          one, which the lane then propagated into their own file.
+
+SLOT      "cuda-build.ps1 serialises CUDA builds"
+          inferred: "so it protects Baracuda's in-flight measurement"
+          FALSE -- SlotCount = 2, so a second build is ADMITTED, not blocked.
+          It prevents OVERSUBSCRIPTION. It does not protect a MEASUREMENT.
+          Caught before running; the lane's own words: "I know the wrapper
+          serialises CUDA builds; I would have reasoned that the slot
+          protects me."
+```
+
+**In both, the guard's own contract is accurate and narrower than the use it
+was put to.** Reading the guard would have shown it; **reading that the guard
+EXISTS showed nothing** — and existence is what a hurried reader checks.
+
+⚠️ **THE SLOT CASE IS THE MORE DANGEROUS SHAPE, because the guard fires
+CORRECTLY and admits you.** A blocked build tells you something; **an admitted
+one tells you the system is content, and the system IS content — it was never
+asked about measurement integrity.**
+
+**PRACTICE: name the PROPERTY you need protected, then read the guard's
+contract for that property specifically.** *"A resource guard is not a
+measurement guard"* is the worked form; the general form is that **a guard
+protects the invariant it was written for and NOTHING adjacent, however
+similar the adjacent thing looks.** Related:
+[`the-instrument-nearest-to-hand`](#the-instrument-nearest-to-hand),
+[`validating-a-gate-means-reading-it`](#validating-a-gate-means-reading-it).
