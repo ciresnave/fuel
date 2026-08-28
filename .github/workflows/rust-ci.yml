@@ -288,6 +288,25 @@ jobs:
       # constants from `dlpack::codes` and the mirror stops existing; tracked
       # separately as the manual-mirror class.) Revisit whether this leg earns
       # `-D warnings` once that resolves.
+      #
+      # BORN-RED, OBSERVED IN CI (not inferred), per GAP-233's bar. Seeding a
+      # `dlpack`-gated `const _ = NO_SUCH_CONST;` into fuel-ir/src/dlpack/convert.rs
+      # made THIS step go RED while every other check in the SAME run stayed GREEN
+      # — the in-CI form of the local `leg=101 / default=0` pair, and it forecloses
+      # the reading "CI went red, maybe the branch is just broken." One run, both
+      # arms:
+      #   RED (dlpack step, seed present):
+      #     https://github.com/ciresnave/fuel/actions/runs/33129652417/job/98715936288#step:14:1
+      #   GREEN baseline (same step, no seed, clean main @8e0bad4f):
+      #     https://github.com/ciresnave/fuel/actions/runs/33128922289/job/98713605205#step:14:1
+      # The seed's LOCATION is the load-bearing evidence: it reddens FROM
+      # convert.rs (fuel-ir arm) — and equally from dlpack_view.rs (fuel-memory
+      # arm, verified locally the same way) — which proves the leg reaches WHICH
+      # code (the wire codec and the view), not merely that the invocation runs.
+      # That is what separates this leg from one that reddens while parsing none of
+      # its feature's code (the baracuda-types near-miss, GAP-247). To re-verify or
+      # extend this leg, the seed MUST land in a `dlpack`-gated region of the crate
+      # under test, never anywhere the invocation merely touches.
       - name: Check dlpack-gated compilation (GAP-233; §6.1 wire codec)
         if: matrix.os == 'ubuntu-latest'
         run: cargo check -p fuel-ir -p fuel-memory --features fuel-memory/dlpack --all-targets
