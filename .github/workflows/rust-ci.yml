@@ -267,6 +267,95 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: cargo check -p fuel-dispatch --features jit --all-targets
 
+      # ── Non-default FEATURE compile coverage, second tranche (GAP-247) ──
+      # A 45-cell census measured every non-default feature NO CI step names.
+      # Seven were built; THREE had rotted. The rate is the argument: these are
+      # not a tail. Instances found, worst first:
+      #   * fuel-cpu-backend --features mkl  — 19 errors incl. `extern blocks
+      #     must be unsafe` (edition-2024) and unstable `f16`. A DEFAULT-MEMBER,
+      #     so every job builds the crate and the rot hides behind the feature.
+      #     ONE defect, SIX cells: all `mkl` cells chain to it. NOT gated below
+      #     — a leg over a cell that does not compile would be born red and stay
+      #     red; it is filed for dedicated repair first.
+      #   * fuel-ir --features dlpack — E0004, `DType::Bool` never added to the
+      #     DLPack conversion. Also a default-member. Its leg lands with the fix.
+      #   * fuel-aocl-cpu-backend / fuel-mkl-cpu-backend — CI-excluded, fixed
+      #     separately; MKL was ENTIRELY uncompilable, library included.
+      #
+      # ⚠️ WHAT A GREEN HERE MEANS, AND WHAT IT DOES NOT. These are `check`
+      # steps: green means the cell COMPILES. `check` sets no `-D warnings`, so
+      # a leg passes a future warning exactly as it passes today's — the dlpack
+      # cell emitted a dead-code warning the first time anything ever built it,
+      # invisible for the life of the code. Do NOT read a green here as "this
+      # cell is clean".
+      #
+      # BORN-RED, two forms, and THE WEAK FORM MISSED A VACUOUS LEG — which is
+      # the reason the strong form is recorded here rather than assumed.
+      #
+      #   WEAK: re-point each invocation at `-p fuel-cpu-backend --features mkl`
+      #   (a cell measured broken). All four went RED, then green again when
+      #   pointed back. This proves only that the STEP SHAPE reddens.
+      #
+      #   STRONG: seed `#[cfg(feature = X)] const .. = <undefined>;` in the
+      #   crate's own gated region and require BOTH (a) the leg goes RED and
+      #   (b) a DEFAULT build stays GREEN — (b) is what proves the seed is
+      #   genuinely invisible without the feature, so a red leg is not merely a
+      #   broken crate. Measured: fuel-ir/serde, fuel-dispatch/
+      #   telemetry+baracuda-types, fuel-correctness-fixtures/capture all
+      #   DISCRIMINATE (leg 101, default 0, restored 0).
+      #
+      # ⚠️ WHAT THE STRONG FORM CAUGHT: this step was first written as
+      # `--features baracuda-types` ALONE, which compiles NONE of that feature's
+      # code — every `baracuda-types`-gated line in the crate lives inside
+      # `telemetry/`, and `pub mod telemetry` is itself `#[cfg(feature =
+      # "telemetry")]` (lib.rs:142). The leg would have been a PERMANENT GREEN
+      # GATING NOTHING, the same defect as the `neon-dotprod` cell rejected
+      # below. The weak born-red passed it. `--features telemetry,baracuda-types`
+      # is the intersection that actually compiles it — one feature is not two.
+      #
+      # NOT strongly born-red: the `onnx` leg. That feature adds a DEPENDENCY
+      # (`onnx = ["fuel-onnx"]`) rather than gating code in `fuel-examples`, so
+      # there is no `#[cfg(feature = "onnx")]` region to seed; it has the weak
+      # form only, and that is stated rather than left to be assumed (GAP-181:
+      # an unproven step must not be called coverage).
+      #
+      # Pure-host, seconds-scale. `baracuda-types` is the one that looks
+      # expensive and is not: it reaches `baracuda-cuda-sys`, whose build script
+      # is a 321-byte PLACEHOLDER emitting only two `rerun-if-env-changed` lines,
+      # with bindings pre-generated and vendored in-tree. No nvcc, no forge, and
+      # — contrary to that feature's own Cargo.toml comment — no CUDA SDK for a
+      # `check`. ⚠️ Unverifiable locally (this box HAS the SDK), so it must be
+      # SEEN to run on a clean runner before being described as coverage.
+      #
+      # STILL UNCOVERED, named so a green badge does not imply otherwise:
+      #   * 20 cells behind `cuda`/`cudnn`/`nccl`/`jit-synth` — measured with
+      #     `cargo tree -e features` to pull `baracuda-kernels-sys`, which forges
+      #     UNCONDITIONALLY (~93 min under load). A runner question, GAP-181.
+      #   * 6 `accelerate` cells — Apple hardware, unbuildable anywhere here.
+      #   * `fuel-quantized --features neon-dotprod` DELIBERATELY has no leg. It
+      #     compiles GREEN on x86 while compiling its own code AWAY: the SDOT
+      #     intrinsic is `aarch64`-gated. A leg would be a permanent green that
+      #     gates nothing. Any target-gated feature must state the TARGET it was
+      #     built for, or its green is unreadable.
+      - name: Check serde-gated fuel-ir (GAP-247)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo check -p fuel-ir --features serde --all-targets
+      - name: Check capture-gated correctness fixtures (GAP-247)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo check -p fuel-correctness-fixtures --features capture --all-targets
+      - name: Check baracuda-types-gated dispatch (GAP-247)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo check -p fuel-dispatch --features telemetry,baracuda-types --all-targets
+      - name: Check onnx-gated examples (GAP-247)
+        # `fuel-examples` is Fuel's de-facto CONSTRUCTOR gate — the working
+        # agreement's field-add rule depends on it building, because a struct
+        # field added elsewhere breaks CONSTRUCTING crates and the defining
+        # crate's own gate cannot see it. An uncompiled cell here disables that
+        # check, so the rot would not merely break an example.
+        # Needs `protoc` (fuel-onnx's build script); installed earlier in this job.
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo check -p fuel-examples --features onnx --all-targets
+
   test:
     name: Test Suite
     runs-on: ${{ matrix.os }}
