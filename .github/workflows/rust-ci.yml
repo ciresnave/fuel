@@ -382,29 +382,47 @@ jobs:
       #     `cargo tree -e features` to pull `baracuda-kernels-sys`, which forges
       #     UNCONDITIONALLY (~93 min under load). A runner question, GAP-181.
       #   * 6 `accelerate` cells — Apple hardware, unbuildable anywhere here.
-      #   * `fuel-quantized --features neon-dotprod` has no leg YET, and the
-      #     reason recorded here first was WRONG — corrected 2026-08-28, because
-      #     it was the exact defect this block exists to prevent.
-      #     TRUE: the cell compiles GREEN on x86 while compiling its own code
-      #     AWAY (the SDOT intrinsic is `aarch64`-gated), so an x86-only leg
-      #     would be a permanent green gating nothing.
-      #     FALSE, as originally written: *"a leg would be a permanent green"*
-      #     — unqualified. This matrix HAS `ubuntu-24.04-arm` (line 105), where
-      #     the code is real; the existing "Run with arm neon" step (line 158)
-      #     already gates to it with `if: matrix.os == 'ubuntu-24.04-arm'`. So a
-      #     leg gated to THAT runner is genuine coverage, and the sentence
-      #     foreclosed it by reasoning from one machine to "every runner".
-      #     ⚠️ That is the GAP-016 shape — a claim that does not fail loudly, it
-      #     STOPS PEOPLE TRYING — which is precisely why nobody had gated the
-      #     SDK-gated cells either. A comment that rules something out must name
-      #     the configuration it was measured in.
-      #     STANDING RULE, which survives this correction unchanged: any
+      #   * `fuel-quantized --features neon-dotprod` has no leg, and the reason
+      #     recorded here has now been wrong TWICE, in OPPOSITE directions. The
+      #     ORIGINAL conclusion was RIGHT; the architect's 2026-08-28 correction
+      #     of it was WRONG and is retracted here.
+      #     MEASURED: the SDOT arm (fuel-quantized/src/neon.rs:47-51) is TRIPLY
+      #     gated - all(target_arch = "aarch64", target_feature = "dotprod",
+      #     feature = "neon-dotprod") - and its intrinsic `vdotq_s32` is an
+      #     UNSTABLE library feature (stdarch_neon_dotprod, rust#117224). The
+      #     file's own doc says it "cannot compile on stable Rust", and CI is
+      #     @stable. On ubuntu-24.04-arm the feature is ON and the arch matches,
+      #     but the runner's baseline aarch64 does NOT set target_feature =
+      #     "dotprod" - so the SDOT arm compiles ITSELF AWAY and an arm leg is a
+      #     permanent green too. SAME vacuity as x86, DIFFERENT mechanism.
+      #     WHY THE CORRECTION WAS WRONG, which is worth more than the fact: the
+      #     architect confirmed the MATRIX HAS AN ARM RUNNER and inferred the
+      #     cell was live there, without checking the GATE SET. The step cited
+      #     as evidence ("Run with arm neon", line 158) is `cargo check
+      #     --workspace` with DEFAULT features and RUSTFLAGS=-C
+      #     target-feature=neon; it never enables `neon-dotprod` and never sets
+      #     `dotprod`. "A runner exists" and "the cell compiles there" are
+      #     different claims. The proposed seed gated all(feature, target_arch)
+      #     was UNDER-gated by one cfg: it would redden a BROADER region than
+      #     the SDOT code, which no stable leg reaches at all.
+      #     THE PROPAGATION IS THE REAL COST: the lane that wrote the correct
+      #     sentence rewrote it to match the architect's wrong correction, so a
+      #     TRUE comment was edited into a FALSE one BY A COORDINATOR'S FIX. A
+      #     correction is a claim and needs the same verification as the thing
+      #     it corrects - it arrives wearing the costume of rigour, which is
+      #     exactly why nobody re-checks it. Caught by a lane PRE-FLIGHTING the
+      #     allocation instead of implementing it: disconfirming the
+      #     coordinator's hypothesis WAS the deliverable.
+      #     IF SDOT IS EVER TO BE COVERED: viable but not cheap - @nightly +
+      #     RUSTFLAGS=-C target-feature=+dotprod + `-p fuel-quantized --features
+      #     neon-dotprod` on ubuntu-24.04-arm makes all three cfgs true with the
+      #     intrinsic available. A nightly-toolchain addition, not a
+      #     seconds-scale leg. NOT TAKEN.
+      #     STANDING RULE, which survives BOTH corrections unchanged: any
       #     target-gated feature must state the TARGET it was built for, or its
       #     green is unreadable. `skipped-everywhere` and
-      #     `skipped-here-runs-there` are different states and a RUN-level view
-      #     cannot tell them apart — read STEP conclusions per job.
-      #     (Leg deliberately not added here: offered to the lane that measured
-      #     the arm runner, to avoid two people writing it.)
+      #     `skipped-here-runs-there` are different states, and a RUN-level view
+      #     cannot tell them apart - read STEP conclusions per job.
       - name: Check serde-gated fuel-ir (GAP-247)
         if: matrix.os == 'ubuntu-latest'
         run: cargo check -p fuel-ir --features serde --all-targets
