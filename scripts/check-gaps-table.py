@@ -48,7 +48,15 @@ for l in lines:
 
 struck = [r for r in rows if r[0].startswith('~~')]
 live = [r for r in rows if not r[0].startswith('~~')]
-closed_by_status = [r for r in live if 'CLOSED' in r[2]]
+# NAME THE CONSTRUCT, NOT THE INTENT. This matches CLOSED ANYWHERE IN THE ROW,
+# which is NOT the same as "the status cell says CLOSED" -- the label said the
+# latter for weeks and was wrong in two ways at once (measured 2026-08-28 on a
+# 52-row population): only 43 of the 52 had CLOSED in the LAST cell, and 5 sat
+# in 4-column tables that have NO status cell at all, where the sentence is not
+# even expressible. That is this file's own four-schema trap, inside the gate
+# that warns about the schemas. Keeping the loose match is deliberate -- it is
+# the safe direction for a tripwire -- but the label now says what it counts.
+closed_word_anywhere = [r for r in live if 'CLOSED' in r[2]]
 
 print('delimiter-count distribution:', dict(Counter(d for _, d, _ in rows)))
 odd = [(r, d) for r, d, _ in rows if d not in (5, 6)]
@@ -68,15 +76,24 @@ print('rows, ALL (regex ^| ~*GAP-, INCLUDES strikethrough-closed): %d' % len(row
 print('rows, NOT struck through (what `grep -c "^| GAP-"` returns):  %d' % len(live))
 print('rows, struck through (closed-by-strikethrough):               %d  %s'
       % (len(struck), [r[0] for r in struck]))
-print('rows, live but whose STATUS CELL says CLOSED:                 %d' % len(closed_by_status))
+print('rows, live, with the WORD "CLOSED" ANYWHERE in the row:      %d' % len(closed_word_anywhere))
 print()
 # NOTE: ASCII ONLY below. The first version of this block used an emoji and
 # died on cp1252 stdout -- making the gate exit 1 for a PRINTING failure with no
 # table violation present. A false red from a gate is worse than no gate: it is
 # the failure this project keeps recording, pointed at the instrument itself.
-print('!! TWO CLOSE CONVENTIONS COEXIST (strikethrough vs the word CLOSED in the')
-print('   status cell), so "how many are open" has no single answer from this')
-print('   table alone. Quote the construct with the number.')
+print('!! CLOSE VOCABULARY IS NOT CONTROLLED, so "how many are open" has no single')
+print('   answer from this table alone. Strikethrough is the ruled close marker')
+print('   (2026-08-28); the count above is the WORD "CLOSED" anywhere in a live')
+print('   row, which over-counts -- some of those rows are correctly OPEN and')
+print('   merely narrate a closure, and others are honestly PARTIAL and say so')
+print('   in their leading phrase. FOURTEEN forms are in use besides the two:')
+print('   SHIPPED, FIXED, PARTIALLY CLOSED, RE-OPENED, NOT CLOSED, UNIT A')
+print('   CLOSED, LAYER 1 CLOSED, HALF CLOSED, "CLOSED for X ... OPEN for Y",')
+print('   "(a) CLOSED; (b) OPEN", WON\'T DO, MISFILED, SUBJECT DELETED,')
+print('   "(Was: OPEN ...)". Most carry real information a single token would')
+print('   destroy, so the fix is a controlled PREFIX plus free prose, not a')
+print('   collapse to two words. Quote the construct with the number.')
 
 # ---------------------------------------------------------------------------
 # HEADERS MUST AGREE WITH THE ROWS BENEATH THEM, IN ARITY AND IN NAME.
