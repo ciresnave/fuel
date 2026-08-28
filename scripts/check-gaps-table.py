@@ -58,6 +58,26 @@ live = [r for r in rows if not r[0].startswith('~~')]
 # the safe direction for a tripwire -- but the label now says what it counts.
 closed_word_anywhere = [r for r in live if 'CLOSED' in r[2]]
 
+# SCHEMA COVERAGE, because a status convention is not expressible for a table
+# with no status column. The 4-column tables (`ID | File:Line | Tier | Gap`) fold
+# status into the Gap cell; the 5-column ones have a real Status cell.
+#
+# COUNTED, NOT STATED. A convention covering 63% of a file and described in prose
+# as covering the file is the green-reads-as-coverage failure -- the same one the
+# two doc-vs-code guards each had to close in their own scope statements. Making
+# the hole visible is deliberate; closing it (a status column on nine tables) is
+# a separate decision nobody has taken. See docs/design/gaps-status-vocabulary.md.
+schema_cols, _cur = [], None
+for _l in lines:
+    if re.match(r'^\| ID', _l):
+        _cur = unescaped_pipes(_l) - 1
+    elif re.match(r'^\| ~*GAP-', _l):
+        schema_cols.append(_cur)
+    elif not _l.startswith('|'):
+        _cur = None
+no_status = sum(1 for c in schema_cols if c == 4)
+headerless = sum(1 for c in schema_cols if c is None)
+
 print('delimiter-count distribution:', dict(Counter(d for _, d, _ in rows)))
 odd = [(r, d) for r, d, _ in rows if d not in (5, 6)]
 print('rows NOT in {5,6}:', odd if odd else 'NONE')
@@ -77,6 +97,15 @@ print('rows, NOT struck through (what `grep -c "^| GAP-"` returns):  %d' % len(l
 print('rows, struck through (closed-by-strikethrough):               %d  %s'
       % (len(struck), [r[0] for r in struck]))
 print('rows, live, with the WORD "CLOSED" ANYWHERE in the row:      %d' % len(closed_word_anywhere))
+print('rows OUTSIDE the status convention (4-col, no status cell): %d of %d'
+      % (no_status, len(schema_cols)))
+# HEADERLESS ROWS: GAP rows in a table fragment with no `| ID |` header above
+# them (a `---` rule then rows). The header check below reports 'headers
+# DISAGREEING: NONE' and CANNOT SEE THESE -- there is no header to disagree
+# with. Found 2026-08-28 by two schema-counting methods disagreeing 94 vs 92:
+# the looser one silently attributed them to a DIFFERENT table's header.
+print('rows with NO HEADER above them (schema undetermined):     %d'
+      % headerless)
 print()
 # NOTE: ASCII ONLY below. The first version of this block used an emoji and
 # died on cp1252 stdout -- making the gate exit 1 for a PRINTING failure with no
