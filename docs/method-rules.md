@@ -1522,3 +1522,43 @@ authored** — a version boundary is exactly where authorship stops being
 evidence. Related:
 [`a-stale-tool-is-a-wrong-action`](#a-stale-tool-is-a-wrong-action),
 [`go-to-the-artefact-not-the-rendering`](#go-to-the-artefact-not-the-rendering).
+
+## a-true-half-vouches-for-the-false-half
+
+**A SENTENCE NAMING SEVERAL ARTIFACTS, WHERE SOME EXIST AND SOME DO NOT, READS
+AS VERIFIED. The real names lend their credibility to the absent ones, and a
+reader spot-checking ONE name is likelier to hit a real one.**
+
+**Two instances, 2026-08-28, found by the doc-vs-code audit:**
+
+```
+02-layers:77       "...`Node`, `Graph`, `FusedOpRegistry` metadata types,
+                    `OptimizationMap` rules..."
+                   FusedOpRegistry EXISTS. OptimizationMap does NOT.
+
+04-optimization    "A rule's FAMILY, COST CONTRIBUTION, and FRONTIER
+                    COMPATIBILITY are part of its identity"
+                   family()/RuleFamily EXIST on `pub trait Rule`.
+                   frontier compatibility: NO method, NO enum, 0 occurrences.
+                   -> nothing can DECLARE it, so nothing can READ it, and the
+                      doc's closing present-tense claim that "the optimizer
+                      reads the declaration" cannot be true.
+```
+
+**Why these survive review specifically: the sentence PASSES a spot check.**
+Verification effort scales with the number of names, attention does not, and
+**the first name a reader tries is the one that vouches for the rest.** A list
+of three where two are real is more dangerous than a single false claim,
+because a single false claim has nothing standing next to it.
+
+⚠️ **AND EVERY LIST IS AN OPPORTUNITY FOR THIS** — the failure needs no
+carelessness, only a doc that outlived one of its members. Both instances above
+are lists that were true when written.
+
+**PRACTICE: check EVERY name in a list, or state which ones you checked.** A
+report of the form *"spot-checked, looks right"* over a multi-name sentence is
+an unbounded claim from a bounded measurement. **When writing such a sentence,
+prefer separate clauses over a comma list** — a list invites the reader to
+sample, and separate claims each have to stand on their own. Related:
+[`verify-the-population-not-the-instance`](#verify-the-population-not-the-instance),
+[`enumerate-the-population-not-the-strings`](#enumerate-the-population-not-the-strings).
