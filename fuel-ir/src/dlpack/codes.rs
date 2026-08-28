@@ -209,6 +209,22 @@ pub const FDX_DTYPE_COMPLEX64: u16 = 0x0200;
 /// `FDXDTypeExt`.
 pub const FDX_DTYPE_BOOL: u16 = 0x0201;
 
+// --- FDXPacking codes (§6.1 packing table) — the value written into
+// `FDXDTypeExt.packing`. The COMPLETE set the spec defines; exported here so
+// consumers name them rather than mirroring the table locally (a partial local
+// copy already diverged once — GAP-248). `FDXPacking` is the sole packing
+// authority (§3.4); the native DLPack `IS_SUBBYTE_TYPE_PADDED` flag is unused. ---
+/// One logical element per `ceil(bit_width/8)` bytes (e.g. F8E4M3, F8E8M0).
+pub const FDX_PACKING_BYTE_ALIGNED: u8 = 0;
+/// Sub-byte elements packed back-to-back, no per-block framing (e.g. 2×F4/byte).
+pub const FDX_PACKING_DENSE_SUBBYTE: u8 = 1;
+/// OCP-microscaling: a packed sub-byte payload block + a separate F8E8M0 scale
+/// per block (block geometry in `FDXQuant`, §6.2).
+pub const FDX_PACKING_MX_BLOCK: u8 = 2;
+/// ggml/GGUF block layout: scales/mins/quants interleaved in one block struct
+/// (per-format byte layout in `FDXQuant`, §6.2).
+pub const FDX_PACKING_GGML_BLOCK: u8 = 3;
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -114,11 +114,15 @@ pub enum DType {
 impl DType {
     /// Every [`DType`] variant, in declaration order.
     ///
-    /// Kept complete by [`all_variants_witness`] below: its wildcard-free
-    /// `match` makes adding a variant a compile error there, dragging the
-    /// author to this list. A **compile-time** completeness instrument (the
-    /// constitution's "validate at build time"), not a runtime-reflected one —
-    /// which is why this is a hand-written `const` and not a derived iterator.
+    /// Completeness is REMINDED, not compiler-derived (GAP-248). [`all_variants_witness`]
+    /// below is a wildcard-free `match`, so adding a `DType` fails to compile THERE — a
+    /// variant cannot be added without being dragged to this file. But extending THIS
+    /// list in the same edit is then convention: nothing ties `ALL` to the witness, so a
+    /// variant added to the match yet forgotten here would still compile. A hand-written
+    /// `const` (not a derived iterator) because the anchor is a compile-time tripwire —
+    /// the residual gap is that it reminds rather than derives. Measured complete at head
+    /// (`ALL` = witness = enum = 18). The enforced version is a single-source macro
+    /// declaring the enum and `ALL` together; see GAP-248.
     pub const ALL: &'static [DType] = &[
         DType::U8,
         DType::I8,
@@ -261,8 +265,10 @@ mod reserved_token_tests {
     /// conclusion (the name is fine).
     ///
     /// **Completeness is inherited, not assumed:** the population is
-    /// [`DType::ALL`], which [`all_variants_witness`] keeps exhaustive (a variant
-    /// cannot exist without appearing there), and the count is derived through
+    /// [`DType::ALL`], which [`all_variants_witness`] REMINDS the author to keep
+    /// exhaustive (a variant cannot be added without a compile error at the witness,
+    /// though nothing forces it into `ALL` — GAP-248; measured complete at head), and
+    /// the count is derived through
     /// the same `is_e4m3_family` predicate that feeds the assertion — so the
     /// perturbation control (widen the predicate, watch it fire at two) actually
     /// exercises the detection path. Keep the filter on `DType::ALL`: this file

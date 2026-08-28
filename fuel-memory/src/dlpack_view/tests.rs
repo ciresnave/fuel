@@ -76,15 +76,15 @@ fn sub_byte_bits_and_packing_declines_unauthored_dtype() {
 fn sub_byte_bits_and_packing_pins_authored_dtypes() {
     assert_eq!(
         sub_byte_bits_and_packing(DType::F4).unwrap(),
-        (4, PACKING_DENSE_SUBBYTE),
+        (4, FDX_PACKING_DENSE_SUBBYTE),
     );
     assert_eq!(
         sub_byte_bits_and_packing(DType::F6E2M3).unwrap(),
-        (6, PACKING_DENSE_SUBBYTE),
+        (6, FDX_PACKING_DENSE_SUBBYTE),
     );
     assert_eq!(
         sub_byte_bits_and_packing(DType::F6E3M2).unwrap(),
-        (6, PACKING_DENSE_SUBBYTE),
+        (6, FDX_PACKING_DENSE_SUBBYTE),
     );
 }
 

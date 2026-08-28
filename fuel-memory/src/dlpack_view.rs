@@ -75,11 +75,6 @@ use crate::Storage;
 /// capacity of 6). A layout of higher rank is a typed `RankExceeds6` error.
 const MAX_RANK: usize = 6;
 
-/// `FDXPacking` codes (spec §6.1). Mirrored locally because the `dlpack::codes`
-/// module does not (yet) export named packing constants.
-const PACKING_BYTE_ALIGNED: u8 = 0;
-const PACKING_DENSE_SUBBYTE: u8 = 1;
-
 /// A borrowed DLPack + FDX view over a Fuel `(Storage, Layout)` pair.
 ///
 /// Holds the base [`DLTensor`] (with its `shape`/`strides` pointers left NULL —
@@ -259,8 +254,8 @@ fn is_sub_byte(d: DType) -> bool {
 /// [`view`], never a silent wrong wire value.
 fn sub_byte_bits_and_packing(d: DType) -> Result<(u16, u8)> {
     match d {
-        DType::F4 => Ok((4, PACKING_DENSE_SUBBYTE)),
-        DType::F6E2M3 | DType::F6E3M2 => Ok((6, PACKING_DENSE_SUBBYTE)),
+        DType::F4 => Ok((4, FDX_PACKING_DENSE_SUBBYTE)),
+        DType::F6E2M3 | DType::F6E3M2 => Ok((6, FDX_PACKING_DENSE_SUBBYTE)),
         other => Err(Error::Msg(format!(
             "DlpackView: no authored sub-byte bit-width/packing for dtype {other:?}; \
              declining rather than emitting an invented FDX wire value a foreign \
