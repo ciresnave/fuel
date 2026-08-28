@@ -1374,3 +1374,47 @@ rerun.
 dependency (`onnx = ["fuel-onnx"]`) gates no code and has no region to seed —
 **that leg has the weak form only, and the report must say it rather than let a
 reader assume parity across the set.**
+
+## marking-one-representation-does-not-mark-the-others
+
+**ONE CLAIM CAN EXIST IN SEVERAL REPRESENTATIONS INSIDE ONE DOCUMENT — A
+DIAGRAM, PROSE, A BULLET LIST, TWICE IN A SENTENCE — AND EACH IS INVISIBLE
+FROM THE ONE YOU ARE LOOKING AT. A FIX SCOPED TO THE REPRESENTATION THAT
+PROMPTED IT LEAVES THE CLAIM STANDING EVERYWHERE ELSE, AND LOOKS COMPLETE.**
+
+**Worked example, `docs/architecture/02-layers.md`, 2026-08-27/28. FOUR
+deliberate, increasingly-correct remedies. The claim survived all four:**
+
+```
+2026-07-29  an as-built NOTE under the diagram        -> went stale itself
+v0.8        remedy = another diagram-adjacent note    -> too weak, and the
+                                                         file's OWN TEXT said so
+a6b5476d    remedy = mark inside the DIAGRAM          -> right, and the PROSE
+                                                         went on making the claim
+v0.10       remedy = mark the prose leaves too        -> right, and one name
+                                                         appeared TWICE ON ONE LINE;
+                                                         a first-occurrence replace
+                                                         marked one of them
+```
+
+**Every remedy was stronger than the last. Every one was correct about the
+surface it addressed. NOTHING ENUMERATED THE SURFACES.**
+
+⚠️ **THE SHARPEST INSTANCE IS THE SECOND ROW: v0.8 EXISTS *BECAUSE* THE EARLIER
+NOTE WENT STALE, AND ITS OWN TEXT READS *"the remedy for a stale diagram entry
+was itself a diagram-adjacent prose claim."* THE AUTHOR WROTE THAT SENTENCE AND
+APPLIED THE SAME WEAK REMEDY TO FOUR MORE NAMES IN THE SAME FILE HOURS LATER.**
+A document diagnosing a failure mode does not inoculate the next edit to it.
+
+**AND THE FOURTH ROW IS THE ONE THAT ENDS THE ARGUMENT: it was caught by
+RE-COUNTING, not by reading.** A careful reader had just read that line while
+editing it. **So the honest close is to write NOT PROVABLY COMPLETE into the
+commit** — a fifth confident fix would have taught the wrong lesson.
+
+**PRACTICE: when a claim is wrong, do not fix the instance — ENUMERATE ITS
+REPRESENTATIONS FIRST** (grep the name, count occurrences, and check whether any
+share a line). **If you cannot enumerate them, say the pass is not complete and
+reach for a MECHANICAL GUARD rather than a further careful read** — a grep does
+not have the scoped-to-what-prompted-it failure mode. Related:
+[`verify-the-population-not-the-instance`](#verify-the-population-not-the-instance),
+[`fix-the-generator-not-the-output`](#fix-the-generator-not-the-output).
