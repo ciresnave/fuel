@@ -1322,3 +1322,55 @@ provisional, with the reason, until the sweep that would bound it actually runs.
 **Related: [`a-defence-can-outlive-its-defect`](#a-defence-can-outlive-its-defect)
 — there a remedy survives its cause; here a CONCLUSION survives the arrival of the
 thing that would have refuted it.**
+
+## born-red-the-aim-not-the-shape
+
+**Pointing a gate at something known-broken proves the STEP SHAPE reddens. It
+is blind to a gate aimed at nothing. For a `cfg`-gated cell the proof is a SEED
+IN THE CELL'S OWN GATED REGION, and it needs TWO arms: the leg goes RED, and a
+DEFAULT build stays GREEN.**
+
+**The second arm is the load-bearing one. Without it, a red leg is
+indistinguishable from a merely broken crate.**
+
+**Worked example, 2026-08-27.** Four CI legs were added over non-default feature
+cells. The architect prescribed the weak form — re-point each invocation at a
+crate known to fail, confirm red. **All four went red. One of them compiled NONE
+of its feature's code.**
+
+`cargo check -p fuel-dispatch --features baracuda-types` compiles nothing that
+the feature gates: **every `baracuda-types`-gated line lives inside `telemetry/`,
+and `pub mod telemetry` is itself `#[cfg(feature = "telemetry")]`.** The fix is
+`--features telemetry,baracuda-types` — **[`one-feature-is-not-two`](#one-feature-is-not-two),
+committed while writing the comment that warned against the analogous defect.**
+
+**It would have shipped as a permanent green gating nothing, and the prescribed
+born-red certified it.**
+
+**THE STRONG FORM:**
+
+```
+seed   #[cfg(feature = X)] const _SEED: u8 = <undefined>;
+       ...into the crate's OWN gated region
+
+(a) the leg must go RED        <- proves it reaches the cell
+(b) a DEFAULT build must stay  <- proves the red came from the CELL and not
+    GREEN                          from the crate being broken generally
+```
+
+**Both arms, or the result is uninformative in the direction that looks like
+success.**
+
+⚠️ **AND THE SEED ITSELF CAN BE MALFORMED IN A WAY THAT READS AS A FINDING.** The
+lane's first attempt spliced the seed **directly after an existing `#[cfg]`
+attribute, stealing it from the item below and un-gating that item** — so the
+DEFAULT build broke too, and the result read INCONCLUSIVE *in a way that looked
+like a discovery about the crate.* **Append a COMPLETE gated item; never splice
+between an attribute and what it modifies.** **An inconclusive control reads like
+evidence**, which is why it belongs in the record rather than being quietly
+rerun.
+
+**WHERE THE STRONG FORM IS UNAVAILABLE, SAY SO.** A feature that only adds a
+dependency (`onnx = ["fuel-onnx"]`) gates no code and has no region to seed —
+**that leg has the weak form only, and the report must say it rather than let a
+reader assume parity across the set.**
