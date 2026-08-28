@@ -207,7 +207,7 @@ impl SType {
                     baxes[i] = i as i32; // v1: blocks tile leading axes; refine when wiring the op.
                 }
                 let (zp_present, zp_dtype) = match zero_point {
-                    Some(zp) => (1u8, dtype_to_fdx(zp.dtype)?),
+                    Some(zp) => (1u8, dtype_to_fdx(zp.dtype)?.namespace_code()),
                     None => (0u8, FDX_DTYPE_NONE),
                 };
                 Some(FDXQuant {
@@ -220,7 +220,7 @@ impl SType {
                     pack_order: 0,
                     _pad1: [0; 3],
                     scale_present: 1,
-                    scale_dtype: dtype_to_fdx(scale.dtype)?,
+                    scale_dtype: dtype_to_fdx(scale.dtype)?.namespace_code(),
                     scale_placement: FDX_SCALE_PLACEMENT_SEPARATE_BUFFER, // never INLINE
                     // AFFINE_BLOCK grain rides block_shape, NOT a granularity byte
                     // (spec §6.2); the coarse dispatch-key granularity is kept but
