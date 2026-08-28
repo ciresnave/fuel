@@ -250,6 +250,65 @@ fn sub_byte_f6_has_six_bit_width() {
     assert_eq!(sc.dtype_ext.logical_dtype, FDX_DTYPE_F6E2M3);
 }
 
+// ── Bool rides the base (§6.1.1): no sidecar when plain; reserved 0x0201 in a
+//    namespace field when a sidecar exists for ANOTHER reason ─────────────────
+
+/// A plain `Bool` tensor is faithfully named by the base descriptor (`kDLBool`)
+/// and emits NO `FDXDTypeExt` at all — `Bool` is not sub-byte, so it can never
+/// reach the dtype-ext branch. This is the view-level half of the `RidesBase`
+/// disposition: a sidecar-blind consumer reads the base and is correct.
+#[test]
+fn plain_bool_rides_the_base_with_no_sidecar() {
+    let storage = cpu_bytes(DType::Bool, 3 * 4); // [3,4] Bool = 12 bytes
+    let layout = Layout::contiguous(Shape::from_dims(&[3, 4]));
+    let v = view(&storage, &layout, None).expect("view");
+
+    assert!(
+        v.sidecar.is_none(),
+        "a plain Bool tensor must emit no sidecar — it rides the base (§6.1.1)"
+    );
+    // The base descriptor is the honest kDLBool, not any FDX code.
+    assert_eq!(v.dl.dtype.code, dtype_code::K_DL_BOOL);
+    assert_eq!(v.dl.dtype.bits, 8);
+    assert_eq!(v.dl.dtype.lanes, 1);
+}
+
+/// When a `Bool` tensor gets a sidecar for a DIFFERENT reason (here a symbolic
+/// extent), the base still carries `kDLBool` and NO `FDXDTypeExt` is emitted for
+/// the dtype — but the `FDXBufferRef.dtype` namespace field must still be filled,
+/// and §6.1.1 reserves `0x0201` for exactly that. This is where `RidesBase`'s
+/// payload is consumed; it is the ONLY place a base-riding code is written.
+#[test]
+fn bool_with_a_sidecar_writes_reserved_0x0201_and_no_dtype_ext() {
+    let sym = SymId(7);
+    // Full capacity 2*8*4 = 64 Bool elements = 64 bytes (matches symbolic_kv_layout).
+    let storage = cpu_bytes(DType::Bool, 64);
+    let layout = symbolic_kv_layout(sym);
+    let v = view(&storage, &layout, None).expect("view");
+    let sc = v
+        .sidecar
+        .as_ref()
+        .expect("a symbolic Bool tensor emits a sidecar (for the symbolic reason)");
+
+    // The sidecar exists for the SYMBOLIC reason, not a dtype reason: Bool carries
+    // no FDXDTypeExt even here.
+    assert_ne!(sc.flags & FDX_FLAG_HAS_SYMBOLIC, 0, "symbolic flag set");
+    assert_eq!(
+        sc.flags & FDX_FLAG_HAS_DTYPE_EXT,
+        0,
+        "Bool must not carry an FDXDTypeExt even when a sidecar exists for another reason"
+    );
+
+    // buffers[0] is the base data buffer; its namespace dtype is the reserved
+    // 0x0201 (FDX_DTYPE_BOOL) — the sole place a base-riding code is ever written.
+    let buffers = v.buffers();
+    assert_eq!(buffers[0].role, FDX_BUFFER_ROLE_DATA);
+    assert_eq!(
+        buffers[0].dtype, 0x0201,
+        "a base-riding Bool fills FDXBufferRef.dtype with the reserved namespace code 0x0201"
+    );
+}
+
 // ── T8: symbolic layout → HAS_SYMBOLIC + extents; V14 in/out of range ───────
 
 /// A KV-cache-style layout: `[n_heads=2, K_capacity=8, head_dim=4]` with the
@@ -518,7 +577,9 @@ fn affine_block_view_with_quant_validates() {
     assert_eq!(buffers[1].role, FDX_BUFFER_ROLE_SCALE);
     assert_eq!(
         buffers[1].dtype,
-        fuel_ir::dlpack::convert::dtype_to_fdx(DType::F32).unwrap()
+        fuel_ir::dlpack::convert::dtype_to_fdx(DType::F32)
+            .unwrap()
+            .namespace_code()
     );
     assert_eq!(buffers[1].shape[0], 2);
 

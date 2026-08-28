@@ -191,6 +191,24 @@ pub const FDX_DTYPE_U4: u16 = 0x0103;
 /// DLPack representation — the meaning rides the sidecar.
 pub const FDX_DTYPE_B1: u16 = 0x0104;
 
+// --- Base-riding RESERVED logical codes (the 0x02xx family). UNLIKE the 0x01xx
+// codes above, these name element types the BASE DLPack `DLDataType` CAN express
+// faithfully (`kDLComplex`, `kDLBool`), so per §6.1.1 a plain tensor rides the
+// base and emits NO `FDXDTypeExt` at all. The code is "kept for completeness":
+// it is the namespace slot to fill in a `FDXBufferRef.dtype` / `FDXQuant` /
+// `FDXDTypeExt.logical_dtype` field ONLY when a sidecar already exists for some
+// OTHER reason (multi-buffer / quant / residency / symbolic). It is therefore
+// deliberately one-way: `fdx_to_dtype` returns `None` for it, because the
+// authoritative element type lives in the base, not in this placeholder. ---
+/// Complex, 2×f32 (reserved base-riding placeholder — base is `kDLComplex`).
+/// No Fuel `DType` today; the row exists for the namespace-field case above.
+pub const FDX_DTYPE_COMPLEX64: u16 = 0x0200;
+/// Boolean (reserved base-riding placeholder — base is `kDLBool`). `DType::Bool`
+/// rides the base (§6.1.1); this code is only ever written into a namespace
+/// field when a sidecar exists for another reason, never as a standalone
+/// `FDXDTypeExt`.
+pub const FDX_DTYPE_BOOL: u16 = 0x0201;
+
 #[cfg(test)]
 mod tests {
     use super::*;

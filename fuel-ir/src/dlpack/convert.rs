@@ -37,28 +37,81 @@ use crate::symbol::SymId;
 // DType ⇄ FDX logical-dtype code (§6.1)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Map a Fuel [`DType`] to its FDX logical-dtype code (`FDX_DTYPE_*`, §6.1).
+/// The FDX logical-dtype disposition of a Fuel [`DType`] in the SIDECAR namespace
+/// (§6.1) — the value that fills `FDXDTypeExt.logical_dtype`, `FDXBufferRef.dtype`,
+/// and the `FDXQuant` scale/zero-point dtype fields. Returned by [`dtype_to_fdx`].
+///
+/// Three outcomes are kept DISTINCT because they are three different facts, and
+/// collapsing any two is a wire-level bug:
+/// - [`Coded`](Self::Coded)`(u16)` — the dtype has an assigned `FDX_DTYPE_*` code.
+/// - [`RidesBase`](Self::RidesBase)`(u16)` — the element type is faithfully named
+///   by the **base** DLPack `DLDataType` (§6.1.1: `Bool`→`kDLBool`), so a plain
+///   tensor needs **no `FDXDTypeExt` sidecar at all**. The payload is the reserved
+///   namespace code (`FDX_DTYPE_BOOL`), written into a namespace field ONLY when a
+///   sidecar already exists for some OTHER reason (multi-buffer / quant / residency
+///   / symbolic); it is never emitted as a standalone `FDXDTypeExt`.
+/// - a DECLINE is the `Err` arm of [`dtype_to_fdx`]: `F8E5M2` (code unassigned,
+///   GAP-097) and `F8E6M2` (encoding unauthored, GAP-045), by [`Error`] message.
+///
+/// An `Option<u16>` return would conflate `RidesBase` (no code *needed*) with a
+/// decline (no code *exists*); a bare `u16` cannot express `RidesBase` at all
+/// without fabricating the very sidecar §6.1.1 forbids. This type answers a
+/// caller's two independent questions separately: "does a plain tensor need a
+/// sidecar?" (match the variant — `RidesBase` says no) and "what code fills a
+/// namespace field if a sidecar exists anyway?" ([`namespace_code`](Self::namespace_code)).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FdxDtype {
+    /// The dtype has an assigned `FDX_DTYPE_*` code (§6.1).
+    Coded(u16),
+    /// The dtype rides the base DLPack descriptor (§6.1.1) and needs no sidecar;
+    /// the payload is the reserved namespace code for the sidecar-exists-anyway case.
+    RidesBase(u16),
+}
+
+impl FdxDtype {
+    /// The `u16` to write into a sidecar NAMESPACE field (`FDXBufferRef.dtype`,
+    /// `FDXQuant` scale/zero-point, `FDXDTypeExt.logical_dtype`). Both variants
+    /// carry one — `Coded` its assigned code, `RidesBase` its reserved §6.1.1
+    /// placeholder — because a namespace field, once a sidecar exists, must be
+    /// filled either way. This is NOT the decision of whether to emit a sidecar;
+    /// that decision belongs to the variant, not to this code.
+    pub fn namespace_code(self) -> u16 {
+        match self {
+            FdxDtype::Coded(c) | FdxDtype::RidesBase(c) => c,
+        }
+    }
+}
+
+/// Map a Fuel [`DType`] to its FDX logical-dtype disposition ([`FdxDtype`], §6.1).
 ///
 /// **Exhaustive `match`, no wildcard** — adding/removing/reordering a `DType`
 /// variant breaks this compile (the §6.0 guarantee). NEVER `d as u16`: the FDX
 /// code is the stable contract, decoupled from the source discriminant.
 ///
-/// # Why this returns `Result` (GAP-059)
+/// # The three dispositions (why not a bare `u16`)
 ///
-/// `F8E6M2` is a **token-only** dtype: Fuel can name and parse it, but its
-/// encoding is deliberately unauthored (GAP-045). There is therefore no
-/// correct FDX code for it, and every available answer would be invented.
-/// Inventing one is the worst option on the table — an FDX code is a **stable
-/// wire contract**, so a placeholder gets read by another process as a real
-/// claim about the bytes, and the mistake surfaces as silently mis-decoded
-/// tensor data rather than as an error.
+/// Most dtypes map to an assigned code — [`FdxDtype::Coded`]. Two others do not,
+/// for two DIFFERENT reasons, and this function keeps all three apart:
 ///
-/// The decline is therefore typed and loud, and it is deliberately NOT held
-/// until GAP-045 settles: declining is sound *whatever* the encoding turns out
-/// to be, whereas a fabricated code has to be guessed right today and migrated
-/// later. When the encoding is authored this arm becomes a mapping and the
-/// signature does not change again.
-pub fn dtype_to_fdx(d: DType) -> crate::Result<u16> {
+/// **Rides the base ([`FdxDtype::RidesBase`]).** `Bool` is faithfully named by the
+/// base DLPack descriptor (`kDLBool`, §6.1.1), so a plain `Bool` tensor emits no
+/// `FDXDTypeExt` at all. It is NOT a decline (Bool is fully supported) and it must
+/// NOT emit a standalone sidecar code — returning `Coded(0x0201)` would emit the
+/// exact sidecar the spec says not to. `Complex64` (`0x0200`) is the twin row and
+/// would land here identically; there is no `DType::Complex` today, so no arm
+/// exists for it — the compile-time exhaustiveness check adds one the day it does.
+///
+/// **Declines (`Err`, GAP-059).** `F8E6M2` is token-only: Fuel can name and parse
+/// it but its encoding is deliberately unauthored (GAP-045), so there is no
+/// correct FDX code — every answer would be invented, and an FDX code is a stable
+/// wire contract a foreign process reads as a real claim about the bytes.
+/// `F8E5M2`'s encoding IS OCP-standard, but §6.1 has assigned it no code yet
+/// (GAP-097); this module's rule is that a code is assigned deliberately, never
+/// inferred from adjacency. Both decline; declining is sound whatever the encoding
+/// turns out to be, whereas a fabricated code must be guessed right today and
+/// migrated later. When either is authored, its arm becomes a `Coded` mapping and
+/// the signature does not change again.
+pub fn dtype_to_fdx(d: DType) -> crate::Result<FdxDtype> {
     Ok(match d {
         // GAP-097: E5M2's encoding is NOT unauthored — it is OCP-standard and
         // `float8::F8E5M2` exists. It declines for a different reason: the FDX
@@ -80,21 +133,27 @@ pub fn dtype_to_fdx(d: DType) -> crate::Result<u16> {
                  declining rather than emitting an invented wire code",
             ));
         }
-        DType::U8 => FDX_DTYPE_U8,
-        DType::I8 => FDX_DTYPE_I8,
-        DType::U32 => FDX_DTYPE_U32,
-        DType::I16 => FDX_DTYPE_I16,
-        DType::I32 => FDX_DTYPE_I32,
-        DType::I64 => FDX_DTYPE_I64,
-        DType::BF16 => FDX_DTYPE_BF16,
-        DType::F16 => FDX_DTYPE_F16,
-        DType::F32 => FDX_DTYPE_F32,
-        DType::F64 => FDX_DTYPE_F64,
-        DType::F8E4M3 => FDX_DTYPE_F8E4M3,
-        DType::F6E2M3 => FDX_DTYPE_F6E2M3,
-        DType::F6E3M2 => FDX_DTYPE_F6E3M2,
-        DType::F4 => FDX_DTYPE_F4,
-        DType::F8E8M0 => FDX_DTYPE_F8E8M0,
+        // §6.1.1: Bool is faithfully named by the base descriptor (`kDLBool`), so a
+        // plain tensor rides the base and emits NO `FDXDTypeExt`. This is neither a
+        // code (`Coded`) nor a decline (`Err`) — it is the third disposition. The
+        // payload is the reserved namespace code, written into a field ONLY when a
+        // sidecar exists for another reason (never as a standalone sidecar).
+        DType::Bool => FdxDtype::RidesBase(FDX_DTYPE_BOOL),
+        DType::U8 => FdxDtype::Coded(FDX_DTYPE_U8),
+        DType::I8 => FdxDtype::Coded(FDX_DTYPE_I8),
+        DType::U32 => FdxDtype::Coded(FDX_DTYPE_U32),
+        DType::I16 => FdxDtype::Coded(FDX_DTYPE_I16),
+        DType::I32 => FdxDtype::Coded(FDX_DTYPE_I32),
+        DType::I64 => FdxDtype::Coded(FDX_DTYPE_I64),
+        DType::BF16 => FdxDtype::Coded(FDX_DTYPE_BF16),
+        DType::F16 => FdxDtype::Coded(FDX_DTYPE_F16),
+        DType::F32 => FdxDtype::Coded(FDX_DTYPE_F32),
+        DType::F64 => FdxDtype::Coded(FDX_DTYPE_F64),
+        DType::F8E4M3 => FdxDtype::Coded(FDX_DTYPE_F8E4M3),
+        DType::F6E2M3 => FdxDtype::Coded(FDX_DTYPE_F6E2M3),
+        DType::F6E3M2 => FdxDtype::Coded(FDX_DTYPE_F6E3M2),
+        DType::F4 => FdxDtype::Coded(FDX_DTYPE_F4),
+        DType::F8E8M0 => FdxDtype::Coded(FDX_DTYPE_F8E8M0),
     })
 }
 
@@ -502,7 +561,9 @@ mod tests {
                 );
                 continue;
             }
-            let code = dtype_to_fdx(d).expect("every authored dtype encodes");
+            let code = dtype_to_fdx(d)
+                .expect("every authored dtype encodes")
+                .namespace_code();
             assert_eq!(
                 fdx_to_dtype(code),
                 Some(d),
@@ -513,19 +574,80 @@ mod tests {
 
     #[test]
     fn dtype_anchor_codes_match_spec_6_1() {
-        // Anchors pinned against the §6.1 logical-dtype table.
-        assert_eq!(dtype_to_fdx(DType::U8).unwrap(), FDX_DTYPE_U8);
-        assert_eq!(dtype_to_fdx(DType::U8).unwrap(), 0);
-        assert_eq!(dtype_to_fdx(DType::I8).unwrap(), 1);
-        assert_eq!(dtype_to_fdx(DType::F32).unwrap(), FDX_DTYPE_F32);
-        assert_eq!(dtype_to_fdx(DType::F32).unwrap(), 8);
-        assert_eq!(dtype_to_fdx(DType::F64).unwrap(), 9);
+        // Anchors pinned against the §6.1 logical-dtype table. `.namespace_code()`
+        // is the u16 the field carries; these are all `Coded`, so it equals the
+        // assigned code (the born-red below covers the `RidesBase`/decline splits).
+        assert_eq!(
+            dtype_to_fdx(DType::U8).unwrap().namespace_code(),
+            FDX_DTYPE_U8
+        );
+        assert_eq!(dtype_to_fdx(DType::U8).unwrap().namespace_code(), 0);
+        assert_eq!(dtype_to_fdx(DType::I8).unwrap().namespace_code(), 1);
+        assert_eq!(
+            dtype_to_fdx(DType::F32).unwrap().namespace_code(),
+            FDX_DTYPE_F32
+        );
+        assert_eq!(dtype_to_fdx(DType::F32).unwrap().namespace_code(), 8);
+        assert_eq!(dtype_to_fdx(DType::F64).unwrap().namespace_code(), 9);
         // The sub-byte / microscaling ones the spec calls out explicitly.
-        assert_eq!(dtype_to_fdx(DType::F8E4M3).unwrap(), 10);
-        assert_eq!(dtype_to_fdx(DType::F6E2M3).unwrap(), 11);
-        assert_eq!(dtype_to_fdx(DType::F6E3M2).unwrap(), 12);
-        assert_eq!(dtype_to_fdx(DType::F4).unwrap(), 13);
-        assert_eq!(dtype_to_fdx(DType::F8E8M0).unwrap(), 14);
+        assert_eq!(dtype_to_fdx(DType::F8E4M3).unwrap().namespace_code(), 10);
+        assert_eq!(dtype_to_fdx(DType::F6E2M3).unwrap().namespace_code(), 11);
+        assert_eq!(dtype_to_fdx(DType::F6E3M2).unwrap().namespace_code(), 12);
+        assert_eq!(dtype_to_fdx(DType::F4).unwrap().namespace_code(), 13);
+        assert_eq!(dtype_to_fdx(DType::F8E8M0).unwrap().namespace_code(), 14);
+    }
+
+    #[test]
+    fn bool_rides_the_base_as_a_third_disposition_distinct_from_a_decline() {
+        // §6.1.1: `Bool` is faithfully named by the base DLPack descriptor
+        // (`kDLBool`), so it needs NO FDX sidecar code. That is a THIRD outcome —
+        // neither "has a code" nor "declined" — and it must be observable in the
+        // RETURN, not merely asserted in a comment. This test discriminates all
+        // three, so a Bool implemented as a decline (the conflating fabrication)
+        // or as `Coded(0x0201)` (emitting the sidecar §6.1.1 forbids) fails it.
+
+        // (1) Bool is SUPPORTED — not a decline. Fails if `Bool => Err`.
+        let bool_result = dtype_to_fdx(DType::Bool);
+        assert!(
+            bool_result.is_ok(),
+            "Bool rides the base and must not decline; got {bool_result:?}"
+        );
+        let bool_disp = bool_result.expect("asserted Ok directly above"); // FdxDtype: Copy
+
+        // (2) Bool is `RidesBase`, never `Coded` — so it can never be emitted as a
+        //     standalone sidecar code (the reserved 0x0201 included). Fails if
+        //     `Bool => Coded(_)` for ANY code, 0x0201 included.
+        assert_eq!(
+            bool_disp,
+            FdxDtype::RidesBase(FDX_DTYPE_BOOL),
+            "Bool must be RidesBase(0x0201) — a Coded value is a wire claim the base already makes"
+        );
+        assert_eq!(
+            FDX_DTYPE_BOOL, 0x0201,
+            "the reserved BOOL namespace code is 0x0201 (§6.1)"
+        );
+        assert!(
+            !matches!(bool_disp, FdxDtype::Coded(_)),
+            "Bool must never be Coded — a plain Bool tensor emits no standalone FDXDTypeExt"
+        );
+
+        // (3) The three dispositions are pairwise distinct IN THE RETURN. An
+        //     `Option<u16>` would collapse `RidesBase` and the F8E5M2 decline to
+        //     `None`; here Bool is `Ok(RidesBase)`, F8E5M2 is `Err`, F32 is
+        //     `Ok(Coded)` — three shapes.
+        assert!(
+            matches!(dtype_to_fdx(DType::F32), Ok(FdxDtype::Coded(_))),
+            "a normal dtype is Coded — distinct from RidesBase and from a decline"
+        );
+        assert!(
+            dtype_to_fdx(DType::F8E5M2).is_err(),
+            "F8E5M2's code is unassigned (GAP-097) — a decline, distinct from Bool's RidesBase"
+        );
+
+        // The namespace code Bool writes into a field (only when a sidecar exists
+        // for another reason) IS 0x0201 — same u16 a `Coded` would carry, but the
+        // variant, not the code, is what says "no standalone sidecar".
+        assert_eq!(dtype_to_fdx(DType::Bool).unwrap().namespace_code(), 0x0201);
     }
 
     #[test]
@@ -650,6 +772,7 @@ mod tests {
             .copied()
             .map(dtype_to_fdx)
             .flatten()
+            .map(FdxDtype::namespace_code)
             .collect();
         let n = codes.len();
         codes.sort_unstable();
@@ -866,6 +989,7 @@ mod tests {
             .copied()
             .map(dtype_to_fdx)
             .flatten()
+            .map(FdxDtype::namespace_code)
             .collect();
         for &c in &dt {
             assert_ne!(c, FDX_DTYPE_NONE);

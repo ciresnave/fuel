@@ -266,6 +266,31 @@ jobs:
       - name: Check jit-gated compilation (GAP-233)
         if: matrix.os == 'ubuntu-latest'
         run: cargo check -p fuel-dispatch --features jit --all-targets
+      # `dlpack` is default-off and, before this step, NO workflow compiled a line
+      # behind `--features dlpack` — so fuel-ir's exhaustive `DType`→FDX match
+      # (`dlpack::convert::dtype_to_fdx`, the §6.1 wire codec) and fuel-memory's
+      # `dlpack_view` consumer had no gate at all. That match went RED on
+      # `DType::Bool` (E0004, convert.rs:62) while every default CI check stayed
+      # GREEN — exactly the invisible-behind-a-feature class this section
+      # documents. Pure-host, seconds: no baracuda, no SDK, no GPU. Both crates in
+      # ONE invocation so features resolve once and share a cache; `--all-targets`
+      # so the born-reds in BOTH crates' test targets compile — the artifacts that
+      # prove that are `fuel-ir (lib test)` and `fuel-memory (lib test)`, not a
+      # bare `Checking` line.
+      #
+      # ⚠️ This is a COMPILE gate, NOT a lint gate. The `check` job does not set
+      # `-D warnings` (only Clippy does, and Clippy runs DEFAULT features, so it
+      # never sees `dlpack`). A GREEN here means the cell BUILDS, not that it is
+      # clean: it passes fuel-memory's known-benign `PACKING_BYTE_ALIGNED`
+      # dead-code warning today and will pass a future `--features dlpack` warning
+      # the same way. (That constant is a hand-maintained mirror of the §6.1
+      # FDXPacking table whose own doc names its expiry — export the named
+      # constants from `dlpack::codes` and the mirror stops existing; tracked
+      # separately as the manual-mirror class.) Revisit whether this leg earns
+      # `-D warnings` once that resolves.
+      - name: Check dlpack-gated compilation (GAP-233; §6.1 wire codec)
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo check -p fuel-ir -p fuel-memory --features fuel-memory/dlpack --all-targets
 
       # ── Non-default FEATURE compile coverage, second tranche (GAP-247) ──
       # A 45-cell census measured every non-default feature NO CI step names.

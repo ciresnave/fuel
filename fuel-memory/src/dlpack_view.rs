@@ -533,7 +533,11 @@ fn fnv1a(s: &str) -> u64 {
 /// (`F8E6M2`, GAP-045). Declining beats emitting an invented wire code that a
 /// foreign consumer would read as a real claim about the bytes.
 fn dtype_to_fdx_code(d: DType) -> fuel_ir::Result<u16> {
-    fuel_ir::dlpack::convert::dtype_to_fdx(d)
+    // The u16 that fills a namespace field. Both `Coded` and `RidesBase` carry
+    // one; a base-riding dtype (`Bool`, §6.1.1) contributes its reserved code
+    // ONLY here — a plain `Bool` tensor emits no `FDXDTypeExt`, so this path is
+    // reached only when a sidecar already exists for another reason.
+    fuel_ir::dlpack::convert::dtype_to_fdx(d).map(|disp| disp.namespace_code())
 }
 
 /// Construct a borrowed DLPack + FDX view over `(storage, layout)` with **no
