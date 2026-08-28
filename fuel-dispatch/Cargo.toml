@@ -111,8 +111,24 @@ default = []
 # `structure_key_token`). NOT the kernel forge: `baracuda-kernels-types` has
 # `build = false` and does not depend on `baracuda-kernels-sys`, so enabling
 # this compiles NO CUDA kernels. (It does still reach `baracuda-cuda-sys`, whose
-# build script is 321 bytes and invokes no nvcc — so the CUDA SDK must be
-# present, but nothing is forged.)
+# build script is a 321-byte placeholder emitting two `rerun-if-env-changed`
+# lines, with bindings pre-generated and vendored in-tree.)
+#
+# CORRECTED 2026-08-28 — THIS COMMENT USED TO END *"so the CUDA SDK must be
+# present, but nothing is forged."* THE SECOND HALF IS RIGHT AND THE FIRST IS
+# MEASURABLY WRONG FOR A `check`. A GitHub-hosted `ubuntu-latest` has NO CUDA SDK,
+# and `cargo check -p fuel-dispatch --features telemetry,baracuda-types
+# --all-targets` COMPILED THERE — run 33128700330, read at STEP level, which is
+# what converts the GAP-247 leg from unverified into real coverage per GAP-181.
+#
+# SCOPE, STATED BECAUSE THE MEASUREMENT HAS ONE: this is proven for `check`.
+# Whether a LINK needs the SDK is untested in either direction — do not read the
+# correction as wider than the run that produced it.
+#
+# WHY THE FALSE HALF MATTERED: a capability claim that overstates a precondition
+# does not fail loudly, IT STOPS PEOPLE TRYING — it is why nobody put this cell in
+# CI. Same shape as CLAUDE.md's GAP-016 "mkl/aocl are unbuildable here", which was
+# false and hid real rot behind it.
 #
 # WHY THIS EXISTS AS ITS OWN FEATURE RATHER THAN RIDING `cuda` OR `jit`.
 # `telemetry/baracuda_provider.rs` needs exactly this crate and nothing else
