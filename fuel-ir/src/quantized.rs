@@ -9,10 +9,26 @@
 
 use crate::error::Result;
 
-/// The ggml block-format dtype tag. Mirrors llama.cpp's `ggml_type` for
-/// the subset fuel supports; lives here (rather than in `quantized/mod.rs`)
-/// because per-backend kernel crates need to name it without depending on
-/// fuel-core.
+/// The ggml block-format dtype tag. Mirrors llama.cpp's `ggml_type`
+/// **@`9d57ce456c`** for the subset fuel supports (the classic 15 — F32/F16/BF16
+/// plus Q4_0..Q8_1 and Q2K..Q8K; NOT the IQ*/TQ*/MXFP4/NVFP4 families).
+///
+/// Geometry checked against that commit (GAP-248 instance 5), and the referee
+/// differs by column:
+/// - `type_size` (bytes/block) is **ADJUDICATED** — upstream's own `static_assert`
+///   on each block struct is the referee; 12/12 for the quant types here.
+/// - `block_size` (elems/block) and the numeric codes are **CORROBORATED** — both
+///   are transcribed upstream (`type_traits[].blck_size`, `enum ggml_type`) and
+///   agree 12/12 with MLMF's INDEPENDENT transcription; no referee exists.
+/// - per-block **alignment** is UNANCHORED by both projects; fuel tracks none, so
+///   an upstream alignment change is undetectable here.
+///
+/// NO DETECTOR: this pin makes drift ANSWERABLE, not detected — it ages silently.
+/// Re-run the comparison on any llama.cpp bump that touches `ggml_type` or
+/// `type_traits[]`.
+///
+/// Lives here (rather than in `quantized/mod.rs`) because per-backend kernel
+/// crates need to name it without depending on fuel-core.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GgmlDType {
     F32,
