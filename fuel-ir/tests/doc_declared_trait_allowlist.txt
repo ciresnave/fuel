@@ -1,0 +1,17 @@
+# Doc-declared traits that do not exist in code, with their DISPOSITION.
+#
+# Format:  <doc file>	<TraitName>	<disposition + why>
+# The KEY is the first two fields, so editing a reason never breaks an entry.
+# An entry with a BLANK reason FAILS the gate: a bare allowlist is amnesty with
+# no record of which disposition it is, and it takes the guard signal with it.
+# This list may only SHRINK - an entry whose doc no longer declares the trait is
+# STALE and fails, so it cannot rot into permanent amnesty.
+#
+# Source: docs-vs-code audit 2026-08-28. Method-level measurement, not name
+# matching: each trait body was parsed for its declared fn names and each name
+# counted at head. Occurrence counts were the WRONG instrument here and produced
+# the wrong disposition for two of three before the method check corrected it.
+#
+05-backend-contract.md	BackendIdentity	DOC DRIFT, not unbuilt: 2/3 methods exist (device_location, same_device) but the SHAPE differs - backend_id is a STRUCT FIELD on BackendCapabilities, and same_device/device_location are inherent methods on concrete types, not a shared trait. Highest-severity doc defect in the corpus: it sits under Tier 1 MANDATORY in the document external backend authors are pointed at, so an implementer cannot tell a missed requirement from a stale doc. v0.7 marks the section; the rewrite (where identity BELONGS - struct field vs trait method) is a design decision and a real item, deliberately not made at 02:00 by whoever noticed.
+05-backend-contract.md	BackendPressureSignals	GENUINELY UNBUILT, filed: 0/2 declared methods exist (register_pressure_callback, unregister_pressure_callback have zero fn definitions). Tier 2 conditional, so low priority - but the doc gives it a full pub trait body with no marker before v0.7.
+05-backend-contract.md	BackendDiagnostics	GENUINELY UNBUILT, filed: 0/4 declared methods exist (device_name, driver_version, peak_throughput, peak_memory_bandwidth have zero fn definitions). Tier 3 optional, so lowest priority. Note device_name has 15 non-comment occurrences as a struct FIELD - which is why an occurrence count cannot decide this and the method check was required.
