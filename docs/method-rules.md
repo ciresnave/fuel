@@ -1477,3 +1477,48 @@ is the least-audited event in a task, because it feels like the process
 working. Related:
 [`uninformative-signals-both-directions`](#uninformative-signals-both-directions),
 [`magnitude-is-not-impossibility`](#magnitude-is-not-impossibility).
+
+## the-instrument-nearest-to-hand
+
+**THE COMMONEST SOURCING ERROR IS NOT USING A BAD INSTRUMENT. IT IS REACHING
+FOR THE ONE NEAREST TO HAND INSTEAD OF THE ONE THAT ANSWERS THE QUESTION** —
+**and it feels like diligence, because you DID consult a source.**
+
+**Three instances on 2026-08-28, three different parties, one shape. Each was
+caught by a different mechanism and none by review:**
+
+```
+PROXIMITY    Baracuda was closest to their own build's death and was WRONG
+             about its cause -- they reported a cross-project collision; it was
+             self-inflicted. Caught by their own retry succeeding after they
+             capped their OWN threads.
+
+AUTHORSHIP   The party that IMPLEMENTED `NUM_JOBS` support wrote a durable
+             config comment saying their forge does not read it. Caught by two
+             review bots on the comment, by accident.
+
+RECENCY      A coordinator read the CLAUDE.md SNAPSHOT loaded at session start
+             and reported it as the file's current content. It had been
+             corrected hours earlier. Caught by the file's owner.
+```
+
+**Being NEAR a thing, having AUTHORED a thing, and having RECENTLY READ a thing
+all feel like standing, and none of them is evidence.** The victim, the
+implementer and the reader each had the strongest available claim to know, and
+each was wrong in the direction their position made comfortable.
+
+⚠️ **RECENCY IS THE WORST OF THE THREE IN AN AGENT SESSION, because a cached
+snapshot is INDISTINGUISHABLE FROM HEAD at the point of use.** A stale working
+tree at least sits at a path you could question; **a context snapshot has no
+path and no timestamp in the moment you read it.** The remedy is the one this
+file already mandates for trees — **`git show <ref>:<path>`, at a NAMED ref** —
+and it applies to your own project's files, not only to other people's.
+
+**PRACTICE: before citing a source, ask what makes it AUTHORITATIVE for THIS
+question rather than merely CLOSE.** For a file's current content that is a ref,
+never a memory. For a build's cause it is a log, never a proximity. **For a
+crate's behaviour it is the version you RESOLVE, never the version you
+authored** — a version boundary is exactly where authorship stops being
+evidence. Related:
+[`a-stale-tool-is-a-wrong-action`](#a-stale-tool-is-a-wrong-action),
+[`go-to-the-artefact-not-the-rendering`](#go-to-the-artefact-not-the-rendering).
