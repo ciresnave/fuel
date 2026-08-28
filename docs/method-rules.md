@@ -1418,3 +1418,62 @@ reach for a MECHANICAL GUARD rather than a further careful read** — a grep doe
 not have the scoped-to-what-prompted-it failure mode. Related:
 [`verify-the-population-not-the-instance`](#verify-the-population-not-the-instance),
 [`fix-the-generator-not-the-output`](#fix-the-generator-not-the-output).
+
+## a-pre-stated-blocker-is-a-prediction
+
+**A BLOCKER YOU NAME BEFORE MEASURING IS A PREDICTION, AND THESE FAIL
+OVERWHELMINGLY IN ONE DIRECTION: THE DIRECTION THAT STOPS THE WORK. PHRASE A
+STOP-CONDITION AS *STOP AND REPORT*, NEVER AS THE OUTCOME — AN
+OUTCOME-PHRASED FENCE LICENSES FILING THE PREDICTION AS A RESULT.**
+
+**Worked example: `fuel-cpu-backend --features mkl`, 2026-08-27. THREE
+predictions in one thread, from two people, ALL WRONG, ALL IN THE STOPPING
+DIRECTION:**
+
+```
+predicted                            measured
+----------------------------------   -----------------------------------------
+"5 errors blocked on f16             a MISSING QUALIFICATION. `half` was already
+ stabilisation (rust#116909)"        a dep; `f16::ONE` resolved to Rust's
+                                     unstable PRIMITIVE because the file
+                                     imported `half` nowhere. 19 of 19 fixed,
+                                     none blocked.
+
+"no CI leg -- the cell needs a       VIABLE. ocipkg fetched MKL on a clean
+ preinstalled SDK"                   runner. Step green in 39s.
+
+"the leg may pull a large archive    COMPARABLE: onnx 25s, mkl 39s, against
+ -- read the duration before         0s/3s/6s for the others.
+ treating it as cheap"
+```
+
+**Each was individually reasonable. Each dissolved on contact with a
+measurement. And each would have PREVENTED the work rather than misdirected
+it** — which is why the class is expensive and quiet: **the output of a
+wrong stopping-prediction is an ABSENCE, and nobody audits work that was never
+attempted.**
+
+⚠️ **THE MOST DURABLE WRONG ANSWER AVAILABLE IS A BLOCKED ITEM WITH A NAMED
+UPSTREAM ISSUE.** *"14 fixed, 5 blocked on rust#116909"* would have been
+accepted by everyone, filed, and never revisited — **it LOOKS resolved.**
+And the error message named a REAL upstream limitation that was not the one
+being hit, **so the plausible reading was also the well-evidenced one.**
+
+**THE FENCE DESIGN THAT SAVED IT, named by the lane that went past it:**
+
+```
+OUTCOME-PHRASED   "if they are blocked on f16, file them as blocked"
+                  -> licenses the PREDICTED OUTCOME. Stops the looking.
+
+STOP-AND-REPORT   "if they are blocked, STOP AND REPORT WHAT YOU FOUND"
+                  -> licenses only STOPPING. The report requires looking at
+                     the thing, which is what dissolved it.
+```
+
+**PRACTICE: name the predicted blocker so it can be RECOGNISED, but make the
+deliverable a REPORT ON WHAT WAS FOUND, never the predicted disposition. And
+when a fence fires, that is the moment to LOOK HARDEST** — a fence firing
+is the least-audited event in a task, because it feels like the process
+working. Related:
+[`uninformative-signals-both-directions`](#uninformative-signals-both-directions),
+[`magnitude-is-not-impossibility`](#magnitude-is-not-impossibility).
