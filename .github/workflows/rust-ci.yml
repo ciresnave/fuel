@@ -322,7 +322,13 @@ jobs:
       #     — a leg over a cell that does not compile would be born red and stay
       #     red; it is filed for dedicated repair first.
       #   * fuel-ir --features dlpack — E0004, `DType::Bool` never added to the
-      #     DLPack conversion. Also a default-member. Its leg lands with the fix.
+      #     DLPack conversion. Also a default-member. CLOSED: fixed in #24, and
+      #     its leg is the "Check dlpack-gated compilation" step above — which
+      #     also unblocked `fuel-memory --features dlpack`, a cell this sweep
+      #     could only record as NO RESULT because it died inside fuel-ir. Now
+      #     measured: COMPILES, with a dead-code warning
+      #     (`PACKING_BYTE_ALIGNED`) that had been invisible for the life of the
+      #     code because nothing ever built the cell.
       #   * fuel-aocl-cpu-backend / fuel-mkl-cpu-backend — CI-excluded, fixed
       #     separately; MKL was ENTIRELY uncompilable, library included.
       #
@@ -376,11 +382,29 @@ jobs:
       #     `cargo tree -e features` to pull `baracuda-kernels-sys`, which forges
       #     UNCONDITIONALLY (~93 min under load). A runner question, GAP-181.
       #   * 6 `accelerate` cells — Apple hardware, unbuildable anywhere here.
-      #   * `fuel-quantized --features neon-dotprod` DELIBERATELY has no leg. It
-      #     compiles GREEN on x86 while compiling its own code AWAY: the SDOT
-      #     intrinsic is `aarch64`-gated. A leg would be a permanent green that
-      #     gates nothing. Any target-gated feature must state the TARGET it was
-      #     built for, or its green is unreadable.
+      #   * `fuel-quantized --features neon-dotprod` has no leg YET, and the
+      #     reason recorded here first was WRONG — corrected 2026-08-28, because
+      #     it was the exact defect this block exists to prevent.
+      #     TRUE: the cell compiles GREEN on x86 while compiling its own code
+      #     AWAY (the SDOT intrinsic is `aarch64`-gated), so an x86-only leg
+      #     would be a permanent green gating nothing.
+      #     FALSE, as originally written: *"a leg would be a permanent green"*
+      #     — unqualified. This matrix HAS `ubuntu-24.04-arm` (line 105), where
+      #     the code is real; the existing "Run with arm neon" step (line 158)
+      #     already gates to it with `if: matrix.os == 'ubuntu-24.04-arm'`. So a
+      #     leg gated to THAT runner is genuine coverage, and the sentence
+      #     foreclosed it by reasoning from one machine to "every runner".
+      #     ⚠️ That is the GAP-016 shape — a claim that does not fail loudly, it
+      #     STOPS PEOPLE TRYING — which is precisely why nobody had gated the
+      #     SDK-gated cells either. A comment that rules something out must name
+      #     the configuration it was measured in.
+      #     STANDING RULE, which survives this correction unchanged: any
+      #     target-gated feature must state the TARGET it was built for, or its
+      #     green is unreadable. `skipped-everywhere` and
+      #     `skipped-here-runs-there` are different states and a RUN-level view
+      #     cannot tell them apart — read STEP conclusions per job.
+      #     (Leg deliberately not added here: offered to the lane that measured
+      #     the arm runner, to avoid two people writing it.)
       - name: Check serde-gated fuel-ir (GAP-247)
         if: matrix.os == 'ubuntu-latest'
         run: cargo check -p fuel-ir --features serde --all-targets
