@@ -1523,6 +1523,27 @@ evidence. Related:
 [`a-stale-tool-is-a-wrong-action`](#a-stale-tool-is-a-wrong-action),
 [`go-to-the-artefact-not-the-rendering`](#go-to-the-artefact-not-the-rendering).
 
+⚠️ **AND THE COMPANION INSTRUMENT DEFECT, CAUGHT WITHIN AN HOUR OF THIS RULE
+LANDING, BY THE LANE APPLYING IT: YOUR *DEFINITION* QUERY'S KEYWORD SET IS
+ITSELF A POPULATION CLAIM.**
+
+Checking every name in a mixed list (as this rule demands), a lane's query
+reported **`KernelRef`: ZERO definitions, 54 files mentioning it** — which
+reads exactly like a second false name in the sentence being corrected.
+**It is real: `pub type KernelRef = fn(...)`, a TYPE ALIAS.** The query was
+keyed on `struct|enum|trait|mod` and Rust declares things with `type`, `const`,
+`static`, `fn`, and macros as well.
+
+**A query keyed on SOME declaration keywords misses the others SILENTLY, and
+its output is indistinguishable from a real absence.** Had it been trusted, the
+correction of one false name would have introduced another **into the very
+sentence being fixed.**
+
+**PRACTICE: when a definition query returns zero, name the declaration FORMS it
+covers before reporting the absence** — and note that a high mention-count
+beside a zero definition-count is the signature of this defect, not of a
+phantom.
+
 ## a-true-half-vouches-for-the-false-half
 
 **A SENTENCE NAMING SEVERAL ARTIFACTS, WHERE SOME EXIST AND SOME DO NOT, READS
