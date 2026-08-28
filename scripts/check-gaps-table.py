@@ -94,6 +94,16 @@ print('   "(a) CLOSED; (b) OPEN", WON\'T DO, MISFILED, SUBJECT DELETED,')
 print('   "(Was: OPEN ...)". Most carry real information a single token would')
 print('   destroy, so the fix is a controlled PREFIX plus free prose, not a')
 print('   collapse to two words. Quote the construct with the number.')
+print()
+print('!! THE HOMED-RESIDUE TEST APPLIES TO CLOSED ROWS ONLY. A closure is')
+print('   genuine when its residue is absent or HOMED AT A NAMED ROW -- but')
+print('   that is because STRIKETHROUGH IS WHAT TELLS A READER NOT TO LOOK,')
+print('   so residue inside a CLOSED row is unreachable. Residue inside an')
+print('   OPEN row is exactly where it belongs: AN OPEN ROW IS ITS OWN')
+print('   ADDRESS. Applied unbounded on 2026-08-28 the criterion would have')
+print('   filed eight rows pointing at eight rows that already point at')
+print('   themselves -- the satisfied-non-goal shape, inside a criterion')
+print('   written to prevent it.')
 
 # ---------------------------------------------------------------------------
 # HEADERS MUST AGREE WITH THE ROWS BENEATH THEM, IN ARITY AND IN NAME.
