@@ -31,3 +31,30 @@ rustflags = ["-C", "target-cpu=generic"]
 
 [target.x86_64-apple-darwin]
 rustflags = ["-C", "target-feature=-avx,-avx2"]
+
+# ── [env] — cap the CUDA forge on the UNWRAPPED path (GAP-151) ───────────────
+# `baracuda-kernels-sys`'s build script forges UNCONDITIONALLY — it never
+# consults the `cuda` feature — so `cargo check --workspace --all-targets` at
+# DEFAULT features IS a CUDA build, and it touches NEITHER
+# `scripts/cuda-build.ps1` NOR its `BARACUDA_FORGE_THREADS` cap. Without this,
+# that accidental path forges at full width (~11 nvcc on this box). This applies
+# the protocol K to it, so the cap is enforced for the repo, not only for wrapped
+# builds.
+#
+# PLAIN `[env]`, NOT `force = true` — and the ABSENCE of `force` is load-bearing,
+# so it is defended here rather than instructed. `cuda-build.ps1` sets
+# `BARACUDA_FORGE_THREADS` as an AMBIENT variable; a plain `[env]` DEFERS to an
+# ambient value, so a wrapped build still gets the protocol value the wrapper
+# chose. Measured with a build-script probe (a build script is the surface the
+# forge runs on):
+#     [env]="4", no ambient   -> build script observes 4   (unwrapped path capped)
+#     [env]="4", ambient=9    -> build script observes 9   (wrapper still wins)
+#     force=true, ambient=9   -> build script observes 4   (force DEFEATS the wrapper)
+# `force` would override the wrapper's value, and the failure is near-invisible:
+# `cuda-build.ps1:290` would still print "OVERRIDING pre-existing BARACUDA_FORGE_
+# THREADS…" (it DID set the variable) while cargo silently ignored it — a protocol
+# reporting success while being overridden, which is worse than one that fails.
+# Only `baracuda-forge` reads this variable (`parallel.rs:98`); `RAYON_NUM_THREADS`
+# would perturb every rayon consumer, which is an argument for this knob over that.
+[env]
+BARACUDA_FORGE_THREADS = "4"
