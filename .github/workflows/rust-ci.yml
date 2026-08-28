@@ -470,10 +470,14 @@ jobs:
       # second half proving the seed is invisible without the feature, so a red
       # leg is not merely a broken crate. Restored clean.
       #
-      # NOTE the cost shape differs from every other leg here: those are
-      # seconds-scale pure-host checks. This one may pull a large MKL archive on
-      # a cold runner. Read the step's duration on the first green before
-      # treating it as cheap.
+      # ✅ EXPERIMENT RESOLVED — run 33134436974, PR #26, Check (ubuntu-latest):
+      # this step PASSED in 39s on a runner with no preinstalled MKL, so ocipkg
+      # does fetch it and the leg is viable. The cost caveat written here before
+      # the run ("may pull a large archive, read the duration before calling it
+      # cheap") is now MEASURED rather than feared: 39s against 25s for the onnx
+      # leg and 3-6s for the pure-host ones. Comparable, not exceptional.
+      # Recorded because the pre-run guess and the measurement disagreed, and
+      # the guess is the kind that would otherwise have justified never trying.
       - name: Check mkl-gated cpu backend (GAP-247, EXPERIMENT)
         if: matrix.os == 'ubuntu-latest'
         run: cargo check -p fuel-cpu-backend --features mkl --all-targets
