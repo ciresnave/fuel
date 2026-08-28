@@ -526,49 +526,42 @@ mod tests {
 
     // ── DType ─────────────────────────────────────────────────────────────
 
-    /// Representative of EVERY `DType` variant. Compile-time exhaustiveness in
-    /// `dtype_to_fdx` already guards additions; this list guards value
-    /// correctness (the "mapping is total" test below iterates it).
-    const ALL_DTYPES: [DType; 15] = [
-        DType::U8,
-        DType::I8,
-        DType::U32,
-        DType::I16,
-        DType::I32,
-        DType::I64,
-        DType::BF16,
-        DType::F16,
-        DType::F32,
-        DType::F64,
-        DType::F8E4M3,
-        DType::F6E2M3,
-        DType::F6E3M2,
-        DType::F4,
-        DType::F8E8M0,
-    ];
-
     #[test]
     fn dtype_roundtrips_for_every_variant() {
-        for d in ALL_DTYPES {
-            // GAP-059: F8E6M2 has no authored FDX encoding (GAP-045) and is
-            // expected to DECLINE. Asserted explicitly rather than skipped —
-            // a skip would silently start passing if the decline were replaced
-            // by an invented code, which is the exact failure being guarded.
-            if d == DType::F8E6M2 {
-                assert!(
+        // Population is `DType::ALL` (GAP-248: reminded-complete, measured 18 at
+        // head), not a hand-list that silently goes stale — the dead `F8E6M2`
+        // branch this test once carried is now LIVE. Each variant is asserted at
+        // its OWN disposition; a skip would let a decline start passing as an
+        // invented code (GAP-059), the exact failure guarded here.
+        for &d in DType::ALL {
+            match d {
+                // GAP-045/097: no authored/assigned FDX code — must DECLINE, never
+                // round-trip through an invented one.
+                DType::F8E5M2 | DType::F8E6M2 => assert!(
                     dtype_to_fdx(d).is_err(),
-                    "F8E6M2 must decline until its encoding is authored, never round-trip through an invented code"
-                );
-                continue;
+                    "{d:?} must decline until its FDX code is authored, never round-trip through an invented code"
+                ),
+                // §6.1.1: Bool rides the base — `RidesBase`, no `fdx_to_dtype`
+                // round-trip (0x0201 is a reserved placeholder the base speaks for).
+                DType::Bool => assert!(
+                    matches!(dtype_to_fdx(d), Ok(FdxDtype::RidesBase(_))),
+                    "Bool must ride the base as RidesBase, not a coded round-trip"
+                ),
+                // Every other variant has an assigned code that round-trips. A new
+                // variant lands here by default; if it is actually a decline or
+                // rides-base, this arm fails loudly (expect/round-trip), forcing it
+                // into an arm above.
+                _ => {
+                    let code = dtype_to_fdx(d)
+                        .expect("every coded dtype encodes")
+                        .namespace_code();
+                    assert_eq!(
+                        fdx_to_dtype(code),
+                        Some(d),
+                        "DType {d:?} (code {code}) must round-trip"
+                    );
+                }
             }
-            let code = dtype_to_fdx(d)
-                .expect("every authored dtype encodes")
-                .namespace_code();
-            assert_eq!(
-                fdx_to_dtype(code),
-                Some(d),
-                "DType {d:?} (code {code}) must round-trip"
-            );
         }
     }
 
@@ -742,32 +735,34 @@ mod tests {
         assert_eq!(dl_dtype(DType::F8E4M3).unwrap().bits, 8);
         assert_eq!(dl_dtype(DType::F8E8M0).unwrap().bits, 8);
         // Lanes always 1 for scalar dtypes.
-        for d in ALL_DTYPES {
-            // GAP-059: F8E6M2 declines (GAP-045, no authored width). Asserted,
-            // not skipped — a skip starts passing silently if the decline is
-            // ever replaced by a fabricated width.
-            if d == DType::F8E6M2 {
-                assert!(
+        for &d in DType::ALL {
+            match d {
+                // F8E5M2 (GAP-097) and F8E6M2 (GAP-045) decline a base width —
+                // asserted, not skipped: a skip starts passing silently if a
+                // decline is ever replaced by a fabricated width.
+                DType::F8E5M2 | DType::F8E6M2 => assert!(
                     dl_dtype(d).is_err(),
-                    "F8E6M2 must decline, not assert a width"
-                );
-                continue;
+                    "{d:?} must decline a base width, not assert one"
+                ),
+                // Every other variant (Bool included) has a faithful scalar
+                // descriptor with lanes = 1.
+                _ => assert_eq!(
+                    dl_dtype(d).unwrap().lanes,
+                    1,
+                    "DType {d:?} must be scalar (lanes=1)"
+                ),
             }
-            assert_eq!(
-                dl_dtype(d).unwrap().lanes,
-                1,
-                "DType {d:?} must be scalar (lanes=1)"
-            );
         }
     }
 
     #[test]
     fn dtype_codes_have_no_duplicates() {
         // GAP-059: only dtypes with an AUTHORED encoding have a code to collide.
-        // F8E6M2 declines (GAP-045); `flatten()` drops it rather than unwrapping,
-        // and the count below is taken from what was collected, so the assertion
-        // stays exact instead of comparing against a stale ALL_DTYPES length.
-        let mut codes: Vec<u16> = ALL_DTYPES
+        // F8E5M2/F8E6M2 decline (GAP-097/045); `flatten()` drops them. Bool
+        // contributes its reserved RidesBase code (0x0201), distinct from the
+        // 0..=14 assigned codes. The count is taken from what was collected, so the
+        // assertion stays exact rather than comparing against a hand-list length.
+        let mut codes: Vec<u16> = DType::ALL
             .iter()
             .copied()
             .map(dtype_to_fdx)
@@ -980,16 +975,18 @@ mod tests {
 
     #[test]
     fn every_source_variant_maps_to_a_distinct_real_code() {
-        // DType: every dtype with an AUTHORED encoding maps to a distinct
-        // non-NONE code. GAP-059: F8E6M2 declines (GAP-045) and contributes no
-        // code, so `flatten()` drops it — distinctness is a property of the
-        // codes that exist, not of the variant count.
-        let dt: Vec<u16> = ALL_DTYPES
+        // DType: every dtype with an assigned §6.1 code maps to a distinct non-NONE
+        // code THAT ROUND-TRIPS. GAP-097/045: F8E5M2/F8E6M2 decline and contribute
+        // no code. §6.1.1: Bool is `RidesBase` — its reserved 0x0201 is deliberately
+        // NOT a round-trippable code (the base speaks for it), so this "maps to a
+        // real code" claim is about `Coded` variants only; filter to them.
+        let dt: Vec<u16> = DType::ALL
             .iter()
             .copied()
-            .map(dtype_to_fdx)
-            .flatten()
-            .map(FdxDtype::namespace_code)
+            .filter_map(|d| match dtype_to_fdx(d) {
+                Ok(FdxDtype::Coded(c)) => Some(c),
+                _ => None,
+            })
             .collect();
         for &c in &dt {
             assert_ne!(c, FDX_DTYPE_NONE);
