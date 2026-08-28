@@ -33,6 +33,14 @@ use crate::quantized::GgmlDType;
 use crate::shape::Extent;
 use crate::symbol::SymId;
 
+// TEMP born-red-the-AIM-in-CI seed (DO NOT MERGE) — a complete dlpack-gated item
+// that MUST fail to compile, so the `Check dlpack-gated compilation` step goes RED
+// in CI while every other check stays GREEN. Proves the CI step both EXECUTES and
+// COMPILES fuel-ir's dlpack region (that `fuel-memory/dlpack` forwards to
+// `fuel-ir/dlpack` under CI's feature resolution). Reverted on this same branch.
+#[cfg(feature = "dlpack")]
+const _BORN_RED_AIM_CI_SEED: u8 = NO_SUCH_CONST_CI;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // DType ⇄ FDX logical-dtype code (§6.1)
 // ─────────────────────────────────────────────────────────────────────────────
