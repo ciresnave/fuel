@@ -103,6 +103,52 @@ fn unindexed(method_rules: &str, claude: &str) -> Vec<String> {
         .collect()
 }
 
+/// ARM C: a section with no ANCHOR LINK is reachable in prose and not by a
+/// link a reader can follow.
+///
+/// Arm A accepts ANY mention of the name, and arm B only validates anchors that
+/// already exist -- so a link whose TEXT names the section and whose TARGET
+/// omits the `#anchor` satisfies both and still strands the reader at the top of
+/// the file. Found 2026-09-02 with two live instances.
+fn unanchored(method_rules: &str, claude: &str) -> Vec<String> {
+    let cited = cited_anchors(claude);
+    sections(method_rules)
+        .into_iter()
+        .filter(|s| !cited.contains(s))
+        .collect()
+}
+
+/// ARM D: a link to the FILE rather than to a SECTION strands the reader.
+///
+/// Distinct from arm C and neither implies the other: arm C asks whether a
+/// SECTION is reachable at all, so a rule cited five times with four anchors
+/// passes it while the fifth citation still lands the reader at the top of a
+/// 1,600-line file. Counts occurrences of the file path NOT followed by `#`.
+///
+/// KNOWN BOUND, named rather than mitigated: this also forbids a legitimate
+/// WHOLE-FILE link -- `[the rules corpus](docs/method-rules.md)` -- which
+/// promises no section and therefore breaks no promise. Measured 2026-09-02:
+/// ZERO such links exist in any tracked `.md`, and both real instances named
+/// a section in the link TEXT. Refining this to "flag only when the text
+/// names a slug" would be machinery for a case that does not occur. Whoever
+/// writes the first whole-file link gets a clear red and a REAL instance to
+/// reason about, which is a better basis for relaxing this than a
+/// hypothetical is today.
+fn anchorless_links(claude: &str) -> usize {
+    const NEEDLE: &str = "](docs/method-rules.md";
+    let mut n = 0usize;
+    let mut from = 0usize;
+    while let Some(rel) = claude[from..].find(NEEDLE) {
+        let at = from + rel + NEEDLE.len();
+        // `](docs/method-rules.md)` -- no fragment -- is the defect.
+        if claude[at..].starts_with(')') {
+            n += 1;
+        }
+        from = at;
+    }
+    n
+}
+
 /// ARM B: a link to nothing damages trust in every other link.
 fn dangling(method_rules: &str, claude: &str) -> Vec<String> {
     let have = sections(method_rules);
@@ -153,6 +199,69 @@ fn arm_b_every_claude_md_anchor_resolves_to_a_real_section() {
 
 /// Positive control for ARM A — a blind scanner is indistinguishable from a
 /// clean corpus, so the arm above proves nothing without this.
+#[test]
+fn arm_c_every_section_has_a_link_whose_target_carries_its_anchor() {
+    let (mr, cm) = read_pair();
+    let unanchored = unanchored(&mr, &cm);
+    assert!(
+        unanchored.is_empty(),
+        "{} method-rules section(s) have NO link in CLAUDE.md whose TARGET carries their \
+         anchor. Arm A is satisfied by a bare NAME and arm B only checks anchors that already \
+         exist, so a citation like `[`…md` § `slug`](docs/method-rules.md)` -- name in the TEXT, \
+         no `#anchor` in the TARGET -- passes both and strands the reader at the top of a \
+         1,600-line file. It READS as a working citation and is not one. Fix the TARGET, not \
+         the text. Unanchored: {unanchored:?}",
+        unanchored.len(),
+    );
+}
+
+#[test]
+fn arm_d_every_method_rules_link_carries_an_anchor() {
+    let (_mr, cm) = read_pair();
+    let n = anchorless_links(&cm);
+    assert_eq!(
+        n, 0,
+        "{n} CLAUDE.md link(s) target `docs/method-rules.md` with NO `#anchor`. Distinct from \
+         arm C: a rule cited several times with anchors passes THAT while one bad citation \
+         still lands the reader at the top of a 1,600-line file. Add the fragment to the \
+         TARGET; the link text is not what a reader follows.",
+    );
+}
+
+#[test]
+fn arm_d_scanner_discriminates_anchored_from_anchorless() {
+    assert_eq!(
+        anchorless_links("see [`x`](docs/method-rules.md) here"),
+        1,
+        "arm D's scanner missed a link with no fragment",
+    );
+    assert_eq!(
+        anchorless_links("see [`x`](docs/method-rules.md#x) here"),
+        0,
+        "arm D's scanner flagged a correctly-anchored link",
+    );
+}
+
+#[test]
+fn arm_c_scanner_can_see_a_section_cited_without_an_anchor() {
+    // The exact shape found in the wild: the slug is in the link TEXT and the
+    // TARGET has no fragment. A scanner keyed on the text would call this fine.
+    let mr = "## only-section\n\nbody\n";
+    let cm = "see [`docs/method-rules.md` § `only-section`](docs/method-rules.md) for detail\n";
+    assert_eq!(
+        unanchored(mr, cm),
+        vec!["only-section".to_string()],
+        "arm C's scanner did not flag a section whose only citation omits the #anchor from the \
+         link target -- the very shape it exists to catch",
+    );
+    // ...and it must NOT flag the same section once the target carries the anchor.
+    let fixed = "see [`only-section`](docs/method-rules.md#only-section) for detail\n";
+    assert!(
+        unanchored(mr, fixed).is_empty(),
+        "arm C's scanner flagged a correctly-anchored citation",
+    );
+}
+
 #[test]
 fn arm_a_scanner_can_see_an_unindexed_section() {
     let mr = "## alpha-rule\ntext\n\n## beta-rule\ntext\n";
