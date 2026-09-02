@@ -282,6 +282,23 @@ fn every_allowlist_entry_carries_a_reason() {
     );
 }
 
+/// An allowlist entry may not outlive the edge it exempts.
+///
+/// ⚠️ **THIS CHECKS THE EDGE, NEVER THE REASON, AND A REASON ROTS FIRST.**
+/// Worked example, 2026-09-02: Stage 2 (`131e8b84`) left the `fuel-nn -> fuel`
+/// entry perfectly valid while making BOTH halves of its reason false — it
+/// named `fuel-transformers` as a dependent (now 0) and predicted the repoint
+/// would unblock "until Stage 2 moves it", when the one blocking symbol,
+/// `fuel::lazy_latent_cache::LatentCache`, is precisely the file Stage 2
+/// carved OUT by design. **The entry was correct; its justification had
+/// become fiction, and this arm is structurally blind to that.**
+///
+/// No prose guard is built for it deliberately. A reason is free text, so any
+/// checker would be pattern-matching English — the shape that scores ~10%
+/// precision and starts flagging correct statements, taking the guard's signal
+/// with it. **The honest remedy is a human re-reading reasons when the graph
+/// moves, and this comment naming the exposure so it is not mistaken for
+/// covered.**
 #[test]
 fn no_allowlist_entry_outlives_its_edge() {
     let w = load();
