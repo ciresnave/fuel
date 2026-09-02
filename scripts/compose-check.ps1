@@ -22,6 +22,23 @@
   Heads landing before you. A bare number N is fetched as `pull/N/head`;
   anything else is used as a git ref verbatim.
 
+.PARAMETER Echo
+  Regex selecting which lines of a PASSING gate's output to print. Defaults to
+  `.` — every non-empty line.
+
+  ⚠️ **This defaulted to `test result|dep-direction` and that was a defect.** A
+  wrapper that RUNS a gate and FILTERS its output has silently narrowed what the
+  gate can tell you, and the narrowing is invisible at the call site: the gate
+  still passes or fails correctly, so nothing looks wrong except that you can no
+  longer see WHY. Found by using this tool to preview a merge and discovering it
+  had eaten the very `[kiss-6.13]` diagnostic lines the gate exists to print —
+  the merge had to be redone by hand to read them.
+
+  The loud default is deliberate. **The failure mode of too much output is
+  annoyance; the failure mode of too little is the one above, and it propagates
+  to every caller who never knew the filter was there.** Narrow it per-call when
+  you want terseness: `-Echo 'test result'`.
+
 .PARAMETER Gate
   Commands to run after merging, in order. Defaults to the dependency-direction
   gate, which is the fast structural one this check exists for.
@@ -78,7 +95,8 @@ param(
     [Parameter(Mandatory)][string]   $Mine,
     [Parameter(Mandatory)][string[]] $Against,
     [string[]] $Gate = @('cargo test -q -p fuel-ir --test crate_dependency_direction'),
-    [string]   $Remote = 'origin'
+    [string]   $Remote = 'origin',
+    [string]   $Echo = '.'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -164,7 +182,7 @@ try {
             $detail = "GATE FAILED: $g (exit $code) -- they merge, and the result is red"
             $verdict = 3; return 3
         }
-        $out | Where-Object { $_ -match 'test result|dep-direction' } | ForEach-Object { Write-Host "    $_" }
+        $out | Where-Object { $_ -match $Echo } | ForEach-Object { Write-Host "    $_" }
     }
     $verdict = 0; $detail = "COMPOSES: merged " + (($refs | ForEach-Object { $_.Name }) -join ', ') + ", all gates passed"
 }
