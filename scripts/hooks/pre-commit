@@ -74,7 +74,24 @@ if [ -n "$staged_any" ]; then
     # This check will be green on virtually every commit forever, so without a
     # standing fixture it is indistinguishable from a check that does nothing.
     # The dirty fixture MUST flag and the clean one MUST NOT.
-    cm_tmp=$(mktemp -d 2>/dev/null || echo "${TMPDIR:-/tmp}")
+    # ⚠️ mktemp is MANDATORY -- do NOT add a `|| echo "$TMPDIR"` fallback here.
+    # An earlier version did exactly that, and since the cleanup below is
+    # `rm -rf "$cm_tmp"`, a failed mktemp would have deleted THE TEMP DIRECTORY
+    # ITSELF on every commit. The fallback converted a FAILURE into a
+    # VALID-LOOKING VALUE, which every later step then trusted; an emptiness
+    # test would not have caught it either, because `/tmp` is not empty.
+    cm_tmp=$(mktemp -d) || {
+        echo "pre-commit: mktemp failed; cannot run the conflict-marker self-test." >&2
+        echo "  Refusing to continue: a self-test that cannot build its fixture" >&2
+        echo "  proves nothing, and this check is green on nearly every commit," >&2
+        echo "  so the fixture is its only evidence." >&2
+        exit 1
+    }
+    case "$cm_tmp" in
+        # Belt and braces: never rm -rf something that is not a fresh subdir.
+        */*) : ;;
+        *) echo "pre-commit: refusing to use suspicious temp path '$cm_tmp'" >&2; exit 1 ;;
+    esac
     printf 'a\n%s x\nb\n%s\nc\n%s y\n' "$cm_lt" "$cm_eq" "$cm_gt" > "$cm_tmp/dirty"
     printf 'a\nb < c\nd = e\nf > g\n' > "$cm_tmp/clean"
     if [ "$(cm_scan "$cm_tmp/dirty" | wc -l)" -ne 3 ]; then
