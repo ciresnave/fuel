@@ -15,12 +15,14 @@
 //! The manifest `#[test]` here (call it "a") and the `#[cfg]`-gated EFFECT tests
 //! below ("b") are COMPLEMENTARY — neither alone is sufficient, so do NOT delete
 //! (a) as redundant because (b) covers the case you happen to think of:
-//!   * CROSSING  `vulkan = ["fuel-core/telemetry"]`
-//!       -> (b) catches it (`use fuel::vulkan_backend` fails to compile);
-//!          (a) also catches it.
-//!   * OVER-FORWARD  `vulkan = ["fuel-core/vulkan", "fuel-core/telemetry"]`
-//!       -> (b) PASSES (vulkan IS on, module reachable) — only (a) catches it,
-//!          via the "forwards to EXACTLY [\"fuel-core/X\"]" length+equality check.
+//!
+//! ```text
+//! CROSSING      vulkan = ["fuel-core/telemetry"]
+//!   (b) catches it: `use fuel::vulkan_backend` fails to compile. (a) too.
+//! OVER-FORWARD  vulkan = ["fuel-core/vulkan", "fuel-core/telemetry"]
+//!   (b) PASSES (vulkan IS on, module reachable) — only (a) catches it, via
+//!   the "forwards to EXACTLY [fuel-core/X]" length+equality check.
+//! ```
 //!
 //! Coverage split, stated so "feature forwarding is tested" is never read
 //! unqualified: (a) covers all 10 forwardable features TEXTUALLY; (b) covers 2
