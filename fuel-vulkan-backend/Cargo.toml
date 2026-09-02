@@ -38,7 +38,26 @@
     # `effective_api_version()`, and `cooperative_matrix_properties()` losing
     # its `unsafe` qualifier. Note `SubgroupProperties::size_control` needs an
     # instance at V1_3; ours are V1_2, so it reads `None` regardless of device.
-    vulkane                = "0.9.0"
+    # 0.13.0 (2026-09) is a SOUNDNESS release and changes THREE things we touch.
+    # (1) Every `returnedonly` enum accessor now returns `Option<T>` with a
+    # `_raw` sibling: those structs are DRIVER-FILLED, and reading a Rust enum
+    # whose memory holds an out-of-set discriminant is UB -- so the UB here was
+    # reachable by upgrading a graphics driver, with no change on our side.
+    # `None` means "newer than vulkane's pinned vk.xml", NOT an error; do not
+    # unwrap it (rustc will suggest `.expect`, which would panic on a driver
+    # upgrade on a production path). (2) `cooperative_matrix_properties()`
+    # returns `Result` so that "the device said no" (`Ok(vec![])`) and "we could
+    # not tell" (`Err`) stop sharing a spelling. (3) Two allocator fixes that
+    # came out of OUR OWN 2026-07-31 host-aperture bugcheck audit:
+    # `AllocationUsage::HostVisible` no longer degenerates to "first matching
+    # type wins" (staging could land in the PCIe BAR window, whose exhaustion
+    # surfaces as a driver-level failure rather than a catchable
+    # VK_ERROR_OUT_OF_DEVICE_MEMORY), and `vkDeviceMemory` is no longer leaked
+    # when `vkMapMemory` or sub-allocation fails -- that leak sat on the
+    # RECOVERY path, so each retry was likelier to fail than the last.
+    # 0.10.2 / 0.11.x / 0.12.x were NEVER PUBLISHED (the CHANGELOG documents
+    # 0.10.2 but it did not ship), so 0.9 -> 0.13 is one jump, not four.
+    vulkane                = "0.13.0"
 
 [dev-dependencies]
 # GAP-157: `require`/`required_ok` — a missing device is a FAILURE, not a

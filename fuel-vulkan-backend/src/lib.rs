@@ -204,10 +204,18 @@ pub struct CoopMatrixShape {
     pub m_size: u32,
     pub n_size: u32,
     pub k_size: u32,
-    pub a_type: vulkane::raw::bindings::VkComponentTypeKHR,
-    pub b_type: vulkane::raw::bindings::VkComponentTypeKHR,
-    pub c_type: vulkane::raw::bindings::VkComponentTypeKHR,
-    pub result_type: vulkane::raw::bindings::VkComponentTypeKHR,
+    // The four component types are `Option` because vulkane 0.13 made every
+    // `returnedonly` enum accessor return one: the struct is DRIVER-FILLED, and
+    // reading a Rust enum whose memory holds an out-of-set discriminant is UB,
+    // so the UB was reachable by upgrading a graphics driver with no change
+    // here. `None` means the driver reported a component type newer than
+    // vulkane's pinned `vk.xml` -- NOT an error, and NOT a value to unwrap.
+    // `is_matmul_coop_tile` reads it as "definitely not our tile", which is
+    // correct: an unrecognised component type is not f16 and is not f32.
+    pub a_type: Option<vulkane::raw::bindings::VkComponentTypeKHR>,
+    pub b_type: Option<vulkane::raw::bindings::VkComponentTypeKHR>,
+    pub c_type: Option<vulkane::raw::bindings::VkComponentTypeKHR>,
+    pub result_type: Option<vulkane::raw::bindings::VkComponentTypeKHR>,
     pub saturating_accumulation: bool,
 }
 
@@ -236,13 +244,17 @@ impl CoopMatrixShape {
     /// build must gate on rather than mere extension presence.
     pub fn is_matmul_coop_tile(&self) -> bool {
         use vulkane::raw::bindings::VkComponentTypeKHR as Ct;
+        // `None` (a component type vulkane's pinned vk.xml does not know) is
+        // NOT our tile, so it must read as false rather than panic or be
+        // unwrapped. Compared as i32 to match the pre-0.13 spelling.
+        let is = |t: Option<Ct>, want: Ct| t.map(|x| x as i32) == Some(want as i32);
         self.m_size == 16
             && self.n_size == 16
             && self.k_size == 16
-            && self.a_type as i32 == Ct::COMPONENT_TYPE_FLOAT16_KHR as i32
-            && self.b_type as i32 == Ct::COMPONENT_TYPE_FLOAT16_KHR as i32
-            && self.c_type as i32 == Ct::COMPONENT_TYPE_FLOAT32_KHR as i32
-            && self.result_type as i32 == Ct::COMPONENT_TYPE_FLOAT32_KHR as i32
+            && is(self.a_type, Ct::COMPONENT_TYPE_FLOAT16_KHR)
+            && is(self.b_type, Ct::COMPONENT_TYPE_FLOAT16_KHR)
+            && is(self.c_type, Ct::COMPONENT_TYPE_FLOAT32_KHR)
+            && is(self.result_type, Ct::COMPONENT_TYPE_FLOAT32_KHR)
     }
 }
 
@@ -462,13 +474,13 @@ impl VulkanBackend {
                 for (i, p) in physicals.iter().enumerate() {
                     let props = p.properties();
                     let dt = props.device_type();
-                    if dt == PhysicalDeviceType::DISCRETE_GPU {
+                    if dt == Some(PhysicalDeviceType::DISCRETE_GPU) {
                         best = Some((i, p));
                         break;
                     }
                     if best.is_none()
-                        && dt != PhysicalDeviceType::CPU
-                        && dt != PhysicalDeviceType::OTHER
+                        && dt != Some(PhysicalDeviceType::CPU)
+                        && dt != Some(PhysicalDeviceType::OTHER)
                     {
                         best = Some((i, p));
                     }
@@ -574,8 +586,25 @@ impl VulkanBackend {
         // still reports shapes from the *supported* list — a silent loss of
         // tensor-core-class matmul, not a compile error.
         let coop_matrix_shapes: Vec<CoopMatrixShape> = if has_coop_matrix {
-            let raw = physical.cooperative_matrix_properties();
-            raw.iter().map(CoopMatrixShape::from_vulkane).collect()
+            // vulkane 0.13 returns `Result` here DELIBERATELY, and the two Ok/Err
+            // spellings are not severities of one answer -- they are different
+            // answers. `Ok(vec![])` means the device was ASKED AND SAID NO;
+            // `Err` means WE COULD NOT TELL (loader missing the entry point,
+            // enumeration failed). Collapsing them would record a driver/loader
+            // fault as a hardware fact. Fuel's ACTION is the same either way --
+            // do not build the coop pipelines -- but the two must not be LOGGED
+            // the same, or an environment problem reads as "this GPU lacks
+            // tensor-core matmul" and nobody looks again.
+            match physical.cooperative_matrix_properties() {
+                Ok(raw) => raw.iter().map(CoopMatrixShape::from_vulkane).collect(),
+                Err(e) => {
+                    tracing::warn!(
+                        error = ?e,
+                        "VK_KHR_cooperative_matrix is advertised but its properties \n                         could not be queried -- treating as NO usable tile. This is \n                         'could not tell', NOT 'device has none'.",
+                    );
+                    Vec::new()
+                }
+            }
         } else {
             Vec::new()
         };
@@ -736,13 +765,13 @@ impl VulkanBackend {
             .map(|(i, p)| {
                 let props = p.properties();
                 let dt = props.device_type();
-                let type_str = if dt == PhysicalDeviceType::DISCRETE_GPU {
+                let type_str = if dt == Some(PhysicalDeviceType::DISCRETE_GPU) {
                     "discrete"
-                } else if dt == PhysicalDeviceType::INTEGRATED_GPU {
+                } else if dt == Some(PhysicalDeviceType::INTEGRATED_GPU) {
                     "integrated"
-                } else if dt == PhysicalDeviceType::VIRTUAL_GPU {
+                } else if dt == Some(PhysicalDeviceType::VIRTUAL_GPU) {
                     "virtual"
-                } else if dt == PhysicalDeviceType::CPU {
+                } else if dt == Some(PhysicalDeviceType::CPU) {
                     "cpu"
                 } else {
                     "other"
@@ -14015,10 +14044,10 @@ mod coop_shape_gate_tests {
             m_size: m,
             n_size: n,
             k_size: k,
-            a_type: a,
-            b_type: b,
-            c_type: c,
-            result_type: r,
+            a_type: Some(a),
+            b_type: Some(b),
+            c_type: Some(c),
+            result_type: Some(r),
             saturating_accumulation: false,
         }
     }
@@ -14048,5 +14077,54 @@ mod coop_shape_gate_tests {
             shape(16, 16, 16, f16, f16, f32, f32),
         ];
         assert!(mixed.iter().any(|s| s.is_matmul_coop_tile()));
+    }
+
+    /// A component type vulkane cannot name must NOT pass the tile gate.
+    ///
+    /// THIS STATE DID NOT EXIST BEFORE vulkane 0.13. The accessors returned a
+    /// bare `VkComponentTypeKHR`, so there was nothing to represent "the driver
+    /// reported a value newer than the pinned vk.xml" -- reading it was simply
+    /// UB. 0.13 made that state REPRESENTABLE as `None`, which means the gate
+    /// now has an input it never had, and nothing else in this suite supplies
+    /// one.
+    ///
+    /// The dangerous adaptation is the one rustc itself suggests: it proposed
+    /// `.expect("REASON")` at all four fields. That would panic on a driver
+    /// upgrade, on a production path, for a condition that is not an error.
+    /// The correct reading is "not our tile" -- an unrecognised component type
+    /// is not f16 and is not f32 -- and this pins it.
+    #[test]
+    fn an_unknown_component_type_does_not_pass_the_coop_gate() {
+        let f16 = Ct::COMPONENT_TYPE_FLOAT16_KHR;
+        let f32 = Ct::COMPONENT_TYPE_FLOAT32_KHR;
+
+        // Right dims, right everything else, but A is a type vulkane could not
+        // decode. Must not match, and must not panic.
+        let unknown_a = CoopMatrixShape {
+            m_size: 16,
+            n_size: 16,
+            k_size: 16,
+            a_type: None,
+            b_type: Some(f16),
+            c_type: Some(f32),
+            result_type: Some(f32),
+            saturating_accumulation: false,
+        };
+        assert!(
+            !unknown_a.is_matmul_coop_tile(),
+            "an undecodable component type must read as NOT our tile"
+        );
+
+        // Control: the SAME shape with A decoded as f16 DOES match -- so the
+        // assertion above is about the None, not about some other field being
+        // wrong.
+        let known_a = CoopMatrixShape {
+            a_type: Some(f16),
+            ..unknown_a
+        };
+        assert!(
+            known_a.is_matmul_coop_tile(),
+            "control: identical shape with a decodable A must match"
+        );
     }
 }
