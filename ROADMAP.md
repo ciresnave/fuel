@@ -219,14 +219,23 @@ The 40 crates that actually exist are the directories with a `Cargo.toml` at the
     **THE INSTRUMENT IS A REVERSE-DEPENDENCY QUERY, and it asks the question that actually matters: DOES A FACADE DEPENDENCY PROPAGATE INTO ANOTHER LIBRARY?** *(Measured excluding the ROOT manifest, which counts as a dependent and inflates every leaf to one.)*
 
     ```
-    PROPAGATES INTO A REAL LIBRARY  -- was a pair; ONE REMAINS
-      fuel-transformers   <- fuel-examples, fuel-inference
-      fuel-nn             DONE 2026-09-02 (#53, main 42d3c1d0)
+    PROPAGATES INTO A REAL LIBRARY  -- TIER CLEARED 2026-09-02
+      fuel-transformers   DONE (no facade dep at 42d3c1d0)
+      fuel-nn             DONE (#53, main 42d3c1d0)
     TERMINATES IN A CONSUMER        -- tidiness; propagates only into fuel-examples
       fuel-datasets       fuel-onnx
     LEAF, nothing depends on them   -- arguably not violations at all
 
-⚠️ **`fuel-nn` REPOINTED 2026-09-02 (#53, `main` `42d3c1d0`).** Measured at head: `fuel-nn/Cargo.toml` `[dependencies]` lists `fuel-core`, `fuel-ir` and `fuel-graph` and **no `fuel` facade**; `use fuel::` in `fuel-nn/src` is **0 files** *(control: `fuel_core::` appears in 23, so the zero is absence rather than a broken query)*. **`fuel-transformers` is the remaining member of what this block called a pair.** ⚠️ **This line went stale the moment #53 merged, and #53 did not touch `ROADMAP.md` at all** — corrected here by the lane that merged it, which is where the obligation actually sat.
+⚠️⚠️ **STATUS RE-MEASURED ACROSS ALL EIGHT NAMED CRATES AT `42d3c1d0`, 2026-09-02 — THE TOP TIER IS CLEARED AND THE TABLE ABOVE IS A SNAPSHOT, NOT A QUEUE.**
+
+```
+PROPAGATES  fuel-transformers  clear      fuel-nn            clear   <- TIER EMPTY
+TERMINATES  fuel-datasets      clear      fuel-onnx          depends
+LEAF        fuel-inference     depends    fuel-training      depends
+            fuel-parallel      depends    fuel-tensor-tools  depends
+```
+
+**Construct: a `fuel = ` line in the crate’s `Cargo.toml` at `origin/main`, any section.** *(Control: the same query over every workspace manifest returns exactly seven dependents — the five `depends` rows above plus `fuel-examples` and `fuel-lazy-examples`, which this block does not name because they are consumers by design. So the `clear` rows are absence, not a broken query.)* ⚠️ **`fuel-nn` was cleared by #53 and `fuel-datasets` by #47; `fuel-transformers` had no facade dep at all, so the top tier was ALREADY half-wrong when it was written.** ⚠️⚠️ **AND THE FIRST VERSION OF THIS NOTE SAID *"`fuel-transformers` is the remaining member"* — ALSO FALSE. I checked the one crate #53 had touched and inferred the other, which is fixing the INSTANCE and asserting the POPULATION.** Caught before landing by running the query over all eight. **A correction is a claim and needs the same population check as the thing it corrects.**
       fuel-inference   fuel-training   fuel-parallel   fuel-tensor-tools
     ```
 
