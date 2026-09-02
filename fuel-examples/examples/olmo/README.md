@@ -1,4 +1,4 @@
-﻿# fuel-olmo: Open Language Models designed to enable the science of language models
+# fuel-olmo: Open Language Models designed to enable the science of language models
 
 OLMo is a series of Open Language Models designed to enable the science of language models.
 

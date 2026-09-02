@@ -1,4 +1,4 @@
-﻿# fuel-yolo-v8: Object Detection and Pose Estimation
+# fuel-yolo-v8: Object Detection and Pose Estimation
 
 This is a port of [Ultralytics
 YOLOv8](https://github.com/ultralytics/ultralytics). The implementation is based

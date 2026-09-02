@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Tensor memory layout: shape, strides, and start offset.
 //!
 //! Re-exported from [`fuel_ir`].

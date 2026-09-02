@@ -1,4 +1,4 @@
-﻿# fuel-yolo-v3:
+# fuel-yolo-v3:
 
 Fuel implementation of Yolo-V3 for object detection.
 
