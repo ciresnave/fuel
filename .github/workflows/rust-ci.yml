@@ -609,6 +609,74 @@ jobs:
           grep -q 'fuel_emits_only_recognized_sk4_dtype_spellings' "$out" \
             || { echo '::error::the sk4 byte-match test (fuel_emits_only_recognized_sk4_dtype_spellings) did not run — its integration target was gated away, renamed, or excluded. If it was RENAMED, update this grep; otherwise re-enable the target. See GAP-173.'; exit 1; }
 
+  conflict-markers:
+    name: Conflict markers
+    runs-on: ubuntu-latest
+    # ENFORCEMENT half of the conflict-marker guard. The hook half
+    # (scripts/hooks/pre-commit) is FAST FEEDBACK before a commit; this is what
+    # actually holds, because it cannot be bypassed by declining to install a
+    # hook and it requires no mutation of shared machine state.
+    #
+    # WHY THE GUARD EXISTS: every line-oriented checker in this repo is blind to
+    # conflict markers BY CONSTRUCTION -- check-gaps-table.py keys on
+    # `^| ~*GAP-`, method_rules_index_join.rs on `^## `, doc_declared_traits.rs
+    # on rust fences. A marker begins with `<`, `=` or `>`, so none of those
+    # patterns can match one: both sides of a conflict are read as ordinary
+    # content, totals go UP, and every gate reports clean. Measured 2026-09-02:
+    # the gaps gate returned exit 0 on a conflicted docs/gaps.md three times.
+    # `git add` marks a conflicted file RESOLVED, so no local layer sees it.
+    #
+    # Cheap and unconditional on purpose: a grep over tracked files, seconds,
+    # no toolchain, no matrix.
+    steps:
+      - uses: actions/checkout@v6
+      - name: Reject unresolved conflict markers
+        run: |
+          set -eu
+          # BUILT, never written: a literal seven-run in this file would make
+          # the scan below flag the workflow itself.
+          lt=$(printf '<%.0s' 1 2 3 4 5 6 7)
+          eq=$(printf '=%.0s' 1 2 3 4 5 6 7)
+          gt=$(printf '>%.0s' 1 2 3 4 5 6 7)
+          # ONE pattern, used by the self-test AND the scan. The pattern is the
+          # detector; validating a copy of it would prove nothing.
+          pat="^(${lt}|${gt})|^${eq}"'$'
+
+          # RETAINED SELF-TEST, run every time. This leg is green on virtually
+          # every push forever, so it has NO evidence from live data, ever --
+          # the fixture is not a supplement to real-world evidence, it is the
+          # only evidence available. A dirty fixture MUST flag; a clean one
+          # containing bare `<`, `=`, `>` MUST NOT.
+          tmp=$(mktemp -d)
+          printf 'a\n%s x\nb\n%s\nc\n%s y\n' "$lt" "$eq" "$gt" > "$tmp/dirty"
+          printf 'a\nb < c\nd = e\nf > g\n' > "$tmp/clean"
+          d=$(grep -cE "$pat" "$tmp/dirty" || true)
+          c=$(grep -cE "$pat" "$tmp/clean" || true)
+          rm -rf "$tmp"
+          if [ "$d" != "3" ] || [ "$c" != "0" ]; then
+            echo "conflict-marker detector FAILED its own fixture:"
+            echo "  sabotaged fixture matched $d lines (want 3)"
+            echo "  clean fixture matched $c lines (want 0)"
+            echo "The check is inert -- fix the pattern, do not relax the test."
+            exit 1
+          fi
+
+          # Output captured rather than relying on the exit code: xargs returns
+          # 123 when ANY invocation exits non-zero, so a mixed run of matching
+          # and non-matching batches is indistinguishable from a clean one.
+          hits=$(git ls-files -z | xargs -0 grep -InE "$pat" || true)
+          if [ -n "$hits" ]; then
+            echo "UNRESOLVED CONFLICT MARKERS in tracked files:"
+            echo "$hits"
+            echo ""
+            echo "Every line-oriented gate in this repo is structurally blind to"
+            echo "these and reports CLEAN on a conflicted file. Resolve by READING"
+            echo "BOTH SIDES: taking one wholesale can silently revert another"
+            echo "lane's landed work while every gate still passes."
+            exit 1
+          fi
+          echo "no conflict markers in $(git ls-files | wc -l) tracked files"
+
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
