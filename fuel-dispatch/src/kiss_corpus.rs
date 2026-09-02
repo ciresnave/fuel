@@ -37,6 +37,14 @@ use thiserror::Error;
 /// dependence). Provenance: `fuel-dispatch/fixtures/kiss-corpus/PROVENANCE.md`.
 const OP_MANIFEST_JSON: &str = include_str!("../fixtures/kiss-corpus/op_manifest.json");
 const OPS_ARITH_JSON: &str = include_str!("../fixtures/kiss-corpus/ops-arith.json");
+/// Ordinary (strict-inequality) minmax vectors — the max-vs-min discriminator.
+const OPS_MINMAX_ORDINARY_JSON: &str =
+    include_str!("../fixtures/kiss-corpus/ops-minmax-ordinary.json");
+/// Signed-zero tie vectors. `+0` vs `-0` compares EQUAL, so the tie is broken by
+/// operand order, not by value — a value-compare passes vacuously and only a
+/// BIT comparison can see it.
+const OPS_MINMAX_SIGNED_ZERO_JSON: &str =
+    include_str!("../fixtures/kiss-corpus/ops-minmax-signed-zero.json");
 
 /// A never-panic parse/schema failure. The embedded snapshot is a build-time
 /// constant, so in practice `load_vendored_corpus` always succeeds — the
@@ -163,45 +171,26 @@ fn parse_hex_bytes(s: &str, file: &'static str, tc_id: u64) -> Result<Vec<u8>, C
     Ok(out)
 }
 
-/// Load and parse the vendored corpus snapshot (manifest metadata +
-/// exact-byte vectors). Pure over the embedded constants; never panics.
-pub fn load_vendored_corpus() -> Result<Corpus, CorpusError> {
-    // --- op_manifest.json: metadata (op names, transcendental atoms, coverage).
-    let manifest: serde_json::Value =
-        serde_json::from_str(OP_MANIFEST_JSON).map_err(|source| CorpusError::Json {
-            file: "op_manifest.json",
-            source,
-        })?;
-    let string_list = |key: &str| -> Vec<String> {
-        manifest
-            .get(key)
-            .and_then(|v| v.as_array())
-            .map(|a| {
-                a.iter()
-                    .filter_map(|x| x.as_str().map(String::from))
-                    .collect()
-            })
-            .unwrap_or_default()
-    };
-    let all_ops = string_list("all_ops");
-    let transcendental_atoms = string_list("transcendental_atoms");
-    let declared_coverage = string_list("declared_coverage_set");
-
-    // --- ops-arith.json: the exact-byte vectors.
-    let arith: serde_json::Value =
-        serde_json::from_str(OPS_ARITH_JSON).map_err(|source| CorpusError::Json {
-            file: "ops-arith.json",
-            source,
-        })?;
-    let arr = arith
+/// Parse one `kiss-oracle-vectors-v1` file into exact-byte vectors.
+///
+/// Extracted from `load_vendored_corpus` so every vector file goes through the
+/// SAME parse, rather than a second copy that can drift. `file` is carried only
+/// for error attribution — a `CorpusError` must name which file it came from
+/// once more than one is loaded.
+fn parse_vector_file(
+    json: &'static str,
+    file: &'static str,
+) -> Result<Vec<CorpusVector>, CorpusError> {
+    let doc: serde_json::Value =
+        serde_json::from_str(json).map_err(|source| CorpusError::Json { file, source })?;
+    let arr = doc
         .get("vectors")
         .and_then(|v| v.as_array())
         .ok_or_else(|| CorpusError::Schema {
-            file: "ops-arith.json",
+            file,
             detail: "missing `vectors` array".to_string(),
         })?;
 
-    let file = "ops-arith.json";
     let mut vectors = Vec::with_capacity(arr.len());
     for v in arr {
         let tc_id = v.get("tcId").and_then(|x| x.as_u64()).unwrap_or(0);
@@ -267,6 +256,43 @@ pub fn load_vendored_corpus() -> Result<Corpus, CorpusError> {
             class,
             ulp_bound,
         });
+    }
+    Ok(vectors)
+}
+
+/// Load and parse the vendored corpus snapshot (manifest metadata +
+/// exact-byte vectors). Pure over the embedded constants; never panics.
+pub fn load_vendored_corpus() -> Result<Corpus, CorpusError> {
+    // --- op_manifest.json: metadata (op names, transcendental atoms, coverage).
+    let manifest: serde_json::Value =
+        serde_json::from_str(OP_MANIFEST_JSON).map_err(|source| CorpusError::Json {
+            file: "op_manifest.json",
+            source,
+        })?;
+    let string_list = |key: &str| -> Vec<String> {
+        manifest
+            .get(key)
+            .and_then(|v| v.as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let all_ops = string_list("all_ops");
+    let transcendental_atoms = string_list("transcendental_atoms");
+    let declared_coverage = string_list("declared_coverage_set");
+
+    // Every vector file goes through the same parse. Order is stable so
+    // `vectors` indices are reproducible across runs.
+    let mut vectors = Vec::new();
+    for (json, file) in [
+        (OPS_ARITH_JSON, "ops-arith.json"),
+        (OPS_MINMAX_ORDINARY_JSON, "ops-minmax-ordinary.json"),
+        (OPS_MINMAX_SIGNED_ZERO_JSON, "ops-minmax-signed-zero.json"),
+    ] {
+        vectors.extend(parse_vector_file(json, file)?);
     }
 
     Ok(Corpus {
@@ -341,5 +367,127 @@ mod tests {
         );
         assert!(parse_hex_bytes("3F 8", "t", 0).is_err()); // odd digit count
         assert!(parse_hex_bytes("ZZ", "t", 0).is_err()); // non-hex
+    }
+
+    /// The re-vendor actually loaded the minmax files — not merely dropped them
+    /// in the fixture directory.
+    ///
+    /// This is the check that distinguishes a real re-vendor from the inert
+    /// shape: `kiss_corpus.rs` reads its files through `include_str!` BY NAME,
+    /// so adding JSON to the fixture directory changes nothing on its own. The
+    /// directory would look current while the vectors sat unread and the gate
+    /// stayed exactly as blind.
+    #[test]
+    fn the_minmax_vectors_are_loaded_not_merely_vendored() {
+        let corpus = load_vendored_corpus().expect("vendored corpus parses");
+        for op in ["max_prop", "min_prop", "fmax_ieee", "fmin_ieee"] {
+            let n = corpus.vectors.iter().filter(|v| v.op == op).count();
+            assert_eq!(
+                n, 18,
+                "expected 18 vectors for `{op}` (6 ordinary + 12 signed-zero); \
+                 got {n}. A zero here means the file is in the directory but not \
+                 in `include_str!`."
+            );
+        }
+        // Control: the pre-existing arith vectors are still present and did not
+        // move, so the count above is an ADDITION rather than a replacement.
+        assert_eq!(
+            corpus.cells("add", "f32").len(),
+            5,
+            "the original 5 add/f32 vectors must survive the re-vendor"
+        );
+    }
+
+    /// ⚠️ TRIPWIRE, AND IT IS SUPPOSED TO PASS TODAY AND FAIL LATER.
+    ///
+    /// The vendored corpus CANNOT distinguish NaN-propagating minmax
+    /// (`max_prop`/`min_prop`) from IEEE minmax (`fmax_ieee`/`fmin_ieee`).
+    /// Measured at KISS `f4952b4c`: of the 18 distinct `(dtype, input-pair)`
+    /// cells, ALL 18 carry all four ops and ZERO of them give the prop and ieee
+    /// forms different expected bits.
+    ///
+    /// That is structural, not accidental — the corpus's own provenance note
+    /// says so: §6.6 signed-zero equality makes both comparisons true on a ±0
+    /// tie, so operand `a` wins every tie in all four ops. NaN is the axis on
+    /// which the two families differ, and the corpus contains NO NaN INPUT AT
+    /// ALL (77 vectors, 0 with a NaN operand).
+    ///
+    /// So these vectors buy real coverage — signed-zero tie-breaking and
+    /// max-vs-min — and they do NOT close the defect GAP-236 is about: an
+    /// `fmaxf` mis-lifted as a NaN-propagating `Max` passes every one of them.
+    ///
+    /// WHY THIS IS A TEST AND NOT A COMMENT: a comment recording "the corpus is
+    /// blind here" is read only by someone already standing here, and nothing
+    /// fires when it stops being true. When KISS ships the NaN vectors, this
+    /// test GOES RED — which is the signal to re-measure and close the row.
+    /// A prose note would have gone silently stale instead.
+    /// Group minmax vectors into `(dtype, input-bytes) -> {op -> expected}`
+    /// cells, so the four ops line up per cell and can be compared.
+    fn minmax_cells(
+        corpus: &Corpus,
+    ) -> std::collections::BTreeMap<
+        (String, Vec<Vec<u8>>),
+        std::collections::BTreeMap<String, Vec<u8>>,
+    > {
+        let mut cells: std::collections::BTreeMap<
+            (String, Vec<Vec<u8>>),
+            std::collections::BTreeMap<String, Vec<u8>>,
+        > = std::collections::BTreeMap::new();
+        for v in &corpus.vectors {
+            if matches!(
+                v.op.as_str(),
+                "max_prop" | "min_prop" | "fmax_ieee" | "fmin_ieee"
+            ) {
+                cells
+                    .entry((v.dtype.clone(), v.inputs.clone()))
+                    .or_default()
+                    .insert(v.op.clone(), v.expected.clone());
+            }
+        }
+        cells
+    }
+
+    /// True iff this cell gives the prop and ieee forms different expected bits.
+    fn cell_discriminates_prop_from_ieee(
+        ops: &std::collections::BTreeMap<String, Vec<u8>>,
+    ) -> bool {
+        let differs =
+            |a: &str, b: &str| matches!((ops.get(a), ops.get(b)), (Some(x), Some(y)) if x != y);
+        differs("max_prop", "fmax_ieee") || differs("min_prop", "fmin_ieee")
+    }
+
+    #[test]
+    fn the_corpus_cannot_yet_discriminate_prop_from_ieee_minmax() {
+        let corpus = load_vendored_corpus().expect("vendored corpus parses");
+        let cells = minmax_cells(&corpus);
+
+        let discriminating = cells
+            .values()
+            .filter(|ops| cell_discriminates_prop_from_ieee(ops))
+            .count();
+
+        // POSITIVE CONTROL: the corpus is not simply inert. It DOES separate max
+        // from min, so a zero above is a statement about the prop/ieee axis
+        // specifically, not about the cell grouping being broken.
+        let max_vs_min = cells
+            .values()
+            .filter(|ops| {
+                matches!(
+                    (ops.get("max_prop"), ops.get("min_prop")),
+                    (Some(a), Some(b)) if a != b
+                )
+            })
+            .count();
+        assert!(
+            max_vs_min > 0,
+            "control failed: the corpus should separate max from min on at least one cell — if this is 0 the cell grouping is broken and the prop-vs-ieee count below means nothing"
+        );
+
+        assert_eq!(
+            discriminating,
+            0,
+            "the corpus now HAS a cell where prop and ieee minmax differ ({discriminating} of {} cells). This test existing and passing recorded a KNOWN BLIND SPOT; a red here is GOOD NEWS — NaN vectors have landed. Re-measure the discrimination, wire the assertion the other way, and close the registry row that tracks this.",
+            cells.len()
+        );
     }
 }
