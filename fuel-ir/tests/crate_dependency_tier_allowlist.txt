@@ -1,0 +1,18 @@
+# Dependency edges that point UPWARD in `crate_dependency_tiers.txt`, with the
+# REASON each is tolerated.
+#
+# Format:  <from>\t<to>\t<reason>
+# The KEY is the first two fields, so editing a reason never breaks an entry.
+# An entry with a BLANK reason FAILS the gate: a bare allowlist is amnesty with
+# no record of which disposition it is, and it takes the guard's signal with it.
+# This list may only SHRINK -- an entry whose edge no longer exists is STALE and
+# fails, so it cannot rot into permanent amnesty.
+#
+# ALL THREE ENTRIES BELOW WERE FOUND, NOT PLANTED. They are the facade
+# inversion: library crates depending on the consumer-facing facade `fuel`
+# instead of on `fuel-core`. ROADMAP item 12 tracks undoing it; each removal
+# here is one repoint landing.
+
+fuel-nn	fuel	FACADE INVERSION (ROADMAP item 12). 215 symbol references, 1 of them a model reference blocking the repoint until Stage 2 moves it. Propagates into real libraries (fuel-training, fuel-transformers depend on fuel-nn), so this is the URGENT tier, not tidiness.
+fuel-onnx	fuel	FACADE INVERSION (ROADMAP item 12). Eligible to repoint today -- zero model references. Terminates in a consumer (only fuel-examples depends on it), so it is the TIDINESS tier: safe now, not urgent.
+fuel-transformers	fuel	FACADE INVERSION (ROADMAP item 12). ONE src reference. Stage 2 repoints this crate specifically, because the facade cannot re-export the 147 models while fuel-transformers depends on the facade -- that is a hard cargo cycle, and it is the edge that forced this whole audit.
