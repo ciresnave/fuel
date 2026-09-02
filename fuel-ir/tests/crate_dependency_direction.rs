@@ -434,6 +434,14 @@ fn self_declared_layers_agree_with_the_tier_file() {
             )),
         }
     }
+    // THE COUNT THAT MOVES IF THIS ARM BECOMES A NO-OP. `declared.len()` does
+    // not -- it asserts the PARSE worked. Only this asserts anything was
+    // CHECKED, and the `disputed` hatch is exactly what could empty it.
+    assert!(
+        compared >= 4,
+        "only {compared} self-declared layers were actually COMPARED (4 at          f9bdfb20). The parse floor above says the doc comments were READ; this          says they were CHECKED. If the `disputed` list grew, it hollowed out          this arm -- assert the set that SURVIVES an exemption, never the set          going in."
+    );
+
     assert!(
         mismatches.is_empty(),
         "a crate's self-declared layer disagrees with its tier:\n  {}\n\n\
