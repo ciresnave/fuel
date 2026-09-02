@@ -27,8 +27,8 @@
 //!   * Per-channel form requires `rank(x) >= 2` and `x.dim(1) ==
 //!     num_parameters`, matching the eager `fuel_nn::PReLU` check.
 
-use fuel::Result;
-use fuel::lazy::Tensor;
+use fuel_core::Result;
+use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -54,7 +54,7 @@ impl PReLU {
     /// rather than at the first forward call.
     pub fn new(weight: Arc<[f32]>, num_parameters: usize) -> Result<Self> {
         if weight.len() != num_parameters {
-            return Err(fuel::Error::Msg(format!(
+            return Err(fuel_core::Error::Msg(format!(
                 "PReLU::new: weight length {} != num_parameters {}",
                 weight.len(),
                 num_parameters,
@@ -62,9 +62,10 @@ impl PReLU {
             .bt());
         }
         if num_parameters == 0 {
-            return Err(
-                fuel::Error::Msg("PReLU::new: num_parameters must be >= 1".to_string()).bt(),
-            );
+            return Err(fuel_core::Error::Msg(
+                "PReLU::new: num_parameters must be >= 1".to_string(),
+            )
+            .bt());
         }
         Ok(Self {
             weight,
@@ -86,9 +87,10 @@ impl PReLU {
     /// to PyTorch's default `0.25`.
     pub fn per_channel_default(c: usize) -> Result<Self> {
         if c == 0 {
-            return Err(
-                fuel::Error::Msg("PReLU::per_channel_default: c must be >= 1".to_string()).bt(),
-            );
+            return Err(fuel_core::Error::Msg(
+                "PReLU::per_channel_default: c must be >= 1".to_string(),
+            )
+            .bt());
         }
         let w: Arc<[f32]> = Arc::<[f32]>::from(vec![0.25_f32; c]);
         Ok(Self {
@@ -119,7 +121,7 @@ impl PReLU {
             let dims = x.shape();
             let dims = dims.dims();
             if dims.len() < 2 {
-                return Err(fuel::Error::Msg(format!(
+                return Err(fuel_core::Error::Msg(format!(
                     "PReLU::forward: per-channel form requires rank >= 2, \
                      got shape {dims:?}",
                 ))
@@ -127,7 +129,7 @@ impl PReLU {
             }
             let c = dims[1];
             if c != self.num_parameters {
-                return Err(fuel::Error::Msg(format!(
+                return Err(fuel_core::Error::Msg(format!(
                     "PReLU::forward: channel-axis size {c} != \
                      num_parameters {} (input shape {dims:?})",
                     self.num_parameters,
@@ -158,15 +160,15 @@ impl PReLU {
     /// `None` for the shared-scalar form (matching the eager
     /// `prelu(num_channels, vb)` factory).
     pub fn load_from_mmapped(
-        st: &fuel::safetensors::MmapedSafetensors,
+        st: &fuel_core::safetensors::MmapedSafetensors,
         prefix: &str,
         num_parameters: Option<usize>,
     ) -> Result<Self> {
-        use fuel::lazy::load_tensor_as_f32;
+        use fuel_core::lazy::load_tensor_as_f32;
         let n = num_parameters.unwrap_or(1);
         let w = load_tensor_as_f32(st, &format!("{prefix}.weight"))?;
         if w.len() != n {
-            fuel::bail!("{prefix}.weight: {} elements, expected {n}", w.len(),);
+            fuel_core::bail!("{prefix}.weight: {} elements, expected {n}", w.len(),);
         }
         let weight: Arc<[f32]> = Arc::from(w);
         Ok(PReLU {
@@ -188,7 +190,7 @@ fn broadcast_zero_like(zero_scalar: &Tensor, like: &Tensor) -> Result<Tensor> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel::Device;
+    use fuel_core::Device;
 
     fn approx_eq(a: f32, b: f32, eps: f32) -> bool {
         (a - b).abs() <= eps

@@ -29,8 +29,8 @@
 
 use crate::optim::Var;
 use crate::varmap::VarMap;
-use fuel::Result;
-use fuel::{DType, Device};
+use fuel_core::Result;
+use fuel_core::{DType, Device};
 use fuel_ir::Shape;
 
 /// A name-prefixing handle over a [`VarMap`] for constructing
@@ -102,7 +102,7 @@ impl VarBuilder {
         let key = self.path(name);
         if let Some(existing) = self.map.get(&key) {
             if existing.shape().dims() != shape.dims() {
-                return Err(fuel::Error::Msg(format!(
+                return Err(fuel_core::Error::Msg(format!(
                     "VarBuilder::get_with: parameter {key} already \
                      registered with shape {:?}, requested {:?}",
                     existing.shape().dims(),

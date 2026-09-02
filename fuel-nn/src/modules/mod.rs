@@ -33,8 +33,8 @@ pub use quantizable_linear::QuantizableLinear;
 pub use sequential::Sequential;
 pub use two_proj_attention::TwoProjAttention;
 
-use fuel::Result;
-use fuel::lazy::Tensor;
+use fuel_core::Result;
+use fuel_core::lazy::Tensor;
 
 /// Single-input `forward` over the lazy-graph tensor. Analogous to
 /// the eager [`crate::Module`] trait, retargeted at `Tensor`.
