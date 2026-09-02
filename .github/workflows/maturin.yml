@@ -1,4 +1,4 @@
-﻿name: PyO3-Wheels
+name: PyO3-Wheels
 
 on:
   push:
