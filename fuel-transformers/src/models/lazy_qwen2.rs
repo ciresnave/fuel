@@ -100,6 +100,82 @@ impl Qwen2Config {
     }
 }
 
+// ROADMAP item 8 (II): config-from-path, as a capability of the config TYPE
+// (not a registry service — it survives whatever happens to increment I).
+// Convention mirrors the ~30 models that already parse HF config.json (gemma2,
+// bert, llama_full, phi, …): a `serde` raw carrying the file's field names plus
+// constant defaults, then `resolve` fills the sibling-derived values.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct Qwen2ConfigRaw {
+    vocab_size: usize,
+    hidden_size: usize,
+    intermediate_size: usize,
+    num_hidden_layers: usize,
+    num_attention_heads: usize,
+    #[serde(default)]
+    num_key_value_heads: Option<usize>,
+    max_position_embeddings: usize,
+    #[serde(default)]
+    sliding_window: Option<usize>,
+    #[serde(default)]
+    max_window_layers: Option<usize>,
+    #[serde(default)]
+    use_sliding_window: bool,
+    #[serde(default = "default_qwen2_rope_theta")]
+    rope_theta: f64,
+    #[serde(default = "default_qwen2_rms_norm_eps")]
+    rms_norm_eps: f64,
+    #[serde(default)]
+    tie_word_embeddings: bool,
+}
+
+fn default_qwen2_rope_theta() -> f64 {
+    1_000_000.0
+}
+fn default_qwen2_rms_norm_eps() -> f64 {
+    1e-6
+}
+
+impl Qwen2ConfigRaw {
+    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
+        serde_json::from_str(json)
+            .map_err(|e| fuel_core::Error::Msg(format!("parsing Qwen2 config.json: {e}")))
+    }
+
+    fn resolve(self) -> Qwen2Config {
+        Qwen2Config {
+            vocab_size: self.vocab_size,
+            hidden_size: self.hidden_size,
+            intermediate_size: self.intermediate_size,
+            num_hidden_layers: self.num_hidden_layers,
+            num_attention_heads: self.num_attention_heads,
+            num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
+                self.num_key_value_heads,
+                self.num_attention_heads,
+            ),
+            max_position_embeddings: self.max_position_embeddings,
+            // absent/null sliding_window: fall back to the full context length.
+            sliding_window: self.sliding_window.unwrap_or(self.max_position_embeddings),
+            // HF default: all layers windowed, i.e. num_hidden_layers.
+            max_window_layers: self.max_window_layers.unwrap_or(self.num_hidden_layers),
+            use_sliding_window: self.use_sliding_window,
+            rope_theta: self.rope_theta,
+            rms_norm_eps: self.rms_norm_eps,
+            tie_word_embeddings: self.tie_word_embeddings,
+        }
+    }
+}
+
+impl Qwen2Config {
+    /// Parse a HuggingFace `config.json` string into a [`Qwen2Config`].
+    ///
+    /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
+    /// see the born-red `qwen2_config_from_hf_json_parses_the_artifact_not_a_preset`.
+    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+        Ok(Qwen2ConfigRaw::from_json_str(json)?.resolve())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Qwen2Weights {
     /// Process-unique identity for THIS weight set — the component that lets a
@@ -860,6 +936,90 @@ impl Qwen2Weights {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ROADMAP item 8 (II). Golden values from Qwen/Qwen2-0.5B's real config.json
+    // (huggingface.co/Qwen/Qwen2-0.5B/blob/main/config.json).
+    const QWEN2_0_5B_CONFIG_JSON: &str = r#"{
+        "architectures": ["Qwen2ForCausalLM"],
+        "model_type": "qwen2",
+        "vocab_size": 151936,
+        "hidden_size": 896,
+        "intermediate_size": 4864,
+        "num_hidden_layers": 24,
+        "num_attention_heads": 14,
+        "num_key_value_heads": 2,
+        "max_position_embeddings": 131072,
+        "max_window_layers": 24,
+        "sliding_window": 131072,
+        "use_sliding_window": false,
+        "rope_theta": 1000000.0,
+        "rms_norm_eps": 1e-06,
+        "tie_word_embeddings": true
+    }"#;
+
+    #[test]
+    fn qwen2_config_from_hf_json_parses_the_artifact_not_a_preset() {
+        let cfg = Qwen2Config::from_hf_json_str(QWEN2_0_5B_CONFIG_JSON).unwrap();
+        // POSITIVE goldens — Qwen2-0.5B, none coinciding with a resolve default:
+        assert_eq!(cfg.hidden_size, 896); // required field, no default
+        assert_eq!(cfg.num_hidden_layers, 24); // required
+        assert_eq!(cfg.num_attention_heads, 14); // required
+        assert_eq!(cfg.vocab_size, 151_936); // required
+        assert_eq!(cfg.intermediate_size, 4864); // required
+        // GQA: default is num_attention_heads (14); 2 proves the key was READ.
+        assert_eq!(cfg.num_key_value_heads, 2);
+        // 0.5B ties; the `#[serde(default)]` bool default is false and the 7B preset
+        // is false, so `true` proves the key was READ (not defaulted, not the preset).
+        assert!(cfg.tie_word_embeddings);
+        // Sabotage sibling (WEAKER): not the 7B preset. The `==` goldens above are primary.
+        assert_ne!(cfg, Qwen2Config::qwen2_7b());
+    }
+
+    /// Retained sabotage sibling: a SECOND distinct config must parse to ITS OWN
+    /// values, so a parser that returns a constant/preset fails one of the two.
+    /// Also exercises the default path (sliding_window/rope_theta/etc. omitted).
+    #[test]
+    fn qwen2_config_from_hf_json_reads_a_second_distinct_config() {
+        let json = r#"{
+            "model_type": "qwen2",
+            "vocab_size": 152064,
+            "hidden_size": 3584,
+            "intermediate_size": 18944,
+            "num_hidden_layers": 28,
+            "num_attention_heads": 28,
+            "num_key_value_heads": 4,
+            "max_position_embeddings": 131072,
+            "tie_word_embeddings": false
+        }"#;
+        let cfg = Qwen2Config::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.hidden_size, 3584);
+        assert_eq!(cfg.num_hidden_layers, 28);
+        assert_eq!(cfg.num_key_value_heads, 4);
+        assert!(!cfg.tie_word_embeddings);
+        // omitted defaults resolved
+        assert_eq!(cfg.rope_theta, 1_000_000.0);
+        assert_eq!(cfg.max_window_layers, 28); // defaulted to num_hidden_layers
+        // distinct from the 0.5B parse — a constant parser cannot satisfy both tests
+        assert_ne!(cfg.hidden_size, 896);
+    }
+
+    /// Retained sabotage sibling: with `num_key_value_heads` ABSENT, GQA defaults
+    /// to `num_attention_heads`. Paired with the 0.5B golden (present → 2), this
+    /// distinguishes "read the key" from "never looked".
+    #[test]
+    fn qwen2_config_gqa_defaults_to_num_heads_when_absent() {
+        let json = r#"{
+            "model_type": "qwen2",
+            "vocab_size": 1000,
+            "hidden_size": 64,
+            "intermediate_size": 128,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 8,
+            "max_position_embeddings": 128
+        }"#;
+        let cfg = Qwen2Config::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.num_key_value_heads, 8); // absent → defaults to num_attention_heads
+    }
 
     fn tiny_weights(cfg: &Qwen2Config) -> Qwen2Weights {
         let mut s: u32 = 7777;
