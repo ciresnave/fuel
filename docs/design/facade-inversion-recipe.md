@@ -222,9 +222,36 @@ compiling a line** — its `build.rs` calls `prost_build::compile_protos` and
 prost-build 0.13.5 bundles no `protoc`. CLAUDE.md carries the installed directory.
 This is a harness failure that reads exactly like the repoint breaking the crate.
 
-**Sequencing note.** The three eligible crates were originally ordered as "cheap
-independents first". That order is right and its stated reason is not the
-load-bearing one: the split is on model-reference count, and cheapness coincides
-with it here **by accident**. A crate that is both cheap and model-referencing
-would be sent early by the cheapness heuristic and break. Order on the property
-that decides it.
+**Sequencing: ELIGIBILITY and URGENCY are two questions, and this table answers
+only the first.**
+
+**ELIGIBILITY — can this be repointed now?** Decided by model-reference count: a
+crate with zero model references is repointable today, one with any must wait for
+Stage 2. That is what the table above measures.
+
+**URGENCY — should it be repointed now?** Decided by whether the crate
+**propagates into a real library** or terminates. From Fuel 3's
+reverse-dependency query:
+
+| tier | crates | why |
+|---|---|---|
+| propagates into a real library | `fuel-transformers`, `fuel-nn` | fix these |
+| terminates in a consumer | `fuel-datasets`, `fuel-onnx` | tidiness |
+| leaf, nothing depends on them | `fuel-inference`, `fuel-training`, `fuel-parallel`, `fuel-tensor-tools` | leaf |
+
+⚠️ **The two axes are orthogonal and neither substitutes for the other.** The
+three eligible crates were originally ordered "cheap independents first". That
+order is right and its stated reason is not the load-bearing one: cheapness
+coincides with model-reference count here **by accident**, and a crate that is
+both cheap and model-referencing would be sent early by the heuristic and break.
+
+⚠️ **And note where that leaves this pilot: `fuel-datasets` is in the TIDINESS
+tier.** It was chosen for being cheapest, which is a fine reason to pilot a
+procedure and not a reason to do the work — the recipe is what justifies the
+cost, not the repoint itself.
+
+**Prefer a criterion that can be RE-RUN.** An earlier pass cleared
+`fuel-inference` and `fuel-training` by calling them "Use-Case Orchestration" — a
+judgement about intent — and reached the same verdict the rev-dep query reaches on
+evidence. **Same answer; only one of the two can be re-derived by the next
+person.**
