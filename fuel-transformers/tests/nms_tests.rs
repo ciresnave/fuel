@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-use fuel::Result;
+use fuel_core::Result;
 use fuel_transformers::object_detection::{
     Bbox, non_maximum_suppression, soft_non_maximum_suppression,
 };
