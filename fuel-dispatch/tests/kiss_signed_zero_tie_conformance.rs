@@ -182,71 +182,89 @@ fn same_sign_vectors_pass_under_either_tie_convention() {
     );
 }
 
-/// **What can honestly be asserted about the ±0 ties, and what cannot.**
+/// **§6.13 conformance for the ±0 ties. This ASSERTS, and #67 is why it can.**
 ///
-/// ⚠️ **No assertion about WHICH operand comes back is sound**, because Fuel
-/// does not implement §6.13's tie rule at all — it delegates to `f32::min`,
-/// which Rust's own docs disclaim on ±0. Measured 2026-09-02, ONE program,
-/// `rustc -C opt-level=3`:
+/// ⚠️ **HISTORY, because a future reader will otherwise re-litigate it.** This
+/// arm REPORTED rather than asserted until #67 (`4ffd3a34`), because the old
+/// code DELEGATED the tie to `f32::min`, whose ±0 behaviour Rust disclaims.
+/// Measured then: the answer varied WITHIN ONE BINARY at one optimisation level
+/// — `#[inline(never)]` gave one operand, `black_box` the other, and literal
+/// operands were constant-folded to a third answer that never executed. Three
+/// people measured it and got three results, all correct in their own context.
 ///
-/// ```text
-/// #[inline(never)] fn m(a,b){a.min(b)}    m(-0,+0) = +0
-/// black_box(-0).min(black_box(+0))        = -0
-/// constant-folded literals                = canonicalising (never runs)
-/// ```
-///
-/// **Same source, same binary, same optimisation level — the answer is decided
-/// by how each call site was compiled.** Three parties measured this and got
-/// three different answers, all correct in their own context: b-bias (runtime),
-/// canonicalising (constant-folded), and a mixed result on macOS CI.
-///
-/// **So conformance here is not merely ABSENT — it is not well-defined.** An
-/// assertion pinning either answer would go red on a compiler upgrade with no
-/// code change. That is why this arm asserts only what the language actually
-/// guarantees, and REPORTS the rest.
-///
-/// ⚠️ **The contrast that makes this a rule rather than a caveat: NaN payload
-/// order IS stable across every context measured, because it is EXPLICIT IN OUR
-/// SOURCE (`if a.is_nan() { a }`) rather than delegated.** Stability follows
-/// from owning the decision. A fixture for the CSE-fold question must therefore
-/// key on NaN payloads, never on ±0 — a ±0 fixture would pass or fail for
-/// reasons belonging to the compiler.
+/// **#67 replaced that with an explicit `a >= b` select — §6.13's
+/// `cmp_ge(a,b) -> a`.** ⚠️ **THAT is the licence for asserting here, and "it
+/// comes out right today" is not: an assertion on an explicit select cannot be
+/// re-decided by a compiler upgrade, and one on a delegated intrinsic can. The
+/// two justifications are indistinguishable in a green test and diverge the
+/// first time someone bumps the toolchain.**
 #[test]
-fn discriminating_vectors_return_an_input_and_the_selection_is_reported() {
+fn discriminating_vectors_conform_to_kiss_613() {
     let vs = load();
     let mut evaluated = 0usize;
-    let mut fabricated = Vec::new();
-    let (mut matches_kiss, mut returns_b) = (0usize, 0usize);
+    let mut nonconforming = Vec::new();
 
     for v in vs.iter().filter(|v| v.signs_differ) {
         evaluated += 1;
         let got = run(v);
-        // STABLE and guaranteed: the result must be one of the two operands.
-        // Every candidate implementation satisfies this; fabricating a third
-        // value would not be a tie-rule disagreement but a broken op.
-        if got != bits_of(&v.a) && got != bits_of(&v.b) {
-            fabricated.push(format!("tcId {} {} {}", v.tc_id, v.op, v.dtype));
-        }
-        if got == bits_of(&v.expected) {
-            matches_kiss += 1;
-        }
-        if got == bits_of(&v.b) {
-            returns_b += 1;
+        if got != bits_of(&v.expected) {
+            nonconforming.push(format!(
+                "tcId {} {} {} -- got {:02x?} want {:02x?}",
+                v.tc_id,
+                v.op,
+                v.dtype,
+                got,
+                bits_of(&v.expected)
+            ));
         }
     }
 
-    // REPORTED, never asserted: unspecified behaviour has no stable value to pin.
     println!(
-        "[kiss-6.13] {evaluated} discriminating · {matches_kiss} match KISS a-bias ·          {returns_b} returned operand b · (GAP-271: unspecified, varies by call site)"
+        "[kiss-6.13] {evaluated} discriminating - {} nonconforming",
+        nonconforming.len()
     );
-
     assert_eq!(
         evaluated, 24,
-        "evaluated {evaluated} discriminating vectors, expected 24 -- the corpus          or the classifier changed, and any result here would mean nothing"
+        "evaluated {evaluated} discriminating vectors, expected 24 -- the corpus \
+         or the classifier changed, and a clean result would mean nothing"
     );
     assert!(
-        fabricated.is_empty(),
-        "min/max returned a value that is NEITHER operand: {fabricated:?}
-         This is not a tie-convention disagreement -- every candidate convention          returns one of the inputs. It is a broken op."
+        nonconforming.is_empty(),
+        "{} vector(s) do NOT match §6.13:\n  {}\n\n\
+         Fuel regressed on the ±0 tie. #67 made it an explicit `a >= b` select; \
+         if this fires, either that select changed or something now reaches the \
+         old delegated path.",
+        nonconforming.len(),
+        nonconforming.join("\n  ")
+    );
+}
+
+/// **A check on the FIXTURE, not on Fuel — and it is deliberately NOT a second
+/// opinion about the implementation.**
+///
+/// ⚠️ Measured: for all 24 discriminating vectors the corpus's `expected` IS
+/// operand `a`. So *"Fuel matches `expected`"* and *"Fuel returns operand a"*
+/// are THE SAME FACT, and asserting both against Fuel would be one check wearing
+/// two hats — the shape where two agreeing artifacts read as two pieces of
+/// evidence.
+///
+/// What is genuinely independent is asserting the RULE against the CORPUS: if
+/// the vendored `expected` values ever stopped encoding a-bias, the arm above
+/// would faithfully verify Fuel against a wrong oracle and pass.
+#[test]
+fn the_corpus_expected_values_encode_a_bias() {
+    let vs = load();
+    let disagreeing: Vec<u64> = vs
+        .iter()
+        .filter(|v| v.signs_differ)
+        .filter(|v| v.expected != v.a)
+        .map(|v| v.tc_id)
+        .collect();
+    assert!(
+        disagreeing.is_empty(),
+        "corpus `expected` is not operand `a` for tcIds {disagreeing:?} -- §6.13 \
+         specifies a-bias on a ±0 tie, so either the vendored corpus changed or \
+         the spec did. The conformance arm above trusts these values; if they \
+         are wrong it verifies Fuel against a wrong oracle and passes."
     );
 }
