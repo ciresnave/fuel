@@ -219,12 +219,14 @@ The 40 crates that actually exist are the directories with a `Cargo.toml` at the
     **THE INSTRUMENT IS A REVERSE-DEPENDENCY QUERY, and it asks the question that actually matters: DOES A FACADE DEPENDENCY PROPAGATE INTO ANOTHER LIBRARY?** *(Measured excluding the ROOT manifest, which counts as a dependent and inflates every leaf to one.)*
 
     ```
-    PROPAGATES INTO A REAL LIBRARY  -- the load-bearing pair, fix these
+    PROPAGATES INTO A REAL LIBRARY  -- was a pair; ONE REMAINS
       fuel-transformers   <- fuel-examples, fuel-inference
-      fuel-nn             <- fuel-training, fuel-transformers
+      fuel-nn             DONE 2026-09-02 (#53, main 42d3c1d0)
     TERMINATES IN A CONSUMER        -- tidiness; propagates only into fuel-examples
       fuel-datasets       fuel-onnx
     LEAF, nothing depends on them   -- arguably not violations at all
+
+⚠️ **`fuel-nn` REPOINTED 2026-09-02 (#53, `main` `42d3c1d0`).** Measured at head: `fuel-nn/Cargo.toml` `[dependencies]` lists `fuel-core`, `fuel-ir` and `fuel-graph` and **no `fuel` facade**; `use fuel::` in `fuel-nn/src` is **0 files** *(control: `fuel_core::` appears in 23, so the zero is absence rather than a broken query)*. **`fuel-transformers` is the remaining member of what this block called a pair.** ⚠️ **This line went stale the moment #53 merged, and #53 did not touch `ROADMAP.md` at all** — corrected here by the lane that merged it, which is where the obligation actually sat.
       fuel-inference   fuel-training   fuel-parallel   fuel-tensor-tools
     ```
 
