@@ -1021,6 +1021,28 @@ mod tests {
         assert_eq!(cfg.num_key_value_heads, 8); // absent → defaults to num_attention_heads
     }
 
+    /// Load-bearing behavioural row (hf_config take-if-present-else-derive): a config
+    /// STATING `num_key_value_heads = 1` is TRUE MQA and must survive as 1, never
+    /// collapsed to `num_attention_heads`. This is the case a hand-rolled
+    /// `unwrap_or(num_attention_heads)` gets wrong-but-plausible; it passes only
+    /// because resolve routes through `hf_config::num_key_value_heads`. Membership
+    /// guard: rewrite resolve to fork the rule and this goes red.
+    #[test]
+    fn qwen2_config_preserves_true_mqa() {
+        let json = r#"{
+            "model_type": "qwen2",
+            "vocab_size": 1000,
+            "hidden_size": 64,
+            "intermediate_size": 128,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 14,
+            "num_key_value_heads": 1,
+            "max_position_embeddings": 128
+        }"#;
+        let cfg = Qwen2Config::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.num_key_value_heads, 1); // TRUE MQA survives, not collapsed to 14
+    }
+
     fn tiny_weights(cfg: &Qwen2Config) -> Qwen2Weights {
         let mut s: u32 = 7777;
         let next = || -> f32 {
