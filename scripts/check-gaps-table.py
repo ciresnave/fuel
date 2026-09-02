@@ -291,5 +291,95 @@ print('headers checked against the rows beneath them: %d'
       % sum(1 for l in lines if re.match(r'^\| ID\b', l)))
 print('headers DISAGREEING with their rows:', header_problems if header_problems else 'NONE')
 
-if odd or no_pipe or header_problems or control_chars:
+# ---------------------------------------------------------------------------
+# PARENT -> CHILD BACKLINKS
+#
+# A row that homes another row's residue declares `Parent: GAP-NNN`. Nothing
+# required the PARENT to cite the child back, so on 2026-09-02 the score was
+# 0 of 10 -- every declaration one-way.
+#
+# ⚠️ WHY THAT IS A DEFECT AND NOT UNTIDINESS, AND IT IS SPECIFIC TO STRUCK
+# ROWS: `~~GAP-186~~` says "the generator producing the 42nd accessor is a
+# KNOWN OPEN RESIDUAL" and names no row. Its residue IS homed -- at GAP-250 --
+# so the strike is legitimate. But STRIKETHROUGH IS WHAT TELLS A READER NOT TO
+# LOOK FURTHER, so from the row a reader actually lands on, a HOMED residue and
+# an UN-HOMED one are INDISTINGUISHABLE. The work was never lost; the address
+# was unreachable from the only place anyone would go.
+#
+# Three states, not two:
+#   un-homed          -> unstrike, or file a row   (GAP-176 -> GAP-258)
+#   homed AND cited   -> fine
+#   homed but SILENT  -> one clause                (GAP-186 -> GAP-250)
+# With only two states, `~~GAP-186~~` reads as un-homed and gets UNSTRUCK,
+# re-opening finished work -- and an unstruck row looks like diligence, so
+# nothing downstream catches it.
+#
+# ⚠️ WHY THIS IS A GATE RATHER THAN A RULE: filing a row is one action and
+# backlinking is a second action nobody's workflow requires, so the omission is
+# the CONVENTION'S DEFAULT. It recurred within one hour, in the person who had
+# just been warned about it, while filing GAP-258. Awareness demonstrably does
+# not hold; only a check does.
+def missing_backlinks_in(src_lines):
+    """Rows declaring `Parent: X` whose X does not cite them back.
+
+    A FUNCTION so the retained sabotage below can run the SAME code against a
+    fixture. Duplicating the logic for the self-test would validate a copy.
+    """
+    claims, by_id = {}, {}
+    for l in src_lines:
+        m = re.match(r'^\| ~*(GAP-[0-9]+)', l)
+        if not m:
+            continue
+        by_id.setdefault(m.group(1), []).append(l)
+        for pm in re.finditer(r'Parents?:\s*((?:GAP-[0-9]+[,;\s]*)+)', l):
+            for p in re.findall(r'GAP-[0-9]+', pm.group(1)):
+                if p != m.group(1):
+                    claims.setdefault(p, set()).add(m.group(1))
+    out = []
+    for p in sorted(claims):
+        if p not in by_id:
+            out.append('%s is declared as a parent but has NO ROW' % p)
+            continue
+        joined = ' '.join(by_id[p])
+        for c in sorted(claims[p]):
+            if c not in joined:
+                out.append('%s declares `Parent: %s`, but %s does not cite %s'
+                           % (c, p, p, c))
+    return out, sum(len(v) for v in claims.values())
+
+
+# ⚠️ RETAINED SABOTAGE, RUN ON EVERY INVOCATION -- NOT AN AUTHORING-TIME RED.
+# This check went green the moment it was written, because the ten real
+# backlinks had just been added. A born-red proves a gate discriminated ONCE;
+# it says nothing about any later run, and a check that has never been SEEN to
+# fire is indistinguishable from one that does nothing. The fixture below is
+# missing its backlink BY CONSTRUCTION, so if the detector is ever weakened
+# into inertness this foundation check goes red before the real data does.
+_FIXTURE_CAUGHT = [
+    '| GAP-901 | fixture | C | child row. Parent: GAP-902. |',
+    '| ~~GAP-902~~ | fixture | C | parent row that does NOT cite its child. |',
+]
+_FIXTURE_CLEAN = [
+    '| GAP-901 | fixture | C | child row. Parent: GAP-902. |',
+    '| ~~GAP-902~~ | fixture | C | parent row citing GAP-901. |',
+]
+_caught, _ = missing_backlinks_in(_FIXTURE_CAUGHT)
+_clean, _ = missing_backlinks_in(_FIXTURE_CLEAN)
+_foundation = []
+if len(_caught) != 1:
+    _foundation.append('detector did NOT flag the sabotaged fixture (got %r)' % _caught)
+if _clean:
+    _foundation.append('detector flagged the CLEAN fixture (got %r)' % _clean)
+
+missing_backlinks, _n_claims = missing_backlinks_in(lines)
+
+print()
+print('parent<-child backlinks checked: %d' % _n_claims)
+print('backlink detector self-test (sabotaged fixture must flag, clean must not):',
+      'PASS' if not _foundation else _foundation)
+print('parents NOT citing their declared child:',
+      missing_backlinks if missing_backlinks else 'NONE')
+
+if (odd or no_pipe or header_problems or control_chars
+        or missing_backlinks or _foundation):
     sys.exit(1)
