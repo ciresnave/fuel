@@ -1,4 +1,4 @@
-﻿# fuel-mamba: Mamba implementation
+# fuel-mamba: Mamba implementation
 
 Fuel implementation of *Mamba* [1] inference only. Mamba is an alternative to
 the transformer architecture. It leverages State Space Models (SSMs) with the

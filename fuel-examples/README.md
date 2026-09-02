@@ -1,1 +1,1 @@
-﻿# fuel-examples
+# fuel-examples

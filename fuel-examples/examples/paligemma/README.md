@@ -1,4 +1,4 @@
-﻿# PaliGemma
+# PaliGemma
 
 [HuggingFace Model Card](https://huggingface.co/google/paligemma-3b-pt-224) -
 [Model Page](https://ai.google.dev/gemma/docs/paligemma)

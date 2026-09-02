@@ -1,4 +1,4 @@
-﻿# fuel-marian-mt
+# fuel-marian-mt
 
 `marian-mt` is a neural machine translation model. In this example it is used to
 translate text from French to English. See the associated [model

@@ -1,4 +1,4 @@
-﻿# fuel-flux: image generation with latent rectified flow transformers
+# fuel-flux: image generation with latent rectified flow transformers
 
 ![rusty robot holding a fuel](./assets/flux-robot.jpg)
 

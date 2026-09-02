@@ -1,4 +1,4 @@
-﻿# Fuel Ecosystem Compatibility Matrix
+# Fuel Ecosystem Compatibility Matrix
 
 This document records the known-good dependency set for the Fuel workspace
 and the ecosystem crates that integrate with it. It exists so that version drift

@@ -1,4 +1,4 @@
-﻿# fuel-segformer
+# fuel-segformer
 
 - [HuggingFace Segformer Model Card][segformer]
 - [`mit-b0` - An encoder only pretrained model][encoder]

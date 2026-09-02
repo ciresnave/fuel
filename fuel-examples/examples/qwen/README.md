@@ -1,4 +1,4 @@
-﻿# fuel-qwen: large language model series from Alibaba Cloud
+# fuel-qwen: large language model series from Alibaba Cloud
 
 Qwen 1.5 is a series of large language models that provide strong performances
 on English and Chinese.

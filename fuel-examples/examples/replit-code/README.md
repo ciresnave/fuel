@@ -1,4 +1,4 @@
-﻿# fuel-replit-code: code completion specialized model.
+# fuel-replit-code: code completion specialized model.
 
 [replit-code-v1_5-3b](https://huggingface.co/replit/replit-code-v1_5-3b) is a
 language model specialized for code completion. This model uses 3.3B parameters
