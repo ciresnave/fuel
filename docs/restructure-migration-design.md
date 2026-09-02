@@ -272,6 +272,62 @@ this stage forgets** — retarget them to wherever the module lands as part of t
 any greenfield design**, and if the surface cannot express them, the surface is
 wrong.
 
+#### EXECUTED 2026-09-02 (commits `fe765b38` repoint + `798e99cf` move)
+
+**147 candidates → 146 moved, 1 stays (`147 − 1`).** Do not restate the moved count
+as 147; ROADMAP and this recording agree on 146 with `lazy_latent_cache` named.
+
+- **Forced carve-out — stay-list = {`lazy_latent_cache`}.** The criterion is
+  MECHANICAL, not "is it a model" or "is it a cache": a `lazy_*` module STAYS in
+  `fuel-core` iff any crate **at or below the Models tier** references it in code —
+  moving it would create an upward edge and cycle. (GAP-265: cargo enforces
+  acyclicity, not layer DIRECTION, so this is classified by hand, not by "it
+  compiles.") Sole forcer: `fuel-nn/src/modules/two_proj_attention.rs` uses
+  `lazy_latent_cache::LatentCache` in production; transitive closure empty.
+  ⚠️ **`lazy_kv_cache` MOVES** — it has no at/below-Models code consumer, so the
+  mechanical criterion keeps one cache module, NOT the cache family. This diverges
+  from the "keep the caches together" gloss deliberately; reuniting `lazy_kv_cache`
+  with `lazy_latent_cache` is a Stage 3 question.
+- **The cycle it resolves.** `fuel-transformers` depended on the `fuel` FACADE;
+  re-exporting its models from the facade would cycle `facade → fuel-transformers →
+  facade`. Fix: repoint `fuel-transformers → fuel-core` (Foundation). The facade
+  re-exports `fuel_transformers::models::*`, so `fuel::lazy_bert` still resolves —
+  path set unchanged.
+- **Gate met.** `fuel-examples` (the heaviest consumer) compiles UNTOUCHED; its
+  `use fuel::lazy_X` imports resolve through the facade re-export unchanged.
+- **Reference census, re-run AFTER the rebase** over `fuel-transformers/src/models/`
+  (a corpus measurement: a clean rebase attests to mergeability, not that the corpus
+  still matches): `fuel_core::` 2354 (524 `use` imports) · `crate::models::` 221 ·
+  dangling `crate::` not `models::` **0** · code `fuel::` facade **0** (the single
+  `fuel::` hit is `models/mod.rs` header PROSE describing facade resolution) ·
+  `fuel_transformers::` 24. `cargo check -p fuel-transformers -p fuel --locked
+  --all-targets` exits 0, so the corpus resolves and `Cargo.lock` is consistent.
+- **Deferred doc-pointers folded in** (the two this section named):
+  `debertav2/main.rs:347` (a `bail!` string) and `xlm-roberta/main.rs:142` (a
+  comment) retargeted `fuel_core::lazy_X` → `fuel::lazy_X`; both are runtime text no
+  rustdoc gate flags. ⚠️ The plan's claim above that "the canonical `fuel::` also
+  goes stale" is SUPERSEDED and was false: the facade re-exports
+  `fuel_transformers::models::*`, so `fuel::lazy_debertav2` resolves — `fuel::` is
+  the correct stable target.
+- **Doc gates.** `cargo test --doc -p fuel-transformers` compiles **6** executable
+  doctests (all pass); the gate was born-red-confirmed by sabotaging a FENCED
+  `fuel_core::Error` ref in `lazy_bert.rs` → `E0425` fail, restored → pass
+  (recompiled, 4.91s vs 0.48s). Reference dispositions beyond code: **33** intra-doc
+  `[...]` links (`cargo doc` `broken_intra_doc_links`) + **29** bare `` `code
+  spans` `` (NO gate sees them; read individually — 26 pre-existing + 3 new header).
+  The aspirational subset (**48** = 33 links + 15 bare) to an unbuilt
+  `models::{llm,audio,multimodal}::` / `_models_retired::` taxonomy is PRE-EXISTING,
+  not introduced by the move, and tracked as **GAP-266**.
+- **Visibility — 7 changes, all `fuel-core`-owned:** 4 fns
+  (`refresh_decode_session`, `offer_flash_decode_arm_for_region` in `lazy.rs`;
+  `compute_decode_token_host`, `upload_decode_token_data` in `persistent_decode.rs`)
+  + 1 method (`run_backbone_with_rope_tables`, E0624) + 2 types (`DecodeTokenHost`,
+  `SessionDisposition`). The two types are `pub` as a Stage 2 CONSEQUENCE — a
+  `pub fn` cannot return a private type and the models thread them by inference — NOT
+  an API judgement; **revisit when Stage 3 settles the serving/decode destination.**
+  `Tensor::inner` stays `pub(crate)` (GAP-264): the zoo's 24 uses were rewritten to
+  the existing `graph()`/`node_id()` accessors, and the crate boundary now enforces it.
+
 ### Stage 3 — Fission the ~50k remainder
 
 Now a normal-sized refactor, and only now are the boundaries visible:

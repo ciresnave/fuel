@@ -139,7 +139,7 @@ fn main() -> Result<()> {
     // weight layout is identical across the BGE rerankers and most
     // small fine-tunes since they all share the base encoder size. If
     // you point at `xlm-roberta-large` you'll need a `xlm_roberta_large`
-    // preset in `fuel_core::lazy_xlm_roberta` first.
+    // preset in `fuel::lazy_xlm_roberta` first.
     let cfg = XlmrConfig::xlm_roberta_base();
 
     let st = unsafe { fuel::safetensors::MmapedSafetensors::multi(&[weights_path]) }

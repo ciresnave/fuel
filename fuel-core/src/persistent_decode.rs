@@ -697,7 +697,7 @@ pub struct DecodeLayerInputs<'a> {
 }
 
 /// Per-token host data, before it becomes either a baked Const or an upload.
-pub(crate) struct DecodeTokenHost {
+pub struct DecodeTokenHost {
     pub token_ids: Vec<u32>,
     pub rope_cos: Vec<f32>,
     pub rope_sin: Vec<f32>,
@@ -709,7 +709,7 @@ pub(crate) struct DecodeTokenHost {
 /// Compute one decode step's host-side data — the RoPE tables and the stacked
 /// mask. Pure host math, no graph and no upload, shared by the build path (which
 /// bakes or uploads it) and every family's rebind hook (which uploads it).
-pub(crate) fn compute_decode_token_host<M: DecodeBackbone + ?Sized>(
+pub fn compute_decode_token_host<M: DecodeBackbone + ?Sized>(
     model: &M,
     cached_len: usize,
     tokens: &[u32],
@@ -1040,7 +1040,7 @@ fn build_decode_graph<M: DecodeBackbone + ?Sized>(
 /// Upload one step's host data to device-resident Arcs — the same upload path
 /// `KvCache::with_capacity` uses. On CPU the Storage wraps the host bytes; on
 /// GPU it performs the (tiny) H2D copy.
-pub(crate) fn upload_decode_token_data(
+pub fn upload_decode_token_data(
     device: &Device,
     host: &DecodeTokenHost,
     cache_dtype: DType,

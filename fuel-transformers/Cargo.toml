@@ -12,8 +12,24 @@ readme = "README.md"
 [dependencies]
 accelerate-src = { workspace = true, optional = true }
 byteorder = { workspace = true }
-fuel = { workspace = true }
+fuel-core = { path = "../fuel-core", version = "0.10.3" }
 fuel-cpu-backend = { workspace = true }
+# Stage 2: the moved model zoo uses these Foundation + external crates directly
+# (they were fuel-core's deps). Added as workspace deps — already declared in the
+# root [workspace.dependencies], so NO root manifest change. DEFAULT features only,
+# nothing requested: `cargo test --workspace` unifies features across the graph,
+# and any feature the models need (e.g. fuel-ir/serde) is already turned on by
+# fuel-core in the graph. This set must NOT grow features here.
+fuel-dispatch = { workspace = true }
+fuel-graph = { workspace = true }
+fuel-ir = { workspace = true }
+fuel-quantized = { workspace = true }
+half = { workspace = true }
+hf-hub = { workspace = true }
+rand_distr = { workspace = true }
+tokenizers = { workspace = true }
+safetensors = { workspace = true }
+image = { workspace = true }
 fancy-regex = { workspace = true }
 intel-mkl-src = { workspace = true, optional = true }
 num-traits = { workspace = true }
@@ -26,11 +42,11 @@ tracing = { workspace = true }
 
 [features]
 default = []
-accelerate = ["dep:accelerate-src", "fuel/accelerate"]
-cuda = ["fuel/cuda"]
-cudnn = ["fuel/cudnn"]
-mkl = ["dep:intel-mkl-src", "fuel/mkl"]
-metal = ["fuel/metal"]
+accelerate = ["dep:accelerate-src", "fuel-core/accelerate"]
+cuda = ["fuel-core/cuda"]
+cudnn = ["fuel-core/cudnn"]
+mkl = ["dep:intel-mkl-src", "fuel-core/mkl"]
+metal = ["fuel-core/metal"]
 
 # Doctest-only. The crate-level "Quick start" example names
 # `fuel_nn::varbuilder::VarBuilder`, which this crate does NOT depend on at

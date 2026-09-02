@@ -18,16 +18,30 @@ repository = "https://github.com/ciresnave/fuel"
 
 [dependencies]
 fuel-core = { path = "../fuel-core", version = "0.10.3" }
+# Stage 2: the facade re-exports the model zoo from fuel-transformers (Models
+# tier). Added in the SAME commit that repoints fuel-transformers -> fuel-core,
+# because a facade depending on a fuel-transformers that still depends on the
+# facade would be a cargo cycle — so this dependency and that repoint cannot be
+# split. The models re-export (`pub use fuel_transformers::models::*`) lands in
+# the move commit; this crate carries the feature forwards from here on.
+fuel-transformers = { path = "../fuel-transformers", version = "0.10.3" }
 
+# Features forward to EVERY dependency that declares them, and to no dependency
+# that does not (see fuel/tests/feature_forwarding.rs, which derives this rule
+# from the manifests rather than hardcoding the split). fuel-transformers carries
+# accelerate/cuda/cudnn/mkl/metal (a strict subset of fuel-core's 10), so those
+# five forward to BOTH; telemetry/nccl/aocl/onemkl/vulkan forward to fuel-core
+# only. Forwarding to both is byte-safe ONLY because Stage 1's forwarding is 1:1
+# (fuel's `cuda` is exactly `fuel-core/cuda`) — the first thing that gate protects.
 [features]
 default = []
 telemetry = ["fuel-core/telemetry"]
-cuda = ["fuel-core/cuda"]
-cudnn = ["fuel-core/cudnn"]
+cuda = ["fuel-core/cuda", "fuel-transformers/cuda"]
+cudnn = ["fuel-core/cudnn", "fuel-transformers/cudnn"]
 nccl = ["fuel-core/nccl"]
-mkl = ["fuel-core/mkl"]
+mkl = ["fuel-core/mkl", "fuel-transformers/mkl"]
 aocl = ["fuel-core/aocl"]
 onemkl = ["fuel-core/onemkl"]
-accelerate = ["fuel-core/accelerate"]
-metal = ["fuel-core/metal"]
+accelerate = ["fuel-core/accelerate", "fuel-transformers/accelerate"]
+metal = ["fuel-core/metal", "fuel-transformers/metal"]
 vulkan = ["fuel-core/vulkan"]

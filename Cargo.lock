@@ -1705,6 +1705,7 @@ name = "fuel"
 version = "0.10.3"
 dependencies = [
  "fuel-core",
+ "fuel-transformers",
 ]
 
 [[package]]
@@ -2271,16 +2272,26 @@ dependencies = [
  "accelerate-src",
  "byteorder",
  "fancy-regex",
- "fuel",
+ "fuel-core",
  "fuel-cpu-backend",
+ "fuel-dispatch",
+ "fuel-graph",
+ "fuel-ir",
  "fuel-nn",
+ "fuel-quantized",
+ "half",
+ "hf-hub",
+ "image",
  "intel-mkl-src",
  "num-traits",
  "rand",
+ "rand_distr",
  "rayon",
+ "safetensors",
  "serde",
  "serde_json",
  "serde_plain",
+ "tokenizers",
  "tracing",
 ]
 

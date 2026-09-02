@@ -7150,8 +7150,8 @@ impl Tensor {
     /// Composite via reshape + concat + reshape: insert a unit dim
     /// after each spatial dim, concat `scale` copies of the tensor on
     /// each new dim, then collapse the inflated dims back. Same shape
-    /// as the `upsample_nearest_2x` helper in [`crate::lazy_yolov8`]
-    /// and [`crate::lazy_sd_unet`], generalized to arbitrary scale.
+    /// as the `upsample_nearest_2x` helper in [`fuel_transformers::models::lazy_yolov8`]
+    /// and [`fuel_transformers::models::lazy_sd_unet`], generalized to arbitrary scale.
     pub fn upsample_nearest2d(&self, scale: usize) -> std::result::Result<Self, fuel_ir::Error> {
         if scale == 0 {
             return Err(
@@ -8301,14 +8301,14 @@ impl LlamaModel {
     /// cos/sin tables and an attention mask. The standard
     /// [`forward_embeds`] path computes cos/sin from `cfg.rope_base`
     /// via [`Tensor::rope_tables_const`] and uses a strict-causal
-    /// mask; [`crate::lazy_llama_full::Llama3Model`] uses this hook to
+    /// mask; [`fuel_transformers::models::lazy_llama_full::Llama3Model`] uses this hook to
     /// inject Llama-3 long-context scaled RoPE tables without
     /// duplicating the forward path.
     ///
     /// `rope_cos` / `rope_sin` must have shape `[seq, head_dim]` and
     /// live on the same graph as `embeds`. `mask` is additive,
     /// broadcast-compatible with `(B, n_heads, seq, kv_seq)`.
-    pub(crate) fn run_backbone_with_rope_tables(
+    pub fn run_backbone_with_rope_tables(
         &self,
         embeds: &Tensor,
         rope_cos: &Tensor,
@@ -10880,7 +10880,7 @@ fn invalidate_decode_pair_if_stale<C>(
 
 /// What [`refresh_decode_session`] did to the held plan.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SessionDisposition {
+pub enum SessionDisposition {
     /// There was no held plan; nothing to do.
     Absent,
     /// The plan is valid for this step and was left alone.
@@ -10919,7 +10919,7 @@ pub(crate) enum SessionDisposition {
 /// which is what lets this compile (and therefore be CPU-tested) without the
 /// `cuda` feature.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn refresh_decode_session(
+pub fn refresh_decode_session(
     session: &mut Option<crate::inference_context::DecodeSession>,
     ctx: &mut InferenceContext,
     seq: usize,
@@ -11322,7 +11322,7 @@ pub(crate) fn flash_window_bounds(window: Option<usize>) -> (Option<usize>, Opti
 // capability) for one flash-decode-arm offer. Each is a distinct graph node or
 // scalar, not a bundle-able struct. Exceeds even the raised (10) threshold.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn offer_flash_decode_arm_for_region(
+pub fn offer_flash_decode_arm_for_region(
     graph: &fuel_graph::SharedGraph,
     q: fuel_graph::NodeId,
     k: fuel_graph::NodeId,

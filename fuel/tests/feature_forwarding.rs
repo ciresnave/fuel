@@ -1,53 +1,47 @@
-//! Feature-forwarding gate for the `fuel` facade (restructure Stage 1).
+//! Feature-forwarding gate for the `fuel` facade.
 //!
-//! The facade's entire job in the feature dimension is to forward every
-//! fuel-core feature 1:1: a consumer's `features = ["vulkan"]` on `fuel` must
-//! enable exactly `fuel-core/vulkan`. Cargo already rejects a forward to a
-//! NONEXISTENT fuel-core feature at build time, so this gate targets the two
-//! failures cargo cannot see:
+//! The facade re-exports two crates — `fuel-core` (Foundation: tensor API) and,
+//! since Stage 2, `fuel-transformers` (Models tier: the model zoo). A consumer
+//! enabling `fuel/cuda` must get a CUDA-capable tensor API AND CUDA-built models,
+//! so the facade must forward each feature to EVERY dependency that declares it —
+//! and to no dependency that does not.
 //!
-//!   * CROSSING — `vulkan = ["fuel-core/telemetry"]`. Both features exist, the
-//!     facade compiles, every consumer-compile passes, and a `--features vulkan`
-//!     consumer silently gets no Vulkan. Caught by assertion (ii).
-//!   * OMISSION — fuel-core grows a feature and the facade never forwards it.
-//!     Caught by assertion (i).
+//! This gate DERIVES that rule from the three manifests rather than encoding a
+//! snapshot ("5 shared, 5 fuel-core-only"). The snapshot is true today
+//! (fuel-transformers carries accelerate/cuda/cudnn/mkl/metal, a strict subset of
+//! fuel-core's ten) but a constant assertion stays green the day fuel-transformers
+//! gains, say, `telemetry` and the facade is not updated — the models then build
+//! without it and nothing complains. Deriving from the manifests makes that RED.
 //!
-//! The manifest `#[test]` here (call it "a") and the `#[cfg]`-gated EFFECT tests
-//! below ("b") are COMPLEMENTARY — neither alone is sufficient, so do NOT delete
-//! (a) as redundant because (b) covers the case you happen to think of:
+//! What the compiler CANNOT see, and this test therefore must (all invisible to
+//! `cargo check` because a facade with an incomplete forward still compiles):
+//!   - CROSSING: `cuda = ["fuel-core/telemetry", ...]` — wrong target.
+//!   - OMITTED HALF: `cuda = ["fuel-core/cuda"]` — fuel-transformers also declares
+//!     `cuda` but is not forwarded to; models build without CUDA.
+//!   - SPURIOUS: forwarding to a dep that does not declare the feature.
+//!   - GROWTH: a feature added to a dep with no facade entry (the future case).
 //!
-//! ```text
-//! CROSSING      vulkan = ["fuel-core/telemetry"]
-//!   (b) catches it: `use fuel::vulkan_backend` fails to compile. (a) too.
-//! OVER-FORWARD  vulkan = ["fuel-core/vulkan", "fuel-core/telemetry"]
-//!   (b) PASSES (vulkan IS on, module reachable) — only (a) catches it, via
-//!   the "forwards to EXACTLY [fuel-core/X]" length+equality check.
-//! ```
-//!
-//! Coverage split, stated so "feature forwarding is tested" is never read
-//! unqualified: (a) covers all 10 forwardable features TEXTUALLY; (b) covers 2
-//! (telemetry, vulkan) by EFFECT — the two runnable on this box. The other eight
-//! (cuda, cudnn, nccl, metal, mkl, aocl, onemkl, accelerate) are
-//! forwarding-verified and effect-UNVERIFIED (cuda forges; metal is off-platform;
-//! mkl/aocl/onemkl/accelerate need absent SDKs).
+//! Born-red directions (keep reproducible):
+//!   - GROWTH (the one that will actually happen): add `foo = []` to
+//!     fuel-transformers/Cargo.toml, do NOT add it to the facade -> assertion (i)
+//!     fails, `Missing ... ["foo"]`.
+//!   - OMITTED HALF: drop `fuel-transformers/cuda` from the facade's `cuda` ->
+//!     assertion (ii) fails for `cuda`.
+//!   - CROSSING: point the facade's `cuda` at `fuel-core/telemetry` ->
+//!     assertion (ii) fails for `cuda`.
 //!
 //! Manifests are embedded at compile time via `include_str!`, so the test is
 //! hermetic and cwd-independent.
 //!
-//! Born-red discipline (one sabotage per assertion arm — keep it reproducible):
-//!   * arm (ii): set `vulkan = ["fuel-core/telemetry"]` in fuel/Cargo.toml →
-//!     `facade feature `vulkan` must forward EXACTLY to ["fuel-core/vulkan"]`.
-//!   * arm (i): delete the `metal` line from fuel/Cargo.toml [features] →
-//!     `facade feature set must equal fuel-core's ... Missing: ["metal"]`.
-//!
-//! The two `#[cfg]`-gated tests below add the EFFECT dimension (proving the
-//! forward turns the fuel-core feature ON, not merely that the name resolves):
-//! run `cargo test -p fuel --features telemetry` and `--features vulkan`.
+//! The `#[cfg]`-gated tests below add the EFFECT dimension (the forward actually
+//! turns the fuel-core feature ON and its gated module is reachable through the
+//! facade): run `cargo test -p fuel --features telemetry` and `--features vulkan`.
 
 use std::collections::BTreeSet;
 
 const FACADE_MANIFEST: &str = include_str!("../Cargo.toml");
 const CORE_MANIFEST: &str = include_str!("../../fuel-core/Cargo.toml");
+const TRANSFORMERS_MANIFEST: &str = include_str!("../../fuel-transformers/Cargo.toml");
 
 /// Parse the `[features]` table into `(name, [array elements])` pairs, in order.
 ///
@@ -117,14 +111,22 @@ fn extract_quoted(s: &str) -> Vec<String> {
     out
 }
 
+/// Feature names in a parsed manifest, excluding `default`.
+fn feature_names(parsed: &[(String, Vec<String>)]) -> BTreeSet<String> {
+    parsed
+        .iter()
+        .map(|(n, _)| n.clone())
+        .filter(|n| n != "default")
+        .collect()
+}
+
 #[test]
-fn facade_forwards_every_fuel_core_feature_one_to_one() {
+fn facade_forwards_each_feature_to_every_dep_that_declares_it() {
     let facade = parse_features(FACADE_MANIFEST);
     let core = parse_features(CORE_MANIFEST);
+    let transformers = parse_features(TRANSFORMERS_MANIFEST);
 
-    // Positive control: an empty parse would make every assertion below vacuous.
-    // fuel has 11 features (default + 10); fuel-core has 11. Require a plausible
-    // floor so a broken parser/path fails loudly instead of passing green.
+    // Positive controls: an empty parse would make every assertion vacuous.
     assert!(
         facade.len() >= 5,
         "parsed only {} facade feature(s) — parser or include path broken",
@@ -135,29 +137,37 @@ fn facade_forwards_every_fuel_core_feature_one_to_one() {
         "parsed only {} fuel-core feature(s) — parser or include path broken",
         core.len()
     );
-
-    let facade_names: BTreeSet<&str> = facade
-        .iter()
-        .map(|(n, _)| n.as_str())
-        .filter(|n| *n != "default")
-        .collect();
-    let core_names: BTreeSet<&str> = core
-        .iter()
-        .map(|(n, _)| n.as_str())
-        .filter(|n| *n != "default")
-        .collect();
-
-    // (i) NO OMISSION / NO EXTRA — the forwarded set is exactly fuel-core's.
-    assert_eq!(
-        facade_names,
-        core_names,
-        "facade feature set must equal fuel-core's (minus `default`). \
-         Missing (in core, not forwarded): {:?}; Extra (forwarded, not in core): {:?}",
-        core_names.difference(&facade_names).collect::<Vec<_>>(),
-        facade_names.difference(&core_names).collect::<Vec<_>>(),
+    assert!(
+        transformers.len() >= 3,
+        "parsed only {} fuel-transformers feature(s) — parser or include path broken",
+        transformers.len()
     );
 
-    // (ii) NO CROSSING — each facade feature forwards to EXACTLY fuel-core/<same-name>.
+    let core_names = feature_names(&core);
+    let tf_names = feature_names(&transformers);
+    let facade_names = feature_names(&facade);
+
+    // The dependencies the facade forwards to, each with its own declared set.
+    // Derived from the manifests — see the module doc for why a hardcoded split
+    // would rot silently.
+    let deps: [(&str, &BTreeSet<String>); 2] =
+        [("fuel-core", &core_names), ("fuel-transformers", &tf_names)];
+
+    // (i) The facade exposes EXACTLY the union of its deps' features: no omission
+    // (a dep feature the facade never surfaces) and no extra (a facade feature no
+    // dep declares).
+    let union: BTreeSet<String> = core_names.union(&tf_names).cloned().collect();
+    assert_eq!(
+        facade_names,
+        union,
+        "facade feature set must equal the UNION of its deps' features. \
+         Missing (a dep declares it, facade doesn't): {:?}; \
+         Extra (facade has it, no dep declares it): {:?}",
+        union.difference(&facade_names).collect::<Vec<_>>(),
+        facade_names.difference(&union).collect::<Vec<_>>(),
+    );
+
+    // (ii) Each facade feature forwards to EXACTLY the deps that declare it.
     for (name, elems) in &facade {
         if name == "default" {
             assert!(
@@ -166,25 +176,23 @@ fn facade_forwards_every_fuel_core_feature_one_to_one() {
             );
             continue;
         }
-        let expected = format!("fuel-core/{name}");
+        let expected: BTreeSet<String> = deps
+            .iter()
+            .filter(|(_, feats)| feats.contains(name))
+            .map(|(dep, _)| format!("{dep}/{name}"))
+            .collect();
+        let got: BTreeSet<String> = elems.iter().cloned().collect();
         assert_eq!(
-            elems.len(),
-            1,
-            "facade feature `{name}` must forward to a single fuel-core feature, got {elems:?}"
-        );
-        assert_eq!(
-            elems[0], expected,
-            "facade feature `{name}` must forward EXACTLY to [\"{expected}\"] (crossing?), got {:?}",
-            elems[0]
+            got, expected,
+            "facade feature `{name}` must forward to EXACTLY the deps that declare it \
+             — expected {expected:?}, got {got:?}"
         );
     }
 }
 
-// (b) EFFECT, not just text. Under each runnable feature the forwarded fuel-core
+// EFFECT, not just text. Under each runnable feature the forwarded fuel-core
 // feature must actually be ON and its gated public module reachable through the
-// facade glob. Each `use` resolves iff the forward worked end-to-end; a crossing
-// (`vulkan = ["fuel-core/telemetry"]`) makes fuel-core/vulkan stay off and the
-// module vanish, so this fails to COMPILE under `--features vulkan`.
+// facade. Each `use` resolves iff the forward worked end-to-end.
 
 #[cfg(feature = "telemetry")]
 #[test]
