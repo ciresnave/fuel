@@ -13,6 +13,32 @@ edge, so it no longer reaches the tensor API through the facade.
 
 ---
 
+## ⚠️ What transfers from this pilot, and what does not
+
+**A pilot's PROCEDURAL output generalises. Its MEASUREMENTS do not.** State which
+half you are citing.
+
+**TRANSFERS** — the steps, the prerequisites, the traps, the gate set: the
+workspace-dependency prerequisite, the `lazy` / `lazy_` delimiter trap, the
+requirement for two compile gates plus a text sweep, reading artifacts instead of
+progress lines, and gating optional consumers under their features.
+
+**DOES NOT TRANSFER** — any ratio measured here. `fuel-datasets` is **8/8 fenced,
+the only 100% in the set**, which makes it the *least* representative crate for
+the fenced-vs-prose question, and a claim generalised from it was wrong within
+hours. ⚠️ **The pilot was chosen for being cheapest; cheapest is not
+representative, and the two are unrelated properties.**
+
+**The structural part worth remembering: this failure is invisible from inside the
+pilot, because everything the pilot measured was correct.** No control on the
+pilot's own work can catch it — only the population can, and avoiding measuring
+the population is the entire point of a pilot. **The cheap defence is not a second
+pilot: when a pilot produces a claim about a PROPERTY, spot-check that property on
+ONE other member of the population before generalising.** One extra crate here
+would have shown 1/5 prose on `fuel-nn` and killed the generalisation on the spot.
+
+---
+
 ## The procedure, in the order that works
 
 ### 0. Decide whether the crate is eligible AT ALL
