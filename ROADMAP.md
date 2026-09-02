@@ -214,7 +214,23 @@ The 40 crates that actually exist are the directories with a `Cargo.toml` at the
 
     **PROSE CARRIES THE MAJORITY IN THREE OF SIX, so the gate that catches NOTHING is the dominant one more often than not.** ⚠️ **AND THE PILOT THAT PRODUCED THE FENCED FINDING WAS THE LEAST REPRESENTATIVE CRATE IN THE SET FOR THIS EXACT QUESTION — `fuel-datasets` is 8/8, the only 100%.** **It was chosen as the pilot for being the CHEAPEST (13 src refs, smallest in the set), and cheapness selected the sample where the claim it produced was MAXIMALLY TRUE.** **A PILOT CHOSEN FOR BEING CHEAPEST IS NOT THEREBY REPRESENTATIVE** — and the failure is invisible from inside the pilot, because everything it measured was correct. **I made that selection.** ⚠️ **THE STANDING FORM: a doc-reference count that is NOT SPLIT says nothing about which gate would catch it. My original column was one number over a population with two halves and two different fates; the first correction was one number over the same population weighted by the wrong crate.** ·  **s-grp** = count of `use fuel::{…}` STATEMENTS (each expands to many names, so it is a statement count, not a name count).
 
-    ⚠️ **MY FIRST PASS SAID EIGHT AND CLASSIFIED BY CRATE NAME; MY SECOND SAID SEVEN AND STILL DID NOT APPLY THE LAYER CRITERION. Corrected to THREE violations + TWO unplaceable: `fuel-inference` and `fuel-training` are Use-Case Orchestration, ABOVE the facade, so depending on it is CORRECT; `fuel-parallel` and `fuel-datasets` appear nowhere in the layer model, which is the same defect as the facade itself.**
+    ⚠️ **THE CLASSIFICATION BELOW IS THE FOURTH AND THE FIRST ONE THAT CAN FAIL. The three before it were EIGHT (by crate NAME), SEVEN (by layer, without applying the criterion to the list), and THREE-PLUS-TWO (by layer, applied). ⚠️ **NONE OF THOSE THREE WAS FALSIFIABLE BY RUNNING ANYTHING** — *"inversion by name"*, *"seven crates"*, *"correct by layer"* are all judgements, so each restatement had to be caught by a person. **Not carelessness three times; the same missing instrument three times.**
+
+    **THE INSTRUMENT IS A REVERSE-DEPENDENCY QUERY, and it asks the question that actually matters: DOES A FACADE DEPENDENCY PROPAGATE INTO ANOTHER LIBRARY?** *(Measured excluding the ROOT manifest, which counts as a dependent and inflates every leaf to one.)*
+
+    ```
+    PROPAGATES INTO A REAL LIBRARY  -- the load-bearing pair, fix these
+      fuel-transformers   <- fuel-examples, fuel-inference
+      fuel-nn             <- fuel-training, fuel-transformers
+    TERMINATES IN A CONSUMER        -- tidiness; propagates only into fuel-examples
+      fuel-datasets       fuel-onnx
+    LEAF, nothing depends on them   -- arguably not violations at all
+      fuel-inference   fuel-training   fuel-parallel   fuel-tensor-tools
+    ```
+
+    ⚠️ **THE ORDERING NOW FALLS OUT OF THE MEASUREMENT RATHER THAN OUT OF COST.** `fuel-transformers` is exactly the one Stage 2 hit as a hard cycle, and `fuel-nn` is the other crate whose facade dependency reaches a real library — which is why those two are the expensive pair and the four leaves are arguably fine as they stand. **A leaf whose facade dependency propagates nowhere is an application, and consuming the facade is what the facade is FOR.**
+
+    ⚠️ **AND NOTE WHAT THE EARLIER LAYER-BASED ANSWER GOT RIGHT FOR THE WRONG REASON: it cleared `fuel-inference` and `fuel-training` by calling them "Use-Case Orchestration", a judgement about intent. The rev-dep query clears them on evidence — nothing depends on either.** **Same verdict, and only one of the two can be re-run by the next person.**
 
     **The name-based error is still worth recording: THE AUDIT FOUND ONE ERROR AND IT WAS THE CRATE WHOSE NAME MOST SOUNDS LIKE A LIBRARY: `fuel-tensor-tools` HAS NO `lib.rs`** — `{bin: 1}`, one `main.rs`, **zero crates depend on it.** A leaf CLI consuming the facade is exactly what the facade is FOR. **Seven inversions and three consumers, not eight and two.**
 
