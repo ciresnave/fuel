@@ -2,8 +2,8 @@
 //! `Sequential` — a Vec of boxed [`Module`]s applied left-to-right.
 
 use super::Module;
-use fuel::Result;
-use fuel::lazy::Tensor;
+use fuel_core::Result;
+use fuel_core::lazy::Tensor;
 
 /// A container that chains owned [`Module`]s.
 ///
@@ -59,8 +59,8 @@ impl Module for Sequential {
 mod tests {
     use super::*;
     use crate::modules::{Linear, Module};
-    use fuel::Device;
-    use fuel::lazy::WeightStorage;
+    use fuel_core::Device;
+    use fuel_core::lazy::WeightStorage;
     use fuel_ir::Shape;
     use std::sync::Arc;
 

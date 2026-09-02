@@ -20,7 +20,7 @@
 //! checkpoints and the `MmapedSafetensors` loader.
 
 use crate::optim::Var;
-use fuel::Result;
+use fuel_core::Result;
 use safetensors::tensor::{Dtype, SafeTensors, TensorView};
 use std::collections::HashMap;
 use std::path::Path;
@@ -90,13 +90,14 @@ impl VarMap {
             .map(|(name, bytes, shape)| {
                 let view =
                     TensorView::new(Dtype::F32, shape.clone(), bytes.as_slice()).map_err(|e| {
-                        fuel::Error::Msg(format!("VarMap::save: TensorView for {name}: {e}")).bt()
+                        fuel_core::Error::Msg(format!("VarMap::save: TensorView for {name}: {e}"))
+                            .bt()
                     });
                 view.map(|v| (name.clone(), v))
             })
             .collect::<Result<Vec<_>>>()?;
         safetensors::tensor::serialize_to_file(views, None, path.as_ref())
-            .map_err(|e| fuel::Error::Msg(format!("VarMap::save: {e}")).bt())?;
+            .map_err(|e| fuel_core::Error::Msg(format!("VarMap::save: {e}")).bt())?;
         Ok(())
     }
 
@@ -107,21 +108,21 @@ impl VarMap {
     /// the on-disk shape or if its dtype is not F32.
     pub fn load<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         let bytes = std::fs::read(path.as_ref()).map_err(|e| {
-            fuel::Error::Msg(format!(
+            fuel_core::Error::Msg(format!(
                 "VarMap::load: read {}: {e}",
                 path.as_ref().display()
             ))
             .bt()
         })?;
         let tensors = SafeTensors::deserialize(&bytes)
-            .map_err(|e| fuel::Error::Msg(format!("VarMap::load: deserialize: {e}")).bt())?;
+            .map_err(|e| fuel_core::Error::Msg(format!("VarMap::load: deserialize: {e}")).bt())?;
         let guard = self.vars.read().unwrap();
         for (name, view) in tensors.tensors() {
             let Some(var) = guard.get(&name) else {
                 continue;
             };
             if view.dtype() != Dtype::F32 {
-                return Err(fuel::Error::Msg(format!(
+                return Err(fuel_core::Error::Msg(format!(
                     "VarMap::load: tensor {name} has dtype {:?}, expected F32",
                     view.dtype()
                 ))
@@ -130,14 +131,14 @@ impl VarMap {
             let on_disk_shape = view.shape();
             let var_shape = var.shape().dims();
             if on_disk_shape != var_shape {
-                return Err(fuel::Error::Msg(format!(
+                return Err(fuel_core::Error::Msg(format!(
                     "VarMap::load: tensor {name} has shape {on_disk_shape:?}, registered Var shape is {var_shape:?}",
                 ))
                 .bt());
             }
             let raw = view.data();
             if raw.len() % 4 != 0 {
-                return Err(fuel::Error::Msg(format!(
+                return Err(fuel_core::Error::Msg(format!(
                     "VarMap::load: tensor {name} has byte length {} not divisible by 4",
                     raw.len(),
                 ))
