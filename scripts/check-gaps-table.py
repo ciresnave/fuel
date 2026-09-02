@@ -78,6 +78,47 @@ for _l in lines:
 no_status = sum(1 for c in schema_cols if c == 4)
 headerless = sum(1 for c in schema_cols if c is None)
 
+# ---------------------------------------------------------------------------
+# CONTROL CHARACTERS -- checked FIRST, because an invisible byte can corrupt the
+# row parsing that every other check below depends on.
+#
+# WHY THIS EXISTS: seven of these accumulated across earlier commits and were
+# repaired at `ffc5f25a` -- 5x FORMFEED (0x0c) and 1x BACKSPACE (0x08) in this
+# file, 1x VERTICAL TAB (0x0b) in CLAUDE.md. All of them arrived the same way:
+# a Windows path or a regex written inside a QUOTED SHELL HEREDOC, where the
+# backslash is eaten and `\f` in `C:\Projects\fuel` becomes one formfeed byte.
+#
+# ⚠️ THE ASYMMETRY IS THE WHOLE REASON THEY ACCUMULATED, AND IT IS THE OPPOSITE
+# OF THE INTUITION: `\Projects` and `\.git` raise a SyntaxWarning and SURVIVE AS
+# LITERALS, while `\fuel` becomes a formfeed with NO DIAGNOSTIC AT ALL. The
+# escapes that warn are the harmless ones; the silent one is the one that
+# corrupts. So "be careful with heredocs" is not a usable rule -- nobody was
+# careless, and the loud cases trained everyone to expect a warning that the
+# damaging case never emits.
+#
+# ⚠️ CONTEXT IS PRINTED, NOT JUST AN OFFSET, AND THAT IS LOAD-BEARING: the byte
+# is INVISIBLE, so a line/column alone tells a reader nothing they can see. What
+# identified the original seven was a context dump, not a coordinate.
+#
+# TAB is allowed per the ruling. CR and LF cannot appear here at all: the file is
+# read through universal-newline translation and split on '\n', so any surviving
+# control character is genuinely embedded in a cell.
+_CTRL_NAMES = {0x08: 'BACKSPACE', 0x09: 'TAB', 0x0b: 'VERTICAL TAB',
+               0x0c: 'FORMFEED', 0x1b: 'ESCAPE'}
+control_chars = []
+for _n, _l in enumerate(lines, 1):
+    for _k, _ch in enumerate(_l):
+        _o = ord(_ch)
+        if _o < 0x20 and _ch != '\t':
+            _lo, _hi = max(0, _k - 20), min(len(_l), _k + 21)
+            _ctx = _l[_lo:_hi].replace(_ch, '<U+%04X>' % _o)
+            control_chars.append(
+                'line %d col %d: U+%04X %s -- ...%s...'
+                % (_n, _k + 1, _o, _CTRL_NAMES.get(_o, 'CONTROL'), _ctx))
+
+print('control characters (excl. tab):',
+      control_chars if control_chars else 'NONE')
+print()
 print('delimiter-count distribution:', dict(Counter(d for _, d, _ in rows)))
 odd = [(r, d) for r, d, _ in rows if d not in (5, 6)]
 print('rows NOT in {5,6}:', odd if odd else 'NONE')
@@ -250,5 +291,5 @@ print('headers checked against the rows beneath them: %d'
       % sum(1 for l in lines if re.match(r'^\| ID\b', l)))
 print('headers DISAGREEING with their rows:', header_problems if header_problems else 'NONE')
 
-if odd or no_pipe or header_problems:
+if odd or no_pipe or header_problems or control_chars:
     sys.exit(1)
