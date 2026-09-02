@@ -15,8 +15,8 @@
 //! path.
 
 use crate::modules::Module;
-use fuel::Result;
-use fuel::lazy::Tensor;
+use fuel_core::Result;
+use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -43,7 +43,7 @@ impl LayerNorm {
         last_dim: usize,
     ) -> Result<Self> {
         if gain.len() != last_dim {
-            return Err(fuel::Error::Msg(format!(
+            return Err(fuel_core::Error::Msg(format!(
                 "LayerNorm::new: gain has length {} but last_dim = {}",
                 gain.len(),
                 last_dim,
@@ -53,7 +53,7 @@ impl LayerNorm {
         if let Some(b) = bias.as_ref()
             && b.len() != last_dim
         {
-            return Err(fuel::Error::Msg(format!(
+            return Err(fuel_core::Error::Msg(format!(
                 "LayerNorm::new: bias has length {} but last_dim = {}",
                 b.len(),
                 last_dim,
@@ -118,7 +118,7 @@ impl RmsNorm {
     /// Build an RmsNorm wrapper. `gain.len()` must equal `last_dim`.
     pub fn new(gain: Arc<[f32]>, eps: f64, last_dim: usize) -> Result<Self> {
         if gain.len() != last_dim {
-            return Err(fuel::Error::Msg(format!(
+            return Err(fuel_core::Error::Msg(format!(
                 "RmsNorm::new: gain has length {} but last_dim = {}",
                 gain.len(),
                 last_dim,
@@ -184,17 +184,19 @@ impl GroupNorm {
         eps: f64,
     ) -> Result<Self> {
         if num_groups == 0 {
-            return Err(fuel::Error::Msg("GroupNorm::new: num_groups must be ≥ 1".into()).bt());
+            return Err(
+                fuel_core::Error::Msg("GroupNorm::new: num_groups must be ≥ 1".into()).bt(),
+            );
         }
         if !num_channels.is_multiple_of(num_groups) {
-            return Err(fuel::Error::Msg(format!(
+            return Err(fuel_core::Error::Msg(format!(
                 "GroupNorm::new: num_groups ({num_groups}) must divide \
                  num_channels ({num_channels})",
             ))
             .bt());
         }
         if gain.len() != num_channels {
-            return Err(fuel::Error::Msg(format!(
+            return Err(fuel_core::Error::Msg(format!(
                 "GroupNorm::new: gain has length {} but num_channels = {}",
                 gain.len(),
                 num_channels,
@@ -202,7 +204,7 @@ impl GroupNorm {
             .bt());
         }
         if bias.len() != num_channels {
-            return Err(fuel::Error::Msg(format!(
+            return Err(fuel_core::Error::Msg(format!(
                 "GroupNorm::new: bias has length {} but num_channels = {}",
                 bias.len(),
                 num_channels,
@@ -248,7 +250,7 @@ impl Module for GroupNorm {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         let in_dims: Vec<usize> = xs.shape().dims().to_vec();
         if in_dims.len() < 3 {
-            return Err(fuel::Error::Msg(format!(
+            return Err(fuel_core::Error::Msg(format!(
                 "GroupNorm::forward: input rank must be ≥ 3, got {in_dims:?}",
             ))
             .bt());
@@ -256,7 +258,7 @@ impl Module for GroupNorm {
         let b_sz = in_dims[0];
         let c = in_dims[1];
         if c != self.num_channels {
-            return Err(fuel::Error::Msg(format!(
+            return Err(fuel_core::Error::Msg(format!(
                 "GroupNorm::forward: input channel dim {c} != num_channels = {}",
                 self.num_channels,
             ))
@@ -324,7 +326,7 @@ impl BatchNorm2d {
             ("running_var", &running_var),
         ] {
             if buf.len() != num_features {
-                return Err(fuel::Error::Msg(format!(
+                return Err(fuel_core::Error::Msg(format!(
                     "BatchNorm2d::new: {name} has length {} but num_features = {}",
                     buf.len(),
                     num_features,
@@ -333,9 +335,10 @@ impl BatchNorm2d {
             }
         }
         if eps < 0.0 {
-            return Err(
-                fuel::Error::Msg(format!("BatchNorm2d::new: eps must be ≥ 0, got {eps}",)).bt(),
-            );
+            return Err(fuel_core::Error::Msg(format!(
+                "BatchNorm2d::new: eps must be ≥ 0, got {eps}",
+            ))
+            .bt());
         }
         Ok(Self {
             weight,
@@ -394,13 +397,13 @@ impl Module for BatchNorm2d {
     fn forward(&self, xs: &Tensor) -> Result<Tensor> {
         let dims: Vec<usize> = xs.shape().dims().to_vec();
         if dims.len() != 4 {
-            return Err(fuel::Error::Msg(format!(
+            return Err(fuel_core::Error::Msg(format!(
                 "BatchNorm2d::forward: input must be rank 4 (N, C, H, W), got {dims:?}",
             ))
             .bt());
         }
         if dims[1] != self.num_features {
-            return Err(fuel::Error::Msg(format!(
+            return Err(fuel_core::Error::Msg(format!(
                 "BatchNorm2d::forward: input channel dim {} != num_features = {}",
                 dims[1], self.num_features,
             ))
@@ -414,7 +417,7 @@ impl Module for BatchNorm2d {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel::Device;
+    use fuel_core::Device;
 
     fn ramp_f32(n: usize, scale: f32, offset: f32) -> Vec<f32> {
         (0..n).map(|i| (i as f32) * scale + offset).collect()

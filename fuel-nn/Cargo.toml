@@ -11,11 +11,11 @@ license.workspace = true
 # Sits ABOVE fuel-core, not beside it. The NN surface is built on `Tensor`,
 # which lives in `fuel-core::lazy`, so fuel-nn is a CONSUMER of fuel-core and
 # `fuel-core` deliberately does NOT re-export it — that would be a dependency
-# cycle and cargo forbids it. When the fuel-core dissolution eventually runs,
-# fuel-nn re-points its imports; one crate's `use` lines rather than a blocked
-# program.
+# cycle and cargo forbids it. The fuel-core dissolution repoint has run
+# (2026-09-02): fuel-nn imports `fuel_core::` directly rather than through the
+# `fuel` facade — one crate's `use` lines, exactly as anticipated.
 [dependencies]
-fuel = { workspace = true }
+fuel-core = { workspace = true }
 fuel-ir = { workspace = true }
 fuel-graph = { workspace = true }
 safetensors = { workspace = true }

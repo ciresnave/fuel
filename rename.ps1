@@ -1,4 +1,4 @@
-﻿$exts = @('.rs', '.md', '.toml', '.txt', '.yml', '.yaml', '.ps1', '.sh', '.html', '.c', '.cpp', '.h', '.cu')
+$exts = @('.rs', '.md', '.toml', '.txt', '.yml', '.yaml', '.ps1', '.sh', '.html', '.c', '.cpp', '.h', '.cu')
 $files = git ls-files
 foreach ($f in $files) {
     $ext = [System.IO.Path]::GetExtension($f).ToLower()

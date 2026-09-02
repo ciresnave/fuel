@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "fuel-datasets"
 version.workspace = true
 edition.workspace = true

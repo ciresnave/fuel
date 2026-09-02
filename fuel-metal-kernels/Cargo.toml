@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "fuel-metal-kernels"
 version = "0.10.3"
 edition = "2021"

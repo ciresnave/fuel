@@ -1,4 +1,4 @@
-﻿# fuel-eva2
+# fuel-eva2
 
 [EVA-02](https://arxiv.org/abs/2303.11331) is a computer vision model.
 In this example, it is used as an ImageNet classifier: the model returns the

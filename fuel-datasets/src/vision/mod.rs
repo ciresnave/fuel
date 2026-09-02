@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 /// A vision dataset split into train/test images and labels.
 ///
 /// # Host buffers, not tensors

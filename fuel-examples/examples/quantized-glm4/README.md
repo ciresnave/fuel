@@ -1,4 +1,4 @@
-﻿# fuel-quantized-glm4
+# fuel-quantized-glm4
 
 Fuel implementation of various quantized GLM4-0414 models.
 

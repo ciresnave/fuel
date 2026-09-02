@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Identifies a physical device location (CPU or a specific GPU).
 
 #[cfg(feature = "serde")]

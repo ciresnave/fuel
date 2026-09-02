@@ -1,4 +1,4 @@
-﻿# hiera
+# hiera
 
 [Hiera: A Hierarchical Vision Transformer without the Bells-and-Whistles](https://arxiv.org/abs/2306.00989)
 This fuel implementation uses pre-trained Hiera models from timm for inference.
