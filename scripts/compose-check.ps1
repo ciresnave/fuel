@@ -37,6 +37,25 @@
   attributes MAIN's changes to the PR, and gets worse the further behind the PR
   is -- exactly when you are running this.
 
+  !! TWO LINES IN HERE LOOK REDUNDANT AND ARE NOT. BOTH WERE REAL DEFECTS,
+     FOUND BY THIS SCRIPT'S OWN BORN-RED, AND BOTH SIMPLIFICATIONS ARE THE
+     OBVIOUS ONES:
+
+     1. The body is a FUNCTION and every exit path returns a VALUE. `return`
+        inside try/finally at SCRIPT scope ends the SCRIPT, skipping the
+        trailing `exit` -- the process then exits 0 while the console reads
+        "GATE FAILED". A correct diagnosis with a success exit code. If you
+        see the function wrapper as ceremony and inline it, the tool silently
+        returns to reporting success on failure.
+
+     2. A failed merge is classified by git's CONFLICTED PATHS, not by
+        $LASTEXITCODE. DO NOT SIMPLIFY THIS TO THE EXIT STATUS. A merge exits
+        nonzero for many reasons -- FETCH_HEAD is PER-WORKTREE, so merging
+        'FETCH_HEAD' inside the scratch worktree fails outright -- and reading
+        that status as "conflict" produced a CONFIDENT FALSE RED claiming two
+        branches conflicted when they compose perfectly. Conflicted paths ask
+        the question directly; the exit status only correlates with it.
+
   !! THIS IS NOT CI. It runs the gates you name and NOTHING else -- no clippy,
   no fmt, no full test suite, no other platform. A green compose-check means
   "these compose under the named gates", never "this PR is green".
