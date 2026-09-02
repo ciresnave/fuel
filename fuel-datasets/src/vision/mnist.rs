@@ -3,7 +3,7 @@
 //!
 //! The files can be obtained from the following link:
 //! <http://yann.lecun.com/exdb/mnist/>
-use fuel::{Error, Result};
+use fuel_core::{Error, Result};
 use hf_hub::{Repo, RepoType, api::sync::Api};
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use std::fs::File;
@@ -58,7 +58,7 @@ fn read_images(filename: &std::path::Path) -> Result<(Vec<f32>, usize, usize, us
 /// ```no_run
 /// use fuel_datasets::vision::mnist;
 /// let dataset = mnist::load_dir("data/mnist")?;
-/// # Ok::<(), fuel::Error>(())
+/// # Ok::<(), fuel_core::Error>(())
 /// ```
 pub fn load_dir<T: AsRef<std::path::Path>>(dir: T) -> Result<crate::vision::Dataset> {
     let dir = dir.as_ref();
@@ -152,7 +152,7 @@ pub(crate) fn load_mnist_like(
 /// use fuel_datasets::vision::mnist;
 /// let dataset = mnist::load()?;
 /// println!("train samples: {}, dims: {:?}", dataset.train_samples, dataset.image_dims);
-/// # Ok::<(), fuel::Error>(())
+/// # Ok::<(), fuel_core::Error>(())
 /// ```
 pub fn load() -> Result<crate::vision::Dataset> {
     load_mnist_like(

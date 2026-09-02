@@ -190,9 +190,17 @@ if ($missing.Count -gt 0) {
 # A gate that does not match CI's TOOLCHAIN is as blind as one that does not
 # match its FEATURE SET. This pass must pin both.
 $stableOk = $true
+# NOTE: rustup's EXIT CODE is deliberately NOT read. It answers a different
+# question from the one this gate asks: rustup can exit non-zero for reasons
+# that say nothing about the toolchain -- notably a failed SELF-UPDATE when
+# another session on this box holds rustup.exe, which with many concurrent
+# sessions is the steady state rather than a race (diagnosed in vulkane). The
+# check below asserts the PROPERTY this gate depends on -- is the target
+# present -- and subsumes a genuine failure, because a failed rustup emits no
+# target list and 2>$null keeps stderr out of the variable. Restoring an
+# exit-code test would add no detection and one false-red path.
 $stableTargets = & rustup +stable target list --installed 2>$null
-if ($LASTEXITCODE -ne 0) { $stableOk = $false }
-elseif ($stableTargets -notcontains $target) { $stableOk = $false }
+if ($stableTargets -notcontains $target) { $stableOk = $false }
 if (-not $stableOk) {
     Write-Host ''
     Write-Host "FAIL: the stable toolchain with target '$target' is required." -ForegroundColor Red
