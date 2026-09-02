@@ -2,7 +2,7 @@
 //! **GAP-265: dependencies must flow downward, and this is what enforces it.**
 //!
 //! `docs/architecture/02-layers.md` Rule 1 says dependencies flow downward only
-//! and claims it is *"enforced via Cargo's dep graph"*. It is not. **Cargo
+//! and claimed it is *"enforced via Cargo's dep graph"*. It is not. **Cargo
 //! enforces ACYCLICITY, not DIRECTION** -- a crate may depend on anything at all
 //! so long as no cycle results, and every layering violation this project has
 //! shipped was acyclic.
@@ -21,15 +21,48 @@
 //! 02-layers does not state anywhere, and inverts the drawing across the
 //! Foundation/Backends boundary deliberately.
 //!
-//! # What a green here does and does not mean
+//! # Why this is FIVE tests and not one
 //!
-//! The gate prints its own coverage every run -- how many edges it judged, and
-//! how many crates carry no tier. **A crate with no tier makes every edge it
-//! touches unjudgeable, and a silent 40%-coverage green is the exact failure
-//! this project keeps recording.** Read the printed coverage, not just the pass.
+//! The checks were verified by independent sabotages, so they must FAIL as
+//! independent arms. Folded into one `#[test]`, the first assertion to fire
+//! hides every later one: a direction failure would tell you nothing about
+//! whether the stale-allowlist check still discriminates. That is the fail-fast
+//! problem in miniature, and this project has measured what it costs -- fixing
+//! one defect took a macOS CI run from 21 executed suites to 72.
+//!
+//! The foundation assertions live in [`load`], not in one arm, so **no arm can
+//! pass vacuously over missing data**. A gate whose own inputs went missing and
+//! stayed green is the exact failure this file exists to prevent.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+
+/// The parsed workspace: members, normal dependency edges, tiers, allowlist.
+struct Workspace {
+    members: BTreeSet<String>,
+    edges: BTreeSet<(String, String)>,
+    tiers: BTreeMap<String, (u32, String)>,
+    allow: BTreeMap<(String, String), String>,
+    root: PathBuf,
+}
+
+impl Workspace {
+    /// Edges both of whose endpoints carry a tier. An unassigned crate makes
+    /// every edge it touches unjudgeable, in BOTH directions.
+    fn judged(&self) -> Vec<&(String, String)> {
+        self.edges
+            .iter()
+            .filter(|(a, b)| self.tiers.contains_key(a) && self.tiers.contains_key(b))
+            .collect()
+    }
+
+    fn unassigned(&self) -> Vec<&String> {
+        self.members
+            .iter()
+            .filter(|m| !self.tiers.contains_key(*m))
+            .collect()
+    }
+}
 
 fn workspace_root() -> PathBuf {
     let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -47,6 +80,15 @@ fn workspace_root() -> PathBuf {
     }
 }
 
+/// The directory name a `members` entry refers to, or the empty string.
+///
+/// Extracted so [`workspace_members`] reads as the scan and this reads as the
+/// grammar. It changes no condition.
+fn member_dir_name(entry: &str) -> String {
+    let cleaned: String = entry.chars().filter(|c| *c != '"' && *c != ',').collect();
+    cleaned.trim().split('/').next().unwrap_or("").to_string()
+}
+
 /// Workspace member directory names, read from the root manifest's `members`.
 fn workspace_members(root: &Path) -> BTreeSet<String> {
     let txt = std::fs::read_to_string(root.join("Cargo.toml")).expect("root manifest");
@@ -58,37 +100,53 @@ fn workspace_members(root: &Path) -> BTreeSet<String> {
             in_members = true;
             continue;
         }
-        if in_members {
-            if t.starts_with(']') {
-                in_members = false;
-                continue;
-            }
-            let cleaned: String = t.chars().filter(|c| *c != '"' && *c != ',').collect();
-            let name = cleaned.trim().split('/').next().unwrap_or("").to_string();
-            if !name.is_empty()
-                && !name.starts_with('#')
-                && root.join(&name).join("Cargo.toml").exists()
-            {
-                out.insert(name);
-            }
+        if !in_members {
+            continue;
+        }
+        if t.starts_with(']') {
+            in_members = false;
+            continue;
+        }
+        let name = member_dir_name(t);
+        if !name.is_empty()
+            && !name.starts_with('#')
+            && root.join(&name).join("Cargo.toml").exists()
+        {
+            out.insert(name);
         }
     }
     out
 }
 
-/// `(from, to)` for every NORMAL intra-workspace dependency edge.
+/// Whether a section header opens NORMAL dependencies.
 ///
-/// Leading whitespace is allowed on the declaration. A column-0 anchor misses
-/// indented declarations and returns a clean, confident, low answer.
+/// dev- and build-dependencies are excluded deliberately: they do not constrain
+/// layering. `fuel-test-support` is the worked example -- all six of its
+/// consumers take it as a dev-dependency, so it participates in no edge here.
+fn opens_normal_deps(header: &str) -> bool {
+    header == "[dependencies]"
+        || (header.starts_with("[target.") && header.ends_with(".dependencies]"))
+}
+
+/// The crate a dependency line declares, or the empty string.
 ///
-/// MEASURED, with the population named because the bare ratio is wider than
-/// the evidence: across every workspace `Cargo.toml` at `ca398d5c`, counting
-/// DECLARATION LINES FOR `fuel*` CRATES ONLY (`^[[:space:]]+fuel[a-z-]*=` vs
-/// `^fuel[a-z-]*=`), 68 were indented against 103 at column 0. That is 40% of
-/// THOSE lines -- not of all dependency declarations, which nobody measured.
-/// It cost the lane that measured it two published claims before they swept
-/// the anchor bug backwards.
-/// dev- and build-dependencies are excluded: they do not constrain layering.
+/// **Leading whitespace is allowed.** A column-0 anchor misses indented
+/// declarations and returns a clean, confident, LOW answer. Measured across
+/// every workspace `Cargo.toml` at `ca398d5c`, counting DECLARATION LINES FOR
+/// `fuel*` CRATES ONLY, 68 were indented against 103 at column 0 -- 40% of THOSE
+/// lines, not of all dependency declarations, which nobody measured. It cost the
+/// lane that found it two published claims before they swept the anchor bug
+/// backwards.
+fn declared_dep_name(line: &str) -> String {
+    line.split(['=', '.'])
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_matches('"')
+        .to_string()
+}
+
+/// Every NORMAL intra-workspace dependency edge, as `(from, to)`.
 fn dependency_edges(root: &Path, members: &BTreeSet<String>) -> BTreeSet<(String, String)> {
     let mut out = BTreeSet::new();
     for m in members {
@@ -99,20 +157,13 @@ fn dependency_edges(root: &Path, members: &BTreeSet<String>) -> BTreeSet<(String
         for line in txt.lines() {
             let t = line.trim();
             if t.starts_with('[') {
-                in_normal_deps = t == "[dependencies]"
-                    || (t.starts_with("[target.") && t.ends_with(".dependencies]"));
+                in_normal_deps = opens_normal_deps(t);
                 continue;
             }
             if !in_normal_deps || t.starts_with('#') || t.is_empty() {
                 continue;
             }
-            let name = t
-                .split(['=', '.'])
-                .next()
-                .unwrap_or("")
-                .trim()
-                .trim_matches('"')
-                .to_string();
+            let name = declared_dep_name(t);
             if members.contains(&name) && name != *m {
                 out.insert((m.clone(), name));
             }
@@ -121,63 +172,43 @@ fn dependency_edges(root: &Path, members: &BTreeSet<String>) -> BTreeSet<(String
     out
 }
 
-/// crate -> (tier, layer name)
-fn load_tiers(root: &Path) -> BTreeMap<String, (u32, String)> {
-    let p = root.join("fuel-ir/tests/crate_dependency_tiers.txt");
-    let txt =
-        std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("cannot read {}: {e}", p.display()));
-    let mut out = BTreeMap::new();
-    for line in txt.lines() {
-        let t = line.trim_end();
-        if t.starts_with('#') || t.trim().is_empty() {
-            continue;
-        }
-        let mut f = t.split('\t');
-        let (Some(name), Some(tier)) = (f.next(), f.next()) else {
-            continue;
-        };
-        let layer = f.next().unwrap_or("").trim().to_string();
-        if let Ok(n) = tier.trim().parse::<u32>() {
-            out.insert(name.trim().to_string(), (n, layer));
-        }
-    }
-    out
+/// Tab-separated records, comments and blank lines skipped.
+fn tsv_records(path: &Path) -> Vec<Vec<String>> {
+    let txt = std::fs::read_to_string(path)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+    txt.lines()
+        .filter(|l| !l.starts_with('#') && !l.trim().is_empty())
+        .map(|l| l.split('\t').map(|f| f.trim().to_string()).collect())
+        .collect()
 }
 
-/// (from, to) -> reason. A blank or missing reason is preserved as empty so the
-/// gate can REJECT it rather than silently accepting amnesty with no record.
-fn load_allowlist(root: &Path) -> BTreeMap<(String, String), String> {
-    let p = root.join("fuel-ir/tests/crate_dependency_tier_allowlist.txt");
-    let txt =
-        std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("cannot read {}: {e}", p.display()));
-    let mut out = BTreeMap::new();
-    for line in txt.lines() {
-        let t = line.trim_end();
-        if t.starts_with('#') || t.trim().is_empty() {
-            continue;
-        }
-        let mut f = t.split('\t');
-        let (Some(a), Some(b)) = (f.next(), f.next()) else {
-            continue;
-        };
-        out.insert(
-            (a.trim().to_string(), b.trim().to_string()),
-            f.next().unwrap_or("").trim().to_string(),
-        );
-    }
-    out
-}
-
-#[test]
-fn dependencies_flow_downward_only() {
+/// Parse everything once, and REFUSE to return a degenerate graph.
+fn load() -> Workspace {
     let root = workspace_root();
     let members = workspace_members(&root);
     let edges = dependency_edges(&root, &members);
-    let tiers = load_tiers(&root);
-    let allow = load_allowlist(&root);
 
-    // FOUNDATION CHECKS. Without these the gate passes vacuously when its own
-    // data goes missing -- which is the failure mode it exists to prevent.
+    let mut tiers = BTreeMap::new();
+    for r in tsv_records(&root.join("fuel-ir/tests/crate_dependency_tiers.txt")) {
+        if let (Some(name), Some(tier)) = (r.first(), r.get(1))
+            && let Ok(n) = tier.parse::<u32>()
+        {
+            tiers.insert(name.clone(), (n, r.get(2).cloned().unwrap_or_default()));
+        }
+    }
+
+    let mut allow = BTreeMap::new();
+    for r in tsv_records(&root.join("fuel-ir/tests/crate_dependency_tier_allowlist.txt")) {
+        if let (Some(a), Some(b)) = (r.first(), r.get(1)) {
+            allow.insert(
+                (a.clone(), b.clone()),
+                r.get(2).cloned().unwrap_or_default(),
+            );
+        }
+    }
+
+    // FOUNDATION. Here rather than in one arm, so NO arm can pass vacuously
+    // over missing data -- the failure this gate exists to prevent.
     assert!(
         members.len() >= 30,
         "found only {} workspace members -- the manifest scan is broken, and a \
@@ -187,72 +218,41 @@ fn dependencies_flow_downward_only() {
     assert!(
         edges.len() >= 50,
         "found only {} intra-workspace dependency edges -- the manifest parse is \
-         broken. A column-0 anchor misses indented declarations (68 of 171 \
-         `fuel*` declaration LINES in this repo -- that population, not all \
-         dependencies) and returns a confident low number",
+         broken. A column-0 anchor misses indented declarations and returns a \
+         confident low number",
         edges.len()
     );
     assert!(
         tiers.len() >= 25,
         "crate_dependency_tiers.txt assigns only {} crates. If this file were \
-         emptied the gate would judge NOTHING and still pass, so the count is \
-         asserted: an unassigned crate makes every edge it touches unjudgeable",
+         emptied every arm below would judge NOTHING and still pass",
         tiers.len()
     );
 
-    let judged: Vec<&(String, String)> = edges
-        .iter()
-        .filter(|(a, b)| tiers.contains_key(a) && tiers.contains_key(b))
-        .collect();
-    let unassigned: Vec<&String> = members.iter().filter(|m| !tiers.contains_key(*m)).collect();
+    Workspace {
+        members,
+        edges,
+        tiers,
+        allow,
+        root,
+    }
+}
 
-    // COVERAGE, printed every run. A green over 40% of the edges is not the same
-    // claim as a green over all of them, and only this line says which it is.
-    println!(
-        "[dep-direction] judged {} of {} edges; {} of {} crates assigned; {} unassigned: {:?}",
-        judged.len(),
-        edges.len(),
-        tiers.len(),
-        members.len(),
-        unassigned.len(),
-        unassigned
-    );
-
-    let violations: Vec<String> = judged
+#[test]
+fn dependencies_flow_downward_only() {
+    let w = load();
+    let violations: Vec<String> = w
+        .judged()
         .iter()
-        .filter(|(a, b)| tiers[b].0 > tiers[a].0)
-        .filter(|(a, b)| !allow.contains_key(&(a.clone(), b.clone())))
+        .filter(|(a, b)| w.tiers[b].0 > w.tiers[a].0)
+        .filter(|(a, b)| !w.allow.contains_key(&(a.clone(), b.clone())))
         .map(|(a, b)| {
             format!(
                 "{a} (tier {}, {}) -> {b} (tier {}, {})",
-                tiers[a].0, tiers[a].1, tiers[b].0, tiers[b].1
+                w.tiers[a].0, w.tiers[a].1, w.tiers[b].0, w.tiers[b].1
             )
         })
         .collect();
-
-    let reasonless: Vec<String> = allow
-        .iter()
-        .filter(|(_, r)| r.is_empty())
-        .map(|((a, b), _)| format!("{a} -> {b}"))
-        .collect();
-
-    let stale: Vec<String> = allow
-        .keys()
-        .filter(|(a, b)| !edges.contains(&(a.clone(), b.clone())))
-        .map(|(a, b)| format!("{a} -> {b}"))
-        .collect();
-
-    assert!(
-        reasonless.is_empty(),
-        "allowlist entries with a BLANK reason: {reasonless:?}\n\
-         A bare allowlist is amnesty with no record of which disposition it is, \
-         and it takes the guard's signal with it."
-    );
-    assert!(
-        stale.is_empty(),
-        "STALE allowlist entries -- the edge no longer exists: {stale:?}\n\
-         This list may only SHRINK. Delete the entry; the repoint landed."
-    );
     assert!(
         violations.is_empty(),
         "dependency edges pointing UPWARD through the tier order:\n  {}\n\n\
@@ -262,5 +262,171 @@ fn dependencies_flow_downward_only() {
          tier assignment is -- and if the edge is deliberate, add it to \
          crate_dependency_tier_allowlist.txt WITH A REASON.",
         violations.join("\n  ")
+    );
+}
+
+#[test]
+fn every_allowlist_entry_carries_a_reason() {
+    let w = load();
+    let reasonless: Vec<String> = w
+        .allow
+        .iter()
+        .filter(|(_, r)| r.is_empty())
+        .map(|((a, b), _)| format!("{a} -> {b}"))
+        .collect();
+    assert!(
+        reasonless.is_empty(),
+        "allowlist entries with a BLANK reason: {reasonless:?}\n\
+         A bare allowlist is amnesty with no record of which disposition it is, \
+         and it takes the guard's signal with it."
+    );
+}
+
+#[test]
+fn no_allowlist_entry_outlives_its_edge() {
+    let w = load();
+    let stale: Vec<String> = w
+        .allow
+        .keys()
+        .filter(|(a, b)| !w.edges.contains(&(a.clone(), b.clone())))
+        .map(|(a, b)| format!("{a} -> {b}"))
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "STALE allowlist entries -- the edge no longer exists: {stale:?}\n\
+         This list may only SHRINK. Delete the entry; the repoint landed."
+    );
+}
+
+/// Coverage is a RATCHET, not a report.
+///
+/// A green over 92% of the edges is not the same claim as a green over all of
+/// them, and a shrinking denominator is invisible in a pass. The exemption count
+/// may only fall: a new crate with no tier fails HERE rather than silently
+/// widening the blind spot.
+#[test]
+fn unjudged_coverage_may_only_shrink() {
+    let w = load();
+    let unassigned = w.unassigned();
+    let judged = w.judged();
+    println!(
+        "[dep-direction] judged {} of {} edges; {} of {} crates assigned; {} unassigned: {:?}",
+        judged.len(),
+        w.edges.len(),
+        w.tiers.len(),
+        w.members.len(),
+        unassigned.len(),
+        unassigned
+    );
+    assert!(
+        unassigned.len() <= 5,
+        "{} crates carry no tier (5 at f9bdfb20): {:?}\n\
+         Every edge they touch is UNJUDGED, in both directions. If you added a \
+         crate, give it a tier. This bound may only SHRINK -- the header of \
+         crate_dependency_tiers.txt lists what the current exemptions cost.",
+        unassigned.len(),
+        unassigned
+    );
+}
+
+/// Where a crate states its own layer in a `**Layer**:` doc line, the tier file
+/// must agree with it.
+///
+/// **This is a CROSS-CHECK between two independently-maintained sources, not a
+/// source of truth.** The declared vocabulary is partial (6 of 39 crates with a
+/// `lib.rs`) and differently spelled from both the diagram and this gate, so the
+/// mapping below is stated explicitly rather than inferred -- the mapping IS the
+/// interesting part. `Inference` and `Training` are not diagram band names; the
+/// diagram calls that band Use-Case Orchestration.
+///
+/// One crate is a DECLARED DISAGREEMENT rather than a mapping, and it is
+/// recorded instead of forced: `fuel-onnx` self-declares `IO`, while
+/// `02-layers.md:76` places it at `Interchange (as-built form of
+/// fuel-format-interchange-onnx)`, and this gate's dependency order puts it with
+/// the model libraries. **Three sources, three names, no ruling.** Its violation
+/// verdict is unaffected either way, so nothing is blocked on resolving it.
+#[test]
+fn self_declared_layers_agree_with_the_tier_file() {
+    let w = load();
+    let map: &[(&str, &str)] = &[
+        ("Use-Case Orchestration", "use-case orchestration"),
+        ("Inference", "use-case orchestration"),
+        ("Training", "use-case orchestration"),
+        ("Models", "models / libraries"),
+    ];
+    let disputed: &[(&str, &str)] = &[(
+        "fuel-onnx",
+        "declares IO; 02-layers:76 says Interchange; tiered with the model \
+         libraries by dependency order. Three sources, three names, no ruling.",
+    )];
+
+    let mut declared: Vec<(String, String)> = Vec::new();
+    for m in &w.members {
+        let Ok(txt) = std::fs::read_to_string(w.root.join(m).join("src/lib.rs")) else {
+            continue;
+        };
+        let Some(raw) = txt.lines().find_map(|l| l.split("**Layer**:").nth(1)) else {
+            continue;
+        };
+        // The label ends at the first em-dash, pipe, or sentence stop; several
+        // declarations run prose afterwards. It is NOT split on '-', because the
+        // longest label in use is "Use-Case Orchestration" -- a hyphen split
+        // yields "Use", which is a plausible-LOOKING label that no assertion
+        // would reject, so the tidier parser fails SILENTLY. The correct
+        // delimiter set is longer and less obvious than the wrong one.
+        let label = raw
+            .split(['\u{2014}', '|'])
+            .next()
+            .unwrap_or("")
+            .split('.')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .trim_matches('*')
+            .trim()
+            .to_string();
+        if !label.is_empty() {
+            declared.push((m.clone(), label));
+        }
+    }
+
+    // FOUNDATION for this arm specifically: a broken doc-parse yields zero
+    // declarations and then agrees with everything.
+    assert!(
+        declared.len() >= 6,
+        "parsed only {} self-declared layers (6 at f9bdfb20) -- the doc-comment \
+         parse is broken, and a broken parse agrees with the tier file about \
+         nothing at all while reporting PASS. Declarations found: {declared:?}",
+        declared.len()
+    );
+
+    let mut mismatches = Vec::new();
+    let mut compared = 0usize;
+    for (krate, label) in &declared {
+        if disputed.iter().any(|(d, _)| d == krate) {
+            continue;
+        }
+        let Some((_, tier_layer)) = w.tiers.get(krate) else {
+            continue; // unassigned crates are reported by the coverage arm
+        };
+        compared += 1;
+        match map.iter().find(|(d, _)| d == label).map(|(_, t)| *t) {
+            Some(e) if e == tier_layer => {}
+            Some(e) => mismatches.push(format!(
+                "{krate}: declares {label:?} (maps to {e:?}) but is tiered {tier_layer:?}"
+            )),
+            None => mismatches.push(format!(
+                "{krate}: declares {label:?}, which has no entry in this arm's \
+                 vocabulary map. Add the mapping, or record it as disputed WITH \
+                 A REASON -- do not force it."
+            )),
+        }
+    }
+    assert!(
+        mismatches.is_empty(),
+        "a crate's self-declared layer disagrees with its tier:\n  {}\n\n\
+         Two independently-maintained sources have drifted. Fix whichever is \
+         wrong; this project treats doc-vs-code drift as a defect.",
+        mismatches.join("\n  ")
     );
 }

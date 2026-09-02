@@ -52,44 +52,54 @@
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# SIX CRATES CARRY NO TIER. THAT IS A DECISION, AND HERE IS WHAT IT COSTS
+# FIVE CRATES CARRY NO TIER. THAT IS A DECISION, AND HERE IS WHAT IT COSTS
 # ---------------------------------------------------------------------------
 # An unassigned crate makes every edge it touches UNJUDGEABLE -- as source OR
 # as target -- so the cost is stated as a MEASURED EDGE LIST rather than as a
-# count of crates, which would hide it. Measured at f9bdfb20: 10 of 118 edges
-# are unjudged, and these are all of them.
+# count of crates, which would hide it. 7 of 118 edges are unjudged
+# and these are all of them:
 #
-#   fuel-parallel   -> fuel                  <-- THE ONE THAT MATTERS
-#   fuel-parallel   -> fuel-cuda-backend
-#   fuel-parallel   -> fuel-vulkan-backend
-#   fuel-core       -> fuel-correctness-fixtures
-#   fuel-correctness-fixtures -> fuel-ir
-#   fuel-datasets   -> fuel-core
-#   fuel-examples   -> fuel-datasets
+#   fuel-core                   -> fuel-correctness-fixtures
+#   fuel-correctness-fixtures   -> fuel-ir
+#   fuel-datasets               -> fuel-core
+#   fuel-examples               -> fuel-datasets
 #   fuel-model-fixture          -> fuel-model-core
 #   fuel-model-umbrella-fixture -> fuel-model-core
 #   fuel-model-umbrella-fixture -> fuel-model-fixture
 #
-# READ THE FIRST LINE AS THE GAP IN THIS GATE'S OWN COVERAGE. `fuel-parallel`
-# is one of the NINE crates that depend on the facade, and GAP-265 names it
-# explicitly -- so an edge of exactly the class this gate exists to catch is
-# currently invisible to it. It is unassigned because 02-layers HAS NEVER
-# PLACED `fuel-parallel` OR `fuel-datasets`, and inventing a constitutional
-# placement inside a test data file is the architect's call, not this gate's.
-# Assigning `fuel-parallel` above the facade would manufacture a FOURTH
-# violation and demand a FOURTH allowlist entry -- i.e. a ruling on whether its
-# facade dependency is legitimate. That ruling is owed; this file will not fake
-# it by choosing a number.
+# `fuel-test-support` is the case that costs NOTHING, and it is recorded so it
+# is not confused with the others: it participates in ZERO normal edges in
+# EITHER direction. Its six consumers all take it as a [dev-dependency], which
+# this gate excludes by design because a dev-dep does not constrain layering.
+# Assigning it a tier would change no verdict. Measured, not assumed -- a draft
+# of this header claimed all four fixture crates were dev-dep-only, and it was
+# FALSE for two of them.
 #
-# `fuel-test-support` is the opposite case and is recorded so the two are not
-# confused: it participates in ZERO normal edges in EITHER direction (its six
-# consumers all take it as a [dev-dependency], which this gate excludes by
-# design because a dev-dep does not constrain layering). Assigning it a tier
-# would change no verdict. That is measured, not assumed.
+# `fuel-core -> fuel-correctness-fixtures` is the one to look at first: it is a
+# NON-OPTIONAL [dependencies] edge (features serde, capture), so a fixtures
+# crate sits on a production path. Consistent with FKC capture being production
+# infrastructure, but it means the edge is real and wants a tier.
 #
-# The remaining four sit on ordinary edges and are placeable without a ruling;
-# they are left out only because they were not needed to make the gate bite,
-# and adding them is a STRICT coverage improvement for whoever does it next.
+# The remaining four sit on ordinary edges and are placeable without a ruling.
+# They are left out only because they were not needed to make the gate bite.
+# Adding them is a STRICT coverage improvement for whoever does it next.
+# ---------------------------------------------------------------------------
+#
+# `fuel-parallel` WAS on this list and is now placed at 130, and HOW it was
+# placed is the point: it SELF-DECLARES its layer in its own module doc --
+# `fuel-parallel/src/lib.rs:3`, "**Layer**: Use-Case Orchestration" -- which is
+# ABOVE the facade, so its `-> fuel` edge is legitimate and needs no allowlist
+# entry. That is evidence from the crate, not a judgement about it. The
+# question was handed up rather than answered by picking a number, and the
+# answer turned out to be written down already.
+#
+# Six crates declare a layer this way, out of 39 with a lib.rs. The gate now
+# cross-checks all six against this file (see the arm in
+# crate_dependency_direction.rs). The vocabulary DIFFERS from both the diagram
+# and this file, so the mapping is written out explicitly there rather than
+# inferred -- and `fuel-onnx` is recorded as a DECLARED DISAGREEMENT instead of
+# being forced into a mapping: it says IO, 02-layers:76 says Interchange, and
+# the dependency order puts it with the model libraries.
 # ---------------------------------------------------------------------------
 
 fuel-ir	10	IR vocabulary
@@ -135,6 +145,7 @@ fuel	120	consumer facade
 
 fuel-inference	130	use-case orchestration
 fuel-training	130	use-case orchestration
+fuel-parallel	130	use-case orchestration
 
 fuel-examples	140	consumers
 fuel-lazy-examples	140	consumers
