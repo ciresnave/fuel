@@ -124,6 +124,16 @@ fn unanchored(method_rules: &str, claude: &str) -> Vec<String> {
 /// SECTION is reachable at all, so a rule cited five times with four anchors
 /// passes it while the fifth citation still lands the reader at the top of a
 /// 1,600-line file. Counts occurrences of the file path NOT followed by `#`.
+///
+/// KNOWN BOUND, named rather than mitigated: this also forbids a legitimate
+/// WHOLE-FILE link -- `[the rules corpus](docs/method-rules.md)` -- which
+/// promises no section and therefore breaks no promise. Measured 2026-09-02:
+/// ZERO such links exist in any tracked `.md`, and both real instances named
+/// a section in the link TEXT. Refining this to "flag only when the text
+/// names a slug" would be machinery for a case that does not occur. Whoever
+/// writes the first whole-file link gets a clear red and a REAL instance to
+/// reason about, which is a better basis for relaxing this than a
+/// hypothetical is today.
 fn anchorless_links(claude: &str) -> usize {
     const NEEDLE: &str = "](docs/method-rules.md";
     let mut n = 0usize;
