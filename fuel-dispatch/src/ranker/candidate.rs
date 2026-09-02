@@ -32,7 +32,7 @@ use crate::kernel::{KernelCaps, KernelRef, OpParams};
 /// # Where it comes from
 ///
 /// Phase 1.2 (`compile_plan` successor) builds candidates by walking
-/// [`crate::SystemTopology`]-equivalent metadata: for each
+/// [`crate::topology::SystemTopology`]-equivalent metadata: for each
 /// `DeviceLocation` the graph node may run on, enumerate co-located
 /// `BackendId`s, then for each `(op_kind, dtypes, backend)` triple
 /// pull every entry from [`crate::kernel::KernelBindingTable::lookup_alternatives`].
