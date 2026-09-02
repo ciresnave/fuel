@@ -5789,9 +5789,9 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vulkan_gen"
-version = "0.3.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4333cb0d7a3f24246eadffc8de89694fd88c9d6aac912661dab3978a7e1c8a1b"
+checksum = "49a6cebc8e779256cba54c9c85269a738f1a5b0bab80e258e4a3bde3da278cba"
 dependencies = [
  "regex",
  "roxmltree",
@@ -5803,9 +5803,9 @@ dependencies = [
 
 [[package]]
 name = "vulkane"
-version = "0.9.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8ec23099c359ae475feb072c48f24e8431513e41d9a3c3cb3ee0f094c9fb3748"
+checksum = "0aba8bce0ec12dc46fa29b4deb1c1be24659444cf5a04f47f18e9f659a30e06a"
 dependencies = [
  "libloading 0.9.0",
  "ureq 3.3.0",
