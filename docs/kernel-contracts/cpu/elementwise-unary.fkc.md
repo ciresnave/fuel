@@ -209,8 +209,20 @@ determinism: same_hardware_bitwise
 
 Elementwise negation.
 
-`out[i] = -in[i]` (`chassis/unary.rs:137`). Exact for all dtypes (a sign flip; bf16/f16 round-trip
-through f32 is bit-exact for negation). Bandwidth-bound.
+`out[i] = -in[i]` (`chassis/unary.rs:137`). Exact for all dtypes (a sign flip).
+Bandwidth-bound.
+
+> ⚠️ **CORRECTED 2026-09-02.** This entry previously read *"bf16/f16 round-trip
+> through f32 is bit-exact for negation"*. **That is true for every finite value
+> and every QUIET NaN, and FALSE for a SIGNALLING one.** `half` 2.7.1 quiets on
+> **both** legs independently — `bf16_to_f32` and `f32_to_bf16` each set
+> `| 0x0040` — so a round trip quiets twice: **measured, `0x7F81` came back
+> `0xFFC1` where a pure sign flip gives `0xFF81`.** The bf16/f16 path is now a
+> **narrow sign-bit operation that never constructs the f32**
+> (`UnaryOpCore::bf16`/`f16` override the promoting default). **KISS-OPS-6.16-0009**:
+> an op whose decomposition contains no arithmetic returns the *moved operand*,
+> bits preserved exactly, and *"a promote-to-`f32`-and-round-back implementation
+> of such an op is non-conforming for a narrow float"*.
 
 ```fkc
 kernel: neg
@@ -260,7 +272,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "-x; exact (sign flip) for every dtype, including bf16/f16. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, OTHER PARAMETER CONFIGURATIONS (one probe fixes one; branches such as causal/softcap/window go untaken), other machines, or other compilers.]"
+  notes: "-x; exact (sign flip) for every dtype. bf16/f16 take a NARROW sign-bit path and never construct the f32 -- a round trip would QUIET a signalling NaN (both conversion legs quiet independently), which KISS-OPS-6.16-0009 forbids for a no-arithmetic op. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, OTHER PARAMETER CONFIGURATIONS (one probe fixes one; branches such as causal/softcap/window go untaken), other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
@@ -459,7 +471,17 @@ determinism: same_hardware_bitwise
 
 Elementwise absolute value.
 
-`out[i] = |in[i]|` (`chassis/unary.rs:165`, `x.abs()`). Exact for all dtypes (sign clear).
+`out[i] = |in[i]|` (`chassis/unary.rs:165`, `x.abs()` -- **the f32/f64 core only**).
+Exact for all dtypes (sign clear).
+
+> ⚠️ **CORRECTED 2026-09-02.** The cited `x.abs()` is the f32 core, and **`half`
+> has NO `abs` on `bf16`/`f16` at all** (measured: zero occurrences; control --
+> the same query finds `fn signum`). So the narrow path this entry described was
+> the *promoting blanket impl*, not the cited line, and it **quiets a signalling
+> NaN** on both conversion legs. The narrow path is now a written-out
+> `& 0x7FFF` sign-bit clear in `UnaryOpCore::bf16`/`f16`. **KISS-OPS-6.16-0009**
+> requires the moved operand's bits to be preserved exactly, payload and
+> signalling bit included.
 Bandwidth-bound.
 
 ```fkc
@@ -510,7 +532,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "|x|; exact (sign clear) for every dtype, including bf16/f16. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, OTHER PARAMETER CONFIGURATIONS (one probe fixes one; branches such as causal/softcap/window go untaken), other machines, or other compilers.]"
+  notes: "|x|; exact (sign clear) for every dtype. bf16/f16 take a NARROW sign-bit path written out as `& 0x7FFF` (half has no abs on narrow types) and never construct the f32 -- a round trip would QUIET a signalling NaN, which KISS-OPS-6.16-0009 forbids for a no-arithmetic op. [evidence: bit_stable_on_same_hardware earned EMPIRICALLY per registered dtype — 16 byte-identical repeat invocations of ONE probe, on the recording hardware and under the pinned toolchain (rust-toolchain.toml channel = 1.98.0). Not a source-level determinism argument, and not evidence about other inputs, OTHER PARAMETER CONFIGURATIONS (one probe fixes one; branches such as causal/softcap/window go untaken), other machines, or other compilers.]"
 
 determinism: same_hardware_bitwise
 ```
