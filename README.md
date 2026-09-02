@@ -1,4 +1,4 @@
-﻿# fuel
+# fuel
 [![discord server](https://dcbadge.limes.pink/api/server/hugging-face-879548962464493619)](https://discord.gg/hugging-face-879548962464493619)
 [![Latest version](https://img.shields.io/crates/v/fuel-core.svg)](https://crates.io/crates/fuel-core)
 [![Documentation](https://docs.rs/fuel-core/badge.svg)](https://docs.rs/fuel-core)

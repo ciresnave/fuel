@@ -1,4 +1,4 @@
-﻿# fuel-musicgen
+# fuel-musicgen
 
 Fuel implementation of musicgen from [Simple and Controllable Music Generation](https://arxiv.org/pdf/2306.05284).
 

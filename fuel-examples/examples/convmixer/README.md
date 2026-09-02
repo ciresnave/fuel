@@ -1,4 +1,4 @@
-﻿# fuel-convmixer
+# fuel-convmixer
 
 A lightweight CNN architecture that processes image patches similar to a vision transformer, with separate spatial and channel convolutions.
 

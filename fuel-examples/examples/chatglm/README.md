@@ -1,4 +1,4 @@
-﻿# fuel-chatglm
+# fuel-chatglm
 
 Uses `THUDM/chatglm3-6b` to generate chinese text. Will not generate text for english (usually).
  

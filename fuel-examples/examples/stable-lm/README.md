@@ -1,4 +1,4 @@
-﻿# fuel-stable-lm
+# fuel-stable-lm
 
 StableLM-3B-4E1T is a 3 billion parameter decoder-only language model
 pre-trained on 1 trillion tokens of diverse English and code datasets for 4

@@ -1,4 +1,4 @@
-﻿[package]
+[package]
     categories.workspace = true
     description          = "Training orchestration layer for the Fuel ML framework."
     edition.workspace    = true

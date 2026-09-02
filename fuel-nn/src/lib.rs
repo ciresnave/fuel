@@ -3,7 +3,7 @@
 //!
 //! Extracted from `fuel-core` (2026-08-19). This crate sits **above**
 //! `fuel-core`: the whole surface is built on `Tensor`, which lives in
-//! `fuel::lazy`, so `fuel-nn` is a *consumer* of `fuel-core` and
+//! `fuel_core::lazy`, so `fuel-nn` is a *consumer* of `fuel-core` and
 //! `fuel-core` deliberately does **not** re-export it — that would be a
 //! dependency cycle.
 //!
@@ -23,7 +23,7 @@
 //!
 //! And this surface never depended on the EAGER tensor type in the first place:
 //! measured across all 22 files, every tensor mention is the lazy
-//! `fuel::lazy::Tensor` or a doc comment, with one exception
+//! `fuel_core::lazy::Tensor` or a doc comment, with one exception
 //! (`optim.rs`, `fuel_graph::NodeHandle::from_existing`) which is the graph
 //! handle from a crate already *below* `fuel-core`.
 //!

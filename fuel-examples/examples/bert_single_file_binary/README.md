@@ -1,4 +1,4 @@
-﻿# fuel_bert_single_file_binary
+# fuel_bert_single_file_binary
 
 This is an adapted version of the Fuel Bert example to inline (embed) the model files into the binary to create a single file binary.
 
