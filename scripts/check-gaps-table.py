@@ -171,6 +171,27 @@ print('   ADDRESS. Applied unbounded on 2026-08-28 the criterion would have')
 print('   filed eight rows pointing at eight rows that already point at')
 print('   themselves -- the satisfied-non-goal shape, inside a criterion')
 print('   written to prevent it.')
+print()
+
+# THE TIER CELL IS AUTHORITATIVE; THE SECTION HEADING IS NOT.
+#
+# Measured 2026-09-02 while headering the three fragments this gate could
+# not previously see: all three are CHRONOLOGICAL APPENDS, not tier-sorted.
+# The 13-row fragment sitting under `## Tier B` holds 9 B, 3 C and 1 A; the
+# 5-row fragment under Tier A holds 3 A and 2 B; the 2-row fragment under
+# Tier P holds one P and one TBD.
+#
+# So a query that groups rows by SECTION BOUNDARY returns a wrong answer
+# today, silently. Sorting the rows was ruled against: it would shift every
+# row's line number and invalidate citations across the corpus, and it is
+# unnecessary because the tier is already in the row. Same precedent as
+# rule 4b -- the data outvotes the presentation.
+print('!! THE TIER CELL (column 3) IS AUTHORITATIVE. The `## Tier X` section')
+print('   headings are PRESENTATIONAL and membership in them is CHRONOLOGICAL:')
+print('   rows were appended where the file happened to end, not where their')
+print('   tier belongs. Measured 2026-09-02: the 13-row block under Tier B')
+print('   holds 9 B, 3 C and 1 A. GROUP BY THE CELL, NEVER BY THE SECTION --')
+print('   a section-boundary query returns a wrong answer and says nothing.')
 
 # ---------------------------------------------------------------------------
 # HEADERS MUST AGREE WITH THE ROWS BENEATH THEM, IN ARITY AND IN NAME.
