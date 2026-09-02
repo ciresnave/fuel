@@ -38,6 +38,25 @@ from collections import Counter
 lines = io.open('docs/gaps.md', encoding='utf-8').read().split('\n')
 
 
+def _is_cell_boundary(l, k):
+    """Is `l[k]` a `|` that acts as a CELL BOUNDARY -- i.e. not `\\|`-escaped?
+
+    THE ONE DEFINITION OF A CELL BOUNDARY IN THIS FILE, used by both
+    `unescaped_pipes` (which counts them) and `row_cells` (which splits on
+    them). It was inline in both until 2026-09-02, which made a SECOND copy of
+    the rule in the file whose whole lesson is that there must be one -- see
+    `unescaped_pipes` below for the incident that lesson came from.
+
+    BOTH halves are load-bearing and neither may be dropped to simplify this:
+      * `l[k] == '|'`        the delimiter
+      * `k == 0 or ...`      index 0 has no preceding character, so a row's
+                             LEADING pipe is always a boundary
+      * `l[k - 1] != '\\'`    a `\\|` inside a code span is CONTENT, not a
+                             boundary -- GAP-183 reads as 16 cells and has 6
+    """
+    return l[k] == '|' and (k == 0 or l[k - 1] != '\\')
+
+
 def unescaped_pipes(l):
     """Count '|' that are NOT escaped as '\\|'.
 
@@ -57,8 +76,7 @@ def unescaped_pipes(l):
     defect in THIS gate. Agreement between instruments that share a blind
     spot is not corroboration. Hence: one function, called everywhere.
     """
-    return sum(1 for k, ch in enumerate(l)
-               if ch == '|' and (k == 0 or l[k - 1] != '\\'))
+    return sum(1 for k in range(len(l)) if _is_cell_boundary(l, k))
 
 
 rows = []
@@ -575,7 +593,7 @@ def status_prefix(c):
 def row_cells(l):
     out, buf = [], []
     for k, ch in enumerate(l):
-        if ch == '|' and (k == 0 or l[k - 1] != '\\'):
+        if _is_cell_boundary(l, k):
             out.append(''.join(buf))
             buf = []
         else:
