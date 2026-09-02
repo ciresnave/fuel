@@ -1625,3 +1625,25 @@ protects the invariant it was written for and NOTHING adjacent, however
 similar the adjacent thing looks.** Related:
 [`the-instrument-nearest-to-hand`](#the-instrument-nearest-to-hand),
 [`validating-a-gate-means-reading-it`](#validating-a-gate-means-reading-it).
+
+## a-control-must-vary-along-the-claims-axis
+
+> **Index line (in CLAUDE.md):** **When a claim is scoped to a CONFIGURATION — a version, a feature, a target, a host — the control must VARY along that axis or it cannot see the error.** The instrument runs, the control passes, and the configuration under test is never exercised.
+
+**WHEN A CLAIM IS SCOPED TO A CONFIGURATION, A CONTROL THAT DOES NOT VARY ALONG THAT AXIS IS A CONTROL FOR A DIFFERENT CLAIM (2026-09-02).** This corpus already carries the bound that *a positive control proves the query CAN FIND the thing it looks for; it does not prove the query LOOKS FOR THE RIGHT THING*. **This is the sharper case, and it is nastier: the query is right, the instrument is right, the control genuinely passes — and the CONFIGURATION the claim is scoped to was never exercised.** The three instances below come from three unrelated tools and were carried as three separate lessons. **They are one lesson about controls.**
+
+| axis | the claim | the control that PASSED | what it actually proved | what it could not see |
+|---|---|---|---|---|
+| **VERSION** | `gpu-run.ps1` / `cuda-build.ps1` fail to parse under **PowerShell 5.1** — they parse fine under 7 | a deliberately-unbalanced `.ps1`, returning 1 parse error | the parser API works and reports errors | **WHICH parser.** An unbalanced script errors under 5.1 *and* under 7, so the control is **version-insensitive by construction** |
+| **FEATURE** | an exhaustive `match` in `baracuda_provider.rs` is parsed only under a feature **pair** | `--features telemetry` — *strictly stronger* than a default build | the crate compiles with telemetry on | **the intersection.** The module is cfg'd *inside* another cfg, so no single feature reaches it |
+| **CFG / TARGET KIND** | a `cfg`'d module's code, or a crate's `#[cfg(test)]` code, was compiled | `Checking fuel-cuda-backend v0.10.3` — a real target-crate artifact | the crate was reached | **the MODULE, and the TEST TARGETS.** A crate-level compile line collapses both dimensions; the discriminating artifact is `(lib test)` |
+
+**In every row: the instrument RAN, the control PASSED, and the configuration under test was never exercised.** One row is an anecdote. Three, across a shell, a compiler and a build system, is a class.
+
+**THE OPERATIONAL TEST, and it is one question:** ***does my control VARY along the axis the claim is scoped to?*** If it does not, it validates the **instrument** and says nothing about the **configuration**. For the version case the control that was needed is not "a script that fails to parse" but **a script that parses under 7 and FAILS under 5.1** — the control has to be able to tell the two hosts apart, because that distinction *is* the claim.
+
+**THE LEAD EXAMPLE IS WORTH THE SPACE BECAUSE IT NEARLY SUCCEEDED.** Re-measuring a closed row (`GAP-223`) to decide whether its defect had recurred, the first run used `[Parser]::ParseFile` under the host that happened to be attached — **pwsh 7.6.5** — with the unbalanced-script control returning **1**, and reported **0 parse errors** for both scripts. **Correct API, passing control, clean answer, wrong conclusion available for free.** It was caught only because `GAP-223`'s own text named **both** hosts, quoting *"0 under pwsh 7.6.5"* beside *"shared-checkout 10 / 4"* under 5.1. ⚠️ **The row was the instrument that validated the instrument — and a row that had merely said "the scripts fail to parse" would have let the clean zero stand.** Re-run under 5.1 gave the same zeros, **so the conclusion survived by luck rather than by method**, which is the part that makes it teach rather than merely warn.
+
+**WHAT THIS SUBSUMES — cross-referenced, not replaced, because three orphaned lessons is worse than one duplicated one.** [`one-feature-is-not-two`](#one-feature-is-not-two) is the **feature** row; [`target-crate-compile-line`](#target-crate-compile-line) and [`lib-does-not-build-tests`](#lib-does-not-build-tests) are the **cfg / target-kind** row. Each remains correct and each carries detail this rule does not. **Read them as instances; read this as the axis they share.** Closest neighbours: [`a-rule-bound-to-an-instrument-does-not-transfer`](#a-rule-bound-to-an-instrument-does-not-transfer) (the instrument changes, the rule does not follow) and [`a-guard-exists-is-not-the-guard-protects-this`](#a-guard-exists-is-not-the-guard-protects-this) (the guard is real and aimed elsewhere). **The difference from both: here nothing is stale and nothing is misaimed. The control is correct for a claim that is one configuration away from the one being made.**
+
+---
