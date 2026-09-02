@@ -14,6 +14,27 @@ from collections import Counter
 # "registry rows" for several turns. The arithmetic was right both times; what
 # the count RANGED OVER was never stated, so it was never checked.
 
+# ---------------------------------------------------------------------------
+# INVARIANT FOR ANY SCRIPT THAT EDITS THIS FILE: POPULATION CONSERVATION.
+#
+#     A pass that MOVES rows must never create or destroy them. Assert the
+#     `^| ~*GAP-` count before and after, and fail if it changed.
+#
+# ⚠️ WHY THIS IS NOT OBVIOUS, AND WHY PER-ROW CHECKS CANNOT REPLACE IT: on
+# 2026-09-02 a pass inserting a missing `Area` cell put the placeholder BEFORE
+# the id instead of after it. The rows became `| — | GAP-141 | …`, which no
+# longer matches `^| ~*GAP-`, and FOUR ROWS SILENTLY LEFT THE POPULATION --
+# 254 -> 250.
+#
+# EVERY PER-ROW MESSAGE PRINTED SUCCESS, because every individual edit genuinely
+# SUCCEEDED. There was no failing item to detect. The rows simply stopped being
+# in the population that every later query ranges over, so the relocation that
+# followed read as completely clean. The defect is invisible to per-item
+# verification BY CONSTRUCTION.
+#
+# It was caught by a row-total assert that had been added for an unrelated
+# reason -- which is the only reason it was there at all.
+# ---------------------------------------------------------------------------
 lines = io.open('docs/gaps.md', encoding='utf-8').read().split('\n')
 
 
