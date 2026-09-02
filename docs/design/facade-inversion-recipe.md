@@ -116,13 +116,38 @@ them: 93 `example` + 2 `lib` + 1 `custom-build` artifacts for `fuel-examples`,
 
 ## What surprised me
 
-**The doc population is not prose.** It was briefed as compiler-blind, and it is
-blind to the *usual* gate — but these are executable doctests with a gate of
-their own. That is better news than "prose nobody checks" and worse news than
-"the compiler has it covered": there IS a red available, and only if you run the
-second invocation. For `fuel-training`, which has 6 model references in doc
-comments against 4 in code, this is the difference between a repoint that works
-and one whose majority population is silently wrong.
+**The doc population is PART executable doctest, part prose — and the ratio
+varies per crate.** It was briefed as compiler-blind. For `fuel-datasets` that is
+wrong: all 8 doc references sit inside `no_run` fences, so they are executable
+code with a gate of their own. ⚠️ **But I first wrote this section as "the doc
+population is not prose", which is a claim about every crate derived from the one
+in front of me — and the pilot crate turns out to be the MOST extreme fenced case
+in the set, i.e. the least representative crate for exactly this question.** Fuel 3
+refuted it; the split below is my independent reproduction of their measurement.
+
+| crate | doc lines | inside a fence | prose |
+|---|---|---|---|
+| `fuel-datasets` | 8 | 8 | 0 |
+| `fuel-training` | 11 | 7 | 4 |
+| `fuel-onnx` | 5 | 3 | 2 |
+| `fuel-inference` | 17 | 6 | 11 |
+| `fuel-parallel` | 5 | 1 | 4 |
+| `fuel-nn` | 6 | 1 | 5 |
+
+⚠️⚠️ **SO THERE ARE THREE GATES OVER THAT COLUMN, NOT TWO:**
+
+- `cargo check --all-targets` — sees **neither** portion
+- `cargo test --doc` — sees the **fenced** portion, and nothing else does
+- **nothing at all** — sees the **prose** portion; it needs a text sweep
+
+**A repoint therefore needs the doctest run AND a text sweep, and which one
+carries the majority flips between crates** — 8/0 fenced for `fuel-datasets`,
+1/5 prose for `fuel-nn`. Reporting a doc count without splitting it says nothing
+about which gate would catch it.
+
+For `fuel-training`, which has 6 model references in doc comments against 4 in
+code, this is the difference between a repoint that works and one whose majority
+population is silently wrong.
 
 ⚠️ **"References" is three different constructs and they disagree.** For this
 crate: **5 lines** contain `fuel::`, there are **5 string occurrences**, and there
