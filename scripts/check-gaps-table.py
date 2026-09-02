@@ -483,6 +483,27 @@ if len(arity_extra) < ARITY_EXTRA_BASELINE or len(arity_missing) < ARITY_MISSING
         % (len(arity_extra), len(arity_missing),
            ARITY_EXTRA_BASELINE, ARITY_MISSING_BASELINE))
 print('arity ratchet:', arity_regression if arity_regression else 'HOLDING')
+# ⚠️ WHY THE `extra` BASELINE IS 1 AND NOT 0 -- ruled 2026-09-02, and it is a
+# decision rather than leftover debt.
+#
+# The single remaining dissent is GAP-099: a worked row, priced (64 literals /
+# 3 crates), ranked below C ON MEASUREMENT, and carrying a re-rank trigger. Its
+# tier is `—`, for which there is no section, so there is nowhere to relocate
+# it to. GAP-048/GAP-079 were folded because their status was a bare `OPEN` the
+# Gap text already carried, and nothing was lost. GAP-099 is the opposite kind
+# of row: it is precisely the row that OUTGREW the index, and folding its
+# status into prose to make this counter reach zero would be FITTING THE DATA
+# TO THE INSTRUMENT.
+#
+# The gate does not need the zero. The stale-baseline arm above already
+# prevents the only failure a ratchet has -- it can only shrink, and a baseline
+# left above the true count fires. A NAMED, REASONED 1 TELLS A READER
+# SOMETHING; A 0 BOUGHT THIS WAY WOULD TELL THEM THE FILE IS UNIFORM, WHICH IS
+# FALSE.
+if len(arity_extra) == 1 and not arity_regression:
+    print('   (the 1 is GAP-099 BY DECISION, not debt: a worked row whose tier')
+    print('    has no section. Folding its status to reach 0 would be fitting')
+    print('    the data to the instrument. Ruled 2026-09-02.)')
 
 # ---------------------------------------------------------------------------
 # STATUS VOCABULARY -- docs/design/gaps-status-vocabulary.md
