@@ -272,8 +272,25 @@ fn all_unary_sqr(s: &HostBuffer, layout: &Layout) -> Result<HostBuffer> {
 
 fn all_unary_abs(s: &HostBuffer, layout: &Layout) -> Result<HostBuffer> {
     match s {
-        HostBuffer::BF16(d) => Ok(HostBuffer::BF16(unary_map(d, layout, |v: bf16| v.abs()))),
-        HostBuffer::F16(d) => Ok(HostBuffer::F16(unary_map(d, layout, |v: f16| v.abs()))),
+        // ⚠️ RAW BITS, NOT `v.abs()` -- and the reason is subtle enough to state.
+        // `half` ships TWO `abs` for each narrow type under the SAME NAME, in two
+        // traits, with OPPOSITE conformance:
+        //     num_traits::FloatCore::abs  ->  from_bits(to_bits() & 0x7FFF)   raw-bit
+        //     num_traits::Float::abs      ->  from_f32(to_f32().abs())        PROMOTES
+        // There is no inherent `abs` on `bf16`/`f16`, so `v.abs()` resolves purely
+        // by WHICH TRAIT IS IN SCOPE. This file has `use num_traits::Float as _`
+        // (line 17) and NOT `FloatCore`, so `v.abs()` bound to the PROMOTING one --
+        // which quiets a signalling NaN on both conversion legs and violates
+        // KISS-OPS-6.16-0009 (a moved operand keeps its bits exactly).
+        //
+        // Writing the bits is the only form that cannot be silently re-resolved by
+        // someone changing an import at the top of the file.
+        HostBuffer::BF16(d) => Ok(HostBuffer::BF16(unary_map(d, layout, |v: bf16| {
+            bf16::from_bits(v.to_bits() & 0x7FFF)
+        }))),
+        HostBuffer::F16(d) => Ok(HostBuffer::F16(unary_map(d, layout, |v: f16| {
+            f16::from_bits(v.to_bits() & 0x7FFF)
+        }))),
         HostBuffer::F32(d) => Ok(HostBuffer::F32(unary_map(d, layout, |v: f32| v.abs()))),
         HostBuffer::F64(d) => Ok(HostBuffer::F64(unary_map(d, layout, |v: f64| v.abs()))),
         HostBuffer::U8(d) => Ok(HostBuffer::U8(unary_map(d, layout, |v: u8| v))),
@@ -281,6 +298,14 @@ fn all_unary_abs(s: &HostBuffer, layout: &Layout) -> Result<HostBuffer> {
         HostBuffer::I16(d) => Ok(HostBuffer::I16(unary_map(d, layout, |v: i16| v.abs()))),
         HostBuffer::I32(d) => Ok(HostBuffer::I32(unary_map(d, layout, |v: i32| v.abs()))),
         HostBuffer::I64(d) => Ok(HostBuffer::I64(unary_map(d, layout, |v: i64| v.abs()))),
+        // `float8` has the IDENTICAL two-trait split (`num_traits.rs` :960 raw-bit
+        // vs :1125 promoting), so this call also binds to the promoting one -- but
+        // it is NOT the same defect and is deliberately left alone. E4M3 encodes
+        // exactly TWO NaN bit patterns (`is_nan` is `self.0 == 0x7F || == 0xFF`):
+        // no quiet bit, no payload. Both forms therefore yield `0x7F` and there is
+        // nothing to lose. ⚠️ That reasoning is about E4M3's ENCODING, not about
+        // this call being safe -- a narrow type WITH a quiet bit added to this
+        // match would need the raw-bit form like the two arms above.
         HostBuffer::F8E4M3(d) => Ok(HostBuffer::F8E4M3(unary_map(d, layout, |v: F8E4M3| {
             v.abs()
         }))),
@@ -1862,6 +1887,53 @@ mod binary_op_nan_tests {
 
     fn f32_buf(v: &[f32]) -> HostBuffer {
         HostBuffer::F32(v.to_vec())
+    }
+
+    /// KISS-OPS-6.16-0009 on the DYN path, which the chassis tests cannot reach.
+    ///
+    /// ⚠️ THIS FILE HAS ITS OWN HAND-WRITTEN PER-DTYPE ARMS, so a fix in
+    /// `chassis/unary.rs` does NOT cover it — the same two-path split this
+    /// module already documents for `Relu`. `abs` was the live half: `half`
+    /// ships TWO `abs` per narrow type under one name (`FloatCore::abs` raw-bit,
+    /// `Float::abs` promoting), there is no inherent `abs`, and this file has
+    /// `use num_traits::Float as _` at the top — so `v.abs()` bound to the
+    /// PROMOTING one and quieted a signalling NaN.
+    ///
+    /// The POSITIVE CONTROL is required: it asserts the promoting form still
+    /// quiets in this build, so "still signalling" is evidence rather than an
+    /// accident of the fixture or of a `half` release that stopped quieting.
+    #[test]
+    fn cpu_unary_abs_moves_a_signalling_nan_without_quieting_it() {
+        const QUIET: u16 = 0x0040;
+        let s = bf16::from_bits(0x7F81);
+        assert_eq!(s.to_bits() & QUIET, 0, "fixture must be SIGNALLING");
+
+        // CONTROL: the promoting form quiets. If this stops being true the
+        // assertion below proves nothing.
+        assert_ne!(
+            bf16::from_f32(s.to_f32().abs()).to_bits() & QUIET,
+            0,
+            "control failed: the promoting form no longer quiets, so the dyn-path              assertion below is vacuous"
+        );
+
+        let buf = HostBuffer::BF16(vec![s]);
+        let l = Layout::contiguous(Shape::from_dims(&[1]));
+        let out = cpu_unary_op(&buf, &l, UnaryOp::Abs).expect("abs");
+        let HostBuffer::BF16(got) = out else {
+            panic!("expected BF16 output");
+        };
+        assert_eq!(
+            got[0].to_bits(),
+            s.to_bits() & 0x7FFF,
+            "dyn-path abs must clear the sign bit and PRESERVE the rest              (0x{:04X} -> 0x{:04X}); it bound to the promoting `Float::abs` and              quieted the NaN. See KISS-OPS-6.16-0009.",
+            s.to_bits(),
+            got[0].to_bits()
+        );
+        assert_eq!(
+            got[0].to_bits() & QUIET,
+            0,
+            "dyn-path abs QUIETED a signalling NaN"
+        );
     }
 
     #[test]
