@@ -101,6 +101,10 @@ pub struct Corpus {
 
 impl Corpus {
     /// True iff at least one vector exists for this `(op, dtype)` cell.
+    ///
+    /// **This is the predicate an activation check wants** — it asks whether the
+    /// corpus can actually verify this cell. Contrast [`Corpus::declares_op`],
+    /// which answers a different question despite the closer-sounding name.
     pub fn covers(&self, op: &str, dtype: &str) -> bool {
         self.vectors.iter().any(|v| v.op == op && v.dtype == dtype)
     }
@@ -122,6 +126,32 @@ impl Corpus {
     }
 
     /// True iff the manifest's `declared_coverage_set` names this op.
+    ///
+    /// ⚠️ **NOT the predicate to gate a conformance or activation check on, and
+    /// its name is the trap.** `declared_coverage_set` is KISS's **scope marker
+    /// for the current minting slice** — their pipeline plan defines it as *"op
+    /// names in scope for the CURRENT slice"* and says *"it grows as slices
+    /// land"*. It is NOT an inventory of which ops have vectors.
+    ///
+    /// Measured against the vendored corpus (KISS `f4952b4c`), the two answers
+    /// differ for 12 of 13 cells:
+    ///
+    /// ```text
+    ///              declares_op   covers(f32)
+    /// add             true          true
+    /// max_prop        FALSE         true      (+ bf16, f64)
+    /// min_prop        FALSE         true      (+ bf16, f64)
+    /// fmax_ieee       FALSE         true      (+ bf16, f64)
+    /// fmin_ieee       FALSE         true      (+ bf16, f64)
+    /// ```
+    ///
+    /// **Both answers are correct; they answer different questions.** KISS's own
+    /// §6.5-0008 test asserts `declared ⊆ covered` — one-directional by design,
+    /// so vectors beyond the declared slice are expected, not an inconsistency.
+    ///
+    /// **So gating activation on this would silently verify one op out of five
+    /// and look like it worked.** Use [`Corpus::covers`] for "can the corpus
+    /// check this cell". This one is for asking what slice upstream has minted.
     pub fn declares_op(&self, op: &str) -> bool {
         self.declared_coverage.iter().any(|o| o == op)
     }
