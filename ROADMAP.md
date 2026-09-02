@@ -175,7 +175,7 @@ The 40 crates that actually exist are the directories with a `Cargo.toml` at the
 
     **Stages 3 (fission the ~50k remainder) and 4 (retire `fuel-core`) are UNSTARTED** and both depend on Stage 2 landing first.
 
-12. **SEVEN library crates depend on the CONSUMER FACADE, and one of them is a hard cargo CYCLE that blocks Stage 2 — measured 2026-09-02 at `a744417e`.** The facade `fuel` exists so *consumers* have one import. **A Models-tier or Foundation-adjacent crate depending on it is a layering inversion**, and `fuel-transformers` depending on `fuel` makes it **structurally impossible for the facade to re-export the 147 models Stage 2 is about to move into it** — `facade → fuel-transformers → facade`. **No re-export trick avoids it; a `pub use` needs the dependency edge.**
+12. **TEN crates depend on the CONSUMER FACADE — THREE of them are LAYER VIOLATIONS, TWO cannot be classified because the layer model never placed them, and one of them is a hard cargo CYCLE that blocks Stage 2 — measured 2026-09-02 at `a744417e`.** The facade `fuel` exists so *consumers* have one import. **A Models-tier or Foundation-adjacent crate depending on it is a layering inversion**, and `fuel-transformers` depending on `fuel` makes it **structurally impossible for the facade to re-export the 147 models Stage 2 is about to move into it** — `facade → fuel-transformers → facade`. **No re-export trick avoids it; a `pub use` needs the dependency edge.**
 
     **AUDITED 2026-09-02 (owner: Fuel 3), by `cargo metadata` target kinds and reverse-dependency edges — NOT by crate name:**
 
@@ -196,7 +196,9 @@ The 40 crates that actually exist are the directories with a `Cargo.toml` at the
 
     **SRC/TEST** = `fuel::` path-token occurrences · **s-doc/t-doc** = those on `///`/`//!` lines, **COMPILER-BLIND** · **s-grp** = count of `use fuel::{…}` STATEMENTS (each expands to many names, so it is a statement count, not a name count).
 
-    ⚠️ **MY FIRST PASS SAID EIGHT AND CLASSIFIED BY CRATE NAME. THE AUDIT FOUND ONE ERROR AND IT WAS THE CRATE WHOSE NAME MOST SOUNDS LIKE A LIBRARY: `fuel-tensor-tools` HAS NO `lib.rs`** — `{bin: 1}`, one `main.rs`, **zero crates depend on it.** A leaf CLI consuming the facade is exactly what the facade is FOR. **Seven inversions and three consumers, not eight and two.**
+    ⚠️ **MY FIRST PASS SAID EIGHT AND CLASSIFIED BY CRATE NAME; MY SECOND SAID SEVEN AND STILL DID NOT APPLY THE LAYER CRITERION. Corrected to THREE violations + TWO unplaceable: `fuel-inference` and `fuel-training` are Use-Case Orchestration, ABOVE the facade, so depending on it is CORRECT; `fuel-parallel` and `fuel-datasets` appear nowhere in the layer model, which is the same defect as the facade itself.**
+
+    **The name-based error is still worth recording: THE AUDIT FOUND ONE ERROR AND IT WAS THE CRATE WHOSE NAME MOST SOUNDS LIKE A LIBRARY: `fuel-tensor-tools` HAS NO `lib.rs`** — `{bin: 1}`, one `main.rs`, **zero crates depend on it.** A leaf CLI consuming the facade is exactly what the facade is FOR. **Seven inversions and three consumers, not eight and two.**
 
     ⚠️ **AND THE COUNTS RECONCILE ONLY WHEN `src` IS SPLIT FROM `tests`: `fuel-transformers` reads ONE or THREE depending on the population, and both figures were reported by different lanes on the same day.** Neither was wrong. **The split is kept in the table because it is the construct that makes the numbers comparable at all.**
 

@@ -65,7 +65,19 @@ The Foundation layer is where most of this architecture-doc set lives. The IR (0
 
 **Rule 1: dependencies flow downward only.** Enforced via Cargo's dep graph. A leaf-layer crate (fuel-inference) can depend on Models, IO, NN, Foundation, Backends. A Foundation crate cannot depend on Models or higher. Violations are caught at build time.
 
-⚠️⚠️ **CORRECTED 2026-09-02 — "ENFORCED VIA CARGO’S DEP GRAPH" AND "CAUGHT AT BUILD TIME" ARE FALSE AS STATED, AND THERE ARE SEVEN LIVE VIOLATIONS PROVING IT.** **Cargo enforces ACYCLICITY. It does not enforce layer DIRECTION.** A crate in a lower layer depending on one in a higher layer is legal to cargo and compiles silently — **`fuel-nn` (NN), `fuel-inference` and `fuel-training` (Use-Case), `fuel-onnx`, `fuel-parallel`, `fuel-datasets` and `fuel-transformers` all depend on the `fuel` FACADE today, and every one of them builds.** *(Control that this is a real classification and not a naming sweep: `fuel-tensor-tools` also depends on the facade and is NOT a violation — `cargo metadata` reports `{bin: 1}`, no `lib.rs`, zero reverse-deps, i.e. a leaf CLI, which is what a facade is FOR.)*
+⚠️⚠️ **CORRECTED 2026-09-02 — "ENFORCED VIA CARGO’S DEP GRAPH" AND "CAUGHT AT BUILD TIME" ARE FALSE AS STATED, AND LIVE VIOLATIONS PROVE IT.** **Cargo enforces ACYCLICITY. It does not enforce layer DIRECTION.** A crate in a lower layer depending on one in a higher layer is legal to cargo and compiles silently. **TEN crates depend on the `fuel` facade and every one of them builds. Classified BY LAYER:**
+
+    LEGITIMATE, at or above the facade
+      fuel-examples  fuel-lazy-examples  fuel-tensor-tools   applications / CLI
+      fuel-inference  fuel-training                          Use-Case Orchestration (top)
+    VIOLATIONS, below the facade
+      fuel-nn              NN
+      fuel-transformers    Models
+      fuel-onnx            Interchange (as-built form of fuel-format-interchange-onnx)
+    UNCLASSIFIABLE
+      fuel-parallel  fuel-datasets    NOT PLACED IN THIS DIAGRAM AT ALL
+
+⚠️⚠️ **THE COUNT IN THE FIRST DRAFT OF THIS PARAGRAPH WAS "SEVEN" AND IT WAS WRONG, BY THE CRITERION STATED TWENTY LINES BELOW IT.** `fuel-inference` and `fuel-training` are the TOP layer, ABOVE the facade, so depending on it is CORRECT — the diagram says so on its own line. **I asserted a population without applying my own rule to it, which is the defect this document keeps recording.** ⚠️ **AND THE TWO UNCLASSIFIABLE CRATES ARE THE SAME DEFECT AS THE FACADE ITSELF: `fuel-parallel` and `fuel-datasets` appear NOWHERE in the layer model, so no layer rule can reach them either.** *(Control that this is a real classification and not a naming sweep: `fuel-tensor-tools` also depends on the facade and is NOT a violation — `cargo metadata` reports `{bin: 1}`, no `lib.rs`, zero reverse-deps, i.e. a leaf CLI, which is what a facade is FOR.)*
 
 ⚠️ **THE ONLY SHADOW A LAYERING VIOLATION CASTS THAT CARGO CAN SEE IS A CYCLE — AND THAT IS EXACTLY HOW THIS ONE WAS FOUND.** The seven sat unremarked for as long as the facade re-exported nothing they provide. **The moment restructure Stage 2 needed the facade to re-export the model zoo out of `fuel-transformers`, the latent upward edge became an actual `facade → fuel-transformers → facade` cycle and cargo refused it.** **A rule enforced only where it happens to produce a cycle is not enforced; it is occasionally noticed.** **If Rule 1 is to be enforced it needs a dep-graph test that knows the layer assignment — nothing in the toolchain knows it today.** See ROADMAP item 12.
 
@@ -84,7 +96,10 @@ This is what makes "compile fuel without CUDA" or "ship a fuel-cpu-only binary" 
 - **Today** it re-exports `fuel-core` only (`pub use fuel_core::*` plus an explicit `bail`, the one macro a glob does not carry), so its effective position is `fuel-core`’s — which itself still spans Foundation and Models, because it has not been dissolved yet.
 - **After Stage 2** it also re-exports the model zoo, which places it unambiguously **ABOVE Models**. **At that point every library crate depending on it is formally upward and Rule 1 applies without argument.**
 
-⚠️ **RULE: a crate may depend on `fuel` IF AND ONLY IF it is a CONSUMER — a binary, an example, or a leaf that nothing depends on.** **A library crate depends on the real crate it needs (`fuel-core`, `fuel-graph`, …), never on the facade.** *(The pattern already exists in-tree: `fuel-vulkan-backend` depends on `fuel-core` directly.)* **The seven exceptions are recorded with measured repoint costs in ROADMAP item 12; `fuel-transformers` is fixed by Stage 2 and the other six are sequenced behind it.**
+⚠️ **RULE: a crate may depend on `fuel` IF AND ONLY IF IT SITS AT OR ABOVE THE FACADE — an application, an example, a CLI, or a Use-Case Orchestration crate.**
+
+⚠️ **DO NOT USE "a leaf that nothing depends on" AS THE TEST. That was this rule's first wording and it is a PROXY that misclassifies:** it would exempt any low-layer crate that merely happens to have no dependents today (`fuel-parallel` has none), and it would condemn a legitimately-placed one the moment something depends on it. **A proxy that agrees with the criterion on today's data is not the criterion. Classify by LAYER.**
+ **A library crate depends on the real crate it needs (`fuel-core`, `fuel-graph`, …), never on the facade.** *(The pattern already exists in-tree: `fuel-vulkan-backend` depends on `fuel-core` directly.)* **The seven exceptions are recorded with measured repoint costs in ROADMAP item 12; `fuel-transformers` is fixed by Stage 2 and the other six are sequenced behind it.**
 
 ## Crate boundaries inside Foundation
 
