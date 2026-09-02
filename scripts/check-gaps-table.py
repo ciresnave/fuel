@@ -97,8 +97,19 @@ print('rows, NOT struck through (what `grep -c "^| GAP-"` returns):  %d' % len(l
 print('rows, struck through (closed-by-strikethrough):               %d  %s'
       % (len(struck), [r[0] for r in struck]))
 print('rows, live, with the WORD "CLOSED" ANYWHERE in the row:      %d' % len(closed_word_anywhere))
-print('rows OUTSIDE the status convention (4-col, no status cell): %d of %d'
-      % (no_status, len(schema_cols)))
+def _pct(n, d):
+    """A percentage, never printed alone.
+
+    Every call site below prints `%d of %d (%d%%)`, so the numerator, the
+    DENOMINATOR and the ratio travel together. A bare percentage is
+    unreadable -- 44% of what? -- and this file's whole subject is counts
+    whose population was never stated.
+    """
+    return round(100.0 * n / d) if d else 0
+
+
+print('rows OUTSIDE the status convention (4-col, no status cell): %d of %d (%d%%)'
+      % (no_status, len(schema_cols), _pct(no_status, len(schema_cols))))
 # HEADERLESS ROWS: GAP rows in a table fragment with no `| ID |` header above
 # them (a `---` rule then rows). The header check below reports 'headers
 # DISAGREEING: NONE' and CANNOT SEE THESE -- there is no header to disagree
@@ -106,6 +117,33 @@ print('rows OUTSIDE the status convention (4-col, no status cell): %d of %d'
 # the looser one silently attributed them to a DIFFERENT table's header.
 print('rows with NO HEADER above them (schema undetermined):     %d'
       % headerless)
+# THE COMBINED FIGURE -- COMPUTED HERE, NOT QUOTED FROM ANYWHERE.
+#
+# A reader asking "how much of this file does the status convention actually
+# cover?" needs BOTH lines above added: a 4-column row has nowhere to PUT a
+# status, and a headerless row has no determined schema at all. Printing only
+# the first understates the uncovered population by however many rows are
+# currently headerless -- which was 20, and those 20 are the entire reason
+# this gate spent an unknown window reporting a clean verdict over a
+# population it could not see.
+#
+# WHY THIS IS COMPUTED AND NOT WRITTEN DOWN: the figure was specified to the
+# lane as `112 of 253 (44%)`. That was measured, correct, and TRUE ONLY OF
+# THE PRE-FIX FILE -- 92 four-column + 20 headerless. Giving those 20 rows a
+# 5-column header (their own measured arity) hands each one a real Status
+# cell, so they move INTO the convention and the total falls to 92 of 253
+# (36%), with the 5-column group going 141 -> 161. The remediation dissolves
+# its own reporting target, and a hardcoded 112 would have been a fabricated
+# number sitting in a gate whose entire job is to make counts honest.
+#
+# THE COMPONENTS STAY SEPARATE because they are different defects with
+# different owners: a 4-column table needs a ruled decision about adding a
+# Status column (nobody has taken it -- docs/design/gaps-status-vocabulary.md),
+# whereas a headerless fragment just needs its header. One number would hide
+# that half of it is a decision and half of it is a chore.
+_uncovered = no_status + headerless
+print('rows NOT COVERED by the status convention (both of the above): %d of %d (%d%%)'
+      % (_uncovered, len(schema_cols), _pct(_uncovered, len(schema_cols))))
 print()
 # NOTE: ASCII ONLY below. The first version of this block used an emoji and
 # died on cp1252 stdout -- making the gate exit 1 for a PRINTING failure with no
