@@ -12,9 +12,10 @@
 //!   prior simplification), same shape/dtype — consumers of the
 //!   duplicate are redirected to the canonical node. The duplicate
 //!   becomes unreferenced and is silently dropped by the executor's
-//!   topo-walk. Commutative ops (`Add`, `Mul`, `Maximum`, `Minimum`)
-//!   are keyed on sorted input IDs so `a + b` and `b + a` fold to the
-//!   same canonical node.
+//!   topo-walk. Commutative ops (`Add`, `Mul`) are keyed on sorted input
+//!   IDs so `a + b` and `b + a` fold to the same canonical node.
+//!   `Maximum`/`Minimum` are NOT in that set: commutative in value, not in
+//!   bits, because the NaN tie-break returns the FIRST operand. See GAP-271.
 //!
 //! - **Algebraic simplification**: a handful of identity/zero rules
 //!   that eliminate no-op ops:
@@ -387,9 +388,9 @@ pub fn lower_to_base_map(graph: &SharedGraph, roots: &[NodeId]) -> Vec<NodeId> {
 ///
 /// - [`op_key`] for op identity when available (covers every primitive +
 ///   `Op::Fused` variant CSE already relies on).
-/// - [`is_commutative`] to sort child hashes for `Add`/`Mul`/`Maximum`/
-///   `Minimum`, so `a + b` and `b + a` hash equal (mirrors CSE's own
-///   commutative-operand canonicalization).
+/// - [`is_commutative`] to sort child hashes for `Add`/`Mul`, so `a + b` and
+///   `b + a` hash equal (mirrors CSE's own commutative-operand
+///   canonicalization). `Maximum`/`Minimum` are excluded -- see GAP-271.
 ///
 /// `op_key` deliberately excludes `Op::Const` (its payload lives in the
 /// graph's `storage_map` slot, not the `Op` enum — see the comment on
@@ -1267,8 +1268,29 @@ fn dtype_key(dt: DType) -> u32 {
         .fold(0u32, |acc, b| acc.wrapping_mul(31).wrapping_add(*b as u32))
 }
 
+/// `Maximum`/`Minimum` are DELIBERATELY ABSENT. They are commutative in
+/// value and NOT in bits: `chassis/binary.rs` returns the FIRST NaN operand
+/// (`if a.is_nan() { a } else if b.is_nan() { b }`), a documented lhs-first
+/// tie-break matching `torch.maximum`. Two distinct NaN payloads therefore
+/// swap with operand order -- measured, `max(0x7FC00001, 0x7FC00002)` gives
+/// `0x7FC00001` and the reverse gives `0x7FC00002` -- so folding `min(a,b)`
+/// with `min(b,a)` is an INVALID rewrite. See GAP-271.
+///
+/// The +-0 tie ALSO makes the fold invalid, but do not state it as a fixed
+/// bias: the +-0 answer is NOT A PROPERTY OF THIS SOURCE. It is decided per
+/// CALL SITE by the optimizer, because we delegate to Rust's `f32::max`,
+/// which disclaims the zero tie. Measured in ONE binary at opt-level 3:
+/// const-folded literals give +0 for both orders; `black_box` operands give
+/// -0 for both; `#[inline(never)]` gives -0 and +0 -- ORDER-DEPENDENT.
+/// Three answers, same source. That is itself a reason the fold is invalid:
+/// folding two call sites merges forms the compiler may resolve differently.
+///
+/// Rely on the NaN-payload argument, because it is STABLE -- verified
+/// identical at opt-level 0 and 3, under `black_box` and under
+/// `#[inline(never)]`. It is stable precisely because that tie-break is
+/// EXPLICIT IN OUR SOURCE, where the +-0 tie is delegated to the compiler.
 fn is_commutative(op: &Op) -> bool {
-    matches!(op, Op::Add | Op::Mul | Op::Maximum | Op::Minimum)
+    matches!(op, Op::Add | Op::Mul)
 }
 
 /// Run CSE + algebraic simplification on the graph reachable from
@@ -3358,6 +3380,56 @@ mod tests {
         assert_eq!(
             new_roots[0], new_roots[1],
             "commutative CSE should fold a+b and b+a to one node"
+        );
+    }
+
+    /// GAP-271: `Maximum`/`Minimum` must NOT be folded across operand order.
+    ///
+    /// They are commutative in VALUE and not in BITS. `chassis/binary.rs`
+    /// returns the FIRST NaN operand -- a documented lhs-first tie-break
+    /// matching `torch.maximum` -- so two distinct NaN payloads swap with
+    /// operand order: `max(0x7FC00001, 0x7FC00002)` is `0x7FC00001` and the
+    /// reverse is `0x7FC00002`. Folding the two orderings is therefore an
+    /// invalid rewrite.
+    ///
+    /// A +-0 FIXTURE WOULD BE UNSOUND HERE, and not because we canonicalise:
+    /// the +-0 answer is decided PER CALL SITE by the optimizer (we delegate
+    /// to `f32::max`, which disclaims the tie). One binary at opt-level 3
+    /// gives three answers -- const-folded +0/+0, `black_box` -0/-0,
+    /// `#[inline(never)]` -0/+0. A +-0 assertion would therefore be testing
+    /// the optimizer, not us. The NaN tie-break is explicit in our source and
+    /// is stable in all four contexts, which is why it is the fixture.
+    #[test]
+    fn cse_does_not_fold_minmax_across_operand_order() {
+        let (_graph, a) = make_scalar_graph();
+        let b = a.add_scalar(5.0);
+
+        // CONTROL, and it is load-bearing: `Add` IS commutative in bits, so it
+        // must STILL fold. Without this arm, a change that broke CSE entirely
+        // would pass the assertion below for the wrong reason.
+        let add_ab = a.add(&b);
+        let add_ba = b.add(&a);
+        let graph = a.graph().clone();
+        let add_roots = optimize(&graph, &[add_ab.id(), add_ba.id()]);
+        assert_eq!(
+            add_roots[0], add_roots[1],
+            "control: Add is bitwise commutative and must still fold -- if this              fails, CSE is broken generally and the Maximum arm below proves nothing"
+        );
+
+        let max_ab = a.maximum(&b);
+        let max_ba = b.maximum(&a);
+        let max_roots = optimize(&graph, &[max_ab.id(), max_ba.id()]);
+        assert_ne!(
+            max_roots[0], max_roots[1],
+            "max(a,b) and max(b,a) were folded to one node, but they differ in              BITS on distinct NaN payloads (lhs-first tie-break). See GAP-271."
+        );
+
+        let min_ab = a.minimum(&b);
+        let min_ba = b.minimum(&a);
+        let min_roots = optimize(&graph, &[min_ab.id(), min_ba.id()]);
+        assert_ne!(
+            min_roots[0], min_roots[1],
+            "min(a,b) and min(b,a) were folded to one node -- same defect as              Maximum, see GAP-271"
         );
     }
 
