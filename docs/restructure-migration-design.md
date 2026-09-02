@@ -249,6 +249,16 @@ tensor API; they are moved, not rewritten.
 **Gate**: facade path set unchanged; `fuel-examples` (553 `fuel::` imports, the
 heaviest consumer) compiles untouched.
 
+**Deferred doc-pointers to fold in here.** Two example source-pointers were left
+as `fuel_core::` in the Stage 1 facade-rename follow-up because Stage 2 relocates
+the module they name: `fuel-examples/examples/debertav2/main.rs:347` (a `bail!`
+string naming `fuel_core::lazy_debertav2`) and `.../xlm-roberta/main.rs:142` (a
+comment naming `fuel_core::lazy_xlm_roberta`). Both spellings — `fuel_core::` and
+the canonical `fuel::` — go stale once these modules land in `fuel-transformers`,
+so converting earlier was churn for no reader. **They are RUNTIME text (a `bail!`
+string and a comment), not `[intra-doc links]`, so no rustdoc gate flags them if
+this stage forgets** — retarget them to wherever the module lands as part of this move.
+
 **And this is the first real test of the §4 authoring surface**: whatever
 `fuel-author` ends up being, it has to be able to express what already exists in
 `lazy_flux.rs` and `lazy_mmdit.rs`. **147 worked examples is a better spec than
