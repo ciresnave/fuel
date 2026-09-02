@@ -14,7 +14,7 @@ half = { workspace = true }
 #
 # Lockstep is preserved by pinning all three at the same published minor: they
 # publish together at matching versions. The caret's auto-uptake is bounded by
-# kiss-ref's release discipline — `"0.2"` accepts only non-breaking 0.2.z, and
+# kiss-ref's release discipline — `"0.3"` accepts only non-breaking 0.3.z, and
 # any breaking change goes to a 0.x-minor bump the caret will not pull. That
 # discipline was established by shipping the ScalarFloat seal + Node::ConstBits
 # + required from_bits as 0.2.0 rather than 0.1.1, precisely so surprise-
@@ -23,6 +23,6 @@ half = { workspace = true }
 # What this gives up vs a rev pin: tracking UNRELEASED main. That is the healthy
 # direction — being blocked on an unreleased kiss-ref change is a signal to cut
 # a release, not to track a rev.
-kiss-ref-core       = "0.2"
-kiss-ops-vocab      = "0.2"
-kiss-classify-vocab = "0.2"
+kiss-ref-core       = "0.3"
+kiss-ops-vocab      = "0.3"
+kiss-classify-vocab = "0.3"

@@ -54,8 +54,17 @@ pub fn op_to_kiss(op: OpTag) -> Option<Op> {
     })
 }
 
-/// Map a Fuel dtype to its kiss-ref `Dtype`, or `None` if kiss-ref has no
-/// equivalent (Fuel's MX formats `F8E8M0`/`F6E2M3`/`F6E3M2`/`F4`).
+/// Map a Fuel dtype to its kiss-ref `Dtype`, or `None` when there is no
+/// mappable equivalent. Two DISTINCT reasons, kept apart because one of them
+/// stopped being true at kiss-classify-vocab 0.3:
+///
+/// - `F6E2M3` / `F6E3M2` / `F4` — kiss-classify has no such token at all.
+/// - `F8E8M0` / `F8E6M2` — kiss-classify 0.3 DOES define `F8e8m0` / `F8e6m2`,
+///   so "no equivalent" is no longer why these decline. They are MX shared-
+///   exponent *scale* types, never element-value dtypes: kiss-classify states
+///   they decline compute in a value position, and this adapter feeds a
+///   compute oracle. Mapping them would hand the differential target a scale
+///   operand as if it were an element value.
 pub fn dtype_to_kiss(d: DType) -> Option<Dtype> {
     use DType as D;
     Some(match d {
@@ -64,12 +73,12 @@ pub fn dtype_to_kiss(d: DType) -> Option<Dtype> {
         D::F32 => Dtype::F32,
         D::F64 => Dtype::F64,
         D::U8 => Dtype::U8,
-        D::I8 => Dtype::S8,
+        D::I8 => Dtype::I8,
         D::U32 => Dtype::U32,
-        D::I16 => Dtype::S16,
+        D::I16 => Dtype::I16,
         D::I32 => Dtype::I32,
         D::I64 => Dtype::I64,
-        D::F8E4M3 => Dtype::E4m3,
+        D::F8E4M3 => Dtype::F8e4m3fn,
         _ => return None,
     })
 }
@@ -95,7 +104,7 @@ mod tests {
         assert!(matches!(op_to_kiss(OpTag::Gelu), Some(Op::GeluTanh)));
         assert!(matches!(op_to_kiss(OpTag::GeluErf), Some(Op::Gelu)));
         assert!(matches!(dtype_to_kiss(DType::F32), Some(Dtype::F32)));
-        assert!(matches!(dtype_to_kiss(DType::I8), Some(Dtype::S8)));
+        assert!(matches!(dtype_to_kiss(DType::I8), Some(Dtype::I8)));
         assert!(matches!(dtype_to_kiss(DType::BF16), Some(Dtype::Bf16)));
     }
 
@@ -115,5 +124,41 @@ mod tests {
     fn supports_floor_cell_and_declines_off_floor() {
         assert!(supports(OpTag::Add, DType::F32));
         assert!(!supports(OpTag::MatMul, DType::F32)); // op declines
+    }
+
+    /// `DType::F8E4M3` IS OCP *finite* E4M3FN -- bias 7, max-finite +/-448, no
+    /// infinities, single NaN -- an identity `fuel-ir` commits in the variant's
+    /// own doc and tests at three sites, none of them this adapter.
+    ///
+    /// This guard is NEW WORK CREATED BY THE 0.3 BUMP, not a pre-existing hole.
+    /// kiss-classify 0.2 had exactly one `E4m3`, so the arm could not be got
+    /// wrong. 0.3 splits the family into `F8e4m3fn` and `F8e4m3fnuz` (bias 8,
+    /// no -0, no infinities), which kiss-classify itself calls BYTE-INCOMPATIBLE
+    /// -- and `fnuz` carries no compute semantics at sk4 at all. Both spellings
+    /// type-check here, so the wrong one is a silent wrong-oracle defect rather
+    /// than a build failure. Pin the arm so the choice stays deliberate.
+    #[test]
+    fn f8e4m3_maps_to_the_ocp_finite_variant_not_fnuz() {
+        assert!(matches!(
+            dtype_to_kiss(DType::F8E4M3),
+            Some(Dtype::F8e4m3fn)
+        ));
+    }
+
+    /// The MX shared-exponent SCALE types decline -- and after the 0.3 bump they
+    /// decline for a DIFFERENT REASON than they used to, which is why this is
+    /// asserted rather than left to follow from absence.
+    ///
+    /// Under kiss-classify 0.2 these declined because the vocabulary had no such
+    /// token: the outcome was forced. 0.3 DOES define `F8e8m0` and `F8e6m2`, so
+    /// declining is now a CHOICE -- they are per-block scale operands, never
+    /// element values, and this adapter feeds a compute oracle. Mapping one
+    /// would hand the differential target a scale as if it were an element.
+    #[test]
+    fn mx_scale_dtypes_decline_even_though_kiss_now_defines_them() {
+        assert!(dtype_to_kiss(DType::F8E8M0).is_none());
+        assert!(dtype_to_kiss(DType::F8E6M2).is_none());
+        assert!(!supports(OpTag::Add, DType::F8E8M0));
+        assert!(!supports(OpTag::Add, DType::F8E6M2));
     }
 }
