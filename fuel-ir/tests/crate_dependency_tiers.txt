@@ -52,15 +52,13 @@
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
-# FIVE CRATES CARRY NO TIER. THAT IS A DECISION, AND HERE IS WHAT IT COSTS
+# FOUR CRATES CARRY NO TIER. THAT IS A DECISION, AND HERE IS WHAT IT COSTS
 # ---------------------------------------------------------------------------
 # An unassigned crate makes every edge it touches UNJUDGEABLE -- as source OR
 # as target -- so the cost is stated as a MEASURED EDGE LIST rather than as a
-# count of crates, which would hide it. 7 of 118 edges are unjudged
+# count of crates, which would hide it. 5 of 123 edges are unjudged
 # and these are all of them:
 #
-#   fuel-core                   -> fuel-correctness-fixtures
-#   fuel-correctness-fixtures   -> fuel-ir
 #   fuel-datasets               -> fuel-core
 #   fuel-examples               -> fuel-datasets
 #   fuel-model-fixture          -> fuel-model-core
@@ -84,6 +82,22 @@
 # They are left out only because they were not needed to make the gate bite.
 # Adding them is a STRICT coverage improvement for whoever does it next.
 # ---------------------------------------------------------------------------
+#
+# `fuel-correctness-fixtures` is tiered at 30 as CONTRACTS, and the name is the
+# reason that needs saying: it reads like test support, and it is NOT. Measured
+# 2026-09-02 in `fuel-core/src/judge/mod.rs`: 31 references OUTSIDE `cfg(test)`
+# against 42 inside, including a PUBLIC PRODUCTION STRUCT FIELD
+# (`pub fixtures: Option<HashMap<..., Vec<CorrectnessFixture>>>`) and calls to
+# `capture::derive_seed` / `deterministic_f32_input` from inside `impl Judge`.
+# A module-scope `use` outside `cfg(test)` is self-evidencing too: were it
+# test-only, a non-test build would emit `unused_imports`.
+#
+# So the dependency is correctly placed and THE NAME IS WHAT LIES (GAP-268). A
+# correctness fixture is a CONTRACT -- it states expected behaviour -- which is
+# why it sits with `fuel-backend-contract` and `fuel-kernel-seam` rather than
+# anywhere near test support. The rename is separable and deliberately NOT done
+# here: it is a cross-tree sweep with the stale/historical/pinned disposition
+# problem attached, and tiering closes the coverage hole today without buying it.
 #
 # `fuel-parallel` WAS on this list and is now placed at 130, and HOW it was
 # placed is the point: it SELF-DECLARES its layer in its own module doc --
@@ -114,6 +128,7 @@ fuel-kernel-seam-announce	20	kernels
 
 fuel-backend-contract	30	contracts
 fuel-kernel-seam	30	contracts
+fuel-correctness-fixtures	30	contracts
 fuel-formats	30	IO / formats
 
 fuel-graph	40	foundation

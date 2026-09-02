@@ -18,7 +18,7 @@ use std::fs::File;
 /// methods without needing to explicitly add `parquet` as a dependency.
 ///
 /// # Example
-/// ```
+/// ```no_run
 /// use fuel_datasets::hub::{from_hub, FileReader};  // Re-exported trait
 /// let api = hf_hub::api::sync::Api::new().unwrap();
 /// let files = from_hub(&api, "hf-internal-testing/dummy_image_text_data".to_string()).unwrap();
@@ -52,7 +52,7 @@ fn sibling_to_parquet(
 /// This returns a list of `SerializedFileReader<File>` that can be used to read Parquet content.
 ///
 /// # Example
-/// ```
+/// ```no_run
 /// use fuel_datasets::hub::{from_hub, FileReader};
 /// let api = hf_hub::api::sync::Api::new().unwrap();
 /// let readers = from_hub(&api, "hf-internal-testing/dummy_image_text_data".to_string()).unwrap();
@@ -80,6 +80,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "hits the live HuggingFace Hub: a network fault fails this test \n                without saying anything about `from_hub`. Same convention as the \n                live-GPU tests -- a plain `cargo test` must skip it. Run it \n                deliberately with `--ignored` when you mean to exercise the Hub."]
     fn test_dataset() {
         let api = Api::new().unwrap();
         let files = from_hub(
