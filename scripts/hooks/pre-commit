@@ -25,6 +25,91 @@
 # by its own drift and never by someone else's.
 
 # ---------------------------------------------------------------------------
+# 0. UNRESOLVED CONFLICT MARKERS, on every staged text file.
+# ---------------------------------------------------------------------------
+# WHY THIS IS A HOOK-LEVEL CHECK AND NOT A PER-GATE ONE: every line-oriented
+# checker in this repo is blind to conflict markers BY CONSTRUCTION.
+#
+#     scripts/check-gaps-table.py    keys on `^| ~*GAP-` and `^| ID`
+#     method_rules_index_join.rs     keys on `^## ` and `method-rules.md#`
+#     doc_declared_traits.rs         keys on rust fences
+#
+# A conflict marker begins with `<`, `=` or `>`, so NOT ONE of those patterns
+# can match one. The checkers do not TOLERATE markers -- they cannot SEE them.
+# Both sides of the conflict are then read as ordinary content, the totals go
+# UP, and every gate reports clean on a file in the most broken state git can
+# produce. Measured 2026-09-02: the gaps gate returned EXIT 0 on a conflicted
+# `docs/gaps.md` three times in one rebase session.
+#
+# AND THERE IS NO OTHER LAYER. `git add`-ing a conflicted file marks it
+# RESOLVED, so this hook runs against exactly that content -- the only thing
+# between a botched resolution and `main` is a human noticing. The cost is not
+# hypothetical: one conflict that night had a row differing on BOTH sides, and
+# taking either side wholesale would have silently reverted another lane's
+# landed work while leaving every row parsing and every gate green.
+#
+# THIS CANNOT JUDGE A RESOLUTION. It refuses to bless an UNRESOLVED one.
+#
+# SELF-REFERENCE: a naive version of this check flags its own source, because
+# that source would contain the marker literals. The markers are therefore
+# BUILT with printf rather than written, so the seven-character runs never
+# appear in this file. Proven by staging this file and running the check.
+#
+# Scoped to STAGED files on purpose: an unstaged conflict elsewhere is not this
+# commit's problem, and a hook that fails on someone else's mid-merge state is
+# a hook people disable.
+staged_any=$(git diff --cached --name-only --diff-filter=ACM)
+if [ -n "$staged_any" ]; then
+    cm_lt=$(printf '<%.0s' 1 2 3 4 5 6 7)
+    cm_eq=$(printf '=%.0s' 1 2 3 4 5 6 7)
+    cm_gt=$(printf '>%.0s' 1 2 3 4 5 6 7)
+    # -I skips binaries. The `=` arm is anchored to an EXACT seven-run so a
+    # decorative rule of eight or more does not false-positive; the `<`/`>`
+    # arms are not, because no real content starts that way.
+    # ONE definition, used by the scan AND by the self-test below, so the
+    # self-test exercises the same code rather than a copy of it.
+    cm_scan() { grep -InE "^(${cm_lt}|${cm_gt})|^${cm_eq}\$" -- "$1" 2>/dev/null; }
+
+    # RETAINED SELF-TEST, run on every commit -- not an authoring-time red.
+    # This check will be green on virtually every commit forever, so without a
+    # standing fixture it is indistinguishable from a check that does nothing.
+    # The dirty fixture MUST flag and the clean one MUST NOT.
+    cm_tmp=$(mktemp -d 2>/dev/null || echo "${TMPDIR:-/tmp}")
+    printf 'a\n%s x\nb\n%s\nc\n%s y\n' "$cm_lt" "$cm_eq" "$cm_gt" > "$cm_tmp/dirty"
+    printf 'a\nb < c\nd = e\nf > g\n' > "$cm_tmp/clean"
+    if [ "$(cm_scan "$cm_tmp/dirty" | wc -l)" -ne 3 ]; then
+        echo "pre-commit: conflict-marker detector FAILED its own fixture" >&2
+        echo "  (the sabotaged fixture was not flagged -- the check is inert)" >&2
+        rm -rf "$cm_tmp"
+        exit 1
+    fi
+    if [ -n "$(cm_scan "$cm_tmp/clean")" ]; then
+        echo "pre-commit: conflict-marker detector flagged a CLEAN fixture" >&2
+        rm -rf "$cm_tmp"
+        exit 1
+    fi
+    rm -rf "$cm_tmp"
+
+    conflicts=$(
+        echo "$staged_any" | while IFS= read -r cf; do
+            [ -f "$cf" ] || continue
+            cm_scan "$cf" | sed "s#^#${cf}:#"
+        done
+    )
+    if [ -n "$conflicts" ]; then
+        echo ""
+        echo "pre-commit: UNRESOLVED CONFLICT MARKERS in staged files:"
+        echo "$conflicts" | sed 's/^/    /'
+        echo ""
+        echo "  Every line-oriented gate in this repo is structurally blind to"
+        echo "  these and reports CLEAN on a conflicted file, and \`git add\` has"
+        echo "  already marked the file resolved. Resolve by READING BOTH SIDES:"
+        echo "  taking one wholesale can silently revert another lane's work."
+        exit 1
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # 1. Table integrity for docs/gaps.md
 # ---------------------------------------------------------------------------
 # Run as a hook because the COORDINATOR kept bypassing it by hand. Four times in
