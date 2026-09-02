@@ -1,8 +1,10 @@
 # Facade-inversion repoint — the recipe
 
 **Status:** MEASURED on `fuel-datasets`, 2026-09-02. One crate, landed and green.
-**Purpose:** de-risk the remaining repoints, of which `fuel-nn` at 219 references
-is the expensive one. This recipe is the pilot's actual product; the crate itself
+**Purpose:** de-risk the remaining repoints, of which `fuel-nn` is the expensive one:
+**213 code lines carrying 215 symbol references**, plus 6 doc-comment lines
+(219 lines contain `fuel::` in total). Those three numbers are the same crate
+counted three ways — see "What surprised me" below. This recipe is the pilot's actual product; the crate itself
 was the cheapest available subject, not the point.
 
 Stage 1 made `fuel` a real crate that facades `fuel-core`. A repoint rewrites
@@ -135,7 +137,10 @@ reader cannot tell a real disagreement from a vocabulary mismatch.
 ## Parked, with the measurement recorded so nobody re-derives it
 
 Measured 2026-09-02. MODEL = `fuel::lazy_<model>`; TENSOR = every other `fuel::`;
-MIXED = one grouped `use` carrying both kinds; doc columns counted separately.
+MIXED = one grouped `use` carrying both kinds. **MODEL and TENSOR count SYMBOL
+REFERENCES** (grouped imports expanded to their members); **the doc columns count
+LINES.** Stated because the two do not agree and the difference is not visible in
+the table.
 
 | crate | MODEL | TENSOR | MIXED | doc-MODEL | doc-TENSOR | disposition |
 |---|---|---|---|---|---|---|
