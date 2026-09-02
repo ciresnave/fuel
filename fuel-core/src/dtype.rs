@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Types for elements that can be stored and manipulated using tensors.
 //!
 //! The [`DType`] enum and its inherent methods, Display, FromStr, DTypeParseError,

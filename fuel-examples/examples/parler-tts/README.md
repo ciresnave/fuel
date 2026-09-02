@@ -1,4 +1,4 @@
-﻿# fuel-parler-tts
+# fuel-parler-tts
 
 [Parler-TTS](https://huggingface.co/parler-tts/parler-tts-large-v1) is a large
 text-to-speech model with 2.2B parameters trained on ~45K hours of audio data.

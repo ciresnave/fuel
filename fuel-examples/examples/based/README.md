@@ -1,4 +1,4 @@
-﻿# fuel-based
+# fuel-based
 
 Experimental, not instruction-tuned small LLM from the Hazy Research group, combining local and linear attention layers.
 

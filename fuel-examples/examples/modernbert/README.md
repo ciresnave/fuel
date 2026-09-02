@@ -1,4 +1,4 @@
-﻿# fuel-modernbert
+# fuel-modernbert
 
 ModernBERT is a bidirectional encoder-only language model. In this example it is used for the fill-mask task:
 

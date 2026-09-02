@@ -1,4 +1,4 @@
-﻿# fuel-bert
+# fuel-bert
 
 Bert is a general large language model. In this example it can be used for two
 different tasks:

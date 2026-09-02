@@ -1,4 +1,4 @@
-﻿# fuel-granite 4.0 Micro (GraniteMoeHybrid)
+# fuel-granite 4.0 Micro (GraniteMoeHybrid)
 
 This example runs IBM's [Granite 4.0 Micro](https://huggingface.co/ibm-granite/granite-4.0-micro) hybrid Mixture-of-Experts model with Fuel's `GraniteMoeHybrid` implementation. It mirrors the Granite example workflow while showcasing the embedding/logit scaling and hybrid attention stack specific to the 4.0 release.
 

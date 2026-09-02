@@ -1,4 +1,4 @@
-﻿# fuel-mobilenetv4
+# fuel-mobilenetv4
 
 [MobileNetV4 - Universal Models for the Mobile Ecosystem](https://arxiv.org/abs/2404.10518)
 This fuel implementation uses pre-trained MobileNetV4 models from timm for inference.

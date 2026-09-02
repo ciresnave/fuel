@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Chunked prefill for bounded time-to-first-token.
 //!
 //! When a prompt is very long (thousands of tokens), processing it in a single forward

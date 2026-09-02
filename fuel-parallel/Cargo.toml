@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "fuel-parallel"
 version.workspace = true
 edition.workspace = true

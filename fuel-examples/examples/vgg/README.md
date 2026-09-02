@@ -1,4 +1,4 @@
-﻿## VGG Model Implementation
+## VGG Model Implementation
 
 This example demonstrates the implementation of VGG models (VGG13, VGG16, VGG19) using the Fuel library.
 

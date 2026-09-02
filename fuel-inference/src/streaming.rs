@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! StreamingLLM: Sink-token + recent-window KV cache management.
 //!
 //! When generating very long sequences that exceed the model's training context window,
