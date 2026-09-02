@@ -382,7 +382,16 @@ mod tests {
     /// same thing.
     #[test]
     fn minmax_non_nan_path_is_unchanged_by_the_nan_override() {
-        let cases = [0x3F80u16, 0xC020, 0x0000, 0x8000, 0x7F7F, 0xFF7F];
+        // +1.0, -2.5, +0, -0, max-finite, -max-finite, +inf, -inf.
+        // ⚠️ NO NaN FIXTURES, deliberately: the NaN branch is where this
+        // override DIVERGES from the promoting path, so including one here
+        // would assert the opposite of the sibling test. ±inf IS included
+        // because it is neither finite nor NaN -- the exactness argument for
+        // this delegation is worded about FINITE values and says nothing about
+        // infinities, so they are the one class the reasoning does not cover.
+        let cases = [
+            0x3F80u16, 0xC020, 0x0000, 0x8000, 0x7F7F, 0xFF7F, 0x7F80, 0xFF80,
+        ];
         for &ab in &cases {
             for &bb in &cases {
                 let (a, b) = (half::bf16::from_bits(ab), half::bf16::from_bits(bb));

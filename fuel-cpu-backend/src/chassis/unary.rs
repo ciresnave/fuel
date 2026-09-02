@@ -538,8 +538,14 @@ mod tests {
     /// The narrow overrides must not change any ORDINARY value -- otherwise the
     /// NaN fix would be bought with a numeric regression nothing else asserts.
     #[test]
-    fn narrow_overrides_agree_with_the_promoting_path_on_finite_values() {
-        for bits in [0x3F80u16, 0xC020, 0x0000, 0x8000, 0x7F7F, 0xFF7F] {
+    fn narrow_overrides_agree_with_the_promoting_path_on_non_nan_values() {
+        // ±inf (0x7F80/0xFF80) included: neither finite nor NaN, so the
+        // exactness argument -- worded about FINITE values -- does not cover
+        // them. Both conversion legs take their non-NaN path for an infinity
+        // and round-trip it exactly, so these must agree.
+        for bits in [
+            0x3F80u16, 0xC020, 0x0000, 0x8000, 0x7F7F, 0xFF7F, 0x7F80, 0xFF80,
+        ] {
             let x = half::bf16::from_bits(bits);
             assert_eq!(
                 <Neg as UnaryOpCore>::bf16(x).to_bits(),
