@@ -33,22 +33,20 @@ fn all_bf16() -> impl Iterator<Item = bf16> {
     (0u16..=u16::MAX).map(bf16::from_bits)
 }
 
-#[test]
-fn bf16_minmax_result_is_bitwise_one_of_its_inputs_for_every_finite_pattern() {
-    let partners: Vec<bf16> = [
-        0.0f32, -0.0, 1.0, -1.0, 0.5, -0.5, 3.4e38, -3.4e38, 1e-38, -1e-38,
-    ]
-    .iter()
-    .map(|v| bf16::from_f32(*v))
-    .collect();
-
+/// Sweep every finite bf16 against each partner, returning
+/// `(comparisons_made, violations)`.
+///
+/// Extracted so the test below reads as its assertion and this reads as the
+/// sweep. It changes no condition — the partner list, the NaN skip and the
+/// bitwise predicate are all unchanged.
+fn sweep_finite(partners: &[bf16]) -> (usize, Vec<String>) {
     let mut checked = 0usize;
     let mut violations = Vec::new();
     for a in all_bf16() {
         if a.is_nan() {
             continue; // NaN is the other test's subject
         }
-        for b in &partners {
+        for b in partners {
             let lo = <Minimum as BinaryOp<bf16>>::apply(a, *b);
             let hi = <Maximum as BinaryOp<bf16>>::apply(a, *b);
             checked += 2;
@@ -70,6 +68,19 @@ fn bf16_minmax_result_is_bitwise_one_of_its_inputs_for_every_finite_pattern() {
             }
         }
     }
+    (checked, violations)
+}
+
+#[test]
+fn bf16_minmax_result_is_bitwise_one_of_its_inputs_for_every_finite_pattern() {
+    let partners: Vec<bf16> = [
+        0.0f32, -0.0, 1.0, -1.0, 0.5, -0.5, 3.4e38, -3.4e38, 1e-38, -1e-38,
+    ]
+    .iter()
+    .map(|v| bf16::from_f32(*v))
+    .collect();
+
+    let (checked, violations) = sweep_finite(&partners);
 
     println!(
         "[bf16-minmax] finite: {checked} comparisons, {} violations",
