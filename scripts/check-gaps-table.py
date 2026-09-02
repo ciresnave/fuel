@@ -137,6 +137,28 @@ for _n, _l in enumerate(lines, 1):
                 'line %d col %d: U+%04X %s -- ...%s...'
                 % (_n, _k + 1, _o, _CTRL_NAMES.get(_o, 'CONTROL'), _ctx))
 
+# ---------------------------------------------------------------------------
+# CONFLICT MARKERS.
+#
+# ⚠️ FOUND BY REBASING THIS FILE THREE TIMES IN ONE SESSION: the gate returned
+# EXIT 0 on a CONFLICTED docs/gaps.md, every time.
+#
+# It is structural, not an oversight. Every other check here keys on lines
+# matching `^| ~*GAP-` or `^| ID`. Conflict markers start with `<`, `=` and `>`,
+# so the row parser does not merely tolerate them -- IT CANNOT SEE THEM. Both
+# sides of the conflict are then counted as ordinary rows, the totals go UP, and
+# every check still passes. THE FILE IS IN THE MOST BROKEN STATE GIT CAN LEAVE
+# IT IN AND THE GATE SAYS CLEAN.
+#
+# The pre-commit hook cannot save you either: `git add`-ing a conflicted file
+# marks it resolved, so the hook runs against exactly this content.
+conflict_markers = [
+    'line %d: %s' % (n, l[:60])
+    for n, l in enumerate(lines, 1)
+    if l.startswith('<<<<<<<') or l.startswith('>>>>>>>') or l.rstrip() == '======='
+]
+print('unresolved conflict markers:',
+      conflict_markers if conflict_markers else 'NONE')
 print('control characters (excl. tab):',
       control_chars if control_chars else 'NONE')
 print()
@@ -631,7 +653,7 @@ print('rows whose status does not start with a set member:',
 print('STRUCK rows whose prefix says work remains (asymmetric by design):',
       strike_contra if strike_contra else 'NONE')
 
-if (odd or no_pipe or header_problems or control_chars
+if (odd or no_pipe or header_problems or control_chars or conflict_markers
         or missing_backlinks or _foundation
         or arity_regression or bad_prefix or strike_contra
         or vocab_foundation):
