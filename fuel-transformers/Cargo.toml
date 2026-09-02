@@ -12,7 +12,7 @@ readme = "README.md"
 [dependencies]
 accelerate-src = { workspace = true, optional = true }
 byteorder = { workspace = true }
-fuel = { workspace = true }
+fuel-core = { path = "../fuel-core", version = "0.10.3" }
 fuel-cpu-backend = { workspace = true }
 fancy-regex = { workspace = true }
 intel-mkl-src = { workspace = true, optional = true }
@@ -26,11 +26,11 @@ tracing = { workspace = true }
 
 [features]
 default = []
-accelerate = ["dep:accelerate-src", "fuel/accelerate"]
-cuda = ["fuel/cuda"]
-cudnn = ["fuel/cudnn"]
-mkl = ["dep:intel-mkl-src", "fuel/mkl"]
-metal = ["fuel/metal"]
+accelerate = ["dep:accelerate-src", "fuel-core/accelerate"]
+cuda = ["fuel-core/cuda"]
+cudnn = ["fuel-core/cudnn"]
+mkl = ["dep:intel-mkl-src", "fuel-core/mkl"]
+metal = ["fuel-core/metal"]
 
 # Doctest-only. The crate-level "Quick start" example names
 # `fuel_nn::varbuilder::VarBuilder`, which this crate does NOT depend on at
