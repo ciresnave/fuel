@@ -175,6 +175,25 @@ The 40 crates that actually exist are the directories with a `Cargo.toml` at the
 
     **Stages 3 (fission the ~50k remainder) and 4 (retire `fuel-core`) are UNSTARTED** and both depend on Stage 2 landing first.
 
+12. **EIGHT library crates depend on the CONSUMER FACADE, and one of them is a hard cargo CYCLE that blocks Stage 2 — measured 2026-09-02 at `a744417e`.** The facade `fuel` exists so *consumers* have one import. **A Models-tier or Foundation-adjacent crate depending on it is a layering inversion**, and `fuel-transformers` depending on `fuel` makes it **structurally impossible for the facade to re-export the 147 models Stage 2 is about to move into it** — `facade → fuel-transformers → facade`. **No re-export trick avoids it; a `pub use` needs the dependency edge.**
+
+    **MEASURED (every crate whose manifest depends on `fuel`):**
+
+    ```
+    CONSUMERS, correct        fuel-examples   fuel-lazy-examples
+    LIBRARY CRATES, inverted  fuel-datasets   fuel-inference    fuel-nn        fuel-onnx
+                              fuel-parallel   fuel-tensor-tools fuel-training  fuel-transformers
+    CONTROL, already correct  fuel-vulkan-backend depends on fuel-core DIRECTLY
+    ```
+
+    ⚠️ **THE CONTROL IS WHY THIS IS ACTIONABLE RATHER THAN AN OPINION: the target pattern already exists in-tree.** The repoint applies an established shape; it does not invent one.
+
+    ⚠️ **THE CONSUMER/LIBRARY SPLIT ABOVE IS PROVISIONAL — I CLASSIFIED BY CRATE NAME, WHICH IS THE SHORTCUT THIS FILE EXISTS TO CATCH.** `fuel-examples` and `fuel-lazy-examples` are obviously consumers; **`fuel-datasets` and `fuel-training` were NOT verified to be library crates rather than consumer-facing ones.** An audit is in flight (owner: Fuel 3) reporting, per crate, the `fuel::` reference count in **three separate populations — code paths, grouped `use fuel::{…}` imports, and doc-comment mentions — because the compiler is an oracle for the first two and BLIND to the third.**
+
+    **Stage 2 repoints EXACTLY ONE** (`fuel-transformers` → `fuel-core`), and the cost is measured, not estimated: **one `fuel::` import in existing code, one manifest edit, five feature forwards.** ⚠️ **Those forwards are safe ONLY BECAUSE Stage 1’s forwarding is 1:1** — `fuel/cuda` *is* `fuel-core/cuda` — **so `fuel/tests/feature_forwarding.rs` is the artifact that licenses the edit. On any tree without that gate it would be a silent feature-surface change.**
+
+    ⚠️ **THE OTHER SEVEN ARE EXPLICITLY OUT OF STAGE 2’S SCOPE.** A mechanical 147-file move plus a workspace-wide layering correction is two changes and the combined diff is unreviewable — the same reason item 8 must not be combined with Stage 2. **But they are not dormant: the cycle REAPPEARS the moment the facade re-exports anything from `fuel-nn` or `fuel-inference`, so this is a blocker in waiting rather than tidiness.**
+
 **Blockers**: none on the CapturedRun critical path — **CapturedRun 4b is COMPLETE (2026-07-13, commits `a127c190`..`9b7a5d1c`, merged to main).** The FKC contract-verification prerequisite (item 6) shipped (`cf0c3ee2`); this session then seeded the CUDA verification ledger (`seed_cuda_ledger.rs`, 219 records) so the decode places on CUDA, and the acceptance test `forward_with_kv_context_captured_matches_persistent` is byte-exact GREEN on the RTX 4070. The 4b-ε bench measures a **10.4× captured-replay speedup, byte-exact** on TinyLlama-1.1B F32 (D2 plan-once ~267 ms/tok → D3 captured `cuGraphLaunch` replay ~25.8 ms/tok median). One correctness finding along the way: baracuda's `rope_apply` is INTERLEAVED but Fuel's `FusedOps::ROPE` is ROTATE-HALF, so the Step-2 fused registration was reverted and rope runs DECOMPOSED on CUDA (auto-re-fuses once a rotate-half fused kernel + a real rope pattern matcher land). Multi-GPU work (Phase 6c D2D, 6d MoE placement) is parked pending hardware.
 
 ### Adaptive runtime fusion (2026-06-20)
