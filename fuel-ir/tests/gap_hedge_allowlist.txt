@@ -25,7 +25,6 @@ fuel-cpu-backend/src/byte_storage/aligned.rs	// and not yet freed; no mutation p
 fuel-cpu-backend/src/conv2d.rs	// Other 1x1 convolutions for now are assumed faster with full im2col,
 fuel-cpu-backend/src/conv2d.rs	// TODO other cases
 fuel-cpu-backend/src/dyn_impl.rs	// For now, go through CPU storage → convert via unary_map.
-fuel-cpu-backend/src/dyn_impl.rs	// match would need the raw-bit form like the two arms above.
 fuel-cpu-backend/src/ops.rs	// TODO: Avoid making this copy if `inp` already has the appropriate layout.
 fuel-cpu-backend/src/ops.rs	// TODO: Specialized implementation for the case 2*h, 2*w?
 fuel-cpu-backend/src/ops.rs	// TODO: Specialized implementation for the case 2*sz?

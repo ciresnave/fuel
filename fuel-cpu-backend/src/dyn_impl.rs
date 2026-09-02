@@ -305,7 +305,7 @@ fn all_unary_abs(s: &HostBuffer, layout: &Layout) -> Result<HostBuffer> {
         // no quiet bit, no payload. Both forms therefore yield `0x7F` and there is
         // nothing to lose. ⚠️ That reasoning is about E4M3's ENCODING, not about
         // this call being safe -- a narrow type WITH a quiet bit added to this
-        // match would need the raw-bit form like the two arms above.
+        // match would need the raw-bit form like the two arms above. GAP(GAP-274)
         HostBuffer::F8E4M3(d) => Ok(HostBuffer::F8E4M3(unary_map(d, layout, |v: F8E4M3| {
             v.abs()
         }))),
