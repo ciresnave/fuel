@@ -52,6 +52,11 @@ const BOM: [u8; 3] = [0xEF, 0xBB, 0xBF];
 /// THE PROPER FIX IS TO REMOVE THE NON-ASCII CHARACTERS (they are em-dashes in
 /// comments), which would retire both entries. That is a content change to a
 /// machine-wide guard and belongs in its own change, not in an encoding sweep.
+/// VERIFIED rather than inferred: ASCII-only BOM-less copies of both scripts
+/// parse at 0 errors under 5.1 (23 and 26 non-ASCII characters removed), so the
+/// retirement condition is REACHABLE, not merely plausible. An exemption whose
+/// retirement condition is unreachable is a permanent exemption wearing a
+/// temporary one's clothes.
 const BOM_REQUIRED: &[(&str, &str)] = &[
     (
         "scripts/cuda-build.ps1",
@@ -138,16 +143,16 @@ fn no_tracked_file_begins_with_a_utf8_bom() {
         // A file that cannot be read is skipped, not failed: `git ls-files`
         // lists entries that may be absent from the working tree (sparse
         // checkouts, submodule gitlinks). A missing file has no first byte.
-        if let Ok(bytes) = std::fs::read(path) {
-            if starts_with_bom(&bytes) {
-                offenders.push(
-                    path.strip_prefix(&root)
-                        .unwrap_or(path)
-                        .display()
-                        .to_string()
-                        .replace('\\', "/"),
-                );
-            }
+        if let Ok(bytes) = std::fs::read(path)
+            && starts_with_bom(&bytes)
+        {
+            offenders.push(
+                path.strip_prefix(&root)
+                    .unwrap_or(path)
+                    .display()
+                    .to_string()
+                    .replace('\\', "/"),
+            );
         }
     }
 
@@ -261,12 +266,11 @@ fn an_empty_enumeration_is_an_error_not_a_pass() {
     std::fs::create_dir_all(&empty).ok();
     // Outside any git work tree (or in one that lists nothing), `tracked_files`
     // must return Err. It must never return Ok(vec![]).
-    match tracked_files(&empty) {
-        Ok(v) => assert!(
+    if let Ok(v) = tracked_files(&empty) {
+        assert!(
             !v.is_empty(),
             "tracked_files returned Ok with an EMPTY list — a gate that cannot enumerate \
              would report clean"
-        ),
-        Err(_) => {}
+        );
     }
 }
