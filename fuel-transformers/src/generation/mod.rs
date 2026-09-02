@@ -18,7 +18,7 @@
 //! let next = lp.sample(&logits).unwrap();
 //! # let _ = next;
 //! ```
-use fuel::{Error, Result};
+use fuel_core::{Error, Result};
 use rand::{SeedableRng, distr::Distribution};
 
 /// Token-sampling strategy used during autoregressive text generation.

@@ -24,3 +24,12 @@ pub use fuel_core::*;
 // re-exported explicitly here. The public-API gate reports it (`pub macro
 // fuel::bail!`), so its presence is verified, not assumed.
 pub use fuel_core::bail;
+
+// Stage 2: the model zoo moved from fuel-core into fuel-transformers (Models
+// tier). Re-export it so `fuel::lazy_bert` etc. still resolve — the consumer
+// path set is unchanged (147 − 1: lazy_latent_cache stays in fuel-core). This
+// glob carries exactly the moved models; `fuel_transformers::models` is exactly
+// the `lazy_<model>` modules, disjoint from `fuel_core::*` by the stay-list
+// (fuel-core keeps `lazy` and `lazy_latent_cache`, neither a `lazy_<model>`
+// re-export collision) — asserted in tests/facade_disjoint.rs.
+pub use fuel_transformers::models::*;

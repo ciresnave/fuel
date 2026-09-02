@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! `LatentCache` — a general **N-slot** decode cache backed by
-//! [`Tensor`], the structural generalization of [`crate::lazy_kv_cache::
+//! [`Tensor`], the structural generalization of [`fuel_transformers::models::lazy_kv_cache::
 //! LazyKvCache`] that unblocks latent / pruned KV compression.
 //!
 //! `LazyKvCache` hardwires a symmetric **K/V pair** — two buffers per

@@ -344,7 +344,7 @@ fn main() -> Result<()> {
                 "`--task fill-mask` is not yet wired in the lazy DeBERTa-v2 port \
                  (no DebertaV2ForMaskedLM head). Pick `--task ner` or \
                  `--task text-classification`, or open a follow-up to ship the \
-                 MLM head in `fuel_core::lazy_debertav2`."
+                 MLM head in `fuel::lazy_debertav2`."
             );
         }
         ArgsTask::Ner => {
