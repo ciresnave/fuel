@@ -154,7 +154,13 @@ impl PhiConfigRaw {
 
 impl PhiConfig {
     pub fn num_kv_heads(&self) -> usize {
-        self.num_key_value_heads.unwrap_or(self.num_attention_heads)
+        // Route through the shared rule rather than hand-rolling the fallback
+        // (item-8-II membership gate). Verified identical to the previous
+        // `unwrap_or(num_attention_heads)` on every input, incl. Some(1) → 1.
+        fuel_core::hf_config::num_key_value_heads(
+            self.num_key_value_heads,
+            self.num_attention_heads,
+        )
     }
     pub fn rope_dim(&self) -> usize {
         let r = (self.partial_rotary_factor * self.head_dim as f64) as usize;
@@ -761,6 +767,31 @@ mod tests {
             }"#,
         ),
     ];
+
+    // item-8-II membership guard for the phi FORK fix: num_kv_heads() now routes
+    // through hf_config::num_key_value_heads instead of a hand-rolled unwrap_or.
+    // Verified BEHAVIOURALLY (GAP-209) so the repoint is checked by a test rather
+    // than by the two expressions looking alike; the load-bearing row is MQA.
+    #[test]
+    fn phi_num_kv_heads_defaults_to_num_heads_when_absent() {
+        let json = r#"{
+            "vocab_size": 51200, "hidden_size": 1024, "intermediate_size": 4096,
+            "num_hidden_layers": 16, "num_attention_heads": 16, "max_position_embeddings": 2048
+        }"#;
+        let cfg = PhiConfig::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.num_kv_heads(), 16); // absent → num_attention_heads (MHA)
+    }
+
+    #[test]
+    fn phi_num_kv_heads_preserves_true_mqa() {
+        let json = r#"{
+            "vocab_size": 51200, "hidden_size": 1024, "intermediate_size": 4096,
+            "num_hidden_layers": 16, "num_attention_heads": 16, "num_key_value_heads": 1,
+            "max_position_embeddings": 2048
+        }"#;
+        let cfg = PhiConfig::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.num_kv_heads(), 1); // Some(1) → 1: TRUE MQA survives
+    }
 
     #[test]
     fn serde_path_agrees_with_the_legacy_parser_on_every_fixture() {
