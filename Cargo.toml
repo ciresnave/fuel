@@ -8,6 +8,7 @@ members = [
     "fuel-aocl-cpu-backend",
     "fuel-conv",
     "fuel-core",
+    "fuel",
     "fuel-nn",
     "fuel-ir",
     "fuel-backend-contract",
@@ -112,7 +113,7 @@ aocl-types = "0.1"
 onemkl = "0.2"
 anyhow = { version = "1", features = ["backtrace"] }
 byteorder = "1.4.3"
-fuel = { path = "./fuel-core", package = "fuel-core", version = "0.10.3" }
+fuel = { path = "./fuel", version = "0.10.3" }
 fuel-nn = { path = "./fuel-nn", version = "0.10.3" }
 fuel-aocl-cpu-backend = { path = "./fuel-aocl-cpu-backend", version = "0.10.3" }
 fuel-conv = { path = "./fuel-conv", version = "0.10.3" }

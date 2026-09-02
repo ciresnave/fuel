@@ -1,0 +1,33 @@
+# The `fuel` facade crate (restructure Stage 1 — "make `fuel` real").
+#
+# Before Stage 1, `fuel` was a manifest ALIAS: `fuel = { path = "./fuel-core",
+# package = "fuel-core" }`. This crate replaces that alias with a real crate whose
+# lib.rs re-exports EXACTLY fuel-core's public surface, so no consumer edits an
+# import (`use fuel::…` resolves identically). The byte-identical-public-API gate
+# (cargo public-api, per feature set) enforces that.
+#
+# Features are forwarded 1:1 to fuel-core — a consumer's `features = ["vulkan"]`
+# must resolve on `fuel`, so every fuel-core feature name has to exist here too.
+[package]
+name = "fuel"
+version.workspace = true
+edition.workspace = true
+license = "MIT OR Apache-2.0"
+description = "Fuel — a DAG-first, lazy-only ML framework for Rust (public facade over fuel-core)."
+repository = "https://github.com/ciresnave/fuel"
+
+[dependencies]
+fuel-core = { path = "../fuel-core", version = "0.10.3" }
+
+[features]
+default = []
+telemetry = ["fuel-core/telemetry"]
+cuda = ["fuel-core/cuda"]
+cudnn = ["fuel-core/cudnn"]
+nccl = ["fuel-core/nccl"]
+mkl = ["fuel-core/mkl"]
+aocl = ["fuel-core/aocl"]
+onemkl = ["fuel-core/onemkl"]
+accelerate = ["fuel-core/accelerate"]
+metal = ["fuel-core/metal"]
+vulkan = ["fuel-core/vulkan"]
