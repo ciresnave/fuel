@@ -175,20 +175,34 @@ The 40 crates that actually exist are the directories with a `Cargo.toml` at the
 
     **Stages 3 (fission the ~50k remainder) and 4 (retire `fuel-core`) are UNSTARTED** and both depend on Stage 2 landing first.
 
-12. **EIGHT library crates depend on the CONSUMER FACADE, and one of them is a hard cargo CYCLE that blocks Stage 2 — measured 2026-09-02 at `a744417e`.** The facade `fuel` exists so *consumers* have one import. **A Models-tier or Foundation-adjacent crate depending on it is a layering inversion**, and `fuel-transformers` depending on `fuel` makes it **structurally impossible for the facade to re-export the 147 models Stage 2 is about to move into it** — `facade → fuel-transformers → facade`. **No re-export trick avoids it; a `pub use` needs the dependency edge.**
+12. **SEVEN library crates depend on the CONSUMER FACADE, and one of them is a hard cargo CYCLE that blocks Stage 2 — measured 2026-09-02 at `a744417e`.** The facade `fuel` exists so *consumers* have one import. **A Models-tier or Foundation-adjacent crate depending on it is a layering inversion**, and `fuel-transformers` depending on `fuel` makes it **structurally impossible for the facade to re-export the 147 models Stage 2 is about to move into it** — `facade → fuel-transformers → facade`. **No re-export trick avoids it; a `pub use` needs the dependency edge.**
 
-    **MEASURED (every crate whose manifest depends on `fuel`):**
+    **AUDITED 2026-09-02 (owner: Fuel 3), by `cargo metadata` target kinds and reverse-dependency edges — NOT by crate name:**
 
     ```
-    CONSUMERS, correct        fuel-examples   fuel-lazy-examples
-    LIBRARY CRATES, inverted  fuel-datasets   fuel-inference    fuel-nn        fuel-onnx
-                              fuel-parallel   fuel-tensor-tools fuel-training  fuel-transformers
-    CONTROL, already correct  fuel-vulkan-backend depends on fuel-core DIRECTLY
+    CRATE                |  SRC  s-doc  s-grp | TEST  t-doc | REAL REVERSE-DEPS
+    ---------------------+--------------------+-------------+---------------------------------
+    fuel-nn              |  219      6      2 |    0     0  | fuel-training, fuel-transformers
+    fuel-inference       |   92     17      0 |    0     0  | (none)
+    fuel-training        |   30     11      0 |    0     0  | (none)
+    fuel-onnx            |   18      5      4 |    3     0  | fuel-examples
+    fuel-parallel        |   16      4      4 |    4     1  | (none)
+    fuel-datasets        |   13      8      2 |    0     0  | fuel-examples
+    fuel-transformers    |    1      0      1 |    2     0  | fuel-examples, fuel-inference
+
+    CONSUMERS, correct   fuel-examples  fuel-lazy-examples  fuel-tensor-tools
+    CONTROL              fuel-vulkan-backend depends on fuel-core DIRECTLY
     ```
 
-    ⚠️ **THE CONTROL IS WHY THIS IS ACTIONABLE RATHER THAN AN OPINION: the target pattern already exists in-tree.** The repoint applies an established shape; it does not invent one.
+    **SRC/TEST** = `fuel::` path-token occurrences · **s-doc/t-doc** = those on `///`/`//!` lines, **COMPILER-BLIND** · **s-grp** = count of `use fuel::{…}` STATEMENTS (each expands to many names, so it is a statement count, not a name count).
 
-    ⚠️ **THE CONSUMER/LIBRARY SPLIT ABOVE IS PROVISIONAL — I CLASSIFIED BY CRATE NAME, WHICH IS THE SHORTCUT THIS FILE EXISTS TO CATCH.** `fuel-examples` and `fuel-lazy-examples` are obviously consumers; **`fuel-datasets` and `fuel-training` were NOT verified to be library crates rather than consumer-facing ones.** An audit is in flight (owner: Fuel 3) reporting, per crate, the `fuel::` reference count in **three separate populations — code paths, grouped `use fuel::{…}` imports, and doc-comment mentions — because the compiler is an oracle for the first two and BLIND to the third.**
+    ⚠️ **MY FIRST PASS SAID EIGHT AND CLASSIFIED BY CRATE NAME. THE AUDIT FOUND ONE ERROR AND IT WAS THE CRATE WHOSE NAME MOST SOUNDS LIKE A LIBRARY: `fuel-tensor-tools` HAS NO `lib.rs`** — `{bin: 1}`, one `main.rs`, **zero crates depend on it.** A leaf CLI consuming the facade is exactly what the facade is FOR. **Seven inversions and three consumers, not eight and two.**
+
+    ⚠️ **AND THE COUNTS RECONCILE ONLY WHEN `src` IS SPLIT FROM `tests`: `fuel-transformers` reads ONE or THREE depending on the population, and both figures were reported by different lanes on the same day.** Neither was wrong. **The split is kept in the table because it is the construct that makes the numbers comparable at all.**
+
+    ⚠️ **THE CYCLE QUESTION HAS A UNIFORM ANSWER, SO IT DOES NOT DISCRIMINATE.** I asked which crates would cycle if the facade re-exported from them, framing that as tidiness-versus-blocker. **All seven would, structurally: each depends on `fuel` today, so ANY facade dependency on ANY of them closes a loop.** **And there is NO cycle today — `fuel/Cargo.toml` depends only on `fuel-core`.** **The real discriminator is whether the facade PLANS to re-export from it: `fuel-transformers` is a LIVE blocker (Stage 2 re-exports the 147 models); the other six are LATENT, zero cost today, and cheapest to repoint precisely while nothing depends on the outcome.**
+
+    **SEQUENCING BY MEASURED COST:** `fuel-transformers` with Stage 2 (1 src line) → `fuel-datasets` 13 / `fuel-parallel` 16 / `fuel-onnx` 18 as cheap independents → `fuel-training` 30 → `fuel-inference` 92 → **`fuel-nn` 219 as its OWN item, folded into nothing** — it is an order of magnitude above everything else and 213 of its references are compiler-visible.
 
     **Stage 2 repoints EXACTLY ONE** (`fuel-transformers` → `fuel-core`), and the cost is measured, not estimated: **one `fuel::` import in existing code, one manifest edit, five feature forwards.** ⚠️ **Those forwards are safe ONLY BECAUSE Stage 1’s forwarding is 1:1** — `fuel/cuda` *is* `fuel-core/cuda` — **so `fuel/tests/feature_forwarding.rs` is the artifact that licenses the edit. On any tree without that gate it would be a silent feature-surface change.**
 
