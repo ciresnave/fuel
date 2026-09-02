@@ -55,6 +55,23 @@
 //! - [`fuel-datasets`](https://docs.rs/fuel-datasets): training datasets.
 //! - [`fuel-onnx`](https://docs.rs/fuel-onnx): ONNX import.
 
+// GAP-229, extended to this crate by Stage 2's 146-file move (see
+// docs/restructure-migration-design.md): moving the model zoo out from under
+// fuel-core's crate-root `#![allow(clippy::identity_op)]` reds this lint on
+// byte-identical code — the deliberate TRIPWIRE firing in a third crate, so it is
+// RE-MEASURED here, not transcribed. 15 sites, 15 intentional (12 DOC-SHAPE + 3
+// DOC-INDEX), 0 defects:
+//   * DOC-SHAPE (12): an explicit unit/batch dim in a shape product (`c * 1 * k * k`,
+//     `1 * 77 * dim`) mirroring `Shape::from_dims(&[..])`.
+//   * DOC-INDEX (3): an explicit `1 *`/`+ 0` NAMES an index (`reg[1*n + i]`,
+//     `1*table_total + ..`); two are the load-bearing `1 *` sibling of a `0 *` partner
+//     that carries its own `#[allow(clippy::erasing_op)]`, so the sibling must survive.
+// RESIDUAL, re-measured for THIS crate: the allow ALSO hides FLOAT identity ops
+// (`x + 0.0` normalizes -0.0 -> +0.0). Float population among the 15 is ZERO — all are
+// usize shape/index arithmetic. A float identity op landing later is silently admitted;
+// re-measure at the next rust-toolchain pin bump (docs/gaps.md GAP-229).
+#![allow(clippy::identity_op)]
+
 pub mod generation;
 pub mod models;
 pub mod object_detection;
