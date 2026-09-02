@@ -14,7 +14,47 @@ from collections import Counter
 # "registry rows" for several turns. The arithmetic was right both times; what
 # the count RANGED OVER was never stated, so it was never checked.
 
+# ---------------------------------------------------------------------------
+# INVARIANT FOR ANY SCRIPT THAT EDITS THIS FILE: POPULATION CONSERVATION.
+#
+#     A pass that MOVES rows must never create or destroy them. Assert the
+#     `^| ~*GAP-` count before and after, and fail if it changed.
+#
+# ⚠️ WHY THIS IS NOT OBVIOUS, AND WHY PER-ROW CHECKS CANNOT REPLACE IT: on
+# 2026-09-02 a pass inserting a missing `Area` cell put the placeholder BEFORE
+# the id instead of after it. The rows became `| — | GAP-141 | …`, which no
+# longer matches `^| ~*GAP-`, and FOUR ROWS SILENTLY LEFT THE POPULATION --
+# 254 -> 250.
+#
+# EVERY PER-ROW MESSAGE PRINTED SUCCESS, because every individual edit genuinely
+# SUCCEEDED. There was no failing item to detect. The rows simply stopped being
+# in the population that every later query ranges over, so the relocation that
+# followed read as completely clean. The defect is invisible to per-item
+# verification BY CONSTRUCTION.
+#
+# It was caught by a row-total assert that had been added for an unrelated
+# reason -- which is the only reason it was there at all.
+# ---------------------------------------------------------------------------
 lines = io.open('docs/gaps.md', encoding='utf-8').read().split('\n')
+
+
+def _is_cell_boundary(l, k):
+    """Is `l[k]` a `|` that acts as a CELL BOUNDARY -- i.e. not `\\|`-escaped?
+
+    THE ONE DEFINITION OF A CELL BOUNDARY IN THIS FILE, used by both
+    `unescaped_pipes` (which counts them) and `row_cells` (which splits on
+    them). It was inline in both until 2026-09-02, which made a SECOND copy of
+    the rule in the file whose whole lesson is that there must be one -- see
+    `unescaped_pipes` below for the incident that lesson came from.
+
+    BOTH halves are load-bearing and neither may be dropped to simplify this:
+      * `l[k] == '|'`        the delimiter
+      * `k == 0 or ...`      index 0 has no preceding character, so a row's
+                             LEADING pipe is always a boundary
+      * `l[k - 1] != '\\'`    a `\\|` inside a code span is CONTENT, not a
+                             boundary -- GAP-183 reads as 16 cells and has 6
+    """
+    return l[k] == '|' and (k == 0 or l[k - 1] != '\\')
 
 
 def unescaped_pipes(l):
@@ -36,8 +76,7 @@ def unescaped_pipes(l):
     defect in THIS gate. Agreement between instruments that share a blind
     spot is not corroboration. Hence: one function, called everywhere.
     """
-    return sum(1 for k, ch in enumerate(l)
-               if ch == '|' and (k == 0 or l[k - 1] != '\\'))
+    return sum(1 for k in range(len(l)) if _is_cell_boundary(l, k))
 
 
 rows = []
@@ -116,6 +155,28 @@ for _n, _l in enumerate(lines, 1):
                 'line %d col %d: U+%04X %s -- ...%s...'
                 % (_n, _k + 1, _o, _CTRL_NAMES.get(_o, 'CONTROL'), _ctx))
 
+# ---------------------------------------------------------------------------
+# CONFLICT MARKERS.
+#
+# ⚠️ FOUND BY REBASING THIS FILE THREE TIMES IN ONE SESSION: the gate returned
+# EXIT 0 on a CONFLICTED docs/gaps.md, every time.
+#
+# It is structural, not an oversight. Every other check here keys on lines
+# matching `^| ~*GAP-` or `^| ID`. Conflict markers start with `<`, `=` and `>`,
+# so the row parser does not merely tolerate them -- IT CANNOT SEE THEM. Both
+# sides of the conflict are then counted as ordinary rows, the totals go UP, and
+# every check still passes. THE FILE IS IN THE MOST BROKEN STATE GIT CAN LEAVE
+# IT IN AND THE GATE SAYS CLEAN.
+#
+# The pre-commit hook cannot save you either: `git add`-ing a conflicted file
+# marks it resolved, so the hook runs against exactly this content.
+conflict_markers = [
+    'line %d: %s' % (n, l[:60])
+    for n, l in enumerate(lines, 1)
+    if l.startswith('<<<<<<<') or l.startswith('>>>>>>>') or l.rstrip() == '======='
+]
+print('unresolved conflict markers:',
+      conflict_markers if conflict_markers else 'NONE')
 print('control characters (excl. tab):',
       control_chars if control_chars else 'NONE')
 print()
@@ -227,6 +288,18 @@ print()
 # row's line number and invalidate citations across the corpus, and it is
 # unnecessary because the tier is already in the row. Same precedent as
 # rule 4b -- the data outvotes the presentation.
+print('!! THE 4-COLUMN TABLES ARE PERMANENTLY EXEMPT FROM THE STATUS')
+print('   CONVENTION -- ruled 2026-09-02 on measurement, not convenience.')
+print('   They are Tier C subdivided BY CRATE: an INDEX of terse one-line')
+print('   capability declines where the gap statement IS the status')
+print('   ("Pad Reflect/Replicate modes return \'not yet implemented\'").')
+print('   Measured: of 79 such rows, 67 carry NO status language at all, so')
+print('   a Status column would mean writing OPEN into 67 cells -- a field')
+print('   identical for 85% of its rows. THAT IS NOT INFORMATION, IT IS A')
+print('   COLUMN THAT EXISTS TO BE FULL, and it is the same false precision')
+print('   the OPEN/<state> ruling rejected, one column over.')
+print('   64% honest beats 100% decorative. DO NOT "COMPLETE" THIS.')
+print()
 print('!! THE TIER CELL (column 3) IS AUTHORITATIVE. The `## Tier X` section')
 print('   headings are PRESENTATIONAL and membership in them is CHRONOLOGICAL:')
 print('   rows were appended where the file happened to end, not where their')
@@ -380,6 +453,226 @@ print('backlink detector self-test (sabotaged fixture must flag, clean must not)
 print('parents NOT citing their declared child:',
       missing_backlinks if missing_backlinks else 'NONE')
 
-if (odd or no_pipe or header_problems or control_chars
-        or missing_backlinks or _foundation):
+# ---------------------------------------------------------------------------
+# ARITY DISSENT -- ANY row disagreeing with its header, not just a MODAL one.
+#
+# ⚠️ `close_table()` above compares a header to the MODAL row count, so a
+# MINORITY of wrong-arity rows never trips it. Eighteen rows disagreed with
+# their header while it reported NONE. That is the THIRD time this file has
+# carried a check reporting clean over a population it structurally cannot see
+# -- and the second time in the same check, after the headerless fragments.
+#
+# The two directions are DIFFERENT DEFECTS and are reported separately:
+#   row has MORE cells than its header  -> the row carries status content the
+#                                          header has no column for
+#   row has FEWER cells than its header -> a missing cell. This is an ARITY
+#                                          defect, NOT a vocabulary violation,
+#                                          and the vocabulary check below must
+#                                          not index the cell that isn't there.
+arity_extra, arity_missing = [], []
+_hdr = None
+for n, l in enumerate(lines, 1):
+    if re.match(r'^\| ID\b', l):
+        _hdr = (n, unescaped_pipes(l) - 1)
+    elif re.match(r'^\| ~*GAP-', l):
+        if _hdr is not None:
+            own = unescaped_pipes(l) - 1
+            if own > _hdr[1]:
+                arity_extra.append('line %d: row has %d cells, header (line %d) has %d'
+                                   % (n, own, _hdr[0], _hdr[1]))
+            elif own < _hdr[1]:
+                arity_missing.append('line %d: row has %d cells, header (line %d) has %d'
+                                     % (n, own, _hdr[0], _hdr[1]))
+    elif not l.startswith('|'):
+        _hdr = None
+
+# ⚠️ A RATCHET, NOT A HARD GATE, AND THE REASON IS NOT LENIENCY. These 18 are
+# real, pre-existing and outside the scope of the change that added this check.
+# Failing on them would red-gate every commit in the repo until an unrelated
+# 18-row edit lands, and a gate that cannot be satisfied by following its own
+# advice teaches `--no-verify` -- a worse outcome than the drift it guards.
+# Same shape as the prose-hedge allowlist: the baseline MAY ONLY SHRINK.
+#
+# ⚠️ IF YOU FIX ROWS, LOWER THESE NUMBERS IN THE SAME COMMIT. A baseline left
+# above the true count is a gate that has quietly stopped guarding, which is the
+# defect this whole file exists to catch.
+ARITY_EXTRA_BASELINE = 1
+ARITY_MISSING_BASELINE = 0
+
+print()
+print('rows with MORE cells than their header (status content, no column): %d (baseline %d)'
+      % (len(arity_extra), ARITY_EXTRA_BASELINE))
+for _p in arity_extra:
+    print('    ' + _p)
+print('rows with FEWER cells than their header (ARITY defect, not vocabulary): %d (baseline %d)'
+      % (len(arity_missing), ARITY_MISSING_BASELINE))
+for _p in arity_missing:
+    print('    ' + _p)
+arity_regression = []
+if len(arity_extra) > ARITY_EXTRA_BASELINE:
+    arity_regression.append('MORE-cells rows rose %d -> %d'
+                            % (ARITY_EXTRA_BASELINE, len(arity_extra)))
+if len(arity_missing) > ARITY_MISSING_BASELINE:
+    arity_regression.append('FEWER-cells rows rose %d -> %d'
+                            % (ARITY_MISSING_BASELINE, len(arity_missing)))
+if len(arity_extra) < ARITY_EXTRA_BASELINE or len(arity_missing) < ARITY_MISSING_BASELINE:
+    arity_regression.append(
+        'BASELINE IS STALE AND MUST BE LOWERED IN THIS COMMIT: measured %d/%d, '
+        'baseline %d/%d -- a baseline above the true count is a gate that has '
+        'quietly stopped guarding'
+        % (len(arity_extra), len(arity_missing),
+           ARITY_EXTRA_BASELINE, ARITY_MISSING_BASELINE))
+print('arity ratchet:', arity_regression if arity_regression else 'HOLDING')
+# ⚠️ WHY THE `extra` BASELINE IS 1 AND NOT 0 -- ruled 2026-09-02, and it is a
+# decision rather than leftover debt.
+#
+# The single remaining dissent is GAP-099: a worked row, priced (64 literals /
+# 3 crates), ranked below C ON MEASUREMENT, and carrying a re-rank trigger. Its
+# tier is `—`, for which there is no section, so there is nowhere to relocate
+# it to. GAP-048/GAP-079 were folded because their status was a bare `OPEN` the
+# Gap text already carried, and nothing was lost. GAP-099 is the opposite kind
+# of row: it is precisely the row that OUTGREW the index, and folding its
+# status into prose to make this counter reach zero would be FITTING THE DATA
+# TO THE INSTRUMENT.
+#
+# The gate does not need the zero. The stale-baseline arm above already
+# prevents the only failure a ratchet has -- it can only shrink, and a baseline
+# left above the true count fires. A NAMED, REASONED 1 TELLS A READER
+# SOMETHING; A 0 BOUGHT THIS WAY WOULD TELL THEM THE FILE IS UNIFORM, WHICH IS
+# FALSE.
+if len(arity_extra) == 1 and not arity_regression:
+    print('   (the 1 is GAP-099 BY DECISION, not debt: a worked row whose tier')
+    print('    has no section. Folding its status to reach 0 would be fitting')
+    print('    the data to the instrument. Ruled 2026-09-02.)')
+
+# ---------------------------------------------------------------------------
+# STATUS VOCABULARY -- docs/design/gaps-status-vocabulary.md
+#
+# ⚠️⚠️ THIS BUYS GREPPABILITY, NOT ACCURACY. NOT ONE DEFECT FOUND IN THE
+# 2026-08-28 CLOSE-CONVENTION AUDIT WOULD HAVE BEEN CAUGHT BY IT. Every real
+# finding that night came from READING A ROW. Whoever cites this file may say
+# "N rows carry prefix X" and must NEVER say "N gaps are verified closed" on
+# the strength of it. A convention sold as hygiene and read as verification is
+# the defect this registry keeps producing -- printed here rather than left in
+# the design doc, because the doc is read once and this prints every commit.
+#
+# SCOPE IS THE ROW'S OWN ARITY, NOT ITS HEADER'S (ruled 2026-09-02). The row is
+# where the status lives; 14 rows carry a status cell under a 4-column header
+# and a header-keyed rule would exempt rows that are really in scope.
+STATUS_PREFIXES = ('CLOSED', 'PARTIAL', 'RE-OPENED', "WON'T DO", 'VOID',
+                   'MEASURED', 'OPEN')
+
+
+def normalise_status(c):
+    """Strip, FROM THE LEFT ONLY: whitespace, markdown emphasis, and any
+    non-ASCII character -- which is how the `✅` / `⚠️` leads are absorbed.
+
+    ⚠️ THIS IS A JUDGMENT AND IT IS STATED HERE ON PURPOSE. The design doc
+    called this test "exact, mechanical, no judgment", and that was literally
+    false for 13 of the cells: six lead with an emoji, four are empty, the rest
+    open with a backtick or bold. An UNSTATED normalisation inside a check
+    billed as having none is the spec being false about itself. The emoji
+    carries the same verdict the token does, so it is absorbed rather than
+    forbidden -- forbidding it would convert six correct rows into violations
+    for no greppability gain.
+    """
+    i = 0
+    while i < len(c) and (c[i].isspace() or c[i] in '*`~' or ord(c[i]) > 127):
+        i += 1
+    return c[i:]
+
+
+def status_prefix(c):
+    s = normalise_status(c).upper()
+    for p in sorted(STATUS_PREFIXES, key=len, reverse=True):
+        if s.startswith(p):
+            return p
+    return None
+
+
+def row_cells(l):
+    out, buf = [], []
+    for k, ch in enumerate(l):
+        if _is_cell_boundary(l, k):
+            out.append(''.join(buf))
+            buf = []
+        else:
+            buf.append(ch)
+    out.append(''.join(buf))
+    if out and not out[0].strip():
+        out = out[1:]
+    if out and not out[-1].strip():
+        out = out[:-1]
+    return [c.strip() for c in out]
+
+
+def vocab_findings(src_lines):
+    """(unrecognised-prefix rows, strikethrough contradictions, distribution).
+
+    A FUNCTION so the retained self-test below runs THIS code against fixtures
+    rather than a copy of it.
+    """
+    bad, contra, dist = [], [], Counter()
+    for n, l in enumerate(src_lines, 1):
+        _m = re.match(r'^\| (~*GAP-[0-9]+)', l)
+        if not _m:
+            continue
+        _cs = row_cells(l)
+        if len(_cs) != 5:      # arity defect, reported above -- NOT here
+            continue
+        _p = status_prefix(_cs[4])
+        dist[_p or '(UNRECOGNISED)'] += 1
+        if _p is None:
+            bad.append('line %d %s: status does not start with a set member -- %r'
+                       % (n, _m.group(1), normalise_status(_cs[4])[:60]))
+        elif _m.group(1).startswith('~~') and _p in ('PARTIAL', 'OPEN', 'RE-OPENED'):
+        # ⚠️ ASYMMETRIC ON PURPOSE -- DO NOT "COMPLETE" THIS INTO SYMMETRY.
+        #   struck + OPEN/PARTIAL -> FLAG. The row is hidden AND has open work,
+        #                            so the work is UNREACHABLE: strikethrough
+        #                            is what tells a reader not to look.
+        #   unstruck + CLOSED     -> do NOT flag. Visible, and says closed.
+        #                            Merely untidy; nothing is hidden.
+        # Asymmetric damage, asymmetric check.
+            contra.append('line %d %s: STRUCK but prefix is %s -- %r'
+                          % (n, _m.group(1), _p, normalise_status(_cs[4])[:60]))
+    return bad, contra, dist
+
+
+# ⚠️ RETAINED SELF-TEST, RUN EVERY INVOCATION. The cross-check below is called
+# "the ONE genuine accuracy test available here", and on 2026-09-02 it fired on
+# REAL DATA (`~~GAP-176~~`) -- the strongest evidence a check can have. But the
+# moment that row is dispositioned it goes green forever, and a check nobody has
+# seen fire is indistinguishable from one that does nothing. Real-data evidence
+# is a SNAPSHOT; this fixture is the STANDING proof.
+_FX_BAD = ['| GAP-903 | fx | C | fx | bespoke phrase with no set member |']
+_FX_CONTRA = ['| ~~GAP-904~~ | fx | C | fx | **PARTIAL** — work remains |']
+_FX_OK = ['| ~~GAP-905~~ | fx | C | fx | **CLOSED** — nothing remains |']
+_vb, _vc, _ = vocab_findings(_FX_BAD)
+_wb, _wc, _ = vocab_findings(_FX_CONTRA)
+_ob, _oc, _ = vocab_findings(_FX_OK)
+vocab_foundation = []
+if len(_vb) != 1:
+    vocab_foundation.append('prefix check did NOT flag an unrecognised lead (%r)' % _vb)
+if len(_wc) != 1:
+    vocab_foundation.append('cross-check did NOT flag a STRUCK PARTIAL (%r)' % _wc)
+if _ob or _oc:
+    vocab_foundation.append('a CLEAN struck+CLOSED fixture was flagged (%r %r)' % (_ob, _oc))
+
+bad_prefix, strike_contra, prefix_dist = vocab_findings(lines)
+
+print()
+print('vocabulary detector self-test (unrecognised must flag, struck-PARTIAL must '
+      'flag, struck-CLOSED must not):',
+      'PASS' if not vocab_foundation else vocab_foundation)
+print('status-prefix distribution (5-cell rows):',
+      dict(sorted(prefix_dist.items(), key=lambda kv: -kv[1])))
+print('rows whose status does not start with a set member:',
+      bad_prefix if bad_prefix else 'NONE')
+print('STRUCK rows whose prefix says work remains (asymmetric by design):',
+      strike_contra if strike_contra else 'NONE')
+
+if (odd or no_pipe or header_problems or control_chars or conflict_markers
+        or missing_backlinks or _foundation
+        or arity_regression or bad_prefix or strike_contra
+        or vocab_foundation):
     sys.exit(1)
