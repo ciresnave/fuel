@@ -45,7 +45,7 @@
 //! - **TDP-7** The kernel binding table is the source of truth for
 //!   "which backends have kernels registered." Op-coverage advertised
 //!   in `BackendCapabilities` is cross-checked against it via
-//!   [`SystemTopology::capabilities_op_coverage_is_subset`].
+//!   [`SystemTopology::capabilities_op_coverage_divergence`].
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock, RwLock};

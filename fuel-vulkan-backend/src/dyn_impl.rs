@@ -3,7 +3,7 @@
 //!
 //! `VulkanBackendDevice` is the wrapper type that satisfies
 //! [`DynBackendDevice`]. It carries an `Arc<VulkanBackend>` so a
-//! `fuel_core::Device` constructed from this wrapper can be downcast
+//! `fuel::Device` constructed from this wrapper can be downcast
 //! back to the concrete backend at dispatch time (the binding-table
 //! dispatch path reaches the backend through `Arc<VulkanBackend>`
 //! fields on `VulkanStorageBytes`).
@@ -16,7 +16,7 @@
 //! ([`VulkanBackend::alloc_bytes_handle`],
 //! [`VulkanBackend::upload_bytes_handle`],
 //! [`VulkanBackend::download_bytes`]) reached through
-//! `fuel_core::vulkan_backend::as_device(&device)`.
+//! `fuel::vulkan_backend::as_device(&device)`.
 //!
 //! [`VulkanBackend::alloc_bytes_handle`]: crate::VulkanBackend::alloc_bytes_handle
 //! [`VulkanBackend::upload_bytes_handle`]: crate::VulkanBackend::upload_bytes_handle
@@ -35,7 +35,7 @@ pub struct VulkanBackendDevice {
     inner: Arc<VulkanBackend>,
     /// RNG seed slot — Vulkan has no native RNG yet, so set/get
     /// merely round-trip a host-side `u64`. Tracked so calls to
-    /// [`fuel_core::Device::set_seed`] / `Device::get_current_seed`
+    /// `fuel::Device::set_seed` / `Device::get_current_seed`
     /// don't error out for downstream code that calls them
     /// unconditionally across backends.
     seed: Mutex<u64>,
@@ -55,7 +55,7 @@ impl std::fmt::Debug for VulkanBackendDevice {
 
 impl VulkanBackendDevice {
     /// Wrap an `Arc<VulkanBackend>` so it can stand in as an
-    /// `Arc<dyn DynBackendDevice>` for `fuel_core::Device`.
+    /// `Arc<dyn DynBackendDevice>` for `fuel::Device`.
     pub fn new(inner: Arc<VulkanBackend>) -> Self {
         Self {
             inner,
@@ -65,7 +65,7 @@ impl VulkanBackendDevice {
 
     /// Borrow the wrapped `Arc<VulkanBackend>`.
     ///
-    /// `fuel_core::vulkan_backend::as_device` downcasts a `&Device`
+    /// `fuel::vulkan_backend::as_device` downcasts a `&Device`
     /// to `&VulkanBackendDevice` and clones this `Arc` so the byte-
     /// storage allocation path can call
     /// [`VulkanBackend::alloc_bytes_handle`] etc.
@@ -110,7 +110,7 @@ fn vulkan_dyn_err(method: &'static str) -> Error {
          (VulkanStorageBytes via fuel_memory::Storage). Use the dedicated \
          allocation surface on VulkanBackend (alloc_bytes_handle, \
          upload_bytes_handle, download_bytes) reached via \
-         fuel_core::vulkan_backend::as_device(&device).",
+         fuel::vulkan_backend::as_device(&device).",
     ))
     .bt()
 }
