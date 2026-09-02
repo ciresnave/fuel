@@ -74,8 +74,25 @@ Added once, in the pilot, and every later repoint inherits it:
     fuel-core = { path = "./fuel-core", version = "0.10.3" }
 
 Chosen over a direct path dependency because `workspace = true` is the dominant
-convention — 4 of the 5 crates declaring `fuel-ir` use it. The one precedent for
-a direct path dep is the facade itself, which is a special case.
+convention: **18 of the 19 crates declaring `fuel-ir` use it**, the exception
+being `fuel-kiss-ref-backend`. The two pre-existing `fuel-core` dependents —
+`fuel` (the facade) and `fuel-vulkan-backend`, which passes
+`features = ["vulkan"]` — both use direct path deps, so the local precedent runs
+the other way; the workspace-wide convention is what decides it, and a
+feature-carrying dependency can be expressed as `workspace = true` with
+`features` anyway.
+
+⚠️ **THOSE NUMBERS WERE WRONG WHEN FIRST WRITTEN — "only the facade depends on
+`fuel-core`" and "4 of 5" — AND THE CAUSE IS A TRAP ANYONE RUNNING THESE QUERIES
+WILL HIT.** Both came from a grep anchored at column 0 (`^fuel-ir *=`). **Many
+manifests here INDENT their dependency declarations, so the anchor silently
+dropped them: 68 indented against 103 at column 0 — the query could not see 40%
+of the population.** It found real rows, returned a clean answer, and undercounted
+by more than a third. **Anchor dependency greps as `^[[:space:]]*<name>[[:space:]]*=`,
+and treat any manifest survey taken with a column-0 anchor as suspect.** The same
+bug initially made `fuel-transformers` and `fuel-datasets` look like they had
+identical reverse-dependency profiles, which would have falsely discredited the
+propagation tiers below.
 
 ### 2. Confirm every symbol you are repointing TO actually exists
 
