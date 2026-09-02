@@ -21,15 +21,15 @@ fuel-graph = { workspace = true }
 fuel-kernel-seam-types = { workspace = true }
 # kiss-ref advisory cross-check (cuda-gated verify path only) — see the `cuda` feature.
 fuel-kiss-ref-backend = { path = "../fuel-kiss-ref-backend", optional = true }
-# kiss-ref-core (github.com/ThinkersJournal/kiss-ref, crates.io "0.2") — the SINGLE
+# kiss-ref-core (github.com/ThinkersJournal/kiss-ref, crates.io "0.3") — the SINGLE
 # cross-project source of truth for the ULP-distance metric. `fkc::verify::ulp::
 # ulp_distance` delegates to `kiss_ref_core::ulp_distance_f32` so Fuel's verify stack
 # and any other "KISS-speaking" project compare floats byte-for-byte identically
 # (previously a Fuel-internal copy that had drifted on NaN handling). NON-optional:
 # `mod ulp;` is always compiled and its unit tests run under a plain `cargo test`.
-# `no_std`, small; already present transitively via fuel-kiss-ref-backend. "0.2"
-# tracks non-breaking 0.2.z per kiss-ref's release discipline (same as the adapter).
-kiss-ref-core = "0.2"
+# `no_std`, small; already present transitively via fuel-kiss-ref-backend. "0.3"
+# tracks non-breaking 0.3.z per kiss-ref's release discipline (same as the adapter).
+kiss-ref-core = "0.3"
 fuel-memory = { workspace = true }
 fuel-vulkan-backend = { workspace = true, optional = true }
 # Baracuda's shipped `structure_key` keyer (pure-Rust types crate — no nvcc).
@@ -56,10 +56,10 @@ fuel-kernel-seam = { workspace = true, optional = true }
 # `revision e8ae0b58… not found`, but the rev exists — that is the auth failure
 # wearing a missing-object message.)
 #
-# "0.2" matches `fuel-kiss-ref-backend/Cargo.toml`, so the two are now in
+# "0.3" matches `fuel-kiss-ref-backend/Cargo.toml`, so the two are now in
 # lockstep via a PUBLIC registry rather than a private rev — same intent as
 # before, minus the ability to break every build for anyone outside the org.
-kiss-ops-vocab = { version = "0.2", optional = true }
+kiss-ops-vocab = { version = "0.3", optional = true }
 # NVRTC (crates.io-pinned, no ../baracuda checkout) — only under `cuda`, for the
 # tests/jit_synth_kernel_live.rs on-device JIT-load test, which compiles a
 # scalar-ABI PTX kernel at test time.

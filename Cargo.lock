@@ -3192,21 +3192,21 @@ dependencies = [
 
 [[package]]
 name = "kiss-classify-vocab"
-version = "0.2.3"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "29df93d5496e200d4a61b3866cb8384ad22e17482b128b8f14afdfa7f089ab4e"
+checksum = "1e89422caebe2116ffe50387612df4a0e9276b0d5db12e5bb363d7b504a2d9fc"
 
 [[package]]
 name = "kiss-ops-vocab"
-version = "0.2.3"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af3891fa7ef282f0eb2b55042dbc392301fe938d9753e3ebe38ff0b7bfff9933"
+checksum = "6543126bce86d20287b71d2a55384b93034ad4965a4e91452cd5c186942d225d"
 
 [[package]]
 name = "kiss-ref-core"
-version = "0.2.3"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "033fab75ff86c324470c43792f9306768a3f79e61a99394f5f6bc268ba9148a6"
+checksum = "3e9d7100aaef5a647d305699d6de787d6bb44e021c08c8a777e02dcad619bb3c"
 dependencies = [
  "half",
  "kiss-classify-vocab",
