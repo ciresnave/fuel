@@ -223,6 +223,10 @@ origin/main  1be77f05  2026-08-20
 
 **PRACTICE: branch from `origin/main`, never from local `main`; and when a measurement disagrees with something you believe, check `git rev-list --count main..origin/main` before re-deriving the claim.** Same instrument as the shared-tree case, pointed at a ref instead of a directory.
 
+⚠️ **THAT PRACTICE IS REACTIVE, AND A 2026-09-02 INSTANCE DEFEATED IT: *"when a measurement disagrees with something you believe"* REQUIRES A DISAGREEMENT.** A behaviour-preserving refactor of the gaps gate's pipe-splitter was verified by a differential over every line of `docs/gaps.md`, before and after. **It returned IDENTICAL — and it was IDENTICAL ABOUT THE WRONG FILE**, because the local branch was one commit behind its own remote. **Measured: the differential recorded 350 lines where the real file has 353.** ⚠️ **A reassuring result, and reassuring results are not audited.** Git had said so — `git checkout` printed *"use git pull to update your local branch"* — but that line is **noise-shaped**, and it appears whether or not it matters.
+
+⚠️ **THE DETECTOR THAT ACTUALLY CAUGHT IT IS PROACTIVE, CHEAP, AND UNLIKE `git status` CANNOT BE READ AS NOISE: GREP THE TREE FOR THE NEWEST ARTIFACT YOU KNOW LANDED.** Here, a conflict-marker check written into that very file two PRs earlier was **absent from the working tree** — and it could only be absent if the tree predated a commit known to have merged. **The tell was a thing that SHOULD have been there and was not, which is the opposite of the usual stale-tree tell and is why it survives a clean result.** **State it as: *before trusting any measurement taken from a checkout, grep for the newest thing you know is in it.*** It costs one grep, it works when the answer is flattering, and **it only works if you pick an artifact distinctive enough that its absence is unambiguous** — a recently-landed check, a named constant, a new function — never something a merge could plausibly have renamed.
+
 ---
 
 ## a-297-byte-log-has-three-causes
