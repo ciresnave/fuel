@@ -345,6 +345,18 @@ fn unjudged_coverage_may_only_shrink() {
 /// fuel-format-interchange-onnx)`, and this gate's dependency order puts it with
 /// the model libraries. **Three sources, three names, no ruling.** Its violation
 /// verdict is unaffected either way, so nothing is blocked on resolving it.
+///
+/// # The escape hatch can empty the population it exempts from
+///
+/// `disputed` is a hatch, and a hatch that grows silently hollows out the arm:
+/// were it to cover all six declaring crates, this test would compare NOTHING
+/// and still pass its `declared.len() >= 6` floor, because that floor asserts
+/// the PARSE worked, not that anything was CHECKED. **The guard and the escape
+/// hatch were measuring different quantities and only one was asserted.** So
+/// the count that MOVES if this arm becomes a no-op is asserted instead --
+/// comparisons actually made. Same shape as an allowlist that grows until
+/// nothing is checked: whenever you add an exemption mechanism, assert the size
+/// of the set that SURVIVES it, never the size of the set going in.
 #[test]
 fn self_declared_layers_agree_with_the_tier_file() {
     let w = load();
