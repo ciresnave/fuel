@@ -17,8 +17,8 @@
 //! parameters with optional bias.
 
 use crate::modules::Module;
-use fuel::Result;
-use fuel::lazy::{Tensor, WeightStorage};
+use fuel_core::Result;
+use fuel_core::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -56,10 +56,10 @@ impl LoraLinear {
         out_features: usize,
     ) -> Result<Self> {
         if rank == 0 {
-            return Err(fuel::Error::Msg("LoraLinear::new: rank must be > 0".into()).bt());
+            return Err(fuel_core::Error::Msg("LoraLinear::new: rank must be > 0".into()).bt());
         }
         if base_weight.elem_count() != in_features * out_features {
-            return Err(fuel::Error::Msg(format!(
+            return Err(fuel_core::Error::Msg(format!(
                 "LoraLinear::new: base_weight has {} elements but \
                  in_features * out_features = {} * {} = {}",
                 base_weight.elem_count(),
@@ -70,7 +70,7 @@ impl LoraLinear {
             .bt());
         }
         if matches!(base_weight, WeightStorage::WithLoRA { .. }) {
-            return Err(fuel::Error::Msg(
+            return Err(fuel_core::Error::Msg(
                 "LoraLinear::new: base_weight is already WithLoRA \
                  (nested adapters unsupported)"
                     .into(),
@@ -78,7 +78,7 @@ impl LoraLinear {
             .bt());
         }
         if lora_a.len() != in_features * rank {
-            return Err(fuel::Error::Msg(format!(
+            return Err(fuel_core::Error::Msg(format!(
                 "LoraLinear::new: lora_a has {} elements but \
                  in_features * rank = {} * {} = {}",
                 lora_a.len(),
@@ -89,7 +89,7 @@ impl LoraLinear {
             .bt());
         }
         if lora_b.len() != rank * out_features {
-            return Err(fuel::Error::Msg(format!(
+            return Err(fuel_core::Error::Msg(format!(
                 "LoraLinear::new: lora_b has {} elements but \
                  rank * out_features = {} * {} = {}",
                 lora_b.len(),
@@ -102,7 +102,7 @@ impl LoraLinear {
         if let Some(b) = bias.as_ref()
             && b.len() != out_features
         {
-            return Err(fuel::Error::Msg(format!(
+            return Err(fuel_core::Error::Msg(format!(
                 "LoraLinear::new: bias has length {} but \
                      out_features = {}",
                 b.len(),
@@ -189,7 +189,7 @@ impl Module for LoraLinear {
 mod tests {
     use super::*;
     use crate::modules::Linear;
-    use fuel::Device;
+    use fuel_core::Device;
 
     fn ramp_f32(n: usize, scale: f32, offset: f32) -> Vec<f32> {
         (0..n).map(|i| (i as f32) * scale + offset).collect()
