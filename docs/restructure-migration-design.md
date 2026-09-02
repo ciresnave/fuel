@@ -1,6 +1,6 @@
 # Fuel restructure — migration design
 
-**Status**: draft for review, 2026-08-26. Measured at `1b6ae698`.
+**Status**: Stage 1 **SHIPPED** 2026-09-02 (`a2027651`, PR #35); Stages 2–4 not yet executed. Originally drafted 2026-08-26, measured at `1b6ae698` (pre-Stage-1).
 **Reviewers requested**: Vulkane (live external backend), Lightbulb (external consumer of `fuel-core`), Unpopped (provider, if the FKC surface publishes), the portfolio PM (claims-against-refs).
 **Author**: Fuel architect. Corrected four times before landing; see §10.
 
@@ -228,6 +228,13 @@ Four stages. **Each is independently valuable and independently revertible**, an
 no stage begins before its predecessor's gate is green.
 
 ### Stage 1 — Make `fuel` real (small, unblocks everything)
+
+**SHIPPED 2026-09-02 — `a2027651`, PR #35.** The facade crate landed: a
+byte-identical public surface (`pub use fuel_core::*` + an explicit `bail`
+re-export) with a 1:1 feature-forwarding gate, consumer impact nil (all 6
+`fuel::` consumers compiled unchanged). The `fuel_core::` doc/prose sites are a
+separate follow-up (PR #43) — 7 converted, 7 left after a STALE/HISTORICAL/PINNED
+read, 2 deferred to Stage 2 (below). The original plan text is kept for the record:
 
 Convert the 18 `fuel_core::` sites to `fuel::`. Create `fuel` as a real crate
 whose `lib.rs` re-exports exactly what `fuel-core/src/lib.rs` exports today.
