@@ -89,6 +89,15 @@ fn member_dir_name(entry: &str) -> String {
     cleaned.trim().split('/').next().unwrap_or("").to_string()
 }
 
+/// Whether a `members` entry names a real crate directory on disk.
+///
+/// Three conditions, named rather than inlined: non-empty, not a comment, and
+/// carrying a manifest. **None may be dropped** -- the disk check is what keeps
+/// a commented-out or planned member out of the graph.
+fn is_member_dir(root: &Path, name: &str) -> bool {
+    !name.is_empty() && !name.starts_with('#') && root.join(name).join("Cargo.toml").exists()
+}
+
 /// Workspace member directory names, read from the root manifest's `members`.
 fn workspace_members(root: &Path) -> BTreeSet<String> {
     let txt = std::fs::read_to_string(root.join("Cargo.toml")).expect("root manifest");
@@ -108,10 +117,7 @@ fn workspace_members(root: &Path) -> BTreeSet<String> {
             continue;
         }
         let name = member_dir_name(t);
-        if !name.is_empty()
-            && !name.starts_with('#')
-            && root.join(&name).join("Cargo.toml").exists()
-        {
+        if is_member_dir(root, &name) {
             out.insert(name);
         }
     }
@@ -153,20 +159,34 @@ fn dependency_edges(root: &Path, members: &BTreeSet<String>) -> BTreeSet<(String
         let Ok(txt) = std::fs::read_to_string(root.join(m).join("Cargo.toml")) else {
             continue;
         };
-        let mut in_normal_deps = false;
-        for line in txt.lines() {
-            let t = line.trim();
-            if t.starts_with('[') {
-                in_normal_deps = opens_normal_deps(t);
-                continue;
-            }
-            if !in_normal_deps || t.starts_with('#') || t.is_empty() {
-                continue;
-            }
-            let name = declared_dep_name(t);
-            if members.contains(&name) && name != *m {
-                out.insert((m.clone(), name));
-            }
+        out.extend(manifest_edges(&txt, m, members));
+    }
+    out
+}
+
+/// Every NORMAL intra-workspace dependency that ONE manifest declares.
+///
+/// Separated from the walk so this reads as the grammar and the caller reads as
+/// the traversal. No condition changed.
+fn manifest_edges(
+    txt: &str,
+    owner: &str,
+    members: &BTreeSet<String>,
+) -> BTreeSet<(String, String)> {
+    let mut out = BTreeSet::new();
+    let mut in_normal_deps = false;
+    for line in txt.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            in_normal_deps = opens_normal_deps(t);
+            continue;
+        }
+        if !in_normal_deps || t.starts_with('#') || t.is_empty() {
+            continue;
+        }
+        let name = declared_dep_name(t);
+        if members.contains(&name) && name != *owner {
+            out.insert((owner.to_string(), name));
         }
     }
     out
