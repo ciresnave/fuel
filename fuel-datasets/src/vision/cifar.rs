@@ -5,7 +5,7 @@
 //! <https://www.cs.toronto.edu/~kriz/cifar.html>
 //! The binary version of the dataset is used.
 use crate::vision::Dataset;
-use fuel::{Error, Result};
+use fuel_core::{Error, Result};
 use hf_hub::{Repo, RepoType, api::sync::Api};
 use parquet::file::reader::{FileReader, SerializedFileReader};
 use std::fs::File;
@@ -48,7 +48,7 @@ fn read_file(filename: &std::path::Path) -> Result<(Vec<f32>, Vec<u32>)> {
 /// ```no_run
 /// use fuel_datasets::vision::cifar;
 /// let dataset = cifar::load_dir("data/cifar-10-batches-bin")?;
-/// # Ok::<(), fuel::Error>(())
+/// # Ok::<(), fuel_core::Error>(())
 /// ```
 pub fn load_dir<T: AsRef<std::path::Path>>(dir: T) -> Result<Dataset> {
     let dir = dir.as_ref();
@@ -132,7 +132,7 @@ fn load_parquet(
 /// use fuel_datasets::vision::cifar;
 /// let dataset = cifar::load()?;
 /// println!("train samples: {}, dims: {:?}", dataset.train_samples, dataset.image_dims);
-/// # Ok::<(), fuel::Error>(())
+/// # Ok::<(), fuel_core::Error>(())
 /// ```
 pub fn load() -> Result<Dataset> {
     let api = Api::new().map_err(|e| Error::Msg(format!("Api error: {e}")))?;
