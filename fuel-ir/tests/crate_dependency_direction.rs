@@ -182,6 +182,36 @@ fn tsv_records(path: &Path) -> Vec<Vec<String>> {
         .collect()
 }
 
+/// Refuse a degenerate graph. These live here, not in one arm, so NO arm can
+/// pass vacuously over missing data -- the failure this gate exists to prevent.
+fn assert_graph_is_whole(
+    members: &BTreeSet<String>,
+    edges: &BTreeSet<(String, String)>,
+    tiers: &BTreeMap<String, (u32, String)>,
+) {
+    // FOUNDATION. Here rather than in one arm, so NO arm can pass vacuously
+    // over missing data -- the failure this gate exists to prevent.
+    assert!(
+        members.len() >= 30,
+        "found only {} workspace members -- the manifest scan is broken, and a \
+     broken scan and a clean tree are byte-identical here",
+        members.len()
+    );
+    assert!(
+        edges.len() >= 50,
+        "found only {} intra-workspace dependency edges -- the manifest parse is \
+     broken. A column-0 anchor misses indented declarations and returns a \
+     confident low number",
+        edges.len()
+    );
+    assert!(
+        tiers.len() >= 25,
+        "crate_dependency_tiers.txt assigns only {} crates. If this file were \
+     emptied every arm below would judge NOTHING and still pass",
+        tiers.len()
+    );
+}
+
 /// Parse everything once, and REFUSE to return a degenerate graph.
 fn load() -> Workspace {
     let root = workspace_root();
@@ -207,27 +237,7 @@ fn load() -> Workspace {
         }
     }
 
-    // FOUNDATION. Here rather than in one arm, so NO arm can pass vacuously
-    // over missing data -- the failure this gate exists to prevent.
-    assert!(
-        members.len() >= 30,
-        "found only {} workspace members -- the manifest scan is broken, and a \
-         broken scan and a clean tree are byte-identical here",
-        members.len()
-    );
-    assert!(
-        edges.len() >= 50,
-        "found only {} intra-workspace dependency edges -- the manifest parse is \
-         broken. A column-0 anchor misses indented declarations and returns a \
-         confident low number",
-        edges.len()
-    );
-    assert!(
-        tiers.len() >= 25,
-        "crate_dependency_tiers.txt assigns only {} crates. If this file were \
-         emptied every arm below would judge NOTHING and still pass",
-        tiers.len()
-    );
+    assert_graph_is_whole(&members, &edges, &tiers);
 
     Workspace {
         members,
@@ -346,6 +356,103 @@ fn unjudged_coverage_may_only_shrink() {
     );
 }
 
+/// Declared layer name -> the layer name this gate's tier file uses.
+///
+/// **The mapping IS the interesting part, so it is stated rather than inferred**
+/// and lives at module scope where a reader looks for it. `Inference` and
+/// `Training` are not diagram band names; the diagram calls that band Use-Case
+/// Orchestration.
+const LAYER_VOCABULARY: &[(&str, &str)] = &[
+    ("Use-Case Orchestration", "use-case orchestration"),
+    ("Inference", "use-case orchestration"),
+    ("Training", "use-case orchestration"),
+    ("Models", "models / libraries"),
+];
+
+/// Crates whose layer name three sources disagree about, recorded rather than
+/// forced into a mapping. **This is an escape hatch, so the arm asserts the
+/// number of comparisons that SURVIVE it, never the number going in.**
+const DISPUTED_LAYERS: &[(&str, &str)] = &[(
+    "fuel-onnx",
+    "declares IO; 02-layers:76 says Interchange; tiered with the model \
+     libraries by dependency order. Three sources, three names, no ruling.",
+)];
+
+/// `(crate, layer)` for every crate that states its own layer in a `**Layer**:`
+/// doc line. Extracted so the arm below reads as the COMPARISON it is; the
+/// delimiter rule here is the subtle part and deserves its own home.
+fn self_declared_layers(w: &Workspace) -> Vec<(String, String)> {
+    let (root, members) = (&w.root, &w.members);
+    let mut declared: Vec<(String, String)> = Vec::new();
+    for m in members {
+        let Ok(txt) = std::fs::read_to_string(root.join(m).join("src/lib.rs")) else {
+            continue;
+        };
+        let Some(raw) = txt.lines().find_map(|l| l.split("**Layer**:").nth(1)) else {
+            continue;
+        };
+        // The label ends at the first em-dash, pipe, or sentence stop; several
+        // declarations run prose afterwards. It is NOT split on '-', because the
+        // longest label in use is "Use-Case Orchestration" -- a hyphen split
+        // yields "Use", which is a plausible-LOOKING label that no assertion
+        // would reject, so the tidier parser fails SILENTLY. The correct
+        // delimiter set is longer and less obvious than the wrong one.
+        let label = raw
+            .split(['\u{2014}', '|'])
+            .next()
+            .unwrap_or("")
+            .split('.')
+            .next()
+            .unwrap_or("")
+            .trim()
+            .trim_matches('*')
+            .trim()
+            .to_string();
+        if !label.is_empty() {
+            declared.push((m.clone(), label));
+        }
+    }
+    declared
+}
+
+/// Compare each declared layer against its tier, returning the disagreements
+/// and **the number of comparisons actually made**.
+///
+/// The count is returned rather than inferred because it is the quantity that
+/// moves if this check becomes a no-op: `declared.len()` would not.
+fn layer_mismatches(
+    declared: &[(String, String)],
+    tiers: &BTreeMap<String, (u32, String)>,
+) -> (Vec<String>, usize) {
+    let mut mismatches = Vec::new();
+    let mut compared = 0usize;
+    for (krate, label) in declared {
+        if DISPUTED_LAYERS.iter().any(|(d, _)| d == krate) {
+            continue;
+        }
+        let Some((_, tier_layer)) = tiers.get(krate) else {
+            continue; // unassigned crates are reported by the coverage arm
+        };
+        compared += 1;
+        match LAYER_VOCABULARY
+            .iter()
+            .find(|(d, _)| d == label)
+            .map(|(_, t)| *t)
+        {
+            Some(e) if e == tier_layer => {}
+            Some(e) => mismatches.push(format!(
+                "{krate}: declares {label:?} (maps to {e:?}) but is tiered {tier_layer:?}"
+            )),
+            None => mismatches.push(format!(
+                "{krate}: declares {label:?}, which has no entry in this arm's \
+             vocabulary map. Add the mapping, or record it as disputed WITH \
+             A REASON -- do not force it."
+            )),
+        }
+    }
+    (mismatches, compared)
+}
+
 /// Where a crate states its own layer in a `**Layer**:` doc line, the tier file
 /// must agree with it.
 ///
@@ -377,48 +484,8 @@ fn unjudged_coverage_may_only_shrink() {
 #[test]
 fn self_declared_layers_agree_with_the_tier_file() {
     let w = load();
-    let map: &[(&str, &str)] = &[
-        ("Use-Case Orchestration", "use-case orchestration"),
-        ("Inference", "use-case orchestration"),
-        ("Training", "use-case orchestration"),
-        ("Models", "models / libraries"),
-    ];
-    let disputed: &[(&str, &str)] = &[(
-        "fuel-onnx",
-        "declares IO; 02-layers:76 says Interchange; tiered with the model \
-         libraries by dependency order. Three sources, three names, no ruling.",
-    )];
 
-    let mut declared: Vec<(String, String)> = Vec::new();
-    for m in &w.members {
-        let Ok(txt) = std::fs::read_to_string(w.root.join(m).join("src/lib.rs")) else {
-            continue;
-        };
-        let Some(raw) = txt.lines().find_map(|l| l.split("**Layer**:").nth(1)) else {
-            continue;
-        };
-        // The label ends at the first em-dash, pipe, or sentence stop; several
-        // declarations run prose afterwards. It is NOT split on '-', because the
-        // longest label in use is "Use-Case Orchestration" -- a hyphen split
-        // yields "Use", which is a plausible-LOOKING label that no assertion
-        // would reject, so the tidier parser fails SILENTLY. The correct
-        // delimiter set is longer and less obvious than the wrong one.
-        let label = raw
-            .split(['\u{2014}', '|'])
-            .next()
-            .unwrap_or("")
-            .split('.')
-            .next()
-            .unwrap_or("")
-            .trim()
-            .trim_matches('*')
-            .trim()
-            .to_string();
-        if !label.is_empty() {
-            declared.push((m.clone(), label));
-        }
-    }
-
+    let declared = self_declared_layers(&w);
     // FOUNDATION for this arm specifically: a broken doc-parse yields zero
     // declarations and then agrees with everything.
     assert!(
@@ -429,28 +496,8 @@ fn self_declared_layers_agree_with_the_tier_file() {
         declared.len()
     );
 
-    let mut mismatches = Vec::new();
-    let mut compared = 0usize;
-    for (krate, label) in &declared {
-        if disputed.iter().any(|(d, _)| d == krate) {
-            continue;
-        }
-        let Some((_, tier_layer)) = w.tiers.get(krate) else {
-            continue; // unassigned crates are reported by the coverage arm
-        };
-        compared += 1;
-        match map.iter().find(|(d, _)| d == label).map(|(_, t)| *t) {
-            Some(e) if e == tier_layer => {}
-            Some(e) => mismatches.push(format!(
-                "{krate}: declares {label:?} (maps to {e:?}) but is tiered {tier_layer:?}"
-            )),
-            None => mismatches.push(format!(
-                "{krate}: declares {label:?}, which has no entry in this arm's \
-                 vocabulary map. Add the mapping, or record it as disputed WITH \
-                 A REASON -- do not force it."
-            )),
-        }
-    }
+    let (mismatches, compared) = layer_mismatches(&declared, &w.tiers);
+
     // THE COUNT THAT MOVES IF THIS ARM BECOMES A NO-OP. `declared.len()` does
     // not -- it asserts the PARSE worked. Only this asserts anything was
     // CHECKED, and the `disputed` hatch is exactly what could empty it.
