@@ -58,6 +58,28 @@ pub trait UnaryOp<T: Copy> {
 pub trait UnaryOpCore {
     fn f32(x: f32) -> f32;
     fn f64(x: f64) -> f64;
+
+    /// Narrow-float lowering. THE DEFAULT PROMOTES, COMPUTES AND ROUNDS BACK,
+    /// which is correct for every op that COMPUTES its result -- rounding a
+    /// computed narrow value is what KISS-OPS-6.16-0003 licenses.
+    ///
+    /// ⚠️ OPS THAT **SELECT** MUST OVERRIDE THIS AND RETURN SOURCE BITS.
+    /// IEEE 754-2019 §5.5.1 makes `negate`/`abs`/`copySign` SIGN-BIT
+    /// operations, not arithmetic: they neither signal on a signalling NaN nor
+    /// quiet it. Routing them through f32 does quiet it -- measured, bf16
+    /// `0x7F81` (signalling) comes back `0x7FC1` (quiet), because the quiet bit
+    /// is set on the WIDENING convert, before the op runs at all.
+    ///
+    /// The split is the same one KISS #355 and #363 draw: COMPUTE may quiet
+    /// (IEEE default exception handling), SELECT may not.
+    fn bf16(x: half::bf16) -> half::bf16 {
+        half::bf16::from_f32(Self::f32(x.to_f32()))
+    }
+
+    /// See [`UnaryOpCore::bf16`].
+    fn f16(x: half::f16) -> half::f16 {
+        half::f16::from_f32(Self::f32(x.to_f32()))
+    }
 }
 
 // Blanket impls.
@@ -76,13 +98,13 @@ impl<O: UnaryOpCore> UnaryOp<f64> for O {
 
 impl<O: UnaryOpCore> UnaryOp<half::bf16> for O {
     fn apply(x: half::bf16) -> half::bf16 {
-        half::bf16::from_f32(<O as UnaryOpCore>::f32(x.to_f32()))
+        <O as UnaryOpCore>::bf16(x)
     }
 }
 
 impl<O: UnaryOpCore> UnaryOp<half::f16> for O {
     fn apply(x: half::f16) -> half::f16 {
-        half::f16::from_f32(<O as UnaryOpCore>::f32(x.to_f32()))
+        <O as UnaryOpCore>::f16(x)
     }
 }
 
@@ -140,6 +162,34 @@ impl UnaryOpCore for Relu {
     fn f64(x: f64) -> f64 {
         if x < 0.0 { 0.0 } else { x }
     }
+
+    // ⚠️ NARROW OVERRIDE -- Relu SELECTS: on the `else` branch the result IS the
+    // input, so it must be the input's BITS. The default promotes through f32,
+    // and `bf16::to_f32` QUIETS a signalling NaN before the predicate runs.
+    // Measured: 0x7F81 (signalling) came back 0x7FC1 (quiet); the branch taken
+    // was ELSE (observed, with a -2.5 control proving the probe distinguishes
+    // the branches), so a SOURCE value was quieted on its way through.
+    //
+    // `-0.0` behaviour is UNCHANGED and deliberately so: `-0.0 < 0.0` is false
+    // in narrow exactly as in f32, so `-0.0` passes through. That contract is
+    // pinned twice in the decisions log (2026-07-08 NaN, 2026-07-14 -0.0) and
+    // this override preserves it rather than relying on the round-trip to.
+    fn bf16(x: half::bf16) -> half::bf16 {
+        if x < half::bf16::ZERO {
+            half::bf16::ZERO
+        } else {
+            x
+        }
+    }
+
+    /// See [`Relu::bf16`].
+    fn f16(x: half::f16) -> half::f16 {
+        if x < half::f16::ZERO {
+            half::f16::ZERO
+        } else {
+            x
+        }
+    }
 }
 
 /// Negation: `-x`.
@@ -149,6 +199,25 @@ impl UnaryOpCore for Neg {
         -x
     }
     fn f64(x: f64) -> f64 {
+        -x
+    }
+
+    // ⚠️ NARROW OVERRIDE -- do NOT delete to "simplify". The default promotes
+    // through f32, and `bf16::to_f32` QUIETS a signalling NaN (half 2.7.1
+    // `convert.rs`, `i | 0x0040`), before this op runs at all. IEEE 754-2019
+    // §5.5.1 classes negate/abs/copySign as SIGN-BIT operations that neither
+    // signal nor quiet, so promoting here violates the standard directly --
+    // not KISS #355 by analogy. Measured: bf16 0x7F81 (signalling) came back
+    // 0x7FC1 (quiet) through the default path.
+    //
+    // `half`'s own `impl Neg for bf16` is exactly `Self(self.0 ^ 0x8000)`, so
+    // delegating to `-x` is the bit operation, not a promotion.
+    fn bf16(x: half::bf16) -> half::bf16 {
+        -x
+    }
+
+    /// See [`Neg::bf16`].
+    fn f16(x: half::f16) -> half::f16 {
         -x
     }
 }
@@ -194,6 +263,26 @@ impl UnaryOpCore for Abs {
     }
     fn f64(x: f64) -> f64 {
         x.abs()
+    }
+
+    // ⚠️ NARROW OVERRIDE -- do NOT delete to "simplify". The default promotes
+    // through f32, and `bf16::to_f32` QUIETS a signalling NaN (half 2.7.1
+    // `convert.rs`, `i | 0x0040`), before this op runs at all. IEEE 754-2019
+    // §5.5.1 classes negate/abs/copySign as SIGN-BIT operations that neither
+    // signal nor quiet, so promoting here violates the standard directly --
+    // not KISS #355 by analogy. Measured: bf16 0x7F81 (signalling) came back
+    // 0x7FC1 (quiet) through the default path.
+    //
+    // ⚠️ WRITTEN OUT because `half` HAS NO `abs` on `bf16`/`f16` -- measured,
+    // zero occurrences, with `fn signum` (1 hit) as the control proving the
+    // query would have found one. Clearing the sign bit is the whole operation.
+    fn bf16(x: half::bf16) -> half::bf16 {
+        half::bf16::from_bits(x.to_bits() & 0x7FFF)
+    }
+
+    /// See [`Abs::bf16`].
+    fn f16(x: half::f16) -> half::f16 {
+        half::f16::from_bits(x.to_bits() & 0x7FFF)
     }
 }
 
@@ -401,6 +490,87 @@ impl UnaryOpCore for GeluTanh {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// KISS #355: SIGN-BIT and SELECT ops must not QUIET a signalling NaN.
+    ///
+    /// The default narrow lowering promotes through f32, and `bf16::to_f32`
+    /// quiets deliberately (`half` 2.7.1 `convert.rs`, `i | 0x0040`) BEFORE the
+    /// op runs. IEEE 754-2019 §5.5.1 classes negate/abs/copySign as sign-bit
+    /// operations that neither signal nor quiet; `Relu` selects its input on the
+    /// `else` branch, so its result is a SOURCE value too.
+    ///
+    /// ⚠️ THE POSITIVE CONTROL IS LOAD-BEARING. "Still signalling" only means
+    /// something if the promoting path demonstrably quiets in this same build --
+    /// otherwise a fixture that was never signalling, or a `half` version that
+    /// stopped quieting, would make every assertion below pass vacuously.
+    #[test]
+    fn sign_bit_and_select_ops_preserve_a_signalling_nan_in_narrow() {
+        const QUIET: u16 = 0x0040;
+        let s = half::bf16::from_bits(0x7F81); // exp all ones, mantissa set, quiet CLEAR
+        assert!(s.is_nan(), "fixture is not a NaN");
+        assert_eq!(s.to_bits() & QUIET, 0, "fixture must be SIGNALLING");
+
+        // CONTROL: the DEFAULT (promoting) lowering must quiet. `Sqrt` computes,
+        // so it legitimately keeps the default path.
+        let promoted = <Sqrt as UnaryOpCore>::bf16(s);
+        assert_ne!(
+            promoted.to_bits() & QUIET,
+            0,
+            "control failed: the promoting path did NOT quiet, so 'still signalling'              below proves nothing -- check the fixture and half's convert"
+        );
+
+        for (name, got) in [
+            ("Neg", <Neg as UnaryOpCore>::bf16(s)),
+            ("Abs", <Abs as UnaryOpCore>::bf16(s)),
+            ("Relu", <Relu as UnaryOpCore>::bf16(s)),
+        ] {
+            assert!(got.is_nan(), "{name} lost NaN-ness entirely");
+            assert_eq!(
+                got.to_bits() & QUIET,
+                0,
+                "{name} QUIETED a signalling NaN (0x{:04X} -> 0x{:04X}); it is a                  sign-bit/select op and must return SOURCE bits, not round an f32                  result. See KISS #355 and IEEE 754-2019 §5.5.1.",
+                s.to_bits(),
+                got.to_bits()
+            );
+        }
+    }
+
+    /// The narrow overrides must not change any ORDINARY value -- otherwise the
+    /// NaN fix would be bought with a numeric regression nothing else asserts.
+    #[test]
+    fn narrow_overrides_agree_with_the_promoting_path_on_non_nan_values() {
+        // ±inf (0x7F80/0xFF80) included: neither finite nor NaN, so the
+        // exactness argument -- worded about FINITE values -- does not cover
+        // them. Both conversion legs take their non-NaN path for an infinity
+        // and round-trip it exactly, so these must agree.
+        for bits in [
+            0x3F80u16, 0xC020, 0x0000, 0x8000, 0x7F7F, 0xFF7F, 0x7F80, 0xFF80,
+        ] {
+            let x = half::bf16::from_bits(bits);
+            assert_eq!(
+                <Neg as UnaryOpCore>::bf16(x).to_bits(),
+                half::bf16::from_f32(-x.to_f32()).to_bits(),
+                "Neg diverged from the promoting path on 0x{bits:04X}"
+            );
+            assert_eq!(
+                <Abs as UnaryOpCore>::bf16(x).to_bits(),
+                half::bf16::from_f32(x.to_f32().abs()).to_bits(),
+                "Abs diverged from the promoting path on 0x{bits:04X}"
+            );
+            assert_eq!(
+                <Relu as UnaryOpCore>::bf16(x).to_bits(),
+                half::bf16::from_f32(if x.to_f32() < 0.0 { 0.0 } else { x.to_f32() }).to_bits(),
+                "Relu diverged from the promoting path on 0x{bits:04X}"
+            );
+        }
+        // -0.0 explicitly: the contract pinned twice in the decisions log.
+        let nz = half::bf16::from_f32(-0.0);
+        assert_eq!(
+            <Relu as UnaryOpCore>::bf16(nz).to_bits(),
+            nz.to_bits(),
+            "Relu must PRESERVE -0.0 (pinned 2026-07-14), not normalise it to +0.0"
+        );
+    }
 
     #[test]
     fn unary_op_neg_f32_negates() {
