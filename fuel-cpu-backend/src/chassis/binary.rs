@@ -162,10 +162,12 @@ impl BinaryOpCore for Div {
 /// Elementwise maximum. NaN-propagating (torch parity —
 /// `torch.maximum` returns NaN if *either* operand is NaN), pinned
 /// 2026-07-08 (`docs/architecture/10-decisions-log.md`). Deliberately
-/// does *not* use `f32::max`/`f64::max` (those are NaN-as-missing —
-/// they return the non-NaN operand instead). Payload-preserving: the
-/// NaN operand is returned as-is (`a` checked before `b`, matching
-/// `torch.maximum`'s lhs-first tie-break).
+/// does *not* use `f32::max`/`f64::max`: those are NaN-as-missing (they
+/// return the non-NaN operand) AND leave the ±0 tie unspecified (measured
+/// b-biased on x86-64, 2026-09-02). Payload-preserving on NaN: the NaN
+/// operand is returned as-is (`a` checked before `b`, matching
+/// `torch.maximum`'s lhs-first tie-break). On a ±0 tie `a >= b` is true,
+/// so operand `a` wins — a-biased per KISS §6.13.
 pub struct Maximum;
 impl BinaryOpCore for Maximum {
     fn f32(a: f32, b: f32) -> f32 {
@@ -173,8 +175,10 @@ impl BinaryOpCore for Maximum {
             a
         } else if b.is_nan() {
             b
+        } else if a >= b {
+            a
         } else {
-            a.max(b)
+            b
         }
     }
     fn f64(a: f64, b: f64) -> f64 {
@@ -182,14 +186,17 @@ impl BinaryOpCore for Maximum {
             a
         } else if b.is_nan() {
             b
+        } else if a >= b {
+            a
         } else {
-            a.max(b)
+            b
         }
     }
 }
 
 /// Elementwise minimum. NaN handling mirrors [`Maximum`] (NaN-propagating,
-/// torch parity).
+/// torch parity, `a`-first payload). On a ±0 tie `a <= b` is true, so operand
+/// `a` wins — a-biased per KISS §6.13 (see [`Maximum`] for the `f32::min` rationale).
 pub struct Minimum;
 impl BinaryOpCore for Minimum {
     fn f32(a: f32, b: f32) -> f32 {
@@ -197,8 +204,10 @@ impl BinaryOpCore for Minimum {
             a
         } else if b.is_nan() {
             b
+        } else if a <= b {
+            a
         } else {
-            a.min(b)
+            b
         }
     }
     fn f64(a: f64, b: f64) -> f64 {
@@ -206,8 +215,10 @@ impl BinaryOpCore for Minimum {
             a
         } else if b.is_nan() {
             b
+        } else if a <= b {
+            a
         } else {
-            a.min(b)
+            b
         }
     }
 }
@@ -301,5 +312,96 @@ mod tests {
         binary::<f32, Add>("test", &lhs, &rhs, &mut out).expect("binary add_f32");
         let r: &[f32] = out.as_slice().unwrap();
         assert_eq!(r, &[11.0, 22.0, 33.0, 44.0]);
+    }
+
+    // KISS §6.13: on a ±0 tie, operand `a` wins in ALL FOUR minmax ops
+    // (a-biased). Measured 2026-09-02: the previous `a.max(b)`/`a.min(b)`
+    // was DETERMINISTICALLY b-biased on x86-64 (returned operand `b`), and
+    // the language leaves ±0 unspecified — so `>=`/`<=` both pins the tie
+    // and lands it a-biased. `to_bits` is required because `+0.0 == -0.0`;
+    // `black_box` defeats const-folding, which is what hid this bug (a folded
+    // probe measures the compiler, not the running code). Retained as a
+    // permanent guard: reverting the select to a NaN-as-missing primitive
+    // (`f32::max`) reds these.
+    #[test]
+    fn maximum_signed_zero_tie_is_a_biased_f32() {
+        use std::hint::black_box;
+        let pz = black_box(0.0_f32);
+        let nz = black_box(-0.0_f32);
+        // a wins: max(+0,-0) = +0 ; max(-0,+0) = -0
+        assert_eq!(
+            <Maximum as BinaryOp<f32>>::apply(pz, nz).to_bits(),
+            pz.to_bits()
+        );
+        assert_eq!(
+            <Maximum as BinaryOp<f32>>::apply(nz, pz).to_bits(),
+            nz.to_bits()
+        );
+    }
+
+    #[test]
+    fn minimum_signed_zero_tie_is_a_biased_f32() {
+        use std::hint::black_box;
+        let pz = black_box(0.0_f32);
+        let nz = black_box(-0.0_f32);
+        // a wins: min(+0,-0) = +0 ; min(-0,+0) = -0
+        assert_eq!(
+            <Minimum as BinaryOp<f32>>::apply(pz, nz).to_bits(),
+            pz.to_bits()
+        );
+        assert_eq!(
+            <Minimum as BinaryOp<f32>>::apply(nz, pz).to_bits(),
+            nz.to_bits()
+        );
+    }
+
+    #[test]
+    fn minmax_signed_zero_tie_is_a_biased_f64() {
+        use std::hint::black_box;
+        let pz = black_box(0.0_f64);
+        let nz = black_box(-0.0_f64);
+        assert_eq!(
+            <Maximum as BinaryOp<f64>>::apply(pz, nz).to_bits(),
+            pz.to_bits()
+        );
+        assert_eq!(
+            <Maximum as BinaryOp<f64>>::apply(nz, pz).to_bits(),
+            nz.to_bits()
+        );
+        assert_eq!(
+            <Minimum as BinaryOp<f64>>::apply(pz, nz).to_bits(),
+            pz.to_bits()
+        );
+        assert_eq!(
+            <Minimum as BinaryOp<f64>>::apply(nz, pz).to_bits(),
+            nz.to_bits()
+        );
+    }
+
+    #[test]
+    fn minmax_signed_zero_tie_a_bias_inherits_through_bf16_and_f16() {
+        use std::hint::black_box;
+        // bf16/f16 route through the f32 core (blanket impls), and a min/max
+        // select is value-exact across the f32 round-trip, so the a-bias carries.
+        let pz = half::bf16::from_f32(black_box(0.0));
+        let nz = half::bf16::from_f32(black_box(-0.0));
+        assert_eq!(
+            <Maximum as BinaryOp<half::bf16>>::apply(pz, nz).to_bits(),
+            pz.to_bits()
+        );
+        assert_eq!(
+            <Maximum as BinaryOp<half::bf16>>::apply(nz, pz).to_bits(),
+            nz.to_bits()
+        );
+        let pz = half::f16::from_f32(black_box(0.0));
+        let nz = half::f16::from_f32(black_box(-0.0));
+        assert_eq!(
+            <Minimum as BinaryOp<half::f16>>::apply(pz, nz).to_bits(),
+            pz.to_bits()
+        );
+        assert_eq!(
+            <Minimum as BinaryOp<half::f16>>::apply(nz, pz).to_bits(),
+            nz.to_bits()
+        );
     }
 }
