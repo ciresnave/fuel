@@ -1276,10 +1276,19 @@ fn dtype_key(dt: DType) -> u32 {
 /// `0x7FC00001` and the reverse gives `0x7FC00002` -- so folding `min(a,b)`
 /// with `min(b,a)` is an INVALID rewrite. See GAP-271.
 ///
-/// NOTE the reason is NOT the +-0 tie: we fall through to Rust's `a.max(b)`,
-/// which CANONICALISES zeros (both orders give +0 for max, -0 for min), so on
-/// zeros our min/max IS bitwise commutative. The invalidity is a NaN-payload
-/// property and is therefore INDEPENDENT of any future +-0 tie-bias change.
+/// The +-0 tie ALSO makes the fold invalid, but do not state it as a fixed
+/// bias: the +-0 answer is NOT A PROPERTY OF THIS SOURCE. It is decided per
+/// CALL SITE by the optimizer, because we delegate to Rust's `f32::max`,
+/// which disclaims the zero tie. Measured in ONE binary at opt-level 3:
+/// const-folded literals give +0 for both orders; `black_box` operands give
+/// -0 for both; `#[inline(never)]` gives -0 and +0 -- ORDER-DEPENDENT.
+/// Three answers, same source. That is itself a reason the fold is invalid:
+/// folding two call sites merges forms the compiler may resolve differently.
+///
+/// Rely on the NaN-payload argument, because it is STABLE -- verified
+/// identical at opt-level 0 and 3, under `black_box` and under
+/// `#[inline(never)]`. It is stable precisely because that tie-break is
+/// EXPLICIT IN OUR SOURCE, where the +-0 tie is delegated to the compiler.
 fn is_commutative(op: &Op) -> bool {
     matches!(op, Op::Add | Op::Mul)
 }
@@ -3383,11 +3392,13 @@ mod tests {
     /// reverse is `0x7FC00002`. Folding the two orderings is therefore an
     /// invalid rewrite.
     ///
-    /// NOTE the reason is NOT the +-0 tie. We fall through to Rust's
-    /// `a.max(b)`, which CANONICALISES zeros -- both orders give +0 for max
-    /// and -0 for min -- so a +-0 fixture CANNOT distinguish the orderings and
-    /// a test built on one would pass for the wrong reason. The invalidity is
-    /// a NaN-payload property, independent of any future tie-bias change.
+    /// A +-0 FIXTURE WOULD BE UNSOUND HERE, and not because we canonicalise:
+    /// the +-0 answer is decided PER CALL SITE by the optimizer (we delegate
+    /// to `f32::max`, which disclaims the tie). One binary at opt-level 3
+    /// gives three answers -- const-folded +0/+0, `black_box` -0/-0,
+    /// `#[inline(never)]` -0/+0. A +-0 assertion would therefore be testing
+    /// the optimizer, not us. The NaN tie-break is explicit in our source and
+    /// is stable in all four contexts, which is why it is the fixture.
     #[test]
     fn cse_does_not_fold_minmax_across_operand_order() {
         let (_graph, a) = make_scalar_graph();

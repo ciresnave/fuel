@@ -121,10 +121,13 @@ pub fn op_to_tag(op: &Op) -> Option<OpTag> {
 /// `0x7FC00001` and the reverse gives `0x7FC00002` -- so folding `min(a,b)`
 /// with `min(b,a)` is an INVALID rewrite. See GAP-271.
 ///
-/// NOTE the reason is NOT the +-0 tie: we fall through to Rust's `a.max(b)`,
-/// which CANONICALISES zeros (both orders give +0 for max, -0 for min), so on
-/// zeros our min/max IS bitwise commutative. The invalidity is a NaN-payload
-/// property and is therefore INDEPENDENT of any future +-0 tie-bias change.
+/// The +-0 tie ALSO makes the fold invalid, but it is NOT A PROPERTY OF THIS
+/// SOURCE: it is decided per CALL SITE by the optimizer, because we delegate
+/// to Rust's `f32::max`, which disclaims the zero tie. Measured in ONE binary
+/// at opt-level 3 -- const-folded literals +0/+0, `black_box` -0/-0,
+/// `#[inline(never)]` -0/+0 (ORDER-DEPENDENT). Rely on the NaN-payload
+/// argument: it is STABLE across all four contexts, because that tie-break is
+/// explicit in our source. See `opt.rs::is_commutative` for the full note.
 fn is_commutative(op: OpTag) -> bool {
     matches!(op, OpTag::Add | OpTag::Mul)
 }
