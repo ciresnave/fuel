@@ -1,4 +1,4 @@
-﻿# fuel-yi
+# fuel-yi
 
 Fuel implementations of the Yi family of bilingual (English, Chinese) LLMs.
 

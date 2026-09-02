@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use crate::metal::{Buffer, ComputeCommandEncoder, Device, MetalDeviceType};
 use crate::utils::EncoderProvider;
 use crate::{set_params, ConstantValues, EncoderParam, Kernels, MetalKernelError, Source, Value};

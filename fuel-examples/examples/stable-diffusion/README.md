@@ -1,4 +1,4 @@
-﻿# fuel-stable-diffusion: A Diffusers API in Rust/Fuel
+# fuel-stable-diffusion: A Diffusers API in Rust/Fuel
 
 ![rusty robot holding a fuel](./assets/stable-diffusion-xl.jpg)
 

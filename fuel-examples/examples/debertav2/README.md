@@ -1,4 +1,4 @@
-﻿## debertav2
+## debertav2
 
 This is a port of the DebertaV2/V3 model codebase for use in `fuel`. It works with both locally fine-tuned models, as well as those pushed to HuggingFace. It works with both DebertaV2 and DebertaV3 fine-tuned models.
 

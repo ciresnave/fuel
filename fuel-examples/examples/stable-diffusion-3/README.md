@@ -1,4 +1,4 @@
-﻿# fuel-stable-diffusion-3: Fuel Implementation of Stable Diffusion 3/3.5
+# fuel-stable-diffusion-3: Fuel Implementation of Stable Diffusion 3/3.5
 
 ![](assets/stable-diffusion-3.jpg)
 

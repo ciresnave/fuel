@@ -1,4 +1,4 @@
-﻿# fuel-convnext
+# fuel-convnext
 
 [A ConvNet for the 2020s](https://arxiv.org/abs/2201.03545) and
 [ConvNeXt V2: Co-designing and Scaling ConvNets with Masked Autoencoders](https://arxiv.org/abs/2301.00808).

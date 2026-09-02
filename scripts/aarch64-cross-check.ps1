@@ -1,4 +1,4 @@
-﻿<#
+<#
 .SYNOPSIS
     Type-checks Fuel's aarch64 code paths from any host, without a Mac and
     without a GPU. (GAP-162)

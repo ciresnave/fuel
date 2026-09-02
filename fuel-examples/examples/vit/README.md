@@ -1,4 +1,4 @@
-﻿# fuel-vit
+# fuel-vit
 
 Vision Transformer (ViT) model implementation following the lines of
 [vit-base-patch16-224](https://huggingface.co/google/vit-base-patch16-224)

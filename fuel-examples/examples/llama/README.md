@@ -1,4 +1,4 @@
-﻿# fuel-llama
+# fuel-llama
 
 Fuel implementations of various Llama based architectures.
 

@@ -1,4 +1,4 @@
-﻿# PaddleOCR-VL
+# PaddleOCR-VL
 
 [PaddleOCR-VL](https://huggingface.co/PaddlePaddle/PaddleOCR-VL) is a state-of-the-art
 vision-language model for document parsing, developed by PaddlePaddle. With only 0.9B

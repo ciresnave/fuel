@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use fuel::Result;
 
 /// This is a wrapper around a tokenizer to ensure that tokens can be returned to the user in a

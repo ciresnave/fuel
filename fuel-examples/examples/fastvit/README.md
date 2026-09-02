@@ -1,4 +1,4 @@
-﻿# fuel-fastvit
+# fuel-fastvit
 
 [FastViT: A Fast Hybrid Vision Transformer using Structural Reparameterization](https://arxiv.org/abs/2303.14189).
 This fuel implementation uses a pre-trained FastViT network for inference. The

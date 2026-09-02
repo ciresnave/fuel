@@ -1,4 +1,4 @@
-﻿# fuel-quantized-t5
+# fuel-quantized-t5
 
 Fuel implementation for quantizing and running T5 translation models.
 

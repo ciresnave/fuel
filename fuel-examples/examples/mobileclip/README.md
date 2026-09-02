@@ -1,4 +1,4 @@
-﻿# fuel-mobileclip
+# fuel-mobileclip
 
 MobileCLIP is family of efficient CLIP-like models using FastViT-based image encoders.
 

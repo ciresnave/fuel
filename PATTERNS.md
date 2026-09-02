@@ -1,4 +1,4 @@
-﻿# Fuel Canonical Patterns
+# Fuel Canonical Patterns
 
 Architecture guides — not API demos. Each pattern captures the minimal correct
 structure for a common task. Copy, adapt, and extend.

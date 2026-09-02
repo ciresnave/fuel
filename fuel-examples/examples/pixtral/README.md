@@ -1,4 +1,4 @@
-﻿# pixtral
+# pixtral
 
 Pixtral-12B is a 12B text+vision model.
 

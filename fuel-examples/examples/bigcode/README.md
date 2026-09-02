@@ -1,4 +1,4 @@
-﻿# fuel-starcoder: code generation model
+# fuel-starcoder: code generation model
 
 [StarCoder/BigCode](https://huggingface.co/bigcode/starcoderbase-1b) is a LLM
 model specialized to code generation. The initial model was trained on 80

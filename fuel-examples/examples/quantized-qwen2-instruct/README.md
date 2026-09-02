@@ -1,4 +1,4 @@
-﻿# fuel-quantized-qwen2-instruct
+# fuel-quantized-qwen2-instruct
 
 [Qwen2]((https://qwenlm.github.io/blog/qwen2/)) is an upgraded version of Qwen1.5, released by Alibaba Cloud.
 

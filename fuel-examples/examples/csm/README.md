@@ -1,4 +1,4 @@
-﻿# Conversational Speech Model (CSM)
+# Conversational Speech Model (CSM)
 
 CSM is a speech generation model from Sesame,
 [SesameAILabs/csm](https://github.com/SesameAILabs/csm).

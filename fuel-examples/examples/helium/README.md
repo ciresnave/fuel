@@ -1,4 +1,4 @@
-﻿# fuel-helium: 2b LLM with CC-BY licensed weights
+# fuel-helium: 2b LLM with CC-BY licensed weights
 
 Helium-1 is a lightweight model with around 2B parameters, the preview version
 currently supports 6 languages, showing strong capabilities in those languages

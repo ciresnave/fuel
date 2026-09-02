@@ -1,4 +1,4 @@
-﻿# fuel-blip
+# fuel-blip
 
 The
 [blip-image-captioning](https://huggingface.co/Salesforce/blip-image-captioning-base)

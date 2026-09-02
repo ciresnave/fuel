@@ -1,4 +1,4 @@
-﻿[package]
+[package]
     categories.workspace = true
     description          = "Core types and traits for the fuel ML framework"
     edition.workspace    = true

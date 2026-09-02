@@ -1,4 +1,4 @@
-﻿# fuel-dinov2
+# fuel-dinov2
 
 [DINOv2](https://github.com/facebookresearch/dinov2) is a computer vision model.
 In this example, it is used as an ImageNet classifier: the model returns the

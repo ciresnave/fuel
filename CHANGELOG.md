@@ -1,4 +1,4 @@
-﻿# Changelog
+# Changelog
 This documents the main changes to the `fuel` crate.
 
 ## v0.3.1 - Unreleased

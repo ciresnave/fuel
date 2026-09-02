@@ -1,4 +1,4 @@
-﻿# fuel-onnx
+# fuel-onnx
 
 This crate adds ONNX support to fuel
 

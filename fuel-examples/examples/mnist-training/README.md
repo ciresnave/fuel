@@ -1,4 +1,4 @@
-﻿# fuel-mnist-training
+# fuel-mnist-training
 
 Training a 2 layer MLP on mnist in Fuel.
 

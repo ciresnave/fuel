@@ -1,4 +1,4 @@
-﻿# fuel-efficientvit
+# fuel-efficientvit
 
 [EfﬁcientViT: Memory Efﬁcient Vision Transformer with Cascaded Group Attention](https://arxiv.org/abs/2305.07027).
 

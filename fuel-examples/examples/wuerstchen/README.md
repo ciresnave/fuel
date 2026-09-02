@@ -1,4 +1,4 @@
-﻿# fuel-wuerstchen: Efficient Pretraining of Text-to-Image Models
+# fuel-wuerstchen: Efficient Pretraining of Text-to-Image Models
 
 ![anthropomorphic cat dressed as a fire fighter](./assets/cat.jpg)
 

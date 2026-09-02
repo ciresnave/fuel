@@ -1,4 +1,4 @@
-﻿[package]
+[package]
     categories.workspace = true
     description          = "CPU backend computation kernels for the fuel ML framework"
     edition.workspace    = true

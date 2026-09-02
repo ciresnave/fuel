@@ -1,4 +1,4 @@
-﻿## Using ONNX models in Fuel
+## Using ONNX models in Fuel
 
 This example demonstrates how to run [ONNX](https://github.com/onnx/onnx) based LLM models in Fuel.
 

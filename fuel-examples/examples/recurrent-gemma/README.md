@@ -1,4 +1,4 @@
-﻿# fuel-recurrent-gemma
+# fuel-recurrent-gemma
 
 This model card corresponds to the 2B base version of the RecurrentGemma model
 [huggingface model card](https://huggingface.co/google/recurrentgemma-2b).

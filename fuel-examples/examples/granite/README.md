@@ -1,4 +1,4 @@
-﻿# fuel-granite LLMs from IBM Research
+# fuel-granite LLMs from IBM Research
 
 [Granite](https://www.ibm.com/granite) is a family of Large Language Models built for business, to help drive trust and scalability in AI-driven applications.
 

@@ -1,4 +1,4 @@
-﻿# SmolLM3 Unified Inference
+# SmolLM3 Unified Inference
 
 A unified Rust implementation for running SmolLM3 models using the Fuel ML framework. Supports both quantized (GGUF) and full precision (safetensors) models with a single codebase.
 

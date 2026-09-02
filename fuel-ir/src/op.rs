@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Enums and traits representing tensor operations.
 //!
 //! This module defines the core operation enums and traits needed by backend implementations.

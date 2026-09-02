@@ -1,4 +1,4 @@
-﻿# fuel-mamba2: Mamba2 implementation
+# fuel-mamba2: Mamba2 implementation
 
 Fuel implementation of _Mamba2_ [1] inference. Mamba2 introduces the State Space
 Duality (SSD) framework which unifies structured SSMs and attention variants.

@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 //! Metal backend implementation for the fuel ML framework.
 //!
 //! This crate provides [`MetalStorage`] and [`MetalDevice`] types that

@@ -1,4 +1,4 @@
-﻿# fuel-efficientnet
+# fuel-efficientnet
 
 Demonstrates a Fuel implementation of EfficientNet for image classification based on ImageNet classes.
 

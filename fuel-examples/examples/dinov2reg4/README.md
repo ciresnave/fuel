@@ -1,4 +1,4 @@
-﻿# fuel-dinov2-reg4
+# fuel-dinov2-reg4
 
 [DINOv2-reg4](https://arxiv.org/abs/2309.16588) is the latest version of DINOv2 with registers.
 In this example, it is used as an plant species classifier: the model returns the

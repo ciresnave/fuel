@@ -1,4 +1,4 @@
-﻿# fuel-whisper: speech recognition
+# fuel-whisper: speech recognition
 
 An implementation of [OpenAI Whisper](https://github.com/openai/whisper) using
 fuel. Whisper is a general purpose speech recognition model, it can be used to

@@ -1,4 +1,4 @@
-﻿# NV-Embed-v2
+# NV-Embed-v2
 
 Fuel implementation (inference only) of [NV-Embed-v2](https://huggingface.co/nvidia/NV-Embed-v2), a text embedding model that ranks No. 1 (as of Nov 25 2024) on the [MTEB](https://huggingface.co/spaces/mteb/leaderboard) benchmark with a score of 72.31 across 56 text embedding tasks.
 

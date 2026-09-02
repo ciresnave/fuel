@@ -1,4 +1,4 @@
-﻿# fuel-quantized-llama: Fast Inference of quantized LLaMA models
+# fuel-quantized-llama: Fast Inference of quantized LLaMA models
 
 This example provides a quantized LLaMA model similar to
 [llama.cpp](https://github.com/ggerganov/llama.cpp). This is based on fuel

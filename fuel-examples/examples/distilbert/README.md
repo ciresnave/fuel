@@ -1,4 +1,4 @@
-﻿# fuel-distilbert
+# fuel-distilbert
 
 DistilBert is a distiled version of the Bert model.
 

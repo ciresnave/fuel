@@ -1,4 +1,4 @@
-﻿[package]
+[package]
 name = "fuel-tensor-tools"
 version.workspace = true
 edition.workspace = true

@@ -1,4 +1,4 @@
-﻿# Fuel — Developer Guide
+# Fuel — Developer Guide
 
 This document routes you to the right crate based on what you are trying to do.
 Read the section that matches your goal, then follow the links.

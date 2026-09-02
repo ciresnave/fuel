@@ -1,4 +1,4 @@
-﻿# fuel-starcoder2
+# fuel-starcoder2
 
 Fuel implementation of Star Coder 2 family of code generation model from [StarCoder 2 and The Stack v2: The Next Generation](https://arxiv.org/pdf/2402.19173).
 

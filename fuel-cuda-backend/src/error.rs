@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: MIT OR Apache-2.0
+// SPDX-License-Identifier: MIT OR Apache-2.0
 use fuel_ir::{DType, Layout};
 
 /// Errors from the CUDA backend — driver, NVRTC, cuBLAS, and curand

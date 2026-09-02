@@ -1,4 +1,4 @@
-﻿# fuel-clip
+# fuel-clip
 
 Contrastive Language-Image Pre-Training (CLIP) is an architecture trained on
 pairs of images with related texts.

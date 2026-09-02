@@ -1,3 +1,3 @@
-﻿# fuel-metal-kernels
+# fuel-metal-kernels
 
 This crate contains Metal kernels used from fuel.

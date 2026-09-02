@@ -1,4 +1,4 @@
-﻿# fuel-trocr
+# fuel-trocr
 
 `TrOCR` is a transformer OCR Model. In this example it is used to
 transcribe image text. See the associated [model

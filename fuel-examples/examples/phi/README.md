@@ -1,4 +1,4 @@
-﻿# fuel-phi: 1.3b and 2.7b LLM with state of the art performance for <10b models.
+# fuel-phi: 1.3b and 2.7b LLM with state of the art performance for <10b models.
 
 [Phi-1.5](https://huggingface.co/microsoft/phi-1_5), 
 [Phi-2](https://huggingface.co/microsoft/phi-2), and

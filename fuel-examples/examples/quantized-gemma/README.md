@@ -1,4 +1,4 @@
-﻿# fuel-quantized-gemma
+# fuel-quantized-gemma
 
 Fuel implementation of quantized Gemma.
 

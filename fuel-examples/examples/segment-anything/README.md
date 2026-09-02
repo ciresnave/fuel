@@ -1,4 +1,4 @@
-﻿# fuel-segment-anything: Segment-Anything Model
+# fuel-segment-anything: Segment-Anything Model
 
 This example is based on Meta AI [Segment-Anything
 Model](https://github.com/facebookresearch/segment-anything). This model

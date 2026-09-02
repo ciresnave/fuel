@@ -1,4 +1,4 @@
-﻿# fuel-xlm-roberta
+# fuel-xlm-roberta
 
 This example demonstrates how to use the XLM-RoBERTa model in Fuel especially known for their use in reranking. It uses the `fill-mask` task to generate a word for a masked token. And a `reranker` task to rerank a list of documents for a given query.
 

@@ -1,4 +1,4 @@
-﻿# fuel-beit
+# fuel-beit
 
 [Beit](https://arxiv.org/abs/2106.08254) is a computer vision model.
 In this example, it is used as an ImageNet classifier: the model returns the

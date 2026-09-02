@@ -1,4 +1,4 @@
-﻿## SigLIP
+## SigLIP
 
 SigLIP is multi-modal text-vision model that improves over CLIP by using a sigmoid based loss,
 [HuggingFace](https://huggingface.co/google/siglip-base-patch16-224).

@@ -1,4 +1,4 @@
-﻿# fuel-t5
+# fuel-t5
 
 Fuel implementations of the T5 family of translation models.
 
