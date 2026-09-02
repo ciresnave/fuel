@@ -724,4 +724,126 @@ jobs:
       # reports the wrong subject.
       - name: Clippy (fuel-dispatch, DEFAULT features - GAP-242)
         run: cargo clippy -p fuel-dispatch --no-deps --all-targets -- -D warnings
+
+      # GENERALISES THE LEG ABOVE FROM ONE CRATE TO THE DERIVED POPULATION.
+      # The GAP-242 leg closes the divergence for fuel-dispatch only, and its own
+      # comment records that an earlier draft "died on fuel-hardware" -- so a
+      # second instance of the same class was ENCOUNTERED, scoped around, and not
+      # filed. It is now GAP-267.
+      #
+      # MEASURED 2026-09-02 (local, warm; cold-runner cost deliberately unstated):
+      #     17  crates with a non-default feature surface   (cargo metadata)
+      #      1  covered by a dedicated per-package leg      (fuel-dispatch)
+      #     16  uncovered
+      #     15  measured   (fuel-cuda-backend UNMEASURED -- see SKIP below)
+      #      1  ACTUALLY FAILS   fuel-hardware, 2 lints
+      #
+      # THE CANDIDATE SET IS A SUPERSET OF THE HAZARD, NOT A MATCH FOR IT.
+      # `--workspace` DOES build every non-excluded crate at default features;
+      # hiding additionally requires that some OTHER member turns the feature ON.
+      # A candidate is a crate where that COULD happen, and 15 of 16 are clean.
+      # Do not read the candidate count as a defect count.
+      - name: Clippy (DEFAULT features, per crate - GAP-267)
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # UNMEASURED, not passing: linting fuel-cuda-backend builds baracuda-kernels-sys,
+          # whose build script forges CUDA kernels UNCONDITIONALLY (~56 min). It is also
+          # already absent from WORKSPACE_EXCLUDES' scope above, so it is uncovered by BOTH
+          # routes. Named here so the exclusion is visible to whoever reads the green.
+          SKIP="fuel-cuda-backend"
+
+          # KNOWN FAILING, with the row that tracks it. This is an INVERSE allowlist and it
+          # SELF-RETIRES: if a listed crate starts PASSING, this leg FAILS and tells you to
+          # delete the entry. So the fix cannot land while the exemption quietly survives --
+          # the failure mode of an ordinary allowlist.
+          #
+          # fuel-hardware: GAP-267. `measure_h2d_d2h` gates its match arms on cuda/vulkan
+          # with a `_ => return None` fallback, so at default features the match collapses,
+          # `bytes` is unused and the next line is unreachable -- i.e. the transfer-cost
+          # path is a constant None. Fixing the lints is a change to that crate with its own
+          # gate, deliberately NOT bundled into the leg that discovered them.
+          KNOWN_FAILING="fuel-hardware"
+
+          # The candidate set is DERIVED, never hard-coded: a new crate is covered the day
+          # it gains a feature surface. `cargo metadata` is used rather than a grep over
+          # Cargo.toml because the manifest has a real parser -- three successive regexes
+          # gave 6, then 7, then 18 crates, each looking like a complete answer, because
+          # some manifests indent their keys.
+          mapfile -t CANDIDATES < <(
+            cargo metadata --no-deps --format-version 1 \
+            | python3 -c '
+          import json, sys
+          md = json.load(sys.stdin)
+          for p in sorted(md["packages"], key=lambda x: x["name"]):
+              feats = p.get("features", {})
+              # A crate can only hide a default-features defect if it HAS a non-default
+              # feature. Crates with no feature surface are excluded because there is
+              # nothing for unification to turn on.
+              if [k for k in feats if k != "default"]:
+                  print(p["name"])
+          ' | tr -d '\r'
+          )
+
+          # FAIL, never skip. A leg that iterates zero crates reports green having asserted
+          # nothing -- the same shape as a test binary printing `running 0 tests` and being
+          # read as a pass. This is not hypothetical: the first draft of this step used jq,
+          # which is absent on some machines, and it silently enumerated ZERO candidates.
+          if [ "${#CANDIDATES[@]}" -eq 0 ]; then
+            echo "FAIL: the candidate enumeration returned NOTHING."
+            echo "This leg cannot report clean without a population. Either cargo metadata"
+            echo "failed or the python filter is broken -- fix it, do not relax this check."
+            exit 1
+          fi
+
+          echo "candidates (crates with a non-default feature surface): ${#CANDIDATES[@]}"
+          printf '  %s\n' "${CANDIDATES[@]}"
+          echo
+
+          failed=()
+          unexpected_pass=()
+          for c in "${CANDIDATES[@]}"; do
+            if [ "$c" = "$SKIP" ]; then
+              echo "== $c: UNMEASURED (skipped -- would forge CUDA kernels; see comment)"
+              continue
+            fi
+            echo "== $c"
+            # `--no-deps` is load-bearing, not tidiness: `-p <crate>` LINTS PATH
+            # DEPENDENCIES TOO, so one crate's defect would red every leg that depends on
+            # it and attribution would be lost. Measured: fuel-hardware's two lints were
+            # reported identically by fuel-datasets and fuel-parallel until --no-deps was
+            # added, turning one defect into three false reports.
+            if cargo clippy -p "$c" --no-deps --tests -- -D warnings; then
+              if [[ " $KNOWN_FAILING " == *" $c "* ]]; then
+                echo "   ^ PASSES but is listed KNOWN_FAILING -- delete the entry (GAP-267)"
+                unexpected_pass+=("$c")
+
+              fi
+            else
+              if [[ " $KNOWN_FAILING " == *" $c "* ]]; then
+                echo "   ^ fails as recorded (GAP-267)"
+              else
+                failed+=("$c")
+              fi
+            fi
+          done
+
+          echo
+          if [ "${#failed[@]}" -ne 0 ]; then
+            echo "DEFAULT-FEATURE CLIPPY FAILURES (${#failed[@]}):"
+            printf '  %s\n' "${failed[@]}"
+            echo
+            echo "These crates lint clean under the workspace leg and FAIL at their own"
+            echo "default features, because --workspace unifies features across the graph"
+            echo "and a sibling turns the feature on. The natural developer command"
+            echo "(cargo clippy -p <crate>) sees what CI did not."
+            exit 1
+          fi
+          if [ "${#unexpected_pass[@]}" -ne 0 ]; then
+            echo "KNOWN_FAILING entries that now PASS (delete them):"
+            printf "  %s\n" "${unexpected_pass[@]}"
+            exit 1
+          fi
+          echo "all measured candidates behave as recorded"
  
