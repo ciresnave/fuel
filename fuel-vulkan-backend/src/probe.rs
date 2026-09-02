@@ -244,7 +244,13 @@ mod tests {
     // a FAILURE, not a silent early return that reports `ok` having asserted
     // nothing. Run them with the documented runner:
     //   pwsh scripts/gpu-run.ps1 -Project fuel -- \
-    //       cargo test -p fuel-vulkan-backend --features vulkan -- --ignored
+    //       cargo test -p fuel-vulkan-backend -- --ignored
+    //
+    // NOTE the absence of `--features vulkan`: this crate has NO `[features]`
+    // section -- it IS the Vulkan backend, and the `vulkan` feature lives on its
+    // CONSUMERS (fuel-core, fuel-dispatch, fuel-memory, fuel-hardware, ...).
+    // Passing it here fails with `does not contain this feature` at exit 101 and
+    // ZERO compile artifacts -- which reads exactly like the crate is broken.
     use fuel_test_support::{required, required_ok};
 
     /// The fan-out this memoization exists to kill.
