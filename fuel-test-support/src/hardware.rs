@@ -13,10 +13,59 @@
 //! hardware nobody claimed to have, and the first thing anyone would do is stop
 //! running it that way. **A gate people switch off protects nothing.**
 //!
-//! So this module adds the missing middle: absence is a *declared skip* by
-//! default, and becomes a *failure* in an environment that promised the
-//! hardware. That is the shape vulkane arrived at (`VULKANE_REQUIRE_DEVICE`),
-//! and the reasoning below is theirs, adapted.
+//! So this module adds the missing middle. ⚠️ **NOT "a declared skip by
+//! default" — that sentence stood here until 2026-09-02 and was FALSE for half
+//! the families.** The default is PER FAMILY (see [`Hardware::default_policy`]):
+//!
+//! - `Cuda` | `Vulkan` → [`Policy::Fatal`]. Absence FAILS with no variable set.
+//! - `Aocl` | `Mkl`   → [`Policy::Permissive`]. Absence is a declared skip.
+//!
+//! `FUEL_REQUIRE_<FAM>` then adjusts that default in EITHER direction: any value
+//! but `0` forces `Fatal`, and `0` forces `Permissive`. The downgrade is
+//! deliberate and is what makes a `Fatal` default safe to ship — a wrong default
+//! becomes a nuisance rather than a wall.
+//!
+//! The shape is vulkane's (`VULKANE_REQUIRE_DEVICE`), and the reasoning below is
+//! theirs, adapted; the per-family split is Fuel's, because Fuel has four
+//! independently-present families where vulkane has one device class.
+//!
+//! ⚠️ **WHY THAT STALE SENTENCE IS CALLED OUT RATHER THAN QUIETLY REPLACED.** It
+//! described a uniform default that this module had when it was written; the
+//! per-family split landed afterwards and the header was not updated. The
+//! sentence was then read as authoritative, copied into a memory file, and
+//! handed down as an architectural ruling that would have REVERTED the fix in
+//! `fuel-cuda-backend/src/probe.rs` (GAP-243). A stale doc comment travelled two
+//! hops and became a directive. The header of a module is the first thing read
+//! and the last thing updated.
+//!
+//! # Two forms, and the choice between them IS the severity declaration
+//!
+//! [`crate::require`] / [`crate::required`] / [`crate::required_ok`] and [`skip`]
+//! coexist BY DESIGN. They are not duplicates awaiting consolidation, and
+//! collapsing them would silently widen or narrow the domain where absence is
+//! tolerated:
+//!
+//! - **`require(...)` is NON-DOWNGRADABLE BY CONSTRUCTION.** No environment
+//!   variable is consulted anywhere on its path. The author is asserting
+//!   *absence here is a broken promise, unconditionally*.
+//! - **`skip(...)` is policy-driven**, with the per-family default above and an
+//!   environment override in both directions. The author is asserting *absence
+//!   here is legitimately possible and must be REPORTED*.
+//!
+//! **Choosing between them is the author's severity declaration, made at the
+//! call site where the cause is known.** Both forms SAY SO on absence; neither
+//! may return a bare `ok` (GAP-157). `require` is live — it has call sites in
+//! eight-plus files including `fuel-cuda-backend/src/probe.rs` — so its presence
+//! is a choice, not leftovers.
+//!
+//! ⚠️ **And a stricter guard is not automatically the right one.** `probe.rs`
+//! used `required_ok`, which panics only on `Err`, while
+//! `enumerate_devices_uncached` returns `Ok(vec![])` for a CUDA runtime with no
+//! usable device — so the empty vec sailed through, the assertions were inside a
+//! `for` over it, and the test reported `ok` having asserted nothing. **The
+//! strict-looking guard was AIMED AT THE WRONG STATE** (enumeration failing,
+//! not the device being absent). Severity is not the only axis; what the guard
+//! is pointed at matters more.
 //!
 //! # Why one variable per family, and not one `FUEL_REQUIRE_DEVICE`
 //!
@@ -127,12 +176,50 @@ impl Hardware {
     /// `Fatal`-default family is used outside an `#[ignore]`d test. When the
     /// proxy stops holding, that guard says so.
     ///
-    /// AOCL and MKL are `Permissive` for a measured reason rather than a
-    /// symmetric one: `--features aocl` compiles from a sibling checkout with
-    /// **no AMD DLLs present at all**, and the resulting test binary cannot even
-    /// launch (`STATUS_DLL_NOT_FOUND`, measured on this box), so the probe it
-    /// would gate never executes. For those families, compiling the feature
-    /// carries no hardware implication whatsoever.
+    /// AOCL and MKL are `Permissive` rather than symmetric, and the DEFAULT IS
+    /// NOT IN QUESTION: compiling `--features aocl` carries no hardware
+    /// implication, so absence must not be fatal by default.
+    ///
+    /// ⚠️ **ITS STATED REASON IS UNSUPPORTED, AND THE LINKAGE MECHANISM IS
+    /// UNIDENTIFIED (measured 2026-09-02).** This doc previously asserted that
+    /// the test binary *"cannot even launch (`STATUS_DLL_NOT_FOUND`)"* so the
+    /// probe never executes. `dll_path.rs`'s header asserts the OPPOSITE: that
+    /// `ensure_loadable` fixes `PATH` *"before any `LoadLibrary` attempt"* and
+    /// that on failure `try_new` returns an `Err` the caller surfaces. **Both
+    /// cannot be true** — if the process dies at load, `ensure_loadable` never
+    /// runs.
+    ///
+    /// What was actually measured, one crate down:
+    ///
+    /// ```text
+    /// aocl-blas-sys   7094  extern "C" declarations
+    ///                    0  #[link(...)] attributes
+    ///                    0  cargo:rustc-link-lib / rustc-link-search in build.rs
+    /// aocl-blas       `static-link` feature, DEFAULT OFF
+    /// libloading      present in Cargo.lock ONLY -- a bindgen build-time
+    ///                 transitive, with zero source occurrences; NOT a runtime
+    ///                 loader
+    /// ```
+    ///
+    /// **That evidences NEITHER doc.** Zero link directives is not "dies at
+    /// load" and not "resolves at first call" — it leaves unanswered how those
+    /// 7094 symbols resolve at all, and is compatible with a third mechanism
+    /// nobody has described. Do not pick a winner between two unevidenced
+    /// claims.
+    ///
+    /// ⚠️ **UNRESOLVED HERE, AND THAT IS A FACT ABOUT THE BOX RATHER THAN A GAP
+    /// IN EFFORT: this machine HAS AOCL INSTALLED**, so the absent-DLL case
+    /// cannot be observed and neither doc can be falsified locally. Settling it
+    /// needs a machine WITHOUT AOCL — the same class as the CI fixes that could
+    /// not be reproduced here because the failure required something this box
+    /// lacks.
+    ///
+    /// **Consequence to hold separately from the default itself:** IF the
+    /// dies-at-load claim is the true one, then this family's `Permissive`
+    /// default is justified by a condition the mechanism CANNOT OBSERVE — no
+    /// test runs, so neither skip nor failure is reachable and no environment
+    /// variable can change that. That would not make the default wrong; it would
+    /// make its stated reason unsupported. Keep the two claims apart.
     pub const fn default_policy(self) -> Policy {
         match self {
             Hardware::Cuda | Hardware::Vulkan => Policy::Fatal,
