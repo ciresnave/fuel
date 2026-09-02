@@ -27,7 +27,7 @@
 //!
 //! ```rust,no_run
 //! use fuel_datasets::vision::mnist;
-//! # fn main() -> fuel::Result<()> {
+//! # fn main() -> fuel_core::Result<()> {
 //! let dataset = mnist::load()?; // downloads if needed
 //! println!(
 //!     "train: {} samples of {:?} ({} floats)",

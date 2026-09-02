@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Helper functions for the tinystories dataset. This uses the pre-tokenized version as generated
 //! by the tools from https://github.com/karpathy/llama2.c
-use fuel::Result;
+use fuel_core::Result;
 
 /// A pre-tokenized TinyStories dataset loaded from binary token files.
 ///
@@ -11,7 +11,7 @@ use fuel::Result;
 /// use fuel_datasets::nlp::tinystories::Dataset;
 /// let ds = Dataset::new("data/tinystories")?;
 /// println!("train shards: {}", ds.train_tokens());
-/// # Ok::<(), fuel::Error>(())
+/// # Ok::<(), fuel_core::Error>(())
 /// ```
 pub struct Dataset {
     valid_tokens: Vec<memmap2::Mmap>,
@@ -37,7 +37,7 @@ impl Dataset {
             }
         }
         if bin_files.len() < 2 {
-            fuel::bail!("found less than two bin files in {:?}", dir)
+            fuel_core::bail!("found less than two bin files in {:?}", dir)
         }
         bin_files.sort();
         let valid_tokens = mmap_file(&bin_files[0])?;
@@ -68,7 +68,7 @@ impl Dataset {
 /// use fuel_datasets::nlp::tinystories::{Dataset, DatasetRandomIter};
 /// let ds = Dataset::new("data/tinystories")?;
 /// let iter = DatasetRandomIter::new(&ds, false, 512);
-/// # Ok::<(), fuel::Error>(())
+/// # Ok::<(), fuel_core::Error>(())
 /// ```
 pub struct DatasetRandomIter<'a> {
     all_tokens: &'a [memmap2::Mmap],

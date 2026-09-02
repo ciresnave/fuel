@@ -1881,7 +1881,7 @@ name = "fuel-datasets"
 version = "0.10.3"
 dependencies = [
  "byteorder",
- "fuel",
+ "fuel-core",
  "hf-hub",
  "image",
  "intel-mkl-src",
