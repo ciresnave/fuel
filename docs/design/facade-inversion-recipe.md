@@ -90,7 +90,12 @@ hidden lines such as `# Ok::<(), fuel::Error>(())`.
 | `cargo check -p <crate> --all-targets` | **GREEN** | emitted `Checking fuel-datasets v0.10.3`, so the crate genuinely recompiled and still did not see it |
 | `cargo test --doc -p <crate>` | **RED** | `error[E0433]: cannot find module or crate 'fuel'` |
 
-So the required gate is **both**, as two invocations:
+⚠️ **Two gates were enough for THIS crate because all 8 of its doc references are
+fenced. They are not enough in general** — see "What surprised me" below, where the
+prose portion of the doc column has no compile gate at all and needs a text sweep.
+For `fuel-nn`, 5 of 6 doc references are prose.
+
+So the required compile gate is **both**, as two invocations:
 
     cargo check -p <crate> --all-targets -j 4
     cargo test  --doc -p <crate>         -j 4
