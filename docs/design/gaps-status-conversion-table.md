@@ -77,3 +77,20 @@ rows carry remainder language, and the defect runs in **both** directions —
 | `GAP-228` | `PARTIAL` | Increment row; 32 remain. | DONE — 32 remain: FlashAttnBackwardK/Q/V 24 (partial mirror, await |
 | `GAP-228` | `PARTIAL` | Increment row; 8 remain. | DONE — 8 remain: PagedAttn only, separate surface by ruling (q + 2 |
 | `GAP-228` | `CLOSED` | Final increment: CPU UNAUDITED 320 -> 0. | DONE — CPU UNAUDITED 320 -> 0; 623/623 backed without the fill  |
+
+## Follow-on: the 4 Meta rows, converted once the arity fix made them visible
+
+⚠️ **These were never exempt on their merits — they were INVISIBLE to the
+vocabulary check.** It skips any row without exactly 5 cells, and these had 4
+because an **Area** cell was missing on the *left*, which shifted every later
+field. Repairing the arity did not change their status; it made their status
+**readable**. **A reviewer seeing four new vocabulary rows appear in an arity
+commit must not read it as the arity fix breaking something** — it is the same
+shape as `~~GAP-176~~` becoming legible to the strikethrough cross-check.
+
+| GAP | prefix | why | cell lead before conversion |
+|---|---|---|---|
+| `GAP-141` | `PARTIAL` | INC-1 DONE -> PARTIAL per the Absorbs table; increment 1 landed, increment 2 scheduled. | INC-1 DONE @ `999f5b67` (`fuel-ir/tests/gap_refs.rs`, runs under t |
+| `GAP-142` | `OPEN/standing` | STANDING -> OPEN/standing. The suffix is SOURCED from the row, not invented: a process rule is permanently open by design and a flat OPEN would read as unfinished work forever. | STANDING  |
+| `GAP-143` | `OPEN/standing` | As GAP-142. | STANDING  |
+| `GAP-144` | `OPEN/standing` | As GAP-142. | STANDING  |

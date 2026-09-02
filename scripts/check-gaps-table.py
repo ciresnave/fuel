@@ -227,6 +227,18 @@ print()
 # row's line number and invalidate citations across the corpus, and it is
 # unnecessary because the tier is already in the row. Same precedent as
 # rule 4b -- the data outvotes the presentation.
+print('!! THE 4-COLUMN TABLES ARE PERMANENTLY EXEMPT FROM THE STATUS')
+print('   CONVENTION -- ruled 2026-09-02 on measurement, not convenience.')
+print('   They are Tier C subdivided BY CRATE: an INDEX of terse one-line')
+print('   capability declines where the gap statement IS the status')
+print('   ("Pad Reflect/Replicate modes return \'not yet implemented\'").')
+print('   Measured: of 79 such rows, 67 carry NO status language at all, so')
+print('   a Status column would mean writing OPEN into 67 cells -- a field')
+print('   identical for 85% of its rows. THAT IS NOT INFORMATION, IT IS A')
+print('   COLUMN THAT EXISTS TO BE FULL, and it is the same false precision')
+print('   the OPEN/<state> ruling rejected, one column over.')
+print('   64% honest beats 100% decorative. DO NOT "COMPLETE" THIS.')
+print()
 print('!! THE TIER CELL (column 3) IS AUTHORITATIVE. The `## Tier X` section')
 print('   headings are PRESENTATIONAL and membership in them is CHRONOLOGICAL:')
 print('   rows were appended where the file happened to end, not where their')
@@ -423,8 +435,8 @@ for n, l in enumerate(lines, 1):
 # ⚠️ IF YOU FIX ROWS, LOWER THESE NUMBERS IN THE SAME COMMIT. A baseline left
 # above the true count is a gate that has quietly stopped guarding, which is the
 # defect this whole file exists to catch.
-ARITY_EXTRA_BASELINE = 14
-ARITY_MISSING_BASELINE = 4
+ARITY_EXTRA_BASELINE = 1
+ARITY_MISSING_BASELINE = 0
 
 print()
 print('rows with MORE cells than their header (status content, no column): %d (baseline %d)'
