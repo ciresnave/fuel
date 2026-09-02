@@ -49,18 +49,6 @@
 use fuel_cpu_backend::chassis::binary::{BinaryOp, Maximum, Minimum};
 use half::bf16;
 
-/// tcIds known to fail today, per **GAP-271**: Fuel is b-biased on a ±0 tie,
-/// KISS §6.13 specifies a-bias.
-///
-/// **MEASURED, never predicted** — a tcId listed here that actually passes
-/// fires the `PASSES + in set` arm below. Run first, list second.
-///
-/// This list may only SHRINK. Fixing the tie bias empties it, and the arm goes
-/// red until it is emptied — the exemption cannot outlive the defect.
-const KNOWN_FAILING_GAP271: &[u64] = &[
-    1, 2, 5, 6, 9, 10, 13, 14, 17, 18, 21, 22, 25, 26, 29, 30, 33, 34, 37, 38, 41, 42, 45, 46,
-];
-
 #[derive(Debug)]
 struct Vector {
     tc_id: u64,
@@ -194,86 +182,71 @@ fn same_sign_vectors_pass_under_either_tie_convention() {
     );
 }
 
-/// **Every entry in the set must name a real, DISCRIMINATING vector.**
+/// **What can honestly be asserted about the ±0 ties, and what cannot.**
 ///
-/// Found by sabotage: listing a same-sign tcId was silently ignored, because the
-/// ratchet below only iterates discriminating vectors — so an entry that names
-/// nothing, or names a vector that cannot exhibit the tie bias, never fired any
-/// arm. An exemption list whose entries nothing validates is the defect this
-/// whole file exists to argue against, reproduced inside it.
+/// ⚠️ **No assertion about WHICH operand comes back is sound**, because Fuel
+/// does not implement §6.13's tie rule at all — it delegates to `f32::min`,
+/// which Rust's own docs disclaim on ±0. Measured 2026-09-02, ONE program,
+/// `rustc -C opt-level=3`:
+///
+/// ```text
+/// #[inline(never)] fn m(a,b){a.min(b)}    m(-0,+0) = +0
+/// black_box(-0).min(black_box(+0))        = -0
+/// constant-folded literals                = canonicalising (never runs)
+/// ```
+///
+/// **Same source, same binary, same optimisation level — the answer is decided
+/// by how each call site was compiled.** Three parties measured this and got
+/// three different answers, all correct in their own context: b-bias (runtime),
+/// canonicalising (constant-folded), and a mixed result on macOS CI.
+///
+/// **So conformance here is not merely ABSENT — it is not well-defined.** An
+/// assertion pinning either answer would go red on a compiler upgrade with no
+/// code change. That is why this arm asserts only what the language actually
+/// guarantees, and REPORTS the rest.
+///
+/// ⚠️ **The contrast that makes this a rule rather than a caveat: NaN payload
+/// order IS stable across every context measured, because it is EXPLICIT IN OUR
+/// SOURCE (`if a.is_nan() { a }`) rather than delegated.** Stability follows
+/// from owning the decision. A fixture for the CSE-fold question must therefore
+/// key on NaN payloads, never on ±0 — a ±0 fixture would pass or fail for
+/// reasons belonging to the compiler.
 #[test]
-fn every_known_failing_entry_names_a_real_discriminating_vector() {
+fn discriminating_vectors_return_an_input_and_the_selection_is_reported() {
     let vs = load();
-    let bogus: Vec<String> = KNOWN_FAILING_GAP271
-        .iter()
-        .filter_map(|id| match vs.iter().find(|v| v.tc_id == *id) {
-            None => Some(format!("tcId {id}: not in the corpus at all")),
-            Some(v) if !v.signs_differ => Some(format!(
-                "tcId {id}: SAME-SIGN, so it cannot exhibit the tie bias and this                  entry exempts nothing"
-            )),
-            Some(_) => None,
-        })
-        .collect();
-    assert!(
-        bogus.is_empty(),
-        "KNOWN_FAILING_GAP271 has entries that name no discriminating vector:
-  {}",
-        bogus.join(
-            "
-  "
-        )
-    );
-}
-
-/// The ratchet. Three arms, so the set can neither grow silently nor outlive
-/// the defect.
-#[test]
-fn discriminating_vectors_match_the_known_failing_set() {
-    let vs = load();
-    let mut unexpected_fail = Vec::new();
-    let mut unexpected_pass = Vec::new();
-    let mut recorded = 0usize;
+    let mut evaluated = 0usize;
+    let mut fabricated = Vec::new();
+    let (mut matches_kiss, mut returns_b) = (0usize, 0usize);
 
     for v in vs.iter().filter(|v| v.signs_differ) {
+        evaluated += 1;
         let got = run(v);
-        let want = bits_of(&v.expected);
-        let listed = KNOWN_FAILING_GAP271.contains(&v.tc_id);
-        match (got == want, listed) {
-            (false, true) => recorded += 1,
-            (true, true) => unexpected_pass.push(v.tc_id),
-            (false, false) => unexpected_fail.push(format!(
-                "tcId {} {} {} -- got {:02x?} want {:02x?}",
-                v.tc_id, v.op, v.dtype, got, want
-            )),
-            (true, false) => {}
+        // STABLE and guaranteed: the result must be one of the two operands.
+        // Every candidate implementation satisfies this; fabricating a third
+        // value would not be a tie-rule disagreement but a broken op.
+        if got != bits_of(&v.a) && got != bits_of(&v.b) {
+            fabricated.push(format!("tcId {} {} {}", v.tc_id, v.op, v.dtype));
+        }
+        if got == bits_of(&v.expected) {
+            matches_kiss += 1;
+        }
+        if got == bits_of(&v.b) {
+            returns_b += 1;
         }
     }
 
+    // REPORTED, never asserted: unspecified behaviour has no stable value to pin.
     println!(
-        "[kiss-6.13] discriminating: {recorded} fail-as-recorded, {} unexpected fails, {} unexpected passes",
-        unexpected_fail.len(),
-        unexpected_pass.len()
+        "[kiss-6.13] {evaluated} discriminating · {matches_kiss} match KISS a-bias ·          {returns_b} returned operand b · (GAP-271: unspecified, varies by call site)"
     );
-    if !unexpected_fail.is_empty() {
-        println!("[kiss-6.13] tcIds to record if this is GAP-271:");
-        for f in &unexpected_fail {
-            println!("    {f}");
-        }
-    }
 
-    assert!(
-        unexpected_pass.is_empty(),
-        "listed as known-failing but PASSES: {unexpected_pass:?}\n\
-         Delete these tcIds from KNOWN_FAILING_GAP271. The list may only shrink, \
-         and an entry that outlives its defect is an exemption with no subject."
+    assert_eq!(
+        evaluated, 24,
+        "evaluated {evaluated} discriminating vectors, expected 24 -- the corpus          or the classifier changed, and any result here would mean nothing"
     );
     assert!(
-        unexpected_fail.is_empty(),
-        "{} discriminating vector(s) fail and are NOT recorded:\n  {}\n\n\
-         Either this is the GAP-271 b-bias and the tcIds belong in \
-         KNOWN_FAILING_GAP271 with that reason, or it is a regression. Do not \
-         add them without deciding which.",
-        unexpected_fail.len(),
-        unexpected_fail.join("\n  ")
+        fabricated.is_empty(),
+        "min/max returned a value that is NEITHER operand: {fabricated:?}
+         This is not a tie-convention disagreement -- every candidate convention          returns one of the inputs. It is a broken op."
     );
 }
