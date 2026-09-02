@@ -219,9 +219,9 @@ the table.
 
 | crate | MODEL | TENSOR | MIXED | doc-MODEL | doc-TENSOR | disposition |
 |---|---|---|---|---|---|---|
-| `fuel-datasets` | 0 | 7 | 0 | 0 | 8 | **DONE — this pilot** |
-| `fuel-onnx` | 0 | 32 | 0 | 0 | 5 | PARKED — eligible, no consumer waiting |
-| `fuel-parallel` | 0 | 22 | 0 | 0 | 5 | PARKED — eligible, no consumer waiting |
+| `fuel-datasets` | 0 | 7 | 0 | 0 | 8 | **DONE — this pilot**; tidiness tier |
+| `fuel-onnx` | 0 | 32 | 0 | 0 | 5 | PARKED — eligible; **tidiness** tier |
+| `fuel-parallel` | 0 | 22 | 0 | 0 | 5 | PARKED — eligible; **leaf** |
 | `fuel-training` | 4 | 15 | 0 | 6 | 5 | BLOCKED until Stage 2 |
 | `fuel-inference` | 9 | 63 | 0 | 2 | 17 | BLOCKED until Stage 2 |
 | `fuel-nn` | 1 | 214 | 0 | 0 | 6 | BLOCKED — see below |
