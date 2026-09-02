@@ -1,4 +1,4 @@
-﻿# fuel-quantized-phi
+# fuel-quantized-phi
 
 Fuel implementation of various quantized Phi models.
 

@@ -1,4 +1,4 @@
-﻿# fuel-z-image: Text-to-Image Generation with Flow Matching
+# fuel-z-image: Text-to-Image Generation with Flow Matching
 
 Z-Image is a ~24B parameter text-to-image generation model developed by Alibaba,
 using flow matching for high-quality image synthesis.

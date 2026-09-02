@@ -1,4 +1,4 @@
-﻿# fuel-jina-bert
+# fuel-jina-bert
 
 Jina-Bert is a general large language model with a context size of 8192, [model
 card](https://huggingface.co/jinaai/jina-embeddings-v2-base-en). In this example

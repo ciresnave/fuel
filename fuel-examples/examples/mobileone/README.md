@@ -1,4 +1,4 @@
-﻿# fuel-mobileone
+# fuel-mobileone
 
 [MobileOne: An Improved One millisecond Mobile Backbone](https://arxiv.org/abs/2206.04040).
 

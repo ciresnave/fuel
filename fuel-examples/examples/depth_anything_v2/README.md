@@ -1,4 +1,4 @@
-﻿# fuel-dinov2
+# fuel-dinov2
 
 [Depth Anything V2] is a model for Monocular Depth Estimation (MDE, i.e. just using a single image) which
 builds on the [DINOv2](https://github.com/facebookresearch/dinov2) vision transformer.

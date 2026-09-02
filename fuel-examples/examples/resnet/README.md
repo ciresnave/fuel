@@ -1,4 +1,4 @@
-﻿# fuel-resnet
+# fuel-resnet
 
 A fuel implementation of inference using a pre-trained [ResNet](https://arxiv.org/abs/1512.03385).
 This uses a classification head trained on the ImageNet dataset and returns the

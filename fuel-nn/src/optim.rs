@@ -28,8 +28,8 @@
 //!
 //! [`step`]: Optimizer::step
 
-use fuel::Result;
-use fuel::lazy::{Tensor, realize_many_f32};
+use fuel_core::Result;
+use fuel_core::lazy::{Tensor, realize_many_f32};
 use fuel_graph::NodeId;
 use fuel_ir::{Error, Shape};
 use std::collections::HashMap;
@@ -603,7 +603,7 @@ impl Optimizer for AdamW {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel::Device;
+    use fuel_core::Device;
 
     fn build_grads_for(vars: &[(&Var, Vec<f32>)]) -> (Tensor, HashMap<String, Tensor>) {
         let (first_var, first_data) = &vars[0];

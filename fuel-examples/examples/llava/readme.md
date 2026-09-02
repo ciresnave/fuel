@@ -1,4 +1,4 @@
-﻿# fuel-llava
+# fuel-llava
 
 LLaVA (Large Language-and-Vision Assistant) is an end-to-end trained large
 multimodal model. This example is from [fuel-llava](https://github.com/chenwanqq/fuel-llava)

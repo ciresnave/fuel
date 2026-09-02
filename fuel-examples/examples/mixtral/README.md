@@ -1,4 +1,4 @@
-﻿# fuel-mixtral: 8x7b LLM using a sparse mixture of experts.
+# fuel-mixtral: 8x7b LLM using a sparse mixture of experts.
 
 Mixtral-8x7B-v0.1 is a pretrained generative LLM with 56 billion parameters. 
 
