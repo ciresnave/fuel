@@ -1,6 +1,6 @@
 # Fuel restructure — migration design
 
-**Status**: draft for review, 2026-08-26. Measured at `1b6ae698`.
+**Status**: Stage 1 **SHIPPED** 2026-09-02 (`a2027651`, PR #35); Stages 2–4 not yet executed. Originally drafted 2026-08-26, measured at `1b6ae698` (pre-Stage-1).
 **Reviewers requested**: Vulkane (live external backend), Lightbulb (external consumer of `fuel-core`), Unpopped (provider, if the FKC surface publishes), the portfolio PM (claims-against-refs).
 **Author**: Fuel architect. Corrected four times before landing; see §10.
 
@@ -229,6 +229,13 @@ no stage begins before its predecessor's gate is green.
 
 ### Stage 1 — Make `fuel` real (small, unblocks everything)
 
+**SHIPPED 2026-09-02 — `a2027651`, PR #35.** The facade crate landed: a
+byte-identical public surface (`pub use fuel_core::*` + an explicit `bail`
+re-export) with a 1:1 feature-forwarding gate, consumer impact nil (all 6
+`fuel::` consumers compiled unchanged). The `fuel_core::` doc/prose sites are a
+separate follow-up (PR #43) — 7 converted, 7 left after a STALE/HISTORICAL/PINNED
+read, 2 deferred to Stage 2 (below). The original plan text is kept for the record:
+
 Convert the 18 `fuel_core::` sites to `fuel::`. Create `fuel` as a real crate
 whose `lib.rs` re-exports exactly what `fuel-core/src/lib.rs` exports today.
 `fuel-core` becomes its only dependency.
@@ -248,6 +255,16 @@ tensor API; they are moved, not rewritten.
 
 **Gate**: facade path set unchanged; `fuel-examples` (553 `fuel::` imports, the
 heaviest consumer) compiles untouched.
+
+**Deferred doc-pointers to fold in here.** Two example source-pointers were left
+as `fuel_core::` in the Stage 1 facade-rename follow-up because Stage 2 relocates
+the module they name: `fuel-examples/examples/debertav2/main.rs:347` (a `bail!`
+string naming `fuel_core::lazy_debertav2`) and `.../xlm-roberta/main.rs:142` (a
+comment naming `fuel_core::lazy_xlm_roberta`). Both spellings — `fuel_core::` and
+the canonical `fuel::` — go stale once these modules land in `fuel-transformers`,
+so converting earlier was churn for no reader. **They are RUNTIME text (a `bail!`
+string and a comment), not `[intra-doc links]`, so no rustdoc gate flags them if
+this stage forgets** — retarget them to wherever the module lands as part of this move.
 
 **And this is the first real test of the §4 authoring surface**: whatever
 `fuel-author` ends up being, it has to be able to express what already exists in

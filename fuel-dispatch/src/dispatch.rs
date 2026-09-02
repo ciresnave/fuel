@@ -7547,7 +7547,7 @@ static GLOBAL_REGISTRY: OnceLock<RwLock<CapabilityRegistry>> = OnceLock::new();
 
 /// Process-wide topology generation counter. Bumped whenever the
 /// set of registered backends / loaded kernels changes — so a
-/// [`fuel_core::topology::SystemTopology`] snapshot built at
+/// [`crate::topology::SystemTopology`] snapshot built at
 /// generation N self-invalidates the next time a consumer asks for
 /// a fresh view and the counter is N+1 or greater. See the
 /// system-topology session prompt for the contract.
@@ -7983,7 +7983,7 @@ fn substrate_for_backend(backend: BackendId) -> SubstrateClass {
 /// cover.
 ///
 /// The `(op, dtype)` derivation mirrors
-/// [`fuel_core::topology::SystemTopology`]'s `binding_op_coverage`: each
+/// [`crate::topology::SystemTopology`]'s `binding_op_coverage`: each
 /// binding key carries per-operand dtypes (inputs then outputs); the
 /// classic `(op, dtype)` shape takes the OUTPUT dtype — the last entry
 /// in the key's dtype list. Single-dtype keys (most elementwise ops)

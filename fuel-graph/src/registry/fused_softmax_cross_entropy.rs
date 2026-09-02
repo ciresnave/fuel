@@ -54,7 +54,7 @@
 //! collides with a non-negative class index, so the lowered backward
 //! is correct for the typical case. Datasets that actually use
 //! ignore-masking during training should keep using
-//! [`fuel_core::train::loss::cross_entropy_with_logits`] (the
+//! `fuel::train::loss::cross_entropy_with_logits` (the
 //! primitive composition path) until the in-place fused backward
 //! lands.
 
