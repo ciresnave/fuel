@@ -366,8 +366,8 @@ fn unjudged_coverage_may_only_shrink() {
         unassigned
     );
     assert!(
-        unassigned.len() <= 5,
-        "{} crates carry no tier (5 at f9bdfb20): {:?}\n\
+        unassigned.len() <= 4,
+        "{} crates carry no tier (4 at 29270ef3, down from 5): {:?}\n\
          Every edge they touch is UNJUDGED, in both directions. If you added a \
          crate, give it a tier. This bound may only SHRINK -- the header of \
          crate_dependency_tiers.txt lists what the current exemptions cost.",
