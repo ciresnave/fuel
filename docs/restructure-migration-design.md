@@ -341,6 +341,118 @@ Now a normal-sized refactor, and only now are the boundaries visible:
 | `train.rs` | **`fuel-training`** (exists) | |
 | the rest (5.5k, 31 files) | distribute | `nf4`→`fuel-quantized`, `device`→`fuel-hardware`, … |
 
+### Per-row membership + pre-flight (measured 2026-09-02, at `main` `131e8b84`)
+
+⚠️ **The rows above cannot be trusted row-by-row.** Each names a *size* and a
+*destination* and never a *file set* — and a size cannot disagree with anything, so a
+multi-layer row looks exactly like a single-layer one. The `serving/decode` hole was
+filed as ONE row for exactly this reason. This pre-flight was required to make the rows
+falsifiable. Result: **three of six rows conflate layers, "the rest" spans four tiers,
+and two real dependency cycles were caught before execution.**
+
+Pre-flight test per row: does any crate *at or below* the destination consume the code
+(consumer direction), and can the destination reach what the code depends on (dependency
+direction)? Either failing is a cycle — the defect Stage 2 hit (GAP-265: cargo enforces
+acyclicity, not layer direction).
+
+⚠️ **None of the 45 `fuel-core/src` files carries a `//! **Layer**:` declaration.** Six
+crates in this workspace self-declare their layer; none of these files does. **Every
+placement below was inferred from the dependency graph, not read off** — a future reader
+must not mistake these for self-declared.
+
+Layer order (bottom→top): `fuel-ir`/`fuel-graph`/`fuel-memory`/backends → `fuel-dispatch`
+→ `fuel-core` (Foundation/IO) → `fuel-nn` (NN) → `fuel-transformers` (Models) →
+`fuel-inference`/`fuel-training` (top leaves).
+
+#### Row 1 — `lazy.rs` (25,925) → `fuel-tensor` · ⚠️ MULTI-LAYER (≥3 destinations)
+
+| Member (by concern) | Destination | Consumers | Pre-flight |
+|---|---|---|---|
+| Tensor API (bulk) | `fuel-tensor` (Foundation) | all tiers above | CLEAN |
+| `LlamaModel`/`PhiModel` (`impl` at :8103, pre-trait models) | `fuel-transformers` (Models) | `fuel-inference` + intra-Models | architectures, not tensor API |
+| Paged serving methods (:8674+ `forward_paged_step`, …; take `&mut DeviceKvPool`/`SessionHandle`) | `fuel-inference` (serving, with Group B) | **only** `fuel-inference` | ⚠️ must NOT ride into `fuel-tensor` — `fuel-tensor→fuel-inference` cycle |
+
+The single "→ `fuel-tensor`" destination is wrong for two of the three concerns.
+
+#### Row 2 — runtime bridge (`pipelined_bridge` 2680, `scheduling` 1481, `factories` 331) → `fuel-dispatch` · 2 clean, 1 mis-filed
+
+| Member | Destination | Pre-flight |
+|---|---|---|
+| `pipelined_bridge.rs` | `fuel-dispatch` | CLEAN dep-wise (code uses `fuel_ir`/`fuel_graph`/`fuel_memory`); its 7 `fuel-core` refs are **doc-links only**, but they point at `crate::inference_context`/`lazy::Tensor` and **break on the move → must repath to Group A's home** |
+| `scheduling.rs` | `fuel-dispatch` | CLEAN (0 `fuel-core` code refs) |
+| `factories.rs` | ⚠️ **`fuel-judge`, not `fuel-dispatch`** (RULED 2026-09-02, OPT A) | **mis-GROUPING corrected — it was never executor code.** `factories.rs:41 use crate::lazy::Tensor` is real code and `fuel-dispatch` is *below* `fuel-tensor` → cycle. Its **sole code consumer** is `judge/mod.rs` (the §5.1 runner) — it is the Judge's realize *facade* — so it belongs in `fuel-judge` (a top leaf, so `Tensor`/`Device`/`pipelined_bridge`/`StorageCache` are all downward, CLEAN, zero decoupling). |
+
+⚠️ **A stale prose consumer list is why this row looked ambiguous — a finding in its own
+right.** `factories.rs`'s module doc (line 7) names "the `crate::probe` enumerator" as a
+consumer; but `crate::probe` is `pub use fuel_hardware::probe`, and `factories.rs:34-36` —
+twenty-seven lines below — records that device enumeration moved to `fuel-hardware`'s
+`HardwareEnumerator` in B0.2. **The file contradicts itself: a doc naming a consumer that
+no longer exists, sitting above the note that explains why it does not.** A prose consumer
+list is a *cache* — nothing re-derives it, so it goes stale silently. It is the same
+defect as the Stage 3 rows themselves (an unfalsifiable claim nothing re-checks), and a
+better example, because here the refutation was already in the file. **Two doc-link
+repaths also ride this move:** `pipelined_bridge.rs:316` and `:1233` reference
+`crate::factories::{BridgeRealizer, Realizer}` in doc comments, and since `factories` →
+`fuel-judge` while `pipelined_bridge` → `fuel-dispatch`, those links become cross-crate in
+both directions at once.
+
+#### Row 3 — the Judge (`judge/mod.rs` 3910 → `fuel-judge`; `judge/oracle.rs` 439 + `judge/cache.rs` 412 → `fuel-dispatch`) · RULED (§5.1), premise VERIFIED
+
+Pre-flight confirmed 2026-09-02: `oracle.rs`/`cache.rs` non-test imports are only
+`fuel_dispatch` + `fuel_ir` — **zero** `fuel-core`-Foundation code deps, so the
+`→ fuel-dispatch` half carries no cycle (the `factories` cycle does not recur here).
+Execution note: their tests reference `crate::judge::{test_equiv_key,
+PROFILE_REPORT_VERSION}` from `judge/mod.rs` → `fuel-judge`; those helpers must
+move/repath on the split — test wiring, not a layering fault. `factories.rs` joins this
+crate's runner (see Row 2).
+
+#### Row 4 — serving / decode (8,926) → SPLIT
+
+| Group | Members | Destination | Pre-flight |
+|---|---|---|---|
+| A — decode-graph machinery | `persistent_decode` 1482, `inference_context` 2671, `decode_shape` 471 | **new `fuel-decode`** (Foundation/NN level) | consumed by `fuel-transformers` (Models) + `fuel-inference`; **`fuel-inference` FAILS** (Models is below it). Crate forced by **L880** (Models must hold no sessions; A holds `DecodeSession`/`KvCache`/`InferenceContext`). Stopping-rule class *Models-without-A* is real (7 of 146 models decode) but its benefit is conditional on a `decode` feature gate over the 7 families. |
+| B — serving orchestration | `kv_block_pool` 1720, `kv_block_pool_device` 2238, `decode_state_spec` 344 | **`fuel-inference`** | consumed only by `fuel-inference`; PASSES. `multi_session.rs` (4163) already there. `lazy.rs` paged methods peel here (Row 1). |
+
+Verified A has **zero** code dep on B (only doc-links), so B is free to go up.
+
+#### Row 5 — `train.rs` (1,633) → `fuel-training` · CLEAN
+
+Only consumer is `lib.rs`'s `pub mod train;` (moves with it); no below-consumer;
+`fuel-training` is a top leaf. PASSES.
+
+#### Row 6 — "the rest" (~25 files, ~5.5k) → distribute · ⚠️ FOUR tiers, not one
+
+| Tier | Files |
+|---|---|
+| Foundation (`fuel-tensor`/`fuel-ir`) | `dtype` 111, `shape` 52, `error` 26, `storage` 19, `layout` 5, `strided_index` 5, `planner` 117, `model_progress` 138 |
+| Kernels (`fuel-quantized`) | `nf4` 698, `quantized/{arch,gguf_mmap,gguf_file,imatrix_file,mod}` ~449, `utils` 111 |
+| Backends | `accelerate` 477, `mkl` 419 → CPU backend crates; `cuda_backend`/`vulkan_backend`/`metal_backend`/`cpu_backend`/`backend`/`dyn_backend` → re-export shims |
+| `fuel-dispatch` | `telemetry` 364 |
+| IO | `safetensors` 241, `hf_config` 111 → `fuel-core` IO remnant / `fuel-io`; ⚠️ **`quantized/tokenizer.rs` 333 is tokenizer glue → IO, not Kernels** |
+| test-support | `test_utils` 124 |
+
+The named examples (`nf4`→`fuel-quantized`, `device`→`fuel-hardware`) are correct but
+partial. All destinations sit at/below their consumers, so each passes the pre-flight;
+the finding is that the row is four rows.
+
+#### Carve-out — `lazy_latent_cache.rs` (398) → `fuel-nn`
+
+Lowest real consumer is `fuel-nn` (`two_proj_attention.rs`); also `fuel-transformers` +
+`fuel-inference`, both above. Not `fuel-transformers` (that is the Stage 2 cycle). Kept
+apart from `lazy_kv_cache` — which has no Models-only deps, so reunion is *feasible* — but
+feasibility is not a reason; the separation stands with this recorded rationale, and the
+burden to reunite is a positive argument, not tidiness.
+
+#### What the pre-flight caught before execution
+
+- `lazy.rs` paged methods → `fuel-inference` would have cycled `fuel-tensor→fuel-inference`
+  had `lazy.rs` moved monolithically to `fuel-tensor`.
+- `factories.rs`'s `use crate::lazy::Tensor` → `fuel-dispatch` would have cycled
+  `fuel-dispatch→fuel-tensor`.
+
+Both are the GAP-265 defect (an upward edge that compiles until the crate boundary
+exists), and both were invisible in a row that named only a size and a destination.
+
 ### 5.1 The Judge splits, and the line is already drawn in its file layout
 
 **Ruled 2026-08-27.** This was left open in the first draft, then blocked on a
