@@ -24,7 +24,27 @@
 //! 2. `C:\Program Files\AMD\AOCL-Windows\amd-blis\lib\LP64`
 //! 3. `C:\Program Files\AMD\AOCL-Windows\amd-blis\lib\ILP64`
 //!
-//! First match wins. If none exist, the function returns silently —
+//! ⚠️ **THIS MODULE'S ACCOUNT AND `fuel-test-support`'s DISAGREE, AND NEITHER IS
+//! EVIDENCED (measured 2026-09-02).** The text below describes a `PATH` fix
+//! applied *before* a `LoadLibrary` attempt, with failure surfacing as an `Err`
+//! from `try_new` — which requires the DLL to be resolved at first USE.
+//! `fuel_test_support::hardware::Hardware::default_policy`'s doc asserted the
+//! opposite: that the test binary *"cannot even launch"*, in which case nothing
+//! here ever runs. **Both cannot be true.**
+//!
+//! Measured one crate down: `aocl-blas-sys` has 7094 `extern "C"` declarations,
+//! **zero** `#[link(...)]` attributes and **zero** `cargo:rustc-link-lib` /
+//! `rustc-link-search` directives in its build script; `aocl-blas`'s
+//! `static-link` feature is OFF by default; and `libloading` appears only in a
+//! `Cargo.lock` as a bindgen build-time transitive, with no source use. **That
+//! evidences neither mechanism** — it leaves open how those symbols resolve at
+//! all, and admits a third possibility nobody has written down.
+//!
+//! **UNRESOLVED on this machine, because this machine HAS AOCL installed** and
+//! the absent-DLL case therefore cannot be observed. See
+//! `fuel-test-support/src/hardware.rs` for the full record. Do not resolve this
+//! by picking whichever file you opened first.
+//!//! First match wins. If none exist, the function returns silently —
 //! the subsequent gemm probe will fail and `try_new` returns an Err
 //! that the caller surfaces.
 
