@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! **Does CSE actually fold `min(a,b)` with `min(b,a)`?**
 //!
-//! `opt.rs::is_commutative` lists `Op::Minimum` and `Op::Maximum`, and the
+//! **HISTORY, because the reason this guard exists is the thing worth keeping.**
+//! `opt.rs::is_commutative` LISTED `Op::Minimum` and `Op::Maximum` until #65
+//! (`071903c8`); this file now guards the REMOVAL, and its assertions fire if
+//! anyone re-adds them to `opt.rs` or `jit.rs`. It is the only guard in the tree
+//! pointed at that regression, and #65 changed BOTH functions.
+//!
+//! The original measurement is kept because it is why the removal happened. The
 //! module doc says commutative ops "are keyed on sorted input IDs so `a + b`
 //! and `b + a` fold to the same canonical node". There is an existing in-crate
 //! test proving that for `Add`.
@@ -58,10 +64,13 @@ fn cse_folds_minimum_across_operand_order() {
         roots[1],
         roots[0] == roots[1]
     );
-    assert_eq!(
+    assert_ne!(
         roots[0], roots[1],
-        "CSE folds min(a,b) with min(b,a) -- so the survivor's operand order \
-         wins for every consumer, and min/max is order-dependent on signed zeros"
+        "min(a,b) and min(b,a) FOLDED. `Minimum` was removed from \
+         `is_commutative` by #65 (071903c8) because min/max are not bitwise \
+         commutative -- NaN payload order is first-operand-biased and explicit \
+         in the source. If they fold again, that removal has been undone and \
+         an invalid rewrite is live."
     );
 }
 
@@ -73,7 +82,45 @@ fn cse_folds_maximum_across_operand_order() {
     let graph = a.graph().clone();
     let roots = optimize(&graph, &[ab.id(), ba.id()]);
     println!("[minmax-cse] maximum: folded={}", roots[0] == roots[1]);
-    assert_eq!(roots[0], roots[1], "same for Maximum");
+    assert_ne!(
+        roots[0], roots[1],
+        "max(a,b) and max(b,a) FOLDED -- same regression as the Minimum arm. \
+         BOTH `is_commutative` functions must exclude it: `opt.rs` keys CSE \
+         and `jit.rs` matches order-independently; #65 changed both."
+    );
+}
+
+/// **POSITIVE CONTROL FOR THE WHOLE FILE — added when the min/max assertions
+/// were inverted.**
+///
+/// After the inversion every assertion here is a NON-equality, and a `optimize`
+/// that folded NOTHING AT ALL — a dead pass, a harness that never reaches CSE,
+/// a refactor that makes `optimize` a no-op on this shape — would turn the whole
+/// file GREEN while proving nothing.
+///
+/// `control_non_commutative_sub_does_not_fold` cannot see that: it fires in the
+/// SAME DIRECTION as total inertness, so it guards against over-folding and is
+/// blind to under-folding. Two failure directions; without this one, two
+/// controls point at one of them and none at the other.
+///
+/// `Add` is still in `is_commutative` at head, so this MUST fold.
+#[test]
+fn control_add_still_folds_across_operand_order() {
+    let (a, b) = two_operands();
+    let ab = a.add(&b);
+    let ba = b.add(&a);
+    let graph = a.graph().clone();
+    let roots = optimize(&graph, &[ab.id(), ba.id()]);
+    println!(
+        "[minmax-cse] CONTROL add: a+b->{:?}  b+a->{:?}  folded={}",
+        roots[0],
+        roots[1],
+        roots[0] == roots[1]
+    );
+    assert_eq!(
+        roots[0], roots[1],
+        "`Add` did NOT fold across operand order. `optimize` is not folding          anything on this shape, so every assert_ne in this file is vacuous and          its greenness means nothing. This is a larger finding than the file's          own subject -- stop and investigate rather than adjusting assertions."
+    );
 }
 
 /// **The control, and it is load-bearing.** If CSE folded *everything* with the
