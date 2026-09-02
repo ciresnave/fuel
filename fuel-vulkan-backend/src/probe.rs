@@ -236,6 +236,116 @@ fn total_device_local_memory(p: &PhysicalDevice) -> u64 {
         .sum()
 }
 
+// GATED ON `cfg(test)` DELIBERATELY. This is a diagnostic with exactly one
+// caller -- the GAP-260 measurement below -- so compiling it into production
+// builds would add dead code, and `#[allow(dead_code)]` would suppress a
+// warning that is telling the truth. `--all-targets` (what CI runs) still
+// compiles it, so it is covered where it matters.
+#[cfg(test)]
+/// A fuel-internal POD summary of one Vulkan memory type.
+///
+/// Extracted from `vulkane::safe::MemoryType` for the same reason
+/// [`CoopMatrixShape`](crate::CoopMatrixShape) is extracted from
+/// `CooperativeMatrixProperties`: the vulkane wrapper holds a raw
+/// `VkMemoryType`, so a POD copy is `Send + Sync` and survives a vulkane bump
+/// without making vulkane part of this crate's public API.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MemoryTypeSummary {
+    /// Index into `VkPhysicalDeviceMemoryProperties::memoryTypes`.
+    pub(crate) index: u32,
+    /// Which heap this type draws from.
+    pub(crate) heap_index: u32,
+    /// Raw `VkMemoryPropertyFlags` bits, kept raw so an unrecognised bit from a
+    /// newer driver is PRESERVED rather than dropped by a decode step.
+    pub(crate) property_flags: u32,
+}
+
+#[cfg(test)]
+impl MemoryTypeSummary {
+    pub(crate) fn is_host_visible(&self) -> bool {
+        self.property_flags & MemoryPropertyFlags::HOST_VISIBLE.0 != 0
+    }
+}
+
+#[cfg(test)]
+/// One physical device's memory-type layout.
+pub(crate) struct DeviceMemoryLayout {
+    pub(crate) device_name: String,
+    pub(crate) types: Vec<MemoryTypeSummary>,
+}
+
+#[cfg(test)]
+impl DeviceMemoryLayout {
+    /// Pairs of HOST_VISIBLE memory types whose property-flag sets are
+    /// INCOMPARABLE -- neither a subset of the other.
+    ///
+    /// WHY THIS EXACT PREDICATE (GAP-260). Vulkan requires a memory type whose
+    /// flags are a strict SUBSET of another's to be enumerated FIRST, so on a
+    /// layout where every host-visible type is comparable, a first-match search
+    /// already picks the least-specialised one and the ordering is forced.
+    /// Where two types are INCOMPARABLE the spec imposes no ordering, and a
+    /// conforming driver may enumerate the BAR-backed
+    /// `DEVICE_LOCAL + HOST_VISIBLE + HOST_COHERENT` type ahead of the plain
+    /// `HOST_VISIBLE + HOST_COHERENT + HOST_CACHED` one. That is the layout
+    /// vulkane 0.13's `AllocationUsage::HostVisible` fix exists for -- and
+    /// `AllocationUsage::HostVisible` is used at five-plus sites on this crate's
+    /// staging path, so it is not hypothetical.
+    ///
+    /// An empty result therefore means the fix cannot change this device's
+    /// selection; a non-empty one means it can.
+    pub(crate) fn incomparable_host_visible_pairs(&self) -> Vec<(u32, u32)> {
+        let hv: Vec<&MemoryTypeSummary> =
+            self.types.iter().filter(|t| t.is_host_visible()).collect();
+        let mut out = Vec::new();
+        for (i, a) in hv.iter().enumerate() {
+            for b in hv.iter().skip(i + 1) {
+                let a_sub_b = a.property_flags & b.property_flags == a.property_flags;
+                let b_sub_a = a.property_flags & b.property_flags == b.property_flags;
+                if !a_sub_b && !b_sub_a {
+                    out.push((a.index, b.index));
+                }
+            }
+        }
+        out
+    }
+}
+
+#[cfg(test)]
+/// Enumerate every physical device's memory-type layout.
+///
+/// Deliberately `pub(crate)`: this is a diagnostic, and making it public would
+/// add permanent API surface for a measurement. It reuses
+/// `new_instance_preferring_v1_3` so it observes the SAME devices the backend
+/// dispatches to -- a caller that built its own instance would be measuring a
+/// different enumeration than the production path.
+pub(crate) fn enumerate_memory_layouts() -> Result<Vec<DeviceMemoryLayout>> {
+    let instance = new_instance_preferring_v1_3(|api_version| InstanceCreateInfo {
+        engine_name: Some("fuel-vulkan-backend memory-layout probe"),
+        api_version,
+        ..Default::default()
+    })?;
+    let physicals = instance.enumerate_physical_devices().map_err(vk_err)?;
+    Ok(physicals
+        .iter()
+        .map(|p| {
+            let mp = p.memory_properties();
+            DeviceMemoryLayout {
+                device_name: p.properties().device_name(),
+                types: (0..mp.type_count())
+                    .map(|i| {
+                        let t = mp.memory_type(i);
+                        MemoryTypeSummary {
+                            index: i,
+                            heap_index: t.heap_index(),
+                            property_flags: t.property_flags().0,
+                        }
+                    })
+                    .collect(),
+            }
+        })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -589,5 +699,89 @@ mod tests {
                 d.hardware_sku,
             );
         }
+    }
+
+    /// GAP-260: does any adapter on this box have INCOMPARABLE host-visible
+    /// memory types -- the layout vulkane 0.13's `AllocationUsage::HostVisible`
+    /// fix exists for?
+    ///
+    /// A MEASUREMENT, not a gate. It asserts only that enumeration returned
+    /// something, so an empty result fails loudly instead of printing nothing
+    /// and reporting `ok` (GAP-157). The finding is in the output.
+    ///
+    /// The question it answers is a scheduling one: `new_device()` uses
+    /// `PreferDiscrete` and hands back the NVIDIA card, so every live-GPU result
+    /// this crate reports comes from the discrete adapter. Whether an iGPU test
+    /// arm is WORTH building depends on whether the integrated adapter actually
+    /// has the layout the fix targets -- learning it is ordinary and skipping
+    /// the arm is a cheaper correct outcome than wiring the arm blind.
+    #[test]
+    #[ignore = "live GPU: enumerates real Vulkan memory layouts; run via scripts/gpu-run.ps1"]
+    fn report_host_visible_memory_layout_incomparability() {
+        fn decode(flags: u32) -> String {
+            let mut s = Vec::new();
+            for (bit, name) in [
+                (MemoryPropertyFlags::DEVICE_LOCAL.0, "DEVICE_LOCAL"),
+                (MemoryPropertyFlags::HOST_VISIBLE.0, "HOST_VISIBLE"),
+                (MemoryPropertyFlags::HOST_COHERENT.0, "HOST_COHERENT"),
+                (MemoryPropertyFlags::HOST_CACHED.0, "HOST_CACHED"),
+                (MemoryPropertyFlags::LAZILY_ALLOCATED.0, "LAZILY_ALLOCATED"),
+                // Not in vulkane's MemoryPropertyFlags constants; named here
+                // from vk.xml bitpos 5/6/7/8 because this box's AMD adapter
+                // actually sets 0xc0 and an unnamed hex blob is unreadable.
+                (0x20, "PROTECTED"),
+                (0x40, "DEVICE_COHERENT_AMD"),
+                (0x80, "DEVICE_UNCACHED_AMD"),
+                (0x100, "RDMA_CAPABLE_NV"),
+            ] {
+                if flags & bit != 0 {
+                    s.push(name);
+                }
+            }
+            // Any bit we do not name is REPORTED as raw rather than dropped: a
+            // newer driver's flag must not vanish from a diagnostic.
+            let known: u32 = MemoryPropertyFlags::DEVICE_LOCAL.0
+                | MemoryPropertyFlags::HOST_VISIBLE.0
+                | MemoryPropertyFlags::HOST_COHERENT.0
+                | MemoryPropertyFlags::HOST_CACHED.0
+                | MemoryPropertyFlags::LAZILY_ALLOCATED.0
+                | 0x20
+                | 0x40
+                | 0x80
+                | 0x100;
+            let unknown = flags & !known;
+            let mut out = s.join(" + ");
+            if unknown != 0 {
+                out.push_str(&format!(" + <unknown 0x{unknown:x}>"));
+            }
+            out
+        }
+
+        let layouts = required_ok("a live Vulkan device", enumerate_memory_layouts());
+        println!("=== HOST-VISIBLE MEMORY LAYOUT (GAP-260) ===");
+        for l in &layouts {
+            println!("{}", l.device_name);
+            for t in &l.types {
+                println!(
+                    "  [{}] heap={} flags=0x{:04x}  {}",
+                    t.index,
+                    t.heap_index,
+                    t.property_flags,
+                    decode(t.property_flags)
+                );
+            }
+            let pairs = l.incomparable_host_visible_pairs();
+            println!(
+                "  host-visible types: {}   INCOMPARABLE pairs: {} {:?}",
+                l.types.iter().filter(|t| t.is_host_visible()).count(),
+                pairs.len(),
+                pairs
+            );
+        }
+        assert!(
+            !layouts.is_empty(),
+            "no Vulkan adapters enumerated -- this test cannot report a layout \
+             and must fail rather than pass having printed nothing"
+        );
     }
 }
