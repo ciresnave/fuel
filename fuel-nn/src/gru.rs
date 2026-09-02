@@ -27,8 +27,8 @@
 //!     concern, not handled here).
 //!   - Bidirectional and packed sequences are out of scope.
 
-use fuel::Result;
-use fuel::lazy::Tensor;
+use fuel_core::Result;
+use fuel_core::lazy::Tensor;
 use fuel_ir::Shape;
 use std::sync::Arc;
 
@@ -77,13 +77,13 @@ impl GruStack {
         let h0_shape = h0.shape();
         let h0_dims = h0_shape.dims();
         if h0_dims.len() != 3 {
-            return Err(fuel::Error::Msg(format!(
+            return Err(fuel_core::Error::Msg(format!(
                 "GRU: initial state must be rank 3 [num_layers, B, H], got {h0_dims:?}",
             ))
             .bt());
         }
         if h0_dims[0] != self.layers.len() {
-            return Err(fuel::Error::Msg(format!(
+            return Err(fuel_core::Error::Msg(format!(
                 "GRU: initial state has {} layers, stack has {}",
                 h0_dims[0],
                 self.layers.len(),
@@ -93,14 +93,14 @@ impl GruStack {
         let x_dims = x.shape();
         let x_dims = x_dims.dims();
         if x_dims.len() != 3 {
-            return Err(fuel::Error::Msg(format!(
+            return Err(fuel_core::Error::Msg(format!(
                 "GRU: input must be rank 3 [B, T, D_in], got {x_dims:?}",
             ))
             .bt());
         }
         let b = x_dims[0];
         if h0_dims[1] != b {
-            return Err(fuel::Error::Msg(format!(
+            return Err(fuel_core::Error::Msg(format!(
                 "GRU: initial state batch {} != input batch {}",
                 h0_dims[1], b,
             ))
@@ -109,7 +109,7 @@ impl GruStack {
         let mut h = x.clone();
         for (idx, layer) in self.layers.iter().enumerate() {
             if h0_dims[2] != layer.hidden_dim {
-                return Err(fuel::Error::Msg(format!(
+                return Err(fuel_core::Error::Msg(format!(
                     "GRU: initial state hidden {} != layer {idx} hidden {}",
                     h0_dims[2], layer.hidden_dim,
                 ))
@@ -219,17 +219,17 @@ impl GruCellWeights {
     /// `prefix` is typically empty (`""`) or a module prefix
     /// ending in `.` (e.g. `"encoder.rnn."`).
     pub fn load_from_mmapped(
-        st: &fuel::safetensors::MmapedSafetensors,
+        st: &fuel_core::safetensors::MmapedSafetensors,
         prefix: &str,
         layer: usize,
         input_dim: usize,
         hidden_dim: usize,
     ) -> Result<Self> {
-        use fuel::lazy::load_tensor_as_f32;
+        use fuel_core::lazy::load_tensor_as_f32;
         let three_h = 3 * hidden_dim;
         let w_ih = load_tensor_as_f32(st, &format!("{prefix}weight_ih_l{layer}"))?;
         if w_ih.len() != three_h * input_dim {
-            fuel::bail!(
+            fuel_core::bail!(
                 "{prefix}weight_ih_l{layer}: {} elements, expected {} ({three_h}×{input_dim})",
                 w_ih.len(),
                 three_h * input_dim,
@@ -237,7 +237,7 @@ impl GruCellWeights {
         }
         let w_hh = load_tensor_as_f32(st, &format!("{prefix}weight_hh_l{layer}"))?;
         if w_hh.len() != three_h * hidden_dim {
-            fuel::bail!(
+            fuel_core::bail!(
                 "{prefix}weight_hh_l{layer}: {} elements, expected {} ({three_h}×{hidden_dim})",
                 w_hh.len(),
                 three_h * hidden_dim,
@@ -245,14 +245,14 @@ impl GruCellWeights {
         }
         let b_ih = load_tensor_as_f32(st, &format!("{prefix}bias_ih_l{layer}"))?;
         if b_ih.len() != three_h {
-            fuel::bail!(
+            fuel_core::bail!(
                 "{prefix}bias_ih_l{layer}: {} elements, expected {three_h}",
                 b_ih.len(),
             );
         }
         let b_hh = load_tensor_as_f32(st, &format!("{prefix}bias_hh_l{layer}"))?;
         if b_hh.len() != three_h {
-            fuel::bail!(
+            fuel_core::bail!(
                 "{prefix}bias_hh_l{layer}: {} elements, expected {three_h}",
                 b_hh.len(),
             );
@@ -274,7 +274,7 @@ impl GruStack {
     /// num_layers]` and the on-disk keys are
     /// `{prefix}weight_ih_l{idx}` etc. for each layer's index.
     pub fn load_from_mmapped(
-        st: &fuel::safetensors::MmapedSafetensors,
+        st: &fuel_core::safetensors::MmapedSafetensors,
         prefix: &str,
         layer_dims: &[(usize, usize)],
     ) -> Result<Self> {
@@ -293,7 +293,7 @@ impl GruStack {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel::Device;
+    use fuel_core::Device;
 
     /// Reference Rust implementation of a single GRU layer with
     /// an explicit initial hidden state. Mirrors PyTorch's

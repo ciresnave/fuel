@@ -2191,7 +2191,7 @@ dependencies = [
 name = "fuel-nn"
 version = "0.10.3"
 dependencies = [
- "fuel",
+ "fuel-core",
  "fuel-graph",
  "fuel-ir",
  "fuel-quantized",

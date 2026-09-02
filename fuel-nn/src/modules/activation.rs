@@ -2,8 +2,8 @@
 //! Activation modules wrapping the corresponding `Tensor` ops.
 
 use super::Module;
-use fuel::Result;
-use fuel::lazy::Tensor;
+use fuel_core::Result;
+use fuel_core::lazy::Tensor;
 
 macro_rules! activation_unit {
     ($name:ident, $method:ident) => {
@@ -92,7 +92,7 @@ impl Module for Elu {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel::Device;
+    use fuel_core::Device;
     use fuel_ir::Shape;
     use std::sync::Arc;
 

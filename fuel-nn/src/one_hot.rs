@@ -33,8 +33,8 @@
 //! [`reshape`]: Tensor::reshape
 //! [`to_dtype`]: Tensor::to_dtype
 
-use fuel::Result;
-use fuel::lazy::Tensor;
+use fuel_core::Result;
+use fuel_core::lazy::Tensor;
 use fuel_ir::{DType, Shape};
 use std::sync::Arc;
 
@@ -63,14 +63,14 @@ pub fn one_hot(
     off_value: f32,
 ) -> Result<Tensor> {
     if labels.dtype() != DType::U32 {
-        return Err(fuel::Error::Msg(format!(
+        return Err(fuel_core::Error::Msg(format!(
             "one_hot: labels must be U32, got {:?}",
             labels.dtype(),
         ))
         .bt());
     }
     if num_classes == 0 {
-        return Err(fuel::Error::Msg("one_hot: num_classes must be ≥ 1".into()).bt());
+        return Err(fuel_core::Error::Msg("one_hot: num_classes must be ≥ 1".into()).bt());
     }
 
     let labels_shape = labels.shape();
@@ -103,7 +103,7 @@ pub fn one_hot(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel::Device;
+    use fuel_core::Device;
 
     fn approx_eq(a: f32, b: f32, eps: f32) -> bool {
         (a - b).abs() <= eps

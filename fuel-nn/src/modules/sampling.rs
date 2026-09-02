@@ -15,8 +15,8 @@
 //! with a `[batch, vocab]` shape should narrow / squeeze to `[vocab]`
 //! first.
 
-use fuel::Result;
-use fuel::lazy::Tensor;
+use fuel_core::Result;
+use fuel_core::lazy::Tensor;
 use rand::distr::Distribution;
 use rand::rngs::StdRng;
 
@@ -30,11 +30,16 @@ use rand::rngs::StdRng;
 /// into a killed session. Use the fallible `pipelined_bridge::realize_one_as`
 /// directly (the same path `train.rs::param_to_host` already relies on).
 fn realize_logits(logits: &Tensor) -> Result<Vec<f32>> {
-    let device = fuel::Device::cpu();
-    let v =
-        fuel::pipelined_bridge::realize_one_as::<f32>(logits.graph(), logits.node_id(), &device)?;
+    let device = fuel_core::Device::cpu();
+    let v = fuel_core::pipelined_bridge::realize_one_as::<f32>(
+        logits.graph(),
+        logits.node_id(),
+        &device,
+    )?;
     if v.is_empty() {
-        return Err(fuel::Error::Msg("sampling: realized logits vector is empty".to_string()).bt());
+        return Err(
+            fuel_core::Error::Msg("sampling: realized logits vector is empty".to_string()).bt(),
+        );
     }
     Ok(v)
 }
@@ -57,7 +62,7 @@ fn argmax(values: &[f32]) -> usize {
 /// by `temp`. Returns the same vector, normalized to sum to 1.
 fn softmax_with_temp(mut logits: Vec<f32>, temp: f32) -> Result<Vec<f32>> {
     if !(temp.is_finite()) || temp <= 0.0 {
-        return Err(fuel::Error::Msg(format!(
+        return Err(fuel_core::Error::Msg(format!(
             "sampling: temperature must be > 0 and finite, got {temp}",
         ))
         .bt());
@@ -77,7 +82,7 @@ fn softmax_with_temp(mut logits: Vec<f32>, temp: f32) -> Result<Vec<f32>> {
         sum += *v;
     }
     if !sum.is_finite() || sum <= 0.0 {
-        return Err(fuel::Error::Msg(format!(
+        return Err(fuel_core::Error::Msg(format!(
             "sampling: softmax sum is non-positive or non-finite ({sum})",
         ))
         .bt());
@@ -91,7 +96,7 @@ fn softmax_with_temp(mut logits: Vec<f32>, temp: f32) -> Result<Vec<f32>> {
 /// Multinomial sample from a probability vector. Returns the sampled
 /// index.
 fn sample_multinomial(prs: &[f32], rng: &mut StdRng) -> Result<usize> {
-    let distr = rand::distr::weighted::WeightedIndex::new(prs).map_err(fuel::Error::wrap)?;
+    let distr = rand::distr::weighted::WeightedIndex::new(prs).map_err(fuel_core::Error::wrap)?;
     Ok(distr.sample(rng))
 }
 
@@ -120,7 +125,9 @@ pub fn top_k_sample(logits: &Tensor, k: usize, temp: f32, rng: &mut StdRng) -> R
     let values = realize_logits(logits)?;
     let prs = softmax_with_temp(values, temp)?;
     if k == 0 {
-        return Err(fuel::Error::Msg("sampling: top_k_sample requires k >= 1".to_string()).bt());
+        return Err(
+            fuel_core::Error::Msg("sampling: top_k_sample requires k >= 1".to_string()).bt(),
+        );
     }
     let k = k.min(prs.len());
     let mut idxs: Vec<usize> = (0..prs.len()).collect();
@@ -147,7 +154,9 @@ pub fn top_p_sample(logits: &Tensor, p: f32, temp: f32, rng: &mut StdRng) -> Res
     let values = realize_logits(logits)?;
     let mut prs = softmax_with_temp(values, temp)?;
     if !p.is_finite() {
-        return Err(fuel::Error::Msg(format!("sampling: top_p must be finite, got {p}",)).bt());
+        return Err(
+            fuel_core::Error::Msg(format!("sampling: top_p must be finite, got {p}",)).bt(),
+        );
     }
     if p <= 0.0 {
         let idx = argmax(&prs);
@@ -174,7 +183,7 @@ pub fn top_p_sample(logits: &Tensor, p: f32, temp: f32, rng: &mut StdRng) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel::Device;
+    use fuel_core::Device;
     use fuel_ir::Shape;
     use rand::SeedableRng;
 

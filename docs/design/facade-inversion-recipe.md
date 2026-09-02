@@ -37,6 +37,30 @@ pilot: when a pilot produces a claim about a PROPERTY, spot-check that property 
 ONE other member of the population before generalising.** One extra crate here
 would have shown 1/5 prose on `fuel-nn` and killed the generalisation on the spot.
 
+⚠️ **AND THE SAME "CHEAPEST" CHOICE HID A SECOND CLASS, IN THE OPPOSITE DIRECTION —
+TOO SMALL, NOT TOO UNREPRESENTATIVE (added by the `fuel-nn` repoint, 2026-09-02).** The
+rule above — *"a pilot's PROCEDURAL output generalises, its MEASUREMENTS do not"* — is
+too weak for this one, because it was neither: **it was a MECHANISM that never fired.**
+The pilot's 13 reference LINES cannot cross a line-width boundary, so nothing the pilot
+measured could reveal that a substitution which *lengthens* lines forces a reformat. The
+`fuel-nn` repoint's **219 reference lines (215 symbol references) reflowed 9 files, and
+the pre-commit rustfmt hook rejected the first, otherwise-correct commit.** A cheap pilot
+cannot exercise SCALE-DEPENDENT behaviour, and — exactly like the fenced/prose blind spot
+above — the absence is invisible from inside it, because everything the pilot measured
+was correct. **Same pilot, same selection property (cheapest), two distinct blind spots
+in opposite directions: too UNREPRESENTATIVE (`fuel-datasets` is 8/8 fenced, the maximum
+in the set) and too SMALL (13 reference lines cannot reflow; `fuel-nn`'s 219 did, across 9 files).**
+
+⚠️ **THE TRIGGER, stated as a mechanism so it survives a rename nobody has done yet: any
+substitution that LENGTHENS the lines it touches is a REFLOW TRIGGER.** `fuel::` →
+`fuel_core::` is 5 characters to 10, so **reformatting is a function of reference COUNT,
+not of correctness** — a green compile says nothing about it, and neither of the two
+compile gates below sees it. **Gate `cargo fmt --check` (or run `cargo fmt` and expect the
+pre-commit rustfmt hook — the "`cargo fmt --all` landed twice in one week" gate — to
+reject otherwise-correct work).** *"Also run rustfmt"* is the instance and will not
+connect to the next lengthening rename; *"a widening substitution is fmt-dirty in
+proportion to the lines it grew"* is the class.
+
 ---
 
 ## The procedure, in the order that works

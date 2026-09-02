@@ -13,8 +13,8 @@
 
 use crate::modules::Module;
 use crate::varbuilder::VarBuilder;
-use fuel::Result;
-use fuel::lazy::{Tensor, WeightStorage};
+use fuel_core::Result;
+use fuel_core::lazy::{Tensor, WeightStorage};
 use fuel_ir::Shape;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -42,7 +42,7 @@ impl Linear {
         out_features: usize,
     ) -> Result<Self> {
         if weight.elem_count() != in_features * out_features {
-            return Err(fuel::Error::Msg(format!(
+            return Err(fuel_core::Error::Msg(format!(
                 "Linear::new: weight has {} elements but \
                  in_features * out_features = {} * {} = {}",
                 weight.elem_count(),
@@ -55,7 +55,7 @@ impl Linear {
         if let Some(b) = bias.as_ref()
             && b.len() != out_features
         {
-            return Err(fuel::Error::Msg(format!(
+            return Err(fuel_core::Error::Msg(format!(
                 "Linear::new: bias has length {} but \
                      out_features = {}",
                 b.len(),
@@ -147,7 +147,7 @@ fn fan_in_kaiming_uniform(in_features: usize, n: usize, seed_salt: u64) -> Vec<f
 /// the names `"<prefix>.weight"` and `"<prefix>.bias"`.
 ///
 /// The weight is laid out `[in_features, out_features]` (the layout
-/// [`fuel::lazy::WeightStorage::apply_linear`] expects). Init follows
+/// [`fuel_core::lazy::WeightStorage::apply_linear`] expects). Init follows
 /// a Kaiming-fan-in uniform: `U(-1/sqrt(in_features), +1/sqrt(in_features))`,
 /// approximating the retired `fuel_nn::linear` semantics.
 pub fn linear(in_features: usize, out_features: usize, vs: &VarBuilder) -> Result<Linear> {
@@ -181,7 +181,7 @@ pub fn linear_no_bias(in_features: usize, out_features: usize, vs: &VarBuilder) 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fuel::Device;
+    use fuel_core::Device;
 
     fn ramp_f32(n: usize, scale: f32, offset: f32) -> Vec<f32> {
         (0..n).map(|i| (i as f32) * scale + offset).collect()
@@ -327,7 +327,7 @@ mod tests {
     fn factory_registers_weight_and_bias_and_forward_shape_matches() {
         use crate::varbuilder::VarBuilder;
         use crate::varmap::VarMap;
-        use fuel::DType;
+        use fuel_core::DType;
 
         let in_features = 4;
         let out_features = 3;
