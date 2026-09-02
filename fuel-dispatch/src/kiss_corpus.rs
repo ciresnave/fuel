@@ -421,14 +421,18 @@ mod tests {
     /// fires when it stops being true. When KISS ships the NaN vectors, this
     /// test GOES RED — which is the signal to re-measure and close the row.
     /// A prose note would have gone silently stale instead.
-    #[test]
-    fn the_corpus_cannot_yet_discriminate_prop_from_ieee_minmax() {
-        use std::collections::BTreeMap;
-        let corpus = load_vendored_corpus().expect("vendored corpus parses");
-
-        // Group by (dtype, input bytes) so the four ops line up per cell.
-        let mut cells: BTreeMap<(String, Vec<Vec<u8>>), BTreeMap<String, Vec<u8>>> =
-            BTreeMap::new();
+    /// Group minmax vectors into `(dtype, input-bytes) -> {op -> expected}`
+    /// cells, so the four ops line up per cell and can be compared.
+    fn minmax_cells(
+        corpus: &Corpus,
+    ) -> std::collections::BTreeMap<
+        (String, Vec<Vec<u8>>),
+        std::collections::BTreeMap<String, Vec<u8>>,
+    > {
+        let mut cells: std::collections::BTreeMap<
+            (String, Vec<Vec<u8>>),
+            std::collections::BTreeMap<String, Vec<u8>>,
+        > = std::collections::BTreeMap::new();
         for v in &corpus.vectors {
             if matches!(
                 v.op.as_str(),
@@ -440,25 +444,31 @@ mod tests {
                     .insert(v.op.clone(), v.expected.clone());
             }
         }
+        cells
+    }
+
+    /// True iff this cell gives the prop and ieee forms different expected bits.
+    fn cell_discriminates_prop_from_ieee(
+        ops: &std::collections::BTreeMap<String, Vec<u8>>,
+    ) -> bool {
+        let differs =
+            |a: &str, b: &str| matches!((ops.get(a), ops.get(b)), (Some(x), Some(y)) if x != y);
+        differs("max_prop", "fmax_ieee") || differs("min_prop", "fmin_ieee")
+    }
+
+    #[test]
+    fn the_corpus_cannot_yet_discriminate_prop_from_ieee_minmax() {
+        let corpus = load_vendored_corpus().expect("vendored corpus parses");
+        let cells = minmax_cells(&corpus);
 
         let discriminating = cells
             .values()
-            .filter(|ops| {
-                let max_differs = matches!(
-                    (ops.get("max_prop"), ops.get("fmax_ieee")),
-                    (Some(a), Some(b)) if a != b
-                );
-                let min_differs = matches!(
-                    (ops.get("min_prop"), ops.get("fmin_ieee")),
-                    (Some(a), Some(b)) if a != b
-                );
-                max_differs || min_differs
-            })
+            .filter(|ops| cell_discriminates_prop_from_ieee(ops))
             .count();
 
         // POSITIVE CONTROL: the corpus is not simply inert. It DOES separate max
         // from min, so a zero above is a statement about the prop/ieee axis
-        // specifically, not about the grouping being broken.
+        // specifically, not about the cell grouping being broken.
         let max_vs_min = cells
             .values()
             .filter(|ops| {
@@ -470,19 +480,13 @@ mod tests {
             .count();
         assert!(
             max_vs_min > 0,
-            "control failed: the corpus should separate max from min on at least \
-             one cell — if this is 0 the cell grouping is broken and the \
-             prop-vs-ieee count below means nothing"
+            "control failed: the corpus should separate max from min on at least one cell — if this is 0 the cell grouping is broken and the prop-vs-ieee count below means nothing"
         );
 
         assert_eq!(
             discriminating,
             0,
-            "the corpus now HAS a cell where prop and ieee minmax differ ({discriminating} \
-             of {} cells). This test existing and passing recorded a KNOWN BLIND SPOT; \
-             a red here is GOOD NEWS — NaN vectors have landed. Re-measure the \
-             discrimination, wire the assertion the other way, and close the \
-             registry row that tracks this.",
+            "the corpus now HAS a cell where prop and ieee minmax differ ({discriminating} of {} cells). This test existing and passing recorded a KNOWN BLIND SPOT; a red here is GOOD NEWS — NaN vectors have landed. Re-measure the discrimination, wire the assertion the other way, and close the registry row that tracks this.",
             cells.len()
         );
     }
