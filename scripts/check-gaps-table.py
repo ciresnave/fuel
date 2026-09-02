@@ -14,6 +14,27 @@ from collections import Counter
 # "registry rows" for several turns. The arithmetic was right both times; what
 # the count RANGED OVER was never stated, so it was never checked.
 
+# ---------------------------------------------------------------------------
+# INVARIANT FOR ANY SCRIPT THAT EDITS THIS FILE: POPULATION CONSERVATION.
+#
+#     A pass that MOVES rows must never create or destroy them. Assert the
+#     `^| ~*GAP-` count before and after, and fail if it changed.
+#
+# ⚠️ WHY THIS IS NOT OBVIOUS, AND WHY PER-ROW CHECKS CANNOT REPLACE IT: on
+# 2026-09-02 a pass inserting a missing `Area` cell put the placeholder BEFORE
+# the id instead of after it. The rows became `| — | GAP-141 | …`, which no
+# longer matches `^| ~*GAP-`, and FOUR ROWS SILENTLY LEFT THE POPULATION --
+# 254 -> 250.
+#
+# EVERY PER-ROW MESSAGE PRINTED SUCCESS, because every individual edit genuinely
+# SUCCEEDED. There was no failing item to detect. The rows simply stopped being
+# in the population that every later query ranges over, so the relocation that
+# followed read as completely clean. The defect is invisible to per-item
+# verification BY CONSTRUCTION.
+#
+# It was caught by a row-total assert that had been added for an unrelated
+# reason -- which is the only reason it was there at all.
+# ---------------------------------------------------------------------------
 lines = io.open('docs/gaps.md', encoding='utf-8').read().split('\n')
 
 
@@ -116,6 +137,28 @@ for _n, _l in enumerate(lines, 1):
                 'line %d col %d: U+%04X %s -- ...%s...'
                 % (_n, _k + 1, _o, _CTRL_NAMES.get(_o, 'CONTROL'), _ctx))
 
+# ---------------------------------------------------------------------------
+# CONFLICT MARKERS.
+#
+# ⚠️ FOUND BY REBASING THIS FILE THREE TIMES IN ONE SESSION: the gate returned
+# EXIT 0 on a CONFLICTED docs/gaps.md, every time.
+#
+# It is structural, not an oversight. Every other check here keys on lines
+# matching `^| ~*GAP-` or `^| ID`. Conflict markers start with `<`, `=` and `>`,
+# so the row parser does not merely tolerate them -- IT CANNOT SEE THEM. Both
+# sides of the conflict are then counted as ordinary rows, the totals go UP, and
+# every check still passes. THE FILE IS IN THE MOST BROKEN STATE GIT CAN LEAVE
+# IT IN AND THE GATE SAYS CLEAN.
+#
+# The pre-commit hook cannot save you either: `git add`-ing a conflicted file
+# marks it resolved, so the hook runs against exactly this content.
+conflict_markers = [
+    'line %d: %s' % (n, l[:60])
+    for n, l in enumerate(lines, 1)
+    if l.startswith('<<<<<<<') or l.startswith('>>>>>>>') or l.rstrip() == '======='
+]
+print('unresolved conflict markers:',
+      conflict_markers if conflict_markers else 'NONE')
 print('control characters (excl. tab):',
       control_chars if control_chars else 'NONE')
 print()
@@ -227,6 +270,18 @@ print()
 # row's line number and invalidate citations across the corpus, and it is
 # unnecessary because the tier is already in the row. Same precedent as
 # rule 4b -- the data outvotes the presentation.
+print('!! THE 4-COLUMN TABLES ARE PERMANENTLY EXEMPT FROM THE STATUS')
+print('   CONVENTION -- ruled 2026-09-02 on measurement, not convenience.')
+print('   They are Tier C subdivided BY CRATE: an INDEX of terse one-line')
+print('   capability declines where the gap statement IS the status')
+print('   ("Pad Reflect/Replicate modes return \'not yet implemented\'").')
+print('   Measured: of 79 such rows, 67 carry NO status language at all, so')
+print('   a Status column would mean writing OPEN into 67 cells -- a field')
+print('   identical for 85% of its rows. THAT IS NOT INFORMATION, IT IS A')
+print('   COLUMN THAT EXISTS TO BE FULL, and it is the same false precision')
+print('   the OPEN/<state> ruling rejected, one column over.')
+print('   64% honest beats 100% decorative. DO NOT "COMPLETE" THIS.')
+print()
 print('!! THE TIER CELL (column 3) IS AUTHORITATIVE. The `## Tier X` section')
 print('   headings are PRESENTATIONAL and membership in them is CHRONOLOGICAL:')
 print('   rows were appended where the file happened to end, not where their')
@@ -423,8 +478,8 @@ for n, l in enumerate(lines, 1):
 # ⚠️ IF YOU FIX ROWS, LOWER THESE NUMBERS IN THE SAME COMMIT. A baseline left
 # above the true count is a gate that has quietly stopped guarding, which is the
 # defect this whole file exists to catch.
-ARITY_EXTRA_BASELINE = 14
-ARITY_MISSING_BASELINE = 4
+ARITY_EXTRA_BASELINE = 1
+ARITY_MISSING_BASELINE = 0
 
 print()
 print('rows with MORE cells than their header (status content, no column): %d (baseline %d)'
@@ -450,6 +505,27 @@ if len(arity_extra) < ARITY_EXTRA_BASELINE or len(arity_missing) < ARITY_MISSING
         % (len(arity_extra), len(arity_missing),
            ARITY_EXTRA_BASELINE, ARITY_MISSING_BASELINE))
 print('arity ratchet:', arity_regression if arity_regression else 'HOLDING')
+# ⚠️ WHY THE `extra` BASELINE IS 1 AND NOT 0 -- ruled 2026-09-02, and it is a
+# decision rather than leftover debt.
+#
+# The single remaining dissent is GAP-099: a worked row, priced (64 literals /
+# 3 crates), ranked below C ON MEASUREMENT, and carrying a re-rank trigger. Its
+# tier is `—`, for which there is no section, so there is nowhere to relocate
+# it to. GAP-048/GAP-079 were folded because their status was a bare `OPEN` the
+# Gap text already carried, and nothing was lost. GAP-099 is the opposite kind
+# of row: it is precisely the row that OUTGREW the index, and folding its
+# status into prose to make this counter reach zero would be FITTING THE DATA
+# TO THE INSTRUMENT.
+#
+# The gate does not need the zero. The stale-baseline arm above already
+# prevents the only failure a ratchet has -- it can only shrink, and a baseline
+# left above the true count fires. A NAMED, REASONED 1 TELLS A READER
+# SOMETHING; A 0 BOUGHT THIS WAY WOULD TELL THEM THE FILE IS UNIFORM, WHICH IS
+# FALSE.
+if len(arity_extra) == 1 and not arity_regression:
+    print('   (the 1 is GAP-099 BY DECISION, not debt: a worked row whose tier')
+    print('    has no section. Folding its status to reach 0 would be fitting')
+    print('    the data to the instrument. Ruled 2026-09-02.)')
 
 # ---------------------------------------------------------------------------
 # STATUS VOCABULARY -- docs/design/gaps-status-vocabulary.md
@@ -577,7 +653,7 @@ print('rows whose status does not start with a set member:',
 print('STRUCK rows whose prefix says work remains (asymmetric by design):',
       strike_contra if strike_contra else 'NONE')
 
-if (odd or no_pipe or header_problems or control_chars
+if (odd or no_pipe or header_problems or control_chars or conflict_markers
         or missing_backlinks or _foundation
         or arity_regression or bad_prefix or strike_contra
         or vocab_foundation):
