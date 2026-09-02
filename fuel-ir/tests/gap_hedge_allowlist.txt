@@ -13,46 +13,7 @@ fuel-core/src/kv_block_pool_device.rs	/// f32-only for now (the CPU-gated increm
 fuel-core/src/kv_block_pool_device.rs	/// way. f32-only for now (see [`Self::write_block`]).
 fuel-core/src/lazy.rs	/// Allocate a data-determined [`fuel_ir::SymId`] not yet used by any
 fuel-core/src/lazy.rs	/// does not yet expose.
-fuel-transformers/src/models/lazy_csm.rs	/// generated audio frame) is still consumer-side TODO.
-fuel-transformers/src/models/lazy_dac.rs	//! Dilation handling: `Tensor::conv1d` doesn't yet take a
-fuel-transformers/src/models/lazy_debertav2.rs	/// unused (the lazy encoder doesn't yet ingest either — see the
-fuel-transformers/src/models/lazy_deepseek2.rs	/// Naively threading `LatentCache` directly across
-fuel-transformers/src/models/lazy_dinov2reg4.rs	//! deferred (eager uses `upsample_nearest2d` as a workaround
-fuel-transformers/src/models/lazy_encodec.rs	//! → Conv1d (dim/compress → dim) → optional 1×1 shortcut conv on
-fuel-transformers/src/models/lazy_encodec.rs	/// 1×1 conv on the residual branch when `use_conv_shortcut`.
-fuel-transformers/src/models/lazy_encodec.rs	/// `cfg.use_conv_shortcut` is true.
-fuel-transformers/src/models/lazy_encodec.rs	/// plus an optional `shortcut.conv.*` 1×1 conv when
-fuel-transformers/src/models/lazy_gemma.rs	// o_proj bias support would need a LayerWeights extension if
-fuel-transformers/src/models/lazy_granitemoehybrid.rs	// exercised. Matches eager (which also bails on
-fuel-transformers/src/models/lazy_granitemoehybrid.rs	//! F32, attention-only layers (eager's Mamba branch bails too).
-fuel-transformers/src/models/lazy_granitemoehybrid.rs	//! implemented** (the Mamba branch bails). v1 mirrors that
-fuel-transformers/src/models/lazy_kv_cache.rs	/// `Op::WriteSlice` target; resizing would need a new buffer node).
 fuel-core/src/lazy_latent_cache.rs	//! surface can later be re-expressed on top of it — deferred for now because
-fuel-transformers/src/models/lazy_lfm2.rs	/// TODO(autoregressive): when multi-output nodes land, restore the
-fuel-transformers/src/models/lazy_llama_full.rs	// performing a transpose copy. There's no zero-copy shortcut
-fuel-transformers/src/models/lazy_mimi_conv_wrappers.rs	//! `learnt = true` is the only supported mode (eager bails on
-fuel-transformers/src/models/lazy_mimi_seanet.rs	//!     optional 1×1 skip-shortcut conv.
-fuel-transformers/src/models/lazy_mimi_seanet.rs	//!     then `+ x` (or `+ shortcut(x)` if `true_skip = false`).
-fuel-transformers/src/models/lazy_mimi_seanet.rs	//! (Mimi v0.1 has `lstm = 0`; the eager port also bails when
-fuel-transformers/src/models/lazy_mimi_seanet.rs	/// Optional 1×1 shortcut conv when `true_skip = false`.
-fuel-transformers/src/models/lazy_mimi_seanet.rs	/// optional `shortcut.conv` when `true_skip = false`.
-fuel-transformers/src/models/lazy_mmdit.rs	// ---- MMDiT-X joint block (TODO) --------------------------------------------
-fuel-transformers/src/models/lazy_mmdit.rs	// MMDiT-X (SD3.5 medium) variant: not implemented in v1; flagged as TODO.
-fuel-transformers/src/models/lazy_mmdit.rs	// upstream and would need an `enum JointBlockWeights { MMDiT(...),
-fuel-transformers/src/models/lazy_mmdit.rs	/// MMDiT-X joint-block variant is not yet implemented; this config
-fuel-transformers/src/models/lazy_phi.rs	///   supports false — set to true bails at load time).
-fuel-transformers/src/models/lazy_quantized_whisper.rs	//!   returns an error pointing callers at `from_f32_bake` for now.
-fuel-transformers/src/models/lazy_sam.rs	//!   path bails explicitly in that branch — currently only the
-fuel-transformers/src/models/lazy_sd3_vae.rs	/// Optional 1×1 shortcut when in_channels != out_channels.
-fuel-transformers/src/models/lazy_sd_samplers_unipc.rs	//! # Deferred (TODOs for follow-ups)
-fuel-transformers/src/models/lazy_sd_samplers_unipc.rs	/// implemented in this port; the stochastic `SdeDpmSolverPlusPlus` is a TODO.
-fuel-transformers/src/models/lazy_sd_unet.rs	/// ResNet block with time conditioning. `conv_shortcut` is present
-fuel-transformers/src/models/lazy_sd_vae.rs	//!   shortcuts when the ResNet block changes channel count). Dispatches
-fuel-transformers/src/models/lazy_sd_vae.rs	/// Optional 1×1 shortcut when in_channels != out_channels.
-fuel-transformers/src/models/lazy_stella_v5.rs	//! distinct — it would need its own port.
-fuel-transformers/src/models/lazy_wuerstchen.rs	// conv_transpose2d does not yet plumb the bias; add manually.
-fuel-transformers/src/models/lazy_yolov3.rs	// NOT convs (shortcuts, routes, upsamples, yolo) are skipped.
-fuel-transformers/src/models/lazy_yolov3.rs	// shortcut / route / upsample / yolo blocks sit).
 fuel-core/src/persistent_decode.rs	// would need per-variant inv_freq, and no such model exists yet. Single-base	documented scope boundary with a stated trigger; not an unfinished-work admission (architect-authorised)
 fuel-core/src/train.rs	//! ## Not yet covered
 fuel-correctness-fixtures/src/lib.rs	//! ## Not yet in v1 (deferred to follow-up sessions)
@@ -192,6 +153,45 @@ fuel-quantized/src/k_quants.rs	// TODO: Pre-allocate this.
 fuel-quantized/src/neon.rs	// TODO: dotprod
 fuel-tensor-tools/src/main.rs	// Read + requantize into memory first. A streaming writer would need every
 fuel-tensor-tools/src/main.rs	//! payloads, so `print` for pth would need a pickle *payload* reader.
+fuel-transformers/src/models/lazy_csm.rs	/// generated audio frame) is still consumer-side TODO.
+fuel-transformers/src/models/lazy_dac.rs	//! Dilation handling: `Tensor::conv1d` doesn't yet take a
+fuel-transformers/src/models/lazy_debertav2.rs	/// unused (the lazy encoder doesn't yet ingest either — see the
+fuel-transformers/src/models/lazy_deepseek2.rs	/// Naively threading `LatentCache` directly across
+fuel-transformers/src/models/lazy_dinov2reg4.rs	//! deferred (eager uses `upsample_nearest2d` as a workaround
+fuel-transformers/src/models/lazy_encodec.rs	//! → Conv1d (dim/compress → dim) → optional 1×1 shortcut conv on
+fuel-transformers/src/models/lazy_encodec.rs	/// 1×1 conv on the residual branch when `use_conv_shortcut`.
+fuel-transformers/src/models/lazy_encodec.rs	/// `cfg.use_conv_shortcut` is true.
+fuel-transformers/src/models/lazy_encodec.rs	/// plus an optional `shortcut.conv.*` 1×1 conv when
+fuel-transformers/src/models/lazy_gemma.rs	// o_proj bias support would need a LayerWeights extension if
+fuel-transformers/src/models/lazy_granitemoehybrid.rs	// exercised. Matches eager (which also bails on
+fuel-transformers/src/models/lazy_granitemoehybrid.rs	//! F32, attention-only layers (eager's Mamba branch bails too).
+fuel-transformers/src/models/lazy_granitemoehybrid.rs	//! implemented** (the Mamba branch bails). v1 mirrors that
+fuel-transformers/src/models/lazy_kv_cache.rs	/// `Op::WriteSlice` target; resizing would need a new buffer node).
+fuel-transformers/src/models/lazy_lfm2.rs	/// TODO(autoregressive): when multi-output nodes land, restore the
+fuel-transformers/src/models/lazy_llama_full.rs	// performing a transpose copy. There's no zero-copy shortcut
+fuel-transformers/src/models/lazy_mimi_conv_wrappers.rs	//! `learnt = true` is the only supported mode (eager bails on
+fuel-transformers/src/models/lazy_mimi_seanet.rs	//!     optional 1×1 skip-shortcut conv.
+fuel-transformers/src/models/lazy_mimi_seanet.rs	//!     then `+ x` (or `+ shortcut(x)` if `true_skip = false`).
+fuel-transformers/src/models/lazy_mimi_seanet.rs	//! (Mimi v0.1 has `lstm = 0`; the eager port also bails when
+fuel-transformers/src/models/lazy_mimi_seanet.rs	/// Optional 1×1 shortcut conv when `true_skip = false`.
+fuel-transformers/src/models/lazy_mimi_seanet.rs	/// optional `shortcut.conv` when `true_skip = false`.
+fuel-transformers/src/models/lazy_mmdit.rs	// ---- MMDiT-X joint block (TODO) --------------------------------------------
+fuel-transformers/src/models/lazy_mmdit.rs	// MMDiT-X (SD3.5 medium) variant: not implemented in v1; flagged as TODO.
+fuel-transformers/src/models/lazy_mmdit.rs	// upstream and would need an `enum JointBlockWeights { MMDiT(...),
+fuel-transformers/src/models/lazy_mmdit.rs	/// MMDiT-X joint-block variant is not yet implemented; this config
+fuel-transformers/src/models/lazy_phi.rs	///   supports false — set to true bails at load time).
+fuel-transformers/src/models/lazy_quantized_whisper.rs	//!   returns an error pointing callers at `from_f32_bake` for now.
+fuel-transformers/src/models/lazy_sam.rs	//!   path bails explicitly in that branch — currently only the
+fuel-transformers/src/models/lazy_sd3_vae.rs	/// Optional 1×1 shortcut when in_channels != out_channels.
+fuel-transformers/src/models/lazy_sd_samplers_unipc.rs	//! # Deferred (TODOs for follow-ups)
+fuel-transformers/src/models/lazy_sd_samplers_unipc.rs	/// implemented in this port; the stochastic `SdeDpmSolverPlusPlus` is a TODO.
+fuel-transformers/src/models/lazy_sd_unet.rs	/// ResNet block with time conditioning. `conv_shortcut` is present
+fuel-transformers/src/models/lazy_sd_vae.rs	//!   shortcuts when the ResNet block changes channel count). Dispatches
+fuel-transformers/src/models/lazy_sd_vae.rs	/// Optional 1×1 shortcut when in_channels != out_channels.
+fuel-transformers/src/models/lazy_stella_v5.rs	//! distinct — it would need its own port.
+fuel-transformers/src/models/lazy_wuerstchen.rs	// conv_transpose2d does not yet plumb the bias; add manually.
+fuel-transformers/src/models/lazy_yolov3.rs	// NOT convs (shortcuts, routes, upsamples, yolo) are skipped.
+fuel-transformers/src/models/lazy_yolov3.rs	// shortcut / route / upsample / yolo blocks sit).
 fuel-vulkan-backend/src/capture.rs	/// for now this backend-level method is the advertisement.
 fuel-vulkan-backend/src/lib.rs	/// ## NOT YET integrated with weight allocation
 fuel-vulkan-backend/src/lib.rs	/// (TODO) plus a rebinding path through VulkanBuffer. Until those

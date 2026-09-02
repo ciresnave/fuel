@@ -43,6 +43,25 @@ pub trait BinaryOp<T: Copy> {
 pub trait BinaryOpCore {
     fn f32(a: f32, b: f32) -> f32;
     fn f64(a: f64, b: f64) -> f64;
+
+    /// Narrow-float lowering. THE DEFAULT PROMOTES, COMPUTES AND ROUNDS BACK,
+    /// which is correct for every op that COMPUTES its result.
+    ///
+    /// ⚠️ OPS THAT **MOVE** AN OPERAND MUST OVERRIDE THIS. `half` quiets a
+    /// signalling NaN on BOTH conversion legs independently (`bf16_to_f32` and
+    /// `f32_to_bf16` each `| 0x0040`), so a round trip quiets twice --
+    /// measured, `0x7F81` returns `0xFFC1`. KISS-OPS-6.16-0009: an op whose
+    /// decomposition contains no arithmetic returns the MOVED OPERAND with its
+    /// bits preserved exactly, and *"a promote-to-`f32`-and-round-back
+    /// implementation of such an op is non-conforming for a narrow float"*.
+    fn bf16(a: half::bf16, b: half::bf16) -> half::bf16 {
+        half::bf16::from_f32(Self::f32(a.to_f32(), b.to_f32()))
+    }
+
+    /// See [`BinaryOpCore::bf16`].
+    fn f16(a: half::f16, b: half::f16) -> half::f16 {
+        half::f16::from_f32(Self::f32(a.to_f32(), b.to_f32()))
+    }
 }
 
 // Blanket impls.
@@ -61,13 +80,13 @@ impl<O: BinaryOpCore> BinaryOp<f64> for O {
 
 impl<O: BinaryOpCore> BinaryOp<half::bf16> for O {
     fn apply(a: half::bf16, b: half::bf16) -> half::bf16 {
-        half::bf16::from_f32(<O as BinaryOpCore>::f32(a.to_f32(), b.to_f32()))
+        <O as BinaryOpCore>::bf16(a, b)
     }
 }
 
 impl<O: BinaryOpCore> BinaryOp<half::f16> for O {
     fn apply(a: half::f16, b: half::f16) -> half::f16 {
-        half::f16::from_f32(<O as BinaryOpCore>::f32(a.to_f32(), b.to_f32()))
+        <O as BinaryOpCore>::f16(a, b)
     }
 }
 
@@ -181,6 +200,41 @@ impl BinaryOpCore for Maximum {
             b
         }
     }
+
+    // ⚠️ NARROW OVERRIDE, NaN BRANCH ONLY -- and the split is deliberate.
+    //
+    // A NaN operand is MOVED, not computed: `if a.is_nan() { a }` returns that
+    // operand. Routing it through f32 quiets it on BOTH conversion legs
+    // (measured, 0x7F81 -> 0xFFC1), which KISS-OPS-6.16-0009 forbids for an op
+    // whose decomposition contains no arithmetic.
+    //
+    // ⚠️ THE NON-NaN BRANCH DELIBERATELY KEEPS THE PROMOTING PATH, so this
+    // change does NOT touch the +-0 tie. That tie is PR #67's subject and
+    // deciding it here would pre-empt a ruling that is not mine. The delegation
+    // is exact rather than approximate: for finite bf16 the widening is exact,
+    // min/max returns one of those exact values, and narrowing an
+    // exactly-representable bf16 is exact -- so the non-NaN result is
+    // bit-identical to today's, tie included, whatever the tie turns out to be.
+    fn bf16(a: half::bf16, b: half::bf16) -> half::bf16 {
+        if a.is_nan() {
+            a
+        } else if b.is_nan() {
+            b
+        } else {
+            half::bf16::from_f32(Self::f32(a.to_f32(), b.to_f32()))
+        }
+    }
+
+    /// See [`Maximum::bf16`].
+    fn f16(a: half::f16, b: half::f16) -> half::f16 {
+        if a.is_nan() {
+            a
+        } else if b.is_nan() {
+            b
+        } else {
+            half::f16::from_f32(Self::f32(a.to_f32(), b.to_f32()))
+        }
+    }
     fn f64(a: f64, b: f64) -> f64 {
         if a.is_nan() {
             a
@@ -208,6 +262,41 @@ impl BinaryOpCore for Minimum {
             a
         } else {
             b
+        }
+    }
+
+    // ⚠️ NARROW OVERRIDE, NaN BRANCH ONLY -- and the split is deliberate.
+    //
+    // A NaN operand is MOVED, not computed: `if a.is_nan() { a }` returns that
+    // operand. Routing it through f32 quiets it on BOTH conversion legs
+    // (measured, 0x7F81 -> 0xFFC1), which KISS-OPS-6.16-0009 forbids for an op
+    // whose decomposition contains no arithmetic.
+    //
+    // ⚠️ THE NON-NaN BRANCH DELIBERATELY KEEPS THE PROMOTING PATH, so this
+    // change does NOT touch the +-0 tie. That tie is PR #67's subject and
+    // deciding it here would pre-empt a ruling that is not mine. The delegation
+    // is exact rather than approximate: for finite bf16 the widening is exact,
+    // min/max returns one of those exact values, and narrowing an
+    // exactly-representable bf16 is exact -- so the non-NaN result is
+    // bit-identical to today's, tie included, whatever the tie turns out to be.
+    fn bf16(a: half::bf16, b: half::bf16) -> half::bf16 {
+        if a.is_nan() {
+            a
+        } else if b.is_nan() {
+            b
+        } else {
+            half::bf16::from_f32(Self::f32(a.to_f32(), b.to_f32()))
+        }
+    }
+
+    /// See [`Minimum::bf16`].
+    fn f16(a: half::f16, b: half::f16) -> half::f16 {
+        if a.is_nan() {
+            a
+        } else if b.is_nan() {
+            b
+        } else {
+            half::f16::from_f32(Self::f32(a.to_f32(), b.to_f32()))
         }
     }
     fn f64(a: f64, b: f64) -> f64 {
@@ -254,6 +343,86 @@ impl BinaryOpCore for Rem {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// KISS-OPS-6.16-0009: a MOVED NaN operand keeps its bits exactly.
+    ///
+    /// `Maximum`/`Minimum` return an operand when either is NaN -- that is a
+    /// move, not a computation -- so routing it through f32 is non-conforming.
+    /// `half` quiets on BOTH conversion legs, so the round trip quiets twice.
+    ///
+    /// ⚠️ THE POSITIVE CONTROL IS REQUIRED: "still signalling" is only evidence
+    /// if the promoting path demonstrably quiets in this same build. `Add`
+    /// computes, so it legitimately keeps the default and serves as that control.
+    #[test]
+    fn minmax_move_a_nan_operand_without_quieting_it() {
+        const QUIET: u16 = 0x0040;
+        let s = half::bf16::from_bits(0x7F81);
+        let one = half::bf16::from_f32(1.0);
+        assert_eq!(s.to_bits() & QUIET, 0, "fixture must be SIGNALLING");
+
+        let control = <Add as BinaryOpCore>::bf16(s, one);
+        assert_ne!(
+            control.to_bits() & QUIET,
+            0,
+            "control failed: the promoting path did not quiet, so the assertions              below prove nothing"
+        );
+
+        for (name, got) in [
+            ("Maximum lhs", <Maximum as BinaryOpCore>::bf16(s, one)),
+            ("Maximum rhs", <Maximum as BinaryOpCore>::bf16(one, s)),
+            ("Minimum lhs", <Minimum as BinaryOpCore>::bf16(s, one)),
+            ("Minimum rhs", <Minimum as BinaryOpCore>::bf16(one, s)),
+        ] {
+            assert_eq!(
+                got.to_bits(),
+                s.to_bits(),
+                "{name} did not MOVE the NaN operand's bits (0x{:04X} -> 0x{:04X});                  KISS-OPS-6.16-0009 requires payload AND signalling bit preserved",
+                s.to_bits(),
+                got.to_bits()
+            );
+        }
+    }
+
+    /// ⚠️ THE NON-NaN PATH MUST BE BYTE-IDENTICAL TO THE PROMOTING PATH.
+    ///
+    /// This is the guard that keeps the NaN fix OUT of the ±0 tie, which is
+    /// PR #67's subject. If a later edit "simplifies" the override into a
+    /// narrow-native compare, the tie gets decided here by accident and THIS
+    /// test fails -- which is the point. It includes ±0 in both orders
+    /// deliberately: whatever the tie currently does, the override must do the
+    /// same thing.
+    #[test]
+    fn minmax_non_nan_path_is_unchanged_by_the_nan_override() {
+        // +1.0, -2.5, +0, -0, max-finite, -max-finite, +inf, -inf.
+        // ⚠️ NO NaN FIXTURES, deliberately: the NaN branch is where this
+        // override DIVERGES from the promoting path, so including one here
+        // would assert the opposite of the sibling test. ±inf IS included
+        // because it is neither finite nor NaN -- the exactness argument for
+        // this delegation is worded about FINITE values and says nothing about
+        // infinities, so they are the one class the reasoning does not cover.
+        let cases = [
+            0x3F80u16, 0xC020, 0x0000, 0x8000, 0x7F7F, 0xFF7F, 0x7F80, 0xFF80,
+        ];
+        for &ab in &cases {
+            for &bb in &cases {
+                let (a, b) = (half::bf16::from_bits(ab), half::bf16::from_bits(bb));
+                let want_max =
+                    half::bf16::from_f32(<Maximum as BinaryOpCore>::f32(a.to_f32(), b.to_f32()));
+                let want_min =
+                    half::bf16::from_f32(<Minimum as BinaryOpCore>::f32(a.to_f32(), b.to_f32()));
+                assert_eq!(
+                    <Maximum as BinaryOpCore>::bf16(a, b).to_bits(),
+                    want_max.to_bits(),
+                    "Maximum diverged from the promoting path on (0x{ab:04X}, 0x{bb:04X})                      -- the NaN override must not touch the non-NaN result, tie included"
+                );
+                assert_eq!(
+                    <Minimum as BinaryOpCore>::bf16(a, b).to_bits(),
+                    want_min.to_bits(),
+                    "Minimum diverged from the promoting path on (0x{ab:04X}, 0x{bb:04X})"
+                );
+            }
+        }
+    }
 
     #[test]
     fn binary_op_add_f32_sums() {
