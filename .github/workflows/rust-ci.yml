@@ -764,6 +764,15 @@ jobs:
           # `bytes` is unused and the next line is unreachable -- i.e. the transfer-cost
           # path is a constant None. Fixing the lints is a change to that crate with its own
           # gate, deliberately NOT bundled into the leg that discovered them.
+          #
+          # THIS ENTRY IS A RECORD, NOT A PERMISSION. It states what IS true today; it
+          # does not license the state continuing. It self-retires on the FIX (remove the
+          # crate and this leg goes red until the entry goes too) but NOT on a DEADLINE --
+          # if nobody fixes it, the entry persists. That is deliberate and the clock lives
+          # elsewhere: a deadline written here would be prose at the site, read only by
+          # someone already standing in this file, and the deadline exists precisely for
+          # the case where nobody comes. THE CLOCK IS GAP-267 in docs/gaps.md, which
+          # carries the owner and the checkpoint.
           KNOWN_FAILING="fuel-hardware"
 
           # The candidate set is DERIVED, never hard-coded: a new crate is covered the day
