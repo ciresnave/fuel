@@ -113,11 +113,20 @@ pub fn op_to_tag(op: &Op) -> Option<OpTag> {
 // ===========================================================================
 
 /// The §4.1 commutative ops, whose operands match order-independently (§3a.2a).
+/// `Maximum`/`Minimum` are DELIBERATELY ABSENT. They are commutative in
+/// value and NOT in bits: `chassis/binary.rs` returns the FIRST NaN operand
+/// (`if a.is_nan() { a } else if b.is_nan() { b }`), a documented lhs-first
+/// tie-break matching `torch.maximum`. Two distinct NaN payloads therefore
+/// swap with operand order -- measured, `max(0x7FC00001, 0x7FC00002)` gives
+/// `0x7FC00001` and the reverse gives `0x7FC00002` -- so folding `min(a,b)`
+/// with `min(b,a)` is an INVALID rewrite. See GAP-271.
+///
+/// NOTE the reason is NOT the +-0 tie: we fall through to Rust's `a.max(b)`,
+/// which CANONICALISES zeros (both orders give +0 for max, -0 for min), so on
+/// zeros our min/max IS bitwise commutative. The invalidity is a NaN-payload
+/// property and is therefore INDEPENDENT of any future +-0 tie-bias change.
 fn is_commutative(op: OpTag) -> bool {
-    matches!(
-        op,
-        OpTag::Add | OpTag::Mul | OpTag::Maximum | OpTag::Minimum
-    )
+    matches!(op, OpTag::Add | OpTag::Mul)
 }
 
 /// Project a graph [`Op`]'s load-bearing non-tensor parameters into an
