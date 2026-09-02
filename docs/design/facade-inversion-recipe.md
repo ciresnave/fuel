@@ -122,8 +122,10 @@ occurrence is preceded by a non-identifier character, so a hypothetical
 ## The two gates, and why one is not enough
 
 ⚠️⚠️ **`cargo check --all-targets` DOES NOT COMPILE DOCTESTS.** For this crate
-that is 8 of 13 references — the majority — sitting inside `no_run` fences as
-hidden lines such as `# Ok::<(), fuel::Error>(())`.
+that is **8 of this crate's 13 reference LINES** (5 code, 8 doc) — the majority —
+sitting inside `no_run` fences as hidden lines such as
+`# Ok::<(), fuel::Error>(())`. *Lines*, stated because those 5 code lines carry 7
+symbol references and this document's own thesis is that the two disagree.
 
 **This was MEASURED, not assumed.** One doctest reference was reverted to
 `fuel::Error` and both gates were run against the identical tree:
