@@ -17,7 +17,7 @@
 //!   - `normal`: i.i.d. samples from `N(mean, std^2)`.
 //!   - `uniform`: i.i.d. samples from `U(lo, hi)`.
 
-use fuel::Result;
+use fuel_core::Result;
 use rand::distr::Distribution;
 use rand::rngs::StdRng;
 
@@ -26,7 +26,7 @@ use rand::rngs::StdRng;
 /// `a = sqrt(6 / (fan_in + fan_out))`.
 pub fn xavier_uniform(fan_in: usize, fan_out: usize, rng: &mut StdRng) -> Result<Vec<f32>> {
     if fan_in == 0 || fan_out == 0 {
-        return Err(fuel::Error::Msg(format!(
+        return Err(fuel_core::Error::Msg(format!(
             "xavier_uniform: fan_in and fan_out must be >= 1, got \
              fan_in={fan_in} fan_out={fan_out}",
         ))
@@ -49,12 +49,13 @@ pub fn xavier_uniform(fan_in: usize, fan_out: usize, rng: &mut StdRng) -> Result
 /// `fan_in` and returns a flat buffer the caller reshapes itself.
 pub fn kaiming_uniform(fan_in: usize, gain: f32, rng: &mut StdRng) -> Result<Vec<f32>> {
     if fan_in == 0 {
-        return Err(fuel::Error::Msg("kaiming_uniform: fan_in must be >= 1".to_string()).bt());
+        return Err(fuel_core::Error::Msg("kaiming_uniform: fan_in must be >= 1".to_string()).bt());
     }
     if !gain.is_finite() {
-        return Err(
-            fuel::Error::Msg(format!("kaiming_uniform: gain must be finite, got {gain}",)).bt(),
-        );
+        return Err(fuel_core::Error::Msg(format!(
+            "kaiming_uniform: gain must be finite, got {gain}",
+        ))
+        .bt());
     }
     let std = gain / (fan_in as f32).sqrt();
     let bound = (3.0_f32).sqrt() * std;
@@ -65,11 +66,12 @@ pub fn kaiming_uniform(fan_in: usize, gain: f32, rng: &mut StdRng) -> Result<Vec
 /// `N(mean, std^2)`.
 pub fn normal(mean: f32, std: f32, n: usize, rng: &mut StdRng) -> Result<Vec<f32>> {
     if std < 0.0 || !std.is_finite() || !mean.is_finite() {
-        return Err(
-            fuel::Error::Msg(format!("normal: invalid parameters mean={mean} std={std}",)).bt(),
-        );
+        return Err(fuel_core::Error::Msg(format!(
+            "normal: invalid parameters mean={mean} std={std}",
+        ))
+        .bt());
     }
-    let dist = rand_distr::Normal::new(mean, std).map_err(fuel::Error::wrap)?;
+    let dist = rand_distr::Normal::new(mean, std).map_err(fuel_core::Error::wrap)?;
     Ok((0..n).map(|_| dist.sample(rng)).collect())
 }
 
@@ -79,12 +81,12 @@ pub fn uniform(lo: f32, hi: f32, n: usize, rng: &mut StdRng) -> Result<Vec<f32>>
     // `lo >= hi` is safe HERE only because the two is_finite() checks
     // short-circuit first, so neither operand can be NaN by this point.
     if !lo.is_finite() || !hi.is_finite() || lo >= hi {
-        return Err(fuel::Error::Msg(format!(
+        return Err(fuel_core::Error::Msg(format!(
             "uniform: require lo < hi and both finite, got lo={lo} hi={hi}",
         ))
         .bt());
     }
-    let dist = rand::distr::Uniform::new(lo, hi).map_err(fuel::Error::wrap)?;
+    let dist = rand::distr::Uniform::new(lo, hi).map_err(fuel_core::Error::wrap)?;
     Ok((0..n).map(|_| dist.sample(rng)).collect())
 }
 
