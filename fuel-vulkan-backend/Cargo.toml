@@ -38,7 +38,7 @@
     # `effective_api_version()`, and `cooperative_matrix_properties()` losing
     # its `unsafe` qualifier. Note `SubgroupProperties::size_control` needs an
     # instance at V1_3; ours are V1_2, so it reads `None` regardless of device.
-    vulkane                = "0.9.0"
+    vulkane                = "0.13.0"
 
 [dev-dependencies]
 # GAP-157: `require`/`required_ok` — a missing device is a FAILURE, not a
