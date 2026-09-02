@@ -1657,3 +1657,119 @@ similar the adjacent thing looks.** Related:
 **WHAT THIS SUBSUMES — cross-referenced, not replaced, because three orphaned lessons is worse than one duplicated one.** [`one-feature-is-not-two`](#one-feature-is-not-two) is the **feature** row; [`target-crate-compile-line`](#target-crate-compile-line) and [`lib-does-not-build-tests`](#lib-does-not-build-tests) are the **cfg / target-kind** row. Each remains correct and each carries detail this rule does not. **Read them as instances; read this as the axis they share.** Closest neighbours: [`a-rule-bound-to-an-instrument-does-not-transfer`](#a-rule-bound-to-an-instrument-does-not-transfer) (the instrument changes, the rule does not follow) and [`a-guard-exists-is-not-the-guard-protects-this`](#a-guard-exists-is-not-the-guard-protects-this) (the guard is real and aimed elsewhere). **The difference from both: here nothing is stale and nothing is misaimed. The control is correct for a claim that is one configuration away from the one being made.**
 
 ---
+
+## an-incomplete-decoder-produces-false-equality
+
+**AN INCOMPLETE DECODER DOES NOT PRODUCE OBVIOUSLY-MISSING OUTPUT. IT PRODUCES
+FALSE EQUALITY — distinct inputs collapse to identical renderings, and the
+collapse is invisible because the output is WELL-FORMED.**
+
+**Measured 2026-09-02 on GAP-260** (`fuel-vulkan-backend`, host-visible memory
+layout). The diagnostic decodes `VkMemoryPropertyFlags` bits to names. vulkane's
+`MemoryPropertyFlags` constants cover five bits; this box's AMD Radeon 610M sets
+**`0xc0`** on **eight of its sixteen** memory types — `vk.xml` bitpos 6/7,
+`DEVICE_COHERENT_BIT_AMD` and `DEVICE_UNCACHED_BIT_AMD`.
+
+**Had the decoder rendered only the bits it could name, those eight types would
+have printed IDENTICALLY to four others:**
+
+```
+  [3]  0x000e  ->  HOST_VISIBLE + HOST_COHERENT + HOST_CACHED
+  [7]  0x00ce  ->  HOST_VISIBLE + HOST_COHERENT + HOST_CACHED   <- SAME RENDERING
+```
+
+**Measured collapse, counting DISTINCT FLAG VALUES rather than rows:** the
+adapter's sixteen types carry **8 distinct flag values**, which a dropping
+decoder renders as **4 distinct strings**. Restricted to the host-visible types
+that GAP-260 is about: **6 distinct values render as 3**. Exactly halved, both
+ways. **The reader does not see a gap — the reader sees rows that agree, and
+concludes the device has half the memory types it has.**
+
+**WHY THIS HIDES WHERE OTHER COLLAPSES DO NOT.** This is the same *mechanism* as
+[`injectivity-and-collapsed-mappings`](#injectivity-and-collapsed-mappings) — two
+inputs, one output, and a false agreement filed where a disagreement would be
+investigated. **But every instrument in that rule assumes a RETURNED VALUE**:
+*check the returned value*, *demand injectivity where the output is an identity*,
+the greppable five-line window around a decline. **A decoder has none of those.
+There is no assertion, no comparison, no verdict — it is a `println!` read by a
+human, and the only thing that could catch it is noticing that two rows which
+should differ do not.**
+
+**REMEDY, and it is a different prescription: PRESERVE WHAT YOU CANNOT NAME.**
+Render unrecognised input as itself — `<unknown 0xc0>` — rather than dropping it.
+The output stops being pretty and starts being injective. **A decoder's contract
+is not "name everything"; it is "never make two different things look the same".**
+
+⚠️ **AND THE FAILURE IS FORWARD-DATED, WHICH IS WHY "our decoder covers the
+spec" is not a defence.** The bits were unnamed because vulkane's constants
+predate the AMD extension, not because anyone was careless. **Any decoder over a
+vendor-extensible enum — Vulkan flags, `cpuid` leaves, ELF section types, HTTP
+status classes, a wire vocabulary someone else owns — is guaranteed to meet a
+value it does not know, on hardware or a peer that ships after it.** The
+preservation is what makes the diagnostic survive that; naming the bits is only
+what makes it comfortable today. **In this instance the preservation paid off on
+the FIRST run.**
+
+**Practice: when writing any value-to-text decoder, ask what the renderer does
+with an input outside its table. If the answer is "drops it", two distinct inputs
+already render identically and nothing in the program will ever say so.**
+
+---
+
+## grep-o-discards-the-context-that-dispositions-the-match
+
+**`grep -o` PRINTS ONLY THE MATCHED FRAGMENT, SO IT STRIPS THE EVIDENCE THAT
+SAYS WHETHER THE MATCH IS CODE, A COMMENT, OR PROSE.** A hit printed without
+its line cannot be dispositioned at all — and it reads exactly like a live
+declaration.
+
+**Measured 2026-09-02.** Auditing manifest aliases:
+
+```
+grep -rhoE 'package *= *"fuel-[a-z-]+"' --include=Cargo.toml .
+    ->  package = "fuel-core"          <- looks like a live rename
+```
+
+Reported as a live hazard to another lane. It is **not** live. Without `-o`:
+
+```
+./fuel/Cargo.toml:4:# package = "fuel-core" }`. This crate replaces that alias…
+                   ^ THE LINE STARTS WITH `#`
+```
+
+The alias was deleted by Stage 1; the comment exists to record what was
+**replaced**. `#` is not part of the match, so `-o` discarded it. The lane
+nearly shipped a warning about a hazard that does not exist — which is worse
+than no warning, because it spends the reader's attention and teaches them to
+distrust the surrounding text.
+
+**⚠️ TWO TRAPS, ONE FLAG, OPPOSITE DIRECTIONS — and the pairing is what makes
+the FLAG the hazard rather than either misuse.** The same session:
+
+- **`-o` did TOO MUCH** — stripped the `#`, manufacturing a live declaration
+  out of a historical note.
+- **`-o` did NOTHING AT ALL** — `grep -co` silently ignores `-o` and counts
+  **lines**. Reported as 51; occurrences were 53; the question wanted 50
+  distinct anchors. Three constructs, one command, right for none of them.
+
+**Both produced clean, confident, wrong output.**
+
+**⚠️ AND THIS REPO IS UNUSUALLY EXPOSED, WHICH IS THE PART THAT MAKES IT A RULE
+RATHER THAN A GREP TIP.** Fuel *deliberately* preserves historical mentions —
+[`docs-are-not-code-and-a-sweep-cannot-tell`](#docs-are-not-code-and-a-sweep-cannot-tell)
+requires it, because sweeping a historical mention destroys the record it
+exists to keep. So the corpus is **full of true statements about the past**,
+and `-o` is precisely the flag that hides which tense a line is in. **A
+convention that preserves history and a flag that strips context are
+individually reasonable and jointly produce confident false positives.**
+
+**PRACTICE: never disposition a match from `-o` output. Use `-n` and read the
+line.** Reserve `-o` for counting a construct you have *already* dispositioned
+— and even then, not with `-c`, which ignores it.
+
+**Related but distinct:** the existing rule says the grep is mechanical and the
+disposition is not, which tells a reader to classify each hit. **This one is
+the operational half: with `-o` the classification is physically unreachable,
+so the instruction cannot be followed even by someone trying.**
+
+---
