@@ -786,4 +786,105 @@ mod tests {
         let positions = scalar_positions(tokens.len());
         assert!(model.forward(&tokens, &positions).is_err());
     }
+
+    /// **GAP-195: `use_sliding_window: true` with `sliding_window: None` is DENSE.**
+    ///
+    /// `build_layer_mask` computes `cfg.sliding_window.unwrap_or(seq + 1)`, and
+    /// `j + (seq + 1) <= i` is unsatisfiable for `i < seq`, so the windowed
+    /// branch excludes nothing and collapses to plain causal. **The shipped
+    /// prefill path therefore leaves every layer dense when the width is
+    /// absent, whatever the flag says.**
+    ///
+    /// ⚠️ **THE CODE IS ALREADY CORRECT. This test is COVERAGE, not a fix, and
+    /// it passed on its first run — which is exactly why it is worthless on its
+    /// own.** A naive assertion here passes for the wrong reason if the mask
+    /// pipeline is inert, so it is paired with
+    /// [`a_real_width_does_narrow_the_mask`], which fails in that case. Neither
+    /// arm may be deleted without the other losing its meaning.
+    ///
+    /// **Why this family and not the flag-bearing others:** Qwen3 and Qwen3Moe
+    /// carry this shape and were given explicit tests by `322e3049`; Qwen2's
+    /// width is a bare `usize`, so the shape cannot arise. `Qwen3VlText` is the
+    /// third family with `use_sliding_window` + `Option<usize>` and had no test
+    /// of the flag-true/width-absent configuration — its `tiny_cfg` sets the
+    /// flag FALSE, so none of the existing five ever construct it.
+    #[test]
+    fn flag_true_with_no_width_is_dense() {
+        let mut cfg = tiny_cfg();
+        cfg.use_sliding_window = true;
+        cfg.sliding_window = None; // the hazard configuration
+        cfg.max_window_layers = cfg.num_hidden_layers; // every layer "windowed"
+        let model = Qwen3VlTextModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let seq = 4;
+
+        let windowed = model.build_layer_mask(&anchor, seq, true).realize_f32();
+        let dense = model.build_layer_mask(&anchor, seq, false).realize_f32();
+
+        // FOUNDATION: a mask that examined nothing would compare equal trivially.
+        assert_eq!(windowed.len(), seq * seq, "mask is not seq x seq");
+        assert!(
+            windowed.contains(&f32::NEG_INFINITY),
+            "no position is masked at all -- the causal mask itself is inert, so \
+             equality below would prove nothing"
+        );
+        assert_eq!(
+            windowed, dense,
+            "flag=true with width=None produced a DIFFERENT mask from the dense \
+             path. GAP-195: `sliding_window.unwrap_or(seq + 1)` must exclude \
+             nothing, so a config with the flag set and no width is dense at \
+             every layer. If this fires, decode now disagrees with the shipped \
+             prefill path in the direction GAP-195 exists to prevent."
+        );
+    }
+
+    /// **The retained sibling, and it is load-bearing rather than decorative.**
+    ///
+    /// [`flag_true_with_no_width_is_dense`] asserts an EQUALITY, so it passes
+    /// under total inertness: a `build_layer_mask` that ignored `window`
+    /// entirely, or a refactor that made both branches identical, turns it
+    /// green while proving nothing. **This arm fails in exactly that case.**
+    ///
+    /// Sabotage-verified rather than assumed: changing the production
+    /// `unwrap_or(seq + 1)` to `unwrap_or(2)` reddens the equality arm, and
+    /// making `build_layer_mask` ignore `uses_window` reddens this one. The two
+    /// arms fail on disjoint defects.
+    #[test]
+    fn a_real_width_does_narrow_the_mask() {
+        let mut cfg = tiny_cfg();
+        cfg.use_sliding_window = true;
+        cfg.sliding_window = Some(2); // a width that must actually exclude
+        cfg.max_window_layers = cfg.num_hidden_layers;
+        let model = Qwen3VlTextModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let seq = 4;
+
+        let windowed = model.build_layer_mask(&anchor, seq, true).realize_f32();
+        let dense = model.build_layer_mask(&anchor, seq, false).realize_f32();
+
+        assert_ne!(
+            windowed, dense,
+            "a width of 2 over seq=4 produced the SAME mask as the dense path. \
+             The window is not being applied at all, which makes the equality \
+             asserted by `flag_true_with_no_width_is_dense` vacuous -- it would \
+             hold for every config. Investigate the mask, not this assertion."
+        );
+        // Direction, not just difference: windowing may only ADD exclusions.
+        let extra = windowed
+            .iter()
+            .zip(dense.iter())
+            .filter(|(w, d)| **w == f32::NEG_INFINITY && **d != f32::NEG_INFINITY)
+            .count();
+        assert!(
+            extra > 0,
+            "the windowed mask differs from dense but masks no ADDITIONAL \
+             position -- the difference is in the wrong direction"
+        );
+    }
 }
