@@ -41,6 +41,7 @@ const NOT_YET_PARSED: &[&str] = &[
     "lazy_paddleocr_vl_text.rs",
     "lazy_persimmon.rs",
     "lazy_phi3.rs",
+    "lazy_qwen3_moe.rs",
     "lazy_qwen3_vl_text.rs",
     "lazy_recurrent_gemma.rs",
     "lazy_smollm3.rs",
@@ -54,15 +55,12 @@ const NOT_YET_PARSED: &[&str] = &[
 /// (non-`Option`) field, so there is no take-if-present-else-derive case to route
 /// through the rule. Self-verified below — the day the field becomes `Option`, it
 /// acquires a GQA default that bypasses the rule and this exemption must red.
-const STRUCTURAL_EXEMPT: &[&str] = &["lazy_llava.rs"];
+// The two GAP-270 collapses: a serde config whose num_key_value_heads is REQUIRED usize,
+// so there is no take-if-present case to route. Each self-verifies below (the day the field
+// becomes Option, it acquires a GQA default that bypasses the rule and the exemption reds).
+const STRUCTURAL_EXEMPT: &[&str] = &["lazy_llava.rs", "lazy_qwen2_moe.rs"];
 
 const RULE_CALL: &str = "hf_config::num_key_value_heads";
-const MOE_MARKERS: &[&str] = &[
-    "num_experts",
-    "moe_intermediate_size",
-    "num_local_experts",
-    "n_routed_experts",
-];
 
 /// Whether the source CALLS the shared rule in code — excludes comment lines so a
 /// doc/test mention of `hf_config::num_key_value_heads` cannot fake a call. This is
@@ -149,8 +147,12 @@ fn dense_cluster_files(models: &[(String, String)]) -> BTreeSet<String> {
     for (name, src) in models {
         for fields in config_struct_fields(src) {
             let has_core = core.iter().all(|c| fields.contains(*c));
-            let is_moe = MOE_MARKERS.iter().any(|m| fields.contains(*m));
-            if has_core && !is_moe {
+            // MoE models are IN the cluster too — config-from-path must gate them.
+            // "MoE" is NOT a predicate for the kv rule (batch-1 finding): mixtral routes
+            // the rule like a dense model, qwen2_moe COLLAPSED (GAP-270, exempt below),
+            // qwen3_moe is not-yet-parsed. The earlier `!is_moe` filter left MoE sweep
+            // targets ungated — a hole this widen closes.
+            if has_core {
                 out.insert(name.clone());
                 break;
             }
@@ -244,8 +246,8 @@ fn exempt_lists_may_only_shrink() {
     // as models are migrated to the rule.
     assert_eq!(
         NOT_YET_PARSED.len(),
-        22,
+        23,
         "NOT_YET_PARSED changed — it may only SHRINK as models gain rule-routed parsers"
     );
-    assert_eq!(STRUCTURAL_EXEMPT.len(), 1, "STRUCTURAL_EXEMPT changed");
+    assert_eq!(STRUCTURAL_EXEMPT.len(), 2, "STRUCTURAL_EXEMPT changed");
 }
