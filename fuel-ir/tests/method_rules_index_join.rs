@@ -161,6 +161,72 @@ fn dangling(method_rules: &str, claude: &str) -> Vec<String> {
     out
 }
 
+/// ARM E: an intra-document `](#anchor)` in method-rules.md pointing at no
+/// section of method-rules.md.
+///
+/// Arm B validates CLAUDE.md -> method-rules anchors. NOTHING validated
+/// method-rules -> method-rules, so the file the gate is about was the one
+/// place its cross-references went unchecked. Measured 2026-09-03 at
+/// `2b366804`: 36 intra-document links, 27 unique, 20 resolving (the control
+/// that the query works) and SIX dangling -- every one a MEMORY-file name with
+/// no section here. The hole was recorded in this corpus by the lane that found
+/// it, with its measurement, and went unclosed.
+///
+/// # Code spans are excluded, and it is load-bearing rather than tidiness
+///
+/// A naive scanner reports SEVEN. The seventh is `](#x)` sitting inside an
+/// INLINE CODE SPAN in the very sentence of this corpus that documents this
+/// hole -- so the first false positive of a naive version is the documentation
+/// of the problem it exists to catch. Measured: 0 intra links inside fenced
+/// blocks, 1 inside an inline code span, 35 live.
+///
+/// The module header says self-matching is "solved by SCOPE" -- the scanner is
+/// Rust, the subjects are markdown. That protects the scanner from its OWN
+/// examples. It does not protect it from the SUBJECT's examples, which is a
+/// different problem and is why this function parses code spans at all.
+fn intra_dangling(method_rules: &str) -> Vec<String> {
+    let have = sections(method_rules);
+    let mut out: Vec<String> = Vec::new();
+    let mut fenced = false;
+    for line in method_rules.lines() {
+        if line.trim_start().starts_with("```") {
+            fenced = !fenced;
+            continue;
+        }
+        if fenced {
+            continue;
+        }
+        let chars: Vec<char> = line.chars().collect();
+        let mut in_code = false;
+        let mut i = 0usize;
+        while i < chars.len() {
+            if chars[i] == '`' {
+                in_code = !in_code;
+                i += 1;
+                continue;
+            }
+            let opens_link = !in_code
+                && chars[i] == ']'
+                && chars.get(i + 1) == Some(&'(')
+                && chars.get(i + 2) == Some(&'#');
+            if opens_link {
+                let anchor: String = chars[i + 3..]
+                    .iter()
+                    .copied()
+                    .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
+                    .collect();
+                if !anchor.is_empty() && !have.contains(&anchor) {
+                    out.push(anchor);
+                }
+            }
+            i += 1;
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
 fn read_pair() -> (String, String) {
     let root = workspace_root();
     let mr = std::fs::read_to_string(root.join("docs/method-rules.md")).expect("method-rules.md");
@@ -174,10 +240,7 @@ fn arm_a_every_method_rule_is_reachable_from_claude_md() {
     let missing = unindexed(&mr, &cm);
     assert!(
         missing.is_empty(),
-        "{} method-rules section(s) have NO mention in CLAUDE.md, so they are unreachable from \
-         the file that loads into every session — landed and invisible, which is close to not \
-         having landed. Each section already contains its intended index line in a blockquote; \
-         move it across. Missing: {missing:?}",
+        "{} method-rules section(s) have NO mention in CLAUDE.md, so they are unreachable from the file that loads into every session — landed and invisible, which is close to not having landed. If the section carries its intended index line in a blockquote, move that across; otherwise compose one in the house style -- NOT every section has one. Missing: {missing:?}",
         missing.len(),
     );
 }
@@ -292,5 +355,75 @@ fn arm_b_keys_on_the_link_target_not_the_link_text() {
     assert!(
         dangling(mr, cm).is_empty(),
         "resolving target -> real-section, so not dangling"
+    );
+}
+/// ARM E: the gate's own file had six broken cross-references and nothing looked.
+#[test]
+fn arm_e_every_intra_document_anchor_resolves_to_a_real_section() {
+    let (mr, _cm) = read_pair();
+    let bad = intra_dangling(&mr);
+    assert!(
+        bad.is_empty(),
+        "{} intra-document anchor(s) in docs/method-rules.md point at no section OF THAT FILE. Arm B checks CLAUDE.md -> method-rules; this checks method-rules -> method-rules, which was unchecked. A reader follows one of these and lands nowhere, which damages trust in every other link in the corpus. Usually the target is a MEMORY-file name with no section here: keep the name, drop the link. Dangling: {bad:?}",
+        bad.len(),
+    );
+}
+
+/// Positive control for ARM E, using one of the six real instances.
+#[test]
+fn arm_e_scanner_can_see_a_dangling_intra_anchor() {
+    let mr = "## alpha-rule
+text
+
+see [`magnitude-is-not-impossibility`](#magnitude-is-not-impossibility)
+";
+    assert_eq!(
+        intra_dangling(mr),
+        vec!["magnitude-is-not-impossibility".to_string()]
+    );
+}
+
+/// NEGATIVE CONTROL for ARM E, load-bearing rather than decorative.
+///
+/// The corpus documents this very hole using `](#x)` inside an inline code
+/// span, and shows link syntax inside fenced blocks. A scanner without these
+/// exclusions reports its own documentation as the first defect -- so this is
+/// what separates "the gate works" from "the gate fires on prose about the
+/// gate". Both forms are asserted because different branches exclude them, and
+/// the third case guards the exclusion itself: over-excluding would blind the
+/// scanner entirely while every other assertion here still passed.
+#[test]
+fn arm_e_scanner_ignores_anchors_inside_code() {
+    let inline = "## alpha-rule
+text
+
+Every `See [`x`](#no-such-section)` between sections is unchecked.
+";
+    assert!(
+        intra_dangling(inline).is_empty(),
+        "an anchor inside an INLINE CODE SPAN is an example, not a link"
+    );
+
+    let fenced = "## alpha-rule
+text
+
+```text
+see [x](#no-such-section)
+```
+";
+    assert!(
+        intra_dangling(fenced).is_empty(),
+        "an anchor inside a FENCED BLOCK is an example, not a link"
+    );
+
+    let mixed = "## alpha-rule
+text
+
+`code` and [real](#no-such-section) here
+";
+    assert_eq!(
+        intra_dangling(mixed),
+        vec!["no-such-section".to_string()],
+        "excluding code spans must not blind the scanner to links beside them"
     );
 }
