@@ -18,10 +18,22 @@
 //! sitting in a comment READS as a control, and an unlabelled one is a false
 //! guard** — the reader must not conclude currency is verified.
 //!
-//! - **Artifact read:** KISS `a43a96f` — `conformance/corpus/structure_key_vectors.json`,
-//!   blob `f4ec8d44329ce0aec84747aecea832a3d3b11263`,
-//!   sha256 `619c834e563fb5bce565915b2d3f225cdf2e71ea803d04a6404ed1cedd29656e`,
-//!   16458 bytes. ⚠️ **CORRECTED 2026-08-19: this stamp read `a31c624c…` / 12283
+//! - **Artifact read:** KISS `f4952b4c` — `conformance/corpus/structure_key_vectors.json`,
+//!   blob `fd08f7f2dc6a6f3ee441447ac50e84d01cfd1d0a`,
+//!   sha256 `51ea109cf62955645242f6822efcbf652f9b87fa2bd5b38c8c9f2cbf3ff7d178`,
+//!   20653 bytes. ⚠️ **RE-MEASURED 2026-09-02 (GAP-273). This leg now reads
+//!   `fixtures/kiss-corpus/`, vendored by #39 (`f04bab77`); the stamp above
+//!   describes THAT file. It previously read KISS `a43a96f` / blob `f4ec8d44...`
+//!   / sha256 `619c834e...` / 16458 bytes, which was CORRECT for the
+//!   `tests/corpus/` copy this change DELETES.** ⚠⚠ **AND THE STAMP WAS THE
+//!   ONLY INSTRUMENT THAT COULD HAVE CAUGHT THE DRIFT: the six asserted
+//!   provenance fields — `schema`, `source_commit`, `token_prefix`,
+//!   `structure_key_schema_version`, `recognition_count`, `usable_count` — ARE
+//!   SATISFIED BY BOTH FILES, because `source_commit` is the SPEC commit
+//!   (`19c3ad7`, `generated_from: spec/classify.md`) and the spec did not move
+//!   between the two vendorings. A correct guard aimed at a different axis
+//!   passes, and its green reads as *provenance verified*. THAT is why the
+//!   caps instruction below is load-bearing rather than hygiene.** ⚠️ **CORRECTED 2026-08-19: this stamp read `a31c624c…` / 12283
 //!   bytes, which described the PRE-`f600d870` corpus — the re-vendor (+7
 //!   declines, 10 -> 17) did not update it. An unenforced stamp went stale
 //!   silently and then caused a real misread: a portfolio-level review
@@ -29,8 +41,12 @@
 //!   RE-MEASURE THIS ON EVERY RE-VENDOR.** Read with `git show origin/main:<path>` in `C:\Projects\KISS`
 //!   (never the working tree, which is checked out stale); `origin/main` was
 //!   confirmed equal to `git ls-remote origin refs/heads/main` at read time, so
-//!   this is the live tip and **no invariance claim is needed** — the file has
-//!   no `coverage_note` key, i.e. it is the pre-#169 artifact as published.
+//!   this is the live tip and **no invariance claim is needed**. ⚠️ **CORRECTED
+//!   2026-09-02: this read "the file has no `coverage_note` key, i.e. it is the
+//!   pre-#169 artifact as published". FALSE — it had one (1206 chars), and the
+//!   corpus this leg now reads has one of 4677. The sha256/blob/byte stamp in
+//!   this same block was CORRECT and current; only the prose conclusion drawn
+//!   from it was wrong, which is the harder half to notice.**
 //! - **Spec provenance:** the corpus's own `source_commit` = `19c3ad7`
 //!   (asserted below, so swapping the vendored file for one of different
 //!   provenance fails rather than passing quietly).
@@ -38,7 +54,7 @@
 //!   below are NOT stable across commits — the derivable set was 10 one hour
 //!   before it was 11, on a one-line arm.
 //!
-//! The vendored copy under `tests/corpus/` is byte-identical to the KISS blob.
+//! The vendored copy under `fixtures/kiss-corpus/` is byte-identical to the
 //! It is **vendored, not retyped**: the corpus is codec-generated with nothing
 //! hand-typed, and retyping a token would destroy exactly that property.
 //!
@@ -96,7 +112,7 @@ use fuel_ir::{DType, Layout, Shape, StrideVec};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Byte-identical vendored copy of the KISS artifact — see the module header.
-const CORPUS: &str = include_str!("corpus/structure_key_vectors.json");
+const CORPUS: &str = include_str!("../fixtures/kiss-corpus/structure_key_vectors.json");
 
 /// The corpus's declared spec provenance. Distinct from the artifact commit
 /// (`a43a96f`); conflating the two leaves the report unfalsifiable.
@@ -130,7 +146,10 @@ const FUEL_SK4_SPELLINGS: &[&str] = &[
 /// The old note is worth keeping: for `une` Fuel already derived the *identical*
 /// operand sub-keys for the same cell shape and differed ONLY in field 2 — which
 /// is why closing this was a spelling gap, not a semantic disagreement.
-const OP_FAMILY_EXCLUSIONS: &[(&str, &str)] = &[];
+const OP_FAMILY_EXCLUSIONS: &[(&str, &str)] = &[(
+    "gem_weight_role_discriminator",
+    "KISS-CLASSIFY-6.6-0019 pins <wdt> to the caller's weight-role hint with      operands [weight=i4, weight_scale=f8e8m0, activation=bf16]. Fuel CAN express      the role hint -- `GemCell::weight_dtype` is exactly that field, and      `mixed_fp8_e4m3_x_e4m3_f16` already carries distinct wdt/acc/out. What Fuel      cannot express is the DTYPE: there is no `DType::I4`. `i4` sits in      `fuel_ir::token_kind::RECOGNIZED_UNSUPPORTED_DTYPE_TOKENS`, documented there      as active in the standard with no Fuel DType at all -- a Fuel omission      tracked as GAP-097. No token for this cell can exist until GAP-097 closes,      so this is an absent surface and not an unbuilt cell.",
+)];
 
 // ---- cell construction ---------------------------------------------------
 
@@ -488,9 +507,9 @@ fn corpus_is_the_artifact_this_leg_was_bound_to() {
     assert_eq!(c["namespace_vocabulary_versions"]["cuda"].as_u64(), Some(1));
     assert_eq!(
         c["namespace_vocabulary_versions"]["vulkan"].as_u64(),
-        Some(4)
+        Some(5)
     );
-    assert_eq!(vectors(&c, "positive_vectors").len(), 20);
+    assert_eq!(vectors(&c, "positive_vectors").len(), 21);
     assert_eq!(vectors(&c, "decline_vectors").len(), 17);
 }
 
@@ -545,11 +564,39 @@ fn constructed_and_excluded_partition_the_positive_vectors() {
     // pins every name on both sides, and `is_disjoint` pins the split. The
     // count added no coverage and made a corpus re-vendor look like a defect in
     // this test.
+    // SHRINK-ONLY. Was 0 until the f4952b4c re-vendor published
+    // `gem_weight_role_discriminator`, whose `i4` weight dtype Fuel has no
+    // `DType` for (GAP-097). Raising this number is a deliberate act; lowering
+    // it is what closing GAP-097 should do.
     assert_eq!(
         excluded.len(),
-        0,
-        "no op-family exclusions remain — a future one must be added \
-         deliberately rather than accumulating silently"
+        1,
+        "the op-family exclusion count moved. Adding one is deliberate and needs \
+         a reason naming the ABSENT SURFACE, not merely the unbuilt cell; \
+         removing one means a Fuel gap closed and the cell is now constructible."
+    );
+}
+
+/// **The exclusion's own precondition, so it cannot outlive its cause.**
+///
+/// `gem_weight_role_discriminator` is excluded because Fuel has no `DType` for
+/// `i4`. That is a fact about `fuel_ir`, not about this test, and it is tracked
+/// as GAP-097. **If someone implements `DType::I4`, `i4` leaves
+/// `RECOGNIZED_UNSUPPORTED_DTYPE_TOKENS` and this fires** -- at which point the
+/// cell is CONSTRUCTIBLE and the exclusion must go.
+///
+/// Without this, closing GAP-097 would leave a stale exclusion quietly costing
+/// one vector of coverage, and the byte-match would stay green while covering
+/// less than it could. An exclusion that outlives its reason is indistinguishable
+/// from one that still has it.
+#[test]
+fn the_i4_exclusion_still_has_its_reason() {
+    assert!(
+        fuel_ir::token_kind::RECOGNIZED_UNSUPPORTED_DTYPE_TOKENS.contains(&"i4"),
+        "`i4` is no longer in RECOGNIZED_UNSUPPORTED_DTYPE_TOKENS, so Fuel now \
+         has a DType for it and `gem_weight_role_discriminator` CAN be \
+         constructed. Remove it from OP_FAMILY_EXCLUSIONS, build the cell, and \
+         drop the exclusion count to 0."
     );
 }
 

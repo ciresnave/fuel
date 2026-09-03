@@ -1,0 +1,19 @@
+# Vendored conformance artifacts are byte-identical copies of upstream KISS
+# blobs. Line-ending conversion would silently break that identity — and the
+# whole point of vendoring rather than retyping is that the bytes are the
+# evidence.
+#
+# This OVERRIDES the repository root's `*.json text eol=lf` (`.gitattributes`
+# line 22), which would otherwise normalize these files. `-text` disables eol
+# conversion in BOTH directions, so a Windows checkout still hashes to the
+# upstream blob id.
+#
+# HISTORY: this file is carried forward from `fuel-dispatch/tests/corpus/`,
+# deleted by the GAP-273 consolidation. It was INERT at the time of the move
+# (every artifact here is already LF-only, and the worktree hashes matched
+# HEAD exactly), so nothing broke — but a guard that happens to be unnecessary
+# today is not the same object as one that is unnecessary, and the next
+# re-vendor of an upstream blob containing CRLF would be normalized silently.
+# Widened from one filename to `*.json`: all six artifacts here are byte-
+# identity evidence read by tests, and the original covered only one.
+*.json -text

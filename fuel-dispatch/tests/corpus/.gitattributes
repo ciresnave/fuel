@@ -1,6 +1,0 @@
-# Vendored conformance artifacts are byte-identical copies of an upstream blob.
-# Line-ending conversion would silently break that identity — and the whole
-# point of vendoring rather than retyping is that the bytes are the evidence.
-# `-text` disables eol conversion in BOTH directions, so a Windows checkout
-# still hashes to the upstream blob id.
-structure_key_vectors.json -text
