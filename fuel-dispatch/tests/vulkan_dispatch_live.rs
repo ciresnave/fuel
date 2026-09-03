@@ -279,6 +279,75 @@ fn vulkan_dispatch_binary_minimum_f32() {
     assert_eq!(got, vec![1.0, 4.0, 3.0, 1.0]);
 }
 
+/// KISS §6.13 on Vulkan — the SHIPPABLE half: min/max PROPAGATE NaN a-first.
+///
+/// Vulkan `max`/`min` lower to SPIR-V FMax/FMin (spirv-dis confirmed, all four
+/// dtypes), which on the RTX 4070 DROP NaN (measured: returned the non-NaN
+/// operand). This fix adds an explicit `isnan(x)?x : isnan(y)?y : max(x,y)`
+/// guard, matching CPU (#67) and CUDA. Born-red: on the pre-fix `.spv`,
+/// `max(1,NaN)` returned `1.0` (NaN dropped) — this asserts it is NaN after.
+/// The `isnan` guard is explicit control flow the driver cannot fuse, so the
+/// propagation is reliable across devices (unlike the ±0 half — see below).
+///
+/// ⚠️ The ±0 a-bias half of §6.13 is NOT fixed here and is only MEASURED, never
+/// asserted: the NVIDIA driver re-fuses any source-level select (a float select
+/// AND a bit-cast select — BOTH measured) back into a canonicalizing FMNMX, so
+/// ±0 stays the driver's canonical (max→+0, min→-0). `spirv-dis` shows a clean
+/// IR regardless — it proves what we EMIT, never what EXECUTES; only the live
+/// probe measures the latter. See the Vulkan ±0 gap.
+///
+/// Run:  pwsh scripts/gpu-run.ps1 -Project fuel-dispatch -- cargo test -p \
+///   fuel-dispatch --features vulkan --test vulkan_dispatch_live \
+///   vulkan_minmax_nan -- --ignored --nocapture
+#[test]
+#[ignore]
+fn vulkan_minmax_nan_propagates_a_first() {
+    let Some(backend) = backend_or_skip() else {
+        return;
+    };
+    let a_nan = f32::from_bits(0x7fc0_1234); // distinct payloads prove a-first
+    let b_nan = f32::from_bits(0x7fc0_5678);
+    let one = 1.0_f32;
+
+    for op in [OpKind::MaximumElementwise, OpKind::MinimumElementwise] {
+        // NaN in either position propagates (FMax would drop it to `one`).
+        let r = run_binary_f32(&backend, op, &[a_nan, one], &[one, a_nan]);
+        assert_eq!(
+            r[0].to_bits(),
+            a_nan.to_bits(),
+            "{op:?}(NaN,1) must propagate a's NaN, got {:08x}",
+            r[0].to_bits()
+        );
+        assert!(
+            r[1].is_nan(),
+            "{op:?}(1,NaN) must propagate NaN, not drop to 1 (got {:08x})",
+            r[1].to_bits()
+        );
+        // a-first: with a NaN in BOTH operands, a's payload wins.
+        let both = run_binary_f32(&backend, op, &[a_nan], &[b_nan]);
+        assert_eq!(
+            both[0].to_bits(),
+            a_nan.to_bits(),
+            "{op:?}(NaNa,NaNb) must keep a's payload (a-first)"
+        );
+    }
+
+    // ±0 is the driver's canonical here and is NOT asserted (device-dependent —
+    // see the Vulkan ±0 gap). Printed for diagnosis / re-measurement elsewhere.
+    let z = run_binary_f32(
+        &backend,
+        OpKind::MaximumElementwise,
+        &[0.0_f32, -0.0],
+        &[-0.0, 0.0],
+    );
+    let s = |v: f32| if v.is_sign_negative() { '-' } else { '+' };
+    eprintln!(
+        "VULKAN ±0 NOTE (device-dependent, NOT asserted): max(+0,-0)={} max(-0,+0)={}",
+        s(z[0]),
+        s(z[1])
+    );
+}
+
 // ---- V.2.B — unary f32 ---------------------------------------------------
 
 /// Dispatch-table presence check for all 13 unary-f32 ops.
