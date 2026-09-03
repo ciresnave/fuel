@@ -61,17 +61,24 @@ fn workspace_root() -> PathBuf {
     }
 }
 
+/// The slug alphabet, in ONE place.
+///
+/// It was written out three times -- in `sections`, `cited_anchors` and the
+/// anchor scanner -- which is a divergence generator: a slug convention that
+/// changes in two of three sites fails by SILENTLY NOT MATCHING, so the gate
+/// would go quiet rather than red. Naming it also drops the scanner under
+/// Codacy's complexity limit, but that is the smaller reason.
+fn is_slug_char(c: char) -> bool {
+    c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-'
+}
+
 /// `## slug` headings, lowercase-kebab only (the method-rules convention).
 fn sections(method_rules: &str) -> Vec<String> {
     method_rules
         .lines()
         .filter_map(|l| l.strip_prefix("## "))
         .map(str::trim)
-        .filter(|s| {
-            !s.is_empty()
-                && s.chars()
-                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-        })
+        .filter(|s| !s.is_empty() && s.chars().all(is_slug_char))
         .map(str::to_owned)
         .collect()
 }
@@ -85,7 +92,7 @@ fn cited_anchors(claude: &str) -> Vec<String> {
         let at = from + rel + NEEDLE.len();
         let anchor: String = claude[at..]
             .chars()
-            .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
+            .take_while(|c| is_slug_char(*c))
             .collect();
         if !anchor.is_empty() {
             out.push(anchor);
@@ -207,7 +214,7 @@ fn anchors_in_line(line: &str) -> Vec<String> {
         let anchor: String = chars[i + 3..]
             .iter()
             .copied()
-            .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
+            .take_while(|c| is_slug_char(*c))
             .collect();
         if !anchor.is_empty() {
             out.push(anchor);
