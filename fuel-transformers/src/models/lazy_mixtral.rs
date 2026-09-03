@@ -79,6 +79,81 @@ impl MixtralConfig {
     }
 }
 
+// ROADMAP item 8 (II): config-from-path on the #57 template. Mixtral is MoE, so the
+// raw carries the expert fields too — but "MoE" is not a predicate for the kv rule:
+// resolve routes num_key_value_heads + head_dim through the shared `hf_config` rules
+// exactly as the dense models do (contrast lazy_qwen2_moe, which COLLAPSED — GAP-270).
+#[derive(Debug, Clone, serde::Deserialize)]
+struct MixtralConfigRaw {
+    vocab_size: usize,
+    hidden_size: usize,
+    intermediate_size: usize,
+    num_hidden_layers: usize,
+    num_attention_heads: usize,
+    #[serde(default)]
+    num_key_value_heads: Option<usize>,
+    #[serde(default)]
+    head_dim: Option<usize>,
+    max_position_embeddings: usize,
+    #[serde(default = "default_mixtral_rms_norm_eps")]
+    rms_norm_eps: f64,
+    #[serde(default = "default_mixtral_rope_theta")]
+    rope_theta: f64,
+    #[serde(default)]
+    sliding_window: Option<usize>,
+    num_experts_per_tok: usize,
+    num_local_experts: usize,
+}
+
+fn default_mixtral_rms_norm_eps() -> f64 {
+    1e-5
+}
+fn default_mixtral_rope_theta() -> f64 {
+    1e6
+}
+
+impl MixtralConfigRaw {
+    fn from_json_str(json: &str) -> Result<Self> {
+        serde_json::from_str(json)
+            .map_err(|e| fuel_core::Error::Msg(format!("parsing Mixtral config.json: {e}")))
+    }
+
+    fn resolve(self) -> MixtralConfig {
+        MixtralConfig {
+            vocab_size: self.vocab_size,
+            hidden_size: self.hidden_size,
+            intermediate_size: self.intermediate_size,
+            num_hidden_layers: self.num_hidden_layers,
+            num_attention_heads: self.num_attention_heads,
+            num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
+                self.num_key_value_heads,
+                self.num_attention_heads,
+            ),
+            head_dim: fuel_core::hf_config::head_dim(
+                self.head_dim,
+                self.hidden_size,
+                self.num_attention_heads,
+            ),
+            max_position_embeddings: self.max_position_embeddings,
+            rms_norm_eps: self.rms_norm_eps,
+            rope_theta: self.rope_theta,
+            sliding_window: self.sliding_window,
+            num_experts_per_tok: self.num_experts_per_tok,
+            num_local_experts: self.num_local_experts,
+        }
+    }
+}
+
+impl MixtralConfig {
+    /// Parse a HuggingFace `config.json` string into a [`MixtralConfig`].
+    ///
+    /// ROADMAP item 8 (II): reads the artifact, routing GQA + head_dim through the
+    /// shared rules — see the born-red `mixtral_config_from_hf_json_parses_the_artifact`.
+    pub fn from_hf_json_str(json: &str) -> Result<Self> {
+        Ok(MixtralConfigRaw::from_json_str(json)?.resolve())
+    }
+}
+
 /// One Mixtral expert's SwiGLU MLP weights.
 #[derive(Debug, Clone)]
 pub struct MixtralExpertWeights {
@@ -679,5 +754,69 @@ mod tests {
             max_diff < 1e-5,
             "Mixtral forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})"
         );
+    }
+
+    // ROADMAP item 8 (II) born-red: MoE config-from-path routes GQA + head_dim through
+    // the shared rules exactly as dense models do — "MoE" is not a predicate here.
+    #[test]
+    fn mixtral_config_from_hf_json_parses_the_artifact() {
+        // Mixtral-8x7B-v0.1 shape WITHOUT head_dim (derived), WITH the MoE fields.
+        let json = r#"{
+            "vocab_size": 32000, "hidden_size": 4096, "intermediate_size": 14336,
+            "num_hidden_layers": 32, "num_attention_heads": 32, "num_key_value_heads": 8,
+            "max_position_embeddings": 32768, "rms_norm_eps": 1e-5, "rope_theta": 1000000.0,
+            "sliding_window": 4096, "num_experts_per_tok": 2, "num_local_experts": 8
+        }"#;
+        let cfg = MixtralConfig::from_hf_json_str(json).expect("parse mixtral config.json");
+        assert_eq!(cfg.vocab_size, 32000);
+        assert_eq!(cfg.hidden_size, 4096);
+        assert_eq!(cfg.num_hidden_layers, 32);
+        assert_eq!(cfg.num_attention_heads, 32);
+        assert_eq!(cfg.num_key_value_heads, 8);
+        assert_eq!(cfg.head_dim, 128); // derived: 4096 / 32
+        assert_eq!(cfg.rope_theta, 1000000.0);
+        assert_eq!(cfg.sliding_window, Some(4096));
+        assert_eq!(cfg.num_experts_per_tok, 2);
+        assert_eq!(cfg.num_local_experts, 8);
+    }
+
+    #[test]
+    fn mixtral_config_reads_a_second_distinct_config() {
+        // Different values, explicit head_dim (6144/48=128), rope_theta absent -> default.
+        let json = r#"{
+            "vocab_size": 32000, "hidden_size": 6144, "intermediate_size": 16384,
+            "num_hidden_layers": 56, "num_attention_heads": 48, "num_key_value_heads": 8,
+            "head_dim": 128, "max_position_embeddings": 65536, "rms_norm_eps": 1e-5,
+            "num_experts_per_tok": 2, "num_local_experts": 8
+        }"#;
+        let cfg = MixtralConfig::from_hf_json_str(json).expect("parse second config");
+        assert_eq!(cfg.hidden_size, 6144);
+        assert_eq!(cfg.num_hidden_layers, 56);
+        assert_eq!(cfg.num_attention_heads, 48);
+        assert_eq!(cfg.head_dim, 128); // explicit
+        assert_eq!(cfg.rope_theta, 1e6); // absent -> default
+        assert_eq!(cfg.sliding_window, None); // absent -> None
+    }
+
+    #[test]
+    fn mixtral_config_gqa_defaults_to_num_heads_when_absent() {
+        let json = r#"{
+            "vocab_size": 32000, "hidden_size": 4096, "intermediate_size": 14336,
+            "num_hidden_layers": 32, "num_attention_heads": 32,
+            "max_position_embeddings": 32768, "num_experts_per_tok": 2, "num_local_experts": 8
+        }"#;
+        let cfg = MixtralConfig::from_hf_json_str(json).expect("parse");
+        assert_eq!(cfg.num_key_value_heads, 32); // absent -> num_attention_heads (MHA)
+    }
+
+    #[test]
+    fn mixtral_config_preserves_true_mqa() {
+        let json = r#"{
+            "vocab_size": 32000, "hidden_size": 4096, "intermediate_size": 14336,
+            "num_hidden_layers": 32, "num_attention_heads": 32, "num_key_value_heads": 1,
+            "max_position_embeddings": 32768, "num_experts_per_tok": 2, "num_local_experts": 8
+        }"#;
+        let cfg = MixtralConfig::from_hf_json_str(json).expect("parse");
+        assert_eq!(cfg.num_key_value_heads, 1); // true MQA survives, not collapsed to 32
     }
 }

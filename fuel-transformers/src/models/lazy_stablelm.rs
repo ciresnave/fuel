@@ -53,6 +53,82 @@ impl StableLmConfig {
     }
 }
 
+// ROADMAP item 8 (II): config-from-path on the #57 template. StableLM uses LayerNorm
+// (layer_norm_eps, not rms) and partial rotary + optional qkv bias — the raw carries
+// those, and resolve routes num_key_value_heads + head_dim through the shared rules.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct StableLmConfigRaw {
+    vocab_size: usize,
+    hidden_size: usize,
+    intermediate_size: usize,
+    num_hidden_layers: usize,
+    num_attention_heads: usize,
+    #[serde(default)]
+    num_key_value_heads: Option<usize>,
+    #[serde(default)]
+    head_dim: Option<usize>,
+    #[serde(default = "default_stablelm_layer_norm_eps")]
+    layer_norm_eps: f64,
+    #[serde(default = "default_stablelm_rope_theta")]
+    rope_theta: f64,
+    max_position_embeddings: usize,
+    #[serde(default = "default_stablelm_partial_rotary_factor")]
+    partial_rotary_factor: f64,
+    #[serde(default)]
+    use_qkv_bias: bool,
+}
+
+fn default_stablelm_layer_norm_eps() -> f64 {
+    1e-5
+}
+fn default_stablelm_rope_theta() -> f64 {
+    10_000.0
+}
+fn default_stablelm_partial_rotary_factor() -> f64 {
+    0.25
+}
+
+impl StableLmConfigRaw {
+    fn from_json_str(json: &str) -> Result<Self> {
+        serde_json::from_str(json)
+            .map_err(|e| fuel_core::Error::Msg(format!("parsing StableLM config.json: {e}")))
+    }
+
+    fn resolve(self) -> StableLmConfig {
+        StableLmConfig {
+            vocab_size: self.vocab_size,
+            hidden_size: self.hidden_size,
+            intermediate_size: self.intermediate_size,
+            num_hidden_layers: self.num_hidden_layers,
+            num_attention_heads: self.num_attention_heads,
+            num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
+                self.num_key_value_heads,
+                self.num_attention_heads,
+            ),
+            head_dim: fuel_core::hf_config::head_dim(
+                self.head_dim,
+                self.hidden_size,
+                self.num_attention_heads,
+            ),
+            layer_norm_eps: self.layer_norm_eps,
+            rope_theta: self.rope_theta,
+            max_position_embeddings: self.max_position_embeddings,
+            partial_rotary_factor: self.partial_rotary_factor,
+            use_qkv_bias: self.use_qkv_bias,
+        }
+    }
+}
+
+impl StableLmConfig {
+    /// Parse a HuggingFace `config.json` string into a [`StableLmConfig`].
+    ///
+    /// ROADMAP item 8 (II): reads the artifact — see the born-red
+    /// `stablelm_config_from_hf_json_parses_the_artifact_not_a_preset`.
+    pub fn from_hf_json_str(json: &str) -> Result<Self> {
+        Ok(StableLmConfigRaw::from_json_str(json)?.resolve())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct StableLmWeights {
     pub token_embedding: Arc<[f32]>,
@@ -646,5 +722,68 @@ mod tests {
             max_diff < 1e-5,
             "StableLm forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})"
         );
+    }
+
+    // ROADMAP item 8 (II) born-red: config-from-path reads the artifact, routes GQA +
+    // head_dim through the shared rules, and carries StableLM's partial-rotary + qkv-bias.
+    #[test]
+    fn stablelm_config_from_hf_json_parses_the_artifact_not_a_preset() {
+        // StableLM-2-1.6B-ish shape WITHOUT head_dim (derived), explicit GQA kv=8.
+        let json = r#"{
+            "vocab_size": 100352, "hidden_size": 2048, "intermediate_size": 5632,
+            "num_hidden_layers": 24, "num_attention_heads": 32, "num_key_value_heads": 8,
+            "layer_norm_eps": 1e-5, "rope_theta": 10000.0, "max_position_embeddings": 4096,
+            "partial_rotary_factor": 0.25, "use_qkv_bias": true
+        }"#;
+        let cfg = StableLmConfig::from_hf_json_str(json).expect("parse stablelm config.json");
+        assert_eq!(cfg.vocab_size, 100352);
+        assert_eq!(cfg.hidden_size, 2048);
+        assert_eq!(cfg.intermediate_size, 5632);
+        assert_eq!(cfg.num_hidden_layers, 24);
+        assert_eq!(cfg.num_attention_heads, 32);
+        assert_eq!(cfg.num_key_value_heads, 8); // explicit GQA via the rule
+        assert_eq!(cfg.head_dim, 64); // derived: 2048 / 32
+        assert_eq!(cfg.layer_norm_eps, 1e-5);
+        assert_eq!(cfg.rope_theta, 10000.0);
+        assert_eq!(cfg.partial_rotary_factor, 0.25);
+        assert!(cfg.use_qkv_bias);
+    }
+
+    #[test]
+    fn stablelm_config_reads_a_second_distinct_config() {
+        // Different values: full rotary, no qkv bias, explicit head_dim.
+        let json = r#"{
+            "vocab_size": 50304, "hidden_size": 2560, "intermediate_size": 6912,
+            "num_hidden_layers": 32, "num_attention_heads": 32, "num_key_value_heads": 32,
+            "head_dim": 80, "max_position_embeddings": 4096,
+            "partial_rotary_factor": 1.0, "use_qkv_bias": false
+        }"#;
+        let cfg = StableLmConfig::from_hf_json_str(json).expect("parse second config");
+        assert_eq!(cfg.hidden_size, 2560);
+        assert_eq!(cfg.head_dim, 80); // explicit
+        assert_eq!(cfg.partial_rotary_factor, 1.0);
+        assert!(!cfg.use_qkv_bias);
+        assert_eq!(cfg.layer_norm_eps, 1e-5); // default applied (absent)
+    }
+
+    #[test]
+    fn stablelm_config_gqa_defaults_to_num_heads_when_absent() {
+        let json = r#"{
+            "vocab_size": 100352, "hidden_size": 2048, "intermediate_size": 5632,
+            "num_hidden_layers": 24, "num_attention_heads": 32, "max_position_embeddings": 4096
+        }"#;
+        let cfg = StableLmConfig::from_hf_json_str(json).expect("parse");
+        assert_eq!(cfg.num_key_value_heads, 32); // absent -> num_attention_heads (MHA)
+    }
+
+    #[test]
+    fn stablelm_config_preserves_true_mqa() {
+        let json = r#"{
+            "vocab_size": 100352, "hidden_size": 2048, "intermediate_size": 5632,
+            "num_hidden_layers": 24, "num_attention_heads": 32, "num_key_value_heads": 1,
+            "max_position_embeddings": 4096
+        }"#;
+        let cfg = StableLmConfig::from_hf_json_str(json).expect("parse");
+        assert_eq!(cfg.num_key_value_heads, 1); // true MQA survives
     }
 }

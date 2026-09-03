@@ -39,6 +39,89 @@ pub struct Qwen3Config {
     pub tie_word_embeddings: bool,
 }
 
+// ROADMAP item 8 (II): config-from-path on the #57 template. Qwen3 specifies head_dim
+// EXPLICITLY (and decouples it from hidden_size/heads), so this exercises the take-if-
+// present branch of hf_config::head_dim; resolve also routes num_key_value_heads.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct Qwen3ConfigRaw {
+    vocab_size: usize,
+    hidden_size: usize,
+    intermediate_size: usize,
+    num_hidden_layers: usize,
+    num_attention_heads: usize,
+    #[serde(default)]
+    num_key_value_heads: Option<usize>,
+    #[serde(default)]
+    head_dim: Option<usize>,
+    max_position_embeddings: usize,
+    #[serde(default)]
+    sliding_window: Option<usize>,
+    #[serde(default)]
+    max_window_layers: Option<usize>,
+    #[serde(default)]
+    use_sliding_window: bool,
+    #[serde(default = "default_qwen3_rope_theta")]
+    rope_theta: f64,
+    #[serde(default = "default_qwen3_rms_norm_eps")]
+    rms_norm_eps: f64,
+    #[serde(default)]
+    attention_bias: bool,
+    #[serde(default)]
+    tie_word_embeddings: bool,
+}
+
+fn default_qwen3_rope_theta() -> f64 {
+    1_000_000.0
+}
+fn default_qwen3_rms_norm_eps() -> f64 {
+    1e-6
+}
+
+impl Qwen3ConfigRaw {
+    fn from_json_str(json: &str) -> Result<Self> {
+        serde_json::from_str(json)
+            .map_err(|e| fuel_core::Error::Msg(format!("parsing Qwen3 config.json: {e}")))
+    }
+
+    fn resolve(self) -> Qwen3Config {
+        Qwen3Config {
+            vocab_size: self.vocab_size,
+            hidden_size: self.hidden_size,
+            intermediate_size: self.intermediate_size,
+            num_hidden_layers: self.num_hidden_layers,
+            num_attention_heads: self.num_attention_heads,
+            num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
+                self.num_key_value_heads,
+                self.num_attention_heads,
+            ),
+            head_dim: fuel_core::hf_config::head_dim(
+                self.head_dim,
+                self.hidden_size,
+                self.num_attention_heads,
+            ),
+            max_position_embeddings: self.max_position_embeddings,
+            sliding_window: self.sliding_window,
+            // HF default: all layers windowed, i.e. num_hidden_layers.
+            max_window_layers: self.max_window_layers.unwrap_or(self.num_hidden_layers),
+            use_sliding_window: self.use_sliding_window,
+            rope_theta: self.rope_theta,
+            rms_norm_eps: self.rms_norm_eps,
+            attention_bias: self.attention_bias,
+            tie_word_embeddings: self.tie_word_embeddings,
+        }
+    }
+}
+
+impl Qwen3Config {
+    /// Parse a HuggingFace `config.json` string into a [`Qwen3Config`].
+    ///
+    /// ROADMAP item 8 (II): reads the artifact — see the born-red
+    /// `qwen3_config_from_hf_json_parses_the_artifact_not_a_preset`.
+    pub fn from_hf_json_str(json: &str) -> Result<Self> {
+        Ok(Qwen3ConfigRaw::from_json_str(json)?.resolve())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Qwen3LayerExtras {
     /// `[head_dim]` — per-head RmsNorm gain for Q.
@@ -1251,5 +1334,72 @@ mod tests {
         {
             assert!(*diff < DECODE_ORACLE_ABS, "step {k} diverged by {diff}");
         }
+    }
+
+    // ROADMAP item 8 (II) born-red: config-from-path reads the artifact and routes GQA +
+    // head_dim through the shared rules — Qwen3's EXPLICIT head_dim (≠ hidden/heads)
+    // proves head_dim is TAKEN, not derived.
+    #[test]
+    fn qwen3_config_from_hf_json_parses_the_artifact_not_a_preset() {
+        // Qwen3-0.6B shape: head_dim 128 is EXPLICIT while hidden/heads = 1024/16 = 64,
+        // so head_dim==128 proves the rule took the file value rather than deriving 64.
+        let json = r#"{
+            "vocab_size": 151936, "hidden_size": 1024, "intermediate_size": 3072,
+            "num_hidden_layers": 28, "num_attention_heads": 16, "num_key_value_heads": 8,
+            "head_dim": 128, "max_position_embeddings": 40960, "rope_theta": 1000000.0,
+            "rms_norm_eps": 1e-6, "attention_bias": false, "tie_word_embeddings": true
+        }"#;
+        let cfg = Qwen3Config::from_hf_json_str(json).expect("parse qwen3 config.json");
+        assert_eq!(cfg.vocab_size, 151936);
+        assert_eq!(cfg.hidden_size, 1024);
+        assert_eq!(cfg.num_hidden_layers, 28);
+        assert_eq!(cfg.num_attention_heads, 16);
+        assert_eq!(cfg.num_key_value_heads, 8);
+        assert_eq!(cfg.head_dim, 128); // EXPLICIT, taken as-is (NOT derived 1024/16=64)
+        assert_eq!(cfg.rope_theta, 1000000.0);
+        assert_eq!(cfg.rms_norm_eps, 1e-6);
+        assert!(cfg.tie_word_embeddings);
+        // max_window_layers absent -> num_hidden_layers.
+        assert_eq!(cfg.max_window_layers, 28);
+    }
+
+    #[test]
+    fn qwen3_config_reads_a_second_distinct_config() {
+        // Larger shape, attention_bias true, explicit max_window_layers.
+        let json = r#"{
+            "vocab_size": 151936, "hidden_size": 2048, "intermediate_size": 6144,
+            "num_hidden_layers": 36, "num_attention_heads": 16, "num_key_value_heads": 8,
+            "head_dim": 128, "max_position_embeddings": 40960, "attention_bias": true,
+            "max_window_layers": 20
+        }"#;
+        let cfg = Qwen3Config::from_hf_json_str(json).expect("parse second config");
+        assert_eq!(cfg.hidden_size, 2048);
+        assert_eq!(cfg.num_hidden_layers, 36);
+        assert!(cfg.attention_bias);
+        assert_eq!(cfg.max_window_layers, 20); // explicit
+        assert_eq!(cfg.rope_theta, 1_000_000.0); // default applied (absent)
+        assert_eq!(cfg.rms_norm_eps, 1e-6); // default applied (absent)
+    }
+
+    #[test]
+    fn qwen3_config_gqa_defaults_to_num_heads_when_absent() {
+        let json = r#"{
+            "vocab_size": 151936, "hidden_size": 1024, "intermediate_size": 3072,
+            "num_hidden_layers": 28, "num_attention_heads": 16, "head_dim": 128,
+            "max_position_embeddings": 40960
+        }"#;
+        let cfg = Qwen3Config::from_hf_json_str(json).expect("parse");
+        assert_eq!(cfg.num_key_value_heads, 16); // absent -> num_attention_heads
+    }
+
+    #[test]
+    fn qwen3_config_preserves_true_mqa() {
+        let json = r#"{
+            "vocab_size": 151936, "hidden_size": 1024, "intermediate_size": 3072,
+            "num_hidden_layers": 28, "num_attention_heads": 16, "num_key_value_heads": 1,
+            "head_dim": 128, "max_position_embeddings": 40960
+        }"#;
+        let cfg = Qwen3Config::from_hf_json_str(json).expect("parse");
+        assert_eq!(cfg.num_key_value_heads, 1); // true MQA survives
     }
 }
