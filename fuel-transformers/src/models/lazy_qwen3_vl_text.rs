@@ -827,7 +827,7 @@ mod tests {
         // FOUNDATION: a mask that examined nothing would compare equal trivially.
         assert_eq!(windowed.len(), seq * seq, "mask is not seq x seq");
         assert!(
-            windowed.iter().any(|v| *v == f32::NEG_INFINITY),
+            windowed.contains(&f32::NEG_INFINITY),
             "no position is masked at all -- the causal mask itself is inert, so \
              equality below would prove nothing"
         );
