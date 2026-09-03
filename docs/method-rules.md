@@ -1164,7 +1164,7 @@ back-to-back and say so, so a slip is visible rather than silent. Concretely:
   umbrella's schedule is what makes the cheap change expensive.
 - **Re-verify the free-ness at LAND time, not at ruling time.** The subject
   changes between the two, which is
-  [`reverify-differential-after-rebase-before-push`](#reverify-differential-after-rebase-before-push)
+  `reverify-differential-after-rebase-before-push`
   with the mutation coming from your own queue rather than a peer's.
 
 **The tell that you are in this situation:** the deferred change is described as
@@ -1425,8 +1425,8 @@ REPRESENTATIONS FIRST** (grep the name, count occurrences, and check whether any
 share a line). **If you cannot enumerate them, say the pass is not complete and
 reach for a MECHANICAL GUARD rather than a further careful read** — a grep does
 not have the scoped-to-what-prompted-it failure mode. Related:
-[`verify-the-population-not-the-instance`](#verify-the-population-not-the-instance),
-[`fix-the-generator-not-the-output`](#fix-the-generator-not-the-output).
+`verify-the-population-not-the-instance`,
+`fix-the-generator-not-the-output`.
 
 ## a-pre-stated-blocker-is-a-prediction
 
@@ -1485,7 +1485,7 @@ when a fence fires, that is the moment to LOOK HARDEST** — a fence firing
 is the least-audited event in a task, because it feels like the process
 working. Related:
 [`uninformative-signals-both-directions`](#uninformative-signals-both-directions),
-[`magnitude-is-not-impossibility`](#magnitude-is-not-impossibility).
+`magnitude-is-not-impossibility`.
 
 ## the-instrument-nearest-to-hand
 
@@ -1530,7 +1530,7 @@ crate's behaviour it is the version you RESOLVE, never the version you
 authored** — a version boundary is exactly where authorship stops being
 evidence. Related:
 [`a-stale-tool-is-a-wrong-action`](#a-stale-tool-is-a-wrong-action),
-[`go-to-the-artefact-not-the-rendering`](#go-to-the-artefact-not-the-rendering).
+`go-to-the-artefact-not-the-rendering`.
 
 ⚠️ **AND THE COMPANION INSTRUMENT DEFECT, CAUGHT WITHIN AN HOUR OF THIS RULE
 LANDING, BY THE LANE APPLYING IT: YOUR *DEFINITION* QUERY'S KEYWORD SET IS
@@ -1590,8 +1590,8 @@ report of the form *"spot-checked, looks right"* over a multi-name sentence is
 an unbounded claim from a bounded measurement. **When writing such a sentence,
 prefer separate clauses over a comma list** — a list invites the reader to
 sample, and separate claims each have to stand on their own. Related:
-[`verify-the-population-not-the-instance`](#verify-the-population-not-the-instance),
-[`enumerate-the-population-not-the-strings`](#enumerate-the-population-not-the-strings).
+`verify-the-population-not-the-instance`,
+`enumerate-the-population-not-the-strings`.
 
 ## a-guard-exists-is-not-the-guard-protects-this
 
