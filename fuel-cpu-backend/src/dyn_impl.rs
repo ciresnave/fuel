@@ -1826,6 +1826,63 @@ fn cpu_to_dtype(src: &HostBuffer, layout: &Layout, dtype: DType) -> Result<HostB
     }
 }
 
+/// GAP-275 tripwire: E5M2 storage is not wired, and the moment it is, this
+/// test fails and says what to do about it.
+#[cfg(test)]
+mod gap_275_e5m2_tripwire {
+    use super::*;
+
+    /// **This test exists to FAIL, and its failure is the point.**
+    ///
+    /// `DType::F8E5M2` is OCP-standard, `float8::F8E5M2` exists, and it has a
+    /// real DLPack representation. It declines only because no
+    /// `HostBuffer::F8E5M2` variant has been wired yet -- a deliberate
+    /// under-shipment, not an absent encoding (contrast `F8E6M2`).
+    ///
+    /// Adding the variant is ALREADY a compile error: `HostBuffer::as_ref`
+    /// matches all 16 variants with no wildcard, so the enum cannot grow
+    /// silently. **What that compile error does not say is WHY you should
+    /// care, and that is what this test carries.** It also fires one step
+    /// later than the compiler -- when the capability is actually WIRED,
+    /// rather than when the enum merely grows.
+    ///
+    /// **If this failed, you wired E5M2. Read this before deleting it:**
+    ///
+    /// 1. `float8` 0.7.0's `is_infinite` is BROKEN for both f8 types: it
+    ///    returns `true` for `0x7E`, which is the FINITE 448, and
+    ///    `F8E5M2::INFINITY` is likewise a finite normal. Fuel calls neither
+    ///    predicate today, so exposure is currently zero -- wiring E5M2 is
+    ///    what creates it.
+    /// 2. E5M2 conversions therefore need BOUNDARY coverage before they are
+    ///    trusted: overflow, saturation, infinity, NaN, subnormals, signed
+    ///    zero. The existing f8 tests sit in the exactly-representable
+    ///    interior and would pass over every one of those.
+    /// 3. The template is `cast_f32_f8e4m3_boundary_saturates_and_preserves_nan`
+    ///    in `byte_kernels.rs`: measure first, assert second, keep a positive
+    ///    control, retain the vacuity guard.
+    ///
+    /// **Then delete this test.** It is a tripwire, not a prohibition, and
+    /// removing it is the correct final step once the coverage exists.
+    #[test]
+    fn f8e5m2_zeros_declines_until_someone_wires_it() {
+        let shape = Shape::from_dims(&[4]);
+
+        // POSITIVE CONTROL, load-bearing: a narrow float that IS wired must
+        // succeed. Without it, "F8E5M2 declined" is equally satisfied by a
+        // `cpu_zeros` broken for every dtype, and the tripwire would pass
+        // while asserting nothing about E5M2 at all.
+        assert!(
+            cpu_zeros(&shape, DType::F8E4M3).is_ok(),
+            "CONTROL FAILED: cpu_zeros declined F8E4M3, which IS wired. The F8E5M2 assertion below is therefore vacuous and this test proves nothing -- fix the control before reading the tripwire."
+        );
+
+        assert!(
+            cpu_zeros(&shape, DType::F8E5M2).is_err(),
+            "GAP-275 TRIPWIRE FIRED: cpu_zeros now ACCEPTS DType::F8E5M2, so the E5M2 storage path has been wired. E5M2 conversions have NO boundary coverage, and float8 0.7.0 is_infinite returns true for 0x7E (the FINITE 448) on both f8 types. Add boundary tests modelled on cast_f32_f8e4m3_boundary_saturates_and_preserves_nan in byte_kernels.rs, then delete this test. See GAP-275."
+        );
+    }
+}
+
 #[cfg(test)]
 mod backend_runtime_tests {
     use super::*;
