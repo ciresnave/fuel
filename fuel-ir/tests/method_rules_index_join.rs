@@ -184,6 +184,38 @@ fn dangling(method_rules: &str, claude: &str) -> Vec<String> {
 /// Rust, the subjects are markdown. That protects the scanner from its OWN
 /// examples. It does not protect it from the SUBJECT's examples, which is a
 /// different problem and is why this function parses code spans at all.
+/// Anchors a single markdown line links to, EXCLUDING inline code spans.
+///
+/// Split out of `intra_dangling` so the code-span parsing is one unit with one
+/// job -- and so the negative control can aim at it directly rather than at a
+/// function that also walks fences.
+fn anchors_in_line(line: &str) -> Vec<String> {
+    let chars: Vec<char> = line.chars().collect();
+    let mut out = Vec::new();
+    let mut in_code = false;
+    for i in 0..chars.len() {
+        if chars[i] == '`' {
+            in_code = !in_code;
+            continue;
+        }
+        if in_code || chars[i] != ']' {
+            continue;
+        }
+        if chars.get(i + 1) != Some(&'(') || chars.get(i + 2) != Some(&'#') {
+            continue;
+        }
+        let anchor: String = chars[i + 3..]
+            .iter()
+            .copied()
+            .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
+            .collect();
+        if !anchor.is_empty() {
+            out.push(anchor);
+        }
+    }
+    out
+}
+
 fn intra_dangling(method_rules: &str) -> Vec<String> {
     let have = sections(method_rules);
     let mut out: Vec<String> = Vec::new();
@@ -196,31 +228,11 @@ fn intra_dangling(method_rules: &str) -> Vec<String> {
         if fenced {
             continue;
         }
-        let chars: Vec<char> = line.chars().collect();
-        let mut in_code = false;
-        let mut i = 0usize;
-        while i < chars.len() {
-            if chars[i] == '`' {
-                in_code = !in_code;
-                i += 1;
-                continue;
-            }
-            let opens_link = !in_code
-                && chars[i] == ']'
-                && chars.get(i + 1) == Some(&'(')
-                && chars.get(i + 2) == Some(&'#');
-            if opens_link {
-                let anchor: String = chars[i + 3..]
-                    .iter()
-                    .copied()
-                    .take_while(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '-')
-                    .collect();
-                if !anchor.is_empty() && !have.contains(&anchor) {
-                    out.push(anchor);
-                }
-            }
-            i += 1;
-        }
+        out.extend(
+            anchors_in_line(line)
+                .into_iter()
+                .filter(|a| !have.contains(a)),
+        );
     }
     out.sort();
     out.dedup();
