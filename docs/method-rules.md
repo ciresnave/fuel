@@ -100,6 +100,7 @@ A lane reported *"`cargo fmt --all -- --check` **cannot be green** — `-p fuel-
 **Two details worth keeping.** The lane had made the CORRECT call on the same axis four hours earlier, refusing to write *"COMPLETE"* in a doc where the evidence supported only *"the use cases shipped"* — **then made the mirror error on a number of their own.** And their later framing (*"mechanical and bounded, the cheapest lever"*) **contradicted their own earlier "cannot be green" without either of them noticing the two were in tension** — a self-contradiction inside one program, invisible because the two statements were about the same thing under different descriptions.
 
 **PRACTICE: when a measurement licenses a verdict, check the verdict's TYPE against the measurement's. A count supports "far", "many", "worse than"; it never supports "cannot". If you want an impossibility claim, you need an argument, not a bigger number.**
+
 ---
 
 ## one-feature-is-not-two
@@ -1822,3 +1823,89 @@ so the instruction cannot be followed even by someone trying.**
 ✅ **THE MECHANICAL DETECTOR IS ONE LINE AND NEEDS NO SUSPICION: `--list` LISTED MUST EQUAL UNIQUE.** A duplicate fully-qualified path cannot come from one `fn`, so `cargo test -p <crate> --lib -- --list 2>/dev/null | grep ': test$'` piped to `sort -u | wc -l` must match the raw count — **and drop stderr for this one, precisely because the diagnostics you want to READ are the ones that corrupt a COUNT.** Pair it with naming the neighbour: after inserting near an existing test, assert that test still appears in the listing. **Anchor on the start of the item's attributes or doc comment, never on its `fn` line.**
 
 ⚠️ **AND THE SECOND ANCHOR FAILURE FROM THE SAME HOUR, BECAUSE IT INVERTED A SABOTAGE RESULT: `cargo fmt` RUNS BETWEEN AUTHORING A FIXTURE AND SABOTAGING IT, AND IT INVALIDATES THE TEXT ANCHOR YOU JUST WROTE.** To prove a vacuity guard fired I trimmed the fixture table by splitting on `'(449.0'` — a token I had typed myself minutes earlier. `rustfmt` had since exploded the longer tuples across lines, so the token was gone; **Python's `str.split` on an absent separator returns the whole string unchanged, so the "trim" was a no-op, nothing recompiled, and the test passed.** I very nearly recorded that pass as *the guard does not fire*. **A sabotage that never applied reports absence-of-sensitivity as presence** ([`a-sabotage-that-never-applied`](#a-sabotage-that-never-applied)); the new specifics are that **a formatter is a mutation between your write and your read**, and that **the split/replace family fails SILENTLY and IDENTITY-PRESERVINGLY.** **Assert the anchor is present and that the edit SHRANK the text, before running anything — and require the `Compiling` line, which is what would have caught it here.**
+
+---
+
+## a-confession-is-the-claim-nobody-audits
+
+> **Index line (in CLAUDE.md):** **AN OVERSHOOTING CORRECTION CAN TAKE THE FORM OF INVENTING A DEFECT CLASS — the most credible possible disguise for an error, because it arrives with the author's name attached asking to make it PERMANENT.** A confession has no apparent motive to overstate, so it is the one claim nobody audits; **overstating against yourself reads as rigour and is exactly as wrong.** Verify a correction you ACCEPT with the same measurement you would demand of the claim it corrects.
+
+**2026-09-02, Fuel 3 and the architect, and it came within one PR of entering this file with both names on it.**
+
+Fuel 3 reported that `fuel-hardware/src/transfer_cost.rs` carries two clippy errors in its default config while CI stays green, and offered a mechanism **explicitly labelled as a hypothesis**: `cargo clippy --workspace` unifies features across the selected graph, so the `#[cfg]`'d arm goes live and the lints vanish.
+
+The architect refuted it: *"`fuel-core` and `fuel-dispatch` both enable `fuel-hardware/cuda`, but only under their own non-default `cuda` feature — so your unification theory would not have worked anyway."* **The refutation was accepted.** They were also right that GAP-267 already tracks the file, right that `KNOWN_FAILING`/`unexpected_pass` fences it, and right that the `--no-deps` comment is about attribution — **all three verified at head.**
+
+**Then, to explain an error that had not happened, a defect class was invented:**
+
+> *"I lifted a TRUE, ADJACENT, DOCUMENTED mechanism from eighteen lines away and attached it to the wrong subject — and that is more durable than invention, because grepping for the mechanism CONFIRMS it. My positive control would have passed while I was wrong about the subject."*
+
+**It is a good rule. It is also about an error nobody made.** The architect called it *"the sharpest thing anyone produced tonight"*, asked for it in this file, and **wrote it into their own durable notes within minutes.**
+
+**THEN IT WAS MEASURED:**
+
+```text
+cargo tree -e features --workspace <CI excludes>
+  fuel-hardware feature "vulkan"   PRESENT      <- the arm that rescues it
+  fuel-hardware feature "cuda"     ABSENT       <- the only one either party checked
+
+cargo clippy -p fuel-hardware --no-deps                    -> 3 errors, exit 101
+cargo clippy -p fuel-hardware --no-deps --features vulkan  -> exit 0, CLEAN
+```
+
+`measure_h2d_d2h` has **two** gated arms. **The original mechanism was correct; the refutation checked the wrong feature.** The architect verified this independently and deleted the memory file. Their own account of the miss: *"My grep printed FOUR relevant lines — two `cuda`, two `vulkan`. I read the two `cuda` lines and concluded about the crate. And I had personally quoted the `#[cfg(feature = "vulkan")]` arm from the source BEFORE asserting the match has only `_ => return None`"* — a mixed list read as verified, which is [`a-true-half-vouches-for-the-false-half`](#a-true-half-vouches-for-the-false-half) occurring *inside a correction*.
+
+**WHY THIS IS ITS OWN CLASS AND NOT A VARIANT OF "VERIFY THE PREMISE".** The neighbouring rules describe corrections that are *wrong*. **This one describes a correction that was ACCEPTED and then ELABORATED — and the elaboration is what made it dangerous.** A plain wrong claim invites checking. **A self-critical one does not: the author has no apparent motive to overstate, so a confession reads as already-audited.** The memory note `a-precise-citation-spends-skepticism` says precision consumes a reader's skepticism budget; **penitence spends it the same way, and from a direction nobody guards.**
+
+⚠️ **THE ESCALATION IS THE PART TO FEAR, BECAUSE IT IS FAST AND STRUCTURAL.** A loose hypothesis became an accepted refutation, became a fabricated defect class, became *"write it into `method-rules.md`"*, became a peer's durable memory file — **in under fifteen minutes, with every step performed by someone acting correctly on the previous one.** Nothing in that chain re-derives the original measurement, and the artifact at the end of it would have been permanent.
+
+⚠️ **NOTE WHAT DID NOT CATCH IT.** Two independent parties said the unification read was right — Fuel 2 by measurement, then the architect by re-verification — **and agreement was not what settled it.** The opposite position had already been agreed to, on the same evidence. **The only thing that discriminated was running `cargo tree` and `cargo clippy --features vulkan` directly.** Per [`evidence-that-is-not-independent`](#evidence-that-is-not-independent), peers agreeing is a weak instrument; here it was weaker than the wrong conclusion deference had already produced.
+
+**PRACTICE, three parts, and the third is the one that is easy to skip:**
+
+1. **A correction you ACCEPT is a claim you now hold.** Measure it to the standard you would demand of the thing it corrected. The memory note `a-correction-that-contradicts-your-measurement` covers REFUSING a correction that contradicts something you measured; **this covers ACCEPTING one where you had not measured — the commoner case, since a labelled hypothesis is exactly the place you have no measurement to defend.**
+2. **Do not build theory on an accepted correction until you have measured it.** The theory inherits the correction's truth value and then disguises it, because a mechanism argued at length reads as a mechanism verified.
+3. **When you SUPPLY a correction, name your own half if it turns out wrong.** The architect required this of themselves here: *"a rule about unaudited confessions that omits the party who failed to audit is missing its own mechanism."* **A confession that names only the confessor is the same defect one level up** — it audits the cheapest party and leaves the correction's author unexamined. **Approval by a coordinator is what would have made this permanent, so the approval is part of the mechanism, not context around it.**
+
+**AND THE DISPOSITION THAT SURVIVED ALL OF IT, because right-answer-false-reason is the combination nobody re-checks:** CI is green on that crate for a **measured** reason, GAP-267 tracks it, and the fence is real. **The architect's conclusion was right and the mechanism they gave for it was wrong.** Without the measurement the row would have carried a fence with no explanation — precisely the pair that never gets re-opened, because the answer is correct and only the reason is missing.
+
+⚠️⚠️ **AND A GATE HOLE FOUND WHILE WRITING THIS SECTION, RECORDED WITH ITS MEASUREMENT SO WHOEVER CLOSES IT NEED NOT REDISCOVER IT.** Drafting the citations above, three intended references turned out to be **MEMORY files with no `method-rules.md` section at all** — `a-precise-citation-spends-skepticism`, `a-correction-that-contradicts-your-measurement`, `enumerate-the-population-not-the-strings` (`grep -c '^## <name>$'` → **0** for each; controls `a-true-half-vouches-for-the-false-half`, `evidence-that-is-not-independent`, `a-defence-can-outlive-its-defect` → **1** each, so the query finds sections where they exist). **Two of the three had already been written as bracketed links in the first draft.**
+
+**`fuel-ir/tests/method_rules_index_join.rs` would NOT have caught them.** Its arm B validates that every anchor in **CLAUDE.md** resolves to a real section; **nothing validates anchors that live INSIDE `method-rules.md` itself.** The invariant is bidirectional and **the gate guards one direction — the one that accumulates cross-references more slowly.** Every `See [`x`](#x)` between sections here is currently unchecked, and a section renamed or a citation typed from memory of a *memory file* lands as a dead in-page anchor that renders as ordinary text.
+
+**Recorded as an observation rather than fixed, deliberately:** the arm is small but adding it at the end of a long night, in a PR whose subject is a fabricated defect class, is how the next entry in this section gets written. **The measurement is the deliverable; the arm is somebody's next cheap win.** ⚠️ **And note the detection route, because it is the transferable half: this was found by OBEYING a warning about dangling citations, not by testing the gate.** The gate was green throughout and is still green — **a hole in coverage is invisible to the thing that has the hole.**
+
+---
+
+## an-allowlist-entry-that-reddens-when-its-reason-dissolves
+
+> **Index line (in CLAUDE.md):** **AN EXCLUSION, SUPPRESSION OR KNOWN-FAILING ENTRY MUST CARRY A DETECTOR FOR ITS OWN CAUSE DISSOLVING** — otherwise it outlives the defect it records and is indistinguishable from one that still applies. It fires on the **FIX**, not on a date: an expiry needs an event that will occur, and *"the reason stopped being true"* is exactly that event, with no false alarms and no silence when the world moves. Two polarities: an entry that reddens when a listed thing starts PASSING, and one that reddens when the gap it cites CLOSES.
+
+**Reached independently by two parties on 2026-09-02, on unrelated work, with no contact — which is why it is a construct and not a coincidence.**
+
+```text
+CI, rust-ci.yml:776,829   KNOWN_FAILING="fuel-hardware"
+                          clippy PASSES && crate is listed -> unexpected_pass, RED
+                          "PASSES but is listed KNOWN_FAILING -- delete the entry (GAP-267)"
+
+#72, kiss_structure_key_byte_match.rs
+                          the_i4_exclusion_still_has_its_reason
+                          asserts "i4" is still in RECOGNIZED_UNSUPPORTED_DTYPE_TOKENS
+                          -> closing GAP-097 turns the exclusion RED
+```
+
+**Same construct, opposite polarity.** CI's fires when a listed *failure* stops failing. The corpus exclusion fires when the *reason for excluding* stops being true. **Neither can quietly outlive its cause.**
+
+**AND THE SHAPE ALREADY RECURS HERE, which makes this a missing NAME rather than a new idea.** Measured: `expiring-decline` appears **4 times** and `allow(dead_code)` **5 times** in `docs/gaps.md`, and **neither appears in this file at all** *(control: `staleness-by-workaround` appears twice here, so the query finds sections where they exist)*. **Nine instances in the registry, zero named sections — the construct was being re-argued from scratch each time.**
+
+**WHY A DEADLINE IS THE WEAKER MECHANISM.** CLAUDE.md already requires that an expiry fire on a checkpoint that WILL occur rather than an event that MAY NOT. A date satisfies that and is still weak: **it fires whether or not anything changed, so it trains people to push it forward.** *"The reason dissolved"* is guaranteed-detectable **and only fires when there is something to do.**
+
+⚠️ **THE FAILURE IT PREVENTS IS INVISIBLE BY CONSTRUCTION, WHICH IS THE WHOLE ARGUMENT.** A stale exclusion costs exactly one vector of coverage; a stale `KNOWN_FAILING` entry costs exactly one crate's lint gate — **and both are SILENT: the suite is green, the count is correct, and the output is byte-identical to the healthy case.** Nothing distinguishes *"still needed"* from *"was needed in August"* except re-deriving it, and **nobody re-derives an entry that is not complaining.**
+
+**PRACTICE.** When adding to any allowlist, exclusion list, `KNOWN_FAILING` set or `#[allow]`:
+
+1. **State the CAUSE, not the symptom.** *"Not constructed"* is a symptom. *"Fuel has no `DType::I4`, so no token for this cell can exist"* is a cause — **it names something checkable that can later become false.** A symptom cannot be a detector's subject.
+2. **Write the detector in the same change.** One assertion on the cause. **If the cause is not expressible as an assertion, that is itself the finding:** you have recorded a feeling, not a reason.
+3. **Home the residue at an owned row.** The detector says *when*; the row says *who* and *what next*. `the_i4_exclusion_still_has_its_reason` points at GAP-097; CI's message points at GAP-267. **A site comment is read only by someone already standing there, and the entry exists precisely for the case where nobody comes.**
+
+**Related:** [`a-defence-can-outlive-its-defect`](#a-defence-can-outlive-its-defect) is the mirror image — there a control becomes ACTIVELY HARMFUL once its replacement lands, where here it merely goes INERT while still looking live. **Both are cured by making the entry able to fail.**
