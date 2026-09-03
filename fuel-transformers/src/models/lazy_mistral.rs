@@ -102,6 +102,78 @@ impl MistralConfig {
     }
 }
 
+// ROADMAP item 8 (II): config-from-path as a capability of the config TYPE.
+// Mirrors #57's Qwen2 template — a `serde` raw carrying the HF field names plus
+// constant defaults, then `resolve` fills the sibling-derived values
+// (num_key_value_heads, head_dim) through the shared `hf_config` rules.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct MistralConfigRaw {
+    vocab_size: usize,
+    hidden_size: usize,
+    intermediate_size: usize,
+    num_hidden_layers: usize,
+    num_attention_heads: usize,
+    #[serde(default)]
+    num_key_value_heads: Option<usize>,
+    #[serde(default)]
+    head_dim: Option<usize>,
+    #[serde(default = "default_mistral_rms_norm_eps")]
+    rms_norm_eps: f64,
+    #[serde(default = "default_mistral_rope_theta")]
+    rope_theta: f64,
+    max_position_embeddings: usize,
+    #[serde(default)]
+    sliding_window: Option<usize>,
+}
+
+fn default_mistral_rms_norm_eps() -> f64 {
+    1e-5
+}
+fn default_mistral_rope_theta() -> f64 {
+    10_000.0
+}
+
+impl MistralConfigRaw {
+    fn from_json_str(json: &str) -> Result<Self> {
+        serde_json::from_str(json)
+            .map_err(|e| fuel_core::Error::Msg(format!("parsing Mistral config.json: {e}")))
+    }
+
+    fn resolve(self) -> MistralConfig {
+        MistralConfig {
+            vocab_size: self.vocab_size,
+            hidden_size: self.hidden_size,
+            intermediate_size: self.intermediate_size,
+            num_hidden_layers: self.num_hidden_layers,
+            num_attention_heads: self.num_attention_heads,
+            num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
+                self.num_key_value_heads,
+                self.num_attention_heads,
+            ),
+            head_dim: fuel_core::hf_config::head_dim(
+                self.head_dim,
+                self.hidden_size,
+                self.num_attention_heads,
+            ),
+            rms_norm_eps: self.rms_norm_eps,
+            rope_theta: self.rope_theta,
+            max_position_embeddings: self.max_position_embeddings,
+            // Mistral keeps sliding_window as Option (None = no window); pass as-is.
+            sliding_window: self.sliding_window,
+        }
+    }
+}
+
+impl MistralConfig {
+    /// Parse a HuggingFace `config.json` string into a [`MistralConfig`].
+    ///
+    /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
+    /// see the born-red `mistral_config_from_hf_json_parses_the_artifact_not_a_preset`.
+    pub fn from_hf_json_str(json: &str) -> Result<Self> {
+        Ok(MistralConfigRaw::from_json_str(json)?.resolve())
+    }
+}
+
 /// Mistral weights. Per-layer K/V/Q/O/FFN tensors reuse
 /// [`fuel_core::lazy::LayerWeights`] (the LLaMA shape works unchanged
 /// because Mistral's per-layer parameter layout is identical to
@@ -724,5 +796,72 @@ mod tests {
         for &v in &hidden.realize_f32() {
             assert!(v.is_finite(), "non-finite hidden: {v}");
         }
+    }
+
+    // ROADMAP item 8 (II) born-red: config-from-path reads the artifact and routes
+    // GQA + head_dim through the shared `hf_config` rules (mirrors #57's Qwen2 rows).
+    #[test]
+    fn mistral_config_from_hf_json_parses_the_artifact_not_a_preset() {
+        // Mistral-7B-v0.1 shape WITHOUT head_dim (derived) — proves it reads the
+        // file, not a hardcoded preset.
+        let json = r#"{
+            "vocab_size": 32000, "hidden_size": 4096, "intermediate_size": 14336,
+            "num_hidden_layers": 32, "num_attention_heads": 32, "num_key_value_heads": 8,
+            "rms_norm_eps": 1e-5, "rope_theta": 10000.0,
+            "max_position_embeddings": 32768, "sliding_window": 4096
+        }"#;
+        let cfg = MistralConfig::from_hf_json_str(json).expect("parse mistral config.json");
+        assert_eq!(cfg.vocab_size, 32000);
+        assert_eq!(cfg.hidden_size, 4096);
+        assert_eq!(cfg.intermediate_size, 14336);
+        assert_eq!(cfg.num_hidden_layers, 32);
+        assert_eq!(cfg.num_attention_heads, 32);
+        assert_eq!(cfg.num_key_value_heads, 8);
+        assert_eq!(cfg.head_dim, 128); // derived: 4096 / 32
+        assert_eq!(cfg.rope_theta, 10000.0);
+        assert_eq!(cfg.rms_norm_eps, 1e-5);
+        assert_eq!(cfg.max_position_embeddings, 32768);
+        assert_eq!(cfg.sliding_window, Some(4096));
+    }
+
+    #[test]
+    fn mistral_config_from_hf_json_reads_a_second_distinct_config() {
+        // Different values, explicit head_dim, no sliding_window — a preset return
+        // would ignore all of these.
+        let json = r#"{
+            "vocab_size": 32768, "hidden_size": 5120, "intermediate_size": 14336,
+            "num_hidden_layers": 40, "num_attention_heads": 32, "num_key_value_heads": 8,
+            "head_dim": 128, "rms_norm_eps": 1e-5, "rope_theta": 1000000.0,
+            "max_position_embeddings": 32768
+        }"#;
+        let cfg = MistralConfig::from_hf_json_str(json).expect("parse second config");
+        assert_eq!(cfg.hidden_size, 5120);
+        assert_eq!(cfg.num_hidden_layers, 40);
+        assert_eq!(cfg.rope_theta, 1000000.0);
+        assert_eq!(cfg.head_dim, 128); // explicit, taken as-is
+        assert_eq!(cfg.sliding_window, None); // absent -> None (no window)
+    }
+
+    #[test]
+    fn mistral_config_gqa_defaults_to_num_heads_when_absent() {
+        let json = r#"{
+            "vocab_size": 32000, "hidden_size": 4096, "intermediate_size": 14336,
+            "num_hidden_layers": 32, "num_attention_heads": 32,
+            "max_position_embeddings": 32768
+        }"#;
+        let cfg = MistralConfig::from_hf_json_str(json).expect("parse");
+        // absent num_key_value_heads -> num_attention_heads (MHA), via the shared rule.
+        assert_eq!(cfg.num_key_value_heads, 32);
+    }
+
+    #[test]
+    fn mistral_config_preserves_true_mqa() {
+        let json = r#"{
+            "vocab_size": 32000, "hidden_size": 4096, "intermediate_size": 14336,
+            "num_hidden_layers": 32, "num_attention_heads": 32, "num_key_value_heads": 1,
+            "max_position_embeddings": 32768
+        }"#;
+        let cfg = MistralConfig::from_hf_json_str(json).expect("parse");
+        assert_eq!(cfg.num_key_value_heads, 1); // true MQA survives, not collapsed to 32
     }
 }
