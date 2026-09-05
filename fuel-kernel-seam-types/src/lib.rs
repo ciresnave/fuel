@@ -612,6 +612,24 @@ impl OpAttrs {
     /// defect, which is why six lossy collapses were found by audit rather
     /// than by a failing test.
     ///
+    /// ⚠️ **THIS CRATE'S TWO DIRECTIONS DISAGREE, AND `axis` IS ONE OF THEM.**
+    /// `fuel_graph::runtime_fused::tag_to_op` - the DECODE direction this
+    /// serializer round-trips against - treats an unset required attr as a hard
+    /// decline: **24 `attrs.<field>?` declines over 11 fields**, plus 5 explicit
+    /// `return None`, and its own comments name the policy ("an honest miss
+    /// (unset required attr)"). Seven fields appear on BOTH sides:
+    ///
+    /// ```text
+    /// axis  pad_mode  roll_shift  scan_index  scan_role  slice_len  slice_start
+    /// ```
+    ///
+    /// For every one of them the decoder REFUSES what this encoder INVENTS.
+    /// Six are latent (`op_to_attrs` does set them, so the default is currently
+    /// unreachable); `axis` is LIVE, because the five ops above are the ones it
+    /// leaves unprojected. So making the encoder decline is not a new design -
+    /// it is this codebase's own settled answer to this exact condition, and
+    /// the encoder is the side that dissents.
+    ///
     /// Gated by the collapse table in `fuel-graph/src/jit.rs` tests, which pins
     /// exactly which (op, field) pairs are lossy so that fixing one is visible.
     /// Fixing the encoder is a wire-format change and needs the external ask.
