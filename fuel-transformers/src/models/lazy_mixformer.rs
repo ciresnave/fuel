@@ -148,11 +148,15 @@ impl MixFormerModel {
         let seq = dims[1];
         assert_eq!(dims[2], cfg.hidden_size);
         let head_dim = cfg.head_dim();
-        assert_eq!(
-            cfg.num_attention_heads * head_dim,
-            cfg.hidden_size,
-            "MixFormerConfig: hidden_size must be divisible by num_attention_heads",
-        );
+        // GAP-281: a typed decline, not a panic. `head_dim()` is integer division,
+        // so a head count that does not divide hidden_size violates this -- a CONFIG
+        // property to reject, not an invariant to assert.
+        if cfg.num_attention_heads * head_dim != cfg.hidden_size {
+            return Err(fuel_core::Error::Msg(
+                "MixFormerConfig: hidden_size must be divisible by num_attention_heads".into(),
+            )
+            .bt());
+        }
         let rotary_dim = cfg.effective_rotary_dim();
         assert!(
             rotary_dim > 0 && rotary_dim <= head_dim,
@@ -552,6 +556,42 @@ mod tests {
         assert!(
             max_diff > 1e-6,
             "zeroing V columns of fused Wqkv must change attention output, max_diff = {max_diff}"
+        );
+    }
+
+    /// GAP-281: the head-count x per-head-dim == model-dim relation must DECLINE with
+    /// a typed error, not panic. "Never panic on production paths."
+    ///
+    /// `head_dim()` is integer division, so a head count that does not divide the
+    /// model dim breaks the relation.
+    ///
+    /// Born-red: against the production `assert_eq!` this FAILS BY PANIC.
+    #[test]
+    fn head_dim_mismatch_declines_rather_than_panicking() {
+        let valid = tiny_config();
+        let tokens: Vec<u32> = vec![1, 2, 3];
+        // POSITIVE CONTROL: the conforming config must SUCCEED, or the Err below is
+        // satisfied by a fixture that is merely broken.
+        let good = MixFormerModel {
+            config: valid.clone(),
+            weights: tiny_weights(&valid),
+        };
+        good.forward(&tokens, 0)
+            .expect("control: the conforming config must still run");
+
+        let mut bad = valid.clone();
+        bad.num_attention_heads += 1; // no longer divides hidden_size
+        let model = MixFormerModel {
+            config: bad,
+            weights: tiny_weights(&valid),
+        };
+        let err = model
+            .forward(&tokens, 0)
+            .expect_err("a non-divisible head count must DECLINE, not panic");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("num_attention_heads") && msg.contains("hidden_size"),
+            "the decline must name the relation it rejected, got: {msg}"
         );
     }
 }
