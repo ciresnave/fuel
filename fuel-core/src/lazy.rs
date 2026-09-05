@@ -7605,7 +7605,7 @@ impl LlamaConfigRaw {
             n_kv_heads: crate::hf_config::num_key_value_heads(
                 self.num_key_value_heads,
                 self.num_attention_heads,
-            ),
+            )?,
             head_dim: crate::hf_config::head_dim(
                 self.head_dim,
                 self.hidden_size,
