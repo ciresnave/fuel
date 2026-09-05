@@ -55,6 +55,85 @@ impl StarCoder2Config {
     }
 }
 
+// ROADMAP item 8 (II): config-from-path, as a capability of the config TYPE.
+// A `serde` raw carrying HF's field names + constant defaults, then `resolve`
+// routes the two sibling-derived values (kv heads, head_dim) through the shared
+// `fuel_core::hf_config` rules. StarCoder2 ships an explicit `head_dim` only for
+// padded-head variants; the take-if-present rule honors it and derives the
+// quotient otherwise.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct StarCoder2ConfigRaw {
+    vocab_size: usize,
+    hidden_size: usize,
+    intermediate_size: usize,
+    num_hidden_layers: usize,
+    num_attention_heads: usize,
+    #[serde(default)]
+    num_key_value_heads: Option<usize>,
+    #[serde(default)]
+    head_dim: Option<usize>,
+    max_position_embeddings: usize,
+    #[serde(default = "default_starcoder2_norm_epsilon")]
+    norm_epsilon: f64,
+    #[serde(default = "default_starcoder2_rope_theta")]
+    rope_theta: f64,
+    #[serde(default = "default_starcoder2_use_bias")]
+    use_bias: bool,
+    #[serde(default)]
+    sliding_window: Option<usize>,
+}
+
+fn default_starcoder2_norm_epsilon() -> f64 {
+    1e-5
+}
+fn default_starcoder2_rope_theta() -> f64 {
+    10_000.0
+}
+fn default_starcoder2_use_bias() -> bool {
+    true
+}
+
+impl StarCoder2ConfigRaw {
+    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
+        serde_json::from_str(json)
+            .map_err(|e| fuel_core::Error::Msg(format!("parsing StarCoder2 config.json: {e}")))
+    }
+
+    fn resolve(self) -> StarCoder2Config {
+        StarCoder2Config {
+            vocab_size: self.vocab_size,
+            hidden_size: self.hidden_size,
+            intermediate_size: self.intermediate_size,
+            num_hidden_layers: self.num_hidden_layers,
+            num_attention_heads: self.num_attention_heads,
+            num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
+                self.num_key_value_heads,
+                self.num_attention_heads,
+            ),
+            head_dim: fuel_core::hf_config::head_dim(
+                self.head_dim,
+                self.hidden_size,
+                self.num_attention_heads,
+            ),
+            max_position_embeddings: self.max_position_embeddings,
+            norm_epsilon: self.norm_epsilon,
+            rope_theta: self.rope_theta,
+            use_bias: self.use_bias,
+            sliding_window: self.sliding_window,
+        }
+    }
+}
+
+impl StarCoder2Config {
+    /// Parse a HuggingFace `config.json` string into a [`StarCoder2Config`].
+    ///
+    /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
+    /// see the born-red `starcoder2_config_from_hf_json_parses_the_artifact_not_a_preset`.
+    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+        Ok(StarCoder2ConfigRaw::from_json_str(json)?.resolve())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct StarCoder2LayerWeights {
     pub input_ln_gain: Arc<[f32]>,
@@ -415,6 +494,123 @@ impl StarCoder2Weights {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ROADMAP item 8 (II). Golden values from bigcode/starcoder2-3b's real
+    // config.json (huggingface.co/bigcode/starcoder2-3b/blob/main/config.json).
+    const STARCODER2_3B_CONFIG_JSON: &str = r#"{
+        "architectures": ["Starcoder2ForCausalLM"],
+        "model_type": "starcoder2",
+        "vocab_size": 49152,
+        "hidden_size": 3072,
+        "intermediate_size": 12288,
+        "num_hidden_layers": 30,
+        "num_attention_heads": 24,
+        "num_key_value_heads": 2,
+        "max_position_embeddings": 16384,
+        "norm_epsilon": 1e-05,
+        "rope_theta": 999999.4420358813,
+        "sliding_window": 4096,
+        "use_bias": true
+    }"#;
+
+    #[test]
+    fn starcoder2_config_from_hf_json_parses_the_artifact_not_a_preset() {
+        let cfg = StarCoder2Config::from_hf_json_str(STARCODER2_3B_CONFIG_JSON).unwrap();
+        // POSITIVE goldens — starcoder2-3b, required fields (no default):
+        assert_eq!(cfg.hidden_size, 3072);
+        assert_eq!(cfg.num_hidden_layers, 30);
+        assert_eq!(cfg.num_attention_heads, 24);
+        assert_eq!(cfg.vocab_size, 49_152);
+        assert_eq!(cfg.intermediate_size, 12_288);
+        // GQA: default is num_attention_heads (24); 2 proves the key was READ.
+        assert_eq!(cfg.num_key_value_heads, 2);
+        // head_dim absent from the artifact → derived 3072/24 = 128.
+        assert_eq!(cfg.head_dim, 128);
+        assert_eq!(cfg.max_position_embeddings, 16_384);
+        assert_eq!(cfg.sliding_window, Some(4096));
+        assert!(cfg.use_bias);
+        // The REAL rope_theta (~999999.442), distinct from the preset's rounded
+        // 999_999.0 — the single field that separates this parse from
+        // `starcoder2_3b()`, so it is a PRIMARY discriminator. Asserted within a
+        // tolerance because serde_json and rustc round the artifact's 17th decimal
+        // to adjacent f64 values (1 ULP apart); the point is that it is the
+        // artifact's value (0.442 away from the preset), not an exact bit pattern.
+        assert!((cfg.rope_theta - 999_999.442).abs() < 0.01);
+        assert_ne!(cfg.rope_theta, 999_999.0);
+        // Sabotage sibling (WEAKER): not the 3b preset. The `==` goldens are primary.
+        assert_ne!(cfg, StarCoder2Config::starcoder2_3b());
+    }
+
+    /// A SECOND distinct config parses to ITS OWN values, exercising the default
+    /// path (norm_epsilon/rope_theta/use_bias/sliding_window omitted) AND the
+    /// take-if-present head_dim branch (explicit 96 ≠ 4096/32 = 128). A constant
+    /// or preset parser fails one of the two configs.
+    #[test]
+    fn starcoder2_config_reads_a_second_distinct_config_with_explicit_head_dim() {
+        let json = r#"{
+            "model_type": "starcoder2",
+            "vocab_size": 49152,
+            "hidden_size": 4096,
+            "intermediate_size": 16384,
+            "num_hidden_layers": 32,
+            "num_attention_heads": 32,
+            "num_key_value_heads": 8,
+            "head_dim": 96,
+            "max_position_embeddings": 16384
+        }"#;
+        let cfg = StarCoder2Config::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.hidden_size, 4096);
+        assert_eq!(cfg.num_hidden_layers, 32);
+        assert_eq!(cfg.num_key_value_heads, 8);
+        // explicit head_dim WINS over the quotient (4096/32 = 128).
+        assert_eq!(cfg.head_dim, 96);
+        assert_ne!(cfg.head_dim, 4096 / 32);
+        // omitted → resolve defaults
+        assert_eq!(cfg.rope_theta, 10_000.0);
+        assert_eq!(cfg.norm_epsilon, 1e-5);
+        assert!(cfg.use_bias); // default true
+        assert_eq!(cfg.sliding_window, None);
+        // distinct from the 3b parse — a constant parser cannot satisfy both
+        assert_ne!(cfg.hidden_size, 3072);
+    }
+
+    /// With `num_key_value_heads` ABSENT, GQA defaults to `num_attention_heads`.
+    /// Paired with the 3b golden (present → 2), this distinguishes "read the key"
+    /// from "never looked".
+    #[test]
+    fn starcoder2_config_gqa_defaults_to_num_heads_when_absent() {
+        let json = r#"{
+            "model_type": "starcoder2",
+            "vocab_size": 1000,
+            "hidden_size": 64,
+            "intermediate_size": 128,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 8,
+            "max_position_embeddings": 128
+        }"#;
+        let cfg = StarCoder2Config::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.num_key_value_heads, 8); // absent → num_attention_heads
+    }
+
+    /// Load-bearing behavioural row (hf_config take-if-present-else-derive): a
+    /// config STATING `num_key_value_heads = 1` is TRUE MQA and must survive as 1,
+    /// never collapsed to `num_attention_heads`. Passes only because resolve routes
+    /// through `hf_config::num_key_value_heads`; rewrite it to fork and this reds.
+    #[test]
+    fn starcoder2_config_preserves_true_mqa() {
+        let json = r#"{
+            "model_type": "starcoder2",
+            "vocab_size": 1000,
+            "hidden_size": 64,
+            "intermediate_size": 128,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 8,
+            "num_key_value_heads": 1,
+            "max_position_embeddings": 128
+        }"#;
+        let cfg = StarCoder2Config::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.num_key_value_heads, 1); // TRUE MQA survives, not collapsed to 8
+    }
 
     fn tiny_weights(cfg: &StarCoder2Config) -> StarCoder2Weights {
         let mut s: u32 = 27182;

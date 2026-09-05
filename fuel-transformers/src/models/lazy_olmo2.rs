@@ -52,6 +52,77 @@ impl Olmo2Config {
     }
 }
 
+// ROADMAP item 8 (II): config-from-path on the #57 template. A `serde` raw with
+// HF field names + constant defaults, then `resolve` routes kv heads + head_dim
+// through the shared `fuel_core::hf_config` rules. OLMo2 ships an explicit
+// `head_dim`; the take-if-present rule honors it, deriving the quotient otherwise.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct Olmo2ConfigRaw {
+    vocab_size: usize,
+    hidden_size: usize,
+    intermediate_size: usize,
+    num_hidden_layers: usize,
+    num_attention_heads: usize,
+    #[serde(default)]
+    num_key_value_heads: Option<usize>,
+    #[serde(default)]
+    head_dim: Option<usize>,
+    #[serde(default = "default_olmo2_rms_norm_eps")]
+    rms_norm_eps: f64,
+    #[serde(default = "default_olmo2_rope_theta")]
+    rope_theta: f64,
+    max_position_embeddings: usize,
+    #[serde(default)]
+    attention_bias: bool,
+}
+
+fn default_olmo2_rms_norm_eps() -> f64 {
+    1e-6
+}
+fn default_olmo2_rope_theta() -> f64 {
+    500_000.0
+}
+
+impl Olmo2ConfigRaw {
+    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
+        serde_json::from_str(json)
+            .map_err(|e| fuel_core::Error::Msg(format!("parsing OLMo2 config.json: {e}")))
+    }
+
+    fn resolve(self) -> Olmo2Config {
+        Olmo2Config {
+            vocab_size: self.vocab_size,
+            hidden_size: self.hidden_size,
+            intermediate_size: self.intermediate_size,
+            num_hidden_layers: self.num_hidden_layers,
+            num_attention_heads: self.num_attention_heads,
+            num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
+                self.num_key_value_heads,
+                self.num_attention_heads,
+            ),
+            head_dim: fuel_core::hf_config::head_dim(
+                self.head_dim,
+                self.hidden_size,
+                self.num_attention_heads,
+            ),
+            rms_norm_eps: self.rms_norm_eps,
+            rope_theta: self.rope_theta,
+            max_position_embeddings: self.max_position_embeddings,
+            attention_bias: self.attention_bias,
+        }
+    }
+}
+
+impl Olmo2Config {
+    /// Parse a HuggingFace `config.json` string into an [`Olmo2Config`].
+    ///
+    /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
+    /// see the born-red `olmo2_config_from_hf_json_parses_the_artifact_not_a_preset`.
+    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+        Ok(Olmo2ConfigRaw::from_json_str(json)?.resolve())
+    }
+}
+
 /// Per-layer QK-norm gains. Sibling-side to `LayerWeights` for the
 /// OLMo2-specific extras.
 #[derive(Debug, Clone)]
@@ -374,6 +445,108 @@ impl Olmo2Weights {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ROADMAP item 8 (II). Golden values from allenai/OLMo-2-1124-13B's real
+    // config.json — deliberately the 13B, not the 7B the preset is named after,
+    // so the parse is distinct from `olmo2_7b()`.
+    const OLMO2_13B_CONFIG_JSON: &str = r#"{
+        "architectures": ["Olmo2ForCausalLM"],
+        "model_type": "olmo2",
+        "vocab_size": 100352,
+        "hidden_size": 5120,
+        "intermediate_size": 13824,
+        "num_hidden_layers": 40,
+        "num_attention_heads": 40,
+        "num_key_value_heads": 40,
+        "max_position_embeddings": 4096,
+        "rms_norm_eps": 1e-06,
+        "rope_theta": 500000,
+        "attention_bias": false
+    }"#;
+
+    #[test]
+    fn olmo2_config_from_hf_json_parses_the_artifact_not_a_preset() {
+        let cfg = Olmo2Config::from_hf_json_str(OLMO2_13B_CONFIG_JSON).unwrap();
+        assert_eq!(cfg.hidden_size, 5120);
+        assert_eq!(cfg.num_hidden_layers, 40);
+        assert_eq!(cfg.num_attention_heads, 40);
+        assert_eq!(cfg.vocab_size, 100_352);
+        assert_eq!(cfg.intermediate_size, 13_824);
+        // OLMo2 is MHA (kv == heads); kv READ-vs-defaulted is proven by the
+        // synthetic gqa/mqa tests below, not by this artifact.
+        assert_eq!(cfg.num_key_value_heads, 40);
+        // head_dim absent → derived 5120/40 = 128.
+        assert_eq!(cfg.head_dim, 128);
+        assert_eq!(cfg.rope_theta, 500_000.0);
+        assert_eq!(cfg.max_position_embeddings, 4096);
+        assert!(!cfg.attention_bias);
+        // Sabotage sibling (WEAKER): distinct from the 7B preset (hidden differs).
+        assert_ne!(cfg, Olmo2Config::olmo2_7b());
+    }
+
+    /// A SECOND distinct config, exercising the default path (rms_norm_eps/
+    /// rope_theta/attention_bias omitted) AND the take-if-present head_dim branch
+    /// (explicit 96 ≠ 2048/16 = 128) with GQA (kv 4 ≠ heads 16).
+    #[test]
+    fn olmo2_config_reads_a_second_distinct_config_with_explicit_head_dim() {
+        let json = r#"{
+            "model_type": "olmo2",
+            "vocab_size": 50000,
+            "hidden_size": 2048,
+            "intermediate_size": 4096,
+            "num_hidden_layers": 8,
+            "num_attention_heads": 16,
+            "num_key_value_heads": 4,
+            "head_dim": 96,
+            "max_position_embeddings": 4096
+        }"#;
+        let cfg = Olmo2Config::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.hidden_size, 2048);
+        assert_eq!(cfg.num_key_value_heads, 4);
+        // explicit head_dim WINS over the quotient (2048/16 = 128).
+        assert_eq!(cfg.head_dim, 96);
+        assert_ne!(cfg.head_dim, 2048 / 16);
+        // omitted → resolve defaults
+        assert_eq!(cfg.rms_norm_eps, 1e-6);
+        assert_eq!(cfg.rope_theta, 500_000.0);
+        assert!(!cfg.attention_bias);
+        assert_ne!(cfg.hidden_size, 5120);
+    }
+
+    /// `num_key_value_heads` ABSENT → defaults to `num_attention_heads`.
+    #[test]
+    fn olmo2_config_gqa_defaults_to_num_heads_when_absent() {
+        let json = r#"{
+            "model_type": "olmo2",
+            "vocab_size": 1000,
+            "hidden_size": 64,
+            "intermediate_size": 128,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 8,
+            "max_position_embeddings": 128
+        }"#;
+        let cfg = Olmo2Config::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.num_key_value_heads, 8); // absent → num_attention_heads
+    }
+
+    /// TRUE MQA (`num_key_value_heads = 1`) survives, not collapsed. Passes only
+    /// because resolve routes through `hf_config::num_key_value_heads`.
+    #[test]
+    fn olmo2_config_preserves_true_mqa() {
+        let json = r#"{
+            "model_type": "olmo2",
+            "vocab_size": 1000,
+            "hidden_size": 64,
+            "intermediate_size": 128,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 8,
+            "num_key_value_heads": 1,
+            "max_position_embeddings": 128
+        }"#;
+        let cfg = Olmo2Config::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.num_key_value_heads, 1);
+    }
+
     fn tiny_weights(cfg: &Olmo2Config) -> Olmo2Weights {
         let mut s: u32 = 22222;
         let next = || -> f32 {

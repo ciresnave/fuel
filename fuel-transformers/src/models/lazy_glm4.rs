@@ -65,8 +65,9 @@ pub struct Glm4Config {
     pub num_attention_heads: usize,
     pub num_key_value_heads: usize,
     pub head_dim: usize,
-    /// Fraction of `head_dim` to rotate. `1.0` = full rotary
-    /// (default for GLM-4-9B).
+    /// Fraction of `head_dim` to rotate. HF's `glm` architecture — including
+    /// real GLM-4-9B — uses `0.5` (partial rotary: RoPE on half the head dim);
+    /// `1.0` = full rotary. `from_hf_json_str` resolves an absent key to 0.5.
     pub partial_rotary_factor: f64,
     pub attention_bias: bool,
     pub max_position_embeddings: usize,
@@ -80,6 +81,115 @@ impl Glm4Config {
     pub fn rope_dim(&self) -> usize {
         let r = (self.partial_rotary_factor * self.head_dim as f64) as usize;
         r & !1 // RoPE expects even
+    }
+}
+
+/// Map a HuggingFace `hidden_act` string to [`Glm4Activation`]. Unknown values
+/// ERROR rather than silently defaulting — an activation this port does not
+/// implement is a fact worth surfacing, not swallowing.
+fn glm4_activation_from_str(s: &str) -> fuel_core::Result<Glm4Activation> {
+    match s {
+        "silu" | "swish" => Ok(Glm4Activation::Silu),
+        "gelu" => Ok(Glm4Activation::Gelu),
+        "gelu_pytorch_tanh" => Ok(Glm4Activation::GeluPytorchTanh),
+        other => Err(fuel_core::Error::Msg(format!(
+            "unsupported GLM-4 hidden_act {other:?} (expected silu/gelu/gelu_pytorch_tanh)"
+        ))),
+    }
+}
+
+// ROADMAP item 8 (II): config-from-path on the #57 template. A `serde` raw with
+// HF field names, then `resolve` routes kv heads + head_dim through the shared
+// `fuel_core::hf_config` rules. GLM-4's `partial_rotary_factor` is raw `Option`
+// and resolved ON THE ARCHITECTURE (absent → 0.5) — see the resolve site. The
+// non-serde `Glm4Activation` enum is parsed from the `hidden_act` string.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct Glm4ConfigRaw {
+    vocab_size: usize,
+    hidden_size: usize,
+    intermediate_size: usize,
+    num_hidden_layers: usize,
+    num_attention_heads: usize,
+    #[serde(default)]
+    num_key_value_heads: Option<usize>,
+    #[serde(default)]
+    head_dim: Option<usize>,
+    #[serde(default)]
+    partial_rotary_factor: Option<f64>,
+    #[serde(default = "default_glm4_attention_bias")]
+    attention_bias: bool,
+    max_position_embeddings: usize,
+    #[serde(default = "default_glm4_rope_theta")]
+    rope_theta: f64,
+    #[serde(default = "default_glm4_rms_norm_eps")]
+    rms_norm_eps: f64,
+    #[serde(default)]
+    hidden_act: Option<String>,
+    #[serde(default)]
+    tie_word_embeddings: bool,
+}
+
+// GLM-4 uniformly uses Q/K/V attention biases, and every real `glm` config ships
+// `attention_bias: true`; absent defaults to that architecture fact.
+fn default_glm4_attention_bias() -> bool {
+    true
+}
+fn default_glm4_rope_theta() -> f64 {
+    10_000.0
+}
+fn default_glm4_rms_norm_eps() -> f64 {
+    1e-5
+}
+
+impl Glm4ConfigRaw {
+    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
+        serde_json::from_str(json)
+            .map_err(|e| fuel_core::Error::Msg(format!("parsing GLM-4 config.json: {e}")))
+    }
+
+    fn resolve(self) -> fuel_core::Result<Glm4Config> {
+        let hidden_activation = match self.hidden_act.as_deref() {
+            None => Glm4Activation::Silu,
+            Some(s) => glm4_activation_from_str(s)?,
+        };
+        Ok(Glm4Config {
+            vocab_size: self.vocab_size,
+            hidden_size: self.hidden_size,
+            intermediate_size: self.intermediate_size,
+            num_hidden_layers: self.num_hidden_layers,
+            num_attention_heads: self.num_attention_heads,
+            num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
+                self.num_key_value_heads,
+                self.num_attention_heads,
+            ),
+            head_dim: fuel_core::hf_config::head_dim(
+                self.head_dim,
+                self.hidden_size,
+                self.num_attention_heads,
+            ),
+            // HF `glm` architecture: an ABSENT `partial_rotary_factor` means 0.5
+            // (partial rotary — RoPE on half the head dim), NOT 1.0. Real
+            // GLM-4-9B omits the key and relies on this. Resolved here because it
+            // is a fact about the `glm` architecture, not a property of every
+            // Glm4Config — so it must not be a struct-level default.
+            partial_rotary_factor: self.partial_rotary_factor.unwrap_or(0.5),
+            attention_bias: self.attention_bias,
+            max_position_embeddings: self.max_position_embeddings,
+            rope_theta: self.rope_theta,
+            rms_norm_eps: self.rms_norm_eps,
+            hidden_activation,
+            tie_word_embeddings: self.tie_word_embeddings,
+        })
+    }
+}
+
+impl Glm4Config {
+    /// Parse a HuggingFace `config.json` string into a [`Glm4Config`].
+    ///
+    /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
+    /// see the born-red `glm4_config_from_hf_json_resolves_partial_rotary_to_half`.
+    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+        Glm4ConfigRaw::from_json_str(json)?.resolve()
     }
 }
 
@@ -816,6 +926,121 @@ impl Glm4Weights {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ROADMAP item 8 (II). Golden values from THUDM/glm-4-9b-chat-hf's real
+    // config.json (model_type "glm"). It OMITS `partial_rotary_factor` — the
+    // whole point of this parser's resolve rule.
+    const GLM4_9B_CONFIG_JSON: &str = r#"{
+        "architectures": ["GlmForCausalLM"],
+        "model_type": "glm",
+        "vocab_size": 151552,
+        "hidden_size": 4096,
+        "intermediate_size": 13696,
+        "num_hidden_layers": 40,
+        "num_attention_heads": 32,
+        "num_key_value_heads": 2,
+        "head_dim": 128,
+        "hidden_act": "silu",
+        "attention_bias": true,
+        "max_position_embeddings": 131072,
+        "rms_norm_eps": 1.5625e-07,
+        "rope_theta": 10000.0,
+        "tie_word_embeddings": false
+    }"#;
+
+    #[test]
+    fn glm4_config_from_hf_json_resolves_partial_rotary_to_half() {
+        let cfg = Glm4Config::from_hf_json_str(GLM4_9B_CONFIG_JSON).unwrap();
+        assert_eq!(cfg.hidden_size, 4096);
+        assert_eq!(cfg.num_hidden_layers, 40);
+        assert_eq!(cfg.num_attention_heads, 32);
+        assert_eq!(cfg.vocab_size, 151_552);
+        assert_eq!(cfg.intermediate_size, 13_696);
+        // GQA: default would be num_attention_heads (32); 2 proves the key was READ.
+        assert_eq!(cfg.num_key_value_heads, 2);
+        assert_eq!(cfg.head_dim, 128);
+        assert!(cfg.attention_bias);
+        assert_eq!(cfg.hidden_activation, Glm4Activation::Silu);
+        // THE RULING, made testable: the artifact OMITS partial_rotary_factor, and
+        // HF's `glm` architecture means that absence is 0.5 (partial), NOT 1.0. A
+        // resolver that defaulted 1.0 (the old false doc comment) fails here.
+        assert_eq!(cfg.partial_rotary_factor, 0.5);
+        assert_eq!(cfg.rope_dim(), 64); // 0.5 * 128
+    }
+
+    /// An EXPLICIT `partial_rotary_factor` is READ, not overwritten by the 0.5
+    /// resolution — proving resolve is take-if-present, not hardcoded. Also a
+    /// second distinct config exercising the explicit-head_dim branch (96 ≠
+    /// 2048/16 = 128).
+    #[test]
+    fn glm4_config_reads_an_explicit_partial_rotary_factor() {
+        let json = r#"{
+            "model_type": "glm",
+            "vocab_size": 60000,
+            "hidden_size": 2048,
+            "intermediate_size": 8192,
+            "num_hidden_layers": 12,
+            "num_attention_heads": 16,
+            "num_key_value_heads": 4,
+            "head_dim": 96,
+            "partial_rotary_factor": 1.0,
+            "max_position_embeddings": 8192
+        }"#;
+        let cfg = Glm4Config::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.num_key_value_heads, 4);
+        assert_eq!(cfg.head_dim, 96);
+        assert_ne!(cfg.head_dim, 2048 / 16);
+        // explicit 1.0 survives — NOT collapsed to the 0.5 default.
+        assert_eq!(cfg.partial_rotary_factor, 1.0);
+        // omitted → resolve defaults (rope_theta, attention_bias, activation)
+        assert_eq!(cfg.rope_theta, 10_000.0);
+        assert!(cfg.attention_bias); // glm architecture default
+        assert_eq!(cfg.hidden_activation, Glm4Activation::Silu);
+        assert_ne!(cfg.hidden_size, 4096);
+    }
+
+    /// `num_key_value_heads` ABSENT → defaults to `num_attention_heads`; true MQA
+    /// (`1`) survives — both via the shared `hf_config::num_key_value_heads`.
+    #[test]
+    fn glm4_config_gqa_default_and_true_mqa() {
+        let base = |kv: &str| {
+            format!(
+                r#"{{
+                "model_type": "glm",
+                "vocab_size": 1000, "hidden_size": 64, "intermediate_size": 128,
+                "num_hidden_layers": 2, "num_attention_heads": 8, "head_dim": 8,
+                "max_position_embeddings": 128 {kv}
+            }}"#
+            )
+        };
+        let absent = Glm4Config::from_hf_json_str(&base("")).unwrap();
+        assert_eq!(absent.num_key_value_heads, 8); // absent → num_attention_heads
+        let mqa = Glm4Config::from_hf_json_str(&base(", \"num_key_value_heads\": 1")).unwrap();
+        assert_eq!(mqa.num_key_value_heads, 1); // TRUE MQA survives
+    }
+
+    /// The non-serde activation enum is parsed from `hidden_act`: known values
+    /// map, an UNKNOWN one ERRORS rather than silently defaulting.
+    #[test]
+    fn glm4_config_maps_and_rejects_hidden_act() {
+        let with_act = |act: &str| {
+            format!(
+                r#"{{
+                "model_type": "glm",
+                "vocab_size": 1000, "hidden_size": 64, "intermediate_size": 128,
+                "num_hidden_layers": 2, "num_attention_heads": 8, "head_dim": 8,
+                "max_position_embeddings": 128, "hidden_act": "{act}"
+            }}"#
+            )
+        };
+        assert_eq!(
+            Glm4Config::from_hf_json_str(&with_act("gelu"))
+                .unwrap()
+                .hidden_activation,
+            Glm4Activation::Gelu
+        );
+        assert!(Glm4Config::from_hf_json_str(&with_act("mish")).is_err());
+    }
 
     fn tiny_weights(cfg: &Glm4Config) -> Glm4Weights {
         let mut s: u32 = 67890;

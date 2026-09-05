@@ -50,6 +50,80 @@ impl HeliumConfig {
     }
 }
 
+// ROADMAP item 8 (II): config-from-path on the #57 template. A `serde` raw with
+// HF field names + Helium's own constant defaults, then `resolve` routes kv heads
+// + head_dim through the shared `fuel_core::hf_config` rules. Helium ships an
+// explicit `head_dim`; the take-if-present rule honors it, deriving otherwise.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct HeliumConfigRaw {
+    vocab_size: usize,
+    hidden_size: usize,
+    intermediate_size: usize,
+    num_hidden_layers: usize,
+    num_attention_heads: usize,
+    #[serde(default)]
+    num_key_value_heads: Option<usize>,
+    #[serde(default)]
+    head_dim: Option<usize>,
+    #[serde(default = "default_helium_rms_norm_eps")]
+    rms_norm_eps: f64,
+    #[serde(default = "default_helium_rope_theta")]
+    rope_theta: f64,
+    max_position_embeddings: usize,
+    #[serde(default)]
+    attention_bias: bool,
+    #[serde(default)]
+    tie_word_embeddings: bool,
+}
+
+fn default_helium_rms_norm_eps() -> f64 {
+    1e-8
+}
+fn default_helium_rope_theta() -> f64 {
+    100_000.0
+}
+
+impl HeliumConfigRaw {
+    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
+        serde_json::from_str(json)
+            .map_err(|e| fuel_core::Error::Msg(format!("parsing Helium config.json: {e}")))
+    }
+
+    fn resolve(self) -> HeliumConfig {
+        HeliumConfig {
+            vocab_size: self.vocab_size,
+            hidden_size: self.hidden_size,
+            intermediate_size: self.intermediate_size,
+            num_hidden_layers: self.num_hidden_layers,
+            num_attention_heads: self.num_attention_heads,
+            num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
+                self.num_key_value_heads,
+                self.num_attention_heads,
+            ),
+            head_dim: fuel_core::hf_config::head_dim(
+                self.head_dim,
+                self.hidden_size,
+                self.num_attention_heads,
+            ),
+            rms_norm_eps: self.rms_norm_eps,
+            rope_theta: self.rope_theta,
+            max_position_embeddings: self.max_position_embeddings,
+            attention_bias: self.attention_bias,
+            tie_word_embeddings: self.tie_word_embeddings,
+        }
+    }
+}
+
+impl HeliumConfig {
+    /// Parse a HuggingFace `config.json` string into a [`HeliumConfig`].
+    ///
+    /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
+    /// see the born-red `helium_config_from_hf_json_parses_the_artifact_not_a_preset`.
+    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+        Ok(HeliumConfigRaw::from_json_str(json)?.resolve())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct HeliumWeights {
     pub token_embedding: Arc<[f32]>,
@@ -363,6 +437,105 @@ impl HeliumWeights {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ROADMAP item 8 (II). Golden values from kyutai/helium-1-preview-2b's real
+    // config.json — which differs from the `helium_2b()` ballpark preset (real
+    // vocab 48000 / layers 24 vs preset 32000 / 32), so parse != preset.
+    const HELIUM_2B_CONFIG_JSON: &str = r#"{
+        "architectures": ["HeliumForCausalLM"],
+        "model_type": "helium",
+        "vocab_size": 48000,
+        "hidden_size": 2560,
+        "intermediate_size": 7040,
+        "num_hidden_layers": 24,
+        "num_attention_heads": 20,
+        "num_key_value_heads": 20,
+        "head_dim": 128,
+        "max_position_embeddings": 4096,
+        "rms_norm_eps": 1e-08,
+        "rope_theta": 100000.0,
+        "attention_bias": false,
+        "tie_word_embeddings": false
+    }"#;
+
+    #[test]
+    fn helium_config_from_hf_json_parses_the_artifact_not_a_preset() {
+        let cfg = HeliumConfig::from_hf_json_str(HELIUM_2B_CONFIG_JSON).unwrap();
+        assert_eq!(cfg.hidden_size, 2560);
+        assert_eq!(cfg.num_hidden_layers, 24);
+        assert_eq!(cfg.num_attention_heads, 20);
+        assert_eq!(cfg.vocab_size, 48_000);
+        assert_eq!(cfg.intermediate_size, 7040);
+        assert_eq!(cfg.num_key_value_heads, 20);
+        // head_dim EXPLICIT in the artifact → read as 128 (== 2560/20 here).
+        assert_eq!(cfg.head_dim, 128);
+        assert_eq!(cfg.rms_norm_eps, 1e-8);
+        assert_eq!(cfg.rope_theta, 100_000.0);
+        // Sabotage sibling (WEAKER): distinct from the ballpark preset.
+        assert_ne!(cfg, HeliumConfig::helium_2b());
+    }
+
+    /// A SECOND distinct config, exercising the default path (rms_norm_eps/
+    /// rope_theta/attention_bias/tie omitted) AND the take-if-present head_dim
+    /// branch (explicit 96 ≠ 2048/16 = 128).
+    #[test]
+    fn helium_config_reads_a_second_distinct_config_with_explicit_head_dim() {
+        let json = r#"{
+            "model_type": "helium",
+            "vocab_size": 32000,
+            "hidden_size": 2048,
+            "intermediate_size": 5632,
+            "num_hidden_layers": 12,
+            "num_attention_heads": 16,
+            "num_key_value_heads": 4,
+            "head_dim": 96,
+            "max_position_embeddings": 4096
+        }"#;
+        let cfg = HeliumConfig::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.num_key_value_heads, 4);
+        // explicit head_dim WINS over the quotient (2048/16 = 128).
+        assert_eq!(cfg.head_dim, 96);
+        assert_ne!(cfg.head_dim, 2048 / 16);
+        // omitted → resolve defaults (Helium's own consts)
+        assert_eq!(cfg.rms_norm_eps, 1e-8);
+        assert_eq!(cfg.rope_theta, 100_000.0);
+        assert!(!cfg.attention_bias);
+        assert_ne!(cfg.hidden_size, 2560);
+    }
+
+    /// `num_key_value_heads` ABSENT → defaults to `num_attention_heads`.
+    #[test]
+    fn helium_config_gqa_defaults_to_num_heads_when_absent() {
+        let json = r#"{
+            "model_type": "helium",
+            "vocab_size": 1000,
+            "hidden_size": 64,
+            "intermediate_size": 128,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 8,
+            "max_position_embeddings": 128
+        }"#;
+        let cfg = HeliumConfig::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.num_key_value_heads, 8);
+    }
+
+    /// TRUE MQA (`num_key_value_heads = 1`) survives, not collapsed.
+    #[test]
+    fn helium_config_preserves_true_mqa() {
+        let json = r#"{
+            "model_type": "helium",
+            "vocab_size": 1000,
+            "hidden_size": 64,
+            "intermediate_size": 128,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 8,
+            "num_key_value_heads": 1,
+            "max_position_embeddings": 128
+        }"#;
+        let cfg = HeliumConfig::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.num_key_value_heads, 1);
+    }
+
     fn tiny_weights(cfg: &HeliumConfig) -> HeliumWeights {
         let mut s: u32 = 33333;
         let next = || -> f32 {

@@ -111,6 +111,107 @@ impl Glm4NewConfig {
     }
 }
 
+/// Map a HuggingFace `hidden_act` string to [`Glm4NewActivation`]. Unknown values
+/// ERROR rather than silently defaulting — a config naming an activation this port
+/// does not implement is a fact worth surfacing, not swallowing.
+fn glm4_new_activation_from_str(s: &str) -> fuel_core::Result<Glm4NewActivation> {
+    match s {
+        "silu" | "swish" => Ok(Glm4NewActivation::Silu),
+        "gelu" => Ok(Glm4NewActivation::Gelu),
+        "gelu_pytorch_tanh" => Ok(Glm4NewActivation::GeluPytorchTanh),
+        other => Err(fuel_core::Error::Msg(format!(
+            "unsupported GLM-4 hidden_act {other:?} (expected silu/gelu/gelu_pytorch_tanh)"
+        ))),
+    }
+}
+
+// ROADMAP item 8 (II): config-from-path on the #57 template. A `serde` raw with
+// HF field names + GLM-4's own constant defaults, then `resolve` routes kv heads
+// through the shared `fuel_core::hf_config` rule. `head_dim` and
+// `partial_rotary_factor` are already `Option` on Glm4NewConfig (derived at
+// use-site by `head_dim()` / `rotary_dim()`), so they pass through verbatim —
+// GLM-4-0414 ships an explicit `partial_rotary_factor: 0.5`, read faithfully.
+// `hidden_act` is a non-serde enum, so it is parsed as a string and mapped.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct Glm4NewConfigRaw {
+    vocab_size: usize,
+    hidden_size: usize,
+    intermediate_size: usize,
+    num_hidden_layers: usize,
+    num_attention_heads: usize,
+    #[serde(default)]
+    num_key_value_heads: Option<usize>,
+    #[serde(default)]
+    head_dim: Option<usize>,
+    #[serde(default)]
+    partial_rotary_factor: Option<f32>,
+    #[serde(default)]
+    attention_bias: bool,
+    max_position_embeddings: usize,
+    #[serde(default)]
+    sliding_window: Option<usize>,
+    #[serde(default)]
+    tie_word_embeddings: bool,
+    #[serde(default = "default_glm4_new_rope_theta")]
+    rope_theta: f64,
+    #[serde(default = "default_glm4_new_rms_norm_eps")]
+    rms_norm_eps: f64,
+    #[serde(default)]
+    hidden_act: Option<String>,
+}
+
+fn default_glm4_new_rope_theta() -> f64 {
+    10_000.0
+}
+fn default_glm4_new_rms_norm_eps() -> f64 {
+    1e-5
+}
+
+impl Glm4NewConfigRaw {
+    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
+        serde_json::from_str(json)
+            .map_err(|e| fuel_core::Error::Msg(format!("parsing GLM-4 config.json: {e}")))
+    }
+
+    fn resolve(self) -> fuel_core::Result<Glm4NewConfig> {
+        let hidden_act = match self.hidden_act.as_deref() {
+            None => Glm4NewActivation::Silu,
+            Some(s) => glm4_new_activation_from_str(s)?,
+        };
+        Ok(Glm4NewConfig {
+            vocab_size: self.vocab_size,
+            hidden_size: self.hidden_size,
+            intermediate_size: self.intermediate_size,
+            num_hidden_layers: self.num_hidden_layers,
+            num_attention_heads: self.num_attention_heads,
+            num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
+                self.num_key_value_heads,
+                self.num_attention_heads,
+            ),
+            // Option, derived at use-site by `head_dim()` — passed through.
+            head_dim: self.head_dim,
+            partial_rotary_factor: self.partial_rotary_factor,
+            attention_bias: self.attention_bias,
+            max_position_embeddings: self.max_position_embeddings,
+            sliding_window: self.sliding_window,
+            tie_word_embeddings: self.tie_word_embeddings,
+            rope_theta: self.rope_theta,
+            rms_norm_eps: self.rms_norm_eps,
+            hidden_act,
+        })
+    }
+}
+
+impl Glm4NewConfig {
+    /// Parse a HuggingFace `config.json` string into a [`Glm4NewConfig`].
+    ///
+    /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
+    /// see the born-red `glm4_new_config_from_hf_json_parses_the_artifact_not_a_preset`.
+    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+        Glm4NewConfigRaw::from_json_str(json)?.resolve()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Glm4NewLayerWeights {
     pub input_norm_gain: Arc<[f32]>,
@@ -518,6 +619,130 @@ impl Glm4NewWeights {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ROADMAP item 8 (II). Golden values from zai-org/GLM-4-9B-0414's real
+    // config.json — its rope_theta (10000) / max_position_embeddings (32768)
+    // differ from the `glm4_9b_chat()` preset (5e6 / 131072), so parse != preset.
+    const GLM4_9B_0414_CONFIG_JSON: &str = r#"{
+        "architectures": ["Glm4ForCausalLM"],
+        "model_type": "glm4",
+        "vocab_size": 151552,
+        "hidden_size": 4096,
+        "intermediate_size": 13696,
+        "num_hidden_layers": 40,
+        "num_attention_heads": 32,
+        "num_key_value_heads": 2,
+        "head_dim": 128,
+        "partial_rotary_factor": 0.5,
+        "attention_bias": true,
+        "max_position_embeddings": 32768,
+        "rms_norm_eps": 1e-05,
+        "rope_theta": 10000.0,
+        "tie_word_embeddings": false,
+        "hidden_act": "silu"
+    }"#;
+
+    #[test]
+    fn glm4_new_config_from_hf_json_parses_the_artifact_not_a_preset() {
+        let cfg = Glm4NewConfig::from_hf_json_str(GLM4_9B_0414_CONFIG_JSON).unwrap();
+        assert_eq!(cfg.hidden_size, 4096);
+        assert_eq!(cfg.num_hidden_layers, 40);
+        assert_eq!(cfg.num_attention_heads, 32);
+        assert_eq!(cfg.vocab_size, 151_552);
+        assert_eq!(cfg.intermediate_size, 13_696);
+        // GQA: default would be num_attention_heads (32); 2 proves the key was READ.
+        assert_eq!(cfg.num_key_value_heads, 2);
+        // explicit head_dim (Option) read as Some(128); head_dim() returns 128.
+        assert_eq!(cfg.head_dim, Some(128));
+        assert_eq!(cfg.head_dim(), 128);
+        // GLM-4 ships an explicit partial rotary factor — read faithfully.
+        assert_eq!(cfg.partial_rotary_factor, Some(0.5));
+        assert_eq!(cfg.rope_theta, 10_000.0);
+        assert_eq!(cfg.max_position_embeddings, 32_768);
+        assert!(cfg.attention_bias);
+        assert_eq!(cfg.hidden_act, Glm4NewActivation::Silu);
+        // Sabotage sibling (WEAKER): distinct from the preset (rope_theta/max_pos).
+        assert_ne!(cfg, Glm4NewConfig::glm4_9b_chat());
+    }
+
+    /// A SECOND distinct config exercising the default path (partial_rotary_factor/
+    /// rope_theta/hidden_act omitted → None / 10000 / Silu) AND an explicit,
+    /// decoupled head_dim (80 ≠ 1024/16 = 64), which Glm4NewConfig keeps as Some.
+    #[test]
+    fn glm4_new_config_reads_a_second_distinct_config() {
+        let json = r#"{
+            "model_type": "glm4",
+            "vocab_size": 60000,
+            "hidden_size": 1024,
+            "intermediate_size": 4096,
+            "num_hidden_layers": 8,
+            "num_attention_heads": 16,
+            "num_key_value_heads": 4,
+            "head_dim": 80,
+            "attention_bias": true,
+            "max_position_embeddings": 8192
+        }"#;
+        let cfg = Glm4NewConfig::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.num_key_value_heads, 4);
+        // explicit head_dim kept as Some, NOT collapsed to the quotient (1024/16=64).
+        assert_eq!(cfg.head_dim, Some(80));
+        assert_eq!(cfg.head_dim(), 80);
+        // omitted → resolve defaults
+        assert_eq!(cfg.partial_rotary_factor, None);
+        assert_eq!(cfg.rope_theta, 10_000.0);
+        assert_eq!(cfg.hidden_act, Glm4NewActivation::Silu);
+        assert_ne!(cfg.hidden_size, 4096);
+    }
+
+    /// `num_key_value_heads` ABSENT → defaults to `num_attention_heads`; and true
+    /// MQA (`1`) survives — both via the shared `hf_config::num_key_value_heads`.
+    #[test]
+    fn glm4_new_config_gqa_default_and_true_mqa() {
+        let base = |kv: &str| {
+            format!(
+                r#"{{
+                "model_type": "glm4",
+                "vocab_size": 1000, "hidden_size": 64, "intermediate_size": 128,
+                "num_hidden_layers": 2, "num_attention_heads": 8,
+                "max_position_embeddings": 128 {kv}
+            }}"#
+            )
+        };
+        let absent = Glm4NewConfig::from_hf_json_str(&base("")).unwrap();
+        assert_eq!(absent.num_key_value_heads, 8); // absent → num_attention_heads
+        let mqa = Glm4NewConfig::from_hf_json_str(&base(", \"num_key_value_heads\": 1")).unwrap();
+        assert_eq!(mqa.num_key_value_heads, 1); // TRUE MQA survives
+    }
+
+    /// The non-serde activation enum is parsed from the `hidden_act` string:
+    /// known values map, an UNKNOWN one ERRORS rather than silently defaulting.
+    #[test]
+    fn glm4_new_config_maps_and_rejects_hidden_act() {
+        let with_act = |act: &str| {
+            format!(
+                r#"{{
+                "model_type": "glm4",
+                "vocab_size": 1000, "hidden_size": 64, "intermediate_size": 128,
+                "num_hidden_layers": 2, "num_attention_heads": 8,
+                "max_position_embeddings": 128, "hidden_act": "{act}"
+            }}"#
+            )
+        };
+        assert_eq!(
+            Glm4NewConfig::from_hf_json_str(&with_act("gelu"))
+                .unwrap()
+                .hidden_act,
+            Glm4NewActivation::Gelu
+        );
+        assert_eq!(
+            Glm4NewConfig::from_hf_json_str(&with_act("gelu_pytorch_tanh"))
+                .unwrap()
+                .hidden_act,
+            Glm4NewActivation::GeluPytorchTanh
+        );
+        // Unknown activation is surfaced as an error, not swallowed.
+        assert!(Glm4NewConfig::from_hf_json_str(&with_act("mish")).is_err());
+    }
 
     fn vec_of(n: usize, next: &mut dyn FnMut() -> f32) -> Arc<[f32]> {
         Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
