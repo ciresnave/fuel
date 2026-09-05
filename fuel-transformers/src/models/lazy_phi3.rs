@@ -70,6 +70,73 @@ impl Phi3Config {
     }
 }
 
+// ROADMAP item 8 (II): config-from-path on the #57 template. A `serde` raw with
+// HF field names + Phi-3's own constant defaults, then `resolve` routes kv heads
+// through the shared `fuel_core::hf_config` rule. Phi3Config carries NO explicit
+// head_dim (it derives `hidden_size / num_attention_heads` in `head_dim()`), so
+// only the kv-head rule is routed — head_dim cannot decouple here. Unmodelled
+// fields (sliding_window, LongRoPE factors) are ignored by serde as on the
+// forward-only v1 port.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct Phi3ConfigRaw {
+    vocab_size: usize,
+    hidden_size: usize,
+    intermediate_size: usize,
+    num_hidden_layers: usize,
+    num_attention_heads: usize,
+    #[serde(default)]
+    num_key_value_heads: Option<usize>,
+    max_position_embeddings: usize,
+    #[serde(default = "default_phi3_rope_theta")]
+    rope_theta: f64,
+    #[serde(default = "default_phi3_rms_norm_eps")]
+    rms_norm_eps: f64,
+    #[serde(default)]
+    tie_word_embeddings: bool,
+}
+
+fn default_phi3_rope_theta() -> f64 {
+    10_000.0
+}
+fn default_phi3_rms_norm_eps() -> f64 {
+    1e-5
+}
+
+impl Phi3ConfigRaw {
+    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
+        serde_json::from_str(json)
+            .map_err(|e| fuel_core::Error::Msg(format!("parsing Phi-3 config.json: {e}")))
+    }
+
+    fn resolve(self) -> Phi3Config {
+        Phi3Config {
+            vocab_size: self.vocab_size,
+            hidden_size: self.hidden_size,
+            intermediate_size: self.intermediate_size,
+            num_hidden_layers: self.num_hidden_layers,
+            num_attention_heads: self.num_attention_heads,
+            num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
+                self.num_key_value_heads,
+                self.num_attention_heads,
+            ),
+            max_position_embeddings: self.max_position_embeddings,
+            rope_theta: self.rope_theta,
+            rms_norm_eps: self.rms_norm_eps,
+            tie_word_embeddings: self.tie_word_embeddings,
+        }
+    }
+}
+
+impl Phi3Config {
+    /// Parse a HuggingFace `config.json` string into a [`Phi3Config`].
+    ///
+    /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
+    /// see the born-red `phi3_config_from_hf_json_parses_the_artifact_not_a_preset`.
+    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+        Ok(Phi3ConfigRaw::from_json_str(json)?.resolve())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Phi3Weights {
     /// Process-unique identity for THIS weight set — what lets a held decode
@@ -765,6 +832,105 @@ impl Phi3Weights {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ROADMAP item 8 (II). Golden values from microsoft/Phi-3-medium-4k-instruct's
+    // real config.json — the medium (GQA, kv 10), not the mini the preset is named
+    // after, so the parse is distinct from `phi3_mini_4k()` AND kv proves the read.
+    // (Phi-3's `sliding_window` field is present in the artifact and deliberately
+    // ignored — the forward-only v1 port models no window.)
+    const PHI3_MEDIUM_4K_CONFIG_JSON: &str = r#"{
+        "architectures": ["Phi3ForCausalLM"],
+        "model_type": "phi3",
+        "vocab_size": 32064,
+        "hidden_size": 5120,
+        "intermediate_size": 17920,
+        "num_hidden_layers": 40,
+        "num_attention_heads": 40,
+        "num_key_value_heads": 10,
+        "max_position_embeddings": 4096,
+        "rope_theta": 10000.0,
+        "rms_norm_eps": 1e-05,
+        "sliding_window": 2047,
+        "tie_word_embeddings": false
+    }"#;
+
+    #[test]
+    fn phi3_config_from_hf_json_parses_the_artifact_not_a_preset() {
+        let cfg = Phi3Config::from_hf_json_str(PHI3_MEDIUM_4K_CONFIG_JSON).unwrap();
+        assert_eq!(cfg.hidden_size, 5120);
+        assert_eq!(cfg.num_hidden_layers, 40);
+        assert_eq!(cfg.num_attention_heads, 40);
+        assert_eq!(cfg.vocab_size, 32_064);
+        assert_eq!(cfg.intermediate_size, 17_920);
+        // GQA: default would be num_attention_heads (40); 10 proves the key was READ.
+        assert_eq!(cfg.num_key_value_heads, 10);
+        // head_dim is DERIVED (no field): 5120/40 = 128.
+        assert_eq!(cfg.head_dim(), 128);
+        assert_eq!(cfg.rope_theta, 10_000.0);
+        assert_eq!(cfg.max_position_embeddings, 4096);
+        assert!(!cfg.tie_word_embeddings);
+        // Sabotage sibling (WEAKER): distinct from the mini preset (hidden differs).
+        assert_ne!(cfg, Phi3Config::phi3_mini_4k());
+    }
+
+    /// A SECOND distinct config, exercising the default path (rope_theta/
+    /// rms_norm_eps/tie omitted → Phi-3's own consts). A constant parser cannot
+    /// satisfy both this and the medium golden.
+    #[test]
+    fn phi3_config_reads_a_second_distinct_config() {
+        let json = r#"{
+            "model_type": "phi3",
+            "vocab_size": 32064,
+            "hidden_size": 3072,
+            "intermediate_size": 8192,
+            "num_hidden_layers": 32,
+            "num_attention_heads": 32,
+            "num_key_value_heads": 8,
+            "max_position_embeddings": 4096
+        }"#;
+        let cfg = Phi3Config::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.hidden_size, 3072);
+        assert_eq!(cfg.num_key_value_heads, 8);
+        // omitted → resolve defaults
+        assert_eq!(cfg.rope_theta, 10_000.0);
+        assert_eq!(cfg.rms_norm_eps, 1e-5);
+        assert!(!cfg.tie_word_embeddings);
+        // distinct from the medium parse
+        assert_ne!(cfg.hidden_size, 5120);
+    }
+
+    /// `num_key_value_heads` ABSENT → defaults to `num_attention_heads`.
+    #[test]
+    fn phi3_config_gqa_defaults_to_num_heads_when_absent() {
+        let json = r#"{
+            "model_type": "phi3",
+            "vocab_size": 1000,
+            "hidden_size": 64,
+            "intermediate_size": 128,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 8,
+            "max_position_embeddings": 128
+        }"#;
+        let cfg = Phi3Config::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.num_key_value_heads, 8); // absent → num_attention_heads
+    }
+
+    /// TRUE MQA (`num_key_value_heads = 1`) survives, not collapsed.
+    #[test]
+    fn phi3_config_preserves_true_mqa() {
+        let json = r#"{
+            "model_type": "phi3",
+            "vocab_size": 1000,
+            "hidden_size": 64,
+            "intermediate_size": 128,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 8,
+            "num_key_value_heads": 1,
+            "max_position_embeddings": 128
+        }"#;
+        let cfg = Phi3Config::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.num_key_value_heads, 1);
+    }
 
     fn tiny_weights(cfg: &Phi3Config) -> Phi3Weights {
         let mut s: u32 = 8888;
