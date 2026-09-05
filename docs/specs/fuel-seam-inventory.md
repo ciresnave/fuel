@@ -182,6 +182,72 @@ not** — a `contributed-BY-Fuel` **fidelity** question, not an equivalence one.
 > not a defect** — but an entire published crate sits outside Fuel’s own projection.
 > **`fuel-kernel-seam` is 7/7 PROJECTED.**
 
+### 4.1 The capability column — complete, and `out_files = 0` MEANS FOUR DIFFERENT THINGS
+
+⚠️ **The obvious predicate — *does anything outside the defining crate name this?* —
+conflates a defect with three designs:**
+
+| state | meaning | example |
+|---|---|---|
+| **INERT** | nothing anywhere consumes the capability | ← **the only defect** |
+| **CONSUMER-AHEAD** | declared, waiting on a design agreed elsewhere | `const_bits` |
+| **ENCAPSULATED** | live in-crate; capability reaches Fuel via ANOTHER symbol | the 10 `TAG_*` |
+| **OFFERED-NOT-CONSUMED** | published for EXTERNAL parties; Fuel is not a user | `-announce` |
+
+**Worked demonstration:** the ten `TAG_*` wire tags have **zero** external uses, and the
+capability they encode reaches Fuel through **`decode_shape`, which is projected 33 files**
+wide. **Identical by predicate to `const_bits`; opposite in kind. Only reading the in-crate use
+separates them.** ⚠️ **And `const_bits_narrow` has 13 in-crate uses while `const_bits` has
+0 anywhere — same name stem, opposite states, which is the argument against keying a ledger on
+a stem.**
+
+**`fuel-kernel-seam-types` — all 35 top-level items, reconciled BY NAME:**
+
+```
+PROJECTED       17   the region grammar + shape-expression evaluator
+                     a KISS reader must IMPLEMENT the grammar and
+                     ACCEPT-AND-PRESERVE the shape-expr forms
+ENCAPSULATED    15   10 TAG_* + decode_dim, reduce_shape, gather_shape,
+                     shape_consistent, const_bits_narrow
+                     a KISS reader must implement the FORMAT, not these
+                     symbols -- Fuel’s private spelling of a shared wire format
+UNCLASSIFIABLE   2   LAST, SYMBOLIC
+OpTag            1   handled separately as an 80-variant four-state machine
+                --
+                35
+```
+
+⚠️ **A summary line reported 28 and the buckets summed to 32. The gap was a BOUNDARY
+BETWEEN TWO DELIVERABLES — `OpTag` had been classified separately — not a defect in either.**
+**It closed only because the item LISTS were published alongside the counts: a count
+disagreement closes on names, and a report giving only totals cannot be reconciled by anyone,
+including its author.**
+
+**`fuel-kernel-seam` (7/7 PROJECTED) — a two-phase JIT protocol.** Two facts a parity reader
+needs: ⚠️ **`JitResponse::Declined` is NOT an error path** (*"Never an error path. Fuel leaves
+the region on primitives"*) — a KISS-side seam must model decline as **normal control flow**;
+and ⚠️ **`SynthArtifact.contract` carries A FULL FKC CONTRACT IN MARKDOWN**, parsed by the
+same importer as a build-time contract. **A KISS-equivalent JIT seam must emit a FULL KISS
+contract, not a subset — the JIT path and the build-time path are the same format by
+construction.**
+
+**`fuel-kernel-seam-announce` (15) — a FROZEN C-ABI HANDSHAKE, and it names its own KISS
+counterpart in source:** `SEAM_MAGIC` is documented as *"Matches KISS-ANNOUNCE §6.1-0004"*.
+`SeamHello` is a 56-byte `#[repr(C)]` POD with **frozen, asserted offsets** — **implement
+byte-exactly**. Seven `SEAM_CAP_*` bits negotiate as `local & remote` (*"a feature neither side
+flags is simply not used"*) — **accept-and-preserve**. `negotiate` is *highest
+mutually-supported wins, hard-fail on disjoint*.
+
+> ⚠⚠ **THE PARITY-CRITICAL SURFACE AND THE FUEL-PROJECTED SURFACE ARE NEARLY DISJOINT.**
+> The crate Fuel projects into **least** is the one **most** regulated by KISS. **A ledger
+> ranked by Fuel-side liveness would have ranked the parity-critical crate lowest** — so
+> liveness cannot be used to triage what to classify.
+
+> **And the announce handshake is versioned by design** — *"support multiple profile versions
+> over time without a lockstep flag-day."* **That is the same property §5.1’s version-gate
+> finding is about, one layer down: announce solves the version-skew problem the FKC gate
+> exposed on the KISS side.**
+
 `fuel-kernel-seam`: `JitRequest` · `JitBudget` · `JitResponse` · `SynthArtifact` ·
 `ArtifactKind` · `LinkEntry` · `Synthesizer`.
 
