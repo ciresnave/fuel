@@ -334,7 +334,7 @@ impl PaddleOcrVlTextModel {
             cfg.head_dim,
             &cfg.mrope_section,
             position_ids,
-        );
+        )?;
         let rope_shape = Shape::from_dims(&[seq, cfg.head_dim]);
         let rope_cos = embeds.const_f32_like(rope_cos_data, rope_shape.clone());
         let rope_sin = embeds.const_f32_like(rope_sin_data, rope_shape);
@@ -468,18 +468,24 @@ pub fn build_mrope_tables(
     head_dim: usize,
     mrope_section: &[usize],
     positions: &[[i64; 3]],
-) -> (Vec<f32>, Vec<f32>) {
-    assert!(
-        head_dim.is_multiple_of(2),
-        "build_mrope_tables: head_dim must be even"
-    );
+) -> Result<(Vec<f32>, Vec<f32>)> {
+    // GAP-281: a CONFIG property -- reject it rather than panicking. The
+    // half-dimension split below assumes an even head_dim.
+    if !head_dim.is_multiple_of(2) {
+        return Err(fuel_core::Error::Msg(format!(
+            "build_mrope_tables: head_dim ({head_dim}) must be even"
+        )));
+    }
     let half = head_dim / 2;
     let mrope_sum: usize = mrope_section.iter().sum();
-    assert_eq!(
-        mrope_sum, half,
-        "build_mrope_tables: mrope_section must sum to head_dim/2 ({}), got {}",
-        half, mrope_sum,
-    );
+    // GAP-281: also a CONFIG property. PaddleOcrVlTextConfig::resolve already
+    // declines this at the config boundary, so production cannot reach it --
+    // but this fn is `pub` and its direct callers are not covered by that.
+    if mrope_sum != half {
+        return Err(fuel_core::Error::Msg(format!(
+            "build_mrope_tables: mrope_section must sum to head_dim/2 ({half}), got {mrope_sum}"
+        )));
+    }
 
     // Precompute per-feature (axis_idx, freq_index_into_half) so the
     // hot loop is two multiplies per (position, feature).
@@ -542,7 +548,7 @@ pub fn build_mrope_tables(
             sin_data[row + f] = angle.sin() as f32;
         }
     }
-    (cos_data, sin_data)
+    Ok((cos_data, sin_data))
 }
 
 fn build_causal_mask(anchor: &Tensor, seq: usize) -> Tensor {
@@ -952,7 +958,8 @@ mod tests {
         let head_dim = 8;
         let mrope_section = vec![2, 1, 1];
         let positions = vec![[3_i64, 7, 11], [1, 2, 4]];
-        let (cos, sin) = build_mrope_tables(10_000.0, head_dim, &mrope_section, &positions);
+        let (cos, sin) =
+            build_mrope_tables(10_000.0, head_dim, &mrope_section, &positions).unwrap();
         let seq = positions.len();
         let half = head_dim / 2;
         for s in 0..seq {
@@ -980,7 +987,7 @@ mod tests {
             })
             .collect();
         let (cos_mrope, sin_mrope) =
-            build_mrope_tables(10_000.0, head_dim, &mrope_section, &text_positions);
+            build_mrope_tables(10_000.0, head_dim, &mrope_section, &text_positions).unwrap();
         let (cos_std, sin_std) = fuel_graph::build_rope_tables(10_000.0, 0, seq, head_dim);
         for (i, (a, b)) in cos_mrope.iter().zip(cos_std.iter()).enumerate() {
             assert!(
@@ -999,7 +1006,7 @@ mod tests {
         // tables (i.e. the multimodal axis selection actually matters).
         let mixed_positions = vec![[0_i64, 0, 0], [0, 1, 0], [0, 0, 1]];
         let (cos_mixed, _) =
-            build_mrope_tables(10_000.0, head_dim, &mrope_section, &mixed_positions);
+            build_mrope_tables(10_000.0, head_dim, &mrope_section, &mixed_positions).unwrap();
         let row1 = &cos_mixed[head_dim..2 * head_dim];
         let row2 = &cos_mixed[2 * head_dim..3 * head_dim];
         let any_diff = row1
@@ -1248,5 +1255,47 @@ mod tests {
             // Canonical: PaddlePaddle/PaddleOCR-VL (text decoder lives
             // under top-level `model.*` + `lm_head.weight`).
         }
+    }
+
+    /// GAP-281: an odd `head_dim` must DECLINE, not panic. `half = head_dim / 2`
+    /// truncates silently otherwise, so it is a CONFIG property.
+    ///
+    /// Asserts on the MESSAGE, not merely that an `Err` arrived: a later guard
+    /// on the same path can supply an `Err` of its own (measured in
+    /// `lazy_mamba2`), which makes an `expect_err`-only arm pass under
+    /// sabotage while reporting the guard as live.
+    #[test]
+    fn mrope_odd_head_dim_declines_rather_than_panicking() {
+        // CONTROL: the conforming even value must still build.
+        build_mrope_tables(10_000.0, 8, &[2, 1, 1], &[[0_i64, 0, 0], [1, 1, 1]])
+            .expect("control: an even head_dim must still build");
+
+        let err = build_mrope_tables(10_000.0, 7, &[2, 1, 1], &[[0_i64, 0, 0], [1, 1, 1]])
+            .expect_err("an odd head_dim must DECLINE, not panic");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("head_dim") && msg.contains('7'),
+            "the decline must name the operand and its value, got: {msg}"
+        );
+    }
+
+    /// GAP-281: `mrope_section` must sum to `head_dim / 2`, and that is a
+    /// CONFIG property. `PaddleOcrVlTextConfig::resolve` already declines it at
+    /// the config boundary, so production cannot reach this -- but the fn is
+    /// `pub` and its direct callers are not covered by that.
+    #[test]
+    fn mrope_section_not_summing_to_half_declines_rather_than_panicking() {
+        let positions = [[0_i64, 0, 0], [1, 1, 1]];
+        // CONTROL: a section summing to head_dim/2 == 4 must still build.
+        build_mrope_tables(10_000.0, 8, &[2, 1, 1], &positions)
+            .expect("control: a conforming mrope_section must still build");
+
+        let err = build_mrope_tables(10_000.0, 8, &[2, 1, 2], &positions)
+            .expect_err("a non-summing mrope_section must DECLINE, not panic");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("mrope_section") && msg.contains('4') && msg.contains('5'),
+            "the decline must name the relation and BOTH sides, got: {msg}"
+        );
     }
 }
