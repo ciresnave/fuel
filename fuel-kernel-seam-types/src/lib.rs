@@ -134,7 +134,8 @@ pub enum OpTag {
     // ("RULING RECORD — four-leaf-arm ack", no amendments).
     //
     // **Wire tokens only — no Fuel graph producer yet.** `jit::op_to_tag` emits
-    // none of these and `runtime_fused::tag_to_op` declines all four (honest
+    // none of these. `runtime_fused::tag_to_op` declines THREE of them (`Const`,
+    // `RuntimeScalar`, `ReducedCount`) as honest
     // misses). Fuel expresses these values implicitly today (an `Op::Const`
     // TENSOR operand, a `Runtime { scalars }` slot on the *consuming* op,
     // `Op::ScanPlaceholder` inside `Op::Scan`'s body, Mean's divisor folded into
@@ -1645,7 +1646,9 @@ mod tests {
         // `Op::Iota`, a `Runtime { scalars }` slot on the consuming op,
         // `Op::ScanPlaceholder` inside `Op::Scan`'s body, and Mean's divisor
         // folded into `Op::MeanDim`). So `jit::op_to_tag` emits none of them and
-        // `runtime_fused::tag_to_op` declines all four as honest misses — the
+        // `runtime_fused::tag_to_op` declines `Const`/`RuntimeScalar`/`ReducedCount`
+        // as honest misses but RECONSTRUCTS `ScanPlaceholder` (explicit arm,
+        // `Increment C, B1`) — the
         // flat-DAG-CSE recipe interior that would produce them is the (unbuilt)
         // Convergence-C home. Pinned here so a later wiring change is deliberate.
         //
