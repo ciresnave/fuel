@@ -603,7 +603,7 @@ fn encoder_layer(
 ) -> fuel_core::Result<Tensor> {
     let d = cfg.d_model;
     let n_heads = cfg.encoder_attention_heads;
-    let d_head = cfg.encoder_head_dim();
+    let d_head = cfg.encoder_head_dim()?;
 
     let x_ln = layer_norm_affine(x, &lw.self_attn_ln_g, &lw.self_attn_ln_b, 1e-5, d, seq)?;
     let attn = multi_head_attn(
@@ -628,7 +628,7 @@ fn decoder_layer(
 ) -> fuel_core::Result<Tensor> {
     let d = cfg.d_model;
     let n_heads = cfg.decoder_attention_heads;
-    let d_head = cfg.decoder_head_dim();
+    let d_head = cfg.decoder_head_dim()?;
     let kv_seq_self = q_seq;
 
     let x_ln = layer_norm_affine(x, &lw.self_ln_g, &lw.self_ln_b, 1e-5, d, q_seq)?;

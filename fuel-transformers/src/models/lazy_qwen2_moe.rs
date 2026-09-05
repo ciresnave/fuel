@@ -75,9 +75,17 @@ impl Qwen2MoeConfig {
             .map_err(|e| fuel_core::Error::Msg(format!("parsing qwen2_moe config: {e}")).bt())
     }
 
-    pub fn head_dim(&self) -> usize {
-        assert_eq!(self.hidden_size % self.num_attention_heads, 0);
-        self.hidden_size / self.num_attention_heads
+    pub fn head_dim(&self) -> fuel_core::Result<usize> {
+        // GAP-281 (dim/head relation): a typed decline, not a panic. The
+        // quotient below is integer division, so a non-dividing head count
+        // truncates silently -- a CONFIG property to reject, not an invariant.
+        if !self.hidden_size.is_multiple_of(self.num_attention_heads) {
+            return Err(fuel_core::Error::Msg(format!(
+                "Qwen2MoeConfig: hidden_size ({}) must be divisible by num_attention_heads ({})",
+                self.hidden_size, self.num_attention_heads,
+            )));
+        }
+        Ok(self.hidden_size / self.num_attention_heads)
     }
 }
 
@@ -261,7 +269,7 @@ fn qwen2_attn(
 ) -> fuel_core::Result<Tensor> {
     let h = cfg.hidden_size;
     let n_heads = cfg.num_attention_heads;
-    let d_head = cfg.head_dim();
+    let d_head = cfg.head_dim()?;
     let n_kv = cfg.num_key_value_heads;
 
     let q = linear(x, &lw.q_w, Some(&lw.q_b), h, h, seq)?;
@@ -470,7 +478,7 @@ impl Qwen2MoeWeights {
     ) -> fuel_core::Result<Self> {
         use fuel_core::lazy::{load_tensor_as_f32, load_transposed_matrix};
         let h = cfg.hidden_size;
-        let kv_dim = cfg.num_key_value_heads * cfg.head_dim();
+        let kv_dim = cfg.num_key_value_heads * cfg.head_dim()?;
         let moe_int = cfg.moe_intermediate_size;
         let shared_int = cfg.shared_expert_intermediate_size;
 
@@ -702,7 +710,7 @@ mod tests {
     #[test]
     fn config_head_dim() {
         let cfg = tiny_cfg();
-        assert_eq!(cfg.head_dim(), 4);
+        assert_eq!(cfg.head_dim().unwrap(), 4);
     }
 
     /// `forward_hidden` returns post-RmsNorm hidden states
@@ -858,6 +866,34 @@ mod tests {
         assert!(
             max_diff < 1e-5,
             "Qwen2MoE forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})"
+        );
+    }
+
+    /// GAP-281 (dim/head relation): a head count that does not divide the model
+    /// dim must DECLINE, not panic. The quotient is integer division, so a
+    /// non-dividing count truncates silently.
+    ///
+    /// Born-red by sabotage: dropping the divisibility check makes this the only
+    /// failing arm.
+    #[test]
+    fn head_dim_declines_when_the_head_count_does_not_divide() {
+        let valid = tiny_cfg();
+        // CONTROL: a conforming config still resolves, so "it errored" cannot come
+        // from an accessor that rejects everything.
+        assert!(
+            valid.head_dim().is_ok(),
+            "control: the conforming config must resolve"
+        );
+
+        let mut bad = valid.clone();
+        bad.num_attention_heads = 3;
+        let err = bad
+            .head_dim()
+            .expect_err("a non-dividing head count must DECLINE, not panic");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("hidden_size") && msg.contains("num_attention_heads"),
+            "the decline must name both operands, got: {msg}"
         );
     }
 }
