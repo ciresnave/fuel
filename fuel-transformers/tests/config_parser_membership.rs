@@ -31,14 +31,10 @@ const NOT_YET_PARSED: &[&str] = &[
     "lazy_gemma4_text.rs",
     "lazy_glm4.rs",
     "lazy_glm4_new.rs",
-    "lazy_granite.rs",
     "lazy_granitemoehybrid.rs",
-    "lazy_helium.rs",
     "lazy_lfm2.rs",
     "lazy_metavoice.rs",
-    "lazy_olmo.rs",
     "lazy_paddleocr_vl_text.rs",
-    "lazy_persimmon.rs",
     "lazy_qwen3_moe.rs",
     "lazy_qwen3_vl_text.rs",
     "lazy_recurrent_gemma.rs",
@@ -242,7 +238,7 @@ fn exempt_lists_may_only_shrink() {
     // as models are migrated to the rule.
     assert_eq!(
         NOT_YET_PARSED.len(),
-        19,
+        15,
         "NOT_YET_PARSED changed — it may only SHRINK as models gain rule-routed parsers"
     );
     assert_eq!(STRUCTURAL_EXEMPT.len(), 2, "STRUCTURAL_EXEMPT changed");
