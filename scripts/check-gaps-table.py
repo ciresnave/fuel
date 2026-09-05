@@ -671,8 +671,74 @@ print('rows whose status does not start with a set member:',
 print('STRUCK rows whose prefix says work remains (asymmetric by design):',
       strike_contra if strike_contra else 'NONE')
 
+
+# ---------------------------------------------------------------------------
+# ID UNIQUENESS -- a row id must name exactly one row.
+#
+# WHY: GAP-227 was allocated twice, 19 minutes apart on 2026-08-20 -- 07386357
+# named it deliberately (k_quants clippy, Tier A); 08ed3734, a commit about
+# GAP-225, reused it for an unrelated max_ulp row in Tier B. Every individual
+# row parses, so every other check in this file passes. Nothing here could see
+# it.
+#
+# AND THE AMBIGUITY REACHED THE CODE BEFORE ANYONE NOTICED: docs/method-rules.md
+# cites GAP-227 meaning the clippy gate, while fkc/verify/exact_ref.rs and
+# fkc/verify/seed_cpu_ledger.rs both cite it meaning the float8/max_ulp row.
+# Two senses, four citations, one id.
+#
+# *** MATCH THE FULL ID, INCLUDING ANY `(x)` SUFFIX. ***
+#
+# The obvious implementation -- `grep -oE 'GAP-[0-9]+'` -- TRUNCATES
+# `GAP-228(a)` to `GAP-228` and reports EIGHT duplicates where there is one
+# parent and seven legitimate lettered sub-rows. Measured on this file: the
+# naive form flags {GAP-228: 8, GAP-227: 2}; the full form flags {GAP-227: 2}.
+#
+# THAT MATTERS MORE THAN THE FALSE POSITIVE ITSELF. A gate that fires on valid
+# input teaches its own removal -- the next person to hit it will loosen the
+# rule, because the data is obviously fine and the gate is obviously wrong.
+# If this check ever flags a lettered sub-row, FIX THE MATCHER, DO NOT WIDEN
+# THE RULE.
+
+FULL_ID = re.compile(r'^\| (~*)(GAP-[0-9]+(?:\([a-z0-9]+\))?)')
+
+
+def duplicate_ids(src):
+    """Ids appearing on more than one row, matched in FULL."""
+    seen = {}
+    for _l in src:
+        _m = FULL_ID.match(_l)
+        if _m:
+            seen.setdefault(_m.group(2), []).append(_l[:60])
+    return {k: v for k, v in seen.items() if len(v) > 1}
+
+
+# FOUNDATION CHECK, both directions. A duplicate must flag AND a lettered
+# family must not -- the second arm is the one that would have shipped broken.
+_ID_DUP = ['| GAP-900 | a | A | a | **OPEN** |',
+           '| GAP-900 | b | B | b | **OPEN** |']
+_ID_SUB = ['| GAP-901 | p | A | p | **OPEN** |',
+           '| GAP-901(a) | x | A | x | **OPEN** |',
+           '| GAP-901(b) | y | A | y | **OPEN** |']
+id_foundation = []
+if list(duplicate_ids(_ID_DUP)) != ['GAP-900']:
+    id_foundation.append('a real duplicate was NOT flagged')
+if duplicate_ids(_ID_SUB):
+    id_foundation.append('lettered sub-rows WERE flagged (matcher is truncating)')
+
+dup_ids = duplicate_ids(lines)
+
+print()
+print('id-uniqueness self-test (duplicate must flag, lettered sub-rows must not):',
+      'PASS' if not id_foundation else id_foundation)
+print('row ids appearing more than once:',
+      {k: len(v) for k, v in dup_ids.items()} if dup_ids else 'NONE')
+for _k, _v in sorted(dup_ids.items()):
+    for _r in _v:
+        print('    %s' % _r)
+
 if (odd or no_pipe or header_problems or control_chars or conflict_markers
         or missing_backlinks or _foundation
         or arity_regression or bad_prefix or strike_contra
+        or dup_ids or id_foundation
         or vocab_foundation):
     sys.exit(1)

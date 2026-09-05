@@ -2081,7 +2081,7 @@ mod tests {
     /// (`bit_stable_on_same_hardware`, `max_ulp`) and an earned ledger record
     /// is a contract edit; one whose correctness notion has no name yet
     /// (`bit_exact` for an integer output, `agrees_with_<backend>_to_ulp` for
-    /// a differential) waits on the vocabulary decision tracked by GAP-227.
+    /// a differential) waits on the vocabulary decision tracked by GAP-291.
     ///
     /// ⚠️ **POPULATION, stated because two of them exist and mixing them is
     /// the defect this program keeps finding.** This counts the
