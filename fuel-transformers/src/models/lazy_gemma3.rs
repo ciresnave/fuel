@@ -75,6 +75,124 @@ pub struct Gemma3Config {
     pub final_logit_softcapping: Option<f64>,
 }
 
+/// Map a Gemma-3 `hidden_activation` string to [`GemmaActivation`]. Gemma-3
+/// configs carry the CORRECTED key `hidden_activation` with `gelu_pytorch_tanh`
+/// (unlike Gemma-1, whose `hidden_act: "gelu"` is a known misnomer). Unknown
+/// values error rather than silently defaulting.
+fn gemma3_activation_from_str(s: &str) -> fuel_core::Result<GemmaActivation> {
+    match s {
+        "gelu" => Ok(GemmaActivation::Gelu),
+        "gelu_pytorch_tanh" | "gelu_new" => Ok(GemmaActivation::GeluPytorchTanh),
+        other => Err(fuel_core::Error::Msg(format!(
+            "unsupported Gemma-3 hidden_activation {other:?} (expected gelu/gelu_pytorch_tanh)"
+        ))),
+    }
+}
+
+// ROADMAP item 8 (II): config-from-path on the #57 template. Gemma-3 is a FLAT
+// artifact: a `serde` raw with HF field names + Gemma-3's own constant defaults,
+// then `resolve` routes kv heads + head_dim through the shared `fuel_core::hf_config`
+// rules (Gemma-3 ships an explicit, decoupled head_dim, e.g. 256 vs 1152/4=288).
+// The two logit-softcappings are `Option` (null in the reference configs). The
+// non-serde `GemmaActivation` enum is parsed from the `hidden_activation` string.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct Gemma3ConfigRaw {
+    vocab_size: usize,
+    hidden_size: usize,
+    intermediate_size: usize,
+    num_hidden_layers: usize,
+    num_attention_heads: usize,
+    #[serde(default)]
+    num_key_value_heads: Option<usize>,
+    #[serde(default)]
+    head_dim: Option<usize>,
+    #[serde(default = "default_gemma3_rms_norm_eps")]
+    rms_norm_eps: f64,
+    #[serde(default = "default_gemma3_rope_theta")]
+    rope_theta: f64,
+    #[serde(default = "default_gemma3_rope_local_base_freq")]
+    rope_local_base_freq: f64,
+    max_position_embeddings: usize,
+    #[serde(default = "default_gemma3_sliding_window")]
+    sliding_window: usize,
+    #[serde(default = "default_gemma3_sliding_window_pattern")]
+    sliding_window_pattern: usize,
+    #[serde(default)]
+    attention_bias: bool,
+    #[serde(default)]
+    hidden_activation: Option<String>,
+    #[serde(default)]
+    attn_logit_softcapping: Option<f64>,
+    #[serde(default)]
+    final_logit_softcapping: Option<f64>,
+}
+
+fn default_gemma3_rms_norm_eps() -> f64 {
+    1e-6
+}
+fn default_gemma3_rope_theta() -> f64 {
+    1_000_000.0
+}
+fn default_gemma3_rope_local_base_freq() -> f64 {
+    10_000.0
+}
+fn default_gemma3_sliding_window() -> usize {
+    4096
+}
+fn default_gemma3_sliding_window_pattern() -> usize {
+    6
+}
+
+impl Gemma3ConfigRaw {
+    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
+        serde_json::from_str(json)
+            .map_err(|e| fuel_core::Error::Msg(format!("parsing Gemma-3 config.json: {e}")))
+    }
+
+    fn resolve(self) -> fuel_core::Result<Gemma3Config> {
+        let hidden_activation = match self.hidden_activation.as_deref() {
+            None => GemmaActivation::GeluPytorchTanh,
+            Some(s) => gemma3_activation_from_str(s)?,
+        };
+        Ok(Gemma3Config {
+            vocab_size: self.vocab_size,
+            hidden_size: self.hidden_size,
+            intermediate_size: self.intermediate_size,
+            num_hidden_layers: self.num_hidden_layers,
+            num_attention_heads: self.num_attention_heads,
+            num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
+                self.num_key_value_heads,
+                self.num_attention_heads,
+            ),
+            head_dim: fuel_core::hf_config::head_dim(
+                self.head_dim,
+                self.hidden_size,
+                self.num_attention_heads,
+            ),
+            rms_norm_eps: self.rms_norm_eps,
+            rope_theta: self.rope_theta,
+            rope_local_base_freq: self.rope_local_base_freq,
+            max_position_embeddings: self.max_position_embeddings,
+            sliding_window: self.sliding_window,
+            sliding_window_pattern: self.sliding_window_pattern,
+            attention_bias: self.attention_bias,
+            hidden_activation,
+            attn_logit_softcapping: self.attn_logit_softcapping,
+            final_logit_softcapping: self.final_logit_softcapping,
+        })
+    }
+}
+
+impl Gemma3Config {
+    /// Parse a HuggingFace `config.json` string into a [`Gemma3Config`].
+    ///
+    /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
+    /// see the born-red `gemma3_config_from_hf_json_parses_the_artifact`.
+    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+        Gemma3ConfigRaw::from_json_str(json)?.resolve()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Gemma3LayerWeights {
     pub attn_q: WeightStorage,
@@ -993,6 +1111,143 @@ impl Gemma3Weights {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ROADMAP item 8 (II). Golden values from google/gemma-3-1b-it's real
+    // config.json (model_type "gemma3_text"). No size preset, so a second
+    // distinct config gives the constant-parser discrimination. head_dim is
+    // EXPLICIT and DECOUPLED (256 vs 1152/4 = 288).
+    const GEMMA3_1B_CONFIG_JSON: &str = r#"{
+        "architectures": ["Gemma3ForCausalLM"],
+        "model_type": "gemma3_text",
+        "vocab_size": 262144,
+        "hidden_size": 1152,
+        "intermediate_size": 6912,
+        "num_hidden_layers": 26,
+        "num_attention_heads": 4,
+        "num_key_value_heads": 1,
+        "head_dim": 256,
+        "max_position_embeddings": 32768,
+        "rms_norm_eps": 1e-06,
+        "rope_local_base_freq": 10000,
+        "rope_theta": 1000000,
+        "sliding_window": 512,
+        "sliding_window_pattern": 6,
+        "hidden_activation": "gelu_pytorch_tanh",
+        "attn_logit_softcapping": null,
+        "final_logit_softcapping": null,
+        "attention_bias": false
+    }"#;
+
+    #[test]
+    fn gemma3_config_from_hf_json_parses_the_artifact() {
+        let cfg = Gemma3Config::from_hf_json_str(GEMMA3_1B_CONFIG_JSON).unwrap();
+        assert_eq!(cfg.hidden_size, 1152);
+        assert_eq!(cfg.num_hidden_layers, 26);
+        assert_eq!(cfg.num_attention_heads, 4);
+        assert_eq!(cfg.vocab_size, 262_144);
+        assert_eq!(cfg.intermediate_size, 6912);
+        // GQA: default would be num_attention_heads (4); 1 proves the key was READ.
+        assert_eq!(cfg.num_key_value_heads, 1);
+        // head_dim EXPLICIT and decoupled — 256, NOT 1152/4 = 288.
+        assert_eq!(cfg.head_dim, 256);
+        assert_ne!(cfg.head_dim, 1152 / 4);
+        assert_eq!(cfg.rope_theta, 1_000_000.0);
+        assert_eq!(cfg.rope_local_base_freq, 10_000.0);
+        assert_eq!(cfg.sliding_window, 512);
+        assert_eq!(cfg.sliding_window_pattern, 6);
+        assert_eq!(cfg.hidden_activation, GemmaActivation::GeluPytorchTanh);
+        // null softcaps → None
+        assert_eq!(cfg.attn_logit_softcapping, None);
+        assert_eq!(cfg.final_logit_softcapping, None);
+    }
+
+    /// A SECOND distinct config: distinct sizes, softcaps PRESENT (→ Some), an
+    /// explicit `hidden_activation: "gelu"` (→ Gelu, exercising the map's other
+    /// arm), and omitted rope_local_base_freq/sliding_window_pattern (→ defaults).
+    #[test]
+    fn gemma3_config_reads_a_second_distinct_config() {
+        let json = r#"{
+            "model_type": "gemma3_text",
+            "vocab_size": 262144,
+            "hidden_size": 2560,
+            "intermediate_size": 10240,
+            "num_hidden_layers": 34,
+            "num_attention_heads": 8,
+            "num_key_value_heads": 4,
+            "head_dim": 256,
+            "max_position_embeddings": 131072,
+            "sliding_window": 1024,
+            "hidden_activation": "gelu",
+            "attn_logit_softcapping": 50.0,
+            "final_logit_softcapping": 30.0
+        }"#;
+        let cfg = Gemma3Config::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.hidden_size, 2560);
+        assert_eq!(cfg.num_key_value_heads, 4);
+        assert_eq!(cfg.head_dim, 256);
+        // explicit "gelu" → Gelu (the map's non-default arm)
+        assert_eq!(cfg.hidden_activation, GemmaActivation::Gelu);
+        assert_eq!(cfg.attn_logit_softcapping, Some(50.0));
+        assert_eq!(cfg.final_logit_softcapping, Some(30.0));
+        // omitted → defaults
+        assert_eq!(cfg.rope_local_base_freq, 10_000.0);
+        assert_eq!(cfg.sliding_window_pattern, 6);
+        assert_ne!(cfg.hidden_size, 1152);
+    }
+
+    /// `num_key_value_heads` ABSENT → defaults to `num_attention_heads`.
+    #[test]
+    fn gemma3_config_gqa_defaults_to_num_heads_when_absent() {
+        let json = r#"{
+            "model_type": "gemma3_text",
+            "vocab_size": 1000,
+            "hidden_size": 64,
+            "intermediate_size": 128,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 8,
+            "head_dim": 16,
+            "max_position_embeddings": 128
+        }"#;
+        let cfg = Gemma3Config::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.num_key_value_heads, 8); // absent → num_attention_heads
+        // absent hidden_activation → Gemma-3's default GeluPytorchTanh
+        assert_eq!(cfg.hidden_activation, GemmaActivation::GeluPytorchTanh);
+    }
+
+    /// TRUE MQA (`num_key_value_heads = 1`) survives, not collapsed.
+    #[test]
+    fn gemma3_config_preserves_true_mqa() {
+        let json = r#"{
+            "model_type": "gemma3_text",
+            "vocab_size": 1000,
+            "hidden_size": 64,
+            "intermediate_size": 128,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 8,
+            "head_dim": 16,
+            "num_key_value_heads": 1,
+            "max_position_embeddings": 128
+        }"#;
+        let cfg = Gemma3Config::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.num_key_value_heads, 1);
+    }
+
+    /// An UNKNOWN `hidden_activation` ERRORS rather than silently defaulting.
+    #[test]
+    fn gemma3_config_rejects_unknown_hidden_activation() {
+        let json = r#"{
+            "model_type": "gemma3_text",
+            "vocab_size": 1000,
+            "hidden_size": 64,
+            "intermediate_size": 128,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 8,
+            "head_dim": 16,
+            "max_position_embeddings": 128,
+            "hidden_activation": "silu"
+        }"#;
+        assert!(Gemma3Config::from_hf_json_str(json).is_err());
+    }
 
     fn tiny_weights(cfg: &Gemma3Config) -> Gemma3Weights {
         let mut s: u32 = 5151;
