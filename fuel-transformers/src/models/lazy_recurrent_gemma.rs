@@ -232,7 +232,7 @@ impl RecurrentGemmaConfigRaw {
             num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
                 self.num_key_value_heads,
                 self.num_attention_heads,
-            ),
+            )?,
             head_dim: self.head_dim,
             lru_width: self.lru_width,
             attention_window_size: self.attention_window_size,

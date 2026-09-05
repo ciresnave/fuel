@@ -280,7 +280,7 @@ impl LFM2ConfigRaw {
             num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
                 self.num_key_value_heads,
                 num_attention_heads,
-            ),
+            )?,
             head_dim,
             intermediate_size: self.block_ff_dim,
             max_position_embeddings: self.max_position_embeddings,
