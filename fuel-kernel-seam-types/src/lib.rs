@@ -747,11 +747,13 @@ impl OpAttrs {
             // (the canonical `[00,00,00,00]` implicit form; recipes keep matmul
             // rank-polymorphic). The rank-2 golden is the shared cross-producer
             // fixture (Baracuda #68).
-            T::MatMul => {
-                if !self.lhs_roles.is_empty() || !self.rhs_roles.is_empty() {
-                    put_u8_list(&mut body, &self.lhs_roles);
-                    put_u8_list(&mut body, &self.rhs_roles);
-                }
+            // A guard rather than a nested `if`: MatMul with BOTH role vectors
+            // empty is the rank-polymorphic implicit form, whose body is empty,
+            // so it falls to the empty-schema arm below and emits the canonical
+            // `[00,00,00,00]`. Same bytes as before, one less branch.
+            T::MatMul if !self.lhs_roles.is_empty() || !self.rhs_roles.is_empty() => {
+                put_u8_list(&mut body, &self.lhs_roles);
+                put_u8_list(&mut body, &self.rhs_roles);
             }
             // Empty-schema ops (elementwise, comparison, Where, scalar
             // reductions, log-softmax, ...) and any tag added later: zero-length.
