@@ -123,6 +123,188 @@ impl LFM2Config {
     }
 }
 
+// ROADMAP item 8 (II), key/shape-mismatch program. LFM2 is the KEY-REMAP case:
+// almost nothing in the HF artifact is spelled the way `LFM2Config` spells it,
+// and two of the fields must be DERIVED rather than read.
+//
+// Measured against the real artifact (`LiquidAI/LFM2-1.2B/config.json`, read
+// directly, not from a description):
+//
+//     HF key                  ->  LFM2Config field       note
+//     block_ff_dim: 12288     ->  intermediate_size
+//     conv_L_cache: 3         ->  conv_kernel_size       capital L, serde rename
+//     norm_eps: 1e-05         ->  rms_norm_eps           see the duplicate-key rule
+//     full_attn_idxs: [..]    ->  block_types            DERIVED, per-layer
+//     (absent)                ->  head_dim               DERIVED, hidden/heads
+//
+// ⚠️ TWO KEYS ARE DUPLICATED IN THE SHIPPED ARTIFACT and a mapper must have a
+// rule rather than a coincidence: `norm_eps` and `block_norm_eps` are BOTH
+// 1e-05, and `num_attention_heads` and `num_heads` are BOTH 32. They agree
+// today. `resolve` therefore ERRORS if a future checkpoint ships them
+// disagreeing, rather than silently preferring one — a config where they
+// disagree means something this port does not understand.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct LFM2ConfigRaw {
+    vocab_size: usize,
+    hidden_size: usize,
+    num_hidden_layers: usize,
+    num_attention_heads: usize,
+    /// LFM2 ships this alongside `num_attention_heads`; see the duplicate rule.
+    #[serde(default)]
+    num_heads: Option<usize>,
+    #[serde(default)]
+    num_key_value_heads: Option<usize>,
+    /// LFM2's spelling of `intermediate_size`.
+    block_ff_dim: usize,
+    /// LFM2's spelling of the conv kernel width. Capital `L` in the artifact.
+    #[serde(rename = "conv_L_cache")]
+    conv_l_cache: usize,
+    /// Indices of the layers that run ATTENTION; every other layer is Conv.
+    full_attn_idxs: Vec<usize>,
+    max_position_embeddings: usize,
+    rope_theta: f64,
+    #[serde(default)]
+    norm_eps: Option<f64>,
+    #[serde(default)]
+    block_norm_eps: Option<f64>,
+    /// ABSENT from every released LFM2 config. Read anyway: if a future
+    /// checkpoint ships one it is authoritative over the derivation.
+    #[serde(default)]
+    head_dim: Option<usize>,
+}
+
+/// Expand `full_attn_idxs` into the per-layer schedule `LFM2Config` requires.
+///
+/// ⚠️ `LFM2Config::validate` requires `block_types.len() == num_hidden_layers`,
+/// so this is a genuine EXPANSION — unlike `RecurrentGemmaConfig`, whose
+/// `block_type()` indexes a repeating CYCLE modulo its length and must NOT be
+/// expanded. Two models, two opposite correct answers for the same-sounding
+/// "block types" field.
+///
+/// An out-of-range index is an ERROR, not a clamp: an index past the last layer
+/// means the artifact and `num_hidden_layers` disagree, and silently dropping it
+/// would produce a well-formed schedule for a different model.
+fn lfm2_block_types_from_attn_idxs(
+    full_attn_idxs: &[usize],
+    num_hidden_layers: usize,
+) -> fuel_core::Result<Vec<LFM2BlockType>> {
+    let mut types = vec![LFM2BlockType::Conv; num_hidden_layers];
+    for &i in full_attn_idxs {
+        if i >= num_hidden_layers {
+            return Err(fuel_core::Error::Msg(format!(
+                "LFM2 config.json: full_attn_idxs contains layer {i}, but \
+                 num_hidden_layers is {num_hidden_layers} — the artifact and the \
+                 layer count disagree"
+            )));
+        }
+        types[i] = LFM2BlockType::Attention;
+    }
+    Ok(types)
+}
+
+/// Reconcile a key HF ships twice. Agreement is required; disagreement is an
+/// error rather than a silent preference.
+fn lfm2_agree<T: PartialEq + std::fmt::Debug>(
+    a: Option<T>,
+    b: Option<T>,
+    a_name: &str,
+    b_name: &str,
+) -> fuel_core::Result<Option<T>> {
+    match (a, b) {
+        (Some(x), Some(y)) if x != y => Err(fuel_core::Error::Msg(format!(
+            "LFM2 config.json: {a_name} ({x:?}) and {b_name} ({y:?}) disagree. \
+             Released checkpoints ship them equal; a config where they differ \
+             means something this port does not model."
+        ))),
+        (Some(x), _) => Ok(Some(x)),
+        (None, y) => Ok(y),
+    }
+}
+
+impl LFM2ConfigRaw {
+    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
+        serde_json::from_str(json)
+            .map_err(|e| fuel_core::Error::Msg(format!("parsing LFM2 config.json: {e}")))
+    }
+
+    fn resolve(self) -> fuel_core::Result<LFM2Config> {
+        let num_attention_heads = lfm2_agree(
+            Some(self.num_attention_heads),
+            self.num_heads,
+            "num_attention_heads",
+            "num_heads",
+        )?
+        .expect("left operand is Some");
+
+        let rms_norm_eps = lfm2_agree(
+            self.norm_eps,
+            self.block_norm_eps,
+            "norm_eps",
+            "block_norm_eps",
+        )?
+        .ok_or_else(|| {
+            fuel_core::Error::Msg(
+                "LFM2 config.json: neither norm_eps nor block_norm_eps present".into(),
+            )
+        })?;
+
+        // ⚠️ ARCHITECTURE-DEPENDENT DEFAULT. No released LFM2 config ships
+        // `head_dim`. `LFM2Config::validate` requires
+        // `num_attention_heads * head_dim == hidden_size`, so the only value
+        // that can satisfy the port's own invariant is `hidden / heads`. An
+        // explicit key, if one ever appears, WINS — the derivation is the
+        // fallback, not an override.
+        let head_dim = match self.head_dim {
+            Some(d) => d,
+            None => {
+                if num_attention_heads == 0 || !self.hidden_size.is_multiple_of(num_attention_heads)
+                {
+                    return Err(fuel_core::Error::Msg(format!(
+                        "LFM2 config.json omits head_dim and hidden_size ({}) is not \
+                         divisible by num_attention_heads ({}), so it cannot be derived",
+                        self.hidden_size, num_attention_heads
+                    )));
+                }
+                self.hidden_size / num_attention_heads
+            }
+        };
+
+        let block_types =
+            lfm2_block_types_from_attn_idxs(&self.full_attn_idxs, self.num_hidden_layers)?;
+
+        let cfg = LFM2Config {
+            vocab_size: self.vocab_size,
+            hidden_size: self.hidden_size,
+            num_hidden_layers: self.num_hidden_layers,
+            num_attention_heads,
+            num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
+                self.num_key_value_heads,
+                num_attention_heads,
+            ),
+            head_dim,
+            intermediate_size: self.block_ff_dim,
+            max_position_embeddings: self.max_position_embeddings,
+            rope_theta: self.rope_theta,
+            rms_norm_eps,
+            conv_kernel_size: self.conv_l_cache,
+            block_types,
+        };
+        cfg.validate()?;
+        Ok(cfg)
+    }
+}
+
+impl LFM2Config {
+    /// Parse a HuggingFace LFM2 `config.json` string into an [`LFM2Config`].
+    ///
+    /// ROADMAP item 8 (II): reads the artifact rather than returning a preset.
+    /// LFM2 is the key-remap case — see `LFM2ConfigRaw` for the full mapping and
+    /// for the two DERIVED fields (`head_dim`, `block_types`).
+    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+        LFM2ConfigRaw::from_json_str(json)?.resolve()
+    }
+}
+
 /// Per-layer weights specialized for the attention variant.
 #[derive(Debug, Clone)]
 pub struct LFM2AttentionWeights {
@@ -824,5 +1006,194 @@ mod tests {
             max_diff < 1e-4,
             "LFM2 forward vs forward_embeds must agree (max diff {max_diff})"
         );
+    }
+
+    /// The REAL `LiquidAI/LFM2-1.2B/config.json`, read from the Hub rather than
+    /// transcribed from a description. Trimmed only of keys this port does not
+    /// model (tokenizer ids, init scales, dtype); every key the mapper reads is
+    /// verbatim, including both duplicated pairs.
+    const LFM2_HF_CONFIG_JSON: &str = r#"{
+        "architectures": ["Lfm2ForCausalLM"],
+        "block_auto_adjust_ff_dim": true,
+        "block_dim": 2048,
+        "block_ff_dim": 12288,
+        "block_multiple_of": 256,
+        "block_norm_eps": 1e-05,
+        "block_use_swiglu": true,
+        "conv_L_cache": 3,
+        "conv_bias": false,
+        "conv_dim": 2048,
+        "full_attn_idxs": [2, 5, 8, 10, 12, 14],
+        "hidden_size": 2048,
+        "max_position_embeddings": 128000,
+        "model_type": "lfm2",
+        "norm_eps": 1e-05,
+        "num_attention_heads": 32,
+        "num_heads": 32,
+        "num_hidden_layers": 16,
+        "num_key_value_heads": 8,
+        "rope_theta": 1000000.0,
+        "use_cache": true,
+        "vocab_size": 65536
+    }"#;
+
+    /// **The remap, asserted field by field against the artifact.**
+    ///
+    /// Every one of these is a CLAIM ABOUT HF'S FORMAT. A wrong claim here does
+    /// not fail to parse — it yields a `LFM2Config` that is well-formed and
+    /// describes a different model, which is why each mapped key is asserted
+    /// individually rather than via a single round-trip.
+    #[test]
+    fn lfm2_config_from_hf_json_maps_every_renamed_key() {
+        let cfg = LFM2Config::from_hf_json_str(LFM2_HF_CONFIG_JSON).unwrap();
+
+        // verbatim keys
+        assert_eq!(cfg.vocab_size, 65536);
+        assert_eq!(cfg.hidden_size, 2048);
+        assert_eq!(cfg.num_hidden_layers, 16);
+        assert_eq!(cfg.num_attention_heads, 32);
+        assert_eq!(cfg.num_key_value_heads, 8);
+        assert_eq!(cfg.max_position_embeddings, 128_000);
+        assert_eq!(cfg.rope_theta, 1_000_000.0);
+
+        // RENAMED keys -- each of these is where a wrong claim would be silent
+        assert_eq!(
+            cfg.intermediate_size, 12288,
+            "block_ff_dim -> intermediate_size"
+        );
+        assert_eq!(cfg.conv_kernel_size, 3, "conv_L_cache -> conv_kernel_size");
+        assert_eq!(cfg.rms_norm_eps, 1e-05, "norm_eps -> rms_norm_eps");
+    }
+
+    /// **`head_dim` is DERIVED when absent — and the "explicit key wins" arm is
+    /// NOT CONSTRUCTIBLE, which is a fact about LFM2 rather than a gap here.**
+    ///
+    /// ⚠️ An earlier version of this test claimed a two-arm structure and its
+    /// second arm was VACUOUS. It set `heads: 16, head_dim: 128` against
+    /// `hidden_size: 2048` — but `2048 / 16 == 128`, so READING the key and
+    /// DERIVING it give the same answer and the arm could not tell them apart.
+    /// A sabotage that forced the mapper to always derive left it GREEN.
+    ///
+    /// The reason no such arm exists: `LFM2Config::validate` requires
+    /// `num_attention_heads * head_dim == hidden_size`, so **every config that
+    /// validates has `head_dim == hidden / heads`**. Reading and deriving are
+    /// observationally identical across the whole legal input space, and the
+    /// distinction is unobservable through the public API by construction.
+    ///
+    /// That is asserted below rather than asserted about: a config whose
+    /// explicit `head_dim` disagrees with the derivation is REJECTED, which is
+    /// what closes the space.
+    #[test]
+    fn lfm2_head_dim_is_derived_when_absent_and_the_relation_closes_the_space() {
+        // ARM 1 -- absent in the real artifact: derived as 2048 / 32.
+        let derived = LFM2Config::from_hf_json_str(LFM2_HF_CONFIG_JSON).unwrap();
+        assert_eq!(derived.head_dim, 64, "2048 / 32");
+        assert!(
+            !LFM2_HF_CONFIG_JSON.contains("\"head_dim\""),
+            "control: the artifact must NOT contain head_dim, or arm 1 proves nothing"
+        );
+
+        // WHY THERE IS NO SECOND ARM: an explicit head_dim that disagrees with
+        // the derivation cannot survive validate(), so no legal config
+        // distinguishes read-vs-derive.
+        let disagreeing = LFM2_HF_CONFIG_JSON.replace(
+            "\"conv_L_cache\": 3",
+            "\"conv_L_cache\": 3, \"head_dim\": 100",
+        );
+        let err = LFM2Config::from_hf_json_str(&disagreeing)
+            .expect_err("head_dim=100 with 32 heads and hidden 2048 must be rejected")
+            .to_string();
+        assert!(
+            err.contains("head_dim"),
+            "rejection must name head_dim, got: {err}"
+        );
+
+        // And a divisibility failure is named rather than silently truncated.
+        let indivisible =
+            LFM2_HF_CONFIG_JSON.replace("\"hidden_size\": 2048", "\"hidden_size\": 2050");
+        assert!(
+            LFM2Config::from_hf_json_str(&indivisible).is_err(),
+            "2050 / 32 does not divide; the derivation must decline, not truncate"
+        );
+    }
+
+    /// **`full_attn_idxs` -> per-layer `block_types`, asserted as the FULL
+    /// sequence.**
+    ///
+    /// ⚠️ Asserting only the LENGTH, or only that attention appears somewhere,
+    /// would pass for an off-by-one or an inverted schedule. The whole 16-element
+    /// vector is pinned, so a derivation that is subtly wrong produces a visible
+    /// diff rather than a plausible Vec of the right length.
+    #[test]
+    fn lfm2_block_types_expand_to_the_exact_per_layer_schedule() {
+        let cfg = LFM2Config::from_hf_json_str(LFM2_HF_CONFIG_JSON).unwrap();
+        use LFM2BlockType::{Attention as A, Conv as C};
+        let expected = vec![
+            C, C, A, C, C, A, C, C, // 0..7   attention at 2, 5
+            A, C, A, C, A, C, A, C, // 8..15  attention at 8, 10, 12, 14
+        ];
+        assert_eq!(
+            cfg.block_types, expected,
+            "full_attn_idxs [2,5,8,10,12,14] over 16 layers"
+        );
+        assert_eq!(
+            cfg.block_types.len(),
+            cfg.num_hidden_layers,
+            "validate() requires one entry per layer -- LFM2 EXPANDS, unlike \
+             RecurrentGemma whose block_types is a repeating CYCLE"
+        );
+        // The inverse is also pinned: exactly the listed indices, nothing else.
+        let attn: Vec<usize> = cfg
+            .block_types
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| **t == LFM2BlockType::Attention)
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(attn, vec![2, 5, 8, 10, 12, 14]);
+    }
+
+    /// An index past the last layer is an ERROR, not a clamp or a skip.
+    ///
+    /// Dropping it silently would yield a well-formed schedule for a model that
+    /// is not the one in the artifact — the exact failure mode this program
+    /// exists to prevent.
+    #[test]
+    fn lfm2_rejects_an_attention_index_past_the_last_layer() {
+        let bad = LFM2_HF_CONFIG_JSON.replace("[2, 5, 8, 10, 12, 14]", "[2, 5, 99]");
+        let err = LFM2Config::from_hf_json_str(&bad).unwrap_err().to_string();
+        assert!(
+            err.contains("full_attn_idxs") && err.contains("99"),
+            "expected the offending index to be NAMED, got: {err}"
+        );
+    }
+
+    /// **The duplicate-key rule, which HF's own artifact makes necessary.**
+    ///
+    /// `norm_eps`/`block_norm_eps` and `num_attention_heads`/`num_heads` are each
+    /// shipped TWICE and agree today. A mapper that silently prefers one is
+    /// encoding a claim it has no evidence for, so disagreement is an error.
+    #[test]
+    fn lfm2_rejects_duplicated_keys_that_disagree() {
+        let eps =
+            LFM2_HF_CONFIG_JSON.replace("\"block_norm_eps\": 1e-05", "\"block_norm_eps\": 1e-03");
+        let err = LFM2Config::from_hf_json_str(&eps).unwrap_err().to_string();
+        assert!(
+            err.contains("norm_eps"),
+            "eps disagreement must name the keys: {err}"
+        );
+
+        let heads = LFM2_HF_CONFIG_JSON.replace("\"num_heads\": 32", "\"num_heads\": 16");
+        let err = LFM2Config::from_hf_json_str(&heads)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("num_heads"),
+            "head-count disagreement must name the keys: {err}"
+        );
+
+        // CONTROL: they agree in the real artifact, so the guard is not simply
+        // rejecting everything.
+        assert!(LFM2Config::from_hf_json_str(LFM2_HF_CONFIG_JSON).is_ok());
     }
 }
