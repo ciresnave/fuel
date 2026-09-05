@@ -105,8 +105,8 @@ impl Qwen3MoeConfigRaw {
             .map_err(|e| fuel_core::Error::Msg(format!("parsing Qwen3-MoE config.json: {e}")))
     }
 
-    fn resolve(self) -> Qwen3MoeConfig {
-        Qwen3MoeConfig {
+    fn resolve(self) -> Result<Qwen3MoeConfig> {
+        Ok(Qwen3MoeConfig {
             vocab_size: self.vocab_size,
             hidden_size: self.hidden_size,
             intermediate_size: self.intermediate_size,
@@ -121,7 +121,7 @@ impl Qwen3MoeConfigRaw {
             num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
                 self.num_key_value_heads,
                 self.num_attention_heads,
-            ),
+            )?,
             max_position_embeddings: self.max_position_embeddings,
             sliding_window: self.sliding_window,
             max_window_layers: self.max_window_layers.unwrap_or(self.num_hidden_layers),
@@ -132,7 +132,7 @@ impl Qwen3MoeConfigRaw {
             moe_intermediate_size: self.moe_intermediate_size,
             num_experts: self.num_experts,
             num_experts_per_tok: self.num_experts_per_tok,
-        }
+        })
     }
 }
 
@@ -142,7 +142,7 @@ impl Qwen3MoeConfig {
     /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
     /// see the born-red `qwen3_moe_config_from_hf_json_parses_the_artifact`.
     pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
-        Ok(Qwen3MoeConfigRaw::from_json_str(json)?.resolve())
+        Qwen3MoeConfigRaw::from_json_str(json)?.resolve()
     }
 }
 
