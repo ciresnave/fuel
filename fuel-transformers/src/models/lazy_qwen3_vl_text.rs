@@ -119,9 +119,9 @@ impl Qwen3VlTextConfigRaw {
             .map_err(|e| fuel_core::Error::Msg(format!("parsing Qwen3-VL config.json: {e}")))
     }
 
-    fn resolve(self) -> Qwen3VlTextConfig {
+    fn resolve(self) -> Result<Qwen3VlTextConfig> {
         let t = self.text_config;
-        Qwen3VlTextConfig {
+        Ok(Qwen3VlTextConfig {
             vocab_size: t.vocab_size,
             hidden_size: t.hidden_size,
             intermediate_size: t.intermediate_size,
@@ -130,7 +130,7 @@ impl Qwen3VlTextConfigRaw {
             num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
                 t.num_key_value_heads,
                 t.num_attention_heads,
-            ),
+            )?,
             head_dim: fuel_core::hf_config::head_dim(
                 t.head_dim,
                 t.hidden_size,
@@ -146,7 +146,7 @@ impl Qwen3VlTextConfigRaw {
             tie_word_embeddings: t.tie_word_embeddings,
             // Lifted from the nested `text_config.rope_scaling`.
             mrope_section: t.rope_scaling.mrope_section,
-        }
+        })
     }
 }
 
@@ -157,7 +157,7 @@ impl Qwen3VlTextConfig {
     /// ROADMAP item 8 (II), nested-artifact extension — see the born-red
     /// `qwen3_vl_text_config_from_hf_json_parses_the_nested_text_config`.
     pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
-        Ok(Qwen3VlTextConfigRaw::from_json_str(json)?.resolve())
+        Qwen3VlTextConfigRaw::from_json_str(json)?.resolve()
     }
 }
 

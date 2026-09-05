@@ -69,8 +69,17 @@ pub fn head_dim(explicit: Option<usize>, hidden_size: usize, num_attention_heads
 /// lives here rather than being written out per model. It runs at PARSE time,
 /// per the constitution: every check that CAN run at build time MUST.
 ///
-/// ⚠️ It does NOT cover models that do not route through this function --
-/// measured, 7 of the 18 unguarded models do not. GAP-282 stays open for those.
+/// ⚠️ It does NOT cover models that do not route through this function.
+/// Measured at `4dd37b9a`: of the 18 GQA-capable models with no check, THIRTEEN
+/// route here and are covered; FIVE do not -- `gemma4_text`, `gemma4_vision`,
+/// `llava`, `qwen2_moe`, `z_image`. GAP-282 stays OPEN for those five, and a
+/// green gate here is not coverage of all eighteen.
+///
+/// ⚠️ That split moved under a measurement already taken: it was 11/7 at
+/// `be6d368c`, and #103 added `qwen3_vl_text` and `voxtral` as callers while
+/// this change was in flight. The caller set is DATA, and a merge adds members
+/// to it with zero conflicts -- so the number is stamped with the ref it was
+/// measured at, and re-deriving it is cheap.
 #[inline]
 pub fn num_key_value_heads(explicit: Option<usize>, num_attention_heads: usize) -> Result<usize> {
     let kv = explicit.unwrap_or(num_attention_heads);
