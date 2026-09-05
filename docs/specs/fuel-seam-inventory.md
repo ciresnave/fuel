@@ -102,9 +102,15 @@ are **confirmed migration-data-loss rows.**
 
 ## 3. FDX — the larger half, and the one nobody scoped
 
-**179 public items** — `codes.rs` 101, `validate.rs` 28, `abi.rs` 19, `sidecar.rs` 16,
-`convert.rs` 15, `header_check.rs` 0 — in `fuel-ir/src/dlpack/`, plus
-`fuel-memory/src/dlpack_view.rs`.
+**166 top-level `pub` items** — `codes.rs` 101, `validate.rs` 28, `sidecar.rs` 15,
+`convert.rs` 14, `abi.rs` 8, `header_check.rs` 0 — in `fuel-ir/src/dlpack/`, plus
+`fuel-memory/src/dlpack_view.rs` (not counted).
+
+> ⚠️ **CORRECTED 2026-09-05, SAME DEFECT AS §4: this said 179**, from the same
+> `^\s*pub …` query that also matches **indented** items inside `impl` blocks. `abi.rs`
+> carries the whole error (19 → 8). **The correction to §4 was reported by a lane for ONE
+> crate; re-measuring the whole document found this second instance, which nobody had
+> flagged.** *A defective instrument does not confine itself to the row someone noticed.*
 
 **The regulated substance, by spec section:**
 
@@ -146,11 +152,35 @@ not** — a `contributed-BY-Fuel` **fidelity** question, not an equivalence one.
 
 ## 4. Seam types — published interop surface
 
-**66 public items.** `fuel-kernel-seam-types` 40 · `fuel-kernel-seam-announce` 18 ·
-`fuel-kernel-seam` 8.
+**57 top-level `pub` items** — `fuel-kernel-seam-types` 35 · `fuel-kernel-seam-announce` 15 ·
+`fuel-kernel-seam` 7 — counting `pub struct/enum/trait/type/fn/const` **at column 0**.
 
-> ⚠️ **These are the only Fuel crates in `[patch.crates-io]`.** A capability living in a
-> published seam type is regulated **whether or not any spec mentions it.**
+> ⚠️ **CORRECTED 2026-09-05. THIS SAID 66 AND THE CONSTRUCT WAS WRONG:** the query was
+> `^\s*pub …`, which also matches **indented** `pub` items — methods inside `impl` blocks —
+> giving 40 / 18 / 8 = 66. **At column 0 it is 35 / 15 / 7 = 57.**
+>
+> ⚠⚠ **AND THE CORRECTION TO THE CORRECTION IS THE LESSON.** Fuel 3 caught that
+> `fuel-kernel-seam` has 7 top-level items and not 8 — **and reported 65, inheriting the
+> other two numbers from the same defective query.** *When a peer corrects one entry in a
+> list you wrote, re-measure the WHOLE list: the error was in how the list was compiled,
+> not in one row.* **Neither 66 nor 65 was right.**
+>
+> **Including struct FIELDS the surface is larger** — Fuel 3 measures **116** elements, which
+> is the population the projected/declared question actually ranges over. *Not independently
+> verified here; cited as theirs.*
+
+> ⚠️ **TWO of these three are in `[patch.crates-io]`, not three:** `fuel-kernel-seam` and
+> `fuel-kernel-seam-types`. **`fuel-kernel-seam-announce` is NOT patched** — it is a workspace
+> and default member at `0.10.3`, but it does not meet the criterion used here to define the
+> population. *(Corrected by Fuel 3; verified against the root manifest.)* A capability living
+> in a **patched** seam type is regulated **whether or not any spec mentions it.**
+>
+> **And `fuel-kernel-seam-announce` has ZERO in-repo consumers** — the only manifests naming it
+> are the root and its own; **15 of its 18 items are DECLARED-ONLY**, two constructs agreeing.
+> Its own doc says why: *"so any provider … can depend on this crate for capability negotiation
+> alone"*. **Built for external consumers, so "nothing in Fuel projects into it" is its design,
+> not a defect** — but an entire published crate sits outside Fuel’s own projection.
+> **`fuel-kernel-seam` is 7/7 PROJECTED.**
 
 `fuel-kernel-seam`: `JitRequest` · `JitBudget` · `JitResponse` · `SynthArtifact` ·
 `ArtifactKind` · `LinkEntry` · `Synthesizer`.
