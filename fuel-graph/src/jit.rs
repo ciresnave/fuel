@@ -737,15 +737,35 @@ mod tests {
     // SOUNDNESS IS A PROPERTY OF (op, field), NOT OF A SITE: the single-axis
     // arm serves eight tags and is sound for four of them.
 
+    /// Why a given (op, field) pair is or is not sound.
+    #[derive(PartialEq)]
+    enum Soundness {
+        /// `op_to_attrs` sets it, so the `unwrap_or` is unreachable.
+        Projected,
+        /// The default IS emitted and DIFFERS from the truth: distinct ops
+        /// collide. KISS-OPS-6.19 makes `axis` mandatory with no default, so
+        /// `unwrap_or(0)` fabricates a value the schema does not permit.
+        Lossy,
+        /// The field is never set AND the default is CORRECT, because no op
+        /// reaching this arm can have the other value. `keepdim` is the case:
+        /// `Op::SumDim`/`MaxDim`/`MeanDim` all document "the reduced dim is
+        /// REMOVED from the output" and `CumSum` is "same shape as input", so
+        /// every tag on this arm is keepdim=false. A keepdim=TRUE reduce is
+        /// `Op::ReduceSumTo(Shape)` -- a DIFFERENT tag on a DIFFERENT arm that
+        /// carries `target_shape` and has no `unwrap_or` at all.
+        ///
+        /// Kept as a row rather than dropped: "never set" has more than one
+        /// cause and only one of them is a defect. A table that shows only the
+        /// defect cannot be checked against the claim that the others are fine.
+        DeadField,
+    }
+
     /// One (op, field) pair that [`OpAttrs::to_canonical_bytes`] reads through
     /// an `unwrap_or` default.
     struct Collapse {
         op: Op,
         field: &'static str,
-        /// `true`  -- `op_to_attrs` sets it, so the default is unreachable and
-        ///            the collapse is inert.
-        /// `false` -- the default IS emitted, and distinct ops collide.
-        projected: bool,
+        soundness: Soundness,
         is_set: fn(&OpAttrs) -> bool,
     }
 
@@ -763,50 +783,58 @@ mod tests {
             start: 0,
             len: 2,
         };
-        let row = |op, field, projected, is_set| Collapse {
+        let row = |op, field, soundness, is_set| Collapse {
             op,
             field,
-            projected,
+            soundness,
             is_set,
         };
+        use Soundness::{DeadField, Lossy, Projected};
         vec![
             // -- sound: the producing arm sets the field --
-            row(slice(), "axis", true, axis),
-            row(slice(), "slice_start", true, |a| a.slice_start.is_some()),
-            row(slice(), "slice_len", true, |a| a.slice_len.is_some()),
-            row(Op::Roll { dim: 0, shift: 1 }, "axis", true, axis),
-            row(Op::Roll { dim: 0, shift: 1 }, "roll_shift", true, |a| {
-                a.roll_shift.is_some()
+            row(slice(), "axis", Projected, axis),
+            row(slice(), "slice_start", Projected, |a| {
+                a.slice_start.is_some()
             }),
-            row(Op::Cast(DType::F32), "cast_dtype", true, dtype),
-            row(pad(), "pad_mode", true, |a| a.pad_mode.is_some()),
-            row(pad(), "pad_value", true, |a| a.pad_value.is_some()),
+            row(slice(), "slice_len", Projected, |a| a.slice_len.is_some()),
+            row(Op::Roll { dim: 0, shift: 1 }, "axis", Projected, axis),
+            row(
+                Op::Roll { dim: 0, shift: 1 },
+                "roll_shift",
+                Projected,
+                |a| a.roll_shift.is_some(),
+            ),
+            row(Op::Cast(DType::F32), "cast_dtype", Projected, dtype),
+            row(pad(), "pad_mode", Projected, |a| a.pad_mode.is_some()),
+            row(pad(), "pad_value", Projected, |a| a.pad_value.is_some()),
             row(
                 Op::MaskedFill {
                     value: crate::Scalar::F32(0.0),
                 },
                 "cast_dtype",
-                true,
+                Projected,
                 dtype,
             ),
-            row(Op::Concat { dim: 0 }, "axis", true, axis),
-            row(Op::Flip { dim: 0 }, "axis", true, axis),
-            row(Op::Triu { diagonal: 0 }, "axis", true, axis),
-            row(Op::Tril { diagonal: 0 }, "axis", true, axis),
-            row(Op::SumDim(0), "axis", true, axis),
-            row(Op::MaxDim(0), "axis", true, axis),
-            row(Op::MeanDim(0), "axis", true, axis),
+            row(Op::Concat { dim: 0 }, "axis", Projected, axis),
+            row(Op::Flip { dim: 0 }, "axis", Projected, axis),
+            row(Op::Triu { diagonal: 0 }, "axis", Projected, axis),
+            row(Op::Tril { diagonal: 0 }, "axis", Projected, axis),
+            row(Op::SumDim(0), "axis", Projected, axis),
+            row(Op::MaxDim(0), "axis", Projected, axis),
+            row(Op::MeanDim(0), "axis", Projected, axis),
             // -- lossy: `_ => {}` leaves the field unset; the default is emitted --
-            row(Op::IndexSelect { dim: 1 }, "axis", false, axis),
-            row(Op::Gather { dim: 1 }, "axis", false, axis),
-            row(Op::IndexAdd { dim: 1 }, "axis", false, axis),
-            row(Op::ScatterAdd { dim: 1 }, "axis", false, axis),
-            row(Op::CumSum { dim: 1 }, "axis", false, axis),
-            // `keepdim` is set by NOTHING repo-wide, so every reduce tag is lossy.
-            row(Op::SumDim(0), "keepdim", false, keepdim),
-            row(Op::MaxDim(0), "keepdim", false, keepdim),
-            row(Op::MeanDim(0), "keepdim", false, keepdim),
-            row(Op::CumSum { dim: 1 }, "keepdim", false, keepdim),
+            row(Op::IndexSelect { dim: 1 }, "axis", Lossy, axis),
+            row(Op::Gather { dim: 1 }, "axis", Lossy, axis),
+            row(Op::IndexAdd { dim: 1 }, "axis", Lossy, axis),
+            row(Op::ScatterAdd { dim: 1 }, "axis", Lossy, axis),
+            row(Op::CumSum { dim: 1 }, "axis", Lossy, axis),
+            // `keepdim` is set by NOTHING repo-wide -- and unlike `axis` that is
+            // NOT a defect: every tag on this arm removes the reduced dim, so
+            // `false` is the true value. See `Soundness::DeadField`.
+            row(Op::SumDim(0), "keepdim", DeadField, keepdim),
+            row(Op::MaxDim(0), "keepdim", DeadField, keepdim),
+            row(Op::MeanDim(0), "keepdim", DeadField, keepdim),
+            row(Op::CumSum { dim: 1 }, "keepdim", DeadField, keepdim),
         ]
     }
 
@@ -830,7 +858,10 @@ mod tests {
     /// lossy set -- this test is what makes that visible.
     #[test]
     fn canonical_bytes_projected_fields_are_actually_set() {
-        for c in collapse_table().iter().filter(|c| c.projected) {
+        for c in collapse_table()
+            .iter()
+            .filter(|c| c.soundness == Soundness::Projected)
+        {
             let a = op_to_attrs(&c.op);
             assert!(
                 (c.is_set)(&a),
@@ -843,20 +874,65 @@ mod tests {
         }
     }
 
-    /// PIN, not an endorsement: these nine (op, field) pairs are DEFECTS, held
-    /// so that fixing one is visible. Fixing the encoder is a wire-format
-    /// change on a published format and needs the external ask first; until
-    /// then this records exactly which collapses are live.
+    /// PIN, not an endorsement: these five (op, field) pairs are DEFECTS,
+    /// held so that fixing one is visible. KISS-OPS-6.19 makes `axis` MANDATORY
+    /// with NO default, so `unwrap_or(0)` fabricates a value the schema does
+    /// not permit. Fixing the encoder is a wire-format change and needs the
+    /// external ask first; until then this records which collapses are live.
     #[test]
     fn canonical_bytes_lossy_collapses_are_pinned_gap287() {
-        for c in collapse_table().iter().filter(|c| !c.projected) {
+        for c in collapse_table()
+            .iter()
+            .filter(|c| c.soundness == Soundness::Lossy)
+        {
             let a = op_to_attrs(&c.op);
             assert!(
                 !(c.is_set)(&a),
                 "`{}` is now SET for {:?} -- the GAP-287 collapse was fixed. \
-                 That is good news: move this row to `projected: true` and \
+                 That is good news: move this row to `Soundness::Projected` and \
                  update the GAP-287 row and the to_canonical_bytes doc.",
                 c.field,
+                c.op
+            );
+        }
+    }
+
+    /// `keepdim` is unset everywhere AND that is CORRECT -- the separation this
+    /// table exists to make.
+    ///
+    /// I originally tiered `keepdim` as the WORST of these, reasoning "unset
+    /// universally, and it changes output rank". The first half is measured and
+    /// true; the second does not follow, and checking it refutes it. Every tag
+    /// on this arm removes the reduced dim (`CumSum` does not reduce at all),
+    /// so `false` is the true value, not a fabrication. keepdim=TRUE is
+    /// `Op::ReduceSumTo(Shape)` -- a different tag whose arm carries
+    /// `target_shape` and has no `unwrap_or`.
+    ///
+    /// A field being unset is only a defect if the default CAN differ from the
+    /// truth. This asserts the premise that makes the default correct, so that
+    /// adding a keepdim-varying reduce under one of these tags reddens here
+    /// rather than silently making the encoder wrong.
+    #[test]
+    fn keepdim_is_a_dead_field_not_a_lossy_collapse_gap287() {
+        for c in collapse_table()
+            .iter()
+            .filter(|c| c.soundness == Soundness::DeadField)
+        {
+            let a = op_to_attrs(&c.op);
+            assert!(
+                !(c.is_set)(&a),
+                "`{}` is now SET for {:?}. If a keepdim-varying reduce was added under this tag, unwrap_or(false) is no longer correct and this row moves to Soundness::Lossy.",
+                c.field,
+                c.op
+            );
+            // The premise: no op on this arm can have keepdim = true, because
+            // Fuel expresses that as a different TAG.
+            assert!(
+                !matches!(
+                    op_to_tag(&c.op),
+                    Some(OpTag::ReduceSumTo) | Some(OpTag::ReduceMaxTo)
+                ),
+                "{:?} now projects to a shape-target reduce tag, which is where keepdim=true lives -- the arm assumption has changed",
                 c.op
             );
         }

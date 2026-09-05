@@ -567,19 +567,27 @@ impl OpAttrs {
     /// kernel-seam-interop.md §7.3.2.
     ///
     /// M-3: the `unwrap_or(...)` defaults below cannot distinguish an *unset*
-    /// field from a genuine zero (e.g. `axis: None` vs `Some(0)`), and for six
-    /// fields that collapse is **LOSSY TODAY** - two semantically distinct ops
-    /// serialize to identical bytes. Registry: GAP-287.
+    /// field from a genuine zero (e.g. `axis: None` vs `Some(0)`), and for five
+    /// (op, field) pairs that collapse is **LOSSY TODAY** - two semantically
+    /// distinct ops serialize to identical bytes. Registry: GAP-287.
     ///
     /// This paragraph previously read *"harmless today ... an op that reaches a
     /// given arm always has the field set (`op_to_attrs` / `tag_to_op`
     /// guarantee it)"*. **That was false, and the guarantor's own doc says so**:
     /// `fuel_graph::jit::op_to_attrs` documents itself as *"not exhaustive"* and
     /// leaves `axis` unset for `CumSum`/`IndexSelect`/`Gather`/`IndexAdd`/
-    /// `ScatterAdd` (its `_ => {}` arm), while `keepdim` is set by **nothing in
-    /// the repository**. So `Gather` on axis 2 and on axis 0 emit the same
-    /// bytes, and every projected reduce emits `keepdim = false` regardless of
-    /// its real value - a difference in output RANK, erased.
+    /// `ScatterAdd` (its `_ => {}` arm). So `Gather` on axis 2 and on axis 0
+    /// emit the same bytes. KISS-OPS-6.19 makes `axis` MANDATORY with no
+    /// default, so `unwrap_or(0)` fabricates a value the schema does not permit.
+    ///
+    /// `keepdim` is also set by **nothing in the repository**, and that one is
+    /// NOT a defect - the distinction worth keeping. Every tag on that arm
+    /// removes the reduced dim (`Op::SumDim`/`MaxDim`/`MeanDim` say so verbatim;
+    /// `CumSum` is "same shape as input"), so `false` is the true value.
+    /// keepdim=TRUE is `Op::ReduceSumTo(Shape)`: a different tag, on the
+    /// shape-target arm, with no `unwrap_or` at all. **A field being unset is
+    /// only a defect if the default CAN differ from the truth** - "never set"
+    /// has several causes and only one of them is this bug.
     ///
     /// `const_bits`, `slot_index`, `scan_role` and `scan_index` are reachable
     /// only from hand-built regions (`op_to_tag` emits none of the four leaf
