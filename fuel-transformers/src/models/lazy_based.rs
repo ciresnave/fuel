@@ -371,11 +371,17 @@ impl BasedModel {
         let n_heads = cfg.la.num_heads;
         let d_feat = cfg.la.feature_dim;
         // Eager v_dim: v_proj outputs hidden, reshaped to (b, l, num_heads, hidden/num_heads).
-        assert_eq!(
-            h % n_heads,
-            0,
-            "BasedConfig: hidden_size must be divisible by la.num_heads",
-        );
+        // GAP-281: a typed decline, not a panic. `d_h_v = h / n_heads` below is
+        // integer division, so a non-dividing head count truncates silently.
+        //
+        // ⚠️ This site states the relation on LOCALS (`h`, `n_heads`), which is
+        // why the field-name census for this relation could not see it. The
+        // message named the fields; the operands did not.
+        if !h.is_multiple_of(n_heads) {
+            return Err(fuel_core::Error::Msg(format!(
+                "BasedConfig: hidden_size ({h}) must be divisible by la.num_heads ({n_heads})"
+            )));
+        }
         let d_h_v = h / n_heads;
         let d_expanded = d_feat * d_feat + d_feat + 1;
 
@@ -1029,5 +1035,47 @@ mod tests {
             .embed_tokens_anchored(&anchor, &[1_u32, 2, 3])
             .unwrap();
         assert!(model.forward_embeds(&embeds, 1).is_err());
+    }
+
+    /// GAP-281 (dim/head relation): `hidden_size % la.num_heads` must DECLINE,
+    /// not panic. `d_h_v = h / n_heads` is integer division, so a non-dividing
+    /// head count truncates silently.
+    ///
+    /// ⚠️ This site states the relation on LOCALS, which is why the field-name
+    /// census for this relation did not find it -- it was located only by a
+    /// broader sweep over ALL production divisibility asserts. The message named
+    /// the fields; the operands did not.
+    ///
+    /// Weights are built FOR the bad config: the assert sits inside
+    /// `apply_linear`, so valid-config weights would fail a shape check first.
+    ///
+    /// Born-red by sabotage: dropping the check fails this arm alone.
+    #[test]
+    fn linear_attention_head_divisibility_declines_rather_than_panicking() {
+        let valid = tiny_config();
+        let tokens: Vec<u32> = vec![1, 2, 3];
+
+        // CONTROL: the conforming config still runs.
+        let good = BasedModel {
+            config: valid.clone(),
+            weights: tiny_weights(&valid),
+        };
+        good.forward(&tokens, 0)
+            .expect("control: the conforming config must still run");
+
+        let mut bad = valid.clone();
+        bad.la.num_heads = 3; // hidden_size 8 % 3 == 2
+        let model = BasedModel {
+            config: bad.clone(),
+            weights: tiny_weights(&bad),
+        };
+        let err = model
+            .forward(&tokens, 0)
+            .expect_err("a non-dividing head count must DECLINE, not panic");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("hidden_size") && msg.contains("num_heads"),
+            "the decline must name both operands, got: {msg}"
+        );
     }
 }

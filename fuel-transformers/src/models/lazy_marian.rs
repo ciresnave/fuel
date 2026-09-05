@@ -165,16 +165,20 @@ impl MarianModel {
             cfg.share_encoder_decoder_embeddings,
             "v1 only supports shared encoder+decoder embeddings",
         );
-        assert_eq!(
-            cfg.d_model % cfg.encoder_attention_heads,
-            0,
-            "d_model must be divisible by encoder_attention_heads",
-        );
-        assert_eq!(
-            cfg.d_model % cfg.decoder_attention_heads,
-            0,
-            "d_model must be divisible by decoder_attention_heads",
-        );
+        // GAP-281: a typed decline, not a panic.
+        if !cfg.d_model.is_multiple_of(cfg.encoder_attention_heads) {
+            return Err(fuel_core::Error::Msg(format!(
+                "MarianConfig: d_model ({}) must be divisible by encoder_attention_heads ({})",
+                cfg.d_model, cfg.encoder_attention_heads,
+            )));
+        }
+        // GAP-281: a typed decline, not a panic.
+        if !cfg.d_model.is_multiple_of(cfg.decoder_attention_heads) {
+            return Err(fuel_core::Error::Msg(format!(
+                "MarianConfig: d_model ({}) must be divisible by decoder_attention_heads ({})",
+                cfg.d_model, cfg.decoder_attention_heads,
+            )));
+        }
 
         // Build a single embed tensor (== single graph) and reuse it
         // for both encoder + decoder so cross-attention can matmul
@@ -214,11 +218,13 @@ impl MarianModel {
             cfg.share_encoder_decoder_embeddings,
             "v1 only supports shared encoder+decoder embeddings",
         );
-        assert_eq!(
-            cfg.d_model % cfg.encoder_attention_heads,
-            0,
-            "d_model must be divisible by encoder_attention_heads",
-        );
+        // GAP-281: a typed decline, not a panic.
+        if !cfg.d_model.is_multiple_of(cfg.encoder_attention_heads) {
+            return Err(fuel_core::Error::Msg(format!(
+                "MarianConfig: d_model ({}) must be divisible by encoder_attention_heads ({})",
+                cfg.d_model, cfg.encoder_attention_heads,
+            )));
+        }
         let embed = Tensor::from_f32(
             self.weights.shared_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.d_model]),
@@ -316,11 +322,13 @@ impl MarianModel {
             cfg.share_encoder_decoder_embeddings,
             "v1 only supports shared encoder+decoder embeddings",
         );
-        assert_eq!(
-            cfg.d_model % cfg.decoder_attention_heads,
-            0,
-            "d_model must be divisible by decoder_attention_heads",
-        );
+        // GAP-281: a typed decline, not a panic.
+        if !cfg.d_model.is_multiple_of(cfg.decoder_attention_heads) {
+            return Err(fuel_core::Error::Msg(format!(
+                "MarianConfig: d_model ({}) must be divisible by decoder_attention_heads ({})",
+                cfg.d_model, cfg.decoder_attention_heads,
+            )));
+        }
 
         let embed = enc_out.const_f32_like(
             self.weights.shared_embedding.clone(),
@@ -1151,5 +1159,44 @@ mod tests {
         for &v in &hidden.realize_f32() {
             assert!(v.is_finite(), "non-finite hidden: {v}");
         }
+    }
+
+    /// GAP-281 (dim/head relation): `d_model % {encoder,decoder}_attention_heads`
+    /// must DECLINE, not panic.
+    ///
+    /// ⚠️ Weights are built FOR the bad config. This check sits inside `forward`,
+    /// so weights sized to the VALID config would fail a shape check first and the
+    /// test would measure that instead -- the short-circuit route to a vacuous
+    /// oracle, which cost a fixture on `parler_tts` earlier in this family.
+    ///
+    /// Born-red by sabotage: dropping a divisibility check fails this arm alone.
+    #[test]
+    fn dim_head_mismatch_declines_rather_than_panicking() {
+        let valid = tiny_config();
+        let src = [1_u32, 2, 3, 4];
+        let tgt = [5_u32, 6, 7];
+
+        // CONTROL: the conforming config still runs.
+        let good = MarianModel {
+            config: valid.clone(),
+            weights: tiny_weights(&valid),
+        };
+        good.forward(&src, &tgt)
+            .expect("control: the conforming config must still run");
+
+        let mut bad = valid.clone();
+        bad.encoder_attention_heads = 3; // d_model 8 % 3 == 2
+        let model = MarianModel {
+            config: bad.clone(),
+            weights: tiny_weights(&bad),
+        };
+        let err = model
+            .forward(&src, &tgt)
+            .expect_err("a non-dividing head count must DECLINE, not panic");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("d_model") && msg.contains("encoder_attention_heads"),
+            "the decline must name both operands, got: {msg}"
+        );
     }
 }
