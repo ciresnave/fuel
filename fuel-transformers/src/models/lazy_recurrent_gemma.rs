@@ -121,6 +121,157 @@ impl RecurrentGemmaConfig {
     }
 }
 
+// ROADMAP item 8 (II), key/shape-mismatch program. RecurrentGemma is the
+// SHAPE case — but not the shape the dispatch described, and the difference is
+// the whole point of reading the code before writing the mapper.
+//
+// Measured against the real artifact (`google/recurrentgemma-2b/config.json`,
+// read through the authenticated Hub connector because the repo is gated):
+//
+//     _block_types: ["recurrent","recurrent","attention"]   3 elements
+//     num_hidden_layers: 26
+//
+// ⚠️ THE DISPATCH SAID THIS NEEDS PATTERN -> PER-LAYER EXPANSION. IT DOES NOT.
+// `RecurrentGemmaConfig::block_type()` indexes
+// `self.block_types[layer_idx % self.block_types.len()]` — a CYCLE — and this
+// module's own header says so: *"Block types are configured by a
+// `block_types: Vec<TemporalBlockType>` cycle, e.g. `[R, R, A]` repeats"*.
+// The existing fixtures use lengths 1 and 3 against larger layer counts.
+// So `_block_types` maps DIRECTLY and expanding it would encode a claim the
+// struct does not make.
+//
+// ⚠️ CONTRAST WITH LFM2, which IS an expansion: `LFM2Config::validate`
+// requires `block_types.len() == num_hidden_layers`. Two models, one
+// same-sounding field, opposite correct answers.
+//
+// ⚠️ AND `attention_window_size` IS ITS OWN FIELD on the struct (read at the
+// attention site), NOT a source for `max_seq_len`. Mapping one into the other
+// would conflate a sliding window with a sequence bound. `max_seq_len` has no
+// counterpart in the artifact — see `resolve` for what it is set to and why.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct RecurrentGemmaConfigRaw {
+    vocab_size: usize,
+    hidden_size: usize,
+    intermediate_size: usize,
+    num_hidden_layers: usize,
+    num_attention_heads: usize,
+    #[serde(default)]
+    num_key_value_heads: Option<usize>,
+    head_dim: usize,
+    #[serde(default)]
+    lru_width: Option<usize>,
+    attention_window_size: usize,
+    conv1d_width: usize,
+    logits_soft_cap: f64,
+    hidden_activation: String,
+    partial_rotary_factor: f64,
+    rms_norm_eps: f64,
+    rope_theta: f64,
+    /// Underscore-prefixed in the artifact. A repeating CYCLE, not a per-layer
+    /// list — mapped verbatim, see the module note above.
+    #[serde(rename = "_block_types")]
+    block_types: Vec<String>,
+    #[serde(default)]
+    attention_bias: bool,
+}
+
+/// Map RecurrentGemma's `_block_types` strings to [`TemporalBlockType`].
+///
+/// Unknown values ERROR rather than defaulting: a block kind this port does not
+/// implement is a fact worth surfacing, and defaulting it to either variant
+/// would produce a model that runs and is wrong.
+fn recurrent_gemma_block_type_from_str(s: &str) -> fuel_core::Result<TemporalBlockType> {
+    match s {
+        "attention" => Ok(TemporalBlockType::Attention),
+        "recurrent" => Ok(TemporalBlockType::Recurrent),
+        other => Err(fuel_core::Error::Msg(format!(
+            "unsupported RecurrentGemma _block_types entry {other:?} \
+             (expected \"attention\" or \"recurrent\")"
+        ))),
+    }
+}
+
+/// Map `hidden_activation` to [`GemmaActivation`]. Unknown values ERROR.
+fn recurrent_gemma_activation_from_str(s: &str) -> fuel_core::Result<GemmaActivation> {
+    match s {
+        "gelu_pytorch_tanh" => Ok(GemmaActivation::GeluPytorchTanh),
+        "gelu" => Ok(GemmaActivation::Gelu),
+        other => Err(fuel_core::Error::Msg(format!(
+            "unsupported RecurrentGemma hidden_activation {other:?} \
+             (expected gelu/gelu_pytorch_tanh)"
+        ))),
+    }
+}
+
+impl RecurrentGemmaConfigRaw {
+    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
+        serde_json::from_str(json)
+            .map_err(|e| fuel_core::Error::Msg(format!("parsing RecurrentGemma config.json: {e}")))
+    }
+
+    fn resolve(self) -> fuel_core::Result<RecurrentGemmaConfig> {
+        if self.block_types.is_empty() {
+            return Err(fuel_core::Error::Msg(
+                "RecurrentGemma config.json: _block_types is empty, so block_type() \
+                 would divide by zero"
+                    .into(),
+            ));
+        }
+        let block_types = self
+            .block_types
+            .iter()
+            .map(|s| recurrent_gemma_block_type_from_str(s))
+            .collect::<fuel_core::Result<Vec<_>>>()?;
+
+        Ok(RecurrentGemmaConfig {
+            vocab_size: self.vocab_size,
+            hidden_size: self.hidden_size,
+            intermediate_size: self.intermediate_size,
+            num_hidden_layers: self.num_hidden_layers,
+            num_attention_heads: self.num_attention_heads,
+            num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
+                self.num_key_value_heads,
+                self.num_attention_heads,
+            )?,
+            head_dim: self.head_dim,
+            lru_width: self.lru_width,
+            attention_window_size: self.attention_window_size,
+            conv1d_width: self.conv1d_width,
+            logits_soft_cap: self.logits_soft_cap,
+            hidden_activation: recurrent_gemma_activation_from_str(&self.hidden_activation)?,
+            partial_rotary_factor: self.partial_rotary_factor,
+            rms_norm_eps: self.rms_norm_eps,
+            rope_theta: self.rope_theta,
+            block_types,
+            attention_bias: self.attention_bias,
+            // ⚠️ NO HF COUNTERPART. RecurrentGemma's config ships no
+            // `max_position_embeddings` — a recurrent model has no positional
+            // table to bound, and its attention layers are windowed instead.
+            // `max_seq_len` is set to the attention window, which is the largest
+            // span any attention layer in this model attends, and is the only
+            // number in the artifact with a defensible claim to the name.
+            //
+            // This is a DERIVED value, not a read one, and the field is
+            // currently unread by the port (declared and fixtured only), so the
+            // choice is unobservable today. Recorded here rather than left to be
+            // rediscovered: if `max_seq_len` ever becomes load-bearing, this
+            // line is a decision that needs re-making, not a fact that was read.
+            max_seq_len: self.attention_window_size,
+        })
+    }
+}
+
+impl RecurrentGemmaConfig {
+    /// Parse a HuggingFace RecurrentGemma `config.json` string.
+    ///
+    /// ROADMAP item 8 (II): reads the artifact rather than returning a preset.
+    /// See `RecurrentGemmaConfigRaw` for why `_block_types` is mapped VERBATIM
+    /// (it is a cycle, not a per-layer list) and what `max_seq_len` is set to.
+    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+        RecurrentGemmaConfigRaw::from_json_str(json)?.resolve()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RgluWeights {
     /// `[lru_width]` — softplus'd per-feature parameter for the decay.
@@ -1068,6 +1219,173 @@ mod tests {
         assert!(
             max_diff < 1e-5,
             "RecurrentGemma forward_hidden vs forward_hidden_embeds must agree (max diff {max_diff})"
+        );
+    }
+
+    /// The REAL `google/recurrentgemma-2b/config.json`. The repo is GATED, so
+    /// this was read through the authenticated Hub connector rather than
+    /// transcribed from a description — which matters, because the dispatch's
+    /// description of two of these fields was wrong and only the artifact
+    /// settled it.
+    const RG_HF_CONFIG_JSON: &str = r#"{
+        "_block_types": ["recurrent", "recurrent", "attention"],
+        "architectures": ["RecurrentGemmaForCausalLM"],
+        "attention_bias": false,
+        "attention_dropout": 0.0,
+        "attention_window_size": 2048,
+        "conv1d_width": 4,
+        "embeddings_scale_by_sqrt_dim": true,
+        "head_dim": 256,
+        "hidden_activation": "gelu_pytorch_tanh",
+        "hidden_size": 2560,
+        "intermediate_size": 15360,
+        "logits_soft_cap": 30.0,
+        "lru_width": 2560,
+        "model_type": "recurrent_gemma",
+        "num_attention_heads": 10,
+        "num_hidden_layers": 26,
+        "num_key_value_heads": 1,
+        "partial_rotary_factor": 0.5,
+        "rms_norm_eps": 1e-06,
+        "rope_theta": 10000.0,
+        "vocab_size": 256000
+    }"#;
+
+    #[test]
+    fn recurrent_gemma_config_from_hf_json_maps_the_artifact() {
+        let cfg = RecurrentGemmaConfig::from_hf_json_str(RG_HF_CONFIG_JSON).unwrap();
+        assert_eq!(cfg.vocab_size, 256_000);
+        assert_eq!(cfg.hidden_size, 2560);
+        assert_eq!(cfg.intermediate_size, 15360);
+        assert_eq!(cfg.num_hidden_layers, 26);
+        assert_eq!(cfg.num_attention_heads, 10);
+        assert_eq!(cfg.num_key_value_heads, 1);
+        assert_eq!(cfg.head_dim, 256);
+        assert_eq!(cfg.lru_width, Some(2560));
+        assert_eq!(cfg.conv1d_width, 4);
+        assert_eq!(cfg.logits_soft_cap, 30.0);
+        assert_eq!(cfg.partial_rotary_factor, 0.5);
+        assert_eq!(cfg.rms_norm_eps, 1e-06);
+        assert_eq!(cfg.rope_theta, 10000.0);
+        assert_eq!(cfg.hidden_activation, GemmaActivation::GeluPytorchTanh);
+        assert!(!cfg.attention_bias);
+    }
+
+    /// **`_block_types` is a CYCLE and is mapped VERBATIM — the dispatch said it
+    /// needed per-layer expansion, and the code says otherwise.**
+    ///
+    /// `RecurrentGemmaConfig::block_type()` indexes
+    /// `block_types[layer_idx % block_types.len()]`, and this module's own header
+    /// documents it as a cycle. Expanding a 3-element pattern to 26 entries would
+    /// produce the same answers for layers 0..25 and a DIFFERENT `len()`, so the
+    /// error message at the weight-shape check would name a modulus that does not
+    /// match the config. Verbatim is the faithful mapping.
+    ///
+    /// ⚠️ The per-layer SCHEDULE is asserted anyway — as the sequence
+    /// `block_type()` produces — because that is the observable a wrong tiling
+    /// would corrupt. An off-by-one or a repeat-instead-of-cycle fails here.
+    #[test]
+    fn recurrent_gemma_block_types_are_a_cycle_not_an_expansion() {
+        let cfg = RecurrentGemmaConfig::from_hf_json_str(RG_HF_CONFIG_JSON).unwrap();
+        use TemporalBlockType::{Attention as A, Recurrent as R};
+
+        // Mapped verbatim: THREE entries, not twenty-six.
+        assert_eq!(
+            cfg.block_types,
+            vec![R, R, A],
+            "the pattern is stored as-is"
+        );
+        assert_eq!(
+            cfg.block_types.len(),
+            3,
+            "must NOT be expanded to num_hidden_layers -- block_type() cycles"
+        );
+
+        // The observable: the full 26-layer schedule the cycle produces.
+        let schedule: Vec<TemporalBlockType> = (0..cfg.num_hidden_layers)
+            .map(|i| cfg.block_type(i))
+            .collect();
+        let expected = vec![
+            R, R, A, R, R, A, R, R, A, // 0..8
+            R, R, A, R, R, A, R, R, A, // 9..17
+            R, R, A, R, R, A, R, R, // 18..25
+        ];
+        assert_eq!(schedule, expected, "26 layers from [R,R,A]");
+
+        // Pinned as indices too: an off-by-one moves every one of these.
+        let attn: Vec<usize> = (0..cfg.num_hidden_layers)
+            .filter(|i| cfg.block_type(*i) == TemporalBlockType::Attention)
+            .collect();
+        assert_eq!(attn, vec![2, 5, 8, 11, 14, 17, 20, 23]);
+        assert_eq!(attn.len(), 8, "26 layers, every third from index 2");
+    }
+
+    /// An unknown block kind ERRORS rather than defaulting to either variant.
+    ///
+    /// Defaulting would give a model that runs and is wrong — the silent failure
+    /// this whole program exists to prevent.
+    #[test]
+    fn recurrent_gemma_rejects_an_unknown_block_type() {
+        let bad = RG_HF_CONFIG_JSON.replace("\"attention\"]", "\"mamba\"]");
+        let err = RecurrentGemmaConfig::from_hf_json_str(&bad)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("mamba"),
+            "the unsupported value must be NAMED, got: {err}"
+        );
+
+        let empty =
+            RG_HF_CONFIG_JSON.replace("[\"recurrent\", \"recurrent\", \"attention\"]", "[]");
+        assert!(
+            RecurrentGemmaConfig::from_hf_json_str(&empty).is_err(),
+            "an empty cycle would make block_type() divide by zero"
+        );
+    }
+
+    /// An unknown activation ERRORS rather than defaulting.
+    #[test]
+    fn recurrent_gemma_rejects_an_unknown_activation() {
+        let bad = RG_HF_CONFIG_JSON.replace("gelu_pytorch_tanh", "swiglu");
+        let err = RecurrentGemmaConfig::from_hf_json_str(&bad)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("swiglu"),
+            "must name the activation, got: {err}"
+        );
+    }
+
+    /// **`attention_window_size` is its own field and is NOT `max_seq_len`.**
+    ///
+    /// The dispatch described `attention_window_size` as the source for
+    /// `max_seq_len`. They are separate fields on the struct with different
+    /// meanings — the window is read at the attention site; `max_seq_len` has no
+    /// counterpart in the artifact at all.
+    ///
+    /// This pins the distinction so a later "simplification" that folds one into
+    /// the other has to delete an assertion that says why not.
+    #[test]
+    fn recurrent_gemma_attention_window_is_read_as_itself() {
+        let cfg = RecurrentGemmaConfig::from_hf_json_str(RG_HF_CONFIG_JSON).unwrap();
+        assert_eq!(
+            cfg.attention_window_size, 2048,
+            "read verbatim from the artifact"
+        );
+        // max_seq_len is DERIVED from it (documented in `resolve`), so changing
+        // the window moves both -- which is exactly what a reader should be able
+        // to see, rather than inferring that the artifact supplied a max length.
+        let narrower = RG_HF_CONFIG_JSON.replace(
+            "\"attention_window_size\": 2048",
+            "\"attention_window_size\": 512",
+        );
+        let cfg2 = RecurrentGemmaConfig::from_hf_json_str(&narrower).unwrap();
+        assert_eq!(cfg2.attention_window_size, 512);
+        assert_eq!(
+            cfg2.max_seq_len, 512,
+            "max_seq_len has NO HF counterpart and is set to the window -- if this \
+             ever becomes load-bearing it is a decision to re-make, not a fact read \
+             from the artifact"
         );
     }
 }
