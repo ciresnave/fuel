@@ -28,9 +28,7 @@ use std::path::PathBuf;
 const NOT_YET_PARSED: &[&str] = &[
     "lazy_gemma4_text.rs",
     "lazy_granitemoehybrid.rs",
-    "lazy_lfm2.rs",
     "lazy_metavoice.rs",
-    "lazy_recurrent_gemma.rs",
     "lazy_z_image.rs",
 ];
 
@@ -326,7 +324,7 @@ fn exempt_lists_may_only_shrink() {
     // as models are migrated to the rule.
     assert_eq!(
         NOT_YET_PARSED.len(),
-        6,
+        4,
         "NOT_YET_PARSED changed — it may only SHRINK as models gain rule-routed parsers"
     );
     assert_eq!(STRUCTURAL_EXEMPT.len(), 2, "STRUCTURAL_EXEMPT changed");
