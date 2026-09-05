@@ -2,22 +2,23 @@
 //! Carrier (a): the canonical byte serialization of [`OpAttrs`] for an
 //! [`OpTag`], and its typed decline.
 //!
-//! ⚠️ WHY THIS IS ITS OWN FILE. Codacy's metric engine counts COMMENTS as lines
-//! of code — measured: the pre-GAP-287 `to_canonical_bytes` was 114 lines / 74
-//! code / 40 comments and scored 112. Its per-arm rationale (which fields
-//! decline, which keep their default, and why each) is the substance of
-//! GAP-287, so the function is over the limit BECAUSE it is documented.
+//! WHY THIS IS ITS OWN FILE: the three methods, the typed decline, and the
+//! little-endian writers are one unit — every use of `put_*` outside the
+//! serializer is one writer calling another, checked rather than assumed.
 //!
-//! Codacy's only in-repo suppression scope is a FILE GLOB — there is no
-//! per-function or inline mechanism (checked: `.codacy.yml` supports
-//! `exclude_paths` with Java glob syntax; ignoring individual issues is a web-UI
-//! action). Excluding `lib.rs` would silently exempt every other function in a
-//! 1,700-line file. So the serializer moved into a file whose scope IS the thing
-//! being exempted, rather than the exemption being widened to fit the code.
+//! ⚠️ A CLAIM THAT WAS HERE AND WAS FALSE, recorded because it was acted on.
+//! This header asserted that "Codacy's metric engine counts COMMENTS as lines
+//! of code", inferred from the pre-GAP-287 `to_canonical_bytes` being 114 lines
+//! / 74 code / 40 comments and scoring 112. **Refuted, on this file:** Codacy
+//! reports `canonical_body` at 83 lines of code and it has exactly 83
+//! non-comment lines; `leaf_body` at 39 is not flagged at all. Codacy counts
+//! CODE and the limit is 50.
 //!
-//! Same principle as the project rule "when a gate fires on your own tooling,
-//! MOVE THE TOOL rather than teach the gate an exception": an exemption is
-//! permanent and invisible in the gate's claim; a moved file is neither.
+//! The reasoning error is worth more than the fact: 112 matches neither 74 nor
+//! 114, and the closer candidate was treated as confirmed. Ruling out one
+//! hypothesis narrows the space; it does not populate it. The functions below
+//! are split because they are genuinely large, not because documentation is
+//! penalised — that story was never true.
 
 use crate::{OpAttrs, OpTag};
 
@@ -169,6 +170,14 @@ impl OpAttrs {
         // arm for any of them), so they share a decline rule the arms below do
         // not. Tried first so the match below is exactly the graph-projected
         // schema and nothing else.
+        // The INFALLIBLE arms first. They emit a LIST or a role vector and read
+        // no `Option` field, so they cannot decline -- and `list_body` returns a
+        // plain `Option<Vec<u8>>` with NO error channel, so the type says so.
+        // That is the GAP-287 axis itself: an arm either has a required field
+        // that can be unset, or it does not.
+        if let Some(b) = self.list_body(op) {
+            return Ok(b);
+        }
         if let Some(leaf) = self.leaf_body(op)? {
             return Ok(leaf);
         }
@@ -178,20 +187,6 @@ impl OpAttrs {
         let mut body: Vec<u8> = Vec::new();
         match op {
             // Shape-target ops: the logical output shape (Iota's len rides it).
-            T::Reshape | T::BroadcastTo | T::ReduceSumTo | T::ReduceMaxTo | T::Iota => {
-                put_i64_list(&mut body, &self.target_shape);
-            }
-            // Permute/Transpose: the absolute axis order.
-            T::Permute | T::Transpose => {
-                let perm: Vec<u32> = self.perm.iter().map(|&p| p as u32).collect();
-                put_u32_list(&mut body, &perm);
-            }
-            // Squeeze/Unsqueeze: the affected dim list.
-            T::Unsqueeze | T::Squeeze => {
-                let dims: Vec<u32> = self.dims.iter().map(|&d| d as u32).collect();
-                put_u32_list(&mut body, &dims);
-            }
-            // Slice: axis(u32), start(u64), len(u64).
             T::Slice => {
                 put_u32(&mut body, req(self.axis, "axis")? as u32);
                 put_u64(&mut body, req_u64(self.slice_start, "slice_start")?);
@@ -258,9 +253,6 @@ impl OpAttrs {
                 put_f64(&mut body, self.pad_value.unwrap_or(0.0));
             }
             // Scalar-param ops: the scalar list.
-            T::AddScalar | T::MulScalar | T::Clamp | T::PowI => {
-                put_f64_list(&mut body, &self.scalars);
-            }
             // MaskedFill: scalar value(s) + value dtype name.
             //
             // Unlike `Cast`, `tag_to_op` DEFAULTS this one (`None => F32`). But
@@ -285,6 +277,42 @@ impl OpAttrs {
             // (the canonical `[00,00,00,00]` implicit form; recipes keep matmul
             // rank-polymorphic). The rank-2 golden is the shared cross-producer
             // fixture (Baracuda #68).
+            // Empty-schema ops (elementwise, comparison, Where, scalar
+            // reductions, log-softmax, ...) and any tag added later: zero-length.
+            _ => {}
+        }
+        Ok(body)
+    }
+
+    /// The arms that CANNOT decline: they emit a length-prefixed list or a role
+    /// vector, and read no `Option` field.
+    ///
+    /// Returns `Option<Vec<u8>>` rather than `Result<Option<..>>` deliberately.
+    /// There is no error channel because there is no way to fail, and the
+    /// signature is the cheapest possible statement of that -- a guard whose
+    /// sentence is true. `None` means "not one of these arms", so it is total
+    /// over `OpTag` and the caller needs no unreachable case.
+    fn list_body(&self, op: OpTag) -> Option<Vec<u8>> {
+        use OpTag as T;
+        let mut body: Vec<u8> = Vec::new();
+        match op {
+            T::Reshape | T::BroadcastTo | T::ReduceSumTo | T::ReduceMaxTo | T::Iota => {
+                put_i64_list(&mut body, &self.target_shape);
+            }
+            // Permute/Transpose: the absolute axis order.
+            T::Permute | T::Transpose => {
+                let perm: Vec<u32> = self.perm.iter().map(|&p| p as u32).collect();
+                put_u32_list(&mut body, &perm);
+            }
+            // Squeeze/Unsqueeze: the affected dim list.
+            T::Unsqueeze | T::Squeeze => {
+                let dims: Vec<u32> = self.dims.iter().map(|&d| d as u32).collect();
+                put_u32_list(&mut body, &dims);
+            }
+            // Slice: axis(u32), start(u64), len(u64).
+            T::AddScalar | T::MulScalar | T::Clamp | T::PowI => {
+                put_f64_list(&mut body, &self.scalars);
+            }
             // A guard rather than a nested `if`: MatMul with BOTH role vectors
             // empty is the rank-polymorphic implicit form, whose body is empty,
             // so it falls to the empty-schema arm below and emits the canonical
@@ -293,11 +321,9 @@ impl OpAttrs {
                 put_u8_list(&mut body, &self.lhs_roles);
                 put_u8_list(&mut body, &self.rhs_roles);
             }
-            // Empty-schema ops (elementwise, comparison, Where, scalar
-            // reductions, log-softmax, ...) and any tag added later: zero-length.
-            _ => {}
+            _ => return None,
         }
-        Ok(body)
+        Some(body)
     }
 
     /// The four ACKED source-op LEAF arms (KISS ruling record, "four-leaf-arm
