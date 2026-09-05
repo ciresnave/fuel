@@ -370,7 +370,16 @@ fn apply_attention(
     let (k, v) = if num_kv_heads == num_heads {
         (k, v)
     } else {
-        assert_eq!(num_heads % num_kv_heads, 0);
+        // GAP-281: a typed decline, not a panic. The original assert carried NO
+        // MESSAGE, so a violating checkpoint got a bare line number; the decline
+        // names the values. Relation is on LOCALS here (the `sam` shape), so the
+        // message supplies the names the site does not have.
+        if !num_heads.is_multiple_of(num_kv_heads) {
+            return Err(fuel_core::Error::Msg(format!(
+                "ParlerDecoderConfig: num_attention_heads ({num_heads}) must be a \n                 multiple of num_kv_heads ({num_kv_heads})"
+            ))
+            .bt());
+        }
         let n_rep = num_heads / num_kv_heads;
         let k = repeat_along_head_dim(&k, b, num_kv_heads, n_rep, kv_len, head_dim)?;
         let v = repeat_along_head_dim(&v, b, num_kv_heads, n_rep, kv_len, head_dim)?;
@@ -920,5 +929,63 @@ mod tests {
         let logits = model.forward(&ids, Some(&prompt), &enc, 0).unwrap();
         // With prompt P=3, output token length is P + T = 3 + 2 = 5.
         assert_eq!(logits[0].shape().dims(), &[1, 5, cfg.vocab_size]);
+    }
+
+    /// GAP-281 (GQA relation): `num_heads % num_kv_heads == 0` must DECLINE, not panic.
+    ///
+    /// ⚠️ This site is the `sam` shape: the relation is on LOCALS inside a free
+    /// function, and the original assert carried NO MESSAGE AT ALL -- so a panic here
+    /// told the caller nothing beyond a line number. The decline names the values.
+    ///
+    /// The fixture violates ONLY the GQA axis: hidden_size 8 over 4 heads keeps
+    /// head_dim conforming, so no earlier guard can answer first.
+    ///
+    /// Born-red: against the production `assert_eq!` this FAILS BY PANIC.
+    #[test]
+    fn gqa_head_multiple_mismatch_declines_rather_than_panicking() {
+        let valid = tiny_config();
+        let dev = Device::cpu();
+        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
+        let input_ids = anchor.const_u32_like(
+            vec![1_u32, 2, 3, 4, 5, 6],
+            Shape::from_dims(&[1, valid.num_codebooks, 3]),
+        );
+        let encoder_states = anchor.const_f32_like(
+            Arc::<[f32]>::from(
+                (0..(5 * valid.hidden_size))
+                    .map(|i| (i as f32) * 0.01)
+                    .collect::<Vec<_>>(),
+            ),
+            Shape::from_dims(&[1, 5, valid.hidden_size]),
+        );
+
+        // POSITIVE CONTROL: the conforming config must SUCCEED.
+        let good = ParlerDecoderModel {
+            config: valid.clone(),
+            weights: tiny_weights(&valid),
+        };
+        good.forward(&input_ids, None, &encoder_states, 0)
+            .expect("control: the conforming config must still run");
+
+        let mut bad = valid.clone();
+        bad.num_kv_heads = Some(3); // 4 % 3 == 1; head_dim stays conforming
+        // ⚠️ Weights are built FOR the bad config, not for `valid`. This site sits
+        // deep inside `apply_attention`, AFTER the kv projections are applied, so
+        // mismatched weight shapes panic FIRST and the test would measure a shape
+        // check instead of the GQA relation -- the short-circuit route to a vacuous
+        // oracle. Sizing the weights to `bad` leaves the head ratio as the only
+        // thing wrong.
+        let model = ParlerDecoderModel {
+            config: bad.clone(),
+            weights: tiny_weights(&bad),
+        };
+        let err = model
+            .forward(&input_ids, None, &encoder_states, 0)
+            .expect_err("a non-multiple kv-head count must DECLINE, not panic");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("kv_heads") || msg.contains("multiple"),
+            "the decline must name the relation it rejected, got: {msg}"
+        );
     }
 }
