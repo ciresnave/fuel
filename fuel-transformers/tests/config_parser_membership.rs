@@ -53,13 +53,21 @@ const STRUCTURAL_EXEMPT: &[&str] = &["lazy_llava.rs", "lazy_qwen2_moe.rs"];
 /// guard whose config ALSO declares a `pub head_dim` field — so the guard's claim
 /// is falsifiable by a real checkpoint that decouples head_dim.
 ///
-/// ⚠️ WHAT THIS PINS AND WHAT IT DOES NOT. This is the class AS DOCUMENTED in
-/// GAP-279 at `bbc969f4`, not a class re-derived here. `mixformer` carries the
-/// guard and declares no `head_dim`, so the stated predicate makes it VACUOUS —
-/// it is DELIBERATELY outside this pin, because adding one model from the outside
-/// is the same act that made the row's split drift from its own census. The
-/// census is to be re-derived once, completely. **Do not read a green here as
-/// "28 is the complete class."**
+/// ⚠️ WHAT THIS PINS AND WHAT IT DOES NOT. This is the census RE-DERIVED on
+/// 2026-09-05, replacing the 28 documented at `bbc969f4`. It is keyed on the
+/// RELATION AT THE COMPARISON SITE, not on any field name: every prior
+/// instrument keyed on `num_attention_heads` or `hidden_size`, and **57 of the
+/// 146 model files contain NEITHER token**, so a third of the corpus was
+/// unreachable by all of them.
+///
+/// **REPORTED AS A FLOOR, and this is the region it cannot see.** `lazy_sam.rs`
+/// states the relation on abbreviated locals (`assert_eq!(nh * hd, c, ..)`) and
+/// was found ONLY because its message string spells the fields out. A site using
+/// abbreviations, with no head token and no descriptive message, is invisible to
+/// the scan that produced this list, and that region is UNSIZED. Two other escape
+/// routes WERE measured and are empty (positive- AND negative-controlled): the
+/// relation written as DIVISION (`width / heads != head_dim`) — 0 sites — and a
+/// PARENTHESISED product — 0 sites.
 const HEAD_DIM_AT_RISK: &[&str] = &[
     "lazy_gemma.rs",
     "lazy_gemma2.rs",
@@ -76,29 +84,67 @@ const HEAD_DIM_AT_RISK: &[&str] = &[
     "lazy_qwen3.rs",
     "lazy_qwen3_moe.rs",
     "lazy_qwen3_vl_text.rs",
+    // ADDED by the 2026-09-05 re-derivation: rwkv5/6/7 were EXCLUDED from
+    // GAP-279 as "a DIFFERENT relation over different fields". They are not.
+    // `head_size` IS the per-head dimension, so `n_heads * head_size ==
+    // hidden_size` is the SAME relation under a different spelling -- a
+    // vocabulary difference read as a relation difference.
+    "lazy_rwkv5.rs",
+    "lazy_rwkv6.rs",
+    "lazy_rwkv7.rs",
     "lazy_smollm3.rs",
     "lazy_stablelm.rs",
     "lazy_starcoder2.rs",
     "lazy_yi.rs",
 ];
 
-/// GAP-279: carry the same guard but declare NO `head_dim` field, so the guard
-/// cannot be violated — the config has no way to express a decoupled head_dim.
+/// GAP-279: carry the same guard, but the per-head dimension is DERIVED
+/// (`width / heads`) rather than stored, so the config cannot express a
+/// DECOUPLED head_dim.
+///
+/// ⚠️ **THIS LIST WAS NAMED `HEAD_DIM_VACUOUS` AND THAT LABEL WAS FALSE.**
+/// `VACUOUS` asserts *the guard cannot fire*. It can: `width / heads` is INTEGER
+/// division, so `heads * (width / heads) == width` FAILS whenever
+/// `width % heads != 0` (100/3 -> 33, and 3 * 33 = 99). These guards are
+/// **DIVISIBILITY CHECKS**: INERT against the decoupling GAP-279 is about, and
+/// LIVE against a different, real defect. The test
+/// `divisibility_is_why_derived_is_not_vacuous` holds that distinction as an
+/// EXECUTABLE fact so the old label cannot come back. A guard must not encode a
+/// claim that is false — and here the false claim was in the NAME.
 ///
 /// The pair is a PARTITION, and the gate below asserts the SET rather than a
-/// count: a model moving VACUOUS -> AT_RISK reds WITH ITS NAME. A count moving
+/// count: a model moving DERIVED -> AT_RISK reds WITH ITS NAME. A count moving
 /// 9 to 8 says something changed and not what.
-const HEAD_DIM_VACUOUS: &[&str] = &[
+const HEAD_DIM_DERIVED: &[&str] = &[
     "lazy_bigcode.rs",
     "lazy_falcon.rs",
     "lazy_granite.rs",
     "lazy_granitemoehybrid.rs",
     "lazy_jina_bert.rs",
+    // ADDED by the re-derivation. `mixformer` was named in the old comment as
+    // deliberately outside the pin; `mpt`/`nomic_bert` use n_heads/n_head with
+    // head_dim()/d_model/n_embd and were unreachable by any instrument keyed on
+    // `num_attention_heads` or `hidden_size`; `sam` states the relation on
+    // abbreviated LOCALS (`nh * hd`) inside assert_eq!, and its call site passes
+    // `cfg.head_dim()`.
+    "lazy_mixformer.rs",
     "lazy_modernbert.rs",
+    "lazy_mpt.rs",
     "lazy_musicgen.rs",
+    "lazy_nomic_bert.rs",
     "lazy_phi3.rs",
     "lazy_qwen2.rs",
+    "lazy_sam.rs",
 ];
+
+/// Spellings a config may use for the STORED per-head dimension.
+///
+/// GAP-279 excluded rwkv5/6/7 as "a DIFFERENT relation over different fields".
+/// They are the SAME relation: `head_size` IS the per-head dimension. A
+/// vocabulary difference was read as a relation difference, and the exclusion
+/// went into the row as a justified fact. This table is why a future spelling
+/// is a one-line change rather than a re-derivation.
+const PER_HEAD_FIELD_SPELLINGS: &[&str] = &["head_dim", "head_size", "d_head", "kv_channels"];
 
 const RULE_CALL: &str = "hf_config::num_key_value_heads";
 
@@ -292,10 +338,10 @@ fn exempt_lists_may_only_shrink() {
     assert_eq!(STRUCTURAL_EXEMPT.len(), 2, "STRUCTURAL_EXEMPT changed");
 }
 
-/// GAP-279: the AT_RISK / VACUOUS split must match what the sources say.
+/// GAP-279: the AT_RISK / DERIVED split must match what the sources say.
 ///
 /// The discriminator is `does the config declare a `pub head_dim` field`, read
-/// with the same struct parser the rest of this file uses. The day a VACUOUS
+/// with the same struct parser the rest of this file uses. The day a DERIVED
 /// model gains an explicit `head_dim`, it becomes falsifiable and this reds
 /// naming it — which is the drift the row exists to track.
 ///
@@ -313,10 +359,14 @@ fn head_dim_dispositions_match_the_sources() {
     // silently empty the comparison and pass.
     let pinned: Vec<&str> = HEAD_DIM_AT_RISK
         .iter()
-        .chain(HEAD_DIM_VACUOUS.iter())
+        .chain(HEAD_DIM_DERIVED.iter())
         .copied()
         .collect();
-    assert_eq!(pinned.len(), 28, "GAP-279 documents 28 members");
+    assert_eq!(
+        pinned.len(),
+        35,
+        "GAP-279 documents 35 members after the 2026-09-05 re-derivation (was 28)"
+    );
     for f in &pinned {
         assert!(
             by_name.contains_key(*f),
@@ -324,28 +374,55 @@ fn head_dim_dispositions_match_the_sources() {
         );
     }
 
-    let declares_head_dim = |file: &str| -> bool {
+    // WIDENED 2026-09-05. The old form keyed on the literal "head_dim" and was
+    // blind in TWO ways the re-derived census exposed:
+    //   SPELLING    rwkv5/6/7 store the per-head dimension as `head_size`.
+    //   DECLARATION `lazy_rwkv6.rs` has NO config struct at all -- it re-exports
+    //               rwkv5's (`pub use ..lazy_rwkv5::Rwkv5Config as Rwkv6Config;`),
+    //               so a per-FILE struct scan finds nothing while the type is real.
+    // Keying on one spelling in a gate that pins a class about a VOCABULARY
+    // difference being mistaken for a RELATION difference was the same defect.
+    let declares_per_head_field = |file: &str| -> bool {
+        let direct = |src: &str| -> bool {
+            config_struct_fields(src)
+                .iter()
+                .any(|fields| PER_HEAD_FIELD_SPELLINGS.iter().any(|n| fields.contains(*n)))
+        };
         let src = &by_name[file];
-        config_struct_fields(src)
-            .iter()
-            .any(|fields| fields.contains("head_dim"))
+        if direct(src) {
+            return true;
+        }
+        // follow `pub use crate::models::<mod>::<Type> as <Alias>Config;`
+        src.lines()
+            .filter(|l| l.contains("pub use") && l.contains("as") && l.contains("Config"))
+            .filter_map(|l| {
+                let path = l.split_whitespace().nth(2)?;
+                let parts: Vec<&str> = path.split("::").collect();
+                let module = parts.get(parts.len().checked_sub(2)?)?;
+                by_name.get(&format!("{module}.rs"))
+            })
+            .any(|aliased| direct(aliased))
     };
 
     let mut wrong_side: Vec<String> = Vec::new();
     for f in HEAD_DIM_AT_RISK {
-        if !declares_head_dim(f) {
-            wrong_side.push(format!("{f}: pinned AT_RISK but declares no head_dim"));
+        if !declares_per_head_field(f) {
+            wrong_side.push(format!(
+                "{f}: pinned AT_RISK but declares no stored per-head field"
+            ));
         }
     }
-    for f in HEAD_DIM_VACUOUS {
-        if declares_head_dim(f) {
-            wrong_side.push(format!("{f}: pinned VACUOUS but NOW DECLARES head_dim"));
+    for f in HEAD_DIM_DERIVED {
+        if declares_per_head_field(f) {
+            wrong_side.push(format!(
+                "{f}: pinned DERIVED but NOW DECLARES a stored per-head field"
+            ));
         }
     }
 
     assert!(
         wrong_side.is_empty(),
-        "GAP-279 disposition drift: {wrong_side:?}. A VACUOUS model that gains an explicit head_dim becomes able to express a decoupled config, so the guard's claim becomes falsifiable for it — move it to HEAD_DIM_AT_RISK and update the GAP-279 row in the same change."
+        "GAP-279 disposition drift: {wrong_side:?}. A DERIVED model that gains a stored per-head field (any of PER_HEAD_FIELD_SPELLINGS, in its own config or in one it re-exports) becomes able to express a decoupled config, so the guard's claim becomes falsifiable for it — move it to HEAD_DIM_AT_RISK and update the GAP-279 row in the same change."
     );
 }
 
@@ -357,7 +434,7 @@ fn head_dim_dispositions_match_the_sources() {
 #[test]
 fn head_dim_lists_are_a_partition() {
     let at: BTreeSet<&str> = HEAD_DIM_AT_RISK.iter().copied().collect();
-    let vac: BTreeSet<&str> = HEAD_DIM_VACUOUS.iter().copied().collect();
+    let vac: BTreeSet<&str> = HEAD_DIM_DERIVED.iter().copied().collect();
     assert_eq!(
         at.len(),
         HEAD_DIM_AT_RISK.len(),
@@ -365,12 +442,45 @@ fn head_dim_lists_are_a_partition() {
     );
     assert_eq!(
         vac.len(),
-        HEAD_DIM_VACUOUS.len(),
-        "duplicate in HEAD_DIM_VACUOUS"
+        HEAD_DIM_DERIVED.len(),
+        "duplicate in HEAD_DIM_DERIVED"
     );
     let both: Vec<&&str> = at.intersection(&vac).collect();
     assert!(
         both.is_empty(),
-        "a model cannot be both AT_RISK and VACUOUS: {both:?}"
+        "a model cannot be both AT_RISK and DERIVED: {both:?}"
     );
+}
+
+/// **Why `HEAD_DIM_DERIVED` is NOT `HEAD_DIM_VACUOUS`, held as an executable fact.**
+///
+/// The list was named `HEAD_DIM_VACUOUS` on main. `VACUOUS` asserts *this guard
+/// cannot fire*, and that is FALSE: a derived `head_dim` is INTEGER division, so
+/// the product does not always reconstruct the width.
+///
+/// ⚠️ This test exists so the old label cannot return by anyone reasoning that a
+/// derived value "obviously" satisfies the relation. It does not, and the
+/// counterexample is two lines of arithmetic.
+///
+/// **What DERIVED does mean:** inert against the DECOUPLING GAP-279 is about — a
+/// decoupled `head_dim` can never reach these guards, because there is no field
+/// to carry it. **What it does not mean:** that the guard is dead code.
+#[test]
+fn divisibility_is_why_derived_is_not_vacuous() {
+    let derived = |width: usize, heads: usize| width / heads;
+
+    // Divisible: the guard is silent, which is the case people generalise from.
+    assert_eq!(
+        32 * derived(4096, 32),
+        4096,
+        "divisible case must reconstruct"
+    );
+
+    // NOT divisible: the same derivation makes the guard FIRE.
+    assert_ne!(
+        3 * derived(100, 3),
+        100,
+        "integer division truncates, so a DERIVED head_dim does NOT always satisfy          heads * head_dim == width. If this ever holds, the arithmetic changed and          the DERIVED label's justification must be re-read before anyone renames it          back to VACUOUS."
+    );
+    assert_ne!(7 * derived(1000, 7), 1000, "second non-divisible witness");
 }
