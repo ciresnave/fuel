@@ -198,7 +198,9 @@ At the *graph* `Op` level the leaf/source ops that exist are `Op::Const` (`lib.r
 `OpTag::{Const, RuntimeScalar, ReducedCount, ScanPlaceholder}` serialize per §6 of this
 document, with golden-byte tests. What shipped is
 the **wire token + its `op_attrs` body**, nothing more: `jit::op_to_tag` emits none of the four
-and `runtime_fused::tag_to_op` declines all four as honest misses (the `_ => return None`
+and `runtime_fused::tag_to_op` declines THREE of them — `Const`, `RuntimeScalar`,
+`ReducedCount` — as honest misses, while RECONSTRUCTING `ScanPlaceholder` through an
+explicit arm (the `_ => return None`
 arms), so they never appear in a live Fuel recipe. `OpTag::Const` is the KISS **scalar**
 literal leaf and is deliberately NOT wired to `Op::Const` (a constant **tensor** / weight
 leaf) — different concepts sharing a name. Making the leaves first-class `PatternNode` nodes
@@ -299,7 +301,8 @@ The last four rows are the **source-op leaf arms acked by the KISS editor 2026-0
 ([`issuecomment-5061571967`](https://github.com/ThinkersJournal/KISS/issues/67#issuecomment-5061571967),
 acking Fuel's proposal [`issuecomment-5060303085`](https://github.com/ThinkersJournal/KISS/issues/67#issuecomment-5060303085);
 clean, no amendments). They are wire tokens only: `op_to_tag` emits none of them and
-`tag_to_op` declines all four as honest misses (see §4), so they never reach a live Fuel
+`tag_to_op` declines `Const`/`RuntimeScalar`/`ReducedCount` as honest misses and
+RECONSTRUCTS `ScanPlaceholder` (see §4), so the first three never reach a live Fuel
 recipe yet. Producers widen a narrow const via `const_bits_narrow(storage, width_bits)`.
 
 **Per-carrier width pins — do NOT unify the three framings.** All four leaf bodies ride
