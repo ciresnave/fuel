@@ -198,10 +198,16 @@ impl OpAttrs {
     /// ⚠️ **AND WHAT THIS NOTE DOES *NOT* CLAIM.** An earlier draft justified the
     /// finding as "exhaustiveness is load-bearing here — no wildcard is
     /// permitted". **That is false and was measured false before it was
-    /// written:** `OpTag` is `#[non_exhaustive]`, this match ends in `_ => {}`
-    /// (see below), and there is no `EXHAUSTIVE-BY-DESIGN` marker in this crate.
-    /// Those things are true elsewhere in Fuel and not here. A justification that
-    /// sounds checkable and fails when checked is worse than none.
+    /// written:** `OpTag` is `#[non_exhaustive]` and there was no
+    /// `EXHAUSTIVE-BY-DESIGN` marker in this crate. Those things are true
+    /// elsewhere in Fuel and were not true here. A justification that sounds
+    /// checkable and fails when checked is worse than none.
+    ///
+    /// ⚠️ **Half of that has since CHANGED and the note is kept accurate rather
+    /// than deleted:** GAP-290 removed the bare wildcard, so exhaustiveness IS
+    /// now enforced — in [`Self::has_empty_canonical_body`], not here. It still
+    /// does not justify this function's size, which is why the paragraph above
+    /// stands.
     fn canonical_body(&self, op: OpTag) -> Result<Vec<u8>, UnresolvedAttr> {
         // The four ACKED source-op LEAF arms are a separate table: they are
         // WIRE-ONLY tokens (`op_to_tag` emits none of them, `tag_to_op` has no
@@ -315,9 +321,36 @@ impl OpAttrs {
             // (the canonical `[00,00,00,00]` implicit form; recipes keep matmul
             // rank-polymorphic). The rank-2 golden is the shared cross-producer
             // fixture (Baracuda #68).
-            // Empty-schema ops (elementwise, comparison, Where, scalar
-            // reductions, log-softmax, ...) and any tag added later: zero-length.
-            _ => {}
+            // ⚠️ MatMul's OTHER half, and it must be explicit. With BOTH role
+            // vectors empty this is the rank-polymorphic implicit form, whose
+            // body IS empty -- so it looks like it belongs to the wildcard
+            // below. It does not: `has_empty_canonical_body(MatMul)` is FALSE,
+            // because MatMul DOES carry a schema when roles are present.
+            //
+            // Found by two pre-existing tests failing on the first draft of
+            // GAP-290 (`empty_schema_op_serializes_zero_length`,
+            // `matmul_empty_roles_stay_the_canonical_zero_body`), which is the
+            // whole argument for the classifier being per-TAG rather than
+            // per-instance: "this tag never carries a body" and "this instance
+            // has an empty body" are different claims and MatMul separates them.
+            T::MatMul => {}
+            // GAP-290. Every remaining tag must have a DECLARED-empty schema.
+            // This used to be a bare `_ => {}` commented "and any tag added
+            // later: zero-length" -- which made a new schema-carrying tag
+            // serialize as an empty body on the cross-producer wire, silently.
+            //
+            // `has_empty_canonical_body` is exhaustive over `OpTag` with NO
+            // wildcard, so a new variant is an `E0004` THERE and cannot reach
+            // here unclassified. The decline below is therefore unreachable by
+            // construction today; it exists so the classification is LOAD-
+            // BEARING rather than a checklist nothing consults.
+            other if Self::has_empty_canonical_body(other) => {}
+            other => {
+                return Err(UnresolvedAttr {
+                    op: other,
+                    field: "<tag has no declared canonical schema>",
+                });
+            }
         }
         Ok(body)
     }
@@ -446,5 +479,124 @@ impl OpAttrs {
             _ => return Ok(None),
         }
         Ok(Some(body))
+    }
+
+    /// Does `op`'s canonical body have a DECLARED-EMPTY schema?
+    ///
+    /// # GAP-290: this match is the compile-time enforcement
+    ///
+    /// `to_canonical_bytes` used to end `_ => {}` with the comment *"and any
+    /// tag added later: zero-length"* -- the hazard written down as the
+    /// intended behaviour. A NEW `OpTag` carrying a schema would serialize as
+    /// an empty body on the cross-producer wire, and a receiver cannot tell it
+    /// from a legitimately-empty op: a silent WRONG ENCODING, not a decline, on
+    /// the one seam whose purpose is that two producers agree on bytes.
+    ///
+    /// **This match has NO wildcard, so adding an `OpTag` variant is an
+    /// `E0004` here** -- the author must classify it instead of inheriting
+    /// zero-length by omission.
+    ///
+    /// `Scan` / `View` / `Fused` are in the empty group BY DESIGN, not by
+    /// omission: their params ride `OpAttrs` fields the crate documents as NOT
+    /// on the KISS-OPS-6.19 wire (`scan_*`, `view_slot`, `fused_op`). Verified
+    /// per tag before classifying them, because "absent from the serializer"
+    /// and "declared empty" are different claims.
+    ///
+    /// `OpTag` KEEPS `#[non_exhaustive]`, and that is not a contradiction. The
+    /// attribute does not apply within the defining crate (verified by
+    /// compiling one), so this exhaustive match is legal while DOWNSTREAM keeps
+    /// the protection. That protection is load-bearing: `unpopped` (crates.io)
+    /// matches on 38 `OpTag` variants, so removing the attribute would let it
+    /// match exhaustively and make every future variant a breaking change for
+    /// it. Do not "fix" this by restoring a wildcard, and do not remove the
+    /// attribute.
+    ///
+    /// Distinct from [`UnresolvedAttr`], which neither substitutes for: that is
+    /// an unset FIELD on a KNOWN tag, caught at runtime; this is an unknown
+    /// TAG, caught at compile time.
+    fn has_empty_canonical_body(op: OpTag) -> bool {
+        use OpTag as T;
+        match op {
+            T::Add
+            | T::Sub
+            | T::Mul
+            | T::Div
+            | T::Maximum
+            | T::Minimum
+            | T::Pow
+            | T::Rem
+            | T::Neg
+            | T::Abs
+            | T::Sqr
+            | T::Sqrt
+            | T::Rsqrt
+            | T::Recip
+            | T::Exp
+            | T::Log
+            | T::Sin
+            | T::Cos
+            | T::Tanh
+            | T::Sigmoid
+            | T::Silu
+            | T::Gelu
+            | T::GeluErf
+            | T::Relu
+            | T::Erf
+            | T::Step
+            | T::Floor
+            | T::Ceil
+            | T::Round
+            | T::Sign
+            | T::Equal
+            | T::Ne
+            | T::Lt
+            | T::Le
+            | T::Gt
+            | T::Ge
+            | T::Where
+            | T::SumAll
+            | T::MaxAll
+            | T::MinAll
+            | T::MeanAll
+            | T::LogSoftmaxLastDim
+            | T::Scan
+            | T::View
+            | T::Fused => true,
+            T::AddScalar
+            | T::MulScalar
+            | T::PowI
+            | T::Clamp
+            | T::MaskedFill
+            | T::SumDim
+            | T::MaxDim
+            | T::MeanDim
+            | T::ReduceSumTo
+            | T::ReduceMaxTo
+            | T::CumSum
+            | T::MatMul
+            | T::Transpose
+            | T::Permute
+            | T::Reshape
+            | T::BroadcastTo
+            | T::Unsqueeze
+            | T::Squeeze
+            | T::Cast
+            | T::Slice
+            | T::Concat
+            | T::Flip
+            | T::Roll
+            | T::Pad
+            | T::Triu
+            | T::Tril
+            | T::IndexSelect
+            | T::Gather
+            | T::IndexAdd
+            | T::ScatterAdd
+            | T::Iota
+            | T::Const
+            | T::RuntimeScalar
+            | T::ReducedCount
+            | T::ScanPlaceholder => false,
+        }
     }
 }
