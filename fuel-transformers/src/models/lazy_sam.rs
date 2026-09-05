@@ -453,7 +453,16 @@ fn apply_attention(
     let c = dims[3];
     let nh = num_heads;
     let hd = head_dim;
-    assert_eq!(nh * hd, c, "SAM attn: num_heads * head_dim != embed_dim");
+    // GAP-281: a typed decline, not a panic. Unlike the config-consistency
+    // checks elsewhere, this one validates the CALLER's head parameters against
+    // the input tensor's embed dim -- still a checkable condition, so an error
+    // to return rather than an invariant to assert.
+    if nh * hd != c {
+        return Err(fuel_core::Error::Msg(format!(
+            "SAM attn: num_heads ({nh}) * head_dim ({hd}) must equal embed_dim ({c})"
+        ))
+        .bt());
+    }
 
     // Flatten (h, w) into a single sequence dim for QKV projection:
     // (b, h, w, c) → (b, h*w, c).
@@ -2678,5 +2687,48 @@ mod tests {
                 "round-trip elem {i} differs: {a} vs {b}",
             );
         }
+    }
+
+    /// GAP-281: `apply_attention`'s head/embed relation must DECLINE, not panic.
+    ///
+    /// ⚠️ This one differs from the other nine: the relation is on LOCALS
+    /// (`nh * hd == c`) where `c` is the TENSOR's last dim, so it checks the
+    /// CALLER's parameters against the input rather than a config's internal
+    /// consistency. It is still a production panic on a checkable condition.
+    ///
+    /// `head_dim()` is `embed_dim / num_heads`, so 3 heads over embed_dim 16 gives
+    /// 16 / 3 == 5 and 3 * 5 == 15 != 16.
+    ///
+    /// Born-red: against the production `assert_eq!` this FAILS BY PANIC.
+    #[test]
+    fn head_dim_mismatch_declines_rather_than_panicking() {
+        let valid = tiny_cfg();
+        let img: Vec<f32> = (0..valid.in_chans * valid.img_size * valid.img_size)
+            .map(|i| ((i as f32) * 0.001) - 0.05)
+            .collect();
+
+        // POSITIVE CONTROL: the conforming config must SUCCEED, or the Err below is
+        // satisfied by a fixture that is merely broken.
+        let good = SamImageEncoderVit {
+            config: valid.clone(),
+            weights: tiny_weights(&valid),
+        };
+        good.forward(&img)
+            .expect("control: the conforming config must still run");
+
+        let mut bad = valid.clone();
+        bad.num_heads = 3; // 16 / 3 == 5, and 3 * 5 == 15 != 16
+        let encoder = SamImageEncoderVit {
+            config: bad,
+            weights: tiny_weights(&valid),
+        };
+        let err = encoder
+            .forward(&img)
+            .expect_err("a non-dividing head count must DECLINE, not panic");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("num_heads") && msg.contains("head_dim"),
+            "the decline must name the relation it rejected, got: {msg}"
+        );
     }
 }

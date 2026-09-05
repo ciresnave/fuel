@@ -236,11 +236,16 @@ impl MistralModel {
         assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, hidden]");
         let seq = dims[1];
         assert_eq!(dims[2], cfg.hidden_size);
-        assert_eq!(
-            cfg.num_attention_heads * cfg.head_dim,
-            cfg.hidden_size,
-            "MistralConfig: num_attention_heads * head_dim must equal hidden_size",
-        );
+        // GAP-281: a typed decline, not a panic. The relation is a CONFIG
+        // property a real checkpoint can violate, so it is an error to return,
+        // not an invariant to assert. Matches the conformant form used by the
+        // other 21 models (see `lazy_qwen3.rs`).
+        if cfg.num_attention_heads * cfg.head_dim != cfg.hidden_size {
+            return Err(fuel_core::Error::Msg(
+                "MistralConfig: num_attention_heads * head_dim must equal hidden_size".into(),
+            )
+            .bt());
+        }
         assert_eq!(
             cfg.num_attention_heads % cfg.num_key_value_heads,
             0,
@@ -652,6 +657,53 @@ mod tests {
 
     /// Smoke: a tiny 2-layer Mistral-shape forward produces logits of
     /// the expected shape and contains no NaNs.
+    /// GAP-281: the `num_attention_heads * head_dim == hidden_size` relation must
+    /// DECLINE with a typed error, not panic. "Never panic on production paths."
+    ///
+    /// Born-red: against the production `assert_eq!` this test FAILS BY PANIC
+    /// rather than by assertion, which is the point -- a panic is not a decline.
+    #[test]
+    fn head_dim_mismatch_declines_rather_than_panicking() {
+        let valid = MistralConfig {
+            vocab_size: 32,
+            hidden_size: 16,
+            intermediate_size: 32,
+            num_hidden_layers: 1,
+            num_attention_heads: 4,
+            num_key_value_heads: 2,
+            head_dim: 4, // 4 * 4 == 16 == hidden_size
+            rms_norm_eps: 1e-5,
+            rope_theta: 10_000.0,
+            max_position_embeddings: 32,
+            sliding_window: None,
+        };
+        let tokens: Vec<u32> = vec![1, 2, 3];
+
+        // POSITIVE CONTROL first: the conforming config must SUCCEED, or "it
+        // returned Err" below is satisfied by a fixture that is simply broken.
+        let good = MistralModel {
+            config: valid.clone(),
+            weights: tiny_weights(&valid),
+        };
+        good.forward(&tokens, 0)
+            .expect("control: the conforming config must still run");
+
+        let mut bad = valid.clone();
+        bad.head_dim = 8; // 4 * 8 = 32 != 16
+        let model = MistralModel {
+            config: bad,
+            weights: tiny_weights(&valid),
+        };
+        let err = model
+            .forward(&tokens, 0)
+            .expect_err("a decoupled head_dim must DECLINE, not panic and not succeed");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("head_dim") && msg.contains("hidden_size"),
+            "the decline must name the relation it rejected, got: {msg}"
+        );
+    }
+
     #[test]
     fn forward_shape_and_finite_2_layer() {
         let cfg = MistralConfig {
