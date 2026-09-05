@@ -30,7 +30,7 @@
     intel-mkl-src  = { workspace = true, optional = true }
 
 [target.'cfg(windows)'.dependencies]
-    windows-sys = { version = "0.59", features = ["Win32_System_SystemInformation"] }
+    windows-sys = { version = "0.61", features = ["Win32_System_SystemInformation"] }
 
 [dev-dependencies]
     tempfile = { workspace = true }
