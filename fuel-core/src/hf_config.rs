@@ -76,6 +76,18 @@ pub fn head_dim(
     if let Some(d) = explicit {
         return Ok(d);
     }
+    // ⚠️ THIS ARM CANNOT BE FOLDED INTO THE DIVISIBILITY CHECK BELOW, and the
+    // reason is not style. `0usize.is_multiple_of(0)` is TRUE (run it), so a
+    // lone divisibility check passes `(0, 0)` straight into `0 / 0`.
+    //
+    // The sibling `num_key_value_heads` guards with `is_multiple_of` alone and
+    // its comment is CORRECT -- "false for any NON-ZERO left operand". Read
+    // quickly it looks like a general zero guard; its own qualifier excludes
+    // the (0, 0) case, and it does not need to cover it because THAT function
+    // never divides. `(0, 0) -> Ok(0)` is harmless there and fatal here.
+    //
+    // So: the safety of that guard shape is a property of the CALLER'S
+    // ARITHMETIC, not of the guard. Copying it here would have been wrong.
     if num_attention_heads == 0 {
         return Err(Error::Msg(format!(
             "config.json omits head_dim and num_attention_heads is 0, so              hidden_size ({hidden_size}) / num_attention_heads cannot be              evaluated"
