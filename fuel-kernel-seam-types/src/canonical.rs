@@ -164,6 +164,44 @@ impl OpAttrs {
     /// The per-op body, unframed. One arm per SCHEMA FAMILY rather than per
     /// tag: tags sharing a row shape share an arm, which is why `MaxDim` and
     /// `SumDim` are byte-identical for equal attrs (the monoid rides `op_name`).
+    ///
+    /// # ⚠️ A STANDING CODACY FINDING ON THIS FUNCTION IS ACCEPTED AND PERMANENT
+    ///
+    /// Codacy reports `Method canonical_body has N lines of code (limit is 50)`
+    /// and a cyclomatic complexity over 12. **That finding is correct, it is not
+    /// going to be fixed, and it will never clear.** It is recorded here so a
+    /// reader does not mistake a permanent red for unfinished work: the first
+    /// thing anyone learns from a check that cannot go green is to stop reading
+    /// it, and an accepted finding with no author reads as one somebody meant to
+    /// get back to.
+    ///
+    /// **WHY IT CANNOT GO DOWN.** Measured at this commit: 68 lines of code, 6
+    /// match arms, **17 distinct `OpTag` variants**. Each variant carries a
+    /// DIFFERENT WIRE ROW SCHEMA under KISS-OPS-§6.19 — `Slice` is
+    /// `{axis, start, len}`, the single-axis family is `{axis}`, the reduces are
+    /// `{axis, keepdim}`, `Cast` is a length-prefixed string, `Pad` is a list
+    /// plus mode plus value. **Rows that differ on the wire cannot be collapsed
+    /// into one arm.** The count is set by the op vocabulary, not by style, so
+    /// it goes UP when the vocabulary grows and never down.
+    ///
+    /// Re-derive it by counting `T::` variants in the match and comparing them
+    /// against §6.19's row schemas. If a future reader finds two arms with the
+    /// SAME row shape, that is a real finding and this note is wrong.
+    ///
+    /// **WHAT WAS ALREADY SPLIT OUT, so this is not an un-attempted excuse:**
+    /// `to_canonical_bytes` (the envelope, 6), [`Self::list_body`] (26, the arms
+    /// that cannot decline), [`Self::leaf_body`] (39, the wire-only tags). The
+    /// split axis was *does this arm read a field that can be unset* — the
+    /// GAP-287 question itself. `leaf_body` at 39 passes, which is what shows
+    /// the mechanism works rather than that the limit is unreachable.
+    ///
+    /// ⚠️ **AND WHAT THIS NOTE DOES *NOT* CLAIM.** An earlier draft justified the
+    /// finding as "exhaustiveness is load-bearing here — no wildcard is
+    /// permitted". **That is false and was measured false before it was
+    /// written:** `OpTag` is `#[non_exhaustive]`, this match ends in `_ => {}`
+    /// (see below), and there is no `EXHAUSTIVE-BY-DESIGN` marker in this crate.
+    /// Those things are true elsewhere in Fuel and not here. A justification that
+    /// sounds checkable and fails when checked is worse than none.
     fn canonical_body(&self, op: OpTag) -> Result<Vec<u8>, UnresolvedAttr> {
         // The four ACKED source-op LEAF arms are a separate table: they are
         // WIRE-ONLY tokens (`op_to_tag` emits none of them, `tag_to_op` has no
