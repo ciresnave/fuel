@@ -153,7 +153,12 @@ impl PhiConfigRaw {
 }
 
 impl PhiConfig {
-    pub fn num_kv_heads(&self) -> usize {
+    /// ⚠️ GAP-282: returns `Result` because the shared rule now REJECTS a
+    /// kv-head count that does not divide `num_attention_heads` -- a config
+    /// property that truncates silently when GQA groups query heads. The
+    /// accessor computes a value that can be invalid, so it reports rather
+    /// than asserting.
+    pub fn num_kv_heads(&self) -> Result<usize> {
         // Route through the shared rule rather than hand-rolling the fallback
         // (item-8-II membership gate). Verified identical to the previous
         // `unwrap_or(num_attention_heads)` on every input, incl. Some(1) → 1.
@@ -351,7 +356,7 @@ impl PhiModel {
         let dims = x_shape.dims();
         let batch = dims[0];
         let seq = dims[1];
-        let n_kv = cfg.num_kv_heads();
+        let n_kv = cfg.num_kv_heads()?;
         let kv_dim = n_kv * cfg.head_dim;
         let rope_dim = cfg.rope_dim();
 
@@ -486,7 +491,7 @@ impl PhiWeights {
     ) -> Result<Self> {
         let h = cfg.hidden_size;
         let i = cfg.intermediate_size;
-        let n_kv = cfg.num_kv_heads();
+        let n_kv = cfg.num_kv_heads()?;
         let kv_dim = n_kv * cfg.head_dim;
 
         let token_embedding = Arc::from(fuel_core::lazy::load_tensor_as_f32(
@@ -686,7 +691,7 @@ mod tests {
         };
         let h = cfg.hidden_size;
         let i = cfg.intermediate_size;
-        let n_kv = cfg.num_kv_heads();
+        let n_kv = cfg.num_kv_heads().unwrap();
         let kv = n_kv * cfg.head_dim;
         let mut nb: Box<dyn FnMut() -> f32> = Box::new(next);
         let token_embedding = vec_of(cfg.vocab_size * h, &mut *nb);
@@ -779,7 +784,7 @@ mod tests {
             "num_hidden_layers": 16, "num_attention_heads": 16, "max_position_embeddings": 2048
         }"#;
         let cfg = PhiConfig::from_hf_json_str(json).unwrap();
-        assert_eq!(cfg.num_kv_heads(), 16); // absent → num_attention_heads (MHA)
+        assert_eq!(cfg.num_kv_heads().unwrap(), 16); // absent → num_attention_heads (MHA)
     }
 
     #[test]
@@ -790,7 +795,7 @@ mod tests {
             "max_position_embeddings": 2048
         }"#;
         let cfg = PhiConfig::from_hf_json_str(json).unwrap();
-        assert_eq!(cfg.num_kv_heads(), 1); // Some(1) → 1: TRUE MQA survives
+        assert_eq!(cfg.num_kv_heads().unwrap(), 1); // Some(1) → 1: TRUE MQA survives
     }
 
     #[test]
@@ -1073,7 +1078,7 @@ mod tests {
     #[test]
     fn num_kv_heads_default_is_num_attention_heads() {
         let cfg = tiny_config();
-        assert_eq!(cfg.num_kv_heads(), cfg.num_attention_heads);
+        assert_eq!(cfg.num_kv_heads().unwrap(), cfg.num_attention_heads);
     }
 
     /// `forward_hidden` returns post-LayerNorm hidden states
