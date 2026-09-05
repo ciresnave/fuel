@@ -51,6 +51,78 @@ impl OlmoConfig {
     }
 }
 
+// ROADMAP item 8 (II): config-from-path on the #57 template. A `serde` raw with
+// HF field names + OLMo's own constant defaults, then `resolve` routes kv heads
+// + head_dim through the shared `fuel_core::hf_config` rules. OLMo v1 uses
+// non-parametric LayerNorm, so its config carries no `layer_norm_eps` — the field
+// defaults to the port's 1e-5. `clip_qkv` (null in the artifact) is unmodelled.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct OlmoConfigRaw {
+    vocab_size: usize,
+    hidden_size: usize,
+    intermediate_size: usize,
+    num_hidden_layers: usize,
+    num_attention_heads: usize,
+    #[serde(default)]
+    num_key_value_heads: Option<usize>,
+    #[serde(default)]
+    head_dim: Option<usize>,
+    #[serde(default = "default_olmo_layer_norm_eps")]
+    layer_norm_eps: f64,
+    #[serde(default = "default_olmo_rope_theta")]
+    rope_theta: f64,
+    max_position_embeddings: usize,
+    #[serde(default)]
+    attention_bias: bool,
+}
+
+fn default_olmo_layer_norm_eps() -> f64 {
+    1e-5
+}
+fn default_olmo_rope_theta() -> f64 {
+    10_000.0
+}
+
+impl OlmoConfigRaw {
+    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
+        serde_json::from_str(json)
+            .map_err(|e| fuel_core::Error::Msg(format!("parsing OLMo config.json: {e}")))
+    }
+
+    fn resolve(self) -> OlmoConfig {
+        OlmoConfig {
+            vocab_size: self.vocab_size,
+            hidden_size: self.hidden_size,
+            intermediate_size: self.intermediate_size,
+            num_hidden_layers: self.num_hidden_layers,
+            num_attention_heads: self.num_attention_heads,
+            num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
+                self.num_key_value_heads,
+                self.num_attention_heads,
+            ),
+            head_dim: fuel_core::hf_config::head_dim(
+                self.head_dim,
+                self.hidden_size,
+                self.num_attention_heads,
+            ),
+            layer_norm_eps: self.layer_norm_eps,
+            rope_theta: self.rope_theta,
+            max_position_embeddings: self.max_position_embeddings,
+            attention_bias: self.attention_bias,
+        }
+    }
+}
+
+impl OlmoConfig {
+    /// Parse a HuggingFace `config.json` string into an [`OlmoConfig`].
+    ///
+    /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
+    /// see the born-red `olmo_config_from_hf_json_parses_the_artifact_not_a_preset`.
+    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+        Ok(OlmoConfigRaw::from_json_str(json)?.resolve())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct OlmoLayerWeights {
     pub attn_norm_gain: Arc<[f32]>,
@@ -397,6 +469,103 @@ impl OlmoWeights {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ROADMAP item 8 (II). Golden values from allenai/OLMo-1B-hf's real
+    // config.json — the 1B, not the 7B the preset is named after, so parse !=
+    // preset. OLMo v1 config omits layer_norm_eps (non-parametric LN) → defaulted.
+    const OLMO_1B_CONFIG_JSON: &str = r#"{
+        "architectures": ["OlmoForCausalLM"],
+        "model_type": "olmo",
+        "vocab_size": 50304,
+        "hidden_size": 2048,
+        "intermediate_size": 8192,
+        "num_hidden_layers": 16,
+        "num_attention_heads": 16,
+        "num_key_value_heads": 16,
+        "max_position_embeddings": 2048,
+        "rope_theta": 10000.0,
+        "attention_bias": false,
+        "clip_qkv": null
+    }"#;
+
+    #[test]
+    fn olmo_config_from_hf_json_parses_the_artifact_not_a_preset() {
+        let cfg = OlmoConfig::from_hf_json_str(OLMO_1B_CONFIG_JSON).unwrap();
+        assert_eq!(cfg.hidden_size, 2048);
+        assert_eq!(cfg.num_hidden_layers, 16);
+        assert_eq!(cfg.num_attention_heads, 16);
+        assert_eq!(cfg.vocab_size, 50_304);
+        assert_eq!(cfg.intermediate_size, 8192);
+        assert_eq!(cfg.num_key_value_heads, 16);
+        // head_dim absent → derived 2048/16 = 128.
+        assert_eq!(cfg.head_dim, 128);
+        // layer_norm_eps absent from the artifact → defaulted to 1e-5.
+        assert_eq!(cfg.layer_norm_eps, 1e-5);
+        assert_eq!(cfg.rope_theta, 10_000.0);
+        assert!(!cfg.attention_bias);
+        // Sabotage sibling (WEAKER): distinct from the 7B preset (hidden differs).
+        assert_ne!(cfg, OlmoConfig::olmo_7b());
+    }
+
+    /// A SECOND distinct config, exercising the take-if-present head_dim branch
+    /// (explicit 96 ≠ 2560/20 = 128) with GQA.
+    #[test]
+    fn olmo_config_reads_a_second_distinct_config_with_explicit_head_dim() {
+        let json = r#"{
+            "model_type": "olmo",
+            "vocab_size": 40000,
+            "hidden_size": 2560,
+            "intermediate_size": 6912,
+            "num_hidden_layers": 20,
+            "num_attention_heads": 20,
+            "num_key_value_heads": 5,
+            "head_dim": 96,
+            "max_position_embeddings": 2048,
+            "rope_theta": 500000.0
+        }"#;
+        let cfg = OlmoConfig::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.num_key_value_heads, 5);
+        // explicit head_dim WINS over the quotient (2560/20 = 128).
+        assert_eq!(cfg.head_dim, 96);
+        assert_ne!(cfg.head_dim, 2560 / 20);
+        assert_eq!(cfg.rope_theta, 500_000.0);
+        assert_eq!(cfg.layer_norm_eps, 1e-5); // defaulted
+        assert_ne!(cfg.hidden_size, 2048);
+    }
+
+    /// `num_key_value_heads` ABSENT → defaults to `num_attention_heads`.
+    #[test]
+    fn olmo_config_gqa_defaults_to_num_heads_when_absent() {
+        let json = r#"{
+            "model_type": "olmo",
+            "vocab_size": 1000,
+            "hidden_size": 64,
+            "intermediate_size": 128,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 8,
+            "max_position_embeddings": 128
+        }"#;
+        let cfg = OlmoConfig::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.num_key_value_heads, 8);
+    }
+
+    /// TRUE MQA (`num_key_value_heads = 1`) survives, not collapsed.
+    #[test]
+    fn olmo_config_preserves_true_mqa() {
+        let json = r#"{
+            "model_type": "olmo",
+            "vocab_size": 1000,
+            "hidden_size": 64,
+            "intermediate_size": 128,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 8,
+            "num_key_value_heads": 1,
+            "max_position_embeddings": 128
+        }"#;
+        let cfg = OlmoConfig::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.num_key_value_heads, 1);
+    }
+
     fn tiny_weights(cfg: &OlmoConfig) -> OlmoWeights {
         let mut s: u32 = 11111;
         let next = || -> f32 {

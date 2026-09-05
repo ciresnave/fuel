@@ -46,6 +46,74 @@ impl YiConfig {
     }
 }
 
+// ROADMAP item 8 (II): config-from-path on the #57 template. Yi ships as
+// `model_type: "llama"`; a `serde` raw with HF field names + Yi's own constant
+// defaults, then `resolve` routes kv heads + head_dim through the shared
+// `fuel_core::hf_config` rules (take-if-present-else-derive).
+#[derive(Debug, Clone, serde::Deserialize)]
+struct YiConfigRaw {
+    vocab_size: usize,
+    hidden_size: usize,
+    intermediate_size: usize,
+    num_hidden_layers: usize,
+    num_attention_heads: usize,
+    #[serde(default)]
+    num_key_value_heads: Option<usize>,
+    #[serde(default)]
+    head_dim: Option<usize>,
+    #[serde(default = "default_yi_rms_norm_eps")]
+    rms_norm_eps: f64,
+    #[serde(default = "default_yi_rope_theta")]
+    rope_theta: f64,
+    max_position_embeddings: usize,
+}
+
+fn default_yi_rms_norm_eps() -> f64 {
+    1e-5
+}
+fn default_yi_rope_theta() -> f64 {
+    5_000_000.0
+}
+
+impl YiConfigRaw {
+    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
+        serde_json::from_str(json)
+            .map_err(|e| fuel_core::Error::Msg(format!("parsing Yi config.json: {e}")))
+    }
+
+    fn resolve(self) -> YiConfig {
+        YiConfig {
+            vocab_size: self.vocab_size,
+            hidden_size: self.hidden_size,
+            intermediate_size: self.intermediate_size,
+            num_hidden_layers: self.num_hidden_layers,
+            num_attention_heads: self.num_attention_heads,
+            num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
+                self.num_key_value_heads,
+                self.num_attention_heads,
+            ),
+            head_dim: fuel_core::hf_config::head_dim(
+                self.head_dim,
+                self.hidden_size,
+                self.num_attention_heads,
+            ),
+            rms_norm_eps: self.rms_norm_eps,
+            rope_theta: self.rope_theta,
+            max_position_embeddings: self.max_position_embeddings,
+        }
+    }
+}
+
+impl YiConfig {
+    /// Parse a HuggingFace `config.json` string into a [`YiConfig`].
+    ///
+    /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
+    /// see the born-red `yi_config_from_hf_json_parses_the_artifact_not_a_preset`.
+    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+        Ok(YiConfigRaw::from_json_str(json)?.resolve())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct YiWeights {
     pub token_embedding: Arc<[f32]>,
@@ -345,6 +413,102 @@ impl YiWeights {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ROADMAP item 8 (II). Golden values from 01-ai/Yi-34B's real config.json —
+    // the 34B (GQA, kv 8), not the 6B the preset is named after, so the parse is
+    // distinct from `yi_6b()` AND the kv value proves the key was read.
+    const YI_34B_CONFIG_JSON: &str = r#"{
+        "architectures": ["LlamaForCausalLM"],
+        "model_type": "llama",
+        "vocab_size": 64000,
+        "hidden_size": 7168,
+        "intermediate_size": 20480,
+        "num_hidden_layers": 60,
+        "num_attention_heads": 56,
+        "num_key_value_heads": 8,
+        "max_position_embeddings": 4096,
+        "rms_norm_eps": 1e-05,
+        "rope_theta": 5000000.0
+    }"#;
+
+    #[test]
+    fn yi_config_from_hf_json_parses_the_artifact_not_a_preset() {
+        let cfg = YiConfig::from_hf_json_str(YI_34B_CONFIG_JSON).unwrap();
+        assert_eq!(cfg.hidden_size, 7168);
+        assert_eq!(cfg.num_hidden_layers, 60);
+        assert_eq!(cfg.num_attention_heads, 56);
+        assert_eq!(cfg.vocab_size, 64_000);
+        assert_eq!(cfg.intermediate_size, 20_480);
+        // GQA: default would be num_attention_heads (56); 8 proves the key was READ.
+        assert_eq!(cfg.num_key_value_heads, 8);
+        // head_dim absent → derived 7168/56 = 128.
+        assert_eq!(cfg.head_dim, 128);
+        assert_eq!(cfg.rope_theta, 5_000_000.0);
+        assert_eq!(cfg.max_position_embeddings, 4096);
+        // Sabotage sibling (WEAKER): distinct from the 6B preset.
+        assert_ne!(cfg, YiConfig::yi_6b());
+    }
+
+    /// A SECOND distinct config, exercising the default path (rms_norm_eps/
+    /// rope_theta omitted) AND the take-if-present head_dim branch (explicit 96 ≠
+    /// 4096/32 = 128).
+    #[test]
+    fn yi_config_reads_a_second_distinct_config_with_explicit_head_dim() {
+        let json = r#"{
+            "model_type": "llama",
+            "vocab_size": 32000,
+            "hidden_size": 4096,
+            "intermediate_size": 11008,
+            "num_hidden_layers": 32,
+            "num_attention_heads": 32,
+            "num_key_value_heads": 8,
+            "head_dim": 96,
+            "max_position_embeddings": 4096
+        }"#;
+        let cfg = YiConfig::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.num_key_value_heads, 8);
+        // explicit head_dim WINS over the quotient (4096/32 = 128).
+        assert_eq!(cfg.head_dim, 96);
+        assert_ne!(cfg.head_dim, 4096 / 32);
+        // omitted → resolve defaults (Yi's own consts)
+        assert_eq!(cfg.rms_norm_eps, 1e-5);
+        assert_eq!(cfg.rope_theta, 5_000_000.0);
+        assert_ne!(cfg.hidden_size, 7168);
+    }
+
+    /// `num_key_value_heads` ABSENT → defaults to `num_attention_heads`.
+    #[test]
+    fn yi_config_gqa_defaults_to_num_heads_when_absent() {
+        let json = r#"{
+            "model_type": "llama",
+            "vocab_size": 1000,
+            "hidden_size": 64,
+            "intermediate_size": 128,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 8,
+            "max_position_embeddings": 128
+        }"#;
+        let cfg = YiConfig::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.num_key_value_heads, 8); // absent → num_attention_heads
+    }
+
+    /// TRUE MQA (`num_key_value_heads = 1`) survives, not collapsed.
+    #[test]
+    fn yi_config_preserves_true_mqa() {
+        let json = r#"{
+            "model_type": "llama",
+            "vocab_size": 1000,
+            "hidden_size": 64,
+            "intermediate_size": 128,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 8,
+            "num_key_value_heads": 1,
+            "max_position_embeddings": 128
+        }"#;
+        let cfg = YiConfig::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.num_key_value_heads, 1);
+    }
+
     fn tiny_weights(cfg: &YiConfig) -> YiWeights {
         let mut s: u32 = 65537;
         let next = || -> f32 {
