@@ -109,7 +109,7 @@ impl StableLmConfigRaw {
                 self.head_dim,
                 self.hidden_size,
                 self.num_attention_heads,
-            ),
+            )?,
             layer_norm_eps: self.layer_norm_eps,
             rope_theta: self.rope_theta,
             max_position_embeddings: self.max_position_embeddings,
