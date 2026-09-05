@@ -769,26 +769,44 @@ mod tests {
         is_set: fn(&OpAttrs) -> bool,
     }
 
-    fn collapse_table() -> Vec<Collapse> {
-        let axis: fn(&OpAttrs) -> bool = |a| a.axis.is_some();
-        let keepdim: fn(&OpAttrs) -> bool = |a| a.keepdim.is_some();
-        let dtype: fn(&OpAttrs) -> bool = |a| a.cast_dtype.is_some();
-        let pad = || Op::Pad {
+    fn axis(a: &OpAttrs) -> bool {
+        a.axis.is_some()
+    }
+    fn keepdim(a: &OpAttrs) -> bool {
+        a.keepdim.is_some()
+    }
+    fn dtype(a: &OpAttrs) -> bool {
+        a.cast_dtype.is_some()
+    }
+    fn pad() -> Op {
+        Op::Pad {
             padding: vec![(1, 1)],
             mode: crate::PadMode::Constant,
             value: 0.0,
-        };
-        let slice = || Op::Slice {
+        }
+    }
+    fn slice() -> Op {
+        Op::Slice {
             dim: 1,
             start: 0,
             len: 2,
-        };
-        let row = |op, field, soundness, is_set| Collapse {
+        }
+    }
+    fn row(
+        op: Op,
+        field: &'static str,
+        soundness: Soundness,
+        is_set: fn(&OpAttrs) -> bool,
+    ) -> Collapse {
+        Collapse {
             op,
             field,
             soundness,
             is_set,
-        };
+        }
+    }
+
+    fn collapse_table() -> Vec<Collapse> {
         use Soundness::{DeadField, Lossy, Projected};
         vec![
             // -- sound: the producing arm sets the field --
