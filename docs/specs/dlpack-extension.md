@@ -1,7 +1,7 @@
 # Fuel DLPack Extension (FDX) — tensor interchange for Fuel, kernels, and the ecosystem
 
 **Status:** DRAFT FOR REVIEW (2026-06-17), on branch `feat/kernel-contracts-dlpack`.
-Design pass — no code yet. This is the final draft incorporating the correctness /
+(**a branch that no longer exists**). **IMPLEMENTED ON `main`: `fuel-ir/src/dlpack/` — 8 `.rs` files — plus `fuel-memory/src/dlpack_view.rs`.** The DOCUMENT’s review state may still be draft; its SUBJECT is not. This is the final draft incorporating the correctness /
 backward-compat critique sweep (see "Resolved critique" below); the struct shapes are designed
 to be addable to `fuel-core-types` behind a `dlpack` feature.
 **Scope:** a versioned, *optional sidecar* extension to standard DLPack that lets Fuel
@@ -19,6 +19,12 @@ TVM).
 > reader not to rely on it** — and Fuel relies on this one today.
 > > `dlpack` is a declared feature in **2** manifests (`fuel-ir`, `fuel-memory`)
 > and appears in **19** `.rs` files.
+>
+> ⚠️ **DISCHARGED 2026-09-05: the STATUS LINE ABOVE HAS NOW BEEN CORRECTED.** This
+> notice is kept as the RECORD of when the defect was found, not as a live claim — the
+> "no code yet" wording it quotes is no longer in the status line. **It stood for sixteen
+> days because it ANNOTATED the falsehood instead of correcting it, and a reader who
+> stops at the Status field never reached this paragraph. See GAP-283.**
 >
 > **Status of the DESIGN is unchanged by this notice.** "Draft for review" may
 > still be true of the *document's* review state; what is false is the branch
