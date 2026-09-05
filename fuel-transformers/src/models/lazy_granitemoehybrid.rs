@@ -124,8 +124,11 @@ pub enum GraniteMoeHybridLayerWeights {
         post_attn_norm_gain: Arc<[f32]>,
         mlp: GraniteMoeHybridMlpWeights,
     },
-    /// Reserved for future Mamba expansion — v1 panics if encountered
-    /// (matches eager).
+    /// Reserved for future Mamba expansion — v1 returns `Err` if a Mamba
+    /// layer is exercised (matches eager scope). This said "v1 panics" until
+    /// 2026-09-05; the panic was retired pre-2026-06 under "never panic in
+    /// production" and three later lines in this same file already said so
+    /// (`:153`, `:309`, the test doc below).
     Mamba,
 }
 
