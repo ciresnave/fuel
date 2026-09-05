@@ -86,15 +86,17 @@ impl BertConfig {
     /// Per-head attention feature dimension. BERT derives it as
     /// `hidden_size / num_attention_heads`; the two are required to divide
     /// evenly.
-    pub fn head_dim(&self) -> usize {
-        assert_eq!(
-            self.hidden_size % self.num_attention_heads,
-            0,
-            "BertConfig: hidden_size ({}) must be divisible by num_attention_heads ({})",
-            self.hidden_size,
-            self.num_attention_heads,
-        );
-        self.hidden_size / self.num_attention_heads
+    pub fn head_dim(&self) -> fuel_core::Result<usize> {
+        // GAP-281 (dim/head relation): a typed decline, not a panic. The
+        // quotient below is integer division, so a non-dividing head count
+        // truncates silently -- a CONFIG property to reject, not an invariant.
+        if !self.hidden_size.is_multiple_of(self.num_attention_heads) {
+            return Err(fuel_core::Error::Msg(format!(
+                "BertConfig: hidden_size ({}) must be divisible by num_attention_heads ({})",
+                self.hidden_size, self.num_attention_heads,
+            )));
+        }
+        Ok(self.hidden_size / self.num_attention_heads)
     }
 }
 
@@ -387,7 +389,7 @@ fn encoder_layer(
 ) -> fuel_core::Result<Tensor> {
     let h = cfg.hidden_size;
     let n_heads = cfg.num_attention_heads;
-    let d_head = cfg.head_dim();
+    let d_head = cfg.head_dim()?;
 
     // --- self-attention ----------------------------------------------------
     // Q, K, V projections + bias: `[1, seq, h]` → `[1, seq, h]`.
@@ -822,7 +824,7 @@ mod tests {
         assert_eq!(cfg.vocab_size, 30522);
         assert_eq!(cfg.hidden_size, 768);
         assert_eq!(cfg.num_hidden_layers, 12);
-        assert_eq!(cfg.head_dim(), 64);
+        assert_eq!(cfg.head_dim().unwrap(), 64);
     }
 
     #[test]
@@ -988,6 +990,39 @@ mod tests {
         assert!(
             max_diff > 1e-7,
             "layer 0 and layer 2 intermediates must differ, max_diff = {max_diff}"
+        );
+    }
+
+    /// GAP-281 (dim/head relation): a head count that does not divide
+    /// `hidden_size` must DECLINE, not panic.
+    ///
+    /// Born-red by sabotage: dropping the divisibility check fails this arm alone.
+    #[test]
+    fn head_dim_declines_when_the_head_count_does_not_divide() {
+        let json = r#"{
+            "vocab_size": 30522,
+            "hidden_size": 768,
+            "num_hidden_layers": 12,
+            "num_attention_heads": 12,
+            "intermediate_size": 3072,
+            "max_position_embeddings": 512,
+            "type_vocab_size": 2,
+            "layer_norm_eps": 1e-12,
+            "hidden_dropout_prob": 0.1
+        }"#;
+        let valid = BertConfig::from_hf_json_str(json).unwrap();
+        // CONTROL: 768 / 12 == 64 resolves.
+        assert_eq!(valid.head_dim().unwrap(), 64);
+
+        let mut bad = valid.clone();
+        bad.num_attention_heads = 7; // 768 % 7 != 0
+        let err = bad
+            .head_dim()
+            .expect_err("a non-dividing head count must DECLINE, not panic");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("hidden_size") && msg.contains("num_attention_heads"),
+            "the decline must name both operands, got: {msg}"
         );
     }
 }
