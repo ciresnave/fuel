@@ -150,11 +150,15 @@ impl MetaVoiceModel {
         let batch = dims[0];
         let seq = dims[1];
         assert_eq!(dims[2], cfg.hidden_size);
-        assert_eq!(
-            cfg.num_attention_heads * cfg.head_dim,
-            cfg.hidden_size,
-            "MetaVoiceConfig: num_attention_heads * head_dim must equal hidden_size",
-        );
+        // GAP-281: a typed decline, not a panic. The relation is a CONFIG
+        // property a real checkpoint can violate, so it is an error to return,
+        // not an invariant to assert.
+        if cfg.num_attention_heads * cfg.head_dim != cfg.hidden_size {
+            return Err(fuel_core::Error::Msg(
+                "MetaVoiceConfig: num_attention_heads * head_dim must equal hidden_size".into(),
+            )
+            .bt());
+        }
         assert_eq!(
             cfg.num_attention_heads % cfg.num_key_value_heads,
             0,
@@ -716,6 +720,40 @@ mod tests {
         assert!(
             any_diff,
             "zeroed speaker vs non-zero speaker must change logits",
+        );
+    }
+
+    /// GAP-281: the `num_attention_heads * head_dim == hidden_size` relation must
+    /// DECLINE with a typed error, not panic. "Never panic on production paths."
+    ///
+    /// Born-red: against the production `assert_eq!` this FAILS BY PANIC.
+    #[test]
+    fn head_dim_mismatch_declines_rather_than_panicking() {
+        let valid = tiny_cfg();
+        let tokens: Vec<u32> = vec![1, 2, 3, 4];
+        let spk = speaker_vec(&valid, 0.1);
+        // POSITIVE CONTROL: the conforming config must SUCCEED, or the Err below is
+        // satisfied by a fixture that is merely broken.
+        let good = MetaVoiceModel {
+            config: valid.clone(),
+            weights: tiny_weights(&valid, 2026),
+        };
+        good.forward(&tokens, &spk, 0)
+            .expect("control: the conforming config must still run");
+
+        let mut bad = valid.clone();
+        bad.head_dim = 8; // 4 * 8 = 32 != 16
+        let model = MetaVoiceModel {
+            config: bad,
+            weights: tiny_weights(&valid, 2026),
+        };
+        let err = model
+            .forward(&tokens, &spk, 0)
+            .expect_err("a decoupled head_dim must DECLINE, not panic");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("head_dim") && msg.contains("hidden_size"),
+            "the decline must name the relation it rejected, got: {msg}"
         );
     }
 }

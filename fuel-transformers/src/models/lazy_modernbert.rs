@@ -132,10 +132,15 @@ impl ModernBertModel {
         let h = cfg.hidden_size;
         assert!(seq > 0);
         assert!(seq <= cfg.max_position_embeddings);
-        assert!(
-            cfg.num_attention_heads * cfg.head_dim() == h,
-            "num_attention_heads * head_dim must equal hidden_size",
-        );
+        // GAP-281: a typed decline, not a panic. `head_dim()` is integer division,
+        // so a config whose hidden_size is not divisible by the head count violates
+        // this -- a CONFIG property to reject, not an invariant to assert.
+        if cfg.num_attention_heads * cfg.head_dim() != h {
+            return Err(fuel_core::Error::Msg(
+                "num_attention_heads * head_dim must equal hidden_size".into(),
+            )
+            .bt());
+        }
 
         // ---- Embeddings + LayerNorm ----------------------------------------
         let word_emb_t = Tensor::from_f32(
@@ -238,10 +243,15 @@ impl ModernBertModel {
         let h = cfg.hidden_size;
         assert!(seq > 0);
         assert!(seq <= cfg.max_position_embeddings);
-        assert!(
-            cfg.num_attention_heads * cfg.head_dim() == h,
-            "num_attention_heads * head_dim must equal hidden_size",
-        );
+        // GAP-281: a typed decline, not a panic. `head_dim()` is integer division,
+        // so a config whose hidden_size is not divisible by the head count violates
+        // this -- a CONFIG property to reject, not an invariant to assert.
+        if cfg.num_attention_heads * cfg.head_dim() != h {
+            return Err(fuel_core::Error::Msg(
+                "num_attention_heads * head_dim must equal hidden_size".into(),
+            )
+            .bt());
+        }
         assert!(!layer_ids.is_empty(), "layer_ids must not be empty");
         for w in layer_ids.windows(2) {
             assert!(w[0] < w[1], "layer_ids must be strictly increasing");
@@ -468,6 +478,44 @@ mod tests {
 
     fn vec_of(n: usize, next: &mut dyn FnMut() -> f32) -> Arc<[f32]> {
         Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
+    }
+
+    /// GAP-281: the head-count x per-head-dim == model-dim relation must DECLINE with
+    /// a typed error, not panic. "Never panic on production paths."
+    ///
+    /// `head_dim()` is integer division, so the relation breaks whenever the model dim
+    /// is not divisible by the head count. 6 heads over a dim of 16 gives 16/6 == 2 and
+    /// 6 * 2 == 12 != 16.
+    ///
+    /// Born-red: against the production `assert!` this FAILS BY PANIC.
+    #[test]
+    fn head_dim_mismatch_declines_rather_than_panicking() {
+        let valid = tiny_cfg();
+        let tokens: Vec<u32> = vec![1, 2, 3];
+
+        // POSITIVE CONTROL: the conforming config must SUCCEED, or the Err below is
+        // satisfied by a fixture that is merely broken.
+        let good = ModernBertModel {
+            config: valid.clone(),
+            weights: tiny_weights(&valid),
+        };
+        good.forward(&tokens, None)
+            .expect("control: the conforming config must still run");
+
+        let mut bad = valid.clone();
+        bad.num_attention_heads = 6;
+        let model = ModernBertModel {
+            config: bad,
+            weights: tiny_weights(&valid),
+        };
+        let err = model
+            .forward(&tokens, None)
+            .expect_err("a non-divisible head count must DECLINE, not panic");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("head_dim") && msg.contains("hidden_size"),
+            "the decline must name the relation it rejected, got: {msg}"
+        );
     }
 
     fn tiny_cfg() -> ModernBertConfig {
