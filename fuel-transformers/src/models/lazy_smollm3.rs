@@ -56,6 +56,85 @@ impl SmolLm3Config {
     }
 }
 
+// ROADMAP item 8 (II): config-from-path on the #57 template. A `serde` raw with
+// HF field names + SmolLM3's own constant defaults, then `resolve` routes kv
+// heads + head_dim through the shared `fuel_core::hf_config` rules. HF's per-layer
+// RoPE key is `no_rope_layers` (misleadingly named: `1` = a RoPE layer); it maps
+// IDENTICALLY to the resolved `uses_rope_per_layer` — see the struct doc / GAP-196.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct SmolLm3ConfigRaw {
+    vocab_size: usize,
+    hidden_size: usize,
+    intermediate_size: usize,
+    num_hidden_layers: usize,
+    num_attention_heads: usize,
+    #[serde(default)]
+    num_key_value_heads: Option<usize>,
+    #[serde(default)]
+    head_dim: Option<usize>,
+    #[serde(default = "default_smollm3_rms_norm_eps")]
+    rms_norm_eps: f64,
+    #[serde(default = "default_smollm3_rope_theta")]
+    rope_theta: f64,
+    max_position_embeddings: usize,
+    #[serde(default)]
+    attention_bias: bool,
+    #[serde(default)]
+    sliding_window: Option<usize>,
+    #[serde(default)]
+    no_rope_layers: Option<Vec<usize>>,
+}
+
+fn default_smollm3_rms_norm_eps() -> f64 {
+    1e-6
+}
+fn default_smollm3_rope_theta() -> f64 {
+    5_000_000.0
+}
+
+impl SmolLm3ConfigRaw {
+    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
+        serde_json::from_str(json)
+            .map_err(|e| fuel_core::Error::Msg(format!("parsing SmolLM3 config.json: {e}")))
+    }
+
+    fn resolve(self) -> SmolLm3Config {
+        SmolLm3Config {
+            vocab_size: self.vocab_size,
+            hidden_size: self.hidden_size,
+            intermediate_size: self.intermediate_size,
+            num_hidden_layers: self.num_hidden_layers,
+            num_attention_heads: self.num_attention_heads,
+            num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
+                self.num_key_value_heads,
+                self.num_attention_heads,
+            ),
+            head_dim: fuel_core::hf_config::head_dim(
+                self.head_dim,
+                self.hidden_size,
+                self.num_attention_heads,
+            ),
+            rms_norm_eps: self.rms_norm_eps,
+            rope_theta: self.rope_theta,
+            max_position_embeddings: self.max_position_embeddings,
+            attention_bias: self.attention_bias,
+            sliding_window: self.sliding_window,
+            // Identity map: HF `no_rope_layers[i] == 1` IS a RoPE layer (GAP-196).
+            uses_rope_per_layer: self.no_rope_layers,
+        }
+    }
+}
+
+impl SmolLm3Config {
+    /// Parse a HuggingFace `config.json` string into a [`SmolLm3Config`].
+    ///
+    /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
+    /// see the born-red `smollm3_config_from_hf_json_parses_the_artifact`.
+    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+        Ok(SmolLm3ConfigRaw::from_json_str(json)?.resolve())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SmolLm3Weights {
     /// Identity of this weight set, folded into [`SmolLm3Model::decode_shape_key`]
@@ -711,6 +790,116 @@ impl SmolLm3Weights {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ROADMAP item 8 (II). Golden values from HuggingFaceTB/SmolLM3-3B's real
+    // config.json, including the full 36-entry `no_rope_layers` (every 4th layer
+    // is NoPE). SmolLM3 has no size preset, so a second distinct config provides
+    // the constant-parser discrimination.
+    const SMOLLM3_3B_CONFIG_JSON: &str = r#"{
+        "architectures": ["SmolLM3ForCausalLM"],
+        "model_type": "smollm3",
+        "vocab_size": 128256,
+        "hidden_size": 2048,
+        "intermediate_size": 11008,
+        "num_hidden_layers": 36,
+        "num_attention_heads": 16,
+        "num_key_value_heads": 4,
+        "max_position_embeddings": 65536,
+        "rms_norm_eps": 1e-06,
+        "rope_theta": 5000000.0,
+        "attention_bias": false,
+        "sliding_window": null,
+        "no_rope_layers": [1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0,1,1,1,0]
+    }"#;
+
+    #[test]
+    fn smollm3_config_from_hf_json_parses_the_artifact() {
+        let cfg = SmolLm3Config::from_hf_json_str(SMOLLM3_3B_CONFIG_JSON).unwrap();
+        assert_eq!(cfg.hidden_size, 2048);
+        assert_eq!(cfg.num_hidden_layers, 36);
+        assert_eq!(cfg.num_attention_heads, 16);
+        assert_eq!(cfg.vocab_size, 128_256);
+        assert_eq!(cfg.intermediate_size, 11_008);
+        // GQA: default would be num_attention_heads (16); 4 proves the key was READ.
+        assert_eq!(cfg.num_key_value_heads, 4);
+        // head_dim absent → derived 2048/16 = 128.
+        assert_eq!(cfg.head_dim, 128);
+        assert_eq!(cfg.rope_theta, 5_000_000.0);
+        assert_eq!(cfg.max_position_embeddings, 65_536);
+        assert_eq!(cfg.sliding_window, None);
+        // no_rope_layers parsed IDENTICALLY into uses_rope_per_layer: 36 entries,
+        // every 4th (index 3, 7, ...) a NoPE (0) layer, the rest RoPE (1).
+        let rope = cfg.uses_rope_per_layer.as_ref().expect("per-layer rope");
+        assert_eq!(rope.len(), 36);
+        assert_eq!(rope[0], 1);
+        assert_eq!(rope[3], 0);
+        assert_eq!(rope[7], 0);
+    }
+
+    /// A SECOND distinct config, exercising the default path (rms_norm_eps/
+    /// rope_theta/attention_bias/sliding_window/no_rope_layers omitted → every
+    /// layer RoPE) AND the take-if-present head_dim branch (explicit 96 ≠
+    /// 1024/16 = 64).
+    #[test]
+    fn smollm3_config_reads_a_second_distinct_config_with_explicit_head_dim() {
+        let json = r#"{
+            "model_type": "smollm3",
+            "vocab_size": 50000,
+            "hidden_size": 1024,
+            "intermediate_size": 4096,
+            "num_hidden_layers": 8,
+            "num_attention_heads": 16,
+            "num_key_value_heads": 2,
+            "head_dim": 96,
+            "max_position_embeddings": 4096
+        }"#;
+        let cfg = SmolLm3Config::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.num_key_value_heads, 2);
+        // explicit head_dim WINS over the quotient (1024/16 = 64).
+        assert_eq!(cfg.head_dim, 96);
+        assert_ne!(cfg.head_dim, 1024 / 16);
+        // omitted → resolve defaults
+        assert_eq!(cfg.rms_norm_eps, 1e-6);
+        assert_eq!(cfg.rope_theta, 5_000_000.0);
+        assert_eq!(cfg.sliding_window, None);
+        // no_rope_layers absent → None (every layer uses RoPE, Llama default)
+        assert!(cfg.uses_rope_per_layer.is_none());
+        assert_ne!(cfg.hidden_size, 2048);
+    }
+
+    /// `num_key_value_heads` ABSENT → defaults to `num_attention_heads`.
+    #[test]
+    fn smollm3_config_gqa_defaults_to_num_heads_when_absent() {
+        let json = r#"{
+            "model_type": "smollm3",
+            "vocab_size": 1000,
+            "hidden_size": 64,
+            "intermediate_size": 128,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 8,
+            "max_position_embeddings": 128
+        }"#;
+        let cfg = SmolLm3Config::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.num_key_value_heads, 8);
+    }
+
+    /// TRUE MQA (`num_key_value_heads = 1`) survives, not collapsed.
+    #[test]
+    fn smollm3_config_preserves_true_mqa() {
+        let json = r#"{
+            "model_type": "smollm3",
+            "vocab_size": 1000,
+            "hidden_size": 64,
+            "intermediate_size": 128,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 8,
+            "num_key_value_heads": 1,
+            "max_position_embeddings": 128
+        }"#;
+        let cfg = SmolLm3Config::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.num_key_value_heads, 1);
+    }
+
     fn tiny_weights(cfg: &SmolLm3Config) -> SmolLm3Weights {
         let mut s: u32 = 55555;
         let next = || -> f32 {
