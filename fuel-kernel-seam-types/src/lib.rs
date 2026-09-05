@@ -567,10 +567,37 @@ impl OpAttrs {
     /// kernel-seam-interop.md §7.3.2.
     ///
     /// M-3: the `unwrap_or(...)` defaults below cannot distinguish an *unset*
-    /// field from a genuine zero (e.g. `axis: None` vs `Some(0)`). Harmless
-    /// today — there is no decoder; this is a forward-serialization only, and an
-    /// op that reaches a given arm always has the field set (`op_to_attrs` /
-    /// `tag_to_op` guarantee it). A future decoder must not round-trip `None`.
+    /// field from a genuine zero (e.g. `axis: None` vs `Some(0)`), and for six
+    /// fields that collapse is **LOSSY TODAY** - two semantically distinct ops
+    /// serialize to identical bytes. Registry: GAP-287.
+    ///
+    /// This paragraph previously read *"harmless today ... an op that reaches a
+    /// given arm always has the field set (`op_to_attrs` / `tag_to_op`
+    /// guarantee it)"*. **That was false, and the guarantor's own doc says so**:
+    /// `fuel_graph::jit::op_to_attrs` documents itself as *"not exhaustive"* and
+    /// leaves `axis` unset for `CumSum`/`IndexSelect`/`Gather`/`IndexAdd`/
+    /// `ScatterAdd` (its `_ => {}` arm), while `keepdim` is set by **nothing in
+    /// the repository**. So `Gather` on axis 2 and on axis 0 emit the same
+    /// bytes, and every projected reduce emits `keepdim = false` regardless of
+    /// its real value - a difference in output RANK, erased.
+    ///
+    /// `const_bits`, `slot_index`, `scan_role` and `scan_index` are reachable
+    /// only from hand-built regions (`op_to_tag` emits none of the four leaf
+    /// tags); `scan_*` are set together by both producers today, guaranteed by
+    /// nothing. Note `scan_role.unwrap_or(SCAN_ROLE_CARRY)` is the only default
+    /// here that names a *semantic* value rather than a neutral zero: an unset
+    /// role does not decay to "absent", it asserts "carry".
+    ///
+    /// The old note also said *"a future decoder must not round-trip `None`"*.
+    /// **A decoder cannot recover what this encoder already discarded** - the
+    /// mitigation has to live on this side of the wire. And *"harmless, there is
+    /// no decoder"* was scoped to Fuel's own repo while this format is published
+    /// to external consumers with a cross-producer golden, i.e. scoped to the
+    /// one place the hazard cannot occur.
+    ///
+    /// Gated by the collapse table in `fuel-graph/src/jit.rs` tests, which pins
+    /// exactly which (op, field) pairs are lossy so that fixing one is visible.
+    /// Fixing the encoder is a wire-format change and needs the external ask.
     pub fn to_canonical_bytes(&self, op: OpTag) -> Vec<u8> {
         use OpTag as T;
         let mut body: Vec<u8> = Vec::new();

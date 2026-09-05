@@ -711,4 +711,198 @@ mod tests {
         // …and a different baked value refuses to match at all (attr guard).
         assert!(match_region_extract(&g, ms, &baked(3.0), &cf).is_none());
     }
+
+    // ---- GAP-287 - the `to_canonical_bytes` unset-vs-zero collapse table ----
+    //
+    // `OpAttrs::to_canonical_bytes` reads 17 fields through `unwrap_or`
+    // defaults. Its doc used to justify them as harmless because "an op that
+    // reaches a given arm always has the field set (`op_to_attrs` /
+    // `tag_to_op` guarantee it)". THIS FILE IS THE CITED GUARANTOR AND IT DOES
+    // NOT GUARANTEE THAT: the `_ => {}` arm of `op_to_attrs` leaves `axis`
+    // unset for five axis-bearing ops, and `keepdim` is set by NOTHING in the
+    // repository. Two semantically distinct ops then serialize to identical
+    // bytes, on a format published to external consumers with a
+    // cross-producer golden.
+    //
+    // SCOPE, stated because it is narrower than the 17: only the 12 sites
+    // reachable from the PROJECTION path are testable here. The other five
+    // (`Const`->const_bits, `RuntimeScalar`->slot_index, `ReducedCount`->axis,
+    // `ScanPlaceholder`->{scan_role, scan_index}) are unreachable from any
+    // `Op` -- `op_to_tag` emits none of those four tags -- so they are
+    // reachable only from hand-built regions and are pinned in
+    // fuel-kernel-seam-types instead.
+    //
+    // SOUNDNESS IS A PROPERTY OF (op, field), NOT OF A SITE: the single-axis
+    // arm serves eight tags and is sound for four of them.
+
+    /// One (op, field) pair that [`OpAttrs::to_canonical_bytes`] reads through
+    /// an `unwrap_or` default.
+    struct Collapse {
+        op: Op,
+        field: &'static str,
+        /// `true`  -- `op_to_attrs` sets it, so the default is unreachable and
+        ///            the collapse is inert.
+        /// `false` -- the default IS emitted, and distinct ops collide.
+        projected: bool,
+        is_set: fn(&OpAttrs) -> bool,
+    }
+
+    fn collapse_table() -> Vec<Collapse> {
+        let axis: fn(&OpAttrs) -> bool = |a| a.axis.is_some();
+        let keepdim: fn(&OpAttrs) -> bool = |a| a.keepdim.is_some();
+        let dtype: fn(&OpAttrs) -> bool = |a| a.cast_dtype.is_some();
+        let pad = || Op::Pad {
+            padding: vec![(1, 1)],
+            mode: crate::PadMode::Constant,
+            value: 0.0,
+        };
+        let slice = || Op::Slice {
+            dim: 1,
+            start: 0,
+            len: 2,
+        };
+        let row = |op, field, projected, is_set| Collapse {
+            op,
+            field,
+            projected,
+            is_set,
+        };
+        vec![
+            // -- sound: the producing arm sets the field --
+            row(slice(), "axis", true, axis),
+            row(slice(), "slice_start", true, |a| a.slice_start.is_some()),
+            row(slice(), "slice_len", true, |a| a.slice_len.is_some()),
+            row(Op::Roll { dim: 0, shift: 1 }, "axis", true, axis),
+            row(Op::Roll { dim: 0, shift: 1 }, "roll_shift", true, |a| {
+                a.roll_shift.is_some()
+            }),
+            row(Op::Cast(DType::F32), "cast_dtype", true, dtype),
+            row(pad(), "pad_mode", true, |a| a.pad_mode.is_some()),
+            row(pad(), "pad_value", true, |a| a.pad_value.is_some()),
+            row(
+                Op::MaskedFill {
+                    value: crate::Scalar::F32(0.0),
+                },
+                "cast_dtype",
+                true,
+                dtype,
+            ),
+            row(Op::Concat { dim: 0 }, "axis", true, axis),
+            row(Op::Flip { dim: 0 }, "axis", true, axis),
+            row(Op::Triu { diagonal: 0 }, "axis", true, axis),
+            row(Op::Tril { diagonal: 0 }, "axis", true, axis),
+            row(Op::SumDim(0), "axis", true, axis),
+            row(Op::MaxDim(0), "axis", true, axis),
+            row(Op::MeanDim(0), "axis", true, axis),
+            // -- lossy: `_ => {}` leaves the field unset; the default is emitted --
+            row(Op::IndexSelect { dim: 1 }, "axis", false, axis),
+            row(Op::Gather { dim: 1 }, "axis", false, axis),
+            row(Op::IndexAdd { dim: 1 }, "axis", false, axis),
+            row(Op::ScatterAdd { dim: 1 }, "axis", false, axis),
+            row(Op::CumSum { dim: 1 }, "axis", false, axis),
+            // `keepdim` is set by NOTHING repo-wide, so every reduce tag is lossy.
+            row(Op::SumDim(0), "keepdim", false, keepdim),
+            row(Op::MaxDim(0), "keepdim", false, keepdim),
+            row(Op::MeanDim(0), "keepdim", false, keepdim),
+            row(Op::CumSum { dim: 1 }, "keepdim", false, keepdim),
+        ]
+    }
+
+    /// Every row's op must actually project to a tag, or the row is a typo
+    /// asserting nothing. This is the table's own positive control.
+    #[test]
+    fn collapse_table_rows_all_reach_a_serializer_arm() {
+        for c in collapse_table() {
+            assert!(
+                op_to_tag(&c.op).is_some(),
+                "row ({:?}, {}) does not project to any OpTag, so it exercises \
+                 no to_canonical_bytes arm and asserts nothing",
+                c.op,
+                c.field
+            );
+        }
+    }
+
+    /// LIVE GATE, the sound half. If a projection arm ever stops setting its
+    /// field, that field silently starts serializing a default and joins the
+    /// lossy set -- this test is what makes that visible.
+    #[test]
+    fn canonical_bytes_projected_fields_are_actually_set() {
+        for c in collapse_table().iter().filter(|c| c.projected) {
+            let a = op_to_attrs(&c.op);
+            assert!(
+                (c.is_set)(&a),
+                "REGRESSION: op_to_attrs no longer sets `{}` for {:?}, so \
+                 to_canonical_bytes now emits its unwrap_or default and this \
+                 op collides with every other op on that arm (GAP-287)",
+                c.field,
+                c.op
+            );
+        }
+    }
+
+    /// PIN, not an endorsement: these nine (op, field) pairs are DEFECTS, held
+    /// so that fixing one is visible. Fixing the encoder is a wire-format
+    /// change on a published format and needs the external ask first; until
+    /// then this records exactly which collapses are live.
+    #[test]
+    fn canonical_bytes_lossy_collapses_are_pinned_gap287() {
+        for c in collapse_table().iter().filter(|c| !c.projected) {
+            let a = op_to_attrs(&c.op);
+            assert!(
+                !(c.is_set)(&a),
+                "`{}` is now SET for {:?} -- the GAP-287 collapse was fixed. \
+                 That is good news: move this row to `projected: true` and \
+                 update the GAP-287 row and the to_canonical_bytes doc.",
+                c.field,
+                c.op
+            );
+        }
+    }
+
+    /// The defect AT THE WIRE rather than at the projection: two `Gather`s on
+    /// different axes are distinct ops that serialize to identical bytes.
+    ///
+    /// This is the assertion a decoder cannot undo. The distinction is
+    /// destroyed in the ENCODER, so "a future decoder must not round-trip
+    /// `None`" is an instruction aimed at the side of the wire that has
+    /// already lost the information.
+    #[test]
+    fn distinct_gathers_serialize_identically_gap287() {
+        let a0 = op_to_attrs(&Op::Gather { dim: 0 });
+        let a2 = op_to_attrs(&Op::Gather { dim: 2 });
+        let tag = op_to_tag(&Op::Gather { dim: 0 }).expect("Gather projects to a tag");
+
+        assert_eq!(
+            a0.to_canonical_bytes(tag),
+            a2.to_canonical_bytes(tag),
+            "GAP-287 pin: axis 0 and axis 2 currently collide. If this fails, \
+             the collapse was fixed -- delete this test with the fix."
+        );
+
+        // CONTROL: the serializer is not simply constant. `Slice`, whose axis
+        // IS projected, does discriminate -- so the collision above is the
+        // unset-vs-zero collapse and not a dead serializer.
+        let s0 = op_to_attrs(&Op::Slice {
+            dim: 0,
+            start: 0,
+            len: 1,
+        });
+        let s2 = op_to_attrs(&Op::Slice {
+            dim: 2,
+            start: 0,
+            len: 1,
+        });
+        let st = op_to_tag(&Op::Slice {
+            dim: 0,
+            start: 0,
+            len: 1,
+        })
+        .expect("Slice projects to a tag");
+        assert_ne!(
+            s0.to_canonical_bytes(st),
+            s2.to_canonical_bytes(st),
+            "control failed: the serializer discriminates nothing at all"
+        );
+    }
 }
