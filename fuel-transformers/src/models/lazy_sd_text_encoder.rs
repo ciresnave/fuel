@@ -149,9 +149,17 @@ impl ClipTextConfig {
             .map_err(|e| fuel_core::Error::Msg(format!("parsing clip text config: {e}")).bt())
     }
 
-    pub fn head_dim(&self) -> usize {
-        assert_eq!(self.hidden_size % self.num_attention_heads, 0);
-        self.hidden_size / self.num_attention_heads
+    pub fn head_dim(&self) -> fuel_core::Result<usize> {
+        // GAP-281 (dim/head relation): a typed decline, not a panic. The
+        // quotient below is integer division, so a non-dividing head count
+        // truncates silently -- a CONFIG property to reject, not an invariant.
+        if !self.hidden_size.is_multiple_of(self.num_attention_heads) {
+            return Err(fuel_core::Error::Msg(format!(
+                "SdTextEncoderConfig: hidden_size ({}) must be divisible by num_attention_heads ({})",
+                self.hidden_size, self.num_attention_heads,
+            )));
+        }
+        Ok(self.hidden_size / self.num_attention_heads)
     }
 }
 
@@ -373,7 +381,7 @@ fn encoder_layer(
 ) -> fuel_core::Result<Tensor> {
     let h = cfg.hidden_size;
     let n_heads = cfg.num_attention_heads;
-    let d_head = cfg.head_dim();
+    let d_head = cfg.head_dim()?;
 
     // --- self-attention -------------
     let x_ln = layer_norm_affine(x, &lw.ln1_g, &lw.ln1_b, cfg.layer_norm_eps, h, seq)?;
@@ -716,7 +724,7 @@ mod tests {
         let cfg = ClipTextConfig::sd_v1();
         assert_eq!(cfg.hidden_size, 768);
         assert_eq!(cfg.num_hidden_layers, 12);
-        assert_eq!(cfg.head_dim(), 64);
+        assert_eq!(cfg.head_dim().unwrap(), 64);
         assert_eq!(cfg.max_position_embeddings, 77);
     }
 
@@ -955,5 +963,33 @@ mod tests {
         );
         assert_eq!(ClipTextConfig::sdxl_te2().hidden_size, 1280);
         assert_eq!(ClipTextConfig::sdxl_te2().num_hidden_layers, 32);
+    }
+
+    /// GAP-281 (dim/head relation): a head count that does not divide the model
+    /// dim must DECLINE, not panic. The quotient is integer division, so a
+    /// non-dividing count truncates silently.
+    ///
+    /// Born-red by sabotage: dropping the divisibility check makes this the only
+    /// failing arm.
+    #[test]
+    fn head_dim_declines_when_the_head_count_does_not_divide() {
+        let valid = ClipTextConfig::sd_v1();
+        // CONTROL: a conforming config still resolves, so "it errored" cannot come
+        // from an accessor that rejects everything.
+        assert!(
+            valid.head_dim().is_ok(),
+            "control: the conforming config must resolve"
+        );
+
+        let mut bad = valid.clone();
+        bad.num_attention_heads = 5;
+        let err = bad
+            .head_dim()
+            .expect_err("a non-dividing head count must DECLINE, not panic");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("hidden_size") && msg.contains("num_attention_heads"),
+            "the decline must name both operands, got: {msg}"
+        );
     }
 }
