@@ -100,11 +100,15 @@ impl GemmaModel {
         let seq = tokens.len();
         let _batch = 1;
         assert!(seq > 0, "GemmaModel::forward: tokens must be non-empty");
-        assert_eq!(
-            cfg.num_attention_heads * cfg.head_dim,
-            cfg.hidden_size,
-            "GemmaConfig: num_attention_heads * head_dim must equal hidden_size",
-        );
+        // GAP-281: a typed decline, not a panic. The relation is a CONFIG
+        // property a real checkpoint can violate, so it is an error to return,
+        // not an invariant to assert.
+        if cfg.num_attention_heads * cfg.head_dim != cfg.hidden_size {
+            return Err(fuel_core::Error::Msg(
+                "GemmaConfig: num_attention_heads * head_dim must equal hidden_size".into(),
+            )
+            .bt());
+        }
 
         // Embedding lookup + sqrt(hidden_size) scaling (Gemma-specific).
         let h = Tensor::embed_tokens(
@@ -615,5 +619,50 @@ mod tests {
         // Just smoke-test that forward runs without panic.
         let logits = model.forward(&[0, 1, 2], 0).unwrap().realize_f32();
         assert_eq!(logits.len(), 3 * cfg.vocab_size);
+    }
+
+    /// GAP-281: the `num_attention_heads * head_dim == hidden_size` relation must
+    /// DECLINE with a typed error, not panic. "Never panic on production paths."
+    ///
+    /// Born-red: against the production `assert_eq!` this FAILS BY PANIC.
+    #[test]
+    fn head_dim_mismatch_declines_rather_than_panicking() {
+        let valid = GemmaConfig {
+            vocab_size: 32,
+            hidden_size: 16,
+            intermediate_size: 32,
+            num_hidden_layers: 2,
+            num_attention_heads: 4,
+            num_key_value_heads: 2,
+            head_dim: 4,
+            rms_norm_eps: 1e-6,
+            rope_theta: 10_000.0,
+            max_position_embeddings: 64,
+            attention_bias: false,
+            hidden_activation: GemmaActivation::GeluPytorchTanh,
+        };
+        // POSITIVE CONTROL: the conforming config must SUCCEED, or the Err below is
+        // satisfied by a fixture that is merely broken.
+        let good = GemmaModel {
+            config: valid.clone(),
+            weights: tiny_weights(&valid),
+        };
+        good.forward(&[0, 1, 2], 0)
+            .expect("control: the conforming config must still run");
+
+        let mut bad = valid.clone();
+        bad.head_dim = 8; // 4 * 8 = 32 != 16
+        let model = GemmaModel {
+            config: bad,
+            weights: tiny_weights(&valid),
+        };
+        let err = model
+            .forward(&[0, 1, 2], 0)
+            .expect_err("a decoupled head_dim must DECLINE, not panic");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("head_dim") && msg.contains("hidden_size"),
+            "the decline must name the relation it rejected, got: {msg}"
+        );
     }
 }
