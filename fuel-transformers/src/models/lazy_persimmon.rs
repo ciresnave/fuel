@@ -43,6 +43,87 @@ impl PersimmonConfig {
     }
 }
 
+// ROADMAP item 8 (II): config-from-path on the #57 template. A `serde` raw with
+// HF field names + Persimmon's own constant defaults, then `resolve` routes kv
+// heads + head_dim through the shared `fuel_core::hf_config` rules. Persimmon uses
+// LayerNorm (`layer_norm_eps`), partial rotary (`partial_rotary_factor`, HF
+// default 0.5) and QK-LayerNorm (`qk_layernorm`, HF default true).
+#[derive(Debug, Clone, serde::Deserialize)]
+struct PersimmonConfigRaw {
+    vocab_size: usize,
+    hidden_size: usize,
+    intermediate_size: usize,
+    num_hidden_layers: usize,
+    num_attention_heads: usize,
+    #[serde(default)]
+    num_key_value_heads: Option<usize>,
+    #[serde(default)]
+    head_dim: Option<usize>,
+    #[serde(default = "default_persimmon_layer_norm_eps")]
+    layer_norm_eps: f64,
+    #[serde(default = "default_persimmon_rope_theta")]
+    rope_theta: f64,
+    max_position_embeddings: usize,
+    #[serde(default = "default_persimmon_partial_rotary_factor")]
+    partial_rotary_factor: f64,
+    #[serde(default = "default_persimmon_qk_layernorm")]
+    qk_layernorm: bool,
+}
+
+fn default_persimmon_layer_norm_eps() -> f64 {
+    1e-5
+}
+fn default_persimmon_rope_theta() -> f64 {
+    25_000.0
+}
+fn default_persimmon_partial_rotary_factor() -> f64 {
+    0.5
+}
+fn default_persimmon_qk_layernorm() -> bool {
+    true
+}
+
+impl PersimmonConfigRaw {
+    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
+        serde_json::from_str(json)
+            .map_err(|e| fuel_core::Error::Msg(format!("parsing Persimmon config.json: {e}")))
+    }
+
+    fn resolve(self) -> PersimmonConfig {
+        PersimmonConfig {
+            vocab_size: self.vocab_size,
+            hidden_size: self.hidden_size,
+            intermediate_size: self.intermediate_size,
+            num_hidden_layers: self.num_hidden_layers,
+            num_attention_heads: self.num_attention_heads,
+            num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
+                self.num_key_value_heads,
+                self.num_attention_heads,
+            ),
+            head_dim: fuel_core::hf_config::head_dim(
+                self.head_dim,
+                self.hidden_size,
+                self.num_attention_heads,
+            ),
+            layer_norm_eps: self.layer_norm_eps,
+            rope_theta: self.rope_theta,
+            max_position_embeddings: self.max_position_embeddings,
+            partial_rotary_factor: self.partial_rotary_factor,
+            qk_layernorm: self.qk_layernorm,
+        }
+    }
+}
+
+impl PersimmonConfig {
+    /// Parse a HuggingFace `config.json` string into a [`PersimmonConfig`].
+    ///
+    /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
+    /// see the born-red `persimmon_config_from_hf_json_parses_the_artifact`.
+    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+        Ok(PersimmonConfigRaw::from_json_str(json)?.resolve())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PersimmonLayerWeights {
     pub input_ln_gain: Arc<[f32]>,
@@ -427,6 +508,107 @@ impl PersimmonWeights {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ROADMAP item 8 (II). Golden values from adept/persimmon-8b-base's real
+    // config.json. Persimmon has no size preset, so a second distinct config
+    // provides the constant-parser discrimination. `partial_rotary_factor` is
+    // absent from the artifact → defaulted to 0.5; `qk_layernorm` is present.
+    const PERSIMMON_8B_CONFIG_JSON: &str = r#"{
+        "architectures": ["PersimmonForCausalLM"],
+        "model_type": "persimmon",
+        "vocab_size": 262144,
+        "hidden_size": 4096,
+        "intermediate_size": 16384,
+        "num_hidden_layers": 36,
+        "num_attention_heads": 64,
+        "num_key_value_heads": 64,
+        "max_position_embeddings": 16384,
+        "layer_norm_eps": 1e-05,
+        "rms_norm_eps": 1e-06,
+        "rope_theta": 25000.0,
+        "qk_layernorm": true
+    }"#;
+
+    #[test]
+    fn persimmon_config_from_hf_json_parses_the_artifact() {
+        let cfg = PersimmonConfig::from_hf_json_str(PERSIMMON_8B_CONFIG_JSON).unwrap();
+        assert_eq!(cfg.hidden_size, 4096);
+        assert_eq!(cfg.num_hidden_layers, 36);
+        assert_eq!(cfg.num_attention_heads, 64);
+        assert_eq!(cfg.vocab_size, 262_144);
+        assert_eq!(cfg.intermediate_size, 16_384);
+        assert_eq!(cfg.num_key_value_heads, 64);
+        // head_dim absent → derived 4096/64 = 64.
+        assert_eq!(cfg.head_dim, 64);
+        assert_eq!(cfg.layer_norm_eps, 1e-5);
+        assert_eq!(cfg.rope_theta, 25_000.0);
+        assert!(cfg.qk_layernorm); // present in the artifact
+        // partial_rotary_factor absent → defaulted to 0.5.
+        assert_eq!(cfg.partial_rotary_factor, 0.5);
+    }
+
+    /// A SECOND distinct config, exercising the default path (layer_norm_eps/
+    /// rope_theta/partial_rotary_factor/qk_layernorm omitted) AND the take-if-
+    /// present head_dim branch (explicit 80 ≠ 1024/16 = 64).
+    #[test]
+    fn persimmon_config_reads_a_second_distinct_config_with_explicit_head_dim() {
+        let json = r#"{
+            "model_type": "persimmon",
+            "vocab_size": 50000,
+            "hidden_size": 1024,
+            "intermediate_size": 4096,
+            "num_hidden_layers": 8,
+            "num_attention_heads": 16,
+            "num_key_value_heads": 4,
+            "head_dim": 80,
+            "max_position_embeddings": 2048
+        }"#;
+        let cfg = PersimmonConfig::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.num_key_value_heads, 4);
+        // explicit head_dim WINS over the quotient (1024/16 = 64).
+        assert_eq!(cfg.head_dim, 80);
+        assert_ne!(cfg.head_dim, 1024 / 16);
+        // omitted → resolve defaults (Persimmon's own consts)
+        assert_eq!(cfg.layer_norm_eps, 1e-5);
+        assert_eq!(cfg.rope_theta, 25_000.0);
+        assert_eq!(cfg.partial_rotary_factor, 0.5);
+        assert!(cfg.qk_layernorm); // default true
+        assert_ne!(cfg.hidden_size, 4096);
+    }
+
+    /// `num_key_value_heads` ABSENT → defaults to `num_attention_heads`.
+    #[test]
+    fn persimmon_config_gqa_defaults_to_num_heads_when_absent() {
+        let json = r#"{
+            "model_type": "persimmon",
+            "vocab_size": 1000,
+            "hidden_size": 64,
+            "intermediate_size": 128,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 8,
+            "max_position_embeddings": 128
+        }"#;
+        let cfg = PersimmonConfig::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.num_key_value_heads, 8);
+    }
+
+    /// TRUE MQA (`num_key_value_heads = 1`) survives, not collapsed.
+    #[test]
+    fn persimmon_config_preserves_true_mqa() {
+        let json = r#"{
+            "model_type": "persimmon",
+            "vocab_size": 1000,
+            "hidden_size": 64,
+            "intermediate_size": 128,
+            "num_hidden_layers": 2,
+            "num_attention_heads": 8,
+            "num_key_value_heads": 1,
+            "max_position_embeddings": 128
+        }"#;
+        let cfg = PersimmonConfig::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.num_key_value_heads, 1);
+    }
+
     fn tiny_weights(cfg: &PersimmonConfig) -> PersimmonWeights {
         let mut s: u32 = 77777;
         let next = || -> f32 {
