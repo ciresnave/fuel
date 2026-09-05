@@ -159,13 +159,18 @@ impl MetaVoiceModel {
             )
             .bt());
         }
-        assert_eq!(
-            cfg.num_attention_heads % cfg.num_key_value_heads,
-            0,
-            "MetaVoiceConfig: num_attention_heads ({}) must be a multiple of num_key_value_heads ({})",
-            cfg.num_attention_heads,
-            cfg.num_key_value_heads,
-        );
+        // GAP-281: a typed decline, not a panic. Copied from the conformant
+        // form in `lazy_mixtral.rs`; the message keeps its values via format!.
+        if !cfg
+            .num_attention_heads
+            .is_multiple_of(cfg.num_key_value_heads)
+        {
+            return Err(fuel_core::Error::Msg(format!(
+                "MetaVoiceConfig: num_attention_heads ({}) must be a multiple of num_key_value_heads ({})",
+                cfg.num_attention_heads, cfg.num_key_value_heads,
+            ))
+            .bt());
+        }
 
         let spk_anchored = self.anchor_speaker(speaker_embed, embeds)?;
         let spk_proj = self.weights.speaker_proj.apply_linear(
@@ -753,6 +758,43 @@ mod tests {
         let msg = format!("{err}");
         assert!(
             msg.contains("head_dim") && msg.contains("hidden_size"),
+            "the decline must name the relation it rejected, got: {msg}"
+        );
+    }
+
+    /// GAP-281 (GQA relation): `num_attention_heads % num_key_value_heads == 0` must
+    /// DECLINE with a typed error, not panic. "Never panic on production paths."
+    ///
+    /// The fixture violates ONLY the GQA axis: head_dim is left conforming so the
+    /// head_dim guard (converted separately) cannot answer first and make this vacuous.
+    /// 4 heads over 3 kv-heads gives 4 % 3 == 1.
+    ///
+    /// Born-red: against the production `assert_eq!` this FAILS BY PANIC.
+    #[test]
+    fn gqa_head_multiple_mismatch_declines_rather_than_panicking() {
+        let valid = tiny_cfg();
+        let tokens: Vec<u32> = vec![1, 2, 3, 4];
+        let spk = speaker_vec(&valid, 0.1);
+        // POSITIVE CONTROL: the conforming config must SUCCEED.
+        let good = MetaVoiceModel {
+            config: valid.clone(),
+            weights: tiny_weights(&valid, 2026),
+        };
+        good.forward(&tokens, &spk, 0)
+            .expect("control: the conforming config must still run");
+
+        let mut bad = valid.clone();
+        bad.num_key_value_heads = 3; // 4 % 3 == 1, and head_dim stays conforming
+        let model = MetaVoiceModel {
+            config: bad,
+            weights: tiny_weights(&valid, 2026),
+        };
+        let err = model
+            .forward(&tokens, &spk, 0)
+            .expect_err("a non-multiple kv-head count must DECLINE, not panic");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("num_key_value_heads"),
             "the decline must name the relation it rejected, got: {msg}"
         );
     }
