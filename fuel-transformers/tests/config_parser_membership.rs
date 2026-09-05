@@ -49,6 +49,57 @@ const NOT_YET_PARSED: &[&str] = &[
 // becomes Option, it acquires a GQA default that bypasses the rule and the exemption reds).
 const STRUCTURAL_EXEMPT: &[&str] = &["lazy_llava.rs", "lazy_qwen2_moe.rs"];
 
+/// GAP-279: models carrying the `num_attention_heads * head_dim == hidden_size`
+/// guard whose config ALSO declares a `pub head_dim` field — so the guard's claim
+/// is falsifiable by a real checkpoint that decouples head_dim.
+///
+/// ⚠️ WHAT THIS PINS AND WHAT IT DOES NOT. This is the class AS DOCUMENTED in
+/// GAP-279 at `bbc969f4`, not a class re-derived here. `mixformer` carries the
+/// guard and declares no `head_dim`, so the stated predicate makes it VACUOUS —
+/// it is DELIBERATELY outside this pin, because adding one model from the outside
+/// is the same act that made the row's split drift from its own census. The
+/// census is to be re-derived once, completely. **Do not read a green here as
+/// "28 is the complete class."**
+const HEAD_DIM_AT_RISK: &[&str] = &[
+    "lazy_gemma.rs",
+    "lazy_gemma2.rs",
+    "lazy_helium.rs",
+    "lazy_lfm2.rs",
+    "lazy_metavoice.rs",
+    "lazy_mistral.rs",
+    "lazy_mixtral.rs",
+    "lazy_olmo.rs",
+    "lazy_olmo2.rs",
+    "lazy_paddleocr_vl_text.rs",
+    "lazy_persimmon.rs",
+    "lazy_phi.rs",
+    "lazy_qwen3.rs",
+    "lazy_qwen3_moe.rs",
+    "lazy_qwen3_vl_text.rs",
+    "lazy_smollm3.rs",
+    "lazy_stablelm.rs",
+    "lazy_starcoder2.rs",
+    "lazy_yi.rs",
+];
+
+/// GAP-279: carry the same guard but declare NO `head_dim` field, so the guard
+/// cannot be violated — the config has no way to express a decoupled head_dim.
+///
+/// The pair is a PARTITION, and the gate below asserts the SET rather than a
+/// count: a model moving VACUOUS -> AT_RISK reds WITH ITS NAME. A count moving
+/// 9 to 8 says something changed and not what.
+const HEAD_DIM_VACUOUS: &[&str] = &[
+    "lazy_bigcode.rs",
+    "lazy_falcon.rs",
+    "lazy_granite.rs",
+    "lazy_granitemoehybrid.rs",
+    "lazy_jina_bert.rs",
+    "lazy_modernbert.rs",
+    "lazy_musicgen.rs",
+    "lazy_phi3.rs",
+    "lazy_qwen2.rs",
+];
+
 const RULE_CALL: &str = "hf_config::num_key_value_heads";
 
 /// Whether the source CALLS the shared rule in code — excludes comment lines so a
@@ -239,4 +290,87 @@ fn exempt_lists_may_only_shrink() {
         "NOT_YET_PARSED changed — it may only SHRINK as models gain rule-routed parsers"
     );
     assert_eq!(STRUCTURAL_EXEMPT.len(), 2, "STRUCTURAL_EXEMPT changed");
+}
+
+/// GAP-279: the AT_RISK / VACUOUS split must match what the sources say.
+///
+/// The discriminator is `does the config declare a `pub head_dim` field`, read
+/// with the same struct parser the rest of this file uses. The day a VACUOUS
+/// model gains an explicit `head_dim`, it becomes falsifiable and this reds
+/// naming it — which is the drift the row exists to track.
+///
+/// BORN-RED, observed: giving `lazy_phi3.rs` a `pub head_dim: usize` field makes
+/// this fail with `phi3` named. Restored byte-identically and re-verified, with
+/// the crate fingerprint cleared on BOTH transitions so neither reading came
+/// from a stale binary.
+#[test]
+fn head_dim_dispositions_match_the_sources() {
+    let models = model_sources();
+    let by_name: std::collections::BTreeMap<_, _> =
+        models.iter().map(|(n, s)| (n.clone(), s.clone())).collect();
+
+    // Positive control: every pinned file must EXIST. A rename would otherwise
+    // silently empty the comparison and pass.
+    let pinned: Vec<&str> = HEAD_DIM_AT_RISK
+        .iter()
+        .chain(HEAD_DIM_VACUOUS.iter())
+        .copied()
+        .collect();
+    assert_eq!(pinned.len(), 28, "GAP-279 documents 28 members");
+    for f in &pinned {
+        assert!(
+            by_name.contains_key(*f),
+            "pinned model {f} is not in src/models — renamed or deleted, and a              missing file would make its disposition unobservable rather than wrong"
+        );
+    }
+
+    let declares_head_dim = |file: &str| -> bool {
+        let src = &by_name[file];
+        config_struct_fields(src)
+            .iter()
+            .any(|fields| fields.contains("head_dim"))
+    };
+
+    let mut wrong_side: Vec<String> = Vec::new();
+    for f in HEAD_DIM_AT_RISK {
+        if !declares_head_dim(f) {
+            wrong_side.push(format!("{f}: pinned AT_RISK but declares no head_dim"));
+        }
+    }
+    for f in HEAD_DIM_VACUOUS {
+        if declares_head_dim(f) {
+            wrong_side.push(format!("{f}: pinned VACUOUS but NOW DECLARES head_dim"));
+        }
+    }
+
+    assert!(
+        wrong_side.is_empty(),
+        "GAP-279 disposition drift: {wrong_side:?}. A VACUOUS model that gains an explicit head_dim becomes able to express a decoupled config, so the guard's claim becomes falsifiable for it — move it to HEAD_DIM_AT_RISK and update the GAP-279 row in the same change."
+    );
+}
+
+/// The two GAP-279 lists must stay a PARTITION — disjoint, and no duplicates.
+///
+/// Cheap, and it is the check whose ABSENCE let the row's split drift from its
+/// own census while every count still agreed: 19 + 9 = 28 was true of a set
+/// containing a model with no guard and missing one that had it.
+#[test]
+fn head_dim_lists_are_a_partition() {
+    let at: BTreeSet<&str> = HEAD_DIM_AT_RISK.iter().copied().collect();
+    let vac: BTreeSet<&str> = HEAD_DIM_VACUOUS.iter().copied().collect();
+    assert_eq!(
+        at.len(),
+        HEAD_DIM_AT_RISK.len(),
+        "duplicate in HEAD_DIM_AT_RISK"
+    );
+    assert_eq!(
+        vac.len(),
+        HEAD_DIM_VACUOUS.len(),
+        "duplicate in HEAD_DIM_VACUOUS"
+    );
+    let both: Vec<&&str> = at.intersection(&vac).collect();
+    assert!(
+        both.is_empty(),
+        "a model cannot be both AT_RISK and VACUOUS: {both:?}"
+    );
 }
