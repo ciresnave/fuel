@@ -79,6 +79,109 @@ impl GemmaConfig {
     }
 }
 
+/// Map a Gemma-1 `hidden_act` string to [`GemmaActivation`].
+///
+/// ⚠️ Gemma-1's published configs carry `hidden_act: "gelu"`, but every Gemma-1
+/// checkpoint uses the TANH-APPROXIMATE GELU — a KNOWN BUG in Google's config
+/// (the reference implementation and the model cards use `gelu_pytorch_tanh`;
+/// the `gemma_2b()` preset above already encodes `GeluPytorchTanh`). This
+/// resolver CORRECTS the artifact: `"gelu"` → `GeluPytorchTanh`.
+///
+/// The correction is scoped to the Gemma architecture and lives HERE, at the
+/// resolution site — never in `GemmaActivation` or a global default — because
+/// `gelu → GeluPytorchTanh` is TRUE for Gemma and FALSE for every other
+/// architecture; encoding it more widely would be a guard asserting a false
+/// claim. Overriding an EXPLICIT artifact value (unlike glm4, which filled an
+/// ABSENT one) is the stronger act, and this arch-scoped truth is its licence.
+fn gemma_activation_from_str(s: &str) -> fuel_core::Result<GemmaActivation> {
+    match s {
+        "gelu" | "gelu_pytorch_tanh" | "gelu_new" => Ok(GemmaActivation::GeluPytorchTanh),
+        other => Err(fuel_core::Error::Msg(format!(
+            "unsupported Gemma hidden_act {other:?} (Gemma uses the tanh-approximate GELU)"
+        ))),
+    }
+}
+
+// ROADMAP item 8 (II): config-from-path on the #57 template. Gemma-1 is a FLAT
+// artifact: a `serde` raw with HF field names + Gemma's own constant defaults,
+// then `resolve` routes kv heads + head_dim through the shared `fuel_core::hf_config`
+// rules (Gemma ships an explicit, often-decoupled head_dim, e.g. 256 vs 3072/16=192
+// on gemma-7b). `hidden_act` (also accepted as `hidden_activation`) is corrected
+// to the tanh GELU — see `gemma_activation_from_str`.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct GemmaConfigRaw {
+    vocab_size: usize,
+    hidden_size: usize,
+    intermediate_size: usize,
+    num_hidden_layers: usize,
+    num_attention_heads: usize,
+    #[serde(default)]
+    num_key_value_heads: Option<usize>,
+    #[serde(default)]
+    head_dim: Option<usize>,
+    #[serde(default = "default_gemma_rms_norm_eps")]
+    rms_norm_eps: f64,
+    #[serde(default = "default_gemma_rope_theta")]
+    rope_theta: f64,
+    max_position_embeddings: usize,
+    #[serde(default)]
+    attention_bias: bool,
+    #[serde(default, alias = "hidden_activation")]
+    hidden_act: Option<String>,
+}
+
+fn default_gemma_rms_norm_eps() -> f64 {
+    1e-6
+}
+fn default_gemma_rope_theta() -> f64 {
+    10_000.0
+}
+
+impl GemmaConfigRaw {
+    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
+        serde_json::from_str(json)
+            .map_err(|e| fuel_core::Error::Msg(format!("parsing Gemma config.json: {e}")))
+    }
+
+    fn resolve(self) -> fuel_core::Result<GemmaConfig> {
+        let hidden_activation = match self.hidden_act.as_deref() {
+            None => GemmaActivation::GeluPytorchTanh,
+            Some(s) => gemma_activation_from_str(s)?,
+        };
+        Ok(GemmaConfig {
+            vocab_size: self.vocab_size,
+            hidden_size: self.hidden_size,
+            intermediate_size: self.intermediate_size,
+            num_hidden_layers: self.num_hidden_layers,
+            num_attention_heads: self.num_attention_heads,
+            num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
+                self.num_key_value_heads,
+                self.num_attention_heads,
+            ),
+            head_dim: fuel_core::hf_config::head_dim(
+                self.head_dim,
+                self.hidden_size,
+                self.num_attention_heads,
+            ),
+            rms_norm_eps: self.rms_norm_eps,
+            rope_theta: self.rope_theta,
+            max_position_embeddings: self.max_position_embeddings,
+            attention_bias: self.attention_bias,
+            hidden_activation,
+        })
+    }
+}
+
+impl GemmaConfig {
+    /// Parse a HuggingFace `config.json` string into a [`GemmaConfig`].
+    ///
+    /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
+    /// see the born-red `gemma_config_from_hf_json_corrects_the_gelu_misnomer`.
+    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+        GemmaConfigRaw::from_json_str(json)?.resolve()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct GemmaWeights {
     pub token_embedding: Arc<[f32]>,
@@ -476,6 +579,123 @@ impl GemmaWeights {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ROADMAP item 8 (II). Golden values from google/gemma-2b's real config.json.
+    // Its `hidden_act` is the misnomer "gelu" (Gemma actually uses the tanh GELU).
+    const GEMMA_2B_CONFIG_JSON: &str = r#"{
+        "architectures": ["GemmaForCausalLM"],
+        "model_type": "gemma",
+        "vocab_size": 256000,
+        "hidden_size": 2048,
+        "intermediate_size": 16384,
+        "num_hidden_layers": 18,
+        "num_attention_heads": 8,
+        "num_key_value_heads": 1,
+        "head_dim": 256,
+        "hidden_act": "gelu",
+        "max_position_embeddings": 8192,
+        "rms_norm_eps": 1e-06,
+        "rope_theta": 10000.0,
+        "attention_bias": false
+    }"#;
+
+    #[test]
+    fn gemma_config_from_hf_json_corrects_the_gelu_misnomer() {
+        let cfg = GemmaConfig::from_hf_json_str(GEMMA_2B_CONFIG_JSON).unwrap();
+        assert_eq!(cfg.hidden_size, 2048);
+        assert_eq!(cfg.num_hidden_layers, 18);
+        assert_eq!(cfg.num_attention_heads, 8);
+        assert_eq!(cfg.vocab_size, 256_000);
+        // GQA: default would be num_attention_heads (8); 1 proves the key was READ.
+        assert_eq!(cfg.num_key_value_heads, 1);
+        assert_eq!(cfg.head_dim, 256);
+        // THE RULING — CORRECTION ARM: the artifact says "gelu", but Gemma uses
+        // the tanh GELU, so this must resolve to GeluPytorchTanh, NOT Gelu. A
+        // faithful "gelu" -> Gelu parser fails here; that is the point.
+        assert_eq!(cfg.hidden_activation, GemmaActivation::GeluPytorchTanh);
+        assert_ne!(cfg.hidden_activation, GemmaActivation::Gelu);
+    }
+
+    /// A SECOND distinct real config (gemma-7b): head_dim EXPLICIT and DECOUPLED
+    /// (256 vs 3072/16 = 192), proving take-if-present on a live artifact.
+    #[test]
+    fn gemma_config_reads_gemma_7b_with_decoupled_head_dim() {
+        let json = r#"{
+            "model_type": "gemma",
+            "vocab_size": 256000,
+            "hidden_size": 3072,
+            "intermediate_size": 24576,
+            "num_hidden_layers": 28,
+            "num_attention_heads": 16,
+            "num_key_value_heads": 16,
+            "head_dim": 256,
+            "hidden_act": "gelu",
+            "max_position_embeddings": 8192
+        }"#;
+        let cfg = GemmaConfig::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.hidden_size, 3072);
+        assert_eq!(cfg.num_hidden_layers, 28);
+        // explicit head_dim WINS over the quotient (3072/16 = 192).
+        assert_eq!(cfg.head_dim, 256);
+        assert_ne!(cfg.head_dim, 3072 / 16);
+        // omitted rms_norm_eps/rope_theta → defaults
+        assert_eq!(cfg.rms_norm_eps, 1e-6);
+        assert_eq!(cfg.rope_theta, 10_000.0);
+        assert_ne!(cfg.hidden_size, 2048);
+    }
+
+    /// The activation correction is a TWO-ARM (glm4-shaped) test: the misnomer
+    /// "gelu" AND the explicit "gelu_pytorch_tanh" both resolve to GeluPytorchTanh,
+    /// and an UNKNOWN value ERRORS — the error arm is what catches a resolver
+    /// hardcoded to GeluPytorchTanh (which would pass both mapping arms).
+    #[test]
+    fn gemma_config_activation_corrects_maps_and_rejects() {
+        let with_act = |act: &str| {
+            format!(
+                r#"{{
+                "model_type": "gemma",
+                "vocab_size": 1000, "hidden_size": 64, "intermediate_size": 128,
+                "num_hidden_layers": 2, "num_attention_heads": 8, "head_dim": 8,
+                "max_position_embeddings": 128, "hidden_act": "{act}"
+            }}"#
+            )
+        };
+        // Arm 1: the misnomer is corrected.
+        assert_eq!(
+            GemmaConfig::from_hf_json_str(&with_act("gelu"))
+                .unwrap()
+                .hidden_activation,
+            GemmaActivation::GeluPytorchTanh
+        );
+        // Arm 2: an already-correct explicit value is preserved.
+        assert_eq!(
+            GemmaConfig::from_hf_json_str(&with_act("gelu_pytorch_tanh"))
+                .unwrap()
+                .hidden_activation,
+            GemmaActivation::GeluPytorchTanh
+        );
+        // Arm 3 (the anti-hardcode discriminator): unknown errors.
+        assert!(GemmaConfig::from_hf_json_str(&with_act("silu")).is_err());
+    }
+
+    /// GQA absent → num_attention_heads; true MQA (1) survives.
+    #[test]
+    fn gemma_config_gqa_default_and_true_mqa() {
+        let base = |kv: &str| {
+            format!(
+                r#"{{
+                "model_type": "gemma",
+                "vocab_size": 1000, "hidden_size": 64, "intermediate_size": 128,
+                "num_hidden_layers": 2, "num_attention_heads": 8, "head_dim": 8,
+                "max_position_embeddings": 128 {kv}
+            }}"#
+            )
+        };
+        let absent = GemmaConfig::from_hf_json_str(&base("")).unwrap();
+        assert_eq!(absent.num_key_value_heads, 8);
+        let mqa = GemmaConfig::from_hf_json_str(&base(", \"num_key_value_heads\": 1")).unwrap();
+        assert_eq!(mqa.num_key_value_heads, 1);
+    }
 
     fn tiny_weights(cfg: &GemmaConfig) -> GemmaWeights {
         let mut s: u32 = 4242;
