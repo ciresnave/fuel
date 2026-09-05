@@ -329,7 +329,7 @@ baracuda-kernels-sys   = { version = "0.0.1-alpha.78", features = [
     # Fuel's standard-attention fallback (no FA2 path).
     "fa2",
 ] }
-fancy-regex = "0.17.0"
+fancy-regex = "0.19.0"
 gemm = { version = "0.19.0" }
 hf-hub = "0.5.0"
 half = { version = "2.5.0", features = [
@@ -344,7 +344,7 @@ image = { version = "0.25.2", default-features = false, features = [
     "jpeg",
     "png",
 ] }
-imageproc = { version = "0.26.0", features = [
+imageproc = { version = "0.27.0", features = [
     "text",
 ], default-features = false }
 intel-mkl-src = { version = "0.8.1", features = ["mkl-static-lp64-iomp"] }
