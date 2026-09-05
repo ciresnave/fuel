@@ -608,7 +608,32 @@ impl OpAttrs {
     /// today — there is no decoder; this is a forward-serialization only, and an
     /// op that reaches a given arm always has the field set (`op_to_attrs` /
     /// `tag_to_op` guarantee it). A future decoder must not round-trip `None`.
+    /// Serialize `self` for `op` as carrier (a): `u32_le(body_len) ++ body`.
+    ///
+    /// The FRAME is separated from the per-op BODY here only because they are
+    /// different things -- the envelope is fixed for every tag, the body is the
+    /// schema table. The table itself is deliberately NOT split further: it is
+    /// one match over the wire schema, and a reader checking Fuel against
+    /// KISS-OPS-6.19 needs to see all of it at once.
     pub fn to_canonical_bytes(&self, op: OpTag) -> Result<Vec<u8>, UnresolvedAttr> {
+        let body = self.canonical_body(op)?;
+        let mut out = (body.len() as u32).to_le_bytes().to_vec();
+        out.extend_from_slice(&body);
+        Ok(out)
+    }
+
+    /// The per-op body, unframed. One arm per SCHEMA FAMILY rather than per
+    /// tag: tags sharing a row shape share an arm, which is why `MaxDim` and
+    /// `SumDim` are byte-identical for equal attrs (the monoid rides `op_name`).
+    fn canonical_body(&self, op: OpTag) -> Result<Vec<u8>, UnresolvedAttr> {
+        // The four ACKED source-op LEAF arms are a separate table: they are
+        // WIRE-ONLY tokens (`op_to_tag` emits none of them, `tag_to_op` has no
+        // arm for any of them), so they share a decline rule the arms below do
+        // not. Tried first so the match below is exactly the graph-projected
+        // schema and nothing else.
+        if let Some(leaf) = self.leaf_body(op)? {
+            return Ok(leaf);
+        }
         use OpTag as T;
         let req = |v: Option<i64>, field| v.ok_or(UnresolvedAttr { op, field });
         let req_u64 = |v: Option<u64>, field| v.ok_or(UnresolvedAttr { op, field });
@@ -728,6 +753,26 @@ impl OpAttrs {
                     put_u8_list(&mut body, &self.rhs_roles);
                 }
             }
+            // Empty-schema ops (elementwise, comparison, Where, scalar
+            // reductions, log-softmax, ...) and any tag added later: zero-length.
+            _ => {}
+        }
+        Ok(body)
+    }
+
+    /// The four ACKED source-op LEAF arms (KISS ruling record, "four-leaf-arm
+    /// ack", 2026-07-23 -- acked clean, no amendments).
+    ///
+    /// `Ok(None)` means "not one of the four", so this is TOTAL over `OpTag`
+    /// and the caller needs no unreachable arm. They decline on a narrower
+    /// ground than every other arm: `tag_to_op` has NO arm for these tags, so
+    /// there is no decoder policy to agree with, and an encoder must never emit
+    /// a value it was not given. KISS-OPS-6.19 does not specify `const_bits` or
+    /// `slot_index` at all. Unreachable today -- `op_to_tag` emits none of them.
+    fn leaf_body(&self, op: OpTag) -> Result<Option<Vec<u8>>, UnresolvedAttr> {
+        use OpTag as T;
+        let mut body: Vec<u8> = Vec::new();
+        match op {
             // --- the four ACKED source-op LEAF arms (KISS ruling record,
             // "four-leaf-arm ack", 2026-07-23 -- acked clean, no amendments) ---
             //
@@ -770,7 +815,10 @@ impl OpAttrs {
             // (§6.12-0001), never unilaterally here. `axis` is MANDATORY with no
             // schema default (KISS-OPS-6.19), so it declines like every other
             // axis-bearing arm.
-            T::ReducedCount => put_i64(&mut body, req(self.axis, "axis")?),
+            T::ReducedCount => put_i64(
+                &mut body,
+                self.axis.ok_or(UnresolvedAttr { op, field: "axis" })?,
+            ),
             // `scan_placeholder`: u8(role) ++ u32(index), role 0 = carry,
             // 1 = elem ([`SCAN_ROLE_CARRY`]/[`SCAN_ROLE_ELEM`]).
             //
@@ -791,13 +839,9 @@ impl OpAttrs {
                     })?,
                 );
             }
-            // Empty-schema ops (elementwise, comparison, Where, scalar
-            // reductions, log-softmax, ...) and any tag added later: zero-length.
-            _ => {}
+            _ => return Ok(None),
         }
-        let mut out = (body.len() as u32).to_le_bytes().to_vec();
-        out.extend_from_slice(&body);
-        Ok(out)
+        Ok(Some(body))
     }
 }
 
