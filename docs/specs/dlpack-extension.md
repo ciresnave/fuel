@@ -288,7 +288,9 @@ by FDX come from internally*, so the projection direction is unambiguous.
   dtype/quant/symbolic **codes defined here** (§6.0 — FDX is the normative owner) but are kept
   separate concerns (per 13-interchange: weight ⊥ graph; the node↔weight binding stays
   format-local).
-- Nothing here is implemented. The struct shapes are designed to be addable to
+- ⚠️ **CORRECTED 2026-09-05 — THIS SECTION SAID "Nothing here is implemented" AND WAS FALSE IN THREE PARTICULARS.** **(a) IT IS IMPLEMENTED:** `fuel-ir/src/dlpack/` carries the 15 structs, `validate.rs` (24 checks, 104+ distinct `return Err` obligations) and `convert.rs`. **(b) THE LOCATION MOVED:** it lives in `fuel-ir/src/dlpack`, not in `fuel-core-types`. **(c) IT IS NOT FEATURE-GATED:** the module is UNCONDITIONAL, with no `dlpack` feature guarding it.
+- ⚠️ **AND THIS IS THE SECOND FALSE STATUS IN THIS FILE.** The header `**Status:**` block carried the same falsehood and was corrected separately; **fixing it did NOT fix this one.** *Marking one representation does not mark the others — a claim can live in a header AND a status section, and each is invisible from the other.* See GAP-283.
+- The struct shapes were originally designed to be addable to
   `fuel-core-types` as a new `dlpack` module behind a `dlpack` feature, plus a C header
   `fuel_dlpack_ext.h` co-generated/hand-maintained against the Rust `#[repr(C)]` types.
 - Targets the **Intended** architecture (Phase D symbolic extents + sessions + mmap
