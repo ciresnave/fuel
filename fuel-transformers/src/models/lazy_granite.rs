@@ -69,8 +69,8 @@ impl GraniteConfigRaw {
             .map_err(|e| fuel_core::Error::Msg(format!("parsing Granite config.json: {e}")))
     }
 
-    fn resolve(self) -> GraniteConfig {
-        GraniteConfig {
+    fn resolve(self) -> Result<GraniteConfig> {
+        Ok(GraniteConfig {
             vocab_size: self.vocab_size,
             hidden_size: self.hidden_size,
             intermediate_size: self.intermediate_size,
@@ -79,11 +79,11 @@ impl GraniteConfigRaw {
             num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
                 self.num_key_value_heads,
                 self.num_attention_heads,
-            ),
+            )?,
             rms_norm_eps: self.rms_norm_eps,
             rope_theta: self.rope_theta,
             max_position_embeddings: self.max_position_embeddings,
-        }
+        })
     }
 }
 
@@ -93,7 +93,7 @@ impl GraniteConfig {
     /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
     /// see the born-red `granite_config_from_hf_json_parses_the_artifact`.
     pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
-        Ok(GraniteConfigRaw::from_json_str(json)?.resolve())
+        GraniteConfigRaw::from_json_str(json)?.resolve()
     }
 }
 

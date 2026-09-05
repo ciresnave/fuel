@@ -98,8 +98,8 @@ impl SmolLm3ConfigRaw {
             .map_err(|e| fuel_core::Error::Msg(format!("parsing SmolLM3 config.json: {e}")))
     }
 
-    fn resolve(self) -> SmolLm3Config {
-        SmolLm3Config {
+    fn resolve(self) -> Result<SmolLm3Config> {
+        Ok(SmolLm3Config {
             vocab_size: self.vocab_size,
             hidden_size: self.hidden_size,
             intermediate_size: self.intermediate_size,
@@ -108,7 +108,7 @@ impl SmolLm3ConfigRaw {
             num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
                 self.num_key_value_heads,
                 self.num_attention_heads,
-            ),
+            )?,
             head_dim: fuel_core::hf_config::head_dim(
                 self.head_dim,
                 self.hidden_size,
@@ -121,7 +121,7 @@ impl SmolLm3ConfigRaw {
             sliding_window: self.sliding_window,
             // Identity map: HF `no_rope_layers[i] == 1` IS a RoPE layer (GAP-196).
             uses_rope_per_layer: self.no_rope_layers,
-        }
+        })
     }
 }
 
@@ -131,7 +131,7 @@ impl SmolLm3Config {
     /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
     /// see the born-red `smollm3_config_from_hf_json_parses_the_artifact`.
     pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
-        Ok(SmolLm3ConfigRaw::from_json_str(json)?.resolve())
+        SmolLm3ConfigRaw::from_json_str(json)?.resolve()
     }
 }
 

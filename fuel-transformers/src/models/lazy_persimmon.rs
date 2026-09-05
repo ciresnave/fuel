@@ -89,8 +89,8 @@ impl PersimmonConfigRaw {
             .map_err(|e| fuel_core::Error::Msg(format!("parsing Persimmon config.json: {e}")))
     }
 
-    fn resolve(self) -> PersimmonConfig {
-        PersimmonConfig {
+    fn resolve(self) -> Result<PersimmonConfig> {
+        Ok(PersimmonConfig {
             vocab_size: self.vocab_size,
             hidden_size: self.hidden_size,
             intermediate_size: self.intermediate_size,
@@ -99,7 +99,7 @@ impl PersimmonConfigRaw {
             num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
                 self.num_key_value_heads,
                 self.num_attention_heads,
-            ),
+            )?,
             head_dim: fuel_core::hf_config::head_dim(
                 self.head_dim,
                 self.hidden_size,
@@ -110,7 +110,7 @@ impl PersimmonConfigRaw {
             max_position_embeddings: self.max_position_embeddings,
             partial_rotary_factor: self.partial_rotary_factor,
             qk_layernorm: self.qk_layernorm,
-        }
+        })
     }
 }
 
@@ -120,7 +120,7 @@ impl PersimmonConfig {
     /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
     /// see the born-red `persimmon_config_from_hf_json_parses_the_artifact`.
     pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
-        Ok(PersimmonConfigRaw::from_json_str(json)?.resolve())
+        PersimmonConfigRaw::from_json_str(json)?.resolve()
     }
 }
 

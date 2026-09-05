@@ -144,8 +144,8 @@ impl PaddleOcrVlTextConfigRaw {
             .map_err(|e| fuel_core::Error::Msg(format!("parsing PaddleOCR-VL config.json: {e}")))
     }
 
-    fn resolve(self) -> PaddleOcrVlTextConfig {
-        PaddleOcrVlTextConfig {
+    fn resolve(self) -> Result<PaddleOcrVlTextConfig> {
+        Ok(PaddleOcrVlTextConfig {
             vocab_size: self.vocab_size,
             hidden_size: self.hidden_size,
             intermediate_size: self.intermediate_size,
@@ -154,7 +154,7 @@ impl PaddleOcrVlTextConfigRaw {
             num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
                 self.num_key_value_heads,
                 self.num_attention_heads,
-            ),
+            )?,
             head_dim: fuel_core::hf_config::head_dim(
                 self.head_dim,
                 self.hidden_size,
@@ -167,7 +167,7 @@ impl PaddleOcrVlTextConfigRaw {
             tie_word_embeddings: self.tie_word_embeddings,
             // Lifted from the nested `rope_scaling` sub-object.
             mrope_section: self.rope_scaling.mrope_section,
-        }
+        })
     }
 }
 
@@ -179,7 +179,7 @@ impl PaddleOcrVlTextConfig {
     /// `rope_scaling` object — see the born-red
     /// `paddleocr_config_from_hf_json_lifts_nested_mrope_section`.
     pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
-        Ok(PaddleOcrVlTextConfigRaw::from_json_str(json)?.resolve())
+        PaddleOcrVlTextConfigRaw::from_json_str(json)?.resolve()
     }
 }
 

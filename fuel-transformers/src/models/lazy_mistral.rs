@@ -139,8 +139,8 @@ impl MistralConfigRaw {
             .map_err(|e| fuel_core::Error::Msg(format!("parsing Mistral config.json: {e}")))
     }
 
-    fn resolve(self) -> MistralConfig {
-        MistralConfig {
+    fn resolve(self) -> Result<MistralConfig> {
+        Ok(MistralConfig {
             vocab_size: self.vocab_size,
             hidden_size: self.hidden_size,
             intermediate_size: self.intermediate_size,
@@ -149,7 +149,7 @@ impl MistralConfigRaw {
             num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
                 self.num_key_value_heads,
                 self.num_attention_heads,
-            ),
+            )?,
             head_dim: fuel_core::hf_config::head_dim(
                 self.head_dim,
                 self.hidden_size,
@@ -160,7 +160,7 @@ impl MistralConfigRaw {
             max_position_embeddings: self.max_position_embeddings,
             // Mistral keeps sliding_window as Option (None = no window); pass as-is.
             sliding_window: self.sliding_window,
-        }
+        })
     }
 }
 
@@ -170,7 +170,7 @@ impl MistralConfig {
     /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
     /// see the born-red `mistral_config_from_hf_json_parses_the_artifact_not_a_preset`.
     pub fn from_hf_json_str(json: &str) -> Result<Self> {
-        Ok(MistralConfigRaw::from_json_str(json)?.resolve())
+        MistralConfigRaw::from_json_str(json)?.resolve()
     }
 }
 

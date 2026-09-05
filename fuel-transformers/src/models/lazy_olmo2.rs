@@ -89,8 +89,8 @@ impl Olmo2ConfigRaw {
             .map_err(|e| fuel_core::Error::Msg(format!("parsing OLMo2 config.json: {e}")))
     }
 
-    fn resolve(self) -> Olmo2Config {
-        Olmo2Config {
+    fn resolve(self) -> Result<Olmo2Config> {
+        Ok(Olmo2Config {
             vocab_size: self.vocab_size,
             hidden_size: self.hidden_size,
             intermediate_size: self.intermediate_size,
@@ -99,7 +99,7 @@ impl Olmo2ConfigRaw {
             num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
                 self.num_key_value_heads,
                 self.num_attention_heads,
-            ),
+            )?,
             head_dim: fuel_core::hf_config::head_dim(
                 self.head_dim,
                 self.hidden_size,
@@ -109,7 +109,7 @@ impl Olmo2ConfigRaw {
             rope_theta: self.rope_theta,
             max_position_embeddings: self.max_position_embeddings,
             attention_bias: self.attention_bias,
-        }
+        })
     }
 }
 
@@ -119,7 +119,7 @@ impl Olmo2Config {
     /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
     /// see the born-red `olmo2_config_from_hf_json_parses_the_artifact_not_a_preset`.
     pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
-        Ok(Olmo2ConfigRaw::from_json_str(json)?.resolve())
+        Olmo2ConfigRaw::from_json_str(json)?.resolve()
     }
 }
 

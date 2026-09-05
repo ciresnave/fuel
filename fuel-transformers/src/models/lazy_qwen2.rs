@@ -142,8 +142,8 @@ impl Qwen2ConfigRaw {
             .map_err(|e| fuel_core::Error::Msg(format!("parsing Qwen2 config.json: {e}")))
     }
 
-    fn resolve(self) -> Qwen2Config {
-        Qwen2Config {
+    fn resolve(self) -> Result<Qwen2Config> {
+        Ok(Qwen2Config {
             vocab_size: self.vocab_size,
             hidden_size: self.hidden_size,
             intermediate_size: self.intermediate_size,
@@ -152,7 +152,7 @@ impl Qwen2ConfigRaw {
             num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
                 self.num_key_value_heads,
                 self.num_attention_heads,
-            ),
+            )?,
             max_position_embeddings: self.max_position_embeddings,
             // absent/null sliding_window: fall back to the full context length.
             sliding_window: self.sliding_window.unwrap_or(self.max_position_embeddings),
@@ -162,7 +162,7 @@ impl Qwen2ConfigRaw {
             rope_theta: self.rope_theta,
             rms_norm_eps: self.rms_norm_eps,
             tie_word_embeddings: self.tie_word_embeddings,
-        }
+        })
     }
 }
 
@@ -172,7 +172,7 @@ impl Qwen2Config {
     /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
     /// see the born-red `qwen2_config_from_hf_json_parses_the_artifact_not_a_preset`.
     pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
-        Ok(Qwen2ConfigRaw::from_json_str(json)?.resolve())
+        Qwen2ConfigRaw::from_json_str(json)?.resolve()
     }
 }
 

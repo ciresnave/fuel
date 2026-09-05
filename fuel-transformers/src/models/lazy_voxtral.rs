@@ -209,8 +209,8 @@ fn default_voxtral_text_rope_theta() -> f64 {
 }
 
 impl VoxtralTextConfigRaw {
-    fn resolve(self) -> VoxtralTextConfig {
-        VoxtralTextConfig {
+    fn resolve(self) -> Result<VoxtralTextConfig> {
+        Ok(VoxtralTextConfig {
             vocab_size: self.vocab_size,
             hidden_size: self.hidden_size,
             intermediate_size: self.intermediate_size,
@@ -219,7 +219,7 @@ impl VoxtralTextConfigRaw {
             num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
                 self.num_key_value_heads,
                 self.num_attention_heads,
-            ),
+            )?,
             head_dim: fuel_core::hf_config::head_dim(
                 self.head_dim,
                 self.hidden_size,
@@ -229,7 +229,7 @@ impl VoxtralTextConfigRaw {
             rope_theta: self.rope_theta,
             max_position_embeddings: self.max_position_embeddings,
             tie_word_embeddings: self.tie_word_embeddings,
-        }
+        })
     }
 }
 
@@ -246,12 +246,12 @@ impl VoxtralConfigRaw {
             .map_err(|e| fuel_core::Error::Msg(format!("parsing Voxtral config.json: {e}")))
     }
 
-    fn resolve(self) -> VoxtralConfig {
-        VoxtralConfig {
+    fn resolve(self) -> Result<VoxtralConfig> {
+        Ok(VoxtralConfig {
             audio: self.audio_config.resolve(),
-            text: self.text_config.resolve(),
+            text: self.text_config.resolve()?,
             audio_token_id: self.audio_token_id,
-        }
+        })
     }
 }
 
@@ -262,7 +262,7 @@ impl VoxtralConfig {
     /// ROADMAP item 8 (II), nested-artifact extension — see the born-red
     /// `voxtral_config_from_hf_json_composes_the_nested_sub_configs`.
     pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
-        Ok(VoxtralConfigRaw::from_json_str(json)?.resolve())
+        VoxtralConfigRaw::from_json_str(json)?.resolve()
     }
 }
 

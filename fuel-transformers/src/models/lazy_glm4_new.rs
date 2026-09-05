@@ -187,7 +187,7 @@ impl Glm4NewConfigRaw {
             num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
                 self.num_key_value_heads,
                 self.num_attention_heads,
-            ),
+            )?,
             // Option, derived at use-site by `head_dim()` — passed through.
             head_dim: self.head_dim,
             partial_rotary_factor: self.partial_rotary_factor,
