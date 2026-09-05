@@ -108,8 +108,8 @@ impl Phi3ConfigRaw {
             .map_err(|e| fuel_core::Error::Msg(format!("parsing Phi-3 config.json: {e}")))
     }
 
-    fn resolve(self) -> Phi3Config {
-        Phi3Config {
+    fn resolve(self) -> Result<Phi3Config> {
+        Ok(Phi3Config {
             vocab_size: self.vocab_size,
             hidden_size: self.hidden_size,
             intermediate_size: self.intermediate_size,
@@ -118,12 +118,12 @@ impl Phi3ConfigRaw {
             num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
                 self.num_key_value_heads,
                 self.num_attention_heads,
-            ),
+            )?,
             max_position_embeddings: self.max_position_embeddings,
             rope_theta: self.rope_theta,
             rms_norm_eps: self.rms_norm_eps,
             tie_word_embeddings: self.tie_word_embeddings,
-        }
+        })
     }
 }
 
@@ -133,7 +133,7 @@ impl Phi3Config {
     /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
     /// see the born-red `phi3_config_from_hf_json_parses_the_artifact_not_a_preset`.
     pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
-        Ok(Phi3ConfigRaw::from_json_str(json)?.resolve())
+        Phi3ConfigRaw::from_json_str(json)?.resolve()
     }
 }
 

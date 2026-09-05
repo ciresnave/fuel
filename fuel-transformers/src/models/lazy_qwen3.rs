@@ -83,8 +83,8 @@ impl Qwen3ConfigRaw {
             .map_err(|e| fuel_core::Error::Msg(format!("parsing Qwen3 config.json: {e}")))
     }
 
-    fn resolve(self) -> Qwen3Config {
-        Qwen3Config {
+    fn resolve(self) -> Result<Qwen3Config> {
+        Ok(Qwen3Config {
             vocab_size: self.vocab_size,
             hidden_size: self.hidden_size,
             intermediate_size: self.intermediate_size,
@@ -93,7 +93,7 @@ impl Qwen3ConfigRaw {
             num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
                 self.num_key_value_heads,
                 self.num_attention_heads,
-            ),
+            )?,
             head_dim: fuel_core::hf_config::head_dim(
                 self.head_dim,
                 self.hidden_size,
@@ -108,7 +108,7 @@ impl Qwen3ConfigRaw {
             rms_norm_eps: self.rms_norm_eps,
             attention_bias: self.attention_bias,
             tie_word_embeddings: self.tie_word_embeddings,
-        }
+        })
     }
 }
 
@@ -118,7 +118,7 @@ impl Qwen3Config {
     /// ROADMAP item 8 (II): reads the artifact — see the born-red
     /// `qwen3_config_from_hf_json_parses_the_artifact_not_a_preset`.
     pub fn from_hf_json_str(json: &str) -> Result<Self> {
-        Ok(Qwen3ConfigRaw::from_json_str(json)?.resolve())
+        Qwen3ConfigRaw::from_json_str(json)?.resolve()
     }
 }
 
