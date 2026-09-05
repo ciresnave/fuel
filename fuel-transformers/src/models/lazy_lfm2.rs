@@ -221,6 +221,27 @@ fn lfm2_agree<T: PartialEq + std::fmt::Debug>(
     }
 }
 
+/// [`lfm2_agree`] for a field that MUST be present under one spelling or the
+/// other: reconciles the pair, then requires a value.
+///
+/// Exists so `resolve` need not follow every reconciliation with an
+/// `.ok_or_else` chain or -- worse -- an `.expect`. The heads call passed
+/// `Some(..)` as its left operand and then wrote `.expect("left operand is
+/// Some")`: provably unreachable, and still an `.expect` on a config-PARSE
+/// path, which is the one place this project has a standing rule against.
+fn lfm2_agree_required<T: PartialEq + std::fmt::Debug>(
+    a: Option<T>,
+    b: Option<T>,
+    a_name: &str,
+    b_name: &str,
+) -> fuel_core::Result<T> {
+    lfm2_agree(a, b, a_name, b_name)?.ok_or_else(|| {
+        fuel_core::Error::Msg(format!(
+            "LFM2 config.json: neither {a_name} nor {b_name} present"
+        ))
+    })
+}
+
 /// LFM2's per-head width: the explicit key when present, else `hidden / heads`.
 ///
 /// ARCHITECTURE-DEPENDENT DEFAULT. No released LFM2 config ships `head_dim`.
@@ -258,25 +279,19 @@ impl LFM2ConfigRaw {
     }
 
     fn resolve(self) -> fuel_core::Result<LFM2Config> {
-        let num_attention_heads = lfm2_agree(
+        let num_attention_heads = lfm2_agree_required(
             Some(self.num_attention_heads),
             self.num_heads,
             "num_attention_heads",
             "num_heads",
-        )?
-        .expect("left operand is Some");
+        )?;
 
-        let rms_norm_eps = lfm2_agree(
+        let rms_norm_eps = lfm2_agree_required(
             self.norm_eps,
             self.block_norm_eps,
             "norm_eps",
             "block_norm_eps",
-        )?
-        .ok_or_else(|| {
-            fuel_core::Error::Msg(
-                "LFM2 config.json: neither norm_eps nor block_norm_eps present".into(),
-            )
-        })?;
+        )?;
 
         let head_dim = lfm2_head_dim(self.head_dim, self.hidden_size, num_attention_heads)?;
 
