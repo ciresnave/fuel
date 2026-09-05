@@ -721,8 +721,10 @@ mod tests {
     // NOT GUARANTEE THAT: the `_ => {}` arm of `op_to_attrs` leaves `axis`
     // unset for five axis-bearing ops, and `keepdim` is set by NOTHING in the
     // repository. Two semantically distinct ops then serialize to identical
-    // bytes, on a format published to external consumers with a
-    // cross-producer golden.
+    // bytes, on a format that exists to leave this repo. Note what checks it:
+    // ONE conformance fixture (the rank-2 matmul role-vector golden), covering
+    // the `MatMul` arm - the arm that has no `unwrap_or` at all. There is no
+    // second encoder; Baracuda confirmed the bytes and has no binary arm.
     //
     // SCOPE, stated because it is narrower than the 17: only the 12 sites
     // reachable from the PROJECTION path are testable here. The other five

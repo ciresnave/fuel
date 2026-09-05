@@ -591,9 +591,18 @@ impl OpAttrs {
     /// The old note also said *"a future decoder must not round-trip `None`"*.
     /// **A decoder cannot recover what this encoder already discarded** - the
     /// mitigation has to live on this side of the wire. And *"harmless, there is
-    /// no decoder"* was scoped to Fuel's own repo while this format is published
-    /// to external consumers with a cross-producer golden, i.e. scoped to the
-    /// one place the hazard cannot occur.
+    /// no decoder"* was scoped to Fuel's own repo while this format exists to
+    /// leave it - the decoder is the counterparty's by design, i.e. the claim
+    /// was scoped to the one place the hazard cannot occur.
+    ///
+    /// On what checks this format: exactly one conformance fixture exists,
+    /// `matmul_role_vectors_serialize_the_locked_rank2_golden`, and Baracuda
+    /// "has NO near-term binary arm" (its own comment), so there is no second
+    /// encoder. That golden covers the `MatMul` arm - which emits `lhs_roles`/
+    /// `rhs_roles` directly and contains **no `unwrap_or` at all**. The single
+    /// fixture this format has is aimed at an arm that cannot exhibit this
+    /// defect, which is why six lossy collapses were found by audit rather
+    /// than by a failing test.
     ///
     /// Gated by the collapse table in `fuel-graph/src/jit.rs` tests, which pins
     /// exactly which (op, field) pairs are lossy so that fixing one is visible.
