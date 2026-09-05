@@ -58,6 +58,109 @@ pub struct Qwen3VlTextConfig {
     pub mrope_section: [usize; 3],
 }
 
+// ROADMAP item 8 (II): config-from-path — the DEEP nested-artifact case. Qwen3-VL's
+// text stack lives ENTIRELY under a `text_config` sub-object of the multimodal
+// config.json (with a `vision_config` sibling to ignore), and `mrope_section` is
+// nested again under `text_config.rope_scaling`. So the raw's TOP LEVEL is just
+// `text_config`, and `resolve` builds the flat config from the inner object,
+// lifting mrope_section from its nested rope_scaling. kv + head_dim route through
+// `fuel_core::hf_config` (Qwen3-VL ships an explicit, decoupled head_dim, e.g.
+// 128 vs 2560/32=80).
+#[derive(Debug, Clone, serde::Deserialize)]
+struct Qwen3VlRopeScalingRaw {
+    mrope_section: [usize; 3],
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct Qwen3VlTextInnerRaw {
+    vocab_size: usize,
+    hidden_size: usize,
+    intermediate_size: usize,
+    num_hidden_layers: usize,
+    num_attention_heads: usize,
+    #[serde(default)]
+    num_key_value_heads: Option<usize>,
+    #[serde(default)]
+    head_dim: Option<usize>,
+    max_position_embeddings: usize,
+    #[serde(default)]
+    sliding_window: Option<usize>,
+    #[serde(default)]
+    max_window_layers: Option<usize>,
+    #[serde(default)]
+    use_sliding_window: bool,
+    #[serde(default = "default_qwen3_vl_rope_theta")]
+    rope_theta: f64,
+    #[serde(default = "default_qwen3_vl_rms_norm_eps")]
+    rms_norm_eps: f64,
+    #[serde(default)]
+    attention_bias: bool,
+    #[serde(default)]
+    tie_word_embeddings: bool,
+    rope_scaling: Qwen3VlRopeScalingRaw,
+}
+
+/// The multimodal config.json wrapper: the text stack is under `text_config`.
+#[derive(Debug, Clone, serde::Deserialize)]
+struct Qwen3VlTextConfigRaw {
+    text_config: Qwen3VlTextInnerRaw,
+}
+
+fn default_qwen3_vl_rope_theta() -> f64 {
+    5_000_000.0
+}
+fn default_qwen3_vl_rms_norm_eps() -> f64 {
+    1e-6
+}
+
+impl Qwen3VlTextConfigRaw {
+    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
+        serde_json::from_str(json)
+            .map_err(|e| fuel_core::Error::Msg(format!("parsing Qwen3-VL config.json: {e}")))
+    }
+
+    fn resolve(self) -> Qwen3VlTextConfig {
+        let t = self.text_config;
+        Qwen3VlTextConfig {
+            vocab_size: t.vocab_size,
+            hidden_size: t.hidden_size,
+            intermediate_size: t.intermediate_size,
+            num_hidden_layers: t.num_hidden_layers,
+            num_attention_heads: t.num_attention_heads,
+            num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
+                t.num_key_value_heads,
+                t.num_attention_heads,
+            ),
+            head_dim: fuel_core::hf_config::head_dim(
+                t.head_dim,
+                t.hidden_size,
+                t.num_attention_heads,
+            ),
+            max_position_embeddings: t.max_position_embeddings,
+            sliding_window: t.sliding_window,
+            max_window_layers: t.max_window_layers.unwrap_or(t.num_hidden_layers),
+            use_sliding_window: t.use_sliding_window,
+            rope_theta: t.rope_theta,
+            rms_norm_eps: t.rms_norm_eps,
+            attention_bias: t.attention_bias,
+            tie_word_embeddings: t.tie_word_embeddings,
+            // Lifted from the nested `text_config.rope_scaling`.
+            mrope_section: t.rope_scaling.mrope_section,
+        }
+    }
+}
+
+impl Qwen3VlTextConfig {
+    /// Parse a HuggingFace Qwen3-VL `config.json` string into a
+    /// [`Qwen3VlTextConfig`], reading the nested `text_config` sub-object.
+    ///
+    /// ROADMAP item 8 (II), nested-artifact extension — see the born-red
+    /// `qwen3_vl_text_config_from_hf_json_parses_the_nested_text_config`.
+    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+        Ok(Qwen3VlTextConfigRaw::from_json_str(json)?.resolve())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Qwen3VlTextLayerExtras {
     /// `[head_dim]` — per-head RmsNorm gain for Q.
@@ -592,6 +695,134 @@ impl Qwen3VlTextWeights {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ROADMAP item 8 (II), DEEP nested-artifact case. Golden values from
+    // Qwen/Qwen3-VL-4B-Instruct's real config.json: the ENTIRE text stack is under
+    // `text_config`, `mrope_section` is under `text_config.rope_scaling`, and a
+    // `vision_config` sibling (to ignore) sits beside `text_config`. head_dim is
+    // EXPLICIT and DECOUPLED (128 vs 2560/32 = 80).
+    const QWEN3_VL_4B_CONFIG_JSON: &str = r#"{
+        "architectures": ["Qwen3VLForConditionalGeneration"],
+        "model_type": "qwen3_vl",
+        "image_token_id": 151655,
+        "tie_word_embeddings": true,
+        "text_config": {
+            "model_type": "qwen3_vl_text",
+            "vocab_size": 151936,
+            "hidden_size": 2560,
+            "intermediate_size": 9728,
+            "num_hidden_layers": 36,
+            "num_attention_heads": 32,
+            "num_key_value_heads": 8,
+            "head_dim": 128,
+            "max_position_embeddings": 262144,
+            "rms_norm_eps": 1e-06,
+            "rope_theta": 5000000,
+            "attention_bias": false,
+            "tie_word_embeddings": true,
+            "rope_scaling": {
+                "mrope_interleaved": true,
+                "mrope_section": [24, 20, 20],
+                "rope_type": "default"
+            }
+        },
+        "vision_config": {
+            "depth": 24,
+            "hidden_size": 1024,
+            "patch_size": 16
+        }
+    }"#;
+
+    #[test]
+    fn qwen3_vl_text_config_from_hf_json_parses_the_nested_text_config() {
+        let cfg = Qwen3VlTextConfig::from_hf_json_str(QWEN3_VL_4B_CONFIG_JSON).unwrap();
+        // All of these are lifted out of the nested `text_config` object.
+        assert_eq!(cfg.hidden_size, 2560);
+        assert_eq!(cfg.num_hidden_layers, 36);
+        assert_eq!(cfg.num_attention_heads, 32);
+        assert_eq!(cfg.vocab_size, 151_936);
+        assert_eq!(cfg.intermediate_size, 9728);
+        // GQA: default would be num_attention_heads (32); 8 proves the key was READ.
+        assert_eq!(cfg.num_key_value_heads, 8);
+        // head_dim EXPLICIT and decoupled — 128, NOT 2560/32 = 80.
+        assert_eq!(cfg.head_dim, 128);
+        assert_ne!(cfg.head_dim, 2560 / 32);
+        assert_eq!(cfg.rope_theta, 5_000_000.0);
+        assert_eq!(cfg.max_position_embeddings, 262_144);
+        assert!(cfg.tie_word_embeddings);
+        // absent under text_config → resolved
+        assert_eq!(cfg.sliding_window, None);
+        assert_eq!(cfg.max_window_layers, 36); // → num_hidden_layers
+        // THE DEEP-NEST ASSERTION: mrope_section is lifted from
+        // text_config.rope_scaling (nested twice), and vision_config was ignored.
+        assert_eq!(cfg.mrope_section, [24, 20, 20]);
+    }
+
+    /// A SECOND distinct config under text_config, with a DIFFERENT nested
+    /// mrope_section — proving the value is READ from two-levels-deep, not
+    /// hardcoded, AND the omitted rope_theta defaults.
+    #[test]
+    fn qwen3_vl_text_config_reads_a_second_distinct_nested_config() {
+        let json = r#"{
+            "model_type": "qwen3_vl",
+            "text_config": {
+                "vocab_size": 100000,
+                "hidden_size": 2048,
+                "intermediate_size": 6144,
+                "num_hidden_layers": 28,
+                "num_attention_heads": 16,
+                "num_key_value_heads": 4,
+                "head_dim": 128,
+                "max_position_embeddings": 32768,
+                "rope_scaling": { "mrope_section": [16, 24, 24] }
+            }
+        }"#;
+        let cfg = Qwen3VlTextConfig::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.hidden_size, 2048);
+        assert_eq!(cfg.num_key_value_heads, 4);
+        assert_eq!(cfg.head_dim, 128);
+        assert_eq!(cfg.mrope_section, [16, 24, 24]);
+        assert_ne!(cfg.mrope_section, [24, 20, 20]);
+        assert_eq!(cfg.rope_theta, 5_000_000.0); // defaulted
+    }
+
+    /// `num_key_value_heads` ABSENT (under text_config) → num_attention_heads;
+    /// true MQA (1) survives.
+    #[test]
+    fn qwen3_vl_text_config_gqa_default_and_true_mqa() {
+        let base = |kv: &str| {
+            format!(
+                r#"{{
+                "model_type": "qwen3_vl",
+                "text_config": {{
+                    "vocab_size": 1000, "hidden_size": 64, "intermediate_size": 128,
+                    "num_hidden_layers": 2, "num_attention_heads": 8, "head_dim": 8,
+                    "max_position_embeddings": 128,
+                    "rope_scaling": {{ "mrope_section": [1, 1, 2] }} {kv}
+                }}
+            }}"#
+            )
+        };
+        let absent = Qwen3VlTextConfig::from_hf_json_str(&base("")).unwrap();
+        assert_eq!(absent.num_key_value_heads, 8);
+        let mqa =
+            Qwen3VlTextConfig::from_hf_json_str(&base(", \"num_key_value_heads\": 1")).unwrap();
+        assert_eq!(mqa.num_key_value_heads, 1);
+    }
+
+    /// A config MISSING the `text_config` wrapper is an ERROR — the parser reads
+    /// the nested object, not the top level.
+    #[test]
+    fn qwen3_vl_text_config_missing_text_config_errors() {
+        let json = r#"{
+            "model_type": "qwen3_vl",
+            "vocab_size": 1000,
+            "hidden_size": 64,
+            "num_attention_heads": 8,
+            "head_dim": 8
+        }"#;
+        assert!(Qwen3VlTextConfig::from_hf_json_str(json).is_err());
+    }
 
     fn tiny_cfg() -> Qwen3VlTextConfig {
         Qwen3VlTextConfig {

@@ -151,6 +151,121 @@ impl VoxtralConfig {
     }
 }
 
+// ROADMAP item 8 (II): config-from-path — the STRUCT-NESTED case of the nested
+// extension. Voxtral's config.json has TWO nested sub-objects, `audio_config`
+// (the Whisper-style encoder) and `text_config` (a Llama-shaped decoder), plus a
+// top-level `audio_token_id`. `VoxtralConfig` mirrors that with two sub-config
+// fields, so the raw has a sub-Raw per sub-object and `resolve` composes them.
+// Only the TEXT sub-config routes GQA (the encoder is MHA and carries no kv rule);
+// Voxtral's text head_dim is explicit and decoupled (32*128=4096 vs hidden 3072).
+#[derive(Debug, Clone, serde::Deserialize)]
+struct VoxtralEncoderConfigRaw {
+    hidden_size: usize,
+    intermediate_size: usize,
+    num_hidden_layers: usize,
+    num_attention_heads: usize,
+    num_mel_bins: usize,
+    max_source_positions: usize,
+}
+
+impl VoxtralEncoderConfigRaw {
+    fn resolve(self) -> VoxtralEncoderConfig {
+        VoxtralEncoderConfig {
+            hidden_size: self.hidden_size,
+            intermediate_size: self.intermediate_size,
+            num_hidden_layers: self.num_hidden_layers,
+            num_attention_heads: self.num_attention_heads,
+            num_mel_bins: self.num_mel_bins,
+            max_source_positions: self.max_source_positions,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct VoxtralTextConfigRaw {
+    vocab_size: usize,
+    hidden_size: usize,
+    intermediate_size: usize,
+    num_hidden_layers: usize,
+    num_attention_heads: usize,
+    #[serde(default)]
+    num_key_value_heads: Option<usize>,
+    #[serde(default)]
+    head_dim: Option<usize>,
+    #[serde(default = "default_voxtral_text_rms_norm_eps")]
+    rms_norm_eps: f64,
+    #[serde(default = "default_voxtral_text_rope_theta")]
+    rope_theta: f64,
+    max_position_embeddings: usize,
+    #[serde(default)]
+    tie_word_embeddings: bool,
+}
+
+fn default_voxtral_text_rms_norm_eps() -> f64 {
+    1e-5
+}
+fn default_voxtral_text_rope_theta() -> f64 {
+    10_000.0
+}
+
+impl VoxtralTextConfigRaw {
+    fn resolve(self) -> VoxtralTextConfig {
+        VoxtralTextConfig {
+            vocab_size: self.vocab_size,
+            hidden_size: self.hidden_size,
+            intermediate_size: self.intermediate_size,
+            num_hidden_layers: self.num_hidden_layers,
+            num_attention_heads: self.num_attention_heads,
+            num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
+                self.num_key_value_heads,
+                self.num_attention_heads,
+            ),
+            head_dim: fuel_core::hf_config::head_dim(
+                self.head_dim,
+                self.hidden_size,
+                self.num_attention_heads,
+            ),
+            rms_norm_eps: self.rms_norm_eps,
+            rope_theta: self.rope_theta,
+            max_position_embeddings: self.max_position_embeddings,
+            tie_word_embeddings: self.tie_word_embeddings,
+        }
+    }
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct VoxtralConfigRaw {
+    audio_config: VoxtralEncoderConfigRaw,
+    text_config: VoxtralTextConfigRaw,
+    audio_token_id: u32,
+}
+
+impl VoxtralConfigRaw {
+    fn from_json_str(json: &str) -> fuel_core::Result<Self> {
+        serde_json::from_str(json)
+            .map_err(|e| fuel_core::Error::Msg(format!("parsing Voxtral config.json: {e}")))
+    }
+
+    fn resolve(self) -> VoxtralConfig {
+        VoxtralConfig {
+            audio: self.audio_config.resolve(),
+            text: self.text_config.resolve(),
+            audio_token_id: self.audio_token_id,
+        }
+    }
+}
+
+impl VoxtralConfig {
+    /// Parse a HuggingFace Voxtral `config.json` string into a [`VoxtralConfig`],
+    /// composing the nested `audio_config` and `text_config` sub-objects.
+    ///
+    /// ROADMAP item 8 (II), nested-artifact extension — see the born-red
+    /// `voxtral_config_from_hf_json_composes_the_nested_sub_configs`.
+    pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
+        Ok(VoxtralConfigRaw::from_json_str(json)?.resolve())
+    }
+}
+
 // ---- Encoder weights -------------------------------------------------------
 
 #[derive(Debug, Clone)]
@@ -954,6 +1069,146 @@ impl VoxtralWeights {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ROADMAP item 8 (II), STRUCT-NESTED case. Golden values from
+    // mistralai/Voxtral-Mini-3B-2507's real config.json: two nested sub-objects
+    // `audio_config` + `text_config`, plus a top-level `audio_token_id`. The text
+    // head_dim is EXPLICIT and DECOUPLED (32*128=4096 vs hidden 3072).
+    const VOXTRAL_3B_CONFIG_JSON: &str = r#"{
+        "architectures": ["VoxtralForConditionalGeneration"],
+        "model_type": "voxtral",
+        "audio_token_id": 24,
+        "hidden_size": 3072,
+        "vocab_size": 131072,
+        "audio_config": {
+            "model_type": "voxtral_encoder",
+            "hidden_size": 1280,
+            "intermediate_size": 5120,
+            "num_hidden_layers": 32,
+            "num_attention_heads": 20,
+            "num_mel_bins": 128,
+            "max_source_positions": 1500,
+            "head_dim": 64,
+            "num_key_value_heads": 20,
+            "vocab_size": 51866
+        },
+        "text_config": {
+            "model_type": "llama",
+            "vocab_size": 131072,
+            "hidden_size": 3072,
+            "intermediate_size": 8192,
+            "num_hidden_layers": 30,
+            "num_attention_heads": 32,
+            "num_key_value_heads": 8,
+            "head_dim": 128,
+            "rms_norm_eps": 1e-05,
+            "rope_theta": 100000000.0,
+            "max_position_embeddings": 131072
+        }
+    }"#;
+
+    #[test]
+    fn voxtral_config_from_hf_json_composes_the_nested_sub_configs() {
+        let cfg = VoxtralConfig::from_hf_json_str(VOXTRAL_3B_CONFIG_JSON).unwrap();
+        // audio_token_id — top level
+        assert_eq!(cfg.audio_token_id, 24);
+        // audio sub-config — from the nested `audio_config` object
+        assert_eq!(cfg.audio.hidden_size, 1280);
+        assert_eq!(cfg.audio.num_hidden_layers, 32);
+        assert_eq!(cfg.audio.num_attention_heads, 20);
+        assert_eq!(cfg.audio.num_mel_bins, 128);
+        assert_eq!(cfg.audio.max_source_positions, 1500);
+        // text sub-config — from the nested `text_config` object
+        assert_eq!(cfg.text.hidden_size, 3072);
+        assert_eq!(cfg.text.num_hidden_layers, 30);
+        assert_eq!(cfg.text.vocab_size, 131_072);
+        // GQA on the text stack: default would be 32; 8 proves the key was READ.
+        assert_eq!(cfg.text.num_key_value_heads, 8);
+        // text head_dim EXPLICIT and decoupled — 128, NOT 3072/32 = 96.
+        assert_eq!(cfg.text.head_dim, 128);
+        assert_ne!(cfg.text.head_dim, 3072 / 32);
+        assert_eq!(cfg.text.rope_theta, 100_000_000.0);
+    }
+
+    /// A SECOND distinct config — different sub-config sizes and a different
+    /// text kv/head_dim, proving both nested objects are READ (not preset).
+    #[test]
+    fn voxtral_config_reads_a_second_distinct_config() {
+        let json = r#"{
+            "model_type": "voxtral",
+            "audio_token_id": 99,
+            "audio_config": {
+                "hidden_size": 768,
+                "intermediate_size": 3072,
+                "num_hidden_layers": 12,
+                "num_attention_heads": 12,
+                "num_mel_bins": 80,
+                "max_source_positions": 750
+            },
+            "text_config": {
+                "vocab_size": 32000,
+                "hidden_size": 2048,
+                "intermediate_size": 5632,
+                "num_hidden_layers": 22,
+                "num_attention_heads": 16,
+                "num_key_value_heads": 4,
+                "head_dim": 96,
+                "max_position_embeddings": 32768
+            }
+        }"#;
+        let cfg = VoxtralConfig::from_hf_json_str(json).unwrap();
+        assert_eq!(cfg.audio_token_id, 99);
+        assert_eq!(cfg.audio.hidden_size, 768);
+        assert_eq!(cfg.audio.num_mel_bins, 80);
+        assert_eq!(cfg.text.num_key_value_heads, 4);
+        assert_eq!(cfg.text.head_dim, 96);
+        assert_ne!(cfg.text.head_dim, 2048 / 16);
+        // omitted text rope_theta → default
+        assert_eq!(cfg.text.rope_theta, 10_000.0);
+        assert_ne!(cfg.audio.hidden_size, 1280);
+    }
+
+    /// The text sub-config's `num_key_value_heads` ABSENT → num_attention_heads;
+    /// true MQA (1) survives — proving the shared rule reaches into the nested obj.
+    #[test]
+    fn voxtral_text_config_gqa_default_and_true_mqa() {
+        let base = |kv: &str| {
+            format!(
+                r#"{{
+                "model_type": "voxtral",
+                "audio_token_id": 1,
+                "audio_config": {{
+                    "hidden_size": 64, "intermediate_size": 128, "num_hidden_layers": 2,
+                    "num_attention_heads": 4, "num_mel_bins": 80, "max_source_positions": 100
+                }},
+                "text_config": {{
+                    "vocab_size": 1000, "hidden_size": 64, "intermediate_size": 128,
+                    "num_hidden_layers": 2, "num_attention_heads": 8, "head_dim": 8,
+                    "max_position_embeddings": 128 {kv}
+                }}
+            }}"#
+            )
+        };
+        let absent = VoxtralConfig::from_hf_json_str(&base("")).unwrap();
+        assert_eq!(absent.text.num_key_value_heads, 8);
+        let mqa = VoxtralConfig::from_hf_json_str(&base(", \"num_key_value_heads\": 1")).unwrap();
+        assert_eq!(mqa.text.num_key_value_heads, 1);
+    }
+
+    /// A config MISSING a required sub-config (`audio_config`) is an ERROR.
+    #[test]
+    fn voxtral_config_missing_a_sub_config_errors() {
+        let json = r#"{
+            "model_type": "voxtral",
+            "audio_token_id": 1,
+            "text_config": {
+                "vocab_size": 1000, "hidden_size": 64, "intermediate_size": 128,
+                "num_hidden_layers": 2, "num_attention_heads": 8, "head_dim": 8,
+                "max_position_embeddings": 128
+            }
+        }"#;
+        assert!(VoxtralConfig::from_hf_json_str(json).is_err());
+    }
 
     fn rng(seed: u32) -> impl FnMut() -> f32 {
         let mut s = seed;
