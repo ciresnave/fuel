@@ -274,6 +274,53 @@ dispatch key, caps, precision and return-contract derived from the block.
 quantized, mkl-aocl and the `dispatch/` corpus dir were not mapped to production imports.**
 The README's *"every kernel"* is unproven for those; **~58 families is a floor.**
 
+### 5.3 Corpus → import coverage — MEASURED, and the README’s claim is FALSE
+
+**69 of 114 contract files reach a production import.** **45 do not, partitioned by WHY — the
+distinction the ledger needs is *exercised-elsewhere* vs *genuinely-unexercised*, which a bare
+"45 unwired" destroys.**
+
+| # | bucket | n | meaning for KISS |
+|---|---|---:|---|
+| 1 | **not a dispatch provider by design** — `reference/`, the CPU correctness oracle | 10 | **NOT a capability gap** |
+| 2 | **duplicate / superseded** — exercised via a wired sibling | 18 | redundant **AUTHORING**, not unexercised **CAPABILITY** |
+| 3 | ⚠️ **genuinely unexercised** on the dispatch surface | **15** | **the set KISS must NOT be asked to match** |
+| 4 | ⚠️ **hand-registered seam** — exercised, NOT via FKC import | 2 | **its own parity row — see below** |
+
+> ⚠⚠ **BUCKET 4 FALSIFIES THE README.** *"Importing a provider’s contract file(s)
+> **auto-registers every kernel** … with zero hand-written registration glue"* is **false** for
+> these seams, measured at the call site: `dispatch.rs:8665` registers `FusedOps::FLASH_ATTN`
+> (plus `FLASH_ATTN_BACKWARD_*`, `PAGED_ATTN`) by hand, and `dispatch.rs:7275` registers
+> `QMatMul` by hand.
+>
+> **KISS-Contract must be able to express *"on the dispatch surface via a mechanism OUTSIDE
+> contract import."*** **Otherwise a KISS-conformant reader of Fuel’s corpus concludes
+> FLASH_ATTN, PAGED_ATTN and QMatMul are ABSENT** — among the highest-value kernels in the
+> tree, invisible because they predate the migration and were never moved. **A
+> migration-correctness hazard, not a documentation nit.**
+
+> ⚠️ **BUCKET 3 IS NOT HOMOGENEOUS.** `cuda/rope-apply` is a **CONSUMER-AHEAD CONTRACT**,
+> authored against a kernel that does not exist yet — the source says so: *"CUDA rope runs via
+> the correct rotate-half primitive decompose UNTIL baracuda ships a rotate-half table-driven
+> `rope_apply` variant; the staged (UNWIRED) driver … ready for that kernel."* **Unexercised
+> because the PROVIDER has not shipped is entirely different from unexercised because nothing
+> consumes it** — same bucket by predicate, opposite conclusions for KISS.
+
+**`conv-attn/conv` carries `registrable: false`** — an explicitly *describe-only* contract, and
+**the only machine-readable signal separating "documentation by design" from "unwired by
+accident."** Whether the other bucket-3 members carry it is **unmeasured**; if `metal/`’s eight
+do not, their unexercised state is **undeclared**, which is the state that rots.
+
+**Method + limits.** Attribution by **FULL PATH, never basename** — `cast.fkc.md` exists in five
+directories. **Controls: unique-token `cpu/affine-clamp-powi` = WIRED; common-token `cast.fkc.md`
+→ cpu/cuda/vulkan WIRED, metal/reference UNWIRED.** **Named empty buckets:
+embedded-but-not-imported = 0, stale embeds = 0.** ⚠️ **A first pass reported 10 contracts
+"embedded but not imported" — including `elementwise-binary`, the classic first-migrated kernel.
+The imports are MULTI-LINE and a same-line regex could not see them; surprise at an impossible
+result was the detector**, on a number that would otherwise have crossed to another project.
+**Metal’s absence is SOURCE ABSENCE** — no `metal_dispatch.rs`, no `MetalLinkRegistry` in the
+tree — read from the tree, not a build, since Metal is unbuildable here.
+
 ---
 
 ## 6. Open, and stated so a blank is not read as a measurement
