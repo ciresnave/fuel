@@ -221,6 +221,36 @@ fn lfm2_agree<T: PartialEq + std::fmt::Debug>(
     }
 }
 
+/// LFM2's per-head width: the explicit key when present, else `hidden / heads`.
+///
+/// ARCHITECTURE-DEPENDENT DEFAULT. No released LFM2 config ships `head_dim`.
+/// `LFM2Config::validate` requires `num_attention_heads * head_dim ==
+/// hidden_size`, so the only value that can satisfy the port's own invariant is
+/// the quotient. An explicit key, if one ever appears, WINS -- the derivation
+/// is the fallback, not an override.
+///
+/// NOT `fuel_core::hf_config::head_dim`, deliberately. That helper is
+/// `explicit.unwrap_or(hidden_size / num_attention_heads)`: it neither checks
+/// divisibility (so it silently truncates, the GAP-282 shape) nor guards a zero
+/// head count (so it PANICS on a malformed config, on a parse path). This
+/// returns `Err` for both. Do not "simplify" this into the shared helper
+/// without fixing the shared helper first.
+fn lfm2_head_dim(
+    explicit: Option<usize>,
+    hidden_size: usize,
+    num_attention_heads: usize,
+) -> fuel_core::Result<usize> {
+    if let Some(d) = explicit {
+        return Ok(d);
+    }
+    if num_attention_heads == 0 || !hidden_size.is_multiple_of(num_attention_heads) {
+        return Err(fuel_core::Error::Msg(format!(
+            "LFM2 config.json omits head_dim and hidden_size ({hidden_size}) is not divisible by num_attention_heads ({num_attention_heads}), so it cannot be derived"
+        )));
+    }
+    Ok(hidden_size / num_attention_heads)
+}
+
 impl LFM2ConfigRaw {
     fn from_json_str(json: &str) -> fuel_core::Result<Self> {
         serde_json::from_str(json)
@@ -248,26 +278,7 @@ impl LFM2ConfigRaw {
             )
         })?;
 
-        // ⚠️ ARCHITECTURE-DEPENDENT DEFAULT. No released LFM2 config ships
-        // `head_dim`. `LFM2Config::validate` requires
-        // `num_attention_heads * head_dim == hidden_size`, so the only value
-        // that can satisfy the port's own invariant is `hidden / heads`. An
-        // explicit key, if one ever appears, WINS — the derivation is the
-        // fallback, not an override.
-        let head_dim = match self.head_dim {
-            Some(d) => d,
-            None => {
-                if num_attention_heads == 0 || !self.hidden_size.is_multiple_of(num_attention_heads)
-                {
-                    return Err(fuel_core::Error::Msg(format!(
-                        "LFM2 config.json omits head_dim and hidden_size ({}) is not \
-                         divisible by num_attention_heads ({}), so it cannot be derived",
-                        self.hidden_size, num_attention_heads
-                    )));
-                }
-                self.hidden_size / num_attention_heads
-            }
-        };
+        let head_dim = lfm2_head_dim(self.head_dim, self.hidden_size, num_attention_heads)?;
 
         let block_types =
             lfm2_block_types_from_attn_idxs(&self.full_attn_idxs, self.num_hidden_layers)?;
