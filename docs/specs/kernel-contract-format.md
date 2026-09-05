@@ -1,7 +1,7 @@
 # Fuel Kernel Contract Format (FKC) — how a kernel provider advertises to Fuel
 
 **Status:** DRAFT FOR REVIEW (2026-06-17; reconciled 2026-06-20), on branch
-`feat/kernel-contracts-dlpack`. Design pass — no code yet. This is the final-after-critique revision
+`feat/kernel-contracts-dlpack` (**a branch that no longer exists**). **IMPLEMENTED AND LIVE ON `main`: `fuel-dispatch/src/fkc/` — 35 `.rs` files, no feature gate, parsing 114 `*.fkc.md` contracts as the production kernel-registration path.** The DOCUMENT’s review state may still be draft; its SUBJECT is not. This is the final-after-critique revision
 of the `_drafts/` v0.1; the "Resolved critique" note below records what changed and why. **Reconciled
 2026-06-20** to the adaptive-runtime-fusion decision ([10-decisions-log](../architecture/10-decisions-log.md),
 G1/G4/G5): the §1 / §9.4 "not a runtime-extensible registry / freezes the registry" claims are
@@ -29,6 +29,12 @@ the `fuel-dispatch` / `fuel-graph` import path.
 > (`*.fkc.md`), parsed unconditionally by `fuel-dispatch/src/fkc/` — 33 `.rs`
 > files, no feature gate. This is the most-consumed spec in the cluster while
 > describing itself as a design pass with "no code yet".
+>
+> ⚠️ **DISCHARGED 2026-09-05: the STATUS LINE ABOVE HAS NOW BEEN CORRECTED.** This
+> notice is kept as the RECORD of when the defect was found, not as a live claim — the
+> "no code yet" wording it quotes is no longer in the status line. **It stood for sixteen
+> days because it ANNOTATED the falsehood instead of correcting it, and a reader who
+> stops at the Status field never reached this paragraph. See GAP-283.**
 >
 > **Status of the DESIGN is unchanged by this notice.** "Draft for review" may
 > still be true of the *document's* review state; what is false is the branch
