@@ -54,6 +54,34 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 /// What a citation of a KISS clause is DOING in this repo.
+///
+/// # ⚠️ Four values, deliberately, REPLACING a two-valued instruction
+///
+/// This gate was commissioned as *"every citation names a live test **or is
+/// deleted**"*. **That is a forced choice between the two dispositions that
+/// DESTROY EVIDENCE**, on a population that has four.
+///
+/// A `docs/outreach/` letter recording what Fuel asked KISS for in July is
+/// **historical**: demanding a test for it is impossible, and deleting it
+/// erases the record. Fuel's own rule for old names in prose already says this
+/// — a mention is STALE (fix it), HISTORICAL (rewriting destroys the record and
+/// self-erases), or PINNED (rewriting makes it false) — and **a swept
+/// historical mention reads as correct while the evidence is gone.**
+///
+/// [`Reference`] and [`Declined`] are the two that would not exist under the
+/// original instruction, and both are load-bearing: `KISS-OPS-6.16-0003` is
+/// cited to say what is **permitted** (rounding a *computed* narrow result), so
+/// there is nothing for Fuel to discharge; `KISS-CLASSIFY-6.6-0019` is a
+/// deliberate **non**-conformance with a tracked gap.
+///
+/// The widening is enforced in **both** directions:
+/// `obligation_and_declined_rows_name_a_test_that_exists_and_runs` also rejects
+/// a `Reference` or `Record` row that NAMES a test — **a row that cannot be
+/// discharged by a test must not be permitted to claim one**, or a `Record`
+/// row quietly acquires a fake discharge and starts reading as parity evidence.
+///
+/// Ratified 2026-09-05. **If you are reading a four-valued gate against a
+/// two-valued ruling, the mismatch is deliberate and this is why.**
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Disposition {
     /// Fuel claims to conform. **Must name a discharging test.**
