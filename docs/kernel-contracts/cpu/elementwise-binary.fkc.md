@@ -1220,7 +1220,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "Exact: returns one of the two operands (or a NaN operand unchanged). NaN-propagating (torch parity) — NaN if either operand is NaN; the non-NaN result is otherwise the larger operand."
+  notes: "Exact: returns one of the two operands (or a NaN operand unchanged). NaN-propagating (torch parity) — NaN if either operand is NaN; the non-NaN result is otherwise the larger operand. On a ±0 tie, operand a (lhs) wins — a-biased per KISS §6.13. Two authorities: the NaN-propagation and lhs-first payload above are torch parity; the ±0 tie is pinned by KISS §6.13, NOT torch. (binary.rs avoids the native f32/f64 min/max intrinsics precisely because they leave the ±0 tie unspecified.)"
 
 determinism: same_hardware_bitwise
 ```
@@ -1285,7 +1285,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "Exact: returns one of the two operands (or a NaN operand unchanged). NaN-propagating (torch parity) — NaN if either operand is NaN; the non-NaN result is otherwise the larger operand."
+  notes: "Exact: returns one of the two operands (or a NaN operand unchanged). NaN-propagating (torch parity) — NaN if either operand is NaN; the non-NaN result is otherwise the larger operand. On a ±0 tie, operand a (lhs) wins — a-biased per KISS §6.13. Two authorities: the NaN-propagation and lhs-first payload above are torch parity; the ±0 tie is pinned by KISS §6.13, NOT torch. (binary.rs avoids the native f32/f64 min/max intrinsics precisely because they leave the ±0 tie unspecified.)"
 
 determinism: same_hardware_bitwise
 ```
@@ -1350,7 +1350,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "Widen to f32, take Maximum::f32 (NaN-propagating, torch parity), narrow to bf16 on store (lossless re-narrow of an already-bf16-representable operand). Deterministic; bit-stable on same hardware."
+  notes: "Widen to f32, take Maximum::f32 (NaN-propagating, torch parity), narrow to bf16 on store (lossless re-narrow of an already-bf16-representable operand). Deterministic; bit-stable on same hardware. On a ±0 tie the f32 Maximum wins operand a (lhs) — a-biased per KISS §6.13, a SEPARATE authority from the torch parity above (torch governs NaN + lhs-first payload, NOT the ±0 tie)."
 
 determinism: same_hardware_bitwise
 ```
@@ -1415,7 +1415,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "Widen to f32, take Maximum::f32 (NaN-propagating, torch parity), narrow to f16 on store. Deterministic; bit-stable on same hardware."
+  notes: "Widen to f32, take Maximum::f32 (NaN-propagating, torch parity), narrow to f16 on store. Deterministic; bit-stable on same hardware. On a ±0 tie the f32 Maximum wins operand a (lhs) — a-biased per KISS §6.13, a SEPARATE authority from the torch parity above (torch governs NaN + lhs-first payload, NOT the ±0 tie)."
 
 determinism: same_hardware_bitwise
 ```
@@ -1480,7 +1480,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "Exact: returns one of the two operands (or a NaN operand unchanged). NaN-propagating (torch parity) — NaN if either operand is NaN; the non-NaN result is otherwise the smaller operand."
+  notes: "Exact: returns one of the two operands (or a NaN operand unchanged). NaN-propagating (torch parity) — NaN if either operand is NaN; the non-NaN result is otherwise the smaller operand. On a ±0 tie, operand a (lhs) wins — a-biased per KISS §6.13. Two authorities: the NaN-propagation and lhs-first payload above are torch parity; the ±0 tie is pinned by KISS §6.13, NOT torch. (binary.rs avoids the native f32/f64 min/max intrinsics precisely because they leave the ±0 tie unspecified.)"
 
 determinism: same_hardware_bitwise
 ```
@@ -1545,7 +1545,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "Exact: returns one of the two operands (or a NaN operand unchanged). NaN-propagating (torch parity) — NaN if either operand is NaN; the non-NaN result is otherwise the smaller operand."
+  notes: "Exact: returns one of the two operands (or a NaN operand unchanged). NaN-propagating (torch parity) — NaN if either operand is NaN; the non-NaN result is otherwise the smaller operand. On a ±0 tie, operand a (lhs) wins — a-biased per KISS §6.13. Two authorities: the NaN-propagation and lhs-first payload above are torch parity; the ±0 tie is pinned by KISS §6.13, NOT torch. (binary.rs avoids the native f32/f64 min/max intrinsics precisely because they leave the ±0 tie unspecified.)"
 
 determinism: same_hardware_bitwise
 ```
@@ -1610,7 +1610,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "Widen to f32, take Minimum::f32 (NaN-propagating, torch parity), narrow to bf16 on store. Deterministic; bit-stable on same hardware."
+  notes: "Widen to f32, take Minimum::f32 (NaN-propagating, torch parity), narrow to bf16 on store. Deterministic; bit-stable on same hardware. On a ±0 tie the f32 Minimum wins operand a (lhs) — a-biased per KISS §6.13, a SEPARATE authority from the torch parity above (torch governs NaN + lhs-first payload, NOT the ±0 tie)."
 
 determinism: same_hardware_bitwise
 ```
@@ -1675,7 +1675,7 @@ precision:
   max_relative: ~
   max_absolute: ~
   audited: true
-  notes: "Widen to f32, take Minimum::f32 (NaN-propagating, torch parity), narrow to f16 on store. Deterministic; bit-stable on same hardware."
+  notes: "Widen to f32, take Minimum::f32 (NaN-propagating, torch parity), narrow to f16 on store. Deterministic; bit-stable on same hardware. On a ±0 tie the f32 Minimum wins operand a (lhs) — a-biased per KISS §6.13, a SEPARATE authority from the torch parity above (torch governs NaN + lhs-first payload, NOT the ±0 tie)."
 
 determinism: same_hardware_bitwise
 ```
