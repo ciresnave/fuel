@@ -230,7 +230,7 @@
 |----|-----------|-------|-----|
 | GAP-115 | fuel-vulkan-backend/src/lib.rs:9907,9975 | — | custom weight pool NOT integrated with weight allocation; no defrag/rebind machinery. |
 | GAP-116 | fuel-vulkan-backend/src/lib.rs:4804 | — | flash-attn naive; bails on `Sk>4096`/`D>256`. |
-| GAP-117 | ⚠️ **ANCHOR ROTTED AND SUBJECT NOT LOCATED at `80def246`.** Was `fuel-vulkan-backend/src/lib.rs:111`, which is the residency-tier doc and says *"Today every buffer is `Tier::OnDevice`"* — the opposite of *"weights not yet emitted to VRAM"*. Searched: `emitted to VRAM`, `emit_weights` (0 hits each). **CANDIDATE OBSOLETE — needs a ruling, not a close.** | — | weights "not yet emitted" to VRAM before compute ops. |
+| GAP-117 | ⚠️ **ANCHOR ROTTED AND SUBJECT NOT LOCATED at `80def246`.** Was `fuel-vulkan-backend/src/lib.rs:111`, which is the residency-tier doc and says *"Today every buffer is `Tier::OnDevice`"* — the opposite of *"weights not yet emitted to VRAM"*. ⚠️ **THIS IS THE PLAUSIBLE-ROT FAILURE AT ITS WORST: the anchor is not merely uninformative, it asserts the CONTRARY of the row, so a reader could CLOSE this row on it.** Searched: `emitted to VRAM`, `emit_weights` (0 hits each). **CANDIDATE OBSOLETE — needs a ruling, not a close.** | — | weights "not yet emitted" to VRAM before compute ops. |
 | GAP-118 | fuel-vulkan-backend/src/capture.rs:27 | — | graph capture a capability, "not a wired-in" optimization. |
 
 ### fuel-metal-backend / kernels (macOS; unbuildable here)
