@@ -266,11 +266,15 @@ impl MusicGenModel {
         let n_cb = cfg.num_codebooks;
         let batch = 1usize;
         let embed_dim = cfg.vocab_size + 1;
-        assert_eq!(
-            cfg.num_attention_heads * cfg.head_dim(),
-            cfg.hidden_size,
-            "num_attention_heads * head_dim must equal hidden_size",
-        );
+        // GAP-281: a typed decline, not a panic. `head_dim()` is integer division,
+        // so a head count that does not divide hidden_size violates this -- a CONFIG
+        // property to reject, not an invariant to assert.
+        if cfg.num_attention_heads * cfg.head_dim() != cfg.hidden_size {
+            return Err(fuel_core::Error::Msg(
+                "num_attention_heads * head_dim must equal hidden_size".into(),
+            )
+            .bt());
+        }
 
         // Sum multi-codebook embeddings: for each codebook `i`,
         // look up `audio_tokens[i*seq..i*seq+seq]` in
@@ -930,5 +934,45 @@ mod tests {
         assert_eq!(cfg.hidden_size, 1024);
         assert_eq!(cfg.num_attention_heads, 16);
         assert_eq!(cfg.head_dim(), 64);
+    }
+
+    /// GAP-281: the head-count x per-head-dim == model-dim relation must DECLINE with
+    /// a typed error, not panic. "Never panic on production paths."
+    ///
+    /// `head_dim()` is integer division, so a head count that does not divide the
+    /// model dim breaks the relation.
+    ///
+    /// Born-red: against the production `assert_eq!` this FAILS BY PANIC.
+    #[test]
+    fn head_dim_mismatch_declines_rather_than_panicking() {
+        let valid = tiny_cfg();
+        let seq_len: usize = 3;
+        let text_tokens: Vec<u32> = vec![1, 2, 3];
+        let audio_tokens: Vec<u32> = (0..(valid.num_codebooks * seq_len) as u32)
+            .map(|i| i % valid.vocab_size as u32)
+            .collect();
+        // POSITIVE CONTROL: the conforming config must SUCCEED, or the Err below is
+        // satisfied by a fixture that is merely broken.
+        let good = MusicGenModel {
+            config: valid.clone(),
+            weights: tiny_weights(&valid, 2026),
+        };
+        good.forward(&text_tokens, &audio_tokens, 0)
+            .expect("control: the conforming config must still run");
+
+        let mut bad = valid.clone();
+        bad.num_attention_heads += 1; // no longer divides hidden_size
+        let model = MusicGenModel {
+            config: bad,
+            weights: tiny_weights(&valid, 2026),
+        };
+        let err = model
+            .forward(&text_tokens, &audio_tokens, 0)
+            .expect_err("a non-divisible head count must DECLINE, not panic");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("head_dim") && msg.contains("hidden_size"),
+            "the decline must name the relation it rejected, got: {msg}"
+        );
     }
 }

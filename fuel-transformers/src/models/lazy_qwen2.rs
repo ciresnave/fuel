@@ -142,8 +142,8 @@ impl Qwen2ConfigRaw {
             .map_err(|e| fuel_core::Error::Msg(format!("parsing Qwen2 config.json: {e}")))
     }
 
-    fn resolve(self) -> Qwen2Config {
-        Qwen2Config {
+    fn resolve(self) -> Result<Qwen2Config> {
+        Ok(Qwen2Config {
             vocab_size: self.vocab_size,
             hidden_size: self.hidden_size,
             intermediate_size: self.intermediate_size,
@@ -152,7 +152,7 @@ impl Qwen2ConfigRaw {
             num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
                 self.num_key_value_heads,
                 self.num_attention_heads,
-            ),
+            )?,
             max_position_embeddings: self.max_position_embeddings,
             // absent/null sliding_window: fall back to the full context length.
             sliding_window: self.sliding_window.unwrap_or(self.max_position_embeddings),
@@ -162,7 +162,7 @@ impl Qwen2ConfigRaw {
             rope_theta: self.rope_theta,
             rms_norm_eps: self.rms_norm_eps,
             tie_word_embeddings: self.tie_word_embeddings,
-        }
+        })
     }
 }
 
@@ -172,7 +172,7 @@ impl Qwen2Config {
     /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
     /// see the born-red `qwen2_config_from_hf_json_parses_the_artifact_not_a_preset`.
     pub fn from_hf_json_str(json: &str) -> fuel_core::Result<Self> {
-        Ok(Qwen2ConfigRaw::from_json_str(json)?.resolve())
+        Qwen2ConfigRaw::from_json_str(json)?.resolve()
     }
 }
 
@@ -243,16 +243,27 @@ impl Qwen2Model {
         let seq = dims[1];
         assert_eq!(dims[2], cfg.hidden_size);
         let head_dim = cfg.head_dim();
-        assert_eq!(
-            cfg.num_attention_heads * head_dim,
-            cfg.hidden_size,
-            "Qwen2Config: num_attention_heads * head_dim must equal hidden_size",
-        );
-        assert_eq!(
-            cfg.num_attention_heads % cfg.num_key_value_heads,
-            0,
-            "Qwen2Config: num_attention_heads must be a multiple of num_key_value_heads",
-        );
+        // GAP-281: a typed decline, not a panic. `head_dim()` is integer
+        // division, so a config whose hidden_size is not divisible by the head
+        // count violates this -- a CONFIG property to reject, not an invariant
+        // to assert. Matches the conformant form in `lazy_qwen3.rs`.
+        if cfg.num_attention_heads * head_dim != cfg.hidden_size {
+            return Err(fuel_core::Error::Msg(
+                "Qwen2Config: num_attention_heads * head_dim must equal hidden_size".into(),
+            )
+            .bt());
+        }
+        // GAP-281: a typed decline, not a panic. Copied from the conformant
+        // form in `lazy_mixtral.rs`, one of 15 models already declining here.
+        if !cfg
+            .num_attention_heads
+            .is_multiple_of(cfg.num_key_value_heads)
+        {
+            return Err(fuel_core::Error::Msg(
+                "Qwen2Config: num_attention_heads must be a multiple of num_key_value_heads".into(),
+            )
+            .bt());
+        }
 
         let mut h = embeds.clone();
         let (rope_cos, rope_sin) = h.rope_tables_const(cfg.rope_theta, start_pos, seq, head_dim);
@@ -309,18 +320,28 @@ impl Qwen2Model {
         let seq = dims[1];
         assert_eq!(dims[2], cfg.hidden_size);
         let head_dim = cfg.head_dim();
-        assert_eq!(
-            cfg.num_attention_heads * head_dim,
-            cfg.hidden_size,
-            "Qwen2Config: num_attention_heads * head_dim must equal hidden_size",
-        );
-        assert_eq!(
-            cfg.num_attention_heads % cfg.num_key_value_heads,
-            0,
-            "Qwen2Config: num_attention_heads ({}) must be a multiple of num_key_value_heads ({})",
-            cfg.num_attention_heads,
-            cfg.num_key_value_heads,
-        );
+        // GAP-281: a typed decline, not a panic. `head_dim()` is integer
+        // division, so a config whose hidden_size is not divisible by the head
+        // count violates this -- a CONFIG property to reject, not an invariant
+        // to assert. Matches the conformant form in `lazy_qwen3.rs`.
+        if cfg.num_attention_heads * head_dim != cfg.hidden_size {
+            return Err(fuel_core::Error::Msg(
+                "Qwen2Config: num_attention_heads * head_dim must equal hidden_size".into(),
+            )
+            .bt());
+        }
+        // GAP-281: a typed decline, not a panic. Copied from the conformant
+        // form in `lazy_mixtral.rs`; the message keeps its values via format!.
+        if !cfg
+            .num_attention_heads
+            .is_multiple_of(cfg.num_key_value_heads)
+        {
+            return Err(fuel_core::Error::Msg(format!(
+                "Qwen2Config: num_attention_heads ({}) must be a multiple of num_key_value_heads ({})",
+                cfg.num_attention_heads, cfg.num_key_value_heads,
+            ))
+            .bt());
+        }
 
         let mut h = embeds.clone();
         let (rope_cos, rope_sin) = h.rope_tables_const(cfg.rope_theta, start_pos, seq, head_dim);
@@ -1376,6 +1397,46 @@ mod tests {
 
     /// The config every windowed-decode design rests on: 2 layers, window 4,
     /// `max_window_layers: 1` — layer 0 windowed, layer 1 dense.
+    /// GAP-281: the `num_attention_heads * head_dim == hidden_size` relation must
+    /// DECLINE with a typed error, not panic. "Never panic on production paths."
+    ///
+    /// `head_dim()` is `hidden_size / num_attention_heads` (integer division), so the
+    /// relation breaks whenever `hidden_size` is not divisible by the head count. The
+    /// fixture violates ONLY that axis: 6 heads with 2 kv-heads keeps GQA valid
+    /// (6 % 2 == 0), so the adjacent GQA assert cannot answer first and make this
+    /// vacuous.
+    ///
+    /// Born-red: against the production `assert_eq!` this FAILS BY PANIC.
+    #[test]
+    fn head_dim_mismatch_declines_rather_than_panicking() {
+        let valid = mixed_window_cfg(); // hidden 16, heads 4 -> 4 * 4 == 16
+        let tokens: Vec<u32> = vec![1, 2, 3];
+
+        // POSITIVE CONTROL: the conforming config must SUCCEED, or the Err below is
+        // satisfied by a fixture that is merely broken.
+        let good = Qwen2Model {
+            config: valid.clone(),
+            weights: tiny_weights(&valid),
+        };
+        good.forward(&tokens, 0)
+            .expect("control: the conforming config must still run");
+
+        let mut bad = valid.clone();
+        bad.num_attention_heads = 6; // 16 / 6 == 2, and 6 * 2 == 12 != 16
+        let model = Qwen2Model {
+            config: bad,
+            weights: tiny_weights(&valid),
+        };
+        let err = model
+            .forward(&tokens, 0)
+            .expect_err("a non-divisible head count must DECLINE, not panic");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("head_dim") && msg.contains("hidden_size"),
+            "the decline must name the relation it rejected, got: {msg}"
+        );
+    }
+
     fn mixed_window_cfg() -> Qwen2Config {
         Qwen2Config {
             vocab_size: 32,
@@ -1807,5 +1868,41 @@ mod tests {
                 "D1 prefill logit[{i}]: cached={a}, non-cached={b}",
             );
         }
+    }
+
+    /// GAP-281 (GQA relation): `num_attention_heads % num_key_value_heads == 0` must
+    /// DECLINE with a typed error, not panic. "Never panic on production paths."
+    ///
+    /// The fixture violates ONLY the GQA axis: head_dim is left conforming so the
+    /// head_dim guard (converted separately) cannot answer first and make this vacuous.
+    /// 4 heads over 3 kv-heads gives 4 % 3 == 1.
+    ///
+    /// Born-red: against the production `assert_eq!` this FAILS BY PANIC.
+    #[test]
+    fn gqa_head_multiple_mismatch_declines_rather_than_panicking() {
+        let valid = mixed_window_cfg();
+        let tokens: Vec<u32> = vec![1, 2, 3];
+        // POSITIVE CONTROL: the conforming config must SUCCEED.
+        let good = Qwen2Model {
+            config: valid.clone(),
+            weights: tiny_weights(&valid),
+        };
+        good.forward(&tokens, 0)
+            .expect("control: the conforming config must still run");
+
+        let mut bad = valid.clone();
+        bad.num_key_value_heads = 3; // 4 % 3 == 1, and head_dim stays conforming
+        let model = Qwen2Model {
+            config: bad,
+            weights: tiny_weights(&valid),
+        };
+        let err = model
+            .forward(&tokens, 0)
+            .expect_err("a non-multiple kv-head count must DECLINE, not panic");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("num_key_value_heads"),
+            "the decline must name the relation it rejected, got: {msg}"
+        );
     }
 }
