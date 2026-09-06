@@ -42,7 +42,11 @@
 
 use crate::fkc::error::FkcError;
 use crate::fkc::lower;
-use crate::fkc::schema::{FkcFile, FkcKernel, QuantSpec, TensorDesc};
+use crate::fkc::schema::{
+    AcceptBlock, CapsBlock, CostBlock, CostMemory, FdxSpec, FkcFile, FkcFrontMatter, FkcKernel,
+    FkcProvider, GatherSpec, LayoutSpec, OpParamFieldSpec, OpParamsSchema, OutputDesc,
+    PrecisionBlock, QuantSpec, ReturnBlock, TensorDesc,
+};
 // Rule 7's op-param allowlists are generated from — and held against — these
 // two enums by `variant_table!`; see the V-FKC-5 note above `variant_table!`.
 use crate::kernel::OpParams;
@@ -77,9 +81,8 @@ use fuel_graph::registry::FusedOpParams;
 /// schema change, so this set is a literal and MUST NOT be derived from
 /// `CARGO_PKG_VERSION`. ⚠️ §8-0003 is the counter-intuitive one: an upstream
 /// op-name change is NOT a schema change and MUST NOT add an entry here. The
-/// compile-time pin below enforces §8-0002 while, by pinning the front-matter
-/// STRUCT rather than the op vocabulary, leaving §8-0003's vocabulary changes
-/// untouched.
+/// compile-time pin below enforces §8-0002 while, by pinning the schema STRUCTS
+/// rather than the op vocabulary, leaving §8-0003's vocabulary changes untouched.
 pub const FKC_SUPPORTED_VERSIONS: &[u32] = &[1];
 
 /// The single source of truth for "does this importer accept `fkc_version`?"
@@ -90,32 +93,174 @@ pub(crate) fn fkc_version_is_supported(version: u32) -> bool {
     FKC_SUPPORTED_VERSIONS.contains(&version)
 }
 
-/// GAP-038 / §8-0002 — compile-time schema pin. Adding, removing, or retyping a
-/// field on [`crate::fkc::schema::FkcFrontMatter`] fails to compile HERE (the
-/// destructure is exhaustive), forcing the schema-vs-version decision to be made
-/// deliberately: a front-matter schema change is a §8-0002 change and MUST add a
-/// new entry to [`FKC_SUPPORTED_VERSIONS`] (and bump `PINNED_FKC_SCHEMA_VERSION`
-/// in the test below).
-/// ⚠️ It pins the STRUCT, not the op vocabulary, so a §8-0003 vocabulary change
-/// does NOT trip it — which is exactly the rule: the guard fires on schema drift,
-/// never vocab drift.
+/// GAP-038 + GAP-297 / §8-0002 — compile-time schema pin for the ENTIRE FKC
+/// contract schema. Adding, removing, or retyping a field on ANY
+/// `#[derive(Deserialize)]` struct in [`crate::fkc::schema`] fails to compile HERE
+/// (every destructure is exhaustive), forcing the schema-vs-version decision to be
+/// made deliberately: a schema change is a §8-0002 change and MUST add a new entry
+/// to [`FKC_SUPPORTED_VERSIONS`] (and bump `PINNED_FKC_SCHEMA_VERSION` in the test
+/// below).
 ///
-/// ⚠️ SCOPE / FLOOR: this pins the TOP-LEVEL front-matter fields (`fkc_version` +
-/// `provider`). A field change on the `provider` sub-struct ([`FkcProvider`]) or
-/// on a kernel `` ```fkc `` section ([`crate::fkc::schema::FkcKernel`] & friends) is ALSO a §8-0002
-/// schema change, but it is NOT caught here — this is a floor, not the whole
-/// schema surface. Extending the pin to those structs is a follow-on (GAP-297);
-/// until then, a deeper field change is a schema change the author must record in
-/// `FKC_SUPPORTED_VERSIONS` by discipline, not compiler force.
-fn _fkc_front_matter_schema_pin(fm: crate::fkc::schema::FkcFrontMatter) {
-    let crate::fkc::schema::FkcFrontMatter {
+/// ⚠️ It pins STRUCTS, not the op vocabulary, so a §8-0003 vocabulary change does
+/// NOT trip it — the guard fires on schema drift, never vocab drift.
+///
+/// GAP-297 DISCHARGES the floor GAP-038 documented: the pin covers the top-level
+/// front-matter AND the `provider` sub-struct AND the whole kernel-block tree
+/// (`accept`/`return`/tensor/layout/fdx/quant/gather/caps/cost/precision). Pinning
+/// only the top level would just relocate the floor one struct down, so EVERY
+/// Deserialize struct is destructured. [`FkcFile`] is deliberately EXCLUDED — it is
+/// the parsed RESULT (`#[derive(Debug, Clone)]`, not `Deserialize`), so it is not
+/// part of the wire schema.
+///
+/// Never called: an unreferenced private fn is still fully type-checked (the
+/// `dead_code` lint runs *after* type-checking), so the destructures are enforced
+/// on every build; `#[allow(dead_code)]` only silences the unused-fn report. Each
+/// arm binds every field to `_`, which reads (and thereby pins) the field set.
+#[allow(dead_code, clippy::too_many_arguments)] // a deliberate exhaustive schema pin, never called
+fn _fkc_schema_pin(
+    front_matter: FkcFrontMatter,
+    provider: FkcProvider,
+    kernel: FkcKernel,
+    accept: AcceptBlock,
+    op_params: OpParamsSchema,
+    op_param_field: OpParamFieldSpec,
+    ret: ReturnBlock,
+    output: OutputDesc,
+    tensor: TensorDesc,
+    layout: LayoutSpec,
+    fdx: FdxSpec,
+    quant: QuantSpec,
+    gather: GatherSpec,
+    caps: CapsBlock,
+    cost: CostBlock,
+    cost_memory: CostMemory,
+    precision: PrecisionBlock,
+) {
+    let FkcFrontMatter {
         fkc_version: _,
         provider: _,
-    } = fm;
+    } = front_matter;
+    let FkcProvider {
+        name: _,
+        backend: _,
+        kernel_source: _,
+        link_registry: _,
+        revision_base: _,
+    } = provider;
+    let FkcKernel {
+        kernel: _,
+        registrable: _,
+        op_kind: _,
+        fused_op: _,
+        blurb: _,
+        backend: _,
+        kernel_source: _,
+        entry_point: _,
+        kernel_revision_hash: _,
+        variant: _,
+        accept: _,
+        return_: _,
+        caps: _,
+        cost: _,
+        precision: _,
+        determinism: _,
+    } = kernel;
+    let AcceptBlock {
+        inputs: _,
+        op_params: _,
+    } = accept;
+    let OpParamsSchema {
+        variant: _,
+        fields: _,
+    } = op_params;
+    let OpParamFieldSpec {
+        kind: _,
+        constraint: _,
+        note: _,
+    } = op_param_field;
+    let ReturnBlock {
+        outputs: _,
+        bundle: _,
+    } = ret;
+    let OutputDesc {
+        name: _,
+        dtype_rule: _,
+        shape_rule: _,
+        layout_guarantee: _,
+        aliasing: _,
+    } = output;
+    let TensorDesc {
+        name: _,
+        optional: _,
+        dtypes: _,
+        dtype_class: _,
+        layout: _,
+        rank: _,
+        shape_constraint: _,
+        fdx: _,
+        device: _,
+        substrate: _,
+    } = tensor;
+    let LayoutSpec {
+        contiguous: _,
+        strided: _,
+        broadcast_stride0: _,
+        broadcast_axes: _,
+        start_offset: _,
+        reverse_strides: _,
+        awkward_layout_strategy: _,
+    } = layout;
+    let FdxSpec {
+        requires_ext: _,
+        quant: _,
+        sub_byte: _,
+        symbolic_extent: _,
+        extent_kind: _,
+        gather: _,
+    } = fdx;
+    let QuantSpec {
+        family: _,
+        ggml_dtype: _,
+        granularity: _,
+        block_shape: _,
+        role: _,
+        scale_operand: _,
+    } = quant;
+    let GatherSpec {
+        kind: _,
+        block_table: _,
+        context_lens: _,
+    } = gather;
+    let CapsBlock {
+        awkward_layout_strategy: _,
+        fast_paths: _,
+        in_place: _,
+        alignment_bytes: _,
+        access_granularity_bits: _,
+    } = caps;
+    let CostBlock {
+        provenance: _,
+        class: _,
+        cost_fn: _,
+        flops: _,
+        bytes_moved: _,
+        overhead_ns: _,
+        memory: _,
+    } = cost;
+    let CostMemory {
+        device_bytes: _,
+        host_bytes: _,
+        disk_bytes: _,
+    } = cost_memory;
+    let PrecisionBlock {
+        bit_stable_on_same_hardware: _,
+        max_ulp: _,
+        max_relative: _,
+        max_absolute: _,
+        audited: _,
+        notes: _,
+    } = precision;
 }
-/// Force the pin above to compile without a call site (so it cannot be dropped as
-/// dead code): a fn-pointer const references it at compile time.
-const _FKC_SCHEMA_PIN: fn(crate::fkc::schema::FkcFrontMatter) = _fkc_front_matter_schema_pin;
 
 // ===========================================================================
 // FDX normative token tables (§10.16 drift-guard)
