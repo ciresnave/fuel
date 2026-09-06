@@ -443,7 +443,14 @@ def missing_backlinks_in(src_lines):
     out = []
     for p in sorted(claims):
         if p not in by_id:
-            out.append('%s is declared as a parent but has NO ROW' % p)
+            # ⚠️ TWO CAUSES: the parent row was DELETED, or it was RENUMBERED
+            # and the child's `Parent:` was not updated. A renumber happened on
+            # 2026-09-06 (GAP-227 -> GAP-291, a duplicate id), so this is a live
+            # path, not a hypothetical. Naming only 'has NO ROW' sends the reader
+            # looking for a deletion that may never have occurred.
+            out.append('%s is declared as a parent but has NO ROW -- it was '
+                       'either DELETED or RENUMBERED with the child not updated; '
+                       'check the id history before assuming a deletion' % p)
             continue
         joined = ' '.join(by_id[p])
         for c in sorted(claims[p]):
@@ -542,8 +549,23 @@ for _p in arity_missing:
     print('    ' + _p)
 arity_regression = []
 if len(arity_extra) > ARITY_EXTRA_BASELINE:
-    arity_regression.append('MORE-cells rows rose %d -> %d'
-                            % (ARITY_EXTRA_BASELINE, len(arity_extra)))
+    # ⚠️ A RISE HERE HAS (AT LEAST) TWO CAUSES AND THE MESSAGE MUST NAME BOTH.
+    # (a) a row was MALFORMED -- the defect this ratchet guards; or
+    # (b) a row was ADDED to a 4-COLUMN table WITH a status cell, which is
+    #     EXACTLY WHAT THE NARROWED 4-COLUMN RULING ABOVE PRESCRIBES for the
+    #     22 Tier A rows that currently have nowhere to record a disposition.
+    # ⚠️ SO THIS GATE FIRES ON THE FIX ITS OWN RULING RECOMMENDS. A message
+    # naming only (a) sends the reader hunting for a malformation that is not
+    # there -- misattribution, not invisibility. Audited 2026-09-06 after the
+    # portfolio PM relayed the same defect in KISS's traceability floor, whose
+    # message said 'a clause lost its only backing' when clauses had been ADDED.
+    arity_regression.append(
+        'MORE-cells rows rose %d -> %d. TWO CAUSES, BOTH PRODUCE THIS SIGNAL: '
+        '(a) a row is MALFORMED -- read the line numbers above; or (b) a row was '
+        'ADDED to a 4-column table WITH a status cell, which is the PRESCRIBED '
+        'fix for the Tier A rows that have nowhere to record a disposition. If '
+        '(b), RAISE the baseline and say so in the commit message.'
+        % (ARITY_EXTRA_BASELINE, len(arity_extra)))
 if len(arity_missing) > ARITY_MISSING_BASELINE:
     arity_regression.append('FEWER-cells rows rose %d -> %d'
                             % (ARITY_MISSING_BASELINE, len(arity_missing)))
