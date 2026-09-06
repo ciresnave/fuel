@@ -7,7 +7,7 @@ from collections import Counter
 # PRINTED, and a `&&` chain sailed straight past a real corruption report and
 # pushed the broken row. A check that does not exit is decoration.
 #
-# ⚠️ NAME THE CONSTRUCT WITH EVERY NUMBER. This script used to print a bare
+# !! NAME THE CONSTRUCT WITH EVERY NUMBER. This script used to print a bare
 # "total GAP rows", which matches `^\| ~*GAP-` and therefore INCLUDES
 # strikethrough-closed rows -- while `grep -c '^| GAP-'` excludes them. The two
 # disagreed 171 vs 168 and the coordinator had been reporting the former as
@@ -20,7 +20,7 @@ from collections import Counter
 #     A pass that MOVES rows must never create or destroy them. Assert the
 #     `^| ~*GAP-` count before and after, and fail if it changed.
 #
-# ⚠️ WHY THIS IS NOT OBVIOUS, AND WHY PER-ROW CHECKS CANNOT REPLACE IT: on
+# !! WHY THIS IS NOT OBVIOUS, AND WHY PER-ROW CHECKS CANNOT REPLACE IT: on
 # 2026-09-02 a pass inserting a missing `Area` cell put the placeholder BEFORE
 # the id instead of after it. The rows became `| — | GAP-141 | …`, which no
 # longer matches `^| ~*GAP-`, and FOUR ROWS SILENTLY LEFT THE POPULATION --
@@ -140,6 +140,7 @@ for _l in lines:
         _cur2 = None
 a_in_4col = sum(n for (t, c), n in tier_shape.items() if t == 'A' and c == 4)
 rows_in_4col = sum(n for (t, c), n in tier_shape.items() if c == 4)
+_four_col_tiers = {t: n for (t, c), n in sorted(tier_shape.items()) if c == 4}
 
 no_status = sum(1 for c in schema_cols if c == 4)
 headerless = sum(1 for c in schema_cols if c is None)
@@ -154,7 +155,7 @@ headerless = sum(1 for c in schema_cols if c is None)
 # a Windows path or a regex written inside a QUOTED SHELL HEREDOC, where the
 # backslash is eaten and `\f` in `C:\Projects\fuel` becomes one formfeed byte.
 #
-# ⚠️ THE ASYMMETRY IS THE WHOLE REASON THEY ACCUMULATED, AND IT IS THE OPPOSITE
+# !! THE ASYMMETRY IS THE WHOLE REASON THEY ACCUMULATED, AND IT IS THE OPPOSITE
 # OF THE INTUITION: `\Projects` and `\.git` raise a SyntaxWarning and SURVIVE AS
 # LITERALS, while `\fuel` becomes a formfeed with NO DIAGNOSTIC AT ALL. The
 # escapes that warn are the harmless ones; the silent one is the one that
@@ -162,7 +163,7 @@ headerless = sum(1 for c in schema_cols if c is None)
 # careless, and the loud cases trained everyone to expect a warning that the
 # damaging case never emits.
 #
-# ⚠️ CONTEXT IS PRINTED, NOT JUST AN OFFSET, AND THAT IS LOAD-BEARING: the byte
+# !! CONTEXT IS PRINTED, NOT JUST AN OFFSET, AND THAT IS LOAD-BEARING: the byte
 # is INVISIBLE, so a line/column alone tells a reader nothing they can see. What
 # identified the original seven was a context dump, not a coordinate.
 #
@@ -185,7 +186,7 @@ for _n, _l in enumerate(lines, 1):
 # ---------------------------------------------------------------------------
 # CONFLICT MARKERS.
 #
-# ⚠️ FOUND BY REBASING THIS FILE THREE TIMES IN ONE SESSION: the gate returned
+# !! FOUND BY REBASING THIS FILE THREE TIMES IN ONE SESSION: the gate returned
 # EXIT 0 on a CONFLICTED docs/gaps.md, every time.
 #
 # It is structural, not an oversight. Every other check here keys on lines
@@ -315,22 +316,51 @@ print()
 # row's line number and invalidate citations across the corpus, and it is
 # unnecessary because the tier is already in the row. Same precedent as
 # rule 4b -- the data outvotes the presentation.
-print('!! THE 4-COLUMN STATUS EXEMPTION IS NARROWED -- ruled 2026-09-02,')
-print('   AMENDED 2026-09-06 BECAUSE ITS STATED PREMISE WAS FALSE.')
-print('   It said the 4-column tables ARE Tier C subdivided by crate.')
+print('!! THE 4-COLUMN STATUS EXEMPTION -- ruled 2026-09-02, amended twice on')
+print('   2026-09-06. IT NOW STANDS FOR ALL 4-COLUMN ROWS, AND THE SECOND')
+print('   AMENDMENT RETRACTS THE FIRST.')
 print('   Computed now, not asserted:')
-print('     4-column rows total : %d' % rows_in_4col)
-print('     ...of which TIER A  : %d  <- the premise said these did not exist' % a_in_4col)
-print('   THE EXEMPTION STANDS for the Tier C / untiered capability-decline')
-print('   INDEX, where the gap statement IS the status and a Status column')
-print('   would mean writing OPEN into most cells -- a field identical for')
-print('   most of its rows is a column that exists to be full, not information.')
-print('   IT DOES NOT STAND FOR THE TIER A ROWS. A Tier A row with no status')
-print('   cell CANNOT BE CLOSED, only deleted -- the format forbids the')
-print('   outcome -- and it carries a SEVERITY LABEL, so it outranks live work')
-print('   in every triage until somebody measures it. Those rows need a cell.')
-print('   This is GAP-278 (roadmap items with no status cell) present in')
-print('   gaps.md ITSELF. Found by Fuel 3 during a Tier A currency audit.')
+print('     rows under a 4-col HEADER : %d' % rows_in_4col)
+print('       (NOT the same as rows WITH 4 columns, which is %d --'
+      % (rows_in_4col - 1))
+print('        they differ by GAP-099, which HAS a status cell under a'
+      ' 4-column header. Two honest instruments disagreed 82-vs-81'
+      ' on 2026-09-06 purely because this label said COLUMNS where'
+      ' the code says HEADER.)')
+print('     by tier             : %s' % _four_col_tiers)
+print('   AMENDMENT 1 (earlier today) was right that the ORIGINAL premise was')
+print('   false -- it claimed these rows are Tier C subdivided by crate, and')
+print('   there are 22 Tier A and 13 Tier B among them. It then carved the')
+print('   Tier A rows OUT of the exemption and prescribed adding a status cell')
+print('   to each.')
+print('   AMENDMENT 2 RETRACTS THAT CARVE-OUT. All 22 Tier A rows were READ,')
+print('   not sampled, at 785b6ecc, and every one is a CAPABILITY DECLINE of')
+print('   the same shape as the exempt rows -- "deferred", "not wired in v1",')
+print('   "not yet wired", "returns Unsupported", "follow-up". Their gap')
+print('   statement IS their status, which is the exemption\'s own criterion.')
+print('   The 13 Tier B rows read identically.')
+print('   !! THE CARVE-OUT KEYED ON THE WRONG AXIS. It reasoned from the TIER')
+print('   cell without asking whether the ROWS were the same KIND OF OBJECT as')
+print('   the exempt ones. They are. Name an axis by the property that varies')
+print('   -- here, whether the gap statement is its own status -- not by the')
+print('   first label that happens to sort the rows.')
+print('   !! AND THE PRESCRIBED FIX WOULD HAVE WRITTEN "OPEN" INTO 22 CELLS,')
+print('   which is exactly what the sentence above forbids: a field identical')
+print('   for most of its rows is a column that exists to be full, not')
+print('   information. The remedy contradicted the rule it was appended to.')
+print('   !! THE OMISSION WAS ALSO A CLAIM. Amendment 1 named Tier A (not')
+print('   exempt) and Tier C / untiered (exempt) and said NOTHING about the 13')
+print('   Tier B rows -- and a partial exclusion list does not read as silent')
+print('   on the unnamed member, it reads as covering it.')
+print('   STILL OPEN, AND NOT ANSWERED BY THIS AMENDMENT: 22 deferred')
+print('   capability declines carry a Tier A severity label, so they outrank')
+print('   live work in a tier-sorted triage. That is a question about whether')
+print('   the TIER is right, not about whether a status cell is missing, and')
+print('   it is recorded here rather than answered because nobody has measured')
+print('   it. Do not read this amendment as clearing it.')
+print('   (Amendment 1 found by Fuel 3 during a Tier A currency audit;')
+print('    amendment 2 by the architect, on their own amendment, when the')
+print('    prescribed work was about to be done.)')
 print()
 print('!! THE TIER CELL (column 3) IS AUTHORITATIVE. The `## Tier X` section')
 print('   headings are PRESENTATIONAL and membership in them is CHRONOLOGICAL:')
@@ -403,7 +433,7 @@ print('headers DISAGREEING with their rows:', header_problems if header_problems
 # required the PARENT to cite the child back, so on 2026-09-02 the score was
 # 0 of 10 -- every declaration one-way.
 #
-# ⚠️ WHY THAT IS A DEFECT AND NOT UNTIDINESS, AND IT IS SPECIFIC TO STRUCK
+# !! WHY THAT IS A DEFECT AND NOT UNTIDINESS, AND IT IS SPECIFIC TO STRUCK
 # ROWS: `~~GAP-186~~` says "the generator producing the 42nd accessor is a
 # KNOWN OPEN RESIDUAL" and names no row. Its residue IS homed -- at GAP-250 --
 # so the strike is legitimate. But STRIKETHROUGH IS WHAT TELLS A READER NOT TO
@@ -419,7 +449,7 @@ print('headers DISAGREEING with their rows:', header_problems if header_problems
 # re-opening finished work -- and an unstruck row looks like diligence, so
 # nothing downstream catches it.
 #
-# ⚠️ WHY THIS IS A GATE RATHER THAN A RULE: filing a row is one action and
+# !! WHY THIS IS A GATE RATHER THAN A RULE: filing a row is one action and
 # backlinking is a second action nobody's workflow requires, so the omission is
 # the CONVENTION'S DEFAULT. It recurred within one hour, in the person who had
 # just been warned about it, while filing GAP-258. Awareness demonstrably does
@@ -443,7 +473,7 @@ def missing_backlinks_in(src_lines):
     out = []
     for p in sorted(claims):
         if p not in by_id:
-            # ⚠️ TWO CAUSES: the parent row was DELETED, or it was RENUMBERED
+            # !! TWO CAUSES: the parent row was DELETED, or it was RENUMBERED
             # and the child's `Parent:` was not updated. A renumber happened on
             # 2026-09-06 (GAP-227 -> GAP-291, a duplicate id), so this is a live
             # path, not a hypothetical. Naming only 'has NO ROW' sends the reader
@@ -460,7 +490,7 @@ def missing_backlinks_in(src_lines):
     return out, sum(len(v) for v in claims.values())
 
 
-# ⚠️ RETAINED SABOTAGE, RUN ON EVERY INVOCATION -- NOT AN AUTHORING-TIME RED.
+# !! RETAINED SABOTAGE, RUN ON EVERY INVOCATION -- NOT AN AUTHORING-TIME RED.
 # This check went green the moment it was written, because the ten real
 # backlinks had just been added. A born-red proves a gate discriminated ONCE;
 # it says nothing about any later run, and a check that has never been SEEN to
@@ -495,7 +525,7 @@ print('parents NOT citing their declared child:',
 # ---------------------------------------------------------------------------
 # ARITY DISSENT -- ANY row disagreeing with its header, not just a MODAL one.
 #
-# ⚠️ `close_table()` above compares a header to the MODAL row count, so a
+# !! `close_table()` above compares a header to the MODAL row count, so a
 # MINORITY of wrong-arity rows never trips it. Eighteen rows disagreed with
 # their header while it reported NONE. That is the THIRD time this file has
 # carried a check reporting clean over a population it structurally cannot see
@@ -525,14 +555,14 @@ for n, l in enumerate(lines, 1):
     elif not l.startswith('|'):
         _hdr = None
 
-# ⚠️ A RATCHET, NOT A HARD GATE, AND THE REASON IS NOT LENIENCY. These 18 are
+# !! A RATCHET, NOT A HARD GATE, AND THE REASON IS NOT LENIENCY. These 18 are
 # real, pre-existing and outside the scope of the change that added this check.
 # Failing on them would red-gate every commit in the repo until an unrelated
 # 18-row edit lands, and a gate that cannot be satisfied by following its own
 # advice teaches `--no-verify` -- a worse outcome than the drift it guards.
 # Same shape as the prose-hedge allowlist: the baseline MAY ONLY SHRINK.
 #
-# ⚠️ IF YOU FIX ROWS, LOWER THESE NUMBERS IN THE SAME COMMIT. A baseline left
+# !! IF YOU FIX ROWS, LOWER THESE NUMBERS IN THE SAME COMMIT. A baseline left
 # above the true count is a gate that has quietly stopped guarding, which is the
 # defect this whole file exists to catch.
 ARITY_EXTRA_BASELINE = 1
@@ -549,12 +579,12 @@ for _p in arity_missing:
     print('    ' + _p)
 arity_regression = []
 if len(arity_extra) > ARITY_EXTRA_BASELINE:
-    # ⚠️ A RISE HERE HAS (AT LEAST) TWO CAUSES AND THE MESSAGE MUST NAME BOTH.
+    # !! A RISE HERE HAS (AT LEAST) TWO CAUSES AND THE MESSAGE MUST NAME BOTH.
     # (a) a row was MALFORMED -- the defect this ratchet guards; or
     # (b) a row was ADDED to a 4-COLUMN table WITH a status cell, which is
     #     EXACTLY WHAT THE NARROWED 4-COLUMN RULING ABOVE PRESCRIBES for the
     #     22 Tier A rows that currently have nowhere to record a disposition.
-    # ⚠️ SO THIS GATE FIRES ON THE FIX ITS OWN RULING RECOMMENDS. A message
+    # !! SO THIS GATE FIRES ON THE FIX ITS OWN RULING RECOMMENDS. A message
     # naming only (a) sends the reader hunting for a malformation that is not
     # there -- misattribution, not invisibility. Audited 2026-09-06 after the
     # portfolio PM relayed the same defect in KISS's traceability floor, whose
@@ -577,7 +607,7 @@ if len(arity_extra) < ARITY_EXTRA_BASELINE or len(arity_missing) < ARITY_MISSING
         % (len(arity_extra), len(arity_missing),
            ARITY_EXTRA_BASELINE, ARITY_MISSING_BASELINE))
 print('arity ratchet:', arity_regression if arity_regression else 'HOLDING')
-# ⚠️ WHY THE `extra` BASELINE IS 1 AND NOT 0 -- ruled 2026-09-02, and it is a
+# !! WHY THE `extra` BASELINE IS 1 AND NOT 0 -- ruled 2026-09-02, and it is a
 # decision rather than leftover debt.
 #
 # The single remaining dissent is GAP-099: a worked row, priced (64 literals /
@@ -602,7 +632,7 @@ if len(arity_extra) == 1 and not arity_regression:
 # ---------------------------------------------------------------------------
 # STATUS VOCABULARY -- docs/design/gaps-status-vocabulary.md
 #
-# ⚠️⚠️ THIS BUYS GREPPABILITY, NOT ACCURACY. NOT ONE DEFECT FOUND IN THE
+# ⚠️!! THIS BUYS GREPPABILITY, NOT ACCURACY. NOT ONE DEFECT FOUND IN THE
 # 2026-08-28 CLOSE-CONVENTION AUDIT WOULD HAVE BEEN CAUGHT BY IT. Every real
 # finding that night came from READING A ROW. Whoever cites this file may say
 # "N rows carry prefix X" and must NEVER say "N gaps are verified closed" on
@@ -621,7 +651,7 @@ def normalise_status(c):
     """Strip, FROM THE LEFT ONLY: whitespace, markdown emphasis, and any
     non-ASCII character -- which is how the `✅` / `⚠️` leads are absorbed.
 
-    ⚠️ THIS IS A JUDGMENT AND IT IS STATED HERE ON PURPOSE. The design doc
+    !! THIS IS A JUDGMENT AND IT IS STATED HERE ON PURPOSE. The design doc
     called this test "exact, mechanical, no judgment", and that was literally
     false for 13 of the cells: six lead with an emoji, four are empty, the rest
     open with a backtick or bold. An UNSTATED normalisation inside a check
@@ -680,7 +710,7 @@ def vocab_findings(src_lines):
             bad.append('line %d %s: status does not start with a set member -- %r'
                        % (n, _m.group(1), normalise_status(_cs[4])[:60]))
         elif _m.group(1).startswith('~~') and _p in ('PARTIAL', 'OPEN', 'RE-OPENED'):
-        # ⚠️ ASYMMETRIC ON PURPOSE -- DO NOT "COMPLETE" THIS INTO SYMMETRY.
+        # !! ASYMMETRIC ON PURPOSE -- DO NOT "COMPLETE" THIS INTO SYMMETRY.
         #   struck + OPEN/PARTIAL -> FLAG. The row is hidden AND has open work,
         #                            so the work is UNREACHABLE: strikethrough
         #                            is what tells a reader not to look.
@@ -692,7 +722,7 @@ def vocab_findings(src_lines):
     return bad, contra, dist
 
 
-# ⚠️ RETAINED SELF-TEST, RUN EVERY INVOCATION. The cross-check below is called
+# !! RETAINED SELF-TEST, RUN EVERY INVOCATION. The cross-check below is called
 # "the ONE genuine accuracy test available here", and on 2026-09-02 it fired on
 # REAL DATA (`~~GAP-176~~`) -- the strongest evidence a check can have. But the
 # moment that row is dispositioned it goes green forever, and a check nobody has
