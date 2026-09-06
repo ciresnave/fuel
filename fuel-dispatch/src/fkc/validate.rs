@@ -95,11 +95,11 @@ pub(crate) fn fkc_version_is_supported(version: u32) -> bool {
 
 /// GAP-038 + GAP-297 / §8-0002 — compile-time schema pin for the ENTIRE FKC
 /// contract schema. Adding, removing, or retyping a field on ANY
-/// `#[derive(Deserialize)]` struct in [`crate::fkc::schema`] fails to compile HERE
-/// (every destructure is exhaustive), forcing the schema-vs-version decision to be
-/// made deliberately: a schema change is a §8-0002 change and MUST add a new entry
-/// to [`FKC_SUPPORTED_VERSIONS`] (and bump `PINNED_FKC_SCHEMA_VERSION` in the test
-/// below).
+/// `#[derive(Deserialize)]` struct in [`crate::fkc::schema`] fails to compile in
+/// the matching `_fkc_pin_*` fn below (every destructure is exhaustive), forcing
+/// the schema-vs-version decision to be made deliberately: a schema change is a
+/// §8-0002 change and MUST add a new entry to [`FKC_SUPPORTED_VERSIONS`] (and bump
+/// `PINNED_FKC_SCHEMA_VERSION` in the test below).
 ///
 /// ⚠️ It pins STRUCTS, not the op vocabulary, so a §8-0003 vocabulary change does
 /// NOT trip it — the guard fires on schema drift, never vocab drift.
@@ -112,30 +112,19 @@ pub(crate) fn fkc_version_is_supported(version: u32) -> bool {
 /// the parsed RESULT (`#[derive(Debug, Clone)]`, not `Deserialize`), so it is not
 /// part of the wire schema.
 ///
+/// SPLIT INTO GROUPS by block (front-matter / kernel / accept / return / tensor /
+/// caps-cost-precision) so each fn stays under the method-length + parameter-count
+/// limits, coverage unchanged — all 17 structs are still exhaustively destructured
+/// across the six functions (GAP-297 Codacy follow-up). If a new schema struct is
+/// added, destructure it in the group it belongs to (or add a group) — a struct
+/// with no `_fkc_pin_*` arm is a pin the guard cannot enforce.
+///
 /// Never called: an unreferenced private fn is still fully type-checked (the
 /// `dead_code` lint runs *after* type-checking), so the destructures are enforced
 /// on every build; `#[allow(dead_code)]` only silences the unused-fn report. Each
 /// arm binds every field to `_`, which reads (and thereby pins) the field set.
-#[allow(dead_code, clippy::too_many_arguments)] // a deliberate exhaustive schema pin, never called
-fn _fkc_schema_pin(
-    front_matter: FkcFrontMatter,
-    provider: FkcProvider,
-    kernel: FkcKernel,
-    accept: AcceptBlock,
-    op_params: OpParamsSchema,
-    op_param_field: OpParamFieldSpec,
-    ret: ReturnBlock,
-    output: OutputDesc,
-    tensor: TensorDesc,
-    layout: LayoutSpec,
-    fdx: FdxSpec,
-    quant: QuantSpec,
-    gather: GatherSpec,
-    caps: CapsBlock,
-    cost: CostBlock,
-    cost_memory: CostMemory,
-    precision: PrecisionBlock,
-) {
+#[allow(dead_code)] // deliberate exhaustive schema pin (front-matter block), never called
+fn _fkc_pin_front_matter(front_matter: FkcFrontMatter, provider: FkcProvider) {
     let FkcFrontMatter {
         fkc_version: _,
         provider: _,
@@ -147,6 +136,10 @@ fn _fkc_schema_pin(
         link_registry: _,
         revision_base: _,
     } = provider;
+}
+
+#[allow(dead_code)] // deliberate exhaustive schema pin (kernel block), never called
+fn _fkc_pin_kernel(kernel: FkcKernel) {
     let FkcKernel {
         kernel: _,
         registrable: _,
@@ -165,6 +158,14 @@ fn _fkc_schema_pin(
         precision: _,
         determinism: _,
     } = kernel;
+}
+
+#[allow(dead_code)] // deliberate exhaustive schema pin (accept block), never called
+fn _fkc_pin_accept(
+    accept: AcceptBlock,
+    op_params: OpParamsSchema,
+    op_param_field: OpParamFieldSpec,
+) {
     let AcceptBlock {
         inputs: _,
         op_params: _,
@@ -178,6 +179,10 @@ fn _fkc_schema_pin(
         constraint: _,
         note: _,
     } = op_param_field;
+}
+
+#[allow(dead_code)] // deliberate exhaustive schema pin (return block), never called
+fn _fkc_pin_return(ret: ReturnBlock, output: OutputDesc) {
     let ReturnBlock {
         outputs: _,
         bundle: _,
@@ -189,6 +194,16 @@ fn _fkc_schema_pin(
         layout_guarantee: _,
         aliasing: _,
     } = output;
+}
+
+#[allow(dead_code)] // deliberate exhaustive schema pin (tensor / layout / fdx / quant / gather), never called
+fn _fkc_pin_tensor(
+    tensor: TensorDesc,
+    layout: LayoutSpec,
+    fdx: FdxSpec,
+    quant: QuantSpec,
+    gather: GatherSpec,
+) {
     let TensorDesc {
         name: _,
         optional: _,
@@ -231,6 +246,15 @@ fn _fkc_schema_pin(
         block_table: _,
         context_lens: _,
     } = gather;
+}
+
+#[allow(dead_code)] // deliberate exhaustive schema pin (caps / cost / precision), never called
+fn _fkc_pin_caps_cost_precision(
+    caps: CapsBlock,
+    cost: CostBlock,
+    cost_memory: CostMemory,
+    precision: PrecisionBlock,
+) {
     let CapsBlock {
         awkward_layout_strategy: _,
         fast_paths: _,
