@@ -1,7 +1,31 @@
 # FKC ⇄ KISS-Contract convergence
 
-**Status:** analysis + proposed plan, 2026-08-07. Fuel-side only — **no KISS RFC has been
-opened**; §6 is the proposed ask and is not yet a commitment to any external party.
+**Status:** analysis + proposed plan, 2026-08-07. ⚠️⚠️ **CURRENCY PASS 2026-09-06, measured at `561ee255`. THE ANALYSIS HOLDS; THE STATUS LINE AND THE SEQUENCING DID NOT. Read this block before §5.**
+
+> **WHAT SURVIVED, AND IT IS THE LOAD-BEARING CLAIM.** §0 says `docs/specs/kernel-contract-format.md` contains **zero** references to KISS. **Re-measured: still 0, a month later.** The doc supplied its own positive control and it still arms — the same query returns **1, 1, 12** in `fuel-dispatch/src/fkc/{mod,shape_expr,verify/ulp}.rs`. **The contract format has still had no reconciliation pass, which is the finding this document exists for.**
+>
+> ⚠️ **A CURRENCY PASS THAT REPORTS ONLY DECAY TEACHES A READER TO DISCOUNT THE WHOLE DOCUMENT.** The parts below that expired are administrative; the argument is intact.
+
+> ⚠️⚠️ **FALSE AT HEAD: "no KISS RFC has been opened."** GAP-039 records **RFC 1 of 4 OPENED 2026-08-08 — KISS#124** — *the day after this document was written.* **§6 is therefore no longer purely a proposed ask: one quarter of it is live with an external party.**
+>
+> **The sentence was true for about twenty-four hours and has read as current ever since.** It is an ABSENCE CLAIM in a STATUS HEADER, which is the worst combination available: an absence needs re-measuring to stay true, and a header is the one line every reader takes on trust without checking.
+
+> **§5 SEQUENCING, ROW-BY-ROW AT `561ee255`. Three of six entries have moved:**
+>
+> | § 5 item | row | state now |
+> |---|---|---|
+> | 1 | GAP-035 | **OPEN** — live Fuel work |
+> | 2 | GAP-036 | ⚠️ **CLOSED, struck — BOTH INCREMENTS SHIPPED** |
+> | 3 | GAP-037 | **OPEN but HELD**, on KISS#125 + the `revhash.rs` trap |
+> | 4 | GAP-038 | ⚠️ **CLOSED by PR #130**, 2026-09-06 |
+> | 5 | GAP-039 | **OPEN**, held on KISS — the RFC above |
+> | prereq | GAP-048 | ⚠️⚠️ **a FOUR-COLUMN row with NO STATUS CELL** |
+>
+> ⚠️⚠️ **GAP-048 IS THE ONE THAT MATTERS AND IT IS NOT A STALENESS PROBLEM.** It is named here as a **hard blocker at the moment of declaring conformance** for item 1 — and its row has no status cell at all, so **IT CANNOT BE CLOSED, ONLY DELETED.** A prerequisite whose format forbids the outcome "done" is a permanent blocker on item 1 by construction, and nothing about reading §5 reveals that.
+
+> **Not corrected in place below, deliberately.** The 2026-08-07 text is the record of what was believed when the plan was made, and rewriting it would destroy the evidence that item 2 and item 4 were *predicted* correctly and then *shipped*. **The block above is the verdict; the text below is the history.**
+
+Fuel-side only. **§6 was the proposed ask when written; see the currency block — RFC 1 of 4 is now open.**
 **Author:** Fuel architect/coordinator. **Registry:** GAP-035 … GAP-039.
 
 ---
