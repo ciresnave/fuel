@@ -13,7 +13,7 @@
 //!
 //! | rule | check | `FkcError` |
 //! |------|-------|------------|
-//! | 1  | `fkc_version <= FKC_VERSION_MAX` | `UnsupportedVersion` |
+//! | 1  | `fkc_version ∈ FKC_SUPPORTED_VERSIONS` | `UnsupportedVersion` |
 //! | 2  | required fields (kernel; EXACTLY ONE of op_kind/fused_op; blurb; entry_point; ≥1 input; ≥1 output/bundle; cost; precision; determinism). Describe-only (§3.10) EXEMPTS exactly-one-of-op_kind/fused_op AND the ≥1-input rule (a zero-operand documentation op is legitimate). | `MissingRequiredField` / `MissingBlurb` / `OpTargetAmbiguous` |
 //! | 3  | dtype validity; sub-byte ⇒ fdx.quant; ggml_dtype a real `GgmlDType` | `BadScalarType` / `QuantIncoherent` |
 //! | 4  | layout coherence (≥1 of contiguous/strided OK; broadcast/reverse ⇒ strided) | `LayoutIncoherent` |
@@ -42,13 +42,24 @@
 
 use crate::fkc::error::FkcError;
 use crate::fkc::lower;
-use crate::fkc::schema::{FkcFile, FkcKernel, QuantSpec, TensorDesc};
+use crate::fkc::schema::{
+    AcceptBlock, CapsBlock, CostBlock, CostMemory, FdxSpec, FkcFile, FkcFrontMatter, FkcKernel,
+    FkcProvider, GatherSpec, LayoutSpec, OpParamFieldSpec, OpParamsSchema, OutputDesc,
+    PrecisionBlock, QuantSpec, ReturnBlock, TensorDesc,
+};
 // Rule 7's op-param allowlists are generated from — and held against — these
 // two enums by `variant_table!`; see the V-FKC-5 note above `variant_table!`.
 use crate::kernel::OpParams;
 use fuel_graph::registry::FusedOpParams;
 
-/// The maximum `fkc_version` this importer understands (FKC §10.1 / §11).
+/// The exact set of `fkc_version` values this importer accepts (FKC §10.1 / §11;
+/// KISS #450, narrowing §6.1-0008).
+///
+/// **Membership, not a `<= max` bound.** A version is accepted IFF it is in this
+/// set; a reader MUST NOT accept a version merely because it is *lower* than one
+/// it supports. (GAP-292: the old gate `fkc_version > MAX` accepted `0`, so the
+/// accepted set was silently `{0, 1}` — and `0` is not a version.) A reader
+/// DECLARING its supported set here is exactly what KISS #450 requires.
 ///
 /// # Two independent version axes (GAP-038 — KISS-CONTRACT §8-0001..0007)
 ///
@@ -62,43 +73,218 @@ use fuel_graph::registry::FusedOpParams;
 /// | change                                             | bumps |
 /// |----------------------------------------------------|-------|
 /// | a pure code refactor that preserves the bytes      | crate semver ONLY (§8-0001) |
-/// | a front-matter/section **schema** change (§8-0002) | `fkc_version` (and hence semver) |
+/// | a front-matter/section **schema** change (§8-0002) | the schema version — a new entry here |
 /// | an upstream **vocabulary** change — a new KISS-Ops  | NEITHER axis (§8-0003) |
 /// |   op name, a KISS-Grammar shape                    |       |
 ///
 /// §8-0001: the two axes are INDEPENDENT — a crate-semver change MUST NOT imply a
-/// schema change, so `FKC_VERSION_MAX` is a literal and MUST NOT be derived from
+/// schema change, so this set is a literal and MUST NOT be derived from
 /// `CARGO_PKG_VERSION`. ⚠️ §8-0003 is the counter-intuitive one: an upstream
-/// op-name change is NOT a schema change and MUST NOT bump this. The compile-time
-/// pin below enforces §8-0002 while, by pinning the front-matter STRUCT rather
-/// than the op vocabulary, leaving §8-0003's vocabulary changes untouched.
-pub const FKC_VERSION_MAX: u32 = 1;
+/// op-name change is NOT a schema change and MUST NOT add an entry here. The
+/// compile-time pin below enforces §8-0002 while, by pinning the schema STRUCTS
+/// rather than the op vocabulary, leaving §8-0003's vocabulary changes untouched.
+pub const FKC_SUPPORTED_VERSIONS: &[u32] = &[1];
 
-/// GAP-038 / §8-0002 — compile-time schema pin. Adding, removing, or retyping a
-/// field on [`crate::fkc::schema::FkcFrontMatter`] fails to compile HERE (the
-/// destructure is exhaustive), forcing the schema-vs-version decision to be made
-/// deliberately: a front-matter schema change is a §8-0002 change and MUST bump
-/// [`FKC_VERSION_MAX`] (and `PINNED_FKC_SCHEMA_VERSION` in the test below).
-/// ⚠️ It pins the STRUCT, not the op vocabulary, so a §8-0003 vocabulary change
-/// does NOT trip it — which is exactly the rule: the guard fires on schema drift,
-/// never vocab drift.
+/// The single source of truth for "does this importer accept `fkc_version`?"
+/// (KISS #450 membership). Both the production gate in [`validate_file`] and the
+/// checked-in-corpus conformance test call THIS, so the two cannot diverge on the
+/// accepted set — the drift a duplicated inline `> MAX` check invited (GAP-292).
+pub(crate) fn fkc_version_is_supported(version: u32) -> bool {
+    FKC_SUPPORTED_VERSIONS.contains(&version)
+}
+
+/// GAP-038 + GAP-297 / §8-0002 — compile-time schema pin for the ENTIRE FKC
+/// contract schema. Adding, removing, or retyping a field on ANY
+/// `#[derive(Deserialize)]` struct in [`crate::fkc::schema`] fails to compile in
+/// the matching `_fkc_pin_*` fn below (every destructure is exhaustive), forcing
+/// the schema-vs-version decision to be made deliberately: a schema change is a
+/// §8-0002 change and MUST add a new entry to [`FKC_SUPPORTED_VERSIONS`] (and bump
+/// `PINNED_FKC_SCHEMA_VERSION` in the test below).
 ///
-/// ⚠️ SCOPE / FLOOR: this pins the TOP-LEVEL front-matter fields (`fkc_version` +
-/// `provider`). A field change on the `provider` sub-struct ([`FkcProvider`]) or
-/// on a kernel `` ```fkc `` section ([`crate::fkc::schema::FkcKernel`] & friends) is ALSO a §8-0002
-/// schema change, but it is NOT caught here — this is a floor, not the whole
-/// schema surface. Extending the pin to those structs is a follow-on; until then,
-/// a deeper field change is a schema change the author must bump `FKC_VERSION_MAX`
-/// for by discipline, not compiler force.
-fn _fkc_front_matter_schema_pin(fm: crate::fkc::schema::FkcFrontMatter) {
-    let crate::fkc::schema::FkcFrontMatter {
+/// ⚠️ It pins STRUCTS, not the op vocabulary, so a §8-0003 vocabulary change does
+/// NOT trip it — the guard fires on schema drift, never vocab drift.
+///
+/// GAP-297 DISCHARGES the floor GAP-038 documented: the pin covers the top-level
+/// front-matter AND the `provider` sub-struct AND the whole kernel-block tree
+/// (`accept`/`return`/tensor/layout/fdx/quant/gather/caps/cost/precision). Pinning
+/// only the top level would just relocate the floor one struct down, so EVERY
+/// Deserialize struct is destructured. [`FkcFile`] is deliberately EXCLUDED — it is
+/// the parsed RESULT (`#[derive(Debug, Clone)]`, not `Deserialize`), so it is not
+/// part of the wire schema.
+///
+/// SPLIT INTO GROUPS by block (front-matter / kernel / accept / return / tensor /
+/// caps-cost-precision) so each fn stays under the method-length + parameter-count
+/// limits, coverage unchanged — all 17 structs are still exhaustively destructured
+/// across the six functions (GAP-297 Codacy follow-up). If a new schema struct is
+/// added, destructure it in the group it belongs to (or add a group) — a struct
+/// with no `_fkc_pin_*` arm is a pin the guard cannot enforce.
+///
+/// Never called: an unreferenced private fn is still fully type-checked (the
+/// `dead_code` lint runs *after* type-checking), so the destructures are enforced
+/// on every build; `#[allow(dead_code)]` only silences the unused-fn report. Each
+/// arm binds every field to `_`, which reads (and thereby pins) the field set.
+#[allow(dead_code)] // deliberate exhaustive schema pin (front-matter block), never called
+fn _fkc_pin_front_matter(front_matter: FkcFrontMatter, provider: FkcProvider) {
+    let FkcFrontMatter {
         fkc_version: _,
         provider: _,
-    } = fm;
+    } = front_matter;
+    let FkcProvider {
+        name: _,
+        backend: _,
+        kernel_source: _,
+        link_registry: _,
+        revision_base: _,
+    } = provider;
 }
-/// Force the pin above to compile without a call site (so it cannot be dropped as
-/// dead code): a fn-pointer const references it at compile time.
-const _FKC_SCHEMA_PIN: fn(crate::fkc::schema::FkcFrontMatter) = _fkc_front_matter_schema_pin;
+
+#[allow(dead_code)] // deliberate exhaustive schema pin (kernel block), never called
+fn _fkc_pin_kernel(kernel: FkcKernel) {
+    let FkcKernel {
+        kernel: _,
+        registrable: _,
+        op_kind: _,
+        fused_op: _,
+        blurb: _,
+        backend: _,
+        kernel_source: _,
+        entry_point: _,
+        kernel_revision_hash: _,
+        variant: _,
+        accept: _,
+        return_: _,
+        caps: _,
+        cost: _,
+        precision: _,
+        determinism: _,
+    } = kernel;
+}
+
+#[allow(dead_code)] // deliberate exhaustive schema pin (accept block), never called
+fn _fkc_pin_accept(
+    accept: AcceptBlock,
+    op_params: OpParamsSchema,
+    op_param_field: OpParamFieldSpec,
+) {
+    let AcceptBlock {
+        inputs: _,
+        op_params: _,
+    } = accept;
+    let OpParamsSchema {
+        variant: _,
+        fields: _,
+    } = op_params;
+    let OpParamFieldSpec {
+        kind: _,
+        constraint: _,
+        note: _,
+    } = op_param_field;
+}
+
+#[allow(dead_code)] // deliberate exhaustive schema pin (return block), never called
+fn _fkc_pin_return(ret: ReturnBlock, output: OutputDesc) {
+    let ReturnBlock {
+        outputs: _,
+        bundle: _,
+    } = ret;
+    let OutputDesc {
+        name: _,
+        dtype_rule: _,
+        shape_rule: _,
+        layout_guarantee: _,
+        aliasing: _,
+    } = output;
+}
+
+#[allow(dead_code)] // deliberate exhaustive schema pin (tensor / layout / fdx / quant / gather), never called
+fn _fkc_pin_tensor(
+    tensor: TensorDesc,
+    layout: LayoutSpec,
+    fdx: FdxSpec,
+    quant: QuantSpec,
+    gather: GatherSpec,
+) {
+    let TensorDesc {
+        name: _,
+        optional: _,
+        dtypes: _,
+        dtype_class: _,
+        layout: _,
+        rank: _,
+        shape_constraint: _,
+        fdx: _,
+        device: _,
+        substrate: _,
+    } = tensor;
+    let LayoutSpec {
+        contiguous: _,
+        strided: _,
+        broadcast_stride0: _,
+        broadcast_axes: _,
+        start_offset: _,
+        reverse_strides: _,
+        awkward_layout_strategy: _,
+    } = layout;
+    let FdxSpec {
+        requires_ext: _,
+        quant: _,
+        sub_byte: _,
+        symbolic_extent: _,
+        extent_kind: _,
+        gather: _,
+    } = fdx;
+    let QuantSpec {
+        family: _,
+        ggml_dtype: _,
+        granularity: _,
+        block_shape: _,
+        role: _,
+        scale_operand: _,
+    } = quant;
+    let GatherSpec {
+        kind: _,
+        block_table: _,
+        context_lens: _,
+    } = gather;
+}
+
+#[allow(dead_code)] // deliberate exhaustive schema pin (caps / cost / precision), never called
+fn _fkc_pin_caps_cost_precision(
+    caps: CapsBlock,
+    cost: CostBlock,
+    cost_memory: CostMemory,
+    precision: PrecisionBlock,
+) {
+    let CapsBlock {
+        awkward_layout_strategy: _,
+        fast_paths: _,
+        in_place: _,
+        alignment_bytes: _,
+        access_granularity_bits: _,
+    } = caps;
+    let CostBlock {
+        provenance: _,
+        class: _,
+        cost_fn: _,
+        flops: _,
+        bytes_moved: _,
+        overhead_ns: _,
+        memory: _,
+    } = cost;
+    let CostMemory {
+        device_bytes: _,
+        host_bytes: _,
+        disk_bytes: _,
+    } = cost_memory;
+    let PrecisionBlock {
+        bit_stable_on_same_hardware: _,
+        max_ulp: _,
+        max_relative: _,
+        max_absolute: _,
+        audited: _,
+        notes: _,
+    } = precision;
+}
 
 // ===========================================================================
 // FDX normative token tables (§10.16 drift-guard)
@@ -168,11 +354,11 @@ fn is_registrable_granularity(tok: &str) -> bool {
 /// `import_bundle_str`) runs this after parse so a structurally-bad contract
 /// fails import. Stops at the first violation (a typed `FkcError`).
 pub fn validate_file(file: &FkcFile) -> Result<(), FkcError> {
-    // Rule 1: format version supported.
-    if file.front_matter.fkc_version > FKC_VERSION_MAX {
+    // Rule 1: format version supported (membership, not `<= max` — KISS #450).
+    if !fkc_version_is_supported(file.front_matter.fkc_version) {
         return Err(FkcError::UnsupportedVersion {
             found: file.front_matter.fkc_version,
-            max: FKC_VERSION_MAX,
+            supported: FKC_SUPPORTED_VERSIONS,
         });
     }
     for kernel in &file.kernels {
@@ -1334,8 +1520,39 @@ determinism: same_hardware_bitwise
         let src = valid_bundle().replace("fkc_version: 1", "fkc_version: 99");
         let err = validate_str(&src).expect_err("version 99 unsupported");
         assert!(
-            matches!(err, FkcError::UnsupportedVersion { found: 99, max: 1 }),
+            matches!(err, FkcError::UnsupportedVersion { found: 99, .. }),
             "got {err:?}"
+        );
+    }
+
+    // ===== GAP-292: the accepted set is membership, not `<= max` (KISS #450) =====
+
+    /// GAP-292 born-red (LOW side): `fkc_version: 0` MUST be rejected. The pre-fix
+    /// gate was a bare `fkc_version > FKC_VERSION_MAX`, so 0 (being ≤ max) was
+    /// silently ACCEPTED — the accepted set was {0, 1} and 0 is not a version.
+    /// KISS #450: a reader accepts a version IFF it is in its declared supported
+    /// set, NEVER merely because it is lower than a supported one. This fails on
+    /// the pre-fix gate (0 passes the `> max` test).
+    #[test]
+    fn fkc_version_zero_is_rejected() {
+        let src = valid_bundle().replace("fkc_version: 1", "fkc_version: 0");
+        let err = validate_str(&src).expect_err("fkc_version 0 must be rejected");
+        assert!(
+            matches!(err, FkcError::UnsupportedVersion { found: 0, .. }),
+            "expected UnsupportedVersion for fkc_version 0, got {err:?}"
+        );
+    }
+
+    /// GAP-292 fencepost guard (HIGH-but-sole side, the coverage the pre-fix test
+    /// set never had): `fkc_version: 1`, the sole supported version, MUST still be
+    /// accepted after the lower-bound fix. A bound written in haste lands a
+    /// fencepost exactly here; paired with the low-side test it pins BOTH ends.
+    #[test]
+    fn fkc_version_one_is_still_accepted() {
+        let result = validate_str(&valid_bundle());
+        assert!(
+            !matches!(result, Err(FkcError::UnsupportedVersion { .. })),
+            "fkc_version 1 (sole supported) must pass the version gate, got {result:?}"
         );
     }
 
@@ -1343,27 +1560,30 @@ determinism: same_hardware_bitwise
 
     /// §8-0001: `fkc_version` (wire/schema) and the crate's published semver are
     /// INDEPENDENT axes. A crate release that bumps only `Cargo.toml`'s version
-    /// leaves the wire schema untouched, so `FKC_VERSION_MAX` is a literal — never
-    /// derived from `CARGO_PKG_VERSION`. If it were, publishing the crate would
-    /// silently advance the schema max and reject older contracts.
+    /// leaves the wire schema untouched, so `FKC_SUPPORTED_VERSIONS` is a literal —
+    /// never derived from `CARGO_PKG_VERSION`. If it were, publishing the crate
+    /// would silently advance the accepted set and reject older contracts.
     #[test]
     fn fkc_version_is_decoupled_from_crate_semver() {
         // A literal evaluated at compile time; the module-scope pin is the
         // structural enforcement, this records the decoupling as an executable fact.
-        assert_eq!(FKC_VERSION_MAX, 1);
+        assert_eq!(FKC_SUPPORTED_VERSIONS, &[1]);
     }
 
-    /// §8-0002: the front-matter SCHEMA and `FKC_VERSION_MAX` move together. The
+    /// §8-0002: the front-matter SCHEMA and the schema version move together. The
     /// exhaustive-destructure pin at module scope compile-breaks on a field change;
-    /// this test pins the *version number* that field set corresponds to, so the
-    /// two cannot drift apart. Bump BOTH when the pin forces a new field.
+    /// this test pins the *version number* that field set corresponds to — the
+    /// LATEST supported version (the max of the set) — so the two cannot drift
+    /// apart. Add a new entry to `FKC_SUPPORTED_VERSIONS` AND bump
+    /// `PINNED_FKC_SCHEMA_VERSION` when the pin forces a new field.
     #[test]
     fn fkc_front_matter_schema_is_pinned_to_the_version() {
         const PINNED_FKC_SCHEMA_VERSION: u32 = 1;
         assert_eq!(
-            FKC_VERSION_MAX, PINNED_FKC_SCHEMA_VERSION,
-            "FKC_VERSION_MAX moved without updating the pinned front-matter schema \
-             (or vice-versa) — a §8-0002 schema change bumps both together"
+            FKC_SUPPORTED_VERSIONS.iter().copied().max(),
+            Some(PINNED_FKC_SCHEMA_VERSION),
+            "the latest supported fkc_version moved without updating the pinned \
+             front-matter schema (or vice-versa) — a §8-0002 schema change bumps both"
         );
     }
 
@@ -2504,10 +2724,10 @@ determinism: same_hardware_bitwise
             // 2) validate (whole file) — but to attribute a failure to a
             // specific kernel + rule, validate each kernel individually too.
             // First the file-level (version) check.
-            if file.front_matter.fkc_version > FKC_VERSION_MAX {
+            if !fkc_version_is_supported(file.front_matter.fkc_version) {
                 hard_failures.push(format!(
-                    "{rel}: version {} > {}",
-                    file.front_matter.fkc_version, FKC_VERSION_MAX
+                    "{rel}: fkc_version {} not in supported set {:?}",
+                    file.front_matter.fkc_version, FKC_SUPPORTED_VERSIONS
                 ));
                 continue;
             }
