@@ -69,23 +69,27 @@ fn frontier_items(roadmap: &str) -> Vec<u32> {
     for line in roadmap.lines() {
         if line.starts_with("### Active frontier") {
             inside = true;
-            continue;
-        }
-        if inside && line.starts_with("### ") {
+        } else if inside && line.starts_with("### ") {
             break;
-        }
-        if !inside {
-            continue;
-        }
-        // `N. **` — an item opener, not a numbered line inside a body.
-        let digits: String = line.chars().take_while(|c| c.is_ascii_digit()).collect();
-        if !digits.is_empty() && line[digits.len()..].starts_with(". **") {
-            if let Ok(n) = digits.parse::<u32>() {
-                out.push(n);
-            }
+        } else if inside {
+            out.extend(item_opener(line));
         }
     }
     out
+}
+
+/// The item number, if `line` OPENS a frontier entry (`N. **`).
+///
+/// Split out from `frontier_items` so that "which lines are in scope" and
+/// "what a line means" are separate: the section-bound arm of the foundation
+/// check tests the former, and an arm that tests scope should have a scope to
+/// point at. A numbered line inside an item BODY is not an opener.
+fn item_opener(line: &str) -> Option<u32> {
+    let digits: String = line.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() || !line[digits.len()..].starts_with(". **") {
+        return None;
+    }
+    digits.parse::<u32>().ok()
 }
 
 /// Every `ROADMAP item <N>` / `ROADMAP frontier item <N>` citation in `text`.
@@ -119,27 +123,12 @@ fn citations(root: &Path) -> BTreeMap<u32, Vec<String>> {
         for entry in entries.flatten() {
             let p = entry.path();
             if p.is_dir() {
-                let name = entry.file_name();
-                let name = name.to_string_lossy();
-                if name == "target" || name == ".git" || name == "node_modules" {
-                    continue;
+                if !is_skipped_dir(&entry.file_name().to_string_lossy()) {
+                    stack.push(p);
                 }
-                stack.push(p);
-                continue;
-            }
-            let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
-            if ext != "rs" && ext != "md" {
-                continue;
-            }
-            let rel = p
-                .strip_prefix(root)
-                .unwrap_or(&p)
-                .to_string_lossy()
-                .replace('\\', "/");
-            if rel == SELF_PATH {
-                continue;
-            }
-            if let Ok(txt) = std::fs::read_to_string(&p) {
+            } else if let Some(rel) = scannable(root, &p)
+                && let Ok(txt) = std::fs::read_to_string(&p)
+            {
                 for n in cited_in(&txt) {
                     out.entry(n).or_default().push(rel.clone());
                 }
@@ -147,6 +136,30 @@ fn citations(root: &Path) -> BTreeMap<u32, Vec<String>> {
         }
     }
     out
+}
+
+/// Directories the walk never descends into.
+fn is_skipped_dir(name: &str) -> bool {
+    matches!(name, "target" | ".git" | "node_modules")
+}
+
+/// The workspace-relative path, if this file is one the gate should scan.
+///
+/// Carries the SELF_PATH exclusion, so "what is in scope" lives in one place
+/// rather than being spread through the walk. `.rs` and `.md` only: those are
+/// the two extensions the citation census measured, and widening the set here
+/// without re-measuring would change what the counts in this file mean.
+fn scannable(root: &Path, p: &Path) -> Option<String> {
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if ext != "rs" && ext != "md" {
+        return None;
+    }
+    let rel = p
+        .strip_prefix(root)
+        .unwrap_or(p)
+        .to_string_lossy()
+        .replace('\\', "/");
+    if rel == SELF_PATH { None } else { Some(rel) }
 }
 
 #[test]
