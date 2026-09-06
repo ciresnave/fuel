@@ -226,3 +226,121 @@ unconditionally, so a workspace check is a CUDA build without saying so. The fix
   compares the header to the MODAL row count and a minority never trips it.** **Ruled 2026-09-02:
   key on the ROW's arity; report the two directions SEPARATELY, since a missing 5th cell is an
   ARITY defect and not a vocabulary violation.**
+
+---
+
+# A controlled OWNER vocabulary — ruled and shipped 2026-09-06
+
+The status vocabulary above says *what* a row is. It cannot say *whose* it is, and until
+now nothing did.
+
+## The measured starting point
+
+At `89a09a0a`, over the 119 rows whose status was `OPEN`:
+
+```
+**Owner:**       4        ALLOCATED to     2        allocated to     5
+assigned to      2        bare UNALLOCATED 6
+NO ownership marker of any kind                   100
+```
+
+**Five mutually incompatible spellings over nineteen rows.** A field with five spellings
+cannot be counted: any figure reported over it measures the parser, not the population. The
+architect had been quoting *"~269 owner-less rows"* for a whole session; the real figure was
+not merely different, it was **not a well-defined quantity**.
+
+## ⚠️ The acute defect is not the absence — it is FALSE OWNERSHIP
+
+**27 of the 100 unmarked `OPEN` rows name a lane in prose** — *"FILED 2026-09-05 by Fuel 2"* —
+**as the FINDER.**
+
+A reader skimming for an owner sees a lane's name and moves on. **The row leaves the
+unallocated list without ever having been allocated, and nobody looks for an owner for it
+again.**
+
+> **Absent ownership wastes a reader once. False ownership is permanent, because the row
+> never resurfaces.**
+
+⚠️ **And that `27` is not a stable number** — widening the finder pattern from 50 to 60
+characters of context moved it. **That instability is the finding.** Prose ownership is not
+measurable under *any* query, so the remedy could never have been a better regex.
+
+## The ruling
+
+**One canonical token, in the status cell, from a closed set:**
+
+```
+**Owner:** Fuel 1 | Fuel 2 | Fuel 3 | Architect | UNALLOCATED | HELD
+```
+
+### ⚠️ `UNALLOCATED` is a VALUE, not an absence — this is the whole design
+
+An empty owner is **indistinguishable** from one nobody has filled in yet. An explicit
+`UNALLOCATED` is **a claim somebody made**: greppable, falsifiable, and dated by its commit.
+
+**It converts *"we do not know"* into *"we know it is nobody's"* — the difference between a
+backlog and a pile.**
+
+### `HELD` must name what it waits on, and the gate refuses a bare one
+
+**A false block is permanent in a way an empty queue is not: nobody ever picks up a row they
+believe is waiting on someone else.** Fuel 3 measured **7 of their 8 `HELD-ON` bucketings
+wrong** on 2026-09-05 — rows recorded as blocked on KISS that were plain dispatchable Fuel
+work. So `HELD` requires the cell to also say `HELD on <thing>`.
+
+## ⚠️ The migration rule, which is the load-bearing one
+
+> **NEVER INFER AN OWNER FROM PROSE.**
+
+Only an **explicit allocation statement** transferred. Every other row became `UNALLOCATED`
+**even where a lane is named nearby** — the 27 finder-named rows included.
+
+**Nothing was dropped.** The finder prose is *provenance*, it is *true*, and it stays exactly
+where it was. What changed is that it is no longer the only thing a reader can mistake for an
+owner.
+
+**Under-claiming is safe** — the row sits in the unallocated list until someone picks it up.
+**Over-claiming is the defect being removed.** A migration that "detected" owners from prose
+would have mis-assigned precisely the 27 rows this exists to fix.
+
+Backfill outcome over the 145 work-remains rows (`OPEN` 119 + `PARTIAL` 25 + `RE-OPENED` 1):
+
+```
+explicit -> Fuel 1  1     Fuel 2  3     Fuel 3  2
+UNALLOCATED, confirmed by prose                    7
+UNALLOCATED, no statement either way             132
+```
+
+## Scope, stated so a green run is not over-read
+
+**5-cell rows only** — a row needs a status cell to carry the token. **The 81 four-column rows
+have no status cell at all.** That is a separate structural defect, already registered, and it
+is named here and in the gate so that a passing ownership check is never read as covering
+them.
+
+## Enforcement
+
+`scripts/check-gaps-table.py` refuses a commit where any work-remains row lacks the token,
+carries a value outside the set, carries two tokens, or says a bare `HELD`.
+
+**Foundation check, five arms** — the fourth is the load-bearing one:
+
+```
+missing token            must flag
+valid token              must NOT flag
+value outside the set    must flag
+a CLOSED row             must NOT flag   <- proves the gate is not over-scoped
+bare HELD                must flag
+```
+
+⚠️ **Without the CLOSED arm, a passing run cannot distinguish *correctly scoped* from
+*accidentally silent*.**
+
+### The gate caught a defect in the migration that produced it
+
+The backfill captured `ALLOCATED TO FUEL 2` from a row written in caps and emitted
+`**Owner:** FUEL 2`. **The closed set rejected it.** A free-text owner field would have
+accepted it silently, and `Fuel 2` and `FUEL 2` would have been two different owners forever.
+
+**That is the argument for a closed vocabulary in one incident: the constraint paid for itself
+before the change had even landed.**
