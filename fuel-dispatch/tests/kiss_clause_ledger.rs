@@ -484,6 +484,134 @@ fn row(clause: &str) -> Option<&'static Row> {
     LEDGER.iter().find(|r| r.clause == clause)
 }
 
+// ---- the scanner's blind spot, ENUMERATED rather than assumed away -------
+//
+// `clause_ids_in` anchors on the literal `KISS-`, so a citation written bare
+// -- `6.15-0001` rather than `KISS-OPS-6.15-0001` -- is INVISIBLE to it. The
+// gate below therefore asserts completeness over a corpus it does not fully
+// see, and nothing in a green run says so.
+//
+// ## Why the obvious fix is WRONG, not merely expensive
+//
+// The intended remedy was "report matched/skipped and assert skipped == 0".
+// Measured first, at `80def246`:
+//
+// ```text
+// qualified   KISS-<AREA>-<n>.<n>-<nnnn>          48
+// bare        <n>.<n>-<nnnn> with no KISS- prefix  570   <- 12x larger
+// ```
+//
+// **A blanket `skipped == 0` is not merely infeasible at 570 -- it is wrong.**
+// A bare section number is AMBIGUOUS ACROSS KISS DOCUMENTS: `6.4-0011` is
+// KISS-Grammar, `6.1-0004` is KISS-ANNOUNCE, `7.4-0001` is KISS-Contract. The
+// Ops ledger correctly does not track those, so most of the 570 are not its
+// business, and a gate demanding they carry an Ops prefix would demand a
+// falsehood.
+//
+// ## What IS checkable
+//
+// The narrow hazard is a clause number cited BOTH as `KISS-OPS-<n>` somewhere
+// AND bare elsewhere: there the bare site is provably an Ops citation the
+// scanner cannot see. Measured: 9 such numbers across 36 bare sites. All 9
+// already have ledger rows -- the qualified citation is what earned them --
+// so today they are redundant rather than dangerous.
+//
+// **The residual risk is a KISS-Ops clause cited ONLY bare.** That is
+// UNDETECTABLE by any scanner, because the bare form carries no document
+// identity. The remedy is a WRITING RULE (cite `KISS-OPS-<n>`, never bare,
+// for an Ops clause) rather than a gate -- and this test keeps the rule
+// honest by failing when the bare-cited SET GROWS.
+//
+// The assertion is on the SET OF CLAUSE IDS, never on a site count: ids do
+// not rot, counts do.
+
+/// Clause numbers (the `<n>.<n>-<nnnn>` tail) that the ledger tracks.
+fn ledger_clause_numbers() -> BTreeSet<String> {
+    LEDGER
+        .iter()
+        .filter_map(|r| r.clause.strip_prefix("KISS-OPS-"))
+        .map(str::to_string)
+        .collect()
+}
+
+/// End index of a bare `<n>.<n>-<nnnn>` beginning at `start`, or `None`.
+fn bare_id_end(b: &[u8], start: usize) -> Option<usize> {
+    let mut j = scan(b, start, |c| c.is_ascii_digit());
+    if j == start {
+        return None;
+    }
+    j = eat(b, j, b'.')?;
+    let minor = j;
+    j = scan(b, j, |c| c.is_ascii_digit());
+    if j == minor {
+        return None;
+    }
+    j = eat(b, j, b'-')?;
+    let num = j;
+    j = scan(b, j, |c| c.is_ascii_digit());
+    (j - num == 4).then_some(j)
+}
+
+/// Ledger clause numbers cited in BARE form, mapped to the files doing it.
+///
+/// A candidate whose preceding byte is `-` or `.` is skipped: that is the
+/// tail of a qualified `KISS-OPS-...` id or of a longer number, not a bare
+/// citation.
+fn bare_cited_ledger_clauses() -> BTreeMap<String, Vec<String>> {
+    let tracked = ledger_clause_numbers();
+    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for f in scanned_files() {
+        let label = rel(&f);
+        if label == SELF_PATH {
+            continue;
+        }
+        let Ok(src) = std::fs::read_to_string(&f) else {
+            continue;
+        };
+        let b = src.as_bytes();
+        let mut i = 0usize;
+        while i < b.len() {
+            let boundary_ok = i == 0 || (b[i - 1] != b'-' && b[i - 1] != b'.');
+            if !b[i].is_ascii_digit() || !boundary_ok {
+                i += 1;
+                continue;
+            }
+            match bare_id_end(b, i) {
+                Some(end) => {
+                    let id = &src[i..end];
+                    if tracked.contains(id) {
+                        let files = out.entry(id.to_string()).or_default();
+                        if !files.contains(&label) {
+                            files.push(label.clone());
+                        }
+                    }
+                    i = end;
+                }
+                None => i += 1,
+            }
+        }
+    }
+    out
+}
+
+/// Ledger clauses KNOWN to be cited bare somewhere, measured at `80def246`.
+///
+/// A DECLARATION of the scanner's blind spot, not an approval of it. A new
+/// entry means someone cited a ledger clause without its `KISS-OPS-` prefix,
+/// where the citation gate cannot see it -- qualify the citation rather than
+/// extending this list.
+const BARE_CITED_LEDGER_CLAUSES: &[&str] = &[
+    "6.0-0003",
+    "6.15-0001",
+    "6.15-0002",
+    "6.15-0003",
+    "6.19-0005",
+    "6.20-0002",
+    "6.3-0002",
+    "6.3-0003",
+    "6.8-0001",
+];
+
 // ---- the gate ------------------------------------------------------------
 
 #[test]
@@ -505,6 +633,68 @@ fn every_cited_clause_has_a_ledger_row() {
          delete the citation:\n  {}",
         missing.len(),
         missing.join("\n  ")
+    );
+}
+
+/// The citation gate's blind spot must stay ENUMERATED.
+///
+/// `every_cited_clause_has_a_ledger_row` scans for `KISS-`-prefixed ids only.
+/// This pins the set of ledger clauses that are ALSO cited bare, so the gap
+/// cannot grow silently. It asserts on the ID SET rather than a site count --
+/// ids do not rot and counts do.
+#[test]
+fn the_scanners_blind_spot_stays_enumerated() {
+    // FOUNDATION: if the ledger yields no clause numbers, everything below is
+    // vacuously empty and would pass while measuring nothing.
+    let tracked = ledger_clause_numbers();
+    assert!(
+        !tracked.is_empty(),
+        "ledger_clause_numbers() is EMPTY -- strip_prefix(\"KISS-OPS-\") matched no \
+         row, so the bare-citation probe ranges over nothing and its silence is \
+         meaningless"
+    );
+
+    let bare = bare_cited_ledger_clauses();
+    let found: BTreeSet<&str> = bare.keys().map(String::as_str).collect();
+
+    // FOUNDATION 2: the probe has been seen to find things. An empty result
+    // here is a broken scanner, not a clean tree -- measured 9 at `80def246`,
+    // asserted as a PREDICATE (non-empty) rather than a VALUE (== 9).
+    assert!(
+        !found.is_empty(),
+        "the bare-citation probe found NOTHING across {} tracked clause \
+         number(s) -- it is broken, not the tree clean",
+        tracked.len()
+    );
+
+    let declared: BTreeSet<&str> = BARE_CITED_LEDGER_CLAUSES.iter().copied().collect();
+
+    let undeclared: Vec<String> = found
+        .difference(&declared)
+        .map(|id| {
+            let files = bare.get(*id).map(|v| v.join(", ")).unwrap_or_default();
+            format!("{id}  cited bare in: {files}")
+        })
+        .collect();
+    assert!(
+        undeclared.is_empty(),
+        "{} ledger clause(s) are cited WITHOUT their `KISS-OPS-` prefix, where \
+         `every_cited_clause_has_a_ledger_row` CANNOT SEE THEM. Qualify the \
+         citation (`KISS-OPS-<n>`) rather than adding to \
+         BARE_CITED_LEDGER_CLAUSES -- a bare section number is ambiguous across \
+         KISS documents and no scanner can resolve it:\n  {}",
+        undeclared.len(),
+        undeclared.join("\n  ")
+    );
+
+    let stale: Vec<&str> = declared.difference(&found).copied().collect();
+    assert!(
+        stale.is_empty(),
+        "{} entr(ies) in BARE_CITED_LEDGER_CLAUSES no longer correspond to any \
+         bare citation -- the citations were qualified or removed. Delete them; \
+         a declaration that outlives its subject reads as a live exemption:\n  {}",
+        stale.len(),
+        stale.join("\n  ")
     );
 }
 
