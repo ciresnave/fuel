@@ -8024,6 +8024,26 @@ impl NodeHandle {
         a.ne(a).where_cond(b, &b_not_nan) // a is NaN ? b : (above)
     }
 
+    /// The IEEE-754 NaN-**suppressing** minimum — the KISS-OPS §6.15-0001
+    /// `fmin_ieee` op, DISTINCT from [`minimum`](Self::minimum) (which is
+    /// NaN-**propagating**, torch parity). If exactly one operand is NaN, returns
+    /// the other; if both are NaN, returns NaN; otherwise the smaller.
+    ///
+    /// Built by RESOLUTION through the spec-pinned KISS-OPS §6.13 decomposition
+    /// (KISS-OPS-6.15-0001), used VERBATIM — the `cmp_le` mirror of
+    /// [`fmax_ieee`](Self::fmax_ieee)'s `cmp_ge` form. Fuel resolves; it does not
+    /// substitute `minimum` (that substitution is the §6.15 violation) and does
+    /// not re-derive: the decomposition is KISS's, so its ±0 edge behaviour is the
+    /// spec's to define and a KISS conformance vector's to catch. (GAP-048.)
+    pub fn fmin_ieee(&self, other: &NodeHandle) -> NodeHandle {
+        // select(a != a, b, select(b != b, a, select(a <= b, a, b)))
+        let a = self;
+        let b = other;
+        let plain = a.le(b).where_cond(a, b); // a <= b ? a : b
+        let b_not_nan = b.ne(b).where_cond(a, &plain); // b is NaN ? a : plain
+        a.ne(a).where_cond(b, &b_not_nan) // a is NaN ? b : (above)
+    }
+
     /// Element-wise addition with automatic broadcasting. Unlike `add`,
     /// which requires matching shapes, `broadcast_add` computes the
     /// broadcast shape of the two operands, inserts explicit
