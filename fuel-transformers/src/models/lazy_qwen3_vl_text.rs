@@ -135,7 +135,7 @@ impl Qwen3VlTextConfigRaw {
                 t.head_dim,
                 t.hidden_size,
                 t.num_attention_heads,
-            ),
+            )?,
             max_position_embeddings: t.max_position_embeddings,
             sliding_window: t.sliding_window,
             max_window_layers: t.max_window_layers.unwrap_or(t.num_hidden_layers),

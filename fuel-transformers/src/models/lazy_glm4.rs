@@ -166,7 +166,7 @@ impl Glm4ConfigRaw {
                 self.head_dim,
                 self.hidden_size,
                 self.num_attention_heads,
-            ),
+            )?,
             // HF `glm` architecture: an ABSENT `partial_rotary_factor` means 0.5
             // (partial rotary — RoPE on half the head dim), NOT 1.0. Real
             // GLM-4-9B omits the key and relies on this. Resolved here because it

@@ -7610,7 +7610,7 @@ impl LlamaConfigRaw {
                 self.head_dim,
                 self.hidden_size,
                 self.num_attention_heads,
-            ),
+            )?,
             ffn_dim: self.intermediate_size,
             norm_eps: self.norm_eps,
             rope_base: self.rope_base,
@@ -12529,7 +12529,7 @@ impl PhiConfigRaw {
     fn resolve(self) -> crate::Result<PhiConfig> {
         // ORDERED, not a flat map: rotary_dim reads the resolved head_dim.
         let head_dim =
-            crate::hf_config::head_dim(self.head_dim, self.hidden_size, self.num_attention_heads);
+            crate::hf_config::head_dim(self.head_dim, self.hidden_size, self.num_attention_heads)?;
         let rotary_dim = (self.partial_rotary_factor * head_dim as f64).round() as usize;
         if !rotary_dim.is_multiple_of(2) {
             crate::bail!(

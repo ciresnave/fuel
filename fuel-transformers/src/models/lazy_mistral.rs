@@ -154,7 +154,7 @@ impl MistralConfigRaw {
                 self.head_dim,
                 self.hidden_size,
                 self.num_attention_heads,
-            ),
+            )?,
             rms_norm_eps: self.rms_norm_eps,
             rope_theta: self.rope_theta,
             max_position_embeddings: self.max_position_embeddings,

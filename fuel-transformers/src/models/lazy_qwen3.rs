@@ -98,7 +98,7 @@ impl Qwen3ConfigRaw {
                 self.head_dim,
                 self.hidden_size,
                 self.num_attention_heads,
-            ),
+            )?,
             max_position_embeddings: self.max_position_embeddings,
             sliding_window: self.sliding_window,
             // HF default: all layers windowed, i.e. num_hidden_layers.

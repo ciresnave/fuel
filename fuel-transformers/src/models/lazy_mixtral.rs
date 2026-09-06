@@ -133,7 +133,7 @@ impl MixtralConfigRaw {
                 self.head_dim,
                 self.hidden_size,
                 self.num_attention_heads,
-            ),
+            )?,
             max_position_embeddings: self.max_position_embeddings,
             rms_norm_eps: self.rms_norm_eps,
             rope_theta: self.rope_theta,
