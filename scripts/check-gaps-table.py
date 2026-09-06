@@ -838,28 +838,35 @@ WORK_REMAINS = ('OPEN', 'PARTIAL', 'RE-OPENED')
 OWNER_TOKEN = re.compile(r'\*\*Owner:\*\*\s*([A-Za-z0-9 ]+?)\s*(?:—|--|$)')
 
 
-def owner_findings(src_lines):
-    """(missing a token, value outside the set, more than one token,
-    HELD naming no blocker)."""
-    missing, badval, dupes, blind_holds = [], [], [], []
+def _work_remains_rows(src_lines):
+    """(id, status cell) for every LIVE 5-cell row whose status says work
+    remains. This is the gate's SCOPE, given its own name on purpose: the
+    fourth foundation arm below asserts that a CLOSED row is not reached, and
+    an arm that tests scope should have a scope to point at.
+    """
     for _l in src_lines:
         _m = FULL_ID.match(_l)
         if not _m or _m.group(1):          # struck rows are done; skip
             continue
         _c = row_cells(_l)
-        if len(_c) != 5:
-            continue
-        if status_prefix(_c[4]) not in WORK_REMAINS:
-            continue
-        _t = OWNER_TOKEN.findall(_c[4])
+        if len(_c) == 5 and status_prefix(_c[4]) in WORK_REMAINS:
+            yield _m.group(2), _c[4]
+
+
+def owner_findings(src_lines):
+    """(missing a token, value outside the set, more than one token,
+    HELD naming no blocker)."""
+    missing, badval, dupes, blind_holds = [], [], [], []
+    for _id, _cell in _work_remains_rows(src_lines):
+        _t = OWNER_TOKEN.findall(_cell)
         if not _t:
-            missing.append(_m.group(2))
+            missing.append(_id)
         elif len(_t) > 1:
-            dupes.append((_m.group(2), _t))
+            dupes.append((_id, _t))
         elif _t[0] not in OWNER_VALUES:
-            badval.append((_m.group(2), _t[0]))
-        elif _t[0] == 'HELD' and 'HELD on ' not in _c[4]:
-            blind_holds.append(_m.group(2))
+            badval.append((_id, _t[0]))
+        elif _t[0] == 'HELD' and 'HELD on ' not in _cell:
+            blind_holds.append(_id)
     return missing, badval, dupes, blind_holds
 
 
