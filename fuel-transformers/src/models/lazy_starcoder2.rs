@@ -114,7 +114,7 @@ impl StarCoder2ConfigRaw {
                 self.head_dim,
                 self.hidden_size,
                 self.num_attention_heads,
-            ),
+            )?,
             max_position_embeddings: self.max_position_embeddings,
             norm_epsilon: self.norm_epsilon,
             rope_theta: self.rope_theta,
