@@ -188,7 +188,7 @@ impl MarianModel {
             Shape::from_dims(&[cfg.vocab_size, cfg.d_model]),
             &Device::cpu(),
         );
-        let pos_table = build_sinusoidal_table(cfg.max_position_embeddings, cfg.d_model);
+        let pos_table = build_sinusoidal_table(cfg.max_position_embeddings, cfg.d_model)?;
         let pos_lt_shape = Shape::from_dims(&[cfg.max_position_embeddings, cfg.d_model]);
         let pos_full = embed.const_f32_like(Arc::from(pos_table), pos_lt_shape);
 
@@ -230,7 +230,7 @@ impl MarianModel {
             Shape::from_dims(&[cfg.vocab_size, cfg.d_model]),
             &Device::cpu(),
         );
-        let pos_table = build_sinusoidal_table(cfg.max_position_embeddings, cfg.d_model);
+        let pos_table = build_sinusoidal_table(cfg.max_position_embeddings, cfg.d_model)?;
         let pos_lt_shape = Shape::from_dims(&[cfg.max_position_embeddings, cfg.d_model]);
         let pos_full = embed.const_f32_like(Arc::from(pos_table), pos_lt_shape);
         self.encode(&embed, &pos_full, src_tokens)
@@ -244,7 +244,7 @@ impl MarianModel {
     /// encoding).
     pub fn forward_encoder_embeds(&self, src_embeds: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
-        let pos_table = build_sinusoidal_table(cfg.max_position_embeddings, cfg.d_model);
+        let pos_table = build_sinusoidal_table(cfg.max_position_embeddings, cfg.d_model)?;
         let pos_full = src_embeds.const_f32_like(
             Arc::from(pos_table),
             Shape::from_dims(&[cfg.max_position_embeddings, cfg.d_model]),
@@ -259,7 +259,7 @@ impl MarianModel {
     /// + lm_head bias.
     pub fn forward_decoder_embeds(&self, tgt_embeds: &Tensor, enc_out: &Tensor) -> Result<Tensor> {
         let cfg = &self.config;
-        let pos_table = build_sinusoidal_table(cfg.max_position_embeddings, cfg.d_model);
+        let pos_table = build_sinusoidal_table(cfg.max_position_embeddings, cfg.d_model)?;
         let pos_full = enc_out.const_f32_like(
             Arc::from(pos_table),
             Shape::from_dims(&[cfg.max_position_embeddings, cfg.d_model]),
@@ -285,7 +285,7 @@ impl MarianModel {
         enc_out: &Tensor,
     ) -> Result<Tensor> {
         let cfg = &self.config;
-        let pos_table = build_sinusoidal_table(cfg.max_position_embeddings, cfg.d_model);
+        let pos_table = build_sinusoidal_table(cfg.max_position_embeddings, cfg.d_model)?;
         let pos_full = enc_out.const_f32_like(
             Arc::from(pos_table),
             Shape::from_dims(&[cfg.max_position_embeddings, cfg.d_model]),
@@ -334,7 +334,7 @@ impl MarianModel {
             self.weights.shared_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.d_model]),
         );
-        let pos_table = build_sinusoidal_table(cfg.max_position_embeddings, cfg.d_model);
+        let pos_table = build_sinusoidal_table(cfg.max_position_embeddings, cfg.d_model)?;
         let pos_full = enc_out.const_f32_like(
             Arc::from(pos_table),
             Shape::from_dims(&[cfg.max_position_embeddings, cfg.d_model]),
@@ -630,8 +630,14 @@ impl MarianModel {
 /// are `sin(t * inv_freq)`, the last `d_model/2` are
 /// `cos(t * inv_freq)`, where `inv_freq[i] = 10000^(-i / d_model)`
 /// for `i ∈ [0, d_model/2)`.
-fn build_sinusoidal_table(max_positions: usize, d_model: usize) -> Vec<f32> {
-    assert_eq!(d_model % 2, 0, "d_model must be even");
+fn build_sinusoidal_table(max_positions: usize, d_model: usize) -> Result<Vec<f32>> {
+    // GAP-281: a CONFIG property -- reject it rather than panicking. The
+    // half-dimension split below assumes an even d_model.
+    if !d_model.is_multiple_of(2) {
+        return Err(fuel_core::Error::Msg(format!(
+            "build_sinusoidal_table: d_model ({d_model}) must be even"
+        )));
+    }
     let half = d_model / 2;
     let mut out = vec![0.0_f32; max_positions * d_model];
     let inv_freq: Vec<f32> = (0..half)
@@ -644,7 +650,7 @@ fn build_sinusoidal_table(max_positions: usize, d_model: usize) -> Vec<f32> {
             out[t * d_model + half + i] = arg.cos();
         }
     }
-    out
+    Ok(out)
 }
 
 fn add_bias_3d(x: Tensor, bias: &Arc<[f32]>, n: usize) -> Result<Tensor> {
@@ -968,7 +974,7 @@ mod tests {
     /// the sin half and all-one in the cos half.
     #[test]
     fn sinusoidal_table_position_0() {
-        let t = build_sinusoidal_table(4, 8);
+        let t = build_sinusoidal_table(4, 8).unwrap();
         let half = 4;
         for i in 0..half {
             assert!((t[i]).abs() < 1e-6, "sin[0, {i}] = {} != 0", t[i]);
@@ -1197,6 +1203,26 @@ mod tests {
         assert!(
             msg.contains("d_model") && msg.contains("encoder_attention_heads"),
             "the decline must name both operands, got: {msg}"
+        );
+    }
+
+    /// GAP-281: an odd `d_model` must DECLINE, not panic. `half = d_model / 2`
+    /// truncates silently otherwise, so it is a CONFIG property.
+    ///
+    /// Asserts on the MESSAGE, not merely that an `Err` arrived: a later guard
+    /// on the same path can supply an `Err` of its own (measured in
+    /// `lazy_mamba2`), which makes an `expect_err`-only arm pass under
+    /// sabotage while reporting the guard as live.
+    #[test]
+    fn odd_d_model_declines_rather_than_panicking() {
+        // CONTROL: the conforming even value must still build.
+        build_sinusoidal_table(4, 8).expect("control: an even d_model must still build");
+
+        let err = build_sinusoidal_table(4, 7).expect_err("an odd d_model must DECLINE, not panic");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("d_model") && msg.contains('7'),
+            "the decline must name the operand and its value, got: {msg}"
         );
     }
 }

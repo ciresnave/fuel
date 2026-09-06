@@ -308,11 +308,14 @@ pub fn build_llama3_rope_tables(
     start_pos: usize,
     seq: usize,
     head_dim: usize,
-) -> (Vec<f32>, Vec<f32>) {
-    assert!(
-        head_dim.is_multiple_of(2),
-        "build_llama3_rope_tables: head_dim {head_dim} must be even"
-    );
+) -> Result<(Vec<f32>, Vec<f32>)> {
+    // GAP-281: a CONFIG property -- reject it rather than panicking. The
+    // half-dimension split below assumes an even head_dim.
+    if !head_dim.is_multiple_of(2) {
+        return Err(Error::Msg(format!(
+            "build_llama3_rope_tables: head_dim ({head_dim}) must be even"
+        )));
+    }
     let inv_freq = compute_llama3_inv_freq(rope_base, scaling, head_dim);
     let half = head_dim / 2;
     let mut cos_data = vec![0.0_f32; seq * head_dim];
@@ -329,7 +332,7 @@ pub fn build_llama3_rope_tables(
             sin_data[p * head_dim + i + half] = s;
         }
     }
-    (cos_data, sin_data)
+    Ok((cos_data, sin_data))
 }
 
 fn compute_llama3_inv_freq(
@@ -512,7 +515,7 @@ impl Llama3Model {
             start_pos,
             seq,
             cfg.head_dim,
-        );
+        )?;
         let rope_shape = Shape::from_dims(&[seq, cfg.head_dim]);
         let rope_cos = embeds.const_f32_like(Arc::from(cos_data), rope_shape.clone());
         let rope_sin = embeds.const_f32_like(Arc::from(sin_data), rope_shape);
@@ -1218,6 +1221,28 @@ mod tests {
         assert!(
             max_diff > 10.0 * PARITY_TOL,
             "scaled and unscaled decode are indistinguishable (max diff {max_diff}) — the parity test above would pass with the override removed",
+        );
+    }
+
+    /// GAP-281: an odd `head_dim` must DECLINE, not panic. `half = head_dim / 2`
+    /// truncates silently otherwise, so it is a CONFIG property.
+    ///
+    /// Asserts on the MESSAGE, not merely that an `Err` arrived: a later guard
+    /// on the same path can supply an `Err` of its own (measured in
+    /// `lazy_mamba2`), which makes an `expect_err`-only arm pass under
+    /// sabotage while reporting the guard as live.
+    #[test]
+    fn llama3_odd_head_dim_declines_rather_than_panicking() {
+        // CONTROL: the conforming even value must still build.
+        build_llama3_rope_tables(10_000.0, None, 0, 4, 8)
+            .expect("control: an even head_dim must still build");
+
+        let err = build_llama3_rope_tables(10_000.0, None, 0, 4, 7)
+            .expect_err("an odd head_dim must DECLINE, not panic");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("head_dim") && msg.contains('7'),
+            "the decline must name the operand and its value, got: {msg}"
         );
     }
 }
