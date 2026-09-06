@@ -187,10 +187,10 @@ const LEDGER: &[Row] = &[
         exists_at: None,
     },
     Row {
-        clause: "KISS-OPS-6.19-0005",
+        clause: "KISS-CONTRACT-6.9-0001",
         disposition: Record,
         test: None,
-        reason: "docs/gaps.md registry row (GAP-287). Cited to identify the clause a gap is about — the FDX flag semantics the validator was measured against.",
+        reason: "docs/gaps.md registry row (GAP-038). Records what KISS PINS: the Provenance section is exactly five fields with no crate-version field, which is why Fuel needs no new front-matter field for the second version axis. A fact about KISS, not an obligation Fuel discharges.",
         exists_at: None,
     },
     Row {
@@ -236,6 +236,13 @@ const LEDGER: &[Row] = &[
         disposition: Record,
         test: None,
         reason: "docs/gaps.md registry row. Cited to identify the clause a gap is about.",
+        exists_at: None,
+    },
+    Row {
+        clause: "KISS-OPS-6.19-0005",
+        disposition: Record,
+        test: None,
+        reason: "docs/gaps.md registry row (GAP-287). Cited to identify the clause a gap is about — the FDX flag semantics the validator was measured against.",
         exists_at: None,
     },
     Row {
@@ -589,4 +596,44 @@ fn the_scanner_discriminates() {
          so this test would not detect a scanner that stops at the first hit",
     );
     assert!(n > 1, "{id} must be seen in {n} files");
+}
+
+#[test]
+fn the_ledger_is_sorted_by_clause_id() {
+    // The ledger is APPEND-ONLY by construction: every new KISS citation
+    // anywhere in the tree obliges a new row here. Nothing enforced the order
+    // until now, and it decayed the first time two lanes appended at once --
+    // PR #106 and PR #120 both inserted after `KISS-CONTRACT-6.7-0006`, which
+    // is the correct sorted position for exactly one of them. They conflicted
+    // for no semantic reason: five rows apart in sort order, adjacent on disk.
+    //
+    // Sorting is therefore not tidiness. It makes a row's position a FUNCTION
+    // OF ITS ID rather than of whichever anchor the author happened to be
+    // editing near, so two lanes adding unrelated clauses cannot collide.
+    //
+    // `>=` rather than `>` is deliberate and does a second job: in a sorted
+    // list, rejecting `w[0] >= w[1]` on adjacent pairs proves GLOBAL
+    // UNIQUENESS, because equal ids could only ever be adjacent. That matters
+    // because `row()` resolves with `.find()`, which silently returns the
+    // first of a duplicated pair -- a shadowed row would otherwise never be
+    // reported by anything in this file.
+    let out_of_order: Vec<String> = LEDGER
+        .windows(2)
+        .filter(|w| w[0].clause >= w[1].clause)
+        .map(|w| {
+            if w[0].clause == w[1].clause {
+                format!(
+                    "{} appears twice (the second row is shadowed by `row()`)",
+                    w[0].clause
+                )
+            } else {
+                format!("{} must not precede {}", w[0].clause, w[1].clause)
+            }
+        })
+        .collect();
+    assert!(
+        out_of_order.is_empty(),
+        "LEDGER rows are sorted by clause id, so a row's position is decided by its id rather than by whichever anchor its author happened to edit near. Insert each new row where it sorts:\n  {}",
+        out_of_order.join("\n  ")
+    );
 }

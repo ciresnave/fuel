@@ -71,7 +71,7 @@ rows carry remainder language, and the defect runs in **both** directions —
 | `GAP-208` | `PARTIAL` | Vulkan restored; CPU-fused (77) and CUDA (142) still UNAUDITED. | VULKAN SIX RESTORED `6ed74f54` (24 records under `[T, Bool, T]`, v |
 | `GAP-216` | `PARTIAL` | "(a) CLOSED; (b) OPEN" -> PARTIAL per the Absorbs table. | (a) CLOSED — dead, delete; (b) OPEN, SEVERITY A — shape-gate the c |
 | `GAP-219` | `CLOSED` | Fixed, and the follow-on sweep came back clean. | FIXED `5691f723`  ✅ FOLLOW-ON SWEEP DONE 2026-08-20 AND IT CAME  |
-| `GAP-228` | `PARTIAL` | The (a) half done; the type change unallocated (GAP-227). | DONE — the (a) half; `audited: bool` still cannot express the dist |
+| `GAP-228` | `PARTIAL` | The (a) half done; the type change unallocated (GAP-291). | DONE — the (a) half; `audited: bool` still cannot express the dist |
 | `GAP-228` | `PARTIAL` | Increment row; 60 remain. | DONE — 60 of the original 320 remain: attention 40, SSM 8, fused 8 |
 | `GAP-228` | `PARTIAL` | Increment row; 40 remain. | DONE — 40 remain, ENTIRELY attention (FlashAttn / BackwardK / Back |
 | `GAP-228` | `PARTIAL` | Increment row; 32 remain. | DONE — 32 remain: FlashAttnBackwardK/Q/V 24 (partial mirror, await |

@@ -114,6 +114,33 @@ for _l in lines:
         schema_cols.append(_cur)
     elif not _l.startswith('|'):
         _cur = None
+
+# TIER x SHAPE, COMPUTED. The exemption note below used to ASSERT that the
+# 4-column tables 'are Tier C subdivided by crate'. Measured 2026-09-06 at
+# 8c664a9a that is FALSE: 22 of their rows are TIER A. The exemption had been
+# extended to a population it mischaracterised -- and the note is PRINTED ON
+# EVERY RUN, so a false premise was re-asserted constantly and re-derived
+# never. It is DERIVED here now so it cannot go stale again.
+tier_shape, _cur2 = {}, None
+for _l in lines:
+    if _l.startswith('| ID'):
+        _cur2 = unescaped_pipes(_l) - 1
+    elif _l.startswith('| GAP-') or _l.startswith('| ~~GAP-'):
+        _cc, _buf = [], []
+        for _k, _ch in enumerate(_l):
+            if _is_cell_boundary(_l, _k):
+                _cc.append(''.join(_buf)); _buf = []
+            else:
+                _buf.append(_ch)
+        _cc.append(''.join(_buf))
+        _cc = [x.strip() for x in _cc][1:-1]
+        _tt = _cc[2] if len(_cc) > 2 else '?'
+        tier_shape[(_tt, _cur2)] = tier_shape.get((_tt, _cur2), 0) + 1
+    elif not _l.startswith('|'):
+        _cur2 = None
+a_in_4col = sum(n for (t, c), n in tier_shape.items() if t == 'A' and c == 4)
+rows_in_4col = sum(n for (t, c), n in tier_shape.items() if c == 4)
+
 no_status = sum(1 for c in schema_cols if c == 4)
 headerless = sum(1 for c in schema_cols if c is None)
 
@@ -288,17 +315,22 @@ print()
 # row's line number and invalidate citations across the corpus, and it is
 # unnecessary because the tier is already in the row. Same precedent as
 # rule 4b -- the data outvotes the presentation.
-print('!! THE 4-COLUMN TABLES ARE PERMANENTLY EXEMPT FROM THE STATUS')
-print('   CONVENTION -- ruled 2026-09-02 on measurement, not convenience.')
-print('   They are Tier C subdivided BY CRATE: an INDEX of terse one-line')
-print('   capability declines where the gap statement IS the status')
-print('   ("Pad Reflect/Replicate modes return \'not yet implemented\'").')
-print('   Measured: of 79 such rows, 67 carry NO status language at all, so')
-print('   a Status column would mean writing OPEN into 67 cells -- a field')
-print('   identical for 85% of its rows. THAT IS NOT INFORMATION, IT IS A')
-print('   COLUMN THAT EXISTS TO BE FULL, and it is the same false precision')
-print('   the OPEN/<state> ruling rejected, one column over.')
-print('   64% honest beats 100% decorative. DO NOT "COMPLETE" THIS.')
+print('!! THE 4-COLUMN STATUS EXEMPTION IS NARROWED -- ruled 2026-09-02,')
+print('   AMENDED 2026-09-06 BECAUSE ITS STATED PREMISE WAS FALSE.')
+print('   It said the 4-column tables ARE Tier C subdivided by crate.')
+print('   Computed now, not asserted:')
+print('     4-column rows total : %d' % rows_in_4col)
+print('     ...of which TIER A  : %d  <- the premise said these did not exist' % a_in_4col)
+print('   THE EXEMPTION STANDS for the Tier C / untiered capability-decline')
+print('   INDEX, where the gap statement IS the status and a Status column')
+print('   would mean writing OPEN into most cells -- a field identical for')
+print('   most of its rows is a column that exists to be full, not information.')
+print('   IT DOES NOT STAND FOR THE TIER A ROWS. A Tier A row with no status')
+print('   cell CANNOT BE CLOSED, only deleted -- the format forbids the')
+print('   outcome -- and it carries a SEVERITY LABEL, so it outranks live work')
+print('   in every triage until somebody measures it. Those rows need a cell.')
+print('   This is GAP-278 (roadmap items with no status cell) present in')
+print('   gaps.md ITSELF. Found by Fuel 3 during a Tier A currency audit.')
 print()
 print('!! THE TIER CELL (column 3) IS AUTHORITATIVE. The `## Tier X` section')
 print('   headings are PRESENTATIONAL and membership in them is CHRONOLOGICAL:')
@@ -411,7 +443,14 @@ def missing_backlinks_in(src_lines):
     out = []
     for p in sorted(claims):
         if p not in by_id:
-            out.append('%s is declared as a parent but has NO ROW' % p)
+            # ⚠️ TWO CAUSES: the parent row was DELETED, or it was RENUMBERED
+            # and the child's `Parent:` was not updated. A renumber happened on
+            # 2026-09-06 (GAP-227 -> GAP-291, a duplicate id), so this is a live
+            # path, not a hypothetical. Naming only 'has NO ROW' sends the reader
+            # looking for a deletion that may never have occurred.
+            out.append('%s is declared as a parent but has NO ROW -- it was '
+                       'either DELETED or RENUMBERED with the child not updated; '
+                       'check the id history before assuming a deletion' % p)
             continue
         joined = ' '.join(by_id[p])
         for c in sorted(claims[p]):
@@ -510,8 +549,23 @@ for _p in arity_missing:
     print('    ' + _p)
 arity_regression = []
 if len(arity_extra) > ARITY_EXTRA_BASELINE:
-    arity_regression.append('MORE-cells rows rose %d -> %d'
-                            % (ARITY_EXTRA_BASELINE, len(arity_extra)))
+    # ⚠️ A RISE HERE HAS (AT LEAST) TWO CAUSES AND THE MESSAGE MUST NAME BOTH.
+    # (a) a row was MALFORMED -- the defect this ratchet guards; or
+    # (b) a row was ADDED to a 4-COLUMN table WITH a status cell, which is
+    #     EXACTLY WHAT THE NARROWED 4-COLUMN RULING ABOVE PRESCRIBES for the
+    #     22 Tier A rows that currently have nowhere to record a disposition.
+    # ⚠️ SO THIS GATE FIRES ON THE FIX ITS OWN RULING RECOMMENDS. A message
+    # naming only (a) sends the reader hunting for a malformation that is not
+    # there -- misattribution, not invisibility. Audited 2026-09-06 after the
+    # portfolio PM relayed the same defect in KISS's traceability floor, whose
+    # message said 'a clause lost its only backing' when clauses had been ADDED.
+    arity_regression.append(
+        'MORE-cells rows rose %d -> %d. TWO CAUSES, BOTH PRODUCE THIS SIGNAL: '
+        '(a) a row is MALFORMED -- read the line numbers above; or (b) a row was '
+        'ADDED to a 4-column table WITH a status cell, which is the PRESCRIBED '
+        'fix for the Tier A rows that have nowhere to record a disposition. If '
+        '(b), RAISE the baseline and say so in the commit message.'
+        % (ARITY_EXTRA_BASELINE, len(arity_extra)))
 if len(arity_missing) > ARITY_MISSING_BASELINE:
     arity_regression.append('FEWER-cells rows rose %d -> %d'
                             % (ARITY_MISSING_BASELINE, len(arity_missing)))
@@ -671,8 +725,74 @@ print('rows whose status does not start with a set member:',
 print('STRUCK rows whose prefix says work remains (asymmetric by design):',
       strike_contra if strike_contra else 'NONE')
 
+
+# ---------------------------------------------------------------------------
+# ID UNIQUENESS -- a row id must name exactly one row.
+#
+# WHY: GAP-227 was allocated twice, 19 minutes apart on 2026-08-20 -- 07386357
+# named it deliberately (k_quants clippy, Tier A); 08ed3734, a commit about
+# GAP-225, reused it for an unrelated max_ulp row in Tier B. Every individual
+# row parses, so every other check in this file passes. Nothing here could see
+# it.
+#
+# AND THE AMBIGUITY REACHED THE CODE BEFORE ANYONE NOTICED: docs/method-rules.md
+# cites GAP-227 meaning the clippy gate, while fkc/verify/exact_ref.rs and
+# fkc/verify/seed_cpu_ledger.rs both cite it meaning the float8/max_ulp row.
+# Two senses, four citations, one id.
+#
+# *** MATCH THE FULL ID, INCLUDING ANY `(x)` SUFFIX. ***
+#
+# The obvious implementation -- `grep -oE 'GAP-[0-9]+'` -- TRUNCATES
+# `GAP-228(a)` to `GAP-228` and reports EIGHT duplicates where there is one
+# parent and seven legitimate lettered sub-rows. Measured on this file: the
+# naive form flags {GAP-228: 8, GAP-227: 2}; the full form flags {GAP-227: 2}.
+#
+# THAT MATTERS MORE THAN THE FALSE POSITIVE ITSELF. A gate that fires on valid
+# input teaches its own removal -- the next person to hit it will loosen the
+# rule, because the data is obviously fine and the gate is obviously wrong.
+# If this check ever flags a lettered sub-row, FIX THE MATCHER, DO NOT WIDEN
+# THE RULE.
+
+FULL_ID = re.compile(r'^\| (~*)(GAP-[0-9]+(?:\([a-z0-9]+\))?)')
+
+
+def duplicate_ids(src):
+    """Ids appearing on more than one row, matched in FULL."""
+    seen = {}
+    for _l in src:
+        _m = FULL_ID.match(_l)
+        if _m:
+            seen.setdefault(_m.group(2), []).append(_l[:60])
+    return {k: v for k, v in seen.items() if len(v) > 1}
+
+
+# FOUNDATION CHECK, both directions. A duplicate must flag AND a lettered
+# family must not -- the second arm is the one that would have shipped broken.
+_ID_DUP = ['| GAP-900 | a | A | a | **OPEN** |',
+           '| GAP-900 | b | B | b | **OPEN** |']
+_ID_SUB = ['| GAP-901 | p | A | p | **OPEN** |',
+           '| GAP-901(a) | x | A | x | **OPEN** |',
+           '| GAP-901(b) | y | A | y | **OPEN** |']
+id_foundation = []
+if list(duplicate_ids(_ID_DUP)) != ['GAP-900']:
+    id_foundation.append('a real duplicate was NOT flagged')
+if duplicate_ids(_ID_SUB):
+    id_foundation.append('lettered sub-rows WERE flagged (matcher is truncating)')
+
+dup_ids = duplicate_ids(lines)
+
+print()
+print('id-uniqueness self-test (duplicate must flag, lettered sub-rows must not):',
+      'PASS' if not id_foundation else id_foundation)
+print('row ids appearing more than once:',
+      {k: len(v) for k, v in dup_ids.items()} if dup_ids else 'NONE')
+for _k, _v in sorted(dup_ids.items()):
+    for _r in _v:
+        print('    %s' % _r)
+
 if (odd or no_pipe or header_problems or control_chars or conflict_markers
         or missing_backlinks or _foundation
         or arity_regression or bad_prefix or strike_contra
+        or dup_ids or id_foundation
         or vocab_foundation):
     sys.exit(1)
