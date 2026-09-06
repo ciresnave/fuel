@@ -1909,3 +1909,54 @@ CI, rust-ci.yml:776,829   KNOWN_FAILING="fuel-hardware"
 3. **Home the residue at an owned row.** The detector says *when*; the row says *who* and *what next*. `the_i4_exclusion_still_has_its_reason` points at GAP-097; CI's message points at GAP-267. **A site comment is read only by someone already standing there, and the entry exists precisely for the case where nobody comes.**
 
 **Related:** [`a-defence-can-outlive-its-defect`](#a-defence-can-outlive-its-defect) is the mirror image — there a control becomes ACTIVELY HARMFUL once its replacement lands, where here it merely goes INERT while still looking live. **Both are cured by making the entry able to fail.**
+
+---
+
+## impossibility-from-absence
+
+**A COUNT OF ZERO DOES NOT DISTINGUISH A PROHIBITION FROM A HABIT.** *"Never done"* and
+*"cannot be done"* have an identical signature in the data.
+
+Measured 2026-09-06, three instances in one day, all by the architect. The one that cost most:
+`docs/gaps.md` has 81 four-column rows carrying no status cell, and a convergence spec asserted
+
+> *"its row has no status cell, so IT CANNOT BE CLOSED, ONLY DELETED — a permanent
+> blocker on item 1 by construction."*
+
+**False.** Strikethrough is the ruled close marker and it applies to the **row id**, not to a
+status cell. Tested against the gate's own predicates, a fabricated
+`| ~~GAP-900~~ | subj | C | body |` passes **all** of them: 5 pipes (accepted), the id regex
+matches with the struck flag set, and struck rows are skipped by the ownership check so no
+`**Owner:**` token is required.
+
+**What was true was a MEASUREMENT: 0 of 81 four-column rows have ever been struck, against 41 of
+the five-column ones.** Closure is *available* and has never been *used*.
+
+⚠️ **THE IMPOSSIBILITY FRAMING IS THE MORE EXPENSIVE ERROR, BECAUSE IT IS ACTIONABLE IN THE
+WRONG DIRECTION.** *"Nobody has closed one of these"* invites someone to try. *"The format
+forbids closing one"* **stops them, permanently, and nothing ever contradicts it** — the
+output of a wrong stopping-claim is an ABSENCE, and nobody audits work never attempted.
+
+### Practice
+
+1. **When about to write "cannot", name the mechanism that forbids it.** If the honest answer is
+   *"nothing I can point at — it has just never happened"*, the claim is a measurement and
+   must be written as one.
+2. **Test the forbidden thing against the GATE, not against the CORPUS.** The corpus shows
+   practice; the gate shows permission. One command settled this: fabricate the disallowed row
+   and run the predicates on it.
+3. **State the measurement with its denominator.** *"0 of 81, against 41 of 209"* is informative
+   and honest; *"cannot be closed"* is neither.
+
+⚠️ **WHY IT RECURRED THREE TIMES IN ONE DAY:** all three were absence claims that had been
+**correctly verified as absences** and were then *upgraded*. The verification was real, so the
+claim felt measured — and the upgrade from *not present* to *not possible* happened in the
+writing, with no separate step to check it. **The rigorous half vouches for the unexamined half.**
+
+**Caught only because a lane’s next task depended on the impossibility being true.** A false
+*"cannot"* with no dependent work would never have surfaced.
+
+**Related:** [`uninformative-signals-both-directions`](#uninformative-signals-both-directions) is
+the same asymmetry one step earlier — there an absence is read as proof; here it is read as
+prohibition. [`a-pre-stated-blocker-is-a-prediction`](#a-pre-stated-blocker-is-a-prediction) is
+the dispatch-level consequence: a stopping-claim fails in the direction that stops the work.
