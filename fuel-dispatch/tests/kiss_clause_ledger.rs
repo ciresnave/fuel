@@ -597,3 +597,43 @@ fn the_scanner_discriminates() {
     );
     assert!(n > 1, "{id} must be seen in {n} files");
 }
+
+#[test]
+fn the_ledger_is_sorted_by_clause_id() {
+    // The ledger is APPEND-ONLY by construction: every new KISS citation
+    // anywhere in the tree obliges a new row here. Nothing enforced the order
+    // until now, and it decayed the first time two lanes appended at once --
+    // PR #106 and PR #120 both inserted after `KISS-CONTRACT-6.7-0006`, which
+    // is the correct sorted position for exactly one of them. They conflicted
+    // for no semantic reason: five rows apart in sort order, adjacent on disk.
+    //
+    // Sorting is therefore not tidiness. It makes a row's position a FUNCTION
+    // OF ITS ID rather than of whichever anchor the author happened to be
+    // editing near, so two lanes adding unrelated clauses cannot collide.
+    //
+    // `>=` rather than `>` is deliberate and does a second job: in a sorted
+    // list, rejecting `w[0] >= w[1]` on adjacent pairs proves GLOBAL
+    // UNIQUENESS, because equal ids could only ever be adjacent. That matters
+    // because `row()` resolves with `.find()`, which silently returns the
+    // first of a duplicated pair -- a shadowed row would otherwise never be
+    // reported by anything in this file.
+    let out_of_order: Vec<String> = LEDGER
+        .windows(2)
+        .filter(|w| w[0].clause >= w[1].clause)
+        .map(|w| {
+            if w[0].clause == w[1].clause {
+                format!(
+                    "{} appears twice (the second row is shadowed by `row()`)",
+                    w[0].clause
+                )
+            } else {
+                format!("{} must not precede {}", w[0].clause, w[1].clause)
+            }
+        })
+        .collect();
+    assert!(
+        out_of_order.is_empty(),
+        "LEDGER rows are sorted by clause id, so a row's position is decided by its id rather than by whichever anchor its author happened to edit near. Insert each new row where it sorts:\n  {}",
+        out_of_order.join("\n  ")
+    );
+}
