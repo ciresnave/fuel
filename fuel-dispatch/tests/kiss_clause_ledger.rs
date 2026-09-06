@@ -552,11 +552,45 @@ fn bare_id_end(b: &[u8], start: usize) -> Option<usize> {
     (j - num == 4).then_some(j)
 }
 
-/// Ledger clause numbers cited in BARE form, mapped to the files doing it.
+/// A bare `<n>.<n>-<nnnn>` starting exactly at `i`, or `None`.
 ///
-/// A candidate whose preceding byte is `-` or `.` is skipped: that is the
-/// tail of a qualified `KISS-OPS-...` id or of a longer number, not a bare
-/// citation.
+/// Split out for the same reason `clause_id_end` was split out of
+/// `clause_ids_in`: the guards are what push a single scanning function past
+/// the complexity limit, and a nested chain is what made the original scanner
+/// unreadable.
+fn bare_candidate_at(b: &[u8], i: usize) -> Option<usize> {
+    if !b[i].is_ascii_digit() {
+        return None;
+    }
+    // A preceding `-` or `.` means this is the tail of a qualified
+    // `KISS-OPS-...` id or of a longer number, not a bare citation.
+    if i > 0 && (b[i - 1] == b'-' || b[i - 1] == b'.') {
+        return None;
+    }
+    bare_id_end(b, i)
+}
+
+/// Every tracked clause number appearing BARE in one file's text.
+fn bare_ids_in(src: &str, tracked: &BTreeSet<String>) -> BTreeSet<String> {
+    let b = src.as_bytes();
+    let mut out = BTreeSet::new();
+    let mut i = 0usize;
+    while i < b.len() {
+        match bare_candidate_at(b, i) {
+            Some(end) => {
+                let id = &src[i..end];
+                if tracked.contains(id) {
+                    out.insert(id.to_string());
+                }
+                i = end;
+            }
+            None => i += 1,
+        }
+    }
+    out
+}
+
+/// Ledger clause numbers cited in BARE form, mapped to the files doing it.
 fn bare_cited_ledger_clauses() -> BTreeMap<String, Vec<String>> {
     let tracked = ledger_clause_numbers();
     let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
@@ -568,27 +602,9 @@ fn bare_cited_ledger_clauses() -> BTreeMap<String, Vec<String>> {
         let Ok(src) = std::fs::read_to_string(&f) else {
             continue;
         };
-        let b = src.as_bytes();
-        let mut i = 0usize;
-        while i < b.len() {
-            let boundary_ok = i == 0 || (b[i - 1] != b'-' && b[i - 1] != b'.');
-            if !b[i].is_ascii_digit() || !boundary_ok {
-                i += 1;
-                continue;
-            }
-            match bare_id_end(b, i) {
-                Some(end) => {
-                    let id = &src[i..end];
-                    if tracked.contains(id) {
-                        let files = out.entry(id.to_string()).or_default();
-                        if !files.contains(&label) {
-                            files.push(label.clone());
-                        }
-                    }
-                    i = end;
-                }
-                None => i += 1,
-            }
+        // A per-file set, so no de-duplication branch is needed here.
+        for id in bare_ids_in(&src, &tracked) {
+            out.entry(id).or_default().push(label.clone());
         }
     }
     out
