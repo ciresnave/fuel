@@ -87,7 +87,9 @@ pub fn num_key_value_heads(explicit: Option<usize>, num_attention_heads: usize) 
     // kv count of 0 is rejected here rather than dividing by zero downstream.
     if !num_attention_heads.is_multiple_of(kv) {
         return Err(Error::Msg(format!(
-            "num_attention_heads ({num_attention_heads}) must be a multiple of \n             num_key_value_heads ({kv}); a non-dividing kv-head count truncates \n             silently when GQA groups query heads"
+            "num_attention_heads ({num_attention_heads}) must be a multiple of \
+             num_key_value_heads ({kv}); a non-dividing kv-head count truncates \
+             silently when GQA groups query heads"
         )));
     }
     Ok(kv)
