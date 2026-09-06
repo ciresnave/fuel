@@ -790,9 +790,126 @@ for _k, _v in sorted(dup_ids.items()):
     for _r in _v:
         print('    %s' % _r)
 
+
+# ---------------------------------------------------------------------------
+# OWNERSHIP -- a row that says work remains must NAME who has it.
+#
+# WHY, MEASURED AT 89a09a0a: of 119 OPEN rows, 100 carried NO ownership marker
+# of any kind, and the 19 that did used FIVE mutually incompatible spellings
+# ("**Owner:**", "ALLOCATED to", "allocated to", "assigned to", a bare
+# "UNALLOCATED"). A field with five spellings cannot be counted; any number
+# reported over it measures the parser, not the population.
+#
+# *** THE ACUTE DEFECT IS NOT THE ABSENCE. IT IS FALSE OWNERSHIP. ***
+#
+# 27 of the 100 unmarked OPEN rows NAME a lane in prose -- "FILED 2026-09-05 by
+# Fuel 2" -- as the FINDER. A skimmer reads that as an owner, so the row leaves
+# the unallocated list without ever being allocated, and nobody goes looking for
+# an owner for it again. Absent ownership wastes a reader once; FALSE ownership
+# is permanent, because the row never resurfaces.
+#
+# And that 27 is not a stable number: widening the finder pattern from 50 to 60
+# characters moved it. THAT is the finding -- prose ownership is not measurable
+# under any query, so the remedy cannot be a better regex.
+#
+# *** UNALLOCATED IS A VALUE, NOT AN ABSENCE. ***
+#
+# This is the whole design. An empty owner is indistinguishable from one nobody
+# has filled in yet; an explicit UNALLOCATED is a claim SOMEBODY MADE, and it is
+# greppable, falsifiable, and dated by its commit. It converts "we do not know"
+# into "we know it is nobody's" -- the difference between a backlog and a pile.
+#
+# MIGRATION RULE, and it is the load-bearing one: *** NEVER INFER AN OWNER FROM
+# PROSE. *** Only an explicit allocation statement transfers. Everything else
+# becomes UNALLOCATED even where a lane is named nearby. Under-claiming is safe
+# -- the row sits in the unallocated list until someone picks it up.
+# Over-claiming is the defect being removed.
+#
+# HELD IS NOT UNALLOCATED. A false block is permanent in a way an empty queue is
+# not: nobody ever picks up a row they believe is waiting on someone else. So a
+# HELD row must name what it waits on, and this gate refuses a bare "HELD".
+#
+# SCOPE: 5-cell rows only, because a row needs a status cell to carry the token.
+# The 81 four-column rows have no status cell at all; that is a separate
+# structural defect already registered, and it is named here so a green run on
+# this gate is not read as covering them.
+OWNER_VALUES = ('Fuel 1', 'Fuel 2', 'Fuel 3', 'Architect', 'UNALLOCATED', 'HELD')
+WORK_REMAINS = ('OPEN', 'PARTIAL', 'RE-OPENED')
+OWNER_TOKEN = re.compile(r'\*\*Owner:\*\*\s*([A-Za-z0-9 ]+?)\s*(?:—|--|$)')
+
+
+def _work_remains_rows(src_lines):
+    """(id, status cell) for every LIVE 5-cell row whose status says work
+    remains. This is the gate's SCOPE, given its own name on purpose: the
+    fourth foundation arm below asserts that a CLOSED row is not reached, and
+    an arm that tests scope should have a scope to point at.
+    """
+    for _l in src_lines:
+        _m = FULL_ID.match(_l)
+        if not _m or _m.group(1):          # struck rows are done; skip
+            continue
+        _c = row_cells(_l)
+        if len(_c) == 5 and status_prefix(_c[4]) in WORK_REMAINS:
+            yield _m.group(2), _c[4]
+
+
+def owner_findings(src_lines):
+    """(missing a token, value outside the set, more than one token,
+    HELD naming no blocker)."""
+    missing, badval, dupes, blind_holds = [], [], [], []
+    for _id, _cell in _work_remains_rows(src_lines):
+        _t = OWNER_TOKEN.findall(_cell)
+        if not _t:
+            missing.append(_id)
+        elif len(_t) > 1:
+            dupes.append((_id, _t))
+        elif _t[0] not in OWNER_VALUES:
+            badval.append((_id, _t[0]))
+        elif _t[0] == 'HELD' and 'HELD on ' not in _cell:
+            blind_holds.append(_id)
+    return missing, badval, dupes, blind_holds
+
+
+# FOUNDATION CHECK, FIVE ARMS. The CLOSED arm is the one that matters most: it
+# proves the gate does NOT reach rows where work is finished. Without it a
+# passing run cannot distinguish "correctly scoped" from "accidentally silent".
+_OW_MISS = ['| GAP-910 | a | A | a | **OPEN** work remains |']
+_OW_OK = ['| GAP-911 | a | A | a | **OPEN** work remains **Owner:** UNALLOCATED |']
+_OW_BAD = ['| GAP-912 | a | A | a | **OPEN** x **Owner:** Somebody |']
+_OW_DONE = ['| GAP-913 | a | A | a | **CLOSED** nothing remains |']
+_OW_HELD = ['| GAP-914 | a | A | a | **OPEN** x **Owner:** HELD |']
+owner_foundation = []
+if owner_findings(_OW_MISS)[0] != ['GAP-910']:
+    owner_foundation.append('a row with NO owner token was NOT flagged')
+if any(owner_findings(_OW_OK)):
+    owner_foundation.append('a correctly-owned row WAS flagged')
+if not owner_findings(_OW_BAD)[1]:
+    owner_foundation.append('an owner outside the closed set was NOT flagged')
+if any(owner_findings(_OW_DONE)):
+    owner_foundation.append('a CLOSED row was flagged (gate is over-scoped)')
+if not owner_findings(_OW_HELD)[3]:
+    owner_foundation.append('a bare HELD naming no blocker was NOT flagged')
+
+own_missing, own_bad, own_dupes, own_blind = owner_findings(lines)
+
+print()
+print('ownership self-test (missing flags, valid does not, bad value flags, '
+      'CLOSED does not, bare HELD flags):',
+      'PASS' if not owner_foundation else owner_foundation)
+print('work-remains rows with NO **Owner:** token:',
+      len(own_missing) if own_missing else 'NONE')
+if own_missing:
+    print('    ' + ', '.join(own_missing[:14])
+          + (' ...and %d more' % (len(own_missing) - 14) if len(own_missing) > 14 else ''))
+print('owner values outside the closed set:', own_bad if own_bad else 'NONE')
+print('rows carrying more than one owner token:', own_dupes if own_dupes else 'NONE')
+print('HELD rows naming no blocker:', own_blind if own_blind else 'NONE')
+
 if (odd or no_pipe or header_problems or control_chars or conflict_markers
         or missing_backlinks or _foundation
         or arity_regression or bad_prefix or strike_contra
         or dup_ids or id_foundation
-        or vocab_foundation):
+        or vocab_foundation
+        or own_missing or own_bad or own_dupes or own_blind
+        or owner_foundation):
     sys.exit(1)
