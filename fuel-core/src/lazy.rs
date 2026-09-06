@@ -2435,6 +2435,17 @@ mod tests {
         // live ±0 tie-bias on CPU (#67)/Vulkan (#76) minmax paths, so if the CPU
         // `ge`/`where` path is tie-biased this born-red REVEALS it rather than
         // hiding it behind a value compare.
+        //
+        // ⚠️ SENSITIVITY PROVEN, not assumed (this test passed on first write, and
+        // a first-write pass demonstrates nothing about its own sensitivity):
+        // sabotaging the fmax_ieee decomposition `cmp_ge` → `cmp_gt` flips the tie
+        // to b-wins and this goes RED with left=0 (+0.0) vs right=0x80000000 (-0.0).
+        // So the a-wins result below is EARNED — the CPU ge/where path resolves the
+        // tie a-wins, not tie-biased. Testing BOTH operand orders (each asserting
+        // the *first* operand's zero) is the permanent discriminator: an order
+        // swap or a collapse-to-constant flips one side; a return-`a`/return-`b`
+        // collapse is caught by the sibling NaN test (fmax(NaN,3)=3 needs `b`,
+        // fmax(2,NaN)=2 needs `a`). GAP-048.
         let a = Tensor::from_f32(vec![-0.0, 0.0], Shape::from_dims(&[2]), &Device::cpu());
         let b = a.const_f32_like(vec![0.0, -0.0], Shape::from_dims(&[2]));
 
