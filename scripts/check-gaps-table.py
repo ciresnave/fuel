@@ -970,11 +970,103 @@ print('owner values outside the closed set:', own_bad if own_bad else 'NONE')
 print('rows carrying more than one owner token:', own_dupes if own_dupes else 'NONE')
 print('HELD rows naming no blocker:', own_blind if own_blind else 'NONE')
 
+# --- STRUCK FOUR-COLUMN ROWS ------------------------------------------------
+#
+# Ruled 2026-09-06. Before this arm, 81 rows sat under a four-column header and
+# NONE of them could be closed: a struck four-column row passed EVERY predicate
+# this gate had, so a wrong close in that shape was UNDETECTABLE, and the whole
+# point of the anchor audit that produced these closes is preventing wrong
+# closes.
+#
+# !! THE OBJECTION TO CLOSING THERE WAS AN ARGUMENT FOR BUILDING THE PREDICATE,
+# NOT FOR AVOIDING THE FORMAT. The alternative considered was raising the arity
+# ratchet 1 -> 4 so the rows could take a status cell under a four-column
+# header; it was rejected because it makes THREE rows closable and leaves 78 in
+# the same state, and because a ratchet baseline is a measurement of accepted
+# DEBT -- raising it to admit a new SHAPE makes a format decision look like
+# accumulation, which the next reader cannot tell apart by looking at a number.
+#
+# So a struck four-column row MUST state its disposition at the head of its Gap
+# cell -- that cell is doing the status column's job, so it has to say what a
+# status cell would -- and MUST NOT carry an `**Owner:**` token.
+#
+# !! THE OWNER HALF IS A CORRECTION TO THE RULING THAT COMMISSIONED THIS ARM,
+# and it is encoded here so the error cannot be repeated by the next person
+# reading that ruling. The ruling said to add the status cell "with
+# `**Owner:**`". Measured before acting: 1 of 39 struck five-column rows carries
+# an owner token -- an outlier, not the convention -- and the ownership
+# self-test above exists precisely to assert that a CLOSED row is NOT reached.
+# A closed row has no owner.
+STRUCK4_DISPOSITIONS = ('CLOSED', 'FIXED', 'SUBJECT REMOVED', 'SUPERSEDED',
+                        "WON'T DO", 'MISFILED', 'VOID')
+
+
+def struck4_findings(src_lines):
+    """(no disposition token, carries an owner token) for STRUCK 4-cell rows.
+
+    Scope is given its own name on purpose: the foundation arms below assert
+    that a LIVE four-column row and a STRUCK five-column row are both OUT of
+    scope, so a passing run can be told apart from an accidentally silent one.
+    """
+    nodisp, owned = [], []
+    for _l in src_lines:
+        _m = FULL_ID.match(_l)
+        if not _m or not _m.group(1):        # live rows: not this arm's scope
+            continue
+        _c = row_cells(_l)
+        if len(_c) != 4:                     # five-column rows: covered above
+            continue
+        _gap = normalise_status(_c[3]).upper()
+        if not any(_gap.startswith(_d) for _d in STRUCK4_DISPOSITIONS):
+            nodisp.append(_m.group(2))
+        if OWNER_TOKEN.search(_c[3]):
+            owned.append(_m.group(2))
+    return nodisp, owned
+
+
+# FOUNDATION CHECK, FIVE ARMS. The two over-scope arms matter most: this arm was
+# born with a population of ZERO (no four-column row had ever been struck), so
+# without them a green run would be indistinguishable from an arm that never
+# looks at anything.
+_S4_OK = ['| ~~GAP-920~~ **CLOSED** | a | — | **CLOSED — SUBJECT REMOVED.** x |']
+_S4_NODISP = ['| ~~GAP-921~~ **CLOSED** | a | — | the subject simply went away |']
+_S4_OWNED = ['| ~~GAP-922~~ **CLOSED** | a | — | **CLOSED** x **Owner:** Fuel 2 |']
+_S4_LIVE = ['| GAP-923 | a | — | not struck, so not this arm |']
+_S4_FIVE = ['| ~~GAP-924~~ **CLOSED** | a | — | x | **CLOSED** y |']
+struck4_foundation = []
+if any(struck4_findings(_S4_OK)):
+    struck4_foundation.append('a well-formed struck 4-col row WAS flagged')
+if not struck4_findings(_S4_NODISP)[0]:
+    struck4_foundation.append('a struck 4-col row with NO disposition was NOT flagged')
+if not struck4_findings(_S4_OWNED)[1]:
+    struck4_foundation.append('a struck 4-col row carrying an owner was NOT flagged')
+if any(struck4_findings(_S4_LIVE)):
+    struck4_foundation.append('a LIVE 4-col row was flagged (arm is over-scoped)')
+if any(struck4_findings(_S4_FIVE)):
+    struck4_foundation.append('a struck FIVE-col row was flagged (arm is over-scoped)')
+
+struck4_nodisp, struck4_owned = struck4_findings(lines)
+
+print()
+print('struck 4-column self-test (missing disposition flags, owner flags, '
+      'well-formed does not, live does not, 5-col does not):',
+      'PASS' if not struck4_foundation else struck4_foundation)
+print('struck 4-column rows in the table:',
+      sum(1 for _l in lines
+          if FULL_ID.match(_l) and FULL_ID.match(_l).group(1)
+          and len(row_cells(_l)) == 4))
+print('struck 4-column rows with NO disposition in the Gap cell:',
+      struck4_nodisp if struck4_nodisp else 'NONE')
+print('struck 4-column rows carrying an **Owner:** token:',
+      struck4_owned if struck4_owned else 'NONE')
+
+
 if (odd or no_pipe or header_problems or control_chars or conflict_markers
         or missing_backlinks or _foundation
         or arity_regression or bad_prefix or strike_contra
         or dup_ids or id_foundation
         or vocab_foundation
         or own_missing or own_bad or own_dupes or own_blind
+        or struck4_nodisp or struck4_owned or struck4_foundation
         or owner_foundation):
     sys.exit(1)

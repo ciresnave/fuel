@@ -146,7 +146,7 @@
 ### fuel-ir
 | ID | File:Line | Tier | Gap |
 |----|-----------|-------|-----|
-| GAP-040 | fuel-ir/src/dummy_dtype.rs:4 | — | safetensors-spec dtypes defined but "not yet fully implemented". |
+| ~~GAP-040~~ **CLOSED** | `fuel-ir/src/dummy_dtype.rs` — **FILE DELETED** | — | **CLOSED — FIXED BY DELETION.** Was: safetensors-spec dtypes defined but "not yet fully implemented". The stubs implemented `WithDType` for types with **no numeric meaning**, so the type system stated a capability the body answered with `panic!`. **Deleting the declarations removed the false claim, and that was the chosen remedy** — `CLAUDE.md` records it as *"deleted, not documented"*. ⚠️ **`git grep dummy_dtype` still returns a hit and it is a DIFFERENT THING WITH THE SAME NAME** (`fn dummy_dtype`, a test helper in `fuel-graph/src/registry.rs`); a naive grep reads as "still there". Verified at `80def246`. |
 | GAP-041 | `fuel-dispatch/src/dispatch.rs` — anchor: `git grep -n -e 'AFFINE_BLOCK consumer-ahead, §6), so NF4' -- fuel-dispatch/src/dispatch.rs` (1 hit at `80def246`) | A | NF4 has no distinct FDX code in v1 (deferred). |
 | GAP-042 | fuel-ir/src/stype.rs:61 | A | SType is shape-only, "NOT wired in v1". |
 | GAP-043 | fuel-ir/src/probe.rs:72 | — | fuel-metal-backend "not yet probe-wired". |
@@ -223,7 +223,7 @@
 | GAP-107 | fuel-cuda-backend/src/baracuda/attention.rs:1296 | B | `rope_apply` NOT wired as CUDA `FusedOps::ROPE` (staged). |
 | GAP-108 | fuel-cuda-backend/src/capture.rs:9 | B | CUDA-graph capture a capability, "not yet a wired-in optimization". |
 | GAP-109 | fuel-cuda-backend/src/device.rs:601,647 | B | F16/BF16 `rand_uniform`/`normal` (needs upstream cudarc). |
-| GAP-110 | fuel-cuda-backend/src/ug.rs:60 | B | "support more dtypes". |
+| ~~GAP-110~~ **CLOSED** | `fuel-cuda-backend/src/ug.rs` — **FILE DELETED** | B | **CLOSED — SUBJECT REMOVED.** Was: "support more dtypes". ⚠️ **The capability was NOT delivered — the code went away.** `mod ug` and `ug::` both return **0 tree-wide** at `80def246`; only a vestigial `ug = []` feature in `fuel-ir/Cargo.toml` and one `#[cfg(feature = "ug")]` error variant survive. **If `ug` is ever reinstated this row must be RE-OPENED, not assumed done** — the dtype coverage it asked for was never built. |
 
 ### fuel-vulkan-backend
 | ID | File:Line | Tier | Gap |
@@ -237,7 +237,7 @@
 | ID | File:Line | Tier | Gap |
 |----|-----------|-------|-----|
 | GAP-120 | fuel-metal-backend/src/storage.rs:142 | — | per-dtype "not implemented" bails across affine/powf/elu/reduce/to_dtype/unary/where_cond/conv1d/col2im1d (~20 sites). |
-| GAP-121 | fuel-metal-backend/src/ug.rs:62 | — | "support more dtypes". |
+| ~~GAP-121~~ **CLOSED** | `fuel-metal-backend/src/ug.rs` — **FILE DELETED** | — | **CLOSED — SUBJECT REMOVED.** Was: "support more dtypes". The Metal half of GAP-110, closed on the same evidence: `mod ug` and `ug::` return **0 tree-wide** at `80def246`. **The capability was NOT delivered; the module was removed.** Re-open if `ug` returns. |
 | GAP-122 | fuel-metal-kernels/src/kernels/sdpa.rs:19 | — | non-bf16 final type: template the kernel. |
 | GAP-254 | `fuel-metal-backend` — feature-gated targets nothing builds; the class GAP-185's deletion did not kill | C | **LIVE CLASS, RE-POINTED. Homes the residue GAP-185 closed over.** GAP-185 closed at `24e04ccc` as **SUBJECT DELETED, not fixed** — the WASM tree went away, and the row says so honestly: *"The WASM instance is gone; **the class is not**"*, with the surviving lesson *"re-pointed at `fuel-metal-backend`, which is the same shape and **still live**"*. **A crate name in a closed row's prose is not an address.** The class: a target gated so that no gate on any runner builds it, so its compile errors are invisible rather than absent. **Owner: unallocated.** Parent: GAP-185. |
 
