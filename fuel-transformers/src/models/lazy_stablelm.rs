@@ -94,8 +94,8 @@ impl StableLmConfigRaw {
             .map_err(|e| fuel_core::Error::Msg(format!("parsing StableLM config.json: {e}")))
     }
 
-    fn resolve(self) -> StableLmConfig {
-        StableLmConfig {
+    fn resolve(self) -> Result<StableLmConfig> {
+        Ok(StableLmConfig {
             vocab_size: self.vocab_size,
             hidden_size: self.hidden_size,
             intermediate_size: self.intermediate_size,
@@ -104,7 +104,7 @@ impl StableLmConfigRaw {
             num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
                 self.num_key_value_heads,
                 self.num_attention_heads,
-            ),
+            )?,
             head_dim: fuel_core::hf_config::head_dim(
                 self.head_dim,
                 self.hidden_size,
@@ -115,7 +115,7 @@ impl StableLmConfigRaw {
             max_position_embeddings: self.max_position_embeddings,
             partial_rotary_factor: self.partial_rotary_factor,
             use_qkv_bias: self.use_qkv_bias,
-        }
+        })
     }
 }
 
@@ -125,7 +125,7 @@ impl StableLmConfig {
     /// ROADMAP item 8 (II): reads the artifact — see the born-red
     /// `stablelm_config_from_hf_json_parses_the_artifact_not_a_preset`.
     pub fn from_hf_json_str(json: &str) -> Result<Self> {
-        Ok(StableLmConfigRaw::from_json_str(json)?.resolve())
+        StableLmConfigRaw::from_json_str(json)?.resolve()
     }
 }
 

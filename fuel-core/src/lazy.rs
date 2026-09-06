@@ -7605,7 +7605,7 @@ impl LlamaConfigRaw {
             n_kv_heads: crate::hf_config::num_key_value_heads(
                 self.num_key_value_heads,
                 self.num_attention_heads,
-            ),
+            )?,
             head_dim: crate::hf_config::head_dim(
                 self.head_dim,
                 self.hidden_size,
@@ -8403,6 +8403,14 @@ impl LlamaModel {
         let q_r = q_h.rope_with_tables(rope_cos, rope_sin)?;
         let k_r = k_h.rope_with_tables(rope_cos, rope_sin)?;
 
+        // GQA replication factor. This division is DELIBERATELY left unguarded:
+        // apply_layer is a RUNTIME site, and the build-time divisibility guard for
+        // `n_heads / n_kv_heads` belongs at config parse
+        // (hf_config::num_key_value_heads, called from every *ConfigRaw::resolve),
+        // NOT here — a guard here would fire per-forward rather than at build and
+        // would not cover a config that never reaches this path (GAP-282). If a
+        // non-dividing count reaches this point, fix the parse site that built
+        // `cfg`, not this line.
         let n_rep = cfg.n_heads / cfg.n_kv_heads;
         let k_r = k_r.repeat_interleave(1_usize, n_rep)?;
         let v_h = v_h.repeat_interleave(1_usize, n_rep)?;

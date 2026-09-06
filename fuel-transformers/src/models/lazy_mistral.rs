@@ -139,8 +139,8 @@ impl MistralConfigRaw {
             .map_err(|e| fuel_core::Error::Msg(format!("parsing Mistral config.json: {e}")))
     }
 
-    fn resolve(self) -> MistralConfig {
-        MistralConfig {
+    fn resolve(self) -> Result<MistralConfig> {
+        Ok(MistralConfig {
             vocab_size: self.vocab_size,
             hidden_size: self.hidden_size,
             intermediate_size: self.intermediate_size,
@@ -149,7 +149,7 @@ impl MistralConfigRaw {
             num_key_value_heads: fuel_core::hf_config::num_key_value_heads(
                 self.num_key_value_heads,
                 self.num_attention_heads,
-            ),
+            )?,
             head_dim: fuel_core::hf_config::head_dim(
                 self.head_dim,
                 self.hidden_size,
@@ -160,7 +160,7 @@ impl MistralConfigRaw {
             max_position_embeddings: self.max_position_embeddings,
             // Mistral keeps sliding_window as Option (None = no window); pass as-is.
             sliding_window: self.sliding_window,
-        }
+        })
     }
 }
 
@@ -170,7 +170,7 @@ impl MistralConfig {
     /// ROADMAP item 8 (II): reads the artifact rather than returning a preset —
     /// see the born-red `mistral_config_from_hf_json_parses_the_artifact_not_a_preset`.
     pub fn from_hf_json_str(json: &str) -> Result<Self> {
-        Ok(MistralConfigRaw::from_json_str(json)?.resolve())
+        MistralConfigRaw::from_json_str(json)?.resolve()
     }
 }
 
@@ -236,18 +236,28 @@ impl MistralModel {
         assert_eq!(dims.len(), 3, "embeds must be rank 3 [b, seq, hidden]");
         let seq = dims[1];
         assert_eq!(dims[2], cfg.hidden_size);
-        assert_eq!(
-            cfg.num_attention_heads * cfg.head_dim,
-            cfg.hidden_size,
-            "MistralConfig: num_attention_heads * head_dim must equal hidden_size",
-        );
-        assert_eq!(
-            cfg.num_attention_heads % cfg.num_key_value_heads,
-            0,
-            "MistralConfig: num_attention_heads ({}) must be a multiple of num_key_value_heads ({})",
-            cfg.num_attention_heads,
-            cfg.num_key_value_heads,
-        );
+        // GAP-281: a typed decline, not a panic. The relation is a CONFIG
+        // property a real checkpoint can violate, so it is an error to return,
+        // not an invariant to assert. Matches the conformant form used by the
+        // other 21 models (see `lazy_qwen3.rs`).
+        if cfg.num_attention_heads * cfg.head_dim != cfg.hidden_size {
+            return Err(fuel_core::Error::Msg(
+                "MistralConfig: num_attention_heads * head_dim must equal hidden_size".into(),
+            )
+            .bt());
+        }
+        // GAP-281: a typed decline, not a panic. Copied from the conformant
+        // form in `lazy_mixtral.rs`; the message keeps its values via format!.
+        if !cfg
+            .num_attention_heads
+            .is_multiple_of(cfg.num_key_value_heads)
+        {
+            return Err(fuel_core::Error::Msg(format!(
+                "MistralConfig: num_attention_heads ({}) must be a multiple of num_key_value_heads ({})",
+                cfg.num_attention_heads, cfg.num_key_value_heads,
+            ))
+            .bt());
+        }
 
         let mut h = embeds.clone();
 
@@ -652,6 +662,53 @@ mod tests {
 
     /// Smoke: a tiny 2-layer Mistral-shape forward produces logits of
     /// the expected shape and contains no NaNs.
+    /// GAP-281: the `num_attention_heads * head_dim == hidden_size` relation must
+    /// DECLINE with a typed error, not panic. "Never panic on production paths."
+    ///
+    /// Born-red: against the production `assert_eq!` this test FAILS BY PANIC
+    /// rather than by assertion, which is the point -- a panic is not a decline.
+    #[test]
+    fn head_dim_mismatch_declines_rather_than_panicking() {
+        let valid = MistralConfig {
+            vocab_size: 32,
+            hidden_size: 16,
+            intermediate_size: 32,
+            num_hidden_layers: 1,
+            num_attention_heads: 4,
+            num_key_value_heads: 2,
+            head_dim: 4, // 4 * 4 == 16 == hidden_size
+            rms_norm_eps: 1e-5,
+            rope_theta: 10_000.0,
+            max_position_embeddings: 32,
+            sliding_window: None,
+        };
+        let tokens: Vec<u32> = vec![1, 2, 3];
+
+        // POSITIVE CONTROL first: the conforming config must SUCCEED, or "it
+        // returned Err" below is satisfied by a fixture that is simply broken.
+        let good = MistralModel {
+            config: valid.clone(),
+            weights: tiny_weights(&valid),
+        };
+        good.forward(&tokens, 0)
+            .expect("control: the conforming config must still run");
+
+        let mut bad = valid.clone();
+        bad.head_dim = 8; // 4 * 8 = 32 != 16
+        let model = MistralModel {
+            config: bad,
+            weights: tiny_weights(&valid),
+        };
+        let err = model
+            .forward(&tokens, 0)
+            .expect_err("a decoupled head_dim must DECLINE, not panic and not succeed");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("head_dim") && msg.contains("hidden_size"),
+            "the decline must name the relation it rejected, got: {msg}"
+        );
+    }
+
     #[test]
     fn forward_shape_and_finite_2_layer() {
         let cfg = MistralConfig {
@@ -863,5 +920,53 @@ mod tests {
         }"#;
         let cfg = MistralConfig::from_hf_json_str(json).expect("parse");
         assert_eq!(cfg.num_key_value_heads, 1); // true MQA survives, not collapsed to 32
+    }
+
+    /// GAP-281 (GQA relation): `num_attention_heads % num_key_value_heads == 0` must
+    /// DECLINE with a typed error, not panic. "Never panic on production paths."
+    ///
+    /// The fixture violates ONLY the GQA axis: head_dim is left conforming so the
+    /// head_dim guard (converted separately) cannot answer first and make this vacuous.
+    /// 4 heads over 3 kv-heads gives 4 % 3 == 1.
+    ///
+    /// Born-red: against the production `assert_eq!` this FAILS BY PANIC.
+    #[test]
+    fn gqa_head_multiple_mismatch_declines_rather_than_panicking() {
+        let valid = MistralConfig {
+            vocab_size: 32,
+            hidden_size: 16,
+            intermediate_size: 32,
+            num_hidden_layers: 1,
+            num_attention_heads: 4,
+            num_key_value_heads: 2,
+            head_dim: 4,
+            rms_norm_eps: 1e-5,
+            rope_theta: 10_000.0,
+            max_position_embeddings: 32,
+            sliding_window: None,
+        };
+        let tokens: Vec<u32> = vec![1, 2, 3];
+        // POSITIVE CONTROL: the conforming config must SUCCEED.
+        let good = MistralModel {
+            config: valid.clone(),
+            weights: tiny_weights(&valid),
+        };
+        good.forward(&tokens, 0)
+            .expect("control: the conforming config must still run");
+
+        let mut bad = valid.clone();
+        bad.num_key_value_heads = 3; // 4 % 3 == 1, and head_dim stays conforming
+        let model = MistralModel {
+            config: bad,
+            weights: tiny_weights(&valid),
+        };
+        let err = model
+            .forward(&tokens, 0)
+            .expect_err("a non-multiple kv-head count must DECLINE, not panic");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("num_key_value_heads"),
+            "the decline must name the relation it rejected, got: {msg}"
+        );
     }
 }

@@ -21,6 +21,9 @@
 /// KISS-consistent shape vocabulary, homed here (std-only) so `fuel-graph` can
 /// carry `Dim`/`ShapeExpr` in [`OpAttrs`] without depending on `fuel-dispatch`
 /// (which re-exports this module at `fkc::shape_expr` for its FKC importer).
+mod canonical;
+pub use canonical::UnresolvedAttr;
+
 pub mod shape_expr;
 
 // ===========================================================================
@@ -134,7 +137,8 @@ pub enum OpTag {
     // ("RULING RECORD — four-leaf-arm ack", no amendments).
     //
     // **Wire tokens only — no Fuel graph producer yet.** `jit::op_to_tag` emits
-    // none of these and `runtime_fused::tag_to_op` declines all four (honest
+    // none of these. `runtime_fused::tag_to_op` declines THREE of them (`Const`,
+    // `RuntimeScalar`, `ReducedCount`) as honest
     // misses). Fuel expresses these values implicitly today (an `Op::Const`
     // TENSOR operand, a `Runtime { scalars }` slot on the *consuming* op,
     // `Op::ScanPlaceholder` inside `Op::Scan`'s body, Mean's divisor folded into
@@ -462,68 +466,6 @@ pub struct OpAttrs {
 
 // --- §6.19-shaped canonical positional-blob serialization (Convergence Increment A) ---
 //
-// Little-endian byte writers. `OpAttrs::to_canonical_bytes` emits a per-op
-// **positional** body (no field names, no elision — the OpTag fixes the schema)
-// then length-prefixes it with a `u32` LE byte length, so an empty-schema op has
-// exactly one canonical form (`[0,0,0,0]`). std-only (no `fuel_ir`).
-//
-// SCOPE (do not overclaim): this is the §6.19 positional *shape*, and it is
-// byte-comparable with a Baracuda-emitted blob **for the positionally-conformant
-// ops** — elementwise, cast, slice, concat, roll, pad, flip, iota, permute,
-// (un)squeeze, shape-target, matmul role-vectors (§5, LOCKED). Two known
-// divergences from the confirmed §6.19.3
-// schemas (see docs/outreach/baracuda-recipe-grammar-codesign-reply-2.md), which
-// the pinned node schema `Op{op_name, op_attrs, child_edges}` reconciles WITHOUT
-// widening this blob:
-//   * `reduce{monoid, reduce_axes, keepdim}` — Fuel emits single-axis
-//     `{axis, keepdim}`. `monoid` rides `op_name` (distinct SumDim/MaxDim/MinDim
-//     tags), and a multi-axis `reduce_axes` LIST is DEFERRED (Fuel models
-//     single-axis reduce; no consumer yet).
-//   * `gather/scatter{axis, oob_policy, index_operand, index_dtype, scatter_combine}`
-//     — Fuel emits `{axis}`. `scatter_combine` rides `op_name` (IndexAdd vs
-//     ScatterAdd), `index_operand` rides `child_edges`, `index_dtype` rides that
-//     operand node; `oob_policy` is a DEFERRED unwired slot (no carrier yet).
-// See kernel-seam-interop.md §7.3.2 for the per-op field-order table + this scope.
-
-fn put_u32(b: &mut Vec<u8>, x: u32) {
-    b.extend_from_slice(&x.to_le_bytes());
-}
-fn put_u64(b: &mut Vec<u8>, x: u64) {
-    b.extend_from_slice(&x.to_le_bytes());
-}
-fn put_i64(b: &mut Vec<u8>, x: i64) {
-    b.extend_from_slice(&x.to_le_bytes());
-}
-fn put_f64(b: &mut Vec<u8>, x: f64) {
-    b.extend_from_slice(&x.to_le_bytes());
-}
-fn put_str(b: &mut Vec<u8>, s: &str) {
-    put_u32(b, s.len() as u32);
-    b.extend_from_slice(s.as_bytes());
-}
-fn put_i64_list(b: &mut Vec<u8>, xs: &[i64]) {
-    put_u32(b, xs.len() as u32);
-    for &x in xs {
-        put_i64(b, x);
-    }
-}
-fn put_u32_list(b: &mut Vec<u8>, xs: &[u32]) {
-    put_u32(b, xs.len() as u32);
-    for &x in xs {
-        put_u32(b, x);
-    }
-}
-fn put_f64_list(b: &mut Vec<u8>, xs: &[f64]) {
-    put_u32(b, xs.len() as u32);
-    for &x in xs {
-        put_f64(b, x);
-    }
-}
-fn put_u8_list(b: &mut Vec<u8>, xs: &[u8]) {
-    put_u32(b, xs.len() as u32);
-    b.extend_from_slice(xs);
-}
-
 /// Derive the canonical matmul role vectors for a same-rank ≥ 2 contraction
 /// (the LOCKED reply-3 cell, §5): `lhs = [Batch×(r−2), FreeM, ContractedK]`,
 /// `rhs = [Batch×(r−2), ContractedK, FreeN]` over the roles
@@ -542,149 +484,6 @@ pub fn matmul_roles(lhs_rank: usize, rhs_rank: usize) -> (Vec<u8>, Vec<u8>) {
     }
     // lhs: [.., FreeM(1), ContractedK(3)]; rhs: [.., ContractedK(3), FreeN(2)].
     (one(lhs_rank, 1, 3), one(rhs_rank, 3, 2))
-}
-
-impl OpAttrs {
-    /// Serialize these attrs to the KISS §6.19 canonical positional blob for
-    /// `op`: a per-op **positional** little-endian body (no elision — the
-    /// `OpTag` determines the fixed schema), length-prefixed with a `u32` LE
-    /// byte count. An op whose schema is empty (`Add`, `Neg`, `Where`,
-    /// comparisons, …) serializes as the single canonical form `[0,0,0,0]`.
-    /// `MatMul` is empty-bodied ONLY when its role vectors are unset (the
-    /// implicit rank-polymorphic form); explicit roles serialize the LOCKED
-    /// §5 contraction descriptor. Deterministic + dependency-free.
-    ///
-    /// **Conformance scope (do not overclaim):** byte-comparable with a
-    /// Baracuda-emitted blob for the positionally-conformant ops (elementwise,
-    /// cast, slice, concat, roll, pad, flip, iota, permute, (un)squeeze,
-    /// shape-target, matmul role-vectors — the shared cross-producer golden,
-    /// Baracuda #68). `reduce` emits Fuel's single-axis `{axis, keepdim}` and
-    /// `gather`/`scatter` emit `{axis}`; `oob_policy` and a multi-axis
-    /// `reduce_axes` list are DEFERRED (no carrier/consumer yet), while
-    /// `monoid`/`scatter_combine` ride `op_name` and the index operand/dtype
-    /// ride `child_edges`/that operand node per the pinned node schema — so they
-    /// legitimately do not belong in this blob. See the module comment above and
-    /// kernel-seam-interop.md §7.3.2.
-    ///
-    /// M-3: the `unwrap_or(...)` defaults below cannot distinguish an *unset*
-    /// field from a genuine zero (e.g. `axis: None` vs `Some(0)`). Harmless
-    /// today — there is no decoder; this is a forward-serialization only, and an
-    /// op that reaches a given arm always has the field set (`op_to_attrs` /
-    /// `tag_to_op` guarantee it). A future decoder must not round-trip `None`.
-    pub fn to_canonical_bytes(&self, op: OpTag) -> Vec<u8> {
-        use OpTag as T;
-        let mut body: Vec<u8> = Vec::new();
-        match op {
-            // Shape-target ops: the logical output shape (Iota's len rides it).
-            T::Reshape | T::BroadcastTo | T::ReduceSumTo | T::ReduceMaxTo | T::Iota => {
-                put_i64_list(&mut body, &self.target_shape);
-            }
-            // Permute/Transpose: the absolute axis order.
-            T::Permute | T::Transpose => {
-                let perm: Vec<u32> = self.perm.iter().map(|&p| p as u32).collect();
-                put_u32_list(&mut body, &perm);
-            }
-            // Squeeze/Unsqueeze: the affected dim list.
-            T::Unsqueeze | T::Squeeze => {
-                let dims: Vec<u32> = self.dims.iter().map(|&d| d as u32).collect();
-                put_u32_list(&mut body, &dims);
-            }
-            // Slice: axis(u32), start(u64), len(u64).
-            T::Slice => {
-                put_u32(&mut body, self.axis.unwrap_or(0) as u32);
-                put_u64(&mut body, self.slice_start.unwrap_or(0));
-                put_u64(&mut body, self.slice_len.unwrap_or(0));
-            }
-            // Single-axis ops (dim rides `axis`).
-            T::Concat
-            | T::Flip
-            | T::Triu
-            | T::Tril
-            | T::IndexSelect
-            | T::Gather
-            | T::IndexAdd
-            | T::ScatterAdd => {
-                put_i64(&mut body, self.axis.unwrap_or(0));
-            }
-            // Roll: axis(i64) + shift(i64).
-            T::Roll => {
-                put_i64(&mut body, self.axis.unwrap_or(0));
-                put_i64(&mut body, self.roll_shift.unwrap_or(0));
-            }
-            // Dim reductions + cumsum: axis(i64) + keepdim(u8). The monoid
-            // rides op_name (distinct SumDim/MaxDim/MeanDim tags), so every
-            // reduce tag shares this one row schema.
-            T::SumDim | T::MaxDim | T::MeanDim | T::CumSum => {
-                put_i64(&mut body, self.axis.unwrap_or(0));
-                body.push(self.keepdim.unwrap_or(false) as u8);
-            }
-            // Cast: length-prefixed dtype name.
-            T::Cast => put_str(&mut body, self.cast_dtype.as_deref().unwrap_or("")),
-            // Pad: amounts (count + (before:u64, after:u64) each) + mode(u8) + value(f64).
-            T::Pad => {
-                put_u32(&mut body, self.pad_amounts.len() as u32);
-                for &(before, after) in &self.pad_amounts {
-                    put_u64(&mut body, before);
-                    put_u64(&mut body, after);
-                }
-                body.push(self.pad_mode.unwrap_or(0));
-                put_f64(&mut body, self.pad_value.unwrap_or(0.0));
-            }
-            // Scalar-param ops: the scalar list.
-            T::AddScalar | T::MulScalar | T::Clamp | T::PowI => {
-                put_f64_list(&mut body, &self.scalars);
-            }
-            // MaskedFill: scalar value(s) + value dtype name.
-            T::MaskedFill => {
-                put_f64_list(&mut body, &self.scalars);
-                put_str(&mut body, self.cast_dtype.as_deref().unwrap_or(""));
-            }
-            // MatMul: the LOCKED role-vector contraction descriptor (§5,
-            // reply-3) — `u32_le(len lhs) ++ lhs_roles ++ u32_le(len rhs) ++
-            // rhs_roles`, u8 roles, lhs-then-rhs. Both empty ⇒ the empty body
-            // (the canonical `[00,00,00,00]` implicit form; recipes keep matmul
-            // rank-polymorphic). The rank-2 golden is the shared cross-producer
-            // fixture (Baracuda #68).
-            T::MatMul => {
-                if !self.lhs_roles.is_empty() || !self.rhs_roles.is_empty() {
-                    put_u8_list(&mut body, &self.lhs_roles);
-                    put_u8_list(&mut body, &self.rhs_roles);
-                }
-            }
-            // --- the four ACKED source-op LEAF arms (KISS ruling record,
-            // "four-leaf-arm ack", 2026-07-23 — acked clean, no amendments) ---
-            //
-            // `const`: u64(bits) — a DTYPE-AGNOSTIC bit pattern (Q7: the
-            // structural DAG carries no dtype). MBZ narrow-dtype rule: a
-            // sub-64-bit dtype places its STORAGE bits in the LOW-order bits
-            // with the upper bits ZERO (must-be-zero on read) — producers widen
-            // via [`const_bits_narrow`]. A NaN payload is carried verbatim; this
-            // serializer never quiets or canonicalizes it.
-            T::Const => put_u64(&mut body, self.const_bits.unwrap_or(0)),
-            // `runtime_scalar`: u32(slot_index) — a DISPATCH-BOUND scalar, a
-            // distinct leaf from a baked `const` (an unfilled slot and a baked
-            // value are not interchangeable).
-            T::RuntimeScalar => put_u32(&mut body, self.slot_index.unwrap_or(0)),
-            // `reduced_count`: i64(axis) — single-axis, byte-identical to the
-            // fold row's leading axis field minus `keepdim`, so a resolver
-            // reuses the fold's axis-resolution codepath verbatim. Growth to a
-            // `reduce_axes` LIST happens ONLY in lockstep with the fold
-            // (§6.12-0001), never unilaterally here.
-            T::ReducedCount => put_i64(&mut body, self.axis.unwrap_or(0)),
-            // `scan_placeholder`: u8(role) ++ u32(index), role 0 = carry,
-            // 1 = elem ([`SCAN_ROLE_CARRY`]/[`SCAN_ROLE_ELEM`]).
-            T::ScanPlaceholder => {
-                body.push(self.scan_role.unwrap_or(SCAN_ROLE_CARRY));
-                put_u32(&mut body, self.scan_index.unwrap_or(0));
-            }
-            // Empty-schema ops (elementwise, comparison, Where, scalar
-            // reductions, log-softmax, …) and any tag added later: zero-length.
-            _ => {}
-        }
-        let mut out = (body.len() as u32).to_le_bytes().to_vec();
-        out.extend_from_slice(&body);
-        out
-    }
 }
 
 /// A node of the §3 declarative subgraph grammar. One type, two directions: a
@@ -897,11 +696,13 @@ mod tests {
     fn empty_schema_op_serializes_zero_length() {
         // Add carries no attrs → one canonical byte form: u32 LE length 0.
         assert_eq!(
-            OpAttrs::default().to_canonical_bytes(OpTag::Add),
+            OpAttrs::default().to_canonical_bytes(OpTag::Add).unwrap(),
             vec![0, 0, 0, 0]
         );
         assert_eq!(
-            OpAttrs::default().to_canonical_bytes(OpTag::MatMul),
+            OpAttrs::default()
+                .to_canonical_bytes(OpTag::MatMul)
+                .unwrap(),
             vec![0, 0, 0, 0]
         );
     }
@@ -925,7 +726,7 @@ mod tests {
         };
         expect.extend_from_slice(&(body.len() as u32).to_le_bytes());
         expect.extend_from_slice(&body);
-        assert_eq!(a.to_canonical_bytes(OpTag::Slice), expect);
+        assert_eq!(a.to_canonical_bytes(OpTag::Slice).unwrap(), expect);
     }
 
     #[test]
@@ -939,7 +740,7 @@ mod tests {
         body.extend_from_slice(b"f16");
         let mut expect = (body.len() as u32).to_le_bytes().to_vec();
         expect.extend_from_slice(&body);
-        assert_eq!(a.to_canonical_bytes(OpTag::Cast), expect);
+        assert_eq!(a.to_canonical_bytes(OpTag::Cast).unwrap(), expect);
     }
 
     #[test]
@@ -949,8 +750,8 @@ mod tests {
             ..OpAttrs::default()
         };
         assert_eq!(
-            a.to_canonical_bytes(OpTag::Reshape),
-            a.to_canonical_bytes(OpTag::Reshape)
+            a.to_canonical_bytes(OpTag::Reshape).unwrap(),
+            a.to_canonical_bytes(OpTag::Reshape).unwrap()
         );
     }
 
@@ -974,7 +775,7 @@ mod tests {
 
         // Carrier (a): node-envelope op_attrs — outer prefix is EXACTLY 4 bytes
         // (u32-LE); an empty schema is the 4-byte zero form.
-        let empty = OpAttrs::default().to_canonical_bytes(OpTag::Add);
+        let empty = OpAttrs::default().to_canonical_bytes(OpTag::Add).unwrap();
         assert_eq!(
             empty,
             vec![0u8, 0, 0, 0],
@@ -986,7 +787,7 @@ mod tests {
             slice_len: Some(3),
             ..OpAttrs::default()
         };
-        let blob = sliced.to_canonical_bytes(OpTag::Slice);
+        let blob = sliced.to_canonical_bytes(OpTag::Slice).unwrap();
         let a_body_len = u32::from_le_bytes([blob[0], blob[1], blob[2], blob[3]]) as usize;
         assert_eq!(
             blob.len(),
@@ -1082,8 +883,10 @@ mod tests {
         // Shape-target arm (BroadcastTo/Reshape): rel-only attrs serialize
         // byte-identically to fully-default attrs (an unset target_shape).
         assert_eq!(
-            rel_only.to_canonical_bytes(OpTag::BroadcastTo),
-            OpAttrs::default().to_canonical_bytes(OpTag::BroadcastTo),
+            rel_only.to_canonical_bytes(OpTag::BroadcastTo).unwrap(),
+            OpAttrs::default()
+                .to_canonical_bytes(OpTag::BroadcastTo)
+                .unwrap(),
             "target_shape_rel must not reach the broadcast_to wire arm"
         );
         // Slice arm: the ABSOLUTE fields serialize; adding every rel field on
@@ -1101,8 +904,8 @@ mod tests {
             ..rel_only.clone()
         };
         assert_eq!(
-            abs_plus_rel.to_canonical_bytes(OpTag::Slice),
-            abs.to_canonical_bytes(OpTag::Slice),
+            abs_plus_rel.to_canonical_bytes(OpTag::Slice).unwrap(),
+            abs.to_canonical_bytes(OpTag::Slice).unwrap(),
             "slice_{{start,len}}_rel must not reach the slice wire arm"
         );
         // Reduce row (axis ++ keepdim): axis_last must not leak.
@@ -1115,8 +918,8 @@ mod tests {
             ..rel_only.clone()
         };
         assert_eq!(
-            sd_plus_rel.to_canonical_bytes(OpTag::SumDim),
-            sd.to_canonical_bytes(OpTag::SumDim),
+            sd_plus_rel.to_canonical_bytes(OpTag::SumDim).unwrap(),
+            sd.to_canonical_bytes(OpTag::SumDim).unwrap(),
             "axis_last must not reach the reduce wire row"
         );
         // Scalar-param arm (AddScalar/MulScalar): a `scalar_rel` DimExpr with an
@@ -1124,13 +927,18 @@ mod tests {
         // wire arm emits only `scalars`), so the reduced_count rel carrier never
         // leaks onto the §6.19 wire.
         assert_eq!(
-            rel_only.to_canonical_bytes(OpTag::MulScalar),
-            OpAttrs::default().to_canonical_bytes(OpTag::MulScalar),
+            rel_only.to_canonical_bytes(OpTag::MulScalar).unwrap(),
+            OpAttrs::default()
+                .to_canonical_bytes(OpTag::MulScalar)
+                .unwrap(),
             "scalar_rel must not reach the mul_scalar wire arm"
         );
         // Empty-schema op: stays the single canonical 4-byte zero form even
         // with every rel field set.
-        assert_eq!(rel_only.to_canonical_bytes(OpTag::Add), vec![0, 0, 0, 0]);
+        assert_eq!(
+            rel_only.to_canonical_bytes(OpTag::Add).unwrap(),
+            vec![0, 0, 0, 0]
+        );
     }
 
     // ---- C-T2 (Increment C): OpTag::Fused is a Fuel-internal structural token,
@@ -1150,19 +958,19 @@ mod tests {
         // The Fused tag serializes to the single canonical 4-byte zero body —
         // byte-identical to a fully-default attrs blob (the selector is off-wire).
         assert_eq!(
-            fused.to_canonical_bytes(OpTag::Fused),
+            fused.to_canonical_bytes(OpTag::Fused).unwrap(),
             vec![0, 0, 0, 0],
             "OpTag::Fused must serialize to the empty canonical body"
         );
         assert_eq!(
-            fused.to_canonical_bytes(OpTag::Fused),
-            OpAttrs::default().to_canonical_bytes(OpTag::Fused),
+            fused.to_canonical_bytes(OpTag::Fused).unwrap(),
+            OpAttrs::default().to_canonical_bytes(OpTag::Fused).unwrap(),
             "the fused_op selector must not reach any wire arm"
         );
         // The selector also must not leak into any OTHER schema arm it could
         // plausibly ride alongside (it shares no field with a real op).
         assert_eq!(
-            fused.to_canonical_bytes(OpTag::Add),
+            fused.to_canonical_bytes(OpTag::Add).unwrap(),
             vec![0, 0, 0, 0],
             "fused_op must not leak into an empty-schema arm"
         );
@@ -1185,12 +993,12 @@ mod tests {
         let mut expect = 9u32.to_le_bytes().to_vec();
         expect.extend_from_slice(&1i64.to_le_bytes());
         expect.push(0u8);
-        assert_eq!(a.to_canonical_bytes(OpTag::MaxDim), expect);
+        assert_eq!(a.to_canonical_bytes(OpTag::MaxDim).unwrap(), expect);
         // Row-shape identity: byte-identical to the SumDim row for the same
         // attrs (the tag disambiguates via op_name, never via the blob).
         assert_eq!(
-            a.to_canonical_bytes(OpTag::MaxDim),
-            a.to_canonical_bytes(OpTag::SumDim),
+            a.to_canonical_bytes(OpTag::MaxDim).unwrap(),
+            a.to_canonical_bytes(OpTag::SumDim).unwrap(),
             "MaxDim must share the SumDim reduce-row schema"
         );
     }
@@ -1228,7 +1036,7 @@ mod tests {
             0x03, 0x02, //             rhs_roles = [ContractedK, FreeN]
         ];
         assert_eq!(
-            a.to_canonical_bytes(OpTag::MatMul),
+            a.to_canonical_bytes(OpTag::MatMul).unwrap(),
             golden,
             "the rank-2 matmul role-vector golden is the shared cross-producer contract (Baracuda #68)"
         );
@@ -1240,7 +1048,9 @@ mod tests {
         // single canonical 4-byte zero form. This preserves today's golden
         // (`empty_schema_op_serializes_zero_length`) untouched.
         assert_eq!(
-            OpAttrs::default().to_canonical_bytes(OpTag::MatMul),
+            OpAttrs::default()
+                .to_canonical_bytes(OpTag::MatMul)
+                .unwrap(),
             vec![0, 0, 0, 0]
         );
     }
@@ -1318,14 +1128,15 @@ mod tests {
             0x04, 0x00, 0x00, 0x00, // outer u32-LE body length = 4
             0x07, 0x00, 0x00, 0x00, // u32-LE slot_index = 7
         ];
-        assert_eq!(a.to_canonical_bytes(OpTag::RuntimeScalar), golden);
+        assert_eq!(a.to_canonical_bytes(OpTag::RuntimeScalar).unwrap(), golden);
         // Slot 0 is a real slot, not "unset": still the 4-byte body.
         assert_eq!(
             OpAttrs {
                 slot_index: Some(0),
                 ..OpAttrs::default()
             }
-            .to_canonical_bytes(OpTag::RuntimeScalar),
+            .to_canonical_bytes(OpTag::RuntimeScalar)
+            .unwrap(),
             vec![0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
         );
     }
@@ -1342,12 +1153,12 @@ mod tests {
         };
         let mut golden = 8u32.to_le_bytes().to_vec();
         golden.extend_from_slice(&1i64.to_le_bytes());
-        assert_eq!(a.to_canonical_bytes(OpTag::ReducedCount), golden);
+        assert_eq!(a.to_canonical_bytes(OpTag::ReducedCount).unwrap(), golden);
 
         // Fold-lockstep pin: the reduced_count body IS the reduce row's leading
         // i64(axis), with the reduce row's trailing u8(keepdim) absent.
-        let fold = a.to_canonical_bytes(OpTag::SumDim);
-        let rc = a.to_canonical_bytes(OpTag::ReducedCount);
+        let fold = a.to_canonical_bytes(OpTag::SumDim).unwrap();
+        let rc = a.to_canonical_bytes(OpTag::ReducedCount).unwrap();
         assert_eq!(
             rc[4..],
             fold[4..12],
@@ -1367,7 +1178,7 @@ mod tests {
         };
         let mut expect = 8u32.to_le_bytes().to_vec();
         expect.extend_from_slice(&(-1i64).to_le_bytes());
-        assert_eq!(neg.to_canonical_bytes(OpTag::ReducedCount), expect);
+        assert_eq!(neg.to_canonical_bytes(OpTag::ReducedCount).unwrap(), expect);
     }
 
     #[test]
@@ -1384,14 +1195,14 @@ mod tests {
         };
         let mut golden = 8u32.to_le_bytes().to_vec();
         golden.extend_from_slice(&0x3FF8_0000_0000_0000u64.to_le_bytes());
-        assert_eq!(f64_15.to_canonical_bytes(OpTag::Const), golden);
+        assert_eq!(f64_15.to_canonical_bytes(OpTag::Const).unwrap(), golden);
 
         // f32 — 32 storage bits low-order, upper 32 ZERO.
         let f32_15 = OpAttrs {
             const_bits: Some(const_bits_narrow(1.5f32.to_bits() as u64, 32)),
             ..OpAttrs::default()
         };
-        let blob = f32_15.to_canonical_bytes(OpTag::Const);
+        let blob = f32_15.to_canonical_bytes(OpTag::Const).unwrap();
         assert_eq!(
             blob,
             vec![
@@ -1407,7 +1218,7 @@ mod tests {
             ..OpAttrs::default()
         };
         assert_eq!(
-            f16_15.to_canonical_bytes(OpTag::Const),
+            f16_15.to_canonical_bytes(OpTag::Const).unwrap(),
             vec![
                 0x08, 0x00, 0x00, 0x00, 0x00, 0x3E, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
             ],
@@ -1417,7 +1228,7 @@ mod tests {
             ..OpAttrs::default()
         };
         assert_eq!(
-            bf16_15.to_canonical_bytes(OpTag::Const),
+            bf16_15.to_canonical_bytes(OpTag::Const).unwrap(),
             vec![
                 0x08, 0x00, 0x00, 0x00, 0xC0, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
             ],
@@ -1465,7 +1276,7 @@ mod tests {
             const_bits: Some(const_bits_narrow(F32_NAN_PAYLOAD as u64, 32)),
             ..OpAttrs::default()
         };
-        let blob = a.to_canonical_bytes(OpTag::Const);
+        let blob = a.to_canonical_bytes(OpTag::Const).unwrap();
         assert_eq!(
             blob,
             vec![
@@ -1494,7 +1305,7 @@ mod tests {
             const_bits: Some(F64_SNAN_PAYLOAD),
             ..OpAttrs::default()
         };
-        let dblob = d.to_canonical_bytes(OpTag::Const);
+        let dblob = d.to_canonical_bytes(OpTag::Const).unwrap();
         assert_eq!(
             u64::from_le_bytes(dblob[4..12].try_into().unwrap()),
             F64_SNAN_PAYLOAD,
@@ -1515,7 +1326,7 @@ mod tests {
             ..OpAttrs::default()
         };
         assert_eq!(
-            carry.to_canonical_bytes(OpTag::ScanPlaceholder),
+            carry.to_canonical_bytes(OpTag::ScanPlaceholder).unwrap(),
             vec![0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00],
             "carry hole: u32-LE(5) ++ u8(0) ++ u32-LE(0)"
         );
@@ -1526,7 +1337,7 @@ mod tests {
             ..OpAttrs::default()
         };
         assert_eq!(
-            elem.to_canonical_bytes(OpTag::ScanPlaceholder),
+            elem.to_canonical_bytes(OpTag::ScanPlaceholder).unwrap(),
             vec![0x05, 0x00, 0x00, 0x00, 0x01, 0x02, 0x00, 0x00, 0x00],
             "elem hole: u32-LE(5) ++ u8(1) ++ u32-LE(2)"
         );
@@ -1537,8 +1348,8 @@ mod tests {
             ..OpAttrs::default()
         };
         assert_ne!(
-            carry.to_canonical_bytes(OpTag::ScanPlaceholder),
-            elem0.to_canonical_bytes(OpTag::ScanPlaceholder),
+            carry.to_canonical_bytes(OpTag::ScanPlaceholder).unwrap(),
+            elem0.to_canonical_bytes(OpTag::ScanPlaceholder).unwrap(),
         );
     }
 
@@ -1561,7 +1372,7 @@ mod tests {
             (OpTag::Const, 8),
             (OpTag::ScanPlaceholder, 5),
         ] {
-            let blob = a.to_canonical_bytes(tag);
+            let blob = a.to_canonical_bytes(tag).unwrap();
             let declared = u32::from_le_bytes(blob[..4].try_into().unwrap()) as usize;
             assert_eq!(
                 declared, body_len,
@@ -1583,17 +1394,115 @@ mod tests {
         // `Op::Iota`, a `Runtime { scalars }` slot on the consuming op,
         // `Op::ScanPlaceholder` inside `Op::Scan`'s body, and Mean's divisor
         // folded into `Op::MeanDim`). So `jit::op_to_tag` emits none of them and
-        // `runtime_fused::tag_to_op` declines all four as honest misses — the
+        // `runtime_fused::tag_to_op` declines `Const`/`RuntimeScalar`/`ReducedCount`
+        // as honest misses but RECONSTRUCTS `ScanPlaceholder` (explicit arm,
+        // `Increment C, B1`) — the
         // flat-DAG-CSE recipe interior that would produce them is the (unbuilt)
         // Convergence-C home. Pinned here so a later wiring change is deliberate.
         //
-        // The observable consequence in THIS crate: unset attrs still serialize
-        // to the tag's fixed-width body (the M-3 unset-vs-zero caveat), never a
-        // panic and never an empty body.
+        // The observable consequence in THIS crate, CHANGED BY GAP-287: unset
+        // attrs are DECLINED, not serialized to a fixed-width body of defaults.
+        //
+        // This assertion is the inverse of the one it replaces. The old text
+        // read "unset attrs still serialize to the tag's fixed-width body (the
+        // M-3 unset-vs-zero caveat), never a panic and never an empty body" and
+        // pinned the four LENGTHS -- i.e. it encoded the fabrication as a
+        // REQUIREMENT. It was the ONLY test in this crate that failed when the
+        // encoder began declining, which is the born-red for this change: the
+        // suite already contained an assertion that the defect held.
         let d = OpAttrs::default();
-        assert_eq!(d.to_canonical_bytes(OpTag::RuntimeScalar).len(), 4 + 4);
-        assert_eq!(d.to_canonical_bytes(OpTag::ReducedCount).len(), 4 + 8);
-        assert_eq!(d.to_canonical_bytes(OpTag::Const).len(), 4 + 8);
-        assert_eq!(d.to_canonical_bytes(OpTag::ScanPlaceholder).len(), 4 + 5);
+        for (tag, field) in [
+            (OpTag::RuntimeScalar, "slot_index"),
+            (OpTag::ReducedCount, "axis"),
+            (OpTag::Const, "const_bits"),
+            (OpTag::ScanPlaceholder, "scan_role"),
+        ] {
+            assert_eq!(
+                d.to_canonical_bytes(tag),
+                Err(UnresolvedAttr { op: tag, field }),
+                "{tag:?} must DECLINE an unset `{field}`, not emit a default"
+            );
+        }
+
+        // CONTROL, so the four declines are not merely "this function always
+        // errors": a tag whose arm reads nothing still succeeds with the empty
+        // body, and a fully-populated leaf still serializes to the same length.
+        assert_eq!(d.to_canonical_bytes(OpTag::Add).unwrap(), vec![0, 0, 0, 0]);
+        let filled = OpAttrs {
+            scan_role: Some(SCAN_ROLE_ELEM),
+            scan_index: Some(2),
+            ..OpAttrs::default()
+        };
+        assert_eq!(
+            filled
+                .to_canonical_bytes(OpTag::ScanPlaceholder)
+                .unwrap()
+                .len(),
+            4 + 5,
+            "a RESOLVED ScanPlaceholder still emits the same 5-byte body"
+        );
+    }
+
+    /// The GAP-287 defect itself, asserted as GONE: two `Gather`s on different
+    /// axes no longer collide, because neither is expressible unresolved.
+    ///
+    /// `fuel-graph`'s `distinct_gathers_serialize_identically_gap287` pinned the
+    /// collision from the projection side; this is the same fact from inside the
+    /// crate that owns the encoder.
+    #[test]
+    fn an_unresolved_axis_is_inexpressible_gap287() {
+        assert_eq!(
+            OpAttrs::default().to_canonical_bytes(OpTag::Gather),
+            Err(UnresolvedAttr {
+                op: OpTag::Gather,
+                field: "axis"
+            })
+        );
+
+        // Resolved axes are distinct on the wire -- the property the collapse
+        // destroyed. This is the assertion no decoder could have restored.
+        let a0 = OpAttrs {
+            axis: Some(0),
+            ..OpAttrs::default()
+        };
+        let a2 = OpAttrs {
+            axis: Some(2),
+            ..OpAttrs::default()
+        };
+        assert_ne!(
+            a0.to_canonical_bytes(OpTag::Gather).unwrap(),
+            a2.to_canonical_bytes(OpTag::Gather).unwrap(),
+            "axis 0 and axis 2 must differ on the wire"
+        );
+    }
+
+    /// `keepdim` still defaults, and that is deliberate rather than an omission.
+    ///
+    /// Declining it would refuse input `tag_to_op` ACCEPTS: the decoder reads no
+    /// `keepdim` for these tags at all, because Fuel encodes keepdim=true
+    /// STRUCTURALLY as `ReduceSumTo`/`ReduceMaxTo` on the shape-target arm.
+    /// Pinned so a future "consistency" sweep does not make this arm strict and
+    /// break the round-trip in the name of tidiness.
+    #[test]
+    fn keepdim_still_defaults_because_the_decoder_never_reads_it() {
+        let axis_only = OpAttrs {
+            axis: Some(1),
+            ..OpAttrs::default()
+        };
+        let bytes = axis_only
+            .to_canonical_bytes(OpTag::SumDim)
+            .expect("axis is set; keepdim is not required");
+        assert_eq!(bytes.len(), 4 + 8 + 1, "axis(i64) + keepdim(u8)");
+        assert_eq!(*bytes.last().unwrap(), 0, "keepdim defaults to false");
+
+        // And the axis on the SAME arm is still required -- so this cannot pass
+        // by the arm having become permissive.
+        assert_eq!(
+            OpAttrs::default().to_canonical_bytes(OpTag::SumDim),
+            Err(UnresolvedAttr {
+                op: OpTag::SumDim,
+                field: "axis"
+            })
+        );
     }
 }
