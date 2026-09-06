@@ -319,36 +319,58 @@ fn rel(p: &Path) -> String {
         .replace('\\', "/")
 }
 
+/// Advance past a run of bytes satisfying `pred`.
+fn scan(b: &[u8], mut j: usize, pred: impl Fn(u8) -> bool) -> usize {
+    while j < b.len() && pred(b[j]) {
+        j += 1;
+    }
+    j
+}
+
+/// Consume the byte `c` at `j`, or fail.
+fn eat(b: &[u8], j: usize, c: u8) -> Option<usize> {
+    (j < b.len() && b[j] == c).then_some(j + 1)
+}
+
+/// End index of the clause id beginning at `start`, which must sit on `KISS-`.
+///
+/// Split out of `clause_ids_in` rather than compressed: the grammar is four
+/// guarded segments and expressing it as one nested condition chain is what
+/// made the scanner unreadable (and tripped a complexity gate).
+fn clause_id_end(b: &[u8], start: usize) -> Option<usize> {
+    let mut j = start + "KISS-".len();
+
+    let area = j;
+    j = scan(b, j, |c| c.is_ascii_uppercase());
+    if j == area {
+        return None;
+    }
+    j = eat(b, j, b'-')?;
+
+    let sec = j;
+    j = scan(b, j, |c| c.is_ascii_digit() || c == b'.');
+    // A section must be `<n>.<n>`: digits alone are not a clause id.
+    if j == sec || !b[sec..j].contains(&b'.') {
+        return None;
+    }
+    j = eat(b, j, b'-')?;
+
+    let num = j;
+    j = scan(b, j, |c| c.is_ascii_digit());
+    (j > num).then_some(j)
+}
+
 /// Scan for `KISS-<AREA>-<n>.<n>-<nnnn>` without a regex crate.
 fn clause_ids_in(src: &str) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
     let b = src.as_bytes();
+    let mut out = BTreeSet::new();
     let mut i = 0;
     while let Some(off) = src[i..].find("KISS-") {
         let start = i + off;
-        let mut j = start + 5;
-        let area = j;
-        while j < b.len() && b[j].is_ascii_uppercase() {
-            j += 1;
+        if let Some(end) = clause_id_end(b, start) {
+            out.insert(src[start..end].to_string());
         }
-        if j > area && j < b.len() && b[j] == b'-' {
-            j += 1;
-            let sec = j;
-            while j < b.len() && (b[j].is_ascii_digit() || b[j] == b'.') {
-                j += 1;
-            }
-            if j > sec && src[sec..j].contains('.') && j < b.len() && b[j] == b'-' {
-                j += 1;
-                let num = j;
-                while j < b.len() && b[j].is_ascii_digit() {
-                    j += 1;
-                }
-                if j > num {
-                    out.insert(src[start..j].to_string());
-                }
-            }
-        }
-        i = start + 5;
+        i = start + "KISS-".len();
     }
     out
 }
