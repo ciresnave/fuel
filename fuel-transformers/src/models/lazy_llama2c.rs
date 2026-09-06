@@ -93,7 +93,7 @@ impl Llama2cConfigRaw {
                 self.head_dim,
                 self.hidden_size,
                 self.num_attention_heads,
-            ),
+            )?,
             norm_eps: self.norm_eps,
             rope_theta: self.rope_theta,
         })
