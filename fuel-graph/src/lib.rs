@@ -8003,6 +8003,104 @@ impl NodeHandle {
         self.binary_op("minimum", Op::Minimum, other, self.shape())
     }
 
+    /// The IEEE-754 NaN-**suppressing** maximum — the KISS-OPS §6.15-0001
+    /// `fmax_ieee` op, DISTINCT from [`maximum`](Self::maximum) (which is
+    /// NaN-**propagating**, torch parity). If exactly one operand is NaN, returns
+    /// the other; if both are NaN, returns NaN; otherwise the larger.
+    ///
+    /// Built by RESOLUTION through the spec-pinned §6.13 decomposition
+    /// (KISS-OPS-6.15-0001), used VERBATIM — Fuel does not substitute `maximum`
+    /// for it (that substitution is the §6.15 violation). Because the
+    /// decomposition is spec-authored, its edge behaviour — including ±0 ordering
+    /// under `cmp_ge` (`cmp_ge(-0.0, +0.0)` is true, so this returns `-0.0` for
+    /// that pair) — is the SPEC's to define and a KISS conformance vector's to
+    /// catch. Fuel resolves; it does not re-derive. (GAP-048.)
+    pub fn fmax_ieee(&self, other: &NodeHandle) -> NodeHandle {
+        // select(a != a, b, select(b != b, a, select(a >= b, a, b)))
+        let a = self;
+        let b = other;
+        let plain = a.ge(b).where_cond(a, b); // a >= b ? a : b
+        let b_not_nan = b.ne(b).where_cond(a, &plain); // b is NaN ? a : plain
+        a.ne(a).where_cond(b, &b_not_nan) // a is NaN ? b : (above)
+    }
+
+    /// The IEEE-754 NaN-**suppressing** minimum — the KISS-OPS §6.15-0001
+    /// `fmin_ieee` op, DISTINCT from [`minimum`](Self::minimum) (which is
+    /// NaN-**propagating**, torch parity). If exactly one operand is NaN, returns
+    /// the other; if both are NaN, returns NaN; otherwise the smaller.
+    ///
+    /// Built by RESOLUTION through the spec-pinned KISS-OPS §6.13 decomposition
+    /// (KISS-OPS-6.15-0001), used VERBATIM — the `cmp_le` mirror of
+    /// [`fmax_ieee`](Self::fmax_ieee)'s `cmp_ge` form. Fuel resolves; it does not
+    /// substitute `minimum` (that substitution is the §6.15 violation) and does
+    /// not re-derive: the decomposition is KISS's, so its ±0 edge behaviour is the
+    /// spec's to define and a KISS conformance vector's to catch. (GAP-048.)
+    pub fn fmin_ieee(&self, other: &NodeHandle) -> NodeHandle {
+        // select(a != a, b, select(b != b, a, select(a <= b, a, b)))
+        let a = self;
+        let b = other;
+        let plain = a.le(b).where_cond(a, b); // a <= b ? a : b
+        let b_not_nan = b.ne(b).where_cond(a, &plain); // b is NaN ? a : plain
+        a.ne(a).where_cond(b, &b_not_nan) // a is NaN ? b : (above)
+    }
+
+    /// Round toward zero — the KISS-OPS §6.3 `trunc` floor op (GAP-300).
+    ///
+    /// ⚠️ Unlike [`fmax_ieee`](Self::fmax_ieee)/[`fmin_ieee`](Self::fmin_ieee),
+    /// which resolve through KISS's OWN §6.13 decompositions, `trunc` is a §6.3
+    /// *floor* op: KISS-OPS-6.3-0003 forbids the standard from carrying a
+    /// reference decomposition for a floor op, so THIS expansion is FUEL's, blessed
+    /// by no spec clause and caught by NO KISS conformance vector. Its correctness
+    /// at `-0.0`/NaN/±inf is Fuel's liability — see GAP-300, whose born-reds assert
+    /// on `to_bits()` (a value compare `0.0 == -0.0` passes vacuously).
+    ///
+    /// `trunc(q) = if q >= 0 { floor(q) } else { ceil(q) }`. Float dtypes only;
+    /// integer dtypes are already whole, so `trunc` is identity for them (returned
+    /// unchanged — never a panic on a non-float operand).
+    ///
+    /// REJECTED-FOR-NOW alternative: `copysign(floor(abs(q)), q)` is cleaner (no
+    /// dtype-matched zero; ±0/NaN/inf fall out of the IEEE primitives). Fuel has no
+    /// `copysign` op today (absent from `Op` and the builder API), so it is not
+    /// buildable — adopt it IF `copysign` ever lands.
+    pub fn trunc(&self) -> NodeHandle {
+        let q = self;
+        // A scalar zero of q's dtype, broadcast to q's shape — comparisons require
+        // matching shapes (no implicit broadcast in `binary_compare_op`).
+        let zero = match q.dtype() {
+            DType::F32 => q.const_f32_like(vec![0.0f32], &[1]).broadcast_to(q.shape()),
+            DType::F64 => q.const_f64_like(vec![0.0f64], &[1]).broadcast_to(q.shape()),
+            DType::BF16 => q
+                .const_bf16_like(vec![half::bf16::from_f32(0.0)], &[1])
+                .broadcast_to(q.shape()),
+            DType::F16 => q
+                .const_f16_like(vec![half::f16::from_f32(0.0)], &[1])
+                .broadcast_to(q.shape()),
+            // Integer/other dtypes are already whole: trunc is identity.
+            _ => return q.clone(),
+        };
+        // q >= 0 ? floor(q) : ceil(q). Note: at ±0 BOTH branches yield the same
+        // signed zero (`floor(-0.0) == ceil(-0.0) == -0.0`), so trunc's ±0 result
+        // is robust to a tie-bias in `ge` — but the born-red still checks the bits.
+        q.ge(&zero).where_cond(&q.floor(), &q.ceil())
+    }
+
+    /// Truncated remainder — the KISS-OPS §6.15-0003 `rem_trunc` op, DISTINCT from
+    /// [`rem`](Self::rem) (which is FLOORED / PyTorch, sign of the *divisor*).
+    /// `rem_trunc` takes the sign of the *dividend* (C99 `fmod` / Rust `%`).
+    ///
+    /// Built by RESOLUTION through KISS's spec-pinned §6.13 decomposition
+    /// (KISS-OPS-6.15-0003) — `a - trunc(a / b) * b` — used VERBATIM. Fuel does not
+    /// substitute `rem` (that substitution is the §6.15 violation); the two diverge
+    /// whenever the operands have opposite signs (e.g. `-7 rem_trunc 3 = -1`, where
+    /// `rem` (floored) = `2`). The `trunc` leaf is Fuel's own expansion (GAP-300).
+    pub fn rem_trunc(&self, other: &NodeHandle) -> NodeHandle {
+        // a - trunc(a / b) * b
+        let a = self;
+        let b = other;
+        let t = a.div(b).trunc();
+        a.sub(&t.mul(b))
+    }
+
     /// Element-wise addition with automatic broadcasting. Unlike `add`,
     /// which requires matching shapes, `broadcast_add` computes the
     /// broadcast shape of the two operands, inserts explicit

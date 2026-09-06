@@ -476,6 +476,44 @@ impl Tensor {
         })
     }
 
+    /// IEEE-754 NaN-**suppressing** maximum (`fmax_ieee`, KISS-OPS §6.15-0001) —
+    /// DISTINCT from [`maximum`](Self::maximum) (NaN-propagating). Resolves through
+    /// the spec-pinned §6.13 decomposition; does not substitute `maximum`. GAP-048.
+    pub fn fmax_ieee(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
+        self.check_strict_binary("fmax_ieee", other)?;
+        Ok(Self {
+            inner: self.inner.fmax_ieee(&other.inner),
+        })
+    }
+
+    /// IEEE-754 NaN-**suppressing** minimum (`fmin_ieee`, KISS-OPS §6.15-0001) —
+    /// DISTINCT from [`minimum`](Self::minimum) (NaN-propagating). GAP-048.
+    pub fn fmin_ieee(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
+        self.check_strict_binary("fmin_ieee", other)?;
+        Ok(Self {
+            inner: self.inner.fmin_ieee(&other.inner),
+        })
+    }
+
+    /// Truncated remainder (`rem_trunc`, KISS-OPS §6.15-0003) — sign of the
+    /// DIVIDEND (C99 `fmod`), DISTINCT from [`rem`](Self::rem) (floored, sign of
+    /// the divisor). Resolves through the spec-pinned §6.13 decomposition. GAP-048.
+    pub fn rem_trunc(&self, other: &Self) -> std::result::Result<Self, fuel_ir::Error> {
+        self.check_strict_binary("rem_trunc", other)?;
+        Ok(Self {
+            inner: self.inner.rem_trunc(&other.inner),
+        })
+    }
+
+    /// Round toward zero (`trunc`, KISS-OPS §6.3 floor op; GAP-300). Fuel's own
+    /// expansion (`q>=0 ? floor(q) : ceil(q)`), NOT spec-pinned — its ±0/NaN/inf
+    /// correctness is Fuel's liability. Integer dtypes are identity.
+    pub fn trunc(&self) -> Self {
+        Self {
+            inner: self.inner.trunc(),
+        }
+    }
+
     /// Element-wise equality (`self == other`) producing a `U8` mask:
     /// `1` where equal, `0` otherwise. Both operands must share dtype
     /// and shape. NaN follows IEEE-754 (`NaN == NaN` is false). The
@@ -2349,6 +2387,150 @@ mod tests {
             max_result[1]
         );
         assert_eq!(max_result[2], 3.0, "maximum(3, 2) non-NaN sanity");
+    }
+
+    // ===== GAP-048: KISS-Ops §6.15 resolution helpers (fmax_ieee / fmin_ieee /
+    // rem_trunc) — realized end-to-end because fuel-graph tests only BUILD; the
+    // VALUE divergence needs a backend. Do NOT move these "closer to the code" in
+    // fuel-graph: there they cannot realize and become vacuous. =====
+
+    #[test]
+    fn fmax_fmin_ieee_suppress_nan_where_prop_propagates() {
+        // §6.15-0001 divergence born-red. The IEEE (suppress) and torch-parity
+        // (propagate) halves diverge ONLY on a NaN operand — a no-NaN fixture
+        // passes under BOTH and is vacuous, so the fixture must carry NaN.
+        let a = Tensor::from_f32(
+            vec![f32::NAN, 2.0, 5.0],
+            Shape::from_dims(&[3]),
+            &Device::cpu(),
+        );
+        let b = a.const_f32_like(vec![3.0, f32::NAN, 4.0], Shape::from_dims(&[3]));
+
+        let fmax = a.fmax_ieee(&b).unwrap().realize_f32();
+        assert_eq!(fmax[0], 3.0, "fmax_ieee(NaN,3) suppresses NaN → 3");
+        assert_eq!(fmax[1], 2.0, "fmax_ieee(2,NaN) suppresses NaN → 2");
+        assert_eq!(fmax[2], 5.0, "fmax_ieee(5,4) → 5");
+        let max = a.maximum(&b).unwrap().realize_f32();
+        assert!(
+            max[0].is_nan() && max[1].is_nan(),
+            "maximum PROPAGATES NaN — the divergence that makes fmax_ieee distinct"
+        );
+
+        let fmin = a.fmin_ieee(&b).unwrap().realize_f32();
+        assert_eq!(fmin[0], 3.0, "fmin_ieee(NaN,3) suppresses NaN → 3");
+        assert_eq!(fmin[1], 2.0, "fmin_ieee(2,NaN) suppresses NaN → 2");
+        assert_eq!(fmin[2], 4.0, "fmin_ieee(5,4) → 4");
+        let min = a.minimum(&b).unwrap().realize_f32();
+        assert!(
+            min[0].is_nan() && min[1].is_nan(),
+            "minimum PROPAGATES NaN — the divergence that makes fmin_ieee distinct"
+        );
+    }
+
+    #[test]
+    fn fmax_fmin_ieee_signed_zero_tie_operand_a_wins_bitwise() {
+        // KISS Appendix A.3: on a ±0 tie (cmp_ge and cmp_le both true) operand `a`
+        // (self) wins in all four minmax ops. ⚠️ Asserted on to_bits() — a value
+        // compare cannot tell +0.0 from -0.0 and would pass VACUOUSLY. Fuel has
+        // live ±0 tie-bias on CPU (#67)/Vulkan (#76) minmax paths, so if the CPU
+        // `ge`/`where` path is tie-biased this born-red REVEALS it rather than
+        // hiding it behind a value compare.
+        //
+        // ⚠️ SENSITIVITY PROVEN, not assumed (this test passed on first write, and
+        // a first-write pass demonstrates nothing about its own sensitivity):
+        // sabotaging the fmax_ieee decomposition `cmp_ge` → `cmp_gt` flips the tie
+        // to b-wins and this goes RED with left=0 (+0.0) vs right=0x80000000 (-0.0).
+        // So the a-wins result below is EARNED — the CPU ge/where path resolves the
+        // tie a-wins, not tie-biased. Testing BOTH operand orders (each asserting
+        // the *first* operand's zero) is the permanent discriminator: an order
+        // swap or a collapse-to-constant flips one side; a return-`a`/return-`b`
+        // collapse is caught by the sibling NaN test (fmax(NaN,3)=3 needs `b`,
+        // fmax(2,NaN)=2 needs `a`). GAP-048.
+        let a = Tensor::from_f32(vec![-0.0, 0.0], Shape::from_dims(&[2]), &Device::cpu());
+        let b = a.const_f32_like(vec![0.0, -0.0], Shape::from_dims(&[2]));
+
+        let fmax = a.fmax_ieee(&b).unwrap().realize_f32();
+        assert_eq!(
+            fmax[0].to_bits(),
+            (-0.0f32).to_bits(),
+            "fmax_ieee(-0.0,+0.0): operand a wins the tie → -0.0 (bitwise)"
+        );
+        assert_eq!(
+            fmax[1].to_bits(),
+            (0.0f32).to_bits(),
+            "fmax_ieee(+0.0,-0.0): operand a wins the tie → +0.0 (bitwise)"
+        );
+
+        let fmin = a.fmin_ieee(&b).unwrap().realize_f32();
+        assert_eq!(
+            fmin[0].to_bits(),
+            (-0.0f32).to_bits(),
+            "fmin_ieee(-0.0,+0.0): operand a wins the tie → -0.0 (bitwise)"
+        );
+        assert_eq!(
+            fmin[1].to_bits(),
+            (0.0f32).to_bits(),
+            "fmin_ieee(+0.0,-0.0): operand a wins the tie → +0.0 (bitwise)"
+        );
+    }
+
+    #[test]
+    fn rem_trunc_diverges_from_floored_rem_on_opposite_signs() {
+        // §6.15-0003 divergence born-red. rem_trunc (sign of the DIVIDEND, C99
+        // fmod) vs rem (floored, sign of the divisor) diverge ONLY when the
+        // operands have opposite signs — a same-sign fixture is vacuous.
+        let a = Tensor::from_f32(
+            vec![-7.0, 7.0, -7.0],
+            Shape::from_dims(&[3]),
+            &Device::cpu(),
+        );
+        let b = a.const_f32_like(vec![3.0, -3.0, -3.0], Shape::from_dims(&[3]));
+
+        let rt = a.rem_trunc(&b).unwrap().realize_f32();
+        assert_eq!(rt[0], -1.0, "-7 rem_trunc 3 = -1 (sign of dividend)");
+        assert_eq!(rt[1], 1.0, "7 rem_trunc -3 = 1 (sign of dividend)");
+        assert_eq!(rt[2], -1.0, "-7 rem_trunc -3 = -1");
+        let rf = a.rem(&b).unwrap().realize_f32();
+        assert_eq!(
+            rf[0], 2.0,
+            "-7 rem 3 = 2 (floored, sign of divisor) — the divergence from rem_trunc"
+        );
+    }
+
+    #[test]
+    fn trunc_edges_signed_zero_nan_inf_bitwise() {
+        // GAP-300: trunc's expansion (q>=0 ? floor : ceil) is FUEL's own — no KISS
+        // vector catches an error in it, so its edges are verified HERE. ⚠️ ±0 on
+        // to_bits() (value compare 0.0 == -0.0 is vacuous).
+        let q = Tensor::from_f32(
+            vec![
+                2.7,
+                -2.7,
+                -0.0,
+                0.0,
+                f32::NAN,
+                f32::INFINITY,
+                f32::NEG_INFINITY,
+            ],
+            Shape::from_dims(&[7]),
+            &Device::cpu(),
+        );
+        let t = q.trunc().realize_f32();
+        assert_eq!(t[0], 2.0, "trunc(2.7) = 2 (toward zero)");
+        assert_eq!(t[1], -2.0, "trunc(-2.7) = -2 (toward zero, NOT -3)");
+        assert_eq!(
+            t[2].to_bits(),
+            (-0.0f32).to_bits(),
+            "trunc(-0.0) must PRESERVE -0.0 (bitwise, not +0.0)"
+        );
+        assert_eq!(
+            t[3].to_bits(),
+            (0.0f32).to_bits(),
+            "trunc(+0.0) = +0.0 (bitwise)"
+        );
+        assert!(t[4].is_nan(), "trunc(NaN) = NaN");
+        assert_eq!(t[5], f32::INFINITY, "trunc(+inf) = +inf");
+        assert_eq!(t[6], f32::NEG_INFINITY, "trunc(-inf) = -inf");
     }
 
     #[test]

@@ -99,6 +99,30 @@ sits at bit 16 (KISS's EXT-experimental range — KISS puts provider features at
   `_scalar`-suffix ABI sniffing), plus a small additive requirement for Fuel-as-provider.
 - **Structured accept-block over an opaque `structure_key`** — FKC's parsed 5-flag `LayoutSpec` lets
   layout/dtype facts flow to the optimizer where a byte-matched opaque token would hide them.
+- **KISS-OPS §6.15 minmax/remainder distinctions RESOLVED by decomposition, not native primitives**
+  (GAP-048). KISS-OPS §6.15 pins four op pairs an implementation must not merge/alias/substitute. Fuel
+  conforms on all four: `relu` (§6.15-0002) and `gelu`-erf-vs-tanh (§6.15-0004) are NATIVE; the
+  NaN-**suppressing** `fmax_ieee`/`fmin_ieee` (§6.15-0001) and truncated `rem_trunc` (§6.15-0003) are
+  **RESOLVED** through KISS's own §6.13 decompositions (KISS-OPS §6.14-0004 / §7.1-0002's
+  reference-decomposition path), as `NodeHandle` graph helpers over Fuel's existing floor — **zero new
+  primitives**. Deliberate: Fuel is DAG-first and the spec authored the decompositions, so adding native
+  primitives across four backends for ops with no consumer would be waste. This is RESOLUTION, **not
+  omission and not a "profile deviation"** — KISS has no deviation mechanism (§7.2 is a CLAIM mechanism,
+  not an exemption). And it is never SUBSTITUTION: Fuel's `Maximum`/`Minimum` stay NaN-propagating (torch
+  parity) and advertise as `max_prop`/`min_prop`, **never** as the IEEE ops — guarded in
+  `fuel-kiss-ref-backend::mapping` so a `Maximum → fmax_ieee` arm cannot land. Divergences pinned by
+  born-reds realized end-to-end (fmax/fmin SUPPRESS NaN where `maximum`/`minimum` propagate; `rem_trunc`
+  takes the sign of the dividend where `rem` is floored). ±0 ties follow KISS `maxNum`/A.3 (operand `a`
+  wins), asserted BITWISE.
+- **⚠️ `trunc` (a §6.3 floor op) rests on Fuel's OWN expansion, not a spec decomposition** (GAP-300).
+  `rem_trunc` needs `trunc`, and KISS-OPS §6.3-0003 forbids a floor op from carrying an in-standard
+  reference decomposition — so §6.14-0004 resolution is EMPTY for `trunc` and no KISS conformance vector
+  catches an error in it. Fuel's `trunc(q) = if q>=0 { floor(q) } else { ceil(q) }` is therefore Fuel's
+  liability; its `-0.0`/NaN/±inf edges are verified by born-reds asserting on raw BITS (a value compare
+  `0.0 == -0.0` is vacuous). Fuel additionally lacks native `trunc`/`copysign`/`atan`/`atan2`/`lgamma`
+  as `Op` variants — a §6.3 floor-completeness question tracked in GAP-300 (a structural probe; the
+  obligation is behavioural — "able to evaluate" — so not promoted to a finding without measuring an
+  ingest path).
 
 ---
 
