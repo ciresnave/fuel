@@ -49,7 +49,56 @@ use crate::kernel::OpParams;
 use fuel_graph::registry::FusedOpParams;
 
 /// The maximum `fkc_version` this importer understands (FKC §10.1 / §11).
+///
+/// # Two independent version axes (GAP-038 — KISS-CONTRACT §8-0001..0007)
+///
+/// `fkc_version` is the **wire/schema** axis: the format of the contract file.
+/// The **second** axis is the producing **crate's published semver** (in
+/// `Cargo.toml` and the registry) — deliberately *not* stamped in any contract
+/// (KISS pins the Provenance block to a closed 5-field set with no crate-version
+/// field). The bump rule, transcribed from KISS-CONTRACT §8 and umbrella §5.1
+/// (verify at the KISS tree; this is a pointer, not the authority):
+///
+/// | change                                             | bumps |
+/// |----------------------------------------------------|-------|
+/// | a pure code refactor that preserves the bytes      | crate semver ONLY (§8-0001) |
+/// | a front-matter/section **schema** change (§8-0002) | `fkc_version` (and hence semver) |
+/// | an upstream **vocabulary** change — a new KISS-Ops  | NEITHER axis (§8-0003) |
+/// |   op name, a KISS-Grammar shape                    |       |
+///
+/// §8-0001: the two axes are INDEPENDENT — a crate-semver change MUST NOT imply a
+/// schema change, so `FKC_VERSION_MAX` is a literal and MUST NOT be derived from
+/// `CARGO_PKG_VERSION`. ⚠️ §8-0003 is the counter-intuitive one: an upstream
+/// op-name change is NOT a schema change and MUST NOT bump this. The compile-time
+/// pin below enforces §8-0002 while, by pinning the front-matter STRUCT rather
+/// than the op vocabulary, leaving §8-0003's vocabulary changes untouched.
 pub const FKC_VERSION_MAX: u32 = 1;
+
+/// GAP-038 / §8-0002 — compile-time schema pin. Adding, removing, or retyping a
+/// field on [`crate::fkc::schema::FkcFrontMatter`] fails to compile HERE (the
+/// destructure is exhaustive), forcing the schema-vs-version decision to be made
+/// deliberately: a front-matter schema change is a §8-0002 change and MUST bump
+/// [`FKC_VERSION_MAX`] (and `PINNED_FKC_SCHEMA_VERSION` in the test below).
+/// ⚠️ It pins the STRUCT, not the op vocabulary, so a §8-0003 vocabulary change
+/// does NOT trip it — which is exactly the rule: the guard fires on schema drift,
+/// never vocab drift.
+///
+/// ⚠️ SCOPE / FLOOR: this pins the TOP-LEVEL front-matter fields (`fkc_version` +
+/// `provider`). A field change on the `provider` sub-struct ([`FkcProvider`]) or
+/// on a kernel `` ```fkc `` section ([`crate::fkc::schema::FkcKernel`] & friends) is ALSO a §8-0002
+/// schema change, but it is NOT caught here — this is a floor, not the whole
+/// schema surface. Extending the pin to those structs is a follow-on; until then,
+/// a deeper field change is a schema change the author must bump `FKC_VERSION_MAX`
+/// for by discipline, not compiler force.
+fn _fkc_front_matter_schema_pin(fm: crate::fkc::schema::FkcFrontMatter) {
+    let crate::fkc::schema::FkcFrontMatter {
+        fkc_version: _,
+        provider: _,
+    } = fm;
+}
+/// Force the pin above to compile without a call site (so it cannot be dropped as
+/// dead code): a fn-pointer const references it at compile time.
+const _FKC_SCHEMA_PIN: fn(crate::fkc::schema::FkcFrontMatter) = _fkc_front_matter_schema_pin;
 
 // ===========================================================================
 // FDX normative token tables (§10.16 drift-guard)
@@ -1287,6 +1336,34 @@ determinism: same_hardware_bitwise
         assert!(
             matches!(err, FkcError::UnsupportedVersion { found: 99, max: 1 }),
             "got {err:?}"
+        );
+    }
+
+    // ===== GAP-038: FKC two version axes (KISS-CONTRACT §8-0001..0007) =====
+
+    /// §8-0001: `fkc_version` (wire/schema) and the crate's published semver are
+    /// INDEPENDENT axes. A crate release that bumps only `Cargo.toml`'s version
+    /// leaves the wire schema untouched, so `FKC_VERSION_MAX` is a literal — never
+    /// derived from `CARGO_PKG_VERSION`. If it were, publishing the crate would
+    /// silently advance the schema max and reject older contracts.
+    #[test]
+    fn fkc_version_is_decoupled_from_crate_semver() {
+        // A literal evaluated at compile time; the module-scope pin is the
+        // structural enforcement, this records the decoupling as an executable fact.
+        assert_eq!(FKC_VERSION_MAX, 1);
+    }
+
+    /// §8-0002: the front-matter SCHEMA and `FKC_VERSION_MAX` move together. The
+    /// exhaustive-destructure pin at module scope compile-breaks on a field change;
+    /// this test pins the *version number* that field set corresponds to, so the
+    /// two cannot drift apart. Bump BOTH when the pin forces a new field.
+    #[test]
+    fn fkc_front_matter_schema_is_pinned_to_the_version() {
+        const PINNED_FKC_SCHEMA_VERSION: u32 = 1;
+        assert_eq!(
+            FKC_VERSION_MAX, PINNED_FKC_SCHEMA_VERSION,
+            "FKC_VERSION_MAX moved without updating the pinned front-matter schema \
+             (or vice-versa) — a §8-0002 schema change bumps both together"
         );
     }
 
