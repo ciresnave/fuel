@@ -187,6 +187,13 @@ const LEDGER: &[Row] = &[
         exists_at: None,
     },
     Row {
+        clause: "KISS-OPS-6.19-0005",
+        disposition: Record,
+        test: None,
+        reason: "docs/gaps.md registry row (GAP-287). Cited to identify the clause a gap is about — the FDX flag semantics the validator was measured against.",
+        exists_at: None,
+    },
+    Row {
         clause: "KISS-OPS-6.0-0003",
         disposition: Record,
         test: None,
