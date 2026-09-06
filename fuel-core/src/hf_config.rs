@@ -36,17 +36,69 @@
 //! The same holds for `num_key_value_heads`: absent conventionally means MHA,
 //! but a config that states `1` means true MQA and must survive intact.
 
+use crate::{Error, Result};
+
 /// Per-head feature width: the value from `config.json` when present,
 /// otherwise `hidden_size / num_attention_heads`.
 ///
 /// `explicit` is whatever `"head_dim"` deserialized to — `None` when the key
 /// is absent. It is returned unchanged when present, **including when it
 /// disagrees with the quotient**, which is the case this exists to protect.
-use crate::{Error, Result};
-
+///
+/// # GAP-288: the DERIVED path is guarded; the EXPLICIT path deliberately is not
+///
+/// This used to be `explicit.unwrap_or(hidden_size / num_attention_heads)`,
+/// which did neither of the two things its sibling twelve lines below does:
+///
+/// * **No divisibility check.** A config whose `hidden_size` is not a multiple
+///   of `num_attention_heads` produced a TRUNCATED quotient and nothing said
+///   so — the identical silent-wrong shape GAP-282 fixed for
+///   [`num_key_value_heads`], on the identical parse path, in this file.
+/// * **No zero guard.** `head_dim(None, h, 0)` is `h / 0`, which PANICS on a
+///   config-parse path, against the never-panic rule.
+///
+/// **The two guards are separate and that is measured, not stylistic:**
+/// `0usize.is_multiple_of(0)` is **`true`** (verified), so a single
+/// divisibility check passes `head_dim(None, 0, 0)` straight into `0 / 0`. The
+/// zero check has to be its own arm.
+///
+/// **An explicit value is still returned unchanged, including when it
+/// disagrees with the quotient.** MQA/GQA models with padded head dimensions
+/// ship a deliberate non-quotient `head_dim`; rejecting that would break real
+/// configs and is the failure this function was written to prevent. Only the
+/// path where this function INVENTS a number is guarded.
 #[inline]
-pub fn head_dim(explicit: Option<usize>, hidden_size: usize, num_attention_heads: usize) -> usize {
-    explicit.unwrap_or(hidden_size / num_attention_heads)
+pub fn head_dim(
+    explicit: Option<usize>,
+    hidden_size: usize,
+    num_attention_heads: usize,
+) -> Result<usize> {
+    if let Some(d) = explicit {
+        return Ok(d);
+    }
+    // ⚠️ THIS ARM CANNOT BE FOLDED INTO THE DIVISIBILITY CHECK BELOW, and the
+    // reason is not style. `0usize.is_multiple_of(0)` is TRUE (run it), so a
+    // lone divisibility check passes `(0, 0)` straight into `0 / 0`.
+    //
+    // The sibling `num_key_value_heads` guards with `is_multiple_of` alone and
+    // its comment is CORRECT -- "false for any NON-ZERO left operand". Read
+    // quickly it looks like a general zero guard; its own qualifier excludes
+    // the (0, 0) case, and it does not need to cover it because THAT function
+    // never divides. `(0, 0) -> Ok(0)` is harmless there and fatal here.
+    //
+    // So: the safety of that guard shape is a property of the CALLER'S
+    // ARITHMETIC, not of the guard. Copying it here would have been wrong.
+    if num_attention_heads == 0 {
+        return Err(Error::Msg(format!(
+            "config.json omits head_dim and num_attention_heads is 0, so              hidden_size ({hidden_size}) / num_attention_heads cannot be              evaluated"
+        )));
+    }
+    if !hidden_size.is_multiple_of(num_attention_heads) {
+        return Err(Error::Msg(format!(
+            "config.json omits head_dim and hidden_size ({hidden_size}) is not              a multiple of num_attention_heads ({num_attention_heads}), so a              derived per-head width would silently truncate"
+        )));
+    }
+    Ok(hidden_size / num_attention_heads)
 }
 
 /// Key/value head count: the value from `config.json` when present, otherwise
@@ -110,6 +162,10 @@ mod tests {
     //   kv_heads_preserves_true_mqa                ignore `explicit`, always use heads
     //   kv_heads_absent_means_mha                  fall back to 1 instead of heads
     //   kv_heads_must_divide_the_head_count       drop the divisibility check (GAP-282)
+    //   head_dim_must_divide_when_derived         drop head_dim's divisibility
+    //                                             check, OR fold its zero guard
+    //                                             into the divisibility one
+    //                                             (GAP-288)
     //
     // Done while the harness was warm. An arm whose failure cannot be
     // provoked alone is redundant with another or asserts something the code
@@ -124,16 +180,57 @@ mod tests {
         // 80 against 2560/32 = 80), so a resolver that ignored the explicit
         // value would pass every existing test. This is that discrimination.
         assert_eq!(
-            head_dim(Some(96), 2560, 32),
+            head_dim(Some(96), 2560, 32).unwrap(),
             96,
             "explicit head_dim must win"
         );
-        assert_ne!(head_dim(Some(96), 2560, 32), 2560 / 32);
+        assert_ne!(head_dim(Some(96), 2560, 32).unwrap(), 2560 / 32);
+
+        // GAP-288: an explicit value survives even when the DERIVED path would
+        // have declined. 100 is not a multiple of 3, so `None` here is an error
+        // (asserted below) -- but a config that STATES a head_dim is making a
+        // claim this function does not second-guess. Only the path where this
+        // function invents a number is guarded, and this arm is what proves the
+        // guard did not leak onto the explicit path.
+        assert_eq!(head_dim(Some(7), 100, 3).unwrap(), 7);
+        assert!(head_dim(None, 100, 3).is_err());
     }
 
     #[test]
     fn head_dim_derives_only_when_absent() {
-        assert_eq!(head_dim(None, 1024, 16), 64);
+        assert_eq!(head_dim(None, 1024, 16).unwrap(), 64);
+    }
+
+    /// GAP-288: the DERIVED path declines instead of truncating or panicking.
+    ///
+    /// Before this, `head_dim` was `explicit.unwrap_or(hidden / heads)` -- no
+    /// divisibility check (so a non-dividing config silently truncated, the
+    /// GAP-282 shape) and no zero guard (so `h / 0` panicked on a parse path).
+    #[test]
+    fn head_dim_must_divide_when_derived() {
+        // Controls first, so "it errored" cannot come from a function that
+        // rejects everything.
+        assert_eq!(head_dim(None, 1024, 16).unwrap(), 64);
+        assert_eq!(head_dim(None, 2560, 32).unwrap(), 80);
+
+        // 100 / 3 == 33, which covers 99 of 100 hidden units and says nothing.
+        let err = head_dim(None, 100, 3).expect_err("a non-dividing width must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("100") && msg.contains("3"),
+            "the error must name BOTH operands, got: {msg}"
+        );
+
+        // ⚠️ SEPARATE ARM, AND THE SEPARATION IS MEASURED RATHER THAN STYLISTIC:
+        // `0usize.is_multiple_of(0)` is TRUE (verified), so a lone divisibility
+        // check would pass (0, 0) straight into `0 / 0`. This arm fails if the
+        // zero guard is folded into the divisibility one.
+        let zero = head_dim(None, 0, 0).expect_err("a zero head count must be rejected");
+        assert!(
+            format!("{zero}").contains("num_attention_heads"),
+            "the zero decline must name the operand, got: {zero}"
+        );
+        assert!(head_dim(None, 512, 0).is_err());
     }
 
     #[test]
