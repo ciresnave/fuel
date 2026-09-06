@@ -322,7 +322,7 @@ impl ConvNextModel {
             image.to_vec(),
             Shape::from_dims(&[1, cin, s, s]),
             &fuel_core::Device::cpu(),
-        );
+        )?;
 
         let p = cfg.stem_patch;
         assert!(

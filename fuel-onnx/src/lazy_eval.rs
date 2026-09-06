@@ -632,14 +632,14 @@ fn load_initializer(
         DataType::Float => {
             let data = float_data(t)?;
             match anchor.as_ref() {
-                None => Tensor::from_f32(data, shape, device),
+                None => Tensor::from_f32(data, shape, device)?,
                 Some(a) => a.const_f32_like(data, shape),
             }
         }
         DataType::Double => {
             let data = double_data(t)?;
             match anchor.as_ref() {
-                None => Tensor::from_f64(data, shape, device),
+                None => Tensor::from_f64(data, shape, device)?,
                 Some(a) => a.const_f64_like(data, shape),
             }
         }
@@ -678,7 +678,7 @@ pub(crate) fn ensure_anchor(anchor: &mut Option<Tensor>, device: &Device) -> Ten
             Arc::<[f32]>::from(vec![0.0f32]),
             Shape::from_dims(&[1]),
             device,
-        ));
+        )?);
     }
     anchor.clone().unwrap()
 }

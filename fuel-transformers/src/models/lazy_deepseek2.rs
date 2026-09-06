@@ -1329,7 +1329,7 @@ impl DeepSeek2Model {
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
             &Device::cpu(),
-        );
+        )?;
         let token_ids = embed.const_placeholder_like(Shape::from_dims(&[seq]), DType::U32);
         let token_ids_node = token_ids.node_id();
         let mut h = embed
@@ -1746,7 +1746,7 @@ impl DeepSeek2Model {
             )
         }
         let cfg = &self.config;
-        let fresh_anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let fresh_anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu())?;
         let mut fresh = LatentCache::new(
             &fresh_anchor,
             cache.n_layers(),

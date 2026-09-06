@@ -475,7 +475,7 @@ impl DeviceKvPool {
         // Bind the pool buffer to a placeholder, slice the one block out, realize
         // as u8 — a byte reinterpret, so the read is correct for ANY dtype. The
         // f32 anchor only mints the graph (mirrors the historical read_block).
-        let anchor = Tensor::from_f32(vec![0.0], Shape::from_dims(&[1]), &self.device);
+        let anchor = Tensor::from_f32(vec![0.0], Shape::from_dims(&[1]), &self.device)?;
         let dest = anchor.const_placeholder_like(self.pool_shape.clone(), self.dtype);
         let block = dest
             .slice(0, phys as usize, 1)?
@@ -515,13 +515,18 @@ impl DeviceKvPool {
             DType::F32 => {
                 let v: &[f32] = bytemuck::try_cast_slice(bytes)
                     .map_err(|e| msg_err(format!("const_from_bytes: f32 cast: {e:?}")))?;
-                Ok(Tensor::from_f32(v.to_vec(), shape, dev))
+                Ok(Tensor::from_f32(v.to_vec(), shape, dev)?)
             }
             DType::BF16 => {
                 let v: &[half::bf16] = bytemuck::try_cast_slice(bytes)
                     .map_err(|e| msg_err(format!("const_from_bytes: bf16 cast: {e:?}")))?;
-                let anchor = Tensor::from_f32(vec![0.0f32], Shape::from_dims(&[1]), dev);
-                Ok(Tensor::from_bf16_on(anchor.graph(), v.to_vec(), shape, dev))
+                let anchor = Tensor::from_f32(vec![0.0f32], Shape::from_dims(&[1]), dev)?;
+                Ok(Tensor::from_bf16_on(
+                    anchor.graph(),
+                    v.to_vec(),
+                    shape,
+                    dev,
+                )?)
             }
             other => Err(msg_err(format!(
                 "DeviceKvPool::const_from_bytes: unsupported dtype {other:?} (F32/BF16)",

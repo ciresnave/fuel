@@ -139,7 +139,7 @@ pub fn nf4_from_bytes(
     // host tensor as the "graph anchor"; we anchor on a tiny f32
     // scalar built directly from `device`. Once both are pushed onto
     // the same graph, they're ready to feed nf4_matmul.
-    let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), device);
+    let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), device)?;
     let w_packed_tensor = anchor
         .graph_tensor()
         .const_u8_like(w_packed, Shape::from_dims(&[n, k / 2]));

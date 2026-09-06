@@ -521,7 +521,7 @@ impl YoloV8Model {
             image.to_vec(),
             Shape::from_dims(&[1, 3, isize, isize]),
             &fuel_core::Device::cpu(),
-        );
+        )?;
 
         // --- Backbone ---
         let (h1, w1) = (isize / 2, isize / 2);

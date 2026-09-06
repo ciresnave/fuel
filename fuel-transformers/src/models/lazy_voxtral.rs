@@ -341,7 +341,7 @@ impl VoxtralEncoder {
             mel.to_vec(),
             Shape::from_dims(&[1, n_mel, mel_time]),
             &Device::cpu(),
-        );
+        )?;
 
         // ---- conv stem (downsample) ---------------------------------------
         let x = conv1d_k3_s1_p1(
@@ -529,7 +529,7 @@ impl VoxtralTextModel {
     /// share a graph with an existing tensor (e.g. audio features).
     pub fn embed(&self, tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu())?;
         let embed = self.embed_with_anchor(tokens, &anchor)?;
         let _ = cfg;
         Ok(embed)

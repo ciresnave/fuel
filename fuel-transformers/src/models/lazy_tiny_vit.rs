@@ -532,7 +532,7 @@ impl TinyVitModel {
             image_chw.to_vec(),
             Shape::from_dims(&[1, cfg.in_chans, img, img]),
             &Device::cpu(),
-        );
+        )?;
 
         // Patch embed: 4× spatial downsample (2 × stride-2 convs).
         let x = apply_patch_embed(&x, &weights.patch_embed)?;

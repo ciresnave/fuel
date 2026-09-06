@@ -174,7 +174,7 @@ impl SdVaeDecoder {
             latent.to_vec(),
             Shape::from_dims(&[1, lc, h_lat, w_lat]),
             &fuel_core::Device::cpu(),
-        );
+        )?;
 
         // post_quant_conv (1×1 conv on the raw latent).
         let x = conv2d_k1_s1_p0(

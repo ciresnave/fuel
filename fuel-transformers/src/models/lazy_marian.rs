@@ -187,7 +187,7 @@ impl MarianModel {
             self.weights.shared_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.d_model]),
             &Device::cpu(),
-        );
+        )?;
         let pos_table = build_sinusoidal_table(cfg.max_position_embeddings, cfg.d_model)?;
         let pos_lt_shape = Shape::from_dims(&[cfg.max_position_embeddings, cfg.d_model]);
         let pos_full = embed.const_f32_like(Arc::from(pos_table), pos_lt_shape);
@@ -229,7 +229,7 @@ impl MarianModel {
             self.weights.shared_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.d_model]),
             &Device::cpu(),
-        );
+        )?;
         let pos_table = build_sinusoidal_table(cfg.max_position_embeddings, cfg.d_model)?;
         let pos_lt_shape = Shape::from_dims(&[cfg.max_position_embeddings, cfg.d_model]);
         let pos_full = embed.const_f32_like(Arc::from(pos_table), pos_lt_shape);

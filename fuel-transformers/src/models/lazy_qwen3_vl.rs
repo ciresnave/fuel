@@ -158,7 +158,7 @@ impl Qwen3VlModel {
                 Arc::from(vec![0.0_f32]),
                 Shape::from_dims(&[1]),
                 &Device::cpu(),
-            )
+            )?
         };
 
         // Validate token-id slot counts up front so a mismatched

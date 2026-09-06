@@ -191,7 +191,7 @@ impl MusicGenModel {
             self.weights.embed_tokens[0].clone(),
             Shape::from_dims(&[cfg.vocab_size + 1, cfg.hidden_size]),
             &Device::cpu(),
-        );
+        )?;
 
         // Built-in text adapter → encoder states `(1, text_len, enc_hidden)`.
         let encoder_states = self.encode_text_adapter(&anchor, text_tokens)?;

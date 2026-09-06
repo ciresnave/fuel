@@ -204,7 +204,7 @@ impl PaddleOcrVlModel {
             Arc::from(tile_pixels),
             Shape::from_dims(&[num_tiles, channels, target, target]),
             &Device::cpu(),
-        );
+        )?;
 
         // Run the tile-grid vision encoder -> (N_vision, text_hidden).
         let vision_model = PaddleOcrVlVisionModel {
@@ -443,7 +443,7 @@ pub fn bilinear_resize_to_grid(
         Arc::<[f32]>::from(data),
         Shape::from_dims(&[1, channels, h_grid, w_grid]),
         &Device::cpu(),
-    );
+    )?;
     Ok((tensor, h_grid, w_grid))
 }
 

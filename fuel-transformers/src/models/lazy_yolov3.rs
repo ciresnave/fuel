@@ -469,7 +469,7 @@ impl YoloV3Model {
             image.to_vec(),
             Shape::from_dims(&[1, 3, isize, isize]),
             &fuel_core::Device::cpu(),
-        );
+        )?;
 
         // --- Backbone ---
         // Stem: 3 → 32, k=3, s=1.

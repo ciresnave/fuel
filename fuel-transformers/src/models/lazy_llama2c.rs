@@ -170,7 +170,7 @@ impl Llama2cModel {
             llama.weights.token_embedding.clone(),
             fuel_ir::Shape::from_dims(&[llama.config.vocab_size, llama.config.dim]),
             &fuel_core::Device::cpu(),
-        );
+        )?;
         llama.forward_hidden(tokens, start_pos, &anchor)
     }
 

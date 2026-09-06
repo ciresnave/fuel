@@ -130,10 +130,10 @@ impl Tensor {
         data: impl Into<Arc<[f32]>>,
         shape: impl Into<Shape>,
         device: &crate::Device,
-    ) -> Self {
-        Self {
-            inner: fuel_graph::NodeHandle::from_f32(data, shape, device.as_dyn()),
-        }
+    ) -> fuel_ir::Result<Self> {
+        Ok(Self {
+            inner: fuel_graph::NodeHandle::from_f32(data, shape, device.as_dyn())?,
+        })
     }
 
     /// This tensor's graph identity — see [`fuel_graph::GraphId`]. Two tensors
@@ -166,10 +166,10 @@ impl Tensor {
         data: impl Into<Arc<[f32]>>,
         shape: impl Into<Shape>,
         device: &crate::Device,
-    ) -> Self {
-        Self {
-            inner: fuel_graph::NodeHandle::from_f32_on(graph, data, shape, device.as_dyn()),
-        }
+    ) -> fuel_ir::Result<Self> {
+        Ok(Self {
+            inner: fuel_graph::NodeHandle::from_f32_on(graph, data, shape, device.as_dyn())?,
+        })
     }
 
     /// `f64` sibling of [`from_f32_on`](Self::from_f32_on).
@@ -178,10 +178,10 @@ impl Tensor {
         data: impl Into<Arc<[f64]>>,
         shape: impl Into<Shape>,
         device: &crate::Device,
-    ) -> Self {
-        Self {
-            inner: fuel_graph::NodeHandle::from_f64_on(graph, data, shape, device.as_dyn()),
-        }
+    ) -> fuel_ir::Result<Self> {
+        Ok(Self {
+            inner: fuel_graph::NodeHandle::from_f64_on(graph, data, shape, device.as_dyn())?,
+        })
     }
 
     /// `bf16` sibling of [`from_f32_on`](Self::from_f32_on) — the mixed-precision
@@ -192,10 +192,10 @@ impl Tensor {
         data: impl Into<Arc<[half::bf16]>>,
         shape: impl Into<Shape>,
         device: &crate::Device,
-    ) -> Self {
-        Self {
-            inner: fuel_graph::NodeHandle::from_bf16_on(graph, data, shape, device.as_dyn()),
-        }
+    ) -> fuel_ir::Result<Self> {
+        Ok(Self {
+            inner: fuel_graph::NodeHandle::from_bf16_on(graph, data, shape, device.as_dyn())?,
+        })
     }
 
     /// `f16` sibling of [`from_f32_on`](Self::from_f32_on).
@@ -204,10 +204,10 @@ impl Tensor {
         data: impl Into<Arc<[half::f16]>>,
         shape: impl Into<Shape>,
         device: &crate::Device,
-    ) -> Self {
-        Self {
-            inner: fuel_graph::NodeHandle::from_f16_on(graph, data, shape, device.as_dyn()),
-        }
+    ) -> fuel_ir::Result<Self> {
+        Ok(Self {
+            inner: fuel_graph::NodeHandle::from_f16_on(graph, data, shape, device.as_dyn())?,
+        })
     }
 
     /// `u32` sibling of [`from_f32_on`](Self::from_f32_on) — index tensors built
@@ -217,10 +217,10 @@ impl Tensor {
         data: impl Into<Arc<[u32]>>,
         shape: impl Into<Shape>,
         device: &crate::Device,
-    ) -> Self {
-        Self {
-            inner: fuel_graph::NodeHandle::from_u32_on(graph, data, shape, device.as_dyn()),
-        }
+    ) -> fuel_ir::Result<Self> {
+        Ok(Self {
+            inner: fuel_graph::NodeHandle::from_u32_on(graph, data, shape, device.as_dyn())?,
+        })
     }
 
     /// Build an `f64` lazy tensor. `device` selects where the realized
@@ -233,10 +233,10 @@ impl Tensor {
         data: impl Into<Arc<[f64]>>,
         shape: impl Into<Shape>,
         device: &crate::Device,
-    ) -> Self {
-        Self {
-            inner: fuel_graph::NodeHandle::from_f64(data, shape, device.as_dyn()),
-        }
+    ) -> fuel_ir::Result<Self> {
+        Ok(Self {
+            inner: fuel_graph::NodeHandle::from_f64(data, shape, device.as_dyn())?,
+        })
     }
 
     /// Build a `bf16` lazy tensor. `device` selects where the realized
@@ -251,10 +251,10 @@ impl Tensor {
         data: impl Into<Arc<[half::bf16]>>,
         shape: impl Into<Shape>,
         device: &crate::Device,
-    ) -> Self {
-        Self {
-            inner: fuel_graph::NodeHandle::from_bf16(data, shape, device.as_dyn()),
-        }
+    ) -> fuel_ir::Result<Self> {
+        Ok(Self {
+            inner: fuel_graph::NodeHandle::from_bf16(data, shape, device.as_dyn())?,
+        })
     }
 
     /// Build an `f16` lazy tensor. `device` selects where the realized
@@ -263,10 +263,10 @@ impl Tensor {
         data: impl Into<Arc<[half::f16]>>,
         shape: impl Into<Shape>,
         device: &crate::Device,
-    ) -> Self {
-        Self {
-            inner: fuel_graph::NodeHandle::from_f16(data, shape, device.as_dyn()),
-        }
+    ) -> fuel_ir::Result<Self> {
+        Ok(Self {
+            inner: fuel_graph::NodeHandle::from_f16(data, shape, device.as_dyn())?,
+        })
     }
 
     /// Build a `u32` (index) lazy tensor. Used for gather/scatter/
@@ -276,10 +276,10 @@ impl Tensor {
         data: impl Into<Arc<[u32]>>,
         shape: impl Into<Shape>,
         device: &crate::Device,
-    ) -> Self {
-        Self {
-            inner: fuel_graph::NodeHandle::from_u32(data, shape, device.as_dyn()),
-        }
+    ) -> fuel_ir::Result<Self> {
+        Ok(Self {
+            inner: fuel_graph::NodeHandle::from_u32(data, shape, device.as_dyn())?,
+        })
     }
 
     /// Build a const tensor of the same dtype and graph as `self`.
@@ -6037,11 +6037,11 @@ impl Tensor {
         let shape = shape.into();
         let n = shape.elem_count();
         match dtype {
-            DType::F32 => Ok(Self::from_f32(vec![1.0_f32; n], shape, device)),
-            DType::F64 => Ok(Self::from_f64(vec![1.0_f64; n], shape, device)),
-            DType::BF16 => Ok(Self::from_bf16(vec![half::bf16::ONE; n], shape, device)),
-            DType::F16 => Ok(Self::from_f16(vec![half::f16::ONE; n], shape, device)),
-            DType::U32 => Ok(Self::from_u32(vec![1_u32; n], shape, device)),
+            DType::F32 => Self::from_f32(vec![1.0_f32; n], shape, device),
+            DType::F64 => Self::from_f64(vec![1.0_f64; n], shape, device),
+            DType::BF16 => Self::from_bf16(vec![half::bf16::ONE; n], shape, device),
+            DType::F16 => Self::from_f16(vec![half::f16::ONE; n], shape, device),
+            DType::U32 => Self::from_u32(vec![1_u32; n], shape, device),
             other => Err(fuel_ir::Error::Msg(format!("ones: unsupported dtype {other:?}",)).bt()),
         }
     }
@@ -6063,11 +6063,11 @@ impl Tensor {
         let shape = shape.into();
         let n = shape.elem_count();
         match dtype {
-            DType::F32 => Ok(Self::from_f32(vec![0.0_f32; n], shape, device)),
-            DType::F64 => Ok(Self::from_f64(vec![0.0_f64; n], shape, device)),
-            DType::BF16 => Ok(Self::from_bf16(vec![half::bf16::ZERO; n], shape, device)),
-            DType::F16 => Ok(Self::from_f16(vec![half::f16::ZERO; n], shape, device)),
-            DType::U32 => Ok(Self::from_u32(vec![0_u32; n], shape, device)),
+            DType::F32 => Self::from_f32(vec![0.0_f32; n], shape, device),
+            DType::F64 => Self::from_f64(vec![0.0_f64; n], shape, device),
+            DType::BF16 => Self::from_bf16(vec![half::bf16::ZERO; n], shape, device),
+            DType::F16 => Self::from_f16(vec![half::f16::ZERO; n], shape, device),
+            DType::U32 => Self::from_u32(vec![0_u32; n], shape, device),
             other => Err(fuel_ir::Error::Msg(format!("zeros: unsupported dtype {other:?}",)).bt()),
         }
     }
@@ -6088,11 +6088,11 @@ impl Tensor {
         let shape = shape.into();
         let n = shape.elem_count();
         match value {
-            fuel_ir::Scalar::F32(v) => Ok(Self::from_f32(vec![v; n], shape, device)),
-            fuel_ir::Scalar::F64(v) => Ok(Self::from_f64(vec![v; n], shape, device)),
-            fuel_ir::Scalar::BF16(v) => Ok(Self::from_bf16(vec![v; n], shape, device)),
-            fuel_ir::Scalar::F16(v) => Ok(Self::from_f16(vec![v; n], shape, device)),
-            fuel_ir::Scalar::U32(v) => Ok(Self::from_u32(vec![v; n], shape, device)),
+            fuel_ir::Scalar::F32(v) => Self::from_f32(vec![v; n], shape, device),
+            fuel_ir::Scalar::F64(v) => Self::from_f64(vec![v; n], shape, device),
+            fuel_ir::Scalar::BF16(v) => Self::from_bf16(vec![v; n], shape, device),
+            fuel_ir::Scalar::F16(v) => Self::from_f16(vec![v; n], shape, device),
+            fuel_ir::Scalar::U32(v) => Self::from_u32(vec![v; n], shape, device),
             other => Err(fuel_ir::Error::Msg(format!(
                 "full: unsupported scalar dtype {:?}",
                 other.dtype(),
@@ -6108,7 +6108,17 @@ impl Tensor {
         for i in 0..n {
             data[i * n + i] = 1.0;
         }
-        let base = Self::from_f32(data, vec![n, n], device);
+        // GAP-003 carve-out: `.expect` and NOT `?`, because this cannot fail and
+        // saying it CAN would be a false claim in the signature -- `eye` would
+        // return a `Result` that is never `Err`, and every caller would write a
+        // `?` for an error that does not exist.
+        //
+        // THE PROOF IS LOCAL, two lines up: `data` is `vec![_; n * n]`, and the
+        // shape `[n, n]` has `elem_count() == n * n`. Both are computed from `n`
+        // in this function; no caller supplies either, so they cannot disagree.
+        let base = Self::from_f32(data, vec![n, n], device).expect(
+            "eye: data is vec![_; n*n] and shape is [n, n] (elem_count n*n), \n             both computed from `n` in this function -- lengths cannot disagree",
+        );
         if dtype == DType::F32 {
             base
         } else {
@@ -6629,7 +6639,17 @@ impl Tensor {
                 data[i * n + j] = 1.0;
             }
         }
-        let base = Self::from_f32(data, vec![n, n], device);
+        // GAP-003 carve-out: `.expect` and NOT `?`, because this cannot fail and
+        // saying it CAN would be a false claim in the signature -- `tril2` would
+        // return a `Result` that is never `Err`, and every caller would write a
+        // `?` for an error that does not exist.
+        //
+        // THE PROOF IS LOCAL, two lines up: `data` is `vec![_; n * n]`, and the
+        // shape `[n, n]` has `elem_count() == n * n`. Both are computed from `n`
+        // in this function; no caller supplies either, so they cannot disagree.
+        let base = Self::from_f32(data, vec![n, n], device).expect(
+            "tril2: data is vec![_; n*n] and shape is [n, n] (elem_count n*n), \n             both computed from `n` in this function -- lengths cannot disagree",
+        );
         if dtype == DType::F32 {
             base
         } else {
@@ -6645,7 +6665,17 @@ impl Tensor {
                 data[i * n + j] = 1.0;
             }
         }
-        let base = Self::from_f32(data, vec![n, n], device);
+        // GAP-003 carve-out: `.expect` and NOT `?`, because this cannot fail and
+        // saying it CAN would be a false claim in the signature -- `triu2` would
+        // return a `Result` that is never `Err`, and every caller would write a
+        // `?` for an error that does not exist.
+        //
+        // THE PROOF IS LOCAL, two lines up: `data` is `vec![_; n * n]`, and the
+        // shape `[n, n]` has `elem_count() == n * n`. Both are computed from `n`
+        // in this function; no caller supplies either, so they cannot disagree.
+        let base = Self::from_f32(data, vec![n, n], device).expect(
+            "triu2: data is vec![_; n*n] and shape is [n, n] (elem_count n*n), \n             both computed from `n` in this function -- lengths cannot disagree",
+        );
         if dtype == DType::F32 {
             base
         } else {
@@ -6808,23 +6838,23 @@ impl Tensor {
         match dtype {
             DType::F32 => {
                 let data: Vec<f32> = (0..n).map(|_| rng.random_range(lo..up) as f32).collect();
-                Ok(Self::from_f32(data, shape, device))
+                Self::from_f32(data, shape, device)
             }
             DType::F64 => {
                 let data: Vec<f64> = (0..n).map(|_| rng.random_range(lo..up)).collect();
-                Ok(Self::from_f64(data, shape, device))
+                Self::from_f64(data, shape, device)
             }
             DType::BF16 => {
                 let data: Vec<half::bf16> = (0..n)
                     .map(|_| half::bf16::from_f64(rng.random_range(lo..up)))
                     .collect();
-                Ok(Self::from_bf16(data, shape, device))
+                Self::from_bf16(data, shape, device)
             }
             DType::F16 => {
                 let data: Vec<half::f16> = (0..n)
                     .map(|_| half::f16::from_f64(rng.random_range(lo..up)))
                     .collect();
-                Ok(Self::from_f16(data, shape, device))
+                Self::from_f16(data, shape, device)
             }
             other => {
                 Err(fuel_ir::Error::Msg(format!("Tensor::rand: unsupported dtype {other:?}",)).bt())
@@ -6852,23 +6882,23 @@ impl Tensor {
         match dtype {
             DType::F32 => {
                 let data: Vec<f32> = (0..n).map(|_| normal.sample(&mut rng) as f32).collect();
-                Ok(Self::from_f32(data, shape, device))
+                Self::from_f32(data, shape, device)
             }
             DType::F64 => {
                 let data: Vec<f64> = (0..n).map(|_| normal.sample(&mut rng)).collect();
-                Ok(Self::from_f64(data, shape, device))
+                Self::from_f64(data, shape, device)
             }
             DType::BF16 => {
                 let data: Vec<half::bf16> = (0..n)
                     .map(|_| half::bf16::from_f64(normal.sample(&mut rng)))
                     .collect();
-                Ok(Self::from_bf16(data, shape, device))
+                Self::from_bf16(data, shape, device)
             }
             DType::F16 => {
                 let data: Vec<half::f16> = (0..n)
                     .map(|_| half::f16::from_f64(normal.sample(&mut rng)))
                     .collect();
-                Ok(Self::from_f16(data, shape, device))
+                Self::from_f16(data, shape, device)
             }
             other => Err(fuel_ir::Error::Msg(format!(
                 "Tensor::randn: unsupported dtype {other:?}",
@@ -7477,7 +7507,7 @@ impl Tensor {
                 for chunk in bytes.as_chunks::<4>().0.iter() {
                     data.push(f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
                 }
-                Ok(Self::from_f32(data, shape_obj, device))
+                Self::from_f32(data, shape_obj, device)
             }
             Dtype::F64 => {
                 check_len(elem_count * 8)?;
@@ -7486,7 +7516,7 @@ impl Tensor {
                     let arr: [u8; 8] = *chunk;
                     data.push(f64::from_le_bytes(arr));
                 }
-                Ok(Self::from_f64(data, shape_obj, device))
+                Self::from_f64(data, shape_obj, device)
             }
             Dtype::BF16 => {
                 check_len(elem_count * 2)?;
@@ -7495,7 +7525,7 @@ impl Tensor {
                     let raw = u16::from_le_bytes([chunk[0], chunk[1]]);
                     data.push(half::bf16::from_bits(raw));
                 }
-                Ok(Self::from_bf16(data, shape_obj, device))
+                Self::from_bf16(data, shape_obj, device)
             }
             Dtype::F16 => {
                 check_len(elem_count * 2)?;
@@ -7504,7 +7534,7 @@ impl Tensor {
                     let raw = u16::from_le_bytes([chunk[0], chunk[1]]);
                     data.push(half::f16::from_bits(raw));
                 }
-                Ok(Self::from_f16(data, shape_obj, device))
+                Self::from_f16(data, shape_obj, device)
             }
             Dtype::U32 => {
                 check_len(elem_count * 4)?;
@@ -7512,7 +7542,7 @@ impl Tensor {
                 for chunk in bytes.as_chunks::<4>().0.iter() {
                     data.push(u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
                 }
-                Ok(Self::from_u32(data, shape_obj, device))
+                Self::from_u32(data, shape_obj, device)
             }
             other => crate::bail!(
                 "from_safetensors_bytes: unsupported dtype {other:?} — extend Tensor's \

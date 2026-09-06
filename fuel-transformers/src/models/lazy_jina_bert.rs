@@ -192,7 +192,7 @@ impl JinaBertModel {
             weights.word_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, h]),
             &Device::cpu(),
-        );
+        )?;
         let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         let word_embeds = word_emb_t
             .index_select(0_usize, &token_ids)?
@@ -289,7 +289,7 @@ impl JinaBertModel {
             weights.word_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, h]),
             &Device::cpu(),
-        );
+        )?;
         let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         let word_embeds = word_emb_t
             .index_select(0_usize, &token_ids)?
