@@ -3849,7 +3849,7 @@ impl NodeHandle {
         data: impl Into<Arc<[f32]>>,
         shape: impl Into<Shape>,
         device: &Arc<dyn fuel_backend_contract::DynBackendDevice>,
-    ) -> Self {
+    ) -> Result<Self, fuel_ir::Error> {
         let v: Arc<[f32]> = data.into();
         let buf = fuel_ir::HostBuffer::F32(v.to_vec());
         Self::from_host_buffer(buf, DType::F32, shape, device)
@@ -3861,7 +3861,7 @@ impl NodeHandle {
         data: impl Into<Arc<[f64]>>,
         shape: impl Into<Shape>,
         device: &Arc<dyn fuel_backend_contract::DynBackendDevice>,
-    ) -> Self {
+    ) -> Result<Self, fuel_ir::Error> {
         let v: Arc<[f64]> = data.into();
         let buf = fuel_ir::HostBuffer::F64(v.to_vec());
         Self::from_host_buffer(buf, DType::F64, shape, device)
@@ -3873,7 +3873,7 @@ impl NodeHandle {
         data: impl Into<Arc<[bf16]>>,
         shape: impl Into<Shape>,
         device: &Arc<dyn fuel_backend_contract::DynBackendDevice>,
-    ) -> Self {
+    ) -> Result<Self, fuel_ir::Error> {
         let v: Arc<[bf16]> = data.into();
         let buf = fuel_ir::HostBuffer::BF16(v.to_vec());
         Self::from_host_buffer(buf, DType::BF16, shape, device)
@@ -3885,7 +3885,7 @@ impl NodeHandle {
         data: impl Into<Arc<[f16]>>,
         shape: impl Into<Shape>,
         device: &Arc<dyn fuel_backend_contract::DynBackendDevice>,
-    ) -> Self {
+    ) -> Result<Self, fuel_ir::Error> {
         let v: Arc<[f16]> = data.into();
         let buf = fuel_ir::HostBuffer::F16(v.to_vec());
         Self::from_host_buffer(buf, DType::F16, shape, device)
@@ -3902,7 +3902,7 @@ impl NodeHandle {
         data: impl Into<Arc<[u32]>>,
         shape: impl Into<Shape>,
         device: &Arc<dyn fuel_backend_contract::DynBackendDevice>,
-    ) -> Self {
+    ) -> Result<Self, fuel_ir::Error> {
         let v: Arc<[u32]> = data.into();
         let buf = fuel_ir::HostBuffer::U32(v.to_vec());
         Self::from_host_buffer(buf, DType::U32, shape, device)
@@ -3916,7 +3916,7 @@ impl NodeHandle {
         dtype: DType,
         shape: impl Into<Shape>,
         device: &Arc<dyn fuel_backend_contract::DynBackendDevice>,
-    ) -> Self {
+    ) -> Result<Self, fuel_ir::Error> {
         let graph = Arc::new(RwLock::new(Graph::new()));
         Self::from_host_buffer_on(&graph, buf, dtype, shape, device)
     }
@@ -3930,18 +3930,29 @@ impl NodeHandle {
         dtype: DType,
         shape: impl Into<Shape>,
         device: &Arc<dyn fuel_backend_contract::DynBackendDevice>,
-    ) -> Self {
+    ) -> Result<Self, fuel_ir::Error> {
         let shape = shape.into();
         let n = host_buffer_elem_count(&buf);
-        assert_eq!(
-            n,
-            shape.elem_count(),
-            "NodeHandle::from_*: data length {n} does not match shape element count {}",
-            shape.elem_count(),
-        );
+        // GAP-003: was `assert_eq!`. The message is preserved VERBATIM because
+        // `docs/gaps.md` and `CLAUDE.md` both anchor on it -- a prose anchor is
+        // rename-proof, so changing the words here would orphan two citations
+        // that no identifier rename could have touched.
+        if n != shape.elem_count() {
+            return Err(fuel_ir::Error::Msg(format!(
+                "NodeHandle::from_*: data length {n} does not match shape element count {}",
+                shape.elem_count(),
+            )));
+        }
+        // GAP-003: was `.expect(...)`. This is the sibling panic the row's
+        // anchor could not see -- it carries a DIFFERENT message, and a
+        // message-specific anchor is blind to exactly that.
         let backend_storage = device
             .storage_from_host_buffer_owned_dyn(buf)
-            .expect("NodeHandle::from_*: device.storage_from_host_buffer_owned_dyn failed");
+            .map_err(|e| {
+                fuel_ir::Error::Msg(format!(
+                    "NodeHandle::from_*: device.storage_from_host_buffer_owned_dyn failed: {e}"
+                ))
+            })?;
         let storage_arc = Arc::new(RwLock::new(Storage::from_dyn(backend_storage)));
         let id = {
             let mut g = graph.write().unwrap();
@@ -3954,10 +3965,10 @@ impl NodeHandle {
             g.set_storage(id, storage_arc);
             id
         };
-        Self {
+        Ok(Self {
             graph: Arc::clone(graph),
             id,
-        }
+        })
     }
 
     /// Build an `f32` `Const` leaf **on the graph you pass in**, rather than on a
@@ -3980,7 +3991,7 @@ impl NodeHandle {
         data: impl Into<Arc<[f32]>>,
         shape: impl Into<Shape>,
         device: &Arc<dyn fuel_backend_contract::DynBackendDevice>,
-    ) -> Self {
+    ) -> Result<Self, fuel_ir::Error> {
         let v: Arc<[f32]> = data.into();
         let buf = fuel_ir::HostBuffer::F32(v.to_vec());
         Self::from_host_buffer_on(graph, buf, DType::F32, shape, device)
@@ -3993,7 +4004,7 @@ impl NodeHandle {
         data: impl Into<Arc<[f64]>>,
         shape: impl Into<Shape>,
         device: &Arc<dyn fuel_backend_contract::DynBackendDevice>,
-    ) -> Self {
+    ) -> Result<Self, fuel_ir::Error> {
         let v: Arc<[f64]> = data.into();
         let buf = fuel_ir::HostBuffer::F64(v.to_vec());
         Self::from_host_buffer_on(graph, buf, DType::F64, shape, device)
@@ -4007,7 +4018,7 @@ impl NodeHandle {
         data: impl Into<Arc<[half::bf16]>>,
         shape: impl Into<Shape>,
         device: &Arc<dyn fuel_backend_contract::DynBackendDevice>,
-    ) -> Self {
+    ) -> Result<Self, fuel_ir::Error> {
         let v: Arc<[half::bf16]> = data.into();
         let buf = fuel_ir::HostBuffer::BF16(v.to_vec());
         Self::from_host_buffer_on(graph, buf, DType::BF16, shape, device)
@@ -4019,7 +4030,7 @@ impl NodeHandle {
         data: impl Into<Arc<[half::f16]>>,
         shape: impl Into<Shape>,
         device: &Arc<dyn fuel_backend_contract::DynBackendDevice>,
-    ) -> Self {
+    ) -> Result<Self, fuel_ir::Error> {
         let v: Arc<[half::f16]> = data.into();
         let buf = fuel_ir::HostBuffer::F16(v.to_vec());
         Self::from_host_buffer_on(graph, buf, DType::F16, shape, device)
@@ -4032,7 +4043,7 @@ impl NodeHandle {
         data: impl Into<Arc<[u32]>>,
         shape: impl Into<Shape>,
         device: &Arc<dyn fuel_backend_contract::DynBackendDevice>,
-    ) -> Self {
+    ) -> Result<Self, fuel_ir::Error> {
         let v: Arc<[u32]> = data.into();
         let buf = fuel_ir::HostBuffer::U32(v.to_vec());
         Self::from_host_buffer_on(graph, buf, DType::U32, shape, device)
@@ -11656,7 +11667,8 @@ mod tests {
             vec![0.0_f32; 2 * 3 * 4],
             Shape::from_dims(&[2, 3, 4]),
             cpu_dev(),
-        );
+        )
+        .unwrap();
         let checks: Vec<(NodeHandle, Op)> = vec![
             (
                 x.slice(1, 0, 2),
@@ -11818,7 +11830,8 @@ mod tests {
             vec![0.0_f32; 2 * 4 * 4],
             Shape::from_dims(&[1, 2, 4, 4]),
             cpu_dev(),
-        );
+        )
+        .unwrap();
         let w = x.const_f32_like(
             vec![0.0_f32; 3 * 2 * 3 * 3],
             Shape::from_dims(&[3, 2, 3, 3]),
@@ -11835,7 +11848,8 @@ mod tests {
             vec![0.0_f32; 2 * 8 * 8],
             Shape::from_dims(&[1, 2, 8, 8]),
             cpu_dev(),
-        );
+        )
+        .unwrap();
         let w = x.const_f32_like(
             vec![0.0_f32; 4 * 2 * 3 * 3],
             Shape::from_dims(&[4, 2, 3, 3]),
@@ -11851,7 +11865,8 @@ mod tests {
             vec![0.0_f32; 4 * 4 * 4],
             Shape::from_dims(&[1, 4, 4, 4]),
             cpu_dev(),
-        );
+        )
+        .unwrap();
         let w = x.const_f32_like(vec![0.0_f32; 4 * 3 * 3], Shape::from_dims(&[4, 1, 3, 3]));
         let y = x.conv2d(&w, None, (1, 1), (1, 1), 4);
         assert_eq!(y.shape().dims(), &[1, 4, 4, 4]);
@@ -11864,7 +11879,8 @@ mod tests {
             vec![0.0_f32; 2 * 4 * 4],
             Shape::from_dims(&[1, 2, 4, 4]),
             cpu_dev(),
-        );
+        )
+        .unwrap();
         let w = x.const_f32_like(
             vec![0.0_f32; 2 * 3 * 3 * 3],
             Shape::from_dims(&[2, 3, 3, 3]),
@@ -11881,7 +11897,8 @@ mod tests {
             vec![0.0_f32; 2 * 4],
             Shape::from_dims(&[1, 2, 4]),
             cpu_dev(),
-        );
+        )
+        .unwrap();
         let w = x.const_f32_like(vec![0.0_f32; 2 * 3 * 3], Shape::from_dims(&[2, 3, 3]));
         let y = x.conv_transpose1d(&w, 2, 1, 1, 1, 1);
         assert_eq!(y.shape().dims(), &[1, 3, 8]);
@@ -11891,7 +11908,8 @@ mod tests {
     fn conv_transpose1d_builder_shape_stride_4_no_pad() {
         // Lin=2, K=4, s=4, pad=0, out_pad=0, dil=1
         // Lout = (2-1)*4 + (4-1) + 0 + 1 - 0 = 8.
-        let x = NodeHandle::from_f32(vec![0.0_f32; 2], Shape::from_dims(&[1, 1, 2]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.0_f32; 2], Shape::from_dims(&[1, 1, 2]), cpu_dev())
+            .unwrap();
         let w = x.const_f32_like(vec![0.0_f32; 4], Shape::from_dims(&[1, 1, 4]));
         let y = x.conv_transpose1d(&w, 4, 0, 0, 1, 1);
         assert_eq!(y.shape().dims(), &[1, 1, 8]);
@@ -11906,7 +11924,8 @@ mod tests {
             vec![0.0_f32; 4 * 3],
             Shape::from_dims(&[1, 4, 3]),
             cpu_dev(),
-        );
+        )
+        .unwrap();
         let w = x.const_f32_like(vec![0.0_f32; 4 * 3 * 3], Shape::from_dims(&[4, 3, 3]));
         let y = x.conv_transpose1d(&w, 1, 0, 0, 1, 2);
         assert_eq!(y.shape().dims(), &[1, 6, 5]);
@@ -11922,7 +11941,8 @@ mod tests {
                 .collect::<Vec<f32>>(),
             Shape::from_dims(&[1, 2, 4, 4]),
             cpu_dev(),
-        );
+        )
+        .unwrap();
         let w = x.const_f32_like(
             (0..(3 * 2 * 3 * 3))
                 .map(|i| (i as f32) * 0.07 - 0.4)
@@ -11966,7 +11986,7 @@ mod tests {
 
     #[test]
     fn move_to_device_emits_op_move_node() {
-        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let moved = a.move_to_device(DeviceLocation::Vulkan { gpu_id: 0 });
         let g = moved.graph().read().unwrap();
         match &g.node(moved.id()).op {
@@ -11982,7 +12002,7 @@ mod tests {
 
     #[test]
     fn copy_to_device_emits_op_copy_node() {
-        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let b = a.copy_to_device(DeviceLocation::Vulkan { gpu_id: 0 });
         let g = b.graph().read().unwrap();
         match &g.node(b.id()).op {
@@ -11998,7 +12018,7 @@ mod tests {
 
     #[test]
     fn release_builder_emits_op_release_node() {
-        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let released = a.release();
         let g = released.graph().read().unwrap();
         assert!(matches!(g.node(released.id()).op, Op::Release));
@@ -12009,13 +12029,15 @@ mod tests {
 
     #[test]
     fn placement_is_none_by_default() {
-        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a =
+            NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         assert_eq!(a.placement(), None);
     }
 
     #[test]
     fn on_device_sets_placement_hint() {
-        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a =
+            NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
         // Only tag the Add node; the const leaves remain unplaced.
         let c = a.add(&b).on_device(DeviceLocation::Vulkan { gpu_id: 0 });
@@ -12026,7 +12048,7 @@ mod tests {
 
     #[test]
     fn placement_survives_graph_re_reads() {
-        let a = NodeHandle::from_f32(vec![1.0], Shape::from_dims(&[1]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0], Shape::from_dims(&[1]), cpu_dev()).unwrap();
         let tagged = a.clone().on_device(DeviceLocation::Cpu);
         // Re-read from a fresh borrow — round-trips through the side-table.
         assert_eq!(
@@ -12037,7 +12059,8 @@ mod tests {
 
     #[test]
     fn from_f32_creates_single_const_node() {
-        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a =
+            NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         assert_eq!(a.graph().read().unwrap().len(), 1);
         assert_eq!(a.shape().dims(), &[3]);
         assert_eq!(a.dtype(), DType::F32);
@@ -12052,7 +12075,8 @@ mod tests {
 
     #[test]
     fn add_appends_a_node_and_tracks_inputs() {
-        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a =
+            NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
         let c = a.add(&b);
         assert_eq!(c.graph().read().unwrap().len(), 3); // const, const, add
@@ -12066,7 +12090,8 @@ mod tests {
 
     #[test]
     fn chained_ops_all_share_one_graph() {
-        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a =
+            NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
         let c = a.add(&b).mul(&a).sqr().relu();
         assert_eq!(c.graph().read().unwrap().len(), 6); // 2 consts + add + mul + sqr + relu
@@ -12075,7 +12100,7 @@ mod tests {
 
     #[test]
     fn matmul_validates_shapes_and_produces_correct_output_shape() {
-        let a = NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![1.0; 12], Shape::from_dims(&[3, 4]));
         let c = a.matmul(&b);
         assert_eq!(c.shape().dims(), &[2, 4]);
@@ -12084,7 +12109,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "shape mismatch")]
     fn add_panics_on_shape_mismatch() {
-        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a =
+            NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![1.0, 2.0], Shape::from_dims(&[2]));
         let _ = a.add(&b);
     }
@@ -12092,7 +12118,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "inner dim mismatch")]
     fn matmul_panics_on_inner_dim_mismatch() {
-        let a = NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![1.0; 8], Shape::from_dims(&[4, 2]));
         let _ = a.matmul(&b);
     }
@@ -12100,8 +12126,10 @@ mod tests {
     #[test]
     #[should_panic(expected = "must live on the same graph")]
     fn cross_graph_op_is_rejected() {
-        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
-        let b = NodeHandle::from_f32(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]), cpu_dev());
+        let a =
+            NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
+        let b =
+            NodeHandle::from_f32(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         let _ = a.add(&b);
     }
 
@@ -12114,22 +12142,22 @@ mod tests {
 
     #[test]
     fn each_new_graph_gets_a_distinct_id() {
-        let a = NodeHandle::from_f32(vec![1.0], Shape::from_dims(&[1]), cpu_dev());
-        let b = NodeHandle::from_f32(vec![2.0], Shape::from_dims(&[1]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0], Shape::from_dims(&[1]), cpu_dev()).unwrap();
+        let b = NodeHandle::from_f32(vec![2.0], Shape::from_dims(&[1]), cpu_dev()).unwrap();
         assert_ne!(a.graph_id(), b.graph_id());
     }
 
     #[test]
     fn same_graph_tensors_share_one_id() {
-        let a = NodeHandle::from_f32(vec![1.0], Shape::from_dims(&[1]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0], Shape::from_dims(&[1]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![2.0], Shape::from_dims(&[1]));
         assert_eq!(a.graph_id(), b.graph_id());
     }
 
     #[test]
     fn affinity_panic_names_both_graph_ids() {
-        let a = NodeHandle::from_f32(vec![1.0], Shape::from_dims(&[1]), cpu_dev());
-        let b = NodeHandle::from_f32(vec![2.0], Shape::from_dims(&[1]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0], Shape::from_dims(&[1]), cpu_dev()).unwrap();
+        let b = NodeHandle::from_f32(vec![2.0], Shape::from_dims(&[1]), cpu_dev()).unwrap();
         let (ia, ib) = (a.graph_id(), b.graph_id());
         let err = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| a.add(&b)))
             .expect_err("cross-graph add must panic");
@@ -12146,13 +12174,15 @@ mod tests {
 
     #[test]
     fn from_f32_on_builds_into_the_given_graph() {
-        let root = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let root =
+            NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         let w = NodeHandle::from_f32_on(
             root.graph(),
             vec![4.0, 5.0, 6.0],
             Shape::from_dims(&[3]),
             cpu_dev(),
-        );
+        )
+        .unwrap();
         assert_eq!(root.graph_id(), w.graph_id());
         assert!(Arc::ptr_eq(root.graph(), w.graph()));
     }
@@ -12162,8 +12192,10 @@ mod tests {
         // The program that could not previously be written: build two tensors
         // and combine them, without discovering `const_*_like`.
         let g: SharedGraph = Arc::new(RwLock::new(Graph::new()));
-        let a = NodeHandle::from_f32_on(&g, vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
-        let b = NodeHandle::from_f32_on(&g, vec![1.0; 6], Shape::from_dims(&[3, 2]), cpu_dev());
+        let a = NodeHandle::from_f32_on(&g, vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev())
+            .unwrap();
+        let b = NodeHandle::from_f32_on(&g, vec![1.0; 6], Shape::from_dims(&[3, 2]), cpu_dev())
+            .unwrap();
         let y = a.matmul(&b);
         assert_eq!(y.shape().dims(), &[2, 2]);
         assert_eq!(y.graph_id(), a.graph_id());
@@ -12173,13 +12205,15 @@ mod tests {
     fn graph_scoped_constructors_cover_every_dtype() {
         let g: SharedGraph = Arc::new(RwLock::new(Graph::new()));
         let s = Shape::from_dims(&[1]);
-        let f32t = NodeHandle::from_f32_on(&g, vec![1.0f32], s.clone(), cpu_dev());
-        let f64t = NodeHandle::from_f64_on(&g, vec![1.0f64], s.clone(), cpu_dev());
+        let f32t = NodeHandle::from_f32_on(&g, vec![1.0f32], s.clone(), cpu_dev()).unwrap();
+        let f64t = NodeHandle::from_f64_on(&g, vec![1.0f64], s.clone(), cpu_dev()).unwrap();
         let bf16t =
-            NodeHandle::from_bf16_on(&g, vec![half::bf16::from_f32(1.0)], s.clone(), cpu_dev());
+            NodeHandle::from_bf16_on(&g, vec![half::bf16::from_f32(1.0)], s.clone(), cpu_dev())
+                .unwrap();
         let f16t =
-            NodeHandle::from_f16_on(&g, vec![half::f16::from_f32(1.0)], s.clone(), cpu_dev());
-        let u32t = NodeHandle::from_u32_on(&g, vec![1u32], s, cpu_dev());
+            NodeHandle::from_f16_on(&g, vec![half::f16::from_f32(1.0)], s.clone(), cpu_dev())
+                .unwrap();
+        let u32t = NodeHandle::from_u32_on(&g, vec![1u32], s, cpu_dev()).unwrap();
         for t in [&f64t, &bf16t, &f16t, &u32t] {
             assert_eq!(
                 t.graph_id(),
@@ -12197,7 +12231,8 @@ mod tests {
 
     #[test]
     fn from_f64_tags_node_with_f64_dtype() {
-        let a = NodeHandle::from_f64(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a =
+            NodeHandle::from_f64(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         assert_eq!(a.dtype(), DType::F64);
         let node = a.graph().read().unwrap().node(a.id()).clone();
         // Phase 7.5 G2: slot-rooted Const, dtype validated via slot.
@@ -12212,7 +12247,8 @@ mod tests {
             vec![bf16::from_f32(1.0), bf16::from_f32(2.0)],
             Shape::from_dims(&[2]),
             cpu_dev(),
-        );
+        )
+        .unwrap();
         assert_eq!(a.dtype(), DType::BF16);
         let node = a.graph().read().unwrap().node(a.id()).clone();
         assert!(matches!(node.op, Op::Const));
@@ -12226,7 +12262,8 @@ mod tests {
             vec![f16::from_f32(1.0), f16::from_f32(2.0)],
             Shape::from_dims(&[2]),
             cpu_dev(),
-        );
+        )
+        .unwrap();
         assert_eq!(a.dtype(), DType::F16);
         let node = a.graph().read().unwrap().node(a.id()).clone();
         assert!(matches!(node.op, Op::Const));
@@ -12237,7 +12274,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "dtype mismatch")]
     fn add_panics_on_mixed_dtype() {
-        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let b = a.const_f64_like(vec![1.0, 2.0], Shape::from_dims(&[2]));
         let _ = a.add(&b);
     }
@@ -12250,7 +12287,8 @@ mod tests {
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
             cpu_dev(),
-        );
+        )
+        .unwrap();
         let t = a.transpose();
         assert_eq!(t.shape().dims(), &[3, 2]);
         let node = t.graph().read().unwrap().node(t.id()).clone();
@@ -12261,14 +12299,16 @@ mod tests {
     #[test]
     #[should_panic(expected = "rank ≥ 2")]
     fn transpose_rejects_rank_1() {
-        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a =
+            NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         let _ = a.transpose();
     }
 
     #[test]
     fn transpose_on_rank_3_swaps_last_two_dims() {
         // [2, 3, 4] → [2, 4, 3]
-        let a = NodeHandle::from_f32(vec![0.0_f32; 24], Shape::from_dims(&[2, 3, 4]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![0.0_f32; 24], Shape::from_dims(&[2, 3, 4]), cpu_dev())
+            .unwrap();
         let t = a.transpose();
         assert_eq!(t.shape().dims(), &[2, 4, 3]);
     }
@@ -12278,7 +12318,8 @@ mod tests {
     #[test]
     fn matmul_rank_3_batched_shape() {
         // [2, 3, 4] @ [2, 4, 5] → [2, 3, 5]
-        let a = NodeHandle::from_f32(vec![0.0; 24], Shape::from_dims(&[2, 3, 4]), cpu_dev());
+        let a =
+            NodeHandle::from_f32(vec![0.0; 24], Shape::from_dims(&[2, 3, 4]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![0.0; 40], Shape::from_dims(&[2, 4, 5]));
         let c = a.matmul(&b);
         assert_eq!(c.shape().dims(), &[2, 3, 5]);
@@ -12287,7 +12328,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "batch dim mismatch")]
     fn matmul_rank_3_rejects_batch_dim_mismatch() {
-        let a = NodeHandle::from_f32(vec![0.0; 24], Shape::from_dims(&[2, 3, 4]), cpu_dev());
+        let a =
+            NodeHandle::from_f32(vec![0.0; 24], Shape::from_dims(&[2, 3, 4]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![0.0; 60], Shape::from_dims(&[3, 4, 5]));
         let _ = a.matmul(&b);
     }
@@ -12297,7 +12339,8 @@ mod tests {
         // [batch=2, seq=3, k=4] @ [k=4, n=5] → [2, 3, 5]. This is the
         // canonical "linear layer across a batch" pattern and should
         // Just Work without an explicit broadcast_to on the RHS.
-        let a = NodeHandle::from_f32(vec![0.0; 24], Shape::from_dims(&[2, 3, 4]), cpu_dev());
+        let a =
+            NodeHandle::from_f32(vec![0.0; 24], Shape::from_dims(&[2, 3, 4]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![0.0; 20], Shape::from_dims(&[4, 5]));
         let c = a.matmul(&b);
         assert_eq!(c.shape().dims(), &[2, 3, 5]);
@@ -12306,7 +12349,7 @@ mod tests {
     #[test]
     fn matmul_auto_broadcasts_rank_2_lhs_against_batched_rhs() {
         // [m=3, k=4] @ [batch=2, k=4, n=5] → [2, 3, 5].
-        let a = NodeHandle::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![0.0; 40], Shape::from_dims(&[2, 4, 5]));
         let c = a.matmul(&b);
         assert_eq!(c.shape().dims(), &[2, 3, 5]);
@@ -12315,7 +12358,7 @@ mod tests {
     #[test]
     fn concat_output_shape_sums_along_dim() {
         // [2, 3] concat [2, 4] along dim 1 → [2, 7]
-        let a = NodeHandle::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![0.0; 8], Shape::from_dims(&[2, 4]));
         let c = a.concat(&b, 1);
         assert_eq!(c.shape().dims(), &[2, 7]);
@@ -12324,7 +12367,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "non-dim shapes")]
     fn concat_rejects_nondim_shape_mismatch() {
-        let a = NodeHandle::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![0.0; 12], Shape::from_dims(&[3, 4]));
         let _ = a.concat(&b, 1);
     }
@@ -12332,7 +12375,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "rank mismatch")]
     fn concat_rejects_rank_mismatch() {
-        let a = NodeHandle::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![0.0; 6], Shape::from_dims(&[6]));
         let _ = a.concat(&b, 0);
     }
@@ -12340,7 +12383,7 @@ mod tests {
     #[test]
     fn slice_shrinks_only_the_slice_dim() {
         // [3, 4] slice dim 1, start 1, len 2 → [3, 2]
-        let x = NodeHandle::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev()).unwrap();
         let s = x.slice(1, 1, 2);
         assert_eq!(s.shape().dims(), &[3, 2]);
     }
@@ -12348,14 +12391,14 @@ mod tests {
     #[test]
     #[should_panic(expected = "exceeds dim size")]
     fn slice_rejects_out_of_bounds_range() {
-        let x = NodeHandle::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
         let _ = x.slice(1, 1, 3); // start=1, len=3 → would need dim>=4
     }
 
     #[test]
     fn broadcast_add_shape_promotes_to_common_shape() {
         // [4, 1] + [1, 3] → [4, 3]
-        let a = NodeHandle::from_f32(vec![0.0; 4], Shape::from_dims(&[4, 1]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![0.0; 4], Shape::from_dims(&[4, 1]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![0.0; 3], Shape::from_dims(&[1, 3]));
         let c = a.broadcast_add(&b);
         assert_eq!(c.shape().dims(), &[4, 3]);
@@ -12364,7 +12407,7 @@ mod tests {
     #[test]
     fn broadcast_sub_pads_shorter_shape_with_leading_ones() {
         // [3] - [2, 3] → [2, 3]
-        let a = NodeHandle::from_f32(vec![0.0; 3], Shape::from_dims(&[3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![0.0; 3], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![0.0; 6], Shape::from_dims(&[2, 3]));
         let c = a.broadcast_sub(&b);
         assert_eq!(c.shape().dims(), &[2, 3]);
@@ -12373,14 +12416,14 @@ mod tests {
     #[test]
     #[should_panic(expected = "incompatible shapes")]
     fn broadcast_add_rejects_incompatible_shapes() {
-        let a = NodeHandle::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![0.0; 8], Shape::from_dims(&[2, 4]));
         let _ = a.broadcast_add(&b);
     }
 
     #[test]
     fn argmax_dim_is_u32_and_removes_reduced_dim() {
-        let x = NodeHandle::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
         let am = x.argmax_dim(1);
         assert_eq!(am.dtype(), DType::U32);
         assert_eq!(am.shape().dims(), &[2]);
@@ -12389,13 +12432,13 @@ mod tests {
     #[test]
     #[should_panic(expected = "out of bounds")]
     fn argmax_dim_rejects_bad_dim() {
-        let x = NodeHandle::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
         let _ = x.argmax_dim(5);
     }
 
     #[test]
     fn index_add_shape_validation() {
-        let base = NodeHandle::from_f32(vec![0.0; 10], Shape::from_dims(&[10]), cpu_dev());
+        let base = NodeHandle::from_f32(vec![0.0; 10], Shape::from_dims(&[10]), cpu_dev()).unwrap();
         let idx = base.const_u32_like(vec![1, 3, 5], Shape::from_dims(&[3]));
         let src = base.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
         let out = base.index_add(0, &idx, &src);
@@ -12405,7 +12448,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "dtypes must match")]
     fn index_add_rejects_dtype_mismatch() {
-        let base = NodeHandle::from_f32(vec![0.0; 5], Shape::from_dims(&[5]), cpu_dev());
+        let base = NodeHandle::from_f32(vec![0.0; 5], Shape::from_dims(&[5]), cpu_dev()).unwrap();
         let idx = base.const_u32_like(vec![0, 2], Shape::from_dims(&[2]));
         let src = base.const_f64_like(vec![1.0, 2.0], Shape::from_dims(&[2]));
         let _ = base.index_add(0, &idx, &src);
@@ -12413,7 +12456,8 @@ mod tests {
 
     #[test]
     fn scatter_add_validates_index_matches_src() {
-        let base = NodeHandle::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let base =
+            NodeHandle::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
         let idx = base.const_u32_like(vec![0, 2, 1, 0], Shape::from_dims(&[2, 2]));
         let src = base.const_f32_like(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[2, 2]));
         let out = base.scatter_add(1, &idx, &src);
@@ -12423,7 +12467,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "same shape")]
     fn scatter_add_rejects_index_src_shape_mismatch() {
-        let base = NodeHandle::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let base =
+            NodeHandle::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
         let idx = base.const_u32_like(vec![0, 1], Shape::from_dims(&[2]));
         let src = base.const_f32_like(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[2, 2]));
         let _ = base.scatter_add(1, &idx, &src);
@@ -12432,7 +12477,7 @@ mod tests {
     #[test]
     fn reduce_sum_to_validates_compatibility() {
         // [3, 4] can reduce to [4] (sum along dim 0) or [3, 1] (sum along dim 1).
-        let x = NodeHandle::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev()).unwrap();
         let r1 = x.reduce_sum_to(Shape::from_dims(&[4]));
         assert_eq!(r1.shape().dims(), &[4]);
         let r2 = x.reduce_sum_to(Shape::from_dims(&[3, 1]));
@@ -12443,7 +12488,7 @@ mod tests {
     #[should_panic(expected = "incompatible")]
     fn reduce_sum_to_rejects_non_broadcast_target() {
         // [3, 4] cannot reduce to [3, 2] — target must be broadcast-into-source.
-        let x = NodeHandle::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev()).unwrap();
         let _ = x.reduce_sum_to(Shape::from_dims(&[3, 2]));
     }
 
@@ -12453,7 +12498,8 @@ mod tests {
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
             cpu_dev(),
-        );
+        )
+        .unwrap();
         // Insert at position 0: [2, 3] -> [1, 2, 3]
         let y0 = x.unsqueeze(0);
         assert_eq!(y0.shape().dims(), &[1, 2, 3]);
@@ -12473,7 +12519,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "out of bounds")]
     fn unsqueeze_rejects_dim_above_rank() {
-        let x = NodeHandle::from_f32(vec![1.0; 4], Shape::from_dims(&[4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![1.0; 4], Shape::from_dims(&[4]), cpu_dev()).unwrap();
         // dim=2 > rank=1 → panic.
         let _ = x.unsqueeze(2);
     }
@@ -12487,7 +12533,8 @@ mod tests {
             vec![1.0, 2.0, 3.0, 4.0],
             Shape::from_dims(&[2, 2]),
             cpu_dev(),
-        );
+        )
+        .unwrap();
         let y = x.unsqueeze(1);
         let g = x.graph().read().unwrap();
         assert!(
@@ -12504,7 +12551,7 @@ mod tests {
     #[test]
     fn reduce_max_to_validates_compatibility() {
         // [3, 4] can reduce to [4] (max along dim 0) or [3, 1] (max along dim 1).
-        let x = NodeHandle::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev()).unwrap();
         let r1 = x.reduce_max_to(Shape::from_dims(&[4]));
         assert_eq!(r1.shape().dims(), &[4]);
         assert!(matches!(
@@ -12518,13 +12565,13 @@ mod tests {
     #[test]
     #[should_panic(expected = "incompatible")]
     fn reduce_max_to_rejects_non_broadcast_target() {
-        let x = NodeHandle::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev()).unwrap();
         let _ = x.reduce_max_to(Shape::from_dims(&[3, 2]));
     }
 
     #[test]
     fn reshape_preserves_element_count() {
-        let x = NodeHandle::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev()).unwrap();
         let r = x.reshape(Shape::from_dims(&[2, 6]));
         assert_eq!(r.shape().dims(), &[2, 6]);
     }
@@ -12532,21 +12579,22 @@ mod tests {
     #[test]
     #[should_panic(expected = "element count mismatch")]
     fn reshape_rejects_different_element_count() {
-        let x = NodeHandle::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev()).unwrap();
         let _ = x.reshape(Shape::from_dims(&[3, 3]));
     }
 
     #[test]
     #[should_panic(expected = "same graph")]
     fn concat_across_graphs_panics() {
-        let a = NodeHandle::from_f32(vec![0.0; 3], Shape::from_dims(&[3]), cpu_dev());
-        let b = NodeHandle::from_f32(vec![0.0; 3], Shape::from_dims(&[3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![0.0; 3], Shape::from_dims(&[3]), cpu_dev()).unwrap();
+        let b = NodeHandle::from_f32(vec![0.0; 3], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         let _ = a.concat(&b, 0);
     }
 
     #[test]
     fn scalar_ops_preserve_shape_and_dtype() {
-        let x = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let x =
+            NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         let y = x.add_scalar(5.0).mul_scalar(2.0).powi(2).clamp(0.0, 100.0);
         assert_eq!(y.shape().dims(), &[3]);
         assert_eq!(y.dtype(), DType::F32);
@@ -12554,7 +12602,8 @@ mod tests {
 
     #[test]
     fn maximum_requires_matching_shapes() {
-        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a =
+            NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![4.0, 1.0, 5.0], Shape::from_dims(&[3]));
         let m = a.maximum(&b);
         assert_eq!(m.shape().dims(), &[3]);
@@ -12563,7 +12612,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "shape mismatch")]
     fn maximum_rejects_shape_mismatch() {
-        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a =
+            NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![1.0, 2.0], Shape::from_dims(&[2]));
         let _ = a.maximum(&b);
     }
@@ -12573,7 +12623,7 @@ mod tests {
     #[test]
     fn topo_order_places_inputs_before_dependents() {
         // Build: c = (a + b) * a
-        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
         let sum = a.add(&b);
         let c = sum.mul(&a);
@@ -12592,7 +12642,7 @@ mod tests {
     fn topo_order_visits_each_node_once_when_shared() {
         // (a + a) — `a` appears twice in the Add's inputs but the topo
         // pass should still visit it exactly once.
-        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let double = a.add(&a);
         let order = topo_order(&double.graph().read().unwrap(), double.id());
         assert_eq!(order.len(), 2);
@@ -12612,7 +12662,7 @@ mod tests {
         // topo_order_multi(&[add1, add2]) must contain all 5 nodes
         // (a, b, c, add1, add2) with a before add1/add2 and b before
         // add1 and c before add2.
-        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
         let c = a.const_f32_like(vec![5.0, 6.0], Shape::from_dims(&[2]));
         let add1 = a.add(&b);
@@ -12632,7 +12682,8 @@ mod tests {
     fn backward_of_lone_const_seeds_ones() {
         // backward(a) gives a = 1s (the root's upstream is a ones tensor,
         // which is the gradient stored for the root itself).
-        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a =
+            NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         let grads = a.backward();
         let g_a = grads.get(&a).expect("root gets a seed gradient");
         // The seed is a Const ones node of matching shape. Phase 7.5
@@ -12650,7 +12701,7 @@ mod tests {
         // c = a + b  ⇒  dc/da = 1, dc/db = 1.
         // Upstream seed is a ones tensor. So grad_a and grad_b are both
         // the same ones node (no new math emitted for Add's backward).
-        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
         let c = a.add(&b);
         let grads = c.backward();
@@ -12665,7 +12716,7 @@ mod tests {
         // c = a * b  ⇒  dc/da = b, dc/db = a (upstream is 1s).
         // The backward pass should emit two new Mul nodes (upstream * b,
         // upstream * a).
-        let a = NodeHandle::from_f32(vec![2.0, 3.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![2.0, 3.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![5.0, 7.0], Shape::from_dims(&[2]));
         let c = a.mul(&b);
         let nodes_before = c.graph().read().unwrap().len();
@@ -12688,7 +12739,7 @@ mod tests {
         // After backward, the gradient for a should be an Add node
         // combining the two Mul contributions (one from each input slot
         // of the forward Mul).
-        let a = NodeHandle::from_f32(vec![3.0, 5.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![3.0, 5.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let c = a.mul(&a);
         let grads = c.backward();
         let g_a = grads.get(&a).unwrap();
@@ -12706,7 +12757,7 @@ mod tests {
     fn backward_of_matmul_emits_transpose_and_matmul_nodes() {
         // Forward: Y = A @ B,  A:[2,3], B:[3,4], Y:[2,4].
         // Backward: dA = dY @ B^T (shape [2,3]),  dB = A^T @ dY (shape [3,4]).
-        let a = NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![1.0; 12], Shape::from_dims(&[3, 4]));
         let y = a.matmul(&b);
         let grads = y.backward();
@@ -12726,7 +12777,7 @@ mod tests {
 
     #[test]
     fn cast_tags_node_with_target_dtype() {
-        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let b = a.cast(DType::F64);
         assert_eq!(b.dtype(), DType::F64);
         assert_eq!(b.shape().dims(), &[2]);
@@ -12737,7 +12788,8 @@ mod tests {
     #[test]
     fn broadcast_to_accepts_right_aligned_expansion() {
         // [3] broadcasts to [2, 3]: pad with leading 1, expand.
-        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a =
+            NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         let b = a.broadcast_to(Shape::from_dims(&[2, 3]));
         assert_eq!(b.shape().dims(), &[2, 3]);
     }
@@ -12745,7 +12797,8 @@ mod tests {
     #[test]
     fn broadcast_to_accepts_size_one_expansion() {
         // [3, 1] broadcasts to [3, 4]: size-1 dim expands.
-        let a = NodeHandle::from_f32(vec![10.0, 20.0, 30.0], Shape::from_dims(&[3, 1]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![10.0, 20.0, 30.0], Shape::from_dims(&[3, 1]), cpu_dev())
+            .unwrap();
         let b = a.broadcast_to(Shape::from_dims(&[3, 4]));
         assert_eq!(b.shape().dims(), &[3, 4]);
     }
@@ -12754,20 +12807,23 @@ mod tests {
     #[should_panic(expected = "incompatible")]
     fn broadcast_to_rejects_incompatible_dim() {
         // [3] cannot broadcast to [2, 4] — the source dim 3 must match 4.
-        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a =
+            NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         let _ = a.broadcast_to(Shape::from_dims(&[2, 4]));
     }
 
     #[test]
     fn sum_all_produces_rank_zero_output() {
-        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a =
+            NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         let s = a.sum_all();
         assert_eq!(s.shape().dims(), &[] as &[usize]);
     }
 
     #[test]
     fn sum_dim_removes_reduced_dim_from_shape() {
-        let a = NodeHandle::from_f32(vec![1.0; 24], Shape::from_dims(&[2, 3, 4]), cpu_dev());
+        let a =
+            NodeHandle::from_f32(vec![1.0; 24], Shape::from_dims(&[2, 3, 4]), cpu_dev()).unwrap();
         // Reducing dim 1 should give shape [2, 4].
         let s = a.sum_dim(1);
         assert_eq!(s.shape().dims(), &[2, 4]);
@@ -12776,7 +12832,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "out of bounds")]
     fn sum_dim_rejects_bad_dim() {
-        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a =
+            NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         let _ = a.sum_dim(5);
     }
 
@@ -12786,7 +12843,8 @@ mod tests {
             vec![1.0, 2.0, 3.0, 4.0],
             Shape::from_dims(&[2, 2]),
             cpu_dev(),
-        );
+        )
+        .unwrap();
         assert_eq!(a.softmax_last_dim().shape().dims(), &[2, 2]);
         assert_eq!(a.layer_norm_last_dim(1e-5).shape().dims(), &[2, 2]);
     }
@@ -12795,7 +12853,8 @@ mod tests {
     fn neg_sub_div_sqrt_log_sin_cos_tanh_sigmoid_all_build() {
         // Smoke test: every new builder produces a node with the expected
         // shape and dtype. Numerical correctness is exercised in exec.rs.
-        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a =
+            NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
         for tensor in [
             a.neg(),
@@ -12818,7 +12877,7 @@ mod tests {
 
     #[test]
     fn from_u32_tags_node_with_u32_dtype() {
-        let a = NodeHandle::from_u32(vec![1, 2, 3], Shape::from_dims(&[3]), cpu_dev());
+        let a = NodeHandle::from_u32(vec![1, 2, 3], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         assert_eq!(a.dtype(), DType::U32);
         let node = a.graph().read().unwrap().node(a.id()).clone();
         // Phase 7.5 G2: slot-rooted Const, dtype validated via slot.
@@ -12829,7 +12888,8 @@ mod tests {
 
     #[test]
     fn index_select_produces_shape_with_dim_replaced() {
-        let data = NodeHandle::from_f32(vec![1.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
+        let data =
+            NodeHandle::from_f32(vec![1.0; 12], Shape::from_dims(&[3, 4]), cpu_dev()).unwrap();
         let idx = data.const_u32_like(vec![0, 2, 1, 0, 2], Shape::from_dims(&[5]));
         let out = data.index_select(0, &idx);
         assert_eq!(out.shape().dims(), &[5, 4]);
@@ -12839,7 +12899,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "must be U32")]
     fn index_select_rejects_float_index() {
-        let data = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let data =
+            NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         let bad = data.const_f32_like(vec![0.0, 1.0], Shape::from_dims(&[2]));
         let _ = data.index_select(0, &bad);
     }
@@ -12847,14 +12908,16 @@ mod tests {
     #[test]
     #[should_panic(expected = "must be rank 1")]
     fn index_select_rejects_multi_dim_index() {
-        let data = NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let data =
+            NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
         let idx = data.const_u32_like(vec![0, 1, 0, 1], Shape::from_dims(&[2, 2]));
         let _ = data.index_select(0, &idx);
     }
 
     #[test]
     fn gather_output_shape_matches_index_shape() {
-        let data = NodeHandle::from_f32(vec![1.0; 12], Shape::from_dims(&[3, 4]), cpu_dev());
+        let data =
+            NodeHandle::from_f32(vec![1.0; 12], Shape::from_dims(&[3, 4]), cpu_dev()).unwrap();
         // Index shape [2, 5] — same rank as data (rank 2).
         let idx = data.const_u32_like(vec![0; 10], Shape::from_dims(&[2, 5]));
         let out = data.gather(1, &idx);
@@ -12864,7 +12927,8 @@ mod tests {
     #[test]
     #[should_panic(expected = "same rank")]
     fn gather_rejects_rank_mismatch() {
-        let data = NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let data =
+            NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
         // Rank-1 index for rank-2 data → error.
         let idx = data.const_u32_like(vec![0, 1, 0], Shape::from_dims(&[3]));
         let _ = data.gather(1, &idx);
@@ -12875,7 +12939,8 @@ mod tests {
         // Before: this used to panic. After adding Step + Relu backward,
         // it should successfully emit a backward graph rooted in a Mul
         // whose second input is a Step node.
-        let a = NodeHandle::from_f32(vec![-1.0, 2.0, -3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a =
+            NodeHandle::from_f32(vec![-1.0, 2.0, -3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         let y = a.relu();
         let grads = y.backward();
         let g_a = grads.get(&a).unwrap();
@@ -12893,7 +12958,8 @@ mod tests {
     fn recip_and_abs_builders_produce_unary_nodes() {
         // Smoke test: NodeHandle::recip()/abs() build single-input nodes
         // with the expected op variant and shape passthrough.
-        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a =
+            NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         let r = a.recip();
         let b = a.abs();
         assert_eq!(r.shape().dims(), &[3]);
@@ -12911,7 +12977,7 @@ mod tests {
         // y = 1/x ⇒ dy/dx = -y². The backward graph should be a Neg
         // wrapping a Mul whose inputs include a Sqr node — and the Sqr
         // should reference the forward Recip output, not a fresh recompute.
-        let a = NodeHandle::from_f32(vec![2.0, 4.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![2.0, 4.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let y = a.recip();
         let y_id = y.id();
         let grads = y.backward();
@@ -12946,7 +13012,7 @@ mod tests {
         // backward chain shrinks from 5 nodes (step+neg+step+sub+mul)
         // to 2 (sign+mul): grad_x = upstream * sign(x), where Sign is
         // a single primitive that returns -1/0/1 directly.
-        let a = NodeHandle::from_f32(vec![-2.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![-2.0, 2.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let y = a.abs();
         let grads = y.backward();
         let g_a = grads.get(&a).unwrap();
@@ -12983,7 +13049,8 @@ mod tests {
         // GAP-168(c): NodeHandle::eq builds a binary node whose dtype is Bool
         // regardless of input dtype (CireSnave's ruling — "Fuel uses Bool
         // where possible"), with shape == lhs.shape() (and == rhs.shape()).
-        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a =
+            NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![1.0, 5.0, 3.0], Shape::from_dims(&[3]));
         let m = a.eq(&b);
         assert_eq!(m.shape().dims(), &[3]);
@@ -12998,7 +13065,8 @@ mod tests {
         // GAP-168(c): eq/ne/lt/le/gt/ge every one returns DType::Bool, not the
         // legacy U8 mask. Shape is preserved (== lhs == rhs). One assertion per
         // operator so a regression names the operator that drifted.
-        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a =
+            NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![1.0, 5.0, 3.0], Shape::from_dims(&[3]));
         for (name, m) in [
             ("eq", a.eq(&b)),
@@ -13017,7 +13085,8 @@ mod tests {
     fn try_unsqueeze_returns_err_on_dim_above_rank() {
         // try_unsqueeze surfaces bad dim as Err; unsqueeze panics
         // on the same input. Both share the validation message.
-        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a =
+            NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         let err = a.try_unsqueeze(5).expect_err("dim above rank must error");
         assert!(
             format!("{err:?}").contains("out of bounds"),
@@ -13030,7 +13099,8 @@ mod tests {
 
     #[test]
     fn try_reshape_returns_err_on_count_mismatch() {
-        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), cpu_dev())
+            .unwrap();
         let err = a
             .try_reshape(Shape::from_dims(&[3]))
             .expect_err("count mismatch must error");
@@ -13046,7 +13116,8 @@ mod tests {
 
     #[test]
     fn try_broadcast_to_returns_err_on_incompatible_shape() {
-        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a =
+            NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         let err = a
             .try_broadcast_to(Shape::from_dims(&[2, 4]))
             .expect_err("source dim 3 cannot broadcast to dim 4");
@@ -13062,7 +13133,8 @@ mod tests {
 
     #[test]
     fn try_transpose_returns_err_on_rank_below_2() {
-        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a =
+            NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         let err = a
             .try_transpose()
             .expect_err("rank-1 input cannot transpose");
@@ -13070,14 +13142,14 @@ mod tests {
             format!("{err:?}").contains("rank ≥ 2"),
             "error must mention rank requirement, got: {err:?}"
         );
-        let m = NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let m = NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
         let mt = m.try_transpose().expect("rank-2 transposes ok");
         assert_eq!(mt.shape().dims(), &[3, 2]);
     }
 
     #[test]
     fn try_permute_returns_err_on_bad_axes() {
-        let a = NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
         // Wrong axes length:
         let err = a.try_permute(&[0]).expect_err("axes length mismatch");
         assert!(
@@ -13099,7 +13171,8 @@ mod tests {
     fn squeeze_drops_size_one_dim_metadata_only() {
         // Build [2, 1, 3] → squeeze(1) → [2, 3]. Op::Squeeze, view-op,
         // shape pruned, dtype preserved, single input slot.
-        let a = NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 1, 3]), cpu_dev());
+        let a =
+            NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 1, 3]), cpu_dev()).unwrap();
         let s = a.squeeze(1).expect("squeeze on size-1 dim");
         assert_eq!(s.shape().dims(), &[2, 3]);
         assert_eq!(s.dtype(), DType::F32);
@@ -13117,7 +13190,7 @@ mod tests {
     #[test]
     fn squeeze_rejects_non_size_one_dim() {
         // Result-returning: bad dim surfaces as Err, not panic.
-        let a = NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
         let err = a
             .squeeze(1)
             .expect_err("squeezing a non-size-1 dim must error");
@@ -13129,7 +13202,8 @@ mod tests {
 
     #[test]
     fn squeeze_rejects_dim_above_rank() {
-        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a =
+            NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         let err = a.squeeze(5).expect_err("dim above rank must error");
         assert!(
             format!("{err:?}").contains("out of bounds"),
@@ -13141,7 +13215,8 @@ mod tests {
     fn backward_through_squeeze_emits_unsqueeze() {
         // y = squeeze(x, 1). Backward: re-insert dim 1 via Unsqueeze.
         // Gradient shape must equal x.shape exactly.
-        let a = NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 1, 3]), cpu_dev());
+        let a =
+            NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 1, 3]), cpu_dev()).unwrap();
         let y = a.squeeze(1).expect("squeeze on size-1 dim");
         let grads = y.backward();
         let g_a = grads.get(&a).expect("gradient for a");
@@ -13162,7 +13237,8 @@ mod tests {
     #[test]
     fn floor_builder_produces_unary_node_same_dtype() {
         // NodeHandle::floor builds a unary node preserving shape + dtype.
-        let a = NodeHandle::from_f32(vec![1.5, 2.5, 3.5], Shape::from_dims(&[3]), cpu_dev());
+        let a =
+            NodeHandle::from_f32(vec![1.5, 2.5, 3.5], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         let f = a.floor();
         assert_eq!(f.shape().dims(), &[3]);
         assert_eq!(f.dtype(), DType::F32);
@@ -13177,7 +13253,8 @@ mod tests {
         // backward arm is a no-op. backward() must succeed and the
         // input gets no gradient (the input's upstream is never
         // populated through the Floor node).
-        let a = NodeHandle::from_f32(vec![1.5, 2.5, 3.5], Shape::from_dims(&[3]), cpu_dev());
+        let a =
+            NodeHandle::from_f32(vec![1.5, 2.5, 3.5], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         let y = a.floor();
         let grads = y.backward();
         // a's gradient is dropped — no entry in the GradMap.
@@ -13192,7 +13269,8 @@ mod tests {
         // self is a Bool cond (GAP-168(c)); a/b are F32. Output dtype = F32
         // (= a's dtype), shape = self.shape() (= a.shape() = b.shape()).
         // Op::Where node carries 3 inputs in order (cond, a, b).
-        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let a =
+            NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![10.0, 20.0, 30.0], Shape::from_dims(&[3]));
         let eq_a_b = a.eq(&b); // Bool mask
         let picked = eq_a_b.where_cond(&a, &b);
@@ -13213,7 +13291,7 @@ mod tests {
         // Exp's backward rule uses the forward output directly. The
         // gradient for x should be a Mul whose inputs include the
         // forward Exp node (not a new Exp node).
-        let a = NodeHandle::from_f32(vec![0.0, 1.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![0.0, 1.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let e = a.exp();
         let exp_forward_id = e.id();
         let grads = e.backward();
@@ -13252,7 +13330,8 @@ mod tests {
     #[test]
     fn write_slice_emits_op_writeslice_node() {
         // dest shape [4, 3]; source shape [1, 3]; write at row 2.
-        let dest = NodeHandle::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev());
+        let dest =
+            NodeHandle::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev()).unwrap();
         let src = dest.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]));
         let out = dest
             .write_slice(&src, vec![(2, 3), (0, 3)])
@@ -13274,7 +13353,8 @@ mod tests {
     fn write_slice_dyn_records_dynamic_offset() {
         use fuel_ir::{DynScalar, SymId};
         // dest capacity [8, 3]; source [1, 3]; dynamic start on axis 0.
-        let dest = NodeHandle::from_f32(vec![0.0_f32; 24], Shape::from_dims(&[8, 3]), cpu_dev());
+        let dest =
+            NodeHandle::from_f32(vec![0.0_f32; 24], Shape::from_dims(&[8, 3]), cpu_dev()).unwrap();
         let src = dest.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]));
         let sym = SymId(0);
         // ranges[0].0 is ignored (start is dynamic); width = 1 - 0 = 1
@@ -13299,7 +13379,8 @@ mod tests {
         use fuel_ir::{DynScalar, SymId};
         // dest capacity on axis 0 is 2, but the dynamic-axis slab is
         // width 4 — can never fit regardless of the runtime offset.
-        let dest = NodeHandle::from_f32(vec![0.0_f32; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let dest =
+            NodeHandle::from_f32(vec![0.0_f32; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
         let src = dest.const_f32_like(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]));
         let err = dest.write_slice_dyn(&src, vec![(0, 4), (0, 3)], 0, DynScalar::Sym(SymId(0)));
         assert!(
@@ -13311,7 +13392,8 @@ mod tests {
     #[test]
     fn write_slice_dyn_rejects_axis_out_of_bounds() {
         use fuel_ir::{DynScalar, SymId};
-        let dest = NodeHandle::from_f32(vec![0.0_f32; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let dest =
+            NodeHandle::from_f32(vec![0.0_f32; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
         let src = dest.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]));
         let err = dest.write_slice_dyn(&src, vec![(0, 1), (0, 3)], 5, DynScalar::Sym(SymId(0)));
         assert!(err.is_err(), "dyn_axis past rank must error");
@@ -13325,7 +13407,8 @@ mod tests {
             vec![0.0_f32; 2 * 3 * 4],
             Shape::from_dims(&[1, 2, 3, 4]),
             cpu_dev(),
-        );
+        )
+        .unwrap();
         let k = q.const_f32_like(vec![0.0_f32; 8 * 4], Shape::from_dims(&[1, 1, 8, 4]));
         let v = q.const_f32_like(vec![0.0_f32; 8 * 4], Shape::from_dims(&[1, 1, 8, 4]));
         let sym = SymId(0);
@@ -13363,7 +13446,8 @@ mod tests {
             vec![0.0_f32; 2 * 4],
             Shape::from_dims(&[1, 1, 2, 4]),
             cpu_dev(),
-        );
+        )
+        .unwrap();
         let k = q.const_f32_like(vec![0.0_f32; 4 * 4], Shape::from_dims(&[1, 1, 4, 4]));
         let v = q.const_f32_like(vec![0.0_f32; 4 * 4], Shape::from_dims(&[1, 1, 4, 4]));
         // Concrete k_len=5 > capacity 4 → build-time panic.
@@ -13382,7 +13466,8 @@ mod tests {
 
     #[test]
     fn write_slice_rejects_rank_mismatch() {
-        let dest = NodeHandle::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev());
+        let dest =
+            NodeHandle::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev()).unwrap();
         let src = dest.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
         // ranges has rank 2 (matches dest) but source has rank 1.
         let err = dest.write_slice(&src, vec![(0, 1), (0, 3)]);
@@ -13408,11 +13493,13 @@ mod tests {
 
     #[test]
     fn write_slice_rejects_cross_graph_source() {
-        let dest = NodeHandle::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev());
+        let dest =
+            NodeHandle::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev()).unwrap();
         // A SECOND `from_*` mints a second graph — the easy mistake to make,
         // and currently the un-diagnosable one.
         let foreign =
-            NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]), cpu_dev());
+            NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]), cpu_dev())
+                .unwrap();
         assert_ne!(
             dest.graph_id(),
             foreign.graph_id(),
@@ -13433,9 +13520,9 @@ mod tests {
 
     #[test]
     fn masked_fill_rejects_cross_graph_mask() {
-        let x = NodeHandle::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[4]), cpu_dev()).unwrap();
         let foreign_mask =
-            NodeHandle::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+            NodeHandle::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev()).unwrap();
         assert_ne!(
             x.graph_id(),
             foreign_mask.graph_id(),
@@ -13464,7 +13551,7 @@ mod tests {
         // cannot produce a gradient. Reject at build time — and this must fail
         // on the dtype guard specifically: graph / shape / mask-Bool / value-dtype
         // are all satisfied, so a bare `is_err()` can only be the guard firing.
-        let x = NodeHandle::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[4]), cpu_dev()).unwrap();
         let scale = x.cast(DType::F8E8M0);
         let mask = x.cast(DType::Bool);
         let value = Scalar::one(DType::F8E8M0).unwrap();
@@ -13500,7 +13587,8 @@ mod tests {
             DType::F8E8M0,
             DType::F8E6M2,
         ] {
-            let x = NodeHandle::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+            let x =
+                NodeHandle::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[4]), cpu_dev()).unwrap();
             let t = x.cast(dt);
             let mask = x.cast(DType::Bool);
             // The dtype guard fires before the value-dtype check, so a dummy
@@ -13524,7 +13612,7 @@ mod tests {
     /// declines loudly at allocation, downstream of this permission).
     #[test]
     fn masked_fill_permits_fillable_dtypes_as_permission_not_capability() {
-        let x = NodeHandle::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[4]), cpu_dev()).unwrap();
         let mask = x.cast(DType::Bool);
         assert!(
             x.masked_fill(&mask, Scalar::F32(0.0)).is_ok(),
@@ -13544,15 +13632,18 @@ mod tests {
         // Returns `NodeHandle`, so it follows the convention of the already-checked
         // builders (`matmul`, `paged_attn`) and asserts. A panic names the
         // problem at the build site; the status quo hangs later saying nothing.
-        let x = NodeHandle::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[1, 1, 2, 4]), cpu_dev());
-        let cos = NodeHandle::from_f32(vec![1.0_f32; 8], Shape::from_dims(&[2, 4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[1, 1, 2, 4]), cpu_dev())
+            .unwrap();
+        let cos =
+            NodeHandle::from_f32(vec![1.0_f32; 8], Shape::from_dims(&[2, 4]), cpu_dev()).unwrap();
         let sin = x.const_f32_like(vec![0.0_f32; 8], Shape::from_dims(&[2, 4]));
         let _ = x.rope_with_tables(&cos, &sin);
     }
 
     #[test]
     fn write_slice_rejects_slab_width_mismatch() {
-        let dest = NodeHandle::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev());
+        let dest =
+            NodeHandle::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev()).unwrap();
         // Source has 2 elements along axis 0, but slab is width 1.
         let src = dest.const_f32_like(vec![1.0_f32; 6], Shape::from_dims(&[2, 3]));
         let err = dest.write_slice(&src, vec![(2, 3), (0, 3)]);
@@ -13561,7 +13652,8 @@ mod tests {
 
     #[test]
     fn write_slice_rejects_range_past_dest_extent() {
-        let dest = NodeHandle::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev());
+        let dest =
+            NodeHandle::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev()).unwrap();
         let src = dest.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]));
         // axis 0: dest extent is 4; range [4, 5) is out of bounds.
         let err = dest.write_slice(&src, vec![(4, 5), (0, 3)]);
@@ -13575,7 +13667,8 @@ mod tests {
         //   ro = dest.relu()                          (non-destructive reader of dest)
         //   w  = dest.write_slice(&src, [(0,1),(0,3)])  (destructive on dest)
         // Expected ordering: w must run after ro.
-        let dest = NodeHandle::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev());
+        let dest =
+            NodeHandle::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev()).unwrap();
         let src = dest.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]));
         let ro = dest.relu();
         let w = dest.write_slice(&src, vec![(0, 1), (0, 3)]).unwrap();
@@ -13743,7 +13836,8 @@ mod tests {
         // y = x.relu_inplace(); loss = y.sum_all(); loss.backward()
         // Phase 1's defensive panic is removed; backward emits
         // Op::Step(x) + Op::Mul(upstream, step) — same as Op::Relu.
-        let x = NodeHandle::from_f32(vec![1.0, -2.0, 3.0], Shape::from_dims(&[3]), cpu_dev());
+        let x =
+            NodeHandle::from_f32(vec![1.0, -2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         let y = x.relu_inplace();
         let loss = y.sum_all();
         let grads = loss.backward();
@@ -13760,7 +13854,7 @@ mod tests {
 
     #[test]
     fn backward_through_sigmoid_inplace_does_not_panic() {
-        let x = NodeHandle::from_f32(vec![0.5, -0.5], Shape::from_dims(&[2]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.5, -0.5], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let y = x.sigmoid_inplace();
         let loss = y.sum_all();
         let grads = loss.backward();
@@ -13770,7 +13864,8 @@ mod tests {
 
     #[test]
     fn backward_through_tanh_inplace_does_not_panic() {
-        let x = NodeHandle::from_f32(vec![0.1, 0.2, 0.3], Shape::from_dims(&[3]), cpu_dev());
+        let x =
+            NodeHandle::from_f32(vec![0.1, 0.2, 0.3], Shape::from_dims(&[3]), cpu_dev()).unwrap();
         let y = x.tanh_inplace();
         let loss = y.sum_all();
         let grads = loss.backward();
@@ -13780,7 +13875,7 @@ mod tests {
 
     #[test]
     fn backward_through_silu_inplace_does_not_panic() {
-        let x = NodeHandle::from_f32(vec![0.1, 0.2], Shape::from_dims(&[2]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.1, 0.2], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let y = x.silu_inplace();
         let loss = y.sum_all();
         let grads = loss.backward();
@@ -13793,7 +13888,7 @@ mod tests {
         // GeluInplace mirrors Op::Gelu's "currently inference-only"
         // panic — both rely on the same not-yet-implemented gradient.
         // SiluInplace is the recommended differentiable alternative.
-        let x = NodeHandle::from_f32(vec![0.1], Shape::from_dims(&[1]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.1], Shape::from_dims(&[1]), cpu_dev()).unwrap();
         let y = x.gelu_inplace();
         let loss = y.sum_all();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| loss.backward()));
@@ -13808,14 +13903,16 @@ mod tests {
         // Structural parity: relu_inplace backward emits the same node
         // count + same op variants as relu backward, since the
         // gradient formula is identical.
-        let x_inp = NodeHandle::from_f32(vec![1.0, -1.0], Shape::from_dims(&[2]), cpu_dev());
+        let x_inp =
+            NodeHandle::from_f32(vec![1.0, -1.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let y_inp = x_inp.relu_inplace();
         let loss_inp = y_inp.sum_all();
         let nodes_before_inp = loss_inp.graph().read().unwrap().len();
         let _ = loss_inp.backward();
         let added_inp = loss_inp.graph().read().unwrap().len() - nodes_before_inp;
 
-        let x_fn = NodeHandle::from_f32(vec![1.0, -1.0], Shape::from_dims(&[2]), cpu_dev());
+        let x_fn =
+            NodeHandle::from_f32(vec![1.0, -1.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let y_fn = x_fn.relu();
         let loss_fn = y_fn.sum_all();
         let nodes_before_fn = loss_fn.graph().read().unwrap().len();
@@ -13834,7 +13931,8 @@ mod tests {
             vec![1.0_f32, -1.0, 2.0, -2.0],
             Shape::from_dims(&[4]),
             cpu_dev(),
-        );
+        )
+        .unwrap();
         let y = x.relu_inplace();
         let g = y.graph().read().unwrap();
         let node = g.node(y.id());
@@ -13850,7 +13948,8 @@ mod tests {
             vec![1.0_f32, 2.0, 3.0, 4.0],
             Shape::from_dims(&[4]),
             cpu_dev(),
-        );
+        )
+        .unwrap();
         let y = x.affine_inplace(2.0, 0.5);
         let g = y.graph().read().unwrap();
         let node = g.node(y.id());
@@ -13871,7 +13970,7 @@ mod tests {
         // One smoke per variant — each builder emits exactly the
         // matching `Op::*Inplace` variant, single input, shape +
         // dtype unchanged.
-        let x = NodeHandle::from_f32(vec![0.5_f32; 8], Shape::from_dims(&[8]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![0.5_f32; 8], Shape::from_dims(&[8]), cpu_dev()).unwrap();
         fn check(y: NodeHandle, x_id: NodeId, expect: fn(&Op) -> bool) {
             let g = y.graph().read().unwrap();
             let node = g.node(y.id());
@@ -13922,7 +14021,8 @@ mod tests {
     fn backward_through_expanded_inplace_unary_emits_grad() {
         fn check_emits_grad(make: impl FnOnce(&NodeHandle) -> NodeHandle) {
             let x =
-                NodeHandle::from_f32(vec![0.5_f32, 1.5, 2.5], Shape::from_dims(&[3]), cpu_dev());
+                NodeHandle::from_f32(vec![0.5_f32, 1.5, 2.5], Shape::from_dims(&[3]), cpu_dev())
+                    .unwrap();
             let y = make(&x);
             let loss = y.sum_all();
             let grads = loss.backward();
@@ -13948,7 +14048,8 @@ mod tests {
     fn backward_through_zero_grad_inplace_drops_gradient() {
         fn check_drops(make: impl FnOnce(&NodeHandle) -> NodeHandle) {
             let x =
-                NodeHandle::from_f32(vec![1.5_f32, 2.5, -3.5], Shape::from_dims(&[3]), cpu_dev());
+                NodeHandle::from_f32(vec![1.5_f32, 2.5, -3.5], Shape::from_dims(&[3]), cpu_dev())
+                    .unwrap();
             let y = make(&x);
             let loss = y.sum_all();
             let grads = loss.backward();
@@ -13974,7 +14075,8 @@ mod tests {
             vec![1.0_f32, -1.0, 2.0, -2.0],
             Shape::from_dims(&[4]),
             cpu_dev(),
-        );
+        )
+        .unwrap();
         let y_a = x.relu();
         let y_b_id = x.graph().write().unwrap().push(Node {
             op: Op::ReluInplace,
@@ -15212,7 +15314,7 @@ mod tests {
     #[test]
     fn op_view_backward_emits_scatter_into_slot() {
         let producer_t =
-            NodeHandle::from_f32(vec![0.0_f32; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+            NodeHandle::from_f32(vec![0.0_f32; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
         let graph: SharedGraph = Arc::clone(producer_t.graph());
         let producer_id = producer_t.id();
         let view_id = {
@@ -15265,12 +15367,54 @@ mod tests {
     /// Op::Branch nodes is exactly today's single-route graph" — this
     /// test pins that: the same builder calls produce the same node
     /// count, the same topo order, and not a single `Op::Branch` node.
+    /// GAP-003 STEP 1: the panic IS reachable from the public API today.
+    ///
+    /// `NodeHandle::from_f32` returns `Self`, so a length/shape mismatch has
+    /// nowhere to go but `assert_eq!` inside `from_host_buffer_on`. This test
+    /// PASSES today and is deleted by the fix -- it exists to prove the defect
+    /// is live from a caller's seat, not merely present in the source.
+    /// GAP-003: a length/shape mismatch DECLINES instead of panicking.
+    ///
+    /// ⚠️ This started life as a `#[should_panic]` probe proving the defect was
+    /// reachable from the public API. The bulk `.unwrap()` pass then appended
+    /// `.unwrap()` to it, and it KEPT PASSING -- for the wrong reason: unwrapping
+    /// an `Err` panics, and the `Err` message contains the expected substring, so
+    /// the assertion could no longer tell "the API panics" from "I unwrapped a
+    /// Result". A vacuous green produced by the very edit that fixed the defect.
+    ///
+    /// It now asserts the `Err` DIRECTLY, with no `unwrap`, and matches on the
+    /// LENGTH-MISMATCH message specifically -- not merely on `is_err()`. That
+    /// distinction is load-bearing: `from_host_buffer_on` has a second failure
+    /// path (`storage_from_host_buffer_owned_dyn`), so a bare `is_err()` could
+    /// not tell this decline from that one.
+    #[test]
+    fn gap003_from_f32_declines_a_length_mismatch() {
+        // 2 elements declared as a 3-element shape.
+        let err = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[3]), cpu_dev())
+            .expect_err("a length/shape mismatch must DECLINE, not construct");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("does not match shape element count"),
+            "the decline must name the LENGTH MISMATCH specifically, got: {msg}"
+        );
+        assert!(
+            msg.contains('2') && msg.contains('3'),
+            "and both operands: {msg}"
+        );
+
+        // CONTROL: a MATCHING length still constructs, so the guard is not
+        // "this constructor always fails".
+        assert!(
+            NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).is_ok()
+        );
+    }
+
     #[test]
     fn zero_branch_graph_builds_unchanged() {
         // Build: c = (a + b) * a — the same DAG the topo-order tests
         // use, exercised here purely to prove the arena is untouched by
         // the new variant.
-        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
         let sum = a.add(&b);
         let c = sum.mul(&a);

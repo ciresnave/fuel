@@ -3135,7 +3135,8 @@ mod tests {
     }
 
     fn make_scalar_graph() -> (SharedGraph, NodeHandle) {
-        let t = NodeHandle::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), cpu_dev());
+        let t = NodeHandle::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), cpu_dev())
+            .unwrap();
         (t.graph().clone(), t)
     }
 
@@ -3150,7 +3151,7 @@ mod tests {
     fn insert_copies_no_placement_no_copies() {
         // Graph with no placement hints: pass should be a no-op, no
         // Copies inserted, roots unchanged.
-        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
         let c = a.add(&b);
         let graph = c.graph().clone();
@@ -3165,7 +3166,7 @@ mod tests {
         // Const a, Const b, Add(a, b) placed on Vulkan.
         // Expected: two Copy(a, Vulkan) and Copy(b, Vulkan) inserted,
         // Add's inputs rewritten to reference the Copies.
-        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
         let c = a.add(&b).on_device(DeviceLocation::Vulkan { gpu_id: 0 });
         let graph = c.graph().clone();
@@ -3196,6 +3197,7 @@ mod tests {
         // Const a and Add both placed on Vulkan. Const flows into
         // Add, both want Vulkan — no Copy needed.
         let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev())
+            .unwrap()
             .on_device(DeviceLocation::Vulkan { gpu_id: 0 });
         let b = a
             .const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]))
@@ -3216,6 +3218,7 @@ mod tests {
         // gradient root. Every backward op should end up on Vulkan
         // (inherited from its inputs, which trace back to Vulkan-placed x).
         let x = NodeHandle::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), cpu_dev())
+            .unwrap()
             .on_device(DeviceLocation::Vulkan { gpu_id: 0 });
         let sq = x.mul(&x).on_device(DeviceLocation::Vulkan { gpu_id: 0 });
         let y = sq.sum_all().on_device(DeviceLocation::Vulkan { gpu_id: 0 });
@@ -3245,7 +3248,8 @@ mod tests {
         // and re-run insert_copies. The Copies that get inserted should
         // pull x to Vulkan; the backward path should follow suit when
         // we ask for both roots.
-        let x = NodeHandle::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), cpu_dev())
+            .unwrap();
         let sq = x.mul(&x);
         let y = sq.sum_all().on_device(DeviceLocation::Vulkan { gpu_id: 0 });
         let graph = y.graph().clone();
@@ -3271,7 +3275,7 @@ mod tests {
     fn lower_const_placement_single_vulkan_consumer() {
         // Const a → Add(a, b) placed on Vulkan. lower_const_placement
         // should tag a with Vulkan since Add is its only consumer.
-        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
         let c = a.add(&b).on_device(DeviceLocation::Vulkan { gpu_id: 0 });
         let graph = c.graph().clone();
@@ -3298,7 +3302,7 @@ mod tests {
     fn lower_const_placement_consumers_disagree_stays_unplaced() {
         // Const a flows into two consumers on different devices.
         // Without replication support, lowering has to leave a unplaced.
-        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
         let cpu_sum = a.add(&b).on_device(DeviceLocation::Cpu);
         let vulkan_sum = a.add(&b).on_device(DeviceLocation::Vulkan { gpu_id: 0 });
@@ -3317,6 +3321,7 @@ mod tests {
     fn lower_const_placement_skips_already_placed() {
         // An explicitly-placed Const should not be overridden.
         let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev())
+            .unwrap()
             .on_device(DeviceLocation::Cpu);
         let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
         let c = a.add(&b).on_device(DeviceLocation::Vulkan { gpu_id: 0 });
@@ -3337,7 +3342,7 @@ mod tests {
 
     #[test]
     fn insert_copies_idempotent() {
-        let a = NodeHandle::from_f32(vec![1.0], Shape::from_dims(&[1]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0], Shape::from_dims(&[1]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![2.0], Shape::from_dims(&[1]));
         let c = a.add(&b).on_device(DeviceLocation::Cpu);
         let graph = c.graph().clone();
@@ -3651,7 +3656,8 @@ mod tests {
             vec![0.5, -0.5, 1.0, -1.0],
             Shape::from_dims(&[4]),
             cpu_dev(),
-        );
+        )
+        .unwrap();
         let b = a.const_f32_like(vec![0.1, 0.2, 0.3, 0.4], Shape::from_dims(&[4]));
         let y = a.sub(&b).tanh();
         let graph = y.graph().clone();
@@ -3707,7 +3713,8 @@ mod tests {
         };
         let rid = register_runtime_fused("test::sigmoid_div", region).unwrap();
 
-        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), cpu_dev())
+            .unwrap();
         let b = a.const_f32_like(vec![2.0, 2.0, 2.0, 2.0], Shape::from_dims(&[4]));
         let y = a.div(&b).sigmoid();
         let graph = y.graph().clone();
@@ -3776,7 +3783,7 @@ mod tests {
 
     #[test]
     fn derive_ordering_empty_for_non_destructive_graph() {
-        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
         let c = a.add(&b);
         let ord = derive_ordering(&c.graph().read().unwrap(), &[c.id()]);
@@ -3793,7 +3800,7 @@ mod tests {
         //   b = relu(a)   (non-destructive reader of a)
         //   r = release(a) (destructive reader of a)
         // Expected ordering: r must run after b.
-        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let b = a.relu();
         let r = a.release();
         let ord = derive_ordering(&a.graph().read().unwrap(), &[b.id(), r.id()]);
@@ -3824,7 +3831,8 @@ mod tests {
             vec![1.0_f32, 2.0, 3.0, 4.0],
             Shape::from_dims(&[2, 2]),
             cpu_dev(),
-        );
+        )
+        .unwrap();
         let v = x.transpose();
         let z = v.relu();
         let r = x.release();
@@ -3846,7 +3854,8 @@ mod tests {
             vec![-1.0_f32, 2.0, -3.0, 4.0],
             Shape::from_dims(&[2, 2]),
             cpu_dev(),
-        );
+        )
+        .unwrap();
         let y = x.transpose();
         let z = y.relu();
         // Capture x's shape + dtype + id BEFORE acquiring the write
@@ -3883,7 +3892,8 @@ mod tests {
     /// failure).
     #[test]
     fn derive_ordering_write_slice_round2_plain_slice_reader_pinned() {
-        let dest = NodeHandle::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let dest =
+            NodeHandle::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[4]), cpu_dev()).unwrap();
         let src1 = dest.const_f32_like(vec![1.0_f32, 2.0], Shape::from_dims(&[2]));
         let src2 = dest.const_f32_like(vec![9.0_f32, 8.0], Shape::from_dims(&[2]));
         let x = dest
@@ -3917,7 +3927,8 @@ mod tests {
     /// missing from the alias-extending set), green after.
     #[test]
     fn derive_ordering_write_slice_round2_reshape_reader_pinned() {
-        let dest = NodeHandle::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let dest =
+            NodeHandle::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[4]), cpu_dev()).unwrap();
         let src1 = dest.const_f32_like(vec![1.0_f32, 2.0], Shape::from_dims(&[2]));
         let src2 = dest.const_f32_like(vec![9.0_f32, 8.0], Shape::from_dims(&[2]));
         let x = dest
@@ -3953,7 +3964,8 @@ mod tests {
             vec![1.0_f32, -2.0, 3.0, -4.0],
             Shape::from_dims(&[4]),
             cpu_dev(),
-        );
+        )
+        .unwrap();
         let x_shape = x.shape();
         let x_dtype = x.dtype();
         let x_id = x.id();
@@ -4037,7 +4049,8 @@ mod tests {
             vec![1.0_f32, -2.0, 3.0, -4.0],
             Shape::from_dims(&[4]),
             cpu_dev(),
-        );
+        )
+        .unwrap();
         let x_shape = x.shape();
         let x_dtype = x.dtype();
         let x_id = x.id();
@@ -4086,7 +4099,7 @@ mod tests {
     fn insert_safety_copies_noop_when_no_destructive_conflicts() {
         // Pure functional graph — no in-place ops. The pass should
         // insert zero copies.
-        let x = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let y = x.relu();
         let z = y.sum_all();
         let inserted = insert_safety_copies(&mut x.graph().write().unwrap(), &[z.id()]);
@@ -4100,7 +4113,8 @@ mod tests {
         // node), not x directly. derive_ordering pins ReluInplace
         // after... only ReluInplace itself (no other readers of x).
         // No conflict, no copy needed.
-        let x = NodeHandle::from_f32(vec![1.0_f32, -1.0], Shape::from_dims(&[2]), cpu_dev());
+        let x =
+            NodeHandle::from_f32(vec![1.0_f32, -1.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let x_shape = x.shape();
         let x_dtype = x.dtype();
         let x_id = x.id();
@@ -4130,7 +4144,8 @@ mod tests {
     #[test]
     fn insert_safety_copies_no_spurious_copy_for_independent_reader_of_move() {
         for flip_roots in [false, true] {
-            let a = NodeHandle::from_f32(vec![1.0_f32, -2.0], Shape::from_dims(&[2]), cpu_dev());
+            let a = NodeHandle::from_f32(vec![1.0_f32, -2.0], Shape::from_dims(&[2]), cpu_dev())
+                .unwrap();
             let b = a.relu();
             let a_shape = a.shape();
             let a_dtype = a.dtype();
@@ -4185,7 +4200,8 @@ mod tests {
             vec![1.0_f32, -2.0, 3.0, -4.0],
             Shape::from_dims(&[4]),
             cpu_dev(),
-        );
+        )
+        .unwrap();
         let x_shape = x.shape();
         let x_dtype = x.dtype();
         let x_id = x.id();
@@ -4242,7 +4258,8 @@ mod tests {
             vec![1.0_f32, 2.0, 3.0, 4.0],
             Shape::from_dims(&[2, 2]),
             cpu_dev(),
-        );
+        )
+        .unwrap();
         let v = x.transpose();
         let x_shape = x.shape();
         let x_dtype = x.dtype();
@@ -4289,7 +4306,8 @@ mod tests {
     /// execution_plan must succeed.
     #[test]
     fn insert_safety_copies_breaks_cycle_through_other_ordering_edges() {
-        let t1 = NodeHandle::from_f32(vec![1.0_f32, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let t1 =
+            NodeHandle::from_f32(vec![1.0_f32, 2.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let t2 = t1.const_f32_like(vec![3.0_f32, 4.0], Shape::from_dims(&[2]));
         let shape = t1.shape();
         let dtype = t1.dtype();
@@ -4338,7 +4356,8 @@ mod tests {
     /// target and inserts nothing new.
     #[test]
     fn insert_safety_copies_idempotent_after_rewrite() {
-        let x = NodeHandle::from_f32(vec![1.0_f32, -2.0], Shape::from_dims(&[2]), cpu_dev());
+        let x =
+            NodeHandle::from_f32(vec![1.0_f32, -2.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let x_shape = x.shape();
         let x_dtype = x.dtype();
         let x_id = x.id();
@@ -4367,7 +4386,7 @@ mod tests {
     fn derive_ordering_release_of_multi_reader_input() {
         // a read by relu AND neg, then released. Both relu and neg
         // must precede the release.
-        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let b = a.relu();
         let c = a.neg();
         let r = a.release();
@@ -4381,7 +4400,7 @@ mod tests {
 
     #[test]
     fn execution_plan_matches_topo_when_no_destructive_ops() {
-        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
         let c = a.add(&b);
         let graph = c.graph().read().unwrap();
@@ -4392,7 +4411,7 @@ mod tests {
 
     #[test]
     fn execution_plan_pins_release_after_sibling_reader() {
-        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let b = a.relu();
         let r = a.release();
         let plan = execution_plan(&a.graph().read().unwrap(), &[b.id(), r.id()]);
@@ -4410,7 +4429,7 @@ mod tests {
         // a -> neg -> c
         // a -> release
         // b and c must come before release.
-        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let b = a.relu();
         let c = a.neg();
         let r = a.release();
@@ -4438,7 +4457,8 @@ mod tests {
         //   - 2 new nodes (move, reload) appended
         //   - c's input list now has `reload_id` instead of `a.id()`
         //   - b's input list STILL has `a.id()` (unchanged)
-        let a = NodeHandle::from_f32(vec![1.0_f32, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a =
+            NodeHandle::from_f32(vec![1.0_f32, 2.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let b = a.relu();
         let c = a.neg();
 
@@ -4485,7 +4505,7 @@ mod tests {
         //   r = release(a)  (destructive; runs after b)
         //   sum = sum_all(b) (data-dependent on b, not on r)
         // Plan must have: b before r, b before sum; b before both is enough.
-        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let b = a.relu();
         let sum = b.sum_all();
         let r = a.release();
@@ -4504,7 +4524,8 @@ mod tests {
             vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0],
             crate::Shape::from_dims(&[2, 3]),
             cpu_dev(),
-        );
+        )
+        .unwrap();
         let b = a.const_f32_like(
             (0..12).map(|i| (i as f32) * 0.1).collect::<Vec<f32>>(),
             crate::Shape::from_dims(&[3, 4]),
@@ -4549,7 +4570,8 @@ mod tests {
             vec![1.0_f32; 6],
             crate::Shape::from_dims(&[2, 3]),
             cpu_dev(),
-        );
+        )
+        .unwrap();
         let b = a.const_f32_like(vec![1.0_f32; 12], crate::Shape::from_dims(&[3, 4]));
         let bias = a.const_f32_like(vec![1.0_f32; 4], crate::Shape::from_dims(&[4]));
         let mm = a.matmul(&b);
@@ -4591,7 +4613,8 @@ mod tests {
     /// `ReduceMaxTo`/`ReduceSumTo` form.
     #[test]
     fn softmax_last_dim_lower_rule_produces_canonical_subgraph() {
-        let x = NodeHandle::from_f32(vec![1.0_f32; 12], Shape::from_dims(&[2, 3, 2]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![1.0_f32; 12], Shape::from_dims(&[2, 3, 2]), cpu_dev())
+            .unwrap();
         let sm = x.softmax_last_dim();
         let graph = sm.graph().clone();
 
@@ -4699,7 +4722,8 @@ mod tests {
     fn softmax_last_dim_fuse_rule_collapses_canonical_subgraph() {
         // Build the canonical subgraph by-hand — start from a Const
         // and apply the same op sequence the lower rule would emit.
-        let x = NodeHandle::from_f32(vec![1.0_f32; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let x =
+            NodeHandle::from_f32(vec![1.0_f32; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
         let m = x.reduce_max_to(Shape::from_dims(&[2, 1]));
         let mb = m.broadcast_to(Shape::from_dims(&[2, 3]));
         let s = x.sub(&mb);
@@ -4743,7 +4767,8 @@ mod tests {
     /// from the rewritten root).
     #[test]
     fn softmax_last_dim_lower_then_fuse_round_trips() {
-        let x = NodeHandle::from_f32(vec![1.0_f32; 6], Shape::from_dims(&[2, 3]), cpu_dev());
+        let x =
+            NodeHandle::from_f32(vec![1.0_f32; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
         let sm = x.softmax_last_dim();
         let graph = sm.graph().clone();
         let original_root = sm.id();
@@ -4784,7 +4809,7 @@ mod tests {
     /// Empty registry is a no-op: roots come back unchanged.
     #[test]
     fn empty_registry_is_noop() {
-        let x = NodeHandle::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev()).unwrap();
         let y = x.add(&x);
         let graph = y.graph().clone();
         let pre_len = graph.read().unwrap().len();
@@ -4802,7 +4827,7 @@ mod tests {
     /// roots unchanged.
     #[test]
     fn lower_rule_does_not_fire_without_softmax() {
-        let x = NodeHandle::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev()).unwrap();
         let y = x.relu();
         let graph = y.graph().clone();
         let pre_len = graph.read().unwrap().len();
@@ -4990,9 +5015,9 @@ mod tests {
     #[test]
     fn base_map_hash_folds_real_const_bytes() {
         let shape = Shape::from_dims(&[4]);
-        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0, 4.0], shape.clone(), cpu_dev());
-        let b = NodeHandle::from_f32(vec![1.0, 2.0, 3.0, 4.0], shape.clone(), cpu_dev());
-        let c = NodeHandle::from_f32(vec![9.0, 9.0, 9.0, 9.0], shape, cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0, 4.0], shape.clone(), cpu_dev()).unwrap();
+        let b = NodeHandle::from_f32(vec![1.0, 2.0, 3.0, 4.0], shape.clone(), cpu_dev()).unwrap();
+        let c = NodeHandle::from_f32(vec![9.0, 9.0, 9.0, 9.0], shape, cpu_dev()).unwrap();
         let ga = a.graph().read().unwrap();
         let gb = b.graph().read().unwrap();
         let gc = c.graph().read().unwrap();
@@ -5184,7 +5209,7 @@ mod tests {
     #[test]
     fn flash_attn_vanilla_decomposes_to_sdpa() {
         let s = Shape::from_dims(&[1, 1, 1, 1]);
-        let q = NodeHandle::from_f32(vec![0.0_f32; 1], s.clone(), cpu_dev());
+        let q = NodeHandle::from_f32(vec![0.0_f32; 1], s.clone(), cpu_dev()).unwrap();
         let k = q.const_f32_like(vec![0.0_f32; 1], s.clone());
         let v = q.const_f32_like(vec![0.0_f32; 1], s.clone());
         // Vanilla: non-causal, Hq==Hkv==1, no alibi/window/softcap.
@@ -5212,7 +5237,7 @@ mod tests {
     #[test]
     fn flash_attn_causal_decomposes_with_triu_mask() {
         let s = Shape::from_dims(&[1, 1, 2, 1]); // Sq=Sk=2 so the mask is non-trivial
-        let q = NodeHandle::from_f32(vec![0.0_f32; 2], s.clone(), cpu_dev());
+        let q = NodeHandle::from_f32(vec![0.0_f32; 2], s.clone(), cpu_dev()).unwrap();
         let k = q.const_f32_like(vec![0.0_f32; 2], s.clone());
         let v = q.const_f32_like(vec![0.0_f32; 2], s.clone());
         let attn = q.flash_attn(&k, &v, None, 1.0_f32, true, None, None, None); // causal
@@ -5237,7 +5262,7 @@ mod tests {
     /// a plain `a / b` with no upstream softmax structure).
     #[test]
     fn fuse_rule_does_not_fire_on_plain_div() {
-        let a = NodeHandle::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![2.0_f32; 4], Shape::from_dims(&[4]));
         let c = a.div(&b);
         let graph = c.graph().clone();
@@ -5270,7 +5295,7 @@ mod tests {
     /// `x:f32 → Neg(f32)` when the predicate says Neg supports f32.
     #[test]
     fn cast_fusion_drops_cast_when_consumer_supports_source_dtype() {
-        let x = NodeHandle::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev()).unwrap();
         let xc = x.cast(fuel_ir::DType::BF16);
         let y = xc.neg();
         let graph = y.graph().clone();
@@ -5305,7 +5330,7 @@ mod tests {
     /// not fire. Graph structure is unchanged.
     #[test]
     fn cast_fusion_no_fire_when_predicate_denies() {
-        let x = NodeHandle::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev()).unwrap();
         let xc = x.cast(fuel_ir::DType::BF16);
         let y = xc.neg();
         let graph = y.graph().clone();
@@ -5332,7 +5357,7 @@ mod tests {
     /// would orphan it for the other).
     #[test]
     fn cast_fusion_no_fire_when_cast_has_multiple_consumers() {
-        let x = NodeHandle::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev()).unwrap();
         let xc = x.cast(fuel_ir::DType::BF16);
         // Two consumers of the same Cast.
         let y1 = xc.neg();
@@ -5358,7 +5383,7 @@ mod tests {
     /// aggressive-semantics caveat).
     #[test]
     fn cast_fusion_rewrites_output_dtype_to_source_dtype() {
-        let x = NodeHandle::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev()).unwrap();
         let xc = x.cast(fuel_ir::DType::BF16);
         let y = xc.neg();
         // Pre-fusion the original Neg produces BF16.
@@ -5381,7 +5406,7 @@ mod tests {
     /// are left alone.
     #[test]
     fn cast_fusion_multi_input_op_fuses_only_qualifying_edge() {
-        let a = NodeHandle::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev()).unwrap();
         // a:f32 → Cast(BF16) → Add(bf16, b:bf16) where b is already bf16.
         let ac = a.cast(fuel_ir::DType::BF16);
         let b = a.const_bf16_like(vec![half::bf16::from_f32(2.0); 4], Shape::from_dims(&[4]));
@@ -5412,7 +5437,7 @@ mod tests {
     /// twice (once per consumer-side cast).
     #[test]
     fn cast_fusion_handles_chained_casts_via_fixpoint() {
-        let x = NodeHandle::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev()).unwrap();
         let x_bf16 = x.cast(fuel_ir::DType::BF16);
         let x_f32 = x_bf16.cast(fuel_ir::DType::F32);
         let y = x_f32.neg();
@@ -5444,7 +5469,7 @@ mod tests {
     /// consumer of a Cast.
     #[test]
     fn cast_fusion_does_not_fire_on_cast_node_itself() {
-        let x = NodeHandle::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev()).unwrap();
         let xc = x.cast(fuel_ir::DType::BF16);
         let graph = xc.graph().clone();
         let pre_len = graph.read().unwrap().len();
@@ -5953,7 +5978,7 @@ mod tests {
     /// the kernel_accepts_strided predicate.
     #[test]
     fn insert_fixups_no_strided_inputs_no_fixups() {
-        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev());
+        let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
         let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
         let c = a.add(&b);
         let graph = c.graph().clone();
@@ -5979,7 +6004,8 @@ mod tests {
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
             cpu_dev(),
-        );
+        )
+        .unwrap();
         // Transpose produces a strided view via the layout side-table.
         let at = a.transpose();
         // A binary op as our "consumer" (Op::Add is kernel-bearing,
@@ -6022,7 +6048,8 @@ mod tests {
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
             cpu_dev(),
-        );
+        )
+        .unwrap();
         let at = a.transpose();
         let b = at.const_f32_like(vec![0.0; 6], Shape::from_dims(&[3, 2]));
         let c = at.add(&b);
@@ -6046,7 +6073,8 @@ mod tests {
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
             cpu_dev(),
-        );
+        )
+        .unwrap();
         let at = a.transpose();
         // Two consumers of the same transposed view.
         let b = at.const_f32_like(vec![0.0; 6], Shape::from_dims(&[3, 2]));
@@ -6079,7 +6107,8 @@ mod tests {
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
             cpu_dev(),
-        );
+        )
+        .unwrap();
         let at = a.transpose();
         let b = at.const_f32_like(vec![0.0; 6], Shape::from_dims(&[3, 2]));
         let c = at.add(&b);
@@ -6107,7 +6136,8 @@ mod tests {
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
             cpu_dev(),
-        );
+        )
+        .unwrap();
         let at = a.transpose();
         // Permute on a transposed view: both are view ops, the
         // strided layout flows through unchanged.

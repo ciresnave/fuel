@@ -3166,7 +3166,8 @@ mod tests {
             fuel_graph::NodeHandle,
             fuel_graph::NodeHandle,
         ) {
-            let init = NodeHandle::from_f32(vec![init_v], Shape::from_dims(&[1]), dev.as_dyn());
+            let init =
+                NodeHandle::from_f32(vec![init_v], Shape::from_dims(&[1]), dev.as_dyn()).unwrap();
             let g = init.graph().clone();
             let a = NodeHandle::from_existing(g.clone(), init.id())
                 .const_f32_like(vec![a_v], Shape::from_dims(&[1]));

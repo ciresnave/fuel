@@ -792,7 +792,7 @@ mod tests {
     fn scan_until_builds_early_exit_node_hashes_distinctly_and_validates() {
         use crate::NodeHandle;
         // init_carry [1]; body new_carry = carry*2; consts include threshold.
-        let init = NodeHandle::from_f32(vec![1.0f32], Shape::from_dims(&[1]), cpu_dev());
+        let init = NodeHandle::from_f32(vec![1.0f32], Shape::from_dims(&[1]), cpu_dev()).unwrap();
         let graph = init.graph().clone();
         // Build the shared body + predicate at graph level, wrap as NodeHandle handles.
         let (nc, thr, pred_ok) = {
@@ -907,7 +907,8 @@ mod tests {
         );
 
         // Rejection: a NON-scalar predicate is a typed Err (never a panic).
-        let big = NodeHandle::from_f32(vec![0.0f32, 1.0], Shape::from_dims(&[2]), cpu_dev()); // wrong graph AND non-scalar
+        let big =
+            NodeHandle::from_f32(vec![0.0f32, 1.0], Shape::from_dims(&[2]), cpu_dev()).unwrap(); // wrong graph AND non-scalar
         assert!(
             init.scan_until(
                 &[],
@@ -1031,7 +1032,7 @@ mod tests {
         // range. Must be a typed BUILD-TIME Err (before this fix the node built
         // fine and the forward driver's build_scan_step -> clone_body_node
         // panicked with elem[5] index-OOB — a never-panic regression).
-        let init = NodeHandle::from_f32(vec![0.0f32], Shape::from_dims(&[1]), cpu_dev());
+        let init = NodeHandle::from_f32(vec![0.0f32], Shape::from_dims(&[1]), cpu_dev()).unwrap();
         let graph = init.graph().clone();
         let (x, nc, thr, pred) = {
             let mut g = graph.write().unwrap();
@@ -1096,7 +1097,7 @@ mod tests {
         use crate::NodeHandle;
         // Base builder shares the same missing build-time check (Phase 1 only
         // avoided the panic because unroll_scan was its sole forward path).
-        let init = NodeHandle::from_f32(vec![0.0f32], Shape::from_dims(&[1]), cpu_dev());
+        let init = NodeHandle::from_f32(vec![0.0f32], Shape::from_dims(&[1]), cpu_dev()).unwrap();
         let graph = init.graph().clone();
         let (x, nc) = {
             let mut g = graph.write().unwrap();
@@ -1146,7 +1147,7 @@ mod tests {
     fn backward_lowers_op_scan_and_no_longer_panics() {
         use crate::NodeHandle;
         // Affine scan: carry[1]; consts a,b; new_carry = a*carry + b; emit=Final. bound=3.
-        let init = NodeHandle::from_f32(vec![1.0f32], Shape::from_dims(&[1]), cpu_dev());
+        let init = NodeHandle::from_f32(vec![1.0f32], Shape::from_dims(&[1]), cpu_dev()).unwrap();
         let a = NodeHandle::from_existing(init.graph().clone(), init.id())
             .const_f32_like(vec![0.5f32], Shape::from_dims(&[1]));
         let b = NodeHandle::from_existing(init.graph().clone(), init.id())

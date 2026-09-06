@@ -884,7 +884,8 @@ mod tests {
             vec![0.0_f32; 64 * 64],
             Shape::from_dims(&[64, 64]),
             crate::Device::cpu().as_dyn(),
-        );
+        )
+        .unwrap();
         let small_b = small_a.const_f32_like(
             Arc::<[f32]>::from(vec![0.0_f32; 64 * 64]),
             Shape::from_dims(&[64, 64]),
@@ -965,7 +966,8 @@ mod tests {
             vec![0.0_f32; 1024 * 1024],
             Shape::from_dims(&[1024, 1024]),
             crate::Device::cpu().as_dyn(),
-        );
+        )
+        .unwrap();
         let b = a.const_f32_like(
             Arc::<[f32]>::from(vec![0.0_f32; 1024 * 1024]),
             Shape::from_dims(&[1024, 1024]),
@@ -1009,7 +1011,8 @@ mod tests {
             vec![0.0_f32; 64 * 64],
             Shape::from_dims(&[64, 64]),
             crate::Device::cpu().as_dyn(),
-        );
+        )
+        .unwrap();
         let b = a.const_f32_like(
             Arc::<[f32]>::from(vec![0.0_f32; 64 * 64]),
             Shape::from_dims(&[64, 64]),
@@ -1132,7 +1135,8 @@ mod tests {
             vec![0.0_f32; 64 * 64],
             Shape::from_dims(&[64, 64]),
             crate::Device::cpu().as_dyn(),
-        );
+        )
+        .unwrap();
         let small_b = small_a.const_f32_like(
             Arc::<[f32]>::from(vec![0.0_f32; 64 * 64]),
             Shape::from_dims(&[64, 64]),
@@ -1224,7 +1228,8 @@ mod tests {
             vec![0.0_f32; 1024 * 1024],
             Shape::from_dims(&[1024, 1024]),
             crate::Device::cpu().as_dyn(),
-        );
+        )
+        .unwrap();
         let big_b = big_a.const_f32_like(
             Arc::<[f32]>::from(vec![0.0_f32; 1024 * 1024]),
             Shape::from_dims(&[1024, 1024]),
@@ -1313,7 +1318,8 @@ mod tests {
             vec![0.0_f32; 64 * 64],
             Shape::from_dims(&[64, 64]),
             crate::Device::cpu().as_dyn(),
-        );
+        )
+        .unwrap();
         let small_b = small_a.const_f32_like(
             Arc::<[f32]>::from(vec![0.0_f32; 64 * 64]),
             Shape::from_dims(&[64, 64]),
@@ -1429,7 +1435,8 @@ mod tests {
             vec![0.0_f32; 64 * 64],
             Shape::from_dims(&[64, 64]),
             crate::Device::cpu().as_dyn(),
-        );
+        )
+        .unwrap();
         let small_b = small_a.const_f32_like(
             Arc::<[f32]>::from(vec![0.0_f32; 64 * 64]),
             Shape::from_dims(&[64, 64]),

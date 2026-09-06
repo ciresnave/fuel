@@ -215,7 +215,7 @@ mod tests {
         // also wires the standard CPU registrations).
         let _bindings = global_bindings();
 
-        let x = NodeHandle::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev());
+        let x = NodeHandle::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev()).unwrap();
         let xc = x.cast(DType::BF16);
         let y = xc.neg();
         let graph = y.graph().clone();

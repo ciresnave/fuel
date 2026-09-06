@@ -5472,7 +5472,8 @@ mod tests {
                 vec![0.1f32, -0.2, 0.3, 0.4, -0.5, 0.6],
                 Shape::from_dims(&[2, 3]),
                 &dev,
-            );
+            )
+            .unwrap();
             let y = x.softmax_last_dim();
             let y_id = y.id();
             let grads = y.backward();
