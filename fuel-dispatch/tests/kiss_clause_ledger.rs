@@ -255,6 +255,20 @@ const LEDGER: &[Row] = &[
         exists_at: None,
     },
     Row {
+        clause: "KISS-OPS-6.3-0002",
+        disposition: Record,
+        test: None,
+        reason: "docs/gaps.md registry row (GAP-300). Records an obligation Fuel has \
+                 NOT yet discharged: a consumer MUST be able to EVALUATE the pinned \
+                 semantics of every primitive-floor op, and `trunc` is in KISS's \
+                 43-op floor while fuel-graph::Op has no native one. The obligation \
+                 is BEHAVIOURAL -- an expansion satisfies it -- but §6.3-0003 leaves \
+                 nothing to resolve through, so the expansion is Fuel's own and no \
+                 KISS vector can catch an error in it. Record, not Obligation: the \
+                 row tracks the liability; the code change is GAP-048's PR.",
+        exists_at: None,
+    },
+    Row {
         clause: "KISS-OPS-6.8-0001",
         disposition: Record,
         test: None,
