@@ -801,7 +801,12 @@ jobs:
           # someone already standing in this file, and the deadline exists precisely for
           # the case where nobody comes. THE CLOCK IS GAP-267 in docs/gaps.md, which
           # carries the owner and the checkpoint.
-          KNOWN_FAILING="fuel-hardware"
+          # GAP-267/294 FIXED 2026-09-06: fuel-hardware's two feature-conditional
+          # lints are gone (transfer_cost.rs measure_h2d_d2h split into two
+          # cfg'd definitions), so the entry is DELETED rather than kept --
+          # the leg reds on a listed crate that PASSES, which is what forced
+          # this edit to ship with the fix instead of after it.
+          KNOWN_FAILING=""
 
           # The candidate set is DERIVED, never hard-coded: a new crate is covered the day
           # it gains a feature surface. `cargo metadata` is used rather than a grep over
