@@ -201,11 +201,31 @@ const LEDGER: &[Row] = &[
         exists_at: None,
     },
     Row {
+        clause: "KISS-OPS-6.15-0001",
+        disposition: Obligation,
+        test: Some("fuel-core/src/lazy.rs::fmax_fmin_ieee_suppress_nan_where_prop_propagates"),
+        reason: "The four minmax ops must not be merged/aliased/substituted. Fuel has the \
+                 NaN-PROPAGATING pair natively (Maximum/Minimum, torch parity) and RESOLVES the \
+                 NaN-SUPPRESSING pair (fmax_ieee/fmin_ieee) through KISS's §6.13 decomposition; \
+                 the named test pins that they SUPPRESS NaN where maximum/minimum propagate \
+                 (GAP-048).",
+        exists_at: None,
+    },
+    Row {
         clause: "KISS-OPS-6.15-0002",
         disposition: Obligation,
         test: Some("fuel-cpu-backend/src/byte_kernels.rs::relu_f32_propagates_nan"),
         reason: "`relu` is `select(x<0, 0, x)`, so it PRESERVES a NaN rather than returning \
                  zero. Fuel matches torch here and the named test pins it.",
+        exists_at: None,
+    },
+    Row {
+        clause: "KISS-OPS-6.15-0003",
+        disposition: Obligation,
+        test: Some("fuel-core/src/lazy.rs::rem_trunc_diverges_from_floored_rem_on_opposite_signs"),
+        reason: "rem_floor and rem_trunc must not be merged. Fuel has floored `rem` natively \
+                 and RESOLVES rem_trunc through KISS's §6.13 decomposition `a - trunc(a/b)*b`; \
+                 the named test pins the sign-of-dividend divergence from floored rem (GAP-048).",
         exists_at: None,
     },
     Row {
@@ -252,6 +272,31 @@ const LEDGER: &[Row] = &[
         reason: "An outreach letter filing a registry extension, plus a superseded plan \
                  document. Both are HISTORICAL: they record what Fuel asked KISS for on a \
                  date. Rewriting or testing them would destroy the record.",
+        exists_at: None,
+    },
+    Row {
+        clause: "KISS-OPS-6.3-0002",
+        disposition: Record,
+        test: None,
+        reason: "docs/gaps.md registry row (GAP-300). Records an obligation Fuel has \
+                 NOT yet discharged: a consumer MUST be able to EVALUATE the pinned \
+                 semantics of every primitive-floor op, and `trunc` is in KISS's \
+                 43-op floor while fuel-graph::Op has no native one. The obligation \
+                 is BEHAVIOURAL -- an expansion satisfies it -- but §6.3-0003 leaves \
+                 nothing to resolve through, so the expansion is Fuel's own and no \
+                 KISS vector can catch an error in it. Record, not Obligation: the \
+                 row tracks the liability; the code change is GAP-048's PR.",
+        exists_at: None,
+    },
+    Row {
+        clause: "KISS-OPS-6.3-0003",
+        disposition: Reference,
+        test: None,
+        reason: "Cited in `trunc`'s doc to explain WHY Fuel's trunc expansion is Fuel's own \
+                 liability: a §6.3 floor op MUST NOT carry an in-standard reference \
+                 decomposition, so §6.14-0004 resolution is EMPTY for a floor op and no KISS \
+                 conformance vector catches an error in Fuel's expansion (GAP-300). Nothing to \
+                 discharge — a Reference, not an Obligation.",
         exists_at: None,
     },
     Row {
