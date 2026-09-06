@@ -326,14 +326,13 @@ impl Qwen3VlTextModel {
             ))
             .bt());
         }
-        validate_mrope_section(&cfg.mrope_section, cfg.head_dim)?;
 
         let (cos_data, sin_data) = build_mrope_tables(
             cfg.rope_theta,
             mrope_positions,
             cfg.head_dim,
             &cfg.mrope_section,
-        );
+        )?;
         let rope_shape = Shape::from_dims(&[seq, cfg.head_dim]);
         let rope_cos = embeds.const_f32_like(cos_data, rope_shape.clone());
         let rope_sin = embeds.const_f32_like(sin_data, rope_shape);
@@ -490,7 +489,13 @@ fn build_mrope_tables(
     mrope_positions: &[MropePos],
     head_dim: usize,
     mrope_section: &[usize; 3],
-) -> (Vec<f32>, Vec<f32>) {
+) -> Result<(Vec<f32>, Vec<f32>)> {
+    // GAP-289: the guard lives INSIDE, not beside. It used to sit at the sole
+    // call site, which is safe only while there is exactly one caller who
+    // remembers it -- a domain enforced by convention rather than by the
+    // signature. Building it in is the only version that survives a second
+    // caller. `half` below is `head_dim / 2`, so an odd head_dim truncates.
+    validate_mrope_section(mrope_section, head_dim)?;
     let seq = mrope_positions.len();
     let half = head_dim / 2;
     let mut cos = vec![0.0_f32; seq * head_dim];
@@ -533,7 +538,7 @@ fn build_mrope_tables(
             sin[p * head_dim + j] = theta.sin() as f32;
         }
     }
-    (cos, sin)
+    Ok((cos, sin))
 }
 
 // ---- HuggingFace safetensors loader ----------------------------------------
@@ -1116,6 +1121,76 @@ mod tests {
             extra > 0,
             "the windowed mask differs from dense but masks no ADDITIONAL \
              position -- the difference is in the wrong direction"
+        );
+    }
+
+    /// GAP-289: `build_mrope_tables` must guard ITSELF, not trust its caller.
+    ///
+    /// The checks used to live at the sole call site. That is safe exactly while
+    /// there is one caller who remembers -- a load-bearing domain enforced by
+    /// convention instead of by the signature. **This test calls the function
+    /// DIRECTLY, which is the thing a second caller would do**, and it could not
+    /// have been written before the fn returned `Result`.
+    ///
+    /// # ⚠️ What the unguarded function actually did -- three behaviours, not one
+    ///
+    /// `axis_of_j` has `head_dim` slots, but `sections_repeated` sums to
+    /// `2 * the section sum`. So without the guard:
+    ///
+    /// - **over-sum** -- index-out-of-bounds **panic** at the
+    ///   `axis_of_j[offset + k]` write, in every profile;
+    /// - **under-sum** -- `debug_assert_eq!(offset, head_dim)` fires in debug and
+    ///   is **compiled out in release**, where the unowned features keep
+    ///   `axis_of_j == 0` and the table is **silently wrong**;
+    /// - **odd `head_dim`** -- lands in one of the two above depending on the
+    ///   section.
+    ///
+    /// So "it silently truncates" holds only for the release under-sum case.
+    /// Both directions are covered below; the under-sum arm is the one whose
+    /// failure was invisible in a release build.
+    ///
+    /// Born-red by sabotage: deleting the internal `validate_mrope_section(...)?`
+    /// reddens this test. **Measured, and stated precisely rather than as "it
+    /// goes red": the first decline arm then dies INSIDE the function with an
+    /// index-out-of-bounds panic, not at the assertion** -- the guard's absence
+    /// is a never-panic violation, not merely a missing error.
+    #[test]
+    fn build_mrope_tables_guards_itself_rather_than_trusting_its_caller() {
+        let positions: Vec<MropePos> = vec![[0, 0, 0], [1, 1, 1]];
+
+        // CONTROL: head_dim 8 -> half 4, and [2,1,1] sums to 4. Must still build.
+        let (cos, sin) = build_mrope_tables(10_000.0, &positions, 8, &[2, 1, 1])
+            .expect("control: a conforming head_dim/section must still build");
+        assert_eq!(cos.len(), positions.len() * 8);
+        assert_eq!(sin.len(), positions.len() * 8);
+
+        // An odd head_dim: `half = head_dim / 2` truncates, so this is a DECLINE
+        // rather than a silently wrong table.
+        let err = build_mrope_tables(10_000.0, &positions, 7, &[2, 1, 1])
+            .expect_err("an odd head_dim must DECLINE, not truncate");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("head_dim") && msg.contains('7'),
+            "the decline must name the operand and its value, got: {msg}"
+        );
+
+        // A section that does not sum to head_dim/2 leaves features unowned.
+        let err = build_mrope_tables(10_000.0, &positions, 8, &[2, 1, 2])
+            .expect_err("a non-summing mrope_section must DECLINE, not truncate");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("mrope_section") && msg.contains('4') && msg.contains('5'),
+            "the decline must name the relation and BOTH sides, got: {msg}"
+        );
+
+        // UNDER-sum: the direction that is SILENT in release, because the
+        // `debug_assert_eq!` guarding it is compiled out there.
+        let err = build_mrope_tables(10_000.0, &positions, 8, &[1, 1, 1])
+            .expect_err("an under-summing mrope_section must DECLINE, not leave features unowned");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("mrope_section") && msg.contains('4') && msg.contains('3'),
+            "the decline must name the relation and BOTH sides, got: {msg}"
         );
     }
 }
