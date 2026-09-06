@@ -878,7 +878,22 @@ for _k, _v in sorted(dup_ids.items()):
 # this gate is not read as covering them.
 OWNER_VALUES = ('Fuel 1', 'Fuel 2', 'Fuel 3', 'Architect', 'UNALLOCATED', 'HELD')
 WORK_REMAINS = ('OPEN', 'PARTIAL', 'RE-OPENED')
-OWNER_TOKEN = re.compile(r'\*\*Owner:\*\*\s*([A-Za-z0-9 ]+?)\s*(?:—|--|·|$)')
+# TERMINATE ON THE END OF THE VALUE, NOT ON A LIST OF SEPARATORS.
+#
+# The first version required one of {em dash, --, middot, end of cell}. That
+# is a guess about what comes NEXT, and it broke the moment prose was
+# appended after the token: `**Owner:** Architect ⚠️ **DUPLICATE OF...`
+# stopped matching, and the row SILENTLY LOST ITS OWNER. The gate caught it
+# (reported as a missing token, which is the honest reading) but the design
+# invited the failure -- an owner is not required to be the LAST thing in a
+# status cell, and nothing said it was.
+#
+# A name is [A-Za-z0-9 ]. So the value ends where a non-name character
+# begins, whatever that character is. The lookahead asserts that without
+# consuming it, so a following `·`, an emoji, or end-of-cell all work.
+OWNER_TOKEN = re.compile(
+    r'\*\*Owner:\*\*[ \t]*([A-Za-z0-9][A-Za-z0-9 ]*?)[ \t]*(?=[^A-Za-z0-9 ]|$)'
+)
 HELD_ON = re.compile(r'\*\*Held on:\*\*\s*(\S)')
 
 
