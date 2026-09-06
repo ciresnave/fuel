@@ -426,7 +426,7 @@ impl GraniteMoeHybridModel {
             seq,
             head_dim,
             cfg.rope_scaling.as_ref(),
-        );
+        )?;
         let rope_shape = Shape::from_dims(&[seq, head_dim]);
         let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
         let rope_sin = h.const_f32_like(sin_data, rope_shape);
@@ -582,8 +582,14 @@ fn build_granite_rope_tables(
     seq: usize,
     head_dim: usize,
     rope_scaling: Option<&GraniteRopeScaling>,
-) -> (Vec<f32>, Vec<f32>) {
-    assert!(head_dim.is_multiple_of(2));
+) -> Result<(Vec<f32>, Vec<f32>)> {
+    // GAP-281: a CONFIG property -- reject it rather than panicking. The
+    // half-dimension split below assumes an even head_dim.
+    if !head_dim.is_multiple_of(2) {
+        return Err(fuel_core::Error::Msg(format!(
+            "build_granite_rope_tables: head_dim ({head_dim}) must be even"
+        )));
+    }
     let half = head_dim / 2;
     // Compute per-i base frequencies.
     let mut inv_freqs: Vec<f32> = (0..half)
@@ -623,7 +629,7 @@ fn build_granite_rope_tables(
             sin[p * head_dim + i + half] = s_v;
         }
     }
-    (cos, sin)
+    Ok((cos, sin))
 }
 
 #[cfg(test)]
@@ -784,7 +790,7 @@ mod tests {
     /// for a config that uses the scaled regime.
     #[test]
     fn granite_rope_scaling_alters_tables() {
-        let (cos_a, sin_a) = build_granite_rope_tables(10_000.0, 0, 4, 8, None);
+        let (cos_a, sin_a) = build_granite_rope_tables(10_000.0, 0, 4, 8, None).unwrap();
         let (cos_b, sin_b) = build_granite_rope_tables(
             10_000.0,
             0,
@@ -796,7 +802,8 @@ mod tests {
                 high_freq_factor: 4.0,
                 original_max_position_embeddings: 8,
             }),
-        );
+        )
+        .unwrap();
         // Some frequencies should differ.
         let mut max_diff = 0.0_f32;
         for (a, b) in cos_a.iter().zip(cos_b.iter()) {
@@ -920,6 +927,28 @@ mod tests {
         assert!(
             max_diff < 1e-5,
             "GraniteMoeHybrid forward_hidden vs forward_hidden_embeds (post-scale) must agree (max diff {max_diff})"
+        );
+    }
+
+    /// GAP-281: an odd `head_dim` must DECLINE, not panic. `half = head_dim / 2`
+    /// truncates silently otherwise, so it is a CONFIG property.
+    ///
+    /// Asserts on the MESSAGE, not merely that an `Err` arrived: a later guard
+    /// on the same path can supply an `Err` of its own (measured in
+    /// `lazy_mamba2`), which makes an `expect_err`-only arm pass under
+    /// sabotage while reporting the guard as live.
+    #[test]
+    fn granite_odd_head_dim_declines_rather_than_panicking() {
+        // CONTROL: the conforming even value must still build.
+        build_granite_rope_tables(10_000.0, 0, 4, 8, None)
+            .expect("control: an even head_dim must still build");
+
+        let err = build_granite_rope_tables(10_000.0, 0, 4, 7, None)
+            .expect_err("an odd head_dim must DECLINE, not panic");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("head_dim") && msg.contains('7'),
+            "the decline must name the operand and its value, got: {msg}"
         );
     }
 }
