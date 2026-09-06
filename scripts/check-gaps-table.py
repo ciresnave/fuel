@@ -114,6 +114,33 @@ for _l in lines:
         schema_cols.append(_cur)
     elif not _l.startswith('|'):
         _cur = None
+
+# TIER x SHAPE, COMPUTED. The exemption note below used to ASSERT that the
+# 4-column tables 'are Tier C subdivided by crate'. Measured 2026-09-06 at
+# 8c664a9a that is FALSE: 22 of their rows are TIER A. The exemption had been
+# extended to a population it mischaracterised -- and the note is PRINTED ON
+# EVERY RUN, so a false premise was re-asserted constantly and re-derived
+# never. It is DERIVED here now so it cannot go stale again.
+tier_shape, _cur2 = {}, None
+for _l in lines:
+    if _l.startswith('| ID'):
+        _cur2 = unescaped_pipes(_l) - 1
+    elif _l.startswith('| GAP-') or _l.startswith('| ~~GAP-'):
+        _cc, _buf = [], []
+        for _k, _ch in enumerate(_l):
+            if _is_cell_boundary(_l, _k):
+                _cc.append(''.join(_buf)); _buf = []
+            else:
+                _buf.append(_ch)
+        _cc.append(''.join(_buf))
+        _cc = [x.strip() for x in _cc][1:-1]
+        _tt = _cc[2] if len(_cc) > 2 else '?'
+        tier_shape[(_tt, _cur2)] = tier_shape.get((_tt, _cur2), 0) + 1
+    elif not _l.startswith('|'):
+        _cur2 = None
+a_in_4col = sum(n for (t, c), n in tier_shape.items() if t == 'A' and c == 4)
+rows_in_4col = sum(n for (t, c), n in tier_shape.items() if c == 4)
+
 no_status = sum(1 for c in schema_cols if c == 4)
 headerless = sum(1 for c in schema_cols if c is None)
 
@@ -288,17 +315,22 @@ print()
 # row's line number and invalidate citations across the corpus, and it is
 # unnecessary because the tier is already in the row. Same precedent as
 # rule 4b -- the data outvotes the presentation.
-print('!! THE 4-COLUMN TABLES ARE PERMANENTLY EXEMPT FROM THE STATUS')
-print('   CONVENTION -- ruled 2026-09-02 on measurement, not convenience.')
-print('   They are Tier C subdivided BY CRATE: an INDEX of terse one-line')
-print('   capability declines where the gap statement IS the status')
-print('   ("Pad Reflect/Replicate modes return \'not yet implemented\'").')
-print('   Measured: of 79 such rows, 67 carry NO status language at all, so')
-print('   a Status column would mean writing OPEN into 67 cells -- a field')
-print('   identical for 85% of its rows. THAT IS NOT INFORMATION, IT IS A')
-print('   COLUMN THAT EXISTS TO BE FULL, and it is the same false precision')
-print('   the OPEN/<state> ruling rejected, one column over.')
-print('   64% honest beats 100% decorative. DO NOT "COMPLETE" THIS.')
+print('!! THE 4-COLUMN STATUS EXEMPTION IS NARROWED -- ruled 2026-09-02,')
+print('   AMENDED 2026-09-06 BECAUSE ITS STATED PREMISE WAS FALSE.')
+print('   It said the 4-column tables ARE Tier C subdivided by crate.')
+print('   Computed now, not asserted:')
+print('     4-column rows total : %d' % rows_in_4col)
+print('     ...of which TIER A  : %d  <- the premise said these did not exist' % a_in_4col)
+print('   THE EXEMPTION STANDS for the Tier C / untiered capability-decline')
+print('   INDEX, where the gap statement IS the status and a Status column')
+print('   would mean writing OPEN into most cells -- a field identical for')
+print('   most of its rows is a column that exists to be full, not information.')
+print('   IT DOES NOT STAND FOR THE TIER A ROWS. A Tier A row with no status')
+print('   cell CANNOT BE CLOSED, only deleted -- the format forbids the')
+print('   outcome -- and it carries a SEVERITY LABEL, so it outranks live work')
+print('   in every triage until somebody measures it. Those rows need a cell.')
+print('   This is GAP-278 (roadmap items with no status cell) present in')
+print('   gaps.md ITSELF. Found by Fuel 3 during a Tier A currency audit.')
 print()
 print('!! THE TIER CELL (column 3) IS AUTHORITATIVE. The `## Tier X` section')
 print('   headings are PRESENTATIONAL and membership in them is CHRONOLOGICAL:')
