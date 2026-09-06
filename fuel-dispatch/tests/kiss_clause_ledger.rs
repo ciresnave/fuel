@@ -187,10 +187,10 @@ const LEDGER: &[Row] = &[
         exists_at: None,
     },
     Row {
-        clause: "KISS-OPS-6.19-0005",
+        clause: "KISS-CONTRACT-6.9-0001",
         disposition: Record,
         test: None,
-        reason: "docs/gaps.md registry row (GAP-287). Cited to identify the clause a gap is about — the FDX flag semantics the validator was measured against.",
+        reason: "docs/gaps.md registry row (GAP-038). Records what KISS PINS: the Provenance section is exactly five fields with no crate-version field, which is why Fuel needs no new front-matter field for the second version axis. A fact about KISS, not an obligation Fuel discharges.",
         exists_at: None,
     },
     Row {
@@ -236,6 +236,13 @@ const LEDGER: &[Row] = &[
         disposition: Record,
         test: None,
         reason: "docs/gaps.md registry row. Cited to identify the clause a gap is about.",
+        exists_at: None,
+    },
+    Row {
+        clause: "KISS-OPS-6.19-0005",
+        disposition: Record,
+        test: None,
+        reason: "docs/gaps.md registry row (GAP-287). Cited to identify the clause a gap is about — the FDX flag semantics the validator was measured against.",
         exists_at: None,
     },
     Row {
