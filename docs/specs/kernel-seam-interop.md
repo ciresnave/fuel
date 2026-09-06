@@ -566,7 +566,9 @@ with the arms:
   (§6.20-0005 shape-expr child length, `u16`-LE). Pinned executably by
   `leaf_arm_bodies_ride_carrier_a_u32_le`, alongside `three_carrier_width_pins_stay_distinct`.
 - **Wire tokens only — no Fuel graph producer yet (honest scope).** `jit::op_to_tag` emits
-  none of the four and `runtime_fused::tag_to_op` declines all four as honest misses. Fuel
+  none of the four and `runtime_fused::tag_to_op` declines THREE of them
+  (`Const`/`RuntimeScalar`/`ReducedCount`) as honest misses while RECONSTRUCTING
+  `ScanPlaceholder` via an explicit arm. Fuel
   expresses these values implicitly today: an `Op::Const` **tensor** operand (*not* the
   `const` scalar leaf), a `Runtime { scalars }` slot on the **consuming** op,
   `Op::ScanPlaceholder` inside `Op::Scan`'s body, and Mean's divisor folded into

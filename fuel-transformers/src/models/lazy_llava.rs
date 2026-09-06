@@ -171,12 +171,20 @@ impl HFLlavaConfig {
             patch_size: v.patch_size,
         };
         let _ = t.max_position_embeddings; // accepted but not modeled in LlamaConfig
+        // Route the GQA head counts through the shared build-time guard rather
+        // than copying num_key_value_heads verbatim: a non-dividing kv count
+        // would otherwise reach LlamaModel::apply_layer and truncate silently
+        // (GAP-282). `?` propagates the typed rejection out of to_llava_config.
+        let n_kv_heads = fuel_core::hf_config::num_key_value_heads(
+            Some(t.num_key_value_heads),
+            t.num_attention_heads,
+        )?;
         let text_config = LlamaConfig {
             vocab_size: t.vocab_size,
             dim: t.hidden_size,
             n_layers: t.num_hidden_layers,
             n_heads: t.num_attention_heads,
-            n_kv_heads: t.num_key_value_heads,
+            n_kv_heads,
             head_dim,
             ffn_dim: t.intermediate_size,
             norm_eps: t.rms_norm_eps,
@@ -1318,6 +1326,33 @@ mod tests {
                 .expect_err("should reject projection_dim != text hidden_size");
             let msg = format!("{err}");
             assert!(msg.contains("projection_dim"), "got: {msg}");
+        }
+
+        #[test]
+        fn rejects_non_dividing_gqa_head_counts() {
+            // hidden_size % num_attention_heads == 0 (passes the head_dim guard
+            // in to_llava_config), but num_attention_heads (16) % num_key_value_heads
+            // (5) != 0. Without routing n_kv_heads through the shared build-time
+            // guard this parses cleanly and truncates silently in
+            // LlamaModel::apply_layer's `n_heads / n_kv_heads` (GAP-282).
+            let json = r#"{
+                "vision_config": {
+                    "hidden_size": 768, "image_size": 224, "intermediate_size": 3072,
+                    "num_attention_heads": 12, "num_hidden_layers": 12, "patch_size": 14
+                },
+                "text_config": {
+                    "hidden_size": 2048, "intermediate_size": 5504,
+                    "max_position_embeddings": 4096, "num_attention_heads": 16,
+                    "num_hidden_layers": 16, "num_key_value_heads": 5, "vocab_size": 32000
+                }
+            }"#;
+            let err = HFLlavaConfig::from_hf_json_str(json)
+                .expect_err("non-dividing kv-head count must be rejected at parse, not truncated at apply_layer");
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("multiple of") && msg.contains("num_key_value_heads"),
+                "error should name the GQA divisibility relation, got: {msg}"
+            );
         }
     }
 
