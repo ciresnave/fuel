@@ -711,4 +711,248 @@ mod tests {
         // …and a different baked value refuses to match at all (attr guard).
         assert!(match_region_extract(&g, ms, &baked(3.0), &cf).is_none());
     }
+
+    // ---- GAP-287 - the `to_canonical_bytes` unset-vs-zero collapse table ----
+    //
+    // `OpAttrs::to_canonical_bytes` reads 17 fields through `unwrap_or`
+    // defaults. Its doc used to justify them as harmless because "an op that
+    // reaches a given arm always has the field set (`op_to_attrs` /
+    // `tag_to_op` guarantee it)". THIS FILE IS THE CITED GUARANTOR AND IT DOES
+    // NOT GUARANTEE THAT: the `_ => {}` arm of `op_to_attrs` leaves `axis`
+    // unset for five axis-bearing ops, and `keepdim` is set by NOTHING in the
+    // repository. Two semantically distinct ops then serialize to identical
+    // bytes, on a format that exists to leave this repo. Note what checks it:
+    // ONE conformance fixture (the rank-2 matmul role-vector golden), covering
+    // the `MatMul` arm - the arm that has no `unwrap_or` at all. There is no
+    // second encoder; Baracuda confirmed the bytes and has no binary arm.
+    //
+    // SCOPE, stated because it is narrower than the 17: only the 12 sites
+    // reachable from the PROJECTION path are testable here. The other five
+    // (`Const`->const_bits, `RuntimeScalar`->slot_index, `ReducedCount`->axis,
+    // `ScanPlaceholder`->{scan_role, scan_index}) are unreachable from any
+    // `Op` -- `op_to_tag` emits none of those four tags -- so they are
+    // reachable only from hand-built regions and are pinned in
+    // fuel-kernel-seam-types instead.
+    //
+    // SOUNDNESS IS A PROPERTY OF (op, field), NOT OF A SITE: the single-axis
+    // arm serves eight tags and is sound for four of them.
+
+    /// Why a given (op, field) pair is or is not sound.
+    #[derive(PartialEq)]
+    enum Soundness {
+        /// `op_to_attrs` sets it, so the `unwrap_or` is unreachable.
+        Projected,
+        /// The default IS emitted and DIFFERS from the truth: distinct ops
+        /// collide. KISS-OPS-6.19 makes `axis` mandatory with no default, so
+        /// `unwrap_or(0)` fabricates a value the schema does not permit.
+        Lossy,
+        /// The field is never set AND the default is CORRECT, because no op
+        /// reaching this arm can have the other value. `keepdim` is the case:
+        /// `Op::SumDim`/`MaxDim`/`MeanDim` all document "the reduced dim is
+        /// REMOVED from the output" and `CumSum` is "same shape as input", so
+        /// every tag on this arm is keepdim=false. A keepdim=TRUE reduce is
+        /// `Op::ReduceSumTo(Shape)` -- a DIFFERENT tag on a DIFFERENT arm that
+        /// carries `target_shape` and has no `unwrap_or` at all.
+        ///
+        /// Kept as a row rather than dropped: "never set" has more than one
+        /// cause and only one of them is a defect. A table that shows only the
+        /// defect cannot be checked against the claim that the others are fine.
+        DeadField,
+    }
+
+    /// One (op, field) pair that [`OpAttrs::to_canonical_bytes`] reads through
+    /// an `unwrap_or` default.
+    struct Collapse {
+        op: Op,
+        field: &'static str,
+        soundness: Soundness,
+        is_set: fn(&OpAttrs) -> bool,
+    }
+
+    fn axis(a: &OpAttrs) -> bool {
+        a.axis.is_some()
+    }
+    fn keepdim(a: &OpAttrs) -> bool {
+        a.keepdim.is_some()
+    }
+    fn dtype(a: &OpAttrs) -> bool {
+        a.cast_dtype.is_some()
+    }
+    fn pad() -> Op {
+        Op::Pad {
+            padding: vec![(1, 1)],
+            mode: crate::PadMode::Constant,
+            value: 0.0,
+        }
+    }
+    fn slice() -> Op {
+        Op::Slice {
+            dim: 1,
+            start: 0,
+            len: 2,
+        }
+    }
+    fn row(
+        op: Op,
+        field: &'static str,
+        soundness: Soundness,
+        is_set: fn(&OpAttrs) -> bool,
+    ) -> Collapse {
+        Collapse {
+            op,
+            field,
+            soundness,
+            is_set,
+        }
+    }
+
+    fn collapse_table() -> Vec<Collapse> {
+        use Soundness::{DeadField, Lossy, Projected};
+        vec![
+            // -- sound: the producing arm sets the field --
+            row(slice(), "axis", Projected, axis),
+            row(slice(), "slice_start", Projected, |a| {
+                a.slice_start.is_some()
+            }),
+            row(slice(), "slice_len", Projected, |a| a.slice_len.is_some()),
+            row(Op::Roll { dim: 0, shift: 1 }, "axis", Projected, axis),
+            row(
+                Op::Roll { dim: 0, shift: 1 },
+                "roll_shift",
+                Projected,
+                |a| a.roll_shift.is_some(),
+            ),
+            row(Op::Cast(DType::F32), "cast_dtype", Projected, dtype),
+            row(pad(), "pad_mode", Projected, |a| a.pad_mode.is_some()),
+            row(pad(), "pad_value", Projected, |a| a.pad_value.is_some()),
+            row(
+                Op::MaskedFill {
+                    value: crate::Scalar::F32(0.0),
+                },
+                "cast_dtype",
+                Projected,
+                dtype,
+            ),
+            row(Op::Concat { dim: 0 }, "axis", Projected, axis),
+            row(Op::Flip { dim: 0 }, "axis", Projected, axis),
+            row(Op::Triu { diagonal: 0 }, "axis", Projected, axis),
+            row(Op::Tril { diagonal: 0 }, "axis", Projected, axis),
+            row(Op::SumDim(0), "axis", Projected, axis),
+            row(Op::MaxDim(0), "axis", Projected, axis),
+            row(Op::MeanDim(0), "axis", Projected, axis),
+            // -- lossy: `_ => {}` leaves the field unset; the default is emitted --
+            row(Op::IndexSelect { dim: 1 }, "axis", Lossy, axis),
+            row(Op::Gather { dim: 1 }, "axis", Lossy, axis),
+            row(Op::IndexAdd { dim: 1 }, "axis", Lossy, axis),
+            row(Op::ScatterAdd { dim: 1 }, "axis", Lossy, axis),
+            row(Op::CumSum { dim: 1 }, "axis", Lossy, axis),
+            // `keepdim` is set by NOTHING repo-wide -- and unlike `axis` that is
+            // NOT a defect: every tag on this arm removes the reduced dim, so
+            // `false` is the true value. See `Soundness::DeadField`.
+            row(Op::SumDim(0), "keepdim", DeadField, keepdim),
+            row(Op::MaxDim(0), "keepdim", DeadField, keepdim),
+            row(Op::MeanDim(0), "keepdim", DeadField, keepdim),
+            row(Op::CumSum { dim: 1 }, "keepdim", DeadField, keepdim),
+        ]
+    }
+
+    /// Every row's op must actually project to a tag, or the row is a typo
+    /// asserting nothing. This is the table's own positive control.
+    #[test]
+    fn collapse_table_rows_all_reach_a_serializer_arm() {
+        for c in collapse_table() {
+            assert!(
+                op_to_tag(&c.op).is_some(),
+                "row ({:?}, {}) does not project to any OpTag, so it exercises \
+                 no to_canonical_bytes arm and asserts nothing",
+                c.op,
+                c.field
+            );
+        }
+    }
+
+    /// LIVE GATE, the sound half. If a projection arm ever stops setting its
+    /// field, that field silently starts serializing a default and joins the
+    /// lossy set -- this test is what makes that visible.
+    #[test]
+    fn canonical_bytes_projected_fields_are_actually_set() {
+        for c in collapse_table()
+            .iter()
+            .filter(|c| c.soundness == Soundness::Projected)
+        {
+            let a = op_to_attrs(&c.op);
+            assert!(
+                (c.is_set)(&a),
+                "REGRESSION: op_to_attrs no longer sets `{}` for {:?}, so \
+                 to_canonical_bytes now emits its unwrap_or default and this \
+                 op collides with every other op on that arm (GAP-287)",
+                c.field,
+                c.op
+            );
+        }
+    }
+
+    /// PIN, not an endorsement: these five (op, field) pairs are DEFECTS,
+    /// held so that fixing one is visible. KISS-OPS-6.19 makes `axis` MANDATORY
+    /// with NO default, so `unwrap_or(0)` fabricates a value the schema does
+    /// not permit. Fixing the encoder is a wire-format change and needs the
+    /// external ask first; until then this records which collapses are live.
+    #[test]
+    fn canonical_bytes_lossy_collapses_are_pinned_gap287() {
+        for c in collapse_table()
+            .iter()
+            .filter(|c| c.soundness == Soundness::Lossy)
+        {
+            let a = op_to_attrs(&c.op);
+            assert!(
+                !(c.is_set)(&a),
+                "`{}` is now SET for {:?} -- the GAP-287 collapse was fixed. \
+                 That is good news: move this row to `Soundness::Projected` and \
+                 update the GAP-287 row and the to_canonical_bytes doc.",
+                c.field,
+                c.op
+            );
+        }
+    }
+
+    /// `keepdim` is unset everywhere AND that is CORRECT -- the separation this
+    /// table exists to make.
+    ///
+    /// I originally tiered `keepdim` as the WORST of these, reasoning "unset
+    /// universally, and it changes output rank". The first half is measured and
+    /// true; the second does not follow, and checking it refutes it. Every tag
+    /// on this arm removes the reduced dim (`CumSum` does not reduce at all),
+    /// so `false` is the true value, not a fabrication. keepdim=TRUE is
+    /// `Op::ReduceSumTo(Shape)` -- a different tag whose arm carries
+    /// `target_shape` and has no `unwrap_or`.
+    ///
+    /// A field being unset is only a defect if the default CAN differ from the
+    /// truth. This asserts the premise that makes the default correct, so that
+    /// adding a keepdim-varying reduce under one of these tags reddens here
+    /// rather than silently making the encoder wrong.
+    #[test]
+    fn keepdim_is_a_dead_field_not_a_lossy_collapse_gap287() {
+        for c in collapse_table()
+            .iter()
+            .filter(|c| c.soundness == Soundness::DeadField)
+        {
+            let a = op_to_attrs(&c.op);
+            assert!(
+                !(c.is_set)(&a),
+                "`{}` is now SET for {:?}. If a keepdim-varying reduce was added under this tag, unwrap_or(false) is no longer correct and this row moves to Soundness::Lossy.",
+                c.field,
+                c.op
+            );
+            // The premise: no op on this arm can have keepdim = true, because
+            // Fuel expresses that as a different TAG.
+            assert!(
+                !matches!(
+                    op_to_tag(&c.op),
+                    Some(OpTag::ReduceSumTo) | Some(OpTag::ReduceMaxTo)
+                ),
+                "{:?} now projects to a shape-target reduce tag, which is where keepdim=true lives -- the arm assumption has changed",
+                c.op
+            );
+        }
+    }
 }

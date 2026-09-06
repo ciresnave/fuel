@@ -100,14 +100,30 @@ impl WhisperConfig {
             .map_err(|e| fuel_core::Error::Msg(format!("parsing whisper config.json: {e}")).bt())
     }
 
-    pub fn encoder_head_dim(&self) -> usize {
-        assert_eq!(self.d_model % self.encoder_attention_heads, 0);
-        self.d_model / self.encoder_attention_heads
+    pub fn encoder_head_dim(&self) -> fuel_core::Result<usize> {
+        // GAP-281 (dim/head relation): a typed decline, not a panic. The
+        // quotient below is integer division, so a non-dividing head count
+        // truncates silently -- a CONFIG property to reject, not an invariant.
+        if !self.d_model.is_multiple_of(self.encoder_attention_heads) {
+            return Err(fuel_core::Error::Msg(format!(
+                "WhisperConfig: d_model ({}) must be divisible by encoder_attention_heads ({})",
+                self.d_model, self.encoder_attention_heads,
+            )));
+        }
+        Ok(self.d_model / self.encoder_attention_heads)
     }
 
-    pub fn decoder_head_dim(&self) -> usize {
-        assert_eq!(self.d_model % self.decoder_attention_heads, 0);
-        self.d_model / self.decoder_attention_heads
+    pub fn decoder_head_dim(&self) -> fuel_core::Result<usize> {
+        // GAP-281 (dim/head relation): a typed decline, not a panic. The
+        // quotient below is integer division, so a non-dividing head count
+        // truncates silently -- a CONFIG property to reject, not an invariant.
+        if !self.d_model.is_multiple_of(self.decoder_attention_heads) {
+            return Err(fuel_core::Error::Msg(format!(
+                "WhisperConfig: d_model ({}) must be divisible by decoder_attention_heads ({})",
+                self.d_model, self.decoder_attention_heads,
+            )));
+        }
+        Ok(self.d_model / self.decoder_attention_heads)
     }
 }
 
@@ -644,7 +660,7 @@ fn encoder_layer(
 ) -> fuel_core::Result<Tensor> {
     let d = cfg.d_model;
     let n_heads = cfg.encoder_attention_heads;
-    let d_head = cfg.encoder_head_dim();
+    let d_head = cfg.encoder_head_dim()?;
 
     let x_ln = layer_norm_affine(x, &lw.self_attn_ln_g, &lw.self_attn_ln_b, 1e-5, d, seq)?;
     let attn = multi_head_attn(
@@ -670,7 +686,7 @@ fn decoder_layer(
 ) -> fuel_core::Result<Tensor> {
     let d = cfg.d_model;
     let n_heads = cfg.decoder_attention_heads;
-    let d_head = cfg.decoder_head_dim();
+    let d_head = cfg.decoder_head_dim()?;
     let kv_seq_self = q_seq;
 
     // --- self-attn (causal) -------
@@ -1095,8 +1111,8 @@ mod tests {
         }"#;
         let cfg = WhisperConfig::from_hf_json_str(json).unwrap();
         assert_eq!(cfg.vocab_size, 51865);
-        assert_eq!(cfg.encoder_head_dim(), 64);
-        assert_eq!(cfg.decoder_head_dim(), 64);
+        assert_eq!(cfg.encoder_head_dim().unwrap(), 64);
+        assert_eq!(cfg.decoder_head_dim().unwrap(), 64);
     }
 
     #[test]
@@ -1154,5 +1170,47 @@ mod tests {
         // so argmax picks index 0 (pad_token_id); pad != eos here so
         // the loop runs to max_new.
         assert_eq!(tokens, vec![1, 0, 0, 0, 0]);
+    }
+
+    /// GAP-281 (dim/head relation): a head count that does not divide `d_model`
+    /// must DECLINE, not panic. Both accessors are covered because they read
+    /// DIFFERENT head fields -- encoder and decoder -- and a single test would
+    /// leave one of them unexercised.
+    ///
+    /// Born-red by sabotage: dropping a divisibility check fails this arm alone.
+    #[test]
+    fn head_dim_declines_when_the_head_count_does_not_divide() {
+        let valid = tiny_cfg();
+        // CONTROL: both accessors resolve on a conforming config.
+        assert!(
+            valid.encoder_head_dim().is_ok(),
+            "control: encoder must resolve"
+        );
+        assert!(
+            valid.decoder_head_dim().is_ok(),
+            "control: decoder must resolve"
+        );
+
+        let mut bad_enc = valid.clone();
+        bad_enc.encoder_attention_heads = valid.d_model + 1; // cannot divide
+        let e = bad_enc
+            .encoder_head_dim()
+            .expect_err("a non-dividing encoder head count must DECLINE");
+        assert!(
+            format!("{e}").contains("encoder_attention_heads"),
+            "got: {e}"
+        );
+        // the DECODER accessor is unaffected by the encoder field
+        assert!(bad_enc.decoder_head_dim().is_ok());
+
+        let mut bad_dec = valid.clone();
+        bad_dec.decoder_attention_heads = valid.d_model + 1;
+        let d = bad_dec
+            .decoder_head_dim()
+            .expect_err("a non-dividing decoder head count must DECLINE");
+        assert!(
+            format!("{d}").contains("decoder_attention_heads"),
+            "got: {d}"
+        );
     }
 }
