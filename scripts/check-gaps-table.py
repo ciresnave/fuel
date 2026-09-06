@@ -855,6 +855,19 @@ for _k, _v in sorted(dup_ids.items()):
 # -- the row sits in the unallocated list until someone picks it up.
 # Over-claiming is the defect being removed.
 #
+# THREE AXES, NOT ONE (GAP-296, 2026-09-06). `**Owner:**` answers WHOSE.
+# `**Held on:** <thing>` answers WHAT IT WAITS ON. They are separate slots
+# because a row is routinely BOTH -- GAP-037 is Fuel's own work AND held on
+# KISS#125, and the first version of this field could not say so: writing
+# `**Owner:** HELD` DESTROYED the record of whose work it was.
+#
+# The diagnosis is Fuel 3's, about their own two-state `FUEL WORK` bucket:
+# "my bucket had TWO states and the question needs THREE: whose work, is it
+# startable, what is it waiting on." I quoted that and shipped a field with
+# the same collapse. The two failures point OPPOSITE ways -- a FALSE BLOCK
+# means nobody picks a row up; a FALSE UNBLOCK means a lane starts a
+# forbidden edit -- which is why one slot cannot carry both.
+#
 # HELD IS NOT UNALLOCATED. A false block is permanent in a way an empty queue is
 # not: nobody ever picks up a row they believe is waiting on someone else. So a
 # HELD row must name what it waits on, and this gate refuses a bare "HELD".
@@ -865,7 +878,23 @@ for _k, _v in sorted(dup_ids.items()):
 # this gate is not read as covering them.
 OWNER_VALUES = ('Fuel 1', 'Fuel 2', 'Fuel 3', 'Architect', 'UNALLOCATED', 'HELD')
 WORK_REMAINS = ('OPEN', 'PARTIAL', 'RE-OPENED')
-OWNER_TOKEN = re.compile(r'\*\*Owner:\*\*\s*([A-Za-z0-9 ]+?)\s*(?:—|--|$)')
+# TERMINATE ON THE END OF THE VALUE, NOT ON A LIST OF SEPARATORS.
+#
+# The first version required one of {em dash, --, middot, end of cell}. That
+# is a guess about what comes NEXT, and it broke the moment prose was
+# appended after the token: `**Owner:** Architect ⚠️ **DUPLICATE OF...`
+# stopped matching, and the row SILENTLY LOST ITS OWNER. The gate caught it
+# (reported as a missing token, which is the honest reading) but the design
+# invited the failure -- an owner is not required to be the LAST thing in a
+# status cell, and nothing said it was.
+#
+# A name is [A-Za-z0-9 ]. So the value ends where a non-name character
+# begins, whatever that character is. The lookahead asserts that without
+# consuming it, so a following `·`, an emoji, or end-of-cell all work.
+OWNER_TOKEN = re.compile(
+    r'\*\*Owner:\*\*[ \t]*([A-Za-z0-9][A-Za-z0-9 ]*?)[ \t]*(?=[^A-Za-z0-9 ]|$)'
+)
+HELD_ON = re.compile(r'\*\*Held on:\*\*\s*(\S)')
 
 
 def _work_remains_rows(src_lines):
@@ -895,7 +924,7 @@ def owner_findings(src_lines):
             dupes.append((_id, _t))
         elif _t[0] not in OWNER_VALUES:
             badval.append((_id, _t[0]))
-        elif _t[0] == 'HELD' and 'HELD on ' not in _cell:
+        elif _t[0] == 'HELD' and not HELD_ON.search(_cell):
             blind_holds.append(_id)
     return missing, badval, dupes, blind_holds
 
@@ -908,6 +937,8 @@ _OW_OK = ['| GAP-911 | a | A | a | **OPEN** work remains **Owner:** UNALLOCATED 
 _OW_BAD = ['| GAP-912 | a | A | a | **OPEN** x **Owner:** Somebody |']
 _OW_DONE = ['| GAP-913 | a | A | a | **CLOSED** nothing remains |']
 _OW_HELD = ['| GAP-914 | a | A | a | **OPEN** x **Owner:** HELD |']
+_OW_3STATE = ['| GAP-915 | a | A | a | **OPEN** x **Owner:** Fuel 2 · **Held on:** KISS#125 |']
+_OW_HELD_OK = ['| GAP-916 | a | A | a | **OPEN** x **Owner:** HELD · **Held on:** GAP-058 |']
 owner_foundation = []
 if owner_findings(_OW_MISS)[0] != ['GAP-910']:
     owner_foundation.append('a row with NO owner token was NOT flagged')
@@ -919,6 +950,10 @@ if any(owner_findings(_OW_DONE)):
     owner_foundation.append('a CLOSED row was flagged (gate is over-scoped)')
 if not owner_findings(_OW_HELD)[3]:
     owner_foundation.append('a bare HELD naming no blocker was NOT flagged')
+if any(owner_findings(_OW_3STATE)):
+    owner_foundation.append('the three-state form (named owner + Held on) WAS flagged')
+if any(owner_findings(_OW_HELD_OK)):
+    owner_foundation.append('a HELD row that DOES name its blocker WAS flagged')
 
 own_missing, own_bad, own_dupes, own_blind = owner_findings(lines)
 
