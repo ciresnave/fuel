@@ -8044,6 +8044,63 @@ impl NodeHandle {
         a.ne(a).where_cond(b, &b_not_nan) // a is NaN ? b : (above)
     }
 
+    /// Round toward zero — the KISS-OPS §6.3 `trunc` floor op (GAP-300).
+    ///
+    /// ⚠️ Unlike [`fmax_ieee`](Self::fmax_ieee)/[`fmin_ieee`](Self::fmin_ieee),
+    /// which resolve through KISS's OWN §6.13 decompositions, `trunc` is a §6.3
+    /// *floor* op: KISS-OPS-6.3-0003 forbids the standard from carrying a
+    /// reference decomposition for a floor op, so THIS expansion is FUEL's, blessed
+    /// by no spec clause and caught by NO KISS conformance vector. Its correctness
+    /// at `-0.0`/NaN/±inf is Fuel's liability — see GAP-300, whose born-reds assert
+    /// on `to_bits()` (a value compare `0.0 == -0.0` passes vacuously).
+    ///
+    /// `trunc(q) = if q >= 0 { floor(q) } else { ceil(q) }`. Float dtypes only;
+    /// integer dtypes are already whole, so `trunc` is identity for them (returned
+    /// unchanged — never a panic on a non-float operand).
+    ///
+    /// REJECTED-FOR-NOW alternative: `copysign(floor(abs(q)), q)` is cleaner (no
+    /// dtype-matched zero; ±0/NaN/inf fall out of the IEEE primitives). Fuel has no
+    /// `copysign` op today (absent from `Op` and the builder API), so it is not
+    /// buildable — adopt it IF `copysign` ever lands.
+    pub fn trunc(&self) -> NodeHandle {
+        let q = self;
+        // A scalar zero of q's dtype, broadcast to q's shape — comparisons require
+        // matching shapes (no implicit broadcast in `binary_compare_op`).
+        let zero = match q.dtype() {
+            DType::F32 => q.const_f32_like(vec![0.0f32], &[1]).broadcast_to(q.shape()),
+            DType::F64 => q.const_f64_like(vec![0.0f64], &[1]).broadcast_to(q.shape()),
+            DType::BF16 => q
+                .const_bf16_like(vec![half::bf16::from_f32(0.0)], &[1])
+                .broadcast_to(q.shape()),
+            DType::F16 => q
+                .const_f16_like(vec![half::f16::from_f32(0.0)], &[1])
+                .broadcast_to(q.shape()),
+            // Integer/other dtypes are already whole: trunc is identity.
+            _ => return q.clone(),
+        };
+        // q >= 0 ? floor(q) : ceil(q). Note: at ±0 BOTH branches yield the same
+        // signed zero (`floor(-0.0) == ceil(-0.0) == -0.0`), so trunc's ±0 result
+        // is robust to a tie-bias in `ge` — but the born-red still checks the bits.
+        q.ge(&zero).where_cond(&q.floor(), &q.ceil())
+    }
+
+    /// Truncated remainder — the KISS-OPS §6.15-0003 `rem_trunc` op, DISTINCT from
+    /// [`rem`](Self::rem) (which is FLOORED / PyTorch, sign of the *divisor*).
+    /// `rem_trunc` takes the sign of the *dividend* (C99 `fmod` / Rust `%`).
+    ///
+    /// Built by RESOLUTION through KISS's spec-pinned §6.13 decomposition
+    /// (KISS-OPS-6.15-0003) — `a - trunc(a / b) * b` — used VERBATIM. Fuel does not
+    /// substitute `rem` (that substitution is the §6.15 violation); the two diverge
+    /// whenever the operands have opposite signs (e.g. `-7 rem_trunc 3 = -1`, where
+    /// `rem` (floored) = `2`). The `trunc` leaf is Fuel's own expansion (GAP-300).
+    pub fn rem_trunc(&self, other: &NodeHandle) -> NodeHandle {
+        // a - trunc(a / b) * b
+        let a = self;
+        let b = other;
+        let t = a.div(b).trunc();
+        a.sub(&t.mul(b))
+    }
+
     /// Element-wise addition with automatic broadcasting. Unlike `add`,
     /// which requires matching shapes, `broadcast_add` computes the
     /// broadcast shape of the two operands, inserts explicit
