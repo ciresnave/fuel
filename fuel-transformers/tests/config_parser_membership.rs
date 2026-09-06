@@ -26,6 +26,13 @@ use std::path::PathBuf;
 /// genuinely lack a `from_hf_json_str` — the moment one gains a parser without
 /// leaving this list (or calling the rule), the gate reds. This list may only SHRINK.
 const NOT_YET_PARSED: &[&str] = &[
+    // ⚠️ GAP-284 trigger-guard (not a baseline): if `gemma4_text` gains a
+    // `from_hf_json_str`, its `layer_types: Vec<Gemma4LayerType>` consumer MUST be
+    // checked against granite's — is the artifact list EXPANDED to per-layer
+    // (LFM2's shape: `validate()` requires `len == num_hidden_layers`) or mapped as
+    // a VERBATIM CYCLE (RecurrentGemma's shape: indexed `% len`)? A field's
+    // semantics come from its CONSUMER, not its name; a name-keyed mapper is
+    // silently wrong for one. Fires exactly when the parser is written.
     "lazy_gemma4_text.rs",
     "lazy_granitemoehybrid.rs",
     "lazy_metavoice.rs",
