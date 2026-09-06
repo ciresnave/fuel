@@ -145,6 +145,22 @@ _four_col_tiers = {t: n for (t, c), n in sorted(tier_shape.items()) if c == 4}
 no_status = sum(1 for c in schema_cols if c == 4)
 headerless = sum(1 for c in schema_cols if c is None)
 
+# COVERED BY THE STRUCK-FOUR-COLUMN ARM (added 2026-09-06, defined near the end
+# of this file). A struck row under a 4-column header with 4 cells states its
+# disposition in the Gap cell and is validated there, so it is NOT outside the
+# conventions -- it is under a different one.
+#
+# !! THIS SPLIT IS COMPUTED, NEVER WRITTEN DOWN. The single number it replaces
+# was TRUE when written and was made FALSE by the very increment that added the
+# arm. A hardcoded 82/3/79 would rot on the next close, in a gate whose whole
+# job is making counts honest -- and this line had already demonstrated that
+# failure mode once, inside one increment.
+#
+# `_n` is the unescaped pipe count, which is what `rows` carries; 5 pipes == 4
+# cells. `row_cells` is not available this early in the file.
+arm_covered = sum(1 for (_rid, _n, _l), _c in zip(rows, schema_cols)
+                  if _c == 4 and _rid.startswith('~~') and _n == 5)
+
 # ---------------------------------------------------------------------------
 # CONTROL CHARACTERS -- checked FIRST, because an invisible byte can corrupt the
 # row parsing that every other check below depends on.
@@ -238,8 +254,12 @@ def _pct(n, d):
     return round(100.0 * n / d) if d else 0
 
 
-print('rows OUTSIDE the status convention (4-col, no status cell): %d of %d (%d%%)'
+print('rows outside the FIVE-column status convention (4-col header): %d of %d (%d%%)'
       % (no_status, len(schema_cols), _pct(no_status, len(schema_cols))))
+print('    covered by the struck-four-column arm (disposition in the Gap cell): %d'
+      % arm_covered)
+print('    still uncovered:                                                    %d'
+      % (no_status - arm_covered))
 # HEADERLESS ROWS: GAP rows in a table fragment with no `| ID |` header above
 # them (a `---` rule then rows). The header check below reports 'headers
 # DISAGREEING: NONE' and CANNOT SEE THESE -- there is no header to disagree
@@ -271,8 +291,8 @@ print('rows with NO HEADER above them (schema undetermined):     %d'
 # Status column (nobody has taken it -- docs/design/gaps-status-vocabulary.md),
 # whereas a headerless fragment just needs its header. One number would hide
 # that half of it is a decision and half of it is a chore.
-_uncovered = no_status + headerless
-print('rows NOT COVERED by the status convention (both of the above): %d of %d (%d%%)'
+_uncovered = no_status + headerless - arm_covered
+print('rows NOT COVERED by ANY status convention (both of the above, less the arm): %d of %d (%d%%)'
       % (_uncovered, len(schema_cols), _pct(_uncovered, len(schema_cols))))
 print()
 # NOTE: ASCII ONLY below. The first version of this block used an emoji and
