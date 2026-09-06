@@ -1,7 +1,7 @@
 # Fuel Self-Describing Storage Encoding — `DType` + `SType` / `Encoding`
 
 **Status:** DRAFT FOR REVIEW (2026-06-18), on branch `feat/kernel-contracts-dlpack`. Design pass —
-no code yet. This is the third boundary spec, sibling to
+(**a branch that no longer exists**). **IMPLEMENTED ON `main`: `fuel-ir/src/stype.rs` declares `pub enum Encoding` and `pub struct SType`.** The DOCUMENT’s review state may still be draft; its SUBJECT is not. This is the third boundary spec, sibling to
 [`dlpack-extension.md`](dlpack-extension.md) (FDX, the kernel-boundary tensor projection) and
 [`kernel-contract-format.md`](kernel-contract-format.md) (FKC, the kernel advertisement). It is
 the **source of truth for the internal `SType` / `Encoding` types**; FDX is `SType`'s *projection*
@@ -15,6 +15,12 @@ by FDX.
 > reader not to rely on it** — and Fuel relies on this one today.
 > > The DType/SType split this document specifies is settled architecture:
 > `SType` appears in **10** `.rs` files.
+>
+> ⚠️ **DISCHARGED 2026-09-05: the STATUS LINE ABOVE HAS NOW BEEN CORRECTED.** This
+> notice is kept as the RECORD of when the defect was found, not as a live claim — the
+> "no code yet" wording it quotes is no longer in the status line. **It stood for sixteen
+> days because it ANNOTATED the falsehood instead of correcting it, and a reader who
+> stops at the Status field never reached this paragraph. See GAP-283.**
 >
 > **Status of the DESIGN is unchanged by this notice.** "Draft for review" may
 > still be true of the *document's* review state; what is false is the branch
