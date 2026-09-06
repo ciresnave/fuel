@@ -241,11 +241,15 @@ impl Mamba2Model {
         let (b_heads, c_heads) = if cfg.ngroups == n_heads {
             (b_g, c_g)
         } else {
-            assert!(
-                n_heads.is_multiple_of(cfg.ngroups),
-                "Mamba2: n_heads ({n_heads}) must be a multiple of ngroups ({})",
-                cfg.ngroups,
-            );
+            // GAP-281: a typed decline, not a panic. `n_per_group = n_heads /
+            // cfg.ngroups` below is integer division, so a non-dividing group
+            // count truncates silently -- a CONFIG property to reject.
+            if !n_heads.is_multiple_of(cfg.ngroups) {
+                return Err(fuel_core::Error::Msg(format!(
+                    "Mamba2Config: n_heads ({n_heads}) must be a multiple of ngroups ({})",
+                    cfg.ngroups,
+                )));
+            }
             let n_per_group = n_heads / cfg.ngroups;
             let expand = |t: Tensor| -> Result<Tensor> {
                 // [batch, seq, ngroups, d_state] → [batch, seq, ngroups, 1, d_state]
@@ -488,5 +492,56 @@ mod tests {
         for &v in &hidden.realize_f32() {
             assert!(v.is_finite(), "non-finite hidden: {v}");
         }
+    }
+
+    /// GAP-281 (group D): `n_heads % ngroups` must DECLINE, not panic.
+    /// `n_per_group = n_heads / cfg.ngroups` is integer division.
+    ///
+    /// The fixture reaches the guarded branch deliberately: the check sits in the
+    /// `else` of `if cfg.ngroups == n_heads`, so ngroups must differ from n_heads
+    /// (8 here) AND not divide it. 3 satisfies both.
+    ///
+    /// Weights are built FOR the bad config -- `bc_dim = ngroups * d_state` sizes
+    /// the conv output, so valid-config weights would fail a shape check first.
+    ///
+    /// Born-red by sabotage: dropping the check fails this arm alone.
+    #[test]
+    fn ngroups_not_dividing_n_heads_declines_rather_than_panicking() {
+        let valid = Mamba2Config {
+            d_model: 16,
+            n_layer: 1,
+            vocab_size: 32,
+            d_state: 8,
+            expand: 2,
+            head_dim: 4,
+            ngroups: 1,
+            pad_vocab_size_multiple: 8,
+            chunk_size: 4,
+            rms_norm_eps: 1e-5,
+        };
+        let tokens: Vec<u32> = vec![1, 2, 3, 4];
+
+        // CONTROL: the conforming config still runs (n_heads 8 % ngroups 1 == 0).
+        let good = Mamba2Model {
+            config: valid.clone(),
+            weights: tiny_weights(&valid),
+        };
+        good.forward(&tokens)
+            .expect("control: the conforming config must still run");
+
+        let mut bad = valid.clone();
+        bad.ngroups = 3; // n_heads 8 % 3 == 2, and 3 != 8 so the branch is reached
+        let model = Mamba2Model {
+            config: bad.clone(),
+            weights: tiny_weights(&bad),
+        };
+        let err = model
+            .forward(&tokens)
+            .expect_err("a non-dividing ngroups must DECLINE, not panic");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("n_heads") && msg.contains("ngroups"),
+            "the decline must name both operands, got: {msg}"
+        );
     }
 }
