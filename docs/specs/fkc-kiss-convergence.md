@@ -1,7 +1,39 @@
 # FKC ⇄ KISS-Contract convergence
 
-**Status:** analysis + proposed plan, 2026-08-07. Fuel-side only — **no KISS RFC has been
-opened**; §6 is the proposed ask and is not yet a commitment to any external party.
+**Status:** analysis + proposed plan, 2026-08-07. ⚠️⚠️ **CURRENCY PASS 2026-09-06, measured at `561ee255`. THE ANALYSIS HOLDS; THE STATUS LINE AND THE SEQUENCING DID NOT. Read this block before §5.**
+
+> **WHAT SURVIVED, AND IT IS THE LOAD-BEARING CLAIM.** §0 says `docs/specs/kernel-contract-format.md` contains **zero** references to KISS. **Re-measured: still 0, a month later.** The doc supplied its own positive control and it still arms — the same query returns **1, 1, 12** in `fuel-dispatch/src/fkc/{mod,shape_expr,verify/ulp}.rs`. **The contract format has still had no reconciliation pass, which is the finding this document exists for.**
+>
+> ⚠️ **A CURRENCY PASS THAT REPORTS ONLY DECAY TEACHES A READER TO DISCOUNT THE WHOLE DOCUMENT.** The parts below that expired are administrative; the argument is intact.
+
+> ⚠️⚠️ **FALSE AT HEAD: "no KISS RFC has been opened."** GAP-039 records **RFC 1 of 4 OPENED 2026-08-08 — KISS#124** — *the day after this document was written.* **§6 is therefore no longer purely a proposed ask: one quarter of it is live with an external party.**
+>
+> **The sentence was true for about twenty-four hours and has read as current ever since.** It is an ABSENCE CLAIM in a STATUS HEADER, which is the worst combination available: an absence needs re-measuring to stay true, and a header is the one line every reader takes on trust without checking.
+
+> **§5 SEQUENCING, ROW-BY-ROW AT `561ee255`. Three of six entries have moved:**
+>
+> | § 5 item | row | state now |
+> |---|---|---|
+> | 1 | GAP-035 | **OPEN** — live Fuel work |
+> | 2 | GAP-036 | ⚠️ **CLOSED, struck — BOTH INCREMENTS SHIPPED** |
+> | 3 | GAP-037 | **OPEN but HELD**, on KISS#125 + the `revhash.rs` trap |
+> | 4 | GAP-038 | ⚠️ **CLOSED by PR #130**, 2026-09-06 |
+> | 5 | GAP-039 | **OPEN**, held on KISS — the RFC above |
+> | prereq | GAP-048 | ⚠️⚠️ **a FOUR-COLUMN row with NO STATUS CELL** |
+>
+> ⚠️⚠️ **GAP-048 IS THE ONE THAT MATTERS, AND MY FIRST STATEMENT OF IT WAS WRONG — CORRECTED IN THIS SAME PR BEFORE IT MERGED.**
+>
+> **I wrote: *"its row has no status cell, so IT CANNOT BE CLOSED, ONLY DELETED — a permanent blocker on item 1 by construction."* THAT IS FALSE.** **Strikethrough is the ruled close marker and it applies to the ROW ID, not to a status cell.** Measured against the gate's own predicates, a fabricated `| ~~GAP-900~~ | subj | C | body |` passes ALL of them: 5 pipes (accepted), the id regex matches with the struck flag set, and struck rows are SKIPPED by the ownership check so no `**Owner:**` token is required. **A four-column row CAN be closed.**
+>
+> ⚠️ **WHAT IS TRUE IS A MEASUREMENT, NOT AN IMPOSSIBILITY: of 81 live four-column rows, ZERO have ever been struck closed — while 41 of the five-column rows have.** **Closure is AVAILABLE to them and has never once been USED.** That is a real signal about the registry and it says nothing about the format forbidding anything.
+>
+> ⚠️⚠️ **THE ERROR IS MINE AND IT IS THE THIRD OF ITS SHAPE TODAY: I ASSERTED IMPOSSIBILITY FROM ABSENCE.** *"Never done"* and *"cannot be done"* have an IDENTICAL SIGNATURE in the data — the same trap as *"no enforcement"* versus *"no obligation to enforce"*. **Nothing in a count of zero distinguishes a prohibition from a habit.**
+>
+> **CONSEQUENCE FOR ITEM 1: GAP-048 IS DISCHARGEABLE.** It is a real prerequisite — §5 names it a hard blocker at the moment of declaring conformance, and Fuel is missing the second half of two KISS-Ops §6.15 pairs — but it can be worked and then STRUCK like any other row. **It is not a structural dead end, and item 1 is not permanently blocked.**
+
+> **Not corrected in place below, deliberately.** The 2026-08-07 text is the record of what was believed when the plan was made, and rewriting it would destroy the evidence that item 2 and item 4 were *predicted* correctly and then *shipped*. **The block above is the verdict; the text below is the history.**
+
+Fuel-side only. **§6 was the proposed ask when written; see the currency block — RFC 1 of 4 is now open.**
 **Author:** Fuel architect/coordinator. **Registry:** GAP-035 … GAP-039.
 
 ---
