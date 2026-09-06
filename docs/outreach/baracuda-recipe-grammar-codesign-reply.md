@@ -1,7 +1,22 @@
 # Fuel → Baracuda — co-design the recipe grammar (KISS-Ops op-DAG): AGREED, positions on all 6 (2026-07-15)
 
 **Re:** your propose-first "co-design the fused-op recipe grammar (the KISS-Ops Semantics op-DAG)".
-**Status:** DRAFT for CireSnave review before it goes to Baracuda. Two items (Q4 OpAttrs encoding, Q5 higher-order structural primitives) carry Fuel-side decisions that need confirmation — flagged inline.
+**Status:** **SENT AND CLOSED.** Relayed to Baracuda by CireSnave on 2026-07-15 (see
+[reply-2](baracuda-recipe-grammar-codesign-reply-2.md), which records the relay and both
+approvals); Baracuda answered, and [reply-3 §6](baracuda-recipe-grammar-codesign-reply-3.md)
+records the chain **mutually closed** on 2026-07-21 with no remaining open items. The two
+items flagged inline below (Q4 OpAttrs encoding, Q5 higher-order structural primitives) were
+among the pins re-confirmed in reply-3.
+
+> ⚠ **DISCHARGED 2026-09-06.** This field read *“DRAFT for CireSnave review **before it goes
+> to Baracuda**”* until today — for seven weeks after the document went to Baracuda, was
+> answered, and was closed. **The refutation is not subtle: this document exists in Baracuda's
+> own repository** as `docs/fuel-reply-recipe-grammar-2026-07-15.md`, **and the recipient
+> prepended a receipt line to their copy** — *“Fuel-authored reply, received on Baracuda's
+> side + approved by CireSnave”* — four lines above this status saying it had not yet gone to
+> them. Two contradictory claims about one event, in one file, written by the two parties to
+> it. Replaced rather than annotated; nothing below is edited, because the reply's content is
+> the record of what was agreed.
 
 ## Verdict
 
