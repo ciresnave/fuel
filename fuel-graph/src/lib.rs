@@ -8003,6 +8003,27 @@ impl NodeHandle {
         self.binary_op("minimum", Op::Minimum, other, self.shape())
     }
 
+    /// The IEEE-754 NaN-**suppressing** maximum — the KISS-OPS §6.15-0001
+    /// `fmax_ieee` op, DISTINCT from [`maximum`](Self::maximum) (which is
+    /// NaN-**propagating**, torch parity). If exactly one operand is NaN, returns
+    /// the other; if both are NaN, returns NaN; otherwise the larger.
+    ///
+    /// Built by RESOLUTION through the spec-pinned §6.13 decomposition
+    /// (KISS-OPS-6.15-0001), used VERBATIM — Fuel does not substitute `maximum`
+    /// for it (that substitution is the §6.15 violation). Because the
+    /// decomposition is spec-authored, its edge behaviour — including ±0 ordering
+    /// under `cmp_ge` (`cmp_ge(-0.0, +0.0)` is true, so this returns `-0.0` for
+    /// that pair) — is the SPEC's to define and a KISS conformance vector's to
+    /// catch. Fuel resolves; it does not re-derive. (GAP-048.)
+    pub fn fmax_ieee(&self, other: &NodeHandle) -> NodeHandle {
+        // select(a != a, b, select(b != b, a, select(a >= b, a, b)))
+        let a = self;
+        let b = other;
+        let plain = a.ge(b).where_cond(a, b); // a >= b ? a : b
+        let b_not_nan = b.ne(b).where_cond(a, &plain); // b is NaN ? a : plain
+        a.ne(a).where_cond(b, &b_not_nan) // a is NaN ? b : (above)
+    }
+
     /// Element-wise addition with automatic broadcasting. Unlike `add`,
     /// which requires matching shapes, `broadcast_add` computes the
     /// broadcast shape of the two operands, inserts explicit
