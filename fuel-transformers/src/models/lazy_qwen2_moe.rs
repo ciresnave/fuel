@@ -209,7 +209,7 @@ impl Qwen2MoeModel {
             self.weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, h]),
             &fuel_core::Device::cpu(),
-        );
+        )?;
         let input_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         let x = embed
             .index_select(0, &input_ids)?

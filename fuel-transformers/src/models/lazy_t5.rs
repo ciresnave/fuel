@@ -175,7 +175,7 @@ impl T5Model {
             self.weights.shared_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.d_model]),
             &Device::cpu(),
-        );
+        )?;
 
         let enc_out = self.encode(&embed, src_tokens)?;
         let dec_out = self.decode(&embed, tgt_tokens, &enc_out)?;
@@ -216,7 +216,7 @@ impl T5Model {
             self.weights.shared_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.d_model]),
             &Device::cpu(),
-        );
+        )?;
         self.encode(&embed, src_tokens)
     }
 

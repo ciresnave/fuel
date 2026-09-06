@@ -347,7 +347,7 @@ impl QuantizedWhisperModel {
             mel.to_vec(),
             Shape::from_dims(&[1, n_mel, mel_time]),
             &fuel_core::Device::cpu(),
-        );
+        )?;
 
         let x = conv1d_k3_s1_p1(
             &mel_t,
@@ -474,7 +474,7 @@ impl QuantizedWhisperModel {
                 encoder_out.clone(),
                 enc_shape.clone(),
                 &fuel_core::Device::cpu(),
-            );
+            )?;
             let logits = self.forward_decoder(&tokens, &encoder_t)?;
             let flat = logits.realize_f32();
             let vocab = self.config.vocab_size;

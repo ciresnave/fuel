@@ -362,7 +362,7 @@ impl DebertaV2Model {
             anchor_ids,
             Shape::from_dims(&[t]),
             &fuel_core::Device::cpu(),
-        );
+        )?;
 
         // Word embedding lookup + LN.
         let table = ids.const_f32_like(
@@ -732,7 +732,7 @@ impl DebertaV2NERModel {
             input_ids.to_vec(),
             Shape::from_dims(&[input_ids.len()]),
             &fuel_core::Device::cpu(),
-        );
+        )?;
         // Apply classifier to every token. apply_linear_with_bias
         // works on the trailing dim — exactly what we want here.
         apply_linear(&hidden, &self.weights.classifier, &anchor)
@@ -825,7 +825,7 @@ impl DebertaV2SeqClassificationModel {
             input_ids.to_vec(),
             Shape::from_dims(&[input_ids.len()]),
             &fuel_core::Device::cpu(),
-        );
+        )?;
         // pooler.dense → tanh → classifier.
         let pooled = apply_linear(&cls, &self.weights.pooler_dense, &anchor)?;
         let pooled = pooled.tanh();

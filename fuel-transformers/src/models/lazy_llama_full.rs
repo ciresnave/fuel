@@ -477,7 +477,7 @@ impl Llama3Model {
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &fuel_core::Device::cpu(),
-        );
+        )?;
         let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         let h = embed
             .index_select(0, &token_ids)?

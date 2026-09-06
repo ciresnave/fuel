@@ -237,7 +237,7 @@ impl SdUnet {
             latent.to_vec(),
             Shape::from_dims(&[1, c_in, h_lat, w_lat]),
             &fuel_core::Device::cpu(),
-        );
+        )?;
         let t_flat = x
             .const_f32_like(time_sin, Shape::from_dims(&[1, c_first]))
             .reshape(Shape::from_dims(&[1, 1, c_first]))?;

@@ -229,7 +229,7 @@ impl SdTextEncoder {
             self.weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, h]),
             &fuel_core::Device::cpu(),
-        );
+        )?;
         let input_ids = token_emb.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         let pos_ids: Vec<u32> = (0..seq as u32).collect();
         let position_ids = token_emb.const_u32_like(pos_ids, Shape::from_dims(&[seq]));
@@ -278,7 +278,7 @@ impl SdTextEncoder {
             self.weights.token_embedding.clone(),
             Shape::from_dims(&[self.config.vocab_size, self.config.hidden_size]),
             &fuel_core::Device::cpu(),
-        );
+        )?;
         self.forward_until_encoder_layer_seeded(token_emb, tokens, until_layer)
     }
 

@@ -250,7 +250,7 @@ impl WhisperModel {
             mel.to_vec(),
             Shape::from_dims(&[1, n_mel, mel_time]),
             &fuel_core::Device::cpu(),
-        );
+        )?;
 
         // --- conv stem (pre-attention downsample) ------------------------
         // conv1: kernel=3, stride=1, padding=1 → [1, d, T]
@@ -392,7 +392,7 @@ impl WhisperModel {
                 encoder_out.clone(),
                 enc_shape.clone(),
                 &fuel_core::Device::cpu(),
-            );
+            )?;
             let logits = self.forward_decoder(&tokens, &encoder_t)?;
             let flat = logits.realize_f32();
             // logits shape is [1, seq, vocab]. Pick the last row.

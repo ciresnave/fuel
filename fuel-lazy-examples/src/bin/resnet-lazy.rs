@@ -99,7 +99,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         image,
         Shape::from_dims(&[1, 3, IMG_SIZE, IMG_SIZE]),
         &fuel::Device::cpu(),
-    );
+    )?;
     let logits_t = model.forward(&img_lt)?;
     let logits = logits_t.realize_f32();
     let elapsed = t0.elapsed();

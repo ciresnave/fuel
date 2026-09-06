@@ -234,7 +234,7 @@ impl MimiEncodecModel {
             pcm_for_run,
             Shape::from_dims(&[1, self.config.channels, usable_len]),
             &fuel_core::Device::cpu(),
-        );
+        )?;
         let codes = self.inner.encode(&pcm_full)?;
         let new_frames = total_frames - state.emitted_frames;
         let emitted_so_far = state.emitted_frames;
@@ -302,7 +302,7 @@ impl MimiEncodecModel {
             flat,
             Shape::from_dims(&[1, n_q, total_frames]),
             &fuel_core::Device::cpu(),
-        );
+        )?;
         let pcm = self.inner.decode(&codes_full)?;
         let stride = self.config.total_audio_stride();
         let new_samples = (state.buffered_frames - state.emitted_frames) * stride;

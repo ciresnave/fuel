@@ -287,7 +287,7 @@ impl SamImageEncoderVit {
             image_chw.to_vec(),
             Shape::from_dims(&[1, ch, img, img]),
             &Device::cpu(),
-        );
+        )?;
         let pps = cfg.patches_per_side();
         let conv_w = x.const_f32_like(
             Arc::clone(&weights.patch_embed_w),

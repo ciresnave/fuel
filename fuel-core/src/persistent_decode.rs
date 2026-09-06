@@ -836,7 +836,7 @@ fn build_decode_graph<M: DecodeBackbone + ?Sized>(
         model.decode_token_embedding(),
         Shape::from_dims(&[dims.vocab, dims.hidden]),
         &Device::cpu(),
-    );
+    )?;
     let token_ids = match consts {
         DataConsts::Baked => embed.const_u32_like(host.token_ids.clone(), Shape::from_dims(&[seq])),
         DataConsts::Rebindable => {

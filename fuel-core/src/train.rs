@@ -410,7 +410,7 @@ impl TrainState {
         //    panic in Tensor::from_*). Training's REAL device
         //    placement comes from `self.device` at the realize-split
         //    call below, not from the seed.
-        let seed = Tensor::from_f32(vec![0.0f32], Shape::from_dims(&[1]), &Device::cpu());
+        let seed = Tensor::from_f32(vec![0.0f32], Shape::from_dims(&[1]), &Device::cpu())?;
         let graph = seed.graph_tensor().graph().clone();
 
         // The realize call's input cache: parameter (and optimizer-
