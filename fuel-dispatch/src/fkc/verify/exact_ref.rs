@@ -59,7 +59,7 @@ enum Scalar {
 /// what Fuel's cast kernel delegates to (`byte_kernels.rs:3792`
 /// `float8::F8E4M3::from_f32`). A reference built on the same crate would
 /// compare that crate against itself and pass unconditionally: `max_ulp` in
-/// name, `agrees_with_float8` in fact, which is GAP-227's defect arriving in
+/// name, `agrees_with_float8` in fact, which is GAP-291's defect arriving in
 /// a new place.
 ///
 /// **The independence this buys is real but bounded, and the bound is worth
