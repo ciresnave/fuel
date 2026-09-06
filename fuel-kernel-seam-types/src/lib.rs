@@ -568,10 +568,72 @@ impl OpAttrs {
     /// kernel-seam-interop.md §7.3.2.
     ///
     /// M-3: the `unwrap_or(...)` defaults below cannot distinguish an *unset*
-    /// field from a genuine zero (e.g. `axis: None` vs `Some(0)`). Harmless
-    /// today — there is no decoder; this is a forward-serialization only, and an
-    /// op that reaches a given arm always has the field set (`op_to_attrs` /
-    /// `tag_to_op` guarantee it). A future decoder must not round-trip `None`.
+    /// field from a genuine zero (e.g. `axis: None` vs `Some(0)`), and for five
+    /// (op, field) pairs that collapse is **LOSSY TODAY** - two semantically
+    /// distinct ops serialize to identical bytes. Registry: GAP-287.
+    ///
+    /// This paragraph previously read *"harmless today ... an op that reaches a
+    /// given arm always has the field set (`op_to_attrs` / `tag_to_op`
+    /// guarantee it)"*. **That was false, and the guarantor's own doc says so**:
+    /// `fuel_graph::jit::op_to_attrs` documents itself as *"not exhaustive"* and
+    /// leaves `axis` unset for `CumSum`/`IndexSelect`/`Gather`/`IndexAdd`/
+    /// `ScatterAdd` (its `_ => {}` arm). So `Gather` on axis 2 and on axis 0
+    /// emit the same bytes. KISS-OPS-6.19 makes `axis` MANDATORY with no
+    /// default, so `unwrap_or(0)` fabricates a value the schema does not permit.
+    ///
+    /// `keepdim` is also set by **nothing in the repository**, and that one is
+    /// NOT a defect - the distinction worth keeping. Every tag on that arm
+    /// removes the reduced dim (`Op::SumDim`/`MaxDim`/`MeanDim` say so verbatim;
+    /// `CumSum` is "same shape as input"), so `false` is the true value.
+    /// keepdim=TRUE is `Op::ReduceSumTo(Shape)`: a different tag, on the
+    /// shape-target arm, with no `unwrap_or` at all. **A field being unset is
+    /// only a defect if the default CAN differ from the truth** - "never set"
+    /// has several causes and only one of them is this bug.
+    ///
+    /// `const_bits`, `slot_index`, `scan_role` and `scan_index` are reachable
+    /// only from hand-built regions (`op_to_tag` emits none of the four leaf
+    /// tags); `scan_*` are set together by both producers today, guaranteed by
+    /// nothing. Note `scan_role.unwrap_or(SCAN_ROLE_CARRY)` is the only default
+    /// here that names a *semantic* value rather than a neutral zero: an unset
+    /// role does not decay to "absent", it asserts "carry".
+    ///
+    /// The old note also said *"a future decoder must not round-trip `None`"*.
+    /// **A decoder cannot recover what this encoder already discarded** - the
+    /// mitigation has to live on this side of the wire. And *"harmless, there is
+    /// no decoder"* was scoped to Fuel's own repo while this format exists to
+    /// leave it - the decoder is the counterparty's by design, i.e. the claim
+    /// was scoped to the one place the hazard cannot occur.
+    ///
+    /// On what checks this format: exactly one conformance fixture exists,
+    /// `matmul_role_vectors_serialize_the_locked_rank2_golden`, and Baracuda
+    /// "has NO near-term binary arm" (its own comment), so there is no second
+    /// encoder. That golden covers the `MatMul` arm - which emits `lhs_roles`/
+    /// `rhs_roles` directly and contains **no `unwrap_or` at all**. The single
+    /// fixture this format has is aimed at an arm that cannot exhibit this
+    /// defect, which is why six lossy collapses were found by audit rather
+    /// than by a failing test.
+    ///
+    /// ⚠️ **THIS CRATE'S TWO DIRECTIONS DISAGREE, AND `axis` IS ONE OF THEM.**
+    /// `fuel_graph::runtime_fused::tag_to_op` - the DECODE direction this
+    /// serializer round-trips against - treats an unset required attr as a hard
+    /// decline: **24 `attrs.<field>?` declines over 11 fields**, plus 5 explicit
+    /// `return None`, and its own comments name the policy ("an honest miss
+    /// (unset required attr)"). Seven fields appear on BOTH sides:
+    ///
+    /// ```text
+    /// axis  pad_mode  roll_shift  scan_index  scan_role  slice_len  slice_start
+    /// ```
+    ///
+    /// For every one of them the decoder REFUSES what this encoder INVENTS.
+    /// Six are latent (`op_to_attrs` does set them, so the default is currently
+    /// unreachable); `axis` is LIVE, because the five ops above are the ones it
+    /// leaves unprojected. So making the encoder decline is not a new design -
+    /// it is this codebase's own settled answer to this exact condition, and
+    /// the encoder is the side that dissents.
+    ///
+    /// Gated by the collapse table in `fuel-graph/src/jit.rs` tests, which pins
+    /// exactly which (op, field) pairs are lossy so that fixing one is visible.
+    /// Fixing the encoder is a wire-format change and needs the external ask.
     pub fn to_canonical_bytes(&self, op: OpTag) -> Vec<u8> {
         use OpTag as T;
         let mut body: Vec<u8> = Vec::new();
