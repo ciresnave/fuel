@@ -21,7 +21,15 @@
 > | 5 | GAP-039 | **OPEN**, held on KISS — the RFC above |
 > | prereq | GAP-048 | ⚠️⚠️ **a FOUR-COLUMN row with NO STATUS CELL** |
 >
-> ⚠️⚠️ **GAP-048 IS THE ONE THAT MATTERS AND IT IS NOT A STALENESS PROBLEM.** It is named here as a **hard blocker at the moment of declaring conformance** for item 1 — and its row has no status cell at all, so **IT CANNOT BE CLOSED, ONLY DELETED.** A prerequisite whose format forbids the outcome "done" is a permanent blocker on item 1 by construction, and nothing about reading §5 reveals that.
+> ⚠️⚠️ **GAP-048 IS THE ONE THAT MATTERS, AND MY FIRST STATEMENT OF IT WAS WRONG — CORRECTED IN THIS SAME PR BEFORE IT MERGED.**
+>
+> **I wrote: *"its row has no status cell, so IT CANNOT BE CLOSED, ONLY DELETED — a permanent blocker on item 1 by construction."* THAT IS FALSE.** **Strikethrough is the ruled close marker and it applies to the ROW ID, not to a status cell.** Measured against the gate's own predicates, a fabricated `| ~~GAP-900~~ | subj | C | body |` passes ALL of them: 5 pipes (accepted), the id regex matches with the struck flag set, and struck rows are SKIPPED by the ownership check so no `**Owner:**` token is required. **A four-column row CAN be closed.**
+>
+> ⚠️ **WHAT IS TRUE IS A MEASUREMENT, NOT AN IMPOSSIBILITY: of 81 live four-column rows, ZERO have ever been struck closed — while 41 of the five-column rows have.** **Closure is AVAILABLE to them and has never once been USED.** That is a real signal about the registry and it says nothing about the format forbidding anything.
+>
+> ⚠️⚠️ **THE ERROR IS MINE AND IT IS THE THIRD OF ITS SHAPE TODAY: I ASSERTED IMPOSSIBILITY FROM ABSENCE.** *"Never done"* and *"cannot be done"* have an IDENTICAL SIGNATURE in the data — the same trap as *"no enforcement"* versus *"no obligation to enforce"*. **Nothing in a count of zero distinguishes a prohibition from a habit.**
+>
+> **CONSEQUENCE FOR ITEM 1: GAP-048 IS DISCHARGEABLE.** It is a real prerequisite — §5 names it a hard blocker at the moment of declaring conformance, and Fuel is missing the second half of two KISS-Ops §6.15 pairs — but it can be worked and then STRUCK like any other row. **It is not a structural dead end, and item 1 is not permanently blocked.**
 
 > **Not corrected in place below, deliberately.** The 2026-08-07 text is the record of what was believed when the plan was made, and rewriting it would destroy the evidence that item 2 and item 4 were *predicted* correctly and then *shipped*. **The block above is the verdict; the text below is the history.**
 
