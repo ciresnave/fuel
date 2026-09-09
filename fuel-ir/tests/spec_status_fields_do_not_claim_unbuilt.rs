@@ -169,6 +169,14 @@ fn is_status_field(para: &str) -> bool {
 /// Vocabulary deliberately matches the block-aware scanner in fuel's doc-drift work, so
 /// two independently-built detectors do not drift apart on the same discriminator.
 fn has_supersession_banner(text: &str) -> bool {
+    // ⚠️ CRLF FIRST, and this bit me twice. `status_paragraph` normalised and this did
+    // not, so on a checkout where git had written CRLF the paragraph split here found
+    // nothing, `cut` became the whole file, and every incidental "superseded" blockquote
+    // counted as a banner. The guard passed on an LF tree and failed on a Windows one:
+    // an ENVIRONMENT-DEPENDENT gate, which is worse than no gate because CI would have
+    // been green while a local run was red, and the disagreement would have read as
+    // flakiness rather than as a defect.
+    let text = &text.replace("\r\n", "\n");
     // A BANNER is a blockquote, ABOVE the status field, announcing the document is
     // superseded. Both halves are load-bearing.
     //
