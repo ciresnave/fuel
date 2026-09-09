@@ -292,7 +292,7 @@ pub fn main() -> anyhow::Result<()> {
             Arc::<[f32]>::from(pixels),
             Shape::from_dims(&[1, 3, image_size, image_size]),
             &device,
-        );
+        )?;
         let feat = model.image_features(&pixel_tensor)?;
         image_feats.push(feat);
     }

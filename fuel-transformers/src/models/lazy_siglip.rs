@@ -243,7 +243,7 @@ impl SiglipTextModel {
         let pos_full = token_embeds.const_f32_like(
             Arc::clone(&weights.position_embedding),
             Shape::from_dims(&[cfg.max_position_embeddings, cfg.hidden_size]),
-        );
+        )?;
         let pos_slice = pos_full
             .slice(0_usize, 0, seq)?
             .reshape(Shape::from_dims(&[1, seq, cfg.hidden_size]))?;
@@ -280,7 +280,7 @@ impl SiglipTextModel {
         let bias_t = head_out.const_f32_like(
             Arc::clone(&weights.head_bias),
             Shape::from_dims(&[cfg.hidden_size]),
-        );
+        )?;
         head_out.broadcast_add(&bias_t)
     }
 }
@@ -311,11 +311,11 @@ impl SiglipVisionModel {
                 cfg.patch_size,
                 cfg.patch_size,
             ]),
-        );
+        )?;
         let conv_b = pixel_values.const_f32_like(
             Arc::clone(&weights.patch_proj_bias),
             Shape::from_dims(&[cfg.hidden_size]),
-        );
+        )?;
         let conv_out = pixel_values.conv2d(
             &conv_w,
             Some(&conv_b),
@@ -332,7 +332,7 @@ impl SiglipVisionModel {
         let pos = pixel_values.const_f32_like(
             Arc::clone(&weights.position_embedding),
             Shape::from_dims(&[np, cfg.hidden_size]),
-        );
+        )?;
         let pos_bc = pos
             .reshape(Shape::from_dims(&[1, np, cfg.hidden_size]))?
             .broadcast_to(Shape::from_dims(&[batch, np, cfg.hidden_size]))?;
@@ -408,11 +408,11 @@ impl SiglipVisionModel {
                 cfg.patch_size,
                 cfg.patch_size,
             ]),
-        );
+        )?;
         let conv_b = pixel_values.const_f32_like(
             Arc::clone(&weights.patch_proj_bias),
             Shape::from_dims(&[cfg.hidden_size]),
-        );
+        )?;
         let conv_out = pixel_values.conv2d(
             &conv_w,
             Some(&conv_b),
@@ -427,7 +427,7 @@ impl SiglipVisionModel {
         let pos = pixel_values.const_f32_like(
             Arc::clone(&weights.position_embedding),
             Shape::from_dims(&[np, cfg.hidden_size]),
-        );
+        )?;
         let pos_bc = pos
             .reshape(Shape::from_dims(&[1, np, cfg.hidden_size]))?
             .broadcast_to(Shape::from_dims(&[batch, np, cfg.hidden_size]))?;
@@ -464,7 +464,7 @@ impl SiglipVisionModel {
         let head_dim = cfg.head_dim();
 
         // Probe broadcast across batch.
-        let probe = xs.const_f32_like(Arc::clone(&head.probe), Shape::from_dims(&[1, 1, h]));
+        let probe = xs.const_f32_like(Arc::clone(&head.probe), Shape::from_dims(&[1, 1, h]))?;
         let probe_bc = probe.broadcast_to(Shape::from_dims(&[batch, 1, h]))?;
 
         // Cross-attention: Q = probe, K = V = xs.
@@ -1043,6 +1043,7 @@ mod tests {
             Shape::from_dims(&[1, cfg.num_channels, cfg.image_size, cfg.image_size]),
             &Device::cpu(),
         )
+        .unwrap()
     }
 
     #[test]

@@ -215,7 +215,7 @@ fn apply_mlm_head(
     let v = cfg.vocab_size;
 
     // head.dense: linear (no bias)
-    let dense_t = hidden.const_f32_like(Arc::clone(&mlm.head_dense), Shape::from_dims(&[h, h]));
+    let dense_t = hidden.const_f32_like(Arc::clone(&mlm.head_dense), Shape::from_dims(&[h, h]))?;
     let x = hidden.matmul(&dense_t)?;
     // GELU
     let x = x.gelu_erf();
@@ -237,11 +237,11 @@ fn apply_mlm_head(
         }
     }
     let decoder_w_t =
-        hidden.const_f32_like(Arc::<[f32]>::from(decoder_w), Shape::from_dims(&[h, v]));
+        hidden.const_f32_like(Arc::<[f32]>::from(decoder_w), Shape::from_dims(&[h, v]))?;
     let logits = x.matmul(&decoder_w_t)?;
     // Add decoder.bias broadcast over [1, seq].
     let bias_t = hidden
-        .const_f32_like(Arc::clone(&mlm.decoder_bias), Shape::from_dims(&[v]))
+        .const_f32_like(Arc::clone(&mlm.decoder_bias), Shape::from_dims(&[v]))?
         .reshape(Shape::from_dims(&[1, 1, v]))?;
     let logits = logits.broadcast_add(&bias_t)?;
     Ok(logits)

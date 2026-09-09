@@ -97,7 +97,7 @@ mod tests {
     use std::sync::Arc;
 
     fn scalar_tensor(val: f32) -> Tensor {
-        Tensor::from_f32(Arc::from(vec![val]), Shape::from_dims(&[1]), &Device::cpu())
+        Tensor::from_f32(Arc::from(vec![val]), Shape::from_dims(&[1]), &Device::cpu()).unwrap()
     }
 
     fn first(t: Tensor) -> f32 {

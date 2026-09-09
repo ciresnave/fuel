@@ -66,7 +66,7 @@ mod tests {
 
     fn tiny_xs(b: usize, d: usize, val: f32) -> Tensor {
         let data: Vec<f32> = vec![val; b * d];
-        Tensor::from_f32(Arc::from(data), Shape::from_dims(&[b, d]), &Device::cpu())
+        Tensor::from_f32(Arc::from(data), Shape::from_dims(&[b, d]), &Device::cpu()).unwrap()
     }
 
     #[test]

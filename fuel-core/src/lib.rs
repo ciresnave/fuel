@@ -11,8 +11,8 @@
 //! // Every tensor is a node in a lazy graph. The first `from_*` call mints the
 //! // graph; a second operand joins it with `from_*_on(a.graph(), ..)` — ops
 //! // require both operands to share one graph.
-//! let a = Tensor::from_f32((0..6).map(|x| x as f32).collect::<Vec<_>>(), (2, 3), &dev);
-//! let b = Tensor::from_f32_on(a.graph(), (0..12).map(|x| x as f32).collect::<Vec<_>>(), (3, 4), &dev);
+//! let a = Tensor::from_f32((0..6).map(|x| x as f32).collect::<Vec<_>>(), (2, 3), &dev)?;
+//! let b = Tensor::from_f32_on(a.graph(), (0..12).map(|x| x as f32).collect::<Vec<_>>(), (3, 4), &dev)?;
 //! let c = a.matmul(&b)?;
 //! assert_eq!(c.shape().dims(), &[2, 4]);
 //!

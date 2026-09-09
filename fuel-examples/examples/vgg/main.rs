@@ -183,7 +183,7 @@ pub fn main() -> anyhow::Result<()> {
         Arc::<[f32]>::from(image_vec),
         Shape::from_dims(&[1, 3, 224, 224]),
         &device,
-    );
+    )?;
 
     let api = hf_hub::api::sync::Api::new()?;
     let api = api.model(args.which.hf_repo().to_string());

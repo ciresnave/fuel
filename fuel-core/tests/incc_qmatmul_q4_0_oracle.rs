@@ -77,8 +77,10 @@ fn check_q4_0(leading: &[usize], k: usize, n: usize) {
     let a_data: Vec<f32> = (0..m * k).map(|i| ((i as f32) * 0.013).cos()).collect();
     let mut a_dims = leading.to_vec();
     a_dims.push(k);
-    let x = Tensor::from_f32(a_data.clone(), Shape::from_dims(&a_dims), &dev);
-    let w = x.const_u32_like(w_u32, Shape::from_dims(&[w_bytes.len() / 4]));
+    let x = Tensor::from_f32(a_data.clone(), Shape::from_dims(&a_dims), &dev).unwrap();
+    let w = x
+        .const_u32_like(w_u32, Shape::from_dims(&[w_bytes.len() / 4]))
+        .unwrap();
     let y = x
         .qmatmul(&w, QuantType::Q4_0, k, n)
         .unwrap_or_else(|e| panic!("{label}: qmatmul build failed: {e:?}"));

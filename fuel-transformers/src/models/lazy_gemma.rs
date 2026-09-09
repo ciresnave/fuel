@@ -380,7 +380,7 @@ impl GemmaModel {
                 mask_data[i * seq + j] = f32::NEG_INFINITY;
             }
         }
-        let mask = x.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]));
+        let mask = x.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]))?;
         let scores_masked = scores_scaled.broadcast_add(&mask)?;
         let attn = scores_masked.softmax_last_dim()?;
         let attn_v = attn.matmul(&v_full)?;
@@ -795,7 +795,8 @@ mod tests {
             (0..dim).map(|i| 0.1 * (i as f32 - 3.5)).collect::<Vec<_>>(),
             Shape::from_dims(&[1, 1, dim]),
             &device,
-        );
+        )
+        .unwrap();
         let zero_gain: Arc<[f32]> = Arc::from(vec![0.0_f32; dim]);
         let unity_gain: Arc<[f32]> = Arc::from(vec![1.0_f32; dim]);
         let offset = x
