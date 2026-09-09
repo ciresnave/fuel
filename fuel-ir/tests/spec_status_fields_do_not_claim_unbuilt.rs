@@ -43,14 +43,19 @@ use std::path::{Path, PathBuf};
 /// started"* — precise, true, and exactly the kind of honest partial status a guard must
 /// not punish. A vocabulary that fires on true statements is a nag, not a detector.
 /// The dead-branch half of the same defect is caught structurally by the second test.
-const UNBUILT_CLAIMS: &[&str] = &["design pass", "no code yet", "before code lands"];
+const UNBUILT_CLAIMS: &[&str] = &[
+    "design pass",
+    "no code yet",
+    "before code lands",
+    "pending implementation plan",
+];
 
 /// The directories this guard ranges over.
 ///
 /// ⚠️ **`docs/architecture/`, `ROADMAP.md` and `docs/gaps.md` are NOT here and they
 /// carry the same defects.** They were held by open PRs when this was written. **A green
 /// here is a fact about two directories, not about fuel's documentation.**
-const SCAN_DIRS: &[&str] = &["docs/specs", "docs/session-prompts"];
+const SCAN_DIRS: &[&str] = &["docs/specs", "docs/session-prompts", "docs/superpowers"];
 
 /// `docs/` itself, NON-recursively — its subdirectories are either listed above or
 /// deliberately out of scope.
