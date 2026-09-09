@@ -204,16 +204,32 @@ def is_padding(field):
     return field.startswith("_pad") or field == "reserved"
 
 
+def _by_tag(semantic):
+    """{VALIDATOR|ELSEWHERE|NEVER: rows} in one pass."""
+    buckets = {"VALIDATOR": [], "ELSEWHERE": [], "NEVER": []}
+    for row in semantic:
+        buckets[row[2]].append(row)
+    return buckets
+
+
+def _split_fdx(rows):
+    """(fdx rows, DLPack ABI rows, the semantic subset of fdx)."""
+    fdx, dlpack = [], []
+    for row in rows:
+        (dlpack if row[0] in DLPACK_ABI else fdx).append(row)
+    return fdx, dlpack, [r for r in fdx if not is_padding(r[1])]
+
+
 def _tally(rows):
-    fdx = [r for r in rows if r[0] not in DLPACK_ABI]
-    semantic = [r for r in fdx if not is_padding(r[1])]
+    fdx, dlpack, semantic = _split_fdx(rows)
+    tagged = _by_tag(semantic)
     return {
         "fdx": fdx,
         "semantic": semantic,
-        "validator": [r for r in semantic if r[2] == "VALIDATOR"],
-        "elsewhere": [r for r in semantic if r[2] == "ELSEWHERE"],
-        "never": [r for r in semantic if r[2] == "NEVER"],
-        "dlpack": [r for r in rows if r[0] in DLPACK_ABI],
+        "validator": tagged["VALIDATOR"],
+        "elsewhere": tagged["ELSEWHERE"],
+        "never": tagged["NEVER"],
+        "dlpack": dlpack,
     }
 
 
