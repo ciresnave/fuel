@@ -130,13 +130,22 @@ def _skip_char_literal(src, j):
     return j + 1
 
 
+def _skip_literal(src, j):
+    """Skip a `"..."` or `'...'` literal starting at `j`; return the index past it."""
+    if src[j] == '"':
+        return _skip_string_literal(src, j)
+    return _skip_char_literal(src, j)
+
+
 def parse_args(src, open_idx):
     """Args of a macro call, string-literal aware. `open_idx` points at the '('.
 
     A naive scan that stops at the first ';' or counts parens is defeated by a ';'
-    or a '(' inside a message string; the string/char skips keep those literals from
-    splitting an argument or unbalancing the parens. Args are returned as source
-    slices between top-level commas, so a literal's bytes ride inside the slice.
+    or a '(' inside a message string; the literal skips keep those from splitting an
+    argument or unbalancing the parens. Args are returned as source slices between
+    top-level commas, so a literal's bytes ride inside the slice. Depth is updated by
+    boolean arithmetic (open +1, close -1) to keep the loop a single flat branch set;
+    on balanced Rust, depth reaches 0 only at the macro's own closing ')'.
     """
     n = len(src)
     j = open_idx + 1
@@ -145,25 +154,17 @@ def parse_args(src, open_idx):
     args = []
     while j < n:
         c = src[j]
-        if c == '"':
-            j = _skip_string_literal(src, j)
-        elif c == "'":
-            j = _skip_char_literal(src, j)
-        elif c in "([{":
-            depth += 1
-            j += 1
-        elif c in ")]}":
-            if c == ")" and depth == 1:
-                args.append(src[start:j])
-                break
-            depth -= 1
-            j += 1
-        elif c == "," and depth == 1:
+        if c in "\"'":
+            j = _skip_literal(src, j)
+            continue
+        depth += (c in "([{") - (c in ")]}")
+        if depth == 0:
+            args.append(src[start:j])
+            break
+        if depth == 1 and c == ",":
             args.append(src[start:j])
             start = j + 1
-            j += 1
-        else:
-            j += 1
+        j += 1
     return [a.strip() for a in args]
 
 
@@ -277,13 +278,14 @@ def git_ref():
 def _summarize(sites):
     """The numbers print_report shows, computed in one place (keeps print_report flat)."""
     crate = [s for s in sites if s[3] != "HEADDIM_RELATION"]
+    buf = [s for s in crate if s[4]]
     return {
         "total": len(sites),
-        "headdim": sum(1 for s in sites if s[3] == "HEADDIM_RELATION"),
+        "headdim": len(sites) - len(crate),
         "crate": len(crate),
         "partition": Counter(s[3] for s in crate).most_common(),
-        "buf_sites": sum(1 for s in crate if s[4]),
-        "buf_files": len({s[0] for s in crate if s[4]}),
+        "buf_sites": len(buf),
+        "buf_files": len({s[0] for s in buf}),
     }
 
 
