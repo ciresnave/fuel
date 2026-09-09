@@ -35,7 +35,7 @@
 //! `IndexSelect` the physical blocks named by the block table → dense
 //! SDPA (`MatMul` / softmax / `MatMul`) → variable-length `MaskedFill`.
 //! Every node is in the closed primitive basis, so it is a genuine
-//! decomposition, not a basis-gap self-return. See [`recipe`].
+//! decomposition, not a basis-gap self-return.
 //!
 //! The old claim confused two different things, and the distinction is
 //! the whole design point of this op:

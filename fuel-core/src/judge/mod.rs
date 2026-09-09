@@ -24,7 +24,7 @@
 //! Ships the types, the runner skeleton, and per-family probe
 //! coverage spanning the inference op surface in F32:
 //!
-//! - **Ops**: see [`PROFILED_OPS`] for the canonical list. Currently:
+//! - **Ops** — the canonical list, currently:
 //!   - dense linear algebra: [`OpKind::MatMul`]
 //!   - elementwise binary: Add / Sub / Mul / Div / Maximum / Minimum
 //!   - elementwise unary: Neg / Sqr / Sqrt / Exp / Log / Sin / Cos /
@@ -35,7 +35,7 @@
 //!   - parametric one-input: Affine / Clamp / PowI
 //!   - 28 OpKind variants total, 84 (op, size) cells per backend
 //!     class.
-//! - **Dtypes**: `{f32, f16, bf16}` (see [`PROFILED_DTYPES`]). The
+//! - **Dtypes**: `{f32, f16, bf16}`. The
 //!   dispatch key always carried a `dtype` axis
 //!   ([`ProfileEntry::dtype`]); the 2026-07-04 dtype slice made the
 //!   *runner* iterate it rather than hard-coding f32. Each profiled
@@ -72,7 +72,7 @@
 //! - convolutions: Conv2D / ConvTranspose2D.
 //! - quantized: QMatMul.
 //!
-//! Each of those is a separable add: extend [`PROFILED_OPS`], add a
+//! Each of those is a separable add: extend `PROFILED_OPS`, add a
 //! `size_plan` arm with a representative size ladder, add a
 //! `build_input_graph` arm that constructs the input graph.
 //!

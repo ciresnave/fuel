@@ -97,7 +97,7 @@ impl DeviceGroup {
     /// **Shard `i` is taken to live on device `i`** — the group's device list is
     /// the residency map, so `shards.len()` must not exceed [`size`](Self::size).
     /// Each shard is brought to the leader (staging through CPU when it must
-    /// cross vendors, see [`bring_to_leader`](Self::bring_to_leader)) and folded
+    /// cross vendors) and folded
     /// with `op`.
     pub fn all_reduce(&self, shards: &[Tensor], op: ReduceOp) -> Result<Tensor> {
         let shards = self.check_shards(shards, "all_reduce")?;

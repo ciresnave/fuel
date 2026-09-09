@@ -747,7 +747,7 @@ impl DeepSeek2Model {
     /// unbound after realize.
     ///
     /// Attention always goes through the **absorbed** (weight-absorption)
-    /// math — see [`Self::mla_attention_latent_kv`]'s doc for why: under
+    /// math, because under
     /// the full fixed-capacity read this path always performs (no slice to
     /// `cached_len + seq`), the non-absorbed form would re-run
     /// `kv_b_proj`'s up-projection over the *entire* `max_seq_len` capacity

@@ -1514,8 +1514,7 @@ impl DecodeSession {
     /// The full realized [`StorageCache`] from the first realize (every
     /// weight Const + the KV Arcs + the initial per-token data Consts).
     /// The CapturedRun capture-building step clones this cheaply
-    /// (Arc-clones only, see [`InferenceContext::cloned_persistent`]'s
-    /// exact pattern) and overwrites the per-token entries with fresh
+    /// (Arc-clones only) and overwrites the per-token entries with fresh
     /// FIXED-address Arcs before handing the merged cache to
     /// [`fuel_dispatch::pipelined::CapturedDecodeSession::capture`] as
     /// `inputs`.

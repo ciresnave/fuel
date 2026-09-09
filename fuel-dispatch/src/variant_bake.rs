@@ -100,7 +100,7 @@ std::thread_local! {
     static VARIANT_BAKES_TL: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// The current thread's cumulative variant-bake count (see [`VARIANT_BAKES_TL`]).
+/// The current thread's cumulative variant-bake count.
 /// Read it before and after an `optimize_graph`/realize call and diff to learn
 /// how many branches this pass collapsed to a fused variant winner — e.g. a
 /// BF16 CUDA decode step should bake one flash-decode arm per layer once the

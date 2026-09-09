@@ -13474,7 +13474,7 @@ impl PhiModel {
     /// re-planning. See the LlamaModel sibling for the full control-flow
     /// contract; the Phi version differs only in the model body it
     /// builds (parallel attn+MLP, LayerNorm, partial RoPE, projection
-    /// biases, optional output bias — see [`Self::apply_layer_with_kv_writes`]).
+    /// biases, optional output bias).
     ///
     /// Byte-identical to the D1 cached path ([`Self::forward_with_kv_context`])
     /// on the same prefix (same plan → same kernels). Bumps

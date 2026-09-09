@@ -1307,7 +1307,7 @@ pub static CPU_CAST_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// `RMS_NORM_LAST_DIM_BACKWARD` / `REDUCE_MAX_TO_BACKWARD` / `POWI_BACKWARD`,
 /// key `[T, T, T]`). Each declares a dtype-agnostic BASE `entry_point`
 /// `…::<op>_cpu` **plus a per-input `dtypes: [F32, F64, BF16, F16]` list**, so
-/// [`crate::fkc::lower::lower_fused`] **dtype-fans** it (§3.4, see [`fep!`]) into
+/// [`crate::fkc::lower::lower_fused`] **dtype-fans** it (§3.4, via the `fep!` macro) into
 /// four per-dtype impls: per fanned `dt` it resolves `<base>_<dt>`
 /// (`…::<op>_cpu_f32`, `…_f64`, `…_bf16`, `…_f16`) against this table (8 ops ×
 /// 4 dtypes = 32 rows). Each row binds the `<op>_<dt>_cpu_wrapper` — the exact
@@ -1446,7 +1446,7 @@ pub static CPU_FUSED_NORM_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// - **FUSED_LINEAR** — a multi-dtype section (`a`/`b`/`bias`
 ///   `dtypes: [F32, F64, BF16, F16]`) on a dtype-agnostic BASE `entry_point`
 ///   `…::fused_linear_cpu`, so [`crate::fkc::lower::lower_fused`] **dtype-fans**
-///   it (§3.4, see [`fep!`]) into 4 per-dtype impls resolving
+///   it (§3.4, via the `fep!` macro) into 4 per-dtype impls resolving
 ///   `…::fused_linear_cpu_<dt>`, key `[T, T, T, T]` (a, b, bias +
 ///   `passthrough(a)` out).
 /// - **QMATMUL** — a NON-fanning section (all operands single-dtype: `a` F32,
@@ -1515,7 +1515,7 @@ pub static CPU_FUSED_LINEAR_QUANT_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// All SIX `fused_op` sections migrate here; each declares a dtype-agnostic
 /// BASE `entry_point` `…::<op>_cpu` **plus a per-input `dtypes: [F32, F64, BF16,
 /// F16]` list**, so [`crate::fkc::lower::lower_fused`] **dtype-fans** it (§3.4,
-/// see [`fep!`]) into four per-dtype impls resolving `<base>_<dt>` — one row per
+/// via the `fep!` macro) into four per-dtype impls resolving `<base>_<dt>` — one row per
 /// (op, dtype) below (6 ops × 4 dtypes = 24 rows). The naming skew is the norm
 /// family's: the FANNED symbol is `<op>_cpu_<dt>` (base `…_cpu` + `_<dt>`) while
 /// the wrapper fn is `<op>_<dt>_cpu_wrapper`.

@@ -124,15 +124,15 @@ std::thread_local! {
 }
 
 /// Read the process-global `optimize_graph` invocation count (D2a
-/// telemetry — see [`OPTIMIZE_CALLS`]). Monotonically non-decreasing across
+/// telemetry). Monotonically non-decreasing across
 /// the process lifetime; process-wide, so it is polluted by concurrent test
 /// threads — use [`optimize_calls_thread_local`] for a per-thread delta.
 pub fn optimize_calls() -> usize {
     OPTIMIZE_CALLS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Read THIS thread's `optimize_graph` invocation count (see
-/// [`OPTIMIZE_CALLS_TL`]). Robust for a single-threaded realize sequence
+/// Read THIS thread's `optimize_graph` invocation count.
+/// Robust for a single-threaded realize sequence
 /// even while other threads optimize concurrently — the D2a optimize-skip
 /// assertion measures a delta on this reader.
 pub fn optimize_calls_thread_local() -> usize {
