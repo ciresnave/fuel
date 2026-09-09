@@ -196,7 +196,13 @@ impl ClipTextModel {
         let seq = tokens.len();
         let batch = 1;
         assert!(seq > 0);
-        assert!(seq <= cfg.max_position_embeddings);
+        // GAP-308 (CONFIG_FIELD): input length vs config limit — reject, do not assert.
+        if seq > cfg.max_position_embeddings {
+            return Err(fuel_core::Error::Msg(format!(
+                "ClipTextModel: seq {seq} > max_position_embeddings {}",
+                cfg.max_position_embeddings,
+            )));
+        }
 
         // Anchor on a single embedding tensor.
         let token_embeds = Tensor::embed_tokens(
@@ -289,7 +295,13 @@ impl ClipTextModel {
         let seq = tokens.len();
         let batch = 1;
         assert!(seq > 0);
-        assert!(seq <= cfg.max_position_embeddings);
+        // GAP-308 (CONFIG_FIELD): input length vs config limit — reject, do not assert.
+        if seq > cfg.max_position_embeddings {
+            return Err(fuel_core::Error::Msg(format!(
+                "ClipTextModel: seq {seq} > max_position_embeddings {}",
+                cfg.max_position_embeddings,
+            )));
+        }
         assert!(!layer_ids.is_empty(), "layer_ids must not be empty");
         for w in layer_ids.windows(2) {
             assert!(w[0] < w[1], "layer_ids must be strictly increasing");
@@ -900,6 +912,38 @@ mod tests {
                 fc2_bias: vec_of(embed, &mut **nb),
             })
             .collect()
+    }
+
+    /// GAP-308 born-red: a sequence longer than `max_position_embeddings` is
+    /// REJECTED with a typed error, not a panic. Asserts the error MESSAGE (the
+    /// `max_position_embeddings` fragment), not `is_err()`: the decline returns
+    /// before any graph op, so with it removed `forward` would return an `Ok`
+    /// handle to an invalid unrealized graph and an `is_err()`-only test would
+    /// pass on it.
+    #[test]
+    fn text_forward_declines_seq_over_max_position_embeddings() {
+        let mut cfg = tiny_text_cfg();
+        cfg.max_position_embeddings = 4;
+        let model = ClipTextModel {
+            config: cfg.clone(),
+            weights: tiny_text_weights(&cfg),
+        };
+        // POSITIVE CONTROL: seq <= max must run, else the Err below could be a broken fixture.
+        let short: Vec<u32> = (0..3).collect();
+        model
+            .forward(&short)
+            .expect("control: seq <= max_position_embeddings must run");
+        let long: Vec<u32> = (0..8).collect(); // seq = 8 > 4
+        let err = model.forward(&long).unwrap_err();
+        assert!(
+            format!("{err}").contains("max_position_embeddings"),
+            "forward must decline seq > max_position_embeddings; got: {err}"
+        );
+        let err2 = model.forward_intermediate_layers(&long, &[0]).unwrap_err();
+        assert!(
+            format!("{err2}").contains("max_position_embeddings"),
+            "forward_intermediate_layers must decline too; got: {err2}"
+        );
     }
 
     fn tiny_text_cfg() -> ClipTextConfig {
