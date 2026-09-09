@@ -313,10 +313,13 @@ pub fn check_v2_flag_coherence(sidecar: &FDXSidecar) -> R {
 /// sub-byte dtype (§3.4).
 pub fn check_v3_honesty_dtype(sidecar: &FDXSidecar, base: &DLTensor) -> R {
     let f = sidecar.flags;
-    let meaning_bearing = flag_set(f, FDX_FLAG_HAS_DTYPE_EXT)
-        || flag_set(f, FDX_FLAG_HAS_QUANT)
-        || flag_set(f, FDX_FLAG_MEANING_REQUIRES_EXT)
-        || flag_set(f, FDX_FLAG_HAS_GATHER);
+    // Meaning-bearing = MEANING_REQUIRES_EXT itself, or any flag in the
+    // meaning-bearing subset. FDX_FLAG_MEANING_BEARING is the single source of
+    // truth shared with check_v22_meaning_bearing_implies_ext, so the honesty check
+    // and the MEANING_REQUIRES_EXT implication cannot drift apart when a future
+    // meaning-bearing flag is added.
+    let meaning_bearing = flag_set(f, FDX_FLAG_MEANING_REQUIRES_EXT)
+        || FDX_FLAG_MEANING_BEARING.iter().any(|&m| flag_set(f, m));
     if !meaning_bearing {
         return Ok(());
     }
@@ -554,10 +557,10 @@ pub fn check_v6_scale_shape(sidecar: &FDXSidecar, base: &DLTensor, buffers: &[FD
             // derive the tiled dim from base.shape; convert packed bytes → logical
             // elements when the payload is sub-byte (the §13.5a NF4 case).
             let mut dim = base_axis_len(base, axis);
-            if let Some(bw) = subbyte_bits {
-                if base.ndim == 1 {
-                    dim = dim.saturating_mul(8) / bw;
-                }
+            if let Some(bw) = subbyte_bits
+                && base.ndim == 1
+            {
+                dim = dim.saturating_mul(8) / bw;
             }
             let blocks = dim.div_ceil(bs);
             expected = expected.saturating_mul(blocks);
@@ -918,14 +921,14 @@ pub fn check_v11_explicit_strides(base: &DLTensor) -> R {
 /// `required_alignment`).
 pub fn check_v12_alignment_boundary_b(base: &DLTensor, buffers: &[FDXBufferRef]) -> R {
     const ALIGN: usize = 256;
-    if !base.data.is_null() && (base.data as usize) % ALIGN != 0 {
+    if !base.data.is_null() && !(base.data as usize).is_multiple_of(ALIGN) {
         return Err(FdxValidationError::Misaligned {
             detail: "base DLTensor.data",
             addr: base.data as usize,
         });
     }
     for (i, b) in buffers.iter().enumerate() {
-        if !b.data.is_null() && (b.data as usize) % ALIGN != 0 {
+        if !b.data.is_null() && !(b.data as usize).is_multiple_of(ALIGN) {
             return Err(FdxValidationError::Misaligned {
                 detail: if i == 0 {
                     "buffer 0 data"
@@ -1402,6 +1405,43 @@ fn whole_byte_width(code: u16) -> Option<u64> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// V22 — meaning-bearing ⇒ MEANING_REQUIRES_EXT (§8.22; generalises V19's clause)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// V22 (§8.22): every flag in the meaning-bearing set (`meaning_bearing`, which
+/// `validate` passes as `FDX_FLAG_MEANING_BEARING`) implies
+/// `FDX_FLAG_MEANING_REQUIRES_EXT`:
+/// if the base bytes are not a self-sufficient standard tensor, the sidecar must
+/// say so via the umbrella flag, so that a sidecar-aware reader meeting a flag it
+/// does not understand is forced by §9.2 to error rather than silently misread
+/// the base.
+///
+/// This generalises the `HAS_GATHER ⇒ MEANING_REQUIRES_EXT` clause of V19
+/// (§8.19) to the whole set; V19 remains the gather-specific specialization (it
+/// also pins the pool base's dtype/strides/byte-length). For v1 every member
+/// already implies the flag — `HAS_GATHER` via V19, `HAS_DTYPE_EXT`/`HAS_QUANT`
+/// via the V3 honesty stand-in that forces an opaque `{kDLUInt,8,1}` base (an
+/// opaque byte base is by construction not a usable standard tensor) — so the
+/// arm's job is to keep that true for a FUTURE meaning-bearing flag: append it to
+/// `FDX_FLAG_MEANING_BEARING` and the implication holds with no edit here. The
+/// set is a parameter so the arm stays testable with a synthetic member once
+/// v1's (currently empty) violating population changes.
+pub fn check_v22_meaning_bearing_implies_ext(sidecar: &FDXSidecar, meaning_bearing: &[u32]) -> R {
+    let f = sidecar.flags;
+    if flag_set(f, FDX_FLAG_MEANING_REQUIRES_EXT) {
+        return Ok(());
+    }
+    for &m in meaning_bearing {
+        if flag_set(f, m) {
+            return Err(FdxValidationError::FlagFieldIncoherent {
+                detail: "a meaning-bearing flag is set without MEANING_REQUIRES_EXT",
+            });
+        }
+    }
+    Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // V20 — pool backing (§8.20, §6.9.4)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1714,6 +1754,7 @@ pub fn validate(sidecar: &FDXSidecar, base: &DLTensor, buffers: &[FDXBufferRef])
     // Gather build arms.
     check_v18_gather_coherence(sidecar)?;
     check_v19_gather_meaning_and_honesty(sidecar, base)?;
+    check_v22_meaning_bearing_implies_ext(sidecar, FDX_FLAG_MEANING_BEARING)?;
     check_v20_pool_backing(sidecar, buffers)?;
     check_v21a_gather_buffers(sidecar, buffers)?;
     check_v21e_logical_extents(sidecar)?;
