@@ -1,7 +1,18 @@
 # Spec B — Candidate-kernel ingestion service (verify → adopt/reject)
 
 **Date:** 2026-07-13
-**Status:** design (approved in brainstorm; pending implementation plan)
+**Status:** design (approved in brainstorm) — ⚠️ **IMPLEMENTED, and this line said otherwise
+for eight weeks with nothing anywhere contradicting it.** Measured at `16577dc1`:
+`fuel-dispatch/src/jit_ingest.rs` is **2,808 non-comment lines** and its own header reads
+*“Candidate-kernel ingestion (Spec B)”*; `CandidateKernel` and `IngestOutcome` are live.
+
+> ⚠️ **DISCHARGED 2026-09-09: THE STATUS LINE ABOVE HAS NOW BEEN CORRECTED.**
+> **The wording it replaced:** *“design (approved in brainstorm; pending implementation
+> plan)”*. ⚠️ **No correction existed anywhere in this file** — unlike the ten
+> `feat/kernel-contracts-dlpack` documents, which at least carried an accurate notice
+> below the falsehood. **An UNCORRECTED falsehood in an authority position is invisible to
+> any sweep built to find corrections**, which is why the guard below reads the field
+> directly rather than looking for retraction vocabulary. See GAP-283.
 **Program:** JIT auto-trigger (the "Fuel auto-synthesizes / auto-adopts kernels" end-state)
 **This is Spec B of a decomposition.** Spec A (JIT region discovery + synthesis request) and
 Spec 2 (background scheduling of A + proactive re-optimize + in-use-safe trimming) are separate,

@@ -1,11 +1,18 @@
 # Runtime fused-op registration — adopting a synthesized kernel (design)
 
-**Status:** design, 2026-06-20. Branch `feat/kernel-contracts-dlpack`.
+**Status:** design, 2026-06-20 — ⚠️ **subject LIVE on `main`; the branch this line used to name
+(`feat/kernel-contracts-dlpack`) does not exist on origin.** A specification that calls itself an
+unmerged draft tells the reader not to rely on it, and Fuel relies on this one today.
 **Consumes:** [fkc-fusion-patterns.md](fkc-fusion-patterns.md) §3 (the `PatternNode` grammar),
 §3a (matching semantics), §5 (JIT-on-request). **Builds on:** the now-live declarative
 fusion engine (`PatternKind::Declarative` → `crate::jit::match_region`,
 [fuel-graph/src/opt.rs](../../fuel-graph/src/opt.rs), commit `1ed5713c`).
 
+> ⚠️ **DISCHARGED 2026-09-09: THE STATUS LINE ABOVE HAS NOW BEEN CORRECTED.**
+> Kept as the RECORD of when the defect was found, not as a live claim. It stood
+> because it ANNOTATED the falsehood instead of correcting it, and a reader who
+> stops at the Status field never reached this paragraph. See GAP-283.
+>
 > ⚠️ **AMENDED 2026-08-20 — THE BRANCH IN THE STATUS LINE DOES NOT EXIST, AND
 > THIS SPEC'S SUBJECT IS LIVE ON `main`.** `feat/kernel-contracts-dlpack` is not
 > on origin. **A specification that calls itself an unmerged draft is telling the
