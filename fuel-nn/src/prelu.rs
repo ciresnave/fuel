@@ -206,7 +206,8 @@ mod tests {
             vec![-2.0_f32, -1.0, 0.0, 1.0, 2.0],
             Shape::from_dims(&[5]),
             &device,
-        );
+        )
+        .unwrap();
         let y = act.forward(&x).unwrap().realize_f32();
         assert_eq!(y.len(), 5);
         let expected = [-0.2_f32, -0.1, 0.0, 1.0, 2.0];
@@ -230,7 +231,8 @@ mod tests {
             vec![-4.0_f32, -2.0, 0.0, -3.0, 1.0, -1.0],
             Shape::from_dims(&[1, 2, 3]),
             &device,
-        );
+        )
+        .unwrap();
         let y = act.forward(&x).unwrap().realize_f32();
         let expected = [-1.0_f32, -0.5, 0.0, -1.5, 1.0, -0.5];
         assert_eq!(y.len(), expected.len());
@@ -248,7 +250,8 @@ mod tests {
             vec![0.0_f32, 0.5, 1.0, 2.5, 100.0],
             Shape::from_dims(&[5]),
             &device,
-        );
+        )
+        .unwrap();
         let y = act.forward(&x).unwrap().realize_f32();
         let expected = [0.0_f32, 0.5, 1.0, 2.5, 100.0];
         for (got, want) in y.iter().zip(expected.iter()) {
@@ -275,7 +278,8 @@ mod tests {
             vec![1.0_f32, 2.0, 3.0, 4.0],
             Shape::from_dims(&[4]),
             &device,
-        );
+        )
+        .unwrap();
         let err = act.forward(&x).unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("rank >= 2"), "expected rank-error, got {msg}",);

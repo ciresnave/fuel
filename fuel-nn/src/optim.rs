@@ -623,7 +623,8 @@ mod tests {
             first_data.clone(),
             first_var.shape().clone(),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let mut map: HashMap<String, Tensor> = HashMap::new();
         for (i, (var, data)) in vars.iter().enumerate() {
             let t = if i == 0 {
@@ -639,7 +640,8 @@ mod tests {
     #[test]
     fn lazy_var_round_trip() {
         let v = Var::new("w", Shape::from_dims(&[3]), vec![1.0, 2.0, 3.0]).unwrap();
-        let anchor = Tensor::from_f32(vec![0.0_f32; 3], Shape::from_dims(&[3]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32; 3], Shape::from_dims(&[3]), &Device::cpu()).unwrap();
         let t = v.tensor(&anchor);
         let host = t.realize_f32();
         assert_eq!(host, vec![1.0, 2.0, 3.0]);
@@ -774,7 +776,8 @@ mod tests {
         let cfg = SgdConfig::new(0.1);
         let mut opt = Sgd::new(vec![w.clone()], cfg).unwrap();
 
-        let anchor = Tensor::from_f32(vec![0.0_f32; 2], Shape::from_dims(&[2]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32; 2], Shape::from_dims(&[2]), &Device::cpu()).unwrap();
         let target = anchor.const_f32_like(vec![1.0_f32, 1.0], Shape::from_dims(&[2]))?;
         let w_t = w.tensor(&anchor);
         let diff = w_t.sub(&target).unwrap();

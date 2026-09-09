@@ -397,7 +397,7 @@ mod tests {
         let expected =
             gru_layer_reference(&x_data, &h0, b, t, d_in, d_h, &w_ih, &w_hh, &b_ih, &b_hh);
 
-        let x = Tensor::from_f32(x_data, Shape::from_dims(&[b, t, d_in]), &Device::cpu());
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[b, t, d_in]), &Device::cpu()).unwrap();
         let stack = GruStack {
             layers: vec![GruCellWeights {
                 w_ih: Arc::<[f32]>::from(w_ih),
@@ -453,7 +453,7 @@ mod tests {
             &after_l1, &h0_l2, b, t, d_in2, d_h2, &w_ih2, &w_hh2, &b_ih2, &b_hh2,
         );
 
-        let x = Tensor::from_f32(x_data, Shape::from_dims(&[b, t, d_in1]), &Device::cpu());
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[b, t, d_in1]), &Device::cpu()).unwrap();
         let stack = GruStack {
             layers: vec![
                 GruCellWeights {
@@ -505,7 +505,7 @@ mod tests {
         let b_hh: Vec<f32> = vec![0.0_f32; three_d];
 
         let h0_data: Vec<f32> = vec![0.7_f32, -0.2];
-        let x = Tensor::from_f32(x_data, Shape::from_dims(&[b, t, d]), &Device::cpu());
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[b, t, d]), &Device::cpu()).unwrap();
         let h0 = x.const_f32_like(
             Arc::<[f32]>::from(h0_data.clone()),
             Shape::from_dims(&[1, b, d]),
@@ -568,14 +568,16 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[b, t, d_in]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let xb = Tensor::from_f32(
             (0..(b * t * d_in))
                 .map(|i| (i as f32) * 0.05 + 0.3)
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[b, t, d_in]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let oa = stack.forward(&xa).unwrap().realize_f32();
         let ob = stack.forward(&xb).unwrap().realize_f32();
         let mut max_diff = 0.0_f32;

@@ -233,13 +233,15 @@ mod tests {
             x_data.clone(),
             Shape::from_dims(&[seq, in_features]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let y_lora = lora.forward(&x).unwrap();
         let x2 = Tensor::from_f32(
             x_data,
             Shape::from_dims(&[seq, in_features]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let y_plain = plain.forward(&x2).unwrap();
 
         assert_eq!(y_lora.shape().dims(), &[seq, out_features]);
@@ -305,7 +307,8 @@ mod tests {
             x_data,
             Shape::from_dims(&[seq, in_features]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let y = lora.forward(&x).unwrap();
         assert_eq!(y.shape().dims(), &[seq, out_features]);
         let got = y.realize_f32();

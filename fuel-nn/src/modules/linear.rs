@@ -233,7 +233,8 @@ mod tests {
             x_data,
             Shape::from_dims(&[seq, in_features]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let y = layer.forward(&x).unwrap();
         assert_eq!(y.shape().dims(), &[seq, out_features]);
         let got = y.realize_f32();
@@ -266,7 +267,8 @@ mod tests {
             x_data,
             Shape::from_dims(&[seq, in_features]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let y = layer.forward(&x).unwrap();
         assert_eq!(y.shape().dims(), &[seq, out_features]);
         let got = y.realize_f32();
@@ -293,7 +295,8 @@ mod tests {
             x_data.clone(),
             Shape::from_dims(&[seq, in_features]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let y = layer.forward(&x).unwrap();
         assert_eq!(y.shape().dims(), &[seq, out_features]);
         let got = y.realize_f32();
@@ -302,7 +305,8 @@ mod tests {
             x_data,
             Shape::from_dims(&[seq, in_features]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let direct = weight
             .apply_linear(&x2, in_features, out_features)
             .unwrap()
@@ -358,7 +362,8 @@ mod tests {
             x_data,
             Shape::from_dims(&[seq, in_features]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let y = layer.forward(&x).unwrap();
         assert_eq!(y.shape().dims(), &[seq, out_features]);
         let got = y.realize_f32();

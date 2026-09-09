@@ -473,7 +473,7 @@ mod tests {
         .unwrap();
 
         let x_data: Vec<f32> = ramp_f32(n * hidden, 0.07, -0.4);
-        let xs = Tensor::from_f32(x_data, Shape::from_dims(&[n, hidden]), &Device::cpu());
+        let xs = Tensor::from_f32(x_data, Shape::from_dims(&[n, hidden]), &Device::cpu()).unwrap();
         let (idx, w_out) = router.route(&xs).unwrap();
         assert_eq!(idx.shape().dims(), &[n, top_k]);
         assert_eq!(w_out.shape().dims(), &[n, top_k]);
@@ -534,7 +534,7 @@ mod tests {
         let layer = MoeLayer::new(router, experts).unwrap();
 
         let x_data: Vec<f32> = ramp_f32(n * hidden, 0.05, -0.2);
-        let xs = Tensor::from_f32(x_data, Shape::from_dims(&[n, hidden]), &Device::cpu());
+        let xs = Tensor::from_f32(x_data, Shape::from_dims(&[n, hidden]), &Device::cpu()).unwrap();
         let y = layer.forward(&xs).unwrap();
         assert_eq!(y.shape().dims(), &[n, hidden]);
         let got = y.realize_f32();
@@ -579,8 +579,10 @@ mod tests {
             x_data.clone(),
             Shape::from_dims(&[n, hidden]),
             &Device::cpu(),
-        );
-        let xs_dense = Tensor::from_f32(x_data, Shape::from_dims(&[n, hidden]), &Device::cpu());
+        )
+        .unwrap();
+        let xs_dense =
+            Tensor::from_f32(x_data, Shape::from_dims(&[n, hidden]), &Device::cpu()).unwrap();
 
         let sparse = layer.forward(&xs_sparse).unwrap().realize_f32();
         let dense = layer.forward_dense(&xs_dense).unwrap().realize_f32();
@@ -626,12 +628,14 @@ mod tests {
             x_data.clone(),
             Shape::from_dims(&[batch, seq, hidden]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let xs_d = Tensor::from_f32(
             x_data,
             Shape::from_dims(&[batch, seq, hidden]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
 
         let sparse = layer.forward(&xs_s).unwrap();
         assert_eq!(sparse.shape().dims(), &[batch, seq, hidden]);
@@ -681,7 +685,8 @@ mod tests {
             ramp_f32(2 * hidden, 0.05, -0.1),
             Shape::from_dims(&[2, hidden]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let err = layer.forward(&xs).unwrap_err();
         let msg = format!("{err}");
         assert!(
@@ -712,8 +717,9 @@ mod tests {
             x_data.clone(),
             Shape::from_dims(&[n, hidden]),
             &Device::cpu(),
-        );
-        let xs2 = Tensor::from_f32(x_data, Shape::from_dims(&[n, hidden]), &Device::cpu());
+        )
+        .unwrap();
+        let xs2 = Tensor::from_f32(x_data, Shape::from_dims(&[n, hidden]), &Device::cpu()).unwrap();
 
         let layer_out = layer.forward(&xs1).unwrap().realize_f32();
         let direct_out = expert.forward(&xs2).unwrap().realize_f32();
@@ -750,7 +756,8 @@ mod tests {
             x_data.clone(),
             Shape::from_dims(&[n, hidden]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let layer_out = layer.forward(&xs_layer).unwrap().realize_f32();
 
         let mut expected = vec![0.0_f32; n * hidden];
@@ -759,7 +766,8 @@ mod tests {
                 x_data.clone(),
                 Shape::from_dims(&[n, hidden]),
                 &Device::cpu(),
-            );
+            )
+            .unwrap();
             let out = e.forward(&xs_e).unwrap().realize_f32();
             for (i, v) in out.iter().enumerate() {
                 expected[i] += v;
