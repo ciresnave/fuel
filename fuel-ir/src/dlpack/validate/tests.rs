@@ -1660,6 +1660,14 @@ fn validate_pass_sub_byte_sidecar() {
     sc.dtype_ext.logical_dtype = FDX_DTYPE_I4;
     sc.dtype_ext.bit_width = 4;
     sc.dtype_ext.packing = FDX_PACKING_DENSE_SUBBYTE;
+    // `lanes: 1` is what the field's own doc calls a scalar dtype. ⚠️ IT CHANGES
+    // NO ASSERTION TODAY -- `validate()` never reads `dtype_ext.lanes` (measured:
+    // 0 reads in validate.rs; control: it reads `logical_dtype` and `bit_width`
+    // there). It is set so the fixture MATCHES ITS NAME, because a fixture named
+    // coherent is what the next author copies as the template for a well-formed
+    // sub-byte sidecar. See GAP-286: the field having no validator arm is a
+    // separate defect and is NOT fixed here.
+    sc.dtype_ext.lanes = 1;
     sc.buffers_count = 1;
     let mut sh = [0i64; 1];
     let mut st = [0i64; 1];
@@ -1679,6 +1687,7 @@ fn validate_rejects_incoherent_sub_byte() {
     sc.dtype_ext.logical_dtype = FDX_DTYPE_I4;
     sc.dtype_ext.bit_width = 0;
     sc.dtype_ext.packing = FDX_PACKING_DENSE_SUBBYTE;
+    sc.dtype_ext.lanes = 1;
     sc.buffers_count = 1;
     let mut sh = [0i64; 1];
     let mut st = [0i64; 1];
