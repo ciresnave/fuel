@@ -132,37 +132,37 @@ const DEAD_ANCHOR_BASELINE: &[(&str, &str)] = &[
     ),
 ];
 
-/// Anchors allowed to exceed [`LOCATES_MAX`] output lines. **May only shrink.**
-/// HISTORICAL - GAP-303 WAS THE ONLY KIND-(b) ENTRY AND IT IS NOW DISCHARGED.
-///
-/// Recorded here rather than deleted because kind (b) is RARE - measured 5 (a) to
-/// 1 (b) across 49 checkable anchors - and a taxonomy whose second branch has no
-/// member is one revision away from being deleted as noise. A discharged example,
-/// clearly marked, teaches the distinction better than no example, and it is the
-/// only thing here that can show the GOOD outcome.
-///
-/// DISPOSITION, on its face rather than in the story: measured at `origin/main`
-/// `1b8d3b1e`; the anchor died in `fb16de3d` (#150), which landed part 1 of the
-/// deferral and deleted the doc comment the row quoted; the row was RE-CITED in
-/// #177 onto the successor anchor `GAP-303 SCOPE LINE`, which GAP-306 already
-/// names and which THIS GATE NOW EXECUTES ON EVERY RUN. So the note does not
-/// stand alone - the thing it points at is checked, and if the successor dies
-/// the gate says so.
-///
-/// The original finding, kept verbatim because it is the record of how a sixth
-/// mechanism was found:
-/// ⚠️⚠️ A SIXTH MECHANISM, AND IT IS NOT ROT: THE ANCHOR DIED BECAUSE THE DEFERRAL
-/// WAS PARTIALLY DISCHARGED. `fb16de3d` (#150) landed GAP-303 part 1 and, in doing so,
-/// deleted the very doc comment the row anchors on. The other five deaths left their
-/// subject alive and untouched; this one is the FIX arriving.
-///
-/// The row's Status still reads "ships single-carry by its own admission
-/// (`Single carry tensor in v1`)", and that admission is gone from the source. Whether
-/// the CONCLUSION survives is not this gate's call and is NOT asserted here: GAP-306
-/// says it does, by a different mechanism (`NodeHandle::scan` pins `n_carries: 1`, so no
-/// public builder can construct a multi-carry Scan). ⚠️ The cited EVIDENCE is dead; that
-/// is not the same as the claim being false, and this entry does not say it is.
+// HISTORICAL - GAP-303 WAS THE ONLY KIND-(b) ENTRY AND IT IS NOW DISCHARGED.
+//
+// Recorded here rather than deleted because kind (b) is RARE - measured 5 (a) to
+// 1 (b) across 49 checkable anchors - and a taxonomy whose second branch has no
+// member is one revision away from being deleted as noise. A discharged example,
+// clearly marked, teaches the distinction better than no example, and it is the
+// only thing here that can show the GOOD outcome.
+//
+// DISPOSITION, on its face rather than in the story: measured at `origin/main`
+// `1b8d3b1e`; the anchor died in `fb16de3d` (#150), which landed part 1 of the
+// deferral and deleted the doc comment the row quoted; the row was RE-CITED in
+// #177 onto the successor anchor `GAP-303 SCOPE LINE`, which GAP-306 already
+// names and which THIS GATE NOW EXECUTES ON EVERY RUN. So the note does not
+// stand alone - the thing it points at is checked, and if the successor dies
+// the gate says so.
+//
+// The original finding, kept verbatim because it is the record of how a sixth
+// mechanism was found:
+// ⚠️⚠️ A SIXTH MECHANISM, AND IT IS NOT ROT: THE ANCHOR DIED BECAUSE THE DEFERRAL
+// WAS PARTIALLY DISCHARGED. `fb16de3d` (#150) landed GAP-303 part 1 and, in doing so,
+// deleted the very doc comment the row anchors on. The other five deaths left their
+// subject alive and untouched; this one is the FIX arriving.
+//
+// The row's Status still reads "ships single-carry by its own admission
+// (`Single carry tensor in v1`)", and that admission is gone from the source. Whether
+// the CONCLUSION survives is not this gate's call and is NOT asserted here: GAP-306
+// says it does, by a different mechanism (`NodeHandle::scan` pins `n_carries: 1`, so no
+// public builder can construct a multi-carry Scan). ⚠️ The cited EVIDENCE is dead; that
+// is not the same as the claim being false, and this entry does not say it is.
 
+/// Anchors allowed to exceed [`LOCATES_MAX`] output lines. **May only shrink.**
 const SPRAWLING_ANCHOR_CEILING: usize = 6;
 
 /// Above this an anchor has the form of a citation and none of its function — a reader
