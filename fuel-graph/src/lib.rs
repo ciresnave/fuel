@@ -4124,31 +4124,51 @@ impl NodeHandle {
     /// const_*_like is called). For cross-device const construction,
     /// build a fresh graph with [`NodeHandle::from_f32`] and link via
     /// [`Op::Move`] / [`Op::Copy`].
-    pub fn const_f32_like(&self, data: impl Into<Arc<[f32]>>, shape: impl Into<Shape>) -> Self {
+    pub fn const_f32_like(
+        &self,
+        data: impl Into<Arc<[f32]>>,
+        shape: impl Into<Shape>,
+    ) -> Result<Self, fuel_ir::Error> {
         let v: Arc<[f32]> = data.into();
         self.const_like_host_buffer(fuel_ir::HostBuffer::F32(v.to_vec()), DType::F32, shape)
     }
 
     /// Build a second `Const f64` tensor on the same graph as `self`.
-    pub fn const_f64_like(&self, data: impl Into<Arc<[f64]>>, shape: impl Into<Shape>) -> Self {
+    pub fn const_f64_like(
+        &self,
+        data: impl Into<Arc<[f64]>>,
+        shape: impl Into<Shape>,
+    ) -> Result<Self, fuel_ir::Error> {
         let v: Arc<[f64]> = data.into();
         self.const_like_host_buffer(fuel_ir::HostBuffer::F64(v.to_vec()), DType::F64, shape)
     }
 
     /// Build a second `Const bf16` tensor on the same graph as `self`.
-    pub fn const_bf16_like(&self, data: impl Into<Arc<[bf16]>>, shape: impl Into<Shape>) -> Self {
+    pub fn const_bf16_like(
+        &self,
+        data: impl Into<Arc<[bf16]>>,
+        shape: impl Into<Shape>,
+    ) -> Result<Self, fuel_ir::Error> {
         let v: Arc<[bf16]> = data.into();
         self.const_like_host_buffer(fuel_ir::HostBuffer::BF16(v.to_vec()), DType::BF16, shape)
     }
 
     /// Build a second `Const f16` tensor on the same graph as `self`.
-    pub fn const_f16_like(&self, data: impl Into<Arc<[f16]>>, shape: impl Into<Shape>) -> Self {
+    pub fn const_f16_like(
+        &self,
+        data: impl Into<Arc<[f16]>>,
+        shape: impl Into<Shape>,
+    ) -> Result<Self, fuel_ir::Error> {
         let v: Arc<[f16]> = data.into();
         self.const_like_host_buffer(fuel_ir::HostBuffer::F16(v.to_vec()), DType::F16, shape)
     }
 
     /// Build a second `Const u32` (index) tensor on the same graph as `self`.
-    pub fn const_u32_like(&self, data: impl Into<Arc<[u32]>>, shape: impl Into<Shape>) -> Self {
+    pub fn const_u32_like(
+        &self,
+        data: impl Into<Arc<[u32]>>,
+        shape: impl Into<Shape>,
+    ) -> Result<Self, fuel_ir::Error> {
         let v: Arc<[u32]> = data.into();
         self.const_like_host_buffer(fuel_ir::HostBuffer::U32(v.to_vec()), DType::U32, shape)
     }
@@ -4156,7 +4176,11 @@ impl NodeHandle {
     /// Build a sibling U8 `Const` on the same graph. Used by
     /// byte-stream inputs (e.g. NF4 quantized weights packed two
     /// codes per byte).
-    pub fn const_u8_like(&self, data: impl Into<Arc<[u8]>>, shape: impl Into<Shape>) -> Self {
+    pub fn const_u8_like(
+        &self,
+        data: impl Into<Arc<[u8]>>,
+        shape: impl Into<Shape>,
+    ) -> Result<Self, fuel_ir::Error> {
         let v: Arc<[u8]> = data.into();
         self.const_like_host_buffer(fuel_ir::HostBuffer::U8(v.to_vec()), DType::U8, shape)
     }
@@ -4164,7 +4188,11 @@ impl NodeHandle {
     /// Build a sibling I64 `Const` on the same graph. Used by
     /// integer-target ops (e.g. cross-entropy with class indices in
     /// PyTorch convention).
-    pub fn const_i64_like(&self, data: impl Into<Arc<[i64]>>, shape: impl Into<Shape>) -> Self {
+    pub fn const_i64_like(
+        &self,
+        data: impl Into<Arc<[i64]>>,
+        shape: impl Into<Shape>,
+    ) -> Result<Self, fuel_ir::Error> {
         let v: Arc<[i64]> = data.into();
         self.const_like_host_buffer(fuel_ir::HostBuffer::I64(v.to_vec()), DType::I64, shape)
     }
@@ -4179,19 +4207,28 @@ impl NodeHandle {
         buf: fuel_ir::HostBuffer,
         dtype: DType,
         shape: impl Into<Shape>,
-    ) -> Self {
+    ) -> Result<Self, fuel_ir::Error> {
         let shape = shape.into();
         let n = host_buffer_elem_count(&buf);
-        assert_eq!(
-            n,
-            shape.elem_count(),
-            "const_*_like: data length {n} does not match shape element count {}",
-            shape.elem_count(),
-        );
+        // GAP-003: was `assert_eq!`. The message is preserved VERBATIM -- gaps.md
+        // and CLAUDE.md both anchor on this prose, and a prose anchor is the one
+        // an identifier rename cannot reach.
+        if n != shape.elem_count() {
+            return Err(fuel_ir::Error::Msg(format!(
+                "const_*_like: data length {n} does not match shape element count {}",
+                shape.elem_count(),
+            )));
+        }
         let device = pick_device_from_graph(&self.graph);
+        // GAP-003: the sibling panic, converted with it -- the same pair
+        // `from_host_buffer_on` had, and the second anchor the row named.
         let backend_storage = device
             .storage_from_host_buffer_owned_dyn(buf)
-            .expect("NodeHandle::const_like: device.storage_from_host_buffer_owned_dyn failed");
+            .map_err(|e| {
+                fuel_ir::Error::Msg(format!(
+                    "NodeHandle::const_like: device.storage_from_host_buffer_owned_dyn failed: {e}"
+                ))
+            })?;
         let storage_arc = Arc::new(RwLock::new(Storage::from_dyn(backend_storage)));
         let id = {
             let mut g = self.graph.write().unwrap();
@@ -4204,10 +4241,10 @@ impl NodeHandle {
             g.set_storage(id, storage_arc);
             id
         };
-        Self {
+        Ok(Self {
             graph: self.graph.clone(),
             id,
-        }
+        })
     }
 
     /// Push a `Const` node on the same graph as `self` **without**
@@ -7667,8 +7704,18 @@ impl NodeHandle {
         let (cos, sin) = build_rope_tables(base, start_pos, seq, d);
         // Phase 7.5 G2: const_*_like derives the device from self's
         // graph internally — RoPE tables go on the same device as self.
-        let cos_t = self.const_f32_like(cos, Shape::from_dims(&[seq, d]));
-        let sin_t = self.const_f32_like(sin, Shape::from_dims(&[seq, d]));
+        // ⚠️ GAP-003 category 2, in production: the proof EXISTS but is NOT
+        // LOCAL -- `build_rope_tables` owns the length guarantee and its
+        // signature `-> (Vec<f32>, Vec<f32>)` does not carry it. So the message
+        // claims NO proof; it names where the guarantee lives. `rope` returns
+        // `NodeHandle` and already asserts on rank, so the error channel it
+        // would need is a signature change -- a different obligation. See #157.
+        let cos_t = self
+            .const_f32_like(cos, Shape::from_dims(&[seq, d]))
+            .expect("rope: build_rope_tables must return seq*d elements for [seq, d]");
+        let sin_t = self
+            .const_f32_like(sin, Shape::from_dims(&[seq, d]))
+            .expect("rope: build_rope_tables must return seq*d elements for [seq, d]");
         self.rope_with_tables(&cos_t, &sin_t)
     }
 
@@ -8134,13 +8181,21 @@ impl NodeHandle {
         // A scalar zero of q's dtype, broadcast to q's shape — comparisons require
         // matching shapes (no implicit broadcast in `binary_compare_op`).
         let zero = match q.dtype() {
-            DType::F32 => q.const_f32_like(vec![0.0f32], &[1]).broadcast_to(q.shape()),
-            DType::F64 => q.const_f64_like(vec![0.0f64], &[1]).broadcast_to(q.shape()),
+            DType::F32 => q
+                .const_f32_like(vec![0.0f32], &[1])
+                .expect("trunc: a 1-element vec with shape [1]")
+                .broadcast_to(q.shape()),
+            DType::F64 => q
+                .const_f64_like(vec![0.0f64], &[1])
+                .expect("trunc: a 1-element vec with shape [1]")
+                .broadcast_to(q.shape()),
             DType::BF16 => q
                 .const_bf16_like(vec![half::bf16::from_f32(0.0)], &[1])
+                .expect("trunc: a 1-element vec with shape [1]")
                 .broadcast_to(q.shape()),
             DType::F16 => q
                 .const_f16_like(vec![half::f16::from_f32(0.0)], &[1])
+                .expect("trunc: a 1-element vec with shape [1]")
                 .broadcast_to(q.shape()),
             // Integer/other dtypes are already whole: trunc is identity.
             _ => return q.clone(),
