@@ -191,6 +191,42 @@ fn tokenize(cmd: &str) -> Vec<String> {
 ///
 /// The command lives in a markdown code span, so the SPAN is parsed — prose apostrophes
 /// outside it cannot reach the tokenizer, which is what defeated the previous version.
+/// The first backtick span after an `anchor:` that carries a git-grep, classified.
+///
+/// ⚠️ A span mentioning `git grep` is not necessarily a COMMAND. GAP-270's recipe quotes
+/// the fragment `git grep -l` mid-sentence — no pattern — and running it yields `fatal: no
+/// pattern given`. That surfaced as INSTRUMENT FAILURE rather than as a dead anchor, which
+/// is the arm separation doing its job; the classification is fixed here so it is not
+/// raised at all. A checkable anchor carries a QUOTED PATTERN. Anything else is a recipe.
+enum AnchorSpan {
+    Cmd(String),
+    Recipe,
+    None,
+}
+
+fn first_anchor_span(rest: &str) -> AnchorSpan {
+    let mut cur = 0usize;
+    while let Some(b1) = rest[cur..].find('`') {
+        let s = cur + b1 + 1;
+        let Some(b2) = rest[s..].find('`') else {
+            return AnchorSpan::None;
+        };
+        let span = &rest[s..s + b2];
+        cur = s + b2 + 1;
+        if span.contains("git grep") {
+            return if span.contains('"') || span.contains('\'') {
+                AnchorSpan::Cmd(span.trim().to_string())
+            } else {
+                AnchorSpan::Recipe
+            };
+        }
+        if cur > 400 {
+            break;
+        }
+    }
+    AnchorSpan::None
+}
+
 fn anchors(gaps: &str) -> (Vec<(String, String)>, Vec<String>) {
     let mut cmds = Vec::new();
     let mut recipes = Vec::new();
@@ -209,36 +245,9 @@ fn anchors(gaps: &str) -> (Vec<(String, String)>, Vec<String>) {
         let mut from = 0usize;
         while let Some(a) = lower[from..].find("anchor:") {
             from += a + "anchor:".len();
-            let rest = &line[from..];
-            let mut cur = 0usize;
-            let mut got = false;
-            while let Some(b1) = rest[cur..].find('`') {
-                let s = cur + b1 + 1;
-                let Some(b2) = rest[s..].find('`') else { break };
-                let span = &rest[s..s + b2];
-                cur = s + b2 + 1;
-                // ⚠️ A span mentioning `git grep` is not necessarily a COMMAND. GAP-270's
-                // recipe quotes the fragment `git grep -l` mid-sentence — no pattern — and
-                // running it yields `fatal: no pattern given`. That surfaced as INSTRUMENT
-                // FAILURE rather than as a dead anchor, which is the arm separation doing
-                // its job; the classification is fixed here so it is not raised at all.
-                //
-                // A checkable anchor carries a QUOTED PATTERN. Anything else is a recipe.
-                if span.contains("git grep") {
-                    if span.contains('"') || span.contains('\'') {
-                        cmds.push((id.to_string(), span.trim().to_string()));
-                    } else {
-                        recipes.push(id.to_string());
-                    }
-                    got = true;
-                    break;
-                }
-                if cur > 400 {
-                    break;
-                }
-            }
-            if !got {
-                recipes.push(id.to_string());
+            match first_anchor_span(&line[from..]) {
+                AnchorSpan::Cmd(span) => cmds.push((id.to_string(), span)),
+                AnchorSpan::Recipe | AnchorSpan::None => recipes.push(id.to_string()),
             }
         }
     }
@@ -302,38 +311,21 @@ fn run_anchor(root: &Path, cmd: &str) -> Outcome {
     }
 }
 
-#[test]
-fn every_registry_anchor_still_resolves_and_still_locates() {
-    let root = repo_root();
-    let gaps = std::fs::read_to_string(root.join("docs/gaps.md"))
-        .expect("control: docs/gaps.md must be readable, or this test checks nothing");
-    let (found, recipes) = anchors(&gaps);
-
-    // ⚠️ The exclusion is PRINTED, per the architect's ruling: a green covering 48 of 79
-    // while reading as "anchors verified" is a coverage claim, not a result.
-    println!(
-        "checkable git-grep anchors: {}\n\
-         PROSE-RECIPE anchors UNCHECKABLE BY THIS GATE: {} {:?}",
-        found.len(),
-        recipes.len(),
-        recipes
-    );
-
-    // Non-vacuity: an extractor that stops matching passes everything below having examined
-    // nothing, and is indistinguishable from a registry of perfect anchors.
-    assert!(
-        found.len() >= 30,
-        "only {} checkable anchors extracted — the extractor is broken, not the registry. \
-         (An earlier version found 24 because it assumed single quotes; 23 of 48 are \
-         double-quoted.)",
-        found.len()
-    );
-
+/// Run every checkable anchor and bucket the outcomes. The assertions stay in the test;
+/// this is the computation only.
+fn run_anchors(
+    root: &Path,
+    found: &[(String, String)],
+) -> (
+    std::collections::BTreeMap<String, String>,
+    Vec<String>,
+    Vec<String>,
+) {
     let mut dead: std::collections::BTreeMap<String, String> = Default::default();
     let mut sprawling = Vec::new();
     let mut not_measured = Vec::new();
-    for (id, cmd) in &found {
-        match run_anchor(&root, cmd) {
+    for (id, cmd) in found {
+        match run_anchor(root, cmd) {
             Outcome::Resolves(n) if n > LOCATES_MAX => sprawling.push(format!("{id} ({n} lines)")),
             Outcome::Resolves(_) => {}
             Outcome::Dead => {
@@ -342,17 +334,12 @@ fn every_registry_anchor_still_resolves_and_still_locates() {
             Outcome::NotMeasured(why) => not_measured.push(format!("{id}: {why}")),
         }
     }
+    (dead, sprawling, not_measured)
+}
 
-    // ⚠️ NOT MEASURED IS NOT A FINDING, and it is reported first so it cannot be mistaken
-    // for one. A tool failure and a subject property must not share an exit arm.
-    assert!(
-        not_measured.is_empty(),
-        "INSTRUMENT FAILURE — these anchors were NOT MEASURED, and this says nothing about \
-         whether they resolve:\n  {}\n\nFix the instrument, then re-read the result.",
-        not_measured.join("\n  ")
-    );
-
-    // ⚠️ THE BASELINE IS BIDIRECTIONAL. Arm 1: rot that is not in the baseline.
+/// ⚠️ THE BASELINE IS BIDIRECTIONAL. Arm 1: rot that is not in the baseline. Extracted
+/// verbatim from the test to keep it under the line limit — the claim is unchanged.
+fn assert_no_unbaselined_rot(dead: &std::collections::BTreeMap<String, String>) {
     let baselined: std::collections::BTreeSet<&str> =
         DEAD_ANCHOR_BASELINE.iter().map(|(id, _)| *id).collect();
     let new_rot: Vec<&String> = dead
@@ -380,6 +367,47 @@ fn every_registry_anchor_still_resolves_and_still_locates() {
             .collect::<Vec<_>>()
             .join("\n  ")
     );
+}
+
+#[test]
+fn every_registry_anchor_still_resolves_and_still_locates() {
+    let root = repo_root();
+    let gaps = std::fs::read_to_string(root.join("docs/gaps.md"))
+        .expect("control: docs/gaps.md must be readable, or this test checks nothing");
+    let (found, recipes) = anchors(&gaps);
+
+    // ⚠️ The exclusion is PRINTED, per the architect's ruling: a green covering 48 of 79
+    // while reading as "anchors verified" is a coverage claim, not a result.
+    println!(
+        "checkable git-grep anchors: {}\n\
+         PROSE-RECIPE anchors UNCHECKABLE BY THIS GATE: {} {:?}",
+        found.len(),
+        recipes.len(),
+        recipes
+    );
+
+    // Non-vacuity: an extractor that stops matching passes everything below having examined
+    // nothing, and is indistinguishable from a registry of perfect anchors.
+    assert!(
+        found.len() >= 30,
+        "only {} checkable anchors extracted — the extractor is broken, not the registry. \
+         (An earlier version found 24 because it assumed single quotes; 23 of 48 are \
+         double-quoted.)",
+        found.len()
+    );
+
+    let (dead, sprawling, not_measured) = run_anchors(&root, &found);
+
+    // ⚠️ NOT MEASURED IS NOT A FINDING, and it is reported first so it cannot be mistaken
+    // for one. A tool failure and a subject property must not share an exit arm.
+    assert!(
+        not_measured.is_empty(),
+        "INSTRUMENT FAILURE — these anchors were NOT MEASURED, and this says nothing about \
+         whether they resolve:\n  {}\n\nFix the instrument, then re-read the result.",
+        not_measured.join("\n  ")
+    );
+
+    assert_no_unbaselined_rot(&dead);
 
     // ⚠️ Arm 2, the self-retiring half: a baselined anchor that RESOLVES again must have
     // its line removed. Without this the baseline outlives its reason and is
