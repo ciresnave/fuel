@@ -1755,22 +1755,41 @@ impl OpSize {
 fn make_leaf(dtype: DType, data: Vec<f32>, shape: Shape) -> crate::lazy::Tensor {
     use crate::lazy::Tensor;
     let dev = crate::Device::cpu();
+    // ⚠️ GAP-003, and this is NEITHER of the two usual dispositions.
+    //
+    // `make_leaf` cannot prove its operands agree -- `data` and `shape` are BOTH
+    // parameters, so there is no local proof and an `.expect` claiming one would
+    // be false. But `Result` is wrong here too, and for a reason that is a
+    // property of the CALLER, not of this function: the sole caller wraps
+    // `build_input_graph` in `std::panic::catch_unwind` (see `Judge::run`), so
+    // this path ALREADY has a working error channel and a panic here is
+    // CAUGHT and reported as a profile failure, not an abort.
+    //
+    // Adding `Result` would give the judge two error channels for one failure
+    // and force every caller to handle both. So the message states the DESIGN
+    // BOUNDARY rather than a proof it cannot make -- which is the honest third
+    // form when a proof exists neither locally nor at all.
+    let leaf = |t: std::result::Result<Tensor, fuel_ir::Error>| {
+        t.expect(
+            "make_leaf: data length must match shape element count. Both are              caller-supplied, so this function cannot prove it -- the panic is              the judge's error channel and is caught by the catch_unwind in              Judge::run",
+        )
+    };
     match dtype {
-        DType::F32 => Tensor::from_f32(data, shape, &dev),
-        DType::F16 => Tensor::from_f16(
+        DType::F32 => leaf(Tensor::from_f32(data, shape, &dev)),
+        DType::F16 => leaf(Tensor::from_f16(
             data.iter()
                 .map(|&x| half::f16::from_f32(x))
                 .collect::<Vec<_>>(),
             shape,
             &dev,
-        ),
-        DType::BF16 => Tensor::from_bf16(
+        )),
+        DType::BF16 => leaf(Tensor::from_bf16(
             data.iter()
                 .map(|&x| half::bf16::from_f32(x))
                 .collect::<Vec<_>>(),
             shape,
             &dev,
-        ),
+        )),
         other => panic!("build_input_graph: unsupported profiled dtype {other:?}"),
     }
 }

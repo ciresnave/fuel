@@ -6403,7 +6403,7 @@ impl Tensor {
         if seq == 0 {
             return Err(fuel_ir::Error::Msg("embed_tokens: tokens must be non-empty".into()).bt());
         }
-        let embed = Self::from_f32(embed_table, Shape::from_dims(&[vocab_size, hidden]), device);
+        let embed = Self::from_f32(embed_table, Shape::from_dims(&[vocab_size, hidden]), device)?;
         let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         embed
             .index_select(0_usize, &token_ids)?
@@ -6518,7 +6518,19 @@ impl Tensor {
         head_dim: usize,
     ) -> Vec<f32> {
         let pool_shape = Shape::from_dims(&[block_size, n_kv_heads, head_dim]);
-        let k = Tensor::from_f32(k_block.to_vec(), pool_shape, dev);
+        // ⚠️ GAP-003: NOT a carve-out and NOT a propagation, and the reason is
+        // this function's SIGNATURE rather than anything about the operands.
+        // `k_block` and the pool dims are BOTH caller-supplied, so there is no
+        // local proof and the message below deliberately does not claim one.
+        // `-> Vec<f32>` has no error channel, and the two `.expect`s already on
+        // this same expression (permute, reshape) are the same pre-existing
+        // condition -- converting one of three would be less honest, not more.
+        //
+        // The fix is this function returning `Result`, which is a DIFFERENT
+        // obligation from the constructor-family ruling and is not in its scope.
+        let k = Tensor::from_f32(k_block.to_vec(), pool_shape, dev).expect(
+            "rope_delta_rotate_block_f32: k_block length must equal              block_size*n_kv_heads*head_dim -- both caller-supplied, so this              function cannot prove it; the -> Vec<f32> signature has no error              channel (see the sibling permute/reshape expects)",
+        );
         let k4 = k
             .permute([1, 0, 2])
             .expect("rope_delta_rotate_block_f32: permute [bs,Hkv,D]->[Hkv,bs,D]")
@@ -7115,7 +7127,15 @@ impl Tensor {
             }
         }
         let n = data.len();
-        Self::from_f32(data, vec![n], device)
+        // GAP-003 carve-out. `.expect`, NOT `?`: this cannot fail, and a `Result`
+        // here would be one that is never `Err` -- a false claim in the signature
+        // that every caller would then write a `?` for.
+        //
+        // THE PROOF IS LOCAL AND ONE LINE UP: `n` IS `data.len()`, and the shape
+        // is `[n]`. The shape is derived FROM the buffer, so they cannot disagree.
+        Self::from_f32(data, vec![n], device).expect(
+            "arange_step: shape is [n] where n IS data.len(), computed one line              above from that same buffer -- the lengths cannot disagree",
+        )
     }
 
     /// Linearly-spaced 1D tensor with `n` points from `start` to `end`
@@ -7123,11 +7143,17 @@ impl Tensor {
     pub fn linspace(start: f32, end: f32, n: usize, device: &Device) -> Self {
         assert!(n >= 1, "linspace: n must be >= 1");
         if n == 1 {
-            return Self::from_f32(vec![start], vec![1], device);
+            // GAP-003 carve-out: a one-element vec with shape [1], on one line.
+            return Self::from_f32(vec![start], vec![1], device)
+                .expect("linspace: vec![start] has exactly 1 element and the shape is [1]");
         }
         let step = (end - start) / ((n - 1) as f32);
         let data: Vec<f32> = (0..n).map(|i| start + step * (i as f32)).collect();
-        Self::from_f32(data, vec![n], device)
+        // GAP-003 carve-out: `data` is a `(0..n)` map -- exactly `n` elements --
+        // and the shape is `[n]`. Both from the same `n`, two lines apart.
+        Self::from_f32(data, vec![n], device).expect(
+            "linspace: data is (0..n).map(..).collect() so it has exactly n              elements, and the shape is [n] -- both from the same `n`",
+        )
     }
 
     /// Frobenius norm: `sqrt(sum(self * self))`. Returns a scalar tensor.
@@ -8342,7 +8368,7 @@ impl LlamaModel {
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &Device::cpu(),
-        );
+        )?;
         let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         // index_select(0, token_ids) produces [seq, dim]. Reshape to
         // [1, seq, dim] for the downstream attention code.
@@ -8945,7 +8971,7 @@ impl LlamaModel {
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &dev,
-        );
+        )?;
         let token_ids = embed.const_u32_like(vec![token], Shape::from_dims(&[1]));
         let mut h = embed
             .index_select(0, &token_ids)
@@ -9240,7 +9266,7 @@ impl LlamaModel {
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &dev,
-        );
+        )?;
         let token_ids = embed.const_placeholder_like(Shape::from_dims(&[1]), DType::U32);
         let token_ids_node = token_ids.inner.id();
         let mut h = embed
@@ -9528,7 +9554,7 @@ impl LlamaModel {
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &dev,
-        );
+        )?;
         let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[k]));
         let mut h = embed
             .index_select(0, &token_ids)
@@ -10315,7 +10341,7 @@ impl LlamaModel {
                 Arc::from(vec![0.0f32]),
                 Shape::from_dims(&[1]),
                 &Device::cpu(),
-            );
+            )?;
             let mut ctx_in = InferenceContext::new(device.clone());
             let mut targets: Vec<fuel_graph::NodeId> = Vec::with_capacity(2 * cfg.n_layers);
             for l in 0..cfg.n_layers {
@@ -10360,7 +10386,7 @@ impl LlamaModel {
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &Device::cpu(),
-        );
+        )?;
         let token_ids = embed.const_u32_like(last_tokens.to_vec(), Shape::from_dims(&[k]));
         let mut h = embed
             .index_select(0, &token_ids)?
@@ -10461,7 +10487,7 @@ impl LlamaModel {
                 Arc::from(vec![0.0f32]),
                 Shape::from_dims(&[1]),
                 &Device::cpu(),
-            );
+            )?;
             let mut ctx_out = InferenceContext::new(device.clone());
             let mut targets: Vec<fuel_graph::NodeId> = Vec::with_capacity(2 * cfg.n_layers * k);
             for l in 0..cfg.n_layers {
@@ -13086,7 +13112,7 @@ impl PhiModel {
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &Device::cpu(),
-        );
+        )?;
         let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
         let mut h = embed
             .index_select(0, &token_ids)?
@@ -13324,7 +13350,7 @@ impl PhiModel {
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &Device::cpu(),
-        );
+        )?;
         let token_ids = embed.const_placeholder_like(Shape::from_dims(&[seq]), DType::U32);
         let token_ids_node = token_ids.inner.id();
         let mut h = embed
