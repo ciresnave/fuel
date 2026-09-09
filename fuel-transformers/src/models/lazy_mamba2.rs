@@ -219,8 +219,8 @@ impl Mamba2Model {
         let conv_w = x.const_f32_like(
             layer.conv1d_weight.clone(),
             Shape::from_dims(&[d_xbc, 1, D_CONV]),
-        );
-        let conv_b = x.const_f32_like(layer.conv1d_bias.clone(), Shape::from_dims(&[d_xbc]));
+        )?;
+        let conv_b = x.const_f32_like(layer.conv1d_bias.clone(), Shape::from_dims(&[d_xbc]))?;
         let xbc_conv = xbc_t.causal_conv1d(&conv_w, &conv_b, /* use_silu */ true);
         // Back to [batch, seq, d_xbc].
         let xbc_conv = xbc_conv.permute([0, 2, 1_usize])?;
@@ -271,13 +271,13 @@ impl Mamba2Model {
         // dt: add learned bias + softplus. The ssd_chunk_scan op takes
         // dt as `[batch, seq, n_heads]`; the eager code applies softplus
         // BEFORE passing into the scan. We replicate that here.
-        let dt_bias_t = x.const_f32_like(layer.dt_bias.clone(), Shape::from_dims(&[n_heads]));
+        let dt_bias_t = x.const_f32_like(layer.dt_bias.clone(), Shape::from_dims(&[n_heads]))?;
         let dt_biased = dt.broadcast_add(&dt_bias_t)?;
         // softplus(x) = ln(1 + exp(x)). Use the existing primitive chain.
         let dt_soft = dt_biased.exp().add_scalar(1.0).log();
 
         // a = -exp(a_log). a_log is `[n_heads]`.
-        let a_log = x.const_f32_like(layer.a_log.clone(), Shape::from_dims(&[n_heads]));
+        let a_log = x.const_f32_like(layer.a_log.clone(), Shape::from_dims(&[n_heads]))?;
         let a = a_log.exp().neg();
 
         // SSD scan: y = ssd_chunk_scan(x_heads, dt, a, b, c, chunk_size).
@@ -285,7 +285,7 @@ impl Mamba2Model {
         let y = x_heads.ssd_chunk_scan(&dt_soft, &a, &b_heads, &c_heads, cfg.chunk_size);
 
         // Skip path: y + x_heads * d (per-head).
-        let d_t = x.const_f32_like(layer.d.clone(), Shape::from_dims(&[n_heads]));
+        let d_t = x.const_f32_like(layer.d.clone(), Shape::from_dims(&[n_heads]))?;
         // Broadcast d from [n_heads] across [batch, seq, n_heads, head_dim]
         // (last-axis broadcast multiplication via reshape).
         let d_per_head = d_t.reshape(Shape::from_dims(&[1, 1, n_heads, 1]))?;

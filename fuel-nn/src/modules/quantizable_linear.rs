@@ -123,7 +123,7 @@ impl Module for QuantizableLinear {
         match &self.bias {
             Some(b) => {
                 let bias_t =
-                    y.const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_features]));
+                    y.const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_features]))?;
                 y.broadcast_add(&bias_t)
             }
             None => Ok(y),
@@ -210,13 +210,15 @@ mod tests {
             x_data.clone(),
             Shape::from_dims(&[seq, in_features]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let got = qlin.forward(&x).unwrap().realize_f32();
         let x2 = Tensor::from_f32(
             x_data,
             Shape::from_dims(&[seq, in_features]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let expected = plain.forward(&x2).unwrap().realize_f32();
         assert_eq!(got.len(), expected.len());
         for (i, (a, e)) in got.iter().zip(expected.iter()).enumerate() {
@@ -245,7 +247,8 @@ mod tests {
             x_data,
             Shape::from_dims(&[seq, in_features]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let y = qlin.forward(&x).unwrap();
         assert_eq!(y.shape().dims(), &[seq, out_features]);
         let got = y.realize_f32();

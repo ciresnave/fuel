@@ -157,6 +157,7 @@ mod tests {
             Shape::from_dims(&[data.len()]),
             &Device::cpu(),
         )
+        .unwrap()
     }
 
     #[test]

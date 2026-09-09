@@ -100,10 +100,10 @@ fn codebook_encode(x: &Tensor, cb: &EuclideanCodebookWeights) -> Result<Tensor> 
     let embedding = x.const_f32_like(
         Arc::clone(&cb.embedding),
         Shape::from_dims(&[cb.codebook_size, cb.codebook_dim]),
-    );
+    )?;
     let e_t = embedding.permute([1, 0_usize])?;
     let dot_prod = x.matmul(&e_t)?;
-    let c2 = x.const_f32_like(Arc::clone(&cb.c2), Shape::from_dims(&[cb.codebook_size]));
+    let c2 = x.const_f32_like(Arc::clone(&cb.c2), Shape::from_dims(&[cb.codebook_size]))?;
     let c2_b = c2
         .reshape(Shape::from_dims(&[1, cb.codebook_size]))?
         .broadcast_to(Shape::from_dims(&[m, cb.codebook_size]))?;
@@ -117,7 +117,7 @@ fn codebook_decode(codes: &Tensor, cb: &EuclideanCodebookWeights) -> Result<Tens
     let embedding = codes.const_f32_like(
         Arc::clone(&cb.embedding),
         Shape::from_dims(&[cb.codebook_size, cb.codebook_dim]),
-    );
+    )?;
     embedding.index_select(0_usize, codes)
 }
 
@@ -137,14 +137,14 @@ fn apply_linear_opt(
                 .const_f32_like(
                     Arc::clone(w_arc),
                     Shape::from_dims(&[out_features, in_features]),
-                )
+                )?
                 .permute([1, 0_usize])?;
             let y = x.matmul(&w_t)?;
             match b {
                 None => Ok(y),
                 Some(b_arc) => {
                     let bias =
-                        x.const_f32_like(Arc::clone(b_arc), Shape::from_dims(&[out_features]));
+                        x.const_f32_like(Arc::clone(b_arc), Shape::from_dims(&[out_features]))?;
                     y.broadcast_add(&bias)
                 }
             }
@@ -164,7 +164,7 @@ fn apply_conv1d_1x1_opt(
             let weight = x.const_f32_like(
                 Arc::clone(w_arc),
                 Shape::from_dims(&[out_channels, in_channels, 1]),
-            );
+            )?;
             x.conv1d(&weight, None, 1, 0, 1)
         }
     }
@@ -601,7 +601,7 @@ mod tests {
         let x_data = vec![
             0.1_f32, 0.9, 0.1, 0.0, 0.0, 0.0, 1.1, 0.0, 1.2, 0.1, 0.0, 0.0,
         ];
-        let x = Tensor::from_f32(x_data, Shape::from_dims(&[3, dim]), &Device::cpu());
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[3, dim]), &Device::cpu()).unwrap();
         let codes = codebook_encode(&x, &cb).unwrap().realize_u32();
         assert_eq!(codes.as_slice(), &[1, 2, 0]);
     }
@@ -617,7 +617,8 @@ mod tests {
             codebook_size: cs,
             codebook_dim: dim,
         };
-        let idx = Tensor::from_u32(vec![2_u32, 0, 3], Shape::from_dims(&[3]), &Device::cpu());
+        let idx =
+            Tensor::from_u32(vec![2_u32, 0, 3], Shape::from_dims(&[3]), &Device::cpu()).unwrap();
         let out = codebook_decode(&idx, &cb).unwrap().realize_f32();
         let want = vec![6.0_f32, 7.0, 8.0, 0.0, 1.0, 2.0, 9.0, 10.0, 11.0];
         for (a, b) in out.iter().zip(want.iter()) {
@@ -639,7 +640,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[b, dim, t]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let codes = vq_encode(&xs, &w).unwrap();
         assert_eq!(codes.shape().dims(), &[b, t]);
         let codes_data = codes.realize_u32();
@@ -665,7 +667,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[b, dim, t]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let codes = rvq_encode(&xs, &w).unwrap();
         assert_eq!(codes.shape().dims(), &[n_q, b, t]);
         let recon = rvq_decode(&codes, &w).unwrap();
@@ -691,7 +694,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[b, dim, t]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let codes = split_rvq_encode(&xs, &w_split).unwrap();
         assert_eq!(codes.shape().dims(), &[b, n_q, t]);
         let recon = split_rvq_decode(&codes, &w_split).unwrap();

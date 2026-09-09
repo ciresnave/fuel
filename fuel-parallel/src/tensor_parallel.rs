@@ -409,7 +409,7 @@ mod tests {
 
     fn ones_input(dims: &[usize]) -> Tensor {
         let n: usize = dims.iter().product();
-        Tensor::from_f32(vec![1.0f32; n], Shape::from_dims(dims), &Device::cpu())
+        Tensor::from_f32(vec![1.0f32; n], Shape::from_dims(dims), &Device::cpu()).unwrap()
     }
 
     #[test]
@@ -588,7 +588,7 @@ mod tests {
         // panics on rank < 2. Guarding here is what keeps the never-panic rule
         // intact through the delegation.
         let lin = ones_linear(3, 2);
-        let x = Tensor::from_f32(vec![1.0f32; 3], Shape::from_dims(&[3]), &Device::cpu());
+        let x = Tensor::from_f32(vec![1.0f32; 3], Shape::from_dims(&[3]), &Device::cpu()).unwrap();
         let err = lin.forward(&x).unwrap_err();
         assert!(format!("{err}").contains("rank >= 2"), "got: {err}");
     }

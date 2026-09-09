@@ -161,7 +161,7 @@ pub fn classify(lines: &[&str]) -> Vec<Scope> {
 
 #[test]
 fn depth_zero_live_prose_is_in_scope() {
-    let f = ["Ordinary prose naming `OptimizationMap`.", "More prose."];
+    let f = ["Ordinary prose naming `Gap302FixtureAlpha`.", "More prose."];
     assert_eq!(classify(&f), vec![Scope::InScope, Scope::InScope]);
 }
 
@@ -196,7 +196,7 @@ fn depth_one_without_a_marker_is_in_scope() {
     // prose that the gate must read, not retained history it must skip.
     let f = [
         "> ⚠️ **AS-BUILT 2026-08-28 — GENUINELY UNBUILT. FILE AS WORK.**",
-        "> Measured at head: ZERO `fn` definitions for `ReferenceFactory`.",
+        "> Measured at head: ZERO `fn` definitions for `Gap302FixtureDelta`.",
     ];
     assert_eq!(classify(&f), vec![Scope::InScope, Scope::InScope]);
 }
@@ -215,7 +215,7 @@ fn retirement_does_not_leak_into_the_next_block() {
         "> **SUPERSEDED — retained below.**",
         "> > the quoted history",
         "",
-        "> A LATER, UNRELATED quoted block naming `CostRegistry`.",
+        "> A LATER, UNRELATED quoted block naming `Gap302FixtureBeta`.",
     ];
     let got = classify(&f);
     assert_eq!(got[0], Scope::OutRetired);
@@ -233,7 +233,7 @@ fn retirement_does_not_leak_into_following_prose() {
         "> **SUPERSEDED 2026-08-27.**",
         "> > the quoted history",
         "",
-        "Ordinary prose naming `PrecisionFloor`, which the gate must read.",
+        "Ordinary prose naming `Gap302FixtureGamma`, which the gate must read.",
     ];
     assert_eq!(classify(&f)[3], Scope::InScope);
 }
@@ -322,52 +322,69 @@ fn depth_counts_markers_not_indentation() {
 /// The gate's own path. ⚠️ EXCLUDED FROM THE `*.rs` SCAN, AND THIS IS NOT
 /// TIDINESS -- IT IS THE DIFFERENCE BETWEEN A WORKING GATE AND A BLIND ONE.
 ///
-/// The fixtures above name `OptimizationMap`, `CostRegistry`, `PrecisionFloor`
-/// and `ReferenceFactory` as example drifted identifiers. Without this
-/// exclusion those four appear in `*.rs` -- in THIS FILE -- and are therefore
-/// classified PRESENT and drop out of the absent population.
+/// ⚠️ THIS EXCLUSION AND THE DATA FILE SOLVE **DIFFERENT** PROBLEMS FOR
+/// **DIFFERENT** BENEFICIARIES, AND NEITHER REPLACES THE OTHER.
 ///
-/// **Measured: 26 names with the exclusion, 17 without -- NINE hidden.**
+/// * `gap302_known_absent.txt` keeps the population OUT of `*.rs`, so
+///   EVERY OTHER INSTRUMENT -- the GAP-302 census, any future scan, tools that
+///   do not exist yet -- reads the corpus correctly with no exclusion to
+///   remember. That is the structural fix.
+/// * `SELF_PATH` protects THIS gate against whatever a future edit puts back.
+///   It is defence in depth, and it is why the probe below is CONSTRUCTED
+///   rather than sampled from the population.
 ///
-/// It was FOUR when the defect was found. Writing the explanation above
-/// added five more, because explaining which names drift requires naming
-/// them. **A gate that documents its own subject poisons its own corpus,
-/// and the better the documentation the worse the poisoning** -- so the
-/// exclusion is not a one-off fix for four fixtures, it is structural. ⚠️ **The four it
-/// hides include `OptimizationMap`, WHICH IS THE NAME THIS ENTIRE GATE EXISTS
-/// BECAUSE OF** -- a researcher built a proposal on it. **The gate would have
-/// been permanently blind to its own motivating example.**
+/// THE HISTORY, KEPT BECAUSE THE MECHANISM RECURS: the fixtures used to name
+/// real drifted identifiers, and the population used to be a `&[&str]` here.
+/// Measured with the exclusion: 26 names; without it: 17 -- NINE hidden by the
+/// fixtures alone. It was FOUR when found; writing the explanation added five,
+/// **because explaining which names drift requires naming them.** One of the
+/// hidden was the name this entire gate exists because of -- a researcher built
+/// a proposal on it -- so **the gate would have been permanently blind to its
+/// own motivating example.**
 ///
-/// **And note the direction: self-poisoning made the population SMALLER.** A
-/// gate that quietly under-reports is the flattering failure, and nothing in a
-/// green run would have contradicted it.
+/// ⚠️ AND THE NINE WAS NOT THE WHOLE STORY, WHICH IS THE PART WORTH KEEPING.
+/// Nine is the count an instrument WITH this exclusion hides. An `*.rs`-wide
+/// census that does NOT self-exclude sees all **26**, because the list literal
+/// counted too -- and that is what took the GAP-302 census to 0 on main. **Two
+/// correct numbers about two different scans; the first did not transfer,
+/// because it was reported without naming which scan it ranged over.**
+///
+/// **Note the direction throughout: self-poisoning made the population
+/// SMALLER.** A gate that quietly under-reports is the flattering failure, and
+/// nothing in a green run would have contradicted it.
 const SELF_PATH: &str = "fuel-ir/tests/doc_block_scope.rs";
 
-/// The adjudicated in-scope absent set at `64e5f46e`.
-const KNOWN_ABSENT: &[&str] = &[
-    "AddInplace",
-    "Aggressive",
-    "ArrowDeviceArray",
-    "Concurrency",
-    "CostRegistry",
-    "ErrorBound",
-    "Fmin",
-    "Forbidden",
-    "FusionMissRecord",
-    "GraphInvoker",
-    "LoadAwareSelector",
-    "MemGetInfo",
-    "MemoryPressureSelector",
-    "Mild",
-    "NoBackendKernel",
-    "NodeKind",
-    "OpEntry",
-    "ReferenceFactory",
-    "RuntimeHook",
-    "SequenceRecord",
-    "SubInplace",
-    "WholeGraph",
-];
+/// A CONSTRUCTED witness that `SELF_PATH` still matches a file on disk.
+///
+/// It appears in exactly one place in the tree -- this line -- and in no
+/// document, so it can never acquire a real referent and can never be a
+/// population member. That is the point: the arm proving the self-exclusion is
+/// load-bearing must not take its evidence from the defect the exclusion exists
+/// to fix, or fixing the defect silently makes the arm vacuous.
+const SELF_EXCLUSION_PROBE: &str = "Gap302SelfExclusionProbe";
+
+/// The adjudicated in-scope absent set, read from a NON-RUST data file.
+///
+/// ⚠️ THE NAMES USED TO BE STRING LITERALS HERE, AND THAT MADE EVERY ONE OF
+/// THEM RESOLVE IN ANY `*.rs` SCAN. They are absent from `*.rs` BY DEFINITION
+/// -- that is what makes them members -- so writing them into a `.rs` file
+/// falsified the property the list exists to record. Measured: the GAP-302
+/// census went 25 -> 0 when this file landed on main (`f2bfcb04`), with all 25
+/// resolving here.
+///
+/// `SELF_PATH` protected THIS gate and did nothing for anyone else's
+/// instrument. Moving the names out of `*.rs` DISSOLVES the coupling instead
+/// of asking every other tool to remember an exclusion.
+///
+/// The data file also carries the prose that has to name members (the R5
+/// derivation), which is what made the list grow 4 -> 9 in its first hour.
+fn known_absent() -> Vec<&'static str> {
+    include_str!("gap302_known_absent.txt")
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect()
+}
 fn repo_root() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -462,13 +479,17 @@ fn idents(src: &str) -> Vec<String> {
 ///
 /// !! THERE IS DELIBERATELY NO "at least two capitals" CLAUSE, and the first
 /// version of this function had one. That constraint is exactly what R5 exists
-/// to REMOVE: it drops `Fmin`, `Forbidden`, `Concurrency`,
-/// `Mild` and `Aggressive` -- all real doc-only identifier claims,
-/// including a documented `Concurrency::Auto` / `Concurrency::Forbidden`
-/// enum whose variants do not exist.
-/// The rule was measured in one language and re-implemented in another, and
-/// the constraint came back silently in the port. The population ratchet
-/// below caught it on its FIRST RUN, naming all five.
+/// to REMOVE -- it drops five real doc-only identifier claims, one of them a
+/// documented enum whose variants do not exist. The rule was measured in one
+/// language and re-implemented in another, and the constraint came back
+/// silently in the port; the population ratchet caught it on its FIRST RUN,
+/// naming all five.
+///
+/// ⚠️ THE FIVE ARE NAMED IN `gap302_known_absent.txt`, NOT HERE, AND THAT
+/// IS THE POINT: they are population members, so naming them in a `*.rs` file
+/// would make them resolve and drop them from the population. Explaining a
+/// drift requires naming it, which is exactly how this file poisoned its own
+/// corpus the first time.
 fn is_identifier_claim(t: &str) -> bool {
     t.len() > 1
         && t.starts_with(|c: char| c.is_ascii_uppercase())
@@ -540,19 +561,19 @@ fn in_scope_absent() -> std::collections::BTreeSet<String> {
 fn the_absent_population_is_exactly_the_adjudicated_set() {
     let found = in_scope_absent();
     let known: std::collections::BTreeSet<String> =
-        KNOWN_ABSENT.iter().map(|s| s.to_string()).collect();
+        known_absent().iter().map(|s| (*s).to_string()).collect();
     let new: Vec<&String> = found.difference(&known).collect();
     let gone: Vec<&String> = known.difference(&found).collect();
     assert!(
         new.is_empty(),
         "NEW doc/code drift -- {} backticked name(s) in docs/architecture/ with no \
          referent in *.rs and no entry here: {new:?}. Adjudicate each in \
-         docs/gaps.md (GAP-302), then add it to KNOWN_ABSENT.",
+         docs/gaps.md (GAP-302), then add it to gap302_known_absent.txt.",
         new.len()
     );
     assert!(
         gone.is_empty(),
-        "{} name(s) in KNOWN_ABSENT now HAVE a referent, or left the corpus: \
+        "{} name(s) in the adjudicated set now HAVE a referent, or left the corpus: \
          {gone:?}. If the drift was fixed, delete the entry. A ratchet reddens in \
          BOTH directions on purpose -- a stale entry is a claim nobody re-derives.",
         gone.len()
@@ -561,29 +582,30 @@ fn the_absent_population_is_exactly_the_adjudicated_set() {
 
 #[test]
 fn excluding_this_file_is_load_bearing_and_changes_the_population() {
-    // THE OVER-SCOPE ARM THAT MATTERS. This file's fixtures NAME four drifted
-    // identifiers as examples. Scanned, they make those four look PRESENT and
-    // the gate goes blind to them -- including `OptimizationMap`, the name this
-    // gate exists because of.
+    // THE OVER-SCOPE ARM THAT MATTERS -- now on a CONSTRUCTED probe.
+    //
+    // ⚠️ IT USED TO SAMPLE ITS NEGATIVE CASE FROM THE POPULATION, asserting
+    // that four real drifted names appear in `*.rs` when this file is
+    // scanned. That held ONLY BECAUSE THE FILE WAS POISONING THE CORPUS --
+    // the arm's evidence WAS the defect, so fixing the defect would have
+    // made it vacuous. A gate cannot source its negative case from the thing
+    // it exists to fix.
+    //
+    // `SELF_EXCLUSION_PROBE` exists for no other purpose, appears in no
+    // document, and can never acquire a real referent -- so this arm keeps
+    // discriminating now that the population has left `*.rs`.
     let with_self = rust_tokens(false);
     let without = rust_tokens(true);
-    for n in [
-        "OptimizationMap",
-        "CostRegistry",
-        "PrecisionFloor",
-        "ReferenceFactory",
-    ] {
-        assert!(
-            with_self.contains(n),
-            "{n} should appear in *.rs when THIS file is scanned -- if not, the \
-             fixture naming it was renamed and this arm no longer tests anything"
-        );
-        assert!(
-            !without.contains(n),
-            "{n} must be ABSENT once this file is excluded; if it is present, a real \
-             referent appeared and the KNOWN_ABSENT entry is stale"
-        );
-    }
+    assert!(
+        with_self.contains(SELF_EXCLUSION_PROBE),
+        "the probe must appear in *.rs when THIS file is scanned; if not, it \
+         was renamed and this arm no longer tests anything"
+    );
+    assert!(
+        !without.contains(SELF_EXCLUSION_PROBE),
+        "the probe must vanish once this file is excluded; if it survives, \
+         SELF_PATH is not matching this file and the exclusion is inert"
+    );
     assert!(
         without.len() < with_self.len(),
         "excluding one file must remove tokens; it removed none, so SELF_PATH no \
@@ -605,5 +627,47 @@ fn parity_membership_rejects_a_name_outside_every_span() {
     assert!(
         backtick_parity_is_inside(line, at2),
         "control: a genuinely backticked name must read as INSIDE"
+    );
+}
+
+/// ⚠️ THE GATE MUST NOT NAME ITS OWN SUBJECTS -- THIS IS THE ARM THAT PROTECTS
+/// EVERY INSTRUMENT THAT IS NOT THIS ONE.
+///
+/// `SELF_PATH` makes THIS gate correct while it poisons the corpus. It does
+/// nothing for a `*.rs`-wide census that has no self-exclusion, and that is not
+/// hypothetical: when this file first landed on main (`f2bfcb04`) the GAP-302
+/// census went from 25 absent names to **0**, with all 25 resolving here.
+///
+/// So the population lives in `gap302_known_absent.txt` and this arm keeps
+/// it there. It reddens the moment a future edit writes a member back into the
+/// Rust -- as a fixture, an example, or a helpful explanation -- which is
+/// exactly how the list grew 4 -> 9 the first time.
+///
+/// It cannot be satisfied by adding an exclusion somewhere else, which is the
+/// point: an exclusion is a coupling someone must remember, and this is a
+/// property the file either has or does not.
+#[test]
+fn this_file_names_none_of_the_population() {
+    let path = repo_root().join(SELF_PATH);
+    let src = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("read {} failed: {e}", path.display()));
+    let mut offenders: Vec<&str> = Vec::new();
+    for name in known_absent() {
+        if idents(&src).iter().any(|t| t == name) {
+            offenders.push(name);
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "{} adjudicated name(s) are written into this *.rs file: {offenders:?}.          Every one of them RESOLVES in any *.rs scan, which falsifies the very          property that makes them population members -- and SELF_PATH hides that          from this gate while leaving every other instrument wrong. Put the name          in gap302_known_absent.txt, where prose may reference it freely.",
+        offenders.len()
+    );
+
+    // POSITIVE CONTROL: the check must be able to FIND a name in this file at
+    // all. The probe is in this file by construction, so a run that cannot see
+    // it is a broken reader, not a clean result.
+    assert!(
+        idents(&src).iter().any(|t| t == SELF_EXCLUSION_PROBE),
+        "the tokenizer cannot see a token known to be in this file, so the          emptiness above is a reader defect, not a finding"
     );
 }

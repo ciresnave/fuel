@@ -341,7 +341,7 @@ impl VoxtralEncoder {
             mel.to_vec(),
             Shape::from_dims(&[1, n_mel, mel_time]),
             &Device::cpu(),
-        );
+        )?;
 
         // ---- conv stem (downsample) ---------------------------------------
         let x = conv1d_k3_s1_p1(
@@ -369,7 +369,7 @@ impl VoxtralEncoder {
             .const_f32_like(
                 self.weights.embed_positions.clone(),
                 Shape::from_dims(&[cfg.max_source_positions, d]),
-            )
+            )?
             .slice(0, 0, t_half)?
             .reshape(Shape::from_dims(&[1, t_half, d]))?
             .broadcast_to(Shape::from_dims(&[1, t_half, d]))?;
@@ -529,7 +529,7 @@ impl VoxtralTextModel {
     /// share a graph with an existing tensor (e.g. audio features).
     pub fn embed(&self, tokens: &[u32]) -> Result<Tensor> {
         let cfg = &self.config;
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu())?;
         let embed = self.embed_with_anchor(tokens, &anchor)?;
         let _ = cfg;
         Ok(embed)
@@ -545,8 +545,8 @@ impl VoxtralTextModel {
         let embed_table = anchor.const_f32_like(
             self.weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
-        );
-        let token_ids = anchor.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        )?;
+        let token_ids = anchor.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]))?;
         embed_table
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[1, seq, cfg.hidden_size]))
@@ -790,7 +790,7 @@ fn substitute_audio_embeds(
     for (audio_row, &pos) in audio_positions.iter().enumerate() {
         scatter_indices[pos] = audio_row as u32;
     }
-    let idx_t = text_embeds.const_u32_like(scatter_indices, Shape::from_dims(&[seq]));
+    let idx_t = text_embeds.const_u32_like(scatter_indices, Shape::from_dims(&[seq]))?;
     // [seq, hidden] — audio_embeds row per token position; text-token
     // rows are bogus but masked out.
     let scattered = audio_embeds
@@ -803,7 +803,7 @@ fn substitute_audio_embeds(
         mask_data[p] = 1.0;
     }
     let mask = text_embeds
-        .const_f32_like(mask_data, Shape::from_dims(&[seq]))
+        .const_f32_like(mask_data, Shape::from_dims(&[seq]))?
         .reshape(Shape::from_dims(&[1, seq, 1]))?
         .broadcast_to(Shape::from_dims(&[1, seq, hidden]))?;
 
@@ -1304,7 +1304,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[4, audio_in]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let out = projector.forward(&audio).unwrap();
         assert_eq!(out.shape().dims(), &[4, text_h]);
         for &v in &out.realize_f32() {
@@ -1381,14 +1382,17 @@ mod tests {
             vec![7.0_f32, 7.0, 7.0, 8.0, 8.0, 8.0],
             Shape::from_dims(&[2, hidden]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         // Anchor text on audio's graph so the substitute step can mix.
-        let text = audio.const_f32_like(
-            Arc::<[f32]>::from(vec![
-                1.0_f32, 1.0, 1.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0, 4.0, 4.0, 4.0,
-            ]),
-            Shape::from_dims(&[1, 4, hidden]),
-        );
+        let text = audio
+            .const_f32_like(
+                Arc::<[f32]>::from(vec![
+                    1.0_f32, 1.0, 1.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0, 4.0, 4.0, 4.0,
+                ]),
+                Shape::from_dims(&[1, 4, hidden]),
+            )
+            .unwrap();
         let out = substitute_audio_embeds(&text, &audio, &tokens, 99, hidden).unwrap();
         let v = out.realize_f32();
         // Expected: row 0 = text 1, row 1 = audio 7, row 2 = text 3,
@@ -1472,11 +1476,14 @@ mod tests {
             vec![0.0_f32, 0.0],
             Shape::from_dims(&[1, hidden]),
             &Device::cpu(),
-        );
-        let text = audio.const_f32_like(
-            Arc::<[f32]>::from(vec![1.0_f32, 1.0, 2.0, 2.0, 3.0, 3.0]),
-            Shape::from_dims(&[1, 3, hidden]),
-        );
+        )
+        .unwrap();
+        let text = audio
+            .const_f32_like(
+                Arc::<[f32]>::from(vec![1.0_f32, 1.0, 2.0, 2.0, 3.0, 3.0]),
+                Shape::from_dims(&[1, 3, hidden]),
+            )
+            .unwrap();
         let out = substitute_audio_embeds(&text, &audio, &tokens, 99, hidden).unwrap();
         let v = out.realize_f32();
         let want = [1.0_f32, 1.0, 2.0, 2.0, 3.0, 3.0];

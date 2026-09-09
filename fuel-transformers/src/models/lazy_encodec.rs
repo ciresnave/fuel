@@ -383,7 +383,7 @@ fn rvq_decode_stacked(
         let codebook = codes.const_f32_like(
             Arc::clone(&q.codebook),
             Shape::from_dims(&[cfg.codebook_size, cfg.codebook_dim]),
-        );
+        )?;
         // (T, codebook_dim) → (1, codebook_dim, T)
         let z_p = codebook
             .index_select(0_usize, &ids)?
@@ -430,7 +430,7 @@ fn rvq_decode_per_codebook(
         let codebook = c.const_f32_like(
             Arc::clone(&q.codebook),
             Shape::from_dims(&[cfg.codebook_size, cfg.codebook_dim]),
-        );
+        )?;
         // (B*T, codebook_dim) → (B, T, codebook_dim) → (B, codebook_dim, T)
         let z_p = codebook
             .index_select(0_usize, &ids)?
@@ -485,7 +485,7 @@ fn rvq_encode(
         let codebook = latent.const_f32_like(
             Arc::clone(&q.codebook),
             Shape::from_dims(&[cfg.codebook_size, cfg.codebook_dim]),
-        );
+        )?;
         // c2 = sum(codebook^2, dim=-1) / 2 — same trick the eager
         // CPU op uses to drop a redundant ||x||^2.
         let cb_sq = codebook.sqr();
@@ -633,10 +633,11 @@ fn apply_encodec_conv1d(
     let w = anchor.const_f32_like(
         Arc::<[f32]>::from(w_data),
         Shape::from_dims(&[c.c_out, c.c_in, k_used]),
-    );
+    )?;
     let bias =
         c.b.as_ref()
-            .map(|b| anchor.const_f32_like(Arc::clone(b), Shape::from_dims(&[c.c_out])));
+            .map(|b| anchor.const_f32_like(Arc::clone(b), Shape::from_dims(&[c.c_out])))
+            .transpose()?;
     x_padded.conv1d(&w, bias.as_ref(), c.stride, 0, 1)
 }
 
@@ -646,11 +647,11 @@ fn apply_encodec_conv_transpose1d(
     cfg: &EncodecConfig,
     anchor: &Tensor,
 ) -> Result<Tensor> {
-    let w = anchor.const_f32_like(Arc::clone(&c.w), Shape::from_dims(&[c.c_in, c.c_out, c.k]));
+    let w = anchor.const_f32_like(Arc::clone(&c.w), Shape::from_dims(&[c.c_in, c.c_out, c.k]))?;
     let mut out = x.conv_transpose1d(&w, c.stride, 0, 0, 1, 1)?;
     if let Some(b) = &c.b {
         let bias = anchor
-            .const_f32_like(Arc::clone(b), Shape::from_dims(&[c.c_out]))
+            .const_f32_like(Arc::clone(b), Shape::from_dims(&[c.c_out]))?
             .reshape(Shape::from_dims(&[1, c.c_out, 1]))?;
         out = out.broadcast_add(&bias)?;
     }
@@ -702,10 +703,16 @@ pub fn pad1d(
     let c = dims[1];
     let t = dims[2];
     let make_const = |n: usize, anchor_t: &Tensor| -> Tensor {
-        anchor_t.const_f32_like(
-            Arc::<[f32]>::from(vec![0.0_f32; b * c * n]),
-            Shape::from_dims(&[b, c, n]),
-        )
+        // GAP-003 carve-out. THE PROOF IS LOCAL AND ON THESE TWO LINES: the
+        // buffer is `vec![_; b * c * n]` and the shape is `[b, c, n]`, whose
+        // elem_count IS that product. The closure returns `Tensor` and its
+        // three inputs are all in scope here; no caller supplies either operand.
+        anchor_t
+            .const_f32_like(
+                Arc::<[f32]>::from(vec![0.0_f32; b * c * n]),
+                Shape::from_dims(&[b, c, n]),
+            )
+            .expect("encodec pad: buffer is vec![_; b*c*n] against shape [b, c, n] -- same three values")
     };
     let (left_pad, right_pad) = match mode {
         PadMode::Constant => {
@@ -1455,8 +1462,11 @@ mod tests {
                 data.push(((c + t) % cfg.codebook_size) as u32);
             }
         }
-        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &Device::cpu());
-        let codes = anchor.const_u32_like(data, Shape::from_dims(&[1, cfg.num_codebooks, time]));
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
+        let codes = anchor
+            .const_u32_like(data, Shape::from_dims(&[1, cfg.num_codebooks, time]))
+            .unwrap();
         let audio = model.decode_codes(&codes).unwrap();
         let shape = audio.shape();
         let dims = shape.dims();
@@ -1479,15 +1489,19 @@ mod tests {
         };
         let time = 4_usize;
         let dev = Device::cpu();
-        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
-        let codes_a = anchor.const_u32_like(
-            vec![0_u32; cfg.num_codebooks * time],
-            Shape::from_dims(&[1, cfg.num_codebooks, time]),
-        );
-        let codes_b = anchor.const_u32_like(
-            vec![3_u32; cfg.num_codebooks * time],
-            Shape::from_dims(&[1, cfg.num_codebooks, time]),
-        );
+        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev).unwrap();
+        let codes_a = anchor
+            .const_u32_like(
+                vec![0_u32; cfg.num_codebooks * time],
+                Shape::from_dims(&[1, cfg.num_codebooks, time]),
+            )
+            .unwrap();
+        let codes_b = anchor
+            .const_u32_like(
+                vec![3_u32; cfg.num_codebooks * time],
+                Shape::from_dims(&[1, cfg.num_codebooks, time]),
+            )
+            .unwrap();
         let a = model.decode_codes(&codes_a).unwrap().realize_f32();
         let b = model.decode_codes(&codes_b).unwrap().realize_f32();
         let mut max_diff = 0.0_f32;
@@ -1508,7 +1522,8 @@ mod tests {
             vec![1.0_f32, 2.0, 3.0, 4.0],
             Shape::from_dims(&[1, 1, 4]),
             &dev,
-        );
+        )
+        .unwrap();
         let y = pad1d(&x, 2, 2, PadMode::Replicate, &x).unwrap();
         let got = y.realize_f32();
         // Left pad 2 = [1, 1]; right pad 2 = [4, 4].
@@ -1522,7 +1537,8 @@ mod tests {
             vec![1.0_f32, 2.0, 3.0, 4.0],
             Shape::from_dims(&[1, 1, 4]),
             &dev,
-        );
+        )
+        .unwrap();
         let y = pad1d(&x, 1, 1, PadMode::Constant, &x).unwrap();
         let got = y.realize_f32();
         assert_eq!(got, vec![0.0, 1.0, 2.0, 3.0, 4.0, 0.0]);
@@ -1567,7 +1583,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, cfg.audio_channels, t_in]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let codes = model.encode(&waveform).unwrap();
         assert_eq!(codes.len(), cfg.num_codebooks, "one tensor per codebook");
         for (i, c) in codes.iter().enumerate() {
@@ -1603,15 +1620,17 @@ mod tests {
         };
         let t_latent = 4_usize;
         let dev = Device::cpu();
-        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
+        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev).unwrap();
         let codes: Vec<Tensor> = (0..cfg.num_codebooks)
             .map(|i| {
-                anchor.const_u32_like(
-                    (0..t_latent)
-                        .map(|t| ((i + t) % cfg.codebook_size) as u32)
-                        .collect::<Vec<u32>>(),
-                    Shape::from_dims(&[1, t_latent]),
-                )
+                anchor
+                    .const_u32_like(
+                        (0..t_latent)
+                            .map(|t| ((i + t) % cfg.codebook_size) as u32)
+                            .collect::<Vec<u32>>(),
+                        Shape::from_dims(&[1, t_latent]),
+                    )
+                    .unwrap()
             })
             .collect();
         let audio = model.decode(&codes).unwrap();
@@ -1645,7 +1664,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, cfg.audio_channels, t_in]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let codes = model.encode(&waveform).unwrap();
         assert_eq!(codes.len(), cfg.num_codebooks);
         let reconstructed = model.decode(&codes).unwrap();
@@ -1689,7 +1709,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, cfg.audio_channels, t_in]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let latent = encoder.forward(&waveform).unwrap();
         let latent_dims = latent.shape();
         let latent_dims = latent_dims.dims();
@@ -1731,7 +1752,8 @@ mod tests {
             vec![0.0_f32; cfg.audio_channels * t_in],
             Shape::from_dims(&[1, cfg.audio_channels, t_in]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         assert!(
             model.encode(&waveform).is_err(),
             "encode must error when encoder weights are absent"

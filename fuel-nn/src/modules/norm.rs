@@ -96,7 +96,7 @@ impl Module for LayerNorm {
             None => {
                 let normed = xs.layer_norm_last_dim(self.eps)?;
                 let g = normed
-                    .const_f32_like(Arc::clone(&self.gain), Shape::from_dims(&[self.last_dim]));
+                    .const_f32_like(Arc::clone(&self.gain), Shape::from_dims(&[self.last_dim]))?;
                 normed.broadcast_mul(&g)
             }
         }
@@ -278,13 +278,13 @@ impl Module for GroupNorm {
             .const_f32_like(
                 Arc::clone(&self.gain),
                 Shape::from_dims(&[self.num_channels]),
-            )
+            )?
             .reshape(Shape::from_dims(&affine_shape))?;
         let b_t = restored
             .const_f32_like(
                 Arc::clone(&self.bias),
                 Shape::from_dims(&[self.num_channels]),
-            )
+            )?
             .reshape(Shape::from_dims(&affine_shape))?;
         restored.broadcast_mul(&g_t)?.broadcast_add(&b_t)
     }
@@ -432,7 +432,8 @@ mod tests {
         let x_data: Vec<f32> = ramp_f32(seq * last_dim, 0.03, -0.5);
 
         let ln = LayerNorm::new(Arc::from(gain), Some(Arc::from(bias)), 1e-5, last_dim).unwrap();
-        let x = Tensor::from_f32(x_data, Shape::from_dims(&[seq, last_dim]), &Device::cpu());
+        let x =
+            Tensor::from_f32(x_data, Shape::from_dims(&[seq, last_dim]), &Device::cpu()).unwrap();
         let y = ln.forward(&x).unwrap();
         assert_eq!(y.shape().dims(), &[seq, last_dim]);
         let got = y.realize_f32();
@@ -451,7 +452,8 @@ mod tests {
         let x_data: Vec<f32> = ramp_f32(seq * last_dim, 0.4, -1.0);
 
         let ln = LayerNorm::new(Arc::from(gain), Some(Arc::from(bias)), 0.0, last_dim).unwrap();
-        let x = Tensor::from_f32(x_data, Shape::from_dims(&[seq, last_dim]), &Device::cpu());
+        let x =
+            Tensor::from_f32(x_data, Shape::from_dims(&[seq, last_dim]), &Device::cpu()).unwrap();
         let y = ln.forward(&x).unwrap();
         let got = y.realize_f32();
         assert_eq!(got.len(), seq * last_dim);
@@ -477,11 +479,13 @@ mod tests {
             x_data.clone(),
             Shape::from_dims(&[seq, last_dim]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let y = rn.forward(&x).unwrap();
         let got = y.realize_f32();
 
-        let x2 = Tensor::from_f32(x_data, Shape::from_dims(&[seq, last_dim]), &Device::cpu());
+        let x2 =
+            Tensor::from_f32(x_data, Shape::from_dims(&[seq, last_dim]), &Device::cpu()).unwrap();
         let expected = x2
             .rms_norm_affine(Arc::from(gain), 1e-6)
             .unwrap()
@@ -516,7 +520,8 @@ mod tests {
             x_data,
             Shape::from_dims(&[b, num_channels, h, w]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let y = gn.forward(&x).unwrap();
         assert_eq!(y.shape().dims(), &[b, num_channels, h, w]);
         let got = y.realize_f32();
@@ -553,7 +558,8 @@ mod tests {
             x_data,
             Shape::from_dims(&[n, num_features, h, w]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let y = bn.forward(&x).unwrap();
         assert_eq!(y.shape().dims(), &[n, num_features, h, w]);
         let got = y.realize_f32();
@@ -595,7 +601,8 @@ mod tests {
             x_data,
             Shape::from_dims(&[n, num_features, h, w]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let got = bn.forward(&x).unwrap().realize_f32();
         let expected = [5.0_f32, 5.0_f32, 4.0_f32, 4.0_f32];
         for (i, (a, e)) in got.iter().zip(expected.iter()).enumerate() {

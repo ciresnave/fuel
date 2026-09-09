@@ -144,7 +144,7 @@ fn load_image_lazy(path: PathBuf, device: &Device) -> anyhow::Result<Tensor> {
         Arc::<[f32]>::from(image_vec),
         Shape::from_dims(&[1, 3, 224, 224]),
         device,
-    ))
+    )?)
 }
 
 fn segmentation_task(args: SegmentationArgs, device: &Device) -> anyhow::Result<()> {

@@ -360,7 +360,7 @@ impl ChatGlmModel {
         let qkv = match &layer.query_key_value_bias {
             None => qkv,
             Some(b) => {
-                let bt = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[qkv_dim]));
+                let bt = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[qkv_dim]))?;
                 qkv.broadcast_add(&bt)?
             }
         };
@@ -403,7 +403,7 @@ impl ChatGlmModel {
         match &layer.dense_bias {
             None => Ok(dense_out),
             Some(b) => {
-                let bt = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[cfg.hidden_size]));
+                let bt = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[cfg.hidden_size]))?;
                 dense_out.broadcast_add(&bt)
             }
         }
@@ -419,7 +419,7 @@ impl ChatGlmModel {
         let h_to_4h = match &layer.dense_h_to_4h_bias {
             None => h_to_4h,
             Some(b) => {
-                let bt = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[fused_dim]));
+                let bt = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[fused_dim]))?;
                 h_to_4h.broadcast_add(&bt)?
             }
         };
@@ -430,7 +430,7 @@ impl ChatGlmModel {
         match &layer.dense_4h_to_h_bias {
             None => Ok(down),
             Some(b) => {
-                let bt = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[h]));
+                let bt = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[h]))?;
                 down.broadcast_add(&bt)
             }
         }
@@ -968,7 +968,8 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
         let max_diff = logits_ref
@@ -993,7 +994,8 @@ mod tests {
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
             Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         assert!(model.forward_embeds(&bad, 0).is_err());
     }
 
@@ -1006,7 +1008,8 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let h_via_embeds = model
             .forward_hidden_embeds(&embeds, 0)

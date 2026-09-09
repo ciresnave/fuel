@@ -301,7 +301,7 @@ fn linear(
     in_f: usize,
     out_f: usize,
 ) -> fuel_core::Result<Tensor> {
-    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]));
+    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]))?;
     let proj = x.matmul(&w_t)?;
     Ok(match b {
         None => proj,
@@ -316,7 +316,7 @@ fn timestep_embedding(t: &Tensor, anchor: &Tensor) -> fuel_core::Result<Tensor> 
     let freqs_data: Vec<f32> = (0..half)
         .map(|i| (-MAX_PERIOD.ln() * (i as f64) / (half as f64)).exp() as f32)
         .collect();
-    let freqs = anchor.const_f32_like(Arc::from(freqs_data), Shape::from_dims(&[half]));
+    let freqs = anchor.const_f32_like(Arc::from(freqs_data), Shape::from_dims(&[half]))?;
     // t: (B,) -> (B, 1)
     let b_size = t.shape().dims()[0];
     let t_col = t.reshape(Shape::from_dims(&[b_size, 1]))?;
@@ -652,27 +652,27 @@ impl ZImageTransformer2DModel {
         let img_cos = x_seq.const_f32_like(
             Arc::from(img_cos_v),
             Shape::from_dims(&[img_seq_len, half_head]),
-        );
+        )?;
         let img_sin = x_seq.const_f32_like(
             Arc::from(img_sin_v),
             Shape::from_dims(&[img_seq_len, half_head]),
-        );
+        )?;
         let cap_cos = x_seq.const_f32_like(
             Arc::from(cap_cos_v),
             Shape::from_dims(&[text_len, half_head]),
-        );
+        )?;
         let cap_sin = x_seq.const_f32_like(
             Arc::from(cap_sin_v),
             Shape::from_dims(&[text_len, half_head]),
-        );
+        )?;
         let uni_cos = x_seq.const_f32_like(
             Arc::from(uni_cos_v),
             Shape::from_dims(&[img_seq_len + text_len, half_head]),
-        );
+        )?;
         let uni_sin = x_seq.const_f32_like(
             Arc::from(uni_sin_v),
             Shape::from_dims(&[img_seq_len + text_len, half_head]),
-        );
+        )?;
 
         // 4. Caption RMSNorm + linear.
         let cap_normed = cap_feats.rms_norm_affine(Arc::clone(&w.cap_norm_gain), cfg.norm_eps)?;
@@ -686,7 +686,8 @@ impl ZImageTransformer2DModel {
 
         // 5. Attention masks (F32: 1.0 = valid, 0.0 = padding).
         let ones_v: Vec<f32> = vec![1.0; b * img_seq_len];
-        let img_mask = x_seq.const_f32_like(Arc::from(ones_v), Shape::from_dims(&[b, img_seq_len]));
+        let img_mask =
+            x_seq.const_f32_like(Arc::from(ones_v), Shape::from_dims(&[b, img_seq_len]))?;
 
         // 6. Noise refiner (modulated image stack).
         for blk in &w.noise_refiner {
@@ -1065,11 +1066,11 @@ fn vae_group_norm(
     let normed = centered.div(&std_bc)?;
     let normed_chw = normed.reshape(Shape::from_dims(&[1, c, h, w]))?;
     let g = x
-        .const_f32_like(gamma.clone(), Shape::from_dims(&[c]))
+        .const_f32_like(gamma.clone(), Shape::from_dims(&[c]))?
         .reshape(Shape::from_dims(&[1, c, 1, 1]))?
         .broadcast_to(Shape::from_dims(&[1, c, h, w]))?;
     let b = x
-        .const_f32_like(beta.clone(), Shape::from_dims(&[c]))
+        .const_f32_like(beta.clone(), Shape::from_dims(&[c]))?
         .reshape(Shape::from_dims(&[1, c, 1, 1]))?
         .broadcast_to(Shape::from_dims(&[1, c, h, w]))?;
     normed_chw.mul(&g)?.add(&b)
@@ -1082,8 +1083,8 @@ fn conv2d_k3_s1_p1(
     cin: usize,
     cout: usize,
 ) -> fuel_core::Result<Tensor> {
-    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin, 3, 3]));
-    let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[cout]));
+    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin, 3, 3]))?;
+    let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[cout]))?;
     x.conv2d(&w_t, Some(&b_t), (1, 1), (1, 1), 1)
 }
 
@@ -1099,18 +1100,19 @@ fn conv2d_k3_s2_p0_with_pad(
     // Match Python: pad_with_zeros (right=1, bottom=1) then stride-2 conv.
     // Implemented by manual reshape+concat zero padding on axes 2 and 3.
     let zeros_right_v: Vec<f32> = vec![0.0; cin * h * 1];
-    let zeros_right = x.const_f32_like(Arc::from(zeros_right_v), Shape::from_dims(&[1, cin, h, 1]));
+    let zeros_right =
+        x.const_f32_like(Arc::from(zeros_right_v), Shape::from_dims(&[1, cin, h, 1]))?;
     let x_w = x.concat(&zeros_right, 3_usize)?;
     let new_w = w_sz + 1;
     let zeros_bottom_v: Vec<f32> = vec![0.0; cin * 1 * new_w];
     let zeros_bottom = x.const_f32_like(
         Arc::from(zeros_bottom_v),
         Shape::from_dims(&[1, cin, 1, new_w]),
-    );
+    )?;
     let x_padded = x_w.concat(&zeros_bottom, 2_usize)?;
 
-    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin, 3, 3]));
-    let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[cout]));
+    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin, 3, 3]))?;
+    let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[cout]))?;
     x_padded.conv2d(&w_t, Some(&b_t), (2, 2), (0, 0), 1)
 }
 
@@ -1147,8 +1149,8 @@ fn vae_resnet(
     let h2 = conv2d_k3_s1_p1(&h2, &rw.c2_w, &rw.c2_b, c_out, c_out)?;
     let shortcut = match (&rw.shortcut_w, &rw.shortcut_b) {
         (Some(sw), Some(sb)) => {
-            let w_t = x.const_f32_like(sw.clone(), Shape::from_dims(&[c_out, c_in, 1, 1]));
-            let b_t = x.const_f32_like(sb.clone(), Shape::from_dims(&[c_out]));
+            let w_t = x.const_f32_like(sw.clone(), Shape::from_dims(&[c_out, c_in, 1, 1]))?;
+            let b_t = x.const_f32_like(sb.clone(), Shape::from_dims(&[c_out]))?;
             x.conv2d(&w_t, Some(&b_t), (1, 1), (0, 0), 1)?
         }
         _ => x.clone(),
@@ -1484,7 +1486,7 @@ impl ZImageModel {
         // cap_mask: all-1 over text_len (no padding in single-prompt path).
         let mask_v: Vec<f32> = vec![1.0; text_len];
         let cap_mask =
-            cap_feats.const_f32_like(Arc::from(mask_v), Shape::from_dims(&[1, text_len]));
+            cap_feats.const_f32_like(Arc::from(mask_v), Shape::from_dims(&[1, text_len]))?;
 
         // 2. Initial noise via deterministic LCG (host-side, then ported into a const).
         let cfg = &self.transformer.config;
@@ -1494,7 +1496,7 @@ impl ZImageModel {
         let noise = cap_feats.const_f32_like(
             Arc::from(noise_v),
             Shape::from_dims(&[1, c, 1, latent_h, latent_w]),
-        );
+        )?;
 
         // 3. Scheduler.
         let mut sched = FlowMatchEulerDiscreteScheduler::new(SchedulerConfig::z_image_turbo());
@@ -1505,7 +1507,7 @@ impl ZImageModel {
         for _ in 0..num_steps {
             let t_norm = sched.current_timestep_normalized();
             let t =
-                cap_feats.const_f32_like(Arc::from(vec![t_norm as f32]), Shape::from_dims(&[1]));
+                cap_feats.const_f32_like(Arc::from(vec![t_norm as f32]), Shape::from_dims(&[1]))?;
             let v = self
                 .transformer
                 .forward(&latent, &t, &cap_feats, &cap_mask)?;
@@ -2148,13 +2150,20 @@ mod tests {
             vec![0.1_f32; c * h * w],
             Shape::from_dims(&[1, c, 1, h, w]),
             &fuel_core::Device::cpu(),
-        );
-        let t = x.const_f32_like(Arc::from(vec![0.5_f32]), Shape::from_dims(&[1]));
-        let cap = x.const_f32_like(
-            Arc::from(vec![0.1_f32; 1 * 3 * cfg.cap_feat_dim]),
-            Shape::from_dims(&[1, 3, cfg.cap_feat_dim]),
-        );
-        let cap_mask = x.const_f32_like(Arc::from(vec![1.0_f32; 3]), Shape::from_dims(&[1, 3]));
+        )
+        .unwrap();
+        let t = x
+            .const_f32_like(Arc::from(vec![0.5_f32]), Shape::from_dims(&[1]))
+            .unwrap();
+        let cap = x
+            .const_f32_like(
+                Arc::from(vec![0.1_f32; 1 * 3 * cfg.cap_feat_dim]),
+                Shape::from_dims(&[1, 3, cfg.cap_feat_dim]),
+            )
+            .unwrap();
+        let cap_mask = x
+            .const_f32_like(Arc::from(vec![1.0_f32; 3]), Shape::from_dims(&[1, 3]))
+            .unwrap();
 
         let out = model.forward(&x, &t, &cap, &cap_mask).unwrap();
         assert_eq!(out.shape().dims(), &[1, c, 1, h, w]);
@@ -2374,7 +2383,8 @@ mod tests {
             vec![0.1_f32; cfg.in_channels * h * w],
             Shape::from_dims(&[1, cfg.in_channels, h, w]),
             &fuel_core::Device::cpu(),
-        );
+        )
+        .unwrap();
         let z = vae.encode(&x).unwrap();
         assert_eq!(z.shape().dims(), &[1, cfg.latent_channels, h / 2, w / 2]);
         let img = vae.decode(&z).unwrap();
@@ -2396,8 +2406,11 @@ mod tests {
             vec![0.5_f32; 4],
             Shape::from_dims(&[1, 4]),
             &fuel_core::Device::cpu(),
-        );
-        let v = sample.const_f32_like(Arc::from(vec![0.1_f32; 4]), Shape::from_dims(&[1, 4]));
+        )
+        .unwrap();
+        let v = sample
+            .const_f32_like(Arc::from(vec![0.1_f32; 4]), Shape::from_dims(&[1, 4]))
+            .unwrap();
         let mut latent = sample.clone();
         while !sched.is_complete() {
             latent = sched.step(&v, &latent).unwrap();
@@ -2440,24 +2453,31 @@ mod tests {
             vec![0.1_f32; c * h_lat * w_lat],
             Shape::from_dims(&[1, c, 1, h_lat, w_lat]),
             &fuel_core::Device::cpu(),
-        );
+        )
+        .unwrap();
         // We can't share the cfg between transformer (in_channels=2) and
         // VAE (latent_channels=2): both happen to be 2 here, so we can
         // hand the transformer output to the VAE directly.
         assert_eq!(tcfg.in_channels, vcfg.latent_channels);
 
-        let cap = noise.const_f32_like(
-            Arc::from(vec![0.05_f32; 1 * 2 * tcfg.cap_feat_dim]),
-            Shape::from_dims(&[1, 2, tcfg.cap_feat_dim]),
-        );
-        let cap_mask = noise.const_f32_like(Arc::from(vec![1.0_f32; 2]), Shape::from_dims(&[1, 2]));
+        let cap = noise
+            .const_f32_like(
+                Arc::from(vec![0.05_f32; 1 * 2 * tcfg.cap_feat_dim]),
+                Shape::from_dims(&[1, 2, tcfg.cap_feat_dim]),
+            )
+            .unwrap();
+        let cap_mask = noise
+            .const_f32_like(Arc::from(vec![1.0_f32; 2]), Shape::from_dims(&[1, 2]))
+            .unwrap();
 
         let mut sched = FlowMatchEulerDiscreteScheduler::new(SchedulerConfig::z_image_turbo());
         sched.set_timesteps(2, None);
         let mut latent = noise;
         for _ in 0..2 {
             let t_norm = sched.current_timestep_normalized() as f32;
-            let t = latent.const_f32_like(Arc::from(vec![t_norm]), Shape::from_dims(&[1]));
+            let t = latent
+                .const_f32_like(Arc::from(vec![t_norm]), Shape::from_dims(&[1]))
+                .unwrap();
             let v = transformer.forward(&latent, &t, &cap, &cap_mask).unwrap();
             latent = sched.step(&v, &latent).unwrap();
         }

@@ -87,10 +87,13 @@ fn two_subdags_cpu_and_cuda_realize_in_one_pass() {
         vec![1.0_f32, 2.0, 3.0, 4.0],
         Shape::from_dims(&[4]),
         &fuel_core::Device::cpu(),
-    );
+    )
+    .unwrap();
     // `const_f32_like` keeps `b` in `a`'s graph (a bare second `from_f32` would
     // mint a separate graph and `add`/`mul` across graphs would fail).
-    let b = a.const_f32_like(vec![10.0_f32, 20.0, 30.0, 40.0], Shape::from_dims(&[4]));
+    let b = a
+        .const_f32_like(vec![10.0_f32, 20.0, 30.0, 40.0], Shape::from_dims(&[4]))
+        .unwrap();
 
     // Sub-DAG 1 on CUDA.
     let s1 = a.add(&b).expect("s1 = a+b");

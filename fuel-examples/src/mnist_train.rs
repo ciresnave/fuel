@@ -131,9 +131,9 @@ impl MnistTrainer {
             .step(move |_graph, params: &HashMap<String, Tensor>| {
                 let (w1, b1, w2, b2) = (&params["w1"], &params["b1"], &params["w2"], &params["b2"]);
                 // Input as a Const on the parameters' graph (the finetune anchor trick).
-                let x = w1.const_f32_like(x_data, Shape::from_dims(&[n_samples, in_dim]));
+                let x = w1.const_f32_like(x_data, Shape::from_dims(&[n_samples, in_dim]))?;
                 let logits = mlp_logits(&x, w1, b1, w2, b2)?;
-                let target = w1.const_f32_like(t_data, Shape::from_dims(&[n_samples, out_dim]));
+                let target = w1.const_f32_like(t_data, Shape::from_dims(&[n_samples, out_dim]))?;
                 loss::cross_entropy_with_logits(&logits, &target)
             })
     }
@@ -146,7 +146,7 @@ impl MnistTrainer {
         let cfg = &self.cfg;
         let mk = |name: &str, dims: &[usize]| -> Result<Tensor> {
             let data: Arc<[f32]> = self.state.param_to_host(name)?.into();
-            Ok(Tensor::from_f32(data, Shape::from_dims(dims), &dev))
+            Tensor::from_f32(data, Shape::from_dims(dims), &dev)
         };
         let w1 = mk("w1", &[cfg.in_dim, cfg.hidden])?;
         let b1 = mk("b1", &[cfg.hidden])?;
@@ -156,7 +156,7 @@ impl MnistTrainer {
             images.to_vec(),
             Shape::from_dims(&[n_samples, cfg.in_dim]),
             &dev,
-        );
+        )?;
         let logits = mlp_logits(&x, &w1, &b1, &w2, &b2)?.realize_f32();
 
         let mut correct = 0usize;

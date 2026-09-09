@@ -102,15 +102,20 @@ fn build_inputs() -> Inputs {
         x_data,
         Shape::from_dims(&[1, seq, dim_in]),
         &fuel_core::Device::cpu(),
-    );
-    let w1 = x.const_f32_like(
-        Arc::<[f32]>::from(gen_lcg(24691, dim_in * dim_mid)),
-        Shape::from_dims(&[dim_in, dim_mid]),
-    );
-    let w2 = x.const_f32_like(
-        Arc::<[f32]>::from(gen_lcg(37037, dim_mid * dim_out)),
-        Shape::from_dims(&[dim_mid, dim_out]),
-    );
+    )
+    .unwrap();
+    let w1 = x
+        .const_f32_like(
+            Arc::<[f32]>::from(gen_lcg(24691, dim_in * dim_mid)),
+            Shape::from_dims(&[dim_in, dim_mid]),
+        )
+        .unwrap();
+    let w2 = x
+        .const_f32_like(
+            Arc::<[f32]>::from(gen_lcg(37037, dim_mid * dim_out)),
+            Shape::from_dims(&[dim_mid, dim_out]),
+        )
+        .unwrap();
     Inputs { x, w1, w2 }
 }
 
@@ -150,7 +155,8 @@ fn bisect_c_just_rmsnorm() -> Result<(), Box<dyn std::error::Error>> {
         data,
         Shape::from_dims(&[1, seq, dim_mid]),
         &fuel_core::Device::cpu(),
-    );
+    )
+    .unwrap();
     let y = x.rms_norm_last_dim(1e-5)?;
     let (r, c) = realize_both(&y);
     report("C: rms_norm only", &r, &c);
@@ -169,11 +175,14 @@ fn bisect_d_rmsnorm_then_matmul() -> Result<(), Box<dyn std::error::Error>> {
         data,
         Shape::from_dims(&[1, seq, dim_mid]),
         &fuel_core::Device::cpu(),
-    );
-    let w2 = x.const_f32_like(
-        Arc::<[f32]>::from(gen_lcg(37037, dim_mid * dim_out)),
-        Shape::from_dims(&[dim_mid, dim_out]),
-    );
+    )
+    .unwrap();
+    let w2 = x
+        .const_f32_like(
+            Arc::<[f32]>::from(gen_lcg(37037, dim_mid * dim_out)),
+            Shape::from_dims(&[dim_mid, dim_out]),
+        )
+        .unwrap();
     let y = x.rms_norm_last_dim(1e-5)?.matmul(&w2)?;
     let (r, c) = realize_both(&y);
     report("D: rms_norm → matmul", &r, &c);

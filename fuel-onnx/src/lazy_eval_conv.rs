@@ -887,7 +887,7 @@ mod tests {
             ..Default::default()
         };
         let device = Device::cpu();
-        let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[1, 1, 3, 3]), &device);
+        let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[1, 1, 3, 3]), &device).unwrap();
         let mut inputs = HashMap::new();
         inputs.insert("X".to_string(), x);
         let outputs = run_graph(graph, inputs).unwrap();
@@ -913,7 +913,7 @@ mod tests {
             ..Default::default()
         };
         let device = Device::cpu();
-        let x = Tensor::from_f32(x_data, Shape::from_dims(&[1, 1, 2, 2]), &device);
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[1, 1, 2, 2]), &device).unwrap();
         let mut inputs = HashMap::new();
         inputs.insert("X".to_string(), x);
         let outputs = run_graph(graph, inputs).unwrap();
@@ -937,7 +937,7 @@ mod tests {
             ..Default::default()
         };
         let device = Device::cpu();
-        let x = Tensor::from_f32(vec![5.0_f32, 7.0], Shape::from_dims(&[1, 2]), &device);
+        let x = Tensor::from_f32(vec![5.0_f32, 7.0], Shape::from_dims(&[1, 2]), &device).unwrap();
         let mut inputs = HashMap::new();
         inputs.insert("X".to_string(), x);
         let outputs = run_graph(graph, inputs).unwrap();
@@ -965,7 +965,7 @@ mod tests {
             ..Default::default()
         };
         let device = Device::cpu();
-        let x = Tensor::from_f32(vec![1.0_f32, 2.0], Shape::from_dims(&[1, 2]), &device);
+        let x = Tensor::from_f32(vec![1.0_f32, 2.0], Shape::from_dims(&[1, 2]), &device).unwrap();
         let mut inputs = HashMap::new();
         inputs.insert("X".to_string(), x);
         let err = run_graph(graph, inputs).unwrap_err();
@@ -991,7 +991,7 @@ mod tests {
             ..Default::default()
         };
         let device = Device::cpu();
-        let x = Tensor::from_f32(x_data, Shape::from_dims(&[1, 1, 4, 4]), &device);
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[1, 1, 4, 4]), &device).unwrap();
         let mut inputs = HashMap::new();
         inputs.insert("X".to_string(), x);
         let outputs = run_graph(graph, inputs).unwrap();
@@ -1025,7 +1025,7 @@ mod tests {
             ..Default::default()
         };
         let device = Device::cpu();
-        let x = Tensor::from_f32(x_data, Shape::from_dims(&[1, 1, 2, 2]), &device);
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[1, 1, 2, 2]), &device).unwrap();
         let mut inputs = HashMap::new();
         inputs.insert("X".to_string(), x);
         let outputs = run_graph(graph, inputs).unwrap();
@@ -1047,7 +1047,7 @@ mod tests {
             ..Default::default()
         };
         let device = Device::cpu();
-        let x = Tensor::from_f32(x_data, Shape::from_dims(&[1, 2, 2, 2]), &device);
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[1, 2, 2, 2]), &device).unwrap();
         let mut inputs = HashMap::new();
         inputs.insert("X".to_string(), x);
         let outputs = run_graph(graph, inputs).unwrap();
@@ -1069,7 +1069,7 @@ mod tests {
             ..Default::default()
         };
         let device = Device::cpu();
-        let x = Tensor::from_f32(x_data, Shape::from_dims(&[1, 2, 2, 2]), &device);
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[1, 2, 2, 2]), &device).unwrap();
         let mut inputs = HashMap::new();
         inputs.insert("X".to_string(), x);
         let outputs = run_graph(graph, inputs).unwrap();

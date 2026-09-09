@@ -141,8 +141,8 @@ impl XlmrModel {
             weights.word_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
             &Device::cpu(),
-        );
-        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        )?;
+        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]))?;
         let word_embeds = word_emb_t
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
@@ -153,8 +153,8 @@ impl XlmrModel {
         let pos_full = word_emb_t.const_f32_like(
             Arc::clone(&weights.position_embedding),
             Shape::from_dims(&[cfg.max_position_embeddings, cfg.hidden_size]),
-        );
-        let pos_ids = word_emb_t.const_u32_like(position_ids_vec, Shape::from_dims(&[seq]));
+        )?;
+        let pos_ids = word_emb_t.const_u32_like(position_ids_vec, Shape::from_dims(&[seq]))?;
         let pos_embeds = pos_full
             .index_select(0_usize, &pos_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
@@ -163,8 +163,8 @@ impl XlmrModel {
         let tt_full = word_emb_t.const_f32_like(
             Arc::clone(&weights.token_type_embedding),
             Shape::from_dims(&[cfg.type_vocab_size, cfg.hidden_size]),
-        );
-        let tt_ids = word_emb_t.const_u32_like(vec![0_u32; seq], Shape::from_dims(&[seq]));
+        )?;
+        let tt_ids = word_emb_t.const_u32_like(vec![0_u32; seq], Shape::from_dims(&[seq]))?;
         let tt_embeds = tt_full
             .index_select(0_usize, &tt_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
@@ -227,8 +227,8 @@ impl XlmrModel {
             weights.word_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
             &Device::cpu(),
-        );
-        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        )?;
+        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]))?;
         let word_embeds = word_emb_t
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
@@ -237,16 +237,16 @@ impl XlmrModel {
         let pos_full = word_emb_t.const_f32_like(
             Arc::clone(&weights.position_embedding),
             Shape::from_dims(&[cfg.max_position_embeddings, cfg.hidden_size]),
-        );
-        let pos_ids = word_emb_t.const_u32_like(position_ids_vec, Shape::from_dims(&[seq]));
+        )?;
+        let pos_ids = word_emb_t.const_u32_like(position_ids_vec, Shape::from_dims(&[seq]))?;
         let pos_embeds = pos_full
             .index_select(0_usize, &pos_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;
         let tt_full = word_emb_t.const_f32_like(
             Arc::clone(&weights.token_type_embedding),
             Shape::from_dims(&[cfg.type_vocab_size, cfg.hidden_size]),
-        );
-        let tt_ids = word_emb_t.const_u32_like(vec![0_u32; seq], Shape::from_dims(&[seq]));
+        )?;
+        let tt_ids = word_emb_t.const_u32_like(vec![0_u32; seq], Shape::from_dims(&[seq]))?;
         let tt_embeds = tt_full
             .index_select(0_usize, &tt_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;

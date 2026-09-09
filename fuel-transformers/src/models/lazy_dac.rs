@@ -180,7 +180,7 @@ impl DacModel {
             let codebook = codes.const_f32_like(
                 Arc::clone(&q.codebook),
                 Shape::from_dims(&[cfg.codebook_size, cfg.codebook_dim]),
-            );
+            )?;
             let z_p = codebook
                 .index_select(0_usize, &ids)?
                 .reshape(Shape::from_dims(&[1, time, cfg.codebook_dim]))?
@@ -254,10 +254,11 @@ fn apply_conv1d(x: &Tensor, c: &Conv1dWeights, anchor: &Tensor) -> Result<Tensor
     let w = anchor.const_f32_like(
         Arc::<[f32]>::from(w_data),
         Shape::from_dims(&[c.c_out, c.c_in, k_eff]),
-    );
+    )?;
     let bias =
         c.b.as_ref()
-            .map(|b| anchor.const_f32_like(Arc::clone(b), Shape::from_dims(&[c.c_out])));
+            .map(|b| anchor.const_f32_like(Arc::clone(b), Shape::from_dims(&[c.c_out])))
+            .transpose()?;
     x.conv1d(&w, bias.as_ref(), c.stride, c.pad, 1)
 }
 
@@ -266,11 +267,11 @@ fn apply_conv_transpose1d(
     c: &ConvTranspose1dWeights,
     anchor: &Tensor,
 ) -> Result<Tensor> {
-    let w = anchor.const_f32_like(Arc::clone(&c.w), Shape::from_dims(&[c.c_in, c.c_out, c.k]));
+    let w = anchor.const_f32_like(Arc::clone(&c.w), Shape::from_dims(&[c.c_in, c.c_out, c.k]))?;
     let mut out = x.conv_transpose1d(&w, c.stride, c.pad, 0, 1, 1)?;
     if let Some(b) = &c.b {
         let bias = anchor
-            .const_f32_like(Arc::clone(b), Shape::from_dims(&[c.c_out]))
+            .const_f32_like(Arc::clone(b), Shape::from_dims(&[c.c_out]))?
             .reshape(Shape::from_dims(&[1, c.c_out, 1]))?;
         out = out.broadcast_add(&bias)?;
     }
@@ -287,7 +288,7 @@ fn apply_snake1d(x: &Tensor, s: &Snake1dWeights, anchor: &Tensor) -> Result<Tens
         dims[1], s.channels
     );
     let alpha = anchor
-        .const_f32_like(Arc::clone(&s.alpha), Shape::from_dims(&[s.channels]))
+        .const_f32_like(Arc::clone(&s.alpha), Shape::from_dims(&[s.channels]))?
         .reshape(Shape::from_dims(&[1, s.channels, 1]))?
         .broadcast_to(Shape::from_dims(dims))?;
     let scaled = x.mul(&alpha)?;
@@ -838,7 +839,8 @@ mod tests {
             vec![0.5_f32, -0.25, 0.75, 1.0],
             Shape::from_dims(&[1, 2, 2]),
             &dev,
-        );
+        )
+        .unwrap();
         let snake_w = Snake1dWeights {
             alpha: Arc::from(vec![0.0_f32; 2]),
             channels: 2,
@@ -866,8 +868,11 @@ mod tests {
                 data.push(((c + t) % cfg.codebook_size) as u32);
             }
         }
-        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &Device::cpu());
-        let codes = anchor.const_u32_like(data, Shape::from_dims(&[1, cfg.num_codebooks, time]));
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
+        let codes = anchor
+            .const_u32_like(data, Shape::from_dims(&[1, cfg.num_codebooks, time]))
+            .unwrap();
         let audio = model.decode_codes(&codes).unwrap();
         let dims = audio.shape();
         let dims = dims.dims();
@@ -1221,11 +1226,13 @@ mod tests {
 
         let time = 4_usize;
         let dev = Device::cpu();
-        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
-        let codes = anchor.const_u32_like(
-            vec![1_u32; cfg.num_codebooks * time],
-            Shape::from_dims(&[1, cfg.num_codebooks, time]),
-        );
+        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev).unwrap();
+        let codes = anchor
+            .const_u32_like(
+                vec![1_u32; cfg.num_codebooks * time],
+                Shape::from_dims(&[1, cfg.num_codebooks, time]),
+            )
+            .unwrap();
         let audio = model.decode_codes(&codes).unwrap().realize_f32();
         assert!(!audio.is_empty(), "decoded audio must have samples");
         for &v in &audio {
@@ -1247,15 +1254,19 @@ mod tests {
         };
         let time = 4_usize;
         let dev = Device::cpu();
-        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
-        let codes_a = anchor.const_u32_like(
-            vec![0_u32; cfg.num_codebooks * time],
-            Shape::from_dims(&[1, cfg.num_codebooks, time]),
-        );
-        let codes_b = anchor.const_u32_like(
-            vec![3_u32; cfg.num_codebooks * time],
-            Shape::from_dims(&[1, cfg.num_codebooks, time]),
-        );
+        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev).unwrap();
+        let codes_a = anchor
+            .const_u32_like(
+                vec![0_u32; cfg.num_codebooks * time],
+                Shape::from_dims(&[1, cfg.num_codebooks, time]),
+            )
+            .unwrap();
+        let codes_b = anchor
+            .const_u32_like(
+                vec![3_u32; cfg.num_codebooks * time],
+                Shape::from_dims(&[1, cfg.num_codebooks, time]),
+            )
+            .unwrap();
         let a = model.decode_codes(&codes_a).unwrap().realize_f32();
         let b = model.decode_codes(&codes_b).unwrap().realize_f32();
         let mut max_diff = 0.0_f32;

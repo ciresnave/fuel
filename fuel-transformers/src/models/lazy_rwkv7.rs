@@ -306,15 +306,24 @@ impl Rwkv7Model {
         let tm = &layer.time_mix;
 
         // ---- Per-stream token-shift mix coefficients --------------------------
-        let mix_const = |arc: &Arc<[f32]>| -> Tensor {
+        // ⚠️ GAP-003 CATEGORY 3, and it is NOT in mimi -- loaded time-mix
+        // weights (`tm.x_r` etc.) against `cfg.hidden_size`. No local proof.
+        // The enclosing fn already returns `Result`, so the channel exists
+        // and the six call sites below simply propagate.
+        let mix_const = |arc: &Arc<[f32]>| -> fuel_core::Result<Tensor> {
             x.const_f32_like(Arc::clone(arc), Shape::from_dims(&[1, 1, h]))
+                .map_err(|e| {
+                    fuel_core::Error::Msg(format!(
+                        "rwkv7 time-mix weight from the checkpoint does not match the \n                         config: {e} (config implies hidden_size)"
+                    ))
+                })
         };
-        let m_r = mix_const(&tm.x_r);
-        let m_w = mix_const(&tm.x_w);
-        let m_k = mix_const(&tm.x_k);
-        let m_v = mix_const(&tm.x_v);
-        let m_a = mix_const(&tm.x_a);
-        let m_g = mix_const(&tm.x_g);
+        let m_r = mix_const(&tm.x_r)?;
+        let m_w = mix_const(&tm.x_w)?;
+        let m_k = mix_const(&tm.x_k)?;
+        let m_v = mix_const(&tm.x_v)?;
+        let m_a = mix_const(&tm.x_a)?;
+        let m_g = mix_const(&tm.x_g)?;
 
         // Token-shifted input: shifted - x  (note: shifted is x_{t-1}).
         let shifted = shift_seq(x, batch, seq, h);
@@ -333,9 +342,9 @@ impl Rwkv7Model {
         let v = tm.value.apply_linear(&xv, h, h)?;
 
         // ---- Decay LoRA: w = exp(-0.606531 * sigmoid(w0 + tanh(xw @ w1) @ w2))
-        let w0 = x.const_f32_like(Arc::clone(&tm.w0), Shape::from_dims(&[1, 1, h]));
-        let w1 = x.const_f32_like(Arc::clone(&tm.w1), Shape::from_dims(&[h, cfg.d_decay]));
-        let w2 = x.const_f32_like(Arc::clone(&tm.w2), Shape::from_dims(&[cfg.d_decay, h]));
+        let w0 = x.const_f32_like(Arc::clone(&tm.w0), Shape::from_dims(&[1, 1, h]))?;
+        let w1 = x.const_f32_like(Arc::clone(&tm.w1), Shape::from_dims(&[h, cfg.d_decay]))?;
+        let w2 = x.const_f32_like(Arc::clone(&tm.w2), Shape::from_dims(&[cfg.d_decay, h]))?;
         let w_hidden = xw.matmul(&w1)?.tanh().matmul(&w2)?;
         let w_pre = w0
             .broadcast_to(Shape::from_dims(&[batch, seq, h]))?
@@ -344,17 +353,17 @@ impl Rwkv7Model {
         let w = w_sig.mul_scalar(-0.606531_f64).exp();
 
         // ---- ICL rate: a = sigmoid(a0 + (xa @ a1) @ a2)
-        let a0 = x.const_f32_like(Arc::clone(&tm.a0), Shape::from_dims(&[1, 1, h]));
-        let a1 = x.const_f32_like(Arc::clone(&tm.a1), Shape::from_dims(&[h, cfg.d_aaa]));
-        let a2 = x.const_f32_like(Arc::clone(&tm.a2), Shape::from_dims(&[cfg.d_aaa, h]));
+        let a0 = x.const_f32_like(Arc::clone(&tm.a0), Shape::from_dims(&[1, 1, h]))?;
+        let a1 = x.const_f32_like(Arc::clone(&tm.a1), Shape::from_dims(&[h, cfg.d_aaa]))?;
+        let a2 = x.const_f32_like(Arc::clone(&tm.a2), Shape::from_dims(&[cfg.d_aaa, h]))?;
         let a_pre = a0
             .broadcast_to(Shape::from_dims(&[batch, seq, h]))?
             .add(&xa.matmul(&a1)?.matmul(&a2)?)?;
         let a = a_pre.sigmoid();
 
         // ---- Gate: g = sigmoid(xg @ g1) @ g2 ---------------------------------
-        let g1 = x.const_f32_like(Arc::clone(&tm.g1), Shape::from_dims(&[h, cfg.d_gate]));
-        let g2 = x.const_f32_like(Arc::clone(&tm.g2), Shape::from_dims(&[cfg.d_gate, h]));
+        let g1 = x.const_f32_like(Arc::clone(&tm.g1), Shape::from_dims(&[h, cfg.d_gate]))?;
+        let g2 = x.const_f32_like(Arc::clone(&tm.g2), Shape::from_dims(&[cfg.d_gate, h]))?;
         let g = xg.matmul(&g1)?.sigmoid().matmul(&g2)?;
 
         // ---- Value residual stream (layer > 0) -------------------------------
@@ -374,9 +383,9 @@ impl Rwkv7Model {
             let v0_arc = tm.v0.as_ref().expect("layer > 0 must carry v0/v1/v2");
             let v1_arc = tm.v1.as_ref().expect("layer > 0 must carry v0/v1/v2");
             let v2_arc = tm.v2.as_ref().expect("layer > 0 must carry v0/v1/v2");
-            let v0 = x.const_f32_like(Arc::clone(v0_arc), Shape::from_dims(&[1, 1, h]));
-            let v1l = x.const_f32_like(Arc::clone(v1_arc), Shape::from_dims(&[h, cfg.d_mv]));
-            let v2l = x.const_f32_like(Arc::clone(v2_arc), Shape::from_dims(&[cfg.d_mv, h]));
+            let v0 = x.const_f32_like(Arc::clone(v0_arc), Shape::from_dims(&[1, 1, h]))?;
+            let v1l = x.const_f32_like(Arc::clone(v1_arc), Shape::from_dims(&[h, cfg.d_mv]))?;
+            let v2l = x.const_f32_like(Arc::clone(v2_arc), Shape::from_dims(&[cfg.d_mv, h]))?;
             let gate_pre = v0
                 .broadcast_to(Shape::from_dims(&[batch, seq, h]))?
                 .add(&xv.matmul(&v1l)?.matmul(&v2l)?)?;
@@ -395,7 +404,7 @@ impl Rwkv7Model {
         let v = v_effective;
 
         // ---- Key processing --------------------------------------------------
-        let kk_const = x.const_f32_like(Arc::clone(&tm.k_k), Shape::from_dims(&[1, 1, h]));
+        let kk_const = x.const_f32_like(Arc::clone(&tm.k_k), Shape::from_dims(&[1, 1, h]))?;
         let kk_raw = k.broadcast_mul(&kk_const)?;
         // L2 normalize per (batch, seq, head, head_size).
         let kk_h = kk_raw.reshape(Shape::from_dims(&[batch, seq, n_heads, head_size]))?;
@@ -408,7 +417,7 @@ impl Rwkv7Model {
             .reshape(Shape::from_dims(&[batch, seq, h]))?;
 
         // k = k * (1 + (a - 1) * k_a)
-        let k_a_const = x.const_f32_like(Arc::clone(&tm.k_a), Shape::from_dims(&[1, 1, h]));
+        let k_a_const = x.const_f32_like(Arc::clone(&tm.k_a), Shape::from_dims(&[1, 1, h]))?;
         let a_minus_1 = a.add_scalar(-1.0);
         let scale_term = a_minus_1.broadcast_mul(&k_a_const)?.add_scalar(1.0);
         let k_corrected = k.mul(&scale_term)?;
@@ -434,14 +443,14 @@ impl Rwkv7Model {
             .permute([0, 2, 1, 3_usize])?;
 
         // ---- Bonus term r_k --------------------------------------------------
-        let r_k_const = x.const_f32_like(Arc::clone(&tm.r_k), Shape::from_dims(&[1, 1, h]));
+        let r_k_const = x.const_f32_like(Arc::clone(&tm.r_k), Shape::from_dims(&[1, 1, h]))?;
 
         // ---- Delta-rule time loop -------------------------------------------
         // state shape: (b, n_heads, head_size, head_size)
         let state_init = x.const_f32_like(
             Arc::from(vec![0.0_f32; batch * n_heads * head_size * head_size]),
             Shape::from_dims(&[batch, n_heads, head_size, head_size]),
-        );
+        )?;
         let mut state = state_init;
         let mut out_steps: Vec<Tensor> = Vec::with_capacity(seq);
         for t in 0..seq {
@@ -538,7 +547,7 @@ impl Rwkv7Model {
 
         let shifted = shift_seq(x, batch, seq, h);
         let xx = shifted.sub(x)?;
-        let mix_const = x.const_f32_like(Arc::clone(&cm.x_k), Shape::from_dims(&[1, 1, h]));
+        let mix_const = x.const_f32_like(Arc::clone(&cm.x_k), Shape::from_dims(&[1, 1, h]))?;
         let k_in = x.add(&xx.broadcast_mul(&mix_const)?)?;
 
         // k = relu(k @ key)^2
@@ -551,7 +560,10 @@ fn shift_seq(x: &Tensor, batch: usize, seq: usize, h: usize) -> Tensor {
     let zero = x.const_f32_like(
         Arc::from(vec![0.0_f32; batch * h]),
         Shape::from_dims(&[batch, 1, h]),
-    );
+    )
+        .expect(
+                "shift_seq: buffer is vec![_; batch * h] and the shape is [batch, 1, h] -- \n             the length IS the product of the shape's own dims",
+        );
     if seq == 1 {
         return zero;
     }
@@ -585,11 +597,11 @@ fn group_norm_per_head(
     let gain_t = x.const_f32_like(
         Arc::clone(gain),
         Shape::from_dims(&[1, 1, n_heads, head_size]),
-    );
+    )?;
     let bias_t = x.const_f32_like(
         Arc::clone(bias),
         Shape::from_dims(&[1, 1, n_heads, head_size]),
-    );
+    )?;
     let gain_bc = gain_t.broadcast_to(Shape::from_dims(&[batch, seq, n_heads, head_size]))?;
     let bias_bc = bias_t.broadcast_to(Shape::from_dims(&[batch, seq, n_heads, head_size]))?;
     let scaled = normed.mul(&gain_bc)?.add(&bias_bc)?;
@@ -968,7 +980,8 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens).unwrap().realize_f32();
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds).unwrap().realize_f32();
         let max_diff = logits_ref
@@ -993,7 +1006,8 @@ mod tests {
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
             Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         assert!(model.forward_embeds(&bad).is_err());
     }
 
@@ -1006,7 +1020,8 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens).unwrap().realize_f32();
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let h_via_embeds = model.forward_hidden_embeds(&embeds).unwrap().realize_f32();
         let max_diff = h_ref

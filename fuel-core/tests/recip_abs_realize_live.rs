@@ -58,7 +58,8 @@ fn recip_realize_on_cuda_matches_reference() {
         vec![2.0_f32, 4.0, 8.0, 16.0],
         Shape::from_dims(&[4]),
         &fuel_core::Device::cpu(),
-    );
+    )
+    .unwrap();
     let r = a.recip();
     assert_eq!(r.dtype(), DType::F32);
 
@@ -85,7 +86,8 @@ fn abs_realize_on_cuda_matches_reference() {
         vec![-3.0_f32, 0.0, 3.0, -1.5, 2.5],
         Shape::from_dims(&[5]),
         &fuel_core::Device::cpu(),
-    );
+    )
+    .unwrap();
     let b = a.abs();
     assert_eq!(b.dtype(), DType::F32);
 

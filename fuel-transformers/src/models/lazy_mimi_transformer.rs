@@ -276,7 +276,7 @@ fn apply_per_channel_scale(x: &Tensor, scale: &Arc<[f32]>, hidden: usize) -> Res
     let mut shape = vec![1_usize; dims_v.len()];
     shape[dims_v.len() - 1] = hidden;
     let s = x
-        .const_f32_like(Arc::clone(scale), Shape::from_dims(&[hidden]))
+        .const_f32_like(Arc::clone(scale), Shape::from_dims(&[hidden]))?
         .reshape(Shape::from_dims(&shape))?
         .broadcast_to(Shape::from_dims(&dims_v))?;
     x.mul(&s)
@@ -303,8 +303,18 @@ fn build_rope_tables(
             sin_v.push(theta.sin());
         }
     }
-    let cos = anchor.const_f32_like(Arc::from(cos_v), Shape::from_dims(&[t, half]));
-    let sin = anchor.const_f32_like(Arc::from(sin_v), Shape::from_dims(&[t, half]));
+    // GAP-003 carve-out. THE PROOF IS LOCAL: the loop above is `for pos in 0..t`
+    // nested over `for i in 0..half`, pushing exactly once per iteration into
+    // each vec -- so both hold `t * half` elements -- against a `[t, half]`
+    // shape whose elem_count is that same product. `fn -> (Tensor, Tensor)` has
+    // no error channel; giving it one is a signature change, a different
+    // obligation from the constructor-family ruling.
+    let cos = anchor
+        .const_f32_like(Arc::from(cos_v), Shape::from_dims(&[t, half]))
+        .expect("mimi rope: t*half pushes against shape [t, half] -- same two values");
+    let sin = anchor
+        .const_f32_like(Arc::from(sin_v), Shape::from_dims(&[t, half]))
+        .expect("mimi rope: t*half pushes against shape [t, half] -- same two values");
     (cos, sin)
 }
 
@@ -619,7 +629,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, d, 5]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let outs = model.forward(&xs).unwrap();
         assert_eq!(outs.len(), 1);
         // conv_layout = true → (B, C, T) preserved.
@@ -640,7 +651,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, input_dim, 5]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let outs = model.forward(&xs).unwrap();
         assert_eq!(outs[0].shape().dims(), &[1, d, 5]);
     }
@@ -655,7 +667,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, d, 5]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let outs = model.forward(&xs).unwrap();
         assert_eq!(outs.len(), 2);
         assert_eq!(outs[0].shape().dims(), &[1, d, 5]);
@@ -676,7 +689,8 @@ mod tests {
             x_data.clone(),
             Shape::from_dims(&[b, h, t, d]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let (cos, sin) = build_rope_tables(&x, t, d, 10_000.0);
         let out = apply_rope_interleaved(&x, &cos, &sin, b, h, t, d).unwrap();
         let out_data = out.realize_f32();
@@ -706,13 +720,14 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, d, t]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         // Build xs_b with last (T-1) column replaced.
         let mut data_b: Vec<f32> = (0..(1 * d * t)).map(|i| (i as f32) * 0.01).collect();
         for c in 0..d {
             data_b[c * t + (t - 1)] = 9.0; // bump last token in every channel
         }
-        let xs_b = Tensor::from_f32(data_b, Shape::from_dims(&[1, d, t]), &Device::cpu());
+        let xs_b = Tensor::from_f32(data_b, Shape::from_dims(&[1, d, t]), &Device::cpu()).unwrap();
         let oa = model.forward(&xs_a).unwrap();
         let ob = model.forward(&xs_b).unwrap();
         let da = oa[0].realize_f32();

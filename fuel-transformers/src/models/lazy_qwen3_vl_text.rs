@@ -334,8 +334,8 @@ impl Qwen3VlTextModel {
             &cfg.mrope_section,
         )?;
         let rope_shape = Shape::from_dims(&[seq, cfg.head_dim]);
-        let rope_cos = embeds.const_f32_like(cos_data, rope_shape.clone());
-        let rope_sin = embeds.const_f32_like(sin_data, rope_shape);
+        let rope_cos = embeds.const_f32_like(cos_data, rope_shape.clone())?;
+        let rope_sin = embeds.const_f32_like(sin_data, rope_shape)?;
 
         let mut h = embeds.clone();
         for (layer_idx, (layer, extras)) in weights
@@ -372,6 +372,9 @@ impl Qwen3VlTextModel {
             }
         }
         anchor.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]))
+        .expect(
+                "build_layer_mask: buffer is vec![_; seq*seq] and the shape's elem_count is seq*seq -- \n             both derived from `seq` in this function; the loop writes in place",
+        )
     }
 
     fn apply_layer(
@@ -977,7 +980,8 @@ mod tests {
         let positions = scalar_positions(tokens.len());
         let logits_ref = model.forward(&tokens, &positions).unwrap().realize_f32();
 
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model
             .forward_embeds(&embeds, &positions)
@@ -1002,7 +1006,8 @@ mod tests {
             config: cfg.clone(),
             weights: tiny_weights(&cfg),
         };
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let embeds = model
             .embed_tokens_anchored(&anchor, &[1_u32, 2, 3])
             .unwrap();
@@ -1054,7 +1059,8 @@ mod tests {
             config: cfg.clone(),
             weights: tiny_weights(&cfg),
         };
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let seq = 4;
 
         let windowed = model.build_layer_mask(&anchor, seq, true).realize_f32();
@@ -1098,7 +1104,8 @@ mod tests {
             config: cfg.clone(),
             weights: tiny_weights(&cfg),
         };
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let seq = 4;
 
         let windowed = model.build_layer_mask(&anchor, seq, true).realize_f32();
