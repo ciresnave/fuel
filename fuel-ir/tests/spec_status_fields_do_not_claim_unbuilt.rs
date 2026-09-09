@@ -43,7 +43,7 @@ use std::path::{Path, PathBuf};
 /// started"* — precise, true, and exactly the kind of honest partial status a guard must
 /// not punish. A vocabulary that fires on true statements is a nag, not a detector.
 /// The dead-branch half of the same defect is caught structurally by the second test.
-const UNBUILT_CLAIMS: &[&str] = &["design pass", "no code yet"];
+const UNBUILT_CLAIMS: &[&str] = &["design pass", "no code yet", "before code lands"];
 
 /// The directories this guard ranges over.
 ///
@@ -51,6 +51,15 @@ const UNBUILT_CLAIMS: &[&str] = &["design pass", "no code yet"];
 /// carry the same defects.** They were held by open PRs when this was written. **A green
 /// here is a fact about two directories, not about fuel's documentation.**
 const SCAN_DIRS: &[&str] = &["docs/specs", "docs/session-prompts"];
+
+/// `docs/` itself, NON-recursively — its subdirectories are either listed above or
+/// deliberately out of scope.
+///
+/// ⚠️ `docs/gaps.md` and `docs/method-rules.md` live here and are held by open PRs.
+/// They are not excluded: measured at `16577dc1`, neither carries a status FIELD this
+/// guard recognises (0 each), so they are out of the population on the facts rather
+/// than by an exemption. If either grows one, this guard will start checking it.
+const SCAN_ROOT: &str = "docs";
 
 fn scan_dirs() -> Vec<PathBuf> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -63,6 +72,19 @@ fn all_status_fields() -> Vec<(PathBuf, String)> {
     let mut files = Vec::new();
     for d in scan_dirs() {
         markdown_files(&d, &mut files);
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("fuel-ir must have a parent directory")
+        .join(SCAN_ROOT);
+    for e in std::fs::read_dir(&root)
+        .unwrap_or_else(|e| panic!("control: {} must be readable: {e}", root.display()))
+        .flatten()
+    {
+        let p = e.path();
+        if p.is_file() && p.extension().is_some_and(|x| x == "md") {
+            files.push(p);
+        }
     }
     assert!(
         files.len() >= 20,
@@ -229,7 +251,15 @@ fn no_spec_status_field_claims_the_work_is_unbuilt() {
 /// A field may still MENTION a dead branch, as history. It must say it is dead.
 #[test]
 fn no_status_field_points_at_a_branch_as_the_live_location() {
-    const POINTERS: &[&str] = &["branch `", "wip lands on `", "lands on branch `"];
+    // ⚠️ Vocabulary, therefore a FLOOR and not a census. Each entry is an instance that was
+    // found; "shipped on `" was added after `fused-op-registry.md` named a dead branch in a
+    // phrasing the first three did not cover.
+    const POINTERS: &[&str] = &[
+        "branch `",
+        "wip lands on `",
+        "lands on branch `",
+        "shipped on `",
+    ];
     const DISCLAIMERS: &[&str] = &[
         "does not exist",
         "no longer exists",
