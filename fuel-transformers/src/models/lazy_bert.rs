@@ -175,11 +175,14 @@ impl BertModel {
         let seq = token_ids.len();
         let cfg = &self.config;
         let h = cfg.hidden_size;
-        assert!(
-            seq <= cfg.max_position_embeddings,
-            "BertModel::forward: seq {seq} > max_position_embeddings {}",
-            cfg.max_position_embeddings,
-        );
+        // GAP-308 (CONFIG_FIELD): an input length exceeding a config limit is
+        // caller-supplied input to reject, not an invariant to assert.
+        if seq > cfg.max_position_embeddings {
+            return Err(fuel_core::Error::Msg(format!(
+                "BertModel::forward: seq {seq} > max_position_embeddings {}",
+                cfg.max_position_embeddings,
+            )));
+        }
 
         // Bootstrap the graph with the word-embedding table. Every
         // subsequent tensor (inputs, positions, segment ids, per-layer
@@ -274,11 +277,13 @@ impl BertModel {
         let seq = token_ids.len();
         let cfg = &self.config;
         let h = cfg.hidden_size;
-        assert!(
-            seq <= cfg.max_position_embeddings,
-            "BertModel::forward_intermediate_layers: seq {seq} > max_position_embeddings {}",
-            cfg.max_position_embeddings,
-        );
+        // GAP-308 (CONFIG_FIELD): input length vs config limit — reject, do not assert.
+        if seq > cfg.max_position_embeddings {
+            return Err(fuel_core::Error::Msg(format!(
+                "BertModel::forward_intermediate_layers: seq {seq} > max_position_embeddings {}",
+                cfg.max_position_embeddings,
+            )));
+        }
 
         // Same embedding setup as `forward`.
         let word_emb = Tensor::from_f32(
@@ -911,6 +916,84 @@ mod tests {
         // Phase 6a oracle gate.
         let out_ref = hidden.realize_f32();
         fuel_core::test_utils::assert_allclose_f32(&out, &out_ref, 1e-4, 1e-3);
+    }
+
+    /// Minimal `BertModel` (zeros/ones weights) with the given
+    /// `max_position_embeddings`, for the decline born-red. Fixture only —
+    /// carries NO assertions, so extracting it out of the test cannot make the
+    /// test vacuous; only the assertions that stay inline in the test can fail.
+    fn tiny_bert(max_position_embeddings: usize) -> BertModel {
+        let cfg = BertConfig {
+            vocab_size: 100,
+            hidden_size: 32,
+            num_hidden_layers: 1,
+            num_attention_heads: 4,
+            intermediate_size: 64,
+            max_position_embeddings,
+            type_vocab_size: 2,
+            layer_norm_eps: 1e-12,
+        };
+        let h = cfg.hidden_size;
+        let zeros = |n: usize| Arc::from(vec![0.0_f32; n]);
+        let ones = |n: usize| Arc::from(vec![1.0_f32; n]);
+        let weights = BertWeights {
+            word_embeddings: zeros(cfg.vocab_size * h),
+            position_embeddings: zeros(cfg.max_position_embeddings * h),
+            token_type_embeddings: zeros(cfg.type_vocab_size * h),
+            emb_ln_gamma: ones(h),
+            emb_ln_beta: zeros(h),
+            layers: (0..cfg.num_hidden_layers)
+                .map(|_| BertLayerWeights {
+                    attn_q_w: zeros(h * h),
+                    attn_q_b: zeros(h),
+                    attn_k_w: zeros(h * h),
+                    attn_k_b: zeros(h),
+                    attn_v_w: zeros(h * h),
+                    attn_v_b: zeros(h),
+                    attn_out_w: zeros(h * h),
+                    attn_out_b: zeros(h),
+                    attn_ln_gamma: ones(h),
+                    attn_ln_beta: zeros(h),
+                    ffn_in_w: zeros(h * cfg.intermediate_size),
+                    ffn_in_b: zeros(cfg.intermediate_size),
+                    ffn_out_w: zeros(cfg.intermediate_size * h),
+                    ffn_out_b: zeros(h),
+                    ffn_ln_gamma: ones(h),
+                    ffn_ln_beta: zeros(h),
+                })
+                .collect(),
+        };
+        BertModel {
+            config: cfg,
+            weights,
+        }
+    }
+
+    /// GAP-308 born-red: a sequence longer than `max_position_embeddings` is
+    /// REJECTED with a typed error, not a panic. Asserts the error MESSAGE (the
+    /// `max_position_embeddings` fragment), not merely `is_err()`: in a lazy
+    /// graph, with the guard removed, `seq > max` does not panic — `forward`
+    /// returns an `Ok` handle to an INVALID UNREALIZED graph (IndexSelect 8 into
+    /// a size-4 position table), so an `is_err()`-only test would pass on a
+    /// downstream failure it never saw. The fixture lives in `tiny_bert` (no
+    /// assertions); both assertion cases stay inline here.
+    #[test]
+    fn forward_declines_seq_over_max_position_embeddings() {
+        let model = tiny_bert(4);
+        // seq = 8 > max_position_embeddings = 4
+        let ids: Vec<u32> = (0..8).collect();
+
+        let err = model.forward(&ids).unwrap_err();
+        assert!(
+            format!("{err}").contains("max_position_embeddings"),
+            "forward must decline seq > max_position_embeddings; got: {err}"
+        );
+
+        let err2 = model.forward_intermediate_layers(&ids, &[0]).unwrap_err();
+        assert!(
+            format!("{err2}").contains("max_position_embeddings"),
+            "forward_intermediate_layers must decline too; got: {err2}"
+        );
     }
 
     /// `forward_intermediate_layers` returns one tensor per

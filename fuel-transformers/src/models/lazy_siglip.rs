@@ -225,7 +225,13 @@ impl SiglipTextModel {
         let seq = tokens.len();
         let batch = 1;
         assert!(seq > 0);
-        assert!(seq <= cfg.max_position_embeddings);
+        // GAP-308 (CONFIG_FIELD): input length vs config limit — reject, do not assert.
+        if seq > cfg.max_position_embeddings {
+            return Err(fuel_core::Error::Msg(format!(
+                "SiglipTextModel::forward: seq {seq} > max_position_embeddings {}",
+                cfg.max_position_embeddings,
+            )));
+        }
 
         let token_embeds = Tensor::embed_tokens(
             weights.token_embedding.clone(),
@@ -1054,6 +1060,27 @@ mod tests {
         for &v in &out.realize_f32() {
             assert!(v.is_finite());
         }
+    }
+
+    /// GAP-308 born-red: a sequence longer than `max_position_embeddings` is
+    /// REJECTED with a typed error, not a panic. Asserts the error MESSAGE, not
+    /// merely `is_err()`: once the guard is a decline, `seq > max` would index
+    /// past the (size-`max`) position table downstream, so an `is_err()`-only
+    /// test would pass on a panic it never saw.
+    #[test]
+    fn text_forward_declines_seq_over_max_position_embeddings() {
+        let mut cfg = tiny_text_cfg();
+        cfg.max_position_embeddings = 4;
+        let model = SiglipTextModel {
+            config: cfg.clone(),
+            weights: tiny_text_weights(&cfg),
+        };
+        let tokens: Vec<u32> = (0..8).collect(); // seq = 8 > 4
+        let err = model.forward(&tokens).unwrap_err();
+        assert!(
+            format!("{err}").contains("max_position_embeddings"),
+            "text forward must decline seq > max_position_embeddings; got: {err}"
+        );
     }
 
     /// SigLIP text encoder is bidirectional — changing a token
