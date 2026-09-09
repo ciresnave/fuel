@@ -129,12 +129,15 @@ impl XlmrModel {
         let batch = 1;
         assert!(seq > 0);
         // RoBERTa position-id offset by `padding_idx + 1`.
-        assert!(
-            seq + (cfg.pad_token_id as usize) < cfg.max_position_embeddings,
-            "seq + padding_idx + 1 ({}) exceeds max_position_embeddings ({})",
-            seq + cfg.pad_token_id as usize + 1,
-            cfg.max_position_embeddings,
-        );
+        // GAP-308 (CONFIG_FIELD): input length (plus RoBERTa's padding_idx offset)
+        // vs config limit — reject, do not assert.
+        if seq + (cfg.pad_token_id as usize) >= cfg.max_position_embeddings {
+            return Err(fuel_core::Error::Msg(format!(
+                "seq + padding_idx + 1 ({}) exceeds max_position_embeddings ({})",
+                seq + cfg.pad_token_id as usize + 1,
+                cfg.max_position_embeddings,
+            )));
+        }
 
         // ---- Embeddings: word + position + token_type, sum, LayerNorm ---
         let word_emb_t = Tensor::from_f32(
@@ -206,12 +209,15 @@ impl XlmrModel {
         let seq = tokens.len();
         let batch = 1;
         assert!(seq > 0);
-        assert!(
-            seq + (cfg.pad_token_id as usize) < cfg.max_position_embeddings,
-            "seq + padding_idx + 1 ({}) exceeds max_position_embeddings ({})",
-            seq + cfg.pad_token_id as usize + 1,
-            cfg.max_position_embeddings,
-        );
+        // GAP-308 (CONFIG_FIELD): input length (plus RoBERTa's padding_idx offset)
+        // vs config limit — reject, do not assert.
+        if seq + (cfg.pad_token_id as usize) >= cfg.max_position_embeddings {
+            return Err(fuel_core::Error::Msg(format!(
+                "seq + padding_idx + 1 ({}) exceeds max_position_embeddings ({})",
+                seq + cfg.pad_token_id as usize + 1,
+                cfg.max_position_embeddings,
+            )));
+        }
         assert!(!layer_ids.is_empty(), "layer_ids must not be empty");
         for w in layer_ids.windows(2) {
             assert!(w[0] < w[1], "layer_ids must be strictly increasing");
@@ -693,6 +699,43 @@ mod tests {
 
     fn vec_of(n: usize, next: &mut dyn FnMut() -> f32) -> Arc<[f32]> {
         Arc::from((0..n).map(|_| next()).collect::<Vec<_>>())
+    }
+
+    /// GAP-308 born-red: a sequence long enough that `seq + padding_idx >=
+    /// max_position_embeddings` is REJECTED with a typed error (RoBERTa offsets
+    /// positions by `pad_token_id + 1`). Asserts the MESSAGE fragment, not
+    /// is_err(); the decline returns before any graph op.
+    #[test]
+    fn forward_declines_seq_over_max_position_embeddings() {
+        let mut cfg = tiny_cfg();
+        cfg.max_position_embeddings = 8; // pad_token_id = 1, so seq + 1 >= 8 declines at seq >= 7
+        let model = XlmrModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
+        // max_position_embeddings = 8, pad_token_id = 1. Positions are offset by
+        // pad+1 = 2, so seq = 7 overflows the size-8 table and is the FIRST
+        // rejected length — rejected ONLY because of the +pad offset. A plain
+        // `seq <= max` guard would ALLOW seq = 7, so testing at 7 (not >= 8) is
+        // what makes this born-red sensitive to the offset rather than a generic seq>max.
+        // POSITIVE CONTROL: seq + pad < max must run.
+        let ok_seq: Vec<u32> = (0..6).collect(); // 6 + 1 = 7 < 8 -> runs
+        model
+            .forward(&ok_seq, None)
+            .expect("control: seq + pad < max_position_embeddings must run");
+        let over: Vec<u32> = (0..7).collect(); // 7 + 1 = 8 >= 8 -> declines via the +pad offset
+        let err = model.forward(&over, None).unwrap_err();
+        assert!(
+            format!("{err}").contains("max_position_embeddings"),
+            "forward must decline seq + pad >= max_position_embeddings; got: {err}"
+        );
+        let err2 = model
+            .forward_intermediate_layers(&over, &[0], None)
+            .unwrap_err();
+        assert!(
+            format!("{err2}").contains("max_position_embeddings"),
+            "forward_intermediate_layers must decline too; got: {err2}"
+        );
     }
 
     fn tiny_cfg() -> XlmrConfig {
