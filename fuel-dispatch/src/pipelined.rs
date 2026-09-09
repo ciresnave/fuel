@@ -7456,6 +7456,7 @@ mod tests {
         use fuel_graph::{Op, ScanEmit};
         assert_eq!(
             crate::pipelined::op_to_op_kind(&Op::Scan {
+                n_carries: 1,
                 n_xs: 0,
                 bound: 2,
                 emit: ScanEmit::All,
