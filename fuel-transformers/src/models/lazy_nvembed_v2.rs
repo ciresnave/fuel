@@ -200,7 +200,7 @@ impl NvEmbedV2Model {
         let latents = embeds.const_f32_like(
             Arc::clone(&self.weights.latents),
             Shape::from_dims(&[cfg.num_latents, bcfg.hidden_size]),
-        );
+        )?;
         let latents = latents
             .reshape(Shape::from_dims(&[1, cfg.num_latents, bcfg.hidden_size]))?
             .broadcast_to(Shape::from_dims(&[
@@ -266,7 +266,7 @@ impl NvEmbedV2Model {
         let sum_mask: f32 = mask_f32.iter().sum();
         assert!(sum_mask > 0.0, "attention_mask sum must be > 0");
         let mask_t = embeds
-            .const_f32_like(Arc::<[f32]>::from(mask_f32), Shape::from_dims(&[seq]))
+            .const_f32_like(Arc::<[f32]>::from(mask_f32), Shape::from_dims(&[seq]))?
             .reshape(Shape::from_dims(&[1, seq, 1]))?;
         let masked = pooled_input.broadcast_mul(&mask_t)?;
         let summed = masked.sum_dim(1_usize)?;
@@ -295,6 +295,9 @@ impl NvEmbedV2Model {
             }
         }
         anchor.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]))
+        .expect(
+                "build_bidirectional_pad_mask: `seq` IS attention_mask.len(); the buffer is \n             vec![_; seq*seq] and the shape's elem_count is seq*seq -- both from that `seq`",
+        )
     }
 }
 

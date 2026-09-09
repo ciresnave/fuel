@@ -345,7 +345,8 @@ impl Mv4Model {
                 let logits = head
                     .linear_w
                     .apply_linear(&flat, cfg.head_out_channels, n)?;
-                let bias = image.const_f32_like(Arc::clone(&head.linear_b), Shape::from_dims(&[n]));
+                let bias =
+                    image.const_f32_like(Arc::clone(&head.linear_b), Shape::from_dims(&[n]))?;
                 logits.broadcast_add(&bias)
             }
         }
@@ -379,7 +380,7 @@ fn apply_conv_bn(x: &Tensor, c: &Conv2dBnWeights, anchor: &Tensor) -> Result<Ten
     let w = anchor.const_f32_like(
         Arc::clone(&c.w),
         Shape::from_dims(&[c.c_out, c.c_in / c.groups, c.k, c.k]),
-    );
+    )?;
     let conv = x.conv2d(&w, None, (c.stride, c.stride), (c.pad, c.pad), c.groups)?;
     apply_bn(&conv, &c.bn, c.c_out)
 }
@@ -424,7 +425,7 @@ fn apply_block(
             y = apply_conv_bn(&y, &uib.pw_proj, anchor)?;
             if let Some(g) = &uib.layer_scale_gamma {
                 let gt = anchor
-                    .const_f32_like(Arc::clone(g), Shape::from_dims(&[g.len()]))
+                    .const_f32_like(Arc::clone(g), Shape::from_dims(&[g.len()]))?
                     .reshape(Shape::from_dims(&[1, g.len(), 1, 1]))?;
                 y = y.broadcast_mul(&gt)?;
             }
@@ -519,7 +520,7 @@ fn apply_mqa(x: &Tensor, mqa: &MqaWeights, anchor: &Tensor) -> Result<Tensor> {
     let mut y = apply_conv_bn(&o, &mqa.output_proj, anchor)?;
     if let Some(g) = &mqa.layer_scale_gamma {
         let gt = anchor
-            .const_f32_like(Arc::clone(g), Shape::from_dims(&[g.len()]))
+            .const_f32_like(Arc::clone(g), Shape::from_dims(&[g.len()]))?
             .reshape(Shape::from_dims(&[1, g.len(), 1, 1]))?;
         y = y.broadcast_mul(&gt)?;
     }
@@ -1289,7 +1290,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let pooled = model.forward(&img).unwrap();
         // No head → pooled features (1, head_in_channels = 32).
         assert_eq!(pooled.shape().dims(), &[1, cfg.head_in_channels]);
@@ -1312,7 +1314,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let logits = model.forward(&img).unwrap();
         assert_eq!(logits.shape().dims(), &[1, 7]);
         for &v in &logits.realize_f32() {
@@ -1334,7 +1337,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let feats = model.forward_features(&img).unwrap();
         let shape = feats.shape();
         let dims = shape.dims();
@@ -1365,14 +1369,16 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let img_b = Tensor::from_f32(
             (0..(3 * 32 * 32))
                 .map(|i| (i as f32) * 0.01 + 0.5)
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let a = model.forward(&img_a).unwrap().realize_f32();
         let b = model.forward(&img_b).unwrap().realize_f32();
         let mut max_diff = 0.0_f32;
@@ -1465,7 +1471,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let pooled = model.forward(&img).unwrap();
         assert_eq!(pooled.shape().dims(), &[1, cfg.head_in_channels]);
         for &v in &pooled.realize_f32() {
@@ -1487,7 +1494,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let pooled = model.forward(&img).unwrap();
         assert_eq!(pooled.shape().dims(), &[1, cfg.head_in_channels]);
         for &v in &pooled.realize_f32() {
@@ -1511,14 +1519,16 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let img_b = Tensor::from_f32(
             (0..(3 * 32 * 32))
                 .map(|i| (i as f32) * 0.01 + 0.5)
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let a = model.forward(&img_a).unwrap().realize_f32();
         let b = model.forward(&img_b).unwrap().realize_f32();
         let mut max_diff = 0.0_f32;
@@ -1666,7 +1676,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let pooled = model.forward(&img).unwrap();
         assert_eq!(pooled.shape().dims(), &[1, cfg.head_in_channels]);
 

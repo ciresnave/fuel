@@ -389,6 +389,9 @@ impl Qwen2Model {
             }
         }
         anchor.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]))
+        .expect(
+                "build_layer_mask: buffer is vec![_; seq*seq] and the shape's elem_count is seq*seq -- \n             both derived from `seq` in this function; the loop writes in place",
+        )
     }
 
     fn apply_layer(
@@ -1310,19 +1313,23 @@ mod tests {
             model.weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
             &Device::cpu(),
-        );
-        let token_ids =
-            embed_table.const_u32_like(tokens.clone(), Shape::from_dims(&[tokens.len()]));
+        )
+        .unwrap();
+        let token_ids = embed_table
+            .const_u32_like(tokens.clone(), Shape::from_dims(&[tokens.len()]))
+            .unwrap();
         let embeds = embed_table
             .index_select(0_usize, &token_ids)
             .unwrap()
             .reshape(Shape::from_dims(&[1, tokens.len(), cfg.hidden_size]))
             .unwrap();
         let zero_mask: Arc<[f32]> = Arc::from(vec![0.0_f32; tokens.len() * tokens.len()]);
-        let mask = embeds.const_f32_like(
-            zero_mask,
-            Shape::from_dims(&[1, 1, tokens.len(), tokens.len()]),
-        );
+        let mask = embeds
+            .const_f32_like(
+                zero_mask,
+                Shape::from_dims(&[1, 1, tokens.len(), tokens.len()]),
+            )
+            .unwrap();
         let h_bidir = model
             .forward_hidden_embeds_with_mask(&embeds, &mask, 0)
             .unwrap()
@@ -1374,9 +1381,11 @@ mod tests {
             model.weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
             &Device::cpu(),
-        );
-        let token_ids =
-            embed_table.const_u32_like(tokens.clone(), Shape::from_dims(&[tokens.len()]));
+        )
+        .unwrap();
+        let token_ids = embed_table
+            .const_u32_like(tokens.clone(), Shape::from_dims(&[tokens.len()]))
+            .unwrap();
         let embeds = embed_table
             .index_select(0_usize, &token_ids)
             .unwrap()
@@ -1489,7 +1498,9 @@ mod tests {
                 }
             }
         }
-        let mask = embeds.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]));
+        let mask = embeds
+            .const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]))
+            .unwrap();
         let hidden = model
             .forward_hidden_embeds_with_mask(&embeds, &mask, 0)
             .unwrap();

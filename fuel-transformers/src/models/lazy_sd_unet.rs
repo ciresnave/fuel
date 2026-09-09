@@ -237,9 +237,9 @@ impl SdUnet {
             latent.to_vec(),
             Shape::from_dims(&[1, c_in, h_lat, w_lat]),
             &fuel_core::Device::cpu(),
-        );
+        )?;
         let t_flat = x
-            .const_f32_like(time_sin, Shape::from_dims(&[1, c_first]))
+            .const_f32_like(time_sin, Shape::from_dims(&[1, c_first]))?
             .reshape(Shape::from_dims(&[1, 1, c_first]))?;
         let t_emb = linear(
             &t_flat,
@@ -264,7 +264,7 @@ impl SdUnet {
         let te = x.const_f32_like(
             text_emb.to_vec(),
             Shape::from_dims(&[1, 77, cfg.cross_attention_dim]),
-        );
+        )?;
 
         // --- conv_in ----------------------------------------------
         let x = conv2d_k3_s1_p1(
@@ -570,11 +570,11 @@ fn layer_norm_affine(
 ) -> fuel_core::Result<Tensor> {
     let normed = x.layer_norm_last_dim(eps)?;
     let g = x
-        .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))
+        .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))?
         .reshape(Shape::from_dims(&[1, 1, hidden]))?
         .broadcast_to(Shape::from_dims(&[1, seq, hidden]))?;
     let b = x
-        .const_f32_like(beta.clone(), Shape::from_dims(&[hidden]))
+        .const_f32_like(beta.clone(), Shape::from_dims(&[hidden]))?
         .reshape(Shape::from_dims(&[1, 1, hidden]))?
         .broadcast_to(Shape::from_dims(&[1, seq, hidden]))?;
     normed.mul(&g)?.add(&b)
@@ -607,11 +607,11 @@ fn group_norm(
     let normed = centered.div(&std_bc)?;
     let normed_chw = normed.reshape(Shape::from_dims(&[1, c, h, w]))?;
     let g = x
-        .const_f32_like(gamma.clone(), Shape::from_dims(&[c]))
+        .const_f32_like(gamma.clone(), Shape::from_dims(&[c]))?
         .reshape(Shape::from_dims(&[1, c, 1, 1]))?
         .broadcast_to(Shape::from_dims(&[1, c, h, w]))?;
     let b = x
-        .const_f32_like(beta.clone(), Shape::from_dims(&[c]))
+        .const_f32_like(beta.clone(), Shape::from_dims(&[c]))?
         .reshape(Shape::from_dims(&[1, c, 1, 1]))?
         .broadcast_to(Shape::from_dims(&[1, c, h, w]))?;
     normed_chw.mul(&g)?.add(&b)
@@ -627,8 +627,8 @@ fn conv2d_k3_s1_p1(
     _h: usize,
     _w_sz: usize,
 ) -> fuel_core::Result<Tensor> {
-    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin, 3, 3]));
-    let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[cout]));
+    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin, 3, 3]))?;
+    let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[cout]))?;
     x.conv2d(&w_t, Some(&b_t), (1, 1), (1, 1), 1)
 }
 
@@ -642,8 +642,8 @@ fn conv2d_k3_s2_p1(
     _h: usize,
     _w_sz: usize,
 ) -> fuel_core::Result<Tensor> {
-    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin, 3, 3]));
-    let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[cout]));
+    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin, 3, 3]))?;
+    let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[cout]))?;
     x.conv2d(&w_t, Some(&b_t), (2, 2), (1, 1), 1)
 }
 
@@ -657,8 +657,8 @@ fn conv2d_k1_s1_p0(
     _h: usize,
     _w_sz: usize,
 ) -> fuel_core::Result<Tensor> {
-    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin, 1, 1]));
-    let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[cout]));
+    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin, 1, 1]))?;
+    let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[cout]))?;
     x.conv2d(&w_t, Some(&b_t), (1, 1), (0, 0), 1)
 }
 
@@ -677,12 +677,12 @@ fn linear(
     out_f: usize,
     seq: usize,
 ) -> fuel_core::Result<Tensor> {
-    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]));
+    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]))?;
     let proj = x.matmul(&w_t)?;
     match b {
         Some(b) => {
             let bias = x
-                .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))
+                .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))?
                 .reshape(Shape::from_dims(&[1, 1, out_f]))?
                 .broadcast_to(Shape::from_dims(&[1, seq, out_f]))?;
             proj.add(&bias)

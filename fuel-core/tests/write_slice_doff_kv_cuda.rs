@@ -43,9 +43,13 @@ fn cuda_device() -> fuel_cuda_backend::CudaDevice {
 fn doff_writes_at_device_offset_cuda() {
     require_cuda();
     let device = fuel_core::Device::cpu();
-    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
-    let src = dest.const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]));
-    let offset = dest.const_i64_like(vec![1_i64], Shape::from_dims(&[]));
+    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
+    let src = dest
+        .const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]))
+        .unwrap();
+    let offset = dest
+        .const_i64_like(vec![1_i64], Shape::from_dims(&[]))
+        .unwrap();
     let post_write = dest
         .write_slice_doff(&src, &offset, 0, vec![(0, 1), (0, 2)])
         .expect("write_slice_doff builds");
@@ -60,9 +64,13 @@ fn doff_writes_at_device_offset_cuda() {
 fn doff_offset_zero_writes_leading_row_cuda() {
     require_cuda();
     let device = fuel_core::Device::cpu();
-    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
-    let src = dest.const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]));
-    let offset = dest.const_i64_like(vec![0_i64], Shape::from_dims(&[]));
+    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
+    let src = dest
+        .const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]))
+        .unwrap();
+    let offset = dest
+        .const_i64_like(vec![0_i64], Shape::from_dims(&[]))
+        .unwrap();
     let post_write = dest
         .write_slice_doff(&src, &offset, 0, vec![(0, 1), (0, 2)])
         .expect("write_slice_doff builds");
@@ -85,7 +93,8 @@ fn doff_decode_loop_appends_at_cached_len_cuda() {
         vec![0.0_f32; max_seq * head_dim],
         Shape::from_dims(&[max_seq, head_dim]),
         &device,
-    );
+    )
+    .unwrap();
     let tokens = [
         vec![1.0_f32, 1.1],
         vec![2.0_f32, 2.1],
@@ -93,8 +102,12 @@ fn doff_decode_loop_appends_at_cached_len_cuda() {
         vec![4.0_f32, 4.1],
     ];
     for (step, token) in tokens.iter().enumerate() {
-        let token_t = cache.const_f32_like(token.clone(), Shape::from_dims(&[1, head_dim]));
-        let offset = cache.const_i64_like(vec![step as i64], Shape::from_dims(&[]));
+        let token_t = cache
+            .const_f32_like(token.clone(), Shape::from_dims(&[1, head_dim]))
+            .unwrap();
+        let offset = cache
+            .const_i64_like(vec![step as i64], Shape::from_dims(&[]))
+            .unwrap();
         cache = cache
             .write_slice_doff(&token_t, &offset, 0, vec![(0, 1), (0, head_dim)])
             .expect("doff append");
@@ -109,9 +122,13 @@ fn doff_decode_loop_appends_at_cached_len_cuda() {
 fn doff_writes_on_non_leading_axis_cuda() {
     require_cuda();
     let device = fuel_core::Device::cpu();
-    let dest = Tensor::from_f32(vec![0.0_f32; 10], Shape::from_dims(&[2, 5]), &device);
-    let src = dest.const_f32_like(vec![1.0_f32, 2.0, 3.0, 4.0], Shape::from_dims(&[2, 2]));
-    let offset = dest.const_i64_like(vec![2_i64], Shape::from_dims(&[]));
+    let dest = Tensor::from_f32(vec![0.0_f32; 10], Shape::from_dims(&[2, 5]), &device).unwrap();
+    let src = dest
+        .const_f32_like(vec![1.0_f32, 2.0, 3.0, 4.0], Shape::from_dims(&[2, 2]))
+        .unwrap();
+    let offset = dest
+        .const_i64_like(vec![2_i64], Shape::from_dims(&[]))
+        .unwrap();
     let post_write = dest
         .write_slice_doff(&src, &offset, /* axis */ 1, vec![(0, 2), (0, 2)])
         .expect("write_slice_doff builds");

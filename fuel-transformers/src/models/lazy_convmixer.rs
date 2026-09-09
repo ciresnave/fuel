@@ -189,7 +189,7 @@ impl ConvMixerModel {
         let bias_t = pooled.const_f32_like(
             Arc::clone(&self.weights.head_bias),
             Shape::from_dims(&[cfg.nclasses]),
-        );
+        )?;
         logits.broadcast_add(&bias_t)
     }
 
@@ -342,7 +342,7 @@ fn tiny_image(h: usize, w: usize, device: &Device) -> Tensor {
             })
             .collect::<Vec<_>>(),
     );
-    Tensor::from_f32(data, Shape::from_dims(&[1, 3, h, w]), device)
+    Tensor::from_f32(data, Shape::from_dims(&[1, 3, h, w]), device).unwrap()
 }
 
 #[cfg(test)]

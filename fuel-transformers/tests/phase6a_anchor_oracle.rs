@@ -52,8 +52,8 @@ fn single_matmul_cpu_matches_reference() {
     let (m, k, n) = (32usize, 48, 24);
     let a_data: Vec<f32> = (0..(m * k)).map(|i| ((i as f32) * 1.3e-3).sin()).collect();
     let b_data: Vec<f32> = (0..(k * n)).map(|i| ((i as f32) * 1.7e-3).cos()).collect();
-    let a = Tensor::from_f32(a_data, Shape::from_dims(&[m, k]), &fuel_core::Device::cpu());
-    let b = a.const_f32_like(b_data, Shape::from_dims(&[k, n]));
+    let a = Tensor::from_f32(a_data, Shape::from_dims(&[m, k]), &fuel_core::Device::cpu()).unwrap();
+    let b = a.const_f32_like(b_data, Shape::from_dims(&[k, n])).unwrap();
     let c = a.matmul(&b).unwrap();
     assert_cpu_oracle(&c, 1e-4, 1e-4);
 }
@@ -73,8 +73,11 @@ fn dense_conv2d_cpu_matches_reference() {
         x_data,
         Shape::from_dims(&[n, cin, h, w_sz]),
         &fuel_core::Device::cpu(),
-    );
-    let weight = x.const_f32_like(w_data, Shape::from_dims(&[cout, cin, k, k]));
+    )
+    .unwrap();
+    let weight = x
+        .const_f32_like(w_data, Shape::from_dims(&[cout, cin, k, k]))
+        .unwrap();
     let y = x.conv2d(&weight, None, (1, 1), (pad, pad), 1).unwrap();
     assert_cpu_oracle(&y, 1e-4, 1e-4);
 }
@@ -94,8 +97,11 @@ fn depthwise_conv2d_cpu_matches_reference() {
         x_data,
         Shape::from_dims(&[n, c, h, w_sz]),
         &fuel_core::Device::cpu(),
-    );
-    let weight = x.const_f32_like(w_data, Shape::from_dims(&[c, 1, k, k]));
+    )
+    .unwrap();
+    let weight = x
+        .const_f32_like(w_data, Shape::from_dims(&[c, 1, k, k]))
+        .unwrap();
     let y = x.conv2d(&weight, None, (1, 1), (pad, pad), c).unwrap();
     assert_cpu_oracle(&y, 1e-4, 1e-4);
 }
@@ -116,8 +122,11 @@ fn conv_transpose2d_cpu_matches_reference() {
         x_data,
         Shape::from_dims(&[n, cin, h, w_sz]),
         &fuel_core::Device::cpu(),
-    );
-    let weight = x.const_f32_like(w_data, Shape::from_dims(&[cin, cout, k, k]));
+    )
+    .unwrap();
+    let weight = x
+        .const_f32_like(w_data, Shape::from_dims(&[cin, cout, k, k]))
+        .unwrap();
     let y = x
         .conv_transpose2d(&weight, (2, 2), (1, 1), (1, 1), (1, 1), 1)
         .unwrap();

@@ -204,7 +204,7 @@ impl PaddleOcrVlModel {
             Arc::from(tile_pixels),
             Shape::from_dims(&[num_tiles, channels, target, target]),
             &Device::cpu(),
-        );
+        )?;
 
         // Run the tile-grid vision encoder -> (N_vision, text_hidden).
         let vision_model = PaddleOcrVlVisionModel {
@@ -443,7 +443,7 @@ pub fn bilinear_resize_to_grid(
         Arc::<[f32]>::from(data),
         Shape::from_dims(&[1, channels, h_grid, w_grid]),
         &Device::cpu(),
-    );
+    )?;
     Ok((tensor, h_grid, w_grid))
 }
 
@@ -650,6 +650,7 @@ mod tests {
             Shape::from_dims(&[cfg.num_channels, height, width]),
             &Device::cpu(),
         )
+        .unwrap()
     }
 
     /// Text-only forward (`image_pixels = None`) must produce the same
@@ -709,7 +710,8 @@ mod tests {
             Arc::from(data_b),
             Shape::from_dims(&[cfg.num_channels, cfg.image_size, cfg.image_size]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
 
         let out_a = model
             .forward(Some(&img_a), &tokens, image_token_id, 0)

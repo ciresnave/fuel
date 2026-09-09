@@ -238,8 +238,8 @@ mod tests {
     fn shard(anchor: Option<&Tensor>, data: Vec<f32>, dev: &Device) -> Tensor {
         let shape = Shape::from_dims(&[data.len()]);
         match anchor {
-            Some(a) => Tensor::from_f32_on(a.graph(), data, shape, dev),
-            None => Tensor::from_f32(data, shape, dev),
+            Some(a) => Tensor::from_f32_on(a.graph(), data, shape, dev).unwrap(),
+            None => Tensor::from_f32(data, shape, dev).unwrap(),
         }
     }
 

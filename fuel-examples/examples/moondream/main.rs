@@ -242,7 +242,7 @@ async fn main() -> anyhow::Result<()> {
             cfg.vision.image_size,
         ]),
         &device,
-    );
+    )?;
     println!(
         "loaded image (1, {}, {}, {}) in {:?}",
         cfg.vision.num_channels,

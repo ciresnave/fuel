@@ -189,7 +189,7 @@ mod tests {
 
     fn lazy_logits(values: Vec<f32>) -> Tensor {
         let n = values.len();
-        Tensor::from_f32(values, Shape::from_dims(&[n]), &Device::cpu())
+        Tensor::from_f32(values, Shape::from_dims(&[n]), &Device::cpu()).unwrap()
     }
 
     #[test]

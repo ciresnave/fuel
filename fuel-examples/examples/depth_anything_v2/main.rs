@@ -162,7 +162,7 @@ fn load_and_prep_image(
         Arc::<[f32]>::from(chw),
         Shape::from_dims(&[1, 3, DINO_IMG_SIZE, DINO_IMG_SIZE]),
         device,
-    );
+    )?;
 
     Ok((original_height, original_width, image))
 }

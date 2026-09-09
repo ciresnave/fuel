@@ -67,7 +67,7 @@ pub fn main() -> anyhow::Result<()> {
         Arc::<[f32]>::from(pixels),
         Shape::from_dims(&[1, 3, 224, 224]),
         &device,
-    );
+    )?;
     println!("loaded image");
 
     let model_file = match args.model {

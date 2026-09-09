@@ -223,7 +223,7 @@ impl Gemma4VisionModel {
         let pos_emb = anchor.const_f32_like(
             Arc::from(pos_emb_data),
             Shape::from_dims(&[1, num_patches, h_dim]),
-        );
+        )?;
 
         // Build cos/sin for 2D RoPE: head_dim split into two halves.
         // Within each half, standard split-half RoPE has frequencies for
@@ -264,11 +264,11 @@ impl Gemma4VisionModel {
         let cos_xy = anchor.const_f32_like(
             Arc::from(cos_data),
             Shape::from_dims(&[num_patches, head_dim]),
-        );
+        )?;
         let sin_xy = anchor.const_f32_like(
             Arc::from(sin_data),
             Shape::from_dims(&[num_patches, head_dim]),
-        );
+        )?;
 
         Ok((pos_emb, cos_xy, sin_xy))
     }
@@ -416,7 +416,7 @@ impl Gemma4VisionModel {
             }
         }
         let idx_tensor =
-            x.const_u32_like(idx_full, Shape::from_dims(&[batch, num_patches, hidden]));
+            x.const_u32_like(idx_full, Shape::from_dims(&[batch, num_patches, hidden]))?;
 
         // Scale by 1/k² BEFORE scatter so the scatter sum becomes a mean.
         let x_scaled = x.mul_scalar(1.0 / ((k * k) as f64));
@@ -425,7 +425,7 @@ impl Gemma4VisionModel {
         let zeros = x.const_f32_like(
             Arc::from(vec![0.0_f32; batch * output_length * hidden]),
             Shape::from_dims(&[batch, output_length, hidden]),
-        );
+        )?;
         let _ = cfg; // silence unused
         zeros.scatter_add(1_usize, &idx_tensor, &x_scaled)
     }
@@ -695,7 +695,8 @@ mod tests {
             Arc::from(img_data),
             Shape::from_dims(&[1, 3, h_img, w_img]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let out = model.forward(&pixel_values).unwrap();
         let expected_out_len = (h_img / cfg.patch_size) * (w_img / cfg.patch_size)
             / (cfg.pooling_kernel_size * cfg.pooling_kernel_size);
@@ -736,13 +737,15 @@ mod tests {
             Arc::from(img_a),
             Shape::from_dims(&[1, 3, h_img, w_img]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let out_a = model_a.forward(&pix_a).unwrap().realize_f32();
         let pix_b = Tensor::from_f32(
             Arc::from(img_b),
             Shape::from_dims(&[1, 3, h_img, w_img]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let out_b = model_b.forward(&pix_b).unwrap().realize_f32();
         let mut max_diff = 0.0_f32;
         for (a, b) in out_a.iter().zip(out_b.iter()) {
@@ -772,7 +775,8 @@ mod tests {
             Arc::from(img_data),
             Shape::from_dims(&[1, 3, h_img, w_img]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let out = model.forward(&pix).unwrap();
         assert_eq!(out.shape().dims(), &[1, 1, cfg.hidden_size]);
     }

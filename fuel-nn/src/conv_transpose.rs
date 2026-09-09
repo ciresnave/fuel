@@ -258,7 +258,7 @@ impl ConvTranspose1d {
             None => Ok(y),
             Some(b) => {
                 let bias_t = y
-                    .const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels]))
+                    .const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels]))?
                     .reshape(Shape::from_dims(&[1, self.out_channels, 1]))?;
                 Ok(y.broadcast_add(&bias_t)?)
             }
@@ -506,7 +506,7 @@ impl ConvTranspose2d {
             None => Ok(y),
             Some(b) => {
                 let bias_t = y
-                    .const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels]))
+                    .const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels]))?
                     .reshape(Shape::from_dims(&[1, self.out_channels, 1, 1]))?;
                 Ok(y.broadcast_add(&bias_t)?)
             }
@@ -585,7 +585,7 @@ mod tests {
         .unwrap();
 
         let x_data: Vec<f32> = ramp_f32(n * cin * l, 0.03, -0.4);
-        let x = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, l]), &Device::cpu());
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, l]), &Device::cpu()).unwrap();
         let y = layer.forward(&x).unwrap();
         let l_out = l + k - 1;
         assert_eq!(y.shape().dims(), &[n, cout, l_out]);
@@ -633,11 +633,14 @@ mod tests {
             x_data.clone(),
             Shape::from_dims(&[n, cin, l]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let via_module = layer.forward(&x).unwrap().realize_f32();
 
-        let x2 = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, l]), &Device::cpu());
-        let w_t = x2.const_f32_like(Arc::clone(&weight_arc), Shape::from_dims(&[cin, cout, k]));
+        let x2 = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, l]), &Device::cpu()).unwrap();
+        let w_t = x2
+            .const_f32_like(Arc::clone(&weight_arc), Shape::from_dims(&[cin, cout, k]))
+            .unwrap();
         let direct_raw = x2
             .conv_transpose1d(
                 &w_t,
@@ -650,6 +653,7 @@ mod tests {
             .unwrap();
         let b_t = direct_raw
             .const_f32_like(Arc::clone(&bias_arc), Shape::from_dims(&[cout]))
+            .unwrap()
             .reshape(Shape::from_dims(&[1, cout, 1]))
             .unwrap();
         let direct = direct_raw.broadcast_add(&b_t).unwrap().realize_f32();
@@ -716,7 +720,8 @@ mod tests {
         .unwrap();
 
         let x_data: Vec<f32> = ramp_f32(n * cin * h * w_in, 0.01, -0.5);
-        let x = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu());
+        let x =
+            Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu()).unwrap();
         let y = layer.forward(&x).unwrap();
         let h_out = h + kh - 1;
         let w_out = w_in + kw - 1;
@@ -768,14 +773,18 @@ mod tests {
             x_data.clone(),
             Shape::from_dims(&[n, cin, h, w_in]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let via_module = layer.forward(&x).unwrap().realize_f32();
 
-        let x2 = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu());
-        let w_t = x2.const_f32_like(
-            Arc::clone(&weight_arc),
-            Shape::from_dims(&[cin, cout, kh, kw]),
-        );
+        let x2 =
+            Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu()).unwrap();
+        let w_t = x2
+            .const_f32_like(
+                Arc::clone(&weight_arc),
+                Shape::from_dims(&[cin, cout, kh, kw]),
+            )
+            .unwrap();
         let direct_raw = x2
             .conv_transpose2d(
                 &w_t,
@@ -788,6 +797,7 @@ mod tests {
             .unwrap();
         let b_t = direct_raw
             .const_f32_like(Arc::clone(&bias_arc), Shape::from_dims(&[cout]))
+            .unwrap()
             .reshape(Shape::from_dims(&[1, cout, 1, 1]))
             .unwrap();
         let direct = direct_raw.broadcast_add(&b_t).unwrap().realize_f32();
@@ -844,11 +854,14 @@ mod tests {
             x_data.clone(),
             Shape::from_dims(&[n, cin, l]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let via_module = layer.forward(&x).unwrap().realize_f32();
 
-        let x2 = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, l]), &Device::cpu());
-        let w_t = x2.const_f32_like(Arc::clone(&weight_arc), Shape::from_dims(&[cin, cout, k]));
+        let x2 = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, l]), &Device::cpu()).unwrap();
+        let w_t = x2
+            .const_f32_like(Arc::clone(&weight_arc), Shape::from_dims(&[cin, cout, k]))
+            .unwrap();
         let direct = x2
             .conv_transpose1d(
                 &w_t,
