@@ -317,7 +317,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, img_size, img_size]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let tokens = vec![5_u32, 6, 7];
         let out = model.forward_images(&pixel_values, &tokens).unwrap();
         let np = cfg.vision_config.num_patches();

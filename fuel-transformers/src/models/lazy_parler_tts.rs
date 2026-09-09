@@ -787,7 +787,7 @@ mod tests {
         };
         let dev = Device::cpu();
         // (1, num_codebooks, T) U32.
-        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
+        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev).unwrap();
         let input_ids = anchor.const_u32_like(
             vec![1_u32, 2, 3, 4, 5, 6],
             Shape::from_dims(&[1, cfg.num_codebooks, 3]),
@@ -821,7 +821,7 @@ mod tests {
             weights,
         };
         let dev = Device::cpu();
-        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
+        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev).unwrap();
         let encoder_states = anchor.const_f32_like(
             Arc::<[f32]>::from(vec![0.05_f32; 1 * 4 * cfg.hidden_size]),
             Shape::from_dims(&[1, 4, cfg.hidden_size]),
@@ -868,7 +868,7 @@ mod tests {
             weights,
         };
         let dev = Device::cpu();
-        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
+        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev).unwrap();
         let ids = anchor.const_u32_like(
             vec![1_u32, 2, 3, 4],
             Shape::from_dims(&[1, cfg.num_codebooks, 2]),
@@ -913,7 +913,7 @@ mod tests {
             weights,
         };
         let dev = Device::cpu();
-        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
+        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev).unwrap();
         let ids = anchor.const_u32_like(
             vec![1_u32, 2, 3, 4],
             Shape::from_dims(&[1, cfg.num_codebooks, 2]),
@@ -945,7 +945,7 @@ mod tests {
     fn gqa_head_multiple_mismatch_declines_rather_than_panicking() {
         let valid = tiny_config();
         let dev = Device::cpu();
-        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
+        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev).unwrap();
         let input_ids = anchor.const_u32_like(
             vec![1_u32, 2, 3, 4, 5, 6],
             Shape::from_dims(&[1, valid.num_codebooks, 3]),

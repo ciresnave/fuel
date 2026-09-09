@@ -342,7 +342,7 @@ fn tiny_image(h: usize, w: usize, device: &Device) -> Tensor {
             })
             .collect::<Vec<_>>(),
     );
-    Tensor::from_f32(data, Shape::from_dims(&[1, 3, h, w]), device)
+    Tensor::from_f32(data, Shape::from_dims(&[1, 3, h, w]), device).unwrap()
 }
 
 #[cfg(test)]

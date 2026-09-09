@@ -440,7 +440,7 @@ mod tests {
     }
 
     fn anchor() -> Tensor {
-        Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu())
+        Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap()
     }
 
     #[test]
@@ -498,7 +498,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 2, cfg.backbone_dim]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let logits = model.codebook0_logits(&h).unwrap();
         assert_eq!(logits.shape().dims(), &[1, 2, cfg.audio_vocab_size]);
     }
@@ -514,7 +515,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, cfg.backbone_dim]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let proj = model.project_to_decoder(&curr_h).unwrap();
         assert_eq!(proj.shape().dims(), &[1, 3, cfg.decoder_dim]);
         // Run audio_head_logits for codebook 1 (proj subs in for decoder hidden).

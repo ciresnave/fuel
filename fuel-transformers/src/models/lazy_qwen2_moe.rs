@@ -820,7 +820,8 @@ mod tests {
             vec![0.0_f32],
             Shape::from_dims(&[1]),
             &fuel_core::Device::cpu(),
-        );
+        )
+        .unwrap();
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds).unwrap().realize_f32();
         let max_diff = logits_ref
@@ -842,7 +843,8 @@ mod tests {
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
             Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
             &fuel_core::Device::cpu(),
-        );
+        )
+        .unwrap();
         assert!(model.forward_embeds(&bad).is_err());
     }
 
@@ -855,7 +857,8 @@ mod tests {
             vec![0.0_f32],
             Shape::from_dims(&[1]),
             &fuel_core::Device::cpu(),
-        );
+        )
+        .unwrap();
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let h_via_embeds = model.forward_hidden_embeds(&embeds).unwrap().realize_f32();
         let max_diff = h_ref

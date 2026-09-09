@@ -306,15 +306,24 @@ impl Rwkv7Model {
         let tm = &layer.time_mix;
 
         // ---- Per-stream token-shift mix coefficients --------------------------
-        let mix_const = |arc: &Arc<[f32]>| -> Tensor {
-            x.const_f32_like(Arc::clone(arc), Shape::from_dims(&[1, 1, h]))?
+        // ⚠️ GAP-003 CATEGORY 3, and it is NOT in mimi -- loaded time-mix
+        // weights (`tm.x_r` etc.) against `cfg.hidden_size`. No local proof.
+        // The enclosing fn already returns `Result`, so the channel exists
+        // and the six call sites below simply propagate.
+        let mix_const = |arc: &Arc<[f32]>| -> fuel_core::Result<Tensor> {
+            x.const_f32_like(Arc::clone(arc), Shape::from_dims(&[1, 1, h]))
+                .map_err(|e| {
+                    fuel_core::Error::Msg(format!(
+                        "rwkv7 time-mix weight from the checkpoint does not match the \n                         config: {e} (config implies hidden_size)"
+                    ))
+                })
         };
-        let m_r = mix_const(&tm.x_r);
-        let m_w = mix_const(&tm.x_w);
-        let m_k = mix_const(&tm.x_k);
-        let m_v = mix_const(&tm.x_v);
-        let m_a = mix_const(&tm.x_a);
-        let m_g = mix_const(&tm.x_g);
+        let m_r = mix_const(&tm.x_r)?;
+        let m_w = mix_const(&tm.x_w)?;
+        let m_k = mix_const(&tm.x_k)?;
+        let m_v = mix_const(&tm.x_v)?;
+        let m_a = mix_const(&tm.x_a)?;
+        let m_g = mix_const(&tm.x_g)?;
 
         // Token-shifted input: shifted - x  (note: shifted is x_{t-1}).
         let shifted = shift_seq(x, batch, seq, h);
@@ -971,7 +980,8 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens).unwrap().realize_f32();
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds).unwrap().realize_f32();
         let max_diff = logits_ref
@@ -996,7 +1006,8 @@ mod tests {
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
             Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         assert!(model.forward_embeds(&bad).is_err());
     }
 
@@ -1009,7 +1020,8 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens).unwrap().realize_f32();
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let h_via_embeds = model.forward_hidden_embeds(&embeds).unwrap().realize_f32();
         let max_diff = h_ref

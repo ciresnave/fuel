@@ -600,7 +600,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 28, 28]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let logits = model.forward(&img).unwrap();
         assert_eq!(logits.shape().dims(), &[1, 5]);
         for &v in &logits.realize_f32() {
@@ -622,14 +623,16 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 28, 28]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let img_b = Tensor::from_f32(
             (0..(3 * 28 * 28))
                 .map(|i| (i as f32) * 0.01 + 0.3)
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 28, 28]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let a = model.forward(&img_a).unwrap().realize_f32();
         let b = model.forward(&img_b).unwrap().realize_f32();
         let mut max_diff = 0.0_f32;
@@ -668,7 +671,8 @@ mod tests {
             x_data.clone(),
             Shape::from_dims(&[b, heads, n, head_dim]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
 
         let n_patches = n - 1;
         let rot = x.const_f32_like(

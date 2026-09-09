@@ -627,7 +627,7 @@ mod tests {
     fn tiny_image(h: usize) -> Tensor {
         let mut nb = rng_seed(1234);
         let data: Arc<[f32]> = Arc::from((0..3 * h * h).map(|_| nb()).collect::<Vec<_>>());
-        Tensor::from_f32(data, Shape::from_dims(&[1, 3, h, h]), &Device::cpu())
+        Tensor::from_f32(data, Shape::from_dims(&[1, 3, h, h]), &Device::cpu()).unwrap()
     }
 
     /// pad_same with stride=2, k=3, even input → asymmetric (0, 1).
@@ -703,7 +703,8 @@ mod tests {
             ),
             Shape::from_dims(&[1, 32, 4, 4]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let cfg = EfficientNetConfig::b0(1);
         let weights = build_weights(&cfg, 1);
         let model = EfficientNetModel {

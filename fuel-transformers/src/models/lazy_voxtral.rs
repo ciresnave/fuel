@@ -1304,7 +1304,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[4, audio_in]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let out = projector.forward(&audio).unwrap();
         assert_eq!(out.shape().dims(), &[4, text_h]);
         for &v in &out.realize_f32() {
@@ -1381,7 +1382,8 @@ mod tests {
             vec![7.0_f32, 7.0, 7.0, 8.0, 8.0, 8.0],
             Shape::from_dims(&[2, hidden]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         // Anchor text on audio's graph so the substitute step can mix.
         let text = audio.const_f32_like(
             Arc::<[f32]>::from(vec![
@@ -1472,7 +1474,8 @@ mod tests {
             vec![0.0_f32, 0.0],
             Shape::from_dims(&[1, hidden]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let text = audio.const_f32_like(
             Arc::<[f32]>::from(vec![1.0_f32, 1.0, 2.0, 2.0, 3.0, 3.0]),
             Shape::from_dims(&[1, 3, hidden]),

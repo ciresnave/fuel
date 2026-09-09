@@ -980,7 +980,8 @@ mod tests {
         let positions = scalar_positions(tokens.len());
         let logits_ref = model.forward(&tokens, &positions).unwrap().realize_f32();
 
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model
             .forward_embeds(&embeds, &positions)
@@ -1005,7 +1006,8 @@ mod tests {
             config: cfg.clone(),
             weights: tiny_weights(&cfg),
         };
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let embeds = model
             .embed_tokens_anchored(&anchor, &[1_u32, 2, 3])
             .unwrap();
@@ -1057,7 +1059,8 @@ mod tests {
             config: cfg.clone(),
             weights: tiny_weights(&cfg),
         };
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let seq = 4;
 
         let windowed = model.build_layer_mask(&anchor, seq, true).realize_f32();
@@ -1101,7 +1104,8 @@ mod tests {
             config: cfg.clone(),
             weights: tiny_weights(&cfg),
         };
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let seq = 4;
 
         let windowed = model.build_layer_mask(&anchor, seq, true).realize_f32();

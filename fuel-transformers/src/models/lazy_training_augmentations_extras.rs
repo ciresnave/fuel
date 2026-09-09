@@ -210,7 +210,7 @@ mod tests {
     use fuel_ir::Shape;
 
     fn cpu_f32(values: Vec<f32>, shape: &[usize]) -> Tensor {
-        Tensor::from_f32(values, Shape::from_dims(shape), &Device::cpu())
+        Tensor::from_f32(values, Shape::from_dims(shape), &Device::cpu()).unwrap()
     }
 
     // ---------- Gradient accumulation ----------
@@ -323,7 +323,8 @@ mod tests {
             vec![half::bf16::from_f32(1.0), half::bf16::from_f32(-2.0)],
             Shape::from_dims(&[2]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let mut grads = HashMap::new();
         grads.insert("w".to_string(), grad_bf16);
         let casted = cast_grads_back(grads, &cfg).unwrap();

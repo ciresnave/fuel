@@ -495,7 +495,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, cfg.image_size, cfg.image_size]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let out = model.forward(&img).unwrap();
         let np = cfg.num_patches();
         assert_eq!(out.shape().dims(), &[1, np + 1, cfg.hidden_size]);
@@ -518,14 +519,16 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, cfg.image_size, cfg.image_size]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let img_b = Tensor::from_f32(
             (0..(3 * cfg.image_size * cfg.image_size))
                 .map(|i| (i as f32) * 0.01 + 0.5)
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, cfg.image_size, cfg.image_size]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let a = model.forward(&img_a).unwrap().realize_f32();
         let b = model.forward(&img_b).unwrap().realize_f32();
         let mut max_diff = 0.0_f32;

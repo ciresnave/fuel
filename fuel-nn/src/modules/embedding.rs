@@ -77,7 +77,7 @@ impl Embedding {
         let table_t = token_ids.const_f32_like(
             Arc::clone(&self.table),
             Shape::from_dims(&[self.vocab_size, self.hidden]),
-        );
+        )?;
         let flat_ids = if input_dims.len() == 1 {
             token_ids.clone()
         } else {

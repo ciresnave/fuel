@@ -148,7 +148,7 @@ impl Dropout {
         let mask_shape = Shape::from_dims(shape.dims());
 
         let mask = build_bernoulli_mask(n, self.drop_p, seed);
-        let mask_t = x.const_f32_like(Arc::<[f32]>::from(mask), mask_shape);
+        let mask_t = x.const_f32_like(Arc::<[f32]>::from(mask), mask_shape)?;
         x.mul(&mask_t)
     }
 }

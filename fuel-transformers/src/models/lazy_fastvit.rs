@@ -771,7 +771,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let logits = model.forward(&img).unwrap();
         assert_eq!(logits.shape().dims(), &[1, 10]);
         for &v in &logits.realize_f32() {
@@ -793,7 +794,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let feats = model.forward_features(&img).unwrap();
         let shape = feats.shape();
         let dims = shape.dims();
@@ -819,14 +821,16 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let img_b = Tensor::from_f32(
             (0..(3 * 32 * 32))
                 .map(|i| (i as f32) * 0.01 + 0.5)
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let a = model.forward(&img_a).unwrap().realize_f32();
         let b = model.forward(&img_b).unwrap().realize_f32();
         let mut max_diff = 0.0_f32;

@@ -1576,6 +1576,7 @@ mod tests {
             Shape::from_dims(&[num_tiles, cfg.num_channels, cfg.image_size, cfg.image_size]),
             &Device::cpu(),
         )
+        .unwrap()
     }
 
     #[test]
@@ -2014,6 +2015,7 @@ mod tests {
                 Shape::from_dims(&[1, cfg.num_channels, h, w]),
                 &Device::cpu(),
             )
+            .unwrap()
         }
 
         fn navit_model(text_hidden: usize) -> PaddleOcrVlNaVitModel {
@@ -2175,7 +2177,8 @@ mod tests {
                 Arc::from(data),
                 Shape::from_dims(&[1, cfg.num_channels, 13, 12]),
                 &Device::cpu(),
-            );
+            )
+            .unwrap();
             let _ = model.forward(&pixels);
         }
 
@@ -2193,7 +2196,8 @@ mod tests {
                 Arc::from(data),
                 Shape::from_dims(&[1, cfg.num_channels, 12, 13]),
                 &Device::cpu(),
-            );
+            )
+            .unwrap();
             let _ = model.forward(&pixels);
         }
 

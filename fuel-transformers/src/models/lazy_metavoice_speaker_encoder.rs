@@ -291,7 +291,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, t, cfg.mel_n_channels]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let out = model.forward(&mels).unwrap();
         assert_eq!(out.shape().dims(), &[1, t, cfg.model_embedding_size]);
         for &v in &out.realize_f32() {
@@ -310,7 +311,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, t, cfg.mel_n_channels]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let out = model.forward(&mels).unwrap().realize_f32();
         let e = cfg.model_embedding_size;
         for row in 0..t {

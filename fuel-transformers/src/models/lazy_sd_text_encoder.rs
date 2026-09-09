@@ -794,7 +794,8 @@ mod tests {
         // We build a 1-element graph and compare against the closed form.
         let x_vals = [-2.0_f32, -0.5, 0.0, 0.5, 1.0, 2.0];
         for &v in &x_vals {
-            let x = Tensor::from_f32(vec![v], Shape::from_dims(&[1]), &fuel_core::Device::cpu());
+            let x = Tensor::from_f32(vec![v], Shape::from_dims(&[1]), &fuel_core::Device::cpu())
+                .unwrap();
             let y = quick_gelu(&x).unwrap();
             let out = y.realize_f32()[0];
             let expected = v * (1.0 / (1.0 + (-1.702_f32 * v).exp()));

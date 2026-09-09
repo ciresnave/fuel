@@ -1742,7 +1742,8 @@ mod tests {
             Arc::from(img_data),
             Shape::from_dims(&[1, seq_image, cfg.in_channels]),
             &dev,
-        );
+        )
+        .unwrap();
         let txt_data: Vec<f32> = (0..(1 * seq_text * cfg.context_in_dim))
             .map(|_| rng())
             .collect();
@@ -1983,7 +1984,8 @@ mod tests {
             Arc::from(data),
             Shape::from_dims(&[1, cfg.in_channels, h_in, w_in]),
             &dev,
-        );
+        )
+        .unwrap();
         let z = vae.encode(&img).unwrap();
         let z_dims = z.shape().dims().to_vec();
         // 3 downsamples → /8 spatial
@@ -2016,7 +2018,8 @@ mod tests {
             Arc::from(vec![1.0_f32, 2.0, 3.0, 4.0]),
             Shape::from_dims(&[1, 2, 2]),
             &dev,
-        );
+        )
+        .unwrap();
         let pred = img.const_f32_like(
             Arc::from(vec![0.5_f32, 0.5, 0.5, 0.5]),
             Shape::from_dims(&[1, 2, 2]),

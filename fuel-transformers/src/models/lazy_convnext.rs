@@ -990,7 +990,7 @@ mod tests {
         let x_data = vec![1.0_f32, 1.0, 2.0, 2.0, 3.0];
         let c4 = 5;
         let seq = 1;
-        let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[1, seq, c4]), &dev);
+        let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[1, seq, c4]), &dev).unwrap();
         let gamma = arc(vec![1.0_f32; c4]);
         let beta = arc(vec![0.0_f32; c4]);
         let out = apply_grn(&x, &gamma, &beta, c4, seq).unwrap().realize_f32();
@@ -1018,7 +1018,7 @@ mod tests {
         let x_data = vec![0.5_f32, -0.25, 0.75, 1.0];
         let c4 = 4;
         let seq = 1;
-        let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[1, seq, c4]), &dev);
+        let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[1, seq, c4]), &dev).unwrap();
         let gamma = arc(vec![0.0_f32; c4]);
         let beta = arc(vec![0.0_f32; c4]);
         let out = apply_grn(&x, &gamma, &beta, c4, seq).unwrap().realize_f32();

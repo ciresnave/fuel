@@ -123,7 +123,7 @@ impl Module for QuantizableLinear {
         match &self.bias {
             Some(b) => {
                 let bias_t =
-                    y.const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_features]));
+                    y.const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_features]))?;
                 y.broadcast_add(&bias_t)
             }
             None => Ok(y),

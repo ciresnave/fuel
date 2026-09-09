@@ -795,7 +795,8 @@ mod tests {
             (0..dim).map(|i| 0.1 * (i as f32 - 3.5)).collect::<Vec<_>>(),
             Shape::from_dims(&[1, 1, dim]),
             &device,
-        );
+        )
+        .unwrap();
         let zero_gain: Arc<[f32]> = Arc::from(vec![0.0_f32; dim]);
         let unity_gain: Arc<[f32]> = Arc::from(vec![1.0_f32; dim]);
         let offset = x

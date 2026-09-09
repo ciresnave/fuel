@@ -131,9 +131,9 @@ impl MnistTrainer {
             .step(move |_graph, params: &HashMap<String, Tensor>| {
                 let (w1, b1, w2, b2) = (&params["w1"], &params["b1"], &params["w2"], &params["b2"]);
                 // Input as a Const on the parameters' graph (the finetune anchor trick).
-                let x = w1.const_f32_like(x_data, Shape::from_dims(&[n_samples, in_dim]));
+                let x = w1.const_f32_like(x_data, Shape::from_dims(&[n_samples, in_dim]))?;
                 let logits = mlp_logits(&x, w1, b1, w2, b2)?;
-                let target = w1.const_f32_like(t_data, Shape::from_dims(&[n_samples, out_dim]));
+                let target = w1.const_f32_like(t_data, Shape::from_dims(&[n_samples, out_dim]))?;
                 loss::cross_entropy_with_logits(&logits, &target)
             })
     }

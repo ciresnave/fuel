@@ -1037,6 +1037,7 @@ mod tests {
             Shape::from_dims(&[1, cfg.num_channels, cfg.image_size, cfg.image_size]),
             &Device::cpu(),
         )
+        .unwrap()
     }
 
     #[test]

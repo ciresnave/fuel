@@ -539,7 +539,8 @@ fn apply_conv2d(x: &Tensor, c: &Conv2dWeights, anchor: &Tensor) -> Result<Tensor
     )?;
     let bias =
         c.b.as_ref()
-            .map(|b| anchor.const_f32_like(Arc::clone(b), Shape::from_dims(&[c.c_out])));
+            .map(|b| anchor.const_f32_like(Arc::clone(b), Shape::from_dims(&[c.c_out])))
+            .transpose()?;
     x.conv2d(
         &w,
         bias.as_ref(),
@@ -1246,7 +1247,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let logits = model.forward(&img).unwrap();
         assert_eq!(logits.shape().dims(), &[1, n_labels]);
         for &v in &logits.realize_f32() {
@@ -1272,7 +1274,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let logits = model.forward(&img).unwrap();
         let shape = logits.shape();
         let dims = shape.dims();
@@ -1302,14 +1305,16 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let b = Tensor::from_f32(
             (0..(3 * 32 * 32))
                 .map(|i| (i as f32) * 0.01 + 0.7)
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let la = model.forward(&a).unwrap().realize_f32();
         let lb = model.forward(&b).unwrap().realize_f32();
         let mut max_diff = 0.0_f32;
@@ -1638,7 +1643,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let logits = model.forward(&img).unwrap();
         assert_eq!(logits.shape().dims(), &[1, n_labels]);
         for &v in &logits.realize_f32() {
@@ -1708,7 +1714,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 32, 32]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let logits = model.forward(&img).unwrap();
         let dims = logits.shape();
         let dims = dims.dims();

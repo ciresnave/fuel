@@ -1082,7 +1082,7 @@ pub fn generate(
 fn noise_on_graph(anchor: &Tensor, shape: Shape, seed: u64) -> fuel_core::Result<Tensor> {
     let n = shape.elem_count();
     let data = small_normal_vec(n, seed);
-    anchor.const_f32_like(data, shape)?
+    anchor.const_f32_like(data, shape)
 }
 
 /// Internal helper producing a deterministic small-noise vector
@@ -1796,7 +1796,7 @@ mod tests {
     #[test]
     fn global_response_norm_hand_computed() {
         let x_data = vec![1.0_f32, 0.0, 0.0, 0.0]; // [1, 1, 2, 2]
-        let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[1, 1, 2, 2]), &dev());
+        let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[1, 1, 2, 2]), &dev()).unwrap();
         let gamma = arc_ones(1);
         let beta = arc_zeros(1);
         let out = global_response_norm(&x, &gamma, &beta, 1, 2, 2)
@@ -1821,7 +1821,7 @@ mod tests {
         };
         // Latent shape: spatial 8x8.
         let lat_data = vec![0.01_f32; 1 * 4 * 8 * 8];
-        let lat = Tensor::from_f32(lat_data, Shape::from_dims(&[1, 4, 8, 8]), &dev());
+        let lat = Tensor::from_f32(lat_data, Shape::from_dims(&[1, 4, 8, 8]), &dev()).unwrap();
         let img = model.decode(&lat).unwrap();
         // n_levels = 2 → one upsample (×2) followed by pixel_shuffle ×2 = total ×4.
         assert_eq!(img.shape().dims(), &[1, 3, 32, 32]);
@@ -1848,7 +1848,8 @@ mod tests {
             xs_data,
             Shape::from_dims(&[1, cfg.prior_c_in, 2, 2]),
             &dev(),
-        );
+        )
+        .unwrap();
         let txt_data = vec![0.01_f32; 1 * 4 * cfg.prior_c_cond];
         let txt = xs.const_f32_like(txt_data, Shape::from_dims(&[1, 4, cfg.prior_c_cond]))?;
         let out = model.forward(&xs, 0.5, &txt, 2, 2).unwrap();
@@ -1874,7 +1875,8 @@ mod tests {
             xs_data,
             Shape::from_dims(&[1, cfg.diffnext_c_in, h, w]),
             &dev(),
-        );
+        )
+        .unwrap();
         let txt_data = vec![0.01_f32; 1 * 4 * cfg.clip_embed];
         let txt = xs.const_f32_like(txt_data, Shape::from_dims(&[1, 4, cfg.clip_embed]))?;
         let out = model.forward(&xs, 0.5, &txt, h, w).unwrap();
@@ -2054,7 +2056,8 @@ mod tests {
             weights: make_paella_weights(&cfg),
         };
         let txt_data = vec![0.01_f32; 1 * 4 * cfg.clip_embed];
-        let txt = Tensor::from_f32(txt_data, Shape::from_dims(&[1, 4, cfg.clip_embed]), &dev());
+        let txt =
+            Tensor::from_f32(txt_data, Shape::from_dims(&[1, 4, cfg.clip_embed]), &dev()).unwrap();
         let img = generate(&prior, &diffnext, &paella, &txt, 0, 0, 2, 2, 8, 8).unwrap();
         assert_eq!(img.shape().dims(), &[1, 3, 32, 32]);
         let flat = img.realize_f32();

@@ -695,7 +695,8 @@ mod tests {
             Arc::from(img_data),
             Shape::from_dims(&[1, 3, h_img, w_img]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let out = model.forward(&pixel_values).unwrap();
         let expected_out_len = (h_img / cfg.patch_size) * (w_img / cfg.patch_size)
             / (cfg.pooling_kernel_size * cfg.pooling_kernel_size);
@@ -736,13 +737,15 @@ mod tests {
             Arc::from(img_a),
             Shape::from_dims(&[1, 3, h_img, w_img]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let out_a = model_a.forward(&pix_a).unwrap().realize_f32();
         let pix_b = Tensor::from_f32(
             Arc::from(img_b),
             Shape::from_dims(&[1, 3, h_img, w_img]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let out_b = model_b.forward(&pix_b).unwrap().realize_f32();
         let mut max_diff = 0.0_f32;
         for (a, b) in out_a.iter().zip(out_b.iter()) {
@@ -772,7 +775,8 @@ mod tests {
             Arc::from(img_data),
             Shape::from_dims(&[1, 3, h_img, w_img]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let out = model.forward(&pix).unwrap();
         assert_eq!(out.shape().dims(), &[1, 1, cfg.hidden_size]);
     }

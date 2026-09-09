@@ -845,7 +845,8 @@ mod tests {
             model.weights.embed_tokens[0].clone(),
             Shape::from_dims(&[cfg.vocab_size + 1, cfg.hidden_size]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let enc = model.encode_text_adapter(&anchor, &text_tokens).unwrap();
         let via_enc = model
             .forward_with_encoder_states(&audio, &enc, 0)

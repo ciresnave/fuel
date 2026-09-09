@@ -220,7 +220,7 @@ impl MetaVoiceModel {
             .bt());
         }
         let data: Arc<[f32]> = Arc::from(speaker_embed.realize_f32());
-        anchor.const_f32_like(data, Shape::from_dims(&[1, 1, cfg.speaker_emb_dim]))?
+        anchor.const_f32_like(data, Shape::from_dims(&[1, 1, cfg.speaker_emb_dim]))
     }
 
     fn build_causal_mask(&self, anchor: &Tensor, seq: usize) -> Tensor {
@@ -642,6 +642,7 @@ mod tests {
             Shape::from_dims(&[1, 1, cfg.speaker_emb_dim]),
             &Device::cpu(),
         )
+        .unwrap()
     }
 
     #[test]

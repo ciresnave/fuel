@@ -706,7 +706,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 64, 64]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let feats = model.forward_features(&img).unwrap();
         let shape = feats.shape();
         let dims = shape.dims();
@@ -743,7 +744,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 128, 128]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let feats = model.forward_features(&img).unwrap();
         let shape = feats.shape();
         let dims = shape.dims();
@@ -775,14 +777,16 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, dim, 4, 4]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let b = Tensor::from_f32(
             (0..(dim * 4 * 4))
                 .map(|i| (i as f32) * 0.01 + 0.5)
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, dim, 4, 4]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let out_a = cga_core(&a, &cga, &cfg, &a).unwrap().realize_f32();
         let out_b = cga_core(&b, &cga, &cfg, &b).unwrap().realize_f32();
         let mut max_diff = 0.0_f32;

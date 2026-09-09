@@ -825,7 +825,8 @@ mod tests {
         let pcm: Vec<f32> = (0..t_audio)
             .map(|i| ((i as f32) * 0.01).sin() * 0.1)
             .collect();
-        let pcm = Tensor::from_f32(pcm, Shape::from_dims(&[1, 1, t_audio]), &Device::cpu());
+        let pcm =
+            Tensor::from_f32(pcm, Shape::from_dims(&[1, 1, t_audio]), &Device::cpu()).unwrap();
         let codes = model.encode(&pcm).unwrap();
         let code_dims = codes.shape().dims().to_vec();
         assert_eq!(code_dims, vec![1, n_q, t_audio / total_stride]);
@@ -847,7 +848,8 @@ mod tests {
         // exercises the decode streaming path. 4 code frames.
         let t_codes = 4;
         let codes: Vec<u32> = (0..(1 * n_q * t_codes)).map(|i| (i as u32) % 4).collect();
-        let codes_t = Tensor::from_u32(codes, Shape::from_dims(&[1, n_q, t_codes]), &Device::cpu());
+        let codes_t =
+            Tensor::from_u32(codes, Shape::from_dims(&[1, n_q, t_codes]), &Device::cpu()).unwrap();
 
         let one_shot = model.decode(&codes_t).unwrap().realize_f32();
         assert_eq!(one_shot.len(), t_codes * total_stride);
@@ -900,7 +902,8 @@ mod tests {
             pcm.clone(),
             Shape::from_dims(&[1, 1, t_audio]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let one_shot = model.encode(&pcm_t).unwrap().realize_u32();
         assert_eq!(one_shot.len(), 1 * n_q * t_codes);
 
@@ -917,7 +920,8 @@ mod tests {
             let take = chunk_size.min(t_audio - cursor);
             let chunk_data: Vec<f32> = pcm[cursor..cursor + take].to_vec();
             let chunk =
-                Tensor::from_f32(chunk_data, Shape::from_dims(&[1, 1, take]), &Device::cpu());
+                Tensor::from_f32(chunk_data, Shape::from_dims(&[1, 1, take]), &Device::cpu())
+                    .unwrap();
             let (new_state, out) = model.encode_step(state, &chunk).unwrap();
             state = new_state;
             if let Some(codes) = out {

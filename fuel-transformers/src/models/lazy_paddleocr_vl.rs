@@ -650,6 +650,7 @@ mod tests {
             Shape::from_dims(&[cfg.num_channels, height, width]),
             &Device::cpu(),
         )
+        .unwrap()
     }
 
     /// Text-only forward (`image_pixels = None`) must produce the same
@@ -709,7 +710,8 @@ mod tests {
             Arc::from(data_b),
             Shape::from_dims(&[cfg.num_channels, cfg.image_size, cfg.image_size]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
 
         let out_a = model
             .forward(Some(&img_a), &tokens, image_token_id, 0)

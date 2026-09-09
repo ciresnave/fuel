@@ -431,7 +431,8 @@ mod tests {
         let device = Device::cpu();
         // Tiny SD3-shaped latent: B=1, C=4, H=2, W=2 (the channel
         // count doesn't matter for the IdentityDenoiser).
-        let latent = Tensor::from_f32(vec![0.1_f32; 16], Shape::from_dims(&[1, 4, 2, 2]), &device);
+        let latent =
+            Tensor::from_f32(vec![0.1_f32; 16], Shape::from_dims(&[1, 4, 2, 2]), &device).unwrap();
         let context = latent.const_f32_like(vec![0.2_f32; 48], Shape::from_dims(&[1, 6, 8]))?;
         let y = latent.const_f32_like(vec![0.3_f32; 8], Shape::from_dims(&[1, 8]))?;
         let neg_context =
@@ -526,7 +527,8 @@ mod tests {
     #[test]
     fn zero_num_steps_errors() {
         let device = Device::cpu();
-        let latent = Tensor::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[1, 1, 2, 2]), &device);
+        let latent =
+            Tensor::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[1, 1, 2, 2]), &device).unwrap();
         let context = latent.const_f32_like(vec![0.0_f32; 4], Shape::from_dims(&[1, 1, 4]))?;
         let y = latent.const_f32_like(vec![0.0_f32; 4], Shape::from_dims(&[1, 4]))?;
         let neg_context = context.clone();
@@ -546,7 +548,8 @@ mod tests {
     #[test]
     fn neg_shape_mismatch_errors() {
         let device = Device::cpu();
-        let latent = Tensor::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[1, 1, 2, 2]), &device);
+        let latent =
+            Tensor::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[1, 1, 2, 2]), &device).unwrap();
         let context = latent.const_f32_like(vec![0.0_f32; 6], Shape::from_dims(&[1, 2, 3]))?;
         let y = latent.const_f32_like(vec![0.0_f32; 4], Shape::from_dims(&[1, 4]))?;
         // Wrong context shape.

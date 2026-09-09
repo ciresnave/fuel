@@ -530,10 +530,10 @@ fn scatter_visual_residual(
     text_hidden: usize,
 ) -> Result<Tensor> {
     if slot_positions.is_empty() {
-        return Ok(anchor.const_f32_like(
+        return anchor.const_f32_like(
             Arc::from(vec![0.0_f32; seq * text_hidden]),
             Shape::from_dims(&[1, seq, text_hidden]),
-        ));
+        );
     }
     let mut gather_indices = vec![0_u32; seq];
     for (residual_row, &pos) in slot_positions.iter().enumerate() {
@@ -805,6 +805,7 @@ mod tests {
             ]),
             &Device::cpu(),
         )
+        .unwrap()
     }
 
     fn build_model(deepstack: Vec<usize>, text_hidden: usize) -> Qwen3VlModel {
@@ -922,7 +923,8 @@ mod tests {
             Arc::from(vec![0.0_f32]),
             Shape::from_dims(&[1]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         // text_embeds := (1, seq, hidden) with row r = [r, r, r, r].
         let text_data: Vec<f32> = (0..seq)
             .flat_map(|r| (0..hidden).map(move |_| r as f32))

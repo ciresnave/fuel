@@ -1977,7 +1977,7 @@ mod tests {
                 ((i / (h * w)) % c) as f32
             })
             .collect();
-        let x = Tensor::from_f32(data, Shape::from_dims(&[n, c, h, w]), &Device::cpu());
+        let x = Tensor::from_f32(data, Shape::from_dims(&[n, c, h, w]), &Device::cpu()).unwrap();
         let ln = SamLayerNormWeights {
             gain: Arc::from(vec![2.0_f32; c]),
             bias: Arc::from(vec![1.0_f32; c]),
@@ -2048,7 +2048,7 @@ mod tests {
     }
 
     fn dummy_anchor() -> Tensor {
-        Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu())
+        Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap()
     }
 
     #[test]
@@ -2143,7 +2143,8 @@ mod tests {
             masks_data,
             Shape::from_dims(&[1, 1, h_in, w_in]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let out = enc.embed_masks(&masks).unwrap();
         // After two stride-2 convs the spatial dims drop by 4×.
         assert_eq!(
@@ -2381,7 +2382,8 @@ mod tests {
         let img_data: Vec<f32> = (0..1 * td * h * w)
             .map(|i| ((i as f32) * 0.001) - 0.05)
             .collect();
-        let img = Tensor::from_f32(img_data, Shape::from_dims(&[1, td, h, w]), &Device::cpu());
+        let img =
+            Tensor::from_f32(img_data, Shape::from_dims(&[1, td, h, w]), &Device::cpu()).unwrap();
         let pe_data: Vec<f32> = (0..1 * td * h * w).map(|i| (i as f32) * 0.0007).collect();
         let pe = img.const_f32_like(
             Arc::<[f32]>::from(pe_data),
@@ -2427,7 +2429,8 @@ mod tests {
         let img_data: Vec<f32> = (0..1 * td * h * w)
             .map(|i| ((i as f32) * 0.001) - 0.05)
             .collect();
-        let img = Tensor::from_f32(img_data, Shape::from_dims(&[1, td, h, w]), &Device::cpu());
+        let img =
+            Tensor::from_f32(img_data, Shape::from_dims(&[1, td, h, w]), &Device::cpu()).unwrap();
         let pe = img.const_f32_like(
             Arc::<[f32]>::from(vec![0.001_f32; 1 * td * h * w]),
             Shape::from_dims(&[1, td, h, w]),
@@ -2674,7 +2677,8 @@ mod tests {
             data.clone(),
             Shape::from_dims(&[b, h, w, c]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let (windows, (h_p, w_p)) = window_partition(&x, 2, h, w, c).unwrap();
         assert_eq!(windows.shape().dims(), &[4, 2, 2, c]);
         assert_eq!((h_p, w_p), (4, 4));

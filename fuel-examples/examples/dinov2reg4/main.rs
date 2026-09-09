@@ -48,7 +48,7 @@ pub fn main() -> anyhow::Result<()> {
         Arc::<[f32]>::from(image_vec),
         Shape::from_dims(&[1, 3, 518, 518]),
         &device,
-    );
+    )?;
 
     let f_species_id_mapping = "fuel-examples/examples/dinov2reg4/species_id_mapping.txt";
     let classes: Vec<String> = std::fs::read_to_string(f_species_id_mapping)

@@ -115,7 +115,7 @@ impl PReLU {
         let weight = if self.num_parameters == 1 {
             // Rank-0 scalar; broadcasts against anything.
 
-            x.const_f32_like(Arc::clone(&self.weight), Shape::from_dims(&[]))
+            x.const_f32_like(Arc::clone(&self.weight), Shape::from_dims(&[]))?
         } else {
             // Per-channel — require rank >= 2 and channel-axis match.
             let dims = x.shape();
@@ -140,12 +140,12 @@ impl PReLU {
             // axis so broadcast_mul picks the right alpha per channel.
             let mut bshape: Vec<usize> = vec![1; dims.len()];
             bshape[1] = c;
-            x.const_f32_like(Arc::clone(&self.weight), Shape::from_dims(&bshape))
+            x.const_f32_like(Arc::clone(&self.weight), Shape::from_dims(&bshape))?
         };
 
         // pos = relu(x); neg = min(x, 0)
         let pos = x.relu();
-        let zero = x.const_f32_like(Arc::<[f32]>::from(vec![0.0_f32]), Shape::from_dims(&[]));
+        let zero = x.const_f32_like(Arc::<[f32]>::from(vec![0.0_f32]), Shape::from_dims(&[]))?;
         let neg = x.minimum(&broadcast_zero_like(&zero, x)?)?;
 
         // weighted_neg = alpha * neg (broadcast).

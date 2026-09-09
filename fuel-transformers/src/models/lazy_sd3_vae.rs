@@ -800,7 +800,8 @@ mod tests {
             latent_data,
             Shape::from_dims(&[1, lc, 4, 4]),
             &fuel_core::Device::cpu(),
-        );
+        )
+        .unwrap();
         let out = decoder.decode(&latent).unwrap();
         let flat = out.realize_f32();
         assert_eq!(flat.len(), oc * 32 * 32);
@@ -828,7 +829,8 @@ mod tests {
             latent_data,
             Shape::from_dims(&[1, lc, 4, 4]),
             &fuel_core::Device::cpu(),
-        );
+        )
+        .unwrap();
         let out = decoder.decode(&latent).unwrap();
         let flat = out.realize_f32();
         assert_eq!(flat.len(), oc * 32 * 32);

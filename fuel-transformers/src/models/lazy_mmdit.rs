@@ -1681,7 +1681,8 @@ mod tests {
             Arc::from(txt_data),
             Shape::from_dims(&[1, seq_text, cfg.dim]),
             &dev,
-        );
+        )
+        .unwrap();
         let img = txt.const_f32_like(
             Arc::from(img_data),
             Shape::from_dims(&[1, seq_image, cfg.dim]),
@@ -1718,7 +1719,7 @@ mod tests {
         let data: Vec<f32> = (0..(b * s * dim))
             .map(|i| (i as f32 * 0.137).sin())
             .collect();
-        let x = Tensor::from_f32(Arc::from(data), Shape::from_dims(&[b, s, dim]), &dev);
+        let x = Tensor::from_f32(Arc::from(data), Shape::from_dims(&[b, s, dim]), &dev).unwrap();
         let normed = x.layer_norm_last_dim(1e-6).unwrap();
         let zero = x.const_f32_like(
             Arc::from(vec![0.0_f32; b * dim]),
@@ -1750,7 +1751,7 @@ mod tests {
         let delta_data: Vec<f32> = (0..(b * s * dim))
             .map(|i| (i as f32 * 0.07).sin())
             .collect();
-        let x = Tensor::from_f32(Arc::from(x_data), Shape::from_dims(&[b, s, dim]), &dev);
+        let x = Tensor::from_f32(Arc::from(x_data), Shape::from_dims(&[b, s, dim]), &dev).unwrap();
         let delta = x.const_f32_like(Arc::from(delta_data), Shape::from_dims(&[b, s, dim]))?;
         let gate = x.const_f32_like(
             Arc::from(vec![0.0_f32; b * dim]),
@@ -2006,7 +2007,8 @@ mod tests {
             Arc::from(x_data),
             Shape::from_dims(&[1, cfg.in_channels, h, w]),
             &dev,
-        );
+        )
+        .unwrap();
         let t = x.const_f32_like(Arc::from(t_data), Shape::from_dims(&[1]))?;
         let y = x.const_f32_like(
             Arc::from(y_data),
@@ -2119,7 +2121,8 @@ mod tests {
             Arc::from(data),
             Shape::from_dims(&[1, s, c_per_token]),
             &dev,
-        );
+        )
+        .unwrap();
         let out = unpatchify(&x, patch_size, out_channels, h_lat, w_lat).unwrap();
         assert_eq!(
             out.shape().dims(),

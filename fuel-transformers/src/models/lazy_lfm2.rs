@@ -1023,7 +1023,8 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
         let max_diff = logits_ref

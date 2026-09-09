@@ -749,7 +749,7 @@ mod tests {
             decoder_weights: dw,
         };
         let image: Vec<f32> = (0..(3 * 8 * 8)).map(|i| (i as f32) * 0.01).collect();
-        let img = Tensor::from_f32(image, Shape::from_dims(&[1, 3, 8, 8]), &Device::cpu());
+        let img = Tensor::from_f32(image, Shape::from_dims(&[1, 3, 8, 8]), &Device::cpu()).unwrap();
         let tgt = [1_u32, 2, 3];
         let logits = model.forward(&img, &tgt).unwrap();
         assert_eq!(logits.shape().dims(), &[1, tgt.len(), dcfg.vocab_size]);
@@ -774,7 +774,7 @@ mod tests {
             decoder_weights: dw,
         };
         let image: Vec<f32> = (0..(3 * 8 * 8)).map(|i| (i as f32) * 0.01).collect();
-        let img = Tensor::from_f32(image, Shape::from_dims(&[1, 3, 8, 8]), &Device::cpu());
+        let img = Tensor::from_f32(image, Shape::from_dims(&[1, 3, 8, 8]), &Device::cpu()).unwrap();
         let tgt = [1_u32, 2, 3];
         let full = model.forward(&img, &tgt).unwrap().realize_f32();
         let enc = model.forward_encoder(&img).unwrap();
@@ -809,14 +809,16 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 8, 8]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let img_b = Tensor::from_f32(
             (0..(3 * 8 * 8))
                 .map(|i| i as f32 * 0.01 + 0.5)
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 8, 8]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let tgt = [1_u32, 2, 3];
         let a = model.forward(&img_a, &tgt).unwrap().realize_f32();
         let b = model.forward(&img_b, &tgt).unwrap().realize_f32();
@@ -848,7 +850,8 @@ mod tests {
             vec![0.1_f32; 3 * 8 * 8],
             Shape::from_dims(&[1, 3, 8, 8]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let tgt_a = [1_u32, 2, 3, 4];
         let tgt_b = [1_u32, 2, 3, 9]; // last token changed
         let a = model.forward(&img, &tgt_a).unwrap().realize_f32();
@@ -1144,7 +1147,8 @@ mod tests {
                 image,
                 Shape::from_dims(&[1, 3, 8, 8]),
                 &fuel_core::Device::cpu(),
-            );
+            )
+            .unwrap();
             let logits = model.forward(&img, &[1_u32, 2, 3]).unwrap().realize_f32();
             for v in &logits {
                 assert!(v.is_finite());

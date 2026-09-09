@@ -129,7 +129,7 @@ impl MoeRouter {
             let idx_col = idx.unsqueeze(1usize)?;
             let picked = work.gather(1usize, &idx_col)?;
             let neg_inf =
-                idx_col.const_f32_like(Arc::from(vec![MASK_NEG; n]), Shape::from_dims(&[n, 1]));
+                idx_col.const_f32_like(Arc::from(vec![MASK_NEG; n]), Shape::from_dims(&[n, 1]))?;
             work = work.scatter_add(1usize, &idx_col, &neg_inf)?;
             idx_cols.push(idx_col);
             logit_cols.push(picked);
@@ -355,13 +355,13 @@ impl MoeLayer {
         let dense_zero = xs_flat.const_f32_like(
             Arc::from(vec![0.0_f32; n * num_experts]),
             Shape::from_dims(&[n, num_experts]),
-        );
+        )?;
         let dense_weights = dense_zero.scatter_add(1usize, &indices, &weights)?;
 
         let mut acc = xs_flat.const_f32_like(
             Arc::from(vec![0.0_f32; n * hidden]),
             Shape::from_dims(&[n, hidden]),
-        );
+        )?;
         for (e, expert) in self.experts.iter().enumerate() {
             // Gate-weight column for expert e: [N, 1], nonzero exactly at
             // the tokens routed to e. `nonzero_indices_bundled` flattens it
@@ -411,13 +411,13 @@ impl MoeLayer {
         let dense_zero = xs_flat.const_f32_like(
             Arc::from(vec![0.0_f32; n * num_experts]),
             Shape::from_dims(&[n, num_experts]),
-        );
+        )?;
         let dense_weights = dense_zero.scatter_add(1usize, &indices, &weights)?;
 
         let mut acc = xs_flat.const_f32_like(
             Arc::from(vec![0.0_f32; n * hidden]),
             Shape::from_dims(&[n, hidden]),
-        );
+        )?;
         for (e, expert) in self.experts.iter().enumerate() {
             let exp_out = expert.forward(&xs_flat)?;
             let col = dense_weights.narrow(1usize, e, 1usize)?;

@@ -732,7 +732,7 @@ mod tests {
     fn tiny_image(h: usize) -> Tensor {
         let mut nb = rng_seed(54);
         let data: Arc<[f32]> = Arc::from((0..3 * h * h).map(|_| nb()).collect::<Vec<_>>());
-        Tensor::from_f32(data, Shape::from_dims(&[1, 3, h, h]), &Device::cpu())
+        Tensor::from_f32(data, Shape::from_dims(&[1, 3, h, h]), &Device::cpu()).unwrap()
     }
 
     #[test]

@@ -1089,7 +1089,8 @@ mod tests {
         };
         let src = [1_u32, 2, 3];
         let enc_ref = model.forward_encoder(&src).unwrap().realize_f32();
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let src_embeds = model.embed_tokens_anchored(&anchor, &src).unwrap();
         let enc_via_embeds = model
             .forward_encoder_embeds(&src_embeds)
@@ -1144,7 +1145,8 @@ mod tests {
             vec![0.0_f32; 3 * (cfg.d_model + 1)],
             Shape::from_dims(&[1, 3, cfg.d_model + 1]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         assert!(model.forward_encoder_embeds(&bad).is_err());
     }
 

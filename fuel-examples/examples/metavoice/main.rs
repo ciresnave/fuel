@@ -292,8 +292,8 @@ fn main() -> Result<()> {
             codes_flat.extend(std::iter::repeat_n(0_u32, gen_len));
         }
     }
-    let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &Device::cpu());
-    let codes = anchor.const_u32_like(codes_flat, Shape::from_dims(&[1, enc_num_cb, gen_len]));
+    let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &Device::cpu())?;
+    let codes = anchor.const_u32_like(codes_flat, Shape::from_dims(&[1, enc_num_cb, gen_len]))?;
 
     // 8) Decode to waveform.
     println!("decoding {gen_len} codes through encodec");

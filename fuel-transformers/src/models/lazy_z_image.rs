@@ -2150,7 +2150,8 @@ mod tests {
             vec![0.1_f32; c * h * w],
             Shape::from_dims(&[1, c, 1, h, w]),
             &fuel_core::Device::cpu(),
-        );
+        )
+        .unwrap();
         let t = x.const_f32_like(Arc::from(vec![0.5_f32]), Shape::from_dims(&[1]))?;
         let cap = x.const_f32_like(
             Arc::from(vec![0.1_f32; 1 * 3 * cfg.cap_feat_dim]),
@@ -2376,7 +2377,8 @@ mod tests {
             vec![0.1_f32; cfg.in_channels * h * w],
             Shape::from_dims(&[1, cfg.in_channels, h, w]),
             &fuel_core::Device::cpu(),
-        );
+        )
+        .unwrap();
         let z = vae.encode(&x).unwrap();
         assert_eq!(z.shape().dims(), &[1, cfg.latent_channels, h / 2, w / 2]);
         let img = vae.decode(&z).unwrap();
@@ -2398,7 +2400,8 @@ mod tests {
             vec![0.5_f32; 4],
             Shape::from_dims(&[1, 4]),
             &fuel_core::Device::cpu(),
-        );
+        )
+        .unwrap();
         let v = sample.const_f32_like(Arc::from(vec![0.1_f32; 4]), Shape::from_dims(&[1, 4]))?;
         let mut latent = sample.clone();
         while !sched.is_complete() {
@@ -2442,7 +2445,8 @@ mod tests {
             vec![0.1_f32; c * h_lat * w_lat],
             Shape::from_dims(&[1, c, 1, h_lat, w_lat]),
             &fuel_core::Device::cpu(),
-        );
+        )
+        .unwrap();
         // We can't share the cfg between transformer (in_channels=2) and
         // VAE (latent_channels=2): both happen to be 2 here, so we can
         // hand the transformer output to the VAE directly.

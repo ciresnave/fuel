@@ -205,7 +205,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, dim, t_in]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let y = model.forward(&x).unwrap();
         assert_eq!(y.shape().dims(), &[1, dim, t_in / stride]);
         for &v in &y.realize_f32() {
@@ -232,7 +233,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, dim, t_in]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let y = model.forward(&x).unwrap();
         // Causal-trimmed output length = T · stride exactly.
         assert_eq!(y.shape().dims(), &[1, dim, t_in * stride]);
@@ -267,7 +269,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, dim, t_in]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let mid = dn.forward(&x).unwrap();
         assert_eq!(mid.shape().dims(), &[1, dim, t_in / stride]);
         let back = up.forward(&mid).unwrap();

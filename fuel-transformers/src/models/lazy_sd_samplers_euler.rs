@@ -387,7 +387,7 @@ fn randn_like_on_graph(anchor: &Tensor, mean: f64, stdev: f64) -> Result<Tensor>
         .map_err(|e| Error::Msg(format!("randn_like_on_graph: invalid stdev={stdev}: {e}")).bt())?;
     let mut rng = rand::rng();
     let data: Vec<f32> = (0..n).map(|_| normal.sample(&mut rng) as f32).collect();
-    Ok(anchor.const_f32_like(data, Shape::from_dims(shape.dims())))
+    anchor.const_f32_like(data, Shape::from_dims(shape.dims()))
 }
 
 #[cfg(test)]
@@ -396,7 +396,7 @@ mod tests {
     use fuel_core::Device;
 
     fn paired(a: &[f32], b: &[f32], shape: &[usize]) -> (Tensor, Tensor) {
-        let anchor = Tensor::from_f32(a.to_vec(), Shape::from_dims(shape), &Device::cpu());
+        let anchor = Tensor::from_f32(a.to_vec(), Shape::from_dims(shape), &Device::cpu()).unwrap();
         let other = anchor.const_f32_like(b.to_vec(), Shape::from_dims(shape))?;
         (anchor, other)
     }

@@ -212,7 +212,8 @@ fn apply_causal_conv1d(x: &Tensor, w: &LazyConv1dWeights, pad_mode: PadMode) -> 
     let bias_t = w
         .bias
         .as_ref()
-        .map(|b| padded.const_f32_like(Arc::clone(b), Shape::from_dims(&[w.out_channels])));
+        .map(|b| padded.const_f32_like(Arc::clone(b), Shape::from_dims(&[w.out_channels])))
+        .transpose()?;
     padded.conv1d(&weight, bias_t.as_ref(), w.stride, 0, w.groups)
 }
 
@@ -953,7 +954,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, cfg.channels, t_in]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let latent = encoder.forward(&audio).unwrap();
         let dims = latent.shape();
         let dims = dims.dims();
@@ -976,7 +978,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, cfg.dimension, t_latent]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let audio = decoder.forward(&latent).unwrap();
         let dims = audio.shape();
         let dims = dims.dims();
@@ -1003,7 +1006,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, cfg.channels, t_in]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let latent = encoder.forward(&audio).unwrap();
         let recon = decoder.forward(&latent).unwrap();
         // Audio length preserved end-to-end (within the configured tolerance for

@@ -1313,7 +1313,8 @@ mod tests {
             model.weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let token_ids =
             embed_table.const_u32_like(tokens.clone(), Shape::from_dims(&[tokens.len()]))?;
         let embeds = embed_table
@@ -1377,7 +1378,8 @@ mod tests {
             model.weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let token_ids =
             embed_table.const_u32_like(tokens.clone(), Shape::from_dims(&[tokens.len()]))?;
         let embeds = embed_table

@@ -1155,7 +1155,8 @@ mod tests {
             data,
             Shape::from_dims(&[1, c, h, w]),
             &fuel_core::Device::cpu(),
-        );
+        )
+        .unwrap();
         let anchors = [(20_usize, 30_usize), (40, 60), (80, 90)];
         let stride = 32_usize;
         let decoded = decode_scale(&raw, &anchors, stride, num_classes, h, w).unwrap();
@@ -1224,7 +1225,8 @@ mod tests {
             data,
             Shape::from_dims(&[1, n, attrs]),
             &fuel_core::Device::cpu(),
-        );
+        )
+        .unwrap();
         let raw = YoloV3RawOutput { predictions: preds };
         let nms = YoloV3NmsConfig {
             score_threshold: 0.5,

@@ -601,7 +601,7 @@ mod tests {
         let x_data = vec![
             0.1_f32, 0.9, 0.1, 0.0, 0.0, 0.0, 1.1, 0.0, 1.2, 0.1, 0.0, 0.0,
         ];
-        let x = Tensor::from_f32(x_data, Shape::from_dims(&[3, dim]), &Device::cpu());
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[3, dim]), &Device::cpu()).unwrap();
         let codes = codebook_encode(&x, &cb).unwrap().realize_u32();
         assert_eq!(codes.as_slice(), &[1, 2, 0]);
     }
@@ -617,7 +617,8 @@ mod tests {
             codebook_size: cs,
             codebook_dim: dim,
         };
-        let idx = Tensor::from_u32(vec![2_u32, 0, 3], Shape::from_dims(&[3]), &Device::cpu());
+        let idx =
+            Tensor::from_u32(vec![2_u32, 0, 3], Shape::from_dims(&[3]), &Device::cpu()).unwrap();
         let out = codebook_decode(&idx, &cb).unwrap().realize_f32();
         let want = vec![6.0_f32, 7.0, 8.0, 0.0, 1.0, 2.0, 9.0, 10.0, 11.0];
         for (a, b) in out.iter().zip(want.iter()) {
@@ -639,7 +640,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[b, dim, t]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let codes = vq_encode(&xs, &w).unwrap();
         assert_eq!(codes.shape().dims(), &[b, t]);
         let codes_data = codes.realize_u32();
@@ -665,7 +667,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[b, dim, t]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let codes = rvq_encode(&xs, &w).unwrap();
         assert_eq!(codes.shape().dims(), &[n_q, b, t]);
         let recon = rvq_decode(&codes, &w).unwrap();
@@ -691,7 +694,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[b, dim, t]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let codes = split_rvq_encode(&xs, &w_split).unwrap();
         assert_eq!(codes.shape().dims(), &[b, n_q, t]);
         let recon = split_rvq_decode(&codes, &w_split).unwrap();

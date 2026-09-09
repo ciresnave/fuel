@@ -653,6 +653,7 @@ mod tests {
             ]),
             &Device::cpu(),
         )
+        .unwrap()
     }
 
     /// T=4 frames, H=W=28, embed_dim=16, depth=2, num_heads=4, patch=(2,14,14).
@@ -785,7 +786,8 @@ mod tests {
                 cfg.patch_size,
             ]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let pixels_b = Tensor::from_f32(
             Arc::from(pixels_b_data),
             Shape::from_dims(&[
@@ -796,7 +798,8 @@ mod tests {
                 cfg.patch_size,
             ]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
 
         let out_a = model.forward(&pixels_a, &cu_seqlens).unwrap();
         let out_b = model.forward(&pixels_b, &cu_seqlens).unwrap();

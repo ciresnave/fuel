@@ -257,7 +257,8 @@ fn apply_conv1d(x: &Tensor, c: &Conv1dWeights, anchor: &Tensor) -> Result<Tensor
     )?;
     let bias =
         c.b.as_ref()
-            .map(|b| anchor.const_f32_like(Arc::clone(b), Shape::from_dims(&[c.c_out])));
+            .map(|b| anchor.const_f32_like(Arc::clone(b), Shape::from_dims(&[c.c_out])))
+            .transpose()?;
     x.conv1d(&w, bias.as_ref(), c.stride, c.pad, 1)
 }
 
@@ -838,7 +839,8 @@ mod tests {
             vec![0.5_f32, -0.25, 0.75, 1.0],
             Shape::from_dims(&[1, 2, 2]),
             &dev,
-        );
+        )
+        .unwrap();
         let snake_w = Snake1dWeights {
             alpha: Arc::from(vec![0.0_f32; 2]),
             channels: 2,
@@ -866,7 +868,8 @@ mod tests {
                 data.push(((c + t) % cfg.codebook_size) as u32);
             }
         }
-        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let codes = anchor.const_u32_like(data, Shape::from_dims(&[1, cfg.num_codebooks, time]))?;
         let audio = model.decode_codes(&codes).unwrap();
         let dims = audio.shape();
@@ -1221,7 +1224,7 @@ mod tests {
 
         let time = 4_usize;
         let dev = Device::cpu();
-        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
+        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev).unwrap();
         let codes = anchor.const_u32_like(
             vec![1_u32; cfg.num_codebooks * time],
             Shape::from_dims(&[1, cfg.num_codebooks, time]),
@@ -1247,7 +1250,7 @@ mod tests {
         };
         let time = 4_usize;
         let dev = Device::cpu();
-        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev);
+        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev).unwrap();
         let codes_a = anchor.const_u32_like(
             vec![0_u32; cfg.num_codebooks * time],
             Shape::from_dims(&[1, cfg.num_codebooks, time]),

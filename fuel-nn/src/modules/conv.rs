@@ -221,7 +221,8 @@ impl Module for Conv1d {
         let bias_t = self
             .bias
             .as_ref()
-            .map(|b| xs.const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels])));
+            .map(|b| xs.const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels])))
+            .transpose()?;
         xs.conv1d(
             &w_t,
             bias_t.as_ref(),
@@ -471,7 +472,8 @@ impl Module for Conv2d {
         let bias_t = self
             .bias
             .as_ref()
-            .map(|b| xs.const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels])));
+            .map(|b| xs.const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels])))
+            .transpose()?;
         xs.conv2d(
             &w_t,
             bias_t.as_ref(),
@@ -564,7 +566,7 @@ mod tests {
         let via_module = layer.forward(&x).unwrap().realize_f32();
 
         let x2 = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, l]), &Device::cpu());
-        let w_t = x2.const_f32_like(Arc::clone(&weight_arc), Shape::from_dims(&[cout, cin, k]));
+        let w_t = x2.const_f32_like(Arc::clone(&weight_arc), Shape::from_dims(&[cout, cin, k]))?;
         let direct = x2
             .conv1d(&w_t, None, cfg.stride, cfg.padding, cfg.groups)
             .unwrap()
@@ -665,8 +667,8 @@ mod tests {
         let w_t = x2.const_f32_like(
             Arc::clone(&weight_arc),
             Shape::from_dims(&[cout, cin, kh, kw]),
-        );
-        let b_t = x2.const_f32_like(Arc::clone(&bias_arc), Shape::from_dims(&[cout]));
+        )?;
+        let b_t = x2.const_f32_like(Arc::clone(&bias_arc), Shape::from_dims(&[cout]))?;
         let direct = x2
             .conv2d(&w_t, Some(&b_t), cfg.stride, cfg.padding, cfg.groups)
             .unwrap()

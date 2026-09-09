@@ -619,6 +619,7 @@ mod tests {
             Shape::from_dims(&[1, cfg.num_channels, cfg.image_size, cfg.image_size]),
             &Device::cpu(),
         )
+        .unwrap()
     }
 
     #[test]
@@ -702,12 +703,14 @@ mod tests {
             Arc::from(img_a_data),
             Shape::from_dims(&[1, v_cfg.num_channels, v_cfg.image_size, v_cfg.image_size]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let img_b = Tensor::from_f32(
             Arc::from(img_b_data),
             Shape::from_dims(&[1, v_cfg.num_channels, v_cfg.image_size, v_cfg.image_size]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let toks = [1_u32, 2, 3];
         let a = model_a.forward(&img_a, &toks).unwrap().realize_f32();
         let b = model_b.forward(&img_b, &toks).unwrap().realize_f32();

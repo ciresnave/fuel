@@ -653,7 +653,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 5, cfg.encoder_hidden_size]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let ids = vec![1_u32, 2, 3, 4];
         let logits = model.forward(&ids, &enc, 0).unwrap();
         assert_eq!(logits.shape().dims(), &[1, ids.len(), cfg.vocab_size]);
@@ -674,7 +675,8 @@ mod tests {
             vec![0.05_f32; 1 * 4 * cfg.encoder_hidden_size],
             Shape::from_dims(&[1, 4, cfg.encoder_hidden_size]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let ids_a = vec![1_u32, 2, 3, 4];
         let ids_b = vec![1_u32, 2, 3, 9]; // last position changed
         let a = model.forward(&ids_a, &enc, 0).unwrap().realize_f32();
@@ -708,14 +710,16 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 4, cfg.encoder_hidden_size]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let enc_b = Tensor::from_f32(
             (0..(1 * 4 * cfg.encoder_hidden_size))
                 .map(|i| (i as f32) * 0.01 + 0.5)
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 4, cfg.encoder_hidden_size]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let a = model.forward(&ids, &enc_a, 0).unwrap().realize_f32();
         let b = model.forward(&ids, &enc_b, 0).unwrap().realize_f32();
         let mut max_diff = 0.0_f32;

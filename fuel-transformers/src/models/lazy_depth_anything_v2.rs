@@ -300,13 +300,17 @@ fn apply_conv2d(x: &Tensor, c: &Conv2dWeights, anchor: &Tensor) -> Result<Tensor
         Arc::clone(&c.w),
         Shape::from_dims(&[c.c_out, c.c_in, c.k, c.k]),
     )?;
-    let b = c.b.as_ref().map(|b| {
-        let storage = WeightStorage::F32(Arc::clone(b));
-        match storage {
-            WeightStorage::F32(arr) => anchor.const_f32_like(arr, Shape::from_dims(&[c.c_out])),
-            _ => unreachable!(),
-        }
-    });
+    let b = c
+        .b
+        .as_ref()
+        .map(|b| {
+            let storage = WeightStorage::F32(Arc::clone(b));
+            match storage {
+                WeightStorage::F32(arr) => anchor.const_f32_like(arr, Shape::from_dims(&[c.c_out])),
+                _ => unreachable!(),
+            }
+        })
+        .transpose()?;
     let out = x.conv2d(&w, b.as_ref(), (c.stride, c.stride), (c.pad, c.pad), 1)?;
     Ok(out)
 }
@@ -593,7 +597,8 @@ mod tests {
             weights,
         };
         let image: Vec<f32> = (0..(3 * 14 * 14)).map(|i| (i as f32) * 0.01).collect();
-        let img_tensor = Tensor::from_f32(image, Shape::from_dims(&[1, 3, 14, 14]), &Device::cpu());
+        let img_tensor =
+            Tensor::from_f32(image, Shape::from_dims(&[1, 3, 14, 14]), &Device::cpu()).unwrap();
         let depth = model.forward(&img_tensor).unwrap();
         let dims = depth.shape();
         let dims = dims.dims();
@@ -633,12 +638,14 @@ mod tests {
             (0..n).map(|i| (i as f32) * 0.01).collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 14, 14]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let img_b = Tensor::from_f32(
             (0..n).map(|i| (i as f32) * 0.01 + 0.7).collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 14, 14]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         // Get the intermediate features for each input, then
         // compare the post-projection sums of the first feature
         // map. The DINOv2 backbone responds to input; the

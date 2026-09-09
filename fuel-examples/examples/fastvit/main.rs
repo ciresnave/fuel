@@ -84,7 +84,7 @@ pub fn main() -> Result<()> {
         Arc::<[f32]>::from(image_vec),
         Shape::from_dims(&[1, 3, 256, 256]),
         &device,
-    );
+    )?;
 
     let model_file = match args.model {
         None => {

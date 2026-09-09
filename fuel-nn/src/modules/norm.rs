@@ -96,7 +96,7 @@ impl Module for LayerNorm {
             None => {
                 let normed = xs.layer_norm_last_dim(self.eps)?;
                 let g = normed
-                    .const_f32_like(Arc::clone(&self.gain), Shape::from_dims(&[self.last_dim]));
+                    .const_f32_like(Arc::clone(&self.gain), Shape::from_dims(&[self.last_dim]))?;
                 normed.broadcast_mul(&g)
             }
         }
@@ -278,13 +278,13 @@ impl Module for GroupNorm {
             .const_f32_like(
                 Arc::clone(&self.gain),
                 Shape::from_dims(&[self.num_channels]),
-            )
+            )?
             .reshape(Shape::from_dims(&affine_shape))?;
         let b_t = restored
             .const_f32_like(
                 Arc::clone(&self.bias),
                 Shape::from_dims(&[self.num_channels]),
-            )
+            )?
             .reshape(Shape::from_dims(&affine_shape))?;
         restored.broadcast_mul(&g_t)?.broadcast_add(&b_t)
     }

@@ -121,6 +121,7 @@ mod tests {
             Shape::from_dims(&[b, c, t]),
             &Device::cpu(),
         )
+        .unwrap()
     }
 
     fn ramp_weight(out_c: usize, in_per_group: usize, k: usize) -> Arc<[f32]> {

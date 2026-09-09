@@ -27,7 +27,9 @@ fn cpu_dev() -> &'static std::sync::Arc<dyn fuel_backend_contract::DynBackendDev
 #[test]
 fn rule_no_op_when_not_under_pressure() {
     let a = NodeHandle::from_f32(vec![1.0_f32; 4], Shape::from_dims(&[4]), cpu_dev()).unwrap();
-    let b = a.const_f32_like(vec![2.0_f32; 4], Shape::from_dims(&[4]));
+    let b = a
+        .const_f32_like(vec![2.0_f32; 4], Shape::from_dims(&[4]))
+        .unwrap();
     let c = a.add(&b);
 
     let snapshot = MemoryPressureSnapshot {
