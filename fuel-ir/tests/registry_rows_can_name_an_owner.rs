@@ -58,6 +58,24 @@
 use std::path::{Path, PathBuf};
 
 /// Rows under a no-Status schema carrying no ownership token, at `e3f40665`.
+///
+/// ⚠️ **This number is INVARIANT under the 82-vs-81 labelling disagreement that
+/// `scripts/check-gaps-table.py` already documents** — *"two honest instruments
+/// disagreed 82-vs-81 on 2026-09-06 … they differ by GAP-099, which HAS a status
+/// cell under a 4-column header."* Measured both ways:
+///
+/// ```text
+/// by HEADER          82 rows   7 with an ownership token   75 inexpressible
+/// by ROW CELL COUNT  81 rows   6 with an ownership token   75 inexpressible
+/// ```
+///
+/// **`GAP-099` carries `Owner: UNALLOCATED`, so it moves between numerator and
+/// denominator together and the difference does not change.** The bound therefore
+/// does not depend on which convention a future reader picks, which is the only
+/// reason it is safe to hard-code a figure the project has already disagreed about.
+///
+/// This test classifies by HEADER. Reclassifying by cell count is fine and must not
+/// move the ceiling; if it does, the population changed rather than the label.
 /// **A ceiling, not a target.** See the module docs before changing it.
 const OWNERSHIP_INEXPRESSIBLE_CEILING: usize = 75;
 
