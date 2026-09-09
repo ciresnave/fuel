@@ -715,7 +715,7 @@ pub fn device_alternating_order(graph: &Graph, runs: &[Run]) -> Vec<usize> {
 /// `resolve` is the same per-branch decision the eager picker makes (the
 /// production VRAM-pressure chain reads only free-memory state, not walk
 /// progress), the route this walk accumulates equals
-/// [`fuel_graph::PickedRoute`] the eager `pick_route` produces, and the
+/// `fuel_graph::PickedRoute` the eager `pick_route` produces, and the
 /// emitted order therefore equals `lower_picked_route(graph, roots,
 /// pick_route(..))` on every input. C1 changes *when* a branch resolves,
 /// never *which* arm — and a branchless graph never enters this walk at

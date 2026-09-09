@@ -1608,7 +1608,7 @@ impl KernelBindingTable {
     /// sibling did exist (`any_backend_supports`) and it caused a real defect —
     /// the dtype-reconciliation pass consulted it, so a backend a node could
     /// never run on suppressed the `Op::Cast` that node needed and planning
-    /// dead-ended at `NoBackendForOp`. See [`crate::plan::candidate_backends_for`].
+    /// dead-ended at `NoBackendForOp`. See `crate::plan::candidate_backends_for`.
     pub fn backend_supports(
         &self,
         op: impl Into<BindingKey>,

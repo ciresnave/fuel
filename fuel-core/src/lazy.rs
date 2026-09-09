@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 //! Phase 6a bridge: a lazy-computation-graph tensor that wraps
 //! [`fuel_graph::NodeHandle`] and presents it through an API compatible
-//! with fuel-core's eager [`Tensor`](crate::tensor::Tensor).
+//! with fuel-core's eager `Tensor`.
 //!
 //! # Purpose
 //!
@@ -422,7 +422,7 @@ impl Tensor {
 
     /// Size of the tensor along dimension `dim`. Returns a typed error
     /// rather than panicking on out-of-range — matches eager's
-    /// [`crate::Tensor::dim`] signature.
+    /// `crate::Tensor::dim` signature.
     pub fn dim<D: Dim>(&self, dim: D) -> std::result::Result<usize, fuel_ir::Error> {
         let shape = self.inner.shape();
         let dim = dim.to_index(&shape, "dim")?;
@@ -7159,7 +7159,7 @@ impl Tensor {
     }
 
     /// Sub-tensor at index `i` along dim 0. Equivalent to
-    /// `self.slice(0, i, 1).unwrap().squeeze(0)`. Matches eager's [`crate::Tensor::get`].
+    /// `self.slice(0, i, 1).unwrap().squeeze(0)`. Matches eager's `crate::Tensor::get`.
     pub fn get(&self, i: usize) -> std::result::Result<Self, fuel_ir::Error> {
         let dims = self.shape().dims().to_vec();
         if dims.is_empty() {
@@ -7170,7 +7170,7 @@ impl Tensor {
 
     /// Sub-tensor at index along an arbitrary dim. Equivalent to
     /// `self.slice(dim, index, 1).unwrap().squeeze(dim)`. Matches eager's
-    /// [`crate::Tensor::get_on_dim`]. Accepts any [`Dim`].
+    /// `crate::Tensor::get_on_dim`. Accepts any [`Dim`].
     pub fn get_on_dim<D: Dim>(
         &self,
         dim: D,
@@ -7814,7 +7814,7 @@ impl Tensor {
     }
 
     /// Coordinate grids from rank-1 inputs. Matches PyTorch's
-    /// `torch.meshgrid` and eager's [`crate::Tensor::meshgrid`]:
+    /// `torch.meshgrid` and eager's `crate::Tensor::meshgrid`:
     ///
     /// - `xy_indexing = true` (Cartesian, NumPy default): the first
     ///   two inputs are swapped before broadcasting and the resulting

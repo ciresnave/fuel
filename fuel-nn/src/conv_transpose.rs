@@ -2,8 +2,8 @@
 //! Lazy `ConvTranspose1d` / `ConvTranspose2d` Module wrappers over
 //! [`Tensor`].
 //!
-//! Mirrors the eager [`fuel_nn::ConvTranspose1d`] /
-//! [`fuel_nn::ConvTranspose2d`] surface: each layer holds a
+//! Mirrors the eager `fuel_nn::ConvTranspose1d` /
+//! `fuel_nn::ConvTranspose2d` surface: each layer holds a
 //! [`WeightStorage`] weight plus an optional bias and a config struct
 //! controlling `padding` / `output_padding` / `stride` / `dilation` /
 //! `groups`. `forward` materializes the weight (and bias) as graph
@@ -56,7 +56,7 @@ use std::sync::Arc;
 /// Configuration for [`ConvTranspose1d`].
 ///
 /// Default: `padding=0`, `output_padding=0`, `stride=1`, `dilation=1`,
-/// `groups=1` — matches the eager [`fuel_nn::ConvTranspose1dConfig`].
+/// `groups=1` — matches the eager `fuel_nn::ConvTranspose1dConfig`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConvTranspose1dConfig {
     /// Zero-padding implicitly removed from both sides of the output.
@@ -305,7 +305,7 @@ impl ConvTranspose1d {
 ///
 /// Default: `padding=0`, `output_padding=0`, `stride=1`,
 /// `dilation=1`, `groups=1`. Mirrors the eager
-/// [`fuel_nn::ConvTranspose2dConfig`] surface, plus a `groups` field
+/// `fuel_nn::ConvTranspose2dConfig` surface, plus a `groups` field
 /// (the eager side has a `TODO: support groups.` and the underlying
 /// [`Tensor::conv_transpose2d`] already takes it).
 ///
