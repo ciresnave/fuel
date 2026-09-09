@@ -1,6 +1,6 @@
 # Fuel Kernel Contract Format (FKC) — how a kernel provider advertises to Fuel
 
-**Status:** DRAFT v0.1 (2026-06-17; reconciled 2026-06-20). Design pass — no code yet. **Reconciled
+**Status:** SUPERSEDED DRAFT v0.1 (2026-06-17; reconciled 2026-06-20). **IMPLEMENTED AND LIVE ON `main`: `fuel-dispatch/src/fkc/` — 35 `.rs` files, no feature gate, parsing 114 `*.fkc.md` contracts as the production kernel-registration path.** The DOCUMENT is a superseded draft; its SUBJECT is not. Authoritative form: [`docs/specs/kernel-contract-format.md`](../kernel-contract-format.md). **Reconciled
 2026-06-20** to the adaptive-runtime-fusion decision
 ([10-decisions-log](../../architecture/10-decisions-log.md), G1/G4): the §1 / §9.4 "frozen registry"
 non-goals are re-scoped (Tier-2 trusted, Fuel-orchestrated, cost-gated runtime fused-op registration

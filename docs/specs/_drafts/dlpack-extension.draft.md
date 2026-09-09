@@ -1,6 +1,6 @@
 # Fuel DLPack Extension (FDX) — tensor interchange for Fuel, kernels, and the ecosystem
 
-**Status:** DRAFT v0.1 (2026-06-17). Design pass — no code yet.
+**Status:** SUPERSEDED DRAFT v0.1 (2026-06-17). **IMPLEMENTED ON `main`: `fuel-ir/src/dlpack/` (8 `.rs` files) plus `fuel-memory/src/dlpack_view.rs`.** The DOCUMENT is a superseded draft; its SUBJECT is not. Authoritative form: [`docs/specs/dlpack-extension.md`](../dlpack-extension.md).
 **Scope:** a versioned, *optional sidecar* extension to standard DLPack that lets Fuel
 describe tensors whose full meaning exceeds the standard `DLTensor` — sub-byte / microscaling
 dtypes, parametric quantization, per-axis scales, symbolic (live-vs-capacity) extents,
