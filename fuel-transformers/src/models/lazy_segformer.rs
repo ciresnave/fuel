@@ -13,7 +13,7 @@
 //!   2. N SegformerLayer blocks:
 //!      Pre-LN1 → Efficient Self-Attention (Q from input, K/V
 //!      from input after optional Sequence Reduction conv with
-//!      stride = sr_ratio[i] + LN) → +residual
+//!      stride = `sr_ratio[i]` + LN) → +residual
 //!      → Pre-LN2 → Mix-FFN (Dense1 → 3×3 DWConv → activation
 //!      → Dense2) → +residual.
 //!   3. Stage-final LayerNorm.
@@ -190,7 +190,7 @@ pub struct SegformerEncoderWeights {
 /// Decode-head weights for semantic segmentation.
 #[derive(Debug, Clone)]
 pub struct SegformerDecodeHeadWeights {
-    /// Per-stage MLP: hidden_sizes[i] → decoder_hidden_size.
+    /// Per-stage MLP: `hidden_sizes[i]` → decoder_hidden_size.
     pub linear_c: Vec<(WeightStorage, Arc<[f32]>)>,
     /// 1×1 conv: 4·decoder_hidden_size → decoder_hidden_size.
     pub linear_fuse: Conv2dWeights,

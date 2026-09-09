@@ -4,7 +4,7 @@
 //! When running pipeline- or tensor-parallel inference, the KV cache for each
 //! attention layer must be kept in sync across devices. This module provides
 //! coordination types and protocols — **not** the actual cache storage (which
-//! lives in [`fuel_inference`]).
+//! lives in `fuel_inference`).
 //!
 //! ## Concepts
 //!

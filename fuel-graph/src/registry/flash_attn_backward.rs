@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
-//! FlashAttn backward — produces dQ, dK, dV given (Q, K, V, dO, [alibi]).
+//! FlashAttn backward — produces dQ, dK, dV given (Q, K, V, dO, `[alibi]`).
 //!
 //! Three separate FusedOpId variants (FLASH_ATTN_BACKWARD_Q/K/V) share
 //! one `FusedOpParams::FlashAttnBackward` payload. Each variant's

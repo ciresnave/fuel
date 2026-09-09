@@ -5882,7 +5882,7 @@ impl VulkanBackend {
 
     /// FlashAttention backward — dQ, f32. Same shape contract as
     /// `flash_attn_f32_bytes`; produces grad-Q (same shape as Q)
-    /// given (Q, K, V, dO, [alibi]). Dispatch: one workgroup per
+    /// given (Q, K, V, dO, `[alibi]`). Dispatch: one workgroup per
     /// (b, h_q, q_i).
     #[allow(clippy::too_many_arguments)]
     pub fn flash_attn_backward_q_f32_bytes(

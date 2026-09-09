@@ -625,7 +625,7 @@ pub static CPU_SSM_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// into BOTH the no-bias key `[T, T, T]` (x, weight + out) and the with-bias key
 /// `[T, T, T, T]` (x, weight, bias + `passthrough(x)` output) — both resolving
 /// this SAME symbol/wrapper (the CPU wrapper handles 2 or 3 inputs). The spatial
-/// geometry (x_shape/w_shape/out_shape, stride/padding/[output_padding]/dilation,
+/// geometry (x_shape/w_shape/out_shape, stride/padding/`[output_padding]`/dilation,
 /// groups) rides in `OpParams::{Conv2D, ConvTranspose2D}`, NOT the dtype-list.
 /// This map is the SOLE registration path for the whole family: every
 /// hand-written `table.register(Conv2D/ConvTranspose2D, …)` reg (both operand
