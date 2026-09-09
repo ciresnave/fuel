@@ -1189,9 +1189,9 @@ impl FusedOps {
     /// gradients but needs multi-output infrastructure that doesn't
     /// exist yet. Reuses [`FusedOpParams::FlashAttnBackward`].
     pub const FLASH_ATTN_BACKWARD_Q: FusedOpId = FusedOpId(22);
-    /// FlashAttnBackwardK — produces dK. See [`FLASH_ATTN_BACKWARD_Q`].
+    /// FlashAttnBackwardK — produces dK. See [`Self::FLASH_ATTN_BACKWARD_Q`].
     pub const FLASH_ATTN_BACKWARD_K: FusedOpId = FusedOpId(23);
-    /// FlashAttnBackwardV — produces dV. See [`FLASH_ATTN_BACKWARD_Q`].
+    /// FlashAttnBackwardV — produces dV. See [`Self::FLASH_ATTN_BACKWARD_Q`].
     pub const FLASH_ATTN_BACKWARD_V: FusedOpId = FusedOpId(24);
 }
 

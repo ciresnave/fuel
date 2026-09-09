@@ -2117,7 +2117,7 @@ impl InferenceContext {
         )
     }
 
-    /// Multi-target counterpart of [`realize_one_as`].
+    /// Multi-target counterpart of [`Self::realize_one_as`].
     pub fn realize_many_as<T: bytemuck::Pod>(
         &self,
         graph: &Arc<RwLock<Graph>>,

@@ -684,7 +684,7 @@ impl DeviceKvPool {
         )
     }
 
-    /// Batched (`B = K`) sibling of [`build_decode_attn`] — one decode step over
+    /// Batched (`B = K`) sibling of [`Self::build_decode_attn`] — one decode step over
     /// K sessions sharing this layer's pool buffers (paged-storage PS4a). Each
     /// session `i` contributes one new token: its `[Hkv, D]` K/V (row `i` of
     /// `k_new`/`v_new`, shaped `[K, Hkv, 1, D]`) is written into its own physical

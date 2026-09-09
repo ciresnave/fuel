@@ -289,7 +289,7 @@ impl Tensor {
     /// Phase 7.5 G2: the realized Storage is allocated on the device
     /// derived from `self`'s graph (any existing slot's device — the
     /// graph always has at least one slot-bearing leaf by the time
-    /// const_*_like is called). Use [`from_f32`] with an explicit
+    /// const_*_like is called). Use [`Self::from_f32`] with an explicit
     /// `&Device` when you need a const on a different device than
     /// `self`.
     pub fn const_f32_like(
@@ -7916,7 +7916,7 @@ impl Tensor {
     /// is assumed. The byte count must match `shape.elem_count() *
     /// dtype_bytes`.
     ///
-    /// This is the low-level loader. Prefer [`from_safetensors_view`]
+    /// This is the low-level loader. Prefer [`Self::from_safetensors_view`]
     /// if you already have a `safetensors::TensorView` in hand.
     ///
     /// Supported dtypes today: `F32`, `F64`, `BF16`, `F16`, `U32`.
@@ -8630,7 +8630,7 @@ impl LlamaModel {
             .apply_linear(&h_norm, cfg.dim, cfg.vocab_size)
     }
 
-    /// Like [`forward_embeds`] but skips the LM-head projection
+    /// Like [`Self::forward_embeds`] but skips the LM-head projection
     /// and returns post-final-RmsNorm hidden states
     /// `(batch, seq, dim)`. Uses strict-causal masking. Use
     /// this from multimodal hosts (LLaVA, Pixtral, etc.) that
@@ -8677,7 +8677,7 @@ impl LlamaModel {
         ))
     }
 
-    /// Like [`forward_embeds`] but takes a caller-supplied
+    /// Like [`Self::forward_embeds`] but takes a caller-supplied
     /// additive attention mask `(1, 1, seq, seq)` and skips
     /// the LM-head projection. Returns the post-final-RmsNorm
     /// hidden states `[batch, seq, dim]`.
@@ -8713,7 +8713,7 @@ impl LlamaModel {
         ))
     }
 
-    /// Like [`forward`] but returns the hidden state AFTER the final
+    /// Like [`Self::forward`] but returns the hidden state AFTER the final
     /// RMSNorm, BEFORE the output projection. Shape: `[batch, seq, dim]`.
     ///
     /// The `anchor` tensor provides the graph to build on — use a
@@ -8773,7 +8773,7 @@ impl LlamaModel {
 
     /// Internal entry that runs the LLaMA backbone given pre-built RoPE
     /// cos/sin tables and an attention mask. The standard
-    /// [`forward_embeds`] path computes cos/sin from `cfg.rope_base`
+    /// [`Self::forward_embeds`] path computes cos/sin from `cfg.rope_base`
     /// via [`Tensor::rope_tables_const`] and uses a strict-causal
     /// mask; [`fuel_transformers::models::lazy_llama_full::Llama3Model`] uses this hook to
     /// inject Llama-3 long-context scaled RoPE tables without
@@ -12179,7 +12179,7 @@ impl LlamaTokenizer {
     }
 
     /// Load a tokenizer from a HuggingFace repo. Downloads
-    /// `tokenizer.json` and calls [`from_file`].
+    /// `tokenizer.json` and calls [`Self::from_file`].
     pub fn from_hub(repo_id: &str) -> crate::Result<Self> {
         let api = hf_hub::api::sync::Api::new()
             .map_err(|e| crate::Error::Msg(format!("hf-hub api init: {e}")))?;

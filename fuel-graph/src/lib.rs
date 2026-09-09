@@ -7816,7 +7816,7 @@ impl NodeHandle {
     /// applies RoPE to Q and K with the *same* `(start_pos, seq,
     /// head_dim)`, so the caller can build the tables once and share
     /// the const nodes across all layers rather than re-duplicating
-    /// them inside each `.rope()` call. The classic [`rope`] entry
+    /// them inside each `.rope()` call. The classic [`Self::rope`] entry
     /// point funnels through this after building the tables itself.
     ///
     /// # Panics

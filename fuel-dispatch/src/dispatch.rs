@@ -143,7 +143,7 @@ impl TransferMatrix {
         self.entries.get(&(src, dst)).copied()
     }
 
-    /// Same as [`path`] but always returns a path: falls back to
+    /// Same as [`Self::path`] but always returns a path: falls back to
     /// `TransferPath::HostStaging` (the universal fallback) when no
     /// direct advertised path exists. CPU is reachable from every
     /// backend through host-staging, so this never returns an error
