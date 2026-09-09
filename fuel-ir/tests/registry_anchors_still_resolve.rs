@@ -418,10 +418,25 @@ fn separation_is_load_bearing() {
 
     // CONTROL, the other direction: a well-formed search for something that cannot exist
     // must classify as DEAD, or the arms are merged the other way and nothing is a finding.
-    let genuinely_absent = run_anchor(&root, "git grep -n \"ZzNotARealStringZz\"");
+    //
+    // ⚠️ THE SENTINEL IS ASSEMBLED AT RUNTIME, AND DO NOT INLINE IT. Spelled as a literal
+    // it is self-defeating, and it bit twice here.
+    //
+    // `--cached` searches the INDEX. The gate's own source is inside its own search space,
+    // so **`git add` on this file changes this test's answer** — the literal becomes
+    // present the instant the file is staged, and the assertion below flips. Measured:
+    // identical source, identical test binary (cargo did not rebuild), `Resolves(1)` with
+    // the literal in the index and `Dead` without. The only variable was git state.
+    //
+    // ⚠️ The trap is the TIMING, not the string. The edit/test loop never sees it: the
+    // test is green through every pre-commit run and turns red at the commit itself, which
+    // reads as "the commit broke it" rather than "the check was never valid".
+    let sentinel = concat!("ZzNotA", "RealString", "Zz");
+    let genuinely_absent = run_anchor(&root, &format!("git grep -n \"{sentinel}\""));
     assert!(
         matches!(genuinely_absent, Outcome::Dead),
-        "a well-formed search matching nothing must classify as DEAD — got {genuinely_absent:?}"
+        "a well-formed search matching nothing must classify as DEAD — got {genuinely_absent:?}.
+         If this is Resolves(1), the sentinel above was very likely inlined as a literal: it          is then in the index and this test finds ITSELF. Restore the `concat!` — the string          must never appear whole in the file that searches for it."
     );
 
     // CONTROL, third arm: something that must be found.
