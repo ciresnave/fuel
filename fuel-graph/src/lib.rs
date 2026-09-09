@@ -4317,11 +4317,29 @@ impl NodeHandle {
     /// Append an `Add` node `self + other` to the shared graph and return
     /// a handle to the result. Requires matching shapes and matching
     /// graphs.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn add(&self, other: &NodeHandle) -> NodeHandle {
         self.binary_op("add", Op::Add, other, self.shape())
     }
 
     /// Append a `Mul` node `self * other`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn mul(&self, other: &NodeHandle) -> NodeHandle {
         self.binary_op("mul", Op::Mul, other, self.shape())
     }
@@ -5436,11 +5454,29 @@ impl NodeHandle {
     // --- additional element-wise binary ops ---
 
     /// Append a `Sub` node `self - other`. Requires matching shapes and dtypes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn sub(&self, other: &NodeHandle) -> NodeHandle {
         self.binary_op("sub", Op::Sub, other, self.shape())
     }
 
     /// Append a `Div` node `self / other`. Requires matching shapes and dtypes.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn div(&self, other: &NodeHandle) -> NodeHandle {
         self.binary_op("div", Op::Div, other, self.shape())
     }
@@ -6390,6 +6426,15 @@ impl NodeHandle {
     /// Both operands must share dtype and shape; output dtype is `Bool`
     /// (`1` where equal, `0` otherwise). NaN follows IEEE-754
     /// (`NaN == NaN` is false). Non-differentiable.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn eq(&self, other: &NodeHandle) -> NodeHandle {
         self.binary_compare_op("eq", Op::Equal, other)
     }
@@ -6397,6 +6442,15 @@ impl NodeHandle {
     /// Append a `Ne` node (`self != other`) producing a `Bool` mask.
     /// Same shape/dtype contract as [`Self::eq`]. NaN follows
     /// IEEE-754 (`NaN != NaN` is true → `1`). Non-differentiable.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn ne(&self, other: &NodeHandle) -> NodeHandle {
         self.binary_compare_op("ne", Op::Ne, other)
     }
@@ -6404,6 +6458,15 @@ impl NodeHandle {
     /// Append an `Lt` node (`self < other`) producing a `Bool` mask.
     /// Same shape/dtype contract as [`Self::eq`]. NaN-on-either-side
     /// is always `0` (IEEE-754 unordered). Non-differentiable.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn lt(&self, other: &NodeHandle) -> NodeHandle {
         self.binary_compare_op("lt", Op::Lt, other)
     }
@@ -6411,6 +6474,15 @@ impl NodeHandle {
     /// Append an `Le` node (`self <= other`) producing a `Bool` mask.
     /// Same shape/dtype contract as [`Self::eq`]. NaN-on-either-side
     /// is always `0`. Non-differentiable.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn le(&self, other: &NodeHandle) -> NodeHandle {
         self.binary_compare_op("le", Op::Le, other)
     }
@@ -6418,6 +6490,15 @@ impl NodeHandle {
     /// Append a `Gt` node (`self > other`) producing a `Bool` mask.
     /// Same shape/dtype contract as [`Self::eq`]. NaN-on-either-side
     /// is always `0`. Non-differentiable.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn gt(&self, other: &NodeHandle) -> NodeHandle {
         self.binary_compare_op("gt", Op::Gt, other)
     }
@@ -6425,6 +6506,15 @@ impl NodeHandle {
     /// Append a `Ge` node (`self >= other`) producing a `Bool` mask.
     /// Same shape/dtype contract as [`Self::eq`]. NaN-on-either-side
     /// is always `0`. Non-differentiable.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn ge(&self, other: &NodeHandle) -> NodeHandle {
         self.binary_compare_op("ge", Op::Ge, other)
     }
@@ -8108,11 +8198,29 @@ impl NodeHandle {
 
     /// Append a `Maximum` node `max(self, other)` element-wise. Matching
     /// shapes required.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn maximum(&self, other: &NodeHandle) -> NodeHandle {
         self.binary_op("maximum", Op::Maximum, other, self.shape())
     }
 
     /// Append a `Minimum` node `min(self, other)` element-wise.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn minimum(&self, other: &NodeHandle) -> NodeHandle {
         self.binary_op("minimum", Op::Minimum, other, self.shape())
     }
@@ -8229,24 +8337,60 @@ impl NodeHandle {
     /// `BroadcastTo` nodes as needed, and then emits a regular `Add`.
     /// Useful for bias addition (`[batch, hidden] + [hidden]`) without
     /// the caller writing the broadcast out explicitly.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn broadcast_add(&self, other: &NodeHandle) -> NodeHandle {
         let (a, b) = self.auto_broadcast_pair("broadcast_add", other);
         a.add(&b)
     }
 
     /// Element-wise subtraction with automatic broadcasting.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn broadcast_sub(&self, other: &NodeHandle) -> NodeHandle {
         let (a, b) = self.auto_broadcast_pair("broadcast_sub", other);
         a.sub(&b)
     }
 
     /// Element-wise multiplication with automatic broadcasting.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn broadcast_mul(&self, other: &NodeHandle) -> NodeHandle {
         let (a, b) = self.auto_broadcast_pair("broadcast_mul", other);
         a.mul(&b)
     }
 
     /// Element-wise division with automatic broadcasting.
+    ///
+    /// # Panics
+    ///
+    /// Panics if any operand belongs to a different [`Graph`] than the one this
+    /// builder is building into. Operand identity is graph-scoped and checked by
+    /// pointer identity (`Arc::ptr_eq`), which cannot alias; the panic is
+    /// deliberate and replaces the hang a cross-graph handle used to produce.
+    /// Build every operand from one graph, or use a `Result`-returning entry
+    /// point where one exists.
     pub fn broadcast_div(&self, other: &NodeHandle) -> NodeHandle {
         let (a, b) = self.auto_broadcast_pair("broadcast_div", other);
         a.div(&b)
