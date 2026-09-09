@@ -206,8 +206,18 @@ fn flag_set(flags: u32, bit: u32) -> bool {
 // V1 — header (§8.1)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// V1 (§8.1): `magic == FDX_MAGIC`; `version <= FDX_VERSION_MAX`;
+/// V1 (§8.1): `magic == FDX_MAGIC`; `1 <= version <= FDX_VERSION_MAX`;
 /// `struct_bytes >= sizeof(known prefix)`.
+///
+/// The lower bound is deliberate and was UNDOCUMENTED until 2026-09-06: the
+/// code has always rejected `version == 0`, and this comment said only
+/// `version <= FDX_VERSION_MAX`. That weaker sentence is EXACTLY the gate FKC
+/// shipped -- `fkc_version > FKC_VERSION_MAX`, with no lower bound -- which
+/// accepted a version that has never existed for the whole life of the format
+/// (GAP-292, fixed in PR #132).
+///
+/// So the doc was not merely incomplete: anyone writing a second version gate
+/// from THIS SENTENCE would reproduce that defect. See GAP-298.
 pub fn check_v1_header(sidecar: &FDXSidecar) -> R {
     if sidecar.magic != FDX_MAGIC {
         return Err(FdxValidationError::BadMagic {
