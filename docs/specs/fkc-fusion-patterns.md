@@ -1,6 +1,7 @@
 # FKC Fusion Patterns — declarative subgraph patterns so a backend's fused kernel auto-wires on import
 
-**Status: DRAFT for review (2026-06-20, rev 4), branch `feat/kernel-contracts-dlpack`.** Extension to
+**Status: DRAFT for review (2026-06-20, rev 4).** ⚠️ **The branch this line used to name,
+`feat/kernel-contracts-dlpack`, does not exist on origin; the subject is live on `main`.** Extension to
 the Fuel Kernel Contract Format (FKC). Reviewed adversarially against Fuel's real fusion matchers
 (rev 2) and against Baracuda's auto-generating-provider review (rev 3). Rev 2 corrected the op
 vocabulary (graph `Op`, not `OpKind`) and added node-identity guards. **Rev 3** fixes the two §8
@@ -18,6 +19,11 @@ sequencing. The recipe principle (§1, every fused op carries `decompose` + `pat
 `decompose` total + never-panic + primitive→self; build-time-closed primitive basis) is unchanged —
 it is the canonical G1/G2/G3 statement.
 
+> ⚠️ **DISCHARGED 2026-09-09: THE STATUS LINE ABOVE HAS NOW BEEN CORRECTED.**
+> Kept as the RECORD of when the defect was found, not as a live claim. It stood
+> because it ANNOTATED the falsehood instead of correcting it, and a reader who
+> stops at the Status field never reached this paragraph. See GAP-283.
+>
 > ⚠️ **AMENDED 2026-08-20 — THE BRANCH IN THE STATUS LINE DOES NOT EXIST, AND
 > THIS SPEC'S SUBJECT IS LIVE ON `main`.** `feat/kernel-contracts-dlpack` is not
 > on origin. **A specification that calls itself an unmerged draft is telling the
