@@ -1,12 +1,11 @@
-# Fuel DLPack Extension (FDX) — tensor interchange for Fuel, kernels, and the ecosystem
-
-> **SUPERSEDED / PUBLISHED AS `docs/specs/dlpack-extension.md` — retained as the
-> pre-publication draft; do NOT read the Status line below as current.** The published
-> spec is the single source of truth and its SUBJECT is **implemented and live on
-> `main`** (`fuel-ir/src/dlpack/` — 8 `.rs` files, plus `fuel-memory/src/dlpack_view.rs`). This file is kept because it records what the draft claimed
-> when it was written — see GAP-283 for why that record is worth more than a tidy
-> status line.
+# Fuel DLPack Extension (FDX) — tensor interchange for Fuel, kernels, and the ecosystem
 
+> **SUPERSEDED / PUBLISHED AS `docs/specs/dlpack-extension.md` — retained as the
+> pre-publication draft; do NOT read the Status line below as current.** The published
+> spec is the single source of truth and its SUBJECT is **implemented and live on
+> `main`** (`fuel-ir/src/dlpack/` — 8 `.rs` files, plus `fuel-memory/src/dlpack_view.rs`). This file is kept because it
+> records what the draft claimed when it was written — see GAP-283 for why that
+> record is worth more than a tidy status line.
 
 **Status:** DRAFT v0.1 (2026-06-17). Design pass — no code yet.
 **Scope:** a versioned, *optional sidecar* extension to standard DLPack that lets Fuel
