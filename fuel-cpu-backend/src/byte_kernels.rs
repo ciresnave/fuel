@@ -624,7 +624,7 @@ pub fn pad_reflect_cpu(
 }
 
 /// Replicate (edge-repeat) padding. Per-axis mapping:
-/// - `i < 0`:    out = in[0]
+/// - `i < 0`:    out = `in[0]`
 /// - `0..n`:     out = in[i]
 /// - `i >= n`:   out = in[n-1]
 pub fn pad_replicate_cpu(

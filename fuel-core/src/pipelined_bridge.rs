@@ -1925,7 +1925,7 @@ fn seed_placed_device_handles(
 /// per-backend handle for `Op::Alloc` nodes.
 ///
 /// Phase 3a of bridge-retirement (post-9c). This is the *residual*
-/// of the deleted [`fuel-core::inference_context::alloc_zeroed_on`]:
+/// of the deleted `fuel-core::inference_context::alloc_zeroed_on`:
 /// it does only the per-backend "allocate-on-device" piece, not the
 /// zero-fill (that moves to the executor's Alloc arm). Callers
 /// (today: [`crate::inference_context::KvCache::with_capacity`])

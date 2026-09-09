@@ -239,7 +239,7 @@ fn alibi_bias_recipe(alibi: PatternNode, b: usize, hq: usize, sq: usize, sk: usi
 /// node's input order.
 ///
 /// The MaskedFill fill value is authored dtype-polymorphically (no `cast_dtype`);
-/// emit resolves the `Scalar` to operand[0]'s dtype. For F32 attention this is
+/// emit resolves the `Scalar` to `operand[0]`'s dtype. For F32 attention this is
 /// `Scalar::F32(-inf)`, byte-identical to the imperative body; a non-F32 config
 /// resolves to that dtype's `-inf` (the A2 carrier's dtype-correct behavior — the
 /// legacy always baked F32, an under-protective quirk this migration supersedes),

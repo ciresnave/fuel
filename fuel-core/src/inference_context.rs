@@ -10,7 +10,7 @@
 //!   for the pipelined dispatch world. Today's backing is a simple
 //!   in-memory `HashMap<NodeId, Arc<...>>`; future work may swap this
 //!   for an mmap-backed coherent store per
-//!   [`project_unified_durable_tensor_store.md`].
+//!   `project_unified_durable_tensor_store.md`.
 //!
 //! - **[`KvCache`]**, **[`KvLayer`]**, **[`KvLayerId`]**, **[`KvSlot`]**,
 //!   **[`AuthorityState`]**: the backend-erased KV cache primitive that
@@ -1887,7 +1887,7 @@ impl PagedDecodeSession {
 ///
 /// The persistent map is the seam the unified-storage / mmap-coherence
 /// backplane work later replaces (see
-/// [`project_unified_durable_tensor_store.md`]); today it's a simple
+/// `project_unified_durable_tensor_store.md`); today it's a simple
 /// in-memory `HashMap`. Each realize call clones the Arcs into the
 /// executor's input cache; persistent entries reuse those Arcs
 /// across calls instead of re-uploading.
