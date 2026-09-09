@@ -49,7 +49,7 @@ import json
 import os
 import re
 import shutil
-import subprocess
+import subprocess  # nosec B404 - see SUPPRESSION NOTE below
 import sys
 
 SUFFIX = "_FDXPROBE"
@@ -116,15 +116,40 @@ def probe(rel_path, struct):
 def _cargo_check_json():
     """rustc's JSON diagnostics for the perturbed tree.
 
-    The subprocess IS the instrument: the whole method is "ask the compiler",
-    and there is no filesystem answer to read instead. The executable is
-    resolved to an absolute path so the invocation does not depend on how PATH
-    happens to be ordered.
+    SUPPRESSION NOTE -- `# nosec B404, B603`, ruled by the Fuel architect
+    2026-09-09 rather than decided by whoever wanted the gate green.
+
+    1. WHY IT IS INHERENT. The method IS invoking the compiler. `cargo check`'s
+       `E0609 no field 'X' on type 'Y'` output is the oracle, and the whole
+       reason this tool exists is that no text search answers the question --
+       a field reached by destructuring, a helper, or a match on the parent
+       contains no `parent.field` string, and a bare field name is ambiguous
+       across structs. There is no filesystem answer to read instead, so the
+       remedy that cleared these lints elsewhere in this repo -- dropping
+       subprocess and reading a file -- has no analogue here.
+
+    2. WHAT THE INPUT ACTUALLY IS, since B603 is about untrusted input. The
+       argv is a fixed literal list. Nothing from outside the repository
+       reaches it. The only value this tool ever interpolates anywhere is a
+       FIELD NAME it read out of Fuel's own source moments earlier, and that
+       goes into a regex, never into a command line.
+
+    3. ⚠️ WHAT WOULD HAVE TO CHANGE FOR THIS TO COME OUT, which is the part
+       that makes it a suppression and not an exemption: if the
+       "is this field ever read" question ever becomes answerable WITHOUT
+       compiling -- a rustc lint, an analysis API, a MIR dump -- then the
+       subprocess is avoidable and this note is stale and must go. A
+       suppression that records no expiry condition is permanently
+       unfalsifiable, which is the same defect as a prohibition that records
+       no precondition.
+
+    The executable is resolved to an absolute path (B607, fixed rather than
+    suppressed) so the invocation does not depend on how PATH is ordered.
     """
     cargo = shutil.which("cargo")
     if not cargo:
         raise RuntimeError("cargo not found on PATH -- the probe needs a compiler")
-    proc = subprocess.run(
+    proc = subprocess.run(  # nosec B603 - fixed argv, no external input; see above
         [cargo, "check", "-p", "fuel-ir", "--features", "dlpack",
          "--all-targets", "-j", "4", "--message-format", "json"],
         cwd=ROOT, capture_output=True, text=True,
