@@ -1943,3 +1943,49 @@ CI, rust-ci.yml:776,829   KNOWN_FAILING="fuel-hardware"
 3. **Home the residue at an owned row.** The detector says *when*; the row says *who* and *what next*. `the_i4_exclusion_still_has_its_reason` points at GAP-097; CI's message points at GAP-267. **A site comment is read only by someone already standing there, and the entry exists precisely for the case where nobody comes.**
 
 **Related:** [`a-defence-can-outlive-its-defect`](#a-defence-can-outlive-its-defect) is the mirror image — there a control becomes ACTIVELY HARMFUL once its replacement lands, where here it merely goes INERT while still looking live. **Both are cured by making the entry able to fail.**
+
+---
+
+## a-new-file-that-git-does-not-list-is-a-finding
+
+**An ignore rule can swallow a file you just wrote, and the failure is LOCAL-GREEN / CI-RED with the error pointing somewhere else.**
+
+Measured 2026-09-09 in this repo. A test fixture written to `fuel-ir/tests/data/gap302_known_absent.txt` produced **no `git status` entry at all**:
+
+```
+git check-ignore -v fuel-ir/tests/data/x.txt  ->  .gitignore:4:data/   IGNORED
+control: fuel-ir/tests/doc_block_scope.rs     ->  exit 1, NOT ignored
+```
+
+**A bare `data/` matches a directory of that name at ANY DEPTH.** In this `.gitignore` it sits among `debug/`, `dist/` and `target/` — build-output rules — so it reads as a Cargo artifact rule and is nowhere near anything about test fixtures. Nobody adding a fixture directory would think to look.
+
+⚠️ **THE DIAGNOSTIC POINTS AT THE WRONG PLACE.** `include_str!("data/x.txt")` compiles locally, because the file is on disk. CI checks out a tree where it was never committed and fails **on the `include_str!` line**, so the error names the include and not the ignore. Every local gate is green and says nothing.
+
+**PRACTICE: after writing any new file, read `git status` before `git add`, and treat a MISSING untracked entry as a FINDING rather than as nothing to do.** A file you just created failing to appear is the signal; there is no other one.
+
+**And prefer moving the file to fighting the ignore.** A non-`.rs` file directly in `tests/` is not a cargo test target (`tests/*.rs` are), so no subdirectory is needed. A `.gitignore` negation would encode one crate's fixture layout in a repo-wide file, which is the wrong home for it.
+
+The class is *things this working copy has that a clean checkout does not*, and an uncommitted file is the cheapest possible instance. ⚠️ **NOTE ON THE CITATION THAT IS NOT HERE:** this section was handed over citing `local-green-is-not-evidence-about-ci`, which is a **personal-memory file, not a section of this document** — the anchor would have dangled and `arm_e` would have caught it. **A slug that exists in one ledger reads as a citable anchor in the other, and only one of the two ledgers has a gate.**
+
+---
+
+## a-sabotage-can-redden-the-wrong-assert
+
+**The one-sabotage-per-arm rule is not enough when a single arm has an ORDERED PAIR of assertions. An earlier assert absorbs the sabotage and the arm's actual claim is never exercised — while the arm goes RED, which is the outcome nobody questions.**
+
+Measured 2026-09-09 on `kiss_ops_619_divergence.rs`. Each arm PINS the encoder's bytes (`assert_eq!`) and then asserts DIVERGENCE from a spec-derived vector (`assert_ne!`).
+
+```
+sabotage 1  make the encoder conformant
+            -> 3 arms RED, EVERY ONE on the PIN ("row moved")
+            -> the assert_ne! carrying the file's claim NEVER RAN
+
+sabotage 2  realign the pin to the conformant bytes, so assert_eq! passes
+            -> "assertion `left != right` failed: gather now MATCHES 6.19-0027"
+```
+
+⚠️ **A RED RESULT IS THE LEAST-QUESTIONED OUTCOME IN A BORN-RED DISCIPLINE.** The first sabotage went red, named the right file, and proved only that the pin discriminates. It is [`vacuous-oracle-four-routes`](#vacuous-oracle-four-routes) route 4 — an earlier guard answering first — **inside a single test rather than across tests, which is where nobody looks for it.**
+
+**PRACTICE: for an arm with more than one assertion, ask WHICH assertion the sabotage reaches. If an earlier one absorbs it, run a second sabotage that SATISFIES the earlier assertion so the later one is exercised. Then write the ordering into the file** — otherwise the next reader runs one sabotage, sees red, and stops exactly where the first author nearly did.
+
+**AND SABOTAGE THE INSTRUMENT SEPARATELY FROM THE SUBJECT — they fail different assertions.** The mirror case, same day, same increment: an arm asserting *no population member appears in this file* was sabotaged by making the tokenizer return an empty vector — a BLIND READER. **The offender assertion passed VACUOUSLY (0 found), and only the positive control caught it** (*"the tokenizer cannot see a token known to be in this file, so the emptiness above is a reader defect, not a finding"*). **Subject-sabotage proves the assertion discriminates; instrument-sabotage is what proves the control earns its place.** One of the two alone ships a gate that can go permanently green on a broken reader.
