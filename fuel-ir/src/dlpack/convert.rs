@@ -765,8 +765,7 @@ mod tests {
         let mut codes: Vec<u16> = DType::ALL
             .iter()
             .copied()
-            .map(dtype_to_fdx)
-            .flatten()
+            .flat_map(dtype_to_fdx)
             .map(FdxDtype::namespace_code)
             .collect();
         let n = codes.len();
