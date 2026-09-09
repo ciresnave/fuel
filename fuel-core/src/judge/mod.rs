@@ -1803,20 +1803,29 @@ fn make_const_like(
     data: Vec<f32>,
     shape: Shape,
 ) -> crate::lazy::Tensor {
+    // GAP-003, same DESIGN-BOUNDARY form as `make_leaf` directly above: `data`
+    // and `shape` are BOTH parameters, so there is no local proof -- but the sole
+    // caller wraps `build_input_graph` in `std::panic::catch_unwind`, so this
+    // path already HAS an error channel and a `Result` would be a second one.
+    let cl = |t: std::result::Result<crate::lazy::Tensor, fuel_ir::Error>| {
+        t.expect(
+            "make_const_like: data length must match shape element count. Both are              caller-supplied, so this function cannot prove it -- the panic is the              judge's error channel and is caught by the catch_unwind in Judge::run",
+        )
+    };
     match dtype {
-        DType::F32 => a.const_f32_like(data, shape),
-        DType::F16 => a.const_f16_like(
+        DType::F32 => cl(a.const_f32_like(data, shape)),
+        DType::F16 => cl(a.const_f16_like(
             data.iter()
                 .map(|&x| half::f16::from_f32(x))
                 .collect::<Vec<_>>(),
             shape,
-        ),
-        DType::BF16 => a.const_bf16_like(
+        )),
+        DType::BF16 => cl(a.const_bf16_like(
             data.iter()
                 .map(|&x| half::bf16::from_f32(x))
                 .collect::<Vec<_>>(),
             shape,
-        ),
+        )),
         other => panic!("build_input_graph: unsupported profiled dtype {other:?}"),
     }
 }

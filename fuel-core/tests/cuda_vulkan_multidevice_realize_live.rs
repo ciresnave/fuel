@@ -129,7 +129,9 @@ fn two_subdags_cuda_and_vulkan_realize_in_one_pass() {
         &fuel_core::Device::cpu(),
     )
     .unwrap();
-    let b = a.const_f32_like(vec![10.0_f32, 20.0, 30.0, 40.0], Shape::from_dims(&[4]));
+    let b = a
+        .const_f32_like(vec![10.0_f32, 20.0, 30.0, 40.0], Shape::from_dims(&[4]))
+        .unwrap();
 
     // Sub-DAG 1 on CUDA.
     let s1 = a.add(&b).expect("s1 = a+b");

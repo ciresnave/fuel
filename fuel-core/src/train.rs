@@ -757,7 +757,7 @@ mod tests {
     /// (Gather, etc.) typically wire indices in via `const_u32_like`,
     /// so we go through `from_graph_tensor` here.
     fn lt_const_i64_like(host: &Tensor, data: Vec<i64>, shape: Shape) -> Tensor {
-        Tensor::from_graph_tensor(host.graph_tensor().const_i64_like(data, shape))
+        Tensor::from_graph_tensor(host.graph_tensor().const_i64_like(data, shape).unwrap())
     }
 
     /// FusedSoftmaxCrossEntropy matches the primitive
@@ -793,7 +793,9 @@ mod tests {
         // off `logits_prim` so the second leaf joins that graph.
         let logits_prim =
             Tensor::from_f32(logits_data, Shape::from_dims(&[3, 4]), &device).unwrap();
-        let targets_prim = logits_prim.const_f32_like(targets_onehot, Shape::from_dims(&[3, 4]))?;
+        let targets_prim = logits_prim
+            .const_f32_like(targets_onehot, Shape::from_dims(&[3, 4]))
+            .unwrap();
         let prim_loss = loss::cross_entropy_with_logits(&logits_prim, &targets_prim)
             .unwrap()
             .realize_f32()[0];
@@ -861,8 +863,12 @@ mod tests {
         )
         .unwrap();
         // weight = [0.5, 1.0, 2.0] for one channel, kernel 3
-        let w = x.const_f32_like(vec![0.5_f32, 1.0, 2.0], Shape::from_dims(&[1, 1, 3]))?;
-        let bias = x.const_f32_like(vec![0.1_f32], Shape::from_dims(&[1]))?;
+        let w = x
+            .const_f32_like(vec![0.5_f32, 1.0, 2.0], Shape::from_dims(&[1, 1, 3]))
+            .unwrap();
+        let bias = x
+            .const_f32_like(vec![0.1_f32], Shape::from_dims(&[1]))
+            .unwrap();
         let out = x.causal_conv1d(&w, &bias, false).realize_f32();
         assert_eq!(out.len(), 2);
         assert!((out[0] - 2.1).abs() < 1e-5, "out[0]={}", out[0]);
@@ -879,8 +885,12 @@ mod tests {
             &device,
         )
         .unwrap();
-        let w = x.const_f32_like(vec![0.5_f32, 1.0, 2.0], Shape::from_dims(&[1, 1, 3]))?;
-        let bias = x.const_f32_like(vec![0.1_f32], Shape::from_dims(&[1]))?;
+        let w = x
+            .const_f32_like(vec![0.5_f32, 1.0, 2.0], Shape::from_dims(&[1, 1, 3]))
+            .unwrap();
+        let bias = x
+            .const_f32_like(vec![0.1_f32], Shape::from_dims(&[1]))
+            .unwrap();
         let out = x.causal_conv1d(&w, &bias, true).realize_f32();
         let expected0 = 2.1_f32 / (1.0 + (-2.1_f32).exp());
         let expected1 = 5.1_f32 / (1.0 + (-5.1_f32).exp());
@@ -922,10 +932,18 @@ mod tests {
         // batch=1, seqlen=1, dim=1, dstate=1. Same numbers as the
         // byte-kernel single-step test: expected y = 3.0.
         let u = Tensor::from_f32(vec![3.0_f32], Shape::from_dims(&[1, 1, 1]), &device).unwrap();
-        let delta = u.const_f32_like(vec![1.0_f32], Shape::from_dims(&[1, 1, 1]))?;
-        let a = u.const_f32_like(vec![-1.0_f32], Shape::from_dims(&[1, 1]))?;
-        let b = u.const_f32_like(vec![2.0_f32], Shape::from_dims(&[1, 1, 1]))?;
-        let c = u.const_f32_like(vec![0.5_f32], Shape::from_dims(&[1, 1, 1]))?;
+        let delta = u
+            .const_f32_like(vec![1.0_f32], Shape::from_dims(&[1, 1, 1]))
+            .unwrap();
+        let a = u
+            .const_f32_like(vec![-1.0_f32], Shape::from_dims(&[1, 1]))
+            .unwrap();
+        let b = u
+            .const_f32_like(vec![2.0_f32], Shape::from_dims(&[1, 1, 1]))
+            .unwrap();
+        let c = u
+            .const_f32_like(vec![0.5_f32], Shape::from_dims(&[1, 1, 1]))
+            .unwrap();
         let y = u.selective_scan(&delta, &a, &b, &c, false).realize_f32();
         assert_eq!(y.len(), 1);
         assert!((y[0] - 3.0).abs() < 1e-5, "got {}", y[0]);
@@ -936,10 +954,18 @@ mod tests {
     fn selective_scan_with_softplus_end_to_end() {
         let device = crate::Device::cpu();
         let u = Tensor::from_f32(vec![1.0_f32], Shape::from_dims(&[1, 1, 1]), &device).unwrap();
-        let delta = u.const_f32_like(vec![0.0_f32], Shape::from_dims(&[1, 1, 1]))?;
-        let a = u.const_f32_like(vec![0.0_f32], Shape::from_dims(&[1, 1]))?;
-        let b = u.const_f32_like(vec![1.0_f32], Shape::from_dims(&[1, 1, 1]))?;
-        let c = u.const_f32_like(vec![1.0_f32], Shape::from_dims(&[1, 1, 1]))?;
+        let delta = u
+            .const_f32_like(vec![0.0_f32], Shape::from_dims(&[1, 1, 1]))
+            .unwrap();
+        let a = u
+            .const_f32_like(vec![0.0_f32], Shape::from_dims(&[1, 1]))
+            .unwrap();
+        let b = u
+            .const_f32_like(vec![1.0_f32], Shape::from_dims(&[1, 1, 1]))
+            .unwrap();
+        let c = u
+            .const_f32_like(vec![1.0_f32], Shape::from_dims(&[1, 1, 1]))
+            .unwrap();
         let y = u.selective_scan(&delta, &a, &b, &c, true).realize_f32();
         let expected = 2.0_f32.ln();
         assert!(
@@ -986,10 +1012,18 @@ mod tests {
         let device = crate::Device::cpu();
         // [batch=1, seqlen=1, heads=1, head_dim=1]
         let x = Tensor::from_f32(vec![3.0_f32], Shape::from_dims(&[1, 1, 1, 1]), &device).unwrap();
-        let dt = x.const_f32_like(vec![1.0_f32], Shape::from_dims(&[1, 1, 1]))?;
-        let a = x.const_f32_like(vec![-1.0_f32], Shape::from_dims(&[1]))?;
-        let b = x.const_f32_like(vec![2.0_f32], Shape::from_dims(&[1, 1, 1, 1]))?;
-        let c = x.const_f32_like(vec![0.5_f32], Shape::from_dims(&[1, 1, 1, 1]))?;
+        let dt = x
+            .const_f32_like(vec![1.0_f32], Shape::from_dims(&[1, 1, 1]))
+            .unwrap();
+        let a = x
+            .const_f32_like(vec![-1.0_f32], Shape::from_dims(&[1]))
+            .unwrap();
+        let b = x
+            .const_f32_like(vec![2.0_f32], Shape::from_dims(&[1, 1, 1, 1]))
+            .unwrap();
+        let c = x
+            .const_f32_like(vec![0.5_f32], Shape::from_dims(&[1, 1, 1, 1]))
+            .unwrap();
         let y = x.ssd_chunk_scan(&dt, &a, &b, &c, 1).realize_f32();
         assert_eq!(y.len(), 1);
         assert!((y[0] - 3.0).abs() < 1e-5, "got {}", y[0]);
@@ -1037,10 +1071,12 @@ mod tests {
         .unwrap();
         let w_packed_t = activations
             .graph_tensor()
-            .const_u8_like(vec![247_u8, 247, 127, 127], Shape::from_dims(&[2, 2]));
+            .const_u8_like(vec![247_u8, 247, 127, 127], Shape::from_dims(&[2, 2]))
+            .unwrap();
         let w_packed = Tensor::from_graph_tensor(w_packed_t);
-        let absmax =
-            activations.const_f32_like(vec![1.0_f32, 2.0, 10.0, 20.0], Shape::from_dims(&[2, 2]));
+        let absmax = activations
+            .const_f32_like(vec![1.0_f32, 2.0, 10.0, 20.0], Shape::from_dims(&[2, 2]))
+            .unwrap();
         let y = activations.nf4_matmul(&w_packed, &absmax, 2).realize_f32();
         assert_eq!(y.len(), 2);
         assert!((y[0] - 10.0).abs() < 1e-5, "out 0: {}", y[0]);

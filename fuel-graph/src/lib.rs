@@ -12061,11 +12061,15 @@ mod tests {
             cpu_dev(),
         )
         .unwrap();
-        let w = x.const_f32_like(
-            vec![0.0_f32; 3 * 2 * 3 * 3],
-            Shape::from_dims(&[3, 2, 3, 3]),
-        );
-        let b = x.const_f32_like(vec![0.0_f32; 3], Shape::from_dims(&[3]));
+        let w = x
+            .const_f32_like(
+                vec![0.0_f32; 3 * 2 * 3 * 3],
+                Shape::from_dims(&[3, 2, 3, 3]),
+            )
+            .unwrap();
+        let b = x
+            .const_f32_like(vec![0.0_f32; 3], Shape::from_dims(&[3]))
+            .unwrap();
         let y = x.conv2d(&w, Some(&b), (1, 1), (1, 1), 1);
         assert_eq!(y.shape().dims(), &[1, 3, 4, 4]);
     }
@@ -12079,10 +12083,12 @@ mod tests {
             cpu_dev(),
         )
         .unwrap();
-        let w = x.const_f32_like(
-            vec![0.0_f32; 4 * 2 * 3 * 3],
-            Shape::from_dims(&[4, 2, 3, 3]),
-        );
+        let w = x
+            .const_f32_like(
+                vec![0.0_f32; 4 * 2 * 3 * 3],
+                Shape::from_dims(&[4, 2, 3, 3]),
+            )
+            .unwrap();
         let y = x.conv2d(&w, None, (2, 2), (0, 0), 1);
         assert_eq!(y.shape().dims(), &[1, 4, 3, 3]);
     }
@@ -12096,7 +12102,9 @@ mod tests {
             cpu_dev(),
         )
         .unwrap();
-        let w = x.const_f32_like(vec![0.0_f32; 4 * 3 * 3], Shape::from_dims(&[4, 1, 3, 3]));
+        let w = x
+            .const_f32_like(vec![0.0_f32; 4 * 3 * 3], Shape::from_dims(&[4, 1, 3, 3]))
+            .unwrap();
         let y = x.conv2d(&w, None, (1, 1), (1, 1), 4);
         assert_eq!(y.shape().dims(), &[1, 4, 4, 4]);
     }
@@ -12110,10 +12118,12 @@ mod tests {
             cpu_dev(),
         )
         .unwrap();
-        let w = x.const_f32_like(
-            vec![0.0_f32; 2 * 3 * 3 * 3],
-            Shape::from_dims(&[2, 3, 3, 3]),
-        );
+        let w = x
+            .const_f32_like(
+                vec![0.0_f32; 2 * 3 * 3 * 3],
+                Shape::from_dims(&[2, 3, 3, 3]),
+            )
+            .unwrap();
         let y = x.conv_transpose2d(&w, (2, 2), (1, 1), (1, 1), (1, 1), 1);
         assert_eq!(y.shape().dims(), &[1, 3, 8, 8]);
     }
@@ -12128,7 +12138,9 @@ mod tests {
             cpu_dev(),
         )
         .unwrap();
-        let w = x.const_f32_like(vec![0.0_f32; 2 * 3 * 3], Shape::from_dims(&[2, 3, 3]));
+        let w = x
+            .const_f32_like(vec![0.0_f32; 2 * 3 * 3], Shape::from_dims(&[2, 3, 3]))
+            .unwrap();
         let y = x.conv_transpose1d(&w, 2, 1, 1, 1, 1);
         assert_eq!(y.shape().dims(), &[1, 3, 8]);
     }
@@ -12139,7 +12151,9 @@ mod tests {
         // Lout = (2-1)*4 + (4-1) + 0 + 1 - 0 = 8.
         let x = NodeHandle::from_f32(vec![0.0_f32; 2], Shape::from_dims(&[1, 1, 2]), cpu_dev())
             .unwrap();
-        let w = x.const_f32_like(vec![0.0_f32; 4], Shape::from_dims(&[1, 1, 4]));
+        let w = x
+            .const_f32_like(vec![0.0_f32; 4], Shape::from_dims(&[1, 1, 4]))
+            .unwrap();
         let y = x.conv_transpose1d(&w, 4, 0, 0, 1, 1);
         assert_eq!(y.shape().dims(), &[1, 1, 8]);
     }
@@ -12155,7 +12169,9 @@ mod tests {
             cpu_dev(),
         )
         .unwrap();
-        let w = x.const_f32_like(vec![0.0_f32; 4 * 3 * 3], Shape::from_dims(&[4, 3, 3]));
+        let w = x
+            .const_f32_like(vec![0.0_f32; 4 * 3 * 3], Shape::from_dims(&[4, 3, 3]))
+            .unwrap();
         let y = x.conv_transpose1d(&w, 1, 0, 0, 1, 2);
         assert_eq!(y.shape().dims(), &[1, 6, 5]);
     }
@@ -12172,12 +12188,14 @@ mod tests {
             cpu_dev(),
         )
         .unwrap();
-        let w = x.const_f32_like(
-            (0..(3 * 2 * 3 * 3))
-                .map(|i| (i as f32) * 0.07 - 0.4)
-                .collect::<Vec<f32>>(),
-            Shape::from_dims(&[3, 2, 3, 3]),
-        );
+        let w = x
+            .const_f32_like(
+                (0..(3 * 2 * 3 * 3))
+                    .map(|i| (i as f32) * 0.07 - 0.4)
+                    .collect::<Vec<f32>>(),
+                Shape::from_dims(&[3, 2, 3, 3]),
+            )
+            .unwrap();
         let y = x.conv2d(&w, None, (1, 1), (1, 1), 1);
         let scalar_out = y.sum_all();
         let grads = scalar_out.backward();
@@ -12267,7 +12285,9 @@ mod tests {
     fn on_device_sets_placement_hint() {
         let a =
             NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
-        let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
+        let b = a
+            .const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]))
+            .unwrap();
         // Only tag the Add node; the const leaves remain unplaced.
         let c = a.add(&b).on_device(DeviceLocation::Vulkan { gpu_id: 0 });
         assert_eq!(c.placement(), Some(DeviceLocation::Vulkan { gpu_id: 0 }));
@@ -12306,7 +12326,9 @@ mod tests {
     fn add_appends_a_node_and_tracks_inputs() {
         let a =
             NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
-        let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
+        let b = a
+            .const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]))
+            .unwrap();
         let c = a.add(&b);
         assert_eq!(c.graph().read().unwrap().len(), 3); // const, const, add
         let node = c.graph().read().unwrap().node(c.id()).clone();
@@ -12321,7 +12343,9 @@ mod tests {
     fn chained_ops_all_share_one_graph() {
         let a =
             NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
-        let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
+        let b = a
+            .const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]))
+            .unwrap();
         let c = a.add(&b).mul(&a).sqr().relu();
         assert_eq!(c.graph().read().unwrap().len(), 6); // 2 consts + add + mul + sqr + relu
         assert_eq!(c.shape().dims(), &[3]);
@@ -12330,7 +12354,9 @@ mod tests {
     #[test]
     fn matmul_validates_shapes_and_produces_correct_output_shape() {
         let a = NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
-        let b = a.const_f32_like(vec![1.0; 12], Shape::from_dims(&[3, 4]));
+        let b = a
+            .const_f32_like(vec![1.0; 12], Shape::from_dims(&[3, 4]))
+            .unwrap();
         let c = a.matmul(&b);
         assert_eq!(c.shape().dims(), &[2, 4]);
     }
@@ -12340,7 +12366,9 @@ mod tests {
     fn add_panics_on_shape_mismatch() {
         let a =
             NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
-        let b = a.const_f32_like(vec![1.0, 2.0], Shape::from_dims(&[2]));
+        let b = a
+            .const_f32_like(vec![1.0, 2.0], Shape::from_dims(&[2]))
+            .unwrap();
         let _ = a.add(&b);
     }
 
@@ -12348,7 +12376,9 @@ mod tests {
     #[should_panic(expected = "inner dim mismatch")]
     fn matmul_panics_on_inner_dim_mismatch() {
         let a = NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
-        let b = a.const_f32_like(vec![1.0; 8], Shape::from_dims(&[4, 2]));
+        let b = a
+            .const_f32_like(vec![1.0; 8], Shape::from_dims(&[4, 2]))
+            .unwrap();
         let _ = a.matmul(&b);
     }
 
@@ -12379,7 +12409,7 @@ mod tests {
     #[test]
     fn same_graph_tensors_share_one_id() {
         let a = NodeHandle::from_f32(vec![1.0], Shape::from_dims(&[1]), cpu_dev()).unwrap();
-        let b = a.const_f32_like(vec![2.0], Shape::from_dims(&[1]));
+        let b = a.const_f32_like(vec![2.0], Shape::from_dims(&[1])).unwrap();
         assert_eq!(a.graph_id(), b.graph_id());
     }
 
@@ -12504,7 +12534,9 @@ mod tests {
     #[should_panic(expected = "dtype mismatch")]
     fn add_panics_on_mixed_dtype() {
         let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
-        let b = a.const_f64_like(vec![1.0, 2.0], Shape::from_dims(&[2]));
+        let b = a
+            .const_f64_like(vec![1.0, 2.0], Shape::from_dims(&[2]))
+            .unwrap();
         let _ = a.add(&b);
     }
 
@@ -12549,7 +12581,9 @@ mod tests {
         // [2, 3, 4] @ [2, 4, 5] → [2, 3, 5]
         let a =
             NodeHandle::from_f32(vec![0.0; 24], Shape::from_dims(&[2, 3, 4]), cpu_dev()).unwrap();
-        let b = a.const_f32_like(vec![0.0; 40], Shape::from_dims(&[2, 4, 5]));
+        let b = a
+            .const_f32_like(vec![0.0; 40], Shape::from_dims(&[2, 4, 5]))
+            .unwrap();
         let c = a.matmul(&b);
         assert_eq!(c.shape().dims(), &[2, 3, 5]);
     }
@@ -12559,7 +12593,9 @@ mod tests {
     fn matmul_rank_3_rejects_batch_dim_mismatch() {
         let a =
             NodeHandle::from_f32(vec![0.0; 24], Shape::from_dims(&[2, 3, 4]), cpu_dev()).unwrap();
-        let b = a.const_f32_like(vec![0.0; 60], Shape::from_dims(&[3, 4, 5]));
+        let b = a
+            .const_f32_like(vec![0.0; 60], Shape::from_dims(&[3, 4, 5]))
+            .unwrap();
         let _ = a.matmul(&b);
     }
 
@@ -12570,7 +12606,9 @@ mod tests {
         // Just Work without an explicit broadcast_to on the RHS.
         let a =
             NodeHandle::from_f32(vec![0.0; 24], Shape::from_dims(&[2, 3, 4]), cpu_dev()).unwrap();
-        let b = a.const_f32_like(vec![0.0; 20], Shape::from_dims(&[4, 5]));
+        let b = a
+            .const_f32_like(vec![0.0; 20], Shape::from_dims(&[4, 5]))
+            .unwrap();
         let c = a.matmul(&b);
         assert_eq!(c.shape().dims(), &[2, 3, 5]);
     }
@@ -12579,7 +12617,9 @@ mod tests {
     fn matmul_auto_broadcasts_rank_2_lhs_against_batched_rhs() {
         // [m=3, k=4] @ [batch=2, k=4, n=5] → [2, 3, 5].
         let a = NodeHandle::from_f32(vec![0.0; 12], Shape::from_dims(&[3, 4]), cpu_dev()).unwrap();
-        let b = a.const_f32_like(vec![0.0; 40], Shape::from_dims(&[2, 4, 5]));
+        let b = a
+            .const_f32_like(vec![0.0; 40], Shape::from_dims(&[2, 4, 5]))
+            .unwrap();
         let c = a.matmul(&b);
         assert_eq!(c.shape().dims(), &[2, 3, 5]);
     }
@@ -12588,7 +12628,9 @@ mod tests {
     fn concat_output_shape_sums_along_dim() {
         // [2, 3] concat [2, 4] along dim 1 → [2, 7]
         let a = NodeHandle::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
-        let b = a.const_f32_like(vec![0.0; 8], Shape::from_dims(&[2, 4]));
+        let b = a
+            .const_f32_like(vec![0.0; 8], Shape::from_dims(&[2, 4]))
+            .unwrap();
         let c = a.concat(&b, 1);
         assert_eq!(c.shape().dims(), &[2, 7]);
     }
@@ -12597,7 +12639,9 @@ mod tests {
     #[should_panic(expected = "non-dim shapes")]
     fn concat_rejects_nondim_shape_mismatch() {
         let a = NodeHandle::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
-        let b = a.const_f32_like(vec![0.0; 12], Shape::from_dims(&[3, 4]));
+        let b = a
+            .const_f32_like(vec![0.0; 12], Shape::from_dims(&[3, 4]))
+            .unwrap();
         let _ = a.concat(&b, 1);
     }
 
@@ -12605,7 +12649,9 @@ mod tests {
     #[should_panic(expected = "rank mismatch")]
     fn concat_rejects_rank_mismatch() {
         let a = NodeHandle::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
-        let b = a.const_f32_like(vec![0.0; 6], Shape::from_dims(&[6]));
+        let b = a
+            .const_f32_like(vec![0.0; 6], Shape::from_dims(&[6]))
+            .unwrap();
         let _ = a.concat(&b, 0);
     }
 
@@ -12628,7 +12674,9 @@ mod tests {
     fn broadcast_add_shape_promotes_to_common_shape() {
         // [4, 1] + [1, 3] → [4, 3]
         let a = NodeHandle::from_f32(vec![0.0; 4], Shape::from_dims(&[4, 1]), cpu_dev()).unwrap();
-        let b = a.const_f32_like(vec![0.0; 3], Shape::from_dims(&[1, 3]));
+        let b = a
+            .const_f32_like(vec![0.0; 3], Shape::from_dims(&[1, 3]))
+            .unwrap();
         let c = a.broadcast_add(&b);
         assert_eq!(c.shape().dims(), &[4, 3]);
     }
@@ -12637,7 +12685,9 @@ mod tests {
     fn broadcast_sub_pads_shorter_shape_with_leading_ones() {
         // [3] - [2, 3] → [2, 3]
         let a = NodeHandle::from_f32(vec![0.0; 3], Shape::from_dims(&[3]), cpu_dev()).unwrap();
-        let b = a.const_f32_like(vec![0.0; 6], Shape::from_dims(&[2, 3]));
+        let b = a
+            .const_f32_like(vec![0.0; 6], Shape::from_dims(&[2, 3]))
+            .unwrap();
         let c = a.broadcast_sub(&b);
         assert_eq!(c.shape().dims(), &[2, 3]);
     }
@@ -12646,7 +12696,9 @@ mod tests {
     #[should_panic(expected = "incompatible shapes")]
     fn broadcast_add_rejects_incompatible_shapes() {
         let a = NodeHandle::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
-        let b = a.const_f32_like(vec![0.0; 8], Shape::from_dims(&[2, 4]));
+        let b = a
+            .const_f32_like(vec![0.0; 8], Shape::from_dims(&[2, 4]))
+            .unwrap();
         let _ = a.broadcast_add(&b);
     }
 
@@ -12668,8 +12720,12 @@ mod tests {
     #[test]
     fn index_add_shape_validation() {
         let base = NodeHandle::from_f32(vec![0.0; 10], Shape::from_dims(&[10]), cpu_dev()).unwrap();
-        let idx = base.const_u32_like(vec![1, 3, 5], Shape::from_dims(&[3]));
-        let src = base.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let idx = base
+            .const_u32_like(vec![1, 3, 5], Shape::from_dims(&[3]))
+            .unwrap();
+        let src = base
+            .const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]))
+            .unwrap();
         let out = base.index_add(0, &idx, &src);
         assert_eq!(out.shape().dims(), &[10]);
     }
@@ -12678,8 +12734,12 @@ mod tests {
     #[should_panic(expected = "dtypes must match")]
     fn index_add_rejects_dtype_mismatch() {
         let base = NodeHandle::from_f32(vec![0.0; 5], Shape::from_dims(&[5]), cpu_dev()).unwrap();
-        let idx = base.const_u32_like(vec![0, 2], Shape::from_dims(&[2]));
-        let src = base.const_f64_like(vec![1.0, 2.0], Shape::from_dims(&[2]));
+        let idx = base
+            .const_u32_like(vec![0, 2], Shape::from_dims(&[2]))
+            .unwrap();
+        let src = base
+            .const_f64_like(vec![1.0, 2.0], Shape::from_dims(&[2]))
+            .unwrap();
         let _ = base.index_add(0, &idx, &src);
     }
 
@@ -12687,8 +12747,12 @@ mod tests {
     fn scatter_add_validates_index_matches_src() {
         let base =
             NodeHandle::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
-        let idx = base.const_u32_like(vec![0, 2, 1, 0], Shape::from_dims(&[2, 2]));
-        let src = base.const_f32_like(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[2, 2]));
+        let idx = base
+            .const_u32_like(vec![0, 2, 1, 0], Shape::from_dims(&[2, 2]))
+            .unwrap();
+        let src = base
+            .const_f32_like(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[2, 2]))
+            .unwrap();
         let out = base.scatter_add(1, &idx, &src);
         assert_eq!(out.shape().dims(), &[2, 3]);
     }
@@ -12698,8 +12762,12 @@ mod tests {
     fn scatter_add_rejects_index_src_shape_mismatch() {
         let base =
             NodeHandle::from_f32(vec![0.0; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
-        let idx = base.const_u32_like(vec![0, 1], Shape::from_dims(&[2]));
-        let src = base.const_f32_like(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[2, 2]));
+        let idx = base
+            .const_u32_like(vec![0, 1], Shape::from_dims(&[2]))
+            .unwrap();
+        let src = base
+            .const_f32_like(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[2, 2]))
+            .unwrap();
         let _ = base.scatter_add(1, &idx, &src);
     }
 
@@ -12833,7 +12901,9 @@ mod tests {
     fn maximum_requires_matching_shapes() {
         let a =
             NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
-        let b = a.const_f32_like(vec![4.0, 1.0, 5.0], Shape::from_dims(&[3]));
+        let b = a
+            .const_f32_like(vec![4.0, 1.0, 5.0], Shape::from_dims(&[3]))
+            .unwrap();
         let m = a.maximum(&b);
         assert_eq!(m.shape().dims(), &[3]);
     }
@@ -12843,7 +12913,9 @@ mod tests {
     fn maximum_rejects_shape_mismatch() {
         let a =
             NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
-        let b = a.const_f32_like(vec![1.0, 2.0], Shape::from_dims(&[2]));
+        let b = a
+            .const_f32_like(vec![1.0, 2.0], Shape::from_dims(&[2]))
+            .unwrap();
         let _ = a.maximum(&b);
     }
 
@@ -12853,7 +12925,9 @@ mod tests {
     fn topo_order_places_inputs_before_dependents() {
         // Build: c = (a + b) * a
         let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
-        let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
+        let b = a
+            .const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]))
+            .unwrap();
         let sum = a.add(&b);
         let c = sum.mul(&a);
         let order = topo_order(&c.graph().read().unwrap(), c.id());
@@ -12892,8 +12966,12 @@ mod tests {
         // (a, b, c, add1, add2) with a before add1/add2 and b before
         // add1 and c before add2.
         let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
-        let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
-        let c = a.const_f32_like(vec![5.0, 6.0], Shape::from_dims(&[2]));
+        let b = a
+            .const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]))
+            .unwrap();
+        let c = a
+            .const_f32_like(vec![5.0, 6.0], Shape::from_dims(&[2]))
+            .unwrap();
         let add1 = a.add(&b);
         let add2 = a.add(&c);
         let order = topo_order_multi(&add1.graph().read().unwrap(), &[add1.id(), add2.id()]);
@@ -12931,7 +13009,9 @@ mod tests {
         // Upstream seed is a ones tensor. So grad_a and grad_b are both
         // the same ones node (no new math emitted for Add's backward).
         let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
-        let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
+        let b = a
+            .const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]))
+            .unwrap();
         let c = a.add(&b);
         let grads = c.backward();
         let g_a = grads.get(&a).unwrap();
@@ -12946,7 +13026,9 @@ mod tests {
         // The backward pass should emit two new Mul nodes (upstream * b,
         // upstream * a).
         let a = NodeHandle::from_f32(vec![2.0, 3.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
-        let b = a.const_f32_like(vec![5.0, 7.0], Shape::from_dims(&[2]));
+        let b = a
+            .const_f32_like(vec![5.0, 7.0], Shape::from_dims(&[2]))
+            .unwrap();
         let c = a.mul(&b);
         let nodes_before = c.graph().read().unwrap().len();
         let grads = c.backward();
@@ -12987,7 +13069,9 @@ mod tests {
         // Forward: Y = A @ B,  A:[2,3], B:[3,4], Y:[2,4].
         // Backward: dA = dY @ B^T (shape [2,3]),  dB = A^T @ dY (shape [3,4]).
         let a = NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
-        let b = a.const_f32_like(vec![1.0; 12], Shape::from_dims(&[3, 4]));
+        let b = a
+            .const_f32_like(vec![1.0; 12], Shape::from_dims(&[3, 4]))
+            .unwrap();
         let y = a.matmul(&b);
         let grads = y.backward();
         let g_a = grads.get(&a).unwrap();
@@ -13084,7 +13168,9 @@ mod tests {
         // shape and dtype. Numerical correctness is exercised in exec.rs.
         let a =
             NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
-        let b = a.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let b = a
+            .const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]))
+            .unwrap();
         for tensor in [
             a.neg(),
             a.sub(&b),
@@ -13119,7 +13205,9 @@ mod tests {
     fn index_select_produces_shape_with_dim_replaced() {
         let data =
             NodeHandle::from_f32(vec![1.0; 12], Shape::from_dims(&[3, 4]), cpu_dev()).unwrap();
-        let idx = data.const_u32_like(vec![0, 2, 1, 0, 2], Shape::from_dims(&[5]));
+        let idx = data
+            .const_u32_like(vec![0, 2, 1, 0, 2], Shape::from_dims(&[5]))
+            .unwrap();
         let out = data.index_select(0, &idx);
         assert_eq!(out.shape().dims(), &[5, 4]);
         assert_eq!(out.dtype(), DType::F32);
@@ -13130,7 +13218,9 @@ mod tests {
     fn index_select_rejects_float_index() {
         let data =
             NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
-        let bad = data.const_f32_like(vec![0.0, 1.0], Shape::from_dims(&[2]));
+        let bad = data
+            .const_f32_like(vec![0.0, 1.0], Shape::from_dims(&[2]))
+            .unwrap();
         let _ = data.index_select(0, &bad);
     }
 
@@ -13139,7 +13229,9 @@ mod tests {
     fn index_select_rejects_multi_dim_index() {
         let data =
             NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
-        let idx = data.const_u32_like(vec![0, 1, 0, 1], Shape::from_dims(&[2, 2]));
+        let idx = data
+            .const_u32_like(vec![0, 1, 0, 1], Shape::from_dims(&[2, 2]))
+            .unwrap();
         let _ = data.index_select(0, &idx);
     }
 
@@ -13148,7 +13240,9 @@ mod tests {
         let data =
             NodeHandle::from_f32(vec![1.0; 12], Shape::from_dims(&[3, 4]), cpu_dev()).unwrap();
         // Index shape [2, 5] — same rank as data (rank 2).
-        let idx = data.const_u32_like(vec![0; 10], Shape::from_dims(&[2, 5]));
+        let idx = data
+            .const_u32_like(vec![0; 10], Shape::from_dims(&[2, 5]))
+            .unwrap();
         let out = data.gather(1, &idx);
         assert_eq!(out.shape().dims(), &[2, 5]);
     }
@@ -13159,7 +13253,9 @@ mod tests {
         let data =
             NodeHandle::from_f32(vec![1.0; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
         // Rank-1 index for rank-2 data → error.
-        let idx = data.const_u32_like(vec![0, 1, 0], Shape::from_dims(&[3]));
+        let idx = data
+            .const_u32_like(vec![0, 1, 0], Shape::from_dims(&[3]))
+            .unwrap();
         let _ = data.gather(1, &idx);
     }
 
@@ -13280,7 +13376,9 @@ mod tests {
         // where possible"), with shape == lhs.shape() (and == rhs.shape()).
         let a =
             NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
-        let b = a.const_f32_like(vec![1.0, 5.0, 3.0], Shape::from_dims(&[3]));
+        let b = a
+            .const_f32_like(vec![1.0, 5.0, 3.0], Shape::from_dims(&[3]))
+            .unwrap();
         let m = a.eq(&b);
         assert_eq!(m.shape().dims(), &[3]);
         assert_eq!(m.dtype(), DType::Bool, "eq output must be Bool");
@@ -13296,7 +13394,9 @@ mod tests {
         // operator so a regression names the operator that drifted.
         let a =
             NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
-        let b = a.const_f32_like(vec![1.0, 5.0, 3.0], Shape::from_dims(&[3]));
+        let b = a
+            .const_f32_like(vec![1.0, 5.0, 3.0], Shape::from_dims(&[3]))
+            .unwrap();
         for (name, m) in [
             ("eq", a.eq(&b)),
             ("ne", a.ne(&b)),
@@ -13500,7 +13600,9 @@ mod tests {
         // Op::Where node carries 3 inputs in order (cond, a, b).
         let a =
             NodeHandle::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev()).unwrap();
-        let b = a.const_f32_like(vec![10.0, 20.0, 30.0], Shape::from_dims(&[3]));
+        let b = a
+            .const_f32_like(vec![10.0, 20.0, 30.0], Shape::from_dims(&[3]))
+            .unwrap();
         let eq_a_b = a.eq(&b); // Bool mask
         let picked = eq_a_b.where_cond(&a, &b);
         assert_eq!(picked.shape().dims(), &[3]);
@@ -13561,7 +13663,9 @@ mod tests {
         // dest shape [4, 3]; source shape [1, 3]; write at row 2.
         let dest =
             NodeHandle::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev()).unwrap();
-        let src = dest.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]));
+        let src = dest
+            .const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]))
+            .unwrap();
         let out = dest
             .write_slice(&src, vec![(2, 3), (0, 3)])
             .expect("write_slice should accept matching shapes");
@@ -13584,7 +13688,9 @@ mod tests {
         // dest capacity [8, 3]; source [1, 3]; dynamic start on axis 0.
         let dest =
             NodeHandle::from_f32(vec![0.0_f32; 24], Shape::from_dims(&[8, 3]), cpu_dev()).unwrap();
-        let src = dest.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]));
+        let src = dest
+            .const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]))
+            .unwrap();
         let sym = SymId(0);
         // ranges[0].0 is ignored (start is dynamic); width = 1 - 0 = 1
         // matches source dim 0. Axis 1 is static, full width.
@@ -13610,7 +13716,9 @@ mod tests {
         // width 4 — can never fit regardless of the runtime offset.
         let dest =
             NodeHandle::from_f32(vec![0.0_f32; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
-        let src = dest.const_f32_like(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]));
+        let src = dest
+            .const_f32_like(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]))
+            .unwrap();
         let err = dest.write_slice_dyn(&src, vec![(0, 4), (0, 3)], 0, DynScalar::Sym(SymId(0)));
         assert!(
             err.is_err(),
@@ -13623,7 +13731,9 @@ mod tests {
         use fuel_ir::{DynScalar, SymId};
         let dest =
             NodeHandle::from_f32(vec![0.0_f32; 6], Shape::from_dims(&[2, 3]), cpu_dev()).unwrap();
-        let src = dest.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]));
+        let src = dest
+            .const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]))
+            .unwrap();
         let err = dest.write_slice_dyn(&src, vec![(0, 1), (0, 3)], 5, DynScalar::Sym(SymId(0)));
         assert!(err.is_err(), "dyn_axis past rank must error");
     }
@@ -13638,8 +13748,12 @@ mod tests {
             cpu_dev(),
         )
         .unwrap();
-        let k = q.const_f32_like(vec![0.0_f32; 8 * 4], Shape::from_dims(&[1, 1, 8, 4]));
-        let v = q.const_f32_like(vec![0.0_f32; 8 * 4], Shape::from_dims(&[1, 1, 8, 4]));
+        let k = q
+            .const_f32_like(vec![0.0_f32; 8 * 4], Shape::from_dims(&[1, 1, 8, 4]))
+            .unwrap();
+        let v = q
+            .const_f32_like(vec![0.0_f32; 8 * 4], Shape::from_dims(&[1, 1, 8, 4]))
+            .unwrap();
         let sym = SymId(0);
         let out = q.flash_attn_dyn(
             &k,
@@ -13677,8 +13791,12 @@ mod tests {
             cpu_dev(),
         )
         .unwrap();
-        let k = q.const_f32_like(vec![0.0_f32; 4 * 4], Shape::from_dims(&[1, 1, 4, 4]));
-        let v = q.const_f32_like(vec![0.0_f32; 4 * 4], Shape::from_dims(&[1, 1, 4, 4]));
+        let k = q
+            .const_f32_like(vec![0.0_f32; 4 * 4], Shape::from_dims(&[1, 1, 4, 4]))
+            .unwrap();
+        let v = q
+            .const_f32_like(vec![0.0_f32; 4 * 4], Shape::from_dims(&[1, 1, 4, 4]))
+            .unwrap();
         // Concrete k_len=5 > capacity 4 → build-time panic.
         let _ = q.flash_attn_dyn(
             &k,
@@ -13697,7 +13815,9 @@ mod tests {
     fn write_slice_rejects_rank_mismatch() {
         let dest =
             NodeHandle::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev()).unwrap();
-        let src = dest.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]));
+        let src = dest
+            .const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]))
+            .unwrap();
         // ranges has rank 2 (matches dest) but source has rank 1.
         let err = dest.write_slice(&src, vec![(0, 1), (0, 3)]);
         assert!(err.is_err(), "rank mismatch must error");
@@ -13865,7 +13985,9 @@ mod tests {
             .unwrap();
         let cos =
             NodeHandle::from_f32(vec![1.0_f32; 8], Shape::from_dims(&[2, 4]), cpu_dev()).unwrap();
-        let sin = x.const_f32_like(vec![0.0_f32; 8], Shape::from_dims(&[2, 4]));
+        let sin = x
+            .const_f32_like(vec![0.0_f32; 8], Shape::from_dims(&[2, 4]))
+            .unwrap();
         let _ = x.rope_with_tables(&cos, &sin);
     }
 
@@ -13874,7 +13996,9 @@ mod tests {
         let dest =
             NodeHandle::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev()).unwrap();
         // Source has 2 elements along axis 0, but slab is width 1.
-        let src = dest.const_f32_like(vec![1.0_f32; 6], Shape::from_dims(&[2, 3]));
+        let src = dest
+            .const_f32_like(vec![1.0_f32; 6], Shape::from_dims(&[2, 3]))
+            .unwrap();
         let err = dest.write_slice(&src, vec![(2, 3), (0, 3)]);
         assert!(err.is_err(), "slab-width mismatch must error");
     }
@@ -13883,7 +14007,9 @@ mod tests {
     fn write_slice_rejects_range_past_dest_extent() {
         let dest =
             NodeHandle::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev()).unwrap();
-        let src = dest.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]));
+        let src = dest
+            .const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]))
+            .unwrap();
         // axis 0: dest extent is 4; range [4, 5) is out of bounds.
         let err = dest.write_slice(&src, vec![(4, 5), (0, 3)]);
         assert!(err.is_err(), "range past dest extent must error");
@@ -13898,7 +14024,9 @@ mod tests {
         // Expected ordering: w must run after ro.
         let dest =
             NodeHandle::from_f32(vec![0.0_f32; 12], Shape::from_dims(&[4, 3]), cpu_dev()).unwrap();
-        let src = dest.const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]));
+        let src = dest
+            .const_f32_like(vec![1.0, 2.0, 3.0], Shape::from_dims(&[1, 3]))
+            .unwrap();
         let ro = dest.relu();
         let w = dest.write_slice(&src, vec![(0, 1), (0, 3)]).unwrap();
         let ord = crate::opt::derive_ordering(&dest.graph().read().unwrap(), &[ro.id(), w.id()]);
@@ -15644,7 +15772,9 @@ mod tests {
         // use, exercised here purely to prove the arena is untouched by
         // the new variant.
         let a = NodeHandle::from_f32(vec![1.0, 2.0], Shape::from_dims(&[2]), cpu_dev()).unwrap();
-        let b = a.const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]));
+        let b = a
+            .const_f32_like(vec![3.0, 4.0], Shape::from_dims(&[2]))
+            .unwrap();
         let sum = a.add(&b);
         let c = sum.mul(&a);
 

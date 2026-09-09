@@ -51,7 +51,7 @@ fn conv_transpose1d_groups_1_matches_pytorch() {
     let dev = fuel_core::Device::cpu();
     let t = Tensor::from_f32(T_DATA.to_vec(), Shape::from_dims(&[1, 4, 5]), &dev).unwrap();
     let wt = transposed_weight();
-    let w = t.const_f32_like(wt, Shape::from_dims(&[4, 2, 3]));
+    let w = t.const_f32_like(wt, Shape::from_dims(&[4, 2, 3])).unwrap();
 
     let res = t.conv_transpose1d(&w, 1, 0, 0, 1, 1).unwrap();
     let shape = res.shape();
@@ -76,7 +76,7 @@ fn conv_transpose1d_groups_2_matches_pytorch() {
     let dev = fuel_core::Device::cpu();
     let t = Tensor::from_f32(T_DATA.to_vec(), Shape::from_dims(&[1, 4, 5]), &dev).unwrap();
     let wt = transposed_weight();
-    let w = t.const_f32_like(wt, Shape::from_dims(&[4, 2, 3]));
+    let w = t.const_f32_like(wt, Shape::from_dims(&[4, 2, 3])).unwrap();
 
     let res = t.conv_transpose1d(&w, 1, 0, 0, 1, 2).unwrap();
     let shape = res.shape();
@@ -104,7 +104,9 @@ fn conv_transpose1d_groups_2_matches_pytorch() {
 fn conv_transpose1d_stride_2_out_pad_1_shape() {
     let dev = fuel_core::Device::cpu();
     let t = Tensor::from_f32(vec![0.5_f32; 1 * 1 * 4], Shape::from_dims(&[1, 1, 4]), &dev).unwrap();
-    let w = t.const_f32_like(vec![0.3_f32; 1 * 1 * 3], Shape::from_dims(&[1, 1, 3]));
+    let w = t
+        .const_f32_like(vec![0.3_f32; 1 * 1 * 3], Shape::from_dims(&[1, 1, 3]))
+        .unwrap();
     // Lout = (4-1)*2 + (3-1) + 1 + 1 - 2 = 8.
     let res = t.conv_transpose1d(&w, 2, 1, 1, 1, 1).unwrap();
     let shape = res.shape();

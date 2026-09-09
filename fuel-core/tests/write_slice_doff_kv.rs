@@ -19,8 +19,12 @@ fn doff_writes_at_device_offset() {
     let device = fuel_core::Device::cpu();
     // dest [4, 2] starts at zero; write [7, 8] at device offset 1.
     let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
-    let src = dest.const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]));
-    let offset = dest.const_i64_like(vec![1_i64], Shape::from_dims(&[]));
+    let src = dest
+        .const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]))
+        .unwrap();
+    let offset = dest
+        .const_i64_like(vec![1_i64], Shape::from_dims(&[]))
+        .unwrap();
     let post_write = dest
         .write_slice_doff(&src, &offset, /* axis */ 0, vec![(0, 1), (0, 2)])
         .expect("write_slice_doff builds");
@@ -33,8 +37,12 @@ fn doff_writes_at_device_offset() {
 fn doff_offset_zero_writes_leading_row() {
     let device = fuel_core::Device::cpu();
     let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
-    let src = dest.const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]));
-    let offset = dest.const_i64_like(vec![0_i64], Shape::from_dims(&[]));
+    let src = dest
+        .const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]))
+        .unwrap();
+    let offset = dest
+        .const_i64_like(vec![0_i64], Shape::from_dims(&[]))
+        .unwrap();
     let post_write = dest
         .write_slice_doff(&src, &offset, 0, vec![(0, 1), (0, 2)])
         .expect("write_slice_doff builds");
@@ -63,9 +71,13 @@ fn doff_decode_loop_appends_at_cached_len() {
         vec![4.0_f32, 4.1],
     ];
     for (step, token) in tokens.iter().enumerate() {
-        let token_t = cache.const_f32_like(token.clone(), Shape::from_dims(&[1, head_dim]));
+        let token_t = cache
+            .const_f32_like(token.clone(), Shape::from_dims(&[1, head_dim]))
+            .unwrap();
         // `cached_len` = step: the append offset (device-resident under CUDA).
-        let offset = cache.const_i64_like(vec![step as i64], Shape::from_dims(&[]));
+        let offset = cache
+            .const_i64_like(vec![step as i64], Shape::from_dims(&[]))
+            .unwrap();
         cache = cache
             .write_slice_doff(&token_t, &offset, 0, vec![(0, 1), (0, head_dim)])
             .expect("doff append");
@@ -90,8 +102,12 @@ fn doff_writes_on_non_leading_axis() {
     let device = fuel_core::Device::cpu();
     let dest = Tensor::from_f32(vec![0.0_f32; 10], Shape::from_dims(&[2, 5]), &device).unwrap();
     // slab [2, 2] written at columns [2, 4) on axis 1.
-    let src = dest.const_f32_like(vec![1.0_f32, 2.0, 3.0, 4.0], Shape::from_dims(&[2, 2]));
-    let offset = dest.const_i64_like(vec![2_i64], Shape::from_dims(&[]));
+    let src = dest
+        .const_f32_like(vec![1.0_f32, 2.0, 3.0, 4.0], Shape::from_dims(&[2, 2]))
+        .unwrap();
+    let offset = dest
+        .const_i64_like(vec![2_i64], Shape::from_dims(&[]))
+        .unwrap();
     let post_write = dest
         .write_slice_doff(&src, &offset, /* axis */ 1, vec![(0, 2), (0, 2)])
         .expect("write_slice_doff builds");
@@ -112,8 +128,12 @@ fn doff_writes_on_non_leading_axis() {
 fn doff_rejects_non_i64_offset() {
     let device = fuel_core::Device::cpu();
     let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
-    let src = dest.const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]));
-    let offset = dest.const_u32_like(vec![1_u32], Shape::from_dims(&[]));
+    let src = dest
+        .const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]))
+        .unwrap();
+    let offset = dest
+        .const_u32_like(vec![1_u32], Shape::from_dims(&[]))
+        .unwrap();
     let r = dest.write_slice_doff(&src, &offset, 0, vec![(0, 1), (0, 2)]);
     assert!(r.is_err(), "non-I64 offset must error at build time");
 }
@@ -123,8 +143,12 @@ fn doff_rejects_non_i64_offset() {
 fn doff_rejects_nonscalar_offset() {
     let device = fuel_core::Device::cpu();
     let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
-    let src = dest.const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]));
-    let offset = dest.const_i64_like(vec![1_i64, 2_i64], Shape::from_dims(&[2]));
+    let src = dest
+        .const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]))
+        .unwrap();
+    let offset = dest
+        .const_i64_like(vec![1_i64, 2_i64], Shape::from_dims(&[2]))
+        .unwrap();
     let r = dest.write_slice_doff(&src, &offset, 0, vec![(0, 1), (0, 2)]);
     assert!(r.is_err(), "non-scalar offset must error at build time");
 }
@@ -134,8 +158,12 @@ fn doff_rejects_nonscalar_offset() {
 fn doff_rejects_source_axis_mismatch() {
     let device = fuel_core::Device::cpu();
     let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
-    let src = dest.const_f32_like(vec![1.0_f32; 4], Shape::from_dims(&[2, 2]));
-    let offset = dest.const_i64_like(vec![0_i64], Shape::from_dims(&[]));
+    let src = dest
+        .const_f32_like(vec![1.0_f32; 4], Shape::from_dims(&[2, 2]))
+        .unwrap();
+    let offset = dest
+        .const_i64_like(vec![0_i64], Shape::from_dims(&[]))
+        .unwrap();
     let r = dest.write_slice_doff(&src, &offset, 0, vec![(0, 1), (0, 2)]);
     assert!(r.is_err(), "source/slab mismatch must error at build time");
 }
@@ -145,8 +173,12 @@ fn doff_rejects_source_axis_mismatch() {
 fn doff_rejects_axis_out_of_bounds() {
     let device = fuel_core::Device::cpu();
     let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
-    let src = dest.const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]));
-    let offset = dest.const_i64_like(vec![0_i64], Shape::from_dims(&[]));
+    let src = dest
+        .const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]))
+        .unwrap();
+    let offset = dest
+        .const_i64_like(vec![0_i64], Shape::from_dims(&[]))
+        .unwrap();
     let r = dest.write_slice_doff(&src, &offset, /* axis */ 3, vec![(0, 1), (0, 2)]);
     assert!(r.is_err(), "axis out of bounds must error at build time");
 }
@@ -159,9 +191,13 @@ fn doff_rejects_axis_out_of_bounds() {
 fn doff_offset_overflow_errors_at_realize_cpu() {
     let device = fuel_core::Device::cpu();
     let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
-    let src = dest.const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]));
+    let src = dest
+        .const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]))
+        .unwrap();
     // offset 4 + width 1 > capacity 4 → overflow.
-    let offset = dest.const_i64_like(vec![4_i64], Shape::from_dims(&[]));
+    let offset = dest
+        .const_i64_like(vec![4_i64], Shape::from_dims(&[]))
+        .unwrap();
     let post_write = dest
         .write_slice_doff(&src, &offset, 0, vec![(0, 1), (0, 2)])
         .expect("write_slice_doff builds (offset is dynamic, not checked at build)");

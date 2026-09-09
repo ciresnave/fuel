@@ -40,16 +40,24 @@ fn lazy_paged_attn_decode_round_trip() {
         &fuel_core::Device::cpu(),
     )
     .unwrap();
-    let kc = q.const_f32_like(
-        kc_data.clone(),
-        Shape::from_dims(&[num_blocks, block_size, h, d]),
-    );
-    let vc = q.const_f32_like(
-        vc_data.clone(),
-        Shape::from_dims(&[num_blocks, block_size, h, d]),
-    );
-    let bt = q.const_u32_like(bt_data.clone(), Shape::from_dims(&[b, blocks_per_seq]));
-    let cl = q.const_u32_like(cl_data.clone(), Shape::from_dims(&[b]));
+    let kc = q
+        .const_f32_like(
+            kc_data.clone(),
+            Shape::from_dims(&[num_blocks, block_size, h, d]),
+        )
+        .unwrap();
+    let vc = q
+        .const_f32_like(
+            vc_data.clone(),
+            Shape::from_dims(&[num_blocks, block_size, h, d]),
+        )
+        .unwrap();
+    let bt = q
+        .const_u32_like(bt_data.clone(), Shape::from_dims(&[b, blocks_per_seq]))
+        .unwrap();
+    let cl = q
+        .const_u32_like(cl_data.clone(), Shape::from_dims(&[b]))
+        .unwrap();
     let out = q
         .paged_attn(&kc, &vc, &bt, &cl, None, scale, block_size, None)
         .unwrap();

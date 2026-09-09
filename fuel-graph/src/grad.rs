@@ -229,7 +229,9 @@ mod tests {
     fn dispatch_fires_for_migrated_ops() {
         let a = NodeHandle::from_f32(vec![1.0_f32, 2.0, 3.0], Shape::from_dims(&[3]), cpu_dev())
             .unwrap();
-        let b = a.const_f32_like(vec![4.0_f32, 5.0, 6.0], Shape::from_dims(&[3]));
+        let b = a
+            .const_f32_like(vec![4.0_f32, 5.0, 6.0], Shape::from_dims(&[3]))
+            .unwrap();
         let c = a.add(&b);
         // Drive a backward to populate upstream
         let grads = c.backward();

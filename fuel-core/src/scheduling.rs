@@ -886,21 +886,27 @@ mod tests {
             crate::Device::cpu().as_dyn(),
         )
         .unwrap();
-        let small_b = small_a.const_f32_like(
-            Arc::<[f32]>::from(vec![0.0_f32; 64 * 64]),
-            Shape::from_dims(&[64, 64]),
-        )?;
+        let small_b = small_a
+            .const_f32_like(
+                Arc::<[f32]>::from(vec![0.0_f32; 64 * 64]),
+                Shape::from_dims(&[64, 64]),
+            )
+            .unwrap();
         let small_mm = small_a.matmul(&small_b); // size_class = 12 (4096 elements)
 
         // Build the big matmul as constants on the SAME graph as small_a.
-        let big_a = small_a.const_f32_like(
-            Arc::<[f32]>::from(vec![0.0_f32; 1024 * 1024]),
-            Shape::from_dims(&[1024, 1024]),
-        )?;
-        let big_b = small_a.const_f32_like(
-            Arc::<[f32]>::from(vec![0.0_f32; 1024 * 1024]),
-            Shape::from_dims(&[1024, 1024]),
-        )?;
+        let big_a = small_a
+            .const_f32_like(
+                Arc::<[f32]>::from(vec![0.0_f32; 1024 * 1024]),
+                Shape::from_dims(&[1024, 1024]),
+            )
+            .unwrap();
+        let big_b = small_a
+            .const_f32_like(
+                Arc::<[f32]>::from(vec![0.0_f32; 1024 * 1024]),
+                Shape::from_dims(&[1024, 1024]),
+            )
+            .unwrap();
         let big_mm = big_a.matmul(&big_b); // size_class = 20
 
         // Unprofiled op (Sub) on small tensors — should fall back.
@@ -968,10 +974,12 @@ mod tests {
             crate::Device::cpu().as_dyn(),
         )
         .unwrap();
-        let b = a.const_f32_like(
-            Arc::<[f32]>::from(vec![0.0_f32; 1024 * 1024]),
-            Shape::from_dims(&[1024, 1024]),
-        )?;
+        let b = a
+            .const_f32_like(
+                Arc::<[f32]>::from(vec![0.0_f32; 1024 * 1024]),
+                Shape::from_dims(&[1024, 1024]),
+            )
+            .unwrap();
         let mm = a.matmul(&b); // dispatch table would pick CUDA
 
         // User pins it to CPU explicitly.
@@ -1013,10 +1021,12 @@ mod tests {
             crate::Device::cpu().as_dyn(),
         )
         .unwrap();
-        let b = a.const_f32_like(
-            Arc::<[f32]>::from(vec![0.0_f32; 64 * 64]),
-            Shape::from_dims(&[64, 64]),
-        )?;
+        let b = a
+            .const_f32_like(
+                Arc::<[f32]>::from(vec![0.0_f32; 64 * 64]),
+                Shape::from_dims(&[64, 64]),
+            )
+            .unwrap();
         let mm = a.matmul(&b);
 
         let opts = ScheduleOptions {
@@ -1137,10 +1147,12 @@ mod tests {
             crate::Device::cpu().as_dyn(),
         )
         .unwrap();
-        let small_b = small_a.const_f32_like(
-            Arc::<[f32]>::from(vec![0.0_f32; 64 * 64]),
-            Shape::from_dims(&[64, 64]),
-        )?;
+        let small_b = small_a
+            .const_f32_like(
+                Arc::<[f32]>::from(vec![0.0_f32; 64 * 64]),
+                Shape::from_dims(&[64, 64]),
+            )
+            .unwrap();
         let mm = small_a.matmul(&small_b);
 
         let plan = dp_plan(
@@ -1230,10 +1242,12 @@ mod tests {
             crate::Device::cpu().as_dyn(),
         )
         .unwrap();
-        let big_b = big_a.const_f32_like(
-            Arc::<[f32]>::from(vec![0.0_f32; 1024 * 1024]),
-            Shape::from_dims(&[1024, 1024]),
-        )?;
+        let big_b = big_a
+            .const_f32_like(
+                Arc::<[f32]>::from(vec![0.0_f32; 1024 * 1024]),
+                Shape::from_dims(&[1024, 1024]),
+            )
+            .unwrap();
         let mm = big_a.matmul(&big_b);
 
         let plan = dp_plan(
@@ -1320,20 +1334,26 @@ mod tests {
             crate::Device::cpu().as_dyn(),
         )
         .unwrap();
-        let small_b = small_a.const_f32_like(
-            Arc::<[f32]>::from(vec![0.0_f32; 64 * 64]),
-            Shape::from_dims(&[64, 64]),
-        )?;
+        let small_b = small_a
+            .const_f32_like(
+                Arc::<[f32]>::from(vec![0.0_f32; 64 * 64]),
+                Shape::from_dims(&[64, 64]),
+            )
+            .unwrap();
         let small_mm = small_a.matmul(&small_b); // → CPU
 
-        let big_a = small_a.const_f32_like(
-            Arc::<[f32]>::from(vec![0.0_f32; 1024 * 1024]),
-            Shape::from_dims(&[1024, 1024]),
-        )?;
-        let big_b = small_a.const_f32_like(
-            Arc::<[f32]>::from(vec![0.0_f32; 1024 * 1024]),
-            Shape::from_dims(&[1024, 1024]),
-        )?;
+        let big_a = small_a
+            .const_f32_like(
+                Arc::<[f32]>::from(vec![0.0_f32; 1024 * 1024]),
+                Shape::from_dims(&[1024, 1024]),
+            )
+            .unwrap();
+        let big_b = small_a
+            .const_f32_like(
+                Arc::<[f32]>::from(vec![0.0_f32; 1024 * 1024]),
+                Shape::from_dims(&[1024, 1024]),
+            )
+            .unwrap();
         let big_mm = big_a.matmul(&big_b); // → CUDA
 
         let n_before = small_a.graph().read().unwrap().len();
@@ -1437,20 +1457,26 @@ mod tests {
             crate::Device::cpu().as_dyn(),
         )
         .unwrap();
-        let small_b = small_a.const_f32_like(
-            Arc::<[f32]>::from(vec![0.0_f32; 64 * 64]),
-            Shape::from_dims(&[64, 64]),
-        )?;
+        let small_b = small_a
+            .const_f32_like(
+                Arc::<[f32]>::from(vec![0.0_f32; 64 * 64]),
+                Shape::from_dims(&[64, 64]),
+            )
+            .unwrap();
         let small_mm = small_a.matmul(&small_b); // size 12 → CPU
 
-        let big_a = small_a.const_f32_like(
-            Arc::<[f32]>::from(vec![0.0_f32; 1024 * 1024]),
-            Shape::from_dims(&[1024, 1024]),
-        )?;
-        let big_b = small_a.const_f32_like(
-            Arc::<[f32]>::from(vec![0.0_f32; 1024 * 1024]),
-            Shape::from_dims(&[1024, 1024]),
-        )?;
+        let big_a = small_a
+            .const_f32_like(
+                Arc::<[f32]>::from(vec![0.0_f32; 1024 * 1024]),
+                Shape::from_dims(&[1024, 1024]),
+            )
+            .unwrap();
+        let big_b = small_a
+            .const_f32_like(
+                Arc::<[f32]>::from(vec![0.0_f32; 1024 * 1024]),
+                Shape::from_dims(&[1024, 1024]),
+            )
+            .unwrap();
         let big_mm = big_a.matmul(&big_b); // size 20 → CUDA
 
         let n_before = small_a.graph().read().unwrap().len();

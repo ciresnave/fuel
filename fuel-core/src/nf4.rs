@@ -142,10 +142,10 @@ pub fn nf4_from_bytes(
     let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), device)?;
     let w_packed_tensor = anchor
         .graph_tensor()
-        .const_u8_like(w_packed, Shape::from_dims(&[n, k / 2]));
+        .const_u8_like(w_packed, Shape::from_dims(&[n, k / 2]))?;
     let absmax_tensor = anchor
         .graph_tensor()
-        .const_f32_like(absmax, Shape::from_dims(&[n, k / block_size]));
+        .const_f32_like(absmax, Shape::from_dims(&[n, k / block_size]))?;
     Ok(Nf4Weight {
         w_packed: Tensor::from_graph_tensor(w_packed_tensor),
         absmax: Tensor::from_graph_tensor(absmax_tensor),
@@ -448,7 +448,8 @@ mod tests {
         let activations_t = weight
             .w_packed
             .graph_tensor()
-            .const_f32_like(vec![1.0_f32, 2.0, 2.0, 4.0], Shape::from_dims(&[1, 4]));
+            .const_f32_like(vec![1.0_f32, 2.0, 2.0, 4.0], Shape::from_dims(&[1, 4]))
+            .unwrap();
         let _ = activations; // keep the original visible for symmetry in the docs
         let act = Tensor::from_graph_tensor(activations_t);
         let y = weight.matmul(&act).realize_f32();
@@ -649,7 +650,8 @@ mod tests {
             weight
                 .w_packed
                 .graph_tensor()
-                .const_f32_like(vec![1.0_f32, 2.0, 2.0, 4.0], Shape::from_dims(&[1, 4])),
+                .const_f32_like(vec![1.0_f32, 2.0, 2.0, 4.0], Shape::from_dims(&[1, 4]))
+                .unwrap(),
         );
         let y = weight.matmul(&act).realize_f32();
         assert!((y[0] - 10.0).abs() < 1e-5, "out 0: {}", y[0]);

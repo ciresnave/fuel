@@ -294,14 +294,20 @@ mod tests {
             LatentCache::new(&anchor, 1, 4, vec![vec![3], vec![2]], DType::F32).unwrap();
 
         // Step 1: append 2 tokens.
-        let c1 = anchor.const_f32_like(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3])?;
-        let p1 = anchor.const_f32_like(vec![10.0, 11.0, 12.0, 13.0], vec![2, 2])?;
+        let c1 = anchor
+            .const_f32_like(vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0], vec![2, 3])
+            .unwrap();
+        let p1 = anchor
+            .const_f32_like(vec![10.0, 11.0, 12.0, 13.0], vec![2, 2])
+            .unwrap();
         cache = cache.append(0, &[&c1, &p1]).unwrap().advance_by(2);
         assert_eq!(cache.current_seq_len(), 2);
 
         // Step 2: append 1 token.
-        let c2 = anchor.const_f32_like(vec![7.0, 8.0, 9.0], vec![1, 3])?;
-        let p2 = anchor.const_f32_like(vec![14.0, 15.0], vec![1, 2])?;
+        let c2 = anchor
+            .const_f32_like(vec![7.0, 8.0, 9.0], vec![1, 3])
+            .unwrap();
+        let p2 = anchor.const_f32_like(vec![14.0, 15.0], vec![1, 2]).unwrap();
         cache = cache.append(0, &[&c2, &p2]).unwrap().advance_by(1);
         assert_eq!(cache.current_seq_len(), 3);
 
@@ -327,7 +333,9 @@ mod tests {
         // one slot, trailing [2, 2] → buffer [max_seq, 2, 2].
         let cache = LatentCache::new(&anchor, 1, 4, vec![vec![2, 2]], DType::F32).unwrap();
         assert_eq!(cache.n_slots(), 1);
-        let t = anchor.const_f32_like(vec![1.0, 2.0, 3.0, 4.0], vec![1, 2, 2])?;
+        let t = anchor
+            .const_f32_like(vec![1.0, 2.0, 3.0, 4.0], vec![1, 2, 2])
+            .unwrap();
         let cache = cache.append(0, &[&t]).unwrap().advance_by(1);
         let got = cache.slot(0, 0);
         assert_eq!(got.shape().dims(), &[1, 2, 2]);
@@ -339,11 +347,11 @@ mod tests {
         let anchor = cpu_f32(vec![0.0], &[1]);
         let cache = LatentCache::new(&anchor, 2, 4, vec![vec![2], vec![1]], DType::F32).unwrap();
         // Both layers appended within one step → same position → advance once.
-        let a0 = anchor.const_f32_like(vec![1.0, 1.0], vec![1, 2])?;
-        let b0 = anchor.const_f32_like(vec![9.0], vec![1, 1])?;
+        let a0 = anchor.const_f32_like(vec![1.0, 1.0], vec![1, 2]).unwrap();
+        let b0 = anchor.const_f32_like(vec![9.0], vec![1, 1]).unwrap();
         let cache = cache.append(0, &[&a0, &b0]).unwrap();
-        let a1 = anchor.const_f32_like(vec![2.0, 2.0], vec![1, 2])?;
-        let b1 = anchor.const_f32_like(vec![8.0], vec![1, 1])?;
+        let a1 = anchor.const_f32_like(vec![2.0, 2.0], vec![1, 2]).unwrap();
+        let b1 = anchor.const_f32_like(vec![8.0], vec![1, 1]).unwrap();
         let cache = cache.append(1, &[&a1, &b1]).unwrap().advance_by(1);
         assert_eq!(cache.current_seq_len(), 1);
         assert_eq!(cache.slot(0, 0).realize_f32(), vec![1.0, 1.0]);
@@ -356,7 +364,7 @@ mod tests {
     fn append_rejects_oob_layer() {
         let anchor = cpu_f32(vec![0.0], &[1]);
         let cache = LatentCache::new(&anchor, 1, 4, vec![vec![2]], DType::F32).unwrap();
-        let t = anchor.const_f32_like(vec![0.0, 0.0], vec![1, 2])?;
+        let t = anchor.const_f32_like(vec![0.0, 0.0], vec![1, 2]).unwrap();
         assert!(cache.append(5, &[&t]).is_err());
     }
 
@@ -364,7 +372,7 @@ mod tests {
     fn append_rejects_wrong_slot_count() {
         let anchor = cpu_f32(vec![0.0], &[1]);
         let cache = LatentCache::new(&anchor, 1, 4, vec![vec![2], vec![2]], DType::F32).unwrap();
-        let t = anchor.const_f32_like(vec![0.0, 0.0], vec![1, 2])?;
+        let t = anchor.const_f32_like(vec![0.0, 0.0], vec![1, 2]).unwrap();
         // 2 slots declared, only 1 tensor supplied.
         assert!(cache.append(0, &[&t]).is_err());
     }
@@ -374,7 +382,7 @@ mod tests {
         let anchor = cpu_f32(vec![0.0], &[1]);
         let cache = LatentCache::new(&anchor, 1, 4, vec![vec![3]], DType::F32).unwrap();
         // trailing should be [3], supply [5].
-        let t = anchor.const_f32_like(vec![0.0; 5], vec![1, 5])?;
+        let t = anchor.const_f32_like(vec![0.0; 5], vec![1, 5]).unwrap();
         assert!(cache.append(0, &[&t]).is_err());
     }
 
@@ -383,8 +391,8 @@ mod tests {
         let anchor = cpu_f32(vec![0.0], &[1]);
         let cache = LatentCache::new(&anchor, 1, 4, vec![vec![2], vec![2]], DType::F32).unwrap();
         // slot 0 has seqlen 2, slot 1 has seqlen 1 → inconsistent.
-        let a = anchor.const_f32_like(vec![0.0; 4], vec![2, 2])?;
-        let b = anchor.const_f32_like(vec![0.0; 2], vec![1, 2])?;
+        let a = anchor.const_f32_like(vec![0.0; 4], vec![2, 2]).unwrap();
+        let b = anchor.const_f32_like(vec![0.0; 2], vec![1, 2]).unwrap();
         assert!(cache.append(0, &[&a, &b]).is_err());
     }
 
@@ -392,7 +400,7 @@ mod tests {
     fn append_rejects_capacity_overflow() {
         let anchor = cpu_f32(vec![0.0], &[1]);
         let cache = LatentCache::new(&anchor, 1, 2, vec![vec![1]], DType::F32).unwrap();
-        let t = anchor.const_f32_like(vec![0.0; 3], vec![3, 1])?;
+        let t = anchor.const_f32_like(vec![0.0; 3], vec![3, 1]).unwrap();
         assert!(cache.append(0, &[&t]).is_err()); // 3 tokens > max_seq_len 2
     }
 }

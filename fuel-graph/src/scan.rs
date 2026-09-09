@@ -1424,9 +1424,11 @@ mod tests {
         // Affine scan: carry[1]; consts a,b; new_carry = a*carry + b; emit=Final. bound=3.
         let init = NodeHandle::from_f32(vec![1.0f32], Shape::from_dims(&[1]), cpu_dev()).unwrap();
         let a = NodeHandle::from_existing(init.graph().clone(), init.id())
-            .const_f32_like(vec![0.5f32], Shape::from_dims(&[1]));
+            .const_f32_like(vec![0.5f32], Shape::from_dims(&[1]))
+            .unwrap();
         let b = NodeHandle::from_existing(init.graph().clone(), init.id())
-            .const_f32_like(vec![0.1f32], Shape::from_dims(&[1]));
+            .const_f32_like(vec![0.1f32], Shape::from_dims(&[1]))
+            .unwrap();
         let graph = init.graph().clone();
         let nc = {
             let mut g = graph.write().unwrap();
