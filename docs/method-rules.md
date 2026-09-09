@@ -1943,3 +1943,228 @@ CI, rust-ci.yml:776,829   KNOWN_FAILING="fuel-hardware"
 3. **Home the residue at an owned row.** The detector says *when*; the row says *who* and *what next*. `the_i4_exclusion_still_has_its_reason` points at GAP-097; CI's message points at GAP-267. **A site comment is read only by someone already standing there, and the entry exists precisely for the case where nobody comes.**
 
 **Related:** [`a-defence-can-outlive-its-defect`](#a-defence-can-outlive-its-defect) is the mirror image — there a control becomes ACTIVELY HARMFUL once its replacement lands, where here it merely goes INERT while still looking live. **Both are cured by making the entry able to fail.**
+
+---
+
+## a-new-file-that-git-does-not-list-is-a-finding
+
+**An ignore rule can swallow a file you just wrote, and the failure is LOCAL-GREEN / CI-RED with the error pointing somewhere else.**
+
+Measured 2026-09-09 in this repo. A test fixture written to `fuel-ir/tests/data/gap302_known_absent.txt` produced **no `git status` entry at all**:
+
+```
+git check-ignore -v fuel-ir/tests/data/x.txt  ->  .gitignore:4:data/   IGNORED
+control: fuel-ir/tests/doc_block_scope.rs     ->  exit 1, NOT ignored
+```
+
+**A bare `data/` matches a directory of that name at ANY DEPTH.** In this `.gitignore` it sits among `debug/`, `dist/` and `target/` — build-output rules — so it reads as a Cargo artifact rule and is nowhere near anything about test fixtures. Nobody adding a fixture directory would think to look.
+
+⚠️ **THE DIAGNOSTIC POINTS AT THE WRONG PLACE.** `include_str!("data/x.txt")` compiles locally, because the file is on disk. CI checks out a tree where it was never committed and fails **on the `include_str!` line**, so the error names the include and not the ignore. Every local gate is green and says nothing.
+
+**PRACTICE: after writing any new file, read `git status` before `git add`, and treat a MISSING untracked entry as a FINDING rather than as nothing to do.** A file you just created failing to appear is the signal; there is no other one.
+
+**And prefer moving the file to fighting the ignore.** A non-`.rs` file directly in `tests/` is not a cargo test target (`tests/*.rs` are), so no subdirectory is needed. A `.gitignore` negation would encode one crate's fixture layout in a repo-wide file, which is the wrong home for it.
+
+The class is *things this working copy has that a clean checkout does not*, and an uncommitted file is the cheapest possible instance. ⚠️ **NOTE ON THE CITATION THAT IS NOT HERE:** this section was handed over citing `local-green-is-not-evidence-about-ci`, which is a **personal-memory file, not a section of this document** — the anchor would have dangled and `arm_e` would have caught it. **A slug that exists in one ledger reads as a citable anchor in the other, and only one of the two ledgers has a gate.**
+
+---
+
+## a-sabotage-can-redden-the-wrong-assert
+
+**The one-sabotage-per-arm rule is not enough when a single arm has an ORDERED PAIR of assertions. An earlier assert absorbs the sabotage and the arm's actual claim is never exercised — while the arm goes RED, which is the outcome nobody questions.**
+
+Measured 2026-09-09 on `kiss_ops_619_divergence.rs`. Each arm PINS the encoder's bytes (`assert_eq!`) and then asserts DIVERGENCE from a spec-derived vector (`assert_ne!`).
+
+```
+sabotage 1  make the encoder conformant
+            -> 3 arms RED, EVERY ONE on the PIN ("row moved")
+            -> the assert_ne! carrying the file's claim NEVER RAN
+
+sabotage 2  realign the pin to the conformant bytes, so assert_eq! passes
+            -> "assertion `left != right` failed: gather now MATCHES 6.19-0027"
+```
+
+⚠️ **A RED RESULT IS THE LEAST-QUESTIONED OUTCOME IN A BORN-RED DISCIPLINE.** The first sabotage went red, named the right file, and proved only that the pin discriminates. It is [`vacuous-oracle-four-routes`](#vacuous-oracle-four-routes) route 4 — an earlier guard answering first — **inside a single test rather than across tests, which is where nobody looks for it.**
+
+**PRACTICE: for an arm with more than one assertion, ask WHICH assertion the sabotage reaches. If an earlier one absorbs it, run a second sabotage that SATISFIES the earlier assertion so the later one is exercised. Then write the ordering into the file** — otherwise the next reader runs one sabotage, sees red, and stops exactly where the first author nearly did.
+
+**AND SABOTAGE THE INSTRUMENT SEPARATELY FROM THE SUBJECT — they fail different assertions.** The mirror case, same day, same increment: an arm asserting *no population member appears in this file* was sabotaged by making the tokenizer return an empty vector — a BLIND READER. **The offender assertion passed VACUOUSLY (0 found), and only the positive control caught it** (*"the tokenizer cannot see a token known to be in this file, so the emptiness above is a reader defect, not a finding"*). **Subject-sabotage proves the assertion discriminates; instrument-sabotage is what proves the control earns its place.** One of the two alone ships a gate that can go permanently green on a broken reader.
+
+## a-formatted-repo-splits-multi-token-constructs
+
+**⚠️ IN A FORMATTED REPO, A LINE-ORIENTED GREP FOR A MULTI-TOKEN CONSTRUCT IS BLIND BY CONSTRUCTION — NOT BY BAD LUCK.** `rustfmt` (and any formatter with a line width) splits every construct longer than the width across lines: `assert_eq!(` lands on one line and its argument on the next; a long string wraps; a `Type::Variant` chain breaks at the `::`. A `grep`/`git grep` pattern that requires two tokens ON THE SAME LINE therefore misses exactly the constructs long enough to be split — and the longer the construct, the more certain the split. The failure is a property of the repository's formatting, so it RECURS; it is not a one-off.
+
+**FIVE INSTANCES IN ONE SESSION (2026-09-09). Four produced, nearly produced, or held up a wrong action; the fifth returned the RIGHT answer for the wrong reason, which is the most dangerous of the five.**
+
+1. **`not baked` split across a doc-comment wrap** — nearly sent a wrong correction to a sibling project.
+2. **A hard-wrapped sentence in a spec** — a lane nearly filed a citation as ROTTED when it had only wrapped.
+3. **`Fmax`/`Fmin` at char ~1350 of a 1,468-char line** — a supersession marker took four review rounds because the falsifying clause sat past every reader's and every `grep`'s effective horizon.
+4. **`assert_eq!(` with its argument on the next line** — `git grep 'assert_eq!(FKC_SUPPORTED_VERSIONS'` returned **1**; the multiline-aware count returned **2**. The missed assertion was a live regression guard, and the undercount **held a fully-resolved `gaps.md` row (GAP-292) out of a closure batch** as a suspected dropped born-red. Reading the two test BODIES — not grepping the symbol — settled it.
+5. **A single-line query for GAP-281's production relation-guard returned `0`.** The guard is `head_count * head_dim == width` — exactly the multi-token construct `rustfmt` wraps — so the query could not have seen one had it existed. Here the true answer WAS zero (the asserts had long since been converted to typed declines), so the blind instrument was right — **by luck, not by sight.** **NAMING THE HAND: this was the architect's own query, run roughly twenty minutes after ruling on this very hazard, while sizing GAP-281.** A right-by-luck reading from a blind method is worse than a wrong one: it banks confidence in a method that will be wrong the next time the answer is not zero.
+
+Cases 1–3 are the mechanism in **prose** (an author's wrap width); cases 4–5 are its **code** twin (the formatter's). One rule covers both.
+
+**THE RULE:** any `grep`/`git grep` whose pattern spans **more than one token** must be **multiline-aware** (`git grep -U`/`--multiline`, `rg -U`, or a `python` read over the whole file), **or be replaced by reading the construct.** A single-line pattern is safe only for a single token.
+
+**THE DISCRIMINATOR IS FREE — anchor on ONE token plus a POSITION, not on the multi-token shape.** `git grep -c 'assert_eq!($'` (the macro at end-of-line) counts the very assertions the same-line pattern structurally cannot see; a count that rises against your line-pattern's is the tell. `wc -l` on a file you know is large is the cheapest control for the long-line case, and the file's own byte length against your reader's horizon is the control for case 3.
+
+**AND BECAUSE IT IS FREE, IT HAS TO BE THE *DEFAULT* REACH — not a remedy applied after being burned.** Instance 5 is the proof: the person who wrote this rule reached for the blind single-line form twenty minutes later. A discipline invoked only once you already suspect a split will never fire, because the split's whole signature is that nothing looks wrong — the count is plausible, the command exits 0, no error appears. The multiline-aware form has to be the one you type first, before there is any reason for suspicion.
+
+**THE COMPOUNDING HAZARD (why this one is expensive):** a blind grep returns a **plausible number**, not an error, and a plausible undercount that **agrees with an honest caution** — *"I didn't deep-verify this"* — reads as corroboration when the caution was correct only by luck. GAP-292 (instance 4): a lane flagged uncertainty, a grep returned the undercount, the two matched, and the row was held out of the closure batch. Had the deep read gone the other way, the wrong number would have shipped with a lane's hedge apparently backing it. **A defective instrument that happens to match a hedge is not confirmation of the hedge — read the construct.** This is the false-corroboration failure recorded in [`evidence-that-is-not-independent`](#evidence-that-is-not-independent), reached here from the INSTRUMENT side rather than the two-artifacts side, and it is the same defect the memory rules name as *agreement-is-not-corroboration*, *long-lines-defeat-line-oriented-instruments*, and *construct-invisible-in-the-number*.
+
+## an-empty-collection-is-not-a-null-result
+
+**⚠️ FIVE INSTRUMENTS ANSWER "DOES THIS REPO HAVE BRANCH PROTECTION?" AND THREE OF THEM ARE WRONG — TWO BY RETURNING AN EMPTY LIST INSTEAD OF AN ERROR, AND ONE BY RETURNING A 404 THAT AN UNPROTECTED REPO RETURNS TOO (2026-09-09, `ciresnave/fuel`, one token; A–D measured by Fuel 2, E measured by the architect).**
+
+```text
+A. GraphQL branchProtectionRules(first:5)         -> 0 nodes     reads as NO PROTECTION   WRONG
+B. REST    /repos/<nwo>/rulesets                  -> 0 entries   reads as NO PROTECTION   WRONG
+C. REST    /repos/<nwo>/branches/main .protected  -> true        PROTECTED                RIGHT
+D. GraphQL isRequired(pullRequestNumber: N)       -> 5 required  PROTECTED                RIGHT
+E. REST    /repos/<nwo>/branches/main/protection  -> HTTP 404    reads as NO PROTECTION   WRONG
+```
+
+**C and D are correct.** Protection demonstrably exists: D names the five required checks (`Check (ubuntu-latest)`, `Clippy`, `Rustfmt`, `Test Suite (ubuntu-latest)`, `trufflehog`) — **out of fourteen contexts on the PR, so nine of the fourteen checks cannot block a merge**, which is the operational reason anyone runs this query at all.
+
+**A and B are permission-blind, and they do not say so.** They return HTTP 200 with an empty collection. **A `[]` and a `403` are different facts and only one of them is reported.**
+
+**NEGATIVE CONTROL, so this is not a story about one repo:** `ciresnave/synapse` `.protected` -> **false** against fuel's **true**. C discriminates; it is not returning `true` for everything.
+
+### ⚠️ E fails the same way, and the status code is what disguises it
+
+**Measured first-hand for this section, both arms, same token, same minute:**
+
+```text
+GET /repos/ciresnave/fuel/branches/main/protection      -> 404   repo IS protected     (C: true)
+GET /repos/ciresnave/synapse/branches/main/protection   -> 404   repo is NOT protected (C: false)
+```
+
+**The two responses are BYTE-IDENTICAL** — 138 bytes of stdout and 25 of stderr each, `diff` clean on both streams:
+
+```text
+{"message":"Not Found","documentation_url":"https://docs.github.com/rest/branches/branch-protection#get-branch-protection","status":"404"}
+```
+
+**⚠️ IT IS TEMPTING TO SAY A 404 AT LEAST ANNOUNCES THAT SOMETHING WENT WRONG. IT DOES NOT, AND THE MEASUREMENT ABOVE IS WHY.** A genuinely unprotected branch returns that same 404 — so on this endpoint the 404 is not an error wearing a null, it is **the correct answer for one of the two states, returned identically for the other.** The status code separates E from A and B while carrying no information about which state you are in. *(This paragraph replaces the reading the draft of this section carried, which was that the 404 was the better-behaved of the three. Without the unprotected arm there was nothing to contradict it — **an absence claim about an API needs a repo that genuinely has the absence.**)*
+
+**So E belongs WITH A and B, not against them. Three instruments, one direction of failure: all three report NONE, and NONE is the answer that prompts a WRITE.**
+
+⚠️ **THAT DIRECTION IS THE WHOLE POINT.** **Writing protection onto an already-protected repo is a different act from configuring an unprotected one, and A, B and E cannot tell you which one you are about to do.** The instruments fail in the direction that causes the mutation.
+
+### ⚠️ D's blind spot is CORRELATED with the condition D detects
+
+*(the portfolio PM's, and it is sharper than the probe that prompted it)*
+
+**D needs an OPEN PULL REQUEST**, because `isRequired` is scoped to one. So it **cannot run on a quiet repo — and a quiet repo is exactly where missing protection goes unnoticed.** Four of thirteen repos in the portfolio census had no open PR and could not be measured with D at all.
+
+**An instrument whose UNAVAILABILITY correlates with the condition it would detect contributes nothing to the cases you most need it for**, while looking like a second opinion on the cases you do not.
+
+### Practice
+
+- **For "is this branch protected", use C.** It is readable without admin and it discriminates.
+- **Never use E — `branches/<b>/protection` — to answer it.** Without admin it returns the same 404 for a protected branch and an unprotected one, and that 404 is a legitimate negative answer rather than a permission error, so no amount of reading the response body will separate them.
+- **Corroborate with D only where an open PR exists**, and say which repos it could not reach rather than reporting a two-instrument figure over a population where one instrument was silent. The census that prompted this reported **9 repos C+D agreeing 9/9, and 4 where D could not run** — which is a smaller and truer claim than "13 repos, two instruments."
+- **Never read an empty collection from a permissioned API as a null result** until you have a positive control showing the same call returns non-empty for a case you know is populated. A/B here had no such control, and would have passed any check that did not have one.
+- **And for a null shaped like an error, the control is a NEGATIVE one: a subject that genuinely has the absence.** A positive control proves the query can see the thing; only the unprotected repo proves the query can tell you when the thing is gone. E passes the first and fails the second.
+
+Related: [`uninformative-signals-both-directions`](#uninformative-signals-both-directions) · [`a-guard-exists-is-not-the-guard-protects-this`](#a-guard-exists-is-not-the-guard-protects-this) · and the portfolio working agreement's *give every absence a positive control*, which has no section here — it is a `C:\Projects\CLAUDE.md` rule, and is named rather than linked so the reference cannot rot into a dead anchor.
+
+## a-repoint-can-make-the-link-green-and-the-sentence-false
+
+**⚠️ A FIX THAT MOVES THE METRIC IN THE APPROVING DIRECTION HAS NO DETECTOR EXCEPT READING THE SENTENCE (2026-09-09, Fuel 3, during the rustdoc-census repair; the classification, the counter-example and the inverse case are all theirs).**
+
+A broken intra-doc link is a defect a gate can see. **Repairing it by REPOINTING the link at a live item that happens to share the name is not always a repair — sometimes it converts a true sentence into a false one, and the gate goes GREEN on the way.**
+
+```
+fuel-nn/src/conv_transpose.rs:5   //! Mirrors the eager [`fuel_nn::ConvTranspose1d`]
+                                  // the struct at :117 is the LAZY item
+repoint to crate::ConvTranspose1d ->  "the lazy X mirrors the [lazy X]"
+                                       LINK RESOLVES.  SENTENCE IS NOW FALSE.
+```
+
+**A crate cannot name itself in an intra-doc link, so `fuel_nn::X` inside `fuel-nn` is always broken — and the mechanical repair is always `crate::X`.** It looks like the freest class of repair there is.
+
+⚠️ **AND THE POPULATION EXPLAINS WHY IT IS THE MOST DANGEROUS ONE: 8 of the 9 such sites carried *eager* / *retired* / *former* language.** That is not bad luck. **The commonest reason a doc names its own crate is to contrast the current item with a FORMER one that lived in a crate which no longer exists** — so the structural class *"a crate naming itself"* and the historical class *"this names something retired"* coincide **for a reason**, and the coincidence is exactly what makes the mechanical fix wrong.
+
+**THE RULE: STRUCTURE TELLS YOU WHETHER A LINK CAN RESOLVE; ONLY THE SENTENCE TELLS YOU WHETHER IT SHOULD.**
+
+### The eleven-character proof, and why the unit of work is the SENTENCE and not the line
+
+```diff
+- //! [`Var`] is the lazy equivalent of eager [`crate::Var`]: a
++ //! [`Var`] is the lazy equivalent of eager `crate::Var`: a
+```
+
+**Two references on ONE LINE with OPPOSITE dispositions** — the live lazy `Var` stays linked; the retired eager `crate::Var` is de-linked. **Any line-scoped or file-scoped sweep takes both.** There is no pattern that separates them, because what separates them is the word *eager*.
+
+### ⚠️ THE COUNTER-EXAMPLE THAT KEEPS THIS FROM BECOMING SUPERSTITION
+
+**"Never repoint" is WRONG.** Measured in the same pass: `Recorder::submit_batch` had **already been repointed** at base, by someone else, to `VulkanBackend::submit_pending` — and there the public sibling genuinely carried the meaning. **That is what a real repoint looks like when one is available.**
+
+### ⚠️ AND THE INVERSE CASE, MEASURED THE SAME NIGHT — WHERE DE-LINKING IS THE WRONG FIX
+
+Six sites read *"Append a [`Op::QMatMul`] node"*. **`QMatMul` is not an `Op` variant at all** — it is a `FusedOpParams` variant, and the real node is `Op::Fused(FusedOpId, FusedOpParams)`. **So the sentence is ALREADY FALSE, and the broken link is the only thing advertising it.**
+
+⚠️ **De-linking there would REMOVE THE ADVERTISEMENT AND LEAVE THE FALSEHOOD** — the worst of the three options, and the one a mechanical de-link sweep takes.
+
+**THE DISCRIMINATOR IS NOT THE SHAPE OF THE LINK. IT IS WHETHER THE CODE SAYS WHAT THE THING BECAME — AND THE SOURCES RANK (Fuel 3, measured in the same program):**
+
+```text
+1  A NEIGHBOURING CORRECT REFERENCE   strongest, and it is free
+2  a migration comment                the code stating what it became
+3  a live sibling elsewhere           a public equivalent that carries the meaning
+4  nothing                            -> DE-LINK; a repoint manufactures a falsehood
+```
+
+⚠️ **RANK 1 IS THE ONE NOBODY LOOKS FOR, AND IT IS SITTING IN THE SAME SENTENCE.** Worked example, `lazy_quantized_gemma3.rs`:
+
+```text
+//!   over [`Gemma3Weights::load_from_mmapped`] + [`Self::from_f32_bake`].
+           ^^^^ correctly qualified                  ^^^^ broken
+```
+
+**The correct form is four words from the broken one, in the same doc block, naming the same type.** Not a comment, not a convention — **the same author getting it right about the same thing in the same sentence.** Before reaching for any other evidence, read the rest of the block.
+
+**And the general form:**
+
+```
+the code says (a migration comment, a live sibling)  ->  REPOINT; the sentence gets truer
+the code does NOT say                                ->  DE-LINK; a repoint manufactures a falsehood
+the sentence is already false and the link is the tell -> REWRITE the sentence, never just the link
+```
+
+**And the third row is prose work, one site at a time, with the evidence cited per site** — `// Phase 7.6 step 4 (final): emits Op::Fused(QMATMUL, _)` is the licence, and it belongs in the commit for each site rather than once for the batch.
+
+Related: [`docs-are-not-code-and-a-sweep-cannot-tell`](#docs-are-not-code-and-a-sweep-cannot-tell) · [`a-sweep-must-report-applied-over-population`](#a-sweep-must-report-applied-over-population) · [`marking-one-representation-does-not-mark-the-others`](#marking-one-representation-does-not-mark-the-others)
+
+## a-sweep-must-report-applied-over-population
+
+**⚠️ "NO ERRORS" AND "14 OF 25" ARE THE SAME RUN WITH DIFFERENT REPORTING, AND ONLY THE SECOND IS A RESULT (2026-09-09, Fuel 3, on their own applier).**
+
+A sweep over a measured population ran with two instruments pointed at it, and **they were asking different questions:**
+
+```
+the ANCHOR check :  is the target PRESENT?                    passed 25/25
+the EDIT patterns:  is it present IN A SHAPE I CAN REWRITE?   matched 14/25
+```
+
+**Only the second can fail silently.** The anchor check answers a strictly weaker question, it passes, and **a sweep that printed *"no errors"* would have shipped a half-done pass with a clean log** — 11 sites untouched, the population count unchanged, and nothing anywhere saying so.
+
+**What caught it was that the applier reports WHAT IT APPLIED against WHAT IT WAS GIVEN.** That comparison is the entire difference.
+
+### The blind spot had a shape, and it is worth knowing
+
+```
+[`Op::WriteSlice`](fuel_graph::Op::WriteSlice)
+ ^^^^^^^^^^^^^^^  the link TEXT is an INTERMEDIATE-length path
+```
+
+The patterns covered the **full target** and the **bare leaf**. **The middle of a range is where a two-ended pattern set is blind, and nothing about a two-ended set announces that it has a middle.** Anchor on the exact target instead, so a sibling link on the same line still cannot be caught by it.
+
+### THE GENERAL FORM
+
+**Any sweep, in any tool, must report `applied / population`, never `success / failure`.** A pass rate is a measurement; an absence of errors is a statement about the sweep's own error handling and says nothing about coverage.
+
+⚠️ **AND WHEN TWO INSTRUMENTS RUN OVER ONE POPULATION, ASK WHICH QUESTION EACH LITERALLY ANSWERS AND WHICH OF THEM IS STRICTLY WEAKER.** A passing weak instrument is routinely read as corroboration for the strong one. It is not corroboration; it is a different, easier question that happened to be asked at the same time.
+
+Related: [`a-report-is-not-a-gate`](#a-report-is-not-a-gate) · [`evidence-that-is-not-independent`](#evidence-that-is-not-independent) · [`a-repoint-can-make-the-link-green-and-the-sentence-false`](#a-repoint-can-make-the-link-green-and-the-sentence-false)
