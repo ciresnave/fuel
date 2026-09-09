@@ -172,11 +172,18 @@ def _cargo_check_json():
     cargo = shutil.which("cargo")
     if not cargo:
         raise RuntimeError("cargo not found on PATH -- the probe needs a compiler")
-    # nosemgrep - see SUPPRESSION NOTE, point 4: opposed rules, no argv form
-    # satisfies both. `nosemgrep` is the suppression for the "without a static
-    # string" rule; `nosec` below is bandit's, for B603. TWO ANALYZERS, TWO
+    # SUPPRESSION NOTE point 4 applies here: the two rules are opposed and no
+    # argv form satisfies both. `nosec` on the call line is bandit's, for B603;
+    # the bare `nosemgrep` below is the other analyzer's. TWO ANALYZERS, TWO
     # SUPPRESSION SYNTAXES, ONE CHECK-RUN -- a comment written for one does not
     # reach the other, which is the same discovery as the two cyclomatic limits.
+    #
+    # ⚠️ THE BARE TOKEN MUST BE ON THE LINE IMMEDIATELY ABOVE THE FINDING. The
+    # first attempt put it at the TOP of this five-line block, five lines from
+    # the call, and it did not take -- an inline suppression is LINE-ANCHORED,
+    # so prose between the token and its target silently disarms it. Keep the
+    # explanation above the token, never between it and the call.
+    # nosemgrep
     proc = subprocess.run(  # nosec B603 - fixed argv, no external input; see above
         [cargo, "check", "-p", "fuel-ir", "--features", "dlpack",
          "--all-targets", "-j", "4", "--message-format", "json"],
