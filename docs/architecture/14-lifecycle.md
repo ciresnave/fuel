@@ -305,7 +305,7 @@ the sole realize-path optimizer (Phase A). It transforms the graph **in place**:
 
 1. **Per-node placement/cost** — it drives `compile_plan` (`fuel-dispatch/src/plan.rs:488`)
    internally: for each kernel-bearing node, enumerate `(kernel, backend, device)` candidates →
-   filter chain (`PrecisionFloor` hard, then `StridedInputPref` / `BitStablePref` soft) → cost
+   filter chain (`PrecisionFloorFilter` hard, then `StridedInputPreferenceFilter` / `BitStablePreferenceFilter` soft) → cost
    (Layer-1 static `CostFn`, refined by Layer-2 **Judge** data, `cost.rs:155`) → carry-forward
    placement DP, ranked on the per-path **cost vector** (Pareto dominance, winner time-first),
    and retained per ending device by a **Pareto frontier + crowding cap** (`KEEP_PER_DEVICE`),

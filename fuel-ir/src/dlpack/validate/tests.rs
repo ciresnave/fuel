@@ -322,6 +322,28 @@ fn v1_fail_bad_magic() {
     ));
 }
 
+/// Version `0` is rejected. `0` is not a version -- the format starts at 1.
+///
+/// THIS TEST DID NOT EXIST UNTIL 2026-09-06, AND ITS ABSENCE IS THE POINT.
+/// `check_v1_header` has always rejected `0`, but nothing asserted it and the
+/// doc comment did not mention it, so the lower bound was defended by nothing.
+/// A refactor collapsing `version == 0 || version > MAX` to `version > MAX`
+/// would have been SILENT: the doc endorsed the shorter form, and the only
+/// version test plants `FDX_VERSION_MAX + 1` -- the HIGH side alone.
+///
+/// That is the same test asymmetry GAP-292 found in FKC, in a file whose CODE
+/// was already correct: THE GATE HAD TWO SIDES AND THE TEST SET INHERITED ONLY
+/// ONE. Born-red verified: deleting `version == 0 ||` makes this fail while
+/// `v1_fail_unsupported_version` keeps passing. See GAP-298.
+#[test]
+fn v1_fail_version_zero() {
+    let mut sc = sidecar(0);
+    sc.version = 0;
+    assert!(matches!(
+        check_v1_header(&sc),
+        Err(FdxValidationError::UnsupportedVersion { .. })
+    ));
+}
 #[test]
 fn v1_fail_unsupported_version() {
     let mut sc = sidecar(0);
@@ -1451,4 +1473,131 @@ fn validate_realize_pass_affine_decode() {
     let b = [bind(7, 2000), bind(8, 1)];
     let e = env(&b);
     assert!(validate_realize(&sc, &base, &buffers, &e).is_ok());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// meaning-bearing ⇒ MEANING_REQUIRES_EXT (generalises V19's mandatory clause)
+//
+// The v1 meaning-bearing set already implies the flag — measured: no valid v1
+// sidecar sets a meaning-bearing flag without MEANING_REQUIRES_EXT. (The per-check
+// tests DO build HAS_QUANT/HAS_DTYPE_EXT sidecars, but they call check_v4/v5/v6
+// DIRECTLY and never reach validate(), so they never exercise this arm — the call
+// path, not the fixture, is what determines membership.) The arm's real job is a
+// FUTURE flag, so a SYNTHETIC bit with no other validator attached is the only
+// construction where ONLY this arm can reject: a real member like
+// HAS_QUANT-without-implication is caught by V2/V5 first and would redden a
+// born-red on the wrong guard.
+//
+// Sabotage-proven (2026-09-08):
+//   * arm body replaced with `Ok(())` reddens `meaning_bearing_flag_without_ext_is_rejected`
+//     and `every_real_meaning_bearing_flag_requires_ext`.
+//   * arm rejecting ANY set flag (ignoring the `meaning_bearing` param) reddens
+//     `non_meaning_bearing_flag_is_not_required_to_set_ext`.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// A synthetic FUTURE meaning-bearing flag in the reserved range (bit 30). No
+/// other validator knows this bit, so only the new arm can act on it — which is
+/// what keeps the born-red from passing on some other guard.
+const SYNTHETIC_MB_FLAG: u32 = 1 << 30;
+/// A synthetic flag deliberately kept OUT of the meaning-bearing set (bit 29).
+const SYNTHETIC_NON_MB_FLAG: u32 = 1 << 29;
+
+#[test]
+fn meaning_bearing_flag_without_ext_is_rejected() {
+    // synthetic meaning-bearing flag set, MEANING_REQUIRES_EXT CLEAR -> reject.
+    let sc = sidecar(SYNTHETIC_MB_FLAG);
+    assert!(matches!(
+        check_v22_meaning_bearing_implies_ext(&sc, &[SYNTHETIC_MB_FLAG]),
+        Err(FdxValidationError::FlagFieldIncoherent { .. })
+    ));
+}
+
+#[test]
+fn meaning_bearing_flag_with_ext_is_accepted() {
+    // same flag, MEANING_REQUIRES_EXT SET -> the implication is satisfied.
+    let sc = sidecar(SYNTHETIC_MB_FLAG | FDX_FLAG_MEANING_REQUIRES_EXT);
+    assert!(check_v22_meaning_bearing_implies_ext(&sc, &[SYNTHETIC_MB_FLAG]).is_ok());
+}
+
+#[test]
+fn non_meaning_bearing_flag_is_not_required_to_set_ext() {
+    // A flag NOT in the injected set, MEANING_REQUIRES_EXT clear -> must NOT
+    // reject: proves the arm checks set MEMBERSHIP, not mere presence (i.e. it is
+    // not just rejecting everything with MEANING_REQUIRES_EXT clear).
+    let sc = sidecar(SYNTHETIC_NON_MB_FLAG);
+    assert!(check_v22_meaning_bearing_implies_ext(&sc, &[SYNTHETIC_MB_FLAG]).is_ok());
+    // And a REAL non-meaning-bearing flag against the REAL production set:
+    let sc2 = sidecar(FDX_FLAG_HAS_TILING);
+    assert!(check_v22_meaning_bearing_implies_ext(&sc2, FDX_FLAG_MEANING_BEARING).is_ok());
+}
+
+#[test]
+fn every_real_meaning_bearing_flag_requires_ext() {
+    // Foundation check on the guard itself: the production set is non-empty (an
+    // empty set would make the arm a silent no-op — the "which number moves if it
+    // became a no-op" check), and each real member, set alone with
+    // MEANING_REQUIRES_EXT clear, is rejected by the real arm.
+    assert!(
+        !FDX_FLAG_MEANING_BEARING.is_empty(),
+        "empty meaning-bearing set = the arm is a no-op"
+    );
+    for &m in FDX_FLAG_MEANING_BEARING {
+        let sc = sidecar(m);
+        assert!(
+            matches!(
+                check_v22_meaning_bearing_implies_ext(&sc, FDX_FLAG_MEANING_BEARING),
+                Err(FdxValidationError::FlagFieldIncoherent { .. })
+            ),
+            "meaning-bearing flag {m:#x} must require MEANING_REQUIRES_EXT"
+        );
+    }
+}
+
+#[test]
+fn v22_flag_partition_is_exhaustive() {
+    // The §8.22 exhaustiveness claim as a RULE, given a falsifier: every flag in
+    // FDX_FLAG_ALL is in exactly one of three groups — the meaning-bearing set,
+    // the five V22 does not constrain, or MEANING_REQUIRES_EXT itself. A future
+    // flag appended to FDX_FLAG_ALL without being classified reddens this, at the
+    // moment someone must decide which side it falls on. Without it the §8.22
+    // "constrains the whole flag space" sentence is an assertion nobody can break.
+    use std::collections::BTreeSet;
+    let mb: BTreeSet<u32> = FDX_FLAG_MEANING_BEARING.iter().copied().collect();
+    let excluded: BTreeSet<u32> = [
+        FDX_FLAG_HAS_SYMBOLIC,
+        FDX_FLAG_HAS_TILING,
+        FDX_FLAG_IS_BUNDLE,
+        FDX_FLAG_READ_ONLY,
+        FDX_FLAG_HAS_AFFINE_EXTENT,
+    ]
+    .into_iter()
+    .collect();
+    let consequent: BTreeSet<u32> = [FDX_FLAG_MEANING_REQUIRES_EXT].into_iter().collect();
+
+    // Pairwise disjoint — no flag is classified two ways.
+    assert!(
+        mb.is_disjoint(&excluded),
+        "meaning-bearing set overlaps the five V22 does not constrain"
+    );
+    assert!(
+        mb.is_disjoint(&consequent),
+        "meaning-bearing set contains MEANING_REQUIRES_EXT (it is the target of the implication, not a member)"
+    );
+    assert!(
+        excluded.is_disjoint(&consequent),
+        "the five V22 does not constrain contain MEANING_REQUIRES_EXT"
+    );
+
+    // Covering — the union is exactly FDX_FLAG_ALL.
+    let mut union: BTreeSet<u32> = BTreeSet::new();
+    union.extend(&mb);
+    union.extend(&excluded);
+    union.extend(&consequent);
+    let all: BTreeSet<u32> = FDX_FLAG_ALL.iter().copied().collect();
+    assert_eq!(
+        union, all,
+        "the V22 partition (meaning-bearing ∪ the five ∪ MEANING_REQUIRES_EXT) does not equal \
+         FDX_FLAG_ALL — a flag was added to the spec without being classified into one of the \
+         three §8.22 groups"
+    );
 }

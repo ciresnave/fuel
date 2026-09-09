@@ -1,10 +1,17 @@
 # Kernel-Seam Interop Contract — Profile v1
 
-**Status: RATIFIED — Profile v1 (2026-06-20), branch `feat/kernel-contracts-dlpack`.** Ratified by all
+**Status: RATIFIED — Profile v1 (2026-06-20), live on `main`.** ⚠️ **This line previously read
+“branch `feat/kernel-contracts-dlpack`”, which does not exist on origin — ratified-on-an-unmerged
+branch told the reader both to rely on this and that it was not merged.** Ratified by all
 three parties: **Fuel**, **Baracuda** (its A1/A2/E1 fusion-patterns conditions resolved in rev 3/4 + the
 `SeamHello` C-ABI pinned, §3.1), and **Vulkane** (confirmed the named BDA surface, §7.2). This is the
 single, ratifiable description of how software on the two sides of Fuel's **kernel seam** communicate:
 
+> ⚠️ **DISCHARGED 2026-09-09: THE STATUS LINE ABOVE HAS NOW BEEN CORRECTED.**
+> Kept as the RECORD of when the defect was found, not as a live claim. It stood
+> because it ANNOTATED the falsehood instead of correcting it, and a reader who
+> stops at the Status field never reached this paragraph. See GAP-283.
+>
 > ⚠️ **AMENDED 2026-08-20 — THE STATUS LINE ASSERTS TWO THINGS AT ONCE AND ONLY
 > ONE SURVIVES. RATIFIED IS TRUE; THE BRANCH IS DEAD.**
 >

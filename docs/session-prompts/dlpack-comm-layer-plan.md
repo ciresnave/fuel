@@ -1,8 +1,18 @@
 # Session prompt — DLPack + FDX-extension communication layer
 
-**Status:** Plan (2026-06-17). Not started. WIP lands on `feat/kernel-contracts-dlpack`
-(the same branch the two specs live on), never `main`.
+**Status:** Plan (2026-06-17). ⚠️ **NOT “not started”, and the branch is gone.** `dlpack` is a
+declared feature in both `fuel-ir` and `fuel-memory`, and `fuel-ir/src/dlpack/` holds 8 `.rs`
+files on `main`. **How much of this plan landed is NOT established here** — what is established
+is that the branch pointer is dead and the claim of zero movement is wrong. The previous wording is recorded in the note below.
 
+> ⚠️ **DISCHARGED 2026-09-09: THE STATUS LINE ABOVE HAS NOW BEEN CORRECTED.**
+> Kept as the RECORD of when the defect was found, not as a live claim. It stood
+> because it ANNOTATED the falsehood instead of correcting it, and a reader who
+> stops at the Status field never reached this paragraph. See GAP-283.
+> **The wording this line replaced:** *“Not started. WIP lands on
+> `feat/kernel-contracts-dlpack` (the same branch the two specs live on), never `main`.”*
+> That branch does not exist on origin.
+>
 > ⚠️ **AMENDED 2026-08-19 — THE BRANCH ABOVE NO LONGER EXISTS AND THE WORK IS ON `main`.**
 > `feat/kernel-contracts-dlpack` is **not on origin** — following the status line
 > costs a failed checkout and the natural conclusion that the work was abandoned.

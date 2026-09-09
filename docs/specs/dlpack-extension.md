@@ -2230,6 +2230,19 @@ never a panic, never a silent fix-up.
 > model's job (§6.5/§9.3). The paged-attention kernel declares its acceptance of a paged cache in
 > FKC; FDX only *describes* the tensor.
 
+22. **V22 — meaning-bearing ⇒ MEANING_REQUIRES_EXT.** Every flag in the meaning-bearing set
+    (`FDX_FLAG_MEANING_BEARING`) implies `FDX_FLAG_MEANING_REQUIRES_EXT` is set. The justification
+    is the §3 honesty invariant, not any single member: V3 forces the base `DLTensor.dtype` to the
+    honest `{kDLUInt,8,1}` whenever a meaning-bearing flag is set, and an opaque byte base is by
+    construction not a usable standard tensor, so the implication holds for the whole set. This
+    generalises V19's `HAS_GATHER ⇒ MEANING_REQUIRES_EXT`; V19 remains the gather-specific
+    specialization (it additionally pins the pool base's dtype/strides/byte-length). Every flag
+    defined by this specification is either a member of `FDX_FLAG_MEANING_BEARING`, or one of
+    `HAS_SYMBOLIC`/`HAS_TILING`/`IS_BUNDLE`/`READ_ONLY`/`HAS_AFFINE_EXTENT`, or
+    `MEANING_REQUIRES_EXT` itself, so this clause constrains the whole flag space and not a subset
+    of it. V22 does not constrain those five; whether any of them may be set with
+    `MEANING_REQUIRES_EXT` clear is decided elsewhere. → `FlagFieldIncoherent`
+
 ---
 
 ## 9. Producer / consumer policies

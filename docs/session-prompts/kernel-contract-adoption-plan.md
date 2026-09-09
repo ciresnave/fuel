@@ -1,12 +1,21 @@
 # Kernel-Contract (FKC) adoption plan — moving Fuel's dispatch layers onto importable contracts
 
-**Status:** PLAN (2026-06-17). WIP lands on branch `feat/kernel-contracts-dlpack` (same branch the
-two specs live on); nothing in this plan touches `main` until the rollout gate in §11.
+**Status:** PLAN (2026-06-17) — ⚠️ **SUPERSEDED BY ITS OWN ROLLOUT: FKC is unconditional
+production infrastructure on `main` today.** Measured at `16577dc1`: `fuel-dispatch/src/fkc/`
+holds 35 `.rs` files with no feature gate, parsing 114 `*.fkc.md` contracts as the production
+kernel-registration path. This line previously read *“WIP lands on branch
+`feat/kernel-contracts-dlpack` …; nothing in this plan touches `main` until the rollout gate in
+§11”* — that branch does not exist on origin.
 **Goal:** make *importing a provider's FKC contract file(s) auto-register all of that provider's
 kernels* onto Fuel's existing dispatch surface — the `KernelBindingTable` (primitive ops) and the
 `FusedKernelRegistry` (`Op::Fused` ops) — with **zero hand-written registration glue**, validated at
 import time, never panicking, leaving the optimizer/planner the sole decision-maker.
 
+> ⚠️ **DISCHARGED 2026-09-09: THE STATUS LINE ABOVE HAS NOW BEEN CORRECTED.**
+> Kept as the RECORD of when the defect was found, not as a live claim. It stood
+> because it ANNOTATED the falsehood instead of correcting it, and a reader who
+> stops at the Status field never reached this paragraph. See GAP-283.
+>
 > ⚠️ **AMENDED 2026-08-19 — THE BRANCH ABOVE NO LONGER EXISTS AND THE WORK IS ON `main`.**
 > `feat/kernel-contracts-dlpack` is **not on origin** — following the status line
 > costs a failed checkout and the natural conclusion that the work was abandoned.

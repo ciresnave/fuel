@@ -59,6 +59,19 @@ pub const FDX_FLAG_ALL: [u32; 9] = [
     FDX_FLAG_HAS_AFFINE_EXTENT,
 ];
 
+/// The **meaning-bearing** flag subset (§3): a set bit here means the base bytes
+/// are NOT a self-sufficient standard tensor, so the sidecar MUST also set
+/// `FDX_FLAG_MEANING_REQUIRES_EXT`. Single source of truth shared by the V3
+/// honesty predicate and the meaning-bearing ⇒ `MEANING_REQUIRES_EXT` arm
+/// (`check_v22_meaning_bearing_implies_ext`); a future meaning-bearing flag appends
+/// here and both the honesty check and the implication follow for free.
+/// `MEANING_REQUIRES_EXT` is the *target* of the implication, so it is not listed.
+pub const FDX_FLAG_MEANING_BEARING: &[u32] = &[
+    FDX_FLAG_HAS_DTYPE_EXT,
+    FDX_FLAG_HAS_QUANT,
+    FDX_FLAG_HAS_GATHER,
+];
+
 // --- FDXExtent.kind (§6.4) ---
 pub const FDX_EXTENT_SCALAR: u16 = 0;
 pub const FDX_EXTENT_RANGE: u16 = 1;

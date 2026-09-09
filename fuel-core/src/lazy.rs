@@ -3238,7 +3238,7 @@ mod tests {
             let mut g = graph.write().unwrap();
             fuel_graph::scan::unroll_scan(&mut g, scan_id, 1)
                 .expect("unroll")
-                .0
+                .0[0] // GAP-303: selected side is a Vec; emit=All => one stacked ys
         };
         let oracle = crate::pipelined_bridge::realize_one_as::<f32>(&graph, ys, &dev)
             .expect("realize unrolled selective_scan oracle on CPU");
@@ -3315,7 +3315,7 @@ mod tests {
             let mut g = graph.write().unwrap();
             fuel_graph::scan::unroll_scan(&mut g, scan_id, 1)
                 .expect("unroll")
-                .0
+                .0[0] // GAP-303: selected side is a Vec; emit=All => one stacked ys
         };
         let oracle = crate::pipelined_bridge::realize_one_as::<f32>(&graph, ys, &dev)
             .expect("realize unrolled ssd_chunk_scan oracle on CPU");
@@ -3403,7 +3403,7 @@ mod tests {
                 let mut gw = g.write().unwrap();
                 fuel_graph::scan::unroll_scan(&mut gw, scan_id, 3)
                     .expect("unroll")
-                    .0
+                    .0[0] // GAP-303: selected side is a Vec; emit=All => one stacked ys
             }; // emit=Final -> selected=final_carry
             crate::pipelined_bridge::realize_one_as::<f32>(&g, carry, &dev).expect("realize")[0]
         };
@@ -3747,7 +3747,7 @@ mod tests {
             let mut g = graph.write().unwrap();
             fuel_graph::scan::unroll_scan(&mut g, scan_id, seqlen)
                 .expect("unroll")
-                .0
+                .0[0] // GAP-303: selected side is a Vec; emit=All => one stacked ys
         };
         let ys_flat = crate::pipelined_bridge::realize_one_as::<f32>(&graph, ys, &dev)
             .expect("realize selective_scan unroll oracle on CPU");
@@ -3814,7 +3814,7 @@ mod tests {
             let mut g = graph.write().unwrap();
             fuel_graph::scan::unroll_scan(&mut g, scan_id, seqlen)
                 .expect("unroll")
-                .0
+                .0[0] // GAP-303: selected side is a Vec; emit=All => one stacked ys
         };
         let ys_flat = crate::pipelined_bridge::realize_one_as::<f32>(&graph, ys, &dev)
             .expect("realize selective_scan softplus oracle on CPU");
@@ -3889,7 +3889,7 @@ mod tests {
             let mut g = graph.write().unwrap();
             fuel_graph::scan::unroll_scan(&mut g, scan_id, seqlen)
                 .expect("unroll")
-                .0
+                .0[0] // GAP-303: selected side is a Vec; emit=All => one stacked ys
         };
         let ys_flat = crate::pipelined_bridge::realize_one_as::<f32>(&graph, ys, &dev)
             .expect("realize ssd_chunk_scan unroll oracle on CPU");

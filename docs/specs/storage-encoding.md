@@ -1,6 +1,6 @@
 # Fuel Self-Describing Storage Encoding — `DType` + `SType` / `Encoding`
 
-**Status:** DRAFT FOR REVIEW (2026-06-18), on branch `feat/kernel-contracts-dlpack`. Design pass —
+**Status:** DRAFT FOR REVIEW (2026-06-18), on branch `feat/kernel-contracts-dlpack`
 (**a branch that no longer exists**). **IMPLEMENTED ON `main`: `fuel-ir/src/stype.rs` declares `pub enum Encoding` and `pub struct SType`.** The DOCUMENT’s review state may still be draft; its SUBJECT is not. This is the third boundary spec, sibling to
 [`dlpack-extension.md`](dlpack-extension.md) (FDX, the kernel-boundary tensor projection) and
 [`kernel-contract-format.md`](kernel-contract-format.md) (FKC, the kernel advertisement). It is

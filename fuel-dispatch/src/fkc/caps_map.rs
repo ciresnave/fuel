@@ -461,4 +461,77 @@ mod tests {
         // Empty is not generic (no contract to fall back to).
         assert!(!is_generic_contract(&[]));
     }
+
+    /// ⚠️ **THE FORWARD-EXTENSION HOOK'S CLOCK.**
+    ///
+    /// This module's own doc says, of the flags it parses but does not project:
+    ///
+    /// > *"The moment `KernelCaps` grows `reverse_strides` /
+    /// > `start_offset_capable` the retained values fill them (the
+    /// > forward-extension hook, §6)."*
+    ///
+    /// **That hook fires only if somebody goes.** `reverse_strides` is parsed,
+    /// retained and validated (it has its own `FkcError` arm) across ~1.9k
+    /// contract sites and is projected NOWHERE. If a `KernelCaps` field lands
+    /// and nobody wires the retained value, every one of those sites keeps
+    /// being parsed, retained and ignored — **with nothing red.** A deferral
+    /// whose trigger is *"when someone adds a field"* has no detector, because
+    /// adding the field is not an event anything watches.
+    ///
+    /// # Why a destructuring and not an assertion
+    ///
+    /// The obvious guard — *assert a negative stride implies a non-zero
+    /// `start_offset`* — would re-assert **planner behaviour that is already
+    /// documented twice** (this module's doc, and `KernelCaps::strided_input`'s
+    /// field doc in `kernel.rs`). **The unguarded thing is the HOOK, and you
+    /// guard a hook by making the field's ARRIVAL loud — not by restating what
+    /// the deferral defers to.**
+    ///
+    /// `KernelCaps` is deliberately not `#[non_exhaustive]` and its own doc
+    /// invites growth: *"Forward-extensible by adding fields (no enum/bitflags
+    /// churn)."* **So the struct invites exactly the change that silently
+    /// orphans the retained values, and this pattern fails to COMPILE on the
+    /// day it happens** — at the moment someone must decide whether the new
+    /// field belongs to the hook. `error[E0027]` names the field it is missing.
+    ///
+    /// # The field's arrival is NOT silent, and that CHANGES what this is for
+    ///
+    /// Measured: adding `reverse_strides: bool` to `KernelCaps` breaks the
+    /// build in SEVEN places before this test is even reached -- `E0063` at
+    /// `caps_map.rs` x2 and `kernel.rs` x5. **So "nothing goes red" is false
+    /// and this guard is not the only signal.**
+    ///
+    /// **What it adds is narrower and still worth having: `E0063` demands a
+    /// VALUE, not a DECISION.** The path of least resistance at those sites is
+    /// `reverse_strides: false` -- which compiles, is green, and silently
+    /// orphans every value the importer has been retaining. **The pre-existing
+    /// signal exists and points AWAY from the correct action.** This one fires
+    /// in the file that owns the deferral, under the sentence saying what the
+    /// retained values are for.
+    ///
+    /// AND RUSTC ITSELF SUGGESTS THE FIX THAT DISARMS THIS GUARD: `E0027`'s
+    /// third help is *"or always ignore missing fields here"*, with a `..`
+    /// rest pattern. **Taking it silently converts this test into one that can
+    /// never fail again.** That is why the exhaustive form is spelled out, and
+    /// why this paragraph exists rather than trusting the next reader to
+    /// notice.
+    ///
+    /// **If you are here because this stopped compiling:** decide whether the
+    /// new field is one the importer already retains a value for. If it is,
+    /// wire it in `layout_caps` and delete the deferral note above. If it is
+    /// not, add it to the pattern. **Do not delete this test to make the build
+    /// green** — its failure IS the notification.
+    ///
+    /// Shape borrowed from baracuda, who hit the identical problem on
+    /// `OpAttrs` and solved it the same way.
+    #[test]
+    fn kernel_caps_field_set_is_pinned_to_the_forward_extension_hook() {
+        // Exhaustive by construction: a `..` rest pattern here would defeat the
+        // entire point, and so would a field-count assertion — that is a
+        // hand-written list of the kind whose staleness this file is about.
+        let KernelCaps {
+            strided_input: _,
+            requires_broadcast: _,
+        } = KernelCaps::default();
+    }
 }

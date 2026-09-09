@@ -968,6 +968,40 @@ counts                     no stable form  -> fix by WEAKENING the claim
 **PRACTICE: cite a symbol, a distinctive string, or a test name, and give the grep; give a line number only as a convenience beside a durable anchor, never as the anchor. For a count, write the BOUND you actually rely on, or the property, or a date+ref — and treat a normative rule's citation as the likeliest to have rotted, precisely because the principle above it is unimpeachable and stops anyone checking.**
 
 ---
+## an-anchor-buys-immunity-and-pays-in-blindness
+
+> **Index line (in CLAUDE.md):** **A RENAME-RESISTANT PROSE ANCHOR IS BLIND TO EVERY PANIC AT THE SITE THAT DOES NOT CARRY ITS STRING — the property that makes it rot-proof is the property that makes it narrow.** Measured: the never-panic rule's anchor finds **1 of 3** panic constructs at each of its two sites. **A citation states a LOCATION; a rule needs a POPULATION, and the two are different queries.**
+
+**2026-09-06, found by a lane claiming GAP-003 — the one violation in this project cited by an anchor chosen specifically for durability.**
+
+[`cite-what-cannot-move`](#cite-what-cannot-move) established that a normative rule's citation should anchor on a distinctive prose string, because no identifier rename can reach one. That is correct and it is not free.
+
+```
+anchor 'does not match shape element count'   -> 2 hits: fuel-graph/src/lib.rs :3939, :4147
+panic-capable constructs within 12 lines of EACH hit:
+    assert_eq!(...)          <- the anchor SEES this one
+    .expect("NodeHandle::...")   <- BLIND, ~5-8 lines below
+    .write().unwrap()            <- BLIND, and a DIFFERENT CLASS
+
+CONTROL: both sites test TRUE for all three buckets, so the blindness is not
+         a property of one unlucky site.
+```
+
+**The bullet carrying that anchor said "TWO hits, and both are the violation."** ⚠️ **True about the SITES and silent about the SIBLINGS — and phrased so that it reads as completeness.** A later reader re-deriving the violation from the prescribed grep gets two lines and a clean feeling.
+
+⚠️ **THE MECHANISM, WHICH IS THE PART THAT TRANSFERS: A PROSE ANCHOR IS EXACTLY AS NARROW AS IT IS DURABLE.** A symbol anchor (`from_host_buffer_on`) selects a *scope* — the whole function, every panic in it — and rots on the next rename. A message anchor selects a *line* — the one construct that happens to carry that string — and survives every rename forever. **The trade is not a defect in either form; what is a defect is presenting the narrow one as if it enumerated.**
+
+**And the two failure directions are unequal.** A rotted symbol anchor fails **loudly**: the grep returns nothing and someone re-derives. **A durable message anchor fails SILENTLY and FLATTERINGLY** — it returns real hits, at the right file, at real violations, and simply omits the neighbours. **Nothing in the output says it is a sample.**
+
+**THE GENERAL SHAPE: a citation answers "where is it?" and a normative rule needs "what is all of it?".** Those are different queries and the same string cannot serve both. The same confusion appears elsewhere in this file as the `enumerate-the-population-not-the-strings` memory note — **here it arrives through a citation-hygiene rule doing its job correctly.**
+
+**PRACTICE:**
+
+- **Anchor on prose for DURABILITY; enumerate by CONSTRUCT for COMPLETENESS. Give both, and say which is which** — *"grep `<string>` to find it; the population is every `assert!`/`.expect`/`panic!` in `<fn>`"*.
+- ⚠️ **When a rule's citation returns N hits, state whether N is a COUNT or a LOWER BOUND.** The never-panic bullet's "two hits" was a lower bound written as a count, which is the [count-has-no-rename-resistant-form](#a-count-has-no-rename-resistant-form-so-bound-it) rule arriving at a citation.
+- ⚠️ **Classify the neighbours before sweeping them in.** At these sites the third construct is a poisoned-lock `.unwrap()` — **198 of them in that one file** — and a poisoned lock means another thread has *already* panicked, so converting it to `Result` propagates an unrecoverable condition and buys the caller nothing. **It is a different obligation with a different remedy and belongs in its own row.** Proximity is not membership: **the anchor's blindness and the sweep's over-reach are the same error with opposite signs.**
+
+---
 ## state-the-link-not-the-proxy
 
 > **Index line (in CLAUDE.md):** **A CONDITIONAL LICENCE MUST STATE THE CAUSAL LINK, NOT THE PROXY** — *"if X, proceed"* is only as good as the unstated connection between X and the thing being licensed. **State the link and the grantee can check it; state only the proxy and the licence is UNFALSIFIABLE — the grantee cannot test it and the grantor never learns it was wrong.** The failure is silent in the direction where the proxy HOLDS.

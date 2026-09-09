@@ -1,9 +1,16 @@
 # Session prompt — Self-describing storage: `SType` / `Encoding`
 
-**Status:** Steps 1–4 SHIPPED (2026-06-19, branch `feat/kernel-contracts-dlpack`);
-steps 5–6 are descriptive/deferred-behind-consumer; step 7 gate is green. WIP lands on
-`feat/kernel-contracts-dlpack`, **never `main`**.
+**Status:** Steps 1–4 SHIPPED (2026-06-19); the `DType`/`SType` split they describe is settled
+architecture on `main`. Steps 5–6 remain descriptive/deferred-behind-consumer; step 7 gate is
+green. ⚠️ **This line previously named branch `feat/kernel-contracts-dlpack` and instructed
+“WIP lands on `feat/kernel-contracts-dlpack`, never `main`” — that branch does not exist on
+origin, so the instruction is unfollowable.**
 
+> ⚠️ **DISCHARGED 2026-09-09: THE STATUS LINE ABOVE HAS NOW BEEN CORRECTED.**
+> Kept as the RECORD of when the defect was found, not as a live claim. It stood
+> because it ANNOTATED the falsehood instead of correcting it, and a reader who
+> stops at the Status field never reached this paragraph. See GAP-283.
+>
 > ⚠️ **AMENDED 2026-08-19 — THE BRANCH ABOVE NO LONGER EXISTS AND THE WORK IS ON `main`.**
 > `feat/kernel-contracts-dlpack` is **not on origin** — following the status line
 > costs a failed checkout and the natural conclusion that the work was abandoned.
