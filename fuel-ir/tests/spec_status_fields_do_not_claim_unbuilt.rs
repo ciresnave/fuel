@@ -281,26 +281,35 @@ fn no_status_field_points_at_a_branch_as_the_live_location() {
     // ⚠️ Vocabulary, therefore a FLOOR and not a census. Each entry is an instance that was
     // found; "shipped on `" was added after `fused-op-registry.md` named a dead branch in a
     // phrasing the first three did not cover.
-    const POINTERS: &[&str] = &[
-        "branch `",
-        "wip lands on `",
-        "lands on branch `",
-        "shipped on `",
-    ];
+    // ⚠️ STRUCTURAL, not vocabulary — and this is the second rewrite of this rule.
+    //
+    // It began as a list of prepositions: "branch `", "wip lands on `", "shipped on `".
+    // Forcing found the hole: `baracuda-telemetry-plan.md` writes **`Branch: `feat/...``**
+    // — with a COLON — and matched none of them. **One of the files this very PR fixes had
+    // no detector coverage**, and the PR would have claimed it did.
+    //
+    // A branch is recognisable by its own shape, not by the word in front of it. These
+    // prefixes are branch conventions in this repo and are not doc paths; `docs/` is
+    // deliberately absent because `docs/architecture/` is a legitimate path citation.
+    const BRANCH_PREFIXES: &[&str] = &["feat/", "feature/", "fix/", "chore/", "release/"];
     const DISCLAIMERS: &[&str] = &[
         "does not exist",
         "no longer exists",
         "used to name",
         "previously",
         "is not on origin",
+        "no longer exist",
     ];
     let mut bad = Vec::new();
     for (f, para) in all_status_fields() {
         let lower = para.to_ascii_lowercase();
-        if POINTERS.iter().any(|p| lower.contains(p))
-            && !DISCLAIMERS.iter().any(|d| lower.contains(d))
-        {
-            bad.push(format!("{}: Status field points at a branch", f.display()));
+        let names_branch = lower
+            .split('`')
+            .skip(1)
+            .step_by(2)
+            .any(|tok| BRANCH_PREFIXES.iter().any(|p| tok.starts_with(p)));
+        if names_branch && !DISCLAIMERS.iter().any(|d| lower.contains(d)) {
+            bad.push(format!("{}: Status field names a branch", f.display()));
         }
     }
     assert!(
