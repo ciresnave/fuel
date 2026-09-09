@@ -195,14 +195,9 @@ fn has_supersession_banner(text: &str) -> bool {
     //
     // Incidental prose about supersession is not a banner. Structure is the test.
     let cut = text
-        .split("\n\n")
+        .lines()
         .position(is_status_field)
-        .map(|i| {
-            text.split("\n\n")
-                .take(i)
-                .map(|p| p.len() + 2)
-                .sum::<usize>()
-        })
+        .map(|i| text.lines().take(i).map(|l| l.len() + 1).sum::<usize>())
         .unwrap_or(text.len())
         .min(text.len());
     text[..cut]
@@ -216,20 +211,39 @@ fn has_supersession_banner(text: &str) -> bool {
         })
 }
 
-/// The paragraph beginning `**Status:**`, with wrapping collapsed.
+/// The status FIELD, with wrapping collapsed: the field line plus its continuation.
 ///
-/// ⚠️ Paragraph-joined on purpose: a line-anchored scan measures the author's wrap
-/// width, not the document. Four of the five violations this was written against
-/// straddle a hard wrap, and a `grep` for the phrase found 10 files where a
-/// paragraph-joined search found 16.
+/// ⚠️ **This was a PARAGRAPH extractor and that made the guard vacuous over a whole
+/// class of documents.** It required the paragraph to BEGIN with the status field. Many
+/// fuel specs write a header block of sibling keys —
+/// `**Date:**` / `**Status:**` / `**Program:**` on consecutive lines — so the paragraph
+/// begins with "Date" and the status field is never seen. `jit-candidate-kernel-ingestion`
+/// sat in that blind spot claiming "pending implementation plan" over 2,808 lines of its
+/// own implementation, and **the guard reported green over it.**
+///
+/// Caught by forcing: reverting that file left both tests passing. **A green that does
+/// not go red when you break its subject is not a green.**
+///
+/// Line-wise now: the field line, plus following lines until a blank line or the next
+/// `**Key:**` sibling. CRLF-normalised, because these files are CRLF on a Windows
+/// checkout and were LF when this was written.
 fn status_paragraph(text: &str) -> Option<String> {
-    // These files are CRLF on a Windows checkout, so splitting on two bare newlines
-    // finds NOTHING. The first run reported `0 of 15 files have a Status field` —
-    // caught only by the non-vacuity floor below, which is why that floor exists.
     let text = text.replace("\r\n", "\n");
-    text.split("\n\n")
-        .find(|p| is_status_field(p))
-        .map(|p| p.split_whitespace().collect::<Vec<_>>().join(" "))
+    let lines: Vec<&str> = text.lines().collect();
+    let i = lines.iter().position(|l| is_status_field(l))?;
+    let mut out = vec![lines[i]];
+    for l in &lines[i + 1..] {
+        if l.trim().is_empty() || l.trim_start().starts_with("**") {
+            break;
+        }
+        out.push(l);
+    }
+    Some(
+        out.join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
 }
 
 #[test]
