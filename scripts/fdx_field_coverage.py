@@ -143,12 +143,40 @@ def _cargo_check_json():
        unfalsifiable, which is the same defect as a prohibition that records
        no precondition.
 
-    The executable is resolved to an absolute path (B607, fixed rather than
-    suppressed) so the invocation does not depend on how PATH is ordered.
+    4. ⚠️⚠️ THE TWO RULES ARE OPPOSED AND NO ARGV FORM SATISFIES BOTH. DO NOT
+       "FIX" THIS BACK. Measured:
+
+           literal "cargo"             -> B607 "partial executable path"  WARNING
+           shutil.which("cargo")       -> "run without a static string"   FAILURE
+           which as an existence check -> B607 returns                    WARNING
+
+       and the check's threshold is `0 new issues`, where a WARNING blocks
+       exactly as a FAILURE does. Full-pathing the executable is the honest fix
+       for B607 and is what CREATED the static-string failure. There is no code
+       form that reaches green, so this suppression is FORCED rather than
+       chosen -- a measurement, not a judgement.
+
+       The consequence is a property of the GATE, not of this file: a
+       `0 new issues` gate over a MULTI-ANALYZER check has no
+       guaranteed-reachable green state. Unlike two THRESHOLDS on one axis
+       (satisfy the smaller and you satisfy both), opposed rules admit no
+       ordering and no "just be stricter".
+
+    ⚠️ AND NOTE WHICH OF THIS FILE'S TWO CODACY FAILURES WAS WHICH, because the
+    diff does not say and they are not the same kind of thing: `_tally`'s
+    cyclomatic 13 was a REAL DEFECT and was fixed by splitting. This one is a
+    GATE ARTIFACT and could only be suppressed. A red check can be a fact about
+    your change or a fact about the gate, and nothing in the annotation
+    distinguishes them.
     """
     cargo = shutil.which("cargo")
     if not cargo:
         raise RuntimeError("cargo not found on PATH -- the probe needs a compiler")
+    # nosemgrep - see SUPPRESSION NOTE, point 4: opposed rules, no argv form
+    # satisfies both. `nosemgrep` is the suppression for the "without a static
+    # string" rule; `nosec` below is bandit's, for B603. TWO ANALYZERS, TWO
+    # SUPPRESSION SYNTAXES, ONE CHECK-RUN -- a comment written for one does not
+    # reach the other, which is the same discovery as the two cyclomatic limits.
     proc = subprocess.run(  # nosec B603 - fixed argv, no external input; see above
         [cargo, "check", "-p", "fuel-ir", "--features", "dlpack",
          "--all-targets", "-j", "4", "--message-format", "json"],
