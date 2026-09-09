@@ -119,8 +119,8 @@ If you change 03 (the IR), expect to revise 04, 05, 06, 11. If you change 04 (th
 
 Each section's header records its version. Bump when the change is material — a redirection, a new architectural decision, a removed concept. Don't bump for typos, clarifications, link fixes. The version is `vMAJOR.MINOR`:
 
-- `MAJOR` increments when a section's *core claim* changes (e.g., "fused ops live in a registry, not in Op" is a major change to 03).
-- `MINOR` increments when content is added or refined without changing core claims.
+- MAJOR increments when a section's *core claim* changes (e.g., "fused ops live in a registry, not in Op" is a major change to 03).
+- MINOR increments when content is added or refined without changing core claims.
 
 The decisions log (10) records every MAJOR bump with one paragraph of context (what changed, when, why, related PRs).
 

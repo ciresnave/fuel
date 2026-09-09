@@ -194,6 +194,13 @@ const LEDGER: &[Row] = &[
         exists_at: None,
     },
     Row {
+        clause: "KISS-GRAMMAR-6.8-0007",
+        disposition: Reference,
+        test: None,
+        reason: "Cited in fuel-kernel-seam-types/src/canonical.rs to LOCATE a design in the standard, not to claim or decline conformance: KISS-Grammar embeds the KISS-Ops OpAttrs bytes uninterpreted and \"MUST NOT define an alternative OpAttrs byte layout\". That is what converts \"I did not find per-op schemas for Slice/Cast/Pad\" into \"there is no document those schemas could be in\" -- one mechanism checked would have been an absence claim off the wrong instrument. Nothing here for Fuel to discharge.",
+        exists_at: None,
+    },
+    Row {
         clause: "KISS-OPS-6.0-0003",
         disposition: Record,
         test: None,
@@ -259,10 +266,62 @@ const LEDGER: &[Row] = &[
         exists_at: None,
     },
     Row {
+        clause: "KISS-OPS-6.19-0003",
+        disposition: Reference,
+        test: None,
+        reason: "Cited in canonical.rs and docs/gaps.md (GAP-305) to locate the CLOSED carrier set -- seventeen named ops, every other op \"MUST have an empty OpAttrs blob\". It is the clause that makes the retired byte-comparability claim wrong: the ops that note called conformant are near-exactly the complement of the schema'd set. Reference rather than Declined BECAUSE `to_canonical_bytes` is carrier (a), the #67 node envelope (lib.rs three-carrier pin), and OpTag is Fuel's own kernel-seam-interop 4.1 vocabulary -- so these tags are not claiming membership in the carrier set at all. If that reading is ever overturned this row becomes Declined and needs a test.",
+        exists_at: None,
+    },
+    Row {
         clause: "KISS-OPS-6.19-0005",
         disposition: Record,
         test: None,
         reason: "docs/gaps.md registry row (GAP-287). Cited to identify the clause a gap is about — the FDX flag semantics the validator was measured against.",
+        exists_at: None,
+    },
+    Row {
+        clause: "KISS-OPS-6.19-0007",
+        disposition: Declined,
+        test: Some(
+            "fuel-kernel-seam-types/tests/kiss_ops_619_divergence.rs::the_shared_axis_field_diverges_on_width_not_only_on_field_set",
+        ),
+        reason: "Fuel DELIBERATELY does not conform: -0007 pins an axis index at ONE BYTE and Fuel emits i64. Tracked as GAP-305. The named test asserts the width divergence and reddens in BOTH directions -- if Fuel's encoding moves, and if Fuel ever narrows axis to u8 and the divergence closes. Note this divergence was NOT recorded in the prose, which described the gather/scatter difference as a field-set one only; the two rows disagree even on the single field they share.",
+        exists_at: None,
+    },
+    Row {
+        clause: "KISS-OPS-6.19-0025",
+        disposition: Declined,
+        test: Some(
+            "fuel-kernel-seam-types/tests/kiss_ops_619_divergence.rs::dim_reduce_diverges_from_kiss_ops_6_19_0025",
+        ),
+        reason: "Fuel DELIBERATELY does not conform: -0025 schemas reduce as {monoid, reduce_axes, keepdim, accumulator, math_precision}; Fuel emits {axis, keepdim} with the monoid riding op_name (SumDim/MaxDim/MeanDim). Tracked as GAP-305 and documented in canonical.rs. The named test also pins the VALUE divergence -0025 fixes keepdim at 1 and Fuel emits 0 -- invisible in any length comparison.",
+        exists_at: None,
+    },
+    Row {
+        clause: "KISS-OPS-6.19-0026",
+        disposition: Declined,
+        test: Some(
+            "fuel-kernel-seam-types/tests/kiss_ops_619_divergence.rs::cumsum_diverges_from_kiss_ops_6_19_0026",
+        ),
+        reason: "Fuel DELIBERATELY does not conform: -0026 schemas prefix_scan as {monoid, reduce_axes, exclusivity, accumulator, math_precision}; Fuel's CumSum emits {axis, keepdim}. Tracked as GAP-305. The named test asserts the divergence from vectors derived from the clause text, never from Fuel's own encoder.",
+        exists_at: None,
+    },
+    Row {
+        clause: "KISS-OPS-6.19-0027",
+        disposition: Declined,
+        test: Some(
+            "fuel-kernel-seam-types/tests/kiss_ops_619_divergence.rs::gather_diverges_from_kiss_ops_6_19_0027",
+        ),
+        reason: "Fuel DELIBERATELY does not conform: -0027 schemas gather as {axis, oob_policy, index_operand, index_dtype}; Fuel emits {axis} alone, with oob_policy a deferred unwired slot and index_operand riding child_edges. Tracked as GAP-305 and documented in canonical.rs. The named test asserts the divergence and fails if Fuel ever becomes conformant, at which point this row becomes an Obligation.",
+        exists_at: None,
+    },
+    Row {
+        clause: "KISS-OPS-6.19-0034",
+        disposition: Declined,
+        test: Some(
+            "fuel-kernel-seam-types/tests/kiss_ops_619_divergence.rs::index_select_and_scatter_add_diverge_from_kiss_ops_6_19_0034",
+        ),
+        reason: "Fuel DELIBERATELY does not conform: -0034 schemas index_select/embedding/scatter_add as {axis, index_operand, index_dtype}; Fuel emits {axis} alone. Tracked as GAP-305. The named test covers IndexSelect and ScatterAdd; scatter_combine rides op_name (IndexAdd vs ScatterAdd), which is why the tags differ where the schema does not.",
         exists_at: None,
     },
     Row {

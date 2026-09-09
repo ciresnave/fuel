@@ -4,10 +4,17 @@
 decision, [10-decisions-log](../architecture/10-decisions-log.md) — §2 gains locked items 9 (G3/G4:
 primitive basis build-time-closed + two-tier extensibility, declarative engine = Tier-2 prerequisite)
 and 10 (G5/G7: Fuel is the telemetry strategist *and* consumer, not Baracuda-only; closed-world
-`FusionMissRecord` built first)). Branch **`feat/kernel-contracts-dlpack`**
-(unmerged; `main` untouched). This is the single entry point for a new Claude instance picking up
+`FusionMissRecord` built first)). ⚠️ **The branch this sequencer used to name,
+`feat/kernel-contracts-dlpack`, does not exist on origin, and `main` is NOT untouched — the
+program it sequences is live there.** This is the single entry point for a new Claude instance picking up
 the kernel-boundary program with no prior context beyond `CLAUDE.md` + memory.
 
+> ⚠️ **DISCHARGED 2026-09-09: THE STATUS LINE ABOVE HAS NOW BEEN CORRECTED.**
+> **The wording it replaced:** *“Branch **`feat/kernel-contracts-dlpack`** (unmerged;
+> `main` untouched).”* Kept as the record of when the defect was found. ⚠️ **This file was
+> the ELEVENTH instance, and a vocabulary sweep missed it — it was found by a structural
+> rule matching the branch TOKEN rather than the preposition in front of it.** See GAP-283.
+>
 > ⚠️ **AMENDED 2026-08-20 — THE BRANCH THIS SEQUENCER NAMES DOES NOT EXIST, AND
 > "Living index" is the phrase that stops a reader checking.** `feat/kernel-contracts-dlpack`
 > is **not on origin**; the program it sequences is **unconditional production
