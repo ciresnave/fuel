@@ -2011,3 +2011,60 @@ Cases 1–3 are the mechanism in **prose** (an author's wrap width); cases 4–5
 **AND BECAUSE IT IS FREE, IT HAS TO BE THE *DEFAULT* REACH — not a remedy applied after being burned.** Instance 5 is the proof: the person who wrote this rule reached for the blind single-line form twenty minutes later. A discipline invoked only once you already suspect a split will never fire, because the split's whole signature is that nothing looks wrong — the count is plausible, the command exits 0, no error appears. The multiline-aware form has to be the one you type first, before there is any reason for suspicion.
 
 **THE COMPOUNDING HAZARD (why this one is expensive):** a blind grep returns a **plausible number**, not an error, and a plausible undercount that **agrees with an honest caution** — *"I didn't deep-verify this"* — reads as corroboration when the caution was correct only by luck. GAP-292 (instance 4): a lane flagged uncertainty, a grep returned the undercount, the two matched, and the row was held out of the closure batch. Had the deep read gone the other way, the wrong number would have shipped with a lane's hedge apparently backing it. **A defective instrument that happens to match a hedge is not confirmation of the hedge — read the construct.** This is the false-corroboration failure recorded in [`evidence-that-is-not-independent`](#evidence-that-is-not-independent), reached here from the INSTRUMENT side rather than the two-artifacts side, and it is the same defect the memory rules name as *agreement-is-not-corroboration*, *long-lines-defeat-line-oriented-instruments*, and *construct-invisible-in-the-number*.
+
+## an-empty-collection-is-not-a-null-result
+
+**⚠️ FIVE INSTRUMENTS ANSWER "DOES THIS REPO HAVE BRANCH PROTECTION?" AND THREE OF THEM ARE WRONG — TWO BY RETURNING AN EMPTY LIST INSTEAD OF AN ERROR, AND ONE BY RETURNING A 404 THAT AN UNPROTECTED REPO RETURNS TOO (2026-09-09, `ciresnave/fuel`, one token; A–D measured by Fuel 2, E measured by the architect).**
+
+```text
+A. GraphQL branchProtectionRules(first:5)         -> 0 nodes     reads as NO PROTECTION   WRONG
+B. REST    /repos/<nwo>/rulesets                  -> 0 entries   reads as NO PROTECTION   WRONG
+C. REST    /repos/<nwo>/branches/main .protected  -> true        PROTECTED                RIGHT
+D. GraphQL isRequired(pullRequestNumber: N)       -> 5 required  PROTECTED                RIGHT
+E. REST    /repos/<nwo>/branches/main/protection  -> HTTP 404    reads as NO PROTECTION   WRONG
+```
+
+**C and D are correct.** Protection demonstrably exists: D names the five required checks (`Check (ubuntu-latest)`, `Clippy`, `Rustfmt`, `Test Suite (ubuntu-latest)`, `trufflehog`) — **out of fourteen contexts on the PR, so nine of the fourteen checks cannot block a merge**, which is the operational reason anyone runs this query at all.
+
+**A and B are permission-blind, and they do not say so.** They return HTTP 200 with an empty collection. **A `[]` and a `403` are different facts and only one of them is reported.**
+
+**NEGATIVE CONTROL, so this is not a story about one repo:** `ciresnave/synapse` `.protected` -> **false** against fuel's **true**. C discriminates; it is not returning `true` for everything.
+
+### ⚠️ E fails the same way, and the status code is what disguises it
+
+**Measured first-hand for this section, both arms, same token, same minute:**
+
+```text
+GET /repos/ciresnave/fuel/branches/main/protection      -> 404   repo IS protected     (C: true)
+GET /repos/ciresnave/synapse/branches/main/protection   -> 404   repo is NOT protected (C: false)
+```
+
+**The two responses are BYTE-IDENTICAL** — 138 bytes of stdout and 25 of stderr each, `diff` clean on both streams:
+
+```text
+{"message":"Not Found","documentation_url":"https://docs.github.com/rest/branches/branch-protection#get-branch-protection","status":"404"}
+```
+
+**⚠️ IT IS TEMPTING TO SAY A 404 AT LEAST ANNOUNCES THAT SOMETHING WENT WRONG. IT DOES NOT, AND THE MEASUREMENT ABOVE IS WHY.** A genuinely unprotected branch returns that same 404 — so on this endpoint the 404 is not an error wearing a null, it is **the correct answer for one of the two states, returned identically for the other.** The status code separates E from A and B while carrying no information about which state you are in. *(This paragraph replaces the reading the draft of this section carried, which was that the 404 was the better-behaved of the three. Without the unprotected arm there was nothing to contradict it — **an absence claim about an API needs a repo that genuinely has the absence.**)*
+
+**So E belongs WITH A and B, not against them. Three instruments, one direction of failure: all three report NONE, and NONE is the answer that prompts a WRITE.**
+
+⚠️ **THAT DIRECTION IS THE WHOLE POINT.** **Writing protection onto an already-protected repo is a different act from configuring an unprotected one, and A, B and E cannot tell you which one you are about to do.** The instruments fail in the direction that causes the mutation.
+
+### ⚠️ D's blind spot is CORRELATED with the condition D detects
+
+*(the portfolio PM's, and it is sharper than the probe that prompted it)*
+
+**D needs an OPEN PULL REQUEST**, because `isRequired` is scoped to one. So it **cannot run on a quiet repo — and a quiet repo is exactly where missing protection goes unnoticed.** Four of thirteen repos in the portfolio census had no open PR and could not be measured with D at all.
+
+**An instrument whose UNAVAILABILITY correlates with the condition it would detect contributes nothing to the cases you most need it for**, while looking like a second opinion on the cases you do not.
+
+### Practice
+
+- **For "is this branch protected", use C.** It is readable without admin and it discriminates.
+- **Never use E — `branches/<b>/protection` — to answer it.** Without admin it returns the same 404 for a protected branch and an unprotected one, and that 404 is a legitimate negative answer rather than a permission error, so no amount of reading the response body will separate them.
+- **Corroborate with D only where an open PR exists**, and say which repos it could not reach rather than reporting a two-instrument figure over a population where one instrument was silent. The census that prompted this reported **9 repos C+D agreeing 9/9, and 4 where D could not run** — which is a smaller and truer claim than "13 repos, two instruments."
+- **Never read an empty collection from a permissioned API as a null result** until you have a positive control showing the same call returns non-empty for a case you know is populated. A/B here had no such control, and would have passed any check that did not have one.
+- **And for a null shaped like an error, the control is a NEGATIVE one: a subject that genuinely has the absence.** A positive control proves the query can see the thing; only the unprotected repo proves the query can tell you when the thing is gone. E passes the first and fails the second.
+
+Related: [`uninformative-signals-both-directions`](#uninformative-signals-both-directions) · [`a-guard-exists-is-not-the-guard-protects-this`](#a-guard-exists-is-not-the-guard-protects-this) · and the portfolio working agreement's *give every absence a positive control*, which has no section here — it is a `C:\Projects\CLAUDE.md` rule, and is named rather than linked so the reference cannot rot into a dead anchor.
