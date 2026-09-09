@@ -771,7 +771,7 @@ mod tests {
     // PER-CARRIER, never as "the op_attrs width" — a future consolidation must NOT
     // silently unify them (KISS #67 do-not-unify):
     //   (a) #67 NODE-ENVELOPE op_attrs        → u32-LE OUTER byte length, payload
-    //       verbatim, no-parse-inside (§6.19-0010). Live producer:
+    //       verbatim, no-parse-inside (KISS-OPS-6.19-0010). Live producer:
     //       `OpAttrs::to_canonical_bytes`.
     //   (b) KISS-Grammar §6.8-0007 REGION-NODE-TABLE op_attrs SUB-BLOCK → u16-LE
     //       length + payload verbatim; EMPTY = 0x0000. A DIFFERENT carrier from (a).
@@ -1120,7 +1120,7 @@ mod tests {
     //   const             → u64(bits)                (MBZ narrow-dtype rule)
     //   scan_placeholder  → u8(role: 0=carry,1=elem) ++ u32(index)
     // Every body rides CARRIER (a) — the #67 node-envelope op_attrs blob, u32-LE
-    // outer length, payload verbatim (§6.19-0010). NOT carrier (b) (KISS-Grammar
+    // outer length, payload verbatim (KISS-OPS-6.19-0010). NOT carrier (b) (KISS-Grammar
     // §6.8-0007 region-table, u16-LE) and NOT carrier (c) (§6.20-0005 shape-expr
     // child, u16-LE); see `three_carrier_width_pins_stay_distinct`.
 

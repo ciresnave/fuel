@@ -568,7 +568,7 @@ with the arms:
   (see the `reduced_count{axes}` note below); it grows to a `reduce_axes` list ONLY in
   lockstep with the fold (§6.12-0001).
 - **Carrier discipline.** Every leaf body rides **carrier (a)** — the #67 node-envelope
-  `op_attrs` blob, `u32`-LE outer length, payload verbatim (§6.19-0010). Not carrier (b)
+  `op_attrs` blob, `u32`-LE outer length, payload verbatim (KISS-OPS-6.19-0010). Not carrier (b)
   (KISS-Grammar §6.8-0007 region-node-table `op_attrs`, `u16`-LE), not carrier (c)
   (§6.20-0005 shape-expr child length, `u16`-LE). Pinned executably by
   `leaf_arm_bodies_ride_carrier_a_u32_le`, alongside `three_carrier_width_pins_stay_distinct`.

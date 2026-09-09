@@ -79,7 +79,7 @@ impl std::error::Error for UnresolvedAttr {}
 //      list and the schema'd list are near-COMPLEMENTS rather than overlaps.
 //      There is no second document to look in: KISS-GRAMMAR-6.8-0007 embeds the
 //      KISS-Ops encoding "uninterpreted" and "MUST NOT define an alternative
-//      OpAttrs byte layout", and §6.19-0001 makes KISS-Ops its single normative
+//      OpAttrs byte layout", and KISS-OPS-6.19-0001 makes KISS-Ops its single normative
 //      owner. (Measured in `spec/grammar.md`: slice/cast/roll/flip/iota/concat
 //      all 0; control `gather` 16, `op_attrs` 4, so the query fires.)
 //
@@ -87,7 +87,7 @@ impl std::error::Error for UnresolvedAttr {}
 //      See the three-carrier do-not-unify pin in `lib.rs`
 //      (`three_carrier_width_pins_stay_distinct`): `to_canonical_bytes` is the
 //      #67 NODE-ENVELOPE -- u32-LE outer length, "payload verbatim,
-//      no-parse-inside (§6.19-0010)". The clause it implements is the OUTER
+//      no-parse-inside (KISS-OPS-6.19-0010)". The clause it implements is the OUTER
 //      LENGTH. A receiver that does not parse the body cannot be byte-comparing
 //      it, so agreement on the body is not a property this carrier's contract
 //      asks for.
@@ -102,13 +102,13 @@ impl std::error::Error for UnresolvedAttr {}
 //
 // WHAT IS STILL TRUE, and it is the whole of it: the body follows §6.19's
 // positional *shape* -- positional, little-endian, definite-length, every field
-// explicit and already resolved (§6.19-0005/-0007/-0008/-0010). The PER-OP
+// explicit and already resolved (KISS-OPS-6.19-0005/-0007/-0008/-0010). The PER-OP
 // SCHEMAS for the tags outside the carrier set are Fuel's own
 // kernel-seam-interop §4.1 `OpTag` vocabulary and have NO §6.19 counterpart to
 // conform to OR to diverge from. "Unexercised" is the wrong word and was the
 // wrong remedy: there is nothing on the other side to exercise against.
 //
-// RESIDUAL, named rather than resolved: §6.19-0003 is scoped "for this op-set
+// RESIDUAL, named rather than resolved: KISS-OPS-6.19-0003 is scoped "for this op-set
 // version", and this crate pins no KISS-Ops version. If a different carrier set
 // is ever targeted, THE VERSION IS THE THING THAT MUST BE NAMED HERE.
 //
@@ -168,7 +168,7 @@ fn put_u8_list(b: &mut Vec<u8>, xs: &[u8]) {
 impl OpAttrs {
     /// Serialize these attrs to the node-envelope blob for `op` in the
     /// §6.19 positional *shape* (see the SCOPE note above: this is carrier
-    /// (a), and only the tags inside §6.19-0003's carrier set have a §6.19
+    /// (a), and only the tags inside KISS-OPS-6.19-0003's carrier set have a §6.19
     /// schema at all):
     /// `op`: a per-op **positional** little-endian body (no elision — the
     /// `OpTag` determines the fixed schema), length-prefixed with a `u32` LE
@@ -301,7 +301,7 @@ impl OpAttrs {
     /// against the per-op field-order table in kernel-seam-interop §7.3.2,
     /// which is where these schemas are defined. ⚠️ THIS INSTRUCTION USED TO
     /// SAY "against §6.19's row schemas", AND IT COULD NOT BE FOLLOWED:
-    /// §6.19-0003 requires `Slice`/`Cast`/`Pad` to carry an EMPTY blob, so
+    /// KISS-OPS-6.19-0003 requires `Slice`/`Cast`/`Pad` to carry an EMPTY blob, so
     /// they have no §6.19 row to compare against. A reader who followed it
     /// and found nothing could not tell whether they had looked in the wrong
     /// place or the claim was false -- a false instruction manufactures
@@ -340,7 +340,7 @@ impl OpAttrs {
 
     /// The arms that CAN decline: every one reads an `Option` field that
     /// this serializer requires to be resolved, so every one is a branch.
-    /// (Resolved-not-elided is the §6.19-0005 discipline this blob borrows;
+    /// (Resolved-not-elided is the KISS-OPS-6.19-0005 discipline this blob borrows;
     /// for the non-carrier tags the MANDATORY-ness is ours, not §6.19's.)
     ///
     /// Split from [`Self::canonical_body`] to complete the one-emitter-per-family
