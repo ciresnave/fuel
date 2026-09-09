@@ -1206,6 +1206,7 @@ fn op_key(op: &Op) -> Option<OpKey> {
         // Two scans with identical params but different bodies therefore get
         // different child-hashes and different base_map_hash. Tag 210.
         Op::Scan {
+            n_carries,
             n_xs,
             bound,
             emit,
@@ -1218,7 +1219,23 @@ fn op_key(op: &Op) -> Option<OpKey> {
             let exit_flag: i64 = if early_exit.is_some() { 1 } else { 0 };
             (
                 210,
-                vec![*n_xs as i64, *bound as i64, emit_tag, exit_flag],
+                // ⚠️ GAP-303: `n_carries` MUST be folded here. This is Fuel's own
+                // recipe identity (base_map_hash) -- omit it and a 1-carry and a
+                // 3-carry Scan with the same n_xs/bound/emit hash IDENTICALLY, so
+                // cover-finding and the plan cache treat them as one recipe. Same
+                // defect class as KISS-OPS-6.19 (an arm reading too few attrs made
+                // Gather-on-axis-2 and axis-0 emit identical bytes), and a SECOND
+                // site beside the seam's canonical body.
+                //
+                // Appended LAST so existing single-carry hashes are the only ones
+                // that move, and they move uniformly.
+                vec![
+                    *n_xs as i64,
+                    *bound as i64,
+                    emit_tag,
+                    exit_flag,
+                    *n_carries as i64,
+                ],
                 vec![],
                 vec![],
                 None,
@@ -5048,6 +5065,7 @@ mod tests {
             // inputs = [init_carry, body_new_carry, body_y]  (n_xs = 0, no consts)
             let scan = g.push(Node {
                 op: Op::Scan {
+                    n_carries: 1,
                     n_xs: 0,
                     bound: 3,
                     emit: ScanEmit::All,
@@ -5100,6 +5118,7 @@ mod tests {
             });
             let scan = g.push(Node {
                 op: Op::Scan {
+                    n_carries: 1,
                     n_xs: 0,
                     bound: 3,
                     emit: ScanEmit::All,
@@ -5120,17 +5139,77 @@ mod tests {
         );
     }
 
+    /// GAP-303 DISCRIMINATING FIXTURE for the `n_carries` fold in `op_key`.
+    ///
+    /// ⚠️ WITHOUT THIS TEST THE FIX IS INVISIBLE IN ITS OWN METRIC. Every other
+    /// scan test in this workspace uses ONE carry, and `NodeHandle::scan` pins
+    /// `n_carries: 1`, so folding the field or not folding it produces identical
+    /// hashes across the entire suite. Ask "if this became a no-op, which number
+    /// moves?" — before this test, none.
+    ///
+    /// What it protects: `op_key` is Fuel's own recipe identity. Two scans that
+    /// differ ONLY in carry count must not key the same, or cover-finding and the
+    /// plan cache treat a 1-carry and a 3-carry scan as one recipe. Same defect
+    /// class as KISS-OPS-6.19, where an arm reading too few attrs made
+    /// Gather-on-axis-2 and Gather-on-axis-0 emit IDENTICAL bytes.
+    #[test]
+    fn gap303_n_carries_participates_in_op_key() {
+        use crate::{Op, ScanEmit, ScanRole};
+        // Every other field held EQUAL — n_carries is the only axis that moves.
+        let mk = |n_carries: usize| {
+            op_key(&Op::Scan {
+                n_carries,
+                n_xs: 2,
+                bound: 3,
+                emit: ScanEmit::All,
+                early_exit: None,
+            })
+        };
+        let one = mk(1);
+        assert!(one.is_some(), "Op::Scan must produce an op_key, not None");
+        for n in [2usize, 3, 7] {
+            assert_ne!(
+                mk(n),
+                one,
+                "n_carries={n} must not key identically to n_carries=1                  (all other fields held equal)"
+            );
+        }
+        // ...and distinct counts stay distinct from each OTHER, not merely from 1.
+        assert_ne!(mk(2), mk(3), "distinct carry counts must key distinctly");
+
+        // The SIBLING claim, asserted rather than only commented: the placeholder
+        // arm's own doc says "Carry/0, Elem/0, Carry/1 are all distinct in the
+        // body hash". It had no test. It does now.
+        let c0 = op_key(&Op::ScanPlaceholder {
+            role: ScanRole::Carry,
+            index: 0,
+        });
+        let c1 = op_key(&Op::ScanPlaceholder {
+            role: ScanRole::Carry,
+            index: 1,
+        });
+        let e0 = op_key(&Op::ScanPlaceholder {
+            role: ScanRole::Elem,
+            index: 0,
+        });
+        assert!(c0.is_some(), "ScanPlaceholder must produce an op_key");
+        assert_ne!(c0, c1, "Carry/0 vs Carry/1 must differ in the body hash");
+        assert_ne!(c0, e0, "Carry/0 vs Elem/0 must differ in the body hash");
+    }
+
     #[test]
     fn scan_emit_and_placeholder_role_participate_in_op_key() {
         use crate::{Op, ScanEmit, ScanRole};
         // emit=All vs emit=Final differ.
         let all = op_key(&Op::Scan {
+            n_carries: 1,
             n_xs: 0,
             bound: 3,
             emit: ScanEmit::All,
             early_exit: None,
         });
         let fin = op_key(&Op::Scan {
+            n_carries: 1,
             n_xs: 0,
             bound: 3,
             emit: ScanEmit::Final,
@@ -5144,6 +5223,7 @@ mod tests {
         // n_xs / bound participate.
         assert_ne!(
             op_key(&Op::Scan {
+                n_carries: 1,
                 n_xs: 1,
                 bound: 3,
                 emit: ScanEmit::All,
@@ -5153,6 +5233,7 @@ mod tests {
         );
         assert_ne!(
             op_key(&Op::Scan {
+                n_carries: 1,
                 n_xs: 0,
                 bound: 4,
                 emit: ScanEmit::All,

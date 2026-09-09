@@ -1157,12 +1157,15 @@ pub enum Op {
     ///
     /// The body is encoded in this node's own `inputs`, exactly like
     /// [`Op::Branch`]'s arms. Node layout:
-    /// `inputs = [ init_carry, xs_0..xs_{n_xs-1}, consts..., body_new_carry, body_y ]`
+    /// `inputs = [ init_carry_0..init_carry_{n_carries-1}, xs_0..xs_{n_xs-1},
+    ///            consts..., body_new_carry_0..body_new_carry_{n_carries-1}, body_y ]`
     /// — the two body-exit NodeIds are the LAST two inputs, so `base_map_hash`,
     /// `topo_order_multi`, and reachability see the body for free. The body
     /// references `Op::ScanPlaceholder{Carry,0}` for the per-step carry and
     /// `Op::ScanPlaceholder{Elem,i}` for the per-step slice of `xs[i]`; consts
-    /// are referenced by real NodeId. Single carry tensor in v1.
+    /// are referenced by real NodeId. `n_carries` carries are threaded; the
+    /// body references `ScanPlaceholder{Carry,k}` for carry `k` (GAP-303 —
+    /// `n_carries = 1` is the v1 single-carry model).
     ///
     /// An optimization/verification-time node: it never reaches the executor
     /// un-lowered (the SSM decompose emits it, but the executor dispatches the
@@ -1172,6 +1175,13 @@ pub enum Op {
     /// the primitive. Always a 2-slot bundle (slot 0 = stacked `ys`, slot 1 =
     /// final carry). `early_exit` is Phase-2 (see [`ScanPredicate`]).
     Scan {
+        /// How many recurrent carries this scan threads. Symmetric with
+        /// `n_xs`: the carry NODES live in `inputs` (a positional block, see
+        /// the layout above); this field is only their COUNT, exactly as
+        /// `n_xs` is only the count of the `xs` block.
+        ///
+        /// GAP-303: `1` reproduces the v1 single-carry model exactly.
+        n_carries: usize,
         n_xs: usize,
         bound: usize,
         emit: ScanEmit,
@@ -2167,10 +2177,30 @@ impl Graph {
     /// parsing.
     pub fn describe_node(&self, id: NodeId) -> String {
         let n = self.node(id);
+        // GAP-303: `short_name()` renders every scan as the bare string "Scan",
+        // so a body built from the WRONG scan was invisible in every dump and
+        // every executor panic. Baracuda's requirement, adopted verbatim: make
+        // something PRINT the carry count on the path that constructs the body —
+        // not assert it. "A control tells you the encoding is sound; only the
+        // subject's identity tells you what it encoded."
+        let scan_params = match n.op {
+            Op::Scan {
+                n_carries,
+                n_xs,
+                bound,
+                emit,
+                ref early_exit,
+            } => format!(
+                " n_carries={n_carries} n_xs={n_xs} bound={bound} emit={emit:?} early_exit={}",
+                early_exit.is_some()
+            ),
+            Op::ScanPlaceholder { role, index } => format!(" role={role:?} index={index}"),
+            _ => String::new(),
+        };
         let op_short = n.op.short_name();
         if n.inputs.is_empty() {
             return format!(
-                "Node#{} ({op_short}, out shape={:?} dtype={:?})",
+                "Node#{} ({op_short}{scan_params}, out shape={:?} dtype={:?})",
                 id.0, n.shape, n.dtype,
             );
         }
@@ -2184,7 +2214,7 @@ impl Graph {
             })
             .collect();
         format!(
-            "Node#{} ({op_short}, out shape={:?} dtype={:?}, inputs=[{}])",
+            "Node#{} ({op_short}{scan_params}, out shape={:?} dtype={:?}, inputs=[{}])",
             id.0,
             n.shape,
             n.dtype,
@@ -5849,6 +5879,9 @@ impl NodeHandle {
             crate::scan::validate_scan_body_placeholders(
                 &g,
                 &[body_new_carry.id, body_y.id],
+                // GAP-303: the BUILDER is still single-carry (see the Op::Scan
+                // construction below); the IR and the unroll are not.
+                1,
                 xs.len(),
             )?;
         }
@@ -5880,6 +5913,16 @@ impl NodeHandle {
             // multi-output authoring contract.
             let id = g.push(Node {
                 op: Op::Scan {
+                    // ⚠️ GAP-303 SCOPE LINE: the IR, the validator, `unroll_scan`,
+                    // `parse_scan_layout` and `build_scan_step` all handle N
+                    // carries. This BUILDER deliberately still constructs ONE.
+                    //
+                    // Widening it means N+1 output-view specs through
+                    // `compose_bundle` below -- i.e. the bundle arity -- which is
+                    // GAP-303 row 2 (`Op::ScatterIntoSlot`, kernel-less today) and
+                    // is NOT this change. A reader must not read "the builder makes
+                    // one" as "multi-carry does not work".
+                    n_carries: 1,
                     n_xs: xs.len(),
                     bound,
                     emit,
@@ -5964,6 +6007,9 @@ impl NodeHandle {
             crate::scan::validate_scan_body_placeholders(
                 &g,
                 &[body_new_carry.id, body_y.id],
+                // GAP-303: the BUILDER is still single-carry (see the Op::Scan
+                // construction below); the IR and the unroll are not.
+                1,
                 xs.len(),
             )?;
         }
@@ -6032,6 +6078,16 @@ impl NodeHandle {
             let mut g = self.graph.write().unwrap();
             let id = g.push(Node {
                 op: Op::Scan {
+                    // ⚠️ GAP-303 SCOPE LINE: the IR, the validator, `unroll_scan`,
+                    // `parse_scan_layout` and `build_scan_step` all handle N
+                    // carries. This BUILDER deliberately still constructs ONE.
+                    //
+                    // Widening it means N+1 output-view specs through
+                    // `compose_bundle` below -- i.e. the bundle arity -- which is
+                    // GAP-303 row 2 (`Op::ScatterIntoSlot`, kernel-less today) and
+                    // is NOT this change. A reader must not read "the builder makes
+                    // one" as "multi-carry does not work".
+                    n_carries: 1,
                     n_xs: xs.len(),
                     bound,
                     emit,
@@ -11400,10 +11456,18 @@ fn lower_scans_for_backward(graph: &SharedGraph, root: NodeId) -> NodeId {
                     Err(_) => continue, // malformed scan: leave it; the C4 guard describes it.
                 }
             };
-            // Normalize to (slot0 = stacked_ys, slot1 = final_carry).
-            let (slot0, slot1) = match emit {
+            // Normalize to (slot 0 = stacked_ys, slots 1.. = final carries).
+            //
+            // GAP-303: `unroll_scan` now returns (selected, complementary) as
+            // VECS. The `ys` side is always exactly one node; the carry side is
+            // `n_carries` wide. At `n_carries == 1` this is byte-for-byte the old
+            // behaviour -- one ys, one carry, slot 1 the only carry slot.
+            let (ys_v, carries) = match emit {
                 ScanEmit::All => (a, b),
                 ScanEmit::Final => (b, a),
+            };
+            let Some(&slot0) = ys_v.first() else {
+                continue; // malformed: no stacked ys; the C4 guard describes it.
             };
             // Remap the scan's View{slot}/ViewOwned{slot} consumers to the unroll outputs.
             let g = graph.read().unwrap();
@@ -11412,7 +11476,19 @@ fn lower_scans_for_backward(graph: &SharedGraph, root: NodeId) -> NodeId {
                 if let Op::View { slot } | Op::ViewOwned { slot } = node.op
                     && node.inputs.first() == Some(&scan_id)
                 {
-                    remap.insert(NodeId(nid), if slot == 0 { slot0 } else { slot1 });
+                    // ⚠️ Slot 0 is `ys`; slot k>=1 is carry k-1. The old form was
+                    // `if slot == 0 { slot0 } else { slot1 }`, which folded EVERY
+                    // slot above 0 onto the single carry -- a fifth site of the
+                    // 2-slot assumption. Out-of-range slots are LEFT UNMAPPED for
+                    // the C4 guard rather than indexed (never-panic).
+                    let target = if slot == 0 {
+                        Some(slot0)
+                    } else {
+                        carries.get(slot as usize - 1).copied()
+                    };
+                    if let Some(t) = target {
+                        remap.insert(NodeId(nid), t);
+                    }
                 }
             }
         }
@@ -16141,6 +16217,7 @@ mod tests {
         // Op::Scan node: inputs = [init_carry, <no xs>, <no consts>, body_new_carry, body_y].
         let scan = g.push(Node {
             op: Op::Scan {
+                n_carries: 1,
                 n_xs: 0,
                 bound: 1,
                 emit: ScanEmit::All,
@@ -16154,6 +16231,7 @@ mod tests {
         assert_eq!(g.node(hole).op.short_name(), "ScanPlaceholder");
         // early_exit is constructible (guarded elsewhere) but never Some on a live path.
         let _guarded = Op::Scan {
+            n_carries: 1,
             n_xs: 0,
             bound: 1,
             emit: ScanEmit::Final,
@@ -16163,6 +16241,7 @@ mod tests {
         let lay = fuel_ir::Layout::contiguous(s.clone());
         let derived = crate::derive_view_output_layout(
             &Op::Scan {
+                n_carries: 1,
                 n_xs: 0,
                 bound: 1,
                 emit: ScanEmit::All,
@@ -16319,6 +16398,7 @@ mod tests {
         use crate::{Graph, Node, Op, ScanEmit, ScanRole};
         use fuel_ir::{DType, Shape};
         let scan = Op::Scan {
+            n_carries: 1,
             n_xs: 0,
             bound: 2,
             emit: ScanEmit::All,
