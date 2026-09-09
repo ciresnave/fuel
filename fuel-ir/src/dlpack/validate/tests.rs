@@ -1601,3 +1601,103 @@ fn v22_flag_partition_is_exhaustive() {
          three §8.22 groups"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FULL-validate() coverage for meaning-bearing sidecars.
+//
+// GAP: quant / sub-byte sidecars were tested ONLY per-check — HAS_QUANT and
+// HAS_DTYPE_EXT fixtures exist, but they all call check_v4/v5/v6 DIRECTLY, so
+// the ORCHESTRATOR's quant/sub-byte path was uncovered end-to-end. A census
+// keyed on "do quant sidecars appear in the tests" reads green; the gap is the
+// CALL PATH, not the fixture. These take a coherent sidecar through validate().
+//
+// NON-VACUITY: each positive fixture is paired with an incoherent sibling that
+// validate() MUST reject. The pair is the born-red: if the orchestrator did not
+// reach the quant/sub-byte path, the incoherent case would pass too. (The
+// per-check tests already pass and say nothing about the orchestrator.)
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn validate_pass_ggml_quant_sidecar() {
+    let mut sc = sidecar(FDX_FLAG_HAS_QUANT | FDX_FLAG_MEANING_REQUIRES_EXT);
+    sc.quant.family = FDX_QUANT_GGML_BLOCK;
+    sc.quant.ggml_dtype = FDX_GGML_Q4_0;
+    sc.buffers_count = 1;
+    let mut sh = [0i64; 1];
+    let mut st = [0i64; 1];
+    let base = base_uint8(64, &mut sh, &mut st);
+    let buffers = vec![data_buffer(64)];
+    assert!(
+        validate(&sc, &base, &buffers).is_ok(),
+        "a coherent GGML_BLOCK quant sidecar must pass the full validate()"
+    );
+}
+
+#[test]
+fn validate_rejects_incoherent_ggml_quant() {
+    // Same sidecar, but ggml_dtype cleared to NONE — V5 must reject it THROUGH
+    // validate(). Non-vacuity proof for the positive above.
+    let mut sc = sidecar(FDX_FLAG_HAS_QUANT | FDX_FLAG_MEANING_REQUIRES_EXT);
+    sc.quant.family = FDX_QUANT_GGML_BLOCK;
+    sc.quant.ggml_dtype = FDX_DTYPE_NONE;
+    sc.buffers_count = 1;
+    let mut sh = [0i64; 1];
+    let mut st = [0i64; 1];
+    let base = base_uint8(64, &mut sh, &mut st);
+    let buffers = vec![data_buffer(64)];
+    assert!(
+        matches!(
+            validate(&sc, &base, &buffers),
+            Err(FdxValidationError::QuantIncoherent { .. })
+        ),
+        "an incoherent GGML_BLOCK quant sidecar must be rejected by validate() (proves the quant path is reached)"
+    );
+}
+
+#[test]
+fn validate_pass_sub_byte_sidecar() {
+    let mut sc = sidecar(FDX_FLAG_HAS_DTYPE_EXT | FDX_FLAG_MEANING_REQUIRES_EXT);
+    sc.dtype_ext.logical_dtype = FDX_DTYPE_I4;
+    sc.dtype_ext.bit_width = 4;
+    sc.dtype_ext.packing = FDX_PACKING_DENSE_SUBBYTE;
+    // `lanes: 1` is what the field's own doc calls a scalar dtype. ⚠️ IT CHANGES
+    // NO ASSERTION TODAY -- `validate()` never reads `dtype_ext.lanes` (measured:
+    // 0 reads in validate.rs; control: it reads `logical_dtype` and `bit_width`
+    // there). It is set so the fixture MATCHES ITS NAME, because a fixture named
+    // coherent is what the next author copies as the template for a well-formed
+    // sub-byte sidecar. See GAP-286: the field having no validator arm is a
+    // separate defect and is NOT fixed here.
+    sc.dtype_ext.lanes = 1;
+    sc.buffers_count = 1;
+    let mut sh = [0i64; 1];
+    let mut st = [0i64; 1];
+    let base = base_uint8(64, &mut sh, &mut st);
+    let buffers = vec![data_buffer(64)];
+    assert!(
+        validate(&sc, &base, &buffers).is_ok(),
+        "a coherent sub-byte (HAS_DTYPE_EXT) sidecar must pass the full validate()"
+    );
+}
+
+#[test]
+fn validate_rejects_incoherent_sub_byte() {
+    // Same sidecar, bit_width cleared to 0 — V4 must reject it THROUGH validate().
+    // Non-vacuity proof for the positive above.
+    let mut sc = sidecar(FDX_FLAG_HAS_DTYPE_EXT | FDX_FLAG_MEANING_REQUIRES_EXT);
+    sc.dtype_ext.logical_dtype = FDX_DTYPE_I4;
+    sc.dtype_ext.bit_width = 0;
+    sc.dtype_ext.packing = FDX_PACKING_DENSE_SUBBYTE;
+    sc.dtype_ext.lanes = 1;
+    sc.buffers_count = 1;
+    let mut sh = [0i64; 1];
+    let mut st = [0i64; 1];
+    let base = base_uint8(64, &mut sh, &mut st);
+    let buffers = vec![data_buffer(64)];
+    assert!(
+        matches!(
+            validate(&sc, &base, &buffers),
+            Err(FdxValidationError::BadSubByte { .. })
+        ),
+        "an incoherent sub-byte sidecar (bit_width 0) must be rejected by validate() (proves V4 is reached)"
+    );
+}
