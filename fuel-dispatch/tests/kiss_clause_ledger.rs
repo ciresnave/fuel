@@ -683,13 +683,29 @@ fn bare_cited_ledger_clauses() -> BTreeMap<String, Vec<String>> {
     out
 }
 
-/// Ledger clauses KNOWN to be cited bare somewhere, measured at `80def246`.
+/// Ledger clauses KNOWN to be cited bare somewhere.
 ///
 /// A DECLARATION of the scanner's blind spot, not an approval of it. A new
 /// entry means someone cited a ledger clause without its `KISS-OPS-` prefix,
-/// where the citation gate cannot see it -- qualify the citation rather than
-/// extending this list.
+/// where the citation gate cannot see it.
+///
+/// ⚠️ THE TEST IS NOT "IS THIS INCONVENIENT TO QUALIFY" BUT "WOULD QUALIFYING
+/// IT DESTROY EVIDENCE". Fuel's own live source, tests and current specs are
+/// QUALIFIABLE and must be qualified. CORRESPONDENCE -- sent or received -- is
+/// HISTORICAL: editing a letter to satisfy our scanner rewrites the record of
+/// what was said, and for a letter we RECEIVED it rewrites someone else's
+/// words. Same disposition as `GAP-004`/`GAP-117` keeping their bare
+/// `file:LINE`: a missed stale mention misleads and is findable later; a swept
+/// HISTORICAL one destroys evidence and reads as correct.
+///
+/// EVERY ENTRY BELOW IS BARE **ONLY** IN CORRESPONDENCE. That invariant is what
+/// keeps this a declaration rather than an exemption list, and it is why the
+/// five added 2026-09-09 came with five sites qualified in Fuel's own text
+/// first -- `lib.rs` x2, `recipe-signature-reference.md`,
+/// `kernel-seam-interop.md`, a dated design spec -- so that nothing fixable
+/// hides behind a historical reason.
 const BARE_CITED_LEDGER_CLAUSES: &[&str] = &[
+    // Measured at `80def246`.
     "6.0-0003",
     "6.15-0001",
     "6.15-0002",
@@ -699,6 +715,21 @@ const BARE_CITED_LEDGER_CLAUSES: &[&str] = &[
     "6.3-0002",
     "6.3-0003",
     "6.8-0001",
+    // Added 2026-09-09. These became ledger clauses when GAP-305 gave them
+    // rows; their bare citations are older than the rows and live in letters.
+    //
+    // ⚠️ `6.19-0005` above has been carrying exactly this shape since the list
+    // was written -- it is bare in the same KISS letter -- so these are not a
+    // new category, they are the category the list was built for.
+    "6.19-0003", // kiss-shape-expression-rfc-reply.md -- a letter FROM KISS TO
+    // FUEL, 2026-07-18. Not Fuel's text.
+    "6.19-0007", // kiss-shape-expression-rfc-reply.md -- as above.
+    "6.19-0010", // three outreach letters. Fuel's own five sites were QUALIFIED
+    // in this change rather than declared.
+    "6.19-0025", // kiss-shape-expression-rfc-reply.md -- as above.
+    "6.19-0027", // baracuda-recipe-grammar-codesign-reply-2.md -- a Fuel letter
+                 // marked RELAYED to Baracuda 2026-07-15; a record of what we
+                 // SENT.
 ];
 
 // ---- the gate ------------------------------------------------------------
