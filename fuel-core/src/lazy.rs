@@ -5231,7 +5231,8 @@ impl Tensor {
         Ok(Self { inner })
     }
 
-    /// Append a [`fuel_graph::Op::Conv2D`] node. See `fuel_graph`'s
+    /// Append a [`fuel_graph::Op::Fused`] node carrying
+    /// [`fuel_graph::registry::FusedOpParams::Conv2D`]. See `fuel_graph`'s
     /// `Tensor::conv2d` for the full shape contract: `self` must be
     /// `[N, Cin, H, W]`; `weight` must be `[Cout, Cin/groups, Kh, Kw]`;
     /// `bias` is optional and must be `[Cout]` when provided. Returns
@@ -5321,7 +5322,8 @@ impl Tensor {
         })
     }
 
-    /// Append a [`fuel_graph::Op::FlashAttn`] node. `self` is `q`
+    /// Append a [`fuel_graph::Op::Fused`] node carrying
+    /// [`fuel_graph::registry::FusedOpParams::FlashAttn`]. `self` is `q`
     /// of shape `[B, Hq, Sq, D]`; `k` and `v` are `[B, Hkv, Sk, D]`
     /// with `Hq` a multiple of `Hkv` (GQA). `alibi_slopes` (optional)
     /// is `[Hq]`. Returns the attention output, shape `[B, Hq, Sq, D]`.
@@ -5422,7 +5424,8 @@ impl Tensor {
         })
     }
 
-    /// Append a [`fuel_graph::Op::PagedAttn`] node. `self` is the Q
+    /// Append a [`fuel_graph::Op::Fused`] node carrying
+    /// [`fuel_graph::registry::FusedOpParams::PagedAttn`]. `self` is the Q
     /// tensor `[B, Hq, Sq, D]`. `k_cache` / `v_cache` are paged caches
     /// `[num_blocks, block_size, Hkv, D]`. `block_table` is `[B,
     /// max_blocks]` u32; `context_lens` is `[B]` u32.
@@ -5571,7 +5574,8 @@ impl Tensor {
         })
     }
 
-    /// Append a [`fuel_graph::Op::ConvTranspose2D`] node. `self` must
+    /// Append a [`fuel_graph::Op::Fused`] node carrying
+    /// [`fuel_graph::registry::FusedOpParams::ConvTranspose2D`]. `self` must
     /// be `[N, Cin, H, W]`; `weight` must be `[Cin, Cout/groups, Kh, Kw]`
     /// (note transposed channel order vs `conv2d`). Returns a rank-4
     /// lazy tensor `[N, Cout, Hout, Wout]`.

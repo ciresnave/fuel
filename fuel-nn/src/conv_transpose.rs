@@ -15,7 +15,8 @@
 //!
 //! No computation happens inside `forward` — the weight is wrapped as
 //! a `Const` node on the activation's graph, the transposed conv is
-//! appended as a single [`fuel_graph::Op::ConvTranspose2D`] node (the
+//! appended as a single [`fuel_graph::Op::Fused`] node carrying
+//! [`fuel_graph::registry::FusedOpParams::ConvTranspose2D`] (the
 //! 1-D variant lifts to rank-4 transparently), and the bias add is
 //! appended as a broadcast add. Validation (rank, channel divisibility,
 //! stride / dilation > 0) surfaces as a typed [`fuel_core::Error`] at

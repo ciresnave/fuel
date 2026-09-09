@@ -127,7 +127,8 @@ pub fn topo_order_multi(graph: &Graph, roots: &[NodeId]) -> Vec<NodeId> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct NodeId(pub usize);
 
-/// Quantization block format for [`Op::QMatMul`]. Matches the
+/// Quantization block format for the `QMatMul` fused op
+/// ([`crate::registry::FusedOpParams::QMatMul`]). Matches the
 /// GGML/GGUF block layouts; each variant implies a fixed bytes-per-block
 /// and elements-per-block. Only variants for which a backend has a
 /// fused dequant-in-kernel matmul are currently exposed.
@@ -4512,7 +4513,8 @@ impl NodeHandle {
         out
     }
 
-    /// Append a [`Op::QMatMul`] node that multiplies `self` (F32
+    /// Append an [`Op::Fused`] node carrying
+    /// [`crate::registry::FusedOpParams::QMatMul`] that multiplies `self` (F32
     /// activations, shape `[..., M, K]`) with a Q-type quantized
     /// weight matrix of logical shape `[N, K]` stored as a raw byte
     /// stream (passed in as a U32 tensor; length = n_bytes / 4).
@@ -4599,7 +4601,8 @@ impl NodeHandle {
         }
     }
 
-    /// Append a [`Op::Conv2D`] node. `self` must be `[N, Cin, H, W]`
+    /// Append an [`Op::Fused`] node carrying
+    /// [`crate::registry::FusedOpParams::Conv2D`]. `self` must be `[N, Cin, H, W]`
     /// (rank 4); `weight` must be `[Cout, Cin/groups, Kh, Kw]` (rank
     /// 4) and live on the same graph. `bias` is optional — when
     /// present it must be rank 1 with length `Cout`. Returns a rank-4
@@ -4716,7 +4719,8 @@ impl NodeHandle {
         }
     }
 
-    /// Append a [`Op::PagedAttn`] node. `self` is the Q tensor of shape
+    /// Append an [`Op::Fused`] node carrying
+    /// [`crate::registry::FusedOpParams::PagedAttn`]. `self` is the Q tensor of shape
     /// `[B, Hq, Sq, D]`; `k_cache` and `v_cache` are the paged caches
     /// shaped `[num_blocks, block_size, Hkv, D]`; `block_table` is
     /// `[B, max_num_blocks_per_seq]` (u32) mapping logical → physical
@@ -4889,7 +4893,8 @@ impl NodeHandle {
         }
     }
 
-    /// Append a [`Op::ConvTranspose2D`] node. `self` must be
+    /// Append an [`Op::Fused`] node carrying
+    /// [`crate::registry::FusedOpParams::ConvTranspose2D`]. `self` must be
     /// `[N, Cin, H, W]`; `weight` must be `[Cin, Cout/groups, Kh, Kw]`
     /// (note transposed channel order vs `conv2d`). Returns a rank-4
     /// tensor `[N, Cout, Hout, Wout]`.
@@ -5054,7 +5059,8 @@ impl NodeHandle {
         y4.reshape(Shape::from_dims(&[n_o, cout, l_out]))
     }
 
-    /// Append a [`Op::FlashAttn`] node. `self` is `q` of shape
+    /// Append an [`Op::Fused`] node carrying
+    /// [`crate::registry::FusedOpParams::FlashAttn`]. `self` is `q` of shape
     /// `[B, Hq, Sq, D]`; `k` and `v` are `[B, Hkv, Sk, D]` with
     /// `Hq` a multiple of `Hkv` (GQA). `alibi_slopes` (optional) is
     /// `[Hq]`. Returns a tensor with `q`'s shape.
@@ -5165,7 +5171,8 @@ impl NodeHandle {
         }
     }
 
-    /// Append a [`Op::FlashAttn`] over a fixed-**capacity** K/V whose
+    /// Append an [`Op::Fused`] node carrying
+    /// [`crate::registry::FusedOpParams::FlashAttn`] over a fixed-**capacity** K/V whose
     /// attended length is a **runtime** value (`k_len`) resolved through
     /// the per-pass [`fuel_ir::SymEnv`] at realize, decoupled
     /// from K's allocated shape.
