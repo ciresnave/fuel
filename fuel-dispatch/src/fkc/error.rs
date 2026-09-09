@@ -305,9 +305,13 @@ pub enum FkcError {
     Io { path: String, reason: String },
 
     // ===== §10 build-time validators (V-FKC-*) =====
-    /// `fkc_version` exceeds the importer's supported maximum (V-FKC §10.1).
-    #[error("FKC §10.1: fkc_version {found} exceeds supported max {max}")]
-    UnsupportedVersion { found: u32, max: u32 },
+    /// `fkc_version` is not in the importer's declared supported set (V-FKC
+    /// §10.1; KISS #450 — membership, not a `<= max` bound, so `0` is rejected).
+    #[error("FKC §10.1: fkc_version {found} is not supported (supported versions: {supported:?})")]
+    UnsupportedVersion {
+        found: u32,
+        supported: &'static [u32],
+    },
 
     /// Layout flags are mutually incoherent (V-FKC §10.4): neither
     /// `contiguous` nor `strided` is acceptable; or `broadcast_stride0` /

@@ -113,6 +113,27 @@ mod tests {
         assert!(op_to_kiss(OpTag::MatMul).is_none());
     }
 
+    /// GAP-048 §6.15 no-substitution guard. `op_to_kiss` must never advertise a
+    /// native Fuel op as a DIFFERENT-semantics KISS op. Fuel's `Maximum`/`Minimum`
+    /// are NaN-PROPAGATING (`MaxProp`/`MinProp`), NOT the IEEE NaN-SUPPRESSING
+    /// `FmaxIeee`/`FminIeee`; Fuel's `Rem` is FLOORED, not `RemTrunc`. Those
+    /// IEEE/truncated ops are RESOLVED by decomposition (fuel-graph
+    /// `fmax_ieee`/`fmin_ieee`/`rem_trunc`), never mapped from a native op —
+    /// mapping `Maximum -> FmaxIeee` is the "one careless mapping away" §6.15
+    /// substitution, and this test is what keeps it from happening. `kiss-ops-vocab`
+    /// DOES define `FmaxIeee`/`FminIeee`/`RemTrunc`, so the wrong arm would
+    /// type-check — the guard is not vacuous.
+    #[test]
+    fn never_substitutes_a_native_op_for_an_ieee_or_truncated_kiss_op() {
+        // Truthful mappings — Fuel's native ops advertised as their REAL semantics:
+        assert!(matches!(op_to_kiss(OpTag::Maximum), Some(Op::MaxProp)));
+        assert!(matches!(op_to_kiss(OpTag::Minimum), Some(Op::MinProp)));
+        // The substitutions §6.15 forbids — must NEVER happen:
+        assert!(!matches!(op_to_kiss(OpTag::Maximum), Some(Op::FmaxIeee)));
+        assert!(!matches!(op_to_kiss(OpTag::Minimum), Some(Op::FminIeee)));
+        assert!(!matches!(op_to_kiss(OpTag::Rem), Some(Op::RemTrunc)));
+    }
+
     #[test]
     fn declines_dtype_without_kiss_equivalent() {
         // An MX format Fuel has but kiss-classify lacks.

@@ -116,7 +116,7 @@ pub use shape_constraint::{
     AxisIndex, ProbeCombo, RankSpec, ShapeAtom, ShapeConstraint, parse_rank_spec,
     parse_shape_constraint, solve_probe_shapes,
 };
-pub use validate::{FKC_VERSION_MAX, validate_file, validate_kernel};
+pub use validate::{FKC_SUPPORTED_VERSIONS, validate_file, validate_kernel};
 #[cfg(feature = "vulkan")]
 pub use vulkan_link::{
     VULKAN_CAST_ENTRY_POINTS, VULKAN_ELEMENTWISE_ENTRY_POINTS, VulkanLinkRegistry,
