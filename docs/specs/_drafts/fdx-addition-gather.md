@@ -6,7 +6,7 @@
 > V18–V21, Appendix A, example §13.8, plus the 2026-06-17 critique fixes folded after integration).
 > Read the parent for the authoritative form; this file explains the *why*.
 
-**Status:** COMPANION RATIONALE — FOLDED INTO the parent (2026-06-17). The SUBJECT is implemented on `main` (`fuel-ir/src/dlpack/`); this document is retained as rationale only.
+**Status:** COMPANION RATIONALE — FOLDED INTO the parent (2026-06-17). Design pass — no code yet.
 This file is the pre-integration rationale for the gather addition; the post-integration
 authoritative form lives in `docs/specs/dlpack-extension.md`. (Validator numbers here use V18–V21,
 matching the parent; the earlier pre-integration V16–V20 draft is obsolete — see §"Numbering note".)

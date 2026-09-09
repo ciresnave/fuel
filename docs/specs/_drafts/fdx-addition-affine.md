@@ -7,7 +7,8 @@
 > the i128-widening eval, the V17-before-V14 ordering, the negative-coeff V16 cross-check). Read
 > the parent for the authoritative form; this file explains the *why*.
 
-**Status:** COMPANION RATIONALE — FOLDED INTO the parent (2026-06-17, rev. 2). **The SUBJECT is implemented on `main` (`fuel-ir/src/dlpack/`); this document is retained as rationale only.** The post-integration authoritative form lives in `docs/specs/dlpack-extension.md`.
+**Status:** COMPANION RATIONALE — FOLDED INTO the parent (2026-06-17, rev. 2). **Design pass — no
+code yet.** The post-integration authoritative form lives in `docs/specs/dlpack-extension.md`.
 This document is a *self-contained addition* that specifies the AFFINE extent variant: its
 struct shapes (C + Rust), field semantics, realize-time evaluation through `SymEnv`, the
 bounds/OOB guard, backward-compat with the as-built `Scalar`/`Range`, the validator extensions,

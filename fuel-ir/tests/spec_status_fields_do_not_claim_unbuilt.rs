@@ -64,6 +64,25 @@ fn markdown_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// Does this document announce, up front, that it has been superseded?
+///
+/// ⚠️ **Scoped on the BANNER, not on the path — and the difference is not cosmetic.**
+/// A rule reading `_drafts/` is out of scope would have been right by accident and wrong
+/// by mechanism: two of the four drafts carried this banner and two did not, and the two
+/// WITHOUT it were exactly the ones whose status fields were misleading readers. **A
+/// path-scoped exemption would have excused them permanently and silently, because an
+/// exemption reads as deliberate.** The banner is the property that actually varies.
+///
+/// Vocabulary deliberately matches the block-aware scanner in fuel's doc-drift work, so
+/// two independently-built detectors do not drift apart on the same discriminator.
+fn has_supersession_banner(text: &str) -> bool {
+    let head: String = text.chars().take(1200).collect();
+    let upper = head.to_ascii_uppercase();
+    ["SUPERSEDED", "STRUCK", "RETAINED AS", "RETAINED BELOW"]
+        .iter()
+        .any(|m| upper.contains(m))
+}
+
 /// The paragraph beginning `**Status:**`, with wrapping collapsed.
 ///
 /// ⚠️ Paragraph-joined on purpose: a line-anchored scan measures the author's wrap
@@ -95,10 +114,25 @@ fn no_spec_status_field_claims_the_work_is_unbuilt() {
         dir.display()
     );
 
+    let mut superseded = 0usize;
     let with_status: Vec<_> = files
         .iter()
-        .filter_map(|f| status_paragraph(&std::fs::read_to_string(f).unwrap()).map(|s| (f, s)))
+        .filter_map(|f| {
+            let text = std::fs::read_to_string(f).unwrap();
+            if has_supersession_banner(&text) {
+                superseded += 1;
+                return None;
+            }
+            status_paragraph(&text).map(|s| (f, s))
+        })
         .collect();
+    // Visible, so an exemption that grows silently is not mistaken for a clean tree.
+    assert!(
+        superseded <= 6,
+        "{superseded} spec files now carry a supersession banner and are exempt from this \
+         check. That is more than expected — a banner is not a way to retire a status \
+         field from scrutiny. Re-read them before raising this bound."
+    );
     assert!(
         with_status.len() >= 5,
         "only {} of {} spec files have a **Status:** field — the extractor is broken; \
