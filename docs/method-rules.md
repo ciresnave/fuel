@@ -2107,7 +2107,25 @@ Six sites read *"Append a [`Op::QMatMul`] node"*. **`QMatMul` is not an `Op` var
 
 ⚠️ **De-linking there would REMOVE THE ADVERTISEMENT AND LEAVE THE FALSEHOOD** — the worst of the three options, and the one a mechanical de-link sweep takes.
 
-**THE DISCRIMINATOR IS NOT THE SHAPE OF THE LINK. IT IS WHETHER THE CODE SAYS WHAT THE THING BECAME:**
+**THE DISCRIMINATOR IS NOT THE SHAPE OF THE LINK. IT IS WHETHER THE CODE SAYS WHAT THE THING BECAME — AND THE SOURCES RANK (Fuel 3, measured in the same program):**
+
+```text
+1  A NEIGHBOURING CORRECT REFERENCE   strongest, and it is free
+2  a migration comment                the code stating what it became
+3  a live sibling elsewhere           a public equivalent that carries the meaning
+4  nothing                            -> DE-LINK; a repoint manufactures a falsehood
+```
+
+⚠️ **RANK 1 IS THE ONE NOBODY LOOKS FOR, AND IT IS SITTING IN THE SAME SENTENCE.** Worked example, `lazy_quantized_gemma3.rs`:
+
+```text
+//!   over [`Gemma3Weights::load_from_mmapped`] + [`Self::from_f32_bake`].
+           ^^^^ correctly qualified                  ^^^^ broken
+```
+
+**The correct form is four words from the broken one, in the same doc block, naming the same type.** Not a comment, not a convention — **the same author getting it right about the same thing in the same sentence.** Before reaching for any other evidence, read the rest of the block.
+
+**And the general form:**
 
 ```
 the code says (a migration comment, a live sibling)  ->  REPOINT; the sentence gets truer
