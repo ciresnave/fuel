@@ -74,7 +74,8 @@ use std::sync::Arc;
 ///     vec![1.0_f32, 2.0, 3.0, 4.0],
 ///     Shape::from_dims(&[4]),
 ///     &device,
-/// );
+/// )
+/// .unwrap();
 /// let drop = Dropout::new(0.5);
 /// // Eval mode: identity.
 /// let y_eval = drop.forward(&x, /* train = */ false).unwrap();
