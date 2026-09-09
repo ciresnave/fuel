@@ -38,13 +38,66 @@
 use std::path::{Path, PathBuf};
 
 /// The phrases that assert unbuilt-ness. Deliberately short; see the scope note above.
+/// ⚠️ **"not started" was tried here and REMOVED: it does not discriminate.**
+/// `gap-029-persistent-decode-trait.md` reads *"Increment 1 landed; increments 2+ not
+/// started"* — precise, true, and exactly the kind of honest partial status a guard must
+/// not punish. A vocabulary that fires on true statements is a nag, not a detector.
+/// The dead-branch half of the same defect is caught structurally by the second test.
 const UNBUILT_CLAIMS: &[&str] = &["design pass", "no code yet"];
 
-fn specs_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
+/// The directories this guard ranges over.
+///
+/// ⚠️ **`docs/architecture/`, `ROADMAP.md` and `docs/gaps.md` are NOT here and they
+/// carry the same defects.** They were held by open PRs when this was written. **A green
+/// here is a fact about two directories, not about fuel's documentation.**
+const SCAN_DIRS: &[&str] = &["docs/specs", "docs/session-prompts"];
+
+fn scan_dirs() -> Vec<PathBuf> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .expect("fuel-ir must have a parent directory")
-        .join("docs/specs")
+        .expect("fuel-ir must have a parent directory");
+    SCAN_DIRS.iter().map(|d| root.join(d)).collect()
+}
+
+fn all_status_fields() -> Vec<(PathBuf, String)> {
+    let mut files = Vec::new();
+    for d in scan_dirs() {
+        markdown_files(&d, &mut files);
+    }
+    assert!(
+        files.len() >= 20,
+        "only {} markdown files across {SCAN_DIRS:?} — the scanner is broken, not the docs",
+        files.len()
+    );
+    let mut out = Vec::new();
+    let mut superseded = 0usize;
+    for f in &files {
+        let text = std::fs::read_to_string(f).unwrap();
+        // ⚠️ Order matters. Counting the exemption BEFORE asking whether the file has a
+        // status field at all inflated it from 4 to 10: files with no field and an
+        // incidental "superseded" blockquote were being counted as exemptions.
+        let Some(s) = status_paragraph(&text) else {
+            continue;
+        };
+        if has_supersession_banner(&text) {
+            superseded += 1;
+            continue;
+        }
+        out.push((f.clone(), s));
+    }
+    assert!(
+        superseded <= 6,
+        "{superseded} files now carry a supersession banner and are exempt. A banner is not \
+         a way to retire a status field from scrutiny — re-read them before raising this."
+    );
+    assert!(
+        out.len() >= 15,
+        "only {} status fields found in {} files — the extractor is broken, and an empty \
+         population passes every check below having examined nothing",
+        out.len(),
+        files.len()
+    );
+    out
 }
 
 fn markdown_files(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -64,6 +117,24 @@ fn markdown_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// Is this paragraph a status FIELD?
+///
+/// ⚠️ The first version required the literal `**Status:**`. Fuel writes the field four
+/// ways — `**Status:**`, `**Status:** x`, `**Status: x**`, `**Status**: x` — and the
+/// `**Status: x**` form is the one all four session-prompt files in this PR use. **So the
+/// guard's population silently excluded the very files the PR was fixing**, and it would
+/// have reported green over them forever.
+fn is_status_field(para: &str) -> bool {
+    let s = para
+        .trim_start()
+        .trim_start_matches([' ', '>', '*', '_', '-', '\t']);
+    let low = s.to_ascii_lowercase();
+    let Some(rest) = low.strip_prefix("status") else {
+        return false;
+    };
+    rest.trim_start_matches('*').trim_start().starts_with(':')
+}
+
 /// Does this document announce, up front, that it has been superseded?
 ///
 /// ⚠️ **Scoped on the BANNER, not on the path — and the difference is not cosmetic.**
@@ -76,11 +147,38 @@ fn markdown_files(dir: &Path, out: &mut Vec<PathBuf>) {
 /// Vocabulary deliberately matches the block-aware scanner in fuel's doc-drift work, so
 /// two independently-built detectors do not drift apart on the same discriminator.
 fn has_supersession_banner(text: &str) -> bool {
-    let head: String = text.chars().take(1200).collect();
-    let upper = head.to_ascii_uppercase();
-    ["SUPERSEDED", "STRUCK", "RETAINED AS", "RETAINED BELOW"]
-        .iter()
-        .any(|m| upper.contains(m))
+    // A BANNER is a blockquote, ABOVE the status field, announcing the document is
+    // superseded. Both halves are load-bearing.
+    //
+    // ⚠️ The first version of this asked only whether a keyword appeared in the first
+    // 1200 characters. That exempted 10 of 50 files instead of 4 — and TWO of the
+    // extra six were exempted BY THE VERY CORRECTIONS THIS PR MAKES: a status line
+    // reading "Retained as the implementation plan it was" and another reading
+    // "SUPERSEDED BY ITS OWN ROLLOUT" both matched. **The remedy silently switched the
+    // guard off for the file it had just fixed.** Caught only by the bound on the
+    // exemption count, which is the entire reason that bound exists.
+    //
+    // Incidental prose about supersession is not a banner. Structure is the test.
+    let cut = text
+        .split("\n\n")
+        .position(is_status_field)
+        .map(|i| {
+            text.split("\n\n")
+                .take(i)
+                .map(|p| p.len() + 2)
+                .sum::<usize>()
+        })
+        .unwrap_or(text.len())
+        .min(text.len());
+    text[..cut]
+        .lines()
+        .filter(|l| l.trim_start().starts_with('>'))
+        .any(|l| {
+            let u = l.to_ascii_uppercase();
+            ["SUPERSEDED", "STRUCK", "RETAINED AS", "RETAINED BELOW"]
+                .iter()
+                .any(|m| u.contains(m))
+        })
 }
 
 /// The paragraph beginning `**Status:**`, with wrapping collapsed.
@@ -95,54 +193,14 @@ fn status_paragraph(text: &str) -> Option<String> {
     // caught only by the non-vacuity floor below, which is why that floor exists.
     let text = text.replace("\r\n", "\n");
     text.split("\n\n")
-        .find(|p| p.trim_start().starts_with("**Status:**"))
+        .find(|p| is_status_field(p))
         .map(|p| p.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
 #[test]
 fn no_spec_status_field_claims_the_work_is_unbuilt() {
-    let dir = specs_dir();
-    let mut files = Vec::new();
-    markdown_files(&dir, &mut files);
-
-    // Non-vacuity: a wrong path or a moved directory would pass this test having
-    // examined nothing, and would look identical to a clean tree.
-    assert!(
-        files.len() >= 10,
-        "only {} markdown files under {} — the scanner is broken, not the specs",
-        files.len(),
-        dir.display()
-    );
-
-    let mut superseded = 0usize;
-    let with_status: Vec<_> = files
-        .iter()
-        .filter_map(|f| {
-            let text = std::fs::read_to_string(f).unwrap();
-            if has_supersession_banner(&text) {
-                superseded += 1;
-                return None;
-            }
-            status_paragraph(&text).map(|s| (f, s))
-        })
-        .collect();
-    // Visible, so an exemption that grows silently is not mistaken for a clean tree.
-    assert!(
-        superseded <= 6,
-        "{superseded} spec files now carry a supersession banner and are exempt from this \
-         check. That is more than expected — a banner is not a way to retire a status \
-         field from scrutiny. Re-read them before raising this bound."
-    );
-    assert!(
-        with_status.len() >= 5,
-        "only {} of {} spec files have a **Status:** field — the extractor is broken; \
-         an empty population passes every check below having examined nothing",
-        with_status.len(),
-        files.len()
-    );
-
     let mut bad = Vec::new();
-    for (f, para) in &with_status {
+    for (f, para) in all_status_fields() {
         let lower = para.to_ascii_lowercase();
         for claim in UNBUILT_CLAIMS {
             if lower.contains(claim) {
@@ -150,17 +208,51 @@ fn no_spec_status_field_claims_the_work_is_unbuilt() {
             }
         }
     }
-
     assert!(
         bad.is_empty(),
         "a spec's **Status:** field claims the work is unbuilt:\n  {}\n\n\
          This is GAP-283's class. The Status field is the highest-authority text in the \
-         file, so a reader who stops there never reaches a correction placed below it — \
-         the label does not merely fail to protect the truth, it defends the falsehood \
-         against the correct statement elsewhere in the same document.\n\n\
+         file, so a reader who stops there never reaches a correction placed below it.\n\n\
          FIX: correct the Status field itself. Keep the old wording lower down, marked \
-         DISCHARGED, as the record of when it was found. Do not add a third annotation \
-         layer above the falsehood.",
+         DISCHARGED, as the record of when it was found.",
+        bad.join("\n  ")
+    );
+}
+
+/// **A status field must not point at a branch as the live location of the work.**
+///
+/// GAP-283's other half, and the one that cost the most: ten documents named
+/// `feat/kernel-contracts-dlpack`, a branch that does not exist on origin. Following
+/// such a line costs a failed checkout and **the natural conclusion that the work was
+/// abandoned** — when in every case the subject was live on `main`.
+///
+/// A field may still MENTION a dead branch, as history. It must say it is dead.
+#[test]
+fn no_status_field_points_at_a_branch_as_the_live_location() {
+    const POINTERS: &[&str] = &["branch `", "wip lands on `", "lands on branch `"];
+    const DISCLAIMERS: &[&str] = &[
+        "does not exist",
+        "no longer exists",
+        "used to name",
+        "previously",
+        "is not on origin",
+    ];
+    let mut bad = Vec::new();
+    for (f, para) in all_status_fields() {
+        let lower = para.to_ascii_lowercase();
+        if POINTERS.iter().any(|p| lower.contains(p))
+            && !DISCLAIMERS.iter().any(|d| lower.contains(d))
+        {
+            bad.push(format!("{}: Status field points at a branch", f.display()));
+        }
+    }
+    assert!(
+        bad.is_empty(),
+        "a status field names a branch as where the work lives, with nothing saying \
+         whether that branch still exists:\n  {}\n\n\
+         A branch pointer rots silently: the branch is deleted on merge and the document \
+         keeps sending readers to it. Say where the work IS, and keep the old pointer only \
+         as history that names itself as history.",
         bad.join("\n  ")
     );
 }
