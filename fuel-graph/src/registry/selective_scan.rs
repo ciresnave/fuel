@@ -365,6 +365,7 @@ fn recipe(seqlen: usize, delta_softplus: bool) -> PatternNode {
     let scan = PatternNode::Op {
         op: T::Scan,
         attrs: OpAttrs {
+            scan_n_carries: Some(1),
             scan_n_xs: Some(4),
             scan_bound: Some(seqlen as u32),
             scan_emit: Some(0), // ScanEmit::All
@@ -767,6 +768,7 @@ mod tests {
         let ys_stacked_shape = Shape::from_dims(&[seqlen, batch, dim]);
         let scan = graph.push(Node {
             op: Op::Scan {
+                n_carries: 1,
                 n_xs: 4,
                 bound: seqlen,
                 emit: ScanEmit::All,

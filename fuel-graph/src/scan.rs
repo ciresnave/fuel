@@ -20,15 +20,20 @@ use crate::{Graph, Node, NodeId, Op, ScanEmit, ScanRole};
 pub(crate) fn validate_scan_body_placeholders(
     graph: &Graph,
     roots: &[NodeId],
+    n_carries: usize,
     n_xs: usize,
 ) -> std::result::Result<(), fuel_ir::Error> {
     let reachable = crate::topo_order_multi(graph, roots);
     for &id in &reachable {
         if let Op::ScanPlaceholder { role, index } = &graph.node(id).op {
             match *role {
-                ScanRole::Carry if *index != 0 => {
+                // GAP-303: was `*index != 0` ("v1 is single-carry"). The TYPE was
+                // always multi-carry-shaped -- `index` is a `usize` -- so this is
+                // relaxing a CHECK, not widening a type. Range-checked exactly like
+                // the `Elem` arm below; the two are now symmetric.
+                ScanRole::Carry if *index >= n_carries => {
                     return Err(fuel_ir::Error::Msg(format!(
-                        "scan: body node {} is ScanPlaceholder{{Carry, {index}}} — v1 is single-carry, index must be 0",
+                        "scan: body node {} is ScanPlaceholder{{Carry, {index}}} out of range (n_carries = {n_carries})",
                         id.0,
                     )).bt());
                 }
@@ -57,7 +62,7 @@ pub fn unroll_scan(
     graph: &mut Graph,
     scan_id: NodeId,
     steps: usize,
-) -> std::result::Result<(NodeId, NodeId), fuel_ir::Error> {
+) -> std::result::Result<(Vec<NodeId>, Vec<NodeId>), fuel_ir::Error> {
     if scan_id.0 >= graph.len() {
         return Err(fuel_ir::Error::Msg(format!(
             "unroll_scan: scan_id {} is out of range (graph has {} nodes)",
@@ -67,15 +72,23 @@ pub fn unroll_scan(
         .bt());
     }
     // 1. Read the Scan node's params + input layout in a short borrow.
-    let (n_xs, bound, emit, has_exit, inputs) = {
+    let (n_carries, n_xs, bound, emit, has_exit, inputs) = {
         let n = graph.node(scan_id);
         match &n.op {
             Op::Scan {
+                n_carries,
                 n_xs,
                 bound,
                 emit,
                 early_exit,
-            } => (*n_xs, *bound, *emit, early_exit.is_some(), n.inputs.clone()),
+            } => (
+                *n_carries,
+                *n_xs,
+                *bound,
+                *emit,
+                early_exit.is_some(),
+                n.inputs.clone(),
+            ),
             other => {
                 return Err(fuel_ir::Error::Msg(format!(
                     "unroll_scan: node {} is not an Op::Scan ({})",
@@ -97,18 +110,31 @@ pub fn unroll_scan(
     // Minimum well-formed layout: init_carry(1) + n_xs + consts(>=0) + n_trailing.
     // (One short of the trailing slots — reject it here, before the `consts`
     // slice below can panic with start > end.)
-    let n_trailing = if has_exit { 3 } else { 2 }; // body_new_carry, body_y, [pred_exit]
-    if inputs.len() < 1 + n_xs + n_trailing {
+    // GAP-303: the leading carry BLOCK is `n_carries` wide (was a literal 1) and
+    // the trailing block carries one `body_new_carry` per carry.
+    //
+    // ⚠️ `early_exit` is dead in VALUE (never `Some` on a live Phase-1 path) and
+    // LIVE IN LAYOUT -- it is the `+ has_exit` term here. That is the one place
+    // the Phase-2 field participates in Phase-1 arithmetic.
+    let n_trailing = n_carries + 1 + usize::from(has_exit); // new_carries.., body_y, [pred]
+    if n_carries == 0 {
+        return Err(fuel_ir::Error::Msg(
+            "unroll_scan: Op::Scan with n_carries = 0 has no recurrent state".to_string(),
+        )
+        .bt());
+    }
+    if inputs.len() < n_carries + n_xs + n_trailing {
         return Err(fuel_ir::Error::Msg(format!(
-            "unroll_scan: malformed Op::Scan inputs — need >= {} (init_carry + n_xs={n_xs} + {n_trailing} trailing), got {}",
-            1 + n_xs + n_trailing, inputs.len(),
+            "unroll_scan: malformed Op::Scan inputs — need >= {} (n_carries={n_carries} + n_xs={n_xs} + {n_trailing} trailing), got {}",
+            n_carries + n_xs + n_trailing, inputs.len(),
         )).bt());
     }
-    let init_carry = inputs[0];
-    let xs: Vec<NodeId> = inputs[1..1 + n_xs].to_vec();
-    let consts: Vec<NodeId> = inputs[1 + n_xs..inputs.len() - n_trailing].to_vec();
-    let body_new_carry = inputs[inputs.len() - n_trailing];
-    let body_y = inputs[inputs.len() - n_trailing + 1];
+    let init_carries: Vec<NodeId> = inputs[0..n_carries].to_vec();
+    let xs: Vec<NodeId> = inputs[n_carries..n_carries + n_xs].to_vec();
+    let consts: Vec<NodeId> = inputs[n_carries + n_xs..inputs.len() - n_trailing].to_vec();
+    let body_new_carries: Vec<NodeId> =
+        inputs[inputs.len() - n_trailing..inputs.len() - n_trailing + n_carries].to_vec();
+    let body_y = inputs[inputs.len() - n_trailing + n_carries];
     // pred_exit = inputs[inputs.len() - 1] when has_exit — intentionally NOT read; the
     // build-time backward unroll differentiates the full static `bound` and ignores the
     // runtime early-exit predicate (spec C3 "static-horizon note").
@@ -117,7 +143,9 @@ pub fn unroll_scan(
     // 2. Validate every ScanPlaceholder reachable from the body's two exit
     // nodes has an in-range index, BEFORE any cloning/mutation (shared with the
     // build-time check in NodeHandle::scan / NodeHandle::scan_until).
-    validate_scan_body_placeholders(graph, &[body_new_carry, body_y], n_xs)?;
+    let mut roots: Vec<NodeId> = body_new_carries.clone();
+    roots.push(body_y);
+    validate_scan_body_placeholders(graph, &roots, n_carries, n_xs)?;
 
     // 3. Validate every xs[i] has a leading (scan-axis) dim >= steps: the
     // per-step `Slice { dim: 0, start: t, len: 1 }` below needs `t` in range
@@ -139,7 +167,7 @@ pub fn unroll_scan(
         }
     }
 
-    let mut carry = init_carry;
+    let mut carries: Vec<NodeId> = init_carries;
     let mut ys_steps: Vec<NodeId> = Vec::with_capacity(steps);
 
     for t in 0..steps {
@@ -177,10 +205,15 @@ pub fn unroll_scan(
         // Clone the body subgraph (rooted at {body_new_carry, body_y}),
         // substituting placeholders + keeping consts shared.
         let mut subst: HashMap<NodeId, NodeId> = HashMap::new();
-        let next_carry =
-            clone_body_node(graph, body_new_carry, carry, &elem, &consts_set, &mut subst);
-        let y_t = clone_body_node(graph, body_y, carry, &elem, &consts_set, &mut subst);
-        carry = next_carry;
+        // ⚠️ Every new carry is computed from THIS step's `carries`, so the whole
+        // block is built before any assignment -- updating in place mid-loop would
+        // let carry k+1 read carry k's NEXT value instead of its current one.
+        let next_carries: Vec<NodeId> = body_new_carries
+            .iter()
+            .map(|&nc| clone_body_node(graph, nc, &carries, &elem, &consts_set, &mut subst))
+            .collect();
+        let y_t = clone_body_node(graph, body_y, &carries, &elem, &consts_set, &mut subst);
+        carries = next_carries;
         ys_steps.push(y_t);
     }
 
@@ -216,9 +249,16 @@ pub fn unroll_scan(
         dtype: y0_dtype,
     });
 
+    // GAP-303: both sides widened to `Vec`. The (selected, complementary)
+    // contract is UNCHANGED -- only the arity is.
+    //
+    // ⚠️ The old `(NodeId, NodeId)` return was a FOURTH site of the single-carry
+    // assumption, encoded in a `pub fn`'s SIGNATURE rather than in a field: with
+    // `emit = Final` and `n_carries > 1` there is no single "selected" output,
+    // and no type could have expressed that while the pair was scalar.
     Ok(match emit {
-        ScanEmit::All => (stacked_ys, carry),
-        ScanEmit::Final => (carry, stacked_ys),
+        ScanEmit::All => (vec![stacked_ys], carries),
+        ScanEmit::Final => (carries, vec![stacked_ys]),
     })
 }
 
@@ -228,7 +268,7 @@ pub fn unroll_scan(
 fn clone_body_node(
     graph: &mut Graph,
     id: NodeId,
-    carry: NodeId,
+    carries: &[NodeId],
     elem: &[NodeId],
     consts_set: &std::collections::HashSet<NodeId>,
     subst: &mut HashMap<NodeId, NodeId>,
@@ -244,10 +284,14 @@ fn clone_body_node(
         (n.op.clone(), n.inputs.clone(), n.shape.clone(), n.dtype)
     };
     let mapped = match op {
+        // GAP-303: the two arms are now SYMMETRIC. `Carry` used to ignore
+        // `index` entirely (it was required to be 0); it now indexes `carries`
+        // exactly as `Elem` indexes `elem`. Both are range-checked up front by
+        // `validate_scan_body_placeholders`, so both index safely.
         Op::ScanPlaceholder {
             role: ScanRole::Carry,
-            ..
-        } => carry,
+            index,
+        } => carries[index],
         Op::ScanPlaceholder {
             role: ScanRole::Elem,
             index,
@@ -255,7 +299,7 @@ fn clone_body_node(
         _ => {
             let new_inputs: Vec<NodeId> = in_ids
                 .iter()
-                .map(|&c| clone_body_node(graph, c, carry, elem, consts_set, subst))
+                .map(|&c| clone_body_node(graph, c, carries, elem, consts_set, subst))
                 .collect();
             graph.push(Node {
                 op,
@@ -272,13 +316,15 @@ fn clone_body_node(
 /// The parsed input layout of an [`Op::Scan`] node — the fields the early-exit
 /// step driver needs, extracted from the trailing-input encoding.
 pub struct ScanLayout {
+    /// GAP-303: how many carries the leading/trailing blocks are wide.
+    pub n_carries: usize,
     pub n_xs: usize,
     pub bound: usize,
     pub emit: ScanEmit,
-    pub init_carry: NodeId,
+    pub init_carries: Vec<NodeId>,
     pub xs: Vec<NodeId>,
     pub consts: Vec<NodeId>,
-    pub body_new_carry: NodeId,
+    pub body_new_carries: Vec<NodeId>,
     pub body_y: NodeId,
     /// `Some` when `early_exit = Some` — the scalar-`U8` convergence predicate.
     pub pred_exit: Option<NodeId>,
@@ -287,7 +333,7 @@ pub struct ScanLayout {
 /// One materialized scan step: the post-step carry, the emitted `y`, and the
 /// (optional) realized `stop` predicate node for this step.
 pub struct ScanStep {
-    pub new_carry: NodeId,
+    pub new_carries: Vec<NodeId>,
     pub y: NodeId,
     pub stop: Option<NodeId>,
 }
@@ -309,13 +355,14 @@ pub fn parse_scan_layout(
         .bt());
     }
     let n = graph.node(scan_id);
-    let (n_xs, bound, emit, has_exit) = match &n.op {
+    let (n_carries, n_xs, bound, emit, has_exit) = match &n.op {
         Op::Scan {
+            n_carries,
             n_xs,
             bound,
             emit,
             early_exit,
-        } => (*n_xs, *bound, *emit, early_exit.is_some()),
+        } => (*n_carries, *n_xs, *bound, *emit, early_exit.is_some()),
         other => {
             return Err(fuel_ir::Error::Msg(format!(
                 "parse_scan_layout: node {} is not an Op::Scan ({})",
@@ -326,27 +373,37 @@ pub fn parse_scan_layout(
         }
     };
     let inputs = &n.inputs;
-    let n_trailing = if has_exit { 3 } else { 2 }; // body_new_carry, body_y, [pred_exit]
-    if inputs.len() < 1 + n_xs + n_trailing {
+    // GAP-303: mirrors `unroll_scan`'s arithmetic exactly -- the two parses must
+    // agree or a step driver and the oracle disagree about the same node.
+    let n_trailing = n_carries + 1 + usize::from(has_exit);
+    if n_carries == 0 {
+        return Err(fuel_ir::Error::Msg(
+            "parse_scan_layout: Op::Scan with n_carries = 0 has no recurrent state".to_string(),
+        )
+        .bt());
+    }
+    if inputs.len() < n_carries + n_xs + n_trailing {
         return Err(fuel_ir::Error::Msg(format!(
-            "parse_scan_layout: malformed Op::Scan inputs — need >= {} (init_carry + n_xs={n_xs} + {n_trailing} trailing), got {}",
-            1 + n_xs + n_trailing, inputs.len(),
+            "parse_scan_layout: malformed Op::Scan inputs — need >= {} (n_carries={n_carries} + n_xs={n_xs} + {n_trailing} trailing), got {}",
+            n_carries + n_xs + n_trailing, inputs.len(),
         )).bt());
     }
-    let init_carry = inputs[0];
-    let xs: Vec<NodeId> = inputs[1..1 + n_xs].to_vec();
-    let consts: Vec<NodeId> = inputs[1 + n_xs..inputs.len() - n_trailing].to_vec();
-    let body_new_carry = inputs[inputs.len() - n_trailing];
-    let body_y = inputs[inputs.len() - n_trailing + 1];
+    let init_carries: Vec<NodeId> = inputs[0..n_carries].to_vec();
+    let xs: Vec<NodeId> = inputs[n_carries..n_carries + n_xs].to_vec();
+    let consts: Vec<NodeId> = inputs[n_carries + n_xs..inputs.len() - n_trailing].to_vec();
+    let body_new_carries: Vec<NodeId> =
+        inputs[inputs.len() - n_trailing..inputs.len() - n_trailing + n_carries].to_vec();
+    let body_y = inputs[inputs.len() - n_trailing + n_carries];
     let pred_exit = has_exit.then(|| inputs[inputs.len() - 1]);
     Ok(ScanLayout {
+        n_carries,
         n_xs,
         bound,
         emit,
-        init_carry,
+        init_carries,
         xs,
         consts,
-        body_new_carry,
+        body_new_carries,
         body_y,
         pred_exit,
     })
@@ -362,7 +419,7 @@ pub fn build_scan_step(
     graph: &mut Graph,
     layout: &ScanLayout,
     t: usize,
-    carry: NodeId,
+    carries: &[NodeId],
 ) -> std::result::Result<ScanStep, fuel_ir::Error> {
     // per-step elem slices: xs[i] sliced [t,t+1) on axis 0, squeezed.
     let mut elem: Vec<NodeId> = Vec::with_capacity(layout.n_xs);
@@ -402,22 +459,33 @@ pub fn build_scan_step(
     }
     let consts_set: std::collections::HashSet<NodeId> = layout.consts.iter().copied().collect();
     let mut subst: HashMap<NodeId, NodeId> = HashMap::new();
-    // Clone body_new_carry FIRST so subst records body_new_carry -> new_carry,
-    // then clone body_y and pred_exit sharing subst (spec "Predicate referencing
-    // body_new_carry" — no double-clone).
-    let new_carry = clone_body_node(
+    // Clone EVERY body_new_carry FIRST so subst records each body_new_carry ->
+    // new_carry, then clone body_y and pred_exit sharing subst (spec "Predicate
+    // referencing body_new_carry" — no double-clone).
+    //
+    // GAP-303: the whole block is built from THIS step's `carries` before any of
+    // it is returned, matching `unroll_scan`'s ordering.
+    let new_carries: Vec<NodeId> = layout
+        .body_new_carries
+        .iter()
+        .map(|&nc| clone_body_node(graph, nc, carries, &elem, &consts_set, &mut subst))
+        .collect();
+    let y = clone_body_node(
         graph,
-        layout.body_new_carry,
-        carry,
+        layout.body_y,
+        carries,
         &elem,
         &consts_set,
         &mut subst,
     );
-    let y = clone_body_node(graph, layout.body_y, carry, &elem, &consts_set, &mut subst);
     let stop = layout
         .pred_exit
-        .map(|p| clone_body_node(graph, p, carry, &elem, &consts_set, &mut subst));
-    Ok(ScanStep { new_carry, y, stop })
+        .map(|p| clone_body_node(graph, p, carries, &elem, &consts_set, &mut subst));
+    Ok(ScanStep {
+        new_carries,
+        y,
+        stop,
+    })
 }
 
 #[cfg(test)]
@@ -471,6 +539,7 @@ mod tests {
             });
             g.push(Node {
                 op: Op::Scan {
+                    n_carries: 1,
                     n_xs: 0,
                     bound,
                     emit,
@@ -484,13 +553,210 @@ mod tests {
         (graph, scan)
     }
 
+    /// GAP-303: a TWO-carry scan, exercised through the real internal path.
+    ///
+    /// ⚠️ `NodeHandle::scan` pins `n_carries: 1`, so nothing public can build one
+    /// of these — without this test the multi-carry machinery ships written but
+    /// never RUN, and a green suite says nothing about it.
+    ///
+    /// THE DISCRIMINATING ASSERTION is that carry 1 reads its OWN init, not carry
+    /// 0's. Before this change `clone_body_node`'s `Carry` arm ignored `index`
+    /// entirely (`role: Carry, .. => carry`), so EVERY carry hole substituted to
+    /// the single carry — a 2-carry body would have silently threaded carry 0
+    /// into both slots and produced a graph that runs and is wrong.
+    fn two_carry_scan() -> (
+        Arc<RwLock<Graph>>,
+        crate::NodeId,
+        crate::NodeId,
+        crate::NodeId,
+    ) {
+        let graph = Arc::new(RwLock::new(Graph::new()));
+        let (scan, c0, c1) = {
+            let mut g = graph.write().unwrap();
+            let sh = Shape::from_dims(&[1]);
+            let mk = |g: &mut Graph, op: Op, inputs: Vec<crate::NodeId>| {
+                g.push(Node {
+                    op,
+                    inputs,
+                    shape: sh.clone(),
+                    dtype: DType::F32,
+                })
+            };
+            // Two DISTINCT inits, so "carry 1 read carry 0" is observable.
+            let c0 = mk(&mut g, Op::Const, vec![]);
+            let c1 = mk(&mut g, Op::Const, vec![]);
+            let h0 = mk(
+                &mut g,
+                Op::ScanPlaceholder {
+                    role: ScanRole::Carry,
+                    index: 0,
+                },
+                vec![],
+            );
+            let h1 = mk(
+                &mut g,
+                Op::ScanPlaceholder {
+                    role: ScanRole::Carry,
+                    index: 1,
+                },
+                vec![],
+            );
+            // Different factors, so the two carry chains are distinguishable.
+            let nc0 = mk(&mut g, Op::MulScalar(2.0), vec![h0]);
+            let nc1 = mk(&mut g, Op::MulScalar(3.0), vec![h1]);
+            let y = mk(&mut g, Op::MulScalar(5.0), vec![h0]);
+            // layout = [init_c0, init_c1, | nc0, nc1, y]
+            let scan = g.push(Node {
+                op: Op::Scan {
+                    n_carries: 2,
+                    n_xs: 0,
+                    bound: 1,
+                    emit: ScanEmit::All,
+                    early_exit: None,
+                },
+                inputs: vec![c0, c1, nc0, nc1, y],
+                shape: Shape::from_dims(&[1, 1]),
+                dtype: DType::F32,
+            });
+            (scan, c0, c1)
+        };
+        (graph, scan, c0, c1)
+    }
+
+    /// GAP-303 / Baracuda's requirement: the DUMP must name the carry count.
+    ///
+    /// ⚠️ Their reason, earned the expensive way: they spent a day on a benchmark
+    /// that ran four times, reproducibly, with four valid controls, AGAINST THE
+    /// WRONG KERNEL. "A control tells you the encoding is sound; only the
+    /// subject's identity tells you what it encoded." `short_name()` renders
+    /// every scan as the bare string "Scan", so a body built from the wrong scan
+    /// was indistinguishable in every panic message this graph can emit.
+    #[test]
+    fn gap303_describe_node_names_the_carry_count() {
+        let (graph, scan, _c0, _c1) = two_carry_scan();
+        let g = graph.read().unwrap();
+        let d = g.describe_node(scan);
+        assert!(
+            d.contains("n_carries=2"),
+            "the dump must name the carry count, got: {d}"
+        );
+        assert!(
+            d.contains("n_xs=0") && d.contains("bound=1"),
+            "and its siblings: {d}"
+        );
+        // A placeholder must name WHICH hole it is -- Carry/0 vs Carry/1 is the
+        // distinction a wrong-body bug turns on.
+        let layout = crate::scan::parse_scan_layout(&g, scan).expect("layout");
+        let hole = g.node(layout.body_new_carries[1]).inputs[0];
+        let hd = g.describe_node(hole);
+        assert!(
+            hd.contains("index=1") && hd.contains("Carry"),
+            "a carry hole must name its index, got: {hd}"
+        );
+    }
+
+    #[test]
+    fn gap303_parse_scan_layout_splits_a_two_carry_block() {
+        let (graph, scan, c0, c1) = two_carry_scan();
+        let g = graph.read().unwrap();
+        let l = crate::scan::parse_scan_layout(&g, scan).expect("layout");
+        assert_eq!(l.n_carries, 2);
+        assert_eq!(
+            l.init_carries,
+            vec![c0, c1],
+            "leading block is n_carries wide"
+        );
+        assert_eq!(
+            l.body_new_carries.len(),
+            2,
+            "trailing block is n_carries wide"
+        );
+        assert!(l.xs.is_empty() && l.consts.is_empty());
+        // body_y must be the node AFTER the new-carry block, not inside it.
+        assert!(
+            !l.body_new_carries.contains(&l.body_y),
+            "body_y must not be mistaken for a new-carry slot"
+        );
+    }
+
+    #[test]
+    fn gap303_two_carries_thread_independently_through_unroll() {
+        let (graph, scan, c0, c1) = two_carry_scan();
+        let (_ys, carries) = {
+            let mut g = graph.write().unwrap();
+            unroll_scan(&mut g, scan, 1).expect("unroll a 2-carry scan")
+        };
+        assert_eq!(carries.len(), 2, "one final carry per carry slot");
+        let g = graph.read().unwrap();
+        // ⚠️ THE ASSERTION THAT CATCHES THE OLD BEHAVIOUR: carry 1's chain must
+        // reach ITS OWN init. With the index-ignoring arm it reached c0.
+        assert_eq!(
+            g.node(carries[1]).inputs,
+            vec![c1],
+            "carry 1 must read init_carry 1, NOT init_carry 0"
+        );
+        assert_eq!(
+            g.node(carries[0]).inputs,
+            vec![c0],
+            "carry 0 reads its own init"
+        );
+        assert!(
+            matches!(g.node(carries[1]).op, Op::MulScalar(f) if f == 3.0),
+            "carry 1 keeps its own body op"
+        );
+        assert_ne!(carries[0], carries[1], "the two carries are distinct nodes");
+    }
+
+    #[test]
+    fn gap303_build_scan_step_materialises_every_carry() {
+        let (graph, scan, c0, c1) = two_carry_scan();
+        let layout = {
+            let g = graph.read().unwrap();
+            crate::scan::parse_scan_layout(&g, scan).expect("layout")
+        };
+        let step = {
+            let mut g = graph.write().unwrap();
+            crate::scan::build_scan_step(&mut g, &layout, 0, &[c0, c1]).expect("step")
+        };
+        assert_eq!(step.new_carries.len(), 2, "a step advances every carry");
+        let g = graph.read().unwrap();
+        assert_eq!(
+            g.node(step.new_carries[1]).inputs,
+            vec![c1],
+            "carry 1 stays its own"
+        );
+    }
+
+    #[test]
+    fn gap303_validator_rejects_a_carry_index_past_n_carries() {
+        let (graph, scan, _c0, _c1) = two_carry_scan();
+        let g = graph.read().unwrap();
+        let l = crate::scan::parse_scan_layout(&g, scan).expect("layout");
+        let mut roots = l.body_new_carries.clone();
+        roots.push(l.body_y);
+        // In range for n_carries = 2 ...
+        crate::scan::validate_scan_body_placeholders(&g, &roots, 2, 0)
+            .expect("Carry/0 and Carry/1 are in range when n_carries = 2");
+        // ... and OUT of range once the count shrinks. This is the guard that
+        // used to read `index != 0`; it now range-checks like the Elem arm.
+        let err = crate::scan::validate_scan_body_placeholders(&g, &roots, 1, 0)
+            .expect_err("Carry/1 must be rejected when n_carries = 1");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Carry, 1") && msg.contains("n_carries = 1"),
+            "the error must name the offending index AND the bound, got: {msg}"
+        );
+    }
+
     #[test]
     fn unroll_scan_all_produces_a_concat_of_steps_and_no_scan_nodes() {
         let (graph, scan) = trivial_scan(3, ScanEmit::All, None);
-        let (ys, _carry) = {
+        let (ys_v, _carries) = {
             let mut g = graph.write().unwrap();
             unroll_scan(&mut g, scan, 3).expect("unroll")
         };
+        // GAP-303: the ys side is a one-element Vec now (see unroll_scan).
+        let ys = ys_v[0];
         let g = graph.read().unwrap();
         // ys root is a Concat over the 3 steps.
         assert!(
@@ -553,6 +819,7 @@ mod tests {
             });
             g.push(Node {
                 op: Op::Scan {
+                    n_carries: 1,
                     n_xs: 0,
                     bound: 3,
                     emit: ScanEmit::All,
@@ -563,10 +830,12 @@ mod tests {
                 dtype: DType::F32,
             })
         };
-        let (ys, _carry) = {
+        let (ys_v, _carries) = {
             let mut g = graph.write().unwrap();
             unroll_scan(&mut g, scan, 3).expect("unroll must peel + ignore the predicate")
         };
+        // GAP-303: the ys side is a one-element Vec now (see unroll_scan).
+        let ys = ys_v[0];
         let g = graph.read().unwrap();
         assert!(
             matches!(g.node(ys).op, Op::Concat { .. }),
@@ -620,6 +889,7 @@ mod tests {
         });
         let scan = g.push(Node {
             op: Op::Scan {
+                n_carries: 1,
                 n_xs: 0,
                 bound: 1,
                 emit: ScanEmit::All,
@@ -668,6 +938,7 @@ mod tests {
             });
             g.push(Node {
                 op: Op::Scan {
+                    n_carries: 1,
                     n_xs: 0,
                     bound: 1,
                     emit: ScanEmit::All,
@@ -749,6 +1020,7 @@ mod tests {
             });
             let scan = g.push(Node {
                 op: Op::Scan {
+                    n_carries: 1,
                     n_xs: 1,
                     bound: 2,
                     emit: ScanEmit::All,
@@ -760,10 +1032,12 @@ mod tests {
             });
             (scan, const_id)
         };
-        let (ys, _carry) = {
+        let (ys_v, _carries) = {
             let mut g = graph.write().unwrap();
             unroll_scan(&mut g, scan, 2).expect("unroll")
         };
+        // GAP-303: the ys side is a one-element Vec now (see unroll_scan).
+        let ys = ys_v[0];
         let g = graph.read().unwrap();
         assert!(
             matches!(g.node(ys).op, Op::Concat { .. }),
@@ -981,6 +1255,7 @@ mod tests {
             });
             g.push(Node {
                 op: Op::Scan {
+                    n_carries: 1,
                     n_xs: 0,
                     bound: 4,
                     emit: ScanEmit::Final,
@@ -996,10 +1271,10 @@ mod tests {
             crate::scan::parse_scan_layout(&g, scan).expect("layout")
         };
         assert!(layout.pred_exit.is_some());
-        let init = layout.init_carry;
+        let init = layout.init_carries.clone();
         let step = {
             let mut g = graph.write().unwrap();
-            crate::scan::build_scan_step(&mut g, &layout, 0, init).expect("step")
+            crate::scan::build_scan_step(&mut g, &layout, 0, &init).expect("step")
         };
         let stop = step.stop.expect("early-exit scan yields a stop node");
         // The predicate clone must reach step.new_carry (the shared post-step carry),
@@ -1007,7 +1282,7 @@ mod tests {
         let g = graph.read().unwrap();
         let reach = crate::topo_order_multi(&g, &[stop]);
         assert!(
-            reach.contains(&step.new_carry),
+            reach.contains(&step.new_carries[0]),
             "pred must read THIS step's new_carry (shared subst)"
         );
         assert!(
@@ -1019,7 +1294,7 @@ mod tests {
         // The Ge's first input IS the step's new_carry — proof there was no double-clone.
         let ge_inputs = &g.node(stop).inputs;
         assert_eq!(
-            ge_inputs[0], step.new_carry,
+            ge_inputs[0], step.new_carries[0],
             "predicate's post-step operand is the shared new_carry"
         );
     }

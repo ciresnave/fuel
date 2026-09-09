@@ -412,6 +412,16 @@ pub struct OpAttrs {
     // `Scan` node hits the empty-body `_` arm of `to_canonical_bytes`): the
     // scan is Fuel's own sub-graph-carrying primitive, not a KISS base op, so
     // its params never flow to a cross-producer blob. `None` ⇒ not a scan node.
+    /// [`OpTag::Scan`] `n_carries`: how many recurrent carries the scan threads
+    /// (GAP-303). `1` is the v1 single-carry model.
+    ///
+    /// ⚠️ Like its siblings this is Fuel-internal and NOT on the KISS-OPS-6.19
+    /// wire: `OpTag::Scan` is in `has_empty_canonical_body`'s empty group BY
+    /// DESIGN, so no `Scan` param is serialized and adding one here changes no
+    /// bytes. Carry IDENTITY on the wire is already carried by
+    /// `OpTag::ScanPlaceholder`'s body, which serializes `scan_index` as a
+    /// `u32` — `Carry/0` and `Carry/1` have always produced different bytes.
+    pub scan_n_carries: Option<u32>,
     /// [`OpTag::Scan`] `n_xs`: number of per-step `xs` operands.
     pub scan_n_xs: Option<u32>,
     /// [`OpTag::Scan`] `bound`: the static step horizon.

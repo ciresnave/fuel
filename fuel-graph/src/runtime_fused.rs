@@ -456,6 +456,11 @@ fn tag_to_op(tag: OpTag, attrs: &OpAttrs) -> Option<Op> {
         // stays a base-map terminal (no native kernel, no `LoweringRule`) — the
         // recipe just re-emits it so a decompose can round-trip through data.
         T::Scan => Op::Scan {
+            // GAP-303: `?` (an honest miss) rather than `unwrap_or(1)`. A recipe
+            // that does not state its carry count is not a single-carry scan --
+            // it is a recipe this vocabulary cannot reconstruct, and defaulting
+            // would silently rebuild a DIFFERENT graph.
+            n_carries: attrs.scan_n_carries? as usize,
             n_xs: attrs.scan_n_xs? as usize,
             bound: attrs.scan_bound? as usize,
             emit: match attrs.scan_emit? {
@@ -1329,6 +1334,7 @@ fn emit<'r>(
             let mut scan_bundle: Option<Vec<fuel_ir::storage::OutputViewSpec>> = None;
             let (s, d) = match &prim {
                 Op::Scan {
+                    n_carries: _,
                     n_xs,
                     bound,
                     early_exit,
@@ -6420,6 +6426,7 @@ mod tests {
             PatternNode::Op {
                 op: OpTag::Scan,
                 attrs: OpAttrs {
+                    scan_n_carries: Some(1),
                     scan_n_xs: Some(1),
                     scan_bound: Some(3),
                     scan_emit: Some(0), // All
@@ -6493,6 +6500,7 @@ mod tests {
             });
             g.push(Node {
                 op: Op::Scan {
+                    n_carries: 1,
                     n_xs: 1,
                     bound: 3,
                     emit: ScanEmit::All,
@@ -6509,6 +6517,7 @@ mod tests {
         #[test]
         fn tag_to_op_reconstructs_scan_and_placeholder() {
             let scan_attrs = OpAttrs {
+                scan_n_carries: Some(1),
                 scan_n_xs: Some(1),
                 scan_bound: Some(3),
                 scan_emit: Some(0),
@@ -6518,6 +6527,7 @@ mod tests {
             assert!(matches!(
                 tag_to_op(OpTag::Scan, &scan_attrs),
                 Some(Op::Scan {
+                    n_carries: 1,
                     n_xs: 1,
                     bound: 3,
                     emit: ScanEmit::All,
@@ -6612,6 +6622,7 @@ mod tests {
                 matches!(
                     ge.node(root).op,
                     Op::Scan {
+                        n_carries: 1,
                         n_xs: 1,
                         bound: 3,
                         emit: ScanEmit::All,
@@ -6656,6 +6667,7 @@ mod tests {
             let scan = PatternNode::Op {
                 op: OpTag::Scan,
                 attrs: OpAttrs {
+                    scan_n_carries: Some(1),
                     scan_n_xs: Some(1),
                     scan_bound: Some(3),
                     scan_emit: Some(0),
@@ -6735,6 +6747,7 @@ mod tests {
             let ys = Shape::from_dims(&[3, 2]);
             let scan = g.push(Node {
                 op: Op::Scan {
+                    n_carries: 1,
                     n_xs: 1,
                     bound: 3,
                     emit: ScanEmit::All,
