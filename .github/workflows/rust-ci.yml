@@ -752,6 +752,28 @@ jobs:
       # reports the wrong subject.
       - name: Clippy (fuel-dispatch, DEFAULT features - GAP-242)
         run: cargo clippy -p fuel-dispatch --no-deps --all-targets -- -D warnings
+      # GAP-299: `dlpack` is `default = []`, and NO clippy leg named it. The
+      # workspace leg above runs at DEFAULT features, and the `--no-deps` legs
+      # cannot reach a feature nothing enables -- so every lint behind the
+      # feature was invisible to every CI job that has ever run.
+      #
+      # MEASURED at 3fee13bf, before the fixes in this same commit:
+      #   cargo clippy -p fuel-ir --features dlpack --all-targets -- -D warnings
+      #   -> FOUR violations, all pre-existing, none introduced by any open PR:
+      #      dlpack/validate.rs  collapsible_if, manual_is_multiple_of x2
+      #      dlpack/convert.rs   map_flatten
+      #
+      # THE ORDER IS THE WHOLE POINT AND IT IS NOT A PREFERENCE: this leg is
+      # added in the SAME change that fixes those four. Adding the leg first
+      # would have been BORN RED AND STAYED RED -- the anti-pattern this
+      # workflow already documents for the mkl cells, and the reason GAP-299
+      # says its two halves must not land together.
+      #
+      # `--no-deps` for the reason given on the leg above: without it a
+      # dependency's warnings become this leg's failure and the gate reports a
+      # subject it makes no claim about.
+      - name: Clippy (fuel-ir, --features dlpack - GAP-299)
+        run: cargo clippy -p fuel-ir --features dlpack --no-deps --all-targets -- -D warnings
 
       # GENERALISES THE LEG ABOVE FROM ONE CRATE TO THE DERIVED POPULATION.
       # The GAP-242 leg closes the divergence for fuel-dispatch only, and its own
