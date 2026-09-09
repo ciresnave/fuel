@@ -194,6 +194,13 @@ const LEDGER: &[Row] = &[
         exists_at: None,
     },
     Row {
+        clause: "KISS-GRAMMAR-6.8-0007",
+        disposition: Reference,
+        test: None,
+        reason: "Cited in fuel-kernel-seam-types/src/canonical.rs to LOCATE a design in the standard, not to claim or decline conformance: KISS-Grammar embeds the KISS-Ops OpAttrs bytes uninterpreted and \"MUST NOT define an alternative OpAttrs byte layout\". That is what converts \"I did not find per-op schemas for Slice/Cast/Pad\" into \"there is no document those schemas could be in\" -- one mechanism checked would have been an absence claim off the wrong instrument. Nothing here for Fuel to discharge.",
+        exists_at: None,
+    },
+    Row {
         clause: "KISS-OPS-6.0-0003",
         disposition: Record,
         test: None,
@@ -259,10 +266,76 @@ const LEDGER: &[Row] = &[
         exists_at: None,
     },
     Row {
+        clause: "KISS-OPS-6.19-0001",
+        disposition: Reference,
+        test: None,
+        reason: "Cited in fuel-kernel-seam-types/src/canonical.rs to LOCATE ownership of the OpAttrs channel -- KISS-Ops is its single normative owner, which is what makes KISS-GRAMMAR-6.8-0007's disclaimer (\"MUST NOT define an alternative OpAttrs byte layout\") decisive rather than merely consistent. Nothing for Fuel to discharge; it names WHO owns the layout, not what Fuel must do.",
+        exists_at: None,
+    },
+    Row {
+        clause: "KISS-OPS-6.19-0003",
+        disposition: Reference,
+        test: None,
+        reason: "Cited in canonical.rs and docs/gaps.md (GAP-305) to locate the CLOSED carrier set -- seventeen named ops, every other op \"MUST have an empty OpAttrs blob\". It is the clause that makes the retired byte-comparability claim wrong: the ops that note called conformant are near-exactly the complement of the schema'd set. Reference rather than Declined BECAUSE `to_canonical_bytes` is carrier (a), the #67 node envelope (lib.rs three-carrier pin), and OpTag is Fuel's own kernel-seam-interop 4.1 vocabulary -- so these tags are not claiming membership in the carrier set at all. If that reading is ever overturned this row becomes Declined and needs a test.",
+        exists_at: None,
+    },
+    Row {
         clause: "KISS-OPS-6.19-0005",
         disposition: Record,
         test: None,
         reason: "docs/gaps.md registry row (GAP-287). Cited to identify the clause a gap is about — the FDX flag semantics the validator was measured against.",
+        exists_at: None,
+    },
+    Row {
+        clause: "KISS-OPS-6.19-0007",
+        disposition: Declined,
+        test: Some(
+            "fuel-kernel-seam-types/tests/kiss_ops_619_divergence.rs::the_shared_axis_field_diverges_on_width_not_only_on_field_set",
+        ),
+        reason: "Fuel DELIBERATELY does not conform: -0007 pins an axis index at ONE BYTE and Fuel emits i64. Tracked as GAP-305. The named test asserts the width divergence and reddens in BOTH directions -- if Fuel's encoding moves, and if Fuel ever narrows axis to u8 and the divergence closes. Note this divergence was NOT recorded in the prose, which described the gather/scatter difference as a field-set one only; the two rows disagree even on the single field they share.",
+        exists_at: None,
+    },
+    Row {
+        clause: "KISS-OPS-6.19-0010",
+        disposition: Obligation,
+        test: Some("fuel-kernel-seam-types/src/lib.rs::three_carrier_width_pins_stay_distinct"),
+        reason: "Fuel CLAIMS to conform, and this is the one KISS-Ops clause the node-envelope carrier actually implements: definite lengths only. `OpAttrs::to_canonical_bytes` emits a u32-LE outer byte length and the payload verbatim, no-parse-inside. The named test pins the empty-schema form as exactly the 4-byte zero envelope, which is the definite-length claim at its smallest case; the divergence suite additionally asserts prefix == body length on every vector it builds.",
+        exists_at: None,
+    },
+    Row {
+        clause: "KISS-OPS-6.19-0025",
+        disposition: Declined,
+        test: Some(
+            "fuel-kernel-seam-types/tests/kiss_ops_619_divergence.rs::dim_reduce_diverges_from_kiss_ops_6_19_0025",
+        ),
+        reason: "Fuel DELIBERATELY does not conform: -0025 schemas reduce as {monoid, reduce_axes, keepdim, accumulator, math_precision}; Fuel emits {axis, keepdim} with the monoid riding op_name (SumDim/MaxDim/MeanDim). Tracked as GAP-305 and documented in canonical.rs. The named test also pins the VALUE divergence -0025 fixes keepdim at 1 and Fuel emits 0 -- invisible in any length comparison.",
+        exists_at: None,
+    },
+    Row {
+        clause: "KISS-OPS-6.19-0026",
+        disposition: Declined,
+        test: Some(
+            "fuel-kernel-seam-types/tests/kiss_ops_619_divergence.rs::cumsum_diverges_from_kiss_ops_6_19_0026",
+        ),
+        reason: "Fuel DELIBERATELY does not conform: -0026 schemas prefix_scan as {monoid, reduce_axes, exclusivity, accumulator, math_precision}; Fuel's CumSum emits {axis, keepdim}. Tracked as GAP-305. The named test asserts the divergence from vectors derived from the clause text, never from Fuel's own encoder.",
+        exists_at: None,
+    },
+    Row {
+        clause: "KISS-OPS-6.19-0027",
+        disposition: Declined,
+        test: Some(
+            "fuel-kernel-seam-types/tests/kiss_ops_619_divergence.rs::gather_diverges_from_kiss_ops_6_19_0027",
+        ),
+        reason: "Fuel DELIBERATELY does not conform: -0027 schemas gather as {axis, oob_policy, index_operand, index_dtype}; Fuel emits {axis} alone, with oob_policy a deferred unwired slot and index_operand riding child_edges. Tracked as GAP-305 and documented in canonical.rs. The named test asserts the divergence and fails if Fuel ever becomes conformant, at which point this row becomes an Obligation.",
+        exists_at: None,
+    },
+    Row {
+        clause: "KISS-OPS-6.19-0034",
+        disposition: Declined,
+        test: Some(
+            "fuel-kernel-seam-types/tests/kiss_ops_619_divergence.rs::index_select_and_scatter_add_diverge_from_kiss_ops_6_19_0034",
+        ),
+        reason: "Fuel DELIBERATELY does not conform: -0034 schemas index_select/embedding/scatter_add as {axis, index_operand, index_dtype}; Fuel emits {axis} alone. Tracked as GAP-305. The named test covers IndexSelect and ScatterAdd; scatter_combine rides op_name (IndexAdd vs ScatterAdd), which is why the tags differ where the schema does not.",
         exists_at: None,
     },
     Row {
@@ -484,6 +557,181 @@ fn row(clause: &str) -> Option<&'static Row> {
     LEDGER.iter().find(|r| r.clause == clause)
 }
 
+// ---- the scanner's blind spot, ENUMERATED rather than assumed away -------
+//
+// `clause_ids_in` anchors on the literal `KISS-`, so a citation written bare
+// -- `6.15-0001` rather than `KISS-OPS-6.15-0001` -- is INVISIBLE to it. The
+// gate below therefore asserts completeness over a corpus it does not fully
+// see, and nothing in a green run says so.
+//
+// ## Why the obvious fix is WRONG, not merely expensive
+//
+// The intended remedy was "report matched/skipped and assert skipped == 0".
+// Measured first, at `80def246`:
+//
+// ```text
+// qualified   KISS-<AREA>-<n>.<n>-<nnnn>          48
+// bare        <n>.<n>-<nnnn> with no KISS- prefix  570   <- 12x larger
+// ```
+//
+// **A blanket `skipped == 0` is not merely infeasible at 570 -- it is wrong.**
+// A bare section number is AMBIGUOUS ACROSS KISS DOCUMENTS: `6.4-0011` is
+// KISS-Grammar, `6.1-0004` is KISS-ANNOUNCE, `7.4-0001` is KISS-Contract. The
+// Ops ledger correctly does not track those, so most of the 570 are not its
+// business, and a gate demanding they carry an Ops prefix would demand a
+// falsehood.
+//
+// ## What IS checkable
+//
+// The narrow hazard is a clause number cited BOTH as `KISS-OPS-<n>` somewhere
+// AND bare elsewhere: there the bare site is provably an Ops citation the
+// scanner cannot see. Measured: 9 such numbers across 36 bare sites. All 9
+// already have ledger rows -- the qualified citation is what earned them --
+// so today they are redundant rather than dangerous.
+//
+// **The residual risk is a KISS-Ops clause cited ONLY bare.** That is
+// UNDETECTABLE by any scanner, because the bare form carries no document
+// identity. The remedy is a WRITING RULE (cite `KISS-OPS-<n>`, never bare,
+// for an Ops clause) rather than a gate -- and this test keeps the rule
+// honest by failing when the bare-cited SET GROWS.
+//
+// The assertion is on the SET OF CLAUSE IDS, never on a site count: ids do
+// not rot, counts do.
+
+/// Clause numbers (the `<n>.<n>-<nnnn>` tail) that the ledger tracks.
+fn ledger_clause_numbers() -> BTreeSet<String> {
+    LEDGER
+        .iter()
+        .filter_map(|r| r.clause.strip_prefix("KISS-OPS-"))
+        .map(str::to_string)
+        .collect()
+}
+
+/// End index of a bare `<n>.<n>-<nnnn>` beginning at `start`, or `None`.
+fn bare_id_end(b: &[u8], start: usize) -> Option<usize> {
+    let mut j = scan(b, start, |c| c.is_ascii_digit());
+    if j == start {
+        return None;
+    }
+    j = eat(b, j, b'.')?;
+    let minor = j;
+    j = scan(b, j, |c| c.is_ascii_digit());
+    if j == minor {
+        return None;
+    }
+    j = eat(b, j, b'-')?;
+    let num = j;
+    j = scan(b, j, |c| c.is_ascii_digit());
+    (j - num == 4).then_some(j)
+}
+
+/// A bare `<n>.<n>-<nnnn>` starting exactly at `i`, or `None`.
+///
+/// Split out for the same reason `clause_id_end` was split out of
+/// `clause_ids_in`: the guards are what push a single scanning function past
+/// the complexity limit, and a nested chain is what made the original scanner
+/// unreadable.
+fn bare_candidate_at(b: &[u8], i: usize) -> Option<usize> {
+    if !b[i].is_ascii_digit() {
+        return None;
+    }
+    // A preceding `-` or `.` means this is the tail of a qualified
+    // `KISS-OPS-...` id or of a longer number, not a bare citation.
+    if i > 0 && (b[i - 1] == b'-' || b[i - 1] == b'.') {
+        return None;
+    }
+    bare_id_end(b, i)
+}
+
+/// Every tracked clause number appearing BARE in one file's text.
+fn bare_ids_in(src: &str, tracked: &BTreeSet<String>) -> BTreeSet<String> {
+    let b = src.as_bytes();
+    let mut out = BTreeSet::new();
+    let mut i = 0usize;
+    while i < b.len() {
+        match bare_candidate_at(b, i) {
+            Some(end) => {
+                let id = &src[i..end];
+                if tracked.contains(id) {
+                    out.insert(id.to_string());
+                }
+                i = end;
+            }
+            None => i += 1,
+        }
+    }
+    out
+}
+
+/// Ledger clause numbers cited in BARE form, mapped to the files doing it.
+fn bare_cited_ledger_clauses() -> BTreeMap<String, Vec<String>> {
+    let tracked = ledger_clause_numbers();
+    let mut out: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for f in scanned_files() {
+        let label = rel(&f);
+        if label == SELF_PATH {
+            continue;
+        }
+        let Ok(src) = std::fs::read_to_string(&f) else {
+            continue;
+        };
+        // A per-file set, so no de-duplication branch is needed here.
+        for id in bare_ids_in(&src, &tracked) {
+            out.entry(id).or_default().push(label.clone());
+        }
+    }
+    out
+}
+
+/// Ledger clauses KNOWN to be cited bare somewhere.
+///
+/// A DECLARATION of the scanner's blind spot, not an approval of it. A new
+/// entry means someone cited a ledger clause without its `KISS-OPS-` prefix,
+/// where the citation gate cannot see it.
+///
+/// ⚠️ THE TEST IS NOT "IS THIS INCONVENIENT TO QUALIFY" BUT "WOULD QUALIFYING
+/// IT DESTROY EVIDENCE". Fuel's own live source, tests and current specs are
+/// QUALIFIABLE and must be qualified. CORRESPONDENCE -- sent or received -- is
+/// HISTORICAL: editing a letter to satisfy our scanner rewrites the record of
+/// what was said, and for a letter we RECEIVED it rewrites someone else's
+/// words. Same disposition as `GAP-004`/`GAP-117` keeping their bare
+/// `file:LINE`: a missed stale mention misleads and is findable later; a swept
+/// HISTORICAL one destroys evidence and reads as correct.
+///
+/// EVERY ENTRY BELOW IS BARE **ONLY** IN CORRESPONDENCE. That invariant is what
+/// keeps this a declaration rather than an exemption list, and it is why the
+/// five added 2026-09-09 came with five sites qualified in Fuel's own text
+/// first -- `lib.rs` x2, `recipe-signature-reference.md`,
+/// `kernel-seam-interop.md`, a dated design spec -- so that nothing fixable
+/// hides behind a historical reason.
+const BARE_CITED_LEDGER_CLAUSES: &[&str] = &[
+    // Measured at `80def246`.
+    "6.0-0003",
+    "6.15-0001",
+    "6.15-0002",
+    "6.15-0003",
+    "6.19-0005",
+    "6.20-0002",
+    "6.3-0002",
+    "6.3-0003",
+    "6.8-0001",
+    // Added 2026-09-09. These became ledger clauses when GAP-305 gave them
+    // rows; their bare citations are older than the rows and live in letters.
+    //
+    // ⚠️ `6.19-0005` above has been carrying exactly this shape since the list
+    // was written -- it is bare in the same KISS letter -- so these are not a
+    // new category, they are the category the list was built for.
+    "6.19-0003", // kiss-shape-expression-rfc-reply.md -- a letter FROM KISS TO
+    // FUEL, 2026-07-18. Not Fuel's text.
+    "6.19-0007", // kiss-shape-expression-rfc-reply.md -- as above.
+    "6.19-0010", // three outreach letters. Fuel's own five sites were QUALIFIED
+    // in this change rather than declared.
+    "6.19-0025", // kiss-shape-expression-rfc-reply.md -- as above.
+    "6.19-0027", // baracuda-recipe-grammar-codesign-reply-2.md -- a Fuel letter
+                 // marked RELAYED to Baracuda 2026-07-15; a record of what we
+                 // SENT.
+];
+
 // ---- the gate ------------------------------------------------------------
 
 #[test]
@@ -505,6 +753,68 @@ fn every_cited_clause_has_a_ledger_row() {
          delete the citation:\n  {}",
         missing.len(),
         missing.join("\n  ")
+    );
+}
+
+/// The citation gate's blind spot must stay ENUMERATED.
+///
+/// `every_cited_clause_has_a_ledger_row` scans for `KISS-`-prefixed ids only.
+/// This pins the set of ledger clauses that are ALSO cited bare, so the gap
+/// cannot grow silently. It asserts on the ID SET rather than a site count --
+/// ids do not rot and counts do.
+#[test]
+fn the_scanners_blind_spot_stays_enumerated() {
+    // FOUNDATION: if the ledger yields no clause numbers, everything below is
+    // vacuously empty and would pass while measuring nothing.
+    let tracked = ledger_clause_numbers();
+    assert!(
+        !tracked.is_empty(),
+        "ledger_clause_numbers() is EMPTY -- strip_prefix(\"KISS-OPS-\") matched no \
+         row, so the bare-citation probe ranges over nothing and its silence is \
+         meaningless"
+    );
+
+    let bare = bare_cited_ledger_clauses();
+    let found: BTreeSet<&str> = bare.keys().map(String::as_str).collect();
+
+    // FOUNDATION 2: the probe has been seen to find things. An empty result
+    // here is a broken scanner, not a clean tree -- measured 9 at `80def246`,
+    // asserted as a PREDICATE (non-empty) rather than a VALUE (== 9).
+    assert!(
+        !found.is_empty(),
+        "the bare-citation probe found NOTHING across {} tracked clause \
+         number(s) -- it is broken, not the tree clean",
+        tracked.len()
+    );
+
+    let declared: BTreeSet<&str> = BARE_CITED_LEDGER_CLAUSES.iter().copied().collect();
+
+    let undeclared: Vec<String> = found
+        .difference(&declared)
+        .map(|id| {
+            let files = bare.get(*id).map(|v| v.join(", ")).unwrap_or_default();
+            format!("{id}  cited bare in: {files}")
+        })
+        .collect();
+    assert!(
+        undeclared.is_empty(),
+        "{} ledger clause(s) are cited WITHOUT their `KISS-OPS-` prefix, where \
+         `every_cited_clause_has_a_ledger_row` CANNOT SEE THEM. Qualify the \
+         citation (`KISS-OPS-<n>`) rather than adding to \
+         BARE_CITED_LEDGER_CLAUSES -- a bare section number is ambiguous across \
+         KISS documents and no scanner can resolve it:\n  {}",
+        undeclared.len(),
+        undeclared.join("\n  ")
+    );
+
+    let stale: Vec<&str> = declared.difference(&found).copied().collect();
+    assert!(
+        stale.is_empty(),
+        "{} entr(ies) in BARE_CITED_LEDGER_CLAUSES no longer correspond to any \
+         bare citation -- the citations were qualified or removed. Delete them; \
+         a declaration that outlives its subject reads as a live exemption:\n  {}",
+        stale.len(),
+        stale.join("\n  ")
     );
 }
 

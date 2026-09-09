@@ -63,13 +63,58 @@ impl std::error::Error for UnresolvedAttr {}
 // then length-prefixes it with a `u32` LE byte length, so an empty-schema op has
 // exactly one canonical form (`[0,0,0,0]`). std-only (no `fuel_ir`).
 //
-// SCOPE (do not overclaim): this is the §6.19 positional *shape*, and it is
-// byte-comparable with a Baracuda-emitted blob **for the positionally-conformant
-// ops** — elementwise, cast, slice, concat, roll, pad, flip, iota, permute,
-// (un)squeeze, shape-target, matmul role-vectors (§5, LOCKED). Two known
-// divergences from the confirmed §6.19.3
-// schemas (see docs/outreach/baracuda-recipe-grammar-codesign-reply-2.md), which
-// the pinned node schema `Op{op_name, op_attrs, child_edges}` reconciles WITHOUT
+// SCOPE -- MEASURED 2026-09-09 against KISS `origin/main` `2b673e0a`, AND IT IS
+// NARROWER THAN THIS NOTE USED TO CLAIM. The retired text asserted this blob is
+// "byte-comparable with a Baracuda-emitted blob for the positionally-conformant
+// ops -- elementwise, cast, slice, concat, roll, pad, flip, iota, permute,
+// (un)squeeze, shape-target, matmul role-vectors". Three measurements retire it,
+// and they are independent -- any one alone is sufficient:
+//
+//   1. THE CARRIER SET IS CLOSED AND THESE OPS ARE OUTSIDE IT. KISS-OPS-6.19-0003
+//      fixes it to exactly {reduce, prefix_scan, gather, scatter, sort_network,
+//      reduce_var, reduce_std, softmax, log_softmax, rms_norm, layer_norm,
+//      avg_pool, max_pool, im2col, index_select, embedding, scatter_add}; every
+//      other op "MUST have an empty OpAttrs blob (definite length `0`)". EVERY OP
+//      THE OLD NOTE LISTED AS CONFORMANT IS OUTSIDE THAT SET, so the conformant
+//      list and the schema'd list are near-COMPLEMENTS rather than overlaps.
+//      There is no second document to look in: KISS-GRAMMAR-6.8-0007 embeds the
+//      KISS-Ops encoding "uninterpreted" and "MUST NOT define an alternative
+//      OpAttrs byte layout", and KISS-OPS-6.19-0001 makes KISS-Ops its single normative
+//      owner. (Measured in `spec/grammar.md`: slice/cast/roll/flip/iota/concat
+//      all 0; control `gather` 16, `op_attrs` 4, so the query fires.)
+//
+//   2. THIS PRODUCER IS CARRIER (a), WHICH IS NOT THE PER-OP SCHEMA CHANNEL.
+//      See the three-carrier do-not-unify pin in `lib.rs`
+//      (`three_carrier_width_pins_stay_distinct`): `to_canonical_bytes` is the
+//      #67 NODE-ENVELOPE -- u32-LE outer length, "payload verbatim,
+//      no-parse-inside (KISS-OPS-6.19-0010)". The clause it implements is the OUTER
+//      LENGTH. A receiver that does not parse the body cannot be byte-comparing
+//      it, so agreement on the body is not a property this carrier's contract
+//      asks for.
+//
+//   3. THE NAMED COUNTERPARTY EMITS NOTHING. Measured BY BARACUDA'S LANE and
+//      recorded in the GAP-305 row, NOT re-measured here: 0 encode /
+//      serialize / to_bytes / canonical sites on `OpAttrs`, control 46. A
+//      byte-comparability claim needs two producers; this wire has one.
+//      (Attributed rather than asserted -- a control you were handed is the
+//      one nobody checked. Points 1 and 2 are measured here and each is
+//      sufficient alone, so this one is corroboration, not load-bearing.)
+//
+// WHAT IS STILL TRUE, and it is the whole of it: the body follows §6.19's
+// positional *shape* -- positional, little-endian, definite-length, every field
+// explicit and already resolved (KISS-OPS-6.19-0005/-0007/-0008/-0010). The PER-OP
+// SCHEMAS for the tags outside the carrier set are Fuel's own
+// kernel-seam-interop §4.1 `OpTag` vocabulary and have NO §6.19 counterpart to
+// conform to OR to diverge from. "Unexercised" is the wrong word and was the
+// wrong remedy: there is nothing on the other side to exercise against.
+//
+// RESIDUAL, named rather than resolved: KISS-OPS-6.19-0003 is scoped "for this op-set
+// version", and this crate pins no KISS-Ops version. If a different carrier set
+// is ever targeted, THE VERSION IS THE THING THAT MUST BE NAMED HERE.
+//
+// The two divergences below are the ONLY part of this serializer with a §6.19
+// counterparty -- they are its sole intersection with the carrier set -- and the
+// pinned node schema `Op{op_name, op_attrs, child_edges}` reconciles them WITHOUT
 // widening this blob:
 //   * `reduce{monoid, reduce_axes, keepdim}` — Fuel emits single-axis
 //     `{axis, keepdim}`. `monoid` rides `op_name` (distinct SumDim/MaxDim/MinDim
@@ -121,7 +166,10 @@ fn put_u8_list(b: &mut Vec<u8>, xs: &[u8]) {
 }
 
 impl OpAttrs {
-    /// Serialize these attrs to the KISS §6.19 canonical positional blob for
+    /// Serialize these attrs to the node-envelope blob for `op` in the
+    /// §6.19 positional *shape* (see the SCOPE note above: this is carrier
+    /// (a), and only the tags inside KISS-OPS-6.19-0003's carrier set have a §6.19
+    /// schema at all):
     /// `op`: a per-op **positional** little-endian body (no elision — the
     /// `OpTag` determines the fixed schema), length-prefixed with a `u32` LE
     /// byte count. An op whose schema is empty (`Add`, `Neg`, `Where`,
@@ -215,7 +263,9 @@ impl OpAttrs {
     /// different things -- the envelope is fixed for every tag, the body is the
     /// schema table. The table itself is deliberately NOT split further: it is
     /// one match over the wire schema, and a reader checking Fuel against
-    /// KISS-OPS-6.19 needs to see all of it at once.
+    /// the schema it borrows needs to see all of it at once. (Only the
+    /// carrier-set tags are checkable against KISS-OPS-6.19 itself; for the
+    /// rest the schema is Fuel's own -- SCOPE note above.)
     pub fn to_canonical_bytes(&self, op: OpTag) -> Result<Vec<u8>, UnresolvedAttr> {
         let body = self.canonical_body(op)?;
         let mut out = (body.len() as u32).to_le_bytes().to_vec();
@@ -230,7 +280,8 @@ impl OpAttrs {
     /// # ⚠️ A STANDING CODACY FINDING ON THIS FUNCTION IS ACCEPTED AND PERMANENT
     ///
     /// Codacy reports `Method canonical_body has N lines of code (limit is 50)`
-    /// and a cyclomatic complexity over 12. **That finding is correct, it is not
+    /// and a cyclomatic complexity over its limit. **That finding is correct, it
+    /// is not
     /// going to be fixed, and it will never clear.** It is recorded here so a
     /// reader does not mistake a permanent red for unfinished work: the first
     /// thing anyone learns from a check that cannot go green is to stop reading
@@ -239,15 +290,23 @@ impl OpAttrs {
     ///
     /// **WHY IT CANNOT GO DOWN.** Measured at this commit: 68 lines of code, 6
     /// match arms, **17 distinct `OpTag` variants**. Each variant carries a
-    /// DIFFERENT WIRE ROW SCHEMA under KISS-OPS-§6.19 — `Slice` is
-    /// `{axis, start, len}`, the single-axis family is `{axis}`, the reduces are
+    /// DIFFERENT WIRE ROW SCHEMA -- `Slice` is `{axis, start, len}`, the
+    /// single-axis family is `{axis}`, the reduces are
     /// `{axis, keepdim}`, `Cast` is a length-prefixed string, `Pad` is a list
     /// plus mode plus value. **Rows that differ on the wire cannot be collapsed
     /// into one arm.** The count is set by the op vocabulary, not by style, so
     /// it goes UP when the vocabulary grows and never down.
     ///
     /// Re-derive it by counting `T::` variants in the match and comparing them
-    /// against §6.19's row schemas. If a future reader finds two arms with the
+    /// against the per-op field-order table in kernel-seam-interop §7.3.2,
+    /// which is where these schemas are defined. ⚠️ THIS INSTRUCTION USED TO
+    /// SAY "against §6.19's row schemas", AND IT COULD NOT BE FOLLOWED:
+    /// KISS-OPS-6.19-0003 requires `Slice`/`Cast`/`Pad` to carry an EMPTY blob, so
+    /// they have no §6.19 row to compare against. A reader who followed it
+    /// and found nothing could not tell whether they had looked in the wrong
+    /// place or the claim was false -- a false instruction manufactures
+    /// self-doubt in a competent reader. If a future reader finds two arms
+    /// with the
     /// SAME row shape, that is a real finding and this note is wrong.
     ///
     /// **WHAT WAS ALREADY SPLIT OUT, so this is not an un-attempted excuse:**
@@ -280,7 +339,9 @@ impl OpAttrs {
     }
 
     /// The arms that CAN decline: every one reads an `Option` field that
-    /// KISS-OPS-6.19 requires to be resolved, so every one is a branch.
+    /// this serializer requires to be resolved, so every one is a branch.
+    /// (Resolved-not-elided is the KISS-OPS-6.19-0005 discipline this blob borrows;
+    /// for the non-carrier tags the MANDATORY-ness is ours, not §6.19's.)
     ///
     /// Split from [`Self::canonical_body`] to complete the one-emitter-per-family
     /// shape rather than to hit a threshold: `list_body` (infallible) and
@@ -289,14 +350,26 @@ impl OpAttrs {
     ///
     /// # ⚠️ A STANDING CODACY COMPLEXITY FINDING HERE IS ACCEPTED AND PERMANENT
     ///
-    /// Codacy reports a cyclomatic complexity over its limit of 12 on this
+    /// Codacy reports a cyclomatic complexity over its limit on this
     /// function. **The finding is correct and it is not going to be fixed.**
     /// Recorded so a permanent red is not mistaken for unfinished work.
     ///
+    /// ⚠️ THE THRESHOLD IS NOT WRITTEN HERE ON PURPOSE, and it used to be.
+    /// These notes said "a limit of 12", measured from a Codacy annotation on
+    /// PR #118 (2026-09-06) and correct when taken. Measured again on #147
+    /// (2026-09-09) the same engine reported `limit is 8`. There is NO Codacy
+    /// config in this repo (`git ls-files | grep -i codacy` -> nothing), so the
+    /// threshold is server-side project state that moves with no commit, no
+    /// diff and no notice. A number written here is a claim about a setting
+    /// nobody can see from the tree. The ANNOTATION states its own limit
+    /// inline -- read that, and never a remembered one.
+    ///
     /// **(1) THE BRANCH COUNT IS SPEC-DRIVEN — and the margin is ONE.** Measured
-    /// at this commit: cyclomatic **13** against a limit of 12, from ten
+    /// at this commit: cyclomatic **13**, from ten
     /// required-field checks across six tag arms, one per field KISS-OPS-6.19
-    /// declares mandatory-with-no-default. It goes UP when 6.19 adds a mandatory
+    /// declares mandatory-with-no-default -- for the carrier-set tags -- plus
+    /// the fields Fuel's own §4.1 schemas do. It goes UP when either adds a
+    /// mandatory
     /// field.
     ///
     /// ⚠️ **This ground is stated narrowly on purpose.** An earlier draft argued
@@ -558,7 +631,9 @@ impl OpAttrs {
             // reuses the fold's axis-resolution codepath verbatim. Growth to a
             // `reduce_axes` LIST happens ONLY in lockstep with the fold
             // (§6.12-0001), never unilaterally here. `axis` is MANDATORY with no
-            // schema default (KISS-OPS-6.19), so it declines like every other
+            // schema default. (`ReducedCount` is a Fuel §4.1 tag with no §6.19
+            // counterpart -- the mandatory-ness is ours.) It declines like every
+            // other
             // axis-bearing arm.
             T::ReducedCount => put_i64(
                 &mut body,
