@@ -567,7 +567,9 @@ mod tests {
         let via_module = layer.forward(&x).unwrap().realize_f32();
 
         let x2 = Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, l]), &Device::cpu()).unwrap();
-        let w_t = x2.const_f32_like(Arc::clone(&weight_arc), Shape::from_dims(&[cout, cin, k]))?;
+        let w_t = x2
+            .const_f32_like(Arc::clone(&weight_arc), Shape::from_dims(&[cout, cin, k]))
+            .unwrap();
         let direct = x2
             .conv1d(&w_t, None, cfg.stride, cfg.padding, cfg.groups)
             .unwrap()
@@ -668,11 +670,15 @@ mod tests {
 
         let x2 =
             Tensor::from_f32(x_data, Shape::from_dims(&[n, cin, h, w_in]), &Device::cpu()).unwrap();
-        let w_t = x2.const_f32_like(
-            Arc::clone(&weight_arc),
-            Shape::from_dims(&[cout, cin, kh, kw]),
-        )?;
-        let b_t = x2.const_f32_like(Arc::clone(&bias_arc), Shape::from_dims(&[cout]))?;
+        let w_t = x2
+            .const_f32_like(
+                Arc::clone(&weight_arc),
+                Shape::from_dims(&[cout, cin, kh, kw]),
+            )
+            .unwrap();
+        let b_t = x2
+            .const_f32_like(Arc::clone(&bias_arc), Shape::from_dims(&[cout]))
+            .unwrap();
         let direct = x2
             .conv2d(&w_t, Some(&b_t), cfg.stride, cfg.padding, cfg.groups)
             .unwrap()

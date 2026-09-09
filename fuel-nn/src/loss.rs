@@ -286,7 +286,9 @@ mod tests {
             &device,
         )
         .unwrap();
-        let target = logits.const_i64_like(vec![0_i64, 1], Shape::from_dims(&[2]))?;
+        let target = logits
+            .const_i64_like(vec![0_i64, 1], Shape::from_dims(&[2]))
+            .unwrap();
         let loss = cross_entropy(&logits, &target, Reduction::Mean)
             .unwrap()
             .realize_f32();
@@ -314,7 +316,9 @@ mod tests {
             &device,
         )
         .unwrap();
-        let targets = log_probs.const_u32_like(vec![0_u32, 1], Shape::from_dims(&[2]))?;
+        let targets = log_probs
+            .const_u32_like(vec![0_u32, 1], Shape::from_dims(&[2]))
+            .unwrap();
         let loss = nll(&log_probs, &targets, Reduction::Mean)
             .unwrap()
             .realize_f32();
@@ -335,7 +339,9 @@ mod tests {
             &device,
         )
         .unwrap();
-        let b = a.const_f32_like(vec![0.5_f32, -1.0, 2.0, 3.5], Shape::from_dims(&[4]))?;
+        let b = a
+            .const_f32_like(vec![0.5_f32, -1.0, 2.0, 3.5], Shape::from_dims(&[4]))
+            .unwrap();
         let loss = mse(&a, &b, Reduction::Mean).unwrap().realize_f32();
         assert_eq!(loss.len(), 1);
         assert!(loss[0].abs() < 1e-7, "got {} expected ~0", loss[0]);
@@ -351,7 +357,9 @@ mod tests {
             &device,
         )
         .unwrap();
-        let b = a.const_f32_like(vec![0.0_f32, 1.0, 2.0, 3.0], Shape::from_dims(&[4]))?;
+        let b = a
+            .const_f32_like(vec![0.0_f32, 1.0, 2.0, 3.0], Shape::from_dims(&[4]))
+            .unwrap();
         let loss = mse(&a, &b, Reduction::Mean).unwrap().realize_f32();
         assert_eq!(loss.len(), 1);
         assert!(
@@ -375,7 +383,9 @@ mod tests {
         let device = Device::cpu();
         let logits =
             Tensor::from_f32(vec![1.0_f32, -1.0, 0.0], Shape::from_dims(&[3]), &device).unwrap();
-        let targets = logits.const_f32_like(vec![1.0_f32, 0.0, 1.0], Shape::from_dims(&[3]))?;
+        let targets = logits
+            .const_f32_like(vec![1.0_f32, 0.0, 1.0], Shape::from_dims(&[3]))
+            .unwrap();
         let loss = binary_cross_entropy_with_logit(&logits, &targets, Reduction::Mean)
             .unwrap()
             .realize_f32();
@@ -398,7 +408,9 @@ mod tests {
             &device,
         )
         .unwrap();
-        let tgt = inp.const_f32_like(vec![0.0_f32, 1.0, 2.0, 3.0], Shape::from_dims(&[4]))?;
+        let tgt = inp
+            .const_f32_like(vec![0.0_f32, 1.0, 2.0, 3.0], Shape::from_dims(&[4]))
+            .unwrap();
         let loss = huber(&inp, &tgt, 1.0, Reduction::Mean)
             .unwrap()
             .realize_f32();
@@ -417,7 +429,9 @@ mod tests {
         // mean = (0.125 + 1.5) / 2 = 0.8125
         let device = Device::cpu();
         let inp = Tensor::from_f32(vec![0.5_f32, 3.0], Shape::from_dims(&[2]), &device).unwrap();
-        let tgt = inp.const_f32_like(vec![1.0_f32, 1.0], Shape::from_dims(&[2]))?;
+        let tgt = inp
+            .const_f32_like(vec![1.0_f32, 1.0], Shape::from_dims(&[2]))
+            .unwrap();
         let loss = huber(&inp, &tgt, 1.0, Reduction::Mean)
             .unwrap()
             .realize_f32();

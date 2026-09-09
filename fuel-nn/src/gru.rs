@@ -506,10 +506,12 @@ mod tests {
 
         let h0_data: Vec<f32> = vec![0.7_f32, -0.2];
         let x = Tensor::from_f32(x_data, Shape::from_dims(&[b, t, d]), &Device::cpu()).unwrap();
-        let h0 = x.const_f32_like(
-            Arc::<[f32]>::from(h0_data.clone()),
-            Shape::from_dims(&[1, b, d]),
-        )?;
+        let h0 = x
+            .const_f32_like(
+                Arc::<[f32]>::from(h0_data.clone()),
+                Shape::from_dims(&[1, b, d]),
+            )
+            .unwrap();
         let stack = GruStack {
             layers: vec![GruCellWeights {
                 w_ih: Arc::<[f32]>::from(w_ih),

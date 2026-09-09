@@ -184,7 +184,9 @@ mod tests {
         // const_i64_like off a U32 source — exercises the
         // build-time dtype gate.
         let probe = Tensor::from_u32(vec![0_u32], Shape::from_dims(&[1]), &device).unwrap();
-        let bad = probe.const_i64_like(vec![0_i64], Shape::from_dims(&[1]))?;
+        let bad = probe
+            .const_i64_like(vec![0_i64], Shape::from_dims(&[1]))
+            .unwrap();
         let err = one_hot(&bad, 3, 1.0, 0.0);
         assert!(err.is_err(), "one_hot should reject non-U32 labels");
     }

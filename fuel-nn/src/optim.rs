@@ -630,7 +630,9 @@ mod tests {
             let t = if i == 0 {
                 anchor.clone()
             } else {
-                anchor.const_f32_like(data.clone(), var.shape().clone())?
+                anchor
+                    .const_f32_like(data.clone(), var.shape().clone())
+                    .unwrap()
             };
             map.insert(var.name().to_string(), t);
         }
@@ -778,7 +780,9 @@ mod tests {
 
         let anchor =
             Tensor::from_f32(vec![0.0_f32; 2], Shape::from_dims(&[2]), &Device::cpu()).unwrap();
-        let target = anchor.const_f32_like(vec![1.0_f32, 1.0], Shape::from_dims(&[2]))?;
+        let target = anchor
+            .const_f32_like(vec![1.0_f32, 1.0], Shape::from_dims(&[2]))
+            .unwrap();
         let w_t = w.tensor(&anchor);
         let diff = w_t.sub(&target).unwrap();
         let loss = diff.sqr().sum_all();
