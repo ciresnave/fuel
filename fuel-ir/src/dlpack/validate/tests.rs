@@ -322,6 +322,28 @@ fn v1_fail_bad_magic() {
     ));
 }
 
+/// Version `0` is rejected. `0` is not a version -- the format starts at 1.
+///
+/// THIS TEST DID NOT EXIST UNTIL 2026-09-06, AND ITS ABSENCE IS THE POINT.
+/// `check_v1_header` has always rejected `0`, but nothing asserted it and the
+/// doc comment did not mention it, so the lower bound was defended by nothing.
+/// A refactor collapsing `version == 0 || version > MAX` to `version > MAX`
+/// would have been SILENT: the doc endorsed the shorter form, and the only
+/// version test plants `FDX_VERSION_MAX + 1` -- the HIGH side alone.
+///
+/// That is the same test asymmetry GAP-292 found in FKC, in a file whose CODE
+/// was already correct: THE GATE HAD TWO SIDES AND THE TEST SET INHERITED ONLY
+/// ONE. Born-red verified: deleting `version == 0 ||` makes this fail while
+/// `v1_fail_unsupported_version` keeps passing. See GAP-298.
+#[test]
+fn v1_fail_version_zero() {
+    let mut sc = sidecar(0);
+    sc.version = 0;
+    assert!(matches!(
+        check_v1_header(&sc),
+        Err(FdxValidationError::UnsupportedVersion { .. })
+    ));
+}
 #[test]
 fn v1_fail_unsupported_version() {
     let mut sc = sidecar(0);
