@@ -377,13 +377,13 @@ impl Model {
             }
         }
         // Anchor Tensor so const_u32_like has something to hang off of.
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &fuel::Device::cpu());
+        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &fuel::Device::cpu())?;
         let t0 = codes0.len();
         let t1 = codes1.len();
         let t2 = codes2.len();
-        let codes0_lt = anchor.const_u32_like(codes0, Shape::from_dims(&[1, t0]));
-        let codes1_lt = anchor.const_u32_like(codes1, Shape::from_dims(&[1, t1]));
-        let codes2_lt = anchor.const_u32_like(codes2, Shape::from_dims(&[1, t2]));
+        let codes0_lt = anchor.const_u32_like(codes0, Shape::from_dims(&[1, t0]))?;
+        let codes1_lt = anchor.const_u32_like(codes1, Shape::from_dims(&[1, t1]))?;
+        let codes2_lt = anchor.const_u32_like(codes2, Shape::from_dims(&[1, t2]))?;
         let pcm = self
             .snac
             .decode_codes(&[codes0_lt, codes1_lt, codes2_lt])

@@ -446,11 +446,11 @@ fn run(args: Args) -> Result<()> {
                 latents.clone(),
                 fuel::Shape::from_dims(&[bsize, 4, h_lat, w_lat]),
                 &fuel::Device::cpu(),
-            );
+            )?;
             let model_out_lazy = sample_lazy.const_f32_like(
                 noise_pred,
                 fuel::Shape::from_dims(&[bsize, 4, h_lat, w_lat]),
-            );
+            )?;
             let next_lazy = scheduler
                 .step(&model_out_lazy, timestep, &sample_lazy)
                 .map_err(|e| E::msg(format!("scheduler step: {e}")))?;

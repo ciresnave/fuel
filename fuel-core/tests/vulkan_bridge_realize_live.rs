@@ -47,11 +47,14 @@ fn mul_add_realize_on_vulkan_matches_reference() {
         vec![1.0_f32, 2.0, 3.0, 4.0],
         Shape::from_dims(&[4]),
         &fuel_core::Device::cpu(),
-    );
+    )
+    .unwrap();
     // `const_f32_like` keeps `b` in `a`'s graph (a bare second
     // `from_f32` would mint a separate graph and `add` across graphs
     // would fail).
-    let b = a.const_f32_like(vec![10.0_f32, 20.0, 30.0, 40.0], Shape::from_dims(&[4]));
+    let b = a
+        .const_f32_like(vec![10.0_f32, 20.0, 30.0, 40.0], Shape::from_dims(&[4]))
+        .unwrap();
     // Tensor binary ops are fallible (shape/broadcast validation),
     // unlike the graph-`Tensor` ops; surface any error rather than panic
     // implicitly.
@@ -81,8 +84,11 @@ fn deep_chain_realize_on_vulkan_matches_reference() {
         vec![1.0_f32, 2.0, 3.0, 4.0],
         Shape::from_dims(&[4]),
         &fuel_core::Device::cpu(),
-    );
-    let b = a.const_f32_like(vec![10.0_f32, 20.0, 30.0, 40.0], Shape::from_dims(&[4]));
+    )
+    .unwrap();
+    let b = a
+        .const_f32_like(vec![10.0_f32, 20.0, 30.0, 40.0], Shape::from_dims(&[4]))
+        .unwrap();
 
     let t1 = a.add(&b).expect("add");
     let t2 = t1.mul(&a).expect("mul");

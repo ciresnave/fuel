@@ -307,12 +307,12 @@ fn linear(
     batch: usize,
     seq: usize,
 ) -> fuel_core::Result<Tensor> {
-    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]));
+    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]))?;
     let proj = x.matmul(&w_t)?;
     match b {
         Some(b) => {
             let bias = x
-                .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))
+                .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))?
                 .reshape(Shape::from_dims(&[1, 1, out_f]))?
                 .broadcast_to(Shape::from_dims(&[batch, seq, out_f]))?;
             proj.add(&bias)
@@ -351,11 +351,11 @@ pub fn global_response_norm(
     let stand = agg.div(&denom)?; // [1, C, 1, 1]
     let stand_b = stand.broadcast_to(Shape::from_dims(&[1, c, h, w]))?;
     let g = x
-        .const_f32_like(gamma.clone(), Shape::from_dims(&[c]))
+        .const_f32_like(gamma.clone(), Shape::from_dims(&[c]))?
         .reshape(Shape::from_dims(&[1, c, 1, 1]))?
         .broadcast_to(Shape::from_dims(&[1, c, h, w]))?;
     let b = x
-        .const_f32_like(beta.clone(), Shape::from_dims(&[c]))
+        .const_f32_like(beta.clone(), Shape::from_dims(&[c]))?
         .reshape(Shape::from_dims(&[1, c, 1, 1]))?
         .broadcast_to(Shape::from_dims(&[1, c, h, w]))?;
     let scaled = x.mul(&stand_b)?.mul(&g)?;
@@ -390,8 +390,8 @@ fn apply_res_block(
     // semantics for the common (no-skip) ResBlock case (`PriorModel`
     // uses `c_skip == 0`).
     let _ = c_skip;
-    let dw_w = x.const_f32_like(rw.dw_w.clone(), Shape::from_dims(&[c, 1, k, k]));
-    let dw_b = x.const_f32_like(rw.dw_b.clone(), Shape::from_dims(&[c]));
+    let dw_w = x.const_f32_like(rw.dw_w.clone(), Shape::from_dims(&[c, 1, k, k]))?;
+    let dw_b = x.const_f32_like(rw.dw_b.clone(), Shape::from_dims(&[c]))?;
     let conv = xs.conv2d(&dw_w, Some(&dw_b), (1, 1), (k / 2, k / 2), c)?;
     let norm = w_layer_norm(&conv, c, h, w, eps)?;
     // Channelwise MLP. Permute to NHWC for the linears.
@@ -428,8 +428,8 @@ fn apply_res_block_stage_b(
     let c_skip = rw.c_skip;
     let k = rw.ksize;
     let residual = x.clone();
-    let dw_w = x.const_f32_like(rw.dw_w.clone(), Shape::from_dims(&[c, 1, k, k]));
-    let dw_b = x.const_f32_like(rw.dw_b.clone(), Shape::from_dims(&[c]));
+    let dw_w = x.const_f32_like(rw.dw_w.clone(), Shape::from_dims(&[c, 1, k, k]))?;
+    let dw_b = x.const_f32_like(rw.dw_b.clone(), Shape::from_dims(&[c]))?;
     let conv = x.conv2d(&dw_w, Some(&dw_b), (1, 1), (k / 2, k / 2), c)?;
     let norm = w_layer_norm(&conv, c, h, w, eps)?;
     // Concat skip channels after norm.
@@ -611,8 +611,9 @@ impl PriorModel {
         let proj_w = xs.const_f32_like(
             self.weights.projection_w.clone(),
             Shape::from_dims(&[c, c_in, 1, 1]),
-        );
-        let proj_b = xs.const_f32_like(self.weights.projection_b.clone(), Shape::from_dims(&[c]));
+        )?;
+        let proj_b =
+            xs.const_f32_like(self.weights.projection_b.clone(), Shape::from_dims(&[c]))?;
         let mut x = xs.conv2d(&proj_w, Some(&proj_b), (1, 1), (0, 0), 1)?;
 
         // Cond-mapper: linear → leaky_relu(0.2) → linear.
@@ -627,7 +628,7 @@ impl PriorModel {
         )?;
         // leaky_relu(0.2): max(x, 0.2 * x). Compose via where_cond.
         let c1_neg = c1.mul_scalar(0.2_f64);
-        let zero = c1.const_f32_like(vec![0.0_f32; c1.elem_count()], c1.shape());
+        let zero = c1.const_f32_like(vec![0.0_f32; c1.elem_count()], c1.shape())?;
         let mask = c1.gt(&zero)?;
         let c1_act = mask.where_cond(&c1, &c1_neg)?;
         let c_embed_mapped = linear(
@@ -643,7 +644,7 @@ impl PriorModel {
         // r_embed.
         let r_vec = r_embedding_host(r, cfg.c_r);
         let r_embed = xs
-            .const_f32_like(r_vec, Shape::from_dims(&[cfg.c_r]))
+            .const_f32_like(r_vec, Shape::from_dims(&[cfg.c_r]))?
             .reshape(Shape::from_dims(&[1, 1, cfg.c_r]))?;
 
         for bw in &self.weights.blocks {
@@ -657,11 +658,11 @@ impl PriorModel {
         let out_w = xs.const_f32_like(
             self.weights.out_conv_w.clone(),
             Shape::from_dims(&[c_in * 2, c, 1, 1]),
-        );
+        )?;
         let out_b = xs.const_f32_like(
             self.weights.out_conv_b.clone(),
             Shape::from_dims(&[c_in * 2]),
-        );
+        )?;
         let out = normed.conv2d(&out_w, Some(&out_b), (1, 1), (0, 0), 1)?;
         let ab = out.chunk(2, 1_usize)?;
         let a0 = &ab[0];
@@ -730,7 +731,7 @@ impl DiffNextModel {
         // r_embed.
         let r_vec = r_embedding_host(r, cfg.c_r);
         let r_embed = xs
-            .const_f32_like(r_vec, Shape::from_dims(&[cfg.c_r]))
+            .const_f32_like(r_vec, Shape::from_dims(&[cfg.c_r]))?
             .reshape(Shape::from_dims(&[1, 1, cfg.c_r]))?;
 
         // Pixel-unshuffle by `p`: [1, C, H, W] → [1, C * p², H/p, W/p].
@@ -741,8 +742,9 @@ impl DiffNextModel {
         let emb_w = xs.const_f32_like(
             self.weights.embed_w.clone(),
             Shape::from_dims(&[levels[0], c_in * p * p, 1, 1]),
-        );
-        let emb_b = xs.const_f32_like(self.weights.embed_b.clone(), Shape::from_dims(&[levels[0]]));
+        )?;
+        let emb_b =
+            xs.const_f32_like(self.weights.embed_b.clone(), Shape::from_dims(&[levels[0]]))?;
         let mut x = xu.conv2d(&emb_w, Some(&emb_b), (1, 1), (0, 0), 1)?;
         x = w_layer_norm(&x, levels[0], h, w, eps)?;
 
@@ -753,8 +755,8 @@ impl DiffNextModel {
             if let (Some(dw), Some(db)) = (&lvl.down_w, &lvl.down_b) {
                 let prev = levels[i - 1];
                 x = w_layer_norm(&x, prev, h, w, eps)?;
-                let dw_t = xs.const_f32_like(dw.clone(), Shape::from_dims(&[c_lvl, prev, 2, 2]));
-                let db_t = xs.const_f32_like(db.clone(), Shape::from_dims(&[c_lvl]));
+                let dw_t = xs.const_f32_like(dw.clone(), Shape::from_dims(&[c_lvl, prev, 2, 2]))?;
+                let db_t = xs.const_f32_like(db.clone(), Shape::from_dims(&[c_lvl]))?;
                 x = x.conv2d(&dw_t, Some(&db_t), (2, 2), (0, 0), 1)?;
                 h /= 2;
                 w /= 2;
@@ -796,13 +798,13 @@ impl DiffNextModel {
             if let (Some(uw), Some(ub)) = (&lvl.up_w, &lvl.up_b) {
                 let next = levels[lvl_idx - 1];
                 x = w_layer_norm(&x, c_lvl, h, w, eps)?;
-                let uw_t = xs.const_f32_like(uw.clone(), Shape::from_dims(&[c_lvl, next, 2, 2]));
-                let ub_t = xs.const_f32_like(ub.clone(), Shape::from_dims(&[next]));
+                let uw_t = xs.const_f32_like(uw.clone(), Shape::from_dims(&[c_lvl, next, 2, 2]))?;
+                let ub_t = xs.const_f32_like(ub.clone(), Shape::from_dims(&[next]))?;
                 x = x.conv_transpose2d(&uw_t, (2, 2), (0, 0), (0, 0), (1, 1), 1)?;
                 let _ = ub_t;
                 // conv_transpose2d does not yet plumb the bias; add manually.
                 let bias = xs
-                    .const_f32_like(ub.clone(), Shape::from_dims(&[next]))
+                    .const_f32_like(ub.clone(), Shape::from_dims(&[next]))?
                     .reshape(Shape::from_dims(&[1, next, 1, 1]))?
                     .broadcast_to(Shape::from_dims(&[1, next, h * 2, w * 2]))?;
                 x = x.add(&bias)?;
@@ -817,11 +819,11 @@ impl DiffNextModel {
         let clf_w = xs.const_f32_like(
             self.weights.clf_w.clone(),
             Shape::from_dims(&[2 * c_out * p * p, last_h, 1, 1]),
-        );
+        )?;
         let clf_b = xs.const_f32_like(
             self.weights.clf_b.clone(),
             Shape::from_dims(&[2 * c_out * p * p]),
-        );
+        )?;
         let out = x.conv2d(&clf_w, Some(&clf_b), (1, 1), (0, 0), 1)?;
         // pixel_shuffle by p: [1, 2*c_out*p², H, W] → [1, 2*c_out, H*p, W*p].
         let out = pixel_shuffle(&out, 2 * c_out * p * p, h, w, p)?;
@@ -902,9 +904,9 @@ impl PaellaVqModel {
         let in_w = latents.const_f32_like(
             self.weights.up_in_w.clone(),
             Shape::from_dims(&[levels[0], cfg.paella_latent_channels, 1, 1]),
-        );
+        )?;
         let in_b =
-            latents.const_f32_like(self.weights.up_in_b.clone(), Shape::from_dims(&[levels[0]]));
+            latents.const_f32_like(self.weights.up_in_b.clone(), Shape::from_dims(&[levels[0]]))?;
         let mut x = latents.conv2d(&in_w, Some(&in_b), (1, 1), (0, 0), 1)?;
         for (i, lw) in self.weights.up_levels.iter().enumerate() {
             let c_lvl = levels[i];
@@ -914,12 +916,12 @@ impl PaellaVqModel {
             if let (Some(uw), Some(ub)) = (&lw.upsample_w, &lw.upsample_b) {
                 let next = levels[i + 1];
                 let uw_t =
-                    latents.const_f32_like(uw.clone(), Shape::from_dims(&[c_lvl, next, 4, 4]));
+                    latents.const_f32_like(uw.clone(), Shape::from_dims(&[c_lvl, next, 4, 4]))?;
                 let x_t = x.conv_transpose2d(&uw_t, (2, 2), (1, 1), (0, 0), (1, 1), 1)?;
                 let new_h = h * 2;
                 let new_w = w * 2;
                 let bias = latents
-                    .const_f32_like(ub.clone(), Shape::from_dims(&[next]))
+                    .const_f32_like(ub.clone(), Shape::from_dims(&[next]))?
                     .reshape(Shape::from_dims(&[1, next, 1, 1]))?
                     .broadcast_to(Shape::from_dims(&[1, next, new_h, new_w]))?;
                 x = x_t.add(&bias)?;
@@ -935,8 +937,8 @@ impl PaellaVqModel {
         let ow = latents.const_f32_like(
             self.weights.out_w.clone(),
             Shape::from_dims(&[oc * 4, last_c, 1, 1]),
-        );
-        let ob = latents.const_f32_like(self.weights.out_b.clone(), Shape::from_dims(&[oc * 4]));
+        )?;
+        let ob = latents.const_f32_like(self.weights.out_b.clone(), Shape::from_dims(&[oc * 4]))?;
         let out = x.conv2d(&ow, Some(&ob), (1, 1), (0, 0), 1)?;
         let out = pixel_shuffle(&out, oc * 4, h, w, 2)?;
         // Final tanh: bring into [-1, 1] (matches Paella's reference output range).
@@ -963,8 +965,8 @@ fn apply_paella_mixing_res(
     let temp = w_layer_norm(x, c, h, w, eps)?;
     let temp = temp.affine(1.0 + g[0] as f64, g[1] as f64);
     let padded = replicate_pad_2d(&temp, c, h, w, 1)?;
-    let dw_w = x.const_f32_like(bw.dw_w.clone(), Shape::from_dims(&[c, 1, 3, 3]));
-    let dw_b = x.const_f32_like(bw.dw_b.clone(), Shape::from_dims(&[c]));
+    let dw_w = x.const_f32_like(bw.dw_w.clone(), Shape::from_dims(&[c, 1, 3, 3]))?;
+    let dw_b = x.const_f32_like(bw.dw_b.clone(), Shape::from_dims(&[c]))?;
     let conv = padded.conv2d(&dw_w, Some(&dw_b), (1, 1), (0, 0), c)?;
     let xs = x.add(&conv.mul_scalar(g[2] as f64))?;
 
@@ -1080,7 +1082,7 @@ pub fn generate(
 fn noise_on_graph(anchor: &Tensor, shape: Shape, seed: u64) -> fuel_core::Result<Tensor> {
     let n = shape.elem_count();
     let data = small_normal_vec(n, seed);
-    Ok(anchor.const_f32_like(data, shape))
+    anchor.const_f32_like(data, shape)
 }
 
 /// Internal helper producing a deterministic small-noise vector
@@ -1794,7 +1796,7 @@ mod tests {
     #[test]
     fn global_response_norm_hand_computed() {
         let x_data = vec![1.0_f32, 0.0, 0.0, 0.0]; // [1, 1, 2, 2]
-        let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[1, 1, 2, 2]), &dev());
+        let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[1, 1, 2, 2]), &dev()).unwrap();
         let gamma = arc_ones(1);
         let beta = arc_zeros(1);
         let out = global_response_norm(&x, &gamma, &beta, 1, 2, 2)
@@ -1819,7 +1821,7 @@ mod tests {
         };
         // Latent shape: spatial 8x8.
         let lat_data = vec![0.01_f32; 1 * 4 * 8 * 8];
-        let lat = Tensor::from_f32(lat_data, Shape::from_dims(&[1, 4, 8, 8]), &dev());
+        let lat = Tensor::from_f32(lat_data, Shape::from_dims(&[1, 4, 8, 8]), &dev()).unwrap();
         let img = model.decode(&lat).unwrap();
         // n_levels = 2 → one upsample (×2) followed by pixel_shuffle ×2 = total ×4.
         assert_eq!(img.shape().dims(), &[1, 3, 32, 32]);
@@ -1846,9 +1848,12 @@ mod tests {
             xs_data,
             Shape::from_dims(&[1, cfg.prior_c_in, 2, 2]),
             &dev(),
-        );
+        )
+        .unwrap();
         let txt_data = vec![0.01_f32; 1 * 4 * cfg.prior_c_cond];
-        let txt = xs.const_f32_like(txt_data, Shape::from_dims(&[1, 4, cfg.prior_c_cond]));
+        let txt = xs
+            .const_f32_like(txt_data, Shape::from_dims(&[1, 4, cfg.prior_c_cond]))
+            .unwrap();
         let out = model.forward(&xs, 0.5, &txt, 2, 2).unwrap();
         assert_eq!(out.shape().dims(), &[1, cfg.prior_c_in, 2, 2]);
         for v in &out.realize_f32() {
@@ -1872,9 +1877,12 @@ mod tests {
             xs_data,
             Shape::from_dims(&[1, cfg.diffnext_c_in, h, w]),
             &dev(),
-        );
+        )
+        .unwrap();
         let txt_data = vec![0.01_f32; 1 * 4 * cfg.clip_embed];
-        let txt = xs.const_f32_like(txt_data, Shape::from_dims(&[1, 4, cfg.clip_embed]));
+        let txt = xs
+            .const_f32_like(txt_data, Shape::from_dims(&[1, 4, cfg.clip_embed]))
+            .unwrap();
         let out = model.forward(&xs, 0.5, &txt, h, w).unwrap();
         assert_eq!(out.shape().dims(), &[1, cfg.diffnext_c_out, h, w]);
         for v in &out.realize_f32() {
@@ -2052,7 +2060,8 @@ mod tests {
             weights: make_paella_weights(&cfg),
         };
         let txt_data = vec![0.01_f32; 1 * 4 * cfg.clip_embed];
-        let txt = Tensor::from_f32(txt_data, Shape::from_dims(&[1, 4, cfg.clip_embed]), &dev());
+        let txt =
+            Tensor::from_f32(txt_data, Shape::from_dims(&[1, 4, cfg.clip_embed]), &dev()).unwrap();
         let img = generate(&prior, &diffnext, &paella, &txt, 0, 0, 2, 2, 8, 8).unwrap();
         assert_eq!(img.shape().dims(), &[1, 3, 32, 32]);
         let flat = img.realize_f32();

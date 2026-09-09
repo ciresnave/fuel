@@ -347,7 +347,7 @@ impl QuantizedWhisperModel {
             mel.to_vec(),
             Shape::from_dims(&[1, n_mel, mel_time]),
             &fuel_core::Device::cpu(),
-        );
+        )?;
 
         let x = conv1d_k3_s1_p1(
             &mel_t,
@@ -380,7 +380,7 @@ impl QuantizedWhisperModel {
             .const_f32_like(
                 Arc::clone(&self.weights.encoder.positional),
                 Shape::from_dims(&[cfg.max_source_positions, d]),
-            )
+            )?
             .slice(0, 0, t_half)?
             .reshape(Shape::from_dims(&[1, t_half, d]))?
             .broadcast_to(Shape::from_dims(&[1, t_half, d]))?;
@@ -421,17 +421,18 @@ impl QuantizedWhisperModel {
             .bt());
         }
 
-        let input_ids = encoder_out.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        let input_ids = encoder_out.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]))?;
         let embed = encoder_out.const_f32_like(
             Arc::clone(&self.weights.decoder.embed_tokens),
             Shape::from_dims(&[cfg.vocab_size, d]),
-        );
+        )?;
         let position_ids_vec: Vec<u32> = (0..seq as u32).collect();
-        let position_ids = encoder_out.const_u32_like(position_ids_vec, Shape::from_dims(&[seq]));
+        let position_ids =
+            encoder_out.const_u32_like(position_ids_vec, Shape::from_dims(&[seq]))?;
         let pos_emb = encoder_out.const_f32_like(
             Arc::clone(&self.weights.decoder.embed_positions),
             Shape::from_dims(&[cfg.max_target_positions, d]),
-        );
+        )?;
 
         let tok = embed.index_select(0, &input_ids)?;
         let pos = pos_emb.index_select(0, &position_ids)?;
@@ -474,7 +475,7 @@ impl QuantizedWhisperModel {
                 encoder_out.clone(),
                 enc_shape.clone(),
                 &fuel_core::Device::cpu(),
-            );
+            )?;
             let logits = self.forward_decoder(&tokens, &encoder_t)?;
             let flat = logits.realize_f32();
             let vocab = self.config.vocab_size;
@@ -508,11 +509,11 @@ fn layer_norm_affine(
 ) -> fuel_core::Result<Tensor> {
     let normed = x.layer_norm_last_dim(eps)?;
     let g = x
-        .const_f32_like(Arc::clone(gamma), Shape::from_dims(&[hidden]))
+        .const_f32_like(Arc::clone(gamma), Shape::from_dims(&[hidden]))?
         .reshape(Shape::from_dims(&[1, 1, hidden]))?
         .broadcast_to(Shape::from_dims(&[1, seq, hidden]))?;
     let b = x
-        .const_f32_like(Arc::clone(beta), Shape::from_dims(&[hidden]))
+        .const_f32_like(Arc::clone(beta), Shape::from_dims(&[hidden]))?
         .reshape(Shape::from_dims(&[1, 1, hidden]))?
         .broadcast_to(Shape::from_dims(&[1, seq, hidden]))?;
     normed.mul(&g)?.add(&b)
@@ -534,7 +535,7 @@ fn q_linear(
     match b {
         Some(bias) => {
             let bias_t = proj
-                .const_f32_like(Arc::clone(bias), Shape::from_dims(&[out_f]))
+                .const_f32_like(Arc::clone(bias), Shape::from_dims(&[out_f]))?
                 .reshape(Shape::from_dims(&[1, 1, out_f]))?
                 .broadcast_to(Shape::from_dims(&[1, seq, out_f]))?;
             Ok(proj.add(&bias_t)?)
@@ -584,7 +585,7 @@ fn multi_head_attn(
             }
         }
         let mask_t = scores
-            .const_f32_like(mask, Shape::from_dims(&[q_seq, kv_seq]))
+            .const_f32_like(mask, Shape::from_dims(&[q_seq, kv_seq]))?
             .reshape(Shape::from_dims(&[1, 1, q_seq, kv_seq]))?
             .broadcast_to(Shape::from_dims(&[1, n_heads, q_seq, kv_seq]))?;
         scores = scores.add(&mask_t)?;

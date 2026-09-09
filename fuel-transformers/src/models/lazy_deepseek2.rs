@@ -707,7 +707,7 @@ impl DeepSeek2Model {
         // Decode mask, built once and shared across every layer.
         let mask_data = fuel_core::lazy::build_decode_causal_mask(cached_len, seq_new, total_len);
         let mask = h
-            .const_f32_like(mask_data, Shape::from_dims(&[seq_new, total_len]))
+            .const_f32_like(mask_data, Shape::from_dims(&[seq_new, total_len]))?
             .reshape(Shape::from_dims(&[1, 1, seq_new, total_len]))?;
 
         let mut cache = cache;
@@ -855,7 +855,7 @@ impl DeepSeek2Model {
         // tail (same trade LlamaModel's forward_with_kv_context documents).
         let mask_data = fuel_core::lazy::build_decode_causal_mask(cached_len, seq, max_seq_len);
         let mask = h
-            .const_f32_like(mask_data, Shape::from_dims(&[seq, max_seq_len]))
+            .const_f32_like(mask_data, Shape::from_dims(&[seq, max_seq_len]))?
             .reshape(Shape::from_dims(&[1, 1, seq, max_seq_len]))?;
 
         let kvr = cfg.kv_lora_rank;
@@ -1093,8 +1093,8 @@ impl DeepSeek2Model {
 
         // ---- Absorbed weights: kv_b_proj split into per-head W_UK^T / W_UV --
         let (w_uk_t_data, w_uv_data) = absorb_split_kv_b(&w.kv_b_proj, kvr, n_heads, nope, v_dim)?;
-        let w_uk_t = x.const_f32_like(w_uk_t_data, Shape::from_dims(&[1, n_heads, nope, kvr]));
-        let w_uv = x.const_f32_like(w_uv_data, Shape::from_dims(&[1, n_heads, kvr, v_dim]));
+        let w_uk_t = x.const_f32_like(w_uk_t_data, Shape::from_dims(&[1, n_heads, nope, kvr]))?;
+        let w_uv = x.const_f32_like(w_uv_data, Shape::from_dims(&[1, n_heads, kvr, v_dim]))?;
 
         // ---- q_absorbed[h] = q_nope[h] @ W_UK[h]^T ---------------------------
         let q_absorbed = q_nope.matmul(&w_uk_t)?; // (1,H,s,nope) @ (1,H,nope,kvr) -> (1,H,s,kvr)
@@ -1329,7 +1329,7 @@ impl DeepSeek2Model {
             weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
             &Device::cpu(),
-        );
+        )?;
         let token_ids = embed.const_placeholder_like(Shape::from_dims(&[seq]), DType::U32);
         let token_ids_node = token_ids.node_id();
         let mut h = embed
@@ -1746,7 +1746,7 @@ impl DeepSeek2Model {
             )
         }
         let cfg = &self.config;
-        let fresh_anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let fresh_anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu())?;
         let mut fresh = LatentCache::new(
             &fresh_anchor,
             cache.n_layers(),
@@ -1763,11 +1763,11 @@ impl DeepSeek2Model {
             let latent_c = fresh_anchor.const_f32_like(
                 latent_prefix,
                 Shape::from_dims(&[cached_len, cfg.kv_lora_rank]),
-            );
+            )?;
             let kpe_c = fresh_anchor.const_f32_like(
                 kpe_prefix,
                 Shape::from_dims(&[cached_len, cfg.qk_rope_head_dim]),
-            );
+            )?;
             fresh = fresh.append(layer, &[&latent_c, &kpe_c])?;
         }
         Ok(fresh.advance_by(cached_len))
@@ -2168,8 +2168,8 @@ impl DeepSeek2Model {
 
         // ---- Absorbed weights: kv_b_proj split into per-head W_UK^T / W_UV --
         let (w_uk_t_data, w_uv_data) = absorb_split_kv_b(&w.kv_b_proj, kvr, n_heads, nope, v_dim)?;
-        let w_uk_t = x.const_f32_like(w_uk_t_data, Shape::from_dims(&[1, n_heads, nope, kvr]));
-        let w_uv = x.const_f32_like(w_uv_data, Shape::from_dims(&[1, n_heads, kvr, v_dim]));
+        let w_uk_t = x.const_f32_like(w_uk_t_data, Shape::from_dims(&[1, n_heads, nope, kvr]))?;
+        let w_uv = x.const_f32_like(w_uv_data, Shape::from_dims(&[1, n_heads, kvr, v_dim]))?;
 
         // ---- q_absorbed[h] = q_nope[h] @ W_UK[h]^T ---------------------------
         let q_absorbed = q_nope.matmul(&w_uk_t)?; // (1,H,s,nope) @ (1,H,nope,kvr) -> (1,H,s,kvr)
@@ -2317,7 +2317,7 @@ impl DeepSeek2Model {
         );
 
         // Routed path (dense routing — full softmax × every expert).
-        let router_t = x.const_f32_like(w.router.clone(), Shape::from_dims(&[h, n_routed]));
+        let router_t = x.const_f32_like(w.router.clone(), Shape::from_dims(&[h, n_routed]))?;
         let router_logits = x.matmul(&router_t)?;
         let routing_weights = router_logits.softmax_last_dim()?;
 
@@ -2666,7 +2666,8 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
         let max_diff = logits_ref
@@ -2691,7 +2692,8 @@ mod tests {
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
             Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         assert!(model.forward_embeds(&bad, 0).is_err());
     }
 
@@ -2724,7 +2726,8 @@ mod tests {
             // `forward_with_latent_cache` now works around it internally
             // (rebinding each call onto its own fresh graph), so plain
             // per-step realize works here without any test-side fallback.
-            let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+            let anchor =
+                Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
             let cache = LatentCache::new(
                 &anchor,
                 cfg.num_hidden_layers,
@@ -2789,7 +2792,8 @@ mod tests {
             config: cfg.clone(),
             weights: tiny_weights(&cfg),
         };
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
 
         // Wrong slot count (1 slot instead of 2).
         let bad_slots = LatentCache::new(
@@ -2842,7 +2846,8 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let h_via_embeds = model
             .forward_hidden_embeds(&embeds, 0)
@@ -2897,7 +2902,8 @@ mod tests {
             };
             let vocab = cfg.vocab_size;
 
-            let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+            let anchor =
+                Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
             let cache_u = LatentCache::new(
                 &anchor,
                 cfg.num_hidden_layers,
@@ -2980,7 +2986,8 @@ mod tests {
 
             let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
 
-            let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+            let anchor =
+                Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
             let cache = LatentCache::new(
                 &anchor,
                 cfg.num_hidden_layers,

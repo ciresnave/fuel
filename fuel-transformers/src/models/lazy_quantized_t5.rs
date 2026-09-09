@@ -891,7 +891,8 @@ mod tests {
         let model = QuantizedT5Model::from_f32_bake(cfg.clone(), src).unwrap();
         let src_tokens = [1_u32, 2, 3];
         let enc_ref = model.forward_encoder(&src_tokens).unwrap().realize_f32();
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let src_embeds = model.embed_tokens_anchored(&anchor, &src_tokens).unwrap();
         let enc_via_embeds = model
             .forward_encoder_embeds(&src_embeds)

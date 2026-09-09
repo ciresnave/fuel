@@ -190,22 +190,22 @@ impl BertModel {
             self.weights.word_embeddings.clone(),
             Shape::from_dims(&[cfg.vocab_size, h]),
             &fuel_core::Device::cpu(),
-        );
-        let input_ids = word_emb.const_u32_like(token_ids.to_vec(), Shape::from_dims(&[seq]));
+        )?;
+        let input_ids = word_emb.const_u32_like(token_ids.to_vec(), Shape::from_dims(&[seq]))?;
         let position_ids_vec: Vec<u32> = (0..seq as u32).collect();
-        let position_ids = word_emb.const_u32_like(position_ids_vec, Shape::from_dims(&[seq]));
+        let position_ids = word_emb.const_u32_like(position_ids_vec, Shape::from_dims(&[seq]))?;
         // Segment IDs all zero — single-sequence input.
-        let token_type_ids = word_emb.const_u32_like(vec![0u32; seq], Shape::from_dims(&[seq]));
+        let token_type_ids = word_emb.const_u32_like(vec![0u32; seq], Shape::from_dims(&[seq]))?;
 
         // -- embeddings ------------------------------------------------------
         let pos_emb = word_emb.const_f32_like(
             self.weights.position_embeddings.clone(),
             Shape::from_dims(&[cfg.max_position_embeddings, h]),
-        );
+        )?;
         let type_emb = word_emb.const_f32_like(
             self.weights.token_type_embeddings.clone(),
             Shape::from_dims(&[cfg.type_vocab_size, h]),
-        );
+        )?;
         // Each lookup produces `[seq, h]`.
         let w = word_emb.index_select(0, &input_ids)?;
         let p = pos_emb.index_select(0, &position_ids)?;
@@ -285,19 +285,19 @@ impl BertModel {
             self.weights.word_embeddings.clone(),
             Shape::from_dims(&[cfg.vocab_size, h]),
             &fuel_core::Device::cpu(),
-        );
-        let input_ids = word_emb.const_u32_like(token_ids.to_vec(), Shape::from_dims(&[seq]));
+        )?;
+        let input_ids = word_emb.const_u32_like(token_ids.to_vec(), Shape::from_dims(&[seq]))?;
         let position_ids_vec: Vec<u32> = (0..seq as u32).collect();
-        let position_ids = word_emb.const_u32_like(position_ids_vec, Shape::from_dims(&[seq]));
-        let token_type_ids = word_emb.const_u32_like(vec![0u32; seq], Shape::from_dims(&[seq]));
+        let position_ids = word_emb.const_u32_like(position_ids_vec, Shape::from_dims(&[seq]))?;
+        let token_type_ids = word_emb.const_u32_like(vec![0u32; seq], Shape::from_dims(&[seq]))?;
         let pos_emb = word_emb.const_f32_like(
             self.weights.position_embeddings.clone(),
             Shape::from_dims(&[cfg.max_position_embeddings, h]),
-        );
+        )?;
         let type_emb = word_emb.const_f32_like(
             self.weights.token_type_embeddings.clone(),
             Shape::from_dims(&[cfg.type_vocab_size, h]),
-        );
+        )?;
         let w = word_emb.index_select(0, &input_ids)?;
         let p = pos_emb.index_select(0, &position_ids)?;
         let t = type_emb.index_select(0, &token_type_ids)?;
@@ -350,11 +350,11 @@ fn layer_norm_affine(
 ) -> fuel_core::Result<Tensor> {
     let normed = x.layer_norm_last_dim(eps)?;
     let g = x
-        .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))
+        .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))?
         .reshape(Shape::from_dims(&[1, 1, hidden]))?
         .broadcast_to(Shape::from_dims(&[1, seq, hidden]))?;
     let b = x
-        .const_f32_like(beta.clone(), Shape::from_dims(&[hidden]))
+        .const_f32_like(beta.clone(), Shape::from_dims(&[hidden]))?
         .reshape(Shape::from_dims(&[1, 1, hidden]))?
         .broadcast_to(Shape::from_dims(&[1, seq, hidden]))?;
     normed.mul(&g)?.add(&b)
@@ -371,9 +371,9 @@ fn linear(
     out_f: usize,
     seq: usize,
 ) -> fuel_core::Result<Tensor> {
-    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]));
+    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]))?;
     let bias = x
-        .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))
+        .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))?
         .reshape(Shape::from_dims(&[1, 1, out_f]))?
         .broadcast_to(Shape::from_dims(&[1, seq, out_f]))?;
     x.matmul(&w_t)?.add(&bias)

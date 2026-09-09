@@ -100,10 +100,10 @@ fn apply_mlm_head(hidden: &Tensor, mlm: &MlmHead, cfg: &BertConfig) -> Result<Te
     let dense_t = hidden.const_f32_like(
         Arc::clone(&mlm.transform_dense_w),
         Shape::from_dims(&[h, h]),
-    );
+    )?;
     let x = hidden.matmul(&dense_t)?;
     let bias_t = hidden
-        .const_f32_like(Arc::clone(&mlm.transform_dense_b), Shape::from_dims(&[h]))
+        .const_f32_like(Arc::clone(&mlm.transform_dense_b), Shape::from_dims(&[h]))?
         .reshape(Shape::from_dims(&[1, 1, h]))?;
     let x = x.broadcast_add(&bias_t)?;
     // GELU (BERT default hidden_act = gelu)
@@ -115,10 +115,10 @@ fn apply_mlm_head(hidden: &Tensor, mlm: &MlmHead, cfg: &BertConfig) -> Result<Te
         cfg.layer_norm_eps,
     )?;
     // decoder
-    let dec_t = hidden.const_f32_like(Arc::clone(&mlm.decoder_w), Shape::from_dims(&[h, v]));
+    let dec_t = hidden.const_f32_like(Arc::clone(&mlm.decoder_w), Shape::from_dims(&[h, v]))?;
     let logits = x.matmul(&dec_t)?;
     let dec_b = hidden
-        .const_f32_like(Arc::clone(&mlm.decoder_b), Shape::from_dims(&[v]))
+        .const_f32_like(Arc::clone(&mlm.decoder_b), Shape::from_dims(&[v]))?
         .reshape(Shape::from_dims(&[1, 1, v]))?;
     Ok(logits.broadcast_add(&dec_b)?)
 }

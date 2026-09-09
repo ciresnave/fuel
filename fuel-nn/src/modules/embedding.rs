@@ -77,7 +77,7 @@ impl Embedding {
         let table_t = token_ids.const_f32_like(
             Arc::clone(&self.table),
             Shape::from_dims(&[self.vocab_size, self.hidden]),
-        );
+        )?;
         let flat_ids = if input_dims.len() == 1 {
             token_ids.clone()
         } else {
@@ -115,7 +115,7 @@ mod tests {
         let table = make_table(vocab, hidden);
         let emb = Embedding::new(Arc::from(table), vocab, hidden).unwrap();
         let tokens: Vec<u32> = vec![0, 3, 1, 6, 2];
-        let token_ids = Tensor::from_u32(tokens, Shape::from_dims(&[seq]), &Device::cpu());
+        let token_ids = Tensor::from_u32(tokens, Shape::from_dims(&[seq]), &Device::cpu()).unwrap();
         let out = emb.forward(&token_ids).unwrap();
         assert_eq!(out.shape().dims(), &[seq, hidden]);
         let got = out.realize_f32();
@@ -144,7 +144,8 @@ mod tests {
             tokens.clone(),
             Shape::from_dims(&[tokens.len()]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let out = emb.forward(&token_ids).unwrap();
         assert_eq!(out.shape().dims(), &[tokens.len(), hidden]);
         let got = out.realize_f32();

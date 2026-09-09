@@ -325,6 +325,9 @@ impl Gemma4TextModel {
             }
         }
         anchor.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]))
+        .expect(
+                "build_mask: buffer is vec![_; seq*seq] and the shape's elem_count is seq*seq -- \n             both derived from `seq` in this function; the loop writes in place",
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -834,7 +837,8 @@ mod tests {
             Arc::from((0..16).map(|i| (i as f32 + 1.0) * 0.1).collect::<Vec<_>>()),
             Shape::from_dims(&[1, 2, 2, 4]),
             &dev,
-        );
+        )
+        .unwrap();
         let normed = v_rms_norm(&x, 1e-6).unwrap().realize_f32();
         // mean-squared per last-dim group should be ~1 after RMS norm.
         for chunk in normed.chunks(4) {
@@ -878,7 +882,8 @@ mod tests {
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
 
         // Path 2: embed_tokens_anchored → scale → forward_embeds.
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let scaled = embeds.mul_scalar((cfg.hidden_size as f64).sqrt());
         let logits_via_embeds = model.forward_embeds(&scaled, 0).unwrap().realize_f32();
@@ -907,14 +912,16 @@ mod tests {
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
             Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         assert!(model.forward_embeds(&bad_embeds, 0).is_err());
         // Wrong rank.
         let rank2 = Tensor::from_f32(
             vec![0.0_f32; cfg.hidden_size],
             Shape::from_dims(&[1, cfg.hidden_size]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         assert!(model.forward_embeds(&rank2, 0).is_err());
     }
 
@@ -930,7 +937,8 @@ mod tests {
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
 
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let scaled = embeds.mul_scalar((cfg.hidden_size as f64).sqrt());
         let h_via_embeds = model

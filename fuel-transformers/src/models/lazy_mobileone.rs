@@ -181,7 +181,7 @@ impl MobileOneModel {
                 let n = cfg.nclasses.expect("head present but cfg.nclasses == None");
                 let last_c = cfg.channels_at(4);
                 let logits = w.apply_linear(&pooled, last_c, n)?;
-                let bias_t = pooled.const_f32_like(Arc::clone(b), Shape::from_dims(&[n]));
+                let bias_t = pooled.const_f32_like(Arc::clone(b), Shape::from_dims(&[n]))?;
                 logits.broadcast_add(&bias_t)
             }
         }
@@ -227,7 +227,7 @@ impl MobileOneModel {
             layer.groups,
         )?;
         let bias_t = x
-            .const_f32_like(Arc::clone(&layer.conv_b), Shape::from_dims(&[layer.c_out]))
+            .const_f32_like(Arc::clone(&layer.conv_b), Shape::from_dims(&[layer.c_out]))?
             .reshape(Shape::from_dims(&[1, layer.c_out, 1, 1]))?;
         let mut out = conv_out.broadcast_add(&bias_t)?;
         if let Some(se) = &layer.se {
@@ -256,7 +256,7 @@ impl MobileOneModel {
         let wt = w.const_like(x, Shape::from_dims(&[c_out, c_in, 1, 1]))?;
         let conv = x.conv2d(&wt, None, (1, 1), (0, 0), 1)?;
         let bt = x
-            .const_f32_like(Arc::clone(b), Shape::from_dims(&[c_out]))
+            .const_f32_like(Arc::clone(b), Shape::from_dims(&[c_out]))?
             .reshape(Shape::from_dims(&[1, c_out, 1, 1]))?;
         conv.broadcast_add(&bt)
     }
@@ -732,7 +732,7 @@ mod tests {
     fn tiny_image(h: usize) -> Tensor {
         let mut nb = rng_seed(54);
         let data: Arc<[f32]> = Arc::from((0..3 * h * h).map(|_| nb()).collect::<Vec<_>>());
-        Tensor::from_f32(data, Shape::from_dims(&[1, 3, h, h]), &Device::cpu())
+        Tensor::from_f32(data, Shape::from_dims(&[1, 3, h, h]), &Device::cpu()).unwrap()
     }
 
     #[test]

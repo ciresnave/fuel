@@ -145,10 +145,10 @@ fn gru_layer_forward(x: &Tensor, w: &GruCellWeights, h0: Option<Tensor>) -> Resu
     let three_h = 3 * h_dim;
 
     // Weight + bias constants on the input's graph.
-    let w_ih = x.const_f32_like(Arc::clone(&w.w_ih), Shape::from_dims(&[three_h, d_in]));
-    let w_hh = x.const_f32_like(Arc::clone(&w.w_hh), Shape::from_dims(&[three_h, h_dim]));
-    let b_ih = x.const_f32_like(Arc::clone(&w.b_ih), Shape::from_dims(&[three_h]));
-    let b_hh = x.const_f32_like(Arc::clone(&w.b_hh), Shape::from_dims(&[three_h]));
+    let w_ih = x.const_f32_like(Arc::clone(&w.w_ih), Shape::from_dims(&[three_h, d_in]))?;
+    let w_hh = x.const_f32_like(Arc::clone(&w.w_hh), Shape::from_dims(&[three_h, h_dim]))?;
+    let b_ih = x.const_f32_like(Arc::clone(&w.b_ih), Shape::from_dims(&[three_h]))?;
+    let b_hh = x.const_f32_like(Arc::clone(&w.b_hh), Shape::from_dims(&[three_h]))?;
     // Broadcast biases to (B, 3·H) for elementwise add per time step.
     let b_ih_b = b_ih
         .reshape(Shape::from_dims(&[1, three_h]))?
@@ -160,10 +160,14 @@ fn gru_layer_forward(x: &Tensor, w: &GruCellWeights, h0: Option<Tensor>) -> Resu
     // Initial h: zero or supplied (B, H).
     let mut h_prev = match h0 {
         Some(h) => h,
-        None => x.const_f32_like(
-            Arc::<[f32]>::from(vec![0.0_f32; b * h_dim]),
-            Shape::from_dims(&[b, h_dim]),
-        ),
+        // GAP-003 carve-out, PROOF LOCAL: buffer is vec![_; b * h_dim] against
+        // shape [b, h_dim] -- the same two values, adjacent lines.
+        None => x
+            .const_f32_like(
+                Arc::<[f32]>::from(vec![0.0_f32; b * h_dim]),
+                Shape::from_dims(&[b, h_dim]),
+            )
+            .expect("gru h0: vec![_; b*h_dim] against shape [b, h_dim] -- same two values"),
     };
 
     let w_ih_t = w_ih.transpose()?;
@@ -393,7 +397,7 @@ mod tests {
         let expected =
             gru_layer_reference(&x_data, &h0, b, t, d_in, d_h, &w_ih, &w_hh, &b_ih, &b_hh);
 
-        let x = Tensor::from_f32(x_data, Shape::from_dims(&[b, t, d_in]), &Device::cpu());
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[b, t, d_in]), &Device::cpu()).unwrap();
         let stack = GruStack {
             layers: vec![GruCellWeights {
                 w_ih: Arc::<[f32]>::from(w_ih),
@@ -449,7 +453,7 @@ mod tests {
             &after_l1, &h0_l2, b, t, d_in2, d_h2, &w_ih2, &w_hh2, &b_ih2, &b_hh2,
         );
 
-        let x = Tensor::from_f32(x_data, Shape::from_dims(&[b, t, d_in1]), &Device::cpu());
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[b, t, d_in1]), &Device::cpu()).unwrap();
         let stack = GruStack {
             layers: vec![
                 GruCellWeights {
@@ -501,11 +505,13 @@ mod tests {
         let b_hh: Vec<f32> = vec![0.0_f32; three_d];
 
         let h0_data: Vec<f32> = vec![0.7_f32, -0.2];
-        let x = Tensor::from_f32(x_data, Shape::from_dims(&[b, t, d]), &Device::cpu());
-        let h0 = x.const_f32_like(
-            Arc::<[f32]>::from(h0_data.clone()),
-            Shape::from_dims(&[1, b, d]),
-        );
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[b, t, d]), &Device::cpu()).unwrap();
+        let h0 = x
+            .const_f32_like(
+                Arc::<[f32]>::from(h0_data.clone()),
+                Shape::from_dims(&[1, b, d]),
+            )
+            .unwrap();
         let stack = GruStack {
             layers: vec![GruCellWeights {
                 w_ih: Arc::<[f32]>::from(w_ih),
@@ -564,14 +570,16 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[b, t, d_in]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let xb = Tensor::from_f32(
             (0..(b * t * d_in))
                 .map(|i| (i as f32) * 0.05 + 0.3)
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[b, t, d_in]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let oa = stack.forward(&xa).unwrap().realize_f32();
         let ob = stack.forward(&xb).unwrap().realize_f32();
         let mut max_diff = 0.0_f32;

@@ -155,8 +155,8 @@ impl OpenClipTextModel {
             Arc::clone(&w.token_embedding),
             Shape::from_dims(&[cfg.vocab_size, cfg.embed_dim]),
             &fuel_core::Device::cpu(),
-        );
-        let ids = token_table.const_u32_like(input_ids.to_vec(), Shape::from_dims(&[seq]));
+        )?;
+        let ids = token_table.const_u32_like(input_ids.to_vec(), Shape::from_dims(&[seq]))?;
         let tok = token_table
             .index_select(0_usize, &ids)?
             .reshape(Shape::from_dims(&[1, seq, cfg.embed_dim]))?;
@@ -165,7 +165,7 @@ impl OpenClipTextModel {
         let pos_table = token_table.const_f32_like(
             Arc::clone(&w.position_embedding),
             Shape::from_dims(&[cfg.max_position_embeddings, cfg.embed_dim]),
-        );
+        )?;
         let pos = pos_table
             .narrow(0_usize, 0, seq)?
             .reshape(Shape::from_dims(&[1, seq, cfg.embed_dim]))?;

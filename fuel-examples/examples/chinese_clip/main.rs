@@ -84,7 +84,7 @@ fn main() -> Result<()> {
             Arc::<[f32]>::from(pixels),
             Shape::from_dims(&[1, 3, config.vision.image_size, config.vision.image_size]),
             &device,
-        );
+        )?;
         let f = clip_model.get_image_features(&pixels)?;
         image_feats.push(f.realize_f32());
     }

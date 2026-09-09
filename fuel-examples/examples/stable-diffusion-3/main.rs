@@ -355,7 +355,7 @@ fn main() -> Result<()> {
         Arc::from(noise),
         Shape::from_dims(&[1, c_lat, h_lat, w_lat]),
         &device,
-    );
+    )?;
 
     // ---- Build the sampler config -----------------------------------
     //

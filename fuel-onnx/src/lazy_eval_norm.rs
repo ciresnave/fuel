@@ -381,7 +381,8 @@ mod tests {
             Arc::<[f32]>::from(x_data),
             Shape::from_dims(&dims_i64),
             &device,
-        );
+        )
+        .unwrap();
         let mut inputs = HashMap::new();
         inputs.insert("X".to_string(), x);
         let outputs = evaluator.run(&inputs).unwrap();
@@ -434,7 +435,8 @@ mod tests {
             Arc::<[f32]>::from(vec![1.0_f32, 2.0, 3.0, 4.0]),
             Shape::from_dims(&[1, 2, 2, 1]),
             &device,
-        );
+        )
+        .unwrap();
         let mut inputs = HashMap::new();
         inputs.insert("X".to_string(), x);
         let out = evaluator.run(&inputs).unwrap();
@@ -482,7 +484,8 @@ mod tests {
             Arc::<[f32]>::from(vec![1.0_f32, 2.0, 3.0, 4.0, 5.0, 6.0]),
             Shape::from_dims(&[2, 3]),
             &device,
-        );
+        )
+        .unwrap();
         let mut inputs = HashMap::new();
         inputs.insert("X".to_string(), x);
         let out = evaluator.run(&inputs).unwrap();
@@ -527,7 +530,8 @@ mod tests {
             Arc::<[f32]>::from(vec![1.0_f32, 2.0, 3.0, 1.0, 1.0, 1.0]),
             Shape::from_dims(&[2, 3]),
             &device,
-        );
+        )
+        .unwrap();
         let mut inputs = HashMap::new();
         inputs.insert("X".to_string(), x);
         let out = evaluator.run(&inputs).unwrap();
@@ -565,7 +569,8 @@ mod tests {
             Arc::<[f32]>::from(xs.clone()),
             Shape::from_dims(&[xs.len()]),
             &device,
-        );
+        )
+        .unwrap();
         let expected = xt.relu().realize_f32();
         assert_eq!(got.len(), expected.len());
         for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {
@@ -586,7 +591,8 @@ mod tests {
             Arc::<[f32]>::from(xs.clone()),
             Shape::from_dims(&[xs.len()]),
             &device,
-        );
+        )
+        .unwrap();
         let expected = xt.gelu().realize_f32();
         assert_eq!(got.len(), expected.len());
         for (i, (g, e)) in got.iter().zip(expected.iter()).enumerate() {

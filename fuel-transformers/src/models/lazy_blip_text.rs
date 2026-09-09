@@ -184,17 +184,17 @@ impl BlipTextModel {
         let word_table = anchor.const_f32_like(
             Arc::clone(&w.word_embedding),
             Shape::from_dims(&[cfg.vocab_size, h]),
-        );
-        let ids = anchor.const_u32_like(input_ids.to_vec(), Shape::from_dims(&[t]));
+        )?;
+        let ids = anchor.const_u32_like(input_ids.to_vec(), Shape::from_dims(&[t]))?;
         let tok = word_table
             .index_select(0_usize, &ids)?
             .reshape(Shape::from_dims(&[1, t, h]))?;
         let pos_ids: Vec<u32> = (0..t).map(|i| (i + start_pos) as u32).collect();
-        let pos_idx = anchor.const_u32_like(pos_ids, Shape::from_dims(&[t]));
+        let pos_idx = anchor.const_u32_like(pos_ids, Shape::from_dims(&[t]))?;
         let pos_table = anchor.const_f32_like(
             Arc::clone(&w.position_embedding),
             Shape::from_dims(&[cfg.max_position_embeddings, h]),
-        );
+        )?;
         let pos = pos_table
             .index_select(0_usize, &pos_idx)?
             .reshape(Shape::from_dims(&[1, t, h]))?;
@@ -653,7 +653,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 5, cfg.encoder_hidden_size]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let ids = vec![1_u32, 2, 3, 4];
         let logits = model.forward(&ids, &enc, 0).unwrap();
         assert_eq!(logits.shape().dims(), &[1, ids.len(), cfg.vocab_size]);
@@ -674,7 +675,8 @@ mod tests {
             vec![0.05_f32; 1 * 4 * cfg.encoder_hidden_size],
             Shape::from_dims(&[1, 4, cfg.encoder_hidden_size]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let ids_a = vec![1_u32, 2, 3, 4];
         let ids_b = vec![1_u32, 2, 3, 9]; // last position changed
         let a = model.forward(&ids_a, &enc, 0).unwrap().realize_f32();
@@ -708,14 +710,16 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 4, cfg.encoder_hidden_size]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let enc_b = Tensor::from_f32(
             (0..(1 * 4 * cfg.encoder_hidden_size))
                 .map(|i| (i as f32) * 0.01 + 0.5)
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 4, cfg.encoder_hidden_size]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let a = model.forward(&ids, &enc_a, 0).unwrap().realize_f32();
         let b = model.forward(&ids, &enc_b, 0).unwrap().realize_f32();
         let mut max_diff = 0.0_f32;

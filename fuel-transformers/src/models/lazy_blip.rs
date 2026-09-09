@@ -323,7 +323,8 @@ mod tests {
             pixel_data,
             Shape::from_dims(&[1, 3, img_size, img_size]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let input_ids = vec![1_u32, 2, 3, 4];
         let t = input_ids.len();
         let logits = model.forward(&pixels, &input_ids, 0).unwrap();
@@ -356,12 +357,14 @@ mod tests {
             pixel_a,
             Shape::from_dims(&[1, 3, img_size, img_size]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let pb = Tensor::from_f32(
             pixel_b,
             Shape::from_dims(&[1, 3, img_size, img_size]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let ids = vec![1_u32, 2, 3];
         let la = model.forward(&pa, &ids, 0).unwrap().realize_f32();
         let lb = model.forward(&pb, &ids, 0).unwrap().realize_f32();

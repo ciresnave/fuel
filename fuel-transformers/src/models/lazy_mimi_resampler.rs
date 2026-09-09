@@ -65,7 +65,7 @@ impl ConvDownsample1dModel {
         let weight = padded.const_f32_like(
             Arc::clone(&w.weight),
             Shape::from_dims(&[w.dim, w.dim, kernel]),
-        );
+        )?;
         padded.conv1d(&weight, None, w.stride, 0, 1)
     }
 }
@@ -78,7 +78,8 @@ impl ConvTrUpsample1dModel {
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let w = &self.weights;
         let kernel = 2 * w.stride;
-        let weight = x.const_f32_like(Arc::clone(&w.weight), Shape::from_dims(&[w.dim, 1, kernel]));
+        let weight =
+            x.const_f32_like(Arc::clone(&w.weight), Shape::from_dims(&[w.dim, 1, kernel]))?;
         let y = x.conv_transpose1d(
             &weight, w.stride, /* padding */ 0, /* output_padding */ 0,
             /* dilation */ 1, /* groups */ w.dim,
@@ -204,7 +205,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, dim, t_in]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let y = model.forward(&x).unwrap();
         assert_eq!(y.shape().dims(), &[1, dim, t_in / stride]);
         for &v in &y.realize_f32() {
@@ -231,7 +233,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, dim, t_in]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let y = model.forward(&x).unwrap();
         // Causal-trimmed output length = T · stride exactly.
         assert_eq!(y.shape().dims(), &[1, dim, t_in * stride]);
@@ -266,7 +269,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, dim, t_in]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let mid = dn.forward(&x).unwrap();
         assert_eq!(mid.shape().dims(), &[1, dim, t_in / stride]);
         let back = up.forward(&mid).unwrap();

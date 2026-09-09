@@ -39,8 +39,11 @@ fn realize_panic_message_has_graph_location() {
         vec![1.0f32, 2.0, 3.0, 4.0],
         Shape::from_dims(&[4]),
         &fuel_core::Device::cpu(),
-    );
-    let bad_idx = src.const_u32_like(vec![100u32, 200u32], Shape::from_dims(&[2]));
+    )
+    .unwrap();
+    let bad_idx = src
+        .const_u32_like(vec![100u32, 200u32], Shape::from_dims(&[2]))
+        .unwrap();
     let result_tensor = src.index_select(0_usize, &bad_idx).unwrap();
 
     let result = catch_unwind(AssertUnwindSafe(|| {

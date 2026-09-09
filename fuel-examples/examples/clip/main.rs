@@ -114,7 +114,7 @@ pub fn main() -> Result<()> {
             Arc::<[f32]>::from(pixels),
             Shape::from_dims(&[1, 3, vision_config.image_size, vision_config.image_size]),
             &device,
-        );
+        )?;
         let f = model.image_features(&pixels)?;
         image_feats.push(f.realize_f32());
     }

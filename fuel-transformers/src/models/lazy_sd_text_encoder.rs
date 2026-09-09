@@ -229,14 +229,14 @@ impl SdTextEncoder {
             self.weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, h]),
             &fuel_core::Device::cpu(),
-        );
-        let input_ids = token_emb.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        )?;
+        let input_ids = token_emb.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]))?;
         let pos_ids: Vec<u32> = (0..seq as u32).collect();
-        let position_ids = token_emb.const_u32_like(pos_ids, Shape::from_dims(&[seq]));
+        let position_ids = token_emb.const_u32_like(pos_ids, Shape::from_dims(&[seq]))?;
         let pos_emb = token_emb.const_f32_like(
             self.weights.position_embedding.clone(),
             Shape::from_dims(&[cfg.max_position_embeddings, h]),
-        );
+        )?;
 
         let w = token_emb.index_select(0, &input_ids)?;
         let p = pos_emb.index_select(0, &position_ids)?;
@@ -278,7 +278,7 @@ impl SdTextEncoder {
             self.weights.token_embedding.clone(),
             Shape::from_dims(&[self.config.vocab_size, self.config.hidden_size]),
             &fuel_core::Device::cpu(),
-        );
+        )?;
         self.forward_until_encoder_layer_seeded(token_emb, tokens, until_layer)
     }
 
@@ -297,7 +297,7 @@ impl SdTextEncoder {
         let token_emb = anchor.const_f32_like(
             self.weights.token_embedding.clone(),
             Shape::from_dims(&[self.config.vocab_size, self.config.hidden_size]),
-        );
+        )?;
         self.forward_until_encoder_layer_seeded(token_emb, tokens, until_layer)
     }
 
@@ -330,13 +330,13 @@ impl SdTextEncoder {
         );
         let until_idx = until as usize;
 
-        let input_ids = token_emb.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        let input_ids = token_emb.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]))?;
         let pos_ids: Vec<u32> = (0..seq as u32).collect();
-        let position_ids = token_emb.const_u32_like(pos_ids, Shape::from_dims(&[seq]));
+        let position_ids = token_emb.const_u32_like(pos_ids, Shape::from_dims(&[seq]))?;
         let pos_emb = token_emb.const_f32_like(
             self.weights.position_embedding.clone(),
             Shape::from_dims(&[cfg.max_position_embeddings, h]),
-        );
+        )?;
         let w = token_emb.index_select(0, &input_ids)?;
         let p = pos_emb.index_select(0, &position_ids)?;
         let mut x = w.add(&p)?.reshape(Shape::from_dims(&[1, seq, h]))?;
@@ -431,7 +431,7 @@ fn quick_gelu(x: &Tensor) -> fuel_core::Result<Tensor> {
     // Reciprocal via 1/one_plus. Tensor's div goes through the
     // Div op; use `div` with the numerator 1-tensor.
     let ones = x
-        .const_f32_like(vec![1.0_f32; 1], Shape::from_dims(&[1]))
+        .const_f32_like(vec![1.0_f32; 1], Shape::from_dims(&[1]))?
         .broadcast_to(one_plus.shape())?;
     let sig = ones.div(&one_plus)?;
     x.mul(&sig)
@@ -448,11 +448,11 @@ fn layer_norm_affine(
 ) -> fuel_core::Result<Tensor> {
     let normed = x.layer_norm_last_dim(eps)?;
     let g = x
-        .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))
+        .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))?
         .reshape(Shape::from_dims(&[1, 1, hidden]))?
         .broadcast_to(Shape::from_dims(&[1, seq, hidden]))?;
     let b = x
-        .const_f32_like(beta.clone(), Shape::from_dims(&[hidden]))
+        .const_f32_like(beta.clone(), Shape::from_dims(&[hidden]))?
         .reshape(Shape::from_dims(&[1, 1, hidden]))?
         .broadcast_to(Shape::from_dims(&[1, seq, hidden]))?;
     normed.mul(&g)?.add(&b)
@@ -466,12 +466,12 @@ fn linear(
     out_f: usize,
     seq: usize,
 ) -> fuel_core::Result<Tensor> {
-    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]));
+    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]))?;
     let proj = x.matmul(&w_t)?;
     match b {
         Some(b) => {
             let bias = x
-                .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))
+                .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))?
                 .reshape(Shape::from_dims(&[1, 1, out_f]))?
                 .broadcast_to(Shape::from_dims(&[1, seq, out_f]))?;
             proj.add(&bias)
@@ -794,7 +794,8 @@ mod tests {
         // We build a 1-element graph and compare against the closed form.
         let x_vals = [-2.0_f32, -0.5, 0.0, 0.5, 1.0, 2.0];
         for &v in &x_vals {
-            let x = Tensor::from_f32(vec![v], Shape::from_dims(&[1]), &fuel_core::Device::cpu());
+            let x = Tensor::from_f32(vec![v], Shape::from_dims(&[1]), &fuel_core::Device::cpu())
+                .unwrap();
             let y = quick_gelu(&x).unwrap();
             let out = y.realize_f32()[0];
             let expected = v * (1.0 / (1.0 + (-1.702_f32 * v).exp()));

@@ -200,7 +200,7 @@ pub fn main() -> Result<()> {
         // sample-rate-like dummy — but we need a real F32 anchor. Use
         // the first KV tensor (always present) or a fresh zero f32
         // anchor.
-        let anchor = Tensor::from_f32(vec![0.0_f32; 1], (1usize,), &device);
+        let anchor = Tensor::from_f32(vec![0.0_f32; 1], (1usize,), &device)?;
 
         let mut inputs: std::collections::HashMap<String, Tensor> =
             std::collections::HashMap::new();
@@ -208,39 +208,39 @@ pub fn main() -> Result<()> {
         if let Some(past) = &past_kv {
             // Single-token continuation.
             let last_token = generated_tokens[generated_tokens.len() - 1];
-            let input_ids = anchor.const_i64_like(vec![last_token], (1usize, 1usize));
+            let input_ids = anchor.const_i64_like(vec![last_token], (1usize, 1usize))?;
             inputs.insert("input_ids".to_string(), input_ids);
 
             let seq_len = generated_tokens.len();
-            let attn = anchor.const_i64_like(vec![1_i64; seq_len], (1usize, seq_len));
+            let attn = anchor.const_i64_like(vec![1_i64; seq_len], (1usize, seq_len))?;
             inputs.insert("attention_mask".to_string(), attn);
 
-            let pos = anchor.const_i64_like(vec![(seq_len - 1) as i64], (1usize, 1usize));
+            let pos = anchor.const_i64_like(vec![(seq_len - 1) as i64], (1usize, 1usize))?;
             inputs.insert("position_ids".to_string(), pos);
 
             for (i, (k_pair, v_pair)) in past.iter().enumerate() {
                 let k_lazy = anchor.const_f32_like(
                     Arc::<[f32]>::from(k_pair.0.clone().into_boxed_slice()),
                     k_pair.1,
-                );
+                )?;
                 let v_lazy = anchor.const_f32_like(
                     Arc::<[f32]>::from(v_pair.0.clone().into_boxed_slice()),
                     v_pair.1,
-                );
+                )?;
                 inputs.insert(format!("past_key_values.{}.key", i), k_lazy);
                 inputs.insert(format!("past_key_values.{}.value", i), v_lazy);
             }
         } else {
             // Prefill: feed full prompt.
             let seq_len = generated_tokens.len();
-            let input_ids = anchor.const_i64_like(generated_tokens.clone(), (1usize, seq_len));
+            let input_ids = anchor.const_i64_like(generated_tokens.clone(), (1usize, seq_len))?;
             inputs.insert("input_ids".to_string(), input_ids);
 
-            let attn = anchor.const_i64_like(vec![1_i64; seq_len], (1usize, seq_len));
+            let attn = anchor.const_i64_like(vec![1_i64; seq_len], (1usize, seq_len))?;
             inputs.insert("attention_mask".to_string(), attn);
 
             let pos: Vec<i64> = (0..seq_len as i64).collect();
-            let pos_t = anchor.const_i64_like(pos, (1usize, seq_len));
+            let pos_t = anchor.const_i64_like(pos, (1usize, seq_len))?;
             inputs.insert("position_ids".to_string(), pos_t);
 
             // Empty key/value tensors (shape ..., 0, head_dim).
@@ -250,9 +250,9 @@ pub fn main() -> Result<()> {
                 let k = anchor.const_f32_like(
                     Arc::<[f32]>::from(empty.clone().into_boxed_slice()),
                     empty_shape,
-                );
+                )?;
                 let v = anchor
-                    .const_f32_like(Arc::<[f32]>::from(empty.into_boxed_slice()), empty_shape);
+                    .const_f32_like(Arc::<[f32]>::from(empty.into_boxed_slice()), empty_shape)?;
                 inputs.insert(format!("past_key_values.{}.key", i), k);
                 inputs.insert(format!("past_key_values.{}.value", i), v);
             }

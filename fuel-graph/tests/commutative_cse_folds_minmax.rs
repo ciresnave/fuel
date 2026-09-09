@@ -46,7 +46,7 @@ fn cpu_dev() -> Arc<dyn fuel_backend_contract::DynBackendDevice> {
 /// and the two orderings differ only in position.
 fn two_operands() -> (NodeHandle, NodeHandle) {
     let dev = cpu_dev();
-    let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), &dev);
+    let a = NodeHandle::from_f32(vec![1.0, 2.0, 3.0, 4.0], Shape::from_dims(&[4]), &dev).unwrap();
     let b = a.add_scalar(5.0);
     (a, b)
 }

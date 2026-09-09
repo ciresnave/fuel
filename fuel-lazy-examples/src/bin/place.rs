@@ -50,22 +50,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         vec![0.0_f32; 64 * 64],
         Shape::from_dims(&[64, 64]),
         cpu_dev(),
-    );
+    )?;
     let mk = |elems: usize| Arc::<[f32]>::from(vec![0.0_f32; elems]);
 
     // Tiny matmul: 64×64 @ 64×64 (size_class 12)
     let tiny_a = root.clone();
-    let tiny_b = root.const_f32_like(mk(64 * 64), Shape::from_dims(&[64, 64]));
+    let tiny_b = root.const_f32_like(mk(64 * 64), Shape::from_dims(&[64, 64]))?;
     let tiny_mm = tiny_a.matmul(&tiny_b);
 
     // Medium matmul: 256×256 @ 256×256 (size_class 16)
-    let mid_a = root.const_f32_like(mk(256 * 256), Shape::from_dims(&[256, 256]));
-    let mid_b = root.const_f32_like(mk(256 * 256), Shape::from_dims(&[256, 256]));
+    let mid_a = root.const_f32_like(mk(256 * 256), Shape::from_dims(&[256, 256]))?;
+    let mid_b = root.const_f32_like(mk(256 * 256), Shape::from_dims(&[256, 256]))?;
     let mid_mm = mid_a.matmul(&mid_b);
 
     // Large matmul: 1024×1024 @ 1024×1024 (size_class 20)
-    let big_a = root.const_f32_like(mk(1024 * 1024), Shape::from_dims(&[1024, 1024]));
-    let big_b = root.const_f32_like(mk(1024 * 1024), Shape::from_dims(&[1024, 1024]));
+    let big_a = root.const_f32_like(mk(1024 * 1024), Shape::from_dims(&[1024, 1024]))?;
+    let big_b = root.const_f32_like(mk(1024 * 1024), Shape::from_dims(&[1024, 1024]))?;
     let big_mm = big_a.matmul(&big_b);
 
     // Unprofiled ops — Sub and Silu — should use fallback.

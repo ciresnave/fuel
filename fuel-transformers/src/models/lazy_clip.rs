@@ -211,7 +211,7 @@ impl ClipTextModel {
         let pos_full = token_embeds.const_f32_like(
             Arc::clone(&weights.position_embedding),
             Shape::from_dims(&[cfg.max_position_embeddings, cfg.embed_dim]),
-        );
+        )?;
         let pos_slice = pos_full
             .slice(0_usize, 0, seq)?
             .reshape(Shape::from_dims(&[1, seq, cfg.embed_dim]))?;
@@ -225,7 +225,7 @@ impl ClipTextModel {
                 mask_data[i * seq + j] = f32::NEG_INFINITY;
             }
         }
-        let mask = h.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]));
+        let mask = h.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]))?;
 
         for layer in &weights.layers {
             h = apply_clip_layer(
@@ -310,7 +310,7 @@ impl ClipTextModel {
         let pos_full = token_embeds.const_f32_like(
             Arc::clone(&weights.position_embedding),
             Shape::from_dims(&[cfg.max_position_embeddings, cfg.embed_dim]),
-        );
+        )?;
         let pos_slice = pos_full
             .slice(0_usize, 0, seq)?
             .reshape(Shape::from_dims(&[1, seq, cfg.embed_dim]))?;
@@ -324,7 +324,7 @@ impl ClipTextModel {
                 mask_data[i * seq + j] = f32::NEG_INFINITY;
             }
         }
-        let mask = h.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]));
+        let mask = h.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]))?;
 
         let mut out = Vec::with_capacity(layer_ids.len());
         let mut next_capture = 0;
@@ -372,7 +372,7 @@ impl ClipVisionModel {
                 cfg.patch_size,
                 cfg.patch_size,
             ]),
-        );
+        )?;
         let conv_out =
             pixel_values.conv2d(&conv_w, None, (cfg.patch_size, cfg.patch_size), (0, 0), 1)?;
         let np = cfg.num_patches();
@@ -384,7 +384,7 @@ impl ClipVisionModel {
         let cls = pixel_values.const_f32_like(
             Arc::clone(&weights.class_embedding),
             Shape::from_dims(&[1, 1, cfg.embed_dim]),
-        );
+        )?;
         let cls_bc = cls.broadcast_to(Shape::from_dims(&[batch, 1, cfg.embed_dim]))?;
         let with_cls = cls_bc.concat(&patches, 1_usize)?;
 
@@ -392,7 +392,7 @@ impl ClipVisionModel {
         let pos = pixel_values.const_f32_like(
             Arc::clone(&weights.position_embedding),
             Shape::from_dims(&[np + 1, cfg.embed_dim]),
-        );
+        )?;
         let pos_bc = pos
             .reshape(Shape::from_dims(&[1, np + 1, cfg.embed_dim]))?
             .broadcast_to(Shape::from_dims(&[batch, np + 1, cfg.embed_dim]))?;
@@ -478,7 +478,7 @@ impl ClipVisionModel {
                 cfg.patch_size,
                 cfg.patch_size,
             ]),
-        );
+        )?;
         let conv_out =
             pixel_values.conv2d(&conv_w, None, (cfg.patch_size, cfg.patch_size), (0, 0), 1)?;
         let np = cfg.num_patches();
@@ -488,13 +488,13 @@ impl ClipVisionModel {
         let cls = pixel_values.const_f32_like(
             Arc::clone(&weights.class_embedding),
             Shape::from_dims(&[1, 1, cfg.embed_dim]),
-        );
+        )?;
         let cls_bc = cls.broadcast_to(Shape::from_dims(&[batch, 1, cfg.embed_dim]))?;
         let with_cls = cls_bc.concat(&patches, 1_usize)?;
         let pos = pixel_values.const_f32_like(
             Arc::clone(&weights.position_embedding),
             Shape::from_dims(&[np + 1, cfg.embed_dim]),
-        );
+        )?;
         let pos_bc = pos
             .reshape(Shape::from_dims(&[1, np + 1, cfg.embed_dim]))?
             .broadcast_to(Shape::from_dims(&[batch, np + 1, cfg.embed_dim]))?;
@@ -990,6 +990,7 @@ mod tests {
             Shape::from_dims(&[1, cfg.num_channels, cfg.image_size, cfg.image_size]),
             &Device::cpu(),
         )
+        .unwrap()
     }
 
     #[test]

@@ -258,7 +258,7 @@ fn main() -> Result<()> {
         Arc::<[f32]>::from(pixel_chw),
         Shape::from_dims(&[1, 3, img_size, img_size]),
         &Device::cpu(),
-    );
+    )?;
 
     print!("{}", args.prompt);
     std::io::stdout().flush()?;

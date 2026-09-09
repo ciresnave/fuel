@@ -130,7 +130,8 @@ mod tests {
             input_data,
             Shape::from_dims(&[1, seq, cfg.multimodal_hidden_size]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let out = model.forward(&input).unwrap();
         assert_eq!(out.shape().dims(), &[1, seq, cfg.text_hidden_size]);
         for &v in &out.realize_f32() {
@@ -161,7 +162,8 @@ mod tests {
             vec![1.0_f32, 2.0, 3.0, 4.0],
             Shape::from_dims(&[1, 1, 4]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let out = model.forward(&input).unwrap().realize_f32();
         let expected = [
             1.0_f32 / 7.5_f32.sqrt(),

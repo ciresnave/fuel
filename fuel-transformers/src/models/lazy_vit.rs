@@ -180,11 +180,11 @@ impl VitModel {
                 cfg.patch_size,
                 cfg.patch_size,
             ]),
-        );
+        )?;
         let conv_b = pixel_values.const_f32_like(
             Arc::clone(&weights.patch_proj_bias),
             Shape::from_dims(&[cfg.hidden_size]),
-        );
+        )?;
         let conv_out = pixel_values.conv2d(
             &conv_w,
             Some(&conv_b),
@@ -202,7 +202,7 @@ impl VitModel {
         let cls_tok = patches.const_f32_like(
             Arc::clone(&weights.cls_token),
             Shape::from_dims(&[1, 1, cfg.hidden_size]),
-        );
+        )?;
         let cls_bc = cls_tok.broadcast_to(Shape::from_dims(&[batch, 1, cfg.hidden_size]))?;
         let with_cls = cls_bc.concat(&patches, 1_usize)?; // (b, num_patches + 1, hidden)
 
@@ -210,7 +210,7 @@ impl VitModel {
         let pos = patches.const_f32_like(
             Arc::clone(&weights.position_embeddings),
             Shape::from_dims(&[1, num_patches + 1, cfg.hidden_size]),
-        );
+        )?;
         let pos_bc =
             pos.broadcast_to(Shape::from_dims(&[batch, num_patches + 1, cfg.hidden_size]))?;
         let mut h_states = with_cls.add(&pos_bc)?;
@@ -238,7 +238,7 @@ impl VitModel {
                 let num_labels = cls_b.len();
                 let logits = cls_w.apply_linear(&cls, cfg.hidden_size, num_labels)?;
                 let bias_t =
-                    h_norm.const_f32_like(Arc::clone(cls_b), Shape::from_dims(&[num_labels]));
+                    h_norm.const_f32_like(Arc::clone(cls_b), Shape::from_dims(&[num_labels]))?;
                 logits.broadcast_add(&bias_t)
             }
         }
@@ -290,11 +290,11 @@ impl VitModel {
                 cfg.patch_size,
                 cfg.patch_size,
             ]),
-        );
+        )?;
         let conv_b = pixel_values.const_f32_like(
             Arc::clone(&weights.patch_proj_bias),
             Shape::from_dims(&[cfg.hidden_size]),
-        );
+        )?;
         let conv_out = pixel_values.conv2d(
             &conv_w,
             Some(&conv_b),
@@ -310,14 +310,14 @@ impl VitModel {
         let cls_tok = patches.const_f32_like(
             Arc::clone(&weights.cls_token),
             Shape::from_dims(&[1, 1, cfg.hidden_size]),
-        );
+        )?;
         let cls_bc = cls_tok.broadcast_to(Shape::from_dims(&[batch, 1, cfg.hidden_size]))?;
         let with_cls = cls_bc.concat(&patches, 1_usize)?;
 
         let pos = patches.const_f32_like(
             Arc::clone(&weights.position_embeddings),
             Shape::from_dims(&[1, num_patches + 1, cfg.hidden_size]),
-        );
+        )?;
         let pos_bc =
             pos.broadcast_to(Shape::from_dims(&[batch, num_patches + 1, cfg.hidden_size]))?;
         let mut h = with_cls.add(&pos_bc)?;
@@ -383,7 +383,7 @@ impl VitModel {
         let attn_out_bias_t = x.const_f32_like(
             Arc::clone(&layer.attn_output_proj_bias),
             Shape::from_dims(&[h]),
-        );
+        )?;
         let attn_out = attn_out.broadcast_add(&attn_out_bias_t)?;
         // First residual.
         let h1 = x.add(&attn_out)?;
@@ -403,7 +403,7 @@ impl VitModel {
         let inter_bias_t = x.const_f32_like(
             Arc::clone(&layer.intermediate_proj_bias),
             Shape::from_dims(&[cfg.intermediate_size]),
-        );
+        )?;
         let inter = inter_proj.broadcast_add(&inter_bias_t)?;
         let activated = match cfg.hidden_activation {
             VitActivation::Gelu => inter.gelu_erf(),
@@ -419,7 +419,7 @@ impl VitModel {
         let mlp_bias_t = x.const_f32_like(
             Arc::clone(&layer.mlp_output_proj_bias),
             Shape::from_dims(&[h]),
-        );
+        )?;
         let mlp_out = mlp_out.broadcast_add(&mlp_bias_t)?;
         // Second residual.
         h1.add(&mlp_out)
@@ -684,6 +684,7 @@ mod tests {
             Shape::from_dims(&[1, cfg.num_channels, cfg.image_size, cfg.image_size]),
             &Device::cpu(),
         )
+        .unwrap()
     }
 
     #[test]

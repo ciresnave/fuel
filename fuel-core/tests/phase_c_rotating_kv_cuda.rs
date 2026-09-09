@@ -39,9 +39,13 @@ fn cuda_device() -> fuel_cuda_backend::CudaDevice {
 fn rotating_within_window_cuda() {
     require_cuda();
     let device = fuel_core::Device::cpu();
-    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
-    let src = dest.const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]));
-    let position = dest.const_u32_like(vec![1_u32], Shape::from_dims(&[]));
+    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
+    let src = dest
+        .const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]))
+        .unwrap();
+    let position = dest
+        .const_u32_like(vec![1_u32], Shape::from_dims(&[]))
+        .unwrap();
     let post_write = dest
         .write_slice_rotating(&src, &position, 0, 4, vec![(0, 1), (0, 2)])
         .expect("write_slice_rotating builds");
@@ -57,9 +61,13 @@ fn rotating_within_window_cuda() {
 fn rotating_splits_across_boundary_cuda() {
     require_cuda();
     let device = fuel_core::Device::cpu();
-    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
-    let src = dest.const_f32_like(vec![10.0_f32, 11.0, 20.0, 21.0], Shape::from_dims(&[2, 2]));
-    let position = dest.const_u32_like(vec![3_u32], Shape::from_dims(&[]));
+    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
+    let src = dest
+        .const_f32_like(vec![10.0_f32, 11.0, 20.0, 21.0], Shape::from_dims(&[2, 2]))
+        .unwrap();
+    let position = dest
+        .const_u32_like(vec![3_u32], Shape::from_dims(&[]))
+        .unwrap();
     let post_write = dest
         .write_slice_rotating(&src, &position, 0, 4, vec![(0, 2), (0, 2)])
         .expect("write_slice_rotating builds");
@@ -81,7 +89,8 @@ fn rotating_mistral_style_decode_loop_cuda() {
         vec![0.0_f32; window * head_dim],
         Shape::from_dims(&[window, head_dim]),
         &device,
-    );
+    )
+    .unwrap();
     let tokens = [
         vec![1.0_f32, 1.1],
         vec![2.0_f32, 2.1],
@@ -89,8 +98,12 @@ fn rotating_mistral_style_decode_loop_cuda() {
         vec![4.0_f32, 4.1],
     ];
     for (step, token) in tokens.iter().enumerate() {
-        let token_t = cache.const_f32_like(token.clone(), Shape::from_dims(&[1, head_dim]));
-        let position = cache.const_u32_like(vec![step as u32], Shape::from_dims(&[]));
+        let token_t = cache
+            .const_f32_like(token.clone(), Shape::from_dims(&[1, head_dim]))
+            .unwrap();
+        let position = cache
+            .const_u32_like(vec![step as u32], Shape::from_dims(&[]))
+            .unwrap();
         cache = cache
             .write_slice_rotating(&token_t, &position, 0, window, vec![(0, 1), (0, head_dim)])
             .expect("rotating append");

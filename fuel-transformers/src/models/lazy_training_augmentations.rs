@@ -345,7 +345,7 @@ mod tests {
     // ---------- Gradient clipping tests ----------
 
     fn make_grad(values: Vec<f32>, shape: &[usize]) -> Tensor {
-        Tensor::from_f32(values, Shape::from_dims(shape), &Device::cpu())
+        Tensor::from_f32(values, Shape::from_dims(shape), &Device::cpu()).unwrap()
     }
 
     #[test]

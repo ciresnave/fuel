@@ -792,11 +792,13 @@ mod tests {
     use fuel_ir::Shape;
 
     fn lazy_from(values: &[f32], shape: &[usize]) -> Tensor {
-        Tensor::from_f32(values.to_vec(), Shape::from_dims(shape), &Device::cpu())
+        Tensor::from_f32(values.to_vec(), Shape::from_dims(shape), &Device::cpu()).unwrap()
     }
 
     fn lazy_like(anchor: &Tensor, values: &[f32], shape: &[usize]) -> Tensor {
-        anchor.const_f32_like(values.to_vec(), Shape::from_dims(shape))
+        anchor
+            .const_f32_like(values.to_vec(), Shape::from_dims(shape))
+            .unwrap()
     }
 
     fn finite(out: &[f32]) -> bool {

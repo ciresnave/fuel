@@ -179,7 +179,7 @@ impl StellaV5Model {
         let sum_mask: f32 = mask_f32.iter().sum();
         assert!(sum_mask > 0.0, "attention_mask sum must be > 0");
         let mask_t = hidden
-            .const_f32_like(Arc::<[f32]>::from(mask_f32), Shape::from_dims(&[seq]))
+            .const_f32_like(Arc::<[f32]>::from(mask_f32), Shape::from_dims(&[seq]))?
             .reshape(Shape::from_dims(&[1, seq, 1]))?;
         let masked = hidden.broadcast_mul(&mask_t)?; // (1, seq, hidden)
         // Sum over seq, then divide by mask sum.

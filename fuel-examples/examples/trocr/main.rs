@@ -345,7 +345,7 @@ pub fn main() -> Result<()> {
         Arc::<[f32]>::from(image_vec),
         Shape::from_dims(&[1, 3, image_size, image_size]),
         &device,
-    );
+    )?;
 
     // Encode once; the lazy decoder takes the encoder output as a
     // graph anchor and re-uses it across autoregressive steps.

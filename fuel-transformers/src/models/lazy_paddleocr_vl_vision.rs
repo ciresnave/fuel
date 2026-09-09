@@ -209,17 +209,17 @@ impl PaddleOcrVlVisionModel {
         let cos = pixels.const_f32_like(
             Arc::from(cos_data),
             Shape::from_dims(&[num_patches_per_tile, head_dim]),
-        );
+        )?;
         let sin = pixels.const_f32_like(
             Arc::from(sin_data),
             Shape::from_dims(&[num_patches_per_tile, head_dim]),
-        );
+        )?;
 
         // Per-tile position embedding.
         let pos = pixels.const_f32_like(
             Arc::clone(&self.weights.position_embedding),
             Shape::from_dims(&[1, num_patches_per_tile, cfg.hidden_size]),
-        );
+        )?;
 
         let conv_w = pixels.const_f32_like(
             Arc::clone(&self.weights.patch_proj),
@@ -229,11 +229,11 @@ impl PaddleOcrVlVisionModel {
                 cfg.patch_size,
                 cfg.patch_size,
             ]),
-        );
+        )?;
         let conv_b = pixels.const_f32_like(
             Arc::clone(&self.weights.patch_proj_bias),
             Shape::from_dims(&[cfg.hidden_size]),
-        );
+        )?;
 
         // Encode each tile independently and collect the post-merged
         // projections, then concatenate them in row-major tile order.
@@ -1026,18 +1026,18 @@ impl PaddleOcrVlNaVitModel {
         let cos = pixel_values.const_f32_like(
             Arc::from(cos_data),
             Shape::from_dims(&[num_patches, head_dim]),
-        );
+        )?;
         let sin = pixel_values.const_f32_like(
             Arc::from(sin_data),
             Shape::from_dims(&[num_patches, head_dim]),
-        );
+        )?;
 
         // Bilinear-interpolated position embedding for this grid.
         let pos_data = self.interpolated_position_embedding(h_patches, w_patches);
         let pos = pixel_values.const_f32_like(
             pos_data,
             Shape::from_dims(&[1, num_patches, cfg.hidden_size]),
-        );
+        )?;
 
         // Conv2d patch embedding.
         let conv_w = pixel_values.const_f32_like(
@@ -1048,11 +1048,11 @@ impl PaddleOcrVlNaVitModel {
                 cfg.patch_size,
                 cfg.patch_size,
             ]),
-        );
+        )?;
         let conv_b = pixel_values.const_f32_like(
             Arc::clone(&self.weights.patch_proj_bias),
             Shape::from_dims(&[cfg.hidden_size]),
-        );
+        )?;
         let conv_out = pixel_values.conv2d(
             &conv_w,
             Some(&conv_b),
@@ -1576,6 +1576,7 @@ mod tests {
             Shape::from_dims(&[num_tiles, cfg.num_channels, cfg.image_size, cfg.image_size]),
             &Device::cpu(),
         )
+        .unwrap()
     }
 
     #[test]
@@ -2014,6 +2015,7 @@ mod tests {
                 Shape::from_dims(&[1, cfg.num_channels, h, w]),
                 &Device::cpu(),
             )
+            .unwrap()
         }
 
         fn navit_model(text_hidden: usize) -> PaddleOcrVlNaVitModel {
@@ -2175,7 +2177,8 @@ mod tests {
                 Arc::from(data),
                 Shape::from_dims(&[1, cfg.num_channels, 13, 12]),
                 &Device::cpu(),
-            );
+            )
+            .unwrap();
             let _ = model.forward(&pixels);
         }
 
@@ -2193,7 +2196,8 @@ mod tests {
                 Arc::from(data),
                 Shape::from_dims(&[1, cfg.num_channels, 12, 13]),
                 &Device::cpu(),
-            );
+            )
+            .unwrap();
             let _ = model.forward(&pixels);
         }
 

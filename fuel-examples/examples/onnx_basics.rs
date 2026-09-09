@@ -79,7 +79,7 @@ pub fn main() -> Result<()> {
                             Some(a) => {
                                 Tensor::from_f32_on(a.graph(), zeros, Shape::from_dims(&dims), &dev)
                             }
-                        };
+                        }?;
                         t.to_dtype(dt)?
                     }
                     type_ => anyhow::bail!("unsupported input type {type_:?}"),

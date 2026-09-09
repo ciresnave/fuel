@@ -61,8 +61,10 @@ fn check_case(
     let w_data: Vec<f32> = (0..w_len).map(|i| ((i as f32) * 1.7e-3).cos()).collect();
 
     let build = |dev: &Device| {
-        let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[n, cin, h, w]), dev);
-        let weight = x.const_f32_like(w_data.clone(), Shape::from_dims(&[cin, cout_per_g, kh, kw]));
+        let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[n, cin, h, w]), dev).unwrap();
+        let weight = x
+            .const_f32_like(w_data.clone(), Shape::from_dims(&[cin, cout_per_g, kh, kw]))
+            .unwrap();
         x.conv_transpose2d(&weight, stride, padding, output_padding, dilation, groups)
             .unwrap_or_else(|e| panic!("{label}: conv_transpose2d build failed: {e:?}"))
     };

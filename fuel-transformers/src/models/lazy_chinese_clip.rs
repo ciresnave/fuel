@@ -350,7 +350,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 16, 16]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let f = model.get_image_features(&image).unwrap();
         assert_eq!(f.shape().dims(), &[1, 4]);
         for &v in &f.realize_f32() {
@@ -373,15 +374,20 @@ mod tests {
         let model = tiny_model();
         // Build features on the SAME graph (test-only) by constructing
         // synthetic (1, 4) feature tensors anchored on a shared Tensor.
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
-        let img_feats = anchor.const_f32_like(
-            Arc::from(vec![0.1_f32, 0.2, 0.3, 0.4]),
-            Shape::from_dims(&[1, 4]),
-        );
-        let txt_feats = anchor.const_f32_like(
-            Arc::from(vec![0.5_f32, -0.2, 0.1, 0.3]),
-            Shape::from_dims(&[1, 4]),
-        );
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
+        let img_feats = anchor
+            .const_f32_like(
+                Arc::from(vec![0.1_f32, 0.2, 0.3, 0.4]),
+                Shape::from_dims(&[1, 4]),
+            )
+            .unwrap();
+        let txt_feats = anchor
+            .const_f32_like(
+                Arc::from(vec![0.5_f32, -0.2, 0.1, 0.3]),
+                Shape::from_dims(&[1, 4]),
+            )
+            .unwrap();
         let (lpt, lpi) = model.contrastive_logits(&img_feats, &txt_feats).unwrap();
         assert_eq!(lpt.shape().dims(), &[1, 1]);
         assert_eq!(lpi.shape().dims(), &[1, 1]);

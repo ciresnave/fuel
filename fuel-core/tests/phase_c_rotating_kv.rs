@@ -16,9 +16,13 @@ use fuel_ir::Shape;
 fn rotating_within_window() {
     let device = fuel_core::Device::cpu();
     // dest [4, 2] starts at zero; write [7, 8] at position 1.
-    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
-    let src = dest.const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]));
-    let position = dest.const_u32_like(vec![1_u32], Shape::from_dims(&[]));
+    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
+    let src = dest
+        .const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]))
+        .unwrap();
+    let position = dest
+        .const_u32_like(vec![1_u32], Shape::from_dims(&[]))
+        .unwrap();
     let post_write = dest
         .write_slice_rotating(
             &src,
@@ -36,9 +40,13 @@ fn rotating_within_window() {
 #[test]
 fn rotating_wraps_position_at_modulus() {
     let device = fuel_core::Device::cpu();
-    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
-    let src = dest.const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]));
-    let position = dest.const_u32_like(vec![4_u32], Shape::from_dims(&[]));
+    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
+    let src = dest
+        .const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]))
+        .unwrap();
+    let position = dest
+        .const_u32_like(vec![4_u32], Shape::from_dims(&[]))
+        .unwrap();
     let post_write = dest
         .write_slice_rotating(&src, &position, 0, 4, vec![(0, 1), (0, 2)])
         .expect("write_slice_rotating builds");
@@ -51,9 +59,13 @@ fn rotating_wraps_position_at_modulus() {
 #[test]
 fn rotating_splits_across_boundary() {
     let device = fuel_core::Device::cpu();
-    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
-    let src = dest.const_f32_like(vec![10.0_f32, 11.0, 20.0, 21.0], Shape::from_dims(&[2, 2]));
-    let position = dest.const_u32_like(vec![3_u32], Shape::from_dims(&[]));
+    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
+    let src = dest
+        .const_f32_like(vec![10.0_f32, 11.0, 20.0, 21.0], Shape::from_dims(&[2, 2]))
+        .unwrap();
+    let position = dest
+        .const_u32_like(vec![3_u32], Shape::from_dims(&[]))
+        .unwrap();
     let post_write = dest
         .write_slice_rotating(&src, &position, 0, 4, vec![(0, 2), (0, 2)])
         .expect("write_slice_rotating builds");
@@ -74,7 +86,8 @@ fn rotating_mistral_style_decode_loop() {
         vec![0.0_f32; window * head_dim],
         Shape::from_dims(&[window, head_dim]),
         &device,
-    );
+    )
+    .unwrap();
     // 4 "token" K vectors.
     let tokens = [
         vec![1.0_f32, 1.1],
@@ -83,8 +96,12 @@ fn rotating_mistral_style_decode_loop() {
         vec![4.0_f32, 4.1],
     ];
     for (step, token) in tokens.iter().enumerate() {
-        let token_t = cache.const_f32_like(token.clone(), Shape::from_dims(&[1, head_dim]));
-        let position = cache.const_u32_like(vec![step as u32], Shape::from_dims(&[]));
+        let token_t = cache
+            .const_f32_like(token.clone(), Shape::from_dims(&[1, head_dim]))
+            .unwrap();
+        let position = cache
+            .const_u32_like(vec![step as u32], Shape::from_dims(&[]))
+            .unwrap();
         cache = cache
             .write_slice_rotating(&token_t, &position, 0, window, vec![(0, 1), (0, head_dim)])
             .expect("rotating append");
@@ -112,10 +129,14 @@ fn rotating_mistral_style_decode_loop() {
 #[test]
 fn rotating_rejects_nonscalar_position() {
     let device = fuel_core::Device::cpu();
-    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
-    let src = dest.const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]));
+    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
+    let src = dest
+        .const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]))
+        .unwrap();
     // position is rank-1 — should error at build time.
-    let position = dest.const_u32_like(vec![1_u32, 2_u32], Shape::from_dims(&[2]));
+    let position = dest
+        .const_u32_like(vec![1_u32, 2_u32], Shape::from_dims(&[2]))
+        .unwrap();
     let r = dest.write_slice_rotating(&src, &position, 0, 4, vec![(0, 1), (0, 2)]);
     assert!(r.is_err(), "non-scalar position must error at build time");
 }
@@ -124,10 +145,14 @@ fn rotating_rejects_nonscalar_position() {
 #[test]
 fn rotating_rejects_source_axis_mismatch() {
     let device = fuel_core::Device::cpu();
-    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
+    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
     // source has 2 rows but ranges declares slab of 1 on axis 0.
-    let src = dest.const_f32_like(vec![1.0_f32; 4], Shape::from_dims(&[2, 2]));
-    let position = dest.const_u32_like(vec![0_u32], Shape::from_dims(&[]));
+    let src = dest
+        .const_f32_like(vec![1.0_f32; 4], Shape::from_dims(&[2, 2]))
+        .unwrap();
+    let position = dest
+        .const_u32_like(vec![0_u32], Shape::from_dims(&[]))
+        .unwrap();
     let r = dest.write_slice_rotating(&src, &position, 0, 4, vec![(0, 1), (0, 2)]);
     assert!(r.is_err(), "source/slab mismatch must error at build time");
 }
@@ -136,9 +161,13 @@ fn rotating_rejects_source_axis_mismatch() {
 #[test]
 fn rotating_rejects_modulus_exceeds_dest_dim() {
     let device = fuel_core::Device::cpu();
-    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
-    let src = dest.const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]));
-    let position = dest.const_u32_like(vec![0_u32], Shape::from_dims(&[]));
+    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
+    let src = dest
+        .const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]))
+        .unwrap();
+    let position = dest
+        .const_u32_like(vec![0_u32], Shape::from_dims(&[]))
+        .unwrap();
     let r = dest.write_slice_rotating(
         &src,
         &position,
@@ -153,9 +182,13 @@ fn rotating_rejects_modulus_exceeds_dest_dim() {
 #[test]
 fn rotating_rejects_axis_out_of_bounds() {
     let device = fuel_core::Device::cpu();
-    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
-    let src = dest.const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]));
-    let position = dest.const_u32_like(vec![0_u32], Shape::from_dims(&[]));
+    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
+    let src = dest
+        .const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]))
+        .unwrap();
+    let position = dest
+        .const_u32_like(vec![0_u32], Shape::from_dims(&[]))
+        .unwrap();
     let r = dest.write_slice_rotating(&src, &position, /* axis */ 3, 4, vec![(0, 1), (0, 2)]);
     assert!(r.is_err(), "axis out of bounds must error at build time");
 }

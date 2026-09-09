@@ -79,7 +79,7 @@ pub fn main() -> Result<()> {
         }
     };
 
-    let image_lazy = Tensor::from_f32(image_chw, image_shape, &device);
+    let image_lazy = Tensor::from_f32(image_chw, image_shape, &device)?;
     // EfficientNet wants HWC, others want CHW.
     let image_lazy = match args.which {
         Which::SqueezeNet => image_lazy,

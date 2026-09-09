@@ -243,7 +243,7 @@ impl EfficientNetModel {
         let bias_t = pooled.const_f32_like(
             Arc::clone(&self.weights.classifier_b),
             Shape::from_dims(&[cfg.nclasses]),
-        );
+        )?;
         logits.broadcast_add(&bias_t)
     }
 
@@ -286,7 +286,7 @@ impl EfficientNetModel {
             cb.w.const_like(x, Shape::from_dims(&[cb.c_out, cb.c_in, 1, 1]))?;
         let conv = x.conv2d(&w, None, (1, 1), (0, 0), 1)?;
         let b_t = x
-            .const_f32_like(Arc::clone(&cb.b), Shape::from_dims(&[cb.c_out]))
+            .const_f32_like(Arc::clone(&cb.b), Shape::from_dims(&[cb.c_out]))?
             .reshape(Shape::from_dims(&[1, cb.c_out, 1, 1]))?;
         conv.broadcast_add(&b_t)
     }
@@ -627,7 +627,7 @@ mod tests {
     fn tiny_image(h: usize) -> Tensor {
         let mut nb = rng_seed(1234);
         let data: Arc<[f32]> = Arc::from((0..3 * h * h).map(|_| nb()).collect::<Vec<_>>());
-        Tensor::from_f32(data, Shape::from_dims(&[1, 3, h, h]), &Device::cpu())
+        Tensor::from_f32(data, Shape::from_dims(&[1, 3, h, h]), &Device::cpu()).unwrap()
     }
 
     /// pad_same with stride=2, k=3, even input → asymmetric (0, 1).
@@ -703,7 +703,8 @@ mod tests {
             ),
             Shape::from_dims(&[1, 32, 4, 4]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let cfg = EfficientNetConfig::b0(1);
         let weights = build_weights(&cfg, 1);
         let model = EfficientNetModel {

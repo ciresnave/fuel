@@ -151,7 +151,8 @@ fn run_named(model: &ModelProto, inputs: &[In], want: &str) -> Result<Vec<f32>> 
         let t = match &anchor {
             None => Tensor::from_f32(d, Shape::from_dims(shape), &dev),
             Some(a) => Tensor::from_f32_on(a.graph(), d, Shape::from_dims(shape), &dev),
-        };
+        }
+        .unwrap();
         if anchor.is_none() {
             anchor = Some(t.clone());
         }

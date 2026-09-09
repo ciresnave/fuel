@@ -87,7 +87,7 @@ impl ColPaliModel {
         let bias = anchor.const_f32_like(
             Arc::clone(&self.weights.custom_text_projection_bias),
             Shape::from_dims(&[COLPALI_PROJ_DIM]),
-        );
+        )?;
         let biased = projected.broadcast_add(&bias)?;
         l2_normalize_last(&biased, 1e-12)
     }
@@ -317,7 +317,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, img_size, img_size]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let tokens = vec![5_u32, 6, 7];
         let out = model.forward_images(&pixel_values, &tokens).unwrap();
         let np = cfg.vision_config.num_patches();

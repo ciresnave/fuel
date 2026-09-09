@@ -332,7 +332,7 @@ impl BasedModel {
 
         // in_proj: hidden → 4 * hidden, then chunk into (u_conv, gate).
         let proj = w.in_proj_w.apply_linear(x, h, 4 * h)?;
-        let proj_bias_t = x.const_f32_like(Arc::clone(&w.in_proj_b), Shape::from_dims(&[4 * h]));
+        let proj_bias_t = x.const_f32_like(Arc::clone(&w.in_proj_b), Shape::from_dims(&[4 * h]))?;
         let proj = proj.broadcast_add(&proj_bias_t)?;
         let u_conv_in = proj.slice(2_usize, 0, dim2)?;
         let gate = proj.slice(2_usize, dim2, dim2)?;
@@ -343,10 +343,11 @@ impl BasedModel {
         let pad_zeros = x.const_f32_like(
             Arc::from(vec![0.0_f32; batch * dim2 * (kernel - 1)]),
             Shape::from_dims(&[batch, dim2, kernel - 1]),
-        );
+        )?;
         let u_padded = pad_zeros.concat(&u_perm, 2_usize)?;
-        let conv_w = x.const_f32_like(Arc::clone(&w.conv_w), Shape::from_dims(&[dim2, 1, kernel]));
-        let conv_b = x.const_f32_like(Arc::clone(&w.conv_b), Shape::from_dims(&[dim2]));
+        let conv_w =
+            x.const_f32_like(Arc::clone(&w.conv_w), Shape::from_dims(&[dim2, 1, kernel]))?;
+        let conv_b = x.const_f32_like(Arc::clone(&w.conv_b), Shape::from_dims(&[dim2]))?;
         // Note: causal_conv1d's optional fused-SiLU is off — we want
         // the conv output to be then multiplied by silu(...) elsewhere?
         // Looking again, the eager applies silu AFTER conv:
@@ -357,7 +358,7 @@ impl BasedModel {
         let u_conv = u_conv_raw.permute([0, 2, 1_usize])?.silu();
         let v = u_conv.mul(&gate)?;
         let out = w.out_proj_w.apply_linear(&v, dim2, h)?;
-        let out_bias_t = x.const_f32_like(Arc::clone(&w.out_proj_b), Shape::from_dims(&[h]));
+        let out_bias_t = x.const_f32_like(Arc::clone(&w.out_proj_b), Shape::from_dims(&[h]))?;
         out.broadcast_add(&out_bias_t)
     }
 
@@ -417,7 +418,7 @@ impl BasedModel {
                 tril_data[i * seq + j] = 1.0;
             }
         }
-        let tril = x.const_f32_like(Arc::from(tril_data), Shape::from_dims(&[1, 1, seq, seq]));
+        let tril = x.const_f32_like(Arc::from(tril_data), Shape::from_dims(&[1, 1, seq, seq]))?;
         let tril_bc = tril.broadcast_to(Shape::from_dims(&[batch, n_heads, seq, seq]))?;
         let aqk_masked = aqk.mul(&tril_bc)?;
         let aqk_v = aqk_masked.matmul(&v_h)?; // (b, h, seq, d_h_v)
@@ -433,7 +434,7 @@ impl BasedModel {
         let ones = x.const_f32_like(
             Arc::from(vec![1.0_f32; batch * n_heads * seq]),
             Shape::from_dims(&[batch, n_heads, seq]),
-        );
+        )?;
         let z = ones.div(&z_inv)?;
         let z_bc = z
             .reshape(Shape::from_dims(&[batch, n_heads, seq, 1]))?
@@ -488,7 +489,7 @@ impl BasedModel {
                 }
             }
         }
-        let mask = x.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]));
+        let mask = x.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]))?;
         let scores_masked = scores_scaled.broadcast_add(&mask)?;
         let probs = scores_masked.softmax_last_dim()?;
         let attn_v = probs.matmul(&v)?;
@@ -528,7 +529,7 @@ fn taylor_feature_map(
     let ones = x.const_f32_like(
         Arc::from(vec![1.0_f32; batch * n_heads * seq * 1]),
         Shape::from_dims(&[batch, n_heads, seq, 1]),
-    );
+    )?;
 
     let x_scaled = x.mul_scalar(1.0 / rrd); // x / d^(1/4)
 
@@ -967,7 +968,8 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let logits_via_embeds = model.forward_embeds(&embeds, 0).unwrap().realize_f32();
         let max_diff = logits_ref
@@ -992,7 +994,8 @@ mod tests {
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
             Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         assert!(model.forward_embeds(&bad, 0).is_err());
     }
 
@@ -1005,7 +1008,8 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let h_via_embeds = model
             .forward_hidden_embeds(&embeds, 0)
@@ -1030,7 +1034,8 @@ mod tests {
             config: cfg.clone(),
             weights: tiny_weights(&cfg),
         };
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let embeds = model
             .embed_tokens_anchored(&anchor, &[1_u32, 2, 3])
             .unwrap();

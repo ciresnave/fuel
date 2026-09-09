@@ -124,7 +124,7 @@ pub fn main() -> Result<()> {
         Arc::<[f32]>::from(image_vec),
         Shape::from_dims(&[1, 3, 384, 384]),
         &device,
-    );
+    )?;
 
     let st = unsafe { MmapedSafetensors::multi(&[model_file]) }
         .map_err(|e| E::msg(format!("mmap safetensors: {e}")))?;

@@ -128,7 +128,8 @@ fn solo_chain(seed: f32, loc: DeviceLocation, len: usize) -> Tensor {
         vec![seed; N],
         Shape::from_dims(&[N]),
         &fuel_core::Device::cpu(),
-    );
+    )
+    .unwrap();
     extend_chain(x0, loc, len)
 }
 
@@ -549,8 +550,10 @@ fn independent_cuda_and_vulkan_subdags_overlap() {
     //       the Vulkan fence at the Vulkan→CPU copy — that wait is where the two
     //       devices overlap.
     let build_combined = || {
-        let xc0 = Tensor::from_f32(vec![1.0_f32; N], Shape::from_dims(&[N]), &cpu);
-        let xv0 = xc0.const_f32_like(vec![2.0_f32; N], Shape::from_dims(&[N]));
+        let xc0 = Tensor::from_f32(vec![1.0_f32; N], Shape::from_dims(&[N]), &cpu).unwrap();
+        let xv0 = xc0
+            .const_f32_like(vec![2.0_f32; N], Shape::from_dims(&[N]))
+            .unwrap();
         let xc = extend_chain(xc0, cuda0, cuda_len);
         let xv = extend_chain(xv0, vk_loc, VULKAN_CHAIN_LEN);
         let out = xv.add(&xc).expect("cuda reconverge add"); // inputs=[vulkan→cuda, cuda]
@@ -841,8 +844,10 @@ fn run_auto_overlap_case(order: OperandOrder) {
     // per-device ordering tricks; C3 must auto-find the overlap order. The
     // operand order is the ONE knob — both must overlap after the follow-on.
     let build_combined = || {
-        let xc0 = Tensor::from_f32(vec![1.0_f32; N], Shape::from_dims(&[N]), &cpu);
-        let xv0 = xc0.const_f32_like(vec![2.0_f32; N], Shape::from_dims(&[N]));
+        let xc0 = Tensor::from_f32(vec![1.0_f32; N], Shape::from_dims(&[N]), &cpu).unwrap();
+        let xv0 = xc0
+            .const_f32_like(vec![2.0_f32; N], Shape::from_dims(&[N]))
+            .unwrap();
         let xc = extend_chain(xc0, cuda0, cuda_len);
         let xv = extend_chain(xv0, vk_loc, VULKAN_CHAIN_LEN);
         let out = match order {

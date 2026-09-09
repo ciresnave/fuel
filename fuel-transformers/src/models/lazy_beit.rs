@@ -176,11 +176,11 @@ impl BeitModel {
                 cfg.patch_size,
                 cfg.patch_size,
             ]),
-        );
+        )?;
         let conv_b = pixel_values.const_f32_like(
             Arc::clone(&weights.patch_proj_bias),
             Shape::from_dims(&[cfg.embed_dim]),
-        );
+        )?;
         let conv_out = pixel_values.conv2d(
             &conv_w,
             Some(&conv_b),
@@ -197,7 +197,7 @@ impl BeitModel {
         let cls = pixel_values.const_f32_like(
             Arc::clone(&weights.cls_token),
             Shape::from_dims(&[1, 1, cfg.embed_dim]),
-        );
+        )?;
         let cls_bc = cls.broadcast_to(Shape::from_dims(&[batch, 1, cfg.embed_dim]))?;
         let mut h = cls_bc.concat(&patches, 1_usize)?;
 
@@ -224,7 +224,7 @@ impl BeitModel {
         let bias_t = pixel_values.const_f32_like(
             Arc::clone(&weights.head_bias),
             Shape::from_dims(&[cfg.num_classes]),
-        );
+        )?;
         logits.broadcast_add(&bias_t)
     }
 
@@ -279,11 +279,11 @@ impl BeitModel {
                 cfg.patch_size,
                 cfg.patch_size,
             ]),
-        );
+        )?;
         let conv_b = pixel_values.const_f32_like(
             Arc::clone(&weights.patch_proj_bias),
             Shape::from_dims(&[cfg.embed_dim]),
-        );
+        )?;
         let conv_out = pixel_values.conv2d(
             &conv_w,
             Some(&conv_b),
@@ -298,7 +298,7 @@ impl BeitModel {
         let cls = pixel_values.const_f32_like(
             Arc::clone(&weights.cls_token),
             Shape::from_dims(&[1, 1, cfg.embed_dim]),
-        );
+        )?;
         let cls_bc = cls.broadcast_to(Shape::from_dims(&[batch, 1, cfg.embed_dim]))?;
         let mut h = cls_bc.concat(&patches, 1_usize)?;
 
@@ -336,7 +336,7 @@ impl BeitModel {
         let qkv = match &block.qkv_bias {
             None => qkv_lin,
             Some(b) => {
-                let bt = anchor.const_f32_like(Arc::clone(b), Shape::from_dims(&[3 * h]));
+                let bt = anchor.const_f32_like(Arc::clone(b), Shape::from_dims(&[3 * h]))?;
                 qkv_lin.broadcast_add(&bt)?
             }
         };
@@ -370,13 +370,13 @@ impl BeitModel {
         let attn_out = match &block.proj_bias {
             None => proj,
             Some(b) => {
-                let bt = anchor.const_f32_like(Arc::clone(b), Shape::from_dims(&[h]));
+                let bt = anchor.const_f32_like(Arc::clone(b), Shape::from_dims(&[h]))?;
                 proj.broadcast_add(&bt)?
             }
         };
 
         // LayerScale 1 + residual.
-        let ls1_t = anchor.const_f32_like(Arc::clone(&block.ls1_gamma), Shape::from_dims(&[h]));
+        let ls1_t = anchor.const_f32_like(Arc::clone(&block.ls1_gamma), Shape::from_dims(&[h]))?;
         let h1 = x.add(&attn_out.broadcast_mul(&ls1_t)?)?;
 
         // Pre-MLP norm + MLP + LayerScale 2 + residual.
@@ -388,12 +388,13 @@ impl BeitModel {
         let mlp_h = cfg.embed_dim * cfg.mlp_ratio;
         let fc1 = block.fc1.apply_linear(&h1_norm, h, mlp_h)?;
         let fc1_bias_t =
-            anchor.const_f32_like(Arc::clone(&block.fc1_bias), Shape::from_dims(&[mlp_h]));
+            anchor.const_f32_like(Arc::clone(&block.fc1_bias), Shape::from_dims(&[mlp_h]))?;
         let fc1 = fc1.broadcast_add(&fc1_bias_t)?.gelu_erf();
         let fc2 = block.fc2.apply_linear(&fc1, mlp_h, h)?;
-        let fc2_bias_t = anchor.const_f32_like(Arc::clone(&block.fc2_bias), Shape::from_dims(&[h]));
+        let fc2_bias_t =
+            anchor.const_f32_like(Arc::clone(&block.fc2_bias), Shape::from_dims(&[h]))?;
         let mlp_out = fc2.broadcast_add(&fc2_bias_t)?;
-        let ls2_t = anchor.const_f32_like(Arc::clone(&block.ls2_gamma), Shape::from_dims(&[h]));
+        let ls2_t = anchor.const_f32_like(Arc::clone(&block.ls2_gamma), Shape::from_dims(&[h]))?;
         h1.add(&mlp_out.broadcast_mul(&ls2_t)?)
     }
 
@@ -426,7 +427,7 @@ impl BeitModel {
         let bias = anchor.const_f32_like(
             Arc::from(bias_data),
             Shape::from_dims(&[1, n_heads, seq, seq]),
-        );
+        )?;
         Ok(bias)
     }
 }
@@ -719,6 +720,7 @@ mod tests {
             Shape::from_dims(&[1, cfg.num_channels, cfg.image_size, cfg.image_size]),
             &Device::cpu(),
         )
+        .unwrap()
     }
 
     #[test]

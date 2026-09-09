@@ -191,7 +191,7 @@ impl MusicGenModel {
             self.weights.embed_tokens[0].clone(),
             Shape::from_dims(&[cfg.vocab_size + 1, cfg.hidden_size]),
             &Device::cpu(),
-        );
+        )?;
 
         // Built-in text adapter → encoder states `(1, text_len, enc_hidden)`.
         let encoder_states = self.encode_text_adapter(&anchor, text_tokens)?;
@@ -246,8 +246,8 @@ impl MusicGenModel {
         let embed = anchor.const_f32_like(
             Arc::clone(&self.weights.text_encoder_embedding),
             Shape::from_dims(&[cfg.text_vocab_size, cfg.encoder_hidden_size]),
-        );
-        let ids = anchor.const_u32_like(text_tokens.to_vec(), Shape::from_dims(&[text_len]));
+        )?;
+        let ids = anchor.const_u32_like(text_tokens.to_vec(), Shape::from_dims(&[text_len]))?;
         embed
             .index_select(0_usize, &ids)?
             .reshape(Shape::from_dims(&[1, text_len, cfg.encoder_hidden_size]))
@@ -285,8 +285,8 @@ impl MusicGenModel {
             let table = anchor.const_f32_like(
                 Arc::clone(&weights.embed_tokens[cb]),
                 Shape::from_dims(&[embed_dim, cfg.hidden_size]),
-            );
-            let ids = anchor.const_u32_like(slice.to_vec(), Shape::from_dims(&[seq_len]));
+            )?;
+            let ids = anchor.const_u32_like(slice.to_vec(), Shape::from_dims(&[seq_len]))?;
             let part = table
                 .index_select(0_usize, &ids)?
                 .reshape(Shape::from_dims(&[batch, seq_len, cfg.hidden_size]))?;
@@ -305,7 +305,7 @@ impl MusicGenModel {
         let pos_full = anchor.const_f32_like(
             Arc::from(pos_table),
             Shape::from_dims(&[cfg.max_position_embeddings, cfg.hidden_size]),
-        );
+        )?;
         let pos_slice = pos_full
             .slice(0_usize, start_pos, seq_len)?
             .reshape(Shape::from_dims(&[1, seq_len, cfg.hidden_size]))?;
@@ -323,7 +323,7 @@ impl MusicGenModel {
             }
         }
         let causal_mask =
-            anchor.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq_len, seq_len]));
+            anchor.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq_len, seq_len]))?;
 
         for layer in &weights.layers {
             h = self.apply_decoder_layer(&h, layer, encoder_states, &causal_mask)?;
@@ -845,7 +845,8 @@ mod tests {
             model.weights.embed_tokens[0].clone(),
             Shape::from_dims(&[cfg.vocab_size + 1, cfg.hidden_size]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let enc = model.encode_text_adapter(&anchor, &text_tokens).unwrap();
         let via_enc = model
             .forward_with_encoder_states(&audio, &enc, 0)

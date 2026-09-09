@@ -227,7 +227,7 @@ impl Gemma4AudioModel {
                 let pick = (i * stride).min(t_after_blocks - 1);
                 idx_data.push(pick as u32);
             }
-            let idx = h.const_u32_like(idx_data, Shape::from_dims(&[reduced_len]));
+            let idx = h.const_u32_like(idx_data, Shape::from_dims(&[reduced_len]))?;
             h.index_select(1_usize, &idx)?
         } else {
             h
@@ -412,7 +412,7 @@ impl Gemma4AudioModel {
         let rel_table = x.const_f32_like(
             Arc::clone(&layer.rel_pos_bias),
             Shape::from_dims(&[span, n_heads]),
-        );
+        )?;
         let picked = rel_table.index_select(0_usize, rel_pos_idx)?; // (T*T, H)
         let bias = picked
             .reshape(Shape::from_dims(&[t_seq, t_seq, n_heads]))?
@@ -483,7 +483,7 @@ impl Gemma4AudioModel {
         let cfg = &self.config;
         let mask =
             chunked_band_mask_values(t_seq, cfg.conf_attention_chunk_size, cfg.conf_left_chunks);
-        Ok(anchor.const_f32_like(Arc::from(mask), Shape::from_dims(&[1, 1, t_seq, t_seq])))
+        anchor.const_f32_like(Arc::from(mask), Shape::from_dims(&[1, 1, t_seq, t_seq]))
     }
 
     /// Build a flat `(T*T,)` U32 index tensor selecting rows from the
@@ -500,7 +500,7 @@ impl Gemma4AudioModel {
                 data.push(bucket);
             }
         }
-        Ok(anchor.const_u32_like(data, Shape::from_dims(&[t_seq * t_seq])))
+        anchor.const_u32_like(data, Shape::from_dims(&[t_seq * t_seq]))
     }
 }
 
@@ -954,7 +954,8 @@ mod tests {
             Arc::from(mel_data),
             Shape::from_dims(&[b, t_in, n_mels]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let out = model.forward(&mel).unwrap();
         // T: 64 -> 32 -> 16 after two stride-2 convs.
         let dims = out.shape().dims().to_vec();
@@ -1049,7 +1050,8 @@ mod tests {
             Arc::from(vec![0.0_f32; t_seq]),
             Shape::from_dims(&[t_seq]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let idx_t = model.build_rel_pos_indices(&anchor, t_seq).unwrap();
         let realized = idx_t.realize_u32();
         assert_eq!(realized, expected);

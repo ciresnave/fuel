@@ -271,7 +271,7 @@ fn timestep_sinusoidal_embed(t: &Tensor, dim: usize) -> Result<Tensor> {
         .map(|i| (-log_mp * (i as f32) / (half as f32)).exp())
         .collect();
     let freqs_t = t
-        .const_f32_like(Arc::from(freqs), Shape::from_dims(&[half]))
+        .const_f32_like(Arc::from(freqs), Shape::from_dims(&[half]))?
         .reshape(Shape::from_dims(&[1, half]))?
         .broadcast_to(Shape::from_dims(&[batch, half]))?;
 
@@ -1122,7 +1122,7 @@ fn patch_embed(
 ) -> Result<Tensor> {
     let w_shape = Shape::from_dims(&[hidden, in_channels, patch_size, patch_size]);
     let w_t = weights.proj_weight.const_like(x, w_shape)?;
-    let bias_t = x.const_f32_like(Arc::clone(&weights.proj_bias), Shape::from_dims(&[hidden]));
+    let bias_t = x.const_f32_like(Arc::clone(&weights.proj_bias), Shape::from_dims(&[hidden]))?;
     let x_conv = x.conv2d(&w_t, Some(&bias_t), (patch_size, patch_size), (0, 0), 1)?;
     // (N, hidden, h_patch, w_patch) -> (N, hidden, h_patch * w_patch)
     //                                -> (N, S, hidden).
@@ -1186,7 +1186,7 @@ fn cropped_pos_embed(
     let pe = anchor.const_f32_like(
         Arc::clone(pos_embed),
         Shape::from_dims(&[1, pos_embed_max_size, pos_embed_max_size, hidden]),
-    );
+    )?;
     let pe = pe.narrow(1_usize, top, h)?;
     let pe = pe.narrow(2_usize, left, w)?;
     pe.reshape(Shape::from_dims(&[1, h * w, hidden]))
@@ -1681,13 +1681,20 @@ mod tests {
             Arc::from(txt_data),
             Shape::from_dims(&[1, seq_text, cfg.dim]),
             &dev,
-        );
-        let img = txt.const_f32_like(
-            Arc::from(img_data),
-            Shape::from_dims(&[1, seq_image, cfg.dim]),
-        );
-        let y = txt.const_f32_like(Arc::from(y_data), Shape::from_dims(&[1, adm_in]));
-        let t = txt.const_f32_like(Arc::from(t_data), Shape::from_dims(&[1]));
+        )
+        .unwrap();
+        let img = txt
+            .const_f32_like(
+                Arc::from(img_data),
+                Shape::from_dims(&[1, seq_image, cfg.dim]),
+            )
+            .unwrap();
+        let y = txt
+            .const_f32_like(Arc::from(y_data), Shape::from_dims(&[1, adm_in]))
+            .unwrap();
+        let t = txt
+            .const_f32_like(Arc::from(t_data), Shape::from_dims(&[1]))
+            .unwrap();
         (txt, img, t, y)
     }
 
@@ -1718,12 +1725,14 @@ mod tests {
         let data: Vec<f32> = (0..(b * s * dim))
             .map(|i| (i as f32 * 0.137).sin())
             .collect();
-        let x = Tensor::from_f32(Arc::from(data), Shape::from_dims(&[b, s, dim]), &dev);
+        let x = Tensor::from_f32(Arc::from(data), Shape::from_dims(&[b, s, dim]), &dev).unwrap();
         let normed = x.layer_norm_last_dim(1e-6).unwrap();
-        let zero = x.const_f32_like(
-            Arc::from(vec![0.0_f32; b * dim]),
-            Shape::from_dims(&[b, dim]),
-        );
+        let zero = x
+            .const_f32_like(
+                Arc::from(vec![0.0_f32; b * dim]),
+                Shape::from_dims(&[b, dim]),
+            )
+            .unwrap();
         let modulated = apply_modulation(&normed, &zero, &zero).unwrap();
         let a = normed.realize_f32();
         let bv = modulated.realize_f32();
@@ -1750,12 +1759,16 @@ mod tests {
         let delta_data: Vec<f32> = (0..(b * s * dim))
             .map(|i| (i as f32 * 0.07).sin())
             .collect();
-        let x = Tensor::from_f32(Arc::from(x_data), Shape::from_dims(&[b, s, dim]), &dev);
-        let delta = x.const_f32_like(Arc::from(delta_data), Shape::from_dims(&[b, s, dim]));
-        let gate = x.const_f32_like(
-            Arc::from(vec![0.0_f32; b * dim]),
-            Shape::from_dims(&[b, dim]),
-        );
+        let x = Tensor::from_f32(Arc::from(x_data), Shape::from_dims(&[b, s, dim]), &dev).unwrap();
+        let delta = x
+            .const_f32_like(Arc::from(delta_data), Shape::from_dims(&[b, s, dim]))
+            .unwrap();
+        let gate = x
+            .const_f32_like(
+                Arc::from(vec![0.0_f32; b * dim]),
+                Shape::from_dims(&[b, dim]),
+            )
+            .unwrap();
         let out = gated_residual(&x, &delta, &gate).unwrap();
         let a = x.realize_f32();
         let bv = out.realize_f32();
@@ -2006,16 +2019,23 @@ mod tests {
             Arc::from(x_data),
             Shape::from_dims(&[1, cfg.in_channels, h, w]),
             &dev,
-        );
-        let t = x.const_f32_like(Arc::from(t_data), Shape::from_dims(&[1]));
-        let y = x.const_f32_like(
-            Arc::from(y_data),
-            Shape::from_dims(&[1, cfg.adm_in_channels]),
-        );
-        let ctx = x.const_f32_like(
-            Arc::from(ctx_data),
-            Shape::from_dims(&[1, s_context, cfg.context_embed_size]),
-        );
+        )
+        .unwrap();
+        let t = x
+            .const_f32_like(Arc::from(t_data), Shape::from_dims(&[1]))
+            .unwrap();
+        let y = x
+            .const_f32_like(
+                Arc::from(y_data),
+                Shape::from_dims(&[1, cfg.adm_in_channels]),
+            )
+            .unwrap();
+        let ctx = x
+            .const_f32_like(
+                Arc::from(ctx_data),
+                Shape::from_dims(&[1, s_context, cfg.context_embed_size]),
+            )
+            .unwrap();
         (x, t, y, ctx)
     }
 
@@ -2119,7 +2139,8 @@ mod tests {
             Arc::from(data),
             Shape::from_dims(&[1, s, c_per_token]),
             &dev,
-        );
+        )
+        .unwrap();
         let out = unpatchify(&x, patch_size, out_channels, h_lat, w_lat).unwrap();
         assert_eq!(
             out.shape().dims(),

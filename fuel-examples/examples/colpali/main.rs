@@ -203,7 +203,7 @@ fn main() -> Result<()> {
             Arc::<[f32]>::from(chw),
             Shape::from_dims(&[1, 3, img_size, img_size]),
             &Device::cpu(),
-        );
+        )?;
         let image_emb = model
             .forward_images(&pixel_values, &dummy_tokens)
             .map_err(|e| E::msg(format!("forward_images: {e}")))?

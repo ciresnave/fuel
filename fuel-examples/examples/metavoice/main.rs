@@ -292,8 +292,8 @@ fn main() -> Result<()> {
             codes_flat.extend(std::iter::repeat_n(0_u32, gen_len));
         }
     }
-    let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &Device::cpu());
-    let codes = anchor.const_u32_like(codes_flat, Shape::from_dims(&[1, enc_num_cb, gen_len]));
+    let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &Device::cpu())?;
+    let codes = anchor.const_u32_like(codes_flat, Shape::from_dims(&[1, enc_num_cb, gen_len]))?;
 
     // 8) Decode to waveform.
     println!("decoding {gen_len} codes through encodec");
@@ -353,7 +353,7 @@ fn load_speaker_embed(args: &Args, cfg: &MetaVoiceConfig) -> Result<Tensor> {
                     }
                     if out.len() == cfg.speaker_emb_dim {
                         println!("loaded spk_emb tensor ({} floats)", out.len());
-                        return Ok(Tensor::from_f32(out, shape, &device));
+                        return Ok(Tensor::from_f32(out, shape, &device)?);
                     } else {
                         eprintln!(
                             "speaker-encoder file has spk_emb with {} elts, \
@@ -383,7 +383,7 @@ fn load_speaker_embed(args: &Args, cfg: &MetaVoiceConfig) -> Result<Tensor> {
         vec![0.0_f32; cfg.speaker_emb_dim],
         shape,
         &device,
-    ))
+    )?)
 }
 
 /// Byte-level fallback tokenizer. Each prompt byte becomes a token id

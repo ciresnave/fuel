@@ -132,7 +132,7 @@ pub fn main() -> Result<()> {
             Arc::<[f32]>::from(pixels),
             Shape::from_dims(&[1, 3, config.image_size, config.image_size]),
             &device,
-        );
+        )?;
         let f = model.get_image_features(&pixels)?;
         image_feats.push(f.realize_f32());
     }
@@ -141,7 +141,7 @@ pub fn main() -> Result<()> {
     // position for OpenCLIP-style text encoders is the highest-id
     // token in the padded sequence (mirrors argmax(input_ids) in the
     // eager forward).
-    let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &device);
+    let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &device)?;
     let mut text_feats: Vec<Vec<f32>> = Vec::with_capacity(token_lists.len());
     for tokens in &token_lists {
         let eot_pos = argmax_u32(tokens);

@@ -184,7 +184,7 @@ impl MixFormerModel {
         let bias_t = h.const_f32_like(
             Arc::clone(&weights.lm_head_bias),
             Shape::from_dims(&[cfg.vocab_size]),
-        );
+        )?;
         logits.broadcast_add(&bias_t)
     }
 
@@ -269,7 +269,7 @@ impl MixFormerModel {
         // ---- Attention path: fused Wqkv -------------------------------------
         let qkv_lin = layer.wqkv.apply_linear(&x_norm, h, 3 * h)?;
         let qkv_b_t =
-            x_norm.const_f32_like(Arc::clone(&layer.wqkv_bias), Shape::from_dims(&[3 * h]));
+            x_norm.const_f32_like(Arc::clone(&layer.wqkv_bias), Shape::from_dims(&[3 * h]))?;
         let qkv = qkv_lin.broadcast_add(&qkv_b_t)?;
         let q = qkv.slice(2_usize, 0, h)?;
         let k = qkv.slice(2_usize, h, h)?;
@@ -297,20 +297,21 @@ impl MixFormerModel {
 
         let merged = attn_v.merge_heads()?;
         let attn_out_lin = layer.out_proj.apply_linear(&merged, h, h)?;
-        let out_bias_t = x.const_f32_like(Arc::clone(&layer.out_proj_bias), Shape::from_dims(&[h]));
+        let out_bias_t =
+            x.const_f32_like(Arc::clone(&layer.out_proj_bias), Shape::from_dims(&[h]))?;
         let attn_out = attn_out_lin.broadcast_add(&out_bias_t)?;
 
         // ---- MLP path (uses the same x_norm) -------------------------------
         let inner = cfg.inner_dim();
         let fc1_lin = layer.fc1.apply_linear(&x_norm, h, inner)?;
-        let fc1_b_t = x.const_f32_like(Arc::clone(&layer.fc1_bias), Shape::from_dims(&[inner]));
+        let fc1_b_t = x.const_f32_like(Arc::clone(&layer.fc1_bias), Shape::from_dims(&[inner]))?;
         let fc1_out = fc1_lin.broadcast_add(&fc1_b_t)?;
         let activated = match cfg.hidden_activation {
             MixFormerActivation::Gelu => fc1_out.gelu_erf(),
             MixFormerActivation::GeluPytorchTanh => fc1_out.gelu(),
         };
         let fc2_lin = layer.fc2.apply_linear(&activated, inner, h)?;
-        let fc2_b_t = x.const_f32_like(Arc::clone(&layer.fc2_bias), Shape::from_dims(&[h]));
+        let fc2_b_t = x.const_f32_like(Arc::clone(&layer.fc2_bias), Shape::from_dims(&[h]))?;
         let mlp_out = fc2_lin.broadcast_add(&fc2_b_t)?;
 
         // Parallel combine: residual + attn + mlp.

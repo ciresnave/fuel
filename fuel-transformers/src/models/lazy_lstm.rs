@@ -93,10 +93,10 @@ fn lstm_layer_forward(x: &Tensor, w: &LstmCellWeights) -> Result<Tensor> {
     let four_h = 4 * h_dim;
 
     // Weight + bias constants on the input's graph.
-    let w_ih = x.const_f32_like(Arc::clone(&w.w_ih), Shape::from_dims(&[four_h, d_in]));
-    let w_hh = x.const_f32_like(Arc::clone(&w.w_hh), Shape::from_dims(&[four_h, h_dim]));
-    let b_ih = x.const_f32_like(Arc::clone(&w.b_ih), Shape::from_dims(&[four_h]));
-    let b_hh = x.const_f32_like(Arc::clone(&w.b_hh), Shape::from_dims(&[four_h]));
+    let w_ih = x.const_f32_like(Arc::clone(&w.w_ih), Shape::from_dims(&[four_h, d_in]))?;
+    let w_hh = x.const_f32_like(Arc::clone(&w.w_hh), Shape::from_dims(&[four_h, h_dim]))?;
+    let b_ih = x.const_f32_like(Arc::clone(&w.b_ih), Shape::from_dims(&[four_h]))?;
+    let b_hh = x.const_f32_like(Arc::clone(&w.b_hh), Shape::from_dims(&[four_h]))?;
     let b_combined = b_ih.add(&b_hh)?;
     // Broadcast bias to (B, 4·H) for elementwise add per time step.
     let bias = b_combined
@@ -107,7 +107,7 @@ fn lstm_layer_forward(x: &Tensor, w: &LstmCellWeights) -> Result<Tensor> {
     let zeros_bh = x.const_f32_like(
         Arc::<[f32]>::from(vec![0.0_f32; b * h_dim]),
         Shape::from_dims(&[b, h_dim]),
-    );
+    )?;
     let mut h_prev = zeros_bh.clone();
     let mut c_prev = zeros_bh;
 
@@ -253,7 +253,7 @@ mod tests {
 
         let expected = lstm_layer_reference(&x_data, b, t, d_in, d_h, &w_ih, &w_hh, &b_ih, &b_hh);
 
-        let x = Tensor::from_f32(x_data, Shape::from_dims(&[b, t, d_in]), &Device::cpu());
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[b, t, d_in]), &Device::cpu()).unwrap();
         let stack = LstmStack {
             layers: vec![LstmCellWeights {
                 w_ih: Arc::from(w_ih),
@@ -305,7 +305,7 @@ mod tests {
         let expected =
             lstm_layer_reference(&after_l1, b, t, d_in2, d_h2, &w_ih2, &w_hh2, &b_ih2, &b_hh2);
 
-        let x = Tensor::from_f32(x_data, Shape::from_dims(&[b, t, d_in1]), &Device::cpu());
+        let x = Tensor::from_f32(x_data, Shape::from_dims(&[b, t, d_in1]), &Device::cpu()).unwrap();
         let stack = LstmStack {
             layers: vec![
                 LstmCellWeights {
@@ -351,7 +351,8 @@ mod tests {
         // for all t. h_t = 0.5 * tanh(0) = 0 for all t. So plain
         // `forward` output is all zeros; `forward_with_residual` output
         // must equal the input.
-        let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[b, t, d]), &Device::cpu());
+        let x =
+            Tensor::from_f32(x_data.clone(), Shape::from_dims(&[b, t, d]), &Device::cpu()).unwrap();
         let stack = LstmStack {
             layers: vec![LstmCellWeights {
                 w_ih: Arc::from(w_ih),
@@ -402,14 +403,16 @@ mod tests {
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[b, t, d_in]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let xb = Tensor::from_f32(
             (0..(b * t * d_in))
                 .map(|i| (i as f32) * 0.05 + 0.3)
                 .collect::<Vec<_>>(),
             Shape::from_dims(&[b, t, d_in]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let oa = stack.forward(&xa).unwrap().realize_f32();
         let ob = stack.forward(&xb).unwrap().realize_f32();
         let mut max_diff = 0.0_f32;

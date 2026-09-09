@@ -336,8 +336,8 @@ impl PaddleOcrVlTextModel {
             position_ids,
         )?;
         let rope_shape = Shape::from_dims(&[seq, cfg.head_dim]);
-        let rope_cos = embeds.const_f32_like(rope_cos_data, rope_shape.clone());
-        let rope_sin = embeds.const_f32_like(rope_sin_data, rope_shape);
+        let rope_cos = embeds.const_f32_like(rope_cos_data, rope_shape.clone())?;
+        let rope_sin = embeds.const_f32_like(rope_sin_data, rope_shape)?;
         let mask = build_causal_mask(embeds, seq);
 
         let mut h = embeds.clone();
@@ -559,6 +559,9 @@ fn build_causal_mask(anchor: &Tensor, seq: usize) -> Tensor {
         }
     }
     anchor.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]))
+        .expect(
+                "build_causal_mask: buffer is vec![_; seq*seq] and the shape's elem_count is seq*seq -- \n             both derived from `seq` in this function; the loop writes in place",
+        )
 }
 
 // ---- Safetensors loader ----------------------------------------------------

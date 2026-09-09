@@ -428,8 +428,8 @@ impl GraniteMoeHybridModel {
             cfg.rope_scaling.as_ref(),
         )?;
         let rope_shape = Shape::from_dims(&[seq, head_dim]);
-        let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
-        let rope_sin = h.const_f32_like(sin_data, rope_shape);
+        let rope_cos = h.const_f32_like(cos_data, rope_shape.clone())?;
+        let rope_sin = h.const_f32_like(sin_data, rope_shape)?;
 
         for (idx, (layer, kind)) in weights
             .layers
@@ -865,7 +865,8 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![1, 2, 3];
         let logits_ref = model.forward(&tokens, 0).unwrap().realize_f32();
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let scaled = if (cfg.embedding_multiplier - 1.0).abs() > f32::EPSILON {
             embeds.mul_scalar(cfg.embedding_multiplier as f64)
@@ -895,7 +896,8 @@ mod tests {
             vec![0.0_f32; 3 * (cfg.hidden_size + 1)],
             Shape::from_dims(&[1, 3, cfg.hidden_size + 1]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         assert!(model.forward_embeds(&bad, 0).is_err());
     }
 
@@ -908,7 +910,8 @@ mod tests {
         };
         let tokens: Vec<u32> = vec![5, 7];
         let h_ref = model.forward_hidden(&tokens, 0).unwrap().realize_f32();
-        let anchor = Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         let embeds = model.embed_tokens_anchored(&anchor, &tokens).unwrap();
         let scaled = if (cfg.embedding_multiplier - 1.0).abs() > f32::EPSILON {
             embeds.mul_scalar(cfg.embedding_multiplier as f64)

@@ -192,8 +192,8 @@ impl NomicBertModel {
             weights.word_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.n_embd]),
             &Device::cpu(),
-        );
-        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        )?;
+        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]))?;
         let mut embeds = word_emb_t
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.n_embd]))?;
@@ -202,7 +202,7 @@ impl NomicBertModel {
             let tte_t = word_emb_t.const_f32_like(
                 Arc::clone(tte),
                 Shape::from_dims(&[cfg.type_vocab_size, cfg.n_embd]),
-            );
+            )?;
             let tt_ids: Vec<u32> = match token_type_ids {
                 Some(ids) => {
                     assert_eq!(
@@ -214,7 +214,7 @@ impl NomicBertModel {
                 }
                 None => vec![0; seq],
             };
-            let tt_id_t = word_emb_t.const_u32_like(tt_ids, Shape::from_dims(&[seq]));
+            let tt_id_t = word_emb_t.const_u32_like(tt_ids, Shape::from_dims(&[seq]))?;
             let tt_emb = tte_t
                 .index_select(0_usize, &tt_id_t)?
                 .reshape(Shape::from_dims(&[batch, seq, cfg.n_embd]))?;
@@ -295,8 +295,8 @@ impl NomicBertModel {
             weights.word_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.n_embd]),
             &Device::cpu(),
-        );
-        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        )?;
+        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]))?;
         let mut embeds = word_emb_t
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.n_embd]))?;
@@ -304,7 +304,7 @@ impl NomicBertModel {
             let tte_t = word_emb_t.const_f32_like(
                 Arc::clone(tte),
                 Shape::from_dims(&[cfg.type_vocab_size, cfg.n_embd]),
-            );
+            )?;
             let tt_ids: Vec<u32> = match token_type_ids {
                 Some(ids) => {
                     assert_eq!(
@@ -316,7 +316,7 @@ impl NomicBertModel {
                 }
                 None => vec![0; seq],
             };
-            let tt_id_t = word_emb_t.const_u32_like(tt_ids, Shape::from_dims(&[seq]));
+            let tt_id_t = word_emb_t.const_u32_like(tt_ids, Shape::from_dims(&[seq]))?;
             let tt_emb = tte_t
                 .index_select(0_usize, &tt_id_t)?
                 .reshape(Shape::from_dims(&[batch, seq, cfg.n_embd]))?;

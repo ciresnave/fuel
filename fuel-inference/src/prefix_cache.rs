@@ -227,8 +227,10 @@ mod tests {
                     vec![0.0_f32; 4 * seq_len * 64],
                     dims.clone(),
                     &Device::cpu(),
-                );
-                let v = Tensor::from_f32(vec![0.0_f32; 4 * seq_len * 64], dims, &Device::cpu());
+                )
+                .unwrap();
+                let v = Tensor::from_f32(vec![0.0_f32; 4 * seq_len * 64], dims, &Device::cpu())
+                    .unwrap();
 
                 (k, v)
             })

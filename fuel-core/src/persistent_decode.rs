@@ -836,9 +836,11 @@ fn build_decode_graph<M: DecodeBackbone + ?Sized>(
         model.decode_token_embedding(),
         Shape::from_dims(&[dims.vocab, dims.hidden]),
         &Device::cpu(),
-    );
+    )?;
     let token_ids = match consts {
-        DataConsts::Baked => embed.const_u32_like(host.token_ids.clone(), Shape::from_dims(&[seq])),
+        DataConsts::Baked => {
+            embed.const_u32_like(host.token_ids.clone(), Shape::from_dims(&[seq]))?
+        }
         DataConsts::Rebindable => {
             embed.const_placeholder_like(Shape::from_dims(&[seq]), DType::U32)
         }
@@ -890,8 +892,8 @@ fn build_decode_graph<M: DecodeBackbone + ?Sized>(
     };
     let (rope_cos, rope_sin) = match consts {
         DataConsts::Baked => (
-            h.const_f32_like(host.rope_cos.clone(), rope_shape.clone()),
-            h.const_f32_like(host.rope_sin.clone(), rope_shape),
+            h.const_f32_like(host.rope_cos.clone(), rope_shape.clone())?,
+            h.const_f32_like(host.rope_sin.clone(), rope_shape)?,
         ),
         DataConsts::Rebindable => (
             h.const_placeholder_like(rope_shape.clone(), DType::F32),
