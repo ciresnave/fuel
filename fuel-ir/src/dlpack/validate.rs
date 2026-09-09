@@ -554,10 +554,10 @@ pub fn check_v6_scale_shape(sidecar: &FDXSidecar, base: &DLTensor, buffers: &[FD
             // derive the tiled dim from base.shape; convert packed bytes → logical
             // elements when the payload is sub-byte (the §13.5a NF4 case).
             let mut dim = base_axis_len(base, axis);
-            if let Some(bw) = subbyte_bits {
-                if base.ndim == 1 {
-                    dim = dim.saturating_mul(8) / bw;
-                }
+            if let Some(bw) = subbyte_bits
+                && base.ndim == 1
+            {
+                dim = dim.saturating_mul(8) / bw;
             }
             let blocks = dim.div_ceil(bs);
             expected = expected.saturating_mul(blocks);
@@ -918,14 +918,14 @@ pub fn check_v11_explicit_strides(base: &DLTensor) -> R {
 /// `required_alignment`).
 pub fn check_v12_alignment_boundary_b(base: &DLTensor, buffers: &[FDXBufferRef]) -> R {
     const ALIGN: usize = 256;
-    if !base.data.is_null() && (base.data as usize) % ALIGN != 0 {
+    if !base.data.is_null() && !(base.data as usize).is_multiple_of(ALIGN) {
         return Err(FdxValidationError::Misaligned {
             detail: "base DLTensor.data",
             addr: base.data as usize,
         });
     }
     for (i, b) in buffers.iter().enumerate() {
-        if !b.data.is_null() && (b.data as usize) % ALIGN != 0 {
+        if !b.data.is_null() && !(b.data as usize).is_multiple_of(ALIGN) {
             return Err(FdxValidationError::Misaligned {
                 detail: if i == 0 {
                     "buffer 0 data"
