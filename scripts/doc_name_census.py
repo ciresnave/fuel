@@ -34,9 +34,14 @@ EXTRACTOR RULES (stated so the census is auditable)
     - PRESENT iff the token appears as a CamelCase word-token in any *.rs under the
       repo (the `target/` build dir and `.git/` are excluded)
 
-    This differs from the earlier out-of-repo tool in exactly two ways that each
-    removed a false positive: fence-stripping (drops `Refines`, a triple-backtick
-    span-break artifact) and the >=1-lowercase rule (drops `MINOR`, a semver level).
+    This differs from the earlier out-of-repo tool two ways, which is exactly why
+    its published "25 absent" figure and this tool's 26 differ (settled by a
+    membership diff, not a total): (1) this tool splits qualified forms and tests
+    head AND tail, so it CATCHES `Concurrency`/`ErrorBound` (which occur only as
+    `Type::Variant`) -- the earlier tool took only the tail and UNDERCOUNTS by
+    those two; (2) the >=1-lowercase rule drops `MINOR`, a semver level in prose
+    the earlier tool OVER-counts as a type. So published-25 = this-26 minus
+    {Concurrency, ErrorBound} plus {MINOR}; it closes with no third term.
 
 CONTROLS
     Every run reasserts two positive controls -- NodeHandle and FusedOpRegistry
@@ -78,7 +83,6 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #              class has one site whose point IS the absence). Remedy: an inline
 #              supersession marker AT the stale passage, never only a later fix.
 #   CONCEPT    a concept, not a type; the doc should un-backtick it
-#   ARTIFACT   an instrument bug -- not a real doc name under this extractor
 #
 # CITED vs FALSEHOOD is decided by ENUMERATING EVERY occurrence, not the first:
 # one site is not the population (Fmin was mis-read as CITED from a single site
@@ -126,12 +130,9 @@ DISPOSITIONS = {
     # -- CONCEPT-NOT-TYPE (doc should un-backtick) -------------------------
     "OptimizationMap":  ("CONCEPT", "doc's own parenthetical calls it deliberately-not-a-type; 02-layers:135."),
     "MINOR":            ("CONCEPT", "semver level in prose (MAJOR/MINOR/PATCH), not a type; 00-index:120-123. Dropped by the >=1-lowercase rule."),
-
-    # -- INSTRUMENT ARTIFACT (not a real doc name here) --------------------
-    "Refines":          ("ARTIFACT", "triple-backtick span-break artifact of the earlier out-of-repo tool; not produced by this extractor."),
 }
 
-CLASS_ORDER = ["DRIFT", "FALSEHOOD", "PROPOSED", "CITED", "CONCEPT", "EXTERNAL", "ARTIFACT", "UNCLASSIFIED"]
+CLASS_ORDER = ["DRIFT", "FALSEHOOD", "PROPOSED", "CITED", "CONCEPT", "EXTERNAL", "UNCLASSIFIED"]
 
 CONTROLS = ["NodeHandle", "FusedOpRegistry"]
 
