@@ -30,7 +30,7 @@
 //! Slot `s` of every layer is a buffer `[max_seq, …slot_trailing[s]]` with
 //! the sequence axis at dim 0 (matching [`LazyKvCache`]'s no-batch,
 //! per-sequence convention; the caller broadcasts/concats across batches).
-//! An [`Self::append`] writes a `[seqlen_new, …slot_trailing[s]]` slab into
+//! An [`LatentCache::append`] writes a `[seqlen_new, …slot_trailing[s]]` slab into
 //! every slot at the cache's current position; all slots in one append
 //! share the same `seqlen_new`.
 //!

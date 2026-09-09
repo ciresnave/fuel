@@ -90,7 +90,7 @@ pub struct KernelCaps {
     /// `in[0]` / dropping the bcast-axis stride terms). It is therefore NOT
     /// a generic dense-safe kernel: a dense operand routed here would be
     /// read WRONG (element 0 repeatedly). The realize pick
-    /// ([`Self::lookup_with_caps`]) SKIPS such a sibling so a dense operand
+    /// ([`KernelBindingTable::lookup_with_caps`]) SKIPS such a sibling so a dense operand
     /// is never routed into a broadcast-baked kernel — the exclusion is
     /// order-independent (it does not rest on the generic contract being
     /// registered first). Selecting it CORRECTLY, for an operand genuinely

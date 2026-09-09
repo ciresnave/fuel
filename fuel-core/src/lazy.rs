@@ -6112,7 +6112,7 @@ impl Tensor {
     }
 
     /// Two-argument transpose: swap dims `dim1` and `dim2`, leaving the
-    /// rest in place. Implemented via [`Self::try_permute`]; matches the
+    /// rest in place. Implemented via [`fuel_graph::NodeHandle::try_permute`]; matches the
     /// eager `transpose(d1, d2)` two-arg form. Accepts any [`Dim`]
     /// (`usize`, `D::Minus1`, etc.).
     pub fn transpose_dims<D1: Dim, D2: Dim>(
