@@ -24,6 +24,19 @@
 //!     file must be rewritten as a conformance test. A divergence that closes
 //!     silently is as bad as one that opens silently.
 //!
+//! ⚠️ HOW TO SABOTAGE-CHECK THIS FILE, AND THE TRAP THAT CAUGHT ITS AUTHOR:
+//! THE PIN SHORT-CIRCUITS THE DIVERGENCE ARM. Make the encoder conformant and
+//! three arms go red -- every one of them on the PIN ("row moved"), because
+//! `assert_eq!` runs first. The `assert_ne!` that carries this file's actual
+//! claim is never reached. A RED RESULT IS THE LEAST-QUESTIONED OUTCOME IN A
+//! BORN-RED DISCIPLINE, so one sabotage looks like proof and is not: it
+//! demonstrates the pin discriminates and says NOTHING about the divergence.
+//! To exercise the claim you must ALSO realign the pin to the conformant
+//! bytes, so `assert_eq!` passes and only `assert_ne!` can fire. Done on
+//! 2026-09-09: `assertion left != right failed: gather now MATCHES
+//! §6.19-0027`. That is the arm failing for its stated reason; the first
+//! sabotage never touched it.
+//!
 //! Measured against KISS `origin/main` `2b673e0a`, 2026-09-09. §6.19-0003 is
 //! scoped "for this op-set version" and this crate pins no KISS-Ops version --
 //! see the GAP row. If a version is ever pinned, re-derive these vectors.
