@@ -171,8 +171,8 @@ impl Conv3dTemporal2Weights {
             self.kernel_h,
             self.kernel_w,
         ]);
-        let w1 = input.const_f32_like(Arc::clone(&self.w1), w_shape.clone());
-        let w2 = input.const_f32_like(Arc::clone(&self.w2), w_shape);
+        let w1 = input.const_f32_like(Arc::clone(&self.w1), w_shape.clone())?;
+        let w2 = input.const_f32_like(Arc::clone(&self.w2), w_shape)?;
 
         let stride = (self.cfg.stride, self.cfg.stride);
         let padding = (self.cfg.padding, self.cfg.padding);

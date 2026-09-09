@@ -217,7 +217,7 @@ impl RepVggModel {
                 let n = cfg.nclasses.expect("head present but cfg.nclasses == None");
                 let last_c = cfg.channels_at(4);
                 let logits = w.apply_linear(&pooled, last_c, n)?;
-                let bias_t = pooled.const_f32_like(Arc::clone(b), Shape::from_dims(&[n]));
+                let bias_t = pooled.const_f32_like(Arc::clone(b), Shape::from_dims(&[n]))?;
                 logits.broadcast_add(&bias_t)
             }
         }
@@ -251,7 +251,7 @@ impl RepVggModel {
         let w = layer.conv_w.const_like(x, w_shape)?;
         let conv_out = x.conv2d(&w, None, (layer.stride, layer.stride), (1, 1), layer.groups)?;
         let bias_t = x
-            .const_f32_like(Arc::clone(&layer.conv_b), Shape::from_dims(&[layer.c_out]))
+            .const_f32_like(Arc::clone(&layer.conv_b), Shape::from_dims(&[layer.c_out]))?
             .reshape(Shape::from_dims(&[1, layer.c_out, 1, 1]))?;
         Ok(conv_out.broadcast_add(&bias_t)?.relu())
     }

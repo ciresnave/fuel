@@ -256,20 +256,20 @@ impl CsmModel {
                 offset_codes.push(c as u32);
             }
         }
-        let audio_ids = anchor.const_u32_like(offset_codes, Shape::from_dims(&[seq * cb]));
+        let audio_ids = anchor.const_u32_like(offset_codes, Shape::from_dims(&[seq * cb]))?;
         let audio_table = anchor.const_f32_like(
             Arc::clone(&self.weights.audio_embedding),
             Shape::from_dims(&[cb * cfg.audio_vocab_size, bd]),
-        );
+        )?;
         let audio_emb = audio_table
             .index_select(0_usize, &audio_ids)?
             .reshape(Shape::from_dims(&[1, seq, cb, bd]))?;
 
-        let text_ids = anchor.const_u32_like(text_tokens.to_vec(), Shape::from_dims(&[seq]));
+        let text_ids = anchor.const_u32_like(text_tokens.to_vec(), Shape::from_dims(&[seq]))?;
         let text_table = anchor.const_f32_like(
             Arc::clone(&self.weights.text_embedding),
             Shape::from_dims(&[cfg.text_vocab_size, bd]),
-        );
+        )?;
         let text_emb = text_table
             .index_select(0_usize, &text_ids)?
             .reshape(Shape::from_dims(&[1, seq, 1, bd]))?;
@@ -279,7 +279,7 @@ impl CsmModel {
 
         // Apply mask (broadcast over backbone_dim) and sum across codebook+1 axis.
         let mask_f32: Vec<f32> = tokens_mask.iter().map(|&b| b as f32).collect();
-        let mask = anchor.const_f32_like(mask_f32, Shape::from_dims(&[1, seq, cb + 1, 1]));
+        let mask = anchor.const_f32_like(mask_f32, Shape::from_dims(&[1, seq, cb + 1, 1]))?;
         let mask_b = mask.broadcast_to(Shape::from_dims(&[1, seq, cb + 1, bd]))?;
         let gated = combined.mul(&mask_b)?;
         gated.sum_dim(2_usize)
@@ -328,7 +328,7 @@ impl CsmModel {
         let head = decoder_h.const_f32_like(
             head_slice,
             Shape::from_dims(&[cfg.decoder_dim, cfg.audio_vocab_size]),
-        );
+        )?;
         decoder_h.matmul(&head)
     }
 
@@ -377,8 +377,8 @@ impl CsmModel {
         let table = anchor.const_f32_like(
             Arc::clone(&self.weights.audio_embedding),
             Shape::from_dims(&[cfg.audio_num_codebooks * cfg.audio_vocab_size, bd]),
-        );
-        let id = anchor.const_u32_like(vec![code + offset], Shape::from_dims(&[1]));
+        )?;
+        let id = anchor.const_u32_like(vec![code + offset], Shape::from_dims(&[1]))?;
         let emb = table
             .index_select(0_usize, &id)?
             .reshape(Shape::from_dims(&[1, 1, bd]))?;

@@ -243,11 +243,11 @@ fn per_channel_affine(
     w: usize,
 ) -> fuel_core::Result<Tensor> {
     let s = x
-        .const_f32_like(scale.clone(), Shape::from_dims(&[c]))
+        .const_f32_like(scale.clone(), Shape::from_dims(&[c]))?
         .reshape(Shape::from_dims(&[1, c, 1, 1]))?
         .broadcast_to(Shape::from_dims(&[1, c, h, w]))?;
     let sh = x
-        .const_f32_like(shift.clone(), Shape::from_dims(&[c]))
+        .const_f32_like(shift.clone(), Shape::from_dims(&[c]))?
         .reshape(Shape::from_dims(&[1, c, 1, 1]))?
         .broadcast_to(Shape::from_dims(&[1, c, h, w]))?;
     x.mul(&s)?.add(&sh)
@@ -270,7 +270,7 @@ fn cbs(
     let w_t = x.const_f32_like(
         cw.conv_w.clone(),
         Shape::from_dims(&[c_out, c_in / groups, k, k]),
-    );
+    )?;
     let conv = x.conv2d(&w_t, None, (s, s), (p, p), groups)?;
     let affine = per_channel_affine(&conv, &cw.bn_scale, &cw.bn_shift, c_out, h_out, w_out)?;
     Ok(affine.silu())
@@ -317,13 +317,13 @@ fn pad_hw_zeros(x: &Tensor, c: usize, h: usize, w: usize, p: usize) -> fuel_core
     if p == 0 {
         return Ok(x.clone());
     }
-    let z_w = x.const_f32_like(vec![0.0_f32; c * h * p], Shape::from_dims(&[1, c, h, p]));
+    let z_w = x.const_f32_like(vec![0.0_f32; c * h * p], Shape::from_dims(&[1, c, h, p]))?;
     let x_wpad = z_w.concat(x, 3)?.concat(&z_w, 3)?;
     let w_p = w + 2 * p;
     let z_h = x.const_f32_like(
         vec![0.0_f32; c * p * w_p],
         Shape::from_dims(&[1, c, p, w_p]),
-    );
+    )?;
     z_h.concat(&x_wpad, 2)?.concat(&z_h, 2)
 }
 
@@ -414,8 +414,8 @@ fn raw_conv(
     k: usize,
     p: usize,
 ) -> fuel_core::Result<Tensor> {
-    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[c_out, c_in, k, k]));
-    let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[c_out]));
+    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[c_out, c_in, k, k]))?;
+    let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[c_out]))?;
     x.conv2d(&w_t, Some(&b_t), (1, 1), (p, p), 1)
 }
 
@@ -472,7 +472,7 @@ fn dfl_decode(reg_logits: &Tensor, reg_max: usize, n_anchors: usize) -> fuel_cor
     // Bin weights [0..R] as a const tensor broadcast to [1, 4, N, R].
     let bins: Vec<f32> = (0..r).map(|i| i as f32).collect();
     let bins_t = reg_logits
-        .const_f32_like(bins, Shape::from_dims(&[r]))
+        .const_f32_like(bins, Shape::from_dims(&[r]))?
         .reshape(Shape::from_dims(&[1, 1, 1, r]))?
         .broadcast_to(Shape::from_dims(&[1, 4, n_anchors, r]))?;
     let weighted = probs.mul(&bins_t)?;

@@ -309,23 +309,23 @@ impl Rwkv5Model {
         let mix_key = x.const_f32_like(
             Arc::clone(&layer.attn_time_mix_key),
             Shape::from_dims(&[1, 1, h]),
-        );
+        )?;
         let mix_val = x.const_f32_like(
             Arc::clone(&layer.attn_time_mix_value),
             Shape::from_dims(&[1, 1, h]),
-        );
+        )?;
         let mix_rec = x.const_f32_like(
             Arc::clone(&layer.attn_time_mix_receptance),
             Shape::from_dims(&[1, 1, h]),
-        );
+        )?;
         let mix_gate = x.const_f32_like(
             Arc::clone(&layer.attn_time_mix_gate),
             Shape::from_dims(&[1, 1, h]),
-        );
+        )?;
         let one_minus = |m: &Tensor| -> Result<Tensor> {
             // 1.0 - m, returning a tensor shaped (1, 1, h).
             let ones: Vec<f32> = vec![1.0_f32; h];
-            let ones_t = x.const_f32_like(Arc::from(ones), Shape::from_dims(&[1, 1, h]));
+            let ones_t = x.const_f32_like(Arc::from(ones), Shape::from_dims(&[1, 1, h]))?;
             ones_t.sub(m)
         };
         let mk_inv = one_minus(&mix_key)?;
@@ -369,21 +369,21 @@ impl Rwkv5Model {
         let td = x.const_f32_like(
             Arc::clone(&layer.attn_time_decay),
             Shape::from_dims(&[n_heads, head_size]),
-        );
+        )?;
         let decay = td.exp().neg().exp();
         let decay = decay.reshape(Shape::from_dims(&[n_heads, head_size, 1]))?;
 
         let faaaa = x.const_f32_like(
             Arc::clone(&layer.attn_time_faaaa),
             Shape::from_dims(&[n_heads, head_size]),
-        );
+        )?;
         let faaaa = faaaa.reshape(Shape::from_dims(&[n_heads, head_size, 1]))?;
 
         // Initial state: zeros (b, n_heads, head_size, head_size).
         let state_init = x.const_f32_like(
             Arc::from(vec![0.0_f32; batch * n_heads * head_size * head_size]),
             Shape::from_dims(&[batch, n_heads, head_size, head_size]),
-        );
+        )?;
         let mut state = state_init;
         let mut outs: Vec<Tensor> = Vec::with_capacity(seq);
         for t in 0..seq {
@@ -444,12 +444,12 @@ impl Rwkv5Model {
         let mix_key = x.const_f32_like(
             Arc::clone(&layer.ffn_time_mix_key),
             Shape::from_dims(&[1, 1, h]),
-        );
+        )?;
         let mix_rec = x.const_f32_like(
             Arc::clone(&layer.ffn_time_mix_receptance),
             Shape::from_dims(&[1, 1, h]),
-        );
-        let ones_t = x.const_f32_like(Arc::from(vec![1.0_f32; h]), Shape::from_dims(&[1, 1, h]));
+        )?;
+        let ones_t = x.const_f32_like(Arc::from(vec![1.0_f32; h]), Shape::from_dims(&[1, 1, h]))?;
         let mk_inv = ones_t.sub(&mix_key)?;
         let mr_inv = ones_t.sub(&mix_rec)?;
 
@@ -474,6 +474,9 @@ impl Rwkv5Model {
         let zero = x.const_f32_like(
             Arc::from(vec![0.0_f32; batch * h]),
             Shape::from_dims(&[batch, 1, h]),
+        )
+        .expect(
+                "shift_seq: buffer is vec![_; batch * h] and the shape is [batch, 1, h] -- \n             the length IS the product of the shape's own dims",
         );
         if seq == 1 {
             return zero;
@@ -515,11 +518,11 @@ fn group_norm(
     let gain_t = x.const_f32_like(
         Arc::clone(gain),
         Shape::from_dims(&[1, 1, n_heads, head_size]),
-    );
+    )?;
     let bias_t = x.const_f32_like(
         Arc::clone(bias),
         Shape::from_dims(&[1, 1, n_heads, head_size]),
-    );
+    )?;
     let gain_bc = gain_t.broadcast_to(Shape::from_dims(&[batch, seq, n_heads, head_size]))?;
     let bias_bc = bias_t.broadcast_to(Shape::from_dims(&[batch, seq, n_heads, head_size]))?;
     let scaled = normed.mul(&gain_bc)?.add(&bias_bc)?;

@@ -145,11 +145,11 @@ impl EvaModel {
         let w = image.const_f32_like(
             Arc::clone(&self.weights.patch_conv_w),
             Shape::from_dims(&[e, 3, cfg.patch_size, cfg.patch_size]),
-        );
+        )?;
         let bias = image.const_f32_like(
             Arc::clone(&self.weights.patch_conv_b),
             Shape::from_dims(&[e]),
-        );
+        )?;
         let patches = image.conv2d(&w, Some(&bias), (cfg.patch_size, cfg.patch_size), (0, 0), 1)?;
         let p_dims = patches.shape();
         let p_dims = p_dims.dims();
@@ -165,7 +165,7 @@ impl EvaModel {
             .const_f32_like(
                 Arc::clone(&self.weights.cls_token),
                 Shape::from_dims(&[1, 1, e]),
-            )
+            )?
             .broadcast_to(Shape::from_dims(&[b, 1, e]))?;
         let mut x = cls.concat(&patches, 1_usize)?;
 
@@ -174,7 +174,7 @@ impl EvaModel {
             .const_f32_like(
                 Arc::clone(&self.weights.pos_embed),
                 Shape::from_dims(&[1, n_tokens, e]),
-            )
+            )?
             .broadcast_to(Shape::from_dims(&[b, n_tokens, e]))?;
         x = x.add(&pos)?;
 
@@ -183,7 +183,7 @@ impl EvaModel {
         let rot_full = image.const_f32_like(
             Arc::clone(&self.weights.rot_pos_embed),
             Shape::from_dims(&[n_patches, 2 * head_dim]),
-        );
+        )?;
         let sin_emb = rot_full.narrow(1_usize, 0, head_dim)?;
         let cos_emb = rot_full.narrow(1_usize, head_dim, head_dim)?;
 
@@ -202,7 +202,7 @@ impl EvaModel {
         let head_bias = image.const_f32_like(
             Arc::clone(&self.weights.head_b),
             Shape::from_dims(&[self.weights.head_b.len()]),
-        );
+        )?;
         logits.broadcast_add(&head_bias)
     }
 }
@@ -245,11 +245,11 @@ fn apply_attention(
 
     // Three independent linears (Q has bias, K NO bias, V has bias).
     let q = a.q_w.apply_linear(x, e, e)?;
-    let q_bias = anchor.const_f32_like(Arc::clone(&a.q_b), Shape::from_dims(&[e]));
+    let q_bias = anchor.const_f32_like(Arc::clone(&a.q_b), Shape::from_dims(&[e]))?;
     let q = q.broadcast_add(&q_bias)?;
     let k = a.k_w.apply_linear(x, e, e)?;
     let v = a.v_w.apply_linear(x, e, e)?;
-    let v_bias = anchor.const_f32_like(Arc::clone(&a.v_b), Shape::from_dims(&[e]));
+    let v_bias = anchor.const_f32_like(Arc::clone(&a.v_b), Shape::from_dims(&[e]))?;
     let v = v.broadcast_add(&v_bias)?;
 
     // (B, N, E) → (B, heads, N, head_dim)
@@ -276,7 +276,7 @@ fn apply_attention(
         .merge_heads()?;
     let _ = e;
     let projected = a.proj_w.apply_linear(&ctx, e, e)?;
-    let proj_bias = anchor.const_f32_like(Arc::clone(&a.proj_b), Shape::from_dims(&[e]));
+    let proj_bias = anchor.const_f32_like(Arc::clone(&a.proj_b), Shape::from_dims(&[e]))?;
     projected.broadcast_add(&proj_bias)
 }
 
@@ -315,8 +315,8 @@ fn apply_rope(
     debug_assert_eq!(evens.len(), half);
     debug_assert_eq!(odds.len(), half);
 
-    let even_idx = x.const_u32_like(evens, Shape::from_dims(&[half]));
-    let odd_idx = x.const_u32_like(odds, Shape::from_dims(&[half]));
+    let even_idx = x.const_u32_like(evens, Shape::from_dims(&[half]))?;
+    let odd_idx = x.const_u32_like(odds, Shape::from_dims(&[half]))?;
     let x_even = x.index_select(3_usize, &even_idx)?;
     let x_odd_neg = x.index_select(3_usize, &odd_idx)?.mul_scalar(-1.0);
 
@@ -343,18 +343,18 @@ fn apply_mlp(x: &Tensor, m: &EvaMlpWeights, cfg: &EvaConfig, anchor: &Tensor) ->
     let hidden = cfg.hidden_mlp_dim();
 
     let g = m.fc1_g_w.apply_linear(x, e, hidden)?;
-    let g_b = anchor.const_f32_like(Arc::clone(&m.fc1_g_b), Shape::from_dims(&[hidden]));
+    let g_b = anchor.const_f32_like(Arc::clone(&m.fc1_g_b), Shape::from_dims(&[hidden]))?;
     let g = g.broadcast_add(&g_b)?.silu();
 
     let xv = m.fc1_x_w.apply_linear(x, e, hidden)?;
-    let xv_b = anchor.const_f32_like(Arc::clone(&m.fc1_x_b), Shape::from_dims(&[hidden]));
+    let xv_b = anchor.const_f32_like(Arc::clone(&m.fc1_x_b), Shape::from_dims(&[hidden]))?;
     let xv = xv.broadcast_add(&xv_b)?;
 
     let gated = g.mul(&xv)?;
     let normed = apply_layer_norm_last(&gated, &m.norm, hidden)?;
 
     let out = m.fc2_w.apply_linear(&normed, hidden, e)?;
-    let out_b = anchor.const_f32_like(Arc::clone(&m.fc2_b), Shape::from_dims(&[e]));
+    let out_b = anchor.const_f32_like(Arc::clone(&m.fc2_b), Shape::from_dims(&[e]))?;
     out.broadcast_add(&out_b)
 }
 
@@ -674,7 +674,7 @@ mod tests {
         let rot = x.const_f32_like(
             Arc::clone(&weights.rot_pos_embed),
             Shape::from_dims(&[n_patches, 2 * head_dim]),
-        );
+        )?;
         let sin_emb = rot.narrow(1_usize, 0, head_dim).unwrap();
         let cos_emb = rot.narrow(1_usize, head_dim, head_dim).unwrap();
         let out = apply_rope_skip_cls(&x, &cos_emb, &sin_emb, b, heads, n, head_dim).unwrap();

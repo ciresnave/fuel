@@ -300,7 +300,7 @@ impl T5Model {
         let embed = encoder_out.const_f32_like(
             self.weights.shared_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.d_model]),
-        );
+        )?;
         let dec_out = self.decode(&embed, tgt_tokens, encoder_out)?;
         let lm_head = match &self.weights.lm_head {
             Some(w) => w.clone(),
@@ -324,7 +324,7 @@ impl T5Model {
         let cfg = &self.config;
         let src_len = src.len();
         let batch = 1;
-        let ids = embed.const_u32_like(src.to_vec(), Shape::from_dims(&[src_len]));
+        let ids = embed.const_u32_like(src.to_vec(), Shape::from_dims(&[src_len]))?;
         let src_embeds = embed
             .index_select(0_usize, &ids)?
             .reshape(Shape::from_dims(&[batch, src_len, cfg.d_model]))?;
@@ -374,7 +374,7 @@ impl T5Model {
         let cfg = &self.config;
         let tgt_len = tgt.len();
         let batch = 1;
-        let ids = embed.const_u32_like(tgt.to_vec(), Shape::from_dims(&[tgt_len]));
+        let ids = embed.const_u32_like(tgt.to_vec(), Shape::from_dims(&[tgt_len]))?;
         let tgt_embeds = embed
             .index_select(0_usize, &ids)?
             .reshape(Shape::from_dims(&[batch, tgt_len, cfg.d_model]))?;
@@ -417,7 +417,7 @@ impl T5Model {
             }
         }
         let causal =
-            tgt_embeds.const_f32_like(causal_mask, Shape::from_dims(&[1, 1, tgt_len, tgt_len]));
+            tgt_embeds.const_f32_like(causal_mask, Shape::from_dims(&[1, 1, tgt_len, tgt_len]))?;
 
         for layer in &self.weights.decoder_layers {
             x = self.apply_decoder_layer(&x, layer, enc_out, &pos_bias, &causal)?;
@@ -628,7 +628,7 @@ fn compute_position_bias(
     let bias = anchor.const_f32_like(
         Arc::from(bias_data),
         Shape::from_dims(&[q_len, kv_len, n_heads]),
-    );
+    )?;
     // Permute (q, kv, h) → (h, q, kv); unsqueeze batch dim.
     bias.permute([2, 0, 1_usize])?
         .reshape(Shape::from_dims(&[1, n_heads, q_len, kv_len]))

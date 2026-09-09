@@ -184,17 +184,17 @@ impl BlipTextModel {
         let word_table = anchor.const_f32_like(
             Arc::clone(&w.word_embedding),
             Shape::from_dims(&[cfg.vocab_size, h]),
-        );
-        let ids = anchor.const_u32_like(input_ids.to_vec(), Shape::from_dims(&[t]));
+        )?;
+        let ids = anchor.const_u32_like(input_ids.to_vec(), Shape::from_dims(&[t]))?;
         let tok = word_table
             .index_select(0_usize, &ids)?
             .reshape(Shape::from_dims(&[1, t, h]))?;
         let pos_ids: Vec<u32> = (0..t).map(|i| (i + start_pos) as u32).collect();
-        let pos_idx = anchor.const_u32_like(pos_ids, Shape::from_dims(&[t]));
+        let pos_idx = anchor.const_u32_like(pos_ids, Shape::from_dims(&[t]))?;
         let pos_table = anchor.const_f32_like(
             Arc::clone(&w.position_embedding),
             Shape::from_dims(&[cfg.max_position_embeddings, h]),
-        );
+        )?;
         let pos = pos_table
             .index_select(0_usize, &pos_idx)?
             .reshape(Shape::from_dims(&[1, t, h]))?;

@@ -149,8 +149,8 @@ impl TrocrModel {
         let embed = enc_out.const_f32_like(
             Arc::clone(&dw.embed_tokens),
             Shape::from_dims(&[dcfg.vocab_size, dcfg.d_model]),
-        );
-        let ids = enc_out.const_u32_like(tgt_tokens.to_vec(), Shape::from_dims(&[tgt_len]));
+        )?;
+        let ids = enc_out.const_u32_like(tgt_tokens.to_vec(), Shape::from_dims(&[tgt_len]))?;
         let tok = embed
             .index_select(0_usize, &ids)?
             .reshape(Shape::from_dims(&[1, tgt_len, dcfg.d_model]))?;
@@ -169,8 +169,8 @@ impl TrocrModel {
                 dcfg.max_position_embeddings + dcfg.learned_pos_offset,
                 dcfg.d_model,
             ]),
-        );
-        let pos_idx = enc_out.const_u32_like(pos_ids, Shape::from_dims(&[tgt_len]));
+        )?;
+        let pos_idx = enc_out.const_u32_like(pos_ids, Shape::from_dims(&[tgt_len]))?;
         let pos = pos_table
             .index_select(0_usize, &pos_idx)?
             .reshape(Shape::from_dims(&[1, tgt_len, dcfg.d_model]))?;
@@ -184,7 +184,7 @@ impl TrocrModel {
             }
         }
         let causal_mask =
-            enc_out.const_f32_like(mask_data, Shape::from_dims(&[1, 1, tgt_len, tgt_len]));
+            enc_out.const_f32_like(mask_data, Shape::from_dims(&[1, 1, tgt_len, tgt_len]))?;
 
         for layer in &dw.layers {
             x = apply_decoder_layer(&x, layer, enc_out, &causal_mask, dcfg)?;
@@ -201,7 +201,7 @@ impl TrocrModel {
                 let lm_w = enc_out.const_f32_like(
                     Arc::clone(&dw.embed_tokens),
                     Shape::from_dims(&[dcfg.vocab_size, dcfg.d_model]),
-                );
+                )?;
                 x.matmul(&lm_w.transpose()?)?
             }
         };

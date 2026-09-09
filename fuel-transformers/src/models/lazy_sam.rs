@@ -292,11 +292,11 @@ impl SamImageEncoderVit {
         let conv_w = x.const_f32_like(
             Arc::clone(&weights.patch_embed_w),
             Shape::from_dims(&[cfg.embed_dim, ch, cfg.patch_size, cfg.patch_size]),
-        );
+        )?;
         let conv_b = x.const_f32_like(
             Arc::clone(&weights.patch_embed_b),
             Shape::from_dims(&[cfg.embed_dim]),
-        );
+        )?;
         let patches = x.conv2d(
             &conv_w,
             Some(&conv_b),
@@ -312,7 +312,7 @@ impl SamImageEncoderVit {
             let pos_t = x.const_f32_like(
                 Arc::clone(pos),
                 Shape::from_dims(&[1, pps, pps, cfg.embed_dim]),
-            );
+            )?;
             x = x.add(&pos_t)?;
         }
 
@@ -326,13 +326,13 @@ impl SamImageEncoderVit {
         let neck1_w = x.const_f32_like(
             Arc::clone(&weights.neck_conv1_w),
             Shape::from_dims(&[cfg.out_chans, cfg.embed_dim, 1, 1]),
-        );
+        )?;
         let x = x.conv2d(&neck1_w, None, (1, 1), (0, 0), 1)?;
         let x = layer_norm_2d(&x, &weights.neck_ln1, cfg.out_chans, 1e-6)?;
         let neck2_w = x.const_f32_like(
             Arc::clone(&weights.neck_conv2_w),
             Shape::from_dims(&[cfg.out_chans, cfg.out_chans, 3, 3]),
-        );
+        )?;
         let x = x.conv2d(&neck2_w, None, (1, 1), (1, 1), 1)?;
         layer_norm_2d(&x, &weights.neck_ln2, cfg.out_chans, 1e-6)
     }
@@ -425,11 +425,11 @@ pub(crate) fn layer_norm_2d(
     let normalized = xs.div(&denom)?;
 
     let g = x
-        .const_f32_like(Arc::clone(&ln.gain), Shape::from_dims(&[num_channels]))
+        .const_f32_like(Arc::clone(&ln.gain), Shape::from_dims(&[num_channels]))?
         .reshape(Shape::from_dims(&[1, num_channels, 1, 1]))?
         .broadcast_to(Shape::from_dims(&[n, num_channels, h, w]))?;
     let b = x
-        .const_f32_like(Arc::clone(&ln.bias), Shape::from_dims(&[num_channels]))
+        .const_f32_like(Arc::clone(&ln.bias), Shape::from_dims(&[num_channels]))?
         .reshape(Shape::from_dims(&[1, num_channels, 1, 1]))?
         .broadcast_to(Shape::from_dims(&[n, num_channels, h, w]))?;
     normalized.mul(&g)?.add(&b)
@@ -603,11 +603,11 @@ fn get_rel_pos(
             indices[i * k_size + j] = rel as u32;
         }
     }
-    let idx_t = anchor.const_u32_like(indices, Shape::from_dims(&[q_size * k_size]));
+    let idx_t = anchor.const_u32_like(indices, Shape::from_dims(&[q_size * k_size]))?;
     let rel_pos_table = anchor.const_f32_like(
         Arc::clone(rel_pos),
         Shape::from_dims(&[max_rel_dist, head_dim]),
-    );
+    )?;
     rel_pos_table
         .index_select(0_usize, &idx_t)?
         .reshape(Shape::from_dims(&[q_size, k_size, head_dim]))
@@ -790,7 +790,7 @@ impl SamPromptEncoder {
             }
         }
         let coords_t =
-            anchor.const_f32_like(Arc::<[f32]>::from(coords), Shape::from_dims(&[h, w, 2]));
+            anchor.const_f32_like(Arc::<[f32]>::from(coords), Shape::from_dims(&[h, w, 2]))?;
         // pe_encoding: project, scale, sin+cos cat, then transpose.
         let pe = self.pe_encoding(anchor, &coords_t)?;
         // (h, w, embed_dim) → (1, embed_dim, h, w).
@@ -845,11 +845,11 @@ impl SamPromptEncoder {
         let coords_t = anchor.const_f32_like(
             Arc::<[f32]>::from(coords_owned),
             Shape::from_dims(&[1, n_padded, 2]),
-        );
+        )?;
         let labels_t = anchor.const_f32_like(
             Arc::<[f32]>::from(labels_owned),
             Shape::from_dims(&[1, n_padded]),
-        );
+        )?;
 
         // pe_encoding(coords) → (1, n_padded, embed_dim).
         let pos_emb = self.pe_encoding(anchor, &coords_t)?;
@@ -868,17 +868,17 @@ impl SamPromptEncoder {
             .const_f32_like(
                 Arc::<[f32]>::from(vec![-1.0_f32; 1]),
                 Shape::from_dims(&[1]),
-            )
+            )?
             .broadcast_to(Shape::from_dims(&[1, n_padded, cfg.embed_dim]))?)?;
         let pos_emb = neg1_mask.where_cond(&not_a_point, &pos_emb)?;
 
         let bg_emb =
             self.broadcast_per_point_emb(anchor, &self.weights.point_embeddings[0], n_padded)?;
         let zeros = pos_emb
-            .const_f32_like(Arc::<[f32]>::from(vec![0.0_f32; 1]), Shape::from_dims(&[1]))
+            .const_f32_like(Arc::<[f32]>::from(vec![0.0_f32; 1]), Shape::from_dims(&[1]))?
             .broadcast_to(Shape::from_dims(&[1, n_padded, cfg.embed_dim]))?;
         let zero_mask = labels_bc.eq(&labels_bc
-            .const_f32_like(Arc::<[f32]>::from(vec![0.0_f32; 1]), Shape::from_dims(&[1]))
+            .const_f32_like(Arc::<[f32]>::from(vec![0.0_f32; 1]), Shape::from_dims(&[1]))?
             .broadcast_to(Shape::from_dims(&[1, n_padded, cfg.embed_dim]))?)?;
         let label0_contrib = zero_mask.where_cond(&bg_emb, &zeros)?;
         let pos_emb = pos_emb.add(&label0_contrib)?;
@@ -886,7 +886,7 @@ impl SamPromptEncoder {
         let fg_emb =
             self.broadcast_per_point_emb(anchor, &self.weights.point_embeddings[1], n_padded)?;
         let one_mask = labels_bc.eq(&labels_bc
-            .const_f32_like(Arc::<[f32]>::from(vec![1.0_f32; 1]), Shape::from_dims(&[1]))
+            .const_f32_like(Arc::<[f32]>::from(vec![1.0_f32; 1]), Shape::from_dims(&[1]))?
             .broadcast_to(Shape::from_dims(&[1, n_padded, cfg.embed_dim]))?)?;
         let label1_contrib = one_mask.where_cond(&fg_emb, &zeros)?;
         pos_emb.add(&label1_contrib)
@@ -922,7 +922,7 @@ impl SamPromptEncoder {
         let coords_t = anchor.const_f32_like(
             Arc::<[f32]>::from(corners),
             Shape::from_dims(&[n_boxes, 2, 2]),
-        );
+        )?;
         let pe = self.pe_encoding(anchor, &coords_t)?; // (n_boxes, 2, embed_dim)
 
         // Add per-corner type embeddings:
@@ -954,8 +954,8 @@ impl SamPromptEncoder {
         let q = mi / 4;
         // Conv1: 1 → mi/4, k=2, s=2.
         let conv1_w =
-            masks.const_f32_like(Arc::clone(&w.mask_conv1_w), Shape::from_dims(&[q, 1, 2, 2]));
-        let conv1_b = masks.const_f32_like(Arc::clone(&w.mask_conv1_b), Shape::from_dims(&[q]));
+            masks.const_f32_like(Arc::clone(&w.mask_conv1_w), Shape::from_dims(&[q, 1, 2, 2]))?;
+        let conv1_b = masks.const_f32_like(Arc::clone(&w.mask_conv1_b), Shape::from_dims(&[q]))?;
         let x = masks.conv2d(&conv1_w, Some(&conv1_b), (2, 2), (0, 0), 1)?;
         let x = layer_norm_2d(&x, &w.mask_ln1, q, 1e-6)?;
         let x = x.gelu();
@@ -963,8 +963,8 @@ impl SamPromptEncoder {
         let conv2_w = masks.const_f32_like(
             Arc::clone(&w.mask_conv2_w),
             Shape::from_dims(&[mi, q, 2, 2]),
-        );
-        let conv2_b = masks.const_f32_like(Arc::clone(&w.mask_conv2_b), Shape::from_dims(&[mi]));
+        )?;
+        let conv2_b = masks.const_f32_like(Arc::clone(&w.mask_conv2_b), Shape::from_dims(&[mi]))?;
         let x = x.conv2d(&conv2_w, Some(&conv2_b), (2, 2), (0, 0), 1)?;
         let x = layer_norm_2d(&x, &w.mask_ln2, mi, 1e-6)?;
         let x = x.gelu();
@@ -972,11 +972,11 @@ impl SamPromptEncoder {
         let conv3_w = masks.const_f32_like(
             Arc::clone(&w.mask_conv3_w),
             Shape::from_dims(&[cfg.embed_dim, mi, 1, 1]),
-        );
+        )?;
         let conv3_b = masks.const_f32_like(
             Arc::clone(&w.mask_conv3_b),
             Shape::from_dims(&[cfg.embed_dim]),
-        );
+        )?;
         x.conv2d(&conv3_w, Some(&conv3_b), (1, 1), (0, 0), 1)
     }
 
@@ -989,7 +989,7 @@ impl SamPromptEncoder {
         let no_mask = anchor.const_f32_like(
             Arc::clone(&self.weights.no_mask_embed),
             Shape::from_dims(&[1, cfg.embed_dim, 1, 1]),
-        );
+        )?;
         no_mask.broadcast_to(Shape::from_dims(&[1, cfg.embed_dim, h, w]))
     }
 
@@ -1006,7 +1006,7 @@ impl SamPromptEncoder {
         let gaussian = anchor.const_f32_like(
             Arc::clone(&self.weights.positional_encoding_gaussian),
             Shape::from_dims(&[2, cfg.embed_dim / 2]),
-        );
+        )?;
         let projected = coords.matmul(&gaussian)?;
         // Multiply by 2π then sin + cos concat along last dim.
         let scaled = projected.mul_scalar(2.0 * std::f64::consts::PI);
@@ -1026,7 +1026,7 @@ impl SamPromptEncoder {
         let e = anchor.const_f32_like(
             Arc::clone(emb_data),
             Shape::from_dims(&[1, 1, cfg.embed_dim]),
-        );
+        )?;
         e.broadcast_to(Shape::from_dims(&[1, n_points, cfg.embed_dim]))
     }
 }
@@ -1427,9 +1427,9 @@ impl SamMaskDecoder {
 
         // Output tokens = [iou_token; mask_tokens] of shape (1 + nmt, td).
         let iou_t = sparse_prompt_embeddings
-            .const_f32_like(Arc::clone(&w.iou_token), Shape::from_dims(&[1, td]));
+            .const_f32_like(Arc::clone(&w.iou_token), Shape::from_dims(&[1, td]))?;
         let mask_t = sparse_prompt_embeddings
-            .const_f32_like(Arc::clone(&w.mask_tokens), Shape::from_dims(&[nmt, td]));
+            .const_f32_like(Arc::clone(&w.mask_tokens), Shape::from_dims(&[nmt, td]))?;
         let output_tokens = iou_t.concat(&mask_t, 0_usize)?;
         let sp_dims = sparse_prompt_embeddings.shape();
         let sp_dims = sp_dims.dims();
@@ -1477,9 +1477,9 @@ impl SamMaskDecoder {
         let ct1_w = src_grid.const_f32_like(
             Arc::clone(&w.upsample_conv1_w),
             Shape::from_dims(&[td, td / 4, 2, 2]),
-        );
-        let ct1_b =
-            src_grid.const_f32_like(Arc::clone(&w.upsample_conv1_b), Shape::from_dims(&[td / 4]));
+        )?;
+        let ct1_b = src_grid
+            .const_f32_like(Arc::clone(&w.upsample_conv1_b), Shape::from_dims(&[td / 4]))?;
         let up1 = src_grid.conv_transpose2d(&ct1_w, (2, 2), (0, 0), (0, 0), (1, 1), 1)?;
         // Add bias (broadcast across spatial dims).
         let up1 = up1.broadcast_add(&ct1_b.reshape(Shape::from_dims(&[1, td / 4, 1, 1]))?)?;
@@ -1488,9 +1488,9 @@ impl SamMaskDecoder {
         let ct2_w = src_grid.const_f32_like(
             Arc::clone(&w.upsample_conv2_w),
             Shape::from_dims(&[td / 4, td / 8, 2, 2]),
-        );
-        let ct2_b =
-            src_grid.const_f32_like(Arc::clone(&w.upsample_conv2_b), Shape::from_dims(&[td / 8]));
+        )?;
+        let ct2_b = src_grid
+            .const_f32_like(Arc::clone(&w.upsample_conv2_b), Shape::from_dims(&[td / 8]))?;
         let upscaled = up1.conv_transpose2d(&ct2_w, (2, 2), (0, 0), (0, 0), (1, 1), 1)?;
         let upscaled =
             upscaled.broadcast_add(&ct2_b.reshape(Shape::from_dims(&[1, td / 8, 1, 1]))?)?;
@@ -2386,18 +2386,18 @@ mod tests {
         let pe = img.const_f32_like(
             Arc::<[f32]>::from(pe_data),
             Shape::from_dims(&[1, td, h, w]),
-        );
+        )?;
         let n_prompts = 2;
         let sparse_data: Vec<f32> = (0..1 * n_prompts * td).map(|i| (i as f32) * 0.01).collect();
         let sparse = img.const_f32_like(
             Arc::<[f32]>::from(sparse_data),
             Shape::from_dims(&[1, n_prompts, td]),
-        );
+        )?;
         let dense_data: Vec<f32> = (0..1 * td * h * w).map(|i| (i as f32) * 0.0005).collect();
         let dense = img.const_f32_like(
             Arc::<[f32]>::from(dense_data),
             Shape::from_dims(&[1, td, h, w]),
-        );
+        )?;
 
         let (masks, iou_pred) = decoder
             .forward(
@@ -2431,16 +2431,16 @@ mod tests {
         let pe = img.const_f32_like(
             Arc::<[f32]>::from(vec![0.001_f32; 1 * td * h * w]),
             Shape::from_dims(&[1, td, h, w]),
-        );
+        )?;
         let n_prompts = 2;
         let sparse = img.const_f32_like(
             Arc::<[f32]>::from(vec![0.01_f32; 1 * n_prompts * td]),
             Shape::from_dims(&[1, n_prompts, td]),
-        );
+        )?;
         let dense = img.const_f32_like(
             Arc::<[f32]>::from(vec![0.0005_f32; 1 * td * h * w]),
             Shape::from_dims(&[1, td, h, w]),
-        );
+        )?;
 
         let (masks, iou_pred) = decoder
             .forward(&img, &pe, &sparse, &dense, /* multimask_output */ true)

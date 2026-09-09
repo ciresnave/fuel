@@ -246,11 +246,11 @@ fn per_channel_affine(
     w: usize,
 ) -> fuel_core::Result<Tensor> {
     let s = x
-        .const_f32_like(scale.clone(), Shape::from_dims(&[c]))
+        .const_f32_like(scale.clone(), Shape::from_dims(&[c]))?
         .reshape(Shape::from_dims(&[1, c, 1, 1]))?
         .broadcast_to(Shape::from_dims(&[1, c, h, w]))?;
     let sh = x
-        .const_f32_like(shift.clone(), Shape::from_dims(&[c]))
+        .const_f32_like(shift.clone(), Shape::from_dims(&[c]))?
         .reshape(Shape::from_dims(&[1, c, 1, 1]))?
         .broadcast_to(Shape::from_dims(&[1, c, h, w]))?;
     x.mul(&s)?.add(&sh)
@@ -278,7 +278,7 @@ fn cbn(
     cfg: &YoloV3Config,
 ) -> fuel_core::Result<Tensor> {
     let p = (k - 1) / 2;
-    let w_t = x.const_f32_like(cw.conv_w.clone(), Shape::from_dims(&[c_out, c_in, k, k]));
+    let w_t = x.const_f32_like(cw.conv_w.clone(), Shape::from_dims(&[c_out, c_in, k, k]))?;
     let conv = x.conv2d(&w_t, None, (stride, stride), (p, p), 1)?;
     let affine = per_channel_affine(&conv, &cw.bn_scale, &cw.bn_shift, c_out, h_out, w_out)?;
     leaky_relu(&affine, cfg.leaky_slope)
@@ -349,8 +349,8 @@ fn raw_conv_1x1_bias(
     c_in: usize,
     c_out: usize,
 ) -> fuel_core::Result<Tensor> {
-    let w_t = x.const_f32_like(dw.conv_w.clone(), Shape::from_dims(&[c_out, c_in, 1, 1]));
-    let b_t = x.const_f32_like(dw.conv_b.clone(), Shape::from_dims(&[c_out]));
+    let w_t = x.const_f32_like(dw.conv_w.clone(), Shape::from_dims(&[c_out, c_in, 1, 1]))?;
+    let b_t = x.const_f32_like(dw.conv_b.clone(), Shape::from_dims(&[c_out]))?;
     x.conv2d(&w_t, Some(&b_t), (1, 1), (0, 0), 1)
 }
 
@@ -403,10 +403,10 @@ fn decode_scale(
             }
         }
     }
-    let g_x = raw.const_f32_like(grid_x, Shape::from_dims(&[1, n, 1]));
-    let g_y = raw.const_f32_like(grid_y, Shape::from_dims(&[1, n, 1]));
-    let a_w = raw.const_f32_like(anc_w, Shape::from_dims(&[1, n, 1]));
-    let a_h = raw.const_f32_like(anc_h, Shape::from_dims(&[1, n, 1]));
+    let g_x = raw.const_f32_like(grid_x, Shape::from_dims(&[1, n, 1]))?;
+    let g_y = raw.const_f32_like(grid_y, Shape::from_dims(&[1, n, 1]))?;
+    let a_w = raw.const_f32_like(anc_w, Shape::from_dims(&[1, n, 1]))?;
+    let a_h = raw.const_f32_like(anc_h, Shape::from_dims(&[1, n, 1]))?;
 
     // Slice the channel axis: positions 0..2 (xy), 2..4 (wh),
     // 4..(5+nc) (obj + classes).

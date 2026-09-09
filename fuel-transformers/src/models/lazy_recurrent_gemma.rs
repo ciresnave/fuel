@@ -562,7 +562,7 @@ impl RecurrentGemmaModel {
                 }
             }
         }
-        let mask = x.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]));
+        let mask = x.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]))?;
         let scores_masked = scores_scaled.broadcast_add(&mask)?;
         let attn = scores_masked.softmax_last_dim()?;
         let attn_v = attn.matmul(&v_full)?;
@@ -610,13 +610,13 @@ impl RecurrentGemmaModel {
         let pad_zeros = x.const_f32_like(
             Arc::from(vec![0.0_f32; batch * lru_width * (kernel - 1)]),
             Shape::from_dims(&[batch, lru_width, kernel - 1]),
-        );
+        )?;
         let x_b_padded = pad_zeros.concat(&x_b_t, 2_usize)?;
         let conv_w = x.const_f32_like(
             Arc::clone(&r.conv1d_w),
             Shape::from_dims(&[lru_width, 1, kernel]),
-        );
-        let conv_b = x.const_f32_like(Arc::clone(&r.conv1d_b), Shape::from_dims(&[lru_width]));
+        )?;
+        let conv_b = x.const_f32_like(Arc::clone(&r.conv1d_b), Shape::from_dims(&[lru_width]))?;
         let x_conv = x_b_padded.causal_conv1d(&conv_w, &conv_b, false); // (b, lru, seq)
         let x_back = x_conv.permute([0, 2, 1_usize])?; // (b, seq, lru_width)
 
@@ -652,7 +652,7 @@ impl RecurrentGemmaModel {
             let w_t = x.const_f32_like(
                 Arc::clone(w),
                 Shape::from_dims(&[1, 1, n_heads, block_width, block_width]),
-            );
+            )?;
             let w_bc = w_t.broadcast_to(Shape::from_dims(&[
                 batch,
                 seq,
@@ -667,7 +667,7 @@ impl RecurrentGemmaModel {
             let b_t = x.const_f32_like(
                 Arc::clone(b),
                 Shape::from_dims(&[1, 1, n_heads, block_width]),
-            );
+            )?;
             let b_bc = b_t.broadcast_to(Shape::from_dims(&[batch, seq, n_heads, block_width]))?;
             res.add(&b_bc)
         };
@@ -683,7 +683,7 @@ impl RecurrentGemmaModel {
         let rp = x.const_f32_like(
             Arc::clone(&rg.recurrent_param),
             Shape::from_dims(&[lru_width]),
-        );
+        )?;
         let softplus_rp = rp.exp().add_scalar(1.0).log();
         // broadcast (lru_width) → (1, 1, lru_width)
         let softplus_rp_bc = softplus_rp
@@ -701,7 +701,7 @@ impl RecurrentGemmaModel {
         // Build reset mask shape (1, seq, 1): [1.0, 0.0, 0.0, ...].
         let mut reset_data = vec![0.0_f32; seq];
         reset_data[0] = 1.0;
-        let reset = x.const_f32_like(Arc::from(reset_data), Shape::from_dims(&[1, seq, 1]));
+        let reset = x.const_f32_like(Arc::from(reset_data), Shape::from_dims(&[1, seq, 1]))?;
         let one_minus_reset = reset.mul_scalar(-1.0).add_scalar(1.0); // 1 - reset
         let one_minus_reset_bc =
             one_minus_reset.broadcast_to(Shape::from_dims(&[batch, seq, lru_width]))?;

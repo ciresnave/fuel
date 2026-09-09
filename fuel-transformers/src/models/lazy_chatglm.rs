@@ -360,7 +360,7 @@ impl ChatGlmModel {
         let qkv = match &layer.query_key_value_bias {
             None => qkv,
             Some(b) => {
-                let bt = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[qkv_dim]));
+                let bt = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[qkv_dim]))?;
                 qkv.broadcast_add(&bt)?
             }
         };
@@ -403,7 +403,7 @@ impl ChatGlmModel {
         match &layer.dense_bias {
             None => Ok(dense_out),
             Some(b) => {
-                let bt = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[cfg.hidden_size]));
+                let bt = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[cfg.hidden_size]))?;
                 dense_out.broadcast_add(&bt)
             }
         }
@@ -419,7 +419,7 @@ impl ChatGlmModel {
         let h_to_4h = match &layer.dense_h_to_4h_bias {
             None => h_to_4h,
             Some(b) => {
-                let bt = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[fused_dim]));
+                let bt = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[fused_dim]))?;
                 h_to_4h.broadcast_add(&bt)?
             }
         };
@@ -430,7 +430,7 @@ impl ChatGlmModel {
         match &layer.dense_4h_to_h_bias {
             None => Ok(down),
             Some(b) => {
-                let bt = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[h]));
+                let bt = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[h]))?;
                 down.broadcast_add(&bt)
             }
         }

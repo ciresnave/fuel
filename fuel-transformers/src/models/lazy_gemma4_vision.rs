@@ -223,7 +223,7 @@ impl Gemma4VisionModel {
         let pos_emb = anchor.const_f32_like(
             Arc::from(pos_emb_data),
             Shape::from_dims(&[1, num_patches, h_dim]),
-        );
+        )?;
 
         // Build cos/sin for 2D RoPE: head_dim split into two halves.
         // Within each half, standard split-half RoPE has frequencies for
@@ -264,11 +264,11 @@ impl Gemma4VisionModel {
         let cos_xy = anchor.const_f32_like(
             Arc::from(cos_data),
             Shape::from_dims(&[num_patches, head_dim]),
-        );
+        )?;
         let sin_xy = anchor.const_f32_like(
             Arc::from(sin_data),
             Shape::from_dims(&[num_patches, head_dim]),
-        );
+        )?;
 
         Ok((pos_emb, cos_xy, sin_xy))
     }
@@ -416,7 +416,7 @@ impl Gemma4VisionModel {
             }
         }
         let idx_tensor =
-            x.const_u32_like(idx_full, Shape::from_dims(&[batch, num_patches, hidden]));
+            x.const_u32_like(idx_full, Shape::from_dims(&[batch, num_patches, hidden]))?;
 
         // Scale by 1/k² BEFORE scatter so the scatter sum becomes a mean.
         let x_scaled = x.mul_scalar(1.0 / ((k * k) as f64));
@@ -425,7 +425,7 @@ impl Gemma4VisionModel {
         let zeros = x.const_f32_like(
             Arc::from(vec![0.0_f32; batch * output_length * hidden]),
             Shape::from_dims(&[batch, output_length, hidden]),
-        );
+        )?;
         let _ = cfg; // silence unused
         zeros.scatter_add(1_usize, &idx_tensor, &x_scaled)
     }

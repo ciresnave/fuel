@@ -276,7 +276,7 @@ fn apply_per_channel_scale(x: &Tensor, scale: &Arc<[f32]>, hidden: usize) -> Res
     let mut shape = vec![1_usize; dims_v.len()];
     shape[dims_v.len() - 1] = hidden;
     let s = x
-        .const_f32_like(Arc::clone(scale), Shape::from_dims(&[hidden]))
+        .const_f32_like(Arc::clone(scale), Shape::from_dims(&[hidden]))?
         .reshape(Shape::from_dims(&shape))?
         .broadcast_to(Shape::from_dims(&dims_v))?;
     x.mul(&s)
@@ -303,8 +303,8 @@ fn build_rope_tables(
             sin_v.push(theta.sin());
         }
     }
-    let cos = anchor.const_f32_like(Arc::from(cos_v), Shape::from_dims(&[t, half]));
-    let sin = anchor.const_f32_like(Arc::from(sin_v), Shape::from_dims(&[t, half]));
+    let cos = anchor.const_f32_like(Arc::from(cos_v), Shape::from_dims(&[t, half]))?;
+    let sin = anchor.const_f32_like(Arc::from(sin_v), Shape::from_dims(&[t, half]))?;
     (cos, sin)
 }
 

@@ -356,7 +356,7 @@ mod tests {
         // lr    = 0.1
         // After step: param - 0.1 * grad = [0.95, 1.95, 2.95]
         let mut param = cpu_f32(vec![1.0, 2.0, 3.0], &[3]);
-        let grad = param.const_f32_like(vec![0.5_f32, 0.5, 0.5], Shape::from_dims(&[3]));
+        let grad = param.const_f32_like(vec![0.5_f32, 0.5, 0.5], Shape::from_dims(&[3]))?;
         apply_inplace_sgd_step(&mut param, &grad, 0.1).unwrap();
         let host = param.realize_f32();
         assert_eq!(host.len(), 3);
@@ -368,7 +368,7 @@ mod tests {
     #[test]
     fn inplace_sgd_step_zero_lr_is_noop() {
         let mut param = cpu_f32(vec![1.0, 2.0, 3.0], &[3]);
-        let grad = param.const_f32_like(vec![1.0_f32, 1.0, 1.0], Shape::from_dims(&[3]));
+        let grad = param.const_f32_like(vec![1.0_f32, 1.0, 1.0], Shape::from_dims(&[3]))?;
         apply_inplace_sgd_step(&mut param, &grad, 0.0).unwrap();
         let host = param.realize_f32();
         assert!((host[0] - 1.0).abs() < 1e-6);

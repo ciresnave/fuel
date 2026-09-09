@@ -193,7 +193,7 @@ impl ResNetModel {
                     .nclasses
                     .expect("config nclasses must be Some when fc is present");
                 let logits = w.apply_linear(&pooled, cfg.features(), n)?;
-                let bias_t = pooled.const_f32_like(Arc::clone(b), Shape::from_dims(&[n]));
+                let bias_t = pooled.const_f32_like(Arc::clone(b), Shape::from_dims(&[n]))?;
                 logits.broadcast_add(&bias_t)
             }
         }

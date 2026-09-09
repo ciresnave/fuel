@@ -341,7 +341,8 @@ fn project_visual(
     let projected = proj
         .weight
         .apply_linear(visual, vision_out_hidden, text_hidden)?;
-    let bias_t = projected.const_f32_like(Arc::clone(&proj.bias), Shape::from_dims(&[text_hidden]));
+    let bias_t =
+        projected.const_f32_like(Arc::clone(&proj.bias), Shape::from_dims(&[text_hidden]))?;
     projected.broadcast_add(&bias_t)
 }
 
@@ -400,7 +401,7 @@ fn substitute_visual_embeds(
     for (visual_row, &pos) in slot_positions.iter().enumerate() {
         gather_indices[pos] = visual_row as u32;
     }
-    let idx = text_embeds.const_u32_like(gather_indices, Shape::from_dims(&[seq]));
+    let idx = text_embeds.const_u32_like(gather_indices, Shape::from_dims(&[seq]))?;
     let gathered = visual_embeds
         .index_select(0_usize, &idx)?
         .reshape(Shape::from_dims(&[1, seq, text_hidden]))?;
@@ -410,7 +411,7 @@ fn substitute_visual_embeds(
         mask_data[p] = 1.0;
     }
     let mask = text_embeds
-        .const_f32_like(mask_data, Shape::from_dims(&[seq]))
+        .const_f32_like(mask_data, Shape::from_dims(&[seq]))?
         .reshape(Shape::from_dims(&[1, seq, 1]))?
         .broadcast_to(Shape::from_dims(&[1, seq, text_hidden]))?;
     let one_minus = mask.affine(-1.0, 1.0);
@@ -538,7 +539,7 @@ fn scatter_visual_residual(
     for (residual_row, &pos) in slot_positions.iter().enumerate() {
         gather_indices[pos] = residual_row as u32;
     }
-    let idx = anchor.const_u32_like(gather_indices, Shape::from_dims(&[seq]));
+    let idx = anchor.const_u32_like(gather_indices, Shape::from_dims(&[seq]))?;
     let gathered = residual
         .index_select(0_usize, &idx)?
         .reshape(Shape::from_dims(&[1, seq, text_hidden]))?;
@@ -547,7 +548,7 @@ fn scatter_visual_residual(
         mask_data[p] = 1.0;
     }
     let mask = anchor
-        .const_f32_like(mask_data, Shape::from_dims(&[seq]))
+        .const_f32_like(mask_data, Shape::from_dims(&[seq]))?
         .reshape(Shape::from_dims(&[1, seq, 1]))?
         .broadcast_to(Shape::from_dims(&[1, seq, text_hidden]))?;
     gathered.mul(&mask)
@@ -929,14 +930,14 @@ mod tests {
         let text_embeds = anchor.const_f32_like(
             Arc::from(text_data.clone()),
             Shape::from_dims(&[1, seq, hidden]),
-        );
+        )?;
         // visual_embeds := (N=2, hidden) with row r = [-(r+1), …].
         let n = 2_usize;
         let visual_data: Vec<f32> = (0..n)
             .flat_map(|r| (0..hidden).map(move |_| -((r + 1) as f32)))
             .collect();
         let visual_embeds =
-            anchor.const_f32_like(Arc::from(visual_data), Shape::from_dims(&[n, hidden]));
+            anchor.const_f32_like(Arc::from(visual_data), Shape::from_dims(&[n, hidden]))?;
         let slot_positions = vec![1_usize, 3];
         let out = substitute_visual_embeds(&text_embeds, &visual_embeds, &slot_positions, hidden)
             .unwrap()

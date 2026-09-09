@@ -189,7 +189,7 @@ impl ConvMixerModel {
         let bias_t = pooled.const_f32_like(
             Arc::clone(&self.weights.head_bias),
             Shape::from_dims(&[cfg.nclasses]),
-        );
+        )?;
         logits.broadcast_add(&bias_t)
     }
 

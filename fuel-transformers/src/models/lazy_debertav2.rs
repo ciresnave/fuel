@@ -368,7 +368,7 @@ impl DebertaV2Model {
         let table = ids.const_f32_like(
             Arc::clone(&w.word_embedding),
             Shape::from_dims(&[cfg.vocab_size, h]),
-        );
+        )?;
         let x = table
             .index_select(0_usize, &ids)?
             .reshape(Shape::from_dims(&[1, t, h]))?;
@@ -382,7 +382,7 @@ impl DebertaV2Model {
         let rel_table = ids.const_f32_like(
             Arc::clone(&w.rel_embeddings),
             Shape::from_dims(&[2 * cfg.position_buckets, h]),
-        );
+        )?;
         let rel_table = match &w.rel_emb_ln {
             None => rel_table,
             Some(ln) => rel_table
@@ -398,8 +398,8 @@ impl DebertaV2Model {
         // Build c2p / p2c gather index tables (depend on T).
         let c2p_idx = build_c2p_indices(t, cfg.position_buckets, cfg.max_relative_positions);
         let p2c_idx = build_p2c_indices(t, cfg.position_buckets, cfg.max_relative_positions);
-        let c2p_idx = ids.const_u32_like(c2p_idx, Shape::from_dims(&[1, t, t]));
-        let p2c_idx = ids.const_u32_like(p2c_idx, Shape::from_dims(&[1, t, t]));
+        let c2p_idx = ids.const_u32_like(c2p_idx, Shape::from_dims(&[1, t, t]))?;
+        let p2c_idx = ids.const_u32_like(p2c_idx, Shape::from_dims(&[1, t, t]))?;
 
         for layer in &w.layers {
             x = apply_layer(&x, layer, &rel_table, &c2p_idx, &p2c_idx, cfg, &ids)?;

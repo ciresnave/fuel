@@ -252,7 +252,7 @@ impl ImageClassificationModel {
         let pooled = flat.mean_dim(1_usize)?;
         let n = self.classifier.b.len();
         let logits = self.classifier.w.apply_linear(&pooled, c, n)?;
-        let bias = image.const_f32_like(Arc::clone(&self.classifier.b), Shape::from_dims(&[n]));
+        let bias = image.const_f32_like(Arc::clone(&self.classifier.b), Shape::from_dims(&[n]))?;
         logits.broadcast_add(&bias)
     }
 }
@@ -536,7 +536,7 @@ fn apply_conv2d(x: &Tensor, c: &Conv2dWeights, anchor: &Tensor) -> Result<Tensor
     let w = anchor.const_f32_like(
         Arc::clone(&c.w),
         Shape::from_dims(&[c.c_out, c.c_in / c.groups, c.k, c.k]),
-    );
+    )?;
     let bias =
         c.b.as_ref()
             .map(|b| anchor.const_f32_like(Arc::clone(b), Shape::from_dims(&[c.c_out])));

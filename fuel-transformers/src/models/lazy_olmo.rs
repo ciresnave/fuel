@@ -341,7 +341,7 @@ impl OlmoModel {
 fn apply_layer_norm_no_bias(x: &Tensor, gain: &Arc<[f32]>, dim: usize, eps: f64) -> Result<Tensor> {
     assert_eq!(gain.len(), dim);
     let normalized = x.layer_norm_last_dim(eps)?;
-    let gain_t = x.const_f32_like(Arc::clone(gain), Shape::from_dims(&[dim]));
+    let gain_t = x.const_f32_like(Arc::clone(gain), Shape::from_dims(&[dim]))?;
     normalized.broadcast_mul(&gain_t)
 }
 

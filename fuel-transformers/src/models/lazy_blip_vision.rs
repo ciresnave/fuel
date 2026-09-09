@@ -161,11 +161,11 @@ impl BlipVisionModel {
         let conv_w = pixel_values.const_f32_like(
             Arc::clone(&weights.patch_proj),
             Shape::from_dims(&[cfg.hidden_size, 3, cfg.patch_size, cfg.patch_size]),
-        );
+        )?;
         let conv_b = pixel_values.const_f32_like(
             Arc::clone(&weights.patch_proj_bias),
             Shape::from_dims(&[cfg.hidden_size]),
-        );
+        )?;
         let conv_out = pixel_values.conv2d(
             &conv_w,
             Some(&conv_b),
@@ -182,12 +182,12 @@ impl BlipVisionModel {
         let cls = pixel_values.const_f32_like(
             Arc::clone(&weights.class_token),
             Shape::from_dims(&[1, 1, cfg.hidden_size]),
-        );
+        )?;
         let with_cls = cls.concat(&patches, 1_usize)?;
         let pos = pixel_values.const_f32_like(
             Arc::clone(&weights.position_embedding),
             Shape::from_dims(&[1, np + 1, cfg.hidden_size]),
-        );
+        )?;
         let mut x = with_cls.add(&pos)?;
 
         // Transformer encoder layers (Pre-LN).

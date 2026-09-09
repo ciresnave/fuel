@@ -192,7 +192,7 @@ impl Qwen2MoeModel {
         let lm = h_norm.const_f32_like(
             self.weights.lm_head.clone(),
             Shape::from_dims(&[cfg.hidden_size, cfg.vocab_size]),
-        );
+        )?;
         h_norm.matmul(&lm)
     }
 
@@ -210,7 +210,7 @@ impl Qwen2MoeModel {
             Shape::from_dims(&[cfg.vocab_size, h]),
             &fuel_core::Device::cpu(),
         )?;
-        let input_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        let input_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]))?;
         let x = embed
             .index_select(0, &input_ids)?
             .reshape(Shape::from_dims(&[1, seq, h]))?;
@@ -300,7 +300,7 @@ fn qwen2_attn(
         }
     }
     let mask_t = scores
-        .const_f32_like(mask, Shape::from_dims(&[seq, seq]))
+        .const_f32_like(mask, Shape::from_dims(&[seq, seq]))?
         .reshape(Shape::from_dims(&[1, 1, seq, seq]))?
         .broadcast_to(Shape::from_dims(&[1, n_heads, seq, seq]))?;
     scores = scores.add(&mask_t)?;
@@ -322,7 +322,7 @@ fn moe_block(
     let e = cfg.num_experts;
 
     // Router: [1, seq, h] → gate.matmul → [1, seq, E].
-    let gate = x.const_f32_like(lw.gate_w.clone(), Shape::from_dims(&[h, e]));
+    let gate = x.const_f32_like(lw.gate_w.clone(), Shape::from_dims(&[h, e]))?;
     let router_logits = x.matmul(&gate)?;
     let router_weights = router_logits.softmax_last_dim()?; // [1, seq, E]
 
@@ -355,7 +355,7 @@ fn moe_block(
         seq,
     )?;
     // Shared expert gate: Linear(h → 1), then sigmoid.
-    let sg_w = x.const_f32_like(lw.shared_expert_gate_w.clone(), Shape::from_dims(&[h, 1]));
+    let sg_w = x.const_f32_like(lw.shared_expert_gate_w.clone(), Shape::from_dims(&[h, 1]))?;
     let sg = x.matmul(&sg_w)?.sigmoid(); // [1, seq, 1]
     let sg_bc = sg.broadcast_to(Shape::from_dims(&[1, seq, h]))?;
     let shared_gated = shared_out.mul(&sg_bc)?;
@@ -394,7 +394,7 @@ fn rms_norm_affine(
         .broadcast_to(Shape::from_dims(&[1, seq, hidden]))?;
     let normed = x.div(&rstd_bc)?;
     let g = x
-        .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))
+        .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))?
         .reshape(Shape::from_dims(&[1, 1, hidden]))?
         .broadcast_to(Shape::from_dims(&[1, seq, hidden]))?;
     normed.mul(&g)
@@ -428,11 +428,11 @@ fn apply_rope(
     let x_dims = x_shape.dims();
     let n_heads = x_dims[1];
     let cos_t = x
-        .const_f32_like(cos.to_vec(), Shape::from_dims(&[seq, d_head]))
+        .const_f32_like(cos.to_vec(), Shape::from_dims(&[seq, d_head]))?
         .reshape(Shape::from_dims(&[1, 1, seq, d_head]))?
         .broadcast_to(Shape::from_dims(&[1, n_heads, seq, d_head]))?;
     let sin_t = x
-        .const_f32_like(sin.to_vec(), Shape::from_dims(&[seq, d_head]))
+        .const_f32_like(sin.to_vec(), Shape::from_dims(&[seq, d_head]))?
         .reshape(Shape::from_dims(&[1, 1, seq, d_head]))?
         .broadcast_to(Shape::from_dims(&[1, n_heads, seq, d_head]))?;
     let half = d_head / 2;
@@ -452,12 +452,12 @@ fn linear(
     out_f: usize,
     seq: usize,
 ) -> fuel_core::Result<Tensor> {
-    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]));
+    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]))?;
     let proj = x.matmul(&w_t)?;
     match b {
         Some(b) => {
             let bias = x
-                .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))
+                .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))?
                 .reshape(Shape::from_dims(&[1, 1, out_f]))?
                 .broadcast_to(Shape::from_dims(&[1, seq, out_f]))?;
             proj.add(&bias)

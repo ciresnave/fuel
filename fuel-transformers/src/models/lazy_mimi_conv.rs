@@ -292,7 +292,7 @@ impl StreamableConv1dWeights {
                 self.in_channels / self.groups,
                 self.kernel_size,
             ]),
-        )
+        )?
     }
 
     fn build_bias_tensor(&self, anchor: &Tensor) -> Option<Tensor> {

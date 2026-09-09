@@ -243,7 +243,7 @@ impl MptModel {
 
         let slopes = cfg.alibi_slopes();
         let mask_data = build_alibi_causal_mask(seq, &slopes);
-        let mask = h.const_f32_like(mask_data, Shape::from_dims(&[1, cfg.n_heads, seq, seq]));
+        let mask = h.const_f32_like(mask_data, Shape::from_dims(&[1, cfg.n_heads, seq, seq]))?;
 
         for layer in &weights.layers {
             h = self.apply_layer(&h, layer, &mask)?;

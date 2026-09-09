@@ -93,10 +93,10 @@ fn lstm_layer_forward(x: &Tensor, w: &LstmCellWeights) -> Result<Tensor> {
     let four_h = 4 * h_dim;
 
     // Weight + bias constants on the input's graph.
-    let w_ih = x.const_f32_like(Arc::clone(&w.w_ih), Shape::from_dims(&[four_h, d_in]));
-    let w_hh = x.const_f32_like(Arc::clone(&w.w_hh), Shape::from_dims(&[four_h, h_dim]));
-    let b_ih = x.const_f32_like(Arc::clone(&w.b_ih), Shape::from_dims(&[four_h]));
-    let b_hh = x.const_f32_like(Arc::clone(&w.b_hh), Shape::from_dims(&[four_h]));
+    let w_ih = x.const_f32_like(Arc::clone(&w.w_ih), Shape::from_dims(&[four_h, d_in]))?;
+    let w_hh = x.const_f32_like(Arc::clone(&w.w_hh), Shape::from_dims(&[four_h, h_dim]))?;
+    let b_ih = x.const_f32_like(Arc::clone(&w.b_ih), Shape::from_dims(&[four_h]))?;
+    let b_hh = x.const_f32_like(Arc::clone(&w.b_hh), Shape::from_dims(&[four_h]))?;
     let b_combined = b_ih.add(&b_hh)?;
     // Broadcast bias to (B, 4·H) for elementwise add per time step.
     let bias = b_combined
@@ -107,7 +107,7 @@ fn lstm_layer_forward(x: &Tensor, w: &LstmCellWeights) -> Result<Tensor> {
     let zeros_bh = x.const_f32_like(
         Arc::<[f32]>::from(vec![0.0_f32; b * h_dim]),
         Shape::from_dims(&[b, h_dim]),
-    );
+    )?;
     let mut h_prev = zeros_bh.clone();
     let mut c_prev = zeros_bh;
 

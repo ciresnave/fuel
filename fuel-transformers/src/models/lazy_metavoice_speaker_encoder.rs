@@ -96,7 +96,7 @@ impl SpeakerEncoderModel {
         let bias = mels.const_f32_like(
             Arc::clone(&self.weights.linear_bias),
             Shape::from_dims(&[e]),
-        );
+        )?;
         let with_bias = proj.broadcast_add(&bias)?;
         let activated = with_bias.relu();
 

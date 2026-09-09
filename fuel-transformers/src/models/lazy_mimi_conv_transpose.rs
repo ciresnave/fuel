@@ -191,7 +191,7 @@ impl StreamableConvTranspose1dWeights {
                 self.out_channels / self.groups,
                 self.kernel_size,
             ]),
-        )
+        )?
     }
 
     fn build_bias_tensor(&self, anchor: &Tensor) -> Option<Tensor> {
@@ -340,7 +340,7 @@ impl StreamableConvTranspose1dWeights {
                     None => prev_ys,
                     Some(b) => {
                         let bias_1c1 = prev_ys
-                            .const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels]))
+                            .const_f32_like(Arc::clone(b), Shape::from_dims(&[self.out_channels]))?
                             .reshape(Shape::from_dims(&[1, self.out_channels, 1]))?;
                         prev_ys.broadcast_sub(&bias_1c1)?
                     }

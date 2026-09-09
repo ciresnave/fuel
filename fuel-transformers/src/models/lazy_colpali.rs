@@ -87,7 +87,7 @@ impl ColPaliModel {
         let bias = anchor.const_f32_like(
             Arc::clone(&self.weights.custom_text_projection_bias),
             Shape::from_dims(&[COLPALI_PROJ_DIM]),
-        );
+        )?;
         let biased = projected.broadcast_add(&bias)?;
         l2_normalize_last(&biased, 1e-12)
     }

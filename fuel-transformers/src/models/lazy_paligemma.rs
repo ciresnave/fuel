@@ -106,7 +106,7 @@ impl PaligemmaModel {
         let bias_t = pixel_values.const_f32_like(
             Arc::clone(&self.weights.mm_proj_bias),
             Shape::from_dims(&[cfg.projection_dim]),
-        );
+        )?;
         let image_proj = projected.broadcast_add(&bias_t)?;
         // L2 normalize image features per-token.
         let image_proj_n = l2_normalize_last(&image_proj, 1e-12)?;
@@ -119,9 +119,9 @@ impl PaligemmaModel {
         let gemma_embed_lt = pixel_values.const_f32_like(
             Arc::clone(&self.weights.text.token_embedding),
             Shape::from_dims(&[t_cfg.vocab_size, t_cfg.hidden_size]),
-        );
+        )?;
         let token_ids =
-            pixel_values.const_u32_like(text_tokens.to_vec(), Shape::from_dims(&[text_len]));
+            pixel_values.const_u32_like(text_tokens.to_vec(), Shape::from_dims(&[text_len]))?;
         let text_embeds = gemma_embed_lt
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[1, text_len, t_cfg.hidden_size]))?;
@@ -173,16 +173,16 @@ impl PaligemmaModel {
         let bias_t = pixel_values.const_f32_like(
             Arc::clone(&self.weights.mm_proj_bias),
             Shape::from_dims(&[cfg.projection_dim]),
-        );
+        )?;
         let image_proj = projected.broadcast_add(&bias_t)?;
         let image_proj_n = l2_normalize_last(&image_proj, 1e-12)?;
 
         let gemma_embed_lt = pixel_values.const_f32_like(
             Arc::clone(&self.weights.text.token_embedding),
             Shape::from_dims(&[t_cfg.vocab_size, t_cfg.hidden_size]),
-        );
+        )?;
         let token_ids =
-            pixel_values.const_u32_like(text_tokens.to_vec(), Shape::from_dims(&[text_len]));
+            pixel_values.const_u32_like(text_tokens.to_vec(), Shape::from_dims(&[text_len]))?;
         let text_embeds = gemma_embed_lt
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[1, text_len, t_cfg.hidden_size]))?;

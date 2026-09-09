@@ -345,7 +345,8 @@ impl Mv4Model {
                 let logits = head
                     .linear_w
                     .apply_linear(&flat, cfg.head_out_channels, n)?;
-                let bias = image.const_f32_like(Arc::clone(&head.linear_b), Shape::from_dims(&[n]));
+                let bias =
+                    image.const_f32_like(Arc::clone(&head.linear_b), Shape::from_dims(&[n]))?;
                 logits.broadcast_add(&bias)
             }
         }
@@ -379,7 +380,7 @@ fn apply_conv_bn(x: &Tensor, c: &Conv2dBnWeights, anchor: &Tensor) -> Result<Ten
     let w = anchor.const_f32_like(
         Arc::clone(&c.w),
         Shape::from_dims(&[c.c_out, c.c_in / c.groups, c.k, c.k]),
-    );
+    )?;
     let conv = x.conv2d(&w, None, (c.stride, c.stride), (c.pad, c.pad), c.groups)?;
     apply_bn(&conv, &c.bn, c.c_out)
 }
@@ -424,7 +425,7 @@ fn apply_block(
             y = apply_conv_bn(&y, &uib.pw_proj, anchor)?;
             if let Some(g) = &uib.layer_scale_gamma {
                 let gt = anchor
-                    .const_f32_like(Arc::clone(g), Shape::from_dims(&[g.len()]))
+                    .const_f32_like(Arc::clone(g), Shape::from_dims(&[g.len()]))?
                     .reshape(Shape::from_dims(&[1, g.len(), 1, 1]))?;
                 y = y.broadcast_mul(&gt)?;
             }
@@ -519,7 +520,7 @@ fn apply_mqa(x: &Tensor, mqa: &MqaWeights, anchor: &Tensor) -> Result<Tensor> {
     let mut y = apply_conv_bn(&o, &mqa.output_proj, anchor)?;
     if let Some(g) = &mqa.layer_scale_gamma {
         let gt = anchor
-            .const_f32_like(Arc::clone(g), Shape::from_dims(&[g.len()]))
+            .const_f32_like(Arc::clone(g), Shape::from_dims(&[g.len()]))?
             .reshape(Shape::from_dims(&[1, g.len(), 1, 1]))?;
         y = y.broadcast_mul(&gt)?;
     }

@@ -334,8 +334,8 @@ impl Qwen3VlTextModel {
             &cfg.mrope_section,
         )?;
         let rope_shape = Shape::from_dims(&[seq, cfg.head_dim]);
-        let rope_cos = embeds.const_f32_like(cos_data, rope_shape.clone());
-        let rope_sin = embeds.const_f32_like(sin_data, rope_shape);
+        let rope_cos = embeds.const_f32_like(cos_data, rope_shape.clone())?;
+        let rope_sin = embeds.const_f32_like(sin_data, rope_shape)?;
 
         let mut h = embeds.clone();
         for (layer_idx, (layer, extras)) in weights
@@ -372,6 +372,9 @@ impl Qwen3VlTextModel {
             }
         }
         anchor.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]))
+        .expect(
+                "build_layer_mask: buffer is vec![_; seq*seq] and the shape's elem_count is seq*seq -- \n             both derived from `seq` in this function; the loop writes in place",
+        )
     }
 
     fn apply_layer(

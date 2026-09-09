@@ -233,7 +233,7 @@ impl EfficientVitModel {
                 let flat = bn_out.reshape(Shape::from_dims(&[1, c]))?;
                 let n_out = lin_b.len();
                 let logits = lin_w.apply_linear(&flat, c, n_out)?;
-                let bias = image.const_f32_like(Arc::clone(lin_b), Shape::from_dims(&[n_out]));
+                let bias = image.const_f32_like(Arc::clone(lin_b), Shape::from_dims(&[n_out]))?;
                 logits.broadcast_add(&bias)
             }
         }
@@ -281,16 +281,16 @@ fn apply_conv_bn(x: &Tensor, c: &ConvBnWeights, anchor: &Tensor) -> Result<Tenso
     let w = anchor.const_f32_like(
         Arc::clone(&c.conv_w),
         Shape::from_dims(&[c.c_out, c.c_in / c.groups, c.k, c.k]),
-    );
+    )?;
     let conv = x.conv2d(&w, None, (c.stride, c.stride), (c.pad, c.pad), c.groups)?;
     apply_bn(&conv, &c.bn, c.c_out)
 }
 
 fn apply_conv1x1_bias(x: &Tensor, c: &Conv1x1BiasWeights, anchor: &Tensor) -> Result<Tensor> {
-    let w = anchor.const_f32_like(Arc::clone(&c.w), Shape::from_dims(&[c.c_out, c.c_in, 1, 1]));
+    let w = anchor.const_f32_like(Arc::clone(&c.w), Shape::from_dims(&[c.c_out, c.c_in, 1, 1]))?;
     let conv = x.conv2d(&w, None, (1, 1), (0, 0), 1)?;
     let bias = anchor
-        .const_f32_like(Arc::clone(&c.b), Shape::from_dims(&[c.c_out]))
+        .const_f32_like(Arc::clone(&c.b), Shape::from_dims(&[c.c_out]))?
         .reshape(Shape::from_dims(&[1, c.c_out, 1, 1]))?;
     conv.broadcast_add(&bias)
 }
@@ -482,7 +482,7 @@ fn pad_dim_with_zeros(x: &Tensor, dim: usize, right: usize) -> Result<Tensor> {
     let zeros = x.const_f32_like(
         Arc::<[f32]>::from(vec![0.0_f32; n]),
         Shape::from_dims(&shape),
-    );
+    )?;
     x.concat(&zeros, dim)
 }
 

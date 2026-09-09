@@ -478,7 +478,7 @@ impl Llama3Model {
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &fuel_core::Device::cpu(),
         )?;
-        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        let token_ids = embed.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]))?;
         let h = embed
             .index_select(0, &token_ids)?
             .reshape(Shape::from_dims(&[1, seq, cfg.dim]))?;
@@ -517,8 +517,8 @@ impl Llama3Model {
             cfg.head_dim,
         )?;
         let rope_shape = Shape::from_dims(&[seq, cfg.head_dim]);
-        let rope_cos = embeds.const_f32_like(Arc::from(cos_data), rope_shape.clone());
-        let rope_sin = embeds.const_f32_like(Arc::from(sin_data), rope_shape);
+        let rope_cos = embeds.const_f32_like(Arc::from(cos_data), rope_shape.clone())?;
+        let rope_sin = embeds.const_f32_like(Arc::from(sin_data), rope_shape)?;
 
         let mask = Tensor::additive_causal_mask_like(embeds, seq)
             .reshape(Shape::from_dims(&[1, 1, seq, seq]))?;

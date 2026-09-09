@@ -278,7 +278,7 @@ impl Rwkv6Model {
         let mix_x = x.const_f32_like(
             Arc::clone(&layer.attn_time_mix_x),
             Shape::from_dims(&[1, 1, h]),
-        );
+        )?;
         let xxx = x.add(&sx.broadcast_mul(&mix_x)?)?;
 
         // Per-token mix correction: tanh(xxx @ w1) of shape (b, t, 5 * n_heads),
@@ -286,13 +286,13 @@ impl Rwkv6Model {
         let w1 = x.const_f32_like(
             Arc::clone(&layer.attn_time_mix_w1),
             Shape::from_dims(&[h, 5 * n_heads]),
-        );
+        )?;
         let xxx_proj = xxx.matmul(&w1)?.tanh(); // (b, t, 5 * n_heads)
         // Reshape w2 to (5, n_heads, h) for stream slicing.
         let w2 = x.const_f32_like(
             Arc::clone(&layer.attn_time_mix_w2),
             Shape::from_dims(&[5, n_heads, h]),
-        );
+        )?;
 
         // For each stream s ∈ [0, 5):
         //   stream_in  = xxx_proj.slice(2, s*n_heads, n_heads) → (b, t, n_heads)
@@ -313,7 +313,8 @@ impl Rwkv6Model {
 
         // x[stream] = xs + sx * (time_mix_<stream> + m[stream]).
         let make_input = |static_mix: &Arc<[f32]>, m: &Tensor| -> Result<Tensor> {
-            let mix_static = x.const_f32_like(Arc::clone(static_mix), Shape::from_dims(&[1, 1, h]));
+            let mix_static =
+                x.const_f32_like(Arc::clone(static_mix), Shape::from_dims(&[1, 1, h]))?;
             let mix_static_bc = mix_static.broadcast_to(Shape::from_dims(&[batch, seq, h]))?;
             let mix_total = mix_static_bc.add(m)?;
             x.add(&sx.mul(&mix_total)?)
@@ -328,15 +329,15 @@ impl Rwkv6Model {
         let dw1 = x.const_f32_like(
             Arc::clone(&layer.attn_time_decay_w1),
             Shape::from_dims(&[h, 2 * n_heads]),
-        );
+        )?;
         let dw2 = x.const_f32_like(
             Arc::clone(&layer.attn_time_decay_w2),
             Shape::from_dims(&[2 * n_heads, h]),
-        );
+        )?;
         let td_base = x.const_f32_like(
             Arc::clone(&layer.attn_time_decay),
             Shape::from_dims(&[1, 1, h]),
-        );
+        )?;
         let td_correction = xw.matmul(&dw1)?.tanh().matmul(&dw2)?;
         let td_base_bc = td_base.broadcast_to(Shape::from_dims(&[batch, seq, h]))?;
         let w_per_token = td_base_bc.add(&td_correction)?;
@@ -366,13 +367,13 @@ impl Rwkv6Model {
         let faaaa = x.const_f32_like(
             Arc::clone(&layer.attn_time_faaaa),
             Shape::from_dims(&[n_heads, head_size]),
-        );
+        )?;
         let faaaa = faaaa.reshape(Shape::from_dims(&[n_heads, head_size, 1]))?;
 
         let state_init = x.const_f32_like(
             Arc::from(vec![0.0_f32; batch * n_heads * head_size * head_size]),
             Shape::from_dims(&[batch, n_heads, head_size, head_size]),
-        );
+        )?;
         let mut state = state_init;
         let mut outs: Vec<Tensor> = Vec::with_capacity(seq);
         for t in 0..seq {
@@ -435,11 +436,11 @@ impl Rwkv6Model {
         let mix_key = x.const_f32_like(
             Arc::clone(&layer.ffn_time_mix_key),
             Shape::from_dims(&[1, 1, h]),
-        );
+        )?;
         let mix_rec = x.const_f32_like(
             Arc::clone(&layer.ffn_time_mix_receptance),
             Shape::from_dims(&[1, 1, h]),
-        );
+        )?;
         let sx = shifted.sub(x)?;
         let k_in = x.add(&sx.broadcast_mul(&mix_key)?)?;
         let r_in = x.add(&sx.broadcast_mul(&mix_rec)?)?;
@@ -455,7 +456,10 @@ fn shift_seq(x: &Tensor, batch: usize, seq: usize, h: usize) -> Tensor {
     let zero = x.const_f32_like(
         Arc::from(vec![0.0_f32; batch * h]),
         Shape::from_dims(&[batch, 1, h]),
-    );
+    )
+        .expect(
+                "shift_seq: buffer is vec![_; batch * h] and the shape is [batch, 1, h] -- \n             the length IS the product of the shape's own dims",
+        );
     if seq == 1 {
         return zero;
     }
@@ -489,11 +493,11 @@ fn group_norm(
     let gain_t = x.const_f32_like(
         Arc::clone(gain),
         Shape::from_dims(&[1, 1, n_heads, head_size]),
-    );
+    )?;
     let bias_t = x.const_f32_like(
         Arc::clone(bias),
         Shape::from_dims(&[1, 1, n_heads, head_size]),
-    );
+    )?;
     let gain_bc = gain_t.broadcast_to(Shape::from_dims(&[batch, seq, n_heads, head_size]))?;
     let bias_bc = bias_t.broadcast_to(Shape::from_dims(&[batch, seq, n_heads, head_size]))?;
     let scaled = normed.mul(&gain_bc)?.add(&bias_bc)?;

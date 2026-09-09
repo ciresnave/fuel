@@ -1197,11 +1197,11 @@ mod tests {
         let cos_id = qk.const_f32_like(
             Arc::from(vec![1.0_f32; rope_dim]),
             Shape::from_dims(&[1, rope_dim]),
-        );
+        )?;
         let sin_id = qk.const_f32_like(
             Arc::from(vec![0.0_f32; rope_dim]),
             Shape::from_dims(&[1, rope_dim]),
-        );
+        )?;
         let id_out = apply_interleaved_partial_rope(&qk, &cos_id, &sin_id, head_dim, rope_dim)
             .unwrap()
             .realize_f32();
@@ -1218,11 +1218,11 @@ mod tests {
         let cos_rot = qk.const_f32_like(
             Arc::from(vec![0.0_f32; rope_dim]),
             Shape::from_dims(&[1, rope_dim]),
-        );
+        )?;
         let sin_rot = qk.const_f32_like(
             Arc::from(vec![1.0_f32; rope_dim]),
             Shape::from_dims(&[1, rope_dim]),
-        );
+        )?;
         let rot_out = apply_interleaved_partial_rope(&qk, &cos_rot, &sin_rot, head_dim, rope_dim)
             .unwrap()
             .realize_f32();

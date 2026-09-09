@@ -293,7 +293,7 @@ impl LlavaModel {
         let bias_t = pixel_values.const_f32_like(
             Arc::clone(&self.weights.mm_proj_bias),
             Shape::from_dims(&[cfg.projection_dim]),
-        );
+        )?;
         let image_proj = projected.broadcast_add(&bias_t)?;
 
         // ---- Embed text tokens via LLaMA's token embedding -------------
@@ -301,9 +301,9 @@ impl LlavaModel {
         let llama_embed_lt = pixel_values.const_f32_like(
             Arc::clone(&self.weights.text.token_embedding),
             Shape::from_dims(&[t_cfg.vocab_size, t_cfg.dim]),
-        );
+        )?;
         let token_ids =
-            pixel_values.const_u32_like(text_tokens.to_vec(), Shape::from_dims(&[text_len]));
+            pixel_values.const_u32_like(text_tokens.to_vec(), Shape::from_dims(&[text_len]))?;
         let text_embeds = llama_embed_lt
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[1, text_len, t_cfg.dim]))?;
@@ -341,7 +341,7 @@ impl LlavaModel {
                 v_cfg.patch_size,
                 v_cfg.patch_size,
             ]),
-        );
+        )?;
         let conv_out = pixel_values.conv2d(
             &conv_w,
             None,
@@ -358,7 +358,7 @@ impl LlavaModel {
         let cls = pixel_values.const_f32_like(
             Arc::clone(&weights.class_embedding),
             Shape::from_dims(&[1, 1, v_cfg.embed_dim]),
-        );
+        )?;
         let cls_bc = cls.broadcast_to(Shape::from_dims(&[batch, 1, v_cfg.embed_dim]))?;
         let with_cls = cls_bc.concat(&patches, 1_usize)?;
 
@@ -366,7 +366,7 @@ impl LlavaModel {
         let pos = pixel_values.const_f32_like(
             Arc::clone(&weights.position_embedding),
             Shape::from_dims(&[np + 1, v_cfg.embed_dim]),
-        );
+        )?;
         let pos_bc = pos
             .reshape(Shape::from_dims(&[1, np + 1, v_cfg.embed_dim]))?
             .broadcast_to(Shape::from_dims(&[batch, np + 1, v_cfg.embed_dim]))?;

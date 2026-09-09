@@ -383,7 +383,7 @@ fn rvq_decode_stacked(
         let codebook = codes.const_f32_like(
             Arc::clone(&q.codebook),
             Shape::from_dims(&[cfg.codebook_size, cfg.codebook_dim]),
-        );
+        )?;
         // (T, codebook_dim) → (1, codebook_dim, T)
         let z_p = codebook
             .index_select(0_usize, &ids)?
@@ -430,7 +430,7 @@ fn rvq_decode_per_codebook(
         let codebook = c.const_f32_like(
             Arc::clone(&q.codebook),
             Shape::from_dims(&[cfg.codebook_size, cfg.codebook_dim]),
-        );
+        )?;
         // (B*T, codebook_dim) → (B, T, codebook_dim) → (B, codebook_dim, T)
         let z_p = codebook
             .index_select(0_usize, &ids)?
@@ -485,7 +485,7 @@ fn rvq_encode(
         let codebook = latent.const_f32_like(
             Arc::clone(&q.codebook),
             Shape::from_dims(&[cfg.codebook_size, cfg.codebook_dim]),
-        );
+        )?;
         // c2 = sum(codebook^2, dim=-1) / 2 — same trick the eager
         // CPU op uses to drop a redundant ||x||^2.
         let cb_sq = codebook.sqr();
@@ -633,7 +633,7 @@ fn apply_encodec_conv1d(
     let w = anchor.const_f32_like(
         Arc::<[f32]>::from(w_data),
         Shape::from_dims(&[c.c_out, c.c_in, k_used]),
-    );
+    )?;
     let bias =
         c.b.as_ref()
             .map(|b| anchor.const_f32_like(Arc::clone(b), Shape::from_dims(&[c.c_out])));
@@ -646,11 +646,11 @@ fn apply_encodec_conv_transpose1d(
     cfg: &EncodecConfig,
     anchor: &Tensor,
 ) -> Result<Tensor> {
-    let w = anchor.const_f32_like(Arc::clone(&c.w), Shape::from_dims(&[c.c_in, c.c_out, c.k]));
+    let w = anchor.const_f32_like(Arc::clone(&c.w), Shape::from_dims(&[c.c_in, c.c_out, c.k]))?;
     let mut out = x.conv_transpose1d(&w, c.stride, 0, 0, 1, 1)?;
     if let Some(b) = &c.b {
         let bias = anchor
-            .const_f32_like(Arc::clone(b), Shape::from_dims(&[c.c_out]))
+            .const_f32_like(Arc::clone(b), Shape::from_dims(&[c.c_out]))?
             .reshape(Shape::from_dims(&[1, c.c_out, 1]))?;
         out = out.broadcast_add(&bias)?;
     }
@@ -705,7 +705,7 @@ pub fn pad1d(
         anchor_t.const_f32_like(
             Arc::<[f32]>::from(vec![0.0_f32; b * c * n]),
             Shape::from_dims(&[b, c, n]),
-        )
+        )?
     };
     let (left_pad, right_pad) = match mode {
         PadMode::Constant => {
@@ -1456,7 +1456,7 @@ mod tests {
             }
         }
         let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &Device::cpu());
-        let codes = anchor.const_u32_like(data, Shape::from_dims(&[1, cfg.num_codebooks, time]));
+        let codes = anchor.const_u32_like(data, Shape::from_dims(&[1, cfg.num_codebooks, time]))?;
         let audio = model.decode_codes(&codes).unwrap();
         let shape = audio.shape();
         let dims = shape.dims();
@@ -1483,11 +1483,11 @@ mod tests {
         let codes_a = anchor.const_u32_like(
             vec![0_u32; cfg.num_codebooks * time],
             Shape::from_dims(&[1, cfg.num_codebooks, time]),
-        );
+        )?;
         let codes_b = anchor.const_u32_like(
             vec![3_u32; cfg.num_codebooks * time],
             Shape::from_dims(&[1, cfg.num_codebooks, time]),
-        );
+        )?;
         let a = model.decode_codes(&codes_a).unwrap().realize_f32();
         let b = model.decode_codes(&codes_b).unwrap().realize_f32();
         let mut max_diff = 0.0_f32;
@@ -1611,7 +1611,7 @@ mod tests {
                         .map(|t| ((i + t) % cfg.codebook_size) as u32)
                         .collect::<Vec<u32>>(),
                     Shape::from_dims(&[1, t_latent]),
-                )
+                )?
             })
             .collect();
         let audio = model.decode(&codes).unwrap();

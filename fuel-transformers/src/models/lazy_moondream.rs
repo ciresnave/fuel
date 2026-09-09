@@ -189,9 +189,9 @@ impl MoondreamModel {
         let mf_embed_lt = pixel_values.const_f32_like(
             Arc::clone(&self.weights.text.token_embedding),
             Shape::from_dims(&[cfg.text.vocab_size, cfg.text.hidden_size]),
-        );
+        )?;
         let token_ids =
-            pixel_values.const_u32_like(text_tokens.to_vec(), Shape::from_dims(&[text_len]));
+            pixel_values.const_u32_like(text_tokens.to_vec(), Shape::from_dims(&[text_len]))?;
         let text_embeds = mf_embed_lt
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[1, text_len, cfg.text.hidden_size]))?;
@@ -250,14 +250,14 @@ impl MoondreamModel {
         let patch_bias_t = pixel_values.const_f32_like(
             Arc::clone(&weights.patch_embed_bias),
             Shape::from_dims(&[cfg.embed_dim]),
-        );
+        )?;
         let patch_embeds = patch_proj.broadcast_add(&patch_bias_t)?;
 
         // ---- Add position embedding -------------------------------------
         let pos = pixel_values.const_f32_like(
             Arc::clone(&weights.pos_embed),
             Shape::from_dims(&[cfg.num_patches, cfg.embed_dim]),
-        );
+        )?;
         let pos_bc = pos
             .reshape(Shape::from_dims(&[1, cfg.num_patches, cfg.embed_dim]))?
             .broadcast_to(Shape::from_dims(&[batch, cfg.num_patches, cfg.embed_dim]))?;
@@ -295,7 +295,7 @@ impl MoondreamModel {
 
         // Fused Wqkv: hidden → 3 * hidden.
         let qkv_lin = block.qkv.apply_linear(&x_norm, h, 3 * h)?;
-        let qkv_b_t = x.const_f32_like(Arc::clone(&block.qkv_bias), Shape::from_dims(&[3 * h]));
+        let qkv_b_t = x.const_f32_like(Arc::clone(&block.qkv_bias), Shape::from_dims(&[3 * h]))?;
         let qkv = qkv_lin.broadcast_add(&qkv_b_t)?;
         let q = qkv.slice(2_usize, 0, h)?;
         let k = qkv.slice(2_usize, h, h)?;
@@ -313,7 +313,7 @@ impl MoondreamModel {
         let ctx = probs.matmul(&v)?;
         let merged = ctx.merge_heads()?;
         let proj = block.proj.apply_linear(&merged, h, h)?;
-        let proj_b_t = x.const_f32_like(Arc::clone(&block.proj_bias), Shape::from_dims(&[h]));
+        let proj_b_t = x.const_f32_like(Arc::clone(&block.proj_bias), Shape::from_dims(&[h]))?;
         let attn_out = proj.broadcast_add(&proj_b_t)?;
         let h1 = x.add(&attn_out)?;
 
@@ -325,11 +325,11 @@ impl MoondreamModel {
         )?;
         let mlp_h = cfg.mlp_hidden;
         let fc1 = block.fc1.apply_linear(&h1_norm, h, mlp_h)?;
-        let fc1_b_t = x.const_f32_like(Arc::clone(&block.fc1_bias), Shape::from_dims(&[mlp_h]));
+        let fc1_b_t = x.const_f32_like(Arc::clone(&block.fc1_bias), Shape::from_dims(&[mlp_h]))?;
         let fc1 = fc1.broadcast_add(&fc1_b_t)?;
         let act = activate(&fc1, cfg.activation);
         let fc2 = block.fc2.apply_linear(&act, mlp_h, h)?;
-        let fc2_b_t = x.const_f32_like(Arc::clone(&block.fc2_bias), Shape::from_dims(&[h]));
+        let fc2_b_t = x.const_f32_like(Arc::clone(&block.fc2_bias), Shape::from_dims(&[h]))?;
         let mlp_out = fc2.broadcast_add(&fc2_b_t)?;
         h1.add(&mlp_out)
     }
@@ -343,7 +343,7 @@ impl MoondreamModel {
         let fc1_b_t = vision_out.const_f32_like(
             Arc::clone(&weights.fc1_bias),
             Shape::from_dims(&[cfg.hidden_dim]),
-        );
+        )?;
         let fc1 = fc1.broadcast_add(&fc1_b_t)?;
         let act = activate(&fc1, cfg.activation);
         let fc2 = weights
@@ -352,7 +352,7 @@ impl MoondreamModel {
         let fc2_b_t = vision_out.const_f32_like(
             Arc::clone(&weights.fc2_bias),
             Shape::from_dims(&[cfg.out_dim]),
-        );
+        )?;
         fc2.broadcast_add(&fc2_b_t)
     }
 }

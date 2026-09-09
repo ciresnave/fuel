@@ -210,9 +210,9 @@ impl BigCodeModel {
         let wpe = embeds.const_f32_like(
             weights.position_embedding.clone(),
             Shape::from_dims(&[cfg.max_position_embeddings, cfg.hidden_size]),
-        );
+        )?;
         let pos_ids: Vec<u32> = (0..seq).map(|i| (start_pos + i) as u32).collect();
-        let pos_ids_t = embeds.const_u32_like(pos_ids, Shape::from_dims(&[seq]));
+        let pos_ids_t = embeds.const_u32_like(pos_ids, Shape::from_dims(&[seq]))?;
         let pos_emb = wpe
             .index_select(0_usize, &pos_ids_t)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.hidden_size]))?;

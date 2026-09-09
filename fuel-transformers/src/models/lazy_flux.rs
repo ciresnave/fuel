@@ -323,7 +323,7 @@ fn timestep_embedding(t: &Tensor, dim: usize) -> Result<Tensor> {
         .map(|i| (-log_mp * (i as f64) / (half as f64)).exp() as f32)
         .collect();
     let freqs_t = t
-        .const_f32_like(Arc::from(freqs), Shape::from_dims(&[half]))
+        .const_f32_like(Arc::from(freqs), Shape::from_dims(&[half]))?
         .reshape(Shape::from_dims(&[1, half]))?
         .broadcast_to(Shape::from_dims(&[batch, half]))?;
     let t_col = t_scaled
@@ -356,7 +356,7 @@ fn rope_axis(pos: &Tensor, dim: usize, theta: usize) -> Result<Tensor> {
     }
     let (b, n) = (pos_dims[0], pos_dims[1]);
     let inv_freq_t = pos
-        .const_f32_like(Arc::from(inv_freq), Shape::from_dims(&[half]))
+        .const_f32_like(Arc::from(inv_freq), Shape::from_dims(&[half]))?
         .reshape(Shape::from_dims(&[1, 1, half]))?
         .broadcast_to(Shape::from_dims(&[b, n, half]))?;
     let pos_bnh = pos
@@ -1133,16 +1133,16 @@ fn vae_spatial_attention(x: &Tensor, aw: &VaeAttnWeights, cfg: &FluxVaeConfig) -
 fn downsample_conv(x: &Tensor, w: &Arc<[f32]>, b: &Arc<[f32]>, c: usize) -> Result<Tensor> {
     let x = x.pad_with_zeros(3_usize, 0, 1)?;
     let x = x.pad_with_zeros(2_usize, 0, 1)?;
-    let w_t = x.const_f32_like(Arc::clone(w), Shape::from_dims(&[c, c, 3, 3]));
-    let b_t = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[c]));
+    let w_t = x.const_f32_like(Arc::clone(w), Shape::from_dims(&[c, c, 3, 3]))?;
+    let b_t = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[c]))?;
     x.conv2d(&w_t, Some(&b_t), (2, 2), (0, 0), 1)
 }
 
 /// Upsample: 2x nearest then 3x3 stride-1 padding-1 conv.
 fn upsample_conv(x: &Tensor, w: &Arc<[f32]>, b: &Arc<[f32]>, c: usize) -> Result<Tensor> {
     let x = x.upsample_nearest2d(2)?;
-    let w_t = x.const_f32_like(Arc::clone(w), Shape::from_dims(&[c, c, 3, 3]));
-    let b_t = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[c]));
+    let w_t = x.const_f32_like(Arc::clone(w), Shape::from_dims(&[c, c, 3, 3]))?;
+    let b_t = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[c]))?;
     x.conv2d(&w_t, Some(&b_t), (1, 1), (1, 1), 1)
 }
 
@@ -1153,8 +1153,8 @@ fn conv2d_k3_s1_p1(
     cin: usize,
     cout: usize,
 ) -> Result<Tensor> {
-    let w_t = x.const_f32_like(Arc::clone(w), Shape::from_dims(&[cout, cin, 3, 3]));
-    let b_t = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[cout]));
+    let w_t = x.const_f32_like(Arc::clone(w), Shape::from_dims(&[cout, cin, 3, 3]))?;
+    let b_t = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[cout]))?;
     x.conv2d(&w_t, Some(&b_t), (1, 1), (1, 1), 1)
 }
 
@@ -1165,8 +1165,8 @@ fn conv2d_k1_s1_p0(
     cin: usize,
     cout: usize,
 ) -> Result<Tensor> {
-    let w_t = x.const_f32_like(Arc::clone(w), Shape::from_dims(&[cout, cin, 1, 1]));
-    let b_t = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[cout]));
+    let w_t = x.const_f32_like(Arc::clone(w), Shape::from_dims(&[cout, cin, 1, 1]))?;
+    let b_t = x.const_f32_like(Arc::clone(b), Shape::from_dims(&[cout]))?;
     x.conv2d(&w_t, Some(&b_t), (1, 1), (0, 0), 1)
 }
 
@@ -1205,11 +1205,11 @@ fn group_norm(
     let normed = centered.div(&std_bc)?;
     let normed_chw = normed.reshape(Shape::from_dims(&[b, c, h, w]))?;
     let g = x
-        .const_f32_like(Arc::clone(gamma), Shape::from_dims(&[c]))
+        .const_f32_like(Arc::clone(gamma), Shape::from_dims(&[c]))?
         .reshape(Shape::from_dims(&[1, c, 1, 1]))?
         .broadcast_to(Shape::from_dims(&[b, c, h, w]))?;
     let bb = x
-        .const_f32_like(Arc::clone(beta), Shape::from_dims(&[c]))
+        .const_f32_like(Arc::clone(beta), Shape::from_dims(&[c]))?
         .reshape(Shape::from_dims(&[1, c, 1, 1]))?
         .broadcast_to(Shape::from_dims(&[b, c, h, w]))?;
     normed_chw.mul(&g)?.add(&bb)
@@ -1313,7 +1313,7 @@ pub fn generate(
         let t_curr = window[0];
         let t_prev = window[1];
         let t_vec_data: Vec<f32> = vec![t_curr as f32; batch];
-        let t_vec = x.const_f32_like(Arc::from(t_vec_data), Shape::from_dims(&[batch]));
+        let t_vec = x.const_f32_like(Arc::from(t_vec_data), Shape::from_dims(&[batch]))?;
         let pred = model.forward(&x, img_ids, text_t5, txt_ids, &t_vec, text_clip, guidance)?;
         x = scheduler.step(&x, &pred, t_curr, t_prev)?;
     }
@@ -1749,21 +1749,21 @@ mod tests {
         let txt = img.const_f32_like(
             Arc::from(txt_data),
             Shape::from_dims(&[1, seq_text, cfg.context_in_dim]),
-        );
+        )?;
         let n_axes = cfg.axes_dim.len();
         let img_ids_data: Vec<f32> = (0..(seq_image * n_axes)).map(|i| (i % 4) as f32).collect();
         let img_ids = img.const_f32_like(
             Arc::from(img_ids_data),
             Shape::from_dims(&[1, seq_image, n_axes]),
-        );
+        )?;
         let txt_ids_data: Vec<f32> = vec![0.0_f32; seq_text * n_axes];
         let txt_ids = img.const_f32_like(
             Arc::from(txt_ids_data),
             Shape::from_dims(&[1, seq_text, n_axes]),
-        );
+        )?;
         let y_data: Vec<f32> = (0..cfg.vec_in_dim).map(|_| rng()).collect();
-        let y = img.const_f32_like(Arc::from(y_data), Shape::from_dims(&[1, cfg.vec_in_dim]));
-        let t = img.const_f32_like(Arc::from(vec![0.5_f32]), Shape::from_dims(&[1]));
+        let y = img.const_f32_like(Arc::from(y_data), Shape::from_dims(&[1, cfg.vec_in_dim]))?;
+        let t = img.const_f32_like(Arc::from(vec![0.5_f32]), Shape::from_dims(&[1]))?;
         (img, img_ids, txt, txt_ids, t, y)
     }
 
@@ -2020,7 +2020,7 @@ mod tests {
         let pred = img.const_f32_like(
             Arc::from(vec![0.5_f32, 0.5, 0.5, 0.5]),
             Shape::from_dims(&[1, 2, 2]),
-        );
+        )?;
         let out = sched.step(&img, &pred, ts[0], ts[1]).unwrap();
         let out_v = out.realize_f32();
         // dt = ts[1] - ts[0] = 0.75 - 1.0 = -0.25

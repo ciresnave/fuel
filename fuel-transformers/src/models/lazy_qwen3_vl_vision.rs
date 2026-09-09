@@ -236,12 +236,12 @@ impl Qwen3VlVisionModel {
         let bias = pixels.const_f32_like(
             Arc::clone(&weights.patch_embed_bias),
             Shape::from_dims(&[cfg.hidden_size]),
-        );
+        )?;
         let mut hidden = post_conv.broadcast_add(&bias)?;
 
         // ---- Block-diagonal cu_seqlens mask, materialized once -----
         let mask_data = build_cu_seqlens_mask(cu_seqlens, n)?;
-        let mask = pixels.const_f32_like(mask_data, Shape::from_dims(&[1, 1, n, n]));
+        let mask = pixels.const_f32_like(mask_data, Shape::from_dims(&[1, 1, n, n]))?;
 
         // ---- Transformer blocks + DeepStack capture ----------------
         let mut deepstack_outputs: Vec<Tensor> = Vec::new();
@@ -258,7 +258,7 @@ impl Qwen3VlVisionModel {
                     let bias_t = hidden.const_f32_like(
                         Arc::clone(&projector.bias),
                         Shape::from_dims(&[cfg.out_hidden_size]),
-                    );
+                    )?;
                     let with_bias = projected.broadcast_add(&bias_t)?;
                     deepstack_outputs.push(with_bias);
                 }

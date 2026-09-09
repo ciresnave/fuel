@@ -227,7 +227,7 @@ impl Gemma4AudioModel {
                 let pick = (i * stride).min(t_after_blocks - 1);
                 idx_data.push(pick as u32);
             }
-            let idx = h.const_u32_like(idx_data, Shape::from_dims(&[reduced_len]));
+            let idx = h.const_u32_like(idx_data, Shape::from_dims(&[reduced_len]))?;
             h.index_select(1_usize, &idx)?
         } else {
             h
@@ -412,7 +412,7 @@ impl Gemma4AudioModel {
         let rel_table = x.const_f32_like(
             Arc::clone(&layer.rel_pos_bias),
             Shape::from_dims(&[span, n_heads]),
-        );
+        )?;
         let picked = rel_table.index_select(0_usize, rel_pos_idx)?; // (T*T, H)
         let bias = picked
             .reshape(Shape::from_dims(&[t_seq, t_seq, n_heads]))?
@@ -500,7 +500,7 @@ impl Gemma4AudioModel {
                 data.push(bucket);
             }
         }
-        Ok(anchor.const_u32_like(data, Shape::from_dims(&[t_seq * t_seq])))
+        anchor.const_u32_like(data, Shape::from_dims(&[t_seq * t_seq]))?
     }
 }
 

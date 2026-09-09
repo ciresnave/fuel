@@ -377,11 +377,11 @@ mod tests {
         let img_feats = anchor.const_f32_like(
             Arc::from(vec![0.1_f32, 0.2, 0.3, 0.4]),
             Shape::from_dims(&[1, 4]),
-        );
+        )?;
         let txt_feats = anchor.const_f32_like(
             Arc::from(vec![0.5_f32, -0.2, 0.1, 0.3]),
             Shape::from_dims(&[1, 4]),
-        );
+        )?;
         let (lpt, lpi) = model.contrastive_logits(&img_feats, &txt_feats).unwrap();
         assert_eq!(lpt.shape().dims(), &[1, 1]);
         assert_eq!(lpi.shape().dims(), &[1, 1]);

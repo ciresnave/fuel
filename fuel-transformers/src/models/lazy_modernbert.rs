@@ -148,7 +148,7 @@ impl ModernBertModel {
             Shape::from_dims(&[cfg.vocab_size, h]),
             &Device::cpu(),
         )?;
-        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]))?;
         let embeds = word_emb_t
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, h]))?;
@@ -180,7 +180,7 @@ impl ModernBertModel {
             .const_f32_like(
                 Arc::<[f32]>::from(local_mask),
                 Shape::from_dims(&[seq, seq]),
-            )
+            )?
             .reshape(Shape::from_dims(&[1, 1, seq, seq]))?;
 
         // ---- Encoder blocks ------------------------------------------------
@@ -268,7 +268,7 @@ impl ModernBertModel {
             Shape::from_dims(&[cfg.vocab_size, h]),
             &Device::cpu(),
         )?;
-        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]))?;
         let embeds = word_emb_t
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, h]))?;
@@ -295,7 +295,7 @@ impl ModernBertModel {
             .const_f32_like(
                 Arc::<[f32]>::from(local_mask),
                 Shape::from_dims(&[seq, seq]),
-            )
+            )?
             .reshape(Shape::from_dims(&[1, 1, seq, seq]))?;
 
         let mut out = Vec::with_capacity(layer_ids.len());

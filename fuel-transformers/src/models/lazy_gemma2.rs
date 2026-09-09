@@ -250,7 +250,7 @@ impl Gemma2Model {
         let lm_head_w = h_norm.const_f32_like(
             Arc::clone(&self.weights.token_embedding),
             Shape::from_dims(&[cfg.vocab_size, cfg.hidden_size]),
-        );
+        )?;
         let logits = h_norm.matmul(&lm_head_w.transpose()?)?;
         Ok(logits.softcap_optional(cfg.final_logit_softcapping))
     }
@@ -349,6 +349,9 @@ impl Gemma2Model {
             }
         }
         anchor.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]))
+        .expect(
+                "build_mask: buffer is vec![_; seq*seq] and the shape's elem_count is seq*seq -- \n             both derived from `seq` in this function; the loop writes in place",
+        )
     }
 
     fn apply_layer(

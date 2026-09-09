@@ -213,11 +213,11 @@ impl HieraModel {
         let w = image.const_f32_like(
             Arc::clone(&self.weights.embed.conv_w),
             Shape::from_dims(&[c, 3, 7, 7]),
-        );
+        )?;
         let bias = image.const_f32_like(
             Arc::clone(&self.weights.embed.conv_b),
             Shape::from_dims(&[c]),
-        );
+        )?;
         let x = image.conv2d(&w, Some(&bias), (4, 4), (3, 3), 1)?;
         // (B, C, 56, 56) → (B, C, 3136) → (B, 3136, C)
         let x = x
@@ -227,7 +227,7 @@ impl HieraModel {
         let pos = image.const_f32_like(
             Arc::clone(&self.weights.embed.pos_embed),
             Shape::from_dims(&[1, NUM_TOKENS, c]),
-        );
+        )?;
         let pos_b = pos.broadcast_to(Shape::from_dims(&[b, NUM_TOKENS, c]))?;
         let x = x.add(&pos_b)?;
 

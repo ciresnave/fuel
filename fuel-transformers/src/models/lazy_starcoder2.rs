@@ -370,6 +370,9 @@ impl StarCoder2Model {
             }
         }
         anchor.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]))
+        .expect(
+                "build_mask: buffer is vec![_; seq*seq] and the shape's elem_count is seq*seq -- \n             both derived from `seq` in this function; the loop writes in place",
+        )
     }
 }
 

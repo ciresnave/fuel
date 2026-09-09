@@ -323,7 +323,7 @@ impl StableLmModel {
                 mask_data[i * seq + j] = f32::NEG_INFINITY;
             }
         }
-        let mask = x.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]));
+        let mask = x.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]))?;
         let scores_masked = scores_scaled.broadcast_add(&mask)?;
         let attn = scores_masked.softmax_last_dim()?;
         let attn_v = attn.matmul(&v_full)?;

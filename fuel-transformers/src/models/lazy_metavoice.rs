@@ -220,7 +220,7 @@ impl MetaVoiceModel {
             .bt());
         }
         let data: Arc<[f32]> = Arc::from(speaker_embed.realize_f32());
-        Ok(anchor.const_f32_like(data, Shape::from_dims(&[1, 1, cfg.speaker_emb_dim])))
+        anchor.const_f32_like(data, Shape::from_dims(&[1, 1, cfg.speaker_emb_dim]))?
     }
 
     fn build_causal_mask(&self, anchor: &Tensor, seq: usize) -> Tensor {
@@ -233,6 +233,9 @@ impl MetaVoiceModel {
             }
         }
         anchor.const_f32_like(data, Shape::from_dims(&[1, 1, seq, seq]))
+        .expect(
+                "build_causal_mask: buffer is vec![_; seq*seq] and the shape's elem_count is seq*seq -- \n             both derived from `seq` in this function; the loop writes in place",
+        )
     }
 
     fn apply_layer(

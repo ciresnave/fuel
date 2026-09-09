@@ -320,6 +320,9 @@ impl Qwen3MoeModel {
             }
         }
         anchor.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]))
+        .expect(
+                "build_layer_mask: buffer is vec![_; seq*seq] and the shape's elem_count is seq*seq -- \n             both derived from `seq` in this function; the loop writes in place",
+        )
     }
 
     fn apply_layer(
@@ -413,7 +416,7 @@ impl Qwen3MoeModel {
             Qwen3MoeFfn::Moe { router_w, experts } => {
                 let inter = cfg.moe_intermediate_size;
                 let router_w_t =
-                    x.const_f32_like(router_w.clone(), Shape::from_dims(&[h, cfg.num_experts]));
+                    x.const_f32_like(router_w.clone(), Shape::from_dims(&[h, cfg.num_experts]))?;
                 let router_logits = x.matmul(&router_w_t)?;
                 let router_weights = router_logits.softmax_last_dim()?;
 

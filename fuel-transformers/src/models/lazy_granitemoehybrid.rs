@@ -428,8 +428,8 @@ impl GraniteMoeHybridModel {
             cfg.rope_scaling.as_ref(),
         )?;
         let rope_shape = Shape::from_dims(&[seq, head_dim]);
-        let rope_cos = h.const_f32_like(cos_data, rope_shape.clone());
-        let rope_sin = h.const_f32_like(sin_data, rope_shape);
+        let rope_cos = h.const_f32_like(cos_data, rope_shape.clone())?;
+        let rope_sin = h.const_f32_like(sin_data, rope_shape)?;
 
         for (idx, (layer, kind)) in weights
             .layers

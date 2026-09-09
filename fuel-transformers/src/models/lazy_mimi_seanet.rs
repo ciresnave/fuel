@@ -208,7 +208,7 @@ fn apply_causal_conv1d(x: &Tensor, w: &LazyConv1dWeights, pad_mode: PadMode) -> 
     let weight = padded.const_f32_like(
         weight_arc,
         Shape::from_dims(&[w.out_channels, w.in_channels / w.groups, effective_k]),
-    );
+    )?;
     let bias_t = w
         .bias
         .as_ref()
@@ -223,7 +223,7 @@ fn apply_causal_conv_transpose1d(x: &Tensor, w: &LazyConvTranspose1dWeights) -> 
     let weight = x.const_f32_like(
         Arc::clone(&w.weight),
         Shape::from_dims(&[w.in_channels, w.out_channels / w.groups, w.kernel_size]),
-    );
+    )?;
     // Use Tensor::conv_transpose1d (composite shipped earlier this
     // session, layered over conv_transpose2d via rank-3 ↔ rank-4 lift).
     let y = x.conv_transpose1d(
@@ -235,7 +235,7 @@ fn apply_causal_conv_transpose1d(x: &Tensor, w: &LazyConvTranspose1dWeights) -> 
         None => y,
         Some(b) => {
             let bias = x
-                .const_f32_like(Arc::clone(b), Shape::from_dims(&[w.out_channels]))
+                .const_f32_like(Arc::clone(b), Shape::from_dims(&[w.out_channels]))?
                 .reshape(Shape::from_dims(&[1, w.out_channels, 1]))?
                 .broadcast_to(Shape::from_dims(y.shape().dims()))?;
             y.add(&bias)?

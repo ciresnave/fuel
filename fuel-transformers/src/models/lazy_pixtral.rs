@@ -180,9 +180,9 @@ impl PixtralModel {
         let mistral_embed_lt = pixel_values.const_f32_like(
             Arc::clone(&self.weights.text.token_embedding),
             Shape::from_dims(&[cfg.text.vocab_size, cfg.text.hidden_size]),
-        );
+        )?;
         let token_ids =
-            pixel_values.const_u32_like(text_tokens.to_vec(), Shape::from_dims(&[text_len]));
+            pixel_values.const_u32_like(text_tokens.to_vec(), Shape::from_dims(&[text_len]))?;
         let text_embeds = mistral_embed_lt
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[1, text_len, cfg.text.hidden_size]))?;
@@ -219,7 +219,7 @@ impl PixtralModel {
                 cfg.patch_size,
                 cfg.patch_size,
             ]),
-        );
+        )?;
         let conv_out =
             pixel_values.conv2d(&conv_w, None, (cfg.patch_size, cfg.patch_size), (0, 0), 1)?;
         // (b, hidden, ph, pw) → (b, hidden, num_patches) → (b, num_patches, hidden)
@@ -238,9 +238,9 @@ impl PixtralModel {
         assert_eq!(head_dim % 2, 0, "head_dim must be even");
         let (cos_data, sin_data) = build_pixtral_2d_rope_tables(cfg.rope_theta, head_dim, np_side);
         let cos =
-            pixel_values.const_f32_like(Arc::from(cos_data), Shape::from_dims(&[np, head_dim]));
+            pixel_values.const_f32_like(Arc::from(cos_data), Shape::from_dims(&[np, head_dim]))?;
         let sin =
-            pixel_values.const_f32_like(Arc::from(sin_data), Shape::from_dims(&[np, head_dim]));
+            pixel_values.const_f32_like(Arc::from(sin_data), Shape::from_dims(&[np, head_dim]))?;
 
         let mut h = pre;
         for block in &weights.blocks {
@@ -326,7 +326,7 @@ impl PixtralModel {
         let l1_b_t = vision_out.const_f32_like(
             Arc::clone(&weights.linear_1_bias),
             Shape::from_dims(&[cfg.out_dim]),
-        );
+        )?;
         let l1 = l1.broadcast_add(&l1_b_t)?;
         let activated = match cfg.activation {
             PixtralActivation::Silu => l1.silu(),
@@ -339,7 +339,7 @@ impl PixtralModel {
         let l2_b_t = vision_out.const_f32_like(
             Arc::clone(&weights.linear_2_bias),
             Shape::from_dims(&[cfg.out_dim]),
-        );
+        )?;
         l2.broadcast_add(&l2_b_t)
     }
 }

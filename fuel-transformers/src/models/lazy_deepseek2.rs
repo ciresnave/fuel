@@ -707,7 +707,7 @@ impl DeepSeek2Model {
         // Decode mask, built once and shared across every layer.
         let mask_data = fuel_core::lazy::build_decode_causal_mask(cached_len, seq_new, total_len);
         let mask = h
-            .const_f32_like(mask_data, Shape::from_dims(&[seq_new, total_len]))
+            .const_f32_like(mask_data, Shape::from_dims(&[seq_new, total_len]))?
             .reshape(Shape::from_dims(&[1, 1, seq_new, total_len]))?;
 
         let mut cache = cache;
@@ -855,7 +855,7 @@ impl DeepSeek2Model {
         // tail (same trade LlamaModel's forward_with_kv_context documents).
         let mask_data = fuel_core::lazy::build_decode_causal_mask(cached_len, seq, max_seq_len);
         let mask = h
-            .const_f32_like(mask_data, Shape::from_dims(&[seq, max_seq_len]))
+            .const_f32_like(mask_data, Shape::from_dims(&[seq, max_seq_len]))?
             .reshape(Shape::from_dims(&[1, 1, seq, max_seq_len]))?;
 
         let kvr = cfg.kv_lora_rank;
@@ -1093,8 +1093,8 @@ impl DeepSeek2Model {
 
         // ---- Absorbed weights: kv_b_proj split into per-head W_UK^T / W_UV --
         let (w_uk_t_data, w_uv_data) = absorb_split_kv_b(&w.kv_b_proj, kvr, n_heads, nope, v_dim)?;
-        let w_uk_t = x.const_f32_like(w_uk_t_data, Shape::from_dims(&[1, n_heads, nope, kvr]));
-        let w_uv = x.const_f32_like(w_uv_data, Shape::from_dims(&[1, n_heads, kvr, v_dim]));
+        let w_uk_t = x.const_f32_like(w_uk_t_data, Shape::from_dims(&[1, n_heads, nope, kvr]))?;
+        let w_uv = x.const_f32_like(w_uv_data, Shape::from_dims(&[1, n_heads, kvr, v_dim]))?;
 
         // ---- q_absorbed[h] = q_nope[h] @ W_UK[h]^T ---------------------------
         let q_absorbed = q_nope.matmul(&w_uk_t)?; // (1,H,s,nope) @ (1,H,nope,kvr) -> (1,H,s,kvr)
@@ -1763,11 +1763,11 @@ impl DeepSeek2Model {
             let latent_c = fresh_anchor.const_f32_like(
                 latent_prefix,
                 Shape::from_dims(&[cached_len, cfg.kv_lora_rank]),
-            );
+            )?;
             let kpe_c = fresh_anchor.const_f32_like(
                 kpe_prefix,
                 Shape::from_dims(&[cached_len, cfg.qk_rope_head_dim]),
-            );
+            )?;
             fresh = fresh.append(layer, &[&latent_c, &kpe_c])?;
         }
         Ok(fresh.advance_by(cached_len))
@@ -2168,8 +2168,8 @@ impl DeepSeek2Model {
 
         // ---- Absorbed weights: kv_b_proj split into per-head W_UK^T / W_UV --
         let (w_uk_t_data, w_uv_data) = absorb_split_kv_b(&w.kv_b_proj, kvr, n_heads, nope, v_dim)?;
-        let w_uk_t = x.const_f32_like(w_uk_t_data, Shape::from_dims(&[1, n_heads, nope, kvr]));
-        let w_uv = x.const_f32_like(w_uv_data, Shape::from_dims(&[1, n_heads, kvr, v_dim]));
+        let w_uk_t = x.const_f32_like(w_uk_t_data, Shape::from_dims(&[1, n_heads, nope, kvr]))?;
+        let w_uv = x.const_f32_like(w_uv_data, Shape::from_dims(&[1, n_heads, kvr, v_dim]))?;
 
         // ---- q_absorbed[h] = q_nope[h] @ W_UK[h]^T ---------------------------
         let q_absorbed = q_nope.matmul(&w_uk_t)?; // (1,H,s,nope) @ (1,H,nope,kvr) -> (1,H,s,kvr)
@@ -2317,7 +2317,7 @@ impl DeepSeek2Model {
         );
 
         // Routed path (dense routing — full softmax × every expert).
-        let router_t = x.const_f32_like(w.router.clone(), Shape::from_dims(&[h, n_routed]));
+        let router_t = x.const_f32_like(w.router.clone(), Shape::from_dims(&[h, n_routed]))?;
         let router_logits = x.matmul(&router_t)?;
         let routing_weights = router_logits.softmax_last_dim()?;
 

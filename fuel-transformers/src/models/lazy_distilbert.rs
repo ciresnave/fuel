@@ -128,14 +128,14 @@ impl DistilBertModel {
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &Device::cpu(),
         )?;
-        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]))?;
         let word_embeds = word_emb_t
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.dim]))?;
         let pos_full = word_emb_t.const_f32_like(
             Arc::clone(&weights.position_embedding),
             Shape::from_dims(&[cfg.max_position_embeddings, cfg.dim]),
-        );
+        )?;
         let pos_slice = pos_full
             .slice(0_usize, 0, seq)?
             .reshape(Shape::from_dims(&[1, seq, cfg.dim]))?;
@@ -193,14 +193,14 @@ impl DistilBertModel {
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &Device::cpu(),
         )?;
-        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]))?;
         let word_embeds = word_emb_t
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, cfg.dim]))?;
         let pos_full = word_emb_t.const_f32_like(
             Arc::clone(&weights.position_embedding),
             Shape::from_dims(&[cfg.max_position_embeddings, cfg.dim]),
-        );
+        )?;
         let pos_slice = pos_full
             .slice(0_usize, 0, seq)?
             .reshape(Shape::from_dims(&[1, seq, cfg.dim]))?;

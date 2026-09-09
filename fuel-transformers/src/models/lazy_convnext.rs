@@ -401,7 +401,7 @@ fn convnext_block(
     // V1 layer-scale γ (V2 models omit this — GRN replaces it).
     let scaled = if let Some(gamma_arr) = &bw.layer_scale_gamma {
         let gamma = projected
-            .const_f32_like(gamma_arr.clone(), Shape::from_dims(&[c]))
+            .const_f32_like(gamma_arr.clone(), Shape::from_dims(&[c]))?
             .reshape(Shape::from_dims(&[1, 1, c]))?
             .broadcast_to(Shape::from_dims(&[1, h * w, c]))?;
         projected.mul(&gamma)?
@@ -442,11 +442,11 @@ fn apply_grn(
     let nx = gx.div(&gxmean_eps)?;
     let nx_b = nx.broadcast_to(Shape::from_dims(&[1, seq, c4]))?;
     let gamma = x
-        .const_f32_like(gamma_arr.clone(), Shape::from_dims(&[c4]))
+        .const_f32_like(gamma_arr.clone(), Shape::from_dims(&[c4]))?
         .reshape(Shape::from_dims(&[1, 1, c4]))?
         .broadcast_to(Shape::from_dims(&[1, seq, c4]))?;
     let beta = x
-        .const_f32_like(beta_arr.clone(), Shape::from_dims(&[c4]))
+        .const_f32_like(beta_arr.clone(), Shape::from_dims(&[c4]))?
         .reshape(Shape::from_dims(&[1, 1, c4]))?
         .broadcast_to(Shape::from_dims(&[1, seq, c4]))?;
     let scaled = x.mul(&nx_b)?.mul(&gamma)?;
@@ -467,11 +467,11 @@ fn layer_norm_affine(
 ) -> fuel_core::Result<Tensor> {
     let normed = x.layer_norm_last_dim(eps)?;
     let g = x
-        .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))
+        .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))?
         .reshape(Shape::from_dims(&[1, 1, hidden]))?
         .broadcast_to(Shape::from_dims(&[1, seq, hidden]))?;
     let b = x
-        .const_f32_like(beta.clone(), Shape::from_dims(&[hidden]))
+        .const_f32_like(beta.clone(), Shape::from_dims(&[hidden]))?
         .reshape(Shape::from_dims(&[1, 1, hidden]))?
         .broadcast_to(Shape::from_dims(&[1, seq, hidden]))?;
     normed.mul(&g)?.add(&b)
@@ -506,12 +506,12 @@ fn linear(
     out_f: usize,
     seq: usize,
 ) -> fuel_core::Result<Tensor> {
-    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]));
+    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]))?;
     let proj = x.matmul(&w_t)?;
     match b {
         Some(b) => {
             let bias = x
-                .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))
+                .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))?
                 .reshape(Shape::from_dims(&[1, 1, out_f]))?
                 .broadcast_to(Shape::from_dims(&[1, seq, out_f]))?;
             proj.add(&bias)
@@ -567,12 +567,12 @@ fn conv2d_stride_eq_kernel(
     // exactly [Cout, Cin*k*k] in the same ordering (Cin-major, then
     // k_row, then k_col) — matches what we just produced. Transpose
     // to [Cin*k*k, Cout] for matmul.
-    let w_2d = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin * k * k]));
+    let w_2d = x.const_f32_like(w.clone(), Shape::from_dims(&[cout, cin * k * k]))?;
     let w_t = w_2d.transpose()?; // [Cin*k*k, Cout]
     let y = x_flat.matmul(&w_t)?; // [1, H_out*W_out, Cout]
     // Add bias.
     let bias = x
-        .const_f32_like(b.clone(), Shape::from_dims(&[cout]))
+        .const_f32_like(b.clone(), Shape::from_dims(&[cout]))?
         .reshape(Shape::from_dims(&[1, 1, cout]))?
         .broadcast_to(Shape::from_dims(&[1, h_out * w_out, cout]))?;
     let y = y.add(&bias)?;
@@ -596,8 +596,8 @@ fn conv2d_depthwise_k7_s1_p3(
     _h: usize,
     _w_sz: usize,
 ) -> fuel_core::Result<Tensor> {
-    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[c, 1, 7, 7]));
-    let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[c]));
+    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[c, 1, 7, 7]))?;
+    let b_t = x.const_f32_like(b.clone(), Shape::from_dims(&[c]))?;
     x.conv2d(&w_t, Some(&b_t), (1, 1), (3, 3), c)
 }
 

@@ -299,7 +299,7 @@ fn apply_conv2d(x: &Tensor, c: &Conv2dWeights, anchor: &Tensor) -> Result<Tensor
     let w = anchor.const_f32_like(
         Arc::clone(&c.w),
         Shape::from_dims(&[c.c_out, c.c_in, c.k, c.k]),
-    );
+    )?;
     let b = c.b.as_ref().map(|b| {
         let storage = WeightStorage::F32(Arc::clone(b));
         match storage {
@@ -319,11 +319,11 @@ fn apply_conv_transpose2d(
     let w = anchor.const_f32_like(
         Arc::clone(&c.w),
         Shape::from_dims(&[c.c_in, c.c_out, c.k, c.k]),
-    );
+    )?;
     let mut out = x.conv_transpose2d(&w, (c.stride, c.stride), (0, 0), (0, 0), (1, 1), 1)?;
     if let Some(b) = &c.b {
         let bias = anchor
-            .const_f32_like(Arc::clone(b), Shape::from_dims(&[c.c_out]))
+            .const_f32_like(Arc::clone(b), Shape::from_dims(&[c.c_out]))?
             .reshape(Shape::from_dims(&[1, c.c_out, 1, 1]))?;
         out = out.broadcast_add(&bias)?;
     }

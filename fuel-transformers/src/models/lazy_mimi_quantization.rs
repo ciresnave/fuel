@@ -100,10 +100,10 @@ fn codebook_encode(x: &Tensor, cb: &EuclideanCodebookWeights) -> Result<Tensor> 
     let embedding = x.const_f32_like(
         Arc::clone(&cb.embedding),
         Shape::from_dims(&[cb.codebook_size, cb.codebook_dim]),
-    );
+    )?;
     let e_t = embedding.permute([1, 0_usize])?;
     let dot_prod = x.matmul(&e_t)?;
-    let c2 = x.const_f32_like(Arc::clone(&cb.c2), Shape::from_dims(&[cb.codebook_size]));
+    let c2 = x.const_f32_like(Arc::clone(&cb.c2), Shape::from_dims(&[cb.codebook_size]))?;
     let c2_b = c2
         .reshape(Shape::from_dims(&[1, cb.codebook_size]))?
         .broadcast_to(Shape::from_dims(&[m, cb.codebook_size]))?;
@@ -117,7 +117,7 @@ fn codebook_decode(codes: &Tensor, cb: &EuclideanCodebookWeights) -> Result<Tens
     let embedding = codes.const_f32_like(
         Arc::clone(&cb.embedding),
         Shape::from_dims(&[cb.codebook_size, cb.codebook_dim]),
-    );
+    )?;
     embedding.index_select(0_usize, codes)
 }
 
@@ -137,14 +137,14 @@ fn apply_linear_opt(
                 .const_f32_like(
                     Arc::clone(w_arc),
                     Shape::from_dims(&[out_features, in_features]),
-                )
+                )?
                 .permute([1, 0_usize])?;
             let y = x.matmul(&w_t)?;
             match b {
                 None => Ok(y),
                 Some(b_arc) => {
                     let bias =
-                        x.const_f32_like(Arc::clone(b_arc), Shape::from_dims(&[out_features]));
+                        x.const_f32_like(Arc::clone(b_arc), Shape::from_dims(&[out_features]))?;
                     y.broadcast_add(&bias)
                 }
             }
@@ -164,7 +164,7 @@ fn apply_conv1d_1x1_opt(
             let weight = x.const_f32_like(
                 Arc::clone(w_arc),
                 Shape::from_dims(&[out_channels, in_channels, 1]),
-            );
+            )?;
             x.conv1d(&weight, None, 1, 0, 1)
         }
     }

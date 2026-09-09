@@ -243,7 +243,7 @@ impl EfficientNetModel {
         let bias_t = pooled.const_f32_like(
             Arc::clone(&self.weights.classifier_b),
             Shape::from_dims(&[cfg.nclasses]),
-        );
+        )?;
         logits.broadcast_add(&bias_t)
     }
 
@@ -286,7 +286,7 @@ impl EfficientNetModel {
             cb.w.const_like(x, Shape::from_dims(&[cb.c_out, cb.c_in, 1, 1]))?;
         let conv = x.conv2d(&w, None, (1, 1), (0, 0), 1)?;
         let b_t = x
-            .const_f32_like(Arc::clone(&cb.b), Shape::from_dims(&[cb.c_out]))
+            .const_f32_like(Arc::clone(&cb.b), Shape::from_dims(&[cb.c_out]))?
             .reshape(Shape::from_dims(&[1, cb.c_out, 1, 1]))?;
         conv.broadcast_add(&b_t)
     }

@@ -193,7 +193,7 @@ impl JinaBertModel {
             Shape::from_dims(&[cfg.vocab_size, h]),
             &Device::cpu(),
         )?;
-        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]))?;
         let word_embeds = word_emb_t
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, h]))?;
@@ -202,8 +202,8 @@ impl JinaBertModel {
         let tte_t = word_emb_t.const_f32_like(
             Arc::clone(&weights.token_type_embedding),
             Shape::from_dims(&[cfg.type_vocab_size, h]),
-        );
-        let tt_ids = word_emb_t.const_u32_like(vec![0_u32; seq], Shape::from_dims(&[seq]));
+        )?;
+        let tt_ids = word_emb_t.const_u32_like(vec![0_u32; seq], Shape::from_dims(&[seq]))?;
         let tt_embeds = tte_t
             .index_select(0_usize, &tt_ids)?
             .reshape(Shape::from_dims(&[batch, seq, h]))?;
@@ -217,7 +217,7 @@ impl JinaBertModel {
         // ---- ALiBi bias (shared across layers) -----------------------------
         let alibi_data = build_alibi_bias(n_heads, seq);
         let alibi_t = x
-            .const_f32_like(alibi_data, Shape::from_dims(&[n_heads, seq, seq]))
+            .const_f32_like(alibi_data, Shape::from_dims(&[n_heads, seq, seq]))?
             .reshape(Shape::from_dims(&[1, n_heads, seq, seq]))?;
         // Optionally fold the pad mask onto ALiBi once, so each
         // layer just broadcast-adds a single bias tensor.
@@ -290,15 +290,15 @@ impl JinaBertModel {
             Shape::from_dims(&[cfg.vocab_size, h]),
             &Device::cpu(),
         )?;
-        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        let token_ids = word_emb_t.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]))?;
         let word_embeds = word_emb_t
             .index_select(0_usize, &token_ids)?
             .reshape(Shape::from_dims(&[batch, seq, h]))?;
         let tte_t = word_emb_t.const_f32_like(
             Arc::clone(&weights.token_type_embedding),
             Shape::from_dims(&[cfg.type_vocab_size, h]),
-        );
-        let tt_ids = word_emb_t.const_u32_like(vec![0_u32; seq], Shape::from_dims(&[seq]));
+        )?;
+        let tt_ids = word_emb_t.const_u32_like(vec![0_u32; seq], Shape::from_dims(&[seq]))?;
         let tt_embeds = tte_t
             .index_select(0_usize, &tt_ids)?
             .reshape(Shape::from_dims(&[batch, seq, h]))?;
@@ -311,7 +311,7 @@ impl JinaBertModel {
         // Shared ALiBi bias (optionally folded with pad mask).
         let alibi_data = build_alibi_bias(n_heads, seq);
         let alibi_t = x
-            .const_f32_like(alibi_data, Shape::from_dims(&[n_heads, seq, seq]))
+            .const_f32_like(alibi_data, Shape::from_dims(&[n_heads, seq, seq]))?
             .reshape(Shape::from_dims(&[1, n_heads, seq, seq]))?;
         let bias = match attention_mask {
             None => alibi_t,

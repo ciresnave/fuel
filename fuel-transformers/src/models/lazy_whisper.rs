@@ -285,7 +285,7 @@ impl WhisperModel {
             .const_f32_like(
                 self.weights.encoder.positional.clone(),
                 Shape::from_dims(&[cfg.max_source_positions, d]),
-            )
+            )?
             .slice(0, 0, t_half)?
             .reshape(Shape::from_dims(&[1, t_half, d]))?
             .broadcast_to(Shape::from_dims(&[1, t_half, d]))?;
@@ -327,17 +327,18 @@ impl WhisperModel {
         );
 
         // Bootstrap the graph from encoder_out (keeps everything on one graph).
-        let input_ids = encoder_out.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]));
+        let input_ids = encoder_out.const_u32_like(tokens.to_vec(), Shape::from_dims(&[seq]))?;
         let embed = encoder_out.const_f32_like(
             self.weights.decoder.embed_tokens.clone(),
             Shape::from_dims(&[cfg.vocab_size, d]),
-        );
+        )?;
         let position_ids_vec: Vec<u32> = (0..seq as u32).collect();
-        let position_ids = encoder_out.const_u32_like(position_ids_vec, Shape::from_dims(&[seq]));
+        let position_ids =
+            encoder_out.const_u32_like(position_ids_vec, Shape::from_dims(&[seq]))?;
         let pos_emb = encoder_out.const_f32_like(
             self.weights.decoder.embed_positions.clone(),
             Shape::from_dims(&[cfg.max_target_positions, d]),
-        );
+        )?;
 
         let tok = embed.index_select(0, &input_ids)?; // [seq, d]
         let pos = pos_emb.index_select(0, &position_ids)?; // [seq, d]
@@ -429,11 +430,11 @@ fn layer_norm_affine(
 ) -> fuel_core::Result<Tensor> {
     let normed = x.layer_norm_last_dim(eps)?;
     let g = x
-        .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))
+        .const_f32_like(gamma.clone(), Shape::from_dims(&[hidden]))?
         .reshape(Shape::from_dims(&[1, 1, hidden]))?
         .broadcast_to(Shape::from_dims(&[1, seq, hidden]))?;
     let b = x
-        .const_f32_like(beta.clone(), Shape::from_dims(&[hidden]))
+        .const_f32_like(beta.clone(), Shape::from_dims(&[hidden]))?
         .reshape(Shape::from_dims(&[1, 1, hidden]))?
         .broadcast_to(Shape::from_dims(&[1, seq, hidden]))?;
     normed.mul(&g)?.add(&b)
@@ -449,12 +450,12 @@ fn linear(
     out_f: usize,
     seq: usize,
 ) -> fuel_core::Result<Tensor> {
-    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]));
+    let w_t = x.const_f32_like(w.clone(), Shape::from_dims(&[in_f, out_f]))?;
     let proj = x.matmul(&w_t)?;
     match b {
         Some(b) => {
             let bias = x
-                .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))
+                .const_f32_like(b.clone(), Shape::from_dims(&[out_f]))?
                 .reshape(Shape::from_dims(&[1, 1, out_f]))?
                 .broadcast_to(Shape::from_dims(&[1, seq, out_f]))?;
             proj.add(&bias)
@@ -467,7 +468,7 @@ fn linear(
 /// `[1, C, T+2]`. Built via concat with a const zero tensor — no
 /// native `Pad` op is needed since we only use this one padding.
 fn pad_t_axis_one_each_side(x: &Tensor, c: usize, _t: usize) -> fuel_core::Result<Tensor> {
-    let zeros = x.const_f32_like(vec![0.0_f32; c], Shape::from_dims(&[1, c, 1]));
+    let zeros = x.const_f32_like(vec![0.0_f32; c], Shape::from_dims(&[1, c, 1]))?;
     zeros.concat(x, 2)?.concat(&zeros, 2) // [1, c, t+2]
 }
 
@@ -512,11 +513,11 @@ pub(crate) fn conv1d_k3_s1_p1(
             }
         }
     }
-    let w_t = x.const_f32_like(w_out, Shape::from_dims(&[3 * in_c, out_c]));
+    let w_t = x.const_f32_like(w_out, Shape::from_dims(&[3 * in_c, out_c]))?;
     let y = stacked_tlast.matmul(&w_t)?; // [1, T, out_c]
     // Add bias (broadcast [out_c] across [1, T, out_c]).
     let bias = x
-        .const_f32_like(b.clone(), Shape::from_dims(&[out_c]))
+        .const_f32_like(b.clone(), Shape::from_dims(&[out_c]))?
         .reshape(Shape::from_dims(&[1, 1, out_c]))?
         .broadcast_to(Shape::from_dims(&[1, t, out_c]))?;
     y.add(&bias)?.permute([0, 2, 1_usize]) // back to [1, out_c, T]
@@ -582,10 +583,10 @@ pub(crate) fn conv1d_k3_s2_p1(
             }
         }
     }
-    let w_t = x.const_f32_like(w_out, Shape::from_dims(&[3 * in_c, out_c]));
+    let w_t = x.const_f32_like(w_out, Shape::from_dims(&[3 * in_c, out_c]))?;
     let y = stacked_tlast.matmul(&w_t)?;
     let bias = x
-        .const_f32_like(b.clone(), Shape::from_dims(&[out_c]))
+        .const_f32_like(b.clone(), Shape::from_dims(&[out_c]))?
         .reshape(Shape::from_dims(&[1, 1, out_c]))?
         .broadcast_to(Shape::from_dims(&[1, t_out, out_c]))?;
     y.add(&bias)?.permute([0, 2, 1_usize]) // [1, out_c, T_out]
@@ -639,7 +640,7 @@ fn multi_head_attn(
             }
         }
         let mask_t = scores
-            .const_f32_like(mask, Shape::from_dims(&[q_seq, kv_seq]))
+            .const_f32_like(mask, Shape::from_dims(&[q_seq, kv_seq]))?
             .reshape(Shape::from_dims(&[1, 1, q_seq, kv_seq]))?
             .broadcast_to(Shape::from_dims(&[1, n_heads, q_seq, kv_seq]))?;
         scores = scores.add(&mask_t)?;

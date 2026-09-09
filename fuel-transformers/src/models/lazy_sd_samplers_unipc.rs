@@ -796,7 +796,7 @@ mod tests {
     }
 
     fn lazy_like(anchor: &Tensor, values: &[f32], shape: &[usize]) -> Tensor {
-        anchor.const_f32_like(values.to_vec(), Shape::from_dims(shape))
+        anchor.const_f32_like(values.to_vec(), Shape::from_dims(shape))?
     }
 
     fn finite(out: &[f32]) -> bool {

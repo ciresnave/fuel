@@ -233,7 +233,7 @@ fn apply_conv2d_bn(x: &Tensor, w: &Conv2dBnWeights) -> Result<Tensor> {
     let cw = x.const_f32_like(
         Arc::clone(&w.conv_w),
         Shape::from_dims(&[w.c_out, w.c_in / w.groups, w.kernel, w.kernel]),
-    );
+    )?;
     let conv = x.conv2d(
         &cw,
         None,
@@ -356,8 +356,8 @@ fn apply_window_attn(
     let bias_table = xs.const_f32_like(
         Arc::clone(&w.attention_biases),
         Shape::from_dims(&[w.num_heads, w.n_offsets]),
-    );
-    let idxs = xs.const_u32_like(w.attention_bias_idxs.to_vec(), Shape::from_dims(&[n * n]));
+    )?;
+    let idxs = xs.const_u32_like(w.attention_bias_idxs.to_vec(), Shape::from_dims(&[n * n]))?;
     let ab = bias_table
         .index_select(1_usize, &idxs)?
         .reshape(Shape::from_dims(&[1, w.num_heads, n, n]))?
@@ -403,7 +403,7 @@ fn apply_tiny_vit_block(x: &Tensor, w: &TinyVitBlockWeights) -> Result<Tensor> {
                 let zeros_b = padded.const_f32_like(
                     Arc::<[f32]>::from(vec![0.0_f32; b * pad_b * ww * c]),
                     Shape::from_dims(&[b, pad_b, ww, c]),
-                );
+                )?;
                 padded = padded.concat(&zeros_b, 1_usize)?;
             }
             if pad_r > 0 {
@@ -413,7 +413,7 @@ fn apply_tiny_vit_block(x: &Tensor, w: &TinyVitBlockWeights) -> Result<Tensor> {
                 let zeros_r = padded.const_f32_like(
                     Arc::<[f32]>::from(vec![0.0_f32; b * h_padded * pad_r * c]),
                     Shape::from_dims(&[b, h_padded, pad_r, c]),
-                );
+                )?;
                 padded = padded.concat(&zeros_r, 2_usize)?;
             }
             padded
@@ -569,13 +569,13 @@ impl TinyVitModel {
         let nc1 = x_nchw.const_f32_like(
             Arc::clone(&weights.neck.conv1),
             Shape::from_dims(&[256, last_dim, 1, 1]),
-        );
+        )?;
         let x = x_nchw.conv2d(&nc1, None, (1, 1), (0, 0), 1)?;
         let x = layer_norm_2d(&x, &weights.neck.ln1, 256, 1e-6)?;
         let nc2 = x.const_f32_like(
             Arc::clone(&weights.neck.conv2),
             Shape::from_dims(&[256, 256, 3, 3]),
-        );
+        )?;
         let x = x.conv2d(&nc2, None, (1, 1), (1, 1), 1)?;
         layer_norm_2d(&x, &weights.neck.ln2, 256, 1e-6)
     }
