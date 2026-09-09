@@ -19,7 +19,8 @@ fn nonzero_indices_f32_basic() {
         vec![0.0, 1.0, 0.0, 1.0, 1.0, 0.0],
         Shape::from_dims(&[2, 3]),
         &dev,
-    );
+    )
+    .unwrap();
     let mut symgen = SymGen::new();
     let count_sym = symgen.fresh();
     let (indices, count) = x.nonzero_indices_bundled(count_sym).unwrap();
@@ -38,7 +39,7 @@ fn nonzero_indices_f32_basic() {
 #[test]
 fn nonzero_indices_all_zero() {
     let dev = fuel_core::Device::cpu();
-    let x = Tensor::from_f32(vec![0.0; 4], Shape::from_dims(&[4]), &dev);
+    let x = Tensor::from_f32(vec![0.0; 4], Shape::from_dims(&[4]), &dev).unwrap();
     let mut symgen = SymGen::new();
     let (indices, count) = x.nonzero_indices_bundled(symgen.fresh()).unwrap();
     assert_eq!(count.realize_u32(), vec![0], "no nonzeros");
@@ -49,7 +50,7 @@ fn nonzero_indices_all_zero() {
 #[test]
 fn nonzero_indices_all_nonzero() {
     let dev = fuel_core::Device::cpu();
-    let x = Tensor::from_f32(vec![1.0, 2.0, -3.0, 0.5], Shape::from_dims(&[4]), &dev);
+    let x = Tensor::from_f32(vec![1.0, 2.0, -3.0, 0.5], Shape::from_dims(&[4]), &dev).unwrap();
     let mut symgen = SymGen::new();
     let (indices, count) = x.nonzero_indices_bundled(symgen.fresh()).unwrap();
     assert_eq!(count.realize_u32(), vec![4], "every element nonzero");
@@ -76,7 +77,8 @@ fn nonzero_indices_drives_data_determined_write_slice() {
         vec![0.0, 1.0, 0.0, 1.0, 1.0, 0.0],
         Shape::from_dims(&[6]),
         &dev,
-    );
+    )
+    .unwrap();
     let mut symgen = SymGen::new();
     let count_sym = symgen.fresh();
     let (_indices, count) = x.nonzero_indices_bundled(count_sym).unwrap();
@@ -123,7 +125,8 @@ fn nonzero_indices_gather_by_count_selects_routed_rows() {
         ],
         Shape::from_dims(&[4, 2]),
         &dev,
-    );
+    )
+    .unwrap();
     // mask [4]: tokens 1 and 3 routed → nonzeros at flat 1, 3.
     let mask = values.const_f32_like(vec![0.0, 1.0, 0.0, 1.0], Shape::from_dims(&[4]));
     let mut symgen = SymGen::new();
@@ -164,7 +167,8 @@ fn nonzero_count_drives_dynamic_m_matmul() {
         vec![0.0, 1.0, 0.0, 1.0, 1.0, 0.0],
         Shape::from_dims(&[6]),
         &dev,
-    );
+    )
+    .unwrap();
     let mut symgen = SymGen::new();
     let count_sym = symgen.fresh();
     let (indices, _count) = x.nonzero_indices_bundled(count_sym).unwrap();

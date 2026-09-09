@@ -1495,7 +1495,8 @@ mod tests {
         );
 
         let run = |pt: &PageTableHost| -> Vec<f32> {
-            let q = Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, 1, d]), &dev);
+            let q =
+                Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, 1, d]), &dev).unwrap();
             let kc = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
             let vc = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
             let bt = q.const_u32_like(pt.block_table.clone(), pt.block_table_shape());
@@ -1583,7 +1584,7 @@ mod tests {
         assert_eq!(slot, 2, "new token lands at slot 2");
         let linear = phys as usize * block_size + slot; // 10
         let attn_ref = {
-            let q = Tensor::from_f32(q_data.clone(), q_shape.clone(), &dev);
+            let q = Tensor::from_f32(q_data.clone(), q_shape.clone(), &dev).unwrap();
             // k_new/v_new must be siblings of q (build_decode_attn's same-graph
             // contract) — Tensor::from_f32 would mint separate graphs.
             let k_new = q.const_f32_like(k_new_data.clone(), kv_new_shape.clone());
@@ -1615,7 +1616,7 @@ mod tests {
         let sym = fuel_ir::SymId(0);
         let (pool_dyn, _p, _s, pt_dyn) = setup();
         let attn_dyn = {
-            let q = Tensor::from_f32(q_data.clone(), q_shape.clone(), &dev);
+            let q = Tensor::from_f32(q_data.clone(), q_shape.clone(), &dev).unwrap();
             // k_new/v_new must be siblings of q (build_decode_attn's same-graph
             // contract) — Tensor::from_f32 would mint separate graphs.
             let k_new = q.const_f32_like(k_new_data.clone(), kv_new_shape.clone());
@@ -1659,7 +1660,7 @@ mod tests {
         // ---- doff arm: device rank-0 I64 offset (write_slice_doff) ----
         let (pool_doff, _p, _s, pt_doff) = setup();
         let attn_doff = {
-            let q = Tensor::from_f32(q_data.clone(), q_shape.clone(), &dev);
+            let q = Tensor::from_f32(q_data.clone(), q_shape.clone(), &dev).unwrap();
             // k_new/v_new must be siblings of q (build_decode_attn's same-graph
             // contract) — Tensor::from_f32 would mint separate graphs.
             let k_new = q.const_f32_like(k_new_data.clone(), kv_new_shape.clone());
@@ -1764,7 +1765,7 @@ mod tests {
         assert_eq!(pt.context_lens, vec![sk as u32]);
 
         // Build the paged_attn graph, binding the REAL pool buffers as k/v cache.
-        let q = Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, 1, d]), &dev);
+        let q = Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, 1, d]), &dev).unwrap();
         let kc = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
         let vc = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
         let bt = q.const_u32_like(pt.block_table.clone(), pt.block_table_shape());
@@ -1976,7 +1977,8 @@ mod tests {
             );
 
             // Build the paged decode-step graph on q's graph, bind the pool.
-            let q = Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, 1, d]), &dev);
+            let q =
+                Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, 1, d]), &dev).unwrap();
             let kph = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
             let vph = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
             let knew = q.const_f32_like(k_data, Shape::from_dims(&[1, hkv, 1, d]));
@@ -2108,7 +2110,7 @@ mod tests {
             "spliced prefix length carried to B"
         );
         let q_data = rand_f32(hq * d, 1);
-        let q = Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, 1, d]), &dev);
+        let q = Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, 1, d]), &dev).unwrap();
         let kph = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
         let vph = q.const_placeholder_like(pool.pool_shape().clone(), DType::F32);
         let bt = q.const_u32_like(pt.block_table.clone(), pt.block_table_shape());

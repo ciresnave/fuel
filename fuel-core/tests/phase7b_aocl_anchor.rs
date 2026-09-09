@@ -44,7 +44,7 @@ fn aocl_matmul_realize_is_finite_and_sane() {
     let (m, k, n) = (32usize, 48, 24);
     let a_data: Vec<f32> = (0..(m * k)).map(|i| ((i as f32) * 1.3e-3).sin()).collect();
     let b_data: Vec<f32> = (0..(k * n)).map(|i| ((i as f32) * 1.7e-3).cos()).collect();
-    let a = Tensor::from_f32(a_data, Shape::from_dims(&[m, k]), &fuel_core::Device::cpu());
+    let a = Tensor::from_f32(a_data, Shape::from_dims(&[m, k]), &fuel_core::Device::cpu()).unwrap();
     let b = a.const_f32_like(b_data, Shape::from_dims(&[k, n]));
     let c = a.matmul(&b).expect(
         "matmul is a graph-build call; a failure here is a Fuel defect, not a hardware one",

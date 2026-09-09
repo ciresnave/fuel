@@ -30,7 +30,8 @@ fn fused_linear_realizes_same_as_matmul_plus_bias() {
         a_data.clone(),
         Shape::from_dims(&[2, 5]),
         &fuel_core::Device::cpu(),
-    );
+    )
+    .unwrap();
     let b = a.const_f32_like(b_data.clone(), Shape::from_dims(&[5, 7]));
     let bias = a.const_f32_like(bias_data.clone(), Shape::from_dims(&[7]));
     let mm = a.matmul(&b).unwrap();
@@ -40,7 +41,8 @@ fn fused_linear_realizes_same_as_matmul_plus_bias() {
     let unfused_result = unfused_out.realize_f32();
 
     // Identical second graph, then run fuse_linear and realize.
-    let a2 = Tensor::from_f32(a_data, Shape::from_dims(&[2, 5]), &fuel_core::Device::cpu());
+    let a2 =
+        Tensor::from_f32(a_data, Shape::from_dims(&[2, 5]), &fuel_core::Device::cpu()).unwrap();
     let b2 = a2.const_f32_like(b_data, Shape::from_dims(&[5, 7]));
     let bias2 = a2.const_f32_like(bias_data, Shape::from_dims(&[7]));
     let mm2 = a2.matmul(&b2).unwrap();

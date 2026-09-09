@@ -38,7 +38,8 @@ fn lazy_paged_attn_decode_round_trip() {
         q_data.clone(),
         Shape::from_dims(&[b, h, sq, d]),
         &fuel_core::Device::cpu(),
-    );
+    )
+    .unwrap();
     let kc = q.const_f32_like(
         kc_data.clone(),
         Shape::from_dims(&[num_blocks, block_size, h, d]),

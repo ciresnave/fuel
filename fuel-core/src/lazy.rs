@@ -2212,7 +2212,8 @@ mod tests {
 
     #[test]
     fn constructors_wrap_graph_tensor_correctly() {
-        let t = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu());
+        let t =
+            Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu()).unwrap();
         assert_eq!(t.dtype(), DType::F32);
         assert_eq!(t.shape().dims(), &[3]);
         assert_eq!(t.rank(), 1);
@@ -2221,7 +2222,8 @@ mod tests {
 
     #[test]
     fn add_builds_add_node_in_underlying_graph() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu());
+        let a =
+            Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu()).unwrap();
         let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
         let c = a.add(&b).unwrap();
         assert_eq!(c.shape().dims(), &[3]);
@@ -2243,7 +2245,8 @@ mod tests {
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let w = x.const_f32_like(
             vec![1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 1.0],
             Shape::from_dims(&[3, 3]),
@@ -2265,7 +2268,8 @@ mod tests {
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0],
             Shape::from_dims(&[2, 4]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let y = x.rope(10000.0, 0).unwrap();
         assert_eq!(y.shape().dims(), &[2, 4]);
         assert_eq!(y.dtype(), DType::F32);
@@ -2293,7 +2297,8 @@ mod tests {
                 data.to_vec(),
                 Shape::from_dims(&[bs, n_kv_heads, head_dim]),
                 &dev,
-            );
+            )
+            .unwrap();
             let k4 = k
                 .permute([1, 0, 2])
                 .unwrap()
@@ -2325,7 +2330,8 @@ mod tests {
 
     #[test]
     fn cast_switches_dtype_through_wrapper() {
-        let x = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu());
+        let x =
+            Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu()).unwrap();
         let y = x.to_dtype(DType::F64).unwrap();
         assert_eq!(y.dtype(), DType::F64);
         assert_eq!(y.shape().dims(), &[3]);
@@ -2333,7 +2339,8 @@ mod tests {
 
     #[test]
     fn indexing_builds_correct_output_shape() {
-        let data = Tensor::from_f32(vec![1.0; 12], Shape::from_dims(&[3, 4]), &Device::cpu());
+        let data =
+            Tensor::from_f32(vec![1.0; 12], Shape::from_dims(&[3, 4]), &Device::cpu()).unwrap();
         let idx = data.const_u32_like(vec![0, 2, 1], Shape::from_dims(&[3]));
         let out = data.index_select(0, &idx).unwrap();
         assert_eq!(out.shape().dims(), &[3, 4]);
@@ -2346,7 +2353,8 @@ mod tests {
         // The moment of truth: build a graph through Tensor and
         // then realize it end-to-end. (a + b) * a for a = [1, 2, 3],
         // b = [4, 5, 6] should yield [5, 14, 27].
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu());
+        let a =
+            Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu()).unwrap();
         let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
         let c = a.add(&b).unwrap().mul(&a).unwrap();
         let result = c.realize_f32();
@@ -2364,7 +2372,8 @@ mod tests {
             vec![f32::NAN, -2.0, 3.0],
             Shape::from_dims(&[3]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let relu_result = a.relu().realize_f32();
         assert!(
             relu_result[0].is_nan(),
@@ -2403,7 +2412,8 @@ mod tests {
             vec![f32::NAN, 2.0, 5.0],
             Shape::from_dims(&[3]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let b = a.const_f32_like(vec![3.0, f32::NAN, 4.0], Shape::from_dims(&[3]));
 
         let fmax = a.fmax_ieee(&b).unwrap().realize_f32();
@@ -2446,7 +2456,7 @@ mod tests {
         // swap or a collapse-to-constant flips one side; a return-`a`/return-`b`
         // collapse is caught by the sibling NaN test (fmax(NaN,3)=3 needs `b`,
         // fmax(2,NaN)=2 needs `a`). GAP-048.
-        let a = Tensor::from_f32(vec![-0.0, 0.0], Shape::from_dims(&[2]), &Device::cpu());
+        let a = Tensor::from_f32(vec![-0.0, 0.0], Shape::from_dims(&[2]), &Device::cpu()).unwrap();
         let b = a.const_f32_like(vec![0.0, -0.0], Shape::from_dims(&[2]));
 
         let fmax = a.fmax_ieee(&b).unwrap().realize_f32();
@@ -2483,7 +2493,8 @@ mod tests {
             vec![-7.0, 7.0, -7.0],
             Shape::from_dims(&[3]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let b = a.const_f32_like(vec![3.0, -3.0, -3.0], Shape::from_dims(&[3]));
 
         let rt = a.rem_trunc(&b).unwrap().realize_f32();
@@ -2514,7 +2525,8 @@ mod tests {
             ],
             Shape::from_dims(&[7]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let t = q.trunc().realize_f32();
         assert_eq!(t[0], 2.0, "trunc(2.7) = 2 (toward zero)");
         assert_eq!(t[1], -2.0, "trunc(-2.7) = -2 (toward zero, NOT -3)");
@@ -2540,7 +2552,8 @@ mod tests {
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let b = a.const_f32_like(
             vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
             Shape::from_dims(&[3, 2]),
@@ -2561,7 +2574,7 @@ mod tests {
         let n = 32;
         let a_data: Vec<f32> = (0..m * k).map(|i| (i as f32 * 0.01).sin()).collect();
         let b_data: Vec<f32> = (0..k * n).map(|i| (i as f32 * 0.013).cos()).collect();
-        let a = Tensor::from_f32(a_data, Shape::from_dims(&[m, k]), &Device::cpu());
+        let a = Tensor::from_f32(a_data, Shape::from_dims(&[m, k]), &Device::cpu()).unwrap();
         let b = a.const_f32_like(b_data, Shape::from_dims(&[k, n]));
         let c = a.matmul(&b).unwrap();
         let fast = c.realize_f32();
@@ -2673,7 +2686,7 @@ mod tests {
         // swapping the exact constant would perturb these attention-scale parity tests.
         #[allow(clippy::approx_constant)]
         let scale = 0.7071f32;
-        let q = Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, sq, d]), &dev);
+        let q = Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, sq, d]), &dev).unwrap();
         let k = q.const_f32_like(k_data.clone(), Shape::from_dims(&[1, hkv, sk, d]));
         let v = q.const_f32_like(v_data.clone(), Shape::from_dims(&[1, hkv, sk, d]));
         // Distinct positive slope per head (powers of 1/2 — the alibi default).
@@ -2835,7 +2848,7 @@ mod tests {
             .map(|i| (i as f32 * 0.13).cos())
             .collect();
         let v_data: Vec<f32> = (0..hkv * cap * d).map(|i| i as f32 * 0.07 + 1.0).collect();
-        let q = Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, sq, d]), &dev);
+        let q = Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, hq, sq, d]), &dev).unwrap();
         let k = q
             .inner
             .const_f32_like(k_data.clone(), Shape::from_dims(&[1, hkv, cap, d]));
@@ -2982,7 +2995,7 @@ mod tests {
             "test data must be accumulation-order-sensitive so the parity has teeth",
         );
 
-        let x = Tensor::from_f32(data.clone(), Shape::from_dims(&[rows, cols]), &dev);
+        let x = Tensor::from_f32(data.clone(), Shape::from_dims(&[rows, cols]), &dev).unwrap();
         // Recipe spelling: rank-reducing SumDim(last) (chassis `reduce`).
         let sumdim = x.inner.sum_dim(1);
         let got_sumdim = crate::pipelined_bridge::realize_one_as::<f32>(
@@ -3067,6 +3080,7 @@ mod tests {
 
         // RECIPE path: lower the fused node to the recipe (SumDim spelling).
         let recipe = Tensor::from_f32(data.clone(), shape(), &dev)
+            .unwrap()
             .softmax_last_dim()
             .expect("softmax recipe build");
         let graph = recipe.inner.graph().clone();
@@ -3079,7 +3093,7 @@ mod tests {
 
         // LEGACY path: the pre-migration ReduceMaxTo/ReduceSumTo(keepdim)
         // spelling, hand-built with identical Sub/Exp/Div.
-        let x = Tensor::from_f32(data.clone(), shape(), &dev).inner;
+        let x = Tensor::from_f32(data.clone(), shape(), &dev).unwrap().inner;
         let m = x.reduce_max_to(keepdim());
         let mb = m.broadcast_to(shape());
         let s = x.sub(&mb);
@@ -3106,6 +3120,7 @@ mod tests {
         // at most 1 ULP — NOT from the migration but from its reciprocal-
         // multiply normalize (`e*(1/sum)`) vs the primitive true-`Div`.
         let fused_out = Tensor::from_f32(data.clone(), shape(), &dev)
+            .unwrap()
             .softmax_last_dim()
             .expect("softmax fused build")
             .realize_f32();
@@ -3132,6 +3147,7 @@ mod tests {
 
         // RECIPE path: lower the fused node (MeanDim + Unsqueeze spelling).
         let recipe = Tensor::from_f32(data.clone(), shape(), &dev)
+            .unwrap()
             .rms_norm_last_dim(eps)
             .expect("rms_norm recipe build");
         let graph = recipe.inner.graph().clone();
@@ -3144,7 +3160,7 @@ mod tests {
 
         // LEGACY path: MeanDim(last) + Reshape-keepdim spelling, same eps and
         // same true-`Div` normalize.
-        let x = Tensor::from_f32(data.clone(), shape(), &dev).inner;
+        let x = Tensor::from_f32(data.clone(), shape(), &dev).unwrap().inner;
         let sq = x.sqr();
         let mean = sq.mean_dim(1);
         let mean_kd = mean.reshape(keepdim());
@@ -3165,6 +3181,7 @@ mod tests {
         // SECONDARY (documentation): the fused kernel's reciprocal-multiply
         // (`x*rms_inv`) differs from the primitive true-`Div` by ≤1 ULP.
         let fused_out = Tensor::from_f32(data.clone(), shape(), &dev)
+            .unwrap()
             .rms_norm_last_dim(eps)
             .expect("rms_norm fused build")
             .realize_f32();
@@ -3191,7 +3208,7 @@ mod tests {
         use fuel_graph::Op;
         use fuel_graph::registry::FusedOps;
         let dev = Device::cpu();
-        let u = Tensor::from_f32(vec![2.0f32], Shape::from_dims(&[1, 1, 1]), &dev);
+        let u = Tensor::from_f32(vec![2.0f32], Shape::from_dims(&[1, 1, 1]), &dev).unwrap();
         let delta = u.const_f32_like(vec![0.5f32], Shape::from_dims(&[1, 1, 1]));
         let a = u.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1, 1]));
         let b = u.const_f32_like(vec![3.0f32], Shape::from_dims(&[1, 1, 1]));
@@ -3267,7 +3284,7 @@ mod tests {
         let dev = Device::cpu();
         // x [batch, seqlen, heads, head_dim] = [1,1,1,1]; dt [b,s,h]=[1,1,1];
         // a [heads]=[1]; b/c [b,s,h,state]=[1,1,1,1].
-        let x = Tensor::from_f32(vec![2.0f32], Shape::from_dims(&[1, 1, 1, 1]), &dev);
+        let x = Tensor::from_f32(vec![2.0f32], Shape::from_dims(&[1, 1, 1, 1]), &dev).unwrap();
         let dt = x.const_f32_like(vec![0.5f32], Shape::from_dims(&[1, 1, 1]));
         let a = x.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1]));
         let b = x.const_f32_like(vec![3.0f32], Shape::from_dims(&[1, 1, 1, 1]));
@@ -3450,7 +3467,7 @@ mod tests {
     fn selective_scan_is_differentiable_backward_matches_fd() {
         let dev = Device::cpu();
         let fwd = |u_v: f32| -> f32 {
-            let u = Tensor::from_f32(vec![u_v], Shape::from_dims(&[1, 1, 1]), &dev);
+            let u = Tensor::from_f32(vec![u_v], Shape::from_dims(&[1, 1, 1]), &dev).unwrap();
             let delta = u.const_f32_like(vec![0.5f32], Shape::from_dims(&[1, 1, 1]));
             let a = u.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1, 1]));
             let b = u.const_f32_like(vec![3.0f32], Shape::from_dims(&[1, 1, 1]));
@@ -3458,7 +3475,7 @@ mod tests {
             u.selective_scan(&delta, &a, &b, &c, false).realize_f32()[0]
         };
         // Autograd at u=2.0.
-        let u = Tensor::from_f32(vec![2.0f32], Shape::from_dims(&[1, 1, 1]), &dev);
+        let u = Tensor::from_f32(vec![2.0f32], Shape::from_dims(&[1, 1, 1]), &dev).unwrap();
         let delta = u.const_f32_like(vec![0.5f32], Shape::from_dims(&[1, 1, 1]));
         let a = u.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1, 1]));
         let b = u.const_f32_like(vec![3.0f32], Shape::from_dims(&[1, 1, 1]));
@@ -3483,7 +3500,7 @@ mod tests {
         // x [batch,seqlen,heads,head_dim]=[1,1,1,1]; dt [b,s,h]=[1,1,1]; a [heads]=[1];
         // b/c [b,s,h,state]=[1,1,1,1]. Single step: h = dt*b*x = 1.5x, y = c*h = 6x (linear).
         let fwd = |x_v: f32| -> f32 {
-            let x = Tensor::from_f32(vec![x_v], Shape::from_dims(&[1, 1, 1, 1]), &dev);
+            let x = Tensor::from_f32(vec![x_v], Shape::from_dims(&[1, 1, 1, 1]), &dev).unwrap();
             let dt = x.const_f32_like(vec![0.5f32], Shape::from_dims(&[1, 1, 1]));
             let a = x.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1]));
             let b = x.const_f32_like(vec![3.0f32], Shape::from_dims(&[1, 1, 1, 1]));
@@ -3491,7 +3508,7 @@ mod tests {
             x.ssd_chunk_scan(&dt, &a, &b, &c, 1).realize_f32()[0]
         };
         // Autograd at x=2.0.
-        let x = Tensor::from_f32(vec![2.0f32], Shape::from_dims(&[1, 1, 1, 1]), &dev);
+        let x = Tensor::from_f32(vec![2.0f32], Shape::from_dims(&[1, 1, 1, 1]), &dev).unwrap();
         let dt = x.const_f32_like(vec![0.5f32], Shape::from_dims(&[1, 1, 1]));
         let a = x.const_f32_like(vec![-1.0f32], Shape::from_dims(&[1]));
         let b = x.const_f32_like(vec![3.0f32], Shape::from_dims(&[1, 1, 1, 1]));
@@ -3522,7 +3539,7 @@ mod tests {
         // u/delta [batch,seqlen,dim]=[1,2,1]; a [dim,dstate]=[1,1] (< 0, stable gate);
         // b/c [batch,seqlen,dstate]=[1,2,1]. loss = sum(y) (ones-seed over [1,2,1]).
         let fwd = |u_vals: &[f32]| -> f32 {
-            let u = Tensor::from_f32(u_vals.to_vec(), Shape::from_dims(&[1, 2, 1]), &dev);
+            let u = Tensor::from_f32(u_vals.to_vec(), Shape::from_dims(&[1, 2, 1]), &dev).unwrap();
             let delta = u.const_f32_like(vec![0.7f32, 0.7], Shape::from_dims(&[1, 2, 1]));
             let a = u.const_f32_like(vec![-0.5f32], Shape::from_dims(&[1, 1]));
             let b = u.const_f32_like(vec![1.0f32, 1.0], Shape::from_dims(&[1, 2, 1]));
@@ -3533,7 +3550,7 @@ mod tests {
                 .sum()
         };
         let u0 = vec![1.0f32, 2.0];
-        let u = Tensor::from_f32(u0.clone(), Shape::from_dims(&[1, 2, 1]), &dev);
+        let u = Tensor::from_f32(u0.clone(), Shape::from_dims(&[1, 2, 1]), &dev).unwrap();
         let delta = u.const_f32_like(vec![0.7f32, 0.7], Shape::from_dims(&[1, 2, 1]));
         let a = u.const_f32_like(vec![-0.5f32], Shape::from_dims(&[1, 1]));
         let b = u.const_f32_like(vec![1.0f32, 1.0], Shape::from_dims(&[1, 2, 1]));
@@ -3572,7 +3589,8 @@ mod tests {
         // carry passes exp(dt*a) across chunks. x [b,s,h,hd]=[1,4,1,1]; dt [b,s,h]=[1,4,1];
         // a [heads]=[1] (< 0); b/c [b,s,h,state]=[1,4,1,1].
         let fwd = |x_vals: &[f32]| -> f32 {
-            let x = Tensor::from_f32(x_vals.to_vec(), Shape::from_dims(&[1, 4, 1, 1]), &dev);
+            let x =
+                Tensor::from_f32(x_vals.to_vec(), Shape::from_dims(&[1, 4, 1, 1]), &dev).unwrap();
             let dt = x.const_f32_like(vec![0.6f32, 0.6, 0.6, 0.6], Shape::from_dims(&[1, 4, 1]));
             let a = x.const_f32_like(vec![-0.5f32], Shape::from_dims(&[1]));
             let b = x.const_f32_like(vec![1.0f32, 1.0, 1.0, 1.0], Shape::from_dims(&[1, 4, 1, 1]));
@@ -3583,7 +3601,7 @@ mod tests {
                 .sum()
         };
         let x0 = vec![1.0f32, 2.0, 3.0, 4.0];
-        let x = Tensor::from_f32(x0.clone(), Shape::from_dims(&[1, 4, 1, 1]), &dev);
+        let x = Tensor::from_f32(x0.clone(), Shape::from_dims(&[1, 4, 1, 1]), &dev).unwrap();
         let dt = x.const_f32_like(vec![0.6f32, 0.6, 0.6, 0.6], Shape::from_dims(&[1, 4, 1]));
         let a = x.const_f32_like(vec![-0.5f32], Shape::from_dims(&[1]));
         let b = x.const_f32_like(vec![1.0f32, 1.0, 1.0, 1.0], Shape::from_dims(&[1, 4, 1, 1]));
@@ -3707,7 +3725,8 @@ mod tests {
             ],
             Shape::from_dims(&[batch, seqlen, dim]),
             &dev,
-        );
+        )
+        .unwrap();
         // [batch, seqlen, dim] — positive (delta is a rate); all distinct.
         let delta = u.const_f32_like(
             vec![
@@ -3784,7 +3803,8 @@ mod tests {
             vec![0.5, -0.3, 1.0, 0.2, -0.5, 0.7],
             Shape::from_dims(&[batch, seqlen, dim]),
             &dev,
-        );
+        )
+        .unwrap();
         // Mixed signs → softplus exercises max(x,0) AND ln(1+exp(-|x|)).
         let delta = u.const_f32_like(
             vec![-0.5, 0.2, 0.8, -1.0, 0.3, -0.2],
@@ -3869,7 +3889,8 @@ mod tests {
             x_data,
             Shape::from_dims(&[batch, seqlen, heads, head_dim]),
             &dev,
-        );
+        )
+        .unwrap();
         let dt = x.const_f32_like(dt_data, Shape::from_dims(&[batch, seqlen, heads]));
         let a = x.const_f32_like(vec![-0.6f32, -1.0], Shape::from_dims(&[heads]));
         let b = x.const_f32_like(b_data, Shape::from_dims(&[batch, seqlen, heads, state_dim]));
@@ -4012,7 +4033,7 @@ mod tests {
         let x_data = vec![1.5f32, -2.0, 0.5, 3.0];
         let up_data = vec![1.0f32, 0.5, 2.0, -1.0];
         let shape = Shape::from_dims(&[4]);
-        let x = Tensor::from_f32(x_data.clone(), shape.clone(), &dev);
+        let x = Tensor::from_f32(x_data.clone(), shape.clone(), &dev).unwrap();
         let up = x.const_f32_like(up_data.clone(), shape.clone());
         let got = lower_realize_fused(
             &x,
@@ -4049,7 +4070,7 @@ mod tests {
         let (mul, add) = (2.5f64, -1.0f64);
         let x_data = vec![1.5f32, -2.0, 0.5, 3.0];
         let shape = Shape::from_dims(&[4]);
-        let x = Tensor::from_f32(x_data.clone(), shape.clone(), &dev);
+        let x = Tensor::from_f32(x_data.clone(), shape.clone(), &dev).unwrap();
         let got = lower_realize_fused(
             &x,
             fuel_graph::Op::Fused(
@@ -4086,7 +4107,7 @@ mod tests {
         }
         let g_data = vec![1.0f32, -0.5, 0.3, 0.2, 1.5, -1.0];
         let shape = Shape::from_dims(&[rows, cols]);
-        let s = Tensor::from_f32(s_data.clone(), shape.clone(), &dev);
+        let s = Tensor::from_f32(s_data.clone(), shape.clone(), &dev).unwrap();
         let g = s.const_f32_like(g_data.clone(), shape.clone());
         let got = lower_realize_fused(
             &s,
@@ -4124,7 +4145,7 @@ mod tests {
         let x_data = vec![1.0f32, -2.0, 0.5, 3.0, 0.25, -1.5];
         let g_data = vec![0.5f32, 1.0, -0.3, 0.2, -1.0, 0.7];
         let shape = Shape::from_dims(&[rows, cols]);
-        let x = Tensor::from_f32(x_data.clone(), shape.clone(), &dev);
+        let x = Tensor::from_f32(x_data.clone(), shape.clone(), &dev).unwrap();
         let g = x.const_f32_like(g_data.clone(), shape.clone());
         let got = lower_realize_fused(
             &x,
@@ -4167,7 +4188,7 @@ mod tests {
         let x_data = vec![1.0f32, -2.0, 0.5, 3.0, 0.25, -1.5];
         let g_data = vec![0.5f32, 1.0, -0.3, 0.2, -1.0, 0.7];
         let shape = Shape::from_dims(&[rows, cols]);
-        let x = Tensor::from_f32(x_data.clone(), shape.clone(), &dev);
+        let x = Tensor::from_f32(x_data.clone(), shape.clone(), &dev).unwrap();
         let g = x.const_f32_like(g_data.clone(), shape.clone());
         let got = lower_realize_fused(
             &x,
@@ -4218,7 +4239,7 @@ mod tests {
         let up_data = vec![10.0f32, 5.0]; // [2,1] — one per reduced row.
         let x_shape = Shape::from_dims(&[2, 3]);
         let up_shape = Shape::from_dims(&[2, 1]);
-        let x = Tensor::from_f32(x_data.clone(), x_shape.clone(), &dev);
+        let x = Tensor::from_f32(x_data.clone(), x_shape.clone(), &dev).unwrap();
         let up = x.const_f32_like(up_data.clone(), up_shape);
         let got = lower_realize_fused(
             &x,
@@ -4248,7 +4269,7 @@ mod tests {
         let x_data = vec![0.0f32, 1.0, 2.0, 3.0, 1.0, 0.0, -1.0, -2.0];
         let w_data = vec![0.5f32, 1.0, -0.5, 1.0, 0.0, 2.0];
         let bias_data = vec![0.1f32, -0.2];
-        let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[b, c, x_seq]), &dev);
+        let x = Tensor::from_f32(x_data.clone(), Shape::from_dims(&[b, c, x_seq]), &dev).unwrap();
         let w = x.const_f32_like(w_data.clone(), Shape::from_dims(&[c, 1, k]));
         let bias = x.const_f32_like(bias_data.clone(), Shape::from_dims(&[c]));
         let got = lower_realize_fused(
@@ -4304,7 +4325,7 @@ mod tests {
         let do_data = vec![0.5f32, -1.0, 0.2, 0.3]; // [Sq,D]
         let qshape = Shape::from_dims(&[1, 1, sq, d]);
         let kshape = Shape::from_dims(&[1, 1, sk, d]);
-        let q = Tensor::from_f32(q_data.clone(), qshape.clone(), &dev);
+        let q = Tensor::from_f32(q_data.clone(), qshape.clone(), &dev).unwrap();
         let k = q.const_f32_like(k_data.clone(), kshape.clone());
         let v = q.const_f32_like(v_data.clone(), kshape.clone());
         let dout = q.const_f32_like(do_data.clone(), qshape.clone());
@@ -4428,7 +4449,7 @@ mod tests {
         let bt = vec![0u32, 2u32]; // block_table [1,2]: sequence uses blocks 0 and 2
         let cl = vec![3u32]; // context_lens [1]: only the first 3 keys are valid
 
-        let q = Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, 1, 1, 2]), &dev);
+        let q = Tensor::from_f32(q_data.clone(), Shape::from_dims(&[1, 1, 1, 2]), &dev).unwrap();
         let kcache = q.const_f32_like(kc.clone(), Shape::from_dims(&[3, 2, 1, 2]));
         let vcache = q.const_f32_like(vc.clone(), Shape::from_dims(&[3, 2, 1, 2]));
         let block_table = q.const_u32_like(bt, Shape::from_dims(&[1, 2]));
@@ -4500,7 +4521,8 @@ mod tests {
     #[test]
     #[cfg(feature = "cuda")]
     fn cuda_executor_matches_cpu_on_add_mul() {
-        let a = Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu());
+        let a =
+            Tensor::from_f32(vec![1.0, 2.0, 3.0], Shape::from_dims(&[3]), &Device::cpu()).unwrap();
         let b = a.const_f32_like(vec![4.0, 5.0, 6.0], Shape::from_dims(&[3]));
         let c = a.add(&b).unwrap().mul(&a).unwrap();
         let cpu_result = c.realize_f32();
@@ -4545,7 +4567,8 @@ mod tests {
             vec![f32::NAN, -2.0, 3.0, f32::NAN],
             Shape::from_dims(&[4]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let b = a.const_f32_like(vec![1.0, f32::NAN, 2.0, f32::NAN], Shape::from_dims(&[4]));
 
         let max_lazy = a.maximum(&b).unwrap();
@@ -4622,7 +4645,8 @@ mod tests {
             vec![f32::NAN, -2.0, 3.0],
             Shape::from_dims(&[3]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let relu_lazy = a.relu();
         let cpu_result = relu_lazy.realize_f32();
         let cuda_result = relu_lazy.realize_f32_cuda(&cuda);
@@ -4648,7 +4672,8 @@ mod tests {
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let b = a.const_f32_like(
             vec![7.0, 8.0, 9.0, 10.0, 11.0, 12.0],
             Shape::from_dims(&[3, 2]),
@@ -4672,7 +4697,8 @@ mod tests {
             (0..12).map(|i| i as f32 * 0.1).collect::<Vec<_>>(),
             Shape::from_dims(&[1, 3, 4]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let w = x.const_f32_like(
             (0..8).map(|i| i as f32 * 0.2).collect::<Vec<_>>(),
             Shape::from_dims(&[4, 2]),
@@ -4694,7 +4720,8 @@ mod tests {
             (0..24).map(|i| i as f32).collect::<Vec<_>>(),
             Shape::from_dims(&[1, 2, 3, 4]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let y = x.permute([0, 2, 1, 3_usize]).unwrap();
         let cpu = y.realize_f32();
         let exe = fuel_cuda_backend::CudaDevice::new(0).unwrap();
@@ -4709,7 +4736,8 @@ mod tests {
             vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             Shape::from_dims(&[2, 3]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let y = x.softmax_last_dim().unwrap();
         let cpu = y.realize_f32();
         let exe = fuel_cuda_backend::CudaDevice::new(0).unwrap();
@@ -4744,7 +4772,7 @@ mod tests {
         let data: Vec<f32> = (0..n * last)
             .map(|i| ((i as f32) * 0.13).sin() * 2.0 - 0.7)
             .collect();
-        let x = Tensor::from_f32(data, Shape::from_dims(&[n, last]), &Device::cpu());
+        let x = Tensor::from_f32(data, Shape::from_dims(&[n, last]), &Device::cpu()).unwrap();
         let y = x.softmax_last_dim().unwrap();
 
         // CPU baseline: fused SoftmaxLastDim through the standard
@@ -4786,7 +4814,8 @@ mod tests {
             vec![1.0, 2.0, 3.0, 4.0],
             Shape::from_dims(&[2, 2]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let b = a.const_f32_like(vec![5.0, 6.0, 7.0, 8.0], Shape::from_dims(&[2, 2]));
         let cat = a.concat(&b, 1).unwrap(); // [2, 4]
         let sliced = cat.slice(1, 1, 2).unwrap(); // [2, 2]
@@ -4803,7 +4832,8 @@ mod tests {
             (0..8).map(|i| i as f32 * 0.5 - 1.5).collect::<Vec<_>>(),
             Shape::from_dims(&[2, 4]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let y = x.rms_norm_last_dim(1e-5).unwrap();
         let cpu = y.realize_f32();
         let exe = fuel_cuda_backend::CudaDevice::new(0).unwrap();
@@ -4816,7 +4846,8 @@ mod tests {
 
     #[test]
     fn realize_f64_through_bridge() {
-        let a = Tensor::from_f64(vec![1.5, 2.5, 3.5], Shape::from_dims(&[3]), &Device::cpu());
+        let a =
+            Tensor::from_f64(vec![1.5, 2.5, 3.5], Shape::from_dims(&[3]), &Device::cpu()).unwrap();
         let b = a.mul(&a).unwrap();
         assert_eq!(b.realize_f64(), vec![2.25, 6.25, 12.25]);
     }
@@ -4838,7 +4869,8 @@ mod tests {
 
         // Fake input: [1, seq, d_model]
         let x_data: Vec<f32> = (0..seq * d_model).map(|i| i as f32 * 0.01).collect();
-        let x = Tensor::from_f32(x_data, Shape::from_dims(&[1, seq, d_model]), &Device::cpu());
+        let x =
+            Tensor::from_f32(x_data, Shape::from_dims(&[1, seq, d_model]), &Device::cpu()).unwrap();
 
         // Fake weights (just identities for simplicity — makes the
         // test easy to verify output finiteness without needing to
@@ -17342,7 +17374,8 @@ mod generate_tests {
             model.weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let token_ids = embed.const_u32_like(vec![next_token], Shape::from_dims(&[seq]));
         let mut h = embed
             .index_select(0, &token_ids)
@@ -23755,7 +23788,8 @@ mod lora_tests {
         let rank = 2;
         let alpha = 8.0_f32;
 
-        let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &Device::cpu());
+        let anchor =
+            Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
         // Base weight [in, out].
         let base_vec: Vec<f32> = (0..in_f * out_f).map(|i| (i as f32) * 0.1).collect();
         let lora_a_vec: Vec<f32> = (0..in_f * rank).map(|i| (i as f32) * 0.05).collect();
@@ -23835,7 +23869,8 @@ mod lora_tests {
             vec![0.0_f32; 10],
             Shape::from_dims(&[2, 5]), // trailing dim 5 != in_features 4
             &Device::cpu(),
-        );
+        )
+        .unwrap();
         let err = ws
             .apply_linear(&x, 4, 3)
             .expect_err("must not panic, must Err");
@@ -23856,7 +23891,8 @@ mod lora_tests {
             in_features: 4,
             out_features: 4,
         };
-        let x = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[2, 4]), &Device::cpu());
+        let x =
+            Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[2, 4]), &Device::cpu()).unwrap();
         // Trailing dim matches in_features, so this reaches the stored-shape
         // check rather than the contract check above.
         let err = ws
@@ -23872,7 +23908,8 @@ mod lora_tests {
     #[test]
     fn apply_linear_with_bias_errors_on_wrong_bias_length() {
         let ws = WeightStorage::F32(Arc::from(vec![0.0_f32; 12])); // 4 x 3
-        let x = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[2, 4]), &Device::cpu());
+        let x =
+            Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[2, 4]), &Device::cpu()).unwrap();
         let bias: Arc<[f32]> = Arc::from(vec![0.0_f32; 2]); // wrong: out_features is 3
         let err = ws
             .apply_linear_with_bias(&x, 4, 3, bias)
@@ -24100,7 +24137,8 @@ mod llama_tests {
             model.weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &crate::Device::cpu(),
-        );
+        )
+        .unwrap();
         let token_ids = embed.const_u32_like(tokens.clone(), Shape::from_dims(&[tokens.len()]));
         let embeds = embed
             .index_select(0_usize, &token_ids)
@@ -24163,7 +24201,8 @@ mod llama_tests {
             model.weights.token_embedding.clone(),
             Shape::from_dims(&[cfg.vocab_size, cfg.dim]),
             &crate::Device::cpu(),
-        );
+        )
+        .unwrap();
         let token_ids = embed.const_u32_like(tokens.clone(), Shape::from_dims(&[tokens.len()]));
         let embeds = embed
             .index_select(0_usize, &token_ids)
@@ -24260,7 +24299,7 @@ mod phase_a1_wrapper_tests {
     use super::*;
 
     fn cpu_f32(data: Vec<f32>, shape: &[usize]) -> Tensor {
-        Tensor::from_f32(data, shape.to_vec(), &Device::cpu())
+        Tensor::from_f32(data, shape.to_vec(), &Device::cpu()).unwrap()
     }
 
     #[test]
@@ -24687,7 +24726,7 @@ mod phase_a2_composite_tests {
     use super::*;
 
     fn cpu_f32(data: Vec<f32>, shape: &[usize]) -> Tensor {
-        Tensor::from_f32(data, shape.to_vec(), &Device::cpu())
+        Tensor::from_f32(data, shape.to_vec(), &Device::cpu()).unwrap()
     }
 
     #[test]
@@ -25281,7 +25320,7 @@ mod phase_a3_keepdim_tests {
     use super::*;
 
     fn cpu_f32(data: Vec<f32>, shape: &[usize]) -> Tensor {
-        Tensor::from_f32(data, shape.to_vec(), &Device::cpu())
+        Tensor::from_f32(data, shape.to_vec(), &Device::cpu()).unwrap()
     }
 
     #[test]
@@ -25350,7 +25389,7 @@ mod phase_a4_composite_tests {
     use super::*;
 
     fn cpu_f32(data: Vec<f32>, shape: &[usize]) -> Tensor {
-        Tensor::from_f32(data, shape.to_vec(), &Device::cpu())
+        Tensor::from_f32(data, shape.to_vec(), &Device::cpu()).unwrap()
     }
 
     #[test]
@@ -25448,7 +25487,7 @@ mod phase_a5_factory_tests {
     use super::*;
 
     fn cpu_f32(data: Vec<f32>, shape: &[usize]) -> Tensor {
-        Tensor::from_f32(data, shape.to_vec(), &Device::cpu())
+        Tensor::from_f32(data, shape.to_vec(), &Device::cpu()).unwrap()
     }
 
     #[test]
@@ -25517,7 +25556,7 @@ mod phase_a5_factory_tests {
 
     #[test]
     fn meshgrid_ij_indexing_two_inputs() {
-        let x = Tensor::from_f32(vec![1.0_f32, 2.0, 3.0], vec![3], &Device::cpu());
+        let x = Tensor::from_f32(vec![1.0_f32, 2.0, 3.0], vec![3], &Device::cpu()).unwrap();
         let y = x.const_f32_like(vec![4.0_f32, 5.0], vec![2]);
         let grids = Tensor::meshgrid(&[&x, &y], false).unwrap();
         assert_eq!(grids.len(), 2);
@@ -25532,7 +25571,7 @@ mod phase_a5_factory_tests {
 
     #[test]
     fn meshgrid_xy_indexing_swaps_first_two() {
-        let x = Tensor::from_f32(vec![1.0_f32, 2.0, 3.0], vec![3], &Device::cpu());
+        let x = Tensor::from_f32(vec![1.0_f32, 2.0, 3.0], vec![3], &Device::cpu()).unwrap();
         let y = x.const_f32_like(vec![4.0_f32, 5.0], vec![2]);
         let grids = Tensor::meshgrid(&[&x, &y], true).unwrap();
         // xy: shapes flip to [len(y), len(x)] = [2, 3].
@@ -25546,13 +25585,13 @@ mod phase_a5_factory_tests {
 
     #[test]
     fn meshgrid_rejects_single_input() {
-        let x = Tensor::from_f32(vec![1.0_f32, 2.0], vec![2], &Device::cpu());
+        let x = Tensor::from_f32(vec![1.0_f32, 2.0], vec![2], &Device::cpu()).unwrap();
         assert!(Tensor::meshgrid(&[&x], false).is_err());
     }
 
     #[test]
     fn meshgrid_rejects_non_rank_one() {
-        let x = Tensor::from_f32(vec![1.0; 4], vec![2, 2], &Device::cpu());
+        let x = Tensor::from_f32(vec![1.0; 4], vec![2, 2], &Device::cpu()).unwrap();
         let y = x.const_f32_like(vec![1.0, 2.0], vec![2]);
         assert!(Tensor::meshgrid(&[&x, &y], false).is_err());
     }
@@ -25726,7 +25765,7 @@ mod phase_a5_factory_tests {
 
     #[test]
     fn norm_is_sqrt_sum_sq() {
-        let t = Tensor::from_f32(vec![3.0_f32, 4.0], vec![2], &Device::cpu());
+        let t = Tensor::from_f32(vec![3.0_f32, 4.0], vec![2], &Device::cpu()).unwrap();
         let n = t.norm();
         assert!((n.realize_f32()[0] - 5.0).abs() < 1e-6);
     }

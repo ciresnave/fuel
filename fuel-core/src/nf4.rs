@@ -441,7 +441,8 @@ mod tests {
             vec![1.0_f32, 2.0, 2.0, 4.0],
             Shape::from_dims(&[1, 4]),
             &device,
-        );
+        )
+        .unwrap();
         // Must be on the same graph as the weight tensors — go
         // through the weight's graph anchor.
         let activations_t = weight

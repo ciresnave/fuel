@@ -781,7 +781,7 @@ mod tests {
 
         // Path 1: fused op.
         let logits_fused =
-            Tensor::from_f32(logits_data.clone(), Shape::from_dims(&[3, 4]), &device);
+            Tensor::from_f32(logits_data.clone(), Shape::from_dims(&[3, 4]), &device).unwrap();
         let targets_fused =
             lt_const_i64_like(&logits_fused, targets_i64.clone(), Shape::from_dims(&[3]));
         let fused_loss =
@@ -791,7 +791,8 @@ mod tests {
         // Path 2: primitive composition. The one-hot targets must
         // live on the same graph as logits — use `const_f32_like`
         // off `logits_prim` so the second leaf joins that graph.
-        let logits_prim = Tensor::from_f32(logits_data, Shape::from_dims(&[3, 4]), &device);
+        let logits_prim =
+            Tensor::from_f32(logits_data, Shape::from_dims(&[3, 4]), &device).unwrap();
         let targets_prim = logits_prim.const_f32_like(targets_onehot, Shape::from_dims(&[3, 4]));
         let prim_loss = loss::cross_entropy_with_logits(&logits_prim, &targets_prim)
             .unwrap()
@@ -808,7 +809,7 @@ mod tests {
     fn fused_softmax_cross_entropy_none_returns_per_row() {
         let device = crate::Device::cpu();
         let logits_data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, 0.0, 0.0, 0.0, 0.0];
-        let logits = Tensor::from_f32(logits_data, Shape::from_dims(&[2, 4]), &device);
+        let logits = Tensor::from_f32(logits_data, Shape::from_dims(&[2, 4]), &device).unwrap();
         let targets = lt_const_i64_like(&logits, vec![1_i64, 3], Shape::from_dims(&[2]));
         let per_row = loss::fused_softmax_cross_entropy(&logits, &targets, Reduction::None, -100)
             .realize_f32();
@@ -833,7 +834,7 @@ mod tests {
     fn fused_softmax_cross_entropy_ignore_index_masks_row() {
         let device = crate::Device::cpu();
         let logits_data: Vec<f32> = vec![1.0, 2.0, 3.0, 4.0, 0.0, 0.0, 0.0, 0.0];
-        let logits = Tensor::from_f32(logits_data, Shape::from_dims(&[2, 4]), &device);
+        let logits = Tensor::from_f32(logits_data, Shape::from_dims(&[2, 4]), &device).unwrap();
         let targets = lt_const_i64_like(&logits, vec![1_i64, -100], Shape::from_dims(&[2]));
         let loss_val = loss::fused_softmax_cross_entropy(&logits, &targets, Reduction::Mean, -100)
             .realize_f32()[0];
@@ -857,7 +858,8 @@ mod tests {
             vec![0.0_f32, 0.0, 1.0, 2.0],
             Shape::from_dims(&[1, 1, 4]),
             &device,
-        );
+        )
+        .unwrap();
         // weight = [0.5, 1.0, 2.0] for one channel, kernel 3
         let w = x.const_f32_like(vec![0.5_f32, 1.0, 2.0], Shape::from_dims(&[1, 1, 3]));
         let bias = x.const_f32_like(vec![0.1_f32], Shape::from_dims(&[1]));
@@ -875,7 +877,8 @@ mod tests {
             vec![0.0_f32, 0.0, 1.0, 2.0],
             Shape::from_dims(&[1, 1, 4]),
             &device,
-        );
+        )
+        .unwrap();
         let w = x.const_f32_like(vec![0.5_f32, 1.0, 2.0], Shape::from_dims(&[1, 1, 3]));
         let bias = x.const_f32_like(vec![0.1_f32], Shape::from_dims(&[1]));
         let out = x.causal_conv1d(&w, &bias, true).realize_f32();
@@ -918,7 +921,7 @@ mod tests {
         let device = crate::Device::cpu();
         // batch=1, seqlen=1, dim=1, dstate=1. Same numbers as the
         // byte-kernel single-step test: expected y = 3.0.
-        let u = Tensor::from_f32(vec![3.0_f32], Shape::from_dims(&[1, 1, 1]), &device);
+        let u = Tensor::from_f32(vec![3.0_f32], Shape::from_dims(&[1, 1, 1]), &device).unwrap();
         let delta = u.const_f32_like(vec![1.0_f32], Shape::from_dims(&[1, 1, 1]));
         let a = u.const_f32_like(vec![-1.0_f32], Shape::from_dims(&[1, 1]));
         let b = u.const_f32_like(vec![2.0_f32], Shape::from_dims(&[1, 1, 1]));
@@ -932,7 +935,7 @@ mod tests {
     #[test]
     fn selective_scan_with_softplus_end_to_end() {
         let device = crate::Device::cpu();
-        let u = Tensor::from_f32(vec![1.0_f32], Shape::from_dims(&[1, 1, 1]), &device);
+        let u = Tensor::from_f32(vec![1.0_f32], Shape::from_dims(&[1, 1, 1]), &device).unwrap();
         let delta = u.const_f32_like(vec![0.0_f32], Shape::from_dims(&[1, 1, 1]));
         let a = u.const_f32_like(vec![0.0_f32], Shape::from_dims(&[1, 1]));
         let b = u.const_f32_like(vec![1.0_f32], Shape::from_dims(&[1, 1, 1]));
@@ -982,7 +985,7 @@ mod tests {
     fn ssd_chunk_scan_basic_end_to_end() {
         let device = crate::Device::cpu();
         // [batch=1, seqlen=1, heads=1, head_dim=1]
-        let x = Tensor::from_f32(vec![3.0_f32], Shape::from_dims(&[1, 1, 1, 1]), &device);
+        let x = Tensor::from_f32(vec![3.0_f32], Shape::from_dims(&[1, 1, 1, 1]), &device).unwrap();
         let dt = x.const_f32_like(vec![1.0_f32], Shape::from_dims(&[1, 1, 1]));
         let a = x.const_f32_like(vec![-1.0_f32], Shape::from_dims(&[1]));
         let b = x.const_f32_like(vec![2.0_f32], Shape::from_dims(&[1, 1, 1, 1]));
@@ -1030,7 +1033,8 @@ mod tests {
             vec![1.0_f32, 2.0, 2.0, 4.0],
             Shape::from_dims(&[1, 4]),
             &device,
-        );
+        )
+        .unwrap();
         let w_packed_t = activations
             .graph_tensor()
             .const_u8_like(vec![247_u8, 247, 127, 127], Shape::from_dims(&[2, 2]));

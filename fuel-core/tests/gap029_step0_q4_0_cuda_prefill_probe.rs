@@ -94,7 +94,7 @@ fn realize_q4_0(m: usize, k: usize, n: usize, dev: &Device) -> (Outcome, Vec<f32
     BlockQ4_0::to_float(&w_blocks, &mut deq);
 
     let a_data: Vec<f32> = (0..m * k).map(|i| ((i as f32) * 0.013).cos()).collect();
-    let x = Tensor::from_f32(a_data.clone(), Shape::from_dims(&[m, k]), dev);
+    let x = Tensor::from_f32(a_data.clone(), Shape::from_dims(&[m, k]), dev).unwrap();
     let w = x.const_u32_like(w_u32, Shape::from_dims(&[w_bytes.len() / 4]));
     let y = x
         .qmatmul(&w, QuantType::Q4_0, k, n)

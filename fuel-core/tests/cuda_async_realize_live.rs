@@ -51,7 +51,8 @@ fn mul_add_realize_on_cuda_matches_reference() {
         vec![1.0_f32, 2.0, 3.0, 4.0],
         Shape::from_dims(&[4]),
         &fuel_core::Device::cpu(),
-    );
+    )
+    .unwrap();
     // `const_f32_like` keeps `b` in `a`'s graph (a bare second `from_f32` would
     // mint a separate graph and `add` across graphs would fail).
     let b = a.const_f32_like(vec![10.0_f32, 20.0, 30.0, 40.0], Shape::from_dims(&[4]));
@@ -80,7 +81,8 @@ fn deep_chain_realize_on_cuda_matches_reference() {
         vec![1.0_f32, 2.0, 3.0, 4.0],
         Shape::from_dims(&[4]),
         &fuel_core::Device::cpu(),
-    );
+    )
+    .unwrap();
     let b = a.const_f32_like(vec![10.0_f32, 20.0, 30.0, 40.0], Shape::from_dims(&[4]));
 
     let t1 = a.add(&b).expect("add");
@@ -125,7 +127,8 @@ fn long_chain_pool_reuse_on_cuda_matches_reference() {
         a_host.clone(),
         Shape::from_dims(&[N]),
         &fuel_core::Device::cpu(),
-    );
+    )
+    .unwrap();
     let one = a.const_f32_like(vec![1.0_f32; N], Shape::from_dims(&[N]));
 
     let mut t = a.add(&one).expect("add 1");

@@ -128,7 +128,8 @@ fn lazy_flash_attn_matches_composed_attention_basic() {
         q_data.clone(),
         Shape::from_dims(&[b, h, sq, d]),
         &fuel_core::Device::cpu(),
-    );
+    )
+    .unwrap();
     let k = q.const_f32_like(k_data.clone(), Shape::from_dims(&[b, h, sk, d]));
     let v = q.const_f32_like(v_data.clone(), Shape::from_dims(&[b, h, sk, d]));
 
@@ -143,7 +144,8 @@ fn lazy_flash_attn_matches_composed_attention_basic() {
         q_data,
         Shape::from_dims(&[b, h, sq, d]),
         &fuel_core::Device::cpu(),
-    );
+    )
+    .unwrap();
     let k2 = q2.const_f32_like(k_data, Shape::from_dims(&[b, h, sk, d]));
     let v2 = q2.const_f32_like(v_data, Shape::from_dims(&[b, h, sk, d]));
     let composed = composed_attention(&q2, &k2, &v2, scale);
@@ -178,7 +180,8 @@ fn lazy_flash_attn_matches_naive_with_causal_mask() {
         q_data.clone(),
         Shape::from_dims(&[b, h, sq, d]),
         &fuel_core::Device::cpu(),
-    );
+    )
+    .unwrap();
     let k = q.const_f32_like(k_data.clone(), Shape::from_dims(&[b, h, sk, d]));
     let v = q.const_f32_like(v_data.clone(), Shape::from_dims(&[b, h, sk, d]));
     let fa_out = q

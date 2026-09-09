@@ -39,7 +39,7 @@ fn cuda_device() -> fuel_cuda_backend::CudaDevice {
 fn rotating_within_window_cuda() {
     require_cuda();
     let device = fuel_core::Device::cpu();
-    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
+    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
     let src = dest.const_f32_like(vec![7.0_f32, 8.0], Shape::from_dims(&[1, 2]));
     let position = dest.const_u32_like(vec![1_u32], Shape::from_dims(&[]));
     let post_write = dest
@@ -57,7 +57,7 @@ fn rotating_within_window_cuda() {
 fn rotating_splits_across_boundary_cuda() {
     require_cuda();
     let device = fuel_core::Device::cpu();
-    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device);
+    let dest = Tensor::from_f32(vec![0.0_f32; 8], Shape::from_dims(&[4, 2]), &device).unwrap();
     let src = dest.const_f32_like(vec![10.0_f32, 11.0, 20.0, 21.0], Shape::from_dims(&[2, 2]));
     let position = dest.const_u32_like(vec![3_u32], Shape::from_dims(&[]));
     let post_write = dest
@@ -81,7 +81,8 @@ fn rotating_mistral_style_decode_loop_cuda() {
         vec![0.0_f32; window * head_dim],
         Shape::from_dims(&[window, head_dim]),
         &device,
-    );
+    )
+    .unwrap();
     let tokens = [
         vec![1.0_f32, 1.1],
         vec![2.0_f32, 2.1],

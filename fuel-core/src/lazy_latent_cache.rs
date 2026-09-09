@@ -262,7 +262,7 @@ mod tests {
     use super::*;
 
     fn cpu_f32(data: Vec<f32>, shape: &[usize]) -> Tensor {
-        Tensor::from_f32(data, shape.to_vec(), &Device::cpu())
+        Tensor::from_f32(data, shape.to_vec(), &Device::cpu()).unwrap()
     }
 
     #[test]
