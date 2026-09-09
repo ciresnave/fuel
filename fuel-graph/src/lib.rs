@@ -7708,8 +7708,8 @@ impl NodeHandle {
         // LOCAL -- `build_rope_tables` owns the length guarantee and its
         // signature `-> (Vec<f32>, Vec<f32>)` does not carry it. So the message
         // claims NO proof; it names where the guarantee lives. `rope` returns
-        // `NodeHandle` and already asserts on rank, so the error channel it
-        // would need is a signature change -- a different obligation. See #157.
+        // `NodeHandle` and already asserts on rank, so giving it an error
+        // channel is a signature change -- a different obligation. See #157.
         let cos_t = self
             .const_f32_like(cos, Shape::from_dims(&[seq, d]))
             .expect("rope: build_rope_tables must return seq*d elements for [seq, d]");

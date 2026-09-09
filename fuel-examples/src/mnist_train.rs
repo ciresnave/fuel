@@ -146,7 +146,7 @@ impl MnistTrainer {
         let cfg = &self.cfg;
         let mk = |name: &str, dims: &[usize]| -> Result<Tensor> {
             let data: Arc<[f32]> = self.state.param_to_host(name)?.into();
-            Ok(Tensor::from_f32(data, Shape::from_dims(dims), &dev)?)
+            Tensor::from_f32(data, Shape::from_dims(dims), &dev)
         };
         let w1 = mk("w1", &[cfg.in_dim, cfg.hidden])?;
         let b1 = mk("b1", &[cfg.hidden])?;
