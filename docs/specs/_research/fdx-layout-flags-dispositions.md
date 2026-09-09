@@ -188,3 +188,48 @@ worst outcome, ignore-unknown is the option that manufactures it.
 measurements, the discriminator, and the scope find are Fuel 2's; the three
 rulings and their reasons are the Fuel architect's. **The tallies elsewhere in the
 GAP-286 amendment are mine and were certified structurally, not re-run.**
+
+## ⚠️ ARCHITECT'S AMENDMENT, 2026-09-09 — A RESERVED-BITS CONVENTION *DOES* EXIST, AND THE bits-2-31 RULING NOW RESTS ON THE SPEC'S OWN PRECEDENT
+
+**This section was written after the rulings above, by the architect, while preparing to write the bits-2-31 clause into `docs/specs/dlpack-extension.md`. It does not change the ruling. It changes what the ruling is grounded in, from my judgement to the document's own authoritative table — which is a much stronger footing.**
+
+### The finding
+
+The measurement above says *"there is no general reserved-bits rule (the `MUST be 0` hits are all V7 about a different field)."* **The `MUST be 0` half is correct. The conclusion is not — the convention exists and is spelled differently:**
+
+```
+:785  /* bits 9..63 reserved (0). */
+:807  | 9..63 | (reserved, 0) | next addition takes bit 9 from THIS table |
+```
+
+**Line 807 sits inside the block the spec itself calls the *"Authoritative flag-bit allocation table (single owner — this is the only place a bit is assigned)"*.** So it is not incidental prose; it is the normative statement, in the one place the spec designates as normative for bits.
+
+### ⚠️ WHY A CORRECT MEASUREMENT MISSED IT — DISPERSAL, ONE CONVENTION IN TWO SPELLINGS
+
+    query `MUST be 0`        -> 2 hits, both `cap_kind` (V7).  The query WORKS.
+    the actual convention    -> "reserved (0)" and "(reserved, 0)"
+    a `MUST be 0` grep is STRUCTURALLY BLIND to a table cell reading "(reserved, 0)"
+
+**The positive control passes and the query still asks the wrong question** — it looks for an obligation phrased as a MUST, and the spec phrases this one as an allocation-table annotation. **Same defect class as a kv-head denominator spelled seven ways: one construct, several names, and the failure is a CLEAN, PLAUSIBLE, CONFIDENT NULL.** A collision gives you hits to sift and you notice; dispersal gives you a well-formed "no such rule" and nothing looks wrong.
+
+### ⚠️ AND I NEARLY RETRACTED THE RULING ON THE STRENGTH OF ONE CLAUSE
+
+§9.2 already says: *"A consumer that recognizes the version but not a **set flag bit it does not understand** MUST NOT proceed as if the tensor were standard if `FDX_FLAG_MEANING_REQUIRES_EXT` is set."* **I read that as *ignore-unknown*, concluded the spec's posture contradicted my must-be-zero ruling, and began drafting a retraction. Reading the ADJACENT allocation table refuted my own correction.**
+
+**They are not alternatives. The spec uses BOTH, for different questions:**
+
+| mechanism | governs | site |
+|---|---|---|
+| **reserved (0)** | what a producer may write **at the current version** | `:785`, `:807` |
+| **`MEANING_REQUIRES_EXT`** | what an OLDER consumer does when a NEWER version has allocated a bit — version skew | §9.2 |
+| **`struct_bytes` size-prefix** | trailing fields an older reader has never heard of (P8) | `:835` |
+
+**Three mechanisms, three questions.** A ruling that picks one and ignores the others is under-specified; **the bits-2-31 disposition needs the first AND the second, exactly as the `flags` field already has them.**
+
+### What this changes about writing the clause
+
+**Writing `bits 2..31 reserved (0)` into the spec is now APPLYING THE HOUSE CONVENTION to a field that was written without it — not creating a new obligation.** That matters for the audience: the spec binds **Fuel, Baracuda, Vulkane and any external DLPack consumer**, and asking them to follow, for `layout_flags`, the rule they already follow for `flags` is a categorically smaller ask than asking them to adopt a policy invented here.
+
+⚠️ **It also means the version-skew half must be written in the same change, or the clause is half a policy:** an older consumer meeting a `layout_flags` bit a newer version allocated is governed by `MEANING_REQUIRES_EXT`, exactly as for `flags`. **Writing "reserved (0)" alone would leave the skew case undefined and invite the reading I nearly filed.**
+
+**STILL NOT WRITTEN.** This amendment names the precedent and the required shape; the spec edit is a cross-project-visible change to a document whose stated audience includes two sibling projects, and it goes out as a propose-first ask, not a unilateral edit. Tracked at GAP-286.
