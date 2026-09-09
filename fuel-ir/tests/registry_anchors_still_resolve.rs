@@ -363,10 +363,15 @@ fn every_registry_anchor_still_resolves_and_still_locates() {
     assert!(
         new_rot.is_empty(),
         "a registry anchor no longer resolves, and it is NOT in the baseline:\n  {}\n\n\
-         The row cites code by a prose string so a rename cannot break it — but a prose \
-         anchor is fragile against the prose ITSELF being edited, the subject MOVING FILE, \
-         a DECLARATION FORM changing, or (with `-w`) the token GROWING. All five baselined \
-         entries died one of those ways, with the subject still alive.\n\n\
+         ⚠️ FIRST ASK WHICH OF TWO OPPOSITE THINGS HAPPENED — they share this arm:\n\
+         \x20\x20(a) THE CITATION ROTTED, the deferral is still undone -> RE-ANCHOR it;\n\
+         \x20\x20(b) THE DEFERRAL WAS DISCHARGED and the fix deleted what was anchored,\n\
+         \x20\x20\x20\x20\x20\x20so the row's own status text is now stale -> re-cite the row or close it.\n\n\
+         The discriminator is whether the SUBJECT is still there, and this gate cannot see \
+         that. Five baselined entries are (a) — prose REWORDED, subject MOVING FILE, a \
+         DECLARATION FORM changing, or (with `-w`) the token GROWING; subject alive in every \
+         case. GAP-303 is (b): #150 landed part of that deferral and deleted the anchored \
+         comment.\n\n\
          RE-ANCHOR IT, or record what was searched and why it is gone. Do not delete the \
          anchor silently, and do not add it here to make this pass.",
         new_rot
