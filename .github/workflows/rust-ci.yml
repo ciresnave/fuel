@@ -636,6 +636,50 @@ jobs:
           # RENAME of the test is a valid reason to update this line.
           grep -q 'fuel_emits_only_recognized_sk4_dtype_spellings' "$out" \
             || { echo '::error::the sk4 byte-match test (fuel_emits_only_recognized_sk4_dtype_spellings) did not run — its integration target was gated away, renamed, or excluded. If it was RENAMED, update this grep; otherwise re-enable the target. See GAP-173.'; exit 1; }
+      - name: Run dlpack-gated fuel-ir tests (GAP-299; FDX wire codec)
+        # SAME SHAPE AS THE TELEMETRY STEP ABOVE, one crate over, for the same
+        # reason. `cargo test --workspace` uses DEFAULT features and fuel-ir's
+        # `dlpack` is `default = []`, so the ONE step naming the feature --
+        # `cargo check -p fuel-ir -p fuel-memory --features fuel-memory/dlpack
+        # --all-targets` in the Check job -- proves the cell BUILDS and never
+        # that its assertions HOLD. Those are different claims; only the second
+        # catches a regression in the FDX wire codec.
+        #
+        # MEASURED 2026-09-08 at 3fee13bf, before this step existed:
+        #   cargo test -p fuel-ir --lib                    ->  72 passed
+        #   cargo test -p fuel-ir --lib --features dlpack  -> 187 passed
+        # So 115 assertions -- including the whole `dlpack/validate/tests.rs`
+        # suite -- were compiled by CI and had never been observed to execute
+        # anywhere. The full invocation this step runs covers 12 suites.
+        #
+        # `always() &&` is load-bearing for the reason given on the step above:
+        # without it this is skipped whenever an earlier step fails, and on a
+        # summary page a SKIPPED step and a PASSED step look identical.
+        #
+        # NOT ADDED HERE, DELIBERATELY: a `--features dlpack` CLIPPY leg. Four
+        # pre-existing `-D warnings` violations sit behind the feature
+        # (`dlpack/validate.rs` x3, `dlpack/convert.rs` x1, none of them
+        # introduced by this change), so that leg would be BORN RED AND STAY
+        # RED -- the anti-pattern this workflow already documents for the mkl
+        # cells. The lints come first, then the leg. GAP-299 holds both halves
+        # and says they must not land together.
+        if: always() && runner.os == 'Linux'
+        run: |
+          set -uo pipefail
+          out="${RUNNER_TEMP:-/tmp}/dlpack-fuel-ir-test.log"
+          cargo test -p fuel-ir --features dlpack 2>&1 | tee "$out"
+          st=${PIPESTATUS[0]}
+          [ "$st" -eq 0 ] || exit "$st"
+          grep -qE 'test result: ok\. [1-9]' "$out" \
+            || { echo '::error::the dlpack test step ran ZERO tests -- a filter, a missing feature gate, or unbuilt test targets. `cargo test` reports ok and exits 0 on a zero-match run, which is precisely how GAP-299 was found.'; exit 1; }
+          # The count proves SOMETHING ran, never that the DLPACK tests did. If
+          # the module were gated away the lib suite would still run its 72
+          # default tests and the guard above would pass on that number alone --
+          # the exact drift this step exists to catch, one level in. So also
+          # require a dlpack-namespaced test BY NAME. A legitimate RENAME of
+          # that test is a valid reason to update this line.
+          grep -q 'dlpack::abi::tests::dlpack_struct_sizes_match_c_header' "$out" \
+            || { echo '::error::no dlpack-namespaced test ran -- the module was compiled away, the feature did not reach fuel-ir, or the anchor test was renamed. See GAP-299.'; exit 1; }
 
   conflict-markers:
     name: Conflict markers
