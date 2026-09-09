@@ -918,22 +918,18 @@ mod tests {
         fuel_core::test_utils::assert_allclose_f32(&out, &out_ref, 1e-4, 1e-3);
     }
 
-    /// GAP-308 born-red: a sequence longer than `max_position_embeddings` is
-    /// REJECTED with a typed error, not a panic. Asserts the error MESSAGE (the
-    /// `max_position_embeddings` fragment), not merely `is_err()`: once the guard
-    /// is a decline rather than an `assert!`, `seq > max` would otherwise run on
-    /// to an index panic downstream, and an `is_err()`-only test would pass on a
-    /// panic it never saw. Before the conversion this test panicked at the
-    /// `assert!`; after it, both entry points return the decline.
-    #[test]
-    fn forward_declines_seq_over_max_position_embeddings() {
+    /// Minimal `BertModel` (zeros/ones weights) with the given
+    /// `max_position_embeddings`, for the decline born-red. Fixture only —
+    /// carries NO assertions, so extracting it out of the test cannot make the
+    /// test vacuous; only the assertions that stay inline in the test can fail.
+    fn tiny_bert(max_position_embeddings: usize) -> BertModel {
         let cfg = BertConfig {
             vocab_size: 100,
             hidden_size: 32,
             num_hidden_layers: 1,
             num_attention_heads: 4,
             intermediate_size: 64,
-            max_position_embeddings: 4,
+            max_position_embeddings,
             type_vocab_size: 2,
             layer_norm_eps: 1e-12,
         };
@@ -967,10 +963,23 @@ mod tests {
                 })
                 .collect(),
         };
-        let model = BertModel {
+        BertModel {
             config: cfg,
             weights,
-        };
+        }
+    }
+
+    /// GAP-308 born-red: a sequence longer than `max_position_embeddings` is
+    /// REJECTED with a typed error, not a panic. Asserts the error MESSAGE (the
+    /// `max_position_embeddings` fragment), not merely `is_err()`: in a lazy
+    /// graph, with the guard removed, `seq > max` does not panic — `forward`
+    /// returns an `Ok` handle to an INVALID UNREALIZED graph (IndexSelect 8 into
+    /// a size-4 position table), so an `is_err()`-only test would pass on a
+    /// downstream failure it never saw. The fixture lives in `tiny_bert` (no
+    /// assertions); both assertion cases stay inline here.
+    #[test]
+    fn forward_declines_seq_over_max_position_embeddings() {
+        let model = tiny_bert(4);
         // seq = 8 > max_position_embeddings = 4
         let ids: Vec<u32> = (0..8).collect();
 
