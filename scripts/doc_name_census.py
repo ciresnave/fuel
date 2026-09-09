@@ -157,6 +157,24 @@ def doc_names():
     return seen
 
 
+def _rust_paths():
+    """Every `*.rs` path under ROOT, with `target/` and `.git/` pruned."""
+    for dirpath, dirs, files in os.walk(ROOT):
+        dirs[:] = [d for d in dirs if d != "target" and d != ".git"]
+        for fn in files:
+            if fn.endswith(".rs"):
+                yield os.path.join(dirpath, fn)
+
+
+def _read_text(path):
+    """The file's text, or None when it cannot be read."""
+    try:
+        with open(path, encoding="utf-8", errors="ignore") as fh:
+            return fh.read()
+    except OSError:
+        return None
+
+
 def code_tokens():
     """Every CamelCase word-token appearing in any *.rs (target/ and .git/ excluded).
 
@@ -169,21 +187,11 @@ def code_tokens():
     tools that do not exist yet.
     """
     toks = set()
-    for dirpath, dirs, files in os.walk(ROOT):
-        dirs[:] = [d for d in dirs if d != "target" and d != ".git"]
-        for fn in files:
-            if not fn.endswith(".rs"):
-                continue
-            full = os.path.join(dirpath, fn)
-            rel = os.path.relpath(full, ROOT).replace(os.sep, "/")
-            try:
-                with open(full, encoding="utf-8", errors="ignore") as fh:
-                    txt = fh.read()
-            except OSError:
-                continue
-            for tok in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", txt):
-                if is_camel(tok):
-                    toks.add(tok)
+    for path in _rust_paths():
+        txt = _read_text(path)
+        if txt is None:
+            continue
+        toks.update(t for t in re.findall(r"[A-Za-z_][A-Za-z0-9_]*", txt) if is_camel(t))
     return toks
 
 
