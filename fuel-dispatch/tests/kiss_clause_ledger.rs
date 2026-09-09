@@ -266,6 +266,13 @@ const LEDGER: &[Row] = &[
         exists_at: None,
     },
     Row {
+        clause: "KISS-OPS-6.19-0001",
+        disposition: Reference,
+        test: None,
+        reason: "Cited in fuel-kernel-seam-types/src/canonical.rs to LOCATE ownership of the OpAttrs channel -- KISS-Ops is its single normative owner, which is what makes KISS-GRAMMAR-6.8-0007's disclaimer (\"MUST NOT define an alternative OpAttrs byte layout\") decisive rather than merely consistent. Nothing for Fuel to discharge; it names WHO owns the layout, not what Fuel must do.",
+        exists_at: None,
+    },
+    Row {
         clause: "KISS-OPS-6.19-0003",
         disposition: Reference,
         test: None,
@@ -286,6 +293,13 @@ const LEDGER: &[Row] = &[
             "fuel-kernel-seam-types/tests/kiss_ops_619_divergence.rs::the_shared_axis_field_diverges_on_width_not_only_on_field_set",
         ),
         reason: "Fuel DELIBERATELY does not conform: -0007 pins an axis index at ONE BYTE and Fuel emits i64. Tracked as GAP-305. The named test asserts the width divergence and reddens in BOTH directions -- if Fuel's encoding moves, and if Fuel ever narrows axis to u8 and the divergence closes. Note this divergence was NOT recorded in the prose, which described the gather/scatter difference as a field-set one only; the two rows disagree even on the single field they share.",
+        exists_at: None,
+    },
+    Row {
+        clause: "KISS-OPS-6.19-0010",
+        disposition: Obligation,
+        test: Some("fuel-kernel-seam-types/src/lib.rs::three_carrier_width_pins_stay_distinct"),
+        reason: "Fuel CLAIMS to conform, and this is the one KISS-Ops clause the node-envelope carrier actually implements: definite lengths only. `OpAttrs::to_canonical_bytes` emits a u32-LE outer byte length and the payload verbatim, no-parse-inside. The named test pins the empty-schema form as exactly the 4-byte zero envelope, which is the definite-length claim at its smallest case; the divergence suite additionally asserts prefix == body length on every vector it builds.",
         exists_at: None,
     },
     Row {
