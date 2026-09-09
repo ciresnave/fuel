@@ -10188,7 +10188,7 @@ impl LlamaModel {
     ///   dropped after realize). Subsequent forward steps see the
     ///   accumulated K/V state via the same Arcs.
     /// - Logits return shape: rank-1 `[vocab_size]` — last-position
-    ///   only, same as [`Self::forward_with_cache_on`].
+    ///   only, same as [`Self::forward_with_kv_context`].
     /// - Backends: CPU, CUDA, and Vulkan all run this path via the
     ///   pipelined executor + binding-table dispatch.
     ///

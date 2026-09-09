@@ -1293,7 +1293,7 @@ impl<'m, M: PagedDecodeModel> PagedSessionScheduler<'m, M> {
     }
 
     /// Begin capturing session `id`'s per-step decode logits (see
-    /// [`PagedSession::captured_logits`]) — each pre-sample logits vector is
+    /// the session's `captured_logits` buffer) — each pre-sample logits vector is
     /// cloned in decode order until [`take_captured_logits`](Self::take_captured_logits).
     /// Inspection/test observability; the discriminating oracle for
     /// KV-state-dependent behavior (token equality is too coarse). No-op if `id`

@@ -1462,7 +1462,7 @@ impl KernelBindingTable {
     /// A [`FusedOpId`] names a RECIPE, not a signature: `register_runtime_fused`
     /// deduplicates on the region's base-map hash, so one id can legitimately
     /// carry several dtype tuples — `[F32, F32]` and `[F32, F32, F32]` are
-    /// different arities under the same id. [`Self::first_runtime_fused`] scans
+    /// different arities under the same id. The pre-GAP-213 `first_runtime_fused` scanned
     /// for `(fid, backend)` and **binds `dtypes` without testing it**, so it
     /// answers such a question by `HashMap::iter()` order: a coin flip per
     /// process, and capable of returning a kernel of the wrong operand arity.

@@ -743,7 +743,7 @@ pub const FLASH_ATTN_BACKWARD_Q_F32: &str = "flash_attn_backward_q_f32";
 pub const FLASH_ATTN_BACKWARD_K_F32: &str = "flash_attn_backward_k_f32";
 /// FlashAttention backward — dV, f32. One workgroup per
 /// (b, h_kv, k_j); same loop shape as dK but accumulates over
-/// P[k_j] · dO instead of dS · Q.
+/// `P[k_j] · dO` instead of `dS · Q`.
 pub const FLASH_ATTN_BACKWARD_V_F32: &str = "flash_attn_backward_v_f32";
 /// Cooperative-matrix tiled matmul, f16 × f16 → f16 (downcast
 /// store). Same staging pattern as the bf16→bf16 sibling but uses
