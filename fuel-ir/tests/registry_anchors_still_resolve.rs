@@ -26,7 +26,7 @@
 //! | a byte cap is safe | `&s[..220]` panicked inside `—`; this document has never been ASCII |
 //! | the corpus may contain `gaps.md` | every anchor then matches itself, forever |
 //! | the corpus may contain this test | its own doc quotes four anchors, and the negative-control sentinel matched itself |
-//! | every `anchor:` names one pattern | **30 are PROSE RECIPES** — *"two `git grep -l` runs, intersected"* |
+//! | every `anchor:` names one pattern | **31 are PROSE RECIPES** — *"two `git grep -l` runs, intersected"* |
 //! | patterns are literal | GAP-275's `"no .HostBuffer::F8E5M2. variant"` — the dots are **regex** |
 //! | patterns are unscoped | GAP-277 and GAP-281 carry `-- <pathspec>` |
 //! | `rs`/`md`/`toml`/… is enough | GAP-277 targets a **`.metal`** file; 164 such files are tracked |
@@ -54,9 +54,31 @@
 //!
 //! # What a green does NOT cover — printed on every run, not buried here
 //!
-//! ⚠️ **30 of 79 `anchor:` fields are prose RECIPES and no mechanical check can verify
-//! them.** The test prints that count and names them UNCHECKABLE. **A green covering 49 of
-//! 79 while reading as "anchors verified" is a coverage claim, not a result.**
+//! ⚠️ **31 of 80 `anchor:` fields are prose RECIPES and no mechanical check can verify
+//! them** *(measured at `origin/main` `1b8d3b1e`; it was 30 of 79 one merge earlier, which is
+//! why the test PRINTS the live count rather than trusting this line)*. The test names them
+//! UNCHECKABLE. **A green covering 49 of 80 while reading as "anchors verified" is a
+//! coverage claim, not a result.**
+//!
+//! # ⚠️ AND `Dead` IS TWO DIFFERENT THINGS SHARING ONE ARM
+//!
+//! This gate separates *instrument failure* from *dead anchor*, and that separation holds.
+//! **It does NOT separate the two ways an anchor dies**, and they have opposite meanings:
+//!
+//! ```text
+//! the anchor ROTTED        the deferral is still undone, the citation decayed  -> re-anchor
+//! the deferral DISCHARGED  the work landed and deleted the thing anchored      -> close/re-cite
+//! ```
+//!
+//! **GAP-303 is the second kind, and it is in the baseline below.** `#150` landed part 1 of
+//! that deferral and removed the doc comment the row cites; the anchor went red because the
+//! code got BETTER. A reader who sees only `Dead` reaches for the re-anchor and misses that
+//! the row's status now overstates what is undone.
+//!
+//! ⚠️ **Nothing mechanical distinguishes these, and this file does not pretend to.** The
+//! discriminator is whether the subject is still there, which is a judgement about what the
+//! row MEANS — so each baseline entry states which kind it is, in prose, and the gate's job
+//! is to force that judgement to be made rather than to make it.
 //!
 //! Also out of scope, by standing ruling: **the 58 rows carrying a bare `file:LINE`.** They
 //! are deferred (loud-failing rot is lowest value per unit of work), and two — `GAP-004`,
@@ -107,6 +129,21 @@ const DEAD_ANCHOR_BASELINE: &[(&str, &str)] = &[
         "REPLACEMENT UNDECIDED — architect ruling required: is the row's subject \
          `unsafe fn` specifically, or the `unsafe` blocks that replaced it? \
          (`unsafe` = 8 hits in the cited file; `unsafe fn` = 0)",
+    ),
+    // ⚠️⚠️ A SIXTH MECHANISM, AND IT IS NOT ROT: THE ANCHOR DIED BECAUSE THE DEFERRAL
+    // WAS PARTIALLY DISCHARGED. `fb16de3d` (#150) landed GAP-303 part 1 and, in doing so,
+    // deleted the very doc comment the row anchors on. The other five deaths left their
+    // subject alive and untouched; this one is the FIX arriving.
+    //
+    // The row's Status still reads "ships single-carry by its own admission
+    // (`Single carry tensor in v1`)", and that admission is gone from the source. Whether
+    // the CONCLUSION survives is not this gate's call and is NOT asserted here: GAP-306
+    // says it does, by a different mechanism (`NodeHandle::scan` pins `n_carries: 1`, so no
+    // public builder can construct a multi-carry Scan). ⚠️ The cited EVIDENCE is dead; that
+    // is not the same as the claim being false, and this entry does not say it is.
+    (
+        "GAP-303",
+        "REPLACE WITH `GAP-303 SCOPE LINE` — 2 hits in the cited file, measured at          origin/main 1b8d3b1e. It is the successor detector GAP-306 ALREADY NAMES, it was          placed deliberately for this purpose, and it dies exactly when the builder widens.          The old anchor's prose was deleted by fb16de3d (#150).          ⚠️ ALSO RE-CITE THE ROW'S STATUS TEXT, which still quotes the deleted string as          present-tense source evidence — architect/Fuel 3 call, not this gate's.",
     ),
 ];
 
