@@ -46,6 +46,17 @@
 //! conforming instances at `64e5f46e`), and a gate landed ahead of its
 //! population is unfalsifiable at exactly the moment everyone is looking at it.
 //!
+//! # What this classifier CANNOT see, stated on its face
+//!
+//! **Markdown LAZY CONTINUATION.** CommonMark lets a wrapped paragraph inside a
+//! blockquote omit the `>` on its continuation lines. This classifier reads
+//! such a line as depth 0 and would end the block early — mis-dispositioning
+//! retained material as live prose, the dangerous direction. **Measured at
+//! `64e5f46e`: ZERO instances in `docs/architecture/`** (no depth-0 non-blank
+//! line directly follows a depth-1 non-blank one). **Deciding it properly needs
+//! a real markdown parser, so it is recorded as a limit rather than guessed
+//! at** — and if the count ever moves off zero, this is the arm to build.
+//!
 //! **Fixtures are CONSTRUCTED, never sampled from the live corpus**, per the
 //! standing rule that a gate must not source its cases from data the work is
 //! actively changing: the marker pass is about to rewrite every disclosure line
@@ -84,6 +95,11 @@ fn depth(line: &str) -> usize {
     d
 }
 
+/// Strip a line's blockquote markers and leading space, leaving its content.
+fn strip_quote_prefix(line: &str) -> &str {
+    line.trim_start_matches(|c: char| c == '>' || c.is_whitespace())
+}
+
 /// Classify every line by the scope its BLOCK gives it.
 ///
 /// A block is a maximal run of consecutive lines at depth >= 1; a depth-0 line
@@ -103,9 +119,25 @@ pub fn classify(lines: &[&str]) -> Vec<Scope> {
         while i < lines.len() && d[i] >= 1 {
             i += 1;
         }
-        let retired = lines[start..i]
+        // ⚠️ JOINED, NOT PER-LINE. A multi-word marker split across a hard
+        // wrap -- `retained` ending one line and `below` starting the next --
+        // is invisible to a per-line `contains`, and it fails in the DANGEROUS
+        // direction: the block reads as NOT retired, so retained history is
+        // classified IN SCOPE and the drift arm prescribes editing it.
+        //
+        // Measured at `64e5f46e`: 9 blockquote blocks in docs/architecture/,
+        // ZERO where per-line and joined disagree. That null has a positive
+        // control -- a constructed block with `retained below` spanning a wrap
+        // gives per_line=false, joined=true -- so the zero is a real absence
+        // and not a broken comparison. The join lands anyway: the corpus is
+        // about to be rewritten by the marker pass, and a latent hazard in a
+        // classifier is cheaper to remove than to remember.
+        let joined = lines[start..i]
             .iter()
-            .any(|l| RETIRED_MARKERS.iter().any(|m| l.contains(m)));
+            .map(|l| strip_quote_prefix(l))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let retired = RETIRED_MARKERS.iter().any(|m| joined.contains(m));
         for k in start..i {
             out[k] = if d[k] >= 2 {
                 Scope::OutNested
@@ -216,6 +248,30 @@ fn a_marker_below_still_retires_the_block_it_is_in() {
         "> **SUPERSEDED 2026-08-27.**",
     ];
     assert_eq!(classify(&f), vec![Scope::OutRetired, Scope::OutRetired]);
+}
+
+#[test]
+fn a_marker_split_across_a_hard_wrap_still_retires_the_block() {
+    // ⚠️ THE WRAP-WIDTH ARM. A line-anchored scan measures the AUTHOR'S WRAP
+    // WIDTH, not the document -- the Claim Auditor measured exactly this on
+    // `docs/` (10 files line-anchored vs 16 paragraph-joined, four of five
+    // defects straddling a wrap). Here `retained below` spans the break, so no
+    // single line contains it, and a per-line implementation calls the block
+    // LIVE. That is the dangerous direction: retained history would be handed
+    // to the drift arm as prose to edit.
+    let f = [
+        "> **The original note is retained",
+        "> below because its recorded injury is the point.**",
+        "> > **As-built note (2026-07-29): `fuel-nn` is a planned crate.**",
+    ];
+    let got = classify(&f);
+    assert_eq!(
+        got[0],
+        Scope::OutRetired,
+        "wrapped marker must still retire: {got:?}"
+    );
+    assert_eq!(got[1], Scope::OutRetired);
+    assert_eq!(got[2], Scope::OutNested);
 }
 
 #[test]
