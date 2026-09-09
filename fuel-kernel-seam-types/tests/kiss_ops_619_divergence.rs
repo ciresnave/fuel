@@ -207,35 +207,37 @@ fn the_shared_axis_field_diverges_on_width_not_only_on_field_set() {
     );
 }
 
+/// §6.19-0003's CLOSED carrier set, written out rather than derived.
+///
+/// It is a claim about KISS's document, not about Fuel's code: if it drifts,
+/// that is a spec change someone has to read, and a derived copy would track
+/// the drift silently.
+const KISS_CARRIER_SET: &[&str] = &[
+    "reduce",
+    "prefix_scan",
+    "gather",
+    "scatter",
+    "sort_network",
+    "reduce_var",
+    "reduce_std",
+    "softmax",
+    "log_softmax",
+    "rms_norm",
+    "layer_norm",
+    "avg_pool",
+    "max_pool",
+    "im2col",
+    "index_select",
+    "embedding",
+    "scatter_add",
+];
+
 /// OVER-SCOPE ARM. Every op measured in this file must be IN §6.19-0003's
 /// carrier set, or the comparison is theatre -- a non-carrier op has no §6.19
 /// row to diverge FROM, so asserting a difference against a schema that does
 /// not exist proves nothing.
-///
-/// The set is written out rather than derived, because it is a claim about
-/// KISS's document and not about Fuel's code: if it drifts, that is a spec
-/// change someone has to read.
 #[test]
 fn every_op_measured_here_is_in_the_kiss_carrier_set() {
-    const KISS_CARRIER_SET: &[&str] = &[
-        "reduce",
-        "prefix_scan",
-        "gather",
-        "scatter",
-        "sort_network",
-        "reduce_var",
-        "reduce_std",
-        "softmax",
-        "log_softmax",
-        "rms_norm",
-        "layer_norm",
-        "avg_pool",
-        "max_pool",
-        "im2col",
-        "index_select",
-        "embedding",
-        "scatter_add",
-    ];
     // The mapping is Fuel's own, documented in canonical.rs's scope note: the
     // monoid rides op_name for the reduce family, and scatter_combine rides
     // op_name for IndexAdd vs ScatterAdd.
@@ -253,10 +255,16 @@ fn every_op_measured_here_is_in_the_kiss_carrier_set() {
             "{tag:?} maps to `{kiss}`, which is NOT in §6.19-0003's carrier set"
         );
     }
+}
 
-    // The negative half. `Slice` is the worked example: §6.19-0003 requires a
-    // non-carrier op to emit an EMPTY blob, and Fuel emits twenty bytes -- so
-    // it has no §6.19 row and must never be measured above.
+/// THE NEGATIVE HALF, and it is a separate claim rather than a tail on the
+/// arm above: a NON-carrier tag has no §6.19 row, so asserting a divergence
+/// for it would be measuring against a schema that does not exist.
+///
+/// `Slice` is the worked example. §6.19-0003 requires a non-carrier op to emit
+/// an EMPTY blob; Fuel emits twenty bytes.
+#[test]
+fn a_non_carrier_tag_has_no_row_to_diverge_from() {
     let slice = OpAttrs {
         axis: Some(0),
         slice_start: Some(0),
@@ -271,7 +279,6 @@ fn every_op_measured_here_is_in_the_kiss_carrier_set() {
     );
     assert!(
         !KISS_CARRIER_SET.contains(&"slice"),
-        "if `slice` entered the carrier set it acquired a §6.19 row and belongs \
-         in the measured set above"
+        "if `slice` entered the carrier set it acquired a §6.19 row and belongs          in the measured set of the arm above"
     );
 }
