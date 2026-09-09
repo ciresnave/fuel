@@ -10341,7 +10341,7 @@ pub fn write_slice_rotating_cpu(
 
 /// In-place scatter write with a **device-resident-style** start on
 /// `axis` read from `offset_bytes` (the first `i64`, host-side here on
-/// CPU). Backs [`fuel_graph::Op::WriteSliceDoff`] — the CUDA-graph-
+/// CPU). Backs `fuel_graph::Op::WriteSliceDoff` — the CUDA-graph-
 /// capturable KV-cache append. No modulo wrap (unlike
 /// [`write_slice_rotating_cpu`]): the write lands at
 /// `[offset, offset + width)` on `axis`, where `width` is

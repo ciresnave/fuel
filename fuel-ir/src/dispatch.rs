@@ -199,7 +199,7 @@ pub enum OpKind {
     /// causal, window, softcap all flow through `OpParams::FlashAttn`.
     FlashAttn,
     /// Backward of [`FlashAttn`]: produces dQ from `(q, k, v, do, [alibi])`.
-    /// Reuses [`OpParams::FlashAttn`] (same shape/geometry/causal flags
+    /// Reuses `OpParams::FlashAttn` (same shape/geometry/causal flags
     /// as the forward — the recompute pass needs every forward parameter).
     /// Output shape == q shape. The dK and dV gradients are emitted as
     /// separate [`FlashAttnBackwardK`] / [`FlashAttnBackwardV`] nodes
@@ -371,7 +371,7 @@ pub enum OpKind {
     /// Backward of [`ReduceMaxTo`]: `(x, upstream) → grad_x` of x's
     /// shape. Routes upstream to argmax positions; ties split
     /// equally. Per-dtype; carries shape pair via
-    /// [`OpParams::ReduceMaxToBackward`].
+    /// `OpParams::ReduceMaxToBackward`.
     ReduceMaxToBackward,
     /// Pick slices from a source tensor along `dim` using a rank-1
     /// U32 index tensor. Output's `dim` size = number of indices.
@@ -410,7 +410,7 @@ pub enum OpKind {
     /// into a slab of destination defined per-axis by `ranges`.
     /// Backs Phase E.3.2's persistent KV-cache writes
     /// (`InferenceContext` + `KvCache`). See
-    /// [`Op::WriteSlice`](fuel_graph::Op::WriteSlice) for the IR
+    /// `Op::WriteSlice` for the IR
     /// contract and [`OpParams::WriteSlice`](super::dispatch::OpKind)
     /// for the kernel-side params.
     WriteSlice,
@@ -419,7 +419,7 @@ pub enum OpKind {
     /// rotating axis. The write position comes from a dynamic input
     /// (rank-0 U32). Backs sliding-window KV caches (Mistral /
     /// Phi-3 sliding-window / sliding-window Qwen). See
-    /// [`Op::WriteSliceRotating`](fuel_graph::Op::WriteSliceRotating)
+    /// `Op::WriteSliceRotating`
     /// for the IR contract.
     WriteSliceRotating,
     /// In-place scatter write whose start on ONE axis is read from a
@@ -428,12 +428,12 @@ pub enum OpKind {
     /// KV-cache append. Like [`WriteSlice`](Self::WriteSlice) but the
     /// `ranges[axis].0` placeholder is overridden by `*offset` device-
     /// side; no modulo wrap. Backs `DecodeSession` / CapturedRun. See
-    /// [`Op::WriteSliceDoff`](fuel_graph::Op::WriteSliceDoff) for the
+    /// `Op::WriteSliceDoff` for the
     /// IR contract.
     WriteSliceDoff,
     /// Cross-device copy: produce a fresh tensor on the target
     /// device, copying bytes from the input's residency. Backs
-    /// [`Op::Copy`](fuel_graph::Op::Copy) for the bridge-retirement
+    /// `Op::Copy` for the bridge-retirement
     /// trajectory's Phase 2 (D2H through the binding table).
     ///
     /// Binding-table key shape `[T, T]` (input dtype, output dtype —
@@ -502,16 +502,16 @@ pub enum OpKind {
     /// `x = 0.5 · x · (1 + erf(x/√2))`.
     GeluErfInplace,
     /// In-place [`OpKind::ClampElementwise`] — `x = clamp(x, min, max)`.
-    /// Scalar `(min, max)` flow through [`OpParams::Clamp`].
+    /// Scalar `(min, max)` flow through `OpParams::Clamp`.
     ClampInplace,
     /// In-place [`OpKind::PowIElementwise`] — `x = x.powi(exp)`.
-    /// Scalar `exp` flows through [`OpParams::PowI`].
+    /// Scalar `exp` flows through `OpParams::PowI`.
     PowIInplace,
     /// In-place [`OpKind::Affine`] — `x = mul · x + add`. The
     /// `(mul, add)` coefficients flow through
-    /// [`OpParams::Affine`]; the kernel reads + writes the same
+    /// `OpParams::Affine`; the kernel reads + writes the same
     /// buffer. Single-input, single-output. Backs
-    /// [`FusedOps::INPLACE_AFFINE`](fuel_graph::registry::FusedOps::INPLACE_AFFINE).
+    /// `FusedOps::INPLACE_AFFINE`.
     InplaceAffine,
     /// Fused softmax + negative log-likelihood with integer class
     /// targets — the standard PyTorch / Liger-Kernel training loss.
@@ -520,7 +520,7 @@ pub enum OpKind {
     /// Output F32 — scalar for Mean/Sum reductions, `[n_rows]` for
     /// None. Geometry + reduction + `ignore_index` flow through
     /// `OpParams::FusedSoftmaxCrossEntropy`. Backs
-    /// [`FusedOps::FUSED_SOFTMAX_CROSS_ENTROPY`](fuel_graph::registry::FusedOps::FUSED_SOFTMAX_CROSS_ENTROPY).
+    /// `FusedOps::FUSED_SOFTMAX_CROSS_ENTROPY`.
     FusedSoftmaxCrossEntropy,
     /// Depthwise 1-D causal convolution + bias + optional fused SiLU.
     /// Inputs `[x, weight, bias]` where
@@ -528,26 +528,26 @@ pub enum OpKind {
     /// caller), `weight: [channels, 1, kernel]`, `bias: [channels]`.
     /// Output `[batch, channels, seq]`. Geometry + `use_silu` flow
     /// through `OpParams::CausalConv1d`. Backs
-    /// [`FusedOps::CAUSAL_CONV1D`](fuel_graph::registry::FusedOps::CAUSAL_CONV1D)
+    /// `FusedOps::CAUSAL_CONV1D`
     /// — the Mamba-1 / Mamba-2 prefill convolution fusion.
     CausalConv1d,
     /// Mamba-1's selective state-space scan (forward). Five inputs
     /// `[u, delta, a, b, c]` — see
-    /// [`FusedOps::SELECTIVE_SCAN`](fuel_graph::registry::FusedOps::SELECTIVE_SCAN)
+    /// `FusedOps::SELECTIVE_SCAN`
     /// for the full shape contract. Output `y: [batch, seqlen, dim]`.
     /// Geometry + `delta_softplus` flow through
     /// `OpParams::SelectiveScan`.
     SelectiveScan,
     /// Mamba-2's State-Space Duality chunked scan (forward). Five
     /// inputs `[x, dt, a, b, c]` — see
-    /// [`FusedOps::SSD_CHUNK_SCAN`](fuel_graph::registry::FusedOps::SSD_CHUNK_SCAN)
+    /// `FusedOps::SSD_CHUNK_SCAN`
     /// for the full shape contract. Output
     /// `y: [batch, seqlen, heads, head_dim]`. Geometry + `chunk_size`
     /// flow through `OpParams::SsdChunkScan`.
     SsdChunkScan,
     /// bitsandbytes-style 4-bit NormalFloat quantized matmul. Three
     /// inputs `[activations, w_packed, absmax]` — see
-    /// [`FusedOps::NF4_MATMUL`](fuel_graph::registry::FusedOps::NF4_MATMUL)
+    /// `FusedOps::NF4_MATMUL`
     /// for the full shape contract. Output `[..., M, N]` matches the
     /// activations' dtype. Geometry + `block_size` flow through
     /// `OpParams::Nf4Matmul`.
@@ -563,7 +563,7 @@ pub enum OpKind {
     /// for data-dependent dynamic shapes. One input `x`; one bundled
     /// output `[indices [capacity] U32 ; count [1] U32]`. Geometry +
     /// `count_sym` flow through `OpParams::NonZeroIndices`. See
-    /// [`Op::NonZeroIndices`](fuel_graph::Op::NonZeroIndices).
+    /// `Op::NonZeroIndices`.
     NonZeroIndices,
 }
 

@@ -7624,8 +7624,8 @@ impl Tensor {
     /// Composite via reshape + concat + reshape: insert a unit dim
     /// after each spatial dim, concat `scale` copies of the tensor on
     /// each new dim, then collapse the inflated dims back. Same shape
-    /// as the `upsample_nearest_2x` helper in [`fuel_transformers::models::lazy_yolov8`]
-    /// and [`fuel_transformers::models::lazy_sd_unet`], generalized to arbitrary scale.
+    /// as the `upsample_nearest_2x` helper in `fuel_transformers::models::lazy_yolov8`
+    /// and `fuel_transformers::models::lazy_sd_unet`, generalized to arbitrary scale.
     pub fn upsample_nearest2d(&self, scale: usize) -> std::result::Result<Self, fuel_ir::Error> {
         if scale == 0 {
             return Err(
@@ -8775,7 +8775,7 @@ impl LlamaModel {
     /// cos/sin tables and an attention mask. The standard
     /// [`Self::forward_embeds`] path computes cos/sin from `cfg.rope_base`
     /// via [`Tensor::rope_tables_const`] and uses a strict-causal
-    /// mask; [`fuel_transformers::models::lazy_llama_full::Llama3Model`] uses this hook to
+    /// mask; `fuel_transformers::models::lazy_llama_full::Llama3Model` uses this hook to
     /// inject Llama-3 long-context scaled RoPE tables without
     /// duplicating the forward path.
     ///
