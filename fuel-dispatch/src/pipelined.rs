@@ -1050,7 +1050,7 @@ impl PipelinedExecutor {
     ///
     /// **Step E Phase C, PR C1 — STREAMING.** A branched graph WITH a
     /// selector no longer resolves the whole route up front: it routes to the
-    /// [`OrderSource::Streaming`] walk, where the compiler thread resolves
+    /// `OrderSource::Streaming` walk, where the compiler thread resolves
     /// each branch lazily as the frontier reaches it (via
     /// [`resolve_branch`]). C1 keeps the SAME VRAM-only selector chain — so
     /// the streamed route equals the one-shot `pick_route` route byte-for-byte
@@ -1823,7 +1823,7 @@ impl PipelinedExecutor {
     /// Multi-target sibling of [`realize_with_optimized_picking_env`] —
     /// the executor resolves one arm per `Op::Branch` (cleanup Step C/D) over
     /// the effective targets. PR C1: a branched graph routes to the
-    /// [`OrderSource::Streaming`] walk (lazy per-branch resolution at the
+    /// `OrderSource::Streaming` walk (lazy per-branch resolution at the
     /// frontier); branchless / no-selector falls to the untouched arm-0 path.
     pub fn realize_many_with_optimized_picking_env(
         graph: Arc<RwLock<Graph>>,

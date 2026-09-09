@@ -133,7 +133,7 @@ impl OptimizedGraph {
     ///
     /// This is the resolved *effective* placement, not a hint. It is the same
     /// map the residency pass uses to decide where to stitch cross-device
-    /// copies, resolved by the priority in [`effective_placements`]:
+    /// copies, resolved by the priority in `effective_placements`:
     /// residency-declaring ops → explicit `Graph::placement` → input residency
     /// → **plan winner** → backend stamp → view pass-through.
     ///

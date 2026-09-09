@@ -263,7 +263,7 @@ fn backward_cone(graph: &Graph, from: NodeId) -> HashSet<NodeId> {
 ///   (capability: absent ⇒ `None` ⇒ the oracle stands);
 /// - an `Op::MatMul` interior node (the dominant decode-region cost) is priced
 ///   with its geometry derived from operand shapes;
-/// - any other op with an [`op_to_op_kind`] mapping is priced by its Layer-1
+/// - any other op with an `op_to_op_kind` mapping is priced by its Layer-1
 ///   family at `OpParams::None` (the shape-derivable floor — the same
 ///   documented approximation `fused_cost` uses; a param-carrying interior op
 ///   under-prices here and is refined by the Judge, biasing conservatively

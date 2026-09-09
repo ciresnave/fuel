@@ -367,7 +367,7 @@ fn fused_softmax_attr() -> OpAttrs {
 }
 
 /// Lower a fused PagedAttn node to its primitive gather-+-SDPA subgraph and
-/// return the new root id. Since Increment C C-T2 a re-emit of [`recipe`]'s
+/// return the new root id. Since Increment C C-T2 a re-emit of `recipe`'s
 /// portable data through the [`decompose_via_recipe`] bridge (structure-
 /// preserving: the emitted base map is node-for-node identical to the pre-C-T2
 /// imperative body — see the parity test in `tests`). The per-call recipe bakes

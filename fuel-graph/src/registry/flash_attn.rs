@@ -413,7 +413,7 @@ fn recipe(
 
 /// Decompose FlashAttn to its primitive **materialized scaled-dot-product
 /// attention** subgraph and return the new root. Since Increment C C-T3 a
-/// re-emit of [`recipe`]'s portable data through the [`decompose_via_recipe`]
+/// re-emit of `recipe`'s portable data through the [`decompose_via_recipe`]
 /// bridge (structure-preserving: the emitted base map is node-for-node
 /// identical to the pre-C-T3 imperative body — see the parity test in
 /// `tests`). The general math:

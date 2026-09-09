@@ -2776,7 +2776,7 @@ pub fn compact(graph: &mut Graph, roots: &[NodeId]) -> NodeRemap {
 /// node survived compaction, or `None` if it was dropped as unreachable
 /// debris. Callers use [`NodeRemap::get`] to translate roots / `NodeHandle`
 /// ids they still hold; passes that know a node must have survived use
-/// [`NodeRemap::expect`].
+/// `NodeRemap::expect`.
 #[derive(Debug, Clone)]
 pub struct NodeRemap {
     old_to_new: Vec<Option<NodeId>>,

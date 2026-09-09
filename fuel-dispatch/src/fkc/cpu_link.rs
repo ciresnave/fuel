@@ -1588,10 +1588,10 @@ pub static CPU_FUSED_CONV_ROPE_ENTRY_POINTS: &[(&str, KernelRef)] = &[
 /// [`CPU_NORM_ENTRY_POINTS`], [`CPU_NORM_BACKWARD_ENTRY_POINTS`],
 /// [`CPU_ROPE_ENTRY_POINTS`], [`CPU_SSM_ENTRY_POINTS`],
 /// [`CPU_CONV_ENTRY_POINTS`], [`CPU_PADDING_ENTRY_POINTS`],
-/// [`CPU_SHAPE_OPS_ENTRY_POINTS`], [`CPU_INDEXING_ENTRY_POINTS`],
+/// [`CPU_SHAPE_OPS_ENTRY_POINTS`], `CPU_INDEXING_ENTRY_POINTS`,
 /// [`CPU_MATMUL_ENTRY_POINTS`],
 /// [`CPU_ATTENTION_ENTRY_POINTS`], [`CPU_INPLACE_ENTRY_POINTS`], and
-/// [`CPU_CAST_ENTRY_POINTS`].
+/// `CPU_CAST_ENTRY_POINTS`.
 /// Unresolved → `None`, which the importer turns into a typed
 /// `UnknownEntryPoint` error (never a panic, never a fabricated pointer).
 pub struct CpuLinkRegistry;

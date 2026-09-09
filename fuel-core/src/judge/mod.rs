@@ -78,7 +78,7 @@
 //!
 //! # Decode-shaped ladders (Layer-2 coverage arc, slice 2)
 //!
-//! Alongside the square/general ladder, [`Judge::size_plan`] appends
+//! Alongside the square/general ladder, `Judge::size_plan` appends
 //! **decode-representative** cells on the decode-attention path so the
 //! Judge measures the ops at the SKINNY shapes autoregressive decode
 //! (seq_q=1) actually runs:

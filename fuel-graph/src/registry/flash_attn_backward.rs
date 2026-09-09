@@ -23,7 +23,7 @@
 //! `decompose` bodies migrated from imperative `graph.push` calls onto a
 //! declarative [`PatternNode`] recipe re-emitted through
 //! [`decompose_via_recipe`] + `tag_to_op`/`emit` — reusing the C-T3
-//! [`super::flash_attn::recompute_probs_recipe`] for the shared softmax-state
+//! `super::flash_attn::recompute_probs_recipe` for the shared softmax-state
 //! recompute (now returning `k_rep` + `softcap_tanh` too) and the C-T2
 //! nested-fused carrier for the softmax **backward** (`Op::Fused(
 //! SOFTMAX_LAST_DIM_BACKWARD)` rides as an `OpTag::Fused` node).

@@ -13549,7 +13549,7 @@ impl VulkanBackend {
     ///
     /// ## NOT YET integrated with weight allocation
     ///
-    /// Today's [`alloc_device`][Self::alloc_device] path routes through
+    /// Today's `alloc_device` path routes through
     /// the default (per-memory-type) pool, not any custom pool. Wiring
     /// weights through this custom pool — so defrag actually moves them
     /// — is a follow-up. This method exposes the primitive so that

@@ -1061,7 +1061,7 @@ struct DispatchKey {
 /// `&'static str` is the same pointer the binding-table entry
 /// carries.
 ///
-/// `Pick` is only ever constructed at runtime by [`DispatchTable::rebuild_from`]
+/// `Pick` is only ever constructed at runtime by `DispatchTable::rebuild_from`
 /// from in-memory [`ProfileEntry`] data — never deserialized from JSON
 /// or other owned input. We therefore intentionally do NOT derive
 /// `Deserialize` (the `&'static str` field can't be deserialized from

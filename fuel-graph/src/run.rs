@@ -397,7 +397,7 @@ pub fn lower_runs_arm0(graph: &Graph, roots: &[NodeId]) -> Vec<NodeId> {
 /// ([`extract_runs_multi`]) and the same single-contiguous-region
 /// property of a run (extract never spans a branch boundary, so a run is
 /// either wholly inside a non-chosen arm or wholly outside). The skip set
-/// is [`non_chosen_arm_nodes`] — `non_arm0_arm_nodes` generalized to "any
+/// is `non_chosen_arm_nodes` — `non_arm0_arm_nodes` generalized to "any
 /// arm but the chosen one."
 ///
 /// Value-preserving contract: every arm is a valid kernel for the same

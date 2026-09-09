@@ -8108,8 +8108,8 @@ impl LlamaConfig {
     /// - `head_dim` is taken directly when present, or computed as
     ///   `hidden_size / num_attention_heads` otherwise.
     ///
-    /// [`LlamaConfigRaw`] is the wire shape under HF's own field names;
-    /// [`LlamaConfigRaw::resolve`] applies the two cross-field defaults and
+    /// `LlamaConfigRaw` is the wire shape under HF's own field names;
+    /// `LlamaConfigRaw::resolve` applies the two cross-field defaults and
     /// renames into this crate's vocabulary.
     pub fn from_hf_json_str(json: &str) -> crate::Result<Self> {
         LlamaConfigRaw::from_json_str(json)?.resolve()
@@ -10463,11 +10463,11 @@ impl LlamaModel {
     /// Mechanism (spec risk #2 (a), copy-in/copy-out into a per-call shared
     /// buffer; all-or-nothing commit, spec risk #7):
     /// 1. Allocate a shared `[K, n_kv_heads, max_seq_len, head_dim]` K/V buffer
-    ///    per layer ([`crate::inference_context::alloc_batched_kv`]; fail-on-OOM).
+    ///    per layer (`crate::inference_context::alloc_batched_kv`; fail-on-OOM).
     /// 2. **Copy-in:** `Op::WriteSlice` each session's `[1,…]` KV history into
     ///    its batch slot `i`.
     /// 3. **Decode:** build a batch=`K` analogue of
-    ///    [`Self::build_and_realize_first_decode_token`] over the shared buffer
+    ///    `Self::build_and_realize_first_decode_token` over the shared buffer
     ///    (the projection GEMMs batch for free through the leading batch axis;
     ///    the attention half reaches `flash_decoding`'s batch dim on CUDA) and
     ///    realize `[K, vocab]` logits (non-captured plan-once, spec #4).
@@ -13029,7 +13029,7 @@ impl PhiConfigRaw {
 
 impl PhiConfig {
     ///
-    /// [`PhiConfigRaw`] is the wire shape; [`PhiConfigRaw::resolve`] applies
+    /// `PhiConfigRaw` is the wire shape; `PhiConfigRaw::resolve` applies
     /// the CHAINED derivation and the evenness check.
     pub fn from_hf_json_str(json: &str) -> crate::Result<Self> {
         PhiConfigRaw::from_json_str(json)?.resolve()

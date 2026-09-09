@@ -681,7 +681,7 @@ impl BatchedDecode {
 ///
 /// - `RoundRobin`: advance every ready session serially (the correctness
 ///   oracle — always available, always byte-exact).
-/// - `Batched { max_batch }`: try the live batched arm ([`BatchedDecode`]) on
+/// - `Batched { max_batch }`: try the live batched arm (`BatchedDecode`) on
 ///   up to `max_batch` uniform sessions, falling back to serial for any
 ///   session the uniformity gate rejects. Opt-in fast path; provably equal to
 ///   `RoundRobin`.

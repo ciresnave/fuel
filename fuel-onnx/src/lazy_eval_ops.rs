@@ -3,7 +3,7 @@
 //! logical, and shape-manipulation ops.
 //!
 //! Hooks into [`crate::lazy_eval::OnnxEval`]'s dispatch chain the same way
-//! [`crate::lazy_eval_conv`] and [`crate::lazy_eval_norm`] do: [`try_dispatch`]
+//! [`crate::lazy_eval_conv`] and [`crate::lazy_eval_norm`] do: `try_dispatch`
 //! returns `Ok(true)` when it handled the node, `Ok(false)` to fall through.
 //!
 //! These ops were previously reachable only through the EAGER evaluator

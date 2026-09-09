@@ -443,8 +443,8 @@ impl Llama2cConfig {
     /// Compatible with TinyLlama, Llama-2-7B, Llama-3, Mistral, and
     /// any Llama-shape HF checkpoint.
     ///
-    /// Two stages. [`Llama2cConfigRaw`] is the wire shape under HF's own
-    /// field names and is pure `serde`; [`Llama2cConfigRaw::resolve`] applies
+    /// Two stages. `Llama2cConfigRaw` is the wire shape under HF's own
+    /// field names and is pure `serde`; `Llama2cConfigRaw::resolve` applies
     /// the defaults that read a sibling field — which `#[serde(default)]`
     /// cannot — and renames into this crate's vocabulary.
     pub fn from_hf_json_str(json: &str) -> Result<Self> {

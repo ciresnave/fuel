@@ -43,7 +43,7 @@
 //! * **Phase 3a** (zero-alloc): `KvCache::with_capacity` emits
 //!   `Op::Alloc → Op::ZeroFill` pairs and realizes via
 //!   `PipelinedExecutor::realize_many`. `alloc_zeroed_on` deleted.
-//! * **Phase 3b** (H2D Const upload): [`build_const_cache`] (for
+//! * **Phase 3b** (H2D Const upload): `build_const_cache` (for
 //!   non-CPU targets) builds a transient graph of `Op::Const →
 //!   Op::Copy { target: device }` pairs and realizes them
 //!   multi-target. The executor's `WorkItemKind::Copy` arm allocates
@@ -54,7 +54,7 @@
 //!
 //! Residual bridge code: [`device_seed_storage`] (~30 LOC, just the
 //! 0-byte device-handle anchor per backend) and
-//! [`host_buffer_to_bytes`] (per-dtype HostBuffer → bytes
+//! `host_buffer_to_bytes` (per-dtype HostBuffer → bytes
 //! conversion — orthogonal to the device-dispatch concern).
 //!
 //! ## Phase E.3 coverage (complete)
@@ -178,7 +178,7 @@ pub fn realize_one_as<T: bytemuck::Pod>(
 ///
 /// # Why this exists (the dual-device-seed gap)
 ///
-/// A realize pins ONE `device` (the primary). [`build_const_cache`] uploads
+/// A realize pins ONE `device` (the primary). `build_const_cache` uploads
 /// the reachable `Op::Const`s to that device, so a primary-device handle
 /// lands in the cache (carried by the uploaded const storages) and the
 /// executor's H2D `Op::Copy`/`Op::Alloc` device-handle search
@@ -1405,7 +1405,7 @@ pub(crate) fn build_const_cache(
 }
 
 /// Phase D · D2b — build a single device-resident `fuel_memory::Storage`
-/// Arc from a host buffer, the same upload path [`build_const_cache`]
+/// Arc from a host buffer, the same upload path `build_const_cache`
 /// uses per Const. The persistent-decode re-bind inserts the result into
 /// the [`crate::inference_context::InferenceContext`]'s persistent map
 /// under a STABLE data-Const NodeId each token (token-ids / RoPE / mask),
@@ -1417,7 +1417,7 @@ pub(crate) fn build_const_cache(
 ///
 /// **Non-CPU device**: builds a one-node transient `Op::Const → Op::Copy
 /// { target }` graph (+ device-handle anchor) and realizes the copy —
-/// the H2D upload. Mirrors [`build_const_cache`]'s non-CPU arm for a
+/// the H2D upload. Mirrors `build_const_cache`'s non-CPU arm for a
 /// single buffer.
 ///
 /// The `dtype` tag comes from the `HostBuffer` variant. Never panics.

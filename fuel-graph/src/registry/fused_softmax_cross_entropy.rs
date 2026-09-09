@@ -282,7 +282,7 @@ fn recipe(
 }
 
 /// Lower a fused FusedSoftmaxCrossEntropy node to its primitive subgraph and
-/// return the new root id. Since Increment C C-T1 a re-emit of [`recipe`]'s
+/// return the new root id. Since Increment C C-T1 a re-emit of `recipe`'s
 /// portable data through the [`decompose_via_recipe`] bridge (structure-
 /// preserving: the emitted base map is node-for-node identical to the pre-C-T1
 /// imperative body — see the parity test in `tests`). The per-call recipe bakes

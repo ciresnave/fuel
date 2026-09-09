@@ -386,9 +386,9 @@ pub fn lower_to_base_map(graph: &SharedGraph, roots: &[NodeId]) -> Vec<NodeId> {
 /// structurally identical hash equal. Reuses this module's existing
 /// canonicalization primitives rather than duplicating them:
 ///
-/// - [`op_key`] for op identity when available (covers every primitive +
+/// - `op_key` for op identity when available (covers every primitive +
 ///   `Op::Fused` variant CSE already relies on).
-/// - [`is_commutative`] to sort child hashes for `Add`/`Mul`, so `a + b` and
+/// - `is_commutative` to sort child hashes for `Add`/`Mul`, so `a + b` and
 ///   `b + a` hash equal (mirrors CSE's own commutative-operand
 ///   canonicalization). `Maximum`/`Minimum` are excluded -- see GAP-271.
 ///
@@ -3105,7 +3105,7 @@ where
 /// insert one `Op::Cast(target)` per distinct `(input, target)` — CSE-shared
 /// across consumers — and rewire each consumer's edge to it.
 ///
-/// Unlike [`Graph::rewrite_input`] (whose contract is a *same-dtype* redirect),
+/// Unlike `Graph::rewrite_input` (whose contract is a *same-dtype* redirect),
 /// this DELIBERATELY changes the consumer's input dtype — that is the point: it
 /// is the graph-side half of the optimizer's dtype-reconciliation pass
 /// (`fuel_dispatch::optimize::insert_dtype_fixups`), which decides WHICH edges to
