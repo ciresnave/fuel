@@ -5,7 +5,7 @@
 //! ⚠️ THIS IS NOT AN INTEROP TEST AND MUST NOT BE READ AS ONE. There is no
 //! interop on this carrier to test. `OpAttrs::to_canonical_bytes` is the #67
 //! NODE-ENVELOPE (carrier (a) of `lib.rs`'s three-carrier pin): u32-LE outer
-//! length, "payload verbatim, no-parse-inside (§6.19-0010)". A receiver that
+//! length, "payload verbatim, no-parse-inside (KISS-OPS-6.19-0010)". A receiver that
 //! does not parse the body cannot be byte-comparing it. The named
 //! counterparty also emits no such blob -- 0 encode / serialize / to_bytes /
 //! canonical sites on `OpAttrs`, control 46 -- but that was measured BY
@@ -34,10 +34,10 @@
 //! To exercise the claim you must ALSO realign the pin to the conformant
 //! bytes, so `assert_eq!` passes and only `assert_ne!` can fire. Done on
 //! 2026-09-09: `assertion left != right failed: gather now MATCHES
-//! §6.19-0027`. That is the arm failing for its stated reason; the first
+//! KISS-OPS-6.19-0027`. That is the arm failing for its stated reason; the first
 //! sabotage never touched it.
 //!
-//! Measured against KISS `origin/main` `2b673e0a`, 2026-09-09. §6.19-0003 is
+//! Measured against KISS `origin/main` `2b673e0a`, 2026-09-09. KISS-OPS-6.19-0003 is
 //! scoped "for this op-set version" and this crate pins no KISS-Ops version --
 //! see the GAP row. If a version is ever pinned, re-derive these vectors.
 
@@ -60,7 +60,7 @@ fn body(attrs: &OpAttrs, op: OpTag) -> Vec<u8> {
     assert_eq!(
         declared,
         blob.len() - 4,
-        "{op:?}: §6.19-0010 definite length -- the u32 LE prefix must equal the body length"
+        "{op:?}: KISS-OPS-6.19-0010 definite length -- the u32 LE prefix must equal the body length"
     );
     blob[4..].to_vec()
 }
@@ -71,7 +71,7 @@ fn body(attrs: &OpAttrs, op: OpTag) -> Vec<u8> {
 //    then `index_dtype` (enum `u8`, mandatory), in that order."
 //
 // Derived from that sentence alone: FOUR bytes. `axis` = 2 for this vector;
-// `oob_policy` takes its RESOLVED default 1, which §6.19-0005 forbids eliding.
+// `oob_policy` takes its RESOLVED default 1, which KISS-OPS-6.19-0005 forbids eliding.
 const KISS_GATHER_AXIS2: &[u8] = &[2, 1, 0, 0];
 
 #[test]
@@ -90,7 +90,7 @@ fn gather_diverges_from_kiss_ops_6_19_0027() {
     );
     assert_ne!(
         fuel, KISS_GATHER_AXIS2,
-        "gather now MATCHES §6.19-0027. If Fuel became conformant this file is \
+        "gather now MATCHES KISS-OPS-6.19-0027. If Fuel became conformant this file is \
          obsolete and must be rewritten as a conformance test -- do not delete \
          the assertion to make it pass."
     );
@@ -118,7 +118,7 @@ fn index_select_and_scatter_add_diverge_from_kiss_ops_6_19_0034() {
         assert_eq!(fuel, 0i64.to_le_bytes().to_vec(), "{op:?} row moved");
         assert_ne!(
             fuel, KISS_INDEX_TRIPLE_AXIS0,
-            "{op:?} now matches §6.19-0034"
+            "{op:?} now matches KISS-OPS-6.19-0034"
         );
     }
 }
@@ -145,14 +145,14 @@ fn dim_reduce_diverges_from_kiss_ops_6_19_0025() {
         assert_ne!(
             fuel.len(),
             KISS_REDUCE_LEN,
-            "{op:?} body is now §6.19-0025's length"
+            "{op:?} body is now KISS-OPS-6.19-0025's length"
         );
         // ⚠️ A VALUE divergence sitting inside the field-set divergence, and it
-        // is invisible in a length comparison: §6.19-0025 fixes keepdim at 1,
+        // is invisible in a length comparison: KISS-OPS-6.19-0025 fixes keepdim at 1,
         // Fuel emits 0 because these tags remove the reduced dim.
         assert_eq!(
             fuel[8], 0,
-            "{op:?} emits keepdim=0 where §6.19-0025 fixes it at 1, so the rows \
+            "{op:?} emits keepdim=0 where KISS-OPS-6.19-0025 fixes it at 1, so the rows \
              disagree on a field they BOTH carry"
         );
     }
@@ -171,7 +171,11 @@ fn cumsum_diverges_from_kiss_ops_6_19_0026() {
     let mut expect_fuel = 1i64.to_le_bytes().to_vec();
     expect_fuel.push(0);
     assert_eq!(fuel, expect_fuel, "CumSum row moved");
-    assert_ne!(fuel.len(), 6, "CumSum body is now §6.19-0026's length");
+    assert_ne!(
+        fuel.len(),
+        6,
+        "CumSum body is now KISS-OPS-6.19-0026's length"
+    );
 }
 
 /// ⚠️ THE DIVERGENCE IS NOT ONLY A FIELD SET -- THE ONE FIELD BOTH SIDES CARRY
@@ -197,7 +201,7 @@ fn the_shared_axis_field_diverges_on_width_not_only_on_field_set() {
     assert_eq!(fuel.len(), 8, "Fuel encodes axis at i64 width");
     assert_eq!(
         KISS_GATHER_AXIS2[0], 2,
-        "§6.19-0007 encodes an axis index in ONE byte"
+        "KISS-OPS-6.19-0007 encodes an axis index in ONE byte"
     );
     assert_ne!(
         fuel.len(),
@@ -207,7 +211,7 @@ fn the_shared_axis_field_diverges_on_width_not_only_on_field_set() {
     );
 }
 
-/// §6.19-0003's CLOSED carrier set, written out rather than derived.
+/// KISS-OPS-6.19-0003's CLOSED carrier set, written out rather than derived.
 ///
 /// It is a claim about KISS's document, not about Fuel's code: if it drifts,
 /// that is a spec change someone has to read, and a derived copy would track
@@ -232,7 +236,7 @@ const KISS_CARRIER_SET: &[&str] = &[
     "scatter_add",
 ];
 
-/// OVER-SCOPE ARM. Every op measured in this file must be IN §6.19-0003's
+/// OVER-SCOPE ARM. Every op measured in this file must be IN KISS-OPS-6.19-0003's
 /// carrier set, or the comparison is theatre -- a non-carrier op has no §6.19
 /// row to diverge FROM, so asserting a difference against a schema that does
 /// not exist proves nothing.
@@ -252,7 +256,7 @@ fn every_op_measured_here_is_in_the_kiss_carrier_set() {
     ] {
         assert!(
             KISS_CARRIER_SET.contains(&kiss),
-            "{tag:?} maps to `{kiss}`, which is NOT in §6.19-0003's carrier set"
+            "{tag:?} maps to `{kiss}`, which is NOT in KISS-OPS-6.19-0003's carrier set"
         );
     }
 }
@@ -261,7 +265,7 @@ fn every_op_measured_here_is_in_the_kiss_carrier_set() {
 /// arm above: a NON-carrier tag has no §6.19 row, so asserting a divergence
 /// for it would be measuring against a schema that does not exist.
 ///
-/// `Slice` is the worked example. §6.19-0003 requires a non-carrier op to emit
+/// `Slice` is the worked example. KISS-OPS-6.19-0003 requires a non-carrier op to emit
 /// an EMPTY blob; Fuel emits twenty bytes.
 #[test]
 fn a_non_carrier_tag_has_no_row_to_diverge_from() {

@@ -74,7 +74,7 @@ string → typed AST → eval, extending (not replacing) the `same_as` fast path
 - Leaf layouts: `Extent = [tag, operand:u8, axis:u8]`; `Const = [tag, i64-LE]`;
   `Param = [tag, field:u8]`; `SameAs = [tag, operand:u8]`.
 - Binary node: `[tag, u16-LE len(childA), childA, u16-LE len(childB), childB]`
-  (definite-length children, §6.19-0010).
+  (definite-length children, KISS-OPS-6.19-0010).
 - `axis`: non-negative index **or** `LAST = 0xFF` (`u8`; MAX_RANK=8, concrete axes
   `0..7`). `LAST` resolves to `rank-1` at eval. A concrete axis `>= rank`, or `LAST`
   on rank-0, is a typed decline (`AxisOutOfRange`). **`0xFF` (u8 single-axis) is a

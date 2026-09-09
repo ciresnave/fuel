@@ -307,7 +307,7 @@ recipe yet. Producers widen a narrow const via `const_bits_narrow(storage, width
 
 **Per-carrier width pins — do NOT unify the three framings.** All four leaf bodies ride
 **carrier (a)** — the #67 node-envelope `op_attrs` blob, **`u32`-LE outer** byte length,
-payload verbatim (§6.19-0010) — pinned executably by `leaf_arm_bodies_ride_carrier_a_u32_le`.
+payload verbatim (KISS-OPS-6.19-0010) — pinned executably by `leaf_arm_bodies_ride_carrier_a_u32_le`.
 Carrier (a) is a *distinct* framing from **(b)** the KISS-Grammar §6.8-0007 region-node-table
 `op_attrs` sub-block (**`u16`-LE** length; Fuel ships no producer yet — #67-gated) and **(c)**
 the §6.20-0005 shape-expr child length (**`u16`-LE**; `shape_expr.rs` codec, Part II §B). The
