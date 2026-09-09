@@ -494,7 +494,9 @@ mod tests {
 
     fn paired(a: &[f32], b: &[f32], shape: &[usize]) -> (Tensor, Tensor) {
         let anchor = Tensor::from_f32(a.to_vec(), Shape::from_dims(shape), &Device::cpu()).unwrap();
-        let other = anchor.const_f32_like(b.to_vec(), Shape::from_dims(shape))?;
+        let other = anchor
+            .const_f32_like(b.to_vec(), Shape::from_dims(shape))
+            .unwrap();
         (anchor, other)
     }
 

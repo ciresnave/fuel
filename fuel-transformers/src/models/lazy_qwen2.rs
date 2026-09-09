@@ -1315,18 +1315,21 @@ mod tests {
             &Device::cpu(),
         )
         .unwrap();
-        let token_ids =
-            embed_table.const_u32_like(tokens.clone(), Shape::from_dims(&[tokens.len()]))?;
+        let token_ids = embed_table
+            .const_u32_like(tokens.clone(), Shape::from_dims(&[tokens.len()]))
+            .unwrap();
         let embeds = embed_table
             .index_select(0_usize, &token_ids)
             .unwrap()
             .reshape(Shape::from_dims(&[1, tokens.len(), cfg.hidden_size]))
             .unwrap();
         let zero_mask: Arc<[f32]> = Arc::from(vec![0.0_f32; tokens.len() * tokens.len()]);
-        let mask = embeds.const_f32_like(
-            zero_mask,
-            Shape::from_dims(&[1, 1, tokens.len(), tokens.len()]),
-        )?;
+        let mask = embeds
+            .const_f32_like(
+                zero_mask,
+                Shape::from_dims(&[1, 1, tokens.len(), tokens.len()]),
+            )
+            .unwrap();
         let h_bidir = model
             .forward_hidden_embeds_with_mask(&embeds, &mask, 0)
             .unwrap()
@@ -1380,8 +1383,9 @@ mod tests {
             &Device::cpu(),
         )
         .unwrap();
-        let token_ids =
-            embed_table.const_u32_like(tokens.clone(), Shape::from_dims(&[tokens.len()]))?;
+        let token_ids = embed_table
+            .const_u32_like(tokens.clone(), Shape::from_dims(&[tokens.len()]))
+            .unwrap();
         let embeds = embed_table
             .index_select(0_usize, &token_ids)
             .unwrap()
@@ -1494,7 +1498,9 @@ mod tests {
                 }
             }
         }
-        let mask = embeds.const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]))?;
+        let mask = embeds
+            .const_f32_like(mask_data, Shape::from_dims(&[1, 1, seq, seq]))
+            .unwrap();
         let hidden = model
             .forward_hidden_embeds_with_mask(&embeds, &mask, 0)
             .unwrap();

@@ -929,17 +929,20 @@ mod tests {
         let text_data: Vec<f32> = (0..seq)
             .flat_map(|r| (0..hidden).map(move |_| r as f32))
             .collect();
-        let text_embeds = anchor.const_f32_like(
-            Arc::from(text_data.clone()),
-            Shape::from_dims(&[1, seq, hidden]),
-        )?;
+        let text_embeds = anchor
+            .const_f32_like(
+                Arc::from(text_data.clone()),
+                Shape::from_dims(&[1, seq, hidden]),
+            )
+            .unwrap();
         // visual_embeds := (N=2, hidden) with row r = [-(r+1), …].
         let n = 2_usize;
         let visual_data: Vec<f32> = (0..n)
             .flat_map(|r| (0..hidden).map(move |_| -((r + 1) as f32)))
             .collect();
-        let visual_embeds =
-            anchor.const_f32_like(Arc::from(visual_data), Shape::from_dims(&[n, hidden]))?;
+        let visual_embeds = anchor
+            .const_f32_like(Arc::from(visual_data), Shape::from_dims(&[n, hidden]))
+            .unwrap();
         let slot_positions = vec![1_usize, 3];
         let out = substitute_visual_embeds(&text_embeds, &visual_embeds, &slot_positions, hidden)
             .unwrap()

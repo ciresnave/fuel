@@ -675,10 +675,12 @@ mod tests {
         .unwrap();
 
         let n_patches = n - 1;
-        let rot = x.const_f32_like(
-            Arc::clone(&weights.rot_pos_embed),
-            Shape::from_dims(&[n_patches, 2 * head_dim]),
-        )?;
+        let rot = x
+            .const_f32_like(
+                Arc::clone(&weights.rot_pos_embed),
+                Shape::from_dims(&[n_patches, 2 * head_dim]),
+            )
+            .unwrap();
         let sin_emb = rot.narrow(1_usize, 0, head_dim).unwrap();
         let cos_emb = rot.narrow(1_usize, head_dim, head_dim).unwrap();
         let out = apply_rope_skip_cls(&x, &cos_emb, &sin_emb, b, heads, n, head_dim).unwrap();

@@ -1001,12 +1001,14 @@ mod tests {
                 vec![5.0_f32, 5.0, 5.0, 5.0],
                 Shape::from_dims(&[1, 1, 4]),
                 &fuel_core::Device::cpu(),
-            ),
+            )
+            .unwrap(),
             reg_dists: Tensor::from_f32(
                 reg,
                 Shape::from_dims(&[1, 4, 4]),
                 &fuel_core::Device::cpu(),
-            ),
+            )
+            .unwrap(),
             strides: vec![8.0; 4],
             grid_xy: vec![10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0],
         };

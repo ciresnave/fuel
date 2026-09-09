@@ -1464,7 +1464,9 @@ mod tests {
         }
         let anchor =
             Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &Device::cpu()).unwrap();
-        let codes = anchor.const_u32_like(data, Shape::from_dims(&[1, cfg.num_codebooks, time]))?;
+        let codes = anchor
+            .const_u32_like(data, Shape::from_dims(&[1, cfg.num_codebooks, time]))
+            .unwrap();
         let audio = model.decode_codes(&codes).unwrap();
         let shape = audio.shape();
         let dims = shape.dims();
@@ -1488,14 +1490,18 @@ mod tests {
         let time = 4_usize;
         let dev = Device::cpu();
         let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev).unwrap();
-        let codes_a = anchor.const_u32_like(
-            vec![0_u32; cfg.num_codebooks * time],
-            Shape::from_dims(&[1, cfg.num_codebooks, time]),
-        )?;
-        let codes_b = anchor.const_u32_like(
-            vec![3_u32; cfg.num_codebooks * time],
-            Shape::from_dims(&[1, cfg.num_codebooks, time]),
-        )?;
+        let codes_a = anchor
+            .const_u32_like(
+                vec![0_u32; cfg.num_codebooks * time],
+                Shape::from_dims(&[1, cfg.num_codebooks, time]),
+            )
+            .unwrap();
+        let codes_b = anchor
+            .const_u32_like(
+                vec![3_u32; cfg.num_codebooks * time],
+                Shape::from_dims(&[1, cfg.num_codebooks, time]),
+            )
+            .unwrap();
         let a = model.decode_codes(&codes_a).unwrap().realize_f32();
         let b = model.decode_codes(&codes_b).unwrap().realize_f32();
         let mut max_diff = 0.0_f32;

@@ -1385,12 +1385,14 @@ mod tests {
         )
         .unwrap();
         // Anchor text on audio's graph so the substitute step can mix.
-        let text = audio.const_f32_like(
-            Arc::<[f32]>::from(vec![
-                1.0_f32, 1.0, 1.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0, 4.0, 4.0, 4.0,
-            ]),
-            Shape::from_dims(&[1, 4, hidden]),
-        )?;
+        let text = audio
+            .const_f32_like(
+                Arc::<[f32]>::from(vec![
+                    1.0_f32, 1.0, 1.0, 2.0, 2.0, 2.0, 3.0, 3.0, 3.0, 4.0, 4.0, 4.0,
+                ]),
+                Shape::from_dims(&[1, 4, hidden]),
+            )
+            .unwrap();
         let out = substitute_audio_embeds(&text, &audio, &tokens, 99, hidden).unwrap();
         let v = out.realize_f32();
         // Expected: row 0 = text 1, row 1 = audio 7, row 2 = text 3,
@@ -1476,10 +1478,12 @@ mod tests {
             &Device::cpu(),
         )
         .unwrap();
-        let text = audio.const_f32_like(
-            Arc::<[f32]>::from(vec![1.0_f32, 1.0, 2.0, 2.0, 3.0, 3.0]),
-            Shape::from_dims(&[1, 3, hidden]),
-        )?;
+        let text = audio
+            .const_f32_like(
+                Arc::<[f32]>::from(vec![1.0_f32, 1.0, 2.0, 2.0, 3.0, 3.0]),
+                Shape::from_dims(&[1, 3, hidden]),
+            )
+            .unwrap();
         let out = substitute_audio_embeds(&text, &audio, &tokens, 99, hidden).unwrap();
         let v = out.realize_f32();
         let want = [1.0_f32, 1.0, 2.0, 2.0, 3.0, 3.0];

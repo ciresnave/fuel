@@ -1851,7 +1851,9 @@ mod tests {
         )
         .unwrap();
         let txt_data = vec![0.01_f32; 1 * 4 * cfg.prior_c_cond];
-        let txt = xs.const_f32_like(txt_data, Shape::from_dims(&[1, 4, cfg.prior_c_cond]))?;
+        let txt = xs
+            .const_f32_like(txt_data, Shape::from_dims(&[1, 4, cfg.prior_c_cond]))
+            .unwrap();
         let out = model.forward(&xs, 0.5, &txt, 2, 2).unwrap();
         assert_eq!(out.shape().dims(), &[1, cfg.prior_c_in, 2, 2]);
         for v in &out.realize_f32() {
@@ -1878,7 +1880,9 @@ mod tests {
         )
         .unwrap();
         let txt_data = vec![0.01_f32; 1 * 4 * cfg.clip_embed];
-        let txt = xs.const_f32_like(txt_data, Shape::from_dims(&[1, 4, cfg.clip_embed]))?;
+        let txt = xs
+            .const_f32_like(txt_data, Shape::from_dims(&[1, 4, cfg.clip_embed]))
+            .unwrap();
         let out = model.forward(&xs, 0.5, &txt, h, w).unwrap();
         assert_eq!(out.shape().dims(), &[1, cfg.diffnext_c_out, h, w]);
         for v in &out.realize_f32() {

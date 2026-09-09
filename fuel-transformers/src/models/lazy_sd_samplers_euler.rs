@@ -397,7 +397,9 @@ mod tests {
 
     fn paired(a: &[f32], b: &[f32], shape: &[usize]) -> (Tensor, Tensor) {
         let anchor = Tensor::from_f32(a.to_vec(), Shape::from_dims(shape), &Device::cpu()).unwrap();
-        let other = anchor.const_f32_like(b.to_vec(), Shape::from_dims(shape))?;
+        let other = anchor
+            .const_f32_like(b.to_vec(), Shape::from_dims(shape))
+            .unwrap();
         (anchor, other)
     }
 
@@ -425,7 +427,9 @@ mod tests {
         .unwrap();
         let (sample, model_out) =
             paired(&[0.1, -0.2, 0.3, 0.0], &[0.05, 0.01, -0.04, 0.02], &[1, 4]);
-        let noise = sample.const_f32_like(vec![0.0; 4], Shape::from_dims(&[1, 4]))?;
+        let noise = sample
+            .const_f32_like(vec![0.0; 4], Shape::from_dims(&[1, 4]))
+            .unwrap();
         let next = sched.step(&model_out, 0, &sample, &noise).unwrap();
         let out = next.realize_f32();
         assert_eq!(out.len(), 4);
@@ -447,7 +451,9 @@ mod tests {
         let sample_vals: [f32; 4] = [0.5, -0.25, 0.75, 0.1];
         let model_vals: [f32; 4] = [0.2, 0.4, -0.1, 0.05];
         let (sample, model_out) = paired(&sample_vals, &model_vals, &[1, 4]);
-        let noise = sample.const_f32_like(vec![0.0; 4], Shape::from_dims(&[1, 4]))?;
+        let noise = sample
+            .const_f32_like(vec![0.0; 4], Shape::from_dims(&[1, 4]))
+            .unwrap();
 
         let idx = 2usize;
         let sigma_from = sched.sigmas()[idx];

@@ -1747,24 +1747,34 @@ mod tests {
         let txt_data: Vec<f32> = (0..(1 * seq_text * cfg.context_in_dim))
             .map(|_| rng())
             .collect();
-        let txt = img.const_f32_like(
-            Arc::from(txt_data),
-            Shape::from_dims(&[1, seq_text, cfg.context_in_dim]),
-        )?;
+        let txt = img
+            .const_f32_like(
+                Arc::from(txt_data),
+                Shape::from_dims(&[1, seq_text, cfg.context_in_dim]),
+            )
+            .unwrap();
         let n_axes = cfg.axes_dim.len();
         let img_ids_data: Vec<f32> = (0..(seq_image * n_axes)).map(|i| (i % 4) as f32).collect();
-        let img_ids = img.const_f32_like(
-            Arc::from(img_ids_data),
-            Shape::from_dims(&[1, seq_image, n_axes]),
-        )?;
+        let img_ids = img
+            .const_f32_like(
+                Arc::from(img_ids_data),
+                Shape::from_dims(&[1, seq_image, n_axes]),
+            )
+            .unwrap();
         let txt_ids_data: Vec<f32> = vec![0.0_f32; seq_text * n_axes];
-        let txt_ids = img.const_f32_like(
-            Arc::from(txt_ids_data),
-            Shape::from_dims(&[1, seq_text, n_axes]),
-        )?;
+        let txt_ids = img
+            .const_f32_like(
+                Arc::from(txt_ids_data),
+                Shape::from_dims(&[1, seq_text, n_axes]),
+            )
+            .unwrap();
         let y_data: Vec<f32> = (0..cfg.vec_in_dim).map(|_| rng()).collect();
-        let y = img.const_f32_like(Arc::from(y_data), Shape::from_dims(&[1, cfg.vec_in_dim]))?;
-        let t = img.const_f32_like(Arc::from(vec![0.5_f32]), Shape::from_dims(&[1]))?;
+        let y = img
+            .const_f32_like(Arc::from(y_data), Shape::from_dims(&[1, cfg.vec_in_dim]))
+            .unwrap();
+        let t = img
+            .const_f32_like(Arc::from(vec![0.5_f32]), Shape::from_dims(&[1]))
+            .unwrap();
         (img, img_ids, txt, txt_ids, t, y)
     }
 
@@ -2020,10 +2030,12 @@ mod tests {
             &dev,
         )
         .unwrap();
-        let pred = img.const_f32_like(
-            Arc::from(vec![0.5_f32, 0.5, 0.5, 0.5]),
-            Shape::from_dims(&[1, 2, 2]),
-        )?;
+        let pred = img
+            .const_f32_like(
+                Arc::from(vec![0.5_f32, 0.5, 0.5, 0.5]),
+                Shape::from_dims(&[1, 2, 2]),
+            )
+            .unwrap();
         let out = sched.step(&img, &pred, ts[0], ts[1]).unwrap();
         let out_v = out.realize_f32();
         // dt = ts[1] - ts[0] = 0.75 - 1.0 = -0.25

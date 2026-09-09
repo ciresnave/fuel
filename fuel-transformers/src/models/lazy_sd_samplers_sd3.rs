@@ -433,11 +433,18 @@ mod tests {
         // count doesn't matter for the IdentityDenoiser).
         let latent =
             Tensor::from_f32(vec![0.1_f32; 16], Shape::from_dims(&[1, 4, 2, 2]), &device).unwrap();
-        let context = latent.const_f32_like(vec![0.2_f32; 48], Shape::from_dims(&[1, 6, 8]))?;
-        let y = latent.const_f32_like(vec![0.3_f32; 8], Shape::from_dims(&[1, 8]))?;
-        let neg_context =
-            latent.const_f32_like(vec![-0.2_f32; 48], Shape::from_dims(&[1, 6, 8]))?;
-        let neg_y = latent.const_f32_like(vec![-0.3_f32; 8], Shape::from_dims(&[1, 8]))?;
+        let context = latent
+            .const_f32_like(vec![0.2_f32; 48], Shape::from_dims(&[1, 6, 8]))
+            .unwrap();
+        let y = latent
+            .const_f32_like(vec![0.3_f32; 8], Shape::from_dims(&[1, 8]))
+            .unwrap();
+        let neg_context = latent
+            .const_f32_like(vec![-0.2_f32; 48], Shape::from_dims(&[1, 6, 8]))
+            .unwrap();
+        let neg_y = latent
+            .const_f32_like(vec![-0.3_f32; 8], Shape::from_dims(&[1, 8]))
+            .unwrap();
 
         // SLG disabled: just run a few steps end-to-end.
         let cfg_no_slg = Sd3SamplerConfig::slg_disabled(4, 3.0, 4.5);
@@ -529,8 +536,12 @@ mod tests {
         let device = Device::cpu();
         let latent =
             Tensor::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[1, 1, 2, 2]), &device).unwrap();
-        let context = latent.const_f32_like(vec![0.0_f32; 4], Shape::from_dims(&[1, 1, 4]))?;
-        let y = latent.const_f32_like(vec![0.0_f32; 4], Shape::from_dims(&[1, 4]))?;
+        let context = latent
+            .const_f32_like(vec![0.0_f32; 4], Shape::from_dims(&[1, 1, 4]))
+            .unwrap();
+        let y = latent
+            .const_f32_like(vec![0.0_f32; 4], Shape::from_dims(&[1, 4]))
+            .unwrap();
         let neg_context = context.clone();
         let neg_y = y.clone();
         let cfg = Sd3SamplerConfig::slg_disabled(0, 3.0, 4.5);
@@ -550,11 +561,16 @@ mod tests {
         let device = Device::cpu();
         let latent =
             Tensor::from_f32(vec![0.0_f32; 4], Shape::from_dims(&[1, 1, 2, 2]), &device).unwrap();
-        let context = latent.const_f32_like(vec![0.0_f32; 6], Shape::from_dims(&[1, 2, 3]))?;
-        let y = latent.const_f32_like(vec![0.0_f32; 4], Shape::from_dims(&[1, 4]))?;
+        let context = latent
+            .const_f32_like(vec![0.0_f32; 6], Shape::from_dims(&[1, 2, 3]))
+            .unwrap();
+        let y = latent
+            .const_f32_like(vec![0.0_f32; 4], Shape::from_dims(&[1, 4]))
+            .unwrap();
         // Wrong context shape.
-        let bad_neg_context =
-            latent.const_f32_like(vec![0.0_f32; 4], Shape::from_dims(&[1, 1, 4]))?;
+        let bad_neg_context = latent
+            .const_f32_like(vec![0.0_f32; 4], Shape::from_dims(&[1, 1, 4]))
+            .unwrap();
         let neg_y = y.clone();
         let cfg = Sd3SamplerConfig::slg_disabled(2, 3.0, 4.5);
         let denoiser = IdentityDenoiser;

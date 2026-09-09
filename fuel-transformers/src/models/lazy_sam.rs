@@ -2385,21 +2385,27 @@ mod tests {
         let img =
             Tensor::from_f32(img_data, Shape::from_dims(&[1, td, h, w]), &Device::cpu()).unwrap();
         let pe_data: Vec<f32> = (0..1 * td * h * w).map(|i| (i as f32) * 0.0007).collect();
-        let pe = img.const_f32_like(
-            Arc::<[f32]>::from(pe_data),
-            Shape::from_dims(&[1, td, h, w]),
-        )?;
+        let pe = img
+            .const_f32_like(
+                Arc::<[f32]>::from(pe_data),
+                Shape::from_dims(&[1, td, h, w]),
+            )
+            .unwrap();
         let n_prompts = 2;
         let sparse_data: Vec<f32> = (0..1 * n_prompts * td).map(|i| (i as f32) * 0.01).collect();
-        let sparse = img.const_f32_like(
-            Arc::<[f32]>::from(sparse_data),
-            Shape::from_dims(&[1, n_prompts, td]),
-        )?;
+        let sparse = img
+            .const_f32_like(
+                Arc::<[f32]>::from(sparse_data),
+                Shape::from_dims(&[1, n_prompts, td]),
+            )
+            .unwrap();
         let dense_data: Vec<f32> = (0..1 * td * h * w).map(|i| (i as f32) * 0.0005).collect();
-        let dense = img.const_f32_like(
-            Arc::<[f32]>::from(dense_data),
-            Shape::from_dims(&[1, td, h, w]),
-        )?;
+        let dense = img
+            .const_f32_like(
+                Arc::<[f32]>::from(dense_data),
+                Shape::from_dims(&[1, td, h, w]),
+            )
+            .unwrap();
 
         let (masks, iou_pred) = decoder
             .forward(
@@ -2431,19 +2437,25 @@ mod tests {
             .collect();
         let img =
             Tensor::from_f32(img_data, Shape::from_dims(&[1, td, h, w]), &Device::cpu()).unwrap();
-        let pe = img.const_f32_like(
-            Arc::<[f32]>::from(vec![0.001_f32; 1 * td * h * w]),
-            Shape::from_dims(&[1, td, h, w]),
-        )?;
+        let pe = img
+            .const_f32_like(
+                Arc::<[f32]>::from(vec![0.001_f32; 1 * td * h * w]),
+                Shape::from_dims(&[1, td, h, w]),
+            )
+            .unwrap();
         let n_prompts = 2;
-        let sparse = img.const_f32_like(
-            Arc::<[f32]>::from(vec![0.01_f32; 1 * n_prompts * td]),
-            Shape::from_dims(&[1, n_prompts, td]),
-        )?;
-        let dense = img.const_f32_like(
-            Arc::<[f32]>::from(vec![0.0005_f32; 1 * td * h * w]),
-            Shape::from_dims(&[1, td, h, w]),
-        )?;
+        let sparse = img
+            .const_f32_like(
+                Arc::<[f32]>::from(vec![0.01_f32; 1 * n_prompts * td]),
+                Shape::from_dims(&[1, n_prompts, td]),
+            )
+            .unwrap();
+        let dense = img
+            .const_f32_like(
+                Arc::<[f32]>::from(vec![0.0005_f32; 1 * td * h * w]),
+                Shape::from_dims(&[1, td, h, w]),
+            )
+            .unwrap();
 
         let (masks, iou_pred) = decoder
             .forward(&img, &pe, &sparse, &dense, /* multimask_output */ true)

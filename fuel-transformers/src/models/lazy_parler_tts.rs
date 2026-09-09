@@ -788,18 +788,22 @@ mod tests {
         let dev = Device::cpu();
         // (1, num_codebooks, T) U32.
         let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev).unwrap();
-        let input_ids = anchor.const_u32_like(
-            vec![1_u32, 2, 3, 4, 5, 6],
-            Shape::from_dims(&[1, cfg.num_codebooks, 3]),
-        )?;
-        let encoder_states = anchor.const_f32_like(
-            Arc::<[f32]>::from(
-                (0..(1 * 5 * cfg.hidden_size))
-                    .map(|i| (i as f32) * 0.01)
-                    .collect::<Vec<_>>(),
-            ),
-            Shape::from_dims(&[1, 5, cfg.hidden_size]),
-        )?;
+        let input_ids = anchor
+            .const_u32_like(
+                vec![1_u32, 2, 3, 4, 5, 6],
+                Shape::from_dims(&[1, cfg.num_codebooks, 3]),
+            )
+            .unwrap();
+        let encoder_states = anchor
+            .const_f32_like(
+                Arc::<[f32]>::from(
+                    (0..(1 * 5 * cfg.hidden_size))
+                        .map(|i| (i as f32) * 0.01)
+                        .collect::<Vec<_>>(),
+                ),
+                Shape::from_dims(&[1, 5, cfg.hidden_size]),
+            )
+            .unwrap();
         let logits = model.forward(&input_ids, None, &encoder_states, 0).unwrap();
         assert_eq!(logits.len(), cfg.num_codebooks);
         for (cb, l) in logits.iter().enumerate() {
@@ -822,21 +826,27 @@ mod tests {
         };
         let dev = Device::cpu();
         let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev).unwrap();
-        let encoder_states = anchor.const_f32_like(
-            Arc::<[f32]>::from(vec![0.05_f32; 1 * 4 * cfg.hidden_size]),
-            Shape::from_dims(&[1, 4, cfg.hidden_size]),
-        )?;
+        let encoder_states = anchor
+            .const_f32_like(
+                Arc::<[f32]>::from(vec![0.05_f32; 1 * 4 * cfg.hidden_size]),
+                Shape::from_dims(&[1, 4, cfg.hidden_size]),
+            )
+            .unwrap();
         // Row-major layout: codebook 0 at slots 0..4, codebook 1 at 4..8.
         // Changing slot 3 (codebook 0 position 3) and slot 7 (codebook
         // 1 position 3) leaves positions 0..2 unchanged.
-        let ids_a = anchor.const_u32_like(
-            vec![1_u32, 2, 3, 4, 5, 6, 7, 8],
-            Shape::from_dims(&[1, cfg.num_codebooks, 4]),
-        )?;
-        let ids_b = anchor.const_u32_like(
-            vec![1_u32, 2, 3, 9, 5, 6, 7, 9], // only last position of each codebook changed
-            Shape::from_dims(&[1, cfg.num_codebooks, 4]),
-        )?;
+        let ids_a = anchor
+            .const_u32_like(
+                vec![1_u32, 2, 3, 4, 5, 6, 7, 8],
+                Shape::from_dims(&[1, cfg.num_codebooks, 4]),
+            )
+            .unwrap();
+        let ids_b = anchor
+            .const_u32_like(
+                vec![1_u32, 2, 3, 9, 5, 6, 7, 9], // only last position of each codebook changed
+                Shape::from_dims(&[1, cfg.num_codebooks, 4]),
+            )
+            .unwrap();
         let a = model.forward(&ids_a, None, &encoder_states, 0).unwrap();
         let b = model.forward(&ids_b, None, &encoder_states, 0).unwrap();
         for cb in 0..cfg.num_codebooks {
@@ -869,26 +879,32 @@ mod tests {
         };
         let dev = Device::cpu();
         let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev).unwrap();
-        let ids = anchor.const_u32_like(
-            vec![1_u32, 2, 3, 4],
-            Shape::from_dims(&[1, cfg.num_codebooks, 2]),
-        )?;
-        let enc_a = anchor.const_f32_like(
-            Arc::<[f32]>::from(
-                (0..(1 * 4 * cfg.hidden_size))
-                    .map(|i| (i as f32) * 0.01)
-                    .collect::<Vec<_>>(),
-            ),
-            Shape::from_dims(&[1, 4, cfg.hidden_size]),
-        )?;
-        let enc_b = anchor.const_f32_like(
-            Arc::<[f32]>::from(
-                (0..(1 * 4 * cfg.hidden_size))
-                    .map(|i| (i as f32) * 0.01 + 0.5)
-                    .collect::<Vec<_>>(),
-            ),
-            Shape::from_dims(&[1, 4, cfg.hidden_size]),
-        )?;
+        let ids = anchor
+            .const_u32_like(
+                vec![1_u32, 2, 3, 4],
+                Shape::from_dims(&[1, cfg.num_codebooks, 2]),
+            )
+            .unwrap();
+        let enc_a = anchor
+            .const_f32_like(
+                Arc::<[f32]>::from(
+                    (0..(1 * 4 * cfg.hidden_size))
+                        .map(|i| (i as f32) * 0.01)
+                        .collect::<Vec<_>>(),
+                ),
+                Shape::from_dims(&[1, 4, cfg.hidden_size]),
+            )
+            .unwrap();
+        let enc_b = anchor
+            .const_f32_like(
+                Arc::<[f32]>::from(
+                    (0..(1 * 4 * cfg.hidden_size))
+                        .map(|i| (i as f32) * 0.01 + 0.5)
+                        .collect::<Vec<_>>(),
+                ),
+                Shape::from_dims(&[1, 4, cfg.hidden_size]),
+            )
+            .unwrap();
         let a = model.forward(&ids, None, &enc_a, 0).unwrap();
         let b = model.forward(&ids, None, &enc_b, 0).unwrap();
         let av = a[0].realize_f32();
@@ -914,18 +930,24 @@ mod tests {
         };
         let dev = Device::cpu();
         let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev).unwrap();
-        let ids = anchor.const_u32_like(
-            vec![1_u32, 2, 3, 4],
-            Shape::from_dims(&[1, cfg.num_codebooks, 2]),
-        )?;
-        let prompt = anchor.const_f32_like(
-            Arc::<[f32]>::from(vec![0.05_f32; 1 * 3 * cfg.hidden_size]),
-            Shape::from_dims(&[1, 3, cfg.hidden_size]),
-        )?;
-        let enc = anchor.const_f32_like(
-            Arc::<[f32]>::from(vec![0.05_f32; 1 * 4 * cfg.hidden_size]),
-            Shape::from_dims(&[1, 4, cfg.hidden_size]),
-        )?;
+        let ids = anchor
+            .const_u32_like(
+                vec![1_u32, 2, 3, 4],
+                Shape::from_dims(&[1, cfg.num_codebooks, 2]),
+            )
+            .unwrap();
+        let prompt = anchor
+            .const_f32_like(
+                Arc::<[f32]>::from(vec![0.05_f32; 1 * 3 * cfg.hidden_size]),
+                Shape::from_dims(&[1, 3, cfg.hidden_size]),
+            )
+            .unwrap();
+        let enc = anchor
+            .const_f32_like(
+                Arc::<[f32]>::from(vec![0.05_f32; 1 * 4 * cfg.hidden_size]),
+                Shape::from_dims(&[1, 4, cfg.hidden_size]),
+            )
+            .unwrap();
         let logits = model.forward(&ids, Some(&prompt), &enc, 0).unwrap();
         // With prompt P=3, output token length is P + T = 3 + 2 = 5.
         assert_eq!(logits[0].shape().dims(), &[1, 5, cfg.vocab_size]);
@@ -946,18 +968,22 @@ mod tests {
         let valid = tiny_config();
         let dev = Device::cpu();
         let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev).unwrap();
-        let input_ids = anchor.const_u32_like(
-            vec![1_u32, 2, 3, 4, 5, 6],
-            Shape::from_dims(&[1, valid.num_codebooks, 3]),
-        )?;
-        let encoder_states = anchor.const_f32_like(
-            Arc::<[f32]>::from(
-                (0..(5 * valid.hidden_size))
-                    .map(|i| (i as f32) * 0.01)
-                    .collect::<Vec<_>>(),
-            ),
-            Shape::from_dims(&[1, 5, valid.hidden_size]),
-        )?;
+        let input_ids = anchor
+            .const_u32_like(
+                vec![1_u32, 2, 3, 4, 5, 6],
+                Shape::from_dims(&[1, valid.num_codebooks, 3]),
+            )
+            .unwrap();
+        let encoder_states = anchor
+            .const_f32_like(
+                Arc::<[f32]>::from(
+                    (0..(5 * valid.hidden_size))
+                        .map(|i| (i as f32) * 0.01)
+                        .collect::<Vec<_>>(),
+                ),
+                Shape::from_dims(&[1, 5, valid.hidden_size]),
+            )
+            .unwrap();
 
         // POSITIVE CONTROL: the conforming config must SUCCEED.
         let good = ParlerDecoderModel {

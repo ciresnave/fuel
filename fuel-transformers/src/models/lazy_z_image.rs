@@ -2152,12 +2152,18 @@ mod tests {
             &fuel_core::Device::cpu(),
         )
         .unwrap();
-        let t = x.const_f32_like(Arc::from(vec![0.5_f32]), Shape::from_dims(&[1]))?;
-        let cap = x.const_f32_like(
-            Arc::from(vec![0.1_f32; 1 * 3 * cfg.cap_feat_dim]),
-            Shape::from_dims(&[1, 3, cfg.cap_feat_dim]),
-        )?;
-        let cap_mask = x.const_f32_like(Arc::from(vec![1.0_f32; 3]), Shape::from_dims(&[1, 3]))?;
+        let t = x
+            .const_f32_like(Arc::from(vec![0.5_f32]), Shape::from_dims(&[1]))
+            .unwrap();
+        let cap = x
+            .const_f32_like(
+                Arc::from(vec![0.1_f32; 1 * 3 * cfg.cap_feat_dim]),
+                Shape::from_dims(&[1, 3, cfg.cap_feat_dim]),
+            )
+            .unwrap();
+        let cap_mask = x
+            .const_f32_like(Arc::from(vec![1.0_f32; 3]), Shape::from_dims(&[1, 3]))
+            .unwrap();
 
         let out = model.forward(&x, &t, &cap, &cap_mask).unwrap();
         assert_eq!(out.shape().dims(), &[1, c, 1, h, w]);
@@ -2402,7 +2408,9 @@ mod tests {
             &fuel_core::Device::cpu(),
         )
         .unwrap();
-        let v = sample.const_f32_like(Arc::from(vec![0.1_f32; 4]), Shape::from_dims(&[1, 4]))?;
+        let v = sample
+            .const_f32_like(Arc::from(vec![0.1_f32; 4]), Shape::from_dims(&[1, 4]))
+            .unwrap();
         let mut latent = sample.clone();
         while !sched.is_complete() {
             latent = sched.step(&v, &latent).unwrap();
@@ -2452,19 +2460,24 @@ mod tests {
         // hand the transformer output to the VAE directly.
         assert_eq!(tcfg.in_channels, vcfg.latent_channels);
 
-        let cap = noise.const_f32_like(
-            Arc::from(vec![0.05_f32; 1 * 2 * tcfg.cap_feat_dim]),
-            Shape::from_dims(&[1, 2, tcfg.cap_feat_dim]),
-        )?;
-        let cap_mask =
-            noise.const_f32_like(Arc::from(vec![1.0_f32; 2]), Shape::from_dims(&[1, 2]))?;
+        let cap = noise
+            .const_f32_like(
+                Arc::from(vec![0.05_f32; 1 * 2 * tcfg.cap_feat_dim]),
+                Shape::from_dims(&[1, 2, tcfg.cap_feat_dim]),
+            )
+            .unwrap();
+        let cap_mask = noise
+            .const_f32_like(Arc::from(vec![1.0_f32; 2]), Shape::from_dims(&[1, 2]))
+            .unwrap();
 
         let mut sched = FlowMatchEulerDiscreteScheduler::new(SchedulerConfig::z_image_turbo());
         sched.set_timesteps(2, None);
         let mut latent = noise;
         for _ in 0..2 {
             let t_norm = sched.current_timestep_normalized() as f32;
-            let t = latent.const_f32_like(Arc::from(vec![t_norm]), Shape::from_dims(&[1]))?;
+            let t = latent
+                .const_f32_like(Arc::from(vec![t_norm]), Shape::from_dims(&[1]))
+                .unwrap();
             let v = transformer.forward(&latent, &t, &cap, &cap_mask).unwrap();
             latent = sched.step(&v, &latent).unwrap();
         }

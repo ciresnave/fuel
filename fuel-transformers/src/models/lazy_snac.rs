@@ -1086,8 +1086,12 @@ mod tests {
         // Use T_q0 = 2 → T_q1 = 4 → max_t = 4.
         let dev = Device::cpu();
         let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev).unwrap();
-        let c0 = anchor.const_u32_like(vec![0_u32, 1], Shape::from_dims(&[1, 2]))?;
-        let c1 = anchor.const_u32_like(vec![2_u32, 3, 4, 5], Shape::from_dims(&[1, 4]))?;
+        let c0 = anchor
+            .const_u32_like(vec![0_u32, 1], Shape::from_dims(&[1, 2]))
+            .unwrap();
+        let c1 = anchor
+            .const_u32_like(vec![2_u32, 3, 4, 5], Shape::from_dims(&[1, 4]))
+            .unwrap();
         let audio = model.decode_codes(&[c0, c1]).unwrap();
         let dims = audio.shape();
         let dims = dims.dims();
@@ -1110,12 +1114,20 @@ mod tests {
         let dev = Device::cpu();
         let anchor = Tensor::from_f32(vec![0.0_f32; 1], Shape::from_dims(&[1]), &dev).unwrap();
         let codes_a = vec![
-            anchor.const_u32_like(vec![0_u32; 2], Shape::from_dims(&[1, 2])),
-            anchor.const_u32_like(vec![0_u32; 4], Shape::from_dims(&[1, 4])),
+            anchor
+                .const_u32_like(vec![0_u32; 2], Shape::from_dims(&[1, 2]))
+                .unwrap(),
+            anchor
+                .const_u32_like(vec![0_u32; 4], Shape::from_dims(&[1, 4]))
+                .unwrap(),
         ];
         let codes_b = vec![
-            anchor.const_u32_like(vec![3_u32; 2], Shape::from_dims(&[1, 2])),
-            anchor.const_u32_like(vec![5_u32; 4], Shape::from_dims(&[1, 4])),
+            anchor
+                .const_u32_like(vec![3_u32; 2], Shape::from_dims(&[1, 2]))
+                .unwrap(),
+            anchor
+                .const_u32_like(vec![5_u32; 4], Shape::from_dims(&[1, 4]))
+                .unwrap(),
         ];
         let a = model.decode_codes(&codes_a).unwrap().realize_f32();
         let b = model.decode_codes(&codes_b).unwrap().realize_f32();

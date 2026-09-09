@@ -1683,12 +1683,18 @@ mod tests {
             &dev,
         )
         .unwrap();
-        let img = txt.const_f32_like(
-            Arc::from(img_data),
-            Shape::from_dims(&[1, seq_image, cfg.dim]),
-        )?;
-        let y = txt.const_f32_like(Arc::from(y_data), Shape::from_dims(&[1, adm_in]))?;
-        let t = txt.const_f32_like(Arc::from(t_data), Shape::from_dims(&[1]))?;
+        let img = txt
+            .const_f32_like(
+                Arc::from(img_data),
+                Shape::from_dims(&[1, seq_image, cfg.dim]),
+            )
+            .unwrap();
+        let y = txt
+            .const_f32_like(Arc::from(y_data), Shape::from_dims(&[1, adm_in]))
+            .unwrap();
+        let t = txt
+            .const_f32_like(Arc::from(t_data), Shape::from_dims(&[1]))
+            .unwrap();
         (txt, img, t, y)
     }
 
@@ -1721,10 +1727,12 @@ mod tests {
             .collect();
         let x = Tensor::from_f32(Arc::from(data), Shape::from_dims(&[b, s, dim]), &dev).unwrap();
         let normed = x.layer_norm_last_dim(1e-6).unwrap();
-        let zero = x.const_f32_like(
-            Arc::from(vec![0.0_f32; b * dim]),
-            Shape::from_dims(&[b, dim]),
-        )?;
+        let zero = x
+            .const_f32_like(
+                Arc::from(vec![0.0_f32; b * dim]),
+                Shape::from_dims(&[b, dim]),
+            )
+            .unwrap();
         let modulated = apply_modulation(&normed, &zero, &zero).unwrap();
         let a = normed.realize_f32();
         let bv = modulated.realize_f32();
@@ -1752,11 +1760,15 @@ mod tests {
             .map(|i| (i as f32 * 0.07).sin())
             .collect();
         let x = Tensor::from_f32(Arc::from(x_data), Shape::from_dims(&[b, s, dim]), &dev).unwrap();
-        let delta = x.const_f32_like(Arc::from(delta_data), Shape::from_dims(&[b, s, dim]))?;
-        let gate = x.const_f32_like(
-            Arc::from(vec![0.0_f32; b * dim]),
-            Shape::from_dims(&[b, dim]),
-        )?;
+        let delta = x
+            .const_f32_like(Arc::from(delta_data), Shape::from_dims(&[b, s, dim]))
+            .unwrap();
+        let gate = x
+            .const_f32_like(
+                Arc::from(vec![0.0_f32; b * dim]),
+                Shape::from_dims(&[b, dim]),
+            )
+            .unwrap();
         let out = gated_residual(&x, &delta, &gate).unwrap();
         let a = x.realize_f32();
         let bv = out.realize_f32();
@@ -2009,15 +2021,21 @@ mod tests {
             &dev,
         )
         .unwrap();
-        let t = x.const_f32_like(Arc::from(t_data), Shape::from_dims(&[1]))?;
-        let y = x.const_f32_like(
-            Arc::from(y_data),
-            Shape::from_dims(&[1, cfg.adm_in_channels]),
-        )?;
-        let ctx = x.const_f32_like(
-            Arc::from(ctx_data),
-            Shape::from_dims(&[1, s_context, cfg.context_embed_size]),
-        )?;
+        let t = x
+            .const_f32_like(Arc::from(t_data), Shape::from_dims(&[1]))
+            .unwrap();
+        let y = x
+            .const_f32_like(
+                Arc::from(y_data),
+                Shape::from_dims(&[1, cfg.adm_in_channels]),
+            )
+            .unwrap();
+        let ctx = x
+            .const_f32_like(
+                Arc::from(ctx_data),
+                Shape::from_dims(&[1, s_context, cfg.context_embed_size]),
+            )
+            .unwrap();
         (x, t, y, ctx)
     }
 
