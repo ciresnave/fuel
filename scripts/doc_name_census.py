@@ -97,9 +97,6 @@ DISPOSITIONS = {
     "MemGetInfo":       ("EXTERNAL", "CUDA driver API (cuMemGetInfo); 05-backend-contract. Never a Fuel type."),
 
     # -- REAL DRIFT (doc rename proposed; code name in `->`) ---------------
-    "BitStablePref":    ("DRIFT", "-> BitStablePreferenceFilter; ranker filter, abbreviated spelling. 14-lifecycle:308."),
-    "PrecisionFloor":   ("DRIFT", "-> PrecisionFloorFilter; ranker filter, abbreviated spelling. 14-lifecycle:308."),
-    "StridedInputPref": ("DRIFT", "-> StridedInputPreferenceFilter; ranker filter, abbreviated spelling. 14-lifecycle:308."),
 
     # -- PROPOSED-FUTURE (unbuilt; roadmap anchor named) -------------------
     "Concurrency":            ("PROPOSED", "concurrent-execute realize knob enum {Auto,Required,Forbidden}; 04-optimization. Unbuilt (RuleFamily != this)."),
@@ -128,8 +125,6 @@ DISPOSITIONS = {
     "Fmin":             ("FALSEHOOD", "was asserted to EXIST at decisions-log:493 ('remains available ... unchanged') and corrected at :499. Resolved by an inline supersession marker at :493 (the stale passage), so a reader who never reaches :499 cannot believe the false clause."),
 
     # -- CONCEPT-NOT-TYPE (doc should un-backtick) -------------------------
-    "OptimizationMap":  ("CONCEPT", "doc's own parenthetical calls it deliberately-not-a-type; 02-layers:135."),
-    "MINOR":            ("CONCEPT", "semver level in prose (MAJOR/MINOR/PATCH), not a type; 00-index:120-123. Dropped by the >=1-lowercase rule."),
 }
 
 CLASS_ORDER = ["DRIFT", "FALSEHOOD", "PROPOSED", "CITED", "CONCEPT", "EXTERNAL", "UNCLASSIFIED"]
@@ -137,23 +132,6 @@ CLASS_ORDER = ["DRIFT", "FALSEHOOD", "PROPOSED", "CITED", "CONCEPT", "EXTERNAL",
 CONTROLS = ["NodeHandle", "FusedOpRegistry"]
 
 # ---------------------------------------------------------------------------
-# EXCLUDED *.rs FILES -- fixtures that name drifted doc identifiers as STRING
-# DATA rather than as API references.
-#
-# `fuel-ir/tests/doc_block_scope.rs` (#147, the block-aware scope classifier)
-# names the drifted doc identifiers verbatim as TEST FIXTURES. Because the
-# census scans `*.rs` textually, those string mentions make every drifted name
-# read as PRESENT -- the moment #147 merged, this census's ABSENT population
-# went from ~25 to 0. That is a gate born GREEN on a corpus poisoned by another
-# gate's fixtures. Excluding the fixture file (NOT `tests/` wholesale -- a name
-# used as a real SYMBOL in a test is genuine presence) restores the real
-# population. The --self-test mode proves this exclusion is load-bearing and
-# will red if a NEW fixture file poisons the corpus the same way.
-EXCLUDED_FILES = {
-    "fuel-ir/tests/doc_block_scope.rs",
-}
-
-
 def is_camel(tok):
     return (
         len(tok) >= 2
@@ -179,11 +157,16 @@ def doc_names():
     return seen
 
 
-def code_tokens(apply_exclusions=True):
+def code_tokens():
     """Every CamelCase word-token appearing in any *.rs (target/ and .git/ excluded).
 
-    apply_exclusions=False keeps the EXCLUDED_FILES fixtures IN the scan -- used
-    by --self-test to prove the exclusion is load-bearing.
+    NO FILE IS EXCLUDED, and that is the point. A fixture exclusion used to live
+    here because `fuel-ir/tests/doc_block_scope.rs` named the drifted
+    identifiers verbatim as test fixtures -- the census went from ~25 absent to
+    0 the moment #147 merged. That gate now keeps its population in a NON-RUST
+    data file, so there is nothing in `*.rs` to exclude. Dissolving the coupling
+    beats maintaining an exclusion list: no filename to rot, and it works for
+    tools that do not exist yet.
     """
     toks = set()
     for dirpath, dirs, files in os.walk(ROOT):
@@ -193,8 +176,6 @@ def code_tokens(apply_exclusions=True):
                 continue
             full = os.path.join(dirpath, fn)
             rel = os.path.relpath(full, ROOT).replace(os.sep, "/")
-            if apply_exclusions and rel in EXCLUDED_FILES:
-                continue
             try:
                 with open(full, encoding="utf-8", errors="ignore") as fh:
                     txt = fh.read()
@@ -206,35 +187,63 @@ def code_tokens(apply_exclusions=True):
     return toks
 
 
-def absent_count(apply_exclusions):
+def absent_count():
     docs = set(doc_names())
-    code = code_tokens(apply_exclusions=apply_exclusions)
+    code = code_tokens()
     return sum(1 for n in docs if n not in code)
 
 
 def self_test():
     """Two arms, both required; either alone passes on a broken tool.
 
-    ARM A (load-bearing): keeping the fixture IN the scan must MASK real drift,
-      i.e. absent_without_exclusion < absent_with_exclusion. If the fixture
-      contributed nothing, the exclusion would be dead weight. NOTE Arm A passes
-      by a wide margin here (0 < 22) but would ALSO pass if a fixture enumerated
-      only half the names -- so Arm A alone cannot catch a partial poisoning.
-    ARM B (still-sees-corpus / catches the NEXT fixture): with the exclusion
-      applied, absent must be > 0 -- the tool still detects real drift, and a
-      NEW fixture that poisons the whole corpus drives this to 0 and reds. This
-      is the arm that catches the next doc_block_scope.rs; keep both.
+    ARM A (population integrity). RANGES OVER `DISPOSITIONS`, NEVER OVER THE
+      DERIVED `absent` SET -- `absent` IS `docs - code`, so "no absent name is
+      in code" is a TAUTOLOGY that passes on any tool, including one that reads
+      zero files. `DISPOSITIONS` is a claim about the world: each entry was
+      adjudicated ABSENT at a point in time, and this asks whether that still
+      holds.
+
+      It REPLACES a fixture-exclusion arm that asserted the exclusion was
+      load-bearing. That arm was load-bearing only WHILE a fixture was
+      poisoning the corpus -- its evidence WAS the defect -- so fixing the
+      defect would have made it vacuous with nothing saying so. A gate cannot
+      source its negative case from the thing it exists to catch.
+
+      TWO EVENTS, ONE PREDICATE, AND ONLY ONE IS A DEFECT:
+        `n in code`         the name acquired a referent -- it got BUILT.
+                            FAILS, and the message says RECLASSIFY, not drift.
+        `n not in docs`     the doc mention was renamed or un-backticked --
+                            the fix landing. PRINTS, never fails. An arm that
+                            reddens when the fix lands teaches suppression.
+
+    ARM B (still-sees-corpus). UNCHANGED, and it is the arm that catches the
+      NEXT total-poisoning fixture: a new file naming the whole population
+      drives `absent` to 0 and reds here. Keep both.
     """
-    without = absent_count(apply_exclusions=False)
-    with_ex = absent_count(apply_exclusions=True)
+    docs, code = set(doc_names()), code_tokens()
+    reappeared = sorted(n for n in DISPOSITIONS if n in code)
+    left_docs = sorted(n for n in DISPOSITIONS if n not in docs and n not in code)
+    absent = absent_count()
+
     print("SELF-TEST @ %s" % git_ref())
-    print("  ABSENT without fixture exclusion : %d  (fixtures IN scan -> drift masked)" % without)
-    print("  ABSENT with    fixture exclusion : %d  (real population)" % with_ex)
-    print("  excluded fixture(s): %s" % ", ".join(sorted(EXCLUDED_FILES)))
-    arm_a = without < with_ex
-    arm_b = with_ex > 0
-    print("  ARM A (without < with, exclusion load-bearing): %s" % ("PASS" if arm_a else "FAIL"))
-    print("  ARM B (with > 0, tool still sees corpus)      : %s" % ("PASS" if arm_b else "FAIL"))
+    print("  DISPOSITIONS entries              : %d" % len(DISPOSITIONS))
+    print("  entries that now RESOLVE in *.rs  : %d" % len(reappeared))
+    print("  entries whose DOC mention is gone : %d  (benign: renamed/un-backticked)"
+          % len(left_docs))
+    print("  ABSENT population                 : %d" % absent)
+    for n in left_docs:
+        print("      %s -- doc mention removed; retire the table entry" % n)
+    for n in reappeared:
+        cls = DISPOSITIONS[n][0]
+        print("      %s [%s] NOW RESOLVES in *.rs -- re-examine its disposition." % (n, cls))
+        print("          A PROPOSED-FUTURE name resolving means it was BUILT. That is"
+              " GOOD NEWS and the signal to move this row out of PROPOSED --"
+              " it is not drift and must not be suppressed.")
+
+    arm_a = not reappeared
+    arm_b = absent > 0
+    print("  ARM A (no disposition entry resolves in *.rs) : %s" % ("PASS" if arm_a else "FAIL"))
+    print("  ARM B (absent > 0, tool still sees corpus)    : %s" % ("PASS" if arm_b else "FAIL"))
     ok = arm_a and arm_b
     print("  => %s" % ("PASS" if ok else "FAIL"))
     return 0 if ok else 1
