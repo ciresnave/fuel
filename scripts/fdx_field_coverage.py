@@ -48,6 +48,7 @@ import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -98,35 +99,58 @@ def probe(rel_path, struct):
         _rename(raw.decode("utf-8"), struct, True).encode("utf-8")
     )
     try:
-        proc = subprocess.run(
-            ["cargo", "check", "-p", "fuel-ir", "--features", "dlpack",
-             "--all-targets", "-j", "4", "--message-format", "json"],
-            cwd=ROOT, capture_output=True, text=True,
-            encoding="utf-8", errors="replace",
-        )
-        hits = {}
-        for line in (proc.stdout or "").split("\n"):
-            if not line.startswith("{"):
-                continue
-            try:
-                msg = json.loads(line).get("message") or {}
-            except ValueError:
-                continue
-            m = re.search(
-                r"no field `(\w+)` on type `[&\w:]*%s" % re.escape(struct),
-                msg.get("message", ""),
-            )
-            if not m:
-                continue
-            for span in msg.get("spans", []):
-                f = span.get("file_name", "").replace(chr(92), "/")
-                hits.setdefault(m.group(1), set()).add(f)
-        return hits
+        return _e0609_hits(_cargo_check_json(), struct)
     finally:
         io.open(path, "wb").write(raw)
-        assert io.open(path, "rb").read() == raw, (
-            "RESTORE FAILED -- bytes differ from the original"
-        )
+        # ⚠️ NOT `assert`. Under `python -O` an assertion is COMPILED AWAY, so
+        # the guard that catches a bad restore would silently not exist -- and
+        # the failure it guards against (content restored, bytes not) is exactly
+        # the one that leaves no trace. A guard a compiler flag can delete is a
+        # guard with an off switch nobody can see in the source.
+        if io.open(path, "rb").read() != raw:
+            raise RuntimeError(
+                "RESTORE FAILED -- %s differs from the original bytes" % rel_path
+            )
+
+
+def _cargo_check_json():
+    """rustc's JSON diagnostics for the perturbed tree.
+
+    The subprocess IS the instrument: the whole method is "ask the compiler",
+    and there is no filesystem answer to read instead. The executable is
+    resolved to an absolute path so the invocation does not depend on how PATH
+    happens to be ordered.
+    """
+    cargo = shutil.which("cargo")
+    if not cargo:
+        raise RuntimeError("cargo not found on PATH -- the probe needs a compiler")
+    proc = subprocess.run(
+        [cargo, "check", "-p", "fuel-ir", "--features", "dlpack",
+         "--all-targets", "-j", "4", "--message-format", "json"],
+        cwd=ROOT, capture_output=True, text=True,
+        encoding="utf-8", errors="replace", check=False,
+    )
+    return proc.stdout or ""
+
+
+def _e0609_hits(stdout, struct):
+    """{field: {files}} from `no field 'X' on type 'STRUCT'` diagnostics."""
+    want = re.compile(r"no field `(\w+)` on type `[&\w:]*%s" % re.escape(struct))
+    hits = {}
+    for line in stdout.split("\n"):
+        if not line.startswith("{"):
+            continue
+        try:
+            msg = json.loads(line).get("message") or {}
+        except ValueError:
+            continue
+        m = want.search(msg.get("message", ""))
+        if not m:
+            continue
+        for span in msg.get("spans", []):
+            f = span.get("file_name", "").replace(chr(92), "/")
+            hits.setdefault(m.group(1), set()).add(f)
+    return hits
 
 
 def classify(files):
@@ -155,32 +179,47 @@ def is_padding(field):
     return field.startswith("_pad") or field == "reserved"
 
 
-def main():
-    rows = sweep()
+def _tally(rows):
     fdx = [r for r in rows if r[0] not in DLPACK_ABI]
     semantic = [r for r in fdx if not is_padding(r[1])]
-    never = [r for r in semantic if r[2] == "NEVER"]
-    elsewhere = [r for r in semantic if r[2] == "ELSEWHERE"]
+    return {
+        "fdx": fdx,
+        "semantic": semantic,
+        "validator": [r for r in semantic if r[2] == "VALIDATOR"],
+        "elsewhere": [r for r in semantic if r[2] == "ELSEWHERE"],
+        "never": [r for r in semantic if r[2] == "NEVER"],
+        "dlpack": [r for r in rows if r[0] in DLPACK_ABI],
+    }
 
+
+def _print_counts(t):
     print("FDX FIELD COVERAGE -- fields on the wire MINUS fields validate() reads")
-    print("  FDX struct fields            : %d" % len(fdx))
+    print("  FDX struct fields            : %d" % len(t["fdx"]))
     print("    padding / reserved         : %d  SPEC-EXEMPT by construction"
-          % (len(fdx) - len(semantic)))
-    print("    semantic                   : %d" % len(semantic))
-    print("      read by validate.rs      : %d"
-          % len([r for r in semantic if r[2] == "VALIDATOR"]))
-    print("      read ONLY elsewhere      : %d" % len(elsewhere))
-    print("      NEVER read anywhere      : %d" % len(never))
+          % (len(t["fdx"]) - len(t["semantic"])))
+    print("    semantic                   : %d" % len(t["semantic"]))
+    print("      read by validate.rs      : %d" % len(t["validator"]))
+    print("      read ONLY elsewhere      : %d" % len(t["elsewhere"]))
+    print("      NEVER read anywhere      : %d" % len(t["never"]))
     print("  DLPack ABI struct fields     : %d  (not FDX -- reported, not counted)"
-          % len([r for r in rows if r[0] in DLPACK_ABI]))
+          % len(t["dlpack"]))
+
+
+def _print_lists(t):
     print()
     print("READ ONLY OUTSIDE THE VALIDATOR -- exercised, but not enforced:")
-    for st, f, _, where in elsewhere:
+    for st, f, _, where in t["elsewhere"]:
         print("  %-22s %-22s %s" % (st, f, where))
     print()
     print("NEVER READ -- candidates, each needing its SPEC read before it is a hole:")
-    for st, f, _, _ in never:
+    for st, f, _, _ in t["never"]:
         print("  %-22s %s" % (st, f))
+
+
+def main():
+    t = _tally(sweep())
+    _print_counts(t)
+    _print_lists(t)
     return 0
 
 
