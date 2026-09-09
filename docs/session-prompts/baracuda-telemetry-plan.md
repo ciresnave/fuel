@@ -1,8 +1,19 @@
 # Baracuda telemetry / miss-reporting emission — implementation plan
 
-**Status: PLAN — not started. Branch: `feat/kernel-contracts-dlpack` (unmerged; `main` untouched).**
+**Status: IMPLEMENTED ON `main` — not a pending plan.** `fuel-dispatch/src/telemetry/` holds 10
+files on `main`, including `baracuda_provider.rs` and the sk4 structure-key derivation; its gate
+is `telemetry,baracuda-types`, **not** `cuda` (GAP-173). Retained as the implementation plan it
+was. The previous wording is recorded in the note below.
 **Audience: a fresh instance executing this end-to-end, TDD, one crate at a time.**
 
+> ⚠️ **DISCHARGED 2026-09-09: THE STATUS LINE ABOVE HAS NOW BEEN CORRECTED.**
+> Kept as the RECORD of when the defect was found, not as a live claim. It stood
+> because it ANNOTATED the falsehood instead of correcting it, and a reader who
+> stops at the Status field never reached this paragraph. See GAP-283.
+> **The wording this line replaced:** *“PLAN — not started. Branch:
+> `feat/kernel-contracts-dlpack` (unmerged; `main` untouched).”* That branch does not
+> exist on origin.
+>
 > ⚠️ **AMENDED 2026-08-19 — THE BRANCH ABOVE NO LONGER EXISTS AND THE WORK IS ON `main`.**
 > `feat/kernel-contracts-dlpack` is **not on origin** — following the status line
 > costs a failed checkout and the natural conclusion that the work was abandoned.

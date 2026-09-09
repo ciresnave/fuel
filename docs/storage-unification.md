@@ -1,6 +1,15 @@
 # Storage Unification + Backend Contract
 
-**Status**: design v1, 2026-05-03. Iterating before code lands.
+**Status**: design v1, 2026-05-03 — ⚠️ **SUPERSEDED, and the code did land: this doc's core
+proposal was never executed as written and the resolution went a different direction**
+(self-describing storage, 2026-07-11 — see the note below). Measured at `16577dc1`: `Storage`
+lives in `fuel-backend-contract/src/storage.rs`, and `SType`/`Encoding` are declared in
+`fuel-ir/src/stype.rs`. The Phase A/B/C/D phasing sections remain descriptive.
+
+> ⚠️ **DISCHARGED 2026-09-09: THE STATUS LINE ABOVE HAS NOW BEEN CORRECTED.**
+> **The wording it replaced:** *“design v1, 2026-05-03. Iterating before code lands.”*
+> The supersession was recorded on 2026-07-11, eleven lines below the status field, and
+> the status field kept telling a reader no code had landed. See GAP-283.
 
 > **2026-05-09 update — anchored to architecture v1.0**: this design doc was drafted before the architecture set in [`docs/architecture/`](architecture/00-index.md) was established. Most of its commitments survive unchanged in the v1.0 architecture and should be read alongside the relevant architecture sections:
 >
