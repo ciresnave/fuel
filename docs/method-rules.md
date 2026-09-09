@@ -2068,3 +2068,85 @@ GET /repos/ciresnave/synapse/branches/main/protection   -> 404   repo is NOT pro
 - **And for a null shaped like an error, the control is a NEGATIVE one: a subject that genuinely has the absence.** A positive control proves the query can see the thing; only the unprotected repo proves the query can tell you when the thing is gone. E passes the first and fails the second.
 
 Related: [`uninformative-signals-both-directions`](#uninformative-signals-both-directions) · [`a-guard-exists-is-not-the-guard-protects-this`](#a-guard-exists-is-not-the-guard-protects-this) · and the portfolio working agreement's *give every absence a positive control*, which has no section here — it is a `C:\Projects\CLAUDE.md` rule, and is named rather than linked so the reference cannot rot into a dead anchor.
+
+## a-repoint-can-make-the-link-green-and-the-sentence-false
+
+**⚠️ A FIX THAT MOVES THE METRIC IN THE APPROVING DIRECTION HAS NO DETECTOR EXCEPT READING THE SENTENCE (2026-09-09, Fuel 3, during the rustdoc-census repair; the classification, the counter-example and the inverse case are all theirs).**
+
+A broken intra-doc link is a defect a gate can see. **Repairing it by REPOINTING the link at a live item that happens to share the name is not always a repair — sometimes it converts a true sentence into a false one, and the gate goes GREEN on the way.**
+
+```
+fuel-nn/src/conv_transpose.rs:5   //! Mirrors the eager [`fuel_nn::ConvTranspose1d`]
+                                  // the struct at :117 is the LAZY item
+repoint to crate::ConvTranspose1d ->  "the lazy X mirrors the [lazy X]"
+                                       LINK RESOLVES.  SENTENCE IS NOW FALSE.
+```
+
+**A crate cannot name itself in an intra-doc link, so `fuel_nn::X` inside `fuel-nn` is always broken — and the mechanical repair is always `crate::X`.** It looks like the freest class of repair there is.
+
+⚠️ **AND THE POPULATION EXPLAINS WHY IT IS THE MOST DANGEROUS ONE: 8 of the 9 such sites carried *eager* / *retired* / *former* language.** That is not bad luck. **The commonest reason a doc names its own crate is to contrast the current item with a FORMER one that lived in a crate which no longer exists** — so the structural class *"a crate naming itself"* and the historical class *"this names something retired"* coincide **for a reason**, and the coincidence is exactly what makes the mechanical fix wrong.
+
+**THE RULE: STRUCTURE TELLS YOU WHETHER A LINK CAN RESOLVE; ONLY THE SENTENCE TELLS YOU WHETHER IT SHOULD.**
+
+### The eleven-character proof, and why the unit of work is the SENTENCE and not the line
+
+```diff
+- //! [`Var`] is the lazy equivalent of eager [`crate::Var`]: a
++ //! [`Var`] is the lazy equivalent of eager `crate::Var`: a
+```
+
+**Two references on ONE LINE with OPPOSITE dispositions** — the live lazy `Var` stays linked; the retired eager `crate::Var` is de-linked. **Any line-scoped or file-scoped sweep takes both.** There is no pattern that separates them, because what separates them is the word *eager*.
+
+### ⚠️ THE COUNTER-EXAMPLE THAT KEEPS THIS FROM BECOMING SUPERSTITION
+
+**"Never repoint" is WRONG.** Measured in the same pass: `Recorder::submit_batch` had **already been repointed** at base, by someone else, to `VulkanBackend::submit_pending` — and there the public sibling genuinely carried the meaning. **That is what a real repoint looks like when one is available.**
+
+### ⚠️ AND THE INVERSE CASE, MEASURED THE SAME NIGHT — WHERE DE-LINKING IS THE WRONG FIX
+
+Six sites read *"Append a [`Op::QMatMul`] node"*. **`QMatMul` is not an `Op` variant at all** — it is a `FusedOpParams` variant, and the real node is `Op::Fused(FusedOpId, FusedOpParams)`. **So the sentence is ALREADY FALSE, and the broken link is the only thing advertising it.**
+
+⚠️ **De-linking there would REMOVE THE ADVERTISEMENT AND LEAVE THE FALSEHOOD** — the worst of the three options, and the one a mechanical de-link sweep takes.
+
+**THE DISCRIMINATOR IS NOT THE SHAPE OF THE LINK. IT IS WHETHER THE CODE SAYS WHAT THE THING BECAME:**
+
+```
+the code says (a migration comment, a live sibling)  ->  REPOINT; the sentence gets truer
+the code does NOT say                                ->  DE-LINK; a repoint manufactures a falsehood
+the sentence is already false and the link is the tell -> REWRITE the sentence, never just the link
+```
+
+**And the third row is prose work, one site at a time, with the evidence cited per site** — `// Phase 7.6 step 4 (final): emits Op::Fused(QMATMUL, _)` is the licence, and it belongs in the commit for each site rather than once for the batch.
+
+Related: [`docs-are-not-code-and-a-sweep-cannot-tell`](#docs-are-not-code-and-a-sweep-cannot-tell) · [`a-sweep-must-report-applied-over-population`](#a-sweep-must-report-applied-over-population) · [`marking-one-representation-does-not-mark-the-others`](#marking-one-representation-does-not-mark-the-others)
+
+## a-sweep-must-report-applied-over-population
+
+**⚠️ "NO ERRORS" AND "14 OF 25" ARE THE SAME RUN WITH DIFFERENT REPORTING, AND ONLY THE SECOND IS A RESULT (2026-09-09, Fuel 3, on their own applier).**
+
+A sweep over a measured population ran with two instruments pointed at it, and **they were asking different questions:**
+
+```
+the ANCHOR check :  is the target PRESENT?                    passed 25/25
+the EDIT patterns:  is it present IN A SHAPE I CAN REWRITE?   matched 14/25
+```
+
+**Only the second can fail silently.** The anchor check answers a strictly weaker question, it passes, and **a sweep that printed *"no errors"* would have shipped a half-done pass with a clean log** — 11 sites untouched, the population count unchanged, and nothing anywhere saying so.
+
+**What caught it was that the applier reports WHAT IT APPLIED against WHAT IT WAS GIVEN.** That comparison is the entire difference.
+
+### The blind spot had a shape, and it is worth knowing
+
+```
+[`Op::WriteSlice`](fuel_graph::Op::WriteSlice)
+ ^^^^^^^^^^^^^^^  the link TEXT is an INTERMEDIATE-length path
+```
+
+The patterns covered the **full target** and the **bare leaf**. **The middle of a range is where a two-ended pattern set is blind, and nothing about a two-ended set announces that it has a middle.** Anchor on the exact target instead, so a sibling link on the same line still cannot be caught by it.
+
+### THE GENERAL FORM
+
+**Any sweep, in any tool, must report `applied / population`, never `success / failure`.** A pass rate is a measurement; an absence of errors is a statement about the sweep's own error handling and says nothing about coverage.
+
+⚠️ **AND WHEN TWO INSTRUMENTS RUN OVER ONE POPULATION, ASK WHICH QUESTION EACH LITERALLY ANSWERS AND WHICH OF THEM IS STRICTLY WEAKER.** A passing weak instrument is routinely read as corroboration for the strong one. It is not corroboration; it is a different, easier question that happened to be asked at the same time.
+
+Related: [`a-report-is-not-a-gate`](#a-report-is-not-a-gate) · [`evidence-that-is-not-independent`](#evidence-that-is-not-independent) · [`a-repoint-can-make-the-link-green-and-the-sentence-false`](#a-repoint-can-make-the-link-green-and-the-sentence-false)
