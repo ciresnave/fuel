@@ -194,10 +194,28 @@ const LEDGER: &[Row] = &[
         exists_at: None,
     },
     Row {
+        clause: "KISS-GRAMMAR-6.8-0007",
+        disposition: Reference,
+        test: None,
+        reason: "Cited in fuel-kernel-seam-types/src/canonical.rs to LOCATE a design in the standard, not to claim or decline conformance: KISS-Grammar embeds the KISS-Ops OpAttrs bytes uninterpreted and \"MUST NOT define an alternative OpAttrs byte layout\". That is what converts \"I did not find per-op schemas for Slice/Cast/Pad\" into \"there is no document those schemas could be in\" -- one mechanism checked would have been an absence claim off the wrong instrument. Nothing here for Fuel to discharge.",
+        exists_at: None,
+    },
+    Row {
         clause: "KISS-OPS-6.0-0003",
         disposition: Record,
         test: None,
         reason: "docs/gaps.md registry row. Cited to identify the clause a gap is about.",
+        exists_at: None,
+    },
+    Row {
+        clause: "KISS-OPS-6.15-0001",
+        disposition: Obligation,
+        test: Some("fuel-core/src/lazy.rs::fmax_fmin_ieee_suppress_nan_where_prop_propagates"),
+        reason: "The four minmax ops must not be merged/aliased/substituted. Fuel has the \
+                 NaN-PROPAGATING pair natively (Maximum/Minimum, torch parity) and RESOLVES the \
+                 NaN-SUPPRESSING pair (fmax_ieee/fmin_ieee) through KISS's §6.13 decomposition; \
+                 the named test pins that they SUPPRESS NaN where maximum/minimum propagate \
+                 (GAP-048).",
         exists_at: None,
     },
     Row {
@@ -206,6 +224,15 @@ const LEDGER: &[Row] = &[
         test: Some("fuel-cpu-backend/src/byte_kernels.rs::relu_f32_propagates_nan"),
         reason: "`relu` is `select(x<0, 0, x)`, so it PRESERVES a NaN rather than returning \
                  zero. Fuel matches torch here and the named test pins it.",
+        exists_at: None,
+    },
+    Row {
+        clause: "KISS-OPS-6.15-0003",
+        disposition: Obligation,
+        test: Some("fuel-core/src/lazy.rs::rem_trunc_diverges_from_floored_rem_on_opposite_signs"),
+        reason: "rem_floor and rem_trunc must not be merged. Fuel has floored `rem` natively \
+                 and RESOLVES rem_trunc through KISS's §6.13 decomposition `a - trunc(a/b)*b`; \
+                 the named test pins the sign-of-dividend divergence from floored rem (GAP-048).",
         exists_at: None,
     },
     Row {
@@ -239,10 +266,62 @@ const LEDGER: &[Row] = &[
         exists_at: None,
     },
     Row {
+        clause: "KISS-OPS-6.19-0003",
+        disposition: Reference,
+        test: None,
+        reason: "Cited in canonical.rs and docs/gaps.md (GAP-305) to locate the CLOSED carrier set -- seventeen named ops, every other op \"MUST have an empty OpAttrs blob\". It is the clause that makes the retired byte-comparability claim wrong: the ops that note called conformant are near-exactly the complement of the schema'd set. Reference rather than Declined BECAUSE `to_canonical_bytes` is carrier (a), the #67 node envelope (lib.rs three-carrier pin), and OpTag is Fuel's own kernel-seam-interop 4.1 vocabulary -- so these tags are not claiming membership in the carrier set at all. If that reading is ever overturned this row becomes Declined and needs a test.",
+        exists_at: None,
+    },
+    Row {
         clause: "KISS-OPS-6.19-0005",
         disposition: Record,
         test: None,
         reason: "docs/gaps.md registry row (GAP-287). Cited to identify the clause a gap is about — the FDX flag semantics the validator was measured against.",
+        exists_at: None,
+    },
+    Row {
+        clause: "KISS-OPS-6.19-0007",
+        disposition: Declined,
+        test: Some(
+            "fuel-kernel-seam-types/tests/kiss_ops_619_divergence.rs::the_shared_axis_field_diverges_on_width_not_only_on_field_set",
+        ),
+        reason: "Fuel DELIBERATELY does not conform: -0007 pins an axis index at ONE BYTE and Fuel emits i64. Tracked as GAP-305. The named test asserts the width divergence and reddens in BOTH directions -- if Fuel's encoding moves, and if Fuel ever narrows axis to u8 and the divergence closes. Note this divergence was NOT recorded in the prose, which described the gather/scatter difference as a field-set one only; the two rows disagree even on the single field they share.",
+        exists_at: None,
+    },
+    Row {
+        clause: "KISS-OPS-6.19-0025",
+        disposition: Declined,
+        test: Some(
+            "fuel-kernel-seam-types/tests/kiss_ops_619_divergence.rs::dim_reduce_diverges_from_kiss_ops_6_19_0025",
+        ),
+        reason: "Fuel DELIBERATELY does not conform: -0025 schemas reduce as {monoid, reduce_axes, keepdim, accumulator, math_precision}; Fuel emits {axis, keepdim} with the monoid riding op_name (SumDim/MaxDim/MeanDim). Tracked as GAP-305 and documented in canonical.rs. The named test also pins the VALUE divergence -0025 fixes keepdim at 1 and Fuel emits 0 -- invisible in any length comparison.",
+        exists_at: None,
+    },
+    Row {
+        clause: "KISS-OPS-6.19-0026",
+        disposition: Declined,
+        test: Some(
+            "fuel-kernel-seam-types/tests/kiss_ops_619_divergence.rs::cumsum_diverges_from_kiss_ops_6_19_0026",
+        ),
+        reason: "Fuel DELIBERATELY does not conform: -0026 schemas prefix_scan as {monoid, reduce_axes, exclusivity, accumulator, math_precision}; Fuel's CumSum emits {axis, keepdim}. Tracked as GAP-305. The named test asserts the divergence from vectors derived from the clause text, never from Fuel's own encoder.",
+        exists_at: None,
+    },
+    Row {
+        clause: "KISS-OPS-6.19-0027",
+        disposition: Declined,
+        test: Some(
+            "fuel-kernel-seam-types/tests/kiss_ops_619_divergence.rs::gather_diverges_from_kiss_ops_6_19_0027",
+        ),
+        reason: "Fuel DELIBERATELY does not conform: -0027 schemas gather as {axis, oob_policy, index_operand, index_dtype}; Fuel emits {axis} alone, with oob_policy a deferred unwired slot and index_operand riding child_edges. Tracked as GAP-305 and documented in canonical.rs. The named test asserts the divergence and fails if Fuel ever becomes conformant, at which point this row becomes an Obligation.",
+        exists_at: None,
+    },
+    Row {
+        clause: "KISS-OPS-6.19-0034",
+        disposition: Declined,
+        test: Some(
+            "fuel-kernel-seam-types/tests/kiss_ops_619_divergence.rs::index_select_and_scatter_add_diverge_from_kiss_ops_6_19_0034",
+        ),
+        reason: "Fuel DELIBERATELY does not conform: -0034 schemas index_select/embedding/scatter_add as {axis, index_operand, index_dtype}; Fuel emits {axis} alone. Tracked as GAP-305. The named test covers IndexSelect and ScatterAdd; scatter_combine rides op_name (IndexAdd vs ScatterAdd), which is why the tags differ where the schema does not.",
         exists_at: None,
     },
     Row {
@@ -252,6 +331,31 @@ const LEDGER: &[Row] = &[
         reason: "An outreach letter filing a registry extension, plus a superseded plan \
                  document. Both are HISTORICAL: they record what Fuel asked KISS for on a \
                  date. Rewriting or testing them would destroy the record.",
+        exists_at: None,
+    },
+    Row {
+        clause: "KISS-OPS-6.3-0002",
+        disposition: Record,
+        test: None,
+        reason: "docs/gaps.md registry row (GAP-300). Records an obligation Fuel has \
+                 NOT yet discharged: a consumer MUST be able to EVALUATE the pinned \
+                 semantics of every primitive-floor op, and `trunc` is in KISS's \
+                 43-op floor while fuel-graph::Op has no native one. The obligation \
+                 is BEHAVIOURAL -- an expansion satisfies it -- but §6.3-0003 leaves \
+                 nothing to resolve through, so the expansion is Fuel's own and no \
+                 KISS vector can catch an error in it. Record, not Obligation: the \
+                 row tracks the liability; the code change is GAP-048's PR.",
+        exists_at: None,
+    },
+    Row {
+        clause: "KISS-OPS-6.3-0003",
+        disposition: Reference,
+        test: None,
+        reason: "Cited in `trunc`'s doc to explain WHY Fuel's trunc expansion is Fuel's own \
+                 liability: a §6.3 floor op MUST NOT carry an in-standard reference \
+                 decomposition, so §6.14-0004 resolution is EMPTY for a floor op and no KISS \
+                 conformance vector catches an error in Fuel's expansion (GAP-300). Nothing to \
+                 discharge — a Reference, not an Obligation.",
         exists_at: None,
     },
     Row {

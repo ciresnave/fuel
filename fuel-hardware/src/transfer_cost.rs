@@ -289,6 +289,37 @@ fn measure_cpu_memcpy(bytes: usize, iters: u32) -> f64 {
 /// — the last code-level legacy-executor reference in fuel-core.
 /// Re-pointed onto the calibration substrate (executor-unification
 /// Session 6); iteration count is the probe's [`CALIBRATION_ITERS`].
+/// # GAP-267 / GAP-294: why this is two `cfg`'d definitions and not one body
+///
+/// With NEITHER `cuda` NOR `vulkan` enabled — the DEFAULT build — the match
+/// below collapses to its `_ => return None` arm alone. Everything after it is
+/// then genuinely unreachable and `bytes` genuinely unused, so a default
+/// `clippy -D warnings` failed with `unreachable statement` + `unused
+/// variable: bytes`. Enabling either feature makes both disappear, which is why
+/// it survived: the lints are FEATURE-CONDITIONAL and most runs enable
+/// something.
+///
+/// ⚠️ The cost was not cosmetic. `clippy -p <crate>` lints PATH DEPENDENCIES,
+/// so `-D warnings` died HERE before ever reaching `fuel-dispatch` — making the
+/// doc-comment gate `CLAUDE.md` mandates ("run `cargo clippy -p <crate>
+/// --tests`") structurally unrunnable for that crate, and presenting as a red
+/// gate naming a crate the lane never touched.
+///
+/// Splitting the definition states the real precondition — this function needs
+/// a GPU backend feature to do anything — instead of encoding it as a wildcard
+/// arm that silently makes its own tail dead.
+#[cfg(not(any(feature = "cuda", feature = "vulkan")))]
+fn measure_h2d_d2h(
+    _device: &fuel_ir::probe::DeviceDescriptor,
+    _bytes: usize,
+) -> Option<(f64, f64)> {
+    // No GPU backend compiled in: there is no device to time, and saying so
+    // here is the same answer the wildcard arm gave — without a dead tail.
+    None
+}
+
+/// See the `cfg(not(...))` sibling above for why this is split.
+#[cfg(any(feature = "cuda", feature = "vulkan"))]
 fn measure_h2d_d2h(device: &fuel_ir::probe::DeviceDescriptor, bytes: usize) -> Option<(f64, f64)> {
     let (h2d, d2h) = match device.backend {
         #[cfg(feature = "cuda")]

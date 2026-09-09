@@ -145,6 +145,22 @@ _four_col_tiers = {t: n for (t, c), n in sorted(tier_shape.items()) if c == 4}
 no_status = sum(1 for c in schema_cols if c == 4)
 headerless = sum(1 for c in schema_cols if c is None)
 
+# COVERED BY THE STRUCK-FOUR-COLUMN ARM (added 2026-09-06, defined near the end
+# of this file). A struck row under a 4-column header with 4 cells states its
+# disposition in the Gap cell and is validated there, so it is NOT outside the
+# conventions -- it is under a different one.
+#
+# !! THIS SPLIT IS COMPUTED, NEVER WRITTEN DOWN. The single number it replaces
+# was TRUE when written and was made FALSE by the very increment that added the
+# arm. A hardcoded 82/3/79 would rot on the next close, in a gate whose whole
+# job is making counts honest -- and this line had already demonstrated that
+# failure mode once, inside one increment.
+#
+# `_n` is the unescaped pipe count, which is what `rows` carries; 5 pipes == 4
+# cells. `row_cells` is not available this early in the file.
+arm_covered = sum(1 for (_rid, _n, _l), _c in zip(rows, schema_cols)
+                  if _c == 4 and _rid.startswith('~~') and _n == 5)
+
 # ---------------------------------------------------------------------------
 # CONTROL CHARACTERS -- checked FIRST, because an invisible byte can corrupt the
 # row parsing that every other check below depends on.
@@ -238,8 +254,12 @@ def _pct(n, d):
     return round(100.0 * n / d) if d else 0
 
 
-print('rows OUTSIDE the status convention (4-col, no status cell): %d of %d (%d%%)'
+print('rows outside the FIVE-column status convention (4-col header): %d of %d (%d%%)'
       % (no_status, len(schema_cols), _pct(no_status, len(schema_cols))))
+print('    covered by the struck-four-column arm (disposition in the Gap cell): %d'
+      % arm_covered)
+print('    still uncovered:                                                    %d'
+      % (no_status - arm_covered))
 # HEADERLESS ROWS: GAP rows in a table fragment with no `| ID |` header above
 # them (a `---` rule then rows). The header check below reports 'headers
 # DISAGREEING: NONE' and CANNOT SEE THESE -- there is no header to disagree
@@ -271,8 +291,8 @@ print('rows with NO HEADER above them (schema undetermined):     %d'
 # Status column (nobody has taken it -- docs/design/gaps-status-vocabulary.md),
 # whereas a headerless fragment just needs its header. One number would hide
 # that half of it is a decision and half of it is a chore.
-_uncovered = no_status + headerless
-print('rows NOT COVERED by the status convention (both of the above): %d of %d (%d%%)'
+_uncovered = no_status + headerless - arm_covered
+print('rows NOT COVERED by ANY status convention (both of the above, less the arm): %d of %d (%d%%)'
       % (_uncovered, len(schema_cols), _pct(_uncovered, len(schema_cols))))
 print()
 # NOTE: ASCII ONLY below. The first version of this block used an emoji and
@@ -855,6 +875,19 @@ for _k, _v in sorted(dup_ids.items()):
 # -- the row sits in the unallocated list until someone picks it up.
 # Over-claiming is the defect being removed.
 #
+# THREE AXES, NOT ONE (GAP-296, 2026-09-06). `**Owner:**` answers WHOSE.
+# `**Held on:** <thing>` answers WHAT IT WAITS ON. They are separate slots
+# because a row is routinely BOTH -- GAP-037 is Fuel's own work AND held on
+# KISS#125, and the first version of this field could not say so: writing
+# `**Owner:** HELD` DESTROYED the record of whose work it was.
+#
+# The diagnosis is Fuel 3's, about their own two-state `FUEL WORK` bucket:
+# "my bucket had TWO states and the question needs THREE: whose work, is it
+# startable, what is it waiting on." I quoted that and shipped a field with
+# the same collapse. The two failures point OPPOSITE ways -- a FALSE BLOCK
+# means nobody picks a row up; a FALSE UNBLOCK means a lane starts a
+# forbidden edit -- which is why one slot cannot carry both.
+#
 # HELD IS NOT UNALLOCATED. A false block is permanent in a way an empty queue is
 # not: nobody ever picks up a row they believe is waiting on someone else. So a
 # HELD row must name what it waits on, and this gate refuses a bare "HELD".
@@ -865,7 +898,23 @@ for _k, _v in sorted(dup_ids.items()):
 # this gate is not read as covering them.
 OWNER_VALUES = ('Fuel 1', 'Fuel 2', 'Fuel 3', 'Architect', 'UNALLOCATED', 'HELD')
 WORK_REMAINS = ('OPEN', 'PARTIAL', 'RE-OPENED')
-OWNER_TOKEN = re.compile(r'\*\*Owner:\*\*\s*([A-Za-z0-9 ]+?)\s*(?:—|--|$)')
+# TERMINATE ON THE END OF THE VALUE, NOT ON A LIST OF SEPARATORS.
+#
+# The first version required one of {em dash, --, middot, end of cell}. That
+# is a guess about what comes NEXT, and it broke the moment prose was
+# appended after the token: `**Owner:** Architect ⚠️ **DUPLICATE OF...`
+# stopped matching, and the row SILENTLY LOST ITS OWNER. The gate caught it
+# (reported as a missing token, which is the honest reading) but the design
+# invited the failure -- an owner is not required to be the LAST thing in a
+# status cell, and nothing said it was.
+#
+# A name is [A-Za-z0-9 ]. So the value ends where a non-name character
+# begins, whatever that character is. The lookahead asserts that without
+# consuming it, so a following `·`, an emoji, or end-of-cell all work.
+OWNER_TOKEN = re.compile(
+    r'\*\*Owner:\*\*[ \t]*([A-Za-z0-9][A-Za-z0-9 ]*?)[ \t]*(?=[^A-Za-z0-9 ]|$)'
+)
+HELD_ON = re.compile(r'\*\*Held on:\*\*\s*(\S)')
 
 
 def _work_remains_rows(src_lines):
@@ -895,7 +944,7 @@ def owner_findings(src_lines):
             dupes.append((_id, _t))
         elif _t[0] not in OWNER_VALUES:
             badval.append((_id, _t[0]))
-        elif _t[0] == 'HELD' and 'HELD on ' not in _cell:
+        elif _t[0] == 'HELD' and not HELD_ON.search(_cell):
             blind_holds.append(_id)
     return missing, badval, dupes, blind_holds
 
@@ -908,6 +957,8 @@ _OW_OK = ['| GAP-911 | a | A | a | **OPEN** work remains **Owner:** UNALLOCATED 
 _OW_BAD = ['| GAP-912 | a | A | a | **OPEN** x **Owner:** Somebody |']
 _OW_DONE = ['| GAP-913 | a | A | a | **CLOSED** nothing remains |']
 _OW_HELD = ['| GAP-914 | a | A | a | **OPEN** x **Owner:** HELD |']
+_OW_3STATE = ['| GAP-915 | a | A | a | **OPEN** x **Owner:** Fuel 2 · **Held on:** KISS#125 |']
+_OW_HELD_OK = ['| GAP-916 | a | A | a | **OPEN** x **Owner:** HELD · **Held on:** GAP-058 |']
 owner_foundation = []
 if owner_findings(_OW_MISS)[0] != ['GAP-910']:
     owner_foundation.append('a row with NO owner token was NOT flagged')
@@ -919,6 +970,10 @@ if any(owner_findings(_OW_DONE)):
     owner_foundation.append('a CLOSED row was flagged (gate is over-scoped)')
 if not owner_findings(_OW_HELD)[3]:
     owner_foundation.append('a bare HELD naming no blocker was NOT flagged')
+if any(owner_findings(_OW_3STATE)):
+    owner_foundation.append('the three-state form (named owner + Held on) WAS flagged')
+if any(owner_findings(_OW_HELD_OK)):
+    owner_foundation.append('a HELD row that DOES name its blocker WAS flagged')
 
 own_missing, own_bad, own_dupes, own_blind = owner_findings(lines)
 
@@ -935,11 +990,103 @@ print('owner values outside the closed set:', own_bad if own_bad else 'NONE')
 print('rows carrying more than one owner token:', own_dupes if own_dupes else 'NONE')
 print('HELD rows naming no blocker:', own_blind if own_blind else 'NONE')
 
+# --- STRUCK FOUR-COLUMN ROWS ------------------------------------------------
+#
+# Ruled 2026-09-06. Before this arm, 81 rows sat under a four-column header and
+# NONE of them could be closed: a struck four-column row passed EVERY predicate
+# this gate had, so a wrong close in that shape was UNDETECTABLE, and the whole
+# point of the anchor audit that produced these closes is preventing wrong
+# closes.
+#
+# !! THE OBJECTION TO CLOSING THERE WAS AN ARGUMENT FOR BUILDING THE PREDICATE,
+# NOT FOR AVOIDING THE FORMAT. The alternative considered was raising the arity
+# ratchet 1 -> 4 so the rows could take a status cell under a four-column
+# header; it was rejected because it makes THREE rows closable and leaves 78 in
+# the same state, and because a ratchet baseline is a measurement of accepted
+# DEBT -- raising it to admit a new SHAPE makes a format decision look like
+# accumulation, which the next reader cannot tell apart by looking at a number.
+#
+# So a struck four-column row MUST state its disposition at the head of its Gap
+# cell -- that cell is doing the status column's job, so it has to say what a
+# status cell would -- and MUST NOT carry an `**Owner:**` token.
+#
+# !! THE OWNER HALF IS A CORRECTION TO THE RULING THAT COMMISSIONED THIS ARM,
+# and it is encoded here so the error cannot be repeated by the next person
+# reading that ruling. The ruling said to add the status cell "with
+# `**Owner:**`". Measured before acting: 1 of 39 struck five-column rows carries
+# an owner token -- an outlier, not the convention -- and the ownership
+# self-test above exists precisely to assert that a CLOSED row is NOT reached.
+# A closed row has no owner.
+STRUCK4_DISPOSITIONS = ('CLOSED', 'FIXED', 'SUBJECT REMOVED', 'SUPERSEDED',
+                        "WON'T DO", 'MISFILED', 'VOID')
+
+
+def struck4_findings(src_lines):
+    """(no disposition token, carries an owner token) for STRUCK 4-cell rows.
+
+    Scope is given its own name on purpose: the foundation arms below assert
+    that a LIVE four-column row and a STRUCK five-column row are both OUT of
+    scope, so a passing run can be told apart from an accidentally silent one.
+    """
+    nodisp, owned = [], []
+    for _l in src_lines:
+        _m = FULL_ID.match(_l)
+        if not _m or not _m.group(1):        # live rows: not this arm's scope
+            continue
+        _c = row_cells(_l)
+        if len(_c) != 4:                     # five-column rows: covered above
+            continue
+        _gap = normalise_status(_c[3]).upper()
+        if not any(_gap.startswith(_d) for _d in STRUCK4_DISPOSITIONS):
+            nodisp.append(_m.group(2))
+        if OWNER_TOKEN.search(_c[3]):
+            owned.append(_m.group(2))
+    return nodisp, owned
+
+
+# FOUNDATION CHECK, FIVE ARMS. The two over-scope arms matter most: this arm was
+# born with a population of ZERO (no four-column row had ever been struck), so
+# without them a green run would be indistinguishable from an arm that never
+# looks at anything.
+_S4_OK = ['| ~~GAP-920~~ **CLOSED** | a | — | **CLOSED — SUBJECT REMOVED.** x |']
+_S4_NODISP = ['| ~~GAP-921~~ **CLOSED** | a | — | the subject simply went away |']
+_S4_OWNED = ['| ~~GAP-922~~ **CLOSED** | a | — | **CLOSED** x **Owner:** Fuel 2 |']
+_S4_LIVE = ['| GAP-923 | a | — | not struck, so not this arm |']
+_S4_FIVE = ['| ~~GAP-924~~ **CLOSED** | a | — | x | **CLOSED** y |']
+struck4_foundation = []
+if any(struck4_findings(_S4_OK)):
+    struck4_foundation.append('a well-formed struck 4-col row WAS flagged')
+if not struck4_findings(_S4_NODISP)[0]:
+    struck4_foundation.append('a struck 4-col row with NO disposition was NOT flagged')
+if not struck4_findings(_S4_OWNED)[1]:
+    struck4_foundation.append('a struck 4-col row carrying an owner was NOT flagged')
+if any(struck4_findings(_S4_LIVE)):
+    struck4_foundation.append('a LIVE 4-col row was flagged (arm is over-scoped)')
+if any(struck4_findings(_S4_FIVE)):
+    struck4_foundation.append('a struck FIVE-col row was flagged (arm is over-scoped)')
+
+struck4_nodisp, struck4_owned = struck4_findings(lines)
+
+print()
+print('struck 4-column self-test (missing disposition flags, owner flags, '
+      'well-formed does not, live does not, 5-col does not):',
+      'PASS' if not struck4_foundation else struck4_foundation)
+print('struck 4-column rows in the table:',
+      sum(1 for _l in lines
+          if FULL_ID.match(_l) and FULL_ID.match(_l).group(1)
+          and len(row_cells(_l)) == 4))
+print('struck 4-column rows with NO disposition in the Gap cell:',
+      struck4_nodisp if struck4_nodisp else 'NONE')
+print('struck 4-column rows carrying an **Owner:** token:',
+      struck4_owned if struck4_owned else 'NONE')
+
+
 if (odd or no_pipe or header_problems or control_chars or conflict_markers
         or missing_backlinks or _foundation
         or arity_regression or bad_prefix or strike_contra
         or dup_ids or id_foundation
         or vocab_foundation
         or own_missing or own_bad or own_dupes or own_blind
+        or struck4_nodisp or struck4_owned or struck4_foundation
         or owner_foundation):
     sys.exit(1)
