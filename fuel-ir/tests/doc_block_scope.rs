@@ -386,10 +386,23 @@ fn rel(p: &std::path::Path, root: &std::path::Path) -> String {
         .replace('\\', "/")
 }
 
-/// Every identifier token in every `*.rs`, EXCEPT this file. See `SELF_PATH`.
-fn rust_tokens(skip_self: bool) -> std::collections::BTreeSet<String> {
+/// Build output and VCS metadata: never source, and `target/` alone would
+/// dwarf the corpus.
+fn is_pruned_dir(p: &std::path::Path) -> bool {
+    p.file_name()
+        .is_some_and(|n| n == "target" || n == ".git" || n == "node_modules")
+}
+
+/// A `*.rs` path that belongs in the scanned corpus. The `skip_self` arm is
+/// the self-exclusion; see `SELF_PATH` for why it is load-bearing.
+fn is_scanned_source(p: &std::path::Path, root: &std::path::Path, skip_self: bool) -> bool {
+    p.extension().is_some_and(|e| e == "rs") && !(skip_self && rel(p, root) == SELF_PATH)
+}
+
+/// Every `*.rs` under the workspace root, EXCEPT this file when `skip_self`.
+fn rust_files(skip_self: bool) -> Vec<std::path::PathBuf> {
     let root = repo_root();
-    let mut out = std::collections::BTreeSet::new();
+    let mut out = Vec::new();
     let mut stack = vec![root.clone()];
     while let Some(dir) = stack.pop() {
         // A discovery step that can fail must FAIL, not silently shrink its
@@ -400,21 +413,24 @@ fn rust_tokens(skip_self: bool) -> std::collections::BTreeSet<String> {
         for entry in rd.flatten() {
             let p = entry.path();
             if p.is_dir() {
-                if !p
-                    .file_name()
-                    .is_some_and(|n| n == "target" || n == ".git" || n == "node_modules")
-                {
+                if !is_pruned_dir(&p) {
                     stack.push(p);
                 }
-            } else if p.extension().is_some_and(|e| e == "rs") {
-                if skip_self && rel(&p, &root) == SELF_PATH {
-                    continue;
-                }
-                if let Ok(src) = std::fs::read_to_string(&p) {
-                    for t in idents(&src) {
-                        out.insert(t);
-                    }
-                }
+            } else if is_scanned_source(&p, &root, skip_self) {
+                out.push(p);
+            }
+        }
+    }
+    out
+}
+
+/// Every identifier token in every `*.rs`, EXCEPT this file. See `SELF_PATH`.
+fn rust_tokens(skip_self: bool) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    for p in rust_files(skip_self) {
+        if let Ok(src) = std::fs::read_to_string(&p) {
+            for t in idents(&src) {
+                out.insert(t);
             }
         }
     }
