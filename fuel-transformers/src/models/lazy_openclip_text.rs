@@ -144,11 +144,13 @@ impl OpenClipTextModel {
         let w = &self.weights;
         let seq = input_ids.len();
         assert!(seq > 0, "input_ids must be non-empty");
-        assert!(
-            seq <= cfg.max_position_embeddings,
-            "seq_len {seq} > max_position_embeddings {}",
-            cfg.max_position_embeddings,
-        );
+        // GAP-308 (CONFIG_FIELD): input length vs config limit — reject, do not assert.
+        if seq > cfg.max_position_embeddings {
+            return Err(fuel_core::Error::Msg(format!(
+                "OpenClipTextModel: seq {seq} > max_position_embeddings {}",
+                cfg.max_position_embeddings,
+            )));
+        }
 
         // Token embedding lookup.
         let token_table = Tensor::from_f32(
@@ -370,6 +372,31 @@ mod tests {
             gain: Arc::from(vec![1.0_f32; c]),
             bias: Arc::from(vec![0.0_f32; c]),
         }
+    }
+
+    /// GAP-308 born-red: seq > max_position_embeddings is REJECTED with a typed
+    /// error. Asserts the MESSAGE fragment, not is_err(): the decline in
+    /// `run_backbone` returns before any graph op, so a removed decline would
+    /// yield `Ok` on an invalid unrealized graph.
+    #[test]
+    fn forward_declines_seq_over_max_position_embeddings() {
+        let mut cfg = tiny_config();
+        cfg.max_position_embeddings = 4;
+        let model = OpenClipTextModel {
+            config: cfg.clone(),
+            weights: tiny_weights(&cfg),
+        };
+        // POSITIVE CONTROL: seq <= max must run, else the Err below could be a broken fixture.
+        let short: Vec<u32> = (0..3).collect();
+        model
+            .forward(&short)
+            .expect("control: seq <= max_position_embeddings must run");
+        let long: Vec<u32> = (0..8).collect(); // seq = 8 > 4
+        let err = model.forward(&long).unwrap_err();
+        assert!(
+            format!("{err}").contains("max_position_embeddings"),
+            "forward must decline seq > max_position_embeddings; got: {err}"
+        );
     }
 
     fn tiny_config() -> OpenClipTextConfig {
