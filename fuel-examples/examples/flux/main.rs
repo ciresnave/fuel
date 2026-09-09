@@ -207,14 +207,22 @@ fn make_img_ids(anchor: &Tensor, b: usize, h: usize, w: usize) -> Tensor {
             }
         }
     }
-    anchor.const_f32_like(Arc::from(buf), Shape::from_dims(&[b, n, 3]))?
+    anchor
+        .const_f32_like(Arc::from(buf), Shape::from_dims(&[b, n, 3]))
+        .expect(
+            "`buf` is allocated as `b * n * 3` and the shape is `[b, n, 3]`, both from the `b` and `n` bound at the top of this fn",
+        )
 }
 
 /// Per-token text RoPE id tensor `(B, S_text, 3)` — all zeros, just
 /// like the eager implementation.
 fn make_txt_ids(anchor: &Tensor, b: usize, seq: usize) -> Tensor {
     let buf = vec![0.0_f32; b * seq * 3];
-    anchor.const_f32_like(Arc::from(buf), Shape::from_dims(&[b, seq, 3]))?
+    anchor
+        .const_f32_like(Arc::from(buf), Shape::from_dims(&[b, seq, 3]))
+        .expect(
+            "`buf` is allocated as `b * seq * 3` and the shape is `[b, seq, 3]`, both from this fn's own `b` and `seq` parameters",
+        )
 }
 
 /// Deterministic standard-normal noise via Box-Muller over an LCG seeded
@@ -436,7 +444,7 @@ fn run(args: Args) -> Result<()> {
                     Some(img_packed.const_f32_like(
                         Arc::from(vec![4.0_f32; batch]),
                         Shape::from_dims(&[batch]),
-                    ))
+                    )?)
                 } else {
                     None
                 };
