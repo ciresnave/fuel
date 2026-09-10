@@ -53,10 +53,6 @@ use fuel_ir::storage::OutputView;
 use fuel_ir::{DType, Result, SType};
 use std::sync::Arc;
 
-/// Borrowed, zero-copy DLPack + FDX-sidecar view over a `(Storage, Layout
-/// [, SymEnv])` triple at the kernel-call boundary. Behind the `dlpack`
-/// feature. See [`dlpack_view::view`] and
-/// `docs/session-prompts/dlpack-comm-layer-plan.md` §2.
 #[cfg(feature = "dlpack")]
 pub mod dlpack_view;
 
