@@ -608,7 +608,7 @@ pub enum Op {
     ///
     /// First-class IR concern so the optimizer (Phase 2.2) can insert
     /// layout-fixups before kernels that don't advertise
-    /// [`crate::KernelCaps::strided_input`] without overloading
+    /// `crate::KernelCaps::strided_input` without overloading
     /// [`Op::Reshape`]'s "change shape" semantics. The executor
     /// compiles this to the same `WorkItemKind::ContiguizeOf` arm
     /// `Op::Reshape` uses; the only difference is that
@@ -854,7 +854,7 @@ pub enum Op {
     /// `inputs[0]` is a multi-output producer (its Storage carries a
     /// [`fuel_ir::storage::OutputView`] bundle), the bundle
     /// is the single eviction unit — the Release evicts the whole
-    /// bundle, not a single slot. [`opt::collect_alias_set`] treats
+    /// bundle, not a single slot. `opt::collect_alias_set` treats
     /// every `Op::View` of the producer as part of the producer's
     /// alias set, so `derive_ordering` pins Release after every
     /// reader of every View; the bundle drops only when the LAST
@@ -6770,7 +6770,7 @@ impl NodeHandle {
     ///
     /// First-class IR node so the optimizer (Phase 2.2) can insert
     /// layout-fixups before kernels that don't advertise
-    /// [`crate::KernelCaps::strided_input`] without overloading
+    /// `crate::KernelCaps::strided_input` without overloading
     /// [`Self::reshape`]'s "change shape" semantics.
     pub fn contiguize(&self) -> NodeHandle {
         let shape = self.shape().clone();

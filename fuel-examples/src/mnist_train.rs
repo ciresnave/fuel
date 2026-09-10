@@ -9,7 +9,7 @@
 //!
 //! ## What the convergence gate proves — and what it does NOT
 //!
-//! [`tests::mlp_loss_decreases_over_steps`] asserts the training loss decreases
+//! `tests::mlp_loss_decreases_over_steps` asserts the training loss decreases
 //! over a handful of steps on a fixed-seed synthetic batch. **This proves the
 //! training loop is WIRED UP AND MOVING** — parameters are found, gradients flow
 //! back through the graph, and the optimizer updates them in a loss-reducing

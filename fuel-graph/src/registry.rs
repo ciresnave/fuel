@@ -754,7 +754,7 @@ pub struct PatternTree {
 /// `params` is the matcher's authority on the resulting fused-op's
 /// per-instance parameters. The matcher knows what variant of
 /// [`FusedOpParams`] it's recognizing; carrying that decision in the
-/// match result keeps [`crate::opt::FusionRule::rewrite`] generic
+/// match result keeps `crate::opt::FusionRule::rewrite` generic
 /// across all registered fused ops.
 #[derive(Debug, Clone)]
 pub struct PatternMatch {

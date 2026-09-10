@@ -76,7 +76,7 @@
 //! single-residency graph the run extractor produces exactly one run
 //! whose members are that same topo order. The gate asserts that
 //! equality exactly (same `NodeId`s, same order) — see
-//! [`tests::equivalence_gate_branchless_order_matches_compile_plan`].
+//! `tests::equivalence_gate_branchless_order_matches_compile_plan`.
 
 use std::collections::{HashMap, HashSet};
 

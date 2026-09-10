@@ -111,10 +111,6 @@ pub mod factories;
 pub mod inference_context;
 pub mod kv_block_pool;
 pub mod kv_block_pool_device;
-/// The shared persistent-decode rebind driver (GAP-029 2b). Collapses what were
-/// two hand-copied 48-line per-model bodies. Read its module docs before adding
-/// a model: the Llama/Phi decode-path divergence is preserved deliberately, not
-/// an accident to be tidied.
 pub mod persistent_decode;
 // `multi_session` (the K-way decode scheduler) moved to `fuel-inference` (Q2,
 // 2026-07-29): it is consumer-side orchestration, not a Foundation primitive.

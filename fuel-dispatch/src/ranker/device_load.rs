@@ -7,7 +7,7 @@
 //! probing") and that said "needs telemetry infrastructure that doesn't
 //! exist yet". B1 shipped that infrastructure: the process-wide per-device
 //! in-flight counter (`fuel-dispatch::dispatch::inflight_count`) exposed
-//! through the Tier-2 [`BackendStreams::pending_work_count`] seam.
+//! through the Tier-2 `BackendStreams::pending_work_count` seam.
 //!
 //! # What C2 adds
 //!
@@ -75,7 +75,7 @@ use super::{AlternativeSet, BackendRuntimeLookup, Candidate, RuntimeSelector};
 
 /// Coarse load buckets for a device's live in-flight count, relative to
 /// its advertised slot capacity. Coarse (3 buckets) on purpose — mirrors
-/// the [`super::route_picker::free_bytes_bucket`] philosophy so jitter (a
+/// the `super::route_picker::free_bytes_bucket` philosophy so jitter (a
 /// single op submitted/drained between two reads) does not thrash the arm
 /// pick or invalidate the `RouteCache` fingerprint, while a genuine
 /// idle→saturated transition still reorders.
@@ -87,7 +87,7 @@ pub const LOAD_TIER_MODERATE: u8 = 1;
 pub const LOAD_TIER_SATURATED: u8 = 2;
 
 /// Bucket a device's live in-flight `count` (from
-/// [`BackendStreams::pending_work_count`]) against its advertised
+/// `BackendStreams::pending_work_count`) against its advertised
 /// `capacity` (from `slot_capacity`) into a coarse load tier.
 ///
 /// Device-relative (`count / capacity`) so the tiering means the same

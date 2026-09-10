@@ -167,7 +167,7 @@ pub trait BackendRuntime {
     /// Tier-2 upcast seam: a runtime handle that also exposes a
     /// deferred-execution queue model returns `Some(self)` so a
     /// selector holding only a `&dyn BackendRuntime` (the type the
-    /// route picker's [`BackendRuntimeLookup`] hands out) can reach
+    /// route picker's `BackendRuntimeLookup` hands out) can reach
     /// the [`BackendStreams`] live-load surface without naming the
     /// concrete handle type.
     ///

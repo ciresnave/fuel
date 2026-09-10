@@ -950,7 +950,7 @@ impl ProfileReport {
 
     /// Load a previously-persisted report, validated against the hardware of
     /// the loading machine. `current` is that machine's device equivalence
-    /// classes (via [`crate::probe::equivalence_classes`]); requiring it in the
+    /// classes (via `crate::probe::equivalence_classes`); requiring it in the
     /// signature makes it impossible to load without declaring what hardware
     /// you are on — the gate cannot be forgotten by a caller.
     ///
