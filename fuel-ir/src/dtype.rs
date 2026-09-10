@@ -114,7 +114,7 @@ pub enum DType {
 impl DType {
     /// Every [`DType`] variant, in declaration order.
     ///
-    /// Completeness is REMINDED, not compiler-derived (GAP-248). [`all_variants_witness`]
+    /// Completeness is REMINDED, not compiler-derived (GAP-248). `all_variants_witness`
     /// below is a wildcard-free `match`, so adding a `DType` fails to compile THERE — a
     /// variant cannot be added without being dragged to this file. But extending THIS
     /// list in the same edit is then convention: nothing ties `ALL` to the witness, so a

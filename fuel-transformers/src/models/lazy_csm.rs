@@ -313,11 +313,14 @@ impl CsmModel {
     /// `(1, S, audio_vocab_size)`.
     pub fn audio_head_logits(&self, decoder_h: &Tensor, codebook_idx: usize) -> Result<Tensor> {
         let cfg = &self.config;
-        assert!(
-            codebook_idx >= 1 && codebook_idx < cfg.audio_num_codebooks,
-            "codebook_idx {codebook_idx} must be in 1..{}",
-            cfg.audio_num_codebooks
-        );
+        // GAP-308 (CONFIG_FIELD): a caller-supplied codebook index outside the
+        // configured range is input to reject, not an invariant to assert.
+        if codebook_idx == 0 || codebook_idx >= cfg.audio_num_codebooks {
+            return Err(fuel_core::Error::Msg(format!(
+                "codebook_idx {codebook_idx} must be in 1..{}",
+                cfg.audio_num_codebooks
+            )));
+        }
         let slab = cfg.decoder_dim * cfg.audio_vocab_size;
         let start = (codebook_idx - 1) * slab;
         let end = start + slab;
@@ -405,6 +408,30 @@ mod tests {
     }
     fn ws(n: usize, nb: &mut dyn FnMut() -> f32) -> WeightStorage {
         WeightStorage::F32(vec_of(n, nb))
+    }
+
+    /// GAP-308 born-red: a `codebook_idx` outside `1..audio_num_codebooks` is
+    /// REJECTED with a typed error. Asserts the MESSAGE fragment ("codebook_idx"),
+    /// not is_err(): the range check returns before `decoder_h` is used, so the
+    /// positive control builds a real decoder_h and the decline case needs only a
+    /// shape-valid one.
+    #[test]
+    fn audio_head_declines_codebook_idx_out_of_range() {
+        let model = tiny_model();
+        let d = model.config.decoder_dim;
+        let n = model.config.audio_num_codebooks;
+        let decoder_h =
+            Tensor::from_f32(vec![0.0_f32; d], Shape::from_dims(&[1, d]), &Device::cpu()).unwrap();
+        // POSITIVE CONTROL: codebook_idx = 1 is in range and must run.
+        model
+            .audio_head_logits(&decoder_h, 1)
+            .expect("control: codebook_idx in 1..audio_num_codebooks must run");
+        // codebook_idx == audio_num_codebooks is the first out-of-range upper index.
+        let err = model.audio_head_logits(&decoder_h, n).unwrap_err();
+        assert!(
+            format!("{err}").contains("codebook_idx"),
+            "must decline codebook_idx out of range; got: {err}"
+        );
     }
 
     fn tiny_cfg() -> CsmConfig {

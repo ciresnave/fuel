@@ -243,6 +243,79 @@ print('rows, NOT struck through (what `grep -c "^| GAP-"` returns):  %d' % len(l
 print('rows, struck through (closed-by-strikethrough):               %d  %s'
       % (len(struck), [r[0] for r in struck]))
 print('rows, live, with the WORD "CLOSED" ANYWHERE in the row:      %d' % len(closed_word_anywhere))
+
+# ---------------------------------------------------------------------------
+# CANONICAL ROW-COUNT TAXONOMY -- a REPORT, deliberately NOT a gate on the counts.
+#
+# WHY THIS EXISTS: on 2026-09-09 three parties measured this file's population
+# and got 220, 219 and 168 -- ALL THREE CORRECT, over three different constructs
+# (all 5-cell rows; all rows; live plain-id rows), and none of us named the
+# construct. It cost three reconciliations on one file in one session. The block
+# above prints ALL vs struck/live and a delimiter distribution but NEVER CROSSES
+# them -- and every collision was at exactly the {shape} x {plain/lettered} x
+# {struck/live} intersection. This crosses them, and NAMES each construct IN THE
+# PRINTED LINE, because the output is what people quote, not the comment.
+#
+# !! REPORT, NOT AN ASSERTION ON THE VALUES. A count has no rename-resistant
+# form; pinning "220" would fire on every legitimate row addition. The ONLY
+# thing gated here is the two SELF-RECONCILIATION identities below -- a taxonomy
+# that does not add up to itself is a set of numbers, not a taxonomy, and an
+# id-regex drift would otherwise surface as a plausible number rather than a
+# failure. DO NOT "strengthen" the count lines into assertions: that is the exact
+# mistake this whole file exists to prevent.
+#
+# `rows` carries the unescaped-pipe count at [1]; 5 pipes == 4 cells, 6 == 5.
+_LETTERED = re.compile(r'^\| ~*GAP-\d+\([a-z]\)')   # id carries an (a)..(z) suffix
+# `_PLAINID` is computed INDEPENDENTLY of `_LETTERED` (not as its complement), so
+# `plain + lettered == ALL` is a real reconciliation and not a tautology. The
+# `(?![\d(])` anchors the end of the number: a bare `\d+(?!\()` BACKTRACKS and
+# matches `GAP-228(a)` as plain (\d+ -> 22, lookahead sees '8', passes).
+_PLAINID = re.compile(r'^\| ~*GAP-\d+(?![\d(])')    # id has NO suffix
+_plain_rows    = [r for r in rows if _PLAINID.match(r[2])]
+_lettered_rows = [r for r in rows if _LETTERED.match(r[2])]
+_live_plain    = [r for r in live if _PLAINID.match(r[2])]
+
+
+def _tax_shape(sub):
+    """{4-cell, 5-cell, other-shape ids} over a row subset."""
+    c4 = sum(1 for r in sub if r[1] == 5)
+    c5 = sum(1 for r in sub if r[1] == 6)
+    other = [r[0] for r in sub if r[1] not in (5, 6)]
+    return c4, c5, other
+
+
+def _tax_line(label, sub):
+    c4, c5, other = _tax_shape(sub)
+    print('  %-50s %4d   {4-cell: %d, 5-cell: %d}%s'
+          % (label, len(sub), c4, c5, '' if not other else '  OTHER=%s' % other))
+
+
+print()
+print('ROW-COUNT TAXONOMY (report; each line names its own construct):')
+_tax_line('ALL rows (^| ~*GAP-, incl struck + lettered):', rows)
+_tax_line('  of which PLAIN ids (no (x) suffix):', _plain_rows)
+_tax_line('  of which LETTERED sub-rows (GAP-NNN(a)..):', _lettered_rows)
+_tax_line('  of which STRUCK (id begins ~~, closed):', struck)
+_tax_line('  of which LIVE (not struck):', live)
+_tax_line('LIVE and PLAIN-id only:', _live_plain)
+# SELF-RECONCILIATION -- the only arm here that can fail, and the reason the
+# taxonomy is trustworthy rather than decorative. `_PLAINID`/`_LETTERED` are
+# independent, so a drift in the letter-suffix handling drops a row out of BOTH
+# (or into both) and the sum stops equalling ALL. Born-red: delete `\([a-z]\)`
+# from `_LETTERED` and this fires. Fed into the final sys.exit below, matching
+# this file's accumulate-then-exit-once idiom (a raw assert would abort every
+# later check on a broken parse -- but a broken parse is exactly when the later
+# row counts are worthless, so failing loud here is also defensible; the idiom
+# wins for consistency).
+taxonomy_broken = []
+if len(_plain_rows) + len(_lettered_rows) != len(rows):
+    taxonomy_broken.append('plain(%d) + lettered(%d) != ALL(%d)'
+                           % (len(_plain_rows), len(_lettered_rows), len(rows)))
+if len(struck) + len(live) != len(rows):
+    taxonomy_broken.append('struck(%d) + live(%d) != ALL(%d)'
+                           % (len(struck), len(live), len(rows)))
+print('taxonomy self-reconciliation:',
+      'OK' if not taxonomy_broken else 'BROKEN -- %s' % taxonomy_broken)
 def _pct(n, d):
     """A percentage, never printed alone.
 
@@ -1088,5 +1161,6 @@ if (odd or no_pipe or header_problems or control_chars or conflict_markers
         or vocab_foundation
         or own_missing or own_bad or own_dupes or own_blind
         or struck4_nodisp or struck4_owned or struck4_foundation
-        or owner_foundation):
+        or owner_foundation
+        or taxonomy_broken):
     sys.exit(1)

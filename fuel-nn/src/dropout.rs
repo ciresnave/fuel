@@ -10,7 +10,7 @@
 //! Lazy-graph semantics
 //! --------------------
 //!
-//! Unlike the eager [`fuel_nn::ops::dropout`] op (which calls
+//! Unlike the eager `fuel_nn::ops::dropout` op (which calls
 //! `Tensor::rand` at execution time on the storage backend), the
 //! lazy bridge has no graph-level random-number primitive yet. The
 //! v1 implementation therefore samples the Bernoulli mask
@@ -60,7 +60,7 @@ use std::sync::Arc;
 /// A dropout layer that randomly zeroes input elements during
 /// training and is the identity at inference.
 ///
-/// Mirrors the shape of [`fuel_nn::ops::Dropout`]. The drop
+/// Mirrors the shape of `fuel_nn::ops::Dropout`. The drop
 /// probability is captured at construction; `forward` takes the
 /// `train` flag (and an explicit seed if you want deterministic
 /// behavior across step boundaries).

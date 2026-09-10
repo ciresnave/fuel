@@ -10,7 +10,7 @@
 //!   for the pipelined dispatch world. Today's backing is a simple
 //!   in-memory `HashMap<NodeId, Arc<...>>`; future work may swap this
 //!   for an mmap-backed coherent store per
-//!   [`project_unified_durable_tensor_store.md`].
+//!   `project_unified_durable_tensor_store.md`.
 //!
 //! - **[`KvCache`]**, **[`KvLayer`]**, **[`KvLayerId`]**, **[`KvSlot`]**,
 //!   **[`AuthorityState`]**: the backend-erased KV cache primitive that
@@ -1514,8 +1514,7 @@ impl DecodeSession {
     /// The full realized [`StorageCache`] from the first realize (every
     /// weight Const + the KV Arcs + the initial per-token data Consts).
     /// The CapturedRun capture-building step clones this cheaply
-    /// (Arc-clones only, see [`InferenceContext::cloned_persistent`]'s
-    /// exact pattern) and overwrites the per-token entries with fresh
+    /// (Arc-clones only) and overwrites the per-token entries with fresh
     /// FIXED-address Arcs before handing the merged cache to
     /// [`fuel_dispatch::pipelined::CapturedDecodeSession::capture`] as
     /// `inputs`.
@@ -1887,7 +1886,7 @@ impl PagedDecodeSession {
 ///
 /// The persistent map is the seam the unified-storage / mmap-coherence
 /// backplane work later replaces (see
-/// [`project_unified_durable_tensor_store.md`]); today it's a simple
+/// `project_unified_durable_tensor_store.md`); today it's a simple
 /// in-memory `HashMap`. Each realize call clones the Arcs into the
 /// executor's input cache; persistent entries reuse those Arcs
 /// across calls instead of re-uploading.
@@ -2118,7 +2117,7 @@ impl InferenceContext {
         )
     }
 
-    /// Multi-target counterpart of [`realize_one_as`].
+    /// Multi-target counterpart of [`Self::realize_one_as`].
     pub fn realize_many_as<T: bytemuck::Pod>(
         &self,
         graph: &Arc<RwLock<Graph>>,

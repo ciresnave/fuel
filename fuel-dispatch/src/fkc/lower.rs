@@ -144,7 +144,7 @@ pub struct ResolvedFused {
     pub variant: Option<String>,
     /// §5.5 `return.bundle` slot names, in declared order (empty for a
     /// single-output section). Populated by
-    /// [`crate::fkc::return_check::bundle_slot_names`] (Finding 5.4, Task
+    /// `crate::fkc::return_check::bundle_slot_names` (Finding 5.4, Task
     /// 3.6); `register_into` (`register.rs`) threads non-empty values into
     /// `FusedKernelRegistry::record_bundle_slot_names`.
     pub bundle_slot_names: Vec<String>,

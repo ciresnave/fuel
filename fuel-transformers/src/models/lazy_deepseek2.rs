@@ -608,12 +608,12 @@ impl DeepSeek2Model {
     /// the DeepSeek decode trick. Same cached-decode contract (geometry
     /// validation, fresh-graph rebind, per-step RoPE tables, shared decode
     /// mask, cache threading) but attention goes through
-    /// [`Self::mla_attention_cached_absorbed`] instead of
-    /// [`Self::mla_attention_cached`]: rather than up-projecting the whole
+    /// `Self::mla_attention_cached_absorbed` instead of
+    /// `Self::mla_attention_cached`: rather than up-projecting the whole
     /// cached latent prefix through `kv_b_proj` every step, `kv_b_proj`'s
     /// per-head `W_UK`/`W_UV` slices are folded into the query/context
     /// math so attention reads the compressed latent directly. See
-    /// [`Self::mla_attention_cached_absorbed`]'s doc for the full math and
+    /// `Self::mla_attention_cached_absorbed`'s doc for the full math and
     /// the bit-exactness caveat (mathematically equivalent, not
     /// bit-identical, to the non-absorbed path).
     pub fn forward_with_latent_cache_absorbed(
@@ -747,7 +747,7 @@ impl DeepSeek2Model {
     /// unbound after realize.
     ///
     /// Attention always goes through the **absorbed** (weight-absorption)
-    /// math — see [`Self::mla_attention_latent_kv`]'s doc for why: under
+    /// math, because under
     /// the full fixed-capacity read this path always performs (no slice to
     /// `cached_len + seq`), the non-absorbed form would re-run
     /// `kv_b_proj`'s up-projection over the *entire* `max_seq_len` capacity
@@ -1151,9 +1151,9 @@ impl DeepSeek2Model {
     ///    DecodeSession::is_valid_for`]): drop it, falling through to (3).
     /// 3. **`None`** (first decode token, or post-invalidation): build +
     ///    optimize the held graph ONCE via
-    ///    [`Self::build_and_realize_first_mla_decode_token`].
+    ///    `Self::build_and_realize_first_mla_decode_token`.
     /// 4. **`Some` + valid**: re-bind the per-token data Consts and SKIP
-    ///    optimize via [`Self::rebind_and_realize_prebuilt_mla`].
+    ///    optimize via `Self::rebind_and_realize_prebuilt_mla`.
     /// 5. A `TopologyChanged` surfaced from the (4) reuse path invalidates
     ///    the session and falls back to the D1 rebuild path for THIS token
     ///    (the session rebuilds on the next decode token).
@@ -1178,7 +1178,7 @@ impl DeepSeek2Model {
     ///   `kv_nodes: Vec<(NodeId, NodeId)>` verbatim as `(latent, kpe)` pairs.
     /// - MLA-specific geometry guards (`n_slots == 2`, both slots' trailing
     ///   shapes, `dtype == F32`) live inside the build path
-    ///   ([`Self::build_and_realize_first_mla_decode_token`]) — checked
+    ///   (`Self::build_and_realize_first_mla_decode_token`) — checked
     ///   ONCE, on the first decode token — not repeated on every rebind
     ///   (mirrors how `build_and_realize_first_decode_token` carries
     ///   LlamaModel's `max_seq_len` / `n_layers` checks while

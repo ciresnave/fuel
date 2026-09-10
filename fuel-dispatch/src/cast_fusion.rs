@@ -45,7 +45,7 @@ use crate::dispatch::global_bindings;
 /// outside this set always return `false` from the predicate; the
 /// cast survives and dispatch falls back to the existing
 /// `Cast → Op` chain. Extending coverage is mechanical — add a
-/// match arm to [`op_kind`].
+/// match arm to `op_kind`.
 pub fn cast_fusion_predicate() -> CapabilityPredicate {
     Arc::new(|op: &Op, dtypes: &[DType]| -> bool {
         let Some(kind) = op_kind(op) else {

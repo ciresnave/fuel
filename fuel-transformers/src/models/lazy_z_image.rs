@@ -1345,7 +1345,7 @@ pub struct FlowMatchEulerDiscreteScheduler {
 }
 
 impl FlowMatchEulerDiscreteScheduler {
-    /// Build a fresh scheduler. Call [`set_timesteps`] before stepping.
+    /// Build a fresh scheduler. Call [`Self::set_timesteps`] before stepping.
     pub fn new(config: SchedulerConfig) -> Self {
         let n = config.num_train_timesteps;
         let mut timesteps: Vec<f64> = (1..=n).rev().map(|t| t as f64).collect();
